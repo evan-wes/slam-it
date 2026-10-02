@@ -23,7 +23,7 @@ import numpy as np
 from tests.fixtures.foundations import _mp_oracle as o
 
 OUT = Path(__file__).with_name("camera.json")
-MODELS = {"pinhole": 0, "radtan": 1}
+MODELS = {"pinhole": 0, "radtan": 1, "radial": 2}
 PINHOLE = [520.9, 521.0, 325.1, 249.7]
 # A strongly distorting lens (TUM RGB-D fr1-like) and a mild one.
 RADTAN = {
@@ -42,6 +42,10 @@ RADTAN = {
 }
 
 
+# A BAL-like camera: one focal length, two radial terms (Ladybug-scale values).
+RADIAL = [499.4, 320.0, 240.0, -0.31, 0.12]
+
+
 def _distort(coefficients: list[Any], x: Any, y: Any) -> tuple[Any, Any]:  # noqa: ANN401 -- mpmath numbers
     """Apply radtan distortion ``(k1, k2, p1, p2, k3)`` to a normalised point."""
     k1, k2, p1, p2, k3 = coefficients
@@ -56,6 +60,12 @@ def _distort(coefficients: list[Any], x: Any, y: Any) -> tuple[Any, Any]:  # noq
 def _pixel(model: str, values: list[Any], component: int) -> Any:  # noqa: ANN401 -- mpmath number
     """One pixel coordinate of the projection, from point (X, Y, Z) and intrinsics."""
     x_, y_, z_ = values[:3]
+    if model == "radial":  # BAL's formula: f r(p) p + c, with r = 1 + k1 |p|² + k2 |p|⁴
+        f, cx, cy, k1, k2 = values[3:8]
+        x, y = x_ / z_, y_ / z_
+        r2 = x * x + y * y
+        scale = f * (1 + k1 * r2 + k2 * r2 * r2)
+        return scale * x + cx if component == 0 else scale * y + cy
     fx, fy, cx, cy = values[3:7]
     x, y = x_ / z_, y_ / z_
     xd, yd = _distort(values[7:12], x, y) if model == "radtan" else (x, y)
@@ -103,6 +113,9 @@ def _distortion_equations(kk: list[Any], xd: Any, yd: Any) -> Callable[..., list
 def _unproject(model: str, k: list[float], pixels: list[list[float]]) -> list[list[float]]:
     """Bearing vectors: solve the distortion equations with mpmath's root finder."""
     kk = o.mpf_vector(k)
+    if model == "radial":  # as radtan with fx = fy = f and no tangential or k3 terms
+        kk = [kk[0], kk[0], kk[1], kk[2], kk[3], kk[4], mp.mpf(0), mp.mpf(0), mp.mpf(0)]
+        model = "radtan"
     out = []
     for u, v in pixels:
         xd = (mp.mpf(u) - kk[2]) / kk[0]
@@ -128,9 +141,11 @@ def main() -> None:
         "very close": [[0.01, -0.02, 0.05]],
         "far": [[3.0, -2.0, 400.0]],
     }
-    cameras = {"pinhole": ("pinhole", PINHOLE)} | {
-        f"radtan {n}": ("radtan", k) for n, k in RADTAN.items()
-    }
+    cameras = (
+        {"pinhole": ("pinhole", PINHOLE)}
+        | {f"radtan {n}": ("radtan", k) for n, k in RADTAN.items()}
+        | {"radial": ("radial", RADIAL)}
+    )
     fx: dict[str, Any] = {
         name: {"unpack": True, "cases": []}
         for name in ("project", "project_jacobians", "unproject")

@@ -10,8 +10,14 @@ from numpy.typing import NDArray
 
 from slamlab import backends
 from slamlab.foundations import camera
-from slamlab.foundations.errors import NotConvergedError
-from tests.conftest import check_parity, load_fixture, parity_params, protocol_members
+from slamlab.foundations.errors import InvalidInputError, NotConvergedError
+from tests.conftest import (
+    check_parity,
+    load_fixture,
+    parity_params,
+    protocol_members,
+    require_backend,
+)
 
 CAMERA = load_fixture("foundations/camera.json")
 RADTAN = np.array([520.9, 521.0, 325.1, 249.7, 0.2312, -0.7849, -0.0033, -0.0001, 0.9172])
@@ -90,3 +96,25 @@ def test_pinhole_is_radtan_without_distortion() -> None:
     np.testing.assert_array_equal(
         camera.project("radtan", zero, points), camera.project("pinhole", RADTAN[:4], points)
     )
+
+
+RADIAL = np.array([499.4, 320.0, 240.0, -0.31, 0.12])
+
+
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_radial_is_radtan_with_one_focal(backend: str) -> None:
+    """Radial projects as radtan with fx = fy = f and no tangential or k3 terms."""
+    require_backend(backend)
+    points = _points(50)
+    expanded = camera.RADIAL_TO_RADTAN @ RADIAL
+    np.testing.assert_array_equal(expanded, [499.4, 499.4, 320.0, 240.0, -0.31, 0.12, 0, 0, 0])
+    np.testing.assert_allclose(
+        camera.project("radial", RADIAL, points, backend=backend),
+        camera.project("radtan", expanded, points),
+        rtol=1e-15,
+    )
+    _, d_radial = camera.project_jacobians("radial", RADIAL, points, backend=backend)
+    _, d_radtan = camera.project_jacobians("radtan", expanded, points)
+    np.testing.assert_allclose(d_radial[..., 0], d_radtan[..., 0] + d_radtan[..., 1], rtol=1e-14)
+    with pytest.raises(InvalidInputError, match="focal"):
+        camera.check_intrinsics("radial", [-1.0, 320.0, 240.0, 0.0, 0.0])

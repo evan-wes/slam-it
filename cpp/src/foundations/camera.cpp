@@ -10,6 +10,20 @@ namespace slamlab::foundations::camera {
 
 namespace {
 
+/// @brief The linear map from radial `[f, cx, cy, k1, k2]` to radtan
+///        `[f, f, cx, cy, k1, k2, 0, 0, 0]`.
+/// @return The 9 x 5 map.
+Eigen::Matrix<double, 9, 5> radial_to_radtan() {
+  Eigen::Matrix<double, 9, 5> map = Eigen::Matrix<double, 9, 5>::Zero();
+  map(0, 0) = 1.0;
+  map(1, 0) = 1.0;
+  map(2, 1) = 1.0;
+  map(3, 2) = 1.0;
+  map(4, 3) = 1.0;
+  map(5, 4) = 1.0;
+  return map;
+}
+
 /// @brief The terms shared by radtan distortion and its Jacobian.
 struct RadialTerms {
   /// @brief Normalised x.
@@ -91,18 +105,31 @@ Result<Eigen::Vector2d> normalise(Model model, const Eigen::Ref<const Eigen::Vec
 }  // namespace
 
 Result<void> check_intrinsics(Model model, const Eigen::Ref<const Eigen::VectorXd>& intrinsics) {
-  const Eigen::Index expected = model == Model::kPinhole ? 4 : 9;
+  Eigen::Index expected = 9;
+  if (model == Model::kPinhole) {
+    expected = 4;
+  } else if (model == Model::kRadial) {
+    expected = 5;
+  }
   if (intrinsics.size() != expected) {
     return fail(ErrorKind::kInvalidInput, "intrinsics: wrong length for the camera model");
   }
-  if (intrinsics(0) <= 0.0 || intrinsics(1) <= 0.0) {
+  if (intrinsics(0) <= 0.0 || (model != Model::kRadial && intrinsics(1) <= 0.0)) {
     return fail(ErrorKind::kInvalidInput, "intrinsics: focal lengths must be positive");
   }
   return {};
 }
 
-Result<Eigen::Vector2d> project(Model model, const Eigen::Ref<const Eigen::VectorXd>& intrinsics,
-                                const Eigen::Vector3d& point) {
+namespace {
+
+/// @brief Project with a pinhole or radtan model (radial already expanded).
+/// @param model The model (pinhole or radtan).
+/// @param intrinsics The model's intrinsics.
+/// @param point The point.
+/// @return The pixel, or `InvalidInput`.
+Result<Eigen::Vector2d> project_expanded(Model model,
+                                         const Eigen::Ref<const Eigen::VectorXd>& intrinsics,
+                                         const Eigen::Vector3d& point) {
   return normalise(model, intrinsics, point).transform([&](const Eigen::Vector2d& xy) {
     const Eigen::Vector2d xd = model == Model::kRadTan ? distort(intrinsics, xy) : xy;
     return Eigen::Vector2d((intrinsics(0) * xd.x()) + intrinsics(2),
@@ -110,9 +137,14 @@ Result<Eigen::Vector2d> project(Model model, const Eigen::Ref<const Eigen::Vecto
   });
 }
 
-Result<ProjectionJacobian> project_jacobian(Model model,
-                                            const Eigen::Ref<const Eigen::VectorXd>& intrinsics,
-                                            const Eigen::Vector3d& point) {
+/// @brief Differentiate a pinhole or radtan projection (radial already expanded).
+/// @param model The model (pinhole or radtan).
+/// @param intrinsics The model's intrinsics.
+/// @param point The point.
+/// @return The Jacobian, or `InvalidInput`.
+Result<ProjectionJacobian> project_jacobian_expanded(
+    Model model, const Eigen::Ref<const Eigen::VectorXd>& intrinsics,
+    const Eigen::Vector3d& point) {
   const Result<Eigen::Vector2d> normalised = normalise(model, intrinsics, point);
   if (!normalised) {
     return std::unexpected(normalised.error());
@@ -144,8 +176,14 @@ Result<ProjectionJacobian> project_jacobian(Model model,
   return out;
 }
 
-Result<Eigen::Vector3d> unproject(Model model, const Eigen::Ref<const Eigen::VectorXd>& intrinsics,
-                                  const Eigen::Vector2d& pixel) {
+/// @brief Unproject with a pinhole or radtan model (radial already expanded).
+/// @param model The model (pinhole or radtan).
+/// @param intrinsics The model's intrinsics.
+/// @param pixel The pixel.
+/// @return The bearing, or `NotConverged`.
+Result<Eigen::Vector3d> unproject_expanded(Model model,
+                                           const Eigen::Ref<const Eigen::VectorXd>& intrinsics,
+                                           const Eigen::Vector2d& pixel) {
   if (auto checked = check_intrinsics(model, intrinsics); !checked) {
     return std::unexpected(checked.error());
   }
@@ -172,6 +210,62 @@ Result<Eigen::Vector3d> unproject(Model model, const Eigen::Ref<const Eigen::Vec
     }
   }
   return Eigen::Vector3d(xy.x(), xy.y(), 1.0).normalized();
+}
+
+/// @brief A camera's intrinsics in the form the projection code computes with: radial
+///        expanded to radtan, the others unchanged.
+struct Expanded {
+  /// @brief Pinhole or radtan.
+  Model model;
+  /// @brief The intrinsics in that model's layout.
+  Eigen::VectorXd intrinsics;
+};
+
+/// @brief Check a model's intrinsics and expand radial to radtan.
+/// @param model The model.
+/// @param intrinsics The intrinsics.
+/// @return The expanded form, or `InvalidInput`.
+Result<Expanded> expand(Model model, const Eigen::Ref<const Eigen::VectorXd>& intrinsics) {
+  if (auto checked = check_intrinsics(model, intrinsics); !checked) {
+    return std::unexpected(checked.error());
+  }
+  if (model == Model::kRadial) {
+    return Expanded{.model = Model::kRadTan, .intrinsics = radial_to_radtan() * intrinsics};
+  }
+  return Expanded{.model = model, .intrinsics = intrinsics};
+}
+
+}  // namespace
+
+Result<Eigen::Vector2d> project(Model model, const Eigen::Ref<const Eigen::VectorXd>& intrinsics,
+                                const Eigen::Vector3d& point) {
+  return expand(model, intrinsics).and_then([&](const Expanded& camera) {
+    return project_expanded(camera.model, camera.intrinsics, point);
+  });
+}
+
+Result<ProjectionJacobian> project_jacobian(Model model,
+                                            const Eigen::Ref<const Eigen::VectorXd>& intrinsics,
+                                            const Eigen::Vector3d& point) {
+  return expand(model, intrinsics)
+      .and_then([&](const Expanded& camera) {
+        return project_jacobian_expanded(camera.model, camera.intrinsics, point);
+      })
+      .transform([&](ProjectionJacobian full) -> ProjectionJacobian {
+        if (model != Model::kRadial) {
+          return full;
+        }
+        ProjectionJacobian out(2, 3 + 5);
+        out << full.leftCols<3>(), full.rightCols<9>() * radial_to_radtan();
+        return out;
+      });
+}
+
+Result<Eigen::Vector3d> unproject(Model model, const Eigen::Ref<const Eigen::VectorXd>& intrinsics,
+                                  const Eigen::Vector2d& pixel) {
+  return expand(model, intrinsics).and_then([&](const Expanded& camera) {
+    return unproject_expanded(camera.model, camera.intrinsics, pixel);
+  });
 }
 
 }  // namespace slamlab::foundations::camera

@@ -32,6 +32,14 @@ convention is converted by its reader.
 Points at or behind `Z = 1e-9` are rejected rather than projected through the camera centre.
 BA checks cheirality before it ever calls projection.
 
+**Radial** `[f, cx, cy, k1, k2]` is COLMAP's RADIAL and BAL's camera: one focal length and
+two radial terms, `u = f (1 + k1 r² + k2 r⁴) x + cx`. It is radtan with `fx = fy = f` and
+`p1 = p2 = k3 = 0`. So rather than a third copy of the distortion code, both cores map its
+5 parameters onto radtan's 9 with a fixed matrix `E`, `[f, f, cx, cy, k1, k2, 0, 0, 0]`,
+project and unproject through radtan, and get its intrinsics Jacobian as radtan's times `E`.
+The two focal columns of radtan's Jacobian sum into radial's single one. The parity
+oracle writes the radial formula out directly, so it does not share that shortcut.
+
 ## Jacobians
 
 `project_jacobians` returns `d(u, v)/d(X, Y, Z)` and `d(u, v)/d(intrinsics)`, by the chain
@@ -61,9 +69,9 @@ used as an oracle here.
 
 ## How it's checked
 
-- **Parity fixture** (`camera.json`, 45 cases):
-  - cameras: pinhole, a strongly distorting radtan lens (TUM fr1-like), and a mild one
-    (EuRoC-like);
+- **Parity fixture** (`camera.json`, 60 cases):
+  - cameras: pinhole, a strongly distorting radtan lens (TUM fr1-like), a mild one
+    (EuRoC-like), and a BAL-like radial camera;
   - points: on the optical axis, general, near the image corners, very close (Z = 0.05),
     and far (Z = 400).
 - **The oracle (mpmath, 50 digits):**
@@ -75,6 +83,8 @@ used as an oracle here.
   - `unproject(project(p)) = p/|p|`;
   - the Jacobians against central differences in every point coordinate and every intrinsic;
   - radtan with zero coefficients equals pinhole exactly;
+  - radial equals radtan with `E`'s expansion, and its focal derivative is the sum of
+    radtan's two;
   - the uninvertible pixel raises `NotConvergedError`;
   - behind-camera points, a bad intrinsics length and non-positive focal lengths are
     rejected.

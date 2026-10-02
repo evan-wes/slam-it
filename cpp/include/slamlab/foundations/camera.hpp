@@ -3,7 +3,8 @@
 ///
 /// Mirrors `slamlab.foundations.camera`. Points are in the camera frame (z forward); pixels
 /// follow OpenCV (top-left pixel centre at (0, 0)); intrinsics are flat vectors:
-/// pinhole `[fx, fy, cx, cy]`, radtan `[fx, fy, cx, cy, k1, k2, p1, p2, k3]`.
+/// pinhole `[fx, fy, cx, cy]`, radtan `[fx, fy, cx, cy, k1, k2, p1, p2, k3]`, radial
+/// `[f, cx, cy, k1, k2]`.
 #pragma once
 
 #include <Eigen/Core>
@@ -20,6 +21,9 @@ enum class Model : std::uint8_t {
   kPinhole = 0,
   /// @brief `[fx, fy, cx, cy, k1, k2, p1, p2, k3]`, Brown-Conrady radial-tangential.
   kRadTan = 1,
+  /// @brief `[f, cx, cy, k1, k2]`, COLMAP's RADIAL and BAL's model: radtan with `fx = fy = f`
+  ///        and no tangential or k3 terms, computed through radtan.
+  kRadial = 2,
 };
 
 /// @brief Points with `Z` at or below this are behind the camera and cannot project.

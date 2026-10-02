@@ -32,6 +32,9 @@ camera::Model to_model(int model) {
   if (model == 1) {
     return camera::Model::kRadTan;
   }
+  if (model == 2) {
+    return camera::Model::kRadial;
+  }
   throw std::invalid_argument("unknown camera model code");
 }
 

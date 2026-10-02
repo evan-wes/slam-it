@@ -6,7 +6,11 @@ intrinsics are flat vectors per model:
 
 - ``"pinhole"``: ``[fx, fy, cx, cy]``;
 - ``"radtan"``: ``[fx, fy, cx, cy, k1, k2, p1, p2, k3]`` -- Brown-Conrady radial (k1, k2, k3)
-  and tangential (p1, p2) distortion, as in OpenCV, TUM RGB-D and EuRoC.
+  and tangential (p1, p2) distortion, as in OpenCV, TUM RGB-D and EuRoC;
+- ``"radial"``: ``[f, cx, cy, k1, k2]`` -- one focal length and two radial terms, COLMAP's
+  ``RADIAL`` and the Bundle Adjustment in the Large model. It is radtan with ``fx = fy = f``
+  and ``p1 = p2 = k3 = 0``, so it is computed through radtan by the fixed linear map
+  :data:`RADIAL_TO_RADTAN`, and its intrinsics Jacobian is radtan's times that map.
 
 Projection: normalise ``(x, y) = (X/Z, Y/Z)``; distort (radtan); then
 ``u = fx x_d + cx``, ``v = fy y_d + cy``. Points must lie in front of the camera
@@ -30,8 +34,19 @@ from slamlab import backends
 from slamlab.foundations.arrays import as_batch, as_real
 from slamlab.foundations.errors import InvalidInputError, NotConvergedError
 
-MODELS: dict[str, tuple[int, int]] = {"pinhole": (0, 4), "radtan": (1, 9)}
+MODELS: dict[str, tuple[int, int]] = {"pinhole": (0, 4), "radtan": (1, 9), "radial": (2, 5)}
 """Each model's integer code (as it crosses the bindings) and intrinsics length."""
+
+FOCAL_INDICES: dict[str, tuple[int, ...]] = {"pinhole": (0, 1), "radtan": (0, 1), "radial": (0,)}
+"""Each model's focal-length entries in its intrinsics vector."""
+
+RADIAL_TO_RADTAN = np.zeros((9, 5))
+"""The linear map from radial ``[f, cx, cy, k1, k2]`` to radtan
+``[f, f, cx, cy, k1, k2, 0, 0, 0]``."""
+RADIAL_TO_RADTAN[[0, 1, 2, 3, 4, 5], [0, 0, 1, 2, 3, 4]] = 1.0
+
+_RADTAN = 1
+_RADIAL = 2
 
 MIN_DEPTH = 1e-9
 """Points with ``Z`` at or below this are behind (or at) the camera and cannot project."""
@@ -81,7 +96,7 @@ def _model_and_intrinsics(model: str, intrinsics: ArrayLike) -> tuple[int, NDArr
         raise InvalidInputError(
             f"intrinsics: {model} expects shape ({length},), got {params.shape}"
         )
-    if params[0] <= 0.0 or params[1] <= 0.0:
+    if np.any(params[list(FOCAL_INDICES[model])] <= 0.0):
         raise InvalidInputError("intrinsics: focal lengths must be positive")
     return code, params
 
@@ -155,6 +170,8 @@ def _project(
     model: int, params: NDArray[np.float64], points: NDArray[np.float64]
 ) -> NDArray[np.float64]:
     """Project (N, 3) points (reference)."""
+    if model == _RADIAL:
+        return _project(_RADTAN, RADIAL_TO_RADTAN @ params, points)
     xy = points[:, :2] / points[:, 2:3]
     if model == MODELS["radtan"][0]:
         xy = _distort(params, xy)
@@ -165,6 +182,9 @@ def _project_jacobians(
     model: int, params: NDArray[np.float64], points: NDArray[np.float64]
 ) -> NDArray[np.float64]:
     """Compute d(pixel)/d(point) and d(pixel)/d(intrinsics), shape (N, 2, 3 + K) (reference)."""
+    if model == _RADIAL:
+        full = _project_jacobians(_RADTAN, RADIAL_TO_RADTAN @ params, points)
+        return np.concatenate([full[:, :, :3], full[:, :, 3:] @ RADIAL_TO_RADTAN], axis=2)
     n = points.shape[0]
     z = points[:, 2]
     xy = points[:, :2] / z[:, None]
@@ -225,6 +245,8 @@ def _unproject(
     model: int, params: NDArray[np.float64], pixels: NDArray[np.float64]
 ) -> NDArray[np.float64]:
     """Map (N, 2) pixels to unit bearing vectors (reference)."""
+    if model == _RADIAL:
+        return _unproject(_RADTAN, RADIAL_TO_RADTAN @ params, pixels)
     xy = np.stack(
         [(pixels[:, 0] - params[2]) / params[0], (pixels[:, 1] - params[3]) / params[1]], -1
     )
@@ -244,7 +266,7 @@ def project(
 
     Parameters
     ----------
-    model : {"pinhole", "radtan"}
+    model : {"pinhole", "radtan", "radial"}
         The camera model.
     intrinsics : array_like, shape (K,)
         The model's intrinsics (see the module docstring for the layout).
@@ -277,7 +299,7 @@ def project_jacobians(
 
     Parameters
     ----------
-    model : {"pinhole", "radtan"}
+    model : {"pinhole", "radtan", "radial"}
         The camera model.
     intrinsics : array_like, shape (K,)
         The model's intrinsics.
@@ -314,7 +336,7 @@ def unproject(
 
     Parameters
     ----------
-    model : {"pinhole", "radtan"}
+    model : {"pinhole", "radtan", "radial"}
         The camera model.
     intrinsics : array_like, shape (K,)
         The model's intrinsics.
