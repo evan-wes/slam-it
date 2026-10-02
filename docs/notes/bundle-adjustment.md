@@ -203,8 +203,20 @@ geo-referenced scenes (UTM, ECEF, a COLMAP model aligned to GNSS). The first ver
 the whole gauge from about 5e4 m: no pose fixed, σ_f infinite. The rows are therefore built
 in coordinates centred on the observed cameras and anchor points and scaled by their RMS
 spread. A change of origin and unit is an invertible map of `g`, so the spans, and the
-gauge, are the same. A scene 1e6 m out now gets the same gauge pose, confined pose and σ_f
-(to 1%, which is what 1e6 m coordinates leave of the problem's own digits).
+gauge, are the same.
+
+**And the solve in a centred world.** That fixed the rank test, not the steps. A step
+`T_cw exp(δ)` rotates a camera about the world origin, so far from it a rotation step of θ
+swings the centre by about `|θ|² |C| / 2`: half a metre per step at 1e4 m. Nothing in the
+linear model sees that. From a start 0.05 off, the baseline the scale gauge holds drifted by
+0.8, and LM ran from 9 iterations to its cap. At ECEF range (6.4e6 m), σ_f went infinite.
+Both cores therefore solve in a world shifted by the mean camera centre (summed in index
+order, so they agree to the bit), and shift back. Every residual is unchanged by a shift, so
+this is exact. Fixed and unmoved variables come back as given. Up to 6.4e6 m, the solve now
+takes the same iterations, holds the same baseline and gives the same σ_f as at the origin.
+Centring changes the steps' chart, so the gauge's second-order drift, and with it where in
+the gauge orbit the solution lands, moved by up to 1e-4 on the fixture. The costs and
+intrinsics are unchanged.
 
 **Removing N, pose by pose.** At pose c, N moves the camera's world centre and orientation
 by `M = [[I, -[C]×, C], [0, I, 0]] N`. A step moves them by `J_c δ`, where
@@ -492,7 +504,11 @@ milestone 4's hundreds to thousands, the options behind `ReducedSystemSolver` ar
   - The options reject `partial`, which is reported only.
   - Translation priors whose stored rotation is identity give the same solution as with the
     true rotation. Three of them leave no gauge, and σ_f is finite.
-  - A scene 1e6 m from the origin gets the same gauge pose, confined pose and σ_f (to 1%).
+  - Scenes 1e4, 1e6 and 6.4e6 m from the origin, started 0.05 off, get the same gauge
+    pose, confined pose, iterations (within 1), camera centres (to 1e-6 m) and σ_f (to
+    1e-5) as at the origin.
+  - `free_gauge` counts what a fixed recipe leaves: 1 for `first_pose` on monocular data
+    (the scale), 7 for `none` with nothing pinned, 0 under `auto`.
   - Unit tests of the gauge in both cores:
     - the remaining dimension and name for each kind of anchor;
     - the complement's orthonormality;
@@ -500,14 +516,15 @@ milestone 4's hundreds to thousands, the options behind `ReducedSystemSolver` ar
       and a 1e6 m offset.
 - **Degeneracy.** A single-view point, a point 10⁷ away and an unobserved camera are
   dropped or held, counted, and returned unchanged.
-- **Parity.** A committed fixture, `tests/fixtures/foundations/ba.json`, holds fourteen
+- **Parity.** A committed fixture, `tests/fixtures/foundations/ba.json`, holds fifteen
   solves by the reference (`generate_ba.py`):
   - each gauge `auto` resolves to;
   - each explicit recipe (`first_pose`, `scale`, `none`);
   - two partial cases: attitude priors, which confine two poses, and GNSS-style translation
     priors on two cameras, stored with identity rotation;
-  - Gauss-Newton, Huber with outliers, degenerate drops, radial with f, k1, k2 free, and a
-    scene with every kind of block.
+  - Gauss-Newton, Huber with outliers, degenerate drops, radial with f, k1, k2 free, a
+    scene with every kind of block, and a pose prior 1.2 rad from the truth (where `Jr⁻¹`
+    is far from the identity).
 
   Each case records every option it ran with. Each backend must reproduce its outputs under
   per-field tolerances (poses to 1e-9, points to 1e-8, intrinsics to 1e-8 relative,
@@ -593,8 +610,10 @@ milestone 4's hundreds to thousands, the options behind `ReducedSystemSolver` ar
   residual, and was right. Its translation half pinned the rotation about the world origin
   only at second order: a near-null direction, which is exactly what makes LM crawl and
   makes rounding grow between the cores (they ended 1e-3 apart). With the decoupled residual
-  the same problems converge in 10 iterations at every weight, and the cores agree to
-  3e-15.
+  the same problems converge in about 10 iterations at weights 1e2 to 1e4, and the cores
+  agree to 3e-15. Weak priors (weight 1) still take 20 to 30, against 6 under Gauss-Newton:
+  a softly pinned direction has curvature far below Marquardt's `λ diag(JᵀJ)`, so the
+  damping shrinks its steps until λ decays. That is LM's own behaviour, not a defect.
 - **A fixture's tolerance must leave the cores room to stop together.** At a cost tolerance
   of 1e-12, a cost creeping down by about that much per step let last-bit rounding decide
   which step crosses it. On one case Python stopped after 9 iterations and C++ after 12, at
