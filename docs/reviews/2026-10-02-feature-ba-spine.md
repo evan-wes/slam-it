@@ -796,3 +796,380 @@ Sources:
 - [Weber et al., Power Bundle Adjustment, arXiv:2204.12834](https://arxiv.org/abs/2204.12834)
 - [COLMAP bundle_adjustment.cc solver selection (mirror)](https://huggingface.co/camenduru/ceres-solver-v1/blob/main/colmap/src/optim/bundle_adjustment.cc)
 - [Ceres Solver FAQ: choosing a linear solver](https://ceres-solver.readthedocs.io/latest/solving_faqs.html)
+
+## Run 3 -- 2026-10-02
+
+| | |
+|---|---|
+| **Branch** | `feature/ba-spine` |
+| **Range** | `85b86fd...45019840772e7594fba4b1e2baded00e4bcb161e` (Run 2's fixes; full PR range `0d9366f...4501984` as context) |
+| **Reviewers** | hygiene (sonnet), architecture (opus), algorithm (opus) |
+| **How they ran** | registered slamlab-* agents (symlinked into reifyscene's `.claude/`) |
+| **Layer 1** | all checks passed on the code at f24d033..b4196f7 (`scripts/check.sh --env slamlab`); later commits are docs and report only |
+
+Run 2's findings: all resolved as recorded, except L11 (partly: see L17).
+
+### Findings and resolutions
+
+| ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|---|
+| L17 | must-fix | algorithm | `ba/bundle.py` (`_pose_error`), `bundle.cpp`, `gauge` rows | the translation half of a pose prior pins `R̄ᵀt`, not the camera centre: the gauge rows assume a known centre (rotation about the origin left free, σ_f inf), and a GNSS-style prior with identity rotation biases centres by up to 0.76 m | fix (decoupled residual `(C − C̄, log(R̄_wcᵀ R_wc))`) | pending |
+| L18 | must-fix | algorithm | `ba/layout.py`, `gauge`, both cores | rank tolerance absolute in uncentred coordinates: scenes 5e4 m or more from the origin lose the gauge (σ_f inf; at 1e6 m the reference stops at cost 264 vs 41.7); regression | fix (normalised coordinates, relative tolerance) | pending |
+| L19 | should-fix | algorithm | `gauge.plan`, `confinement` | a gauge the plan cannot remove is not reported, and the confinement then takes an arbitrary part of it (cores can differ) | fix (report the leftover dimension; assert the rebuilt rank) | pending |
+| L20 | note | algorithm | BA note, `generate_ba.py` | "stiff translation priors converge slowly" may be the residual's near-null direction, not the problem | fix (re-measure after L17, correct the note and the fixture case) | pending |
+| L21 | note | algorithm | `layout.py` | dropping constant prior blocks makes the reported cost depend on the gauge | fix (say so in `BASummary`) | pending |
+| L22 | note | algorithm | variance factor | down-weighted rows count fully in m (σ̂₀² slightly low under Cauchy) | waive: standard, defensible; an effective redundancy is a refinement for later | pending |
+| A21 | should-fix | architecture | `pyproject.toml` | the allow-list pycolmap contract lost indirect-import coverage (orchestration → colmap_reference → pycolmap passes) | fix (forbid orchestration → `eval.colmap_reference`) | pending |
+| A22 | should-fix | architecture | `ba.cpp`, `problem.py` | "report-only gauge" encoded by position (`> kScale`, `GAUGES[:-1]`) (same as H28) | fix | pending |
+| A23 | should-fix | architecture | fixture | explicit `first_pose` and `scale` (and `none`) have no cross-backend parity | fix (fixture cases) | pending |
+| A24 | note | architecture | `check_layers.py` | the facade header's own includes are checked as `solve`; an unmapped facade is silently exempt | defer (design doc: when the next package facade arrives) | pending |
+| A25 | note | architecture | `ba/layout.py`, `gauge.py` | Python splits the plan, C++ carries it whole; Python gauge helpers public | fix (carry `Plan`; private helpers) | pending |
+| A26 | note | architecture | `ba/gauge` | the gauge is generic to pose-and-point problems | defer (design doc: lift to `foundations.gauge` with pose-graph optimisation) | pending |
+| A27 | note | architecture | tests, `solve.py`, bindings | codes compared outside `assert_matches_fixture`; `_CONVERT` KeyError; two enum-name mechanisms; nls.hpp comment | fix the first two and the comment; defer the enum mechanism (with Rust's enums) | pending |
+| H21 | should-fix | hygiene | `gauge.py`, `gauge.cpp` | tie-break `1e-12` unnamed, twice per core | fix | pending |
+| H22 | should-fix | hygiene | `gauge.plan` | `plan()` long; tie-break names opaque | fix | pending |
+| H23 | should-fix | hygiene | `gauge.py`, `layout.py` | `name` shadows and forces an alias | fix (rename `classify`) | pending |
+| H24 | should-fix | hygiene | `gauge.py` | public functions without Parameters/frames | fix | pending |
+| H25 | should-fix | hygiene | tests | no unit tests of the gauge primitives in either core | fix | pending |
+| H26 | should-fix | hygiene | `bundle.cpp`, `nls.hpp`, `layout.cpp` | stale or garbled C++ comments | fix | pending |
+| H27 | should-fix | hygiene | `layout.cpp` | `fix_gauge` mutates an out-parameter; `make_layout` long | fix (return a value; helpers) | pending |
+| H28 | should-fix | hygiene | `problem.py`, `ba.cpp` | `GAUGES` serves two purposes (same as A22) | fix (with A22) | pending |
+| H29 | should-fix | hygiene | `layout.py` | three `Layout` fields undocumented | fix | pending |
+| H30 | should-fix | hygiene | `check_layers.py` | `check_cpp_internal` deeply nested | fix | pending |
+| H31 | should-fix | hygiene | `compare_ba_colmap.py` | header and row formats written twice | fix | pending |
+| H32 | should-fix | hygiene | `arrays.group_members` | no input checks or edge tests | fix | pending |
+| H33 | note | hygiene | various | `TOLERANCE` doc; `RIGID_DIM`; the fixture regex; `confinement` signatures differ | fix the doc and `RIGID_DIM` (with L18), signatures (with A25); waive the regex (tested by the fixture's round trip) | pending |
+
+### Hygiene review
+
+## Hygiene review
+
+**Scope:** Run 3 re-review, `85b86fd...45019840` on `feature/ba-spine`. I read `ba/gauge.py` and `ba/layout.py` in full, plus `gauge.{hpp,cpp}`, `layout.{hpp,cpp}`, the `Bundle.reduction`, `residual_rows` and variance-factor diffs in both cores, the `solve.py`/`problem.py`/`camera.py`/`arrays.py` diffs, `scripts/check_layers.py`, `eval/readers.py`, `scripts/compare_ba_colmap.py`, the fixture generator and the new tests. I did not rebuild anything.
+
+**Summary:** All eight Run 2 hygiene findings are resolved. The new null-space gauge is correct in structure and the two cores match closely. What remains is should-fix: the tie-break epsilon is an unnamed literal in two places per core, `plan()` and C++ `fix_gauge`/`make_layout` are too long, two docstrings are stale or garbled, and `gauge.py` has no unit tests of its own. There are no must-fix items.
+
+### Run 2 findings
+- **H13** (shared `_members`, per-group masked loops): resolved. `arrays.group_members` is shared and tested, and `reprojection.py` and `colmap_reference.py` both use it. The O(K x M) loops are gone.
+- **H14** (unnamed coincident-pose tolerance): resolved. The old gauge code is gone. New constants are named (see S1 for the one that is not).
+- **H15** (scale-pinned computed two ways): resolved. One null-space test, `remaining()`, replaces both.
+- **H16** (dangling point id reports header line; default-arg closures): resolved. `_Image.keypoint_line` is added, the parsers are module-level and bound with `partial`, and `test_readers.py` asserts `images.txt:3:`.
+- **H17** (trace crosses by column position): resolved. The binding sends `trace_columns` and `_result_from_backend` reads by name, raising if they differ from `nls.Iteration`.
+- **H18** (compare script): resolved. It uses `options.solver.function_tolerance`, the docstring and header say the columns are intrinsics group 0, and the work is split into `freed`, `compare` and `row`. S11 is a residual duplication.
+- **H19** (pycolmap docstring): resolved.
+- **H20** (note): resolved as decided. The `_by_group` rename and the compact fixture are in. `centred` went with the old code. The `..` includes are handled in `check_layers`.
+
+### Findings
+
+#### [should-fix] S1. The tie-break epsilon `1e-12` is an unnamed literal, twice per core
+- **Where:** `src/slamlab/foundations/ba/gauge.py:191-193` and `:225`; `cpp/src/foundations/ba/gauge.cpp:102` and `:196-198`
+- **Issue:** The relative `1e-12` that decides near-ties (in `plan()` and in `_first_largest`/`first_largest`) is written as a bare number four times. `TOLERANCE` is named, but this value is not.
+- **Why it matters:** The cross-core agreement of the gauge depends on it. The cores can only change it in lockstep, but nothing says the four sites are one constant.
+- **Evidence:** `values >= values.max() * (1.0 - 1e-12)`, `second > best_second + 1e-12 * abs(best_second)`, and the C++ equivalents.
+- **Suggested fix:** Add `TIE_RTOL = 1e-12` in `gauge.py` and `kTieRtol` in `gauge.hpp`, each with a one-line justification (last-bit rounding between the two SVDs).
+
+#### [should-fix] S2. `plan()` is too long and its tie-break names are opaque
+- **Where:** `gauge.py:169-207` (`plan`, `_preference`) and `gauge.cpp:177-215`
+- **Issue:** `plan()` mixes candidate scoring, selection, bookkeeping and null-space deflation in one loop with nesting depth 3. The score tuple is `(rank, second)`, where `second` is overloaded: `-cam` for a pose that sees all six directions, otherwise the smallest retained singular value. `_preference` hides this behind a one-line summary.
+- **Why it matters:** This is the subtlest logic in the PR and the part most likely to be edited wrongly.
+- **Suggested fix:** Extract `_best_candidate(...) -> (cam, rank, score)` in both cores. Rename `second`/`best_second` to `tie_break`, and `_preference` to `_tie_break`.
+
+#### [should-fix] S3. `name` shadows and forces an import alias
+- **Where:** `gauge.py:121`, `layout.py:32` (`from ...gauge import name as gauge_name`) and `layout.py:150` (`name = gauge_name(...)`); C++ `gauge.hpp:name(const MatrixXd&)`
+- **Issue:** A free function called `name` needs an alias at its only caller. A local `name` sits next to the aliased import.
+- **Suggested fix:** Rename it `classify` or `gauge_name` in both cores and drop the alias.
+
+#### [should-fix] S4. Several public `gauge.py` functions have one-line docstrings with no Parameters section or frame statement
+- **Where:** `gauge.py:105-112` (`remaining`), `:115-121` (`pose_image`), `:240-255` (`complement`), `:258-268` (`confinement`), `:124` (`name`)
+- **Issue:** The spec asks for shape, dtype and frame. `centres` is stated as "world centres" only in `plan`. `pose_image` does not say the output rows are (centre, orientation) in the world frame. `complement` and `confinement` say nothing about which arguments are `T_world_cam` centres or the order of the returned list. Only `plan` has a numpy-style Parameters block.
+- **Suggested fix:** Add Parameters and Returns blocks. For `centres`, write "ndarray, shape (C, 3), camera centres in the world frame". Say that `confinement` returns one (6, 6 - rank) basis per confined pose, in the plan's order.
+
+#### [should-fix] S5. `gauge.py` has no unit tests; correctness is exercised only through full solves
+- **Where:** there is no `tests/foundations/test_ba_gauge.py`, and no C++ test touches `gauge.cpp`
+- **Issue:** The new behaviour tests are end-to-end and good: `test_auto_gauge_removes_only_what_is_free`, the unobserved-prior test and the variance-factor tests. The primitives are untested directly: `remaining()` dimensions for known anchor sets, `name()` for each of the five outputs, `complement()` orthonormality and its orthogonality to the normals, and `plan()` with no candidates or when no candidate sees any direction. In C++ the only gauge assertion is the single `gauge_pose == 0 && confined_pose == 3` line in `cpp/tests/foundations/test_ba.cpp`.
+- **Why it matters:** A regression in the tie rules or the Householder helper would surface only as a fixture mismatch, with no pointer to the cause.
+- **Suggested fix:** Add small value-asserting tests for the five primitives in Python, and a few C++ checks of `remaining`, `name` and `complement` (for example a fixed pose gives k=0, no anchors gives k=7, and two fixed points give rotation about their line, `partial`).
+
+#### [should-fix] S6. Stale or garbled docs in C++
+- **Where:**
+  - `cpp/src/foundations/ba/bundle.cpp` `residual_rows`: the `@brief` still says "6 per pose prior", but the body now counts 3 per weighted half. The Python docstring was updated and the C++ one was not.
+  - `cpp/include/slamlab/foundations/nls.hpp`, `Termination::kCount`: the comment is broken across lines ("...name tables\n/// are\n///        checked...").
+  - `layout.cpp`, `fix_gauge` `@brief`: "...confined poses and name, and the gauge and confined poses." repeats itself and is unreadable.
+- **Suggested fix:** Correct the three comments.
+
+#### [should-fix] S7. C++ `fix_gauge` mutates an out-parameter and `make_layout` is about 70 lines; Python splits the same work
+- **Where:** `layout.cpp:114-173` (`fix_gauge`, `Layout& layout`) and `:300-370` (`make_layout`); compare Python `_fix_gauge -> _Gauge` and `make_layout`
+- **Issue:** The Python version returns a `_Gauge` value. The C++ version reads `layout.pose_free`, writes `counts.gauge` twice, `gauge_pose`, `confined_pose`, `gauge_anchors` and `gauge_plan`, and its docs list five side effects. `make_layout` inlines the observed-mask, intrinsics and pose-free loops.
+- **Why it matters:** The parallel cores should have parallel structure so the review can compare them. The order dependence is easy to break: `pose_free` must be set before `fix_gauge`, and `prior_cams` is computed after it.
+- **Suggested fix:** Return a `GaugeChoice {Gauge name; Mask pose_free; Anchors anchors; Plan plan;}` from `fix_gauge`, and lift the intrinsics/observed loops into helpers as `attach_priors` and `assign_points` already are.
+
+#### [should-fix] S8. `GAUGES` serves two purposes, and the C++ guard relies on enum order
+- **Where:** `problem.py:23` and `BAOptions.__post_init__` (`GAUGES[:-1]`, `self.gauge == "partial"`); `cpp/src/foundations/ba.cpp:167` (`options.gauge > Gauge::kScale`)
+- **Issue:** One tuple is both the code table and the accepted set, with `"partial"` special-cased in the error text and by slicing off the last element. C++ hard-codes `kScale` as the last requestable value and hides `kPartial`'s position. A `kCount` value would also report the message "'partial' is reported", which is wrong.
+- **Suggested fix:** Add `REQUESTABLE_GAUGES = GAUGES[:-1]` in Python. In C++ add a named `kLastRequestable` or a helper, and give `kCount` its own message.
+
+#### [should-fix] S9. `Layout` leaves three fields undocumented
+- **Where:** `layout.py:64-68` (`affine_free`, `gauge`, `summary`)
+- **Issue:** The other fields have attribute docstrings. These three, including the shapes and meaning of `gauge` and `summary`, do not.
+- **Suggested fix:** Add one-line attribute docs.
+
+#### [should-fix] S10. `check_layers.check_cpp_internal` is deeply nested
+- **Where:** `scripts/check_layers.py` in `check_cpp_internal` (for / for / while / for, nesting depth 5)
+- **Issue:** The chain-following DFS is inlined inside the reporting loop and carries a `(target, via)` tuple state.
+- **Suggested fix:** Extract `_reachable(graph, first, orders) -> Iterator[(target, via)]` and keep the loop as report formatting. The `chain`, `facade` and `parent-relative` cases are covered by the new tests, which are good.
+
+#### [should-fix] S11. `compare_ba_colmap.py` has parallel format definitions
+- **Where:** `scripts/compare_ba_colmap.py` (header f-string in `main`, row f-string in `row`)
+- **Issue:** The column widths are written twice, in the header and the row, so a changed column must be edited in two places to stay aligned. The legend in the first `print` is also one 400-character string.
+- **Suggested fix:** Define a `COLUMNS = [(title, width, spec), ...]` list and generate both the header and the rows from it.
+
+#### [should-fix] S12. `group_members` has no input checks or edge-case tests
+- **Where:** `src/slamlab/foundations/arrays.py` (`group_members`) and `test_validation.py::test_group_members_match_the_masks`
+- **Issue:** The function is public in `arrays`. A group value outside `[0, n_groups)`, a negative one for example, is silently dropped and the other members are returned. The test covers empty groups but not empty input or an out-of-range value.
+- **Suggested fix:** Either check `group.min() >= 0 and group.max() < n_groups` and raise an `InvalidInputError` that names the bad value, or document that the caller has validated. Add an empty-input test.
+
+#### [note] N1. Small items
+- The `TOLERANCE` docstring says "relative to the scene's extent", but `layout.py` uses `TOLERANCE * (1 + extent)`, and `name()` uses it as an absolute `atol`.
+- `name()` compares `k == POSE_DIM` for "the rigid motions". Six is the dimension of the rigid group, not of a pose, so a `RIGID_DIM = 6` constant would read better.
+- `generate_ba._compact` uses a regex whose character class includes the letters `nul`, to match JSON `null`. It works but is brittle.
+- `confinement` takes `(confined, ranks)` in Python and a `Plan` in C++. This is harmless, and the parallel implementations are intentional.
+- `camera.unproject_or_nan` falls back to a per-pixel Python loop only on failure. That is correct and documented.
+
+### Checked and fine
+- `gauge.py` and `gauge.cpp` match step for step: `rows`, `null_space`, `pose_image`, `pose_jacobian`, `canonical_span`, `complement` and `confinement`. I found no unexpected divergence, and the tie-break rule is documented as shared.
+- The `gauge.py` module docstring states the conventions (generators `(t, ω, s)`, `T_cam_world` right-perturbation, Triggs section 9) clearly and consistently with the code.
+- `Bundle.reduction` is a parallel block-diagonal assembly in both cores. `residual_rows` and the variance factor (Σ w·s over IRLS weights, with m counting weighted prior rows only) agree, and both are covered by value-asserting tests (`test_variance_factor_*`, which include a robust-loss case and a prior-row count).
+- Enum `kCount` sentinels with `static_assert`s and the extra range checks give the bindings a build-time guarantee. The C++ `solve` check rejects a requested `partial`.
+- `BAProblem` read-only copies are tested (`test_a_checked_problem_cannot_change`), and `BAOptions` rejects `"partial"` with a test.
+- `eval/readers.py` parsers are now module-level, with line numbers asserted in the tests. `check_layers` chain, facade, parent-relative and duplicate-contract handling each have a test.
+- The fixture generator names the `codes` tolerance policy and justifies the weak translation-prior weight in its docstring. The new cases have docstrings that state intent.
+- No debug prints (the compare script's table output is its purpose), no stray TODOs, no commented-out code, and no hard-coded paths in the new code.
+
+### Architecture review
+
+## Architecture review
+
+**Scope:** Run 3. I reviewed `git diff 85b86fd...4501984` (42 files) against the PR context `0d9366f...HEAD`. I read in full: `ba/gauge.py`, `ba/gauge.{hpp,cpp}`, `ba/layout.py`, the gauge part of `layout.cpp`, the `bundle`/`solve`/`problem` diffs, the binding diff, the enum headers, `camera.unproject_or_nan`, `arrays.group_members`, the `eval` diffs, `check_layers.py`, `test_check_layers.py`, `pyproject.toml`, `setup_slamlab.sh`, the generator and the fixture's structure. I probed two things in the scratchpad (the repo was not touched): the pycolmap contract, with grimp on an exported copy, and `check_cpp_internal` on a fake tree.
+
+**Summary:** All six Run 2 findings (A15-A20) are resolved. The new `gauge` module sits in the right place in both cores. Python `layout`/`bundle` → `gauge` → `problem` and C++ `layout.hpp`/`bundle.cpp` → `gauge.hpp` → `ba.hpp`/`common.hpp` respect "solve > bundle > layout | schur > gauge > problem". The C++ `pinned`/`fix_gauge` mirror `_anchors`/`_fix_gauge` step for step. There are no must-fix findings. Three should-fixes:
+- The allow-list pycolmap contract, which I recommended in Run 2, silently lost the indirect-import coverage the old deny-list had.
+- The "partial is last / everything after kScale is report-only" rule is encoded by position in both cores, the same pattern A20 removed.
+- The explicit `first_pose` and `scale` recipes have no cross-backend parity coverage, although the changelog says the fixture covers "every gauge".
+
+### Run 2 findings
+- **A15** (writable/aliased `BAProblem` arrays): **resolved.** `__post_init__` stores a read-only copy of every validated array (`problem.py:113-116`). `_validated` returns arrays only, so nothing non-array gets wrapped.
+- **A16** (`check_layers.py` weaker than import-linter): **resolved.** The check now follows chains through unlisted modules, resolves `..`, maps the facade (`_CPP_FACADES`) and rejects duplicate containers. The Rust non-coverage is stated in the docstring and in CLAUDE.md. Two small residual gaps are below (note).
+- **A17** (`bearings_or_nan` in `layout`): **resolved.** `camera.unproject_or_nan` takes `backend=`; `layout` and `bundle` both use it.
+- **A18** (explicit `scale` error tested on the reference only): **resolved.** `test_scale_gauge_needs_an_anchor` is parametrised over `LOCKSTEP_BACKENDS` (`test_ba.py:773`).
+- **A19** (fixture not self-describing): **resolved.** Every case stores `asdict(options)`, and `tolerance.codes` is an exact policy. One nit is below (note).
+- **A20** (enum tables, docstring, pin, contract, design row): **resolved.** All enums have `kCount` sentinels with `static_assert`s; pycolmap is pinned once; the contract is an allow-list; the docstring and the design-doc `eval` row are fixed. The allow-list form has a side effect: see the first should-fix.
+
+### Findings
+
+#### [should-fix] The allow-list pycolmap contract no longer covers indirect imports through `colmap_reference`
+- **Where:** `pyproject.toml:156-163` (`ignore_imports = ["slamlab.eval.colmap_reference -> pycolmap"]`)
+- **Issue:** import-linter removes an ignored import from the graph before it checks chains. So, with the only edge to pycolmap ignored, every chain into pycolmap is gone. The old deny-list listed `slamlab.orchestration` as a source, so `orchestration → eval.colmap_reference → pycolmap` was an indirect violation. Under the new contract it passes. Direct imports are tighter than before (other `eval` modules may no longer import pycolmap), but the chain guarantee is lost. I suggested this exact form in Run 2 without noticing.
+- **Why it matters:** The contract's comment says pycolmap is "imported by slamlab.eval alone", and the intent is that pipelines never depend on the optional reference. Today an orchestration pipeline could import `colmap_reference` and pass every check. It would fail at run time only where the `colmap` extra is missing.
+- **Evidence:** I exported HEAD into the scratchpad, appended `import slamlab.eval.colmap_reference` to `orchestration/__init__.py` and built the graph with grimp, as import-linter does:
+  ```
+  chain: ('slamlab.orchestration', 'slamlab.eval.colmap_reference', 'pycolmap')
+  after ignore: None
+  ```
+  `lint-imports` on the real tree reports `Only eval may import pycolmap KEPT (1 ignored import)`.
+- **Suggested fix:** Keep the allow-list for direct imports, and add a forbidden contract with `source_modules = ["slamlab.orchestration"]` and `forbidden_modules = ["slamlab.eval.colmap_reference"]`. The ladder already keeps every other package from reaching `eval`. Alternatively, if pipelines may use the reference, say so in the contract's comment.
+
+#### [should-fix] "Report-only" gauges are encoded by position in both cores
+- **Where:** `cpp/src/foundations/ba.cpp:167` (`if (options.gauge > Gauge::kScale)`, message "'partial' is reported, not requested"); `src/slamlab/foundations/ba/problem.py:266-267` (`self.gauge == "partial"`, `choices = GAUGES[:-1]`)
+- **Issue:** C++ treats every code after `kScale` as report-only. Python assumes `partial` is the last entry of `GAUGES`. Codes are append-only, so the next requestable gauge (for example a Sim(3)-about-a-point recipe) would go after `kPartial`. C++ would then reject it with a misleading message, and Python would list `partial` as a valid choice and omit the new one. A20's `kCount` work removed this kind of anchoring to a particular enumerator; these two checks bring it back.
+- **Why it matters:** The two cores' error behaviour for a requested gauge would drift on the first extension, with no test catching it. The fixture only feeds valid gauges.
+- **Suggested fix:** In C++, check `options.gauge == Gauge::kPartial || options.gauge >= Gauge::kCount`. In Python, use a `REQUESTABLE = tuple(g for g in GAUGES if g != "partial")` and build the message from it. A cleaner option is a separate report enum (`GaugeFound`) so that options cannot carry a report-only value. That is a bigger change and can wait until a second report-only value appears.
+
+#### [should-fix] The explicit `first_pose` and `scale` recipes have no cross-backend parity
+- **Where:** `tests/fixtures/foundations/ba.json`: the requested gauges across the 11 cases are only `auto` (10) and `similarity` (1). `tests/foundations/test_ba.py` has no `gauge="first_pose"` solve. Explicit `gauge="scale"` is exercised only on its error path (`:778`).
+- **Issue:** `first_pose` has its own branch in both cores (`layout.py` `_fix_gauge`, `layout.cpp:133-136`). A successful explicit `scale` has its own anchor rule (`_anchors`/`pinned`: first fixed pose, else first full prior). None of these success paths is compared between Python and C++. CHANGELOG 0.2.0.0 says the fixture covers "every gauge".
+- **Why it matters:** The design doc requires every compiled path to be held to the reference. These are public options whose two implementations could diverge silently. For example, C++'s `any_fixed` and Python's `np.any(fixed & observed)` are computed differently.
+- **Suggested fix:** Add two fixture cases: explicit `first_pose`, and explicit `scale` with one full prior. Then either add explicit `none` too, or reword the changelog to "every gauge `auto` resolves to".
+
+#### [note] `check_layers.py`: the facade header's own includes are checked as `solve`, and an unmapped facade is silently exempt
+- **Where:** `scripts/check_layers.py` `_CPP_FACADES` and `_check_include`; `_include_graph` merges `cpp/include/slamlab/foundations/ba.hpp` and `cpp/src/foundations/ba.cpp` into one node, `("foundations", "ba")`.
+- **Issue 1:** Because the two files share one node, the edges out of `ba.hpp` are checked as if `solve` were including. But `ba.hpp` holds the problem types, the bottom layer.
+  - Probe: a fake tree where `ba.hpp` includes `slamlab/foundations/ba/gauge.hpp` gives `[]`. In Python, `problem → gauge` breaks the contract.
+  - This cannot happen today, because only `cpp/include` is on the public include path (`CMakeLists.txt:25`), so the header cannot reach `src/` detail headers.
+- **Issue 2:** A future package facade with no `_CPP_FACADES` entry "stays outside its container's rules" in both directions, with no message.
+- **Suggested fix (when the next package arrives):**
+  - Key the facade by file kind (`.hpp` → declared module, `.cpp` → implementing module).
+  - Raise an error when a container with a contract has a facade file but no entry.
+
+#### [note] Lock-step shape: Python `Layout` splits the plan; C++ carries it whole
+- **Where:**
+  - Python: `ba/layout.py` `Layout.confined`/`confined_ranks`, and `gauge.confinement(anchors, centres, confined, ranks)`.
+  - C++: `layout.hpp` `Layout::gauge_plan`, and `confinement(anchors, centres, const Plan&)`.
+- Python's `gauge` also exports `pose_image`, `complement`, `name` and others with no underscore, while C++ keeps `pose_image`/`complement` in an anonymous namespace. Both are harmless today. Carrying `gauge_plan: Plan` in Python and prefixing the internal helpers would make the two modules read one-to-one, as the rest of `ba` does.
+
+#### [note] `gauge` is generic to any problem over poses and points
+- **Where:** `src/slamlab/foundations/ba/gauge.py` depends only on `so3` and type aliases from `ba.problem`. The same holds in C++.
+- When pose-graph optimisation or Sim(3) PGO lands (classic rung, loop closure), it needs the same null-space removal. Per the design doc ("shared components live in rung 0"), lift it to `slamlab.foundations.gauge` then, rather than importing `foundations.ba.gauge` from another module or copying it. Nothing to do now.
+
+#### [note] Smaller residuals
+- `tests/foundations/test_ba.py:131-132`: the `codes` policy is asserted (`comparison == "exact"`) and applied with `==`, not through `conftest.assert_matches_fixture` as CLAUDE.md says every policy is. The reason is that codes include strings. Either note the exception in the conftest docstring or let the helper accept a dict of scalars.
+- `src/slamlab/foundations/ba/solve.py` `_CONVERT` is keyed on `str(field.type)`. That depends on `nls.py`'s `from __future__ import annotations` (line 54), which keeps annotations as strings. A non-`int`/`float`/`bool` field would raise `KeyError` rather than the intended "trace columns do not match" error.
+- The enum name tables now come from two mechanisms: `Termination` from the core's `nls::name`, the other four from binding tables checked by `kCount`. Both are sound; pick one when Rust gains these enums.
+- Out of lane (hygiene): clang-format split the `Termination::kCount` doc comment mid-sentence (`nls.hpp:136-138`: "tables\n/// are\n///        checked").
+
+### Checked and fine
+- **Layering:** `gauge` is below `layout | schur` and above `problem` in both languages. `schur` does not use it. `bundle → gauge` and `layout → gauge` are downward. `lint-imports` keeps all 9 contracts, and `check_layers` passes on the real tree. C++ `gauge.hpp → common.hpp` (unlisted, followed, includes nothing from slamlab) and `→ ba.hpp` (facade = `problem`) are allowed.
+- **Lock-step:** `pinned` ≡ `_anchors`, including priors on observed poses only, the scale reference rule and the similarity rule. `fix_gauge` ≡ `_fix_gauge`, including the tolerance `kGaugeTolerance * (1 + extent)`. `plan`, `confinement`, `name`, the canonical span and the Householder complement follow the same algorithm and tie rules. `gauge_pose`/`confined_pose` are reported identically.
+- **Binding boundary:** `trace_columns` crosses by name and Python checks them against `nls.Iteration`. `confined_pose` was renamed through the core, the binding, `COUNT_NAMES` and the Protocol docstring. The binding stays a type conversion.
+- **Enum sentinels:** each core check rejects `kCount` (`camera::check_intrinsics`, `nls::check_options` including the block losses, `ba::solve` for `depth_loss` and `gauge`). The binding's `decode` already blocks out-of-table codes from Python. Switches handle `kCount` explicitly.
+- **Read-only `BAProblem`:** the const-`ndarray` bindings accept it, and `replace` re-validates and re-copies.
+- **`camera.unproject_or_nan`:** in the right module, has `backend=`, and uses no new compiled entry point, so no Protocol change is needed. Per-pixel fallback cost is covered by the A11 deferral.
+- **`arrays.group_members`:** a fitting rung-0 utility, used by `ba`, `eval.reprojection` and `eval.colmap_reference`. Dependency direction is preserved.
+- **`check_layers.py` semantics:** chain-following is sound. Any chain-only violation must pass through an unlisted module, and those are followed. Locations name the first include. Duplicate containers raise. The tests cover a chain, `..`, the facade and duplicate containers.
+- **pycolmap packaging:** one pin in the `colmap` extra. `setup_slamlab.sh --unlocked` installs dev and colmap, and the lockfile already pins `pycolmap==4.2.1`. The `colmap_reference` docstring is accurate.
+- **Fixture design:** the JSON is self-describing (full options, every policy with a reason). The two `partial` cases (rotation priors confine two poses; translation priors on two cameras) exercise multi-pose confinement across backends.
+- **Design doc:** the `eval` row matches the placement. The A12 note places the sparse solver in rung 0 and records that the C++ seam has to be opened first.
+
+Scratchpad probes (outside the repo): `/tmp/scratch/probe` (exported copy, edited for the pycolmap chain probe) and `.../scratchpad/fake` (the facade probe). No repository files were changed.
+
+### Algorithm review
+
+## Algorithm review (Run 3)
+
+**Scope:** Fix range `85b86fd...4501984` on feature/ba-spine, with `0d9366f...HEAD` as context. I read these in full:
+- `src/slamlab/foundations/ba/gauge.py` and `layout.py`
+- `cpp/src/foundations/ba/gauge.cpp`
+- the `bundle.py`, `solve.py`, `problem.py` and `schur.py` diffs
+- the pose-prior residual and its Jacobian (`bundle.py` `_pose_error`, `_pose_prior_kind`)
+- `generate_ba.py` and the new gauge, prior and variance tests in `tests/foundations/test_ba.py`
+- the note's Priors, Gauge, Focal observability, Toward larger problems and What was learned sections
+
+References: Triggs et al. 1999 §9 (gauge); Barfoot 2017 / Solà et al. 2018 for SE(3) perturbations; Förstner & Wrobel 2016 ch. 4; GTSAM `GPSFactor` and COLMAP's position prior for what a position prior conventionally pins.
+
+All probes are in `/tmp/scratch/run3/`. Run them from the slamlab root with `PATH=<slamlab env>/bin:$PATH PYTHONPATH=. python <script>`. The three that reproduce the findings are also saved in a private scripts folder: `ba_trans_prior_rotation_leak.py`, `ba_far_origin.py` and `ba_centre_prior_fix.py`. No repository files were modified.
+
+**Summary:** The null-space gauge is correct for what it models:
+- The signs of `J_c` and `M` are right.
+- The confinement meets the gauge orbit only at zero and covers the removed directions (I checked this analytically).
+- Greedy removal is minimal, and whether it removes all of N does not depend on the order.
+- The classic gauges reproduce the previous fixture to about 1e-14 relative.
+
+Two must-fixes remain:
+1. **The translation half of a pose prior does not pin the camera centre.** `log(T̄_cw⁻¹ T_cw)` pins `R̄ᵀt`. The gauge rows assume a known centre, so `auto` leaves a world rotation about the origin free. A GNSS-style prior (no attitude) also biases the result by tens of centimetres.
+2. **The rank tolerance is absolute in uncentred coordinates.** Scenes 50 km or more from the world origin lose their gauge entirely. This is a regression: the previous code handled 1e6 m.
+
+### Run 2 findings
+- **L11 (must-fix): partly resolved.**
+  - Fixed points, rotation-only priors, full priors, metric depth and the classic gauges are handled correctly, with tests in both cores.
+  - Translation-only priors are not, because the residual does not pin what the gauge rows assume (new must-fix 1).
+  - The fixture's "partial: translation priors on two cameras" case passes only because its priors carry the true rotations.
+  - This is partly my own fault: my Run 2 suggestion listed "translation prior → known position `[I, -hat(X), X]`" without checking it against the residual.
+- **L12: resolved.** Priors count only on observed poses (`layout.py:96-114`). The case is tested as `test_prior_on_an_unobserved_camera_pins_nothing`.
+- **L13: resolved.** `residual_rows` counts `count_nonzero(_p_sqrt_w > 0)`, and `test_variance_factor_counts_only_weighted_prior_rows` checks it.
+- **L14: resolved.** The numerator is `Σ ρ'(s) s` with the final weights, in both cores. `test_variance_factor_under_a_robust_loss` checks it, and the fixture's huber case moved by 0.44 relative, as expected.
+- **L15: resolved.** The note gives the solver per image range (DENSE ≤ 50, SPARSE ≤ 1000) and quotes Power BA's abstract.
+- **L16: waived.** Nothing to check.
+
+### Findings
+
+#### [must-fix] A translation-only pose prior pins `R̄ᵀ t`, not the camera centre, so the gauge removes the wrong directions and GNSS-style priors are biased
+- **Where:**
+  - the residual: `src/slamlab/foundations/ba/bundle.py` (`_pose_error`: `se3.log(se3.compose(T̄_world_cam, T_cam_world))`) and its C++ mirror;
+  - the gauge rows that assume a known centre: `gauge.py:8-9`, `_rows`, `layout.py:111` (`centre_cams` includes translation-prior poses), and `gauge.cpp` `rows`;
+  - the docs: the note's Priors ("from odometry, a previous solve or GNSS") and Gauge ("the centre of a pose with a translation prior", "translation priors on two cameras the rotation about their baseline").
+- **Issue:**
+  - `E = T̄_cw⁻¹ T_cw = [R̄ᵀR, R̄ᵀ(t − t̄)]`, so the translation half is `V⁻¹(θ_e) R̄ᵀ(t − t̄)`, with `t = −R C`.
+  - A world rotation about the origin, `T_cw → T_cw G⁻¹` with `G = (R_g, 0)`, leaves `t` unchanged. At the prior mean the translation half is therefore exactly invariant under rotation about the world origin, while the centre moves.
+  - Its true rows over `g` are about `[−I, 0, −C]` (no ω column), not `[I, −hat(C), C]`.
+  - Full priors are unaffected: with the rotation rows present, the two row sets have the same span. Rotation-only priors are also correct.
+- **Why it matters:**
+  - **Gauge under-removed.** Translation priors on three non-collinear cameras resolve to `none`, but a 3-DoF rotation about the origin is still free. H is singular, `σ_f` is infinite and the focal length is flagged unobservable. With two cameras the gauge removes 1 of the 3 free directions.
+  - **Bias.** A GNSS prior carries a centre and no attitude. If the caller fills the unused rotation with identity, the prior pins `−C̄` against `−R C` and pulls the cameras off by up to 0.76 m.
+- **Evidence:**
+  - `trans_prior_null.py`, noise-free, priors on cameras 0, 2 and 4, free focal. Both backends:
+    ```
+    python gauge none gp -1 cp -1 cost 7.934e-23 f_std [inf inf] unobs 1
+    cpp    gauge none gp -1 cp -1 cost 7.940e-23 f_std [inf inf] unobs 1
+    rotated about origin: translation half of prior error 2.26e-16   (centre moved 0.287 m)
+    ```
+  - `trans_prior_rotation_leak.py`: 0.5 px noise, translation weight 2500 on every camera at the true centres, rotation weight 0. Both backends give identical numbers.
+    ```
+    prior rotation = truth     gauge=none cost=42.54 centre error (m) [0.006 0.004 0.007 0.007 0.007]
+    prior rotation = identity  gauge=none cost=508.8 centre error (m) [0.116 0.197 0.487 0.764 0.594]
+    ```
+  - `hessian_null.py`: the reduced H for "translation priors on two cameras" (the test case, gauge `partial`) has two eigenvalues near 1e-12 relative. Every other case's smallest is about 1e-9.
+  - For comparison, GTSAM's `GPSFactor` error is `nTb.translation() − measured`, the body position in the navigation frame ([GPSFactor.cpp](https://docs.ros.org/en/api/gtsam/html/GPSFactor_8cpp_source.html)).
+- **Suggested fix:**
+  - Make the translation half pin the centre, in both cores. One option is a decoupled residual, `(C − C̄, log(R̄_wcᵀ R_wc))`. The smaller change is `e = log(T̄_wc⁻¹ T_wc) = log(T̄_cw T_cw⁻¹)`, whose translation half is `R̄_wcᵀ(C − C̄)` to first order, with Jacobian `−Jr⁻¹(e) Ad(T_cw)` for the right perturbation.
+  - `centre_prior_fix.py` monkeypatches the second option into the Python reference. On noise-free data it reaches cost about 1e-24 in 10-59 iterations whether the stored rotation is the truth or identity. With the current residual and identity rotation, every weight runs to `max_iterations` with cost 0.24-1100.
+  - Then:
+    - add a test with translation-only priors whose stored rotation is identity, asserting that the solution does not depend on it;
+    - add a test that the reduced H at the solution has no near-zero eigenvalue after `auto`;
+    - regenerate the "partial: translation priors" fixture case;
+    - correct the note.
+
+#### [must-fix] The rank tolerance is absolute in uncentred generator coordinates: scenes far from the world origin lose the gauge (regression)
+- **Where:**
+  - `layout.py:147-149`: `extent = max |coordinate|`, `tolerance = 1e-9 · (1 + extent)`;
+  - its use in `gauge.plan`, `gauge.remaining` and the C++ mirror (`layout.cpp`, `gauge.cpp`).
+- **Issue:**
+  - `g = (t, ω, s)` acts about the world origin. Far from it, the directions that distinguish rotation and scale are scaled by about 1/|C₀| in the orthonormal null basis.
+  - After the first pose is fixed, N is the scale about C₀, the unit vector `(−C₀, 0, 1)/√(1+|C₀|²)`. Its image at another pose has norm `|C − C₀|/|C₀|`.
+  - That is compared with `1e-9·|C₀|`, so the gauge is lost once `baseline < 1e-9·|C₀|²`. For example, 1.6 m at 40 km, or 1 cm at 3 km.
+  - Even the first pose's generator `[[I, −hat(C), C], [0, I, 0]]` has smallest singular value about 1/|C|, so no pose is fixed at all.
+- **Why it matters:**
+  - Geo-referenced coordinates (UTM, ECEF, and COLMAP models aligned to GNSS) routinely sit at 1e5 to 6e6 m.
+  - The gauge goes silently unremoved: the summary still says `similarity`, `σ_f` is infinite, the focal length is flagged unobservable, and at 1e6 m the Python reference stops at cost 264 against the optimum's 41.7.
+  - The previous code handled all of these offsets.
+- **Evidence:** `far_origin.py`: the same noisy scene shifted by `(d, 0.3d, 0)`, nothing anchored.
+  ```
+  HEAD:     1e4 python gauge=similarity gp=0  cp=4 f_std=[0.793 1.057] unobs=0
+            5e4 python gauge=similarity gp=-1 cp=0 f_std=[inf inf]     unobs=1   (cpp the same)
+            1e6 python gauge=similarity gp=-1 cp=4 cost=264.138 f_std=[inf inf]; cpp cp=0 cost=41.74
+  85b86fd:  1e6 python gauge=similarity gp=0  cp=4 cost=41.7377 f_std=[0.793 1.057] unobs=0
+  ```
+  The `85b86fd` row was produced by `far_origin_old2.py` against `git archive 85b86fd`.
+- **Suggested fix:**
+  - Build every row and `pose_image` in normalised coordinates `X' = (X − X̄)/L`. Here X̄ is the mean of the observed centres and anchor points, and L is their RMS spread. Then compare singular values to a relative 1e-9.
+  - A change of base point and unit is an invertible linear map of `g`. N's span transforms with it, so `M`, the plan and the confinement are unchanged in meaning. Only `name()` would need to read N back in world units, or test invariants that survive the map (k, a zero s-row, a zero ω-row).
+  - Add a far-origin test in both cores: offset 1e6 must give the same gauge pose, confined pose and `σ_f` as offset 0.
+
+#### [should-fix] A gauge the plan could not remove is not reported, and the confinement then picks an arbitrary part of it
+- **Where:** `gauge.plan` (`if rank == 0: break` and `while ... and left`) and `gauge.confinement` (`_null(rows, GENERATORS − sum(ranks))`); the same in `gauge.cpp`.
+- **Issue:**
+  - When the free poses do not see all of N, the plan stops with part of N left, and nothing records the dimension left over.
+  - `confinement` then rebuilds N with the planned dimension `sum(ranks)`. This takes an arbitrary `sum(ranks)`-dimensional subspace of a larger null space, which SVD fixes only up to rotation. That can differ from what the plan assigned, and it can differ between the cores.
+- **Why it matters:** the failure is silent. The far-origin output above shows it: the summary says `similarity`, `gauge_pose = −1`, and the two backends confine different poses (`cp=4` against `cp=0` at 1e6). The error contract says failure must be observable.
+- **Suggested fix:** compute N's dimension after the plan. If it is not zero, either raise `Degenerate`, naming the free dimensions, or report it, for example as a `free_gauge` count in the summary that tests assert is 0. Make `confinement` assert that its rebuilt rank equals the planned one.
+
+#### [note] "Stiff translation priors converge slowly under any gauge" may describe the residual, not the problem
+- **Where:** the note's "What was learned", and the comment on `_translation_priors` in `generate_ba.py`.
+- **Observation:** the current residual leaves the rotation about the world origin pinned only at second order, through `V⁻¹(θ_e)` and away from the mean. A slow crawl, and cores that end 1e-3 apart, are the expected symptoms of such a near-null direction. With the centre residual from must-fix 1, `centre_prior_fix.py` converges at weights 1 to 1e4 regardless of the stored rotation. I did not reproduce the fixture seed's 40-100 iterations, so this is a pointer, not a verdict. Re-measure after the fix before keeping the lesson as written.
+
+#### [note] Dropping constant prior blocks is right for the optimum and for σ̂₀²; it makes the reported cost depend on the gauge
+- **Where:** `layout.py:249-254`.
+- **Observation:**
+  - A block on a pose that never moves adds a constant to the cost and nothing to `Jᵀ W J`. Dropping it changes neither the optimum nor the deviations, and it correctly keeps the block out of `Σ w s` and m.
+  - Under `auto`, a pose the gauge fixes can never carry a prior: a fixed pose needs `dim N ≥ 6`, so no prior rows. Only explicit gauges, fixed poses and unobserved poses are affected.
+  - As a result, `initial_cost` and `final_cost` for the same problem differ between, say, `gauge="similarity"` and `auto` when pose 0 has a prior. The note says so ("inflates neither σ̂₀² nor the reported cost"). Add a line to `BASummary` so nobody compares costs across gauges.
+
+#### [note] Σ w s still counts heavily down-weighted rows fully in m
+- `Σ w s / (m − n)` is a standard and defensible choice. Under Cauchy, though, outlier rows add almost nothing to the numerator but a full 2 to m, so σ̂₀² comes out slightly low: 0.23 against 0.25 at 15% outliers (Run 2's probe). An effective redundancy, `Σ w` rows minus n, is the usual refinement if it ever matters. No action needed for this rung.
+
+### Checked and fine
+- **Signs and conventions.** For `T_cw exp(δ)`, `dC = −ρ + hat(C)θ` and the world orientation changes by `−θ`, so `J_c = [[−I, hat(C)], [0, −I]]` is right. The world similarity moves a camera by `dC = t − hat(C)ω + sC` and `dR_wc = ω`, so `M` is right. The note's `a = (−b, b×C)` follows.
+- **Transversality and minimality.** The constraint `Mᵀ J_c δ = 0` excludes every gauge direction the pose sees (`MᵀM n ≠ 0` whenever `M n ≠ 0`), and has codimension equal to `rank(M)`. The removed set after all candidates is `N ∩ ⋂ null(M_c)` in any order, so greedy order affects only which poses take the directions.
+- **Degenerate placements.** A pose cannot see the scale about its own centre (`t + sC = 0` gives an image of 0). A candidate at that centre therefore gets rank 0 and is skipped, and the next pose that sees the direction takes it. Coincident-centre cases fall to point degeneracy (parallax), as before.
+- **Holonomy.** The bases are rebuilt per state from the current anchor centres. The constraint holds to first order and drifts at second order. This is harmless to the optimum, because the cost is flat along the gauge, and only shifts which gauge the deviations are expressed in.
+- **Determinism of the basis.** In `_canonical_span`, `P[:,k]/√P_kk` is a unit vector because P is idempotent, and the deflation stays a projector. The successive Householder complement stays orthonormal because each later normal lies in the remaining span. The 1e-12 relative tie-breaks match between the cores.
+- **Classic gauges reproduce the old fixture.** `cmp_fixture.py` compares old against new `ba.json`:
+  - similarity, scale, radial and Gauss-Newton: poses, points and intrinsics agree to ≤ 1.2e-14 relative, `intrinsics_std` to ≤ 6.7e-13, codes identical (`scale_pose` renamed `confined_pose`);
+  - first_pose and none: bit-identical;
+  - huber: differs only in `variance_factor` (L14);
+  - every kind of block: differs only in `variance_factor` and `intrinsics_std` (L13: the half prior's 3 rows).
+- **Other row types.** Fixed points `[I, −hat(X), X]`, rotation-only priors `[0, I, 0]` and metric depth `[0, 0, 1]` are right. A free-affine depth prior absorbs scale, so it is correctly not counted. Full priors give the same span as the true `log` rows.
+- **`name()`.** The checks for `first_pose` (k = 6 with a zero s-row) and `scale` (k = 1 with a zero ω-row) are correct for any base point.
+- **Note sections.** Gauge and Focal observability are accurate apart from the translation-prior claims above. Toward larger problems is fixed per L15. Förstner & Wrobel and Triggs are correctly cited.
+
+Sources:
+- [Triggs et al., Bundle Adjustment -- A Modern Synthesis (1999)](https://link.springer.com/chapter/10.1007/3-540-44480-7_21)
+- [GTSAM GPSFactor.cpp (error = nTb.translation() − measured)](https://docs.ros.org/en/api/gtsam/html/GPSFactor_8cpp_source.html)
+- [Solà, Deray & Atchuthan, A micro Lie theory for state estimation in robotics, arXiv:1812.01537](https://arxiv.org/abs/1812.01537)
