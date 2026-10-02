@@ -1,19 +1,19 @@
 /// @file
-/// @brief Native tests for slamlab::foundations::hat, runnable without Python.
+/// @brief Native tests for slamlab::foundations::so3, runnable without Python.
 ///
-/// The basis vectors pin every entry of the matrix; skew-symmetry and the cross-product
-/// identity are checked on a general vector. hat only copies and negates, so every check is
-/// exact (no tolerance).
-#include <cstddef>
+/// The parity fixtures (tests/fixtures/foundations/) are the main check of every value;
+/// these tests cover what the standalone C++ core must get right on its own: exact `hat`
+/// entries, round trips, the θ = π convention, and the error paths.
+#include <cmath>
 #include <iostream>
+#include <numbers>
 
 #include "slamlab/foundations/so3.hpp"
 
 namespace {
 
-using slamlab::foundations::hat;
-using slamlab::foundations::Mat3;
-using slamlab::foundations::Vec3;
+namespace so3 = slamlab::foundations::so3;
+using slamlab::foundations::ErrorKind;
 
 /// @brief Count and report a failed check.
 /// @param ok Whether the check passed.
@@ -31,28 +31,47 @@ void expect(bool ok, const char* what, int& failures) {
 int main() {
   int failures = 0;
 
-  // Basis vectors fix all nine entries of the matrix.
-  const Mat3 hx = hat({1.0, 0.0, 0.0});
-  const Mat3 hy = hat({0.0, 1.0, 0.0});
-  const Mat3 hz = hat({0.0, 0.0, 1.0});
-  expect(hx == Mat3{{{0.0, 0.0, 0.0}, {0.0, 0.0, -1.0}, {0.0, 1.0, 0.0}}}, "hat(e_x)", failures);
-  expect(hy == Mat3{{{0.0, 0.0, 1.0}, {0.0, 0.0, 0.0}, {-1.0, 0.0, 0.0}}}, "hat(e_y)", failures);
-  expect(hz == Mat3{{{0.0, -1.0, 0.0}, {1.0, 0.0, 0.0}, {0.0, 0.0, 0.0}}}, "hat(e_z)", failures);
+  // hat: the basis vectors fix all nine entries; it is exact.
+  Eigen::Matrix3d hx;
+  hx << 0, 0, 0, 0, 0, -1, 0, 1, 0;
+  expect(so3::hat(Eigen::Vector3d::UnitX()) == hx, "hat(e_x)", failures);
 
-  // Skew-symmetry and the cross product on a general vector (exact for these values).
-  const Vec3 v{1.0, -2.0, 3.0};
-  const Vec3 u{0.5, 4.0, -1.5};
-  const Mat3 h = hat(v);
-  for (std::size_t i = 0; i < 3; ++i) {
-    for (std::size_t j = 0; j < 3; ++j) {
-      expect(h[i][j] == -h[j][i], "hat(v) is skew-symmetric", failures);
-    }
+  // exp/log round trip across angles, including both sides of the Taylor switch.
+  const Eigen::Vector3d axis = Eigen::Vector3d(0.3, -0.5, 0.8).normalized();
+  for (const double theta : {0.0, 1e-12, 1e-4 * (1 - 1e-9), 1e-4 * (1 + 1e-9), 0.5, 3.0}) {
+    const Eigen::Vector3d omega = theta * axis;
+    const auto back = so3::log(so3::exp(omega));
+    expect(back.has_value() && (*back - omega).cwiseAbs().maxCoeff() < 1e-14,
+           "log(exp(omega)) == omega", failures);
   }
-  const Vec3 cross{v[1] * u[2] - v[2] * u[1], v[2] * u[0] - v[0] * u[2], v[0] * u[1] - v[1] * u[0]};
-  for (std::size_t i = 0; i < 3; ++i) {
-    expect(h[i][0] * u[0] + h[i][1] * u[1] + h[i][2] * u[2] == cross[i], "hat(v) u == v x u",
-           failures);
-  }
+
+  // θ = π exactly: the largest-magnitude component of the result is positive.
+  const Eigen::Matrix3d r_pi = Eigen::Vector3d(1.0, -1.0, -1.0).asDiagonal();
+  const auto at_pi = so3::log(r_pi);
+  expect(at_pi.has_value() && std::abs((*at_pi)(0) - std::numbers::pi) < 1e-15,
+         "log(diag(1,-1,-1)) == (pi, 0, 0)", failures);
+
+  // Jr⁻¹ · Jr = I.
+  const Eigen::Vector3d w(0.4, -1.1, 0.7);
+  const auto jr_inv = so3::right_jacobian_inverse(w);
+  expect(
+      jr_inv.has_value() &&
+          ((*jr_inv * so3::right_jacobian(w)) - Eigen::Matrix3d::Identity()).cwiseAbs().maxCoeff() <
+              1e-14,
+      "Jr^-1 Jr == I", failures);
+
+  // Error paths return InvalidInput rather than garbage.
+  expect(so3::log(Eigen::Matrix3d::Constant(0.5)).error().kind == ErrorKind::kInvalidInput,
+         "log rejects a non-rotation", failures);
+  expect(so3::log(-Eigen::Matrix3d::Identity()).error().kind == ErrorKind::kInvalidInput,
+         "log rejects a reflection", failures);
+  expect(so3::vee(Eigen::Matrix3d::Identity()).error().kind == ErrorKind::kInvalidInput,
+         "vee rejects a non-skew matrix", failures);
+  expect(so3::from_quaternion(Eigen::Vector4d(1, 1, 0, 0)).error().kind == ErrorKind::kInvalidInput,
+         "from_quaternion rejects a non-unit quaternion", failures);
+  expect(so3::right_jacobian_inverse(Eigen::Vector3d(7.0, 0, 0)).error().kind ==
+             ErrorKind::kInvalidInput,
+         "inverse Jacobian rejects |omega| >= 2 pi", failures);
 
   if (failures == 0) {
     std::cout << "foundations/so3: ok\n";

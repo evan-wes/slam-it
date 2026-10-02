@@ -48,8 +48,9 @@ fi
 
 # clang and clang-tools pinned together: clang-tidy needs clang's resource headers.
 # Eigen is the C++ cores' linear algebra (header-only; found by CMake as Eigen3::Eigen).
+# manifpy is a test-only Lie-group oracle, packaged for conda-forge only.
 CONDA_PACKAGES=(cmake ninja cxx-compiler rust "clang-tools=${CLANG_VERSION}" "clang=${CLANG_VERSION}"
-  "eigen=${EIGEN_VERSION}" doxygen nodejs)
+  "eigen=${EIGEN_VERSION}" doxygen nodejs manifpy)
 
 # --- conda layer ---------------------------------------------------------------
 if "${CONDA_BIN}" env list | awk '{print $1}' | grep -qx "${ENV_NAME}"; then

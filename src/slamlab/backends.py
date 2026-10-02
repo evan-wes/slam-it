@@ -19,6 +19,9 @@ from collections.abc import Callable
 from types import ModuleType
 from typing import Any, cast
 
+import numpy as np
+from numpy.typing import NDArray
+
 BACKENDS: tuple[str, ...] = ("python", "cpp", "rust")
 """Every backend name, the Python reference first."""
 
@@ -178,3 +181,48 @@ def function(backend: str, module_name: str, name: str) -> Callable[..., Any]:
     if found is None or isinstance(found, ModuleType) or not callable(found):
         raise NotImplementedError(f"backend {backend!r} does not implement {module_name}.{name}")
     return cast("Callable[..., Any]", found)
+
+
+def dispatch(
+    backend: str,
+    module_name: str,
+    name: str,
+    reference: Callable[..., NDArray[np.float64]],
+    *args: NDArray[Any],
+) -> NDArray[np.float64]:
+    """Run one function with the chosen backend: the Python reference or a compiled one.
+
+    Algorithm modules call this after validating their inputs, so every backend receives the
+    same clean, batched arrays.
+
+    Parameters
+    ----------
+    backend : {"python", "cpp", "rust"}
+        Which implementation computes the result.
+    module_name : str
+        The calling module's ``__name__``.
+    name : str
+        The function's name, as in the module's ``Implementation`` Protocol.
+    reference : callable
+        The Python reference implementation, called when `backend` is ``"python"``.
+    *args : ndarray
+        The validated arguments, passed unchanged.
+
+    Returns
+    -------
+    ndarray of float64
+        The result.
+
+    Raises
+    ------
+    ValueError
+        If `backend` is unknown.
+    BackendNotBuiltError
+        If a compiled `backend` is not built.
+    NotImplementedError
+        If a compiled `backend` does not implement the function.
+    """
+    check_name(backend)
+    if backend == "python":
+        return reference(*args)
+    return np.asarray(function(backend, module_name, name)(*args), dtype=np.float64)

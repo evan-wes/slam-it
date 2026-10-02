@@ -230,15 +230,15 @@ def test_every_compiled_module_matches_its_protocol(name: str) -> None:
 @pytest.mark.parametrize(
     "bad",
     [
-        np.array([1.0, 2.0, 3.0], dtype=np.float32),
-        np.arange(6.0)[::2],
+        np.array([[1.0, 2.0, 3.0]], dtype=np.float32),
+        np.arange(6.0).reshape(1, 6)[:, ::2],
         # Contiguous float64 at an odd byte offset: misaligned for double.
-        np.zeros(25, dtype=np.uint8)[1:25].view(np.float64),
+        np.zeros(25, dtype=np.uint8)[1:25].view(np.float64).reshape(1, 3),
     ],
     ids=["float32", "strided", "misaligned"],
 )
 def test_compiled_bindings_refuse_unconverted_input(name: str, bad: object) -> None:
-    """Both raw bindings refuse anything but an aligned, contiguous float64 array.
+    """Both raw bindings refuse anything but an aligned, contiguous float64 (N, 3) batch.
 
     So a direct caller, or a benchmark, pays no hidden conversion in either language; the
     Python entry points validate and convert before calling.

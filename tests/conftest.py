@@ -112,7 +112,9 @@ def assert_matches_fixture(got: ArrayLike, expected: ArrayLike, tolerance: dict[
     tolerance : dict
         The fixture's tolerance policy: ``comparison`` is ``"exact"`` (values and the
         sign of every zero must match; ``rtol`` and ``atol`` must be 0) or ``"close"``
-        (``rtol`` and ``atol`` are applied as given, never numpy's defaults).
+        (``rtol`` and ``atol`` are applied as given, never numpy's defaults). With
+        ``double_cover`` set, `got` is compared up to sign (``q`` and ``-q`` are the same
+        rotation), aligning its sign with `expected` first.
 
     Raises
     ------
@@ -121,6 +123,8 @@ def assert_matches_fixture(got: ArrayLike, expected: ArrayLike, tolerance: dict[
     """
     got_arr = np.asarray(got, dtype=np.float64)
     expected_arr = np.asarray(expected, dtype=np.float64)
+    if tolerance.get("double_cover") and float(np.sum(got_arr * expected_arr)) < 0.0:
+        got_arr = -got_arr
     comparison = tolerance["comparison"]
     rtol, atol = float(tolerance["rtol"]), float(tolerance["atol"])
     if comparison == "exact":
