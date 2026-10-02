@@ -11,6 +11,9 @@ from scipy.optimize import least_squares
 
 from slamlab import backends
 from slamlab.foundations import ba, camera, nls, se3
+from slamlab.foundations.ba.bundle import Bundle, Kind, State
+from slamlab.foundations.ba.layout import make_layout
+from slamlab.foundations.ba.schur import Reduction
 from slamlab.foundations.errors import InvalidInputError, NotConvergedError
 from tests.conftest import require_backend
 
@@ -91,9 +94,7 @@ def _scene(
     return Scene(poses, world, intrinsics, inverse_depth, problem)
 
 
-def _dense_normal_equations(
-    bundle: ba._Bundle, state: ba._State, weights: Array
-) -> tuple[Array, Array]:
+def _dense_normal_equations(bundle: Bundle, state: State, weights: Array) -> tuple[Array, Array]:
     """Assemble the full weighted normal equations ``(H, g)`` in the free coordinates."""
     reduction = bundle.reduction(state)
     n_free = int(bundle._layout.point_slot.max(initial=-1)) + 1
@@ -108,7 +109,7 @@ def _dense_normal_equations(
     return np.asarray(hessian), np.asarray(gradient)
 
 
-def _kind_jacobian(kind: ba._Kind, reduction: ba._Reduction, n_free: int) -> Array:
+def _kind_jacobian(kind: Kind, reduction: Reduction, n_free: int) -> Array:
     """Return one kind of block's Jacobian in the free coordinates, shape (M, d, n)."""
     m, d = kind.residuals.shape
     full = np.zeros((m, d, reduction.full_size))
@@ -128,24 +129,22 @@ def _kind_jacobian(kind: ba._Kind, reduction: ba._Reduction, n_free: int) -> Arr
     return np.concatenate([cam, pts], axis=2)
 
 
-def _residual_vector(bundle: ba._Bundle, state: ba._State) -> Array:
+def _residual_vector(bundle: Bundle, state: State) -> Array:
     """Return every block's weighted residual rows, stacked."""
     parts = (bundle._reprojection(state), bundle._depth(state), bundle._pose_prior(state))
     return np.concatenate([part.reshape(-1) for part in parts])
 
 
-def _bundle(
-    problem: ba.BAProblem, options: ba.BAOptions | None = None
-) -> tuple[ba._Bundle, ba._State]:
+def _bundle(problem: ba.BAProblem, options: ba.BAOptions | None = None) -> tuple[Bundle, State]:
     """Return the reference's NLS problem and its start state."""
-    layout = ba._layout(problem, options or ba.BAOptions())
-    start = ba._State(
+    layout = make_layout(problem, options or ba.BAOptions())
+    start = State(
         se3.inverse(problem.poses),
         problem.intrinsics.copy(),
         problem.points.copy(),
         problem.depth_affine.copy(),
     )
-    return ba._Bundle(problem, layout, ba.DenseCholesky()), start
+    return Bundle(problem, layout, ba.DenseCholesky()), start
 
 
 def _every_kind(scene: Scene) -> ba.BAProblem:
