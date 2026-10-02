@@ -47,8 +47,8 @@ class Implementation(Protocol):
     Every argument crosses by keyword. Enums cross as their index in :data:`ENUM_TABLES`.
     ``solve`` returns a dict with ``poses``, ``intrinsics``, ``points``, ``depth_affine``,
     ``inverse_depth``, ``intrinsics_std``, ``trace`` (rows of the :class:`nls.Iteration`
-    fields), ``initial_cost``, ``final_cost``, ``termination`` and ``gauge`` codes, and each
-    of :data:`COUNT_NAMES`.
+    fields), ``initial_cost``, ``final_cost``, ``variance_factor``, ``termination`` and
+    ``gauge`` codes, and each of :data:`COUNT_NAMES`.
     """
 
     def codes(self) -> dict[str, list[str]]:
@@ -95,6 +95,7 @@ class Implementation(Protocol):
         strict: bool,
         min_parallax_deg: float,
         focal_std_ratio: float,
+        scale_deviations: bool,
     ) -> BackendResult:
         """Solve; return the named results."""
         ...
@@ -103,15 +104,24 @@ class Implementation(Protocol):
 # --- entry point ----------------------------------------------------------------------------
 
 
-def _intrinsics_std(bundle: Bundle, state: State, loss: nls.BlockLoss) -> Array:
-    """Return the free intrinsics' marginal standard deviations at ``state`` (NaN if fixed)."""
+def _variance_factor(bundle: Bundle, state: State, cost: float) -> float:
+    """Return the a-posteriori variance factor ``2 cost / (m - n)``, or NaN if m <= n."""
+    redundancy = bundle.residual_rows() - bundle.free_size(state)
+    return 2.0 * cost / redundancy if redundancy > 0 else float("nan")
+
+
+def _intrinsics_std(bundle: Bundle, state: State, loss: nls.BlockLoss, factor: float) -> Array:
+    """Return the free intrinsics' marginal standard deviations at ``state`` (NaN if fixed).
+
+    ``factor`` scales the variances (the a-posteriori variance factor, or 1).
+    """
     out = np.full(state.intrinsics.shape, np.nan)
     groups, params, positions = bundle.intrinsics_positions()
     if groups.size == 0:
         return out
     weights = loss.evaluate(bundle.squared_norms(state))[1]
     variances = bundle.linearize(state, weights).camera_variances(positions)
-    out[groups, params] = np.sqrt(variances)
+    out[groups, params] = np.sqrt(factor * variances)
     return out
 
 
@@ -135,13 +145,16 @@ def _solve_reference(problem: BAProblem, options: BAOptions) -> BAResult:
     poses = se3.inverse(final.poses)
     unmoved = np.all(final.poses == start.poses, axis=(1, 2))
     poses[unmoved] = problem.poses[unmoved]  # bit-exact, not a round trip through the inverse
-    std = _intrinsics_std(bundle, final, block_loss)
+    factor = _variance_factor(bundle, final, solution.summary.final_cost)
+    scaling = factor if options.scale_deviations and np.isfinite(factor) else 1.0
+    std = _intrinsics_std(bundle, final, block_loss, scaling)
     summary = BASummary(
         solve=solution.summary,
         gauge=layout.gauge,
         unobservable_focal=_unobservable_focal(
             problem.camera_model, final.intrinsics, std, options.focal_std_ratio
         ),
+        variance_factor=factor,
         **layout.summary,
     )
     return BAResult(
@@ -181,6 +194,7 @@ def _result_from_backend(raw: BackendResult) -> BAResult:
     summary = BASummary(
         solve_summary,
         GAUGES[int(raw["gauge"])],
+        variance_factor=float(raw["variance_factor"]),
         **{name: int(raw[name]) for name in COUNT_NAMES},
     )
     return BAResult(
@@ -248,6 +262,7 @@ def backend_arguments(problem: BAProblem, options: BAOptions) -> dict[str, Any]:
         "strict": solver.strict,
         "min_parallax_deg": options.min_parallax_deg,
         "focal_std_ratio": options.focal_std_ratio,
+        "scale_deviations": options.scale_deviations,
     }
 
 
@@ -272,6 +287,14 @@ def solve(
 
     Raises
     ------
+    ValueError
+        If ``backend`` is not a known backend name.
+    slamlab.backends.BackendNotBuiltError
+        If ``backend`` names a compiled backend that is not built here.
+    slamlab.foundations.errors.InvalidInputError
+        If the problem and options do not fit together: a ``"scale"`` gauge with nothing to
+        measure scale from. The compiled backend also re-checks the problem itself, which
+        :class:`BAProblem` already did on construction.
     slamlab.foundations.errors.NotConvergedError
         If ``options.solver.strict`` and the solve stopped without converging.
     """

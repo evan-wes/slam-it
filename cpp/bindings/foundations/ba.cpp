@@ -216,7 +216,7 @@ nb::dict solve(const MatrixIn& intrinsics, const VectorIn<std::int64_t>& intrins
                int max_iterations, double function_tolerance, double gradient_tolerance,
                double step_tolerance, double initial_damping, double max_damping,
                double min_diagonal, double max_diagonal, double min_relative_decrease, bool strict,
-               double min_parallax_deg, double focal_std_ratio) {
+               double min_parallax_deg, double focal_std_ratio, bool scale_deviations) {
   using Pairs = Eigen::Matrix<double, Eigen::Dynamic, 2, Eigen::RowMajor>;
   const ba::Options options{
       .solver = {.method = decode<nls::Method>(method, kMethods, "method"),
@@ -237,7 +237,8 @@ nb::dict solve(const MatrixIn& intrinsics, const VectorIn<std::int64_t>& intrins
                      .scale = depth_loss_scale},
       .gauge = decode<ba::Gauge>(gauge, kGauges, "gauge"),
       .min_parallax_deg = min_parallax_deg,
-      .focal_std_ratio = focal_std_ratio};
+      .focal_std_ratio = focal_std_ratio,
+      .scale_deviations = scale_deviations};
   const ba::Problem problem{
       .model = decode<camera::Model>(model, kModels, "model"),
       .intrinsics =
@@ -282,6 +283,7 @@ nb::dict solve(const MatrixIn& intrinsics, const VectorIn<std::int64_t>& intrins
   out["unobserved_intrinsics"] = summary.unobserved_intrinsics;
   out["unobserved_depth_affines"] = summary.unobserved_depth_affines;
   out["unobservable_focal"] = summary.unobservable_focal;
+  out["variance_factor"] = summary.variance_factor;
   return out;
 }
 
@@ -304,6 +306,7 @@ void bind_ba(nb::module_& m) {
         nb::arg("step_tolerance"), nb::arg("initial_damping"), nb::arg("max_damping"),
         nb::arg("min_diagonal"), nb::arg("max_diagonal"), nb::arg("min_relative_decrease"),
         nb::arg("strict"), nb::arg("min_parallax_deg"), nb::arg("focal_std_ratio"),
+        nb::arg("scale_deviations"),
         "Run bundle adjustment; every argument by keyword; returns a dict of named results.");
 }
 

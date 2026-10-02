@@ -237,6 +237,11 @@ class BAOptions:
         A free point whose rays span less than this angle is dropped (default 0: only points
         seen fewer than twice are). Bundle adjustment refines low-parallax points well;
         raise it only to discard poorly triangulated points deliberately.
+    scale_deviations : bool
+        Scale the intrinsics' deviations by the a-posteriori variance factor
+        ``σ̂₀² = 2 cost / (m - n)`` (m residual rows, n free parameters), as in Förstner &
+        Wrobel (2016, ch. 4), so they do not depend on how well the weights match the true
+        noise. Off, they assume the weights are exact informations.
     focal_std_ratio : float
         A free focal length whose standard deviation exceeds this fraction of it is counted
         as unobservable.
@@ -247,6 +252,7 @@ class BAOptions:
     gauge: str = "auto"
     min_parallax_deg: float = 0.0
     focal_std_ratio: float = 0.01
+    scale_deviations: bool = True
 
     def __post_init__(self) -> None:
         """Reject an unknown gauge, a bad threshold, or a per-block loss set by the caller."""
@@ -283,6 +289,9 @@ class BASummary:
     unobservable_focal : int
         Free intrinsics groups whose focal length the data does not pin (see
         ``BAOptions.focal_std_ratio``).
+    variance_factor : float
+        The a-posteriori variance factor ``σ̂₀² = 2 cost / (m - n)`` at the solution (NaN
+        without redundancy, m <= n). Near 1 when the weights match the noise.
     """
 
     solve: nls.SolveSummary
@@ -295,6 +304,7 @@ class BASummary:
     unobserved_intrinsics: int
     unobserved_depth_affines: int
     unobservable_focal: int
+    variance_factor: float
 
 
 COUNT_NAMES = (

@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -183,6 +184,21 @@ class Bundle {
       state.inverse_depth(p) = 1.0 / in_host.z();
     }
     return state;
+  }
+
+  /// @brief The number of residual rows: 2 per reprojection, 1 per depth, 6 per pose prior.
+  /// @return The row count.
+  [[nodiscard]] Index residual_rows() const {
+    return static_cast<Index>((2 * layout_->reprojection.size()) + layout_->depth.size() +
+                              (kPoseDim * layout_->prior_cams.size()));
+  }
+
+  /// @brief The number of free parameters (the solver's step length) at `state`.
+  /// @param state The state.
+  /// @return The count.
+  [[nodiscard]] Index free_size(const State& state) const {
+    return reduction(state).size() +
+           std::accumulate(point_dims_.begin(), point_dims_.end(), Index{0});
   }
 
   /// @brief The free intrinsics parameters and their free coordinates.
@@ -698,14 +714,26 @@ class Bundle {
   std::vector<Index> point_dims_;
 };
 
+/// @brief The a-posteriori variance factor `2 cost / (m - n)` at a state.
+/// @param bundle The problem.
+/// @param state The state.
+/// @param cost The cost at `state`.
+/// @return The factor, or NaN without redundancy (m <= n).
+double variance_factor(const Bundle& bundle, const BundleState& state, double cost) {
+  const Index redundancy = bundle.residual_rows() - bundle.free_size(state);
+  return redundancy > 0 ? 2.0 * cost / static_cast<double>(redundancy)
+                        : std::numeric_limits<double>::quiet_NaN();
+}
+
 /// @brief The free intrinsics' marginal standard deviations at a state (NaN where fixed).
 /// @param bundle The problem.
 /// @param state The state.
 /// @param solver The settings whose per-block loss weights the blocks.
-/// @param shape A matrix of the intrinsics' shape.
+/// @param scaling The factor the variances are multiplied by (the variance factor, or 1).
 /// @return The deviations.
 Intrinsics intrinsics_std(const Bundle& bundle, const BundleState& state,
-                          const nls::Options& solver, const Intrinsics& shape) {
+                          const nls::Options& solver, double scaling) {
+  const Intrinsics& shape = state.intrinsics;
   Intrinsics out =
       Intrinsics::Constant(shape.rows(), shape.cols(), std::numeric_limits<double>::quiet_NaN());
   const auto [entries, positions] = bundle.intrinsics_positions();
@@ -717,7 +745,7 @@ Intrinsics intrinsics_std(const Bundle& bundle, const BundleState& state,
   const Eigen::VectorXd variances = bundle.linearize(state, weights).camera_variances(positions);
   for (std::size_t i = 0; i < entries.size(); ++i) {
     out(entries[i] / shape.cols(), entries[i] % shape.cols()) =
-        std::sqrt(variances(static_cast<Index>(i)));
+        std::sqrt(scaling * variances(static_cast<Index>(i)));
   }
   return out;
 }
@@ -743,7 +771,11 @@ Result<Solution> adjust(const Problem& problem, const Options& options, const La
       poses[c] = problem.poses[c];  // bit-exact, not a round trip through the inverse
     }
   }
-  Intrinsics std_dev = intrinsics_std(bundle, final_state, solver, final_state.intrinsics);
+  summary.variance_factor = variance_factor(bundle, final_state, summary.solve.final_cost);
+  const double scaling = options.scale_deviations && std::isfinite(summary.variance_factor)
+                             ? summary.variance_factor
+                             : 1.0;
+  Intrinsics std_dev = intrinsics_std(bundle, final_state, solver, scaling);
   for (Index g = 0; g < std_dev.rows(); ++g) {
     // Radial has one focal length; pinhole and radtan have two.
     const Index n_focal = problem.model == camera::Model::kRadial ? 1 : 2;

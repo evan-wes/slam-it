@@ -19,6 +19,7 @@
 #include <Eigen/Core>
 #include <concepts>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <vector>
 
@@ -135,6 +136,9 @@ struct Options {
   double min_parallax_deg = 0.0;
   /// @brief A free focal length whose deviation exceeds this fraction of it is unobservable.
   double focal_std_ratio = 0.01;
+  /// @brief Scale the intrinsics' deviations by the a-posteriori variance factor (see
+  ///        `Summary::variance_factor`); off, the weights are taken as exact informations.
+  bool scale_deviations = true;
 };
 
 /// @brief How a bundle adjustment went.
@@ -159,6 +163,9 @@ struct Summary {
   std::int64_t unobserved_depth_affines = 0;
   /// @brief Free intrinsics groups whose focal length the data does not pin.
   std::int64_t unobservable_focal = 0;
+  /// @brief The a-posteriori variance factor `2 cost / (m - n)` at the solution, for m
+  ///        residual rows and n free parameters (NaN when m <= n).
+  double variance_factor = std::numeric_limits<double>::quiet_NaN();
 };
 
 /// @brief The refined variables and the summary.

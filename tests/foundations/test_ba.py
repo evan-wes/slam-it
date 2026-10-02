@@ -421,7 +421,11 @@ def test_backend_parity(backend: str) -> None:
     out = ba.solve(problem, options, backend=backend)
     assert out.summary.solve.termination == ref.summary.solve.termination
     assert out.summary.solve.iterations == ref.summary.solve.iterations
-    assert replace(out.summary, solve=ref.summary.solve) == ref.summary
+    same = replace(
+        out.summary, solve=ref.summary.solve, variance_factor=ref.summary.variance_factor
+    )
+    assert same == ref.summary
+    np.testing.assert_allclose(out.summary.variance_factor, ref.summary.variance_factor, rtol=1e-9)
     np.testing.assert_allclose(out.poses, ref.poses, rtol=0, atol=1e-9)
     np.testing.assert_allclose(out.points, ref.points, rtol=0, atol=1e-8)
     # Distortion is poorly conditioned in this scene (k3 ends near -6): 1e-8 relative.
@@ -580,13 +584,14 @@ def test_pose_priors_anchor_the_gauge() -> None:
 def test_focal_observability() -> None:
     """Free focal lengths come with calibrated deviations; unpinned ones are flagged.
 
-    With 0.3 rad of rotation between views, σ_f is under 1 px and the truth lies within 3σ.
-    With 0.04 rad, σ_f is 9 px (1.8%): weakly observable, and flagged. Under pure
-    translation, focal length and depth trade off exactly (σ_f ~ 1400 px).
+    The deviations are scaled by the variance factor, so they hold for the 0.5 px noise
+    whatever the weights. With 0.3 rad of rotation between views, σ_f is under 1 px and the
+    truth lies within 3σ. With 0.02 rad, σ_f is 8 px (1.7%): weakly observable, and flagged.
+    Under pure translation, focal length and depth trade off exactly (σ_f ~ 700 px).
     """
     free = np.array([False])
     flagged = []
-    for rotation in (0.3, 0.04, 0.0):
+    for rotation in (0.3, 0.02, 0.0):
         scene = _scene(cameras=6, points=80, noise=0.5, rotation=rotation, fixed_intrinsics=free)
         result = ba.solve(scene.problem, ba.BAOptions(solver=TIGHT))
         flagged.append(result.summary.unobservable_focal)
@@ -595,6 +600,39 @@ def test_focal_observability() -> None:
             assert np.all(std[:2] < 0.01 * PINHOLE[:2])
             assert np.all(np.abs(result.intrinsics[0] - PINHOLE) < 3.0 * std)
     assert flagged == [0, 1, 1]
+
+
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_variance_factor_calibrates_the_deviations(backend: str) -> None:
+    """The variance factor estimates the noise the weights leave out; it scales σ.
+
+    With 0.5 px noise and unit weights the factor is near 0.25; with the matching weights
+    (1 / 0.5²) near 1, and the scaled deviations agree either way. The unscaled ones keep
+    whatever the weights say.
+    """
+    require_backend(backend)
+    scene = _scene(
+        cameras=6, points=80, noise=0.5, rotation=0.3, fixed_intrinsics=np.array([False])
+    )
+    matched = replace(scene.problem, weights=np.full_like(scene.problem.weights, 4.0))
+    unit = ba.solve(scene.problem, ba.BAOptions(solver=TIGHT), backend=backend)
+    exact = ba.solve(matched, ba.BAOptions(solver=TIGHT), backend=backend)
+    raw = ba.solve(
+        scene.problem, ba.BAOptions(solver=TIGHT, scale_deviations=False), backend=backend
+    )
+    assert 0.2 < unit.summary.variance_factor < 0.3
+    np.testing.assert_allclose(exact.summary.variance_factor, 4.0 * unit.summary.variance_factor)
+    np.testing.assert_allclose(exact.intrinsics_std, unit.intrinsics_std, rtol=1e-6)
+    np.testing.assert_allclose(
+        unit.intrinsics_std, np.sqrt(unit.summary.variance_factor) * raw.intrinsics_std
+    )
+
+
+def test_variance_factor_without_redundancy() -> None:
+    """With no more residuals than free parameters, the factor is NaN and σ is unscaled."""
+    scene = _scene(cameras=2, points=3, fixed_intrinsics=np.array([False]))
+    result = ba.solve(scene.problem, ba.BAOptions(solver=TIGHT))
+    assert np.isnan(result.summary.variance_factor)
 
 
 def test_anchored_points_reach_the_same_optimum() -> None:

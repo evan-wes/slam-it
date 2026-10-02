@@ -229,8 +229,18 @@ infinite cost, so the step is rejected rather than raising an error.
 When intrinsics are free, the result reports each free parameter's standard deviation. It is
 the square root of the diagonal of `S⁻¹`, where `S` is the undamped reduced camera system at
 the solution under the final robust weights: points marginalised by the Schur complement,
-poses by the inverse. It assumes the weights are true informations. A free group whose fx or
-fy deviation exceeds `focal_std_ratio` (1%) of itself is counted in `unobservable_focal`.
+poses by the inverse. That alone assumes the weights are the true informations (inverse
+noise variances). Weights are rarely that: unit weights on 0.5 px noise overstate σ by a
+factor of 2. So by default (`scale_deviations`) the variances are multiplied by the
+a-posteriori variance factor
+
+    σ̂₀² = 2 cost / (m - n),
+
+the residual sum of squares over the redundancy: m residual rows (2 per reprojection, 1 per
+depth prior, 6 per pose prior) less n free parameters (Förstner & Wrobel 2016, ch. 4). It is
+reported as `variance_factor`, near 1 when the weights match the noise, and NaN without
+redundancy (m <= n), when nothing is scaled. A free group whose fx or fy deviation exceeds
+`focal_std_ratio` (1%) of itself is counted in `unobservable_focal`.
 
 The classic failure it catches is focal length against depth. With pure translation and no
 rotation, `u = f (X - t_x)/Z` is unchanged by `f → kf, Z → kZ`, so no amount of data pins f.
@@ -293,22 +303,24 @@ Ceres, on the identical problem:
 spin has no seed: its run takes another route through pose_refine. It is listed rather than
 skipped. Measured on 2026-10-02 at this commit:
 
-| Scene | Start | slamlab | COLMAP | Pushed behind (ours / COLMAP) | σ_f (ours) | f ours / COLMAP |
-|---|---|---|---|---|---|---|
-| lab-coat | 4.854 | 0.880 | 0.910 | 0 / 7 | **3.5** | 483 / 504 |
-| blackswan | 5.267 | 0.518 | 0.522 | 0 / 0 | 63 | 1191 / 1848 |
-| crossing | 3.260 | 0.358 | 0.351 | 0 / 0 | 2009 | 4362 / 3886 |
-| dogs-scale | 4.467 | 0.807 | 0.812 | 0 / 30 | 8.4 | 524 / 758 |
-| gold-fish | 3.616 | 0.672 | 0.674 | 0 / 0 | inf | 2874 / 3217 |
-| india | 5.314 | 0.489 | 0.574 | 0 / 121 | inf | 1521 / 1515 |
-| judo | 3.405 | 0.364 | 0.362 | 0 / 542 | 902 | 2451 / 5422 |
-| lindy-hop | 4.033 | 0.680 | 0.680 | 0 / 471 | 92 | 1726 / 1771 |
-| miami-surf | 4.881 | 0.657 | 0.657 | 0 / 0 | 4355 | 9854 / 10322 |
-| motocross-bumps | 5.437 | 0.384 | 0.390 | 0 / 4 | inf | 898 / 909 |
+| Scene | Start | slamlab | COLMAP | Pushed behind (ours / COLMAP) | σ̂₀ | σ_f (ours) | f ours / COLMAP |
+|---|---|---|---|---|---|---|---|
+| lab-coat | 4.854 | 0.880 | 0.910 | 0 / 7 | 0.68 | **2.3** | 483 / 504 |
+| blackswan | 5.267 | 0.518 | 0.522 | 0 / 0 | 0.41 | 26 | 1191 / 1848 |
+| crossing | 3.260 | 0.358 | 0.351 | 0 / 0 | 0.27 | 528 | 4362 / 3886 |
+| dogs-scale | 4.467 | 0.807 | 0.812 | 0 / 30 | 0.63 | 5.3 | 524 / 758 |
+| gold-fish | 3.616 | 0.672 | 0.674 | 0 / 0 | 0.54 | inf | 2874 / 3217 |
+| india | 5.314 | 0.489 | 0.574 | 0 / 121 | 0.39 | inf | 1521 / 1515 |
+| judo | 3.405 | 0.364 | 0.362 | 0 / 542 | 0.27 | 241 | 2451 / 5422 |
+| lindy-hop | 4.033 | 0.680 | 0.680 | 0 / 471 | 0.55 | 51 | 1726 / 1771 |
+| miami-surf | 4.881 | 0.657 | 0.657 | 0 / 0 | 0.53 | 2333 | 9854 / 10322 |
+| motocross-bumps | 5.437 | 0.384 | 0.390 | 0 / 4 | 0.34 | inf | 898 / 909 |
 
-RMS is in px, over the observations in front at the start and in both results. The table
-comes from this invocation. The comparison script is generic, and the slice and its run
-layout belong to reifyscene, so they appear only here:
+RMS is in px, over the observations in front at the start and in both results. σ̂₀ is the
+a-posteriori noise (px), and σ_f is scaled by it (see
+[Focal observability](#focal-observability)). The table comes from this invocation. The
+comparison script is generic, and the slice and its run layout belong to reifyscene, so they
+appear only here:
 
 ```
 RUNS=$REIFYSCENE_DATA_DIR/runs
@@ -321,9 +333,10 @@ What the slice shows that lab-coat alone would not:
 - **The two solvers agree on reprojection error.** Within 0.01 px on 8 of 10 scenes. Ours is
   lower on lab-coat (0.03 px) and india (0.08 px), where COLMAP pushed points behind their
   cameras.
-- **Focal length is unobservable on 9 of the 10 scenes.** Only lab-coat pins it (σ_f = 3.5
-  px). Elsewhere σ_f runs from 8 px to infinite: DAVIS clips are short handheld moves with
-  little rotation, so focal length and depth trade off. The focal lengths wander with the
+- **Focal length is unobservable on 9 of the 10 scenes.** Only lab-coat pins it (σ_f = 2.3
+  px, 0.5%). Elsewhere σ_f runs from 5.3 px (dogs-scale, 1.0%, at the threshold) to
+  infinite: DAVIS clips are short handheld moves with little rotation, so focal length and
+  depth trade off. The focal lengths wander with the
   iteration count, from 1341 to 1191 on blackswan between 100 and 300 iterations. The two
   solvers land far apart (2451 against 5422 on judo) at essentially the same cost. Five
   scenes never converge within 300 iterations, for the same reason. Judged on lab-coat alone,
@@ -402,8 +415,12 @@ unless `unobservable_focal` is 0.
   | Rotation spread | σ_f | Flagged |
   |---|---|---|
   | 0.3 rad | under 1 px; the truth lies within 3σ | no |
-  | 0.04 rad | 9 px (1.8%) | yes |
-  | none | about 1400 px | yes |
+  | 0.02 rad | 8 px (1.7%) | yes |
+  | none | about 700 px | yes |
+
+  The deviations are scaled: σ̂₀² is near 0.25 for the 0.5 px noise under unit weights, and
+  the same scene with weights 1/0.5² gives the same deviations. Unscaled, they are the
+  scaled ones over σ̂₀, in both backends.
 
 - **Parity.** As above, with every kind of block. The intrinsics agree to 1e-8 relative in a
   scene where the distortion is poorly conditioned (k3 near -6).
@@ -437,7 +454,9 @@ unless `unobservable_focal` is 0.
   0.04 rad of rotation between views, assuming it would count as well observed. The check
   disagreed: σ_f = 9 px, and the estimate was 1σ off the truth. The check was right and the
   assumption was wrong. Weak rotation makes focal length weakly observable, which is why
-  calibration needs varied views.
+  calibration needs varied views. That 9 px was itself twice too large: it took unit weights
+  as the information of 0.5 px noise. Scaled by the variance factor it is 4.3 px (0.9%), and
+  the weak case moved to 0.02 rad.
 - **A triangulation heuristic is not a BA rule.** The first default dropped points with less
   than 1° of parallax. On BAL's Ladybug-49, that left out 37 points (239 observations), which
   kept their starting positions, and the RMS error ended at 1.536 px against COLMAP's

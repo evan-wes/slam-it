@@ -171,5 +171,29 @@ int main() {
   expect(!shortened.has_value() && shortened.error().kind == ErrorKind::kInvalidInput,
          "solve: a short pt_idx is rejected before the anchors read it", failures);
 
+  // With noisy observations and free intrinsics, the variance factor is positive and the
+  // scaled deviations are the unscaled ones times its square root.
+  ba::Problem noisy = problem;
+  noisy.fixed_intrinsics.assign(4, false);
+  for (Eigen::Index row = 0; row < noisy.observations.rows(); ++row) {
+    noisy.observations(row, 0) += 0.5 * std::sin(3.7 * static_cast<double>(row));
+    noisy.observations(row, 1) += 0.5 * std::cos(2.3 * static_cast<double>(row));
+  }
+  ba::Options unscaled = options;
+  unscaled.scale_deviations = false;
+  const auto scaled_fit = ba::solve(noisy, options);
+  const auto raw_fit = ba::solve(noisy, unscaled);
+  bool scaled_ok = scaled_fit.has_value() && raw_fit.has_value() &&
+                   std::isfinite(scaled_fit->summary.variance_factor) &&
+                   scaled_fit->summary.variance_factor > 0.0;
+  if (scaled_ok) {
+    const double root = std::sqrt(scaled_fit->summary.variance_factor);
+    for (Eigen::Index k = 0; k < 4; ++k) {
+      const double want = root * raw_fit->intrinsics_std(0, k);
+      scaled_ok = scaled_ok && std::abs(scaled_fit->intrinsics_std(0, k) - want) <= 1e-9 * want;
+    }
+  }
+  expect(scaled_ok, "solve: deviations scale by the root of the variance factor", failures);
+
   return slamlab::testing::finish("test_ba", failures);
 }

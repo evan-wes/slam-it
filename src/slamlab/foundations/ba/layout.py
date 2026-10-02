@@ -1,4 +1,19 @@
-"""What a bundle adjustment optimises: kept blocks, free variables and the gauge."""
+"""What a bundle adjustment optimises: kept blocks, free variables and the gauge.
+
+The gauge is the scene's free similarity: rigid motion, and scale unless metric data pins it.
+Fixed poses (two or more apart), full pose priors and metric depth priors anchor parts of
+it. The gauge applied removes what is left, and no more (Triggs et al. 1999, section 9):
+
+- ``"first_pose"`` fixes one observed pose (the first fixed one, else the first free one);
+- ``"scale"`` confines the free pose farthest from an anchored one to steps that keep their
+  baseline's length, through a Householder basis of the other five directions;
+- ``"similarity"`` does both;
+- ``"none"`` fixes nothing;
+- ``"auto"`` resolves to the minimal one of these for what is anchored.
+
+Kept blocks: observations of dropped points (too few views, too little parallax, or an
+anchor that cannot be placed) are left out, and the counts reported.
+"""
 
 from __future__ import annotations
 

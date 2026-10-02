@@ -499,6 +499,30 @@ class DenseSystem:
         return cholesky_solve(self.hessian + np.diag(damping), -self.gradient)
 
 
+_DAMPING_GROWTH = 2.0
+"""Nielsen's ν: the factor μ first grows by on a rejected step, itself doubled per rejection."""
+_DAMPING_MAX_SHRINK = 3.0
+"""The most an accepted step divides μ by (Nielsen 1999; Madsen, Nielsen & Tingleff 2004)."""
+
+
+@dataclass
+class _Damping:
+    """The Levenberg-Marquardt damping μ and Nielsen's growth factor ν."""
+
+    mu: float
+    growth: float = _DAMPING_GROWTH
+
+    def accept(self, ratio: float) -> None:
+        """Shrink μ by the gain ratio of an accepted step; reset ν."""
+        self.mu *= max(1.0 / _DAMPING_MAX_SHRINK, 1.0 - (2.0 * ratio - 1.0) ** 3)
+        self.growth = _DAMPING_GROWTH
+
+    def reject(self) -> None:
+        """Grow μ by ν after a rejected step, and double ν."""
+        self.mu *= self.growth
+        self.growth *= _DAMPING_GROWTH
+
+
 def _loss(options: Options) -> Loss | BlockLoss:
     """Return the loss in force: the per-block loss if given, else the uniform one."""
     return options.block_loss if options.block_loss is not None else options.loss
@@ -612,12 +636,11 @@ def solve(
     if not np.isfinite(evaluation.cost):
         raise InvalidInputError("solve: the initial cost is not finite")
     point = _Point.at(problem, initial, evaluation, _loss(opts))
-    damping = opts.initial_damping if levenberg else 0.0
-    growth = 2.0
+    damping = _Damping(opts.initial_damping if levenberg else 0.0)
     trace: list[Iteration] = []
     termination = Termination.MAX_ITERATIONS
     while len(trace) < opts.max_iterations:
-        trial = _try_step(problem, point, damping, len(trace) + 1, opts)
+        trial = _try_step(problem, point, damping.mu, len(trace) + 1, opts)
         if isinstance(trial, Termination):
             termination = trial
             break
@@ -625,8 +648,7 @@ def solve(
         if trial.record.accepted and trial.candidate is not None and trial.evaluation is not None:
             previous = point.evaluation.cost
             if levenberg:
-                damping *= max(1.0 / 3.0, 1.0 - (2.0 * trial.record.relative_decrease - 1.0) ** 3)
-                growth = 2.0
+                damping.accept(trial.record.relative_decrease)
             if previous - trial.evaluation.cost <= opts.function_tolerance * previous:
                 # The loop ends here, so the new state is not worth linearising.
                 point = _Point(trial.candidate, trial.evaluation, point.system)
@@ -638,9 +660,8 @@ def solve(
             singular = trial.candidate is None
             termination = Termination.SINGULAR if singular else Termination.NO_DECREASE
             break
-        damping *= growth
-        growth *= 2.0
-        if damping > opts.max_damping:
+        damping.reject()
+        if damping.mu > opts.max_damping:
             termination = Termination.DAMPING_LIMIT
             break
     converged = termination in CONVERGED

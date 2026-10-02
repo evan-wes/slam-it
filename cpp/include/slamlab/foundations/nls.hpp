@@ -276,6 +276,43 @@ struct Trial {
   Evaluation evaluation;
 };
 
+/// @brief Nielsen's nu: the factor mu first grows by on a rejected step, itself doubled per
+///        rejection.
+inline constexpr double kDampingGrowth = 2.0;
+/// @brief The most an accepted step divides mu by (Nielsen 1999; Madsen, Nielsen & Tingleff
+///        2004).
+inline constexpr double kDampingMaxShrink = 3.0;
+
+/// @brief The Levenberg-Marquardt damping mu and Nielsen's growth factor nu.
+class Damping {
+ public:
+  /// @brief Start at damping `mu`.
+  /// @param mu The first damping (0 for Gauss-Newton).
+  explicit Damping(double mu) : mu_(mu) {}
+
+  /// @brief The damping mu.
+  /// @return mu.
+  [[nodiscard]] double mu() const { return mu_; }
+
+  /// @brief Shrink mu by the gain ratio of an accepted step; reset nu.
+  /// @param ratio The step's gain ratio.
+  void accept(double ratio) {
+    const double centred = (2.0 * ratio) - 1.0;
+    mu_ *= std::max(1.0 / kDampingMaxShrink, 1.0 - (centred * centred * centred));
+    growth_ = kDampingGrowth;
+  }
+
+  /// @brief Grow mu by nu after a rejected step, and double nu.
+  void reject() {
+    mu_ *= growth_;
+    growth_ *= kDampingGrowth;
+  }
+
+ private:
+  double mu_;
+  double growth_ = kDampingGrowth;
+};
+
 /// @brief Compute, apply and judge one step; or return the convergence test it stops on.
 /// @tparam P The problem type.
 /// @tparam S The linear system type.
@@ -352,13 +389,12 @@ template <Problem P>
     return fail(ErrorKind::kInvalidInput, "solve: the initial cost is not finite");
   }
   const double initial_cost = current.cost;
-  double damping = levenberg ? options.initial_damping : 0.0;
-  double growth = 2.0;
+  detail::Damping damping(levenberg ? options.initial_damping : 0.0);
   auto system = problem.linearize(state, current.weights);
   std::vector<Iteration> trace;
   Termination termination = Termination::kMaxIterations;
   while (std::cmp_less(trace.size(), options.max_iterations)) {
-    auto tried = detail::try_step(problem, state, current, system, damping,
+    auto tried = detail::try_step(problem, state, current, system, damping.mu(),
                                   static_cast<int>(trace.size()) + 1, options);
     if (const auto* stop = std::get_if<Termination>(&tried)) {
       termination = *stop;
@@ -371,9 +407,7 @@ template <Problem P>
       state = std::move(*trial.candidate);
       current = std::move(trial.evaluation);
       if (levenberg) {
-        const double centred = (2.0 * trial.record.relative_decrease) - 1.0;
-        damping *= std::max(1.0 / 3.0, 1.0 - (centred * centred * centred));
-        growth = 2.0;
+        damping.accept(trial.record.relative_decrease);
       }
       if (previous - current.cost <= options.function_tolerance * previous) {
         termination = Termination::kFunction;
@@ -386,9 +420,8 @@ template <Problem P>
       termination = trial.candidate ? Termination::kNoDecrease : Termination::kSingular;
       break;
     }
-    damping *= growth;
-    growth *= 2.0;
-    if (damping > options.max_damping) {
+    damping.reject();
+    if (damping.mu() > options.max_damping) {
       termination = Termination::kDampingLimit;
       break;
     }

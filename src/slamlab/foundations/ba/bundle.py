@@ -45,10 +45,15 @@ class State:
     """
 
     poses: Array
+    """World-to-camera poses ``T_cam_world``, shape (C, 4, 4) (the solver's convention)."""
     intrinsics: Array
+    """Intrinsics groups, shape (K, P)."""
     points: Array
+    """Plain points in the world frame, shape (N, 3)."""
     depth_affine: Array
+    """Per-camera depth affines ``(scale, shift)``, shape (C, 2)."""
     inverse_depth: Array
+    """Anchored points' ``ρ``, the inverse of their depth in the host camera, shape (N,)."""
 
 
 @dataclass(frozen=True)
@@ -87,6 +92,15 @@ def _pose_columns(cam: IndexArray) -> IndexArray:
     return np.asarray(POSE_DIM * cam[:, None] + np.arange(POSE_DIM), dtype=np.int64)
 
 
+def _members(group: IndexArray, n_groups: int) -> list[tuple[int, IndexArray]]:
+    """Return each non-empty group with the positions of its members, in one sort."""
+    order = np.argsort(group, kind="stable")
+    bounds = np.searchsorted(group[order], np.arange(n_groups + 1))
+    return [
+        (g, order[bounds[g] : bounds[g + 1]]) for g in range(n_groups) if bounds[g + 1] > bounds[g]
+    ]
+
+
 class Bundle:
     """The bundle-adjustment problem as an NLS ``Problem`` over :class:`State`."""
 
@@ -99,15 +113,28 @@ class Bundle:
         self._intrinsics_offset = POSE_DIM * n_cams
         self._affine_offset = self._intrinsics_offset + n_params * n_groups
         self._full_size = self._affine_offset + AFFINE_DIM * n_cams
+        self._index_reprojection()
+        self._index_depth()
+        self._index_pose_priors()
+        self._index_anchors()
+        self._index_free()
+
+    def _index_reprojection(self) -> None:
+        """Index the reprojection blocks: cameras, points, groups, pixels, weights, columns."""
+        problem, layout = self._problem, self._layout
         obs = layout.obs[layout.reprojection]
         self._cam = problem.cam_idx[obs]
         self._pt = problem.pt_idx[obs]
-        self._group = problem.intrinsics_idx[self._cam]
+        self._members = _members(problem.intrinsics_idx[self._cam], problem.intrinsics.shape[0])
         self._pixels = problem.observations[obs]
         self._sqrt_w = np.sqrt(problem.weights[obs])
         self._columns = np.concatenate(
             [_pose_columns(self._cam), self._intrinsics_columns(self._cam)], axis=1
         )
+
+    def _index_depth(self) -> None:
+        """Index the depth-prior blocks: cameras, points, priors, weights, columns."""
+        problem, layout = self._problem, self._layout
         depth_obs = layout.obs[layout.depth]
         self._d_cam, self._d_pt = problem.cam_idx[depth_obs], problem.pt_idx[depth_obs]
         self._d_prior = problem.depth_prior[depth_obs]
@@ -116,28 +143,44 @@ class Bundle:
         self._d_columns = np.concatenate(
             [_pose_columns(self._d_cam), affine_columns + np.arange(AFFINE_DIM)], axis=1
         )
-        cams = layout.prior_cams
+
+    def _index_pose_priors(self) -> None:
+        """Index the pose-prior blocks: cameras, priors, weights (per row), columns."""
+        cams = self._layout.prior_cams
         self._p_cam = cams
-        self._p_prior = problem.pose_prior[cams]  # T̄_world_cam = T̄_cam_world⁻¹
-        self._p_sqrt_w = np.sqrt(np.repeat(problem.pose_prior_weights[cams], 3, axis=1))
+        self._p_prior = self._problem.pose_prior[cams]  # T̄_world_cam = T̄_cam_world⁻¹
+        self._p_sqrt_w = np.sqrt(np.repeat(self._problem.pose_prior_weights[cams], 3, axis=1))
         self._p_columns = _pose_columns(cams)
+
+    def _index_anchors(self) -> None:
+        """Index the anchored points: hosts, pixels, columns, and which point slots they own.
+
+        An anchored point's slot keeps one real dimension (its inverse depth) of three.
+        """
+        problem, layout = self._problem, self._layout
         self._a_points = np.flatnonzero(layout.anchored)
         anchor_obs = problem.point_anchor[self._a_points]
         self._a_host = problem.cam_idx[anchor_obs]
         self._a_pixels = problem.observations[anchor_obs]
+        self._a_members = _members(
+            problem.intrinsics_idx[self._a_host], problem.intrinsics.shape[0]
+        )
         self._a_index = np.full(problem.points.shape[0], -1, dtype=np.int64)
         self._a_index[self._a_points] = np.arange(self._a_points.size)
         self._a_columns = np.concatenate(
             [_pose_columns(self._a_host), self._intrinsics_columns(self._a_host)], axis=1
         )
         n_slots = int(layout.point_slot.max(initial=-1)) + 1
+        slots = layout.point_slot[self._a_points]
         anchored_slot = np.zeros(n_slots, dtype=bool)
-        anchored_slot[layout.point_slot[self._a_points][layout.point_slot[self._a_points] >= 0]] = (
-            True
-        )
+        anchored_slot[slots[slots >= 0]] = True
         self._anchored_slots = np.flatnonzero(anchored_slot)
         self._real = np.repeat(~anchored_slot, 3)
         self._real[3 * self._anchored_slots] = True
+
+    def _index_free(self) -> None:
+        """Index the free camera-side coordinates and the scale-confined pose's rows."""
+        layout = self._layout
         free = np.concatenate(
             [
                 np.repeat(layout.pose_free, POSE_DIM),
@@ -166,7 +209,11 @@ class Bundle:
         return np.repeat(np.arange(3, dtype=np.int64), sizes)
 
     def start(self) -> State:
-        """Return the starting state: anchored points placed on their rays at their depth."""
+        """Return the starting state: anchored points placed on their rays at their depth.
+
+        Poses are inverted to ``T_cam_world``; each anchored point's ``ρ`` is ``1/z`` of its
+        starting position in its host camera.
+        """
         p = self._problem
         poses = se3.inverse(p.poses)
         inverse_depth = np.full(p.points.shape[0], np.nan)
@@ -179,15 +226,32 @@ class Bundle:
             poses, p.intrinsics.copy(), p.points.copy(), p.depth_affine.copy(), inverse_depth
         )
 
+    def residual_rows(self) -> int:
+        """Return the number of residual rows: 2 per reprojection, 1 per depth, 6 per pose prior."""
+        return int(2 * self._cam.size + self._d_cam.size + POSE_DIM * self._p_cam.size)
+
+    def free_size(self, state: State) -> int:
+        """Return the number of free parameters (the solver's step length) at ``state``."""
+        return self.reduction(state).size + int(np.count_nonzero(self._real))
+
     def intrinsics_positions(self) -> tuple[IndexArray, IndexArray, IndexArray]:
-        """Return the free intrinsics' groups, parameters, and free coordinates."""
+        """Return the free intrinsics' groups, parameters, and free coordinates.
+
+        Three index arrays of equal length: a free entry ``intrinsics[g, k]`` and its position
+        in the step (the reduced camera-side vector).
+        """
         n_params = self._problem.intrinsics.shape[1]
         groups, params = np.nonzero(self._layout.intrinsics_free)
         full = self._intrinsics_offset + n_params * groups + params
         return groups, params, np.searchsorted(self._free, full)
 
     def reduction(self, state: State) -> Reduction:
-        """Return the free camera-side coordinates at ``state`` (the scale basis moves)."""
+        """Return the free camera-side coordinates at ``state``.
+
+        The scale-confined pose's six rows map to the five-column Householder basis of the
+        directions that keep its baseline; the basis moves with the poses, so it is rebuilt
+        at every state.
+        """
         layout = self._layout
         if layout.scale_pose < 0:
             basis = np.zeros((0, 0))
@@ -200,20 +264,24 @@ class Bundle:
     def _rays(self, state: State) -> Array:
         """Return each anchor pixel's ray on its host's normalised plane, ``(x, y, 1)``.
 
+        Shape (Na, 3), in the host camera's frame.
+
         A pixel the current intrinsics cannot undistort gives a NaN ray: its point becomes
         invalid and the step that led there is rejected.
         """
         rays = np.zeros((self._a_points.size, 3))
-        group = self._problem.intrinsics_idx[self._a_host]
-        for g, params in enumerate(state.intrinsics):
-            sel = group == g
-            if np.any(sel):
-                bearing = bearings_or_nan(self._problem.camera_model, params, self._a_pixels[sel])
-                rays[sel] = bearing / bearing[:, 2:3]
+        for g, sel in self._a_members:
+            bearing = bearings_or_nan(
+                self._problem.camera_model, state.intrinsics[g], self._a_pixels[sel]
+            )
+            rays[sel] = bearing / bearing[:, 2:3]
         return rays
 
     def world_points(self, state: State) -> Array:
-        """Return every point in the world frame (NaN rows for ``ρ ≤ 0``)."""
+        """Return every point in the world frame, shape (N, 3) (NaN rows for ``ρ ≤ 0``).
+
+        Plain points as stored; anchored points ``R_hostᵀ (ray / ρ - t_host)``.
+        """
         out = state.points.copy()
         if self._a_points.size:
             rho = state.inverse_depth[self._a_points]
@@ -223,7 +291,12 @@ class Bundle:
         return out
 
     def _anchors(self, state: State) -> _Anchors:
-        """Return the anchored points and their Jacobians at ``state``."""
+        """Return the anchored points and their Jacobians at ``state``.
+
+        The intrinsics Jacobian goes through the ray: the undistorted ray ``m(K)`` satisfies
+        ``project(K, m) = pixel``, so by the implicit-function theorem
+        ``dm/dK = -(∂project/∂m)⁻¹ ∂project/∂K``.
+        """
         n_params = state.intrinsics.shape[1]
         n_anchors = self._a_points.size
         rays = self._rays(state)
@@ -235,32 +308,33 @@ class Bundle:
             [-np.broadcast_to(np.eye(3), (n_anchors, 3, 3)), so3.hat(world)], axis=2
         )
         d_ray = np.zeros((n_anchors, 3, n_params))
-        group = self._problem.intrinsics_idx[self._a_host]
-        for g, params in enumerate(state.intrinsics):
-            sel = group == g
-            if np.any(sel):
-                d_point, d_k = camera.project_jacobians(
-                    self._problem.camera_model, params, rays[sel]
-                )
-                d_ray[sel, :2] = -np.linalg.solve(d_point[:, :, :2], d_k)
+        for g, sel in self._a_members:
+            d_point, d_k = camera.project_jacobians(
+                self._problem.camera_model, state.intrinsics[g], rays[sel]
+            )
+            d_ray[sel, :2] = -np.linalg.solve(d_point[:, :, :2], d_k)
         d_intrinsics = np.einsum("aij,ajk->aik", rotation_t, d_ray) / rho[:, None, None]
         return _Anchors(world, d_rho, d_pose, d_intrinsics)
 
     @staticmethod
     def _in_camera(state: State, world: Array, cam: IndexArray, pt: IndexArray) -> Array:
-        """Return each point in its camera's frame."""
+        """Return ``world[pt]`` in camera ``cam``'s frame, shape (M, 3)."""
         in_camera = np.einsum("mij,mj->mi", state.poses[cam, :3, :3], world[pt])
         return np.asarray(in_camera + state.poses[cam, :3, 3], dtype=np.float64)
 
     def _reprojection(self, state: State, world: Array) -> Array:
-        """Return the weighted reprojection errors (rows of NaN for points behind)."""
+        """Return the weighted reprojection errors ``√w (project - pixel)``, shape (M, 2).
+
+        In pixels scaled by ``√w``; rows of NaN for points behind their camera.
+        """
         in_camera = self._in_camera(state, world, self._cam, self._pt)
         out = np.full((in_camera.shape[0], 2), np.nan)
         valid = in_camera[:, 2] > camera.MIN_DEPTH
-        for group, params in enumerate(state.intrinsics):
-            sel = valid & (self._group == group)
-            if np.any(sel):
-                out[sel] = camera.project(self._problem.camera_model, params, in_camera[sel])
+        for g, members in self._members:
+            sel = members[valid[members]]
+            out[sel] = camera.project(
+                self._problem.camera_model, state.intrinsics[g], in_camera[sel]
+            )
         return (out - self._pixels) * self._sqrt_w[:, None]
 
     def _depth(self, state: State, world: Array) -> Array:
@@ -282,12 +356,18 @@ class Bundle:
         return np.asarray(self._pose_error(state) * self._p_sqrt_w, dtype=np.float64)
 
     def residuals(self, state: State) -> tuple[Array, Array, Array]:
-        """Return every block's weighted error: reprojection, depth prior, pose prior."""
+        """Return every block's weighted error: reprojection, depth prior, pose prior.
+
+        Shapes (M, 2), (Md, 1) and (Cp, 6), for the kept blocks in layout order.
+        """
         world = self.world_points(state)
         return self._reprojection(state, world), self._depth(state, world), self._pose_prior(state)
 
     def squared_norms(self, state: State) -> Array:
-        """Return every block's squared weighted error (inf if its point is behind)."""
+        """Return every block's squared weighted error, shape (M + Md + Cp,).
+
+        In :meth:`residuals` order; inf for a block whose point is behind its camera.
+        """
         squared = np.concatenate([np.sum(r**2, axis=1) for r in self.residuals(state)])
         return np.where(np.isnan(squared), np.inf, squared)
 
@@ -322,17 +402,20 @@ class Bundle:
         )
 
     def _reprojection_kind(self, state: State, world: Array, anchors: _Anchors) -> Kind:
-        """Linearise the reprojection blocks."""
+        """Linearise the reprojection blocks.
+
+        Camera side: ``[d/dt, d/dθ]`` of the right-perturbed ``T_cam_world`` (translation
+        first), then the camera's intrinsics group. Point side: d/d(world point), or d/dρ
+        for an anchored point; :meth:`_couple` adds the anchor's host terms.
+        """
         in_camera = self._in_camera(state, world, self._cam, self._pt)
         n_obs, n_params = in_camera.shape[0], state.intrinsics.shape[1]
         d_point = np.zeros((n_obs, 2, 3))
         d_intrinsics = np.zeros((n_obs, 2, n_params))
-        for group, params in enumerate(state.intrinsics):
-            sel = self._group == group
-            if np.any(sel):
-                d_point[sel], d_intrinsics[sel] = camera.project_jacobians(
-                    self._problem.camera_model, params, in_camera[sel]
-                )
+        for g, sel in self._members:
+            d_point[sel], d_intrinsics[sel] = camera.project_jacobians(
+                self._problem.camera_model, state.intrinsics[g], in_camera[sel]
+            )
         scale = self._sqrt_w[:, None, None]
         j_world = scale * np.einsum("mij,mjk->mik", d_point, state.poses[self._cam, :3, :3])
         rotation_part = -np.einsum("mij,mjk->mik", j_world, so3.hat(world[self._pt]))
@@ -381,7 +464,12 @@ class Bundle:
         )
 
     def linearize(self, state: State, weights: Array) -> SchurSystem:
-        """Form the normal equations at ``state`` and eliminate the points."""
+        """Form the normal equations at ``state`` and eliminate the points.
+
+        ``weights`` are the IRLS weights, one per block in :meth:`squared_norms` order. The
+        camera-side system is over the full vector (poses, intrinsics, affines); the
+        :class:`SchurSystem` reduces it to the free coordinates.
+        """
         kinds = self.kinds(state)
         n_free = self._real.shape[0] // 3
         hessian_cc = np.zeros((self._full_size, self._full_size))
@@ -389,48 +477,37 @@ class Bundle:
         hessian_pp = np.zeros((n_free, 3, 3))
         gradient_p = np.zeros((n_free, 3))
         width = max(k.columns.shape[1] for k in kinds if k.point is not None)
-        coupling, columns, slots = [], [], []
+        couplings = []
         splits = np.cumsum([k.residuals.shape[0] for k in kinds])[:-1]
         for kind, w in zip(kinds, np.split(weights, splits), strict=True):
             weighted_c = kind.camera_side * w[:, None, None]
-            np.add.at(
-                hessian_cc,
-                (kind.columns[:, :, None], kind.columns[:, None, :]),
-                np.einsum("mki,mkj->mij", weighted_c, kind.camera_side),
-            )
-            np.add.at(gradient_c, kind.columns, np.einsum("mki,mk->mi", weighted_c, kind.residuals))
-            if kind.point is None:
-                continue
-            on = kind.slots >= 0
-            weighted_p = kind.point[on] * w[on, None, None]
-            np.add.at(
-                hessian_pp, kind.slots[on], np.einsum("mki,mkj->mij", weighted_p, kind.point[on])
-            )
-            np.add.at(
-                gradient_p, kind.slots[on], np.einsum("mki,mk->mi", weighted_p, kind.residuals[on])
-            )
-            pad = width - kind.columns.shape[1]
-            block = np.einsum("mki,mkj->mij", weighted_c[on], kind.point[on])
-            coupling.append(np.pad(block, ((0, 0), (0, pad), (0, 0))))
-            columns.append(np.pad(kind.columns[on], ((0, 0), (0, pad))))
-            slots.append(kind.slots[on])
+            _add_camera(kind, weighted_c, hessian_cc, gradient_c)
+            if kind.point is not None:
+                _add_point(kind, kind.point, w, hessian_pp, gradient_p)
+                couplings.append(_coupling(kind, kind.point, weighted_c, width))
         # An anchored point's two unused dimensions: inert, so their step is exactly zero.
         hessian_pp[self._anchored_slots, 1, 1] = 1.0
         hessian_pp[self._anchored_slots, 2, 2] = 1.0
+        coupling, columns, slots = (np.concatenate(part) for part in zip(*couplings, strict=True))
         blocks = Blocks(
             hessian_cc=hessian_cc,
             gradient_c=gradient_c,
             hessian_pp=hessian_pp,
             gradient_p=gradient_p,
-            coupling=np.concatenate(coupling),
-            columns=np.concatenate(columns),
-            slots=np.concatenate(slots),
+            coupling=coupling,
+            columns=columns,
+            slots=slots,
             real=self._real,
         )
         return SchurSystem(self.reduction(state), blocks, self._solver)
 
     def retract(self, state: State, delta: Array) -> State:
-        """Apply a step in the free coordinates."""
+        """Apply a step in the free coordinates.
+
+        ``delta`` holds the reduced camera-side step (:meth:`reduction`), then each free
+        point's real coordinates (xyz, or ρ for an anchored point). Poses move by
+        ``T exp(δ)`` (right perturbation); everything else adds.
+        """
         reduction = self.reduction(state)
         full = reduction.expand(delta[: reduction.size])
         n_cams = state.poses.shape[0]
@@ -454,6 +531,47 @@ class Bundle:
         free_anchored = self._a_points[slot[self._a_points] >= 0]
         inverse_depth[free_anchored] += step[slot[free_anchored], 0]
         return State(poses, intrinsics, points, affine, inverse_depth)
+
+
+def _add_camera(kind: Kind, weighted_c: Array, hessian_cc: Array, gradient_c: Array) -> None:
+    """Add a kind's camera-side blocks ``J_cᵀ W J_c`` and ``J_cᵀ W r`` in place."""
+    np.add.at(
+        hessian_cc,
+        (kind.columns[:, :, None], kind.columns[:, None, :]),
+        np.einsum("mki,mkj->mij", weighted_c, kind.camera_side),
+    )
+    np.add.at(gradient_c, kind.columns, np.einsum("mki,mk->mi", weighted_c, kind.residuals))
+
+
+def _add_point(
+    kind: Kind, point: Array, weights: Array, hessian_pp: Array, gradient_p: Array
+) -> None:
+    """Add a kind's point blocks ``J_pᵀ W J_p`` and ``J_pᵀ W r`` per free point, in place.
+
+    ``point`` is the kind's point Jacobian, ``kind.point``, known to be present.
+    """
+    on = kind.slots >= 0
+    weighted_p = point[on] * weights[on, None, None]
+    np.add.at(hessian_pp, kind.slots[on], np.einsum("mki,mkj->mij", weighted_p, point[on]))
+    np.add.at(gradient_p, kind.slots[on], np.einsum("mki,mk->mi", weighted_p, kind.residuals[on]))
+
+
+def _coupling(
+    kind: Kind, point: Array, weighted_c: Array, width: int
+) -> tuple[Array, IndexArray, IndexArray]:
+    """Return a kind's coupling blocks ``J_cᵀ W J_p``, columns and slots on free points.
+
+    The columns are padded to ``width``, the widest kind's, so all kinds stack; padded
+    columns carry zero blocks. ``point`` is ``kind.point``, known to be present.
+    """
+    on = kind.slots >= 0
+    pad = width - kind.columns.shape[1]
+    block = np.einsum("mki,mkj->mij", weighted_c[on], point[on])
+    return (
+        np.pad(block, ((0, 0), (0, pad), (0, 0))),
+        np.pad(kind.columns[on], ((0, 0), (0, pad))),
+        kind.slots[on],
+    )
 
 
 def centres(t_cam_world: Array) -> Array:

@@ -74,7 +74,8 @@ def compare(directory: Path, refine: str, loss: nls.Loss, iterations: int) -> st
         f"{np.count_nonzero(front & ~colmap_front):>5} {rms(problem, used):>8.4f} "
         f"{ours_rms:>8.4f} {colmap_rms:>8.4f} {ours_rms - colmap_rms:>+9.2e} "
         f"{ours.summary.solve.iterations:>4} {ours.summary.solve.termination:>14} "
-        f"{ours.summary.unobservable_focal:>3} {ours.intrinsics_std[0, 0]:>8.2f} "
+        f"{ours.summary.unobservable_focal:>3} {np.sqrt(ours.summary.variance_factor):>6.3f} "
+        f"{ours.intrinsics_std[0, 0]:>8.2f} "
         f"{ours.intrinsics[0, 0]:>8.2f} {reference.intrinsics[0, 0]:>8.2f} "
         f"{ours_seconds:>6.2f} {reference.seconds:>6.2f}"
     )
@@ -93,12 +94,14 @@ def main() -> None:
     print(
         f"refine: {args.refine}; loss: {loss.kind} (scale {loss.scale}). RMS in px over the "
         "observations in front at the start and in both results; bhnd0 counts observations "
-        "behind their camera at the start, b-our and b-col those each solver pushed behind"
+        "behind their camera at the start, b-our and b-col those each solver pushed behind; "
+        "s0 is the a-posteriori noise in px, which sigma_f is scaled by"
     )
     print(
         f"{'model':<16} {'imgs':>4} {'points':>6} {'bhnd0':>5} {'b-our':>5} {'b-col':>5} "
         f"{'start':>8} {'slamlab':>8} {'colmap':>8} {'diff':>9} {'its':>4} {'termination':>14} "
-        f"{'unf':>3} {'sigma_f':>8} {'f ours':>8} {'f colmap':>8} {'t ours':>6} {'t col':>6}"
+        f"{'unf':>3} {'s0':>6} {'sigma_f':>8} {'f ours':>8} {'f colmap':>8} "
+        f"{'t ours':>6} {'t col':>6}"
     )
     for spec in args.models:
         name, _, path = spec.rpartition("=")
