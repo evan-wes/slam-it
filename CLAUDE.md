@@ -28,15 +28,24 @@ structure.
   `.eval`, `.orchestration`. Each package docstring states its rung, milestone and compute
   budget. The import-linter contracts in `pyproject.toml` enforce the ladder's layers,
   sibling independence, no PyTorch on CPU rungs, and no depth-model imports.
-- C++ mirrors it in directories and namespaces (`cpp/src/foundations/`,
-  `slamlab::foundations`); Rust in modules (`slamlab_core::foundations::so3`). The extension
-  submodules mirror it too (`slamlab._cpp.foundations.so3`, `slamlab_rs.foundations.so3`).
+- C++ mirrors it with one library per rung (`slamlab_foundations`, from `cpp/src/foundations/`,
+  namespace `slamlab::foundations`); Rust with one crate per rung (`slamlab-foundations`).
+  `scripts/check_layers.py` holds C++ includes, CMake links and crate dependencies to the
+  same contracts. Bindings are one file per module (`cpp/bindings/<rung>/<module>.cpp`,
+  `rust/slamlab-py/src/<rung>/<module>.rs`), and the extension submodules mirror the tree
+  (`slamlab._cpp.foundations.so3`, `slamlab_rs.foundations.so3`).
+- **Binding boundary:** bindings take and return float64 numpy arrays (nanobind `ndarray`,
+  the Rust `numpy` crate); the cores stay numpy-free and take arrays, spans or slices.
+- **Error contract:** fallible core functions return C++23 `std::expected<T, Error>` /
+  Rust `Result<T, Error>` with one shared kind list (InvalidInput, Degenerate,
+  NotConverged); Python raises the matching `slamlab.foundations.errors` exception.
 - **Each algorithm validates its input once** (shared checks in
   `slamlab.foundations.arrays`), then computes with the Python reference or dispatches via
   its `backend=` argument. `slamlab.backends` only locates compiled implementations.
 - Every C++/Rust implementation has a Python reference, a parity fixture in
-  `tests/fixtures/<rung>/` that states its tolerance policy, and a Protocol that the
-  extension submodule is tested against. Bindings only convert types; algorithms live in
+  `tests/fixtures/<rung>/` that states its tolerance policy (applied by
+  `tests/conftest.assert_matches_fixture`), and an `Implementation` Protocol in its Python
+  module that `tests/test_backends.py` checks every extension submodule against. Bindings only convert types; algorithms live in
   the cores, which build without Python.
 - Tests mirror the packages (`tests/foundations/`, `cpp/tests/foundations/`). Mark tests
   that need a GPU or a compute budget with `@pytest.mark.gpu` / `@pytest.mark.budget`;

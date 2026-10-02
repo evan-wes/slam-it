@@ -36,9 +36,22 @@ with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
   - A PR template whose "How this was built" section records the agentic workflow.
   - A project `CLAUDE.md` with the conventions, layout, review rules and merge rule.
 
-- **The panel's first run reviewed this change** (`docs/reviews/2026-10-02-feature-review-panel.md`):
-  31 findings, 1 of them must-fix. The owner chose to resolve all of them here, so the first
-  version satisfies all three reviewers. The changes below are that work.
+- **The panel reviewed this change twice** (`docs/reviews/2026-10-02-feature-review-panel.md`).
+  Run 1 found 31 findings, 1 of them must-fix; run 2 found 19 more, none must-fix. The owner
+  chose to resolve all of them here, so the first version satisfies all three reviewers. The
+  changes below are that work.
+
+- **C++ and Rust enforce the ladder too.**
+  - One C++ library per rung (`slamlab_foundations`) and one Rust crate per rung
+    (`slamlab-foundations`, previously `slamlab-core`).
+  - `scripts/check_layers.py` reads import-linter's contracts from `pyproject.toml` and
+    fails layer 1 on a forbidden cross-rung `#include`, CMake link or crate dependency.
+
+- **An error contract shared by the three languages.**
+  - C++23 `std::expected<T, Error>` and Rust `Result<T, Error>`, with one list of kinds:
+    `InvalidInput`, `Degenerate` and `NotConverged`.
+  - Python raises the matching exception from `slamlab.foundations.errors`. `as_vec3` now
+    raises `InvalidInputError`.
 
 ### Changed
 
@@ -52,23 +65,32 @@ with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
     so names never collide across rungs.
   - Import-linter contracts now cover whole packages:
     - the ladder's layers, with independent sibling branches;
-    - visual-inertial builds only on edge;
-    - no PyTorch or GPU stack on the CPU rungs;
+    - visual-inertial builds only on edge, and learned only on dense;
+    - the layers contract is exhaustive, so a new top-level package must be placed;
+    - no PyTorch, GPU stack or torch-based geometry library on the CPU rungs;
     - no depth-model imports in any algorithm package;
     - slamlab never imports reifyscene.
+
+- **Bindings take and return float64 numpy arrays** (nanobind `ndarray`, the Rust `numpy`
+  crate), so batched data will cross without per-element Python objects. They are one file
+  per module, with thin roots that only wire the rungs.
 
 - **Dispatch moved next to each algorithm.**
   - `slamlab.foundations.so3.hat(v, backend=...)` validates once, then computes with the
     Python reference or calls the chosen extension.
   - `slamlab.backends` now only locates compiled implementations. It reports an installed
     extension that fails to load with its real error, not as "not built".
-  - Each algorithm types its compiled backend with a Protocol, which a test checks every
-    extension submodule against. This replaces the mypy exemption for the extensions.
+  - Each algorithm module types its compiled backend with an `Implementation` Protocol. One
+    generic test walks every extension submodule and checks its functions and parameter
+    names against it. This replaces the mypy exemption for the extensions.
 
 - **Stricter input validation.** `slamlab.foundations.arrays.as_vec3` rejects booleans,
-  complex numbers, strings and `None`, as well as NaN and infinity, instead of coercing them.
+  complex numbers, strings, `None` and masked arrays, as well as NaN and infinity, instead of
+  coercing them.
 
 - **Parity fixtures state their tolerance policy.**
+  - `tests/conftest.assert_matches_fixture` applies the policy. An exact policy also
+    compares the sign of zeros.
   - `hat`'s fixture is compared exactly, and includes values not representable in float32
     (0.1, 1/3, 1e-300), so a float32 backend now fails.
   - The native C++ and Rust tests pin every matrix entry with the basis vectors, and check
@@ -86,7 +108,7 @@ with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 - **Scaffold brought up to the standard.**
   - Numpy-style docstrings, Doxygen and rustdoc throughout.
   - Docstring examples run as tests.
-  - Python tests: 14 -> 70.
+  - Python tests: 14 -> 87.
 
 ## [0.1.1.0] - 2026-10-02
 

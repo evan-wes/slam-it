@@ -52,10 +52,11 @@ mapfile -t CPP_FILES < <(git ls-files --cached --others --exclude-standard 'cpp/
 mapfile -t CPP_TU < <(git ls-files --cached --others --exclude-standard 'cpp/src/*.cpp' 'cpp/tests/*.cpp')
 
 # Python
-check "ruff lint (numpy docstrings, type hints, style)" ruff check src tests
-check "ruff format" ruff format --check src tests
+check "ruff lint (numpy docstrings, type hints, style)" ruff check src tests scripts
+check "ruff format" ruff format --check src tests scripts
 check "mypy --strict" mypy
 check "import-linter (dependency rules)" lint-imports
+check "C++/Rust layering (same contracts)" python scripts/check_layers.py
 
 # C++
 check "clang-format" clang-format --dry-run --Werror "${CPP_FILES[@]}"
@@ -70,7 +71,7 @@ check "C++ tests (ctest)" ctest --test-dir build/native --output-on-failure
 check "rustfmt" cargo fmt --manifest-path rust/Cargo.toml --all --check
 check "clippy (pedantic, missing docs)" \
   cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets
-check "Rust tests" cargo test --manifest-path rust/Cargo.toml -p slamlab-core
+check "Rust tests" cargo test --manifest-path rust/Cargo.toml -p slamlab-foundations
 
 # All languages
 check "jscpd (duplication)" jscpd --config .jscpd.json

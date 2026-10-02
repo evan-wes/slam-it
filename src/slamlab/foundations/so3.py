@@ -20,15 +20,17 @@ from slamlab import backends
 from slamlab.foundations.arrays import as_vec3
 
 
-class _Implementation(Protocol):
+class Implementation(Protocol):
     """The functions a compiled backend's ``foundations.so3`` submodule provides.
 
-    Bindings take and return plain nested lists (no numpy dependency in the cores).
-    ``tests/foundations/test_so3.py`` checks each compiled submodule against this.
+    The convention for every algorithm module: its compiled implementations are typed by
+    a Protocol named ``Implementation``. Bindings take and return float64 numpy arrays
+    (the cores themselves stay numpy-free). ``tests/test_backends.py`` checks every
+    extension submodule against its module's ``Implementation``.
     """
 
-    def hat(self, v: list[float]) -> list[list[float]]:
-        """Map a 3-vector to its skew-symmetric matrix, as row-major nested lists."""
+    def hat(self, v: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Map a contiguous float64 3-vector to a new (3, 3) float64 array."""
         ...
 
 
@@ -55,8 +57,10 @@ def hat(
 
     Raises
     ------
+    slamlab.foundations.errors.InvalidInputError
+        If `v` is not a finite real 3-vector.
     ValueError
-        If `v` is not a finite real 3-vector, or `backend` is unknown.
+        If `backend` is unknown.
     slamlab.backends.BackendNotBuiltError
         If a compiled `backend` is not built in this environment.
 
@@ -78,5 +82,5 @@ def hat(
                 [-y, x, 0.0],
             ]
         )
-    impl = cast(_Implementation, backends.implementation(backend, __name__))
-    return np.asarray(impl.hat(vec.tolist()), dtype=np.float64)
+    impl = cast(Implementation, backends.implementation(backend, __name__))
+    return impl.hat(vec)

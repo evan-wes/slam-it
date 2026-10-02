@@ -85,6 +85,26 @@ under editable installs.
 C++ and Rust sources also build standalone (CMake, cargo) without Python, for the edge budgets
 and a possible later phone target.
 
+**The binding boundary is numpy arrays.**
+- Bindings take and return float64 C-contiguous numpy arrays: nanobind's `ndarray` and the
+  Rust `numpy` crate.
+- The cores stay numpy-free, taking fixed-size arrays, spans or slices.
+- Batched data therefore crosses the boundary without per-element Python objects, so the
+  "same algorithm, three languages" comparison measures the algorithms, not marshalling.
+
+**The error contract is one shape in every language.**
+- Fallible core functions return a C++23 `std::expected<T, slamlab::foundations::Error>` or
+  a Rust `Result<T, slamlab_foundations::error::Error>`. Nothing throws on the cores' hot
+  paths.
+- Both share one list of error kinds:
+  - `InvalidInput`: shape, range or finiteness;
+  - `Degenerate`: pure rotation, collinear points, too few correspondences;
+  - `NotConverged`: an iteration cap reached.
+- The bindings raise the Python exception of the same kind, from `slamlab.foundations.errors`
+  (`InvalidInputError`, `DegenerateError`, `NotConvergedError`, all `ValueError`
+  subclasses). The Python reference raises the same ones, so every language fails the same
+  way. The binding translation helper arrives with the first fallible function.
+
 ## Package layout
 
 **One package per rung,** mirrored in every language, so a module's place in the ladder is
@@ -92,19 +112,27 @@ visible from its path and enforceable by contract.
 
 | Python package | C++ | Rust | Rung |
 |---|---|---|---|
-| `slamlab.foundations` | `cpp/src/foundations/`, `slamlab::foundations` | `slamlab_core::foundations` | Rung 0 |
-| `slamlab.edge` | `cpp/src/edge/` | `slamlab_core::edge` | Edge VO |
-| `slamlab.vi` | `cpp/src/vi/` | -- | Visual-inertial |
-| `slamlab.classic` | `cpp/src/classic/` | -- | Classic heavy |
+| `slamlab.foundations` | library `slamlab_foundations`, `slamlab::foundations` | crate `slamlab-foundations` | Rung 0 |
+| `slamlab.edge` | library `slamlab_edge` | crate `slamlab-edge` | Edge VO |
+| `slamlab.vi` | library `slamlab_vi` | -- | Visual-inertial |
+| `slamlab.classic` | library `slamlab_classic` | -- | Classic heavy |
 | `slamlab.dense` | -- | -- | Dense BA + depth prior |
 | `slamlab.learned` | -- | -- | DROID- and MegaSaM-style |
 | `slamlab.eval` | -- | -- | Metrics, benchmarks, budget harness |
 | `slamlab.orchestration` | -- | -- | End-to-end pipelines |
 
 Packages for rungs that have no code yet are stubs: a docstring stating the rung, its
-milestone and its compute budget. C++ and Rust directories appear as each rung gets code.
-The extension submodules mirror the tree: `slamlab._cpp.foundations.so3` and
-`slamlab_rs.foundations.so3` implement `slamlab.foundations.so3`.
+milestone and its compute budget. C++ libraries and Rust crates appear as each rung gets
+code. The extension submodules mirror the tree: `slamlab._cpp.foundations.so3` and
+`slamlab_rs.foundations.so3` implement `slamlab.foundations.so3`. Bindings are one file per
+module (`cpp/bindings/<rung>/<module>.cpp`, `rust/slamlab-py/src/<rung>/<module>.rs`), with
+thin roots that only wire them.
+
+**Shared interface types** live in rung 0, so every rung can use them:
+- `SlamInput`, `SlamResult` and the depth-provider Protocol (needed by both the edge rung's
+  RGB-D mode and the dense rung, which are independent siblings) go in
+  `slamlab.foundations.interfaces`, created with the first rung that needs them;
+- the error classes are in `slamlab.foundations.errors`.
 
 **Dispatch.**
 - Each public algorithm validates its input once, using the shared checks in
@@ -113,19 +141,33 @@ The extension submodules mirror the tree: `slamlab._cpp.foundations.so3` and
   `backend=` argument.
 - `slamlab.backends` only locates compiled implementations and never knows what they
   compute.
-- Each algorithm types its compiled backend with a Protocol. A test checks every extension
-  submodule against that Protocol, and the parity tests check the values.
+- Each algorithm module types its compiled backend with a Protocol named `Implementation`. One
+  generic test walks every extension submodule and checks it against the `Implementation`
+  of the slamlab module at the same path: same functions, same parameter names. The parity
+  tests check the values.
 
 **Dependency contracts** (import-linter, `pyproject.toml`):
 - **Layers,** top to bottom: `orchestration`, `eval`, `learned | vi`,
   `dense | edge | classic`, `foundations`, `backends`. Siblings joined by `|` are independent
-  of each other.
-- **Visual-inertial** builds on `edge` only.
+  of each other. The contract is exhaustive: a new top-level package fails until it is
+  placed.
+- **Visual-inertial** builds on `edge` only; **learned** builds on `dense` only.
 - **CPU rungs** (`foundations`, `edge`, `vi`, `backends`) never import PyTorch or a GPU
-  stack.
+  stack, including torch-based geometry libraries (lietorch, pypose, kornia, theseus), which
+  are banned by name because import-linter cannot see through them. PyTorch only ever goes
+  in an optional extra, never in `dependencies`.
 - **No algorithm package imports a depth model.** Depth models are inputs through a
   provider interface.
 - **slamlab never imports reifyscene.**
+
+**The same layering holds in C++ and Rust.** Each rung is its own C++ library and Rust
+crate, so a rung can only link what it declares. `scripts/check_layers.py` reads the
+contracts above from `pyproject.toml` and fails layer 1 on:
+- a cross-rung `#include` that the contracts forbid;
+- a forbidden `slamlab_add_rung(... DEPENDS ...)` link;
+- a forbidden crate dependency.
+
+The three languages therefore share one source of truth.
 
 ## Milestones
 

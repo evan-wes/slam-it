@@ -1,42 +1,22 @@
-//! The `slamlab_rs` Python module: thin `PyO3` wrappers over `slamlab-core`.
+//! The `slamlab_rs` Python module: thin `PyO3` wrappers over the per-rung Rust crates.
 //!
-//! Submodules mirror the Python package tree (`slamlab_rs.foundations.so3` implements
-//! `slamlab.foundations.so3`), so names never collide across rungs. Wrappers only convert
-//! types; the algorithms live in `slamlab-core`, which builds without Python, and the Python
-//! entry points validate input before calling.
+//! One file per bound module, mirroring the Python package tree (`src/foundations/so3.rs`
+//! binds `slamlab.foundations.so3` as `slamlab_rs.foundations.so3`), so no file grows with
+//! every rung. This root only wires the rung modules. Bindings only convert types: float64
+//! numpy arrays in and out, plain slices and arrays into the cores. The Python entry points
+//! validate input before calling.
 
 use pyo3::prelude::*;
 
-/// The `slamlab_rs` module.
+mod foundations;
+
+/// Registers the rung submodules.
+///
+/// # Errors
+///
+/// Returns a Python error if a submodule cannot be added.
 #[pymodule]
-mod slamlab_rs {
-    use pyo3::prelude::*;
-
-    /// Rung 0, foundations.
-    #[pymodule]
-    mod foundations {
-        use pyo3::prelude::*;
-
-        /// SO(3), the group of 3D rotations.
-        #[pymodule]
-        mod so3 {
-            use pyo3::prelude::*;
-
-            /// Maps a 3-vector to its skew-symmetric matrix, returned as nested lists.
-            ///
-            /// # Arguments
-            ///
-            /// * `v` - The vector to map. `PyO3` raises `ValueError` for a sequence of the
-            ///   wrong length and `TypeError` for non-numeric elements; the Python entry
-            ///   point validates first, so these only reach direct callers.
-            ///
-            /// # Returns
-            ///
-            /// The skew-symmetric matrix `[v]x`, row-major.
-            #[pyfunction]
-            fn hat(v: [f64; 3]) -> [[f64; 3]; 3] {
-                slamlab_core::foundations::so3::hat(v)
-            }
-        }
-    }
+fn slamlab_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_wrapped(pyo3::wrap_pymodule!(foundations::foundations))?;
+    Ok(())
 }

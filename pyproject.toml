@@ -78,7 +78,7 @@ convention = "numpy"
 [tool.mypy]
 strict = true
 python_version = "3.11"
-files = ["src/slamlab", "tests"]
+files = ["src/slamlab", "tests", "scripts"]
 # The compiled extensions are never imported by name: slamlab.backends locates them
 # dynamically, and each algorithm types its backend through a Protocol (e.g.
 # slamlab.foundations.so3._Implementation) that tests check the extensions against.
@@ -88,17 +88,21 @@ root_packages = ["slamlab"]
 include_external_packages = true
 
 # The ladder as dependency layers, top to bottom. Siblings joined by `|` are independent:
-# neither may import the other. Every module inside a package is covered automatically.
+# neither may import the other. Every module inside a package is covered automatically, and
+# the contract is exhaustive: a new top-level package fails until it is given a layer.
+# scripts/check_layers.py reads this same list to check the C++ includes and Rust crates.
 [[tool.importlinter.contracts]]
 name = "The ladder's layers (and independent sibling branches)"
 type = "layers"
+containers = ["slamlab"]
+exhaustive = true
 layers = [
-  "slamlab.orchestration",
-  "slamlab.eval",
-  "slamlab.learned | slamlab.vi",
-  "slamlab.dense | slamlab.edge | slamlab.classic",
-  "slamlab.foundations",
-  "slamlab.backends",
+  "orchestration",
+  "eval",
+  "learned | vi",
+  "dense | edge | classic",
+  "foundations",
+  "backends",
 ]
 
 [[tool.importlinter.contracts]]
@@ -108,10 +112,21 @@ source_modules = ["slamlab.vi"]
 forbidden_modules = ["slamlab.dense", "slamlab.classic"]
 
 [[tool.importlinter.contracts]]
+name = "Learned builds on dense only, not edge or classic"
+type = "forbidden"
+source_modules = ["slamlab.learned"]
+forbidden_modules = ["slamlab.edge", "slamlab.classic"]
+
+# import-linter sees external packages as leaves, so a library that imports torch internally
+# is banned by name. torch itself only ever goes in an optional extra, never `dependencies`.
+[[tool.importlinter.contracts]]
 name = "CPU rungs never import PyTorch or a GPU stack (edge compute budgets)"
 type = "forbidden"
 source_modules = ["slamlab.foundations", "slamlab.edge", "slamlab.vi", "slamlab.backends"]
-forbidden_modules = ["torch", "torchvision", "cupy", "jax"]
+forbidden_modules = [
+  "torch", "torchvision", "cupy", "jax",
+  "lietorch", "pypose", "kornia", "theseus",
+]
 
 [[tool.importlinter.contracts]]
 name = "Depth models are inputs through a provider interface, never imported by algorithms"

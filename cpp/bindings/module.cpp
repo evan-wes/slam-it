@@ -1,21 +1,15 @@
 /// @file
-/// @brief The `slamlab._cpp` Python module: thin nanobind wrappers over the C++ core.
+/// @brief The `slamlab._cpp` Python module's root: wires one submodule per rung.
 ///
-/// Submodules mirror the Python package tree (`slamlab._cpp.foundations.so3` implements
-/// `slamlab.foundations.so3`), so names never collide across rungs. Bindings only convert
-/// types: they take and return nested lists, and the Python entry points validate input.
+/// Each rung's bindings live in `cpp/bindings/<rung>/`, one file per bound module, mirroring
+/// the Python package tree, so no file grows with every rung. Bindings only convert types:
+/// float64 numpy arrays in and out, plain arrays and spans into the cores. The Python entry
+/// points validate input before calling.
 #include <nanobind/nanobind.h>
-#include <nanobind/stl/array.h>
 
-#include "slamlab/foundations/so3.hpp"
-
-namespace nb = nanobind;
+#include "foundations/foundations.hpp"
 
 NB_MODULE(_cpp, m) {
   m.doc() = "slamlab's C++ core. Submodules mirror the slamlab package tree.";
-
-  nb::module_ foundations = m.def_submodule("foundations", "Rung 0, foundations.");
-  nb::module_ so3 = foundations.def_submodule("so3", "SO(3), the group of 3D rotations.");
-  so3.def("hat", &slamlab::foundations::hat, nb::arg("v"),
-          "Map a 3-vector to its skew-symmetric matrix, as row-major nested lists.");
+  slamlab::bindings::bind_foundations(m);
 }

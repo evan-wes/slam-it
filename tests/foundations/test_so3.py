@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
-import re
 from collections.abc import Sequence
 from typing import Any, cast
 
@@ -12,26 +10,34 @@ import pytest
 
 from slamlab import backends
 from slamlab.foundations import so3
-from tests.conftest import load_fixture, require_backend
+from slamlab.foundations.errors import InvalidInputError
+from tests.conftest import assert_matches_fixture, load_fixture, require_backend
 
 HAT = load_fixture("foundations/so3_hat.json")
-CROSS_TOLERANCE_ULPS = 4.0
-"""hat(v) @ u and np.cross(v, u) sum the same products in a different order; allow a few
-units in the last place of the largest term."""
+CROSS_TOLERANCE_EPS = 4.0
+"""Tolerance, in units of eps * max|v| * max|u|, between ``hat(v) @ u`` and ``np.cross``.
+
+The BLAS matmul may fuse a multiply-add (FMA), so it rounds differently from np.cross.
+To first order each is within 4u * max|v| * max|u| of the exact value (u = eps / 2: two
+rounded products and one rounded sum), so they differ by at most 4 eps * max|v| * max|u|.
+"""
 
 
 def test_fixture_declares_exact_comparison() -> None:
-    """The hat fixture's tolerance policy is exact, matching how the parity test compares."""
-    assert HAT["tolerance"] == {**HAT["tolerance"], "comparison": "exact", "rtol": 0.0, "atol": 0.0}
+    """The fixture compares exactly, since hat only copies and negates."""
+    assert HAT["tolerance"]["comparison"] == "exact"
+    assert HAT["tolerance"]["rtol"] == 0.0
+    assert HAT["tolerance"]["atol"] == 0.0
 
 
 @pytest.mark.parametrize("name", backends.BACKENDS)
 @pytest.mark.parametrize("case", HAT["cases"], ids=lambda c: str(c["v"]))
-def test_hat_matches_fixture_exactly(name: str, case: dict[str, Any]) -> None:
-    """Each backend's hat equals the fixture bit for bit (a float32 backend would fail)."""
+def test_hat_matches_fixture(name: str, case: dict[str, Any]) -> None:
+    """Each backend's hat matches the fixture under its policy (a float32 backend fails)."""
     got = so3.hat(case["v"], backend=require_backend(name))
     assert got.dtype == np.float64
-    np.testing.assert_array_equal(got, case["expected"])
+    assert got.shape == (3, 3)
+    assert_matches_fixture(got, case["expected"], HAT["tolerance"])
 
 
 @pytest.mark.parametrize("name", backends.BACKENDS)
@@ -58,7 +64,7 @@ def test_hat_is_skew_symmetric_and_the_cross_product(name: str) -> None:
         h = so3.hat(v, backend=backend)
         np.testing.assert_array_equal(h.T, -h)
         scale = np.abs(v).max() * np.abs(u).max()
-        atol = CROSS_TOLERANCE_ULPS * np.finfo(np.float64).eps * scale
+        atol = CROSS_TOLERANCE_EPS * np.finfo(np.float64).eps * scale
         np.testing.assert_allclose(h @ u, np.cross(v, u), rtol=0.0, atol=atol)
 
 
@@ -73,14 +79,15 @@ BAD_INPUTS: list[tuple[object, str]] = [
     ([np.nan, 0.0, 0.0], "finite"),
     ([0.0, np.inf, 0.0], "finite"),
     ([0.0, 0.0, -np.inf], "finite"),
+    (np.ma.array([1.0, 2.0, 3.0], mask=[False, True, False]), "masked"),
 ]
 
 
 @pytest.mark.parametrize("name", backends.BACKENDS)
 @pytest.mark.parametrize(("bad", "message"), BAD_INPUTS, ids=lambda x: repr(x)[:24])
 def test_hat_rejects_invalid_input(name: str, bad: object, message: str) -> None:
-    """Every backend rejects non-numeric, non-finite and wrongly shaped input the same way."""
-    with pytest.raises(ValueError, match=message):
+    """Every backend rejects bad input the same way, with InvalidInputError."""
+    with pytest.raises(InvalidInputError, match=message):
         # Deliberately the wrong type: hat must reject it at runtime.
         so3.hat(cast("Sequence[float]", bad), backend=require_backend(name))
 
@@ -90,34 +97,18 @@ def test_hat_accepts_integers() -> None:
     np.testing.assert_array_equal(so3.hat([1, 2, 3]), so3.hat([1.0, 2.0, 3.0]))
 
 
-@pytest.mark.parametrize("name", ["cpp", "rust"])
-def test_compiled_module_matches_the_protocol(name: str) -> None:
-    """Each compiled foundations.so3 provides the Protocol's functions with its parameters.
-
-    Types are checked at runtime by the parity tests; this catches a missing function or a
-    renamed or added parameter, which mypy cannot see through the dynamic lookup.
-    """
-    impl = backends.implementation(require_backend(name), so3.__name__)
-    protocol_members = [m for m in vars(so3._Implementation) if not m.startswith("_")]
-    for member in protocol_members:
-        expected = [
-            p
-            for p in inspect.signature(getattr(so3._Implementation, member)).parameters
-            if p != "self"
-        ]
-        assert hasattr(impl, member), f"{name} lacks {member}"
-        assert _parameter_names(getattr(impl, member)) == expected
+def test_hat_rejects_an_unknown_backend() -> None:
+    """An unknown backend name raises ValueError before any work is done."""
+    with pytest.raises(ValueError, match="unknown backend"):
+        so3.hat([1.0, 2.0, 3.0], backend="fortran")
 
 
-def _parameter_names(func: object) -> list[str]:
-    """Return a compiled function's parameter names from its nanobind or PyO3 signature."""
-    nb_signature = getattr(func, "__nb_signature__", None)
-    if nb_signature:
-        text = nb_signature[0][0]
-    else:
-        text_signature = getattr(func, "__text_signature__", None)
-        assert text_signature is not None, f"{func!r} exposes no signature"
-        text = f"def f{text_signature}"
-    params = re.search(r"\((.*?)\)", text)
-    assert params is not None, text
-    return [p.split(":")[0].split("=")[0].strip() for p in params.group(1).split(",") if p.strip()]
+def test_hat_reports_an_unbuilt_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Asking hat for a backend whose extension is absent raises BackendNotBuiltError."""
+
+    def absent(backend: str, module_name: str) -> object:
+        raise backends.BackendNotBuiltError(f"backend {backend!r} is not built")
+
+    monkeypatch.setattr(backends, "implementation", absent)
+    with pytest.raises(backends.BackendNotBuiltError, match="not built"):
+        so3.hat([1.0, 2.0, 3.0], backend="cpp")

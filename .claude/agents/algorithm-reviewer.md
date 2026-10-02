@@ -43,7 +43,8 @@ where the field is now**.
     (Vision Algorithms 1999).
   - **Evaluation:** Umeyama, least-squares alignment (TPAMI 1991); Sturm et al., "A Benchmark
     for the Evaluation of RGB-D SLAM Systems" (IROS 2012), for ATE and RPE.
-  - **Edge VO and loop closure (milestones 2, 4):** the ORB-SLAM papers (Mur-Artal et al.);
+  - **Edge VO and loop closure (milestones 2, 4):** ORB-SLAM and ORB-SLAM2 (Mur-Artal et al.,
+    T-RO 2015 and 2017), ORB-SLAM3 (Campos et al., T-RO 2021);
     Gálvez-López & Tardós, "Bags of Binary Words" (T-RO 2012); Teed, Lipson & Deng, "Deep
     Patch Visual Odometry" (NeurIPS 2023) as learned-edge context.
   - **Visual-inertial (milestone 6):** Forster et al., "On-Manifold Preintegration" (T-RO 2017).
@@ -56,7 +57,8 @@ where the field is now**.
   left vs right perturbations, active vs passive rotations, Hamilton vs JPL quaternions,
   row- vs column-major, pixel-centre conventions.
 - Quaternion double cover: `q` and `-q` are the same rotation; parity checks must compare
-  them as equal. `log` returns angles in [0, pi].
+  them as equal. `log` returns angles in [0, pi]; at exactly pi the axis is ambiguous up to
+  sign, so parity checks must accept either `omega` or `-omega` there.
 - Derivatives: analytic Jacobians match numeric differentiation. Check one when in doubt
   and include the command and output as evidence. Left and right Jacobians of SO(3)/SE(3)
   have small-angle forms that must be used near zero (Barfoot; Solà et al.).
@@ -79,8 +81,10 @@ where the field is now**.
   reference implementation or published numbers.
 - Edge and degenerate cases above are tested, not only the happy path.
 - Cross-language parity fixtures cover the numerically hard cases, not only easy ones, and
-  each fixture states its tolerance policy (`comparison`, `rtol`, `atol`, `reason`). Tests
-  pass `rtol` explicitly: numpy's default `rtol=1e-7` silently hides a float32 backend.
+  each fixture states its tolerance policy (`comparison`, `rtol`, `atol`, `reason`), applied
+  by `tests/conftest.assert_matches_fixture` (an exact policy also compares the sign of
+  zeros). Tests pass `rtol` explicitly: numpy's default `rtol=1e-7` silently hides a float32
+  backend.
   Fixtures include values not representable in float32 (e.g. 0.1, 1/3).
 - Randomised tests (RANSAC, synthetic scenes) use seeded generators.
 - ATE states its alignment, SE(3) or Sim(3), and why it suits the rung (monocular rungs have

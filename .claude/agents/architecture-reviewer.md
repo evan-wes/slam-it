@@ -46,8 +46,13 @@ modular and faithful to that design as it grows.
   argument; compiled implementations are found only through
   `slamlab.backends.implementation`, in extension submodules that mirror the package tree
   (`slamlab._cpp.foundations.so3`). `backends` never knows what an algorithm computes.
-- Each algorithm types its compiled backend with a Protocol, and a test checks every
-  extension submodule against it.
+- Each algorithm module types its compiled backend with an `Implementation` Protocol, and
+  one generic test (`tests/test_backends.py`) checks every extension submodule against it.
+- Bindings are one file per module and take/return float64 numpy arrays; the cores take
+  arrays, spans or slices and report failure through `std::expected` / `Result` with the
+  shared error kinds (design doc, "Languages").
+- Each rung is its own C++ library and Rust crate; `scripts/check_layers.py` holds their
+  includes, links and dependencies to the same contracts as import-linter.
 
 **The ladder and compute budgets**
 - New code sits on the right rung, and its module placement says so.

@@ -27,7 +27,7 @@ pub type Mat3 = [[f64; 3]; 3];
 /// # Examples
 ///
 /// ```
-/// use slamlab_core::foundations::so3::hat;
+/// use slamlab_foundations::so3::hat;
 ///
 /// assert_eq!(hat([1.0, 2.0, 3.0]), [[0.0, -3.0, 2.0], [3.0, 0.0, -1.0], [-2.0, 1.0, 0.0]]);
 /// ```

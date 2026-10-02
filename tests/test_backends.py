@@ -1,14 +1,21 @@
-"""Tests for the backend locator: names, availability and failure reporting."""
+"""Tests for the backend locator, and that every compiled module matches its Protocol."""
 
 from __future__ import annotations
 
+import ast
 import importlib
+import inspect
+import pkgutil
+from collections.abc import Iterator
 from types import ModuleType
 
 import pytest
 
+import slamlab
 from slamlab import backends
-from tests.conftest import REQUIRED_BACKENDS
+from tests.conftest import REQUIRED_BACKENDS, require_backend
+
+_EXTENSION_ROOTS = {"cpp": "slamlab._cpp", "rust": "slamlab_rs"}
 
 
 def test_python_reference_always_available() -> None:
@@ -46,12 +53,15 @@ def test_module_outside_slamlab_is_an_error() -> None:
 
 
 @pytest.mark.parametrize("name", ["cpp", "rust"])
-def test_missing_implementation_is_reported(name: str) -> None:
-    """A module the backend does not implement raises NotImplementedError."""
-    if name not in backends.available():
-        pytest.skip(f"{name} backend not built")
+@pytest.mark.parametrize(
+    "module_name",
+    ["slamlab.foundations.no_such_module", "slamlab.foundations.so3.hat"],
+    ids=["missing", "not-a-module"],
+)
+def test_missing_implementation_is_reported(name: str, module_name: str) -> None:
+    """A path the backend does not implement as a module raises NotImplementedError."""
     with pytest.raises(NotImplementedError, match="does not implement"):
-        backends.implementation(name, "slamlab.foundations.no_such_module")
+        backends.implementation(require_backend(name), module_name)
 
 
 def test_absent_extension_counts_as_not_built(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -86,3 +96,119 @@ def test_broken_extension_is_not_hidden(
     with pytest.raises(ImportError) as excinfo:
         backends.available()
     assert excinfo.value is failure
+
+
+def _implementation_modules(root: ModuleType, path: str) -> Iterator[tuple[str, ModuleType]]:
+    """Yield every submodule below `root` that holds functions, with its dotted path.
+
+    Parameters
+    ----------
+    root : module
+        A rung submodule of a compiled extension (or one of its submodules).
+    path : str
+        `root`'s dotted path below the extension, e.g. ``"foundations"``.
+
+    Yields
+    ------
+    tuple of (str, module)
+        The dotted path (e.g. ``"foundations.so3"``) and the submodule.
+    """
+    members = vars(root)
+    if any(callable(v) and not isinstance(v, ModuleType) for v in members.values()):
+        yield path, root
+    for child_name, child in members.items():
+        if isinstance(child, ModuleType):
+            yield from _implementation_modules(child, f"{path}.{child_name}")
+
+
+def _strip_brackets(text: str) -> str:
+    """Remove every bracketed group, e.g. ``ndarray[dtype=float64, shape=(3)]`` -> ``ndarray``.
+
+    nanobind writes ndarray annotations with keyword-like contents that are not valid
+    Python, so they are removed before parsing; only parameter names are compared.
+
+    Parameters
+    ----------
+    text : str
+        A signature line.
+
+    Returns
+    -------
+    str
+        `text` without any ``[...]`` group (nesting handled).
+    """
+    out, depth = [], 0
+    for char in text:
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+        elif depth == 0:
+            out.append(char)
+    return "".join(out)
+
+
+def _parameter_names(func: object) -> list[str]:
+    """Return a compiled function's parameter names from its nanobind or PyO3 signature.
+
+    Parameters
+    ----------
+    func : callable
+        A function from a compiled extension.
+
+    Returns
+    -------
+    list of str
+        The parameter names, in order.
+    """
+    nb_signature = getattr(func, "__nb_signature__", None)
+    if nb_signature:
+        # nanobind: a full Python `def` line, possibly with nested annotations; parse it.
+        tree = ast.parse(_strip_brackets(nb_signature[0][0]) + ": ...")
+        definition = tree.body[0]
+        assert isinstance(definition, ast.FunctionDef)
+        return [arg.arg for arg in definition.args.args]
+    assert callable(func)
+    return list(inspect.signature(func).parameters)
+
+
+def _public_callables(module: ModuleType) -> set[str]:
+    """Return the names of a compiled module's public functions."""
+    return {
+        name
+        for name, value in vars(module).items()
+        if callable(value) and not isinstance(value, ModuleType) and not name.startswith("_")
+    }
+
+
+@pytest.mark.parametrize("name", ["cpp", "rust"])
+def test_every_compiled_module_matches_its_protocol(name: str) -> None:
+    """Every compiled submodule mirrors a slamlab module and matches its Implementation.
+
+    For each submodule of the extension that holds functions: the slamlab module at the
+    same path must exist and define an ``Implementation`` Protocol; the submodule must
+    provide exactly the Protocol's functions, each with the Protocol's parameter names.
+    This is the check that keeps bindings and their Python contract from drifting.
+    """
+    extension = importlib.import_module(_EXTENSION_ROOTS[require_backend(name)])
+    # Walk from slamlab's rung packages, the tree the extension submodules mirror.
+    rungs = [m.name for m in pkgutil.iter_modules(slamlab.__path__) if m.ispkg]
+    found = [
+        item
+        for rung in rungs
+        if isinstance(getattr(extension, rung, None), ModuleType)
+        for item in _implementation_modules(getattr(extension, rung), rung)
+    ]
+    assert found, f"{name} extension exposes no implementation modules"
+    for path, compiled in found:
+        python_module = importlib.import_module(f"slamlab.{path}")
+        protocol = getattr(python_module, "Implementation", None)
+        assert protocol is not None, f"slamlab.{path} has no Implementation Protocol"
+        members = {m for m in vars(protocol) if not m.startswith("_")}
+        assert _public_callables(compiled) == members, f"{name}:{path} functions differ"
+        for member in members:
+            expected = [
+                p for p in inspect.signature(getattr(protocol, member)).parameters if p != "self"
+            ]
+            got = _parameter_names(getattr(compiled, member))
+            assert got == expected, f"{name}:{path}.{member} parameters {got} != {expected}"

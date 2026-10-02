@@ -28,7 +28,9 @@ JSCPD_VERSION="5.4.0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --env) ENV_NAME="$2"; shift 2 ;;
+    --env)
+      [[ $# -ge 2 && -n "$2" ]] || { echo "--env needs an environment name" >&2; exit 2; }
+      ENV_NAME="$2"; shift 2 ;;
     --unlocked) UNLOCKED=1; shift ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
