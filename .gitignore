@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# Build outputs (C++ via scikit-build-core, Rust via cargo/maturin)
+build/
+dist/
+*.egg-info/
+target/
+*.so
+
+# Data lives outside the repo (../datasets, ../runs)
+datasets/
+runs/
+
+# IDE / tooling
+.vscode/
+.idea/
+.claude/
