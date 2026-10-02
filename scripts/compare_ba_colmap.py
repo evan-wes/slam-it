@@ -6,7 +6,8 @@ problem, by slamlab (C++) and by COLMAP's Ceres bundle adjuster, with the princi
 fixed and the chosen intrinsics free, under the same loss. The table lists, per model: the
 RMS reprojection error at the start and after each solver, how many observations each solver
 pushed behind their camera, our iterations, termination and focal-length deviation, both
-focal lengths, and both run times. A directory without a model is listed, not skipped.
+focal lengths, and both run times. The focal columns are intrinsics group 0's (a model with
+several cameras shows its first). A directory without a model is listed, not skipped.
 
 Run from anywhere, in the slamlab environment::
 
@@ -21,7 +22,7 @@ from __future__ import annotations
 
 import argparse
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -48,8 +49,22 @@ def freed(model: readers.ColmapModel, refine: str) -> ba.BAProblem:
     return replace(problem, fixed_intrinsics=fixed)
 
 
-def compare(directory: Path, refine: str, loss: nls.Loss, iterations: int) -> str:
-    """Refine one model with both solvers; return its table row."""
+@dataclass(frozen=True)
+class Comparison:
+    """One model refined by both solvers, on the identical problem."""
+
+    problem: ba.BAProblem
+    ours: ba.BAResult
+    ours_seconds: float
+    reference: colmap_reference.ColmapResult
+
+
+def compare(directory: Path, refine: str, loss: nls.Loss, iterations: int) -> Comparison:
+    """Refine one model with both solvers, under the same loss, cap and tolerance.
+
+    COLMAP's Ceres tolerances are set to slamlab's relative cost-decrease tolerance, so both
+    stop on the same criterion (Ceres also applies it to the gradient and the step).
+    """
     problem = freed(readers.read_colmap_text(directory), refine)
     options = ba.BAOptions(solver=nls.Options(max_iterations=iterations, loss=loss))
     start = time.perf_counter()
@@ -57,8 +72,16 @@ def compare(directory: Path, refine: str, loss: nls.Loss, iterations: int) -> st
     ours_seconds = time.perf_counter() - start
     reference = colmap_reference.solve(
         problem,
-        colmap_reference.ColmapOptions(loss=loss, tolerance=1e-6, max_iterations=iterations),
+        colmap_reference.ColmapOptions(
+            loss=loss, tolerance=options.solver.function_tolerance, max_iterations=iterations
+        ),
     )
+    return Comparison(problem, ours, ours_seconds, reference)
+
+
+def row(result: Comparison) -> str:
+    """Format a comparison as its table row (focal lengths and σ_f of intrinsics group 0)."""
+    problem, ours, reference = result.problem, result.ours, result.reference
     ours_solved = replace(problem, poses=ours.poses, intrinsics=ours.intrinsics, points=ours.points)
     colmap_solved = replace(
         problem, poses=reference.poses, intrinsics=reference.intrinsics, points=reference.points
@@ -68,6 +91,7 @@ def compare(directory: Path, refine: str, loss: nls.Loss, iterations: int) -> st
     # One common set: in front at the start and in both results.
     used = front & ours_front & colmap_front
     ours_rms, colmap_rms = rms(ours_solved, used), rms(colmap_solved, used)
+    focal = camera.FOCAL_INDICES[problem.camera_model][0]
     return (
         f"{problem.poses.shape[0]:>4} {problem.points.shape[0]:>6} "
         f"{np.count_nonzero(~front):>5} {np.count_nonzero(front & ~ours_front):>5} "
@@ -75,9 +99,9 @@ def compare(directory: Path, refine: str, loss: nls.Loss, iterations: int) -> st
         f"{ours_rms:>8.4f} {colmap_rms:>8.4f} {ours_rms - colmap_rms:>+9.2e} "
         f"{ours.summary.solve.iterations:>4} {ours.summary.solve.termination:>14} "
         f"{ours.summary.unobservable_focal:>3} {np.sqrt(ours.summary.variance_factor):>6.3f} "
-        f"{ours.intrinsics_std[0, 0]:>8.2f} "
-        f"{ours.intrinsics[0, 0]:>8.2f} {reference.intrinsics[0, 0]:>8.2f} "
-        f"{ours_seconds:>6.2f} {reference.seconds:>6.2f}"
+        f"{ours.intrinsics_std[0, focal]:>8.2f} "
+        f"{ours.intrinsics[0, focal]:>8.2f} {reference.intrinsics[0, focal]:>8.2f} "
+        f"{result.ours_seconds:>6.2f} {reference.seconds:>6.2f}"
     )
 
 
@@ -95,7 +119,8 @@ def main() -> None:
         f"refine: {args.refine}; loss: {loss.kind} (scale {loss.scale}). RMS in px over the "
         "observations in front at the start and in both results; bhnd0 counts observations "
         "behind their camera at the start, b-our and b-col those each solver pushed behind; "
-        "s0 is the a-posteriori noise in px, which sigma_f is scaled by"
+        "s0 is the a-posteriori noise in px, which sigma_f is scaled by; sigma_f and the "
+        "focal lengths are intrinsics group 0's (its first focal length; NaN if fixed)"
     )
     print(
         f"{'model':<16} {'imgs':>4} {'points':>6} {'bhnd0':>5} {'b-our':>5} {'b-col':>5} "
@@ -108,10 +133,10 @@ def main() -> None:
         directory = Path(path)
         label = name or directory.name
         if (directory / "cameras.txt").is_file():
-            row = compare(directory, args.refine, loss, args.iterations)
+            line = row(compare(directory, args.refine, loss, args.iterations))
         else:
-            row = f"no COLMAP model at {directory}"
-        print(f"{label:<16} {row}", flush=True)
+            line = f"no COLMAP model at {directory}"
+        print(f"{label:<16} {line}", flush=True)
 
 
 if __name__ == "__main__":

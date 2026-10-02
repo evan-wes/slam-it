@@ -4,10 +4,11 @@ Builds a pycolmap reconstruction from a :class:`~slamlab.foundations.ba.BAProble
 COLMAP's bundle adjustment (Ceres underneath), and reads the result back in this package's
 conventions, so the two solvers can be compared on exactly the same problem.
 
-pycolmap is a development dependency, imported only when these functions run; the library
-itself never needs it. Only problems that COLMAP can represent are supported: intrinsics groups
-(shared or per camera), the ``"radial"`` model (COLMAP's ``RADIAL``) or ``"pinhole"``, no priors
-and no anchored points.
+pycolmap is an optional dependency (the ``colmap`` extra, which the development setup
+installs), imported only when these functions run; the library itself never needs it. Only
+problems that COLMAP can represent are supported: intrinsics groups (shared or per camera),
+the ``"radial"`` model (COLMAP's ``RADIAL``) or ``"pinhole"``, no priors and no anchored
+points.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from numpy.typing import NDArray
 
 from slamlab.eval.readers import COLMAP_PIXEL_OFFSET
 from slamlab.foundations import camera, nls, se3
+from slamlab.foundations.arrays import group_members
 from slamlab.foundations.ba import BAProblem
 from slamlab.foundations.errors import InvalidInputError
 
@@ -158,10 +160,10 @@ def to_reconstruction(problem: BAProblem) -> tuple[Any, list[int]]:
                 camera_id=g + 1,
             )
         )
-    slots = []
-    for c in range(problem.poses.shape[0]):
-        sel = np.flatnonzero(problem.cam_idx == c)
-        slots.append({int(m): k for k, m in enumerate(sel)})
+    by_camera = group_members(problem.cam_idx, problem.poses.shape[0])
+    slot = np.zeros(problem.cam_idx.size, dtype=np.int64)  # each observation's keypoint index
+    for c, sel in enumerate(by_camera):
+        slot[sel] = np.arange(sel.size)
         image = pycolmap.Image(
             name=str(c),
             keypoints=problem.observations[sel] + COLMAP_PIXEL_OFFSET,
@@ -170,11 +172,8 @@ def to_reconstruction(problem: BAProblem) -> tuple[Any, list[int]]:
         )
         reconstruction.add_image_with_trivial_frame(image, pycolmap.Rigid3d(t_cam_world[c, :3, :]))
     point_ids = []
-    for p in range(problem.points.shape[0]):
-        track = [
-            pycolmap.TrackElement(int(problem.cam_idx[m]) + 1, slots[problem.cam_idx[m]][int(m)])
-            for m in np.flatnonzero(problem.pt_idx == p)
-        ]
+    for p, views in enumerate(group_members(problem.pt_idx, problem.points.shape[0])):
+        track = [pycolmap.TrackElement(int(problem.cam_idx[m]) + 1, int(slot[m])) for m in views]
         point_ids.append(int(reconstruction.add_point3D(problem.points[p], pycolmap.Track(track))))
     return reconstruction, point_ids
 

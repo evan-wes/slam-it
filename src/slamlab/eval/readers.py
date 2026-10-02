@@ -170,6 +170,31 @@ def _parse(path: Path, number: int, parse: Callable[[], T]) -> T:
         raise InvalidInputError(f"{path.name}:{number}: malformed or dangling ({error})") from error
 
 
+def _camera_params(row: list[str], slots: list[int]) -> list[float]:
+    """Parse a ``cameras.txt`` row's parameters, as many as its model takes."""
+    if len(row) != 4 + len(slots):
+        raise ValueError(f"{row[1]} takes {len(slots)} parameters")
+    return [float(v) for v in row[4:]]
+
+
+def _image_header(header: str) -> tuple[int, Array, int, str]:
+    """Parse an ``images.txt`` header: id, ``T_cam_world``, camera id, name (may hold spaces)."""
+    fields = header.split(maxsplit=9)
+    qw, qx, qy, qz, tx, ty, tz = (float(v) for v in fields[1:8])
+    pose = np.eye(4)
+    pose[:3, :3] = so3.from_quaternion([qx, qy, qz, qw])
+    pose[:3, 3] = [tx, ty, tz]
+    return int(fields[0]), pose, int(fields[8]), fields[9]
+
+
+def _keypoint_triples(line: str) -> Array:
+    """Parse an ``images.txt`` keypoint line into (x, y, point id) rows."""
+    values = np.asarray(line.split(), dtype=np.float64)
+    if values.size % 3:
+        raise ValueError("keypoints come in (x, y, point id) triples")
+    return values.reshape(-1, 3)
+
+
 def _cameras(path: Path) -> tuple[str, Array, Mask, NDArray[np.int64]]:
     """Map COLMAP cameras onto one of this package's models."""
     rows = [(n, line.split()) for n, line in _lines(path) if line.strip()]
@@ -188,13 +213,7 @@ def _cameras(path: Path) -> tuple[str, Array, Mask, NDArray[np.int64]]:
     camera_ids = np.zeros(len(rows), dtype=np.int64)
     for k, (number, row) in enumerate(rows):
         slots = family[row[1]]
-
-        def parse(row: list[str] = row, slots: list[int] = slots) -> list[float]:
-            if len(row) != 4 + len(slots):
-                raise ValueError(f"{row[1]} takes {len(slots)} parameters")
-            return [float(v) for v in row[4:]]
-
-        intrinsics[k, slots] = _parse(path, number, parse)
+        intrinsics[k, slots] = _parse(path, number, partial(_camera_params, row, slots))
         refinable[k, slots] = True
         camera_ids[k] = _parse(path, number, partial(int, row[0]))
     intrinsics[:, list(camera.CENTRE_INDICES[name])] -= COLMAP_PIXEL_OFFSET
@@ -207,6 +226,8 @@ class _Image:
 
     line: int
     """The header's line number in ``images.txt``."""
+    keypoint_line: int
+    """The keypoint line's number, which names the points the image sees."""
     image_id: int
     t_cam_world: Array
     camera_id: int
@@ -224,27 +245,9 @@ def _images(path: Path) -> list[_Image]:
         raise InvalidInputError(f"{path.name}: expected a keypoint line after every image")
     images = []
     for (number, header), (key_number, keypoints) in zip(lines[0::2], lines[1::2], strict=True):
-
-        def parse_header(header: str = header) -> tuple[int, Array, int, str]:
-            fields = header.split(maxsplit=9)  # the name may contain spaces
-            qw, qx, qy, qz, tx, ty, tz = (float(v) for v in fields[1:8])
-            pose = np.eye(4)
-            pose[:3, :3] = so3.from_quaternion([qx, qy, qz, qw])
-            pose[:3, 3] = [tx, ty, tz]
-            return int(fields[0]), pose, int(fields[8]), fields[9]
-
-        def parse_keypoints(keypoints: str = keypoints) -> Array:
-            values = np.asarray(keypoints.split(), dtype=np.float64)
-            if values.size % 3:
-                raise ValueError("keypoints come in (x, y, point id) triples")
-            return values.reshape(-1, 3)
-
-        image_id, pose, camera_id, name = _parse(path, number, parse_header)
-        images.append(
-            _Image(
-                number, image_id, pose, camera_id, name, _parse(path, key_number, parse_keypoints)
-            )
-        )
+        image_id, pose, camera_id, name = _parse(path, number, partial(_image_header, header))
+        triples = _parse(path, key_number, partial(_keypoint_triples, keypoints))
+        images.append(_Image(number, key_number, image_id, pose, camera_id, name, triples))
     return images
 
 
@@ -270,7 +273,8 @@ def read_colmap_text(directory: str | Path) -> ColmapModel:
     root = Path(directory)
     model, intrinsics, refinable, camera_ids = _cameras(root / "cameras.txt")
     group_of = {int(cid): k for k, cid in enumerate(camera_ids)}
-    images = _images(root / "images.txt")
+    images_path = root / "images.txt"
+    images = _images(images_path)
     points_path = root / "points3D.txt"
     point_rows = [(n, line.split()) for n, line in _lines(points_path) if line.strip()]
     point_ids = np.array(
@@ -281,13 +285,12 @@ def read_colmap_text(directory: str | Path) -> ColmapModel:
         [_parse(points_path, n, partial(_floats, row[1:4])) for n, row in point_rows]
     ).reshape(-1, 3)
     point_index = {int(pid): k for k, pid in enumerate(point_ids)}
-    images_path = root / "images.txt"
     cam_idx, pt_idx, pixels = [], [], []
     for c, image in enumerate(images):
         seen = image.keypoints[:, 2] >= 0
         cam_idx += [c] * int(np.count_nonzero(seen))
         pt_idx += [
-            _parse(images_path, image.line, partial(point_index.__getitem__, int(pid)))
+            _parse(images_path, image.keypoint_line, partial(point_index.__getitem__, int(pid)))
             for pid in image.keypoints[seen, 2]
         ]
         pixels.append(image.keypoints[seen, :2] - COLMAP_PIXEL_OFFSET)

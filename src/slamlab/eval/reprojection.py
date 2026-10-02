@@ -10,7 +10,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from slamlab.foundations import camera, se3
-from slamlab.foundations.arrays import as_mask
+from slamlab.foundations.arrays import as_mask, group_members
 from slamlab.foundations.ba import BAProblem
 from slamlab.foundations.errors import InvalidInputError
 
@@ -64,9 +64,8 @@ def rms(problem: BAProblem, used: NDArray[np.bool_]) -> float:
     if np.any(in_cam[:, 2] <= camera.MIN_DEPTH):
         raise InvalidInputError("used: selects an observation whose point is behind its camera")
     pixels = np.zeros((cam.size, 2))
-    group = problem.intrinsics_idx[cam]
-    for g in np.unique(group):  # one projection per intrinsics group, not per camera
-        sel = group == g
+    members = group_members(problem.intrinsics_idx[cam], problem.intrinsics.shape[0])
+    for g, sel in enumerate(members):  # one projection per intrinsics group, not per camera
         pixels[sel] = camera.project(problem.camera_model, problem.intrinsics[g], in_cam[sel])
     errors = pixels - problem.observations[mask]
     return float(np.sqrt(np.mean(np.sum(errors**2, axis=1))))

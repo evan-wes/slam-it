@@ -51,8 +51,9 @@ before writing geometry code or a binding.
   sibling independence, no PyTorch on CPU rungs, and no depth-model imports.
 - C++ mirrors it with one library per rung (`slamlab_foundations`, from `cpp/src/foundations/`,
   namespace `slamlab::foundations`); Rust with one crate per rung (`slamlab-foundations`).
-  `scripts/check_layers.py` holds C++ includes, CMake links and crate dependencies to the
-  same contracts. Bindings are one file per module (`cpp/bindings/<rung>/<module>.cpp`,
+  `scripts/check_layers.py` holds C++ includes (chains included, and the order inside a
+  rung), CMake links and crate dependencies to the same contracts; Rust's modules inside a
+  crate are not checked. Bindings are one file per module (`cpp/bindings/<rung>/<module>.cpp`,
   `rust/slamlab-py/src/<rung>/<module>.rs`), and the extension submodules mirror the tree
   (`slamlab._cpp.foundations.so3`, `slamlab_rs.foundations.so3`).
 - **Binding boundary:** bindings take and return float64 numpy arrays (nanobind `ndarray`,

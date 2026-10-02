@@ -256,16 +256,17 @@ def test_reference_with_a_shared_camera(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("file", "change", "message"),
     [
-        ("points3D.txt", lambda t: t.replace("\n1 ", "\n999 ", 1), "images.txt"),
-        ("images.txt", lambda t: t.replace(" 1 im0.png", " 7 im0.png"), "images.txt"),
-        ("cameras.txt", lambda t: t.rsplit(" ", 1)[0] + "\n", "cameras.txt"),
+        # The keypoint line (3) holds the dangling id, not the image's header (2).
+        ("points3D.txt", lambda t: t.replace("\n1 ", "\n999 ", 1), "images.txt:3:"),
+        ("images.txt", lambda t: t.replace(" 1 im0.png", " 7 im0.png"), "images.txt:2:"),
+        ("cameras.txt", lambda t: t.rsplit(" ", 1)[0] + "\n", "cameras.txt:2:"),
     ],
     ids=["dangling point id", "unknown camera id", "short camera line"],
 )
 def test_colmap_reader_names_malformed_lines(
     tmp_path: Path, file: str, change: Callable[[str], str], message: str
 ) -> None:
-    """A dangling id or a truncated row is an InvalidInputError naming the file."""
+    """A dangling id or a truncated row is an InvalidInputError naming the file and line."""
     _write_colmap(tmp_path, "RADIAL", [500.0, 320.0, 240.0, -0.05, 0.01])
     path = tmp_path / file
     path.write_text(change(path.read_text()))
