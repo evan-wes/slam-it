@@ -813,32 +813,32 @@ Run 2's findings: all resolved as recorded, except L11 (partly: see L17).
 
 | ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
 |---|---|---|---|---|---|---|
-| L17 | must-fix | algorithm | `ba/bundle.py` (`_pose_error`), `bundle.cpp`, `gauge` rows | the translation half of a pose prior pins `R̄ᵀt`, not the camera centre: the gauge rows assume a known centre (rotation about the origin left free, σ_f inf), and a GNSS-style prior with identity rotation biases centres by up to 0.76 m | fix (decoupled residual `(C − C̄, log(R̄_wcᵀ R_wc))`) | pending |
-| L18 | must-fix | algorithm | `ba/layout.py`, `gauge`, both cores | rank tolerance absolute in uncentred coordinates: scenes 5e4 m or more from the origin lose the gauge (σ_f inf; at 1e6 m the reference stops at cost 264 vs 41.7); regression | fix (normalised coordinates, relative tolerance) | pending |
-| L19 | should-fix | algorithm | `gauge.plan`, `confinement` | a gauge the plan cannot remove is not reported, and the confinement then takes an arbitrary part of it (cores can differ) | fix (report the leftover dimension; assert the rebuilt rank) | pending |
-| L20 | note | algorithm | BA note, `generate_ba.py` | "stiff translation priors converge slowly" may be the residual's near-null direction, not the problem | fix (re-measure after L17, correct the note and the fixture case) | pending |
-| L21 | note | algorithm | `layout.py` | dropping constant prior blocks makes the reported cost depend on the gauge | fix (say so in `BASummary`) | pending |
-| L22 | note | algorithm | variance factor | down-weighted rows count fully in m (σ̂₀² slightly low under Cauchy) | waive: standard, defensible; an effective redundancy is a refinement for later | pending |
-| A21 | should-fix | architecture | `pyproject.toml` | the allow-list pycolmap contract lost indirect-import coverage (orchestration → colmap_reference → pycolmap passes) | fix (forbid orchestration → `eval.colmap_reference`) | pending |
-| A22 | should-fix | architecture | `ba.cpp`, `problem.py` | "report-only gauge" encoded by position (`> kScale`, `GAUGES[:-1]`) (same as H28) | fix | pending |
-| A23 | should-fix | architecture | fixture | explicit `first_pose` and `scale` (and `none`) have no cross-backend parity | fix (fixture cases) | pending |
-| A24 | note | architecture | `check_layers.py` | the facade header's own includes are checked as `solve`; an unmapped facade is silently exempt | defer (design doc: when the next package facade arrives) | pending |
-| A25 | note | architecture | `ba/layout.py`, `gauge.py` | Python splits the plan, C++ carries it whole; Python gauge helpers public | fix (carry `Plan`; private helpers) | pending |
-| A26 | note | architecture | `ba/gauge` | the gauge is generic to pose-and-point problems | defer (design doc: lift to `foundations.gauge` with pose-graph optimisation) | pending |
-| A27 | note | architecture | tests, `solve.py`, bindings | codes compared outside `assert_matches_fixture`; `_CONVERT` KeyError; two enum-name mechanisms; nls.hpp comment | fix the first two and the comment; defer the enum mechanism (with Rust's enums) | pending |
-| H21 | should-fix | hygiene | `gauge.py`, `gauge.cpp` | tie-break `1e-12` unnamed, twice per core | fix | pending |
-| H22 | should-fix | hygiene | `gauge.plan` | `plan()` long; tie-break names opaque | fix | pending |
-| H23 | should-fix | hygiene | `gauge.py`, `layout.py` | `name` shadows and forces an alias | fix (rename `classify`) | pending |
-| H24 | should-fix | hygiene | `gauge.py` | public functions without Parameters/frames | fix | pending |
-| H25 | should-fix | hygiene | tests | no unit tests of the gauge primitives in either core | fix | pending |
-| H26 | should-fix | hygiene | `bundle.cpp`, `nls.hpp`, `layout.cpp` | stale or garbled C++ comments | fix | pending |
-| H27 | should-fix | hygiene | `layout.cpp` | `fix_gauge` mutates an out-parameter; `make_layout` long | fix (return a value; helpers) | pending |
-| H28 | should-fix | hygiene | `problem.py`, `ba.cpp` | `GAUGES` serves two purposes (same as A22) | fix (with A22) | pending |
-| H29 | should-fix | hygiene | `layout.py` | three `Layout` fields undocumented | fix | pending |
-| H30 | should-fix | hygiene | `check_layers.py` | `check_cpp_internal` deeply nested | fix | pending |
-| H31 | should-fix | hygiene | `compare_ba_colmap.py` | header and row formats written twice | fix | pending |
-| H32 | should-fix | hygiene | `arrays.group_members` | no input checks or edge tests | fix | pending |
-| H33 | note | hygiene | various | `TOLERANCE` doc; `RIGID_DIM`; the fixture regex; `confinement` signatures differ | fix the doc and `RIGID_DIM` (with L18), signatures (with A25); waive the regex (tested by the fixture's round trip) | pending |
+| L17 | must-fix | algorithm | `ba/bundle.py` (`_pose_error`), `bundle.cpp`, `gauge` rows | the translation half of a pose prior pins `R̄ᵀt`, not the camera centre: the gauge rows assume a known centre (rotation about the origin left free, σ_f inf), and a GNSS-style prior with identity rotation biases centres by up to 0.76 m | fix (decoupled residual `(C − C̄, log(R̄_wcᵀ R_wc))`) | fixed (e14132e): decoupled residual, as chosen -- decided by evan-wes on 2026-10-02 |
+| L18 | must-fix | algorithm | `ba/layout.py`, `gauge`, both cores | rank tolerance absolute in uncentred coordinates: scenes 5e4 m or more from the origin lose the gauge (σ_f inf; at 1e6 m the reference stops at cost 264 vs 41.7); regression | fix (normalised coordinates, relative tolerance) | fixed (e14132e): scene-normalised frame -- decided by evan-wes on 2026-10-02 |
+| L19 | should-fix | algorithm | `gauge.plan`, `confinement` | a gauge the plan cannot remove is not reported, and the confinement then takes an arbitrary part of it (cores can differ) | fix (report the leftover dimension; assert the rebuilt rank) | fixed (e14132e): `free_gauge` reported; confinement rebuilds N with it -- decided by evan-wes on 2026-10-02 |
+| L20 | note | algorithm | BA note, `generate_ba.py` | "stiff translation priors converge slowly" may be the residual's near-null direction, not the problem | fix (re-measure after L17, correct the note and the fixture case) | fixed (274a086): re-measured -- the crawl was the old residual's; the lesson is rewritten and the fixture case is stiff again -- decided by evan-wes on 2026-10-02 |
+| L21 | note | algorithm | `layout.py` | dropping constant prior blocks makes the reported cost depend on the gauge | fix (say so in `BASummary`) | fixed (e14132e) -- decided by evan-wes on 2026-10-02 |
+| L22 | note | algorithm | variance factor | down-weighted rows count fully in m (σ̂₀² slightly low under Cauchy) | waive: standard, defensible; an effective redundancy is a refinement for later | waived: standard and defensible; an effective redundancy is a later refinement -- decided by evan-wes on 2026-10-02 |
+| A21 | should-fix | architecture | `pyproject.toml` | the allow-list pycolmap contract lost indirect-import coverage (orchestration → colmap_reference → pycolmap passes) | fix (forbid orchestration → `eval.colmap_reference`) | fixed (e14132e) -- decided by evan-wes on 2026-10-02 |
+| A22 | should-fix | architecture | `ba.cpp`, `problem.py` | "report-only gauge" encoded by position (`> kScale`, `GAUGES[:-1]`) (same as H28) | fix | fixed (e14132e) -- decided by evan-wes on 2026-10-02 |
+| A23 | should-fix | architecture | fixture | explicit `first_pose` and `scale` (and `none`) have no cross-backend parity | fix (fixture cases) | fixed (e14132e): explicit first_pose, scale and none; it caught a fixture tolerance at the rounding floor -- decided by evan-wes on 2026-10-02 |
+| A24 | note | architecture | `check_layers.py` | the facade header's own includes are checked as `solve`; an unmapped facade is silently exempt | defer (design doc: when the next package facade arrives) | deferred (design doc: when the next package facade arrives) (274a086) -- decided by evan-wes on 2026-10-02 |
+| A25 | note | architecture | `ba/layout.py`, `gauge.py` | Python splits the plan, C++ carries it whole; Python gauge helpers public | fix (carry `Plan`; private helpers) | fixed (e14132e) -- decided by evan-wes on 2026-10-02 |
+| A26 | note | architecture | `ba/gauge` | the gauge is generic to pose-and-point problems | defer (design doc: lift to `foundations.gauge` with pose-graph optimisation) | deferred (design doc: with pose-graph optimisation) (274a086) -- decided by evan-wes on 2026-10-02 |
+| A27 | note | architecture | tests, `solve.py`, bindings | codes compared outside `assert_matches_fixture`; `_CONVERT` KeyError; two enum-name mechanisms; nls.hpp comment | fix the first two and the comment; defer the enum mechanism (with Rust's enums) | fixed (e14132e: codes through the helper, trace types; comment in e14132e); deferred: one enum-name mechanism (design doc, with Rust's enums) -- decided by evan-wes on 2026-10-02 |
+| H21 | should-fix | hygiene | `gauge.py`, `gauge.cpp` | tie-break `1e-12` unnamed, twice per core | fix | fixed (e14132e) -- decided by evan-wes on 2026-10-02 |
+| H22 | should-fix | hygiene | `gauge.plan` | `plan()` long; tie-break names opaque | fix | fixed (e14132e) -- decided by evan-wes on 2026-10-02 |
+| H23 | should-fix | hygiene | `gauge.py`, `layout.py` | `name` shadows and forces an alias | fix (rename `classify`) | fixed (e14132e) -- decided by evan-wes on 2026-10-02 |
+| H24 | should-fix | hygiene | `gauge.py` | public functions without Parameters/frames | fix | fixed (e14132e) -- decided by evan-wes on 2026-10-02 |
+| H25 | should-fix | hygiene | tests | no unit tests of the gauge primitives in either core | fix | fixed (e14132e) -- decided by evan-wes on 2026-10-02 |
+| H26 | should-fix | hygiene | `bundle.cpp`, `nls.hpp`, `layout.cpp` | stale or garbled C++ comments | fix | fixed (e14132e) -- decided by evan-wes on 2026-10-02 |
+| H27 | should-fix | hygiene | `layout.cpp` | `fix_gauge` mutates an out-parameter; `make_layout` long | fix (return a value; helpers) | fixed (e14132e) -- decided by evan-wes on 2026-10-02 |
+| H28 | should-fix | hygiene | `problem.py`, `ba.cpp` | `GAUGES` serves two purposes (same as A22) | fix (with A22) | fixed with A22 (e14132e) -- decided by evan-wes on 2026-10-02 |
+| H29 | should-fix | hygiene | `layout.py` | three `Layout` fields undocumented | fix | fixed (e14132e) -- decided by evan-wes on 2026-10-02 |
+| H30 | should-fix | hygiene | `check_layers.py` | `check_cpp_internal` deeply nested | fix | fixed (8a878ff) -- decided by evan-wes on 2026-10-02 |
+| H31 | should-fix | hygiene | `compare_ba_colmap.py` | header and row formats written twice | fix | fixed (8a878ff) -- decided by evan-wes on 2026-10-02 |
+| H32 | should-fix | hygiene | `arrays.group_members` | no input checks or edge tests | fix | fixed (e14132e) -- decided by evan-wes on 2026-10-02 |
+| H33 | note | hygiene | various | `TOLERANCE` doc; `RIGID_DIM`; the fixture regex; `confinement` signatures differ | fix the doc and `RIGID_DIM` (with L18), signatures (with A25); waive the regex (tested by the fixture's round trip) | fixed: TOLERANCE doc and RIGID_DIM (e14132e); confinement takes the Plan in both cores (A25); waived: the fixture regex (exercised by every round trip) -- decided by evan-wes on 2026-10-02 |
 
 ### Hygiene review
 
