@@ -503,6 +503,10 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
   - **One mechanism for enum names (A27, run 3).** `Termination`'s names come from the core
     (`nls::name`), the other crossing enums' from the bindings' tables. Pick one when Rust
     gains these enums.
+  - **σ_f with the gauge left free (L30, run 5).** When a fixed recipe leaves gauge
+    directions in the problem (`free_gauge > 0`), σ_f is infinite under `none` but finite
+    under `first_pose`, where it depends on how the damping holds the free scale (0.13% off
+    the minimal gauge's). Report σ as unavailable whenever `free_gauge > 0`, or document it.
   - **Triggs' robust-loss correction (L7).** NLS uses plain IRLS, which drops `ρ''`. The
     Triggs correction restores it, and converges faster on outliers. For milestone 3, whose
     data has outliers.

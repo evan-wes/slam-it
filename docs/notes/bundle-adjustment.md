@@ -210,13 +210,15 @@ gauge, are the same.
 swings the centre by about `|θ|² |C| / 2`: half a metre per step at 1e4 m. Nothing in the
 linear model sees that. From a start 0.05 off, the baseline the scale gauge holds drifted by
 0.8, and LM ran from 9 iterations to its cap. At ECEF range (6.4e6 m), σ_f went infinite.
-Both cores therefore solve in a world shifted by the mean camera centre (summed in index
-order, so they agree to the bit), and shift back. Every residual is unchanged by a shift, so
+Both cores therefore solve in a world shifted by the mean centre of the observed cameras
+(summed in index order, so they agree to the bit), and shift back. Only observed cameras
+count: an unregistered camera left at the identity, at the world origin, first pulled the
+centre a sixth of the way back to it, and the crawl returned. Every residual is unchanged by a shift, so
 this is exact. Fixed and unmoved variables come back as given. Up to 6.4e6 m, the solve now
 takes the same iterations, holds the same baseline and gives the same σ_f as at the origin.
 Centring changes the steps' chart, so the gauge's second-order drift, and with it where in
-the gauge orbit the solution lands, moved by up to 1e-4 on the fixture. The costs and
-intrinsics are unchanged.
+the gauge orbit the solution lands, moved by up to 1e-4 on the fixture. The costs agree to
+1e-13 and the intrinsics to 1e-9.
 
 **Removing N, pose by pose.** At pose c, N moves the camera's world centre and orientation
 by `M = [[I, -[C]×, C], [0, I, 0]] N`. A step moves them by `J_c δ`, where
