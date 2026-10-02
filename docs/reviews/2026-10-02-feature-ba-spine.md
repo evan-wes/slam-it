@@ -1190,10 +1190,10 @@ Run 3's findings: L17, L19 (for the planned gauges), L20, L21 resolved; L18 reso
 
 | ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
 |---|---|---|---|---|---|---|
-| L23 | must-fix | algorithm | `ba/bundle.py` (`retract`), `bundle.cpp`, far-origin test | steps rotate cameras about the world origin: far from it the confined baseline drifts (+0.8 at 1e4-1e6 m) and LM runs to the cap (9 iterations become 91-100); at 6.4e6 m σ_f is infinite in C++; the test started too close to the truth to see it | fix (solve in a centred world: subtract the frame origin from translations, points, prior centres; add it back) | pending |
-| L24 | should-fix | algorithm | `ba/layout.py`, `layout.cpp` | `free_gauge` reads 0 when an explicit recipe (`first_pose` on monocular data, `none`) leaves directions free | fix (compute it for every recipe; a full-solve case with `free_gauge > 0`) | pending |
-| L25 | note | algorithm | BA note | "converge in 10 iterations at every weight" is too broad: weak priors still take 22-32 under Marquardt damping (ordinary LM behaviour) | fix (bound the claim, one line on soft directions) | pending |
-| L26 | note | algorithm | fixture | no case with a large pose-prior rotation error (parity pinned only where `Jr⁻¹ ≈ I`) | fix (add a case) | pending |
+| L23 | must-fix | algorithm | `ba/bundle.py` (`retract`), `bundle.cpp`, far-origin test | steps rotate cameras about the world origin: far from it the confined baseline drifts (+0.8 at 1e4-1e6 m) and LM runs to the cap (9 iterations become 91-100); at 6.4e6 m σ_f is infinite in C++; the test started too close to the truth to see it | fix (solve in a centred world: subtract the frame origin from translations, points, prior centres; add it back) | fixed (05fcae5): centred solve in both cores, as chosen (centre only) -- decided by evan-wes on 2026-10-02 |
+| L24 | should-fix | algorithm | `ba/layout.py`, `layout.cpp` | `free_gauge` reads 0 when an explicit recipe (`first_pose` on monocular data, `none`) leaves directions free | fix (compute it for every recipe; a full-solve case with `free_gauge > 0`) | fixed (05fcae5) -- decided by evan-wes on 2026-10-02 |
+| L25 | note | algorithm | BA note | "converge in 10 iterations at every weight" is too broad: weak priors still take 22-32 under Marquardt damping (ordinary LM behaviour) | fix (bound the claim, one line on soft directions) | fixed (6e6271e) -- decided by evan-wes on 2026-10-02 |
+| L26 | note | algorithm | fixture | no case with a large pose-prior rotation error (parity pinned only where `Jr⁻¹ ≈ I`) | fix (add a case) | fixed (05fcae5) -- decided by evan-wes on 2026-10-02 |
 
 ### Algorithm review
 
