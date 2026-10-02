@@ -180,3 +180,59 @@ def test_renamed_workspace_dependency_is_resolved(fake_repo: Path) -> None:
     )
     found = list(check_layers.check_rust(fake_repo, ALLOWED))
     assert [v.message for v in found] == ["rung 'edge' may not depend on crate 'slamlab-classic'"]
+
+
+ORDERS = check_layers.internal_orders(tomllib.loads((REPO / "pyproject.toml").read_text()))
+
+
+@pytest.mark.parametrize(
+    ("path", "include", "message"),
+    [
+        (
+            "cpp/include/slamlab/foundations/so3.hpp",
+            '#include "slamlab/foundations/se3.hpp"',
+            "in foundations, 'so3' may not include 'se3'",
+        ),
+        (
+            "cpp/src/foundations/camera.cpp",
+            "#include <slamlab/foundations/nls.hpp>",
+            "in foundations, 'camera' may not include 'nls'",
+        ),
+        (
+            "cpp/src/foundations/ba/schur.cpp",
+            '#include "bundle.hpp"',
+            "in foundations.ba, 'schur' may not include 'bundle'",
+        ),
+        (
+            "cpp/src/foundations/ba/layout.hpp",
+            '#include "schur.hpp"',
+            "in foundations.ba, 'layout' may not include 'schur'",
+        ),
+    ],
+)
+def test_internal_order_is_checked(fake_repo: Path, path: str, include: str, message: str) -> None:
+    """Upward and sibling includes inside a rung break its internal order, in either form."""
+    _write(fake_repo, path, include + "\n")
+    found = list(check_layers.check_cpp_internal(fake_repo, ORDERS))
+    assert [v.message for v in found] == [message]
+    assert found[0].location == f"{path}:1"
+
+
+@pytest.mark.parametrize(
+    ("path", "include"),
+    [
+        ("cpp/include/slamlab/foundations/so3.hpp", '#include "slamlab/foundations/error.hpp"'),
+        ("cpp/src/foundations/ba/bundle.cpp", '#include "schur.hpp"'),
+        ("cpp/src/foundations/ba.cpp", '#include "ba/bundle.hpp"'),
+        ("cpp/src/foundations/ba/layout.hpp", '#include "common.hpp"'),
+        ("cpp/src/foundations/ba/schur.hpp", "#include <Eigen/Core>"),
+    ],
+)
+def test_internal_order_allows_downward_includes(fake_repo: Path, path: str, include: str) -> None:
+    """Downward includes, the facade, unlisted helpers and system headers all pass.
+
+    ``error.hpp`` is the ``errors`` module; ``ba.cpp`` is the package's facade, above its
+    modules; ``common.hpp`` is listed in no contract.
+    """
+    _write(fake_repo, path, include + "\n")
+    assert list(check_layers.check_cpp_internal(fake_repo, ORDERS)) == []

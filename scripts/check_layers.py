@@ -19,6 +19,14 @@ A rung may depend on the rungs in lower layers, never on a sibling in its own la
 never on a rung a forbidden contract names. Directories and crates must belong to a rung
 listed in the layers contract.
 
+- C++ inside a rung: the layers contracts over a rung or a package inside one (such as
+  "Rung 0's internal order" over ``slamlab.foundations``) apply to the C++ includes in
+  ``cpp/include/slamlab`` and ``cpp/src`` too. A file is the module its path names:
+  ``foundations/so3.hpp`` is ``so3`` in ``foundations``, ``foundations/ba/schur.cpp`` is
+  ``ba`` in ``foundations`` and ``schur`` in ``foundations.ba``. Includes resolve the same
+  way, relative ones against the including file's directory. C++ modules a contract does not
+  list (such as ``ba/common.hpp``) are not constrained, as in import-linter.
+
 Usage::
 
     python scripts/check_layers.py [REPO_ROOT]
@@ -37,6 +45,11 @@ from pathlib import Path
 from typing import Any
 
 _INCLUDE = re.compile(r"^\s*#\s*include\s*[<\"]slamlab/([a-z_]+)/", re.MULTILINE)
+_ANY_INCLUDE = re.compile(r"^\s*#\s*include\s*([<\"])([^>\"]+)[>\"]", re.MULTILINE)
+_CPP_MODULE_ROOTS = ("cpp/include/slamlab", "cpp/src")
+"""Where a C++ file's path names its module; tests and bindings are not modules."""
+_CPP_MODULE_ALIASES = {"error": "errors"}
+"""C++ files whose Python module is named differently."""
 _ADD_RUNG = re.compile(r"slamlab_add_rung\(\s*([a-z_]+)([^)]*)\)")
 _CPP_RUNG_ROOTS = ("cpp/include/slamlab", "cpp/src", "cpp/tests", "cpp/bindings")
 _CPP_SUFFIXES = frozenset({".hpp", ".cpp", ".h", ".cc"})
@@ -115,6 +128,123 @@ def allowed_dependencies(pyproject: dict[str, Any]) -> dict[str, frozenset[str]]
             if rung in allowed:
                 allowed[rung] -= forbidden
     return {rung: frozenset(deps) for rung, deps in allowed.items()}
+
+
+@dataclass(frozen=True)
+class Layer:
+    """One layer of a layers contract: its modules, and whether they may import each other."""
+
+    modules: frozenset[str]
+    independent: bool
+
+
+def internal_orders(pyproject: dict[str, Any]) -> dict[tuple[str, ...], list[Layer]]:
+    """Return every layers contract below the rung level, by its container's path.
+
+    Parameters
+    ----------
+    pyproject : dict
+        The parsed ``pyproject.toml``.
+
+    Returns
+    -------
+    dict of tuple of str to list of Layer
+        Each container (``("foundations",)``, ``("foundations", "ba")``) mapped to its
+        layers, top first. Optional modules (in parentheses) lose their parentheses.
+    """
+    orders: dict[tuple[str, ...], list[Layer]] = {}
+    prefix = f"{_PACKAGE}."
+    for contract in pyproject["tool"]["importlinter"]["contracts"]:
+        if contract["type"] != "layers":
+            continue
+        for container in contract.get("containers", []):
+            if not container.startswith(prefix):
+                continue
+            layers = []
+            for layer in contract["layers"]:
+                names = re.split(r"[|:]", layer)
+                modules = frozenset(name.strip().strip("()") for name in names)
+                layers.append(Layer(modules, independent="|" in layer))
+            orders[tuple(container.removeprefix(prefix).split("."))] = layers
+    return orders
+
+
+def _may_import(layers: list[Layer], source: str, target: str) -> bool:
+    """Return whether module ``source`` may import ``target`` under ``layers``.
+
+    True when either is unlisted, the target sits lower, or both share a non-independent
+    layer.
+    """
+    depth = {name: i for i, layer in enumerate(layers) for name in layer.modules}
+    if source not in depth or target not in depth:
+        return True
+    if depth[source] == depth[target]:
+        return not layers[depth[source]].independent
+    return depth[target] > depth[source]
+
+
+def _module_path(path: Path) -> tuple[str, ...]:
+    """Return a C++ path's module components, extension dropped and aliases applied."""
+    parts = [*path.parent.parts, path.stem]
+    return tuple(_CPP_MODULE_ALIASES.get(part, part) for part in parts if part)
+
+
+def check_cpp_internal(
+    root: Path, orders: dict[tuple[str, ...], list[Layer]]
+) -> Iterator[Violation]:
+    """Check C++ includes inside each rung against the internal layers contracts.
+
+    Parameters
+    ----------
+    root : pathlib.Path
+        The repository root.
+    orders : dict of tuple of str to list of Layer
+        The internal contracts, from :func:`internal_orders`.
+
+    Yields
+    ------
+    Violation
+        Each include of a module the including module may not import.
+    """
+    for module_root in _CPP_MODULE_ROOTS:
+        base = root / module_root
+        if not base.is_dir():
+            continue
+        for source in sorted(p for p in base.rglob("*") if p.suffix in _CPP_SUFFIXES):
+            relative = source.relative_to(base)
+            here = _module_path(relative)
+            text = source.read_text()
+            for match in _ANY_INCLUDE.finditer(text):
+                bracket, name = match.groups()
+                if name.startswith(f"{_PACKAGE}/"):
+                    target = _module_path(Path(name).relative_to(_PACKAGE))
+                elif bracket == '"':
+                    target = _module_path(relative.parent / name)
+                else:
+                    continue  # a system or third-party header
+                line = text.count("\n", 0, match.start()) + 1
+                yield from _check_include(
+                    here, target, orders, f"{source.relative_to(root)}:{line}"
+                )
+
+
+def _check_include(
+    here: tuple[str, ...],
+    target: tuple[str, ...],
+    orders: dict[tuple[str, ...], list[Layer]],
+    location: str,
+) -> Iterator[Violation]:
+    """Check one include against every container both modules sit inside."""
+    for container, layers in orders.items():
+        depth = len(container)
+        if here[:depth] != container or target[:depth] != container:
+            continue
+        if len(here) <= depth or len(target) <= depth:
+            continue  # a container's own facade (ba.hpp) is above its modules
+        source, dest = here[depth], target[depth]
+        if source != dest and not _may_import(layers, source, dest):
+            where = ".".join(container)
+            yield Violation(location, f"in {where}, {source!r} may not include {dest!r}")
 
 
 def _check_rung(name: str, location: str, allowed: dict[str, frozenset[str]]) -> Violation | None:
@@ -317,8 +447,13 @@ def main(argv: list[str]) -> int:
         0 if the layering holds in C++ and Rust, 1 otherwise.
     """
     root = Path(argv[0]) if argv else Path(__file__).resolve().parent.parent
-    allowed = allowed_dependencies(tomllib.loads((root / "pyproject.toml").read_text()))
-    violations = [*check_cpp(root, allowed), *check_rust(root, allowed)]
+    pyproject = tomllib.loads((root / "pyproject.toml").read_text())
+    allowed = allowed_dependencies(pyproject)
+    violations = [
+        *check_cpp(root, allowed),
+        *check_cpp_internal(root, internal_orders(pyproject)),
+        *check_rust(root, allowed),
+    ]
     for violation in violations:
         print(f"{violation.location}: {violation.message}")
     if violations:
