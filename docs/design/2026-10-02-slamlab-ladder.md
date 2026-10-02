@@ -205,6 +205,35 @@ Each component gets a note in `docs/notes/<component>.md`, written as it is buil
 the problem, the maths, the design choices and their alternatives, how it was checked, and what
 was learned. The notes double as showcase content when the repo goes public.
 
+## Review process
+
+Code is reviewed in two layers. The full rules are in `CLAUDE.md`.
+
+- **Layer 1, every PR:** `scripts/check.sh` runs deterministic checks in all three languages,
+  locally and in CI:
+  - documentation present and well-formed: numpy-style in Python, Doxygen in C++, rustdoc in
+    Rust;
+  - type hints (`mypy --strict`);
+  - lint and formatting;
+  - dependency rules (import-linter);
+  - duplication (jscpd);
+  - every test suite.
+- **Layer 2, the review panel (`/review-panel`),** on PATCH-or-larger changes: three
+  reviewer agents in `.claude/agents/`:
+  - **hygiene:** cleanliness, readability, documentation quality;
+  - **architecture:** modularity, the language split, the ladder's progression by compute
+    budget;
+  - **algorithm:** correctness against standard formulations, numerical robustness, and the
+    state of the art, with citations.
+
+  All three call out code that is not production quality. A smaller change can run one
+  reviewer alone.
+- **Results are documented and decided together.** Each run's report is saved in
+  `docs/reviews/` and committed with the PR. The owner decides the action on every finding;
+  the report records each resolution.
+- **PR descriptions record the agentic process** (`.github/pull_request_template.md`): which
+  agents did what, the panel's verdicts, and the owner's decisions.
+
 ## Licensing and publication
 
 - The repo is **private**. It goes public together with reifyscene, as one decision, and only on

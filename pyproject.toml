@@ -33,8 +33,50 @@ input = "VERSION"
 regex = '(?P<value>\d+\.\d+\.\d+\.\d+)'
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "src"]
+# Docstring Examples are run as tests so they cannot go stale.
+addopts = "--doctest-modules"
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.ruff.lint]
+# D: docstrings (numpy convention) on every module, class and function.
+# ANN: type hints on every signature. The rest: correctness, idiom, naming, imports.
+select = ["E", "W", "F", "I", "N", "D", "ANN", "B", "UP", "SIM", "RUF", "PL", "PT", "NPY"]
+ignore = [
+  "PLR2004",  # magic values in comparisons: too noisy for numerical code with tolerances
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.lint.per-file-ignores]
+# pytest fixtures and parametrised arguments are documented by the test's docstring.
+"tests/**" = ["ANN001", "ANN201", "PLR0913"]
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+files = ["src/slamlab", "tests"]
+
+[[tool.mypy.overrides]]
+# Compiled extensions ship no type stubs yet.
+module = ["slamlab._cpp", "slamlab_rs"]
+ignore_missing_imports = true
+
+[tool.importlinter]
+root_packages = ["slamlab"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "slamlab never imports reifyscene (the dependency runs one way)"
+type = "forbidden"
+source_modules = ["slamlab"]
+forbidden_modules = ["reifyscene"]
+
+[[tool.importlinter.contracts]]
+name = "Algorithms never depend on the backend selector above them"
+type = "layers"
+layers = ["slamlab.backends", "slamlab.so3"]

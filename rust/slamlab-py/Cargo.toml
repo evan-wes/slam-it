@@ -13,3 +13,6 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = "0.29.3"
 slamlab-core = { path = "../slamlab-core" }
+
+[lints]
+workspace = true

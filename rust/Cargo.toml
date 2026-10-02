@@ -6,3 +6,15 @@ members = ["slamlab-core", "slamlab-py"]
 edition = "2024"
 license = "PolyForm-Noncommercial-1.0.0"
 publish = false
+
+# Every crate inherits these with `[lints] workspace = true`. The documentation standard
+# matches Python's numpy-style: every item, public or private, is documented.
+[workspace.lints.rust]
+missing_docs = "deny"
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+missing_docs_in_private_items = "deny"
+missing_errors_doc = "deny"
+missing_panics_doc = "deny"

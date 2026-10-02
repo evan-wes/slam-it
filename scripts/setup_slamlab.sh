@@ -5,8 +5,9 @@ set -euo pipefail
 #
 # Two layers, as in reifyscene's setup:
 # - conda layer (conda-forge): Python and the native toolchain -- cmake, ninja, a C++
-#   compiler, and Rust (cargo/rustc). Nothing is installed system-wide; removing the
-#   env removes the toolchain.
+#   compiler, Rust (cargo/rustc) -- plus the layer-1 check tools: clang-format/clang-tidy
+#   (with clang's own headers), doxygen, and Node.js for jscpd. Nothing is installed
+#   system-wide; removing the env removes the toolchain.
 # - pip layer: build backends and Python dependencies, installed from
 #   scripts/locks/slamlab.lock by default (pass --unlocked to re-resolve).
 #
@@ -22,6 +23,8 @@ set -euo pipefail
 ENV_NAME="slamlab"
 PYTHON_VERSION="3.11"   # matches reifyscene's env, which also imports slamlab
 UNLOCKED=0
+CLANG_VERSION="23.1.2"
+JSCPD_VERSION="5.4.0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -40,14 +43,17 @@ if [[ ! -x "${CONDA_BIN}" ]]; then
   exit 1
 fi
 
+# clang and clang-tools pinned together: clang-tidy needs clang's resource headers.
+CONDA_PACKAGES=(cmake ninja cxx-compiler rust "clang-tools=${CLANG_VERSION}" "clang=${CLANG_VERSION}"
+  doxygen nodejs)
+
 # --- conda layer ---------------------------------------------------------------
 if "${CONDA_BIN}" env list | awk '{print $1}' | grep -qx "${ENV_NAME}"; then
   echo "conda env '${ENV_NAME}' exists; updating its toolchain."
-  "${CONDA_BIN}" install -y -n "${ENV_NAME}" -c conda-forge \
-    cmake ninja cxx-compiler rust
+  "${CONDA_BIN}" install -y -n "${ENV_NAME}" -c conda-forge "${CONDA_PACKAGES[@]}"
 else
   "${CONDA_BIN}" create -y -n "${ENV_NAME}" -c conda-forge \
-    "python=${PYTHON_VERSION}" cmake ninja cxx-compiler rust
+    "python=${PYTHON_VERSION}" "${CONDA_PACKAGES[@]}"
 fi
 
 # conda-forge's compilers ship no activation script that sets CC/CXX, so CMake would
@@ -65,8 +71,10 @@ if [[ ${UNLOCKED} -eq 0 && -f "${LOCK_FILE}" ]]; then
 else
   run python -m pip install \
     "scikit-build-core>=0.10" "nanobind>=2.0" "maturin>=1.7" \
-    "numpy>=1.26" "pytest>=8.0" "ruff>=0.6"
+    "numpy>=1.26" "pytest>=8.0" "ruff>=0.6" "mypy>=1.10" "import-linter>=2.0"
 fi
+# jscpd (duplication detection) installs into the env's own Node prefix.
+run npm install -g --silent "jscpd@${JSCPD_VERSION}"
 
 # --- slamlab -------------------------------------------------------------------
 # --no-build-isolation: the editable C++ build rebuilds on import, so its build

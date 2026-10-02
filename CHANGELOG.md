@@ -4,6 +4,48 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.1.2.0] - 2026-10-02
+
+### Added
+
+- **Review process in two layers.**
+
+  **Layer 1** (`scripts/check.sh`) runs on every PR, locally and in CI. It holds all three
+  languages to one standard:
+  - Python: numpy-style docstrings, full type hints and `mypy --strict`, through ruff;
+  - C++: clang-format, clang-tidy, and a Doxygen run that fails on any undocumented
+    declaration;
+  - Rust: rustfmt, and clippy pedantic with `missing_docs` on private items too;
+  - all three: jscpd duplication detection and import-linter dependency contracts
+    (slamlab never imports reifyscene; algorithms never depend on the backend selector).
+
+  CI now builds the conda env with `setup_slamlab.sh` and runs the same script, so it also
+  proves the env reproduces from scratch.
+
+  **Layer 2** (`/review-panel`) runs on PATCH-or-larger changes, with three reviewer agents in
+  `.claude/agents/`:
+  - hygiene (Sonnet);
+  - architecture (Opus): modularity, the language split, the ladder by compute budget;
+  - algorithm (Opus, with web search): correctness, numerical robustness, the state of the
+    art.
+
+  All three flag code that is not production quality. A reviewer can run alone on a smaller
+  change. Reports are saved in `docs/reviews/`, and every finding's resolution is decided by
+  the owner and recorded there.
+
+- **Process documents.**
+  - A PR template whose "How this was built" section records the agentic workflow.
+  - A project `CLAUDE.md` with the conventions, review rules and merge rule.
+
+### Changed
+
+- **Scaffold brought up to the standard.**
+  - Numpy-style docstrings, Doxygen and rustdoc throughout.
+  - Every backend now rejects input that is not a 3-vector, through one shared check,
+    `slamlab.so3.as_vec3`. jscpd caught the duplicated check this replaced.
+  - Docstring examples run as tests.
+  - Python tests: 14 -> 24.
+
 ## [0.1.1.0] - 2026-10-02
 
 ### Added

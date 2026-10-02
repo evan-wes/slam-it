@@ -1,3 +1,6 @@
-//! slamlab's Rust core. Builds standalone (no Python) for the edge budgets.
+//! slamlab's Rust core.
+//!
+//! Builds standalone, without Python, for the edge compute budgets. The Python bindings
+//! live in the separate `slamlab-py` crate.
 
 pub mod so3;

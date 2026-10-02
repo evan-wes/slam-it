@@ -1,0 +1,24 @@
+# Correctness, performance and modern-C++ checks. Documentation presence is checked by
+# Doxygen (see Doxyfile), which clang-tidy has no check for.
+Checks: >
+  bugprone-*,
+  performance-*,
+  modernize-*,
+  readability-*,
+  misc-*,
+  cppcoreguidelines-*,
+  -modernize-use-trailing-return-type,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-pro-bounds-constant-array-index,
+  -misc-include-cleaner,
+  -readability-math-missing-parentheses,
+  -readability-trailing-comma,
+  -cppcoreguidelines-pro-bounds-avoid-unchecked-container-access
+# readability-math-missing-parentheses: would demand (a*b) + (c*d) throughout numerical code.
+# readability-trailing-comma: forces {{ ... }, } nesting on brace-initialised matrices.
+# pro-bounds-avoid-unchecked-container-access: flags literal indices into fixed-size arrays
+#   (v[0] on std::array<double, 3>); .at() would add runtime checks to the hottest code.
+WarningsAsErrors: '*'
+HeaderFilterRegex: 'cpp/(include|src)/.*'
