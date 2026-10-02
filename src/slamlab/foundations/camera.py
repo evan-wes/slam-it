@@ -86,6 +86,25 @@ def _model_and_intrinsics(model: str, intrinsics: ArrayLike) -> tuple[int, NDArr
     return code, params
 
 
+def check_intrinsics(model: str, intrinsics: ArrayLike) -> None:
+    """Raise unless ``intrinsics`` is a valid vector for ``model``.
+
+    Parameters
+    ----------
+    model : str
+        A model from :data:`MODELS`.
+    intrinsics : array_like
+        The intrinsics vector.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If the model is unknown, the vector has the wrong length or is not finite, or a
+        focal length is not positive.
+    """
+    _model_and_intrinsics(model, intrinsics)
+
+
 def _points_in_front(points: ArrayLike) -> tuple[NDArray[np.float64], tuple[int, ...]]:
     """Validate points in the camera frame, all in front of the camera."""
     flat, lead = as_batch(points, (3,), "points")

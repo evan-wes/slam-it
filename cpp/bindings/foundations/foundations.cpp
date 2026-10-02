@@ -15,6 +15,8 @@ void bind_foundations(nanobind::module_& parent) {
   nanobind::module_ alignment =
       foundations.def_submodule("alignment", "Point-set alignment (Umeyama).");
   bind_alignment(alignment);
+  nanobind::module_ ba = foundations.def_submodule("ba", "Bundle adjustment.");
+  bind_ba(ba);
 }
 
 }  // namespace slamlab::bindings

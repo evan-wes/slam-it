@@ -333,6 +333,37 @@ class Problem(Protocol[StateT]):
         ...
 
 
+def cholesky_solve(
+    matrix: NDArray[np.float64], rhs: NDArray[np.float64]
+) -> NDArray[np.float64] | None:
+    """Solve a symmetric positive-definite system by Cholesky.
+
+    Parameters
+    ----------
+    matrix : ndarray of float64, shape (n, n)
+        The matrix.
+    rhs : ndarray of float64, shape (n,)
+        The right-hand side.
+
+    Returns
+    -------
+    ndarray of float64, shape (n,), or None
+        The solution, or ``None`` if the factorisation fails (the matrix is not positive
+        definite), which a damped solver treats as a rejected step, not an error.
+
+    Examples
+    --------
+    >>> cholesky_solve(np.array([[4.0, 2.0], [2.0, 3.0]]), np.array([2.0, 1.0])).tolist()
+    [0.5, 0.0]
+    """
+    try:
+        lower = np.linalg.cholesky(matrix)
+    except np.linalg.LinAlgError:
+        return None
+    # NumPy has no triangular solver; these solves use the factor's two triangles.
+    return np.asarray(np.linalg.solve(lower.T, np.linalg.solve(lower, rhs)))
+
+
 @dataclass(frozen=True)
 class DenseSystem:
     """Normal equations formed densely from a full Jacobian, factored by Cholesky.
@@ -402,13 +433,7 @@ class DenseSystem:
         ndarray of float64, shape (n,), or None
             The step, or ``None`` if the damped system is not positive definite.
         """
-        system = self.hessian + np.diag(damping)
-        try:
-            lower = np.linalg.cholesky(system)
-        except np.linalg.LinAlgError:
-            return None
-        # NumPy has no triangular solver; these solves use the factor's two triangles.
-        return np.asarray(-np.linalg.solve(lower.T, np.linalg.solve(lower, self.gradient)))
+        return cholesky_solve(self.hessian + np.diag(damping), -self.gradient)
 
 
 @dataclass(frozen=True)

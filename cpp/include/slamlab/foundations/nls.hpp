@@ -148,15 +148,15 @@ struct Iteration {
 /// @brief How a solve went.
 struct SolveSummary {
   /// @brief The cost at the start.
-  double initial_cost;
+  double initial_cost = 0.0;
   /// @brief The cost at the returned state.
-  double final_cost;
+  double final_cost = 0.0;
   /// @brief Steps tried, accepted or not.
-  int iterations;
+  int iterations = 0;
   /// @brief Why the solve stopped.
-  Termination termination;
+  Termination termination = Termination::kMaxIterations;
   /// @brief Whether `termination` counts as converged.
-  bool converged;
+  bool converged = false;
   /// @brief Every step tried, in order.
   std::vector<Iteration> trace;
 };

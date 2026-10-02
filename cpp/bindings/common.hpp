@@ -77,20 +77,23 @@ inline void check_aligned(const double* data) {
   }
 }
 
-/// @brief Allocate a new float64 numpy array of the given shape, owning its buffer.
+/// @brief Allocate a new numpy array of the given shape, owning its buffer.
+/// @tparam T The element type (float64 unless stated).
 /// @param shape The array's shape.
 /// @return The array and a pointer to its (row-major) data.
-inline std::pair<ArrayOut, double*> new_array(std::initializer_list<std::size_t> shape) {
+template <typename T = double>
+std::pair<nanobind::ndarray<nanobind::numpy, T>, T*> new_array(
+    std::initializer_list<std::size_t> shape) {
   std::size_t size = 1;
   for (const std::size_t d : shape) {
     size *= d;
   }
   // The capsule owns the buffer and frees it when numpy releases the array.
-  auto* data = new double[size == 0 ? 1 : size]();  // NOLINT(cppcoreguidelines-owning-memory)
+  auto* data = new T[size == 0 ? 1 : size]();  // NOLINT(cppcoreguidelines-owning-memory)
   const nanobind::capsule owner(data, [](void* p) noexcept {
-    delete[] static_cast<double*>(p);  // NOLINT(cppcoreguidelines-owning-memory)
+    delete[] static_cast<T*>(p);  // NOLINT(cppcoreguidelines-owning-memory)
   });
-  return {ArrayOut(data, shape.size(), shape.begin(), owner), data};
+  return {nanobind::ndarray<nanobind::numpy, T>(data, shape.size(), shape.begin(), owner), data};
 }
 
 /// @brief A fixed-size item as stored in a row-major numpy batch (vectors are columns).

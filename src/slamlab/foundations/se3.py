@@ -90,8 +90,19 @@ class Implementation(Protocol):
 # --- validation ---------------------------------------------------------------------------
 
 
-def _check_transform(transform: NDArray[np.float64]) -> None:
-    """Raise unless every (4, 4) matrix in the (N, 4, 4) batch is a rigid transform."""
+def check_transform(transform: NDArray[np.float64]) -> None:
+    """Raise unless every (4, 4) matrix in a batch is a rigid transform.
+
+    Parameters
+    ----------
+    transform : ndarray of float64, shape (N, 4, 4)
+        The transforms.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If a last row is not ``[0, 0, 0, 1]`` or a rotation block is not a rotation.
+    """
     bottom = transform[:, 3, :] - np.array([0.0, 0.0, 0.0, 1.0])
     if np.any(np.abs(bottom) > BOTTOM_ROW_TOLERANCE):
         raise InvalidInputError("transform: last row is not [0, 0, 0, 1]")
@@ -103,7 +114,7 @@ def _transform_batch(
 ) -> tuple[NDArray[np.float64], tuple[int, ...]]:
     """Validate and flatten a batch of transforms."""
     flat, lead = as_batch(value, (4, 4), name)
-    _check_transform(flat)
+    check_transform(flat)
     return flat, lead
 
 
