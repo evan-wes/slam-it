@@ -3,11 +3,15 @@
 import-linter enforces the layering for Python. This script enforces the same rules for
 the other two languages, reading the same contracts, so the three can never disagree:
 
-- C++: every ``#include "slamlab/<rung>/..."`` in ``cpp/{include/slamlab,src,tests,
-  bindings}/<rung>/`` must name the file's own rung or one it may depend on, and every
-  ``slamlab_add_rung(<rung> DEPENDS ...)`` in ``CMakeLists.txt`` may only link those.
-- Rust: each per-rung crate ``rust/slamlab-<rung>`` may only depend on the crates of the
-  rungs it may depend on.
+- C++: every ``#include "slamlab/<rung>/..."`` or ``#include <slamlab/<rung>/...>`` in
+  ``cpp/{include/slamlab,src,tests,bindings}/<rung>/`` must name the file's own rung or one
+  it may depend on; no C++ source may sit outside a rung directory (except the bindings'
+  root, which only wires the rungs); and every ``slamlab_add_rung(<rung> DEPENDS ...)`` in
+  ``CMakeLists.txt`` may only link the rungs it may depend on.
+- Rust: every workspace member except the ``slamlab-py`` bindings crate is a rung crate named
+  ``slamlab-<rung>``, and may only depend -- in any dependency table, including
+  dev/build/target-specific ones, and through renamed (``package = ...``) entries -- on the
+  crates of the rungs it may depend on.
 
 A rung may depend on the rungs in lower layers, never on a sibling in its own layer, and
 never on a rung a forbidden contract names. Directories and crates must belong to a rung
@@ -30,10 +34,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-_INCLUDE = re.compile(r'^\s*#\s*include\s+"slamlab/([a-z_]+)/', re.MULTILINE)
+_INCLUDE = re.compile(r"^\s*#\s*include\s*[<\"]slamlab/([a-z_]+)/", re.MULTILINE)
 _ADD_RUNG = re.compile(r"slamlab_add_rung\(\s*([a-z_]+)([^)]*)\)")
 _CPP_RUNG_ROOTS = ("cpp/include/slamlab", "cpp/src", "cpp/tests", "cpp/bindings")
 _CPP_SUFFIXES = frozenset({".hpp", ".cpp", ".h", ".cc"})
+_CPP_ROOT_FILES_ALLOWED = frozenset({"cpp/bindings"})
+"""Rung roots whose top level may hold files: the bindings' root only wires the rungs."""
+_DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
+_BINDINGS_CRATE = "slamlab-py"
 _PACKAGE = "slamlab"
 _NON_RUNG_PACKAGES = frozenset({"backends"})
 """Layers that are Python plumbing, with no C++ or Rust counterpart."""
@@ -134,11 +142,16 @@ def check_cpp(root: Path, allowed: dict[str, frozenset[str]]) -> Iterator[Violat
 
 
 def _check_cpp_includes(root: Path, allowed: dict[str, frozenset[str]]) -> Iterator[Violation]:
-    """Check every ``#include "slamlab/<rung>/..."`` under the per-rung C++ directories."""
+    """Check every slamlab include under the per-rung C++ directories, and stray files."""
     for rung_root in _CPP_RUNG_ROOTS:
         base = root / rung_root
         if not base.is_dir():
             continue
+        if rung_root not in _CPP_ROOT_FILES_ALLOWED:
+            for stray in sorted(p for p in base.iterdir() if p.suffix in _CPP_SUFFIXES):
+                yield Violation(
+                    str(stray.relative_to(root)), "C++ source outside any rung directory"
+                )
         for rung_dir in sorted(p for p in base.iterdir() if p.is_dir()):
             rung = rung_dir.name
             bad_dir = _check_rung(rung, f"{rung_root}/{rung}", allowed)
@@ -187,27 +200,57 @@ def check_rust(root: Path, allowed: dict[str, frozenset[str]]) -> Iterator[Viola
     Yields
     ------
     Violation
-        Each forbidden crate dependency, or rung crate outside any rung.
+        Each forbidden crate dependency, or workspace crate outside any rung.
     """
-    rust = root / "rust"
-    if not rust.is_dir():
-        return
-    for manifest in sorted(rust.glob("slamlab-*/Cargo.toml")):
-        crate = manifest.parent.name
-        if crate == "slamlab-py":  # the bindings crate may use every rung crate
+    for manifest_path in _workspace_manifests(root / "rust"):
+        manifest = tomllib.loads(manifest_path.read_text())
+        crate = manifest["package"]["name"]
+        if crate == _BINDINGS_CRATE:  # the bindings crate may use every rung crate
             continue
+        location = str(manifest_path.relative_to(root))
         rung = crate.removeprefix("slamlab-").replace("-", "_")
-        location = str(manifest.relative_to(root))
-        bad_rung = _check_rung(rung, location, allowed)
+        bad_rung = (
+            _check_rung(rung, location, allowed)
+            if crate.startswith("slamlab-")
+            else (Violation(location, f"crate {crate!r} is not named slamlab-<rung>"))
+        )
         if bad_rung:
             yield bad_rung
             continue
-        dependencies = tomllib.loads(manifest.read_text()).get("dependencies", {})
-        for dep in dependencies:
-            if dep.startswith("slamlab-"):
+        for dep in _dependency_names(manifest):
+            if dep.startswith("slamlab-") and dep != crate:
                 target = dep.removeprefix("slamlab-").replace("-", "_")
                 if target not in allowed[rung]:
                     yield Violation(location, f"rung {rung!r} may not depend on crate {dep!r}")
+
+
+def _workspace_manifests(rust: Path) -> list[Path]:
+    """Return the ``Cargo.toml`` of every workspace member (glob members expanded)."""
+    workspace = rust / "Cargo.toml"
+    if not workspace.is_file():
+        return []
+    members = tomllib.loads(workspace.read_text()).get("workspace", {}).get("members", [])
+    return sorted(
+        path / "Cargo.toml"
+        for member in members
+        for path in rust.glob(member)
+        if (path / "Cargo.toml").is_file()
+    )
+
+
+def _dependency_names(manifest: dict[str, Any]) -> Iterator[str]:
+    """Yield the real crate name of every dependency, in every table of a manifest.
+
+    Covers ``[dependencies]``, ``[dev-dependencies]``, ``[build-dependencies]`` and their
+    ``[target.<cfg>.*]`` forms; a renamed entry (``alias = { package = "real" }``) yields
+    the real name.
+    """
+    tables = [manifest.get(name, {}) for name in _DEPENDENCY_TABLES]
+    for target in manifest.get("target", {}).values():
+        tables.extend(target.get(name, {}) for name in _DEPENDENCY_TABLES)
+    for table in tables:
+        for key, spec in table.items():
+            yield spec.get("package", key) if isinstance(spec, dict) else key
 
 
 def main(argv: list[str]) -> int:

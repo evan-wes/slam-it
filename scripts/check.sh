@@ -71,7 +71,8 @@ check "C++ tests (ctest)" ctest --test-dir build/native --output-on-failure
 check "rustfmt" cargo fmt --manifest-path rust/Cargo.toml --all --check
 check "clippy (pedantic, missing docs)" \
   cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets
-check "Rust tests" cargo test --manifest-path rust/Cargo.toml -p slamlab-foundations
+# Every rung crate; the cdylib bindings crate cannot be tested standalone.
+check "Rust tests" cargo test --manifest-path rust/Cargo.toml --workspace --exclude slamlab-py
 
 # All languages
 check "jscpd (duplication)" jscpd --config .jscpd.json

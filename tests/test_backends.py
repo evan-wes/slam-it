@@ -9,6 +9,7 @@ import pkgutil
 from collections.abc import Iterator
 from types import ModuleType
 
+import numpy as np
 import pytest
 
 import slamlab
@@ -190,9 +191,15 @@ def test_every_compiled_module_matches_its_protocol(name: str) -> None:
     provide exactly the Protocol's functions, each with the Protocol's parameter names.
     This is the check that keeps bindings and their Python contract from drifting.
     """
-    extension = importlib.import_module(_EXTENSION_ROOTS[require_backend(name)])
-    # Walk from slamlab's rung packages, the tree the extension submodules mirror.
+    root_name = _EXTENSION_ROOTS[require_backend(name)]
+    extension = importlib.import_module(root_name)
+    # Walk from slamlab's rung packages, the tree the extension submodules mirror. Every
+    # top-level submodule must be one of them (a misnamed one would otherwise go unchecked);
+    # maturin's package re-exports the native module under the extension's own name.
     rungs = [m.name for m in pkgutil.iter_modules(slamlab.__path__) if m.ispkg]
+    top_level = {k for k, v in vars(extension).items() if isinstance(v, ModuleType)}
+    stray = top_level - set(rungs) - {root_name.rsplit(".", 1)[-1]}
+    assert not stray, f"{name} extension submodules match no slamlab rung: {sorted(stray)}"
     found = [
         item
         for rung in rungs
@@ -212,3 +219,20 @@ def test_every_compiled_module_matches_its_protocol(name: str) -> None:
             ]
             got = _parameter_names(getattr(compiled, member))
             assert got == expected, f"{name}:{path}.{member} parameters {got} != {expected}"
+
+
+@pytest.mark.parametrize("name", ["cpp", "rust"])
+@pytest.mark.parametrize(
+    "bad",
+    [np.array([1.0, 2.0, 3.0], dtype=np.float32), np.arange(6.0)[::2]],
+    ids=["float32", "strided"],
+)
+def test_compiled_bindings_refuse_unconverted_input(name: str, bad: object) -> None:
+    """Both raw bindings refuse anything but a contiguous float64 array, never copying it.
+
+    So a direct caller, or a benchmark, pays no hidden conversion in either language; the
+    Python entry points validate and convert before calling.
+    """
+    impl = backends.implementation(require_backend(name), "slamlab.foundations.so3")
+    with pytest.raises((TypeError, ValueError)):
+        impl.hat(bad)

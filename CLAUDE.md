@@ -39,6 +39,8 @@ structure.
 - **Error contract:** fallible core functions return C++23 `std::expected<T, Error>` /
   Rust `Result<T, Error>` with one shared kind list (InvalidInput, Degenerate,
   NotConverged); Python raises the matching `slamlab.foundations.errors` exception.
+  Iterative solvers return their best estimate plus a solve summary (iterations, costs,
+  converged flag, termination reason); `NotConverged` is only for strict mode or divergence.
 - **Each algorithm validates its input once** (shared checks in
   `slamlab.foundations.arrays`), then computes with the Python reference or dispatches via
   its `backend=` argument. `slamlab.backends` only locates compiled implementations.

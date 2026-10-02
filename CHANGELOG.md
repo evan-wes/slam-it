@@ -36,22 +36,30 @@ with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
   - A PR template whose "How this was built" section records the agentic workflow.
   - A project `CLAUDE.md` with the conventions, layout, review rules and merge rule.
 
-- **The panel reviewed this change twice** (`docs/reviews/2026-10-02-feature-review-panel.md`).
-  Run 1 found 31 findings, 1 of them must-fix; run 2 found 19 more, none must-fix. The owner
-  chose to resolve all of them here, so the first version satisfies all three reviewers. The
-  changes below are that work.
+- **The panel reviewed this change three times** (`docs/reviews/2026-10-02-feature-review-panel.md`).
+  - Run 1: 31 findings, 1 of them must-fix.
+  - Run 2: 19 findings, none must-fix.
+  - Run 3: all three reviewers stated the first version satisfies them, and raised 7 smaller
+    items.
+
+  The owner chose to resolve every finding here. The changes below are that work.
 
 - **C++ and Rust enforce the ladder too.**
   - One C++ library per rung (`slamlab_foundations`) and one Rust crate per rung
     (`slamlab-foundations`, previously `slamlab-core`).
   - `scripts/check_layers.py` reads import-linter's contracts from `pyproject.toml` and
-    fails layer 1 on a forbidden cross-rung `#include`, CMake link or crate dependency.
+    fails layer 1 on a forbidden cross-rung include, CMake link or crate dependency. It
+    covers quoted and angle-bracket includes, sources outside any rung, every Cargo
+    dependency table (dev, build, target) and renamed crates, with a test for each form.
+  - `check.sh` tests every rung crate: `cargo test --workspace`.
 
 - **An error contract shared by the three languages.**
   - C++23 `std::expected<T, Error>` and Rust `Result<T, Error>`, with one list of kinds:
     `InvalidInput`, `Degenerate` and `NotConverged`.
   - Python raises the matching exception from `slamlab.foundations.errors`. `as_vec3` now
     raises `InvalidInputError`.
+  - Iterative solvers will return their best estimate plus a solve summary, as in Ceres and
+    SciPy. `NotConverged` is kept for strict mode or divergence (design doc).
 
 ### Changed
 
@@ -72,7 +80,8 @@ with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
     - slamlab never imports reifyscene.
 
 - **Bindings take and return float64 numpy arrays** (nanobind `ndarray`, the Rust `numpy`
-  crate), so batched data will cross without per-element Python objects. They are one file
+  crate), so batched data will cross without per-element Python objects. Both refuse
+  anything else rather than silently converting it. They are one file
   per module, with thin roots that only wire the rungs.
 
 - **Dispatch moved next to each algorithm.**

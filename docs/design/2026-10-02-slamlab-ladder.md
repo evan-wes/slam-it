@@ -104,6 +104,17 @@ and a possible later phone target.
   (`InvalidInputError`, `DegenerateError`, `NotConvergedError`, all `ValueError`
   subclasses). The Python reference raises the same ones, so every language fails the same
   way. The binding translation helper arrives with the first fallible function.
+- **Iterative solvers return their best estimate with a summary,** not an error.
+  - This covers Gauss-Newton, Levenberg-Marquardt, BA, and RANSAC with an adaptive iteration
+    count. Each returns the estimate together with a solve summary: iterations, initial and
+    final cost, a converged flag, and the termination reason (converged, iteration cap,
+    no progress).
+  - A capped but improved solve is a normal, usable result: real-time BA is capped by
+    design. Ceres Solver's `Solver::Summary` and SciPy's `least_squares` status follow the
+    same pattern.
+  - `NotConverged` is reserved for a caller-requested strict mode, and for runs that
+    diverge or fail with no usable estimate. `InvalidInput` and `Degenerate` remain hard
+    errors.
 
 ## Package layout
 
@@ -359,6 +370,14 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
 
 - **Final name**, before going public.
 - **Exact budget numbers**, from published device specs.
+- **Milestone 1 tasks carried from the review panel:**
+  - When the first fallible function lands, add the bindings' error translation, with a
+    parity test that every error kind raises the matching Python exception from both
+    bindings.
+  - The `exp`/`log` fixtures cover the hard cases: angle near 0 (Taylor branch), near pi
+    (axis sign ambiguous at exactly pi), above pi (wrap), and non-orthonormal input to
+    `log`.
+  - The first solver defines the solve-summary type shared by the three languages.
 - **GPU and budget test runs:** their opt-in scripts and the light edge environment arrive
   with the first PyTorch rung (milestone 5) and the budget harness (milestone 7).
 - **Linear algebra in rung 0:** write our own small matrix types, or use Eigen (C++) and

@@ -561,3 +561,174 @@ findings in run 2.
 - Citations in `.claude/agents/algorithm-reviewer.md` are accurate: Hartley TPAMI 1997; Nistér TPAMI 2004; Fischler & Bolles CACM 1981; Lepetit, Moreno-Noguer & Fua IJCV 2009; Strasdat, Montiel & Davison RSS 2010; Umeyama TPAMI 1991; Sturm et al. IROS 2012; Gálvez-López & Tardós T-RO 2012; Teed, Lipson & Deng (DPVO) NeurIPS 2023; Forster et al. T-RO 2017; Teed & Deng (DROID-SLAM) NeurIPS 2021; Li et al. (MegaSaM) CVPR 2025; Murai, Dexheimer & Davison (MASt3R-SLAM) CVPR 2025, arXiv:2412.12392; and Wang et al., Shape of Motion, ICCV 2025, pp. 9660-9672, arXiv:2407.13764 — confirmed on [CVF open access](https://openaccess.thecvf.com/content/ICCV2025/html/Wang_Shape_of_Motion_4D_Reconstruction_from_a_Single_Video_ICCV_2025_paper.html) and [arXiv](https://arxiv.org/abs/2407.13764). One small imprecision: "ORB-SLAM papers (Mur-Artal et al.)" — correct for ORB-SLAM/ORB-SLAM2, but ORB-SLAM3 is Campos et al., T-RO 2021 (optional wording fix).
 - The `third_party/` paths in the role definition exist in reifyscene (`shape-of-motion/preproc/DROID-SLAM`, `vggt`, `VGGT-Long`, `Hierarchical-Localization`).
 - New checklist items are standard and correctly stated. For milestone 1, "log returns angles in [0, π]" should also mention that at exactly π the axis is ambiguous up to sign, so parity checks must accept ±ω there.
+
+## Run 3 -- 2026-10-02
+
+| | |
+|---|---|
+| **Branch** | `feature/review-panel` |
+| **Range** | `874db0f...966d820` (base: `origin/develop`) |
+| **Reviewers** | hygiene (sonnet), architecture (opus), algorithm (opus) |
+| **How they ran** | general-purpose agents carrying each `.claude/agents/*.md` role and model |
+| **Layer 1** | all 16 checks passed (`scripts/check.sh`) |
+| **Process note** | All three reviewers stayed read-only. |
+
+**Run 2 status:** all 19 findings resolved. **All three reviewers state that this first
+version satisfies them.** No must-fix findings; two should-fix gaps in the new enforcement
+tooling and four notes.
+
+### Findings and resolutions
+
+| ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|---|
+| A18 | should-fix | architecture | `scripts/check_layers.py` | Misses `#include <slamlab/...>`, headers directly in `cpp/include/slamlab/`, Cargo dev/build/target dependency tables, renamed (`package =`) crates, and crates not named `slamlab-*` (all demonstrated by probe) | fix, with a fake-repo test per form | fix -- decided by owner (evan-wes), 2026-10-02; pending implementation |
+| A19 | should-fix | architecture | `scripts/check.sh` | Rust tests run for `slamlab-foundations` only; later rung crates would be skipped silently | fix: `cargo test --workspace --exclude slamlab-py` | fix -- decided by owner (evan-wes), 2026-10-02; pending implementation |
+| A20 | note | architecture | `tests/test_backends.py` | A misnamed top-level extension submodule is never visited by the Protocol test | fix: every top-level extension submodule must be a rung package | fix -- decided by owner (evan-wes), 2026-10-02; pending implementation |
+| A21 | note | architecture | `pyproject.toml` | Comment still names `_Implementation` | fix | fix -- decided by owner (evan-wes), 2026-10-02; pending implementation |
+| L14 | note | algorithm | `cpp/bindings/foundations/so3.cpp` | nanobind converts float32/strided input silently (Rust refuses), contradicting the docstring | fix: `.noconvert()` | fix -- decided by owner (evan-wes), 2026-10-02; pending implementation |
+| L15 | note | algorithm | design doc, error contract | `NotConverged` as a hard error discards the best estimate; standard solvers return the estimate plus a status | decide now in the design doc: iterative solvers return estimate + summary | decided: iterative solvers return the estimate plus a summary; NotConverged for strict mode or divergence (design doc) -- decided by owner (evan-wes), 2026-10-02; pending implementation |
+| H21 | note | hygiene | error contract | Binding error translation has no code or test yet (no fallible function exists) | record in the milestone-1 plan | recorded in the design doc's milestone-1 tasks -- decided by owner (evan-wes), 2026-10-02; pending implementation |
+
+### Hygiene review
+
+**Scope:** `git diff 874db0f...966d820` (74 files), with changed Python/C++/Rust/scripts/tests read in full; run-2 fixes in `51c9483` cross-checked against the current tree. Did not re-run `scripts/check.sh` (layer 1 reported green on HEAD).
+**Summary:** All six run-2 findings (H15–H20) are resolved. No new must-fix or should-fix issues; the first version satisfies me. One forward-looking note.
+
+#### Run-2 findings
+- **H15 (test path used `pytest.skip`) — resolved.** `tests/test_backends.py` has no direct `pytest.skip`; every backend-dependent test goes through `require_backend`, which calls `pytest.fail` when the backend is in `SLAMLAB_REQUIRE_BACKENDS` (including `test_missing_implementation_is_reported` and `test_every_compiled_module_matches_its_protocol`). `test_required_backends_are_known` / `test_required_backends_are_available` guard the guard.
+- **H16 (tolerance policy declared, never applied) — resolved.** `tests/conftest.py:assert_matches_fixture` applies the fixture's policy: exact mode requires `rtol`/`atol` = 0 and checks `np.signbit` as well as values; close mode applies the given `rtol`/`atol` (never numpy's defaults); a malformed policy raises. `test_hat_matches_fixture` uses it; `test_fixture_declares_exact_comparison` pins the policy. The fixture grew to 155 lines of cases.
+- **H17 (regex signature parser breaks on nested types) — resolved.** `_parameter_names` strips nested brackets (`_strip_brackets`) and then parses with `ast.parse`; PyO3 falls back to `inspect.signature`.
+- **H18 (`--env` with no value dies obscurely) — resolved.** `scripts/setup_slamlab.sh:32` now fails with `--env needs an environment name` and `exit 2`, and also catches an empty string.
+- **H19 (run-1 resolutions read "pending implementation") — resolved.** The only remaining occurrences are the quoted finding itself; the run-1 table now reads `fixed (51c9483)` with the owner's decision date.
+- **H20 (no test for an unknown backend via `so3.hat`, or the locator's non-module branch) — resolved.** `test_hat_rejects_an_unknown_backend` and `test_hat_reports_an_unbuilt_backend` cover `so3.hat`; the `not-a-module` case (`slamlab.foundations.so3.hat`) covers the locator's non-module branch; `test_module_outside_slamlab_is_an_error` and the broken/absent-extension tests cover the rest.
+
+#### Findings
+
+##### [note] Error-contract translation is documented before any code exercises it
+- **Where:** `cpp/include/slamlab/foundations/error.hpp:1-9`, `rust/slamlab-foundations/src/error.rs:1-6`, `src/slamlab/foundations/errors.py`
+- **Issue:** The docs say the bindings translate an `Error` into the matching Python exception, but no fallible function exists yet (`hat` is infallible), so the mapping has no code and no test.
+- **Why it matters:** The C++/Rust kinds and Python exceptions could drift with nothing to fail until the first fallible rung-0 function lands.
+- **Evidence:** The C++ and Rust error tests only check the types in isolation; neither binding references `ErrorKind`.
+- **Suggested fix:** None now (the scaffold is an explicit placeholder). When the first fallible function lands (milestone 1), add a parity test that each kind raises the matching exception from both bindings.
+
+#### Checked and fine
+- Input validation: `as_vec3` rejects masked arrays, bool, complex, string, None, wrong shape and non-finite values, each with a message naming the bad value; `BAD_INPUTS` covers all of them and runs for every backend.
+- Backend locator: only an absent extension counts as "not built"; real import failures are surfaced unchanged, and the tests assert the exception's identity.
+- Error contract: the three kinds match across Python, C++ (`std::expected`, `[[nodiscard]]` `fail`) and Rust (`Result`); all three are documented, and the C++/Rust core tests exercise success and failure.
+- C++ and Rust cores are numpy-free, `noexcept`, and documented with `@param`/`@return` and `# Arguments`/`# Returns`.
+- `rust/slamlab-py/src/foundations/so3.rs` returns `ValueError` for a non-contiguous or wrong-length array instead of unwrapping.
+- The C++ binding's capsule ownership is sound and its `NOLINT`s are justified.
+- C++ test policy: exact comparisons, because `hat` only copies and negates — the rationale is stated; the Python test's `CROSS_TOLERANCE_EPS` is derived and named.
+- `scripts/check_layers.py` and `tests/test_check_layers.py` cover forbidden includes, downward includes, unknown rung directories, CMake links and Rust crate dependencies, with negative cases; the script derives its rules from the same `pyproject.toml` contracts as import-linter.
+- Module docstrings state each module's role; `so3` is explicitly marked placeholder, so its limited scope is not a defect.
+- No debug prints, commented-out code or stray TODOs; the only `# type`/`NOLINT`/`allow` suppressions seen each carry a reason.
+
+### Architecture review
+
+**Scope:** `git diff 874db0f...966d820` on `feature/review-panel` (Run 3). Read every changed source file in Python, C++, Rust, CMake, `pyproject.toml`, `scripts/check_layers.py`, `scripts/check.sh`, tests, and the design-doc diff; probed `check_layers.py` against a scratch copy of the tree at HEAD; inspected the built extensions.
+
+**Summary:** All eight run-2 findings are resolved as the owner decided, and the structure now matches the design doc in all three languages. I am satisfied with this first version. Two small gaps remain in the new enforcement tooling — `check_layers.py` can be bypassed by common C++/Cargo idioms, and `check.sh` names the rung-0 crate explicitly, so later rung crates' tests would not run — plus one stale comment and one narrow gap in the generic Protocol test. Neither gap is a defect in the shipped code; nothing is must-fix.
+
+#### Run 2 findings — status
+
+| ID | Status | Evidence |
+|---|---|---|
+| A10 numpy boundary | **resolved** | `cpp/bindings/foundations/so3.cpp` takes `nb::ndarray<const double, nb::shape<3>, nb::c_contig, nb::device::cpu>` and returns an owned `nb::ndarray<nb::numpy, double, nb::shape<3,3>>`; `rust/slamlab-py/src/foundations/so3.rs` takes `PyReadonlyArray1<f64>` and returns `PyArray2<f64>`. The cores take `std::array` / `[f64; 3]`, with no numpy dependency. |
+| A11 one binding file per module | **resolved** | `cpp/bindings/module.cpp` → `foundations/foundations.cpp` → `foundations/so3.cpp`; `rust/slamlab-py/src/lib.rs` → `foundations/mod.rs` → `foundations/so3.rs`. The roots only wire submodules. |
+| A12 generic Protocol test | **resolved (one small gap, below)** | `tests/test_backends.py::test_every_compiled_module_matches_its_protocol` walks every rung submodule of both extensions and requires an `Implementation` Protocol, an exact function set, and matching parameter names; nanobind signatures are parsed with `ast` after bracket stripping. |
+| A13 per-rung C++/Rust + layer check | **resolved (checker gaps, below)** | `slamlab_add_rung(foundations)`, the `rust/slamlab-foundations` crate, and `scripts/check_layers.py` deriving the allowed rungs from pyproject's contracts; `tests/test_check_layers.py` covers include, link, crate and unknown-rung cases. |
+| A14 learned on dense only | **resolved** | `pyproject.toml` forbidden contract `slamlab.learned` → `slamlab.edge`, `slamlab.classic`, reflected in `allowed_dependencies`. |
+| A15 exhaustive layers; interfaces' home | **resolved** | `exhaustive = true` on the layers contract; the design doc's "Shared interface types" names `slamlab.foundations.interfaces`, to be created with the first rung that needs it (tracked future work). |
+| A16 torch libraries by name | **resolved** | The CPU-rung contract forbids `lietorch`, `pypose`, `kornia`, `theseus`; the comment and design doc say torch only ever goes in an extra; `dependencies = ["numpy>=1.26"]`. |
+| A17 error contract | **resolved** | `cpp/include/slamlab/foundations/error.hpp` (`std::expected`, `ErrorKind`, `fail`) mirrors `rust/slamlab-foundations/src/error.rs` and `src/slamlab/foundations/errors.py`, each tested; the binding translation helper is tracked future work in the design doc ("arrives with the first fallible function"). |
+
+#### Findings
+
+##### [should-fix] `check_layers.py` misses common C++ include and Cargo dependency forms
+- **Where:** `scripts/check_layers.py:30` (`_INCLUDE`), `:116-121` (rung dirs only), `:195` (`.get("dependencies")` only)
+- **Issue:** It only matches quoted includes (`#include "slamlab/<rung>/..."`), so angle-bracket includes are unchecked. It only scans files inside `<root>/<rung>/` directories, so a header placed directly in `cpp/include/slamlab/` is never scanned. It reads only `[dependencies]`, not `[dev-dependencies]`, `[build-dependencies]` or `[target.*.dependencies]`. It does not resolve renamed crates (`foo = { package = "slamlab-dense", ... }`). And it skips any crate whose directory is not named `slamlab-*`.
+- **Why it matters:** Every rung library gets the whole tree through `target_include_directories(... PUBLIC cpp/include)`, so a header-only or inline cross-rung use compiles and links without a `DEPENDS` — this include scan is the only C++ layering gate. On the Rust side, cargo enforces only what a manifest declares, so the manifest scan is the gate.
+- **Evidence:** A scratch copy of HEAD with `cpp/src/edge/a.cpp` containing `#include <slamlab/classic/x.hpp>`; `cpp/include/slamlab/top.hpp` containing `#include "slamlab/dense/y.hpp"`; a `slamlab-edge` crate with `[dev-dependencies] slamlab-classic` and `base = { package = "slamlab-dense", ... }`; and a `slamlab-vi` crate with `[target.x86_64-unknown-linux-gnu.dependencies] slamlab-classic`. `python scripts/check_layers.py .` printed `C++ and Rust layering matches pyproject.toml` and exited 0.
+- **Suggested fix:** Match `#include\s*[<"]slamlab/`; flag any source file under the rung roots that sits outside a rung directory; collect every dependency table, including `target.*`, and use each entry's `package` key when present; treat every workspace member except `slamlab-py` as a rung crate. Add one fake-repo test per form.
+
+##### [should-fix] `check.sh` runs Rust tests for `slamlab-foundations` only
+- **Where:** `scripts/check.sh:74` — `cargo test --manifest-path rust/Cargo.toml -p slamlab-foundations`
+- **Issue:** The per-rung crate design means each new rung adds a crate (`slamlab-edge` next). Because the test step names one package, those crates' tests will not run in layer 1 unless someone remembers to edit this line. Clippy on the line above already uses `--workspace`.
+- **Why it matters:** A new rung's Rust tests would be skipped without any error — the same kind of coverage loss `SLAMLAB_REQUIRE_BACKENDS` was built to prevent on the Python side.
+- **Evidence:** The line quoted above, beside `cargo clippy ... --workspace --all-targets` on line 73.
+- **Suggested fix:** `cargo test --workspace --exclude slamlab-py` (the cdylib bindings crate is the only one that cannot be tested standalone).
+
+##### [note] The generic Protocol test skips extension submodules whose name is not a Python rung package
+- **Where:** `tests/test_backends.py`, `test_every_compiled_module_matches_its_protocol` (the `rungs` / `found` comprehension)
+- **Issue:** The walk starts from slamlab's Python packages and looks each one up on the extension. A misnamed top-level extension submodule (e.g. `slamlab._cpp.fundations`) is never visited, and `assert found` passes as long as any other rung is bound. Today only `foundations` exists, so nothing escapes yet.
+- **Evidence:** Top-level module attributes are `['foundations']` on `slamlab._cpp` and `['slamlab_rs', 'foundations']` on `slamlab_rs`; any fix must allow the `slamlab_rs` self-reference.
+- **Suggested fix:** Assert that every top-level `ModuleType` attribute of the extension is a rung package, with the extension's own name excepted.
+
+##### [note] Stale Protocol name in the mypy comment
+- **Where:** `pyproject.toml:84`
+- **Issue:** The comment cites `slamlab.foundations.so3._Implementation`; the convention is now the public `Implementation` (as in `so3.py`, CLAUDE.md and the design doc). This is the hygiene reviewer's area, but it misstates the architectural convention.
+- **Suggested fix:** Change the comment to `slamlab.foundations.so3.Implementation`.
+
+#### Checked and fine
+- Dependency direction: the layers contract is exhaustive and matches the design doc's table and ladder; the `vi` and `learned` forbidden contracts are in place; `backends` is the bottom layer and imports nothing from slamlab; the reifyscene ban runs one way.
+- Dispatch: `hat` validates once through `foundations.arrays.as_vec3`, then dispatches; `backends.implementation` knows only module paths and correctly separates "not built" from "broken".
+- Language split: the cores build standalone (`slamlab_foundations` static library with no Python; `slamlab-foundations` crate with no dependencies); bindings only convert types; Rust stays within rung 0; the parity fixture lives in `tests/fixtures/foundations/` with an explicit tolerance policy.
+- Placement: SO(3), the shared array checks and the error classes are correctly in rung 0, and shared interfaces have a recorded home there.
+- Compute budgets: each rung package docstring declares its budget; the `gpu`/`budget` markers are declared; the CPU-subset policy and the deferred light edge environment are in the design doc's open items.
+- `hat` is clearly marked placeholder in all three languages and is not hardening into the design.
+- No compatibility shims: the old `slamlab.so3`, `cpp/src/so3.cpp` and `rust/slamlab-core` were removed outright.
+- Error contract: consistent across the three languages in kinds, naming and docs; the translation helper is correctly deferred until a fallible function exists.
+- The design doc's status, packaging, binding boundary, error contract, layout, dispatch, contracts and review-process sections all match the code.
+
+### Algorithm review
+
+**Scope:** `874db0f...966d820` on `feature/review-panel`, focused on run 2's fixes in `51c9483`: `src/slamlab/foundations/{arrays,so3,errors}.py`, `tests/conftest.py`, `tests/foundations/{test_so3,test_errors}.py` and the hat fixture; the C++ core, error header and nanobind binding (`cpp/include/slamlab/foundations/{so3,error}.hpp`, `cpp/src/foundations/so3.cpp`, `cpp/bindings/foundations/so3.cpp`, `cpp/tests/foundations/test_error.cpp`); the Rust core and PyO3/numpy binding (`rust/slamlab-foundations/src/{so3,error}.rs`, `rust/slamlab-py/src/foundations/so3.rs`); the design doc's error-contract section; and `.claude/agents/algorithm-reviewer.md`. Re-ran the float32, invalid-input and signed-zero probes against all three built backends, plus a new probe of the raw extensions' buffer handling (scratch scripts only, outside the repo). `SLAMLAB_REQUIRE_BACKENDS=python,cpp,rust pytest tests/foundations tests/test_backends.py` → 79 passed. HEAD stayed at `966d820`, tree clean.
+
+**Summary:** All five run-2 algorithm findings (L9–L13) are resolved, confirmed by probes on python, cpp and rust. The numpy boundary is correct in both bindings: results are new, memory-owning, C-contiguous float64 (3, 3) arrays, never aliased to the input. The two new findings are notes only — no must-fix or should-fix. On the algorithm side, this first version satisfies me.
+
+#### Run 2 findings
+- **L9 (`CROSS_TOLERANCE_EPS` docstring gave the wrong reason) — resolved.** `tests/foundations/test_so3.py:18-23` now names FMA in the BLAS matmul as the cause, and the bound is still correct: each method's error is ≤ 4u·M to first order (two rounded products plus one rounded sum; 3u·M with FMA), so they differ by ≤ 8u·M = 4 eps·M.
+- **L10 (exact comparison ignored signed zeros) — resolved.** `tests/conftest.py:96-99` compares `np.signbit` after `assert_array_equal`. Probe: flipping a fixture case's `-0.0` entries to `+0.0` is caught; all three backends have 0 sign-bit mismatches across all fixture cases; `hat([-0.0, 0.0, -0.0])` gives identical sign bits `[0,0,0,1,0,0,1,1,0]` on python, cpp and rust.
+- **L11 (tolerance policy declared, not consumed) — resolved.** `assert_matches_fixture` (`tests/conftest.py:70-103`) reads `comparison`/`rtol`/`atol` from the fixture; an exact policy is refused if it sets a non-zero `rtol`/`atol`; a `close` policy passes `rtol`/`atol` explicitly (never numpy's defaults); an unknown comparison fails. The parity test uses it. A simulated float32 backend fails 3 of 6 cases — exactly those holding values float32 cannot represent (0.1 and 1/3; 1e±300; 0.7 and 1/7); the three that pass contain only exactly-representable values.
+- **L12 (masked arrays passed through) — resolved.** `arrays.py:46-47` rejects every `np.ma.MaskedArray` (including one with no mask — strict but defensible) with `InvalidInputError` on all three backends. `as_vec3` now returns `np.ascontiguousarray(..., float64).copy()`; a probe shows a strided input (`np.arange(6.0)[::2]`), a big-endian `>f8` input and a read-only buffer all give the correct result, and the input is never modified.
+- **L13 (ORB-SLAM3 citation; log at π) — resolved.** `algorithm-reviewer.md:46-47` cites ORB-SLAM3 as Campos et al., T-RO 2021; `:60` states that at exactly π the axis is ambiguous up to sign, so parity checks must accept ±`omega`.
+
+**Invalid-input probe (identical on all three backends):**
+- Rejected with `InvalidInputError` and the same message: `None`, str, bool, complex, NaN, ±inf, masked, object dtype, `timedelta64`, `datetime64`, scalar, shape (1,3), shape (3,1), `np.matrix`, dict, set, generator, and an int ≥ 2**64 (object dtype).
+- Accepted and widened exactly: float16, big-endian float64, read-only input.
+- `uint64` `2**64-1` is accepted and rounds to the nearest float64, as the docstring warns.
+
+#### Findings
+
+##### [note] The C++ raw binding converts input silently, unlike its docstring and the Rust binding
+- **Where:** `cpp/bindings/foundations/so3.cpp:22-23` (docstring) and `:45` (`nb::arg("v")` without `.noconvert()`); compare `rust/slamlab-py/src/foundations/so3.rs:12-14`.
+- **Issue:** The docstring says "nanobind raises `TypeError` for anything else". Because implicit conversion is enabled, nanobind actually accepts float32 and strided arrays by copying them into a temporary contiguous float64 array. The Rust binding rejects both, so the two raw extensions disagree on the same input.
+- **Why it matters:** No effect through `so3.hat`, since `as_vec3` always passes a contiguous float64 copy. But a direct caller — or a later batched benchmark — could have the C++ path pay for a hidden conversion copy while Rust refuses the same input, skewing the "same algorithm, three languages" comparison the boundary was redesigned for (A10). It is the template every later binding will copy.
+- **Evidence:** raw-extension probe output:
+  ```
+  cpp  raw f32        -> OK float64 [0.0, -3.0, 2.0, ...]
+  cpp  raw noncontig  -> OK float64 [0.0, -4.0, 2.0, ...]
+  rust raw f32        -> TypeError 'ndarray' object is not an instance of 'ndarray'
+  rust raw noncontig  -> ValueError The given array is not contiguous or is misaligned.
+  ```
+- **Suggested fix:** `nb::arg("v").noconvert()`, so the C++ boundary is as strict as its docstring and the Rust binding; otherwise reword the docstring to describe the conversion.
+
+##### [note] `NotConverged` as a hard error discards the best estimate; decide the iterative-solver contract before milestone 1's solvers
+- **Where:** `docs/design/2026-10-02-slamlab-ladder.md:95-106`; `src/slamlab/foundations/errors.py:30-31`; `cpp/include/slamlab/foundations/error.hpp:25-27`; `rust/slamlab-foundations/src/error.rs:18-19`.
+- **Issue:** The contract makes reaching the iteration cap an error. Through `std::expected`, `Result` and an exception, that error carries no value. Standard nonlinear least-squares and robust estimators — Gauss-Newton, LM, BA, RANSAC with an adaptive iteration count — report non-convergence as a status alongside the best estimate. SLAM front ends routinely use a capped LM/BA result; real-time BA is iteration-capped by design.
+- **Why it matters:** Later rungs would have to either treat a capped but improved solve as failure or work around the contract. The checklist's "report non-convergence" is better served by a summary than by an exception that throws the result away.
+- **Evidence:** Ceres Solver returns `Solver::Summary` with `termination_type` (`CONVERGENCE`, `NO_CONVERGENCE`, `FAILURE`) next to the updated parameters (http://ceres-solver.org/nnls_solving.html#solver-summary). SciPy's `least_squares` returns `x` with `status` (0: "the maximum number of function evaluations is exceeded") (https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.least_squares.html). Triggs et al., "Bundle Adjustment — A Modern Synthesis" (Vision Algorithms 1999), treats stopping criteria as part of the solver's output, not as failure.
+- **Suggested fix:** No code now — nothing fallible exists. In the milestone-1 plan, decide whether iterative solvers return the estimate plus a summary (iterations, final cost, converged flag), keeping `NotConverged` / `NotConvergedError` for a caller-requested strict mode or for runs that diverge or fail without an estimate. `InvalidInput` and `Degenerate` are right as hard errors.
+
+#### Checked and fine
+- C++ binding memory: a heap buffer freed by a capsule deleter; `Mat3Out(data, {3,3}, owner)` gets C-order strides (24, 8), and the row-major copy `data[3*i+j] = h[i][j]` matches `Mat3`'s array-of-rows layout. Results are new, writeable, never alias the input, and independent across calls (mutating one result does not affect the next).
+- Rust binding memory: `PyArray1::from_vec(...).reshape([3,3])` gives a C-contiguous float64 (3, 3) array with strides (24, 8) whose base is a fresh array, not the input; it requires exact f64 and contiguity, and reports a wrong length with a clear message.
+- Python reference: builds a new float64 array; its signed-zero behaviour is identical to C++ and Rust.
+- `as_vec3`: checks the dtype allow-list and shape before casting and finiteness after the float64 cast (so longdouble overflow is still caught); returns a new contiguous copy, so a backend can never alias or modify the caller's data.
+- `assert_matches_fixture`: sound for both policies. The `signbit` check also distinguishes `-NaN` from `+NaN` — harmless, since NaN is rejected upstream.
+- `CROSS_TOLERANCE_EPS = 4` re-confirmed as the right first-order constant (8u = 4 eps), now with the correct reason.
+- Error contract: one list of kinds in C++ (`enum class ErrorKind`, `std::expected`, the `fail` helper), Rust (`ErrorKind`, `Result`, `Display`) and Python (three `ValueError` subclasses under `SlamlabError`), each tested natively. The binding translation is explicitly deferred to the first fallible function, which is reasonable while nothing can fail. `InvalidInputError` as a `ValueError` subclass keeps `except ValueError` callers working.
+- `hat` is still the marked placeholder; it matches `hat(v)u = v × u` (Barfoot, *State Estimation for Robotics*; Solà, Deray & Atchuthan, arXiv:1812.01537), is exact in all three languages, and the native cross-product checks are valid because every value in them is exactly representable.
+- Fixture: includes float32-unrepresentable values (0.1, 1/3, 0.7, 1/7, 1e±300) and `-0.0` cases; JSON round-trips doubles exactly.
+- Randomised tests are seeded (`default_rng(0)`).
+- Reference list: the new citations are accurate, as are those checked in run 2.

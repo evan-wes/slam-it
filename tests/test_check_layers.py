@@ -87,18 +87,62 @@ def test_cmake_link_dependency_is_checked(fake_repo: Path) -> None:
     assert "may not link slamlab_dense" in found[0].message
 
 
-def test_rust_crate_dependency_is_checked(fake_repo: Path) -> None:
-    """A rung crate depending on a sibling's crate is reported; bindings are exempt."""
-    _write(
-        fake_repo,
-        "rust/slamlab-edge/Cargo.toml",
-        '[package]\nname = "slamlab-edge"\n[dependencies]\nslamlab-classic = { path = ".." }\n',
+@pytest.mark.parametrize(
+    "include", ['#include "slamlab/edge/vo.hpp"', "#include <slamlab/edge/vo.hpp>"]
+)
+def test_both_include_forms_are_checked(fake_repo: Path, include: str) -> None:
+    """Quoted and angle-bracket includes are both checked."""
+    _write(fake_repo, "cpp/src/foundations/x.cpp", include + "\n")
+    found = list(check_layers.check_cpp(fake_repo, ALLOWED))
+    assert len(found) == 1
+
+
+def test_source_outside_a_rung_is_reported(fake_repo: Path) -> None:
+    """A header directly in cpp/include/slamlab/ belongs to no rung; the bindings root may."""
+    _write(fake_repo, "cpp/include/slamlab/top.hpp", '#include "slamlab/dense/y.hpp"\n')
+    _write(fake_repo, "cpp/bindings/module.cpp", '#include "foundations/foundations.hpp"\n')
+    found = list(check_layers.check_cpp(fake_repo, ALLOWED))
+    assert [v.location for v in found] == ["cpp/include/slamlab/top.hpp"]
+
+
+def _crate(root: Path, directory: str, name: str, body: str = "") -> None:
+    """Write a crate manifest and register it as a workspace member."""
+    _write(root, f"rust/{directory}/Cargo.toml", f'[package]\nname = "{name}"\n{body}')
+    workspace = root / "rust/Cargo.toml"
+    members = (
+        []
+        if not workspace.exists()
+        else tomllib.loads(workspace.read_text())["workspace"]["members"]
     )
-    _write(
-        fake_repo,
-        "rust/slamlab-py/Cargo.toml",
-        '[package]\nname = "slamlab-py"\n[dependencies]\nslamlab-edge = { path = ".." }\n',
-    )
+    members.append(directory)
+    listed = ", ".join(f'"{m}"' for m in members)
+    workspace.write_text(f"[workspace]\nmembers = [{listed}]\n")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '[dependencies]\nslamlab-classic = { path = ".." }\n',
+        '[dev-dependencies]\nslamlab-classic = { path = ".." }\n',
+        '[build-dependencies]\nslamlab-classic = { path = ".." }\n',
+        '[target.x86_64-unknown-linux-gnu.dependencies]\nslamlab-classic = { path = ".." }\n',
+        '[dependencies]\nbase = { package = "slamlab-classic", path = ".." }\n',
+    ],
+    ids=["dependencies", "dev", "build", "target", "renamed"],
+)
+def test_rust_crate_dependency_is_checked(fake_repo: Path, body: str) -> None:
+    """A rung crate depending on a sibling's crate is reported, in every dependency form."""
+    _crate(fake_repo, "slamlab-edge", "slamlab-edge", body)
     found = list(check_layers.check_rust(fake_repo, ALLOWED))
     assert len(found) == 1
     assert "may not depend on crate 'slamlab-classic'" in found[0].message
+
+
+def test_bindings_crate_is_exempt_and_other_names_are_reported(fake_repo: Path) -> None:
+    """The bindings crate may use every rung; a member not named slamlab-<rung> is reported."""
+    _crate(
+        fake_repo, "slamlab-py", "slamlab-py", '[dependencies]\nslamlab-edge = { path = ".." }\n'
+    )
+    _crate(fake_repo, "geometry", "geometry")
+    found = list(check_layers.check_rust(fake_repo, ALLOWED))
+    assert [v.message for v in found] == ["crate 'geometry' is not named slamlab-<rung>"]

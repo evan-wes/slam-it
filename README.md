@@ -38,5 +38,5 @@ Native tests, without Python:
 ```bash
 cmake -S . -B build/native -G Ninja -DSLAMLAB_BUILD_TESTS=ON && cmake --build build/native -j4
 ctest --test-dir build/native
-cargo test --manifest-path rust/Cargo.toml -p slamlab-foundations
+cargo test --manifest-path rust/Cargo.toml --workspace --exclude slamlab-py
 ```

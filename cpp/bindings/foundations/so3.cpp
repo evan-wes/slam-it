@@ -19,8 +19,10 @@ using Vec3In = nb::ndarray<const double, nb::shape<3>, nb::c_contig, nb::device:
 using Mat3Out = nb::ndarray<nb::numpy, double, nb::shape<3, 3>>;
 
 /// @brief Map a 3-vector to its skew-symmetric matrix, as numpy arrays.
-/// @param v A contiguous float64 array of shape (3,). nanobind raises `TypeError` for
-///          anything else; the Python entry point validates first.
+/// @param v A contiguous float64 array of shape (3,). The argument is `noconvert`: nanobind
+///          raises `TypeError` for anything else (another dtype, a strided view) rather than
+///          silently copying, matching the Rust binding. The Python entry point validates
+///          and converts first.
 /// @return A new float64 array of shape (3, 3) that owns its memory.
 Mat3Out hat(const Vec3In& v) {
   const slamlab::foundations::Mat3 h = slamlab::foundations::hat({v(0), v(1), v(2)});
@@ -42,7 +44,7 @@ Mat3Out hat(const Vec3In& v) {
 namespace slamlab::bindings {
 
 void bind_so3(nb::module_& m) {
-  m.def("hat", &hat, nb::arg("v"),
+  m.def("hat", &hat, nb::arg("v").noconvert(),
         "Map a float64 3-vector to its skew-symmetric matrix, as a new (3, 3) array.");
 }
 
