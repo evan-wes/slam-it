@@ -49,6 +49,37 @@ def freed(model: readers.ColmapModel, refine: str) -> ba.BAProblem:
     return replace(problem, fixed_intrinsics=fixed)
 
 
+COLUMNS = [
+    ("imgs", 4, ""),
+    ("points", 6, ""),
+    ("bhnd0", 5, ""),
+    ("b-our", 5, ""),
+    ("b-col", 5, ""),
+    ("start", 8, ".4f"),
+    ("slamlab", 8, ".4f"),
+    ("colmap", 8, ".4f"),
+    ("diff", 9, "+.2e"),
+    ("its", 4, ""),
+    ("termination", 14, ""),
+    ("unf", 3, ""),
+    ("s0", 6, ".3f"),
+    ("sigma_f", 8, ".2f"),
+    ("f ours", 8, ".2f"),
+    ("f colmap", 8, ".2f"),
+    ("t ours", 6, ".2f"),
+    ("t col", 6, ".2f"),
+]
+"""The table's columns: title, width and format, in :func:`row`'s order."""
+
+LEGEND = (
+    "RMS in px over the observations in front at the start and in both results; bhnd0 counts "
+    "observations behind their camera at the start, b-our and b-col those each solver "
+    "pushed behind; s0 is the a-posteriori noise in px, which sigma_f is scaled by; sigma_f "
+    "and the focal lengths are intrinsics group 0's (its first focal length; NaN if fixed)"
+)
+"""What the columns mean, printed above the table."""
+
+
 @dataclass(frozen=True)
 class Comparison:
     """One model refined by both solvers, on the identical problem."""
@@ -92,17 +123,35 @@ def row(result: Comparison) -> str:
     used = front & ours_front & colmap_front
     ours_rms, colmap_rms = rms(ours_solved, used), rms(colmap_solved, used)
     focal = camera.FOCAL_INDICES[problem.camera_model][0]
-    return (
-        f"{problem.poses.shape[0]:>4} {problem.points.shape[0]:>6} "
-        f"{np.count_nonzero(~front):>5} {np.count_nonzero(front & ~ours_front):>5} "
-        f"{np.count_nonzero(front & ~colmap_front):>5} {rms(problem, used):>8.4f} "
-        f"{ours_rms:>8.4f} {colmap_rms:>8.4f} {ours_rms - colmap_rms:>+9.2e} "
-        f"{ours.summary.solve.iterations:>4} {ours.summary.solve.termination:>14} "
-        f"{ours.summary.unobservable_focal:>3} {np.sqrt(ours.summary.variance_factor):>6.3f} "
-        f"{ours.intrinsics_std[0, focal]:>8.2f} "
-        f"{ours.intrinsics[0, focal]:>8.2f} {reference.intrinsics[0, focal]:>8.2f} "
-        f"{result.ours_seconds:>6.2f} {reference.seconds:>6.2f}"
+    values = [
+        problem.poses.shape[0],
+        problem.points.shape[0],
+        np.count_nonzero(~front),
+        np.count_nonzero(front & ~ours_front),
+        np.count_nonzero(front & ~colmap_front),
+        rms(problem, used),
+        ours_rms,
+        colmap_rms,
+        ours_rms - colmap_rms,
+        ours.summary.solve.iterations,
+        str(ours.summary.solve.termination),
+        ours.summary.unobservable_focal,
+        np.sqrt(ours.summary.variance_factor),
+        ours.intrinsics_std[0, focal],
+        ours.intrinsics[0, focal],
+        reference.intrinsics[0, focal],
+        result.ours_seconds,
+        reference.seconds,
+    ]
+    return " ".join(
+        _cell(value, width, spec) for (_, width, spec), value in zip(COLUMNS, values, strict=True)
     )
+
+
+def _cell(value: object, width: int, spec: str) -> str:
+    """Format one cell right-aligned in ``width``; a leading ``+`` in ``spec`` signs it."""
+    sign, rest = ("+", spec[1:]) if spec.startswith("+") else ("", spec)
+    return f"{value:>{sign}{width}{rest}}"
 
 
 def main() -> None:
@@ -115,19 +164,8 @@ def main() -> None:
     parser.add_argument("--iterations", type=int, default=100, help="cap for both solvers")
     args = parser.parse_args()
     loss = nls.Loss(args.loss, args.loss_scale)
-    print(
-        f"refine: {args.refine}; loss: {loss.kind} (scale {loss.scale}). RMS in px over the "
-        "observations in front at the start and in both results; bhnd0 counts observations "
-        "behind their camera at the start, b-our and b-col those each solver pushed behind; "
-        "s0 is the a-posteriori noise in px, which sigma_f is scaled by; sigma_f and the "
-        "focal lengths are intrinsics group 0's (its first focal length; NaN if fixed)"
-    )
-    print(
-        f"{'model':<16} {'imgs':>4} {'points':>6} {'bhnd0':>5} {'b-our':>5} {'b-col':>5} "
-        f"{'start':>8} {'slamlab':>8} {'colmap':>8} {'diff':>9} {'its':>4} {'termination':>14} "
-        f"{'unf':>3} {'s0':>6} {'sigma_f':>8} {'f ours':>8} {'f colmap':>8} "
-        f"{'t ours':>6} {'t col':>6}"
-    )
+    print(f"refine: {args.refine}; loss: {loss.kind} (scale {loss.scale}). {LEGEND}")
+    print(f"{'model':<16} " + " ".join(f"{title:>{width}}" for title, width, _ in COLUMNS))
     for spec in args.models:
         name, _, path = spec.rpartition("=")
         directory = Path(path)

@@ -268,19 +268,37 @@ def check_cpp_internal(
     graph = _include_graph(root)
     for here, edges in graph.items():
         for first, location in edges:
-            pending: list[tuple[tuple[str, ...], tuple[tuple[str, ...], ...]]] = [(first, ())]
-            seen = {first}
-            while pending:
-                target, via = pending.pop()
+            for target, via in _reachable(graph, here, first, orders):
                 hops = f" (via {', '.join('/'.join(v) for v in via)})" if via else ""
                 for violation in _check_include(here, target, orders, location):
                     yield Violation(violation.location, violation.message + hops)
-                if target == here or _listed(target, orders):
-                    continue
-                for nxt, _ in graph.get(target, []):
-                    if nxt not in seen:
-                        seen.add(nxt)
-                        pending.append((nxt, (*via, target)))
+
+
+Module = tuple[str, ...]
+
+
+def _reachable(
+    graph: dict[Module, list[tuple[Module, str]]],
+    here: Module,
+    first: Module,
+    orders: dict[Module, list[Layer]],
+) -> Iterator[tuple[Module, tuple[Module, ...]]]:
+    """Yield what an include of ``first`` reaches from ``here``, with the modules on the way.
+
+    ``first`` itself, then, through every module no contract lists, what it includes in turn.
+    A listed module is not followed: its own includes are checked as its own.
+    """
+    pending: list[tuple[Module, tuple[Module, ...]]] = [(first, ())]
+    seen = {first}
+    while pending:
+        target, via = pending.pop()
+        yield target, via
+        if target == here or _listed(target, orders):
+            continue
+        for nxt, _ in graph.get(target, []):
+            if nxt not in seen:
+                seen.add(nxt)
+                pending.append((nxt, (*via, target)))
 
 
 def _check_include(
