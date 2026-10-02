@@ -393,9 +393,15 @@ unless `unobservable_focal` is 0.
   - Two explicitly fixed poses add no gauge pose.
 - **Degeneracy.** A single-view point, a point 10⁷ away and an unobserved camera are
   dropped or held, counted, and returned unchanged.
-- **Parity.** C++ against the reference, with radtan, two intrinsics groups and a Cauchy
-  loss: same termination, iterations and counts; poses to 1e-9, points to 1e-8. On the smoke
-  scene they agree to 1e-15.
+- **Parity.** A committed fixture, `tests/fixtures/foundations/ba.json`, holds nine solves
+  by the reference (`generate_ba.py`): each gauge, Gauss-Newton, Huber with outliers,
+  degenerate drops, radial with f, k1, k2 free, and a scene with every kind of block. Each
+  backend must reproduce its outputs under per-field tolerances (poses to 1e-9, points to
+  1e-8, intrinsics to 1e-8 relative, deviations to 1e-6 relative) and its termination,
+  iterations, gauge and counts exactly. There is no closed-form optimum to oracle against,
+  so the fixture pins the reference, whose correctness the other checks here establish.
+  A live test also compares C++ against the reference with radtan, two intrinsics groups
+  and a Cauchy loss. On the smoke scene they agree to 1e-15.
 - **Priors.**
   - The Schur-versus-dense and Jacobian checks include depth blocks (with free affines) and
     pose priors, one of them with zero rotation weight.

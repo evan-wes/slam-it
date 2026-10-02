@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from typing import Any
 
 import numpy as np
 import pytest
@@ -14,9 +15,10 @@ from slamlab.foundations import ba, camera, nls, se3
 from slamlab.foundations.ba.bundle import Bundle, Kind, State
 from slamlab.foundations.ba.layout import make_layout
 from slamlab.foundations.ba.schur import Reduction
-from slamlab.foundations.ba.solve import ENUM_TABLES, backend_arguments
+from slamlab.foundations.ba.solve import ENUM_TABLES, MODULE, backend_arguments
 from slamlab.foundations.errors import InvalidInputError, NotConvergedError
-from tests.conftest import require_backend
+from tests.conftest import assert_matches_fixture, load_fixture, require_backend, require_function
+from tests.fixtures.foundations.generate_ba import options_from, problem_from
 
 Array = NDArray[np.float64]
 
@@ -93,6 +95,45 @@ def _scene(
     )
     inverse_depth = 1.0 / in_camera.reshape(-1, 3)[:, 2]
     return Scene(poses, world, intrinsics, inverse_depth, problem)
+
+
+FIXTURE = load_fixture("foundations/ba.json")
+OUTPUTS = ("poses", "intrinsics", "points", "depth_affine", "inverse_depth", "intrinsics_std")
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("case", FIXTURE["cases"], ids=[c["name"] for c in FIXTURE["cases"]])
+def test_matches_fixture(backend: str, case: dict[str, Any]) -> None:
+    """Each backend reproduces the reference's solve: outputs, costs, codes and counts.
+
+    The cases cover every gauge, Gauss-Newton, robust losses, degenerate drops, the radial
+    model, priors and anchored points (see ``generate_ba.py``).
+    """
+    chosen = require_function(backend, MODULE, "solve")
+    problem = problem_from(case["input"]["problem"])
+    result = ba.solve(problem, options_from(case["input"]["options"]), backend=chosen)
+    expected, tolerance = case["expected"], FIXTURE["tolerance"]
+    for name in OUTPUTS:
+        assert_matches_fixture(getattr(result, name), _nan(expected[name]), tolerance[name])
+    summary = result.summary
+    for name, value in (
+        ("initial_cost", summary.solve.initial_cost),
+        ("final_cost", summary.solve.final_cost),
+        ("variance_factor", summary.variance_factor),
+    ):
+        assert_matches_fixture(value, _nan(expected[name]), tolerance["cost"])
+    codes = {
+        "gauge": summary.gauge,
+        "termination": str(summary.solve.termination),
+        "iterations": summary.solve.iterations,
+        **{name: getattr(summary, name) for name in ba.COUNT_NAMES},
+    }
+    assert codes == expected["codes"]
+
+
+def _nan(value: object) -> Array:
+    """Return a fixture value as floats, its nulls as NaN."""
+    return np.array(value, dtype=np.float64)
 
 
 def _dense_normal_equations(bundle: Bundle, state: State, weights: Array) -> tuple[Array, Array]:
