@@ -14,8 +14,8 @@ namespace slamlab::foundations::ba::detail {
 /// @param block The block.
 void scatter_add(Eigen::MatrixXd& target, const IndexList& rows, const IndexList& cols,
                  const Eigen::MatrixXd& block) {
-  for (std::size_t i = 0; i < rows.size(); ++i) {
-    for (std::size_t j = 0; j < cols.size(); ++j) {
+  for (std::size_t j = 0; j < cols.size(); ++j) {  // column-outer: the matrices are column-major
+    for (std::size_t i = 0; i < rows.size(); ++i) {
       target(rows[i], cols[j]) += block(static_cast<Index>(i), static_cast<Index>(j));
     }
   }

@@ -292,10 +292,29 @@ What the slice shows that lab-coat alone would not:
   freeing the focal length would have looked sound.
 - **COLMAP lets points cross behind their cameras.** It did so for up to 542 observations
   (judo); Ceres has no cheirality guard. Ours rejects such steps.
-- **Speed is the open gap.** Our times range from 6 s to 565 s, against 0.4–37 s for COLMAP.
-  Judo is the worst: its long tracks (34 views) make the per-point pair loop of the dense
-  Schur build quadratic in track length. Milestone 4's sparse reduced solver is the
-  structural fix; the pair loop's per-pair allocations are the cheaper one.
+- **Speed.** The first dense Schur build formed one small product per *pair* of a point's
+  blocks, each heap-allocated: quadratic in track length, 95% of the run time on judo
+  (34-view tracks). It now merges each point's blocks once per linearisation into one
+  coupling over the point's distinct columns (they share their camera's intrinsics), does one
+  product per point, and scatters only the upper triangle, column by column, in memory
+  order. The results are identical (same RMS, focal lengths and iterations); the slice's run
+  times fell 2.3–5.1x:
+
+  | Scene | Before (s) | After (s) | COLMAP (s) |
+  |---|---|---|---|
+  | lab-coat | 20.3 | 6.7 | 4.9 |
+  | blackswan | 50.3 | 15.0 | 12.7 |
+  | crossing | 75.9 | 18.2 | 9.2 |
+  | dogs-scale | 54.8 | 19.0 | 5.1 |
+  | gold-fish | 59.4 | 21.9 | 11.9 |
+  | india | 13.3 | 5.5 | 0.4 |
+  | judo | 564.7 | 110.9 | 36.4 |
+  | lindy-hop | 90.6 | 29.2 | 15.1 |
+  | miami-surf | 34.6 | 15.2 | 8.0 |
+  | motocross-bumps | 6.3 | 3.2 | 1.3 |
+
+  The remaining gap (1.2–4x, 14x on india) is the dense reduced system and
+  single-threading. Milestone 4's sparse reduced solver is the structural fix.
 
 For reifyscene: its `pose_refine` frees the focal length on exactly these scenes. The slice
 suggests that is unconstrained on 9 of 10, so milestone 3 should hold focal fixed (from VGGT)
