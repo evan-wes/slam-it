@@ -221,7 +221,7 @@ visible from its path and enforceable by contract.
 | `slamlab.classic` | library `slamlab_classic` | -- | Classic heavy |
 | `slamlab.dense` | -- | -- | Dense BA + depth prior |
 | `slamlab.learned` | -- | -- | DROID- and MegaSaM-style |
-| `slamlab.eval` | -- | -- | Metrics, benchmarks, budget harness |
+| `slamlab.eval` | -- | -- | Dataset readers, external references (COLMAP), metrics, benchmarks, budget harness |
 | `slamlab.orchestration` | -- | -- | End-to-end pipelines |
 
 Packages for rungs that have no code yet are stubs: a docstring stating the rung, its
@@ -485,7 +485,10 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
     batched API. Decide before the edge rung (milestone 7), where C++ runs without Python.
   - **A sparse reduced solver (A12).** BA's reduced camera system is solved densely behind
     `ReducedSystemSolver`. Milestone 4's scenes need a sparse Cholesky or a preconditioned
-    CG behind the same seam (see the BA note's state-of-the-art section).
+    CG behind the same seam (see the BA note's state-of-the-art section). It belongs in
+    rung 0, beside the dense one, not in `classic`. The C++ core is not yet parametrised on
+    a reduced solver (it uses its dense one directly), so the seam has to be opened there
+    first.
   - **A per-block step tolerance (L6).** NLS's absolute step tolerance never fires on BA's
     mixed scales (radians, pixels of focal length, metres). Replace it with a relative,
     per-block test.

@@ -28,11 +28,16 @@ throughout, each component with a design note in `docs/notes/`.
     `ReducedSystemSolver` seam;
   - points as XYZ or anchored inverse depths;
   - depth priors through per-camera affines (metric or relative), and pose priors;
-  - the gauge removed exactly (automatic choice), degenerate data dropped and counted;
+  - the gauge removed exactly: the null space of what fixed poses, fixed points, pose
+    priors and metric depth pin, removed by fixing or confining as few poses as it takes
+    (partial anchoring such as two control points or attitude priors included);
+  - degenerate data dropped and counted, and constant prior blocks left out;
   - marginal deviations of free intrinsics, scaled by the a-posteriori variance factor
-    (reported), with unobservable focal lengths flagged;
-  - a parity fixture of nine reference solves (every gauge, Gauss-Newton, robust losses,
-    degeneracy, radial, priors, anchors) that the C++ core reproduces.
+    (reported; IRLS-weighted, so outliers do not inflate it), with unobservable focal
+    lengths flagged;
+  - a parity fixture of eleven reference solves (every gauge, partial ones included,
+    Gauss-Newton, robust losses, degeneracy, radial, priors, anchors) that the C++ core
+    reproduces.
 - **Readers** (`slamlab.eval.readers`): BAL (plain or bz2) and COLMAP's text model.
 - **`slamlab.eval`**: COLMAP's Ceres bundle adjuster as a reference, and reprojection
   metrics.
@@ -51,7 +56,10 @@ throughout, each component with a design note in `docs/notes/`.
   per PR. Its status and open items are brought up to date, and the panel's deferrals are
   recorded.
 - `scripts/check_layers.py` applies rung 0's internal order (and BA's) to C++ includes, as
-  import-linter does to Python imports.
+  import-linter does to Python imports, chains through unlisted helpers included.
+- `camera.unproject_or_nan`: per-pixel unprojection with NaN where the lens cannot be
+  inverted (it was BA's private helper).
+- pycolmap is pinned once, in the `colmap` extra, which the development setup installs.
 
 ### Performance
 

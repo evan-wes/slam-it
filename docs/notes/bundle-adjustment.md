@@ -169,46 +169,74 @@ with padding columns that add exact zeros. In C++ each block carries its own col
 
 ## Gauge
 
-Reprojection errors don't change if the whole scene moves rigidly, or, for a monocular
-camera, scales: 7 directions in which the cost is flat. Left in, they make `H` singular. LM's
-damping hides that, but undamped Gauss-Newton fails and the solution drifts. They are removed
-instead:
-- **`first_pose` (SE(3)).** If no observed pose is fixed, the first free observed one is.
-- **`similarity` (Sim(3), the default).** As above. Then, unless two fixed poses at
-  different places already pin the scale, the free pose farthest from a fixed one keeps its
-  distance from it. Its camera centre moves as `dc = -ρ + c × θ` under a step (from
-  `c = -Rᵀt`). Requiring `bᵀ dc = 0`, along the unit baseline `b`, is one linear constraint
-  on its 6-vector, `a = (-b, b × c)`. Its step is confined to the 5-dimensional complement of
-  `a`.
-  - The basis comes from the Householder reflection that maps `a` onto its largest axis:
-    every other column is orthogonal to `a`. It is deterministic, so both backends take the
-    same coordinates and the same damped steps; an SVD null space would not be.
-  - It is recomputed at each linearisation, so the baseline is held to first order. It
-    drifts at second order (1e-4 relative in the tests).
-- **`none`.** The caller's fixed variables or priors define the gauge, such as fixed
-  control points, a fixed rig, or pose priors.
-- **`scale`.** Only the scale: the free pose farthest from the anchoring pose (a fixed pose,
-  or one with a full pose prior) keeps its baseline to it.
-- **`auto` (the default).** Removes exactly what the fixed variables and priors leave free.
-  Triggs et al. (1999, §9) require gauge constraints to be minimal: more biases the
-  solution, fewer leaves the covariance singular.
-  - **Known world positions** are fixed observed camera centres, translation-prior centres
-    and fixed observed points.
-  - **Rigid motion is pinned** by a fixed observed pose, a full pose prior (translation and
-    rotation), or three non-collinear known positions.
-  - **Scale is pinned** by a metric depth prior, or two distinct known positions.
-  - **Choice:**
-    - both pinned → `none` (motion-only BA with fixed points; priors on several cameras);
-    - rigid motion only → `scale` (a full prior on one camera);
-    - scale only → `first_pose` (metric depth);
-    - neither → `similarity`.
-  - **Partial priors are not anchors.** A translation-only prior on one camera pins neither
-    rotation nor scale, so it is not counted.
+Reprojection errors don't change if the whole scene moves by a similarity: a rigid motion
+and, for a monocular camera, a scale. Those are 7 directions `g = (t, ω, s)` in which the
+cost is flat. Left in, they make `H` singular. LM's damping hides that, but undamped
+Gauss-Newton fails and the solution drifts. Triggs et al. (1999, §9) require them removed
+**minimally**: fixing more biases the solution, fixing fewer leaves the covariance singular.
 
-  The summary records the gauge actually applied. The first rule was "any pose prior →
-  `none`, metric depth → `first_pose`, else `similarity`". The review panel found it wrong
-  twice. On motion-only BA it froze a pose at its perturbed start; with one pose prior it
-  left scale free, and the focal length read as unobservable. Both cases are now tests.
+**What is already pinned** (`ba/gauge.py`). Fixed variables and priors pin some of the 7
+directions. Each contributes rows of the derivative of what it pins with respect to `g`:
+- a known position `X` (a fixed point, a fixed pose's centre, the centre of a pose with a
+  translation prior): `dX = t + ω × X + s X`, the rows `[I, -[X]×, X]`;
+- a known orientation (a fixed pose, a pose with a rotation prior): `[0, I, 0]`;
+- metric depth (a depth prior with a fixed affine): `[0, 0, 1]`.
+
+Positions on free poses are read at the current state. A prior on a pose nothing observes
+pins nothing the scene can feel, so it does not count. The **remaining gauge** is the null
+space N of these rows: anything from nothing (`none`) to all 7.
+
+**Removing N, pose by pose.** At pose c, N moves the camera's world centre and orientation
+by `M = [[I, -[C]×, C], [0, I, 0]] N`. A step moves them by `J_c δ`, where
+`J_c = [[-I, [C]×], [0, -I]]` for a right perturbation of `T_cam_world` (from `C = -Rᵀt`,
+`dC = -ρ + C × θ`). Confining the step to the complement of `J_cᵀ M` holds the centre and
+orientation still along the gauge directions.
+- A pose that sees all six of its directions is simply fixed. N then shrinks to the
+  directions the pose does not see, and the next pose takes the rest.
+- Greedy order: the pose seeing the most remaining directions goes first. Among poses that
+  would be fixed, the lowest index; among the others, the one seeing its directions best
+  (the largest smallest singular value of M).
+- For the whole similarity this fixes the first observed pose. Scale about it remains, and
+  the farthest pose is confined to keep its baseline: `J_cᵀ M` is then `a = (-b, b × C)`,
+  the gradient of the baseline length. That is the classic Sim(3) gauge, and the code used
+  it before it was generalised.
+- Rotation-only priors leave translation and scale. A pose's orientation does not see them,
+  so it can take at most 3, and two poses are confined.
+- The bases are rebuilt at each linearisation, so the gauge holds to first order and drifts
+  at second order (1e-4 relative on the baseline in the tests).
+- **Both cores must take the same coordinates**, or their damped steps differ. The basis is
+  built from the span of `J_cᵀ M` alone, never from an SVD's arbitrary basis: from the span's
+  projector, repeatedly the column of the largest diagonal entry, deflated. Then one
+  Householder reflection per vector onto its largest remaining axis, which is dropped.
+  Near-ties (in that axis, or between candidate poses) go to the first index within 1e-12,
+  so last-bit rounding cannot split the cores.
+
+**Choices** (`BAOptions.gauge`):
+- **`auto` (the default)** removes exactly N. The summary names what it was: `none`,
+  `first_pose` (the rigid motions: metric depth alone), `scale` (a full prior on one camera,
+  or one fixed pose), `similarity` (nothing anchored), or `partial` (anything else).
+  Examples of `partial`: one fixed point leaves rotation and scale about it, two fixed points
+  the rotation about their line, translation priors on two cameras the rotation about their
+  baseline, attitude priors translation and scale.
+- **`similarity`** counts only fixed poses as anchors.
+- **`scale`** removes only the scale about a reference (the first fixed pose, else the first
+  pose with a full prior).
+- **`first_pose`** fixes the first observed pose unless one is fixed.
+- **`none`** fixes nothing.
+
+The summary records the fixed pose (`gauge_pose`) and the first confined one
+(`confined_pose`).
+
+The rule took three tries, each caught by the review panel.
+1. "Any pose prior → `none`, metric depth → `first_pose`, else `similarity`". This froze a
+   pose at its perturbed start on motion-only BA. With one pose prior it left scale free, and
+   focal length read as unobservable.
+2. Two yes/no flags, rigid motion pinned and scale pinned, mapped onto the four named gauges.
+   Any partial anchoring fell through to fixing a whole pose, which biased the result. On
+   noise-free data the cost stayed at 5 to 29 where `none` reached 1e-21. A prior on an
+   unobserved camera also counted as the rigid anchor.
+3. The null space, as above. The four partial cases now reach the noise-free optimum in
+   both cores, and the fixture holds two of them.
 
 ## Degenerate data
 
@@ -235,12 +263,23 @@ noise variances). Weights are rarely that: unit weights on 0.5 px noise overstat
 factor of 2. So by default (`scale_deviations`) the variances are multiplied by the
 a-posteriori variance factor
 
-    σ̂₀² = 2 cost / (m - n),
+    σ̂₀² = Σ wᵢ sᵢ / (m - n),
 
-the residual sum of squares over the redundancy: m residual rows (2 per reprojection, 1 per
-depth prior, 6 per pose prior) less n free parameters (Förstner & Wrobel 2016, ch. 4). It is
-reported as `variance_factor`, near 1 when the weights match the noise, and NaN without
-redundancy (m <= n), when nothing is scaled. A free group whose fx or fy deviation exceeds
+the weighted residual sum of squares over the redundancy (Förstner & Wrobel 2016, ch. 4).
+- `sᵢ` are the blocks' squared weighted norms, and `wᵢ` their final IRLS weights. That is the
+  numerator that pairs with the information `Jᵀ W J` the deviations come from. Under the
+  trivial loss it is `2 cost`. Under a robust loss, `2 cost = Σ ρ(sᵢ)` would count each
+  outlier by its `ρ`, which grows without bound (Huber) or slowly (Cauchy), and inflate σ̂₀².
+  With 5% of pixels moved 20 px under Huber, σ_f came out 2.5x too large.
+- m counts weighted residual rows: 2 per reprojection, 1 per depth prior, and 3 per weighted
+  half of a pose prior. A translation-only prior's rotation rows carry nothing.
+- n counts the free parameters.
+- A prior on a pose that never moves (fixed, unobserved, or fixed by the gauge) is a
+  constant. It is left out of the problem, like the views of a dropped point, so its cost
+  inflates neither σ̂₀² nor the reported cost.
+
+It is reported as `variance_factor`, near 1 when the weights match the noise, and NaN
+without redundancy (m <= n), when nothing is scaled. A free group whose fx or fy deviation exceeds
 `focal_std_ratio` (1%) of itself is counted in `unobservable_focal`.
 
 The classic failure it catches is focal length against depth. With pure translation and no
@@ -365,8 +404,12 @@ What the slice shows that lab-coat alone would not:
   | miami-surf | 34.6 | 15.2 | 8.0 |
   | motocross-bumps | 6.3 | 3.2 | 1.3 |
 
-  The remaining gap (1.2–4x, 14x on india) is the dense reduced system and
-  single-threading. Milestone 4's sparse reduced solver is the structural fix.
+  The remaining gap (1.2–4x, 14x on india) is not measured. It is not simply dense against
+  sparse: COLMAP solves with Ceres' `DENSE_SCHUR` up to 50 images, `SPARSE_SCHUR` up to
+  1000 and `ITERATIVE_SCHUR` beyond. So on lab-coat (47 images) and judo (34) both solvers
+  factor densely. Ceres' threads and cheaper Jacobian evaluation are the likelier causes
+  there; above 50 images sparsity adds to them. Milestone 4's sparse reduced solver
+  addresses the second, not the first.
 
 This is the critical-motion degeneracy of self-calibration. Sturm (1997) classifies the
 camera motions under which constant intrinsics are not determined, and Kahl, Triggs & Åström
@@ -382,7 +425,7 @@ unless `unobservable_focal` is 0.
 The reduced camera system is solved densely: O(C³) per step, fine for tens of cameras. For
 milestone 4's hundreds to thousands, the options behind `ReducedSystemSolver` are:
 - **Sparse Cholesky of the reduced system.** Cameras that share no point leave zeros in `S`.
-  This is Ceres' `SPARSE_SCHUR`, and what COLMAP runs.
+  This is Ceres' `SPARSE_SCHUR`, which COLMAP runs between 50 and 1000 images.
 - **Inexact Newton with preconditioned CG.** CG on `S` never forms its factor. The
   products `S v` can even be computed from the blocks without forming `S`. Agarwal, Snavely,
   Seitz & Szeliski (2010) compare the preconditioners, block-Jacobi on the camera blocks
@@ -391,7 +434,8 @@ milestone 4's hundreds to thousands, the options behind `ReducedSystemSolver` ar
   (a nullspace projection) instead of the Schur complement. That keeps the system's
   conditioning, so single precision suffices.
 - **Power BA.** Weber, Demmel, Chan & Cremers (2023) expand the inverse Schur complement
-  as a power series, and report faster solves than preconditioned CG on BAL.
+  as a power series. In their words, it challenges "the state-of-the-art iterative
+  methods" on BAL.
 
 ## How it's checked
 
@@ -413,11 +457,20 @@ milestone 4's hundreds to thousands, the options behind `ReducedSystemSolver` ar
   - Under undamped Gauss-Newton with the similarity gauge, the gauge pose is unchanged
     bit for bit, and the baseline holds to 1e-4.
   - Two explicitly fixed poses add no gauge pose.
+  - Partial anchoring, in both cores: one fixed point, two fixed points, translation priors
+    on two cameras, and attitude priors all resolve to `partial` and reach the noise-free
+    optimum (cost under 1e-18).
+  - A prior on a camera nothing observes changes nothing: the same gauge and deviations as
+    without it.
+  - An explicit `scale` gauge with no reference is rejected by both cores.
+  - The options reject `partial`, which is reported only.
 - **Degeneracy.** A single-view point, a point 10⁷ away and an unobserved camera are
   dropped or held, counted, and returned unchanged.
-- **Parity.** A committed fixture, `tests/fixtures/foundations/ba.json`, holds nine solves
-  by the reference (`generate_ba.py`): each gauge, Gauss-Newton, Huber with outliers,
+- **Parity.** A committed fixture, `tests/fixtures/foundations/ba.json`, holds eleven solves
+  by the reference (`generate_ba.py`): each gauge, two partial ones (attitude priors, which
+  confine two poses; translation priors on two cameras), Gauss-Newton, Huber with outliers,
   degenerate drops, radial with f, k1, k2 free, and a scene with every kind of block. Each
+  case records every option it ran with. Each
   backend must reproduce its outputs under per-field tolerances (poses to 1e-9, points to
   1e-8, intrinsics to 1e-8 relative, deviations to 1e-6 relative) and its termination,
   iterations, gauge and counts exactly. There is no closed-form optimum to oracle against,
@@ -448,7 +501,9 @@ milestone 4's hundreds to thousands, the options behind `ReducedSystemSolver` ar
 
   The deviations are scaled: σ̂₀² is near 0.25 for the 0.5 px noise under unit weights, and
   the same scene with weights 1/0.5² gives the same deviations. Unscaled, they are the
-  scaled ones over σ̂₀, in both backends.
+  scaled ones over σ̂₀, in both backends. With 15% of pixels moved 20 px under Cauchy,
+  σ̂₀² stays between 0.15 and 0.35. Translation-only priors add 3 rows each to the
+  redundancy, not 6.
 
 - **Parity.** As above, with every kind of block. The intrinsics agree to 1e-8 relative in a
   scene where the distortion is poorly conditioned (k3 near -6).
@@ -494,6 +549,17 @@ milestone 4's hundreds to thousands, the options behind `ReducedSystemSolver` ar
 - **Fixed means bit-exact.** The first version returned fixed poses 1 ulp off, from the
   round trip `T_world_cam → T_cam_world → T_world_cam`. Unmoved poses are now returned
   as given, in both cores.
+- **Stiff translation priors converge slowly under any gauge.** With translation-only
+  priors on two cameras at weight 1e2 to 1e4, LM takes 40 to 100 iterations, or runs to
+  the cap. That held with no gauge at all, so it is the problem, not the gauge. In that crawl
+  rounding grows: the cores ended 1e-3 apart. At weight 1 both converge in 15 iterations and
+  agree to 4e-11, and that is the case the fixture holds. Priors that stiff call for a
+  better conditioned solve (the backlog's per-block step test and Triggs' correction are a
+  start).
+- **σ_f on a weakly conditioned scene moves with rounding order.** On lab-coat, one
+  algorithm gave σ_f = 3.41 and 3.53 px before and after the Schur speedup changed the
+  summation order. Later 2.32 and 2.29 px after scaling, with identical results otherwise.
+  Read it to two figures; the 1% rule's verdicts did not change.
 
 ## References
 
