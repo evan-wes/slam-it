@@ -180,7 +180,7 @@ def protocol_members(module: ModuleType) -> set[str]:
 
 
 def check_rejects(
-    module: ModuleType, function: str, bad: object, message: str, backend: str
+    module: ModuleType, function: str, args: tuple[object, ...], message: str, backend: str
 ) -> None:
     """Check that a function rejects bad input with InvalidInputError matching `message`.
 
@@ -190,15 +190,15 @@ def check_rejects(
         The slamlab module under test.
     function : str
         The function's name.
-    bad : object
-        The invalid input.
+    args : tuple
+        The positional arguments, at least one of them invalid.
     message : str
         A regex the error message must match.
     backend : str
         The backend to request (Python validates before any backend runs).
     """
     with pytest.raises(InvalidInputError, match=message):
-        getattr(module, function)(bad, backend=backend)
+        getattr(module, function)(*args, backend=backend)
 
 
 def numeric_right_jacobian(
@@ -247,7 +247,8 @@ def check_parity(
     """Run one fixture case on one backend and compare under the function's policy.
 
     The case's ``input`` is the single argument, or -- when the function's spec sets
-    ``unpack`` -- the list of positional arguments.
+    ``unpack`` -- the list of positional arguments. A function returning several arrays is
+    compared on their concatenation along the last axis.
 
     Parameters
     ----------
@@ -266,6 +267,8 @@ def check_parity(
     chosen = require_function(backend, module.__name__, function)
     args = case["input"] if spec.get("unpack") else [case["input"]]
     got = getattr(module, function)(*args, backend=chosen)
+    if isinstance(got, tuple):  # several arrays: compared side by side, as the fixture stores
+        got = np.concatenate(got, axis=-1)
     assert got.dtype == np.float64
     assert_matches_fixture(got, case["expected"], spec["tolerance"])
 

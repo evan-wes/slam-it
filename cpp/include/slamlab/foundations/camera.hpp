@@ -1,0 +1,68 @@
+/// @file
+/// @brief Camera models: the C++ core's projection, Jacobians and unprojection.
+///
+/// Mirrors `slamlab.foundations.camera`. Points are in the camera frame (z forward); pixels
+/// follow OpenCV (top-left pixel centre at (0, 0)); intrinsics are flat vectors:
+/// pinhole `[fx, fy, cx, cy]`, radtan `[fx, fy, cx, cy, k1, k2, p1, p2, k3]`.
+#pragma once
+
+#include <Eigen/Core>
+#include <cstdint>
+
+#include "slamlab/foundations/error.hpp"
+
+/// @brief Camera models.
+namespace slamlab::foundations::camera {
+
+/// @brief The camera models, with the integer codes they cross the bindings as.
+enum class Model : std::uint8_t {
+  /// @brief `[fx, fy, cx, cy]`.
+  kPinhole = 0,
+  /// @brief `[fx, fy, cx, cy, k1, k2, p1, p2, k3]`, Brown-Conrady radial-tangential.
+  kRadTan = 1,
+};
+
+/// @brief Points with `Z` at or below this are behind the camera and cannot project.
+inline constexpr double kMinDepth = 1e-9;
+/// @brief Newton iterations allowed when inverting the radtan distortion.
+inline constexpr int kUndistortMaxIterations = 30;
+/// @brief Newton stops when the distortion residual is below this (normalised units).
+inline constexpr double kUndistortTolerance = 1e-15;
+
+/// @brief A 2 x (3 + K) Jacobian: d(pixel)/d(point) then d(pixel)/d(intrinsics).
+using ProjectionJacobian = Eigen::Matrix<double, 2, Eigen::Dynamic>;
+
+/// @brief Check a model code and its intrinsics vector.
+/// @param model The model.
+/// @param intrinsics The intrinsics.
+/// @return Nothing on success, or `InvalidInput` (wrong length, non-positive focal length).
+[[nodiscard]] Result<void> check_intrinsics(Model model,
+                                            const Eigen::Ref<const Eigen::VectorXd>& intrinsics);
+
+/// @brief Project a camera-frame point to a pixel.
+/// @param model The model.
+/// @param intrinsics The model's intrinsics (checked by `check_intrinsics`).
+/// @param point The point, with `Z > kMinDepth`.
+/// @return The pixel `(u, v)`, or `InvalidInput` if the point is not in front of the camera.
+[[nodiscard]] Result<Eigen::Vector2d> project(Model model,
+                                              const Eigen::Ref<const Eigen::VectorXd>& intrinsics,
+                                              const Eigen::Vector3d& point);
+
+/// @brief Differentiate the projection with respect to the point and the intrinsics.
+/// @param model The model.
+/// @param intrinsics The model's intrinsics.
+/// @param point The point, with `Z > kMinDepth`.
+/// @return The 2 x (3 + K) Jacobian, or `InvalidInput` if the point is not in front.
+[[nodiscard]] Result<ProjectionJacobian> project_jacobian(
+    Model model, const Eigen::Ref<const Eigen::VectorXd>& intrinsics, const Eigen::Vector3d& point);
+
+/// @brief Map a pixel to a unit bearing vector.
+/// @param model The model.
+/// @param intrinsics The model's intrinsics.
+/// @param pixel The pixel `(u, v)`.
+/// @return The bearing, or `NotConverged` if the distortion cannot be inverted there.
+[[nodiscard]] Result<Eigen::Vector3d> unproject(Model model,
+                                                const Eigen::Ref<const Eigen::VectorXd>& intrinsics,
+                                                const Eigen::Vector2d& pixel);
+
+}  // namespace slamlab::foundations::camera

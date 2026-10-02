@@ -10,6 +10,8 @@ void bind_foundations(nanobind::module_& parent) {
   bind_so3(so3);
   nanobind::module_ se3 = foundations.def_submodule("se3", "SE(3), rigid-body transforms.");
   bind_se3(se3);
+  nanobind::module_ camera = foundations.def_submodule("camera", "Camera models.");
+  bind_camera(camera);
   nanobind::module_ alignment =
       foundations.def_submodule("alignment", "Point-set alignment (Umeyama).");
   bind_alignment(alignment);
