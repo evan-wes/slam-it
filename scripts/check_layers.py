@@ -8,10 +8,12 @@ the other two languages, reading the same contracts, so the three can never disa
   it may depend on; no C++ source may sit outside a rung directory (except the bindings'
   root, which only wires the rungs); and every ``slamlab_add_rung(<rung> DEPENDS ...)`` in
   ``CMakeLists.txt`` may only link the rungs it may depend on.
-- Rust: every workspace member except the ``slamlab-py`` bindings crate is a rung crate named
-  ``slamlab-<rung>``, and may only depend -- in any dependency table, including
-  dev/build/target-specific ones, and through renamed (``package = ...``) entries -- on the
-  crates of the rungs it may depend on.
+- Rust: every crate under ``rust/`` except the ``slamlab-py`` bindings crate -- listed
+  workspace members and the implicit ones Cargo adds for path dependencies alike -- is a
+  rung crate named ``slamlab-<rung>``. It may only depend on the crates of the rungs it may
+  depend on: in any dependency table (including dev/build/target-specific ones), through
+  renamed (``package = ...``) and ``workspace = true`` entries, and through path
+  dependencies on non-rung helper crates, which are followed.
 
 A rung may depend on the rungs in lower layers, never on a sibling in its own layer, and
 never on a rung a forbidden contract names. Directories and crates must belong to a rung
@@ -200,57 +202,105 @@ def check_rust(root: Path, allowed: dict[str, frozenset[str]]) -> Iterator[Viola
     Yields
     ------
     Violation
-        Each forbidden crate dependency, or workspace crate outside any rung.
+        Each forbidden crate dependency (direct, or relayed through a non-rung crate), and
+        each crate under ``rust/`` that is not named ``slamlab-<rung>``.
     """
-    for manifest_path in _workspace_manifests(root / "rust"):
+    rust = root / "rust"
+    workspace_deps = _workspace_dependencies(rust)
+    for manifest_path in _crate_manifests(rust):
         manifest = tomllib.loads(manifest_path.read_text())
         crate = manifest["package"]["name"]
         if crate == _BINDINGS_CRATE:  # the bindings crate may use every rung crate
             continue
         location = str(manifest_path.relative_to(root))
+        if not crate.startswith("slamlab-"):
+            yield Violation(location, f"crate {crate!r} is not named slamlab-<rung>")
+            continue
         rung = crate.removeprefix("slamlab-").replace("-", "_")
-        bad_rung = (
-            _check_rung(rung, location, allowed)
-            if crate.startswith("slamlab-")
-            else (Violation(location, f"crate {crate!r} is not named slamlab-<rung>"))
-        )
+        bad_rung = _check_rung(rung, location, allowed)
         if bad_rung:
             yield bad_rung
             continue
-        for dep in _dependency_names(manifest):
-            if dep.startswith("slamlab-") and dep != crate:
-                target = dep.removeprefix("slamlab-").replace("-", "_")
-                if target not in allowed[rung]:
-                    yield Violation(location, f"rung {rung!r} may not depend on crate {dep!r}")
+        for dep in _reachable_rung_crates(manifest_path, workspace_deps):
+            target = dep.removeprefix("slamlab-").replace("-", "_")
+            if dep != crate and target not in allowed[rung]:
+                yield Violation(location, f"rung {rung!r} may not depend on crate {dep!r}")
 
 
-def _workspace_manifests(rust: Path) -> list[Path]:
-    """Return the ``Cargo.toml`` of every workspace member (glob members expanded)."""
-    workspace = rust / "Cargo.toml"
-    if not workspace.is_file():
+def _crate_manifests(rust: Path) -> list[Path]:
+    """Return every crate manifest under ``rust/`` (skipping build output), members or not.
+
+    Cargo makes every path dependency inside the workspace a member even when
+    ``[workspace] members`` does not list it, so every manifest is checked.
+    """
+    if not rust.is_dir():
         return []
-    members = tomllib.loads(workspace.read_text()).get("workspace", {}).get("members", [])
     return sorted(
-        path / "Cargo.toml"
-        for member in members
-        for path in rust.glob(member)
-        if (path / "Cargo.toml").is_file()
+        path
+        for path in rust.rglob("Cargo.toml")
+        if "target" not in path.relative_to(rust).parts
+        and "package" in tomllib.loads(path.read_text())
     )
 
 
-def _dependency_names(manifest: dict[str, Any]) -> Iterator[str]:
-    """Yield the real crate name of every dependency, in every table of a manifest.
+def _workspace_dependencies(rust: Path) -> dict[str, tuple[str, Path | None]]:
+    """Map each ``[workspace.dependencies]`` key to its real crate name and resolved path."""
+    workspace = rust / "Cargo.toml"
+    if not workspace.is_file():
+        return {}
+    table = tomllib.loads(workspace.read_text()).get("workspace", {}).get("dependencies", {})
+    return {key: _resolve_spec(key, spec, rust) for key, spec in table.items()}
+
+
+def _resolve_spec(key: str, spec: object, base: Path) -> tuple[str, Path | None]:
+    """Return a dependency entry's real crate name and its path, if it is a path dependency."""
+    if not isinstance(spec, dict):
+        return key, None
+    path = spec.get("path")
+    return spec.get("package", key), (base / path).resolve() if path else None
+
+
+def _dependencies(
+    manifest_path: Path, workspace_deps: dict[str, tuple[str, Path | None]]
+) -> Iterator[tuple[str, Path | None]]:
+    """Yield the real name and path of every dependency of a crate, in every table.
 
     Covers ``[dependencies]``, ``[dev-dependencies]``, ``[build-dependencies]`` and their
-    ``[target.<cfg>.*]`` forms; a renamed entry (``alias = { package = "real" }``) yields
-    the real name.
+    ``[target.<cfg>.*]`` forms; renamed entries (``alias = { package = "real" }``) and
+    ``workspace = true`` entries are resolved to the real crate.
     """
+    manifest = tomllib.loads(manifest_path.read_text())
     tables = [manifest.get(name, {}) for name in _DEPENDENCY_TABLES]
     for target in manifest.get("target", {}).values():
         tables.extend(target.get(name, {}) for name in _DEPENDENCY_TABLES)
     for table in tables:
         for key, spec in table.items():
-            yield spec.get("package", key) if isinstance(spec, dict) else key
+            if isinstance(spec, dict) and spec.get("workspace") is True:
+                yield workspace_deps.get(key, (key, None))
+            else:
+                yield _resolve_spec(key, spec, manifest_path.parent)
+
+
+def _reachable_rung_crates(
+    manifest_path: Path, workspace_deps: dict[str, tuple[str, Path | None]]
+) -> set[str]:
+    """Return the slamlab rung crates a crate depends on, directly or via non-rung crates.
+
+    Rung crates are not followed further: each is checked on its own. Path dependencies on
+    other crates are followed, so a helper crate cannot relay a forbidden rung.
+    """
+    found: set[str] = set()
+    seen: set[Path] = set()
+    pending = [manifest_path]
+    while pending:
+        current = pending.pop()
+        for name, path in _dependencies(current, workspace_deps):
+            if name.startswith("slamlab-"):
+                found.add(name)
+            elif path is not None and (path / "Cargo.toml").is_file() and path not in seen:
+                seen.add(path)
+                pending.append(path / "Cargo.toml")
+    return found
 
 
 def main(argv: list[str]) -> int:

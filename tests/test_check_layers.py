@@ -146,3 +146,37 @@ def test_bindings_crate_is_exempt_and_other_names_are_reported(fake_repo: Path) 
     _crate(fake_repo, "geometry", "geometry")
     found = list(check_layers.check_rust(fake_repo, ALLOWED))
     assert [v.message for v in found] == ["crate 'geometry' is not named slamlab-<rung>"]
+
+
+def test_helper_crate_cannot_relay_a_forbidden_rung(fake_repo: Path) -> None:
+    """An unlisted helper crate (an implicit member) is reported, and its deps are followed."""
+    _crate(
+        fake_repo,
+        "slamlab-edge",
+        "slamlab-edge",
+        '[dependencies]\nhelper = { path = "../helper" }\n',
+    )
+    _write(
+        fake_repo,
+        "rust/helper/Cargo.toml",
+        '[package]\nname = "helper"\n[dependencies]\nslamlab-classic = { path = "../x" }\n',
+    )
+    messages = sorted(v.message for v in check_layers.check_rust(fake_repo, ALLOWED))
+    assert messages == [
+        "crate 'helper' is not named slamlab-<rung>",
+        "rung 'edge' may not depend on crate 'slamlab-classic'",
+    ]
+
+
+def test_renamed_workspace_dependency_is_resolved(fake_repo: Path) -> None:
+    """A `workspace = true` entry renamed in [workspace.dependencies] is resolved."""
+    _crate(
+        fake_repo, "slamlab-edge", "slamlab-edge", "[dependencies]\nbase = { workspace = true }\n"
+    )
+    workspace = fake_repo / "rust/Cargo.toml"
+    workspace.write_text(
+        workspace.read_text()
+        + '[workspace.dependencies]\nbase = { package = "slamlab-classic", path = "x" }\n'
+    )
+    found = list(check_layers.check_rust(fake_repo, ALLOWED))
+    assert [v.message for v in found] == ["rung 'edge' may not depend on crate 'slamlab-classic'"]

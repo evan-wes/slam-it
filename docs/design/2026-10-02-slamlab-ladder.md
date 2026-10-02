@@ -99,7 +99,9 @@ and a possible later phone target.
 - Both share one list of error kinds:
   - `InvalidInput`: shape, range or finiteness;
   - `Degenerate`: pure rotation, collinear points, too few correspondences;
-  - `NotConverged`: an iteration cap reached.
+  - `NotConverged`: strict mode was requested and the convergence criteria were not met, or
+    the iteration diverged with no usable estimate. Reaching the iteration cap is not an
+    error (see the solver contract below).
 - The bindings raise the Python exception of the same kind, from `slamlab.foundations.errors`
   (`InvalidInputError`, `DegenerateError`, `NotConvergedError`, all `ValueError`
   subclasses). The Python reference raises the same ones, so every language fails the same
@@ -115,6 +117,17 @@ and a possible later phone target.
   - `NotConverged` is reserved for a caller-requested strict mode, and for runs that
     diverge or fail with no usable estimate. `InvalidInput` and `Degenerate` remain hard
     errors.
+  - **Where the summary lives:** in rung 0, once per language, because the
+    Gauss-Newton/LM, BA and RANSAC code that returns it lives there:
+    - Python: a frozen dataclass plus a `TerminationReason` enum in
+      `slamlab.foundations.solve`;
+    - C++: `cpp/include/slamlab/foundations/solve.hpp`, returned as
+      `std::expected<Solution<T>, Error>`;
+    - Rust: `slamlab_foundations::solve`, returned as `Result<Solution<T>, Error>`.
+  - **Crossing the binding boundary:** the estimate crosses as float64 arrays and the
+    summary as plain scalars, with the termination reason as an integer code. The Python
+    entry point builds the dataclass, and there are no binding-side classes. This extends
+    the numpy-array rule to scalars, and the summary fields go into the parity fixtures.
 
 ## Package layout
 
@@ -377,7 +390,21 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
   - The `exp`/`log` fixtures cover the hard cases: angle near 0 (Taylor branch), near pi
     (axis sign ambiguous at exactly pi), above pi (wrap), and non-orthonormal input to
     `log`.
-  - The first solver defines the solve-summary type shared by the three languages.
+  - The first solver defines the solve-summary type shared by the three languages:
+    - Each termination reason maps explicitly to `converged`, as in Ceres: stalls on
+      function or parameter tolerance count as converged.
+    - Consider a time-cap reason for the compute budgets.
+    - Decide whether RANSAC gets its own summary (iterations, inlier count or mask, whether
+      the target confidence was reached) or a shared core summary with extensions.
+  - Further hard `exp`/`log` cases:
+    - the `arccos` domain at both ends: a rotation whose trace rounds just past +-1, which
+      gives NaN without a clamp;
+    - values just either side of the Taylor-branch switch, so the series and closed form
+      agree where they meet.
+
+    The above-pi case compares rotations, or the wrapped vector, not the raw input. Before
+    writing the non-orthonormal-input case, decide whether `log` rejects it
+    (`InvalidInput`) or projects it to the nearest rotation (SVD).
 - **GPU and budget test runs:** their opt-in scripts and the light edge environment arrive
   with the first PyTorch rung (milestone 5) and the budget harness (milestone 7).
 - **Linear algebra in rung 0:** write our own small matrix types, or use Eigen (C++) and

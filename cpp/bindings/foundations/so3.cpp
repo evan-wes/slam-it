@@ -6,6 +6,8 @@
 #include <nanobind/ndarray.h>
 
 #include <cstddef>
+#include <cstdint>
+#include <stdexcept>
 
 #include "foundations/foundations.hpp"
 
@@ -24,7 +26,14 @@ using Mat3Out = nb::ndarray<nb::numpy, double, nb::shape<3, 3>>;
 ///          silently copying, matching the Rust binding. The Python entry point validates
 ///          and converts first.
 /// @return A new float64 array of shape (3, 3) that owns its memory.
+/// @throws std::invalid_argument (Python `ValueError`) if `v`'s buffer is not aligned for
+///         `double`: reading it would be undefined behaviour. nanobind does not check
+///         alignment, so the binding does, matching the Rust binding.
 Mat3Out hat(const Vec3In& v) {
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): inspecting an address only
+  if (reinterpret_cast<std::uintptr_t>(v.data()) % alignof(double) != 0) {
+    throw std::invalid_argument("hat: the input array is misaligned for float64");
+  }
   const slamlab::foundations::Mat3 h = slamlab::foundations::hat({v(0), v(1), v(2)});
   // The capsule owns the buffer and frees it when numpy releases the array.
   auto* data = new double[9];  // NOLINT(cppcoreguidelines-owning-memory)

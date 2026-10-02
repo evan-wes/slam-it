@@ -732,3 +732,115 @@ tooling and four notes.
 - Fixture: includes float32-unrepresentable values (0.1, 1/3, 0.7, 1/7, 1e±300) and `-0.0` cases; JSON round-trips doubles exactly.
 - Randomised tests are seeded (`default_rng(0)`).
 - Reference list: the new citations are accurate, as are those checked in run 2.
+
+## Run 4 -- 2026-10-02
+
+| | |
+|---|---|
+| **Branch** | `feature/review-panel` |
+| **Range** | run-3 delta `966d820...6d4bdc5`, whole branch `874db0f...6d4bdc5` as context |
+| **Reviewers** | architecture (opus), algorithm (opus); hygiene signed off in run 3 (owner's choice) |
+| **How they ran** | general-purpose agents carrying each `.claude/agents/*.md` role and model |
+| **Layer 1** | all 16 checks passed, 99 tests (`scripts/check.sh`) |
+| **Process note** | Both reviewers stayed read-only. |
+
+**Confirmation:** the owner chose to fix run 4's items without a fifth run: they are wording,
+design-doc records and two small, tested fixes, verified by layer 1.
+
+**Run 3 status:** all 7 findings resolved (A18-A21, L14, L15; H21 recorded). The algorithm
+reviewer states the first version is ready for a PR. The architecture reviewer finds one
+should-fix contradiction left by the L15 decision and one remaining layer-check bypass
+class.
+
+### Findings and resolutions
+
+| ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|---|
+| A22 | should-fix | architecture | design doc error-kind list; `error.hpp`, `error.rs`, `errors.py` | `NotConverged` is still defined as "an iteration cap reached", contradicting the L15 decision | fix: reword in all four places | fix -- decided by owner (evan-wes), 2026-10-02; pending implementation |
+| A23 | note | architecture | `scripts/check_layers.py` | Cargo's implicit workspace members (path dependencies) and renamed `[workspace.dependencies]` entries bypass `check_rust` | fix: members from `cargo metadata`; resolve `workspace = true` | fix -- decided by owner (evan-wes), 2026-10-02; pending implementation |
+| A24 | note | architecture | design doc | Where the solve-summary type lives (rung 0, per language) and how it crosses the numpy-array binding boundary (scalars plus an integer termination code) | record in the design doc | record in the design doc -- decided by owner (evan-wes), 2026-10-02; pending implementation |
+| L16 | note | algorithm | design doc | Each termination reason must map explicitly to `converged`; consider a time cap; RANSAC's summary carries inliers and confidence, not costs | record in the milestone-1 tasks | record in the milestone-1 tasks -- decided by owner (evan-wes), 2026-10-02; pending implementation |
+| L17 | note | algorithm | design doc | Two more hard `exp`/`log` cases: the `arccos` domain at both ends, and both sides of the Taylor-branch switch; above-pi compares rotations; decide non-orthonormal handling | record in the milestone-1 tasks | record in the milestone-1 tasks -- decided by owner (evan-wes), 2026-10-02; pending implementation |
+| L18 | note | algorithm | `cpp/bindings/foundations/so3.cpp` | The C++ raw binding accepts a misaligned float64 buffer that Rust refuses (reading a misaligned double is UB) | fix: refuse misaligned input | fix -- decided by owner (evan-wes), 2026-10-02; pending implementation |
+
+### Architecture review
+
+**Scope:** Run-3 delta `git diff 966d820...6d4bdc5` (fix commit `d397203` plus the report update): `scripts/check_layers.py`, `scripts/check.sh`, `tests/test_backends.py`, `tests/test_check_layers.py`, `cpp/bindings/foundations/so3.cpp`, `pyproject.toml`, `CLAUDE.md`, `docs/design/2026-10-02-slamlab-ladder.md`; whole branch read for context. Re-ran the bypass probe on a scratch `git archive` of `6d4bdc5` (probe at `.../scratchpad/probe4.py`) and checked one case against `cargo metadata`.
+
+**Summary:** A18–A21 are all resolved: all five run-3 bypass forms are now caught, HEAD passes clean, and the bindings root is still allowed. Two new, small findings: the L15 decision contradicts the older `NotConverged` definition, which still stands in the design doc and in all three languages' error docs; and Cargo's implicit workspace members remain a bypass of the layer check. Neither blocks a first-version PR if the owner fixes or defers them explicitly.
+
+#### Run-3 findings
+- **A18 (layer-check bypasses): resolved.** Re-ran the probe on a scratch copy of HEAD; each form is now caught: `#include <slamlab/edge/vo.hpp>` in `cpp/src/foundations/` ("rung 'foundations' may not include from rung 'edge'"); `cpp/include/slamlab/top.hpp` ("C++ source outside any rung directory"); `slamlab-classic` in `[dev-dependencies]`, `[build-dependencies]`, `[target.'cfg(unix)'.dependencies]` and `[target."cfg(unix)".dev-dependencies]`; `base = { package = "slamlab-classic" }`; a member named `geometry` ("crate 'geometry' is not named slamlab-<rung>"); and glob `members = ["slamlab-*"]` is expanded. Unmodified HEAD exits 0 ("C++ and Rust layering matches pyproject.toml"), so `cpp/bindings/module.cpp` is still allowed (`_CPP_ROOT_FILES_ALLOWED`). `tests/test_check_layers.py` has one fake-repo test per form.
+- **A19 (Rust tests for one crate only): resolved.** `scripts/check.sh` runs `cargo test --workspace --exclude slamlab-py`; the README matches.
+- **A20 (misnamed extension submodule unchecked): resolved.** `test_every_compiled_module_matches_its_protocol` now asserts every top-level extension submodule is a rung package, apart from maturin's self re-export. A misnamed deeper submodule already failed on `import_module(f"slamlab.{path}")`.
+- **A21 (stale `_Implementation` comment): resolved.** `pyproject.toml:84` names `slamlab.foundations.so3.Implementation`.
+- **L15, architecture angle: sound decision, one doc gap.** It matches standard solver practice; the gap is a contradiction with older text (finding 1). Where the summary type should live: in **rung 0, once per language** — Python a frozen dataclass plus a `TerminationReason` enum in a new `slamlab.foundations` module (e.g. `solve.py`, not `interfaces` or `errors`); C++ `cpp/include/slamlab/foundations/solve.hpp` in `slamlab_foundations`, returning `std::expected<Solution<T>, Error>`; Rust `slamlab_foundations::solve`, returning `Result<Solution<T>, Error>`. Rung 0 is right because Gauss-Newton/LM bundle adjustment and RANSAC live there (design doc table, line 50) and every rung above reuses them. **Bindings boundary:** a summary is not a float64 array, which conflicts with "Bindings take and return float64 C-contiguous numpy arrays" (design doc line 89). Recommend that bindings return the estimate arrays plus plain scalars (the termination reason as an integer code), the Python entry point builds the dataclass, binding-side classes are avoided, the summary fields go into the parity fixtures, and the design doc's boundary rule is amended to allow this. **RANSAC's stopping state** (inlier count, a confidence-reached reason) differs from least squares' (costs): choose a shared core summary with solver-specific extensions, or a separate RANSAC summary, when the first solver lands — the milestone-1 task line is the right place to record this.
+
+#### Findings
+
+##### [should-fix] `NotConverged` is still defined as "an iteration cap reached", contradicting the L15 decision
+- **Where:** `docs/design/2026-10-02-slamlab-ladder.md:102`; `cpp/include/slamlab/foundations/error.hpp:25-27`; `rust/slamlab-foundations/src/error.rs:18`; `src/slamlab/foundations/errors.py:31`
+- **Issue:** `d397203` added "a capped but improved solve is a normal, usable result" and "`NotConverged` is reserved for a caller-requested strict mode, and for runs that diverge" (design doc, new bullet at line 107ff, and `CLAUDE.md:42-43`). But the design doc's own error-kind list, a few lines above, still reads "`NotConverged`: an iteration cap reached", and the C++, Rust and Python docs all read "An iterative method hit its iteration cap without meeting its convergence criteria."
+- **Why it matters:** The first solver's author will read the error-kind docs in the code, and those say to return an error on hitting the cap — the behaviour L15 rejected. The three languages would then drift from the design doc on the very first fallible solver.
+- **Evidence:** `grep -rn "iteration cap" src cpp/include rust docs/design` at HEAD finds the four lines above; the design doc's decision says the opposite.
+- **Suggested fix:** Reword the kind, once in the doc and once in each language's doc comment, to something like "strict mode was requested and the convergence criteria were not met, or the iteration diverged with no usable estimate".
+
+##### [note] Cargo's implicit workspace members bypass `check_rust`
+- **Where:** `scripts/check_layers.py` (`_workspace_manifests`, and `_dependency_names` for the second gap)
+- **Issue:** The checker reads only the crates listed in `[workspace] members`, but Cargo also makes every path dependency inside the workspace directory a member. With an unlisted `rust/helper` that `slamlab-edge` depends on by path, `cargo metadata --no-deps` lists `['helper', 'slamlab-classic', 'slamlab-edge', 'slamlab-foundations', 'slamlab-py']`, yet `check_layers.py` exits 0. That breaks both the "every member is named slamlab-<rung>" rule and the edge→classic ban, because helper depends on `slamlab-classic`. A second, smaller gap: `[workspace.dependencies] base = { package = "slamlab-classic", ... }` with `base = { workspace = true }` in a rung crate also passes, because `package` is resolved only in the crate's own table.
+- **Why it matters:** The same class of bypass the owner chose to close in A18; the docstring now claims "every workspace member", which is stronger than what the code does.
+- **Evidence:** Probe output rc=0 for both (`.../scratchpad/probe4.py`, `.../scratchpad/meta.py`).
+- **Suggested fix:** Take the member list from `cargo metadata --no-deps --format-version 1` (cargo is already required by `check.sh`), or check every `rust/*/Cargo.toml`; resolve `workspace = true` entries through `[workspace.dependencies]` before reading `package`. Add one fake-repo test for each. A note rather than should-fix: both forms need a deliberate, unusual layout, and review would see them.
+
+#### Checked and fine
+- C++ include regex covers both forms. The other probe cases that passed are not real holes: `#include "../../include/slamlab/edge/..."` relative paths, `.cxx` files and a `cpp/extra/` directory are not compiled or not plausible (CMake globs only `cpp/src/<rung>/*.cpp`). The bindings root including any rung is allowed by design, since it wires every rung.
+- `.noconvert()` on the nanobind `hat` argument aligns C++ and Rust binding behaviour; `test_compiled_bindings_refuse_unconverted_input` pins it for both (float32 and strided input refused, no hidden copy), consistent with the numpy-boundary rule.
+- `check.sh`'s Rust test scope picks up new rung crates without edits.
+- The milestone-1 task list in the design doc records the deferred items (error translation, `exp`/`log` hard-case fixtures, shared summary type) as explicit, temporary scope.
+- `CLAUDE.md` and the design doc agree on the new solver contract, except the stale kind definition in finding 1.
+- No new dependency-direction, rung-placement, compute-budget or compatibility-shim issues in the delta.
+
+### Algorithm review
+
+**Scope:** Run-3 delta `966d820...6d4bdc5` (fix `d397203` plus the report update), with the whole branch `874db0f...6d4bdc5` as context. Read `cpp/bindings/foundations/so3.cpp`, `rust/slamlab-py/src/foundations/so3.rs`, the new `tests/test_backends.py::test_compiled_bindings_refuse_unconverted_input`, the design doc's new solver-contract and milestone-1 sections, and the matching CHANGELOG and CLAUDE.md lines. Re-ran the raw-extension probe against the built extensions (C++ rebuilt from HEAD, `ninja: no work to do`) with 13 inputs on both raw bindings and through `so3.hat(..., backend=python|cpp|rust)`; scratch script `.../scratchpad/probe4.py`. `SLAMLAB_REQUIRE_BACKENDS=python,cpp,rust pytest -q tests` → 98 passed. HEAD stayed at `6d4bdc5`, tree clean.
+
+**Summary:** L14 and L15 are resolved. The C++ raw binding is now as strict as Rust for float32 and strided input, and `so3.hat` returns byte-identical results on all three backends for every input it accepted before. The recorded solver contract matches Ceres and SciPy. No must-fix or should-fix findings; three small notes, none blocking. On the algorithm side, this first version is ready for a PR.
+
+#### Run 3 findings
+- **L14 (C++ binding converted input silently): resolved.** `cpp/bindings/foundations/so3.cpp:47` now reads `nb::arg("v").noconvert()`, and the docstring at `:22-25` describes the refusal; the new test covers float32 and strided input for both bindings. Probe:
+  ```
+  raw cpp  float32   -> TypeError: hat(): incompatible function arguments ...
+  raw rust float32   -> TypeError: 'ndarray' object is not an instance of 'ndarray'
+  raw cpp  strided   -> TypeError: hat(): incompatible function arguments ...
+  raw rust strided   -> ValueError: The given array is not contiguous or is misaligned.
+  ```
+  Negative stride, 0-stride broadcast, big-endian `>f8`, int64, list, shape (4,) and shape (1,3) are also refused by both raw bindings; read-only input and a contiguous column of a Fortran array are accepted by both. **No regression through the entry point:** `so3.hat(x, backend=b)` gives byte-identical output for python, cpp and rust on f64, float32, int64, strided, negative stride, broadcast, big-endian, read-only, misaligned, list and the F-order column; shape (4,) and (1,3) raise `InvalidInputError` on all three. `as_vec3` always hands the bindings an aligned, contiguous float64 copy, so `noconvert` cannot reject anything that came through the entry point.
+- **L15 (`NotConverged` threw away the best estimate): resolved.** `docs/design/2026-10-02-slamlab-ladder.md:107-117` records the contract: Gauss-Newton, LM, BA and adaptive RANSAC return the estimate plus a summary (iterations, initial and final cost, a converged flag, the termination reason); a capped solve counts as a usable result; `NotConverged` is kept for strict mode and for divergence or failure with no usable estimate; `InvalidInput` and `Degenerate` stay hard errors. CLAUDE.md and the CHANGELOG say the same. This matches standard practice: Ceres sets `NO_CONVERGENCE` for the iteration and time caps and `FAILURE` only for unrecoverable cases, with `Summary::IsSolutionUsable()` to tell them apart (`internal/ceres/trust_region_minimizer.cc`; http://ceres-solver.org/nnls_solving.html#solver-summary); SciPy `least_squares` returns `x` with `status`, 0 meaning the cap was hit (https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.least_squares.html); GTSAM's `LevenbergMarquardtOptimizer` returns its values and exposes `iterations()` and `error()`, throwing only on an indeterminate linear system; g2o's `optimize()` returns the number of iterations performed. One small refinement for when the summary type is defined is in the notes.
+- **Milestone-1 tasks from the panel: recorded** (design doc `:373-380`): error translation with a parity test that every kind raises the matching Python exception from both bindings; hard `exp`/`log` fixture cases near 0, near π (axis sign ambiguous at exactly π), above π (wrap), and non-orthonormal input to `log`; the first solver defines the shared summary type. These are the right cases; two additions are in the notes.
+
+#### Findings
+
+##### [note] The termination reasons need a defined `converged` value for "no progress", and probably a time cap
+- **Where:** `docs/design/2026-10-02-slamlab-ladder.md:107-111`
+- **Issue:** The reasons listed are "converged, iteration cap, no progress", but the design doesn't say whether "no progress" sets `converged`. Ceres counts its stall-like stops (function tolerance, parameter tolerance, minimum trust-region radius) as `CONVERGENCE`, and SciPy treats `ftol`/`xtol` stops as success (status 2 and 3). There is no time cap either; Ceres has `max_solver_time_in_seconds` → `NO_CONVERGENCE`, and a compute-budgeted ladder (milestone 7) will likely want one. Adaptive RANSAC doesn't fit "initial/final cost": its natural summary is the iteration count, the inlier count or mask, and whether the target confidence was reached.
+- **Why it matters:** The first solver fixes this type for all three languages; decided ad hoc there, "converged" could mean different things in different rungs.
+- **Suggested fix:** None now. When the type is defined, map each termination reason to `converged` explicitly, as Ceres does; consider a time-cap reason; let a RANSAC summary carry inlier and confidence fields rather than costs.
+
+##### [note] Two hard cases to add to the planned `exp`/`log` fixtures
+- **Where:** `docs/design/2026-10-02-slamlab-ladder.md:377-379`
+- **Issue:** The list does not name (1) the `arccos` domain at both ends — rounding can push `(trace(R) - 1)/2` just above 1 or just below -1, which gives NaN without a clamp; include a rotation built so the trace overshoots — or (2) values just either side of the Taylor-branch switch, to check that the series and closed-form branches agree where they meet. The above-π case should compare the rotations, or the wrapped vector, not the raw input. The non-orthonormal case needs a decision first: reject with `InvalidInput`, or project to the nearest rotation (SVD).
+- **Why it matters:** These are the usual places where a `log` implementation returns NaN, or where its branches disagree across languages (Solà, Deray & Atchuthan, arXiv:1812.01537, §A; Sophus `SO3::logAndTheta`).
+- **Suggested fix:** Add these to the recorded milestone-1 list. Not needed for this PR.
+
+##### [note] The C++ raw binding still accepts a misaligned buffer that Rust refuses
+- **Where:** `cpp/bindings/foundations/so3.cpp:17` (`Vec3In`); nanobind does not check alignment.
+- **Issue:** A contiguous but misaligned float64 view, such as `np.zeros(25, np.uint8)[1:25].view(np.float64)`, is accepted by `_cpp` and refused by `slamlab_rs` with "not contiguous or is misaligned". Reading a misaligned `double` is formally undefined behaviour in C++; it happens to work on x86-64.
+- **Why it matters:** It can't happen through `so3.hat`, because `as_vec3` copies to an aligned array. It matters only for direct callers — e.g. a later benchmark reading a binary file with `np.frombuffer` at an odd offset — and it is the last raw-boundary difference between the two bindings found.
+- **Suggested fix:** Optional: check that `v.data()` is aligned in the template binding, or add one line to the docstring.
+
+#### Checked and fine
+- `noconvert` is on the only array argument; the docstring's `TypeError` claim now matches nanobind's behaviour.
+- The new test uses `require_backend`, so a missing backend fails rather than skips when required, and accepts `(TypeError, ValueError)`, correctly covering Rust's split between dtype and contiguity errors.
+- Entry-point parity: all three backends give byte-identical results across 13 input forms, including signed zeros (compared via `tobytes`).
+- `InvalidInput` and `Degenerate` as hard errors beside a summary-returning solver match GTSAM (throws on an indeterminate system) and Ceres (`FAILURE` for unrecoverable cases).
+- Unchanged and still sound: `hat`, the fixture tolerance policy, `CROSS_TOLERANCE_EPS` and the seeded tests — nothing in the delta touches them.

@@ -28,4 +28,9 @@ class DegenerateError(SlamlabError):
 
 
 class NotConvergedError(SlamlabError):
-    """An iterative method hit its iteration cap without meeting its convergence criteria."""
+    """An iterative method failed to converge where that is an error.
+
+    Either the caller requested strict mode and the convergence criteria were not met, or
+    the iteration diverged with no usable estimate. Reaching the iteration cap is otherwise
+    not an error: iterative solvers return their best estimate with a solve summary.
+    """

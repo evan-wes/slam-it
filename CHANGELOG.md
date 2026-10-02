@@ -41,6 +41,8 @@ with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
   - Run 2: 19 findings, none must-fix.
   - Run 3: all three reviewers stated the first version satisfies them, and raised 7 smaller
     items.
+  - Run 4 (architecture and algorithm): run 3 resolved. 6 small items were fixed or
+    recorded without a fifth run, as the owner chose.
 
   The owner chose to resolve every finding here. The changes below are that work.
 
@@ -50,7 +52,9 @@ with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
   - `scripts/check_layers.py` reads import-linter's contracts from `pyproject.toml` and
     fails layer 1 on a forbidden cross-rung include, CMake link or crate dependency. It
     covers quoted and angle-bracket includes, sources outside any rung, every Cargo
-    dependency table (dev, build, target) and renamed crates, with a test for each form.
+    dependency table (dev, build, target), renamed and `workspace = true` crates, and
+    helper crates that would relay a forbidden rung. Every crate under `rust/` is checked,
+    including Cargo's implicit workspace members. There is a test for each form.
   - `check.sh` tests every rung crate: `cargo test --workspace`.
 
 - **An error contract shared by the three languages.**
@@ -81,7 +85,8 @@ with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
 - **Bindings take and return float64 numpy arrays** (nanobind `ndarray`, the Rust `numpy`
   crate), so batched data will cross without per-element Python objects. Both refuse
-  anything else rather than silently converting it. They are one file
+  anything else (another dtype, a strided view, a misaligned buffer) rather than silently
+  converting it. They are one file
   per module, with thin roots that only wire the rungs.
 
 - **Dispatch moved next to each algorithm.**
