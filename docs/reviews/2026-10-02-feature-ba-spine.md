@@ -1296,12 +1296,12 @@ Run 4's findings: L24, L25 resolved; L23 resolved when every camera is observed 
 
 | ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
 |---|---|---|---|---|---|---|
-| L27 | must-fix | algorithm | `ba/solve.py`, `ba.cpp` (`centring_origin`) | the origin averages every pose, so an unobserved placeholder (an unregistered camera at the identity) pulls it off the scene and brings L23 back (9-10 iterations become 36-100, drift up to 0.97 m) | fix (average the cameras with a positive-weight observation; test with an unobserved identity pose) | pending |
-| L28 | should-fix | algorithm | `test_ba.py` (Jacobian test), fixture | the far-prior fixture case converges onto its prior (2.9e-11 rad at the optimum), so the large-angle `Jr⁻¹` is pinned only by parity, never against numerics | fix (run the numeric Jacobian test at 0.01 and 1.2 rad prior offsets) | pending |
-| L29 | note | algorithm | BA note | "intrinsics unchanged" by centring holds to about 1e-9 relative | fix ("to 1e-9") | pending |
-| L30 | note | algorithm | backlog | with `free_gauge > 0`, σ_f is inf under `none` but finite (regularisation-dependent, 0.13% off) under `first_pose` | defer (design doc: report σ unavailable when the gauge is left free, or document it) | pending |
-| L31 | note | algorithm | backlog | an anchored point with no world point is a NaN row in Python but the stored row in C++ (unreachable at a final state) | fix (C++ returns NaN too, as the reference does) | pending |
-| L32 | note | algorithm | backlog | iteration counts across cores differ at a 1e-12 cost tolerance (known) | waive: already recorded; cross-core iteration comparisons use 1e-10 | pending |
+| L27 | must-fix | algorithm | `ba/solve.py`, `ba.cpp` (`centring_origin`) | the origin averages every pose, so an unobserved placeholder (an unregistered camera at the identity) pulls it off the scene and brings L23 back (9-10 iterations become 36-100, drift up to 0.97 m) | fix (average the cameras with a positive-weight observation; test with an unobserved identity pose) | fixed (ba7bf0e) -- decided by evan-wes on 2026-10-02 |
+| L28 | should-fix | algorithm | `test_ba.py` (Jacobian test), fixture | the far-prior fixture case converges onto its prior (2.9e-11 rad at the optimum), so the large-angle `Jr⁻¹` is pinned only by parity, never against numerics | fix (run the numeric Jacobian test at 0.01 and 1.2 rad prior offsets) | fixed (ba7bf0e) -- decided by evan-wes on 2026-10-02 |
+| L29 | note | algorithm | BA note | "intrinsics unchanged" by centring holds to about 1e-9 relative | fix ("to 1e-9") | fixed (6224b1b) -- decided by evan-wes on 2026-10-02 |
+| L30 | note | algorithm | backlog | with `free_gauge > 0`, σ_f is inf under `none` but finite (regularisation-dependent, 0.13% off) under `first_pose` | defer (design doc: report σ unavailable when the gauge is left free, or document it) | deferred (design doc, 6224b1b) -- decided by evan-wes on 2026-10-02 |
+| L31 | note | algorithm | backlog | an anchored point with no world point is a NaN row in Python but the stored row in C++ (unreachable at a final state) | fix (C++ returns NaN too, as the reference does) | fixed (ba7bf0e) -- decided by evan-wes on 2026-10-02 |
+| L32 | note | algorithm | backlog | iteration counts across cores differ at a 1e-12 cost tolerance (known) | waive: already recorded; cross-core iteration comparisons use 1e-10 | waived: already recorded in the note; cross-core iteration comparisons use 1e-10 -- decided by evan-wes on 2026-10-02 |
 
 ### Algorithm review
 
