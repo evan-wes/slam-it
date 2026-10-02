@@ -29,7 +29,10 @@ throughout, each component with a design note in `docs/notes/`.
   - points as XYZ or anchored inverse depths;
   - depth priors through per-camera affines (metric or relative), and pose priors;
   - the gauge removed exactly (automatic choice), degenerate data dropped and counted;
-  - marginal deviations of free intrinsics, with unobservable focal lengths flagged.
+  - marginal deviations of free intrinsics, scaled by the a-posteriori variance factor
+    (reported), with unobservable focal lengths flagged;
+  - a parity fixture of nine reference solves (every gauge, Gauss-Newton, robust losses,
+    degeneracy, radial, priors, anchors) that the C++ core reproduces.
 - **Readers** (`slamlab.eval.readers`): BAL (plain or bz2) and COLMAP's text model.
 - **`slamlab.eval`**: COLMAP's Ceres bundle adjuster as a reference, and reprojection
   metrics.
@@ -45,7 +48,10 @@ throughout, each component with a design note in `docs/notes/`.
 
 - The design doc fixes the boundary conventions every binding and fixture bakes in. It also
   sets the per-PR review rule: PRs are slices, steps are commits, and the panel runs once
-  per PR.
+  per PR. Its status and open items are brought up to date, and the panel's deferrals are
+  recorded.
+- `scripts/check_layers.py` applies rung 0's internal order (and BA's) to C++ includes, as
+  import-linter does to Python imports.
 
 ### Performance
 
