@@ -197,7 +197,7 @@ def test_matches_ceres_on_a_bal_style_problem(tmp_path: Path, backend: str) -> N
         solver=nls.Options(max_iterations=200, function_tolerance=1e-14), gauge="none"
     )
     ours = ba.solve(problem, options, backend=backend)
-    reference = colmap_reference.solve(problem, tolerance=1e-14)
+    reference = colmap_reference.solve(problem, colmap_reference.ColmapOptions(tolerance=1e-14))
     colmap_focal = reference.intrinsics[:, 0]
     rows = 2 * problem.observations.shape[0]
     colmap_cost = 0.5 * float(
@@ -222,3 +222,31 @@ def test_matches_ceres_on_a_bal_style_problem(tmp_path: Path, backend: str) -> N
         rtol=1e-8,
     )
     np.testing.assert_allclose(ours.intrinsics[:, 0], colmap_focal, rtol=1e-7)
+
+
+def test_reference_with_a_shared_camera(tmp_path: Path) -> None:
+    """Images sharing one COLMAP camera map to one intrinsics group, and back.
+
+    With intrinsics fixed, our optimum and COLMAP's give the same reprojections on noisy
+    observations (the poses and points differ by the gauge each solver picks).
+    """
+    _write_colmap(tmp_path, "PINHOLE", [500.0, 505.0, 320.0, 240.0])
+    read = ba.read_colmap_text(tmp_path)
+    problem = read.problem
+    noisy = problem.observations + np.random.default_rng(2).normal(
+        0.0, 0.3, problem.observations.shape
+    )
+    problem = replace(problem, observations=noisy)
+    assert np.array_equal(problem.intrinsics_idx, [0, 0, 0])
+    ours = ba.solve(problem, ba.BAOptions(solver=nls.Options(function_tolerance=1e-14)))
+    reference = colmap_reference.solve(
+        problem,
+        colmap_reference.ColmapOptions(refine_focal=False, refine_extra=False, tolerance=1e-14),
+    )
+    np.testing.assert_array_equal(reference.intrinsics, problem.intrinsics)
+    # Compared gauge-invariantly: COLMAP chooses its own gauge.
+    ours_problem = replace(problem, poses=ours.poses, points=ours.points)
+    colmap_problem = replace(problem, poses=reference.poses, points=reference.points)
+    np.testing.assert_allclose(
+        _reprojections(ours_problem), _reprojections(colmap_problem), rtol=0, atol=1e-6
+    )

@@ -250,6 +250,57 @@ The dense reduced solve is the gap. Milestone 4 brings the sparse one, and the
 `ReducedSystemSolver` seam is where it plugs in. `scripts/demo_bal.py` reproduces the table
 and, with `--rerun`, saves a recording of the cameras and points before and after.
 
+## Across reifyscene's investigation slice
+
+The investigation slice is ten DAVIS scenes plus spin (`runs/slice_*`, rebuilt
+2026-09-30). For each DAVIS scene, `scripts/demo_slice.py` reads the seed reconstruction
+reifyscene's `pose_refine` stage exports: VGGSfM tracks and VGGT cameras, one shared PINHOLE
+camera, before reifyscene's own BA. It refines the seed with slamlab and with COLMAP's
+Ceres, on the identical problem:
+- focal lengths free, principal point fixed;
+- trivial loss;
+- a 300-iteration cap for both solvers.
+
+spin has no seed: its run takes another route through pose_refine. It is listed rather than
+skipped. Measured on 2026-10-02 at this commit:
+
+| Scene | Start | slamlab | COLMAP | Pushed behind (ours / COLMAP) | σ_f (ours) | f ours / COLMAP |
+|---|---|---|---|---|---|---|
+| lab-coat | 4.854 | 0.880 | 0.910 | 0 / 7 | **3.5** | 483 / 504 |
+| blackswan | 5.267 | 0.518 | 0.522 | 0 / 0 | 63 | 1191 / 1848 |
+| crossing | 3.260 | 0.358 | 0.351 | 0 / 0 | 2009 | 4362 / 3886 |
+| dogs-scale | 4.467 | 0.807 | 0.812 | 0 / 30 | 8.4 | 524 / 758 |
+| gold-fish | 3.616 | 0.672 | 0.674 | 0 / 0 | inf | 2874 / 3217 |
+| india | 5.314 | 0.489 | 0.574 | 0 / 121 | inf | 1521 / 1515 |
+| judo | 3.405 | 0.364 | 0.362 | 0 / 542 | 902 | 2451 / 5422 |
+| lindy-hop | 4.033 | 0.680 | 0.680 | 0 / 471 | 92 | 1726 / 1771 |
+| miami-surf | 4.881 | 0.657 | 0.657 | 0 / 0 | 4355 | 9854 / 10322 |
+| motocross-bumps | 5.437 | 0.384 | 0.390 | 0 / 4 | inf | 898 / 909 |
+
+RMS is in px, over the observations in front at the start and in both results.
+
+What the slice shows that lab-coat alone would not:
+- **The two solvers agree on reprojection error.** Within 0.01 px on 8 of 10 scenes. Ours is
+  lower on lab-coat (0.03 px) and india (0.08 px), where COLMAP pushed points behind their
+  cameras.
+- **Focal length is unobservable on 9 of the 10 scenes.** Only lab-coat pins it (σ_f = 3.5
+  px). Elsewhere σ_f runs from 8 px to infinite: DAVIS clips are short handheld moves with
+  little rotation, so focal length and depth trade off. The focal lengths wander with the
+  iteration count, from 1341 to 1191 on blackswan between 100 and 300 iterations. The two
+  solvers land far apart (2451 against 5422 on judo) at essentially the same cost. Five
+  scenes never converge within 300 iterations, for the same reason. Judged on lab-coat alone,
+  freeing the focal length would have looked sound.
+- **COLMAP lets points cross behind their cameras.** It did so for up to 542 observations
+  (judo); Ceres has no cheirality guard. Ours rejects such steps.
+- **Speed is the open gap.** Our times range from 6 s to 565 s, against 0.4–37 s for COLMAP.
+  Judo is the worst: its long tracks (34 views) make the per-point pair loop of the dense
+  Schur build quadratic in track length. Milestone 4's sparse reduced solver is the
+  structural fix; the pair loop's per-pair allocations are the cheaper one.
+
+For reifyscene: its `pose_refine` frees the focal length on exactly these scenes. The slice
+suggests that is unconstrained on 9 of 10, so milestone 3 should hold focal fixed (from VGGT)
+unless `unobservable_focal` is 0.
+
 ## How it's checked
 
 - **The Schur step equals the dense solve.** The damped step from the Schur system matches

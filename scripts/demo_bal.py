@@ -26,7 +26,8 @@ import numpy as np
 from numpy.typing import NDArray
 
 from slamlab.eval import colmap_reference
-from slamlab.foundations import ba, camera, nls, se3
+from slamlab.eval.reprojection import in_front, rms
+from slamlab.foundations import ba, nls
 
 BAL_URL = "https://grail.cs.washington.edu/projects/bal/data/{problem}.txt.bz2"
 """Where BAL problems are published."""
@@ -41,28 +42,6 @@ def fetch(problem: str, data: Path) -> Path:
         print(f"downloading {url}")
         urllib.request.urlretrieve(url, path)
     return path
-
-
-def in_front(problem: ba.BAProblem) -> NDArray[np.bool_]:
-    """Return which observations' points are in front of their camera."""
-    t_cw = se3.inverse(problem.poses)
-    cam, pt = problem.cam_idx, problem.pt_idx
-    z = np.einsum("mj,mj->m", t_cw[cam, 2, :3], problem.points[pt]) + t_cw[cam, 2, 3]
-    return np.asarray(z > camera.MIN_DEPTH)
-
-
-def rms(problem: ba.BAProblem, used: NDArray[np.bool_]) -> float:
-    """Return the RMS reprojection error (px) over the ``used`` observations."""
-    t_cw = se3.inverse(problem.poses)
-    cam, pt = problem.cam_idx[used], problem.pt_idx[used]
-    in_cam = np.einsum("mij,mj->mi", t_cw[cam, :3, :3], problem.points[pt]) + t_cw[cam, :3, 3]
-    pixels = np.zeros((cam.size, 2))
-    for c in np.unique(cam):
-        sel = cam == c
-        k = problem.intrinsics[problem.intrinsics_idx[c]]
-        pixels[sel] = camera.project(problem.camera_model, k, in_cam[sel])
-    errors = pixels - problem.observations[used]
-    return float(np.sqrt(np.mean(np.sum(errors**2, axis=1))))
 
 
 def record(path: Path, stages: dict[str, tuple[NDArray[np.float64], NDArray[np.float64]]]) -> None:
@@ -108,7 +87,9 @@ def main() -> None:
             f"{summary.iterations} iterations ({summary.termination}), {seconds:.2f} s"
         )
         stages[f"slamlab_{backend}"] = (result.poses, result.points)
-    reference = colmap_reference.solve(problem, tolerance=1e-6, max_iterations=100)
+    reference = colmap_reference.solve(
+        problem, colmap_reference.ColmapOptions(tolerance=1e-6, max_iterations=100)
+    )
     colmap = replace(
         problem, poses=reference.poses, intrinsics=reference.intrinsics, points=reference.points
     )

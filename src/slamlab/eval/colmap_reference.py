@@ -5,21 +5,21 @@ COLMAP's bundle adjustment (Ceres underneath), and reads the result back in this
 conventions, so the two solvers can be compared on exactly the same problem.
 
 pycolmap is a development dependency, imported only when these functions run; the library
-itself never needs it. Only problems that COLMAP can represent are supported: per-camera
-intrinsics groups, the ``"radial"`` model (COLMAP's ``RADIAL``) or ``"pinhole"``, no priors
+itself never needs it. Only problems that COLMAP can represent are supported: intrinsics groups
+(shared or per camera), the ``"radial"`` model (COLMAP's ``RADIAL``) or ``"pinhole"``, no priors
 and no anchored points.
 """
 
 from __future__ import annotations
 
 import importlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
 
-from slamlab.foundations import se3
+from slamlab.foundations import nls, se3
 from slamlab.foundations.ba import BAProblem
 from slamlab.foundations.errors import InvalidInputError
 
@@ -41,8 +41,8 @@ class ColmapResult:
     ----------
     poses : ndarray of float64, shape (C, 4, 4)
         Camera-to-world poses.
-    intrinsics : ndarray of float64, shape (C, P)
-        Per-camera intrinsics.
+    intrinsics : ndarray of float64, shape (K, P)
+        Refined intrinsics groups.
     points : ndarray of float64, shape (N, 3)
         World points (those COLMAP filtered out keep their starting position).
     seconds : float
@@ -69,8 +69,6 @@ def _check(problem: BAProblem) -> None:
     """Reject a problem COLMAP cannot represent as-is."""
     if problem.camera_model not in COLMAP_MODELS:
         raise InvalidInputError(f"COLMAP reference: model {problem.camera_model!r} unsupported")
-    if not np.array_equal(problem.intrinsics_idx, np.arange(problem.poses.shape[0])):
-        raise InvalidInputError("COLMAP reference: expected one intrinsics group per camera")
     if np.any(problem.point_anchor >= 0) or not np.all(np.isnan(problem.depth_prior)):
         raise InvalidInputError("COLMAP reference: anchored points and depth priors unsupported")
 
@@ -86,7 +84,7 @@ def to_reconstruction(problem: BAProblem) -> tuple[Any, list[int]]:
     Returns
     -------
     reconstruction : pycolmap.Reconstruction
-        Camera i is COLMAP camera and image ``i + 1``.
+        Intrinsics group g is COLMAP camera ``g + 1``; pose i is image ``i + 1``.
     point_ids : list of int
         COLMAP's id for each of the problem's points.
 
@@ -99,11 +97,9 @@ def to_reconstruction(problem: BAProblem) -> tuple[Any, list[int]]:
     pycolmap = _pycolmap()
     reconstruction = pycolmap.Reconstruction()
     t_cam_world = se3.inverse(problem.poses)
-    n_cams = problem.poses.shape[0]
     centre = _CENTRE[problem.camera_model]
-    slots = []
-    for c in range(n_cams):
-        params = problem.intrinsics[c].copy()
+    for g, group in enumerate(problem.intrinsics):
+        params = group.copy()
         params[centre] += PIXEL_OFFSET
         width, height = (2.0 * params[centre]).round().astype(int).clip(1)
         reconstruction.add_camera_with_trivial_rig(
@@ -112,15 +108,17 @@ def to_reconstruction(problem: BAProblem) -> tuple[Any, list[int]]:
                 width=int(width),
                 height=int(height),
                 params=params,
-                camera_id=c + 1,
+                camera_id=g + 1,
             )
         )
+    slots = []
+    for c in range(problem.poses.shape[0]):
         sel = np.flatnonzero(problem.cam_idx == c)
         slots.append({int(m): k for k, m in enumerate(sel)})
         image = pycolmap.Image(
             name=str(c),
             keypoints=problem.observations[sel] + PIXEL_OFFSET,
-            camera_id=c + 1,
+            camera_id=int(problem.intrinsics_idx[c]) + 1,
             image_id=c + 1,
         )
         reconstruction.add_image_with_trivial_frame(image, pycolmap.Rigid3d(t_cam_world[c, :3, :]))
@@ -134,26 +132,39 @@ def to_reconstruction(problem: BAProblem) -> tuple[Any, list[int]]:
     return reconstruction, point_ids
 
 
-def solve(
-    problem: BAProblem,
-    *,
-    refine_focal: bool = True,
-    refine_extra: bool = True,
-    tolerance: float = 1e-10,
-    max_iterations: int = 200,
-) -> ColmapResult:
+@dataclass(frozen=True)
+class ColmapOptions:
+    """Settings for COLMAP's bundle adjustment.
+
+    Attributes
+    ----------
+    refine_focal, refine_extra : bool
+        Refine the focal lengths and the distortion terms (the principal point stays fixed).
+    loss : slamlab.foundations.nls.Loss
+        The robust loss per observation. Ceres's Huber and Cauchy losses on the squared norm
+        are the same as this package's.
+    tolerance : float
+        Ceres's function, gradient and parameter tolerances.
+    max_iterations : int
+        Ceres's iteration cap.
+    """
+
+    refine_focal: bool = True
+    refine_extra: bool = True
+    loss: nls.Loss = field(default_factory=nls.Loss)
+    tolerance: float = 1e-10
+    max_iterations: int = 200
+
+
+def solve(problem: BAProblem, options: ColmapOptions | None = None) -> ColmapResult:
     """Run COLMAP's bundle adjustment on a problem.
 
     Parameters
     ----------
     problem : BAProblem
         A problem COLMAP can represent (see the module docstring).
-    refine_focal, refine_extra : bool, optional
-        Refine the focal lengths and the distortion terms (the principal point stays fixed).
-    tolerance : float, optional
-        Ceres's function, gradient and parameter tolerances.
-    max_iterations : int, optional
-        Ceres's iteration cap.
+    options : ColmapOptions, optional
+        What to refine, the loss and Ceres's tolerances (default: ``ColmapOptions()``).
 
     Returns
     -------
@@ -164,21 +175,25 @@ def solve(
 
     pycolmap = _pycolmap()
     reconstruction, point_ids = to_reconstruction(problem)
-    options = pycolmap.BundleAdjustmentOptions()
-    options.refine_principal_point = False
-    options.refine_focal_length = refine_focal
-    options.refine_extra_params = refine_extra
-    options.print_summary = False
-    solver = options.ceres.solver_options
-    solver.function_tolerance = tolerance
-    solver.gradient_tolerance = tolerance
-    solver.parameter_tolerance = tolerance
-    solver.max_num_iterations = max_iterations
+    settings = options if options is not None else ColmapOptions()
+    colmap = pycolmap.BundleAdjustmentOptions()
+    colmap.refine_principal_point = False
+    colmap.refine_focal_length = settings.refine_focal
+    colmap.refine_extra_params = settings.refine_extra
+    colmap.print_summary = False
+    colmap.ceres.loss_function_type = getattr(pycolmap.LossFunctionType, settings.loss.kind.upper())
+    colmap.ceres.loss_function_scale = settings.loss.scale
+    solver = colmap.ceres.solver_options
+    solver.function_tolerance = settings.tolerance
+    solver.gradient_tolerance = settings.tolerance
+    solver.parameter_tolerance = settings.tolerance
+    solver.max_num_iterations = settings.max_iterations
     start = time.perf_counter()
-    pycolmap.bundle_adjustment(reconstruction, options)
+    pycolmap.bundle_adjustment(reconstruction, colmap)
     seconds = time.perf_counter() - start
     n_cams = problem.poses.shape[0]
-    intrinsics = np.array([reconstruction.cameras[c + 1].params for c in range(n_cams)])
+    n_groups = problem.intrinsics.shape[0]
+    intrinsics = np.array([reconstruction.cameras[g + 1].params for g in range(n_groups)])
     intrinsics[:, _CENTRE[problem.camera_model]] -= PIXEL_OFFSET
     t_cam_world = np.tile(np.eye(4), (n_cams, 1, 1))
     for c in range(n_cams):
