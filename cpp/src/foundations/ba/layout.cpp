@@ -186,6 +186,35 @@ void attach_priors(const Problem& problem, const Options& options, Layout& layou
   }
 }
 
+/// @brief Give each used free point a slot, mark the anchored points, and list the
+///        observations that get a reprojection block (all but the anchors).
+/// @param problem The problem.
+/// @param degenerate Which points were dropped.
+/// @param views Each point's number of kept observations.
+/// @param layout The layout to update (its kept observations already chosen).
+void assign_points(const Problem& problem, const std::vector<bool>& degenerate,
+                   const std::vector<Index>& views, Layout& layout) {
+  const std::size_t n_points = views.size();
+  layout.point_slot.assign(n_points, -1);
+  layout.anchored.assign(n_points, false);
+  std::vector<bool> is_anchor(static_cast<std::size_t>(problem.observations.rows()), false);
+  for (std::size_t p = 0; p < n_points; ++p) {
+    const bool used = !degenerate[p] && views[p] > 0;
+    if (used && !problem.fixed_points[p]) {
+      layout.point_slot[p] = layout.free_points++;
+    }
+    if (used && problem.point_anchor[p] >= 0) {
+      layout.anchored[p] = true;
+      is_anchor[static_cast<std::size_t>(problem.point_anchor[p])] = true;
+    }
+  }
+  for (std::size_t i = 0; i < layout.obs.size(); ++i) {
+    if (!is_anchor[static_cast<std::size_t>(layout.obs[i])]) {
+      layout.reprojection.push_back(static_cast<Index>(i));
+    }
+  }
+}
+
 }  // namespace
 
 Layout make_layout(const Problem& problem, const Options& options) {
@@ -219,32 +248,20 @@ Layout make_layout(const Problem& problem, const Options& options) {
     layout.pose_free[c] = !problem.fixed_poses[c] && observed[c];
     layout.counts.unobserved_poses += (!problem.fixed_poses[c] && !observed[c]) ? 1 : 0;
   }
-  layout.intrinsics_free.assign(n_groups, false);
+  const auto n_params = static_cast<std::size_t>(problem.intrinsics.cols());
+  layout.intrinsics_free.assign(n_groups * n_params, false);
   for (std::size_t g = 0; g < n_groups; ++g) {
-    layout.intrinsics_free[g] = !problem.fixed_intrinsics[g] && group_observed[g];
-    layout.counts.unobserved_intrinsics +=
-        (!problem.fixed_intrinsics[g] && !group_observed[g]) ? 1 : 0;
+    bool any_free = false;
+    for (std::size_t k = 0; k < n_params; ++k) {
+      const bool free = !problem.fixed_intrinsics[(g * n_params) + k];
+      layout.intrinsics_free[(g * n_params) + k] = free && group_observed[g];
+      any_free = any_free || free;
+    }
+    layout.counts.unobserved_intrinsics += (any_free && !group_observed[g]) ? 1 : 0;
   }
   attach_priors(problem, options, layout);
   fix_gauge(problem, observed, layout.counts.gauge, layout);
-  layout.point_slot.assign(n_points, -1);
-  layout.anchored.assign(n_points, false);
-  std::vector<bool> is_anchor(static_cast<std::size_t>(problem.observations.rows()), false);
-  for (std::size_t p = 0; p < n_points; ++p) {
-    const bool used = !degenerate[p] && views[p] > 0;
-    if (used && !problem.fixed_points[p]) {
-      layout.point_slot[p] = layout.free_points++;
-    }
-    if (used && problem.point_anchor[p] >= 0) {
-      layout.anchored[p] = true;
-      is_anchor[static_cast<std::size_t>(problem.point_anchor[p])] = true;
-    }
-  }
-  for (std::size_t i = 0; i < layout.obs.size(); ++i) {
-    if (!is_anchor[static_cast<std::size_t>(layout.obs[i])]) {
-      layout.reprojection.push_back(static_cast<Index>(i));
-    }
-  }
+  assign_points(problem, degenerate, views, layout);
   return layout;
 }
 

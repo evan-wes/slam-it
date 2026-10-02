@@ -60,11 +60,13 @@ monocular camera, scales. Those directions are removed, not left to the damping:
 
 **Degenerate data is dropped, and counted:**
 - observations of a point behind its camera at the start;
-- every observation of a free point seen fewer than twice, or with less than
-  ``min_parallax_deg`` between its rays.
+- every observation of a free point seen fewer than twice, or (if ``min_parallax_deg`` is
+  raised from its default of 0) with less than that angle between its rays.
 
-A point with no parallax has an undetermined depth. Freezing it at a wrong depth would bias
-the cameras that see it. Free poses, intrinsics groups and affines left with nothing
+A point seen once has an undetermined depth. Freezing it at a wrong depth would bias the
+cameras that see it. Low-parallax points stay by default: bundle adjustment constrains them
+well, and on BAL's Ladybug-49 dropping those under 1° raised the RMS error from 0.915 to
+1.536 px. Free poses, intrinsics groups and affines left with nothing
 observing them are held fixed.
 
 **Focal observability.** When intrinsics are free, the result reports their standard
@@ -85,6 +87,7 @@ from slamlab.foundations.ba.problem import (
     BASummary,
     anchor_points,
 )
+from slamlab.foundations.ba.readers import ColmapModel, read_bal, read_colmap_text
 from slamlab.foundations.ba.schur import DenseCholesky, ReducedSystemSolver
 from slamlab.foundations.ba.solve import Implementation, solve
 
@@ -97,9 +100,12 @@ __all__ = [
     "BAProblem",
     "BAResult",
     "BASummary",
+    "ColmapModel",
     "DenseCholesky",
     "Implementation",
     "ReducedSystemSolver",
     "anchor_points",
+    "read_bal",
+    "read_colmap_text",
     "solve",
 ]

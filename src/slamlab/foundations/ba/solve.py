@@ -70,18 +70,19 @@ class Implementation(Protocol):
 def _intrinsics_std(bundle: Bundle, state: State, loss: nls.BlockLoss) -> Array:
     """Return the free intrinsics' marginal standard deviations at ``state`` (NaN if fixed)."""
     out = np.full(state.intrinsics.shape, np.nan)
-    groups, positions = bundle.intrinsics_positions()
+    groups, params, positions = bundle.intrinsics_positions()
     if groups.size == 0:
         return out
     weights = loss.evaluate(bundle.squared_norms(state))[1]
     variances = bundle.linearize(state, weights).camera_variances(positions)
-    out[groups] = np.sqrt(variances).reshape(groups.size, -1)
+    out[groups, params] = np.sqrt(variances)
     return out
 
 
-def _unobservable_focal(intrinsics: Array, std: Array, ratio: float) -> int:
+def _unobservable_focal(model: str, intrinsics: Array, std: Array, ratio: float) -> int:
     """Count free groups whose focal length is uncertain by more than ``ratio`` of itself."""
-    relative = std[:, :2] / intrinsics[:, :2]
+    focal = list(camera.FOCAL_INDICES[model])
+    relative = std[:, focal] / intrinsics[:, focal]
     return int(np.count_nonzero(np.any(relative > ratio, axis=1)))
 
 
@@ -102,7 +103,9 @@ def _solve_reference(problem: BAProblem, options: BAOptions) -> BAResult:
     summary = BASummary(
         solve=solution.summary,
         gauge=layout.gauge,
-        unobservable_focal=_unobservable_focal(final.intrinsics, std, options.focal_std_ratio),
+        unobservable_focal=_unobservable_focal(
+            problem.camera_model, final.intrinsics, std, options.focal_std_ratio
+        ),
         **layout.summary,
     )
     return BAResult(
@@ -166,7 +169,7 @@ def _backend_arguments(problem: BAProblem, options: BAOptions) -> tuple[object, 
         problem.pt_idx,
         problem.weights,
         problem.fixed_poses,
-        problem.fixed_intrinsics,
+        np.ascontiguousarray(problem.fixed_intrinsics.ravel()),
         problem.fixed_points,
         problem.depth_prior,
         problem.depth_prior_weights,

@@ -141,7 +141,7 @@ class Bundle:
         free = np.concatenate(
             [
                 np.repeat(layout.pose_free, POSE_DIM),
-                np.repeat(layout.intrinsics_free, n_params),
+                layout.intrinsics_free.ravel(),
                 np.repeat(layout.affine_free, AFFINE_DIM),
             ]
         )
@@ -179,12 +179,12 @@ class Bundle:
             poses, p.intrinsics.copy(), p.points.copy(), p.depth_affine.copy(), inverse_depth
         )
 
-    def intrinsics_positions(self) -> tuple[IndexArray, IndexArray]:
-        """Return the free intrinsics' (group, parameter) pairs and their free coordinates."""
+    def intrinsics_positions(self) -> tuple[IndexArray, IndexArray, IndexArray]:
+        """Return the free intrinsics' groups, parameters, and free coordinates."""
         n_params = self._problem.intrinsics.shape[1]
-        groups = np.flatnonzero(self._layout.intrinsics_free)
-        full = (self._intrinsics_offset + n_params * groups[:, None] + np.arange(n_params)).ravel()
-        return groups, np.searchsorted(self._free, full)
+        groups, params = np.nonzero(self._layout.intrinsics_free)
+        full = self._intrinsics_offset + n_params * groups + params
+        return groups, params, np.searchsorted(self._free, full)
 
     def reduction(self, state: State) -> Reduction:
         """Return the free camera-side coordinates at ``state`` (the scale basis moves)."""

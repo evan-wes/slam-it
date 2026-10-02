@@ -196,7 +196,7 @@ nb::tuple solve(const MatrixIn& intrinsics, const VectorIn<std::int64_t>& intrin
                 int gauge, const VectorIn<double>& settings, const VectorIn<std::int64_t>& codes,
                 const VectorIn<double>& tolerances) {
   const ba::Options options = options_from(gauge, settings, codes, tolerances);
-  if (codes(0) < 0 || codes(0) > 1) {
+  if (codes(0) < 0 || codes(0) > 2) {
     throw std::invalid_argument("model: unknown code");
   }
   using Pairs = Eigen::Matrix<double, Eigen::Dynamic, 2, Eigen::RowMajor>;

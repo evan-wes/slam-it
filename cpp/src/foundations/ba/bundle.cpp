@@ -132,9 +132,9 @@ class Bundle {
     for (Index c = 0; c < n_cams; ++c) {
       append_range(free_, kPoseDim * c, kPoseDim, layout.pose_free[static_cast<std::size_t>(c)]);
     }
-    for (Index g = 0; g < problem.intrinsics.rows(); ++g) {
-      append_range(free_, intrinsics_offset_ + (n_params * g), n_params,
-                   layout.intrinsics_free[static_cast<std::size_t>(g)]);
+    for (Index k = 0; std::cmp_less(k, layout.intrinsics_free.size()); ++k) {
+      append_range(free_, intrinsics_offset_ + k, 1,
+                   layout.intrinsics_free[static_cast<std::size_t>(k)]);
     }
     for (Index c = 0; c < n_cams; ++c) {
       append_range(free_, affine_offset_ + (2 * c), 2,
@@ -185,23 +185,19 @@ class Bundle {
     return state;
   }
 
-  /// @brief The free intrinsics' groups and their free coordinates.
-  /// @return The free groups, and each of their parameters' position.
+  /// @brief The free intrinsics parameters and their free coordinates.
+  /// @return Each free parameter's row-major index in the intrinsics, and its position.
   [[nodiscard]] std::pair<IndexList, IndexList> intrinsics_positions() const {
-    IndexList groups;
+    IndexList entries;
     IndexList positions;
-    const Index n_params = problem_->intrinsics.cols();
-    for (Index g = 0; g < problem_->intrinsics.rows(); ++g) {
-      if (!layout_->intrinsics_free[static_cast<std::size_t>(g)]) {
-        continue;
-      }
-      groups.push_back(g);
-      for (Index k = 0; k < n_params; ++k) {
-        const Index full = intrinsics_offset_ + (n_params * g) + k;
+    for (Index k = 0; std::cmp_less(k, layout_->intrinsics_free.size()); ++k) {
+      if (layout_->intrinsics_free[static_cast<std::size_t>(k)]) {
+        entries.push_back(k);
+        const Index full = intrinsics_offset_ + k;
         positions.push_back(std::ranges::lower_bound(free_, full) - free_.begin());
       }
     }
-    return {groups, positions};
+    return {entries, positions};
   }
 
   /// @brief The free camera-side coordinates at `state` (the scale basis moves with it).
@@ -712,16 +708,16 @@ Intrinsics intrinsics_std(const Bundle& bundle, const BundleState& state,
                           const nls::Options& solver, const Intrinsics& shape) {
   Intrinsics out =
       Intrinsics::Constant(shape.rows(), shape.cols(), std::numeric_limits<double>::quiet_NaN());
-  const auto [groups, positions] = bundle.intrinsics_positions();
-  if (groups.empty()) {
+  const auto [entries, positions] = bundle.intrinsics_positions();
+  if (entries.empty()) {
     return out;
   }
   const Eigen::VectorXd weights =
       nls::detail::evaluate_blocks(solver, bundle.squared_norms(state)).weights;
   const Eigen::VectorXd variances = bundle.linearize(state, weights).camera_variances(positions);
-  for (std::size_t i = 0; i < groups.size(); ++i) {
-    out.row(groups[i]) =
-        variances.segment(static_cast<Index>(i) * shape.cols(), shape.cols()).cwiseSqrt();
+  for (std::size_t i = 0; i < entries.size(); ++i) {
+    out(entries[i] / shape.cols(), entries[i] % shape.cols()) =
+        std::sqrt(variances(static_cast<Index>(i)));
   }
   return out;
 }
@@ -749,8 +745,12 @@ Result<Solution> adjust(const Problem& problem, const Options& options, const La
   }
   Intrinsics std_dev = intrinsics_std(bundle, final_state, solver, final_state.intrinsics);
   for (Index g = 0; g < std_dev.rows(); ++g) {
-    const bool loose = std_dev(g, 0) > options.focal_std_ratio * final_state.intrinsics(g, 0) ||
-                       std_dev(g, 1) > options.focal_std_ratio * final_state.intrinsics(g, 1);
+    // Radial has one focal length; pinhole and radtan have two.
+    const Index n_focal = problem.model == camera::Model::kRadial ? 1 : 2;
+    bool loose = false;
+    for (Index k = 0; k < n_focal; ++k) {
+      loose = loose || std_dev(g, k) > options.focal_std_ratio * final_state.intrinsics(g, k);
+    }
     summary.unobservable_focal += loose ? 1 : 0;
   }
   Points points = final_state.points;

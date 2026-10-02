@@ -191,11 +191,12 @@ instead:
 
 Each of these is dropped, not frozen, and counted in the summary:
 - **Points behind a camera at the start.** Their observations are dropped.
-- **Free points seen fewer than twice, or with less than `min_parallax_deg` (1°) between
-  their rays.** Parallax is the largest angle from a point's first ray to any other, within
-  a factor of two of the largest pairwise angle. Such a point's depth is undetermined, and
-  freezing it at a wrong depth would bias the cameras that see it, so all its observations
-  are dropped.
+- **Free points seen fewer than twice.** Such a point's depth is undetermined, and freezing
+  it at a wrong depth would bias the cameras that see it, so its observation is dropped.
+- **Optionally, free points with less than `min_parallax_deg` between their rays** (default
+  0, off). Parallax is the largest angle from a point's first ray to any other, within a
+  factor of two of the largest pairwise angle. The default was 1° until real data
+  disagreed: see "What was learned".
 - **Free poses and intrinsics groups that nothing observes.** These are held fixed.
 
 During the solve, a step that moves a point behind a camera gives that observation an
@@ -211,6 +212,43 @@ fy deviation exceeds `focal_std_ratio` (1%) of itself is counted in `unobservabl
 
 The classic failure it catches is focal length against depth. With pure translation and no
 rotation, `u = f (X - t_x)/Z` is unchanged by `f → kf, Z → kZ`, so no amount of data pins f.
+
+## Readers, and Ceres as the reference
+
+**BAL** (`read_bal`). BAL's cameras look down `-z` with `y` up: `P = R X + t`,
+`p = -P/P_z`, `u = f (1 + k1|p|² + k2|p|⁴) p`.
+- **Frames.** Flipping the camera's `y` and `z` axes (`F = diag(1, -1, -1)`) gives
+  `T_cam_world = [F R, F t]` and pixels `(x, -y)`.
+- **Camera model.** BAL's camera is exactly the `radial` model `[f, cx, cy, k1, k2]`, added
+  for it. It is radtan with one focal length and no tangential terms, computed through
+  radtan by a fixed 9x5 map.
+- **What is refined.** BAL and Ceres refine `f, k1, k2` but not the principal point, which
+  needed per-parameter intrinsics masks: `fixed_intrinsics` is `(K, P)`.
+
+**COLMAP text** (`read_colmap_text`).
+- **Pixels.** COLMAP puts pixel centres at `(0.5, 0.5)`, so the reader shifts pixels and
+  principal points by -0.5.
+- **Models.** SIMPLE_PINHOLE, SIMPLE_RADIAL and RADIAL map onto `radial`; PINHOLE onto
+  `pinhole`; PINHOLE and OPENCV onto `radtan`. Absent terms are zero, and `refinable` marks
+  the ones the source model has.
+
+**The reference.** `slamlab.eval.colmap_reference` builds a pycolmap reconstruction from a
+problem and runs COLMAP's bundle adjuster, which is Ceres underneath. pyceres was the plan,
+but its reprojection factors are gone from current releases. COLMAP's adjuster is the same
+Ceres, on the same RADIAL model, and is also what reifyscene's reconstructions come from.
+
+**On BAL Ladybug-49** (49 cameras, 7776 points, 31843 observations; 31 behind their camera):
+
+| Solver | RMS reprojection error | Time |
+|---|---|---|
+| start | 7.314 px | |
+| slamlab, Python | 0.915 px | ~60 s |
+| slamlab, C++ (dense reduced solve) | 0.9147 px | ~2 s |
+| COLMAP's Ceres | 0.9147 px | 0.4 s |
+
+The dense reduced solve is the gap. Milestone 4 brings the sparse one, and the
+`ReducedSystemSolver` seam is where it plugs in. `scripts/demo_bal.py` reproduces the table
+and, with `--rerun`, saves a recording of the cameras and points before and after.
 
 ## How it's checked
 
@@ -261,6 +299,13 @@ rotation, `u = f (X - t_x)/Z` is unchanged by `f → kf, Z → kZ`, so no amount
 
 - **Parity.** As above, with every kind of block. The intrinsics agree to 1e-8 relative in a
   scene where the distortion is poorly conditioned (k3 near -6).
+- **Readers and Ceres.**
+  - BAL files (plain and bz2) read back so that our model reproduces BAL's own projection
+    equation, written independently in the test, to 1e-10 px.
+  - COLMAP text models of four camera types reproduce pycolmap's projections of the same
+    files, and mixed models are rejected.
+  - On a BAL problem with `f, k1, k2` free, our optimum matches COLMAP's Ceres BA in both
+    backends: RMS error to 1e-8 relative, focal lengths to 1e-7.
 - **Natively.** The same model is checked in C++:
   - convergence to zero reprojection error;
   - the gauge;
@@ -285,6 +330,12 @@ rotation, `u = f (X - t_x)/Z` is unchanged by `f → kf, Z → kZ`, so no amount
   disagreed: σ_f = 9 px, and the estimate was 1σ off the truth. The check was right and the
   assumption was wrong. Weak rotation makes focal length weakly observable, which is why
   calibration needs varied views.
+- **A triangulation heuristic is not a BA rule.** The first default dropped points with less
+  than 1° of parallax. On BAL's Ladybug-49, that left out 37 points (239 observations), which
+  kept their starting positions, and the RMS error ended at 1.536 px against COLMAP's
+  0.915 px. With the filter off, ours reaches 0.9147 px, the same as COLMAP. COLMAP applies
+  its 1.5° check when it *creates* points; bundle adjustment then refines low-parallax points
+  well, since damping handles their weak depth. The filter is now off by default.
 - **Fixed means bit-exact.** The first version returned fixed poses 1 ulp off, from the
   round trip `T_world_cam → T_cam_world → T_world_cam`. Unmoved poses are now returned
   as given, in both cores.

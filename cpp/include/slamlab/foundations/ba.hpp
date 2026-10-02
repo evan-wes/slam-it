@@ -97,7 +97,7 @@ struct Problem {
   Eigen::VectorXd weights;
   /// @brief Poses held fixed (C).
   Mask fixed_poses;
-  /// @brief Intrinsics groups held fixed (K).
+  /// @brief Intrinsics held fixed, per group and parameter (K x P, row-major).
   Mask fixed_intrinsics;
   /// @brief Points held fixed (N).
   Mask fixed_points;
@@ -127,8 +127,9 @@ struct Options {
   nls::Loss depth_loss;
   /// @brief How the gauge freedom is removed.
   Gauge gauge = Gauge::kAuto;
-  /// @brief A free point whose rays span less than this angle (degrees) is dropped.
-  double min_parallax_deg = 1.0;
+  /// @brief A free point whose rays span less than this angle (degrees) is dropped (default
+  ///        0: only points seen fewer than twice are).
+  double min_parallax_deg = 0.0;
   /// @brief A free focal length whose deviation exceeds this fraction of it is unobservable.
   double focal_std_ratio = 0.01;
 };

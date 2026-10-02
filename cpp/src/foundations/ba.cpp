@@ -126,7 +126,7 @@ Result<void> check_problem(const Problem& problem) {
     return fail(ErrorKind::kInvalidInput, "weights: expected M non-negative values");
   }
   if (problem.fixed_poses.size() != n_cams ||
-      problem.fixed_intrinsics.size() != static_cast<std::size_t>(n_groups) ||
+      std::cmp_not_equal(problem.fixed_intrinsics.size(), n_groups * problem.intrinsics.cols()) ||
       problem.fixed_points.size() != static_cast<std::size_t>(problem.points.rows())) {
     return fail(ErrorKind::kInvalidInput, "fixed masks: wrong length");
   }

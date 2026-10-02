@@ -79,7 +79,7 @@ std::tuple<ba::Problem, ba::Points, Eigen::VectorXd> scene() {
   problem.intrinsics_idx.assign(kCameras, 0);
   problem.weights = Eigen::VectorXd::Ones(problem.observations.rows());
   problem.fixed_poses.assign(kCameras, false);
-  problem.fixed_intrinsics.assign(1, true);
+  problem.fixed_intrinsics.assign(4, true);  // one group, four parameters
   problem.fixed_points.assign(kPoints, false);
   without_priors(problem);
   return {problem, truth, inverse_depth};

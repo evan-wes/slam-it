@@ -30,6 +30,10 @@ dev = [
   # for the parity fixtures). manifpy comes from conda-forge (setup_slamlab.sh).
   "scipy>=1.13",
   "mpmath>=1.3",
+  # COLMAP's Ceres bundle adjuster: the reference BA is compared against (tests, demo).
+  "pycolmap>=4.2",
+  # Visualisation for the demos (never imported by the library).
+  "rerun-sdk>=0.38",
 ]
 
 [tool.scikit-build]

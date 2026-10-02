@@ -51,8 +51,10 @@ class BAProblem:
         Each camera's intrinsics group.
     weights : ndarray of float64, shape (M,)
         Each observation's weight (0 excludes it).
-    fixed_poses, fixed_intrinsics, fixed_points : ndarray of bool
-        Which variables are held fixed, shapes (C,), (K,) and (N,).
+    fixed_poses, fixed_points : ndarray of bool
+        Which poses (C,) and points (N,) are held fixed.
+    fixed_intrinsics : ndarray of bool, shape (K, P)
+        Which intrinsics parameters are held fixed, per group and parameter.
     depth_prior : ndarray of float64, shape (M,)
         Each observation's prior inverse depth (NaN for none).
     depth_prior_weights : ndarray of float64, shape (M,)
@@ -136,8 +138,9 @@ class BAProblem:
             Non-negative observation weights (default: 1).
         fixed_poses : array_like of bool, shape (C,), optional
             Poses held fixed (default: none).
-        fixed_intrinsics : array_like of bool, shape (K,), optional
-            Intrinsics groups held fixed (default: all, as for a calibrated camera).
+        fixed_intrinsics : array_like of bool, shape (K,) or (K, P), optional
+            Intrinsics held fixed, per group or per parameter (default: all, as for a
+            calibrated camera). BAL, for example, frees ``f, k1, k2`` but not ``cx, cy``.
         fixed_points : array_like of bool, shape (N,), optional
             Points held fixed (default: none).
         depth_prior : array_like, shape (M,), optional
@@ -191,7 +194,7 @@ class BAProblem:
             ),
             weights=_weights(weights, (n_obs,), 1.0, "weights"),
             fixed_poses=_mask(fixed_poses, n_cams, False, "fixed_poses"),
-            fixed_intrinsics=_mask(fixed_intrinsics, k.shape[0], True, "fixed_intrinsics"),
+            fixed_intrinsics=_intrinsics_mask(fixed_intrinsics, k.shape),
             fixed_points=_mask(fixed_points, x.shape[0], False, "fixed_points"),
             depth_prior=_depth_prior(depth_prior, n_obs),
             depth_prior_weights=_weights(depth_prior_weights, (n_obs,), 1.0, "depth_prior_weights"),
@@ -223,7 +226,9 @@ class BAOptions:
     gauge : {"auto", "similarity", "first_pose", "none"}
         How the gauge freedom is removed (see the module docstring).
     min_parallax_deg : float
-        A free point whose rays span less than this angle is dropped.
+        A free point whose rays span less than this angle is dropped (default 0: only points
+        seen fewer than twice are). Bundle adjustment refines low-parallax points well;
+        raise it only to discard poorly triangulated points deliberately.
     focal_std_ratio : float
         A free focal length whose standard deviation exceeds this fraction of it is counted
         as unobservable.
@@ -232,7 +237,7 @@ class BAOptions:
     solver: nls.Options = field(default_factory=nls.Options)
     depth_loss: nls.Loss = field(default_factory=nls.Loss)
     gauge: str = "auto"
-    min_parallax_deg: float = 1.0
+    min_parallax_deg: float = 0.0
     focal_std_ratio: float = 0.01
 
     def __post_init__(self) -> None:
@@ -415,6 +420,19 @@ def anchor_points(problem: BAProblem) -> BAProblem:
     anchor[problem.pt_idx[weighted]] = weighted  # the last write per point is its first
     anchor[problem.fixed_points] = -1
     return replace(problem, point_anchor=anchor)
+
+
+def _intrinsics_mask(value: ArrayLike | None, shape: tuple[int, int]) -> Mask:
+    """Return a (K, P) mask of fixed intrinsics from a per-group or per-parameter one."""
+    if value is None:
+        return np.ones(shape, dtype=bool)
+    arr = np.asarray(value)
+    if arr.dtype != np.bool_ or arr.shape not in {(shape[0],), shape}:
+        raise InvalidInputError(
+            f"fixed_intrinsics: expected booleans of shape ({shape[0]},) or {shape}, "
+            f"got {arr.dtype} {arr.shape}"
+        )
+    return np.broadcast_to(arr.reshape(shape[0], -1), shape).copy()
 
 
 def _mask(value: ArrayLike | None, length: int, default: bool, name: str) -> Mask:

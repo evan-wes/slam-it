@@ -32,6 +32,7 @@ class Layout:
     scale_pose: int
     scale_reference: int
     intrinsics_free: Mask
+    """Intrinsics parameters that move, shape (K, P)."""
     affine_free: Mask
     point_slot: IndexArray
     """Each point's index among the free points, or -1."""
@@ -156,7 +157,7 @@ def make_layout(problem: BAProblem, options: BAOptions) -> Layout:
         "dropped_observations": dropped,
         "unobserved_poses": int(np.count_nonzero(~problem.fixed_poses & ~observed)),
         "unobserved_intrinsics": int(
-            np.count_nonzero(~problem.fixed_intrinsics & ~intrinsics_observed)
+            np.count_nonzero(np.any(~problem.fixed_intrinsics, axis=1) & ~intrinsics_observed)
         ),
         "unobserved_depth_affines": int(
             np.count_nonzero(~problem.fixed_depth_affine & ~affine_observed)
@@ -171,7 +172,7 @@ def make_layout(problem: BAProblem, options: BAOptions) -> Layout:
         pose_free=pose_free,
         scale_pose=scale_pose,
         scale_reference=scale_reference,
-        intrinsics_free=~problem.fixed_intrinsics & intrinsics_observed,
+        intrinsics_free=~problem.fixed_intrinsics & intrinsics_observed[:, None],
         affine_free=~problem.fixed_depth_affine & affine_observed,
         point_slot=point_slot,
         gauge=gauge,

@@ -30,7 +30,7 @@ struct Layout {
   std::int64_t scale_pose = -1;
   /// @brief The fixed pose the scale pose's baseline is measured from, or -1.
   std::int64_t scale_reference = -1;
-  /// @brief Intrinsics groups that move.
+  /// @brief Intrinsics parameters that move, per group and parameter (K x P, row-major).
   Mask intrinsics_free;
   /// @brief Each point's index among the free points, or -1.
   IndexList point_slot;

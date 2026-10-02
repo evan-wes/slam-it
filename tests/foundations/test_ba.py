@@ -332,7 +332,7 @@ def test_perturbed_focal_is_recovered() -> None:
     """Freed intrinsics started 3% off converge back to the truth."""
     scene = _scene(cameras=6, points=100, perturb=0.005)
     off = scene.problem.intrinsics * np.array([1.03, 0.97, 1.0, 1.0])
-    problem = replace(scene.problem, intrinsics=off, fixed_intrinsics=np.array([False]))
+    problem = replace(scene.problem, intrinsics=off, fixed_intrinsics=np.zeros((1, 4), dtype=bool))
     result = ba.solve(problem, ba.BAOptions(solver=TIGHT))
     assert result.summary.solve.converged
     np.testing.assert_allclose(result.intrinsics[0], PINHOLE, rtol=1e-7)
@@ -383,7 +383,7 @@ def test_degenerate_data_is_dropped_and_counted() -> None:
         np.concatenate([p.cam_idx, [c for c, _ in extra_obs]]),
         np.concatenate([p.pt_idx, [k for _, k in extra_obs]]),
     )
-    result = ba.solve(problem)
+    result = ba.solve(problem, ba.BAOptions(min_parallax_deg=1.0))
     summary = result.summary
     assert (summary.dropped_points, summary.dropped_observations, summary.unobserved_poses) == (
         2,
