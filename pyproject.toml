@@ -92,7 +92,7 @@ files = ["src/slamlab", "tests", "scripts"]
 
 [[tool.mypy.overrides]]
 # Test-only oracles that ship without type information.
-module = ["mpmath", "manifpy"]
+module = ["mpmath", "manifpy", "scipy.*"]
 ignore_missing_imports = true
 
 [tool.importlinter]
