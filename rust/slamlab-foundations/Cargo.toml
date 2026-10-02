@@ -1,0 +1,12 @@
+[package]
+name = "slamlab-foundations"
+version = "0.1.0"
+description = "Rung 0 of slamlab's Rust core, foundations -- builds standalone, without Python."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

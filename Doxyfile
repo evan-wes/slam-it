@@ -1,0 +1,18 @@
+# Doxygen for the C++ core. Run by scripts/check.sh, which fails on any warning:
+# every public declaration must be documented, and @param/@return must match it.
+PROJECT_NAME           = slamlab
+INPUT                  = cpp/include cpp/src
+RECURSIVE              = YES
+OUTPUT_DIRECTORY       = build/doxygen
+# Only the warnings are needed for the check. Doxygen refuses to run with no output format,
+# so it writes XML, the lightest one, instead of HTML.
+GENERATE_HTML          = NO
+GENERATE_XML           = YES
+GENERATE_LATEX         = NO
+QUIET                  = YES
+EXTRACT_ALL            = NO
+WARN_IF_UNDOCUMENTED   = YES
+WARN_IF_DOC_ERROR      = YES
+WARN_IF_INCOMPLETE_DOC = YES
+WARN_NO_PARAMDOC       = YES
+WARN_AS_ERROR          = FAIL_ON_WARNINGS

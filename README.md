@@ -14,10 +14,10 @@ the ladder and the milestones are in
 | Path | What |
 |---|---|
 | `src/slamlab/` | Python: reference implementations, orchestration, evaluation |
-| `cpp/` | C++ core (`slamlab_core`) and its nanobind module `slamlab._cpp` |
-| `rust/` | Cargo workspace: `slamlab-core` (standalone) and `slamlab-py` (the `slamlab_rs` module) |
+| `cpp/` | C++ core, one library per rung (`slamlab_foundations`), and the nanobind module `slamlab._cpp` (`cpp/bindings/`) |
+| `rust/` | Cargo workspace: one crate per rung (`slamlab-foundations`, standalone) and `slamlab-py` (the `slamlab_rs` module) |
 | `tests/` | Python tests, including parity tests against `tests/fixtures/` |
-| `scripts/` | Environment setup and lockfile |
+| `scripts/` | Environment setup and lockfile, `check.sh` (layer 1), `check_layers.py` (C++/Rust layering) |
 
 ## Setup
 
@@ -38,5 +38,5 @@ Native tests, without Python:
 ```bash
 cmake -S . -B build/native -G Ninja -DSLAMLAB_BUILD_TESTS=ON && cmake --build build/native -j4
 ctest --test-dir build/native
-cargo test --manifest-path rust/Cargo.toml -p slamlab-core
+cargo test --manifest-path rust/Cargo.toml --workspace --exclude slamlab-py
 ```

@@ -1,6 +1,8 @@
 # slamlab: a learning ladder for visual SLAM
 
-Status: draft for review, 2026-10-02. Scoped in conversation; nothing here is built yet.
+Status, 2026-10-02: the scaffold is built. That covers the package-per-rung layout in three
+languages, the conda environment, CI, and the two-layer review process. No SLAM algorithms
+exist yet: milestone 1 is next.
 
 ## Purpose
 
@@ -66,8 +68,9 @@ and Rust implementation is checked against the Python reference. All three are b
 the same compute budgets, which gives a "same algorithm, three languages" comparison of speed,
 memory and lines of code.
 
-**Packaging.** There are three importable parts. The two compiled ones are optional;
-`slamlab.backends` picks an implementation at runtime and reports which are built.
+**Packaging.** There are three importable parts. The two compiled ones are optional. Each
+algorithm's `backend=` argument picks an implementation at runtime, and `slamlab.backends`
+locates the compiled ones and reports which are built.
 
 | Import | Contents | Build |
 |---|---|---|
@@ -81,6 +84,114 @@ under editable installs.
 
 C++ and Rust sources also build standalone (CMake, cargo) without Python, for the edge budgets
 and a possible later phone target.
+
+**The binding boundary is numpy arrays.**
+- Bindings take and return float64 C-contiguous numpy arrays: nanobind's `ndarray` and the
+  Rust `numpy` crate.
+- The cores stay numpy-free, taking fixed-size arrays, spans or slices.
+- Batched data therefore crosses the boundary without per-element Python objects, so the
+  "same algorithm, three languages" comparison measures the algorithms, not marshalling.
+
+**The error contract is one shape in every language.**
+- Fallible core functions return a C++23 `std::expected<T, slamlab::foundations::Error>` or
+  a Rust `Result<T, slamlab_foundations::error::Error>`. Nothing throws on the cores' hot
+  paths.
+- Both share one list of error kinds:
+  - `InvalidInput`: shape, range or finiteness;
+  - `Degenerate`: pure rotation, collinear points, too few correspondences;
+  - `NotConverged`: strict mode was requested and the convergence criteria were not met, or
+    the iteration diverged with no usable estimate. Reaching the iteration cap is not an
+    error (see the solver contract below).
+- The bindings raise the Python exception of the same kind, from `slamlab.foundations.errors`
+  (`InvalidInputError`, `DegenerateError`, `NotConvergedError`, all `ValueError`
+  subclasses). The Python reference raises the same ones, so every language fails the same
+  way. The binding translation helper arrives with the first fallible function.
+- **Iterative solvers return their best estimate with a summary,** not an error.
+  - This covers Gauss-Newton, Levenberg-Marquardt, BA, and RANSAC with an adaptive iteration
+    count. Each returns the estimate together with a solve summary: iterations, initial and
+    final cost, a converged flag, and the termination reason (converged, iteration cap,
+    no progress).
+  - A capped but improved solve is a normal, usable result: real-time BA is capped by
+    design. Ceres Solver's `Solver::Summary` and SciPy's `least_squares` status follow the
+    same pattern.
+  - `NotConverged` is reserved for a caller-requested strict mode, and for runs that
+    diverge or fail with no usable estimate. `InvalidInput` and `Degenerate` remain hard
+    errors.
+  - **Where the summary lives:** in rung 0, once per language, because the
+    Gauss-Newton/LM, BA and RANSAC code that returns it lives there:
+    - Python: a frozen dataclass plus a `TerminationReason` enum in
+      `slamlab.foundations.solve`;
+    - C++: `cpp/include/slamlab/foundations/solve.hpp`, returned as
+      `std::expected<Solution<T>, Error>`;
+    - Rust: `slamlab_foundations::solve`, returned as `Result<Solution<T>, Error>`.
+  - **Crossing the binding boundary:** the estimate crosses as float64 arrays and the
+    summary as plain scalars, with the termination reason as an integer code. The Python
+    entry point builds the dataclass, and there are no binding-side classes. This extends
+    the numpy-array rule to scalars, and the summary fields go into the parity fixtures.
+
+## Package layout
+
+**One package per rung,** mirrored in every language, so a module's place in the ladder is
+visible from its path and enforceable by contract.
+
+| Python package | C++ | Rust | Rung |
+|---|---|---|---|
+| `slamlab.foundations` | library `slamlab_foundations`, `slamlab::foundations` | crate `slamlab-foundations` | Rung 0 |
+| `slamlab.edge` | library `slamlab_edge` | crate `slamlab-edge` | Edge VO |
+| `slamlab.vi` | library `slamlab_vi` | -- | Visual-inertial |
+| `slamlab.classic` | library `slamlab_classic` | -- | Classic heavy |
+| `slamlab.dense` | -- | -- | Dense BA + depth prior |
+| `slamlab.learned` | -- | -- | DROID- and MegaSaM-style |
+| `slamlab.eval` | -- | -- | Metrics, benchmarks, budget harness |
+| `slamlab.orchestration` | -- | -- | End-to-end pipelines |
+
+Packages for rungs that have no code yet are stubs: a docstring stating the rung, its
+milestone and its compute budget. C++ libraries and Rust crates appear as each rung gets
+code. The extension submodules mirror the tree: `slamlab._cpp.foundations.so3` and
+`slamlab_rs.foundations.so3` implement `slamlab.foundations.so3`. Bindings are one file per
+module (`cpp/bindings/<rung>/<module>.cpp`, `rust/slamlab-py/src/<rung>/<module>.rs`), with
+thin roots that only wire them.
+
+**Shared interface types** live in rung 0, so every rung can use them:
+- `SlamInput`, `SlamResult` and the depth-provider Protocol (needed by both the edge rung's
+  RGB-D mode and the dense rung, which are independent siblings) go in
+  `slamlab.foundations.interfaces`, created with the first rung that needs them;
+- the error classes are in `slamlab.foundations.errors`.
+
+**Dispatch.**
+- Each public algorithm validates its input once, using the shared checks in
+  `slamlab.foundations.arrays`.
+- It then computes with the Python reference, or calls the backend chosen by its
+  `backend=` argument.
+- `slamlab.backends` only locates compiled implementations and never knows what they
+  compute.
+- Each algorithm module types its compiled backend with a Protocol named `Implementation`. One
+  generic test walks every extension submodule and checks it against the `Implementation`
+  of the slamlab module at the same path: same functions, same parameter names. The parity
+  tests check the values.
+
+**Dependency contracts** (import-linter, `pyproject.toml`):
+- **Layers,** top to bottom: `orchestration`, `eval`, `learned | vi`,
+  `dense | edge | classic`, `foundations`, `backends`. Siblings joined by `|` are independent
+  of each other. The contract is exhaustive: a new top-level package fails until it is
+  placed.
+- **Visual-inertial** builds on `edge` only; **learned** builds on `dense` only.
+- **CPU rungs** (`foundations`, `edge`, `vi`, `backends`) never import PyTorch or a GPU
+  stack, including torch-based geometry libraries (lietorch, pypose, kornia, theseus), which
+  are banned by name because import-linter cannot see through them. PyTorch only ever goes
+  in an optional extra, never in `dependencies`.
+- **No algorithm package imports a depth model.** Depth models are inputs through a
+  provider interface.
+- **slamlab never imports reifyscene.**
+
+**The same layering holds in C++ and Rust.** Each rung is its own C++ library and Rust
+crate, so a rung can only link what it declares. `scripts/check_layers.py` reads the
+contracts above from `pyproject.toml` and fails layer 1 on:
+- a cross-rung `#include` that the contracts forbid;
+- a forbidden `slamlab_add_rung(... DEPENDS ...)` link;
+- a forbidden crate dependency.
+
+The three languages therefore share one source of truth.
 
 ## Milestones
 
@@ -172,6 +283,16 @@ machine, and are labelled that way.
 
 - The harness is the same everywhere. If real hardware ever turns up, it runs there unchanged, and
   the simulated numbers can be checked.
+- **Where a rung declares its budget:**
+  - its package docstring states the target budgets and what it may depend on;
+  - the import-linter contracts enforce the part that is checkable, namely no PyTorch or GPU
+    stack on CPU rungs;
+  - tests that need a GPU or a budget-capped run are marked `@pytest.mark.gpu` or
+    `@pytest.mark.budget`.
+  
+  `scripts/check.sh` runs the CPU subset on every PR. GPU and budget runs get their own
+  opt-in scripts when those rungs arrive, along with a separate light environment for the
+  edge rungs, so that having no PyTorch is also proven by installation.
 
 ## Datasets
 
@@ -205,6 +326,35 @@ Each component gets a note in `docs/notes/<component>.md`, written as it is buil
 the problem, the maths, the design choices and their alternatives, how it was checked, and what
 was learned. The notes double as showcase content when the repo goes public.
 
+## Review process
+
+Code is reviewed in two layers. The full rules are in `CLAUDE.md`.
+
+- **Layer 1, every PR:** `scripts/check.sh` runs deterministic checks in all three languages,
+  locally and in CI:
+  - documentation present and well-formed: numpy-style in Python, Doxygen in C++, rustdoc in
+    Rust;
+  - type hints (`mypy --strict`);
+  - lint and formatting;
+  - dependency rules (import-linter);
+  - duplication (jscpd);
+  - every test suite.
+- **Layer 2, the review panel (`/review-panel`),** on PATCH-or-larger changes: three
+  reviewer agents in `.claude/agents/`:
+  - **hygiene:** cleanliness, readability, documentation quality;
+  - **architecture:** modularity, the language split, the ladder's progression by compute
+    budget;
+  - **algorithm:** correctness against standard formulations, numerical robustness, and the
+    state of the art, with citations.
+
+  All three call out code that is not production quality. A smaller change can run one
+  reviewer alone.
+- **Results are documented and decided together.** Each run's report is saved in
+  `docs/reviews/` and committed with the PR. The owner decides the action on every finding;
+  the report records each resolution.
+- **PR descriptions record the agentic process** (`.github/pull_request_template.md`): which
+  agents did what, the panel's verdicts, and the owner's decisions.
+
 ## Licensing and publication
 
 - The repo is **private**. It goes public together with reifyscene, as one decision, and only on
@@ -233,6 +383,30 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
 
 - **Final name**, before going public.
 - **Exact budget numbers**, from published device specs.
+- **Milestone 1 tasks carried from the review panel:**
+  - When the first fallible function lands, add the bindings' error translation, with a
+    parity test that every error kind raises the matching Python exception from both
+    bindings.
+  - The `exp`/`log` fixtures cover the hard cases: angle near 0 (Taylor branch), near pi
+    (axis sign ambiguous at exactly pi), above pi (wrap), and non-orthonormal input to
+    `log`.
+  - The first solver defines the solve-summary type shared by the three languages:
+    - Each termination reason maps explicitly to `converged`, as in Ceres: stalls on
+      function or parameter tolerance count as converged.
+    - Consider a time-cap reason for the compute budgets.
+    - Decide whether RANSAC gets its own summary (iterations, inlier count or mask, whether
+      the target confidence was reached) or a shared core summary with extensions.
+  - Further hard `exp`/`log` cases:
+    - the `arccos` domain at both ends: a rotation whose trace rounds just past +-1, which
+      gives NaN without a clamp;
+    - values just either side of the Taylor-branch switch, so the series and closed form
+      agree where they meet.
+
+    The above-pi case compares rotations, or the wrapped vector, not the raw input. Before
+    writing the non-orthonormal-input case, decide whether `log` rejects it
+    (`InvalidInput`) or projects it to the nearest rotation (SVD).
+- **GPU and budget test runs:** their opt-in scripts and the light edge environment arrive
+  with the first PyTorch rung (milestone 5) and the budget harness (milestone 7).
 - **Linear algebra in rung 0:** write our own small matrix types, or use Eigen (C++) and
   nalgebra (Rust). This is a learning choice, made at the start of milestone 1.
 - **reifyscene's env** needs slamlab's build tools (cmake, compiler, Rust) when the adapter lands

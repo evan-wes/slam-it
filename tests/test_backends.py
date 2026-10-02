@@ -1,39 +1,243 @@
-"""Every built backend must match the shared fixtures, and so each other."""
+"""Tests for the backend locator, and that every compiled module matches its Protocol."""
 
-import json
-from pathlib import Path
+from __future__ import annotations
+
+import ast
+import importlib
+import inspect
+import pkgutil
+from collections.abc import Iterator
+from types import ModuleType
 
 import numpy as np
 import pytest
 
+import slamlab
 from slamlab import backends
+from tests.conftest import REQUIRED_BACKENDS, require_backend
 
-FIXTURES = Path(__file__).parent / "fixtures"
-HAT_CASES = json.loads((FIXTURES / "so3_hat.json").read_text())["cases"]
+_EXTENSION_ROOTS = {"cpp": "slamlab._cpp", "rust": "slamlab_rs"}
 
 
-def test_python_reference_always_available():
+def test_python_reference_always_available() -> None:
+    """The Python reference is always present and listed first."""
     assert backends.available()[0] == "python"
 
 
-@pytest.mark.parametrize("name", ["python", "cpp", "rust"])
-@pytest.mark.parametrize("case", HAT_CASES, ids=lambda c: str(c["v"]))
-def test_hat_matches_fixture(name, case):
-    if name not in backends.available():
-        pytest.skip(f"{name} backend not built")
-    got = backends.get(name).hat(case["v"])
-    np.testing.assert_allclose(got, case["expected"], atol=1e-12)
+def test_required_backends_are_known() -> None:
+    """SLAMLAB_REQUIRE_BACKENDS names only real backends (a typo must not pass silently)."""
+    assert set(REQUIRED_BACKENDS) <= set(backends.BACKENDS)
 
 
-@pytest.mark.parametrize("name", ["python", "cpp", "rust"])
-def test_hat_is_cross_product(name):
-    if name not in backends.available():
-        pytest.skip(f"{name} backend not built")
-    rng = np.random.default_rng(0)
-    v, u = rng.normal(size=3), rng.normal(size=3)
-    np.testing.assert_allclose(backends.get(name).hat(v) @ u, np.cross(v, u), atol=1e-12)
+def test_required_backends_are_available() -> None:
+    """Every backend in SLAMLAB_REQUIRE_BACKENDS is built and loads (the CI guarantee)."""
+    missing = REQUIRED_BACKENDS - set(backends.available())
+    assert not missing, f"required backends not available: {sorted(missing)}"
 
 
-def test_unknown_backend_is_an_error():
-    with pytest.raises(ValueError):
-        backends.get("fortran")
+def test_unknown_backend_is_an_error() -> None:
+    """A backend name that does not exist raises ValueError."""
+    with pytest.raises(ValueError, match="unknown backend"):
+        backends.check_name("fortran")
+
+
+def test_python_has_no_compiled_implementation() -> None:
+    """Asking the locator for the python backend is an error: it lives in each module."""
+    with pytest.raises(ValueError, match="python reference"):
+        backends.implementation("python", "slamlab.foundations.so3")
+
+
+def test_module_outside_slamlab_is_an_error() -> None:
+    """The locator only resolves slamlab modules."""
+    with pytest.raises(ValueError, match="not a slamlab module"):
+        backends.implementation("cpp", "numpy.linalg")
+
+
+@pytest.mark.parametrize("name", ["cpp", "rust"])
+@pytest.mark.parametrize(
+    "module_name",
+    ["slamlab.foundations.no_such_module", "slamlab.foundations.so3.hat"],
+    ids=["missing", "not-a-module"],
+)
+def test_missing_implementation_is_reported(name: str, module_name: str) -> None:
+    """A path the backend does not implement as a module raises NotImplementedError."""
+    with pytest.raises(NotImplementedError, match="does not implement"):
+        backends.implementation(require_backend(name), module_name)
+
+
+def test_absent_extension_counts_as_not_built(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only a ModuleNotFoundError for the extension itself means "not built"."""
+
+    def absent(module_name: str) -> ModuleType:
+        raise ModuleNotFoundError(f"No module named {module_name!r}", name=module_name)
+
+    monkeypatch.setattr(importlib, "import_module", absent)
+    assert backends.available() == ["python"]
+    with pytest.raises(backends.BackendNotBuiltError, match="not built"):
+        backends.implementation("cpp", "slamlab.foundations.so3")
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ImportError("undefined symbol: _ZN7slamlab3hatE"),
+        ModuleNotFoundError("No module named 'numpy.core'", name="numpy.core"),
+    ],
+    ids=["broken-extension", "missing-dependency"],
+)
+def test_broken_extension_is_not_hidden(
+    monkeypatch: pytest.MonkeyPatch, failure: ImportError
+) -> None:
+    """An extension that is installed but fails to load raises its real error."""
+
+    def broken(module_name: str) -> ModuleType:
+        raise failure
+
+    monkeypatch.setattr(importlib, "import_module", broken)
+    with pytest.raises(ImportError) as excinfo:
+        backends.available()
+    assert excinfo.value is failure
+
+
+def _implementation_modules(root: ModuleType, path: str) -> Iterator[tuple[str, ModuleType]]:
+    """Yield every submodule below `root` that holds functions, with its dotted path.
+
+    Parameters
+    ----------
+    root : module
+        A rung submodule of a compiled extension (or one of its submodules).
+    path : str
+        `root`'s dotted path below the extension, e.g. ``"foundations"``.
+
+    Yields
+    ------
+    tuple of (str, module)
+        The dotted path (e.g. ``"foundations.so3"``) and the submodule.
+    """
+    members = vars(root)
+    if any(callable(v) and not isinstance(v, ModuleType) for v in members.values()):
+        yield path, root
+    for child_name, child in members.items():
+        if isinstance(child, ModuleType):
+            yield from _implementation_modules(child, f"{path}.{child_name}")
+
+
+def _strip_brackets(text: str) -> str:
+    """Remove every bracketed group, e.g. ``ndarray[dtype=float64, shape=(3)]`` -> ``ndarray``.
+
+    nanobind writes ndarray annotations with keyword-like contents that are not valid
+    Python, so they are removed before parsing; only parameter names are compared.
+
+    Parameters
+    ----------
+    text : str
+        A signature line.
+
+    Returns
+    -------
+    str
+        `text` without any ``[...]`` group (nesting handled).
+    """
+    out, depth = [], 0
+    for char in text:
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+        elif depth == 0:
+            out.append(char)
+    return "".join(out)
+
+
+def _parameter_names(func: object) -> list[str]:
+    """Return a compiled function's parameter names from its nanobind or PyO3 signature.
+
+    Parameters
+    ----------
+    func : callable
+        A function from a compiled extension.
+
+    Returns
+    -------
+    list of str
+        The parameter names, in order.
+    """
+    nb_signature = getattr(func, "__nb_signature__", None)
+    if nb_signature:
+        # nanobind: a full Python `def` line, possibly with nested annotations; parse it.
+        tree = ast.parse(_strip_brackets(nb_signature[0][0]) + ": ...")
+        definition = tree.body[0]
+        assert isinstance(definition, ast.FunctionDef)
+        return [arg.arg for arg in definition.args.args]
+    assert callable(func)
+    return list(inspect.signature(func).parameters)
+
+
+def _public_callables(module: ModuleType) -> set[str]:
+    """Return the names of a compiled module's public functions."""
+    return {
+        name
+        for name, value in vars(module).items()
+        if callable(value) and not isinstance(value, ModuleType) and not name.startswith("_")
+    }
+
+
+@pytest.mark.parametrize("name", ["cpp", "rust"])
+def test_every_compiled_module_matches_its_protocol(name: str) -> None:
+    """Every compiled submodule mirrors a slamlab module and matches its Implementation.
+
+    For each submodule of the extension that holds functions: the slamlab module at the
+    same path must exist and define an ``Implementation`` Protocol; the submodule must
+    provide exactly the Protocol's functions, each with the Protocol's parameter names.
+    This is the check that keeps bindings and their Python contract from drifting.
+    """
+    root_name = _EXTENSION_ROOTS[require_backend(name)]
+    extension = importlib.import_module(root_name)
+    # Walk from slamlab's rung packages, the tree the extension submodules mirror. Every
+    # top-level submodule must be one of them (a misnamed one would otherwise go unchecked);
+    # maturin's package re-exports the native module under the extension's own name.
+    rungs = [m.name for m in pkgutil.iter_modules(slamlab.__path__) if m.ispkg]
+    top_level = {k for k, v in vars(extension).items() if isinstance(v, ModuleType)}
+    stray = top_level - set(rungs) - {root_name.rsplit(".", 1)[-1]}
+    assert not stray, f"{name} extension submodules match no slamlab rung: {sorted(stray)}"
+    found = [
+        item
+        for rung in rungs
+        if isinstance(getattr(extension, rung, None), ModuleType)
+        for item in _implementation_modules(getattr(extension, rung), rung)
+    ]
+    assert found, f"{name} extension exposes no implementation modules"
+    for path, compiled in found:
+        python_module = importlib.import_module(f"slamlab.{path}")
+        protocol = getattr(python_module, "Implementation", None)
+        assert protocol is not None, f"slamlab.{path} has no Implementation Protocol"
+        members = {m for m in vars(protocol) if not m.startswith("_")}
+        assert _public_callables(compiled) == members, f"{name}:{path} functions differ"
+        for member in members:
+            expected = [
+                p for p in inspect.signature(getattr(protocol, member)).parameters if p != "self"
+            ]
+            got = _parameter_names(getattr(compiled, member))
+            assert got == expected, f"{name}:{path}.{member} parameters {got} != {expected}"
+
+
+@pytest.mark.parametrize("name", ["cpp", "rust"])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        np.array([1.0, 2.0, 3.0], dtype=np.float32),
+        np.arange(6.0)[::2],
+        # Contiguous float64 at an odd byte offset: misaligned for double.
+        np.zeros(25, dtype=np.uint8)[1:25].view(np.float64),
+    ],
+    ids=["float32", "strided", "misaligned"],
+)
+def test_compiled_bindings_refuse_unconverted_input(name: str, bad: object) -> None:
+    """Both raw bindings refuse anything but an aligned, contiguous float64 array.
+
+    So a direct caller, or a benchmark, pays no hidden conversion in either language; the
+    Python entry points validate and convert before calling.
+    """
+    impl = backends.implementation(require_backend(name), "slamlab.foundations.so3")
+    with pytest.raises((TypeError, ValueError)):
+        impl.hat(bad)

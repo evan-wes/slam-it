@@ -1,0 +1,9 @@
+{
+  "format": ["python", "cpp", "c-header", "rust"],
+  "path": ["src", "tests", "cpp", "rust"],
+  "ignore": ["**/build/**", "**/target/**", "**/fixtures/**", "**/__pycache__/**"],
+  "minTokens": 50,
+  "threshold": 0,
+  "reporters": ["console"],
+  "absolute": false
+}

@@ -1,9 +1,0 @@
-[package]
-name = "slamlab-core"
-version = "0.1.0"
-description = "slamlab's Rust core -- builds standalone, without Python."
-edition.workspace = true
-license.workspace = true
-publish.workspace = true
-
-[dependencies]
