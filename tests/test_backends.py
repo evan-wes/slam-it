@@ -168,7 +168,7 @@ def _parameter_names(func: object) -> list[str]:
         tree = ast.parse(_strip_brackets(nb_signature[0][0]) + ": ...")
         definition = tree.body[0]
         assert isinstance(definition, ast.FunctionDef)
-        return [arg.arg for arg in definition.args.args]
+        return [arg.arg for arg in (*definition.args.args, *definition.args.kwonlyargs)]
     assert callable(func)
     return list(inspect.signature(func).parameters)
 

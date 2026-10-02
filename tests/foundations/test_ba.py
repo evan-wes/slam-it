@@ -14,6 +14,7 @@ from slamlab.foundations import ba, camera, nls, se3
 from slamlab.foundations.ba.bundle import Bundle, Kind, State
 from slamlab.foundations.ba.layout import make_layout
 from slamlab.foundations.ba.schur import Reduction
+from slamlab.foundations.ba.solve import ENUM_TABLES, backend_arguments
 from slamlab.foundations.errors import InvalidInputError, NotConvergedError
 from tests.conftest import require_backend
 
@@ -478,10 +479,35 @@ def test_invalid_problems_are_rejected(change: dict[str, object], message: str) 
 def test_core_checks_indices_too(backend: str) -> None:
     """A compiled core rejects an out-of-range index even when Python's checks are bypassed."""
     require_backend(backend)
-    p = _scene(cameras=3, points=5).problem
-    bad = replace(p, pt_idx=np.where(np.arange(p.pt_idx.size) == 0, 99, p.pt_idx))
+    arguments = backend_arguments(_scene(cameras=3, points=5).problem, ba.BAOptions())
+    arguments["pt_idx"] = np.where(
+        np.arange(arguments["pt_idx"].size) == 0, 99, arguments["pt_idx"]
+    )
     with pytest.raises(InvalidInputError, match="pt_idx"):
-        ba.solve(bad, backend=backend)
+        backends.function(backend, "slamlab.foundations.ba", "solve")(**arguments)
+
+
+def test_construction_validates_however_built() -> None:
+    """Direct construction and ``dataclasses.replace`` validate like ``create``.
+
+    So the reference and the compiled core reject the same bad problem the same way.
+    """
+    problem = _scene(cameras=3, points=5).problem
+    with pytest.raises(InvalidInputError, match="pt_idx"):
+        replace(problem, pt_idx=np.where(np.arange(problem.pt_idx.size) == 0, 99, problem.pt_idx))
+    with pytest.raises(InvalidInputError, match="fixed point cannot be anchored"):
+        replace(
+            ba.anchor_points(problem),
+            fixed_points=np.ones(problem.points.shape[0], dtype=bool),
+        )
+
+
+@pytest.mark.parametrize("backend", sorted(set(backends.LOCKSTEP_BACKENDS) - {"python"}))
+def test_enum_tables_match_the_compiled_side(backend: str) -> None:
+    """Every enum crossing the boundary has the same names in the same code order."""
+    require_backend(backend)
+    compiled = backends.implementation(backend, "slamlab.foundations.ba").codes()
+    assert {k: tuple(v) for k, v in compiled.items()} == ENUM_TABLES
 
 
 def test_invalid_options() -> None:

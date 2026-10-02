@@ -162,5 +162,14 @@ int main() {
   expect(!rejected.has_value() && rejected.error().kind == ErrorKind::kInvalidInput,
          "solve: an out-of-range point index is rejected", failures);
 
+  // Lengths are checked before anything indexes them: a short pt_idx with an anchor is
+  // rejected, not read out of bounds.
+  ba::Problem short_index = problem;
+  short_index.point_anchor[0] = 0;
+  short_index.pt_idx.resize(3);
+  const auto shortened = ba::solve(short_index, options);
+  expect(!shortened.has_value() && shortened.error().kind == ErrorKind::kInvalidInput,
+         "solve: a short pt_idx is rejected before the anchors read it", failures);
+
   return slamlab::testing::finish("test_ba", failures);
 }

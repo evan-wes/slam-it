@@ -27,22 +27,23 @@
 /// @brief Non-linear least squares.
 namespace slamlab::foundations::nls {
 
-/// @brief The step rule.
+/// @brief The step rule, with the integer codes it crosses the bindings as.
 enum class Method : std::uint8_t {
   /// @brief Damped steps, accepted on a sufficient ratio of actual to predicted decrease.
-  kLevenbergMarquardt,
+  kLevenbergMarquardt = 0,
   /// @brief Undamped steps, stopping at the first that fails to decrease the cost.
-  kGaussNewton,
+  kGaussNewton = 1,
 };
 
-/// @brief The robust losses, acting on a block's squared norm `s`.
+/// @brief The robust losses, acting on a block's squared norm `s`, with the integer codes
+///        they cross the bindings as.
 enum class LossKind : std::uint8_t {
   /// @brief `rho(s) = s`.
-  kTrivial,
+  kTrivial = 0,
   /// @brief `rho(s) = s` for `s <= c^2`, else `2 c sqrt(s) - c^2`.
-  kHuber,
+  kHuber = 1,
   /// @brief `rho(s) = c^2 log(1 + s / c^2)`.
-  kCauchy,
+  kCauchy = 2,
 };
 
 /// @brief A robust loss and its scale `c`.
@@ -110,22 +111,22 @@ struct Options {
 /// @return Nothing, or `InvalidInput` naming the setting out of range.
 [[nodiscard]] Result<void> check_options(const Options& options);
 
-/// @brief Why `solve` stopped.
+/// @brief Why `solve` stopped, with the integer codes it crosses the bindings as.
 enum class Termination : std::uint8_t {
   /// @brief Converged: the gradient is below `gradient_tolerance`.
-  kGradient,
+  kGradient = 0,
   /// @brief Converged: the last accepted step barely lowered the cost.
-  kFunction,
+  kFunction = 1,
   /// @brief Converged: the step is below `step_tolerance`.
-  kStep,
+  kStep = 2,
   /// @brief Not converged: `max_iterations` steps were tried.
-  kMaxIterations,
+  kMaxIterations = 3,
   /// @brief Not converged: the damping exceeded `max_damping`.
-  kDampingLimit,
+  kDampingLimit = 4,
   /// @brief Not converged: a Gauss-Newton step failed to lower the cost.
-  kNoDecrease,
+  kNoDecrease = 5,
   /// @brief Not converged: the undamped Gauss-Newton system is not positive definite.
-  kSingular,
+  kSingular = 6,
 };
 
 /// @brief Whether a termination counts as converged.

@@ -26,7 +26,9 @@ than coerced, because numpy would silently turn them into numbers.
 """
 
 
-def as_real(value: ArrayLike, name: str = "input") -> NDArray[np.float64]:
+def as_real(
+    value: ArrayLike, name: str = "input", *, allow_nan: bool = False
+) -> NDArray[np.float64]:
     """Convert input to a finite, C-contiguous float64 array (a new copy).
 
     Parameters
@@ -36,6 +38,8 @@ def as_real(value: ArrayLike, name: str = "input") -> NDArray[np.float64]:
         2**53 lose precision in the float64 conversion.
     name : str, optional
         The argument's name, used in error messages.
+    allow_nan : bool, optional
+        Accept NaN as "no value" (infinity is still rejected).
 
     Returns
     -------
@@ -57,9 +61,102 @@ def as_real(value: ArrayLike, name: str = "input") -> NDArray[np.float64]:
     if arr.dtype.kind not in _NUMERIC_KINDS:
         raise InvalidInputError(f"{name}: expected real numbers, got dtype {arr.dtype}")
     out = np.ascontiguousarray(arr, dtype=np.float64).copy()
-    if not np.all(np.isfinite(out)):
+    bad = np.isinf(out) if allow_nan else ~np.isfinite(out)
+    if np.any(bad):
         raise InvalidInputError(f"{name}: expected finite values")
     return out
+
+
+def as_indices(value: ArrayLike, length: int, bound: int, name: str = "input") -> NDArray[np.int64]:
+    """Convert input to an int64 index array of a given length, each entry in ``[0, bound)``.
+
+    Parameters
+    ----------
+    value : array_like of int
+        The indices.
+    length : int
+        The expected number of indices.
+    bound : int
+        One past the largest valid index.
+    name : str, optional
+        The argument's name, used in error messages.
+
+    Returns
+    -------
+    ndarray of int64, shape (length,)
+        A new C-contiguous copy.
+
+    Raises
+    ------
+    InvalidInputError
+        If `value` is not a 1D integer array of `length`, or an index is out of range.
+    """
+    arr = np.asarray(value)
+    if arr.shape != (length,) or not np.issubdtype(arr.dtype, np.integer):
+        raise InvalidInputError(f"{name}: expected {length} integers, got {arr.dtype} {arr.shape}")
+    if length and (arr.min() < 0 or arr.max() >= bound):
+        raise InvalidInputError(f"{name}: indices must lie in [0, {bound})")
+    return np.ascontiguousarray(arr, dtype=np.int64).copy()
+
+
+def as_mask(value: ArrayLike, shape: tuple[int, ...], name: str = "input") -> NDArray[np.bool_]:
+    """Convert input to a boolean mask of a given shape.
+
+    Parameters
+    ----------
+    value : array_like of bool
+        The mask (integers are rejected, not coerced).
+    shape : tuple of int
+        The expected shape.
+    name : str, optional
+        The argument's name, used in error messages.
+
+    Returns
+    -------
+    ndarray of bool
+        A new C-contiguous copy.
+
+    Raises
+    ------
+    InvalidInputError
+        If `value` is not boolean or has another shape.
+    """
+    arr = np.asarray(value)
+    if arr.shape != shape or arr.dtype != np.bool_:
+        raise InvalidInputError(
+            f"{name}: expected booleans of shape {shape}, got {arr.dtype} {arr.shape}"
+        )
+    return np.ascontiguousarray(arr).copy()
+
+
+def as_weights(
+    value: ArrayLike, shape: tuple[int, ...], name: str = "input"
+) -> NDArray[np.float64]:
+    """Convert input to finite, non-negative weights of a given shape.
+
+    Parameters
+    ----------
+    value : array_like
+        The weights.
+    shape : tuple of int
+        The expected shape.
+    name : str, optional
+        The argument's name, used in error messages.
+
+    Returns
+    -------
+    ndarray of float64
+        A new C-contiguous copy.
+
+    Raises
+    ------
+    InvalidInputError
+        If `value` fails :func:`as_real`, has another shape, or holds a negative value.
+    """
+    w = as_real(value, name)
+    if w.shape != shape or np.any(w < 0.0):
+        raise InvalidInputError(f"{name}: expected non-negative values of shape {shape}")
+    return w
 
 
 def as_batch(

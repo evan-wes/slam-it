@@ -84,6 +84,10 @@ Result<void> check_anchors(const Problem& problem) {
       return fail(ErrorKind::kInvalidInput,
                   "point_anchor: a point's anchor must be one of its observations");
     }
+    if (a >= 0 && problem.fixed_points[p]) {
+      return fail(ErrorKind::kInvalidInput,
+                  "point_anchor: a fixed point cannot be anchored (it would move with its host)");
+    }
   }
   return {};
 }
@@ -130,12 +134,6 @@ Result<void> check_problem(const Problem& problem) {
       problem.fixed_points.size() != static_cast<std::size_t>(problem.points.rows())) {
     return fail(ErrorKind::kInvalidInput, "fixed masks: wrong length");
   }
-  if (auto checked = check_priors(problem); !checked) {
-    return checked;
-  }
-  if (auto checked = check_anchors(problem); !checked) {
-    return checked;
-  }
   if (problem.cam_idx.size() != n_obs || problem.pt_idx.size() != n_obs ||
       problem.intrinsics_idx.size() != n_cams) {
     return fail(ErrorKind::kInvalidInput, "cam_idx, pt_idx, intrinsics_idx: wrong length");
@@ -147,7 +145,14 @@ Result<void> check_problem(const Problem& problem) {
   if (auto checked = check_indices(problem.pt_idx, problem.points.rows(), "pt_idx"); !checked) {
     return checked;
   }
-  return check_indices(problem.intrinsics_idx, n_groups, "intrinsics_idx");
+  if (auto checked = check_indices(problem.intrinsics_idx, n_groups, "intrinsics_idx"); !checked) {
+    return checked;
+  }
+  // The priors and anchors index the arrays checked above, so they come last.
+  if (auto checked = check_priors(problem); !checked) {
+    return checked;
+  }
+  return check_anchors(problem);
 }
 
 Result<Solution> solve(const Problem& problem, const Options& options) {

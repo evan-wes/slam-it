@@ -7,12 +7,13 @@ A problem crosses every boundary as a struct of arrays (design doc, "Conventions
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from typing import Any
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slamlab.foundations import camera, nls, se3
-from slamlab.foundations.arrays import as_real
+from slamlab.foundations.arrays import as_indices, as_mask, as_real, as_weights
 from slamlab.foundations.errors import InvalidInputError
 
 Array = NDArray[np.float64]
@@ -91,6 +92,23 @@ class BAProblem:
     pose_prior: Array
     pose_prior_weights: Array
     point_anchor: IndexArray
+
+    def __post_init__(self) -> None:
+        """Convert and validate every array, however the problem was built.
+
+        This runs for :meth:`create`, for direct construction and for
+        :func:`dataclasses.replace` alike, so a solver can trust any ``BAProblem`` it is
+        given, and every backend sees the same checked arrays.
+
+        Raises
+        ------
+        slamlab.foundations.errors.InvalidInputError
+            If any array has the wrong shape, type or values, an index is out of range, a
+            pose is not a rigid transform, an intrinsics vector is invalid for the model, or
+            an anchor is not one of its point's observations (or its point is fixed).
+        """
+        for name, value in _validated(self).items():
+            object.__setattr__(self, name, value)
 
     @classmethod
     def create(  # noqa: PLR0913, PLR0917 -- every array of a problem, in the order it reads
@@ -173,42 +191,28 @@ class BAProblem:
         if camera_model not in camera.MODELS:
             raise InvalidInputError(f"camera_model: unknown model {camera_model!r}")
         k = np.atleast_2d(as_real(intrinsics, "intrinsics"))
-        for group in k:
-            camera.check_intrinsics(camera_model, group)
-        t = _transforms(poses, "poses")
-        x = _shaped(points, 3, "points")
-        u = _shaped(observations, 2, "observations")
-        n_cams, n_obs = t.shape[0], u.shape[0]
+        n_cams, n_obs = _count(poses, "poses"), _count(observations, "observations")
+        n_points = _count(points, "points")
         return cls(
             camera_model=camera_model,
             intrinsics=k,
-            poses=t,
-            points=x,
-            observations=u,
-            cam_idx=_indices(cam_idx, n_obs, n_cams, "cam_idx"),
-            pt_idx=_indices(pt_idx, n_obs, x.shape[0], "pt_idx"),
-            intrinsics_idx=(
-                np.zeros(n_cams, dtype=np.int64)
-                if intrinsics_idx is None
-                else _indices(intrinsics_idx, n_cams, k.shape[0], "intrinsics_idx")
-            ),
-            weights=_weights(weights, (n_obs,), 1.0, "weights"),
-            fixed_poses=_mask(fixed_poses, n_cams, False, "fixed_poses"),
+            poses=_given(poses, None),
+            points=_given(points, None),
+            observations=_given(observations, None),
+            cam_idx=_given(cam_idx, None),
+            pt_idx=_given(pt_idx, None),
+            intrinsics_idx=_given(intrinsics_idx, np.zeros(n_cams, dtype=np.int64)),
+            weights=_given(weights, np.ones(n_obs)),
+            fixed_poses=_given(fixed_poses, np.zeros(n_cams, dtype=bool)),
             fixed_intrinsics=_intrinsics_mask(fixed_intrinsics, k.shape),
-            fixed_points=_mask(fixed_points, x.shape[0], False, "fixed_points"),
-            depth_prior=_depth_prior(depth_prior, n_obs),
-            depth_prior_weights=_weights(depth_prior_weights, (n_obs,), 1.0, "depth_prior_weights"),
-            depth_affine=(
-                np.tile([1.0, 0.0], (n_cams, 1))
-                if depth_affine is None
-                else _shaped(depth_affine, AFFINE_DIM, "depth_affine", rows=n_cams)
-            ),
-            fixed_depth_affine=_mask(fixed_depth_affine, n_cams, True, "fixed_depth_affine"),
-            pose_prior=t.copy()
-            if pose_prior is None
-            else _transforms(pose_prior, "pose_prior", n_cams),
-            pose_prior_weights=_weights(pose_prior_weights, (n_cams, 2), 0.0, "pose_prior_weights"),
-            point_anchor=_anchors(point_anchor, x.shape[0], np.asarray(pt_idx)),
+            fixed_points=_given(fixed_points, np.zeros(n_points, dtype=bool)),
+            depth_prior=_given(depth_prior, np.full(n_obs, np.nan)),
+            depth_prior_weights=_given(depth_prior_weights, np.ones(n_obs)),
+            depth_affine=_given(depth_affine, np.tile([1.0, 0.0], (n_cams, 1))),
+            fixed_depth_affine=_given(fixed_depth_affine, np.ones(n_cams, dtype=bool)),
+            pose_prior=_given(pose_prior, poses),
+            pose_prior_weights=_given(pose_prior_weights, np.zeros((n_cams, 2))),
+            point_anchor=_given(point_anchor, np.full(n_points, -1, dtype=np.int64)),
         )
 
 
@@ -337,6 +341,19 @@ class BAResult:
 # --- validation ---------------------------------------------------------------------------
 
 
+def _given(value: ArrayLike | None, default: ArrayLike | None) -> NDArray[Any]:
+    """Return ``value`` as an array, or ``default`` if it is None (``__post_init__`` checks)."""
+    return np.asarray(default if value is None else value)
+
+
+def _count(value: ArrayLike, name: str) -> int:
+    """Return an array argument's leading length (for sizing defaults)."""
+    shape = np.shape(value)
+    if not shape:
+        raise InvalidInputError(f"{name}: expected an array, got a scalar")
+    return int(shape[0])
+
+
 def _shaped(value: ArrayLike, columns: int, name: str, rows: int | None = None) -> Array:
     """Return a finite real 2D array with the given column (and optionally row) count."""
     arr = as_real(value, name)
@@ -355,42 +372,19 @@ def _transforms(value: ArrayLike, name: str, count: int | None = None) -> Array:
     return t
 
 
-def _indices(value: ArrayLike, length: int, bound: int, name: str) -> IndexArray:
-    """Return an int64 index array of the given length with every entry in ``[0, bound)``."""
-    arr = np.asarray(value)
-    if arr.shape != (length,) or not np.issubdtype(arr.dtype, np.integer):
-        raise InvalidInputError(f"{name}: expected {length} integers, got {arr.dtype} {arr.shape}")
-    if length and (arr.min() < 0 or arr.max() >= bound):
-        raise InvalidInputError(f"{name}: indices must lie in [0, {bound})")
-    return arr.astype(np.int64)
-
-
-def _weights(value: ArrayLike | None, shape: tuple[int, ...], default: float, name: str) -> Array:
-    """Return non-negative weights of the given shape (default: filled with ``default``)."""
-    if value is None:
-        return np.full(shape, default)
-    w = as_real(value, name)
-    if w.shape != shape or np.any(w < 0.0):
-        raise InvalidInputError(f"{name}: expected non-negative values of shape {shape}")
-    return w
-
-
-def _depth_prior(value: ArrayLike | None, length: int) -> Array:
+def _depth_prior(value: ArrayLike, length: int) -> Array:
     """Return prior inverse depths: positive, or NaN for none."""
-    if value is None:
-        return np.full(length, np.nan)
-    arr = np.asarray(value, dtype=np.float64)
+    arr = as_real(value, "depth_prior", allow_nan=True)
     given = ~np.isnan(arr)
-    if arr.shape != (length,) or np.any(~np.isfinite(arr[given])) or np.any(arr[given] <= 0.0):
+    if arr.shape != (length,) or np.any(arr[given] <= 0.0):
         raise InvalidInputError(f"depth_prior: expected {length} positive values (NaN for none)")
     return arr
 
 
-def _anchors(value: ArrayLike | None, length: int, pt_idx: IndexArray) -> IndexArray:
-    """Return anchor observations: -1, or an observation of the anchored point itself."""
-    if value is None:
-        return np.full(length, -1, dtype=np.int64)
+def _anchors(value: ArrayLike, pt_idx: IndexArray, fixed_points: Mask) -> IndexArray:
+    """Return anchor observations: -1, or an observation of the (free) anchored point."""
     arr = np.asarray(value)
+    length = fixed_points.shape[0]
     if arr.shape != (length,) or not np.issubdtype(arr.dtype, np.integer):
         raise InvalidInputError(f"point_anchor: expected {length} integers, got {arr.shape}")
     anchored = np.flatnonzero(arr >= 0)
@@ -398,7 +392,52 @@ def _anchors(value: ArrayLike | None, length: int, pt_idx: IndexArray) -> IndexA
         raise InvalidInputError("point_anchor: expected -1 or an observation index")
     if np.any(pt_idx[arr[anchored]] != anchored):
         raise InvalidInputError("point_anchor: a point's anchor must be one of its observations")
-    return arr.astype(np.int64)
+    if np.any(fixed_points[anchored]):
+        raise InvalidInputError(
+            "point_anchor: a fixed point cannot be anchored (it would move with its host)"
+        )
+    return np.ascontiguousarray(arr, dtype=np.int64)
+
+
+def _validated(problem: BAProblem) -> dict[str, object]:
+    """Convert and check every array of a problem; return them by field name."""
+    if problem.camera_model not in camera.MODELS:
+        raise InvalidInputError(f"camera_model: unknown model {problem.camera_model!r}")
+    k = as_real(problem.intrinsics, "intrinsics")
+    if k.ndim != 2 or k.shape[0] == 0 or k.shape[1] != camera.MODELS[problem.camera_model][1]:
+        raise InvalidInputError(f"intrinsics: expected shape (K, P) for {problem.camera_model}")
+    for group in k:
+        camera.check_intrinsics(problem.camera_model, group)
+    poses = _transforms(problem.poses, "poses")
+    points = _shaped(problem.points, 3, "points")
+    observations = _shaped(problem.observations, 2, "observations")
+    n_cams, n_obs, n_points = poses.shape[0], observations.shape[0], points.shape[0]
+    pt_idx = as_indices(problem.pt_idx, n_obs, n_points, "pt_idx")
+    fixed_points = as_mask(problem.fixed_points, (n_points,), "fixed_points")
+    return {
+        "intrinsics": k,
+        "poses": poses,
+        "points": points,
+        "observations": observations,
+        "cam_idx": as_indices(problem.cam_idx, n_obs, n_cams, "cam_idx"),
+        "pt_idx": pt_idx,
+        "intrinsics_idx": as_indices(problem.intrinsics_idx, n_cams, k.shape[0], "intrinsics_idx"),
+        "weights": as_weights(problem.weights, (n_obs,), "weights"),
+        "fixed_poses": as_mask(problem.fixed_poses, (n_cams,), "fixed_poses"),
+        "fixed_intrinsics": as_mask(problem.fixed_intrinsics, k.shape, "fixed_intrinsics"),
+        "fixed_points": fixed_points,
+        "depth_prior": _depth_prior(problem.depth_prior, n_obs),
+        "depth_prior_weights": as_weights(
+            problem.depth_prior_weights, (n_obs,), "depth_prior_weights"
+        ),
+        "depth_affine": _shaped(problem.depth_affine, AFFINE_DIM, "depth_affine", rows=n_cams),
+        "fixed_depth_affine": as_mask(problem.fixed_depth_affine, (n_cams,), "fixed_depth_affine"),
+        "pose_prior": _transforms(problem.pose_prior, "pose_prior", n_cams),
+        "pose_prior_weights": as_weights(
+            problem.pose_prior_weights, (n_cams, 2), "pose_prior_weights"
+        ),
+        "point_anchor": _anchors(problem.point_anchor, pt_idx, fixed_points),
+    }
 
 
 def anchor_points(problem: BAProblem) -> BAProblem:
@@ -415,10 +454,11 @@ def anchor_points(problem: BAProblem) -> BAProblem:
         The same problem with ``point_anchor`` set for each free point that has a weighted
         observation; fixed points and unobserved points stay plain 3D points.
     """
-    anchor = np.full(problem.points.shape[0], -1, dtype=np.int64)
-    weighted = np.flatnonzero(problem.weights > 0.0)[::-1]
-    anchor[problem.pt_idx[weighted]] = weighted  # the last write per point is its first
-    anchor[problem.fixed_points] = -1
+    sentinel = problem.observations.shape[0]
+    first = np.full(problem.points.shape[0], sentinel, dtype=np.int64)
+    weighted = np.flatnonzero(problem.weights > 0.0)
+    np.minimum.at(first, problem.pt_idx[weighted], weighted)
+    anchor = np.where((first < sentinel) & ~problem.fixed_points, first, -1)
     return replace(problem, point_anchor=anchor)
 
 
@@ -433,13 +473,3 @@ def _intrinsics_mask(value: ArrayLike | None, shape: tuple[int, int]) -> Mask:
             f"got {arr.dtype} {arr.shape}"
         )
     return np.broadcast_to(arr.reshape(shape[0], -1), shape).copy()
-
-
-def _mask(value: ArrayLike | None, length: int, default: bool, name: str) -> Mask:
-    """Return a bool mask of the given length."""
-    if value is None:
-        return np.full(length, default)
-    arr = np.asarray(value)
-    if arr.shape != (length,) or arr.dtype != np.bool_:
-        raise InvalidInputError(f"{name}: expected {length} booleans, got {arr.dtype} {arr.shape}")
-    return arr.copy()

@@ -44,9 +44,8 @@ def _ray_parallax(centres: Array, points: Array, cam: IndexArray, pt: IndexArray
     """Return each point's largest angle between its first ray and any other (radians)."""
     rays = centres[cam] - points[pt]
     rays /= np.linalg.norm(rays, axis=-1, keepdims=True)
-    first = np.full(points.shape[0], -1, dtype=np.int64)
-    order = np.arange(cam.shape[0])[::-1]
-    first[pt[order]] = order  # the last write per point is its lowest observation index
+    first = np.full(points.shape[0], cam.shape[0], dtype=np.int64)
+    np.minimum.at(first, pt, np.arange(cam.shape[0]))  # each point's lowest observation
     reference = rays[first[pt]]
     angle = np.arctan2(
         np.linalg.norm(np.cross(rays, reference), axis=-1), np.sum(rays * reference, axis=-1)
