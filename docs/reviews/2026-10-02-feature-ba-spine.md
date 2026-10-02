@@ -19,42 +19,42 @@ once.
 
 | ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
 |---|---|---|---|---|---|---|
-| H1 | must-fix | hygiene | `cpp/src/foundations/ba.cpp` (`check_problem`) | `check_anchors` reads `pt_idx[a]` before `pt_idx`'s length is checked (out-of-bounds read for C++ callers) | fix | pending |
-| H2 | should-fix | hygiene | `ba/problem.py` | `BAProblem` validation bypassed by the constructor and `dataclasses.replace` (same as A2) | fix (with A2) | pending |
-| H3 | should-fix | hygiene | `ba/solve.py`, `bindings/foundations/ba.cpp` | packed `settings`/`codes`/`counts` held by position and enum order (same as A4) | fix (with A4) | pending |
-| H4 | should-fix | hygiene | `readers.py`, `colmap_reference.py`, `demo_slice.py` | COLMAP pixel offset and principal-point slices copied (same as A8) | fix (with A8) | pending |
-| H5 | should-fix | hygiene | `ba/readers.py` (`read_colmap_text`) | raw `KeyError`/`IndexError` on malformed COLMAP files; image names with spaces truncated | fix | pending |
-| H6 | should-fix | hygiene | `eval/colmap_reference.py` | inline `import time` with a `noqa` | fix | pending |
-| H7 | should-fix | hygiene | `scripts/demo_slice.py`, `scripts/demo_bal.py` | cwd-relative default path; interrupted download leaves a corrupt file | fix | pending |
-| H8 | should-fix | hygiene | `eval/reprojection.py` | no direct tests; empty mask gives NaN; per-camera loop is quadratic | fix | pending |
-| H9 | should-fix | hygiene | `ba/problem.py` (`BAOptions.gauge`), `ba.solve` | docstring points to a module docstring that does not describe the gauge; Raises incomplete | fix | pending |
-| H10 | should-fix | hygiene | `ba/bundle.py` | per-group masked loops make the Python reference O(K x M) | fix | pending |
-| H11 | should-fix | hygiene | `nls.py` (`solve`), `ba/bundle.py` | unnamed damping constants; long `solve`, `Bundle.__init__`, `linearize` | fix | pending |
-| H12 | note | hygiene | various | smaller items: triangular solves, `numeric_jacobian` arguments, BAL negative counts and encoding, Umeyama scale via cbrt, `Bundle` method docstrings | fix the BAL counts/encoding and the `Bundle` docstrings; waive the rest | pending |
-| A1 | must-fix | architecture | `tests/fixtures/foundations/` | BA has no parity fixture; the live parity test covers one scene, whose pose priors make `auto` pick `none` (gauges, GN, degeneracy, radial unchecked across backends) | fix | pending |
-| A2 | must-fix | architecture | `ba/problem.py`, `ba/solve.py` | reference and C++ fail differently on an unvalidated problem (`IndexError` vs `InvalidInputError`) | fix | pending |
-| A3 | should-fix | architecture | `nls.py`, `nls.hpp`, design doc | solve summary lives in `nls`, not the doc's `foundations.solve`; doc's open items and Status line stale | fix the doc now; defer the move to PR 2 (RANSAC) | pending |
-| A4 | should-fix | architecture | `ba/solve.py`, `bindings/foundations/ba.cpp`, `nls.hpp` | cross-language options held by position; implicit enum values; hard-coded enum sizes | fix | pending |
-| A5 | should-fix | architecture | `eval/colmap_reference.py`, `pyproject.toml` | pycolmap loaded via `importlib` (invisible to import-linter); no optional extra | fix | pending |
-| A6 | should-fix | architecture | `ba/readers.py`, `eval/__init__.py` | file-format readers in rung 0's solver package; eval docstring stale ("Stub") | fix (move to `slamlab.eval`) | pending |
-| A7 | should-fix | architecture | `scripts/demo_slice.py` | reifyscene's slice list and run layout built into slamlab | fix (generic script; slice list documented, not coded) | pending |
-| A8 | should-fix | architecture | readers, reference, demo | model constants copied (same as H4) | fix | pending |
-| A9 | should-fix | architecture | `ba/problem.py` | general validators belong in `arrays.py`; `_depth_prior` skips `as_real` | fix | pending |
-| A10 | should-fix | architecture | `scripts/check_layers.py` | rung-0 internal-order contract not applied to C++ includes | fix | pending |
-| A11 | note | architecture | `cpp/bindings/common.hpp` | batching lives in the bindings; standalone C++/Rust callers have no batched API | defer (design doc open question, before the edge rung) | pending |
-| A12 | note | architecture | `ba.hpp` | the sparse reduced solver belongs in rung 0 behind `ReducedSystemSolver` | defer (record in the design doc for milestone 4) | pending |
-| A13 | note | architecture | `pyproject.toml` | no contract orders the modules inside `ba` | fix (add the contract) | pending |
-| A14 | note | architecture | `tests/foundations/test_ba_readers.py` | `eval` tests live under `tests/foundations/` | fix (move to `tests/eval/`) | pending |
-| L1 | must-fix | algorithm | `ba/layout.py`, `ba/layout.cpp` | `auto` gauge ignores fixed points (motion-only BA freezes a wrong pose) and treats any pose prior as a full anchor (scale left free; focal falsely unobservable) | fix | pending |
-| L2 | must-fix | algorithm | `ba/bundle.py` (`_rays`) | an anchor pixel leaving the invertible region raises out of the Python solve; C++ rejects the step; at the start the two raise different kinds | fix | pending |
-| L3 | should-fix | algorithm | `ba/solve.py`, `schur.py` | focal deviations not scaled by the a-posteriori variance factor; the 1% rule rests on arbitrary weights | fix | pending |
-| L4 | should-fix | algorithm | `ba/problem.py`, `ba/layout.py` | "first observation" relies on NumPy's unspecified last-write order | fix | pending |
-| L5 | should-fix | algorithm | `eval/colmap_reference.py` | reference silently drops pose priors, weights, fixed poses/points, per-parameter masks | fix | pending |
-| L6 | note | algorithm | `nls.py` | absolute step tolerance never fires on BA's mixed scales | defer (backlog: per-block relative test) | pending |
-| L7 | note | algorithm | `nls.py` | Triggs correction is the standard upgrade over plain IRLS | defer (backlog, milestone 3) | pending |
-| L8 | note | algorithm | reduced solve | state of the art for milestone 4 (sparse Cholesky / PCG, root BA, power BA) | fix (cite in the BA note) | pending |
-| L9 | note | algorithm | `bundle-adjustment.md` | the slice's focal result is the classic critical-motion degeneracy (Sturm 1997; Kahl, Triggs & Åström 2000) | fix (cite) | pending |
-| L10 | note | algorithm | `ba/problem.py` | a fixed anchored point still moves with its host | fix (reject in validation) | pending |
+| H1 | must-fix | hygiene | `cpp/src/foundations/ba.cpp` (`check_problem`) | `check_anchors` reads `pt_idx[a]` before `pt_idx`'s length is checked (out-of-bounds read for C++ callers) | fix | fixed (aa41aec) -- decided by evan-wes on 2026-10-02 |
+| H2 | should-fix | hygiene | `ba/problem.py` | `BAProblem` validation bypassed by the constructor and `dataclasses.replace` (same as A2) | fix (with A2) | fixed with A2 (aa41aec) -- decided by evan-wes on 2026-10-02 |
+| H3 | should-fix | hygiene | `ba/solve.py`, `bindings/foundations/ba.cpp` | packed `settings`/`codes`/`counts` held by position and enum order (same as A4) | fix (with A4) | fixed with A4 (aa41aec) -- decided by evan-wes on 2026-10-02 |
+| H4 | should-fix | hygiene | `readers.py`, `colmap_reference.py`, `demo_slice.py` | COLMAP pixel offset and principal-point slices copied (same as A8) | fix (with A8) | fixed with A8 (3348a47) -- decided by evan-wes on 2026-10-02 |
+| H5 | should-fix | hygiene | `ba/readers.py` (`read_colmap_text`) | raw `KeyError`/`IndexError` on malformed COLMAP files; image names with spaces truncated | fix | fixed (3348a47) -- decided by evan-wes on 2026-10-02 |
+| H6 | should-fix | hygiene | `eval/colmap_reference.py` | inline `import time` with a `noqa` | fix | fixed (3348a47) -- decided by evan-wes on 2026-10-02 |
+| H7 | should-fix | hygiene | `scripts/demo_slice.py`, `scripts/demo_bal.py` | cwd-relative default path; interrupted download leaves a corrupt file | fix | fixed (3348a47) -- decided by evan-wes on 2026-10-02 |
+| H8 | should-fix | hygiene | `eval/reprojection.py` | no direct tests; empty mask gives NaN; per-camera loop is quadratic | fix | fixed (3348a47) -- decided by evan-wes on 2026-10-02 |
+| H9 | should-fix | hygiene | `ba/problem.py` (`BAOptions.gauge`), `ba.solve` | docstring points to a module docstring that does not describe the gauge; Raises incomplete | fix | fixed (b45dce5) -- decided by evan-wes on 2026-10-02 |
+| H10 | should-fix | hygiene | `ba/bundle.py` | per-group masked loops make the Python reference O(K x M) | fix | fixed (b45dce5) -- decided by evan-wes on 2026-10-02 |
+| H11 | should-fix | hygiene | `nls.py` (`solve`), `ba/bundle.py` | unnamed damping constants; long `solve`, `Bundle.__init__`, `linearize` | fix | fixed (b45dce5) -- decided by evan-wes on 2026-10-02 |
+| H12 | note | hygiene | various | smaller items: triangular solves, `numeric_jacobian` arguments, BAL negative counts and encoding, Umeyama scale via cbrt, `Bundle` method docstrings | fix the BAL counts/encoding and the `Bundle` docstrings; waive the rest | BAL counts and encoding fixed (3348a47), `Bundle` docstrings fixed (b45dce5); waived: the general solves on triangular factors serve only the dense reference and tests; `numeric_jacobian` is a test helper; Umeyama's cbrt scale is correct, as the review says -- decided by evan-wes on 2026-10-02 |
+| A1 | must-fix | architecture | `tests/fixtures/foundations/` | BA has no parity fixture; the live parity test covers one scene, whose pose priors make `auto` pick `none` (gauges, GN, degeneracy, radial unchecked across backends) | fix | fixed (dbfb56a) -- decided by evan-wes on 2026-10-02 |
+| A2 | must-fix | architecture | `ba/problem.py`, `ba/solve.py` | reference and C++ fail differently on an unvalidated problem (`IndexError` vs `InvalidInputError`) | fix | fixed (aa41aec) -- decided by evan-wes on 2026-10-02 |
+| A3 | should-fix | architecture | `nls.py`, `nls.hpp`, design doc | solve summary lives in `nls`, not the doc's `foundations.solve`; doc's open items and Status line stale | fix the doc now; defer the move to PR 2 (RANSAC) | doc fixed (9178ddd); deferred: the summary's move to `foundations.solve`, to PR 2 (RANSAC), recorded in the design doc's open items -- decided by evan-wes on 2026-10-02 |
+| A4 | should-fix | architecture | `ba/solve.py`, `bindings/foundations/ba.cpp`, `nls.hpp` | cross-language options held by position; implicit enum values; hard-coded enum sizes | fix | fixed (aa41aec) -- decided by evan-wes on 2026-10-02 |
+| A5 | should-fix | architecture | `eval/colmap_reference.py`, `pyproject.toml` | pycolmap loaded via `importlib` (invisible to import-linter); no optional extra | fix | fixed (3348a47) -- decided by evan-wes on 2026-10-02 |
+| A6 | should-fix | architecture | `ba/readers.py`, `eval/__init__.py` | file-format readers in rung 0's solver package; eval docstring stale ("Stub") | fix (move to `slamlab.eval`) | fixed (3348a47) -- decided by evan-wes on 2026-10-02 |
+| A7 | should-fix | architecture | `scripts/demo_slice.py` | reifyscene's slice list and run layout built into slamlab | fix (generic script; slice list documented, not coded) | fixed (3348a47): `compare_ba_colmap.py` is generic; the slice invocation lives in the BA note, reifyscene unchanged -- decided by evan-wes on 2026-10-02 |
+| A8 | should-fix | architecture | readers, reference, demo | model constants copied (same as H4) | fix | fixed (3348a47) -- decided by evan-wes on 2026-10-02 |
+| A9 | should-fix | architecture | `ba/problem.py` | general validators belong in `arrays.py`; `_depth_prior` skips `as_real` | fix | fixed (aa41aec) -- decided by evan-wes on 2026-10-02 |
+| A10 | should-fix | architecture | `scripts/check_layers.py` | rung-0 internal-order contract not applied to C++ includes | fix | fixed (d28f41d) -- decided by evan-wes on 2026-10-02 |
+| A11 | note | architecture | `cpp/bindings/common.hpp` | batching lives in the bindings; standalone C++/Rust callers have no batched API | defer (design doc open question, before the edge rung) | deferred (design doc, "Deferred from PR 1's review panel"; before the edge rung) -- decided by evan-wes on 2026-10-02 |
+| A12 | note | architecture | `ba.hpp` | the sparse reduced solver belongs in rung 0 behind `ReducedSystemSolver` | defer (record in the design doc for milestone 4) | deferred (design doc, "Deferred from PR 1's review panel"; milestone 4) -- decided by evan-wes on 2026-10-02 |
+| A13 | note | architecture | `pyproject.toml` | no contract orders the modules inside `ba` | fix (add the contract) | fixed (3348a47) -- decided by evan-wes on 2026-10-02 |
+| A14 | note | architecture | `tests/foundations/test_ba_readers.py` | `eval` tests live under `tests/foundations/` | fix (move to `tests/eval/`) | fixed (3348a47) -- decided by evan-wes on 2026-10-02 |
+| L1 | must-fix | algorithm | `ba/layout.py`, `ba/layout.cpp` | `auto` gauge ignores fixed points (motion-only BA freezes a wrong pose) and treats any pose prior as a full anchor (scale left free; focal falsely unobservable) | fix | fixed (3d0a5a0) -- decided by evan-wes on 2026-10-02 |
+| L2 | must-fix | algorithm | `ba/bundle.py` (`_rays`) | an anchor pixel leaving the invertible region raises out of the Python solve; C++ rejects the step; at the start the two raise different kinds | fix | fixed (3d0a5a0) -- decided by evan-wes on 2026-10-02 |
+| L3 | should-fix | algorithm | `ba/solve.py`, `schur.py` | focal deviations not scaled by the a-posteriori variance factor; the 1% rule rests on arbitrary weights | fix | fixed (b45dce5) -- decided by evan-wes on 2026-10-02 |
+| L4 | should-fix | algorithm | `ba/problem.py`, `ba/layout.py` | "first observation" relies on NumPy's unspecified last-write order | fix | fixed (aa41aec) -- decided by evan-wes on 2026-10-02 |
+| L5 | should-fix | algorithm | `eval/colmap_reference.py` | reference silently drops pose priors, weights, fixed poses/points, per-parameter masks | fix | fixed (3348a47) -- decided by evan-wes on 2026-10-02 |
+| L6 | note | algorithm | `nls.py` | absolute step tolerance never fires on BA's mixed scales | defer (backlog: per-block relative test) | deferred (design doc, "Deferred from PR 1's review panel") -- decided by evan-wes on 2026-10-02 |
+| L7 | note | algorithm | `nls.py` | Triggs correction is the standard upgrade over plain IRLS | defer (backlog, milestone 3) | deferred (design doc, "Deferred from PR 1's review panel"; milestone 3) -- decided by evan-wes on 2026-10-02 |
+| L8 | note | algorithm | reduced solve | state of the art for milestone 4 (sparse Cholesky / PCG, root BA, power BA) | fix (cite in the BA note) | fixed (9178ddd) -- decided by evan-wes on 2026-10-02 |
+| L9 | note | algorithm | `bundle-adjustment.md` | the slice's focal result is the classic critical-motion degeneracy (Sturm 1997; Kahl, Triggs & Åström 2000) | fix (cite) | fixed (9178ddd) -- decided by evan-wes on 2026-10-02 |
+| L10 | note | algorithm | `ba/problem.py` | a fixed anchored point still moves with its host | fix (reject in validation) | fixed (aa41aec) -- decided by evan-wes on 2026-10-02 |
 
 Resolution values: `fixed (<commit>)`, `deferred (<where tracked>)`, `waived: <reason>`,
 `disputed: <reason>`, each followed by `-- decided by <user>, <date>`.
