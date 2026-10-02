@@ -4,6 +4,23 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.1.2.1] - 2026-10-02
+
+### Changed
+
+- **The review panel runs from reifyscene sessions.**
+  - Work on slamlab happens from sessions started in reifyscene, so the two projects progress
+    together. The panel no longer assumes a session started inside slamlab.
+  - The agents are renamed `slamlab-hygiene-reviewer`, `slamlab-architecture-reviewer` and
+    `slamlab-algorithm-reviewer`, and the skill `/slamlab-review-panel`, so they cannot clash
+    with a future reifyscene panel.
+  - Every path in them is now relative to the slamlab root (`REPO`), which the skill passes
+    to each reviewer. Before, a reviewer launched from reifyscene would have read
+    reifyscene's `CLAUDE.md`.
+  - They are symlinked into reifyscene's git-ignored `.claude/`, so they are registered there
+    and still single-sourced in slamlab.
+  - `CLAUDE.md` gains a "Where sessions run" section.
+
 ## [0.1.2.0] - 2026-10-02
 
 ### Added

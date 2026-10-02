@@ -5,6 +5,20 @@ project, built through a human-directed agentic workflow. The design, the ladder
 milestones are in `docs/design/2026-10-02-slamlab-ladder.md`. Read it before changing
 structure.
 
+## Where sessions run
+
+Work on slamlab happens from sessions started in the **reifyscene** repository, so the two projects progress together. Never
+suggest starting a session inside slamlab. Consequences:
+- This file does not load automatically: a reifyscene memory entry points here, and it must
+  be read before slamlab work.
+- Address slamlab explicitly: `git -C $REPO ...`, and run its
+  tools from its root.
+- The review panel's agents (`.claude/agents/slamlab-*.md`) and skill
+  (`.claude/skills/slamlab-review-panel/`) are symlinked into reifyscene's git-ignored
+  `.claude/`, so they are registered in reifyscene sessions while staying single-sourced
+  here. Every path in them is relative to the slamlab root, which the skill passes to each
+  reviewer.
+
 ## Environment
 
 - Conda env `slamlab`, built by `scripts/setup_slamlab.sh` (Python 3.11 and the full toolchain
@@ -72,16 +86,16 @@ hints), mypy --strict, import-linter, clang-format, clang-tidy, doxygen (every d
 documented), rustfmt, clippy (pedantic, missing docs), jscpd (duplication), and the C++,
 Rust and Python test suites. CI runs the same script.
 
-**Layer 2, the review panel (`/review-panel`):**
+**Layer 2, the review panel (`/slamlab-review-panel`):**
 - **When:** on PATCH-or-larger changes: new algorithms, modules, rungs or milestones, a new
   language implementation, interface or boundary changes. Not on MICRO changes (fixes, docs,
   CI). A smaller change that touches one area can run that reviewer alone:
-  `/review-panel algorithm | architecture | hygiene`.
+  `/slamlab-review-panel algorithm | architecture | hygiene`.
 - **Say which applies** when proposing a PR: full panel, one reviewer, or layer 1 only. The
   user may override either way.
-- **Reviewers:** `hygiene-reviewer` (sonnet), `architecture-reviewer` (opus),
-  `algorithm-reviewer` (opus, with web search). All call out code that is not production
-  quality.
+- **Reviewers:** `slamlab-hygiene-reviewer` (sonnet), `slamlab-architecture-reviewer` (opus),
+  `slamlab-algorithm-reviewer` (opus, with web search). All call out code that is not
+  production quality.
 - **Reports are saved** to `docs/reviews/` and committed with the PR.
 - **Findings are decided together.** Present each finding with a recommended action (fix,
   defer, waive, dispute); the user decides; only then apply and record it. Every must-fix

@@ -1,6 +1,6 @@
 ---
-name: architecture-reviewer
-description: slamlab review panel -- modularity, dependency direction, the Python/C++/Rust language split, and the ladder's progression by compute budget. Read-only. Run through /review-panel, or alone with `/review-panel architecture`.
+name: slamlab-architecture-reviewer
+description: slamlab review panel -- modularity, dependency direction, the Python/C++/Rust language split, and the ladder's progression by compute budget. Read-only. Run through /slamlab-review-panel, or alone with `/slamlab-review-panel architecture`.
 tools: Read, Grep, Glob, Bash
 model: opus
 ---
@@ -12,8 +12,13 @@ modular and faithful to that design as it grows.
 
 ## Before you review
 
+0. **Work in the slamlab repository, wherever your session started.** The brief gives the
+   repository root as `REPO`. Sessions
+   usually run from the reifyscene repository, so every path in this file is relative to
+   `REPO`: read `REPO/CLAUDE.md` (never the `CLAUDE.md` of the directory you start in), run
+   git as `git -C REPO ...`, and run tools from `REPO`.
 1. Read `CLAUDE.md`, the design doc (`docs/design/*slamlab-ladder.md`) and
-   `.claude/skills/review-panel/finding-format.md` (your output format). The design doc is
+   `.claude/skills/slamlab-review-panel/finding-format.md` (your output format). The design doc is
    the authority on the ladder, the language split and the boundary with reifyscene.
 2. Get the change: the panel gives you a base ref and a head ref. Run
    `git diff --stat <base>...<head>` and `git diff <base>...<head>`, then read the changed

@@ -1,6 +1,6 @@
 ---
-name: algorithm-reviewer
-description: slamlab review panel -- algorithm correctness, numerical robustness, faithfulness to standard formulations, and awareness of the state of the art, with citations. Read-only; uses web search for references. Run through /review-panel, or alone with `/review-panel algorithm`.
+name: slamlab-algorithm-reviewer
+description: slamlab review panel -- algorithm correctness, numerical robustness, faithfulness to standard formulations, and awareness of the state of the art, with citations. Read-only; uses web search for references. Run through /slamlab-review-panel, or alone with `/slamlab-review-panel algorithm`.
 tools: Read, Grep, Glob, Bash, WebSearch, WebFetch
 model: opus
 ---
@@ -14,8 +14,13 @@ where the field is now**.
 
 ## Before you review
 
+0. **Work in the slamlab repository, wherever your session started.** The brief gives the
+   repository root as `REPO`. Sessions
+   usually run from the reifyscene repository, so every path in this file is relative to
+   `REPO`: read `REPO/CLAUDE.md` (never the `CLAUDE.md` of the directory you start in), run
+   git as `git -C REPO ...`, and run tools from `REPO`.
 1. Read `CLAUDE.md`, the design doc (`docs/design/*slamlab-ladder.md`), any design note in
-   `docs/notes/` for the components touched, and `.claude/skills/review-panel/finding-format.md`
+   `docs/notes/` for the components touched, and `.claude/skills/slamlab-review-panel/finding-format.md`
    (your output format).
 2. Get the change: the panel gives you a base ref and a head ref. Run
    `git diff --stat <base>...<head>` and `git diff <base>...<head>`, and read the changed

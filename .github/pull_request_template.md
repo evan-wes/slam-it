@@ -17,9 +17,9 @@ approves every merge. This section is the record of that process for this PR.
 | Role | Agent | Model | What it did |
 |---|---|---|---|
 | Implementation | Claude Code | <model> | <what it built> |
-| Hygiene review | `hygiene-reviewer` | sonnet | <ran / not run: why> |
-| Architecture review | `architecture-reviewer` | opus | <ran / not run: why> |
-| Algorithm review | `algorithm-reviewer` | opus | <ran / not run: why> |
+| Hygiene review | `slamlab-hygiene-reviewer` | sonnet | <ran / not run: why> |
+| Architecture review | `slamlab-architecture-reviewer` | opus | <ran / not run: why> |
+| Algorithm review | `slamlab-algorithm-reviewer` | opus | <ran / not run: why> |
 
 **Review panel:** <full panel / <reviewer> only / layer 1 only (MICRO change)>.
 Report: [`docs/reviews/<file>.md`](https://github.com/evan-wes/slamlab/blob/<branch>/docs/reviews/<file>.md).

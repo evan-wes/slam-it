@@ -1,6 +1,6 @@
 # Review panel: `<branch>`
 
-<!-- Written by /review-panel. One file per branch; later runs append a "Run N" section. -->
+<!-- Written by /slamlab-review-panel. One file per branch; later runs append a "Run N" section. -->
 
 ## Run 1 -- YYYY-MM-DD
 
@@ -9,7 +9,7 @@
 | **Branch** | `<branch>` |
 | **Range** | `<base sha>...<head sha>` (base: `<base ref>`) |
 | **Reviewers** | hygiene (sonnet), architecture (opus), algorithm (opus) |
-| **How they ran** | project agents / general-purpose with the agent prompt |
+| **How they ran** | registered slamlab-* agents / general-purpose with the agent file |
 | **Layer 1** | all checks passed (`scripts/check.sh`) |
 
 ### Findings and resolutions
