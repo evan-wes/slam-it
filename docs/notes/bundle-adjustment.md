@@ -93,8 +93,9 @@ back-substitution: `δp = -H_pp⁻¹ (g_p + H_pc δc)`.
 ## Anchored inverse-depth points
 
 A point can be stored as one number instead of three: an inverse depth `ρ` along the ray of
-an **anchor** observation (camera h, pixel `u_a`). This is DSO's host frame and DROID-SLAM's
-per-pixel depth. It behaves well where XYZ does not:
+an **anchor** observation (camera h, pixel `u_a`). The parametrisation is Civera, Davison &
+Montiel's (2008) for monocular SLAM. It is DSO's host frame (Engel, Koltun & Cremers 2018)
+and DROID-SLAM's per-pixel depth. It behaves well where XYZ does not:
 - far points, where `ρ → 0` is finite and XYZ runs off to infinity;
 - low-parallax points, whose depth is poorly constrained but whose direction is not.
 
@@ -367,9 +368,30 @@ What the slice shows that lab-coat alone would not:
   The remaining gap (1.2–4x, 14x on india) is the dense reduced system and
   single-threading. Milestone 4's sparse reduced solver is the structural fix.
 
+This is the critical-motion degeneracy of self-calibration. Sturm (1997) classifies the
+camera motions under which constant intrinsics are not determined, and Kahl, Triggs & Åström
+(2000) extend the analysis to intrinsics that may vary. Translation with little rotation is the
+textbook case for focal length, and a short handheld clip is close to it.
+
 For reifyscene: its `pose_refine` frees the focal length on exactly these scenes. The slice
 suggests that is unconstrained on 9 of 10, so milestone 3 should hold focal fixed (from VGGT)
 unless `unobservable_focal` is 0.
+
+## Toward larger problems
+
+The reduced camera system is solved densely: O(C³) per step, fine for tens of cameras. For
+milestone 4's hundreds to thousands, the options behind `ReducedSystemSolver` are:
+- **Sparse Cholesky of the reduced system.** Cameras that share no point leave zeros in `S`.
+  This is Ceres' `SPARSE_SCHUR`, and what COLMAP runs.
+- **Inexact Newton with preconditioned CG.** CG on `S` never forms its factor. The
+  products `S v` can even be computed from the blocks without forming `S`. Agarwal, Snavely,
+  Seitz & Szeliski (2010) compare the preconditioners, block-Jacobi on the camera blocks
+  among them, on the BAL problems the reader here loads.
+- **Square-root BA.** Demmel, Sommer, Cremers & Usenko (2021) marginalise the points by QR
+  (a nullspace projection) instead of the Schur complement. That keeps the system's
+  conditioning, so single precision suffices.
+- **Power BA.** Weber, Demmel, Chan & Cremers (2023) expand the inverse Schur complement
+  as a power series, and report faster solves than preconditioned CG on BAL.
 
 ## How it's checked
 
@@ -472,3 +494,21 @@ unless `unobservable_focal` is 0.
 - **Fixed means bit-exact.** The first version returned fixed poses 1 ulp off, from the
   round trip `T_world_cam → T_cam_world → T_world_cam`. Unmoved poses are now returned
   as given, in both cores.
+
+## References
+
+- Agarwal, Snavely, Seitz & Szeliski (2010). Bundle adjustment in the large. ECCV.
+- Civera, Davison & Montiel (2008). Inverse depth parametrization for monocular SLAM. IEEE
+  Transactions on Robotics.
+- Demmel, Sommer, Cremers & Usenko (2021). Square root bundle adjustment for large-scale
+  reconstruction. CVPR.
+- Engel, Koltun & Cremers (2018). Direct sparse odometry. IEEE TPAMI.
+- Förstner & Wrobel (2016). Photogrammetric Computer Vision. Springer.
+- Kahl, Triggs & Åström (2000). Critical motions for auto-calibration when some intrinsic
+  parameters can vary. Journal of Mathematical Imaging and Vision.
+- Sturm (1997). Critical motion sequences for monocular self-calibration and uncalibrated
+  Euclidean reconstruction. CVPR.
+- Triggs, McLauchlan, Hartley & Fitzgibbon (1999). Bundle adjustment -- a modern synthesis.
+  Vision Algorithms: Theory and Practice.
+- Weber, Demmel, Chan & Cremers (2023). Power bundle adjustment for large-scale 3D
+  reconstruction. CVPR.

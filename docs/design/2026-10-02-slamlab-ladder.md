@@ -1,8 +1,10 @@
 # slamlab: a learning ladder for visual SLAM
 
-Status, 2026-10-02: the scaffold is built. That covers the package-per-rung layout in three
-languages, the conda environment, CI, and the two-layer review process. No SLAM algorithms
-exist yet: milestone 1 is next.
+Status, 2026-10-02: milestone 1 is under way. The scaffold (package-per-rung layout in three
+languages, conda environment, CI, two-layer review process) is merged. PR 1, the BA spine, adds
+rung 0's geometry and estimation in Python and C++: SO(3), SE(3), Umeyama alignment, camera
+models, nonlinear least squares and bundle adjustment; Rust's curated subset has SO(3) so
+far. RANSAC follows in PR 2.
 
 ## Purpose
 
@@ -124,6 +126,11 @@ and a possible later phone target.
     - C++: `cpp/include/slamlab/foundations/solve.hpp`, returned as
       `std::expected<Solution<T>, Error>`;
     - Rust: `slamlab_foundations::solve`, returned as `Result<Solution<T>, Error>`.
+
+    As built in PR 1, the summary (`SolveSummary`, `Termination`) lives in
+    `slamlab.foundations.nls` and `nls.hpp`, its only producer so far; BA wraps it in its own
+    summary. It moves to `foundations.solve` in PR 2, when RANSAC becomes its second
+    producer and the shared-or-extended question below is settled.
   - **Crossing the binding boundary:** the estimate crosses as float64 arrays and the
     summary as plain scalars, with the termination reason as an integer code. The Python
     entry point builds the dataclass, and there are no binding-side classes. This extends
@@ -455,28 +462,36 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
 
 - **Final name**, before going public.
 - **Exact budget numbers**, from published device specs.
-- **Milestone 1 tasks carried from the review panel:**
-  - When the first fallible function lands, add the bindings' error translation, with a
-    parity test that every error kind raises the matching Python exception from both
-    bindings.
-  - The `exp`/`log` fixtures cover the hard cases: angle near 0 (Taylor branch), near pi
-    (axis sign ambiguous at exactly pi), above pi (wrap), and non-orthonormal input to
-    `log`.
-  - The first solver defines the solve-summary type shared by the three languages:
-    - Each termination reason maps explicitly to `converged`, as in Ceres: stalls on
-      function or parameter tolerance count as converged.
-    - Consider a time-cap reason for the compute budgets.
-    - Decide whether RANSAC gets its own summary (iterations, inlier count or mask, whether
-      the target confidence was reached) or a shared core summary with extensions.
-  - Further hard `exp`/`log` cases:
-    - the `arccos` domain at both ends: a rotation whose trace rounds just past +-1, which
-      gives NaN without a clamp;
-    - values just either side of the Taylor-branch switch, so the series and closed form
-      agree where they meet.
+- **Milestone 1 tasks carried from the review panel.** Closed by PR 1:
+  - The bindings translate every error kind to its Python exception (`cpp/bindings/common.cpp`),
+    and each kind is raised from the C++ backend in its algorithm's tests: `InvalidInput`
+    throughout, `Degenerate` in alignment, `NotConverged` in camera, NLS and BA.
+  - The `exp`/`log` fixture (mpmath-oracled) covers angles near 0, values either side of
+    each Taylor switch, near pi, exactly pi (canonical sign), above pi (wrap) and near 2 pi.
+    `log` rejects a non-orthonormal input (`InvalidInput`); `project_to_so3` is the explicit
+    SVD projection.
+  - Each termination reason maps explicitly to `converged`, as in Ceres (`CONVERGED`).
 
-    The above-pi case compares rotations, or the wrapped vector, not the raw input. Before
-    writing the non-orthonormal-input case, decide whether `log` rejects it
-    (`InvalidInput`) or projects it to the nearest rotation (SVD).
+  Still open:
+  - The `arccos` domain at both ends: a rotation whose trace rounds just past +-1.
+  - A time-cap termination reason for the compute budgets.
+  - Whether RANSAC gets its own summary (iterations, inlier count or mask, whether the
+    target confidence was reached) or a shared core summary with extensions. Settled in
+    PR 2, with the summary's move to `foundations.solve` (panel A3 on PR 1).
+- **Deferred from PR 1's review panel**
+  ([report](../reviews/2026-10-02-feature-ba-spine.md)):
+  - **Batched APIs for standalone callers (A11).** Batching over many inputs lives in the
+    bindings (`cpp/bindings/common.hpp`), so C++ and Rust callers outside Python have no
+    batched API. Decide before the edge rung (milestone 7), where C++ runs without Python.
+  - **A sparse reduced solver (A12).** BA's reduced camera system is solved densely behind
+    `ReducedSystemSolver`. Milestone 4's scenes need a sparse Cholesky or a preconditioned
+    CG behind the same seam (see the BA note's state-of-the-art section).
+  - **A per-block step tolerance (L6).** NLS's absolute step tolerance never fires on BA's
+    mixed scales (radians, pixels of focal length, metres). Replace it with a relative,
+    per-block test.
+  - **Triggs' robust-loss correction (L7).** NLS uses plain IRLS, which drops `ρ''`. The
+    Triggs correction restores it, and converges faster on outliers. For milestone 3, whose
+    data has outliers.
 - **Milestone 3's inputs, to settle before its adapter is written:**
   - Where its correspondences come from: VGGT's tracks, or reifyscene's tracks
     (VGGSfM/CoTracker) via the dumped BA problem.
