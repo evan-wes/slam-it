@@ -21,8 +21,10 @@ cost = ½ Σ_m ρ(w_m |π(K_g(m), T_c(m) X_p(m)) - u_m|²)
 There is one 2-row residual block per observation m. The block uses the camera's
 world-to-camera pose `T_c`, its intrinsics group `K_g`, a world point `X_p`, the observed
 pixel `u_m`, and a weight `w_m` (an information, `1/σ²` in px⁻²). The robust loss ρ applies
-per observation. The solver is the NLS loop of [nls.md](nls.md): this module supplies its
-`Problem`, a `LinearSystem` and a retraction.
+per observation. Two optional kinds of block join it (see "Priors" below): depth priors and
+pose priors. The solver is the NLS loop of [nls.md](nls.md): this module supplies its
+`Problem`, a `LinearSystem` and a retraction, and gives each kind of block its own loss
+through the loop's per-block loss.
 
 ## The interface
 
@@ -38,6 +40,14 @@ A problem crosses as a struct of arrays (design doc, "Conventions"):
 | `intrinsics_idx` | (C,) int64 | each camera's group: shared, per camera, or anything between |
 | `weights` | (M,) | observation weights; 0 excludes one |
 | `fixed_poses`, `fixed_intrinsics`, `fixed_points` | bool | variables held fixed |
+
+Optional prior arrays:
+
+| Array | Shape | Meaning |
+|---|---|---|
+| `depth_prior`, `depth_prior_weights` | (M,) | a prior inverse depth per observation (NaN for none) |
+| `depth_affine`, `fixed_depth_affine` | (C, 2), (C,) | each camera's prior-to-model `(scale, shift)` |
+| `pose_prior`, `pose_prior_weights` | (C, 4, 4), (C, 2) | prior camera-to-world poses; `(translation, rotation)` informations |
 
 Intrinsics are fixed by default, as for a calibrated camera. Both cores check every index
 and size, so a C++ caller gets the same protection as a Python one.
@@ -80,6 +90,31 @@ back-substitution: `δp = -H_pp⁻¹ (g_p + H_pc δc)`.
 - **Python.** The reference forms `S` vectorised: one block for every ordered pair of a
   point's observations, processed in chunks to bound memory.
 
+## Priors
+
+**Depth priors.** An observation can carry a prior inverse depth `d̃`, from a depth network
+or a sensor. Its residual is `√w (1/z - (s_c d̃ + t_c))`, a 1-row block coupled to the point,
+the pose and that camera's affine `(s_c, t_c)`:
+- **Metric priors** keep the affine fixed at `(1, 0)`.
+- **Affine-invariant priors** (a relative-depth network's disparity) free it, and the solve
+  finds each frame's scale and shift. Shape of Motion and MegaSaM align monocular depth this
+  way.
+- **Why inverse depth.** Networks predict it, it stays finite for far points, and its noise is
+  closer to uniform than depth's.
+- **Its own loss.** `BAOptions.depth_loss` (typically Huber or Cauchy) applies to these blocks
+  only, so a network's failures on sky or reflections don't drag the cameras.
+
+**Pose priors.** A camera can carry a prior pose `T̄`, from odometry, a previous solve or
+GNSS. Its residual is `W log(T̄_cam_world⁻¹ T_cam_world)`, with separate translation and
+rotation informations. It is a 6-row block on that pose alone, with the Jacobian
+`W Jr⁻¹(e)` (right perturbation). Its loss is plain least squares.
+
+**The Schur system with three kinds of block.** Every block contributes
+`J_cᵀ W J_c` to the camera side. Blocks that see a point (reprojection, depth) also
+contribute to that point's 3x3 block and the coupling. In Python the coupling blocks have
+different widths (6+P for reprojection, 8 for depth), so they are zero-padded to the widest,
+with padding columns that add exact zeros. In C++ each block carries its own column list.
+
 ## Gauge
 
 Reprojection errors don't change if the whole scene moves rigidly, or, for a monocular
@@ -98,8 +133,14 @@ instead:
     same coordinates and the same damped steps; an SVD null space would not be.
   - It is recomputed at each linearisation, so the baseline is held to first order. It
     drifts at second order (1e-4 relative in the tests).
-- **`none`.** The caller's fixed variables define the gauge, such as fixed control points or
-  a fixed rig.
+- **`none`.** The caller's fixed variables or priors define the gauge, such as fixed
+  control points, a fixed rig, or pose priors.
+- **`auto` (the default).** Picks by what anchors the scene:
+  - `none` when any pose has a prior;
+  - `first_pose` when a metric depth prior (a fixed affine) fixes the scale;
+  - `similarity` otherwise.
+
+  The summary records the gauge actually applied.
 
 ## Degenerate data
 
@@ -114,6 +155,17 @@ Each of these is dropped, not frozen, and counted in the summary:
 
 During the solve, a step that moves a point behind a camera gives that observation an
 infinite cost, so the step is rejected rather than raising an error.
+
+## Focal observability
+
+When intrinsics are free, the result reports each free parameter's standard deviation. It is
+the square root of the diagonal of `S⁻¹`, where `S` is the undamped reduced camera system at
+the solution under the final robust weights: points marginalised by the Schur complement,
+poses by the inverse. It assumes the weights are true informations. A free group whose fx or
+fy deviation exceeds `focal_std_ratio` (1%) of itself is counted in `unobservable_focal`.
+
+The classic failure it catches is focal length against depth. With pure translation and no
+rotation, `u = f (X - t_x)/Z` is unchanged by `f → kf, Z → kZ`, so no amount of data pins f.
 
 ## How it's checked
 
@@ -140,8 +192,29 @@ infinite cost, so the step is rejected rather than raising an error.
 - **Parity.** C++ against the reference, with radtan, two intrinsics groups and a Cauchy
   loss: same termination, iterations and counts; poses to 1e-9, points to 1e-8. On the smoke
   scene they agree to 1e-15.
-- **Natively.** The same model is checked in C++: convergence to zero reprojection error,
-  the gauge, a dropped point, and the core's own index check.
+- **Priors.**
+  - The Schur-versus-dense and Jacobian checks include depth blocks (with free affines) and
+    pose priors, one of them with zero rotation weight.
+  - Metric depth priors recover the true scene from a start scaled 1.5x. Without them, the
+    similarity gauge keeps the 1.5x scale.
+  - A prior known only as `(1/z - 0.05)/2` gives back the affine `(2, 0.05)` to 1e-8.
+  - Pose priors at the truth return the truth, with the auto gauge resolved to `none`.
+- **Focal observability.** On the same scene with three amounts of rotation:
+
+  | Rotation spread | σ_f | Flagged |
+  |---|---|---|
+  | 0.3 rad | under 1 px; the truth lies within 3σ | no |
+  | 0.04 rad | 9 px (1.8%) | yes |
+  | none | about 1400 px | yes |
+
+- **Parity.** As above, with every kind of block. The intrinsics agree to 1e-8 relative in a
+  scene where the distortion is poorly conditioned (k3 near -6).
+- **Natively.** The same model is checked in C++:
+  - convergence to zero reprojection error;
+  - the gauge;
+  - a dropped point;
+  - metric depth recovering the scale;
+  - the core's own index check.
 
 ## What was learned
 
@@ -155,6 +228,11 @@ infinite cost, so the step is rejected rather than raising an error.
   its floor. Stopping on a 1e-12 relative cost decrease left a gradient near 1e-4 along the
   scene's poorly determined depths. Tests that compare optima therefore run to the step
   floor, and compare in reprojection space, where the data constrains the solution.
+- **A small deviation estimate is not small enough.** The first focal test used a scene with
+  0.04 rad of rotation between views, assuming it would count as well observed. The check
+  disagreed: σ_f = 9 px, and the estimate was 1σ off the truth. The check was right and the
+  assumption was wrong. Weak rotation makes focal length weakly observable, which is why
+  calibration needs varied views.
 - **Fixed means bit-exact.** The first version returned fixed poses 1 ulp off, from the
   round trip `T_world_cam → T_cam_world → T_world_cam`. Unmoved poses are now returned
   as given, in both cores.

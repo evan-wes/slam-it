@@ -292,3 +292,25 @@ def test_invalid_loss_and_system() -> None:
         nls.DenseSystem.build(np.zeros((3, 1, 2)), np.zeros((3, 1)), np.ones(2))
     with pytest.raises(InvalidInputError, match="initial cost"):
         nls.solve(Rosenbrock(), np.array([np.nan, 1.0]))
+
+
+def test_block_loss() -> None:
+    """A per-block loss evaluates each block's own loss.
+
+    Naming one loss everywhere reproduces the uniform solve exactly.
+    """
+    s = np.array([0.25, 4.0, 4.0])
+    block = nls.BlockLoss((nls.Loss(), nls.Loss("huber", 1.0)), np.array([0, 1, 0]))
+    rho, weight = block.evaluate(s)
+    assert rho.tolist() == [0.25, 3.0, 4.0]
+    assert weight.tolist() == [1.0, 0.5, 1.0]
+    fit = _line_with_outliers()
+    cauchy = nls.Loss("cauchy", 0.05)
+    uniform = nls.solve(fit, np.zeros(2), replace(TIGHT, loss=cauchy))
+    everywhere = nls.BlockLoss((nls.Loss(), cauchy), np.ones(fit.xs.size, dtype=np.int64))
+    per_block = nls.solve(fit, np.zeros(2), replace(TIGHT, block_loss=everywhere))
+    np.testing.assert_array_equal(per_block.state, uniform.state)
+    with pytest.raises(InvalidInputError, match="index"):
+        nls.BlockLoss((nls.Loss(),), np.array([0, 1]))
+    with pytest.raises(InvalidInputError, match="blocks"):
+        block.evaluate(np.zeros(2))

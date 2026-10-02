@@ -33,6 +33,8 @@ class Scene:
     poses: Array
     points: Array
     intrinsics: Array
+    inverse_depth: Array
+    """Each observation's true inverse depth, for building depth priors."""
     problem: ba.BAProblem
 
 
@@ -44,12 +46,14 @@ def _scene(
     perturb: float = 0.01,
     model: str = "pinhole",
     seed: int = 0,
+    rotation: float = 0.04,
     groups: Array | None = None,
     **create: object,
 ) -> Scene:
     """Build cameras along a gentle arc looking at a box of points, with every point seen.
 
-    ``groups`` overrides the problem's starting intrinsics (the truth projects with one).
+    ``groups`` overrides the problem's starting intrinsics (the truth projects with one);
+    ``rotation`` is the spread of the cameras' orientations (0 for pure translation).
     """
     rng = np.random.default_rng(seed)
     intrinsics = PINHOLE if model == "pinhole" else RADTAN
@@ -59,7 +63,7 @@ def _scene(
             np.stack(
                 [0.4 * np.arange(cameras), 0.1 * np.sin(np.arange(cameras)), np.zeros(cameras)], 1
             ),
-            rng.normal(0.0, 0.04, (cameras, 3)),
+            rng.normal(0.0, 0.04, (cameras, 3)) * (rotation / 0.04),
         ],
         axis=1,
     )
@@ -83,30 +87,51 @@ def _scene(
         pt_idx,
         **create,  # type: ignore[arg-type]
     )
-    return Scene(poses, world, intrinsics, problem)
+    inverse_depth = 1.0 / in_camera.reshape(-1, 3)[:, 2]
+    return Scene(poses, world, intrinsics, inverse_depth, problem)
 
 
-def _dense_jacobian(bundle: ba._Bundle, state: ba._State) -> tuple[Array, Array]:
-    """Assemble the full Jacobian in the free coordinates from the per-observation blocks."""
-    lin = bundle._linearise(state)
+def _dense_normal_equations(
+    bundle: ba._Bundle, state: ba._State, weights: Array
+) -> tuple[Array, Array]:
+    """Assemble the full weighted normal equations ``(H, g)`` in the free coordinates."""
     reduction = bundle.reduction(state)
-    n_obs = lin.residuals.shape[0]
-    full = np.zeros((n_obs, 2, reduction.full_size))
+    n_free = int(bundle._layout.point_slot.max(initial=-1)) + 1
+    hessian = 0.0
+    gradient = 0.0
+    splits = np.cumsum([k.residuals.shape[0] for k in bundle.kinds(state)])[:-1]
+    for kind, w in zip(bundle.kinds(state), np.split(weights, splits), strict=True):
+        jacobian = _kind_jacobian(kind, reduction, n_free)
+        weighted = jacobian * w[:, None, None]
+        hessian = hessian + np.einsum("mki,mkj->ij", weighted, jacobian)
+        gradient = gradient + np.einsum("mki,mk->i", weighted, kind.residuals)
+    return np.asarray(hessian), np.asarray(gradient)
+
+
+def _kind_jacobian(kind: ba._Kind, reduction: ba._Reduction, n_free: int) -> Array:
+    """Return one kind of block's Jacobian in the free coordinates, shape (M, d, n)."""
+    m, d = kind.residuals.shape
+    full = np.zeros((m, d, reduction.full_size))
     np.add.at(
         full,
-        (np.arange(n_obs)[:, None, None], np.arange(2)[None, :, None], lin.columns[:, None, :]),
-        lin.camera_side,
+        (np.arange(m)[:, None, None], np.arange(d)[None, :, None], kind.columns[:, None, :]),
+        kind.camera_side,
     )
     cam = np.concatenate(
         [full[:, :, reduction.free], full[:, :, reduction.rows] @ reduction.basis], axis=2
     )
-    slots = bundle._layout.point_slot[bundle._pt]
-    n_free = int(slots.max()) + 1
-    pts = np.zeros((n_obs, 2, 3 * n_free))
-    for k in range(3):
-        rows = np.flatnonzero(slots >= 0)
-        pts[rows, :, 3 * slots[rows] + k] = lin.point[rows, :, k]
-    return np.concatenate([cam, pts], axis=2), lin.residuals
+    pts = np.zeros((m, d, 3 * n_free))
+    if kind.point is not None:
+        on = np.flatnonzero(kind.slots >= 0)
+        for k in range(3):
+            pts[on, :, 3 * kind.slots[on] + k] = kind.point[on, :, k]
+    return np.concatenate([cam, pts], axis=2)
+
+
+def _residual_vector(bundle: ba._Bundle, state: ba._State) -> Array:
+    """Return every block's weighted residual rows, stacked."""
+    parts = (bundle._reprojection(state), bundle._depth(state), bundle._pose_prior(state))
+    return np.concatenate([part.reshape(-1) for part in parts])
 
 
 def _bundle(
@@ -114,41 +139,80 @@ def _bundle(
 ) -> tuple[ba._Bundle, ba._State]:
     """Return the reference's NLS problem and its start state."""
     layout = ba._layout(problem, options or ba.BAOptions())
-    start = ba._State(se3.inverse(problem.poses), problem.intrinsics.copy(), problem.points.copy())
+    start = ba._State(
+        se3.inverse(problem.poses),
+        problem.intrinsics.copy(),
+        problem.points.copy(),
+        problem.depth_affine.copy(),
+    )
     return ba._Bundle(problem, layout, ba.DenseCholesky()), start
 
 
+def _every_kind(scene: Scene) -> ba.BAProblem:
+    """Return a scene's problem with depth priors and pose priors added.
+
+    Half the observations get a depth prior, with free affines on two cameras; two cameras get
+    a pose prior, one of them with no rotation weight.
+    """
+    p = scene.problem
+    n_cams = p.poses.shape[0]
+    prior = np.where(np.arange(p.cam_idx.size) % 2 == 0, scene.inverse_depth * 1.02, np.nan)
+    pose_weights = np.zeros((n_cams, 2))
+    pose_weights[1] = [4.0, 0.0]
+    pose_weights[2] = [1.0, 9.0]
+    return replace(
+        p,
+        depth_prior=prior,
+        depth_prior_weights=np.full(p.cam_idx.size, 25.0),
+        fixed_depth_affine=np.arange(n_cams) >= 2,
+        depth_affine=np.tile([1.1, 0.01], (n_cams, 1)),
+        pose_prior=se3.compose(scene.poses, se3.exp(np.full((n_cams, 6), 0.01))),
+        pose_prior_weights=pose_weights,
+    )
+
+
 def test_schur_step_matches_dense_solve() -> None:
-    """Eliminating the points gives the same damped step as solving the full system."""
+    """Eliminating the points gives the same damped step as solving the full system.
+
+    Every kind of block takes part: reprojection, depth prior and pose prior.
+    """
     scene = _scene(noise=0.5, model="radtan", fixed_intrinsics=[False])
-    bundle, state = _bundle(scene.problem)
-    weights = nls.Loss("huber", 2.0).evaluate(bundle.squared_norms(state))[1]
+    problem = _every_kind(scene)
+    bundle, state = _bundle(problem, ba.BAOptions(gauge="similarity"))
+    loss = nls.BlockLoss(
+        (nls.Loss("huber", 2.0), nls.Loss("cauchy", 0.5), nls.Loss()), bundle.loss_index
+    )
+    weights = loss.evaluate(bundle.squared_norms(state))[1]
     schur = bundle.linearize(state, weights)
-    jacobian, residuals = _dense_jacobian(bundle, state)
-    dense = nls.DenseSystem.build(jacobian, residuals, weights)
-    damping = 1e-3 * np.clip(dense.hessian_diagonal, 1e-6, 1e32)
-    np.testing.assert_allclose(schur.gradient, dense.gradient, rtol=1e-12, atol=1e-9)
-    np.testing.assert_allclose(schur.hessian_diagonal, dense.hessian_diagonal, rtol=1e-12)
-    step_schur, step_dense = schur.solve(damping), dense.solve(damping)
+    hessian, gradient = _dense_normal_equations(bundle, state, weights)
+    damping = 1e-3 * np.clip(np.diagonal(hessian), 1e-6, 1e32)
+    np.testing.assert_allclose(schur.gradient, gradient, rtol=1e-12, atol=1e-9)
+    np.testing.assert_allclose(schur.hessian_diagonal, np.diagonal(hessian), rtol=1e-12)
+    step_schur = schur.solve(damping)
+    step_dense = np.linalg.solve(hessian + np.diag(damping), -gradient)
     assert step_schur is not None
-    assert step_dense is not None
     np.testing.assert_allclose(
         step_schur, step_dense, rtol=0, atol=1e-10 * np.abs(step_dense).max()
     )
 
 
 def test_jacobian_matches_numeric() -> None:
-    """The analytic Jacobian (poses, radtan intrinsics, points) matches central differences."""
+    """The analytic Jacobian of every kind of block matches central differences."""
     scene = _scene(cameras=3, points=8, model="radtan", fixed_intrinsics=[False])
-    bundle, state = _bundle(scene.problem)
-    analytic, _ = _dense_jacobian(bundle, state)
+    bundle, state = _bundle(_every_kind(scene), ba.BAOptions(gauge="similarity"))
+    reduction = bundle.reduction(state)
+    n_free = int(bundle._layout.point_slot.max()) + 1
+    analytic = np.concatenate(
+        [
+            _kind_jacobian(k, reduction, n_free).reshape(-1, reduction.size + 3 * n_free)
+            for k in bundle.kinds(state)
+        ]
+    )
     numeric = nls.numeric_jacobian(
-        lambda s: bundle._residuals(s).reshape(-1), state, bundle.retract, analytic.shape[2]
+        lambda s: _residual_vector(bundle, s), state, bundle.retract, analytic.shape[1]
     )
-    scale = np.abs(analytic).max(axis=(0, 1))
-    np.testing.assert_allclose(
-        analytic.reshape(-1, analytic.shape[2]) / scale, numeric / scale, rtol=0, atol=1e-6
-    )
+    scale = np.abs(analytic).max(axis=0)
+    np.testing.assert_allclose(analytic / scale, numeric / scale, rtol=0, atol=1e-6)
 
 
 def test_noise_free_scene_recovers_truth() -> None:
@@ -332,7 +396,11 @@ def test_degenerate_data_is_dropped_and_counted() -> None:
 
 @pytest.mark.parametrize("backend", sorted(set(backends.LOCKSTEP_BACKENDS) - {"python"}))
 def test_backend_parity(backend: str) -> None:
-    """A compiled backend matches the reference: radtan, two intrinsics groups, Cauchy loss."""
+    """A compiled backend matches the reference on every kind of block.
+
+    Radtan, two intrinsics groups, a Cauchy loss, depth priors with free affines, and pose
+    priors.
+    """
     require_backend(backend)
     scene = _scene(
         cameras=5,
@@ -344,8 +412,10 @@ def test_backend_parity(backend: str) -> None:
         seed=7,
         groups=np.stack([RADTAN, RADTAN * 1.001]),
     )
-    problem = scene.problem
-    options = ba.BAOptions(solver=replace(TIGHT, loss=nls.Loss("cauchy", 2.0)))
+    problem = _every_kind(scene)
+    options = ba.BAOptions(
+        solver=replace(TIGHT, loss=nls.Loss("cauchy", 2.0)), depth_loss=nls.Loss("huber", 0.5)
+    )
     ref = ba.solve(problem, options)
     out = ba.solve(problem, options, backend=backend)
     assert out.summary.solve.termination == ref.summary.solve.termination
@@ -353,7 +423,10 @@ def test_backend_parity(backend: str) -> None:
     assert replace(out.summary, solve=ref.summary.solve) == ref.summary
     np.testing.assert_allclose(out.poses, ref.poses, rtol=0, atol=1e-9)
     np.testing.assert_allclose(out.points, ref.points, rtol=0, atol=1e-8)
-    np.testing.assert_allclose(out.intrinsics, ref.intrinsics, rtol=1e-10)
+    # Distortion is poorly conditioned in this scene (k3 ends near -6): 1e-8 relative.
+    np.testing.assert_allclose(out.intrinsics, ref.intrinsics, rtol=1e-8)
+    np.testing.assert_allclose(out.depth_affine, ref.depth_affine, rtol=0, atol=1e-9)
+    np.testing.assert_allclose(out.intrinsics_std, ref.intrinsics_std, rtol=1e-6)
     np.testing.assert_allclose(
         out.summary.solve.final_cost, ref.summary.solve.final_cost, rtol=1e-9
     )
@@ -379,6 +452,9 @@ def test_strict_mode_raises(backend: str) -> None:
         ({"fixed_points": np.array([1, 0])}, "fixed_points"),
         ({"poses": np.stack([np.eye(4), np.diag([2.0, 2.0, 2.0, 1.0])])}, "rotation"),
         ({"intrinsics": np.array([0.0, 500.0, 320.0, 240.0])}, "focal"),
+        ({"depth_prior": np.array([0.2, -0.1])}, "depth_prior"),
+        ({"pose_prior_weights": np.ones((2, 3))}, "pose_prior_weights"),
+        ({"fixed_depth_affine": np.array([True])}, "fixed_depth_affine"),
     ],
 )
 def test_invalid_problems_are_rejected(change: dict[str, object], message: str) -> None:
@@ -414,3 +490,82 @@ def test_invalid_options() -> None:
         ba.BAOptions(gauge="sim3")
     with pytest.raises(InvalidInputError, match="min_parallax_deg"):
         ba.BAOptions(min_parallax_deg=-1.0)
+    block = nls.BlockLoss((nls.Loss(),), np.zeros(1, dtype=np.int64))
+    with pytest.raises(InvalidInputError, match="block_loss"):
+        ba.BAOptions(solver=nls.Options(block_loss=block))
+
+
+def _scaled_about_first_camera(problem: ba.BAProblem, factor: float) -> ba.BAProblem:
+    """Scale a problem's scene about its first camera: reprojections are unchanged."""
+    centre = problem.poses[0, :3, 3]
+    poses = problem.poses.copy()
+    poses[:, :3, 3] = centre + factor * (poses[:, :3, 3] - centre)
+    return replace(problem, poses=poses, points=centre + factor * (problem.points - centre))
+
+
+def test_metric_depth_prior_fixes_scale() -> None:
+    """Metric depth priors fix the scale that reprojection leaves free.
+
+    From a start scaled 1.5x, the solve returns the true scene. Without them, the similarity
+    gauge keeps the 1.5x scale.
+    """
+    scene = _scene(perturb=0.0)
+    scaled = _scaled_about_first_camera(scene.problem, 1.5)
+    with_prior = ba.solve(
+        replace(scaled, depth_prior=scene.inverse_depth), ba.BAOptions(solver=TIGHT)
+    )
+    assert with_prior.summary.gauge == "first_pose"
+    np.testing.assert_allclose(with_prior.points, scene.points, rtol=0, atol=1e-6)
+    without = ba.solve(scaled, ba.BAOptions(solver=TIGHT))
+    assert without.summary.gauge == "similarity"
+    np.testing.assert_allclose(without.points, scaled.points, rtol=0, atol=1e-9)
+
+
+def test_relative_depth_prior_recovers_affine() -> None:
+    """With free affines, a prior known only up to scale and shift is calibrated.
+
+    That is a relative-depth network's disparity: the solve finds each camera's
+    (scale, shift).
+    """
+    scene = _scene(perturb=0.0)
+    scale, shift = 2.0, 0.05
+    problem = replace(
+        scene.problem,
+        depth_prior=(scene.inverse_depth - shift) / scale,
+        fixed_depth_affine=np.zeros(5, dtype=bool),
+    )
+    result = ba.solve(problem, ba.BAOptions(solver=TIGHT))
+    assert result.summary.gauge == "similarity"
+    assert result.summary.solve.converged
+    np.testing.assert_allclose(result.depth_affine, np.tile([scale, shift], (5, 1)), rtol=1e-8)
+
+
+def test_pose_priors_anchor_the_gauge() -> None:
+    """With pose priors, the auto gauge fixes nothing; priors at the truth return it."""
+    scene = _scene()
+    problem = replace(
+        scene.problem, pose_prior=scene.poses, pose_prior_weights=np.full((5, 2), 100.0)
+    )
+    result = ba.solve(problem, ba.BAOptions(solver=TIGHT))
+    assert (result.summary.gauge, result.summary.gauge_pose) == ("none", -1)
+    np.testing.assert_allclose(result.poses, scene.poses, rtol=0, atol=1e-8)
+
+
+def test_focal_observability() -> None:
+    """Free focal lengths come with calibrated deviations; unpinned ones are flagged.
+
+    With 0.3 rad of rotation between views, σ_f is under 1 px and the truth lies within 3σ.
+    With 0.04 rad, σ_f is 9 px (1.8%): weakly observable, and flagged. Under pure
+    translation, focal length and depth trade off exactly (σ_f ~ 1400 px).
+    """
+    free = np.array([False])
+    flagged = []
+    for rotation in (0.3, 0.04, 0.0):
+        scene = _scene(cameras=6, points=80, noise=0.5, rotation=rotation, fixed_intrinsics=free)
+        result = ba.solve(scene.problem, ba.BAOptions(solver=TIGHT))
+        flagged.append(result.summary.unobservable_focal)
+        if rotation == 0.3:
+            std = result.intrinsics_std[0]
+            assert np.all(std[:2] < 0.01 * PINHOLE[:2])
+            assert np.all(np.abs(result.intrinsics[0] - PINHOLE) < 3.0 * std)
+    assert flagged == [0, 1, 1]

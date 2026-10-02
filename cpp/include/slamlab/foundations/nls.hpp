@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -66,12 +67,22 @@ struct LossValue {
 /// @return `rho(s)` and `rho'(s)`.
 [[nodiscard]] LossValue evaluate(const Loss& loss, double squared_norm);
 
+/// @brief A loss per block: block i uses `losses[index[i]]`. Empty means "use `Options::loss`".
+struct BlockLoss {
+  /// @brief The losses.
+  std::vector<Loss> losses;
+  /// @brief Each block's loss, an index into `losses`.
+  std::vector<std::size_t> index;
+};
+
 /// @brief Settings for `solve`; the defaults follow Ceres where it has an equivalent.
 struct Options {
   /// @brief The step rule.
   Method method = Method::kLevenbergMarquardt;
   /// @brief The robust loss applied to every block.
   Loss loss;
+  /// @brief A loss per block, replacing `loss` when not empty.
+  BlockLoss block_loss;
   /// @brief Steps tried, accepted or not, before stopping.
   int max_iterations = 50;
   /// @brief Stop when an accepted step lowers the cost by less than this fraction of it.
@@ -234,11 +245,23 @@ struct Evaluation {
   Eigen::VectorXd weights;
 };
 
+/// @brief Check that a per-block loss, if given, indexes every block.
+/// @param options The settings.
+/// @param blocks The number of blocks.
+/// @return Nothing, or `InvalidInput`.
+[[nodiscard]] inline Result<void> check_block_count(const Options& options, Eigen::Index blocks) {
+  if (!options.block_loss.losses.empty() &&
+      std::cmp_not_equal(options.block_loss.index.size(), blocks)) {
+    return fail(ErrorKind::kInvalidInput, "block loss: index length differs from the blocks");
+  }
+  return {};
+}
+
 /// @brief Evaluate the cost and weights of a set of squared norms.
-/// @param loss The loss.
+/// @param options The settings: their per-block loss if given, else their uniform loss.
 /// @param squared_norms The blocks' squared norms.
 /// @return The evaluation.
-[[nodiscard]] Evaluation evaluate_blocks(const Loss& loss, Eigen::VectorXd squared_norms);
+[[nodiscard]] Evaluation evaluate_blocks(const Options& options, Eigen::VectorXd squared_norms);
 
 /// @brief A step tried: its record, and the candidate state with its evaluation (if any).
 /// @tparam State The problem's state type.
@@ -288,7 +311,7 @@ template <Problem P, LinearSystem S>
     return Termination::kStep;
   }
   typename P::State candidate = problem.retract(state, *delta);
-  Evaluation evaluation = evaluate_blocks(options.loss, problem.squared_norms(candidate));
+  Evaluation evaluation = evaluate_blocks(options, problem.squared_norms(candidate));
   const double predicted = 0.5 * (delta->dot(diagonal.cwiseProduct(*delta)) - gradient.dot(*delta));
   const double ratio = predicted > 0.0 ? (current.cost - evaluation.cost) / predicted : kNan;
   const bool accepted =
@@ -319,7 +342,11 @@ template <Problem P>
   }
   const bool levenberg = options.method == Method::kLevenbergMarquardt;
   typename P::State state = std::move(initial);
-  detail::Evaluation current = detail::evaluate_blocks(options.loss, problem.squared_norms(state));
+  Eigen::VectorXd initial_norms = problem.squared_norms(state);
+  if (auto counted = detail::check_block_count(options, initial_norms.size()); !counted) {
+    return std::unexpected(counted.error());
+  }
+  detail::Evaluation current = detail::evaluate_blocks(options, std::move(initial_norms));
   if (!std::isfinite(current.cost)) {
     return fail(ErrorKind::kInvalidInput, "solve: the initial cost is not finite");
   }

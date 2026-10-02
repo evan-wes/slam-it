@@ -3,12 +3,15 @@
 ///
 /// Mirrors `slamlab.foundations.ba`, whose docstring states the model:
 /// - robust reprojection errors over poses (right-perturbed `T_cam_world`), intrinsics groups
-///   and points;
+///   and points, plus inverse-depth priors through per-camera affines and pose priors, each
+///   kind of block with its own loss;
 /// - points eliminated by the Schur complement, with the reduced camera system factored by a
 ///   `ReducedSystemSolver`;
 /// - the gauge removed by fixing a pose and, for the similarity gauge, confining one pose's
 ///   step to the Householder complement of its baseline direction;
-/// - degenerate observations dropped and counted.
+/// - degenerate observations dropped and counted;
+/// - free intrinsics reported with their marginal standard deviations, and focal lengths the
+///   data does not pin counted.
 ///
 /// The solve is `nls::solve` over the same loop as every other problem.
 #pragma once
@@ -37,6 +40,9 @@ enum class Gauge : std::uint8_t {
   kFirstPose = 1,
   /// @brief Sim(3): as `kFirstPose`, then confine one pose's step to keep its baseline.
   kSimilarity = 2,
+  /// @brief By what anchors the scene: `kNone` with pose priors, `kFirstPose` with a metric
+  ///        depth prior, `kSimilarity` otherwise.
+  kAuto = 3,
 };
 
 /// @brief Solves the reduced camera system `S x = b`, S symmetric positive definite.
@@ -95,22 +101,41 @@ struct Problem {
   Mask fixed_intrinsics;
   /// @brief Points held fixed (N).
   Mask fixed_points;
+  /// @brief Each observation's prior inverse depth (M); NaN for none.
+  Eigen::VectorXd depth_prior;
+  /// @brief Each depth prior's weight, an information in inverse-depth units (M).
+  Eigen::VectorXd depth_prior_weights;
+  /// @brief Each camera's prior-to-model map `(scale, shift)` (C x 2).
+  Eigen::Matrix<double, Eigen::Dynamic, 2, Eigen::RowMajor> depth_affine;
+  /// @brief Affines held fixed (C); a metric prior's stays at `(1, 0)`.
+  Mask fixed_depth_affine;
+  /// @brief Each camera's prior camera-to-world pose (C), used where its weights are positive.
+  Poses pose_prior;
+  /// @brief Each pose prior's `(translation, rotation)` information (C x 2).
+  Eigen::Matrix<double, Eigen::Dynamic, 2, Eigen::RowMajor> pose_prior_weights;
 };
 
 /// @brief Settings for `solve`.
 struct Options {
-  /// @brief The NLS method, loss, tolerances and limits.
+  /// @brief The NLS method, tolerances and limits; its `loss` is the reprojection loss and
+  ///        its `block_loss` must be empty (bundle adjustment assigns it).
   nls::Options solver;
+  /// @brief The depth priors' robust loss.
+  nls::Loss depth_loss;
   /// @brief How the gauge freedom is removed.
-  Gauge gauge = Gauge::kSimilarity;
+  Gauge gauge = Gauge::kAuto;
   /// @brief A free point whose rays span less than this angle (degrees) is dropped.
   double min_parallax_deg = 1.0;
+  /// @brief A free focal length whose deviation exceeds this fraction of it is unobservable.
+  double focal_std_ratio = 0.01;
 };
 
 /// @brief How a bundle adjustment went.
 struct Summary {
   /// @brief The NLS solve's summary.
   nls::SolveSummary solve;
+  /// @brief The gauge applied (`kAuto` resolved).
+  Gauge gauge = Gauge::kAuto;
   /// @brief The pose fixed to remove the rigid gauge, or -1.
   std::int64_t gauge_pose = -1;
   /// @brief The pose whose step was confined to remove the scale gauge, or -1.
@@ -123,6 +148,10 @@ struct Summary {
   std::int64_t unobserved_poses = 0;
   /// @brief Free intrinsics groups held fixed because nothing observes them.
   std::int64_t unobserved_intrinsics = 0;
+  /// @brief Free depth affines held fixed because no depth prior observes them.
+  std::int64_t unobserved_depth_affines = 0;
+  /// @brief Free intrinsics groups whose focal length the data does not pin.
+  std::int64_t unobservable_focal = 0;
 };
 
 /// @brief The refined variables and the summary.
@@ -133,6 +162,10 @@ struct Solution {
   Intrinsics intrinsics;
   /// @brief Refined points (dropped points unchanged).
   Points points;
+  /// @brief Refined depth affines (C x 2).
+  Eigen::Matrix<double, Eigen::Dynamic, 2, Eigen::RowMajor> depth_affine;
+  /// @brief Free intrinsics' standard deviations (K x P); NaN where fixed, inf if singular.
+  Intrinsics intrinsics_std;
   /// @brief How the solve went.
   Summary summary;
 };

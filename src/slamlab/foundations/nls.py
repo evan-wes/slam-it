@@ -132,6 +132,66 @@ class Loss:
 
 
 @dataclass(frozen=True)
+class BlockLoss:
+    """A loss per block: block i uses ``losses[index[i]]``.
+
+    For problems whose blocks are of different kinds (reprojection errors and depth priors,
+    say), each with its own robust loss. Pass it to :func:`solve`, where it replaces
+    ``Options.loss``.
+
+    Attributes
+    ----------
+    losses : tuple of Loss
+        The losses.
+    index : ndarray of int64, shape (M,)
+        Each block's loss, an index into ``losses``.
+    """
+
+    losses: tuple[Loss, ...]
+    index: NDArray[np.int64]
+
+    def __post_init__(self) -> None:
+        """Reject an empty loss list or an index outside it."""
+        if not self.losses:
+            raise InvalidInputError("block loss: expected at least one loss")
+        if self.index.ndim != 1 or (
+            self.index.size and (self.index.min() < 0 or self.index.max() >= len(self.losses))
+        ):
+            raise InvalidInputError("block loss: index must select one of the losses per block")
+
+    def evaluate(
+        self, squared_norms: NDArray[np.float64]
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """Evaluate each block's own loss and weight (see :meth:`Loss.evaluate`).
+
+        Parameters
+        ----------
+        squared_norms : ndarray of float64, shape (M,)
+            The blocks' squared norms.
+
+        Returns
+        -------
+        rho, weights : ndarray of float64, shape (M,)
+            ``ρ_i(s_i)`` and ``ρ_i'(s_i)``.
+
+        Raises
+        ------
+        slamlab.foundations.errors.InvalidInputError
+            If the number of blocks differs from the index's length.
+        """
+        if squared_norms.shape != self.index.shape:
+            raise InvalidInputError(
+                f"block loss: {self.index.shape[0]} blocks indexed, {squared_norms.shape} given"
+            )
+        rho = np.empty_like(squared_norms)
+        weights = np.empty_like(squared_norms)
+        for k, loss in enumerate(self.losses):
+            selected = self.index == k
+            rho[selected], weights[selected] = loss.evaluate(squared_norms[selected])
+        return rho, weights
+
+
+@dataclass(frozen=True)
 class Options:
     """Settings for :func:`solve`; the defaults follow Ceres where it has an equivalent.
 
@@ -141,6 +201,8 @@ class Options:
         The step rule.
     loss : Loss
         The robust loss applied to every block.
+    block_loss : BlockLoss or None
+        A loss per block, replacing ``loss`` when given.
     max_iterations : int
         Steps tried, accepted or not, before stopping.
     function_tolerance : float
@@ -164,6 +226,7 @@ class Options:
 
     method: str = "levenberg_marquardt"
     loss: Loss = Loss()
+    block_loss: BlockLoss | None = None
     max_iterations: int = 50
     function_tolerance: float = 1e-6
     gradient_tolerance: float = 1e-10
@@ -436,6 +499,11 @@ class DenseSystem:
         return cholesky_solve(self.hessian + np.diag(damping), -self.gradient)
 
 
+def _loss(options: Options) -> Loss | BlockLoss:
+    """Return the loss in force: the per-block loss if given, else the uniform one."""
+    return options.block_loss if options.block_loss is not None else options.loss
+
+
 @dataclass(frozen=True)
 class _Evaluation:
     """The blocks' squared norms at a state, and its cost ``½ Σ ρ(s_i)`` (inf if not finite)."""
@@ -444,7 +512,7 @@ class _Evaluation:
     cost: float
 
     @classmethod
-    def of(cls, loss: Loss, squared_norms: ArrayLike) -> _Evaluation:
+    def of(cls, loss: Loss | BlockLoss, squared_norms: ArrayLike) -> _Evaluation:
         """Evaluate the cost of a set of squared norms."""
         s = np.asarray(squared_norms, dtype=np.float64)
         if not np.all(np.isfinite(s)):
@@ -462,7 +530,11 @@ class _Point(Generic[StateT]):
 
     @classmethod
     def at(
-        cls, problem: Problem[StateT], state: StateT, evaluation: _Evaluation, loss: Loss
+        cls,
+        problem: Problem[StateT],
+        state: StateT,
+        evaluation: _Evaluation,
+        loss: Loss | BlockLoss,
     ) -> _Point[StateT]:
         """Linearise ``problem`` at ``state`` with the IRLS weights of its evaluation."""
         weights = loss.evaluate(evaluation.squared_norms)[1]
@@ -496,7 +568,7 @@ def _try_step(
     if step_norm <= opts.step_tolerance:
         return Termination.STEP
     candidate = problem.retract(point.state, delta)
-    evaluation = _Evaluation.of(opts.loss, problem.squared_norms(candidate))
+    evaluation = _Evaluation.of(_loss(opts), problem.squared_norms(candidate))
     predicted = 0.5 * float(delta @ (diagonal * delta) - gradient @ delta)
     ratio = (current.cost - evaluation.cost) / predicted if predicted > 0.0 else float("nan")
     accepted = bool(
@@ -536,10 +608,10 @@ def solve(
     """
     opts = options if options is not None else Options()
     levenberg = opts.method == "levenberg_marquardt"
-    evaluation = _Evaluation.of(opts.loss, problem.squared_norms(initial))
+    evaluation = _Evaluation.of(_loss(opts), problem.squared_norms(initial))
     if not np.isfinite(evaluation.cost):
         raise InvalidInputError("solve: the initial cost is not finite")
-    point = _Point.at(problem, initial, evaluation, opts.loss)
+    point = _Point.at(problem, initial, evaluation, _loss(opts))
     damping = opts.initial_damping if levenberg else 0.0
     growth = 2.0
     trace: list[Iteration] = []
@@ -560,7 +632,7 @@ def solve(
                 point = _Point(trial.candidate, trial.evaluation, point.system)
                 termination = Termination.FUNCTION
                 break
-            point = _Point.at(problem, trial.candidate, trial.evaluation, opts.loss)
+            point = _Point.at(problem, trial.candidate, trial.evaluation, _loss(opts))
             continue
         if not levenberg:
             singular = trial.candidate is None

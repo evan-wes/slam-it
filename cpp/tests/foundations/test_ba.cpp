@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <tuple>
 
 #include "slamlab/foundations/ba.hpp"
 #include "slamlab/foundations/camera.hpp"
@@ -21,10 +23,26 @@ using slamlab::testing::expect;
 constexpr int kCameras = 4;
 constexpr int kPoints = 30;
 
+/// @brief Give a problem's prior arrays their defaults: no depth priors, fixed unit affines,
+///        no pose priors.
+/// @param problem The problem.
+void without_priors(ba::Problem& problem) {
+  const Eigen::Index n_obs = problem.observations.rows();
+  const auto n_cams = static_cast<Eigen::Index>(problem.poses.size());
+  problem.depth_prior = Eigen::VectorXd::Constant(n_obs, std::numeric_limits<double>::quiet_NaN());
+  problem.depth_prior_weights = Eigen::VectorXd::Ones(n_obs);
+  problem.depth_affine.resize(n_cams, 2);
+  problem.depth_affine.col(0).setOnes();
+  problem.depth_affine.col(1).setZero();
+  problem.fixed_depth_affine.assign(problem.poses.size(), true);
+  problem.pose_prior = problem.poses;
+  problem.pose_prior_weights = Eigen::MatrixX2d::Zero(n_cams, 2);
+}
+
 /// @brief A deterministic scene: cameras along x, points in a box ahead, every point seen.
 /// The start perturbs the poses and points; the observations are noise-free.
-/// @return The problem and the true points.
-std::pair<ba::Problem, ba::Points> scene() {
+/// @return The problem, the true points, and each observation's true inverse depth.
+std::tuple<ba::Problem, ba::Points, Eigen::VectorXd> scene() {
   ba::Problem problem;
   problem.model = camera::Model::kPinhole;
   problem.intrinsics.resize(1, 4);
@@ -36,6 +54,7 @@ std::pair<ba::Problem, ba::Points> scene() {
   }
   problem.points = truth.array() + 0.05;
   problem.observations.resize(static_cast<Eigen::Index>(kCameras) * kPoints, 2);
+  Eigen::VectorXd inverse_depth(problem.observations.rows());
   for (int c = 0; c < kCameras; ++c) {
     se3::Vector6d twist;
     twist << 0.4 * c, 0.1 * std::sin(c), 0.0, 0.02 * c, -0.03 * c, 0.01;
@@ -48,6 +67,7 @@ std::pair<ba::Problem, ba::Points> scene() {
           (t_cam_world.topLeftCorner<3, 3>() * truth.row(p).transpose()) +
           t_cam_world.topRightCorner<3, 1>();
       const auto row = (static_cast<Eigen::Index>(c) * kPoints) + p;
+      inverse_depth(row) = 1.0 / in_camera.z();
       problem.observations.row(row) =
           camera::project(problem.model, problem.intrinsics.row(0).transpose(), in_camera)
               ->transpose();
@@ -60,14 +80,15 @@ std::pair<ba::Problem, ba::Points> scene() {
   problem.fixed_poses.assign(kCameras, false);
   problem.fixed_intrinsics.assign(1, true);
   problem.fixed_points.assign(kPoints, false);
-  return {problem, truth};
+  without_priors(problem);
+  return {problem, truth, inverse_depth};
 }
 
 }  // namespace
 
 int main() {
   int failures = 0;
-  const auto [problem, truth] = scene();
+  const auto [problem, truth, inverse_depth] = scene();
   ba::Options options;
   options.solver.function_tolerance = 1e-12;
   options.solver.max_iterations = 100;
@@ -93,11 +114,27 @@ int main() {
   lonely.pt_idx.push_back(kPoints);
   lonely.weights.conservativeResize(lonely.weights.size() + 1);
   lonely.weights(lonely.weights.size() - 1) = 1.0;
+  without_priors(lonely);
   const auto dropped = ba::solve(lonely, options);
   expect(dropped.has_value() && dropped->summary.dropped_points == 1 &&
              dropped->summary.dropped_observations == 1 &&
              dropped->points.row(kPoints) == lonely.points.row(kPoints),
          "solve: a single-view point is dropped and counted", failures);
+
+  // Metric depth priors fix the scale reprojection leaves free: from a start scaled 1.5x
+  // about the first camera, the auto gauge fixes only that camera and the truth returns.
+  ba::Problem scaled = problem;
+  const Eigen::Vector3d origin = scaled.poses[0].topRightCorner<3, 1>();
+  for (Eigen::Matrix4d& pose : scaled.poses) {
+    pose.topRightCorner<3, 1>() = origin + (1.5 * (pose.topRightCorner<3, 1>() - origin));
+  }
+  scaled.points =
+      (1.5 * (scaled.points.rowwise() - origin.transpose())).rowwise() + origin.transpose();
+  scaled.depth_prior = inverse_depth;
+  const auto metric = ba::solve(scaled, options);
+  expect(metric.has_value() && metric->summary.gauge == ba::Gauge::kFirstPose &&
+             (metric->points - truth).cwiseAbs().maxCoeff() < 1e-6,
+         "solve: metric depth priors recover the true scale", failures);
 
   // The core checks indices itself, for callers that bypass Python.
   ba::Problem bad = problem;

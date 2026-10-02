@@ -200,6 +200,7 @@ LineFit line_with_outliers() {
 nls::Options tight(nls::Method method, nls::Loss loss = {}) {
   return {.method = method,
           .loss = loss,
+          .block_loss = {},
           .max_iterations = 200,
           .function_tolerance = 0.0,
           .gradient_tolerance = 1e-12,
@@ -305,6 +306,20 @@ int main() {
       Eigen::MatrixXd::Zero(3, 2), Eigen::VectorXd::Zero(3), Eigen::VectorXd::Ones(2));
   expect(!mismatched.has_value() && mismatched.error().kind == ErrorKind::kInvalidInput,
          "DenseSystem::build: mismatched sizes are rejected", failures);
+
+  // A per-block loss naming one loss everywhere reproduces the uniform solve exactly; an
+  // index outside the losses is rejected.
+  const nls::Loss cauchy_line{.kind = nls::LossKind::kCauchy, .scale = 0.05};
+  nls::Options per_block = tight(nls::Method::kLevenbergMarquardt);
+  per_block.block_loss = {.losses = {nls::Loss{}, cauchy_line},
+                          .index = std::vector<std::size_t>(30, 1)};
+  const auto blockwise = nls::solve(fit, Eigen::Vector2d::Zero(), per_block);
+  expect(blockwise.has_value() && robust.has_value() && blockwise->state == robust->state,
+         "solve: a per-block loss matches the uniform loss it names", failures);
+  per_block.block_loss.index[3] = 2;
+  const auto outside = nls::solve(fit, Eigen::Vector2d::Zero(), per_block);
+  expect(!outside.has_value() && outside.error().kind == ErrorKind::kInvalidInput,
+         "solve: a block-loss index outside the losses is rejected", failures);
 
   return slamlab::testing::finish("test_nls", failures);
 }

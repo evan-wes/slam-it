@@ -53,6 +53,16 @@ Result<void> check_options(const Options& options) {
   if (auto checked = check_setting("loss scale", options.loss.scale, false); !checked) {
     return checked;
   }
+  for (const Loss& loss : options.block_loss.losses) {
+    if (auto checked = check_setting("block loss scale", loss.scale, false); !checked) {
+      return checked;
+    }
+  }
+  for (const std::size_t k : options.block_loss.index) {
+    if (k >= options.block_loss.losses.size()) {
+      return fail(ErrorKind::kInvalidInput, "block loss: index outside the losses");
+    }
+  }
   if (options.max_iterations < 1) {
     return fail(ErrorKind::kInvalidInput, "max_iterations: must be at least 1");
   }
@@ -135,7 +145,8 @@ std::optional<Eigen::VectorXd> DenseSystem::solve(const Eigen::VectorXd& damping
 
 namespace detail {
 
-Evaluation evaluate_blocks(const Loss& loss, Eigen::VectorXd squared_norms) {
+Evaluation evaluate_blocks(const Options& options, Eigen::VectorXd squared_norms) {
+  const bool per_block = !options.block_loss.losses.empty();
   Evaluation out{.cost = 0.0, .squared_norms = std::move(squared_norms), .weights = {}};
   out.weights.resize(out.squared_norms.size());
   for (Eigen::Index i = 0; i < out.squared_norms.size(); ++i) {
@@ -144,6 +155,9 @@ Evaluation evaluate_blocks(const Loss& loss, Eigen::VectorXd squared_norms) {
       out.cost = std::numeric_limits<double>::infinity();
       return out;
     }
+    const Loss& loss =
+        per_block ? options.block_loss.losses[options.block_loss.index[static_cast<std::size_t>(i)]]
+                  : options.loss;
     const LossValue value = evaluate(loss, s);
     out.cost += value.rho;
     out.weights(i) = value.weight;
