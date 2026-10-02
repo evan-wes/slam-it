@@ -44,8 +44,12 @@ documentation, but its limited scope is a note, not a must-fix.
 
 ## Rules
 
-- **Read-only.** Never edit, create, stage or commit files. You may run read-only commands
-  (`git diff`, `git log`, tests, the layer-1 tools) to gather evidence.
+- **Read-only.** Never edit, create, stage or commit files in the repository. Never run a git
+  command that moves `HEAD` or touches the working tree or index: no `checkout`, `switch`,
+  `reset`, `restore`, `stash`, `commit`, `merge`, `rebase` or `clean`. Inspect other
+  revisions with `git show <rev>:<path>` and `git diff`. You may run read-only commands
+  (`git diff`, `git log`, `git show`, tests, the layer-1 tools) to gather evidence; put any
+  scratch files outside the repository.
 - **Evidence over opinion.** Every must-fix carries evidence a reader can check: a quoted
   line, a reproducing input, tool output, or a citation.
 - **Be specific about location.** `path:line`, never "somewhere in the solver".

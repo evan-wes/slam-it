@@ -26,12 +26,13 @@ a finding on its own.
 
 ### 1. Establish the scope
 
-- `git fetch origin` and set `BASE` (default `origin/develop`) and `HEAD`
-  (`git rev-parse HEAD`). Record the branch name and both SHAs.
-- Refuse to run on a dirty tree: uncommitted changes would not be in the reviewed diff. Ask
-  the user to commit or stash first.
-- `git diff --stat $BASE...HEAD` gives the reviewers their scope. If the diff is empty, stop
-  and say so.
+- `git fetch origin`, then set `BASE_SHA` to `git rev-parse <base ref>` (default
+  `origin/develop`) and `HEAD_SHA` to `git rev-parse HEAD`. Record the branch name and both
+  SHAs.
+- Refuse to run on a dirty tree: `git status --porcelain` must print nothing, since
+  uncommitted changes would not be in the reviewed diff. Ask the user to commit first.
+- `git diff --stat $BASE_SHA...$HEAD_SHA` gives the reviewers their scope. If the diff is
+  empty, stop and say so.
 
 ### 2. Layer 1
 
@@ -50,13 +51,14 @@ Spawn the selected reviewers **in a single message**, so they run concurrently:
 | Architecture | `architecture-reviewer` | opus |
 | Algorithm | `algorithm-reviewer` | opus |
 
-Give each the same brief: the repository path, `BASE` and `HEAD` SHAs, the branch name, the
-`--stat` summary, and the instruction to return its review in the format of
+Give each the same brief: the repository path, `BASE_SHA` and `HEAD_SHA`, the branch name,
+the `--stat` summary, and the instruction to return its review in the format of
 `.claude/skills/review-panel/finding-format.md`.
 
-If a project agent type is not available in the session (it is when the session runs inside
-the slamlab repo), spawn a `general-purpose` agent with that agent file's body as its prompt
-and its model as the model override. Record which way each reviewer ran.
+The project agents are registered when the session runs inside the slamlab repo. In a
+session started elsewhere they are not; then spawn a `general-purpose` agent whose prompt
+tells it to read and follow its agent file, with that file's model as the model override.
+Record which way each reviewer ran.
 
 ### 4. Write the report
 

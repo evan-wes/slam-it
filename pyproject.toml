@@ -9,12 +9,24 @@ dynamic = ["version"]
 description = "A learning ladder for visual SLAM, in Python, C++ and Rust (working name)."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { file = "LICENSE" }
+license = "PolyForm-Noncommercial-1.0.0"
+license-files = ["LICENSE"]
 authors = [{ name = "evan-wes" }]
 dependencies = ["numpy>=1.26"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.6", "maturin>=1.7"]
+# The development and layer-1 toolchain's pip layer: the single list scripts/setup_slamlab.sh
+# installs from when not using the lockfile (the conda layer -- compilers, clang tools,
+# doxygen, Node.js/jscpd -- is in that script).
+dev = [
+  "scikit-build-core>=0.10",
+  "nanobind>=2.0",
+  "maturin>=1.7",
+  "pytest>=8.0",
+  "ruff>=0.6",
+  "mypy>=1.10",
+  "import-linter>=2.0",
+]
 
 [tool.scikit-build]
 minimum-version = "build-system.requires"
@@ -35,7 +47,14 @@ regex = '(?P<value>\d+\.\d+\.\d+\.\d+)'
 [tool.pytest.ini_options]
 testpaths = ["tests", "src"]
 # Docstring Examples are run as tests so they cannot go stale.
-addopts = "--doctest-modules"
+addopts = "--doctest-modules --strict-markers"
+# Resource markers. scripts/check.sh runs the default CPU subset (`-m "not gpu and not budget"`);
+# GPU and budget-capped runs get their own opt-in scripts when those rungs arrive.
+markers = [
+  "gpu: needs a CUDA GPU (learned and dense rungs)",
+  "budget: runs under a simulated compute budget (edge rungs, milestone 7)",
+  "slow: takes more than a few seconds",
+]
 
 [tool.ruff]
 line-length = 100
@@ -60,23 +79,51 @@ convention = "numpy"
 strict = true
 python_version = "3.11"
 files = ["src/slamlab", "tests"]
-
-[[tool.mypy.overrides]]
-# Compiled extensions ship no type stubs yet.
-module = ["slamlab._cpp", "slamlab_rs"]
-ignore_missing_imports = true
+# The compiled extensions are never imported by name: slamlab.backends locates them
+# dynamically, and each algorithm types its backend through a Protocol (e.g.
+# slamlab.foundations.so3._Implementation) that tests check the extensions against.
 
 [tool.importlinter]
 root_packages = ["slamlab"]
 include_external_packages = true
+
+# The ladder as dependency layers, top to bottom. Siblings joined by `|` are independent:
+# neither may import the other. Every module inside a package is covered automatically.
+[[tool.importlinter.contracts]]
+name = "The ladder's layers (and independent sibling branches)"
+type = "layers"
+layers = [
+  "slamlab.orchestration",
+  "slamlab.eval",
+  "slamlab.learned | slamlab.vi",
+  "slamlab.dense | slamlab.edge | slamlab.classic",
+  "slamlab.foundations",
+  "slamlab.backends",
+]
+
+[[tool.importlinter.contracts]]
+name = "Visual-inertial builds on the edge rung only, not dense or classic"
+type = "forbidden"
+source_modules = ["slamlab.vi"]
+forbidden_modules = ["slamlab.dense", "slamlab.classic"]
+
+[[tool.importlinter.contracts]]
+name = "CPU rungs never import PyTorch or a GPU stack (edge compute budgets)"
+type = "forbidden"
+source_modules = ["slamlab.foundations", "slamlab.edge", "slamlab.vi", "slamlab.backends"]
+forbidden_modules = ["torch", "torchvision", "cupy", "jax"]
+
+[[tool.importlinter.contracts]]
+name = "Depth models are inputs through a provider interface, never imported by algorithms"
+type = "forbidden"
+source_modules = [
+  "slamlab.foundations", "slamlab.edge", "slamlab.vi", "slamlab.classic",
+  "slamlab.dense", "slamlab.learned",
+]
+forbidden_modules = ["unidepth", "moge", "vggt"]
 
 [[tool.importlinter.contracts]]
 name = "slamlab never imports reifyscene (the dependency runs one way)"
 type = "forbidden"
 source_modules = ["slamlab"]
 forbidden_modules = ["reifyscene"]
-
-[[tool.importlinter.contracts]]
-name = "Algorithms never depend on the backend selector above them"
-type = "layers"
-layers = ["slamlab.backends", "slamlab.so3"]

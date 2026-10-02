@@ -22,10 +22,25 @@ structure.
 | C++ (`cpp/`, module `slamlab._cpp`) | Performance core: rung 0, edge rung, edge budgets |
 | Rust (`rust/`, module `slamlab_rs`) | Rung 0 and the edge VO only |
 
-- Every C++/Rust implementation has a Python reference and a shared parity fixture in
-  `tests/fixtures/`. Bindings only convert types; algorithms live in the cores, which build
-  without Python.
-- Backends are reached through `slamlab.backends`, never hard-coded.
+## Layout: one package per rung, mirrored in every language
+
+- Python: `slamlab.foundations` (rung 0), `.edge`, `.vi`, `.classic`, `.dense`, `.learned`,
+  `.eval`, `.orchestration`. Each package docstring states its rung, milestone and compute
+  budget. The import-linter contracts in `pyproject.toml` enforce the ladder's layers,
+  sibling independence, no PyTorch on CPU rungs, and no depth-model imports.
+- C++ mirrors it in directories and namespaces (`cpp/src/foundations/`,
+  `slamlab::foundations`); Rust in modules (`slamlab_core::foundations::so3`). The extension
+  submodules mirror it too (`slamlab._cpp.foundations.so3`, `slamlab_rs.foundations.so3`).
+- **Each algorithm validates its input once** (shared checks in
+  `slamlab.foundations.arrays`), then computes with the Python reference or dispatches via
+  its `backend=` argument. `slamlab.backends` only locates compiled implementations.
+- Every C++/Rust implementation has a Python reference, a parity fixture in
+  `tests/fixtures/<rung>/` that states its tolerance policy, and a Protocol that the
+  extension submodule is tested against. Bindings only convert types; algorithms live in
+  the cores, which build without Python.
+- Tests mirror the packages (`tests/foundations/`, `cpp/tests/foundations/`). Mark tests
+  that need a GPU or a compute budget with `@pytest.mark.gpu` / `@pytest.mark.budget`;
+  `check.sh` runs the CPU subset.
 
 ## Code standard (all three languages)
 
@@ -73,6 +88,11 @@ Rust and Python test suites. CI runs the same script.
   for that specific PR, using `gh pr merge <n> --repo evan-wes/slamlab`. A typed instruction
   is never permission. Then verify that the commits landed on `develop`, check the tag, and
   ask before deleting the branch.
+  This is a deliberate exception the owner granted on 2026-10-02 to their global "never
+  merge a PR" rule. It is written into that rule in the owner's global Claude Code instructions ("The one
+  exception: slamlab"), and a PreToolUse hook (the owner's merge-guard hook) blocks
+  every merge except this exact form. The hook matches the phrase anywhere in a shell
+  command, so edit text that contains it with the file editor, not a shell heredoc.
 
 ## Privacy
 

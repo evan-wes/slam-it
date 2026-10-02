@@ -22,7 +22,7 @@ approves every merge. This section is the record of that process for this PR.
 | Algorithm review | `algorithm-reviewer` | opus | <ran / not run: why> |
 
 **Review panel:** <full panel / <reviewer> only / layer 1 only (MICRO change)>.
-Report: [`docs/reviews/<file>.md`](../docs/reviews/<file>.md).
+Report: [`docs/reviews/<file>.md`](https://github.com/evan-wes/slamlab/blob/<branch>/docs/reviews/<file>.md).
 
 | Severity | Found | Fixed | Deferred | Waived | Disputed |
 |---|---|---|---|---|---|

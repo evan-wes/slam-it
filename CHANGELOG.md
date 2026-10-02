@@ -16,35 +16,77 @@ with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
   - C++: clang-format, clang-tidy, and a Doxygen run that fails on any undocumented
     declaration;
   - Rust: rustfmt, and clippy pedantic with `missing_docs` on private items too;
-  - all three: jscpd duplication detection and import-linter dependency contracts
-    (slamlab never imports reifyscene; algorithms never depend on the backend selector).
+  - all three: jscpd duplication detection and import-linter dependency contracts;
+  - the C++, Rust and Python test suites, with every backend required:
+    `SLAMLAB_REQUIRE_BACKENDS` turns a missing or broken extension into a failure, not a
+    skipped parity test.
 
-  CI now builds the conda env with `setup_slamlab.sh` and runs the same script, so it also
-  proves the env reproduces from scratch.
+  CI builds the conda env with `setup_slamlab.sh` from a pinned, checksum-verified Miniforge
+  (read-only token, 30-minute timeout) and runs the same script.
 
   **Layer 2** (`/review-panel`) runs on PATCH-or-larger changes, with three reviewer agents in
   `.claude/agents/`:
   - hygiene (Sonnet);
-  - architecture (Opus): modularity, the language split, the ladder by compute budget;
-  - algorithm (Opus, with web search): correctness, numerical robustness, the state of the
-    art.
+  - architecture (Opus);
+  - algorithm (Opus, with web search and a reference list grouped by rung).
 
-  All three flag code that is not production quality. A reviewer can run alone on a smaller
-  change. Reports are saved in `docs/reviews/`, and every finding's resolution is decided by
-  the owner and recorded there.
+  Reports are saved in `docs/reviews/`, and each finding's resolution is decided by the owner.
 
 - **Process documents.**
   - A PR template whose "How this was built" section records the agentic workflow.
-  - A project `CLAUDE.md` with the conventions, review rules and merge rule.
+  - A project `CLAUDE.md` with the conventions, layout, review rules and merge rule.
+
+- **The panel's first run reviewed this change** (`docs/reviews/2026-10-02-feature-review-panel.md`):
+  31 findings, 1 of them must-fix. The owner chose to resolve all of them here, so the first
+  version satisfies all three reviewers. The changes below are that work.
 
 ### Changed
 
+- **One package per rung, mirrored in every language.**
+  - Python: `slamlab.foundations` (rung 0), plus stub packages for `edge`, `vi`, `classic`,
+    `dense`, `learned`, `eval` and `orchestration`. Each stub's docstring states its rung,
+    milestone and compute budget.
+  - C++ and Rust: `cpp/src/foundations/` with `slamlab::foundations`, and
+    `slamlab_core::foundations`.
+  - Extension submodules: `slamlab._cpp.foundations.so3` and `slamlab_rs.foundations.so3`,
+    so names never collide across rungs.
+  - Import-linter contracts now cover whole packages:
+    - the ladder's layers, with independent sibling branches;
+    - visual-inertial builds only on edge;
+    - no PyTorch or GPU stack on the CPU rungs;
+    - no depth-model imports in any algorithm package;
+    - slamlab never imports reifyscene.
+
+- **Dispatch moved next to each algorithm.**
+  - `slamlab.foundations.so3.hat(v, backend=...)` validates once, then computes with the
+    Python reference or calls the chosen extension.
+  - `slamlab.backends` now only locates compiled implementations. It reports an installed
+    extension that fails to load with its real error, not as "not built".
+  - Each algorithm types its compiled backend with a Protocol, which a test checks every
+    extension submodule against. This replaces the mypy exemption for the extensions.
+
+- **Stricter input validation.** `slamlab.foundations.arrays.as_vec3` rejects booleans,
+  complex numbers, strings and `None`, as well as NaN and infinity, instead of coercing them.
+
+- **Parity fixtures state their tolerance policy.**
+  - `hat`'s fixture is compared exactly, and includes values not representable in float32
+    (0.1, 1/3, 1e-300), so a float32 backend now fails.
+  - The native C++ and Rust tests pin every matrix entry with the basis vectors, and check
+    skew-symmetry.
+
+- **Smaller changes.**
+  - pytest markers `gpu`, `budget` and `slow`; `check.sh` runs the CPU subset.
+  - `check.sh` rejects unknown arguments, and takes its C++ file lists from git.
+  - The `dev` extra is the single list of the toolchain's pip layer.
+  - The setup script fails unless all three backends load, and derives compiler names from
+    the host architecture.
+  - The license is declared with an SPDX string.
+  - Doxygen writes XML only.
+
 - **Scaffold brought up to the standard.**
   - Numpy-style docstrings, Doxygen and rustdoc throughout.
-  - Every backend now rejects input that is not a 3-vector, through one shared check,
-    `slamlab.so3.as_vec3`. jscpd caught the duplicated check this replaced.
   - Docstring examples run as tests.
-  - Python tests: 14 -> 24.
+  - Python tests: 14 -> 70.
 
 ## [0.1.1.0] - 2026-10-02
 

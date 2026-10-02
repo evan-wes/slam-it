@@ -4,7 +4,10 @@ PROJECT_NAME           = slamlab
 INPUT                  = cpp/include cpp/src
 RECURSIVE              = YES
 OUTPUT_DIRECTORY       = build/doxygen
-GENERATE_HTML          = YES
+# Only the warnings are needed for the check. Doxygen refuses to run with no output format,
+# so it writes XML, the lightest one, instead of HTML.
+GENERATE_HTML          = NO
+GENERATE_XML           = YES
 GENERATE_LATEX         = NO
 QUIET                  = YES
 EXTRACT_ALL            = NO

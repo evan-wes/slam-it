@@ -1,6 +1,8 @@
 # slamlab: a learning ladder for visual SLAM
 
-Status: draft for review, 2026-10-02. Scoped in conversation; nothing here is built yet.
+Status, 2026-10-02: the scaffold is built. That covers the package-per-rung layout in three
+languages, the conda environment, CI, and the two-layer review process. No SLAM algorithms
+exist yet: milestone 1 is next.
 
 ## Purpose
 
@@ -66,8 +68,9 @@ and Rust implementation is checked against the Python reference. All three are b
 the same compute budgets, which gives a "same algorithm, three languages" comparison of speed,
 memory and lines of code.
 
-**Packaging.** There are three importable parts. The two compiled ones are optional;
-`slamlab.backends` picks an implementation at runtime and reports which are built.
+**Packaging.** There are three importable parts. The two compiled ones are optional. Each
+algorithm's `backend=` argument picks an implementation at runtime, and `slamlab.backends`
+locates the compiled ones and reports which are built.
 
 | Import | Contents | Build |
 |---|---|---|
@@ -81,6 +84,48 @@ under editable installs.
 
 C++ and Rust sources also build standalone (CMake, cargo) without Python, for the edge budgets
 and a possible later phone target.
+
+## Package layout
+
+**One package per rung,** mirrored in every language, so a module's place in the ladder is
+visible from its path and enforceable by contract.
+
+| Python package | C++ | Rust | Rung |
+|---|---|---|---|
+| `slamlab.foundations` | `cpp/src/foundations/`, `slamlab::foundations` | `slamlab_core::foundations` | Rung 0 |
+| `slamlab.edge` | `cpp/src/edge/` | `slamlab_core::edge` | Edge VO |
+| `slamlab.vi` | `cpp/src/vi/` | -- | Visual-inertial |
+| `slamlab.classic` | `cpp/src/classic/` | -- | Classic heavy |
+| `slamlab.dense` | -- | -- | Dense BA + depth prior |
+| `slamlab.learned` | -- | -- | DROID- and MegaSaM-style |
+| `slamlab.eval` | -- | -- | Metrics, benchmarks, budget harness |
+| `slamlab.orchestration` | -- | -- | End-to-end pipelines |
+
+Packages for rungs that have no code yet are stubs: a docstring stating the rung, its
+milestone and its compute budget. C++ and Rust directories appear as each rung gets code.
+The extension submodules mirror the tree: `slamlab._cpp.foundations.so3` and
+`slamlab_rs.foundations.so3` implement `slamlab.foundations.so3`.
+
+**Dispatch.**
+- Each public algorithm validates its input once, using the shared checks in
+  `slamlab.foundations.arrays`.
+- It then computes with the Python reference, or calls the backend chosen by its
+  `backend=` argument.
+- `slamlab.backends` only locates compiled implementations and never knows what they
+  compute.
+- Each algorithm types its compiled backend with a Protocol. A test checks every extension
+  submodule against that Protocol, and the parity tests check the values.
+
+**Dependency contracts** (import-linter, `pyproject.toml`):
+- **Layers,** top to bottom: `orchestration`, `eval`, `learned | vi`,
+  `dense | edge | classic`, `foundations`, `backends`. Siblings joined by `|` are independent
+  of each other.
+- **Visual-inertial** builds on `edge` only.
+- **CPU rungs** (`foundations`, `edge`, `vi`, `backends`) never import PyTorch or a GPU
+  stack.
+- **No algorithm package imports a depth model.** Depth models are inputs through a
+  provider interface.
+- **slamlab never imports reifyscene.**
 
 ## Milestones
 
@@ -172,6 +217,16 @@ machine, and are labelled that way.
 
 - The harness is the same everywhere. If real hardware ever turns up, it runs there unchanged, and
   the simulated numbers can be checked.
+- **Where a rung declares its budget:**
+  - its package docstring states the target budgets and what it may depend on;
+  - the import-linter contracts enforce the part that is checkable, namely no PyTorch or GPU
+    stack on CPU rungs;
+  - tests that need a GPU or a budget-capped run are marked `@pytest.mark.gpu` or
+    `@pytest.mark.budget`.
+  
+  `scripts/check.sh` runs the CPU subset on every PR. GPU and budget runs get their own
+  opt-in scripts when those rungs arrive, along with a separate light environment for the
+  edge rungs, so that having no PyTorch is also proven by installation.
 
 ## Datasets
 
@@ -262,6 +317,8 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
 
 - **Final name**, before going public.
 - **Exact budget numbers**, from published device specs.
+- **GPU and budget test runs:** their opt-in scripts and the light edge environment arrive
+  with the first PyTorch rung (milestone 5) and the budget harness (milestone 7).
 - **Linear algebra in rung 0:** write our own small matrix types, or use Eigen (C++) and
   nalgebra (Rust). This is a learning choice, made at the start of milestone 1.
 - **reifyscene's env** needs slamlab's build tools (cmake, compiler, Rust) when the adapter lands

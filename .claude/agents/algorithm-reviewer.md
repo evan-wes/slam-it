@@ -28,16 +28,38 @@ where the field is now**.
 
 **Correctness against standard formulations**
 - Compare against the standard references and say which one you used:
-  Hartley & Zisserman, *Multiple View Geometry*; Barfoot, *State Estimation for Robotics*;
-  Solà et al., "A micro Lie theory for state estimation in robotics"; Szeliski, *Computer
-  Vision*; Triggs et al., "Bundle Adjustment -- A Modern Synthesis"; Forster et al.,
-  "On-Manifold Preintegration"; the ORB-SLAM papers; Teed & Deng, DROID-SLAM; Li et al.,
-  MegaSaM; and the reference implementations in reifyscene's `third_party/` where relevant.
+  - **Geometry and estimation:** Hartley & Zisserman, *Multiple View Geometry*; Szeliski,
+    *Computer Vision*; Barfoot, *State Estimation for Robotics*.
+  - **Lie groups (rung 0):** Solà, Deray & Atchuthan, "A micro Lie theory for state
+    estimation in robotics" (arXiv:1812.01537, 2018); Strasdat, Montiel & Davison,
+    "Scale Drift-Aware Large Scale Monocular SLAM" (RSS 2010) for Sim(3). Reference
+    implementations for parity: Sophus (github.com/strasdat/Sophus), manif
+    (github.com/artivis/manif).
+  - **Two-view geometry and robust estimation (rung 0):** Hartley, "In defense of the
+    eight-point algorithm" (TPAMI 1997); Nistér, "An efficient solution to the five-point
+    relative pose problem" (TPAMI 2004); Fischler & Bolles, RANSAC (CACM 1981); Lepetit,
+    Moreno-Noguer & Fua, "EPnP" (IJCV 2009).
+  - **Bundle adjustment:** Triggs et al., "Bundle Adjustment -- A Modern Synthesis"
+    (Vision Algorithms 1999).
+  - **Evaluation:** Umeyama, least-squares alignment (TPAMI 1991); Sturm et al., "A Benchmark
+    for the Evaluation of RGB-D SLAM Systems" (IROS 2012), for ATE and RPE.
+  - **Edge VO and loop closure (milestones 2, 4):** the ORB-SLAM papers (Mur-Artal et al.);
+    Gálvez-López & Tardós, "Bags of Binary Words" (T-RO 2012); Teed, Lipson & Deng, "Deep
+    Patch Visual Odometry" (NeurIPS 2023) as learned-edge context.
+  - **Visual-inertial (milestone 6):** Forster et al., "On-Manifold Preintegration" (T-RO 2017).
+  - **Dense and learned (milestones 3, 5, 8, 9):** Teed & Deng, "DROID-SLAM" (NeurIPS 2021);
+    Wang et al., "Shape of Motion" (ICCV 2025, arXiv:2407.13764); Li et al., "MegaSaM"
+    (CVPR 2025); Murai, Dexheimer & Davison, "MASt3R-SLAM" (CVPR 2025, arXiv:2412.12392).
+  - Reference implementations in reifyscene's `third_party/` (shape-of-motion with
+    DROID-SLAM, vggt, VGGT-Long, Hierarchical-Localization) where relevant.
 - Conventions are internally consistent: frames (`T_world_cam` vs `T_cam_world`),
   left vs right perturbations, active vs passive rotations, Hamilton vs JPL quaternions,
   row- vs column-major, pixel-centre conventions.
+- Quaternion double cover: `q` and `-q` are the same rotation; parity checks must compare
+  them as equal. `log` returns angles in [0, pi].
 - Derivatives: analytic Jacobians match numeric differentiation. Check one when in doubt
-  and include the command and output as evidence.
+  and include the command and output as evidence. Left and right Jacobians of SO(3)/SE(3)
+  have small-angle forms that must be used near zero (Barfoot; Solà et al.).
 
 **Numerical robustness**
 - Small-angle and near-singular cases: `exp`/`log` near zero and near pi, normalisation of
@@ -46,6 +68,8 @@ where the field is now**.
   damping in Levenberg-Marquardt, gauge freedom in BA.
 - Degenerate configurations are detected and reported, not silently mishandled: pure
   rotation, planar scenes, collinear points, too few correspondences, zero baseline.
+- Cheirality: triangulated points lie in front of both cameras, and it is the test that
+  picks among the four decompositions of an essential matrix.
 - Robust cost functions and outlier handling where the standard method uses them.
 - float32 vs float64 choices are deliberate and documented.
 
@@ -54,7 +78,13 @@ where the field is now**.
   (`log(exp(x)) == x`), invariants (orthonormality, determinant +1), comparisons against a
   reference implementation or published numbers.
 - Edge and degenerate cases above are tested, not only the happy path.
-- Cross-language parity fixtures cover the numerically hard cases, not only easy ones.
+- Cross-language parity fixtures cover the numerically hard cases, not only easy ones, and
+  each fixture states its tolerance policy (`comparison`, `rtol`, `atol`, `reason`). Tests
+  pass `rtol` explicitly: numpy's default `rtol=1e-7` silently hides a float32 backend.
+  Fixtures include values not representable in float32 (e.g. 0.1, 1/3).
+- Randomised tests (RANSAC, synthetic scenes) use seeded generators.
+- ATE states its alignment, SE(3) or Sim(3), and why it suits the rung (monocular rungs have
+  no metric scale).
 
 **State of the art**
 - Use web search to check whether the approach is current. When the field has moved on,

@@ -4,6 +4,9 @@ on:
     branches: [develop, main]
   pull_request:
 
+permissions:
+  contents: read
+
 # One job, the same checks as local: build the conda env with scripts/setup_slamlab.sh, then
 # run every layer-1 check with scripts/check.sh. Running the setup script here also proves the
 # env, its lockfile and the three-language build reproduce from scratch.
@@ -11,21 +14,23 @@ jobs:
   layer1:
     name: Layer-1 checks (Python, C++, Rust)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MINIFORGE_VERSION: "26.7.2-0"
+      MINIFORGE_SHA256: "281b0ac7d550802efc81af633225a5e6116d29ae72f3ab4eae7168c3931a4c05"
+      CMAKE_BUILD_PARALLEL_LEVEL: "4"
+      CARGO_BUILD_JOBS: "4"
     steps:
       - uses: actions/checkout@v6
-      - name: Install Miniforge
+      - name: Install Miniforge (pinned, checksum-verified)
         run: |
-          curl -fsSL -o miniforge.sh \
-            https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh
-          bash miniforge.sh -b -p "$HOME/miniforge"
+          installer="Miniforge3-${MINIFORGE_VERSION}-Linux-x86_64.sh"
+          curl -fsSL -o "$installer" \
+            "https://github.com/conda-forge/miniforge/releases/download/${MINIFORGE_VERSION}/${installer}"
+          echo "${MINIFORGE_SHA256}  ${installer}" | sha256sum --check
+          bash "$installer" -b -p "$HOME/miniforge"
           echo "CONDA_EXE=$HOME/miniforge/bin/conda" >> "$GITHUB_ENV"
       - name: Build the slamlab env (scripts/setup_slamlab.sh)
-        env:
-          CMAKE_BUILD_PARALLEL_LEVEL: "4"
-          CARGO_BUILD_JOBS: "4"
         run: scripts/setup_slamlab.sh
       - name: Layer-1 checks (scripts/check.sh)
-        env:
-          CMAKE_BUILD_PARALLEL_LEVEL: "4"
-          CARGO_BUILD_JOBS: "4"
         run: scripts/check.sh --env slamlab

@@ -26,7 +26,12 @@ modular and faithful to that design as it grows.
 **Dependency direction and boundaries**
 - slamlab never depends on reifyscene; the reifyscene adapter lives in reifyscene.
 - Lower rungs never depend on higher ones; rung 0 (foundations) depends on nothing above it.
-- Algorithms never depend on orchestration, evaluation or the backend selector.
+  The rung packages (`slamlab.foundations`, `.edge`, `.vi`, `.classic`, `.dense`, `.learned`,
+  `.eval`, `.orchestration`) and their import-linter contracts in `pyproject.toml` encode
+  this; new rules belong in those contracts, and a new package needs a place in them.
+- Algorithms never depend on orchestration or evaluation. They may use `slamlab.backends`,
+  the bottom layer, only to locate compiled implementations; `backends` imports nothing
+  above it.
 - Public interfaces are small and stable; internals are not reached into across modules.
 - Depth models and other heavy external models are inputs behind a provider interface, never
   imported by core algorithm code.
@@ -37,7 +42,12 @@ modular and faithful to that design as it grows.
 - Rust stays within its agreed subset (rung 0 and the edge VO) unless the design doc changed.
 - C++ and Rust cores build standalone, without Python; bindings are thin type-conversion
   layers with no algorithm logic.
-- Backend selection goes through `slamlab.backends`; nothing hard-codes a language.
+- Each algorithm validates its input once and dispatches through its own `backend=`
+  argument; compiled implementations are found only through
+  `slamlab.backends.implementation`, in extension submodules that mirror the package tree
+  (`slamlab._cpp.foundations.so3`). `backends` never knows what an algorithm computes.
+- Each algorithm types its compiled backend with a Protocol, and a test checks every
+  extension submodule against it.
 
 **The ladder and compute budgets**
 - New code sits on the right rung, and its module placement says so.
