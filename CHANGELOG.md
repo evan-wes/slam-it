@@ -4,6 +4,54 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.2.0.0] - 2026-10-02
+
+The bundle-adjustment spine of milestone 1: rung 0's geometry, from Lie groups to a bundle
+adjuster that matches Ceres on real data. Python reference and C++ core in lock-step
+throughout, each component with a design note in `docs/notes/`.
+
+### Added
+
+- **Lie groups** (`foundations.so3`, `.se3`, `.alignment`). SO(3) and SE(3) exp/log,
+  Jacobians and their inverses, quaternions, projection onto SO(3), and Umeyama alignment
+  (SE(3)/Sim(3)). Parity fixtures come from a 50-digit mpmath oracle using independent
+  algorithms; SE(3)'s Q coefficients use exact power series below 1 rad.
+- **Camera models** (`foundations.camera`): pinhole, radtan, and radial (COLMAP's RADIAL,
+  BAL's camera, computed through radtan by a fixed linear map). Projection, Jacobians with
+  respect to the point and the intrinsics, and Newton unprojection to bearing vectors.
+- **Non-linear least squares on manifolds** (`foundations.nls`). Gauss-Newton and
+  Levenberg-Marquardt over a `Problem`/`LinearSystem` seam; Huber and Cauchy losses by IRLS,
+  with a loss per block; a full iteration trace; strict mode; a numeric-Jacobian checker.
+- **Bundle adjustment** (`foundations.ba`):
+  - robust reprojection over poses, intrinsics (shared or per camera, fixable per
+    parameter) and points, with the points eliminated by the Schur complement behind a
+    `ReducedSystemSolver` seam;
+  - points as XYZ or anchored inverse depths;
+  - depth priors through per-camera affines (metric or relative), and pose priors;
+  - the gauge removed exactly (automatic choice), degenerate data dropped and counted;
+  - marginal deviations of free intrinsics, with unobservable focal lengths flagged.
+- **Readers**: BAL (plain or bz2) and COLMAP's text model.
+- **`slamlab.eval`**: COLMAP's Ceres bundle adjuster as a reference, and reprojection
+  metrics.
+- **Demos**:
+  - `scripts/demo_bal.py`: on BAL Ladybug-49 both solvers reach 0.9147 px.
+  - `scripts/demo_slice.py`: reifyscene's ten DAVIS slice scenes against COLMAP, all listed.
+    Reprojection errors agree within 0.01 px on 8 of 10. Focal length is unobservable on 9
+    of 10. COLMAP lets points cross behind cameras; ours never does.
+- **Dev dependencies**: pycolmap and rerun-sdk.
+
+### Changed
+
+- The design doc fixes the boundary conventions every binding and fixture bakes in. It also
+  sets the per-PR review rule: PRs are slices, steps are commits, and the panel runs once
+  per PR.
+
+### Performance
+
+- The C++ Schur elimination does one product per point, not one per pair of its
+  observations. Results are identical, and reifyscene's slice runs 2.3-5.1x faster (judo
+  565 s to 111 s).
+
 ## [0.1.2.1] - 2026-10-02
 
 ### Changed
