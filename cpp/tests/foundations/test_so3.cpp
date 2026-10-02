@@ -5,26 +5,16 @@
 /// these tests cover what the standalone C++ core must get right on its own: exact `hat`
 /// entries, round trips, the θ = π convention, and the error paths.
 #include <cmath>
-#include <iostream>
 #include <numbers>
 
 #include "slamlab/foundations/so3.hpp"
+#include "test_support.hpp"
 
 namespace {
 
+using slamlab::testing::expect;
 namespace so3 = slamlab::foundations::so3;
 using slamlab::foundations::ErrorKind;
-
-/// @brief Count and report a failed check.
-/// @param ok Whether the check passed.
-/// @param what Description of the check, printed on failure.
-/// @param failures Running failure count, incremented on failure.
-void expect(bool ok, const char* what, int& failures) {
-  if (!ok) {
-    std::cerr << "FAILED: " << what << "\n";
-    ++failures;
-  }
-}
 
 }  // namespace
 
@@ -73,8 +63,5 @@ int main() {
              ErrorKind::kInvalidInput,
          "inverse Jacobian rejects |omega| >= 2 pi", failures);
 
-  if (failures == 0) {
-    std::cout << "foundations/so3: ok\n";
-  }
-  return failures == 0 ? 0 : 1;
+  return slamlab::testing::finish("foundations/so3", failures);
 }

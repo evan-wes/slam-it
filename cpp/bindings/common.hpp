@@ -149,4 +149,47 @@ ArrayOut map_batch(const Input& input, F&& f) {
   return out;
 }
 
+/// @brief Apply a per-item core function to every pair of items of two equal-length batches.
+/// @tparam ARows Rows of one item of the first input.
+/// @tparam ACols Columns of one item of the first input (1 for a vector).
+/// @tparam BRows Rows of one item of the second input.
+/// @tparam BCols Columns of one item of the second input (1 for a vector).
+/// @tparam OutRows Rows of one output item.
+/// @tparam OutCols Columns of one output item (1 for a vector).
+/// @tparam InputA The first input array type.
+/// @tparam InputB The second input array type.
+/// @tparam F The core function: (item, item) -> item, or -> `Result<item>`.
+/// @param a A C-contiguous float64 array of shape (N, ARows[, ACols]).
+/// @param b A C-contiguous float64 array of shape (N, BRows[, BCols]).
+/// @param f The function to apply.
+/// @return A new array of shape (N, OutRows[, OutCols]).
+/// @throws CoreError if `f` fails on any pair; std::invalid_argument if the batches differ
+///         in length or either is misaligned.
+template <int ARows, int ACols, int BRows, int BCols, int OutRows, int OutCols, typename InputA,
+          typename InputB, typename F>
+ArrayOut map_batch2(const InputA& a, const InputB& b, F&& f) {
+  check_aligned(a.data());
+  check_aligned(b.data());
+  const std::size_t n = a.shape(0);
+  if (b.shape(0) != n) {
+    throw std::invalid_argument("the two batches differ in length");
+  }
+  constexpr std::size_t kA = static_cast<std::size_t>(ARows) * ACols;
+  constexpr std::size_t kB = static_cast<std::size_t>(BRows) * BCols;
+  constexpr std::size_t kOut = static_cast<std::size_t>(OutRows) * OutCols;
+  auto [out, data] =
+      OutCols == 1
+          ? new_array({n, static_cast<std::size_t>(OutRows)})
+          : new_array({n, static_cast<std::size_t>(OutRows), static_cast<std::size_t>(OutCols)});
+  for (std::size_t i = 0; i < n; ++i) {
+    // NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic): batch offsets
+    const Eigen::Map<const Item<ARows, ACols>> item_a(a.data() + (i * kA));
+    const Eigen::Map<const Item<BRows, BCols>> item_b(b.data() + (i * kB));
+    Eigen::Map<Item<OutRows, OutCols>> result(data + (i * kOut));
+    // NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    result = value_of(f(Item<ARows, ACols>(item_a), Item<BRows, BCols>(item_b)));
+  }
+  return out;
+}
+
 }  // namespace slamlab::bindings

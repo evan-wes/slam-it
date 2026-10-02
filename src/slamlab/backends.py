@@ -188,7 +188,7 @@ def dispatch(
     module_name: str,
     name: str,
     reference: Callable[..., NDArray[np.float64]],
-    *args: NDArray[Any],
+    *args: object,
 ) -> NDArray[np.float64]:
     """Run one function with the chosen backend: the Python reference or a compiled one.
 
@@ -205,8 +205,9 @@ def dispatch(
         The function's name, as in the module's ``Implementation`` Protocol.
     reference : callable
         The Python reference implementation, called when `backend` is ``"python"``.
-    *args : ndarray
-        The validated arguments, passed unchanged.
+    *args : ndarray or scalar
+        The validated arguments, passed unchanged: arrays, and plain scalars (int, float,
+        bool) for options.
 
     Returns
     -------

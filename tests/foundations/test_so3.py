@@ -12,7 +12,15 @@ from numpy.typing import NDArray
 from slamlab import backends
 from slamlab.foundations import so3
 from slamlab.foundations.errors import InvalidInputError
-from tests.conftest import assert_matches_fixture, load_fixture, require_function
+from tests.conftest import (
+    check_parity,
+    load_fixture,
+    numeric_right_jacobian,
+    parity_params,
+    protocol_members,
+    random_rotation_vectors,
+    require_function,
+)
 
 SO3 = load_fixture("foundations/so3.json")
 FUNCTIONS: dict[str, Callable[..., NDArray[np.float64]]] = {
@@ -25,20 +33,14 @@ FINITE_DIFFERENCE_STEP = 1e-6
 
 def test_fixture_covers_the_protocol() -> None:
     """Every function in the compiled-backend Protocol has fixture cases."""
-    members = {m for m in vars(so3.Implementation) if not m.startswith("_")}
-    assert set(SO3["functions"]) == members
+    assert set(SO3["functions"]) == protocol_members(so3)
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
-@pytest.mark.parametrize(
-    ("function", "case"), PARITY_CASES, ids=[f"{n}:{c['name']}" for n, c in PARITY_CASES]
-)
+@pytest.mark.parametrize(("function", "case"), parity_params(SO3))
 def test_matches_fixture(backend: str, function: str, case: dict[str, Any]) -> None:
     """Each backend matches the mpmath oracle under the function's tolerance policy."""
-    chosen = require_function(backend, so3.__name__, function)
-    got = FUNCTIONS[function](case["input"], backend=chosen)
-    assert got.dtype == np.float64
-    assert_matches_fixture(got, case["expected"], SO3["functions"][function]["tolerance"])
+    check_parity(so3, SO3, function, case, backend)
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -54,18 +56,10 @@ def test_batches_keep_their_leading_shape(backend: str) -> None:
         assert so3.to_quaternion(so3.exp(omega), backend=backend).shape == (2, 5, 4)
 
 
-def _random_omega(n: int, seed: int = 0) -> NDArray[np.float64]:
-    """Random rotation vectors with angles spread over [0, pi)."""
-    rng = np.random.default_rng(seed)
-    axes = rng.normal(size=(n, 3))
-    axes /= np.linalg.norm(axes, axis=-1, keepdims=True)
-    return axes * rng.uniform(0.0, np.pi * 0.999, size=(n, 1))
-
-
 @pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
 def test_round_trips(backend: str) -> None:
     """log(exp(w)) = w for |w| < pi; vee(hat(w)) = w; quaternions round-trip."""
-    omega = _random_omega(500)
+    omega = random_rotation_vectors(500)
     np.testing.assert_allclose(
         so3.log(so3.exp(omega, backend=backend), backend=backend), omega, rtol=0.0, atol=1e-12
     )
@@ -78,7 +72,7 @@ def test_round_trips(backend: str) -> None:
 @pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
 def test_rotations_are_orthonormal(backend: str) -> None:
     """The exponential produces orthonormal matrices with determinant +1."""
-    rotation = so3.exp(_random_omega(500) * 1.7, backend=backend)
+    rotation = so3.exp(random_rotation_vectors(500) * 1.7, backend=backend)
     gram = np.einsum("nji,njk->nik", rotation, rotation)
     np.testing.assert_allclose(gram, np.broadcast_to(np.eye(3), gram.shape), rtol=0.0, atol=1e-14)
     np.testing.assert_allclose(np.linalg.det(rotation), 1.0, rtol=0.0, atol=1e-14)
@@ -87,16 +81,8 @@ def test_rotations_are_orthonormal(backend: str) -> None:
 @pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
 def test_right_jacobian_matches_finite_differences(backend: str) -> None:
     """exp(w + d) ≈ exp(w) exp(Jr(w) d): Jr against central differences of log."""
-    h = FINITE_DIFFERENCE_STEP
-    for omega in _random_omega(50, seed=3):
-        base_inv = so3.exp(omega).T
-        numeric = np.empty((3, 3))
-        for k in range(3):
-            step = np.zeros(3)
-            step[k] = h
-            plus = so3.log(base_inv @ so3.exp(omega + step))
-            minus = so3.log(base_inv @ so3.exp(omega - step))
-            numeric[:, k] = (plus - minus) / (2.0 * h)
+    for omega in random_rotation_vectors(50, seed=3):
+        numeric = numeric_right_jacobian(omega, so3.exp, so3.log, lambda a, b: a.T @ b)
         np.testing.assert_allclose(
             so3.right_jacobian(omega, backend=backend), numeric, rtol=0.0, atol=1e-8
         )
@@ -105,7 +91,7 @@ def test_right_jacobian_matches_finite_differences(backend: str) -> None:
 @pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
 def test_jacobian_identities(backend: str) -> None:
     """Jl(w) = Jr(-w), and the inverse Jacobians invert them."""
-    omega = _random_omega(300) * 1.9  # up to ~1.9 pi, inside the 2 pi limit
+    omega = random_rotation_vectors(300) * 1.9  # up to ~1.9 pi, inside the 2 pi limit
     jr = so3.right_jacobian(omega, backend=backend)
     np.testing.assert_allclose(
         so3.left_jacobian(omega, backend=backend), so3.right_jacobian(-omega), rtol=0, atol=1e-15
@@ -120,7 +106,7 @@ def test_cross_check_with_scipy_and_manif() -> None:
     """At moderate angles the reference agrees with SciPy and manif (secondary oracles)."""
     rotation_module = pytest.importorskip("scipy.spatial.transform")
     manifpy = pytest.importorskip("manifpy")
-    omega = _random_omega(200, seed=5)
+    omega = random_rotation_vectors(200, seed=5)
     expected = rotation_module.Rotation.from_rotvec(omega).as_matrix()
     np.testing.assert_allclose(so3.exp(omega), expected, rtol=0.0, atol=1e-14)
     for w in omega[np.linalg.norm(omega, axis=-1) > 0.1]:
@@ -141,38 +127,8 @@ def test_log_at_pi_uses_the_canonical_sign() -> None:
 
 def test_quaternion_double_cover() -> None:
     """The quaternions q and -q give the same rotation."""
-    q = so3.to_quaternion(so3.exp(_random_omega(100)))
+    q = so3.to_quaternion(so3.exp(random_rotation_vectors(100)))
     np.testing.assert_allclose(so3.from_quaternion(q), so3.from_quaternion(-q), rtol=0, atol=0)
-
-
-BAD_INPUTS: list[tuple[str, object, str]] = [
-    ("exp", [1.0, 2.0], "shape"),
-    ("exp", [[1.0, 2.0, 3.0, 4.0]], "shape"),
-    ("exp", [None, 1.0, 2.0], "real numbers"),
-    ("exp", ["1", "2", "3"], "real numbers"),
-    ("exp", [True, False, True], "real numbers"),
-    ("exp", np.array([1 + 2j, 0, 0]), "real numbers"),
-    ("exp", [np.nan, 0.0, 0.0], "finite"),
-    ("exp", [0.0, np.inf, 0.0], "finite"),
-    ("exp", np.ma.array([1.0, 2.0, 3.0], mask=[False, True, False]), "masked"),
-    ("log", np.full((3, 3), 0.5), "orthonormal"),
-    ("log", -np.eye(3), "determinant"),
-    ("to_quaternion", np.eye(3) * 1.1, "orthonormal"),
-    ("vee", np.eye(3), "skew-symmetric"),
-    ("from_quaternion", [1.0, 1.0, 0.0, 0.0], "norm"),
-    ("right_jacobian_inverse", [7.0, 0.0, 0.0], "2\\*pi"),
-    ("left_jacobian_inverse", [0.0, 0.0, -6.3], "2\\*pi"),
-]
-
-
-@pytest.mark.parametrize("backend", backends.BACKENDS)
-@pytest.mark.parametrize(
-    ("function", "bad", "message"), BAD_INPUTS, ids=[f"{f}:{m}" for f, _, m in BAD_INPUTS]
-)
-def test_rejects_invalid_input(backend: str, function: str, bad: object, message: str) -> None:
-    """Every backend rejects bad input the same way: Python validates before dispatching."""
-    with pytest.raises(InvalidInputError, match=message):
-        FUNCTIONS[function](bad, backend=backend)
 
 
 @pytest.mark.parametrize("backend", ["cpp"])

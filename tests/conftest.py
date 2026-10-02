@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import numpy as np
 import pytest
-from numpy.typing import ArrayLike
+from numpy.typing import ArrayLike, NDArray
 
 from slamlab import backends
+from slamlab.foundations.errors import InvalidInputError
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -138,3 +141,155 @@ def assert_matches_fixture(got: ArrayLike, expected: ArrayLike, tolerance: dict[
         np.testing.assert_allclose(got_arr, expected_arr, rtol=rtol, atol=atol)
     else:
         raise AssertionError(f"unknown comparison {comparison!r} in tolerance policy")
+
+
+def parity_params(fixture: dict[str, Any]) -> list[Any]:
+    """List every ``(function, case)`` pair in a parity fixture as named pytest params.
+
+    Parameters
+    ----------
+    fixture : dict
+        A fixture loaded by :func:`load_fixture`, with a ``functions`` mapping.
+
+    Returns
+    -------
+    list of pytest.param
+        One per case, with id ``"<function>:<case name>"``.
+    """
+    return [
+        pytest.param(name, case, id=f"{name}:{case['name']}")
+        for name, spec in fixture["functions"].items()
+        for case in spec["cases"]
+    ]
+
+
+def protocol_members(module: ModuleType) -> set[str]:
+    """Return the function names of a module's ``Implementation`` Protocol.
+
+    Parameters
+    ----------
+    module : module
+        A slamlab algorithm module.
+
+    Returns
+    -------
+    set of str
+        The Protocol's public members.
+    """
+    return {m for m in vars(module.Implementation) if not m.startswith("_")}
+
+
+def check_rejects(
+    module: ModuleType, function: str, bad: object, message: str, backend: str
+) -> None:
+    """Check that a function rejects bad input with InvalidInputError matching `message`.
+
+    Parameters
+    ----------
+    module : module
+        The slamlab module under test.
+    function : str
+        The function's name.
+    bad : object
+        The invalid input.
+    message : str
+        A regex the error message must match.
+    backend : str
+        The backend to request (Python validates before any backend runs).
+    """
+    with pytest.raises(InvalidInputError, match=message):
+        getattr(module, function)(bad, backend=backend)
+
+
+def numeric_right_jacobian(
+    x: NDArray[np.float64],
+    exp: Callable[[NDArray[np.float64]], NDArray[np.float64]],
+    log: Callable[[NDArray[np.float64]], NDArray[np.float64]],
+    between: Callable[[NDArray[np.float64], NDArray[np.float64]], NDArray[np.float64]],
+    step: float = 1e-6,
+) -> NDArray[np.float64]:
+    """Estimate a Lie group's right Jacobian at `x` by central differences.
+
+    Uses ``exp(x + δ) ≈ exp(x) exp(Jr(x) δ)``: column k is
+    ``(log(exp(x)⁻¹ exp(x + h e_k)) - log(exp(x)⁻¹ exp(x - h e_k))) / 2h``.
+
+    Parameters
+    ----------
+    x : ndarray, shape (n,)
+        The tangent point.
+    exp, log : callable
+        The group's exponential and logarithm.
+    between : callable
+        ``between(a, b) = a⁻¹ b`` for two group elements.
+    step : float, optional
+        The difference step h (truncation and rounding both ~1e-10 at 1e-6).
+
+    Returns
+    -------
+    ndarray of float64, shape (n, n)
+        The estimated right Jacobian.
+    """
+    base = exp(x)
+    n = x.shape[0]
+    jacobian = np.empty((n, n))
+    for k in range(n):
+        delta = np.zeros(n)
+        delta[k] = step
+        plus = log(between(base, exp(x + delta)))
+        minus = log(between(base, exp(x - delta)))
+        jacobian[:, k] = (plus - minus) / (2.0 * step)
+    return jacobian
+
+
+def check_parity(
+    module: ModuleType, fixture: dict[str, Any], function: str, case: dict[str, Any], backend: str
+) -> None:
+    """Run one fixture case on one backend and compare under the function's policy.
+
+    The case's ``input`` is the single argument, or -- when the function's spec sets
+    ``unpack`` -- the list of positional arguments.
+
+    Parameters
+    ----------
+    module : module
+        The slamlab module under test.
+    fixture : dict
+        The loaded fixture.
+    function : str
+        The function's name in `module`.
+    case : dict
+        One case of that function.
+    backend : str
+        The backend to run (skipped or failed via :func:`require_function` if missing).
+    """
+    spec = fixture["functions"][function]
+    chosen = require_function(backend, module.__name__, function)
+    args = case["input"] if spec.get("unpack") else [case["input"]]
+    got = getattr(module, function)(*args, backend=chosen)
+    assert got.dtype == np.float64
+    assert_matches_fixture(got, case["expected"], spec["tolerance"])
+
+
+def random_rotation_vectors(
+    n: int, seed: int = 0, max_angle: float = 0.999 * np.pi
+) -> NDArray[np.float64]:
+    """Draw random rotation vectors: uniform axes, angles uniform in [0, `max_angle`).
+
+    Parameters
+    ----------
+    n : int
+        How many vectors.
+    seed : int, optional
+        The generator seed (tests are reproducible).
+    max_angle : float, optional
+        The largest angle; just below pi by default, where ``log`` is unambiguous.
+
+    Returns
+    -------
+    ndarray of float64, shape (n, 3)
+        The rotation vectors.
+    """
+    rng = np.random.default_rng(seed)
+    axes = rng.normal(size=(n, 3))
+    axes /= np.linalg.norm(axes, axis=-1, keepdims=True)
+    return np.asarray(axes * rng.uniform(0.0, max_angle, size=(n, 1)), dtype=np.float64)

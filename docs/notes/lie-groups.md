@@ -1,7 +1,7 @@
-# Lie groups: SO(3)
+# Lie groups: SO(3) and SE(3), and point-set alignment
 
-Design note for `slamlab.foundations.so3` (Python reference), `slamlab::foundations::so3`
-(C++ core), and the Rust subset. SE(3) is added to this note with its own implementation.
+Design note for `slamlab.foundations.so3`, `.se3` and `.alignment` (the Python reference),
+their C++ counterparts in `slamlab::foundations`, and the Rust subset.
 
 ## The problem
 
@@ -120,3 +120,98 @@ passed through float32, as VGGT's do.
 - **Conditioning, not just precision.** Projecting a near-reflection onto SO(3) flips its
   weakest singular direction, which amplifies rounding by about 1/(σ₂ − σ₃). That case
   needs a 1e-13 tolerance where the others pass at 1e-15. The fixture records the reason.
+
+## SE(3)
+
+**The group.** A rigid transform is `T = [[R, t], [0, 1]]`. `T_a_b` maps frame b to frame
+a: `p_a = R p_b + t`. Its tangent is a twist `ξ = (ρ, θ)`, translation first (manif and
+Sophus order; GTSAM's is rotation first, so its Jacobians appear block-swapped).
+
+**Exponential and logarithm.**
+
+```
+exp(ξ) = [[exp(θ), Jl(θ) ρ], [0, 1]],    log(T) = (Jl(θ)⁻¹ t, log(R))
+```
+
+Here `Jl(θ)` is SO(3)'s left Jacobian: it is exactly the "V" matrix that couples the twist's
+translation to the transform's.
+
+**Adjoint.** For twists ordered `(ρ, θ)`, `Ad_T = [[R, hat(t) R], [0, R]]`, so that
+`T exp(ξ) T⁻¹ = exp(Ad_T ξ)`. It moves a perturbation from one side of a transform to the
+other.
+
+**Jacobians.** Barfoot's block form (*State Estimation for Robotics*, §7.1.5):
+
+```
+Jl(ξ) = [[Jl(θ), Q(ρ, θ)], [0, Jl(θ)]],    Jr(ξ) = Jl(-ξ)
+Jl(ξ)⁻¹ = [[Jl⁻¹, -Jl⁻¹ Q Jl⁻¹], [0, Jl⁻¹]]
+```
+
+`Q` is a sum of products of `hat(ρ)` and `hat(θ)` with three coefficients:
+- `(θ - sin θ)/θ³`;
+- `(θ² + 2cos θ - 2)/(2θ⁴)`;
+- `(2θ - 3 sin θ + θ cos θ)/(2θ⁵)`.
+
+## Why SE(3)'s Jacobian needs a different numerical treatment
+
+The third coefficient divides by θ⁵. Its numerator is about θ⁵/60, computed from terms of
+size θ. Rounding therefore costs about 60 eps/θ⁴ relative:
+- 2e-9 at θ = 0.05;
+- 1e-14 only from θ ≈ 1.
+
+A short Taylor series with a small switch angle, as used for SO(3), would leave a band of
+angles where neither form is accurate.
+
+The fix was to derive the coefficients' exact power series. Each has the shape
+`Σ_k (-1)^k θ^{2k} c_k`:
+
+| Coefficient | `c_k` |
+|---|---|
+| `(θ - sin θ)/θ³` | `1/(2k+3)!` |
+| `(θ² + 2cos θ - 2)/(2θ⁴)` | `1/(2k+4)!` |
+| `(2θ - 3 sin θ + θ cos θ)/(2θ⁵)` | `(k+1)/(2k+5)!` |
+
+They are evaluated with 10 terms below θ = 1, where the first omitted term is below 1e-19,
+and in closed form above, where the cancellation is down to 1e-14. Both languages build the
+factorials incrementally.
+
+## Point-set alignment (Umeyama)
+
+`align(x, y)` finds R, t (and optionally s) minimising `Σ w_i |y_i - (s R x_i + t)|²`
+(Umeyama, TPAMI 1991):
+1. Centre both point sets on their weighted means.
+2. Take the SVD of the weighted cross-covariance, `Σ = U D Vᵀ`.
+3. Set `R = U S Vᵀ`, with `S = diag(1, 1, sign(det U det V))`, so R is a proper rotation
+   even for planar points.
+4. Set `s = tr(D S)/σ_x²` and `t = μ_y - s R μ_x`.
+
+It is how a reconstruction is compared with ground truth "up to gauge": SE(3), or Sim(3)
+for monocular, which has no metric scale. Trajectory error (ATE) will use it in milestone 2.
+
+**Degeneracy is an error, not a guess.** Fewer than three weighted points, or collinear
+points (`D₁ ≤ 1e-10 · D₀`), leave the rotation about the line undetermined. Both raise
+`DegenerateError`, in Python and in the C++ core, which returns `ErrorKind::kDegenerate`
+through `std::expected`.
+
+## How SE(3) and alignment are checked
+
+- **Parity fixtures** (`se3.json`, 90 cases; `alignment.json`, 4 cases): rotation angles at
+  0, 1e-10, 1e-4, both sides of the θ = 1 switch, 2.5, π − 1e-6, and above π, plus pure
+  translation.
+- **The oracle is independent again:**
+  - mpmath's matrix exponential for `exp`;
+  - the series `Jl(ξ) = Σ adⁿ/(n+1)!` (150 terms, 50 digits) for the Jacobians. That is
+    the definition, not Barfoot's formula, so a wrong sign in `Q` cannot also hide in the
+    oracle;
+  - matrix inversion for the inverses;
+  - exact synthetic similarities, plus mpmath's own SVD, for Umeyama.
+- **Properties:**
+  - `log(exp(ξ)) = ξ`, and `T T⁻¹ = I`;
+  - associativity;
+  - `act` against the homogeneous product;
+  - the adjoint identity `T exp(ξ) T⁻¹ = exp(Ad ξ)`;
+  - `Jr` against central differences;
+  - `J⁻¹ J = I`;
+  - Umeyama recovering a known transform, with and without scale;
+  - the degenerate cases;
+  - shape and validity errors.

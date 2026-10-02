@@ -111,8 +111,20 @@ class Implementation(Protocol):
 # --- validation ---------------------------------------------------------------------------
 
 
-def _check_rotation(rotation: NDArray[np.float64]) -> None:
-    """Raise unless every (3, 3) matrix in the (N, 3, 3) batch is a rotation."""
+def check_rotation(rotation: NDArray[np.float64]) -> None:
+    """Raise unless every matrix in a batch is a rotation within :data:`ROTATION_TOLERANCE`.
+
+    Parameters
+    ----------
+    rotation : ndarray of float64, shape (N, 3, 3)
+        A validated, flattened batch of matrices (see :func:`slamlab.foundations.arrays.as_batch`).
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If any matrix is not orthonormal within the tolerance, or has a non-positive
+        determinant.
+    """
     gram = np.einsum("nji,njk->nik", rotation, rotation)
     if np.any(np.abs(gram - np.eye(3)) > ROTATION_TOLERANCE):
         raise InvalidInputError(
@@ -420,7 +432,7 @@ def log(rotation: ArrayLike, *, backend: str = "python") -> NDArray[np.float64]:
         orthonormal matrix explicitly with :func:`project_to_so3`.
     """
     flat, lead = as_batch(rotation, (3, 3), "rotation")
-    _check_rotation(flat)
+    check_rotation(flat)
     return unbatch(backends.dispatch(backend, __name__, "log", _log, flat), lead)
 
 
@@ -587,7 +599,7 @@ def to_quaternion(rotation: ArrayLike, *, backend: str = "python") -> NDArray[np
         If `rotation` is not a finite real (..., 3, 3) array of rotations.
     """
     flat, lead = as_batch(rotation, (3, 3), "rotation")
-    _check_rotation(flat)
+    check_rotation(flat)
     result = backends.dispatch(backend, __name__, "to_quaternion", _to_quaternion, flat)
     return unbatch(result, lead)
 
