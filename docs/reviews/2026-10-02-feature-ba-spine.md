@@ -1279,3 +1279,112 @@ Sources:
 - Triggs, McLauchlan, Hartley & Fitzgibbon, "Bundle Adjustment -- A Modern Synthesis", Vision Algorithms 1999, §9 (gauge)
 - Solà, Deray & Atchuthan, "A micro Lie theory for state estimation in robotics", arXiv:1812.01537 (right Jacobians)
 - Barfoot, *State Estimation for Robotics* (SE(3) exp/V matrix, used for the centre's second-order term)
+
+## Run 5 -- 2026-10-02
+
+| | |
+|---|---|
+| **Branch** | `feature/ba-spine` |
+| **Range** | `a8eef3e...86e13f7` (Run 4's fixes) |
+| **Reviewers** | algorithm (opus) only, focused on the centred solve and `free_gauge` |
+| **How they ran** | registered slamlab-algorithm-reviewer agent |
+| **Layer 1** | all checks passed at 05fcae5..6e6271e |
+
+Run 4's findings: L24, L25 resolved; L23 resolved when every camera is observed (see L27); L26 resolved with a caveat (see L28).
+
+### Findings and resolutions
+
+| ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|---|
+| L27 | must-fix | algorithm | `ba/solve.py`, `ba.cpp` (`centring_origin`) | the origin averages every pose, so an unobserved placeholder (an unregistered camera at the identity) pulls it off the scene and brings L23 back (9-10 iterations become 36-100, drift up to 0.97 m) | fix (average the cameras with a positive-weight observation; test with an unobserved identity pose) | pending |
+| L28 | should-fix | algorithm | `test_ba.py` (Jacobian test), fixture | the far-prior fixture case converges onto its prior (2.9e-11 rad at the optimum), so the large-angle `Jr⁻¹` is pinned only by parity, never against numerics | fix (run the numeric Jacobian test at 0.01 and 1.2 rad prior offsets) | pending |
+| L29 | note | algorithm | BA note | "intrinsics unchanged" by centring holds to about 1e-9 relative | fix ("to 1e-9") | pending |
+| L30 | note | algorithm | backlog | with `free_gauge > 0`, σ_f is inf under `none` but finite (regularisation-dependent, 0.13% off) under `first_pose` | defer (design doc: report σ unavailable when the gauge is left free, or document it) | pending |
+| L31 | note | algorithm | backlog | an anchored point with no world point is a NaN row in Python but the stored row in C++ (unreachable at a final state) | fix (C++ returns NaN too, as the reference does) | pending |
+| L32 | note | algorithm | backlog | iteration counts across cores differ at a 1e-12 cost tolerance (known) | waive: already recorded; cross-core iteration comparisons use 1e-10 | pending |
+
+### Algorithm review
+
+## Algorithm review
+
+**Scope:** Run 5, a focused re-review of the Run 4 fixes, range `a8eef3e...86e13f7`:
+- `src/slamlab/foundations/ba/solve.py` (`centring_origin`, `_centred`, `_solve_reference`)
+- `cpp/src/foundations/ba.cpp` (`centring_origin`, `shifted`, `solve`)
+- `layout.py` `_fix_gauge` and `layout.cpp` `fix_gauge`
+- `tests/foundations/test_ba.py`
+- the fixture and `generate_ba.py`
+- `docs/notes/bundle-adjustment.md`
+
+References: Triggs et al. 1999 §9 (gauge freedom, invariance of gauge-free quantities) and Solà et al. 2018 (Jr⁻¹).
+
+**Summary:** Centring is exact and the restoration logic is sound. Across all 15 fixture cases, shifted to 1e4, 1e6 and 6.4e6 m, both cores give the same iterations and agree with the unshifted solve to ulp(|offset|). One gap is left. The origin is the mean of **all** pose centres, so an unobserved placeholder pose (the module supports these, returns them unchanged and counts them) pulls the origin off the scene. That brings back L23 exactly: LM runs to its iteration cap and the centres drift by 0.8 m. L24 is correct. L26's case is valid, but it pins the large-angle Jr⁻¹ only along the LM path, not at the optimum.
+
+### Run 4 findings
+- **L23: partly resolved.** It is resolved for scenes where every camera is observed: verified over all fixture cases and three offsets, both cores. It is not resolved when an unobserved pose sits away from the scene (see the must-fix below).
+- **L24: resolved.** `none`/`first_pose` now count what remains. On monocular data both cores give `free_gauge` 1 for `first_pose`, 7 for `none` and 0 for `auto`. The fixture's `none` case with priors on every camera reads 0.
+- **L25: resolved.** The note now bounds the iteration claim. The soft-direction explanation is right if read as "the damping's Rayleigh quotient along a non-axis-aligned soft direction is far above its curvature".
+- **L26: resolved, with one caveat** (see the should-fix). At the start the prior error is 1.19 rad. At the optimum it is 2.9e-11 rad, so `Jr⁻¹ ≈ I` there, and the case pins the large-angle Jacobian only through the exact 39-iteration path.
+
+### Findings
+
+#### [must-fix] The centring origin includes unobserved poses: a placeholder pose brings L23 back
+- **Where:** `src/slamlab/foundations/ba/solve.py:145-153` (`centring_origin` averages `problem.poses[:, :3, 3]` over every camera) and `cpp/src/foundations/ba.cpp:158-167`.
+- **Issue:** Every pose goes into the mean, including unobserved ones. Those are cameras with no positive-weight observation, which layout holds fixed and returns unchanged. In incremental SfM an unregistered camera is typically stored at the identity. With 5 observed cameras at an offset D and one identity pose, the origin lands at 5D/6. The solve then runs about D/6 from its own origin: about 1e6 m at ECEF range.
+- **Why it matters:** This is exactly the failure L23 fixed. The rotation step swings cameras by `|θ|²|C|/2`, LM runs to `max_iterations`, and the baseline drifts.
+- **Evidence:** `ba_probe_unobserved.py` takes the scene from `test_far_from_the_world_origin` (perturb 0.05) and adds one unobserved camera at the identity:
+  ```
+  python 1e+04 it 10 -> 36  step            dC=1.9e-01
+  python 1e+06 it 10 -> 100 max_iterations  dC=9.7e-01
+  python 6e+06 it 10 -> 100 max_iterations  dC=7.7e-01   σ_f 0.55083 -> 0.55102
+  cpp    (identical: 9 -> 36 / 100 / 100, dC 0.19 / 0.97 / 0.77)
+  ```
+  Without the extra camera, every offset gives the same iterations and `dC ≤ 1e-9`.
+- **Suggested fix:** Average only the cameras that have a positive-weight observation. The mask comes from `cam_idx[weights > 0]`, computed in index order in both cores; fall back to all poses, or zero, if none qualifies. The layout's later `observed` (after the in-front test) is a subset, and either is fine. Restoring unobserved poses bit-exactly already works. Add an unobserved identity pose to `test_far_from_the_world_origin`, and update the docstrings and the note ("the mean of the observed camera centres").
+
+#### [should-fix] The numeric Jacobian test never sees a large pose-prior error
+- **Where:** `tests/foundations/test_ba.py:241-257` (via `_every_kind`, whose priors are `exp(0.01·1)` from the truth); fixture case `"a pose prior 1.2 rad from the truth"`.
+- **Issue:** The new fixture case converges to the prior: the final error is 2.9e-11 rad. Its outputs (poses, σ_f, costs) are therefore evaluated where `Jr⁻¹ ≈ I`. The large-angle `Jr⁻¹` is pinned only indirectly, through both cores taking exactly 39 iterations. That is parity, not correctness: a shared error in both cores would still pass. The only known-answer Jacobian check runs at 0.01 rad.
+- **Why it matters:** `Jr⁻¹` far from I is the case L26 asked to pin. Today nothing checks it against ground truth.
+- **Evidence:** `probe_far_prior.py` gives start `|φ|=1.188`, final `|φ|=2.9e-11`. I also checked correctness: I changed the Jacobian test's priors to `exp([0.5,-0.3,0.2, 1.2·axis])` and got a max scaled analytic-vs-numeric difference of 1.7e-7, under the test's 1e-6. So the code is right. Only the test is missing.
+- **Suggested fix:** Parametrise `test_jacobian_matches_numeric` over the prior offset (0.01 and 1.2 rad). Alternatively, or as well, make the fixture case's prior conflict with a fixed pose, so the optimum keeps a large residual.
+
+#### [note] "Intrinsics unchanged" is unchanged only to about 1e-9 relative
+- **Where:** `docs/notes/bundle-adjustment.md`, the "And the solve in a centred world" paragraph.
+- **Evidence:** I compared `git show a8eef3e:tests/fixtures/foundations/ba.json` with HEAD:
+  - Inputs and codes are identical for all 14 old cases.
+  - Costs agree to ≤9e-14 relative.
+  - Intrinsics differ by up to 6e-10 relative (`radial`, `scale: one full pose prior`); σ_f differs by up to 1e-9 relative.
+  - Poses and points moved by up to 9.3e-6 and 8.6e-5. After a Sim(3) Umeyama alignment of new to old (dropped points excluded, since they stay put), the residual is ≤1e-8. So the motion is along the gauge, as claimed.
+- **Suggested fix:** Write "to 1e-9" instead of "unchanged". Optional.
+
+### Checked and fine
+- **Shift invariance of every block:**
+  - Reprojection, and depth priors (camera-frame depth, metric and free affines).
+  - Anchored inverse depths (host pose shifted).
+  - Fixed points, and the decoupled pose prior (centre difference and rotation).
+  - The in-front test and ray parallax.
+  - The gauge rank tests, already in the scene's own frame.
+
+  Evidence from `ba_probe_shift.py`, all 15 cases × {1e4, 1e6, 6.4e6}, both cores:
+  - same iterations;
+  - centres within 9e-10 and points within 5e-9 at 6.4e6 m (about ulp);
+  - intrinsics within 5e-10 relative;
+  - Python and C++ within 2e-13 of each other.
+- **Bit-exact restoration:**
+  - Unmoved poses, compared in T_cw in Python and after C++ `adjust`'s own restoration against the centred input.
+  - Fixed points and dropped points.
+
+  The sets of unmoved poses and points are identical between shifted and unshifted solves in every case. Fixed points in the `every kind` scene at 6.4e6 m come back bit-exact in both cores. NaN rows cannot be reached: a block with ρ ≤ 0 costs inf, so LM never accepts that state. A moved variable that exactly equals its start would mean LM rejected every step, and returning the input is then correct.
+- **The origin's determinism:** `np.cumsum` is sequential, Eigen's `+=` on a `Vector3d` does not reassociate, the division is the same in both, and there is no fast-math in the build flags.
+- **Layout decisions:** gauge pose, confined pose and `free_gauge` are the same across offsets (the far-origin test plus the probe).
+- **L24 logic:** the same in both cores. Python `with_fixed` is equivalent to the C++ pushes to `centre_cams` and `orientation_cams`.
+- **The analytic pose-prior Jacobian at 1.2 rad:** matches central differences (1.7e-7 scaled).
+- **The note's soft-direction lesson, far-origin bullets and free_gauge bullets:** consistent with the code and tests.
+- **Tests:** `tests/foundations/test_ba.py` gives 105 passed and 15 skipped (Rust is not implemented, by design).
+
+### For the backlog (out of range)
+- **σ_f when gauge is left free:** When `free_gauge > 0`, `intrinsics_std` is `inf` under `none` (7 free) but finite under `first_pose` (1 free): 5.7625 against 5.7552 under `auto` on the same data, 0.13% off. σ_f is gauge-invariant (Triggs §9), so the finite value is regularisation-dependent. Consider reporting σ as unavailable whenever `free_gauge > 0`, or documenting the difference.
+- **Anchored points with no world point:** these differ between the cores. Python `world_points` returns a NaN row, while C++ `adjust` keeps the stored `state.points` row. The final state cannot reach this (cost inf), so it is latent.
+- **An iteration mismatch at 1e-12 function tolerance:** with the test-only `TIGHT` options (function tolerance 1e-12), the near scene plus an unobserved camera stops at 10 iterations in Python and 9 in C++. This is the stopping sensitivity the note already describes. Tests that compare iterations across cores should keep using the fixture's 1e-10.
+
+Probe scripts saved outside the repo: `ba_probe_shift.py` and `ba_probe_unobserved.py`. The other probes (`probe_fixed.py`, `probe_far_prior.py`, `probe_jac_large.py`, `probe_free.py`) are in the session scratchpad.
