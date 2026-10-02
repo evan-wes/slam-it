@@ -1173,3 +1173,109 @@ Sources:
 - [Triggs et al., Bundle Adjustment -- A Modern Synthesis (1999)](https://link.springer.com/chapter/10.1007/3-540-44480-7_21)
 - [GTSAM GPSFactor.cpp (error = nTb.translation() − measured)](https://docs.ros.org/en/api/gtsam/html/GPSFactor_8cpp_source.html)
 - [Solà, Deray & Atchuthan, A micro Lie theory for state estimation in robotics, arXiv:1812.01537](https://arxiv.org/abs/1812.01537)
+
+## Run 4 -- 2026-10-02
+
+| | |
+|---|---|
+| **Branch** | `feature/ba-spine` |
+| **Range** | `baf5612...374cc9afbc5f80e1dc6cb49384c777b1c125bf1f` (Run 3's fixes) |
+| **Reviewers** | algorithm (opus) only: the prior residual and the gauge frame were algorithmic; architecture and hygiene got only the refactors they asked for |
+| **How they ran** | registered slamlab-algorithm-reviewer agent |
+| **Layer 1** | all checks passed at e14132e..274a086 (`scripts/check.sh --env slamlab`) |
+
+Run 3's findings: L17, L19 (for the planned gauges), L20, L21 resolved; L18 resolved for the gauge rows (see L23); L22 waived.
+
+### Findings and resolutions
+
+| ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|---|
+| L23 | must-fix | algorithm | `ba/bundle.py` (`retract`), `bundle.cpp`, far-origin test | steps rotate cameras about the world origin: far from it the confined baseline drifts (+0.8 at 1e4-1e6 m) and LM runs to the cap (9 iterations become 91-100); at 6.4e6 m σ_f is infinite in C++; the test started too close to the truth to see it | fix (solve in a centred world: subtract the frame origin from translations, points, prior centres; add it back) | pending |
+| L24 | should-fix | algorithm | `ba/layout.py`, `layout.cpp` | `free_gauge` reads 0 when an explicit recipe (`first_pose` on monocular data, `none`) leaves directions free | fix (compute it for every recipe; a full-solve case with `free_gauge > 0`) | pending |
+| L25 | note | algorithm | BA note | "converge in 10 iterations at every weight" is too broad: weak priors still take 22-32 under Marquardt damping (ordinary LM behaviour) | fix (bound the claim, one line on soft directions) | pending |
+| L26 | note | algorithm | fixture | no case with a large pose-prior rotation error (parity pinned only where `Jr⁻¹ ≈ I`) | fix (add a case) | pending |
+
+### Algorithm review
+
+## Algorithm review
+
+**Scope:** Run 4 re-review of `feature/ba-spine`, baf5612...374cc9a: the decoupled pose prior (Python `ba/bundle.py`, C++ `ba/bundle.cpp`), the gauge's scene-normalised frame and `Plan.free` (`ba/gauge.py`, `gauge.cpp`/`gauge.hpp`, `layout.py`), the fixture (`generate_ba.py`, `ba.json`), the new tests (`test_ba.py`, `test_ba_gauge.py`, `cpp/tests/foundations/test_gauge.cpp`) and the rewritten sections of `docs/notes/bundle-adjustment.md`. I ran read-only probes in the slamlab env. The scripts are in the session scratchpad and are reproduced inline below.
+
+**Summary:** The L17 fix is correct. I re-derived the pose-prior Jacobian by hand, it matches a numeric check at large rotation errors and 1e3 m centres, and the two cores agree to 4e-12. The L18 frame really does make the gauge rows independent of where the origin is. But the solver still steps about the world origin. Far from it, a rotation step of θ swings the camera centre by about |θ|²|C|/2 that nothing controls. So once the start is more than slightly perturbed, the scale gauge drifts by 50–63% and LM goes from 9 iterations to the 100 cap. The far-origin test misses this because it starts only 0.01 from the truth. At ECEF distances (6.4e6 m) σ_f is still infinite in both cores. `free_gauge` also reports 0 when an explicit recipe leaves directions free.
+
+### Run 3 findings
+
+| ID | Status |
+|---|---|
+| L17 (pose prior did not pin the centre) | **Resolved.** The residual `(C − C̄, log(R̄_wcᵀ R_wc))` is right. Under `T_cw exp(δ)`: `R_wc' = exp(−θ) R_wc`, so `e_r' = log(E exp(−R_cw θ))`, which gives `−Jr⁻¹(e_r) R_cw θ`. And `C' = exp(−θ)(C − Vρ)`, so `dC = −ρ + hat(C) θ`. Both cores implement exactly this. Rotation-only weights zero the centre rows, and the anchors put the camera in `orientation_cams` only, which matches. The gauge row `[I, −hat(C), C]` now really is what a centre prior pins. The numeric-Jacobian test (`test_ba.py:241`) covers both a full prior and a translation-only prior. |
+| L18 (rank test in world coordinates) | **Resolved for the gauge rows, but see the new must-fix.** With `X' = (X−o)/σ`, the generators map as `t' = (t + ω×o + s o)/σ`, `ω' = ω`, `s' = s`. That map is invertible, so the spans are the same. `classify()` reads only the dimension and the ω and s rows, which the map leaves alone, so it is invariant. The normal `J_cᵀ diag(σI, I) M'` equals `J_cᵀ M_world`, which is the world construction. The 1e6 m plan tests in both cores are meaningful: the old absolute tolerance failed them. |
+| L19 (leftover gauge not reported) | **Resolved for `auto`/`similarity`/`scale`.** `confinement` rebuilds N with `sum(ranks) + free` in both cores. The explicit recipes still report 0; see the should-fix below. |
+| L20 (stiff priors crawl) | **Resolved.** Stiff translation priors (1e2 to 1e4) now take 7 to 14 iterations. A separate crawl remains with weak priors; see the note below. |
+| L21 (cost depends on the gauge) | **Resolved.** The `BASummary` doc now says so. |
+| L22 (variance factor redundancy) | **Waived**, as recorded. |
+
+### Findings
+
+#### [must-fix] Far from the origin, the solver's own parameterisation drifts the scale gauge and stalls LM
+- **Where:** `src/slamlab/foundations/ba/bundle.py:534` (`retract`: `T_cw exp(δ)` about the world origin), and the same in C++. Also `gauge.py` `confinement` (a first-order constraint) and `tests/foundations/test_ba.py:871-878` (the far-origin test starts close to the truth). The note's claim is at `docs/notes/bundle-adjustment.md:200-207`.
+- **Issue:** The frame fixes only the gauge's rank test. A step still rotates each camera about the world origin: `C' = exp(−θ)(C − Vρ)`, whose second-order term is about `½|θ|²|C|`. At |C| = 1e4 m and θ = 1e-2 that is about 0.5 m per step. The linearised confinement `(C₄−C₀)·dC = 0` does not see it, and neither does LM's model. The result:
+  - the "baseline-keeping" scale gauge drifts a long way;
+  - steps keep being rejected or only partly accepted, so the iteration count explodes.
+
+  The optimum cost is unchanged, so this is gauge drift plus lost convergence, not a wrong optimum.
+- **Why it matters:** Geo-referenced scenes are the stated motivation: the note lists UTM, ECEF and COLMAP models aligned to GNSS. UTM northings run to 1e7 m. On such input:
+  - the reported `confined_pose` no longer means the baseline was held;
+  - solves hit `max_iterations`;
+  - σ_f goes infinite at ECEF range.
+
+  The note's "1%, which is what 1e6 m coordinates leave of the problem's own digits" is also inaccurate. float64 keeps about 1e-10 m at 1e6 m. The digits are lost to stepping about a far origin, and centring the problem recovers them.
+- **Evidence:** Same scene as `test_far_from_the_world_origin` (`_scene(cameras=5, points=60, noise=0.5, seed=1, rotation=0.3)`, f and c free), with `perturb=0.05`. The whole problem is shifted by `mag·(1, 0.3, 0)`, solved with `TIGHT`, and I compare `|C₄−C₀|` before and after:
+  ```
+  0      python baseline +0.0025 it=9   function
+  1e3    python baseline +0.0591 it=21  function
+  1e4    python baseline +0.4960 it=91  function   (cpp: it=91 step)
+  1e5    python baseline +0.6299 it=87  function   (cpp: it=84 step)
+  1e6    python baseline +0.5053 it=100 max_iterations (cpp too)
+  ```
+  The cost is 50.860474 in every row. With the test's own `perturb=0.01`:
+  - at 1e4–1e6, iterations go from 7 to 34–49 and termination becomes `step`;
+  - at 3e6, C++ σ_cy is 0.5573 against 0.5508 near the origin, a 1.2% difference, so the test's `rtol=1e-2` would fail;
+  - at 6.4e6 (ECEF), both cores give `sf=[inf inf]` and `unobservable_focal=1`.
+- **Suggested fix:**
+  - Solve in a centred world. Subtract an origin, such as `Frame.origin`, from every pose translation, point, pose-prior centre and fixed point before the solve, and add it back afterwards, in both cores. BA residuals are equivariant under translation, so this is exact. It removes the far-origin chart for the steps, the pose-prior `hat(C)` term and the gauge in one move. Unmoved fixed poses are already restored bit-exactly.
+  - Make the far-origin tests start from `perturb≥0.05`, add a 6.4e6 case, and assert that the baseline is held and the iteration count matches the near-origin solve.
+  - Optionally, also scale the problem by `Frame.scale`.
+
+  This is standard practice: OpenSfM, for example, reconstructs GPS-referenced scenes in a local topocentric frame around a reference LLA (https://opensfm.readthedocs.io/en/latest/geometry.html).
+
+#### [should-fix] `free_gauge` reads 0 when an explicit recipe leaves gauge directions in the problem
+- **Where:** `src/slamlab/foundations/ba/layout.py:145,148` (`NO_PLAN` for `none`/`first_pose`), `layout.py:241`, and the doc at `problem.py:303-305`. The C++ layout mirrors this.
+- **Issue:** `free_gauge` is set only from the greedy plan. With `gauge="first_pose"` on monocular data, scale stays free. With `gauge="none"` and nothing pinned, all 7 directions stay free. Both report `free_gauge=0`.
+- **Why it matters:** L19 asked for the leftover dimension to be reported. The doc promises "directions … left in the problem: 0 unless the geometry is degenerate", and a caller reading the summary is told the problem is gauge-free when it is singular.
+- **Evidence:** On the monocular scene (`_scene(..., seed=1, rotation=0.3)`), `ba.solve(..., BAOptions(gauge="first_pose"))` and `gauge="none"` both report `free_gauge 0`, in both cores.
+- **Suggested fix:** For the explicit recipes, set `free = remaining(anchors_after_recipe, centres).shape[1]`, or document that the field counts only what the null-space plan could not remove. Add one fixture or unit case with `free_gauge > 0` that goes through the full solve.
+
+#### [note] Weak priors still crawl under LM; the cause is damping, not the residual
+- **Where:** `docs/notes/bundle-adjustment.md:590` ("converge in 10 iterations at every weight").
+- **Issue:** With weight-1 centre priors (the old fixture's weight), LM takes 22 to 32 iterations, against 7 with no priors. The old note said 15. With Gauss-Newton, or with `initial_damping=1e-8`, the same problems take 6. A softly pinned direction has curvature far below `λ·diag(JᵀJ)`, so Marquardt damping shrinks it until λ decays. This is ordinary LM behaviour, not a residual defect. The lesson "a crawl can be the residual's fault" is right for stiff priors, but the "every weight" claim is too broad.
+- **Evidence:** LM at 1e-4: `3 centres` 32 its, `2 centres` 22. LM at 1e-8: 11 and 6. GN: 6 and 6. The cost matches to 1e-12 in every run.
+- **Suggested fix:** Bound the note's claim to 1e2–1e4 and add one line about soft directions under Marquardt damping.
+
+#### [note] No fixture case has a large pose-prior rotation error
+- **Where:** `generate_ba.py` (`_every_kind` offsets the prior by `exp(0.01)`).
+- **Issue:** Parity is pinned only where `Jr⁻¹ ≈ I`. A live probe at about 1.5 rad offsets agrees between the cores (pose difference 4.4e-12, the same cost and the same iteration count), so this is coverage, not a defect.
+
+### Checked and fine
+- **Pose-prior derivation:** the derivation above matches both cores. The numeric Jacobian on the prior rows, with prior offsets of about 1.5 rad and 1 m at a 1e3 m origin, differs from the analytic one by 6e-11 relative (2e-10 at the origin).
+- **GNSS-style prior:** comparing centres is GTSAM's GPSFactor formulation. The rotation half is a right-error on `R_wc` with an isotropic weight, so the frame it is expressed in does not matter.
+- **Frame equivalence:** spans, `classify` invariance and the world-unit normal (`J_cᵀ diag(σ,1) M'` = `J_cᵀ M_world`) all check out. `MᵀJ·J⁻¹M = MᵀM` is positive definite, so the constraint stays transversal.
+- **`Frame.of`:** handles the empty case and zero spread. The frame stays at its start value while centres move, which keeps entries of order 1.
+- **`Plan.free` and the confinement:** `free` is built consistently in both cores. The confinement rebuilds N with `sum(ranks)+free`. A degenerate pose at the centre of the scale is counted in both cores' unit tests.
+- **Fixture:** 14 cases, including the explicit `first_pose`/`scale`/`none` and a GNSS case stored with identity rotation at weight 1e4 (9 iterations). The reasoning for `function_tolerance=1e-10` is sound, and the codes are compared through `assert_matches_fixture`.
+- **New tests:** the GNSS-prior invariance test (identity against true stored rotation, to 1e-9) and the three-centre "no gauge, finite σ_f" test are meaningful regressions for L17.
+
+Sources:
+- [OpenSfM: Geometric Models (topocentric frame, reference_lla)](https://opensfm.readthedocs.io/en/latest/geometry.html)
+- Triggs, McLauchlan, Hartley & Fitzgibbon, "Bundle Adjustment -- A Modern Synthesis", Vision Algorithms 1999, §9 (gauge)
+- Solà, Deray & Atchuthan, "A micro Lie theory for state estimation in robotics", arXiv:1812.01537 (right Jacobians)
+- Barfoot, *State Estimation for Robotics* (SE(3) exp/V matrix, used for the centre's second-order term)
