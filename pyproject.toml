@@ -1,0 +1,40 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "nanobind>=2.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "slamlab"
+# Canonical version lives in the VERSION file; scikit-build-core reads it at build time.
+dynamic = ["version"]
+description = "A learning ladder for visual SLAM, in Python, C++ and Rust (working name)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "evan-wes" }]
+dependencies = ["numpy>=1.26"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6", "maturin>=1.7"]
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+cmake.build-type = "Release"
+wheel.packages = ["src/slamlab"]
+# Editable installs rebuild the C++ extension on import when its sources change
+# (needs `pip install --no-build-isolation -e .`).
+editable.rebuild = true
+# scripts/setup_slamlab.sh sets a per-env build dir (build/<env name>); this is the default
+# for other builds (CI, plain pip installs).
+build-dir = "build/{wheel_tag}"
+
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "VERSION"
+regex = '(?P<value>\d+\.\d+\.\d+\.\d+)'
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

@@ -1,0 +1,15 @@
+[package]
+name = "slamlab-py"
+version = "0.1.0"
+description = "Python bindings for slamlab's Rust core (the slamlab_rs module)."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "slamlab_rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = "0.29.3"
+slamlab-core = { path = "../slamlab-core" }
