@@ -47,26 +47,13 @@ class DenseCholesky:
 # --- the reduced camera-side coordinates ----------------------------------------------------
 
 
-def householder_complement(normal: Array) -> Array:
-    """Return an orthonormal (n, n-1) basis of the complement of ``normal``, deterministically.
-
-    The Householder reflection mapping ``normal`` onto its largest axis keeps every other axis
-    orthogonal to it; those columns are the basis.
-    """
-    unit = normal / np.linalg.norm(normal)
-    k = int(np.argmax(np.abs(unit)))
-    v = unit.copy()
-    v[k] += 1.0 if unit[k] >= 0.0 else -1.0
-    reflection = np.eye(unit.shape[0]) - 2.0 * np.outer(v, v) / (v @ v)
-    return np.delete(reflection, k, axis=1)
-
-
 @dataclass(frozen=True)
 class Reduction:
     """Maps between the full camera-side vector and the free one.
 
     The full vector holds 6 entries per pose, P per intrinsics group and 2 per depth affine;
-    the free coordinates are the free full entries, in order, then the scale pose's five.
+    the free coordinates are the free full entries, in order, then each confined pose's
+    basis coordinates.
     """
 
     free: IndexArray

@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "common.hpp"
+#include "gauge.hpp"
 #include "slamlab/foundations/ba.hpp"
 
 namespace slamlab::foundations::ba::detail {
@@ -20,16 +21,18 @@ struct Layout {
   Mask anchored;
   /// @brief Positions in `obs` of the kept observations with a depth prior.
   IndexList depth;
-  /// @brief Cameras with a pose prior.
+  /// @brief Cameras with a pose prior that can move (a prior on a pose that cannot is
+  ///        constant).
   IndexList prior_cams;
   /// @brief Depth affines that move.
   Mask affine_free;
   /// @brief Poses with all six directions free.
   Mask pose_free;
-  /// @brief The pose whose step is confined, or -1.
-  std::int64_t scale_pose = -1;
-  /// @brief The fixed pose the scale pose's baseline is measured from, or -1.
-  std::int64_t scale_reference = -1;
+  /// @brief What pins the similarity, the poses the gauge fixed included.
+  Anchors gauge_anchors;
+  /// @brief The poses that remove the gauge: fixed ones (already out of `pose_free`), and
+  ///        confined ones in order with how many directions each removes.
+  Plan gauge_plan;
   /// @brief Intrinsics parameters that move, per group and parameter (K x P, row-major).
   Mask intrinsics_free;
   /// @brief Each point's index among the free points, or -1.

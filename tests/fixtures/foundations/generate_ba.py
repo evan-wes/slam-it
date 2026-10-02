@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
@@ -56,8 +57,14 @@ TOLERANCES = {
         "reason": "the diagonal of an inverse, from a system solved to 1e-9",
     },
     "cost": {"comparison": "close", "rtol": 1e-9, "atol": 1e-20, "reason": "relative"},
+    "codes": {
+        "comparison": "exact",
+        "rtol": 0.0,
+        "atol": 0.0,
+        "reason": "gauge, termination, iterations and counts: the two cores step alike",
+    },
 }
-"""Each output's policy; summary codes and counts compare exactly."""
+"""Each output's policy."""
 
 
 def _scene(
@@ -198,6 +205,26 @@ def _every_kind() -> tuple[ba.BAProblem, dict[str, Any]]:
     return problem, {"loss": ["cauchy", 2.0], "depth_loss": ["huber", 0.5]}
 
 
+def _rotation_priors() -> tuple[ba.BAProblem, dict[str, Any]]:
+    """Attitude priors pin rotation: translation and scale are left, two poses take them."""
+    problem, poses, _ = _scene("pinhole", seed=10)
+    weights = np.zeros((CAMERAS, 2))
+    weights[:, 1] = 1e4
+    return replace(problem, pose_prior=poses, pose_prior_weights=weights), {}
+
+
+def _translation_priors() -> tuple[ba.BAProblem, dict[str, Any]]:
+    """Two translation priors pin all but the rotation about their baseline.
+
+    Weight 1: stiff translation priors (1e2 and up) make this geometry converge slowly
+    under any gauge, none included, and a slow crawl is no place to hold two cores to 1e-9.
+    """
+    problem, poses, _ = _scene("pinhole", seed=11)
+    weights = np.zeros((CAMERAS, 2))
+    weights[[0, 3], 0] = 1.0
+    return replace(problem, pose_prior=poses, pose_prior_weights=weights), {}
+
+
 CASES = {
     "similarity: auto gauge with nothing anchored": _similarity,
     "first_pose: metric depth priors pin the scale": _first_pose,
@@ -208,11 +235,13 @@ CASES = {
     "radial: f, k1, k2 free": _radial,
     "huber: five 20 px outliers": _huber,
     "every kind of block": _every_kind,
+    "partial: rotation priors confine two poses": _rotation_priors,
+    "partial: translation priors on two cameras": _translation_priors,
 }
 
 
-def options_from(spec: dict[str, Any]) -> ba.BAOptions:
-    """Build the options a case names: tight tolerances plus its overrides."""
+def _options(spec: dict[str, Any]) -> ba.BAOptions:
+    """Build a case's options: tight tolerances plus its overrides."""
     solver = nls.Options(
         max_iterations=100,
         function_tolerance=1e-12,
@@ -224,6 +253,19 @@ def options_from(spec: dict[str, Any]) -> ba.BAOptions:
         solver=solver,
         depth_loss=nls.Loss(*spec.get("depth_loss", ["trivial", 1.0])),
         gauge=spec.get("gauge", "auto"),
+    )
+
+
+def options_from(spec: dict[str, Any]) -> ba.BAOptions:
+    """Rebuild a case's options from its JSON input, which lists every field."""
+    solver = dict(spec["solver"])
+    solver["loss"] = nls.Loss(**solver["loss"])
+    return ba.BAOptions(
+        **{
+            **spec,
+            "solver": nls.Options(**solver),
+            "depth_loss": nls.Loss(**spec["depth_loss"]),
+        }
     )
 
 
@@ -282,18 +324,28 @@ def _expected(result: ba.BAResult) -> dict[str, Any]:
     }
 
 
+def _compact(text: str) -> str:
+    """Put each innermost list of numbers on one line (``indent`` gives each its own)."""
+    return re.sub(
+        r"\[\s*([-+0-9.eE,\snul]*?)\s*\]",
+        lambda match: "[" + re.sub(r"\s+", " ", match.group(1)).replace(" ,", ",") + "]",
+        text,
+    )
+
+
 def main() -> None:
     """Solve every case with the reference and write ``ba.json``."""
     cases = []
     for name, build in CASES.items():
         problem, spec = build()
-        result = ba.solve(problem, options_from(spec))
+        options = _options(spec)
+        result = ba.solve(problem, options)
         if not result.summary.solve.converged:
             raise RuntimeError(f"{name}: the reference did not converge")
         cases.append(
             {
                 "name": name,
-                "input": {"problem": asdict(problem), "options": spec},
+                "input": {"problem": asdict(problem), "options": asdict(options)},
                 "expected": _expected(result),
             }
         )
@@ -305,7 +357,7 @@ def main() -> None:
         "tolerance": TOLERANCES,
         "cases": _json(cases),
     }
-    OUT.write_text(json.dumps(doc, indent=1) + "\n")
+    OUT.write_text(_compact(json.dumps(doc, indent=1)) + "\n")
     print(f"wrote {OUT.name} ({len(cases)} cases)")
 
 

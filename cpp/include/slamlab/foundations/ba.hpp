@@ -41,12 +41,18 @@ enum class Gauge : std::uint8_t {
   kFirstPose = 1,
   /// @brief Sim(3): as `kFirstPose`, then confine one pose's step to keep its baseline.
   kSimilarity = 2,
-  /// @brief The minimal gauge the fixed variables and priors leave: `kNone`, `kScale`,
-  ///        `kFirstPose` or `kSimilarity`.
+  /// @brief Exactly what the fixed variables and priors leave free, whatever part of the
+  ///        similarity it is (reported as `kNone`, `kFirstPose`, `kScale`, `kSimilarity` or
+  ///        `kPartial`).
   kAuto = 3,
   /// @brief Scale only: confine one pose's step to keep its baseline to the pose the rigid
   ///        motion is pinned to (a fixed pose or a full pose prior).
   kScale = 4,
+  /// @brief Reported only: `kAuto` found a part of the similarity no other name describes.
+  kPartial = 5,
+  /// @brief The number of gauges (a sentinel, not a gauge): the bindings' name tables are
+  ///        checked against it, so an enumerator added without its name fails to build.
+  kCount = 6,
 };
 
 /// @brief Solves the reduced camera system `S x = b`, S symmetric positive definite.
@@ -149,8 +155,8 @@ struct Summary {
   Gauge gauge = Gauge::kAuto;
   /// @brief The pose fixed to remove the rigid gauge, or -1.
   std::int64_t gauge_pose = -1;
-  /// @brief The pose whose step was confined to remove the scale gauge, or -1.
-  std::int64_t scale_pose = -1;
+  /// @brief The first pose whose step was confined to remove the rest of the gauge, or -1.
+  std::int64_t confined_pose = -1;
   /// @brief Free points dropped as degenerate.
   std::int64_t dropped_points = 0;
   /// @brief Observations left out (of dropped points, or behind their camera).
@@ -163,8 +169,9 @@ struct Summary {
   std::int64_t unobserved_depth_affines = 0;
   /// @brief Free intrinsics groups whose focal length the data does not pin.
   std::int64_t unobservable_focal = 0;
-  /// @brief The a-posteriori variance factor `2 cost / (m - n)` at the solution, for m
-  ///        residual rows and n free parameters (NaN when m <= n).
+  /// @brief The a-posteriori variance factor `sum(w s) / (m - n)` at the solution: the
+  ///        blocks' squared norms under their final IRLS weights (`2 cost` under the trivial
+  ///        loss), over m weighted residual rows less n free parameters (NaN when m <= n).
   double variance_factor = std::numeric_limits<double>::quiet_NaN();
 };
 

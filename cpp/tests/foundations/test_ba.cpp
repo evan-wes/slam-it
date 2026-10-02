@@ -100,8 +100,8 @@ int main() {
   expect(solved.has_value() && solved->summary.solve.converged &&
              solved->summary.solve.final_cost < 1e-16,
          "solve: converges to zero reprojection error", failures);
-  expect(solved.has_value() && solved->summary.gauge_pose == 0 && solved->summary.scale_pose == 3 &&
-             solved->poses[0] == problem.poses[0],
+  expect(solved.has_value() && solved->summary.gauge_pose == 0 &&
+             solved->summary.confined_pose == 3 && solved->poses[0] == problem.poses[0],
          "solve: the similarity gauge fixes pose 0 and confines pose 3", failures);
 
   // A point seen once is dropped, with its observation, and returned unchanged.

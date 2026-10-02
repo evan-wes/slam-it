@@ -16,6 +16,8 @@ dependencies = ["numpy>=1.26"]
 
 [project.optional-dependencies]
 # COLMAP's Ceres bundle adjuster, for slamlab.eval.colmap_reference (the only importer).
+# The development setup installs it too (scripts/setup_slamlab.sh): it is the reference the
+# BA tests and demos compare against.
 colmap = ["pycolmap>=4.2"]
 # The development and layer-1 toolchain's pip layer: the single list scripts/setup_slamlab.sh
 # installs from when not using the lockfile (the conda layer -- compilers, clang tools,
@@ -32,8 +34,6 @@ dev = [
   # for the parity fixtures). manifpy comes from conda-forge (setup_slamlab.sh).
   "scipy>=1.13",
   "mpmath>=1.3",
-  # COLMAP's Ceres bundle adjuster: the reference BA is compared against (tests, demo).
-  "pycolmap>=4.2",
   # Visualisation for the demos (never imported by the library).
   "rerun-sdk>=0.38",
 ]
@@ -148,6 +148,7 @@ layers = [
   "solve",
   "bundle",
   "layout | schur",
+  "gauge",
   "problem",
 ]
 
@@ -155,17 +156,11 @@ layers = [
 [[tool.importlinter.contracts]]
 name = "Only eval may import pycolmap"
 type = "forbidden"
-source_modules = [
-  "slamlab.backends",
-  "slamlab.foundations",
-  "slamlab.edge",
-  "slamlab.classic",
-  "slamlab.dense",
-  "slamlab.vi",
-  "slamlab.learned",
-  "slamlab.orchestration",
-]
+# An allow-list: all of slamlab is forbidden, the one reference module excepted, so a new
+# package is covered without being listed.
+source_modules = ["slamlab"]
 forbidden_modules = ["pycolmap"]
+ignore_imports = ["slamlab.eval.colmap_reference -> pycolmap"]
 
 [[tool.importlinter.contracts]]
 name = "Visual-inertial builds on the edge rung only, not dense or classic"

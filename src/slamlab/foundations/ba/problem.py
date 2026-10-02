@@ -20,8 +20,9 @@ Array = NDArray[np.float64]
 IndexArray = NDArray[np.int64]
 Mask = NDArray[np.bool_]
 
-GAUGES = ("none", "first_pose", "similarity", "auto", "scale")
-"""The gauge choices :class:`BAOptions` accepts, in the order of their integer codes."""
+GAUGES = ("none", "first_pose", "similarity", "auto", "scale", "partial")
+"""The gauges, in the order of their integer codes. ``"partial"`` is reported only, by
+``"auto"`` for a remainder none of the others names; :class:`BAOptions` accepts the rest."""
 
 POSE_DIM = 6
 """A pose's tangent dimension."""
@@ -98,7 +99,9 @@ class BAProblem:
 
         This runs for :meth:`create`, for direct construction and for
         :func:`dataclasses.replace` alike, so a solver can trust any ``BAProblem`` it is
-        given, and every backend sees the same checked arrays.
+        given, and every backend sees the same checked arrays. Each array is the problem's
+        own read-only copy: neither the caller's arrays nor writes to the fields can change
+        a problem after it was checked (build a new one with ``replace``).
 
         Raises
         ------
@@ -108,7 +111,9 @@ class BAProblem:
             an anchor is not one of its point's observations (or its point is fixed).
         """
         for name, value in _validated(self).items():
-            object.__setattr__(self, name, value)
+            own = np.array(value, copy=True)
+            own.flags.writeable = False
+            object.__setattr__(self, name, own)
 
     @classmethod
     def create(  # noqa: PLR0913, PLR0917 -- every array of a problem, in the order it reads
@@ -228,20 +233,22 @@ class BAOptions:
     depth_loss : slamlab.foundations.nls.Loss
         The depth priors' robust loss.
     gauge : {"auto", "similarity", "first_pose", "scale", "none"}
-        How the gauge freedom (the scene's free rigid motion and, for monocular data, scale)
-        is removed. ``"auto"`` removes exactly what the fixed variables and priors leave free:
-        nothing when they pin both, only the scale (``"scale"``) when they pin the rigid
-        motion, the first pose (``"first_pose"``) when metric depth pins the scale, and both
-        (``"similarity"``) otherwise. See :mod:`slamlab.foundations.ba.layout`.
+        How the gauge freedom (the scene's free similarity: rigid motion and, for monocular
+        data, scale) is removed. ``"auto"`` removes exactly what the fixed variables and
+        priors leave free, whatever part of the similarity that is. The others are fixed
+        recipes. See :mod:`slamlab.foundations.ba.layout` and
+        :mod:`slamlab.foundations.ba.gauge`.
     min_parallax_deg : float
         A free point whose rays span less than this angle is dropped (default 0: only points
         seen fewer than twice are). Bundle adjustment refines low-parallax points well;
         raise it only to discard poorly triangulated points deliberately.
     scale_deviations : bool
         Scale the intrinsics' deviations by the a-posteriori variance factor
-        ``σ̂₀² = 2 cost / (m - n)`` (m residual rows, n free parameters), as in Förstner &
-        Wrobel (2016, ch. 4), so they do not depend on how well the weights match the true
-        noise. Off, they assume the weights are exact informations.
+        ``σ̂₀² = Σ w s / (m - n)`` (m weighted residual rows, n free parameters; ``s`` the
+        blocks' squared norms, ``w`` their final IRLS weights), as in Förstner & Wrobel (2016,
+        ch. 4), so they do not depend on how well the weights match the true noise. Under the
+        trivial loss the numerator is ``2 cost``; under a robust one, outliers count only as
+        much as their weight lets them. Off, the weights are taken as exact informations.
     focal_std_ratio : float
         A free focal length whose standard deviation exceeds this fraction of it is counted
         as unobservable.
@@ -256,8 +263,9 @@ class BAOptions:
 
     def __post_init__(self) -> None:
         """Reject an unknown gauge, a bad threshold, or a per-block loss set by the caller."""
-        if self.gauge not in GAUGES:
-            raise InvalidInputError(f"gauge: expected one of {GAUGES}, got {self.gauge!r}")
+        if self.gauge not in GAUGES or self.gauge == "partial":
+            choices = GAUGES[:-1]
+            raise InvalidInputError(f"gauge: expected one of {choices}, got {self.gauge!r}")
         for name in ("min_parallax_deg", "focal_std_ratio"):
             value = getattr(self, name)
             if not (np.isfinite(value) and value >= 0.0):
@@ -275,11 +283,13 @@ class BASummary:
     solve : slamlab.foundations.nls.SolveSummary
         The NLS solve's summary; its costs are the full robust cost.
     gauge : str
-        The gauge applied (``"auto"`` resolved).
+        The gauge applied; for ``"auto"``, what it found free (``"partial"`` for a part of
+        the similarity none of the other names describes).
     gauge_pose : int
-        The pose fixed to remove the rigid gauge, or -1 if none was.
-    scale_pose : int
-        The pose whose step was confined to remove the scale gauge, or -1.
+        The pose fixed to remove the gauge, or -1 if none was.
+    confined_pose : int
+        The first pose whose step was confined to remove the rest of the gauge, or -1.
+        (Removing translation and scale, with rotation pinned, confines two.)
     dropped_points : int
         Free points dropped as degenerate (too few views or too little parallax).
     dropped_observations : int
@@ -290,14 +300,15 @@ class BASummary:
         Free intrinsics groups whose focal length the data does not pin (see
         ``BAOptions.focal_std_ratio``).
     variance_factor : float
-        The a-posteriori variance factor ``σ̂₀² = 2 cost / (m - n)`` at the solution (NaN
-        without redundancy, m <= n). Near 1 when the weights match the noise.
+        The a-posteriori variance factor ``σ̂₀² = Σ w s / (m - n)`` at the solution (see
+        ``BAOptions.scale_deviations``; NaN without redundancy, m <= n). Near 1 when the
+        weights match the noise.
     """
 
     solve: nls.SolveSummary
     gauge: str
     gauge_pose: int
-    scale_pose: int
+    confined_pose: int
     dropped_points: int
     dropped_observations: int
     unobserved_poses: int
@@ -309,7 +320,7 @@ class BASummary:
 
 COUNT_NAMES = (
     "gauge_pose",
-    "scale_pose",
+    "confined_pose",
     "dropped_points",
     "dropped_observations",
     "unobserved_poses",

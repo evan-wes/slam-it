@@ -43,23 +43,26 @@ using MatrixIn = nb::ndarray<const double, nb::shape<-1, -1>, nb::c_contig, nb::
 /// @brief Camera model names, indexed by `camera::Model` code.
 constexpr std::array<const char*, 3> kModels = {"pinhole", "radtan", "radial"};
 /// @brief Gauge names, indexed by `ba::Gauge` code.
-constexpr std::array<const char*, 5> kGauges = {"none", "first_pose", "similarity", "auto",
-                                                "scale"};
+constexpr std::array<const char*, 6> kGauges = {"none", "first_pose", "similarity",
+                                                "auto", "scale",      "partial"};
 /// @brief Method names, indexed by `nls::Method` code.
 constexpr std::array<const char*, 2> kMethods = {"levenberg_marquardt", "gauss_newton"};
 /// @brief Loss names, indexed by `nls::LossKind` code.
 constexpr std::array<const char*, 3> kLosses = {"trivial", "huber", "cauchy"};
-/// @brief The number of `nls::Termination` codes.
-constexpr int kTerminations = 7;
+/// @brief The number of `nls::Termination` codes (their names come from `nls::name`).
+constexpr auto kTerminations = static_cast<int>(nls::Termination::kCount);
 
-static_assert(static_cast<int>(camera::Model::kRadial) + 1 == kModels.size());
-static_assert(static_cast<int>(ba::Gauge::kScale) + 1 == kGauges.size());
-static_assert(static_cast<int>(nls::Method::kGaussNewton) + 1 == kMethods.size());
-static_assert(static_cast<int>(nls::LossKind::kCauchy) + 1 == kLosses.size());
-static_assert(static_cast<int>(nls::Termination::kSingular) + 1 == kTerminations);
+static_assert(static_cast<std::size_t>(camera::Model::kCount) == kModels.size());
+static_assert(static_cast<std::size_t>(ba::Gauge::kCount) == kGauges.size());
+static_assert(static_cast<std::size_t>(nls::Method::kCount) == kMethods.size());
+static_assert(static_cast<std::size_t>(nls::LossKind::kCount) == kLosses.size());
 
 /// @brief The columns of a returned trace row.
 constexpr std::size_t kTraceColumns = 7;
+/// @brief The trace's column names (`nls::Iteration`'s fields), in `trace_array` order; the
+///        Python side reads the columns by these names.
+constexpr std::array<const char*, kTraceColumns> kTraceNames = {
+    "iteration", "cost", "gradient_norm", "step_norm", "damping", "relative_decrease", "accepted"};
 
 /// @brief Decode an enum's integer code, checking it against the enum's name table.
 /// @tparam E The enum.
@@ -271,12 +274,17 @@ nb::dict solve(const MatrixIn& intrinsics, const VectorIn<std::int64_t>& intrins
   out["inverse_depth"] = vector_array(solution.inverse_depth);
   out["intrinsics_std"] = matrix_array(solution.intrinsics_std);
   out["trace"] = trace_array(summary.solve.trace);
+  nb::list columns;
+  for (const char* name : kTraceNames) {
+    columns.append(name);
+  }
+  out["trace_columns"] = columns;
   out["initial_cost"] = summary.solve.initial_cost;
   out["final_cost"] = summary.solve.final_cost;
   out["termination"] = static_cast<int>(summary.solve.termination);
   out["gauge"] = static_cast<int>(summary.gauge);
   out["gauge_pose"] = summary.gauge_pose;
-  out["scale_pose"] = summary.scale_pose;
+  out["confined_pose"] = summary.confined_pose;
   out["dropped_points"] = summary.dropped_points;
   out["dropped_observations"] = summary.dropped_observations;
   out["unobserved_poses"] = summary.unobserved_poses;

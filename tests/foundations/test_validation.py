@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from slamlab import backends
-from slamlab.foundations import camera, se3, so3
+from slamlab.foundations import arrays, camera, se3, so3
 from tests.conftest import check_rejects
 
 PINHOLE = [500.0, 500.0, 320.0, 240.0]
@@ -62,3 +62,12 @@ def test_rejects_invalid_input(
 ) -> None:
     """Every backend rejects bad input the same way: Python validates before dispatching."""
     check_rejects(module, function, args, message, backend)
+
+
+def test_group_members_match_the_masks() -> None:
+    """Each group's members, in order, as the per-group mask finds them; empty groups too."""
+    group = np.array([2, 0, 2, 3, 0, 2], dtype=np.int64)
+    members = arrays.group_members(group, 5)
+    assert len(members) == 5
+    for g, found in enumerate(members):
+        np.testing.assert_array_equal(found, np.flatnonzero(group == g))

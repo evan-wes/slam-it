@@ -25,14 +25,15 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 from slamlab.foundations import camera, se3, so3
-from slamlab.foundations.ba.layout import Layout, bearings_or_nan
+from slamlab.foundations.arrays import group_members
+from slamlab.foundations.ba.gauge import confinement
+from slamlab.foundations.ba.layout import Layout
 from slamlab.foundations.ba.problem import AFFINE_DIM, POSE_DIM, Array, BAProblem, IndexArray
 from slamlab.foundations.ba.schur import (
     Blocks,
     ReducedSystemSolver,
     Reduction,
     SchurSystem,
-    householder_complement,
 )
 
 
@@ -92,13 +93,9 @@ def _pose_columns(cam: IndexArray) -> IndexArray:
     return np.asarray(POSE_DIM * cam[:, None] + np.arange(POSE_DIM), dtype=np.int64)
 
 
-def _members(group: IndexArray, n_groups: int) -> list[tuple[int, IndexArray]]:
-    """Return each non-empty group with the positions of its members, in one sort."""
-    order = np.argsort(group, kind="stable")
-    bounds = np.searchsorted(group[order], np.arange(n_groups + 1))
-    return [
-        (g, order[bounds[g] : bounds[g + 1]]) for g in range(n_groups) if bounds[g + 1] > bounds[g]
-    ]
+def _by_group(group: IndexArray, n_groups: int) -> list[tuple[int, IndexArray]]:
+    """Return each non-empty group with the positions of its members."""
+    return [(g, m) for g, m in enumerate(group_members(group, n_groups)) if m.size]
 
 
 class Bundle:
@@ -125,7 +122,7 @@ class Bundle:
         obs = layout.obs[layout.reprojection]
         self._cam = problem.cam_idx[obs]
         self._pt = problem.pt_idx[obs]
-        self._members = _members(problem.intrinsics_idx[self._cam], problem.intrinsics.shape[0])
+        self._by_group = _by_group(problem.intrinsics_idx[self._cam], problem.intrinsics.shape[0])
         self._pixels = problem.observations[obs]
         self._sqrt_w = np.sqrt(problem.weights[obs])
         self._columns = np.concatenate(
@@ -162,7 +159,7 @@ class Bundle:
         anchor_obs = problem.point_anchor[self._a_points]
         self._a_host = problem.cam_idx[anchor_obs]
         self._a_pixels = problem.observations[anchor_obs]
-        self._a_members = _members(
+        self._a_by_group = _by_group(
             problem.intrinsics_idx[self._a_host], problem.intrinsics.shape[0]
         )
         self._a_index = np.full(problem.points.shape[0], -1, dtype=np.int64)
@@ -179,7 +176,7 @@ class Bundle:
         self._real[3 * self._anchored_slots] = True
 
     def _index_free(self) -> None:
-        """Index the free camera-side coordinates and the scale-confined pose's rows."""
+        """Index the free camera-side coordinates and the confined poses' rows."""
         layout = self._layout
         free = np.concatenate(
             [
@@ -189,11 +186,7 @@ class Bundle:
             ]
         )
         self._free = np.flatnonzero(free)
-        self._scale_rows = (
-            POSE_DIM * layout.scale_pose + np.arange(POSE_DIM)
-            if layout.scale_pose >= 0
-            else np.zeros(0, dtype=np.int64)
-        )
+        self._confined_rows = (POSE_DIM * layout.confined[:, None] + np.arange(POSE_DIM)).ravel()
 
     def _intrinsics_columns(self, cam: IndexArray) -> IndexArray:
         """Return each camera's intrinsics-group columns in the full vector."""
@@ -227,8 +220,12 @@ class Bundle:
         )
 
     def residual_rows(self) -> int:
-        """Return the number of residual rows: 2 per reprojection, 1 per depth, 6 per pose prior."""
-        return int(2 * self._cam.size + self._d_cam.size + POSE_DIM * self._p_cam.size)
+        """Return the number of weighted residual rows.
+
+        2 per reprojection, 1 per depth prior, and 3 per weighted half of a pose prior (a
+        translation-only prior's rotation rows carry no information).
+        """
+        return int(2 * self._cam.size + self._d_cam.size + np.count_nonzero(self._p_sqrt_w > 0.0))
 
     def free_size(self, state: State) -> int:
         """Return the number of free parameters (the solver's step length) at ``state``."""
@@ -248,18 +245,20 @@ class Bundle:
     def reduction(self, state: State) -> Reduction:
         """Return the free camera-side coordinates at ``state``.
 
-        The scale-confined pose's six rows map to the five-column Householder basis of the
-        directions that keep its baseline; the basis moves with the poses, so it is rebuilt
+        Each confined pose's six rows map to a basis of the steps that leave the gauge alone
+        (see :func:`gauge.confinement`); the bases move with the poses, so they are rebuilt
         at every state.
         """
         layout = self._layout
-        if layout.scale_pose < 0:
-            basis = np.zeros((0, 0))
-        else:
-            moving, fixed = centres(state.poses[[layout.scale_pose, layout.scale_reference]])
-            baseline = (moving - fixed) / np.linalg.norm(moving - fixed)
-            basis = householder_complement(np.concatenate([-baseline, np.cross(baseline, moving)]))
-        return Reduction(self._free, self._scale_rows, basis, self._full_size)
+        bases = confinement(
+            layout.gauge_anchors, centres(state.poses), layout.confined, layout.confined_ranks
+        )
+        basis = np.zeros((POSE_DIM * len(bases), sum(b.shape[1] for b in bases)))
+        column = 0
+        for i, block in enumerate(bases):
+            basis[POSE_DIM * i : POSE_DIM * (i + 1), column : column + block.shape[1]] = block
+            column += block.shape[1]
+        return Reduction(self._free, self._confined_rows, basis, self._full_size)
 
     def _rays(self, state: State) -> Array:
         """Return each anchor pixel's ray on its host's normalised plane, ``(x, y, 1)``.
@@ -270,8 +269,8 @@ class Bundle:
         invalid and the step that led there is rejected.
         """
         rays = np.zeros((self._a_points.size, 3))
-        for g, sel in self._a_members:
-            bearing = bearings_or_nan(
+        for g, sel in self._a_by_group:
+            bearing = camera.unproject_or_nan(
                 self._problem.camera_model, state.intrinsics[g], self._a_pixels[sel]
             )
             rays[sel] = bearing / bearing[:, 2:3]
@@ -308,7 +307,7 @@ class Bundle:
             [-np.broadcast_to(np.eye(3), (n_anchors, 3, 3)), so3.hat(world)], axis=2
         )
         d_ray = np.zeros((n_anchors, 3, n_params))
-        for g, sel in self._a_members:
+        for g, sel in self._a_by_group:
             d_point, d_k = camera.project_jacobians(
                 self._problem.camera_model, state.intrinsics[g], rays[sel]
             )
@@ -330,7 +329,7 @@ class Bundle:
         in_camera = self._in_camera(state, world, self._cam, self._pt)
         out = np.full((in_camera.shape[0], 2), np.nan)
         valid = in_camera[:, 2] > camera.MIN_DEPTH
-        for g, members in self._members:
+        for g, members in self._by_group:
             sel = members[valid[members]]
             out[sel] = camera.project(
                 self._problem.camera_model, state.intrinsics[g], in_camera[sel]
@@ -412,7 +411,7 @@ class Bundle:
         n_obs, n_params = in_camera.shape[0], state.intrinsics.shape[1]
         d_point = np.zeros((n_obs, 2, 3))
         d_intrinsics = np.zeros((n_obs, 2, n_params))
-        for g, sel in self._members:
+        for g, sel in self._by_group:
             d_point[sel], d_intrinsics[sel] = camera.project_jacobians(
                 self._problem.camera_model, state.intrinsics[g], in_camera[sel]
             )

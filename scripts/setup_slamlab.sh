@@ -80,12 +80,13 @@ run() { "${CONDA_BIN}" run --no-capture-output -n "${ENV_NAME}" "$@"; }
 if [[ ${UNLOCKED} -eq 0 && -f "${LOCK_FILE}" ]]; then
   run python -m pip install -r "${LOCK_FILE}"
 else
-  # Resolve fresh from pyproject.toml: the runtime dependencies plus the `dev` extra,
-  # the single list of the toolchain's pip layer.
+  # Resolve fresh from pyproject.toml: the runtime dependencies plus the `dev` extra (the
+  # toolchain's pip layer) and the `colmap` extra (the BA reference the tests compare to).
   mapfile -t PIP_REQS < <(run python -c '
 import tomllib
 project = tomllib.load(open("'"${ROOT_DIR}"'/pyproject.toml", "rb"))["project"]
-print("\n".join(project["dependencies"] + project["optional-dependencies"]["dev"]))')
+extras = project["optional-dependencies"]
+print("\n".join(project["dependencies"] + extras["dev"] + extras["colmap"]))')
   run python -m pip install "${PIP_REQS[@]}"
 fi
 # jscpd (duplication detection) installs into the env's own Node prefix.

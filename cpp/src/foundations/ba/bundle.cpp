@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "gauge.hpp"
 #include "schur.hpp"
 #include "slamlab/foundations/camera.hpp"
 #include "slamlab/foundations/nls.hpp"
@@ -28,29 +29,6 @@ namespace {
 /// @return The centre in the world frame.
 Eigen::Vector3d centre(const Eigen::Matrix4d& t_cam_world) {
   return -t_cam_world.topLeftCorner<3, 3>().transpose() * t_cam_world.topRightCorner<3, 1>();
-}
-
-/// @brief An orthonormal basis of the complement of `normal`, by a Householder reflection
-///        onto its largest axis (deterministic, as in the Python reference).
-/// @param normal The 6-vector to complement.
-/// @return A 6 x 5 basis.
-Eigen::Matrix<double, kPoseDim, kPoseDim - 1> householder_complement(
-    const Eigen::Matrix<double, kPoseDim, 1>& normal) {
-  const Eigen::Matrix<double, kPoseDim, 1> unit = normal.normalized();
-  Index k = 0;
-  unit.cwiseAbs().maxCoeff(&k);
-  Eigen::Matrix<double, kPoseDim, 1> v = unit;
-  v(k) += unit(k) >= 0.0 ? 1.0 : -1.0;
-  const Eigen::Matrix<double, kPoseDim, kPoseDim> reflection =
-      Eigen::Matrix<double, kPoseDim, kPoseDim>::Identity() - (2.0 * v * v.transpose() / v.dot(v));
-  Eigen::Matrix<double, kPoseDim, kPoseDim - 1> basis;
-  Index column = 0;
-  for (Index j = 0; j < kPoseDim; ++j) {
-    if (j != k) {
-      basis.col(column++) = reflection.col(j);
-    }
-  }
-  return basis;
 }
 
 /// @brief Invert every pose (world-to-camera and back).
@@ -141,8 +119,8 @@ class Bundle {
       append_range(free_, affine_offset_ + (2 * c), 2,
                    layout.affine_free[static_cast<std::size_t>(c)]);
     }
-    if (layout.scale_pose >= 0) {
-      append_range(scale_rows_, kPoseDim * at(layout.scale_pose), kPoseDim, true);
+    for (const Index c : layout.gauge_plan.confined) {
+      append_range(confined_rows_, kPoseDim * c, kPoseDim, true);
     }
     anchor_index_.assign(layout.anchored.size(), -1);
     point_dims_.assign(static_cast<std::size_t>(layout.free_points), 3);
@@ -189,8 +167,13 @@ class Bundle {
   /// @brief The number of residual rows: 2 per reprojection, 1 per depth, 6 per pose prior.
   /// @return The row count.
   [[nodiscard]] Index residual_rows() const {
-    return static_cast<Index>((2 * layout_->reprojection.size()) + layout_->depth.size() +
-                              (kPoseDim * layout_->prior_cams.size()));
+    auto rows = static_cast<Index>((2 * layout_->reprojection.size()) + layout_->depth.size());
+    for (const Index c : layout_->prior_cams) {
+      // 3 per weighted half: a translation-only prior's rotation rows carry no information.
+      rows += (problem_->pose_prior_weights(c, 0) > 0.0 ? 3 : 0) +
+              (problem_->pose_prior_weights(c, 1) > 0.0 ? 3 : 0);
+    }
+    return rows;
   }
 
   /// @brief The number of free parameters (the solver's step length) at `state`.
@@ -216,22 +199,29 @@ class Bundle {
     return {entries, positions};
   }
 
-  /// @brief The free camera-side coordinates at `state` (the scale basis moves with it).
+  /// @brief The free camera-side coordinates at `state`: each confined pose's rows map to a
+  ///        basis of the steps that leave the gauge alone, rebuilt as the poses move.
   /// @param state The state.
   /// @return The reduction.
   [[nodiscard]] Reduction reduction(const State& state) const {
-    Eigen::MatrixXd basis(0, 0);
-    if (layout_->scale_pose >= 0) {
-      const Eigen::Vector3d moving =
-          centre(state.poses[static_cast<std::size_t>(layout_->scale_pose)]);
-      const Eigen::Vector3d fixed =
-          centre(state.poses[static_cast<std::size_t>(layout_->scale_reference)]);
-      const Eigen::Vector3d baseline = (moving - fixed).normalized();
-      Eigen::Matrix<double, kPoseDim, 1> normal;
-      normal << -baseline, baseline.cross(moving);
-      basis = householder_complement(normal);
+    Positions centres;
+    for (const Eigen::Matrix4d& pose : state.poses) {
+      centres.push_back(centre(pose));
     }
-    return {free_, scale_rows_, basis, full_size_};
+    const std::vector<Eigen::MatrixXd> bases =
+        confinement(layout_->gauge_anchors, centres, layout_->gauge_plan);
+    Index columns = 0;
+    for (const Eigen::MatrixXd& block : bases) {
+      columns += block.cols();
+    }
+    Eigen::MatrixXd basis =
+        Eigen::MatrixXd::Zero(kPoseDim * static_cast<Index>(bases.size()), columns);
+    Index column = 0;
+    for (std::size_t i = 0; i < bases.size(); ++i) {
+      basis.block(kPoseDim * static_cast<Index>(i), column, kPoseDim, bases[i].cols()) = bases[i];
+      column += bases[i].cols();
+    }
+    return {free_, confined_rows_, basis, full_size_};
   }
 
   /// @brief Every point in the world frame (empty where an anchored point is invalid).
@@ -708,21 +698,27 @@ class Bundle {
   Index affine_offset_ = 0;
   Index full_size_ = 0;
   IndexList free_;
-  IndexList scale_rows_;
+  IndexList confined_rows_;
   IndexList anchored_points_;
   IndexList anchor_index_;
   std::vector<Index> point_dims_;
 };
 
-/// @brief The a-posteriori variance factor `2 cost / (m - n)` at a state.
+/// @brief The a-posteriori variance factor `sum(w s) / (m - n)` at a state: the blocks'
+///        squared norms under their final IRLS weights, the numerator that pairs with the
+///        information `J^T W J` the deviations come from (`2 cost` under the trivial loss).
 /// @param bundle The problem.
 /// @param state The state.
-/// @param cost The cost at `state`.
+/// @param solver The settings whose per-block loss gives the weights.
 /// @return The factor, or NaN without redundancy (m <= n).
-double variance_factor(const Bundle& bundle, const BundleState& state, double cost) {
+double variance_factor(const Bundle& bundle, const BundleState& state, const nls::Options& solver) {
   const Index redundancy = bundle.residual_rows() - bundle.free_size(state);
-  return redundancy > 0 ? 2.0 * cost / static_cast<double>(redundancy)
-                        : std::numeric_limits<double>::quiet_NaN();
+  if (redundancy <= 0) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  const Eigen::VectorXd squared = bundle.squared_norms(state);
+  const Eigen::VectorXd weights = nls::detail::evaluate_blocks(solver, squared).weights;
+  return weights.dot(squared) / static_cast<double>(redundancy);
 }
 
 /// @brief The free intrinsics' marginal standard deviations at a state (NaN where fixed).
@@ -771,7 +767,7 @@ Result<Solution> adjust(const Problem& problem, const Options& options, const La
       poses[c] = problem.poses[c];  // bit-exact, not a round trip through the inverse
     }
   }
-  summary.variance_factor = variance_factor(bundle, final_state, summary.solve.final_cost);
+  summary.variance_factor = variance_factor(bundle, final_state, solver);
   const double scaling = options.scale_deviations && std::isfinite(summary.variance_factor)
                              ? summary.variance_factor
                              : 1.0;

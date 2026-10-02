@@ -24,8 +24,8 @@ class Reduction {
  public:
   /// @brief Build the reduction.
   /// @param free The free full entries.
-  /// @param rows The scale pose's six full entries (or none).
-  /// @param basis The scale pose's 6 x 5 basis (or 0 x 0).
+  /// @param rows The confined poses' six full entries each (or none).
+  /// @param basis Their block-diagonal basis (or 0 x 0).
   /// @param full_size The full vector's length.
   Reduction(IndexList free, IndexList rows, Eigen::MatrixXd basis, Index full_size)
       : free_(std::move(free)),

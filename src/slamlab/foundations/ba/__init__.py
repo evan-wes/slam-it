@@ -42,21 +42,16 @@ is inverted, and the reduced camera system (poses, intrinsics and affines) is fa
 :class:`ReducedSystemSolver` (dense Cholesky here; a sparse solver arrives with larger
 problems). The points then follow by back-substitution.
 
-**Gauge.** Reprojection errors don't change if the whole scene moves rigidly, or, for a
-monocular camera, scales. Those directions are removed, not left to the damping:
+**Gauge.** Reprojection errors don't change if the whole scene moves by a similarity
+(rigid motion and, for a monocular camera, scale). Fixed variables and priors pin part of it;
+the rest is removed, not left to the damping, and no more than the rest (see
+:mod:`slamlab.foundations.ba.gauge`):
 
-- ``"first_pose"`` (SE(3) gauge): if no pose is fixed, the first free observed pose is.
-- ``"similarity"`` (Sim(3) gauge): as ``"first_pose"``. Then, unless two fixed poses
-  already pin the scale, the free pose farthest from a fixed one may not move its centre
-  along that baseline. Its 6-dimensional step is confined to the 5-dimensional subspace
-  orthogonal (to first order) to the change ``dc = -ρ + cross(c, θ)`` of its centre ``c``
-  along the baseline. The basis of that subspace is a Householder reflection, deterministic
-  in every backend.
-- ``"none"``: the caller's fixed variables or priors define the gauge.
-- ``"auto"`` (the default) picks by what the data observes:
-  - ``"none"`` when any pose has a prior (it anchors the scene);
-  - ``"first_pose"`` when a metric depth prior (a fixed affine) fixes the scale;
-  - ``"similarity"`` otherwise.
+- ``"auto"`` (the default) removes exactly what is left: the null space of what fixed poses,
+  fixed points, pose priors and metric depth pin. It fixes a pose that sees all of it, and
+  confines the steps of others to keep still along the rest;
+- ``"similarity"``, ``"scale"``, ``"first_pose"`` and ``"none"`` are fixed recipes (see
+  :mod:`slamlab.foundations.ba.layout`).
 
 **Degenerate data is dropped, and counted:**
 - observations of a point behind its camera at the start;

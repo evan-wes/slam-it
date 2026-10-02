@@ -33,6 +33,9 @@ enum class Method : std::uint8_t {
   kLevenbergMarquardt = 0,
   /// @brief Undamped steps, stopping at the first that fails to decrease the cost.
   kGaussNewton = 1,
+  /// @brief The number of methods (a sentinel, not a method): the bindings' name tables are
+  ///        checked against it, so an enumerator added without its name fails to build.
+  kCount = 2,
 };
 
 /// @brief The robust losses, acting on a block's squared norm `s`, with the integer codes
@@ -44,6 +47,9 @@ enum class LossKind : std::uint8_t {
   kHuber = 1,
   /// @brief `rho(s) = c^2 log(1 + s / c^2)`.
   kCauchy = 2,
+  /// @brief The number of losses (a sentinel, not a loss): the bindings' name tables are
+  ///        checked against it, so an enumerator added without its name fails to build.
+  kCount = 3,
 };
 
 /// @brief A robust loss and its scale `c`.
@@ -127,6 +133,10 @@ enum class Termination : std::uint8_t {
   kNoDecrease = 5,
   /// @brief Not converged: the undamped Gauss-Newton system is not positive definite.
   kSingular = 6,
+  /// @brief The number of terminations (a sentinel, not a termination): the bindings' name tables
+  /// are
+  ///        checked against it, so an enumerator added without its name fails to build.
+  kCount = 7,
 };
 
 /// @brief Whether a termination counts as converged.

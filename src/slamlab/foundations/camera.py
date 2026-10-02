@@ -364,3 +364,49 @@ def unproject(
     flat, lead = as_batch(pixels, (2,), "pixels")
     result = backends.dispatch(backend, __name__, "unproject", _unproject, code, params, flat)
     return np.asarray(result.reshape((*lead, 3)), dtype=np.float64)
+
+
+def unproject_or_nan(
+    model: str, intrinsics: ArrayLike, pixels: ArrayLike, *, backend: str = "python"
+) -> NDArray[np.float64]:
+    """Map pixels to unit bearings as :func:`unproject` does, with NaN rows where it cannot.
+
+    A pixel beyond the region where the distortion can be inverted has no ray. Where
+    :func:`unproject` fails the whole batch, this answers per pixel, as the C++ core's
+    per-item result does: callers that must go on (an anchor whose ray is lost, a pixel to
+    skip) get NaN for those pixels alone.
+
+    Parameters
+    ----------
+    model : {"pinhole", "radtan", "radial"}
+        The camera model.
+    intrinsics : array_like, shape (K,)
+        The model's intrinsics.
+    pixels : array_like, shape (N, 2)
+        Pixels ``(u, v)``.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    ndarray of float64, shape (N, 3)
+        Unit vectors along each pixel's ray, or NaN rows.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If the model or intrinsics are invalid, or `pixels` is not (N, 2).
+    """
+    flat = as_real(pixels, "pixels")
+    if flat.ndim != 2 or flat.shape[1] != 2:
+        raise InvalidInputError(f"pixels: expected shape (N, 2), got {flat.shape}")
+    try:
+        return unproject(model, intrinsics, flat, backend=backend)
+    except NotConvergedError:
+        out = np.full((flat.shape[0], 3), np.nan)
+        for i, pixel in enumerate(flat):
+            try:
+                out[i] = unproject(model, intrinsics, pixel, backend=backend)
+            except NotConvergedError:
+                continue
+        return out

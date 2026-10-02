@@ -89,6 +89,17 @@ def test_undistortion_outside_the_invertible_region_is_reported(backend: str) ->
         camera.unproject("radtan", barrel, [[2000.0, 1500.0]], backend=backend)
 
 
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_unproject_or_nan_answers_per_pixel(backend: str) -> None:
+    """Only the pixel the distortion cannot reach gets NaN; the others match unproject."""
+    barrel = [500.0, 500.0, 320.0, 240.0, -0.9, 0.0, 0.0, 0.0, 0.0]
+    pixels = np.array([[320.0, 240.0], [2000.0, 1500.0], [400.0, 260.0]])
+    rays = camera.unproject_or_nan("radtan", barrel, pixels, backend=backend)
+    assert np.all(np.isnan(rays[1]))
+    reachable = camera.unproject("radtan", barrel, pixels[[0, 2]], backend=backend)
+    np.testing.assert_array_equal(rays[[0, 2]], reachable)
+
+
 def test_pinhole_is_radtan_without_distortion() -> None:
     """With zero distortion coefficients, radtan projects exactly like pinhole."""
     points = _points(50)

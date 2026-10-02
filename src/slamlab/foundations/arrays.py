@@ -210,3 +210,27 @@ def unbatch(flat: NDArray[Any], lead: tuple[int, ...]) -> NDArray[np.float64]:
     """
     out = np.asarray(flat, dtype=np.float64)
     return out.reshape((*lead, *out.shape[1:]))
+
+
+def group_members(group: NDArray[np.int64], n_groups: int) -> list[NDArray[np.int64]]:
+    """Return the positions of each group's members, in one stable sort.
+
+    The masked alternative, ``np.flatnonzero(group == g)`` per group, costs a pass over every
+    item for every group: quadratic when there are as many groups as cameras or points.
+
+    Parameters
+    ----------
+    group : ndarray of int, shape (M,)
+        Each item's group, in ``[0, n_groups)``.
+    n_groups : int
+        The number of groups.
+
+    Returns
+    -------
+    list of ndarray of int
+        For each group ``g``, the positions with ``group == g`` in increasing order (empty for
+        a group with no members).
+    """
+    order = np.argsort(group, kind="stable")
+    bounds = np.searchsorted(group[order], np.arange(n_groups + 1))
+    return [order[bounds[g] : bounds[g + 1]] for g in range(n_groups)]

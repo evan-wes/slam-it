@@ -24,6 +24,9 @@ enum class Model : std::uint8_t {
   /// @brief `[f, cx, cy, k1, k2]`, COLMAP's RADIAL and BAL's model: radtan with `fx = fy = f`
   ///        and no tangential or k3 terms, computed through radtan.
   kRadial = 2,
+  /// @brief The number of models (a sentinel, not a model): the bindings' name tables are
+  ///        checked against it, so an enumerator added without its name fails to build.
+  kCount = 3,
 };
 
 /// @brief Points with `Z` at or below this are behind the camera and cannot project.

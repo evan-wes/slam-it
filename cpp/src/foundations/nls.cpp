@@ -44,12 +44,21 @@ LossValue evaluate(const Loss& loss, double squared_norm) {
       return {.rho = c2 * std::log1p(squared_norm / c2),
               .weight = 1.0 / (1.0 + (squared_norm / c2))};
     case LossKind::kTrivial:
+    case LossKind::kCount:
       break;
   }
   return {.rho = squared_norm, .weight = 1.0};
 }
 
 Result<void> check_options(const Options& options) {
+  if (options.method >= Method::kCount || options.loss.kind >= LossKind::kCount) {
+    return fail(ErrorKind::kInvalidInput, "method, loss: not a method or loss (kCount)");
+  }
+  for (const Loss& loss : options.block_loss.losses) {
+    if (loss.kind >= LossKind::kCount) {
+      return fail(ErrorKind::kInvalidInput, "block loss: not a loss (kCount)");
+    }
+  }
   if (auto checked = check_setting("loss scale", options.loss.scale, false); !checked) {
     return checked;
   }
@@ -115,6 +124,8 @@ const char* name(Termination termination) {
       return "no_decrease";
     case Termination::kSingular:
       return "singular";
+    case Termination::kCount:
+      break;
   }
   return "unknown";
 }

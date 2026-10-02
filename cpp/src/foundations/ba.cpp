@@ -164,6 +164,12 @@ Result<Solution> solve(const Problem& problem, const Options& options) {
     return fail(ErrorKind::kInvalidInput,
                 "min_parallax_deg, focal_std_ratio: must be non-negative and finite");
   }
+  if (options.gauge > Gauge::kScale) {
+    return fail(ErrorKind::kInvalidInput, "gauge: 'partial' is reported, not requested");
+  }
+  if (options.depth_loss.kind >= nls::LossKind::kCount) {
+    return fail(ErrorKind::kInvalidInput, "depth_loss: not a loss (kCount)");
+  }
   if (!options.solver.block_loss.losses.empty()) {
     return fail(ErrorKind::kInvalidInput,
                 "solver.block_loss: set by bundle adjustment, not the caller");

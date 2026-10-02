@@ -105,6 +105,9 @@ Result<Eigen::Vector2d> normalise(Model model, const Eigen::Ref<const Eigen::Vec
 }  // namespace
 
 Result<void> check_intrinsics(Model model, const Eigen::Ref<const Eigen::VectorXd>& intrinsics) {
+  if (model >= Model::kCount) {
+    return fail(ErrorKind::kInvalidInput, "model: not a camera model (kCount)");
+  }
   Eigen::Index expected = 9;
   if (model == Model::kPinhole) {
     expected = 4;

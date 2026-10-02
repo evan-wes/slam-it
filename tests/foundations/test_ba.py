@@ -128,6 +128,7 @@ def test_matches_fixture(backend: str, case: dict[str, Any]) -> None:
         "iterations": summary.solve.iterations,
         **{name: getattr(summary, name) for name in ba.COUNT_NAMES},
     }
+    assert tolerance["codes"]["comparison"] == "exact"
     assert codes == expected["codes"]
 
 
@@ -387,7 +388,7 @@ def test_similarity_gauge() -> None:
     result = ba.solve(scene.problem, options)
     summary = result.summary
     assert summary.solve.converged
-    assert (summary.gauge_pose, summary.scale_pose) == (0, 4)
+    assert (summary.gauge_pose, summary.confined_pose) == (0, 4)
     np.testing.assert_array_equal(result.poses[0], scene.problem.poses[0])
     before = np.linalg.norm(scene.problem.poses[4, :3, 3] - scene.problem.poses[0, :3, 3])
     after = np.linalg.norm(result.poses[4, :3, 3] - result.poses[0, :3, 3])
@@ -399,7 +400,7 @@ def test_explicitly_fixed_poses_define_the_gauge() -> None:
     fixed = np.array([True, False, False, True, False])
     scene = _scene(fixed_poses=fixed)
     result = ba.solve(scene.problem)
-    assert (result.summary.gauge_pose, result.summary.scale_pose) == (-1, -1)
+    assert (result.summary.gauge_pose, result.summary.confined_pose) == (-1, -1)
     np.testing.assert_array_equal(result.poses[fixed], scene.problem.poses[fixed])
 
 
@@ -547,6 +548,17 @@ def test_construction_validates_however_built() -> None:
         )
 
 
+def test_a_checked_problem_cannot_change() -> None:
+    """A problem owns read-only copies: neither its fields nor the caller's arrays move it."""
+    problem = _scene(cameras=3, points=5).problem
+    anchors = ba.anchor_points(problem).point_anchor.copy()
+    anchored = replace(problem, point_anchor=anchors)
+    anchors[0] = -1
+    assert anchored.point_anchor[0] != -1
+    with pytest.raises(ValueError, match="read-only"):
+        anchored.pt_idx[0] = 99
+
+
 @pytest.mark.parametrize("backend", sorted(set(backends.LOCKSTEP_BACKENDS) - {"python"}))
 def test_enum_tables_match_the_compiled_side(backend: str) -> None:
     """Every enum crossing the boundary has the same names in the same code order."""
@@ -556,7 +568,9 @@ def test_enum_tables_match_the_compiled_side(backend: str) -> None:
 
 
 def test_invalid_options() -> None:
-    """An unknown gauge or a negative parallax threshold is rejected."""
+    """An unknown gauge, the report-only "partial", or a negative threshold is rejected."""
+    with pytest.raises(InvalidInputError, match="gauge"):
+        ba.BAOptions(gauge="partial")
     with pytest.raises(InvalidInputError, match="gauge"):
         ba.BAOptions(gauge="sim3")
     with pytest.raises(InvalidInputError, match="min_parallax_deg"):
@@ -751,15 +765,120 @@ def test_auto_gauge_single_pose_prior(backend: str) -> None:
     problem = replace(scene.problem, pose_prior=scene.poses, pose_prior_weights=weights)
     result = ba.solve(problem, ba.BAOptions(solver=TIGHT), backend=backend)
     assert result.summary.gauge == "scale"
-    assert result.summary.scale_pose >= 0
+    assert result.summary.confined_pose >= 0
     assert result.summary.unobservable_focal == 0
     assert np.all(np.isfinite(result.intrinsics_std[0, :2]))
 
 
-def test_scale_gauge_needs_an_anchor() -> None:
-    """An explicit scale gauge without a fixed pose or full prior is rejected."""
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_scale_gauge_needs_an_anchor(backend: str) -> None:
+    """An explicit scale gauge without a fixed pose or full prior is rejected, in both cores."""
+    require_backend(backend)
     with pytest.raises(InvalidInputError, match="scale"):
-        ba.solve(_scene().problem, ba.BAOptions(gauge="scale"))
+        ba.solve(_scene().problem, ba.BAOptions(gauge="scale"), backend=backend)
+
+
+def _partially_anchored(case: str) -> ba.BAProblem:
+    """Return a noise-free scene whose priors or fixed points pin part of the similarity."""
+    scene = _scene(cameras=5, points=60, perturb=0.02, seed=4, rotation=0.3)
+    p = scene.problem
+    weights = np.zeros((5, 2))
+    if case == "translation priors on two cameras":  # free: rotation about their baseline
+        weights[[0, 3], 0] = 1e4
+        return replace(p, pose_prior=scene.poses, pose_prior_weights=weights)
+    if case == "rotation priors on every camera":  # free: translation and scale
+        weights[:, 1] = 1e4
+        return replace(p, pose_prior=scene.poses, pose_prior_weights=weights)
+    n_fixed = 1 if case == "one fixed point" else 2  # free: rotation and scale about it; or
+    fixed = np.arange(60) < n_fixed  # the rotation about the line through the two
+    points = np.where(fixed[:, None], scene.points, p.points)
+    return replace(p, points=points, fixed_points=fixed)
+
+
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize(
+    "case",
+    [
+        "translation priors on two cameras",
+        "rotation priors on every camera",
+        "one fixed point",
+        "two fixed points",
+    ],
+)
+def test_auto_gauge_removes_only_what_is_free(backend: str, case: str) -> None:
+    """Partial anchoring: auto removes the rest of the similarity, and no more.
+
+    Fixing a whole pose here (the first version did) held it at its perturbed start while
+    the priors and fixed points pulled elsewhere: costs of 5 to 29 on noise-free data.
+    Removing exactly the free part reaches the optimum, as no gauge at all does.
+    """
+    require_backend(backend)
+    result = ba.solve(_partially_anchored(case), ba.BAOptions(solver=TIGHT), backend=backend)
+    assert result.summary.gauge == "partial"
+    assert result.summary.gauge_pose == -1
+    assert result.summary.confined_pose >= 0
+    assert result.summary.solve.final_cost < 1e-18
+
+
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_prior_on_an_unobserved_camera_pins_nothing(backend: str) -> None:
+    """A prior on a camera nothing observes cannot anchor the scene: the gauge ignores it.
+
+    The first version took it as the rigid anchor, left rigid motion free, and read the
+    focal length as unobservable (σ_f infinite).
+    """
+    require_backend(backend)
+    scene = _scene(
+        cameras=5, points=60, noise=0.5, seed=3, rotation=0.3, fixed_intrinsics=np.array([False])
+    )
+    unseen = replace(scene.problem, weights=np.where(scene.problem.cam_idx == 4, 0.0, 1.0))
+    weights = np.zeros((5, 2))
+    weights[4] = 1e4
+    prior = replace(unseen, pose_prior=scene.poses, pose_prior_weights=weights)
+    plain = ba.solve(unseen, ba.BAOptions(solver=TIGHT), backend=backend)
+    result = ba.solve(prior, ba.BAOptions(solver=TIGHT), backend=backend)
+    assert result.summary.gauge == plain.summary.gauge == "similarity"
+    np.testing.assert_allclose(result.intrinsics_std, plain.intrinsics_std, rtol=1e-6)
+
+
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_variance_factor_counts_only_weighted_prior_rows(backend: str) -> None:
+    """A translation-only prior adds 3 rows to m, not 6: its rotation rows carry nothing.
+
+    Under the trivial loss ``σ̂₀² (m - n) = 2 cost``; with and without the priors the
+    redundancy differs by 3 per prior camera that moves. The gauge fixes pose 0, so its
+    prior is a constant and left out: 4 cameras count.
+    """
+    require_backend(backend)
+    scene = _scene(cameras=5, points=60, noise=0.5, seed=5, rotation=0.3)
+    weights = np.zeros((5, 2))
+    weights[:, 0] = 1e-12  # weighted, but too weakly to move anything
+    priors = replace(scene.problem, pose_prior=scene.poses, pose_prior_weights=weights)
+    options = ba.BAOptions(solver=TIGHT, gauge="similarity")
+    plain = ba.solve(scene.problem, options, backend=backend).summary
+    primed = ba.solve(priors, options, backend=backend).summary
+    redundancy = [2 * s.solve.final_cost / s.variance_factor for s in (plain, primed)]
+    assert plain.gauge_pose == 0
+    assert redundancy[1] - redundancy[0] == pytest.approx(3 * 4, abs=1e-3)
+
+
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_variance_factor_under_a_robust_loss(backend: str) -> None:
+    """Outliers count as much as their IRLS weight lets them, not by their ρ.
+
+    0.5 px noise (σ̂₀² = 0.25) with 15% of the pixels moved 20 px, under Cauchy: the factor
+    stays near 0.25. Taking Σρ instead gave 0.78.
+    """
+    require_backend(backend)
+    scene = _scene(cameras=6, points=80, noise=0.5, seed=6, rotation=0.3)
+    rng = np.random.default_rng(6)
+    pixels = scene.problem.observations.copy()
+    outliers = np.asarray(rng.random(pixels.shape[0]) < 0.15)
+    pixels[outliers] += rng.choice([-20.0, 20.0], size=(int(np.count_nonzero(outliers)), 2))
+    problem = replace(scene.problem, observations=pixels)
+    options = ba.BAOptions(solver=replace(TIGHT, loss=nls.Loss("cauchy", 1.0)))
+    factor = ba.solve(problem, options, backend=backend).summary.variance_factor
+    assert 0.15 < factor < 0.35
 
 
 def _undistortion_scene(k1: float) -> ba.BAProblem:

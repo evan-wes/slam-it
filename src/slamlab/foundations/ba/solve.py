@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import fields, replace
 from typing import Any, Protocol
 
 import numpy as np
@@ -46,9 +46,10 @@ class Implementation(Protocol):
 
     Every argument crosses by keyword. Enums cross as their index in :data:`ENUM_TABLES`.
     ``solve`` returns a dict with ``poses``, ``intrinsics``, ``points``, ``depth_affine``,
-    ``inverse_depth``, ``intrinsics_std``, ``trace`` (rows of the :class:`nls.Iteration`
-    fields), ``initial_cost``, ``final_cost``, ``variance_factor``, ``termination`` and
-    ``gauge`` codes, and each of :data:`COUNT_NAMES`.
+    ``inverse_depth``, ``intrinsics_std``, ``trace`` (one row per step) with
+    ``trace_columns`` (the :class:`nls.Iteration` field each column holds),
+    ``initial_cost``, ``final_cost``, ``variance_factor``, ``termination`` and ``gauge``
+    codes, and each of :data:`COUNT_NAMES`.
     """
 
     def codes(self) -> dict[str, list[str]]:
@@ -104,10 +105,19 @@ class Implementation(Protocol):
 # --- entry point ----------------------------------------------------------------------------
 
 
-def _variance_factor(bundle: Bundle, state: State, cost: float) -> float:
-    """Return the a-posteriori variance factor ``2 cost / (m - n)``, or NaN if m <= n."""
+def _variance_factor(bundle: Bundle, state: State, loss: nls.BlockLoss) -> float:
+    """Return the a-posteriori variance factor ``Σ w s / (m - n)``, or NaN if m <= n.
+
+    ``s`` are the blocks' squared weighted norms and ``w`` their final IRLS weights: the
+    numerator that pairs with the information matrix ``Jᵀ W J`` the deviations come from.
+    Under the trivial loss it is ``2 cost``; under a robust one it does not count outliers'
+    ``ρ``, which grows with their size.
+    """
     redundancy = bundle.residual_rows() - bundle.free_size(state)
-    return 2.0 * cost / redundancy if redundancy > 0 else float("nan")
+    if redundancy <= 0:
+        return float("nan")
+    squared = bundle.squared_norms(state)
+    return float(np.sum(loss.evaluate(squared)[1] * squared)) / redundancy
 
 
 def _intrinsics_std(bundle: Bundle, state: State, loss: nls.BlockLoss, factor: float) -> Array:
@@ -145,7 +155,7 @@ def _solve_reference(problem: BAProblem, options: BAOptions) -> BAResult:
     poses = se3.inverse(final.poses)
     unmoved = np.all(final.poses == start.poses, axis=(1, 2))
     poses[unmoved] = problem.poses[unmoved]  # bit-exact, not a round trip through the inverse
-    factor = _variance_factor(bundle, final, solution.summary.final_cost)
+    factor = _variance_factor(bundle, final, block_loss)
     scaling = factor if options.scale_deviations and np.isfinite(factor) else 1.0
     std = _intrinsics_std(bundle, final, block_loss, scaling)
     summary = BASummary(
@@ -168,17 +178,20 @@ def _solve_reference(problem: BAProblem, options: BAOptions) -> BAResult:
     )
 
 
+_CONVERT = {"int": int, "float": float, "bool": bool}
+"""How each :class:`nls.Iteration` field type is read from the trace's float columns."""
+
+
 def _result_from_backend(raw: BackendResult) -> BAResult:
     """Assemble a compiled backend's named results into a :class:`BAResult`."""
+    # The trace crosses as a matrix whose columns the binding names: read them by name.
+    types = {field.name: str(field.type) for field in fields(nls.Iteration)}
+    columns = [str(name) for name in raw["trace_columns"]]
+    if sorted(columns) != sorted(types):
+        raise RuntimeError(f"trace columns {columns} do not match nls.Iteration")
     records = tuple(
         nls.Iteration(
-            iteration=int(row[0]),
-            cost=float(row[1]),
-            gradient_norm=float(row[2]),
-            step_norm=float(row[3]),
-            damping=float(row[4]),
-            relative_decrease=float(row[5]),
-            accepted=bool(row[6]),
+            **{name: _CONVERT[types[name]](value) for name, value in zip(columns, row, strict=True)}
         )
         for row in raw["trace"]
     )
