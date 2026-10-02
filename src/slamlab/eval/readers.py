@@ -26,15 +26,23 @@ caller to free.
 from __future__ import annotations
 
 import bz2
+from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
+from typing import TypeVar
 
 import numpy as np
 from numpy.typing import NDArray
 
-from slamlab.foundations import se3, so3
-from slamlab.foundations.ba.problem import Array, BAProblem, Mask
+from slamlab.foundations import camera, se3, so3
+from slamlab.foundations.ba import BAProblem
 from slamlab.foundations.errors import InvalidInputError
+
+T = TypeVar("T")
+
+Array = NDArray[np.float64]
+Mask = NDArray[np.bool_]
 
 FLIP = np.diag([1.0, -1.0, -1.0])
 """BAL's camera frame to this package's: flip ``y`` and ``z``."""
@@ -73,13 +81,15 @@ def read_bal(path: str | Path) -> BAProblem:
         If the file is truncated or its counts do not match its contents.
     """
     opener = bz2.open if str(path).endswith(".bz2") else open
-    with opener(path, "rt") as handle:
+    with opener(path, "rt", encoding="ascii") as handle:
         values = handle.read().split()
     try:
         n_cams, n_points, n_obs = (int(v) for v in values[:3])
         numbers = np.asarray(values[3:], dtype=np.float64)
     except ValueError as error:
         raise InvalidInputError(f"BAL file {path}: not a BAL problem ({error})") from error
+    if min(n_cams, n_points, n_obs) < 0:
+        raise InvalidInputError(f"BAL file {path}: negative counts in the header")
     expected = 4 * n_obs + 9 * n_cams + 3 * n_points
     if numbers.size != expected:
         raise InvalidInputError(
@@ -93,8 +103,8 @@ def read_bal(path: str | Path) -> BAProblem:
     t_cam_world[:, :3, 3] = cams[:, 3:6] @ FLIP.T
     zeros = np.zeros(n_cams)
     intrinsics = np.stack([cams[:, 6], zeros, zeros, cams[:, 7], cams[:, 8]], axis=1)
-    fixed = np.zeros((n_cams, 5), dtype=bool)
-    fixed[:, 1:3] = True
+    fixed = np.zeros((n_cams, camera.MODELS["radial"][1]), dtype=bool)
+    fixed[:, list(camera.CENTRE_INDICES["radial"])] = True
     return BAProblem.create(
         "radial",
         intrinsics,
@@ -133,39 +143,109 @@ class ColmapModel:
     image_names: list[str]
 
 
-def _lines(path: Path, *, keep_blank: bool = False) -> list[list[str]]:
-    """Return a COLMAP text file's non-comment lines, split into fields.
+def _lines(path: Path) -> list[tuple[int, str]]:
+    """Return a COLMAP text file's non-comment lines with their line numbers, unsplit.
 
-    ``images.txt`` alternates a header line with a keypoint line that is blank for an image
-    with no keypoints, so there blank lines are kept (all but a trailing one).
+    Blank lines are kept: in ``images.txt`` an image with no keypoints has a blank keypoint
+    line after its header.
     """
-    with path.open() as handle:
-        rows = [line.split() for line in handle if not line.startswith("#")]
-    if keep_blank:
-        return rows[:-1] if rows and not rows[-1] and len(rows) % 2 else rows
-    return [row for row in rows if row]
+    with path.open(encoding="utf-8") as handle:
+        return [
+            (number, line.rstrip("\n"))
+            for number, line in enumerate(handle, start=1)
+            if not line.startswith("#")
+        ]
 
 
-def _cameras(rows: list[list[str]]) -> tuple[str, Array, Mask, NDArray[np.int64]]:
+def _floats(values: list[str]) -> list[float]:
+    """Parse a list of fields as floats."""
+    return [float(v) for v in values]
+
+
+def _parse(path: Path, number: int, parse: Callable[[], T]) -> T:
+    """Run ``parse`` on one line, turning a malformed line into an error naming it."""
+    try:
+        return parse()
+    except (ValueError, IndexError, KeyError) as error:
+        raise InvalidInputError(f"{path.name}:{number}: malformed or dangling ({error})") from error
+
+
+def _cameras(path: Path) -> tuple[str, Array, Mask, NDArray[np.int64]]:
     """Map COLMAP cameras onto one of this package's models."""
-    models = {row[1] for row in rows}
+    rows = [(n, line.split()) for n, line in _lines(path) if line.strip()]
+    models = {row[1] for _, row in rows if len(row) > 1}
     if models <= set(_RADIAL_FAMILY):
-        name, family, size = "radial", _RADIAL_FAMILY, 5
+        name, family = "radial", _RADIAL_FAMILY
     elif models == {"PINHOLE"}:
-        name, family, size = "pinhole", {"PINHOLE": [0, 1, 2, 3]}, 4
+        name, family = "pinhole", {"PINHOLE": [0, 1, 2, 3]}
     elif models <= set(_RADTAN_FAMILY):
-        name, family, size = "radtan", _RADTAN_FAMILY, 9
+        name, family = "radtan", _RADTAN_FAMILY
     else:
         raise InvalidInputError(f"COLMAP cameras: unsupported model mix {sorted(models)}")
+    size = camera.MODELS[name][1]
     intrinsics = np.zeros((len(rows), size))
     refinable = np.zeros((len(rows), size), dtype=bool)
-    for k, row in enumerate(rows):
+    camera_ids = np.zeros(len(rows), dtype=np.int64)
+    for k, (number, row) in enumerate(rows):
         slots = family[row[1]]
-        intrinsics[k, slots] = [float(v) for v in row[4 : 4 + len(slots)]]
+
+        def parse(row: list[str] = row, slots: list[int] = slots) -> list[float]:
+            if len(row) != 4 + len(slots):
+                raise ValueError(f"{row[1]} takes {len(slots)} parameters")
+            return [float(v) for v in row[4:]]
+
+        intrinsics[k, slots] = _parse(path, number, parse)
         refinable[k, slots] = True
-    centre = slice(1, 3) if name == "radial" else slice(2, 4)
-    intrinsics[:, centre] -= COLMAP_PIXEL_OFFSET
-    return name, intrinsics, refinable, np.array([int(row[0]) for row in rows], dtype=np.int64)
+        camera_ids[k] = _parse(path, number, partial(int, row[0]))
+    intrinsics[:, list(camera.CENTRE_INDICES[name])] -= COLMAP_PIXEL_OFFSET
+    return name, intrinsics, refinable, camera_ids
+
+
+@dataclass(frozen=True)
+class _Image:
+    """One image of ``images.txt``: its pose, camera, name and keypoints."""
+
+    line: int
+    """The header's line number in ``images.txt``."""
+    image_id: int
+    t_cam_world: Array
+    camera_id: int
+    name: str
+    keypoints: Array
+    """(K, 3): x, y and the observed point's id (-1 for none)."""
+
+
+def _images(path: Path) -> list[_Image]:
+    """Parse ``images.txt``: header lines, each followed by its (possibly blank) keypoints."""
+    lines = _lines(path)
+    if lines and not lines[-1][1].strip() and len(lines) % 2:
+        lines = lines[:-1]  # a trailing newline after the last keypoint line
+    if len(lines) % 2:
+        raise InvalidInputError(f"{path.name}: expected a keypoint line after every image")
+    images = []
+    for (number, header), (key_number, keypoints) in zip(lines[0::2], lines[1::2], strict=True):
+
+        def parse_header(header: str = header) -> tuple[int, Array, int, str]:
+            fields = header.split(maxsplit=9)  # the name may contain spaces
+            qw, qx, qy, qz, tx, ty, tz = (float(v) for v in fields[1:8])
+            pose = np.eye(4)
+            pose[:3, :3] = so3.from_quaternion([qx, qy, qz, qw])
+            pose[:3, 3] = [tx, ty, tz]
+            return int(fields[0]), pose, int(fields[8]), fields[9]
+
+        def parse_keypoints(keypoints: str = keypoints) -> Array:
+            values = np.asarray(keypoints.split(), dtype=np.float64)
+            if values.size % 3:
+                raise ValueError("keypoints come in (x, y, point id) triples")
+            return values.reshape(-1, 3)
+
+        image_id, pose, camera_id, name = _parse(path, number, parse_header)
+        images.append(
+            _Image(
+                number, image_id, pose, camera_id, name, _parse(path, key_number, parse_keypoints)
+            )
+        )
+    return images
 
 
 def read_colmap_text(directory: str | Path) -> ColmapModel:
@@ -184,42 +264,55 @@ def read_colmap_text(directory: str | Path) -> ColmapModel:
     Raises
     ------
     slamlab.foundations.errors.InvalidInputError
-        If a camera model is unsupported or the models mix families.
+        If a camera model is unsupported or the models mix families, or a line is malformed
+        or refers to a camera or point that does not exist (the error names the line).
     """
     root = Path(directory)
-    model, intrinsics, refinable, camera_ids = _cameras(_lines(root / "cameras.txt"))
-    group_of = {cid: k for k, cid in enumerate(camera_ids)}
-    image_rows = _lines(root / "images.txt", keep_blank=True)
-    headers, keypoint_rows = image_rows[0::2], image_rows[1::2]
-    point_rows = _lines(root / "points3D.txt")
-    point_ids = np.array([int(row[0]) for row in point_rows], dtype=np.int64)
-    point_index = {pid: k for k, pid in enumerate(point_ids)}
-    t_cam_world = np.tile(np.eye(4), (len(headers), 1, 1))
+    model, intrinsics, refinable, camera_ids = _cameras(root / "cameras.txt")
+    group_of = {int(cid): k for k, cid in enumerate(camera_ids)}
+    images = _images(root / "images.txt")
+    points_path = root / "points3D.txt"
+    point_rows = [(n, line.split()) for n, line in _lines(points_path) if line.strip()]
+    point_ids = np.array(
+        [_parse(points_path, n, partial(int, row[0])) for n, row in point_rows],
+        dtype=np.int64,
+    )
+    xyz = np.array(
+        [_parse(points_path, n, partial(_floats, row[1:4])) for n, row in point_rows]
+    ).reshape(-1, 3)
+    point_index = {int(pid): k for k, pid in enumerate(point_ids)}
+    images_path = root / "images.txt"
     cam_idx, pt_idx, pixels = [], [], []
-    for c, (header, keypoints) in enumerate(zip(headers, keypoint_rows, strict=True)):
-        qw, qx, qy, qz, tx, ty, tz = (float(v) for v in header[1:8])
-        t_cam_world[c, :3, :3] = so3.from_quaternion([qx, qy, qz, qw])
-        t_cam_world[c, :3, 3] = [tx, ty, tz]
-        triples = np.asarray(keypoints, dtype=np.float64).reshape(-1, 3)
-        seen = triples[:, 2] >= 0
+    for c, image in enumerate(images):
+        seen = image.keypoints[:, 2] >= 0
         cam_idx += [c] * int(np.count_nonzero(seen))
-        pt_idx += [point_index[int(pid)] for pid in triples[seen, 2]]
-        pixels.append(triples[seen, :2] - COLMAP_PIXEL_OFFSET)
+        pt_idx += [
+            _parse(images_path, image.line, partial(point_index.__getitem__, int(pid)))
+            for pid in image.keypoints[seen, 2]
+        ]
+        pixels.append(image.keypoints[seen, :2] - COLMAP_PIXEL_OFFSET)
+    t_cam_world = np.array([image.t_cam_world for image in images]).reshape(-1, 4, 4)
     problem = BAProblem.create(
         model,
         intrinsics,
         se3.inverse(t_cam_world),
-        np.array([[float(v) for v in row[1:4]] for row in point_rows]).reshape(-1, 3),
+        xyz,
         np.concatenate(pixels) if pixels else np.zeros((0, 2)),
         np.asarray(cam_idx, dtype=np.int64),
         np.asarray(pt_idx, dtype=np.int64),
-        intrinsics_idx=np.array([group_of[int(h[8])] for h in headers], dtype=np.int64),
+        intrinsics_idx=np.array(
+            [
+                _parse(images_path, i.line, partial(group_of.__getitem__, i.camera_id))
+                for i in images
+            ],
+            dtype=np.int64,
+        ),
     )
     return ColmapModel(
         problem=problem,
         refinable=refinable,
         camera_ids=camera_ids,
-        image_ids=np.array([int(h[0]) for h in headers], dtype=np.int64),
+        image_ids=np.array([image.image_id for image in images], dtype=np.int64),
         point_ids=point_ids,
-        image_names=[h[9] for h in headers],
+        image_names=[image.name for image in images],
     )

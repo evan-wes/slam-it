@@ -8,6 +8,7 @@ COLMAP's bundle adjuster (Ceres underneath) on the same problem.
 from __future__ import annotations
 
 import bz2
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation
 
 from slamlab import backends
-from slamlab.eval import colmap_reference
+from slamlab.eval import colmap_reference, readers
 from slamlab.foundations import ba, camera, nls, se3
 from slamlab.foundations.errors import InvalidInputError
 from tests.conftest import require_backend
@@ -81,7 +82,7 @@ def test_bal_reader_matches_bal_projection(tmp_path: Path, name: str) -> None:
     cams, points, pairs = _bal_scene()
     path = tmp_path / name
     _write_bal(path, cams, points, pairs)
-    problem = ba.read_bal(path)
+    problem = readers.read_bal(path)
     assert problem.camera_model == "radial"
     np.testing.assert_allclose(_reprojections(problem), problem.observations, rtol=0, atol=1e-10)
     np.testing.assert_array_equal(problem.fixed_intrinsics[0], [False, True, True, False, False])
@@ -92,7 +93,7 @@ def test_bal_reader_rejects_truncated_files(tmp_path: Path) -> None:
     path = tmp_path / "bad.txt"
     path.write_text("2 1 1\n0 0 1.0 2.0\n")
     with pytest.raises(InvalidInputError, match="expected"):
-        ba.read_bal(path)
+        readers.read_bal(path)
 
 
 def _write_colmap(root: Path, model: str, params: list[float], seed: int = 0) -> None:
@@ -145,7 +146,7 @@ def test_colmap_reader_matches_pycolmap(
 ) -> None:
     """Pixels pycolmap projects (COLMAP's pixel centres) come back -0.5 px under our model."""
     _write_colmap(tmp_path, model, params)
-    read = ba.read_colmap_text(tmp_path)
+    read = readers.read_colmap_text(tmp_path)
     assert read.problem.camera_model == ours
     np.testing.assert_array_equal(read.refinable[0], np.array(refinable, dtype=bool))
     assert read.image_names == ["im0.png", "im1.png", "empty.png"]
@@ -164,7 +165,7 @@ def test_colmap_reader_rejects_mixed_models(tmp_path: Path) -> None:
     with (tmp_path / "cameras.txt").open("a") as handle:
         handle.write("2 OPENCV 640 480 500 500 320 240 0 0 0 0\n")
     with pytest.raises(InvalidInputError, match="unsupported model mix"):
-        ba.read_colmap_text(tmp_path)
+        readers.read_colmap_text(tmp_path)
 
 
 @pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
@@ -179,7 +180,7 @@ def test_matches_ceres_on_a_bal_style_problem(tmp_path: Path, backend: str) -> N
     rng = np.random.default_rng(5)
     path = tmp_path / "noisy.txt"
     _write_bal(path, cams, points, pairs)
-    problem = ba.read_bal(path)
+    problem = readers.read_bal(path)
     noisy = problem.observations + rng.normal(0.0, 0.5, problem.observations.shape)
     start_intrinsics = problem.intrinsics * [1.02, 1.0, 1.0, 1.0, 1.0]
     problem = ba.BAProblem.create(
@@ -231,7 +232,7 @@ def test_reference_with_a_shared_camera(tmp_path: Path) -> None:
     observations (the poses and points differ by the gauge each solver picks).
     """
     _write_colmap(tmp_path, "PINHOLE", [500.0, 505.0, 320.0, 240.0])
-    read = ba.read_colmap_text(tmp_path)
+    read = readers.read_colmap_text(tmp_path)
     problem = read.problem
     noisy = problem.observations + np.random.default_rng(2).normal(
         0.0, 0.3, problem.observations.shape
@@ -241,7 +242,7 @@ def test_reference_with_a_shared_camera(tmp_path: Path) -> None:
     ours = ba.solve(problem, ba.BAOptions(solver=nls.Options(function_tolerance=1e-14)))
     reference = colmap_reference.solve(
         problem,
-        colmap_reference.ColmapOptions(refine_focal=False, refine_extra=False, tolerance=1e-14),
+        colmap_reference.ColmapOptions(tolerance=1e-14),
     )
     np.testing.assert_array_equal(reference.intrinsics, problem.intrinsics)
     # Compared gauge-invariantly: COLMAP chooses its own gauge.
@@ -250,3 +251,52 @@ def test_reference_with_a_shared_camera(tmp_path: Path) -> None:
     np.testing.assert_allclose(
         _reprojections(ours_problem), _reprojections(colmap_problem), rtol=0, atol=1e-6
     )
+
+
+@pytest.mark.parametrize(
+    ("file", "change", "message"),
+    [
+        ("points3D.txt", lambda t: t.replace("\n1 ", "\n999 ", 1), "images.txt"),
+        ("images.txt", lambda t: t.replace(" 1 im0.png", " 7 im0.png"), "images.txt"),
+        ("cameras.txt", lambda t: t.rsplit(" ", 1)[0] + "\n", "cameras.txt"),
+    ],
+    ids=["dangling point id", "unknown camera id", "short camera line"],
+)
+def test_colmap_reader_names_malformed_lines(
+    tmp_path: Path, file: str, change: Callable[[str], str], message: str
+) -> None:
+    """A dangling id or a truncated row is an InvalidInputError naming the file."""
+    _write_colmap(tmp_path, "RADIAL", [500.0, 320.0, 240.0, -0.05, 0.01])
+    path = tmp_path / file
+    path.write_text(change(path.read_text()))
+    with pytest.raises(InvalidInputError, match=message):
+        readers.read_colmap_text(tmp_path)
+
+
+def test_colmap_image_names_keep_spaces(tmp_path: Path) -> None:
+    """An image name with spaces is read whole."""
+    _write_colmap(tmp_path, "RADIAL", [500.0, 320.0, 240.0, -0.05, 0.01])
+    path = tmp_path / "images.txt"
+    path.write_text(path.read_text().replace("im0.png", "my image 0.png"))
+    assert readers.read_colmap_text(tmp_path).image_names[0] == "my image 0.png"
+
+
+def test_bal_reader_rejects_negative_counts(tmp_path: Path) -> None:
+    """A header with a negative count is rejected, whatever follows."""
+    path = tmp_path / "negative.txt"
+    path.write_text("1 -1 0\n" + "0\n" * 9)
+    with pytest.raises(InvalidInputError, match="negative"):
+        readers.read_bal(path)
+
+
+def test_reference_rejects_what_it_cannot_represent(tmp_path: Path) -> None:
+    """COLMAP's adjuster would silently solve a different problem; the reference refuses."""
+    _write_colmap(tmp_path, "PINHOLE", [500.0, 505.0, 320.0, 240.0])
+    problem = readers.read_colmap_text(tmp_path).problem
+    n_cams = problem.poses.shape[0]
+    priors = replace(problem, pose_prior_weights=np.ones((n_cams, 2)))
+    with pytest.raises(InvalidInputError, match="pose priors"):
+        colmap_reference.solve(priors)
+    centre_free = replace(problem, fixed_intrinsics=np.zeros((1, 4), dtype=bool))
+    with pytest.raises(InvalidInputError, match="principal point"):
+        colmap_reference.solve(centre_free)

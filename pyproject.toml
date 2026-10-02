@@ -15,6 +15,8 @@ authors = [{ name = "evan-wes" }]
 dependencies = ["numpy>=1.26"]
 
 [project.optional-dependencies]
+# COLMAP's Ceres bundle adjuster, for slamlab.eval.colmap_reference (the only importer).
+colmap = ["pycolmap>=4.2"]
 # The development and layer-1 toolchain's pip layer: the single list scripts/setup_slamlab.sh
 # installs from when not using the lockfile (the conda layer -- compilers, clang tools,
 # doxygen, Node.js/jscpd -- is in that script).
@@ -136,6 +138,34 @@ layers = [
   "arrays",
   "errors",
 ]
+
+# The order of modules inside the bundle-adjustment package.
+[[tool.importlinter.contracts]]
+name = "Bundle adjustment's internal order"
+type = "layers"
+containers = ["slamlab.foundations.ba"]
+layers = [
+  "solve",
+  "bundle",
+  "layout | schur",
+  "problem",
+]
+
+# pycolmap is an optional reference, imported by slamlab.eval alone.
+[[tool.importlinter.contracts]]
+name = "Only eval may import pycolmap"
+type = "forbidden"
+source_modules = [
+  "slamlab.backends",
+  "slamlab.foundations",
+  "slamlab.edge",
+  "slamlab.classic",
+  "slamlab.dense",
+  "slamlab.vi",
+  "slamlab.learned",
+  "slamlab.orchestration",
+]
+forbidden_modules = ["pycolmap"]
 
 [[tool.importlinter.contracts]]
 name = "Visual-inertial builds on the edge rung only, not dense or classic"

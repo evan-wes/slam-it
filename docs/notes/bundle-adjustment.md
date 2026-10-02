@@ -237,7 +237,7 @@ rotation, `u = f (X - t_x)/Z` is unchanged by `f → kf, Z → kZ`, so no amount
 
 ## Readers, and Ceres as the reference
 
-**BAL** (`read_bal`). BAL's cameras look down `-z` with `y` up: `P = R X + t`,
+**BAL** (`slamlab.eval.readers.read_bal`). BAL's cameras look down `-z` with `y` up: `P = R X + t`,
 `p = -P/P_z`, `u = f (1 + k1|p|² + k2|p|⁴) p`.
 - **Frames.** Flipping the camera's `y` and `z` axes (`F = diag(1, -1, -1)`) gives
   `T_cam_world = [F R, F t]` and pixels `(x, -y)`.
@@ -247,7 +247,8 @@ rotation, `u = f (X - t_x)/Z` is unchanged by `f → kf, Z → kZ`, so no amount
 - **What is refined.** BAL and Ceres refine `f, k1, k2` but not the principal point, which
   needed per-parameter intrinsics masks: `fixed_intrinsics` is `(K, P)`.
 
-**COLMAP text** (`read_colmap_text`).
+**COLMAP text** (`slamlab.eval.readers.read_colmap_text`). Malformed lines and dangling ids
+raise `InvalidInputError` naming the file and line.
 - **Pixels.** COLMAP puts pixel centres at `(0.5, 0.5)`, so the reader shifts pixels and
   principal points by -0.5.
 - **Models.** SIMPLE_PINHOLE, SIMPLE_RADIAL and RADIAL map onto `radial`; PINHOLE onto
@@ -258,6 +259,12 @@ rotation, `u = f (X - t_x)/Z` is unchanged by `f → kf, Z → kZ`, so no amount
 problem and runs COLMAP's bundle adjuster, which is Ceres underneath. pyceres was the plan,
 but its reprojection factors are gone from current releases. COLMAP's adjuster is the same
 Ceres, on the same RADIAL model, and is also what reifyscene's reconstructions come from.
+
+What COLMAP refines is not a separate option: it follows the problem's own
+`fixed_intrinsics` (`colmap_reference.refinement`). Anything COLMAP's adjuster cannot
+represent is rejected rather than silently dropped: priors, anchors, observation weights,
+fixed poses or points, a free principal point, or a per-group mix of free and fixed
+entries. So the comparison is always on the identical problem.
 
 **On BAL Ladybug-49** (49 cameras, 7776 points, 31843 observations; 31 behind their camera):
 
@@ -275,7 +282,7 @@ and, with `--rerun`, saves a recording of the cameras and points before and afte
 ## Across reifyscene's investigation slice
 
 The investigation slice is ten DAVIS scenes plus spin (`runs/slice_*`, rebuilt
-2026-09-30). For each DAVIS scene, `scripts/demo_slice.py` reads the seed reconstruction
+2026-09-30). For each DAVIS scene, `scripts/compare_ba_colmap.py` reads the seed reconstruction
 reifyscene's `pose_refine` stage exports: VGGSfM tracks and VGGT cameras, one shared PINHOLE
 camera, before reifyscene's own BA. It refines the seed with slamlab and with COLMAP's
 Ceres, on the identical problem:
@@ -299,7 +306,16 @@ skipped. Measured on 2026-10-02 at this commit:
 | miami-surf | 4.881 | 0.657 | 0.657 | 0 / 0 | 4355 | 9854 / 10322 |
 | motocross-bumps | 5.437 | 0.384 | 0.390 | 0 / 4 | inf | 898 / 909 |
 
-RMS is in px, over the observations in front at the start and in both results.
+RMS is in px, over the observations in front at the start and in both results. The table
+comes from this invocation. The comparison script is generic, and the slice and its run
+layout belong to reifyscene, so they appear only here:
+
+```
+RUNS=$REIFYSCENE_DATA_DIR/runs
+python scripts/compare_ba_colmap.py --iterations 300 $(for s in lab-coat blackswan crossing \
+  dogs-scale gold-fish india judo lindy-hop miami-surf motocross-bumps spin; do
+  echo "$s=$RUNS/slice_$s/pose_refine/colmap_seed"; done)
+```
 
 What the slice shows that lab-coat alone would not:
 - **The two solvers agree on reprojection error.** Within 0.01 px on 8 of 10 scenes. Ours is

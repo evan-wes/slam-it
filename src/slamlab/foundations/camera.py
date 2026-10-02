@@ -40,6 +40,9 @@ MODELS: dict[str, tuple[int, int]] = {"pinhole": (0, 4), "radtan": (1, 9), "radi
 FOCAL_INDICES: dict[str, tuple[int, ...]] = {"pinhole": (0, 1), "radtan": (0, 1), "radial": (0,)}
 """Each model's focal-length entries in its intrinsics vector."""
 
+CENTRE_INDICES: dict[str, tuple[int, ...]] = {"pinhole": (2, 3), "radtan": (2, 3), "radial": (1, 2)}
+"""Each model's principal-point entries ``(cx, cy)`` in its intrinsics vector."""
+
 RADIAL_TO_RADTAN = np.zeros((9, 5))
 """The linear map from radial ``[f, cx, cy, k1, k2]`` to radtan
 ``[f, f, cx, cy, k1, k2, 0, 0, 0]``."""

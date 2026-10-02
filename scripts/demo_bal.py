@@ -25,7 +25,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
-from slamlab.eval import colmap_reference
+from slamlab.eval import colmap_reference, readers
 from slamlab.eval.reprojection import in_front, rms
 from slamlab.foundations import ba, nls
 
@@ -34,13 +34,19 @@ BAL_URL = "https://grail.cs.washington.edu/projects/bal/data/{problem}.txt.bz2"
 
 
 def fetch(problem: str, data: Path) -> Path:
-    """Return the local path of a BAL problem, downloading it if it is missing."""
+    """Return the local path of a BAL problem, downloading it if it is missing.
+
+    The download goes to a ``.part`` file renamed on success, so an interrupted one is
+    never mistaken for the problem.
+    """
     path = data / f"{problem}.txt.bz2"
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
         url = BAL_URL.format(problem=problem)
         print(f"downloading {url}")
-        urllib.request.urlretrieve(url, path)
+        partial = path.with_name(path.name + ".part")
+        urllib.request.urlretrieve(url, partial)
+        partial.replace(path)
     return path
 
 
@@ -64,7 +70,7 @@ def main() -> None:
     parser.add_argument("--backend", choices=["python", "cpp", "both"], default="cpp")
     parser.add_argument("--rerun", type=Path, default=None, help="save a .rrd recording")
     args = parser.parse_args()
-    problem = ba.read_bal(fetch(args.problem, args.data))
+    problem = readers.read_bal(fetch(args.problem, args.data))
     used = in_front(problem)
     print(
         f"{args.problem}: {problem.poses.shape[0]} cameras, {problem.points.shape[0]} points, "

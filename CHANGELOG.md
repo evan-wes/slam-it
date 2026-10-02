@@ -30,12 +30,13 @@ throughout, each component with a design note in `docs/notes/`.
   - depth priors through per-camera affines (metric or relative), and pose priors;
   - the gauge removed exactly (automatic choice), degenerate data dropped and counted;
   - marginal deviations of free intrinsics, with unobservable focal lengths flagged.
-- **Readers**: BAL (plain or bz2) and COLMAP's text model.
+- **Readers** (`slamlab.eval.readers`): BAL (plain or bz2) and COLMAP's text model.
 - **`slamlab.eval`**: COLMAP's Ceres bundle adjuster as a reference, and reprojection
   metrics.
 - **Demos**:
   - `scripts/demo_bal.py`: on BAL Ladybug-49 both solvers reach 0.9147 px.
-  - `scripts/demo_slice.py`: reifyscene's ten DAVIS slice scenes against COLMAP, all listed.
+  - `scripts/compare_ba_colmap.py`: slamlab against COLMAP on any COLMAP text models. On
+    reifyscene's ten DAVIS slice scenes (invocation in the BA note):
     Reprojection errors agree within 0.01 px on 8 of 10. Focal length is unobservable on 9
     of 10. COLMAP lets points cross behind cameras; ours never does.
 - **Dev dependencies**: pycolmap and rerun-sdk.

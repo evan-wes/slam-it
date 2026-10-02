@@ -10,7 +10,9 @@ import numpy as np
 from numpy.typing import NDArray
 
 from slamlab.foundations import camera, se3
+from slamlab.foundations.arrays import as_mask
 from slamlab.foundations.ba import BAProblem
+from slamlab.foundations.errors import InvalidInputError
 
 
 def in_front(problem: BAProblem) -> NDArray[np.bool_]:
@@ -40,20 +42,31 @@ def rms(problem: BAProblem, used: NDArray[np.bool_]) -> float:
     problem : BAProblem
         The problem, at the variables to measure.
     used : ndarray of bool, shape (M,)
-        The observations to include (all must be in front of their camera).
+        The observations to include; all must be in front of their camera.
 
     Returns
     -------
     float
         ``sqrt(mean |π(X) - u|²)`` over the used observations.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If ``used`` has the wrong shape, selects nothing, or selects an observation whose
+        point is behind its camera.
     """
+    mask = as_mask(used, (problem.observations.shape[0],), "used")
+    if not np.any(mask):
+        raise InvalidInputError("used: selects no observations")
     t_cw = se3.inverse(problem.poses)
-    cam, pt = problem.cam_idx[used], problem.pt_idx[used]
+    cam, pt = problem.cam_idx[mask], problem.pt_idx[mask]
     in_cam = np.einsum("mij,mj->mi", t_cw[cam, :3, :3], problem.points[pt]) + t_cw[cam, :3, 3]
+    if np.any(in_cam[:, 2] <= camera.MIN_DEPTH):
+        raise InvalidInputError("used: selects an observation whose point is behind its camera")
     pixels = np.zeros((cam.size, 2))
-    for c in np.unique(cam):
-        sel = cam == c
-        k = problem.intrinsics[problem.intrinsics_idx[c]]
-        pixels[sel] = camera.project(problem.camera_model, k, in_cam[sel])
-    errors = pixels - problem.observations[used]
+    group = problem.intrinsics_idx[cam]
+    for g in np.unique(group):  # one projection per intrinsics group, not per camera
+        sel = group == g
+        pixels[sel] = camera.project(problem.camera_model, problem.intrinsics[g], in_cam[sel])
+    errors = pixels - problem.observations[mask]
     return float(np.sqrt(np.mean(np.sum(errors**2, axis=1))))
