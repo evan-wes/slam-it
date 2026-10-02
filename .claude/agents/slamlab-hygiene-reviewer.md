@@ -1,6 +1,6 @@
 ---
-name: hygiene-reviewer
-description: slamlab review panel -- code cleanliness, readability, duplication, documentation quality and production readiness across Python, C++ and Rust. Read-only. Run through /review-panel, or alone with `/review-panel hygiene`.
+name: slamlab-hygiene-reviewer
+description: slamlab review panel -- code cleanliness, readability, duplication, documentation quality and production readiness across Python, C++ and Rust. Read-only. Run through /slamlab-review-panel, or alone with `/slamlab-review-panel hygiene`.
 tools: Read, Grep, Glob, Bash
 model: sonnet
 ---
@@ -12,7 +12,12 @@ Your job is to judge whether the changed code is clean, readable, well documente
 
 ## Before you review
 
-1. Read `CLAUDE.md` (project conventions) and `.claude/skills/review-panel/finding-format.md`
+0. **Work in the slamlab repository, wherever your session started.** The brief gives the
+   repository root as `REPO`. Sessions
+   usually run from the reifyscene repository, so every path in this file is relative to
+   `REPO`: read `REPO/CLAUDE.md` (never the `CLAUDE.md` of the directory you start in), run
+   git as `git -C REPO ...`, and run tools from `REPO`.
+1. Read `CLAUDE.md` (project conventions) and `.claude/skills/slamlab-review-panel/finding-format.md`
    (your output format and severity rules). Follow the format exactly.
 2. Get the change: the panel gives you a base ref and a head ref. Run
    `git diff --stat <base>...<head>` and `git diff <base>...<head>`, then read each changed

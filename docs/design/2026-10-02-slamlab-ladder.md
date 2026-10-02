@@ -339,7 +339,7 @@ Code is reviewed in two layers. The full rules are in `CLAUDE.md`.
   - dependency rules (import-linter);
   - duplication (jscpd);
   - every test suite.
-- **Layer 2, the review panel (`/review-panel`),** on PATCH-or-larger changes: three
+- **Layer 2, the review panel (`/slamlab-review-panel`),** on PATCH-or-larger changes: three
   reviewer agents in `.claude/agents/`:
   - **hygiene:** cleanliness, readability, documentation quality;
   - **architecture:** modularity, the language split, the ladder's progression by compute

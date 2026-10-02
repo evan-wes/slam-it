@@ -1,10 +1,10 @@
 ---
-name: review-panel
-description: Run slamlab's review panel on the current branch -- layer-1 checks, then the hygiene, architecture and algorithm reviewers in parallel -- save the report to docs/reviews/, and present the findings so the user decides each action. Use before opening a PR for a PATCH-or-larger change, or with a reviewer name (hygiene | architecture | algorithm) to run one reviewer alone.
+name: slamlab-review-panel
+description: Run slamlab's review panel on slamlab's current branch (from any session, normally reifyscene) -- layer-1 checks, then the hygiene, architecture and algorithm reviewers in parallel -- save the report to docs/reviews/, and present the findings so the user decides each action. Use before opening a PR for a PATCH-or-larger change, or with a reviewer name (hygiene | architecture | algorithm) to run one reviewer alone.
 argument-hint: "[hygiene|architecture|algorithm] [--base <ref>]"
 ---
 
-# /review-panel
+# /slamlab-review-panel
 
 slamlab reviews in two layers:
 
@@ -16,6 +16,15 @@ slamlab reviews in two layers:
 Findings are **decided together with the user**. The panel never fixes, waives or dismisses
 a finding on its own.
 
+## Where it runs
+
+Sessions run from the reifyscene repository, so the panel always works on the slamlab
+repository explicitly: `REPO`, the SLAM It! checkout. Run git as
+`git -C "$REPO" ...` and tools from `$REPO`, and give every reviewer `REPO` in its brief.
+Read `$REPO/CLAUDE.md` before starting. The agents and this skill are symlinked into
+reifyscene's `.claude/` (git-ignored there), so they are registered in reifyscene sessions
+while staying single-sourced here.
+
 ## Arguments
 
 - No reviewer named: run all three.
@@ -26,7 +35,7 @@ a finding on its own.
 
 ### 1. Establish the scope
 
-- `git fetch origin`, then set `BASE_SHA` to `git rev-parse <base ref>` (default
+- `git -C "$REPO" fetch origin`, then set `BASE_SHA` to `git rev-parse <base ref>` (default
   `origin/develop`) and `HEAD_SHA` to `git rev-parse HEAD`. Record the branch name and both
   SHAs.
 - Refuse to run on a dirty tree: `git status --porcelain` must print nothing, since
@@ -47,18 +56,18 @@ Spawn the selected reviewers **in a single message**, so they run concurrently:
 
 | Reviewer | Agent (`.claude/agents/`) | Model |
 |---|---|---|
-| Hygiene | `hygiene-reviewer` | sonnet |
-| Architecture | `architecture-reviewer` | opus |
-| Algorithm | `algorithm-reviewer` | opus |
+| Hygiene | `slamlab-hygiene-reviewer` | sonnet |
+| Architecture | `slamlab-architecture-reviewer` | opus |
+| Algorithm | `slamlab-algorithm-reviewer` | opus |
 
-Give each the same brief: the repository path, `BASE_SHA` and `HEAD_SHA`, the branch name,
+Give each the same brief: `REPO` (the slamlab repository root), `BASE_SHA` and `HEAD_SHA`, the branch name,
 the `--stat` summary, and the instruction to return its review in the format of
-`.claude/skills/review-panel/finding-format.md`.
+`.claude/skills/slamlab-review-panel/finding-format.md`.
 
-The project agents are registered when the session runs inside the slamlab repo. In a
-session started elsewhere they are not; then spawn a `general-purpose` agent whose prompt
-tells it to read and follow its agent file, with that file's model as the model override.
-Record which way each reviewer ran.
+If an agent type is not registered (the symlinks in reifyscene's `.claude/` are missing, or
+the session started somewhere else), spawn a `general-purpose` agent whose prompt tells it to
+read and follow `$REPO/.claude/agents/<agent>.md`, with that file's model as the model
+override. Record which way each reviewer ran.
 
 ### 4. Write the report
 
@@ -102,6 +111,6 @@ response means wait.
 
 ### 7. Hand off to the PR
 
-The PR body's "How this was built" section (`.github/pull_request_template.md`) links the
+The PR body's "How this was built" section (`$REPO/.github/pull_request_template.md`) links the
 report and summarises the panel: reviewers and models, finding counts by severity, and how
 each must-fix was resolved.
