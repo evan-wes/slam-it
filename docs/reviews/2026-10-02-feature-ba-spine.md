@@ -423,3 +423,376 @@ Sources:
 - [Square Root Bundle Adjustment, CVPR 2021](https://openaccess.thecvf.com/content/CVPR2021/html/Demmel_Square_Root_Bundle_Adjustment_for_Large-Scale_Reconstruction_CVPR_2021_paper.html)
 - [Power Bundle Adjustment, arXiv:2204.12834](https://arxiv.org/abs/2204.12834v4)
 - [Power Bundle Adjustment, CVPR 2023](https://openaccess.thecvf.com/content/CVPR2023/html/Weber_Power_Bundle_Adjustment_for_Large-Scale_3D_Reconstruction_CVPR_2023_paper.html)
+
+## Run 2 -- 2026-10-02
+
+| | |
+|---|---|
+| **Branch** | `feature/ba-spine` |
+| **Range** | `e3c60fc5167d6567c3029ba021595dc5d0940609...cda70e627c44a4910f71c65ed474b7c61fc953be` (Run 1's fixes; full PR range `0d9366f...cda70e6` as context) |
+| **Reviewers** | hygiene (sonnet), architecture (opus), algorithm (opus) |
+| **How they ran** | registered slamlab-* agents (symlinked into reifyscene's `.claude/`) |
+| **Layer 1** | all checks passed at 9178ddd (`scripts/check.sh --env slamlab`); later commits are changelog and report only |
+
+Each reviewer first checked its Run 1 findings: all resolved as recorded, except H8 (partly:
+see H13) and L1 (partly: see L11, L12).
+
+### Findings and resolutions
+
+| ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|---|
+| H13 | should-fix | hygiene | `eval/reprojection.py`, `ba/layout.py`, `eval/colmap_reference.py` | per-group / per-camera / per-point masked loops survive (O(K x M), O(N x M)); `_members` is private to `bundle.py` | fix (share `_members`) | pending |
+| H14 | should-fix | hygiene | `ba/layout.py`, `ba/layout.cpp` | coincident-pose tolerance `1e-12 * (1 + |origin|)` unnamed, written twice per core | fix | pending |
+| H15 | should-fix | hygiene | `ba/layout.py` (`_gauge`), `layout.cpp` (`fix_gauge`) | "scale pinned" computed two ways (fixed poses apart vs `_anchoring`) | fix (with L11) | pending |
+| H16 | should-fix | hygiene | `eval/readers.py` | dangling point id reports the header's line, not the keypoint line; closures with default-argument capture | fix | pending |
+| H17 | should-fix | hygiene | `ba/solve.py`, `bindings/foundations/ba.cpp` | the trace still crosses by column position | fix | pending |
+| H18 | should-fix | hygiene | `scripts/compare_ba_colmap.py` | bare COLMAP tolerance; reports group 0 without saying so; `compare` does too much | fix | pending |
+| H19 | should-fix | hygiene | `eval/colmap_reference.py` | module docstring still says pycolmap is a dev dependency (same as part of A20) | fix | pending |
+| H20 | note | hygiene | various | `_members` vs `self._members`; `point` passed beside `kind`; shared camera-side helper; `centred` misnamed; `..` in relative includes; `ba.json` one number per line; robust bias in σ̂₀ (same as L14) | fix the rename, `centred`, `..` (with A16), compact fixture; waive the rest | pending |
+| A15 | should-fix | architecture | `ba/problem.py` | validated arrays are writable and `point_anchor` aliases the caller's array, so a valid `BAProblem` can be made invalid in place | fix (copy; read-only arrays) | pending |
+| A16 | should-fix | architecture | `scripts/check_layers.py` | internal-order check sees direct includes only, exempts the facade both ways, skips Rust, overwrites duplicate containers -- yet claims to match import-linter | fix (close the C++ gaps; state that Rust is not covered) | pending |
+| A17 | should-fix | architecture | `ba/layout.py` (`bearings_or_nan`) | a camera capability (per-pixel unproject with NaN) lives in BA's layout | fix (move to `camera`) | pending |
+| A18 | should-fix | architecture | `tests/foundations/test_ba.py` | the explicit `scale` gauge error is tested on the reference only | fix | pending |
+| A19 | note | architecture | `generate_ba.py`, `ba.json` | fixture not self-describing: options and the exact-codes policy live in the generator | fix (full options and an exact policy in the JSON) | pending |
+| A20 | note | architecture | bindings, `colmap_reference.py`, `pyproject.toml`, design doc | enum tables anchored only on the last enumerator; stale docstring; pycolmap pinned twice; deny-list contract; `eval` row in the package table | fix | pending |
+| L11 | must-fix | algorithm | `ba/layout.py`, `layout.cpp` (`_anchoring`, `_resolve_gauge`) | `auto` reduces anchoring to two flags, so partial anchoring (fixed points, translation-only or rotation-only priors) fixes a whole pose and biases the solution (cost 4.7-29 vs 1e-21) | fix (see options) | pending |
+| L12 | should-fix | algorithm | `ba/layout.py`, `layout.cpp` | a pose prior on an unobserved camera counts as an anchor: `auto` picks `scale`, leaving rigid motion free (σ_f inf) | fix | pending |
+| L13 | should-fix | algorithm | `ba/bundle.py`, `bundle.cpp` (`residual_rows`) | a half pose prior counts 6 rows in m, understating σ̂₀² | fix | pending |
+| L14 | should-fix | algorithm | `ba/solve.py`, `bundle.cpp` (`variance_factor`) | under a robust loss the numerator Σρ overstates σ̂₀² (2.5x on σ_f at 5% outliers, Huber); Σ w s pairs with the information used | fix (Σ w s) | pending |
+| L15 | note | algorithm | `docs/notes/bundle-adjustment.md` | COLMAP picks DENSE_SCHUR up to 50 images, so the slice's speed gap is not dense vs sparse; Power BA paraphrase | fix the note | pending |
+| L16 | note | algorithm | live L2 test | Python stops on `step`, C++ on `gradient` at one start; both converge | waive: both converge to the same optimum; the live test rightly asserts convergence only | pending |
+
+### Hygiene review
+
+## Hygiene review (Run 2)
+
+**Scope:** `git diff e3c60fc...HEAD` (37 files). I read in full: `ba/{bundle,layout,solve}.py`, the `problem.py` diff, the `nls.py` and `arrays.py` diffs, `eval/{readers,reprojection,colmap_reference}.py`, `scripts/{check_layers,compare_ba_colmap}.py`, `generate_ba.py`, and the C++ diffs (`ba.cpp`, `bundle.cpp`, `layout.cpp`, `nls.hpp`, bindings). I read the test names plus the fixture, variance-factor, gauge and anchor tests. I did not review the docs notes or CHANGELOG, and I did not read the `ba.json` data.
+
+**Summary:** The fixes are real and the new code is clean. Validation is centralised, `Damping` and the `_index_*` split read well, and the fixture, generator and test chain is sound. All Run 1 hygiene findings are resolved except H8, which is partly resolved. The remaining items are should-fix or note: a quadratic per-group loop that survives in three places, the unnamed `1e-12` tolerance in both cores, and a few readability and doc nits.
+
+### Run 1 findings
+- **H1** resolved. `check_problem` now checks lengths and index ranges first and runs `check_priors`/`check_anchors` last (`cpp/src/foundations/ba.cpp`). `test_ba.cpp` adds the short-`pt_idx` case.
+- **H2** resolved. `BAProblem.__post_init__` runs `_validated` on every construction path. `test_construction_validates_however_built` covers it, and `generate_ba.problem_from` uses direct construction.
+- **H3** resolved. `solve` is keyword-only, enums cross through named tables, and `codes()` is checked by `test_enum_tables_match_the_compiled_side`. One positional piece is left (see should-fix 5).
+- **H4** resolved. `camera.CENTRE_INDICES` and `COLMAP_PIXEL_OFFSET` are each defined once and used by the readers, the reference and `compare_ba_colmap`.
+- **H5** resolved. `_parse` turns malformed lines into `InvalidInputError` naming the file and line, and names are split with `maxsplit=9`. One wrong line number is noted below (should-fix 4).
+- **H6** resolved. The inline import became `_pycolmap()` with a message pointing to the `colmap` extra, and `pycolmap` is now declared in `pyproject.toml`.
+- **H7** resolved. `demo_slice.py` is deleted. `demo_bal.py` defaults to `Path.home()/datasets/bal` and downloads to `.part` before the rename.
+- **H8** partly resolved. `rms` is validated, tested by hand, and raises on an empty mask. Its loop is now per intrinsics group, but BAL gives every camera its own group, so BAL is still O(C×M) (see should-fix 1).
+- **H9** resolved. The `gauge` docstring now describes all five gauges and points at `ba.layout`. `solve`'s Raises is complete.
+- **H10** resolved. `_members` does one sort and slices per group, and `_rays`, `_reprojection` and `_reprojection_kind` use it. The same per-group pattern survives elsewhere (should-fix 1).
+- **H11** resolved. `_Damping`/`detail::Damping` carry named constants, and `Bundle` is split into `_index_*` helpers and `_add_camera`/`_add_point`/`_coupling`.
+- **H12** resolved as recorded. The waivers are reasonable.
+
+### Findings
+
+#### [should-fix] Per-group masked loops are still O(groups × M), in three places, and `_members` is not shared
+- **Where:** `src/slamlab/eval/reprojection.py:68-71` (`rms`), `src/slamlab/foundations/ba/layout.py` (`_unplaceable_anchors`, the `for g in np.unique(group): sel = group == g` loop), and `eval/colmap_reference.py:to_reconstruction`. In the last, `np.flatnonzero(problem.cam_idx == c)` runs per camera and `np.flatnonzero(problem.pt_idx == p)` runs per point, so it is O(C×M) and O(N×M).
+- **Issue:** `bundle._members` fixes exactly this with one sort, but it is private to `bundle.py`. The other modules re-implement the masked loop.
+- **Why it matters:** `read_bal` gives each camera its own group, so `rms` costs C×M comparisons on BAL. At ladybug size that is about 1.5M and fine; on the BAL problems with millions of observations it is billions. `to_reconstruction` is quadratic in points×observations.
+- **Evidence:** the `rms` comment says "one projection per intrinsics group, not per camera", but the `group == g` mask is still computed once per group.
+- **Suggested fix:** move `_members` to a shared place (`slamlab.foundations.arrays` or `ba.problem`) and use it in the three sites. In `to_reconstruction`, group observations once with `np.argsort` and `np.searchsorted`.
+
+#### [should-fix] The tolerance `1e-12 * (1 + |origin|)` is an unnamed literal, repeated within each core
+- **Where:** `layout.py` in `_confine_scale` and `_gauge`; `cpp/src/foundations/ba/layout.cpp` in `confine_scale` and `fix_gauge`. `kAnchorTolerance` and `ANCHOR_TOLERANCE` are named next to them, but this sibling is not.
+- **Issue:** the same "two poses coincide" threshold is written twice per language with no name or justification.
+- **Why it matters:** the two uses must agree (one decides whether scale is already pinned, the other whether a farthest pose exists). Changing one silently breaks the gauge logic.
+- **Suggested fix:** add `COINCIDENT_TOLERANCE = 1e-12` (C++ `kCoincidentTolerance`) with a one-line justification, plus a small `_coincident(a, b)` helper.
+
+#### [should-fix] `_gauge` / `fix_gauge` repeat what `_anchoring` computes
+- **Where:** `layout.py` in `_gauge` (the `spread > tolerance` block) and `layout.cpp` in `fix_gauge`.
+- **Issue:** the fixed-observed-poses-apart test duplicates part of `_spread` and `_anchoring`'s scale determination (`anchors.scale`). The explicit `similarity` gauge needs "fixed poses apart pin the scale" and `auto` needs "scale pinned", computed two ways.
+- **Why it matters:** the two notions of "scale pinned" can drift apart, and the same logic exists in two forms per language.
+- **Suggested fix:** let `fix_gauge` for `similarity` consult the poses-only subset through `_spread`. At minimum, comment why a poses-only test differs from `anchors.scale`.
+
+#### [should-fix] Wrong line reported for a dangling point id, and closure-in-loop readability in the readers
+- **Where:** `src/slamlab/eval/readers.py`: `read_colmap_text` (`_parse(images_path, image.line, partial(point_index.__getitem__, ...))`), and `_cameras` / `_images` (nested `parse`, `parse_header` and `parse_keypoints` defined in a loop with default-argument capture).
+- **Issue:** `image.line` is the header's line, but a dangling point id sits on the keypoint line, one later. The error text promises "names the line" and names the wrong one. `images_path` is also rebuilt after `_images(root / "images.txt")` already used the path.
+- **Why it matters:** misleading diagnostics, and the default-argument capture (`row: list[str] = row`) is the kind of trick that reads as a bug.
+- **Suggested fix:** store `keypoint_line` in `_Image` and use it. Promote the parsers to module-level functions taking their arguments. Compute `images_path` once.
+
+#### [should-fix] The result trace still crosses by column position
+- **Where:** `src/slamlab/foundations/ba/solve.py:_result_from_backend` (`row[0]` to `row[6]`) against `trace_array` in `cpp/bindings/foundations/ba.cpp` (`kTraceColumns = 7`).
+- **Issue:** this is the one remaining packed-by-position piece of H3. A reordered column fails silently (a swapped `cost` and `gradient_norm`) and `test_matches_fixture` does not compare the trace.
+- **Suggested fix:** a `TRACE_COLUMNS` tuple of field names in `solve.py` (a test checks it against the C++ column order), or at least add the trace's final row to the fixture comparison.
+
+#### [should-fix] `compare_ba_colmap.py`: unexplained constant and fragile indexing
+- **Where:** `scripts/compare_ba_colmap.py:compare`: `tolerance=1e-6`, `ours.intrinsics_std[0, 0]`, `reference.intrinsics[0, 0]`.
+- **Issue:** the COLMAP tolerance is a bare literal (the `ColmapOptions` default is `1e-10`) with no reason given. Reporting `[0, 0]` is NaN with `--refine none` and means only "group 0's first focal length" otherwise, which the docstring does not say. `compare` also builds the problem, runs both solvers and formats a row, so it does too much.
+- **Suggested fix:** name the tolerance and state why. Say in the docstring and header that the table reports group 0. Split row formatting out of `compare`.
+
+#### [should-fix] Stale module docstring in `colmap_reference.py`
+- **Where:** `src/slamlab/eval/colmap_reference.py:11` ("pycolmap is a development dependency, imported only when these functions run").
+- **Issue:** `pyproject.toml` now declares the optional `colmap` extra, and `_pycolmap` tells users `pip install slamlab[colmap]`.
+- **Suggested fix:** say "an optional dependency (the `colmap` extra)".
+
+#### [note] Smaller readability items
+- `ba/bundle.py` has a module function `_members` and an instance attribute `self._members` (a list of tuples). The shadowing is confusing. Rename the attribute (`_by_group`).
+- `_add_point(kind, point, ...)` and `_coupling(kind, point, ...)` take `point` as a parameter although it is always `kind.point`. The docstring says this is for the type checker. A `Kind` subtype or an `assert kind.point is not None` inside would be simpler.
+- `_reprojection_kind` and `_depth_kind` repeat the rotation-part, `world[...]` and slot construction. They could share a helper like `_camera_side(j_world, world_pt)`.
+- `layout.cpp::anchoring` names its unsubtracted matrix `centred`. Rename it `positions_m` or similar, since centring happens two lines later.
+- `scripts/check_layers.py::_module_path` does not normalise `..` in quoted relative includes (`"../x.hpp"`), so such includes are silently unconstrained. `_may_import` rebuilds `depth` on every call. Neither matters today, but the docstring claims relative includes resolve.
+- `generate_ba.py` says "so the file stays small", but `ba.json` is 272 KB and 17.8k lines because `indent=1` puts every number on its own line. Using compact separators for the numeric arrays would cut the review noise. The fixture's oracle is the Python reference and is documented as such, which is acceptable.
+- `variance_factor` uses `2 cost / (m - n)`. With a robust loss, `cost` includes ρ, so σ̂₀² is biased low for outliers. `BAOptions.scale_deviations` does not say so; the algorithm reviewer owns whether this matters.
+
+### Checked and fine
+- `_Damping` and `detail::Damping`: named Nielsen constants, `accept`/`reject` mirror each other, and `solve` is shorter. The two cores agree.
+- `_variance_factor` / `variance_factor` / `scale_deviations`: identical formula and NaN-without-redundancy rule in both cores. They are tested (`test_variance_factor_*`, `test_ba.cpp`), and the docstrings state m and n.
+- Bundle split into `_index_*` helpers, `_add_camera`, `_add_point` and `_coupling`: each does one thing and is documented. The padding trick in `_coupling` is explained.
+- `BAProblem.__post_init__` / `_validated`: one path for all construction, with messages that name the argument. The new `as_indices`, `as_mask`, `as_weights` and `allow_nan` helpers are documented and sit in `arrays.py`.
+- `_anchoring` / `_resolve_gauge`: the Python and C++ versions are parallel, the minimality rule cites Triggs, and the gauge tests cover auto-motion-only, a single pose prior, and a scale gauge with no anchor.
+- Bindings: `decode`, the name tables with `static_assert`s, and `codes()` are tidy. The NOLINT is justified in a comment.
+- `check_layers`: `internal_orders` and `check_cpp_internal` are documented and tested (`tests/test_check_layers.py`), and unlisted modules are not constrained, as stated.
+- Parity fixture: the generator is seeded and its tolerances carry a stated `reason`. `test_matches_fixture` covers every gauge, both methods, robust losses, degenerate drops, radial, priors and anchors, and asserts values.
+- `demo_bal.py`: atomic download, a home-based default path, and `readers.read_bal`.
+- `eval/reprojection.py` tests assert values, and the empty, mis-shaped and behind-camera cases are covered.
+
+### Architecture review
+
+## Architecture review
+
+**Scope:** Run 2 re-review of `feature/ba-spine`. Fix range `e3c60fc...cda70e6` (37 files), read against the Run 1 report (`docs/reviews/2026-10-02-feature-ba-spine.md`) and the design doc. Read: `pyproject.toml` contracts, `scripts/check_layers.py` and `tests/test_check_layers.py`, `src/slamlab/foundations/{arrays,camera,nls}.py`, `ba/{problem,layout,solve}.py`, `src/slamlab/eval/{__init__,readers,colmap_reference}.py`, `scripts/{compare_ba_colmap,demo_bal}.py`, `cpp/bindings/foundations/ba.cpp`, `cpp/include/slamlab/foundations/{ba,nls,camera}.hpp`, `cpp/src/foundations/ba.cpp` and `ba/{bundle.cpp,layout.hpp}`, the whole C++ include graph of rung 0, `tests/fixtures/foundations/generate_ba.py` with the head of `ba.json`, the fixture and validation tests in `tests/foundations/test_ba.py`, and the design-doc and CHANGELOG diffs.
+
+**Summary:** The fixes resolve all eleven Run 1 findings marked fixed, and the three deferrals are recorded where the report says. The slice's structure is now sound:
+- the readers sit in `eval`, and the pycolmap boundary has a contract;
+- options and results cross the binding by name;
+- the enum tables are tested across languages;
+- BA has a parity fixture with a stated policy;
+- the variance factor and the `scale` gauge are in lock-step across both cores.
+
+I found no must-fix. Three should-fix items remain:
+- A2's guarantee ("any `BAProblem` is valid") can still be broken by changing a problem's arrays in place.
+- The C++ internal-order checker is weaker than import-linter in ways its docstring claims it is not.
+- `bearings_or_nan`, a camera capability, sits in the wrong module.
+
+### Run 1 findings
+
+- **A1** (BA parity fixture): **resolved.** `tests/fixtures/foundations/ba.json` has nine cases: `auto` resolving to each of similarity, first_pose, scale and none, an explicit similarity with Gauss-Newton, degenerate drops, radial, Huber, and every block kind. Each output has its own tolerance policy. `test_matches_fixture` runs every backend, including Python, against it. There are residual fixture-design notes below.
+- **A2** (reference and C++ fail differently): **resolved for construction and `replace`**, through `BAProblem.__post_init__` and `test_construction_validates_however_built`. One way around it remains (in-place change of the arrays); see the should-fix below.
+- **A3** (summary location, stale doc): **resolved / deferral recorded.** The design doc says where the summary lives "as built in PR 1" (around line 130). Its open items say it moves to `foundations.solve` in PR 2. The Status line is updated.
+- **A4** (cross-language contract held by position): **resolved.** The binding takes keyword-only arguments (`nb::kw_only()`). `Implementation.solve` is keyword-only, and `test_backends._parameter_names` now reads `kwonlyargs`, so the Protocol test covers every option. Every crossing enum has explicit values. `codes()` is tested against `ENUM_TABLES`, and the range checks come from the name tables. There is a small residual note on how the tables are anchored.
+- **A5** (pycolmap via importlib, no extra): **resolved.** pycolmap is a plain local import, there is a `colmap` extra, and the "Only eval may import pycolmap" contract exists. There are small residual notes below.
+- **A6** (readers in rung 0): **resolved** in code: `slamlab.eval.readers`, and the eval docstring is rewritten. The design doc's package table (line 224, "Metrics, benchmarks, budget harness") does not record readers or references in `eval`, which A6 also asked for. See the note.
+- **A7** (reifyscene yardstick in slamlab): **resolved as decided.** `compare_ba_colmap.py` is generic, and the slice invocation lives in `docs/notes/bundle-adjustment.md` as a recorded experiment. No code knows reifyscene's layout.
+- **A8** (copied constants): **resolved.** There is one `COLMAP_PIXEL_OFFSET` (in `eval/readers.py`) and a new `camera.CENTRE_INDICES`. The readers take sizes from `camera.MODELS`.
+- **A9** (validators in `arrays.py`): **resolved.** `as_indices`, `as_mask` and `as_weights` are in `arrays.py`, and `as_real(allow_nan=True)` handles `_depth_prior`.
+- **A10** (internal order not applied to C++): **resolved as specified.** `check_cpp_internal` applies every sub-rung layers contract to includes. Its semantics differ from import-linter's; see the should-fix below.
+- **A11** (batching in bindings): **deferral recorded** (design doc, "Deferred from PR 1's review panel", before milestone 7).
+- **A12** (sparse reduced solver): **deferral recorded** (milestone 4). The record drops two points from the finding:
+  - the solver belongs in **rung 0**, not `classic`;
+  - C++ `ba::solve` is not yet parametrised on `ReducedSystemSolver`, so the C++ side has no "same seam" yet.
+
+  It is worth adding one sentence.
+- **A13** (order inside `ba`): **resolved.** The "Bundle adjustment's internal order" contract is `solve > bundle > layout | schur > problem`.
+- **A14** (eval tests location): **resolved.** `tests/eval/test_readers.py` and `tests/eval/test_reprojection.py` exist.
+
+### Findings
+
+#### [should-fix] A validated `BAProblem` can still be changed in place, and `point_anchor` shares memory with the caller's array
+- **Where:** `src/slamlab/foundations/ba/problem.py:96-111` (`__post_init__`) and `:413` (`_anchors` returns `np.ascontiguousarray(arr, dtype=np.int64)`, which does not copy an int64 contiguous input)
+- **Issue:** The dataclass is frozen, but its arrays are writable. Every other validator returns a copy; `_anchors` does not. So a caller can make a validated problem invalid in two ways:
+  - by writing to a field, e.g. `problem.pt_idx[0] = 99`;
+  - by changing the array it passed as `point_anchor`.
+
+  The solver trusts the problem, so the original A2 divergence comes back.
+- **Why it matters:** `__post_init__`'s docstring promises "a solver can trust any `BAProblem` it is given". That is the A2 fix, and it does not fully hold.
+- **Evidence:** I ran `PYTHONPATH=. conda run -n slamlab python -c ...` with `p = _scene('pinhole', seed=1)` from the generator:
+  ```
+  point_anchor aliased: True          # np.shares_memory(a, replace(p, point_anchor=a).point_anchor)
+  python IndexError index 99 is out of bounds for axis 0 with size 24    # after q.pt_idx[0] = 99
+  cpp InvalidInputError pt_idx: indices must lie in [0, 24)
+  ```
+- **Suggested fix:** In `__post_init__`, copy `point_anchor` and set `flags.writeable = False` on every validated array. If nothing writes to them, this costs nothing; if something does, it surfaces. Add the in-place case to `test_construction_validates_however_built`.
+
+#### [should-fix] `check_layers.py`'s internal-order check is weaker than import-linter but says it matches it
+- **Where:** `scripts/check_layers.py:22-28` (docstring: "not constrained, as in import-linter"; line 4: "so the three can never disagree") and `:232-247` (`_check_include`)
+- **Issue:** There are three gaps between the C++ check and the import-linter contract it claims to mirror:
+  1. **Direct includes only.** import-linter's layers contracts reject *chains*, including chains through modules no layer lists. The C++ check looks at one include at a time. So a C++-only helper that no contract lists (today `ba/common.hpp`, which has no Python counterpart) is a free bridge. For example, `schur.hpp → common.hpp → bundle.hpp` passes.
+  2. **The facade exemption is the wrong way round.** The comment says the facade "(ba.hpp) is above its modules". Yet `schur.hpp`, `layout.hpp` and `bundle.hpp` all include `slamlab/foundations/ba.hpp`, which by that statement is an upward include, and the check skips it in both directions. The real correspondence is that C++ `ba.hpp` holds what Python splits between `problem` (the types, bottom layer) and the `solve` declaration (top layer).
+  3. **No Rust check.** The internal-order check does not apply to Rust modules, and `internal_orders` silently replaces an earlier contract on the same container (`orders[...] = layers`).
+- **Why it matters:** CLAUDE.md says the script holds C++ "to the same contracts as import-linter". Today's include graph is clean (I checked every `#include "..."` in `cpp/src/foundations` and `cpp/include/slamlab/foundations`), but the gaps will matter as C++-only helpers and Rust modules (se3, the edge VO) arrive.
+- **Evidence:** In `_check_include`, `if len(here) <= depth or len(target) <= depth: continue` skips every include of the facade. There is no transitive closure over `_ANY_INCLUDE` matches. `rust/slamlab-foundations/src/` has `so3.rs` and `error.rs`, which nothing checks.
+- **Suggested fix:** Do one of these two:
+  - **Close the gaps:** follow includes through unlisted modules (a reachability walk per file), and map `ba.hpp` explicitly to `problem` in a table like `_CPP_MODULE_ALIASES`, so including it from inside `ba` is a downward include. Raise an error on duplicate containers.
+  - **Narrow the claims:** state in the docstring and in CLAUDE.md that the check covers direct includes only, that the facade is exempt, and that it does not cover Rust.
+
+  I recommend the first, because it is small.
+
+#### [should-fix] `bearings_or_nan` is a camera capability placed in BA's layout module
+- **Where:** `src/slamlab/foundations/ba/layout.py:196-212`, imported by `ba/bundle.py:28`
+- **Issue:** "Unproject a batch; mark the pixels that cannot be undistorted" is a property of the camera model. C++ gets it from `camera::unproject`'s per-item `std::expected` (`ba/bundle.cpp:430`, `ba/layout.cpp:252`). Python's `camera.unproject` aborts the whole batch on the first failure, so BA builds its own per-pixel fallback around the exception. `bundle` then imports a camera utility from `layout`.
+- **Why it matters:** PnP, RANSAC and the edge VO will need the same per-pixel answer, and each would either import it from `foundations.ba` or copy it. This is the Python face of A11 (per-item failure semantics live at the batch boundary).
+- **Suggested fix:** Move it to `slamlab.foundations.camera`, either as a function or as an option on `unproject`, and import it in both BA modules. Alternatively, fold it into the A11 deferral record by name.
+
+#### [should-fix] The explicit `"scale"` gauge error is tested only on the Python reference
+- **Where:** `tests/foundations/test_ba.py:759-762` (`test_scale_gauge_needs_an_anchor`); C++ counterpart at `cpp/src/foundations/ba/layout.cpp:152`
+- **Issue:** This PR adds a new `InvalidInput` path in both cores, but only the reference is tested against it. The fixture covers only successful solves.
+- **Why it matters:** The design doc requires that every language fails the same way. Without the test, a change to the C++ check would go unnoticed.
+- **Suggested fix:** Parametrise the test over `backends.BACKENDS`, with `require_function`, as `test_matches_fixture` does.
+
+#### [note] The BA fixture is not self-describing: options and the exact-match policy live in the generator
+- **Where:** `tests/fixtures/foundations/generate_ba.py:198-212` (`options_from`), `:57` (comment: "summary codes and counts compare exactly"); `tests/foundations/test_ba.py:21` imports `options_from` and `problem_from` from the generator
+- The fixture stores only each case's overrides, e.g. `{"loss": ["huber", 2.0]}`:
+  - The tight tolerances (`max_iterations=100`, `function_tolerance=1e-12`, `gradient_tolerance=1e-10`) and every other option default are supplied by Python code at test time.
+  - The exact-match policy for codes, counts and `iterations` is stated in a comment, not in the JSON's `tolerance` block.
+
+  Parity between backends holds, because both get the same `backend_arguments`. But the fixture is not the complete contract, so a non-Python consumer could not replay it.
+- Two more points:
+  - Exact `iterations` equality depends on a float threshold (the relative decrease against `function_tolerance`) landing the same way in both languages. It is reasonable to hold the line now; if it ever flakes under a compiler or FMA change, the policy should say so rather than loosen silently.
+  - Suggestion: write the full option set (names, as `backend_arguments` builds it) into each case's input, and add a `"codes": {"comparison": "exact"}` entry to the tolerance block.
+
+#### [note] Small A4/A5/A6 residuals
+- `cpp/bindings/foundations/ba.cpp:44-58`: the name tables for model, gauge, method and loss are in the binding, not the core (only `Termination` has a core `nls::name`). The `static_assert`s check only that the *current* last enumerator plus 1 equals the table size. If an enumerator is appended in C++ only (for example, the planned time-cap termination), the build passes, `codes()` still matches Python, and Python fails with `IndexError` on the new code. A `kCount` sentinel, or a core `name()` for each enum, closes this.
+- `src/slamlab/eval/colmap_reference.py:7`: the docstring says "pycolmap is a development dependency"; it is now the `colmap` extra.
+- `pyproject.toml:36`: pycolmap is pinned both in `dev` and in `colmap`. `dev` could list `slamlab[colmap]`, so there is one pin.
+- The pycolmap contract lists the forbidden *sources*, which is a deny-list: a new top-level package is not covered unless someone adds it. An allow-list is safer: `source_modules = ["slamlab"]` with `ignore_imports = ["slamlab.eval.colmap_reference -> pycolmap"]`.
+- Design doc line 224: the `slamlab.eval` row should say "readers, external references, metrics, benchmarks, budget harness", to record A6's placement decision (TUM and EuRoC follow it at milestone 2).
+
+### Checked and fine
+- Dependency direction: `foundations` no longer references readers or pycolmap. `eval` imports only `foundations`. The scripts use public `eval`/`foundations` exports. Nothing in `src/` references reifyscene's layout.
+- The binding is a thin type conversion: keyword-only arguments, float64/int64/bool arrays with `noconvert`, a dict of named results, and no algorithm logic. The `scale` gauge and `variance_factor` cross by name, and `codes()` is tested against `ENUM_TABLES`.
+- Lock-step: `variance_factor` (`2 cost / (m - n)`, NaN without redundancy), `scale_deviations`, the `scale` gauge, the fixed-point and anchor rejection, and Nielsen's damping (`_Damping` / `detail::Damping`) all match between the Python reference and the C++ core. `make_layout` now returns `Result<Layout>` in C++, and raises `InvalidInputError` in Python.
+- Error contract: C++ `check_problem` now checks lengths and indices before priors and anchors, which fixes H1's out-of-bounds read. The new rejections use `InvalidInput` in both languages.
+- Validation once: `BAProblem.__post_init__` (via `_validated`) is the single Python check. The compiled core's re-check is documented in `ba.solve`'s Raises section.
+- Fixture tolerance policy: one policy per output with a stated reason, applied through `conftest.assert_matches_fixture`. NaN is written as `null`. The generator refuses to write a case the reference did not converge on.
+- The new import-linter contracts are well-formed: the `ba` order matches the actual imports (`bundle` imports `layout` and `schur`, `solve` imports all three), and the root config has `include_external_packages = true`.
+- `tests/test_check_layers.py` covers upward, sibling, relative, angle-bracket, facade, unlisted-module and system-header cases.
+- `compare_ba_colmap.py` is generic (`NAME=DIR` arguments); the reifyscene invocation is documentation only.
+- The design doc's Status line, closed and open items, and deferral records (A3, A11, A12, L6, L7) are present and match the code.
+
+One side effect: my evidence run (`conda run` in the repo) triggered the editable install's automatic C++ rebuild into the git-ignored `build/slamlab/`. No tracked files changed.
+
+### Algorithm review
+
+## Algorithm review
+
+**Scope:** Fix range `e3c60fc...cda70e6` on feature/ba-spine, with the full PR (`0d9366f...cda70e6`) as context. I read these in full:
+- `src/slamlab/foundations/ba/{layout,solve,bundle,problem}.py` (the diffs, plus all of `layout.py`)
+- `cpp/src/foundations/ba/{layout,bundle}.cpp`, `cpp/src/foundations/ba.cpp`, `cpp/include/slamlab/foundations/{ba,nls}.hpp`
+- `src/slamlab/foundations/nls.py` (`_Damping`)
+- `src/slamlab/eval/colmap_reference.py`
+- the new tests in `tests/foundations/test_ba.py`
+- the diff of `docs/notes/bundle-adjustment.md`
+
+References: Triggs et al. 1999 §9 (gauge), Förstner & Wrobel 2016 ch. 4 (variance factor), Huber, *Robust Statistics* (1981) for M-estimator scale, and COLMAP's `bundle_adjustment.cc` for solver selection. I ran small probes against the HEAD build with both backends. The scripts are in `/tmp/scratch/` (`run2_partial_anchor.py`, `run2_unobserved_ref.py`, `run2_variance_rows.py`, `run2_robust_factor.py`). Run them from the slamlab root with `PATH=<slamlab env>/bin:$PATH PYTHONPATH=. python <script>`. No repository files were modified.
+
+**Summary:** Both cases Run 1 reported are fixed in both cores and covered by tests: the frozen pose under motion-only BA, and the free scale under a single pose prior. The new `scale` gauge is sound: under a full prior on one camera, it removes exactly the one null direction (scale about the reference centre). L2, L4, L5 and L10 are resolved, and the Nielsen damping refactor is behaviour-identical in both languages.
+
+**One must-fix remains.** The new `auto` gauge sorts the anchoring into two yes/no flags, rigid motion and scale. Any partial anchoring therefore falls through to fixing a whole pose. I reproduced four noise-free cases where `auto` leaves cost between 4.7 and 29, while `none` reaches about 1e-21. This is the same kind of silent bias L1 was about.
+
+The variance factor has two counting and numerator problems (should-fix), and the new state-of-the-art text has one inaccurate claim about COLMAP (note).
+
+### Run 1 findings
+- **L1 (must-fix): partly resolved.** Motion-only BA (`test_auto_gauge_motion_only`) and a single full prior (`test_auto_gauge_single_pose_prior`) now resolve correctly in both cores. My Run 1 probes now give: motion-only → `none`, cost 2.3e-20, pose error 0; one prior → `scale`, finite f_std, unobservable_focal = 0. Two gaps remain:
+  - partial anchoring still over-constrains (new must-fix below);
+  - a prior on an unobserved camera re-creates the original symptom (should-fix below).
+- **L2: resolved.** Python `bearings_or_nan` gives NaN rays, so the step is rejected. At the start, both cores drop the point, and the drop rule matches (`layout.py:215-254`, `layout.cpp` `degenerate_points`). My Run 1 probe now converges to k1 = -0.0800 on both backends for k1 from -1.1 to 1.0. `test_anchor_pixels_outside_the_invertible_region` covers the mid-solve and start cases.
+- **L3: implemented; two issues with the factor itself** (two should-fix findings below). The scaling, its option, the NaN for m ≤ n and the backend parity are correct. The slice table's σ_f values equal the old ones times σ̂₀ (for example 3.5 × 0.68 = 2.4 ≈ 2.3, and 902 × 0.27 = 244 ≈ 241).
+- **L4: resolved.** `np.minimum.at` is used in `problem.py:474` and `layout.py:64`.
+- **L5: resolved.** `_check` rejects priors, weights other than 1, fixed poses and fixed points. `refinement()` takes the masks from the problem and rejects mixed masks and a free principal point.
+- **L6, L7: deferred.** The design-doc records exist; nothing to check.
+- **L8: resolved.** The citations are accurate; one claim about COLMAP needs a correction (note below).
+- **L9: resolved.** Sturm (CVPR 1997) and Kahl, Triggs & Åström (JMIV 2000) are cited correctly.
+- **L10: resolved.** Both cores reject this in validation (`problem.py:409`, `ba.cpp` `check_anchors`, which now runs after the size checks).
+
+### Findings
+
+#### [must-fix] `auto` still over-constrains partial anchoring: it fixes a whole pose when the data pins only some gauge directions
+- **Where:** `src/slamlab/foundations/ba/layout.py:101-143` (`_anchoring`, `_resolve_gauge`). Mirrored in `cpp/src/foundations/ba/layout.cpp` (`anchoring`, `resolve_gauge`).
+- **Issue:** The anchoring is reduced to two flags, `rigid` and `scale`. Anything short of "rigid" (a fixed pose, a full prior, or three non-collinear known positions) resolves to `first_pose` or `similarity`. That fixes all six DoF of pose 0 at its starting value, even when priors or fixed points already pin some of those DoF. Cases that hit this:
+  - one fixed point (pins 3 DoF);
+  - two fixed points, or translation priors on two cameras (pin 6 DoF; only rotation about the baseline is free);
+  - translation priors along a collinear track;
+  - rotation-only (attitude) priors (pin 3 DoF).
+- **Why it matters:**
+  - Triggs' minimality is violated, and the result is silently biased: pose 0 stays at its perturbed start while the priors and fixed points pull elsewhere.
+  - `auto` is the default, and these are ordinary inputs: a couple of control points, GNSS on a few frames, IMU attitude.
+  - The docstrings (`layout.py:12`, `BAOptions.gauge`) and the note claim `auto` "removes exactly what the fixed variables and priors leave free". That is false for these inputs.
+- **Evidence:** `run2_partial_anchor.py`, on the noise-free `_scene(cameras=5, points=60, perturb=0.02, seed=4, rotation=0.3)`. Priors and fixed points are at their true values; both backends give the same result.
+  ```
+  translation priors on 2 cams  auto -> first_pose gp=0  cost=4.747e+00 | none cost=7.2e-22
+  rotation priors on all cams   auto -> similarity gp=0 sp=4 cost=9.577e+00 | none cost=1.0e-19
+  one fixed point               auto -> similarity gp=0 sp=4 cost=5.362e+00 | none cost=4.6e-21
+  two fixed points              auto -> first_pose gp=0  cost=2.936e+01 | none cost=2.6e-23
+  ```
+  Triggs et al. 1999, §9: gauge constraints must be minimal.
+- **Suggested fix:** Compute the remaining gauge, not two flags.
+  1. Stack, for every anchor, the derivative of the anchored quantity with respect to the 7 similarity generators (t, ω, s):
+     - a known position X gives the rows `[I, −hat(X), X]`;
+     - a fixed pose or full prior gives its centre rows plus `[0, I, 0]`;
+     - a rotation-only prior gives `[0, I, 0]`;
+     - metric depth gives `[0, 0, 1]`.
+  2. Take the null space N of the stacked matrix. `auto` maps onto the existing gauges only when N is {} (`none`), scale about a reference (`scale`), the rigid motions (`first_pose`) or everything (`similarity`).
+  3. For any other N, either generalise `_confine_scale` to project one pose's step off N's image (a QR/Householder complement of dimension 6 − d), or raise `InvalidInputError` asking for an explicit gauge.
+
+  Add tests for one fixed point, two translation priors and rotation-only priors, in both cores.
+
+#### [should-fix] A pose prior on an unobserved camera counts as an anchor and re-creates L1's symptom
+- **Where:** `layout.py:111-127`. `translation` and `full` are not filtered by `observed`, while `fixed_cams` is. The C++ `anchoring` loop does the same.
+- **Issue:** An unobserved camera is held fixed and is not connected to the scene. Its prior pins nothing about the observed cameras. Yet it becomes the `reference` (so `rigid=True`), and its prior centre counts as a known position.
+- **Why it matters:** A camera becomes unobserved whenever all its observations are zero-weighted or dropped (behind the camera, or degenerate). `auto` then picks `scale`, which leaves the rigid gauge free. The reduced system is singular, and focal reads as unobservable: exactly what L1 fixed.
+- **Evidence:** `run2_unobserved_ref.py`: `_scene(cameras=5, noise=0.5, seed=3, rotation=0.3)` with free focal, camera 4's observation weights set to 0, and a full prior on camera 4. Both backends:
+  ```
+  no prior                   gauge=similarity f_std=[1.409 1.997] unobservable_focal=0
+  prior on unobserved cam 4  gauge=scale  sp=0 f_std=[inf inf]    unobservable_focal=1
+  ```
+- **Suggested fix:** Count priors only on observed cameras, as fixed poses already are (`& observed` on `translation` and `full`). Add the case above as a test.
+
+#### [should-fix] The variance factor's m counts 6 rows for a half pose prior
+- **Where:** `bundle.py` `residual_rows` (`POSE_DIM * self._p_cam.size`) and `bundle.cpp` `residual_rows`. `prior_cams` is every camera with *any* positive prior weight (`layout.py:273`).
+- **Issue:** A translation-only or rotation-only prior has three zero-weight rows. They contribute no cost and no information, but they still add 3 to m. So the redundancy m − n is overstated and σ̂₀² is understated.
+- **Why it matters:** In small problems, or problems with many priors, the deviations and the 1% focal rule shift. The partial priors that the note explicitly supports are exactly the affected case.
+- **Evidence:** `run2_variance_rows.py`: 3 cameras, 6 points, translation-only priors on all cameras, gauge `none`.
+  ```
+  variance_factor reported 0.1473   (m=54, n=36)
+  with m counting only weighted rows: 0.2947 (m=45, n=36)
+  ```
+- **Suggested fix:** Count `3 · (number of positive weights)` per prior camera, in both cores. Optionally, document that constant blocks (priors on fixed or unobserved poses) still count.
+
+#### [should-fix] Under a robust loss, 2·cost = Σρ overstates σ̂₀² and is inconsistent with the information matrix used
+- **Where:** `solve.py:_variance_factor` and `bundle.cpp` `variance_factor`; the note's "the residual sum of squares over the redundancy".
+- **Issue:** The deviations come from `(Jᵀ W J)⁻¹` with the final IRLS weights. The numerator, though, is Σρ(sᵢ), not the IRLS-weighted Σ wᵢ sᵢ that pairs with that matrix:
+  - Huber: for an outlier ρ = 2δ√s − δ², about twice w·s = δ√s;
+  - Cauchy: ρ grows like log(s), while w·s is bounded by δ².
+
+  Gross outliers therefore inflate σ̂₀², and through it σ_f and the `unobservable_focal` flag. Under the trivial loss the two numerators are identical, so all current tests pass.
+- **Evidence:** `run2_robust_factor.py`: 0.5 px noise (true factor 0.25), a fraction of observations replaced by ±20 px outliers, δ = 1.
+
+  | Outliers | Loss | Reported (2·cost) | Σ w s / (m − n) |
+  |---|---|---|---|
+  | 0% | Huber | 0.221 | 0.217 |
+  | 5% | Huber | 1.547 | 0.904 |
+  | 5% | Cauchy | 0.395 | 0.172 |
+  | 15% | Cauchy | 0.776 | 0.231 |
+
+  With 5% outliers under Huber, σ_f is inflated about 2.5×. Huber (1981, ch. 7) and Förstner & Wrobel (2016, §4.7) use a weighted or robust scale estimate for M-estimators, not Σρ.
+- **Suggested fix:** Use Σ wᵢ sᵢ / (m − n) with the final IRLS weights in both cores, or a robust scale (MAD of the normalised residuals). State the choice in the `BAOptions.scale_deviations` and `variance_factor` docstrings and in the note. Add a known-answer test with a robust loss and outliers.
+
+#### [note] COLMAP's linear solver depends on problem size; the slice timing attribution should be rechecked
+- **Where:** `docs/notes/bundle-adjustment.md`, "Toward larger problems": "This is Ceres' `SPARSE_SCHUR`, and what COLMAP runs". Also the earlier "remaining gap … is the dense reduced system and single-threading".
+- **Correction:** COLMAP's `bundle_adjustment.cc` chooses by image count:
+  - `DENSE_SCHUR` up to 50 images;
+  - `SPARSE_SCHUR` up to 1000;
+  - beyond that, `ITERATIVE_SCHUR` with `SCHUR_JACOBI`.
+
+  `colmap_reference.solve` does not override this. So on lab-coat (47 images) and judo (34 images), COLMAP also solved densely. The gaps there are not explained by "dense vs sparse"; multithreading and the cost of Jacobian evaluation are the likelier causes.
+- Separately, the Power BA abstract claims to "challenge the state-of-the-art iterative methods" on BAL. "Faster solves than preconditioned CG" is a fair paraphrase only if the paper's tables show it. Consider quoting the abstract's wording.
+
+#### [note] Termination differs between backends at one L2 start
+- `_undistortion_scene(-1.0)`: Python stops on `step`, C++ on `gradient`. Both converge to k1 = −0.0800 with cost about 1e-25. The test asserts only `converged`, which is right for a live comparison. The fixture's exact termination policy does not include this case, so this is not a defect.
+
+### Checked and fine
+- **`scale` gauge with a free reference.** The confined pose's step is projected off its baseline to the (moving) reference centre, rebuilt at every state. The only Hessian null direction under one full prior is scale about the reference centre, so this removes exactly one DoF.
+- **Known-position test.** The SVD rank test (`_spread`) is order-independent and matches between the cores. Its tolerance is relative to magnitude.
+- **`first_pose` / `similarity`.** These paths are unchanged in behaviour. Two separated fixed poses still add no scale constraint. `scale` without a reference raises `InvalidInput` in both cores.
+- **L2 drop at the start.** `bearings_or_nan` retries per pixel only after a batch failure. The start-time drop runs only on points not already degenerate, matching C++. NaN rays propagate to inf block costs, so the step is rejected.
+- **Variance factor counting otherwise.** Anchor self-observations are excluded from m and an anchored point counts 1 in n. This gives the same redundancy as a plain point with all its observations (2k − 3). n is taken from the reduced coordinates (5 for the scale pose). m ≤ n gives NaN and no scaling. Scaled σ equals √σ̂₀² × unscaled σ in both backends.
+- **Damping refactor.** `_Damping` / `detail::Damping` reproduce the previous Nielsen update (shrink by at most 1/3 via 1 − (2r − 1)³; ν reset on accept, doubled on reject) exactly.
+- **First observation.** `np.minimum.at` gives the lowest kept observation in both `anchor_points` and `_ray_parallax`, matching the explicit C++ loops.
+- **Note claims and citations.** Civera 2008, Engel 2018, Demmel 2021, Weber 2023, Agarwal 2010, Sturm 1997, Kahl/Triggs/Åström 2000 and Förstner & Wrobel 2016 are all correctly attributed. The slice's σ̂₀ values agree with RMS/√2 corrected for redundancy. "0.5 px noise under unit weights overstates σ by 2" is correct.
+
+Sources:
+- [Triggs et al., Bundle Adjustment -- A Modern Synthesis (1999)](https://link.springer.com/chapter/10.1007/3-540-44480-7_21)
+- [Weber et al., Power Bundle Adjustment, arXiv:2204.12834](https://arxiv.org/abs/2204.12834)
+- [COLMAP bundle_adjustment.cc solver selection (mirror)](https://huggingface.co/camenduru/ceres-solver-v1/blob/main/colmap/src/optim/bundle_adjustment.cc)
+- [Ceres Solver FAQ: choosing a linear solver](https://ceres-solver.readthedocs.io/latest/solving_faqs.html)
