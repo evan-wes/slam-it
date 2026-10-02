@@ -3,8 +3,8 @@
 ///
 /// Mirrors `slamlab.foundations.ba`, whose docstring states the model:
 /// - robust reprojection errors over poses (right-perturbed `T_cam_world`), intrinsics groups
-///   and points, plus inverse-depth priors through per-camera affines and pose priors, each
-///   kind of block with its own loss;
+///   and points (plain, or anchored inverse depths), plus inverse-depth priors through
+///   per-camera affines and pose priors, each kind of block with its own loss;
 /// - points eliminated by the Schur complement, with the reduced camera system factored by a
 ///   `ReducedSystemSolver`;
 /// - the gauge removed by fixing a pose and, for the similarity gauge, confining one pose's
@@ -113,6 +113,9 @@ struct Problem {
   Poses pose_prior;
   /// @brief Each pose prior's `(translation, rotation)` information (C x 2).
   Eigen::Matrix<double, Eigen::Dynamic, 2, Eigen::RowMajor> pose_prior_weights;
+  /// @brief Each point's anchor observation (N), or -1: an anchored point is one inverse
+  ///        depth along its anchor pixel's ray, in the anchor's camera.
+  Indices point_anchor;
 };
 
 /// @brief Settings for `solve`.
@@ -162,6 +165,8 @@ struct Solution {
   Intrinsics intrinsics;
   /// @brief Refined points (dropped points unchanged).
   Points points;
+  /// @brief Anchored points' refined inverse depths (N); NaN for the others.
+  Eigen::VectorXd inverse_depth;
   /// @brief Refined depth affines (C x 2).
   Eigen::Matrix<double, Eigen::Dynamic, 2, Eigen::RowMajor> depth_affine;
   /// @brief Free intrinsics' standard deviations (K x P); NaN where fixed, inf if singular.

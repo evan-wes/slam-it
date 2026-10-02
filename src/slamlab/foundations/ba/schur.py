@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
+from numpy.typing import NDArray
 
 from slamlab.foundations import nls
 from slamlab.foundations.ba.problem import Array, IndexArray
@@ -125,6 +126,11 @@ class Blocks:
         Those blocks' camera-side columns (padding points at column 0, with zero coupling).
     slots : ndarray of int64, shape (Mf,)
         Those blocks' free-point slots.
+    real : ndarray of bool, shape (Nf * 3,)
+        Which point dimensions are variables. Every point block is 3x3; an inverse-depth
+        point uses one dimension, and its other two are inert (identity Hessian, no
+        coupling, no gradient), so their step is exactly zero and they are hidden from the
+        solver.
     """
 
     hessian_cc: Array
@@ -134,6 +140,7 @@ class Blocks:
     coupling: Array
     columns: IndexArray
     slots: IndexArray
+    real: NDArray[np.bool_]
 
 
 class SchurSystem:
@@ -173,7 +180,7 @@ class SchurSystem:
         return np.concatenate(
             [
                 self._reduction.reduce_vector(self._blocks.gradient_c),
-                self._blocks.gradient_p.reshape(-1),
+                self._blocks.gradient_p.reshape(-1)[self._blocks.real],
             ]
         )
 
@@ -183,7 +190,9 @@ class SchurSystem:
         return np.concatenate(
             [
                 self._reduction.reduce_diagonal(self._blocks.hessian_cc),
-                np.diagonal(self._blocks.hessian_pp, axis1=1, axis2=2).reshape(-1),
+                np.diagonal(self._blocks.hessian_pp, axis1=1, axis2=2).reshape(-1)[
+                    self._blocks.real
+                ],
             ]
         )
 
@@ -195,7 +204,9 @@ class SchurSystem:
         """
         b = self._blocks
         n_cam = self._reduction.size
-        damped_pp = b.hessian_pp + damping[n_cam:].reshape(-1, 3)[:, :, None] * np.eye(3)
+        point_damping = np.zeros(b.real.shape[0])
+        point_damping[b.real] = damping[n_cam:]
+        damped_pp = b.hessian_pp + point_damping.reshape(-1, 3)[:, :, None] * np.eye(3)
         try:
             lower = np.linalg.cholesky(damped_pp)
         except np.linalg.LinAlgError:
@@ -239,7 +250,7 @@ class SchurSystem:
         back = b.gradient_p.copy()
         np.add.at(back, b.slots, np.einsum("mij,mi->mj", b.coupling, full_c[b.columns]))
         step_p = -np.einsum("pij,pj->pi", inverse_pp, back)
-        return np.concatenate([step_c, step_p.reshape(-1)])
+        return np.concatenate([step_c, step_p.reshape(-1)[b.real]])
 
     def camera_variances(self, positions: IndexArray) -> Array:
         """Return marginal variances of camera-side free coordinates: ``diag(S⁻¹)``.
@@ -254,7 +265,8 @@ class SchurSystem:
         ndarray of float64
             Their variances, or infinity for all if the reduced system is singular.
         """
-        undamped = self._eliminate(np.zeros(self._reduction.size + self._blocks.gradient_p.size))
+        size = self._reduction.size + int(np.count_nonzero(self._blocks.real))
+        undamped = self._eliminate(np.zeros(size))
         if undamped is None:
             return np.full(positions.shape, np.inf)
         reduced = undamped[0]

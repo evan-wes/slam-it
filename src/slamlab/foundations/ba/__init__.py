@@ -83,6 +83,7 @@ from slamlab.foundations.ba.problem import (
     BAProblem,
     BAResult,
     BASummary,
+    anchor_points,
 )
 from slamlab.foundations.ba.schur import DenseCholesky, ReducedSystemSolver
 from slamlab.foundations.ba.solve import Implementation, solve
@@ -99,5 +100,6 @@ __all__ = [
     "DenseCholesky",
     "Implementation",
     "ReducedSystemSolver",
+    "anchor_points",
     "solve",
 ]

@@ -90,6 +90,51 @@ back-substitution: `δp = -H_pp⁻¹ (g_p + H_pc δc)`.
 - **Python.** The reference forms `S` vectorised: one block for every ordered pair of a
   point's observations, processed in chunks to bound memory.
 
+## Anchored inverse-depth points
+
+A point can be stored as one number instead of three: an inverse depth `ρ` along the ray of
+an **anchor** observation (camera h, pixel `u_a`). This is DSO's host frame and DROID-SLAM's
+per-pixel depth. It behaves well where XYZ does not:
+- far points, where `ρ → 0` is finite and XYZ runs off to infinity;
+- low-parallax points, whose depth is poorly constrained but whose direction is not.
+
+`point_anchor` names each point's anchor (-1 for XYZ); `anchor_points` anchors every free
+point at its first observation.
+
+The anchor pixel gives a ray `m = (x, y, 1)` on h's normalised plane, undistorted with h's
+current intrinsics, and
+
+```
+X_world = T_h⁻¹ (m / ρ)
+```
+
+Any block that sees the point has a world-point Jacobian `J_X`, chained three ways:
+
+| Through | `d X_world` |
+|---|---|
+| ρ | `-R_hᵀ m / ρ²` |
+| the host pose (right perturbation, world frame) | `[-I, hat(X_world)]` |
+| the host intrinsics | `R_hᵀ (dm/dK) / ρ`, with `dm/dK = -(∂π/∂m)⁻¹ ∂π/∂K` |
+
+The last row is the implicit function theorem on `π(K, m) = u_a`: if the focal length
+changes, the anchor ray swings so that it still projects to the same pixel. For radtan this
+saves differentiating the undistortion's Newton iteration.
+
+**The anchor observation has no reprojection block.** Its error is identically zero, since it
+defines the ray. A depth prior on it remains, and acts directly as a prior on `ρ`.
+
+**In the Schur system,** an anchored point keeps the 3x3 point machinery. Its two unused
+dimensions are inert: an identity Hessian, no coupling and no gradient, so their step is
+exactly zero. A mask hides them from the solver's coordinates. A block on an anchored point
+touches the host's pose and intrinsics columns as well as its own camera's, and those can be
+the same columns when the observing camera is the host. The C++ scatters therefore
+accumulate repeated indices explicitly; Eigen's indexed `+=` would keep only one.
+
+**Validity.** An anchor must be one of the point's own observations. A point whose anchor
+lies behind its camera at the start cannot be placed, and is dropped. A step that sends
+`ρ ≤ 0` makes the point invalid, so the step is rejected. Anchored points start on their ray
+at the depth the caller gave.
+
 ## Priors
 
 **Depth priors.** An observation can carry a prior inverse depth `d̃`, from a depth network
@@ -199,6 +244,13 @@ rotation, `u = f (X - t_x)/Z` is unchanged by `f → kf, Z → kZ`, so no amount
     similarity gauge keeps the 1.5x scale.
   - A prior known only as `(1/z - 0.05)/2` gives back the affine `(2, 0.05)` to 1e-8.
   - Pose priors at the truth return the truth, with the auto gauge resolved to `none`.
+- **Anchored points.**
+  - The Schur, Jacobian and parity tests anchor every third point; one of them carries a
+    depth prior at its anchor. They run on radtan with free intrinsics, which exercises the
+    `dm/dK` path.
+  - On noise-free data, a fully anchored problem reaches zero cost, with each `ρ` equal to
+    its point's `1/z` in the host to 1e-12.
+  - A wrong anchor is rejected, and an anchor behind its camera drops its point.
 - **Focal observability.** On the same scene with three amounts of rotation:
 
   | Rotation spread | σ_f | Flagged |

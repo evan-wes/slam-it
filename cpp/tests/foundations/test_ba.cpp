@@ -37,6 +37,7 @@ void without_priors(ba::Problem& problem) {
   problem.fixed_depth_affine.assign(problem.poses.size(), true);
   problem.pose_prior = problem.poses;
   problem.pose_prior_weights = Eigen::MatrixX2d::Zero(n_cams, 2);
+  problem.point_anchor.assign(static_cast<std::size_t>(problem.points.rows()), -1);
 }
 
 /// @brief A deterministic scene: cameras along x, points in a box ahead, every point seen.
@@ -135,6 +136,24 @@ int main() {
   expect(metric.has_value() && metric->summary.gauge == ba::Gauge::kFirstPose &&
              (metric->points - truth).cwiseAbs().maxCoeff() < 1e-6,
          "solve: metric depth priors recover the true scale", failures);
+
+  // Every point anchored at its first observation as an inverse depth: noise-free data still
+  // reaches zero cost, and each inverse depth is its point's 1/z in the anchor camera.
+  ba::Problem anchored = problem;
+  for (int pt = 0; pt < kPoints; ++pt) {
+    anchored.point_anchor[static_cast<std::size_t>(pt)] = pt;  // camera 0's observation
+  }
+  const auto inverse = ba::solve(anchored, options);
+  bool inverse_ok = inverse.has_value() && inverse->summary.solve.converged &&
+                    inverse->summary.solve.final_cost < 1e-16;
+  for (int pt = 0; inverse_ok && pt < kPoints; ++pt) {
+    const Eigen::Matrix4d host = *se3::inverse(inverse->poses[0]);
+    const Eigen::Vector3d in_host =
+        (host.topLeftCorner<3, 3>() * inverse->points.row(pt).transpose()) +
+        host.topRightCorner<3, 1>();
+    inverse_ok = std::abs((inverse->inverse_depth(pt) * in_host.z()) - 1.0) < 1e-12;
+  }
+  expect(inverse_ok, "solve: anchored inverse-depth points converge", failures);
 
   // The core checks indices itself, for callers that bypass Python.
   ba::Problem bad = problem;

@@ -148,6 +148,15 @@ ArrayOut matrix_array(const M& matrix) {
   return out;
 }
 
+/// @brief Copy a vector into a new 1D array.
+/// @param vector The vector.
+/// @return The array.
+ArrayOut vector_array(const Eigen::VectorXd& vector) {
+  auto [out, data] = new_array({static_cast<std::size_t>(vector.size())});
+  Eigen::Map<Eigen::VectorXd>(data, vector.size()) = vector;
+  return out;
+}
+
 /// @brief The summary's trace as a new (I, 7) array.
 /// @param trace The trace.
 /// @return The array.
@@ -171,7 +180,8 @@ ArrayOut trace_array(const std::vector<nls::Iteration>& trace) {
 }
 
 /// @brief Run bundle adjustment on a problem given as a struct of arrays.
-/// @return `(poses, intrinsics, points, depth_affine, intrinsics_std, trace, counts, costs)`;
+/// @return `(poses, intrinsics, points, depth_affine, inverse_depth, intrinsics_std, trace,
+///         counts, costs)`;
 ///         see the Python `Implementation` Protocol.
 /// @throws CoreError for an invalid problem or (in strict mode) no convergence.
 nb::tuple solve(const MatrixIn& intrinsics, const VectorIn<std::int64_t>& intrinsics_idx,
@@ -182,8 +192,9 @@ nb::tuple solve(const MatrixIn& intrinsics, const VectorIn<std::int64_t>& intrin
                 const VectorIn<bool>& fixed_points, const VectorIn<double>& depth_prior,
                 const VectorIn<double>& depth_prior_weights, const BatchIn<2>& depth_affine,
                 const VectorIn<bool>& fixed_depth_affine, const BatchIn<4, 4>& pose_prior,
-                const BatchIn<2>& pose_prior_weights, int gauge, const VectorIn<double>& settings,
-                const VectorIn<std::int64_t>& codes, const VectorIn<double>& tolerances) {
+                const BatchIn<2>& pose_prior_weights, const VectorIn<std::int64_t>& point_anchor,
+                int gauge, const VectorIn<double>& settings, const VectorIn<std::int64_t>& codes,
+                const VectorIn<double>& tolerances) {
   const ba::Options options = options_from(gauge, settings, codes, tolerances);
   if (codes(0) < 0 || codes(0) > 1) {
     throw std::invalid_argument("model: unknown code");
@@ -209,7 +220,8 @@ nb::tuple solve(const MatrixIn& intrinsics, const VectorIn<std::int64_t>& intrin
       .fixed_depth_affine = copy_vector<ba::Mask>(fixed_depth_affine),
       .pose_prior = copy_poses(pose_prior),
       .pose_prior_weights =
-          copy_matrix<Pairs>(pose_prior_weights.data(), pose_prior_weights.shape(0), 2)};
+          copy_matrix<Pairs>(pose_prior_weights.data(), pose_prior_weights.shape(0), 2),
+      .point_anchor = copy_vector<ba::Indices>(point_anchor)};
   const ba::Solution solution = unwrap(ba::solve(problem, options));
   const ba::Summary& summary = solution.summary;
   const std::array<std::int64_t, kCounts> counts = {
@@ -231,8 +243,8 @@ nb::tuple solve(const MatrixIn& intrinsics, const VectorIn<std::int64_t>& intrin
   costs_data[1] = summary.solve.final_cost;
   return nb::make_tuple(poses_array(solution.poses), matrix_array(solution.intrinsics),
                         matrix_array(solution.points), matrix_array(solution.depth_affine),
-                        matrix_array(solution.intrinsics_std), trace_array(summary.solve.trace),
-                        counts_out, costs_out);
+                        vector_array(solution.inverse_depth), matrix_array(solution.intrinsics_std),
+                        trace_array(summary.solve.trace), counts_out, costs_out);
 }
 
 }  // namespace
@@ -246,8 +258,8 @@ void bind_ba(nb::module_& m) {
         nb::arg("fixed_points").noconvert(), nb::arg("depth_prior").noconvert(),
         nb::arg("depth_prior_weights").noconvert(), nb::arg("depth_affine").noconvert(),
         nb::arg("fixed_depth_affine").noconvert(), nb::arg("pose_prior").noconvert(),
-        nb::arg("pose_prior_weights").noconvert(), nb::arg("gauge"),
-        nb::arg("settings").noconvert(), nb::arg("codes").noconvert(),
+        nb::arg("pose_prior_weights").noconvert(), nb::arg("point_anchor").noconvert(),
+        nb::arg("gauge"), nb::arg("settings").noconvert(), nb::arg("codes").noconvert(),
         nb::arg("tolerances").noconvert(),
         "Run bundle adjustment; return poses, intrinsics, points, depth affines, intrinsics "
         "deviations, trace, counts and costs.");

@@ -97,20 +97,23 @@ def _scene(
 def _dense_normal_equations(bundle: Bundle, state: State, weights: Array) -> tuple[Array, Array]:
     """Assemble the full weighted normal equations ``(H, g)`` in the free coordinates."""
     reduction = bundle.reduction(state)
-    n_free = int(bundle._layout.point_slot.max(initial=-1)) + 1
+    real = bundle._real
     hessian = 0.0
     gradient = 0.0
     splits = np.cumsum([k.residuals.shape[0] for k in bundle.kinds(state)])[:-1]
     for kind, w in zip(bundle.kinds(state), np.split(weights, splits), strict=True):
-        jacobian = _kind_jacobian(kind, reduction, n_free)
+        jacobian = _kind_jacobian(kind, reduction, real)
         weighted = jacobian * w[:, None, None]
         hessian = hessian + np.einsum("mki,mkj->ij", weighted, jacobian)
         gradient = gradient + np.einsum("mki,mk->i", weighted, kind.residuals)
     return np.asarray(hessian), np.asarray(gradient)
 
 
-def _kind_jacobian(kind: Kind, reduction: Reduction, n_free: int) -> Array:
-    """Return one kind of block's Jacobian in the free coordinates, shape (M, d, n)."""
+def _kind_jacobian(kind: Kind, reduction: Reduction, real: NDArray[np.bool_]) -> Array:
+    """Return one kind of block's Jacobian in the free coordinates, shape (M, d, n).
+
+    ``real`` marks the point dimensions that are variables (an anchored point has one).
+    """
     m, d = kind.residuals.shape
     full = np.zeros((m, d, reduction.full_size))
     np.add.at(
@@ -121,37 +124,32 @@ def _kind_jacobian(kind: Kind, reduction: Reduction, n_free: int) -> Array:
     cam = np.concatenate(
         [full[:, :, reduction.free], full[:, :, reduction.rows] @ reduction.basis], axis=2
     )
-    pts = np.zeros((m, d, 3 * n_free))
+    pts = np.zeros((m, d, real.shape[0]))
     if kind.point is not None:
         on = np.flatnonzero(kind.slots >= 0)
         for k in range(3):
             pts[on, :, 3 * kind.slots[on] + k] = kind.point[on, :, k]
-    return np.concatenate([cam, pts], axis=2)
+    return np.concatenate([cam, pts[:, :, real]], axis=2)
 
 
 def _residual_vector(bundle: Bundle, state: State) -> Array:
     """Return every block's weighted residual rows, stacked."""
-    parts = (bundle._reprojection(state), bundle._depth(state), bundle._pose_prior(state))
-    return np.concatenate([part.reshape(-1) for part in parts])
+    return np.concatenate([part.reshape(-1) for part in bundle.residuals(state)])
 
 
 def _bundle(problem: ba.BAProblem, options: ba.BAOptions | None = None) -> tuple[Bundle, State]:
     """Return the reference's NLS problem and its start state."""
     layout = make_layout(problem, options or ba.BAOptions())
-    start = State(
-        se3.inverse(problem.poses),
-        problem.intrinsics.copy(),
-        problem.points.copy(),
-        problem.depth_affine.copy(),
-    )
-    return Bundle(problem, layout, ba.DenseCholesky()), start
+    bundle = Bundle(problem, layout, ba.DenseCholesky())
+    return bundle, bundle.start()
 
 
 def _every_kind(scene: Scene) -> ba.BAProblem:
     """Return a scene's problem with depth priors and pose priors added.
 
     Half the observations get a depth prior, with free affines on two cameras; two cameras get
-    a pose prior, one of them with no rotation weight.
+    a pose prior, one of them with no rotation weight; every third point is anchored as an
+    inverse depth (one of them at an observation that also carries a depth prior).
     """
     p = scene.problem
     n_cams = p.poses.shape[0]
@@ -167,6 +165,9 @@ def _every_kind(scene: Scene) -> ba.BAProblem:
         depth_affine=np.tile([1.1, 0.01], (n_cams, 1)),
         pose_prior=se3.compose(scene.poses, se3.exp(np.full((n_cams, 6), 0.01))),
         pose_prior_weights=pose_weights,
+        point_anchor=np.where(
+            np.arange(p.points.shape[0]) % 3 == 0, ba.anchor_points(p).point_anchor, -1
+        ),
     )
 
 
@@ -200,10 +201,10 @@ def test_jacobian_matches_numeric() -> None:
     scene = _scene(cameras=3, points=8, model="radtan", fixed_intrinsics=[False])
     bundle, state = _bundle(_every_kind(scene), ba.BAOptions(gauge="similarity"))
     reduction = bundle.reduction(state)
-    n_free = int(bundle._layout.point_slot.max()) + 1
+    real = bundle._real
     analytic = np.concatenate(
         [
-            _kind_jacobian(k, reduction, n_free).reshape(-1, reduction.size + 3 * n_free)
+            _kind_jacobian(k, reduction, real).reshape(-1, reduction.size + int(real.sum()))
             for k in bundle.kinds(state)
         ]
     )
@@ -568,3 +569,48 @@ def test_focal_observability() -> None:
             assert np.all(std[:2] < 0.01 * PINHOLE[:2])
             assert np.all(np.abs(result.intrinsics[0] - PINHOLE) < 3.0 * std)
     assert flagged == [0, 1, 1]
+
+
+def test_anchored_points_reach_the_same_optimum() -> None:
+    """Anchoring every point as an inverse depth still reaches zero cost on noise-free data.
+
+    Each inverse depth is its point's 1/z in its anchor camera.
+    """
+    scene = _scene()
+    anchored = ba.anchor_points(scene.problem)
+    result = ba.solve(anchored, ba.BAOptions(solver=TIGHT))
+    assert result.summary.solve.converged
+    assert result.summary.solve.final_cost < 1e-18
+    host = se3.inverse(result.poses)[anchored.cam_idx[anchored.point_anchor]]
+    in_host = np.einsum("pij,pj->pi", host[:, :3, :3], result.points) + host[:, :3, 3]
+    np.testing.assert_allclose(result.inverse_depth, 1.0 / in_host[:, 2], rtol=1e-12)
+    plain = ba.solve(scene.problem, ba.BAOptions(solver=TIGHT))
+    assert np.all(np.isnan(plain.inverse_depth))
+
+
+def test_anchor_validation_and_dropped_anchor() -> None:
+    """An anchor must be one of the point's own observations, and one behind its camera drops it.
+
+    A point whose anchor sits behind its camera at the start has no ray to be placed on.
+    """
+    p = _scene(cameras=3, points=6).problem
+    wrong = np.full(6, -1)
+    wrong[0] = 1  # observation 1 sees point 1, not point 0
+    with pytest.raises(InvalidInputError, match="point_anchor"):
+        ba.BAProblem.create(
+            "pinhole",
+            PINHOLE,
+            p.poses,
+            p.points,
+            p.observations,
+            p.cam_idx,
+            p.pt_idx,
+            point_anchor=wrong,
+        )
+    flipped = p.poses.copy()
+    flipped[0] = se3.compose(p.poses[0], se3.exp(np.array([0.0, 0, 0, np.pi, 0, 0])))
+    anchored = replace(
+        ba.anchor_points(p), poses=flipped, fixed_poses=np.array([False, True, True])
+    )
+    result = ba.solve(anchored, ba.BAOptions(gauge="none"))
+    assert result.summary.dropped_points == 6

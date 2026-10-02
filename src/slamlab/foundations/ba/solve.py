@@ -27,9 +27,9 @@ from slamlab.foundations.ba.schur import DenseCholesky
 MODULE = "slamlab.foundations.ba"
 """The module a compiled backend's implementation mirrors (``_cpp.foundations.ba``)."""
 
-BackendResult = tuple[Array, Array, Array, Array, Array, Array, IndexArray, Array]
-"""What a compiled backend returns: poses, intrinsics, points, depth affines, intrinsics
-deviations, the trace, the counts and the costs."""
+BackendResult = tuple[Array, Array, Array, Array, Array, Array, Array, IndexArray, Array]
+"""What a compiled backend returns: poses, intrinsics, points, depth affines, inverse depths,
+intrinsics deviations, the trace, the counts and the costs."""
 
 
 class Implementation(Protocol):
@@ -54,6 +54,7 @@ class Implementation(Protocol):
         fixed_depth_affine: Mask,
         pose_prior: Array,
         pose_prior_weights: Array,
+        point_anchor: IndexArray,
         gauge: int,
         settings: Array,
         codes: IndexArray,
@@ -91,12 +92,7 @@ def _solve_reference(problem: BAProblem, options: BAOptions) -> BAResult:
     block_loss = nls.BlockLoss(
         (options.solver.loss, options.depth_loss, nls.Loss()), bundle.loss_index
     )
-    start = State(
-        se3.inverse(problem.poses),
-        problem.intrinsics.copy(),
-        problem.points.copy(),
-        problem.depth_affine.copy(),
-    )
+    start = bundle.start()
     solution = nls.solve(bundle, start, replace(options.solver, block_loss=block_loss))
     final = solution.state
     poses = se3.inverse(final.poses)
@@ -109,12 +105,20 @@ def _solve_reference(problem: BAProblem, options: BAOptions) -> BAResult:
         unobservable_focal=_unobservable_focal(final.intrinsics, std, options.focal_std_ratio),
         **layout.summary,
     )
-    return BAResult(poses, final.intrinsics, final.points, final.depth_affine, std, summary)
+    return BAResult(
+        poses,
+        final.intrinsics,
+        bundle.world_points(final),
+        final.depth_affine,
+        final.inverse_depth,
+        std,
+        summary,
+    )
 
 
 def _result_from_backend(raw: BackendResult) -> BAResult:
     """Assemble a compiled backend's arrays into a :class:`BAResult`."""
-    poses, intrinsics, points, affine, std, trace, counts, costs = raw
+    poses, intrinsics, points, affine, inverse_depth, std, trace, counts, costs = raw
     records = tuple(
         nls.Iteration(
             iteration=int(row[0]),
@@ -141,7 +145,7 @@ def _result_from_backend(raw: BackendResult) -> BAResult:
         GAUGES[int(counts[1])],
         **{name: int(v) for name, v in zip(COUNT_NAMES, counts[2:], strict=True)},
     )
-    return BAResult(poses, intrinsics, points, affine, std, summary)
+    return BAResult(poses, intrinsics, points, affine, inverse_depth, std, summary)
 
 
 def _backend_arguments(problem: BAProblem, options: BAOptions) -> tuple[object, ...]:
@@ -170,6 +174,7 @@ def _backend_arguments(problem: BAProblem, options: BAOptions) -> tuple[object, 
         problem.fixed_depth_affine,
         problem.pose_prior,
         problem.pose_prior_weights,
+        problem.point_anchor,
         GAUGES.index(options.gauge),
         np.array(
             [

@@ -18,6 +18,11 @@ class Layout:
 
     obs: IndexArray
     """Indices of the observations kept."""
+    reprojection: IndexArray
+    """Positions in ``obs`` with a reprojection block: all but the anchors, whose error is
+    identically zero (they define their point's ray)."""
+    anchored: Mask
+    """Points parameterised as an inverse depth along their anchor's ray."""
     depth: IndexArray
     """Positions in ``obs`` of the kept observations with a depth prior."""
     prior_cams: IndexArray
@@ -106,6 +111,11 @@ def _kept_observations(problem: BAProblem, options: BAOptions) -> tuple[IndexArr
         & (views > 0)
         & ((views < 2) | (parallax < np.deg2rad(options.min_parallax_deg)))
     )
+    # An anchored point whose anchor was dropped has no ray to live on.
+    kept = np.zeros(problem.observations.shape[0], dtype=bool)
+    kept[obs] = True
+    anchors = problem.point_anchor
+    degenerate |= (anchors >= 0) & ~kept[np.maximum(anchors, 0)] & (views > 0)
     keep = ~degenerate[pt]
     dropped = int(np.count_nonzero(~in_front)) + int(np.count_nonzero(~keep))
     return obs[keep], degenerate, dropped
@@ -133,11 +143,10 @@ def make_layout(problem: BAProblem, options: BAOptions) -> Layout:
     pose_free, gauge_pose, scale_pose, scale_reference = _gauge(
         problem, ~problem.fixed_poses & observed, observed, gauge
     )
-    point_free = (
-        ~problem.fixed_points
-        & ~degenerate
-        & (np.bincount(problem.pt_idx[obs], minlength=n_points) > 0)
-    )
+    used = ~degenerate & (np.bincount(problem.pt_idx[obs], minlength=n_points) > 0)
+    point_free = ~problem.fixed_points & used
+    anchored = (problem.point_anchor >= 0) & used
+    reprojection = np.flatnonzero(~np.isin(obs, problem.point_anchor[anchored]))
     point_slot = np.full(n_points, -1, dtype=np.int64)
     point_slot[point_free] = np.arange(np.count_nonzero(point_free))
     summary = {
@@ -155,6 +164,8 @@ def make_layout(problem: BAProblem, options: BAOptions) -> Layout:
     }
     return Layout(
         obs=obs,
+        reprojection=reprojection,
+        anchored=anchored,
         depth=depth,
         prior_cams=prior_cams,
         pose_free=pose_free,

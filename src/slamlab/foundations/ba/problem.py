@@ -6,7 +6,7 @@ A problem crosses every boundary as a struct of arrays (design doc, "Conventions
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -65,6 +65,9 @@ class BAProblem:
         Each camera's prior camera-to-world pose (ignored where its weights are zero).
     pose_prior_weights : ndarray of float64, shape (C, 2)
         Each pose prior's ``(translation, rotation)`` information.
+    point_anchor : ndarray of int64, shape (N,)
+        Each point's anchor observation, or -1. An anchored point is one inverse depth along
+        its anchor pixel's ray, in the anchor's camera (see :func:`anchor_points`).
     """
 
     camera_model: str
@@ -85,6 +88,7 @@ class BAProblem:
     fixed_depth_affine: Mask
     pose_prior: Array
     pose_prior_weights: Array
+    point_anchor: IndexArray
 
     @classmethod
     def create(  # noqa: PLR0913, PLR0917 -- every array of a problem, in the order it reads
@@ -108,6 +112,7 @@ class BAProblem:
         fixed_depth_affine: ArrayLike | None = None,
         pose_prior: ArrayLike | None = None,
         pose_prior_weights: ArrayLike | None = None,
+        point_anchor: ArrayLike | None = None,
     ) -> BAProblem:
         """Validate a problem and fill in the defaults.
 
@@ -147,6 +152,9 @@ class BAProblem:
             Prior camera-to-world poses (default: the poses themselves).
         pose_prior_weights : array_like, shape (C, 2), optional
             Non-negative ``(translation, rotation)`` informations (default: zero, no prior).
+        point_anchor : array_like of int, shape (N,), optional
+            Each point's anchor observation (one of its own), or -1 for a plain 3D point
+            (default: all -1).
 
         Returns
         -------
@@ -197,6 +205,7 @@ class BAProblem:
             if pose_prior is None
             else _transforms(pose_prior, "pose_prior", n_cams),
             pose_prior_weights=_weights(pose_prior_weights, (n_cams, 2), 0.0, "pose_prior_weights"),
+            point_anchor=_anchors(point_anchor, x.shape[0], np.asarray(pt_idx)),
         )
 
 
@@ -303,6 +312,8 @@ class BAResult:
         Refined points (dropped points are returned unchanged).
     depth_affine : ndarray of float64, shape (C, 2)
         Refined depth affines.
+    inverse_depth : ndarray of float64, shape (N,)
+        Anchored points' refined inverse depths in their anchor camera (NaN for the others).
     intrinsics_std : ndarray of float64, shape (K, P)
         Free intrinsics' standard deviations (NaN where held fixed; inf if unobservable).
     summary : BASummary
@@ -313,6 +324,7 @@ class BAResult:
     intrinsics: Array
     points: Array
     depth_affine: Array
+    inverse_depth: Array
     intrinsics_std: Array
     summary: BASummary
 
@@ -367,6 +379,42 @@ def _depth_prior(value: ArrayLike | None, length: int) -> Array:
     if arr.shape != (length,) or np.any(~np.isfinite(arr[given])) or np.any(arr[given] <= 0.0):
         raise InvalidInputError(f"depth_prior: expected {length} positive values (NaN for none)")
     return arr
+
+
+def _anchors(value: ArrayLike | None, length: int, pt_idx: IndexArray) -> IndexArray:
+    """Return anchor observations: -1, or an observation of the anchored point itself."""
+    if value is None:
+        return np.full(length, -1, dtype=np.int64)
+    arr = np.asarray(value)
+    if arr.shape != (length,) or not np.issubdtype(arr.dtype, np.integer):
+        raise InvalidInputError(f"point_anchor: expected {length} integers, got {arr.shape}")
+    anchored = np.flatnonzero(arr >= 0)
+    if np.any(arr < -1) or np.any(arr[anchored] >= pt_idx.shape[0]):
+        raise InvalidInputError("point_anchor: expected -1 or an observation index")
+    if np.any(pt_idx[arr[anchored]] != anchored):
+        raise InvalidInputError("point_anchor: a point's anchor must be one of its observations")
+    return arr.astype(np.int64)
+
+
+def anchor_points(problem: BAProblem) -> BAProblem:
+    """Anchor every free point at its first weighted observation, as an inverse depth.
+
+    Parameters
+    ----------
+    problem : BAProblem
+        The problem.
+
+    Returns
+    -------
+    BAProblem
+        The same problem with ``point_anchor`` set for each free point that has a weighted
+        observation; fixed points and unobserved points stay plain 3D points.
+    """
+    anchor = np.full(problem.points.shape[0], -1, dtype=np.int64)
+    weighted = np.flatnonzero(problem.weights > 0.0)[::-1]
+    anchor[problem.pt_idx[weighted]] = weighted  # the last write per point is its first
+    anchor[problem.fixed_points] = -1
+    return replace(problem, point_anchor=anchor)
 
 
 def _mask(value: ArrayLike | None, length: int, default: bool, name: str) -> Mask:
