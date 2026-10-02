@@ -202,8 +202,9 @@ struct Solution {
 /// @return Nothing, or `InvalidInput` naming the offending array.
 [[nodiscard]] Result<void> check_problem(const Problem& problem);
 
-/// @brief The point a solve is centred on: the mean of the camera centres, summed in index
-///        order. The solve shifts the world by its negative and back.
+/// @brief The point a solve is centred on: the mean of the centres of the cameras with a
+///        positive-weight observation (all of them if none is), summed in index order. The
+///        solve shifts the world by its negative and back.
 /// @param problem The problem (checked).
 /// @return The origin.
 [[nodiscard]] Eigen::Vector3d centring_origin(const Problem& problem);

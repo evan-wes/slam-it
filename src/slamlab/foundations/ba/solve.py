@@ -143,11 +143,16 @@ def _unobservable_focal(model: str, intrinsics: Array, std: Array, ratio: float)
 
 
 def centring_origin(problem: BAProblem) -> Array:
-    """Return the point the solve is centred on: the camera centres' mean, shape (3,).
+    """Return the point the solve is centred on, shape (3,).
 
-    Summed in index order (a cumulative sum), so both cores get the same bits.
+    The mean of the centres of the cameras with a positive-weight observation: an unobserved
+    placeholder (an unregistered camera left at the identity) must not pull it off the
+    scene. All cameras if none is observed. Summed in index order (a cumulative sum), so both
+    cores get the same bits.
     """
-    centres = problem.poses[:, :3, 3]
+    seen = np.zeros(problem.poses.shape[0], dtype=bool)
+    seen[problem.cam_idx[problem.weights > 0.0]] = True
+    centres = problem.poses[seen if np.any(seen) else slice(None), :3, 3]
     if centres.shape[0] == 0:
         return np.zeros(3)
     return np.asarray(np.cumsum(centres, axis=0)[-1] / centres.shape[0], dtype=np.float64)

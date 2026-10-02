@@ -238,10 +238,20 @@ def test_schur_step_matches_dense_solve() -> None:
     )
 
 
-def test_jacobian_matches_numeric() -> None:
-    """The analytic Jacobian of every kind of block matches central differences."""
+@pytest.mark.parametrize("prior_rotation", [0.0, 1.2])
+def test_jacobian_matches_numeric(prior_rotation: float) -> None:
+    """The analytic Jacobian of every kind of block matches central differences.
+
+    With the pose priors 0.01 rad from the poses, and 1.2 rad, where the prior's ``Jr⁻¹`` is
+    far from the identity.
+    """
     scene = _scene(cameras=3, points=8, model="radtan", fixed_intrinsics=[False])
-    bundle, state = _bundle(_every_kind(scene), ba.BAOptions(gauge="similarity"))
+    problem = _every_kind(scene)
+    if prior_rotation:
+        axis = np.array([0.666, -0.5, 0.5]) / np.linalg.norm([0.666, -0.5, 0.5])
+        offset = np.tile([0.5, -0.3, 0.2, *(prior_rotation * axis)], (problem.poses.shape[0], 1))
+        problem = replace(problem, pose_prior=se3.compose(scene.poses, se3.exp(offset)))
+    bundle, state = _bundle(problem, ba.BAOptions(gauge="similarity"))
     reduction = bundle.reduction(state)
     real = bundle._real
     analytic = np.concatenate(
@@ -874,16 +884,28 @@ def test_far_from_the_world_origin(backend: str, offset: float) -> None:
 
     Two fixes made this hold. The gauge's rank tests run in the scene's own frame (in world
     coordinates the gauge was lost from about 5e4 m). And the solve itself runs in a world
-    centred on the cameras: a step rotates a camera about the world origin, which far away
-    swings it by about ``|θ|² |C| / 2``. Before centring, from a start 0.05 off, the
-    baseline drifted by 0.8 and LM ran to its cap.
+    centred on the observed cameras: a step rotates a camera about the world origin, which
+    far away swings it by about ``|θ|² |C| / 2``. Before centring, from a start 0.05 off,
+    the baseline drifted by 0.8 and LM ran to its cap. An unregistered camera at the
+    identity (unobserved) must not pull the centre off the scene, as it first did.
     """
     require_backend(backend)
     scene = _scene(cameras=5, points=60, noise=0.5, seed=1, rotation=0.3, perturb=0.05)
     near = replace(scene.problem, fixed_intrinsics=np.array([[False, False, True, True]]))
+    # An unregistered camera left at the identity: unobserved, it must not move the centring.
+    near = replace(
+        near,
+        poses=np.concatenate([near.poses, np.eye(4)[None]]),
+        intrinsics_idx=np.append(near.intrinsics_idx, 0),
+        fixed_poses=np.append(near.fixed_poses, False),
+        depth_affine=np.vstack([near.depth_affine, [1.0, 0.0]]),
+        fixed_depth_affine=np.append(near.fixed_depth_affine, True),
+        pose_prior=np.concatenate([near.pose_prior, np.eye(4)[None]]),
+        pose_prior_weights=np.vstack([near.pose_prior_weights, [0.0, 0.0]]),
+    )
     shift = offset * np.array([1.0, 0.3, 0.0])
     poses = near.poses.copy()
-    poses[:, :3, 3] += shift
+    poses[:-1, :3, 3] += shift  # the placeholder stays at the identity, as it would
     far = replace(near, poses=poses, points=near.points + shift)
     results = [ba.solve(p, ba.BAOptions(solver=TIGHT), backend=backend) for p in (near, far)]
     near_result, far_result = results
@@ -894,8 +916,9 @@ def test_far_from_the_world_origin(backend: str, offset: float) -> None:
     )
     assert abs(far_result.summary.solve.iterations - near_result.summary.solve.iterations) <= 1
     np.testing.assert_allclose(
-        far_result.poses[:, :3, 3] - shift, near_result.poses[:, :3, 3], rtol=0, atol=1e-6
+        far_result.poses[:-1, :3, 3] - shift, near_result.poses[:-1, :3, 3], rtol=0, atol=1e-6
     )
+    np.testing.assert_array_equal(far_result.poses[-1], np.eye(4))
     np.testing.assert_allclose(far_result.intrinsics_std, near_result.intrinsics_std, rtol=1e-5)
 
 

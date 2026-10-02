@@ -800,8 +800,12 @@ Result<Solution> adjust(const Problem& problem, const Options& options, const La
   const WorldPoints world = bundle.world_points(final_state);
   for (Index p = 0; p < points.rows(); ++p) {
     const auto& point = world[static_cast<std::size_t>(p)];
-    if (layout.anchored[static_cast<std::size_t>(p)] && point) {
-      points.row(p) = point->transpose();
+    if (layout.anchored[static_cast<std::size_t>(p)]) {
+      // An anchored point with no world position (rho <= 0, or a ray the lens cannot
+      // invert) is a NaN row, as in the Python reference.
+      points.row(p) = point
+                          ? Eigen::RowVector3d(point->transpose())
+                          : Eigen::RowVector3d::Constant(std::numeric_limits<double>::quiet_NaN());
     }
   }
   return Solution{.poses = std::move(poses),

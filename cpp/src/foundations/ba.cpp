@@ -3,12 +3,14 @@
 #include "slamlab/foundations/ba.hpp"
 
 #include <Eigen/Cholesky>
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "ba/bundle.hpp"
 #include "ba/common.hpp"
@@ -156,14 +158,24 @@ Result<void> check_problem(const Problem& problem) {
 }
 
 Eigen::Vector3d centring_origin(const Problem& problem) {
+  // The cameras with a positive-weight observation: an unobserved placeholder (an
+  // unregistered camera left at the identity) must not pull the origin off the scene.
+  std::vector<bool> seen(problem.poses.size(), false);
+  for (Eigen::Index m = 0; m < problem.weights.size(); ++m) {
+    if (problem.weights(m) > 0.0) {
+      seen[static_cast<std::size_t>(problem.cam_idx[static_cast<std::size_t>(m)])] = true;
+    }
+  }
+  const bool any_seen = std::ranges::find(seen, true) != seen.end();
   Eigen::Vector3d sum = Eigen::Vector3d::Zero();
-  if (problem.poses.empty()) {
-    return sum;
+  std::size_t count = 0;
+  for (std::size_t c = 0; c < problem.poses.size(); ++c) {
+    if (seen[c] || !any_seen) {
+      sum += problem.poses[c].topRightCorner<3, 1>();  // in index order, as Python sums
+      ++count;
+    }
   }
-  for (const Eigen::Matrix4d& pose : problem.poses) {
-    sum += pose.topRightCorner<3, 1>();  // in index order, as the Python reference sums
-  }
-  return sum / static_cast<double>(problem.poses.size());
+  return count > 0 ? Eigen::Vector3d(sum / static_cast<double>(count)) : sum;
 }
 
 namespace {
