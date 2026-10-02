@@ -43,7 +43,8 @@ using MatrixIn = nb::ndarray<const double, nb::shape<-1, -1>, nb::c_contig, nb::
 /// @brief Camera model names, indexed by `camera::Model` code.
 constexpr std::array<const char*, 3> kModels = {"pinhole", "radtan", "radial"};
 /// @brief Gauge names, indexed by `ba::Gauge` code.
-constexpr std::array<const char*, 4> kGauges = {"none", "first_pose", "similarity", "auto"};
+constexpr std::array<const char*, 5> kGauges = {"none", "first_pose", "similarity", "auto",
+                                                "scale"};
 /// @brief Method names, indexed by `nls::Method` code.
 constexpr std::array<const char*, 2> kMethods = {"levenberg_marquardt", "gauss_newton"};
 /// @brief Loss names, indexed by `nls::LossKind` code.
@@ -52,7 +53,7 @@ constexpr std::array<const char*, 3> kLosses = {"trivial", "huber", "cauchy"};
 constexpr int kTerminations = 7;
 
 static_assert(static_cast<int>(camera::Model::kRadial) + 1 == kModels.size());
-static_assert(static_cast<int>(ba::Gauge::kAuto) + 1 == kGauges.size());
+static_assert(static_cast<int>(ba::Gauge::kScale) + 1 == kGauges.size());
 static_assert(static_cast<int>(nls::Method::kGaussNewton) + 1 == kMethods.size());
 static_assert(static_cast<int>(nls::LossKind::kCauchy) + 1 == kLosses.size());
 static_assert(static_cast<int>(nls::Termination::kSingular) + 1 == kTerminations);

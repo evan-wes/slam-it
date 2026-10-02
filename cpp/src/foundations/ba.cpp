@@ -168,7 +168,11 @@ Result<Solution> solve(const Problem& problem, const Options& options) {
     return fail(ErrorKind::kInvalidInput,
                 "solver.block_loss: set by bundle adjustment, not the caller");
   }
-  return detail::adjust(problem, options, detail::make_layout(problem, options));
+  const auto layout = detail::make_layout(problem, options);
+  if (!layout) {
+    return std::unexpected(layout.error());
+  }
+  return detail::adjust(problem, options, *layout);
 }
 
 }  // namespace slamlab::foundations::ba

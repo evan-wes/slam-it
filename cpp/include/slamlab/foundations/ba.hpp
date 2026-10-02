@@ -40,9 +40,12 @@ enum class Gauge : std::uint8_t {
   kFirstPose = 1,
   /// @brief Sim(3): as `kFirstPose`, then confine one pose's step to keep its baseline.
   kSimilarity = 2,
-  /// @brief By what anchors the scene: `kNone` with pose priors, `kFirstPose` with a metric
-  ///        depth prior, `kSimilarity` otherwise.
+  /// @brief The minimal gauge the fixed variables and priors leave: `kNone`, `kScale`,
+  ///        `kFirstPose` or `kSimilarity`.
   kAuto = 3,
+  /// @brief Scale only: confine one pose's step to keep its baseline to the pose the rigid
+  ///        motion is pinned to (a fixed pose or a full pose prior).
+  kScale = 4,
 };
 
 /// @brief Solves the reduced camera system `S x = b`, S symmetric positive definite.

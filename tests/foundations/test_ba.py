@@ -640,3 +640,74 @@ def test_anchor_validation_and_dropped_anchor() -> None:
     )
     result = ba.solve(anchored, ba.BAOptions(gauge="none"))
     assert result.summary.dropped_points == 6
+
+
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_auto_gauge_motion_only(backend: str) -> None:
+    """With every point fixed (motion-only BA), the points pin the gauge: auto fixes nothing.
+
+    The first version froze a pose at its perturbed start here (panel finding L1).
+    """
+    require_backend(backend)
+    scene = _scene(cameras=4, points=40, perturb=0.01, seed=1)
+    problem = replace(scene.problem, points=scene.points, fixed_points=np.ones(40, dtype=bool))
+    result = ba.solve(problem, ba.BAOptions(solver=TIGHT), backend=backend)
+    assert (result.summary.gauge, result.summary.gauge_pose) == ("none", -1)
+    assert result.summary.solve.final_cost < 1e-16
+    np.testing.assert_allclose(result.poses, scene.poses, rtol=0, atol=1e-8)
+
+
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_auto_gauge_single_pose_prior(backend: str) -> None:
+    """A full pose prior on one camera pins rigid motion, not scale: auto confines the scale.
+
+    The first version left scale free here, so the focal length read as unobservable.
+    """
+    require_backend(backend)
+    scene = _scene(
+        cameras=5, points=60, noise=0.5, seed=3, rotation=0.3, fixed_intrinsics=np.array([False])
+    )
+    weights = np.zeros((5, 2))
+    weights[0] = 1e4
+    problem = replace(scene.problem, pose_prior=scene.poses, pose_prior_weights=weights)
+    result = ba.solve(problem, ba.BAOptions(solver=TIGHT), backend=backend)
+    assert result.summary.gauge == "scale"
+    assert result.summary.scale_pose >= 0
+    assert result.summary.unobservable_focal == 0
+    assert np.all(np.isfinite(result.intrinsics_std[0, :2]))
+
+
+def test_scale_gauge_needs_an_anchor() -> None:
+    """An explicit scale gauge without a fixed pose or full prior is rejected."""
+    with pytest.raises(InvalidInputError, match="scale"):
+        ba.solve(_scene().problem, ba.BAOptions(gauge="scale"))
+
+
+def _undistortion_scene(k1: float) -> ba.BAProblem:
+    """Anchored points on radtan with free distortion, started at a strong k1."""
+    scene = _scene(cameras=4, points=30, model="radtan", seed=2, perturb=0.02)
+    fixed = np.zeros((1, 9), dtype=bool)
+    fixed[0, 2:4] = True
+    start = RADTAN.copy()
+    start[4] = k1
+    return replace(
+        ba.anchor_points(scene.problem), intrinsics=start[None, :], fixed_intrinsics=fixed
+    )
+
+
+@pytest.mark.parametrize(("k1", "dropped"), [(-1.0, 0), (-1.1, 1)])
+def test_anchor_pixels_outside_the_invertible_region(k1: float, dropped: int) -> None:
+    """Both backends behave alike when an anchor pixel has no ray (panel finding L2).
+
+    From k1 = -1.0, trial steps push anchor pixels out of the invertible region; they are
+    rejected, not raised (Python used to raise). From k1 = -1.1, one anchor has no ray at the
+    start; both backends drop it and count it. Both recover the true k1 = -0.08.
+    """
+    require_backend("cpp")
+    problem = _undistortion_scene(k1)
+    for backend in ("python", "cpp"):
+        result = ba.solve(problem, ba.BAOptions(solver=TIGHT), backend=backend)
+        assert result.summary.dropped_points == dropped
+        assert result.summary.solve.converged
+        assert any(not it.accepted for it in result.summary.solve.trace)
+        np.testing.assert_allclose(result.intrinsics[0, 4], RADTAN[4], rtol=0, atol=1e-9)

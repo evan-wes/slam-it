@@ -25,7 +25,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 from slamlab.foundations import camera, se3, so3
-from slamlab.foundations.ba.layout import Layout
+from slamlab.foundations.ba.layout import Layout, bearings_or_nan
 from slamlab.foundations.ba.problem import AFFINE_DIM, POSE_DIM, Array, BAProblem, IndexArray
 from slamlab.foundations.ba.schur import (
     Blocks,
@@ -198,13 +198,17 @@ class Bundle:
         return Reduction(self._free, self._scale_rows, basis, self._full_size)
 
     def _rays(self, state: State) -> Array:
-        """Return each anchor pixel's ray on its host's normalised plane, ``(x, y, 1)``."""
+        """Return each anchor pixel's ray on its host's normalised plane, ``(x, y, 1)``.
+
+        A pixel the current intrinsics cannot undistort gives a NaN ray: its point becomes
+        invalid and the step that led there is rejected.
+        """
         rays = np.zeros((self._a_points.size, 3))
         group = self._problem.intrinsics_idx[self._a_host]
         for g, params in enumerate(state.intrinsics):
             sel = group == g
             if np.any(sel):
-                bearing = camera.unproject(self._problem.camera_model, params, self._a_pixels[sel])
+                bearing = bearings_or_nan(self._problem.camera_model, params, self._a_pixels[sel])
                 rays[sel] = bearing / bearing[:, 2:3]
         return rays
 

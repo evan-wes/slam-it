@@ -43,7 +43,7 @@ struct Layout {
 /// @brief Drop degenerate observations, hold unobserved variables fixed, and fix the gauge.
 /// @param problem The problem.
 /// @param options The settings.
-/// @return The layout.
-[[nodiscard]] Layout make_layout(const Problem& problem, const Options& options);
+/// @return The layout, or `InvalidInput` for a gauge the problem cannot support.
+[[nodiscard]] Result<Layout> make_layout(const Problem& problem, const Options& options);
 
 }  // namespace slamlab::foundations::ba::detail

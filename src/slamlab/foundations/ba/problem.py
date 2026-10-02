@@ -20,7 +20,7 @@ Array = NDArray[np.float64]
 IndexArray = NDArray[np.int64]
 Mask = NDArray[np.bool_]
 
-GAUGES = ("none", "first_pose", "similarity", "auto")
+GAUGES = ("none", "first_pose", "similarity", "auto", "scale")
 """The gauge choices :class:`BAOptions` accepts, in the order of their integer codes."""
 
 POSE_DIM = 6
@@ -227,8 +227,12 @@ class BAOptions:
         ``block_loss`` must be unset: bundle adjustment assigns the per-block losses.
     depth_loss : slamlab.foundations.nls.Loss
         The depth priors' robust loss.
-    gauge : {"auto", "similarity", "first_pose", "none"}
-        How the gauge freedom is removed (see the module docstring).
+    gauge : {"auto", "similarity", "first_pose", "scale", "none"}
+        How the gauge freedom (the scene's free rigid motion and, for monocular data, scale)
+        is removed. ``"auto"`` removes exactly what the fixed variables and priors leave free:
+        nothing when they pin both, only the scale (``"scale"``) when they pin the rigid
+        motion, the first pose (``"first_pose"``) when metric depth pins the scale, and both
+        (``"similarity"``) otherwise. See :mod:`slamlab.foundations.ba.layout`.
     min_parallax_deg : float
         A free point whose rays span less than this angle is dropped (default 0: only points
         seen fewer than twice are). Bundle adjustment refines low-parallax points well;

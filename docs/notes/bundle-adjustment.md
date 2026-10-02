@@ -130,10 +130,16 @@ touches the host's pose and intrinsics columns as well as its own camera's, and 
 the same columns when the observing camera is the host. The C++ scatters therefore
 accumulate repeated indices explicitly; Eigen's indexed `+=` would keep only one.
 
-**Validity.** An anchor must be one of the point's own observations. A point whose anchor
-lies behind its camera at the start cannot be placed, and is dropped. A step that sends
-`ρ ≤ 0` makes the point invalid, so the step is rejected. Anchored points start on their ray
-at the depth the caller gave.
+**Validity.**
+- An anchor must be one of the point's own observations, and a fixed point cannot be
+  anchored (its world position would still move with the host).
+- A point whose anchor lies behind its camera at the start cannot be placed, and is dropped.
+- So is one whose anchor pixel the starting intrinsics cannot undistort: it lies beyond the
+  radius where the lens model folds back.
+- During the solve, a step that sends `ρ ≤ 0`, or pushes an anchor pixel out of the
+  invertible region, makes the point invalid, so the step is rejected. Both cores behave
+  alike here. The Python reference used to raise instead (a panel finding).
+- Anchored points start on their ray at the depth the caller gave.
 
 ## Priors
 
@@ -180,12 +186,28 @@ instead:
     drifts at second order (1e-4 relative in the tests).
 - **`none`.** The caller's fixed variables or priors define the gauge, such as fixed
   control points, a fixed rig, or pose priors.
-- **`auto` (the default).** Picks by what anchors the scene:
-  - `none` when any pose has a prior;
-  - `first_pose` when a metric depth prior (a fixed affine) fixes the scale;
-  - `similarity` otherwise.
+- **`scale`.** Only the scale: the free pose farthest from the anchoring pose (a fixed pose,
+  or one with a full pose prior) keeps its baseline to it.
+- **`auto` (the default).** Removes exactly what the fixed variables and priors leave free.
+  Triggs et al. (1999, §9) require gauge constraints to be minimal: more biases the
+  solution, fewer leaves the covariance singular.
+  - **Known world positions** are fixed observed camera centres, translation-prior centres
+    and fixed observed points.
+  - **Rigid motion is pinned** by a fixed observed pose, a full pose prior (translation and
+    rotation), or three non-collinear known positions.
+  - **Scale is pinned** by a metric depth prior, or two distinct known positions.
+  - **Choice:**
+    - both pinned → `none` (motion-only BA with fixed points; priors on several cameras);
+    - rigid motion only → `scale` (a full prior on one camera);
+    - scale only → `first_pose` (metric depth);
+    - neither → `similarity`.
+  - **Partial priors are not anchors.** A translation-only prior on one camera pins neither
+    rotation nor scale, so it is not counted.
 
-  The summary records the gauge actually applied.
+  The summary records the gauge actually applied. The first rule was "any pose prior →
+  `none`, metric depth → `first_pose`, else `similarity`". The review panel found it wrong
+  twice. On motion-only BA it froze a pose at its perturbed start; with one pose prior it
+  left scale free, and the focal length read as unobservable. Both cases are now tests.
 
 ## Degenerate data
 

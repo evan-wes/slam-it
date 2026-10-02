@@ -8,6 +8,7 @@ import numpy as np
 
 from slamlab.foundations import camera, se3
 from slamlab.foundations.ba.problem import Array, BAOptions, BAProblem, IndexArray, Mask
+from slamlab.foundations.errors import InvalidInputError, NotConvergedError
 
 # --- setup: what is optimised ---------------------------------------------------------------
 
@@ -55,43 +56,159 @@ def _ray_parallax(centres: Array, points: Array, cam: IndexArray, pt: IndexArray
     return parallax
 
 
-def _resolve_gauge(gauge: str, has_pose_prior: bool, has_metric_depth: bool) -> str:
-    """Resolve ``"auto"`` by what anchors the scene; other choices pass through."""
+ANCHOR_TOLERANCE = 1e-9
+"""Known positions closer than this (relative to their magnitude) count as one."""
+
+
+@dataclass(frozen=True)
+class _Anchoring:
+    """What the fixed variables and priors already pin, before any gauge is applied."""
+
+    rigid: bool
+    """Rotation and translation: a fixed pose, a full pose prior, or three non-collinear
+    known positions."""
+    scale: bool
+    """Scale: a metric depth prior, or two distinct known positions."""
+    reference: int
+    """The camera the rigid motion is pinned to (a fixed or fully prior-constrained pose),
+    or -1."""
+
+
+def _spread(positions: Array) -> tuple[bool, bool]:
+    """Return whether known world positions are (at least two) distinct, and non-collinear."""
+    if positions.shape[0] < 2:
+        return False, False
+    singular = np.linalg.svd(positions - positions.mean(axis=0), compute_uv=False)
+    tolerance = ANCHOR_TOLERANCE * (1.0 + float(np.abs(positions).max()))
+    return bool(singular[0] > tolerance), bool(singular[1] > tolerance)
+
+
+def _anchoring(
+    problem: BAProblem, observed: Mask, fixed_points_used: Mask, metric_depth: bool
+) -> _Anchoring:
+    """Count what fixed poses, fixed points, pose priors and metric depth already pin.
+
+    Known world positions are fixed observed camera centres, translation-prior centres and
+    fixed observed points. A translation-only prior on one camera pins neither rotation nor
+    scale; it is not counted as an anchor.
+    """
+    fixed_cams = np.flatnonzero(problem.fixed_poses & observed)
+    weights = problem.pose_prior_weights
+    translation = np.flatnonzero(weights[:, 0] > 0.0)
+    full = np.flatnonzero((weights[:, 0] > 0.0) & (weights[:, 1] > 0.0))
+    positions = np.concatenate(
+        [
+            problem.poses[fixed_cams, :3, 3],
+            problem.pose_prior[translation, :3, 3],
+            problem.points[fixed_points_used],
+        ]
+    )
+    distinct, non_collinear = _spread(positions)
+    if fixed_cams.size:
+        reference = int(fixed_cams[0])
+    elif full.size:
+        reference = int(full[0])
+    else:
+        reference = -1
+    return _Anchoring(
+        rigid=reference >= 0 or non_collinear, scale=metric_depth or distinct, reference=reference
+    )
+
+
+def _resolve_gauge(gauge: str, anchoring: _Anchoring) -> str:
+    """Resolve ``"auto"`` to the minimal gauge the anchoring leaves; others pass through.
+
+    Minimal, as Triggs et al. (1999, section 9) require: fixing more than the free directions
+    biases the solution, fixing fewer leaves the system singular.
+    """
     if gauge != "auto":
         return gauge
-    if has_pose_prior:
-        return "none"
-    return "first_pose" if has_metric_depth else "similarity"
+    if anchoring.rigid:
+        return "none" if anchoring.scale else "scale"
+    return "first_pose" if anchoring.scale else "similarity"
+
+
+def _confine_scale(problem: BAProblem, pose_free: Mask, reference: int) -> tuple[Mask, int, int]:
+    """Confine the free pose farthest from ``reference`` to keep its baseline (scale gauge)."""
+    centres = problem.poses[:, :3, 3]
+    candidates = np.flatnonzero(pose_free)
+    tolerance = 1e-12 * (1.0 + np.linalg.norm(centres[reference]))
+    if candidates.size == 0:
+        return pose_free, -1, -1
+    distance = np.linalg.norm(centres[candidates] - centres[reference], axis=-1)
+    if distance.max() <= tolerance:
+        return pose_free, -1, -1
+    scale_pose = int(candidates[np.argmax(distance)])
+    pose_free = pose_free.copy()
+    pose_free[scale_pose] = False
+    return pose_free, scale_pose, reference
 
 
 def _gauge(
-    problem: BAProblem, pose_free: Mask, observed: Mask, gauge: str
+    problem: BAProblem, pose_free: Mask, observed: Mask, gauge: str, anchoring: _Anchoring
 ) -> tuple[Mask, int, int, int]:
     """Fix the gauge; return the free poses, the gauge pose, the scale pose and its reference."""
     pose_free = pose_free.copy()
-    gauge_pose = scale_pose = scale_reference = -1
     if gauge == "none":
-        return pose_free, gauge_pose, scale_pose, scale_reference
-    anchors = np.flatnonzero(~problem.fixed_poses & observed)
+        return pose_free, -1, -1, -1
+    if gauge == "scale":
+        if anchoring.reference < 0:
+            raise InvalidInputError(
+                "gauge: 'scale' needs a fixed pose or a full pose prior to measure scale from"
+            )
+        pose_free, scale_pose, reference = _confine_scale(problem, pose_free, anchoring.reference)
+        return pose_free, -1, scale_pose, reference
+    gauge_pose = -1
     fixed_observed = np.flatnonzero(problem.fixed_poses & observed)
-    if fixed_observed.size == 0 and anchors.size:
+    if fixed_observed.size == 0:
+        anchors = np.flatnonzero(~problem.fixed_poses & observed)
+        if anchors.size == 0:
+            return pose_free, -1, -1, -1
         gauge_pose = int(anchors[0])
         pose_free[gauge_pose] = False
         fixed_observed = np.array([gauge_pose])
-    if gauge == "first_pose" or fixed_observed.size == 0:
-        return pose_free, gauge_pose, scale_pose, scale_reference
+    if gauge == "first_pose":
+        return pose_free, gauge_pose, -1, -1
     centres = problem.poses[:, :3, 3]
+    tolerance = 1e-12 * (1.0 + np.linalg.norm(centres[fixed_observed[0]]))
     spread = np.linalg.norm(centres[fixed_observed] - centres[fixed_observed[0]], axis=-1)
-    candidates = np.flatnonzero(pose_free)
-    scale_tolerance = 1e-12 * (1.0 + np.linalg.norm(centres[fixed_observed[0]]))
-    if np.any(spread > scale_tolerance) or candidates.size == 0:
-        return pose_free, gauge_pose, scale_pose, scale_reference
-    distance = np.linalg.norm(centres[candidates] - centres[fixed_observed[0]], axis=-1)
-    if distance.max() > scale_tolerance:
-        scale_pose = int(candidates[np.argmax(distance)])
-        scale_reference = int(fixed_observed[0])
-        pose_free[scale_pose] = False
-    return pose_free, gauge_pose, scale_pose, scale_reference
+    if np.any(spread > tolerance):
+        return pose_free, gauge_pose, -1, -1  # two fixed poses apart already pin the scale
+    pose_free, scale_pose, reference = _confine_scale(problem, pose_free, int(fixed_observed[0]))
+    return pose_free, gauge_pose, scale_pose, reference
+
+
+def bearings_or_nan(model: str, intrinsics: Array, pixels: Array) -> Array:
+    """Unproject pixels to bearings; rows whose pixel cannot be undistorted are NaN.
+
+    A pixel beyond the region where the lens model is invertible has no ray. For an anchor
+    pixel, that makes its point invalid: at the start it is dropped, during a solve the step
+    that caused it is rejected (its blocks' cost becomes infinite), as in the C++ core.
+    """
+    try:
+        return camera.unproject(model, intrinsics, pixels)
+    except NotConvergedError:
+        out = np.full((pixels.shape[0], 3), np.nan)
+        for i, pixel in enumerate(pixels):
+            try:
+                out[i] = camera.unproject(model, intrinsics, pixel)
+            except NotConvergedError:
+                continue
+        return out
+
+
+def _unplaceable_anchors(problem: BAProblem, candidates: IndexArray) -> IndexArray:
+    """Return the anchored points among ``candidates`` whose anchor pixel has no ray."""
+    anchor_obs = problem.point_anchor[candidates]
+    group = problem.intrinsics_idx[problem.cam_idx[anchor_obs]]
+    bad = np.zeros(candidates.size, dtype=bool)
+    for g in np.unique(group):
+        sel = group == g
+        rays = bearings_or_nan(
+            problem.camera_model, problem.intrinsics[g], problem.observations[anchor_obs[sel]]
+        )
+        bad[sel] = np.isnan(rays[:, 0])
+    return candidates[bad]
 
 
 def _kept_observations(problem: BAProblem, options: BAOptions) -> tuple[IndexArray, Mask, int]:
@@ -116,6 +233,10 @@ def _kept_observations(problem: BAProblem, options: BAOptions) -> tuple[IndexArr
     kept[obs] = True
     anchors = problem.point_anchor
     degenerate |= (anchors >= 0) & ~kept[np.maximum(anchors, 0)] & (views > 0)
+    # So has one whose anchor pixel cannot be undistorted with the starting intrinsics.
+    degenerate[
+        _unplaceable_anchors(problem, np.flatnonzero((anchors >= 0) & ~degenerate & (views > 0)))
+    ] = True
     keep = ~degenerate[pt]
     dropped = int(np.count_nonzero(~in_front)) + int(np.count_nonzero(~keep))
     return obs[keep], degenerate, dropped
@@ -135,15 +256,17 @@ def make_layout(problem: BAProblem, options: BAOptions) -> Layout:
     )
     affine_observed = np.bincount(cam[depth], minlength=n_cams) > 0
     prior_cams = np.flatnonzero(np.any(problem.pose_prior_weights > 0.0, axis=1))
-    gauge = _resolve_gauge(
-        options.gauge,
-        has_pose_prior=prior_cams.size > 0,
-        has_metric_depth=bool(np.any(problem.fixed_depth_affine[cam[depth]])),
-    )
-    pose_free, gauge_pose, scale_pose, scale_reference = _gauge(
-        problem, ~problem.fixed_poses & observed, observed, gauge
-    )
     used = ~degenerate & (np.bincount(problem.pt_idx[obs], minlength=n_points) > 0)
+    anchoring = _anchoring(
+        problem,
+        observed,
+        problem.fixed_points & used,
+        metric_depth=bool(np.any(problem.fixed_depth_affine[cam[depth]])),
+    )
+    gauge = _resolve_gauge(options.gauge, anchoring)
+    pose_free, gauge_pose, scale_pose, scale_reference = _gauge(
+        problem, ~problem.fixed_poses & observed, observed, gauge, anchoring
+    )
     point_free = ~problem.fixed_points & used
     anchored = (problem.point_anchor >= 0) & used
     reprojection = np.flatnonzero(~np.isin(obs, problem.point_anchor[anchored]))
