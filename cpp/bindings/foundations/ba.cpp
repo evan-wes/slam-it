@@ -285,6 +285,7 @@ nb::dict solve(const MatrixIn& intrinsics, const VectorIn<std::int64_t>& intrins
   out["gauge"] = static_cast<int>(summary.gauge);
   out["gauge_pose"] = summary.gauge_pose;
   out["confined_pose"] = summary.confined_pose;
+  out["free_gauge"] = summary.free_gauge;
   out["dropped_points"] = summary.dropped_points;
   out["dropped_observations"] = summary.dropped_observations;
   out["unobserved_poses"] = summary.unobserved_poses;

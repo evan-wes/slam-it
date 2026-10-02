@@ -25,6 +25,12 @@ second.
 
 Known positions on free poses (priors) are read at the current state, so the confinement is
 rebuilt at every state; fixed points and fixed poses are constant.
+
+The rows are built in scene-normalised coordinates, ``X' = (X - origin) / scale`` (the
+anchors' and observed cameras' mean and RMS spread at the start): ``g`` acts about the
+world origin, so in world coordinates the rotation and scale directions shrink like
+``1 / |X|`` far from it, and a rank test there fails for geo-referenced scenes. A change of
+origin and unit is an invertible map of ``g``, so the spans -- and the gauge -- are the same.
 """
 
 from __future__ import annotations
@@ -39,8 +45,40 @@ from slamlab.foundations.ba.problem import POSE_DIM, Array, IndexArray
 GENERATORS = 7
 """The similarity's directions: translation (3), rotation (3), scale (1)."""
 
+RIGID_DIM = 6
+"""The rigid motions' directions: translation (3), rotation (3)."""
+
 TOLERANCE = 1e-9
-"""Singular values below this, relative to the scene's extent, count as zero."""
+"""Singular values below this count as zero. Rows and images are in scene-normalised
+coordinates (see :class:`Frame`), so their entries are of order 1 and it is in effect
+relative."""
+
+TIE_RTOL = 1e-12
+"""Two scores within this relative margin are a tie, broken by the lower index. Both cores
+then choose alike despite last-bit rounding between their SVDs."""
+
+
+@dataclass(frozen=True)
+class Frame:
+    """Scene-normalised coordinates for the gauge: ``X' = (X - origin) / scale``."""
+
+    origin: Array
+    """The mean of the anchors' and observed cameras' world positions, shape (3,)."""
+    scale: float
+    """Their RMS distance from ``origin`` (1 if they coincide)."""
+
+    @classmethod
+    def of(cls, positions: Array) -> Frame:
+        """Return the frame centred on ``positions`` (N, 3) and scaled by their spread."""
+        if positions.shape[0] == 0:
+            return cls(np.zeros(3), 1.0)
+        origin = positions.mean(axis=0)
+        spread = float(np.sqrt(np.mean(np.sum((positions - origin) ** 2, axis=1))))
+        return cls(origin, spread if spread > 0.0 else 1.0)
+
+    def __call__(self, positions: Array) -> Array:
+        """Return world positions (..., 3) in this frame."""
+        return np.asarray((positions - self.origin) / self.scale, dtype=np.float64)
 
 
 @dataclass(frozen=True)
@@ -50,11 +88,13 @@ class Anchors:
     points: Array
     """Fixed known positions in the world, shape (Np, 3)."""
     centre_cams: IndexArray
-    """Poses whose current centre is pinned (fixed poses, translation priors)."""
+    """Poses whose current world centre is pinned (fixed poses, translation priors)."""
     orientation_cams: IndexArray
-    """Poses whose current orientation is pinned (fixed poses, rotation priors)."""
+    """Poses whose current world orientation is pinned (fixed poses, rotation priors)."""
     metric: bool
     """Whether metric depth pins the scale."""
+    frame: Frame
+    """The scene-normalised coordinates the rows are built in."""
 
     def with_fixed(self, cam: int) -> Anchors:
         """Return these anchors with pose ``cam`` fixed (its centre and orientation)."""
@@ -65,9 +105,35 @@ class Anchors:
         )
 
 
+@dataclass(frozen=True)
+class Plan:
+    """Which poses remove the gauge, decided once from the start."""
+
+    fixed: IndexArray
+    """Poses fixed outright (each saw all six of its directions)."""
+    confined: IndexArray
+    """Poses whose step is confined, in the order they take their share."""
+    ranks: IndexArray
+    """How many directions each confined pose removes."""
+    free: int
+    """Directions no free pose could take: left in the problem (0 unless degenerate)."""
+
+
+NO_PLAN = Plan(
+    fixed=np.zeros(0, dtype=np.int64),
+    confined=np.zeros(0, dtype=np.int64),
+    ranks=np.zeros(0, dtype=np.int64),
+    free=0,
+)
+"""Nothing to remove."""
+
+
 def _rows(anchors: Anchors, centres: Array) -> Array:
-    """Return the anchors' rows of ``d(pinned) / d(t, ω, s)``, shape (q, 7)."""
-    positions = np.concatenate([anchors.points, centres[anchors.centre_cams]])
+    """Return the anchors' rows of ``d(pinned) / d(t, ω, s)`` in the frame, shape (q, 7).
+
+    ``centres`` are every camera's world centres, shape (C, 3).
+    """
+    positions = anchors.frame(np.concatenate([anchors.points, centres[anchors.centre_cams]]))
     blocks = [
         np.concatenate(
             [
@@ -93,21 +159,38 @@ def _null(matrix: Array, rank: int) -> Array:
     return np.asarray(vt[rank:].T, dtype=np.float64)
 
 
-def _rank(matrix: Array, tolerance: float) -> int:
-    """Return the number of singular values above ``tolerance``."""
+def _singular(matrix: Array) -> Array:
+    """Return a matrix's singular values, largest first (none for an empty matrix)."""
     if matrix.size == 0:
-        return 0
-    return int(np.count_nonzero(np.linalg.svd(matrix, compute_uv=False) > tolerance))
+        return np.zeros(0)
+    return np.asarray(np.linalg.svd(matrix, compute_uv=False), dtype=np.float64)
 
 
-def remaining(anchors: Anchors, centres: Array, tolerance: float) -> Array:
-    """Return the remaining gauge N, an orthonormal (7, k) basis."""
+def remaining(anchors: Anchors, centres: Array) -> Array:
+    """Return the remaining gauge N.
+
+    Parameters
+    ----------
+    anchors : Anchors
+        What is pinned.
+    centres : ndarray, shape (C, 3)
+        Every camera's centre in the world frame.
+
+    Returns
+    -------
+    ndarray, shape (7, k)
+        An orthonormal basis of N, over ``(t, ω, s)`` in the anchors' frame.
+    """
     rows = _rows(anchors, centres)
-    return _null(rows, _rank(rows, tolerance))
+    return _null(rows, int(np.count_nonzero(_singular(rows) > TOLERANCE)))
 
 
-def pose_image(centre: Array, null: Array) -> Array:
-    """Return how N moves a camera's world centre and orientation, shape (6, k)."""
+def _pose_image(centre: Array, null: Array) -> Array:
+    """Return how N moves a camera's centre and orientation, shape (6, k), in the frame.
+
+    ``centre`` is the camera's centre in the frame; rows are the centre's change, then the
+    world orientation's.
+    """
     generator = np.zeros((POSE_DIM, GENERATORS))
     generator[:3, :3] = np.eye(3)
     generator[:3, 3:6] = -so3.hat(centre)
@@ -116,100 +199,112 @@ def pose_image(centre: Array, null: Array) -> Array:
     return generator @ null
 
 
-def name(null: Array) -> str:
-    """Name the remaining gauge: ``none``, ``scale``, ``first_pose``, ``similarity``, ``partial``.
+def classify(null: Array) -> str:
+    """Name a remaining gauge: ``none``, ``scale``, ``first_pose``, ``similarity``, ``partial``.
 
     ``scale`` is a scale about some point (no rotation), ``first_pose`` the rigid motions
-    (no scale).
+    (no scale). The tests read only N's dimension and its ω and s rows, which a change of
+    origin and unit leaves alone.
+
+    Parameters
+    ----------
+    null : ndarray, shape (7, k)
+        The remaining gauge, from :func:`remaining`.
+
+    Returns
+    -------
+    str
+        Its name.
     """
     k = null.shape[1]
     if k == 0:
         return "none"
     if k == GENERATORS:
         return "similarity"
-    if k == POSE_DIM and np.allclose(null[GENERATORS - 1], 0.0, atol=TOLERANCE):
+    if k == RIGID_DIM and np.allclose(null[GENERATORS - 1], 0.0, atol=TOLERANCE):
         return "first_pose"
     if k == 1 and np.allclose(null[3:6], 0.0, atol=TOLERANCE):
         return "scale"
     return "partial"
 
 
-@dataclass(frozen=True)
-class Plan:
-    """Which poses remove the gauge, decided once from the start."""
+def _tie_break(cam: int, singular: Array, rank: int) -> float:
+    """Score candidates seeing the same number of directions (higher wins).
 
-    fixed: IndexArray
-    """Poses fixed outright (each saw all six of its directions)."""
-    confined: IndexArray
-    """Poses whose step is confined, in the order they take their share."""
-    ranks: IndexArray
-    """How many directions each confined pose removes."""
-
-
-def _preference(cam: int, singular: Array, rank: int) -> float:
-    """Rank candidates seeing the same number of directions.
-
-    A pose that would be fixed: the lowest index first. One that would be confined: the one
-    seeing its directions best (largest smallest singular value).
+    A pose that would be fixed: the lowest index (``-cam``). One that would be confined: the
+    one seeing its directions best, its smallest retained singular value (for scale, the
+    farthest from the centre).
     """
     if rank == POSE_DIM:
         return -float(cam)
     return float(singular[rank - 1]) if rank else 0.0
 
 
-def plan(anchors: Anchors, centres: Array, candidates: IndexArray, tolerance: float) -> Plan:
+def _best_candidate(
+    anchors: Anchors, centres: Array, left: list[int], null: Array
+) -> tuple[int, int]:
+    """Return the candidate that sees the most of N (ties by :func:`_tie_break`), and how many."""
+    best, best_rank, best_score = -1, 0, 0.0
+    for c in left:
+        singular = _singular(_pose_image(anchors.frame(centres[c]), null))
+        rank = int(np.count_nonzero(singular > TOLERANCE))
+        score = _tie_break(c, singular, rank)
+        if rank > best_rank or (
+            rank == best_rank and score > best_score + TIE_RTOL * abs(best_score)
+        ):
+            best, best_rank, best_score = c, rank, score
+    return best, best_rank
+
+
+def plan(anchors: Anchors, centres: Array, candidates: IndexArray) -> Plan:
     """Choose the poses that remove the remaining gauge, greedily.
 
-    At each turn the candidate seeing the most remaining directions takes them. Among
-    poses that see all six, the lowest index is fixed; among the others, the one seeing them
-    best (largest smallest singular value: for scale, the farthest from its centre).
+    At each turn the candidate seeing the most remaining directions takes them: a pose that
+    sees all six is fixed, any other is confined. N then shrinks to what it did not see.
 
     Parameters
     ----------
     anchors : Anchors
         What is pinned.
     centres : ndarray, shape (C, 3)
-        The cameras' world centres at the start.
+        Every camera's centre in the world frame, at the start.
     candidates : ndarray of int
         The free observed poses, in index order.
-    tolerance : float
-        The absolute rank tolerance.
+
+    Returns
+    -------
+    Plan
+        The poses, and what no pose could take.
     """
-    null = remaining(anchors, centres, tolerance)
+    null = remaining(anchors, centres)
     fixed: list[int] = []
     confined: list[int] = []
     ranks: list[int] = []
     left = list(candidates)
     while null.shape[1] and left:
-        best, best_rank, best_second = -1, 0, 0.0
-        for c in left:
-            singular = np.asarray(
-                np.linalg.svd(pose_image(centres[c], null), compute_uv=False), dtype=np.float64
-            )
-            rank = int(np.count_nonzero(singular > tolerance))
-            second = _preference(c, singular, rank)
-            # Beat the best by a relative 1e-12, so ties go to the lowest index in both cores.
-            if rank > best_rank or (
-                rank == best_rank and second > best_second + 1e-12 * abs(best_second)
-            ):
-                best, best_rank, best_second = c, rank, second
-        rank = best_rank
+        best, rank = _best_candidate(anchors, centres, left, null)
         if rank == 0:
             break
-        (fixed if rank == POSE_DIM else confined).append(best)
-        if rank < POSE_DIM:
+        if rank == POSE_DIM:
+            fixed.append(best)
+        else:
+            confined.append(best)
             ranks.append(rank)
-        null = null @ _null(pose_image(centres[best], null), rank)
+        null = null @ _null(_pose_image(anchors.frame(centres[best]), null), rank)
         left.remove(best)
     return Plan(
         np.array(fixed, dtype=np.int64),
         np.array(confined, dtype=np.int64),
         np.array(ranks, dtype=np.int64),
+        free=int(null.shape[1]),
     )
 
 
 def _pose_jacobian(centre: Array) -> Array:
-    """Return ``d(centre, orientation) / dδ`` for a right perturbation of ``T_cam_world``."""
+    """Return ``d(centre, orientation) / dδ`` for a right perturbation of ``T_cam_world``.
+
+    ``centre`` is the camera's world centre; the result is in world units.
+    """
     jacobian = np.zeros((POSE_DIM, POSE_DIM))
     jacobian[:3, :3] = -np.eye(3)
     jacobian[:3, 3:] = so3.hat(centre)
@@ -218,11 +313,8 @@ def _pose_jacobian(centre: Array) -> Array:
 
 
 def _first_largest(values: Array) -> int:
-    """Return the first index within a relative 1e-12 of the largest value.
-
-    Near-ties then resolve the same way in both cores despite last-bit rounding.
-    """
-    return int(np.flatnonzero(values >= values.max() * (1.0 - 1e-12))[0])
+    """Return the first index within :data:`TIE_RTOL` of the largest value."""
+    return int(np.flatnonzero(values >= values.max() * (1.0 - TIE_RTOL))[0])
 
 
 def _canonical_span(matrix: Array, rank: int) -> list[Array]:
@@ -243,12 +335,12 @@ def _canonical_span(matrix: Array, rank: int) -> list[Array]:
     return out
 
 
-def complement(normals: list[Array], size: int) -> Array:
-    """Return an orthonormal basis of the complement of ``normals``, deterministically.
+def _complement(normals: list[Array], size: int) -> Array:
+    """Return an orthonormal (size, size - len(normals)) basis orthogonal to ``normals``.
 
     One Householder reflection per normal, each mapping it onto its largest remaining axis,
     which is then dropped; the other axes stay orthogonal to it. For one normal this is the
-    reflection's other columns.
+    reflection's other columns. Deterministic, so both cores take the same coordinates.
     """
     basis = np.eye(size)
     for normal in normals:
@@ -262,20 +354,35 @@ def complement(normals: list[Array], size: int) -> Array:
     return basis
 
 
-def confinement(
-    anchors: Anchors, centres: Array, confined: IndexArray, ranks: IndexArray
-) -> list[Array]:
-    """Return each confined pose's step basis at the current centres, shape (6, 6 - rank).
+def confinement(anchors: Anchors, centres: Array, chosen: Plan) -> list[Array]:
+    """Return each confined pose's step basis at the current centres.
 
     ``anchors`` include the poses the plan fixed. N is rebuilt from them at these centres,
-    with the dimension the plan found (the confined ranks' sum), then each confined pose
-    takes its share as the plan decided.
+    with the dimension the plan left (its confined ranks plus what it could not remove), and
+    each confined pose takes its share as the plan decided. The normal ``J_cᵀ M`` is taken in
+    world units: ``M``'s centre rows scale back by the frame's scale.
+
+    Parameters
+    ----------
+    anchors : Anchors
+        What is pinned, the plan's fixed poses included.
+    centres : ndarray, shape (C, 3)
+        Every camera's current centre in the world frame.
+    chosen : Plan
+        The plan.
+
+    Returns
+    -------
+    list of ndarray, shape (6, 6 - rank)
+        One basis per confined pose, in the plan's order, over its right-perturbation step.
     """
-    null = _null(_rows(anchors, centres), GENERATORS - int(np.sum(ranks)))
+    dimension = int(np.sum(chosen.ranks)) + chosen.free
+    null = _null(_rows(anchors, centres), GENERATORS - dimension)
+    to_world = np.diag([anchors.frame.scale] * 3 + [1.0] * 3)
     bases = []
-    for c, rank in zip(confined, ranks, strict=True):
-        image = pose_image(centres[c], null)
-        normals = _canonical_span(_pose_jacobian(centres[c]).T @ image, int(rank))
-        bases.append(complement(normals, POSE_DIM))
+    for c, rank in zip(chosen.confined, chosen.ranks, strict=True):
+        image = _pose_image(anchors.frame(centres[c]), null)
+        normals = _canonical_span(_pose_jacobian(centres[c]).T @ to_world @ image, int(rank))
+        bases.append(_complement(normals, POSE_DIM))
         null = null @ _null(image, int(rank))
     return bases

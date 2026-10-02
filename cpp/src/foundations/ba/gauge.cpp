@@ -15,14 +15,17 @@ namespace slamlab::foundations::ba::detail {
 
 namespace {
 
-/// @brief The anchors' rows of `d(pinned) / d(t, omega, s)`.
+/// @brief The anchors' rows of `d(pinned) / d(t, omega, s)`, in the anchors' frame.
 /// @param anchors What is pinned.
 /// @param centres Every camera's world centre.
 /// @return A q x 7 matrix.
 Eigen::MatrixXd rows(const Anchors& anchors, const Positions& centres) {
-  Positions positions = anchors.points;
+  Positions positions;
+  for (const Eigen::Vector3d& point : anchors.points) {
+    positions.push_back(in_frame(anchors.frame, point));
+  }
   for (const Index c : anchors.centre_cams) {
-    positions.push_back(centres[static_cast<std::size_t>(c)]);
+    positions.push_back(in_frame(anchors.frame, centres[static_cast<std::size_t>(c)]));
   }
   const auto n_positions = static_cast<Index>(positions.size());
   const Index n_rows =
@@ -57,20 +60,26 @@ Eigen::MatrixXd null_space(const Eigen::MatrixXd& matrix, Index rank) {
   return svd.matrixV().rightCols(matrix.cols() - rank);
 }
 
-/// @brief The number of singular values above `tolerance`.
+/// @brief A matrix's singular values, largest first (none for an empty matrix).
 /// @param matrix The matrix.
-/// @param tolerance The threshold.
-/// @return The rank.
-Index rank_of(const Eigen::MatrixXd& matrix, double tolerance) {
+/// @return The values.
+Eigen::VectorXd singular_values(const Eigen::MatrixXd& matrix) {
   if (matrix.size() == 0) {
-    return 0;
+    return Eigen::VectorXd(0);
   }
   const Eigen::JacobiSVD<Eigen::MatrixXd> svd(matrix);
-  return (svd.singularValues().array() > tolerance).count();
+  return svd.singularValues();
 }
 
-/// @brief How N moves a camera's world centre and orientation.
-/// @param centre The camera's world centre.
+/// @brief The number of singular values above `kGaugeTolerance`.
+/// @param singular The singular values.
+/// @return The rank.
+Index rank_of(const Eigen::VectorXd& singular) {
+  return (singular.array() > kGaugeTolerance).count();
+}
+
+/// @brief How N moves a camera's centre and orientation, in the frame.
+/// @param centre The camera's centre in the frame.
 /// @param null The remaining gauge N.
 /// @return A 6 x k matrix.
 Eigen::MatrixXd pose_image(const Eigen::Vector3d& centre, const Eigen::MatrixXd& null) {
@@ -83,7 +92,8 @@ Eigen::MatrixXd pose_image(const Eigen::Vector3d& centre, const Eigen::MatrixXd&
   return generator * null;
 }
 
-/// @brief `d(centre, orientation) / d(step)` for a right perturbation of `T_cam_world`.
+/// @brief `d(centre, orientation) / d(step)` for a right perturbation of `T_cam_world`, in
+///        world units.
 /// @param centre The camera's world centre.
 /// @return The 6 x 6 Jacobian.
 Eigen::Matrix<double, kPoseDim, kPoseDim> pose_jacobian(const Eigen::Vector3d& centre) {
@@ -94,12 +104,11 @@ Eigen::Matrix<double, kPoseDim, kPoseDim> pose_jacobian(const Eigen::Vector3d& c
   return out;
 }
 
-/// @brief The first index within a relative 1e-12 of the largest value, so that near-ties
-///        resolve as in the Python reference despite last-bit rounding.
+/// @brief The first index within `kTieRtol` of the largest value.
 /// @param values The values.
 /// @return The index.
 Index first_largest(const Eigen::VectorXd& values) {
-  const double threshold = values.maxCoeff() * (1.0 - 1e-12);
+  const double threshold = values.maxCoeff() * (1.0 - kTieRtol);
   for (Index i = 0; i < values.size(); ++i) {
     if (values(i) >= threshold) {
       return i;
@@ -149,14 +158,71 @@ Eigen::MatrixXd complement(const std::vector<Eigen::VectorXd>& normals, Index si
   return basis;
 }
 
-}  // namespace
-
-Eigen::MatrixXd remaining(const Anchors& anchors, const Positions& centres, double tolerance) {
-  const Eigen::MatrixXd pinned = rows(anchors, centres);
-  return null_space(pinned, rank_of(pinned, tolerance));
+/// @brief Score candidates seeing the same number of directions (higher wins): the lowest
+///        index for a pose that would be fixed, the smallest retained singular value for one
+///        that would be confined.
+/// @param cam The candidate.
+/// @param singular Its image's singular values.
+/// @param rank How many directions it sees.
+/// @return The score.
+double tie_break(Index cam, const Eigen::VectorXd& singular, Index rank) {
+  if (rank == kPoseDim) {
+    return -static_cast<double>(cam);
+  }
+  return rank > 0 ? singular(rank - 1) : 0.0;
 }
 
-Gauge name(const Eigen::MatrixXd& null) {
+/// @brief The candidate that sees the most of N (ties by `tie_break`), and how many.
+/// @param anchors What is pinned (for the frame).
+/// @param centres Every camera's world centre.
+/// @param left The candidates.
+/// @param null The remaining gauge.
+/// @return The candidate (-1 if none sees anything) and its rank.
+std::pair<Index, Index> best_candidate(const Anchors& anchors, const Positions& centres,
+                                       const IndexList& left, const Eigen::MatrixXd& null) {
+  Index best = -1;
+  Index best_rank = 0;
+  double best_score = 0.0;
+  for (const Index c : left) {
+    const Eigen::VectorXd singular = singular_values(
+        pose_image(in_frame(anchors.frame, centres[static_cast<std::size_t>(c)]), null));
+    const Index rank = rank_of(singular);
+    const double score = tie_break(c, singular, rank);
+    if (rank > best_rank ||
+        (rank == best_rank && score > best_score + (kTieRtol * std::abs(best_score)))) {
+      best = c;
+      best_rank = rank;
+      best_score = score;
+    }
+  }
+  return {best, best_rank};
+}
+
+}  // namespace
+
+Frame frame_of(const Positions& positions) {
+  if (positions.empty()) {
+    return {};
+  }
+  Eigen::Vector3d origin = Eigen::Vector3d::Zero();
+  for (const Eigen::Vector3d& position : positions) {
+    origin += position;
+  }
+  origin /= static_cast<double>(positions.size());
+  double squared = 0.0;
+  for (const Eigen::Vector3d& position : positions) {
+    squared += (position - origin).squaredNorm();
+  }
+  const double spread = std::sqrt(squared / static_cast<double>(positions.size()));
+  return {.origin = origin, .scale = spread > 0.0 ? spread : 1.0};
+}
+
+Eigen::MatrixXd remaining(const Anchors& anchors, const Positions& centres) {
+  const Eigen::MatrixXd pinned = rows(anchors, centres);
+  return null_space(pinned, rank_of(singular_values(pinned)));
+}
+
+Gauge classify(const Eigen::MatrixXd& null) {
   const Index k = null.cols();
   if (k == 0) {
     return Gauge::kNone;
@@ -164,7 +230,7 @@ Gauge name(const Eigen::MatrixXd& null) {
   if (k == kGenerators) {
     return Gauge::kSimilarity;
   }
-  if (k == kPoseDim && null.row(kGenerators - 1).cwiseAbs().maxCoeff() <= kGaugeTolerance) {
+  if (k == kRigidDim && null.row(kGenerators - 1).cwiseAbs().maxCoeff() <= kGaugeTolerance) {
     return Gauge::kFirstPose;
   }
   if (k == 1 && null.middleRows(3, 3).cwiseAbs().maxCoeff() <= kGaugeTolerance) {
@@ -173,62 +239,47 @@ Gauge name(const Eigen::MatrixXd& null) {
   return Gauge::kPartial;
 }
 
-Plan plan(const Anchors& anchors, const Positions& centres, const IndexList& candidates,
-          double tolerance) {
-  Eigen::MatrixXd null = remaining(anchors, centres, tolerance);
+Plan plan(const Anchors& anchors, const Positions& centres, const IndexList& candidates) {
+  Eigen::MatrixXd null = remaining(anchors, centres);
   Plan out;
   IndexList left = candidates;
   while (null.cols() > 0 && !left.empty()) {
-    Index best = -1;
-    Index best_rank = 0;
-    double best_second = 0.0;
-    for (const Index c : left) {
-      const Eigen::JacobiSVD<Eigen::MatrixXd> svd(
-          pose_image(centres[static_cast<std::size_t>(c)], null));
-      const Eigen::VectorXd& singular = svd.singularValues();
-      const Index rank = (singular.array() > tolerance).count();
-      double second = 0.0;
-      if (rank == kPoseDim) {
-        second = -static_cast<double>(c);
-      } else if (rank > 0) {
-        second = singular(rank - 1);
-      }
-      // Beat the best by a relative 1e-12, so ties go to the lowest index in both cores.
-      if (rank > best_rank ||
-          (rank == best_rank && second > best_second + (1e-12 * std::abs(best_second)))) {
-        best = c;
-        best_rank = rank;
-        best_second = second;
-      }
-    }
-    if (best_rank == 0) {
+    const auto [best, rank] = best_candidate(anchors, centres, left, null);
+    if (rank == 0) {
       break;
     }
-    if (best_rank == kPoseDim) {
+    if (rank == kPoseDim) {
       out.fixed.push_back(best);
     } else {
       out.confined.push_back(best);
-      out.ranks.push_back(best_rank);
+      out.ranks.push_back(rank);
     }
-    null = null * null_space(pose_image(centres[static_cast<std::size_t>(best)], null), best_rank);
+    null = null *
+           null_space(
+               pose_image(in_frame(anchors.frame, centres[static_cast<std::size_t>(best)]), null),
+               rank);
     left.erase(std::ranges::find(left, best));
   }
+  out.free = null.cols();
   return out;
 }
 
 std::vector<Eigen::MatrixXd> confinement(const Anchors& anchors, const Positions& centres,
                                          const Plan& chosen) {
-  const IndexList& confined = chosen.confined;
-  const IndexList& ranks = chosen.ranks;
-  const Index total = std::accumulate(ranks.begin(), ranks.end(), Index{0});
-  Eigen::MatrixXd null = null_space(rows(anchors, centres), kGenerators - total);
+  const Index dimension =
+      std::accumulate(chosen.ranks.begin(), chosen.ranks.end(), Index{0}) + chosen.free;
+  Eigen::MatrixXd null = null_space(rows(anchors, centres), kGenerators - dimension);
+  Eigen::Matrix<double, kPoseDim, kPoseDim> to_world =
+      Eigen::Matrix<double, kPoseDim, kPoseDim>::Identity();
+  to_world.topLeftCorner<3, 3>() *= anchors.frame.scale;
   std::vector<Eigen::MatrixXd> bases;
-  for (std::size_t i = 0; i < confined.size(); ++i) {
-    const Eigen::Vector3d& centre = centres[static_cast<std::size_t>(confined[i])];
-    const Eigen::MatrixXd image = pose_image(centre, null);
-    bases.push_back(
-        complement(canonical_span(pose_jacobian(centre).transpose() * image, ranks[i]), kPoseDim));
-    null = null * null_space(image, ranks[i]);
+  for (std::size_t i = 0; i < chosen.confined.size(); ++i) {
+    const Eigen::Vector3d& centre = centres[static_cast<std::size_t>(chosen.confined[i])];
+    const Eigen::MatrixXd image = pose_image(in_frame(anchors.frame, centre), null);
+    bases.push_back(complement(
+        canonical_span(pose_jacobian(centre).transpose() * to_world * image, chosen.ranks[i]),
+        kPoseDim));
+    null = null * null_space(image, chosen.ranks[i]);
   }
   return bases;
 }

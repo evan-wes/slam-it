@@ -162,6 +162,14 @@ source_modules = ["slamlab"]
 forbidden_modules = ["pycolmap"]
 ignore_imports = ["slamlab.eval.colmap_reference -> pycolmap"]
 
+# The ignored import above hides every chain through colmap_reference, so a pipeline that
+# imported it would pass. Pipelines must not depend on the optional reference.
+[[tool.importlinter.contracts]]
+name = "Pipelines never reach the COLMAP reference"
+type = "forbidden"
+source_modules = ["slamlab.orchestration"]
+forbidden_modules = ["slamlab.eval.colmap_reference"]
+
 [[tool.importlinter.contracts]]
 name = "Visual-inertial builds on the edge rung only, not dense or classic"
 type = "forbidden"

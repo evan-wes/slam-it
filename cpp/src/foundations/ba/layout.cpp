@@ -44,6 +44,51 @@ Eigen::VectorXd ray_parallax(const Problem& problem, const IndexList& obs) {
   return parallax;
 }
 
+/// @brief The observed poses sorted by what pins them.
+struct PinnedPoses {
+  /// @brief Fixed observed poses.
+  IndexList fixed;
+  /// @brief Free observed poses with a translation prior.
+  IndexList translation;
+  /// @brief Free observed poses with a rotation prior.
+  IndexList rotation;
+  /// @brief Free observed poses with both.
+  IndexList full;
+  /// @brief Every observed pose's centre.
+  Positions centres;
+};
+
+/// @brief Sort the observed poses by what pins them.
+/// @param problem The problem.
+/// @param observed Which poses are observed.
+/// @return The poses.
+PinnedPoses pinned_poses(const Problem& problem, const Mask& observed) {
+  PinnedPoses out;
+  for (std::size_t c = 0; c < problem.poses.size(); ++c) {
+    if (!observed[c]) {
+      continue;
+    }
+    const auto row = static_cast<Index>(c);
+    out.centres.emplace_back(problem.poses[c].topRightCorner<3, 1>());
+    if (problem.fixed_poses[c]) {
+      out.fixed.push_back(row);
+      continue;
+    }
+    const bool by_translation = problem.pose_prior_weights(row, 0) > 0.0;
+    const bool by_rotation = problem.pose_prior_weights(row, 1) > 0.0;
+    if (by_translation) {
+      out.translation.push_back(row);
+    }
+    if (by_rotation) {
+      out.rotation.push_back(row);
+    }
+    if (by_translation && by_rotation) {
+      out.full.push_back(row);
+    }
+  }
+  return out;
+}
+
 /// @brief What a gauge choice counts as pinned: `kAuto` everything (fixed observed poses,
 ///        priors on observed poses, fixed observed points, metric depth), `kSimilarity` the
 ///        fixed observed poses, `kScale` its reference pose. Priors on unobserved poses pin
@@ -56,113 +101,99 @@ Eigen::VectorXd ray_parallax(const Problem& problem, const IndexList& obs) {
 /// @return The anchors, or `InvalidInput` for a scale gauge with nothing to measure from.
 Result<Anchors> pinned(const Problem& problem, const Mask& observed, bool metric_depth,
                        const std::vector<bool>& fixed_points_used, Gauge gauge) {
-  IndexList fixed;
-  IndexList translation;
-  IndexList rotation;
-  IndexList full;
-  for (std::size_t c = 0; c < problem.poses.size(); ++c) {
-    const auto row = static_cast<Index>(c);
-    const bool by_translation = problem.pose_prior_weights(row, 0) > 0.0;
-    const bool by_rotation = problem.pose_prior_weights(row, 1) > 0.0;
-    if (observed[c] && problem.fixed_poses[c]) {
-      fixed.push_back(row);
-    } else if (observed[c]) {
-      if (by_translation) {
-        translation.push_back(row);
-      }
-      if (by_rotation) {
-        rotation.push_back(row);
-      }
-      if (by_translation && by_rotation) {
-        full.push_back(row);
-      }
+  const PinnedPoses poses = pinned_poses(problem, observed);
+  Positions points;
+  for (std::size_t p = 0; p < fixed_points_used.size(); ++p) {
+    if (fixed_points_used[p]) {
+      points.emplace_back(problem.points.row(static_cast<Index>(p)).transpose());
     }
   }
+  Positions scene = poses.centres;  // the frame's positions: observed centres, then points
+  scene.insert(scene.end(), points.begin(), points.end());
   Anchors out;
+  out.frame = frame_of(scene);
   if (gauge == Gauge::kScale) {
-    if (fixed.empty() && full.empty()) {
+    if (poses.fixed.empty() && poses.full.empty()) {
       return fail(ErrorKind::kInvalidInput,
                   "gauge: 'scale' needs a fixed pose or a full pose prior to measure scale from");
     }
-    const Index reference = fixed.empty() ? full.front() : fixed.front();
+    const Index reference = poses.fixed.empty() ? poses.full.front() : poses.fixed.front();
     out.centre_cams = {reference};
     out.orientation_cams = {reference};
     return out;
   }
-  out.centre_cams = fixed;
-  out.orientation_cams = fixed;
+  out.centre_cams = poses.fixed;
+  out.orientation_cams = poses.fixed;
   if (gauge == Gauge::kSimilarity) {
     return out;
   }
-  out.centre_cams.insert(out.centre_cams.end(), translation.begin(), translation.end());
-  out.orientation_cams.insert(out.orientation_cams.end(), rotation.begin(), rotation.end());
-  for (std::size_t p = 0; p < fixed_points_used.size(); ++p) {
-    if (fixed_points_used[p]) {
-      out.points.emplace_back(problem.points.row(static_cast<Index>(p)).transpose());
-    }
-  }
+  out.centre_cams.insert(out.centre_cams.end(), poses.translation.begin(), poses.translation.end());
+  out.orientation_cams.insert(out.orientation_cams.end(), poses.rotation.begin(),
+                              poses.rotation.end());
+  out.points = std::move(points);
   out.metric = metric_depth;
   return out;
 }
 
-/// @brief Resolve the gauge choice and plan its removal: update the free poses, record the
-///        gauge's anchors, confined poses and name, and the gauge and confined poses.
+/// @brief The gauge as applied: its name, the poses that remove it, what pins the rest.
+struct GaugeChoice {
+  /// @brief The gauge applied: the request, or for `kAuto` what it found.
+  Gauge name = Gauge::kNone;
+  /// @brief Poses with all six directions free once the gauge is removed.
+  Mask pose_free;
+  /// @brief What pins the similarity, the plan's fixed poses included.
+  Anchors anchors;
+  /// @brief The poses that remove the gauge.
+  Plan plan;
+};
+
+/// @brief Resolve the gauge choice and plan its removal (see `gauge.hpp`).
 /// @param problem The problem.
 /// @param observed Which poses are observed.
 /// @param metric_depth Whether a metric depth prior is present.
 /// @param fixed_points_used Which fixed points are observed and kept.
 /// @param gauge The requested gauge.
-/// @param layout The layout to update (its free poses already set).
-/// @return Nothing, or `InvalidInput` for a scale gauge with nothing to measure from.
-Result<void> fix_gauge(const Problem& problem, const Mask& observed, bool metric_depth,
-                       const std::vector<bool>& fixed_points_used, Gauge gauge, Layout& layout) {
+/// @return The choice, or `InvalidInput` for a scale gauge with nothing to measure from.
+Result<GaugeChoice> fix_gauge(const Problem& problem, const Mask& observed, bool metric_depth,
+                              const std::vector<bool>& fixed_points_used, Gauge gauge) {
   auto anchors = pinned(problem, observed, metric_depth, fixed_points_used, gauge);
   if (!anchors) {
     return std::unexpected(anchors.error());
   }
-  layout.counts.gauge = gauge;
+  GaugeChoice out;
+  out.name = gauge;
+  out.pose_free.assign(problem.poses.size(), false);
   IndexList candidates;
   bool any_fixed = false;
+  Positions centres;
   for (std::size_t c = 0; c < problem.poses.size(); ++c) {
-    if (layout.pose_free[c]) {
+    out.pose_free[c] = !problem.fixed_poses[c] && observed[c];
+    if (out.pose_free[c]) {
       candidates.push_back(static_cast<Index>(c));
     }
     any_fixed = any_fixed || (observed[c] && problem.fixed_poses[c]);
+    centres.emplace_back(problem.poses[c].topRightCorner<3, 1>());
   }
-  Plan chosen;
   if (gauge == Gauge::kFirstPose) {
     if (!any_fixed && !candidates.empty()) {
-      chosen.fixed.push_back(candidates.front());
+      out.plan.fixed.push_back(candidates.front());
     }
   } else if (gauge != Gauge::kNone) {
-    Positions centres;
-    double extent = 0.0;
-    for (const Eigen::Matrix4d& pose : problem.poses) {
-      centres.emplace_back(pose.topRightCorner<3, 1>());
-      extent = std::max(extent, centres.back().cwiseAbs().maxCoeff());
-    }
-    for (const Eigen::Vector3d& point : anchors->points) {
-      extent = std::max(extent, point.cwiseAbs().maxCoeff());
-    }
-    const double tolerance = kGaugeTolerance * (1.0 + extent);
     if (gauge == Gauge::kAuto) {
-      layout.counts.gauge = name(remaining(*anchors, centres, tolerance));
+      out.name = classify(remaining(*anchors, centres));
     }
-    chosen = plan(*anchors, centres, candidates, tolerance);
+    out.plan = plan(*anchors, centres, candidates);
   }
-  for (const Index c : chosen.fixed) {
+  for (const Index c : out.plan.fixed) {
     anchors->centre_cams.push_back(c);
     anchors->orientation_cams.push_back(c);
-    layout.pose_free[static_cast<std::size_t>(c)] = false;
+    out.pose_free[static_cast<std::size_t>(c)] = false;
   }
-  for (const Index c : chosen.confined) {
-    layout.pose_free[static_cast<std::size_t>(c)] = false;
+  for (const Index c : out.plan.confined) {
+    out.pose_free[static_cast<std::size_t>(c)] = false;
   }
-  layout.counts.gauge_pose = chosen.fixed.empty() ? -1 : chosen.fixed.front();
-  layout.counts.confined_pose = chosen.confined.empty() ? -1 : chosen.confined.front();
-  layout.gauge_anchors = std::move(*anchors);
-  layout.gauge_plan = std::move(chosen);
-  return {};
+  out.anchors = std::move(*anchors);
+  return out;
 }
 
 /// @brief The weighted observations whose point is in front of its camera at the start.
@@ -281,23 +312,16 @@ void assign_points(const Problem& problem, const std::vector<bool>& degenerate,
   }
 }
 
-}  // namespace
-
-Result<Layout> make_layout(const Problem& problem, const Options& options) {
-  const std::size_t n_cams = problem.poses.size();
-  const auto n_points = static_cast<std::size_t>(problem.points.rows());
-  const auto n_groups = static_cast<std::size_t>(problem.intrinsics.rows());
-  Layout layout;
-  const IndexList kept = in_front(problem, layout.counts);
-  std::vector<Index> views(n_points, 0);
-  for (const Index m : kept) {
-    ++views[static_cast<std::size_t>(problem.pt_idx[static_cast<std::size_t>(m)])];
-  }
-  const std::vector<bool> degenerate =
-      degenerate_points(problem, kept, options.min_parallax_deg, views);
-  layout.counts.dropped_points = std::count(degenerate.begin(), degenerate.end(), true);
-  Mask observed(n_cams, false);
-  Mask group_observed(n_groups, false);
+/// @brief Keep the observations of points that are not degenerate, and mark what they see.
+/// @param problem The problem.
+/// @param kept The observations in front of their camera.
+/// @param degenerate Which points were dropped.
+/// @param layout The layout to update: its observations and dropped-observation count.
+/// @return Which poses and which intrinsics groups are observed.
+std::pair<Mask, Mask> observe(const Problem& problem, const IndexList& kept,
+                              const std::vector<bool>& degenerate, Layout& layout) {
+  Mask observed(problem.poses.size(), false);
+  Mask group_observed(static_cast<std::size_t>(problem.intrinsics.rows()), false);
   for (const Index m : kept) {
     const auto p = static_cast<std::size_t>(problem.pt_idx[static_cast<std::size_t>(m)]);
     if (degenerate[p]) {
@@ -309,11 +333,15 @@ Result<Layout> make_layout(const Problem& problem, const Options& options) {
     observed[c] = true;
     group_observed[static_cast<std::size_t>(problem.intrinsics_idx[c])] = true;
   }
-  layout.pose_free.assign(n_cams, false);
-  for (std::size_t c = 0; c < n_cams; ++c) {
-    layout.pose_free[c] = !problem.fixed_poses[c] && observed[c];
-    layout.counts.unobserved_poses += (!problem.fixed_poses[c] && !observed[c]) ? 1 : 0;
-  }
+  return {observed, group_observed};
+}
+
+/// @brief Free the observed intrinsics parameters, and count the unobserved free groups.
+/// @param problem The problem.
+/// @param group_observed Which intrinsics groups are observed.
+/// @param layout The layout to update.
+void free_intrinsics(const Problem& problem, const Mask& group_observed, Layout& layout) {
+  const auto n_groups = static_cast<std::size_t>(problem.intrinsics.rows());
   const auto n_params = static_cast<std::size_t>(problem.intrinsics.cols());
   layout.intrinsics_free.assign(n_groups * n_params, false);
   for (std::size_t g = 0; g < n_groups; ++g) {
@@ -325,26 +353,59 @@ Result<Layout> make_layout(const Problem& problem, const Options& options) {
     }
     layout.counts.unobserved_intrinsics += (any_free && !group_observed[g]) ? 1 : 0;
   }
+}
+
+/// @brief Attach the pose priors on poses that move. A prior on a pose that never moves
+///        (fixed, unobserved, or fixed by the gauge) is a constant: it informs nothing and is
+///        left out, like the views of a dropped point.
+/// @param problem The problem.
+/// @param layout The layout to update (its gauge already applied).
+void attach_pose_priors(const Problem& problem, Layout& layout) {
+  for (std::size_t c = 0; c < problem.poses.size(); ++c) {
+    const IndexList& confined = layout.gauge_plan.confined;
+    const bool moves =
+        layout.pose_free[c] || std::ranges::find(confined, static_cast<Index>(c)) != confined.end();
+    if (moves && (problem.pose_prior_weights.row(static_cast<Index>(c)).array() > 0.0).any()) {
+      layout.prior_cams.push_back(static_cast<Index>(c));
+    }
+  }
+}
+
+}  // namespace
+
+Result<Layout> make_layout(const Problem& problem, const Options& options) {
+  const auto n_points = static_cast<std::size_t>(problem.points.rows());
+  Layout layout;
+  const IndexList kept = in_front(problem, layout.counts);
+  std::vector<Index> views(n_points, 0);
+  for (const Index m : kept) {
+    ++views[static_cast<std::size_t>(problem.pt_idx[static_cast<std::size_t>(m)])];
+  }
+  const std::vector<bool> degenerate =
+      degenerate_points(problem, kept, options.min_parallax_deg, views);
+  layout.counts.dropped_points = std::count(degenerate.begin(), degenerate.end(), true);
+  const auto [observed, group_observed] = observe(problem, kept, degenerate, layout);
+  for (std::size_t c = 0; c < problem.poses.size(); ++c) {
+    layout.counts.unobserved_poses += (!problem.fixed_poses[c] && !observed[c]) ? 1 : 0;
+  }
+  free_intrinsics(problem, group_observed, layout);
   const bool metric_depth = attach_priors(problem, layout);
   std::vector<bool> fixed_points_used(n_points, false);
   for (std::size_t p = 0; p < n_points; ++p) {
     fixed_points_used[p] = problem.fixed_points[p] && !degenerate[p] && views[p] > 0;
   }
-  if (auto fixed =
-          fix_gauge(problem, observed, metric_depth, fixed_points_used, options.gauge, layout);
-      !fixed) {
-    return std::unexpected(fixed.error());
+  auto gauge = fix_gauge(problem, observed, metric_depth, fixed_points_used, options.gauge);
+  if (!gauge) {
+    return std::unexpected(gauge.error());
   }
-  // A prior on a pose that never moves (fixed, unobserved, or fixed by the gauge) is a
-  // constant: it informs nothing and is left out, like the views of a dropped point.
-  for (std::size_t c = 0; c < n_cams; ++c) {
-    const bool moves = layout.pose_free[c] ||
-                       std::ranges::find(layout.gauge_plan.confined, static_cast<Index>(c)) !=
-                           layout.gauge_plan.confined.end();
-    if (moves && (problem.pose_prior_weights.row(static_cast<Index>(c)).array() > 0.0).any()) {
-      layout.prior_cams.push_back(static_cast<Index>(c));
-    }
-  }
+  layout.counts.gauge = gauge->name;
+  layout.counts.gauge_pose = gauge->plan.fixed.empty() ? -1 : gauge->plan.fixed.front();
+  layout.counts.confined_pose = gauge->plan.confined.empty() ? -1 : gauge->plan.confined.front();
+  layout.counts.free_gauge = gauge->plan.free;
+  layout.pose_free = std::move(gauge->pose_free);
+  layout.gauge_anchors = std::move(gauge->anchors);
+  layout.gauge_plan = std::move(gauge->plan);
+  attach_pose_priors(problem, layout);
   assign_points(problem, degenerate, views, layout);
   return layout;
 }

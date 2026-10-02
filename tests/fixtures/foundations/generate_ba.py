@@ -214,15 +214,41 @@ def _rotation_priors() -> tuple[ba.BAProblem, dict[str, Any]]:
 
 
 def _translation_priors() -> tuple[ba.BAProblem, dict[str, Any]]:
-    """Two translation priors pin all but the rotation about their baseline.
+    """Two GNSS-style priors (centres only) pin all but the rotation about their baseline.
 
-    Weight 1: stiff translation priors (1e2 and up) make this geometry converge slowly
-    under any gauge, none included, and a slow crawl is no place to hold two cores to 1e-9.
+    The stored rotation is identity: the decoupled residual compares centres alone.
     """
     problem, poses, _ = _scene("pinhole", seed=11)
     weights = np.zeros((CAMERAS, 2))
-    weights[[0, 3], 0] = 1.0
-    return replace(problem, pose_prior=poses, pose_prior_weights=weights), {}
+    weights[[0, 3], 0] = 1e4
+    centres_only = np.tile(np.eye(4), (CAMERAS, 1, 1))
+    centres_only[:, :3, 3] = poses[:, :3, 3]
+    return replace(problem, pose_prior=centres_only, pose_prior_weights=weights), {}
+
+
+def _explicit_first_pose() -> tuple[ba.BAProblem, dict[str, Any]]:
+    """Use the explicit SE(3) recipe: the first pose fixed, metric depth pinning the scale."""
+    problem, _, inverse_depth = _scene("pinhole", seed=12)
+    metric = replace(
+        problem, depth_prior=inverse_depth, depth_prior_weights=np.full(inverse_depth.size, 100.0)
+    )
+    return metric, {"gauge": "first_pose"}
+
+
+def _explicit_scale() -> tuple[ba.BAProblem, dict[str, Any]]:
+    """Use the explicit scale recipe, about the one pose with a full prior."""
+    problem, poses, _ = _scene("pinhole", seed=13)
+    weights = np.zeros((CAMERAS, 2))
+    weights[2] = 1e4
+    return replace(problem, pose_prior=poses, pose_prior_weights=weights), {"gauge": "scale"}
+
+
+def _explicit_none() -> tuple[ba.BAProblem, dict[str, Any]]:
+    """Use no gauge: the caller's two fixed poses apart pin the similarity."""
+    problem, _, _ = _scene("pinhole", seed=14)
+    fixed = np.zeros(CAMERAS, dtype=bool)
+    fixed[[0, 4]] = True
+    return replace(problem, fixed_poses=fixed), {"gauge": "none"}
 
 
 CASES = {
@@ -237,14 +263,22 @@ CASES = {
     "every kind of block": _every_kind,
     "partial: rotation priors confine two poses": _rotation_priors,
     "partial: translation priors on two cameras": _translation_priors,
+    "explicit first_pose": _explicit_first_pose,
+    "explicit scale about a full prior": _explicit_scale,
+    "explicit none with two fixed poses": _explicit_none,
 }
 
 
 def _options(spec: dict[str, Any]) -> ba.BAOptions:
-    """Build a case's options: tight tolerances plus its overrides."""
+    """Build a case's options: tight tolerances plus its overrides.
+
+    The cost tolerance is 1e-10, not lower: the cores must stop on the same iteration, and
+    at 1e-12 a cost creeping down by about that much per step lets last-bit rounding decide
+    which step crosses it (Python 9 iterations, C++ 12, the same optimum).
+    """
     solver = nls.Options(
         max_iterations=100,
-        function_tolerance=1e-12,
+        function_tolerance=1e-10,
         gradient_tolerance=1e-10,
         method=spec.get("method", "levenberg_marquardt"),
         loss=nls.Loss(*spec.get("loss", ["trivial", 1.0])),

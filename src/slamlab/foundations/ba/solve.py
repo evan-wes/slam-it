@@ -187,8 +187,10 @@ def _result_from_backend(raw: BackendResult) -> BAResult:
     # The trace crosses as a matrix whose columns the binding names: read them by name.
     types = {field.name: str(field.type) for field in fields(nls.Iteration)}
     columns = [str(name) for name in raw["trace_columns"]]
-    if sorted(columns) != sorted(types):
-        raise RuntimeError(f"trace columns {columns} do not match nls.Iteration")
+    if sorted(columns) != sorted(types) or not set(types.values()) <= set(_CONVERT):
+        raise RuntimeError(
+            f"trace columns {columns} (types {types}) do not match nls.Iteration's numbers"
+        )
     records = tuple(
         nls.Iteration(
             **{name: _CONVERT[types[name]](value) for name, value in zip(columns, row, strict=True)}

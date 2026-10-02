@@ -28,8 +28,7 @@ import numpy as np
 
 from slamlab.foundations import camera, se3
 from slamlab.foundations.arrays import group_members
-from slamlab.foundations.ba.gauge import TOLERANCE, Anchors, Plan, plan, remaining
-from slamlab.foundations.ba.gauge import name as gauge_name
+from slamlab.foundations.ba.gauge import NO_PLAN, Anchors, Frame, Plan, classify, plan, remaining
 from slamlab.foundations.ba.problem import Array, BAOptions, BAProblem, IndexArray, Mask
 from slamlab.foundations.errors import InvalidInputError
 
@@ -55,17 +54,19 @@ class Layout:
     """Poses with all six directions free (not fixed, observed, not the gauge poses)."""
     gauge_anchors: Anchors
     """What pins the similarity, the poses the gauge fixed included."""
-    confined: IndexArray
-    """Poses whose step is confined to remove the rest of the gauge, in order."""
-    confined_ranks: IndexArray
-    """How many gauge directions each confined pose removes."""
+    gauge_plan: Plan
+    """The poses that remove the gauge: fixed ones (out of ``pose_free``), and confined ones
+    in order with how many directions each removes."""
     intrinsics_free: Mask
     """Intrinsics parameters that move, shape (K, P)."""
     affine_free: Mask
+    """Depth affines that move, shape (C,): free and observed by a depth prior."""
     point_slot: IndexArray
     """Each point's index among the free points, or -1."""
     gauge: str
+    """The gauge applied (``auto`` resolved to what it found)."""
     summary: dict[str, int]
+    """The layout's counts, by :data:`~slamlab.foundations.ba.problem.COUNT_NAMES` name."""
 
 
 def _ray_parallax(centres: Array, points: Array, cam: IndexArray, pt: IndexArray) -> Array:
@@ -96,6 +97,10 @@ def _anchors(
     weights = problem.pose_prior_weights
     fixed = np.flatnonzero(problem.fixed_poses & observed)
     prior = observed & ~problem.fixed_poses
+    points = problem.points[fixed_points_used]
+    # The rows' frame: centred on the scene and scaled by its spread (see gauge.Frame).
+    frame = Frame.of(np.concatenate([problem.poses[observed, :3, 3], points]))
+    none = np.zeros((0, 3))
     if gauge == "scale":
         full = np.flatnonzero(prior & (weights[:, 0] > 0.0) & (weights[:, 1] > 0.0))
         reference = np.concatenate([fixed, full])[:1]
@@ -103,14 +108,15 @@ def _anchors(
             raise InvalidInputError(
                 "gauge: 'scale' needs a fixed pose or a full pose prior to measure scale from"
             )
-        return Anchors(np.zeros((0, 3)), reference, reference, metric=False)
+        return Anchors(none, reference, reference, metric=False, frame=frame)
     if gauge == "similarity":
-        return Anchors(np.zeros((0, 3)), fixed, fixed, metric=False)
+        return Anchors(none, fixed, fixed, metric=False, frame=frame)
     return Anchors(
-        points=problem.points[fixed_points_used],
+        points=points,
         centre_cams=np.concatenate([fixed, np.flatnonzero(prior & (weights[:, 0] > 0.0))]),
         orientation_cams=np.concatenate([fixed, np.flatnonzero(prior & (weights[:, 1] > 0.0))]),
         metric=metric_depth,
+        frame=frame,
     )
 
 
@@ -119,9 +125,13 @@ class _Gauge:
     """The gauge as applied: its name, the poses that remove it, what pins the rest."""
 
     name: str
+    """The gauge applied: the request, or for ``auto`` what it found."""
     pose_free: Mask
+    """Poses with all six directions free once the gauge is removed."""
     anchors: Anchors
+    """What pins the similarity, the plan's fixed poses included."""
     plan: Plan
+    """The poses that remove the gauge."""
 
 
 def _fix_gauge(
@@ -130,25 +140,22 @@ def _fix_gauge(
     """Resolve the gauge choice and plan its removal (see :mod:`slamlab.foundations.ba.gauge`)."""
     pose_free = ~problem.fixed_poses & observed
     candidates = np.flatnonzero(pose_free)
-    none = Plan(*(np.zeros(0, dtype=np.int64) for _ in range(3)))
     anchors = _anchors(problem, observed, fixed_points_used, metric_depth, gauge)
     if gauge == "none":
-        return _Gauge(gauge, pose_free, anchors, none)
+        return _Gauge(gauge, pose_free, anchors, NO_PLAN)
     if gauge == "first_pose":
         if np.any(problem.fixed_poses & observed) or candidates.size == 0:
-            return _Gauge(gauge, pose_free, anchors, none)
+            return _Gauge(gauge, pose_free, anchors, NO_PLAN)
         first = int(candidates[0])
         return _Gauge(
             gauge,
             pose_free & (np.arange(pose_free.size) != first),
-            anchors,
-            replace(none, fixed=np.array([first])),
+            anchors.with_fixed(first),
+            replace(NO_PLAN, fixed=np.array([first])),
         )
     centres = problem.poses[:, :3, 3]
-    extent = float(np.abs(np.concatenate([centres, anchors.points])).max(initial=0.0))
-    tolerance = TOLERANCE * (1.0 + extent)
-    name = gauge_name(remaining(anchors, centres, tolerance)) if gauge == "auto" else gauge
-    chosen = plan(anchors, centres, candidates, tolerance)
+    name = classify(remaining(anchors, centres)) if gauge == "auto" else gauge
+    chosen = plan(anchors, centres, candidates)
     for c in chosen.fixed:
         anchors = anchors.with_fixed(int(c))
     pose_free = pose_free.copy()
@@ -231,6 +238,7 @@ def make_layout(problem: BAProblem, options: BAOptions) -> Layout:
     summary = {
         "gauge_pose": int(gauge.plan.fixed[0]) if gauge.plan.fixed.size else -1,
         "confined_pose": int(gauge.plan.confined[0]) if gauge.plan.confined.size else -1,
+        "free_gauge": gauge.plan.free,
         "dropped_points": int(np.count_nonzero(degenerate)),
         "dropped_observations": dropped,
         "unobserved_poses": int(np.count_nonzero(~problem.fixed_poses & ~observed)),
@@ -254,8 +262,7 @@ def make_layout(problem: BAProblem, options: BAOptions) -> Layout:
         ),
         pose_free=gauge.pose_free,
         gauge_anchors=gauge.anchors,
-        confined=gauge.plan.confined,
-        confined_ranks=gauge.plan.ranks,
+        gauge_plan=gauge.plan,
         intrinsics_free=~problem.fixed_intrinsics & intrinsics_observed[:, None],
         affine_free=~problem.fixed_depth_affine & affine_observed,
         point_slot=point_slot,

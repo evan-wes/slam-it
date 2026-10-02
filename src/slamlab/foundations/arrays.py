@@ -230,7 +230,15 @@ def group_members(group: NDArray[np.int64], n_groups: int) -> list[NDArray[np.in
     list of ndarray of int
         For each group ``g``, the positions with ``group == g`` in increasing order (empty for
         a group with no members).
+
+    Raises
+    ------
+    InvalidInputError
+        If a group lies outside ``[0, n_groups)``: it would be silently dropped.
     """
+    if group.size and (group.min() < 0 or group.max() >= n_groups):
+        bad = group[(group < 0) | (group >= n_groups)][0]
+        raise InvalidInputError(f"group: {bad} is outside [0, {n_groups})")
     order = np.argsort(group, kind="stable")
     bounds = np.searchsorted(group[order], np.arange(n_groups + 1))
     return [order[bounds[g] : bounds[g + 1]] for g in range(n_groups)]

@@ -157,6 +157,9 @@ struct Summary {
   std::int64_t gauge_pose = -1;
   /// @brief The first pose whose step was confined to remove the rest of the gauge, or -1.
   std::int64_t confined_pose = -1;
+  /// @brief Gauge directions no free pose could take, left in the problem (0 unless the
+  ///        geometry is degenerate).
+  std::int64_t free_gauge = 0;
   /// @brief Free points dropped as degenerate.
   std::int64_t dropped_points = 0;
   /// @brief Observations left out (of dropped points, or behind their camera).

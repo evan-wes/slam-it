@@ -164,8 +164,11 @@ Result<Solution> solve(const Problem& problem, const Options& options) {
     return fail(ErrorKind::kInvalidInput,
                 "min_parallax_deg, focal_std_ratio: must be non-negative and finite");
   }
-  if (options.gauge > Gauge::kScale) {
+  if (options.gauge == Gauge::kPartial) {
     return fail(ErrorKind::kInvalidInput, "gauge: 'partial' is reported, not requested");
+  }
+  if (options.gauge >= Gauge::kCount) {
+    return fail(ErrorKind::kInvalidInput, "gauge: not a gauge (kCount)");
   }
   if (options.depth_loss.kind >= nls::LossKind::kCount) {
     return fail(ErrorKind::kInvalidInput, "depth_loss: not a loss (kCount)");

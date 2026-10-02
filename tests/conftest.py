@@ -103,14 +103,17 @@ def load_fixture(relative: str) -> dict[str, Any]:
     return fixture
 
 
-def assert_matches_fixture(got: ArrayLike, expected: ArrayLike, tolerance: dict[str, Any]) -> None:
+def assert_matches_fixture(
+    got: ArrayLike | dict[str, Any], expected: ArrayLike | dict[str, Any], tolerance: dict[str, Any]
+) -> None:
     """Compare a result with a fixture's expected value under the fixture's policy.
 
     Parameters
     ----------
-    got : array_like
-        The value a backend produced.
-    expected : array_like
+    got : array_like or dict
+        The value a backend produced: numbers, or (under an exact policy only) a dict of
+        named codes and counts, which may hold strings.
+    expected : array_like or dict
         The fixture's expected value.
     tolerance : dict
         The fixture's tolerance policy: ``comparison`` is ``"exact"`` (values and the
@@ -124,6 +127,10 @@ def assert_matches_fixture(got: ArrayLike, expected: ArrayLike, tolerance: dict[
     AssertionError
         If the values differ under the policy, or the policy is malformed.
     """
+    if isinstance(expected, dict):
+        assert tolerance["comparison"] == "exact", f"named codes need an exact policy: {tolerance}"
+        assert got == expected
+        return
     got_arr = np.asarray(got, dtype=np.float64)
     expected_arr = np.asarray(expected, dtype=np.float64)
     if tolerance.get("double_cover") and float(np.sum(got_arr * expected_arr)) < 0.0:

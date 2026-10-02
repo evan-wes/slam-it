@@ -12,6 +12,7 @@ import pytest
 
 from slamlab import backends
 from slamlab.foundations import arrays, camera, se3, so3
+from slamlab.foundations.errors import InvalidInputError
 from tests.conftest import check_rejects
 
 PINHOLE = [500.0, 500.0, 320.0, 240.0]
@@ -71,3 +72,7 @@ def test_group_members_match_the_masks() -> None:
     assert len(members) == 5
     for g, found in enumerate(members):
         np.testing.assert_array_equal(found, np.flatnonzero(group == g))
+    empty = arrays.group_members(np.zeros(0, dtype=np.int64), 2)
+    assert [m.size for m in empty] == [0, 0]
+    with pytest.raises(InvalidInputError, match="outside"):
+        arrays.group_members(np.array([0, 5], dtype=np.int64), 2)

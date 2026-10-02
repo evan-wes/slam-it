@@ -133,9 +133,9 @@ enum class Termination : std::uint8_t {
   kNoDecrease = 5,
   /// @brief Not converged: the undamped Gauss-Newton system is not positive definite.
   kSingular = 6,
-  /// @brief The number of terminations (a sentinel, not a termination): the bindings' name tables
-  /// are
-  ///        checked against it, so an enumerator added without its name fails to build.
+  /// @brief The number of terminations (a sentinel, not a termination): the bindings check
+  ///        their code count against it, so an enumerator added without its name fails to
+  ///        build.
   kCount = 7,
 };
 

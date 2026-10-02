@@ -164,7 +164,8 @@ class Bundle {
     return state;
   }
 
-  /// @brief The number of residual rows: 2 per reprojection, 1 per depth, 6 per pose prior.
+  /// @brief The number of weighted residual rows: 2 per reprojection, 1 per depth prior,
+  ///        and 3 per weighted half of a pose prior.
   /// @return The row count.
   [[nodiscard]] Index residual_rows() const {
     auto rows = static_cast<Index>((2 * layout_->reprojection.size()) + layout_->depth.size());
@@ -561,18 +562,23 @@ class Bundle {
     return std::sqrt(problem_->depth_prior_weights(m)) * ((1.0 / z) - predicted);
   }
 
-  /// @brief A pose prior's unweighted error `log(prior_cam_world^-1 T_cam_world)`.
+  /// @brief A pose prior's unweighted error `(C - C_prior, log(R_prior^T R_world_cam))`:
+  ///        decoupled, so the translation half pins the world centre whatever rotation the
+  ///        prior stores (a GNSS-style prior).
   /// @param state The state.
   /// @param k The prior.
   /// @return The error.
   [[nodiscard]] std::optional<se3::Vector6d> pose_error(const State& state, std::size_t k) const {
     const auto c = static_cast<std::size_t>(layout_->prior_cams[k]);
-    const auto relative = se3::compose(problem_->pose_prior[c], state.poses[c]);
-    if (!relative) {
+    const Eigen::Matrix4d& prior = problem_->pose_prior[c];
+    const Eigen::Matrix3d r_world_cam = state.poses[c].topLeftCorner<3, 3>().transpose();
+    const auto rotation_error = so3::log(prior.topLeftCorner<3, 3>().transpose() * r_world_cam);
+    if (!rotation_error) {
       return std::nullopt;
     }
-    const auto error = se3::log(*relative);
-    return error ? std::optional<se3::Vector6d>(*error) : std::nullopt;
+    se3::Vector6d error;
+    error << centre(state.poses[c]) - prior.topRightCorner<3, 1>(), *rotation_error;
+    return error;
   }
 
   /// @brief A pose prior's weights, square-rooted, per tangent component.
@@ -670,7 +676,9 @@ class Bundle {
     return couple(block, p, anchor_jacobians) ? block : LinearBlock{};
   }
 
-  /// @brief Linearise a pose-prior block: `d log(E exp(delta)) = Jr^-1(e) d delta`.
+  /// @brief Linearise a pose-prior block. Under `T_cw exp(delta)`, `delta = (rho, theta)`, the
+  ///        centre moves by `-rho + hat(C) theta` and the rotation error by
+  ///        `-Jr^-1(e_r) R_cw theta`.
   /// @param state The state.
   /// @param k The prior.
   /// @return The block (touching no point).
@@ -679,13 +687,20 @@ class Bundle {
     if (!error) {
       return {};
     }
-    const auto inverse = se3::right_jacobian_inverse(*error);
+    const auto inverse = so3::right_jacobian_inverse(Eigen::Vector3d(error->tail<3>()));
     if (!inverse) {
       return {};
     }
+    const Eigen::Matrix4d& t_cam_world =
+        state.poses[static_cast<std::size_t>(layout_->prior_cams[k])];
+    Eigen::Matrix<double, kPoseDim, kPoseDim> jacobian =
+        Eigen::Matrix<double, kPoseDim, kPoseDim>::Zero();
+    jacobian.topLeftCorner<3, 3>() = -Eigen::Matrix3d::Identity();
+    jacobian.topRightCorner<3, 3>() = so3::hat(centre(t_cam_world));
+    jacobian.bottomRightCorner<3, 3>() = -(*inverse) * t_cam_world.topLeftCorner<3, 3>();
     const se3::Vector6d weights = pose_sqrt_weights(k);
     LinearBlock block{.residual = weights.cwiseProduct(*error),
-                      .camera_side = Block(weights.asDiagonal() * *inverse),
+                      .camera_side = Block(weights.asDiagonal() * jacobian),
                       .columns = pose_columns(layout_->prior_cams[k]),
                       .point = Eigen::Matrix<double, Eigen::Dynamic, 3>(0, 3),
                       .slot = -1};

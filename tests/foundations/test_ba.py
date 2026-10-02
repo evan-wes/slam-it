@@ -128,8 +128,7 @@ def test_matches_fixture(backend: str, case: dict[str, Any]) -> None:
         "iterations": summary.solve.iterations,
         **{name: getattr(summary, name) for name in ba.COUNT_NAMES},
     }
-    assert tolerance["codes"]["comparison"] == "exact"
-    assert codes == expected["codes"]
+    assert_matches_fixture(codes, expected["codes"], tolerance["codes"])
 
 
 def _nan(value: object) -> Array:
@@ -817,7 +816,82 @@ def test_auto_gauge_removes_only_what_is_free(backend: str, case: str) -> None:
     assert result.summary.gauge == "partial"
     assert result.summary.gauge_pose == -1
     assert result.summary.confined_pose >= 0
+    assert result.summary.free_gauge == 0
     assert result.summary.solve.final_cost < 1e-18
+
+
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_translation_priors_pin_centres_whatever_rotation_they_store(backend: str) -> None:
+    """A GNSS-style prior carries a centre and no attitude: its stored rotation is unused.
+
+    The first residual compared world-to-camera translations through the stored rotation;
+    filled with identity, it pulled the centres 0.1-0.8 m off. The decoupled residual
+    compares centres, so the solution does not depend on it.
+    """
+    require_backend(backend)
+    scene = _scene(cameras=5, points=60, noise=0.5, seed=3, rotation=0.3)
+    weights = np.zeros((5, 2))
+    weights[:, 0] = 2500.0
+    identity = np.tile(np.eye(4), (5, 1, 1))
+    identity[:, :3, 3] = scene.poses[:, :3, 3]
+    results = [
+        ba.solve(
+            replace(scene.problem, pose_prior=prior, pose_prior_weights=weights),
+            ba.BAOptions(solver=TIGHT),
+            backend=backend,
+        )
+        for prior in (scene.poses, identity)
+    ]
+    np.testing.assert_allclose(results[1].poses, results[0].poses, rtol=0, atol=1e-9)
+    centre_error = np.linalg.norm(results[1].poses[:, :3, 3] - scene.poses[:, :3, 3], axis=1)
+    assert np.all(centre_error < 0.02)
+
+
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_translation_priors_on_three_cameras_leave_no_gauge(backend: str) -> None:
+    """Three non-collinear known centres pin the whole similarity: no gauge, finite σ_f.
+
+    With the first residual a rotation about the world origin stayed free, and the focal
+    length read as unobservable.
+    """
+    require_backend(backend)
+    scene = _scene(
+        cameras=5, points=60, perturb=0.02, seed=4, rotation=0.3, fixed_intrinsics=np.array([False])
+    )
+    weights = np.zeros((5, 2))
+    weights[[0, 2, 4], 0] = 1e4
+    problem = replace(scene.problem, pose_prior=scene.poses, pose_prior_weights=weights)
+    result = ba.solve(problem, ba.BAOptions(solver=TIGHT), backend=backend)
+    assert (result.summary.gauge, result.summary.free_gauge) == ("none", 0)
+    assert result.summary.unobservable_focal == 0
+    assert np.all(np.isfinite(result.intrinsics_std[0, :2]))
+
+
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_far_from_the_world_origin(backend: str) -> None:
+    """A scene 1e6 m from the origin (geo-referenced) gets the same gauge and deviations.
+
+    The first null-space gauge tested rank in world coordinates and lost the gauge from about
+    5e4 m: σ_f infinite, focal length flagged unobservable.
+    """
+    require_backend(backend)
+    scene = _scene(cameras=5, points=60, noise=0.5, seed=1, rotation=0.3)
+    free = replace(scene.problem, fixed_intrinsics=np.array([[False, False, True, True]]))
+    offset = 1e6 * np.array([1.0, 0.3, 0.0])
+    poses = free.poses.copy()
+    poses[:, :3, 3] += offset
+    far = replace(free, poses=poses, points=free.points + offset)
+    near_result, far_result = (
+        ba.solve(p, ba.BAOptions(solver=TIGHT), backend=backend) for p in (free, far)
+    )
+    for result in (near_result, far_result):
+        assert result.summary.free_gauge == 0
+    assert (far_result.summary.gauge_pose, far_result.summary.confined_pose) == (
+        near_result.summary.gauge_pose,
+        near_result.summary.confined_pose,
+    )
+    # 1e6 m coordinates cost the problem itself digits, so σ_f agrees to 1%, not to rounding.
+    np.testing.assert_allclose(far_result.intrinsics_std, near_result.intrinsics_std, rtol=1e-2)
 
 
 @pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))

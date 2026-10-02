@@ -145,7 +145,7 @@ class Bundle:
         """Index the pose-prior blocks: cameras, priors, weights (per row), columns."""
         cams = self._layout.prior_cams
         self._p_cam = cams
-        self._p_prior = self._problem.pose_prior[cams]  # T̄_world_cam = T̄_cam_world⁻¹
+        self._p_prior = self._problem.pose_prior[cams]  # T̄_world_cam: centre, orientation
         self._p_sqrt_w = np.sqrt(np.repeat(self._problem.pose_prior_weights[cams], 3, axis=1))
         self._p_columns = _pose_columns(cams)
 
@@ -186,7 +186,8 @@ class Bundle:
             ]
         )
         self._free = np.flatnonzero(free)
-        self._confined_rows = (POSE_DIM * layout.confined[:, None] + np.arange(POSE_DIM)).ravel()
+        confined = layout.gauge_plan.confined
+        self._confined_rows = (POSE_DIM * confined[:, None] + np.arange(POSE_DIM)).ravel()
 
     def _intrinsics_columns(self, cam: IndexArray) -> IndexArray:
         """Return each camera's intrinsics-group columns in the full vector."""
@@ -250,9 +251,7 @@ class Bundle:
         at every state.
         """
         layout = self._layout
-        bases = confinement(
-            layout.gauge_anchors, centres(state.poses), layout.confined, layout.confined_ranks
-        )
+        bases = confinement(layout.gauge_anchors, centres(state.poses), layout.gauge_plan)
         basis = np.zeros((POSE_DIM * len(bases), sum(b.shape[1] for b in bases)))
         column = 0
         for i, block in enumerate(bases):
@@ -345,10 +344,19 @@ class Bundle:
         return np.asarray(error[:, None], dtype=np.float64)
 
     def _pose_error(self, state: State) -> Array:
-        """Return the unweighted pose-prior errors ``log(T̄⁻¹ T)``, shape (Cp, 6)."""
+        """Return the unweighted pose-prior errors ``(C - C̄, log(R̄_wcᵀ R_wc))``, shape (Cp, 6).
+
+        Decoupled: the translation half compares world camera centres, so it pins the centre
+        whatever rotation the prior stores (a GNSS-style prior), and the rotation half the
+        camera's world orientation.
+        """
         if self._p_cam.size == 0:
             return np.zeros((0, POSE_DIM))
-        return se3.log(se3.compose(self._p_prior, state.poses[self._p_cam]))
+        t_cam_world = state.poses[self._p_cam]
+        r_world_cam = np.swapaxes(t_cam_world[:, :3, :3], 1, 2)
+        centre_error = centres(t_cam_world) - self._p_prior[:, :3, 3]
+        rotation_error = so3.log(np.einsum("cji,cjk->cik", self._p_prior[:, :3, :3], r_world_cam))
+        return np.concatenate([centre_error, rotation_error], axis=1)
 
     def _pose_prior(self, state: State) -> Array:
         """Return the weighted pose-prior errors, shape (Cp, 6)."""
@@ -440,14 +448,23 @@ class Bundle:
         return self._couple(base, j_world, self._d_pt, state, anchors)
 
     def _pose_prior_kind(self, state: State) -> Kind:
-        """Linearise the pose-prior blocks: ``d log(E exp(δ)) = Jr⁻¹(e) dδ``."""
+        """Linearise the pose-prior blocks.
+
+        Under ``T_cw exp(δ)``, ``δ = (ρ, θ)``: the centre moves by ``-ρ + hat(C) θ``, and
+        ``R_wc`` by ``exp(-θ) R_wc``, so the rotation error ``log(E exp(-R_cw θ))`` moves by
+        ``-Jr⁻¹(e_r) R_cw θ``.
+        """
         error = self._pose_error(state)
         residuals = np.asarray(error * self._p_sqrt_w, dtype=np.float64)
-        jacobian = (
-            se3.right_jacobian_inverse(error)
-            if error.shape[0]
-            else np.zeros((0, POSE_DIM, POSE_DIM))
-        )
+        n_priors = error.shape[0]
+        jacobian = np.zeros((n_priors, POSE_DIM, POSE_DIM))
+        if n_priors:
+            t_cam_world = state.poses[self._p_cam]
+            jacobian[:, :3, :3] = -np.eye(3)
+            jacobian[:, :3, 3:] = so3.hat(centres(t_cam_world))
+            jacobian[:, 3:, 3:] = -np.einsum(
+                "cij,cjk->cik", so3.right_jacobian_inverse(error[:, 3:]), t_cam_world[:, :3, :3]
+            )
         camera_side = self._p_sqrt_w[:, :, None] * jacobian
         empty = np.zeros(0, dtype=np.int64)
         return Kind(residuals, camera_side, self._p_columns, None, empty)

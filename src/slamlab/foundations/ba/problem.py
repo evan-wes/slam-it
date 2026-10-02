@@ -21,8 +21,14 @@ IndexArray = NDArray[np.int64]
 Mask = NDArray[np.bool_]
 
 GAUGES = ("none", "first_pose", "similarity", "auto", "scale", "partial")
-"""The gauges, in the order of their integer codes. ``"partial"`` is reported only, by
-``"auto"`` for a remainder none of the others names; :class:`BAOptions` accepts the rest."""
+"""The gauges, in the order of their integer codes (append only)."""
+
+REPORTED_ONLY = frozenset({"partial"})
+"""Gauges ``"auto"`` reports but no caller may request: ``"partial"`` names a remainder the
+other gauges do not describe."""
+
+REQUESTABLE_GAUGES = tuple(g for g in GAUGES if g not in REPORTED_ONLY)
+"""The gauges :class:`BAOptions` accepts."""
 
 POSE_DIM = 6
 """A pose's tangent dimension."""
@@ -263,9 +269,10 @@ class BAOptions:
 
     def __post_init__(self) -> None:
         """Reject an unknown gauge, a bad threshold, or a per-block loss set by the caller."""
-        if self.gauge not in GAUGES or self.gauge == "partial":
-            choices = GAUGES[:-1]
-            raise InvalidInputError(f"gauge: expected one of {choices}, got {self.gauge!r}")
+        if self.gauge not in REQUESTABLE_GAUGES:
+            raise InvalidInputError(
+                f"gauge: expected one of {REQUESTABLE_GAUGES}, got {self.gauge!r}"
+            )
         for name in ("min_parallax_deg", "focal_std_ratio"):
             value = getattr(self, name)
             if not (np.isfinite(value) and value >= 0.0):
@@ -281,7 +288,10 @@ class BASummary:
     Attributes
     ----------
     solve : slamlab.foundations.nls.SolveSummary
-        The NLS solve's summary; its costs are the full robust cost.
+        The NLS solve's summary; its costs are the full robust cost of the blocks that take
+        part. Priors on poses that never move are constant and left out, so the same problem
+        under two gauges (or with a pose fixed or not) can report different costs: compare
+        costs under one gauge only.
     gauge : str
         The gauge applied; for ``"auto"``, what it found free (``"partial"`` for a part of
         the similarity none of the other names describes).
@@ -290,6 +300,9 @@ class BASummary:
     confined_pose : int
         The first pose whose step was confined to remove the rest of the gauge, or -1.
         (Removing translation and scale, with rotation pinned, confines two.)
+    free_gauge : int
+        Gauge directions no free pose could take, left in the problem: 0 unless the
+        geometry is degenerate (say, every free pose at the centre of a free scale).
     dropped_points : int
         Free points dropped as degenerate (too few views or too little parallax).
     dropped_observations : int
@@ -309,6 +322,7 @@ class BASummary:
     gauge: str
     gauge_pose: int
     confined_pose: int
+    free_gauge: int
     dropped_points: int
     dropped_observations: int
     unobserved_poses: int
@@ -321,6 +335,7 @@ class BASummary:
 COUNT_NAMES = (
     "gauge_pose",
     "confined_pose",
+    "free_gauge",
     "dropped_points",
     "dropped_observations",
     "unobserved_poses",
