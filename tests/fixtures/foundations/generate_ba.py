@@ -251,6 +251,21 @@ def _explicit_none() -> tuple[ba.BAProblem, dict[str, Any]]:
     return replace(problem, fixed_poses=fixed), {"gauge": "none"}
 
 
+def _far_prior() -> tuple[ba.BAProblem, dict[str, Any]]:
+    """Give one camera a full prior 1.2 rad and 0.6 m from its truth: Jr⁻¹ far from I.
+
+    The prior is the only anchor, so the whole scene turns 1.2 rad to meet it (39 steps).
+    """
+    problem, poses, _ = _scene("pinhole", seed=15)
+    axis = np.array([0.666, -0.5, 0.5]) / np.linalg.norm([0.666, -0.5, 0.5])
+    offset = np.zeros((CAMERAS, 6))
+    offset[2] = [0.5, -0.3, 0.2, *(1.2 * axis)]
+    weights = np.zeros((CAMERAS, 2))
+    weights[2] = 1e4
+    prior = se3.compose(poses, se3.exp(offset))
+    return replace(problem, pose_prior=prior, pose_prior_weights=weights), {}
+
+
 CASES = {
     "similarity: auto gauge with nothing anchored": _similarity,
     "first_pose: metric depth priors pin the scale": _first_pose,
@@ -266,6 +281,7 @@ CASES = {
     "explicit first_pose": _explicit_first_pose,
     "explicit scale about a full prior": _explicit_scale,
     "explicit none with two fixed poses": _explicit_none,
+    "a pose prior 1.2 rad from the truth": _far_prior,
 }
 
 

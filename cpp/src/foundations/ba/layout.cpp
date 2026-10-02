@@ -192,6 +192,10 @@ Result<GaugeChoice> fix_gauge(const Problem& problem, const Mask& observed, bool
   for (const Index c : out.plan.confined) {
     out.pose_free[static_cast<std::size_t>(c)] = false;
   }
+  if (gauge == Gauge::kNone || gauge == Gauge::kFirstPose) {
+    // Fixed recipes: whatever they leave of the gauge stays in the problem, and is counted.
+    out.plan.free = remaining(*anchors, centres).cols();
+  }
   out.anchors = std::move(*anchors);
   return out;
 }

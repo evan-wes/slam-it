@@ -141,19 +141,20 @@ def _fix_gauge(
     pose_free = ~problem.fixed_poses & observed
     candidates = np.flatnonzero(pose_free)
     anchors = _anchors(problem, observed, fixed_points_used, metric_depth, gauge)
-    if gauge == "none":
-        return _Gauge(gauge, pose_free, anchors, NO_PLAN)
-    if gauge == "first_pose":
-        if np.any(problem.fixed_poses & observed) or candidates.size == 0:
-            return _Gauge(gauge, pose_free, anchors, NO_PLAN)
-        first = int(candidates[0])
+    centres = problem.poses[:, :3, 3]
+    if gauge in {"none", "first_pose"}:
+        # Fixed recipes: whatever they leave of the gauge stays in the problem, and is counted.
+        fixed = np.zeros(0, dtype=np.int64)
+        if gauge == "first_pose" and not np.any(problem.fixed_poses & observed) and candidates.size:
+            fixed = candidates[:1]
+            anchors = anchors.with_fixed(int(fixed[0]))
+        free = int(remaining(anchors, centres).shape[1])
         return _Gauge(
             gauge,
-            pose_free & (np.arange(pose_free.size) != first),
-            anchors.with_fixed(first),
-            replace(NO_PLAN, fixed=np.array([first])),
+            pose_free & ~np.isin(np.arange(pose_free.size), fixed),
+            anchors,
+            replace(NO_PLAN, fixed=fixed, free=free),
         )
-    centres = problem.poses[:, :3, 3]
     name = classify(remaining(anchors, centres)) if gauge == "auto" else gauge
     chosen = plan(anchors, centres, candidates)
     for c in chosen.fixed:

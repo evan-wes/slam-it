@@ -157,8 +157,9 @@ struct Summary {
   std::int64_t gauge_pose = -1;
   /// @brief The first pose whose step was confined to remove the rest of the gauge, or -1.
   std::int64_t confined_pose = -1;
-  /// @brief Gauge directions no free pose could take, left in the problem (0 unless the
-  ///        geometry is degenerate).
+  /// @brief Gauge directions left in the problem: under `kAuto`, `kSimilarity` and `kScale`
+  ///        0 unless the geometry is degenerate; under `kNone` and `kFirstPose` whatever they
+  ///        leave (the scale `kFirstPose` leaves on monocular data).
   std::int64_t free_gauge = 0;
   /// @brief Free points dropped as degenerate.
   std::int64_t dropped_points = 0;
@@ -200,6 +201,12 @@ struct Solution {
 /// @param problem The problem.
 /// @return Nothing, or `InvalidInput` naming the offending array.
 [[nodiscard]] Result<void> check_problem(const Problem& problem);
+
+/// @brief The point a solve is centred on: the mean of the camera centres, summed in index
+///        order. The solve shifts the world by its negative and back.
+/// @param problem The problem (checked).
+/// @return The origin.
+[[nodiscard]] Eigen::Vector3d centring_origin(const Problem& problem);
 
 /// @brief Refine a problem's poses, intrinsics and points.
 /// @param problem The problem.

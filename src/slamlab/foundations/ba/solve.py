@@ -142,8 +142,35 @@ def _unobservable_focal(model: str, intrinsics: Array, std: Array, ratio: float)
     return int(np.count_nonzero(np.any(relative > ratio, axis=1)))
 
 
-def _solve_reference(problem: BAProblem, options: BAOptions) -> BAResult:
-    """Run bundle adjustment with the Python reference."""
+def centring_origin(problem: BAProblem) -> Array:
+    """Return the point the solve is centred on: the camera centres' mean, shape (3,).
+
+    Summed in index order (a cumulative sum), so both cores get the same bits.
+    """
+    centres = problem.poses[:, :3, 3]
+    if centres.shape[0] == 0:
+        return np.zeros(3)
+    return np.asarray(np.cumsum(centres, axis=0)[-1] / centres.shape[0], dtype=np.float64)
+
+
+def _centred(problem: BAProblem, origin: Array) -> BAProblem:
+    """Return the problem shifted by ``-origin``: camera centres, points and prior centres.
+
+    Exact for the optimum: every residual is unchanged by a shift of the world. It keeps
+    the solve's own steps well conditioned far from the origin, where a step's rotation
+    about the world origin would swing a camera by about ``|θ|² |C| / 2``.
+    """
+    poses = problem.poses.copy()
+    poses[:, :3, 3] -= origin
+    prior = problem.pose_prior.copy()
+    prior[:, :3, 3] -= origin
+    return replace(problem, poses=poses, points=problem.points - origin, pose_prior=prior)
+
+
+def _solve_reference(original: BAProblem, options: BAOptions) -> BAResult:
+    """Run bundle adjustment with the Python reference, in a world centred on the cameras."""
+    origin = centring_origin(original)
+    problem = _centred(original, origin)
     layout = make_layout(problem, options)
     bundle = Bundle(problem, layout, DenseCholesky())
     block_loss = nls.BlockLoss(
@@ -153,8 +180,13 @@ def _solve_reference(problem: BAProblem, options: BAOptions) -> BAResult:
     solution = nls.solve(bundle, start, replace(options.solver, block_loss=block_loss))
     final = solution.state
     poses = se3.inverse(final.poses)
+    poses[:, :3, 3] += origin
     unmoved = np.all(final.poses == start.poses, axis=(1, 2))
-    poses[unmoved] = problem.poses[unmoved]  # bit-exact, not a round trip through the inverse
+    poses[unmoved] = original.poses[unmoved]  # bit-exact, not a round trip through the inverse
+    points = bundle.world_points(final)
+    still = np.all(points == problem.points, axis=1)  # fixed or dropped
+    points = points + origin
+    points[still] = original.points[still]
     factor = _variance_factor(bundle, final, block_loss)
     scaling = factor if options.scale_deviations and np.isfinite(factor) else 1.0
     std = _intrinsics_std(bundle, final, block_loss, scaling)
@@ -170,7 +202,7 @@ def _solve_reference(problem: BAProblem, options: BAOptions) -> BAResult:
     return BAResult(
         poses,
         final.intrinsics,
-        bundle.world_points(final),
+        points,
         final.depth_affine,
         final.inverse_depth,
         std,

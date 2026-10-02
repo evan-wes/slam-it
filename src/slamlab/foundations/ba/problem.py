@@ -301,8 +301,10 @@ class BASummary:
         The first pose whose step was confined to remove the rest of the gauge, or -1.
         (Removing translation and scale, with rotation pinned, confines two.)
     free_gauge : int
-        Gauge directions no free pose could take, left in the problem: 0 unless the
-        geometry is degenerate (say, every free pose at the centre of a free scale).
+        Gauge directions left in the problem. Under ``auto``, ``similarity`` and ``scale``:
+        0 unless the geometry is degenerate (say, every free pose at the centre of a free
+        scale). Under ``none`` and ``first_pose``: whatever those recipes leave, such as the
+        scale ``first_pose`` leaves on monocular data -- the damping then holds it.
     dropped_points : int
         Free points dropped as degenerate (too few views or too little parallax).
     dropped_observations : int

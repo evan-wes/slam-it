@@ -868,30 +868,47 @@ def test_translation_priors_on_three_cameras_leave_no_gauge(backend: str) -> Non
 
 
 @pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
-def test_far_from_the_world_origin(backend: str) -> None:
-    """A scene 1e6 m from the origin (geo-referenced) gets the same gauge and deviations.
+@pytest.mark.parametrize("offset", [1e4, 1e6, 6.4e6])
+def test_far_from_the_world_origin(backend: str, offset: float) -> None:
+    """A geo-referenced scene (up to ECEF's 6.4e6 m) solves as it does at the origin.
 
-    The first null-space gauge tested rank in world coordinates and lost the gauge from about
-    5e4 m: σ_f infinite, focal length flagged unobservable.
+    Two fixes made this hold. The gauge's rank tests run in the scene's own frame (in world
+    coordinates the gauge was lost from about 5e4 m). And the solve itself runs in a world
+    centred on the cameras: a step rotates a camera about the world origin, which far away
+    swings it by about ``|θ|² |C| / 2``. Before centring, from a start 0.05 off, the
+    baseline drifted by 0.8 and LM ran to its cap.
     """
     require_backend(backend)
-    scene = _scene(cameras=5, points=60, noise=0.5, seed=1, rotation=0.3)
-    free = replace(scene.problem, fixed_intrinsics=np.array([[False, False, True, True]]))
-    offset = 1e6 * np.array([1.0, 0.3, 0.0])
-    poses = free.poses.copy()
-    poses[:, :3, 3] += offset
-    far = replace(free, poses=poses, points=free.points + offset)
-    near_result, far_result = (
-        ba.solve(p, ba.BAOptions(solver=TIGHT), backend=backend) for p in (free, far)
-    )
-    for result in (near_result, far_result):
-        assert result.summary.free_gauge == 0
+    scene = _scene(cameras=5, points=60, noise=0.5, seed=1, rotation=0.3, perturb=0.05)
+    near = replace(scene.problem, fixed_intrinsics=np.array([[False, False, True, True]]))
+    shift = offset * np.array([1.0, 0.3, 0.0])
+    poses = near.poses.copy()
+    poses[:, :3, 3] += shift
+    far = replace(near, poses=poses, points=near.points + shift)
+    results = [ba.solve(p, ba.BAOptions(solver=TIGHT), backend=backend) for p in (near, far)]
+    near_result, far_result = results
+    assert far_result.summary.free_gauge == 0
     assert (far_result.summary.gauge_pose, far_result.summary.confined_pose) == (
         near_result.summary.gauge_pose,
         near_result.summary.confined_pose,
     )
-    # 1e6 m coordinates cost the problem itself digits, so σ_f agrees to 1%, not to rounding.
-    np.testing.assert_allclose(far_result.intrinsics_std, near_result.intrinsics_std, rtol=1e-2)
+    assert abs(far_result.summary.solve.iterations - near_result.summary.solve.iterations) <= 1
+    np.testing.assert_allclose(
+        far_result.poses[:, :3, 3] - shift, near_result.poses[:, :3, 3], rtol=0, atol=1e-6
+    )
+    np.testing.assert_allclose(far_result.intrinsics_std, near_result.intrinsics_std, rtol=1e-5)
+
+
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize(("gauge", "free"), [("first_pose", 1), ("none", 7), ("auto", 0)])
+def test_free_gauge_counts_what_a_recipe_leaves(backend: str, gauge: str, free: int) -> None:
+    """On monocular data ``first_pose`` leaves the scale and ``none`` all 7 directions.
+
+    The summary says so, rather than reporting a gauge-free problem that is singular.
+    """
+    require_backend(backend)
+    result = ba.solve(_scene().problem, ba.BAOptions(solver=TIGHT, gauge=gauge), backend=backend)
+    assert result.summary.free_gauge == free
 
 
 @pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
