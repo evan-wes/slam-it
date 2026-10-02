@@ -36,6 +36,13 @@ suggest starting a session inside slamlab. Consequences:
 | C++ (`cpp/`, module `slamlab._cpp`) | Performance core: rung 0, edge rung, edge budgets |
 | Rust (`rust/`, module `slamlab_rs`) | Rung 0 and the edge VO only |
 
+## Conventions
+
+Frames (`T_a_b`; solvers use `T_cam_world`), right perturbations, `(ρ, θ)` tangent order,
+xyzw Hamilton quaternions, the array encoding of every geometric type, pixel centres, Eigen
+storage and plain Cholesky are fixed in the design doc's "Conventions" section. Read it
+before writing geometry code or a binding.
+
 ## Layout: one package per rung, mirrored in every language
 
 - Python: `slamlab.foundations` (rung 0), `.edge`, `.vi`, `.classic`, `.dense`, `.learned`,
@@ -86,11 +93,19 @@ hints), mypy --strict, import-linter, clang-format, clang-tidy, doxygen (every d
 documented), rustfmt, clippy (pedantic, missing docs), jscpd (duplication), and the C++,
 Rust and Python test suites. CI runs the same script.
 
+**PRs are slices, not steps.** A PR makes meaningful progress toward a stated goal: a slice
+of a milestone (e.g. milestone 1's "BA spine"). The individual steps are semantic commits
+inside it (`feat(foundations): ...`, `test(...)`, `docs(notes): ...`), each with layer 1
+green. Prefer few, substantial PRs over many small ones.
+
 **Layer 2, the review panel (`/slamlab-review-panel`):**
-- **When:** on PATCH-or-larger changes: new algorithms, modules, rungs or milestones, a new
-  language implementation, interface or boundary changes. Not on MICRO changes (fixes, docs,
-  CI). A smaller change that touches one area can run that reviewer alone:
-  `/slamlab-review-panel algorithm | architecture | hygiene`.
+- **When:** once per PR, on the finished slice, against the PR's stated goal. Never after
+  every incremental change: reviewing each step lets each run's findings steer the next step,
+  and the work drifts. Not on MICRO PRs (fixes, docs, CI). A small PR that touches one area
+  can run that reviewer alone: `/slamlab-review-panel algorithm | architecture | hygiene`.
+- **Findings outside the PR's goal go to a backlog by default**, not into the PR.
+- **Stop rule for a component:** it is done when its oracle and property tests pass within
+  the stated tolerance, its named hard cases pass, and its consumer works.
 - **Say which applies** when proposing a PR: full panel, one reviewer, or layer 1 only. The
   user may override either way.
 - **Reviewers:** `slamlab-hygiene-reviewer` (sonnet), `slamlab-architecture-reviewer` (opus),
@@ -99,7 +114,8 @@ Rust and Python test suites. CI runs the same script.
 - **Reports are saved** to `docs/reviews/` and committed with the PR.
 - **Findings are decided together.** Present each finding with a recommended action (fix,
   defer, waive, dispute); the user decides; only then apply and record it. Every must-fix
-  needs an explicit decision. Never act on findings unilaterally.
+  needs an individual, explicit decision; should-fix findings and notes may be decided in
+  bulk. Never act on findings unilaterally.
 
 ## Git and PRs
 

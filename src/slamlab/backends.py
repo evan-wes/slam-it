@@ -15,10 +15,19 @@ and it sits below every algorithm package in the dependency layers.
 from __future__ import annotations
 
 import importlib
+from collections.abc import Callable
 from types import ModuleType
+from typing import Any, cast
 
 BACKENDS: tuple[str, ...] = ("python", "cpp", "rust")
 """Every backend name, the Python reference first."""
+
+LOCKSTEP_BACKENDS: frozenset[str] = frozenset({"python", "cpp"})
+"""Backends that implement every function of every compiled module.
+
+C++ is built in lock-step with the Python reference. Rust implements a curated subset
+(design doc, "Languages") and never gates a merge, so a Rust module may lack functions.
+"""
 
 _EXTENSIONS: dict[str, str] = {"cpp": "slamlab._cpp", "rust": "slamlab_rs"}
 _PACKAGE_PREFIX = "slamlab."
@@ -136,3 +145,36 @@ def implementation(backend: str, module_name: str) -> ModuleType:
     if not isinstance(found, ModuleType):
         raise NotImplementedError(f"backend {backend!r} does not implement {module_name}")
     return found
+
+
+def function(backend: str, module_name: str, name: str) -> Callable[..., Any]:
+    """Return one function of a compiled backend's implementation of a slamlab module.
+
+    Parameters
+    ----------
+    backend : {"cpp", "rust"}
+        The compiled backend.
+    module_name : str
+        The Python module whose implementation is wanted, as its ``__name__``.
+    name : str
+        The function's name, as in the module's ``Implementation`` Protocol.
+
+    Returns
+    -------
+    callable
+        The compiled function.
+
+    Raises
+    ------
+    ValueError
+        If `backend` is unknown or ``"python"``, or `module_name` is not a slamlab module.
+    BackendNotBuiltError
+        If the backend's extension is not installed.
+    NotImplementedError
+        If the backend does not implement `module_name`, or implements it without `name`
+        (Rust implements a curated subset).
+    """
+    found = getattr(implementation(backend, module_name), name, None)
+    if found is None or isinstance(found, ModuleType) or not callable(found):
+        raise NotImplementedError(f"backend {backend!r} does not implement {module_name}.{name}")
+    return cast("Callable[..., Any]", found)

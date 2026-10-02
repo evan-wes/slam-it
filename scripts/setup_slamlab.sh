@@ -6,7 +6,7 @@ set -euo pipefail
 # Two layers, as in reifyscene's setup:
 # - conda layer (conda-forge): Python and the native toolchain -- cmake, ninja, a C++
 #   compiler, Rust (cargo/rustc) -- plus the layer-1 check tools: clang-format/clang-tidy
-#   (with clang's own headers), doxygen, and Node.js for jscpd. Nothing is installed
+#   (with clang's own headers), Eigen, doxygen, and Node.js for jscpd. Nothing is installed
 #   system-wide; removing the env removes the toolchain.
 # - pip layer: build backends and Python dependencies, installed from
 #   scripts/locks/slamlab.lock by default (pass --unlocked to re-resolve).
@@ -25,6 +25,7 @@ PYTHON_VERSION="3.11"   # matches reifyscene's env, which also imports slamlab
 UNLOCKED=0
 CLANG_VERSION="23.1.2"
 JSCPD_VERSION="5.4.0"
+EIGEN_VERSION="5.0.1"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -46,8 +47,9 @@ if [[ ! -x "${CONDA_BIN}" ]]; then
 fi
 
 # clang and clang-tools pinned together: clang-tidy needs clang's resource headers.
+# Eigen is the C++ cores' linear algebra (header-only; found by CMake as Eigen3::Eigen).
 CONDA_PACKAGES=(cmake ninja cxx-compiler rust "clang-tools=${CLANG_VERSION}" "clang=${CLANG_VERSION}"
-  doxygen nodejs)
+  "eigen=${EIGEN_VERSION}" doxygen nodejs)
 
 # --- conda layer ---------------------------------------------------------------
 if "${CONDA_BIN}" env list | awk '{print $1}' | grep -qx "${ENV_NAME}"; then

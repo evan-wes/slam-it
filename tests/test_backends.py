@@ -186,10 +186,12 @@ def _public_callables(module: ModuleType) -> set[str]:
 def test_every_compiled_module_matches_its_protocol(name: str) -> None:
     """Every compiled submodule mirrors a slamlab module and matches its Implementation.
 
-    For each submodule of the extension that holds functions: the slamlab module at the
-    same path must exist and define an ``Implementation`` Protocol; the submodule must
-    provide exactly the Protocol's functions, each with the Protocol's parameter names.
-    This is the check that keeps bindings and their Python contract from drifting.
+    For each submodule of the extension that holds functions, the slamlab module at the same
+    path must exist and define an ``Implementation`` Protocol; every compiled function must
+    be a Protocol member with the Protocol's parameter names. A lock-step backend (C++)
+    must provide every member of every Protocol it implements a module for; Rust implements
+    a curated subset, so it may provide fewer. This keeps bindings and their Python contract
+    from drifting.
     """
     root_name = _EXTENSION_ROOTS[require_backend(name)]
     extension = importlib.import_module(root_name)
@@ -212,8 +214,11 @@ def test_every_compiled_module_matches_its_protocol(name: str) -> None:
         protocol = getattr(python_module, "Implementation", None)
         assert protocol is not None, f"slamlab.{path} has no Implementation Protocol"
         members = {m for m in vars(protocol) if not m.startswith("_")}
-        assert _public_callables(compiled) == members, f"{name}:{path} functions differ"
-        for member in members:
+        provided = _public_callables(compiled)
+        assert provided <= members, f"{name}:{path} has functions outside the Protocol"
+        if name in backends.LOCKSTEP_BACKENDS:
+            assert provided == members, f"{name}:{path} lacks {sorted(members - provided)}"
+        for member in provided:
             expected = [
                 p for p in inspect.signature(getattr(protocol, member)).parameters if p != "self"
             ]

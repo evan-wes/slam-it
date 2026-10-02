@@ -129,6 +129,78 @@ and a possible later phone target.
     entry point builds the dataclass, and there are no binding-side classes. This extends
     the numpy-array rule to scalars, and the summary fields go into the parity fixtures.
 
+## Conventions
+
+These are fixed in milestone 1, before any geometry code. They are the ones every binding
+and fixture bakes in.
+
+**Frames and transforms.**
+- `T_a_b` maps coordinates in frame b to frame a: `p_a = T_a_b p_b`.
+- Inside a solver, a camera pose is the world-to-camera `T_cam_world`, as in ORB-SLAM and
+  DROID.
+- Results returned to callers are camera-to-world `T_world_cam`, as in `SlamResult`.
+
+**Lie groups.**
+- **Perturbations are right (local):** `X ⊕ δ = X · Exp(δ)`, as in Solà et al. and GTSAM's
+  manifold updates. Jacobians copied from Barfoot (left-perturbed) need converting with the
+  adjoint.
+- **Tangent order is translation first:** `(ρ, θ)` for SE(3), and `(ρ, θ, σ)` for Sim(3) when
+  it arrives. This matches manif and Sophus. GTSAM's `Pose3` tangent is rotation first, so
+  Jacobians compared against it appear block-swapped.
+- **Quaternions are Hamilton, stored `(x, y, z, w)`,** like Eigen's `coeffs()` and SciPy. Note
+  that Eigen's constructor `Quaterniond(w, x, y, z)` takes w first, so code and fixtures
+  always build from xyzw arrays. `q` and `-q` are the same rotation, and parity checks compare
+  them as equal.
+- **`log` returns angles in [0, pi].** At exactly pi the axis is ambiguous up to sign.
+- **`log` rejects input that is not a rotation** (beyond a tolerance shared by all three
+  languages) with `InvalidInput`. `project_to_so3` repairs it explicitly, through an SVD.
+
+**Array encodings at the boundary** (float64, C-contiguous, row-major):
+
+| Quantity | Shape |
+|---|---|
+| 3-vector, tangent of SO(3) | `(..., 3)` |
+| Rotation matrix | `(..., 3, 3)` |
+| Quaternion | `(..., 4)`, xyzw |
+| SE(3) pose | `(..., 4, 4)` homogeneous; last row checked to be `[0, 0, 0, 1]` |
+| SE(3) tangent | `(..., 6)`, `(ρ, θ)` |
+| Pinhole intrinsics | `(4,)`, `[fx, fy, cx, cy]` |
+| Radial-tangential intrinsics | `(9,)`, `[fx, fy, cx, cy, k1, k2, p1, p2, k3]` |
+| Pixels | `(..., 2)` |
+| Bearing vectors | `(..., 3)`, unit norm |
+
+**Pixel coordinates follow OpenCV:** the centre of the top-left pixel is `(0, 0)`. COLMAP's
+convention (`(0.5, 0.5)`) is converted by the COLMAP reader. VGGT's principal point is checked
+against this convention when its cameras are imported.
+
+**C++ storage.** The cores use Eigen. Fixed-size Eigen types (`Eigen::Matrix3d`, `Vector3d`,
+…) may appear in core headers. The bindings map numpy's row-major buffers with
+`Eigen::Map<…, Eigen::RowMajor>`. Matrices are factorised with plain Cholesky (`Eigen::LLT`;
+nalgebra's `Cholesky`; numpy's `cholesky`) in all three languages. A failed factorisation
+inside a damped solver means "reject the step and raise the damping", not an error.
+
+**Structured problems cross as structs of arrays.** A BA problem, for example, crosses as:
+- float64 values;
+- `int64` index arrays (`cam_idx`, `pt_idx`);
+- bool masks (fixed variables);
+- options as scalars, with integer codes for enums.
+
+The cores check index bounds and sizes and return `InvalidInput`, even though the Python
+entry point validates too. Standalone C++ and Rust callers get the same protection, and both
+languages fail the same way.
+
+**Generic in the core, concrete in the bindings.**
+- Generic algorithms (the least-squares solver, RANSAC) are templates in C++ and traits in
+  Rust, and generic over a Protocol in Python.
+- The bindings expose only concrete instances (`bundle_adjust`, `essential_ransac`, …), so
+  no compiled hot loop calls back into Python.
+- A generic module with no concrete binding of its own (e.g. `slamlab.foundations.nls`) is
+  tested natively in each core, and in parity through the concrete problems that use it.
+
+**Languages per module.** Python and C++ are lock-step: C++ implements every function in a
+compiled module's `Implementation` Protocol. Rust implements a curated subset and never gates
+a merge. The tests enforce both rules.
+
 ## Package layout
 
 **One package per rung,** mirrored in every language, so a module's place in the ladder is
@@ -405,9 +477,12 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
     The above-pi case compares rotations, or the wrapped vector, not the raw input. Before
     writing the non-orthonormal-input case, decide whether `log` rejects it
     (`InvalidInput`) or projects it to the nearest rotation (SVD).
+- **Milestone 3's inputs, to settle before its adapter is written:**
+  - Where its correspondences come from: VGGT's tracks, or reifyscene's tracks
+    (VGGSfM/CoTracker) via the dumped BA problem.
+  - Which depth prior: VGGT's depth or a monocular model, metric or relative. This sets
+    whether BA's per-frame scale/shift is free.
 - **GPU and budget test runs:** their opt-in scripts and the light edge environment arrive
   with the first PyTorch rung (milestone 5) and the budget harness (milestone 7).
-- **Linear algebra in rung 0:** write our own small matrix types, or use Eigen (C++) and
-  nalgebra (Rust). This is a learning choice, made at the start of milestone 1.
 - **reifyscene's env** needs slamlab's build tools (cmake, compiler, Rust) when the adapter lands
   at milestone 3.

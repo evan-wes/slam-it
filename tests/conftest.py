@@ -49,6 +49,39 @@ def require_backend(name: str) -> str:
     return name
 
 
+def require_function(name: str, module_name: str, function: str) -> str:
+    """Return backend `name` if it implements `function`; otherwise skip or fail.
+
+    A lock-step backend (Python, C++) missing a function fails the test. Rust implements a
+    curated subset, so a Rust function that does not exist skips the test instead.
+
+    Parameters
+    ----------
+    name : str
+        The backend the test needs.
+    module_name : str
+        The slamlab module, as its ``__name__``.
+    function : str
+        The function the test calls.
+
+    Returns
+    -------
+    str
+        `name`, for use as the test's ``backend=`` argument.
+    """
+    require_backend(name)
+    if name == "python":
+        return name
+    try:
+        backends.function(name, module_name, function)
+    except NotImplementedError:
+        message = f"{name} does not implement {module_name}.{function}"
+        if name in backends.LOCKSTEP_BACKENDS:
+            pytest.fail(f"{message}, but {name} is a lock-step backend")
+        pytest.skip(f"{message} (curated subset)")
+    return name
+
+
 def load_fixture(relative: str) -> dict[str, Any]:
     """Load a JSON parity fixture.
 

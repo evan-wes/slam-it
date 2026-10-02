@@ -105,6 +105,22 @@ layers = [
   "backends",
 ]
 
+# The order of modules inside rung 0. Parenthesised layers are optional: they are the modules
+# milestone 1 adds, so the contract covers each as it lands.
+[[tool.importlinter.contracts]]
+name = "Rung 0's internal order"
+type = "layers"
+containers = ["slamlab.foundations"]
+layers = [
+  "(ba)",
+  "(camera) | (nls)",
+  "(alignment)",
+  "(se3)",
+  "so3",
+  "arrays",
+  "errors",
+]
+
 [[tool.importlinter.contracts]]
 name = "Visual-inertial builds on the edge rung only, not dense or classic"
 type = "forbidden"
