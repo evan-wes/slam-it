@@ -492,6 +492,17 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
   - **A per-block step tolerance (L6).** NLS's absolute step tolerance never fires on BA's
     mixed scales (radians, pixels of focal length, metres). Replace it with a relative,
     per-block test.
+  - **Facade edge cases in the layer check (A24, run 3).** `check_layers.py` merges a
+    package's public header and its implementation into one node, so the header's own
+    includes are checked as the implementation's; a facade with no `_CPP_FACADES` entry is
+    exempt. Key facades by file kind, and fail on an unmapped one, when the next package gets
+    a facade.
+  - **The gauge in rung 0's own right (A26, run 3).** `ba/gauge` depends only on poses and
+    points. When pose-graph optimisation (the classic rung's loop closure) needs the same
+    null-space removal, lift it to `foundations.gauge` rather than importing it from `ba`.
+  - **One mechanism for enum names (A27, run 3).** `Termination`'s names come from the core
+    (`nls::name`), the other crossing enums' from the bindings' tables. Pick one when Rust
+    gains these enums.
   - **Triggs' robust-loss correction (L7).** NLS uses plain IRLS, which drops `ρ''`. The
     Triggs correction restores it, and converges faster on outliers. For milestone 3, whose
     data has outliers.

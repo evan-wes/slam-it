@@ -156,10 +156,21 @@ the pose and that camera's affine `(s_c, t_c)`:
 - **Its own loss.** `BAOptions.depth_loss` (typically Huber or Cauchy) applies to these blocks
   only, so a network's failures on sky or reflections don't drag the cameras.
 
-**Pose priors.** A camera can carry a prior pose `T̄`, from odometry, a previous solve or
-GNSS. Its residual is `W log(T̄_cam_world⁻¹ T_cam_world)`, with separate translation and
-rotation informations. It is a 6-row block on that pose alone, with the Jacobian
-`W Jr⁻¹(e)` (right perturbation). Its loss is plain least squares.
+**Pose priors.** A camera can carry a prior pose `T̄_world_cam`, from odometry, a previous
+solve or GNSS. Its residual is decoupled: `(C - C̄, log(R̄_wcᵀ R_wc))`, the camera centre's
+offset and the world orientation's, with separate translation and rotation informations. It
+is a 6-row block on that pose alone. Under a right perturbation `T_cw exp(δ)`,
+`δ = (ρ, θ)`, the centre moves by `-ρ + [C]× θ` and the rotation error by
+`-Jr⁻¹(e_r) R_cw θ`. Its loss is plain least squares.
+- **Why decoupled.** A GNSS fix gives a centre and no attitude. The translation half must
+  then pin the centre whatever rotation the prior stores. The first version used
+  `log(T̄_cw⁻¹ T_cw)`, whose translation half is `R̄ᵀ(t - t̄)`, with `t = -R C`. That compares
+  world-to-camera translations through the stored rotation:
+  - it is blind to a rotation of the world about the origin, which moves the centre but not
+    `t`, so the gauge was left with a free direction (σ_f infinite);
+  - a prior stored with identity rotation pulled the centres 0.1-0.8 m off.
+
+  The decoupled form is what GTSAM's GPS factor uses for the position.
 
 **The Schur system with three kinds of block.** Every block contributes
 `J_cᵀ W J_c` to the camera side. Blocks that see a point (reprojection, depth) also
@@ -185,6 +196,15 @@ directions. Each contributes rows of the derivative of what it pins with respect
 Positions on free poses are read at the current state. A prior on a pose nothing observes
 pins nothing the scene can feel, so it does not count. The **remaining gauge** is the null
 space N of these rows: anything from nothing (`none`) to all 7.
+
+**In the scene's own frame.** `g` acts about the world origin. Far from it, the rotation and
+scale directions shrink like `1/|X|`, so a rank test in world coordinates fails for
+geo-referenced scenes (UTM, ECEF, a COLMAP model aligned to GNSS). The first version lost
+the whole gauge from about 5e4 m: no pose fixed, σ_f infinite. The rows are therefore built
+in coordinates centred on the observed cameras and anchor points and scaled by their RMS
+spread. A change of origin and unit is an invertible map of `g`, so the spans, and the
+gauge, are the same. A scene 1e6 m out now gets the same gauge pose, confined pose and σ_f
+(to 1%, which is what 1e6 m coordinates leave of the problem's own digits).
 
 **Removing N, pose by pose.** At pose c, N moves the camera's world centre and orientation
 by `M = [[I, -[C]×, C], [0, I, 0]] N`. A step moves them by `J_c δ`, where
@@ -224,8 +244,9 @@ orientation still along the gauge directions.
 - **`first_pose`** fixes the first observed pose unless one is fixed.
 - **`none`** fixes nothing.
 
-The summary records the fixed pose (`gauge_pose`) and the first confined one
-(`confined_pose`).
+The summary records the fixed pose (`gauge_pose`), the first confined one (`confined_pose`),
+and any directions no free pose could take (`free_gauge`). The last is 0 unless the
+geometry is degenerate, for example the only free pose at the centre of a free scale.
 
 The rule took three tries, each caught by the review panel.
 1. "Any pose prior → `none`, metric depth → `first_pose`, else `similarity`". This froze a
@@ -236,7 +257,12 @@ The rule took three tries, each caught by the review panel.
    noise-free data the cost stayed at 5 to 29 where `none` reached 1e-21. A prior on an
    unobserved camera also counted as the rigid anchor.
 3. The null space, as above. The four partial cases now reach the noise-free optimum in
-   both cores, and the fixture holds two of them.
+   both cores, and the fixture holds two of them. Run 3 then found two flaws underneath:
+   - the translation prior's residual did not pin the centre the rows assumed (see
+     Priors);
+   - the rank test was in world coordinates, so it failed far from the origin.
+
+   Both are fixed, with tests in both cores.
 
 ## Degenerate data
 
@@ -464,16 +490,28 @@ milestone 4's hundreds to thousands, the options behind `ReducedSystemSolver` ar
     without it.
   - An explicit `scale` gauge with no reference is rejected by both cores.
   - The options reject `partial`, which is reported only.
+  - Translation priors whose stored rotation is identity give the same solution as with the
+    true rotation. Three of them leave no gauge, and σ_f is finite.
+  - A scene 1e6 m from the origin gets the same gauge pose, confined pose and σ_f (to 1%).
+  - Unit tests of the gauge in both cores:
+    - the remaining dimension and name for each kind of anchor;
+    - the complement's orthonormality;
+    - the plan's choices, including a direction no pose can take (counted in `free_gauge`)
+      and a 1e6 m offset.
 - **Degeneracy.** A single-view point, a point 10⁷ away and an unobserved camera are
   dropped or held, counted, and returned unchanged.
-- **Parity.** A committed fixture, `tests/fixtures/foundations/ba.json`, holds eleven solves
-  by the reference (`generate_ba.py`): each gauge, two partial ones (attitude priors, which
-  confine two poses; translation priors on two cameras), Gauss-Newton, Huber with outliers,
-  degenerate drops, radial with f, k1, k2 free, and a scene with every kind of block. Each
-  case records every option it ran with. Each
-  backend must reproduce its outputs under per-field tolerances (poses to 1e-9, points to
-  1e-8, intrinsics to 1e-8 relative, deviations to 1e-6 relative) and its termination,
-  iterations, gauge and counts exactly. There is no closed-form optimum to oracle against,
+- **Parity.** A committed fixture, `tests/fixtures/foundations/ba.json`, holds fourteen
+  solves by the reference (`generate_ba.py`):
+  - each gauge `auto` resolves to;
+  - each explicit recipe (`first_pose`, `scale`, `none`);
+  - two partial cases: attitude priors, which confine two poses, and GNSS-style translation
+    priors on two cameras, stored with identity rotation;
+  - Gauss-Newton, Huber with outliers, degenerate drops, radial with f, k1, k2 free, and a
+    scene with every kind of block.
+
+  Each case records every option it ran with. Each backend must reproduce its outputs under
+  per-field tolerances (poses to 1e-9, points to 1e-8, intrinsics to 1e-8 relative,
+  deviations to 1e-6 relative) and its termination, iterations, gauge and counts exactly. There is no closed-form optimum to oracle against,
   so the fixture pins the reference, whose correctness the other checks here establish.
   A live test also compares C++ against the reference with radtan, two intrinsics groups
   and a Cauchy loss. On the smoke scene they agree to 1e-15.
@@ -549,13 +587,18 @@ milestone 4's hundreds to thousands, the options behind `ReducedSystemSolver` ar
 - **Fixed means bit-exact.** The first version returned fixed poses 1 ulp off, from the
   round trip `T_world_cam → T_cam_world → T_world_cam`. Unmoved poses are now returned
   as given, in both cores.
-- **Stiff translation priors converge slowly under any gauge.** With translation-only
-  priors on two cameras at weight 1e2 to 1e4, LM takes 40 to 100 iterations, or runs to
-  the cap. That held with no gauge at all, so it is the problem, not the gauge. In that crawl
-  rounding grows: the cores ended 1e-3 apart. At weight 1 both converge in 15 iterations and
-  agree to 4e-11, and that is the case the fixture holds. Priors that stiff call for a
-  better conditioned solve (the backlog's per-block step test and Triggs' correction are a
-  start).
+- **A slow crawl can be a residual's fault, not the problem's.** With translation-only
+  priors at weight 1e2 to 1e4, LM took 40 to 100 iterations, or ran to the cap, with no gauge
+  as well. I first wrote that down as a property of the geometry. The reviewer suspected the
+  residual, and was right. Its translation half pinned the rotation about the world origin
+  only at second order: a near-null direction, which is exactly what makes LM crawl and
+  makes rounding grow between the cores (they ended 1e-3 apart). With the decoupled residual
+  the same problems converge in 10 iterations at every weight, and the cores agree to
+  3e-15.
+- **A fixture's tolerance must leave the cores room to stop together.** At a cost tolerance
+  of 1e-12, a cost creeping down by about that much per step let last-bit rounding decide
+  which step crosses it. On one case Python stopped after 9 iterations and C++ after 12, at
+  the same optimum. The fixture solves to 1e-10.
 - **σ_f on a weakly conditioned scene moves with rounding order.** On lab-coat, one
   algorithm gave σ_f = 3.41 and 3.53 px before and after the Schur speedup changed the
   summation order. Later 2.32 and 2.29 px after scaling, with identical results otherwise.

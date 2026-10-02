@@ -27,17 +27,19 @@ throughout, each component with a design note in `docs/notes/`.
     parameter) and points, with the points eliminated by the Schur complement behind a
     `ReducedSystemSolver` seam;
   - points as XYZ or anchored inverse depths;
-  - depth priors through per-camera affines (metric or relative), and pose priors;
+  - depth priors through per-camera affines (metric or relative), and pose priors with
+    decoupled centre and orientation halves (a GNSS-style centre-only prior works);
   - the gauge removed exactly: the null space of what fixed poses, fixed points, pose
     priors and metric depth pin, removed by fixing or confining as few poses as it takes
-    (partial anchoring such as two control points or attitude priors included);
+    (partial anchoring such as two control points or attitude priors included), in the
+    scene's own frame, so geo-referenced coordinates work;
   - degenerate data dropped and counted, and constant prior blocks left out;
   - marginal deviations of free intrinsics, scaled by the a-posteriori variance factor
     (reported; IRLS-weighted, so outliers do not inflate it), with unobservable focal
     lengths flagged;
-  - a parity fixture of eleven reference solves (every gauge, partial ones included,
-    Gauss-Newton, robust losses, degeneracy, radial, priors, anchors) that the C++ core
-    reproduces.
+  - a parity fixture of fourteen reference solves (every gauge `auto` resolves to, every
+    explicit recipe, partial ones, Gauss-Newton, robust losses, degeneracy, radial, priors,
+    anchors) that the C++ core reproduces.
 - **Readers** (`slamlab.eval.readers`): BAL (plain or bz2) and COLMAP's text model.
 - **`slamlab.eval`**: COLMAP's Ceres bundle adjuster as a reference, and reprojection
   metrics.
