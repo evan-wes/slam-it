@@ -69,20 +69,20 @@ def test_essential_is_t_cross_r() -> None:
     assert min(np.abs(found - truth).max(), np.abs(found + truth).max()) < 1e-13
 
 
-@pytest.mark.parametrize("function", ["essential_ransac", "fundamental_ransac"])
-def test_ransac_backends_agree_run_for_run(function: str) -> None:
-    """Same seed, same samples: every backend stops on the same iteration, same inliers."""
+def test_fundamental_ransac_backends_agree_run_for_run() -> None:
+    """Same seed, same samples: every backend stops on the same iteration, same inliers.
+
+    E-RANSAC's counterpart, for every minimal solver, is
+    ``test_ransac_backends_agree_for_every_solver``.
+    """
     b1, b2 = sc.pairs(sc.scene(150, seed=3), sigma=2e-3, seed=4)
     b2, _ = sc.with_outliers(b2, 0.4, seed=5)
-    if function == "essential_ransac":
-        args: tuple[np.ndarray, np.ndarray] = (b1, b2)
-        options = ransac.Options(threshold=4e-3, seed=9)
-    else:
-        args = (_pixels(b1), _pixels(b2))
-        options = ransac.Options(threshold=2.0, seed=9)
     runs = [
-        getattr(epipolar, function)(
-            *args, options, backend=require_function(b, epipolar.__name__, function)
+        epipolar.fundamental_ransac(
+            _pixels(b1),
+            _pixels(b2),
+            ransac.Options(threshold=2.0, seed=9),
+            backend=require_function(b, epipolar.__name__, "fundamental_ransac"),
         )
         for b in sorted(backends.LOCKSTEP_BACKENDS)
     ]
@@ -242,8 +242,15 @@ def test_ransac_backends_agree_for_every_solver(minimal_solver: str, refine: boo
         for b in sorted(backends.LOCKSTEP_BACKENDS)
     ]
     for other in runs[1:]:
-        assert other.summary.iterations == runs[0].summary.iterations
-        assert other.summary.score == pytest.approx(runs[0].summary.score, rel=1e-12)
+        first, summary = runs[0].summary, other.summary
+        assert summary.iterations == first.iterations
+        assert summary.run.local_optimizations == first.run.local_optimizations
+        assert summary.run.score == pytest.approx(first.run.score, rel=1e-12)
+        assert summary.refined == first.refined
+        assert (summary.refinement is None) == (first.refinement is None) == (not refine)
+        if summary.refinement is not None and first.refinement is not None:
+            assert summary.refinement.iterations == first.refinement.iterations
+            assert summary.refinement.termination == first.refinement.termination
         np.testing.assert_array_equal(other.state.inliers, runs[0].state.inliers)
         assert _essential_error(other.state.model, runs[0].state.model) < 1e-12
 

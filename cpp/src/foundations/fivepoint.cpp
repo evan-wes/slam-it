@@ -379,30 +379,44 @@ std::array<Poly, 3> z_polynomials(const Eigen::Matrix<double, 1, 10>& tail) {
           Poly{tail(9), tail(8), tail(7), tail(6)}};
 }
 
-/// @brief Refine (x, y, z) by Gauss-Newton on the ten cubic constraints (Nistér's order).
+/// @brief The monomials of an order evaluated at (x, y, z), and their derivatives.
+/// @param order The monomial order.
+/// @param xyz The point.
+/// @return The 20 values, and their 20x3 gradient.
+std::pair<Eigen::Matrix<double, 20, 1>, Eigen::Matrix<double, 20, 3>> monomials(
+    const Order& order, const Eigen::Vector3d& xyz) {
+  const auto power = [&xyz](const Monomial& e) {
+    return std::pow(xyz(0), e[0]) * std::pow(xyz(1), e[1]) * std::pow(xyz(2), e[2]);
+  };
+  Eigen::Matrix<double, 20, 1> values;
+  Eigen::Matrix<double, 20, 3> slope = Eigen::Matrix<double, 20, 3>::Zero();
+  for (std::size_t k = 0; k < order.size(); ++k) {
+    const Monomial& e = order.at(k);
+    const auto row = static_cast<Eigen::Index>(k);
+    values(row) = power(e);
+    for (std::size_t v = 0; v < 3; ++v) {
+      if (e.at(v) == 0) {
+        continue;
+      }
+      Monomial lowered = e;
+      lowered.at(v) -= 1;
+      slope(row, static_cast<Eigen::Index>(v)) = e.at(v) * power(lowered);
+    }
+  }
+  return {values, slope};
+}
+
+/// @brief Refine (x, y, z) by Gauss-Newton on the ten cubic constraints, to convergence (see
+///        `_polish` in the Python reference).
 /// @param m The 10x20 constraint matrix.
+/// @param order Its monomial order.
 /// @param xyz The starting point.
 /// @return The polished point.
-Eigen::Vector3d polish(const Eigen::Matrix<double, 10, 20>& m, Eigen::Vector3d xyz) {
-  for (int step = 0; step < kPolishSteps; ++step) {
-    Eigen::Matrix<double, 20, 1> powers;
-    Eigen::Matrix<double, 20, 3> slope = Eigen::Matrix<double, 20, 3>::Zero();
-    for (std::size_t k = 0; k < 20; ++k) {
-      const Monomial& e = kNisterOrder.at(k);
-      const auto row = static_cast<Eigen::Index>(k);
-      powers(row) = std::pow(xyz(0), e[0]) * std::pow(xyz(1), e[1]) * std::pow(xyz(2), e[2]);
-      for (int v = 0; v < 3; ++v) {
-        if (e.at(v) == 0) {
-          continue;
-        }
-        Monomial lowered = e;
-        lowered.at(v) -= 1;
-        slope(row, v) = e.at(v) * std::pow(xyz(0), lowered[0]) * std::pow(xyz(1), lowered[1]) *
-                        std::pow(xyz(2), lowered[2]);
-      }
-    }
-    const Eigen::Matrix<double, 10, 3> jacobian = m * slope;
-    const Eigen::Matrix<double, 10, 1> residual = m * powers;
+Eigen::Vector3d polish(const Eigen::Matrix<double, 10, 20>& m, const Order& order,
+                       Eigen::Vector3d xyz) {
+  Eigen::Matrix<double, 10, 1> residual = m * monomials(order, xyz).first;
+  for (int step = 0; step < kPolishMaxSteps; ++step) {
+    const Eigen::Matrix<double, 10, 3> jacobian = m * monomials(order, xyz).second;
     const Eigen::Vector3d delta =
         Eigen::JacobiSVD<Eigen::Matrix<double, 10, 3>, Eigen::ComputeThinU | Eigen::ComputeThinV>(
             jacobian)
@@ -410,7 +424,16 @@ Eigen::Vector3d polish(const Eigen::Matrix<double, 10, 20>& m, Eigen::Vector3d x
     if (!delta.allFinite()) {
       break;
     }
-    xyz += delta;
+    const Eigen::Vector3d moved = xyz + delta;
+    const Eigen::Matrix<double, 10, 1> moved_residual = m * monomials(order, moved).first;
+    if (!(moved_residual.norm() < residual.norm())) {
+      break;
+    }
+    xyz = moved;
+    residual = moved_residual;
+    if (delta.norm() <= kPolishTolerance * std::max(1.0, xyz.norm())) {
+      break;
+    }
   }
   return xyz;
 }
@@ -489,7 +512,7 @@ std::vector<Eigen::Matrix3d> nister(const Eigen::Ref<const correspondences::Rows
       continue;
     }
     const Eigen::Vector3d xyz =
-        polish(system->constraints, Eigen::Vector3d(v(0) / v(2), v(1) / v(2), root));
+        polish(system->constraints, kNisterOrder, Eigen::Vector3d(v(0) / v(2), v(1) / v(2), root));
     keep(solutions, system->basis, xyz);
   }
   return solutions;
@@ -522,8 +545,10 @@ std::vector<Eigen::Matrix3d> stewenius(const Eigen::Ref<const correspondences::R
         !(std::abs(vector(9)) > 0.0)) {
       continue;
     }
-    const Eigen::Vector3d xyz((vector(6) / vector(9)).real(), (vector(7) / vector(9)).real(),
-                              (vector(8) / vector(9)).real());
+    const Eigen::Vector3d xyz =
+        polish(system->constraints, kGrevlexOrder,
+               Eigen::Vector3d((vector(6) / vector(9)).real(), (vector(7) / vector(9)).real(),
+                               (vector(8) / vector(9)).real()));
     keep(solutions, system->basis, xyz);
   }
   return solutions;
@@ -598,7 +623,15 @@ std::vector<double> real_roots(std::vector<double> poly) {
 std::vector<Eigen::Matrix3d> solve(const Eigen::Ref<const correspondences::Rows3>& bearings1,
                                    const Eigen::Ref<const correspondences::Rows3>& bearings2,
                                    Solver solver) {
-  return solver == Solver::kNister ? nister(bearings1, bearings2) : stewenius(bearings1, bearings2);
+  switch (solver) {
+    case Solver::kNister:
+      return nister(bearings1, bearings2);
+    case Solver::kStewenius:
+      return stewenius(bearings1, bearings2);
+    case Solver::kCount:
+      break;
+  }
+  return {};
 }
 
 Result<std::vector<Eigen::Matrix3d>> essential_5pt(

@@ -75,8 +75,10 @@ REAL_TOLERANCE = 1e-10
 """An action-matrix eigenvalue counts as real when its imaginary part is below this, relative
 to its modulus (at least 1)."""
 
-POLISH_STEPS = 3
-"""Gauss-Newton steps polishing each of Nistér's solutions on the ten cubic constraints."""
+POLISH_MAX_STEPS = 10
+"""At most this many Gauss-Newton steps polish each solution on the ten cubic constraints."""
+POLISH_TOLERANCE = 1e-14
+"""Polishing stops when a step is below this, relative to the solution (at least 1)."""
 
 ROOT_TOLERANCE = 1e-14
 """Bisection stops when a root's bracket is below this, relative to the root (at least 1)."""
@@ -284,24 +286,40 @@ def _z_polynomials(tail: NDArray[np.float64]) -> tuple[NDArray[np.float64], ...]
     )
 
 
-_EXPONENTS = np.array(NISTER_ORDER)
-"""Nistér's monomials as an (20, 3) exponent array."""
+def _residual(
+    constraints: NDArray[np.float64], exponents: NDArray[np.int64], xyz: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    """Evaluate the ten cubic constraints at ``(x, y, z)``."""
+    return np.asarray(constraints @ np.prod(xyz[None, :] ** exponents, axis=1), dtype=np.float64)
 
 
-def _polish(constraints: NDArray[np.float64], xyz: NDArray[np.float64]) -> NDArray[np.float64]:
-    """Refine ``(x, y, z)`` by Gauss-Newton on the ten cubic constraints (Nistér's order)."""
-    for _ in range(POLISH_STEPS):
-        powers = xyz[None, :] ** _EXPONENTS
+def _polish(
+    constraints: NDArray[np.float64], order: tuple[_Monomial, ...], xyz: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    """Refine ``(x, y, z)`` by Gauss-Newton on the ten cubic constraints, to convergence.
+
+    A step is taken only if it lowers the constraints' residual; the polish stops when a step
+    is below :data:`POLISH_TOLERANCE` of the solution, does not help, or after
+    :data:`POLISH_MAX_STEPS`.
+    """
+    exponents = np.array(order)
+    residual = _residual(constraints, exponents, xyz)
+    for _ in range(POLISH_MAX_STEPS):
         derivative = np.zeros((20, 3))
         for k in range(3):
-            lowered = _EXPONENTS.copy()
+            lowered = exponents.copy()
             lowered[:, k] = np.maximum(lowered[:, k] - 1, 0)
-            derivative[:, k] = _EXPONENTS[:, k] * np.prod(xyz[None, :] ** lowered, axis=1)
-        residual = constraints @ np.prod(powers, axis=1)
+            derivative[:, k] = exponents[:, k] * np.prod(xyz[None, :] ** lowered, axis=1)
         step = np.linalg.lstsq(constraints @ derivative, -residual, rcond=None)[0]
         if not np.all(np.isfinite(step)):
             break
-        xyz = xyz + step
+        moved = xyz + step
+        moved_residual = _residual(constraints, exponents, moved)
+        if not np.linalg.norm(moved_residual) < np.linalg.norm(residual):
+            break
+        xyz, residual = moved, moved_residual
+        if np.linalg.norm(step) <= POLISH_TOLERANCE * max(1.0, float(np.linalg.norm(xyz))):
+            break
     return xyz
 
 
@@ -329,7 +347,7 @@ def _nister(bearings1: NDArray[np.float64], bearings2: NDArray[np.float64]) -> l
         v = np.cross(matrix[0], matrix[1])
         if not abs(v[2]) > 0.0:
             continue
-        x, y, z = _polish(constraints, np.array([v[0] / v[2], v[1] / v[2], root]))
+        x, y, z = _polish(constraints, NISTER_ORDER, np.array([v[0] / v[2], v[1] / v[2], root]))
         _keep(solutions, x * basis[0] + y * basis[1] + z * basis[2] + basis[3])
     return solutions
 
@@ -347,7 +365,8 @@ def _stewenius(bearings1: NDArray[np.float64], bearings2: NDArray[np.float64]) -
     basis = _null_space(bearings1, bearings2)
     if basis is None:
         return []
-    reduced = _gauss_jordan(_constraints(basis, GREVLEX_ORDER))
+    constraints = _constraints(basis, GREVLEX_ORDER)
+    reduced = _gauss_jordan(constraints)
     if reduced is None:
         return []
     action = np.zeros((10, 10))
@@ -359,7 +378,7 @@ def _stewenius(bearings1: NDArray[np.float64], bearings2: NDArray[np.float64]) -
     for value, vector in zip(values, vectors.T, strict=True):
         if abs(value.imag) > REAL_TOLERANCE * max(1.0, abs(value)) or not abs(vector[9]) > 0.0:
             continue
-        x, y, z = (vector[6:9] / vector[9]).real
+        x, y, z = _polish(constraints, GREVLEX_ORDER, (vector[6:9] / vector[9]).real)
         _keep(solutions, x * basis[0] + y * basis[1] + z * basis[2] + basis[3])
     return solutions
 
@@ -380,8 +399,17 @@ def solve_reference(
     -------
     list of ndarray of float64, shape (3, 3)
         Every real solution that is essential (none for a degenerate sample).
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If `solver` is unknown.
     """
-    return _nister(bearings1, bearings2) if solver == "nister" else _stewenius(bearings1, bearings2)
+    if solver == "nister":
+        return _nister(bearings1, bearings2)
+    if solver == "stewenius":
+        return _stewenius(bearings1, bearings2)
+    raise InvalidInputError(f"solver: expected one of {SOLVERS}, got {solver!r}")
 
 
 def _reference(b1: NDArray[np.float64], b2: NDArray[np.float64], code: int) -> NDArray[np.float64]:
@@ -394,7 +422,7 @@ def essential_5pt(
     bearings1: ArrayLike,
     bearings2: ArrayLike,
     *,
-    solver: str = "nister",
+    solver: str = "stewenius",
     backend: str = "python",
 ) -> NDArray[np.float64]:
     """Return every essential matrix five bearing pairs allow.
@@ -404,7 +432,7 @@ def essential_5pt(
     bearings1, bearings2 : array_like, shape (5, 3)
         Five unit bearing pairs (any sign of z: the solvers use bearings, not image points).
     solver : {"nister", "stewenius"}, optional
-        Nistér's polynomial and Sturm sequence (default) or Stewénius' action matrix.
+        Stewénius' action matrix (default) or Nistér's polynomial and Sturm sequence.
     backend : {"python", "cpp", "rust"}, optional
         Which implementation computes the result (default: the Python reference).
 

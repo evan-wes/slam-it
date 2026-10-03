@@ -3,9 +3,9 @@
 ///
 /// Mirrors `slamlab.foundations.fivepoint`, whose docstring states the maths: the null space
 /// of five bearing pairs' epipolar equations, Demazure's ten cubic constraints, then either
-/// Nistér's degree-10 polynomial (real roots by Sturm sequences and bisection, each solution
-/// polished by Gauss-Newton on the constraints) or Stewénius' 10x10 action matrix (real
-/// eigenvectors). Every real solution that is essential is returned, scaled to singular values
+/// Nistér's degree-10 polynomial (real roots by Sturm sequences and bisection) or Stewénius'
+/// 10x10 action matrix (real eigenvectors), each solution then polished by Gauss-Newton on the
+/// constraints. Every real solution that is essential is returned, scaled to singular values
 /// (1, 1, 0) (a sample with no baseline gives arbitrary ones, some not essential).
 #pragma once
 
@@ -21,8 +21,10 @@ namespace slamlab::foundations::fivepoint {
 
 /// @brief Correspondences a 5-point solver takes.
 inline constexpr std::uint32_t kSampleSize = 5;
-/// @brief Gauss-Newton steps polishing each of Nistér's solutions.
-inline constexpr int kPolishSteps = 3;
+/// @brief At most this many Gauss-Newton steps polish each solution on the ten cubics.
+inline constexpr int kPolishMaxSteps = 10;
+/// @brief Polishing stops when a step is below this, relative to the solution (at least 1).
+inline constexpr double kPolishTolerance = 1e-14;
 /// @brief An eigenvalue counts as real when its imaginary part is below this, relative to its
 ///        modulus (at least 1).
 inline constexpr double kRealTolerance = 1e-10;

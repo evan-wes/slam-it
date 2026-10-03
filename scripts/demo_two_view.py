@@ -315,7 +315,7 @@ def main() -> None:
     parser.add_argument(
         "--essential-solver",
         choices=epipolar.MINIMAL_SOLVERS,
-        default="nister",
+        default="stewenius",
         help="E-RANSAC's minimal solver",
     )
     parser.add_argument(

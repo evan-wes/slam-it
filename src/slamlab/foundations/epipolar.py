@@ -44,8 +44,8 @@ two_view`.
 
 **RANSAC.** :func:`essential_ransac` and :func:`fundamental_ransac` run the generic LO-MSAC
 loop (:mod:`slamlab.foundations.ransac`). F's minimal and least-squares solver is the 8-point
-algorithm. E's minimal solver is chosen (:data:`MINIMAL_SOLVERS`): Nistér's or Stewénius'
-5-point solver (:mod:`slamlab.foundations.fivepoint`, the default) or the 8-point; its
+algorithm. E's minimal solver is chosen (:data:`MINIMAL_SOLVERS`): Stewénius' (the default) or
+Nistér's 5-point solver (:mod:`slamlab.foundations.fivepoint`), or the 8-point; its
 least-squares refits are always the 8-point.
 
 **The Sampson refinement.** The 8-point refits minimise an algebraic error, so LO-RANSAC stops
@@ -55,14 +55,15 @@ Levenberg-Marquardt (:mod:`slamlab.foundations.nls`) on E's five-dimensional man
 ``E = [t]ₓ R`` with ``R`` updated as ``R exp(δθ)`` and the unit ``t`` moved in its tangent
 plane and renormalised. The Jacobian is analytic, by the chain rule through E. With
 ``refine=True`` (the default), :func:`essential_ransac` refines its consensus and keeps the
-result only if its MSAC cost is lower (:func:`polish_consensus`).
+result only if its MSAC cost is lower; its :class:`EssentialSummary` holds the refinement's
+solve and whether it was kept.
 
 The C++ core (``slamlab/foundations/epipolar.hpp``) implements every function.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Protocol
 
 import numpy as np
@@ -87,7 +88,7 @@ from slamlab.foundations.solve import Solution
 SAMPLE_SIZE = 8
 """Correspondences the 8-point algorithm needs (its minimal sample)."""
 
-MINIMAL_SOLVERS = ("nister", "stewenius", "8pt")
+MINIMAL_SOLVERS = (*fivepoint.SOLVERS, "8pt")
 """E-RANSAC's minimal solvers, in code order: the 5-point solvers of
 :mod:`slamlab.foundations.fivepoint`, or the 8-point algorithm."""
 
@@ -160,7 +161,11 @@ class Implementation(Protocol):
         minimal_solver: int,
         refine: bool,
     ) -> dict[str, Any]:
-        """Run LO-MSAC with a minimal solver (an index into ``MINIMAL_SOLVERS``)."""
+        """Run LO-MSAC with a minimal solver (an index into ``MINIMAL_SOLVERS``), then refine.
+
+        Returns ``model``, ``inliers`` and ``summary`` (see
+        :func:`essential_summary_from_backend`).
+        """
         ...
 
     def fundamental_ransac(
@@ -252,7 +257,9 @@ def sampson(
 
 
 def essential_estimator(
-    bearings1: NDArray[np.float64], bearings2: NDArray[np.float64], minimal_solver: str = "nister"
+    bearings1: NDArray[np.float64],
+    bearings2: NDArray[np.float64],
+    minimal_solver: str = "stewenius",
 ) -> PairEstimator:
     """Return E's RANSAC estimator: a minimal solver, the 8-point refit, the Sampson error.
 
@@ -269,16 +276,13 @@ def essential_estimator(
         The estimator; its least-squares fit is always the normalised 8-point algorithm.
     """
     x1, x2 = normalised_plane(bearings1), normalised_plane(bearings2)
-    if minimal_solver == "8pt":
-        return PairEstimator(
-            (bearings1, bearings2), _essential_8pt, lambda m: sampson(m, x1, x2), SAMPLE_SIZE
-        )
+    eight = minimal_solver == "8pt"
     return PairEstimator(
         (bearings1, bearings2),
         _essential_8pt,
         lambda m: sampson(m, x1, x2),
-        fivepoint.SAMPLE_SIZE,
-        minimal=lambda a, b: fivepoint.solve_reference(a, b, minimal_solver),
+        SAMPLE_SIZE if eight else fivepoint.SAMPLE_SIZE,
+        minimal=None if eight else lambda a, b: fivepoint.solve_reference(a, b, minimal_solver),
     )
 
 
@@ -766,40 +770,136 @@ def refine_essential(
     return Solution(state=np.asarray(raw["essential"], dtype=np.float64), summary=summary)
 
 
-def polish_consensus(
+@dataclass(frozen=True)
+class EssentialSummary:
+    """How E-RANSAC went: the RANSAC run, and the Sampson refinement if it ran.
+
+    Nests its solvers' summaries, as BA's summary nests its least-squares solve, and
+    satisfies :class:`slamlab.foundations.solve.Summary` through the RANSAC run's fields.
+
+    Attributes
+    ----------
+    run : ransac.Summary
+        The RANSAC run; its ``inlier_count`` and ``score`` describe the returned E.
+    refinement : nls.Summary or None
+        The refinement's solve, if it ran (``refine`` on and at least five inliers).
+    refined : bool
+        Whether the refined E was kept: it lowered the MSAC cost.
+    """
+
+    run: ransac.Summary
+    refinement: nls.Summary | None
+    refined: bool
+
+    @property
+    def iterations(self) -> int:
+        """Minimal samples drawn."""
+        return self.run.iterations
+
+    @property
+    def termination(self) -> ransac.Termination:
+        """Why sampling stopped."""
+        return self.run.termination
+
+    @property
+    def converged(self) -> bool:
+        """Whether sampling reached its target confidence."""
+        return self.run.converged
+
+
+def _polish_consensus(
     found: Solution[ransac.Consensus[Matrix3], ransac.Summary],
     bearings: tuple[NDArray[np.float64], NDArray[np.float64]],
     threshold: float,
-) -> Solution[ransac.Consensus[Matrix3], ransac.Summary]:
+) -> Solution[ransac.Consensus[Matrix3], EssentialSummary]:
     """Refine E-RANSAC's model on its inliers, keeping it only if the MSAC cost drops.
+
+    Unchecked: the bearings are validated pairs with positive z, and `found` is E-RANSAC's
+    result on them.
+    """
+    unrefined = EssentialSummary(found.summary, refinement=None, refined=False)
+    inliers = found.state.inliers
+    if np.count_nonzero(inliers) < fivepoint.SAMPLE_SIZE:
+        return Solution(state=found.state, summary=unrefined)
+    b1, b2 = bearings
+    solved = refine_reference(found.state.model, b1[inliers], b2[inliers], threshold)
+    errors = sampson(solved.state, normalised_plane(b1), normalised_plane(b2))
+    score = float(np.sum(np.minimum(errors, threshold**2)))
+    if not score < found.summary.score:
+        return Solution(state=found.state, summary=replace(unrefined, refinement=solved.summary))
+    kept = errors < threshold**2
+    run = replace(found.summary, inlier_count=int(np.count_nonzero(kept)), score=score)
+    return Solution(
+        state=ransac.Consensus(model=solved.state, inliers=kept),
+        summary=EssentialSummary(run, refinement=solved.summary, refined=True),
+    )
+
+
+def essential_ransac_reference(
+    bearings1: NDArray[np.float64],
+    bearings2: NDArray[np.float64],
+    options: ransac.Options,
+    minimal_solver: str,
+    refine: bool,  # noqa: FBT001 -- mirrors the compiled signature
+) -> Solution[ransac.Consensus[Matrix3], EssentialSummary]:
+    """Run E-RANSAC and the refinement (the reference), unchecked.
 
     Parameters
     ----------
-    found : slamlab.foundations.solve.Solution
-        E-RANSAC's result.
-    bearings : tuple of ndarray of float64, shape (N, 3)
-        All the bearing pairs.
-    threshold : float
-        RANSAC's threshold: the MSAC cap and the refinement's Cauchy scale.
+    bearings1, bearings2 : ndarray of float64, shape (N, 3)
+        Validated bearing pairs with positive z, N >= the minimal sample.
+    options : ransac.Options
+        The settings.
+    minimal_solver : {"nister", "stewenius", "8pt"}
+        The minimal solver.
+    refine : bool
+        Refine the best model on its inliers.
 
     Returns
     -------
     slamlab.foundations.solve.Solution
-        The refined model, its inliers and a summary whose ``inlier_count`` and ``score``
-        describe it; `found` unchanged if the refinement did not lower the cost.
+        E, its inliers and the :class:`EssentialSummary`.
+
+    Raises
+    ------
+    slamlab.foundations.errors.DegenerateError
+        If no sample gave an essential matrix.
     """
-    inliers = found.state.inliers
-    if np.count_nonzero(inliers) < fivepoint.SAMPLE_SIZE:
-        return found
-    b1, b2 = bearings
-    refined = refine_reference(found.state.model, b1[inliers], b2[inliers], threshold).state
-    errors = sampson(refined, normalised_plane(b1), normalised_plane(b2))
-    score = float(np.sum(np.minimum(errors, threshold**2)))
-    if not score < found.summary.score:
-        return found
-    kept = errors < threshold**2
-    summary = replace(found.summary, inlier_count=int(np.count_nonzero(kept)), score=score)
-    return Solution(state=ransac.Consensus(model=refined, inliers=kept), summary=summary)
+    found = ransac.estimate(essential_estimator(bearings1, bearings2, minimal_solver), options)
+    if refine:
+        return _polish_consensus(found, (bearings1, bearings2), options.threshold)
+    return Solution(state=found.state, summary=EssentialSummary(found.summary, None, False))
+
+
+def essential_summary_from_backend(
+    raw: dict[str, Any], codes: dict[str, list[str]]
+) -> EssentialSummary:
+    """Build E-RANSAC's summary from the dict a compiled backend returned.
+
+    Parameters
+    ----------
+    raw : dict
+        ``run`` (see :func:`slamlab.foundations.ransac.summary_from_backend`),
+        ``refinement`` (see :func:`slamlab.foundations.nls.summary_from_backend`, or None) and
+        ``refined``.
+    codes : dict of str to list of str
+        The backend's enum names: ``termination`` (RANSAC's) and ``nls_termination``.
+
+    Returns
+    -------
+    EssentialSummary
+        The summary.
+    """
+    refinement = raw["refinement"]
+    return EssentialSummary(
+        run=ransac.summary_from_backend(raw["run"], codes),
+        refinement=(
+            None
+            if refinement is None
+            else nls.summary_from_backend(refinement, codes["nls_termination"])
+        ),
+        refined=bool(raw["refined"]),
+    )
 
 
 def essential_ransac(  # noqa: PLR0913 -- the solver choices are keyword-only
@@ -807,10 +907,10 @@ def essential_ransac(  # noqa: PLR0913 -- the solver choices are keyword-only
     bearings2: ArrayLike,
     options: ransac.Options,
     *,
-    minimal_solver: str = "nister",
+    minimal_solver: str = "stewenius",
     refine: bool = True,
     backend: str = "python",
-) -> Solution[ransac.Consensus[Matrix3], ransac.Summary]:
+) -> Solution[ransac.Consensus[Matrix3], EssentialSummary]:
     """Estimate the essential matrix robustly: LO-MSAC, then an optional Sampson refinement.
 
     Parameters
@@ -821,7 +921,7 @@ def essential_ransac(  # noqa: PLR0913 -- the solver choices are keyword-only
         The settings; ``threshold`` is a Sampson distance in the normalised plane (a pixel
         threshold divided by the focal length).
     minimal_solver : {"nister", "stewenius", "8pt"}, optional
-        The minimal solver (default Nistér's 5-point). The least-squares refits inside LO are
+        The minimal solver (default Stewénius' 5-point). The least-squares refits inside LO are
         always the normalised 8-point algorithm.
     refine : bool, optional
         Refine the best model on its inliers (:func:`refine_essential`, Cauchy scale
@@ -832,8 +932,8 @@ def essential_ransac(  # noqa: PLR0913 -- the solver choices are keyword-only
     Returns
     -------
     slamlab.foundations.solve.Solution
-        E and its inliers, and the run's :class:`ransac.Summary` (whose ``inlier_count`` and
-        ``score`` describe the returned E).
+        E and its inliers, and the :class:`EssentialSummary`: the RANSAC run (whose
+        ``inlier_count`` and ``score`` describe the returned E) and the refinement's solve.
 
     Raises
     ------
@@ -848,19 +948,17 @@ def essential_ransac(  # noqa: PLR0913 -- the solver choices are keyword-only
         )
     minimum = SAMPLE_SIZE if minimal_solver == "8pt" else fivepoint.SAMPLE_SIZE
     b1, b2 = as_bearing_pairs(bearings1, bearings2, minimum)
-    estimator = essential_estimator(b1, b2, minimal_solver)
+    backends.check_name(backend)
     if backend == "python":
-        found = ransac.estimate(estimator, options)
-        return polish_consensus(found, (b1, b2), options.threshold) if refine else found
-    extra = {"minimal_solver": MINIMAL_SOLVERS.index(minimal_solver), "refine": refine}
-    return ransac.run(
-        estimator,
-        (b1, b2),
-        options,
-        backend=backend,
-        target=(__name__, "essential_ransac"),
-        extra=extra,
+        return essential_ransac_reference(b1, b2, options, minimal_solver, refine)
+    compiled = backends.function(backend, __name__, "essential_ransac")
+    raw = compiled(b1, b2, asdict(options), MINIMAL_SOLVERS.index(minimal_solver), refine)
+    codes = backends.implementation(backend, __name__).codes()
+    consensus = ransac.Consensus(
+        model=np.asarray(raw["model"], dtype=np.float64),
+        inliers=np.asarray(raw["inliers"], dtype=np.bool_),
     )
+    return Solution(state=consensus, summary=essential_summary_from_backend(raw["summary"], codes))
 
 
 def fundamental_ransac(

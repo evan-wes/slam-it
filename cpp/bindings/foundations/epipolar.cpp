@@ -9,6 +9,7 @@
 #include <string>
 
 #include "common.hpp"
+#include "foundations/essential_crossing.hpp"
 #include "foundations/foundations.hpp"
 #include "foundations/nls_crossing.hpp"
 #include "foundations/ransac_crossing.hpp"
@@ -89,13 +90,12 @@ ArrayOut decompose_essential(const Matrix3In& essential) {
 ///        refinement's terminations.
 /// @return `{"termination": [...], "minimal_solver": [...], "nls_termination": [...]}`.
 nb::dict codes() {
-  nb::dict out = ransac_codes();
+  nb::dict out = essential_codes();
   nb::list solvers;
   for (int k = 0; k < static_cast<int>(epipolar::MinimalSolver::kCount); ++k) {
     solvers.append(epipolar::name(static_cast<epipolar::MinimalSolver>(k)));
   }
   out["minimal_solver"] = solvers;
-  out["nls_termination"] = nls_terminations();
   return out;
 }
 
@@ -120,7 +120,7 @@ epipolar::MinimalSolver minimal_solver(int code) {
 /// @throws CoreError for invalid or degenerate input.
 nb::dict essential_ransac(const BatchIn<3>& bearings1, const BatchIn<3>& bearings2,
                           const nb::dict& options, int minimal, bool refine) {
-  return ransac_result(
+  return essential_result(
       unwrap(epipolar::essential_ransac(rows3(bearings1), rows3(bearings2), ransac_options(options),
                                         minimal_solver(minimal), refine)));
 }

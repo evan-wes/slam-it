@@ -433,14 +433,13 @@ def from_backend(
     return Solution(state=consensus, summary=summary_from_backend(raw["summary"], codes))
 
 
-def run(  # noqa: PLR0913 -- everything after the options is keyword-only
+def run(
     estimator: Estimator[NDArray[np.float64]],
     arrays: tuple[NDArray[np.float64], NDArray[np.float64]],
     options: Options,
     *,
     backend: str,
     target: tuple[str, str],
-    extra: dict[str, Any] | None = None,
 ) -> Solution[Consensus[NDArray[np.float64]], Summary]:
     """Run an array-valued RANSAC with the reference estimator or a compiled backend.
 
@@ -456,8 +455,6 @@ def run(  # noqa: PLR0913 -- everything after the options is keyword-only
         Which implementation runs.
     target : tuple of str
         The calling module's ``__name__`` and the compiled function's name.
-    extra : dict, optional
-        Further keyword arguments for the compiled function (scalars and codes).
 
     Returns
     -------
@@ -469,6 +466,5 @@ def run(  # noqa: PLR0913 -- everything after the options is keyword-only
         return estimate(estimator, options)
     module_name, function = target
     implementation = backends.implementation(backend, module_name)
-    compiled = backends.function(backend, module_name, function)
-    raw = compiled(*arrays, options=asdict(options), **(extra or {}))
+    raw = backends.function(backend, module_name, function)(*arrays, options=asdict(options))
     return from_backend(raw, implementation.codes())

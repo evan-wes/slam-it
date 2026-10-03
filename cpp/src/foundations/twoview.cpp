@@ -46,15 +46,16 @@ ransac::Options ransac_options(const Options& options, Model model) {
 }
 
 /// @brief Run one RANSAC, keeping "no model" as an empty result.
+/// @tparam S The run's solution type.
 /// @param run The RANSAC's result.
 /// @return The solution, nothing if no sample gave a model, or the error otherwise.
-Result<std::optional<ransac::Solution<Eigen::Matrix3d>>> found(
-    Result<ransac::Solution<Eigen::Matrix3d>> run) {
+template <typename S>
+Result<std::optional<S>> found(Result<S> run) {
   if (run) {
-    return std::optional<ransac::Solution<Eigen::Matrix3d>>(std::move(*run));
+    return std::optional<S>(std::move(*run));
   }
   if (run.error().kind == ErrorKind::kDegenerate) {
-    return std::optional<ransac::Solution<Eigen::Matrix3d>>();
+    return std::optional<S>();
   }
   return std::unexpected(run.error());
 }
@@ -128,7 +129,7 @@ struct Planes {
 /// @brief Both RANSAC runs; at least one found a model.
 struct Runs {
   /// @brief E's run, if it found a model.
-  std::optional<ransac::Solution<Eigen::Matrix3d>> essential;
+  std::optional<epipolar::EssentialSolution> essential;
   /// @brief H's run, if it found a model.
   std::optional<ransac::Solution<Eigen::Matrix3d>> planar;
 };
@@ -169,10 +170,11 @@ Initialization scored(const Runs& runs, const Planes& planes, double sigma) {
   const Eigen::Index n = planes.x1.rows();
   Eigen::Array<bool, Eigen::Dynamic, 1> support =
       Eigen::Array<bool, Eigen::Dynamic, 1>::Constant(n, false);
-  for (const auto* run : {&runs.essential, &runs.planar}) {
-    if (run->has_value()) {
-      support = support || (*run)->state.inliers;
-    }
+  if (runs.essential) {
+    support = support || runs.essential->state.inliers;
+  }
+  if (runs.planar) {
+    support = support || runs.planar->state.inliers;
   }
   ransac::Indices explained;
   for (Eigen::Index i = 0; i < n; ++i) {
@@ -217,15 +219,15 @@ struct Decision {
 
 /// @brief Try a model's candidate motions on its inliers and judge the best.
 /// @param model The model.
-/// @param run Its RANSAC solution.
+/// @param run Its RANSAC consensus.
 /// @param rays Both cameras' bearings.
 /// @param options The settings.
 /// @return The verdict, or a decomposition or triangulation error.
-Result<Decision> decide(Model model, const ransac::Solution<Eigen::Matrix3d>& run,
+Result<Decision> decide(Model model, const ransac::Consensus<Eigen::Matrix3d>& run,
                         const std::pair<Eigen::Ref<const correspondences::Rows3>,
                                         Eigen::Ref<const correspondences::Rows3>>& rays,
                         const Options& options) {
-  const auto poses = candidates(model, run.state.model);
+  const auto poses = candidates(model, run.model);
   if (!poses) {
     return std::unexpected(poses.error());
   }
@@ -237,7 +239,7 @@ Result<Decision> decide(Model model, const ransac::Solution<Eigen::Matrix3d>& ru
   const double min_parallax = options.min_parallax_deg * std::numbers::pi / 180.0;
   std::vector<Tried> tried;
   for (const Eigen::Matrix4d& pose : *poses) {
-    auto attempt = try_candidate(pose, rays.first, rays.second, run.state.inliers, min_parallax);
+    auto attempt = try_candidate(pose, rays.first, rays.second, run.inliers, min_parallax);
     if (!attempt) {
       return std::unexpected(attempt.error());
     }
@@ -341,8 +343,13 @@ Result<Initialization> initialize(const Eigen::Ref<const correspondences::Rows3>
     return std::unexpected(runs.error());
   }
   Initialization out = scored(*runs, planes, options.sigma_px / options.focal);
-  const auto& run = out.model == Model::kHomography ? runs->planar : runs->essential;
-  if (!run.has_value()) {
+  const ransac::Consensus<Eigen::Matrix3d>* run = nullptr;
+  if (out.model == Model::kHomography && runs->planar) {
+    run = &runs->planar->state;
+  } else if (out.model == Model::kEssential && runs->essential) {
+    run = &runs->essential->state;
+  }
+  if (run == nullptr) {
     // Unreachable: the chosen model's score is finite only when its run found a model.
     return fail(ErrorKind::kDegenerate, "initialize: the chosen model has no run");
   }
@@ -353,10 +360,10 @@ Result<Initialization> initialize(const Eigen::Ref<const correspondences::Rows3>
   if (!decision) {
     return std::unexpected(decision.error());
   }
-  out.inliers = run->state.inliers;
+  out.inliers = run->inliers;
   if (decision->status == Status::kAmbiguous && out.model == Model::kHomography &&
       runs->essential.has_value()) {
-    auto alternative = decide(Model::kEssential, *runs->essential, rays, options);
+    auto alternative = decide(Model::kEssential, runs->essential->state, rays, options);
     if (!alternative) {
       return std::unexpected(alternative.error());
     }
