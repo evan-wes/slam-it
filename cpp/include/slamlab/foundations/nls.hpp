@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "slamlab/foundations/error.hpp"
+#include "slamlab/foundations/solve.hpp"
 
 /// @brief Non-linear least squares.
 namespace slamlab::foundations::nls {
@@ -167,8 +168,8 @@ struct Iteration {
   bool accepted;
 };
 
-/// @brief How a solve went.
-struct SolveSummary {
+/// @brief How a solve went. Satisfies `solve::Summary`.
+struct Summary {
   /// @brief The cost at the start.
   double initial_cost = 0.0;
   /// @brief The cost at the returned state.
@@ -183,15 +184,10 @@ struct SolveSummary {
   std::vector<Iteration> trace;
 };
 
-/// @brief The best state found, and how the solve went.
+/// @brief The lowest-cost state visited, and how the solve went.
 /// @tparam State The problem's state type.
 template <typename State>
-struct Solution {
-  /// @brief The lowest-cost state visited.
-  State state;
-  /// @brief The solve's summary.
-  SolveSummary summary;
-};
+using Solution = solve::Solution<State, Summary>;
 
 /// @brief A linearisation's normal equations, `(H + diag(d)) delta = -g`.
 template <typename S>
@@ -444,12 +440,12 @@ template <Problem P>
   const int iterations = static_cast<int>(trace.size());
   return Solution<typename P::State>{
       .state = std::move(state),
-      .summary = SolveSummary{.initial_cost = initial_cost,
-                              .final_cost = current.cost,
-                              .iterations = iterations,
-                              .termination = termination,
-                              .converged = converged,
-                              .trace = std::move(trace)},
+      .summary = Summary{.initial_cost = initial_cost,
+                         .final_cost = current.cost,
+                         .iterations = iterations,
+                         .termination = termination,
+                         .converged = converged,
+                         .trace = std::move(trace)},
   };
 }
 

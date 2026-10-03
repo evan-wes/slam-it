@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <expected>
+#include <sstream>
 #include <string>
 #include <utility>
 
@@ -48,6 +49,18 @@ using Result = std::expected<T, Error>;
 /// @return An `std::unexpected` holding the error, convertible to any `Result<T>`.
 [[nodiscard]] inline std::unexpected<Error> fail(ErrorKind kind, std::string message) {
   return std::unexpected<Error>(Error{.kind = kind, .message = std::move(message)});
+}
+
+/// @brief Build the `InvalidInput` failure for a setting out of range, naming its value.
+/// @param name The setting's name.
+/// @param rule What it must satisfy, e.g. "must be at least 1".
+/// @param value Its value.
+/// @return `"<name>: <rule>, got <value>"` as an `InvalidInput` error.
+[[nodiscard]] inline std::unexpected<Error> fail_setting(const char* name, const char* rule,
+                                                         double value) {
+  std::ostringstream message;
+  message << name << ": " << rule << ", got " << value;
+  return fail(ErrorKind::kInvalidInput, message.str());
 }
 
 }  // namespace slamlab::foundations

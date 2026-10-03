@@ -69,7 +69,7 @@ with shared thresholds:
 | `(1 - cos θ)/θ²` | Catastrophic cancellation at small θ | Rewritten as `½ (sin(θ/2)/(θ/2))²`: no subtraction at all |
 | `sin θ / θ`, `θ / sin θ` | 0/0 at θ = 0 | Series below 1e-4 (truncation below 1e-17) |
 | `(θ - sin θ)/θ³`, `1/θ² - cot(θ/2)/(2θ)` | Cancellation of about 6 eps/θ² | Series below 0.05, with four terms (truncation below 1e-18); about 5e-13 for the closed form at the switch |
-| The angle in `log` | `arccos((tr R - 1)/2)` returns NaN when rounding pushes its argument past ±1, and loses precision near 0 and π | `atan2(\|v\|, cos θ)`: no domain to leave, accurate everywhere |
+| The angle in `log` | `arccos((tr R - 1)/2)` returns NaN when rounding pushes its argument past ±1, and loses precision near 0 and π | `atan2(\|v\|, cos θ)` with the cosine clamped: no domain to leave, accurate everywhere. The fixture holds traces a few ulps past 3 and -1 |
 | The axis near θ = π | `v = sin θ · n` vanishes, so `v/\|v\|` amplifies rounding | Below `sin θ = 1e-3` with `cos θ < 0`, take n from the symmetric part, `(R + Rᵀ)/2 - cos θ I = (1 - cos θ) n nᵀ`, and its sign from v |
 | θ = π exactly | n and -n are the same rotation | Deterministic: the largest-magnitude component positive, in every backend |
 

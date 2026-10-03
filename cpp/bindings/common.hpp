@@ -12,12 +12,15 @@
 #include <nanobind/ndarray.h>
 
 #include <Eigen/Core>
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "slamlab/foundations/error.hpp"
 
@@ -193,6 +196,146 @@ ArrayOut map_batch2(const InputA& a, const InputB& b, F&& f) {
     result = value_of(f(Item<ARows, ACols>(item_a), Item<BRows, BCols>(item_b)));
   }
   return out;
+}
+
+/// @brief A read-only, contiguous 1D array.
+/// @tparam T The element type.
+template <typename T>
+using VectorIn =
+    nanobind::ndarray<const T, nanobind::shape<-1>, nanobind::c_contig, nanobind::device::cpu>;
+
+/// @brief A read-only, contiguous float64 matrix.
+using MatrixIn = nanobind::ndarray<const double, nanobind::shape<-1, -1>, nanobind::c_contig,
+                                   nanobind::device::cpu>;
+
+/// @brief Copy a 1D array into a vector.
+/// @tparam Out The vector type.
+/// @tparam T The element type.
+/// @param in The array.
+/// @return The copy.
+template <typename Out, typename T>
+Out copy_vector(const VectorIn<T>& in) {
+  Out out(in.shape(0));
+  for (std::size_t i = 0; i < in.shape(0); ++i) {
+    out[i] = in(i);
+  }
+  return out;
+}
+
+/// @brief Copy a row-major float64 matrix of known column count into an Eigen matrix.
+/// @tparam M The Eigen matrix type.
+/// @param data The buffer.
+/// @param rows Rows.
+/// @param cols Columns.
+/// @return The copy.
+template <typename M>
+M copy_matrix(const double* data, std::size_t rows, std::size_t cols) {
+  check_aligned(data);
+  return Eigen::Map<const M>(data, static_cast<Eigen::Index>(rows),
+                             static_cast<Eigen::Index>(cols));
+}
+
+/// @brief Copy a (C, 4, 4) batch into poses.
+/// @param in The batch.
+/// @return The poses.
+inline std::vector<Eigen::Matrix4d> copy_poses(const BatchIn<4, 4>& in) {
+  check_aligned(in.data());
+  std::vector<Eigen::Matrix4d> out;
+  for (std::size_t c = 0; c < in.shape(0); ++c) {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic): batch offset
+    out.emplace_back(Eigen::Map<const Item<4, 4>>(in.data() + (16 * c)));
+  }
+  return out;
+}
+
+/// @brief Copy poses into a new (C, 4, 4) array.
+/// @param poses The poses.
+/// @return The array.
+inline ArrayOut poses_array(const std::vector<Eigen::Matrix4d>& poses) {
+  auto [out, data] = new_array({poses.size(), 4, 4});
+  for (std::size_t c = 0; c < poses.size(); ++c) {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic): batch offset
+    Eigen::Map<Item<4, 4>>(data + (16 * c)) = poses[c];
+  }
+  return out;
+}
+
+/// @brief Copy a row-major matrix into a new array of its shape.
+/// @tparam M The matrix type.
+/// @param matrix The matrix.
+/// @return The array.
+template <typename M>
+ArrayOut matrix_array(const M& matrix) {
+  auto [out, data] =
+      new_array({static_cast<std::size_t>(matrix.rows()), static_cast<std::size_t>(matrix.cols())});
+  Eigen::Map<Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>(
+      data, matrix.rows(), matrix.cols()) = matrix;
+  return out;
+}
+
+/// @brief Copy a vector into a new 1D array.
+/// @param vector The vector.
+/// @return The array.
+inline ArrayOut vector_array(const Eigen::VectorXd& vector) {
+  auto [out, data] = new_array({static_cast<std::size_t>(vector.size())});
+  Eigen::Map<Eigen::VectorXd>(data, vector.size()) = vector;
+  return out;
+}
+
+/// @brief One read-only (3, 3) matrix.
+using Matrix3In = nanobind::ndarray<const double, nanobind::shape<3, 3>, nanobind::c_contig,
+                                    nanobind::device::cpu>;
+
+/// @brief Copy one (3, 3) matrix in.
+/// @param in The array.
+/// @return The matrix.
+inline Eigen::Matrix3d matrix3(const Matrix3In& in) {
+  check_aligned(in.data());
+  return Eigen::Map<const Item<3, 3>>(in.data());
+}
+
+/// @brief Return a 3x3 matrix as a new (3, 3) array.
+/// @param matrix The matrix.
+/// @return The array.
+inline ArrayOut matrix3_array(const Eigen::Matrix3d& matrix) {
+  auto [out, data] = new_array({3, 3});
+  Eigen::Map<Item<3, 3>> view(data);
+  view = matrix;
+  return out;
+}
+
+/// @brief Copy a boolean array out.
+/// @param mask The mask.
+/// @return A new (N,) bool array.
+inline nanobind::ndarray<nanobind::numpy, bool> mask_array(
+    const Eigen::Array<bool, Eigen::Dynamic, 1>& mask) {
+  auto [out, data] = new_array<bool>({static_cast<std::size_t>(mask.size())});
+  for (Eigen::Index i = 0; i < mask.size(); ++i) {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic): array fill
+    data[i] = mask(i);
+  }
+  return out;
+}
+
+/// @brief Refuse a dict whose keys are not exactly the expected ones (an options dict crossing
+///        from a Python dataclass), so the two sides cannot drift apart.
+/// @param values The dict.
+/// @param keys The expected keys.
+/// @param what The dataclass's name, for the message.
+/// @throws std::invalid_argument (Python `ValueError`) for a missing or unknown key.
+inline void check_keys(const nanobind::dict& values, std::span<const char* const> keys,
+                       const char* what) {
+  for (const char* key : keys) {
+    if (!values.contains(key)) {
+      throw std::invalid_argument(std::string("options: missing ") + key + " of " + what);
+    }
+  }
+  for (const auto& [key, value] : values) {
+    const std::string name = nanobind::str(key).c_str();
+    if (std::ranges::find(keys, name) == keys.end()) {
+      throw std::invalid_argument("options: unexpected " + name + ", not a field of " + what);
+    }
+  }
 }
 
 }  // namespace slamlab::bindings

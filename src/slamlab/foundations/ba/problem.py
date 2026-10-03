@@ -287,7 +287,7 @@ class BASummary:
 
     Attributes
     ----------
-    solve : slamlab.foundations.nls.SolveSummary
+    solve : slamlab.foundations.nls.Summary
         The NLS solve's summary; its costs are the full robust cost of the blocks that take
         part. Priors on poses that never move are constant and left out, so the same problem
         under two gauges (or with a pose fixed or not) can report different costs: compare
@@ -320,7 +320,7 @@ class BASummary:
         weights match the noise.
     """
 
-    solve: nls.SolveSummary
+    solve: nls.Summary
     gauge: str
     gauge_pose: int
     confined_pose: int

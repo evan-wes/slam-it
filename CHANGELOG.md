@@ -4,6 +4,71 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.2.1.0] - 2026-10-02
+
+Two-view geometry, milestone 1's slice B up to the 5-point solver: from feature matches
+between two calibrated views to their relative motion and first map points, or a reason
+why not. Python reference and C++ core in lock-step, with identical RANSAC runs on the
+same seed.
+
+### Added
+
+- **The solver contract** (`foundations.solve`): the `Summary` Protocol and the generic
+  `Solution[State, Summary]` every iterative solver returns. Each solver owns its summary
+  (`nls.Summary`, `ransac.Summary`).
+- **PCG32** (`foundations.rng`): one random generator in every backend (the reference
+  library's output, an unbiased bounded draw, Floyd's sampling), so a seed draws the same
+  RANSAC samples in Python and C++.
+- **Triangulation** (`foundations.triangulation`): two-view optimal (Lindstrom's niter2)
+  and N-view DLT on bearing vectors, with cheirality and parallax per point; parallel or
+  undetermined points are NaN and counted.
+- **RANSAC** (`foundations.ransac`): LO-MSAC, generic over an estimator: MSAC scoring, the
+  adaptive bound, and Lebeda et al.'s local optimisation.
+- **Correspondences** (`foundations.correspondences`): the unchecked building blocks the
+  two-view estimators share (homogeneous and normalised points, Hartley's normalisation, the
+  null vector, `PairEstimator`), with their input checks in `foundations.arrays` and
+  `ransac.run`, so `epipolar` and `homography` are independent siblings.
+- **Epipolar geometry** (`foundations.epipolar`): the normalised 8-point essential and
+  fundamental matrices, their Sampson distances, RANSAC, and E's four-pose decomposition.
+- **Homographies** (`foundations.homography`): the normalised DLT, its Sampson distance,
+  RANSAC, and Malis and Vargas' decomposition.
+- **Two-view initialisation** (`foundations.twoview`): E and H by RANSAC, Torr's GRIC over
+  the matches either explains, the motion chosen by triangulation, and a status
+  (`initialized`, `pure_rotation`, `low_parallax`, `ambiguous`) instead of an exception;
+  an ambiguous H falls back to E. H-RANSAC's threshold is E's scaled for its two degrees of
+  freedom.
+- **`slamlab.eval.tum`**: TUM RGB-D sequences with their ground-truth poses and calibrations.
+- **`scripts/demo_two_view.py`**: initialisation on a TUM pair against the ground truth and
+  OpenCV. On fr1/xyz frames 0 and 30: 0.47 deg rotation and 2.4 deg translation-direction
+  error (OpenCV's 5-point RANSAC: 1.30 and 5.1); 4-6 ms in C++. `--survey` runs 38 pairs.
+- An import-linter contract keeps `cv2` out of slamlab.
+- Design notes: `triangulation.md`, `ransac.md`, `two-view.md`.
+
+### Changed
+
+- NLS's `SolveSummary` is `nls.Summary`, and its `Solution` is `solve.Solution`.
+- The bindings' array copy helpers moved from `ba.cpp` to `common.hpp`.
+- `opencv-python-headless` joins the dev extra (the demo's feature matching only).
+
+### Fixed
+
+- An estimated homography's candidate rotations, and a pure rotation's, are projected onto
+  SO(3); the closed form is only exact for an exact H.
+- `opencv-python-headless` is in the dev extra, not only the lock.
+
+### Review
+
+- The full panel (hygiene, architecture, algorithm) ran on the slice: 3 must-fix, 13
+  should-fix and 10 notes, each decided with the owner
+  (`docs/reviews/2026-10-02-feature-two-view.md`).
+
+### Tests
+
+- `so3.log` at both ends of the `arccos` domain: traces a few ulps past 3 and -1.
+- Fixtures from a 50-digit mpmath oracle for triangulation, the 8-point solvers, the DLT,
+  Sampson distances and both decompositions, and ground-truth fixtures for RANSAC runs and
+  initialisation.
+
 ## [0.2.0.0] - 2026-10-02
 
 The bundle-adjustment spine of milestone 1: rung 0's geometry, from Lie groups to a bundle

@@ -15,6 +15,16 @@ void bind_foundations(nanobind::module_& parent) {
   nanobind::module_ alignment =
       foundations.def_submodule("alignment", "Point-set alignment (Umeyama).");
   bind_alignment(alignment);
+  nanobind::module_ triangulation =
+      foundations.def_submodule("triangulation", "Triangulation from bearing vectors.");
+  bind_triangulation(triangulation);
+  nanobind::module_ epipolar =
+      foundations.def_submodule("epipolar", "Essential and fundamental matrices.");
+  bind_epipolar(epipolar);
+  nanobind::module_ homography = foundations.def_submodule("homography", "Homographies.");
+  bind_homography(homography);
+  nanobind::module_ twoview = foundations.def_submodule("twoview", "Two-view initialisation.");
+  bind_twoview(twoview);
   nanobind::module_ ba = foundations.def_submodule("ba", "Bundle adjustment.");
   bind_ba(ba);
 }

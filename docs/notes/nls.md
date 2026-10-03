@@ -92,7 +92,7 @@ cost, rather than accepting it. Without a line search, that is the honest behavi
 Only the first three count as converged.
 
 **The solver contract.** The returned state is always the lowest-cost one visited, and a
-`SolveSummary` records the costs, the termination reason and every step tried. Hitting the
+`Summary` records the costs, the termination reason and every step tried. Hitting the
 cap is not an error. `strict=True` turns any unconverged stop into `NotConvergedError`
 (`ErrorKind::kNotConverged` in C++).
 
