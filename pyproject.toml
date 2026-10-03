@@ -131,7 +131,7 @@ type = "layers"
 containers = ["slamlab.foundations"]
 layers = [
   "(ba)",
-  "(camera) | (nls) | (triangulation)",
+  "(camera) | (nls) | (ransac) | (triangulation)",
   "(alignment)",
   "(se3)",
   "so3",
