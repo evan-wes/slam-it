@@ -250,18 +250,18 @@ polish never loses a true E the unpolished solver had found.
 
 | ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
 |---|---|---|---|---|---|---|
-| L8 | should-fix | algorithm | `generate_twoview.py` `_fivepoint_fixture` | `fivepoint.json` passes with the polish disabled: no near-degenerate case pins it, though Rust will be held to the fixture | fix | pending |
-| A11 | should-fix | architecture | design doc "Where the summary lives"; `EssentialSummary` | The composite summary satisfies the solver contract by delegation in Python but is a named struct in C++; the doc states neither, nor that `converged` is the RANSAC run's | fix (doc) | pending |
-| H9 | should-fix | hygiene | `twoview.Options.refine` docstring; `five-point.md` | References to `polish_consensus`, now private | fix | pending |
-| H10 / A12 | should-fix | hygiene, architecture | `epipolar.essential_ransac` compiled branch | Rebuilds `ransac.from_backend`'s consensus decoding | fix | pending |
-| L9 | note | algorithm | `fivepoint._keep` / `keep` | Polishing can merge two roots into duplicate solutions (Nistér 41/300 at 1% forward; Stewénius 3) | fix (drop duplicates) | pending |
-| L10 | note | algorithm | `five-point.md`; near-degenerate test | Backend parity is a well-posed-sample property; near degeneracy Nistér's root sets differ by backend, and its test bound is tight (7 measured vs ≤ 8) | fix (note wording; bound ≤ 12, stated as measured) | pending |
-| A13 | note | architecture | `essential_ransac` fixture | Records no summary field; whether the refinement ran is deterministic | fix | pending |
-| A14 / H14 | note | architecture, hygiene | `test_epipolar.py` code-table test | Two-view's table check lives in the epipolar tests and skips `status`/`model` | fix (move to `test_twoview.py`, cover all keys) | pending |
-| A15 | note | architecture | `pyproject.toml` oracle contract | Its comment gives the test-oracle reason; the lasting one is the numpy-only runtime | fix (wording) | pending |
-| H11 | note | hygiene | C++ `fivepoint::polish` | Builds the monomials' slope twice per accepted step | fix | pending |
-| H12 | note | hygiene | `_polish_consensus` / `polish` | The unrefined summary is built in two places per language | fix | pending |
-| H13 | note | hygiene | C++ `nister` | Determinant terms still inline (Python has `_DETERMINANT_TERMS`) | fix | pending |
+| L8 | should-fix | algorithm | `generate_twoview.py` `_fivepoint_fixture` | `fivepoint.json` passes with the polish disabled: no near-degenerate case pins it, though Rust will be held to the fixture | fix | fixed (3b1ab77) -- decided by evan-wes, 2026-10-03 |
+| A11 | should-fix | architecture | design doc "Where the summary lives"; `EssentialSummary` | The composite summary satisfies the solver contract by delegation in Python but is a named struct in C++; the doc states neither, nor that `converged` is the RANSAC run's | fix (doc) | fixed (e05fceb, design doc) -- decided by evan-wes, 2026-10-03 |
+| H9 | should-fix | hygiene | `twoview.Options.refine` docstring; `five-point.md` | References to `polish_consensus`, now private | fix | fixed (3b1ab77, e05fceb) -- decided by evan-wes, 2026-10-03 |
+| H10 / A12 | should-fix | hygiene, architecture | `epipolar.essential_ransac` compiled branch | Rebuilds `ransac.from_backend`'s consensus decoding | fix | fixed (3b1ab77) -- decided by evan-wes, 2026-10-03 |
+| L9 | note | algorithm | `fivepoint._keep` / `keep` | Polishing can merge two roots into duplicate solutions (Nistér 41/300 at 1% forward; Stewénius 3) | fix (drop duplicates) | fixed (3b1ab77) -- decided by evan-wes, 2026-10-03 |
+| L10 | note | algorithm | `five-point.md`; near-degenerate test | Backend parity is a well-posed-sample property; near degeneracy Nistér's root sets differ by backend, and its test bound is tight (7 measured vs ≤ 8) | fix (note wording; bound ≤ 12, stated as measured) | fixed (3b1ab77, e05fceb) -- decided by evan-wes, 2026-10-03 |
+| A13 | note | architecture | `essential_ransac` fixture | Records no summary field; whether the refinement ran is deterministic | fix | fixed (3b1ab77) -- decided by evan-wes, 2026-10-03 |
+| A14 / H14 | note | architecture, hygiene | `test_epipolar.py` code-table test | Two-view's table check lives in the epipolar tests and skips `status`/`model` | fix (move to `test_twoview.py`, cover all keys) | fixed (3b1ab77) -- decided by evan-wes, 2026-10-03 |
+| A15 | note | architecture | `pyproject.toml` oracle contract | Its comment gives the test-oracle reason; the lasting one is the numpy-only runtime | fix (wording) | fixed (3b1ab77) -- decided by evan-wes, 2026-10-03 |
+| H11 | note | hygiene | C++ `fivepoint::polish` | Builds the monomials' slope twice per accepted step | fix | fixed (3b1ab77) -- decided by evan-wes, 2026-10-03 |
+| H12 | note | hygiene | `_polish_consensus` / `polish` | The unrefined summary is built in two places per language | fix | fixed (3b1ab77) -- decided by evan-wes, 2026-10-03 |
+| H13 | note | hygiene | C++ `nister` | Determinant terms still inline (Python has `_DETERMINANT_TERMS`) | fix | fixed (3b1ab77) -- decided by evan-wes, 2026-10-03 |
 
 ### Hygiene review
 
@@ -297,3 +297,6 @@ The fixes resolve run 1's algorithm findings correctly. The polish to convergenc
 - **[note] Backend parity holds on well-posed samples only.** Generic: 4.6e-12, no count differences over 300. Near degeneracy, rounding decides whether a near-real root counts: at 1% forward Nistér's sets differ 64/100 (truth in one backend only: 39), Stewénius 7/100 (6); at 5% Nistér 22/100 (11), Stewénius 0. The near-degenerate test's Nistér bound is tight (6 Python, 7 C++, against ≤ 8); Stewénius 0 against ≤ 2. Say in the note that agreement is a well-posed property; loosen the Nistér bound or call it a measured, platform-dependent count.
 
 Checked and fine: the polish (equivalent across languages, correct derivatives including zero exponents, strict-decrease acceptance, stopping rule, per-solver order; most polishes finish in 1–3 steps, 0.8% reach the cap, all near degeneracy); the note's table; generic precision after polishing (worst 3.8e-12 on the test's samples, consistent with the note's 1.6e-12 on the probe's); the default switch with no stale Nistér default; `EssentialSummary` semantics in both languages; the `refine_essential` fixture (atol 1e-8 against a measured 2.5e-9); the per-solver RANSAC fixtures; L1; L4; the Sampson terms refactor; seeded randomness everywhere.
+
+No run 3: decided by evan-wes, 2026-10-03 (the fixes are targeted; layer 1 passed in full at
+e05fceb, and without the polish 7 of `fivepoint.json`'s 12 cases fail).
