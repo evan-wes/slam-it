@@ -24,6 +24,8 @@ void bind_foundations(nanobind::module_& parent) {
   nanobind::module_ fivepoint =
       foundations.def_submodule("fivepoint", "The 5-point essential matrix.");
   bind_fivepoint(fivepoint);
+  nanobind::module_ p3p = foundations.def_submodule("p3p", "P3P: the pose from three points.");
+  bind_p3p(p3p);
   nanobind::module_ homography = foundations.def_submodule("homography", "Homographies.");
   bind_homography(homography);
   nanobind::module_ twoview = foundations.def_submodule("twoview", "Two-view initialisation.");

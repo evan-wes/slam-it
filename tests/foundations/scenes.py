@@ -15,6 +15,11 @@ POSE = se3.exp([0.5, -0.1, 0.05, 0.02, -0.1, 0.03])
 """A sideways-moving relative pose ``T_c2_c1`` with some rotation."""
 
 
+def random_pose(rng: np.random.Generator, translation: float) -> NDArray[np.float64]:
+    """Draw a pose: a rotation vector of unit scale, a translation of scale `translation`."""
+    return se3.exp(np.concatenate([rng.normal(size=3), rng.normal(scale=translation, size=3)]))
+
+
 def bearings(points: NDArray[np.float64]) -> NDArray[np.float64]:
     """Return the unit directions of points."""
     return np.asarray(points / np.linalg.norm(points, axis=-1, keepdims=True), dtype=np.float64)

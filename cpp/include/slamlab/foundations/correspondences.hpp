@@ -73,6 +73,18 @@ inline constexpr double kBearingTolerance = 1e-9;
                                                const Eigen::Ref<const Rows3>& bearings2,
                                                Eigen::Index minimum, bool positive_z = true);
 
+/// @brief Check world points and their bearings (`slamlab.foundations.arrays.
+///        as_correspondences`): equal sizes, at least `minimum`, finite points, unit bearings,
+///        and (by default) positive z.
+/// @param points World points.
+/// @param bearings Their bearings in the camera.
+/// @param minimum The fewest correspondences accepted.
+/// @param positive_z Require positive z.
+/// @return Nothing, or `InvalidInput`.
+[[nodiscard]] Result<void> check_correspondences(const Eigen::Ref<const Rows3>& points,
+                                                 const Eigen::Ref<const Rows3>& bearings,
+                                                 Eigen::Index minimum, bool positive_z = true);
+
 /// @brief Check point pairs: equal sizes, at least `minimum`, finite.
 /// @param points1 Points in image 1.
 /// @param points2 Points in image 2.

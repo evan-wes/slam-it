@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from slamlab import backends
-from slamlab.foundations import fivepoint, se3, so3
+from slamlab.foundations import fivepoint, so3
 from slamlab.foundations.errors import InvalidInputError
 from tests.conftest import load_fixture, require_function
 from tests.foundations import scenes as sc
@@ -18,7 +18,7 @@ FIXTURE = load_fixture("foundations/fivepoint.json")
 def _sample(seed: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return five exact bearing pairs under a random motion, and the true E (unit t)."""
     rng = np.random.default_rng(seed)
-    pose = se3.exp(np.concatenate([rng.normal(size=3), rng.normal(scale=0.3, size=3)]))
+    pose = sc.random_pose(rng, 0.3)
     b1, b2 = sc.pairs(sc.scene(5, seed=seed), pose=pose)
     t = pose[:3, 3] / np.linalg.norm(pose[:3, 3])
     return b1, b2, so3.hat(t) @ pose[:3, :3]

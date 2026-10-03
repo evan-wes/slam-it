@@ -84,6 +84,30 @@ Result<void> check_bearing_pairs(const Eigen::Ref<const Rows3>& bearings1,
   return {};
 }
 
+Result<void> check_correspondences(const Eigen::Ref<const Rows3>& points,
+                                   const Eigen::Ref<const Rows3>& bearings, Eigen::Index minimum,
+                                   bool positive_z) {
+  if (points.rows() != bearings.rows()) {
+    return fail(ErrorKind::kInvalidInput, "points, bearings: expected equal (N, 3) shapes");
+  }
+  if (points.rows() < minimum) {
+    return fail(ErrorKind::kInvalidInput, "points: need at least " + std::to_string(minimum) +
+                                              ", got " + std::to_string(points.rows()));
+  }
+  if (!points.allFinite()) {
+    return fail(ErrorKind::kInvalidInput, "points: expected finite values");
+  }
+  for (Eigen::Index i = 0; i < bearings.rows(); ++i) {
+    if (auto ok = check_bearing(bearings, i, "bearings"); !ok) {
+      return ok;
+    }
+    if (positive_z && !(bearings(i, 2) > 0.0)) {
+      return fail(ErrorKind::kInvalidInput, "bearings: expected positive z (a pinhole view)");
+    }
+  }
+  return {};
+}
+
 Result<void> check_point_pairs(const Eigen::Ref<const Rows2>& points1,
                                const Eigen::Ref<const Rows2>& points2, Eigen::Index minimum,
                                const char* name) {
