@@ -91,6 +91,11 @@ ESSENTIAL_DIMENSION, ESSENTIAL_PARAMETERS = 3, 5
 """E's variety has dimension 3 in the 4D data space, and E has 5 degrees of freedom."""
 HOMOGRAPHY_DIMENSION, HOMOGRAPHY_PARAMETERS = 2, 8
 """H's variety has dimension 2, and H has 8 degrees of freedom."""
+HOMOGRAPHY_THRESHOLD_SCALE = math.sqrt(5.991 / 3.841)
+"""H's RANSAC threshold over E's: the ratio of the 95% quantiles of χ² with two degrees of
+freedom and with one. Under image noise σ a squared Sampson distance is about σ² χ²₁ to E (one
+constraint per match) but σ² χ²₂ to H (two), so one threshold would keep 95% of E's true
+inliers but 86% of H's (Hartley and Zisserman, table 4.1; ORB-SLAM uses 3.841 and 5.991)."""
 
 
 class Model(enum.StrEnum):
@@ -124,7 +129,8 @@ class Options:
     focal : float
         The focal length in pixels, converting the pixel settings to the normalised plane.
     threshold_px : float
-        RANSAC's inlier threshold (a Sampson distance), in pixels.
+        E-RANSAC's inlier threshold (a Sampson distance), in pixels. H's is scaled by
+        :data:`HOMOGRAPHY_THRESHOLD_SCALE`, because its residual has two degrees of freedom.
     sigma_px : float
         The image noise's standard deviation for GRIC, in pixels.
     confidence : float
@@ -175,25 +181,28 @@ class Options:
                 f"ambiguity_ratio: must be in (0, 1], got {self.ambiguity_ratio}"
             )
 
-    def ransac_options(self, stream: int) -> ransac.Options:
-        """Return RANSAC's options in the normalised plane, on one random stream.
+    def ransac_options(self, model: Model) -> ransac.Options:
+        """Return one model's RANSAC options in the normalised plane, on its own stream.
 
         Parameters
         ----------
-        stream : int
-            The random stream.
+        model : Model
+            E (stream 0, ``threshold_px``) or H (stream 1, ``threshold_px`` scaled by
+            :data:`HOMOGRAPHY_THRESHOLD_SCALE`).
 
         Returns
         -------
         ransac.Options
             The threshold divided by the focal length, and this run's limits and seed.
         """
+        planar = model is Model.HOMOGRAPHY
+        scale = HOMOGRAPHY_THRESHOLD_SCALE if planar else 1.0
         return ransac.Options(
-            threshold=self.threshold_px / self.focal,
+            threshold=scale * self.threshold_px / self.focal,
             confidence=self.confidence,
             max_iterations=self.max_iterations,
             seed=self.seed,
-            stream=stream,
+            stream=1 if planar else 0,
         )
 
 
@@ -385,8 +394,14 @@ def _initialize(
         correspondences.normalised_plane(bearings1),
         correspondences.normalised_plane(bearings2),
     )
-    essential = _fit(epipolar.essential_estimator(bearings1, bearings2), options.ransac_options(0))
-    planar = _fit(homography.homography_estimator(x1[:, :2], x2[:, :2]), options.ransac_options(1))
+    essential = _fit(
+        epipolar.essential_estimator(bearings1, bearings2),
+        options.ransac_options(Model.ESSENTIAL),
+    )
+    planar = _fit(
+        homography.homography_estimator(x1[:, :2], x2[:, :2]),
+        options.ransac_options(Model.HOMOGRAPHY),
+    )
     if essential is None and planar is None:
         raise DegenerateError("initialize: neither RANSAC found a model")
     sigma = options.sigma_px / options.focal

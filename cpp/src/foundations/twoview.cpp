@@ -30,16 +30,19 @@ struct Tried {
   correspondences::Rows3 points;
 };
 
-/// @brief RANSAC's options in the normalised plane, on one random stream.
+/// @brief One model's RANSAC options in the normalised plane, on its own stream.
 /// @param options The initialiser's settings.
-/// @param stream The random stream.
+/// @param model E (stream 0, `threshold_px`) or H (stream 1, scaled by
+///        `kHomographyThresholdScale`).
 /// @return The options.
-ransac::Options ransac_options(const Options& options, std::uint64_t stream) {
-  return ransac::Options{.threshold = options.threshold_px / options.focal,
+ransac::Options ransac_options(const Options& options, Model model) {
+  const bool planar = model == Model::kHomography;
+  const double scale = planar ? kHomographyThresholdScale : 1.0;
+  return ransac::Options{.threshold = scale * options.threshold_px / options.focal,
                          .confidence = options.confidence,
                          .max_iterations = options.max_iterations,
                          .seed = options.seed,
-                         .stream = stream};
+                         .stream = planar ? 1U : 0U};
 }
 
 /// @brief Run one RANSAC, keeping "no model" as an empty result.
@@ -139,13 +142,14 @@ struct Runs {
 Result<Runs> run_both(const Eigen::Ref<const correspondences::Rows3>& bearings1,
                       const Eigen::Ref<const correspondences::Rows3>& bearings2,
                       const Planes& planes, const Options& options) {
-  auto essential =
-      found(epipolar::essential_ransac(bearings1, bearings2, ransac_options(options, 0)));
+  auto essential = found(
+      epipolar::essential_ransac(bearings1, bearings2, ransac_options(options, Model::kEssential)));
   if (!essential) {
     return std::unexpected(essential.error());
   }
-  auto planar = found(homography::homography_ransac(
-      planes.x1.leftCols<2>(), planes.x2.leftCols<2>(), ransac_options(options, 1)));
+  auto planar =
+      found(homography::homography_ransac(planes.x1.leftCols<2>(), planes.x2.leftCols<2>(),
+                                          ransac_options(options, Model::kHomography)));
   if (!planar) {
     return std::unexpected(planar.error());
   }

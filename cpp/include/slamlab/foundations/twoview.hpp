@@ -10,6 +10,7 @@
 #pragma once
 
 #include <Eigen/Core>
+#include <cmath>
 #include <cstdint>
 #include <optional>
 #include <vector>
@@ -34,6 +35,9 @@ inline constexpr int kEssentialParameters = 5;
 inline constexpr int kHomographyDimension = 2;
 /// @brief H's degrees of freedom.
 inline constexpr int kHomographyParameters = 8;
+/// @brief H's RANSAC threshold over E's: sqrt(5.991 / 3.841), the ratio of the 95% quantiles of
+///        chi-squared with two degrees of freedom and with one (H's residual has two).
+inline const double kHomographyThresholdScale = std::sqrt(5.991 / 3.841);
 
 /// @brief Which model GRIC chose, with the codes it crosses the bindings as.
 enum class Model : std::uint8_t {
@@ -73,7 +77,8 @@ enum class Status : std::uint8_t {
 struct Options {
   /// @brief The focal length in pixels.
   double focal = 1.0;
-  /// @brief RANSAC's inlier threshold (a Sampson distance), in pixels.
+  /// @brief E-RANSAC's inlier threshold (a Sampson distance), in pixels; H's is scaled by
+  ///        `kHomographyThresholdScale`.
   double threshold_px = 2.0;
   /// @brief The image noise's standard deviation for GRIC, in pixels.
   double sigma_px = 1.0;
