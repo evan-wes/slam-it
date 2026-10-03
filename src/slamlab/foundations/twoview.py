@@ -154,7 +154,8 @@ class Options:
         E-RANSAC's minimal solver (see :data:`slamlab.foundations.epipolar.MINIMAL_SOLVERS`).
     refine : bool
         Whether E-RANSAC's model is refined on its inliers' Sampson distances
-        (:func:`slamlab.foundations.epipolar.polish_consensus`).
+        (:func:`slamlab.foundations.epipolar.essential_ransac`), keeping it only if it lowers the
+        MSAC cost; :class:`slamlab.foundations.epipolar.EssentialSummary` says whether it did.
     """
 
     focal: float

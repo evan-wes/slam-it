@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from slamlab import backends
-from slamlab.foundations import epipolar, se3, so3, twoview
+from slamlab.foundations import epipolar, nls, ransac, se3, so3, twoview
 from slamlab.foundations.errors import InvalidInputError
 from tests.conftest import load_fixture, require_function
 from tests.foundations import scenes as sc
@@ -232,3 +232,13 @@ def test_core_checks_its_own_input(backend: str) -> None:
         impl.initialize(b1, b2, {"focal": 1.0})
     with pytest.raises(ValueError, match="essential_solver"):
         impl.initialize(b1, b2, {**asdict(OPTIONS), "essential_solver": "sturm"})
+
+
+def test_the_compiled_code_tables_match() -> None:
+    """Every code table two-view's compiled core returns is Python's, in the same order."""
+    chosen = require_function("cpp", twoview.__name__, "initialize")
+    codes = backends.implementation(chosen, twoview.__name__).codes()
+    assert tuple(codes["status"]) == tuple(twoview.Status)
+    assert tuple(codes["model"]) == tuple(twoview.Model)
+    assert tuple(codes["termination"]) == tuple(ransac.Termination)
+    assert tuple(codes["nls_termination"]) == tuple(nls.Termination)

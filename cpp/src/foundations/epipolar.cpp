@@ -415,6 +415,15 @@ class SampsonProblem {
   Rows3 x2_;
 };
 
+/// @brief E-RANSAC's solution before (or without) the refinement (`EssentialSummary.unrefined`
+///        in Python).
+/// @param found The RANSAC run's solution.
+/// @return Its consensus, with a summary holding the run and no refinement.
+EssentialSolution unrefined(ransac::Solution<Eigen::Matrix3d> found) {
+  return {.state = std::move(found.state),
+          .summary = {.run = found.summary, .refinement = std::nullopt, .refined = false}};
+}
+
 /// @brief Refine E-RANSAC's model on its inliers, keeping it only if the MSAC cost drops (see
 ///        `_polish_consensus` in the Python reference).
 /// @param found E-RANSAC's result.
@@ -426,8 +435,7 @@ class SampsonProblem {
 EssentialSolution polish(ransac::Solution<Eigen::Matrix3d> found,
                          const Eigen::Ref<const Rows3>& bearings1,
                          const Eigen::Ref<const Rows3>& bearings2, double threshold) {
-  EssentialSolution out{.state = std::move(found.state),
-                        .summary = {.run = found.summary, .refinement = std::nullopt}};
+  EssentialSolution out = unrefined(std::move(found));
   ransac::Indices inliers;
   for (Eigen::Index i = 0; i < out.state.inliers.size(); ++i) {
     if (out.state.inliers(i)) {
@@ -523,8 +531,7 @@ Result<EssentialSolution> essential_ransac(const Eigen::Ref<const Rows3>& bearin
     return std::unexpected(found.error());
   }
   if (!refine) {
-    return EssentialSolution{.state = std::move(found->state),
-                             .summary = {.run = found->summary, .refinement = std::nullopt}};
+    return unrefined(std::move(*found));
   }
   return polish(std::move(*found), bearings1, bearings2, options.threshold);
 }

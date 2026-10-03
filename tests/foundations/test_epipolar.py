@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
-from types import ModuleType
 from typing import Any
 
 import numpy as np
 import pytest
 
 from slamlab import backends
-from slamlab.foundations import correspondences, epipolar, nls, ransac, so3, twoview
+from slamlab.foundations import correspondences, epipolar, nls, ransac, so3
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
 from tests.conftest import assert_matches_fixture, load_fixture, require_function
 from tests.foundations import scenes as sc
@@ -38,6 +37,12 @@ def test_ransac_matches_fixture(backend: str) -> None:
     """With noise-free inliers, every minimal solver finds the true E and the clean pairs."""
     chosen = require_function(backend, epipolar.__name__, "essential_ransac")
     sc.check_fixture(epipolar, FIXTURE, "essential_ransac", chosen)
+    for case in FIXTURE["functions"]["essential_ransac"]["cases"]:
+        inputs = dict(case["input"])
+        options = ransac.Options(threshold=inputs.pop("threshold"), seed=inputs.pop("seed"))
+        found = epipolar.essential_ransac(**inputs, options=options, backend=chosen)
+        ran = found.summary.refinement is not None
+        assert ran == case["summary"]["refinement_ran"], case["name"]
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -391,15 +396,13 @@ def test_refine_rejects_invalid_input(backend: str) -> None:
         )
 
 
-@pytest.mark.parametrize("module", [epipolar, twoview])
-def test_the_compiled_code_tables_match(module: ModuleType) -> None:
+def test_the_compiled_code_tables_match() -> None:
     """The codes Python sends and decodes are the compiled core's, in the same order."""
-    chosen = require_function("cpp", module.__name__, "codes")
-    codes = backends.implementation(chosen, module.__name__).codes()
+    chosen = require_function("cpp", epipolar.__name__, "codes")
+    codes = backends.implementation(chosen, epipolar.__name__).codes()
     assert tuple(codes["termination"]) == tuple(ransac.Termination)
     assert tuple(codes["nls_termination"]) == tuple(nls.Termination)
-    if module is epipolar:
-        assert tuple(codes["minimal_solver"]) == epipolar.MINIMAL_SOLVERS
+    assert tuple(codes["minimal_solver"]) == epipolar.MINIMAL_SOLVERS
 
 
 @pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))

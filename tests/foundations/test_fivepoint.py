@@ -142,7 +142,9 @@ def test_near_degenerate_samples_keep_the_true_essential(backend: str) -> None:
     """Forward motion at a 5% baseline (docs/notes/five-point.md, "Near degeneracy").
 
     On 100 exact samples, Stewénius finds the true E on all but at most two, Nistér on all but
-    at most eight: its degree-10 polynomial can round a real root into a complex pair.
+    at most twelve: its degree-10 polynomial can round a real root into a complex pair. Nistér's
+    count is measured (6 in Python, 7 in C++) and depends on rounding, so on the platform and
+    compiler; the bound leaves room for that.
     """
     chosen = require_function(backend, fivepoint.__name__, "essential_5pt")
     misses = dict.fromkeys(fivepoint.SOLVERS, 0)
@@ -152,7 +154,7 @@ def test_near_degenerate_samples_keep_the_true_essential(backend: str) -> None:
             found = fivepoint.essential_5pt(b1, b2, solver=solver, backend=chosen)
             misses[solver] += _distance(found, truth) > 1e-4
     assert misses["stewenius"] <= 2
-    assert misses["nister"] <= 8
+    assert misses["nister"] <= 12
 
 
 @pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))

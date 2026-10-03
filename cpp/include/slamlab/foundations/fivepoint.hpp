@@ -34,6 +34,9 @@ inline constexpr double kRootTolerance = 1e-14;
 /// @brief A solution is kept only if, scaled to norm sqrt(2), `s1 - s2` and `s3` are both below
 ///        this (see `slamlab.foundations.fivepoint.ESSENTIAL_TOLERANCE`).
 inline constexpr double kEssentialTolerance = 1e-6;
+/// @brief A solution within this (max-abs, up to sign) of one already kept is the same solution
+///        (see `slamlab.foundations.fivepoint.DUPLICATE_TOLERANCE`).
+inline constexpr double kDuplicateTolerance = 1e-8;
 
 /// @brief The solvers, with the codes they cross the bindings as.
 enum class Solver : std::uint8_t {

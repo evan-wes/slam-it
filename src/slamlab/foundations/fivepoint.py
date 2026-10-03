@@ -40,8 +40,10 @@ motion) it keeps the true solution far more often than Nistér's polynomial, who
 push a real root off the real axis.
 
 **Polishing.** Each solution of either method is polished by Gauss-Newton on the original ten
-cubic constraints, to convergence (:data:`POLISH_MAX_STEPS`, :data:`POLISH_TOLERANCE`). The
-measured precision and recall are in ``docs/notes/five-point.md``.
+cubic constraints, to convergence (:data:`POLISH_MAX_STEPS`, :data:`POLISH_TOLERANCE`). Near
+degeneracy two roots can polish to the same solution; the copy is dropped
+(:data:`DUPLICATE_TOLERANCE`). The measured precision and recall are in
+``docs/notes/five-point.md``.
 
 Both return every real solution, scaled to singular values ``(1, 1, 0)``; each is
 ``±[t̂]ₓ R``. Five pairs whose 5x9 system has rank below five (a repeated or degenerate
@@ -85,6 +87,10 @@ POLISH_TOLERANCE = 1e-14
 
 ROOT_TOLERANCE = 1e-14
 """Bisection stops when a root's bracket is below this, relative to the root (at least 1)."""
+
+DUPLICATE_TOLERANCE = 1e-8
+"""A solution within this (max-abs, up to sign) of one already kept is the same solution: two
+roots that polishing merged."""
 
 ESSENTIAL_TOLERANCE = 1e-6
 """A solution is kept only if, scaled to norm √2, ``σ1 - σ2`` and ``σ3`` are both below this.
@@ -202,12 +208,17 @@ def _keep(solutions: list[Matrix3], essential: NDArray[np.float64]) -> None:
     A solution of a well-posed sample is essential to the solver's precision. A sample with no
     baseline (or nearly none) leaves the cubic constraints a continuum of solutions, and some
     roots the solvers find there give no essential matrix: anything not within
-    :data:`ESSENTIAL_TOLERANCE` of singular values (1, 1, 0) is dropped.
+    :data:`ESSENTIAL_TOLERANCE` of singular values (1, 1, 0) is dropped, and so is a copy of a
+    solution already kept (:data:`DUPLICATE_TOLERANCE`).
     """
     scaled = np.asarray(essential * (np.sqrt(2.0) / np.linalg.norm(essential)), dtype=np.float64)
     singular = np.linalg.svd(scaled, compute_uv=False)
-    if max(singular[0] - singular[1], singular[2]) <= ESSENTIAL_TOLERANCE:
-        solutions.append(scaled)
+    if not max(singular[0] - singular[1], singular[2]) <= ESSENTIAL_TOLERANCE:
+        return
+    for kept in solutions:
+        if min(np.abs(kept - scaled).max(), np.abs(kept + scaled).max()) <= DUPLICATE_TOLERANCE:
+            return
+    solutions.append(scaled)
 
 
 # --- Nistér: a degree-10 polynomial and its Sturm sequence ---------------------------------

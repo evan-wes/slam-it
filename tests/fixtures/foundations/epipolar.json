@@ -4423,6 +4423,9 @@
        true,
        true
       ]
+     },
+     "summary": {
+      "refinement_ran": true
      }
     },
     {
@@ -5777,6 +5780,9 @@
        true,
        true
       ]
+     },
+     "summary": {
+      "refinement_ran": true
      }
     },
     {
@@ -7131,6 +7137,9 @@
        true,
        true
       ]
+     },
+     "summary": {
+      "refinement_ran": false
      }
     }
    ]

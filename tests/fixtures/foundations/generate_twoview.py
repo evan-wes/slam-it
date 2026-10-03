@@ -294,6 +294,7 @@ def _epipolar_fixture() -> dict[str, Any]:
                 "refine": refine,
             },
             {"model": _float(e_true), "inliers": mask},
+            summary={"refinement_ran": refine},
         )
         for solver, refine in (("stewenius", True), ("nister", True), ("8pt", False))
     ]
@@ -402,9 +403,17 @@ def _fivepoint_fixture() -> dict[str, Any]:
         "forward": _pose([0.01, 0.02, 0.0], [0.02, 0.01, 0.6]),
         "oblique": _pose([-0.1, 0.05, 0.2], [0.3, 0.4, -0.2]),
     }
-    cases = []
+    samples = []
     for name, (rot, t) in motions.items():
-        b1, b2 = _bearing_pairs(rng, 5, rot, t, 0.0)
+        samples.append((name, rot, t, _bearing_pairs(rng, 5, rot, t, 0.0)))
+    # A 5 cm forward baseline: samples whose unpolished solutions miss the true E by 6e-8 to
+    # 3e-3 (both solvers), so a port without the converged polish fails the tolerance.
+    near_rot, near_t = _pose([0.01, -0.015, 0.005], [0.004, -0.003, 0.05])
+    for seed in (1, 15, 20):
+        pairs = _bearing_pairs(np.random.default_rng(seed), 5, near_rot, near_t, 0.0)
+        samples.append((f"forward, 5 cm baseline, sample {seed}", near_rot, near_t, pairs))
+    cases = []
+    for name, rot, t, (b1, b2) in samples:
         for solver in ("stewenius", "nister"):
             cases.append(
                 o.case(
@@ -421,10 +430,12 @@ def _fivepoint_fixture() -> dict[str, Any]:
                 "tolerance": {
                     "comparison": "close",
                     "rtol": 0.0,
-                    "atol": 1e-9,
+                    "atol": 1e-11,
                     "double_cover": True,
                     "reason": "the expected E must be among the solutions, up to sign; the "
-                    "solutions are polished to convergence on the cubic constraints",
+                    "solutions are polished to convergence on the cubic constraints (worst "
+                    "measured 1.6e-12 here, 3.8e-12 on 300 generic samples); unpolished, the "
+                    "near-degenerate samples miss by 6e-8 to 3e-3",
                 },
                 "cases": cases,
             }

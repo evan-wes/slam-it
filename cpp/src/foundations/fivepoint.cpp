@@ -47,6 +47,16 @@ constexpr Order kGrevlexOrder = {{{3, 0, 0}, {2, 1, 0}, {2, 0, 1}, {1, 2, 0}, {1
 ///        of the reduced matrix, each followed by its partner (see `_NISTER_ROW_PAIRS`).
 constexpr std::array<Eigen::Index, 3> kNisterRowPairs = {4, 6, 8};
 
+/// @brief A 3x3 determinant's six terms: the column taken from each row, and the permutation's
+///        sign (see `_DETERMINANT_TERMS`).
+constexpr std::array<std::tuple<std::size_t, std::size_t, std::size_t, double>, 6>
+    kDeterminantTerms = {{{0, 1, 2, 1.0},
+                          {1, 2, 0, 1.0},
+                          {2, 0, 1, 1.0},
+                          {0, 2, 1, -1.0},
+                          {1, 0, 2, -1.0},
+                          {2, 1, 0, -1.0}}};
+
 /// @brief The flat index of a monomial.
 /// @param a The exponent of x.
 /// @param b The exponent of y.
@@ -209,9 +219,16 @@ void keep(std::vector<Eigen::Matrix3d>& solutions, const std::array<Eigen::Matri
       (xyz(0) * basis[0]) + (xyz(1) * basis[1]) + (xyz(2) * basis[2]) + basis[3];
   const Eigen::Matrix3d scaled = essential * (std::numbers::sqrt2 / essential.norm());
   const Eigen::Vector3d singular = Eigen::JacobiSVD<Eigen::Matrix3d>(scaled).singularValues();
-  if (std::max(singular(0) - singular(1), singular(2)) <= kEssentialTolerance) {
-    solutions.push_back(scaled);
+  if (!(std::max(singular(0) - singular(1), singular(2)) <= kEssentialTolerance)) {
+    return;
   }
+  for (const Eigen::Matrix3d& kept : solutions) {
+    if (std::min((kept - scaled).cwiseAbs().maxCoeff(), (kept + scaled).cwiseAbs().maxCoeff()) <=
+        kDuplicateTolerance) {
+      return;
+    }
+  }
+  solutions.push_back(scaled);
 }
 
 // --- polynomials in one variable ------------------------------------------------------------
@@ -418,9 +435,10 @@ std::pair<Eigen::Matrix<double, 20, 1>, Eigen::Matrix<double, 20, 3>> monomials(
 /// @return The polished point.
 Eigen::Vector3d polish(const Eigen::Matrix<double, 10, 20>& m, const Order& order,
                        Eigen::Vector3d xyz) {
-  Eigen::Matrix<double, 10, 1> residual = m * monomials(order, xyz).first;
+  auto evaluated = monomials(order, xyz);
+  Eigen::Matrix<double, 10, 1> residual = m * evaluated.first;
   for (int step = 0; step < kPolishMaxSteps; ++step) {
-    const Eigen::Matrix<double, 10, 3> jacobian = m * monomials(order, xyz).second;
+    const Eigen::Matrix<double, 10, 3> jacobian = m * evaluated.second;
     const Eigen::Vector3d delta =
         Eigen::JacobiSVD<Eigen::Matrix<double, 10, 3>, Eigen::ComputeThinU | Eigen::ComputeThinV>(
             jacobian)
@@ -429,11 +447,13 @@ Eigen::Vector3d polish(const Eigen::Matrix<double, 10, 20>& m, const Order& orde
       break;
     }
     const Eigen::Vector3d moved = xyz + delta;
-    const Eigen::Matrix<double, 10, 1> moved_residual = m * monomials(order, moved).first;
+    auto moved_evaluated = monomials(order, moved);
+    const Eigen::Matrix<double, 10, 1> moved_residual = m * moved_evaluated.first;
     if (!(moved_residual.norm() < residual.norm())) {
       break;
     }
     xyz = moved;
+    evaluated = std::move(moved_evaluated);
     residual = moved_residual;
     if (delta.norm() <= kPolishTolerance * std::max(1.0, xyz.norm())) {
       break;
@@ -496,9 +516,7 @@ std::vector<Eigen::Matrix3d> nister(const Eigen::Ref<const correspondences::Rows
     }
   }
   Poly determinant = {0.0};
-  for (const auto& [i, j, k, sign] :
-       {std::tuple{0, 1, 2, 1.0}, std::tuple{1, 2, 0, 1.0}, std::tuple{2, 0, 1, 1.0},
-        std::tuple{0, 2, 1, -1.0}, std::tuple{1, 0, 2, -1.0}, std::tuple{2, 1, 0, -1.0}}) {
+  for (const auto& [i, j, k, sign] : kDeterminantTerms) {
     const Poly term = product(product(rows[0].at(i), rows[1].at(j)), rows[2].at(k));
     determinant = sum(determinant, term, sign);
   }

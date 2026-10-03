@@ -169,8 +169,10 @@ type = "forbidden"
 source_modules = ["slamlab"]
 forbidden_modules = ["cv2"]
 
-# The test oracles check slamlab against independent implementations; the library using one
-# would make that check circular (PoseLib is a competing implementation of the same solvers).
+# The library's runtime is numpy alone (the dependencies above), so none of these may enter
+# it; and they are the test oracles, which check slamlab against independent implementations,
+# so the library using one would make that check circular (PoseLib implements the same
+# solvers). A rung that needs one of them at run time changes the dependencies first.
 [[tool.importlinter.contracts]]
 name = "slamlab never imports its test oracles"
 type = "forbidden"

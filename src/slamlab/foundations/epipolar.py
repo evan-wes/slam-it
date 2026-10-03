@@ -797,6 +797,22 @@ class EssentialSummary:
     refinement: nls.Summary | None
     refined: bool
 
+    @classmethod
+    def unrefined(cls, run: ransac.Summary) -> EssentialSummary:
+        """Return the summary of a run whose refinement did not run.
+
+        Parameters
+        ----------
+        run : ransac.Summary
+            The RANSAC run.
+
+        Returns
+        -------
+        EssentialSummary
+            `run`, no refinement, not refined.
+        """
+        return cls(run, refinement=None, refined=False)
+
     @property
     def iterations(self) -> int:
         """Minimal samples drawn."""
@@ -823,7 +839,7 @@ def _polish_consensus(
     Unchecked: the bearings are validated pairs with positive z, and `found` is E-RANSAC's
     result on them.
     """
-    unrefined = EssentialSummary(found.summary, refinement=None, refined=False)
+    unrefined = EssentialSummary.unrefined(found.summary)
     inliers = found.state.inliers
     if np.count_nonzero(inliers) < fivepoint.SAMPLE_SIZE:
         return Solution(state=found.state, summary=unrefined)
@@ -874,7 +890,7 @@ def essential_ransac_reference(
     found = ransac.estimate(essential_estimator(bearings1, bearings2, minimal_solver), options)
     if refine:
         return _polish_consensus(found, (bearings1, bearings2), options.threshold)
-    return Solution(state=found.state, summary=EssentialSummary(found.summary, None, False))
+    return Solution(state=found.state, summary=EssentialSummary.unrefined(found.summary))
 
 
 def essential_summary_from_backend(
@@ -960,11 +976,7 @@ def essential_ransac(  # noqa: PLR0913 -- the solver choices are keyword-only
     compiled = backends.function(backend, __name__, "essential_ransac")
     raw = compiled(b1, b2, asdict(options), MINIMAL_SOLVERS.index(minimal_solver), refine)
     codes = backends.implementation(backend, __name__).codes()
-    consensus = ransac.Consensus(
-        model=np.asarray(raw["model"], dtype=np.float64),
-        inliers=np.asarray(raw["inliers"], dtype=np.bool_),
-    )
-    return Solution(state=consensus, summary=essential_summary_from_backend(raw["summary"], codes))
+    return ransac.from_backend(raw, codes, essential_summary_from_backend)
 
 
 def fundamental_ransac(
