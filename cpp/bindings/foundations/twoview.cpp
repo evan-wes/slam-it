@@ -95,6 +95,7 @@ nb::dict initialize(const BatchIn<3>& bearings1, const BatchIn<3>& bearings2,
   nb::dict out;
   out["status"] = static_cast<int>(result.status);
   out["model"] = static_cast<int>(result.model);
+  out["fallback"] = result.fallback;
   auto [pose, pose_data] = new_array({4, 4});
   Eigen::Map<Item<4, 4>> pose_view(pose_data);
   pose_view = result.relative_pose;

@@ -4,8 +4,9 @@
 ///
 /// Mirrors `slamlab.foundations.twoview`, whose docstring states the method: E (normalised
 /// 8-point) and H (normalised DLT) by LO-MSAC on independent random streams, Torr's GRIC over
-/// the matches either model explains, the winner's decomposition, and each candidate tried by
-/// triangulating the inliers. The outcome is a status, not an error.
+/// the matches either model explains, the winner's decomposition, each candidate tried by
+/// triangulating the inliers, and E deciding when H's candidates are ambiguous. The outcome is a
+/// status, not an error.
 #pragma once
 
 #include <Eigen/Core>
@@ -108,8 +109,10 @@ struct Options {
 struct Initialization {
   /// @brief Whether it initialised, and if not, why.
   Status status = Status::kLowParallax;
-  /// @brief The model GRIC chose.
+  /// @brief The model that decided: GRIC's choice, or E when it fell back.
   Model model = Model::kEssential;
+  /// @brief Whether H won GRIC but its candidates were ambiguous, and E decided instead.
+  bool fallback = false;
   /// @brief The best candidate `T_c2_c1`, unit translation (zero for a pure rotation).
   Eigen::Matrix4d relative_pose = Eigen::Matrix4d::Identity();
   /// @brief The chosen model's RANSAC inliers.

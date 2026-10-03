@@ -39,6 +39,15 @@ the model's inliers (:func:`~slamlab.foundations.triangulation.two_view`) and co
 points in front of both cameras. The best must beat the runner-up clearly, and enough of its
 points must have the parallax that makes their depth well determined.
 
+**Falling back to E.** On a scene with little parallax (a desk seen from half a metre),
+GRIC often prefers H, rightly: H explains most matches within the noise. But H's
+decomposition then leaves two physically valid motions with similar support, and choosing
+between them is a guess. In that case, if E on its own is unambiguous and has enough
+parallax, E decides (``fallback`` is set). On 38 frame pairs of TUM fr1/xyz (1 to 1.5 s
+apart), refusing on an ambiguous H initialised 3 pairs; falling back to E initialised 22,
+2 with a translation direction off by more than 20 degrees (OpenCV's 5-point RANSAC: 3 of
+the same 22).
+
 **The outcome is a status, not an exception.** Not being able to initialise from two frames is
 normal (the camera has not moved enough yet), so :func:`initialize` always returns its best
 estimate and a :class:`Status`:
@@ -192,7 +201,9 @@ class Initialization:
     status : Status
         Whether it initialised, and if not, why.
     model : Model
-        The model GRIC chose.
+        The model that decided: GRIC's choice, or E when it fell back.
+    fallback : bool
+        Whether H won GRIC but its candidates were ambiguous, and E decided instead.
     relative_pose : ndarray of float64, shape (4, 4)
         The best candidate ``T_c2_c1``, unit translation (zero for a pure rotation).
     inliers : ndarray of bool, shape (N,)
@@ -211,6 +222,7 @@ class Initialization:
 
     status: Status
     model: Model
+    fallback: bool
     relative_pose: NDArray[np.float64]
     inliers: NDArray[np.bool_]
     points: NDArray[np.float64]
@@ -322,6 +334,42 @@ def _candidates(model: Model, matrix: epipolar.Matrix3) -> NDArray[np.float64]:
     return homography.decompose_reference(matrix)["poses"]
 
 
+@dataclass(frozen=True)
+class _Decision:
+    """A model's verdict: its status, best candidate and per-candidate counts."""
+
+    status: Status
+    pose: NDArray[np.float64]
+    best: _Tried | None
+    counts: list[int]
+
+
+def _decide(
+    model: Model,
+    run: Solution[ransac.Consensus[epipolar.Matrix3], ransac.Summary],
+    rays: tuple[NDArray[np.float64], NDArray[np.float64]],
+    options: Options,
+) -> _Decision:
+    """Try a model's candidate motions on its inliers and judge the best."""
+    candidates = _candidates(model, run.state.model)
+    if not np.linalg.norm(candidates[0][:3, 3]) > 0.0:
+        return _Decision(Status.PURE_ROTATION, candidates[0], None, [])
+    min_parallax = math.radians(options.min_parallax_deg)
+    tried = sorted(
+        (_try(pose, rays, run.state.inliers, min_parallax) for pose in candidates),
+        key=lambda t: -t.in_front,
+    )
+    counts = [t.in_front for t in tried]
+    best = tried[0]
+    if np.count_nonzero(best.good) < options.min_points:
+        status = Status.LOW_PARALLAX
+    elif len(tried) > 1 and tried[1].in_front > options.ambiguity_ratio * best.in_front:
+        status = Status.AMBIGUOUS
+    else:
+        status = Status.INITIALIZED
+    return _Decision(status, best.pose, best, counts)
+
+
 def _initialize(
     bearings1: NDArray[np.float64], bearings2: NDArray[np.float64], options: Options
 ) -> Initialization:
@@ -349,38 +397,28 @@ def _initialize(
     model = Model.HOMOGRAPHY if gric_h < gric_e else Model.ESSENTIAL
     chosen = planar if model is Model.HOMOGRAPHY else essential
     assert chosen is not None  # the lower score is finite
-    inliers = chosen.state.inliers
-    candidates = _candidates(model, chosen.state.model)
-
-    def result(status: Status, best: _Tried | None, counts: list[int]) -> Initialization:
-        return Initialization(
-            status=status,
-            model=model,
-            relative_pose=best.pose if best is not None else candidates[0],
-            inliers=inliers,
-            points=best.points if best is not None else np.full((n, 3), np.nan),
-            triangulated=best.good if best is not None else np.zeros(n, dtype=bool),
-            gric_essential=gric_e,
-            gric_homography=gric_h,
-            in_front=np.asarray(counts, dtype=np.int64),
-            essential=essential.summary if essential is not None else None,
-            homography=planar.summary if planar is not None else None,
-        )
-
-    if not np.linalg.norm(candidates[0][:3, 3]) > 0.0:
-        return result(Status.PURE_ROTATION, None, [])
-    min_parallax = math.radians(options.min_parallax_deg)
-    tried = sorted(
-        (_try(pose, (bearings1, bearings2), inliers, min_parallax) for pose in candidates),
-        key=lambda t: -t.in_front,
+    rays = (bearings1, bearings2)
+    decision = _decide(model, chosen, rays, options)
+    fallback = False
+    if decision.status is Status.AMBIGUOUS and model is Model.HOMOGRAPHY and essential is not None:
+        alternative = _decide(Model.ESSENTIAL, essential, rays, options)
+        if alternative.status is Status.INITIALIZED:
+            model, chosen, decision, fallback = Model.ESSENTIAL, essential, alternative, True
+    best = decision.best
+    return Initialization(
+        status=decision.status,
+        model=model,
+        fallback=fallback,
+        relative_pose=decision.pose,
+        inliers=chosen.state.inliers,
+        points=best.points if best is not None else np.full((n, 3), np.nan),
+        triangulated=best.good if best is not None else np.zeros(n, dtype=bool),
+        gric_essential=gric_e,
+        gric_homography=gric_h,
+        in_front=np.asarray(decision.counts, dtype=np.int64),
+        essential=essential.summary if essential is not None else None,
+        homography=planar.summary if planar is not None else None,
     )
-    counts = [t.in_front for t in tried]
-    best = tried[0]
-    if np.count_nonzero(best.good) < options.min_points:
-        return result(Status.LOW_PARALLAX, best, counts)
-    if len(tried) > 1 and tried[1].in_front > options.ambiguity_ratio * best.in_front:
-        return result(Status.AMBIGUOUS, best, counts)
-    return result(Status.INITIALIZED, best, counts)
 
 
 # --- validation and dispatch --------------------------------------------------------------
@@ -400,6 +438,7 @@ def _from_backend(raw: dict[str, Any], codes: dict[str, list[str]]) -> Initializ
     return Initialization(
         status=Status(codes["status"][int(raw["status"])]),
         model=Model(codes["model"][int(raw["model"])]),
+        fallback=bool(raw["fallback"]),
         relative_pose=np.asarray(raw["relative_pose"], dtype=np.float64),
         inliers=np.asarray(raw["inliers"], dtype=np.bool_),
         points=np.asarray(raw["points"], dtype=np.float64),

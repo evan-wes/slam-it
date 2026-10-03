@@ -198,29 +198,41 @@ Initialization scored(const Runs& runs, const Planes& planes, double sigma) {
   return out;
 }
 
-/// @brief Try the chosen model's candidates, keep the best, and set the status.
-/// @param out The result, with the model and inliers set.
-/// @param matrix The chosen model's matrix.
+/// @brief A model's verdict: its status, best candidate and per-candidate counts.
+struct Decision {
+  /// @brief The status this model reaches.
+  Status status = Status::kLowParallax;
+  /// @brief The best candidate (the first, for a pure rotation).
+  Eigen::Matrix4d pose = Eigen::Matrix4d::Identity();
+  /// @brief The best candidate, triangulated (none for a pure rotation).
+  std::optional<Tried> best;
+  /// @brief Each candidate's inliers in front, best first.
+  std::vector<int> in_front;
+};
+
+/// @brief Try a model's candidate motions on its inliers and judge the best.
+/// @param model The model.
+/// @param run Its RANSAC solution.
 /// @param rays Both cameras' bearings.
 /// @param options The settings.
-/// @return Nothing, or a decomposition or triangulation error.
-Result<void> choose_motion(
-    Initialization& out, const Eigen::Matrix3d& matrix,
+/// @return The verdict, or a decomposition or triangulation error.
+Result<Decision> decide(
+    Model model, const ransac::Solution<Eigen::Matrix3d>& run,
     const std::pair<Eigen::Ref<const epipolar::Rows3>, Eigen::Ref<const epipolar::Rows3>>& rays,
     const Options& options) {
-  const auto poses = candidates(out.model, matrix);
+  const auto poses = candidates(model, run.state.model);
   if (!poses) {
     return std::unexpected(poses.error());
   }
-  out.relative_pose = poses->front();
-  if (!(out.relative_pose.topRightCorner<3, 1>().norm() > 0.0)) {
+  Decision out{.pose = poses->front(), .best = std::nullopt, .in_front = {}};
+  if (!(out.pose.topRightCorner<3, 1>().norm() > 0.0)) {
     out.status = Status::kPureRotation;
-    return {};
+    return out;
   }
   const double min_parallax = options.min_parallax_deg * std::numbers::pi / 180.0;
   std::vector<Tried> tried;
   for (const Eigen::Matrix4d& pose : *poses) {
-    auto attempt = try_candidate(pose, rays.first, rays.second, out.inliers, min_parallax);
+    auto attempt = try_candidate(pose, rays.first, rays.second, run.state.inliers, min_parallax);
     if (!attempt) {
       return std::unexpected(attempt.error());
     }
@@ -232,9 +244,6 @@ Result<void> choose_motion(
     out.in_front.push_back(t.in_front);
   }
   const Tried& best = tried.front();
-  out.relative_pose = best.pose;
-  out.points = best.points;
-  out.triangulated = best.good;
   if (best.good.count() < options.min_points) {
     out.status = Status::kLowParallax;
   } else if (tried.size() > 1 && tried[1].in_front > options.ambiguity_ratio * best.in_front) {
@@ -242,7 +251,9 @@ Result<void> choose_motion(
   } else {
     out.status = Status::kInitialized;
   }
-  return {};
+  out.pose = best.pose;
+  out.best = best;
+  return out;
 }
 
 }  // namespace
@@ -325,10 +336,32 @@ Result<Initialization> initialize(const Eigen::Ref<const epipolar::Rows3>& beari
     // Unreachable: the chosen model's score is finite only when its run found a model.
     return fail(ErrorKind::kDegenerate, "initialize: the chosen model has no run");
   }
-  const ransac::Solution<Eigen::Matrix3d>& chosen = *run;
-  out.inliers = chosen.state.inliers;
-  if (auto ok = choose_motion(out, chosen.state.model, {bearings1, bearings2}, options); !ok) {
-    return std::unexpected(ok.error());
+  const std::pair<Eigen::Ref<const epipolar::Rows3>, Eigen::Ref<const epipolar::Rows3>> rays{
+      bearings1, bearings2};
+  auto decision = decide(out.model, *run, rays, options);
+  if (!decision) {
+    return std::unexpected(decision.error());
+  }
+  out.inliers = run->state.inliers;
+  if (decision->status == Status::kAmbiguous && out.model == Model::kHomography &&
+      runs->essential.has_value()) {
+    auto alternative = decide(Model::kEssential, *runs->essential, rays, options);
+    if (!alternative) {
+      return std::unexpected(alternative.error());
+    }
+    if (alternative->status == Status::kInitialized) {
+      out.model = Model::kEssential;
+      out.fallback = true;
+      out.inliers = runs->essential->state.inliers;
+      decision = std::move(alternative);
+    }
+  }
+  out.status = decision->status;
+  out.relative_pose = decision->pose;
+  out.in_front = decision->in_front;
+  if (decision->best) {
+    out.points = decision->best->points;
+    out.triangulated = decision->best->good;
   }
   return out;
 }

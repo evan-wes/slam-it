@@ -106,6 +106,34 @@ def test_a_strict_ambiguity_ratio_reports_ambiguity() -> None:
     assert result.in_front[1] > 0.01 * result.in_front[0]
 
 
+def _desk(seed: int = 0) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return a desk-like scene: 80% of points on a plane 2 m away, the rest in front of it.
+
+    With a 20 cm baseline and 1 px noise, H wins GRIC; its runner-up candidate has more than
+    half its best's support, so with ``ambiguity_ratio=0.5`` H is ambiguous and E decides.
+    """
+    pose = se3.exp([0.2, 0.0, 0.02, 0.0, 0.02, 0.0])
+    points = np.vstack([sc.plane(240, seed=1, depth=2.0), sc.scene(60, seed=2) * [0.5, 0.5, 0.4]])
+    b1, b2 = sc.pairs(points, pose=pose, sigma=1 / 520, seed=3 + seed)
+    b2, _ = sc.with_outliers(b2, 0.2, seed=4 + seed)
+    return b1, b2, pose
+
+
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_an_ambiguous_homography_falls_back_to_e(backend: str) -> None:
+    """H wins but is ambiguous; E alone is unambiguous, so E decides and the flag says so."""
+    b1, b2, pose = _desk()
+    strict = replace(OPTIONS, ambiguity_ratio=0.5)
+    result = twoview.initialize(b1, b2, strict, backend=backend)
+    assert result.gric_homography < result.gric_essential
+    assert result.status is twoview.Status.INITIALIZED
+    assert result.model is twoview.Model.ESSENTIAL
+    assert result.fallback
+    assert _rotation_error_deg(result.relative_pose, pose) < 1.0
+    default = twoview.initialize(b1, b2, OPTIONS, backend=backend)
+    assert (default.model, default.fallback) == (twoview.Model.HOMOGRAPHY, False)
+
+
 @pytest.mark.parametrize("seed", range(3))
 def test_backends_agree_run_for_run(seed: int) -> None:
     """Every backend reaches the same decision, inliers and points on noisy data."""
@@ -117,7 +145,11 @@ def test_backends_agree_run_for_run(seed: int) -> None:
         for b in sorted(backends.LOCKSTEP_BACKENDS)
     ]
     for other in runs[1:]:
-        assert (other.status, other.model) == (runs[0].status, runs[0].model)
+        assert (other.status, other.model, other.fallback) == (
+            runs[0].status,
+            runs[0].model,
+            runs[0].fallback,
+        )
         np.testing.assert_array_equal(other.inliers, runs[0].inliers)
         np.testing.assert_array_equal(other.triangulated, runs[0].triangulated)
         np.testing.assert_allclose(other.relative_pose, runs[0].relative_pose, rtol=0, atol=1e-10)
