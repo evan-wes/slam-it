@@ -79,7 +79,7 @@ ignore = [
 ]
 # Greek letters in docstrings are the maths notation (ρ for translation, σ for scale, ...),
 # not look-alikes of Latin letters.
-allowed-confusables = ["ρ", "σ", "α", "ν"]
+allowed-confusables = ["ρ", "σ", "α", "ν", "×"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
@@ -131,7 +131,7 @@ type = "layers"
 containers = ["slamlab.foundations"]
 layers = [
   "(ba)",
-  "(camera) | (nls)",
+  "(camera) | (nls) | (triangulation)",
   "(alignment)",
   "(se3)",
   "so3",

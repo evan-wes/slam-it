@@ -32,14 +32,6 @@ namespace ba = foundations::ba;
 namespace camera = foundations::camera;
 namespace nls = foundations::nls;
 
-/// @brief A read-only, contiguous 1D array.
-/// @tparam T The element type.
-template <typename T>
-using VectorIn = nb::ndarray<const T, nb::shape<-1>, nb::c_contig, nb::device::cpu>;
-
-/// @brief A read-only, contiguous float64 matrix.
-using MatrixIn = nb::ndarray<const double, nb::shape<-1, -1>, nb::c_contig, nb::device::cpu>;
-
 /// @brief Camera model names, indexed by `camera::Model` code.
 constexpr std::array<const char*, 3> kModels = {"pinhole", "radtan", "radial"};
 /// @brief Gauge names, indexed by `ba::Gauge` code.
@@ -78,80 +70,6 @@ E decode(int code, const std::array<const char*, N>& names, const char* what) {
     throw std::invalid_argument(std::string(what) + ": unknown code " + std::to_string(code));
   }
   return static_cast<E>(code);
-}
-
-/// @brief Copy a 1D array into a vector.
-/// @tparam Out The vector type.
-/// @tparam T The element type.
-/// @param in The array.
-/// @return The copy.
-template <typename Out, typename T>
-Out copy_vector(const VectorIn<T>& in) {
-  Out out(in.shape(0));
-  for (std::size_t i = 0; i < in.shape(0); ++i) {
-    out[i] = in(i);
-  }
-  return out;
-}
-
-/// @brief Copy a row-major float64 matrix of known column count into an Eigen matrix.
-/// @tparam M The Eigen matrix type.
-/// @param data The buffer.
-/// @param rows Rows.
-/// @param cols Columns.
-/// @return The copy.
-template <typename M>
-M copy_matrix(const double* data, std::size_t rows, std::size_t cols) {
-  check_aligned(data);
-  return Eigen::Map<const M>(data, static_cast<Eigen::Index>(rows),
-                             static_cast<Eigen::Index>(cols));
-}
-
-/// @brief Copy a (C, 4, 4) batch into poses.
-/// @param in The batch.
-/// @return The poses.
-ba::Poses copy_poses(const BatchIn<4, 4>& in) {
-  check_aligned(in.data());
-  ba::Poses out;
-  for (std::size_t c = 0; c < in.shape(0); ++c) {
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic): batch offset
-    out.emplace_back(Eigen::Map<const Item<4, 4>>(in.data() + (16 * c)));
-  }
-  return out;
-}
-
-/// @brief Copy poses into a new (C, 4, 4) array.
-/// @param poses The poses.
-/// @return The array.
-ArrayOut poses_array(const ba::Poses& poses) {
-  auto [out, data] = new_array({poses.size(), 4, 4});
-  for (std::size_t c = 0; c < poses.size(); ++c) {
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic): batch offset
-    Eigen::Map<Item<4, 4>>(data + (16 * c)) = poses[c];
-  }
-  return out;
-}
-
-/// @brief Copy a row-major matrix into a new array of its shape.
-/// @tparam M The matrix type.
-/// @param matrix The matrix.
-/// @return The array.
-template <typename M>
-ArrayOut matrix_array(const M& matrix) {
-  auto [out, data] =
-      new_array({static_cast<std::size_t>(matrix.rows()), static_cast<std::size_t>(matrix.cols())});
-  Eigen::Map<Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>(
-      data, matrix.rows(), matrix.cols()) = matrix;
-  return out;
-}
-
-/// @brief Copy a vector into a new 1D array.
-/// @param vector The vector.
-/// @return The array.
-ArrayOut vector_array(const Eigen::VectorXd& vector) {
-  auto [out, data] = new_array({static_cast<std::size_t>(vector.size())});
-  Eigen::Map<Eigen::VectorXd>(data, vector.size()) = vector;
-  return out;
 }
 
 /// @brief The summary's trace as a new (I, 7) array.

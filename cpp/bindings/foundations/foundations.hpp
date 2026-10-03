@@ -27,6 +27,10 @@ void bind_camera(nanobind::module_& m);
 /// @param m The `foundations.alignment` submodule.
 void bind_alignment(nanobind::module_& m);
 
+/// @brief Add the `triangulation` functions to the `foundations.triangulation` submodule.
+/// @param m The `foundations.triangulation` submodule.
+void bind_triangulation(nanobind::module_& m);
+
 /// @brief Add the `ba` functions to the `foundations.ba` submodule.
 /// @param m The `foundations.ba` submodule.
 void bind_ba(nanobind::module_& m);
