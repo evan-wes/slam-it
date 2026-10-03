@@ -121,6 +121,9 @@ green. Prefer few, substantial PRs over many small ones.
 ## Git and PRs
 
 - Feature branches off `develop`, PRs into `develop`. `main` only takes `develop` releases.
+- **Docs-only changes skip the PR:** once the owner has finalized the wording, commit them
+  directly on `develop` (layer 1 green) and push. They need no version bump or CHANGELOG
+  entry. Anything that touches code, tests or tooling still goes through a PR.
 - Every PR with a code change bumps `VERSION` (4-digit MAJOR.MINOR.PATCH.MICRO) and adds a
   `CHANGELOG.md` entry.
 - **PR descriptions follow `.github/pull_request_template.md`.** Its "How this was built"

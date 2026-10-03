@@ -49,9 +49,9 @@ The ladder spans compute budgets. Every rung stands on rung 0.
 
 | Rung | What it is | Compute target |
 |---|---|---|
-| **0: Foundations** | Camera models, SE(3)/Sim(3), 8/5-point, RANSAC, triangulation, PnP, Gauss-Newton/LM bundle adjustment with a Schur complement | CPU |
+| **0: Foundations** | Camera models, SE(3)/Sim(3), 8/5-point, RANSAC, triangulation, PnP, Gauss-Newton/LM bundle adjustment with a Schur complement; state estimation, batch (Gauss-Newton/LM) and recursive (error-state filter) | CPU |
 | **Edge: sparse VO** | Features, tracking, keyframes, local BA (ORB-SLAM-lite); optional RGB-D mode with predicted depth | Real-time under an edge budget |
-| **Visual-inertial** | IMU preintegration and tight visual-inertial optimisation, on top of the edge VO | Edge budget |
+| **Visual-inertial** | IMU preintegration shared by two estimators, a filter (MSCKF) and a smoother (sliding-window optimisation), on top of the edge VO | Edge budget |
 | **Classic heavy** | Incremental SfM, global BA, place recognition, loop closure | Offline, minutes per clip |
 | **Dense BA + depth prior** | Dense bundle adjustment over per-pixel depth, with a monocular depth prior and motion masks | GPU |
 | **Learned dense** | DROID-style: correlation volumes, recurrent flow update, dense-BA layer | GPU, around real time |
@@ -284,7 +284,7 @@ reifyscene a measured payoff.
 | 3 | **reifyscene payoff 1:** depth-aware, motion-masked BA refining VGGT's cameras | Py (+C++ solver) | reifyscene lab-coat masked PSNR; spin GT poses |
 | 4 | Classic heavy: incremental SfM, place recognition, loop closure | Py, C++ | KITTI odometry |
 | 5 | **reifyscene payoff 2:** DROID-style rung with DROID's published weights loaded, plus dense BA with a depth prior (the full Shape-of-Motion recipe) | Py (PyTorch) | Parity with the DROID reference; reifyscene lab-coat and spin |
-| 6 | Visual-inertial, branching off milestone 2 | Py, C++ | EuRoC, TUM-VI |
+| 6 | Visual-inertial, branching off milestone 2: filtering versus smoothing on the same IMU front end | Py, C++ | EuRoC, TUM-VI |
 | 7 | Edge budgets: Pi-class and Jetson-class runs, ARM build check | C++ (Rust) | Same benchmarks, budget-capped |
 | 8 | Train the DROID-style network ourselves | Py (PyTorch) | TartanAir subset; compare against DROID's weights |
 | 9 | Heaviest rung: MegaSaM-style | Py (PyTorch) | Sintel, Bonn RGB-D Dynamic |
@@ -295,6 +295,35 @@ moving people. Milestone 3 is the corrected version of that same idea: rung 0's 
 depth prior and motion masks. It reuses what milestones 1 and 2 teach and needs only a small
 adapter. Its target is the gap between plain VGGT and the old bundle-adjusted cameras on lab-coat
 (27.42 vs 29.04 dB masked PSNR).
+
+**Milestone 6: filtering versus smoothing.** SLAM is a state estimation problem, and its
+estimators come in two families: batch (smoothing) and recursive (filtering). Rung 0 has the
+first in NLS and BA. Milestone 6 builds the second and compares the two on the same input.
+
+- **One front end, two estimators.** On-manifold IMU preintegration (Forster et al. 2017), the
+  IMU noise and bias model, and visual-inertial initialisation are built once and feed both.
+- **The filter.**
+  - An error-state EKF on SO(3)/R³, with rung 0's right-perturbation convention.
+  - Grown into the MSCKF (Mourikis & Roumeliotis 2007): a sliding window of cloned poses,
+    with feature updates projected onto the left null space, so landmarks never enter the
+    state.
+  - First-estimate Jacobians, for observability-consistent updates.
+  - OpenVINS is the study reference, not a dependency.
+- **The smoother.** Rung 0's NLS over a keyframe window, with old states marginalised into a
+  prior.
+- **The comparison.**
+  - Both estimators run on EuRoC and TUM-VI under the same budget.
+  - Reported: ATE/RPE; consistency (NEES: whether the reported covariance matches the actual
+    error); per-frame cost.
+  - Expected, to be confirmed: the filter is cheaper per frame, and the smoother is more
+    accurate, because it relinearises.
+- **Placement.** It follows the BA-on-NLS split:
+  - The generic parts go in `foundations`, beside NLS, as rung 0's recursive estimator:
+    - a Gaussian state on a manifold (mean on the group, covariance in the tangent space);
+    - an error-state filter, generic over its process and measurement models;
+    - covariance propagation and marginalisation, shared by both estimators.
+  - The IMU process model and the MSCKF go in `vi`.
+  - The generic parts are built when milestone 6 needs them, not before.
 
 ## Boundary with reifyscene
 
