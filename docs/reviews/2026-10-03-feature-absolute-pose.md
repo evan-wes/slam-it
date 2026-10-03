@@ -262,3 +262,82 @@ Sources:
 - [PoseLib absolute_pose.cc (LO refit by bundle adjustment)](https://raw.githubusercontent.com/PoseLib/PoseLib/master/PoseLib/robust/estimators/absolute_pose.cc)
 - [Terzakis & Lourakis, SQPnP, ECCV 2020](https://www.ecva.net/papers/eccv_2020/papers_ECCV/papers/123460460.pdf)
 - Lebeda, Matas & Chum, "Fixing the Locally Optimized RANSAC", BMVC 2012
+
+## Run 2 -- 2026-10-03
+
+| | |
+|---|---|
+| **Branch** | `feature/absolute-pose` |
+| **Range** | `4a4d078...55e96ab` (the fixes after run 1) |
+| **Reviewers** | algorithm (opus) only, as the owner chose |
+| **How they ran** | registered slamlab-* agents |
+| **Layer 1** | all checks passed (`scripts/check.sh`): pytest 1308 passed, ctest 17/17 |
+
+### Findings and resolutions
+
+| ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|---|
+| L7 | must-fix | algorithm | `generate_pose.py`, `p3p.json`, note | The "1e-8 outside the cylinder" fixture case has three real roots after its parameters were rounded, so the old shortcut passes it: L1 has no guard | fix: store an exact probe sample that still fails with the shortcut, assert in the generator that it discriminates; correct the comment and note | fixed (541befa) -- decided by evan-wes, 2026-10-03 |
+| L8 | should-fix | algorithm | `ransac.py`/`ransac.hpp` `refine_consensus`, parity tests | `rounds` not compared across backends; the loop's exits and the two `REFINE_ROUNDS` constants untested | fix: `rounds` in both parity tests; a stub-estimator unit test of the exits; a C++ check of `kRefineRounds` | fixed (541befa) -- decided by evan-wes, 2026-10-03 |
+| L9 | note | algorithm | `RefinedSummary`, planar test | On planar scenes the cap ends most runs and the summary cannot say why the rounds stopped; the planar test's `max < 4.0` holds only for seeds 0-9 (6.4 over 40) | fix the test bound (median only); defer a stop-reason field to the design doc | fixed (541befa): median bound only; stop reason deferred (design doc, deferred from PR 4's panel) -- decided by evan-wes, 2026-10-03 |
+| L10 | note | algorithm | `twoview.py`/`.cpp` | The rank-1 H fix is post-hoc; the standard place is a validity check inside H-RANSAC (already an open item) | waive: tracked in the design doc's open items | waived: already a design-doc open item (H-RANSAC's validity check) -- decided by evan-wes, 2026-10-03 |
+| L11 | note | algorithm | note, `p3p.py` docstring | "missed 485" is the gross count next to a table whose first column is misses | fix: say "grossly" | fixed (541befa) -- decided by evan-wes, 2026-10-03 |
+
+### Algorithm review
+
+**Scope:** Run 2, fixes only: `git diff 4a4d078...55e96ab` (4c0bc5e L1, 182c552 L2, ece7779 rank-1 H, 0f36d41 structural/cheirality, f786d3c docs). Read the full diffs of `src/slamlab/foundations/{p3p,pnp,ransac,twoview,epipolar,homography,correspondences}.py`, `cpp/include/slamlab/foundations/{ransac,p3p}.hpp`, `cpp/src/foundations/{p3p,pnp,twoview}.cpp`, bindings, test and fixture-generator diffs, `docs/notes/absolute-pose.md`, the five-point note addendum and the design-doc diff. Re-ran every probe the note cites at HEAD 55e96ab, plus scratch experiments (outside the repo), including the run-1 head's `p3p.py` loaded from `git show 4a4d078:...`.
+
+**Summary:** The fixes are correct and their C++/Python mirrors agree: Ding now always intersects both lines; the refine-and-reselect loop accepts a round only on a strict MSAC decrease and stops at the cap, so it terminates and never worsens the result; cheirality is enforced inside LM; Ding's reordering-by-table is equivalent to the old branches; every re-measured number in the note reproduces exactly. One real defect: the new P3P fixture case meant to guard L1 does not exercise the single-root shortcut, so reverting the fix would pass the suite. Two smaller test gaps around the new rounds.
+
+#### Findings
+
+##### [must-fix] The "1e-8 outside the danger cylinder" P3P fixture does not catch the L1 regression it is there for
+- **Where:** `tests/fixtures/foundations/generate_pose.py:232-236` (the case and its comment "skipping the second line ... missed the true pose here by 0.73"); `docs/notes/absolute-pose.md` "How it's checked" ("the 1e-8 case one that skips Ding's second line (it misses by 0.73)"); `tests/fixtures/foundations/p3p.json`.
+- **Issue:** On the fixture's stored inputs the cubic has three real roots (`single=False`), so the old shortcut never fires: Ding with the shortcut (run-1 head, 4a4d078) returns the true pose to 7.7e-9, identical to the fixed code. The probe's float64 sample was replayed with its angles/azimuth/height rounded to 4 digits and bearings regenerated in mpmath; near the cylinder that is enough to flip the rounding-decided root count.
+- **Why it matters:** L1's fix has no automated guard: restoring `if poses and single: break` in either language would pass the suite, while the note and the generator comment claim otherwise.
+- **Evidence:** scratch script loading `old_p3p.py` from `git show 4a4d078:src/slamlab/foundations/p3p.py`, wrapping `cubic_root` to record the flag, run on every `p3p.json` case:
+  ```
+  camera 1e-08 outside the danger cylinder, ding  single=[False]  shortcut: n=3 err=7.72e-09   nobreak: n=3 err=7.72e-09
+  ```
+  (every other case is also identical with and without the break). The shortcut itself is very much live on the probe's distribution: Python reference at −1e-8, 2000 samples — old miss 566 / gross 485, new miss 126 / gross 39 — and the trigger survives exact inputs: of 113 gross old-code misses in seeds 0-399, 66 still miss grossly when the bearings are regenerated correctly rounded (mpmath, 50 digits) from the same float64 points and pose.
+- **Suggested fix:** take a probe seed whose float64 points and pose (not rounded parameters) still fail with the shortcut after mpmath regeneration, store those exact values, and have the generator (or the test) assert the case discriminates — the float64 pencil cubic's discriminant is > 0 and the first line of `_line_pair` yields a pose that is not the truth — so it can't silently become non-discriminating again. Correct the generator comment and the note accordingly.
+
+##### [should-fix] The rounds are unchecked: no parity on `rounds`, no unit test of the loop's three exits
+- **Where:** `src/slamlab/foundations/ransac.py:479-532` / `cpp/include/slamlab/foundations/ransac.hpp:363-419` (`refine_consensus`); `tests/foundations/test_pnp.py:297-304` and `test_epipolar.py:265-269` (parity tests compare `refined` and the run, not `rounds`); `grep -rn "rounds\|REFINE_ROUNDS\|kRefineRounds" tests cpp/tests` finds nothing.
+- **Issue:** `REFINE_ROUNDS`/`kRefineRounds` are two constants that must stay equal, and the loop has three exits (cost not dropped, inliers unchanged, cap) plus the too-few-inliers guard. None is pinned by a test, and `summary.rounds` is never compared across backends.
+- **Why it matters:** The cap is what ends most planar runs (next note), so a drift in either constant or exit changes results without any test failing. Today the backends do agree: on 30 seeds each, rounds and refined matched exactly (3D: {1:1, 2:14, 3:12, 4:3}; planar: {2:2, 3:7, 4:21}, Python = C++).
+- **Suggested fix:** add `assert compiled.summary.rounds == reference.summary.rounds` to both parity tests, and one `refine_consensus` unit test with a stub estimator/refiner covering the three exits (a worse refinement is discarded with `refined` False; unchanged inliers stop after one kept round; the cap stops at `REFINE_ROUNDS`). In C++, a `static_assert`/test tying `kRefineRounds` to the value the Python test expects.
+
+##### [note] On planar scenes the round cap, not stability, ends most runs — and the summary cannot say which
+- **Where:** `ransac.py` `RefinedSummary`, `REFINE_ROUNDS = 4`.
+- With the test's planar construction (40 seeds, Python, cap patched; error / floor):
+
+  | cap | median | p90 | max | rounds hit |
+  |---|---|---|---|---|
+  | 1 | 2.60 | 6.38 | 9.44 | all 1 |
+  | 2 | 1.46 | 3.18 | 5.34 | all 2 |
+  | 4 | 1.36 | 2.36 | 6.42 | 4 in 30/40 |
+  | 8 | 1.38 | 2.16 | 5.92 | 2-6, one 8 |
+  | 20 | 1.33 | 2.16 | 5.92 | stable by round 9 |
+
+  Four is a reasonable cap (little gain beyond), but "stops when stable" is the exception, not the rule, on planar scenes; `rounds == REFINE_ROUNDS` cannot distinguish "capped" from "converged on the last round", and `summary.refinement` is the last solve, which may be a discarded one (both documented, but a reader of a kept model's summary can be misled). A termination field on the rounds (cost / stable / cap / too few inliers) would make this observable, in line with the solver-summary convention in CLAUDE.md.
+- Separately, `test_ransac_on_a_planar_scene_reaches_the_floor` asserts `max(ratios) < 4.0` on seeds 0-9; over 40 seeds the max is 6.42, so that bound holds only for the chosen seeds. The median bound is the robust one.
+
+##### [note] The rank-1 H fix is post-hoc; the standard place is a model-validity check inside H-RANSAC (already tracked)
+- **Where:** `src/slamlab/foundations/twoview.py:338-348,446-447`; `cpp/src/foundations/twoview.cpp:158-161`.
+- The fix is correct for what it targets (an undecomposable H, rank < 2, is treated as no model; E decides; regression test on real matches). Its weakness: a degenerate H winning H-RANSAC hides whatever valid H RANSAC could have found, so on a genuinely planar scene with duplicate keypoints, H is lost entirely. Standard estimators reject such models before scoring (Hartley & Zisserman §4.7 on degenerate configurations; OpenCV's homography RANSAC callback rejects collinear minimal subsets and checks models; DEGENSAC — Chum, Werner & Matas, "Two-View Geometry Estimation Unaffected by a Dominant Plane", CVPR 2005 — treats sample degeneracy as part of the loop). The design doc's new open item ("reject a fitted H of rank below 3 … decide with the edge rung's tracker") already covers this; deduplicating keypoints at one pixel in the front end (SIFT emits one per orientation) removes the cause.
+
+##### [note] The note's "missed 485" is a gross count, next to a table whose first column counts misses
+- **Where:** `docs/notes/absolute-pose.md` "Near degeneracy" ("with the shortcut, slamlab's Ding missed 485 of 2000 there").
+- 485 is the gross count (> 1e-3); by the table's own "missing" (1e-6) definition the shortcut missed 566 (my Python run). Say "grossly missed 485 (42 without)" so it compares with the table's gross column. The `p3p.py` docstring's "485 … against 39" is gross and Python (C++ gives 42) — right, but should say "grossly".
+
+#### Checked and fine
+- L1 fix: `cubic_root` returns only the root in both languages; `_ding`/`ding` intersect both lines; Lambda Twist unchanged apart from argument order. The 3e-8 atol is justified by the measured 1.5e-8 (Lambda Twist) on that case.
+- Ding reordering by `_LONGEST_LAST`/`kLongestLast`: mapping correct (pair 01 longest → (2,1,0), 02 → (1,0,2), 12 → identity); ties go to the first index in both numpy `argmax` and Eigen `maxCoeff`, so Python and C++ agree (tie-breaking differs from before, but any choice puts a longest pair last).
+- `refine_consensus`: strict cost decrease against the running score, cap, too-few-inliers guard; Python and C++ line-for-line equivalent; the run's `inlier_count`/`score` describe the kept model.
+- Cheirality (L4/H5): `squared_norms` infinite for z ≤ 0 in both languages; `nls` maps a non-finite cost to inf and rejects the step (`nls.py:529`, `nls.hpp:362`); `refine_pose` rejects a start with a point behind the camera with a named error (tested); RANSAC's inliers have finite residuals, so the refinement always starts finite.
+- `rigid_pose` shared by P3P and EPnP (None on collinear, EPnP skips that candidate as before); `normalised_xy` identical to the removed `normalised` in both languages.
+- Re-measured claims, all reproduced exactly at 55e96ab: degeneracy table (all 5 cylinder rows and far rows, every count); non-planar sweep 1.25/1.95, planar 1.21/1.96, unrefined 5.61/15.02, OpenCV 2.10/4.40; E-RANSAC 5-point 0.78/2.94 recall 0.953, 8-point 0.81/3.09 (0.951); TUM fr1/xyz refined 5-point 24/38 at 0.51°/2.11°, 8-point 23/38 at 0.63°/2.32°.
+- `pnp.codes()` carries `minimal_solver`, tested against `p3p.SOLVERS`.
+- Design-doc pose convention (estimators return `T_cam_world` for P3P/PnP as in OpenCV/PoseLib, `T_c2_c1` for two-view; trajectory results `T_world_cam`) is consistent with the code.
+- State of the art: the design doc now cites SQPnP (Terzakis & Lourakis, ECCV 2020) and IPPE (Collins & Bartoli, IJCV 2014) as the planar least-squares options; refine-and-reselect after LO is a reasonable, cheaper stand-in for PoseLib-style nonlinear LO refits (Lebeda, Matas & Chum, "Fixing the Locally Optimized RANSAC", BMVC 2012).
