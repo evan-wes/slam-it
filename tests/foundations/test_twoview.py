@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from slamlab import backends
-from slamlab.foundations import se3, so3, twoview
+from slamlab.foundations import epipolar, nls, ransac, se3, so3, twoview
 from slamlab.foundations.errors import InvalidInputError
 from tests.conftest import load_fixture, require_function
 from tests.foundations import scenes as sc
@@ -120,13 +120,15 @@ def test_a_strict_ambiguity_ratio_reports_ambiguity() -> None:
 
 
 def _desk(seed: int = 0) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return a desk-like scene: 80% of points on a plane 2 m away, the rest in front of it.
+    """Return a desk-like scene: 90% of points on a plane 2 m away, the rest in front of it.
 
     With a 20 cm baseline and 1 px noise, H wins GRIC; its runner-up candidate has more than
     half its best's support, so with ``ambiguity_ratio=0.5`` H is ambiguous and E decides.
+    At 80% planar, H's GRIC margin was a few points and E's refinement erased it; at 90% it
+    is 15 to 80 points for every E solver, refined or not.
     """
     pose = se3.exp([0.2, 0.0, 0.02, 0.0, 0.02, 0.0])
-    points = np.vstack([sc.plane(240, seed=1, depth=2.0), sc.scene(60, seed=2) * [0.5, 0.5, 0.4]])
+    points = np.vstack([sc.plane(270, seed=1, depth=2.0), sc.scene(30, seed=2) * [0.5, 0.5, 0.4]])
     b1, b2 = sc.pairs(points, pose=pose, sigma=1 / 520, seed=3 + seed)
     b2, _ = sc.with_outliers(b2, 0.2, seed=4 + seed)
     return b1, b2, pose
@@ -148,12 +150,15 @@ def test_an_ambiguous_homography_falls_back_to_e(backend: str) -> None:
 
 
 @pytest.mark.parametrize("seed", range(3))
-def test_backends_agree_run_for_run(seed: int) -> None:
-    """Every backend reaches the same decision, inliers and points on noisy data."""
+@pytest.mark.parametrize("essential_solver", epipolar.MINIMAL_SOLVERS)
+@pytest.mark.parametrize("refine", [False, True])
+def test_backends_agree_run_for_run(seed: int, essential_solver: str, refine: bool) -> None:
+    """Every backend reaches the same decision, inliers and points, for every E setting."""
     b1, b2 = _noisy(sc.scene(200, seed=10 + seed), sc.POSE, seed=seed)
+    options = replace(OPTIONS, essential_solver=essential_solver, refine=refine)
     runs = [
         twoview.initialize(
-            b1, b2, OPTIONS, backend=require_function(b, twoview.__name__, "initialize")
+            b1, b2, options, backend=require_function(b, twoview.__name__, "initialize")
         )
         for b in sorted(backends.LOCKSTEP_BACKENDS)
     ]
@@ -205,9 +210,10 @@ def test_gric_terms() -> None:
             r"ambiguity_ratio: must be in \(0, 1\], got 1.5",
         ),
         ({"focal": 520.0, "min_parallax_deg": math.nan}, "min_parallax_deg"),
+        ({"focal": 520.0, "essential_solver": "sturm"}, "essential_solver"),
     ],
 )
-def test_rejects_invalid_options(kwargs: dict[str, float], message: str) -> None:
+def test_rejects_invalid_options(kwargs: dict[str, float | str], message: str) -> None:
     """Out-of-range settings are rejected when the options are built."""
     with pytest.raises(InvalidInputError, match=message):
         twoview.Options(**kwargs)  # type: ignore[arg-type]
@@ -224,3 +230,15 @@ def test_core_checks_its_own_input(backend: str) -> None:
         impl.initialize(b1[:7], b2[:7], asdict(OPTIONS))
     with pytest.raises(ValueError, match="options"):
         impl.initialize(b1, b2, {"focal": 1.0})
+    with pytest.raises(ValueError, match="essential_solver"):
+        impl.initialize(b1, b2, {**asdict(OPTIONS), "essential_solver": "sturm"})
+
+
+def test_the_compiled_code_tables_match() -> None:
+    """Every code table two-view's compiled core returns is Python's, in the same order."""
+    chosen = require_function("cpp", twoview.__name__, "initialize")
+    codes = backends.implementation(chosen, twoview.__name__).codes()
+    assert tuple(codes["status"]) == tuple(twoview.Status)
+    assert tuple(codes["model"]) == tuple(twoview.Model)
+    assert tuple(codes["termination"]) == tuple(ransac.Termination)
+    assert tuple(codes["nls_termination"]) == tuple(nls.Termination)

@@ -276,9 +276,9 @@ def as_bearings(value: ArrayLike, name: str = "bearings") -> NDArray[np.float64]
 
 
 def as_bearing_pairs(
-    bearings1: ArrayLike, bearings2: ArrayLike, minimum: int
+    bearings1: ArrayLike, bearings2: ArrayLike, minimum: int, *, positive_z: bool = True
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Validate (N, 3) unit bearing pairs with positive z, N >= `minimum`.
+    """Validate (N, 3) unit bearing pairs, N >= `minimum`, by default with positive z.
 
     Parameters
     ----------
@@ -286,6 +286,8 @@ def as_bearing_pairs(
         The bearings.
     minimum : int
         The fewest pairs accepted.
+    positive_z : bool, optional
+        Require positive z, as methods working in the normalised image plane do (default).
 
     Returns
     -------
@@ -305,7 +307,7 @@ def as_bearing_pairs(
         )
     if b1.shape[0] < minimum:
         raise InvalidInputError(f"bearings: need at least {minimum} pairs, got {b1.shape[0]}")
-    if np.any(b1[:, 2] <= 0.0) or np.any(b2[:, 2] <= 0.0):
+    if positive_z and (np.any(b1[:, 2] <= 0.0) or np.any(b2[:, 2] <= 0.0)):
         raise InvalidInputError("bearings: expected positive z (a pinhole view)")
     return b1, b2
 

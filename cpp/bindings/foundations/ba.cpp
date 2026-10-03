@@ -19,6 +19,7 @@
 
 #include "common.hpp"
 #include "foundations/foundations.hpp"
+#include "foundations/nls_crossing.hpp"
 #include "slamlab/foundations/camera.hpp"
 #include "slamlab/foundations/nls.hpp"
 
@@ -41,20 +42,10 @@ constexpr std::array<const char*, 6> kGauges = {"none", "first_pose", "similarit
 constexpr std::array<const char*, 2> kMethods = {"levenberg_marquardt", "gauss_newton"};
 /// @brief Loss names, indexed by `nls::LossKind` code.
 constexpr std::array<const char*, 3> kLosses = {"trivial", "huber", "cauchy"};
-/// @brief The number of `nls::Termination` codes (their names come from `nls::name`).
-constexpr auto kTerminations = static_cast<int>(nls::Termination::kCount);
-
 static_assert(static_cast<std::size_t>(camera::Model::kCount) == kModels.size());
 static_assert(static_cast<std::size_t>(ba::Gauge::kCount) == kGauges.size());
 static_assert(static_cast<std::size_t>(nls::Method::kCount) == kMethods.size());
 static_assert(static_cast<std::size_t>(nls::LossKind::kCount) == kLosses.size());
-
-/// @brief The columns of a returned trace row.
-constexpr std::size_t kTraceColumns = 7;
-/// @brief The trace's column names (`nls::Iteration`'s fields), in `trace_array` order; the
-///        Python side reads the columns by these names.
-constexpr std::array<const char*, kTraceColumns> kTraceNames = {
-    "iteration", "cost", "gradient_norm", "step_norm", "damping", "relative_decrease", "accepted"};
 
 /// @brief Decode an enum's integer code, checking it against the enum's name table.
 /// @tparam E The enum.
@@ -72,28 +63,6 @@ E decode(int code, const std::array<const char*, N>& names, const char* what) {
   return static_cast<E>(code);
 }
 
-/// @brief The summary's trace as a new (I, 7) array.
-/// @param trace The trace.
-/// @return The array.
-ArrayOut trace_array(const std::vector<nls::Iteration>& trace) {
-  auto [out, data] = new_array({trace.size(), kTraceColumns});
-  for (std::size_t i = 0; i < trace.size(); ++i) {
-    const nls::Iteration& it = trace[i];
-    const std::array<double, kTraceColumns> row = {static_cast<double>(it.iteration),
-                                                   it.cost,
-                                                   it.gradient_norm,
-                                                   it.step_norm,
-                                                   it.damping,
-                                                   it.relative_decrease,
-                                                   it.accepted ? 1.0 : 0.0};
-    for (std::size_t k = 0; k < row.size(); ++k) {
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic): row offset
-      data[(kTraceColumns * i) + k] = row.at(k);
-    }
-  }
-  return out;
-}
-
 /// @brief The enums' name tables, by enum, in code order.
 /// @return `{"model": [...], "gauge": [...], "method": [...], "loss": [...],
 ///         "termination": [...]}`.
@@ -105,16 +74,12 @@ nb::dict codes() {
     }
     return out;
   };
-  nb::list terminations;
-  for (int k = 0; k < kTerminations; ++k) {
-    terminations.append(nls::name(static_cast<nls::Termination>(k)));
-  }
   nb::dict out;
   out["model"] = as_list(kModels);
   out["gauge"] = as_list(kGauges);
   out["method"] = as_list(kMethods);
   out["loss"] = as_list(kLosses);
-  out["termination"] = terminations;
+  out["termination"] = nls_terminations();
   return out;
 }
 
@@ -191,15 +156,7 @@ nb::dict solve(const MatrixIn& intrinsics, const VectorIn<std::int64_t>& intrins
   out["depth_affine"] = matrix_array(solution.depth_affine);
   out["inverse_depth"] = vector_array(solution.inverse_depth);
   out["intrinsics_std"] = matrix_array(solution.intrinsics_std);
-  out["trace"] = trace_array(summary.solve.trace);
-  nb::list columns;
-  for (const char* name : kTraceNames) {
-    columns.append(name);
-  }
-  out["trace_columns"] = columns;
-  out["initial_cost"] = summary.solve.initial_cost;
-  out["final_cost"] = summary.solve.final_cost;
-  out["termination"] = static_cast<int>(summary.solve.termination);
+  out["solve"] = nls_summary(summary.solve);
   out["gauge"] = static_cast<int>(summary.gauge);
   out["gauge_pose"] = summary.gauge_pose;
   out["confined_pose"] = summary.confined_pose;

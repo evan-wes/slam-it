@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import fields, replace
+from dataclasses import replace
 from typing import Any, Protocol
 
 import numpy as np
@@ -46,10 +46,9 @@ class Implementation(Protocol):
 
     Every argument crosses by keyword. Enums cross as their index in :data:`ENUM_TABLES`.
     ``solve`` returns a dict with ``poses``, ``intrinsics``, ``points``, ``depth_affine``,
-    ``inverse_depth``, ``intrinsics_std``, ``trace`` (one row per step) with
-    ``trace_columns`` (the :class:`nls.Iteration` field each column holds),
-    ``initial_cost``, ``final_cost``, ``variance_factor``, ``termination`` and ``gauge``
-    codes, and each of :data:`COUNT_NAMES`.
+    ``inverse_depth``, ``intrinsics_std``, ``solve`` (the least-squares summary, read by
+    :func:`nls.summary_from_backend`), ``variance_factor``, the ``gauge`` code, and each of
+    :data:`COUNT_NAMES`.
     """
 
     def codes(self) -> dict[str, list[str]]:
@@ -215,34 +214,9 @@ def _solve_reference(original: BAProblem, options: BAOptions) -> BAResult:
     )
 
 
-_CONVERT = {"int": int, "float": float, "bool": bool}
-"""How each :class:`nls.Iteration` field type is read from the trace's float columns."""
-
-
 def _result_from_backend(raw: BackendResult) -> BAResult:
     """Assemble a compiled backend's named results into a :class:`BAResult`."""
-    # The trace crosses as a matrix whose columns the binding names: read them by name.
-    types = {field.name: str(field.type) for field in fields(nls.Iteration)}
-    columns = [str(name) for name in raw["trace_columns"]]
-    if sorted(columns) != sorted(types) or not set(types.values()) <= set(_CONVERT):
-        raise RuntimeError(
-            f"trace columns {columns} (types {types}) do not match nls.Iteration's numbers"
-        )
-    records = tuple(
-        nls.Iteration(
-            **{name: _CONVERT[types[name]](value) for name, value in zip(columns, row, strict=True)}
-        )
-        for row in raw["trace"]
-    )
-    termination = nls.Termination(ENUM_TABLES["termination"][int(raw["termination"])])
-    solve_summary = nls.Summary(
-        initial_cost=float(raw["initial_cost"]),
-        final_cost=float(raw["final_cost"]),
-        iterations=len(records),
-        termination=termination,
-        converged=termination in nls.CONVERGED,
-        trace=records,
-    )
+    solve_summary = nls.summary_from_backend(raw["solve"], list(ENUM_TABLES["termination"]))
     summary = BASummary(
         solve_summary,
         GAUGES[int(raw["gauge"])],

@@ -35,6 +35,10 @@ void bind_triangulation(nanobind::module_& m);
 /// @param m The `foundations.epipolar` submodule.
 void bind_epipolar(nanobind::module_& m);
 
+/// @brief Add the `fivepoint` functions to the `foundations.fivepoint` submodule.
+/// @param m The `foundations.fivepoint` submodule.
+void bind_fivepoint(nanobind::module_& m);
+
 /// @brief Add the `homography` functions to the `foundations.homography` submodule.
 /// @param m The `foundations.homography` submodule.
 void bind_homography(nanobind::module_& m);

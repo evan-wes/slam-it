@@ -7,7 +7,7 @@
     "comparison": "close",
     "rtol": 0.0,
     "atol": 1e-09,
-    "reason": "exact inliers: the 8-point fit and Lindstrom are exact to rounding; depths up to 8 over a baseline of 0.5 amplify it"
+    "reason": "exact inliers: the 5-point solver, the 8-point refits, the Sampson refinement and Lindstrom are exact to rounding; depths up to 8 over a baseline of 0.5 amplify it"
    },
    "cases": [
     {

@@ -3,6 +3,7 @@
 ///        RANSAC with outliers, a planar scene's degeneracy, and the decomposition.
 #include <Eigen/Core>
 #include <cmath>
+#include <string>
 #include <vector>
 
 #include "scene_support.hpp"
@@ -23,7 +24,7 @@ int main() {
   int failures = 0;
   const Eigen::Matrix3d rotation = slamlab::testing::scene_rotation();
   const Eigen::Vector3d t = slamlab::testing::scene_translation();
-  const Eigen::Matrix3d truth = slamlab::foundations::so3::hat(t.normalized()) * rotation;
+  const Eigen::Matrix3d truth = slamlab::testing::scene_essential();
   epipolar::Rows3 b1;
   epipolar::Rows3 b2;
   slamlab::testing::scene_bearings(40, false, {rotation, t}, b1, b2);
@@ -58,5 +59,38 @@ int main() {
   }
   expect(poses.has_value() && poses->size() == 4 && has_truth,
          "E's four candidates include the true pose", failures);
+
+  // Every minimal solver, refined or not, finds E and the clean pairs.
+  for (const epipolar::MinimalSolver minimal :
+       {epipolar::MinimalSolver::kNister, epipolar::MinimalSolver::kStewenius,
+        epipolar::MinimalSolver::k8pt}) {
+    for (const bool refine : {false, true}) {
+      const auto found = epipolar::essential_ransac(b1, dirty, ransac::Options{.threshold = 1e-6},
+                                                    minimal, refine);
+      bool ok = found.has_value() && up_to_sign(found->state.model, truth) < 1e-9;
+      for (int i = 0; ok && i < 40; ++i) {
+        ok = found->state.inliers(i) == (i % 3 != 0);
+      }
+      const std::string what = std::string(epipolar::name(minimal)) + (refine ? " (refined)" : "") +
+                               " finds E and the clean pairs";
+      expect(ok, what.c_str(), failures);
+    }
+  }
+  const auto unknown = epipolar::essential_ransac(b1, b2, ransac::Options{.threshold = 1e-6},
+                                                  epipolar::MinimalSolver::kCount, true);
+  expect(!unknown.has_value(), "an unknown minimal solver is rejected", failures);
+
+  // On exact data the Sampson cost's minimum is the true E: refining reaches it from a
+  // perturbed start.
+  const Eigen::Matrix3d start =
+      slamlab::foundations::so3::hat(
+          slamlab::foundations::so3::exp(Eigen::Vector3d(0.0, 0.02, 0.0)) * t.normalized()) *
+      slamlab::foundations::so3::exp(Eigen::Vector3d(0.01, 0.0, 0.0)) * rotation;
+  const auto refined = epipolar::refine_essential(start, b1, b2, 1e-3);
+  expect(
+      refined.has_value() && refined->summary.converged && up_to_sign(refined->state, truth) < 1e-9,
+      "refining recovers the true E", failures);
+  const auto bad_scale = epipolar::refine_essential(start, b1, b2, 0.0);
+  expect(!bad_scale.has_value(), "a non-positive scale is rejected", failures);
   return slamlab::testing::finish("foundations/epipolar", failures);
 }

@@ -34,6 +34,9 @@ dev = [
   # for the parity fixtures). manifpy comes from conda-forge (setup_slamlab.sh).
   "scipy>=1.13",
   "mpmath>=1.3",
+  # Test-only oracle for the 5-point solvers and the Sampson refinement (a contract forbids
+  # the library from importing any test oracle).
+  "poselib>=2.0.5",
   # Visualisation for the demos (never imported by the library).
   "rerun-sdk>=0.38",
   # Feature matching for the two-view demo (never imported by the library; a contract
@@ -135,7 +138,7 @@ containers = ["slamlab.foundations"]
 layers = [
   "(ba) | (twoview)",
   "(epipolar) | (homography)",
-  "(camera) | (nls) | (ransac) | (triangulation)",
+  "(camera) | (fivepoint) | (nls) | (ransac) | (triangulation)",
   "(correspondences)",
   "(alignment)",
   "(se3)",
@@ -165,6 +168,16 @@ name = "slamlab never imports OpenCV"
 type = "forbidden"
 source_modules = ["slamlab"]
 forbidden_modules = ["cv2"]
+
+# The library's runtime is numpy alone (the dependencies above), so none of these may enter
+# it; and they are the test oracles, which check slamlab against independent implementations,
+# so the library using one would make that check circular (PoseLib implements the same
+# solvers). A rung that needs one of them at run time changes the dependencies first.
+[[tool.importlinter.contracts]]
+name = "slamlab never imports its test oracles"
+type = "forbidden"
+source_modules = ["slamlab"]
+forbidden_modules = ["poselib", "mpmath", "manifpy", "scipy"]
 
 # pycolmap is an optional reference, imported by slamlab.eval alone.
 [[tool.importlinter.contracts]]

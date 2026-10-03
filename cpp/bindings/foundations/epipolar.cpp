@@ -5,8 +5,13 @@
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 
+#include <stdexcept>
+#include <string>
+
 #include "common.hpp"
+#include "foundations/essential_crossing.hpp"
 #include "foundations/foundations.hpp"
+#include "foundations/nls_crossing.hpp"
 #include "foundations/ransac_crossing.hpp"
 
 namespace nb = nanobind;
@@ -81,16 +86,60 @@ ArrayOut decompose_essential(const Matrix3In& essential) {
   return poses_array(unwrap(epipolar::decompose_essential(matrix3(essential))));
 }
 
-/// @brief LO-MSAC with the 8-point E solver.
+/// @brief The enums' name tables: RANSAC's terminations, the minimal solvers and the
+///        refinement's terminations.
+/// @return `{"termination": [...], "minimal_solver": [...], "nls_termination": [...]}`.
+nb::dict codes() {
+  nb::dict out = essential_codes();
+  nb::list solvers;
+  for (int k = 0; k < static_cast<int>(epipolar::MinimalSolver::kCount); ++k) {
+    solvers.append(epipolar::name(static_cast<epipolar::MinimalSolver>(k)));
+  }
+  out["minimal_solver"] = solvers;
+  return out;
+}
+
+/// @brief Decode a minimal solver's code.
+/// @param code The code, an index into `codes()["minimal_solver"]`.
+/// @return The solver.
+/// @throws std::invalid_argument (Python `ValueError`) for an unknown code.
+epipolar::MinimalSolver minimal_solver(int code) {
+  if (code < 0 || code >= static_cast<int>(epipolar::MinimalSolver::kCount)) {
+    throw std::invalid_argument("minimal_solver: unknown code " + std::to_string(code));
+  }
+  return static_cast<epipolar::MinimalSolver>(code);
+}
+
+/// @brief LO-MSAC with a minimal E solver, then (optionally) the Sampson refinement.
 /// @param bearings1 Bearings in camera 1.
 /// @param bearings2 Bearings in camera 2.
 /// @param options `ransac.Options`' fields.
+/// @param minimal The minimal solver's code.
+/// @param refine Whether to refine the consensus model.
 /// @return The solution as a dict.
 /// @throws CoreError for invalid or degenerate input.
 nb::dict essential_ransac(const BatchIn<3>& bearings1, const BatchIn<3>& bearings2,
-                          const nb::dict& options) {
-  return ransac_result(unwrap(
-      epipolar::essential_ransac(rows3(bearings1), rows3(bearings2), ransac_options(options))));
+                          const nb::dict& options, int minimal, bool refine) {
+  return essential_result(
+      unwrap(epipolar::essential_ransac(rows3(bearings1), rows3(bearings2), ransac_options(options),
+                                        minimal_solver(minimal), refine)));
+}
+
+/// @brief Refine E on its inliers' Sampson distances.
+/// @param bearings1 The inliers' bearings in camera 1.
+/// @param bearings2 The inliers' bearings in camera 2.
+/// @param essential The starting E.
+/// @param scale The Cauchy loss's scale.
+/// @return `{"essential": (3, 3), "summary": the solve's summary}`.
+/// @throws CoreError for invalid or degenerate input.
+nb::dict refine_essential(const BatchIn<3>& bearings1, const BatchIn<3>& bearings2,
+                          const Matrix3In& essential, double scale) {
+  const auto solved = unwrap(
+      epipolar::refine_essential(matrix3(essential), rows3(bearings1), rows3(bearings2), scale));
+  nb::dict out;
+  out["essential"] = matrix3_array(solved.state);
+  out["summary"] = nls_summary(solved.summary);
+  return out;
 }
 
 /// @brief LO-MSAC with the normalised 8-point F solver.
@@ -108,7 +157,7 @@ nb::dict fundamental_ransac(const BatchIn<2>& pixels1, const BatchIn<2>& pixels2
 }  // namespace
 
 void bind_epipolar(nb::module_& m) {
-  m.def("codes", &ransac_codes, "Each enum's names in code order.");
+  m.def("codes", &codes, "Each enum's names in code order.");
   m.def("essential_8pt", &essential_8pt, nb::arg("bearings1").noconvert(),
         nb::arg("bearings2").noconvert(), "Estimate E from (N, 3) bearing pairs, N >= 8.");
   m.def("fundamental_8pt", &fundamental_8pt, nb::arg("pixels1").noconvert(),
@@ -122,8 +171,11 @@ void bind_epipolar(nb::module_& m) {
   m.def("decompose_essential", &decompose_essential, nb::arg("essential").noconvert(),
         "Return E's four candidate poses T_c2_c1, shape (4, 4, 4).");
   m.def("essential_ransac", &essential_ransac, nb::arg("bearings1").noconvert(),
-        nb::arg("bearings2").noconvert(), nb::arg("options"),
-        "Run LO-MSAC with the 8-point E solver.");
+        nb::arg("bearings2").noconvert(), nb::arg("options"), nb::arg("minimal_solver"),
+        nb::arg("refine"), "Run LO-MSAC with a minimal E solver, then the Sampson refinement.");
+  m.def("refine_essential", &refine_essential, nb::arg("bearings1").noconvert(),
+        nb::arg("bearings2").noconvert(), nb::arg("essential").noconvert(), nb::arg("scale"),
+        "Refine E on (M, 3) inlier bearing pairs' Sampson distances, M >= 5.");
   m.def("fundamental_ransac", &fundamental_ransac, nb::arg("pixels1").noconvert(),
         nb::arg("pixels2").noconvert(), nb::arg("options"),
         "Run LO-MSAC with the normalised 8-point F solver.");

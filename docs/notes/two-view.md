@@ -2,7 +2,8 @@
 
 Design note for `slamlab.foundations.epipolar`, `.homography`, `.twoview` and
 `.correspondences` (the Python references) and their headers in `slamlab/foundations/` (the C++
-core). Triangulation and RANSAC have their own notes.
+core). Triangulation, RANSAC, and the 5-point solver with the Sampson refinement have their
+own notes.
 
 ## The problem
 
@@ -30,7 +31,7 @@ choose.
 | `epipolar.essential_8pt(b1, b2)` | E from 8+ bearing pairs: normalised 8-point, projected onto the essential manifold |
 | `epipolar.fundamental_8pt(u1, u2)` | F from 8+ pixel pairs: normalised 8-point, rank 2 |
 | `epipolar.sampson_essential`, `sampson_fundamental` | each match's squared Sampson distance |
-| `epipolar.essential_ransac`, `fundamental_ransac` | LO-MSAC with the 8-point solver |
+| `epipolar.essential_ransac`, `fundamental_ransac` | LO-MSAC: E with a 5-point (default) or the 8-point minimal solver, then the Sampson refinement ([five-point](five-point.md)); F with the 8-point |
 | `epipolar.decompose_essential(E)` | E's four candidate poses |
 | `homography.homography_dlt(x1, x2)` | H from 4+ point pairs: normalised DLT |
 | `homography.sampson_homography` | each match's squared Sampson distance |
@@ -239,15 +240,16 @@ it. Both measure the matching as much as the motion capture:
   and one that did not.
 - **The 8-point algorithm is a weak minimal solver.** With 8 noisy matches its E is barely
   better than a guess (median error 0.84 on the test scene); local optimisation's
-  least-squares refits do most of the work. The 5-point solver (the next PR) needs a smaller
-  sample and gives better minimal models.
+  least-squares refits do most of the work. The 5-point solver (PR 3, [five-point](five-point.md))
+  needs a seventh of the samples and gives better minimal models.
 - **Residuals with different degrees of freedom need different thresholds.** The review panel
   found that one Sampson threshold silently dropped 14% of H's inliers.
 - **The refits minimise an algebraic error.** LO-RANSAC stops at the 8-point fit to its
   inliers, whose MSAC cost was 4% (with 40% outliers) to 15% (with none) above the true
-  model's in the 40-scene sweep. A refinement minimising
-  the Sampson distance itself, with `foundations.nls` over the essential manifold, would go
-  below that floor (deferred).
+  model's in the 40-scene sweep. PR 3's refinement minimises the Sampson distance itself,
+  with `foundations.nls` over the essential manifold, and goes below that floor
+  ([five-point](five-point.md)). The numbers in this note are PR 2's (the 8-point, no
+  refinement), reproduced by `essential_solver="8pt", refine=False`.
 - **Model selection is where real data bites.** Synthetic scenes are either clearly planar
   or clearly not; a desk is neither, and GRIC's choice of H was right while being useless.
 - **Formulas assume exact inputs.** Malis and Vargas' rotation is exact only for an exact H;

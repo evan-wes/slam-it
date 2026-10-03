@@ -4,6 +4,7 @@
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
+#include <nanobind/stl/string.h>
 
 #include <array>
 #include <cstddef>
@@ -12,6 +13,7 @@
 #include <string>
 
 #include "common.hpp"
+#include "foundations/essential_crossing.hpp"
 #include "foundations/foundations.hpp"
 #include "foundations/ransac_crossing.hpp"
 
@@ -24,9 +26,24 @@ namespace {
 namespace twoview = foundations::twoview;
 
 /// @brief `twoview.Options`' fields, as the dict's keys.
-constexpr std::array<const char*, 9> kOptionKeys = {
-    "focal", "threshold_px",     "sigma_px",   "confidence",     "max_iterations",
-    "seed",  "min_parallax_deg", "min_points", "ambiguity_ratio"};
+constexpr std::array<const char*, 11> kOptionKeys = {
+    "focal", "threshold_px",     "sigma_px",   "confidence",      "max_iterations",
+    "seed",  "min_parallax_deg", "min_points", "ambiguity_ratio", "essential_solver",
+    "refine"};
+
+/// @brief Look a minimal solver up by the name `epipolar.MINIMAL_SOLVERS` spells it.
+/// @param name The name.
+/// @return The solver.
+/// @throws std::invalid_argument (Python `ValueError`) for an unknown name.
+foundations::epipolar::MinimalSolver essential_solver(const std::string& name) {
+  using foundations::epipolar::MinimalSolver;
+  for (int k = 0; k < static_cast<int>(MinimalSolver::kCount); ++k) {
+    if (name == foundations::epipolar::name(static_cast<MinimalSolver>(k))) {
+      return static_cast<MinimalSolver>(k);
+    }
+  }
+  throw std::invalid_argument("essential_solver: unknown solver " + name);
+}
 
 /// @brief Read the initialiser's options from a dict of scalars.
 /// @param options The dict, with exactly `kOptionKeys`.
@@ -34,22 +51,32 @@ constexpr std::array<const char*, 9> kOptionKeys = {
 /// @throws std::invalid_argument for a missing or unknown key.
 twoview::Options read_options(const nb::dict& options) {
   check_keys(options, kOptionKeys, "twoview.Options");
-  return twoview::Options{.focal = nb::cast<double>(options["focal"]),
-                          .threshold_px = nb::cast<double>(options["threshold_px"]),
-                          .sigma_px = nb::cast<double>(options["sigma_px"]),
-                          .confidence = nb::cast<double>(options["confidence"]),
-                          .max_iterations = nb::cast<int>(options["max_iterations"]),
-                          .seed = nb::cast<std::uint64_t>(options["seed"]),
-                          .min_parallax_deg = nb::cast<double>(options["min_parallax_deg"]),
-                          .min_points = nb::cast<int>(options["min_points"]),
-                          .ambiguity_ratio = nb::cast<double>(options["ambiguity_ratio"])};
+  return twoview::Options{
+      .focal = nb::cast<double>(options["focal"]),
+      .threshold_px = nb::cast<double>(options["threshold_px"]),
+      .sigma_px = nb::cast<double>(options["sigma_px"]),
+      .confidence = nb::cast<double>(options["confidence"]),
+      .max_iterations = nb::cast<int>(options["max_iterations"]),
+      .seed = nb::cast<std::uint64_t>(options["seed"]),
+      .min_parallax_deg = nb::cast<double>(options["min_parallax_deg"]),
+      .min_points = nb::cast<int>(options["min_points"]),
+      .ambiguity_ratio = nb::cast<double>(options["ambiguity_ratio"]),
+      .essential_solver = essential_solver(nb::cast<std::string>(options["essential_solver"])),
+      .refine = nb::cast<bool>(options["refine"])};
 }
 
-/// @brief A RANSAC summary, or None if that run found no model.
+/// @brief H-RANSAC's summary, or None if that run found no model.
 /// @param summary The summary.
 /// @return A dict (see `ransac_summary`) or None.
 nb::object maybe_summary(const std::optional<foundations::ransac::Summary>& summary) {
   return summary ? nb::object(ransac_summary(*summary)) : nb::none();
+}
+
+/// @brief E-RANSAC's summary, or None if that run found no model.
+/// @param summary The summary.
+/// @return A dict (see `essential_summary`) or None.
+nb::object maybe_summary(const std::optional<foundations::epipolar::EssentialSummary>& summary) {
+  return summary ? nb::object(essential_summary(*summary)) : nb::none();
 }
 
 /// @brief Initialise two views.
@@ -88,10 +115,10 @@ nb::dict initialize(const BatchIn<3>& bearings1, const BatchIn<3>& bearings2,
   return out;
 }
 
-/// @brief The enum tables: status, model and RANSAC termination names in code order.
+/// @brief The enum tables: status, model, and RANSAC and NLS termination names in code order.
 /// @return The tables.
 nb::dict codes() {
-  nb::dict out = ransac_codes();
+  nb::dict out = essential_codes();
   nb::list statuses;
   for (int k = 0; k < static_cast<int>(twoview::Status::kCount); ++k) {
     statuses.append(twoview::name(static_cast<twoview::Status>(k)));

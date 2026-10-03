@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import enum
 import math
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any, Generic, Protocol, TypeVar
 
@@ -60,11 +61,13 @@ import numpy as np
 from numpy.typing import NDArray
 
 from slamlab import backends
+from slamlab.foundations import solve
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
 from slamlab.foundations.rng import Pcg32
 from slamlab.foundations.solve import Solution
 
 ModelT = TypeVar("ModelT")
+SummaryT = TypeVar("SummaryT", bound=solve.Summary)
 
 
 class Estimator(Protocol[ModelT]):
@@ -409,17 +412,21 @@ def summary_from_backend(raw: dict[str, Any], codes: dict[str, list[str]]) -> Su
 
 
 def from_backend(
-    raw: dict[str, Any], codes: dict[str, list[str]]
-) -> Solution[Consensus[NDArray[np.float64]], Summary]:
+    raw: dict[str, Any],
+    codes: dict[str, list[str]],
+    summary: Callable[[dict[str, Any], dict[str, list[str]]], SummaryT],
+) -> Solution[Consensus[NDArray[np.float64]], SummaryT]:
     """Build a solution from a compiled backend's RANSAC result.
 
     Parameters
     ----------
     raw : dict
-        ``model`` and ``inliers`` arrays, and ``summary``, the dict
-        :func:`summary_from_backend` reads.
+        ``model`` and ``inliers`` arrays, and ``summary``, the dict `summary` reads.
     codes : dict of str to list of str
         The backend's enum names in code order (its ``codes()``).
+    summary : callable
+        Decodes the summary dict: :func:`summary_from_backend`, or a solver's own for a
+        summary that nests others (``epipolar.essential_summary_from_backend``).
 
     Returns
     -------
@@ -430,7 +437,7 @@ def from_backend(
         model=np.asarray(raw["model"], dtype=np.float64),
         inliers=np.asarray(raw["inliers"], dtype=np.bool_),
     )
-    return Solution(state=consensus, summary=summary_from_backend(raw["summary"], codes))
+    return Solution(state=consensus, summary=summary(raw["summary"], codes))
 
 
 def run(
@@ -467,4 +474,4 @@ def run(
     module_name, function = target
     implementation = backends.implementation(backend, module_name)
     raw = backends.function(backend, module_name, function)(*arrays, options=asdict(options))
-    return from_backend(raw, implementation.codes())
+    return from_backend(raw, implementation.codes(), summary_from_backend)

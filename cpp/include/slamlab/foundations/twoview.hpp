@@ -94,6 +94,10 @@ struct Options {
   int min_points = 50;
   /// @brief The runner-up must have fewer than this fraction of the best's points in front.
   double ambiguity_ratio = 0.75;
+  /// @brief E-RANSAC's minimal solver.
+  epipolar::MinimalSolver essential_solver = epipolar::MinimalSolver::kStewenius;
+  /// @brief Whether E-RANSAC's model is refined on its inliers' Sampson distances.
+  bool refine = true;
 };
 
 /// @brief Check the settings.
@@ -133,8 +137,8 @@ struct Initialization {
   double gric_homography = 0.0;
   /// @brief Each candidate's inliers in front of both cameras, best first.
   std::vector<int> in_front;
-  /// @brief E's RANSAC summary, if it found a model.
-  std::optional<ransac::Summary> essential;
+  /// @brief E-RANSAC's summary (with the refinement's), if it found a model.
+  std::optional<epipolar::EssentialSummary> essential;
   /// @brief H's RANSAC summary, if it found a model.
   std::optional<ransac::Summary> homography;
 };

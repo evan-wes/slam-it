@@ -61,7 +61,8 @@ Result<void> check_bearing(const Eigen::Ref<const Rows3>& bearings, Eigen::Index
 }
 
 Result<void> check_bearing_pairs(const Eigen::Ref<const Rows3>& bearings1,
-                                 const Eigen::Ref<const Rows3>& bearings2, Eigen::Index minimum) {
+                                 const Eigen::Ref<const Rows3>& bearings2, Eigen::Index minimum,
+                                 bool positive_z) {
   if (bearings1.rows() != bearings2.rows()) {
     return fail(ErrorKind::kInvalidInput, "bearings: expected equal (N, 3) shapes");
   }
@@ -75,7 +76,7 @@ Result<void> check_bearing_pairs(const Eigen::Ref<const Rows3>& bearings1,
       if (auto ok = check_bearing(*bearings, i, name); !ok) {
         return ok;
       }
-      if (!((*bearings)(i, 2) > 0.0)) {
+      if (positive_z && !((*bearings)(i, 2) > 0.0)) {
         return fail(ErrorKind::kInvalidInput, "bearings: expected positive z (a pinhole view)");
       }
     }

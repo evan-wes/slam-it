@@ -8,6 +8,8 @@
 #include <cmath>
 #include <utility>
 
+#include "slamlab/foundations/so3.hpp"
+
 /// @brief Helpers for slamlab's native tests.
 namespace slamlab::testing {
 
@@ -29,6 +31,12 @@ inline Eigen::Matrix3d scene_rotation() {
 /// @brief The scenes' relative translation: half a metre sideways.
 /// @return t of `T_c2_c1`.
 inline Eigen::Vector3d scene_translation() { return {0.5, -0.1, 0.05}; }
+
+/// @brief The scenes' essential matrix, `[t]x R` with unit t.
+/// @return E.
+inline Eigen::Matrix3d scene_essential() {
+  return foundations::so3::hat(scene_translation().normalized()) * scene_rotation();
+}
 
 /// @brief Rows of 3-vectors, row-major as the cores take them.
 using Rows3 = Eigen::Matrix<double, Eigen::Dynamic, 3, Eigen::RowMajor>;

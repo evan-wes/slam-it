@@ -71,8 +71,9 @@ from __future__ import annotations
 
 import enum
 import math
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -82,6 +83,9 @@ from slamlab.foundations import correspondences, epipolar, homography, ransac, t
 from slamlab.foundations.arrays import as_bearing_pairs
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
 from slamlab.foundations.solve import Solution
+from slamlab.foundations.solve import Summary as _Summary
+
+_SummaryT = TypeVar("_SummaryT", bound=_Summary)
 
 GRIC_LAMBDA3 = 2.0
 """Torr's ``λ₃``: a residual's contribution is capped at ``λ₃ (r - d)``."""
@@ -146,6 +150,12 @@ class Options:
     ambiguity_ratio : float
         The runner-up candidate must have fewer than this fraction of the best's points in
         front.
+    essential_solver : {"nister", "stewenius", "8pt"}
+        E-RANSAC's minimal solver (see :data:`slamlab.foundations.epipolar.MINIMAL_SOLVERS`).
+    refine : bool
+        Whether E-RANSAC's model is refined on its inliers' Sampson distances
+        (:func:`slamlab.foundations.epipolar.essential_ransac`), keeping it only if it lowers the
+        MSAC cost; :class:`slamlab.foundations.epipolar.EssentialSummary` says whether it did.
     """
 
     focal: float
@@ -157,6 +167,8 @@ class Options:
     min_parallax_deg: float = 1.0
     min_points: int = 50
     ambiguity_ratio: float = 0.75
+    essential_solver: str = "stewenius"
+    refine: bool = True
 
     def __post_init__(self) -> None:
         """Check the settings.
@@ -179,6 +191,11 @@ class Options:
         if not 0.0 < self.ambiguity_ratio <= 1.0:
             raise InvalidInputError(
                 f"ambiguity_ratio: must be in (0, 1], got {self.ambiguity_ratio}"
+            )
+        if self.essential_solver not in epipolar.MINIMAL_SOLVERS:
+            raise InvalidInputError(
+                f"essential_solver: expected one of {epipolar.MINIMAL_SOLVERS}, "
+                f"got {self.essential_solver!r}"
             )
 
     def ransac_options(self, model: Model) -> ransac.Options:
@@ -230,8 +247,10 @@ class Initialization:
         Each model's GRIC score (infinity if its RANSAC found no model).
     in_front : ndarray of int, shape (K,)
         Each candidate's count of inliers triangulated in front of both cameras, best first.
-    essential, homography : ransac.Summary or None
-        Each RANSAC run's summary (None if it found no model).
+    essential : epipolar.EssentialSummary or None
+        E-RANSAC's summary, with the refinement's (None if it found no model).
+    homography : ransac.Summary or None
+        H-RANSAC's summary (None if it found no model).
     """
 
     status: Status
@@ -244,7 +263,7 @@ class Initialization:
     gric_essential: float
     gric_homography: float
     in_front: NDArray[np.int64]
-    essential: ransac.Summary | None
+    essential: epipolar.EssentialSummary | None
     homography: ransac.Summary | None
 
 
@@ -253,9 +272,10 @@ class Implementation(Protocol):
 
     ``initialize`` takes :class:`Options`' fields as one dict and returns a dict of the
     :class:`Initialization` fields: ``status`` and ``model`` as codes into ``codes()``,
-    ``in_front`` as an int64 array, and ``essential`` and ``homography`` as summary dicts
-    (:func:`slamlab.foundations.ransac.summary_from_backend`), or None when that model's
-    RANSAC found nothing.
+    ``in_front`` as an int64 array, ``essential`` as a summary dict
+    (:func:`slamlab.foundations.epipolar.essential_summary_from_backend`) and ``homography``
+    as one (:func:`slamlab.foundations.ransac.summary_from_backend`), or None when that
+    model's RANSAC found nothing.
     """
 
     def codes(self) -> dict[str, list[str]]:
@@ -304,11 +324,11 @@ def gric(
 
 
 def _fit(
-    estimator: ransac.Estimator[correspondences.Matrix3], options: ransac.Options
-) -> Solution[ransac.Consensus[correspondences.Matrix3], ransac.Summary] | None:
+    run: Callable[[], Solution[ransac.Consensus[correspondences.Matrix3], _SummaryT]],
+) -> Solution[ransac.Consensus[correspondences.Matrix3], _SummaryT] | None:
     """Run one RANSAC; None if no sample gave a model."""
     try:
-        return ransac.estimate(estimator, options)
+        return run()
     except DegenerateError:
         return None
 
@@ -361,17 +381,17 @@ class _Decision:
 
 def _decide(
     model: Model,
-    run: Solution[ransac.Consensus[correspondences.Matrix3], ransac.Summary],
+    run: ransac.Consensus[correspondences.Matrix3],
     rays: tuple[NDArray[np.float64], NDArray[np.float64]],
     options: Options,
 ) -> _Decision:
     """Try a model's candidate motions on its inliers and judge the best."""
-    candidates = _candidates(model, run.state.model)
+    candidates = _candidates(model, run.model)
     if not np.linalg.norm(candidates[0][:3, 3]) > 0.0:
         return _Decision(Status.PURE_ROTATION, candidates[0], None, [])
     min_parallax = math.radians(options.min_parallax_deg)
     tried = sorted(
-        (_try(pose, rays, run.state.inliers, min_parallax) for pose in candidates),
+        (_try(pose, rays, run.inliers, min_parallax) for pose in candidates),
         key=lambda t: -t.in_front,
     )
     counts = [t.in_front for t in tried]
@@ -395,12 +415,19 @@ def _initialize(
         correspondences.normalised_plane(bearings2),
     )
     essential = _fit(
-        epipolar.essential_estimator(bearings1, bearings2),
-        options.ransac_options(Model.ESSENTIAL),
+        lambda: epipolar.essential_ransac_reference(
+            bearings1,
+            bearings2,
+            options.ransac_options(Model.ESSENTIAL),
+            options.essential_solver,
+            options.refine,
+        )
     )
     planar = _fit(
-        homography.homography_estimator(x1[:, :2], x2[:, :2]),
-        options.ransac_options(Model.HOMOGRAPHY),
+        lambda: ransac.estimate(
+            homography.homography_estimator(x1[:, :2], x2[:, :2]),
+            options.ransac_options(Model.HOMOGRAPHY),
+        )
     )
     if essential is None and planar is None:
         raise DegenerateError("initialize: neither RANSAC found a model")
@@ -419,22 +446,23 @@ def _initialize(
         h_errors = homography.sampson(planar.state.model, x1[support, :2], x2[support, :2])
         gric_h = gric(h_errors, sigma, HOMOGRAPHY_DIMENSION, HOMOGRAPHY_PARAMETERS)
     model = Model.HOMOGRAPHY if gric_h < gric_e else Model.ESSENTIAL
-    chosen = planar if model is Model.HOMOGRAPHY else essential
-    assert chosen is not None  # the lower score is finite
+    run = planar if model is Model.HOMOGRAPHY else essential
+    assert run is not None  # the lower score is finite
+    chosen = run.state
     rays = (bearings1, bearings2)
     decision = _decide(model, chosen, rays, options)
     fallback = False
     if decision.status is Status.AMBIGUOUS and model is Model.HOMOGRAPHY and essential is not None:
-        alternative = _decide(Model.ESSENTIAL, essential, rays, options)
+        alternative = _decide(Model.ESSENTIAL, essential.state, rays, options)
         if alternative.status is Status.INITIALIZED:
-            model, chosen, decision, fallback = Model.ESSENTIAL, essential, alternative, True
+            model, chosen, decision, fallback = Model.ESSENTIAL, essential.state, alternative, True
     best = decision.best
     return Initialization(
         status=decision.status,
         model=model,
         fallback=fallback,
         relative_pose=decision.pose,
-        inliers=chosen.state.inliers,
+        inliers=chosen.inliers,
         points=best.points if best is not None else np.full((n, 3), np.nan),
         triangulated=best.good if best is not None else np.zeros(n, dtype=bool),
         gric_essential=gric_e,
@@ -466,7 +494,11 @@ def _from_backend(raw: dict[str, Any], codes: dict[str, list[str]]) -> Initializ
         gric_essential=float(raw["gric_essential"]),
         gric_homography=float(raw["gric_homography"]),
         in_front=np.asarray(raw["in_front"], dtype=np.int64),
-        essential=_summary(raw["essential"], codes),
+        essential=(
+            None
+            if raw["essential"] is None
+            else epipolar.essential_summary_from_backend(raw["essential"], codes)
+        ),
         homography=_summary(raw["homography"], codes),
     )
 
