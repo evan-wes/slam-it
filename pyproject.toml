@@ -15,6 +15,10 @@ authors = [{ name = "evan-wes" }]
 dependencies = ["numpy>=1.26"]
 
 [project.optional-dependencies]
+# COLMAP's Ceres bundle adjuster, for slamlab.eval.colmap_reference (the only importer).
+# The development setup installs it too (scripts/setup_slamlab.sh): it is the reference the
+# BA tests and demos compare against.
+colmap = ["pycolmap>=4.2"]
 # The development and layer-1 toolchain's pip layer: the single list scripts/setup_slamlab.sh
 # installs from when not using the lockfile (the conda layer -- compilers, clang tools,
 # doxygen, Node.js/jscpd -- is in that script).
@@ -26,6 +30,12 @@ dev = [
   "ruff>=0.6",
   "mypy>=1.10",
   "import-linter>=2.0",
+  # Test-only oracles: SciPy (rotations, least squares) and mpmath (high-precision values
+  # for the parity fixtures). manifpy comes from conda-forge (setup_slamlab.sh).
+  "scipy>=1.13",
+  "mpmath>=1.3",
+  # Visualisation for the demos (never imported by the library).
+  "rerun-sdk>=0.38",
 ]
 
 [tool.scikit-build]
@@ -67,6 +77,9 @@ select = ["E", "W", "F", "I", "N", "D", "ANN", "B", "UP", "SIM", "RUF", "PL", "P
 ignore = [
   "PLR2004",  # magic values in comparisons: too noisy for numerical code with tolerances
 ]
+# Greek letters in docstrings are the maths notation (ρ for translation, σ for scale, ...),
+# not look-alikes of Latin letters.
+allowed-confusables = ["ρ", "σ", "α", "ν"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
@@ -82,6 +95,11 @@ files = ["src/slamlab", "tests", "scripts"]
 # The compiled extensions are never imported by name: slamlab.backends locates them
 # dynamically, and each algorithm types its backend through a Protocol (e.g.
 # slamlab.foundations.so3.Implementation) that tests check the extensions against.
+
+[[tool.mypy.overrides]]
+# Test-only oracles that ship without type information.
+module = ["mpmath", "manifpy", "scipy.*"]
+ignore_missing_imports = true
 
 [tool.importlinter]
 root_packages = ["slamlab"]
@@ -104,6 +122,53 @@ layers = [
   "foundations",
   "backends",
 ]
+
+# The order of modules inside rung 0. Parenthesised layers are optional: they are the modules
+# milestone 1 adds, so the contract covers each as it lands.
+[[tool.importlinter.contracts]]
+name = "Rung 0's internal order"
+type = "layers"
+containers = ["slamlab.foundations"]
+layers = [
+  "(ba)",
+  "(camera) | (nls)",
+  "(alignment)",
+  "(se3)",
+  "so3",
+  "arrays",
+  "errors",
+]
+
+# The order of modules inside the bundle-adjustment package.
+[[tool.importlinter.contracts]]
+name = "Bundle adjustment's internal order"
+type = "layers"
+containers = ["slamlab.foundations.ba"]
+layers = [
+  "solve",
+  "bundle",
+  "layout | schur",
+  "gauge",
+  "problem",
+]
+
+# pycolmap is an optional reference, imported by slamlab.eval alone.
+[[tool.importlinter.contracts]]
+name = "Only eval may import pycolmap"
+type = "forbidden"
+# An allow-list: all of slamlab is forbidden, the one reference module excepted, so a new
+# package is covered without being listed.
+source_modules = ["slamlab"]
+forbidden_modules = ["pycolmap"]
+ignore_imports = ["slamlab.eval.colmap_reference -> pycolmap"]
+
+# The ignored import above hides every chain through colmap_reference, so a pipeline that
+# imported it would pass. Pipelines must not depend on the optional reference.
+[[tool.importlinter.contracts]]
+name = "Pipelines never reach the COLMAP reference"
+type = "forbidden"
+source_modules = ["slamlab.orchestration"]
+forbidden_modules = ["slamlab.eval.colmap_reference"]
 
 [[tool.importlinter.contracts]]
 name = "Visual-inertial builds on the edge rung only, not dense or classic"

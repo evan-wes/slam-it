@@ -15,4 +15,20 @@ void bind_foundations(nanobind::module_& parent);
 /// @param m The `foundations.so3` submodule.
 void bind_so3(nanobind::module_& m);
 
+/// @brief Add the `se3` functions to the `foundations.se3` submodule.
+/// @param m The `foundations.se3` submodule.
+void bind_se3(nanobind::module_& m);
+
+/// @brief Add the `camera` functions to the `foundations.camera` submodule.
+/// @param m The `foundations.camera` submodule.
+void bind_camera(nanobind::module_& m);
+
+/// @brief Add the `alignment` functions to the `foundations.alignment` submodule.
+/// @param m The `foundations.alignment` submodule.
+void bind_alignment(nanobind::module_& m);
+
+/// @brief Add the `ba` functions to the `foundations.ba` submodule.
+/// @param m The `foundations.ba` submodule.
+void bind_ba(nanobind::module_& m);
+
 }  // namespace slamlab::bindings

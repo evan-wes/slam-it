@@ -10,6 +10,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # the nanobind module is added only when built through scikit-build-core.
 option(SLAMLAB_BUILD_TESTS "Build the native C++ tests" OFF)
 
+# Eigen is the cores' linear algebra: fixed-size types may appear in core headers, so it is
+# a PUBLIC dependency of every rung library. Provided by the conda env (setup_slamlab.sh).
+find_package(Eigen3 5.0 CONFIG REQUIRED)
+
 # One static library per rung, mirroring the Python packages: slamlab_<rung> from
 # cpp/src/<rung>/, linking only the rungs below it. DEPENDS must agree with the ladder's
 # layers in pyproject.toml; scripts/check_layers.py enforces that, and that every
@@ -19,7 +23,7 @@ function(slamlab_add_rung rung)
   file(GLOB_RECURSE sources CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/cpp/src/${rung}/*.cpp)
   add_library(slamlab_${rung} STATIC ${sources})
   target_include_directories(slamlab_${rung} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cpp/include)
-  target_link_libraries(slamlab_${rung} PUBLIC ${ARG_DEPENDS})
+  target_link_libraries(slamlab_${rung} PUBLIC Eigen3::Eigen ${ARG_DEPENDS})
   set_target_properties(slamlab_${rung} PROPERTIES POSITION_INDEPENDENT_CODE ON)
   target_compile_options(slamlab_${rung} PRIVATE -Wall -Wextra -Wpedantic)
   if(SLAMLAB_BUILD_TESTS)
@@ -30,6 +34,8 @@ function(slamlab_add_rung rung)
       set(test_name ${rung}_${test_stem})
       add_executable(${test_name} ${test_source})
       target_link_libraries(${test_name} PRIVATE slamlab_${rung})
+      # Tests may include a rung's internal headers (cpp/src/<rung>/...) to unit-test them.
+      target_include_directories(${test_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cpp/src)
       target_compile_options(${test_name} PRIVATE -Wall -Wextra -Wpedantic)
       add_test(NAME ${test_name} COMMAND ${test_name})
     endforeach()

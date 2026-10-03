@@ -15,10 +15,22 @@ and it sits below every algorithm package in the dependency layers.
 from __future__ import annotations
 
 import importlib
+from collections.abc import Callable
 from types import ModuleType
+from typing import Any, cast
+
+import numpy as np
+from numpy.typing import NDArray
 
 BACKENDS: tuple[str, ...] = ("python", "cpp", "rust")
 """Every backend name, the Python reference first."""
+
+LOCKSTEP_BACKENDS: frozenset[str] = frozenset({"python", "cpp"})
+"""Backends that implement every function of every compiled module.
+
+C++ is built in lock-step with the Python reference. Rust implements a curated subset
+(design doc, "Languages") and never gates a merge, so a Rust module may lack functions.
+"""
 
 _EXTENSIONS: dict[str, str] = {"cpp": "slamlab._cpp", "rust": "slamlab_rs"}
 _PACKAGE_PREFIX = "slamlab."
@@ -136,3 +148,82 @@ def implementation(backend: str, module_name: str) -> ModuleType:
     if not isinstance(found, ModuleType):
         raise NotImplementedError(f"backend {backend!r} does not implement {module_name}")
     return found
+
+
+def function(backend: str, module_name: str, name: str) -> Callable[..., Any]:
+    """Return one function of a compiled backend's implementation of a slamlab module.
+
+    Parameters
+    ----------
+    backend : {"cpp", "rust"}
+        The compiled backend.
+    module_name : str
+        The Python module whose implementation is wanted, as its ``__name__``.
+    name : str
+        The function's name, as in the module's ``Implementation`` Protocol.
+
+    Returns
+    -------
+    callable
+        The compiled function.
+
+    Raises
+    ------
+    ValueError
+        If `backend` is unknown or ``"python"``, or `module_name` is not a slamlab module.
+    BackendNotBuiltError
+        If the backend's extension is not installed.
+    NotImplementedError
+        If the backend does not implement `module_name`, or implements it without `name`
+        (Rust implements a curated subset).
+    """
+    found = getattr(implementation(backend, module_name), name, None)
+    if found is None or isinstance(found, ModuleType) or not callable(found):
+        raise NotImplementedError(f"backend {backend!r} does not implement {module_name}.{name}")
+    return cast("Callable[..., Any]", found)
+
+
+def dispatch(
+    backend: str,
+    module_name: str,
+    name: str,
+    reference: Callable[..., NDArray[np.float64]],
+    *args: object,
+) -> NDArray[np.float64]:
+    """Run one function with the chosen backend: the Python reference or a compiled one.
+
+    Algorithm modules call this after validating their inputs, so every backend receives the
+    same clean, batched arrays.
+
+    Parameters
+    ----------
+    backend : {"python", "cpp", "rust"}
+        Which implementation computes the result.
+    module_name : str
+        The calling module's ``__name__``.
+    name : str
+        The function's name, as in the module's ``Implementation`` Protocol.
+    reference : callable
+        The Python reference implementation, called when `backend` is ``"python"``.
+    *args : ndarray or scalar
+        The validated arguments, passed unchanged: arrays, and plain scalars (int, float,
+        bool) for options.
+
+    Returns
+    -------
+    ndarray of float64
+        The result.
+
+    Raises
+    ------
+    ValueError
+        If `backend` is unknown.
+    BackendNotBuiltError
+        If a compiled `backend` is not built.
+    NotImplementedError
+        If a compiled `backend` does not implement the function.
+    """
+    check_name(backend)
+    if backend == "python":
+        return reference(*args)
+    return np.asarray(function(backend, module_name, name)(*args), dtype=np.float64)

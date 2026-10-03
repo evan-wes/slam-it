@@ -6,7 +6,7 @@ set -euo pipefail
 # Two layers, as in reifyscene's setup:
 # - conda layer (conda-forge): Python and the native toolchain -- cmake, ninja, a C++
 #   compiler, Rust (cargo/rustc) -- plus the layer-1 check tools: clang-format/clang-tidy
-#   (with clang's own headers), doxygen, and Node.js for jscpd. Nothing is installed
+#   (with clang's own headers), Eigen, doxygen, and Node.js for jscpd. Nothing is installed
 #   system-wide; removing the env removes the toolchain.
 # - pip layer: build backends and Python dependencies, installed from
 #   scripts/locks/slamlab.lock by default (pass --unlocked to re-resolve).
@@ -25,6 +25,7 @@ PYTHON_VERSION="3.11"   # matches reifyscene's env, which also imports slamlab
 UNLOCKED=0
 CLANG_VERSION="23.1.2"
 JSCPD_VERSION="5.4.0"
+EIGEN_VERSION="5.0.1"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -46,8 +47,10 @@ if [[ ! -x "${CONDA_BIN}" ]]; then
 fi
 
 # clang and clang-tools pinned together: clang-tidy needs clang's resource headers.
+# Eigen is the C++ cores' linear algebra (header-only; found by CMake as Eigen3::Eigen).
+# manifpy is a test-only Lie-group oracle, packaged for conda-forge only.
 CONDA_PACKAGES=(cmake ninja cxx-compiler rust "clang-tools=${CLANG_VERSION}" "clang=${CLANG_VERSION}"
-  doxygen nodejs)
+  "eigen=${EIGEN_VERSION}" doxygen nodejs manifpy)
 
 # --- conda layer ---------------------------------------------------------------
 if "${CONDA_BIN}" env list | awk '{print $1}' | grep -qx "${ENV_NAME}"; then
@@ -77,12 +80,13 @@ run() { "${CONDA_BIN}" run --no-capture-output -n "${ENV_NAME}" "$@"; }
 if [[ ${UNLOCKED} -eq 0 && -f "${LOCK_FILE}" ]]; then
   run python -m pip install -r "${LOCK_FILE}"
 else
-  # Resolve fresh from pyproject.toml: the runtime dependencies plus the `dev` extra,
-  # the single list of the toolchain's pip layer.
+  # Resolve fresh from pyproject.toml: the runtime dependencies plus the `dev` extra (the
+  # toolchain's pip layer) and the `colmap` extra (the BA reference the tests compare to).
   mapfile -t PIP_REQS < <(run python -c '
 import tomllib
 project = tomllib.load(open("'"${ROOT_DIR}"'/pyproject.toml", "rb"))["project"]
-print("\n".join(project["dependencies"] + project["optional-dependencies"]["dev"]))')
+extras = project["optional-dependencies"]
+print("\n".join(project["dependencies"] + extras["dev"] + extras["colmap"]))')
   run python -m pip install "${PIP_REQS[@]}"
 fi
 # jscpd (duplication detection) installs into the env's own Node prefix.

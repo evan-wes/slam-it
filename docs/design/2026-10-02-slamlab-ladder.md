@@ -1,8 +1,10 @@
 # slamlab: a learning ladder for visual SLAM
 
-Status, 2026-10-02: the scaffold is built. That covers the package-per-rung layout in three
-languages, the conda environment, CI, and the two-layer review process. No SLAM algorithms
-exist yet: milestone 1 is next.
+Status, 2026-10-02: milestone 1 is under way. The scaffold (package-per-rung layout in three
+languages, conda environment, CI, two-layer review process) is merged. PR 1, the BA spine, adds
+rung 0's geometry and estimation in Python and C++: SO(3), SE(3), Umeyama alignment, camera
+models, nonlinear least squares and bundle adjustment; Rust's curated subset has SO(3) so
+far. RANSAC follows in PR 2.
 
 ## Purpose
 
@@ -124,10 +126,87 @@ and a possible later phone target.
     - C++: `cpp/include/slamlab/foundations/solve.hpp`, returned as
       `std::expected<Solution<T>, Error>`;
     - Rust: `slamlab_foundations::solve`, returned as `Result<Solution<T>, Error>`.
+
+    As built in PR 1, the summary (`SolveSummary`, `Termination`) lives in
+    `slamlab.foundations.nls` and `nls.hpp`, its only producer so far; BA wraps it in its own
+    summary. It moves to `foundations.solve` in PR 2, when RANSAC becomes its second
+    producer and the shared-or-extended question below is settled.
   - **Crossing the binding boundary:** the estimate crosses as float64 arrays and the
     summary as plain scalars, with the termination reason as an integer code. The Python
     entry point builds the dataclass, and there are no binding-side classes. This extends
     the numpy-array rule to scalars, and the summary fields go into the parity fixtures.
+
+## Conventions
+
+These are fixed in milestone 1, before any geometry code. They are the ones every binding
+and fixture bakes in.
+
+**Frames and transforms.**
+- `T_a_b` maps coordinates in frame b to frame a: `p_a = T_a_b p_b`.
+- Inside a solver, a camera pose is the world-to-camera `T_cam_world`, as in ORB-SLAM and
+  DROID.
+- Results returned to callers are camera-to-world `T_world_cam`, as in `SlamResult`.
+
+**Lie groups.**
+- **Perturbations are right (local):** `X ⊕ δ = X · Exp(δ)`, as in Solà et al. and GTSAM's
+  manifold updates. Jacobians copied from Barfoot (left-perturbed) need converting with the
+  adjoint.
+- **Tangent order is translation first:** `(ρ, θ)` for SE(3), and `(ρ, θ, σ)` for Sim(3) when
+  it arrives. This matches manif and Sophus. GTSAM's `Pose3` tangent is rotation first, so
+  Jacobians compared against it appear block-swapped.
+- **Quaternions are Hamilton, stored `(x, y, z, w)`,** like Eigen's `coeffs()` and SciPy. Note
+  that Eigen's constructor `Quaterniond(w, x, y, z)` takes w first, so code and fixtures
+  always build from xyzw arrays. `q` and `-q` are the same rotation, and parity checks compare
+  them as equal.
+- **`log` returns angles in [0, pi].** At exactly pi the axis is ambiguous up to sign.
+- **`log` rejects input that is not a rotation** (beyond a tolerance shared by all three
+  languages) with `InvalidInput`. `project_to_so3` repairs it explicitly, through an SVD.
+
+**Array encodings at the boundary** (float64, C-contiguous, row-major):
+
+| Quantity | Shape |
+|---|---|
+| 3-vector, tangent of SO(3) | `(..., 3)` |
+| Rotation matrix | `(..., 3, 3)` |
+| Quaternion | `(..., 4)`, xyzw |
+| SE(3) pose | `(..., 4, 4)` homogeneous; last row checked to be `[0, 0, 0, 1]` |
+| SE(3) tangent | `(..., 6)`, `(ρ, θ)` |
+| Pinhole intrinsics | `(4,)`, `[fx, fy, cx, cy]` |
+| Radial-tangential intrinsics | `(9,)`, `[fx, fy, cx, cy, k1, k2, p1, p2, k3]` |
+| Pixels | `(..., 2)` |
+| Bearing vectors | `(..., 3)`, unit norm |
+
+**Pixel coordinates follow OpenCV:** the centre of the top-left pixel is `(0, 0)`. COLMAP's
+convention (`(0.5, 0.5)`) is converted by the COLMAP reader. VGGT's principal point is checked
+against this convention when its cameras are imported.
+
+**C++ storage.** The cores use Eigen. Fixed-size Eigen types (`Eigen::Matrix3d`, `Vector3d`,
+…) may appear in core headers. The bindings map numpy's row-major buffers with
+`Eigen::Map<…, Eigen::RowMajor>`. Matrices are factorised with plain Cholesky (`Eigen::LLT`;
+nalgebra's `Cholesky`; numpy's `cholesky`) in all three languages. A failed factorisation
+inside a damped solver means "reject the step and raise the damping", not an error.
+
+**Structured problems cross as structs of arrays.** A BA problem, for example, crosses as:
+- float64 values;
+- `int64` index arrays (`cam_idx`, `pt_idx`);
+- bool masks (fixed variables);
+- options as scalars, with integer codes for enums.
+
+The cores check index bounds and sizes and return `InvalidInput`, even though the Python
+entry point validates too. Standalone C++ and Rust callers get the same protection, and both
+languages fail the same way.
+
+**Generic in the core, concrete in the bindings.**
+- Generic algorithms (the least-squares solver, RANSAC) are templates in C++ and traits in
+  Rust, and generic over a Protocol in Python.
+- The bindings expose only concrete instances (`bundle_adjust`, `essential_ransac`, …), so
+  no compiled hot loop calls back into Python.
+- A generic module with no concrete binding of its own (e.g. `slamlab.foundations.nls`) is
+  tested natively in each core, and in parity through the concrete problems that use it.
+
+**Languages per module.** Python and C++ are lock-step: C++ implements every function in a
+compiled module's `Implementation` Protocol. Rust implements a curated subset and never gates
+a merge. The tests enforce both rules.
 
 ## Package layout
 
@@ -142,7 +221,7 @@ visible from its path and enforceable by contract.
 | `slamlab.classic` | library `slamlab_classic` | -- | Classic heavy |
 | `slamlab.dense` | -- | -- | Dense BA + depth prior |
 | `slamlab.learned` | -- | -- | DROID- and MegaSaM-style |
-| `slamlab.eval` | -- | -- | Metrics, benchmarks, budget harness |
+| `slamlab.eval` | -- | -- | Dataset readers, external references (COLMAP), metrics, benchmarks, budget harness |
 | `slamlab.orchestration` | -- | -- | End-to-end pipelines |
 
 Packages for rungs that have no code yet are stubs: a docstring stating the rung, its
@@ -383,31 +462,60 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
 
 - **Final name**, before going public.
 - **Exact budget numbers**, from published device specs.
-- **Milestone 1 tasks carried from the review panel:**
-  - When the first fallible function lands, add the bindings' error translation, with a
-    parity test that every error kind raises the matching Python exception from both
-    bindings.
-  - The `exp`/`log` fixtures cover the hard cases: angle near 0 (Taylor branch), near pi
-    (axis sign ambiguous at exactly pi), above pi (wrap), and non-orthonormal input to
-    `log`.
-  - The first solver defines the solve-summary type shared by the three languages:
-    - Each termination reason maps explicitly to `converged`, as in Ceres: stalls on
-      function or parameter tolerance count as converged.
-    - Consider a time-cap reason for the compute budgets.
-    - Decide whether RANSAC gets its own summary (iterations, inlier count or mask, whether
-      the target confidence was reached) or a shared core summary with extensions.
-  - Further hard `exp`/`log` cases:
-    - the `arccos` domain at both ends: a rotation whose trace rounds just past +-1, which
-      gives NaN without a clamp;
-    - values just either side of the Taylor-branch switch, so the series and closed form
-      agree where they meet.
+- **Milestone 1 tasks carried from the review panel.** Closed by PR 1:
+  - The bindings translate every error kind to its Python exception (`cpp/bindings/common.cpp`),
+    and each kind is raised from the C++ backend in its algorithm's tests: `InvalidInput`
+    throughout, `Degenerate` in alignment, `NotConverged` in camera, NLS and BA.
+  - The `exp`/`log` fixture (mpmath-oracled) covers angles near 0, values either side of
+    each Taylor switch, near pi, exactly pi (canonical sign), above pi (wrap) and near 2 pi.
+    `log` rejects a non-orthonormal input (`InvalidInput`); `project_to_so3` is the explicit
+    SVD projection.
+  - Each termination reason maps explicitly to `converged`, as in Ceres (`CONVERGED`).
 
-    The above-pi case compares rotations, or the wrapped vector, not the raw input. Before
-    writing the non-orthonormal-input case, decide whether `log` rejects it
-    (`InvalidInput`) or projects it to the nearest rotation (SVD).
+  Still open:
+  - The `arccos` domain at both ends: a rotation whose trace rounds just past +-1.
+  - A time-cap termination reason for the compute budgets.
+  - Whether RANSAC gets its own summary (iterations, inlier count or mask, whether the
+    target confidence was reached) or a shared core summary with extensions. Settled in
+    PR 2, with the summary's move to `foundations.solve` (panel A3 on PR 1).
+- **Deferred from PR 1's review panel**
+  ([report](../reviews/2026-10-02-feature-ba-spine.md)):
+  - **Batched APIs for standalone callers (A11).** Batching over many inputs lives in the
+    bindings (`cpp/bindings/common.hpp`), so C++ and Rust callers outside Python have no
+    batched API. Decide before the edge rung (milestone 7), where C++ runs without Python.
+  - **A sparse reduced solver (A12).** BA's reduced camera system is solved densely behind
+    `ReducedSystemSolver`. Milestone 4's scenes need a sparse Cholesky or a preconditioned
+    CG behind the same seam (see the BA note's state-of-the-art section). It belongs in
+    rung 0, beside the dense one, not in `classic`. The C++ core is not yet parametrised on
+    a reduced solver (it uses its dense one directly), so the seam has to be opened there
+    first.
+  - **A per-block step tolerance (L6).** NLS's absolute step tolerance never fires on BA's
+    mixed scales (radians, pixels of focal length, metres). Replace it with a relative,
+    per-block test.
+  - **Facade edge cases in the layer check (A24, run 3).** `check_layers.py` merges a
+    package's public header and its implementation into one node, so the header's own
+    includes are checked as the implementation's; a facade with no `_CPP_FACADES` entry is
+    exempt. Key facades by file kind, and fail on an unmapped one, when the next package gets
+    a facade.
+  - **The gauge in rung 0's own right (A26, run 3).** `ba/gauge` depends only on poses and
+    points. When pose-graph optimisation (the classic rung's loop closure) needs the same
+    null-space removal, lift it to `foundations.gauge` rather than importing it from `ba`.
+  - **One mechanism for enum names (A27, run 3).** `Termination`'s names come from the core
+    (`nls::name`), the other crossing enums' from the bindings' tables. Pick one when Rust
+    gains these enums.
+  - **σ_f with the gauge left free (L30, run 5).** When a fixed recipe leaves gauge
+    directions in the problem (`free_gauge > 0`), σ_f is infinite under `none` but finite
+    under `first_pose`, where it depends on how the damping holds the free scale (0.13% off
+    the minimal gauge's). Report σ as unavailable whenever `free_gauge > 0`, or document it.
+  - **Triggs' robust-loss correction (L7).** NLS uses plain IRLS, which drops `ρ''`. The
+    Triggs correction restores it, and converges faster on outliers. For milestone 3, whose
+    data has outliers.
+- **Milestone 3's inputs, to settle before its adapter is written:**
+  - Where its correspondences come from: VGGT's tracks, or reifyscene's tracks
+    (VGGSfM/CoTracker) via the dumped BA problem.
+  - Which depth prior: VGGT's depth or a monocular model, metric or relative. This sets
+    whether BA's per-frame scale/shift is free.
 - **GPU and budget test runs:** their opt-in scripts and the light edge environment arrive
   with the first PyTorch rung (milestone 5) and the budget harness (milestone 7).
-- **Linear algebra in rung 0:** write our own small matrix types, or use Eigen (C++) and
-  nalgebra (Rust). This is a learning choice, made at the start of milestone 1.
 - **reifyscene's env** needs slamlab's build tools (cmake, compiler, Rust) when the adapter lands
   at milestone 3.

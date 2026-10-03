@@ -1,60 +1,102 @@
 /// @file
 /// @brief Bindings for `slamlab.foundations.so3` (`slamlab._cpp.foundations.so3`).
+///
+/// Every function is batched: float64 arrays of shape (N, ...) in, new arrays out, each item
+/// computed by the core in `slamlab/foundations/so3.hpp`. Core errors become the matching
+/// `slamlab.foundations.errors` exception.
 #include "slamlab/foundations/so3.hpp"
 
 #include <nanobind/nanobind.h>
-#include <nanobind/ndarray.h>
 
-#include <cstddef>
-#include <cstdint>
-#include <stdexcept>
-
+#include "common.hpp"
 #include "foundations/foundations.hpp"
 
 namespace nb = nanobind;
 
+namespace slamlab::bindings {
+
 namespace {
 
-/// @brief A read-only, contiguous float64 3-vector from numpy.
-using Vec3In = nb::ndarray<const double, nb::shape<3>, nb::c_contig, nb::device::cpu>;
-/// @brief A new float64 3x3 numpy array.
-using Mat3Out = nb::ndarray<nb::numpy, double, nb::shape<3, 3>>;
-
-/// @brief Map a 3-vector to its skew-symmetric matrix, as numpy arrays.
-/// @param v A contiguous float64 array of shape (3,). The argument is `noconvert`: nanobind
-///          raises `TypeError` for anything else (another dtype, a strided view) rather than
-///          silently copying, matching the Rust binding. The Python entry point validates
-///          and converts first.
-/// @return A new float64 array of shape (3, 3) that owns its memory.
-/// @throws std::invalid_argument (Python `ValueError`) if `v`'s buffer is not aligned for
-///         `double`: reading it would be undefined behaviour. nanobind does not check
-///         alignment, so the binding does, matching the Rust binding.
-Mat3Out hat(const Vec3In& v) {
-  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): inspecting an address only
-  if (reinterpret_cast<std::uintptr_t>(v.data()) % alignof(double) != 0) {
-    throw std::invalid_argument("hat: the input array is misaligned for float64");
-  }
-  const slamlab::foundations::Mat3 h = slamlab::foundations::hat({v(0), v(1), v(2)});
-  // The capsule owns the buffer and frees it when numpy releases the array.
-  auto* data = new double[9];  // NOLINT(cppcoreguidelines-owning-memory)
-  for (std::size_t i = 0; i < 3; ++i) {
-    for (std::size_t j = 0; j < 3; ++j) {
-      data[(3 * i) + j] = h[i][j];  // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-    }
-  }
-  const nb::capsule owner(data, [](void* p) noexcept {
-    delete[] static_cast<double*>(p);  // NOLINT(cppcoreguidelines-owning-memory)
-  });
-  return Mat3Out(data, {3, 3}, owner);
-}
+namespace so3 = foundations::so3;
 
 }  // namespace
 
-namespace slamlab::bindings {
-
 void bind_so3(nb::module_& m) {
-  m.def("hat", &hat, nb::arg("v").noconvert(),
-        "Map a float64 3-vector to its skew-symmetric matrix, as a new (3, 3) array.");
+  m.def(
+      "hat",
+      [](const BatchIn<3>& omega) {
+        return map_batch<3, 1, 3, 3>(omega, [](const Eigen::Vector3d& w) { return so3::hat(w); });
+      },
+      nb::arg("omega").noconvert(), "Map (N, 3) vectors to (N, 3, 3) skew-symmetric matrices.");
+  m.def(
+      "vee",
+      [](const BatchIn<3, 3>& skew) {
+        return map_batch<3, 3, 3, 1>(skew, [](const Eigen::Matrix3d& s) { return so3::vee(s); });
+      },
+      nb::arg("skew").noconvert(), "Map (N, 3, 3) skew-symmetric matrices to (N, 3) vectors.");
+  m.def(
+      "exp",
+      [](const BatchIn<3>& omega) {
+        return map_batch<3, 1, 3, 3>(omega, [](const Eigen::Vector3d& w) { return so3::exp(w); });
+      },
+      nb::arg("omega").noconvert(), "Map (N, 3) rotation vectors to (N, 3, 3) rotations.");
+  m.def(
+      "log",
+      [](const BatchIn<3, 3>& rotation) {
+        return map_batch<3, 3, 3, 1>(rotation,
+                                     [](const Eigen::Matrix3d& r) { return so3::log(r); });
+      },
+      nb::arg("rotation").noconvert(),
+      "Map (N, 3, 3) rotations to (N, 3) rotation vectors with angle in [0, pi].");
+  m.def(
+      "right_jacobian",
+      [](const BatchIn<3>& omega) {
+        return map_batch<3, 1, 3, 3>(
+            omega, [](const Eigen::Vector3d& w) { return so3::right_jacobian(w); });
+      },
+      nb::arg("omega").noconvert(), "Map (N, 3) vectors to their (N, 3, 3) right Jacobians.");
+  m.def(
+      "left_jacobian",
+      [](const BatchIn<3>& omega) {
+        return map_batch<3, 1, 3, 3>(
+            omega, [](const Eigen::Vector3d& w) { return so3::left_jacobian(w); });
+      },
+      nb::arg("omega").noconvert(), "Map (N, 3) vectors to their (N, 3, 3) left Jacobians.");
+  m.def(
+      "right_jacobian_inverse",
+      [](const BatchIn<3>& omega) {
+        return map_batch<3, 1, 3, 3>(
+            omega, [](const Eigen::Vector3d& w) { return so3::right_jacobian_inverse(w); });
+      },
+      nb::arg("omega").noconvert(), "Map (N, 3) vectors to their inverse right Jacobians.");
+  m.def(
+      "left_jacobian_inverse",
+      [](const BatchIn<3>& omega) {
+        return map_batch<3, 1, 3, 3>(
+            omega, [](const Eigen::Vector3d& w) { return so3::left_jacobian_inverse(w); });
+      },
+      nb::arg("omega").noconvert(), "Map (N, 3) vectors to their inverse left Jacobians.");
+  m.def(
+      "from_quaternion",
+      [](const BatchIn<4>& quaternion) {
+        return map_batch<4, 1, 3, 3>(
+            quaternion, [](const Eigen::Vector4d& q) { return so3::from_quaternion(q); });
+      },
+      nb::arg("quaternion").noconvert(), "Map (N, 4) xyzw quaternions to (N, 3, 3) rotations.");
+  m.def(
+      "to_quaternion",
+      [](const BatchIn<3, 3>& rotation) {
+        return map_batch<3, 3, 4, 1>(
+            rotation, [](const Eigen::Matrix3d& r) { return so3::to_quaternion(r); });
+      },
+      nb::arg("rotation").noconvert(), "Map (N, 3, 3) rotations to (N, 4) quaternions, w >= 0.");
+  m.def(
+      "project_to_so3",
+      [](const BatchIn<3, 3>& matrix) {
+        return map_batch<3, 3, 3, 3>(
+            matrix, [](const Eigen::Matrix3d& x) { return so3::project_to_so3(x); });
+      },
+      nb::arg("matrix").noconvert(), "Map (N, 3, 3) matrices to their nearest rotations.");
 }
 
 }  // namespace slamlab::bindings

@@ -4,6 +4,72 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.2.0.0] - 2026-10-02
+
+The bundle-adjustment spine of milestone 1: rung 0's geometry, from Lie groups to a bundle
+adjuster that matches Ceres on real data. Python reference and C++ core in lock-step
+throughout, each component with a design note in `docs/notes/`.
+
+### Added
+
+- **Lie groups** (`foundations.so3`, `.se3`, `.alignment`). SO(3) and SE(3) exp/log,
+  Jacobians and their inverses, quaternions, projection onto SO(3), and Umeyama alignment
+  (SE(3)/Sim(3)). Parity fixtures come from a 50-digit mpmath oracle using independent
+  algorithms; SE(3)'s Q coefficients use exact power series below 1 rad.
+- **Camera models** (`foundations.camera`): pinhole, radtan, and radial (COLMAP's RADIAL,
+  BAL's camera, computed through radtan by a fixed linear map). Projection, Jacobians with
+  respect to the point and the intrinsics, and Newton unprojection to bearing vectors.
+- **Non-linear least squares on manifolds** (`foundations.nls`). Gauss-Newton and
+  Levenberg-Marquardt over a `Problem`/`LinearSystem` seam; Huber and Cauchy losses by IRLS,
+  with a loss per block; a full iteration trace; strict mode; a numeric-Jacobian checker.
+- **Bundle adjustment** (`foundations.ba`):
+  - robust reprojection over poses, intrinsics (shared or per camera, fixable per
+    parameter) and points, with the points eliminated by the Schur complement behind a
+    `ReducedSystemSolver` seam;
+  - points as XYZ or anchored inverse depths;
+  - depth priors through per-camera affines (metric or relative), and pose priors with
+    decoupled centre and orientation halves (a GNSS-style centre-only prior works);
+  - the gauge removed exactly: the null space of what fixed poses, fixed points, pose
+    priors and metric depth pin, removed by fixing or confining as few poses as it takes
+    (partial anchoring such as two control points or attitude priors included), in the
+    scene's own frame, and the solve runs in a world centred on the cameras, so
+    geo-referenced coordinates (up to ECEF range) solve as at the origin;
+  - degenerate data dropped and counted, and constant prior blocks left out;
+  - marginal deviations of free intrinsics, scaled by the a-posteriori variance factor
+    (reported; IRLS-weighted, so outliers do not inflate it), with unobservable focal
+    lengths flagged;
+  - a parity fixture of fifteen reference solves (every gauge `auto` resolves to, every
+    explicit recipe, partial ones, Gauss-Newton, robust losses, degeneracy, radial, priors
+    far from the truth, anchors) that the C++ core reproduces.
+- **Readers** (`slamlab.eval.readers`): BAL (plain or bz2) and COLMAP's text model.
+- **`slamlab.eval`**: COLMAP's Ceres bundle adjuster as a reference, and reprojection
+  metrics.
+- **Demos**:
+  - `scripts/demo_bal.py`: on BAL Ladybug-49 both solvers reach 0.9147 px.
+  - `scripts/compare_ba_colmap.py`: slamlab against COLMAP on any COLMAP text models. On
+    reifyscene's ten DAVIS slice scenes (invocation in the BA note):
+    Reprojection errors agree within 0.01 px on 8 of 10. Focal length is unobservable on 9
+    of 10. COLMAP lets points cross behind cameras; ours never does.
+- **Dev dependencies**: pycolmap and rerun-sdk.
+
+### Changed
+
+- The design doc fixes the boundary conventions every binding and fixture bakes in. It also
+  sets the per-PR review rule: PRs are slices, steps are commits, and the panel runs once
+  per PR. Its status and open items are brought up to date, and the panel's deferrals are
+  recorded.
+- `scripts/check_layers.py` applies rung 0's internal order (and BA's) to C++ includes, as
+  import-linter does to Python imports, chains through unlisted helpers included.
+- `camera.unproject_or_nan`: per-pixel unprojection with NaN where the lens cannot be
+  inverted (it was BA's private helper).
+- pycolmap is pinned once, in the `colmap` extra, which the development setup installs.
+
+### Performance
+
+- The C++ Schur elimination does one product per point, not one per pair of its
+  observations. Results are identical, and reifyscene's slice runs 2.3-5.1x faster (judo
+  565 s to 111 s).
+
 ## [0.1.2.1] - 2026-10-02
 
 ### Changed

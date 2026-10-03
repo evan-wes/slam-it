@@ -1,6 +1,6 @@
 ---
 name: slamlab-review-panel
-description: Run slamlab's review panel on slamlab's current branch (from any session, normally reifyscene) -- layer-1 checks, then the hygiene, architecture and algorithm reviewers in parallel -- save the report to docs/reviews/, and present the findings so the user decides each action. Use before opening a PR for a PATCH-or-larger change, or with a reviewer name (hygiene | architecture | algorithm) to run one reviewer alone.
+description: Run slamlab's review panel on slamlab's current branch (from any session, normally reifyscene) -- layer-1 checks, then the hygiene, architecture and algorithm reviewers in parallel -- save the report to docs/reviews/, and present the findings so the user decides each action. Use once per PR, on the finished slice, before opening it -- never after every incremental change -- or with a reviewer name (hygiene | architecture | algorithm) to run one reviewer alone on a small PR.
 argument-hint: "[hygiene|architecture|algorithm] [--base <ref>]"
 ---
 
@@ -9,9 +9,10 @@ argument-hint: "[hygiene|architecture|algorithm] [--base <ref>]"
 slamlab reviews in two layers:
 
 - **Layer 1, every PR:** deterministic checks in `scripts/check.sh`, also run by CI.
-- **Layer 2, this panel:** three reviewer agents, for **PATCH-or-larger** changes (new
-  algorithms, modules, rungs, language implementations, interface or boundary changes). Or
-  run one reviewer alone when a smaller change touches its area.
+- **Layer 2, this panel:** three reviewer agents, **once per PR, on the finished slice**,
+  against the PR's stated goal. A PR is a slice of a milestone built as semantic commits;
+  the panel never runs per commit. Or run one reviewer alone on a small PR that touches its
+  area. Findings outside the PR's goal go to a backlog by default.
 
 Findings are **decided together with the user**. The panel never fixes, waives or dismisses
 a finding on its own.
