@@ -327,8 +327,8 @@ def _rotation_from(
     return rotation if np.linalg.det(rotation) > 0.0 else -rotation
 
 
-def _decompose(homography: Matrix3) -> dict[str, NDArray[np.float64]]:
-    """Decompose a calibrated H by Malis and Vargas' closed form (reference)."""
+def decompose_reference(homography: Matrix3) -> dict[str, NDArray[np.float64]]:
+    """Decompose a calibrated H by Malis and Vargas' closed form: the reference, unchecked."""
     h = homography / np.linalg.svd(homography, compute_uv=False)[1]
     s = h.T @ h - np.eye(3)
     if np.abs(s).max() < PURE_ROTATION_TOLERANCE:
@@ -408,7 +408,7 @@ def decompose_homography(homography: ArrayLike, *, backend: str = "python") -> P
         raise DegenerateError("homography: rank below 2")
     backends.check_name(backend)
     raw = (
-        _decompose(matrix)
+        decompose_reference(matrix)
         if backend == "python"
         else backends.function(backend, __name__, "decompose_homography")(matrix)
     )

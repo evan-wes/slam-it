@@ -23,6 +23,8 @@ void bind_foundations(nanobind::module_& parent) {
   bind_epipolar(epipolar);
   nanobind::module_ homography = foundations.def_submodule("homography", "Homographies.");
   bind_homography(homography);
+  nanobind::module_ twoview = foundations.def_submodule("twoview", "Two-view initialisation.");
+  bind_twoview(twoview);
   nanobind::module_ ba = foundations.def_submodule("ba", "Bundle adjustment.");
   bind_ba(ba);
 }

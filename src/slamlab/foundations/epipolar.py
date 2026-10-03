@@ -392,10 +392,29 @@ def fundamental_estimator(
 # --- validation and dispatch --------------------------------------------------------------
 
 
-def _bearing_pairs(
+def bearing_pairs(
     bearings1: ArrayLike, bearings2: ArrayLike, minimum: int
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Validate (N, 3) unit bearing pairs with positive z, N >= `minimum`."""
+    """Validate (N, 3) unit bearing pairs with positive z, N >= `minimum`.
+
+    Parameters
+    ----------
+    bearings1, bearings2 : array_like, shape (N, 3)
+        The bearings.
+    minimum : int
+        The fewest pairs accepted.
+
+    Returns
+    -------
+    tuple of ndarray of float64, shape (N, 3)
+        C-contiguous copies.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If the shapes differ or are not (N, 3), a vector is not unit, a z is not positive, or
+        N < `minimum`.
+    """
     b1, b2 = as_bearings(bearings1, "bearings1"), as_bearings(bearings2, "bearings2")
     if b1.ndim != 2 or b1.shape != b2.shape:
         raise InvalidInputError(
@@ -527,7 +546,7 @@ def essential_8pt(
     slamlab.foundations.errors.DegenerateError
         If the correspondences do not determine E uniquely.
     """
-    b1, b2 = _bearing_pairs(bearings1, bearings2, SAMPLE_SIZE)
+    b1, b2 = bearing_pairs(bearings1, bearings2, SAMPLE_SIZE)
     found = backends.dispatch(backend, __name__, "essential_8pt", _essential_reference, b1, b2)
     return _solved(found, "E")
 
@@ -584,7 +603,7 @@ def sampson_essential(
         If the matrix is not (3, 3) or the bearings are invalid.
     """
     matrix = as_matrix3(essential, "essential")
-    b1, b2 = _bearing_pairs(bearings1, bearings2, 0)
+    b1, b2 = bearing_pairs(bearings1, bearings2, 0)
     return backends.dispatch(
         backend, __name__, "sampson_essential", _sampson_essential, matrix, b1, b2
     )
@@ -625,8 +644,8 @@ _W = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
 """The rotation by 90 degrees about z in E's decomposition, ``R = U W Vᵀ`` or ``U Wᵀ Vᵀ``."""
 
 
-def _decompose_essential(essential: Matrix3) -> NDArray[np.float64]:
-    """Return E's four candidate poses, shape (4, 4, 4) (reference)."""
+def decompose_reference(essential: Matrix3) -> NDArray[np.float64]:
+    """Return E's four candidate poses, shape (4, 4, 4): the reference, unchecked."""
     u, _, vt = np.linalg.svd(essential)
     # E = U diag(1, 1, 0) Vᵀ holds with either sign of U or V, so make both proper rotations.
     u = u if np.linalg.det(u) > 0.0 else -u
@@ -674,7 +693,7 @@ def decompose_essential(essential: ArrayLike, *, backend: str = "python") -> NDA
     singular = np.linalg.svd(matrix, compute_uv=False)
     if not singular[1] > RANK_TOLERANCE * singular[0]:
         raise DegenerateError("essential: rank below 2, no translation direction")
-    return backends.dispatch(backend, __name__, "decompose_essential", _decompose_essential, matrix)
+    return backends.dispatch(backend, __name__, "decompose_essential", decompose_reference, matrix)
 
 
 def run_ransac(
@@ -741,7 +760,7 @@ def essential_ransac(
     slamlab.foundations.errors.DegenerateError
         If no sample gave an essential matrix.
     """
-    b1, b2 = _bearing_pairs(bearings1, bearings2, SAMPLE_SIZE)
+    b1, b2 = bearing_pairs(bearings1, bearings2, SAMPLE_SIZE)
     estimator = essential_estimator(b1, b2)
     return run_ransac(
         estimator, (b1, b2), options, backend=backend, target=(__name__, "essential_ransac")

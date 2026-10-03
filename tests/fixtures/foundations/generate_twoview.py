@@ -1,4 +1,4 @@
-"""Generate ``epipolar.json`` and ``homography.json`` from a 50-digit mpmath oracle.
+"""Generate ``epipolar.json``, ``homography.json`` and ``twoview.json`` (mpmath, 50 digits).
 
 Run from the repository root after changing the cases (the fixtures are committed)::
 
@@ -487,11 +487,159 @@ def _homography_fixture() -> dict[str, Any]:
     }
 
 
+OUTLIER_MARGIN = 10 * 2.0 / 520.0
+"""Planted outliers lie at least ten 2 px thresholds (at f = 520) from the true model, so no
+estimator could call them inliers."""
+
+
+def _true_distance(motion: tuple[mp.matrix, mp.matrix], f1: list[float], f2: list[float]) -> float:
+    """Return a match's distance to the true model in the normalised plane.
+
+    The Sampson distance under the true E, or the transfer distance under R for a rotation.
+    """
+    rot, t = motion
+    a = mp.matrix([f1[0] / f1[2], f1[1] / f1[2], 1])
+    b = mp.matrix([f2[0] / f2[2], f2[1] / f2[2], 1])
+    if mp.norm(t) == 0:
+        y = rot * a
+        return float(mp.norm(mp.matrix([b[0] - y[0] / y[2], b[1] - y[1] / y[2]])))
+    return float(mp.sqrt(_sampson_epipolar(_true_essential(rot, t), list(a), list(b))))
+
+
+def _far_outliers(
+    rng: np.random.Generator,
+    b1: list[list[float]],
+    b2: list[list[float]],
+    motion: tuple[mp.matrix, mp.matrix],
+    fraction: float,
+) -> tuple[list[list[float]], list[bool]]:
+    """Replace a fraction of camera-2 bearings by random directions far from the true model."""
+    out, inliers = [], []
+    for f1, f2 in zip(b1, b2, strict=True):
+        if rng.random() >= fraction:
+            out.append(f2)
+            inliers.append(True)
+            continue
+        while True:
+            g = rng.uniform(-0.6, 0.6, size=2)
+            candidate = _unit(mp.matrix([float(g[0]), float(g[1]), 1.0]))
+            if _true_distance(motion, f1, candidate) > OUTLIER_MARGIN:
+                break
+        out.append(candidate)
+        inliers.append(False)
+    return out, inliers
+
+
+def _initialize_case(
+    name: str,
+    points: list[mp.matrix],
+    motion: tuple[mp.matrix, mp.matrix],
+    *,
+    expected: tuple[str, str],
+    seed: int,
+) -> dict[str, object]:
+    """Build one ``initialize`` case from exact bearings, with a third replaced by outliers.
+
+    The expected motion is the true one with unit translation; the expected points are the
+    true ones over the baseline's length, for the clean matches with at least one degree of
+    parallax (none for a pure rotation).
+    """
+    rng = np.random.default_rng(seed)
+    rot, t = motion
+    b1 = [_unit(x) for x in points]
+    b2 = [_unit(rot * x + t) for x in points]
+    b2, clean = _far_outliers(rng, b1, b2, motion, 1 / 3)
+    baseline = mp.norm(t)
+    centre2 = -(rot.T * t)
+    unit = t / baseline if baseline > 0 else t
+    rows, kept = [], []
+    for x, ok in zip(points, clean, strict=True):
+        if baseline == 0 or not ok:
+            kept.append(False)
+            continue
+        parallax = mp.degrees(
+            mp.acos((x.T * (x - centre2))[0] / (mp.norm(x) * mp.norm(x - centre2)))
+        )
+        kept.append(bool(parallax >= 1))
+        if kept[-1]:
+            rows.append([float(c / baseline) for c in x])
+    return o.case(
+        name,
+        {"bearings1": b1, "bearings2": b2, "focal": 520.0, "seed": seed},
+        {
+            "status": expected[0],
+            "model": expected[1],
+            "relative_pose": _pose_list(rot, unit),
+            "inliers": clean,
+            "triangulated": kept,
+            "points": rows,
+        },
+    )
+
+
+def _initialize_fixture() -> dict[str, Any]:
+    """Build the two-view initialisation cases: exact matches, a third of them outliers."""
+    rng = np.random.default_rng(13)
+    general = _scene(rng, 150)
+    planar = []
+    for xy in rng.uniform(-2.0, 2.0, size=(150, 2)):
+        planar.append(mp.matrix([float(xy[0]), float(xy[1]), 5.0]))
+    sideways = _pose([0.02, -0.1, 0.03], [0.5, -0.1, 0.05])
+    forward = _pose([0.01, 0.02, 0.0], [0.02, 0.01, 0.6])
+    rotation = _pose([0.05, -0.1, 0.02], [0.0, 0.0, 0.0])
+    return {
+        "description": "Two-view initialisation: ground truth fixture (generate_twoview.py).",
+        "oracle": "the true motion and points of exact matches; a third replaced by outliers",
+        "functions": {
+            "initialize": {
+                "tolerance": {
+                    "comparison": "close",
+                    "rtol": 0.0,
+                    "atol": 1e-9,
+                    "reason": "exact inliers: the 8-point fit and Lindstrom are exact to "
+                    "rounding; depths up to 8 over a baseline of 0.5 amplify it",
+                },
+                "cases": [
+                    _initialize_case(
+                        "general scene, sideways",
+                        general,
+                        sideways,
+                        expected=("initialized", "essential"),
+                        seed=21,
+                    ),
+                    _initialize_case(
+                        "general scene, forward",
+                        general,
+                        forward,
+                        expected=("initialized", "essential"),
+                        seed=22,
+                    ),
+                    _initialize_case(
+                        "plane: E degenerate, H chosen",
+                        planar,
+                        sideways,
+                        expected=("initialized", "homography"),
+                        seed=23,
+                    ),
+                    _initialize_case(
+                        "pure rotation",
+                        general,
+                        rotation,
+                        expected=("pure_rotation", "homography"),
+                        seed=24,
+                    ),
+                ],
+            }
+        },
+    }
+
+
 def main() -> None:
-    """Write ``epipolar.json`` and ``homography.json``."""
+    """Write ``epipolar.json``, ``homography.json`` and ``twoview.json``."""
     for name, doc in (
         ("epipolar.json", _epipolar_fixture()),
         ("homography.json", _homography_fixture()),
+        ("twoview.json", _initialize_fixture()),
     ):
         (HERE / name).write_text(json.dumps(doc, indent=1) + "\n")
         functions: dict[str, dict[str, Any]] = doc["functions"]

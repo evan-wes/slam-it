@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "scene_support.hpp"
 #include "slamlab/foundations/epipolar.hpp"
 #include "slamlab/foundations/homography.hpp"
 #include "slamlab/foundations/so3.hpp"
@@ -35,9 +36,7 @@ double up_to_sign(const Eigen::Matrix3d& a, const Eigen::Matrix3d& b) {
 Eigen::MatrixX3d points(int n, bool planar) {
   Eigen::MatrixX3d out(n, 3);
   for (int i = 0; i < n; ++i) {
-    const double a = std::sin(1.3 * i);
-    const double b = std::cos(0.7 * i);
-    out.row(i) << 2.0 * a, 2.0 * b, planar ? 5.0 : 6.0 + (2.0 * std::sin(2.9 * i));
+    out.row(i) = slamlab::testing::scene_point(i, planar).transpose();
   }
   return out;
 }
@@ -46,9 +45,8 @@ Eigen::MatrixX3d points(int n, bool planar) {
 
 int main() {
   int failures = 0;
-  const Eigen::Matrix3d rotation =
-      Eigen::AngleAxisd(0.1, Eigen::Vector3d(0.2, -1.0, 0.3).normalized()).toRotationMatrix();
-  const Eigen::Vector3d t(0.5, -0.1, 0.05);
+  const Eigen::Matrix3d rotation = slamlab::testing::scene_rotation();
+  const Eigen::Vector3d t = slamlab::testing::scene_translation();
   const Eigen::Matrix3d truth = slamlab::foundations::so3::hat(t.normalized()) * rotation;
 
   const Eigen::MatrixX3d scene = points(40, false);

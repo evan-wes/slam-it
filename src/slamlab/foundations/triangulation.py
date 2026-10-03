@@ -162,12 +162,15 @@ def _angle(a: NDArray[np.float64], b: NDArray[np.float64]) -> NDArray[np.float64
     )
 
 
-def _two_view(
+def triangulate_pairs(
     relative_pose: NDArray[np.float64],
     bearings1: NDArray[np.float64],
     bearings2: NDArray[np.float64],
 ) -> NDArray[np.float64]:
-    """Triangulate bearing pairs with Lindstrom's niter2 (reference); return (P, 5)."""
+    """Triangulate bearing pairs with Lindstrom's niter2, unchecked; return (P, 5).
+
+    The reference behind :func:`two_view`: point, ``in_front`` (0 or 1), parallax per row.
+    """
     rotation, t = relative_pose[:3, :3], relative_pose[:3, 3]
     essential = so3.hat(t) @ rotation
     e2 = essential[:2, :2]
@@ -305,7 +308,7 @@ def two_view(
         )
     if np.any(b1[:, 2] <= 0.0) or np.any(b2[:, 2] <= 0.0):
         raise InvalidInputError("bearings: expected positive z (a pinhole view)")
-    packed = backends.dispatch(backend, __name__, "two_view", _two_view, pose[0], b1, b2)
+    packed = backends.dispatch(backend, __name__, "two_view", triangulate_pairs, pose[0], b1, b2)
     return Triangulation.unpack(packed)
 
 

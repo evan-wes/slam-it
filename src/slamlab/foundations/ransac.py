@@ -375,6 +375,38 @@ def estimate(
     return Solution(state=Consensus(model=best.model, inliers=inliers), summary=summary)
 
 
+def summary_from_backend(
+    raw: dict[str, Any], codes: dict[str, list[str]], prefix: str = ""
+) -> Summary:
+    """Build a summary from the scalars a compiled backend returned.
+
+    Parameters
+    ----------
+    raw : dict
+        The :class:`Summary` fields (``converged`` aside) as scalars, each name preceded by
+        `prefix`, with ``termination`` as an index into ``codes["termination"]``.
+    codes : dict of str to list of str
+        The backend's enum names in code order (its ``codes()``).
+    prefix : str, optional
+        What precedes each field's name in `raw` (default: nothing).
+
+    Returns
+    -------
+    Summary
+        The summary.
+    """
+    termination = Termination(codes["termination"][int(raw[f"{prefix}termination"])])
+    return Summary(
+        iterations=int(raw[f"{prefix}iterations"]),
+        termination=termination,
+        converged=termination in CONVERGED,
+        degenerate_samples=int(raw[f"{prefix}degenerate_samples"]),
+        local_optimizations=int(raw[f"{prefix}local_optimizations"]),
+        inlier_count=int(raw[f"{prefix}inlier_count"]),
+        score=float(raw[f"{prefix}score"]),
+    )
+
+
 def from_backend(
     raw: dict[str, Any], codes: dict[str, list[str]]
 ) -> Solution[Consensus[NDArray[np.float64]], Summary]:
@@ -383,8 +415,8 @@ def from_backend(
     Parameters
     ----------
     raw : dict
-        ``model`` and ``inliers`` arrays, the :class:`Summary` fields as scalars, and
-        ``termination`` as an index into ``codes["termination"]``.
+        ``model`` and ``inliers`` arrays, and the summary's scalars (see
+        :func:`summary_from_backend`).
     codes : dict of str to list of str
         The backend's enum names in code order (its ``codes()``).
 
@@ -393,18 +425,8 @@ def from_backend(
     slamlab.foundations.solve.Solution
         The model, its inliers and the summary.
     """
-    termination = Termination(codes["termination"][int(raw["termination"])])
-    summary = Summary(
-        iterations=int(raw["iterations"]),
-        termination=termination,
-        converged=termination in CONVERGED,
-        degenerate_samples=int(raw["degenerate_samples"]),
-        local_optimizations=int(raw["local_optimizations"]),
-        inlier_count=int(raw["inlier_count"]),
-        score=float(raw["score"]),
-    )
     consensus = Consensus(
         model=np.asarray(raw["model"], dtype=np.float64),
         inliers=np.asarray(raw["inliers"], dtype=np.bool_),
     )
-    return Solution(state=consensus, summary=summary)
+    return Solution(state=consensus, summary=summary_from_backend(raw, codes))

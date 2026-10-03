@@ -39,6 +39,10 @@ void bind_epipolar(nanobind::module_& m);
 /// @param m The `foundations.homography` submodule.
 void bind_homography(nanobind::module_& m);
 
+/// @brief Add the `twoview` functions to the `foundations.twoview` submodule.
+/// @param m The `foundations.twoview` submodule.
+void bind_twoview(nanobind::module_& m);
+
 /// @brief Add the `ba` functions to the `foundations.ba` submodule.
 /// @param m The `foundations.ba` submodule.
 void bind_ba(nanobind::module_& m);

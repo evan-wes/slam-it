@@ -130,7 +130,7 @@ name = "Rung 0's internal order"
 type = "layers"
 containers = ["slamlab.foundations"]
 layers = [
-  "(ba)",
+  "(ba) | (twoview)",
   "(homography)",
   "(epipolar)",
   "(camera) | (nls) | (ransac) | (triangulation)",
