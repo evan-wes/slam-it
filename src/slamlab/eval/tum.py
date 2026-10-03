@@ -71,24 +71,61 @@ class Sequence:
         return INTRINSICS[self.sensor].copy()
 
 
-def _table(path: Path) -> list[list[str]]:
-    """Return a TUM text file's rows, skipping comments and blank lines."""
+def _table(path: Path, columns: int) -> list[tuple[int, list[str]]]:
+    """Return a TUM text file's rows with their line numbers, skipping comments and blanks.
+
+    Raises
+    ------
+    ValueError
+        If a row has fewer than `columns` fields.
+    """
     rows = []
-    for line in path.read_text().splitlines():
+    for number, line in enumerate(path.read_text().splitlines(), start=1):
         stripped = line.strip()
-        if stripped and not stripped.startswith("#"):
-            rows.append(stripped.split())
+        if not stripped or stripped.startswith("#"):
+            continue
+        fields = stripped.split()
+        if len(fields) < columns:
+            raise ValueError(f"{path}:{number}: expected {columns} fields, got {len(fields)}")
+        rows.append((number, fields))
     return rows
 
 
-def _poses(rows: list[list[str]]) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Return the ground truth's timestamps and ``T_world_cam`` matrices."""
-    values = np.array([[float(v) for v in row[:8]] for row in rows])
+def _poses(path: Path) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Return the ground truth's timestamps (ascending) and ``T_world_cam`` matrices.
+
+    Raises
+    ------
+    ValueError
+        If the file has no rows, or a row is not 8 finite numbers with a non-zero quaternion.
+    """
+    rows = _table(path, 8)
+    if not rows:
+        raise ValueError(f"{path}: no ground-truth poses")
+    values = np.empty((len(rows), 8))
+    for k, (number, fields) in enumerate(rows):
+        try:
+            values[k] = [float(v) for v in fields[:8]]
+        except ValueError as error:
+            raise ValueError(f"{path}:{number}: expected numbers ({error})") from None
+        if not np.all(np.isfinite(values[k])) or not np.linalg.norm(values[k, 4:8]) > 0.0:
+            raise ValueError(f"{path}:{number}: expected finite values and a non-zero quaternion")
+    values = values[np.argsort(values[:, 0], kind="stable")]
     quaternions = values[:, 4:8] / np.linalg.norm(values[:, 4:8], axis=1, keepdims=True)
     poses = np.tile(np.eye(4), (len(values), 1, 1))
     poses[:, :3, :3] = so3.from_quaternion(quaternions)
     poses[:, :3, 3] = values[:, 1:4]
     return values[:, 0], poses
+
+
+def _nearest(times: NDArray[np.float64], stamps: NDArray[np.float64]) -> NDArray[np.int64]:
+    """Return, for each stamp, the index of the nearest of the ascending `times`."""
+    if len(times) == 1:
+        return np.zeros(len(stamps), dtype=np.int64)
+    right = np.clip(np.searchsorted(times, stamps), 1, len(times) - 1)
+    left = right - 1
+    closer_left = np.abs(times[left] - stamps) <= np.abs(times[right] - stamps)
+    return np.asarray(np.where(closer_left, left, right), dtype=np.int64)
 
 
 def read_sequence(root: str | Path, max_difference: float = MAX_DIFFERENCE) -> Sequence:
@@ -109,23 +146,26 @@ def read_sequence(root: str | Path, max_difference: float = MAX_DIFFERENCE) -> S
     Raises
     ------
     ValueError
-        If the folder's name does not say its sensor, or no frame has a pose.
+        If the folder's name does not say its sensor, `max_difference` is negative, a file is
+        malformed (named with its line), or no frame has a pose.
     FileNotFoundError
         If ``rgb.txt`` or ``groundtruth.txt`` is missing.
     """
+    if not (np.isfinite(max_difference) and max_difference >= 0.0):
+        raise ValueError(f"max_difference: must be non-negative, got {max_difference}")
     folder = Path(root)
     sensor = next((s for s in INTRINSICS if s in folder.name), None)
     if sensor is None:
         raise ValueError(f"{folder.name}: expected 'freiburg1', '2' or '3' in the folder's name")
-    frames = _table(folder / "rgb.txt")
-    truth_times, truth_poses = _poses(_table(folder / "groundtruth.txt"))
-    times, images, poses = [], [], []
-    for stamp, name in ((float(r[0]), r[1]) for r in frames):
-        nearest = int(np.argmin(np.abs(truth_times - stamp)))
-        if abs(truth_times[nearest] - stamp) <= max_difference:
-            times.append(stamp)
-            images.append(folder / name)
-            poses.append(truth_poses[nearest])
-    if not times:
+    frames = _table(folder / "rgb.txt", 2)
+    truth_times, truth_poses = _poses(folder / "groundtruth.txt")
+    try:
+        stamps = np.array([float(fields[0]) for _, fields in frames])
+    except ValueError as error:
+        raise ValueError(f"{folder / 'rgb.txt'}: expected numeric timestamps ({error})") from None
+    nearest = _nearest(truth_times, stamps)
+    kept = np.flatnonzero(np.abs(truth_times[nearest] - stamps) <= max_difference)
+    if kept.size == 0:
         raise ValueError(f"{folder}: no frame has a ground-truth pose within {max_difference} s")
-    return Sequence(folder, sensor, np.array(times), images, np.array(poses))
+    images = [folder / frames[k][1][1] for k in kept]
+    return Sequence(folder, sensor, stamps[kept], images, truth_poses[nearest[kept]])

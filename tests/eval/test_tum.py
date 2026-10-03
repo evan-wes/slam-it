@@ -52,3 +52,31 @@ def test_rejects_unknown_sensors_and_empty_associations(tmp_path: Path) -> None:
     _write(desk)
     with pytest.raises(ValueError, match="no frame"):
         tum.read_sequence(desk, max_difference=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("groundtruth", "message"),
+    [
+        ("100.0 1.0 2.0 3.0 0.0 0.0 0.0\n", r"groundtruth.txt:1: expected 8 fields"),
+        ("100.0 1.0 2.0 3.0 0.0 0.0 0.0 x\n", r"groundtruth.txt:1: expected numbers"),
+        ("100.0 1.0 2.0 3.0 0.0 0.0 0.0 0.0\n", r"groundtruth.txt:1: .*non-zero quaternion"),
+        ("# only a comment\n", "no ground-truth poses"),
+    ],
+)
+def test_malformed_ground_truth_is_named_with_its_line(
+    tmp_path: Path, groundtruth: str, message: str
+) -> None:
+    """A short, non-numeric or zero-quaternion row, or no rows, is an error naming the file."""
+    folder = tmp_path / "rgbd_dataset_freiburg1_xyz"
+    _write(folder)
+    (folder / "groundtruth.txt").write_text(groundtruth)
+    with pytest.raises(ValueError, match=message):
+        tum.read_sequence(folder)
+
+
+def test_rejects_a_negative_max_difference(tmp_path: Path) -> None:
+    """The association tolerance must be non-negative."""
+    folder = tmp_path / "rgbd_dataset_freiburg1_xyz"
+    _write(folder)
+    with pytest.raises(ValueError, match="max_difference"):
+        tum.read_sequence(folder, max_difference=-1.0)
