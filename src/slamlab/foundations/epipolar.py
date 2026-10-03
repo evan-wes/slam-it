@@ -55,15 +55,16 @@ Levenberg-Marquardt (:mod:`slamlab.foundations.nls`) on E's five-dimensional man
 ``E = [t]ₓ R`` with ``R`` updated as ``R exp(δθ)`` and the unit ``t`` moved in its tangent
 plane and renormalised. The Jacobian is analytic, by the chain rule through E. With
 ``refine=True`` (the default), :func:`essential_ransac` refines its consensus and keeps the
-result only if its MSAC cost is lower; its :class:`EssentialSummary` holds the refinement's
-solve and whether it was kept.
+result only if its MSAC cost is lower (:func:`slamlab.foundations.ransac.refine_consensus`);
+its :class:`~slamlab.foundations.ransac.RefinedSummary` holds the refinement's solve and
+whether it was kept.
 
 The C++ core (``slamlab/foundations/epipolar.hpp``) implements every function.
 """
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
 import numpy as np
@@ -102,7 +103,7 @@ class Implementation(Protocol):
     The RANSAC functions take :class:`slamlab.foundations.ransac.Options`' fields as one dict
     of scalars and return a dict: ``model`` (3, 3), ``inliers`` (N,) bool, and ``summary``,
     a dict of the summary's fields with ``termination`` as its index in
-    ``codes()["termination"]``.
+    ``codes()["ransac_termination"]``.
     """
 
     def codes(self) -> dict[str, list[str]]:
@@ -164,7 +165,7 @@ class Implementation(Protocol):
         """Run LO-MSAC with a minimal solver (an index into ``MINIMAL_SOLVERS``), then refine.
 
         Returns ``model``, ``inliers`` and ``summary`` (see
-        :func:`essential_summary_from_backend`).
+        :func:`slamlab.foundations.ransac.refined_summary_from_backend`).
         """
         ...
 
@@ -767,93 +768,16 @@ def refine_essential(
         raise InvalidInputError(f"scale: must be positive and finite, got {scale}")
     if not np.linalg.svd(matrix, compute_uv=False)[1] > RANK_TOLERANCE * np.linalg.norm(matrix):
         raise DegenerateError("essential: rank below 2, no translation direction")
-    backends.check_name(backend)
-    if backend == "python":
-        return refine_reference(matrix, b1, b2, scale)
-    raw = backends.function(backend, __name__, "refine_essential")(b1, b2, matrix, scale)
-    codes = backends.implementation(backend, __name__).codes()
-    summary = nls.summary_from_backend(raw["summary"], codes["nls_termination"])
-    return Solution(state=np.asarray(raw["essential"], dtype=np.float64), summary=summary)
-
-
-@dataclass(frozen=True)
-class EssentialSummary:
-    """How E-RANSAC went: the RANSAC run, and the Sampson refinement if it ran.
-
-    Nests its solvers' summaries, as BA's summary nests its least-squares solve, and
-    satisfies :class:`slamlab.foundations.solve.Summary` through the RANSAC run's fields.
-
-    Attributes
-    ----------
-    run : ransac.Summary
-        The RANSAC run; its ``inlier_count`` and ``score`` describe the returned E.
-    refinement : nls.Summary or None
-        The refinement's solve, if it ran (``refine`` on and at least five inliers).
-    refined : bool
-        Whether the refined E was kept: it lowered the MSAC cost.
-    """
-
-    run: ransac.Summary
-    refinement: nls.Summary | None
-    refined: bool
-
-    @classmethod
-    def unrefined(cls, run: ransac.Summary) -> EssentialSummary:
-        """Return the summary of a run whose refinement did not run.
-
-        Parameters
-        ----------
-        run : ransac.Summary
-            The RANSAC run.
-
-        Returns
-        -------
-        EssentialSummary
-            `run`, no refinement, not refined.
-        """
-        return cls(run, refinement=None, refined=False)
-
-    @property
-    def iterations(self) -> int:
-        """Minimal samples drawn."""
-        return self.run.iterations
-
-    @property
-    def termination(self) -> ransac.Termination:
-        """Why sampling stopped."""
-        return self.run.termination
-
-    @property
-    def converged(self) -> bool:
-        """Whether sampling reached its target confidence."""
-        return self.run.converged
-
-
-def _polish_consensus(
-    found: Solution[ransac.Consensus[Matrix3], ransac.Summary],
-    bearings: tuple[NDArray[np.float64], NDArray[np.float64]],
-    threshold: float,
-) -> Solution[ransac.Consensus[Matrix3], EssentialSummary]:
-    """Refine E-RANSAC's model on its inliers, keeping it only if the MSAC cost drops.
-
-    Unchecked: the bearings are validated pairs with positive z, and `found` is E-RANSAC's
-    result on them.
-    """
-    unrefined = EssentialSummary.unrefined(found.summary)
-    inliers = found.state.inliers
-    if np.count_nonzero(inliers) < fivepoint.SAMPLE_SIZE:
-        return Solution(state=found.state, summary=unrefined)
-    b1, b2 = bearings
-    solved = refine_reference(found.state.model, b1[inliers], b2[inliers], threshold)
-    errors = sampson(solved.state, normalised_plane(b1), normalised_plane(b2))
-    score = float(np.sum(np.minimum(errors, threshold**2)))
-    if not score < found.summary.score:
-        return Solution(state=found.state, summary=replace(unrefined, refinement=solved.summary))
-    kept = errors < threshold**2
-    run = replace(found.summary, inlier_count=int(np.count_nonzero(kept)), score=score)
-    return Solution(
-        state=ransac.Consensus(model=solved.state, inliers=kept),
-        summary=EssentialSummary(run, refinement=solved.summary, refined=True),
+    return backends.call(
+        backend,
+        __name__,
+        "refine_essential",
+        reference=lambda: refine_reference(matrix, b1, b2, scale),
+        arguments={"bearings1": b1, "bearings2": b2, "essential": matrix, "scale": scale},
+        decode=lambda raw, codes: Solution(
+            state=np.asarray(raw["essential"], dtype=np.float64),
+            summary=nls.summary_from_backend(raw["summary"], codes),
+        ),
     )
 
 
@@ -863,7 +787,7 @@ def essential_ransac_reference(
     options: ransac.Options,
     minimal_solver: str,
     refine: bool,
-) -> Solution[ransac.Consensus[Matrix3], EssentialSummary]:
+) -> Solution[ransac.Consensus[Matrix3], ransac.RefinedSummary]:
     """Run E-RANSAC and the refinement (the reference), unchecked.
 
     Parameters
@@ -880,47 +804,25 @@ def essential_ransac_reference(
     Returns
     -------
     slamlab.foundations.solve.Solution
-        E, its inliers and the :class:`EssentialSummary`.
+        E, its inliers and the :class:`~slamlab.foundations.ransac.RefinedSummary`.
 
     Raises
     ------
     slamlab.foundations.errors.DegenerateError
         If no sample gave an essential matrix.
     """
-    found = ransac.estimate(essential_estimator(bearings1, bearings2, minimal_solver), options)
-    if refine:
-        return _polish_consensus(found, (bearings1, bearings2), options.threshold)
-    return Solution(state=found.state, summary=EssentialSummary.unrefined(found.summary))
-
-
-def essential_summary_from_backend(
-    raw: dict[str, Any], codes: dict[str, list[str]]
-) -> EssentialSummary:
-    """Build E-RANSAC's summary from the dict a compiled backend returned.
-
-    Parameters
-    ----------
-    raw : dict
-        ``run`` (see :func:`slamlab.foundations.ransac.summary_from_backend`),
-        ``refinement`` (see :func:`slamlab.foundations.nls.summary_from_backend`, or None) and
-        ``refined``.
-    codes : dict of str to list of str
-        The backend's enum names: ``termination`` (RANSAC's) and ``nls_termination``.
-
-    Returns
-    -------
-    EssentialSummary
-        The summary.
-    """
-    refinement = raw["refinement"]
-    return EssentialSummary(
-        run=ransac.summary_from_backend(raw["run"], codes),
-        refinement=(
-            None
-            if refinement is None
-            else nls.summary_from_backend(refinement, codes["nls_termination"])
+    estimator = essential_estimator(bearings1, bearings2, minimal_solver)
+    found = ransac.estimate(estimator, options)
+    if not refine:
+        return Solution(state=found.state, summary=ransac.RefinedSummary.unrefined(found.summary))
+    return ransac.refine_consensus(
+        estimator,
+        found,
+        lambda model, inliers: refine_reference(
+            model, bearings1[inliers], bearings2[inliers], options.threshold
         ),
-        refined=bool(raw["refined"]),
+        threshold=options.threshold,
+        minimum=fivepoint.SAMPLE_SIZE,
     )
 
 
@@ -932,7 +834,7 @@ def essential_ransac(  # noqa: PLR0913 -- the solver choices are keyword-only
     minimal_solver: str = "stewenius",
     refine: bool = True,
     backend: str = "python",
-) -> Solution[ransac.Consensus[Matrix3], EssentialSummary]:
+) -> Solution[ransac.Consensus[Matrix3], ransac.RefinedSummary]:
     """Estimate the essential matrix robustly: LO-MSAC, then an optional Sampson refinement.
 
     Parameters
@@ -954,8 +856,9 @@ def essential_ransac(  # noqa: PLR0913 -- the solver choices are keyword-only
     Returns
     -------
     slamlab.foundations.solve.Solution
-        E and its inliers, and the :class:`EssentialSummary`: the RANSAC run (whose
-        ``inlier_count`` and ``score`` describe the returned E) and the refinement's solve.
+        E and its inliers, and the :class:`~slamlab.foundations.ransac.RefinedSummary`: the
+        RANSAC run (whose ``inlier_count`` and ``score`` describe the returned E) and the
+        refinement's solve.
 
     Raises
     ------
@@ -970,13 +873,20 @@ def essential_ransac(  # noqa: PLR0913 -- the solver choices are keyword-only
         )
     minimum = SAMPLE_SIZE if minimal_solver == "8pt" else fivepoint.SAMPLE_SIZE
     b1, b2 = as_bearing_pairs(bearings1, bearings2, minimum)
-    backends.check_name(backend)
-    if backend == "python":
-        return essential_ransac_reference(b1, b2, options, minimal_solver, refine)
-    compiled = backends.function(backend, __name__, "essential_ransac")
-    raw = compiled(b1, b2, asdict(options), MINIMAL_SOLVERS.index(minimal_solver), refine)
-    codes = backends.implementation(backend, __name__).codes()
-    return ransac.from_backend(raw, codes, essential_summary_from_backend)
+    return backends.call(
+        backend,
+        __name__,
+        "essential_ransac",
+        reference=lambda: essential_ransac_reference(b1, b2, options, minimal_solver, refine),
+        arguments={
+            "bearings1": b1,
+            "bearings2": b2,
+            "options": asdict(options),
+            "minimal_solver": MINIMAL_SOLVERS.index(minimal_solver),
+            "refine": refine,
+        },
+        decode=ransac.decoder(ransac.refined_summary_from_backend),
+    )
 
 
 def fundamental_ransac(
@@ -1008,5 +918,9 @@ def fundamental_ransac(
     p1, p2 = as_point_pairs(pixels1, pixels2, SAMPLE_SIZE)
     estimator = fundamental_estimator(p1, p2)
     return ransac.run(
-        estimator, (p1, p2), options, backend=backend, target=(__name__, "fundamental_ransac")
+        estimator,
+        {"pixels1": p1, "pixels2": p2},
+        options,
+        backend=backend,
+        target=(__name__, "fundamental_ransac"),
     )

@@ -240,5 +240,5 @@ def test_the_compiled_code_tables_match() -> None:
     codes = backends.implementation(chosen, twoview.__name__).codes()
     assert tuple(codes["status"]) == tuple(twoview.Status)
     assert tuple(codes["model"]) == tuple(twoview.Model)
-    assert tuple(codes["termination"]) == tuple(ransac.Termination)
+    assert tuple(codes["ransac_termination"]) == tuple(ransac.Termination)
     assert tuple(codes["nls_termination"]) == tuple(nls.Termination)

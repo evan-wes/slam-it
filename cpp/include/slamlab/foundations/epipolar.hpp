@@ -253,25 +253,6 @@ class FundamentalEstimator {
 [[nodiscard]] Result<std::vector<Eigen::Matrix4d>> decompose_essential(
     const Eigen::Matrix3d& essential);
 
-/// @brief How E-RANSAC went: the RANSAC run, and the Sampson refinement if it ran (see
-///        `slamlab.foundations.epipolar.EssentialSummary`; nested like `ba::Summary`'s solve).
-struct EssentialSummary {
-  /// @brief The RANSAC run; its inlier count and score describe the returned E.
-  ransac::Summary run;
-  /// @brief The refinement's solve, if it ran (`refine` on and at least five inliers).
-  std::optional<nls::Summary> refinement;
-  /// @brief Whether the refined E was kept (it lowered the MSAC cost).
-  bool refined = false;
-};
-
-/// @brief E-RANSAC's estimate and how it went.
-struct EssentialSolution {
-  /// @brief E and its inliers.
-  ransac::Consensus<Eigen::Matrix3d> state;
-  /// @brief The run's summary.
-  EssentialSummary summary;
-};
-
 /// @brief Estimate E robustly: LO-MSAC, then (optionally) the Sampson refinement on the
 ///        inliers, kept only if it lowers the MSAC cost.
 /// @param bearings1 Unit bearings in camera 1 (N x 3), positive z, N >= the minimal sample.
@@ -280,7 +261,7 @@ struct EssentialSolution {
 /// @param minimal The minimal solver.
 /// @param refine Refine the best model on its inliers.
 /// @return E, its inliers and the run's summary; `InvalidInput` or `Degenerate`.
-[[nodiscard]] Result<EssentialSolution> essential_ransac(
+[[nodiscard]] Result<ransac::RefinedSolution<Eigen::Matrix3d>> essential_ransac(
     const Eigen::Ref<const Rows3>& bearings1, const Eigen::Ref<const Rows3>& bearings2,
     const ransac::Options& options, MinimalSolver minimal = MinimalSolver::kStewenius,
     bool refine = true);

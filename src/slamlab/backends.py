@@ -15,9 +15,9 @@ and it sits below every algorithm package in the dependency layers.
 from __future__ import annotations
 
 import importlib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from types import ModuleType
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -227,3 +227,64 @@ def dispatch(
     if backend == "python":
         return reference(*args)
     return np.asarray(function(backend, module_name, name)(*args), dtype=np.float64)
+
+
+Codes = dict[str, list[str]]
+"""A compiled module's enum tables, from its ``codes()``: each enum's names in code order."""
+
+ResultT = TypeVar("ResultT")
+
+
+def call(  # noqa: PLR0913 -- the two sides and the decoder are keyword-only
+    backend: str,
+    module_name: str,
+    name: str,
+    *,
+    reference: Callable[[], ResultT],
+    arguments: Mapping[str, object],
+    decode: Callable[[Any, Codes], ResultT],
+) -> ResultT:
+    """Run one function with the chosen backend, decoding a compiled result into Python's.
+
+    :func:`dispatch` serves functions whose two sides take the same arguments and return an
+    array. This serves the rest: the reference takes Python objects (an options dataclass, a
+    solver's name) where the compiled function takes their crossing form (a dict, a code),
+    and the compiled function returns a dict for `decode` to rebuild into the reference's
+    result type.
+
+    Parameters
+    ----------
+    backend : {"python", "cpp", "rust"}
+        Which implementation computes the result.
+    module_name : str
+        The calling module's ``__name__``.
+    name : str
+        The compiled function's name, as in the module's ``Implementation`` Protocol.
+    reference : callable
+        Computes the result with the Python reference; called when `backend` is ``"python"``.
+    arguments : mapping of str to object
+        The compiled function's arguments, passed by keyword.
+    decode : callable
+        Builds the result from the compiled function's return value and the module's
+        :data:`Codes` (empty when the module has no ``codes()``).
+
+    Returns
+    -------
+    ResultT
+        The result, of the same type whichever backend computed it.
+
+    Raises
+    ------
+    ValueError
+        If `backend` is unknown.
+    BackendNotBuiltError
+        If a compiled `backend` is not built.
+    NotImplementedError
+        If a compiled `backend` does not implement the function.
+    """
+    check_name(backend)
+    if backend == "python":
+        return reference()
+    raw = function(backend, module_name, name)(**arguments)
+    tables = getattr(implementation(backend, module_name), "codes", None)
+    return decode(raw, tables() if callable(tables) else {})

@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "slamlab/foundations/error.hpp"
+#include "slamlab/foundations/nls.hpp"
 #include "slamlab/foundations/rng.hpp"
 #include "slamlab/foundations/solve.hpp"
 
@@ -320,6 +321,85 @@ template <Estimator E>
                          .inlier_count = inlier_count,
                          .score = best->score},
   };
+}
+
+/// @brief How a RANSAC run and the least-squares refinement of its model went (see
+///        `slamlab.foundations.ransac.RefinedSummary`; nested like `ba::Summary`'s solve).
+struct RefinedSummary {
+  /// @brief The RANSAC run; its inlier count and score describe the returned model.
+  Summary run;
+  /// @brief The refinement's solve, if it ran (refinement on, and enough inliers).
+  std::optional<nls::Summary> refinement;
+  /// @brief Whether the refined model was kept (it lowered the MSAC cost).
+  bool refined = false;
+};
+
+/// @brief A refined RANSAC run's estimate and how it went. A named struct, not
+///        `solve::Solution`: `RefinedSummary` nests its summaries, so it has no data members
+///        for the `solve::Summary` concept (the design doc's rule for nested summaries).
+/// @tparam Model The estimator's model type.
+template <typename Model>
+struct RefinedSolution {
+  /// @brief The model and its inliers.
+  Consensus<Model> state;
+  /// @brief The run's and the refinement's summaries.
+  RefinedSummary summary;
+};
+
+/// @brief A RANSAC result whose refinement did not run (`RefinedSummary.unrefined` in Python).
+/// @tparam Model The model type.
+/// @param found The RANSAC run's solution.
+/// @return Its consensus, with a summary holding the run and no refinement.
+template <typename Model>
+RefinedSolution<Model> unrefined(Solution<Model> found) {
+  return {.state = std::move(found.state),
+          .summary = {.run = found.summary, .refinement = std::nullopt, .refined = false}};
+}
+
+/// @brief Refine RANSAC's model on its inliers, keeping it only if the MSAC cost drops (see
+///        `slamlab.foundations.ransac.refine_consensus`).
+/// @tparam E The estimator type.
+/// @tparam Refine Callable as `refine(model, inlier indices)`, returning
+///         `solve::Solution<E::Model, nls::Summary>`.
+/// @param estimator The estimator RANSAC ran with; its residuals rescore the refined model.
+/// @param found RANSAC's result.
+/// @param refine Refines a model on the data the indices select.
+/// @param threshold RANSAC's inlier threshold.
+/// @param minimum The fewest inliers the refinement needs; with fewer it does not run.
+/// @return The kept model, its inliers and the summary, whose run's inlier count and score
+///         describe the kept model.
+template <Estimator E, typename Refine>
+  requires std::invocable<Refine&, const typename E::Model&, const Indices&>
+// NOLINTBEGIN(bugprone-easily-swappable-parameters): (threshold, minimum), as in Python
+RefinedSolution<typename E::Model> refine_consensus(const E& estimator,
+                                                    Solution<typename E::Model> found,
+                                                    Refine&& refine, double threshold,
+                                                    std::uint32_t minimum) {
+  // NOLINTEND(bugprone-easily-swappable-parameters)
+  RefinedSolution<typename E::Model> out = unrefined(std::move(found));
+  Indices inliers;
+  for (Eigen::Index i = 0; i < out.state.inliers.size(); ++i) {
+    if (out.state.inliers(i)) {
+      inliers.push_back(static_cast<std::uint32_t>(i));
+    }
+  }
+  if (inliers.size() < minimum) {
+    return out;
+  }
+  auto solved = std::forward<Refine>(refine)(out.state.model, inliers);
+  out.summary.refinement = std::move(solved.summary);
+  const Eigen::VectorXd residuals = estimator.residuals(solved.state);
+  const double threshold2 = threshold * threshold;
+  const double score = detail::score(residuals, threshold2);
+  if (!(score < out.summary.run.score)) {
+    return out;
+  }
+  out.state.model = std::move(solved.state);
+  out.state.inliers = residuals.array() < threshold2;
+  out.summary.run.inlier_count = static_cast<int>(out.state.inliers.count());
+  out.summary.run.score = score;
+  out.summary.refined = true;
+  return out;
 }
 
 }  // namespace slamlab::foundations::ransac

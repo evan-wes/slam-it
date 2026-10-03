@@ -129,7 +129,7 @@ struct Planes {
 /// @brief Both RANSAC runs; at least one found a model.
 struct Runs {
   /// @brief E's run, if it found a model.
-  std::optional<epipolar::EssentialSolution> essential;
+  std::optional<ransac::RefinedSolution<Eigen::Matrix3d>> essential;
   /// @brief H's run, if it found a model.
   std::optional<ransac::Solution<Eigen::Matrix3d>> planar;
 };

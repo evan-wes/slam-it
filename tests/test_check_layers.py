@@ -195,8 +195,8 @@ ORDERS = check_layers.internal_orders(tomllib.loads((REPO / "pyproject.toml").re
         ),
         (
             "cpp/src/foundations/camera.cpp",
-            "#include <slamlab/foundations/nls.hpp>",
-            "in foundations, 'camera' may not include 'nls'",
+            "#include <slamlab/foundations/ransac.hpp>",
+            "in foundations, 'camera' may not include 'ransac'",
         ),
         (
             "cpp/src/foundations/ba/schur.cpp",

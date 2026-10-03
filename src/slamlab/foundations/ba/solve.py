@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 from typing import Any, Protocol
 
 import numpy as np
@@ -35,16 +35,20 @@ ENUM_TABLES: dict[str, tuple[str, ...]] = {
     "gauge": GAUGES,
     "method": nls.METHODS,
     "loss": nls.LOSSES,
-    "termination": tuple(t.value for t in nls.Termination),
+    "nls_termination": tuple(t.value for t in nls.Termination),
 }
-"""Each enum crossing the boundary, as names in code order. A compiled backend's ``codes()``
-must return the same tables; a test holds the two sides together."""
+"""Each enum the binding knows, as names in code order. The camera model and the result's
+gauge and termination cross as codes; the options' choices (gauge, method, loss) cross by
+name and the binding looks them up in these same tables. A compiled backend's ``codes()``
+must return them; a test holds the two sides together."""
 
 
 class Implementation(Protocol):
     """The functions a compiled backend's ``foundations.ba`` submodule provides.
 
-    Every argument crosses by keyword. Enums cross as their index in :data:`ENUM_TABLES`.
+    Every argument crosses by keyword: the problem's arrays, the camera model as its index in
+    :data:`ENUM_TABLES`, and ``options``, :class:`BAOptions`' fields as one dict
+    (``dataclasses.asdict``: nested for ``solver`` and the losses, choices by name).
     ``solve`` returns a dict with ``poses``, ``intrinsics``, ``points``, ``depth_affine``,
     ``inverse_depth``, ``intrinsics_std``, ``solve`` (the least-squares summary, read by
     :func:`nls.summary_from_backend`), ``variance_factor``, the ``gauge`` code, and each of
@@ -77,25 +81,7 @@ class Implementation(Protocol):
         pose_prior_weights: Array,
         point_anchor: IndexArray,
         model: int,
-        gauge: int,
-        method: int,
-        loss: int,
-        loss_scale: float,
-        depth_loss: int,
-        depth_loss_scale: float,
-        max_iterations: int,
-        function_tolerance: float,
-        gradient_tolerance: float,
-        step_tolerance: float,
-        initial_damping: float,
-        max_damping: float,
-        min_diagonal: float,
-        max_diagonal: float,
-        min_relative_decrease: float,
-        strict: bool,
-        min_parallax_deg: float,
-        focal_std_ratio: float,
-        scale_deviations: bool,
+        options: dict[str, Any],
     ) -> BackendResult:
         """Solve; return the named results."""
         ...
@@ -214,12 +200,12 @@ def _solve_reference(original: BAProblem, options: BAOptions) -> BAResult:
     )
 
 
-def _result_from_backend(raw: BackendResult) -> BAResult:
+def _result_from_backend(raw: BackendResult, codes: backends.Codes) -> BAResult:
     """Assemble a compiled backend's named results into a :class:`BAResult`."""
-    solve_summary = nls.summary_from_backend(raw["solve"], list(ENUM_TABLES["termination"]))
+    solve_summary = nls.summary_from_backend(raw["solve"], codes)
     summary = BASummary(
         solve_summary,
-        GAUGES[int(raw["gauge"])],
+        codes["gauge"][int(raw["gauge"])],
         variance_factor=float(raw["variance_factor"]),
         **{name: int(raw[name]) for name in COUNT_NAMES},
     )
@@ -249,7 +235,6 @@ def backend_arguments(problem: BAProblem, options: BAOptions) -> dict[str, Any]:
     dict
         Every argument of :meth:`Implementation.solve`, by name.
     """
-    solver = options.solver
     return {
         "intrinsics": problem.intrinsics,
         "intrinsics_idx": problem.intrinsics_idx,
@@ -270,25 +255,7 @@ def backend_arguments(problem: BAProblem, options: BAOptions) -> dict[str, Any]:
         "pose_prior_weights": problem.pose_prior_weights,
         "point_anchor": problem.point_anchor,
         "model": ENUM_TABLES["model"].index(problem.camera_model),
-        "gauge": ENUM_TABLES["gauge"].index(options.gauge),
-        "method": ENUM_TABLES["method"].index(solver.method),
-        "loss": ENUM_TABLES["loss"].index(solver.loss.kind),
-        "loss_scale": solver.loss.scale,
-        "depth_loss": ENUM_TABLES["loss"].index(options.depth_loss.kind),
-        "depth_loss_scale": options.depth_loss.scale,
-        "max_iterations": solver.max_iterations,
-        "function_tolerance": solver.function_tolerance,
-        "gradient_tolerance": solver.gradient_tolerance,
-        "step_tolerance": solver.step_tolerance,
-        "initial_damping": solver.initial_damping,
-        "max_damping": solver.max_damping,
-        "min_diagonal": solver.min_diagonal,
-        "max_diagonal": solver.max_diagonal,
-        "min_relative_decrease": solver.min_relative_decrease,
-        "strict": solver.strict,
-        "min_parallax_deg": options.min_parallax_deg,
-        "focal_std_ratio": options.focal_std_ratio,
-        "scale_deviations": options.scale_deviations,
+        "options": asdict(options),
     }
 
 
@@ -325,8 +292,11 @@ def solve(
         If ``options.solver.strict`` and the solve stopped without converging.
     """
     opts = options if options is not None else BAOptions()
-    backends.check_name(backend)
-    if backend == "python":
-        return _solve_reference(problem, opts)
-    raw = backends.function(backend, MODULE, "solve")(**backend_arguments(problem, opts))
-    return _result_from_backend(raw)
+    return backends.call(
+        backend,
+        MODULE,
+        "solve",
+        reference=lambda: _solve_reference(problem, opts),
+        arguments=backend_arguments(problem, opts),
+        decode=_result_from_backend,
+    )

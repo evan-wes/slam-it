@@ -400,7 +400,7 @@ def test_the_compiled_code_tables_match() -> None:
     """The codes Python sends and decodes are the compiled core's, in the same order."""
     chosen = require_function("cpp", epipolar.__name__, "codes")
     codes = backends.implementation(chosen, epipolar.__name__).codes()
-    assert tuple(codes["termination"]) == tuple(ransac.Termination)
+    assert tuple(codes["ransac_termination"]) == tuple(ransac.Termination)
     assert tuple(codes["nls_termination"]) == tuple(nls.Termination)
     assert tuple(codes["minimal_solver"]) == epipolar.MINIMAL_SOLVERS
 
