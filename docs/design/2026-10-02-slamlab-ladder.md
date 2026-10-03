@@ -1,14 +1,15 @@
 # slamlab: a learning ladder for visual SLAM
 
-Status, 2026-10-02: milestone 1 is under way. The scaffold (package-per-rung layout in three
+Status, 2026-10-03: milestone 1 is under way. The scaffold (package-per-rung layout in three
 languages, conda environment, CI, two-layer review process) is merged. PR 1, the BA spine,
 added rung 0's geometry and estimation in Python and C++: SO(3), SE(3), Umeyama alignment,
 camera models, nonlinear least squares and bundle adjustment; Rust's curated subset has SO(3)
 so far. PR 2 adds two-view geometry: triangulation, LO-MSAC RANSAC, the 8-point essential and
 fundamental matrices, homographies, their decompositions, and two-view initialisation with
-GRIC model selection, demonstrated on TUM RGB-D. Milestone 1's slice B continues in PR 3 (the
-5-point solver) and PR 4 (absolute pose: P3P, EPnP, refinement, PnP RANSAC); the Rust
-showcase (slice C) is PR 5.
+GRIC model selection, demonstrated on TUM RGB-D. PR 3 adds the 5-point solver (Nistér's,
+and Stewénius' behind an option) as E-RANSAC's default minimal solver, and the Sampson
+refinement of E on its manifold. Milestone 1's slice B continues in PR 4 (absolute pose: P3P,
+EPnP, refinement, PnP RANSAC); the Rust showcase (slice C) is PR 5.
 
 ## Purpose
 
@@ -538,11 +539,10 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
     (Chum and Matas, CVPR 2005) samples by match quality, cheap here since the matcher
     already has ratio-test scores.
 - **Found while building PR 2:**
-  - **A Sampson-error refinement for E.** LO-RANSAC's refits are the 8-point fit to the
-    inliers, which minimises an algebraic error; its MSAC cost stayed 4-15% above the true
-    model's. A refit minimising the Sampson distance over the essential manifold, with
-    `foundations.nls`, would go below the 8-point floor. With the 5-point solver (PR 3), or
-    after it.
+  - Closed by PR 3: **a Sampson-error refinement for E.** `epipolar.refine_essential`
+    minimises the inliers' robust Sampson distance over the essential manifold with
+    `foundations.nls`, and E-RANSAC keeps it when it lowers the MSAC cost: the median error
+    went from 0.93 to 0.71 of the 8-point floor (see the five-point note).
   - **Initialisation on low-parallax scenes.** On TUM fr1/xyz, 13 of 38 pairs report
     `low_parallax` and 3 stay `ambiguous` (see the two-view note). Milestone 2's tracker
     retries on later frames; revisit the thresholds there, against its success rate.

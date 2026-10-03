@@ -4,6 +4,40 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.2.2.0] - 2026-10-03
+
+The 5-point solver and the Sampson refinement of E (milestone 1, slice B): E-RANSAC samples
+five matches instead of eight and refines its consensus on the geometric error. Python
+reference and C++ core in lock-step.
+
+### Added
+
+- **The 5-point solvers** (`foundations.fivepoint`): Nistér's degree-10 polynomial with
+  Sturm-sequence root isolation and Gauss-Newton polishing, and Stewénius' action matrix,
+  behind a `solver` option. Only essential solutions are returned.
+- **The Sampson refinement** (`epipolar.refine_essential`): Levenberg-Marquardt on the inliers'
+  robust (Cauchy) Sampson distance over E's five-dimensional manifold, with an analytic
+  Jacobian, returning an `nls.Summary`.
+- **E-RANSAC options**: `essential_ransac(minimal_solver=, refine=)` and
+  `twoview.Options(essential_solver=, refine=)`; the demo's `--essential-solver` and
+  `--no-refine`.
+- **Design note** `docs/notes/five-point.md`, with the synthetic sweep and the TUM survey.
+- PoseLib in the dev extra, as a test-only oracle.
+
+### Changed
+
+- E-RANSAC's default minimal solver is Nistér's 5-point, and it refines its consensus by
+  default (kept only if the MSAC cost drops). On TUM fr1/xyz the initialiser now initialises
+  24 of 38 pairs (was 22) at a median 0.49° rotation and 2.33° translation-direction error (was
+  0.88° and 4.16°). `essential_solver="8pt", refine=False` reproduces 0.2.1.0.
+- A compiled backend's NLS summary crosses the bindings as one nested dict
+  (`nls.summary_from_backend`), shared by BA and the refinement.
+
+### Tests
+
+- The two-view fallback test's desk scene is 90% planar (was 80%): the refined E erased H's
+  GRIC margin on the old scene.
+
 ## [0.2.1.0] - 2026-10-02
 
 Two-view geometry, milestone 1's slice B up to the 5-point solver: from feature matches
