@@ -148,3 +148,9 @@ def test_candidates_of_a_noisy_h_are_rotations(backend: str) -> None:
         rotation = pose[:3, :3]
         np.testing.assert_allclose(rotation.T @ rotation, np.eye(3), rtol=0, atol=1e-12)
         assert np.linalg.det(rotation) == pytest.approx(1.0, abs=1e-12)
+
+
+def test_the_reference_decomposition_checks_rank_itself() -> None:
+    """A singular H raises in the reference that twoview calls, as in C++ (panel H1)."""
+    with pytest.raises(DegenerateError, match="rank"):
+        homography.decompose_reference(np.outer([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]))

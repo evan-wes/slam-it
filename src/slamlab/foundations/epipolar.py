@@ -80,8 +80,9 @@ class Implementation(Protocol):
     """The functions a compiled backend's ``foundations.epipolar`` submodule provides.
 
     The RANSAC functions take :class:`slamlab.foundations.ransac.Options`' fields as one dict
-    of scalars and return a dict: ``model`` (3, 3), ``inliers`` (N,) bool, and the summary's
-    fields with ``termination`` as its index in ``codes()["termination"]``.
+    of scalars and return a dict: ``model`` (3, 3), ``inliers`` (N,) bool, and ``summary``,
+    a dict of the summary's fields with ``termination`` as its index in
+    ``codes()["termination"]``.
     """
 
     def codes(self) -> dict[str, list[str]]:

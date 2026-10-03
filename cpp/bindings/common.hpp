@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -278,6 +279,59 @@ inline ArrayOut vector_array(const Eigen::VectorXd& vector) {
   auto [out, data] = new_array({static_cast<std::size_t>(vector.size())});
   Eigen::Map<Eigen::VectorXd>(data, vector.size()) = vector;
   return out;
+}
+
+/// @brief One read-only (3, 3) matrix.
+using Matrix3In = nanobind::ndarray<const double, nanobind::shape<3, 3>, nanobind::c_contig,
+                                    nanobind::device::cpu>;
+
+/// @brief Copy one (3, 3) matrix in.
+/// @param in The array.
+/// @return The matrix.
+inline Eigen::Matrix3d matrix3(const Matrix3In& in) {
+  check_aligned(in.data());
+  return Eigen::Map<const Item<3, 3>>(in.data());
+}
+
+/// @brief Return a 3x3 matrix as a new (3, 3) array.
+/// @param matrix The matrix.
+/// @return The array.
+inline ArrayOut matrix3_array(const Eigen::Matrix3d& matrix) {
+  auto [out, data] = new_array({3, 3});
+  Eigen::Map<Item<3, 3>> view(data);
+  view = matrix;
+  return out;
+}
+
+/// @brief Copy a boolean array out.
+/// @param mask The mask.
+/// @return A new (N,) bool array.
+inline nanobind::ndarray<nanobind::numpy, bool> mask_array(
+    const Eigen::Array<bool, Eigen::Dynamic, 1>& mask) {
+  auto [out, data] = new_array<bool>({static_cast<std::size_t>(mask.size())});
+  for (Eigen::Index i = 0; i < mask.size(); ++i) {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic): array fill
+    data[i] = mask(i);
+  }
+  return out;
+}
+
+/// @brief Refuse a dict whose keys are not exactly the expected ones (an options dict crossing
+///        from a Python dataclass), so the two sides cannot drift apart.
+/// @param values The dict.
+/// @param keys The expected keys.
+/// @param what The dataclass's name, for the message.
+/// @throws std::invalid_argument (Python `ValueError`) for a missing or unknown key.
+inline void check_keys(const nanobind::dict& values, std::span<const char* const> keys,
+                       const char* what) {
+  for (const char* key : keys) {
+    if (!values.contains(key)) {
+      throw std::invalid_argument(std::string("options: missing ") + key + " of " + what);
+    }
+  }
+  if (values.size() != keys.size()) {
+    throw std::invalid_argument(std::string("options: expected exactly ") + what + "'s fields");
+  }
 }
 
 }  // namespace slamlab::bindings

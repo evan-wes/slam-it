@@ -3,8 +3,8 @@
 ///
 /// The options cross as one dict of scalars keyed by `slamlab.foundations.ransac.Options`'
 /// field names; a missing or unknown key is an error, so the two sides cannot drift apart.
-/// A solution crosses as a dict: `model`, `inliers` (bool), the summary's fields, and
-/// `termination` as its index in `codes()["termination"]`.
+/// A solution crosses as a dict: `model`, `inliers` (bool) and `summary`, a dict of the
+/// summary's fields with `termination` as its index in `codes()["termination"]`.
 #pragma once
 
 #include <nanobind/nanobind.h>
@@ -34,41 +34,12 @@ inline constexpr std::array<const char*, 10> kRansacOptionKeys = {"threshold",
                                                                   "lo_inner_iterations",
                                                                   "lo_sample_factor"};
 
-/// @brief One read-only (3, 3) matrix.
-using Matrix3In = nanobind::ndarray<const double, nanobind::shape<3, 3>, nanobind::c_contig,
-                                    nanobind::device::cpu>;
-
-/// @brief Copy one (3, 3) matrix in.
-/// @param in The array.
-/// @return The matrix.
-inline Eigen::Matrix3d matrix3(const Matrix3In& in) {
-  check_aligned(in.data());
-  return Eigen::Map<const Item<3, 3>>(in.data());
-}
-
-/// @brief Return a 3x3 matrix as a new (3, 3) array.
-/// @param matrix The matrix.
-/// @return The array.
-inline ArrayOut matrix3_array(const Eigen::Matrix3d& matrix) {
-  auto [out, data] = new_array({3, 3});
-  Eigen::Map<Item<3, 3>> view(data);
-  view = matrix;
-  return out;
-}
-
 /// @brief Read RANSAC's options from a dict of scalars.
 /// @param options The dict, with exactly `kRansacOptionKeys`.
 /// @return The options (checked by the core when it runs).
 /// @throws std::invalid_argument (Python `ValueError`) for a missing or unknown key.
 inline foundations::ransac::Options ransac_options(const nanobind::dict& options) {
-  if (options.size() != kRansacOptionKeys.size()) {
-    throw std::invalid_argument("options: expected exactly ransac.Options' fields");
-  }
-  for (const char* key : kRansacOptionKeys) {
-    if (!options.contains(key)) {
-      throw std::invalid_argument(std::string("options: missing ") + key);
-    }
-  }
+  check_keys(options, kRansacOptionKeys, "ransac.Options");
   return foundations::ransac::Options{
       .threshold = nanobind::cast<double>(options["threshold"]),
       .confidence = nanobind::cast<double>(options["confidence"]),
@@ -82,27 +53,29 @@ inline foundations::ransac::Options ransac_options(const nanobind::dict& options
       .lo_sample_factor = nanobind::cast<int>(options["lo_sample_factor"])};
 }
 
-/// @brief A RANSAC solution with a 3x3 model as a dict.
-/// @param solution The solution.
-/// @return `model`, `inliers` and the summary's fields.
-inline nanobind::dict ransac_result(
-    const foundations::ransac::Solution<Eigen::Matrix3d>& solution) {
+/// @brief A RANSAC summary as a dict of scalars, `termination` as its code.
+/// @param summary The summary.
+/// @return The summary's fields (`converged` follows from `termination`).
+inline nanobind::dict ransac_summary(const foundations::ransac::Summary& summary) {
   nanobind::dict out;
-  const auto n = static_cast<std::size_t>(solution.state.inliers.size());
-  auto [inliers, inlier_data] = new_array<bool>({n});
-  for (std::size_t i = 0; i < n; ++i) {
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic): array fill
-    inlier_data[i] = solution.state.inliers(static_cast<Eigen::Index>(i));
-  }
-  const foundations::ransac::Summary& summary = solution.summary;
-  out["model"] = matrix3_array(solution.state.model);
-  out["inliers"] = inliers;
   out["iterations"] = summary.iterations;
   out["termination"] = static_cast<int>(summary.termination);
   out["degenerate_samples"] = summary.degenerate_samples;
   out["local_optimizations"] = summary.local_optimizations;
   out["inlier_count"] = summary.inlier_count;
   out["score"] = summary.score;
+  return out;
+}
+
+/// @brief A RANSAC solution with a 3x3 model as a dict.
+/// @param solution The solution.
+/// @return `model`, `inliers` (bool) and `summary` (see `ransac_summary`).
+inline nanobind::dict ransac_result(
+    const foundations::ransac::Solution<Eigen::Matrix3d>& solution) {
+  nanobind::dict out;
+  out["model"] = matrix3_array(solution.state.model);
+  out["inliers"] = mask_array(solution.state.inliers);
+  out["summary"] = ransac_summary(solution.summary);
   return out;
 }
 

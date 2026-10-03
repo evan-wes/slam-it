@@ -239,9 +239,10 @@ class Implementation(Protocol):
     """The functions a compiled backend's ``foundations.twoview`` submodule provides.
 
     ``initialize`` takes :class:`Options`' fields as one dict and returns a dict of the
-    :class:`Initialization` fields, with ``status`` and ``model`` as codes into ``codes()``, and
-    each RANSAC summary flattened with an ``essential_`` or ``homography_`` prefix (``found``
-    false when that model's RANSAC found nothing).
+    :class:`Initialization` fields: ``status`` and ``model`` as codes into ``codes()``,
+    ``in_front`` as an int64 array, and ``essential`` and ``homography`` as summary dicts
+    (:func:`slamlab.foundations.ransac.summary_from_backend`), or None when that model's
+    RANSAC found nothing.
     """
 
     def codes(self) -> dict[str, list[str]]:
@@ -428,13 +429,9 @@ def _initialize(
 # --- validation and dispatch --------------------------------------------------------------
 
 
-def _summary(
-    raw: dict[str, Any], prefix: str, codes: dict[str, list[str]]
-) -> ransac.Summary | None:
-    """Rebuild a RANSAC summary a compiled backend flattened with a prefix (None if not found)."""
-    if not raw[f"{prefix}found"]:
-        return None
-    return ransac.summary_from_backend(raw, codes, prefix)
+def _summary(raw: dict[str, Any] | None, codes: dict[str, list[str]]) -> ransac.Summary | None:
+    """Rebuild a RANSAC summary a compiled backend returned (None if that run found no model)."""
+    return None if raw is None else ransac.summary_from_backend(raw, codes)
 
 
 def _from_backend(raw: dict[str, Any], codes: dict[str, list[str]]) -> Initialization:
@@ -450,8 +447,8 @@ def _from_backend(raw: dict[str, Any], codes: dict[str, list[str]]) -> Initializ
         gric_essential=float(raw["gric_essential"]),
         gric_homography=float(raw["gric_homography"]),
         in_front=np.asarray(raw["in_front"], dtype=np.int64),
-        essential=_summary(raw, "essential_", codes),
-        homography=_summary(raw, "homography_", codes),
+        essential=_summary(raw["essential"], codes),
+        homography=_summary(raw["homography"], codes),
     )
 
 

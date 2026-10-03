@@ -33,14 +33,7 @@ constexpr std::array<const char*, 9> kOptionKeys = {
 /// @return The options (checked by the core).
 /// @throws std::invalid_argument for a missing or unknown key.
 twoview::Options read_options(const nb::dict& options) {
-  if (options.size() != kOptionKeys.size()) {
-    throw std::invalid_argument("options: expected exactly twoview.Options' fields");
-  }
-  for (const char* key : kOptionKeys) {
-    if (!options.contains(key)) {
-      throw std::invalid_argument(std::string("options: missing ") + key);
-    }
-  }
+  check_keys(options, kOptionKeys, "twoview.Options");
   return twoview::Options{.focal = nb::cast<double>(options["focal"]),
                           .threshold_px = nb::cast<double>(options["threshold_px"]),
                           .sigma_px = nb::cast<double>(options["sigma_px"]),
@@ -52,32 +45,11 @@ twoview::Options read_options(const nb::dict& options) {
                           .ambiguity_ratio = nb::cast<double>(options["ambiguity_ratio"])};
 }
 
-/// @brief Copy a boolean array out.
-/// @param mask The mask.
-/// @return A new (N,) bool array.
-nb::ndarray<nb::numpy, bool> mask_array(const Eigen::Array<bool, Eigen::Dynamic, 1>& mask) {
-  auto [out, data] = new_array<bool>({static_cast<std::size_t>(mask.size())});
-  for (Eigen::Index i = 0; i < mask.size(); ++i) {
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic): array fill
-    data[i] = mask(i);
-  }
-  return out;
-}
-
-/// @brief Flatten a RANSAC summary into a dict with a prefix.
-/// @param out The dict.
-/// @param prefix The prefix.
-/// @param summary The summary, if the run found a model.
-void put_summary(nb::dict& out, const std::string& prefix,
-                 const std::optional<foundations::ransac::Summary>& summary) {
-  out[(prefix + "found").c_str()] = summary.has_value();
-  const foundations::ransac::Summary s = summary.value_or(foundations::ransac::Summary{});
-  out[(prefix + "iterations").c_str()] = s.iterations;
-  out[(prefix + "termination").c_str()] = static_cast<int>(s.termination);
-  out[(prefix + "degenerate_samples").c_str()] = s.degenerate_samples;
-  out[(prefix + "local_optimizations").c_str()] = s.local_optimizations;
-  out[(prefix + "inlier_count").c_str()] = s.inlier_count;
-  out[(prefix + "score").c_str()] = s.score;
+/// @brief A RANSAC summary, or None if that run found no model.
+/// @param summary The summary.
+/// @return A dict (see `ransac_summary`) or None.
+nb::object maybe_summary(const std::optional<foundations::ransac::Summary>& summary) {
+  return summary ? nb::object(ransac_summary(*summary)) : nb::none();
 }
 
 /// @brief Initialise two views.
@@ -105,13 +77,14 @@ nb::dict initialize(const BatchIn<3>& bearings1, const BatchIn<3>& bearings2,
   out["triangulated"] = mask_array(result.triangulated);
   out["gric_essential"] = result.gric_essential;
   out["gric_homography"] = result.gric_homography;
-  nb::list in_front;
-  for (const int count : result.in_front) {
-    in_front.append(count);
+  auto [in_front, counts] = new_array<std::int64_t>({result.in_front.size()});
+  for (std::size_t i = 0; i < result.in_front.size(); ++i) {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic): array fill
+    counts[i] = result.in_front[i];
   }
   out["in_front"] = in_front;
-  put_summary(out, "essential_", result.essential);
-  put_summary(out, "homography_", result.homography);
+  out["essential"] = maybe_summary(result.essential);
+  out["homography"] = maybe_summary(result.homography);
   return out;
 }
 

@@ -376,35 +376,31 @@ def estimate(
     return Solution(state=Consensus(model=best.model, inliers=inliers), summary=summary)
 
 
-def summary_from_backend(
-    raw: dict[str, Any], codes: dict[str, list[str]], prefix: str = ""
-) -> Summary:
+def summary_from_backend(raw: dict[str, Any], codes: dict[str, list[str]]) -> Summary:
     """Build a summary from the scalars a compiled backend returned.
 
     Parameters
     ----------
     raw : dict
-        The :class:`Summary` fields (``converged`` aside) as scalars, each name preceded by
-        `prefix`, with ``termination`` as an index into ``codes["termination"]``.
+        The :class:`Summary` fields (``converged`` aside) as scalars, with ``termination`` as
+        an index into ``codes["termination"]``.
     codes : dict of str to list of str
         The backend's enum names in code order (its ``codes()``).
-    prefix : str, optional
-        What precedes each field's name in `raw` (default: nothing).
 
     Returns
     -------
     Summary
         The summary.
     """
-    termination = Termination(codes["termination"][int(raw[f"{prefix}termination"])])
+    termination = Termination(codes["termination"][int(raw["termination"])])
     return Summary(
-        iterations=int(raw[f"{prefix}iterations"]),
+        iterations=int(raw["iterations"]),
         termination=termination,
         converged=termination in CONVERGED,
-        degenerate_samples=int(raw[f"{prefix}degenerate_samples"]),
-        local_optimizations=int(raw[f"{prefix}local_optimizations"]),
-        inlier_count=int(raw[f"{prefix}inlier_count"]),
-        score=float(raw[f"{prefix}score"]),
+        degenerate_samples=int(raw["degenerate_samples"]),
+        local_optimizations=int(raw["local_optimizations"]),
+        inlier_count=int(raw["inlier_count"]),
+        score=float(raw["score"]),
     )
 
 
@@ -416,8 +412,8 @@ def from_backend(
     Parameters
     ----------
     raw : dict
-        ``model`` and ``inliers`` arrays, and the summary's scalars (see
-        :func:`summary_from_backend`).
+        ``model`` and ``inliers`` arrays, and ``summary``, the dict
+        :func:`summary_from_backend` reads.
     codes : dict of str to list of str
         The backend's enum names in code order (its ``codes()``).
 
@@ -430,7 +426,7 @@ def from_backend(
         model=np.asarray(raw["model"], dtype=np.float64),
         inliers=np.asarray(raw["inliers"], dtype=np.bool_),
     )
-    return Solution(state=consensus, summary=summary_from_backend(raw, codes))
+    return Solution(state=consensus, summary=summary_from_backend(raw["summary"], codes))
 
 
 def run(
