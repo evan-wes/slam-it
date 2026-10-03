@@ -59,6 +59,22 @@ def normalised_plane(bearings: NDArray[np.float64]) -> NDArray[np.float64]:
     return np.asarray(bearings / bearings[:, 2:3], dtype=np.float64)
 
 
+def normalised_xy(bearings: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Map bearings with positive z to normalised image points ``(f_x / f_z, f_y / f_z)``.
+
+    Parameters
+    ----------
+    bearings : ndarray of float64, shape (N, 3)
+        Bearings with positive z.
+
+    Returns
+    -------
+    ndarray of float64, shape (N, 2)
+        ``(x, y)`` per bearing: :func:`normalised_plane` without its ones.
+    """
+    return np.asarray(bearings[:, :2] / bearings[:, 2:3], dtype=np.float64)
+
+
 def hartley_normalisation(points: NDArray[np.float64]) -> NDArray[np.float64] | None:
     """Return Hartley's similarity: centroid to the origin, mean distance √2.
 

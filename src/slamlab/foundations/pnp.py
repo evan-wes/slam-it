@@ -25,7 +25,7 @@ the same in the camera as in the world, quadratic equations in β, linearised in
 (one, two or three of the ``vₖ``; Lepetit et al.'s N = 1 case is the first β of N = 4) and
 each polished by Gauss-Newton on the six distances (:data:`POLISH_MAX_STEPS`). Each gives the
 camera points ``Σⱼ αᵢⱼ cⱼ`` (their sign chosen so they lie in front), and the pose aligning the
-world points to them (:func:`slamlab.foundations.alignment.align`, rigid); the one with the
+world points to them (:func:`slamlab.foundations.p3p.rigid_pose`); the one with the
 lowest reprojection error wins. It follows OpenCV's implementation of the paper.
 
 EPnP needs the points to span three dimensions: on a plane, the third control point has no
@@ -59,8 +59,9 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slamlab import backends
-from slamlab.foundations import alignment, nls, p3p, ransac, se3, so3
+from slamlab.foundations import nls, p3p, ransac, se3, so3
 from slamlab.foundations.arrays import as_correspondences
+from slamlab.foundations.correspondences import normalised_xy
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
 from slamlab.foundations.solve import Solution
 
@@ -136,11 +137,6 @@ class Implementation(Protocol):
 # --- the reprojection error ---------------------------------------------------------------
 
 
-def normalised(bearings: NDArray[np.float64]) -> NDArray[np.float64]:
-    """Return bearings' normalised image points ``(y_x / y_z, y_y / y_z)``, shape (N, 2)."""
-    return np.asarray(bearings[:, :2] / bearings[:, 2:3], dtype=np.float64)
-
-
 def _reprojection(
     pose: Pose, points: NDArray[np.float64], image: NDArray[np.float64]
 ) -> NDArray[np.float64]:
@@ -178,7 +174,7 @@ def reprojection_errors(
     """
     matrix = _as_pose(pose)
     world, rays = as_correspondences(points, bearings, 0)
-    return _reprojection(matrix, world, normalised(rays))
+    return _reprojection(matrix, world, normalised_xy(rays))
 
 
 def _as_pose(value: ArrayLike) -> Pose:
@@ -298,7 +294,7 @@ def _epnp(points: NDArray[np.float64], bearings: NDArray[np.float64]) -> Pose | 
     alphas = np.column_stack([np.ones(len(points)), points]) @ np.linalg.inv(
         np.column_stack([np.ones(4), controls])
     )
-    image = normalised(bearings)
+    image = normalised_xy(bearings)
     system = np.zeros((2 * len(points), 12))
     for j in range(4):
         system[0::2, 3 * j] = alphas[:, j]
@@ -314,12 +310,9 @@ def _epnp(points: NDArray[np.float64], bearings: NDArray[np.float64]) -> Pose | 
         camera = alphas @ (betas @ basis).reshape(4, 3)
         if np.sum(camera[:, 2]) < 0.0:
             camera = -camera
-        try:
-            fitted = alignment.align(points, camera)
-        except DegenerateError:
+        pose = p3p.rigid_pose(points, camera)
+        if pose is None:
             continue
-        pose = np.eye(4)
-        pose[:3, :3], pose[:3, 3] = fitted.rotation, fitted.translation
         error = float(np.sum(_reprojection(pose, points, image)))
         if best is None or error < best[0]:
             best = (error, pose)
@@ -367,7 +360,9 @@ def epnp(points: ArrayLike, bearings: ArrayLike, *, backend: str = "python") -> 
 class ReprojectionProblem:
     """Least squares on the reprojection errors of correspondences, over SE(3).
 
-    One residual block of two per correspondence: ``π(R X + t) - x`` in the normalised plane.
+    One residual block of two per correspondence: ``π(R X + t) - x`` in the normalised plane;
+    a point behind the camera has an infinite squared norm, as in RANSAC's scoring, since its
+    projection ``x / z`` with both negative can land near the observation.
     The state is ``T_cam_world``; a step is ``T exp(δ)`` with ``δ = (ρ, θ)``, so the camera
     point moves by ``R (ρ - [X]ₓ θ)`` to first order and the Jacobian is
     ``∂π/∂p · [R | -R [X]ₓ]``, ``∂π/∂p = [[1/z, 0, -x/z²], [0, 1/z, -y/z²]]``.
@@ -399,9 +394,10 @@ class ReprojectionProblem:
         Returns
         -------
         ndarray of float64, shape (M,)
-            The squared residuals.
+            The squared residuals; infinity for a point behind the camera, so a step that
+            moves one there has an infinite cost and is rejected (cheirality).
         """
-        return np.asarray(np.sum(self._projection(state)[1] ** 2, axis=1), dtype=np.float64)
+        return _reprojection(state, self._points, self._image)
 
     def linearize(self, state: Pose, weights: NDArray[np.float64]) -> nls.DenseSystem:
         """Linearise at `state` into weighted normal equations over ``(ρ, θ)``.
@@ -474,7 +470,7 @@ def refine_reference(
     slamlab.foundations.solve.Solution
         The refined pose and the solve's summary.
     """
-    problem = ReprojectionProblem(points, normalised(bearings))
+    problem = ReprojectionProblem(points, normalised_xy(bearings))
     options = nls.Options(loss=nls.Loss("cauchy", scale), max_iterations=REFINE_ITERATIONS)
     return nls.solve(problem, pose, options)
 
@@ -609,7 +605,7 @@ class PoseEstimator:
         ndarray of float64, shape (N,)
             The errors; infinity behind the camera.
         """
-        return _reprojection(model, self.points, normalised(self.bearings))
+        return _reprojection(model, self.points, normalised_xy(self.bearings))
 
 
 def pnp_ransac_reference(
@@ -704,12 +700,17 @@ def pnp_ransac(  # noqa: PLR0913 -- the solver choices are keyword-only
             f"minimal_solver: expected one of {p3p.SOLVERS}, got {minimal_solver!r}"
         )
     world, rays = as_correspondences(points, bearings, p3p.SAMPLE_SIZE)
-    return ransac.run_refined(
+    return ransac.run(
         lambda: pnp_ransac_reference(world, rays, options, minimal_solver, refine),
-        {"points": world, "bearings": rays},
+        {
+            "points": world,
+            "bearings": rays,
+            "minimal_solver": p3p.SOLVERS.index(minimal_solver),
+            "refine": refine,
+        },
         options,
-        minimal_solver=p3p.SOLVERS.index(minimal_solver),
-        refine=refine,
+        summary=ransac.refined_summary_from_backend,
         backend=backend,
-        target=(__name__, "pnp_ransac"),
+        module_name=__name__,
+        function="pnp_ransac",
     )

@@ -30,6 +30,19 @@ struct Geometry {
   Eigen::Vector3d squared;
 };
 
+/// @brief Ding's conic coefficients: the squared distances over the longest, `a12`.
+struct Ratios {
+  /// @brief `a01 / a12`.
+  double a;
+  /// @brief `a02 / a12`.
+  double b;
+};
+
+/// @brief Ding's reordering (`_LONGEST_LAST`): for the longest of the pairs 01, 02, 12, the
+///        order of the points that makes it the pair of the second and third.
+constexpr std::array<std::array<Eigen::Index, 3>, 3> kLongestLast = {
+    {{2, 1, 0}, {1, 0, 2}, {0, 1, 2}}};
+
 /// @brief The distance equations' data as named scalars, `b_ij` then `a_ij`.
 struct Terms {
   /// @brief `b_12`.
@@ -203,14 +216,14 @@ std::pair<Eigen::Vector3d, double> polish_depths(Eigen::Vector3d depths, const G
   return {depths, current.norm()};
 }
 
-/// @brief `T_cam_world` aligning the world triangle to `l_i y_i` (`_pose`).
+/// @brief `T_cam_world` aligning the world triangle to `l_i y_i` (`rigid_pose` in Python).
 /// @param depths The depths.
-/// @param bearings The bearings.
 /// @param points The world points.
+/// @param bearings The bearings.
 /// @return The pose, or nothing if the alignment is degenerate.
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (bearings, points), as in Python
-std::optional<Eigen::Matrix4d> pose_of(const Eigen::Vector3d& depths, const Rows3& bearings,
-                                       const Rows3& points) {
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (points, bearings), as in Python
+std::optional<Eigen::Matrix4d> pose_of(const Eigen::Vector3d& depths, const Rows3& points,
+                                       const Rows3& bearings) {
   const Rows3 camera = depths.asDiagonal() * bearings;
   auto fitted = alignment::umeyama(points, camera, Eigen::Vector3d::Ones(), false);
   if (!fitted) {
@@ -231,18 +244,18 @@ bool collinear(const Rows3& points) {
 /// @brief Polish candidate depths and add the pose, if all three stay positive and satisfy
 ///        the distance equations (`_finish`).
 /// @param depths The candidate depths.
-/// @param bearings The bearings.
 /// @param points The world points.
+/// @param bearings The bearings.
 /// @param geometry The cosines and squared distances.
 /// @param poses The poses found so far.
-void finish(const Eigen::Vector3d& depths, const Rows3& bearings, const Rows3& points,
+void finish(const Eigen::Vector3d& depths, const Rows3& points, const Rows3& bearings,
             const Geometry& geometry, std::vector<Eigen::Matrix4d>& poses) {
   const auto [polished, residual] = polish_depths(depths, geometry);
   const bool positive = (polished.array() > 0.0).all();
   if (!positive || residual > kDistanceTolerance * geometry.squared.maxCoeff()) {
     return;
   }
-  auto pose = pose_of(polished, bearings, points);
+  auto pose = pose_of(polished, points, bearings);
   if (pose && pose->allFinite()) {
     poses.push_back(*pose);
   }
@@ -374,7 +387,7 @@ std::vector<Eigen::Matrix4d> lambda_twist(const Rows3& points, const Rows3& bear
   for (const double sign : {1.0, -1.0}) {
     const Eigen::Vector3d u = decomposed->vectors.col(0) - (sign * s * decomposed->vectors.col(1));
     for (const Eigen::Vector3d& depths : twist_depths(u, geometry)) {
-      finish(depths, bearings, points, geometry, poses);
+      finish(depths, points, bearings, geometry, poses);
     }
   }
   return poses;
@@ -408,15 +421,17 @@ std::optional<std::array<Eigen::Vector3d, 2>> line_pair(const Eigen::Matrix3d& c
 ///        (`_ding_depths`).
 /// @param p The line.
 /// @param geometry The reordered points' cosines and squared distances.
+/// @param ratios The conics' `a = a01 / a12` and `b = a02 / a12`.
 /// @return The candidate depths, every one positive.
-std::vector<Eigen::Vector3d> ding_depths(const Eigen::Vector3d& p, const Geometry& geometry) {
+std::vector<Eigen::Vector3d> ding_depths(const Eigen::Vector3d& p, const Geometry& geometry,
+                                         const Ratios& ratios) {
   const double m01 = geometry.cosines(0);
   const double m02 = geometry.cosines(1);
   const double m12 = geometry.cosines(2);
   const double a01 = geometry.squared(0);
   const double a12 = geometry.squared(2);
-  const double a = a01 / a12;
-  const double b = geometry.squared(1) / a12;
+  const double a = ratios.a;
+  const double b = ratios.b;
   std::vector<Eigen::Vector3d> candidates;
   if (std::abs(p(0)) <= std::abs(p(1))) {
     // d0 = w0 d2 + w1 d1; t = d1 / d2.
@@ -454,16 +469,9 @@ std::vector<Eigen::Vector3d> ding_depths(const Eigen::Vector3d& p, const Geometr
 /// @param bearings The bearings.
 /// @return The poses.
 std::vector<Eigen::Matrix4d> ding(const Rows3& points, const Rows3& bearings) {
-  const Geometry unordered = geometry_of(points, bearings);
-  std::array<Eigen::Index, 3> order = {0, 1, 2};
-  // Reorder so the distance between the second and third points is the longest.
-  if (unordered.squared(0) > unordered.squared(1)) {
-    if (unordered.squared(0) > unordered.squared(2)) {
-      order = {2, 1, 0};
-    }
-  } else if (unordered.squared(1) > unordered.squared(2)) {
-    order = {1, 0, 2};
-  }
+  Eigen::Index longest = 0;
+  geometry_of(points, bearings).squared.maxCoeff(&longest);
+  const std::array<Eigen::Index, 3>& order = kLongestLast.at(static_cast<std::size_t>(longest));
   Rows3 x(3, 3);
   Rows3 world(3, 3);
   for (Eigen::Index i = 0; i < 3; ++i) {
@@ -474,8 +482,10 @@ std::vector<Eigen::Matrix4d> ding(const Rows3& points, const Rows3& bearings) {
   const double m01 = geometry.cosines(0);
   const double m02 = geometry.cosines(1);
   const double m12 = geometry.cosines(2);
-  const double a = geometry.squared(0) / geometry.squared(2);
-  const double b = geometry.squared(1) / geometry.squared(2);
+  const Ratios ratios{.a = geometry.squared(0) / geometry.squared(2),
+                      .b = geometry.squared(1) / geometry.squared(2)};
+  const double a = ratios.a;
+  const double b = ratios.b;
   Eigen::Matrix3d first;
   first << -a, 0.0, a * m12, 0.0, 1.0, -m01, a * m12, -m01, 1.0 - a;
   Eigen::Matrix3d second;
@@ -491,8 +501,8 @@ std::vector<Eigen::Matrix4d> ding(const Rows3& points, const Rows3& bearings) {
   }
   std::vector<Eigen::Matrix4d> poses;
   for (const Eigen::Vector3d& line : *lines) {
-    for (const Eigen::Vector3d& depths : ding_depths(line, geometry)) {
-      finish(depths, x, world, geometry, poses);
+    for (const Eigen::Vector3d& depths : ding_depths(line, geometry, ratios)) {
+      finish(depths, world, x, geometry, poses);
     }
   }
   return poses;

@@ -93,3 +93,12 @@ def test_rejects_a_negative_max_difference(tmp_path: Path) -> None:
     _write(folder)
     with pytest.raises(ValueError, match="max_difference"):
         tum.read_sequence(folder, max_difference=-1.0)
+
+
+def test_a_malformed_depth_file_is_named_with_its_line(tmp_path: Path) -> None:
+    """A depth map listed with a timestamp that is not a number is an error naming the line."""
+    folder = tmp_path / "rgbd_dataset_freiburg1_xyz"
+    _write(folder)
+    (folder / "depth.txt").write_text("# depth maps\n100.010 depth/a.png\nnoon depth/b.png\n")
+    with pytest.raises(ValueError, match=r"depth.txt:3: expected a numeric timestamp"):
+        tum.read_sequence(folder)

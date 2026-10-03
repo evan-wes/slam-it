@@ -870,14 +870,19 @@ def essential_ransac(  # noqa: PLR0913 -- the solver choices are keyword-only
         )
     minimum = SAMPLE_SIZE if minimal_solver == "8pt" else fivepoint.SAMPLE_SIZE
     b1, b2 = as_bearing_pairs(bearings1, bearings2, minimum)
-    return ransac.run_refined(
+    return ransac.run(
         lambda: essential_ransac_reference(b1, b2, options, minimal_solver, refine),
-        {"bearings1": b1, "bearings2": b2},
+        {
+            "bearings1": b1,
+            "bearings2": b2,
+            "minimal_solver": MINIMAL_SOLVERS.index(minimal_solver),
+            "refine": refine,
+        },
         options,
-        minimal_solver=MINIMAL_SOLVERS.index(minimal_solver),
-        refine=refine,
+        summary=ransac.refined_summary_from_backend,
         backend=backend,
-        target=(__name__, "essential_ransac"),
+        module_name=__name__,
+        function="essential_ransac",
     )
 
 
@@ -910,9 +915,11 @@ def fundamental_ransac(
     p1, p2 = as_point_pairs(pixels1, pixels2, SAMPLE_SIZE)
     estimator = fundamental_estimator(p1, p2)
     return ransac.run(
-        estimator,
+        lambda: ransac.estimate(estimator, options),
         {"pixels1": p1, "pixels2": p2},
         options,
+        summary=ransac.summary_from_backend,
         backend=backend,
-        target=(__name__, "fundamental_ransac"),
+        module_name=__name__,
+        function="fundamental_ransac",
     )

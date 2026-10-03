@@ -206,15 +206,12 @@ class ReprojectionProblem {
   ReprojectionProblem(Rows3 points, Rows2 image)
       : points_(std::move(points)), image_(std::move(image)) {}
 
-  /// @brief Each block's squared residual.
+  /// @brief Each block's squared residual; infinity behind the camera, so a step that moves a
+  ///        point there is rejected (cheirality).
   /// @param state The pose.
   /// @return The squared residuals.
   [[nodiscard]] Eigen::VectorXd squared_norms(const State& state) const {
-    Eigen::VectorXd out(points_.rows());
-    for (Eigen::Index i = 0; i < points_.rows(); ++i) {
-      out(i) = residual(state, i).squaredNorm();
-    }
-    return out;
+    return reprojection(state, points_, image_);
   }
 
   /// @brief The weighted normal equations over `(rho, theta)`.
@@ -276,14 +273,6 @@ Result<void> check_pose(const Eigen::Matrix4d& pose) {
 
 }  // namespace
 
-Rows2 normalised(const Eigen::Ref<const Rows3>& bearings) {
-  Rows2 out(bearings.rows(), 2);
-  for (Eigen::Index i = 0; i < bearings.rows(); ++i) {
-    out.row(i) = bearings.row(i).head<2>() / bearings(i, 2);
-  }
-  return out;
-}
-
 Eigen::VectorXd reprojection(const Eigen::Matrix4d& pose, const Eigen::Ref<const Rows3>& points,
                              const Eigen::Ref<const Rows2>& image) {
   Eigen::VectorXd out(points.rows());
@@ -310,7 +299,7 @@ std::optional<Eigen::Matrix4d> solve_epnp(const Eigen::Ref<const Rows3>& points,
   Eigen::Matrix4d control_homogeneous;
   control_homogeneous << Eigen::Vector4d::Ones(), *controls;
   const Eigen::MatrixXd alphas = homogeneous * control_homogeneous.inverse();
-  const Rows2 image = normalised(bearings);
+  const Rows2 image = correspondences::normalised_xy(bearings);
   Eigen::MatrixXd system = Eigen::MatrixXd::Zero(2 * n, 12);
   for (Eigen::Index i = 0; i < n; ++i) {
     for (Eigen::Index j = 0; j < 4; ++j) {
@@ -367,7 +356,7 @@ solve::Solution<Eigen::Matrix4d, nls::Summary> refine(const Eigen::Matrix4d& pos
                                                       const Eigen::Ref<const Rows3>& points,
                                                       const Eigen::Ref<const Rows3>& bearings,
                                                       double scale) {
-  const ReprojectionProblem problem(points, normalised(bearings));
+  const ReprojectionProblem problem(points, correspondences::normalised_xy(bearings));
   nls::Options options;
   options.loss = {.kind = nls::LossKind::kCauchy, .scale = scale};
   options.max_iterations = kRefineIterations;
@@ -398,7 +387,7 @@ Result<solve::Solution<Eigen::Matrix4d, nls::Summary>> refine_pose(
 PoseEstimator::PoseEstimator(Rows3 points, Rows3 bearings, p3p::Solver solver)
     : points_(std::move(points)),
       bearings_(std::move(bearings)),
-      image_(normalised(bearings_)),
+      image_(correspondences::normalised_xy(bearings_)),
       solver_(solver) {}
 
 std::uint32_t PoseEstimator::size() const { return static_cast<std::uint32_t>(points_.rows()); }

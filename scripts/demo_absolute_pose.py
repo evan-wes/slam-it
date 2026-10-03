@@ -42,6 +42,7 @@ from numpy.typing import NDArray
 from slamlab import backends
 from slamlab.eval import tum
 from slamlab.foundations import camera, p3p, pnp, ransac, se3, so3, twoview
+from slamlab.foundations.correspondences import normalised_xy
 from slamlab.foundations.errors import DegenerateError
 from slamlab.foundations.solve import Solution
 
@@ -59,6 +60,17 @@ MIN_INLIERS = 20
 """A placement with fewer inliers than this is rejected, as a tracker would reject it. On
 TUM fr1/xyz's blurred stretch, the ground truth itself explains under 5% of some frames'
 matches; RANSAC then finds 3-7 inliers and a wrong pose."""
+SURVEY_STRIDE = 40
+"""The survey takes a reference frame every this many frames."""
+SURVEY_OFFSETS = (15, 30)
+"""Each survey reference places the frames this many frames later."""
+OPENCV_ITERATIONS = 10000
+"""OpenCV's RANSAC sample limit: slamlab's default ``max_iterations``."""
+OPENCV_CONFIDENCE = 0.999
+"""OpenCV's RANSAC confidence: slamlab's default."""
+OPENCV_MIN_INLIERS = 4
+"""Fewer OpenCV inliers than this and its pose is not refined (``solvePnPRefineLM`` needs
+four)."""
 CONFIGURATIONS = (("ding", True), ("lambda_twist", True), ("ding", False))
 """The (P3P solver, refine) configurations the survey compares."""
 
@@ -182,8 +194,7 @@ def twoview_points(
     rays_b = camera.unproject("radtan", intrinsics, b.pixels[pairs[:, 1]])
     try:
         result = twoview.initialize(rays_a, rays_b, twoview.Options(focal=float(intrinsics[0])))
-    except DegenerateError:
-        # A rank-deficient homography from H-RANSAC fails its decomposition (open item).
+    except DegenerateError:  # neither RANSAC found a model
         return None
     if result.status is not twoview.Status.INITIALIZED:
         return None
@@ -265,12 +276,12 @@ def opencv_reference(
     tuple of (ndarray of float64, shape (4, 4), int), or None
         The pose and its inlier count, or None if OpenCV found none.
     """
-    image = pnp.normalised(bearings)
+    image = normalised_xy(bearings)
     ok, rvec, tvec, inliers = cv2.solvePnPRansac(
-        points, image, np.eye(3), None, iterationsCount=10000, reprojectionError=threshold,
-        confidence=0.999, flags=cv2.SOLVEPNP_AP3P,
+        points, image, np.eye(3), None, iterationsCount=OPENCV_ITERATIONS,
+        reprojectionError=threshold, confidence=OPENCV_CONFIDENCE, flags=cv2.SOLVEPNP_AP3P,
     )  # fmt: skip
-    if not ok or inliers is None or len(inliers) < 4:
+    if not ok or inliers is None or len(inliers) < OPENCV_MIN_INLIERS:
         return None
     kept = inliers.ravel()
     rvec, tvec = cv2.solvePnPRefineLM(points[kept], image[kept], np.eye(3), None, rvec, tvec)
@@ -313,7 +324,8 @@ def reference_points(
 def survey(sequence: tum.Sequence, source: str, init_gap: int, backend: str) -> None:
     """Place frames across the sequence and print each configuration's median errors.
 
-    Reference frames start every 40 frames; each places the frames 15 and 30 later.
+    Reference frames start every :data:`SURVEY_STRIDE` frames; each places the frames
+    :data:`SURVEY_OFFSETS` later.
 
     Parameters
     ----------
@@ -330,16 +342,17 @@ def survey(sequence: tum.Sequence, source: str, init_gap: int, backend: str) -> 
     results: dict[str, list[tuple[float, float]]] = collections.defaultdict(list)
     rejected: collections.Counter[str] = collections.Counter()
     skipped: collections.Counter[str] = collections.Counter()
-    for first in range(0, len(sequence.images) - 40, 40):
+    last = len(sequence.images) - max(SURVEY_OFFSETS)
+    for first in range(0, last, SURVEY_STRIDE):
         if source == "depth" and sequence.depths[first] is None:
-            skipped["no depth map"] += 2
+            skipped["no depth map"] += len(SURVEY_OFFSETS)
             continue
         found: dict[int, Features] = {}
         points = reference_points(sequence, source, first, init_gap, found)
         if points is None:
-            skipped["not initialised"] += 2
+            skipped["not initialised"] += len(SURVEY_OFFSETS)
             continue
-        for offset in (15, 30):
+        for offset in SURVEY_OFFSETS:
             world, rays, _ = correspondences(sequence, points, first, first + offset, found)
             if len(world) < MIN_CORRESPONDENCES:
                 skipped["too few correspondences"] += 1
@@ -369,6 +382,58 @@ def survey(sequence: tum.Sequence, source: str, init_gap: int, backend: str) -> 
         print(f"skipped {count} frames: {reason}")
 
 
+def report_single(sequence: tum.Sequence, args: argparse.Namespace, chosen: list[str]) -> None:
+    """Place one frame against the reference's points and print each backend's result.
+
+    Parameters
+    ----------
+    sequence : tum.Sequence
+        The sequence.
+    args : argparse.Namespace
+        The parsed arguments (``first``, ``offset``, ``source``, ``init_gap``, ``sequence``).
+    chosen : list of str
+        The backends to run.
+    """
+    target = args.first + args.offset
+    found: dict[int, Features] = {}
+    points = reference_points(sequence, args.source, args.first, args.init_gap, found)
+    if points is None:
+        print(
+            f"two-view initialisation of frames {args.first} and {args.first + args.init_gap} "
+            "did not initialise; try another --first or --init-gap"
+        )
+        return
+    world, rays, _ = correspondences(sequence, points, args.first, target, found)
+    truth = se3.inverse(sequence.T_world_cam[target]) @ sequence.T_world_cam[args.first]
+    focal = float(sequence.intrinsics[0])
+    print(
+        f"{args.sequence.name}: frame {target} against frame {args.first}'s points "
+        f"({args.source}); {len(world)} correspondences; the camera moved "
+        f"{100 * np.linalg.norm(truth[:3, 3]):.1f} cm"
+    )
+    for backend in chosen:
+        for solver in p3p.SOLVERS:
+            run = place(world, rays, focal, (solver, True), backend)
+            if run is None:
+                print(f"{backend:>6} {solver:>12}: no pose")
+                continue
+            rotation, position = errors(run.state.model, truth)
+            print(
+                f"{backend:>6} {solver:>12}: {np.count_nonzero(run.state.inliers)} inliers, "
+                f"{run.summary.iterations} samples, refined {run.summary.refined}; rotation "
+                f"error {rotation:.3f} deg, position {position:.2f} cm"
+            )
+    reference = opencv_reference(world, rays, THRESHOLD_PX / focal)
+    if reference is None:
+        print(f"{'opencv':>19}: no pose")
+    else:
+        rotation, position = errors(reference[0], truth)
+        print(
+            f"{'opencv':>19}: {reference[1]} inliers; rotation error {rotation:.3f} deg, "
+            f"position {position:.2f} cm"
+        )
+
+
 def main() -> None:
     """Run the demo."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -390,43 +455,7 @@ def main() -> None:
     target = args.first + args.offset
     if not 0 <= args.first < target < len(sequence.images):
         parser.error(f"frames {args.first} and {target}: the sequence has {len(sequence.images)}")
-    found: dict[int, Features] = {}
-    points = reference_points(sequence, args.source, args.first, args.init_gap, found)
-    if points is None:
-        print(
-            f"two-view initialisation of frames {args.first} and {args.first + args.init_gap} "
-            "did not initialise; try another --first or --init-gap"
-        )
-        return
-    world, rays, _ = correspondences(sequence, points, args.first, target, found)
-    truth = se3.inverse(sequence.T_world_cam[target]) @ sequence.T_world_cam[args.first]
-    focal = float(sequence.intrinsics[0])
-    print(
-        f"{args.sequence.name}: frame {target} against frame {args.first}'s points "
-        f"({args.source}); {len(world)} correspondences; the camera moved "
-        f"{100 * np.linalg.norm(truth[:3, 3]):.1f} cm"
-    )
-    for backend in [args.backend] if args.backend else lockstep:
-        for solver in p3p.SOLVERS:
-            run = place(world, rays, focal, (solver, True), backend)
-            if run is None:
-                print(f"{backend:>6} {solver:>12}: no pose")
-                continue
-            rotation, position = errors(run.state.model, truth)
-            print(
-                f"{backend:>6} {solver:>12}: {np.count_nonzero(run.state.inliers)} inliers, "
-                f"{run.summary.iterations} samples, refined {run.summary.refined}; rotation "
-                f"error {rotation:.3f} deg, position {position:.2f} cm"
-            )
-    reference = opencv_reference(world, rays, THRESHOLD_PX / focal)
-    if reference is None:
-        print(f"{'opencv':>19}: no pose")
-    else:
-        rotation, position = errors(reference[0], truth)
-        print(
-            f"{'opencv':>19}: {reference[1]} inliers; rotation error {rotation:.3f} deg, "
-            f"position {position:.2f} cm"
-        )
+    report_single(sequence, args, [args.backend] if args.backend else lockstep)
 
 
 if __name__ == "__main__":

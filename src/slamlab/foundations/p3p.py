@@ -283,17 +283,44 @@ def _polish_depths(depths: Vector3, cosines: Vector3, squared: Vector3) -> tuple
     return depths, float(np.linalg.norm(current))
 
 
-def _pose(
-    depths: Vector3, bearings: NDArray[np.float64], points: NDArray[np.float64]
-) -> Pose | None:
-    """Return ``T_cam_world`` aligning the world triangle to ``λᵢ yᵢ``; None if degenerate."""
+def rigid_pose(points: NDArray[np.float64], in_camera: NDArray[np.float64]) -> Pose | None:
+    """Return the rigid ``T_cam_world`` taking world points onto their camera-frame positions.
+
+    The rigid alignment (:func:`slamlab.foundations.alignment.align`), so the pose is always a
+    rotation and a translation; P3P and EPnP both finish with it.
+
+    Parameters
+    ----------
+    points : ndarray of float64, shape (N, 3)
+        World points, N >= 3.
+    in_camera : ndarray of float64, shape (N, 3)
+        The same points in the camera frame.
+
+    Returns
+    -------
+    ndarray of float64, shape (4, 4), or None
+        The pose; None if the points are collinear (the alignment is degenerate).
+    """
     try:
-        fitted = alignment.align(points, depths[:, None] * bearings)
+        fitted = alignment.align(points, in_camera)
     except DegenerateError:
         return None
     pose = np.eye(4)
     pose[:3, :3], pose[:3, 3] = fitted.rotation, fitted.translation
     return pose
+
+
+def _geometry(
+    points: NDArray[np.float64], bearings: NDArray[np.float64]
+) -> tuple[Vector3, Vector3]:
+    """Return the distance equations' cosines ``bᵢⱼ`` and squared distances ``aᵢⱼ``.
+
+    In the order ``ij = 12, 13, 23`` (0-based: 01, 02, 12).
+    """
+    pairs = ((0, 1), (0, 2), (1, 2))
+    cosines = np.array([float(bearings[i] @ bearings[j]) for i, j in pairs])
+    squared = np.array([float(np.sum((points[i] - points[j]) ** 2)) for i, j in pairs])
+    return cosines, squared
 
 
 def _collinear(points: NDArray[np.float64]) -> bool:
@@ -305,8 +332,8 @@ def _collinear(points: NDArray[np.float64]) -> bool:
 
 def _finish(
     depths: Vector3,
-    bearings: NDArray[np.float64],
     points: NDArray[np.float64],
+    bearings: NDArray[np.float64],
     geometry: tuple[Vector3, Vector3],
 ) -> Pose | None:
     """Polish candidate depths and build the pose.
@@ -318,7 +345,7 @@ def _finish(
     polished, residual = _polish_depths(depths, cosines, squared)
     if not (np.all(polished > 0.0) and residual <= DISTANCE_TOLERANCE * float(np.max(squared))):
         return None
-    pose = _pose(polished, bearings, points)
+    pose = rigid_pose(points, polished[:, None] * bearings)
     return pose if pose is not None and np.all(np.isfinite(pose)) else None
 
 
@@ -363,12 +390,10 @@ def _eigen_known_zero(matrix: Matrix3) -> tuple[Matrix3, float, float] | None:
     return vectors, sigma1, sigma2
 
 
-def _lambda_twist(bearings: NDArray[np.float64], points: NDArray[np.float64]) -> list[Pose]:
+def _lambda_twist(points: NDArray[np.float64], bearings: NDArray[np.float64]) -> list[Pose]:
     """Solve P3P by Lambda Twist (reference)."""
-    a12, a13, a23 = (
-        float(np.sum((points[i] - points[j]) ** 2)) for i, j in ((0, 1), (0, 2), (1, 2))
-    )
-    b12, b13, b23 = (float(bearings[i] @ bearings[j]) for i, j in ((0, 1), (0, 2), (1, 2)))
+    geometry = _geometry(points, bearings)
+    (b12, b13, b23), (a12, a13, a23) = geometry
     d1 = np.array(
         [[a23, -a23 * b12, 0.0], [-a23 * b12, a23 - a12, a12 * b23], [0.0, a12 * b23, -a12]]
     )
@@ -384,11 +409,10 @@ def _lambda_twist(bearings: NDArray[np.float64], points: NDArray[np.float64]) ->
         return []
     vectors, sigma1, sigma2 = decomposed
     s = math.sqrt(-sigma2 / sigma1)
-    geometry = (np.array([b12, b13, b23]), np.array([a12, a13, a23]))
     poses: list[Pose] = []
     for sign in (1.0, -1.0):
         for depths in _twist_depths(vectors[:, 0] - sign * s * vectors[:, 1], geometry):
-            if (pose := _finish(depths, bearings, points, geometry)) is not None:
+            if (pose := _finish(depths, points, bearings, geometry)) is not None:
                 poses.append(pose)
     return poses
 
@@ -467,20 +491,19 @@ def _line_pair(conic: Matrix3) -> tuple[Vector3, Vector3] | None:
     return rank_one[:, column], rank_one[row, :]
 
 
-def _ding(bearings: NDArray[np.float64], points: NDArray[np.float64]) -> list[Pose]:
+_LONGEST_LAST = ((2, 1, 0), (1, 0, 2), (0, 1, 2))
+"""Ding's reordering: for the longest of the pairs 01, 02, 12, the order of the points that
+makes it the pair of the second and third."""
+
+
+def _ding(points: NDArray[np.float64], bearings: NDArray[np.float64]) -> list[Pose]:
     """Solve P3P by Ding et al.'s method (reference)."""
-    order = [0, 1, 2]
-    squared = [float(np.sum((points[i] - points[j]) ** 2)) for i, j in ((0, 1), (0, 2), (1, 2))]
-    # Reorder so the distance between the second and third points, a₁₂, is the longest.
-    if squared[0] > squared[1]:
-        if squared[0] > squared[2]:
-            order = [2, 1, 0]
-    elif squared[1] > squared[2]:
-        order = [1, 0, 2]
-    x, world = bearings[order], points[order]
-    a01, a02, a12 = (float(np.sum((world[i] - world[j]) ** 2)) for i, j in ((0, 1), (0, 2), (1, 2)))
-    m01, m02, m12 = (float(x[i] @ x[j]) for i, j in ((0, 1), (0, 2), (1, 2)))
-    a, b = a01 / a12, a02 / a12
+    order = list(_LONGEST_LAST[int(np.argmax(_geometry(points, bearings)[1]))])
+    world, x = points[order], bearings[order]
+    geometry = _geometry(world, x)
+    (m01, m02, m12), (a01, a02, a12) = geometry
+    ratios = (a01 / a12, a02 / a12)
+    a, b = ratios
     # The conics over (1, x, y) = (λ₃, λ₁, λ₂) / λ₃ (0-based: depths d0, d1 over d2):
     # x² - 2m₀₁xy + (1-a)y² + 2am₁₂y - a = 0, and x² - 2m₀₂x + 1 - b(y² - 2m₁₂y + 1) = 0.
     first = np.array([[-a, 0.0, a * m12], [0.0, 1.0, -m01], [a * m12, -m01, 1.0 - a]])
@@ -492,29 +515,31 @@ def _ding(bearings: NDArray[np.float64], points: NDArray[np.float64]) -> list[Po
     lines = _line_pair(first + s * second)
     if lines is None:
         return []
-    geometry = (np.array([m01, m02, m12]), np.array([a01, a02, a12]))
     poses: list[Pose] = []
     for line in lines:
-        for depths in _ding_depths(line, geometry):
-            if (pose := _finish(depths, x, world, geometry)) is not None:
+        for depths in _ding_depths(line, geometry, ratios):
+            if (pose := _finish(depths, world, x, geometry)) is not None:
                 poses.append(pose)
     return poses
 
 
-def _ding_depths(p: Vector3, geometry: tuple[Vector3, Vector3]) -> list[Vector3]:
+def _ding_depths(
+    p: Vector3, geometry: tuple[Vector3, Vector3], ratios: tuple[float, float]
+) -> list[Vector3]:
     """Intersect one of Ding et al.'s lines, ``p · (λ₃, λ₁, λ₂) = 0``, with a conic.
 
     In 0-based depths ``d0, d1, d2`` (the reordered points'): ``d0`` is eliminated if
     ``|p₀| <= |p₁|``, else ``d2``, leaving a quadratic in ``τ = d1/d2`` (resp. ``d1/d0``); one
-    distance equation then fixes the scale.
+    distance equation then fixes the scale. `ratios` are the conics' ``a = a₀₁/a₁₂`` and
+    ``b = a₀₂/a₁₂``.
 
     Returns
     -------
     list of ndarray of float64, shape (3,)
         The candidate depths, every one positive.
     """
-    (m01, m02, m12), (a01, a02, a12) = geometry
-    a, b = a01 / a12, a02 / a12
+    (m01, m02, m12), (a01, _, a12) = geometry
+    a, b = ratios
     candidates: list[Vector3] = []
     if abs(p[0]) <= abs(p[1]):
         # d0 = w0 d2 + w1 d1 and τ = d1 / d2, from the second conic.
@@ -573,8 +598,8 @@ def solve_reference(
     if _collinear(points):
         return []
     if solver == "ding":
-        return _ding(bearings, points)
-    return _lambda_twist(bearings, points)
+        return _ding(points, bearings)
+    return _lambda_twist(points, bearings)
 
 
 def _reference(

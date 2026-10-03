@@ -38,6 +38,11 @@ using Rows2 = Eigen::Matrix<double, Eigen::Dynamic, 2, Eigen::RowMajor>;
 /// @return `(x, y, 1)` per bearing.
 [[nodiscard]] Rows3 normalised_plane(const Eigen::Ref<const Rows3>& bearings);
 
+/// @brief Map bearings with positive z to normalised image points `(f_x / f_z, f_y / f_z)`.
+/// @param bearings The bearings (N x 3).
+/// @return `(x, y)` per bearing: `normalised_plane` without its ones.
+[[nodiscard]] Rows2 normalised_xy(const Eigen::Ref<const Rows3>& bearings);
+
 /// @brief Hartley's similarity: centroid to the origin, mean distance sqrt(2).
 /// @param points The points (N x 2).
 /// @return `T`, or nothing if every point coincides.

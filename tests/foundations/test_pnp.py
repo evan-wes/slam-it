@@ -144,7 +144,7 @@ def test_refining_matches_scipy_least_squares() -> None:
         world, rays, _, _ = _correspondences(seed, 150, sigma_px=1.0, outliers=0.2)
         run = pnp.pnp_ransac(world, rays, ransac.Options(threshold=scale, seed=seed), refine=False)
         world, rays = world[run.state.inliers], rays[run.state.inliers]
-        problem = pnp.ReprojectionProblem(world, pnp.normalised(rays))
+        problem = pnp.ReprojectionProblem(world, sc.plane_xy(rays))
         origin = run.state.model
 
         image = sc.plane_xy(rays)
@@ -170,12 +170,12 @@ def test_refining_matches_scipy_least_squares() -> None:
 def test_the_reprojection_jacobian_matches_finite_differences() -> None:
     """The analytic Jacobian is the numeric one of the residuals through the retraction."""
     world, rays, truth, _ = _correspondences(3, 12, sigma_px=1.0)
-    problem = pnp.ReprojectionProblem(world, pnp.normalised(rays))
+    problem = pnp.ReprojectionProblem(world, sc.plane_xy(rays))
     start = problem.retract(truth, np.array([0.01, -0.02, 0.03, 0.01, 0.02, -0.01]))
 
     def residuals(pose: np.ndarray) -> np.ndarray:
         in_camera = world @ pose[:3, :3].T + pose[:3, 3]
-        return np.asarray((in_camera[:, :2] / in_camera[:, 2:3] - pnp.normalised(rays)).ravel())
+        return np.asarray((in_camera[:, :2] / in_camera[:, 2:3] - sc.plane_xy(rays)).ravel())
 
     numeric = nls.numeric_jacobian(residuals, start, problem.retract, 6)
     ones = np.ones(len(world))
@@ -184,6 +184,21 @@ def test_the_reprojection_jacobian_matches_finite_differences() -> None:
     np.testing.assert_allclose(
         analytic.gradient, numeric.T @ residuals(start), rtol=1e-6, atol=1e-10
     )
+
+
+def test_a_point_behind_the_camera_has_an_infinite_cost() -> None:
+    """The refinement's cost, like RANSAC's, is infinite for a point behind the camera.
+
+    Its projection ``x / z`` with both negative can land on the observation, so without this
+    an LM step could move a point behind the camera at no cost.
+    """
+    world, rays, truth, _ = _correspondences(0, 10)
+    mirrored = world.copy()
+    mirrored[0] = 2.0 * (-truth[:3, :3].T @ truth[:3, 3]) - world[0]
+    problem = pnp.ReprojectionProblem(mirrored, sc.plane_xy(rays))
+    norms = problem.squared_norms(truth)
+    assert norms[0] == np.inf
+    assert np.all(norms[1:] < 1e-20)
 
 
 @pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))

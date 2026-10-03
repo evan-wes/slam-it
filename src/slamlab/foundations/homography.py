@@ -298,11 +298,13 @@ def homography_ransac(
     p1, p2 = as_point_pairs(points1, points2, SAMPLE_SIZE, "points")
     estimator = homography_estimator(p1, p2)
     return ransac.run(
-        estimator,
+        lambda: ransac.estimate(estimator, options),
         {"points1": p1, "points2": p2},
         options,
+        summary=ransac.summary_from_backend,
         backend=backend,
-        target=(__name__, "homography_ransac"),
+        module_name=__name__,
+        function="homography_ransac",
     )
 
 

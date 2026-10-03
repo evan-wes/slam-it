@@ -40,11 +40,6 @@ inline constexpr double kPolishTolerance = 1e-14;
 /// @brief Levenberg-Marquardt iterations of the pose refinement.
 inline constexpr int kRefineIterations = 20;
 
-/// @brief Bearings' normalised image points `(y_x / y_z, y_y / y_z)`.
-/// @param bearings Unit bearings with positive z (N x 3).
-/// @return The points (N x 2).
-[[nodiscard]] Rows2 normalised(const Eigen::Ref<const Rows3>& bearings);
-
 /// @brief Squared normalised-plane reprojection errors; infinity behind the camera.
 /// @param pose `T_cam_world`.
 /// @param points World points (N x 3).

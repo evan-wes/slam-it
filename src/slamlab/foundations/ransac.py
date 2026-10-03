@@ -571,56 +571,6 @@ def estimate_refined(
     return refine_consensus(estimator, found, refine, threshold=options.threshold, minimum=minimum)
 
 
-def run_refined(  # noqa: PLR0913 -- the choices are keyword-only
-    reference: Callable[[], Solution[Consensus[NDArray[np.float64]], RefinedSummary]],
-    data: dict[str, NDArray[np.float64]],
-    options: Options,
-    *,
-    minimal_solver: int,
-    refine: bool,
-    backend: str,
-    target: tuple[str, str],
-) -> Solution[Consensus[NDArray[np.float64]], RefinedSummary]:
-    """Run a refined RANSAC with the reference or a compiled backend (see :func:`run`).
-
-    Parameters
-    ----------
-    reference : callable
-        Runs the reference, when `backend` is ``"python"``.
-    data : dict of str to ndarray
-        The validated data, passed to the compiled function by keyword.
-    options : Options
-        The settings, passed as a dict of their fields.
-    minimal_solver : int
-        The minimal solver's code.
-    refine : bool
-        Whether the consensus is refined.
-    backend : {"python", "cpp", "rust"}
-        Which implementation runs.
-    target : tuple of str
-        The calling module's ``__name__`` and the compiled function's name.
-
-    Returns
-    -------
-    slamlab.foundations.solve.Solution
-        The model, its inliers and the :class:`RefinedSummary`.
-    """
-    module_name, function = target
-    return backends.call(
-        backend,
-        module_name,
-        function,
-        reference=reference,
-        arguments={
-            **data,
-            "options": asdict(options),
-            "minimal_solver": minimal_solver,
-            "refine": refine,
-        },
-        decode=decoder(refined_summary_from_backend),
-    )
-
-
 def refined_summary_from_backend(raw: dict[str, Any], codes: backends.Codes) -> RefinedSummary:
     """Build a refined run's summary from the dict a compiled backend returned.
 
@@ -676,58 +626,47 @@ def from_backend(
     return Solution(state=consensus, summary=summary(raw["summary"], codes))
 
 
-def decoder(
-    summary: Callable[[dict[str, Any], backends.Codes], SummaryT],
-) -> Callable[[Any, backends.Codes], Solution[Consensus[NDArray[np.float64]], SummaryT]]:
-    """Return a :func:`slamlab.backends.call` decoder for an array-model RANSAC result.
-
-    Parameters
-    ----------
-    summary : callable
-        Decodes the summary dict (see :func:`from_backend`).
-
-    Returns
-    -------
-    callable
-        ``(raw, codes) -> Solution``.
-    """
-    return lambda raw, codes: from_backend(raw, codes, summary)
-
-
-def run(
-    estimator: Estimator[NDArray[np.float64]],
-    arrays: dict[str, NDArray[np.float64]],
+def run(  # noqa: PLR0913 -- the compiled target is keyword-only
+    reference: Callable[[], Solution[Consensus[NDArray[np.float64]], SummaryT]],
+    arguments: dict[str, object],
     options: Options,
     *,
+    summary: Callable[[dict[str, Any], backends.Codes], SummaryT],
     backend: str,
-    target: tuple[str, str],
-) -> Solution[Consensus[NDArray[np.float64]], Summary]:
-    """Run an array-valued RANSAC with the reference estimator or a compiled backend.
+    module_name: str,
+    function: str,
+) -> Solution[Consensus[NDArray[np.float64]], SummaryT]:
+    """Run an array-valued RANSAC with the reference or a compiled backend.
 
     Parameters
     ----------
-    estimator : Estimator
-        The reference estimator, used when `backend` is ``"python"``.
-    arrays : dict of str to ndarray
-        The validated data, passed to the compiled function by keyword.
+    reference : callable
+        Runs the reference, when `backend` is ``"python"``.
+    arguments : dict of str to object
+        The compiled function's arguments other than the options (the validated data, and any
+        choices such as a minimal solver's code), passed by keyword.
     options : Options
-        The settings, passed to the compiled function as a dict of its fields.
+        The settings, passed to the compiled function as a dict of their fields.
+    summary : callable
+        Decodes the compiled summary: :func:`summary_from_backend`, or
+        :func:`refined_summary_from_backend` for a refined run.
     backend : {"python", "cpp", "rust"}
         Which implementation runs.
-    target : tuple of str
-        The calling module's ``__name__`` and the compiled function's name.
+    module_name : str
+        The calling module's ``__name__``.
+    function : str
+        The compiled function's name.
 
     Returns
     -------
     slamlab.foundations.solve.Solution
         The model, its inliers and the run's summary.
     """
-    module_name, function = target
     return backends.call(
         backend,
         module_name,
         function,
-        reference=lambda: estimate(estimator, options),
-        arguments={**arrays, "options": asdict(options)},
-        decode=decoder(summary_from_backend),
+        reference=reference,
+        arguments={**arguments, "options": asdict(options)},
+        decode=lambda raw, codes: from_backend(raw, codes, summary),
     )

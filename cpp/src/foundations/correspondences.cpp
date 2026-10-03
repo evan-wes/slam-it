@@ -22,6 +22,10 @@ Rows3 normalised_plane(const Eigen::Ref<const Rows3>& bearings) {
   return (bearings.array().colwise() / bearings.col(2).array()).matrix();
 }
 
+Rows2 normalised_xy(const Eigen::Ref<const Rows3>& bearings) {
+  return (bearings.leftCols<2>().array().colwise() / bearings.col(2).array()).matrix();
+}
+
 std::optional<Eigen::Matrix3d> hartley_normalisation(const Eigen::Ref<const Rows2>& points) {
   const Eigen::RowVector2d centroid = points.colwise().mean();
   const double spread = (points.rowwise() - centroid).rowwise().norm().mean();
