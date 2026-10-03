@@ -55,8 +55,8 @@ from __future__ import annotations
 
 import enum
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Generic, Protocol, TypeVar
+from dataclasses import dataclass, fields
+from typing import Any, Generic, Protocol, TypeVar
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -709,3 +709,50 @@ def numeric_jacobian(
         backward = np.asarray(residuals(retract(state, -delta)), dtype=np.float64)
         columns.append((forward - backward) / (2.0 * step))
     return np.stack(columns, axis=-1)
+
+
+_CONVERT = {"int": int, "float": float, "bool": bool}
+"""How each :class:`Iteration` field type is read from the trace's float columns."""
+
+
+def summary_from_backend(raw: dict[str, Any], termination_names: list[str]) -> Summary:
+    """Build a solve's summary from the dict a compiled backend returned.
+
+    Parameters
+    ----------
+    raw : dict
+        ``initial_cost``, ``final_cost``, ``termination`` (an index into
+        `termination_names`), ``trace`` (one row per step) and ``trace_columns`` (the
+        :class:`Iteration` field each column holds, read by name).
+    termination_names : list of str
+        The backend's :class:`Termination` names in code order.
+
+    Returns
+    -------
+    Summary
+        The summary.
+
+    Raises
+    ------
+    RuntimeError
+        If the trace's columns are not :class:`Iteration`'s fields.
+    """
+    types = {field.name: str(field.type) for field in fields(Iteration)}
+    columns = [str(name) for name in raw["trace_columns"]]
+    if sorted(columns) != sorted(types) or not set(types.values()) <= set(_CONVERT):
+        raise RuntimeError(f"trace columns {columns} (types {types}) do not match Iteration's")
+    records = tuple(
+        Iteration(
+            **{name: _CONVERT[types[name]](value) for name, value in zip(columns, row, strict=True)}
+        )
+        for row in raw["trace"]
+    )
+    termination = Termination(termination_names[int(raw["termination"])])
+    return Summary(
+        initial_cost=float(raw["initial_cost"]),
+        final_cost=float(raw["final_cost"]),
+        iterations=len(records),
+        termination=termination,
+        converged=termination in CONVERGED,
+        trace=records,
+    )
