@@ -15,7 +15,7 @@ linear in the nine entries of H, from the first two rows of ``x₂ × H x₁ = 0
 correspondences give ``A vec(H) = 0``, solved by the right singular vector of the smallest
 singular value. Points are first **normalised** (Hartley: centroid to the origin, mean distance
 √2 in each image) and the result mapped back. A system whose second-smallest singular value is
-below :data:`slamlab.foundations.epipolar.RANK_TOLERANCE` of its largest (three collinear
+below :data:`slamlab.foundations.correspondences.RANK_TOLERANCE` of its largest (three collinear
 points in a minimal sample) does not determine H.
 
 **The Sampson error** is the first-order approximation of the squared distance the
@@ -46,16 +46,14 @@ from numpy.typing import ArrayLike, NDArray
 
 from slamlab import backends
 from slamlab.foundations import ransac, so3
-from slamlab.foundations.epipolar import (
+from slamlab.foundations.arrays import as_matrix3, as_point_pairs
+from slamlab.foundations.correspondences import (
     RANK_TOLERANCE,
     Matrix3,
     PairEstimator,
-    as_matrix3,
     hartley_normalisation,
     homogeneous,
     null_vector,
-    point_pairs,
-    run_ransac,
 )
 from slamlab.foundations.errors import DegenerateError
 from slamlab.foundations.solve import Solution
@@ -155,7 +153,7 @@ def _homography_dlt(points1: NDArray[np.float64], points2: NDArray[np.float64]) 
 def sampson(
     homography: Matrix3, points1: NDArray[np.float64], points2: NDArray[np.float64]
 ) -> NDArray[np.float64]:
-    """Return the squared Sampson error of point pairs under H.
+    """Return the squared Sampson error of point pairs under H, unchecked.
 
     Parameters
     ----------
@@ -199,7 +197,7 @@ def homography_estimator(
 
     Returns
     -------
-    slamlab.foundations.epipolar.PairEstimator
+    slamlab.foundations.correspondences.PairEstimator
         The estimator.
     """
     return PairEstimator(
@@ -211,9 +209,11 @@ def homography_estimator(
 
 
 def _dlt_reference(p1: NDArray[np.float64], p2: NDArray[np.float64]) -> Matrix3:
-    """Run the normalised DLT; NaN if undetermined."""
+    """Run the normalised DLT (reference); raise if the pairs do not determine H."""
     found = _homography_dlt(p1, p2)
-    return np.full((3, 3), np.nan) if found is None else found
+    if found is None:
+        raise DegenerateError("H: the correspondences do not determine a unique solution")
+    return found
 
 
 def homography_dlt(points1: ArrayLike, points2: ArrayLike, *, backend: str = "python") -> Matrix3:
@@ -238,11 +238,8 @@ def homography_dlt(points1: ArrayLike, points2: ArrayLike, *, backend: str = "py
     slamlab.foundations.errors.DegenerateError
         If the correspondences do not determine H (three collinear points in four).
     """
-    p1, p2 = point_pairs(points1, points2, SAMPLE_SIZE, "points")
-    found = backends.dispatch(backend, __name__, "homography_dlt", _dlt_reference, p1, p2)
-    if np.all(np.isnan(found)):
-        raise DegenerateError("H: the correspondences do not determine a unique solution")
-    return found
+    p1, p2 = as_point_pairs(points1, points2, SAMPLE_SIZE, "points")
+    return backends.dispatch(backend, __name__, "homography_dlt", _dlt_reference, p1, p2)
 
 
 def sampson_homography(
@@ -270,7 +267,7 @@ def sampson_homography(
         If the matrix is not (3, 3) or the points are invalid.
     """
     matrix = as_matrix3(homography, "homography")
-    p1, p2 = point_pairs(points1, points2, 0, "points")
+    p1, p2 = as_point_pairs(points1, points2, 0, "points")
     return backends.dispatch(backend, __name__, "sampson_homography", sampson, matrix, p1, p2)
 
 
@@ -300,9 +297,9 @@ def homography_ransac(
     slamlab.foundations.errors.DegenerateError
         If no sample gave a homography.
     """
-    p1, p2 = point_pairs(points1, points2, SAMPLE_SIZE, "points")
+    p1, p2 = as_point_pairs(points1, points2, SAMPLE_SIZE, "points")
     estimator = homography_estimator(p1, p2)
-    return run_ransac(
+    return ransac.run(
         estimator, (p1, p2), options, backend=backend, target=(__name__, "homography_ransac")
     )
 
@@ -333,8 +330,15 @@ def _rotation_from(
 
 
 def decompose_reference(homography: Matrix3) -> dict[str, NDArray[np.float64]]:
-    """Decompose a calibrated H by Malis and Vargas' closed form: the reference, unchecked."""
-    h = homography / np.linalg.svd(homography, compute_uv=False)[1]
+    """Decompose a calibrated H by Malis and Vargas' closed form (the reference).
+
+    Unchecked apart from its rank: a matrix of rank below 2 raises DegenerateError, as the C++
+    core does.
+    """
+    singular = np.linalg.svd(homography, compute_uv=False)
+    if not singular[1] > RANK_TOLERANCE * singular[0]:
+        raise DegenerateError("homography: rank below 2")
+    h = homography / singular[1]
     s = h.T @ h - np.eye(3)
     if np.abs(s).max() < PURE_ROTATION_TOLERANCE:
         # An estimated H is only near a rotation: project it, as for the four candidates.
@@ -408,9 +412,6 @@ def decompose_homography(homography: ArrayLike, *, backend: str = "python") -> P
         If H is singular (rank below 2).
     """
     matrix = as_matrix3(homography, "homography")
-    singular = np.linalg.svd(matrix, compute_uv=False)
-    if not singular[1] > RANK_TOLERANCE * singular[0]:
-        raise DegenerateError("homography: rank below 2")
     backends.check_name(backend)
     raw = (
         decompose_reference(matrix)

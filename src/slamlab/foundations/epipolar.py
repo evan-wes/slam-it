@@ -52,8 +52,6 @@ The C++ core (``slamlab/foundations/epipolar.hpp``) implements every function.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import asdict
 from typing import Any, Protocol
 
 import numpy as np
@@ -61,20 +59,21 @@ from numpy.typing import ArrayLike, NDArray
 
 from slamlab import backends
 from slamlab.foundations import ransac
-from slamlab.foundations.arrays import as_batch
-from slamlab.foundations.errors import DegenerateError, InvalidInputError
+from slamlab.foundations.arrays import as_bearing_pairs, as_matrix3, as_point_pairs
+from slamlab.foundations.correspondences import (
+    RANK_TOLERANCE,
+    Matrix3,
+    PairEstimator,
+    hartley_normalisation,
+    homogeneous,
+    normalised_plane,
+    null_vector,
+)
+from slamlab.foundations.errors import DegenerateError
 from slamlab.foundations.solve import Solution
-from slamlab.foundations.triangulation import as_bearings
-
-RANK_TOLERANCE = 1e-10
-"""The 8-point system's second-smallest singular value must exceed this fraction of its
-largest; below it the solution is not unique."""
 
 SAMPLE_SIZE = 8
 """Correspondences in a minimal sample (and the fewest the 8-point algorithm accepts)."""
-
-Matrix3 = NDArray[np.float64]
-"""A (3, 3) essential or fundamental matrix."""
 
 
 class Implementation(Protocol):
@@ -145,81 +144,6 @@ class Implementation(Protocol):
 # --- the reference ------------------------------------------------------------------------
 
 
-def homogeneous(points: NDArray[np.float64]) -> NDArray[np.float64]:
-    """Append a 1 to each 2D point.
-
-    Parameters
-    ----------
-    points : ndarray of float64, shape (N, 2)
-        The points.
-
-    Returns
-    -------
-    ndarray of float64, shape (N, 3)
-        ``(x, y, 1)`` per point.
-    """
-    return np.column_stack([points, np.ones(points.shape[0])])
-
-
-def normalised_plane(bearings: NDArray[np.float64]) -> NDArray[np.float64]:
-    """Map bearings with positive z to homogeneous normalised image points ``f / f_z``.
-
-    Parameters
-    ----------
-    bearings : ndarray of float64, shape (N, 3)
-        Bearings with positive z.
-
-    Returns
-    -------
-    ndarray of float64, shape (N, 3)
-        ``(x, y, 1)`` per bearing.
-    """
-    return np.asarray(bearings / bearings[:, 2:3], dtype=np.float64)
-
-
-def hartley_normalisation(points: NDArray[np.float64]) -> NDArray[np.float64] | None:
-    """Return Hartley's similarity: centroid to the origin, mean distance √2.
-
-    Parameters
-    ----------
-    points : ndarray of float64, shape (N, 2)
-        The points.
-
-    Returns
-    -------
-    ndarray of float64, shape (3, 3), or None
-        ``T`` with ``T (x, y, 1)`` normalised; None if every point coincides.
-    """
-    centroid = points.mean(axis=0)
-    spread = float(np.mean(np.linalg.norm(points - centroid, axis=1)))
-    if not spread > 0.0:
-        return None
-    scale = np.sqrt(2.0) / spread
-    return np.array(
-        [[scale, 0.0, -scale * centroid[0]], [0.0, scale, -scale * centroid[1]], [0.0, 0.0, 1.0]]
-    )
-
-
-def null_vector(system: NDArray[np.float64]) -> NDArray[np.float64] | None:
-    """Solve ``A v = 0`` for a unit ``v`` by SVD, if the solution is unique.
-
-    Parameters
-    ----------
-    system : ndarray of float64, shape (M, 9)
-        ``A``, with M >= 8.
-
-    Returns
-    -------
-    ndarray of float64, shape (9,), or None
-        The right singular vector of the smallest singular value; None if the
-        second-smallest is below :data:`RANK_TOLERANCE` of the largest.
-    """
-    _, singular, vt = np.linalg.svd(system, full_matrices=True)
-    if not singular[7] > RANK_TOLERANCE * singular[0]:
-        return None
-    return np.asarray(vt[-1], dtype=np.float64)
-
-
 def _epipolar_system(x1: NDArray[np.float64], x2: NDArray[np.float64]) -> NDArray[np.float64]:
     """Stack ``x₂ ⊗ x₁`` per correspondence: the rows of ``A vec(M) = 0`` (vec row-major)."""
     return np.asarray((x2[:, :, None] * x1[:, None, :]).reshape(-1, 9), dtype=np.float64)
@@ -271,7 +195,7 @@ def _fundamental_8pt(pixels1: NDArray[np.float64], pixels2: NDArray[np.float64])
 def sampson(
     matrix: Matrix3, x1: NDArray[np.float64], x2: NDArray[np.float64]
 ) -> NDArray[np.float64]:
-    """Return the squared Sampson error of homogeneous point pairs (z = 1) under E or F.
+    """Return the squared Sampson error of homogeneous point pairs (z = 1) under E or F, unchecked.
 
     Parameters
     ----------
@@ -295,58 +219,6 @@ def sampson(
     return np.asarray(error, dtype=np.float64)
 
 
-class PairEstimator:
-    """A :class:`ransac.Estimator` over correspondence pairs whose model is a 3x3 matrix.
-
-    The same solver serves as the minimal and the least-squares fit (the 8-point algorithm,
-    the DLT), so one class carries E, F and H: what differs is the solver and the residual.
-
-    Parameters
-    ----------
-    data : tuple of ndarray
-        The validated correspondences, as the solver takes them (two arrays of N rows).
-    solver : callable
-        Fits a model to rows of both arrays; returns None when they do not determine one.
-    residual : callable
-        Returns every pair's squared residual under a model.
-    sample_size : int
-        The minimal sample size.
-    """
-
-    def __init__(
-        self,
-        data: tuple[NDArray[np.float64], NDArray[np.float64]],
-        solver: Callable[[NDArray[np.float64], NDArray[np.float64]], Matrix3 | None],
-        residual: Callable[[Matrix3], NDArray[np.float64]],
-        sample_size: int,
-    ) -> None:
-        self._data, self._solver, self._residual = data, solver, residual
-        self._sample_size = sample_size
-
-    @property
-    def sample_size(self) -> int:
-        """The minimal sample size."""
-        return self._sample_size
-
-    @property
-    def size(self) -> int:
-        """The number of correspondences."""
-        return int(self._data[0].shape[0])
-
-    def fit_minimal(self, sample: NDArray[np.int64]) -> list[Matrix3]:
-        """Fit a minimal sample (the same solver as the least-squares fit)."""
-        return self.fit_nonminimal(sample)
-
-    def fit_nonminimal(self, subset: NDArray[np.int64]) -> list[Matrix3]:
-        """Fit a subset; no model if it does not determine one."""
-        found = self._solver(self._data[0][subset], self._data[1][subset])
-        return [] if found is None else [found]
-
-    def residuals(self, model: Matrix3) -> NDArray[np.float64]:
-        """Return every pair's squared residual."""
-        return self._residual(model)
-
-
 def essential_estimator(
     bearings1: NDArray[np.float64], bearings2: NDArray[np.float64]
 ) -> PairEstimator:
@@ -359,7 +231,7 @@ def essential_estimator(
 
     Returns
     -------
-    PairEstimator
+    slamlab.foundations.correspondences.PairEstimator
         The estimator.
     """
     x1, x2 = normalised_plane(bearings1), normalised_plane(bearings2)
@@ -392,120 +264,21 @@ def fundamental_estimator(
 # --- validation and dispatch --------------------------------------------------------------
 
 
-def bearing_pairs(
-    bearings1: ArrayLike, bearings2: ArrayLike, minimum: int
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Validate (N, 3) unit bearing pairs with positive z, N >= `minimum`.
-
-    Parameters
-    ----------
-    bearings1, bearings2 : array_like, shape (N, 3)
-        The bearings.
-    minimum : int
-        The fewest pairs accepted.
-
-    Returns
-    -------
-    tuple of ndarray of float64, shape (N, 3)
-        C-contiguous copies.
-
-    Raises
-    ------
-    slamlab.foundations.errors.InvalidInputError
-        If the shapes differ or are not (N, 3), a vector is not unit, a z is not positive, or
-        N < `minimum`.
-    """
-    b1, b2 = as_bearings(bearings1, "bearings1"), as_bearings(bearings2, "bearings2")
-    if b1.ndim != 2 or b1.shape != b2.shape:
-        raise InvalidInputError(
-            f"bearings: expected equal (N, 3) shapes, got {b1.shape}, {b2.shape}"
-        )
-    if b1.shape[0] < minimum:
-        raise InvalidInputError(f"bearings: need at least {minimum} pairs, got {b1.shape[0]}")
-    if np.any(b1[:, 2] <= 0.0) or np.any(b2[:, 2] <= 0.0):
-        raise InvalidInputError("bearings: expected positive z (a pinhole view)")
-    return b1, b2
-
-
-def point_pairs(
-    points1: ArrayLike, points2: ArrayLike, minimum: int, name: str = "pixels"
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Validate (N, 2) point pairs, N >= `minimum`.
-
-    Parameters
-    ----------
-    points1, points2 : array_like, shape (N, 2)
-        The points.
-    minimum : int
-        The fewest pairs accepted.
-    name : str, optional
-        The arguments' name, used in error messages.
-
-    Returns
-    -------
-    tuple of ndarray of float64, shape (N, 2)
-        C-contiguous copies.
-
-    Raises
-    ------
-    slamlab.foundations.errors.InvalidInputError
-        If the shapes differ or are not (N, 2), or N < `minimum`.
-    """
-    p1, lead1 = as_batch(points1, (2,), f"{name}1")
-    p2, lead2 = as_batch(points2, (2,), f"{name}2")
-    if len(lead1) != 1 or lead1 != lead2:
-        raise InvalidInputError(f"{name}: expected equal (N, 2) shapes, got {lead1}, {lead2}")
-    if p1.shape[0] < minimum:
-        raise InvalidInputError(f"{name}: need at least {minimum} pairs, got {p1.shape[0]}")
-    return p1, p2
-
-
-def as_matrix3(value: ArrayLike, name: str) -> Matrix3:
-    """Validate one finite (3, 3) matrix.
-
-    Parameters
-    ----------
-    value : array_like, shape (3, 3)
-        The matrix.
-    name : str
-        The argument's name, used in error messages.
-
-    Returns
-    -------
-    ndarray of float64, shape (3, 3)
-        A C-contiguous copy.
-
-    Raises
-    ------
-    slamlab.foundations.errors.InvalidInputError
-        If it is not one finite (3, 3) matrix.
-    """
-    flat, lead = as_batch(value, (3, 3), name)
-    if lead != ():
-        raise InvalidInputError(f"{name}: expected one (3, 3) matrix, got {lead}")
-    return np.ascontiguousarray(flat[0])
-
-
-def _solved(matrix: NDArray[np.float64], what: str) -> Matrix3:
-    """Raise Degenerate if the reference solver found no unique solution."""
-    if np.all(np.isnan(matrix)):
+def _unique(found: Matrix3 | None, what: str) -> Matrix3:
+    """Return a solver's matrix, or raise as the C++ core does when there is none."""
+    if found is None:
         raise DegenerateError(f"{what}: the correspondences do not determine a unique solution")
-    return matrix
-
-
-def _or_nan(matrix: Matrix3 | None) -> Matrix3:
-    """Return the reference's "no solution" as a NaN matrix, the compiled backends' way."""
-    return np.full((3, 3), np.nan) if matrix is None else matrix
+    return found
 
 
 def _essential_reference(b1: NDArray[np.float64], b2: NDArray[np.float64]) -> Matrix3:
-    """Run the 8-point E solver; NaN if degenerate."""
-    return _or_nan(_essential_8pt(b1, b2))
+    """Run the 8-point E solver (reference); raise if the pairs do not determine E."""
+    return _unique(_essential_8pt(b1, b2), "E")
 
 
 def _fundamental_reference(p1: NDArray[np.float64], p2: NDArray[np.float64]) -> Matrix3:
-    """Run the normalised 8-point F solver; NaN if degenerate."""
-    return _or_nan(_fundamental_8pt(p1, p2))
+    """Run the normalised 8-point F solver (reference); raise if the pairs do not determine F."""
+    return _unique(_fundamental_8pt(p1, p2), "F")
 
 
 def _sampson_essential(
@@ -546,9 +319,8 @@ def essential_8pt(
     slamlab.foundations.errors.DegenerateError
         If the correspondences do not determine E uniquely.
     """
-    b1, b2 = bearing_pairs(bearings1, bearings2, SAMPLE_SIZE)
-    found = backends.dispatch(backend, __name__, "essential_8pt", _essential_reference, b1, b2)
-    return _solved(found, "E")
+    b1, b2 = as_bearing_pairs(bearings1, bearings2, SAMPLE_SIZE)
+    return backends.dispatch(backend, __name__, "essential_8pt", _essential_reference, b1, b2)
 
 
 def fundamental_8pt(pixels1: ArrayLike, pixels2: ArrayLike, *, backend: str = "python") -> Matrix3:
@@ -573,9 +345,8 @@ def fundamental_8pt(pixels1: ArrayLike, pixels2: ArrayLike, *, backend: str = "p
     slamlab.foundations.errors.DegenerateError
         If the correspondences do not determine F uniquely.
     """
-    p1, p2 = point_pairs(pixels1, pixels2, SAMPLE_SIZE)
-    found = backends.dispatch(backend, __name__, "fundamental_8pt", _fundamental_reference, p1, p2)
-    return _solved(found, "F")
+    p1, p2 = as_point_pairs(pixels1, pixels2, SAMPLE_SIZE)
+    return backends.dispatch(backend, __name__, "fundamental_8pt", _fundamental_reference, p1, p2)
 
 
 def sampson_essential(
@@ -603,7 +374,7 @@ def sampson_essential(
         If the matrix is not (3, 3) or the bearings are invalid.
     """
     matrix = as_matrix3(essential, "essential")
-    b1, b2 = bearing_pairs(bearings1, bearings2, 0)
+    b1, b2 = as_bearing_pairs(bearings1, bearings2, 0)
     return backends.dispatch(
         backend, __name__, "sampson_essential", _sampson_essential, matrix, b1, b2
     )
@@ -634,7 +405,7 @@ def sampson_fundamental(
         If the matrix is not (3, 3) or the pixels are invalid.
     """
     matrix = as_matrix3(fundamental, "fundamental")
-    p1, p2 = point_pairs(pixels1, pixels2, 0)
+    p1, p2 = as_point_pairs(pixels1, pixels2, 0)
     return backends.dispatch(
         backend, __name__, "sampson_fundamental", _sampson_fundamental, matrix, p1, p2
     )
@@ -696,43 +467,6 @@ def decompose_essential(essential: ArrayLike, *, backend: str = "python") -> NDA
     return backends.dispatch(backend, __name__, "decompose_essential", decompose_reference, matrix)
 
 
-def run_ransac(
-    estimator: ransac.Estimator[Matrix3],
-    arrays: tuple[NDArray[np.float64], NDArray[np.float64]],
-    options: ransac.Options,
-    *,
-    backend: str,
-    target: tuple[str, str],
-) -> Solution[ransac.Consensus[Matrix3], ransac.Summary]:
-    """Run a matrix-valued RANSAC with the reference or a compiled backend.
-
-    Parameters
-    ----------
-    estimator : ransac.Estimator
-        The reference estimator, used when `backend` is ``"python"``.
-    arrays : tuple of ndarray
-        The validated correspondences, passed to the compiled function.
-    options : ransac.Options
-        The settings, passed to the compiled function as a dict of its fields.
-    backend : {"python", "cpp", "rust"}
-        Which implementation runs.
-    target : tuple of str
-        The calling module's ``__name__`` and the compiled function's name.
-
-    Returns
-    -------
-    slamlab.foundations.solve.Solution
-        The (3, 3) model, its inliers and the run's summary.
-    """
-    backends.check_name(backend)
-    if backend == "python":
-        return ransac.estimate(estimator, options)
-    module_name, function = target
-    implementation = backends.implementation(backend, module_name)
-    raw = backends.function(backend, module_name, function)(*arrays, options=asdict(options))
-    return ransac.from_backend(raw, implementation.codes())
-
-
 def essential_ransac(
     bearings1: ArrayLike, bearings2: ArrayLike, options: ransac.Options, *, backend: str = "python"
 ) -> Solution[ransac.Consensus[Matrix3], ransac.Summary]:
@@ -760,9 +494,9 @@ def essential_ransac(
     slamlab.foundations.errors.DegenerateError
         If no sample gave an essential matrix.
     """
-    b1, b2 = bearing_pairs(bearings1, bearings2, SAMPLE_SIZE)
+    b1, b2 = as_bearing_pairs(bearings1, bearings2, SAMPLE_SIZE)
     estimator = essential_estimator(b1, b2)
-    return run_ransac(
+    return ransac.run(
         estimator, (b1, b2), options, backend=backend, target=(__name__, "essential_ransac")
     )
 
@@ -793,8 +527,8 @@ def fundamental_ransac(
     slamlab.foundations.errors.DegenerateError
         If no sample gave a fundamental matrix.
     """
-    p1, p2 = point_pairs(pixels1, pixels2, SAMPLE_SIZE)
+    p1, p2 = as_point_pairs(pixels1, pixels2, SAMPLE_SIZE)
     estimator = fundamental_estimator(p1, p2)
-    return run_ransac(
+    return ransac.run(
         estimator, (p1, p2), options, backend=backend, target=(__name__, "fundamental_ransac")
     )

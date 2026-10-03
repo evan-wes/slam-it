@@ -78,7 +78,8 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slamlab import backends
-from slamlab.foundations import epipolar, homography, ransac, triangulation
+from slamlab.foundations import correspondences, epipolar, homography, ransac, triangulation
+from slamlab.foundations.arrays import as_bearing_pairs
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
 from slamlab.foundations.solve import Solution
 
@@ -289,8 +290,8 @@ def gric(
 
 
 def _fit(
-    estimator: ransac.Estimator[epipolar.Matrix3], options: ransac.Options
-) -> Solution[ransac.Consensus[epipolar.Matrix3], ransac.Summary] | None:
+    estimator: ransac.Estimator[correspondences.Matrix3], options: ransac.Options
+) -> Solution[ransac.Consensus[correspondences.Matrix3], ransac.Summary] | None:
     """Run one RANSAC; None if no sample gave a model."""
     try:
         return ransac.estimate(estimator, options)
@@ -327,7 +328,7 @@ def _try(
     return _Tried(unit, int(np.count_nonzero(in_front)), good, points)
 
 
-def _candidates(model: Model, matrix: epipolar.Matrix3) -> NDArray[np.float64]:
+def _candidates(model: Model, matrix: correspondences.Matrix3) -> NDArray[np.float64]:
     """Return the chosen model's candidate motions ``T_c2_c1``, shape (K, 4, 4)."""
     if model is Model.ESSENTIAL:
         return epipolar.decompose_reference(matrix)
@@ -346,7 +347,7 @@ class _Decision:
 
 def _decide(
     model: Model,
-    run: Solution[ransac.Consensus[epipolar.Matrix3], ransac.Summary],
+    run: Solution[ransac.Consensus[correspondences.Matrix3], ransac.Summary],
     rays: tuple[NDArray[np.float64], NDArray[np.float64]],
     options: Options,
 ) -> _Decision:
@@ -375,7 +376,10 @@ def _initialize(
 ) -> Initialization:
     """Initialise two views (reference)."""
     n = bearings1.shape[0]
-    x1, x2 = epipolar.normalised_plane(bearings1), epipolar.normalised_plane(bearings2)
+    x1, x2 = (
+        correspondences.normalised_plane(bearings1),
+        correspondences.normalised_plane(bearings2),
+    )
     essential = _fit(epipolar.essential_estimator(bearings1, bearings2), options.ransac_options(0))
     planar = _fit(homography.homography_estimator(x1[:, :2], x2[:, :2]), options.ransac_options(1))
     if essential is None and planar is None:
@@ -478,7 +482,7 @@ def initialize(
     slamlab.foundations.errors.DegenerateError
         If neither RANSAC found a model.
     """
-    b1, b2 = epipolar.bearing_pairs(bearings1, bearings2, epipolar.SAMPLE_SIZE)
+    b1, b2 = as_bearing_pairs(bearings1, bearings2, epipolar.SAMPLE_SIZE)
     backends.check_name(backend)
     if backend == "python":
         return _initialize(b1, b2, options)

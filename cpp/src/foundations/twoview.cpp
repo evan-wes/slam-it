@@ -27,7 +27,7 @@ struct Tried {
   /// @brief The inliers in front with enough parallax.
   Eigen::Array<bool, Eigen::Dynamic, 1> good;
   /// @brief Their points; NaN elsewhere.
-  epipolar::Rows3 points;
+  correspondences::Rows3 points;
 };
 
 /// @brief RANSAC's options in the normalised plane, on one random stream.
@@ -64,14 +64,14 @@ Result<std::optional<ransac::Solution<Eigen::Matrix3d>>> found(
 /// @param min_parallax The parallax a point needs, in radians.
 /// @return The tried candidate, or a triangulation error.
 Result<Tried> try_candidate(const Eigen::Matrix4d& pose,
-                            const Eigen::Ref<const epipolar::Rows3>& bearings1,
-                            const Eigen::Ref<const epipolar::Rows3>& bearings2,
+                            const Eigen::Ref<const correspondences::Rows3>& bearings1,
+                            const Eigen::Ref<const correspondences::Rows3>& bearings2,
                             const Eigen::Array<bool, Eigen::Dynamic, 1>& inliers,
                             double min_parallax) {
   Tried out{.pose = pose,
             .good = Eigen::Array<bool, Eigen::Dynamic, 1>::Constant(inliers.size(), false),
-            .points = epipolar::Rows3::Constant(inliers.size(), 3,
-                                                std::numeric_limits<double>::quiet_NaN())};
+            .points = correspondences::Rows3::Constant(inliers.size(), 3,
+                                                       std::numeric_limits<double>::quiet_NaN())};
   out.pose.topRightCorner<3, 1>().normalize();
   ransac::Indices index;
   for (Eigen::Index i = 0; i < inliers.size(); ++i) {
@@ -79,9 +79,9 @@ Result<Tried> try_candidate(const Eigen::Matrix4d& pose,
       index.push_back(static_cast<std::uint32_t>(i));
     }
   }
-  const auto result =
-      triangulation::two_view(out.pose, epipolar::gather(epipolar::Rows3(bearings1), index),
-                              epipolar::gather(epipolar::Rows3(bearings2), index));
+  const auto result = triangulation::two_view(
+      out.pose, correspondences::gather(correspondences::Rows3(bearings1), index),
+      correspondences::gather(correspondences::Rows3(bearings2), index));
   if (!result) {
     return std::unexpected(result.error());
   }
@@ -117,9 +117,9 @@ Result<std::vector<Eigen::Matrix4d>> candidates(Model model, const Eigen::Matrix
 /// @brief The matches in the normalised image plane.
 struct Planes {
   /// @brief Camera 1's points `(x, y, 1)`.
-  epipolar::Rows3 x1;
+  correspondences::Rows3 x1;
   /// @brief Camera 2's points `(x, y, 1)`.
-  epipolar::Rows3 x2;
+  correspondences::Rows3 x2;
 };
 
 /// @brief Both RANSAC runs; at least one found a model.
@@ -136,9 +136,9 @@ struct Runs {
 /// @param planes The matches in the normalised plane.
 /// @param options The settings.
 /// @return The runs; `Degenerate` if neither found a model.
-Result<Runs> run_both(const Eigen::Ref<const epipolar::Rows3>& bearings1,
-                      const Eigen::Ref<const epipolar::Rows3>& bearings2, const Planes& planes,
-                      const Options& options) {
+Result<Runs> run_both(const Eigen::Ref<const correspondences::Rows3>& bearings1,
+                      const Eigen::Ref<const correspondences::Rows3>& bearings2,
+                      const Planes& planes, const Options& options) {
   auto essential =
       found(epipolar::essential_ransac(bearings1, bearings2, ransac_options(options, 0)));
   if (!essential) {
@@ -175,8 +175,8 @@ Initialization scored(const Runs& runs, const Planes& planes, double sigma) {
       explained.push_back(static_cast<std::uint32_t>(i));
     }
   }
-  const epipolar::Rows3 x1 = epipolar::gather(planes.x1, explained);
-  const epipolar::Rows3 x2 = epipolar::gather(planes.x2, explained);
+  const correspondences::Rows3 x1 = correspondences::gather(planes.x1, explained);
+  const correspondences::Rows3 x2 = correspondences::gather(planes.x2, explained);
   Initialization out;
   out.gric_essential = std::numeric_limits<double>::infinity();
   out.gric_homography = std::numeric_limits<double>::infinity();
@@ -193,7 +193,7 @@ Initialization scored(const Runs& runs, const Planes& planes, double sigma) {
   }
   // The lower score is finite, so the chosen run exists.
   out.model = out.gric_homography < out.gric_essential ? Model::kHomography : Model::kEssential;
-  out.points = epipolar::Rows3::Constant(n, 3, std::numeric_limits<double>::quiet_NaN());
+  out.points = correspondences::Rows3::Constant(n, 3, std::numeric_limits<double>::quiet_NaN());
   out.triangulated = Eigen::Array<bool, Eigen::Dynamic, 1>::Constant(n, false);
   return out;
 }
@@ -216,10 +216,10 @@ struct Decision {
 /// @param rays Both cameras' bearings.
 /// @param options The settings.
 /// @return The verdict, or a decomposition or triangulation error.
-Result<Decision> decide(
-    Model model, const ransac::Solution<Eigen::Matrix3d>& run,
-    const std::pair<Eigen::Ref<const epipolar::Rows3>, Eigen::Ref<const epipolar::Rows3>>& rays,
-    const Options& options) {
+Result<Decision> decide(Model model, const ransac::Solution<Eigen::Matrix3d>& run,
+                        const std::pair<Eigen::Ref<const correspondences::Rows3>,
+                                        Eigen::Ref<const correspondences::Rows3>>& rays,
+                        const Options& options) {
   const auto poses = candidates(model, run.state.model);
   if (!poses) {
     return std::unexpected(poses.error());
@@ -315,17 +315,18 @@ double gric(const Eigen::VectorXd& squared_errors, double sigma, int dimension, 
          (std::log(kDataDimension * n) * parameters);
 }
 
-Result<Initialization> initialize(const Eigen::Ref<const epipolar::Rows3>& bearings1,
-                                  const Eigen::Ref<const epipolar::Rows3>& bearings2,
+Result<Initialization> initialize(const Eigen::Ref<const correspondences::Rows3>& bearings1,
+                                  const Eigen::Ref<const correspondences::Rows3>& bearings2,
                                   const Options& options) {
   if (auto ok = check_options(options); !ok) {
     return std::unexpected(ok.error());
   }
-  if (auto ok = epipolar::check_bearing_pairs(bearings1, bearings2, epipolar::kSampleSize); !ok) {
+  if (auto ok = correspondences::check_bearing_pairs(bearings1, bearings2, epipolar::kSampleSize);
+      !ok) {
     return std::unexpected(ok.error());
   }
-  const Planes planes{.x1 = epipolar::normalised_plane(bearings1),
-                      .x2 = epipolar::normalised_plane(bearings2)};
+  const Planes planes{.x1 = correspondences::normalised_plane(bearings1),
+                      .x2 = correspondences::normalised_plane(bearings2)};
   auto runs = run_both(bearings1, bearings2, planes, options);
   if (!runs) {
     return std::unexpected(runs.error());
@@ -336,8 +337,9 @@ Result<Initialization> initialize(const Eigen::Ref<const epipolar::Rows3>& beari
     // Unreachable: the chosen model's score is finite only when its run found a model.
     return fail(ErrorKind::kDegenerate, "initialize: the chosen model has no run");
   }
-  const std::pair<Eigen::Ref<const epipolar::Rows3>, Eigen::Ref<const epipolar::Rows3>> rays{
-      bearings1, bearings2};
+  const std::pair<Eigen::Ref<const correspondences::Rows3>,
+                  Eigen::Ref<const correspondences::Rows3>>
+      rays{bearings1, bearings2};
   auto decision = decide(out.model, *run, rays, options);
   if (!decision) {
     return std::unexpected(decision.error());

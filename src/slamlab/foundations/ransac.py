@@ -53,12 +53,13 @@ from __future__ import annotations
 
 import enum
 import math
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Generic, Protocol, TypeVar
 
 import numpy as np
 from numpy.typing import NDArray
 
+from slamlab import backends
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
 from slamlab.foundations.rng import Pcg32
 from slamlab.foundations.solve import Solution
@@ -430,3 +431,40 @@ def from_backend(
         inliers=np.asarray(raw["inliers"], dtype=np.bool_),
     )
     return Solution(state=consensus, summary=summary_from_backend(raw, codes))
+
+
+def run(
+    estimator: Estimator[NDArray[np.float64]],
+    arrays: tuple[NDArray[np.float64], NDArray[np.float64]],
+    options: Options,
+    *,
+    backend: str,
+    target: tuple[str, str],
+) -> Solution[Consensus[NDArray[np.float64]], Summary]:
+    """Run an array-valued RANSAC with the reference estimator or a compiled backend.
+
+    Parameters
+    ----------
+    estimator : Estimator
+        The reference estimator, used when `backend` is ``"python"``.
+    arrays : tuple of ndarray
+        The validated correspondences, passed to the compiled function.
+    options : Options
+        The settings, passed to the compiled function as a dict of its fields.
+    backend : {"python", "cpp", "rust"}
+        Which implementation runs.
+    target : tuple of str
+        The calling module's ``__name__`` and the compiled function's name.
+
+    Returns
+    -------
+    slamlab.foundations.solve.Solution
+        The (3, 3) model, its inliers and the run's summary.
+    """
+    backends.check_name(backend)
+    if backend == "python":
+        return estimate(estimator, options)
+    module_name, function = target
+    implementation = backends.implementation(backend, module_name)
+    raw = backends.function(backend, module_name, function)(*arrays, options=asdict(options))
+    return from_backend(raw, implementation.codes())

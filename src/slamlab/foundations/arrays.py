@@ -242,3 +242,128 @@ def group_members(group: NDArray[np.int64], n_groups: int) -> list[NDArray[np.in
     order = np.argsort(group, kind="stable")
     bounds = np.searchsorted(group[order], np.arange(n_groups + 1))
     return [order[bounds[g] : bounds[g + 1]] for g in range(n_groups)]
+
+
+BEARING_TOLERANCE = 1e-9
+"""Bearing vectors must have unit norm within this."""
+
+
+def as_bearings(value: ArrayLike, name: str = "bearings") -> NDArray[np.float64]:
+    """Validate bearing vectors: finite, shape (..., 3), unit norm.
+
+    Parameters
+    ----------
+    value : array_like, shape (..., 3)
+        The bearings.
+    name : str, optional
+        The argument's name, used in error messages.
+
+    Returns
+    -------
+    ndarray of float64, shape (..., 3)
+        A new C-contiguous copy.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If the input is not finite real (..., 3), or a vector's norm is not 1 within
+        :data:`BEARING_TOLERANCE`.
+    """
+    flat, lead = as_batch(value, (3,), name)
+    if np.any(np.abs(np.linalg.norm(flat, axis=-1) - 1.0) > BEARING_TOLERANCE):
+        raise InvalidInputError(f"{name}: expected unit vectors within {BEARING_TOLERANCE}")
+    return flat.reshape((*lead, 3))
+
+
+def as_bearing_pairs(
+    bearings1: ArrayLike, bearings2: ArrayLike, minimum: int
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Validate (N, 3) unit bearing pairs with positive z, N >= `minimum`.
+
+    Parameters
+    ----------
+    bearings1, bearings2 : array_like, shape (N, 3)
+        The bearings.
+    minimum : int
+        The fewest pairs accepted.
+
+    Returns
+    -------
+    tuple of ndarray of float64, shape (N, 3)
+        C-contiguous copies.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If the shapes differ or are not (N, 3), a vector is not unit, a z is not positive, or
+        N < `minimum`.
+    """
+    b1, b2 = as_bearings(bearings1, "bearings1"), as_bearings(bearings2, "bearings2")
+    if b1.ndim != 2 or b1.shape != b2.shape:
+        raise InvalidInputError(
+            f"bearings: expected equal (N, 3) shapes, got {b1.shape}, {b2.shape}"
+        )
+    if b1.shape[0] < minimum:
+        raise InvalidInputError(f"bearings: need at least {minimum} pairs, got {b1.shape[0]}")
+    if np.any(b1[:, 2] <= 0.0) or np.any(b2[:, 2] <= 0.0):
+        raise InvalidInputError("bearings: expected positive z (a pinhole view)")
+    return b1, b2
+
+
+def as_point_pairs(
+    points1: ArrayLike, points2: ArrayLike, minimum: int, name: str = "pixels"
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Validate (N, 2) point pairs, N >= `minimum`.
+
+    Parameters
+    ----------
+    points1, points2 : array_like, shape (N, 2)
+        The points.
+    minimum : int
+        The fewest pairs accepted.
+    name : str, optional
+        The arguments' name, used in error messages.
+
+    Returns
+    -------
+    tuple of ndarray of float64, shape (N, 2)
+        C-contiguous copies.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If the shapes differ or are not (N, 2), or N < `minimum`.
+    """
+    p1, lead1 = as_batch(points1, (2,), f"{name}1")
+    p2, lead2 = as_batch(points2, (2,), f"{name}2")
+    if len(lead1) != 1 or lead1 != lead2:
+        raise InvalidInputError(f"{name}: expected equal (N, 2) shapes, got {lead1}, {lead2}")
+    if p1.shape[0] < minimum:
+        raise InvalidInputError(f"{name}: need at least {minimum} pairs, got {p1.shape[0]}")
+    return p1, p2
+
+
+def as_matrix3(value: ArrayLike, name: str) -> NDArray[np.float64]:
+    """Validate one finite (3, 3) matrix.
+
+    Parameters
+    ----------
+    value : array_like, shape (3, 3)
+        The matrix.
+    name : str
+        The argument's name, used in error messages.
+
+    Returns
+    -------
+    ndarray of float64, shape (3, 3)
+        A C-contiguous copy.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If it is not one finite (3, 3) matrix.
+    """
+    flat, lead = as_batch(value, (3, 3), name)
+    if lead != ():
+        raise InvalidInputError(f"{name}: expected one (3, 3) matrix, got {lead}")
+    return np.ascontiguousarray(flat[0])

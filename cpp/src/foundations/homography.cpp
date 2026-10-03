@@ -14,13 +14,13 @@ namespace slamlab::foundations::homography {
 
 std::optional<Eigen::Matrix3d> fit(const Eigen::Ref<const Rows2>& points1,
                                    const Eigen::Ref<const Rows2>& points2) {
-  const auto t1 = epipolar::hartley_normalisation(points1);
-  const auto t2 = epipolar::hartley_normalisation(points2);
+  const auto t1 = correspondences::hartley_normalisation(points1);
+  const auto t2 = correspondences::hartley_normalisation(points2);
   if (!t1 || !t2) {
     return std::nullopt;
   }
-  const epipolar::Rows3 x1 = epipolar::homogeneous(points1) * t1->transpose();
-  const epipolar::Rows3 x2 = epipolar::homogeneous(points2) * t2->transpose();
+  const correspondences::Rows3 x1 = correspondences::homogeneous(points1) * t1->transpose();
+  const correspondences::Rows3 x2 = correspondences::homogeneous(points2) * t2->transpose();
   const Eigen::Index n = x1.rows();
   Eigen::Matrix<double, Eigen::Dynamic, 9> system =
       Eigen::Matrix<double, Eigen::Dynamic, 9>::Zero(2 * n, 9);
@@ -31,7 +31,7 @@ std::optional<Eigen::Matrix3d> fit(const Eigen::Ref<const Rows2>& points1,
     system.block<1, 3>((2 * i) + 1, 0) = x1.row(i);
     system.block<1, 3>((2 * i) + 1, 6) = -x2(i, 0) * x1.row(i);
   }
-  const auto solution = epipolar::null_vector(system);
+  const auto solution = correspondences::null_vector(system);
   if (!solution) {
     return std::nullopt;
   }
@@ -68,7 +68,7 @@ Eigen::VectorXd sampson(const Eigen::Matrix3d& homography, const Eigen::Ref<cons
 
 Result<Eigen::Matrix3d> homography_dlt(const Eigen::Ref<const Rows2>& points1,
                                        const Eigen::Ref<const Rows2>& points2) {
-  if (auto ok = epipolar::check_point_pairs(points1, points2, kSampleSize, "points"); !ok) {
+  if (auto ok = correspondences::check_point_pairs(points1, points2, kSampleSize, "points"); !ok) {
     return std::unexpected(ok.error());
   }
   const auto homography = fit(points1, points2);
@@ -82,7 +82,7 @@ Result<Eigen::Matrix3d> homography_dlt(const Eigen::Ref<const Rows2>& points1,
 Result<Eigen::VectorXd> sampson_homography(const Eigen::Matrix3d& homography,
                                            const Eigen::Ref<const Rows2>& points1,
                                            const Eigen::Ref<const Rows2>& points2) {
-  if (auto ok = epipolar::check_point_pairs(points1, points2, 0, "points"); !ok) {
+  if (auto ok = correspondences::check_point_pairs(points1, points2, 0, "points"); !ok) {
     return std::unexpected(ok.error());
   }
   if (!homography.allFinite()) {
@@ -106,7 +106,7 @@ std::vector<HomographyEstimator::Model> HomographyEstimator::fit_minimal(
 std::vector<HomographyEstimator::Model> HomographyEstimator::fit_nonminimal(
     std::span<const std::uint32_t> subset) const {
   const auto homography =
-      fit(epipolar::gather(points1_, subset), epipolar::gather(points2_, subset));
+      fit(correspondences::gather(points1_, subset), correspondences::gather(points2_, subset));
   return homography ? std::vector<Model>{*homography} : std::vector<Model>{};
 }
 
@@ -185,7 +185,7 @@ Result<PlanarMotions> decompose_homography(const Eigen::Matrix3d& homography) {
     return fail(ErrorKind::kInvalidInput, "homography: expected a finite (3, 3) matrix");
   }
   const Eigen::Vector3d singular = Eigen::JacobiSVD<Eigen::Matrix3d>(homography).singularValues();
-  if (!(singular(1) > epipolar::kRankTolerance * singular(0))) {
+  if (!(singular(1) > correspondences::kRankTolerance * singular(0))) {
     return fail(ErrorKind::kDegenerate, "homography: rank below 2");
   }
   const Eigen::Matrix3d h = homography / singular(1);
@@ -230,7 +230,7 @@ Result<PlanarMotions> decompose_homography(const Eigen::Matrix3d& homography) {
 Result<ransac::Solution<Eigen::Matrix3d>> homography_ransac(const Eigen::Ref<const Rows2>& points1,
                                                             const Eigen::Ref<const Rows2>& points2,
                                                             const ransac::Options& options) {
-  if (auto ok = epipolar::check_point_pairs(points1, points2, kSampleSize, "points"); !ok) {
+  if (auto ok = correspondences::check_point_pairs(points1, points2, kSampleSize, "points"); !ok) {
     return std::unexpected(ok.error());
   }
   return ransac::estimate(HomographyEstimator(points1, points2), options);

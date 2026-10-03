@@ -49,11 +49,8 @@ from numpy.typing import ArrayLike, NDArray
 
 from slamlab import backends
 from slamlab.foundations import se3, so3
-from slamlab.foundations.arrays import as_batch, as_mask
+from slamlab.foundations.arrays import as_batch, as_bearing_pairs, as_bearings, as_mask
 from slamlab.foundations.errors import InvalidInputError
-
-BEARING_TOLERANCE = 1e-9
-"""Bearing vectors must have unit norm within this."""
 
 PARALLEL_SINE = 1e-12
 """Rays meeting at an angle whose sine is below this are parallel, and their point is at
@@ -125,33 +122,6 @@ class Triangulation:
             in_front=packed[:, 3] > 0.5,
             parallax=np.ascontiguousarray(packed[:, 4]),
         )
-
-
-def as_bearings(value: ArrayLike, name: str = "bearings") -> NDArray[np.float64]:
-    """Validate bearing vectors: finite, shape (..., 3), unit norm.
-
-    Parameters
-    ----------
-    value : array_like, shape (..., 3)
-        The bearings.
-    name : str, optional
-        The argument's name, used in error messages.
-
-    Returns
-    -------
-    ndarray of float64, shape (..., 3)
-        A new C-contiguous copy.
-
-    Raises
-    ------
-    slamlab.foundations.errors.InvalidInputError
-        If the input is not finite real (..., 3), or a vector's norm is not 1 within
-        :data:`BEARING_TOLERANCE`.
-    """
-    flat, lead = as_batch(value, (3,), name)
-    if np.any(np.abs(np.linalg.norm(flat, axis=-1) - 1.0) > BEARING_TOLERANCE):
-        raise InvalidInputError(f"{name}: expected unit vectors within {BEARING_TOLERANCE}")
-    return flat.reshape((*lead, 3))
 
 
 def _angle(a: NDArray[np.float64], b: NDArray[np.float64]) -> NDArray[np.float64]:
@@ -301,13 +271,7 @@ def two_view(
     se3.check_transform(pose)
     if not np.linalg.norm(pose[0, :3, 3]) > 0.0:
         raise InvalidInputError("relative_pose: zero translation; the depth is undetermined")
-    b1, b2 = as_bearings(bearings1, "bearings1"), as_bearings(bearings2, "bearings2")
-    if b1.ndim != 2 or b1.shape != b2.shape:
-        raise InvalidInputError(
-            f"bearings: expected equal (P, 3) shapes, got {b1.shape}, {b2.shape}"
-        )
-    if np.any(b1[:, 2] <= 0.0) or np.any(b2[:, 2] <= 0.0):
-        raise InvalidInputError("bearings: expected positive z (a pinhole view)")
+    b1, b2 = as_bearing_pairs(bearings1, bearings2, 0)
     packed = backends.dispatch(backend, __name__, "two_view", triangulate_pairs, pose[0], b1, b2)
     return Triangulation.unpack(packed)
 

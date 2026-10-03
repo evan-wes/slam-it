@@ -14,6 +14,7 @@
 #include <optional>
 #include <vector>
 
+#include "slamlab/foundations/correspondences.hpp"
 #include "slamlab/foundations/epipolar.hpp"
 #include "slamlab/foundations/error.hpp"
 #include "slamlab/foundations/ransac.hpp"
@@ -118,7 +119,7 @@ struct Initialization {
   /// @brief The chosen model's RANSAC inliers.
   Eigen::Array<bool, Eigen::Dynamic, 1> inliers;
   /// @brief The well-triangulated points in camera 1's frame; NaN elsewhere (N x 3).
-  epipolar::Rows3 points;
+  correspondences::Rows3 points;
   /// @brief Which matches have a point.
   Eigen::Array<bool, Eigen::Dynamic, 1> triangulated;
   /// @brief E's GRIC score (infinity if its RANSAC found no model).
@@ -139,8 +140,8 @@ struct Initialization {
 /// @param options The settings.
 /// @return The result; `InvalidInput` for bad bearings or settings; `Degenerate` if neither
 ///         RANSAC found a model.
-[[nodiscard]] Result<Initialization> initialize(const Eigen::Ref<const epipolar::Rows3>& bearings1,
-                                                const Eigen::Ref<const epipolar::Rows3>& bearings2,
-                                                const Options& options);
+[[nodiscard]] Result<Initialization> initialize(
+    const Eigen::Ref<const correspondences::Rows3>& bearings1,
+    const Eigen::Ref<const correspondences::Rows3>& bearings2, const Options& options);
 
 }  // namespace slamlab::foundations::twoview

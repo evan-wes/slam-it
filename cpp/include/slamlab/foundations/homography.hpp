@@ -13,7 +13,7 @@
 #include <span>
 #include <vector>
 
-#include "slamlab/foundations/epipolar.hpp"
+#include "slamlab/foundations/correspondences.hpp"
 #include "slamlab/foundations/error.hpp"
 #include "slamlab/foundations/ransac.hpp"
 
@@ -23,7 +23,7 @@ namespace slamlab::foundations::homography {
 /// @brief Correspondences in a minimal sample.
 inline constexpr std::uint32_t kSampleSize = 4;
 
-using epipolar::Rows2;
+using correspondences::Rows2;
 
 /// @brief The normalised DLT (unchecked).
 /// @param points1 Points in image 1 (N x 2), N >= 4.
