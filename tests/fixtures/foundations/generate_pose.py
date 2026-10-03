@@ -1,4 +1,4 @@
-"""Generate ``p3p.json``: the absolute-pose parity fixtures.
+"""Generate ``p3p.json`` and ``pnp.json``: the absolute-pose parity fixtures.
 
 Run from the repository root after changing the cases (the fixtures are committed)::
 
@@ -7,7 +7,14 @@ Run from the repository root after changing the cases (the fixtures are committe
 Independent methods, nothing imported from slamlab: each case is an exact sample built in 50
 digits (mpmath) from a chosen pose ``T_cam_world``. The world points are chosen in float64,
 mapped into the camera in 50 digits, and their bearings rounded once; the expected pose is the
-chosen one, which the solvers must return among their solutions.
+chosen one, which the solvers must return among their solutions:
+
+- P3P must return it among its solutions;
+- EPnP must return it on exact samples (five points, its minimum, and twenty);
+- the refinement, from a perturbed start on exact correspondences, must reach it (the cost's
+  minimum, zero);
+- RANSAC on exact inliers and outliers far from the pose must return it, with exactly the
+  clean correspondences as inliers, for each P3P solver, refined or not.
 """
 
 from __future__ import annotations
@@ -71,6 +78,125 @@ def _cylinder_sample(margin: float) -> tuple[mp.matrix, mp.matrix, list[list[flo
     return rot, -(rot * centre), points
 
 
+def _world_points(
+    rng: np.random.Generator, rot: mp.matrix, t: mp.matrix, n: int
+) -> list[list[float]]:
+    """Draw points 2-8 m ahead of the camera; return them in the world frame, as float64."""
+    in_camera = np.column_stack([rng.uniform(-3.0, 3.0, (n, 2)), rng.uniform(2.0, 8.0, n)])
+    return [[float(x) for x in rot.T * (mp.matrix(c.tolist()) - t)] for c in in_camera]
+
+
+def _outliers(
+    rng: np.random.Generator, rot: mp.matrix, t: mp.matrix, points: list[list[float]], gap: float
+) -> list[list[float]]:
+    """Return random bearings (positive z) at least `gap` from each point's true projection."""
+    out = []
+    for p in points:
+        c = rot * mp.matrix(p) + t
+        true = np.array([float(c[0] / c[2]), float(c[1] / c[2])])
+        while True:
+            x = rng.uniform(-0.6, 0.6, 2)
+            if np.linalg.norm(x - true) > gap:
+                break
+        out.append(_unit_float([x[0], x[1], 1.0]))
+    return out
+
+
+def _unit_float(v: list[float]) -> list[float]:
+    """Round a vector's direction, computed in 50 digits, to float64."""
+    m = mp.matrix(v)
+    n = mp.norm(m)
+    return [float(x / n) for x in m]
+
+
+def _pnp_fixture() -> dict[str, Any]:
+    """Build the EPnP, refinement and PnP RANSAC cases."""
+    rng = np.random.default_rng(29)
+    rot, t = _pose([0.4, -0.3, 0.2], [0.3, -0.2, 1.5])
+    twenty = _world_points(rng, rot, t, 20)
+    five = _world_points(rng, rot, t, 5)
+    expected = _pose_list(rot, t)
+    epnp = [
+        o.case("noise-free, 20 points", {"points": twenty, "bearings": _bearings(rot, t, twenty)},
+               expected),
+        o.case("noise-free, exactly 5", {"points": five, "bearings": _bearings(rot, t, five)},
+               expected),
+    ]  # fmt: skip
+    start_rot = mp.matrix(o.so3_exp(o.mpf_vector([0.01, -0.015, 0.02]))) * rot
+    start_t = t + mp.matrix([0.03, -0.02, 0.05])
+    refine = [
+        o.case(
+            "noise-free, 20 points, a perturbed start",
+            {
+                "pose": _pose_list(start_rot, start_t),
+                "points": twenty,
+                "bearings": _bearings(rot, t, twenty),
+                "scale": 1e-3,
+            },
+            expected,
+            summary={"converged": True},
+        )
+    ]
+    run_points = _world_points(rng, rot, t, 100)
+    run_bearings = _bearings(rot, t, run_points)
+    mask = [True] * len(run_points)
+    for k in rng.choice(len(run_points), 30, replace=False).tolist():
+        mask[k] = False
+    far = _outliers(rng, rot, t, [p for p, m in zip(run_points, mask, strict=True) if not m], 0.05)
+    shuffled = iter(far)
+    run_bearings = [b if m else next(shuffled) for b, m in zip(run_bearings, mask, strict=True)]
+    ransac_cases = [
+        o.case(
+            f"30% outliers, noise-free inliers, {solver}{', refined' if refine_on else ''}",
+            {
+                "points": run_points,
+                "bearings": run_bearings,
+                "threshold": 1e-4,
+                "seed": 5,
+                "minimal_solver": solver,
+                "refine": refine_on,
+            },
+            {"model": expected, "inliers": mask},
+            summary={"refinement_ran": refine_on},
+        )
+        for solver, refine_on in (("ding", True), ("lambda_twist", True), ("ding", False))
+    ]
+    tol: dict[str, Any] = {"comparison": "close", "rtol": 0.0}
+    return {
+        "description": "PnP: parity fixture from mpmath (generate_pose.py).",
+        "oracle": "the true pose of exact samples, built in 50 digits",
+        "functions": {
+            "epnp": {
+                "tolerance": {
+                    **tol,
+                    "atol": 1e-10,
+                    "reason": "exact samples: the null space and the distance equations are "
+                    "exact to rounding",
+                },
+                "cases": epnp,
+            },
+            "refine_pose": {
+                "tolerance": {
+                    **tol,
+                    "atol": 1e-8,
+                    "reason": "exact correspondences: the reprojection cost's minimum is the true "
+                    "pose; LM stops on its function tolerance near it",
+                },
+                "cases": refine,
+            },
+            "pnp_ransac": {
+                "tolerance": {
+                    **tol,
+                    "atol": 1e-10,
+                    "reason": "noise-free inliers: P3P and LO's EPnP refits are exact to rounding, "
+                    "and the refinement starts at the cost's minimum",
+                },
+                "cases": ransac_cases,
+            },
+        },
+    }
+
+
 def _p3p_fixture() -> dict[str, Any]:
     """Build the P3P cases: exact three-point samples, the true pose among the solutions."""
     rng = np.random.default_rng(23)
@@ -128,8 +254,8 @@ def _p3p_fixture() -> dict[str, Any]:
 
 
 def main() -> None:
-    """Write ``p3p.json``."""
-    for name, build in (("p3p.json", _p3p_fixture),):
+    """Write ``p3p.json`` and ``pnp.json``."""
+    for name, build in (("p3p.json", _p3p_fixture), ("pnp.json", _pnp_fixture)):
         with mp.workdps(o.PRECISION):
             doc = build()
         (HERE / name).write_text(json.dumps(doc, indent=1) + "\n")

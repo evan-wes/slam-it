@@ -42,6 +42,9 @@ void bind_fivepoint(nanobind::module_& m);
 /// @brief Add the `p3p` functions to the `foundations.p3p` submodule.
 /// @param m The `foundations.p3p` submodule.
 void bind_p3p(nanobind::module_& m);
+/// @brief Add the `pnp` functions to the `foundations.pnp` submodule.
+/// @param m The `foundations.pnp` submodule.
+void bind_pnp(nanobind::module_& m);
 /// @brief Add the `homography` functions to the `foundations.homography` submodule.
 /// @param m The `foundations.homography` submodule.
 void bind_homography(nanobind::module_& m);

@@ -64,7 +64,7 @@ The C++ core (``slamlab/foundations/epipolar.hpp``) implements every function.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 import numpy as np
@@ -811,17 +811,14 @@ def essential_ransac_reference(
     slamlab.foundations.errors.DegenerateError
         If no sample gave an essential matrix.
     """
-    estimator = essential_estimator(bearings1, bearings2, minimal_solver)
-    found = ransac.estimate(estimator, options)
-    if not refine:
-        return Solution(state=found.state, summary=ransac.RefinedSummary.unrefined(found.summary))
-    return ransac.refine_consensus(
-        estimator,
-        found,
-        lambda model, inliers: refine_reference(
-            model, bearings1[inliers], bearings2[inliers], options.threshold
-        ),
-        threshold=options.threshold,
+
+    def refined(model: Matrix3, inliers: NDArray[np.bool_]) -> Solution[Matrix3, nls.Summary]:
+        return refine_reference(model, bearings1[inliers], bearings2[inliers], options.threshold)
+
+    return ransac.estimate_refined(
+        essential_estimator(bearings1, bearings2, minimal_solver),
+        options,
+        refined if refine else None,
         minimum=fivepoint.SAMPLE_SIZE,
     )
 
@@ -873,19 +870,14 @@ def essential_ransac(  # noqa: PLR0913 -- the solver choices are keyword-only
         )
     minimum = SAMPLE_SIZE if minimal_solver == "8pt" else fivepoint.SAMPLE_SIZE
     b1, b2 = as_bearing_pairs(bearings1, bearings2, minimum)
-    return backends.call(
-        backend,
-        __name__,
-        "essential_ransac",
-        reference=lambda: essential_ransac_reference(b1, b2, options, minimal_solver, refine),
-        arguments={
-            "bearings1": b1,
-            "bearings2": b2,
-            "options": asdict(options),
-            "minimal_solver": MINIMAL_SOLVERS.index(minimal_solver),
-            "refine": refine,
-        },
-        decode=ransac.decoder(ransac.refined_summary_from_backend),
+    return ransac.run_refined(
+        lambda: essential_ransac_reference(b1, b2, options, minimal_solver, refine),
+        {"bearings1": b1, "bearings2": b2},
+        options,
+        minimal_solver=MINIMAL_SOLVERS.index(minimal_solver),
+        refine=refine,
+        backend=backend,
+        target=(__name__, "essential_ransac"),
     )
 
 

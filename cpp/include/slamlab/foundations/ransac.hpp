@@ -402,4 +402,33 @@ RefinedSolution<typename E::Model> refine_consensus(const E& estimator,
   return out;
 }
 
+/// @brief Run LO-MSAC, then, if `refine`, refine the consensus (see
+///        `slamlab.foundations.ransac.estimate_refined`).
+/// @tparam E The estimator type.
+/// @tparam Refine Callable as in `refine_consensus`.
+/// @param estimator The model's solvers and residuals.
+/// @param options The settings; the threshold is also the MSAC cap the refined model is
+///        rescored with.
+/// @param refine Whether to refine the consensus.
+/// @param refiner Refines a model on the data the indices select.
+/// @param minimum The fewest inliers the refinement needs.
+/// @return The kept model, its inliers and the summary; `estimate`'s errors.
+template <Estimator E, typename Refine>
+  requires std::invocable<Refine&, const typename E::Model&, const Indices&>
+[[nodiscard]] Result<RefinedSolution<typename E::Model>> estimate_refined(const E& estimator,
+                                                                          const Options& options,
+                                                                          bool refine,
+                                                                          Refine&& refiner,
+                                                                          std::uint32_t minimum) {
+  auto found = estimate(estimator, options);
+  if (!found) {
+    return std::unexpected(found.error());
+  }
+  if (!refine) {
+    return unrefined(std::move(*found));
+  }
+  return refine_consensus(estimator, std::move(*found), std::forward<Refine>(refiner),
+                          options.threshold, minimum);
+}
+
 }  // namespace slamlab::foundations::ransac

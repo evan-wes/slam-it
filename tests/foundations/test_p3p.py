@@ -21,15 +21,8 @@ def _distance(found: np.ndarray, expected: np.ndarray) -> float:
 
 
 def _sample(seed: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return three world points, their exact bearings, and the true ``T_cam_world``.
-
-    The points are drawn in the camera, 2-8 m ahead, and mapped to the world by the inverse of a
-    random pose.
-    """
-    rng = np.random.default_rng(seed)
-    pose = sc.random_pose(rng, 0.5)
-    in_camera = np.column_stack([rng.uniform(-3.0, 3.0, (3, 2)), rng.uniform(2.0, 8.0, 3)])
-    return (in_camera - pose[:3, 3]) @ pose[:3, :3], sc.bearings(in_camera), pose
+    """Return three world points, their exact bearings, and the true ``T_cam_world``."""
+    return sc.posed(np.random.default_rng(seed), 3)
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)

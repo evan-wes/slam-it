@@ -514,6 +514,95 @@ def refine_consensus(
     )
 
 
+def estimate_refined(
+    estimator: Estimator[ModelT],
+    options: Options,
+    refine: Callable[[ModelT, NDArray[np.bool_]], Solution[ModelT, nls.Summary]] | None,
+    *,
+    minimum: int,
+) -> Solution[Consensus[ModelT], RefinedSummary]:
+    """Run LO-MSAC, then, unless `refine` is None, refine the consensus.
+
+    Parameters
+    ----------
+    estimator : Estimator
+        The model's solvers and residuals.
+    options : Options
+        The settings; ``threshold`` is also the MSAC cap the refined model is rescored with.
+    refine : callable or None
+        Refines a model on the data an inlier mask selects (see :func:`refine_consensus`); None
+        skips the refinement.
+    minimum : int
+        The fewest inliers the refinement needs.
+
+    Returns
+    -------
+    slamlab.foundations.solve.Solution
+        The kept model, its inliers and the :class:`RefinedSummary`.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If there are fewer data than a minimal sample.
+    slamlab.foundations.errors.DegenerateError
+        If no sample gave a model.
+    """
+    found = estimate(estimator, options)
+    if refine is None:
+        return Solution(state=found.state, summary=RefinedSummary.unrefined(found.summary))
+    return refine_consensus(estimator, found, refine, threshold=options.threshold, minimum=minimum)
+
+
+def run_refined(  # noqa: PLR0913 -- the choices are keyword-only
+    reference: Callable[[], Solution[Consensus[NDArray[np.float64]], RefinedSummary]],
+    data: dict[str, NDArray[np.float64]],
+    options: Options,
+    *,
+    minimal_solver: int,
+    refine: bool,
+    backend: str,
+    target: tuple[str, str],
+) -> Solution[Consensus[NDArray[np.float64]], RefinedSummary]:
+    """Run a refined RANSAC with the reference or a compiled backend (see :func:`run`).
+
+    Parameters
+    ----------
+    reference : callable
+        Runs the reference, when `backend` is ``"python"``.
+    data : dict of str to ndarray
+        The validated data, passed to the compiled function by keyword.
+    options : Options
+        The settings, passed as a dict of their fields.
+    minimal_solver : int
+        The minimal solver's code.
+    refine : bool
+        Whether the consensus is refined.
+    backend : {"python", "cpp", "rust"}
+        Which implementation runs.
+    target : tuple of str
+        The calling module's ``__name__`` and the compiled function's name.
+
+    Returns
+    -------
+    slamlab.foundations.solve.Solution
+        The model, its inliers and the :class:`RefinedSummary`.
+    """
+    module_name, function = target
+    return backends.call(
+        backend,
+        module_name,
+        function,
+        reference=reference,
+        arguments={
+            **data,
+            "options": asdict(options),
+            "minimal_solver": minimal_solver,
+            "refine": refine,
+        },
+        decode=decoder(refined_summary_from_backend),
+    )
+
+
 def refined_summary_from_backend(raw: dict[str, Any], codes: backends.Codes) -> RefinedSummary:
     """Build a refined run's summary from the dict a compiled backend returned.
 

@@ -476,23 +476,15 @@ Result<ransac::RefinedSolution<Eigen::Matrix3d>> essential_ransac(
   if (auto ok = check_bearing_pairs(bearings1, bearings2, minimum); !ok) {
     return std::unexpected(ok.error());
   }
-  const EssentialEstimator estimator(bearings1, bearings2, minimal);
-  auto found = ransac::estimate(estimator, options);
-  if (!found) {
-    return std::unexpected(found.error());
-  }
-  if (!refine) {
-    return ransac::unrefined(std::move(*found));
-  }
   const Rows3 all1 = bearings1;
   const Rows3 all2 = bearings2;
-  return ransac::refine_consensus(
-      estimator, std::move(*found),
+  return ransac::estimate_refined(
+      EssentialEstimator(bearings1, bearings2, minimal), options, refine,
       [&](const Eigen::Matrix3d& model, const ransac::Indices& inliers) {
         return epipolar::refine(model, gather(all1, inliers), gather(all2, inliers),
                                 options.threshold);
       },
-      options.threshold, fivepoint::kSampleSize);
+      fivepoint::kSampleSize);
 }
 
 Result<ransac::Solution<Eigen::Matrix3d>> fundamental_ransac(const Eigen::Ref<const Rows2>& pixels1,

@@ -20,6 +20,28 @@ def random_pose(rng: np.random.Generator, translation: float) -> NDArray[np.floa
     return se3.exp(np.concatenate([rng.normal(size=3), rng.normal(scale=translation, size=3)]))
 
 
+def posed(
+    rng: np.random.Generator, n: int
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+    """Draw a camera and n points 2-8 m ahead of it, for absolute pose.
+
+    Parameters
+    ----------
+    rng : numpy.random.Generator
+        The random generator.
+    n : int
+        How many points.
+
+    Returns
+    -------
+    tuple of ndarray
+        The world points (n, 3), their exact unit bearings (n, 3) and ``T_cam_world`` (4, 4).
+    """
+    pose = random_pose(rng, 0.5)
+    in_camera = np.column_stack([rng.uniform(-3.0, 3.0, (n, 2)), rng.uniform(2.0, 8.0, n)])
+    return (in_camera - pose[:3, 3]) @ pose[:3, :3], bearings(in_camera), pose
+
+
 def bearings(points: NDArray[np.float64]) -> NDArray[np.float64]:
     """Return the unit directions of points."""
     return np.asarray(points / np.linalg.norm(points, axis=-1, keepdims=True), dtype=np.float64)
@@ -79,7 +101,9 @@ def check_fixture(module: ModuleType, fixture: dict[str, Any], function: str, ba
     """Hold one backend to every case of one function in a fixture.
 
     A RANSAC function (name ending in ``_ransac``) takes ``threshold`` and ``seed`` from each
-    case's input beside the correspondences, and is held to the expected model and inliers.
+    case's input beside the correspondences, and is held to the expected model and inliers. A
+    refinement (name starting ``refine_``) is held to the expected state and to whether it
+    converged.
 
     Parameters
     ----------
@@ -95,6 +119,11 @@ def check_fixture(module: ModuleType, fixture: dict[str, Any], function: str, ba
     spec: dict[str, Any] = fixture["functions"][function]
     for case in spec["cases"]:
         inputs = dict(case["input"])
+        if function.startswith("refine_"):
+            solved = getattr(module, function)(**inputs, backend=backend)
+            assert_matches_fixture(solved.state, case["expected"], spec["tolerance"])
+            assert solved.summary.converged == case["summary"]["converged"]
+            continue
         if not function.endswith("_ransac"):
             got = getattr(module, function)(**inputs, backend=backend)
             assert_matches_fixture(got, case["expected"], spec["tolerance"])

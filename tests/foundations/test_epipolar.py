@@ -11,7 +11,7 @@ import pytest
 from slamlab import backends
 from slamlab.foundations import correspondences, epipolar, nls, ransac, so3
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
-from tests.conftest import assert_matches_fixture, load_fixture, require_function
+from tests.conftest import load_fixture, require_function
 from tests.foundations import scenes as sc
 
 FIXTURE = load_fixture("foundations/epipolar.json")
@@ -49,11 +49,7 @@ def test_ransac_matches_fixture(backend: str) -> None:
 def test_refinement_matches_fixture(backend: str) -> None:
     """On exact pairs the refinement converges from a perturbed start to the true E."""
     chosen = require_function(backend, epipolar.__name__, "refine_essential")
-    spec = FIXTURE["functions"]["refine_essential"]
-    for case in spec["cases"]:
-        solved = epipolar.refine_essential(**case["input"], backend=chosen)
-        assert_matches_fixture(solved.state, case["expected"], spec["tolerance"])
-        assert solved.summary.converged == case["summary"]["converged"]
+    sc.check_fixture(epipolar, FIXTURE, "refine_essential", chosen)
 
 
 @pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))

@@ -6,7 +6,6 @@
 #include <nanobind/ndarray.h>
 
 #include <cstddef>
-#include <stdexcept>
 
 #include "common.hpp"
 #include "foundations/foundations.hpp"
@@ -18,8 +17,6 @@ namespace slamlab::bindings {
 namespace {
 
 namespace p3p = foundations::p3p;
-using Rows3 = foundations::correspondences::Rows3;
-
 /// @brief Every camera pose three world points and their bearings allow.
 /// @param points (3, 3) world points.
 /// @param bearings (3, 3) unit bearings.
@@ -27,12 +24,8 @@ using Rows3 = foundations::correspondences::Rows3;
 /// @return A new (K, 4, 4) array of poses `T_cam_world`.
 /// @throws CoreError for invalid input; std::invalid_argument for an unknown code.
 ArrayOut solve_p3p(const BatchIn<3>& points, const BatchIn<3>& bearings, int solver) {
-  if (solver < 0 || solver >= static_cast<int>(p3p::Solver::kCount)) {
-    throw std::invalid_argument("solver: unknown code");
-  }
-  const auto found = unwrap(p3p::p3p(copy_matrix<Rows3>(points.data(), points.shape(0), 3),
-                                     copy_matrix<Rows3>(bearings.data(), bearings.shape(0), 3),
-                                     static_cast<p3p::Solver>(solver)));
+  const auto found =
+      unwrap(p3p::p3p(rows3(points), rows3(bearings), enum_code<p3p::Solver>(solver, "solver")));
   return poses_array(found);
 }
 

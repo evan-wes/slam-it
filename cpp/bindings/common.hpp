@@ -282,6 +282,36 @@ inline ArrayOut vector_array(const Eigen::VectorXd& vector) {
   return out;
 }
 
+/// @brief Copy an (N, 3) batch in, as the cores' row-major rows.
+/// @param in The array.
+/// @return The rows.
+inline Eigen::Matrix<double, Eigen::Dynamic, 3, Eigen::RowMajor> rows3(const BatchIn<3>& in) {
+  return copy_matrix<Eigen::Matrix<double, Eigen::Dynamic, 3, Eigen::RowMajor>>(in.data(),
+                                                                                in.shape(0), 3);
+}
+
+/// @brief Copy an (N, 2) batch in, as the cores' row-major rows.
+/// @param in The array.
+/// @return The rows.
+inline Eigen::Matrix<double, Eigen::Dynamic, 2, Eigen::RowMajor> rows2(const BatchIn<2>& in) {
+  return copy_matrix<Eigen::Matrix<double, Eigen::Dynamic, 2, Eigen::RowMajor>>(in.data(),
+                                                                                in.shape(0), 2);
+}
+
+/// @brief Decode an enum crossing as its integer code, for an enum with a `kCount` sentinel.
+/// @tparam E The enum.
+/// @param code The code.
+/// @param what The argument's name, for the message.
+/// @return The enum value.
+/// @throws std::invalid_argument (Python `ValueError`) for an unknown code.
+template <typename E>
+E enum_code(int code, const char* what) {
+  if (code < 0 || code >= static_cast<int>(E::kCount)) {
+    throw std::invalid_argument(std::string(what) + ": unknown code " + std::to_string(code));
+  }
+  return static_cast<E>(code);
+}
+
 /// @brief One read-only (3, 3) matrix.
 using Matrix3In = nanobind::ndarray<const double, nanobind::shape<3, 3>, nanobind::c_contig,
                                     nanobind::device::cpu>;
@@ -292,6 +322,18 @@ using Matrix3In = nanobind::ndarray<const double, nanobind::shape<3, 3>, nanobin
 inline Eigen::Matrix3d matrix3(const Matrix3In& in) {
   check_aligned(in.data());
   return Eigen::Map<const Item<3, 3>>(in.data());
+}
+
+/// @brief One read-only (4, 4) matrix.
+using Matrix4In = nanobind::ndarray<const double, nanobind::shape<4, 4>, nanobind::c_contig,
+                                    nanobind::device::cpu>;
+
+/// @brief Copy one (4, 4) matrix in.
+/// @param in The array.
+/// @return The matrix.
+inline Eigen::Matrix4d matrix4(const Matrix4In& in) {
+  check_aligned(in.data());
+  return Eigen::Map<const Item<4, 4>>(in.data());
 }
 
 /// @brief Return a 3x3 matrix as a new (3, 3) array.
