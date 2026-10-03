@@ -4,7 +4,9 @@
 ///        outliers, built without Python.
 #include <Eigen/Geometry>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <vector>
 
 #include "slamlab/foundations/epipolar.hpp"
 #include "slamlab/foundations/homography.hpp"
@@ -96,6 +98,30 @@ int main() {
   expect(h.has_value() && up_to_sign(*h, h_truth) < 1e-12, "H = R + t n^T / d", failures);
   const Eigen::VectorXd errors = homography::sampson(h_truth, x1, x2);
   expect(errors.maxCoeff() < 1e-25, "the Sampson error vanishes on the model", failures);
+
+  // Decompositions: the true motion is among the candidates.
+  const auto poses = epipolar::decompose_essential(truth);
+  bool has_truth = false;
+  for (const Eigen::Matrix4d& pose : poses.value_or(std::vector<Eigen::Matrix4d>{})) {
+    has_truth =
+        has_truth || ((pose.topLeftCorner<3, 3>() - rotation).cwiseAbs().maxCoeff() < 1e-12 &&
+                      (pose.topRightCorner<3, 1>() - t.normalized()).norm() < 1e-12);
+  }
+  expect(poses.has_value() && poses->size() == 4 && has_truth,
+         "E's four candidates include the true pose", failures);
+  const auto motions = homography::decompose_homography(-2.0 * h_truth);
+  bool has_plane = false;
+  if (motions) {
+    for (std::size_t i = 0; i < motions->poses.size(); ++i) {
+      const Eigen::Matrix4d& pose = motions->poses[i];
+      has_plane =
+          has_plane || ((pose.topLeftCorner<3, 3>() - rotation).cwiseAbs().maxCoeff() < 1e-10 &&
+                        (pose.topRightCorner<3, 1>() - (t / 5.0)).norm() < 1e-10 &&
+                        (motions->normals[i] - Eigen::Vector3d::UnitZ()).norm() < 1e-10);
+    }
+  }
+  expect(motions.has_value() && motions->poses.size() == 4 && has_plane,
+         "H's candidates include the true motion and plane", failures);
 
   epipolar::Rows2 line(4, 2);
   line << 0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 0.0, 1.0;

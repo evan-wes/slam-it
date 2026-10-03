@@ -233,6 +233,14 @@ template <typename M>
   return out;
 }
 
+/// @brief The four relative poses an essential matrix allows: `(R1, t)`, `(R1, -t)`,
+///        `(R2, t)`, `(R2, -t)` with `R = U W V^T` or `U W^T V^T` and `t = u3` (unit).
+/// @param essential E (any scale).
+/// @return The candidates `T_c2_c1`; `InvalidInput` if not finite; `Degenerate` if its rank
+///         is below 2.
+[[nodiscard]] Result<std::vector<Eigen::Matrix4d>> decompose_essential(
+    const Eigen::Matrix3d& essential);
+
 /// @brief Estimate E robustly: LO-MSAC with the 8-point solver.
 /// @param bearings1 Unit bearings in camera 1 (N x 3), positive z, N >= 8.
 /// @param bearings2 Unit bearings in camera 2 (N x 3), positive z.

@@ -159,6 +159,23 @@ def _bearing_pairs(
     return b1, b2
 
 
+def _pose_list(rot: mp.matrix, t: mp.matrix) -> list[list[float]]:
+    """Round a 50-digit ``[R | t]`` to a float (4, 4) list."""
+    rows = [[float(rot[i, j]) for j in range(3)] + [float(t[i])] for i in range(3)]
+    return [*rows, [0.0, 0.0, 0.0, 1.0]]
+
+
+def _essential_candidates(rot: mp.matrix, t: mp.matrix) -> list[list[list[float]]]:
+    """Return E's four poses in closed form: ``(R, ±t̂)`` and the twisted pair ``(R', ±t̂)``.
+
+    The twisted pair turns R by half a turn about the baseline: ``R' = (2 t̂ t̂ᵀ - I) R``
+    (Hartley and Zisserman, section 9.6.3).
+    """
+    unit = t / mp.norm(t)
+    twisted = (2 * unit * unit.T - mp.eye(3)) * rot
+    return [_pose_list(r, sign * unit) for r in (rot, twisted) for sign in (1, -1)]
+
+
 def _true_essential(rot: mp.matrix, t: mp.matrix) -> mp.matrix:
     """Return ``[t̂]ₓ R``: singular values (1, 1, 0)."""
     return mp.matrix(o.hat(list(t / mp.norm(t)))) * rot
@@ -305,6 +322,26 @@ def _epipolar_fixture() -> dict[str, Any]:
                 },
                 "cases": sampson_f,
             },
+            "decompose_essential": {
+                "tolerance": {
+                    "comparison": "close",
+                    "rtol": 0.0,
+                    "atol": 1e-12,
+                    "reason": "an SVD of E; compared as an unordered set of four poses",
+                },
+                "cases": [
+                    o.case(
+                        "sideways motion",
+                        {"essential": _float(e_true)},
+                        _essential_candidates(rot, t),
+                    ),
+                    o.case(
+                        "forward motion",
+                        {"essential": _float(_true_essential(fwd_rot, fwd_t))},
+                        _essential_candidates(fwd_rot, fwd_t),
+                    ),
+                ],
+            },
             "essential_ransac": {
                 "tolerance": {
                     **tol,
@@ -397,6 +434,39 @@ def _homography_fixture() -> dict[str, Any]:
                             for a, b in zip(noisy1, noisy2, strict=True)
                         ],
                     )
+                ],
+            },
+            "decompose_homography": {
+                "tolerance": {
+                    "comparison": "close",
+                    "rtol": 0.0,
+                    "atol": 1e-10,
+                    "reason": "Malis-Vargas closed form; the expected candidates must be among "
+                    "those returned",
+                },
+                "cases": [
+                    o.case(
+                        "plane, scaled and negated H",
+                        {"homography": _float(-2.5 * (rot + t * normal.T / depth))},
+                        {
+                            "contains_poses": [
+                                _pose_list(rot, t / depth),
+                                _pose_list(rot, -t / depth),
+                            ],
+                            "contains_normals": [
+                                [float(c) for c in normal],
+                                [-float(c) for c in normal],
+                            ],
+                        },
+                    ),
+                    o.case(
+                        "pure rotation",
+                        {"homography": _float(rot)},
+                        {
+                            "contains_poses": [_pose_list(rot, mp.matrix([0, 0, 0]))],
+                            "contains_normals": [[0.0, 0.0, 0.0]],
+                        },
+                    ),
                 ],
             },
             "homography_ransac": {

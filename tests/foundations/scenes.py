@@ -6,7 +6,7 @@ from types import ModuleType
 from typing import Any
 
 import numpy as np
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 
 from slamlab.foundations import ransac, se3
 from tests.conftest import assert_matches_fixture
@@ -98,3 +98,20 @@ def check_fixture(module: ModuleType, fixture: dict[str, Any], function: str, ba
         result = getattr(module, function)(**inputs, options=options, backend=backend)
         assert_matches_fixture(result.state.model, case["expected"]["model"], spec["tolerance"])
         np.testing.assert_array_equal(result.state.inliers, case["expected"]["inliers"])
+
+
+def assert_contains(found: NDArray[np.float64], expected: ArrayLike, atol: float) -> None:
+    """Assert every expected item is among the found ones (an unordered comparison).
+
+    Parameters
+    ----------
+    found : ndarray, shape (K, ...)
+        The items a function returned.
+    expected : array_like, shape (M, ...)
+        Items that must each match one found item within `atol`.
+    atol : float
+        The absolute tolerance.
+    """
+    for item in np.asarray(expected, dtype=np.float64):
+        distances = [float(np.abs(candidate - item).max()) for candidate in found]
+        assert min(distances) <= atol, f"no match within {atol}: closest {min(distances):.3g}"

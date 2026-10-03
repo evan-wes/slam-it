@@ -6,6 +6,8 @@
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 
+#include <cstddef>
+
 #include "common.hpp"
 #include "foundations/foundations.hpp"
 #include "foundations/ransac_crossing.hpp"
@@ -46,6 +48,23 @@ ArrayOut sampson_homography(const Matrix3In& h, const BatchIn<2>& points1,
       unwrap(homography::sampson_homography(matrix3(h), rows2(points1), rows2(points2))));
 }
 
+/// @brief The motions a calibrated H allows.
+/// @param h H.
+/// @return `poses` (K, 4, 4) and `normals` (K, 3).
+/// @throws CoreError for invalid or degenerate input.
+nb::dict decompose_homography(const Matrix3In& h) {
+  const homography::PlanarMotions motions = unwrap(homography::decompose_homography(matrix3(h)));
+  Eigen::Matrix<double, Eigen::Dynamic, 3, Eigen::RowMajor> normals(
+      static_cast<Eigen::Index>(motions.normals.size()), 3);
+  for (std::size_t i = 0; i < motions.normals.size(); ++i) {
+    normals.row(static_cast<Eigen::Index>(i)) = motions.normals[i].transpose();
+  }
+  nb::dict out;
+  out["poses"] = poses_array(motions.poses);
+  out["normals"] = matrix_array(normals);
+  return out;
+}
+
 /// @brief LO-MSAC with the normalised DLT.
 /// @param points1 Points in image 1.
 /// @param points2 Points in image 2.
@@ -67,6 +86,8 @@ void bind_homography(nb::module_& m) {
   m.def("sampson_homography", &sampson_homography, nb::arg("homography").noconvert(),
         nb::arg("points1").noconvert(), nb::arg("points2").noconvert(),
         "Return (N,) squared Sampson errors.");
+  m.def("decompose_homography", &decompose_homography, nb::arg("homography").noconvert(),
+        "Return poses (K, 4, 4) and normals (K, 3), K = 4 or 1 (pure rotation).");
   m.def("homography_ransac", &homography_ransac, nb::arg("points1").noconvert(),
         nb::arg("points2").noconvert(), nb::arg("options"), "Run LO-MSAC with the normalised DLT.");
 }

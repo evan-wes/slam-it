@@ -95,3 +95,41 @@ def test_rejects_invalid_input(function: str, args: tuple[Any, ...], message: st
     """Bad shapes and sizes are rejected before any backend runs."""
     with pytest.raises(InvalidInputError, match=message):
         getattr(homography, function)(*args)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_decomposition_matches_fixture(backend: str) -> None:
+    """The true motion and plane are among the candidates; a rotation has one candidate."""
+    spec: dict[str, Any] = FIXTURE["functions"]["decompose_homography"]
+    chosen = require_function(backend, homography.__name__, "decompose_homography")
+    for case in spec["cases"]:
+        found = homography.decompose_homography(**case["input"], backend=chosen)
+        atol = spec["tolerance"]["atol"]
+        sc.assert_contains(found.poses, case["expected"]["contains_poses"], atol)
+        sc.assert_contains(found.normals, case["expected"]["contains_normals"], atol)
+    rotation = homography.decompose_homography(np.eye(3), backend=chosen)
+    assert rotation.poses.shape == (1, 4, 4)
+
+
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_every_candidate_reproduces_h(backend: str) -> None:
+    """Over random motions and planes, each of the four candidates rebuilds H up to scale."""
+    rng = np.random.default_rng(0)
+    for _ in range(25):
+        pose = se3.exp(np.r_[rng.normal(scale=0.5, size=3), rng.normal(scale=0.2, size=3)])
+        normal = rng.normal(size=3)
+        normal /= np.linalg.norm(normal)
+        h = pose[:3, :3] + np.outer(pose[:3, 3], normal) / rng.uniform(2.0, 8.0)
+        motions = homography.decompose_homography(h, backend=backend)
+        assert motions.poses.shape == (4, 4, 4)
+        target = h / np.linalg.norm(h)
+        for candidate, n in zip(motions.poses, motions.normals, strict=True):
+            rebuilt = candidate[:3, :3] + np.outer(candidate[:3, 3], n)
+            rebuilt /= np.linalg.norm(rebuilt)
+            assert min(np.abs(rebuilt - target).max(), np.abs(rebuilt + target).max()) < 1e-10
+
+
+def test_singular_homographies_are_rejected() -> None:
+    """A rank-1 matrix is no homography: DegenerateError."""
+    with pytest.raises(DegenerateError, match="rank"):
+        homography.decompose_homography(np.outer([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]))

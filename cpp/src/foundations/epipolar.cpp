@@ -290,6 +290,40 @@ Eigen::VectorXd FundamentalEstimator::residuals(const Model& model) const {
   return sampson(model, x1_, x2_);
 }
 
+Result<std::vector<Eigen::Matrix4d>> decompose_essential(const Eigen::Matrix3d& essential) {
+  if (!essential.allFinite()) {
+    return fail(ErrorKind::kInvalidInput, "essential: expected a finite (3, 3) matrix");
+  }
+  const Eigen::JacobiSVD<Eigen::Matrix3d, Eigen::ComputeFullU | Eigen::ComputeFullV> svd(essential);
+  const Eigen::Vector3d singular = svd.singularValues();
+  if (!(singular(1) > kRankTolerance * singular(0))) {
+    return fail(ErrorKind::kDegenerate, "essential: rank below 2, no translation direction");
+  }
+  // E = U diag(1, 1, 0) V^T holds with either sign of U or V, so make both proper rotations.
+  Eigen::Matrix3d u = svd.matrixU();
+  Eigen::Matrix3d v = svd.matrixV();
+  if (u.determinant() < 0.0) {
+    u = -u;
+  }
+  if (v.determinant() < 0.0) {
+    v = -v;
+  }
+  Eigen::Matrix3d w;
+  w << 0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0;
+  const Eigen::Vector3d t = u.col(2);
+  std::vector<Eigen::Matrix4d> poses;
+  for (const Eigen::Matrix3d& rotation : {Eigen::Matrix3d(u * w * v.transpose()),
+                                          Eigen::Matrix3d(u * w.transpose() * v.transpose())}) {
+    for (const double sign : {1.0, -1.0}) {
+      Eigen::Matrix4d pose = Eigen::Matrix4d::Identity();
+      pose.topLeftCorner<3, 3>() = rotation;
+      pose.topRightCorner<3, 1>() = sign * t;
+      poses.push_back(pose);
+    }
+  }
+  return poses;
+}
+
 Result<ransac::Solution<Eigen::Matrix3d>> essential_ransac(const Eigen::Ref<const Rows3>& bearings1,
                                                            const Eigen::Ref<const Rows3>& bearings2,
                                                            const ransac::Options& options) {

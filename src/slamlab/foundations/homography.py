@@ -38,6 +38,7 @@ The C++ core (``slamlab/foundations/homography.hpp``) implements every function.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 import numpy as np
@@ -46,19 +47,44 @@ from numpy.typing import ArrayLike, NDArray
 from slamlab import backends
 from slamlab.foundations import ransac
 from slamlab.foundations.epipolar import (
+    RANK_TOLERANCE,
     Matrix3,
     PairEstimator,
+    as_matrix3,
     hartley_normalisation,
     homogeneous,
     null_vector,
     point_pairs,
     run_ransac,
 )
-from slamlab.foundations.errors import DegenerateError, InvalidInputError
+from slamlab.foundations.errors import DegenerateError
 from slamlab.foundations.solve import Solution
 
 SAMPLE_SIZE = 4
 """Correspondences in a minimal sample (and the fewest the DLT accepts)."""
+
+PURE_ROTATION_TOLERANCE = 1e-3
+"""Below this largest entry of ``HᵀH - I`` (H scaled to a middle singular value of 1), H is a
+rotation: the translation is zero and the plane is undetermined. The value is OpenCV's
+(``HomographyDecompInria``)."""
+
+
+@dataclass(frozen=True)
+class PlanarMotions:
+    """The motions a calibrated homography allows: ``H ∝ R + t nᵀ``.
+
+    Attributes
+    ----------
+    poses : ndarray of float64, shape (K, 4, 4)
+        Each candidate ``T_c2_c1``; its translation is ``t / d``, scaled by the plane's
+        distance from camera 1.
+    normals : ndarray of float64, shape (K, 3)
+        Each candidate's unit plane normal ``n`` in camera 1's frame (zero for a pure
+        rotation).
+    """
+
+    poses: NDArray[np.float64]
+    normals: NDArray[np.float64]
 
 
 class Implementation(Protocol):
@@ -86,6 +112,10 @@ class Implementation(Protocol):
         points2: NDArray[np.float64],
     ) -> NDArray[np.float64]:
         """Return (N,) squared Sampson errors."""
+        ...
+
+    def decompose_homography(self, homography: NDArray[np.float64]) -> dict[str, Any]:
+        """Return ``poses`` (K, 4, 4) and ``normals`` (K, 3), K = 4 or 1 (pure rotation)."""
         ...
 
     def homography_ransac(
@@ -239,13 +269,9 @@ def sampson_homography(
     slamlab.foundations.errors.InvalidInputError
         If the matrix is not (3, 3) or the points are invalid.
     """
-    matrix = np.asarray(homography, dtype=np.float64)
-    if matrix.shape != (3, 3) or not np.all(np.isfinite(matrix)):
-        raise InvalidInputError(f"homography: expected a finite (3, 3) matrix, got {matrix.shape}")
+    matrix = as_matrix3(homography, "homography")
     p1, p2 = point_pairs(points1, points2, 0, "points")
-    return backends.dispatch(
-        backend, __name__, "sampson_homography", sampson, np.ascontiguousarray(matrix), p1, p2
-    )
+    return backends.dispatch(backend, __name__, "sampson_homography", sampson, matrix, p1, p2)
 
 
 def homography_ransac(
@@ -278,4 +304,115 @@ def homography_ransac(
     estimator = homography_estimator(p1, p2)
     return run_ransac(
         estimator, (p1, p2), options, backend=backend, target=(__name__, "homography_ransac")
+    )
+
+
+# --- decomposition (Malis and Vargas) -----------------------------------------------------
+
+
+def _opposite_of_minor(m: Matrix3, row: int, col: int) -> float:
+    """Return ``-M_ij``, the negated (row, col) minor of a symmetric 3x3 matrix."""
+    rows = [r for r in range(3) if r != row]
+    cols = [c for c in range(3) if c != col]
+    a, b = rows
+    c, d = cols
+    return float(m[a, d] * m[b, c] - m[a, c] * m[b, d])
+
+
+def _rotation_from(
+    h: Matrix3, t_star: NDArray[np.float64], n: NDArray[np.float64], v: float
+) -> Matrix3:
+    """Return ``R = H (I - (2/v) t* nᵀ)``, made proper."""
+    rotation = h @ (np.eye(3) - (2.0 / v) * np.outer(t_star, n))
+    return rotation if np.linalg.det(rotation) > 0.0 else -rotation
+
+
+def _decompose(homography: Matrix3) -> dict[str, NDArray[np.float64]]:
+    """Decompose a calibrated H by Malis and Vargas' closed form (reference)."""
+    h = homography / np.linalg.svd(homography, compute_uv=False)[1]
+    s = h.T @ h - np.eye(3)
+    if np.abs(s).max() < PURE_ROTATION_TOLERANCE:
+        rotation = h if np.linalg.det(h) > 0.0 else -h
+        pose = np.eye(4)
+        pose[:3, :3] = rotation
+        return {"poses": pose[None], "normals": np.zeros((1, 3))}
+    m = {
+        (i, j): _opposite_of_minor(s, i, j)
+        for i, j in ((0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2))
+    }
+    root = {k: np.sqrt(max(m[(k, k)], 0.0)) for k in range(3)}
+    sign = {k: 1.0 if m[k] >= 0.0 else -1.0 for k in ((0, 1), (0, 2), (1, 2))}
+    k = int(np.argmax(np.abs(np.diag(s))))
+    if k == 0:
+        na = np.array([s[0, 0], s[0, 1] + root[2], s[0, 2] + sign[(1, 2)] * root[1]])
+        nb = np.array([s[0, 0], s[0, 1] - root[2], s[0, 2] - sign[(1, 2)] * root[1]])
+    elif k == 1:
+        na = np.array([s[0, 1] + root[2], s[1, 1], s[1, 2] - sign[(0, 2)] * root[0]])
+        nb = np.array([s[0, 1] - root[2], s[1, 1], s[1, 2] + sign[(0, 2)] * root[0]])
+    else:
+        na = np.array([s[0, 2] + sign[(0, 1)] * root[1], s[1, 2] + root[0], s[2, 2]])
+        nb = np.array([s[0, 2] - sign[(0, 1)] * root[1], s[1, 2] - root[0], s[2, 2]])
+    trace = float(np.trace(s))
+    v = 2.0 * np.sqrt(max(1.0 + trace - m[(0, 0)] - m[(1, 1)] - m[(2, 2)], 0.0))
+    r = np.sqrt(max(2.0 + trace + v, 0.0))
+    n_t = np.sqrt(max(2.0 + trace - v, 0.0))
+    na, nb = na / np.linalg.norm(na), nb / np.linalg.norm(nb)
+    e = 1.0 if s[k, k] >= 0.0 else -1.0
+    ta_star = 0.5 * n_t * (e * r * nb - n_t * na)
+    tb_star = 0.5 * n_t * (e * r * na - n_t * nb)
+    poses = np.tile(np.eye(4), (4, 1, 1))
+    normals = np.empty((4, 3))
+    for j, (t_star, n) in enumerate(((ta_star, na), (tb_star, nb))):
+        rotation = _rotation_from(h, t_star, n, v)
+        t = rotation @ t_star
+        for sgn, slot in ((1.0, 2 * j), (-1.0, 2 * j + 1)):
+            poses[slot, :3, :3] = rotation
+            poses[slot, :3, 3] = sgn * t
+            normals[slot] = sgn * n
+    return {"poses": poses, "normals": normals}
+
+
+def decompose_homography(homography: ArrayLike, *, backend: str = "python") -> PlanarMotions:
+    """Return the motions and planes a calibrated homography allows (Malis and Vargas).
+
+    For ``H ∝ R + t nᵀ`` on normalised image points, Malis and Vargas ("Deeper understanding of
+    the homography decomposition for vision-based control", INRIA RR-6303, 2007) give the
+    candidates in closed form from ``S = HᵀH - I`` (with H scaled to a middle singular value
+    of 1), without an SVD of H's structure. There are four: two pairs ``(R, t, n)`` and
+    ``(R, -t, -n)``. Two put the plane behind the cameras; the remaining two are told apart by
+    triangulating the inliers (:func:`slamlab.foundations.twoview.initialize`). A pure
+    rotation (``S ≈ 0``) has one, with zero translation and no plane.
+
+    Parameters
+    ----------
+    homography : array_like, shape (3, 3)
+        A calibrated H (on normalised image points), any scale and sign.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    PlanarMotions
+        The candidates' poses ``T_c2_c1`` (translation over plane distance) and normals.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If the matrix is not a finite (3, 3) array.
+    slamlab.foundations.errors.DegenerateError
+        If H is singular (rank below 2).
+    """
+    matrix = as_matrix3(homography, "homography")
+    singular = np.linalg.svd(matrix, compute_uv=False)
+    if not singular[1] > RANK_TOLERANCE * singular[0]:
+        raise DegenerateError("homography: rank below 2")
+    backends.check_name(backend)
+    raw = (
+        _decompose(matrix)
+        if backend == "python"
+        else backends.function(backend, __name__, "decompose_homography")(matrix)
+    )
+    return PlanarMotions(
+        poses=np.asarray(raw["poses"], dtype=np.float64),
+        normals=np.asarray(raw["normals"], dtype=np.float64),
     )

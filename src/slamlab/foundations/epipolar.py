@@ -119,6 +119,10 @@ class Implementation(Protocol):
         """Return (N,) squared Sampson errors in pixels."""
         ...
 
+    def decompose_essential(self, essential: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Return E's four candidate poses ``T_c2_c1``, shape (4, 4, 4)."""
+        ...
+
     def essential_ransac(
         self,
         bearings1: NDArray[np.float64],
@@ -437,8 +441,26 @@ def point_pairs(
     return p1, p2
 
 
-def _matrix(value: ArrayLike, name: str) -> Matrix3:
-    """Validate one (3, 3) matrix."""
+def as_matrix3(value: ArrayLike, name: str) -> Matrix3:
+    """Validate one finite (3, 3) matrix.
+
+    Parameters
+    ----------
+    value : array_like, shape (3, 3)
+        The matrix.
+    name : str
+        The argument's name, used in error messages.
+
+    Returns
+    -------
+    ndarray of float64, shape (3, 3)
+        A C-contiguous copy.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If it is not one finite (3, 3) matrix.
+    """
     flat, lead = as_batch(value, (3, 3), name)
     if lead != ():
         raise InvalidInputError(f"{name}: expected one (3, 3) matrix, got {lead}")
@@ -561,7 +583,7 @@ def sampson_essential(
     slamlab.foundations.errors.InvalidInputError
         If the matrix is not (3, 3) or the bearings are invalid.
     """
-    matrix = _matrix(essential, "essential")
+    matrix = as_matrix3(essential, "essential")
     b1, b2 = _bearing_pairs(bearings1, bearings2, 0)
     return backends.dispatch(
         backend, __name__, "sampson_essential", _sampson_essential, matrix, b1, b2
@@ -592,11 +614,67 @@ def sampson_fundamental(
     slamlab.foundations.errors.InvalidInputError
         If the matrix is not (3, 3) or the pixels are invalid.
     """
-    matrix = _matrix(fundamental, "fundamental")
+    matrix = as_matrix3(fundamental, "fundamental")
     p1, p2 = point_pairs(pixels1, pixels2, 0)
     return backends.dispatch(
         backend, __name__, "sampson_fundamental", _sampson_fundamental, matrix, p1, p2
     )
+
+
+_W = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+"""The rotation by 90 degrees about z in E's decomposition, ``R = U W Vᵀ`` or ``U Wᵀ Vᵀ``."""
+
+
+def _decompose_essential(essential: Matrix3) -> NDArray[np.float64]:
+    """Return E's four candidate poses, shape (4, 4, 4) (reference)."""
+    u, _, vt = np.linalg.svd(essential)
+    # E = U diag(1, 1, 0) Vᵀ holds with either sign of U or V, so make both proper rotations.
+    u = u if np.linalg.det(u) > 0.0 else -u
+    vt = vt if np.linalg.det(vt) > 0.0 else -vt
+    t = u[:, 2]
+    poses = np.tile(np.eye(4), (4, 1, 1))
+    for k, (rotation, sign) in enumerate(
+        [(u @ _W @ vt, 1.0), (u @ _W @ vt, -1.0), (u @ _W.T @ vt, 1.0), (u @ _W.T @ vt, -1.0)]
+    ):
+        poses[k, :3, :3] = rotation
+        poses[k, :3, 3] = sign * t
+    return poses
+
+
+def decompose_essential(essential: ArrayLike, *, backend: str = "python") -> NDArray[np.float64]:
+    """Return the four relative poses an essential matrix allows.
+
+    ``E = U diag(1, 1, 0) Vᵀ`` (with U and V proper rotations) is ``[t]ₓ R`` for
+    ``R ∈ {U W Vᵀ, U Wᵀ Vᵀ}`` and ``t = ±u₃`` (Hartley and Zisserman, result 9.19), where W is
+    a quarter turn about z. Exactly one of the four puts the scene in front of both cameras;
+    :func:`slamlab.foundations.twoview.initialize` chooses it by triangulating.
+
+    Parameters
+    ----------
+    essential : array_like, shape (3, 3)
+        E (any scale; it is projected onto the essential manifold by the SVD).
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    ndarray of float64, shape (4, 4, 4)
+        The candidates ``T_c2_c1``, with unit translation: ``(R₁, t)``, ``(R₁, -t)``,
+        ``(R₂, t)``, ``(R₂, -t)``. Which of ``R₁``, ``R₂`` is which, and the sign of ``t``,
+        depend on the SVD, so backends may order them differently.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If the matrix is not a finite (3, 3) array.
+    slamlab.foundations.errors.DegenerateError
+        If its rank is below 2 (no translation direction).
+    """
+    matrix = as_matrix3(essential, "essential")
+    singular = np.linalg.svd(matrix, compute_uv=False)
+    if not singular[1] > RANK_TOLERANCE * singular[0]:
+        raise DegenerateError("essential: rank below 2, no translation direction")
+    return backends.dispatch(backend, __name__, "decompose_essential", _decompose_essential, matrix)
 
 
 def run_ransac(

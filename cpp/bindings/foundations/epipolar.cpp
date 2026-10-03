@@ -73,6 +73,14 @@ ArrayOut sampson_fundamental(const Matrix3In& fundamental, const BatchIn<2>& pix
       unwrap(epipolar::sampson_fundamental(matrix3(fundamental), rows2(pixels1), rows2(pixels2))));
 }
 
+/// @brief E's four candidate poses.
+/// @param essential E.
+/// @return A new (4, 4, 4) array.
+/// @throws CoreError for invalid or degenerate input.
+ArrayOut decompose_essential(const Matrix3In& essential) {
+  return poses_array(unwrap(epipolar::decompose_essential(matrix3(essential))));
+}
+
 /// @brief LO-MSAC with the 8-point E solver.
 /// @param bearings1 Bearings in camera 1.
 /// @param bearings2 Bearings in camera 2.
@@ -111,6 +119,8 @@ void bind_epipolar(nb::module_& m) {
   m.def("sampson_fundamental", &sampson_fundamental, nb::arg("fundamental").noconvert(),
         nb::arg("pixels1").noconvert(), nb::arg("pixels2").noconvert(),
         "Return (N,) squared Sampson errors in pixels.");
+  m.def("decompose_essential", &decompose_essential, nb::arg("essential").noconvert(),
+        "Return E's four candidate poses T_c2_c1, shape (4, 4, 4).");
   m.def("essential_ransac", &essential_ransac, nb::arg("bearings1").noconvert(),
         nb::arg("bearings2").noconvert(), nb::arg("options"),
         "Run LO-MSAC with the 8-point E solver.");

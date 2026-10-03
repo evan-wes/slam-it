@@ -167,3 +167,30 @@ def test_core_checks_its_own_input(backend: str) -> None:
 def _options_dict() -> dict[str, Any]:
     """Return default RANSAC options as the dict the bindings take."""
     return asdict(ransac.Options(threshold=1.0))
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_decomposition_matches_fixture(backend: str) -> None:
+    """The four poses are the closed-form ones (R, ±t̂) and the twisted pair, in any order."""
+    spec: dict[str, Any] = FIXTURE["functions"]["decompose_essential"]
+    chosen = require_function(backend, epipolar.__name__, "decompose_essential")
+    for case in spec["cases"]:
+        found = epipolar.decompose_essential(**case["input"], backend=chosen)
+        assert found.shape == (4, 4, 4)
+        sc.assert_contains(found, case["expected"], spec["tolerance"]["atol"])
+
+
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_every_candidate_explains_e(backend: str) -> None:
+    """Each candidate's ``[t]ₓ R`` equals E up to sign, for E of any scale."""
+    b1, b2 = sc.pairs(sc.scene(30), sigma=1e-3)
+    essential = epipolar.essential_8pt(b1, b2)
+    for pose in epipolar.decompose_essential(-3.0 * essential, backend=backend):
+        rebuilt = so3.hat(pose[:3, 3]) @ pose[:3, :3]
+        assert min(np.abs(rebuilt - essential).max(), np.abs(rebuilt + essential).max()) < 1e-12
+
+
+def test_rank_one_matrices_are_not_essential() -> None:
+    """A rank-1 matrix has no translation direction: DegenerateError."""
+    with pytest.raises(DegenerateError, match="rank"):
+        epipolar.decompose_essential(np.outer([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]))

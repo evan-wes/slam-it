@@ -3,6 +3,8 @@
 #include "slamlab/foundations/homography.hpp"
 
 #include <Eigen/Dense>
+#include <algorithm>
+#include <cmath>
 #include <limits>
 #include <utility>
 
@@ -108,6 +110,115 @@ std::vector<HomographyEstimator::Model> HomographyEstimator::fit_nonminimal(
 
 Eigen::VectorXd HomographyEstimator::residuals(const Model& model) const {
   return sampson(model, points1_, points2_);
+}
+
+namespace {
+
+/// @brief The negated (row, col) minor of a symmetric 3x3 matrix.
+/// @param m The matrix.
+/// @param row The row removed.
+/// @param col The column removed.
+/// @return `-M_ij`.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (row, col), as in M(row, col)
+double opposite_of_minor(const Eigen::Matrix3d& m, int row, int col) {
+  const int a = row == 0 ? 1 : 0;
+  const int b = row == 2 ? 1 : 2;
+  const int c = col == 0 ? 1 : 0;
+  const int d = col == 2 ? 1 : 2;
+  return (m(a, d) * m(b, c)) - (m(a, c) * m(b, d));
+}
+
+/// @brief `R = H (I - (2 / v) t* n^T)`, made proper.
+/// @param h The scaled homography.
+/// @param t_star The candidate's `t*`.
+/// @param n The candidate's normal.
+/// @param v Malis and Vargas' `v`.
+/// @return The rotation.
+Eigen::Matrix3d rotation_from(const Eigen::Matrix3d& h, const Eigen::Vector3d& t_star,
+                              const Eigen::Vector3d& n, double v) {
+  const Eigen::Matrix3d rotation =
+      h * (Eigen::Matrix3d::Identity() - ((2.0 / v) * t_star * n.transpose()));
+  return rotation.determinant() > 0.0 ? rotation : Eigen::Matrix3d(-rotation);
+}
+
+/// @brief A non-negative square root (rounding can push a zero just below).
+/// @param x The value.
+/// @return `sqrt(max(x, 0))`.
+double root(double x) { return std::sqrt(std::max(x, 0.0)); }
+
+/// @brief +1 or -1 by sign, with +1 for zero.
+/// @param x The value.
+/// @return The sign.
+double sign_of(double x) { return x >= 0.0 ? 1.0 : -1.0; }
+
+/// @brief Malis and Vargas' two normal candidates `n_a`, `n_b` (unnormalised).
+/// @param s `H^T H - I`.
+/// @param k The index of the largest `|s_kk|`.
+/// @return The pair.
+std::pair<Eigen::Vector3d, Eigen::Vector3d> normal_candidates(const Eigen::Matrix3d& s, int k) {
+  const double r00 = root(opposite_of_minor(s, 0, 0));
+  const double r11 = root(opposite_of_minor(s, 1, 1));
+  const double r22 = root(opposite_of_minor(s, 2, 2));
+  const double e01 = sign_of(opposite_of_minor(s, 0, 1));
+  const double e02 = sign_of(opposite_of_minor(s, 0, 2));
+  const double e12 = sign_of(opposite_of_minor(s, 1, 2));
+  if (k == 0) {
+    return {{s(0, 0), s(0, 1) + r22, s(0, 2) + (e12 * r11)},
+            {s(0, 0), s(0, 1) - r22, s(0, 2) - (e12 * r11)}};
+  }
+  if (k == 1) {
+    return {{s(0, 1) + r22, s(1, 1), s(1, 2) - (e02 * r00)},
+            {s(0, 1) - r22, s(1, 1), s(1, 2) + (e02 * r00)}};
+  }
+  return {{s(0, 2) + (e01 * r11), s(1, 2) + r00, s(2, 2)},
+          {s(0, 2) - (e01 * r11), s(1, 2) - r00, s(2, 2)}};
+}
+
+}  // namespace
+
+Result<PlanarMotions> decompose_homography(const Eigen::Matrix3d& homography) {
+  if (!homography.allFinite()) {
+    return fail(ErrorKind::kInvalidInput, "homography: expected a finite (3, 3) matrix");
+  }
+  const Eigen::Vector3d singular = Eigen::JacobiSVD<Eigen::Matrix3d>(homography).singularValues();
+  if (!(singular(1) > epipolar::kRankTolerance * singular(0))) {
+    return fail(ErrorKind::kDegenerate, "homography: rank below 2");
+  }
+  const Eigen::Matrix3d h = homography / singular(1);
+  const Eigen::Matrix3d s = (h.transpose() * h) - Eigen::Matrix3d::Identity();
+  PlanarMotions out;
+  if (s.cwiseAbs().maxCoeff() < kPureRotationTolerance) {
+    Eigen::Matrix4d pose = Eigen::Matrix4d::Identity();
+    pose.topLeftCorner<3, 3>() = h.determinant() > 0.0 ? h : Eigen::Matrix3d(-h);
+    out.poses.push_back(pose);
+    out.normals.emplace_back(Eigen::Vector3d::Zero());
+    return out;
+  }
+  int k = 0;
+  s.diagonal().cwiseAbs().maxCoeff(&k);
+  auto [na, nb] = normal_candidates(s, k);
+  na.normalize();
+  nb.normalize();
+  const double trace = s.trace();
+  const double v = 2.0 * root(1.0 + trace - opposite_of_minor(s, 0, 0) -
+                              opposite_of_minor(s, 1, 1) - opposite_of_minor(s, 2, 2));
+  const double r = root(2.0 + trace + v);
+  const double n_t = root(2.0 + trace - v);
+  const double e = sign_of(s(k, k));
+  const Eigen::Vector3d ta_star = 0.5 * n_t * ((e * r * nb) - (n_t * na));
+  const Eigen::Vector3d tb_star = 0.5 * n_t * ((e * r * na) - (n_t * nb));
+  for (const auto& [t_star, n] : {std::pair{ta_star, na}, std::pair{tb_star, nb}}) {
+    const Eigen::Matrix3d rotation = rotation_from(h, t_star, n, v);
+    const Eigen::Vector3d t = rotation * t_star;
+    for (const double sign : {1.0, -1.0}) {
+      Eigen::Matrix4d pose = Eigen::Matrix4d::Identity();
+      pose.topLeftCorner<3, 3>() = rotation;
+      pose.topRightCorner<3, 1>() = sign * t;
+      out.poses.push_back(pose);
+      out.normals.emplace_back(sign * n);
+    }
+  }
+  return out;
 }
 
 Result<ransac::Solution<Eigen::Matrix3d>> homography_ransac(const Eigen::Ref<const Rows2>& points1,

@@ -98,6 +98,24 @@ class HomographyEstimator {
   Rows2 points2_;
 };
 
+/// @brief Below this largest entry of `H^T H - I` (H scaled to a middle singular value of 1),
+///        H is a rotation (OpenCV's `HomographyDecompInria` value).
+inline constexpr double kPureRotationTolerance = 1e-3;
+
+/// @brief The motions a calibrated homography allows: `H ~ R + t n^T`.
+struct PlanarMotions {
+  /// @brief Each candidate `T_c2_c1`, translation over the plane's distance.
+  std::vector<Eigen::Matrix4d> poses;
+  /// @brief Each candidate's unit plane normal in camera 1 (zero for a pure rotation).
+  std::vector<Eigen::Vector3d> normals;
+};
+
+/// @brief Decompose a calibrated H by Malis and Vargas' closed form.
+/// @param homography H on normalised image points (any scale and sign).
+/// @return Four candidates, or one for a pure rotation; `InvalidInput` if not finite;
+///         `Degenerate` if its rank is below 2.
+[[nodiscard]] Result<PlanarMotions> decompose_homography(const Eigen::Matrix3d& homography);
+
 /// @brief Estimate H robustly: LO-MSAC with the normalised DLT.
 /// @param points1 Points in image 1 (N x 2), N >= 4.
 /// @param points2 Points in image 2 (N x 2).
