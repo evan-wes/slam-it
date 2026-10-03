@@ -146,6 +146,11 @@ class Options:
     ambiguity_ratio : float
         The runner-up candidate must have fewer than this fraction of the best's points in
         front.
+    essential_solver : {"nister", "stewenius", "8pt"}
+        E-RANSAC's minimal solver (see :data:`slamlab.foundations.epipolar.MINIMAL_SOLVERS`).
+    refine : bool
+        Whether E-RANSAC's model is refined on its inliers' Sampson distances
+        (:func:`slamlab.foundations.epipolar.polish_consensus`).
     """
 
     focal: float
@@ -157,6 +162,8 @@ class Options:
     min_parallax_deg: float = 1.0
     min_points: int = 50
     ambiguity_ratio: float = 0.75
+    essential_solver: str = "nister"
+    refine: bool = True
 
     def __post_init__(self) -> None:
         """Check the settings.
@@ -179,6 +186,11 @@ class Options:
         if not 0.0 < self.ambiguity_ratio <= 1.0:
             raise InvalidInputError(
                 f"ambiguity_ratio: must be in (0, 1], got {self.ambiguity_ratio}"
+            )
+        if self.essential_solver not in epipolar.MINIMAL_SOLVERS:
+            raise InvalidInputError(
+                f"essential_solver: expected one of {epipolar.MINIMAL_SOLVERS}, "
+                f"got {self.essential_solver!r}"
             )
 
     def ransac_options(self, model: Model) -> ransac.Options:
@@ -394,10 +406,15 @@ def _initialize(
         correspondences.normalised_plane(bearings1),
         correspondences.normalised_plane(bearings2),
     )
+    essential_options = options.ransac_options(Model.ESSENTIAL)
     essential = _fit(
-        epipolar.essential_estimator(bearings1, bearings2),
-        options.ransac_options(Model.ESSENTIAL),
+        epipolar.essential_estimator(bearings1, bearings2, options.essential_solver),
+        essential_options,
     )
+    if essential is not None and options.refine:
+        essential = epipolar.polish_consensus(
+            essential, (bearings1, bearings2), essential_options.threshold
+        )
     planar = _fit(
         homography.homography_estimator(x1[:, :2], x2[:, :2]),
         options.ransac_options(Model.HOMOGRAPHY),

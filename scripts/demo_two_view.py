@@ -312,11 +312,24 @@ def main() -> None:
     parser.add_argument(
         "--survey", action="store_true", help="run 38 pairs across the sequence instead"
     )
+    parser.add_argument(
+        "--essential-solver",
+        choices=epipolar.MINIMAL_SOLVERS,
+        default="nister",
+        help="E-RANSAC's minimal solver",
+    )
+    parser.add_argument(
+        "--no-refine", action="store_true", help="skip the Sampson refinement of E-RANSAC's E"
+    )
     args = parser.parse_args()
 
     sequence = tum.read_sequence(args.sequence)
     intrinsics = sequence.intrinsics
-    options = twoview.Options(focal=float(intrinsics[0]))
+    options = twoview.Options(
+        focal=float(intrinsics[0]),
+        essential_solver=args.essential_solver,
+        refine=not args.no_refine,
+    )
     lockstep = [b for b in backends.available() if b in backends.LOCKSTEP_BACKENDS]
     if args.survey:
         survey(sequence, options, args.backend or ("cpp" if "cpp" in lockstep else "python"))

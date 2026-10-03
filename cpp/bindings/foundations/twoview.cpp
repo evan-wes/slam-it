@@ -4,6 +4,7 @@
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
+#include <nanobind/stl/string.h>
 
 #include <array>
 #include <cstddef>
@@ -24,9 +25,24 @@ namespace {
 namespace twoview = foundations::twoview;
 
 /// @brief `twoview.Options`' fields, as the dict's keys.
-constexpr std::array<const char*, 9> kOptionKeys = {
-    "focal", "threshold_px",     "sigma_px",   "confidence",     "max_iterations",
-    "seed",  "min_parallax_deg", "min_points", "ambiguity_ratio"};
+constexpr std::array<const char*, 11> kOptionKeys = {
+    "focal", "threshold_px",     "sigma_px",   "confidence",      "max_iterations",
+    "seed",  "min_parallax_deg", "min_points", "ambiguity_ratio", "essential_solver",
+    "refine"};
+
+/// @brief Look a minimal solver up by the name `epipolar.MINIMAL_SOLVERS` spells it.
+/// @param name The name.
+/// @return The solver.
+/// @throws std::invalid_argument (Python `ValueError`) for an unknown name.
+foundations::epipolar::MinimalSolver essential_solver(const std::string& name) {
+  using foundations::epipolar::MinimalSolver;
+  for (int k = 0; k < static_cast<int>(MinimalSolver::kCount); ++k) {
+    if (name == foundations::epipolar::name(static_cast<MinimalSolver>(k))) {
+      return static_cast<MinimalSolver>(k);
+    }
+  }
+  throw std::invalid_argument("essential_solver: unknown solver " + name);
+}
 
 /// @brief Read the initialiser's options from a dict of scalars.
 /// @param options The dict, with exactly `kOptionKeys`.
@@ -34,15 +50,18 @@ constexpr std::array<const char*, 9> kOptionKeys = {
 /// @throws std::invalid_argument for a missing or unknown key.
 twoview::Options read_options(const nb::dict& options) {
   check_keys(options, kOptionKeys, "twoview.Options");
-  return twoview::Options{.focal = nb::cast<double>(options["focal"]),
-                          .threshold_px = nb::cast<double>(options["threshold_px"]),
-                          .sigma_px = nb::cast<double>(options["sigma_px"]),
-                          .confidence = nb::cast<double>(options["confidence"]),
-                          .max_iterations = nb::cast<int>(options["max_iterations"]),
-                          .seed = nb::cast<std::uint64_t>(options["seed"]),
-                          .min_parallax_deg = nb::cast<double>(options["min_parallax_deg"]),
-                          .min_points = nb::cast<int>(options["min_points"]),
-                          .ambiguity_ratio = nb::cast<double>(options["ambiguity_ratio"])};
+  return twoview::Options{
+      .focal = nb::cast<double>(options["focal"]),
+      .threshold_px = nb::cast<double>(options["threshold_px"]),
+      .sigma_px = nb::cast<double>(options["sigma_px"]),
+      .confidence = nb::cast<double>(options["confidence"]),
+      .max_iterations = nb::cast<int>(options["max_iterations"]),
+      .seed = nb::cast<std::uint64_t>(options["seed"]),
+      .min_parallax_deg = nb::cast<double>(options["min_parallax_deg"]),
+      .min_points = nb::cast<int>(options["min_points"]),
+      .ambiguity_ratio = nb::cast<double>(options["ambiguity_ratio"]),
+      .essential_solver = essential_solver(nb::cast<std::string>(options["essential_solver"])),
+      .refine = nb::cast<bool>(options["refine"])};
 }
 
 /// @brief A RANSAC summary, or None if that run found no model.

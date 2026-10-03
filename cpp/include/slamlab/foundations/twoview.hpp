@@ -94,6 +94,10 @@ struct Options {
   int min_points = 50;
   /// @brief The runner-up must have fewer than this fraction of the best's points in front.
   double ambiguity_ratio = 0.75;
+  /// @brief E-RANSAC's minimal solver.
+  epipolar::MinimalSolver essential_solver = epipolar::MinimalSolver::kNister;
+  /// @brief Whether E-RANSAC's model is refined on its inliers' Sampson distances.
+  bool refine = true;
 };
 
 /// @brief Check the settings.

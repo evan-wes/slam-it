@@ -142,8 +142,9 @@ struct Runs {
 Result<Runs> run_both(const Eigen::Ref<const correspondences::Rows3>& bearings1,
                       const Eigen::Ref<const correspondences::Rows3>& bearings2,
                       const Planes& planes, const Options& options) {
-  auto essential = found(
-      epipolar::essential_ransac(bearings1, bearings2, ransac_options(options, Model::kEssential)));
+  auto essential = found(epipolar::essential_ransac(bearings1, bearings2,
+                                                    ransac_options(options, Model::kEssential),
+                                                    options.essential_solver, options.refine));
   if (!essential) {
     return std::unexpected(essential.error());
   }
@@ -307,6 +308,9 @@ Result<void> check_options(const Options& options) {
   if (std::isnan(options.ambiguity_ratio) || options.ambiguity_ratio <= 0.0 ||
       options.ambiguity_ratio > 1.0) {
     return fail_setting("ambiguity_ratio", "must be in (0, 1]", options.ambiguity_ratio);
+  }
+  if (options.essential_solver >= epipolar::MinimalSolver::kCount) {
+    return fail(ErrorKind::kInvalidInput, "essential_solver: unknown solver");
   }
   return {};
 }
