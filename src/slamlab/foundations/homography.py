@@ -329,11 +329,58 @@ def _rotation_from(
     return so3.project_to_so3(proper)
 
 
+_Minors = dict[tuple[int, int], float]
+"""``-M_ij`` of S by index pair: the diagonal three and (0, 1), (0, 2), (1, 2)."""
+
+
+def _minors(s: Matrix3) -> _Minors:
+    """Return the negated minors of S that Malis and Vargas' formulas use."""
+    pairs = ((0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2))
+    return {(i, j): _opposite_of_minor(s, i, j) for i, j in pairs}
+
+
+def _plane_normals(
+    s: Matrix3, minors: _Minors
+) -> tuple[NDArray[np.float64], NDArray[np.float64], int]:
+    """Return the two unit plane normals ``n'_a``, ``n'_b`` and the index of S's largest |s_kk|.
+
+    Malis and Vargas (2007) give three equivalent formulas; the one built on the row of S with
+    the largest diagonal entry is used, for numerical stability.
+    """
+    root = {k: np.sqrt(max(minors[(k, k)], 0.0)) for k in range(3)}
+    sign = {k: 1.0 if minors[k] >= 0.0 else -1.0 for k in ((0, 1), (0, 2), (1, 2))}
+    k = int(np.argmax(np.abs(np.diag(s))))
+    if k == 0:
+        na = np.array([s[0, 0], s[0, 1] + root[2], s[0, 2] + sign[(1, 2)] * root[1]])
+        nb = np.array([s[0, 0], s[0, 1] - root[2], s[0, 2] - sign[(1, 2)] * root[1]])
+    elif k == 1:
+        na = np.array([s[0, 1] + root[2], s[1, 1], s[1, 2] - sign[(0, 2)] * root[0]])
+        nb = np.array([s[0, 1] - root[2], s[1, 1], s[1, 2] + sign[(0, 2)] * root[0]])
+    else:
+        na = np.array([s[0, 2] + sign[(0, 1)] * root[1], s[1, 2] + root[0], s[2, 2]])
+        nb = np.array([s[0, 2] - sign[(0, 1)] * root[1], s[1, 2] - root[0], s[2, 2]])
+    return na / np.linalg.norm(na), nb / np.linalg.norm(nb), k
+
+
+def _motion_scalars(s: Matrix3, minors: _Minors) -> tuple[float, float, float]:
+    """Return Malis and Vargas' scalars ``ν``, ``ρ`` and ``‖t_e‖``.
+
+    ``ν = 2 √(1 + tr S - M₁₁ - M₂₂ - M₃₃)``, ``ρ² = 2 + tr S + ν``, ``‖t_e‖² = 2 + tr S - ν``;
+    each radicand is clamped at zero, since rounding takes a zero just below it.
+    """
+    trace = float(np.trace(s))
+    nu = 2.0 * np.sqrt(max(1.0 + trace - minors[(0, 0)] - minors[(1, 1)] - minors[(2, 2)], 0.0))
+    rho = float(np.sqrt(max(2.0 + trace + nu, 0.0)))
+    t_norm = float(np.sqrt(max(2.0 + trace - nu, 0.0)))
+    return float(nu), rho, t_norm
+
+
 def decompose_reference(homography: Matrix3) -> dict[str, NDArray[np.float64]]:
     """Decompose a calibrated H by Malis and Vargas' closed form (the reference).
 
     Unchecked apart from its rank: a matrix of rank below 2 raises DegenerateError, as the C++
-    core does.
+    core does. The names follow the paper: ``S = HᵀH - I``, the plane normals ``n'_a``,
+    ``n'_b``, ``ε = sign(s_kk)``, and ``t*_a``, ``t*_b`` the translations before rotation.
     """
     singular = np.linalg.svd(homography, compute_uv=False)
     if not singular[1] > RANK_TOLERANCE * singular[0]:
@@ -345,34 +392,16 @@ def decompose_reference(homography: Matrix3) -> dict[str, NDArray[np.float64]]:
         pose = np.eye(4)
         pose[:3, :3] = so3.project_to_so3(h if np.linalg.det(h) > 0.0 else -h)
         return {"poses": pose[None], "normals": np.zeros((1, 3))}
-    m = {
-        (i, j): _opposite_of_minor(s, i, j)
-        for i, j in ((0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2))
-    }
-    root = {k: np.sqrt(max(m[(k, k)], 0.0)) for k in range(3)}
-    sign = {k: 1.0 if m[k] >= 0.0 else -1.0 for k in ((0, 1), (0, 2), (1, 2))}
-    k = int(np.argmax(np.abs(np.diag(s))))
-    if k == 0:
-        na = np.array([s[0, 0], s[0, 1] + root[2], s[0, 2] + sign[(1, 2)] * root[1]])
-        nb = np.array([s[0, 0], s[0, 1] - root[2], s[0, 2] - sign[(1, 2)] * root[1]])
-    elif k == 1:
-        na = np.array([s[0, 1] + root[2], s[1, 1], s[1, 2] - sign[(0, 2)] * root[0]])
-        nb = np.array([s[0, 1] - root[2], s[1, 1], s[1, 2] + sign[(0, 2)] * root[0]])
-    else:
-        na = np.array([s[0, 2] + sign[(0, 1)] * root[1], s[1, 2] + root[0], s[2, 2]])
-        nb = np.array([s[0, 2] - sign[(0, 1)] * root[1], s[1, 2] - root[0], s[2, 2]])
-    trace = float(np.trace(s))
-    v = 2.0 * np.sqrt(max(1.0 + trace - m[(0, 0)] - m[(1, 1)] - m[(2, 2)], 0.0))
-    r = np.sqrt(max(2.0 + trace + v, 0.0))
-    n_t = np.sqrt(max(2.0 + trace - v, 0.0))
-    na, nb = na / np.linalg.norm(na), nb / np.linalg.norm(nb)
-    e = 1.0 if s[k, k] >= 0.0 else -1.0
-    ta_star = 0.5 * n_t * (e * r * nb - n_t * na)
-    tb_star = 0.5 * n_t * (e * r * na - n_t * nb)
+    minors = _minors(s)
+    na, nb, k = _plane_normals(s, minors)
+    nu, rho, t_norm = _motion_scalars(s, minors)
+    epsilon = 1.0 if s[k, k] >= 0.0 else -1.0
+    ta_star = 0.5 * t_norm * (epsilon * rho * nb - t_norm * na)
+    tb_star = 0.5 * t_norm * (epsilon * rho * na - t_norm * nb)
     poses = np.tile(np.eye(4), (4, 1, 1))
     normals = np.empty((4, 3))
     for j, (t_star, n) in enumerate(((ta_star, na), (tb_star, nb))):
-        rotation = _rotation_from(h, t_star, n, v)
+        rotation = _rotation_from(h, t_star, n, nu)
         t = rotation @ t_star
         for sgn, slot in ((1.0, 2 * j), (-1.0, 2 * j + 1)):
             poses[slot, :3, :3] = rotation

@@ -287,21 +287,22 @@ const char* name(Status status) {
 }
 
 Result<void> check_options(const Options& options) {
-  for (const double value : {options.focal, options.threshold_px, options.sigma_px}) {
+  for (const auto& [name, value] :
+       {std::pair{"focal", options.focal}, std::pair{"threshold_px", options.threshold_px},
+        std::pair{"sigma_px", options.sigma_px}}) {
     if (!std::isfinite(value) || value <= 0.0) {
-      return fail(ErrorKind::kInvalidInput,
-                  "focal, threshold_px, sigma_px: must be positive and finite");
+      return fail_setting(name, "must be positive and finite", value);
     }
   }
   if (!std::isfinite(options.min_parallax_deg) || options.min_parallax_deg < 0.0) {
-    return fail(ErrorKind::kInvalidInput, "min_parallax_deg: must be non-negative");
+    return fail_setting("min_parallax_deg", "must be non-negative", options.min_parallax_deg);
   }
   if (options.min_points < 1) {
-    return fail(ErrorKind::kInvalidInput, "min_points: must be at least 1");
+    return fail_setting("min_points", "must be at least 1", options.min_points);
   }
   if (std::isnan(options.ambiguity_ratio) || options.ambiguity_ratio <= 0.0 ||
       options.ambiguity_ratio > 1.0) {
-    return fail(ErrorKind::kInvalidInput, "ambiguity_ratio: must be in (0, 1]");
+    return fail_setting("ambiguity_ratio", "must be in (0, 1]", options.ambiguity_ratio);
   }
   return {};
 }

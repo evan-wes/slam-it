@@ -157,6 +157,14 @@ layers = [
   "problem",
 ]
 
+# OpenCV serves the demos as an external reference only: slamlab never wraps it (a stated
+# non-goal), and the edge rungs need a light dependency set.
+[[tool.importlinter.contracts]]
+name = "slamlab never imports OpenCV"
+type = "forbidden"
+source_modules = ["slamlab"]
+forbidden_modules = ["cv2"]
+
 # pycolmap is an optional reference, imported by slamlab.eval alone.
 [[tool.importlinter.contracts]]
 name = "Only eval may import pycolmap"

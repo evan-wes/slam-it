@@ -155,11 +155,11 @@ def test_required_iterations() -> None:
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        ({"threshold": 0.0}, "threshold"),
+        ({"threshold": 0.0}, "threshold: must be positive and finite, got 0.0"),
         ({"threshold": math.nan}, "threshold"),
         ({"threshold": 1.0, "confidence": 1.0}, "confidence"),
         ({"threshold": 1.0, "max_iterations": 0}, "max_iterations"),
-        ({"threshold": 1.0, "lo_steps": 0}, "lo_steps"),
+        ({"threshold": 1.0, "lo_steps": 0}, "lo_steps: must be at least 1, got 0"),
         ({"threshold": 1.0, "lo_threshold_multiplier": 0.5}, "lo_threshold_multiplier"),
     ],
 )

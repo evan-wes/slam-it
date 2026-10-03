@@ -154,17 +154,21 @@ class Options:
             If a setting is out of range.
         """
         if not (math.isfinite(self.threshold) and self.threshold > 0.0):
-            raise InvalidInputError("threshold: must be positive and finite")
+            raise InvalidInputError(f"threshold: must be positive and finite, got {self.threshold}")
         if not 0.0 < self.confidence < 1.0:
-            raise InvalidInputError("confidence: must be in (0, 1)")
-        if self.max_iterations < 1:
-            raise InvalidInputError("max_iterations: must be at least 1")
-        if self.lo_steps < 1 or self.lo_inner_iterations < 0 or self.lo_sample_factor < 1:
-            raise InvalidInputError("lo_steps, lo_inner_iterations, lo_sample_factor: out of range")
-        if not (
-            math.isfinite(self.lo_threshold_multiplier) and self.lo_threshold_multiplier >= 1.0
-        ):
-            raise InvalidInputError("lo_threshold_multiplier: must be at least 1")
+            raise InvalidInputError(f"confidence: must be in (0, 1), got {self.confidence}")
+        for name in ("max_iterations", "lo_steps", "lo_sample_factor"):
+            if getattr(self, name) < 1:
+                raise InvalidInputError(f"{name}: must be at least 1, got {getattr(self, name)}")
+        if self.lo_inner_iterations < 0:
+            raise InvalidInputError(
+                f"lo_inner_iterations: must be non-negative, got {self.lo_inner_iterations}"
+            )
+        multiplier = self.lo_threshold_multiplier
+        if not (math.isfinite(multiplier) and multiplier >= 1.0):
+            raise InvalidInputError(
+                f"lo_threshold_multiplier: must be at least 1, got {multiplier}"
+            )
 
 
 @dataclass(frozen=True)

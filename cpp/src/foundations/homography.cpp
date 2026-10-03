@@ -178,6 +178,26 @@ std::pair<Eigen::Vector3d, Eigen::Vector3d> normal_candidates(const Eigen::Matri
           {s(0, 2) - (e01 * r11), s(1, 2) - r00, s(2, 2)}};
 }
 
+/// @brief Malis and Vargas' scalars.
+struct MotionScalars {
+  /// @brief nu = 2 sqrt(1 + tr S - M_11 - M_22 - M_33).
+  double nu;
+  /// @brief rho = sqrt(2 + tr S + nu).
+  double rho;
+  /// @brief |t_e| = sqrt(2 + tr S - nu).
+  double t_norm;
+};
+
+/// @brief Malis and Vargas' scalars, each radicand clamped at zero.
+/// @param s `H^T H - I`.
+/// @return nu, rho and |t_e|.
+MotionScalars motion_scalars(const Eigen::Matrix3d& s) {
+  const double trace = s.trace();
+  const double nu = 2.0 * root(1.0 + trace - opposite_of_minor(s, 0, 0) -
+                               opposite_of_minor(s, 1, 1) - opposite_of_minor(s, 2, 2));
+  return {.nu = nu, .rho = root(2.0 + trace + nu), .t_norm = root(2.0 + trace - nu)};
+}
+
 }  // namespace
 
 Result<PlanarMotions> decompose_homography(const Eigen::Matrix3d& homography) {
@@ -200,21 +220,20 @@ Result<PlanarMotions> decompose_homography(const Eigen::Matrix3d& homography) {
     out.normals.emplace_back(Eigen::Vector3d::Zero());
     return out;
   }
+  // Names follow Malis and Vargas: S, the plane normals n'_a and n'_b, epsilon = sign(s_kk),
+  // and t*_a, t*_b the translations before rotation.
   int k = 0;
   s.diagonal().cwiseAbs().maxCoeff(&k);
   auto [na, nb] = normal_candidates(s, k);
   na.normalize();
   nb.normalize();
-  const double trace = s.trace();
-  const double v = 2.0 * root(1.0 + trace - opposite_of_minor(s, 0, 0) -
-                              opposite_of_minor(s, 1, 1) - opposite_of_minor(s, 2, 2));
-  const double r = root(2.0 + trace + v);
-  const double n_t = root(2.0 + trace - v);
-  const double e = sign_of(s(k, k));
-  const Eigen::Vector3d ta_star = 0.5 * n_t * ((e * r * nb) - (n_t * na));
-  const Eigen::Vector3d tb_star = 0.5 * n_t * ((e * r * na) - (n_t * nb));
+  const MotionScalars scalars = motion_scalars(s);
+  const double epsilon = sign_of(s(k, k));
+  const double t_norm = scalars.t_norm;
+  const Eigen::Vector3d ta_star = 0.5 * t_norm * ((epsilon * scalars.rho * nb) - (t_norm * na));
+  const Eigen::Vector3d tb_star = 0.5 * t_norm * ((epsilon * scalars.rho * na) - (t_norm * nb));
   for (const auto& [t_star, n] : {std::pair{ta_star, na}, std::pair{tb_star, nb}}) {
-    const Eigen::Matrix3d rotation = rotation_from(h, t_star, n, v);
+    const Eigen::Matrix3d rotation = rotation_from(h, t_star, n, scalars.nu);
     const Eigen::Vector3d t = rotation * t_star;
     for (const double sign : {1.0, -1.0}) {
       Eigen::Matrix4d pose = Eigen::Matrix4d::Identity();

@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <utility>
 
 namespace slamlab::foundations::ransac {
 
@@ -23,20 +24,24 @@ const char* name(Termination termination) {
 
 Result<void> check_options(const Options& options) {
   if (!std::isfinite(options.threshold) || options.threshold <= 0.0) {
-    return fail(ErrorKind::kInvalidInput, "threshold: must be positive and finite");
+    return fail_setting("threshold", "must be positive and finite", options.threshold);
   }
   if (std::isnan(options.confidence) || options.confidence <= 0.0 || options.confidence >= 1.0) {
-    return fail(ErrorKind::kInvalidInput, "confidence: must be in (0, 1)");
+    return fail_setting("confidence", "must be in (0, 1)", options.confidence);
   }
-  if (options.max_iterations < 1) {
-    return fail(ErrorKind::kInvalidInput, "max_iterations: must be at least 1");
+  for (const auto& [name, value] : {std::pair{"max_iterations", options.max_iterations},
+                                    std::pair{"lo_steps", options.lo_steps},
+                                    std::pair{"lo_sample_factor", options.lo_sample_factor}}) {
+    if (value < 1) {
+      return fail_setting(name, "must be at least 1", value);
+    }
   }
-  if (options.lo_steps < 1 || options.lo_inner_iterations < 0 || options.lo_sample_factor < 1) {
-    return fail(ErrorKind::kInvalidInput,
-                "lo_steps, lo_inner_iterations, lo_sample_factor: out of range");
+  if (options.lo_inner_iterations < 0) {
+    return fail_setting("lo_inner_iterations", "must be non-negative", options.lo_inner_iterations);
   }
   if (!std::isfinite(options.lo_threshold_multiplier) || options.lo_threshold_multiplier < 1.0) {
-    return fail(ErrorKind::kInvalidInput, "lo_threshold_multiplier: must be at least 1");
+    return fail_setting("lo_threshold_multiplier", "must be at least 1",
+                        options.lo_threshold_multiplier);
   }
   return {};
 }

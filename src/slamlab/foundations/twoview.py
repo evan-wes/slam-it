@@ -163,13 +163,17 @@ class Options:
         for name in ("focal", "threshold_px", "sigma_px"):
             value = getattr(self, name)
             if not (math.isfinite(value) and value > 0.0):
-                raise InvalidInputError(f"{name}: must be positive and finite")
+                raise InvalidInputError(f"{name}: must be positive and finite, got {value}")
         if not (math.isfinite(self.min_parallax_deg) and self.min_parallax_deg >= 0.0):
-            raise InvalidInputError("min_parallax_deg: must be non-negative")
+            raise InvalidInputError(
+                f"min_parallax_deg: must be non-negative, got {self.min_parallax_deg}"
+            )
         if self.min_points < 1:
-            raise InvalidInputError("min_points: must be at least 1")
+            raise InvalidInputError(f"min_points: must be at least 1, got {self.min_points}")
         if not 0.0 < self.ambiguity_ratio <= 1.0:
-            raise InvalidInputError("ambiguity_ratio: must be in (0, 1]")
+            raise InvalidInputError(
+                f"ambiguity_ratio: must be in (0, 1], got {self.ambiguity_ratio}"
+            )
 
     def ransac_options(self, stream: int) -> ransac.Options:
         """Return RANSAC's options in the normalised plane, on one random stream.

@@ -189,7 +189,10 @@ def test_gric_terms() -> None:
         ({"focal": 0.0}, "focal"),
         ({"focal": 520.0, "sigma_px": -1.0}, "sigma_px"),
         ({"focal": 520.0, "min_points": 0}, "min_points"),
-        ({"focal": 520.0, "ambiguity_ratio": 1.5}, "ambiguity_ratio"),
+        (
+            {"focal": 520.0, "ambiguity_ratio": 1.5},
+            r"ambiguity_ratio: must be in \(0, 1\], got 1.5",
+        ),
         ({"focal": 520.0, "min_parallax_deg": math.nan}, "min_parallax_deg"),
     ],
 )
