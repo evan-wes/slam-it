@@ -6,8 +6,8 @@
 /// A solution crosses as a dict: `model`, `inliers` (bool) and `summary`, a dict of the
 /// summary's fields with `termination` as its index in `codes()["ransac_termination"]`.
 /// A refined run's summary (`ransac::RefinedSummary`) crosses as a dict: `run` (see
-/// `ransac_summary`), `refinement` (see `nls_summary`, or None if it did not run) and
-/// `refined`; its module's `codes()` carries both `ransac_termination` and
+/// `ransac_summary`), `refinement` (see `nls_summary`, or None if it did not run), `refined`
+/// and `rounds`; its module's `codes()` carries both `ransac_termination` and
 /// `nls_termination`.
 #pragma once
 
@@ -102,13 +102,14 @@ nanobind::dict ransac_result(const foundations::ransac::Solution<Model>& solutio
 
 /// @brief A refined run's summary as a dict.
 /// @param summary The summary.
-/// @return `{"run", "refinement", "refined"}`.
+/// @return `{"run", "refinement", "refined", "rounds"}`.
 inline nanobind::dict refined_summary(const foundations::ransac::RefinedSummary& summary) {
   nanobind::dict out;
   out["run"] = ransac_summary(summary.run);
   out["refinement"] =
       summary.refinement ? nanobind::object(nls_summary(*summary.refinement)) : nanobind::none();
   out["refined"] = summary.refined;
+  out["rounds"] = summary.rounds;
   return out;
 }
 

@@ -105,6 +105,9 @@ class Termination(enum.StrEnum):
     """Not converged: ``max_iterations`` samples were drawn first."""
 
 
+REFINE_ROUNDS = 4
+"""At most this many refine-and-reselect rounds polish a consensus (:func:`refine_consensus`)."""
+
 CONVERGED = frozenset({Termination.CONFIDENCE})
 """The terminations that count as converged."""
 
@@ -424,14 +427,17 @@ class RefinedSummary:
     run : Summary
         The RANSAC run; its ``inlier_count`` and ``score`` describe the returned model.
     refinement : nls.Summary or None
-        The refinement's solve, if it ran (refinement on, and enough inliers).
+        The last refinement's solve, if one ran (refinement on, and enough inliers).
     refined : bool
-        Whether the refined model was kept: it lowered the MSAC cost.
+        Whether a refined model was kept: it lowered the MSAC cost.
+    rounds : int
+        Refine-and-reselect rounds run (0 if the refinement did not run).
     """
 
     run: Summary
     refinement: nls.Summary | None
     refined: bool
+    rounds: int
 
     @classmethod
     def unrefined(cls, run: Summary) -> RefinedSummary:
@@ -447,7 +453,7 @@ class RefinedSummary:
         RefinedSummary
             `run`, no refinement, not refined.
         """
-        return cls(run, refinement=None, refined=False)
+        return cls(run, refinement=None, refined=False, rounds=0)
 
     @property
     def iterations(self) -> int:
@@ -473,10 +479,15 @@ def refine_consensus(
     threshold: float,
     minimum: int,
 ) -> Solution[Consensus[ModelT], RefinedSummary]:
-    """Refine RANSAC's model on its inliers, keeping it only if the MSAC cost drops.
+    """Refine RANSAC's model on its inliers, re-collect them, and repeat while the cost drops.
 
-    The refinement minimises its own (robust, geometric) cost, not MSAC's truncated one, so a
-    refined model can score worse; it is then discarded, and the summary says so.
+    Each round refines the model on the current inliers, rescores it by MSAC over all the data,
+    and keeps it only if the cost drops; the kept model's inliers are re-collected and the next
+    round starts from them. It stops when a round does not lower the cost, the inliers stop
+    changing, or after :data:`REFINE_ROUNDS` rounds. The refinement minimises its own (robust,
+    geometric) cost, not MSAC's truncated one, so a refined model can score worse; it is then
+    discarded. Re-collecting matters where LO's least-squares refits cannot run (EPnP on planar
+    points): one refinement on the minimal sample's consensus leaves the inliers it missed.
 
     Parameters
     ----------
@@ -497,20 +508,27 @@ def refine_consensus(
         The kept model, its inliers and the :class:`RefinedSummary`, whose run's
         ``inlier_count`` and ``score`` describe the kept model.
     """
-    unrefined = RefinedSummary.unrefined(found.summary)
-    inliers = found.state.inliers
-    if np.count_nonzero(inliers) < minimum:
-        return Solution(state=found.state, summary=unrefined)
-    solved = refine(found.state.model, inliers)
-    residuals = estimator.residuals(solved.state)
-    score = _score(residuals, threshold**2)
-    if not score < found.summary.score:
-        return Solution(state=found.state, summary=replace(unrefined, refinement=solved.summary))
-    kept = residuals < threshold**2
-    run = replace(found.summary, inlier_count=int(np.count_nonzero(kept)), score=score)
+    threshold2 = threshold**2
+    state, score = found.state, found.summary.score
+    refinement: nls.Summary | None = None
+    refined, rounds = False, 0
+    while rounds < REFINE_ROUNDS and np.count_nonzero(state.inliers) >= minimum:
+        solved = refine(state.model, state.inliers)
+        rounds += 1
+        refinement = solved.summary
+        residuals = estimator.residuals(solved.state)
+        candidate = _score(residuals, threshold2)
+        if not candidate < score:
+            break
+        kept = residuals < threshold2
+        unchanged = bool(np.array_equal(kept, state.inliers))
+        state, score, refined = Consensus(model=solved.state, inliers=kept), candidate, True
+        if unchanged:
+            break
+    run = replace(found.summary, inlier_count=int(np.count_nonzero(state.inliers)), score=score)
     return Solution(
-        state=Consensus(model=solved.state, inliers=kept),
-        summary=RefinedSummary(run, refinement=solved.summary, refined=True),
+        state=state,
+        summary=RefinedSummary(run, refinement=refinement, refined=refined, rounds=rounds),
     )
 
 
@@ -610,7 +628,8 @@ def refined_summary_from_backend(raw: dict[str, Any], codes: backends.Codes) -> 
     ----------
     raw : dict
         ``run`` (see :func:`summary_from_backend`), ``refinement`` (see
-        :func:`slamlab.foundations.nls.summary_from_backend`, or None) and ``refined``.
+        :func:`slamlab.foundations.nls.summary_from_backend`, or None), ``refined`` and
+        ``rounds``.
     codes : dict of str to list of str
         The backend's enum names: ``ransac_termination`` and ``nls_termination``.
 
@@ -624,6 +643,7 @@ def refined_summary_from_backend(raw: dict[str, Any], codes: backends.Codes) -> 
         run=summary_from_backend(raw["run"], codes),
         refinement=None if refinement is None else nls.summary_from_backend(refinement, codes),
         refined=bool(raw["refined"]),
+        rounds=int(raw["rounds"]),
     )
 
 

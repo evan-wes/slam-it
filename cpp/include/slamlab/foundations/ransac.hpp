@@ -45,6 +45,9 @@ concept Estimator =
       { estimator.residuals(model) } -> std::convertible_to<Eigen::VectorXd>;
     };
 
+/// @brief At most this many refine-and-reselect rounds polish a consensus (`refine_consensus`).
+inline constexpr int kRefineRounds = 4;
+
 /// @brief Why `estimate` stopped, with the integer codes it crosses the bindings as.
 enum class Termination : std::uint8_t {
   /// @brief Converged: enough samples were drawn to reach the target confidence.
@@ -328,10 +331,12 @@ template <Estimator E>
 struct RefinedSummary {
   /// @brief The RANSAC run; its inlier count and score describe the returned model.
   Summary run;
-  /// @brief The refinement's solve, if it ran (refinement on, and enough inliers).
+  /// @brief The last refinement's solve, if one ran (refinement on, and enough inliers).
   std::optional<nls::Summary> refinement;
-  /// @brief Whether the refined model was kept (it lowered the MSAC cost).
+  /// @brief Whether a refined model was kept (it lowered the MSAC cost).
   bool refined = false;
+  /// @brief Refine-and-reselect rounds run (0 if the refinement did not run).
+  int rounds = 0;
 };
 
 /// @brief A refined RANSAC run's estimate and how it went. A named struct, not
@@ -352,12 +357,15 @@ struct RefinedSolution {
 /// @return Its consensus, with a summary holding the run and no refinement.
 template <typename Model>
 RefinedSolution<Model> unrefined(Solution<Model> found) {
-  return {.state = std::move(found.state),
-          .summary = {.run = found.summary, .refinement = std::nullopt, .refined = false}};
+  return {
+      .state = std::move(found.state),
+      .summary = {.run = found.summary, .refinement = std::nullopt, .refined = false, .rounds = 0}};
 }
 
-/// @brief Refine RANSAC's model on its inliers, keeping it only if the MSAC cost drops (see
-///        `slamlab.foundations.ransac.refine_consensus`).
+/// @brief Refine RANSAC's model on its inliers, re-collect them, and repeat while the MSAC
+///        cost drops (see `slamlab.foundations.ransac.refine_consensus`): at most
+///        `kRefineRounds` rounds, stopping when a round does not lower the cost or the inliers
+///        stop changing.
 /// @tparam E The estimator type.
 /// @tparam Refine Callable as `refine(model, inlier indices)`, returning
 ///         `solve::Solution<E::Model, nls::Summary>`.
@@ -369,36 +377,44 @@ RefinedSolution<Model> unrefined(Solution<Model> found) {
 /// @return The kept model, its inliers and the summary, whose run's inlier count and score
 ///         describe the kept model.
 template <Estimator E, typename Refine>
-  requires std::invocable<Refine&, const typename E::Model&, const Indices&>
+  requires std::invocable<const Refine&, const typename E::Model&, const Indices&>
 // NOLINTBEGIN(bugprone-easily-swappable-parameters): (threshold, minimum), as in Python
 RefinedSolution<typename E::Model> refine_consensus(const E& estimator,
                                                     Solution<typename E::Model> found,
-                                                    Refine&& refine, double threshold,
+                                                    const Refine& refine, double threshold,
                                                     std::uint32_t minimum) {
   // NOLINTEND(bugprone-easily-swappable-parameters)
   RefinedSolution<typename E::Model> out = unrefined(std::move(found));
-  Indices inliers;
-  for (Eigen::Index i = 0; i < out.state.inliers.size(); ++i) {
-    if (out.state.inliers(i)) {
-      inliers.push_back(static_cast<std::uint32_t>(i));
+  const double threshold2 = threshold * threshold;
+  while (out.summary.rounds < kRefineRounds) {
+    Indices inliers;
+    for (Eigen::Index i = 0; i < out.state.inliers.size(); ++i) {
+      if (out.state.inliers(i)) {
+        inliers.push_back(static_cast<std::uint32_t>(i));
+      }
+    }
+    if (inliers.size() < minimum) {
+      break;
+    }
+    auto solved = refine(std::as_const(out.state.model), std::as_const(inliers));
+    ++out.summary.rounds;
+    out.summary.refinement = std::move(solved.summary);
+    const Eigen::VectorXd residuals = estimator.residuals(solved.state);
+    const double score = detail::score(residuals, threshold2);
+    if (!(score < out.summary.run.score)) {
+      break;
+    }
+    Eigen::Array<bool, Eigen::Dynamic, 1> kept = residuals.array() < threshold2;
+    const bool unchanged = (kept == out.state.inliers).all();
+    out.state.model = std::move(solved.state);
+    out.state.inliers = std::move(kept);
+    out.summary.run.inlier_count = static_cast<int>(out.state.inliers.count());
+    out.summary.run.score = score;
+    out.summary.refined = true;
+    if (unchanged) {
+      break;
     }
   }
-  if (inliers.size() < minimum) {
-    return out;
-  }
-  auto solved = std::forward<Refine>(refine)(out.state.model, inliers);
-  out.summary.refinement = std::move(solved.summary);
-  const Eigen::VectorXd residuals = estimator.residuals(solved.state);
-  const double threshold2 = threshold * threshold;
-  const double score = detail::score(residuals, threshold2);
-  if (!(score < out.summary.run.score)) {
-    return out;
-  }
-  out.state.model = std::move(solved.state);
-  out.state.inliers = residuals.array() < threshold2;
-  out.summary.run.inlier_count = static_cast<int>(out.state.inliers.count());
-  out.summary.run.score = score;
-  out.summary.refined = true;
   return out;
 }
 
@@ -414,11 +430,11 @@ RefinedSolution<typename E::Model> refine_consensus(const E& estimator,
 /// @param minimum The fewest inliers the refinement needs.
 /// @return The kept model, its inliers and the summary; `estimate`'s errors.
 template <Estimator E, typename Refine>
-  requires std::invocable<Refine&, const typename E::Model&, const Indices&>
+  requires std::invocable<const Refine&, const typename E::Model&, const Indices&>
 [[nodiscard]] Result<RefinedSolution<typename E::Model>> estimate_refined(const E& estimator,
                                                                           const Options& options,
                                                                           bool refine,
-                                                                          Refine&& refiner,
+                                                                          const Refine& refiner,
                                                                           std::uint32_t minimum) {
   auto found = estimate(estimator, options);
   if (!found) {
@@ -427,8 +443,7 @@ template <Estimator E, typename Refine>
   if (!refine) {
     return unrefined(std::move(*found));
   }
-  return refine_consensus(estimator, std::move(*found), std::forward<Refine>(refiner),
-                          options.threshold, minimum);
+  return refine_consensus(estimator, std::move(*found), refiner, options.threshold, minimum);
 }
 
 }  // namespace slamlab::foundations::ransac

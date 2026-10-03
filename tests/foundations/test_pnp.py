@@ -229,15 +229,42 @@ def test_ransac_recovers_the_pose_through_outliers(backend: str, solver: str) ->
         assert found.summary.converged
 
 
-def test_the_refinement_lowers_the_error() -> None:
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_ransac_on_a_planar_scene_reaches_the_floor(backend: str) -> None:
+    """On a plane, refining and re-collecting the inliers brings the pose to the noise floor.
+
+    EPnP refuses planar points, so LO's refits cannot run; one refinement left the pose 2x off
+    the floor (p90 8x). The floor is the refinement started at the true pose on the true inliers.
+    """
+    chosen = require_function(backend, pnp.__name__, "pnp_ransac")
+    threshold = 2.0 / FOCAL
+    ratios = []
+    for seed in range(10):
+        world, rays, truth, mask = _correspondences(seed, 200, sigma_px=1.0, outliers=0.4)
+        in_camera = sc.in_camera(truth, world)
+        in_camera[:, 2] = in_camera[:, 2].mean()
+        world = (in_camera - truth[:3, 3]) @ truth[:3, :3]
+        rays[mask] = sc.noisy(sc.bearings(in_camera[mask]), 1.0 / FOCAL, seed)
+        floor = pnp.refine_pose(truth, world[mask], rays[mask], scale=threshold).state
+        found = pnp.pnp_ransac(
+            world, rays, ransac.Options(threshold=threshold, seed=seed), backend=chosen
+        )
+        ratios.append(_pose_error(found.state.model, truth)[0] / _pose_error(floor, truth)[0])
+    assert np.median(ratios) < 1.6
+    assert max(ratios) < 4.0
+
+
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_the_refinement_lowers_the_error(backend: str) -> None:
     """Refining the consensus lowers the median rotation error below LO's EPnP refits'."""
+    chosen = require_function(backend, pnp.__name__, "pnp_ransac")
     errors: dict[bool, list[float]] = {True: [], False: []}
     for seed in range(20):
         world, rays, truth, _ = _correspondences(seed, 150, sigma_px=1.0, outliers=0.3)
         for refine in (True, False):
             found = pnp.pnp_ransac(
                 world, rays, ransac.Options(threshold=3.0 / FOCAL, seed=seed), refine=refine,
-                backend="cpp" if "cpp" in backends.available() else "python",
+                backend=chosen,
             )  # fmt: skip
             errors[refine].append(_pose_error(found.state.model, truth)[0])
     assert np.median(errors[True]) < np.median(errors[False])
