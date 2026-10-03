@@ -14,24 +14,6 @@ namespace twoview = slamlab::foundations::twoview;
 namespace epipolar = slamlab::foundations::epipolar;
 using slamlab::testing::expect;
 
-/// @brief Exact bearing pairs of deterministic points through `[R | t]`.
-/// @param rotation R.
-/// @param t t.
-/// @param planar Put the points on the plane z = 5.
-/// @param b1 Bearings in camera 1 (filled).
-/// @param b2 Bearings in camera 2 (filled).
-void scene(const Eigen::Matrix3d& rotation, const Eigen::Vector3d& t, bool planar,
-           epipolar::Rows3& b1, epipolar::Rows3& b2) {
-  constexpr int kPoints = 120;
-  b1.resize(kPoints, 3);
-  b2.resize(kPoints, 3);
-  for (int i = 0; i < kPoints; ++i) {
-    const Eigen::Vector3d x = slamlab::testing::scene_point(i, planar);
-    b1.row(i) = x.normalized().transpose();
-    b2.row(i) = ((rotation * x) + t).normalized().transpose();
-  }
-}
-
 }  // namespace
 
 int main() {
@@ -42,20 +24,20 @@ int main() {
   epipolar::Rows3 b1;
   epipolar::Rows3 b2;
 
-  scene(rotation, t, false, b1, b2);
+  slamlab::testing::scene_bearings(120, false, {rotation, t}, b1, b2);
   const auto general = twoview::initialize(b1, b2, options);
   expect(general.has_value() && general->status == twoview::Status::kInitialized &&
              general->model == twoview::Model::kEssential &&
              (general->relative_pose.topRightCorner<3, 1>() - t.normalized()).norm() < 1e-9,
          "a general scene initialises with E and the true motion", failures);
 
-  scene(rotation, t, true, b1, b2);
+  slamlab::testing::scene_bearings(120, true, {rotation, t}, b1, b2);
   const auto plane = twoview::initialize(b1, b2, options);
   expect(plane.has_value() && plane->status == twoview::Status::kInitialized &&
              plane->model == twoview::Model::kHomography,
          "a plane initialises with H", failures);
 
-  scene(rotation, Eigen::Vector3d::Zero(), false, b1, b2);
+  slamlab::testing::scene_bearings(120, false, {rotation, Eigen::Vector3d::Zero()}, b1, b2);
   const auto spin = twoview::initialize(b1, b2, options);
   expect(spin.has_value() && spin->status == twoview::Status::kPureRotation &&
              !spin->triangulated.any(),

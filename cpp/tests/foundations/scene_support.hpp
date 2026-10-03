@@ -4,7 +4,9 @@
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
+#include <algorithm>
 #include <cmath>
+#include <utility>
 
 /// @brief Helpers for slamlab's native tests.
 namespace slamlab::testing {
@@ -27,5 +29,34 @@ inline Eigen::Matrix3d scene_rotation() {
 /// @brief The scenes' relative translation: half a metre sideways.
 /// @return t of `T_c2_c1`.
 inline Eigen::Vector3d scene_translation() { return {0.5, -0.1, 0.05}; }
+
+/// @brief Rows of 3-vectors, row-major as the cores take them.
+using Rows3 = Eigen::Matrix<double, Eigen::Dynamic, 3, Eigen::RowMajor>;
+
+/// @brief Exact bearing pairs of the deterministic scene seen through `[R | t]`.
+/// @param n How many points.
+/// @param planar Put the points on the plane z = 5.
+/// @param pose The motion, `(R, t)`.
+/// @param b1 Bearings in camera 1 (filled).
+/// @param b2 Bearings in camera 2 (filled).
+inline void scene_bearings(int n, bool planar,
+                           const std::pair<Eigen::Matrix3d, Eigen::Vector3d>& pose, Rows3& b1,
+                           Rows3& b2) {
+  b1.resize(n, 3);
+  b2.resize(n, 3);
+  for (int i = 0; i < n; ++i) {
+    const Eigen::Vector3d x = scene_point(i, planar);
+    b1.row(i) = x.normalized().transpose();
+    b2.row(i) = ((pose.first * x) + pose.second).normalized().transpose();
+  }
+}
+
+/// @brief The smaller of `|a - b|` and `|a + b|` (entrywise max): equality up to sign.
+/// @param a A matrix.
+/// @param b A matrix.
+/// @return The distance.
+inline double up_to_sign(const Eigen::Matrix3d& a, const Eigen::Matrix3d& b) {
+  return std::min((a - b).cwiseAbs().maxCoeff(), (a + b).cwiseAbs().maxCoeff());
+}
 
 }  // namespace slamlab::testing
