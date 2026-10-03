@@ -6,9 +6,9 @@ added rung 0's geometry and estimation in Python and C++: SO(3), SE(3), Umeyama 
 camera models, nonlinear least squares and bundle adjustment; Rust's curated subset has SO(3)
 so far. PR 2 adds two-view geometry: triangulation, LO-MSAC RANSAC, the 8-point essential and
 fundamental matrices, homographies, their decompositions, and two-view initialisation with
-GRIC model selection, demonstrated on TUM RGB-D. PR 3 adds the 5-point solver (Nistér's,
-and Stewénius' behind an option) as E-RANSAC's default minimal solver, and the Sampson
-refinement of E on its manifold. Milestone 1's slice B continues in PR 4 (absolute pose: P3P,
+GRIC model selection, demonstrated on TUM RGB-D. PR 3 adds the 5-point solvers (Stewénius',
+the default, and Nistér's) as E-RANSAC's minimal solver, and the Sampson refinement of E on
+its manifold. Milestone 1's slice B continues in PR 4 (absolute pose: P3P,
 EPnP, refinement, PnP RANSAC); the Rust showcase (slice C) is PR 5.
 
 ## Purpose
@@ -203,9 +203,14 @@ settings are a frozen dataclass (`ransac.Options`, `twoview.Options`) passes
 `dataclasses.asdict(options)` as one `options` argument, and the binding reads each field by
 name. The binding refuses a dict whose keys are not exactly the dataclass's fields
 (`check_keys` in `cpp/bindings/common.hpp`), so a field added on one side fails loudly. Results
-cross as dicts of arrays and scalars, nested where they hold a sub-result (a RANSAC summary),
-with enums as integer codes and a `codes()` function giving their names. BA predates the rule
-and still passes its options as keyword scalars (see the open items).
+cross as dicts of arrays and scalars, nested where they hold a sub-result (a RANSAC summary,
+or E-RANSAC's summary nesting the refinement's), with enums as integer codes and a `codes()`
+function giving their names; a test holds each module's Python tables to its `codes()`. A
+choice field inside an options dataclass (`twoview.Options.essential_solver`) crosses by name,
+as `asdict` gives it, and the binding maps it through the core's `name()`, failing on an
+unknown name; a choice passed as its own argument (`essential_ransac`'s `minimal_solver`)
+crosses as a code. BA predates the rule and still passes its options as keyword scalars (see
+the open items).
 
 The cores check index bounds and sizes and return `InvalidInput`, even though the Python
 entry point validates too. Standalone C++ and Rust callers get the same protection, and both
@@ -546,6 +551,19 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
   - **Initialisation on low-parallax scenes.** On TUM fr1/xyz, 13 of 38 pairs report
     `low_parallax` and 3 stay `ambiguous` (see the two-view note). Milestone 2's tracker
     retries on later frames; revisit the thresholds there, against its success rate.
+- **Deferred from PR 3's review panel**
+  ([report](../reviews/2026-10-03-feature-five-point.md)):
+  - **Where refinements live (A6).** The Sampson refinement grew `epipolar` (its `Motion`,
+    `SampsonProblem`, the S² tangent basis and retraction). PR 4 adds pose refinement for PnP:
+    decide before it whether refinements get their own modules, and move the S² basis and
+    retraction next to `so3` when a second user appears.
+  - **Refining inside LO (L5).** LO's refits stay the algebraic 8-point; PoseLib refines on
+    the Sampson error inside LO, and SupeRANSAC (Barath, arXiv 2506.04803, 2025) finishes E
+    with LM on MAGSAC++-weighted Sampson error. An inlier-reselect and refine loop is the next
+    step if the floor ratio matters.
+  - **`codes()` keys (A7).** `"termination"` is NLS' in BA and RANSAC's in epipolar and
+    two-view (where NLS' is `"nls_termination"`). Qualify both when another module nests
+    summaries; with A8 of PR 2 (a generic dispatch).
 - **Deferred from PR 1's review panel**
   ([report](../reviews/2026-10-02-feature-ba-spine.md)):
   - **Batched APIs for standalone callers (A11).** Batching over many inputs lives in the

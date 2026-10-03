@@ -28,14 +28,19 @@ the geometric (Sampson) error, not an algebraic one, can go below the floor.
 |---|---|
 | `fivepoint.essential_5pt(b1, b2, solver=)` | every essential matrix five bearing pairs allow, (K, 3, 3), K ≤ 10 |
 | `fivepoint.real_roots(poly)` | a polynomial's distinct real roots, by Sturm sequences and bisection |
-| `epipolar.essential_ransac(b1, b2, options, minimal_solver=, refine=)` | LO-MSAC with a chosen minimal solver, then the refinement |
+| `epipolar.essential_ransac(b1, b2, options, minimal_solver=, refine=)` | LO-MSAC with a chosen minimal solver, then the refinement; an `EssentialSummary` |
 | `epipolar.refine_essential(E, b1, b2, scale=)` | E refined on inlier pairs' robust Sampson distance; a `Solution` with `nls.Summary` |
 | `twoview.Options(essential_solver=, refine=)` | the same two choices for the initialiser |
 
-`solver` is `"nister"` (the default) or `"stewenius"`; `minimal_solver` and `essential_solver`
+`solver` is `"stewenius"` (the default) or `"nister"`; `minimal_solver` and `essential_solver`
 also accept `"8pt"`, PR 2's behaviour. `refine` defaults to on. The C++ core implements all of
 it; the options cross the bindings as codes (`codes()["minimal_solver"]`) or, inside
 `twoview.Options`' dict, by name.
+
+E-RANSAC's summary, `EssentialSummary`, nests the RANSAC run's (`run`: samples, inliers,
+score of the returned E) and the refinement's `nls.Summary` (`refinement`, None when it did
+not run), with `refined`: whether the refined E was kept. The two-view result carries it as
+its `essential` summary, so whether the refinement ran, converged and helped is visible.
 
 ## The maths
 
@@ -48,15 +53,36 @@ monomials of degree up to three.
 **Nistér (2004).** In Nistér's monomial order, Gauss-Jordan elimination leaves six rows that
 pair up into a 3x3 matrix `B(z)` of polynomials, which must be singular. `det B(z)` has degree
 ten. Its real roots are isolated by a Sturm sequence and bisection, and `(x, y)` is B's null
-vector at each root. Forming the determinant loses digits on some samples, so each solution is
-**polished** by three Gauss-Newton steps on the ten original cubics. On 300 exact random
-problems the worst error in E fell from 7e-4 to 2e-11.
+vector at each root. Forming the determinant loses digits on some samples.
 
 **Stewénius, Engels and Nistér (2006).** In graded reverse lexicographic order, elimination
 expresses the ten cubic monomials in the ten lower ones. That is the **action matrix** of
 multiplication by `x`, whose eigenvectors are the solutions (a Gröbner-basis method). One
-10x10 eigen-decomposition replaces the polynomial and its roots. It is accurate to about
-1e-9 without polishing, and is a third faster than Nistér in C++.
+10x10 eigen-decomposition replaces the polynomial and its roots.
+
+**Polishing.** Each solution of either method is polished by Gauss-Newton on the ten
+original cubics, to convergence: a step is taken only if it lowers the constraints' residual,
+and the polish stops when a step is below 1e-14 of the solution, or after 10 steps. On 300
+exact generic problems the worst error in E is 1.6e-12 for both solvers, from 7e-4 (Nistér)
+and 1.2e-9 (Stewénius) unpolished; the two backends agree to 1e-10.
+
+**Near degeneracy, and the default.** Generic samples hide the solvers' weak spot, which the
+review panel found: a small baseline with forward motion, where the initialiser works.
+Counting how often the true E is missing from the solutions of 300 exact samples
+(`five_point_degeneracy_probe.py`, threshold 1e-4):
+
+| Motion, baseline | Nistér, unpolished | Nistér, 3 steps | **Nistér, converged** | Stewénius, unpolished | **Stewénius, converged** | PoseLib |
+|---|---|---|---|---|---|---|
+| forward, 1% | 196 | 127 | **105** | 90 | **18** | 131 |
+| forward, 5% | 67 | 19 | **14** | 3 | **0** | 33 |
+| sideways, 1% | 77 | 29 | **25** | 10 | **2** | 40 |
+
+Polishing to convergence helps both. Nistér's remaining misses are not a precision problem:
+rounding in the degree-10 determinant turns the true real root into a near-real complex pair
+(for example `−4.0346 ± 0.0068i` for a true `z = −4.0256`), which the Sturm sequence rightly
+does not count. Stewénius' eigen-decomposition does not go through that polynomial. On
+generic scenes the two are indistinguishable (identical RANSAC runs, the same speed once both
+are polished), so **Stewénius is the default**.
 
 **Only essential matrices are returned.** With no baseline every `[t]ₓ R` fits, and the cubics
 have a continuum of solutions instead of ten points. The solvers' roots are then arbitrary,
@@ -93,11 +119,19 @@ if the MSAC cost over all matches is lower, then recomputes the inliers and scor
 
 ## How it's checked
 
+- **Parity fixtures** (`tests/fixtures/foundations/`, from `generate_twoview.py` in 50
+  digits): `fivepoint.json` (exact samples, both solvers, the true E among the solutions to
+  1e-9); in `epipolar.json`, `essential_ransac` for Stewénius and Nistér refined and the
+  8-point unrefined (the true E and exactly the clean pairs), and `refine_essential` from a
+  perturbed start (the true E to 1e-8, converged).
 - **The true E is among the solutions.** On 50 random exact problems, for both solvers and
   both backends, one solution matches the truth to 1e-8. Every solution has singular values
-  (1, 1, 0) and satisfies the five equations to 1e-9.
+  (1, 1, 0) and satisfies the five equations to 1e-9. A repeated pair gives none.
+- **Near degeneracy.** On 100 exact forward-motion samples at a 5% baseline, Stewénius misses
+  the true E at most twice and Nistér at most eight times, in both backends.
 - **The two solvers agree.** Nistér and Stewénius return the same number of solutions, equal
-  to 1e-7, and the C++ core matches the reference.
+  to 1e-9, and the C++ core matches the reference to 1e-10. The solver codes are checked
+  against the compiled `codes()`.
 - **PoseLib as an oracle.** Every PoseLib `essential_matrix_5pt` solution that satisfies the
   cubic constraint is one of ours, to 1e-8. The filter must be on the cubic constraint, not
   the epipolar residuals. Any matrix in the null space satisfies the five equations to 1e-17,
@@ -127,16 +161,16 @@ the C++ backend's wall time per RANSAC run (`five_point_sweep.py`).
 |---|---|---|---|---|---|
 | 8-point | no | 1.06, 3.48 | 738 | 0.915 | 8.4 |
 | 8-point | yes | 0.84, 3.19 | 738 | 0.949 | 8.4 |
-| Nistér | no | 0.93, 4.40 | 110 | 0.923 | 5.5 |
-| **Nistér** | **yes** | **0.71, 3.21** | **110** | **0.950** | **5.4** |
-| Stewénius | no | 0.93, 4.40 | 110 | 0.923 | 3.5 |
-| Stewénius | yes | 0.71, 3.21 | 110 | 0.950 | 3.5 |
+| Nistér | no | 0.93, 4.40 | 110 | 0.923 | 5.4 |
+| Nistér | yes | 0.71, 3.21 | 110 | 0.950 | 5.2 |
+| Stewénius | no | 0.93, 4.40 | 110 | 0.923 | 5.1 |
+| **Stewénius** | **yes** | **0.71, 3.21** | **110** | **0.950** | **5.1** |
 
 - The 5-point needs a seventh of the samples, and its models are better before any refinement.
 - The refinement is what goes below the floor.
-- Nistér and Stewénius draw identical runs (same samples, same models), so only their speed
-  differs. The pure-Python reference is about 50 times slower with Nistér (2-3 ms per sample)
-  than its C++ core.
+- Nistér and Stewénius draw identical runs here (same samples, same models). Unpolished,
+  Stewénius was a third faster; polished, they take the same time. The pure-Python reference
+  is about 50 times slower than its C++ core.
 
 **TUM fr1/xyz**, the two-view note's 38 frame pairs, on the same SIFT matches
 (`tum_solver_survey.py`). Errors are median degrees on the initialised
@@ -146,19 +180,22 @@ pairs:
 |---|---|---|---|---|
 | 8-point, no refine (PR 2) | 22 / 38 | 0.88 | 4.16 | 2 |
 | 8-point, refine | 22 / 38 | 0.72 | 2.29 | 2 |
-| **Nistér or Stewénius, refine** | **24 / 38** | **0.49** | **2.33** | **2** |
-| Nistér or Stewénius, no refine | 24 / 38 | 0.83 | 2.83 | 2 |
+| **Stewénius or Nistér, refine** | **24 / 38** | **0.49** | **2.33** | **2** |
+| Stewénius or Nistér, no refine | 24 / 38 | 0.83 | 2.83 | 2 |
 
 The unrefined 8-point row reproduces PR 2's survey exactly. With the 5-point solvers two pairs
 that were `ambiguous` now initialise. OpenCV's 5-point RANSAC on all 38 pairs has a median
 error of 1.32° rotation and 5.54° direction, and 12 wrong; that includes the 13 low-parallax
-pairs we decline. Try it with `scripts/demo_two_view.py --essential-solver stewenius
+pairs we decline. Try it with `scripts/demo_two_view.py --essential-solver nister
 --no-refine`.
 
 ## What was learned
 
-- **Precision matters in a minimal solver.** Nistér's determinant loses digits. Three
-  Gauss-Newton steps on the original constraints are cheap and recover them.
+- **Precision matters in a minimal solver, and generic tests hide where it fails.** Nistér's
+  determinant loses digits; polishing on the original constraints recovers them on generic
+  samples, but near degeneracy a root can leave the real axis altogether. The review panel
+  found it by testing the regime the initialiser works in, not random poses. Polish to
+  convergence, not a fixed count.
 - **"It fits the data" is not "it is a solution".** Any null-space matrix fits five epipolar
   equations exactly. Essentialness is the cubic constraint, which is what the oracle must be
   filtered on, and the reason degenerate samples can return junk.
