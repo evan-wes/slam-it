@@ -599,6 +599,10 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
   - **Depth maps in the library (A7).** `eval.tum` associates depth maps, but decoding the
     16-bit PNGs happens in the demo, with OpenCV, which `slamlab` may not import. Milestone 2's
     RGB-D mode needs an in-library loader: choose its PNG dependency then.
+  - **Why the refinement rounds stopped (L9, run 2).** On planar scenes the cap of four
+    rounds, not stable inliers, ends most runs, and `RefinedSummary` cannot say which
+    (`rounds == REFINE_ROUNDS` is either). Add a stop reason (cost, stable, cap, too few
+    inliers) when a caller needs it, with the summary-convention's termination enum.
   - **One feature front end (A8).** Each demo script has its own SIFT and ratio-test
     matching. Fold them into the edge rung's front end when it lands (milestone 2), or into
     one shared script helper if a third demo comes first.

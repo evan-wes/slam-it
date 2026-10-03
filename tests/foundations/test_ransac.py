@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import math
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from slamlab.foundations import ransac, solve
+from slamlab.foundations import nls, ransac, solve
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
 
 Line = NDArray[np.float64]
@@ -173,3 +173,106 @@ def test_rejects_too_few_data() -> None:
     """Fewer data than a minimal sample cannot be sampled."""
     with pytest.raises(InvalidInputError, match="fewer than a minimal sample"):
         ransac.estimate(LineEstimator(np.zeros((1, 2))), OPTIONS)
+
+
+class ScoreEstimator:
+    """A stub for :func:`ransac.refine_consensus`: the model is a number k.
+
+    With ``moving`` inliers, the first ``k`` data fit exactly and the rest miss, so raising k
+    lowers the cost and changes the inliers; otherwise the first five data are the inliers
+    whatever k, with residuals that shrink as k grows.
+    """
+
+    def __init__(self, *, moving: bool) -> None:
+        self.moving = moving
+
+    sample_size = 1
+    size = 10
+
+    def fit_minimal(self, sample: NDArray[np.int64]) -> list[float]:
+        """Unused by the refinement."""
+        raise NotImplementedError
+
+    def fit_nonminimal(self, subset: NDArray[np.int64]) -> list[float]:
+        """Unused by the refinement."""
+        raise NotImplementedError
+
+    def residuals(self, model: float) -> NDArray[np.float64]:
+        """Return the squared residuals under model k."""
+        index = np.arange(self.size)
+        if self.moving:
+            return np.where(index < model, 0.0, 1.0)
+        return np.where(index < 5, 0.1 / (model + 1.0), 1.0)
+
+
+def _start(
+    estimator: ScoreEstimator, model: float
+) -> solve.Solution[ransac.Consensus[float], ransac.Summary]:
+    """Return a RANSAC result at `model` (threshold 0.5), as `refine_consensus` receives it."""
+    residuals = estimator.residuals(model)
+    summary = ransac.Summary(
+        iterations=1,
+        termination=ransac.Termination.CONFIDENCE,
+        converged=True,
+        degenerate_samples=0,
+        local_optimizations=0,
+        inlier_count=int(np.count_nonzero(residuals < 0.25)),
+        score=float(np.sum(np.minimum(residuals, 0.25))),
+    )
+    return solve.Solution(ransac.Consensus(model, residuals < 0.25), summary)
+
+
+@dataclass(frozen=True)
+class Exit:
+    """One exit of the rounds: the stub's mode, start, step and minimum, and the outcome."""
+
+    moving: bool
+    start: float
+    step: float
+    minimum: int
+    rounds: int
+    refined: bool
+    model: float
+
+
+EXITS = {
+    "cap": Exit(True, 0.0, 1.0, 0, ransac.REFINE_ROUNDS, True, float(ransac.REFINE_ROUNDS)),
+    "worse": Exit(True, 3.0, -1.0, 0, 1, False, 3.0),
+    "stable": Exit(False, 0.0, 1.0, 0, 1, True, 1.0),
+    "too-few": Exit(False, 0.0, 1.0, 6, 0, False, 0.0),
+}
+"""The cap; a worse refinement discarded; a kept round whose inliers did not change; too few
+inliers to start."""
+
+NO_SOLVE = nls.Summary(
+    initial_cost=0.0,
+    final_cost=0.0,
+    iterations=0,
+    termination=nls.Termination.FUNCTION,
+    converged=True,
+    trace=(),
+)
+"""The stub refinement's summary."""
+
+
+@pytest.mark.parametrize("name", list(EXITS))
+def test_refine_consensus_rounds_and_their_exits(name: str) -> None:
+    """The rounds stop at the cap, on a worse refinement, on unchanged inliers, or never start.
+
+    Python's REFINE_ROUNDS and C++'s kRefineRounds are both pinned to 4 (here and by a
+    static_assert in cpp/tests/foundations/test_ransac.cpp).
+    """
+    assert ransac.REFINE_ROUNDS == 4
+    case = EXITS[name]
+    estimator = ScoreEstimator(moving=case.moving)
+    found = ransac.refine_consensus(
+        estimator,
+        _start(estimator, case.start),
+        lambda model, inliers: solve.Solution(model + case.step, NO_SOLVE),
+        threshold=0.5,
+        minimum=case.minimum,
+    )
+    outcome = (found.summary.rounds, found.summary.refined, found.state.model)
+    assert outcome == (case.rounds, case.refined, case.model)
+    expected_score = float(np.sum(np.minimum(estimator.residuals(case.model), 0.25)))
+    assert found.summary.run.score == pytest.approx(expected_score)

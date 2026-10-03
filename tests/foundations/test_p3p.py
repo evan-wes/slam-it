@@ -95,6 +95,41 @@ def test_poselib_solutions_are_among_ours() -> None:
             assert _distance(ours, matrix) < 1e-9
 
 
+def test_the_outside_cylinder_case_needs_both_lines(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fixture's sample 1e-8 outside the cylinder still guards Ding's second line.
+
+    PoseLib's shortcut skips the second line when the cubic has a single real root. On this
+    sample the float64 cubic has one (its discriminant is positive) and the first line alone
+    misses the true pose, so a solver with the shortcut fails the fixture. If a change to the
+    sample or the solver loses either property, this test says so.
+    """
+    spec = load_fixture("foundations/p3p.json")["functions"]["p3p"]
+    case = next(
+        c for c in spec["cases"] if c["name"] == "camera 1e-08 outside the danger cylinder, ding"
+    )
+    truth = np.asarray(case["expected"][0])
+    discriminants: list[float] = []
+    root = p3p.cubic_root
+
+    def recording(c2: float, c1: float, c0: float) -> float:
+        p, q = c1 - c2 * c2 / 3.0, (2.0 * c2**3 - 9.0 * c2 * c1) / 27.0 + c0
+        discriminants.append(q * q / 4.0 + p**3 / 27.0)
+        return root(c2, c1, c0)
+
+    monkeypatch.setattr(p3p, "cubic_root", recording)
+    line_pair = p3p._line_pair
+
+    def first_line(conic: np.ndarray) -> tuple[np.ndarray, ...] | None:
+        lines = line_pair(conic)
+        return None if lines is None else lines[:1]
+
+    monkeypatch.setattr(p3p, "_line_pair", first_line)
+    first_line_only = p3p.p3p(case["input"]["points"], case["input"]["bearings"], solver="ding")
+    assert discriminants == [pytest.approx(discriminants[0])]
+    assert discriminants[0] > 0.0
+    assert _distance(first_line_only, truth) > 1e-2
+
+
 @pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
 @pytest.mark.parametrize("solver", p3p.SOLVERS)
 def test_collinear_points_give_no_solution(backend: str, solver: str) -> None:

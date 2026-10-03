@@ -34,6 +34,26 @@ P3P_SOLVERS = ("ding", "lambda_twist")
 """The P3P solvers the fixture covers (slamlab.foundations.p3p.SOLVERS)."""
 
 
+OUTSIDE_POINTS = [
+    [0.487158595965231, -0.8733135189479119, 0.0],
+    [-0.6419957636562047, 0.7667081840227653, 0.0],
+    [-0.29260286175229117, -0.9562340536157293, 0.0],
+]
+"""Three points on the unit circle, from ``p3p_degeneracy_probe.py``'s cylinder sampler (seed 14,
+margin -1e-8), with the camera 1e-8 outside their danger cylinder."""
+OUTSIDE_ROTATION = [
+    [-0.08386450416634778, 0.9354114795941512, 0.3434706811132695],
+    [0.9735852461942709, 0.15037410348529157, -0.17181209909035985],
+    [-0.21236410556818086, 0.3199890511321841, -0.9233138652818721],
+]
+OUTSIDE_TRANSLATION = [-0.010211003863095407, -0.11316834267335378, 2.489480076125785]
+
+
+def _outside_pose() -> tuple[mp.matrix, mp.matrix]:
+    """Return the outside sample's pose as given (float64 entries, taken as exact)."""
+    return mp.matrix(OUTSIDE_ROTATION), mp.matrix(OUTSIDE_TRANSLATION)
+
+
 def _pose(omega: list[float], t: list[float]) -> tuple[mp.matrix, mp.matrix]:
     """Return a 50-digit rotation ``exp(ω)`` and translation."""
     return mp.matrix(o.so3_exp(o.mpf_vector(omega))), mp.matrix(o.mpf_vector(t))
@@ -229,11 +249,12 @@ def _p3p_fixture() -> dict[str, Any]:
     for margin in (1e-2, 1e-6):
         rot, t, points = _cylinder_sample(margin)
         samples.append((f"camera {margin:g} inside the danger cylinder", rot, t, points))
-    # 1e-8 outside: the cubic's single real root is decided by rounding, and the first line
-    # carries a near-tangent false pose; skipping the second line (PoseLib's shortcut) missed
-    # the true pose here by 0.73.
-    rot, t, points = _cylinder_sample(-1e-8, (0.9058, 3.2159, 5.9719), 5.9605, 1.6237)
-    samples.append(("camera 1e-08 outside the danger cylinder", rot, t, points))
+    # 1e-8 outside: a float64 sample stored exactly (rounding its parameters changes which way
+    # rounding decides the cubic's root count). Its cubic has a single real root and the first
+    # line carries a near-tangent false pose: skipping the second line (PoseLib's shortcut)
+    # missed the true pose by 0.46. tests/foundations/test_p3p.py asserts both properties.
+    rot, t = _outside_pose()
+    samples.append(("camera 1e-08 outside the danger cylinder", rot, t, OUTSIDE_POINTS))
     cases = []
     for name, rot, t, points in samples:
         bearings = _bearings(rot, t, points)
@@ -255,8 +276,8 @@ def _p3p_fixture() -> dict[str, Any]:
                     "rtol": 0.0,
                     "atol": 3e-8,
                     "reason": "the expected pose must be among the solutions; worst measured "
-                    "1.5e-8 (Lambda Twist, 1e-8 outside the danger cylinder) and 1.3e-9 (1e-6 "
-                    "inside it), where the problem is ill-conditioned; 2e-12 elsewhere",
+                    "7.8e-9 (1e-8 outside the danger cylinder) and 1.3e-9 (1e-6 inside it), "
+                    "where the problem is ill-conditioned; 2e-12 elsewhere",
                 },
                 "cases": cases,
             }

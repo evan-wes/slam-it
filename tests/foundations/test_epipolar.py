@@ -265,6 +265,7 @@ def test_ransac_backends_agree_for_every_solver(minimal_solver: str, refine: boo
         assert summary.run.local_optimizations == first.run.local_optimizations
         assert summary.run.score == pytest.approx(first.run.score, rel=1e-12)
         assert summary.refined == first.refined
+        assert summary.rounds == first.rounds
         assert (summary.refinement is None) == (first.refinement is None) == (not refine)
         if summary.refinement is not None and first.refinement is not None:
             assert summary.refinement.iterations == first.refinement.iterations

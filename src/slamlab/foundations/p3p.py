@@ -59,8 +59,8 @@ terms. Five departures, the same in both:
 - Ding's solver always intersects both lines. PoseLib skips the second once the first gave a
   pose when the cubic has a single real root, where the two real intersections lie on one
   line; but near the danger cylinder rounding decides whether the root is single, and the
-  first line can carry a near-tangent false pose, so the skip dropped the true one (485 of
-  2000 true poses 1e-8 outside the cylinder, against 39 without it).
+  first line can carry a near-tangent false pose, so the skip dropped the true one (1e-8
+  outside the cylinder it grossly missed 485 of 2000 true poses, against 42 without it).
 
 A sample whose world points are collinear has no unique pose and gives no solution.
 

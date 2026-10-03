@@ -112,7 +112,10 @@ refinement's cost is infinite for a point behind the camera too, so LM never mov
   - P3P: the true pose among the solutions, on generic samples, each of Ding's three
     orderings, 1e-2 and 1e-6 inside the danger cylinder, and 1e-8 outside it. The 1e-6 case
     catches a solver that merges a quadratic's close roots; the 1e-8 case one that skips
-    Ding's second line (it misses by 0.73).
+    Ding's second line (it misses by 0.46). That case is a float64 sample stored exactly,
+    since rounding its parameters changes which way rounding decides the cubic's root count,
+    and a test asserts it still discriminates: a single real root, and a first line that
+    alone misses the truth.
   - EPnP: exact on 5 and 20 points.
   - The refinement: from a perturbed start to the truth.
   - RANSAC: on noise-free inliers and far outliers, the true pose and exactly the clean
@@ -154,7 +157,8 @@ length. "Missing" means none within 1e-6, "gross" none within 1e-3.
 | 1e-8 outside | 126, 42 | 253, 120 | 552, 477 |
 
 That is why Ding's is the default. PoseLib's single-root shortcut costs it most just outside
-the cylinder; with the shortcut, slamlab's Ding missed 485 of 2000 there. Far away (a 1 m
+the cylinder; with the shortcut, slamlab's Ding grossly missed 485 of 2000 there (42 without).
+Far away (a 1 m
 triangle at 1000 m) every solver misses about 0.1%; precision is then limited by the
 conditioning (median relative error 5e-10).
 
