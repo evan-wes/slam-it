@@ -62,14 +62,16 @@ inline constexpr double kBearingTolerance = 1e-9;
 [[nodiscard]] Result<void> check_bearing(const Eigen::Ref<const Rows3>& bearings, Eigen::Index row,
                                          const char* name);
 
-/// @brief Check bearing pairs: equal sizes, at least `minimum`, unit vectors with positive z.
+/// @brief Check bearing pairs: equal sizes, at least `minimum`, unit vectors, and (by default)
+///        positive z, which methods working in the normalised image plane need.
 /// @param bearings1 Bearings in camera 1.
 /// @param bearings2 Bearings in camera 2.
 /// @param minimum The fewest pairs accepted.
+/// @param positive_z Require positive z.
 /// @return Nothing, or `InvalidInput`.
 [[nodiscard]] Result<void> check_bearing_pairs(const Eigen::Ref<const Rows3>& bearings1,
                                                const Eigen::Ref<const Rows3>& bearings2,
-                                               Eigen::Index minimum);
+                                               Eigen::Index minimum, bool positive_z = true);
 
 /// @brief Check point pairs: equal sizes, at least `minimum`, finite.
 /// @param points1 Points in image 1.

@@ -88,14 +88,17 @@ def null_vector(system: NDArray[np.float64]) -> NDArray[np.float64] | None:
     Parameters
     ----------
     system : ndarray of float64, shape (M, 9)
-        ``A``, with M >= 8.
+        ``A``.
 
     Returns
     -------
     ndarray of float64, shape (9,), or None
         The right singular vector of the smallest singular value; None if the
-        second-smallest is below :data:`RANK_TOLERANCE` of the largest.
+        second-smallest is below :data:`RANK_TOLERANCE` of the largest, or there are fewer
+        than eight rows (the solution is then not unique).
     """
+    if system.shape[0] < 8:
+        return None
     _, singular, vt = np.linalg.svd(system, full_matrices=True)
     if not singular[7] > RANK_TOLERANCE * singular[0]:
         return None
@@ -105,8 +108,9 @@ def null_vector(system: NDArray[np.float64]) -> NDArray[np.float64] | None:
 class PairEstimator:
     """A :class:`ransac.Estimator` over correspondence pairs whose model is a 3x3 matrix.
 
-    The same solver serves as the minimal and the least-squares fit (the 8-point algorithm,
-    the DLT), so one class carries E, F and H: what differs is the solver and the residual.
+    One class carries E, F and H: what differs is the solvers and the residual. The
+    least-squares solver also fits minimal samples (the 8-point algorithm, the DLT) unless a
+    separate minimal solver is given (the 5-point solvers, which return several models).
 
     Parameters
     ----------
@@ -118,6 +122,8 @@ class PairEstimator:
         Returns every pair's squared residual under a model.
     sample_size : int
         The minimal sample size.
+    minimal : callable, optional
+        Fits a minimal sample, returning every model it allows (default: `solver`).
     """
 
     def __init__(
@@ -126,9 +132,10 @@ class PairEstimator:
         solver: Callable[[NDArray[np.float64], NDArray[np.float64]], Matrix3 | None],
         residual: Callable[[Matrix3], NDArray[np.float64]],
         sample_size: int,
+        minimal: Callable[[NDArray[np.float64], NDArray[np.float64]], list[Matrix3]] | None = None,
     ) -> None:
         self._data, self._solver, self._residual = data, solver, residual
-        self._sample_size = sample_size
+        self._sample_size, self._minimal = sample_size, minimal
 
     @property
     def sample_size(self) -> int:
@@ -141,8 +148,10 @@ class PairEstimator:
         return int(self._data[0].shape[0])
 
     def fit_minimal(self, sample: NDArray[np.int64]) -> list[Matrix3]:
-        """Fit a minimal sample (the same solver as the least-squares fit)."""
-        return self.fit_nonminimal(sample)
+        """Fit a minimal sample: every model the minimal solver allows."""
+        if self._minimal is None:
+            return self.fit_nonminimal(sample)
+        return self._minimal(self._data[0][sample], self._data[1][sample])
 
     def fit_nonminimal(self, subset: NDArray[np.int64]) -> list[Matrix3]:
         """Fit a subset; no model if it does not determine one."""

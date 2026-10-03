@@ -21,6 +21,9 @@ void bind_foundations(nanobind::module_& parent) {
   nanobind::module_ epipolar =
       foundations.def_submodule("epipolar", "Essential and fundamental matrices.");
   bind_epipolar(epipolar);
+  nanobind::module_ fivepoint =
+      foundations.def_submodule("fivepoint", "The 5-point essential matrix.");
+  bind_fivepoint(fivepoint);
   nanobind::module_ homography = foundations.def_submodule("homography", "Homographies.");
   bind_homography(homography);
   nanobind::module_ twoview = foundations.def_submodule("twoview", "Two-view initialisation.");
