@@ -16,6 +16,7 @@ mypy==2.4.0
 mypy_extensions==1.1.0
 nanobind==3.1.0
 numpy==2.4.6
+opencv-python-headless==5.0.0.93
 packaging==26.3
 pathspec==1.1.1
 pillow==12.3.0
