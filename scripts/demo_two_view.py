@@ -101,13 +101,22 @@ def errors_deg(found: NDArray[np.float64], truth: NDArray[np.float64]) -> tuple[
     return rotation, direction
 
 
-def truth_consistency_px(
-    b1: NDArray[np.float64], b2: NDArray[np.float64], truth: NDArray[np.float64], focal: float
-) -> float:
-    """Return the median Sampson distance of the matches under the ground truth's E, in pixels.
+FEW_MATCHES = 50
+"""Below this many matches a pair's consistency with the ground truth says more about the
+matching than about the motion capture."""
 
-    How well the motion-capture pose explains the images: the floor that errors against it
-    are read against (about 1 to 4 px on fr1/xyz, depending on the pair).
+
+def truth_consistency(
+    b1: NDArray[np.float64],
+    b2: NDArray[np.float64],
+    truth: NDArray[np.float64],
+    options: twoview.Options,
+) -> str:
+    """Describe how well the ground truth's E explains the matches.
+
+    The share of matches within the RANSAC threshold of the true E, and their median Sampson
+    distance. Both measure the matching as much as the motion capture: on a pair with few
+    matches, mostly outliers, the median is an outlier's distance. Such pairs are flagged.
 
     Parameters
     ----------
@@ -115,16 +124,24 @@ def truth_consistency_px(
         The matches' bearings.
     truth : ndarray of float64, shape (4, 4)
         The true ``T_c2_c1``.
-    focal : float
-        The focal length, in pixels.
+    options : twoview.Options
+        The focal length and threshold.
 
     Returns
     -------
-    float
-        The median distance.
+    str
+        E.g. ``"434 matches, 24% within 2 px of the truth's E (median 3.78 px)"``.
     """
     essential = so3.hat(truth[:3, 3] / np.linalg.norm(truth[:3, 3])) @ truth[:3, :3]
-    return float(np.sqrt(np.median(epipolar.sampson_essential(essential, b1, b2))) * focal)
+    distances = np.sqrt(epipolar.sampson_essential(essential, b1, b2)) * options.focal
+    share = float(np.mean(distances < options.threshold_px))
+    text = (
+        f"{len(distances)} matches, {100 * share:.0f}% within {options.threshold_px:g} px of "
+        f"the truth's E (median {float(np.median(distances)):.2f} px)"
+    )
+    return text + (
+        " -- few matches, not a ground-truth measure" if len(distances) < FEW_MATCHES else ""
+    )
 
 
 def opencv_reference(
@@ -264,14 +281,14 @@ def survey(sequence: tum.Sequence, options: twoview.Options, backend: str) -> No
             fallback = " (fallback)" if result.fallback else ""
             tally[f"{result.status}, {result.model}{fallback}"] += 1
             reference = opencv_reference(pixels[:, :2], pixels[:, 2:], sequence.intrinsics, options)
-            floor = truth_consistency_px(b1, b2, truth, options.focal)
+            consistency = truth_consistency(b1, b2, truth, options)
             row = f"{first:4d} +{gap:2d}: {result.status:<13} {result.model:<10}"
             if result.status is twoview.Status.INITIALIZED and reference is not None:
                 ours.append(errors_deg(result.relative_pose, truth))
                 theirs.append(errors_deg(reference, truth))
                 (r1, d1), (r2, d2) = ours[-1], theirs[-1]
                 row += f" {r1:5.2f} {d1:6.2f} | opencv {r2:5.2f} {d2:6.2f}"
-            print(f"{row} | truth {floor:.2f} px")
+            print(f"{row} | {consistency}")
     for key, count in sorted(tally.items()):
         print(f"{count:3d}  {key}")
     if ours:
@@ -309,9 +326,8 @@ def main() -> None:
     print(
         f"{args.sequence.name}: frames {first} and {second} "
         f"({sequence.timestamps[second] - sequence.timestamps[first]:.2f} s apart, "
-        f"baseline {100 * np.linalg.norm(truth[:3, 3]):.1f} cm); {len(pixels)} SIFT matches "
-        f"after the ratio test; the ground truth explains them to "
-        f"{truth_consistency_px(b1, b2, truth, options.focal):.2f} px (median)"
+        f"baseline {100 * np.linalg.norm(truth[:3, 3]):.1f} cm); "
+        f"{truth_consistency(b1, b2, truth, options)}"
     )
     chosen = [args.backend] if args.backend else lockstep
     result = None

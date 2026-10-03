@@ -145,7 +145,8 @@ of both cameras is best. Then:
    act on (wait for more motion), and because it usually makes the candidates hard to tell
    apart too; a noisy pure rotation usually ends here, its H not quite a rotation;
 3. a runner-up with more than `ambiguity_ratio` (0.75) of the best's support is `ambiguous`,
-   the same ratio ORB-SLAM uses. Support here is every inlier triangulated in front of both
+   the ratio ORB-SLAM uses for H (it uses 0.7 for F; slamlab uses one ratio for both).
+   Support here is every inlier triangulated in front of both
    cameras, whatever its parallax; ORB-SLAM's `CheckRT` also counts low-parallax points
    behind a camera as good, which makes its candidates harder to tell apart.
 
@@ -215,12 +216,21 @@ python scripts/demo_two_view.py --survey
 the same pairs: 1.12° and 4.3°); 2 are off by more than 20° in direction (OpenCV: 3); 13
 report `low_parallax` and 3 remain `ambiguous`.
 
-**The ground truth is not uniformly good.** The survey also prints how well the
-motion-capture pose explains each pair's matches: the median Sampson distance under the true
-E. Across the 38 pairs it ranges from 0.3 px to 62 px, with a median of 1.9 px; the first
-pairs are near 3.8 px, and frames 200 and 230 disagree with their images by 56 px. Errors
-of a degree or so against it are at its own accuracy on many pairs, so comparisons with
-OpenCV are the sharper measure.
+**Reading errors against the ground truth.** The survey also prints, for each pair, how many
+matches the true E explains within the 2 px threshold and their median Sampson distance under
+it. Both measure the matching as much as the motion capture:
+
+- On the 29 pairs with at least 50 matches and at least a tenth of them consistent, the
+  median is 0.3 to 3.9 px. The first pairs sit near 3 to 4 px, and there the true rotation
+  fits the images: what disagrees is the translation direction (refitting only the
+  direction brought 3.78 px down to 0.82 px on frames 0 and 30, in the review panel's
+  probe), which suggests a small
+  timing offset between the cameras and the motion capture rather than a poor ground truth.
+  Translation-direction errors of a few degrees on those pairs are partly the reference's.
+- Seven pairs have fewer than 50 matches (the survey flags them), and two more (200+30,
+  320+15) have under a tenth of their matches consistent. Their medians, up to 62 px, are
+  outliers' distances: the matching failed, typically on the 30-frame gaps with the largest
+  rotations (13 to 18 degrees), not the motion capture.
 
 ## What was learned
 
