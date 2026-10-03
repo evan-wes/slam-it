@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from slamlab import backends
-from slamlab.foundations import correspondences, epipolar, nls, ransac, so3
+from slamlab.foundations import correspondences, epipolar, ransac, so3
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
 from tests.conftest import load_fixture, require_function
 from tests.foundations import scenes as sc
@@ -396,8 +396,7 @@ def test_the_compiled_code_tables_match() -> None:
     """The codes Python sends and decodes are the compiled core's, in the same order."""
     chosen = require_function("cpp", epipolar.__name__, "codes")
     codes = backends.implementation(chosen, epipolar.__name__).codes()
-    assert tuple(codes["ransac_termination"]) == tuple(ransac.Termination)
-    assert tuple(codes["nls_termination"]) == tuple(nls.Termination)
+    sc.assert_refined_codes(codes)
     assert tuple(codes["minimal_solver"]) == epipolar.MINIMAL_SOLVERS
 
 

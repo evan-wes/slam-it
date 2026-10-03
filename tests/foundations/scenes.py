@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from slamlab.foundations import ransac, se3
+from slamlab.foundations import nls, ransac, se3
 from tests.conftest import assert_matches_fixture
 
 POSE = se3.exp([0.5, -0.1, 0.05, 0.02, -0.1, 0.03])
@@ -132,6 +132,18 @@ def check_fixture(module: ModuleType, fixture: dict[str, Any], function: str, ba
         result = getattr(module, function)(**inputs, options=options, backend=backend)
         assert_matches_fixture(result.state.model, case["expected"]["model"], spec["tolerance"])
         np.testing.assert_array_equal(result.state.inliers, case["expected"]["inliers"])
+
+
+def assert_refined_codes(codes: dict[str, list[str]]) -> None:
+    """Assert a refined-RANSAC module's termination tables are RANSAC's and NLS', in order.
+
+    Parameters
+    ----------
+    codes : dict of str to list of str
+        The compiled module's ``codes()``.
+    """
+    assert tuple(codes["ransac_termination"]) == tuple(ransac.Termination)
+    assert tuple(codes["nls_termination"]) == tuple(nls.Termination)
 
 
 def assert_contains(found: NDArray[np.float64], expected: ArrayLike, atol: float) -> None:

@@ -312,6 +312,20 @@ E enum_code(int code, const char* what) {
   return static_cast<E>(code);
 }
 
+/// @brief An enum's names in code order, for a `codes()` table.
+/// @tparam E The enum, with a `kCount` sentinel.
+/// @tparam Name Callable as `name(E)`, returning the name.
+/// @param name The enum's name function.
+/// @return The names.
+template <typename E, typename Name>
+nanobind::list enum_names(const Name& name) {
+  nanobind::list out;
+  for (int k = 0; k < static_cast<int>(E::kCount); ++k) {
+    out.append(name(static_cast<E>(k)));
+  }
+  return out;
+}
+
 /// @brief One read-only (3, 3) matrix.
 using Matrix3In = nanobind::ndarray<const double, nanobind::shape<3, 3>, nanobind::c_contig,
                                     nanobind::device::cpu>;

@@ -18,9 +18,14 @@ namespace {
 
 namespace pnp = foundations::pnp;
 namespace p3p = foundations::p3p;
-/// @brief The enum tables: RANSAC's and NLS' terminations.
-/// @return `{"ransac_termination": [...], "nls_termination": [...]}`.
-nb::dict codes() { return refined_codes(); }
+/// @brief The enum tables: the P3P solvers, RANSAC's and NLS' terminations.
+/// @return `{"minimal_solver": [...], "ransac_termination": [...], "nls_termination": [...]}`.
+nb::dict codes() {
+  nb::dict out = refined_codes();
+  out["minimal_solver"] =
+      enum_names<p3p::Solver>([](p3p::Solver solver) { return p3p::name(solver); });
+  return out;
+}
 
 /// @brief EPnP's pose.
 /// @param points (N, 3) world points.

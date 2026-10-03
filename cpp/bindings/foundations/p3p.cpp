@@ -32,12 +32,8 @@ ArrayOut solve_p3p(const BatchIn<3>& points, const BatchIn<3>& bearings, int sol
 /// @brief The enum tables: the solvers' names in code order.
 /// @return `{"solver": [...]}`.
 nb::dict codes() {
-  nb::list solvers;
-  for (int k = 0; k < static_cast<int>(p3p::Solver::kCount); ++k) {
-    solvers.append(p3p::name(static_cast<p3p::Solver>(k)));
-  }
   nb::dict out;
-  out["solver"] = solvers;
+  out["solver"] = enum_names<p3p::Solver>([](p3p::Solver solver) { return p3p::name(solver); });
   return out;
 }
 

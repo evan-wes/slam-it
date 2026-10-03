@@ -301,11 +301,11 @@ def test_a_point_behind_the_camera_is_never_an_inlier() -> None:
 
 
 def test_the_compiled_codes_match() -> None:
-    """The termination codes are RANSAC's and NLS'."""
+    """The solver codes Python sends are P3P's; the termination codes RANSAC's and NLS'."""
     chosen = require_function("cpp", pnp.__name__, "pnp_ransac")
     codes = backends.implementation(chosen, pnp.__name__).codes()
-    assert tuple(codes["ransac_termination"]) == tuple(ransac.Termination)
-    assert tuple(codes["nls_termination"]) == tuple(nls.Termination)
+    assert tuple(codes["minimal_solver"]) == p3p.SOLVERS
+    sc.assert_refined_codes(codes)
 
 
 @pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
