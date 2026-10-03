@@ -43,9 +43,22 @@ ArrayOut essential_5pt(const BatchIn<3>& bearings1, const BatchIn<3>& bearings2,
   return out;
 }
 
+/// @brief The enum tables: the solvers' names in code order.
+/// @return `{"solver": [...]}`.
+nb::dict codes() {
+  nb::list solvers;
+  for (int k = 0; k < static_cast<int>(fivepoint::Solver::kCount); ++k) {
+    solvers.append(fivepoint::name(static_cast<fivepoint::Solver>(k)));
+  }
+  nb::dict out;
+  out["solver"] = solvers;
+  return out;
+}
+
 }  // namespace
 
 void bind_fivepoint(nb::module_& m) {
+  m.def("codes", &codes, "Each enum's names in code order.");
   m.def("essential_5pt", &essential_5pt, nb::arg("bearings1").noconvert(),
         nb::arg("bearings2").noconvert(), nb::arg("solver"),
         "Return every essential matrix five bearing pairs allow, shape (K, 3, 3).");

@@ -571,6 +571,17 @@ class SampsonProblem:
     def __init__(self, x1: NDArray[np.float64], x2: NDArray[np.float64]) -> None:
         self._x1, self._x2 = x1, x2
 
+    def _terms(self, essential: Matrix3) -> tuple[NDArray[np.float64], ...]:
+        """Return the epipolar lines ``E x₁`` and ``Eᵀ x₂``, ``c = x₂ᵀ E x₁`` and ``g``.
+
+        ``g`` is the sum of both lines' first two coordinates squared; the residual is
+        ``c / √g``.
+        """
+        line2, line1 = self._x1 @ essential.T, self._x2 @ essential
+        c = np.sum(self._x2 * line2, axis=1)
+        g = line2[:, 0] ** 2 + line2[:, 1] ** 2 + line1[:, 0] ** 2 + line1[:, 1] ** 2
+        return line2, line1, c, g
+
     def residuals(self, state: Motion) -> NDArray[np.float64]:
         """Return each match's signed Sampson distance, shape (M,).
 
@@ -584,11 +595,8 @@ class SampsonProblem:
         ndarray of float64, shape (M,)
             The residuals.
         """
-        e = state.essential
-        line2, line1 = self._x1 @ e.T, self._x2 @ e
-        algebraic = np.sum(self._x2 * line2, axis=1)
-        gradient = line2[:, 0] ** 2 + line2[:, 1] ** 2 + line1[:, 0] ** 2 + line1[:, 1] ** 2
-        return np.asarray(algebraic / np.sqrt(gradient), dtype=np.float64)
+        _, _, c, g = self._terms(state.essential)
+        return np.asarray(c / np.sqrt(g), dtype=np.float64)
 
     def squared_norms(self, state: Motion) -> NDArray[np.float64]:
         """Return each block's squared residual.
@@ -620,11 +628,8 @@ class SampsonProblem:
         slamlab.foundations.nls.DenseSystem
             The normal equations, five parameters.
         """
-        e = state.essential
         x1, x2 = self._x1, self._x2
-        line2, line1 = x1 @ e.T, x2 @ e
-        c = np.sum(x2 * line2, axis=1)
-        g = line2[:, 0] ** 2 + line2[:, 1] ** 2 + line1[:, 0] ** 2 + line1[:, 1] ** 2
+        line2, line1, c, g = self._terms(state.essential)
         root = np.sqrt(g)
         # ∂c/∂E = x₂ x₁ᵀ; ∂g/∂E = 2 Σᵢ₌₀,₁ (line2ᵢ eᵢ x₁ᵀ + line1ᵢ x₂ eᵢᵀ).
         dc = x2[:, :, None] * x1[:, None, :]
@@ -694,17 +699,18 @@ def refine_reference(
 ) -> Solution[Matrix3, nls.Summary]:
     """Refine E on validated bearing pairs by Levenberg-Marquardt on the Sampson distance.
 
-    The reference, unchecked. The loss is Cauchy with `scale`, so the inliers' few remaining
-    outliers barely pull.
+    The reference, unchecked: the caller has validated everything :func:`refine_essential`
+    checks. The loss is Cauchy with `scale`, so the inliers' few remaining outliers barely
+    pull.
 
     Parameters
     ----------
     essential : ndarray of float64, shape (3, 3)
-        The starting E.
+        The starting E, finite and of rank 2 (so it decomposes).
     bearings1, bearings2 : ndarray of float64, shape (M, 3)
-        Bearing pairs with positive z, M >= 5.
+        Unit bearing pairs with positive z, M >= 5.
     scale : float
-        The Cauchy loss's scale, a Sampson distance in the normalised plane.
+        The Cauchy loss's scale, a Sampson distance in the normalised plane (positive).
 
     Returns
     -------
@@ -840,7 +846,7 @@ def essential_ransac_reference(
     bearings2: NDArray[np.float64],
     options: ransac.Options,
     minimal_solver: str,
-    refine: bool,  # noqa: FBT001 -- mirrors the compiled signature
+    refine: bool,
 ) -> Solution[ransac.Consensus[Matrix3], EssentialSummary]:
     """Run E-RANSAC and the refinement (the reference), unchecked.
 

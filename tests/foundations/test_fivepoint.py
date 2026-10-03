@@ -8,10 +8,11 @@ import pytest
 from slamlab import backends
 from slamlab.foundations import fivepoint, se3, so3
 from slamlab.foundations.errors import InvalidInputError
-from tests.conftest import require_function
+from tests.conftest import load_fixture, require_function
 from tests.foundations import scenes as sc
 
 TRIALS = 50
+FIXTURE = load_fixture("foundations/fivepoint.json")
 
 
 def _sample(seed: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -28,6 +29,17 @@ def _distance(found: np.ndarray, expected: np.ndarray) -> float:
     if len(found) == 0:
         return np.inf
     return float(min(min(np.abs(e - expected).max(), np.abs(e + expected).max()) for e in found))
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_matches_fixture(backend: str) -> None:
+    """Each backend finds the 50-digit true E among its solutions, up to sign."""
+    chosen = require_function(backend, fivepoint.__name__, "essential_5pt")
+    spec = FIXTURE["functions"]["essential_5pt"]
+    for case in spec["cases"]:
+        found = fivepoint.essential_5pt(**case["input"], backend=chosen)
+        for expected in case["expected"]:
+            assert _distance(found, np.asarray(expected)) <= spec["tolerance"]["atol"]
 
 
 @pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
@@ -57,15 +69,12 @@ def test_nister_and_stewenius_find_the_same_solutions(backend: str) -> None:
         stewenius = fivepoint.essential_5pt(b1, b2, solver="stewenius", backend=chosen)
         assert len(nister) == len(stewenius)
         for e in nister:
-            assert _distance(stewenius, e) < 1e-7
+            assert _distance(stewenius, e) < 1e-9
 
 
 @pytest.mark.parametrize("solver", fivepoint.SOLVERS)
 def test_backends_agree(solver: str) -> None:
-    """The C++ core returns the reference's solutions, in any order.
-
-    Stewénius' solutions are not polished, so the two backends' rounding shows at ~1e-8.
-    """
+    """The C++ core returns the reference's solutions, in any order."""
     chosen = require_function("cpp", fivepoint.__name__, "essential_5pt")
     for seed in range(TRIALS):
         b1, b2, _ = _sample(seed)
@@ -73,7 +82,7 @@ def test_backends_agree(solver: str) -> None:
         compiled = fivepoint.essential_5pt(b1, b2, solver=solver, backend=chosen)
         assert len(reference) == len(compiled)
         for e in reference:
-            assert _distance(compiled, e) < 1e-7
+            assert _distance(compiled, e) < 1e-10
 
 
 def test_poselib_solutions_are_among_ours() -> None:
@@ -106,6 +115,61 @@ def test_real_roots_matches_numpy() -> None:
     poly = np.polynomial.polynomial.polymul(poly, [1.0, 0.0, 1.0])  # z^2 + 1: no real roots
     np.testing.assert_allclose(fivepoint.real_roots(poly), roots, atol=1e-12)
     assert len(fivepoint.real_roots([1.0, 0.0, 1.0])) == 0
+
+
+@pytest.mark.parametrize("poly", [[np.nan, 1.0], [1.0, np.inf, 1.0], [[1.0, 2.0]]])
+def test_real_roots_rejects_bad_coefficients(poly: list[float]) -> None:
+    """Non-finite or non-1-D coefficients are an error, not "no real roots"."""
+    with pytest.raises(InvalidInputError, match="poly"):
+        fivepoint.real_roots(poly)
+
+
+def _near_degenerate(seed: int, baseline: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return five exact pairs under mostly forward motion with a small baseline, and E."""
+    rng = np.random.default_rng(seed)
+    depth = rng.uniform(2.0, 8.0, 5)
+    points = np.column_stack([rng.uniform(-0.5, 0.5, (5, 2)) * depth[:, None], depth])
+    rotation = so3.exp(rng.normal(scale=0.02, size=3))
+    direction = np.array([0.0, 0.0, 1.0]) + rng.normal(scale=0.2, size=3)
+    t = direction / np.linalg.norm(direction)
+    b1 = sc.bearings(points)
+    b2 = sc.bearings(points @ rotation.T + baseline * t)
+    return b1, b2, so3.hat(t) @ rotation
+
+
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_near_degenerate_samples_keep_the_true_essential(backend: str) -> None:
+    """Forward motion at a 5% baseline (docs/notes/five-point.md, "Near degeneracy").
+
+    On 100 exact samples, Stewénius finds the true E on all but at most two, Nistér on all but
+    at most eight: its degree-10 polynomial can round a real root into a complex pair.
+    """
+    chosen = require_function(backend, fivepoint.__name__, "essential_5pt")
+    misses = dict.fromkeys(fivepoint.SOLVERS, 0)
+    for seed in range(100):
+        b1, b2, truth = _near_degenerate(seed, 0.05)
+        for solver in fivepoint.SOLVERS:
+            found = fivepoint.essential_5pt(b1, b2, solver=solver, backend=chosen)
+            misses[solver] += _distance(found, truth) > 1e-4
+    assert misses["stewenius"] <= 2
+    assert misses["nister"] <= 8
+
+
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("solver", fivepoint.SOLVERS)
+def test_a_repeated_pair_gives_no_solution(backend: str, solver: str) -> None:
+    """Five pairs with one repeated leave a rank-4 system: no isolated solution, none returned."""
+    chosen = require_function(backend, fivepoint.__name__, "essential_5pt")
+    b1, b2, _ = _sample(0)
+    b1[4], b2[4] = b1[3], b2[3]
+    assert fivepoint.essential_5pt(b1, b2, solver=solver, backend=chosen).shape == (0, 3, 3)
+
+
+def test_the_compiled_solver_codes_match() -> None:
+    """The solver codes Python sends are the compiled core's."""
+    chosen = require_function("cpp", fivepoint.__name__, "essential_5pt")
+    codes = backends.implementation(chosen, fivepoint.__name__).codes()
+    assert tuple(codes["solver"]) == fivepoint.SOLVERS
 
 
 @pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))

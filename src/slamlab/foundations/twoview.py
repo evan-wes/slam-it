@@ -71,8 +71,8 @@ from __future__ import annotations
 
 import enum
 import math
-from dataclasses import asdict, dataclass
 from collections.abc import Callable
+from dataclasses import asdict, dataclass
 from typing import Any, Protocol, TypeVar
 
 import numpy as np

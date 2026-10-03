@@ -26,10 +26,7 @@ monomials, leaving three equations ``kₓ(z) x + k_y(z) y + k₁(z) = 0``: a 3x3
 of polynomials in ``z`` that must be singular. ``det B(z)`` is a polynomial of degree ten; its
 real roots are isolated with a **Sturm sequence** and refined by bisection, as Nistér did.
 For each root, ``(x, y, 1)`` is B's null vector, the cross product of two of its rows.
-Forming ``det B(z)`` loses digits on some samples, so each solution is then **polished** by a
-few Gauss-Newton steps on the original ten cubic constraints: on 300 exact random problems the
-worst error in E fell from 7e-4 (20 worse than 1e-8; PoseLib's ``essential_matrix_5pt`` had 27,
-worst 0.16) to 2e-11.
+Forming ``det B(z)`` loses digits on some samples.
 
 **Stewénius** (Stewénius, Engels and Nistér, "Recent developments on direct relative
 orientation", ISPRS J. 60(4), 2006). With the monomials in graded reverse lexicographic order,
@@ -38,7 +35,13 @@ elimination expresses the ten cubic monomials in the ten lower ones, ``b``. That
 10x10 **action matrix** of multiplication by ``x`` on ``b``: ``x·b = A b`` at every solution.
 So every solution is an eigenvector of A, with ``x`` its eigenvalue, and ``(x, y, z)`` read off
 the eigenvector's last four entries. A Gröbner-basis method: one eigen-decomposition instead
-of a polynomial and its roots.
+of a polynomial and its roots. It is the default: near degeneracy (a small baseline, forward
+motion) it keeps the true solution far more often than Nistér's polynomial, whose rounding can
+push a real root off the real axis.
+
+**Polishing.** Each solution of either method is polished by Gauss-Newton on the original ten
+cubic constraints, to convergence (:data:`POLISH_MAX_STEPS`, :data:`POLISH_TOLERANCE`). The
+measured precision and recall are in ``docs/notes/five-point.md``.
 
 Both return every real solution, scaled to singular values ``(1, 1, 0)``; each is
 ``±[t̂]ₓ R``. Five pairs whose 5x9 system has rank below five (a repeated or degenerate
@@ -82,6 +85,7 @@ POLISH_TOLERANCE = 1e-14
 
 ROOT_TOLERANCE = 1e-14
 """Bisection stops when a root's bracket is below this, relative to the root (at least 1)."""
+
 ESSENTIAL_TOLERANCE = 1e-6
 """A solution is kept only if, scaled to norm √2, ``σ1 - σ2`` and ``σ3`` are both below this.
 The solvers are accurate to about 1e-9 on well-posed samples (docs/notes/five-point.md)."""
@@ -102,9 +106,22 @@ GREVLEX_ORDER: tuple[_Monomial, ...] = (
 )  # fmt: skip
 """Graded reverse lexicographic order, exponents of ``(x, y, z)``."""
 
+_NISTER_ROW_PAIRS = ((4, 5), (6, 7), (8, 9))
+"""Rows of Nistér's reduced matrix led by ``x²z, x²``, ``y²z, y²`` and ``xyz, xy``: the first of
+each pair minus ``z`` times the second cancels the leading monomials, giving B(z)'s rows."""
+_DETERMINANT_TERMS = (
+    ((0, 1, 2), 1), ((1, 2, 0), 1), ((2, 0, 1), 1),
+    ((0, 2, 1), -1), ((1, 0, 2), -1), ((2, 1, 0), -1),
+)  # fmt: skip
+"""A 3x3 determinant's six terms: the column taken from each row, and the permutation's sign."""
+
 
 class Implementation(Protocol):
     """The functions a compiled backend's ``foundations.fivepoint`` submodule provides."""
+
+    def codes(self) -> dict[str, list[str]]:
+        """Return each enum's names in code order: ``{"solver": [...]}``."""
+        ...
 
     def essential_5pt(
         self, bearings1: NDArray[np.float64], bearings2: NDArray[np.float64], solver: int
@@ -247,8 +264,18 @@ def real_roots(poly: ArrayLike) -> NDArray[np.float64]:
     -------
     ndarray of float64, shape (r,)
         The real roots, ascending.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If the coefficients are not a finite 1-D array.
     """
-    p = npoly.polytrim(np.asarray(poly, dtype=np.float64), tol=0.0)
+    coefficients = np.asarray(poly, dtype=np.float64)
+    if coefficients.ndim != 1 or not np.all(np.isfinite(coefficients)):
+        raise InvalidInputError(
+            f"poly: expected finite coefficients, shape (n + 1,), got shape {coefficients.shape}"
+        )
+    p = npoly.polytrim(coefficients, tol=0.0)
     if len(p) < 2:
         return np.empty(0)
     p = p / p[-1]
@@ -333,12 +360,11 @@ def _nister(bearings1: NDArray[np.float64], bearings2: NDArray[np.float64]) -> l
     if reduced is None:
         return []
     rows = []
-    for upper, lower in ((4, 5), (6, 7), (8, 9)):  # x²z - z·x², y²z - z·y², xyz - z·xy
+    for upper, lower in _NISTER_ROW_PAIRS:
         a, b = _z_polynomials(reduced[upper]), _z_polynomials(reduced[lower])
         rows.append([npoly.polysub(p, npoly.polymulx(q)) for p, q in zip(a, b, strict=True)])
     determinant = np.zeros(1)
-    for (i, j, k), sign in (((0, 1, 2), 1), ((1, 2, 0), 1), ((2, 0, 1), 1),
-                            ((0, 2, 1), -1), ((1, 0, 2), -1), ((2, 1, 0), -1)):  # fmt: skip
+    for (i, j, k), sign in _DETERMINANT_TERMS:
         term = npoly.polymul(npoly.polymul(rows[0][i], rows[1][j]), rows[2][k])
         determinant = np.asarray(npoly.polyadd(determinant, sign * term), dtype=np.float64)
     solutions: list[Matrix3] = []

@@ -1,4 +1,4 @@
-"""Generate ``epipolar.json``, ``homography.json`` and ``twoview.json`` (mpmath, 50 digits).
+"""Generate ``epipolar.json``, ``fivepoint.json``, ``homography.json`` and ``twoview.json``.
 
 Run from the repository root after changing the cases (the fixtures are committed)::
 
@@ -14,7 +14,13 @@ Independent methods, nothing imported from slamlab:
   then mpmath's SVD for the projection onto the essential manifold or rank 2;
 - Sampson errors are their closed forms in 50 digits;
 - RANSAC runs use noise-free inliers and outliers far from any model, so the expected model
-  is the true one and the expected inliers are exactly the clean correspondences.
+  is the true one and the expected inliers are exactly the clean correspondences, for every
+  minimal solver, refined or not;
+- the 5-point solvers on exact samples must return the true E among their solutions;
+- the Sampson refinement on exact pairs, from a perturbed start, must reach the true E (the
+  cost's minimum, zero).
+
+Everything is computed in 50 digits (mpmath) and rounded once.
 """
 
 from __future__ import annotations
@@ -278,9 +284,32 @@ def _epipolar_fixture() -> dict[str, Any]:
     run2, mask = _with_outliers(rng, run2, 0.3)
     ransac = [
         o.case(
-            "30% outliers, noise-free inliers",
-            {"bearings1": run1, "bearings2": run2, "threshold": 1e-4, "seed": 5},
+            f"30% outliers, noise-free inliers, {solver}{', refined' if refine else ''}",
+            {
+                "bearings1": run1,
+                "bearings2": run2,
+                "threshold": 1e-4,
+                "seed": 5,
+                "minimal_solver": solver,
+                "refine": refine,
+            },
             {"model": _float(e_true), "inliers": mask},
+        )
+        for solver, refine in (("stewenius", True), ("nister", True), ("8pt", False))
+    ]
+    nudged = mp.matrix(o.so3_exp(o.mpf_vector([0.0, 0.02, 0.0]))) * (t / mp.norm(t))
+    start = mp.matrix(o.hat(list(nudged))) * mp.matrix(o.so3_exp(o.mpf_vector([0.01, 0.0, 0.0])))
+    refine = [
+        o.case(
+            "noise-free, 20 pairs, a perturbed start",
+            {
+                "essential": _float(start * rot),
+                "bearings1": clean1,
+                "bearings2": clean2,
+                "scale": 1e-3,
+            },
+            _float(e_true),
+            summary={"converged": True},
         )
     ]
     tol: dict[str, Any] = {"comparison": "close", "rtol": 0.0, "double_cover": True}
@@ -346,10 +375,59 @@ def _epipolar_fixture() -> dict[str, Any]:
                 "tolerance": {
                     **tol,
                     "atol": 1e-10,
-                    "reason": "LO refits all clean inliers exactly",
+                    "reason": "noise-free inliers: the minimal solvers and LO's 8-point refits "
+                    "are exact to rounding, and the refinement starts at the cost's minimum",
                 },
                 "cases": ransac,
             },
+            "refine_essential": {
+                "tolerance": {
+                    **tol,
+                    "atol": 1e-8,
+                    "reason": "exact pairs: the Sampson cost's minimum is the true E; LM converges "
+                    "to it from a 1-degree perturbation and stops on its function tolerance, "
+                    "measured 2.5e-9 away",
+                },
+                "cases": refine,
+            },
+        },
+    }
+
+
+def _fivepoint_fixture() -> dict[str, Any]:
+    """Build the 5-point cases: exact five-pair samples, the true E among the solutions."""
+    rng = np.random.default_rng(17)
+    motions = {
+        "sideways": _pose([0.02, -0.1, 0.03], [0.5, -0.1, 0.05]),
+        "forward": _pose([0.01, 0.02, 0.0], [0.02, 0.01, 0.6]),
+        "oblique": _pose([-0.1, 0.05, 0.2], [0.3, 0.4, -0.2]),
+    }
+    cases = []
+    for name, (rot, t) in motions.items():
+        b1, b2 = _bearing_pairs(rng, 5, rot, t, 0.0)
+        for solver in ("stewenius", "nister"):
+            cases.append(
+                o.case(
+                    f"{name}, {solver}",
+                    {"bearings1": b1, "bearings2": b2, "solver": solver},
+                    [_float(_true_essential(rot, t))],
+                )
+            )
+    return {
+        "description": "The 5-point solvers: parity fixture from mpmath (generate_twoview.py).",
+        "oracle": "the true E of exact samples, built in 50 digits from the pose",
+        "functions": {
+            "essential_5pt": {
+                "tolerance": {
+                    "comparison": "close",
+                    "rtol": 0.0,
+                    "atol": 1e-9,
+                    "double_cover": True,
+                    "reason": "the expected E must be among the solutions, up to sign; the "
+                    "solutions are polished to convergence on the cubic constraints",
+                },
+                "cases": cases,
+            }
         },
     }
 
@@ -596,8 +674,9 @@ def _initialize_fixture() -> dict[str, Any]:
                     "comparison": "close",
                     "rtol": 0.0,
                     "atol": 1e-9,
-                    "reason": "exact inliers: the 8-point fit and Lindstrom are exact to "
-                    "rounding; depths up to 8 over a baseline of 0.5 amplify it",
+                    "reason": "exact inliers: the 5-point solver, the 8-point refits, the "
+                    "Sampson refinement and Lindstrom are exact to rounding; depths up to 8 "
+                    "over a baseline of 0.5 amplify it",
                 },
                 "cases": [
                     _initialize_case(
@@ -635,9 +714,10 @@ def _initialize_fixture() -> dict[str, Any]:
 
 
 def main() -> None:
-    """Write ``epipolar.json``, ``homography.json`` and ``twoview.json``."""
+    """Write ``epipolar.json``, ``fivepoint.json``, ``homography.json`` and ``twoview.json``."""
     for name, doc in (
         ("epipolar.json", _epipolar_fixture()),
+        ("fivepoint.json", _fivepoint_fixture()),
         ("homography.json", _homography_fixture()),
         ("twoview.json", _initialize_fixture()),
     ):

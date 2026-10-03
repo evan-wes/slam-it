@@ -43,6 +43,10 @@ constexpr Order kGrevlexOrder = {{{3, 0, 0}, {2, 1, 0}, {2, 0, 1}, {1, 2, 0}, {1
                                   {2, 0, 0}, {1, 1, 0}, {1, 0, 1}, {0, 2, 0}, {0, 1, 1},
                                   {0, 0, 2}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {0, 0, 0}}};
 
+/// @brief The first of Nistér's row pairs (x^2 z, x^2), (y^2 z, y^2), (xyz, xy): rows 4, 6 and 8
+///        of the reduced matrix, each followed by its partner (see `_NISTER_ROW_PAIRS`).
+constexpr std::array<Eigen::Index, 3> kNisterRowPairs = {4, 6, 8};
+
 /// @brief The flat index of a monomial.
 /// @param a The exponent of x.
 /// @param b The exponent of y.
@@ -479,10 +483,10 @@ std::vector<Eigen::Matrix3d> nister(const Eigen::Ref<const correspondences::Rows
     return {};
   }
   const auto& reduced = system->reduced;
-  // x^2 z - z x^2, y^2 z - z y^2, xyz - z xy: three rows of polynomials in z.
+  // Each pair's first row minus z times its second: three rows of polynomials in z.
   std::array<std::array<Poly, 3>, 3> rows;
   for (std::size_t r = 0; r < 3; ++r) {
-    const auto upper = static_cast<Eigen::Index>(4 + (2 * r));
+    const Eigen::Index upper = kNisterRowPairs.at(r);
     const auto a = z_polynomials(reduced.row(upper));
     const auto b = z_polynomials(reduced.row(upper + 1));
     for (std::size_t c = 0; c < 3; ++c) {

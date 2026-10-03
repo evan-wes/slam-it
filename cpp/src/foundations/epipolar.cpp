@@ -297,6 +297,34 @@ Eigen::Matrix<double, 3, 2> tangent_basis(const Eigen::Vector3d& direction) {
 
 namespace {
 
+/// @brief One match's Sampson terms under E: the epipolar lines, `c = x2^T E x1` and `g`, the
+///        sum of both lines' first two coordinates squared; the residual is `c / sqrt(g)`.
+struct SampsonTerms {
+  /// @brief `E x1`.
+  Eigen::Vector3d line2;
+  /// @brief `E^T x2`.
+  Eigen::Vector3d line1;
+  /// @brief The algebraic error.
+  double c;
+  /// @brief The squared gradient norm.
+  double g;
+};
+
+/// @brief One match's Sampson terms (`SampsonProblem._terms` in Python).
+/// @param e E.
+/// @param x1 The point in image 1, z = 1.
+/// @param x2 The point in image 2, z = 1.
+/// @return The terms.
+SampsonTerms sampson_terms(const Eigen::Matrix3d& e, const Eigen::Vector3d& x1,
+                           const Eigen::Vector3d& x2) {
+  const Eigen::Vector3d line2 = e * x1;
+  const Eigen::Vector3d line1 = e.transpose() * x2;
+  return {.line2 = line2,
+          .line1 = line1,
+          .c = x2.dot(line2),
+          .g = line2.head<2>().squaredNorm() + line1.head<2>().squaredNorm()};
+}
+
 /// @brief Least squares on the signed Sampson distance of E's inliers, over E's manifold
 ///        (see `slamlab.foundations.epipolar.SampsonProblem`).
 class SampsonProblem {
@@ -316,10 +344,8 @@ class SampsonProblem {
     const Eigen::Matrix3d e = essential_of(state);
     Eigen::VectorXd out(x1_.rows());
     for (Eigen::Index i = 0; i < x1_.rows(); ++i) {
-      const Eigen::Vector3d line2 = e * x1_.row(i).transpose();
-      const Eigen::Vector3d line1 = e.transpose() * x2_.row(i).transpose();
-      out(i) = x2_.row(i).dot(line2) /
-               std::sqrt(line2.head<2>().squaredNorm() + line1.head<2>().squaredNorm());
+      const SampsonTerms terms = sampson_terms(e, x1_.row(i).transpose(), x2_.row(i).transpose());
+      out(i) = terms.c / std::sqrt(terms.g);
     }
     return out;
   }
@@ -354,10 +380,7 @@ class SampsonProblem {
     for (Eigen::Index i = 0; i < x1_.rows(); ++i) {
       const Eigen::Vector3d x1 = x1_.row(i).transpose();
       const Eigen::Vector3d x2 = x2_.row(i).transpose();
-      const Eigen::Vector3d line2 = e * x1;
-      const Eigen::Vector3d line1 = e.transpose() * x2;
-      const double c = x2.dot(line2);
-      const double g = line2.head<2>().squaredNorm() + line1.head<2>().squaredNorm();
+      const auto [line2, line1, c, g] = sampson_terms(e, x1, x2);
       const double root = std::sqrt(g);
       // dc/dE = x2 x1^T; dg/dE = 2 sum_{i=0,1} (line2_i e_i x1^T + line1_i x2 e_i^T).
       Eigen::Matrix3d dg = Eigen::Matrix3d::Zero();

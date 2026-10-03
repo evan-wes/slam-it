@@ -34,8 +34,8 @@ dev = [
   # for the parity fixtures). manifpy comes from conda-forge (setup_slamlab.sh).
   "scipy>=1.13",
   "mpmath>=1.3",
-  # Test-only oracle for the 5-point solvers and the Sampson refinement (never imported by
-  # the library).
+  # Test-only oracle for the 5-point solvers and the Sampson refinement (a contract forbids
+  # the library from importing any test oracle).
   "poselib>=2.0.5",
   # Visualisation for the demos (never imported by the library).
   "rerun-sdk>=0.38",
@@ -168,6 +168,14 @@ name = "slamlab never imports OpenCV"
 type = "forbidden"
 source_modules = ["slamlab"]
 forbidden_modules = ["cv2"]
+
+# The test oracles check slamlab against independent implementations; the library using one
+# would make that check circular (PoseLib is a competing implementation of the same solvers).
+[[tool.importlinter.contracts]]
+name = "slamlab never imports its test oracles"
+type = "forbidden"
+source_modules = ["slamlab"]
+forbidden_modules = ["poselib", "mpmath", "manifpy", "scipy"]
 
 # pycolmap is an optional reference, imported by slamlab.eval alone.
 [[tool.importlinter.contracts]]

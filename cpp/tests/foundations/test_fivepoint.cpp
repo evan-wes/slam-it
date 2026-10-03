@@ -2,6 +2,7 @@
 /// @brief Native tests for the 5-point solvers (slamlab/foundations/fivepoint.hpp): the true E
 ///        among each solver's solutions, every solution essential, Sturm roots, bad input.
 #include <Eigen/Dense>
+#include <Eigen/Geometry>
 #include <cmath>
 #include <cstddef>
 #include <string>
@@ -75,5 +76,35 @@ int main() {
       fivepoint::essential_5pt(b1.topRows(4), b2.topRows(4), fivepoint::Solver::kNister);
   expect(!four.has_value() && four.error().kind == slamlab::foundations::ErrorKind::kInvalidInput,
          "four pairs are rejected", failures);
+  const auto six =
+      fivepoint::essential_5pt(b1.topRows(6), b2.topRows(6), fivepoint::Solver::kStewenius);
+  expect(!six.has_value(), "six pairs are rejected", failures);
+  const auto unknown =
+      fivepoint::essential_5pt(b1.topRows(5), b2.topRows(5), fivepoint::Solver::kCount);
+  expect(!unknown.has_value(), "an unknown solver is rejected", failures);
+
+  // A repeated pair leaves a rank-4 system: no isolated solution.
+  Rows3 r1 = b1.topRows(5);
+  Rows3 r2 = b2.topRows(5);
+  r1.row(4) = r1.row(3);
+  r2.row(4) = r2.row(3);
+  // No baseline: every [t]x R fits, and only essential matrices may come back.
+  const Eigen::Matrix3d spin =
+      Eigen::AngleAxisd(0.1, Eigen::Vector3d(0.0, 1.0, 0.2).normalized()).toRotationMatrix();
+  const Rows3 p2 = b1.topRows(5) * spin.transpose();
+  for (const fivepoint::Solver solver :
+       {fivepoint::Solver::kNister, fivepoint::Solver::kStewenius}) {
+    const auto repeated = fivepoint::essential_5pt(r1, r2, solver);
+    expect(repeated.has_value() && repeated->empty(), "a repeated pair gives no solution",
+           failures);
+    const auto rotated = fivepoint::essential_5pt(b1.topRows(5), p2, solver);
+    bool essential = rotated.has_value();
+    for (const Eigen::Matrix3d& e : rotated.value_or(std::vector<Eigen::Matrix3d>{})) {
+      const Eigen::Vector3d singular = Eigen::JacobiSVD<Eigen::Matrix3d>(e).singularValues();
+      essential = essential && (singular - Eigen::Vector3d(1.0, 1.0, 0.0)).cwiseAbs().maxCoeff() <=
+                                   fivepoint::kEssentialTolerance;
+    }
+    expect(essential, "a pure rotation returns only essential matrices", failures);
+  }
   return slamlab::testing::finish("foundations/fivepoint", failures);
 }

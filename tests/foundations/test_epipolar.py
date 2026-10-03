@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
+from types import ModuleType
 from typing import Any
 
 import numpy as np
 import pytest
 
 from slamlab import backends
-from slamlab.foundations import correspondences, epipolar, ransac, so3
+from slamlab.foundations import correspondences, epipolar, nls, ransac, so3, twoview
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
-from tests.conftest import load_fixture, require_function
+from tests.conftest import assert_matches_fixture, load_fixture, require_function
 from tests.foundations import scenes as sc
 
 FIXTURE = load_fixture("foundations/epipolar.json")
@@ -34,9 +35,20 @@ def test_matches_fixture(backend: str, function: str) -> None:
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_ransac_matches_fixture(backend: str) -> None:
-    """With noise-free inliers, RANSAC finds the true E and exactly the clean pairs."""
+    """With noise-free inliers, every minimal solver finds the true E and the clean pairs."""
     chosen = require_function(backend, epipolar.__name__, "essential_ransac")
     sc.check_fixture(epipolar, FIXTURE, "essential_ransac", chosen)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_refinement_matches_fixture(backend: str) -> None:
+    """On exact pairs the refinement converges from a perturbed start to the true E."""
+    chosen = require_function(backend, epipolar.__name__, "refine_essential")
+    spec = FIXTURE["functions"]["refine_essential"]
+    for case in spec["cases"]:
+        solved = epipolar.refine_essential(**case["input"], backend=chosen)
+        assert_matches_fixture(solved.state, case["expected"], spec["tolerance"])
+        assert solved.summary.converged == case["summary"]["converged"]
 
 
 @pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
@@ -69,14 +81,20 @@ def test_essential_is_t_cross_r() -> None:
     assert min(np.abs(found - truth).max(), np.abs(found + truth).max()) < 1e-13
 
 
+def _contaminated() -> tuple[np.ndarray, np.ndarray]:
+    """Return 150 noisy bearing pairs, 40% of them outliers, for the run-for-run tests."""
+    b1, b2 = sc.pairs(sc.scene(150, seed=3), sigma=2e-3, seed=4)
+    b2, _ = sc.with_outliers(b2, 0.4, seed=5)
+    return b1, b2
+
+
 def test_fundamental_ransac_backends_agree_run_for_run() -> None:
     """Same seed, same samples: every backend stops on the same iteration, same inliers.
 
     E-RANSAC's counterpart, for every minimal solver, is
     ``test_ransac_backends_agree_for_every_solver``.
     """
-    b1, b2 = sc.pairs(sc.scene(150, seed=3), sigma=2e-3, seed=4)
-    b2, _ = sc.with_outliers(b2, 0.4, seed=5)
+    b1, b2 = _contaminated()
     runs = [
         epipolar.fundamental_ransac(
             _pixels(b1),
@@ -227,8 +245,7 @@ def _essential_error(found: np.ndarray, truth: np.ndarray) -> float:
 @pytest.mark.parametrize("refine", [False, True])
 def test_ransac_backends_agree_for_every_solver(minimal_solver: str, refine: bool) -> None:
     """Every minimal solver, refined or not, runs sample for sample the same in each backend."""
-    b1, b2 = sc.pairs(sc.scene(150, seed=3), sigma=2e-3, seed=4)
-    b2, _ = sc.with_outliers(b2, 0.4, seed=5)
+    b1, b2 = _contaminated()
     options = ransac.Options(threshold=4e-3, seed=9)
     runs = [
         epipolar.essential_ransac(
@@ -372,3 +389,31 @@ def test_refine_rejects_invalid_input(backend: str) -> None:
         epipolar.essential_ransac(
             b1, b2, ransac.Options(threshold=1.0), minimal_solver="sturm", backend=backend
         )
+
+
+@pytest.mark.parametrize("module", [epipolar, twoview])
+def test_the_compiled_code_tables_match(module: ModuleType) -> None:
+    """The codes Python sends and decodes are the compiled core's, in the same order."""
+    chosen = require_function("cpp", module.__name__, "codes")
+    codes = backends.implementation(chosen, module.__name__).codes()
+    assert tuple(codes["termination"]) == tuple(ransac.Termination)
+    assert tuple(codes["nls_termination"]) == tuple(nls.Termination)
+    if module is epipolar:
+        assert tuple(codes["minimal_solver"]) == epipolar.MINIMAL_SOLVERS
+
+
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_the_summary_reports_the_refinement(backend: str) -> None:
+    """With refine on, the summary holds the refinement's solve and whether it was kept."""
+    b1, b2 = sc.pairs(sc.scene(200, seed=1), sigma=1 / 520, seed=2)
+    b2, _ = sc.with_outliers(b2, 0.3, seed=3)
+    options = ransac.Options(threshold=2 / 520, seed=4)
+    plain = epipolar.essential_ransac(b1, b2, options, refine=False, backend=backend)
+    refined = epipolar.essential_ransac(b1, b2, options, backend=backend)
+    assert plain.summary.refinement is None
+    assert not plain.summary.refined
+    assert refined.summary.refinement is not None
+    assert refined.summary.refinement.converged
+    assert refined.summary.refined
+    assert refined.summary.run.score < plain.summary.run.score
+    assert refined.summary.iterations == plain.summary.iterations
