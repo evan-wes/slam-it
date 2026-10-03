@@ -337,9 +337,9 @@ def decompose_reference(homography: Matrix3) -> dict[str, NDArray[np.float64]]:
     h = homography / np.linalg.svd(homography, compute_uv=False)[1]
     s = h.T @ h - np.eye(3)
     if np.abs(s).max() < PURE_ROTATION_TOLERANCE:
-        rotation = h if np.linalg.det(h) > 0.0 else -h
+        # An estimated H is only near a rotation: project it, as for the four candidates.
         pose = np.eye(4)
-        pose[:3, :3] = rotation
+        pose[:3, :3] = so3.project_to_so3(h if np.linalg.det(h) > 0.0 else -h)
         return {"poses": pose[None], "normals": np.zeros((1, 3))}
     m = {
         (i, j): _opposite_of_minor(s, i, j)

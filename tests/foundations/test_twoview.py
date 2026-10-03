@@ -91,6 +91,19 @@ def test_a_rotation_does_not_initialise() -> None:
     assert _rotation_error_deg(result.relative_pose, ROTATION) < 0.5
 
 
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_a_well_estimated_rotation_returns_a_rigid_pose(backend: str) -> None:
+    """With a long focal length and many matches a noisy rotation reaches ``pure_rotation``.
+
+    Its H is still only near a rotation; the returned pose must be rigid (panel L1).
+    """
+    b1, b2 = sc.pairs(sc.scene(1000, seed=3), pose=ROTATION, sigma=1 / 2000, seed=0)
+    result = twoview.initialize(b1, b2, twoview.Options(focal=2000.0), backend=backend)
+    assert result.status is twoview.Status.PURE_ROTATION
+    se3.check_transform(result.relative_pose[None])
+    assert _rotation_error_deg(result.relative_pose, ROTATION) < 0.1
+
+
 def test_a_tiny_baseline_has_low_parallax() -> None:
     """A 1 cm baseline at 4-8 m leaves too little parallax."""
     tiny = se3.exp([0.01, 0.0, 0.0, 0.01, 0.0, 0.0])

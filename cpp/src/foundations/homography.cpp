@@ -193,7 +193,9 @@ Result<PlanarMotions> decompose_homography(const Eigen::Matrix3d& homography) {
   PlanarMotions out;
   if (s.cwiseAbs().maxCoeff() < kPureRotationTolerance) {
     Eigen::Matrix4d pose = Eigen::Matrix4d::Identity();
-    pose.topLeftCorner<3, 3>() = h.determinant() > 0.0 ? h : Eigen::Matrix3d(-h);
+    // An estimated H is only near a rotation: project it, as for the four candidates.
+    pose.topLeftCorner<3, 3>() =
+        so3::project_to_so3(h.determinant() > 0.0 ? h : Eigen::Matrix3d(-h));
     out.poses.push_back(pose);
     out.normals.emplace_back(Eigen::Vector3d::Zero());
     return out;
