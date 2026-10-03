@@ -110,27 +110,28 @@ and a possible later phone target.
   way. The binding translation helper arrives with the first fallible function.
 - **Iterative solvers return their best estimate with a summary,** not an error.
   - This covers Gauss-Newton, Levenberg-Marquardt, BA, and RANSAC with an adaptive iteration
-    count. Each returns the estimate together with a solve summary: iterations, initial and
-    final cost, a converged flag, and the termination reason (converged, iteration cap,
-    no progress).
+    count. Each returns the estimate together with a solve summary: at least the iteration
+    count, a converged flag and the termination reason, plus what that solver has to report
+    (costs and a step trace for least squares; samples, inliers and the confidence reached
+    for RANSAC).
   - A capped but improved solve is a normal, usable result: real-time BA is capped by
     design. Ceres Solver's `Solver::Summary` and SciPy's `least_squares` status follow the
     same pattern.
   - `NotConverged` is reserved for a caller-requested strict mode, and for runs that
     diverge or fail with no usable estimate. `InvalidInput` and `Degenerate` remain hard
     errors.
-  - **Where the summary lives:** in rung 0, once per language, because the
-    Gauss-Newton/LM, BA and RANSAC code that returns it lives there:
-    - Python: a frozen dataclass plus a `TerminationReason` enum in
-      `slamlab.foundations.solve`;
-    - C++: `cpp/include/slamlab/foundations/solve.hpp`, returned as
-      `std::expected<Solution<T>, Error>`;
-    - Rust: `slamlab_foundations::solve`, returned as `Result<Solution<T>, Error>`.
+  - **Where the summary lives:** each solver owns its summary and its termination enum
+    (`nls.Summary` and `nls.Termination`, `ransac.Summary` and `ransac.Termination`), since
+    what is worth reporting differs. What they share lives in `foundations.solve`, once per
+    language (settled in PR 2, panel A3 on PR 1):
+    - Python: the `Summary` Protocol (`iterations`, `termination`, `converged`) and the
+      generic `Solution[State, Summary]` dataclass;
+    - C++: `cpp/include/slamlab/foundations/solve.hpp`, a `Summary` concept and
+      `Solution<State, Summary>`, returned as `std::expected<Solution<…>, Error>`;
+    - Rust: `slamlab_foundations::solve`, when Rust gains a solver.
 
-    As built in PR 1, the summary (`SolveSummary`, `Termination`) lives in
-    `slamlab.foundations.nls` and `nls.hpp`, its only producer so far; BA wraps it in its own
-    summary. It moves to `foundations.solve` in PR 2, when RANSAC becomes its second
-    producer and the shared-or-extended question below is settled.
+    BA wraps the least-squares summary in its own. A solver with no estimate at all to
+    return (RANSAC that never finds a valid hypothesis) raises `Degenerate`.
   - **Crossing the binding boundary:** the estimate crosses as float64 arrays and the
     summary as plain scalars, with the termination reason as an integer code. The Python
     entry point builds the dataclass, and there are no binding-side classes. This extends
@@ -504,9 +505,6 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
   Still open:
   - The `arccos` domain at both ends: a rotation whose trace rounds just past +-1.
   - A time-cap termination reason for the compute budgets.
-  - Whether RANSAC gets its own summary (iterations, inlier count or mask, whether the
-    target confidence was reached) or a shared core summary with extensions. Settled in
-    PR 2, with the summary's move to `foundations.solve` (panel A3 on PR 1).
 - **Deferred from PR 1's review panel**
   ([report](../reviews/2026-10-02-feature-ba-spine.md)):
   - **Batched APIs for standalone callers (A11).** Batching over many inputs lives in the

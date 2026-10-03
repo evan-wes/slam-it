@@ -235,7 +235,7 @@ def _result_from_backend(raw: BackendResult) -> BAResult:
         for row in raw["trace"]
     )
     termination = nls.Termination(ENUM_TABLES["termination"][int(raw["termination"])])
-    solve_summary = nls.SolveSummary(
+    solve_summary = nls.Summary(
         initial_cost=float(raw["initial_cost"]),
         final_cost=float(raw["final_cost"]),
         iterations=len(records),

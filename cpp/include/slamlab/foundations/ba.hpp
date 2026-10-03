@@ -150,7 +150,7 @@ struct Options {
 /// @brief How a bundle adjustment went.
 struct Summary {
   /// @brief The NLS solve's summary.
-  nls::SolveSummary solve;
+  nls::Summary solve;
   /// @brief The gauge applied (`kAuto` resolved).
   Gauge gauge = Gauge::kAuto;
   /// @brief The pose fixed to remove the rigid gauge, or -1.

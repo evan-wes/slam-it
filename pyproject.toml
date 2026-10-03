@@ -136,6 +136,7 @@ layers = [
   "(se3)",
   "so3",
   "arrays",
+  "(solve)",
   "errors",
 ]
 

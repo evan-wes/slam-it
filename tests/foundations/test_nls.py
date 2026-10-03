@@ -9,7 +9,7 @@ import pytest
 from numpy.typing import NDArray
 from scipy.optimize import least_squares
 
-from slamlab.foundations import nls, so3
+from slamlab.foundations import nls, so3, solve
 from slamlab.foundations.errors import InvalidInputError, NotConvergedError
 
 TIGHT = nls.Options(
@@ -151,6 +151,14 @@ def test_levenberg_marquardt_reaches_rosenbrock_minimum() -> None:
     assert accepted == sorted(accepted, reverse=True)
     assert summary.iterations == len(summary.trace)
     assert summary.trace[0].cost == summary.initial_cost
+
+
+def test_summary_meets_the_shared_contract() -> None:
+    """The NLS summary is a :class:`solve.Summary`; mypy checks the assignment."""
+    shared: solve.Summary = nls.solve(Rosenbrock(), np.array([-1.2, 1.0]), TIGHT).summary
+    assert shared.converged
+    assert shared.termination in nls.CONVERGED
+    assert shared.iterations > 0
 
 
 def test_gauss_newton_stops_on_overshoot_and_converges_nearby() -> None:

@@ -43,8 +43,8 @@ step's norm falls below ``step_tolerance`` (absolute, in the tangent space, whic
 natural scale here); or ``max_iterations`` steps have been tried. **Every step is accepted
 only if it decreases the cost,** so the result is never worse than the start. Reaching the
 iteration cap is not an error: :func:`solve` returns its best estimate with a
-:class:`SolveSummary`, and raises :class:`~slamlab.foundations.errors.NotConvergedError`
-only when ``strict`` asks it to.
+:class:`Summary` (the shared contract is in :mod:`slamlab.foundations.solve`), and
+raises :class:`~slamlab.foundations.errors.NotConvergedError` only when ``strict`` asks it to.
 
 The C++ core (``slamlab/foundations/nls.hpp``) is the same loop as a template over the same
 problem concept. Following the "generic in the core, concrete in the bindings" rule, it is
@@ -63,6 +63,7 @@ from numpy.typing import ArrayLike, NDArray
 
 from slamlab.foundations.arrays import as_real
 from slamlab.foundations.errors import InvalidInputError, NotConvergedError
+from slamlab.foundations.solve import Solution
 
 StateT = TypeVar("StateT")
 
@@ -321,8 +322,10 @@ class Iteration:
 
 
 @dataclass(frozen=True)
-class SolveSummary:
+class Summary:
     """How a solve went: costs, iteration count, why it stopped, and its trace.
+
+    Satisfies :class:`slamlab.foundations.solve.Summary`.
 
     Attributes
     ----------
@@ -344,22 +347,6 @@ class SolveSummary:
     termination: Termination
     converged: bool
     trace: tuple[Iteration, ...]
-
-
-@dataclass(frozen=True)
-class Solution(Generic[StateT]):
-    """The best state found, and how the solve went.
-
-    Attributes
-    ----------
-    state : StateT
-        The estimate: the lowest-cost state visited.
-    summary : SolveSummary
-        The solve's summary.
-    """
-
-    state: StateT
-    summary: SolveSummary
 
 
 class LinearSystem(Protocol):
@@ -606,7 +593,7 @@ def _try_step(
 
 def solve(
     problem: Problem[StateT], initial: StateT, options: Options | None = None
-) -> Solution[StateT]:
+) -> Solution[StateT, Summary]:
     """Minimise ``½ Σ ρ(|r_i|²)`` from ``initial`` by Levenberg-Marquardt or Gauss-Newton.
 
     Parameters
@@ -620,8 +607,8 @@ def solve(
 
     Returns
     -------
-    Solution
-        The lowest-cost state visited and the solve's summary.
+    slamlab.foundations.solve.Solution
+        The lowest-cost state visited, and the solve's :class:`Summary`.
 
     Raises
     ------
@@ -667,7 +654,7 @@ def solve(
     converged = termination in CONVERGED
     if opts.strict and not converged:
         raise NotConvergedError(f"solve: stopped without converging ({termination})")
-    summary = SolveSummary(
+    summary = Summary(
         initial_cost=evaluation.cost,
         final_cost=point.evaluation.cost,
         iterations=len(trace),
