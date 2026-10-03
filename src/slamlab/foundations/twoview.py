@@ -155,7 +155,7 @@ class Options:
     refine : bool
         Whether E-RANSAC's model is refined on its inliers' Sampson distances
         (:func:`slamlab.foundations.epipolar.essential_ransac`), keeping it only if it lowers the
-        MSAC cost; :class:`slamlab.foundations.epipolar.EssentialSummary` says whether it did.
+        MSAC cost; :class:`slamlab.foundations.ransac.RefinedSummary` says whether it did.
     """
 
     focal: float
@@ -247,10 +247,12 @@ class Initialization:
         Each model's GRIC score (infinity if its RANSAC found no model).
     in_front : ndarray of int, shape (K,)
         Each candidate's count of inliers triangulated in front of both cameras, best first.
-    essential : epipolar.EssentialSummary or None
+    essential : ransac.RefinedSummary or None
         E-RANSAC's summary, with the refinement's (None if it found no model).
     homography : ransac.Summary or None
-        H-RANSAC's summary (None if it found no model).
+        H-RANSAC's summary (None if it found no usable model: none, or one of rank below 2,
+        which has no motion to decompose; duplicate keypoints at one pixel can make such an H
+        win).
     """
 
     status: Status
@@ -263,7 +265,7 @@ class Initialization:
     gric_essential: float
     gric_homography: float
     in_front: NDArray[np.int64]
-    essential: epipolar.EssentialSummary | None
+    essential: ransac.RefinedSummary | None
     homography: ransac.Summary | None
 
 
@@ -273,7 +275,7 @@ class Implementation(Protocol):
     ``initialize`` takes :class:`Options`' fields as one dict and returns a dict of the
     :class:`Initialization` fields: ``status`` and ``model`` as codes into ``codes()``,
     ``in_front`` as an int64 array, ``essential`` as a summary dict
-    (:func:`slamlab.foundations.epipolar.essential_summary_from_backend`) and ``homography``
+    (:func:`slamlab.foundations.ransac.refined_summary_from_backend`) and ``homography``
     as one (:func:`slamlab.foundations.ransac.summary_from_backend`), or None when that
     model's RANSAC found nothing.
     """
@@ -331,6 +333,18 @@ def _fit(
         return run()
     except DegenerateError:
         return None
+
+
+def _decomposable(matrix: correspondences.Matrix3) -> bool:
+    """Whether H decomposes into motions: rank 2 or more.
+
+    H-RANSAC can return rank 1 when many matches share one pixel.
+    """
+    try:
+        homography.decompose_reference(matrix)
+    except DegenerateError:
+        return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -429,6 +443,8 @@ def _initialize(
             options.ransac_options(Model.HOMOGRAPHY),
         )
     )
+    if planar is not None and not _decomposable(planar.state.model):
+        planar = None
     if essential is None and planar is None:
         raise DegenerateError("initialize: neither RANSAC found a model")
     sigma = options.sigma_px / options.focal
@@ -476,12 +492,12 @@ def _initialize(
 # --- validation and dispatch --------------------------------------------------------------
 
 
-def _summary(raw: dict[str, Any] | None, codes: dict[str, list[str]]) -> ransac.Summary | None:
+def _summary(raw: dict[str, Any] | None, codes: backends.Codes) -> ransac.Summary | None:
     """Rebuild a RANSAC summary a compiled backend returned (None if that run found no model)."""
     return None if raw is None else ransac.summary_from_backend(raw, codes)
 
 
-def _from_backend(raw: dict[str, Any], codes: dict[str, list[str]]) -> Initialization:
+def _from_backend(raw: dict[str, Any], codes: backends.Codes) -> Initialization:
     """Build the result from a compiled backend's dict."""
     return Initialization(
         status=Status(codes["status"][int(raw["status"])]),
@@ -497,7 +513,7 @@ def _from_backend(raw: dict[str, Any], codes: dict[str, list[str]]) -> Initializ
         essential=(
             None
             if raw["essential"] is None
-            else epipolar.essential_summary_from_backend(raw["essential"], codes)
+            else ransac.refined_summary_from_backend(raw["essential"], codes)
         ),
         homography=_summary(raw["homography"], codes),
     )
@@ -531,9 +547,11 @@ def initialize(
         If neither RANSAC found a model.
     """
     b1, b2 = as_bearing_pairs(bearings1, bearings2, epipolar.SAMPLE_SIZE)
-    backends.check_name(backend)
-    if backend == "python":
-        return _initialize(b1, b2, options)
-    implementation = backends.implementation(backend, __name__)
-    raw = backends.function(backend, __name__, "initialize")(b1, b2, options=asdict(options))
-    return _from_backend(raw, implementation.codes())
+    return backends.call(
+        backend,
+        __name__,
+        "initialize",
+        reference=lambda: _initialize(b1, b2, options),
+        arguments={"bearings1": b1, "bearings2": b2, "options": asdict(options)},
+        decode=_from_backend,
+    )

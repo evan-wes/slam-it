@@ -312,6 +312,46 @@ def as_bearing_pairs(
     return b1, b2
 
 
+def as_correspondences(
+    points: ArrayLike, bearings: ArrayLike, minimum: int, *, positive_z: bool = True
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Validate (N, 3) world points and their (N, 3) unit bearings, N >= `minimum`.
+
+    Parameters
+    ----------
+    points : array_like, shape (N, 3)
+        The points, in the world frame.
+    bearings : array_like, shape (N, 3)
+        Their unit bearings in the camera.
+    minimum : int
+        The fewest correspondences accepted.
+    positive_z : bool, optional
+        Require positive z, as methods working in the normalised image plane do (default).
+
+    Returns
+    -------
+    tuple of ndarray of float64, shape (N, 3)
+        C-contiguous copies of the points and the bearings.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If the shapes differ or are not (N, 3), a value is not finite, a bearing is not unit,
+        a z is not positive, or N < `minimum`.
+    """
+    world, lead = as_batch(points, (3,), "points")
+    rays = as_bearings(bearings)
+    if len(lead) != 1 or rays.shape != world.shape:
+        raise InvalidInputError(
+            f"points, bearings: expected equal (N, 3) shapes, got {world.shape}, {rays.shape}"
+        )
+    if world.shape[0] < minimum:
+        raise InvalidInputError(f"points: need at least {minimum}, got {world.shape[0]}")
+    if positive_z and np.any(rays[:, 2] <= 0.0):
+        raise InvalidInputError("bearings: expected positive z (a pinhole view)")
+    return world, rays
+
+
 def as_point_pairs(
     points1: ArrayLike, points2: ArrayLike, minimum: int, name: str = "pixels"
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:

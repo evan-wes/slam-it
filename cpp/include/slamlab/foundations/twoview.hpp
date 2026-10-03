@@ -138,7 +138,7 @@ struct Initialization {
   /// @brief Each candidate's inliers in front of both cameras, best first.
   std::vector<int> in_front;
   /// @brief E-RANSAC's summary (with the refinement's), if it found a model.
-  std::optional<epipolar::EssentialSummary> essential;
+  std::optional<ransac::RefinedSummary> essential;
   /// @brief H's RANSAC summary, if it found a model.
   std::optional<ransac::Summary> homography;
 };

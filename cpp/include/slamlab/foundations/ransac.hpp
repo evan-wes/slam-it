@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "slamlab/foundations/error.hpp"
+#include "slamlab/foundations/nls.hpp"
 #include "slamlab/foundations/rng.hpp"
 #include "slamlab/foundations/solve.hpp"
 
@@ -43,6 +44,9 @@ concept Estimator =
       { estimator.fit_nonminimal(indices) } -> std::convertible_to<std::vector<typename E::Model>>;
       { estimator.residuals(model) } -> std::convertible_to<Eigen::VectorXd>;
     };
+
+/// @brief At most this many refine-and-reselect rounds polish a consensus (`refine_consensus`).
+inline constexpr int kRefineRounds = 4;
 
 /// @brief Why `estimate` stopped, with the integer codes it crosses the bindings as.
 enum class Termination : std::uint8_t {
@@ -320,6 +324,126 @@ template <Estimator E>
                          .inlier_count = inlier_count,
                          .score = best->score},
   };
+}
+
+/// @brief How a RANSAC run and the least-squares refinement of its model went (see
+///        `slamlab.foundations.ransac.RefinedSummary`; nested like `ba::Summary`'s solve).
+struct RefinedSummary {
+  /// @brief The RANSAC run; its inlier count and score describe the returned model.
+  Summary run;
+  /// @brief The last refinement's solve, if one ran (refinement on, and enough inliers).
+  std::optional<nls::Summary> refinement;
+  /// @brief Whether a refined model was kept (it lowered the MSAC cost).
+  bool refined = false;
+  /// @brief Refine-and-reselect rounds run (0 if the refinement did not run).
+  int rounds = 0;
+};
+
+/// @brief A refined RANSAC run's estimate and how it went. A named struct, not
+///        `solve::Solution`: `RefinedSummary` nests its summaries, so it has no data members
+///        for the `solve::Summary` concept (the design doc's rule for nested summaries).
+/// @tparam Model The estimator's model type.
+template <typename Model>
+struct RefinedSolution {
+  /// @brief The model and its inliers.
+  Consensus<Model> state;
+  /// @brief The run's and the refinement's summaries.
+  RefinedSummary summary;
+};
+
+/// @brief A RANSAC result whose refinement did not run (`RefinedSummary.unrefined` in Python).
+/// @tparam Model The model type.
+/// @param found The RANSAC run's solution.
+/// @return Its consensus, with a summary holding the run and no refinement.
+template <typename Model>
+RefinedSolution<Model> unrefined(Solution<Model> found) {
+  return {
+      .state = std::move(found.state),
+      .summary = {.run = found.summary, .refinement = std::nullopt, .refined = false, .rounds = 0}};
+}
+
+/// @brief Refine RANSAC's model on its inliers, re-collect them, and repeat while the MSAC
+///        cost drops (see `slamlab.foundations.ransac.refine_consensus`): at most
+///        `kRefineRounds` rounds, stopping when a round does not lower the cost or the inliers
+///        stop changing.
+/// @tparam E The estimator type.
+/// @tparam Refine Callable as `refine(model, inlier indices)`, returning
+///         `solve::Solution<E::Model, nls::Summary>`.
+/// @param estimator The estimator RANSAC ran with; its residuals rescore the refined model.
+/// @param found RANSAC's result.
+/// @param refine Refines a model on the data the indices select.
+/// @param threshold RANSAC's inlier threshold.
+/// @param minimum The fewest inliers the refinement needs; with fewer it does not run.
+/// @return The kept model, its inliers and the summary, whose run's inlier count and score
+///         describe the kept model.
+template <Estimator E, typename Refine>
+  requires std::invocable<const Refine&, const typename E::Model&, const Indices&>
+// NOLINTBEGIN(bugprone-easily-swappable-parameters): (threshold, minimum), as in Python
+RefinedSolution<typename E::Model> refine_consensus(const E& estimator,
+                                                    Solution<typename E::Model> found,
+                                                    const Refine& refine, double threshold,
+                                                    std::uint32_t minimum) {
+  // NOLINTEND(bugprone-easily-swappable-parameters)
+  RefinedSolution<typename E::Model> out = unrefined(std::move(found));
+  const double threshold2 = threshold * threshold;
+  while (out.summary.rounds < kRefineRounds) {
+    Indices inliers;
+    for (Eigen::Index i = 0; i < out.state.inliers.size(); ++i) {
+      if (out.state.inliers(i)) {
+        inliers.push_back(static_cast<std::uint32_t>(i));
+      }
+    }
+    if (inliers.size() < minimum) {
+      break;
+    }
+    auto solved = refine(std::as_const(out.state.model), std::as_const(inliers));
+    ++out.summary.rounds;
+    out.summary.refinement = std::move(solved.summary);
+    const Eigen::VectorXd residuals = estimator.residuals(solved.state);
+    const double score = detail::score(residuals, threshold2);
+    if (!(score < out.summary.run.score)) {
+      break;
+    }
+    Eigen::Array<bool, Eigen::Dynamic, 1> kept = residuals.array() < threshold2;
+    const bool unchanged = (kept == out.state.inliers).all();
+    out.state.model = std::move(solved.state);
+    out.state.inliers = std::move(kept);
+    out.summary.run.inlier_count = static_cast<int>(out.state.inliers.count());
+    out.summary.run.score = score;
+    out.summary.refined = true;
+    if (unchanged) {
+      break;
+    }
+  }
+  return out;
+}
+
+/// @brief Run LO-MSAC, then, if `refine`, refine the consensus (see
+///        `slamlab.foundations.ransac.estimate_refined`).
+/// @tparam E The estimator type.
+/// @tparam Refine Callable as in `refine_consensus`.
+/// @param estimator The model's solvers and residuals.
+/// @param options The settings; the threshold is also the MSAC cap the refined model is
+///        rescored with.
+/// @param refine Whether to refine the consensus.
+/// @param refiner Refines a model on the data the indices select.
+/// @param minimum The fewest inliers the refinement needs.
+/// @return The kept model, its inliers and the summary; `estimate`'s errors.
+template <Estimator E, typename Refine>
+  requires std::invocable<const Refine&, const typename E::Model&, const Indices&>
+[[nodiscard]] Result<RefinedSolution<typename E::Model>> estimate_refined(const E& estimator,
+                                                                          const Options& options,
+                                                                          bool refine,
+                                                                          const Refine& refiner,
+                                                                          std::uint32_t minimum) {
+  auto found = estimate(estimator, options);
+  if (!found) {
+    return std::unexpected(found.error());
+  }
+  if (!refine) {
+    return unrefined(std::move(*found));
+  }
+  return refine_consensus(estimator, std::move(*found), refiner, options.threshold, minimum);
 }
 
 }  // namespace slamlab::foundations::ransac

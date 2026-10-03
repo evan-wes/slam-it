@@ -54,14 +54,14 @@ from __future__ import annotations
 import enum
 import math
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Generic, Protocol, TypeVar
 
 import numpy as np
 from numpy.typing import NDArray
 
 from slamlab import backends
-from slamlab.foundations import solve
+from slamlab.foundations import nls, solve
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
 from slamlab.foundations.rng import Pcg32
 from slamlab.foundations.solve import Solution
@@ -104,6 +104,9 @@ class Termination(enum.StrEnum):
     MAX_ITERATIONS = "max_iterations"
     """Not converged: ``max_iterations`` samples were drawn first."""
 
+
+REFINE_ROUNDS = 4
+"""At most this many refine-and-reselect rounds polish a consensus (:func:`refine_consensus`)."""
 
 CONVERGED = frozenset({Termination.CONFIDENCE})
 """The terminations that count as converged."""
@@ -383,14 +386,14 @@ def estimate(
     return Solution(state=Consensus(model=best.model, inliers=inliers), summary=summary)
 
 
-def summary_from_backend(raw: dict[str, Any], codes: dict[str, list[str]]) -> Summary:
+def summary_from_backend(raw: dict[str, Any], codes: backends.Codes) -> Summary:
     """Build a summary from the scalars a compiled backend returned.
 
     Parameters
     ----------
     raw : dict
         The :class:`Summary` fields (``converged`` aside) as scalars, with ``termination`` as
-        an index into ``codes["termination"]``.
+        an index into ``codes["ransac_termination"]``.
     codes : dict of str to list of str
         The backend's enum names in code order (its ``codes()``).
 
@@ -399,7 +402,7 @@ def summary_from_backend(raw: dict[str, Any], codes: dict[str, list[str]]) -> Su
     Summary
         The summary.
     """
-    termination = Termination(codes["termination"][int(raw["termination"])])
+    termination = Termination(codes["ransac_termination"][int(raw["termination"])])
     return Summary(
         iterations=int(raw["iterations"]),
         termination=termination,
@@ -411,10 +414,193 @@ def summary_from_backend(raw: dict[str, Any], codes: dict[str, list[str]]) -> Su
     )
 
 
+@dataclass(frozen=True)
+class RefinedSummary:
+    """How a RANSAC run and the least-squares refinement of its model went.
+
+    Nests both solvers' summaries, as BA's summary nests its least-squares solve, and
+    satisfies :class:`slamlab.foundations.solve.Summary` through the RANSAC run's fields (the
+    design doc's rule for a summary that nests others).
+
+    Attributes
+    ----------
+    run : Summary
+        The RANSAC run; its ``inlier_count`` and ``score`` describe the returned model.
+    refinement : nls.Summary or None
+        The last refinement's solve, if one ran (refinement on, and enough inliers).
+    refined : bool
+        Whether a refined model was kept: it lowered the MSAC cost.
+    rounds : int
+        Refine-and-reselect rounds run (0 if the refinement did not run).
+    """
+
+    run: Summary
+    refinement: nls.Summary | None
+    refined: bool
+    rounds: int
+
+    @classmethod
+    def unrefined(cls, run: Summary) -> RefinedSummary:
+        """Return the summary of a run whose refinement did not run.
+
+        Parameters
+        ----------
+        run : Summary
+            The RANSAC run.
+
+        Returns
+        -------
+        RefinedSummary
+            `run`, no refinement, not refined.
+        """
+        return cls(run, refinement=None, refined=False, rounds=0)
+
+    @property
+    def iterations(self) -> int:
+        """Minimal samples drawn."""
+        return self.run.iterations
+
+    @property
+    def termination(self) -> Termination:
+        """Why sampling stopped."""
+        return self.run.termination
+
+    @property
+    def converged(self) -> bool:
+        """Whether sampling reached its target confidence."""
+        return self.run.converged
+
+
+def refine_consensus(
+    estimator: Estimator[ModelT],
+    found: Solution[Consensus[ModelT], Summary],
+    refine: Callable[[ModelT, NDArray[np.bool_]], Solution[ModelT, nls.Summary]],
+    *,
+    threshold: float,
+    minimum: int,
+) -> Solution[Consensus[ModelT], RefinedSummary]:
+    """Refine RANSAC's model on its inliers, re-collect them, and repeat while the cost drops.
+
+    Each round refines the model on the current inliers, rescores it by MSAC over all the data,
+    and keeps it only if the cost drops; the kept model's inliers are re-collected and the next
+    round starts from them. It stops when a round does not lower the cost, the inliers stop
+    changing, or after :data:`REFINE_ROUNDS` rounds. The refinement minimises its own (robust,
+    geometric) cost, not MSAC's truncated one, so a refined model can score worse; it is then
+    discarded. Re-collecting matters where LO's least-squares refits cannot run (EPnP on planar
+    points): one refinement on the minimal sample's consensus leaves the inliers it missed.
+
+    Parameters
+    ----------
+    estimator : Estimator
+        The estimator RANSAC ran with; its residuals rescore the refined model.
+    found : slamlab.foundations.solve.Solution
+        RANSAC's result.
+    refine : callable
+        Refines a model on the data an inlier mask selects.
+    threshold : float
+        RANSAC's inlier threshold ``θ``.
+    minimum : int
+        The fewest inliers the refinement needs; with fewer it does not run.
+
+    Returns
+    -------
+    slamlab.foundations.solve.Solution
+        The kept model, its inliers and the :class:`RefinedSummary`, whose run's
+        ``inlier_count`` and ``score`` describe the kept model.
+    """
+    threshold2 = threshold**2
+    state, score = found.state, found.summary.score
+    refinement: nls.Summary | None = None
+    refined, rounds = False, 0
+    while rounds < REFINE_ROUNDS and np.count_nonzero(state.inliers) >= minimum:
+        solved = refine(state.model, state.inliers)
+        rounds += 1
+        refinement = solved.summary
+        residuals = estimator.residuals(solved.state)
+        candidate = _score(residuals, threshold2)
+        if not candidate < score:
+            break
+        kept = residuals < threshold2
+        unchanged = bool(np.array_equal(kept, state.inliers))
+        state, score, refined = Consensus(model=solved.state, inliers=kept), candidate, True
+        if unchanged:
+            break
+    run = replace(found.summary, inlier_count=int(np.count_nonzero(state.inliers)), score=score)
+    return Solution(
+        state=state,
+        summary=RefinedSummary(run, refinement=refinement, refined=refined, rounds=rounds),
+    )
+
+
+def estimate_refined(
+    estimator: Estimator[ModelT],
+    options: Options,
+    refine: Callable[[ModelT, NDArray[np.bool_]], Solution[ModelT, nls.Summary]] | None,
+    *,
+    minimum: int,
+) -> Solution[Consensus[ModelT], RefinedSummary]:
+    """Run LO-MSAC, then, unless `refine` is None, refine the consensus.
+
+    Parameters
+    ----------
+    estimator : Estimator
+        The model's solvers and residuals.
+    options : Options
+        The settings; ``threshold`` is also the MSAC cap the refined model is rescored with.
+    refine : callable or None
+        Refines a model on the data an inlier mask selects (see :func:`refine_consensus`); None
+        skips the refinement.
+    minimum : int
+        The fewest inliers the refinement needs.
+
+    Returns
+    -------
+    slamlab.foundations.solve.Solution
+        The kept model, its inliers and the :class:`RefinedSummary`.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If there are fewer data than a minimal sample.
+    slamlab.foundations.errors.DegenerateError
+        If no sample gave a model.
+    """
+    found = estimate(estimator, options)
+    if refine is None:
+        return Solution(state=found.state, summary=RefinedSummary.unrefined(found.summary))
+    return refine_consensus(estimator, found, refine, threshold=options.threshold, minimum=minimum)
+
+
+def refined_summary_from_backend(raw: dict[str, Any], codes: backends.Codes) -> RefinedSummary:
+    """Build a refined run's summary from the dict a compiled backend returned.
+
+    Parameters
+    ----------
+    raw : dict
+        ``run`` (see :func:`summary_from_backend`), ``refinement`` (see
+        :func:`slamlab.foundations.nls.summary_from_backend`, or None), ``refined`` and
+        ``rounds``.
+    codes : dict of str to list of str
+        The backend's enum names: ``ransac_termination`` and ``nls_termination``.
+
+    Returns
+    -------
+    RefinedSummary
+        The summary.
+    """
+    refinement = raw["refinement"]
+    return RefinedSummary(
+        run=summary_from_backend(raw["run"], codes),
+        refinement=None if refinement is None else nls.summary_from_backend(refinement, codes),
+        refined=bool(raw["refined"]),
+        rounds=int(raw["rounds"]),
+    )
+
+
 def from_backend(
     raw: dict[str, Any],
-    codes: dict[str, list[str]],
-    summary: Callable[[dict[str, Any], dict[str, list[str]]], SummaryT],
+    codes: backends.Codes,
+    summary: Callable[[dict[str, Any], backends.Codes], SummaryT],
 ) -> Solution[Consensus[NDArray[np.float64]], SummaryT]:
     """Build a solution from a compiled backend's RANSAC result.
 
@@ -425,8 +611,8 @@ def from_backend(
     codes : dict of str to list of str
         The backend's enum names in code order (its ``codes()``).
     summary : callable
-        Decodes the summary dict: :func:`summary_from_backend`, or a solver's own for a
-        summary that nests others (``epipolar.essential_summary_from_backend``).
+        Decodes the summary dict: :func:`summary_from_backend`, or
+        :func:`refined_summary_from_backend` for a refined run.
 
     Returns
     -------
@@ -440,38 +626,47 @@ def from_backend(
     return Solution(state=consensus, summary=summary(raw["summary"], codes))
 
 
-def run(
-    estimator: Estimator[NDArray[np.float64]],
-    arrays: tuple[NDArray[np.float64], NDArray[np.float64]],
+def run(  # noqa: PLR0913 -- the compiled target is keyword-only
+    reference: Callable[[], Solution[Consensus[NDArray[np.float64]], SummaryT]],
+    arguments: dict[str, object],
     options: Options,
     *,
+    summary: Callable[[dict[str, Any], backends.Codes], SummaryT],
     backend: str,
-    target: tuple[str, str],
-) -> Solution[Consensus[NDArray[np.float64]], Summary]:
-    """Run an array-valued RANSAC with the reference estimator or a compiled backend.
+    module_name: str,
+    function: str,
+) -> Solution[Consensus[NDArray[np.float64]], SummaryT]:
+    """Run an array-valued RANSAC with the reference or a compiled backend.
 
     Parameters
     ----------
-    estimator : Estimator
-        The reference estimator, used when `backend` is ``"python"``.
-    arrays : tuple of ndarray
-        The validated correspondences, passed to the compiled function.
+    reference : callable
+        Runs the reference, when `backend` is ``"python"``.
+    arguments : dict of str to object
+        The compiled function's arguments other than the options (the validated data, and any
+        choices such as a minimal solver's code), passed by keyword.
     options : Options
-        The settings, passed to the compiled function as a dict of its fields.
+        The settings, passed to the compiled function as a dict of their fields.
+    summary : callable
+        Decodes the compiled summary: :func:`summary_from_backend`, or
+        :func:`refined_summary_from_backend` for a refined run.
     backend : {"python", "cpp", "rust"}
         Which implementation runs.
-    target : tuple of str
-        The calling module's ``__name__`` and the compiled function's name.
+    module_name : str
+        The calling module's ``__name__``.
+    function : str
+        The compiled function's name.
 
     Returns
     -------
     slamlab.foundations.solve.Solution
-        The (3, 3) model, its inliers and the run's summary.
+        The model, its inliers and the run's summary.
     """
-    backends.check_name(backend)
-    if backend == "python":
-        return estimate(estimator, options)
-    module_name, function = target
-    implementation = backends.implementation(backend, module_name)
-    raw = backends.function(backend, module_name, function)(*arrays, options=asdict(options))
-    return from_backend(raw, implementation.codes(), summary_from_backend)
+    return backends.call(
+        backend,
+        module_name,
+        function,
+        reference=reference,
+        arguments={**arguments, "options": asdict(options)},
+        decode=lambda raw, codes: from_backend(raw, codes, summary),
+    )

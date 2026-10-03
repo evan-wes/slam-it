@@ -715,17 +715,18 @@ _CONVERT = {"int": int, "float": float, "bool": bool}
 """How each :class:`Iteration` field type is read from the trace's float columns."""
 
 
-def summary_from_backend(raw: dict[str, Any], termination_names: list[str]) -> Summary:
+def summary_from_backend(raw: dict[str, Any], codes: dict[str, list[str]]) -> Summary:
     """Build a solve's summary from the dict a compiled backend returned.
 
     Parameters
     ----------
     raw : dict
         ``initial_cost``, ``final_cost``, ``termination`` (an index into
-        `termination_names`), ``trace`` (one row per step) and ``trace_columns`` (the
-        :class:`Iteration` field each column holds, read by name).
-    termination_names : list of str
-        The backend's :class:`Termination` names in code order.
+        ``codes["nls_termination"]``), ``trace`` (one row per step) and ``trace_columns``
+        (the :class:`Iteration` field each column holds, read by name).
+    codes : dict of str to list of str
+        The backend's enum names in code order (its ``codes()``); ``nls_termination`` is
+        :class:`Termination`'s.
 
     Returns
     -------
@@ -747,7 +748,7 @@ def summary_from_backend(raw: dict[str, Any], termination_names: list[str]) -> S
         )
         for row in raw["trace"]
     )
-    termination = Termination(termination_names[int(raw["termination"])])
+    termination = Termination(codes["nls_termination"][int(raw["termination"])])
     return Summary(
         initial_cost=float(raw["initial_cost"]),
         final_cost=float(raw["final_cost"]),

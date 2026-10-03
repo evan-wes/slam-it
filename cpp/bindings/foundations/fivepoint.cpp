@@ -6,7 +6,6 @@
 #include <nanobind/ndarray.h>
 
 #include <cstddef>
-#include <stdexcept>
 
 #include "common.hpp"
 #include "foundations/foundations.hpp"
@@ -27,13 +26,10 @@ using Rows3 = foundations::correspondences::Rows3;
 /// @return A new (K, 3, 3) array.
 /// @throws CoreError for invalid input; std::invalid_argument for an unknown code.
 ArrayOut essential_5pt(const BatchIn<3>& bearings1, const BatchIn<3>& bearings2, int solver) {
-  if (solver < 0 || solver >= static_cast<int>(fivepoint::Solver::kCount)) {
-    throw std::invalid_argument("solver: unknown code");
-  }
   const auto found =
       unwrap(fivepoint::essential_5pt(copy_matrix<Rows3>(bearings1.data(), bearings1.shape(0), 3),
                                       copy_matrix<Rows3>(bearings2.data(), bearings2.shape(0), 3),
-                                      static_cast<fivepoint::Solver>(solver)));
+                                      enum_code<fivepoint::Solver>(solver, "solver")));
   auto [out, data] = new_array({found.size(), 3, 3});
   for (std::size_t k = 0; k < found.size(); ++k) {
     // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic): batch offset

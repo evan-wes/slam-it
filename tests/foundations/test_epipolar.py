@@ -9,9 +9,9 @@ import numpy as np
 import pytest
 
 from slamlab import backends
-from slamlab.foundations import correspondences, epipolar, nls, ransac, so3
+from slamlab.foundations import correspondences, epipolar, ransac, so3
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
-from tests.conftest import assert_matches_fixture, load_fixture, require_function
+from tests.conftest import load_fixture, require_function
 from tests.foundations import scenes as sc
 
 FIXTURE = load_fixture("foundations/epipolar.json")
@@ -49,11 +49,7 @@ def test_ransac_matches_fixture(backend: str) -> None:
 def test_refinement_matches_fixture(backend: str) -> None:
     """On exact pairs the refinement converges from a perturbed start to the true E."""
     chosen = require_function(backend, epipolar.__name__, "refine_essential")
-    spec = FIXTURE["functions"]["refine_essential"]
-    for case in spec["cases"]:
-        solved = epipolar.refine_essential(**case["input"], backend=chosen)
-        assert_matches_fixture(solved.state, case["expected"], spec["tolerance"])
-        assert solved.summary.converged == case["summary"]["converged"]
+    sc.check_fixture(epipolar, FIXTURE, "refine_essential", chosen)
 
 
 @pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
@@ -269,6 +265,7 @@ def test_ransac_backends_agree_for_every_solver(minimal_solver: str, refine: boo
         assert summary.run.local_optimizations == first.run.local_optimizations
         assert summary.run.score == pytest.approx(first.run.score, rel=1e-12)
         assert summary.refined == first.refined
+        assert summary.rounds == first.rounds
         assert (summary.refinement is None) == (first.refinement is None) == (not refine)
         if summary.refinement is not None and first.refinement is not None:
             assert summary.refinement.iterations == first.refinement.iterations
@@ -400,8 +397,7 @@ def test_the_compiled_code_tables_match() -> None:
     """The codes Python sends and decodes are the compiled core's, in the same order."""
     chosen = require_function("cpp", epipolar.__name__, "codes")
     codes = backends.implementation(chosen, epipolar.__name__).codes()
-    assert tuple(codes["termination"]) == tuple(ransac.Termination)
-    assert tuple(codes["nls_termination"]) == tuple(nls.Termination)
+    sc.assert_refined_codes(codes)
     assert tuple(codes["minimal_solver"]) == epipolar.MINIMAL_SOLVERS
 
 

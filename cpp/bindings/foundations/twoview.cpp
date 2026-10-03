@@ -13,7 +13,6 @@
 #include <string>
 
 #include "common.hpp"
-#include "foundations/essential_crossing.hpp"
 #include "foundations/foundations.hpp"
 #include "foundations/ransac_crossing.hpp"
 
@@ -74,9 +73,9 @@ nb::object maybe_summary(const std::optional<foundations::ransac::Summary>& summ
 
 /// @brief E-RANSAC's summary, or None if that run found no model.
 /// @param summary The summary.
-/// @return A dict (see `essential_summary`) or None.
-nb::object maybe_summary(const std::optional<foundations::epipolar::EssentialSummary>& summary) {
-  return summary ? nb::object(essential_summary(*summary)) : nb::none();
+/// @return A dict (see `refined_summary`) or None.
+nb::object maybe_summary(const std::optional<foundations::ransac::RefinedSummary>& summary) {
+  return summary ? nb::object(refined_summary(*summary)) : nb::none();
 }
 
 /// @brief Initialise two views.
@@ -118,7 +117,7 @@ nb::dict initialize(const BatchIn<3>& bearings1, const BatchIn<3>& bearings2,
 /// @brief The enum tables: status, model, and RANSAC and NLS termination names in code order.
 /// @return The tables.
 nb::dict codes() {
-  nb::dict out = essential_codes();
+  nb::dict out = refined_codes();
   nb::list statuses;
   for (int k = 0; k < static_cast<int>(twoview::Status::kCount); ++k) {
     statuses.append(twoview::name(static_cast<twoview::Status>(k)));

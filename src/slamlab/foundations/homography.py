@@ -298,7 +298,13 @@ def homography_ransac(
     p1, p2 = as_point_pairs(points1, points2, SAMPLE_SIZE, "points")
     estimator = homography_estimator(p1, p2)
     return ransac.run(
-        estimator, (p1, p2), options, backend=backend, target=(__name__, "homography_ransac")
+        lambda: ransac.estimate(estimator, options),
+        {"points1": p1, "points2": p2},
+        options,
+        summary=ransac.summary_from_backend,
+        backend=backend,
+        module_name=__name__,
+        function="homography_ransac",
     )
 
 
@@ -439,12 +445,18 @@ def decompose_homography(homography: ArrayLike, *, backend: str = "python") -> P
         If H is singular (rank below 2).
     """
     matrix = as_matrix3(homography, "homography")
-    backends.check_name(backend)
-    raw = (
-        decompose_reference(matrix)
-        if backend == "python"
-        else backends.function(backend, __name__, "decompose_homography")(matrix)
+    return backends.call(
+        backend,
+        __name__,
+        "decompose_homography",
+        reference=lambda: _motions(decompose_reference(matrix)),
+        arguments={"homography": matrix},
+        decode=lambda raw, _: _motions(raw),
     )
+
+
+def _motions(raw: dict[str, NDArray[np.float64]]) -> PlanarMotions:
+    """Build the candidates from a decomposition's ``poses`` and ``normals`` arrays."""
     return PlanarMotions(
         poses=np.asarray(raw["poses"], dtype=np.float64),
         normals=np.asarray(raw["normals"], dtype=np.float64),

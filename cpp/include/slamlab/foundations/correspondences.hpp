@@ -38,6 +38,11 @@ using Rows2 = Eigen::Matrix<double, Eigen::Dynamic, 2, Eigen::RowMajor>;
 /// @return `(x, y, 1)` per bearing.
 [[nodiscard]] Rows3 normalised_plane(const Eigen::Ref<const Rows3>& bearings);
 
+/// @brief Map bearings with positive z to normalised image points `(f_x / f_z, f_y / f_z)`.
+/// @param bearings The bearings (N x 3).
+/// @return `(x, y)` per bearing: `normalised_plane` without its ones.
+[[nodiscard]] Rows2 normalised_xy(const Eigen::Ref<const Rows3>& bearings);
+
 /// @brief Hartley's similarity: centroid to the origin, mean distance sqrt(2).
 /// @param points The points (N x 2).
 /// @return `T`, or nothing if every point coincides.
@@ -72,6 +77,18 @@ inline constexpr double kBearingTolerance = 1e-9;
 [[nodiscard]] Result<void> check_bearing_pairs(const Eigen::Ref<const Rows3>& bearings1,
                                                const Eigen::Ref<const Rows3>& bearings2,
                                                Eigen::Index minimum, bool positive_z = true);
+
+/// @brief Check world points and their bearings (`slamlab.foundations.arrays.
+///        as_correspondences`): equal sizes, at least `minimum`, finite points, unit bearings,
+///        and (by default) positive z.
+/// @param points World points.
+/// @param bearings Their bearings in the camera.
+/// @param minimum The fewest correspondences accepted.
+/// @param positive_z Require positive z.
+/// @return Nothing, or `InvalidInput`.
+[[nodiscard]] Result<void> check_correspondences(const Eigen::Ref<const Rows3>& points,
+                                                 const Eigen::Ref<const Rows3>& bearings,
+                                                 Eigen::Index minimum, bool positive_z = true);
 
 /// @brief Check point pairs: equal sizes, at least `minimum`, finite.
 /// @param points1 Points in image 1.

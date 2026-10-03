@@ -246,3 +246,50 @@ def test_compiled_bindings_refuse_unconverted_input(name: str, bad: object) -> N
     impl = backends.implementation(require_backend(name), "slamlab.foundations.so3")
     with pytest.raises((TypeError, ValueError)):
         impl.hat(bad)
+
+
+def test_call_runs_the_reference_for_python() -> None:
+    """With the Python backend, ``call`` runs the reference and never touches an extension."""
+    result = backends.call(
+        "python",
+        "slamlab.foundations.nowhere",
+        "nothing",
+        reference=lambda: 42,
+        arguments={},
+        decode=lambda raw, codes: -1,
+    )
+    assert result == 42
+
+
+def test_call_decodes_a_compiled_result_with_the_module_codes() -> None:
+    """A compiled result reaches the decoder with the module's ``codes()`` tables."""
+    require_backend("cpp")
+    seen: dict[str, object] = {}
+
+    def decode(raw: object, codes: backends.Codes) -> int:
+        seen["raw"], seen["codes"] = raw, codes
+        return 7
+
+    result = backends.call(
+        "cpp",
+        "slamlab.foundations.fivepoint",
+        "codes",
+        reference=lambda: 0,
+        arguments={},
+        decode=decode,
+    )
+    assert result == 7
+    assert seen["raw"] == seen["codes"] == {"solver": ["nister", "stewenius"]}
+
+
+def test_call_rejects_an_unknown_backend() -> None:
+    """An unknown backend name is an error before anything runs."""
+    with pytest.raises(ValueError, match="unknown backend"):
+        backends.call(
+            "julia",
+            "slamlab.foundations.so3",
+            "exp",
+            reference=lambda: 0,
+            arguments={},
+            decode=lambda raw, codes: 0,
+        )

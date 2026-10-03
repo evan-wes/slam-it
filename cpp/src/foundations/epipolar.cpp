@@ -415,55 +415,6 @@ class SampsonProblem {
   Rows3 x2_;
 };
 
-/// @brief E-RANSAC's solution before (or without) the refinement (`EssentialSummary.unrefined`
-///        in Python).
-/// @param found The RANSAC run's solution.
-/// @return Its consensus, with a summary holding the run and no refinement.
-EssentialSolution unrefined(ransac::Solution<Eigen::Matrix3d> found) {
-  return {.state = std::move(found.state),
-          .summary = {.run = found.summary, .refinement = std::nullopt, .refined = false}};
-}
-
-/// @brief Refine E-RANSAC's model on its inliers, keeping it only if the MSAC cost drops (see
-///        `_polish_consensus` in the Python reference).
-/// @param found E-RANSAC's result.
-/// @param bearings1 All bearings in camera 1.
-/// @param bearings2 All bearings in camera 2.
-/// @param threshold The MSAC cap and the Cauchy scale.
-/// @return The refined solution, or `found`'s if refining did not lower the cost; the summary
-///         says which, and holds the refinement's solve.
-EssentialSolution polish(ransac::Solution<Eigen::Matrix3d> found,
-                         const Eigen::Ref<const Rows3>& bearings1,
-                         const Eigen::Ref<const Rows3>& bearings2, double threshold) {
-  EssentialSolution out = unrefined(std::move(found));
-  ransac::Indices inliers;
-  for (Eigen::Index i = 0; i < out.state.inliers.size(); ++i) {
-    if (out.state.inliers(i)) {
-      inliers.push_back(static_cast<std::uint32_t>(i));
-    }
-  }
-  if (inliers.size() < fivepoint::kSampleSize) {
-    return out;
-  }
-  const Rows3 all1 = bearings1;
-  const Rows3 all2 = bearings2;
-  auto solved = refine(out.state.model, gather(all1, inliers), gather(all2, inliers), threshold);
-  out.summary.refinement = std::move(solved.summary);
-  const Eigen::VectorXd errors =
-      sampson(solved.state, normalised_plane(all1), normalised_plane(all2));
-  const double threshold2 = threshold * threshold;
-  const double score = errors.cwiseMin(threshold2).sum();
-  if (!(score < out.summary.run.score)) {
-    return out;
-  }
-  out.state.model = solved.state;
-  out.state.inliers = errors.array() < threshold2;
-  out.summary.run.inlier_count = static_cast<int>(out.state.inliers.count());
-  out.summary.run.score = score;
-  out.summary.refined = true;
-  return out;
-}
-
 }  // namespace
 
 Motion start_motion(const Eigen::Matrix3d& essential) {
@@ -513,10 +464,9 @@ Result<solve::Solution<Eigen::Matrix3d, nls::Summary>> refine_essential(
   return refine(essential, bearings1, bearings2, scale);
 }
 
-Result<EssentialSolution> essential_ransac(const Eigen::Ref<const Rows3>& bearings1,
-                                           const Eigen::Ref<const Rows3>& bearings2,
-                                           const ransac::Options& options, MinimalSolver minimal,
-                                           bool refine) {
+Result<ransac::RefinedSolution<Eigen::Matrix3d>> essential_ransac(
+    const Eigen::Ref<const Rows3>& bearings1, const Eigen::Ref<const Rows3>& bearings2,
+    const ransac::Options& options, MinimalSolver minimal, bool refine) {
   if (minimal != MinimalSolver::kNister && minimal != MinimalSolver::kStewenius &&
       minimal != MinimalSolver::k8pt) {
     return fail(ErrorKind::kInvalidInput, "minimal_solver: unknown code");
@@ -526,14 +476,15 @@ Result<EssentialSolution> essential_ransac(const Eigen::Ref<const Rows3>& bearin
   if (auto ok = check_bearing_pairs(bearings1, bearings2, minimum); !ok) {
     return std::unexpected(ok.error());
   }
-  auto found = ransac::estimate(EssentialEstimator(bearings1, bearings2, minimal), options);
-  if (!found) {
-    return std::unexpected(found.error());
-  }
-  if (!refine) {
-    return unrefined(std::move(*found));
-  }
-  return polish(std::move(*found), bearings1, bearings2, options.threshold);
+  const Rows3 all1 = bearings1;
+  const Rows3 all2 = bearings2;
+  return ransac::estimate_refined(
+      EssentialEstimator(bearings1, bearings2, minimal), options, refine,
+      [&](const Eigen::Matrix3d& model, const ransac::Indices& inliers) {
+        return epipolar::refine(model, gather(all1, inliers), gather(all2, inliers),
+                                options.threshold);
+      },
+      fivepoint::kSampleSize);
 }
 
 Result<ransac::Solution<Eigen::Matrix3d>> fundamental_ransac(const Eigen::Ref<const Rows2>& pixels1,

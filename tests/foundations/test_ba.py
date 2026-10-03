@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -539,6 +540,33 @@ def test_core_checks_indices_too(backend: str) -> None:
         np.arange(arguments["pt_idx"].size) == 0, 99, arguments["pt_idx"]
     )
     with pytest.raises(InvalidInputError, match="pt_idx"):
+        backends.function(backend, "slamlab.foundations.ba", "solve")(**arguments)
+
+
+@pytest.mark.parametrize("backend", sorted(set(backends.LOCKSTEP_BACKENDS) - {"python"}))
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda o: o.pop("gauge"), "missing gauge"),
+        (lambda o: o["solver"].update(trust_region=1.0), "unexpected trust_region"),
+        (lambda o: o["depth_loss"].pop("scale"), "missing scale"),
+        (lambda o: o.update(gauge="sim3"), "gauge: unknown name sim3"),
+        (lambda o: o["solver"]["loss"].update(kind="tukey"), "loss: unknown name tukey"),
+        (lambda o: o["solver"].update(block_loss={}), "block_loss"),
+    ],
+)
+def test_the_options_dict_is_read_strictly(
+    backend: str, change: Callable[[dict[str, Any]], object], message: str
+) -> None:
+    """The binding refuses a key that is missing or unknown, at any depth, and an unknown name.
+
+    So a field added to ``BAOptions``, ``nls.Options`` or ``nls.Loss`` on one side only fails
+    loudly instead of being dropped.
+    """
+    require_backend(backend)
+    arguments = backend_arguments(_scene(cameras=3, points=5).problem, ba.BAOptions())
+    change(arguments["options"])
+    with pytest.raises(ValueError, match=message):
         backends.function(backend, "slamlab.foundations.ba", "solve")(**arguments)
 
 

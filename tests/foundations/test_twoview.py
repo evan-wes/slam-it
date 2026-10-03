@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from slamlab import backends
-from slamlab.foundations import epipolar, nls, ransac, se3, so3, twoview
+from slamlab.foundations import epipolar, se3, so3, twoview
 from slamlab.foundations.errors import InvalidInputError
 from tests.conftest import load_fixture, require_function
 from tests.foundations import scenes as sc
@@ -240,5 +240,23 @@ def test_the_compiled_code_tables_match() -> None:
     codes = backends.implementation(chosen, twoview.__name__).codes()
     assert tuple(codes["status"]) == tuple(twoview.Status)
     assert tuple(codes["model"]) == tuple(twoview.Model)
-    assert tuple(codes["termination"]) == tuple(ransac.Termination)
-    assert tuple(codes["nls_termination"]) == tuple(nls.Termination)
+    sc.assert_refined_codes(codes)
+
+
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_a_homography_of_rank_one_is_not_a_model(backend: str) -> None:
+    """A rank-1 H is not a model: H is unavailable and E decides.
+
+    On these real matches, many sharing one pixel, a rank-1 H wins H-RANSAC; it has no motion
+    to decompose, and the initialiser used to raise here.
+    """
+    chosen = require_function(backend, twoview.__name__, "initialize")
+    data = load_fixture("foundations/twoview_rank_one_h.json")
+    result = twoview.initialize(
+        data["bearings1"],
+        data["bearings2"],
+        twoview.Options(focal=data["focal"]),
+        backend=chosen,
+    )
+    assert result.homography is None
+    assert result.model is twoview.Model.ESSENTIAL

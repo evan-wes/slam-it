@@ -93,6 +93,10 @@ Eigen::MatrixX2d parity_points() {
 
 }  // namespace
 
+// The refine-and-reselect cap is pinned to the value Python's test_ransac.py pins
+// `ransac.REFINE_ROUNDS` to, so the two constants cannot drift apart.
+static_assert(ransac::kRefineRounds == 4);
+
 int main() {
   int failures = 0;
   const LineEstimator estimator(parity_points());

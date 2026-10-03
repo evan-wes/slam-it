@@ -20,13 +20,6 @@ namespace {
 
 namespace homography = foundations::homography;
 
-/// @brief Copy an (N, 2) batch in.
-/// @param in The array.
-/// @return The rows.
-homography::Rows2 rows2(const BatchIn<2>& in) {
-  return copy_matrix<homography::Rows2>(in.data(), in.shape(0), 2);
-}
-
 /// @brief H from (N, 2) point pairs.
 /// @param points1 Points in image 1.
 /// @param points2 Points in image 2.

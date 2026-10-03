@@ -1,19 +1,23 @@
 /// @file
 /// @brief Bindings for `slamlab.foundations.ba` (`slamlab._cpp.foundations.ba`).
 ///
-/// Everything crosses by name: arrays and options are keyword arguments, enums are integer
-/// codes whose names come from one table per enum here (exported by `codes()`, so the
-/// Python side's tables are tested against them), and the result is a dict of named arrays
-/// and scalars.
+/// Everything crosses by name: the problem's arrays are keyword arguments, and the options
+/// one dict of `BAOptions`' fields, nested where `BAOptions` nests (`solver`, the losses),
+/// with each choice by its name. The camera model, a standalone argument, crosses as a code;
+/// so do the enums in the result. Every enum's names come from one table here (exported by
+/// `codes()`, so the Python side's tables are tested against them), and the result is a
+/// dict of named arrays and scalars.
 #include "slamlab/foundations/ba.hpp"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
+#include <nanobind/stl/string.h>
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 
@@ -47,6 +51,26 @@ static_assert(static_cast<std::size_t>(ba::Gauge::kCount) == kGauges.size());
 static_assert(static_cast<std::size_t>(nls::Method::kCount) == kMethods.size());
 static_assert(static_cast<std::size_t>(nls::LossKind::kCount) == kLosses.size());
 
+/// @brief `ba.BAOptions`' fields, as the options dict's keys.
+constexpr std::array<const char*, 6> kOptionKeys = {
+    "solver", "depth_loss", "gauge", "min_parallax_deg", "focal_std_ratio", "scale_deviations"};
+/// @brief `nls.Options`' fields, as the `solver` dict's keys.
+constexpr std::array<const char*, 13> kSolverKeys = {"method",
+                                                     "loss",
+                                                     "block_loss",
+                                                     "max_iterations",
+                                                     "function_tolerance",
+                                                     "gradient_tolerance",
+                                                     "step_tolerance",
+                                                     "initial_damping",
+                                                     "max_damping",
+                                                     "min_diagonal",
+                                                     "max_diagonal",
+                                                     "min_relative_decrease",
+                                                     "strict"};
+/// @brief `nls.Loss`' fields, as a loss dict's keys.
+constexpr std::array<const char*, 2> kLossKeys = {"kind", "scale"};
+
 /// @brief Decode an enum's integer code, checking it against the enum's name table.
 /// @tparam E The enum.
 /// @tparam N The table's size.
@@ -63,9 +87,71 @@ E decode(int code, const std::array<const char*, N>& names, const char* what) {
   return static_cast<E>(code);
 }
 
+/// @brief Look an enum up by its name in the enum's name table.
+/// @tparam E The enum.
+/// @tparam N The table's size.
+/// @param value The name, a Python `str`.
+/// @param names The enum's names.
+/// @param what The field's name, for the message.
+/// @return The enum value.
+/// @throws std::invalid_argument (Python `ValueError`) for an unknown name.
+template <typename E, std::size_t N>
+E by_name(const nb::handle& value, const std::array<const char*, N>& names, const char* what) {
+  const std::string name = nb::cast<std::string>(value);
+  const auto* found = std::ranges::find(names, name);
+  if (found == names.end()) {
+    throw std::invalid_argument(std::string(what) + ": unknown name " + name);
+  }
+  return static_cast<E>(std::distance(names.begin(), found));
+}
+
+/// @brief Read a robust loss from a dict of `nls.Loss`' fields.
+/// @param loss The dict.
+/// @param what The field's name, for the messages.
+/// @return The loss (checked by the core).
+/// @throws std::invalid_argument for a missing or unknown key, or an unknown kind.
+nls::Loss read_loss(const nb::dict& loss, const char* what) {
+  check_keys(loss, kLossKeys, "nls.Loss");
+  return {.kind = by_name<nls::LossKind>(loss["kind"], kLosses, what),
+          .scale = nb::cast<double>(loss["scale"])};
+}
+
+/// @brief Read bundle adjustment's options from a dict of `BAOptions`' fields.
+/// @param options The dict.
+/// @return The options (checked by the core).
+/// @throws std::invalid_argument for a missing or unknown key, an unknown name, or a
+///         `block_loss` set by the caller (bundle adjustment assigns it).
+ba::Options read_options(const nb::dict& options) {
+  check_keys(options, kOptionKeys, "ba.BAOptions");
+  const auto solver = nb::cast<nb::dict>(options["solver"]);
+  check_keys(solver, kSolverKeys, "nls.Options");
+  if (!solver["block_loss"].is_none()) {
+    throw std::invalid_argument("solver.block_loss: set by bundle adjustment, not the caller");
+  }
+  return ba::Options{
+      .solver = {.method = by_name<nls::Method>(solver["method"], kMethods, "method"),
+                 .loss = read_loss(nb::cast<nb::dict>(solver["loss"]), "loss"),
+                 .block_loss = {},
+                 .max_iterations = nb::cast<int>(solver["max_iterations"]),
+                 .function_tolerance = nb::cast<double>(solver["function_tolerance"]),
+                 .gradient_tolerance = nb::cast<double>(solver["gradient_tolerance"]),
+                 .step_tolerance = nb::cast<double>(solver["step_tolerance"]),
+                 .initial_damping = nb::cast<double>(solver["initial_damping"]),
+                 .max_damping = nb::cast<double>(solver["max_damping"]),
+                 .min_diagonal = nb::cast<double>(solver["min_diagonal"]),
+                 .max_diagonal = nb::cast<double>(solver["max_diagonal"]),
+                 .min_relative_decrease = nb::cast<double>(solver["min_relative_decrease"]),
+                 .strict = nb::cast<bool>(solver["strict"])},
+      .depth_loss = read_loss(nb::cast<nb::dict>(options["depth_loss"]), "depth_loss"),
+      .gauge = by_name<ba::Gauge>(options["gauge"], kGauges, "gauge"),
+      .min_parallax_deg = nb::cast<double>(options["min_parallax_deg"]),
+      .focal_std_ratio = nb::cast<double>(options["focal_std_ratio"]),
+      .scale_deviations = nb::cast<bool>(options["scale_deviations"])};
+}
+
 /// @brief The enums' name tables, by enum, in code order.
 /// @return `{"model": [...], "gauge": [...], "method": [...], "loss": [...],
-///         "termination": [...]}`.
+///         "nls_termination": [...]}`.
 nb::dict codes() {
   const auto as_list = [](const auto& names) {
     nb::list out;
@@ -79,14 +165,14 @@ nb::dict codes() {
   out["gauge"] = as_list(kGauges);
   out["method"] = as_list(kMethods);
   out["loss"] = as_list(kLosses);
-  out["termination"] = nls_terminations();
+  out["nls_termination"] = nls_terminations();
   return out;
 }
 
-/// @brief Run bundle adjustment on a problem given by named arrays and options.
+/// @brief Run bundle adjustment on a problem given by named arrays, and its options.
 /// @return A dict of named results; see the Python `Implementation` Protocol.
 /// @throws CoreError for an invalid problem or (in strict mode) no convergence;
-///         std::invalid_argument for an unknown code.
+///         std::invalid_argument for an unknown code or name, or a malformed options dict.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters,readability-function-size): every
 // argument crosses as a keyword, by name, so positions cannot be swapped by a caller.
 nb::dict solve(const MatrixIn& intrinsics, const VectorIn<std::int64_t>& intrinsics_idx,
@@ -97,34 +183,8 @@ nb::dict solve(const MatrixIn& intrinsics, const VectorIn<std::int64_t>& intrins
                const VectorIn<double>& depth_prior, const VectorIn<double>& depth_prior_weights,
                const BatchIn<2>& depth_affine, const VectorIn<bool>& fixed_depth_affine,
                const BatchIn<4, 4>& pose_prior, const BatchIn<2>& pose_prior_weights,
-               const VectorIn<std::int64_t>& point_anchor, int model, int gauge, int method,
-               int loss, double loss_scale, int depth_loss, double depth_loss_scale,
-               int max_iterations, double function_tolerance, double gradient_tolerance,
-               double step_tolerance, double initial_damping, double max_damping,
-               double min_diagonal, double max_diagonal, double min_relative_decrease, bool strict,
-               double min_parallax_deg, double focal_std_ratio, bool scale_deviations) {
+               const VectorIn<std::int64_t>& point_anchor, int model, const nb::dict& options) {
   using Pairs = Eigen::Matrix<double, Eigen::Dynamic, 2, Eigen::RowMajor>;
-  const ba::Options options{
-      .solver = {.method = decode<nls::Method>(method, kMethods, "method"),
-                 .loss = {.kind = decode<nls::LossKind>(loss, kLosses, "loss"),
-                          .scale = loss_scale},
-                 .block_loss = {},
-                 .max_iterations = max_iterations,
-                 .function_tolerance = function_tolerance,
-                 .gradient_tolerance = gradient_tolerance,
-                 .step_tolerance = step_tolerance,
-                 .initial_damping = initial_damping,
-                 .max_damping = max_damping,
-                 .min_diagonal = min_diagonal,
-                 .max_diagonal = max_diagonal,
-                 .min_relative_decrease = min_relative_decrease,
-                 .strict = strict},
-      .depth_loss = {.kind = decode<nls::LossKind>(depth_loss, kLosses, "depth_loss"),
-                     .scale = depth_loss_scale},
-      .gauge = decode<ba::Gauge>(gauge, kGauges, "gauge"),
-      .min_parallax_deg = min_parallax_deg,
-      .focal_std_ratio = focal_std_ratio,
-      .scale_deviations = scale_deviations};
   const ba::Problem problem{
       .model = decode<camera::Model>(model, kModels, "model"),
       .intrinsics =
@@ -147,7 +207,7 @@ nb::dict solve(const MatrixIn& intrinsics, const VectorIn<std::int64_t>& intrins
       .pose_prior_weights =
           copy_matrix<Pairs>(pose_prior_weights.data(), pose_prior_weights.shape(0), 2),
       .point_anchor = copy_vector<ba::Indices>(point_anchor)};
-  const ba::Solution solution = unwrap(ba::solve(problem, options));
+  const ba::Solution solution = unwrap(ba::solve(problem, read_options(options)));
   const ba::Summary& summary = solution.summary;
   nb::dict out;
   out["poses"] = poses_array(solution.poses);
@@ -184,13 +244,7 @@ void bind_ba(nb::module_& m) {
         nb::arg("depth_prior").noconvert(), nb::arg("depth_prior_weights").noconvert(),
         nb::arg("depth_affine").noconvert(), nb::arg("fixed_depth_affine").noconvert(),
         nb::arg("pose_prior").noconvert(), nb::arg("pose_prior_weights").noconvert(),
-        nb::arg("point_anchor").noconvert(), nb::arg("model"), nb::arg("gauge"), nb::arg("method"),
-        nb::arg("loss"), nb::arg("loss_scale"), nb::arg("depth_loss"), nb::arg("depth_loss_scale"),
-        nb::arg("max_iterations"), nb::arg("function_tolerance"), nb::arg("gradient_tolerance"),
-        nb::arg("step_tolerance"), nb::arg("initial_damping"), nb::arg("max_damping"),
-        nb::arg("min_diagonal"), nb::arg("max_diagonal"), nb::arg("min_relative_decrease"),
-        nb::arg("strict"), nb::arg("min_parallax_deg"), nb::arg("focal_std_ratio"),
-        nb::arg("scale_deviations"),
+        nb::arg("point_anchor").noconvert(), nb::arg("model"), nb::arg("options"),
         "Run bundle adjustment; every argument by keyword; returns a dict of named results.");
 }
 

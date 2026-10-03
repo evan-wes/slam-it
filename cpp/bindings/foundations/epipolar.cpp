@@ -5,11 +5,7 @@
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 
-#include <stdexcept>
-#include <string>
-
 #include "common.hpp"
-#include "foundations/essential_crossing.hpp"
 #include "foundations/foundations.hpp"
 #include "foundations/nls_crossing.hpp"
 #include "foundations/ransac_crossing.hpp"
@@ -21,20 +17,6 @@ namespace slamlab::bindings {
 namespace {
 
 namespace epipolar = foundations::epipolar;
-
-/// @brief Copy an (N, 3) batch in.
-/// @param in The array.
-/// @return The rows.
-epipolar::Rows3 rows3(const BatchIn<3>& in) {
-  return copy_matrix<epipolar::Rows3>(in.data(), in.shape(0), 3);
-}
-
-/// @brief Copy an (N, 2) batch in.
-/// @param in The array.
-/// @return The rows.
-epipolar::Rows2 rows2(const BatchIn<2>& in) {
-  return copy_matrix<epipolar::Rows2>(in.data(), in.shape(0), 2);
-}
 
 /// @brief E from (N, 3) bearing pairs.
 /// @param bearings1 Bearings in camera 1.
@@ -90,24 +72,13 @@ ArrayOut decompose_essential(const Matrix3In& essential) {
 ///        refinement's terminations.
 /// @return `{"termination": [...], "minimal_solver": [...], "nls_termination": [...]}`.
 nb::dict codes() {
-  nb::dict out = essential_codes();
+  nb::dict out = refined_codes();
   nb::list solvers;
   for (int k = 0; k < static_cast<int>(epipolar::MinimalSolver::kCount); ++k) {
     solvers.append(epipolar::name(static_cast<epipolar::MinimalSolver>(k)));
   }
   out["minimal_solver"] = solvers;
   return out;
-}
-
-/// @brief Decode a minimal solver's code.
-/// @param code The code, an index into `codes()["minimal_solver"]`.
-/// @return The solver.
-/// @throws std::invalid_argument (Python `ValueError`) for an unknown code.
-epipolar::MinimalSolver minimal_solver(int code) {
-  if (code < 0 || code >= static_cast<int>(epipolar::MinimalSolver::kCount)) {
-    throw std::invalid_argument("minimal_solver: unknown code " + std::to_string(code));
-  }
-  return static_cast<epipolar::MinimalSolver>(code);
 }
 
 /// @brief LO-MSAC with a minimal E solver, then (optionally) the Sampson refinement.
@@ -120,9 +91,9 @@ epipolar::MinimalSolver minimal_solver(int code) {
 /// @throws CoreError for invalid or degenerate input.
 nb::dict essential_ransac(const BatchIn<3>& bearings1, const BatchIn<3>& bearings2,
                           const nb::dict& options, int minimal, bool refine) {
-  return essential_result(
-      unwrap(epipolar::essential_ransac(rows3(bearings1), rows3(bearings2), ransac_options(options),
-                                        minimal_solver(minimal), refine)));
+  return refined_result(unwrap(epipolar::essential_ransac(
+      rows3(bearings1), rows3(bearings2), ransac_options(options),
+      enum_code<epipolar::MinimalSolver>(minimal, "minimal_solver"), refine)));
 }
 
 /// @brief Refine E on its inliers' Sampson distances.
