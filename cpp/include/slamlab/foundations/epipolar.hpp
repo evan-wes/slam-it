@@ -16,6 +16,8 @@
 
 #include "slamlab/foundations/correspondences.hpp"
 #include "slamlab/foundations/error.hpp"
+#include "slamlab/foundations/fivepoint.hpp"
+#include "slamlab/foundations/nls.hpp"
 #include "slamlab/foundations/ransac.hpp"
 
 /// @brief Epipolar geometry.
@@ -24,8 +26,27 @@ namespace slamlab::foundations::epipolar {
 using correspondences::Rows2;
 using correspondences::Rows3;
 
-/// @brief Correspondences in a minimal sample.
+/// @brief Correspondences the 8-point algorithm needs (its minimal sample).
 inline constexpr std::uint32_t kSampleSize = 8;
+/// @brief Levenberg-Marquardt iterations of the Sampson refinement.
+inline constexpr int kRefineIterations = 20;
+
+/// @brief E-RANSAC's minimal solver, with the codes it crosses the bindings as.
+enum class MinimalSolver : std::uint8_t {
+  /// @brief Nistér's 5-point solver.
+  kNister = 0,
+  /// @brief Stewénius' 5-point solver.
+  kStewenius = 1,
+  /// @brief The 8-point algorithm.
+  k8pt = 2,
+  /// @brief The number of solvers (a sentinel).
+  kCount = 3,
+};
+
+/// @brief The solver's name, as `slamlab.foundations.epipolar.MINIMAL_SOLVERS` spells it.
+/// @param solver The solver.
+/// @return A static string.
+[[nodiscard]] const char* name(MinimalSolver solver);
 
 /// @brief The squared Sampson error of homogeneous point pairs (z = 1) under E or F.
 /// @param matrix E (on normalised points) or F (on pixels).
@@ -92,22 +113,23 @@ class EssentialEstimator {
   /// @brief Hold checked bearing pairs.
   /// @param bearings1 Bearings in camera 1 (N x 3), unit, positive z.
   /// @param bearings2 Bearings in camera 2 (N x 3), unit, positive z.
-  EssentialEstimator(Rows3 bearings1, Rows3 bearings2);
+  /// @param minimal The minimal solver.
+  EssentialEstimator(Rows3 bearings1, Rows3 bearings2, MinimalSolver minimal);
 
-  /// @brief Eight correspondences.
-  /// @return 8.
-  [[nodiscard]] static std::uint32_t sample_size() { return kSampleSize; }
+  /// @brief The minimal sample: five, or eight for the 8-point algorithm.
+  /// @return The size.
+  [[nodiscard]] std::uint32_t sample_size() const;
 
   /// @brief The number of correspondences.
   /// @return N.
   [[nodiscard]] std::uint32_t size() const;
 
-  /// @brief Fit E to eight correspondences.
+  /// @brief Fit E to a minimal sample.
   /// @param sample The indices.
-  /// @return E, or none if degenerate.
+  /// @return Every E the minimal solver allows (none if degenerate).
   [[nodiscard]] std::vector<Model> fit_minimal(std::span<const std::uint32_t> sample) const;
 
-  /// @brief Fit E to eight or more correspondences.
+  /// @brief Fit E to eight or more correspondences (the 8-point algorithm).
   /// @param subset The indices.
   /// @return E, or none if degenerate.
   [[nodiscard]] std::vector<Model> fit_nonminimal(std::span<const std::uint32_t> subset) const;
@@ -126,7 +148,57 @@ class EssentialEstimator {
   Rows3 x1_;
   /// @brief Their normalised image points in camera 2.
   Rows3 x2_;
+  /// @brief The minimal solver.
+  MinimalSolver minimal_;
 };
+
+/// @brief E's motion on its manifold: `E = [t]x R` with |t| = 1.
+struct Motion {
+  /// @brief R.
+  Eigen::Matrix3d rotation;
+  /// @brief The unit translation t.
+  Eigen::Vector3d translation;
+};
+
+/// @brief A motion's E (`Motion.essential` in Python).
+/// @param motion The motion.
+/// @return `[t]x R`: singular values (1, 1, 0).
+[[nodiscard]] Eigen::Matrix3d essential_of(const Motion& motion);
+
+/// @brief An orthonormal basis of the plane tangent to the unit sphere at a direction, built
+///        from the coordinate axis least aligned with it (as in Python).
+/// @param direction A unit vector.
+/// @return Two orthonormal columns perpendicular to it.
+[[nodiscard]] Eigen::Matrix<double, 3, 2> tangent_basis(const Eigen::Vector3d& direction);
+
+/// @brief The motion a refinement of E starts from (see
+/// `slamlab.foundations.epipolar.start_motion`):
+///        the candidate rotation with the largest trace, and the translation's sign that makes
+///        its largest-magnitude component positive.
+/// @param essential E, of rank 2.
+/// @return The start.
+[[nodiscard]] Motion start_motion(const Eigen::Matrix3d& essential);
+
+/// @brief Refine E by Levenberg-Marquardt on the Cauchy-robust Sampson distance (unchecked).
+/// @param essential The starting E.
+/// @param bearings1 Bearings in camera 1 (M x 3), positive z, M >= 5.
+/// @param bearings2 Bearings in camera 2 (M x 3).
+/// @param scale The Cauchy scale, a Sampson distance in the normalised plane.
+/// @return The refined E and the solve's summary.
+[[nodiscard]] solve::Solution<Eigen::Matrix3d, nls::Summary> refine(
+    const Eigen::Matrix3d& essential, const Eigen::Ref<const Rows3>& bearings1,
+    const Eigen::Ref<const Rows3>& bearings2, double scale);
+
+/// @brief Refine E on its inliers by minimising the robust Sampson distance over E's manifold.
+/// @param essential The starting E.
+/// @param bearings1 Unit bearings in camera 1 (M x 3), positive z, M >= 5.
+/// @param bearings2 Unit bearings in camera 2 (M x 3), positive z.
+/// @param scale The Cauchy scale (positive).
+/// @return The refined E and the summary; `InvalidInput` for bad input; `Degenerate` if E's
+///         rank is below 2.
+[[nodiscard]] Result<solve::Solution<Eigen::Matrix3d, nls::Summary>> refine_essential(
+    const Eigen::Matrix3d& essential, const Eigen::Ref<const Rows3>& bearings1,
+    const Eigen::Ref<const Rows3>& bearings2, double scale);
 
 /// @brief The normalised 8-point F solver and its Sampson error, as a `ransac::Estimator`.
 class FundamentalEstimator {
@@ -181,14 +253,19 @@ class FundamentalEstimator {
 [[nodiscard]] Result<std::vector<Eigen::Matrix4d>> decompose_essential(
     const Eigen::Matrix3d& essential);
 
-/// @brief Estimate E robustly: LO-MSAC with the 8-point solver.
-/// @param bearings1 Unit bearings in camera 1 (N x 3), positive z, N >= 8.
+/// @brief Estimate E robustly: LO-MSAC, then (optionally) the Sampson refinement on the
+///        inliers, kept only if it lowers the MSAC cost.
+/// @param bearings1 Unit bearings in camera 1 (N x 3), positive z, N >= the minimal sample.
 /// @param bearings2 Unit bearings in camera 2 (N x 3), positive z.
 /// @param options The settings (threshold: a Sampson distance in the normalised plane).
-/// @return E, its inliers and the run's summary; `InvalidInput` or `Degenerate`.
+/// @param minimal The minimal solver.
+/// @param refine Refine the best model on its inliers.
+/// @return E, its inliers and the run's summary (whose inlier count and score describe the
+///         returned E); `InvalidInput` or `Degenerate`.
 [[nodiscard]] Result<ransac::Solution<Eigen::Matrix3d>> essential_ransac(
     const Eigen::Ref<const Rows3>& bearings1, const Eigen::Ref<const Rows3>& bearings2,
-    const ransac::Options& options);
+    const ransac::Options& options, MinimalSolver minimal = MinimalSolver::kNister,
+    bool refine = true);
 
 /// @brief Estimate F robustly: LO-MSAC with the normalised 8-point solver.
 /// @param pixels1 Pixels in image 1 (N x 2), N >= 8.

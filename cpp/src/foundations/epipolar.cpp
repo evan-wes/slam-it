@@ -3,11 +3,15 @@
 #include "slamlab/foundations/epipolar.hpp"
 
 #include <Eigen/Dense>
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <numbers>
 #include <string>
 #include <utility>
+
+#include "slamlab/foundations/so3.hpp"
 
 namespace slamlab::foundations::epipolar {
 
@@ -169,11 +173,30 @@ Result<Eigen::VectorXd> sampson_fundamental(const Eigen::Matrix3d& fundamental,
   return sampson(fundamental, homogeneous(pixels1), homogeneous(pixels2));
 }
 
-EssentialEstimator::EssentialEstimator(Rows3 bearings1, Rows3 bearings2)
+const char* name(MinimalSolver solver) {
+  switch (solver) {
+    case MinimalSolver::kNister:
+      return "nister";
+    case MinimalSolver::kStewenius:
+      return "stewenius";
+    case MinimalSolver::k8pt:
+      return "8pt";
+    case MinimalSolver::kCount:
+      break;
+  }
+  return "unknown";
+}
+
+EssentialEstimator::EssentialEstimator(Rows3 bearings1, Rows3 bearings2, MinimalSolver minimal)
     : bearings1_(std::move(bearings1)),
       bearings2_(std::move(bearings2)),
       x1_(normalised_plane(bearings1_)),
-      x2_(normalised_plane(bearings2_)) {}
+      x2_(normalised_plane(bearings2_)),
+      minimal_(minimal) {}
+
+std::uint32_t EssentialEstimator::sample_size() const {
+  return minimal_ == MinimalSolver::k8pt ? kSampleSize : fivepoint::kSampleSize;
+}
 
 std::uint32_t EssentialEstimator::size() const {
   return static_cast<std::uint32_t>(bearings1_.rows());
@@ -181,7 +204,12 @@ std::uint32_t EssentialEstimator::size() const {
 
 std::vector<EssentialEstimator::Model> EssentialEstimator::fit_minimal(
     std::span<const std::uint32_t> sample) const {
-  return fit_nonminimal(sample);
+  if (minimal_ == MinimalSolver::k8pt) {
+    return fit_nonminimal(sample);
+  }
+  const auto solver = minimal_ == MinimalSolver::kNister ? fivepoint::Solver::kNister
+                                                         : fivepoint::Solver::kStewenius;
+  return fivepoint::solve(gather(bearings1_, sample), gather(bearings2_, sample), solver);
 }
 
 std::vector<EssentialEstimator::Model> EssentialEstimator::fit_nonminimal(
@@ -253,13 +281,220 @@ Result<std::vector<Eigen::Matrix4d>> decompose_essential(const Eigen::Matrix3d& 
   return poses;
 }
 
-Result<ransac::Solution<Eigen::Matrix3d>> essential_ransac(const Eigen::Ref<const Rows3>& bearings1,
-                                                           const Eigen::Ref<const Rows3>& bearings2,
-                                                           const ransac::Options& options) {
-  if (auto ok = check_bearing_pairs(bearings1, bearings2, kSampleSize); !ok) {
+Eigen::Matrix3d essential_of(const Motion& motion) {
+  return so3::hat(motion.translation) * motion.rotation;
+}
+
+Eigen::Matrix<double, 3, 2> tangent_basis(const Eigen::Vector3d& direction) {
+  Eigen::Index k = 0;
+  direction.cwiseAbs().minCoeff(&k);
+  const Eigen::Vector3d first = direction.cross(Eigen::Vector3d::Unit(k)).normalized();
+  Eigen::Matrix<double, 3, 2> basis;
+  basis.col(0) = first;
+  basis.col(1) = direction.cross(first);
+  return basis;
+}
+
+namespace {
+
+/// @brief Least squares on the signed Sampson distance of E's inliers, over E's manifold
+///        (see `slamlab.foundations.epipolar.SampsonProblem`).
+class SampsonProblem {
+ public:
+  /// @brief The state: R and a unit t.
+  using State = Motion;
+
+  /// @brief Hold the inliers' normalised image points.
+  /// @param x1 Points in image 1 (M x 3), z = 1.
+  /// @param x2 Points in image 2 (M x 3), z = 1.
+  SampsonProblem(Rows3 x1, Rows3 x2) : x1_(std::move(x1)), x2_(std::move(x2)) {}
+
+  /// @brief Each match's signed Sampson distance.
+  /// @param state The motion.
+  /// @return The residuals.
+  [[nodiscard]] Eigen::VectorXd residuals(const State& state) const {
+    const Eigen::Matrix3d e = essential_of(state);
+    Eigen::VectorXd out(x1_.rows());
+    for (Eigen::Index i = 0; i < x1_.rows(); ++i) {
+      const Eigen::Vector3d line2 = e * x1_.row(i).transpose();
+      const Eigen::Vector3d line1 = e.transpose() * x2_.row(i).transpose();
+      out(i) = x2_.row(i).dot(line2) /
+               std::sqrt(line2.head<2>().squaredNorm() + line1.head<2>().squaredNorm());
+    }
+    return out;
+  }
+
+  /// @brief Each block's squared residual.
+  /// @param state The motion.
+  /// @return The squared residuals.
+  [[nodiscard]] Eigen::VectorXd squared_norms(const State& state) const {
+    return residuals(state).array().square().matrix();
+  }
+
+  /// @brief The weighted normal equations over (dtheta, dt).
+  /// @param state The motion.
+  /// @param weights The blocks' weights.
+  /// @return The dense system.
+  [[nodiscard]] nls::DenseSystem linearize(const State& state,
+                                           const Eigen::VectorXd& weights) const {
+    const Eigen::Matrix3d e = essential_of(state);
+    const Eigen::Matrix3d t_hat = so3::hat(state.translation);
+    const Eigen::Matrix<double, 3, 2> basis = tangent_basis(state.translation);
+    // dE along each of (dtheta, dt): [t]x R [e_k]x, then [b_j]x R.
+    std::array<Eigen::Matrix3d, 5> directions{};
+    for (std::size_t k = 0; k < 3; ++k) {
+      directions.at(k) =
+          t_hat * state.rotation * so3::hat(Eigen::Vector3d::Unit(static_cast<Eigen::Index>(k)));
+    }
+    for (std::size_t j = 0; j < 2; ++j) {
+      directions.at(3 + j) = so3::hat(basis.col(static_cast<Eigen::Index>(j))) * state.rotation;
+    }
+    Eigen::MatrixXd jacobian(x1_.rows(), 5);
+    Eigen::VectorXd residual(x1_.rows());
+    for (Eigen::Index i = 0; i < x1_.rows(); ++i) {
+      const Eigen::Vector3d x1 = x1_.row(i).transpose();
+      const Eigen::Vector3d x2 = x2_.row(i).transpose();
+      const Eigen::Vector3d line2 = e * x1;
+      const Eigen::Vector3d line1 = e.transpose() * x2;
+      const double c = x2.dot(line2);
+      const double g = line2.head<2>().squaredNorm() + line1.head<2>().squaredNorm();
+      const double root = std::sqrt(g);
+      // dc/dE = x2 x1^T; dg/dE = 2 sum_{i=0,1} (line2_i e_i x1^T + line1_i x2 e_i^T).
+      Eigen::Matrix3d dg = Eigen::Matrix3d::Zero();
+      for (int k = 0; k < 2; ++k) {
+        dg.row(k) += 2.0 * line2(k) * x1.transpose();
+        dg.col(k) += 2.0 * line1(k) * x2;
+      }
+      const Eigen::Matrix3d dr = ((x2 * x1.transpose()) / root) - ((c / (2.0 * g * root)) * dg);
+      for (std::size_t k = 0; k < directions.size(); ++k) {
+        jacobian(i, static_cast<Eigen::Index>(k)) = dr.cwiseProduct(directions.at(k)).sum();
+      }
+      residual(i) = c / root;
+    }
+    return *nls::DenseSystem::build(jacobian, residual, weights);
+  }
+
+  /// @brief Step on E's manifold: R exp(dtheta), and t along the sphere.
+  /// @param state The motion.
+  /// @param delta (dtheta, dt).
+  /// @return The moved motion.
+  [[nodiscard]] static State retract(const State& state, const Eigen::VectorXd& delta) {
+    const Eigen::Vector3d moved =
+        state.translation + (tangent_basis(state.translation) * delta.tail<2>());
+    return {.rotation = state.rotation * so3::exp(delta.head<3>()),
+            .translation = moved.normalized()};
+  }
+
+ private:
+  /// @brief Points in image 1.
+  Rows3 x1_;
+  /// @brief Points in image 2.
+  Rows3 x2_;
+};
+
+/// @brief Refine E-RANSAC's model on its inliers, keeping it only if the MSAC cost drops.
+/// @param found E-RANSAC's result.
+/// @param bearings1 All bearings in camera 1.
+/// @param bearings2 All bearings in camera 2.
+/// @param threshold The MSAC cap and the Cauchy scale.
+/// @return The refined solution, or `found` if refining did not lower the cost.
+ransac::Solution<Eigen::Matrix3d> polish(ransac::Solution<Eigen::Matrix3d> found,
+                                         const Eigen::Ref<const Rows3>& bearings1,
+                                         const Eigen::Ref<const Rows3>& bearings2,
+                                         double threshold) {
+  ransac::Indices inliers;
+  for (Eigen::Index i = 0; i < found.state.inliers.size(); ++i) {
+    if (found.state.inliers(i)) {
+      inliers.push_back(static_cast<std::uint32_t>(i));
+    }
+  }
+  if (inliers.size() < fivepoint::kSampleSize) {
+    return found;
+  }
+  const Eigen::Matrix3d refined = refine(found.state.model, gather(Rows3(bearings1), inliers),
+                                         gather(Rows3(bearings2), inliers), threshold)
+                                      .state;
+  const Eigen::VectorXd errors =
+      sampson(refined, normalised_plane(bearings1), normalised_plane(bearings2));
+  const double threshold2 = threshold * threshold;
+  const double score = errors.cwiseMin(threshold2).sum();
+  if (!(score < found.summary.score)) {
+    return found;
+  }
+  found.state.model = refined;
+  found.state.inliers = errors.array() < threshold2;
+  found.summary.inlier_count = static_cast<int>(found.state.inliers.count());
+  found.summary.score = score;
+  return found;
+}
+
+}  // namespace
+
+Motion start_motion(const Eigen::Matrix3d& essential) {
+  // decompose_essential succeeds on any matrix of rank 2, which every caller has checked.
+  const std::vector<Eigen::Matrix4d> candidates = *decompose_essential(essential);
+  const auto best = std::ranges::max_element(candidates, {}, [](const Eigen::Matrix4d& pose) {
+    return pose.topLeftCorner<3, 3>().trace();
+  });
+  Eigen::Vector3d translation = best->topRightCorner<3, 1>();
+  Eigen::Index k = 0;
+  translation.cwiseAbs().maxCoeff(&k);
+  if (translation(k) < 0.0) {
+    translation = -translation;
+  }
+  return {.rotation = best->topLeftCorner<3, 3>(), .translation = translation};
+}
+
+solve::Solution<Eigen::Matrix3d, nls::Summary> refine(const Eigen::Matrix3d& essential,
+                                                      const Eigen::Ref<const Rows3>& bearings1,
+                                                      const Eigen::Ref<const Rows3>& bearings2,
+                                                      double scale) {
+  const SampsonProblem problem(normalised_plane(bearings1), normalised_plane(bearings2));
+  nls::Options options;
+  options.loss = {.kind = nls::LossKind::kCauchy, .scale = scale};
+  options.max_iterations = kRefineIterations;
+  // With the strict flag off the solve never fails: it returns its best state.
+  auto solved = *nls::solve(problem, start_motion(essential), options);
+  return {.state = essential_of(solved.state), .summary = std::move(solved.summary)};
+}
+
+Result<solve::Solution<Eigen::Matrix3d, nls::Summary>> refine_essential(
+    const Eigen::Matrix3d& essential, const Eigen::Ref<const Rows3>& bearings1,
+    const Eigen::Ref<const Rows3>& bearings2, double scale) {
+  if (!essential.allFinite()) {
+    return fail(ErrorKind::kInvalidInput, "essential: expected a finite (3, 3) matrix");
+  }
+  if (auto ok = check_bearing_pairs(bearings1, bearings2, fivepoint::kSampleSize); !ok) {
     return std::unexpected(ok.error());
   }
-  return ransac::estimate(EssentialEstimator(bearings1, bearings2), options);
+  if (!std::isfinite(scale) || scale <= 0.0) {
+    return fail_setting("scale", "must be positive and finite", scale);
+  }
+  const Eigen::Vector3d singular = Eigen::JacobiSVD<Eigen::Matrix3d>(essential).singularValues();
+  if (!(singular(1) > kRankTolerance * essential.norm())) {
+    return fail(ErrorKind::kDegenerate, "essential: rank below 2, no translation direction");
+  }
+  return refine(essential, bearings1, bearings2, scale);
+}
+
+Result<ransac::Solution<Eigen::Matrix3d>> essential_ransac(const Eigen::Ref<const Rows3>& bearings1,
+                                                           const Eigen::Ref<const Rows3>& bearings2,
+                                                           const ransac::Options& options,
+                                                           MinimalSolver minimal, bool refine) {
+  if (minimal != MinimalSolver::kNister && minimal != MinimalSolver::kStewenius &&
+      minimal != MinimalSolver::k8pt) {
+    return fail(ErrorKind::kInvalidInput, "minimal_solver: unknown code");
+  }
+  const Eigen::Index minimum =
+      minimal == MinimalSolver::k8pt ? kSampleSize : fivepoint::kSampleSize;
+  if (auto ok = check_bearing_pairs(bearings1, bearings2, minimum); !ok) {
+    return std::unexpected(ok.error());
+  }
+  auto found = ransac::estimate(EssentialEstimator(bearings1, bearings2, minimal), options);
+  if (!found || !refine) {
+    return found;
+  }
+  return polish(std::move(*found), bearings1, bearings2, options.threshold);
 }
 
 Result<ransac::Solution<Eigen::Matrix3d>> fundamental_ransac(const Eigen::Ref<const Rows2>& pixels1,

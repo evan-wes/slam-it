@@ -1,4 +1,4 @@
-"""Epipolar geometry: the essential and fundamental matrices, by the 8-point algorithm.
+"""Epipolar geometry: the essential and fundamental matrices, robust estimation, refinement.
 
 Two views of a static scene satisfy the **epipolar constraint**. For calibrated rays (bearing
 vectors ``f₁``, ``f₂``) and the relative pose ``T_c2_c1 = [R | t]``,
@@ -43,22 +43,33 @@ need bearings with positive z (pinhole views), like :func:`~slamlab.foundations.
 two_view`.
 
 **RANSAC.** :func:`essential_ransac` and :func:`fundamental_ransac` run the generic LO-MSAC
-loop (:mod:`slamlab.foundations.ransac`) with the 8-point algorithm as both the minimal solver
-(8 correspondences) and the least-squares one. The 5-point solver, a smaller minimal sample,
-arrives in its own change.
+loop (:mod:`slamlab.foundations.ransac`). F's minimal and least-squares solver is the 8-point
+algorithm. E's minimal solver is chosen (:data:`MINIMAL_SOLVERS`): Nistér's or Stewénius'
+5-point solver (:mod:`slamlab.foundations.fivepoint`, the default) or the 8-point; its
+least-squares refits are always the 8-point.
+
+**The Sampson refinement.** The 8-point refits minimise an algebraic error, so LO-RANSAC stops
+at the 8-point fit to its inliers. :func:`refine_essential` minimises the inliers' Sampson
+distance itself, robustly (a Cauchy loss whose scale is RANSAC's threshold), by
+Levenberg-Marquardt (:mod:`slamlab.foundations.nls`) on E's five-dimensional manifold:
+``E = [t]ₓ R`` with ``R`` updated as ``R exp(δθ)`` and the unit ``t`` moved in its tangent
+plane and renormalised. The Jacobian is analytic, by the chain rule through E. With
+``refine=True`` (the default), :func:`essential_ransac` refines its consensus and keeps the
+result only if its MSAC cost is lower (:func:`polish_consensus`).
 
 The C++ core (``slamlab/foundations/epipolar.hpp``) implements every function.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slamlab import backends
-from slamlab.foundations import ransac
+from slamlab.foundations import fivepoint, nls, ransac, so3
 from slamlab.foundations.arrays import as_bearing_pairs, as_matrix3, as_point_pairs
 from slamlab.foundations.correspondences import (
     RANK_TOLERANCE,
@@ -70,11 +81,18 @@ from slamlab.foundations.correspondences import (
     null_vector,
     unique,
 )
-from slamlab.foundations.errors import DegenerateError
+from slamlab.foundations.errors import DegenerateError, InvalidInputError
 from slamlab.foundations.solve import Solution
 
 SAMPLE_SIZE = 8
-"""Correspondences in a minimal sample (and the fewest the 8-point algorithm accepts)."""
+"""Correspondences the 8-point algorithm needs (its minimal sample)."""
+
+MINIMAL_SOLVERS = ("nister", "stewenius", "8pt")
+"""E-RANSAC's minimal solvers, in code order: the 5-point solvers of
+:mod:`slamlab.foundations.fivepoint`, or the 8-point algorithm."""
+
+REFINE_ITERATIONS = 20
+"""Levenberg-Marquardt iterations of the Sampson refinement (it starts near the optimum)."""
 
 
 class Implementation(Protocol):
@@ -124,13 +142,25 @@ class Implementation(Protocol):
         """Return E's four candidate poses ``T_c2_c1``, shape (4, 4, 4)."""
         ...
 
+    def refine_essential(
+        self,
+        bearings1: NDArray[np.float64],
+        bearings2: NDArray[np.float64],
+        essential: NDArray[np.float64],
+        scale: float,
+    ) -> dict[str, Any]:
+        """Refine E on (M, 3) bearing pairs: ``essential`` and its NLS ``summary``."""
+        ...
+
     def essential_ransac(
         self,
         bearings1: NDArray[np.float64],
         bearings2: NDArray[np.float64],
         options: dict[str, Any],
+        minimal_solver: int,
+        refine: bool,
     ) -> dict[str, Any]:
-        """Run LO-MSAC with the 8-point E solver."""
+        """Run LO-MSAC with a minimal solver (an index into ``MINIMAL_SOLVERS``)."""
         ...
 
     def fundamental_ransac(
@@ -222,23 +252,33 @@ def sampson(
 
 
 def essential_estimator(
-    bearings1: NDArray[np.float64], bearings2: NDArray[np.float64]
+    bearings1: NDArray[np.float64], bearings2: NDArray[np.float64], minimal_solver: str = "nister"
 ) -> PairEstimator:
-    """Return the 8-point E solver with its normalised-plane Sampson error.
+    """Return E's RANSAC estimator: a minimal solver, the 8-point refit, the Sampson error.
 
     Parameters
     ----------
     bearings1, bearings2 : ndarray of float64, shape (N, 3)
         Validated bearing pairs with positive z.
+    minimal_solver : {"nister", "stewenius", "8pt"}, optional
+        The minimal solver: a 5-point solver (samples of 5) or the 8-point algorithm (8).
 
     Returns
     -------
     slamlab.foundations.correspondences.PairEstimator
-        The estimator.
+        The estimator; its least-squares fit is always the normalised 8-point algorithm.
     """
     x1, x2 = normalised_plane(bearings1), normalised_plane(bearings2)
+    if minimal_solver == "8pt":
+        return PairEstimator(
+            (bearings1, bearings2), _essential_8pt, lambda m: sampson(m, x1, x2), SAMPLE_SIZE
+        )
     return PairEstimator(
-        (bearings1, bearings2), _essential_8pt, lambda m: sampson(m, x1, x2), SAMPLE_SIZE
+        (bearings1, bearings2),
+        _essential_8pt,
+        lambda m: sampson(m, x1, x2),
+        fivepoint.SAMPLE_SIZE,
+        minimal=lambda a, b: fivepoint.solve_reference(a, b, minimal_solver),
     )
 
 
@@ -462,37 +502,364 @@ def decompose_essential(essential: ArrayLike, *, backend: str = "python") -> NDA
     return backends.dispatch(backend, __name__, "decompose_essential", decompose_reference, matrix)
 
 
-def essential_ransac(
-    bearings1: ArrayLike, bearings2: ArrayLike, options: ransac.Options, *, backend: str = "python"
-) -> Solution[ransac.Consensus[Matrix3], ransac.Summary]:
-    """Estimate the essential matrix robustly: LO-MSAC with the 8-point solver.
+# --- the Sampson refinement ----------------------------------------------------------------
+
+
+def tangent_basis(direction: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Return an orthonormal basis of the plane tangent to the unit sphere at `direction`.
+
+    Built from the coordinate axis least aligned with `direction`, so every backend picks the
+    same basis.
 
     Parameters
     ----------
-    bearings1, bearings2 : array_like, shape (N, 3)
-        Unit bearing pairs with positive z, N >= 8.
-    options : ransac.Options
-        The settings; ``threshold`` is a Sampson distance in the normalised plane (a pixel
-        threshold divided by the focal length).
+    direction : ndarray of float64, shape (3,)
+        A unit vector.
+
+    Returns
+    -------
+    ndarray of float64, shape (3, 2)
+        Two orthonormal columns, both perpendicular to `direction`.
+    """
+    axis = np.zeros(3)
+    axis[int(np.argmin(np.abs(direction)))] = 1.0
+    first = np.cross(direction, axis)
+    first /= np.linalg.norm(first)
+    return np.column_stack([first, np.cross(direction, first)])
+
+
+@dataclass(frozen=True)
+class Motion:
+    """E's motion on its manifold: ``E = [t]ₓ R`` with ``|t| = 1`` (five degrees of freedom).
+
+    Attributes
+    ----------
+    rotation : ndarray of float64, shape (3, 3)
+        R.
+    translation : ndarray of float64, shape (3,)
+        The unit translation t.
+    """
+
+    rotation: NDArray[np.float64]
+    translation: NDArray[np.float64]
+
+    @property
+    def essential(self) -> Matrix3:
+        """``[t]ₓ R``: singular values (1, 1, 0)."""
+        return np.asarray(so3.hat(self.translation) @ self.rotation, dtype=np.float64)
+
+
+class SampsonProblem:
+    """Least squares on the Sampson distance of E's inliers, over E's manifold.
+
+    One residual block per match: the signed Sampson distance
+    ``(x₂ᵀ E x₁) / √((E x₁)₀² + (E x₁)₁² + (Eᵀ x₂)₀² + (Eᵀ x₂)₁²)`` in the normalised plane. The
+    state is :class:`Motion`; a step is ``R ← R exp(δθ)`` (right perturbation) and
+    ``t ← normalise(t + B δt)`` with B :func:`tangent_basis` at t. The Jacobian is analytic:
+    ``∂r/∂E`` contracted with ``∂E/∂θₖ = [t]ₓ R [eₖ]ₓ`` and ``∂E/∂tⱼ = [bⱼ]ₓ R``.
+
+    Parameters
+    ----------
+    x1, x2 : ndarray of float64, shape (M, 3)
+        The inliers' homogeneous normalised image points (z = 1).
+    """
+
+    def __init__(self, x1: NDArray[np.float64], x2: NDArray[np.float64]) -> None:
+        self._x1, self._x2 = x1, x2
+
+    def residuals(self, state: Motion) -> NDArray[np.float64]:
+        """Return each match's signed Sampson distance, shape (M,).
+
+        Parameters
+        ----------
+        state : Motion
+            The motion.
+
+        Returns
+        -------
+        ndarray of float64, shape (M,)
+            The residuals.
+        """
+        e = state.essential
+        line2, line1 = self._x1 @ e.T, self._x2 @ e
+        algebraic = np.sum(self._x2 * line2, axis=1)
+        gradient = line2[:, 0] ** 2 + line2[:, 1] ** 2 + line1[:, 0] ** 2 + line1[:, 1] ** 2
+        return np.asarray(algebraic / np.sqrt(gradient), dtype=np.float64)
+
+    def squared_norms(self, state: Motion) -> NDArray[np.float64]:
+        """Return each block's squared residual.
+
+        Parameters
+        ----------
+        state : Motion
+            The motion.
+
+        Returns
+        -------
+        ndarray of float64, shape (M,)
+            The squared residuals.
+        """
+        return self.residuals(state) ** 2
+
+    def linearize(self, state: Motion, weights: NDArray[np.float64]) -> nls.DenseSystem:
+        """Linearise at `state` into weighted normal equations over (δθ, δt).
+
+        Parameters
+        ----------
+        state : Motion
+            The motion.
+        weights : ndarray of float64, shape (M,)
+            The blocks' weights.
+
+        Returns
+        -------
+        slamlab.foundations.nls.DenseSystem
+            The normal equations, five parameters.
+        """
+        e = state.essential
+        x1, x2 = self._x1, self._x2
+        line2, line1 = x1 @ e.T, x2 @ e
+        c = np.sum(x2 * line2, axis=1)
+        g = line2[:, 0] ** 2 + line2[:, 1] ** 2 + line1[:, 0] ** 2 + line1[:, 1] ** 2
+        root = np.sqrt(g)
+        # ∂c/∂E = x₂ x₁ᵀ; ∂g/∂E = 2 Σᵢ₌₀,₁ (line2ᵢ eᵢ x₁ᵀ + line1ᵢ x₂ eᵢᵀ).
+        dc = x2[:, :, None] * x1[:, None, :]
+        dg = np.zeros_like(dc)
+        for i in range(2):
+            dg[:, i, :] += 2.0 * line2[:, i : i + 1] * x1
+            dg[:, :, i] += 2.0 * line1[:, i : i + 1] * x2
+        dr = dc / root[:, None, None] - (c / (2.0 * g * root))[:, None, None] * dg
+        t_hat = so3.hat(state.translation)
+        directions = [t_hat @ state.rotation @ so3.hat(np.eye(3)[k]) for k in range(3)]
+        basis = tangent_basis(state.translation)
+        directions += [so3.hat(basis[:, j]) @ state.rotation for j in range(2)]
+        jacobian = np.stack([np.einsum("mij,ij->m", dr, d) for d in directions], axis=1)
+        return nls.DenseSystem.build(
+            jacobian[:, None, :], (c / root)[:, None], np.asarray(weights, dtype=np.float64)
+        )
+
+    @staticmethod
+    def retract(state: Motion, delta: NDArray[np.float64]) -> Motion:
+        """Step on E's manifold: ``R exp(δθ)``, and t along the sphere.
+
+        Parameters
+        ----------
+        state : Motion
+            The motion.
+        delta : ndarray of float64, shape (5,)
+            ``(δθ, δt)``.
+
+        Returns
+        -------
+        Motion
+            The moved motion.
+        """
+        rotation = state.rotation @ so3.exp(delta[:3])
+        moved = state.translation + tangent_basis(state.translation) @ delta[3:]
+        return Motion(rotation=rotation, translation=moved / np.linalg.norm(moved))
+
+
+def start_motion(essential: Matrix3) -> Motion:
+    """Return the motion a refinement of E starts from, chosen the same way by every backend.
+
+    All four of E's candidate poses give E up to sign, so any would do; but each backend's
+    SVD orders and signs them differently, and the solve's path depends on the start. The
+    rule: the candidate rotation nearest the identity (largest trace), and the translation's
+    sign that makes its largest-magnitude component positive.
+
+    Parameters
+    ----------
+    essential : ndarray of float64, shape (3, 3)
+        E, of rank 2.
+
+    Returns
+    -------
+    Motion
+        The start.
+    """
+    candidates = decompose_reference(essential)
+    best = max(candidates, key=lambda pose: float(np.trace(pose[:3, :3])))
+    translation = best[:3, 3]
+    if translation[np.argmax(np.abs(translation))] < 0.0:
+        translation = -translation
+    return Motion(rotation=best[:3, :3], translation=translation)
+
+
+def refine_reference(
+    essential: Matrix3, bearings1: NDArray[np.float64], bearings2: NDArray[np.float64], scale: float
+) -> Solution[Matrix3, nls.Summary]:
+    """Refine E on validated bearing pairs by Levenberg-Marquardt on the Sampson distance.
+
+    The reference, unchecked. The loss is Cauchy with `scale`, so the inliers' few remaining
+    outliers barely pull.
+
+    Parameters
+    ----------
+    essential : ndarray of float64, shape (3, 3)
+        The starting E.
+    bearings1, bearings2 : ndarray of float64, shape (M, 3)
+        Bearing pairs with positive z, M >= 5.
+    scale : float
+        The Cauchy loss's scale, a Sampson distance in the normalised plane.
+
+    Returns
+    -------
+    slamlab.foundations.solve.Solution
+        The refined E (singular values (1, 1, 0)) and the solve's summary.
+    """
+    problem = SampsonProblem(normalised_plane(bearings1), normalised_plane(bearings2))
+    options = nls.Options(loss=nls.Loss("cauchy", scale), max_iterations=REFINE_ITERATIONS)
+    solved = nls.solve(problem, start_motion(essential), options)
+    return Solution(state=solved.state.essential, summary=solved.summary)
+
+
+def refine_essential(
+    essential: ArrayLike,
+    bearings1: ArrayLike,
+    bearings2: ArrayLike,
+    *,
+    scale: float,
+    backend: str = "python",
+) -> Solution[Matrix3, nls.Summary]:
+    """Refine E by minimising the inliers' robust Sampson distance over E's manifold.
+
+    The 8-point algorithm minimises an algebraic error; the Sampson distance is the
+    first-order geometric error. Levenberg-Marquardt (:mod:`slamlab.foundations.nls`) over
+    ``E = [t]ₓ R`` with R in SO(3) and t on the unit sphere (five parameters) minimises
+    ``½ Σ ρ(rᵢ²)``, ρ Cauchy's loss with `scale`.
+
+    Parameters
+    ----------
+    essential : array_like, shape (3, 3)
+        The starting E (any scale and sign).
+    bearings1, bearings2 : array_like, shape (M, 3)
+        The inliers' unit bearing pairs, positive z, M >= 5.
+    scale : float
+        The Cauchy loss's scale, a Sampson distance in the normalised plane (positive).
     backend : {"python", "cpp", "rust"}, optional
         Which implementation runs (default: the Python reference).
 
     Returns
     -------
     slamlab.foundations.solve.Solution
-        E and its inliers, and the run's :class:`ransac.Summary`.
+        The refined E (singular values (1, 1, 0), up to sign) and the solve's summary.
 
     Raises
     ------
     slamlab.foundations.errors.InvalidInputError
-        If the bearings are invalid or fewer than 8.
+        If E or the bearings are invalid, M < 5, or `scale` is not positive.
+    slamlab.foundations.errors.DegenerateError
+        If E's rank is below 2.
+    """
+    matrix = as_matrix3(essential, "essential")
+    b1, b2 = as_bearing_pairs(bearings1, bearings2, fivepoint.SAMPLE_SIZE)
+    if not (np.isfinite(scale) and scale > 0.0):
+        raise InvalidInputError(f"scale: must be positive and finite, got {scale}")
+    if not np.linalg.svd(matrix, compute_uv=False)[1] > RANK_TOLERANCE * np.linalg.norm(matrix):
+        raise DegenerateError("essential: rank below 2, no translation direction")
+    backends.check_name(backend)
+    if backend == "python":
+        return refine_reference(matrix, b1, b2, scale)
+    raw = backends.function(backend, __name__, "refine_essential")(b1, b2, matrix, scale)
+    codes = backends.implementation(backend, __name__).codes()
+    summary = nls.summary_from_backend(raw["summary"], codes["nls_termination"])
+    return Solution(state=np.asarray(raw["essential"], dtype=np.float64), summary=summary)
+
+
+def polish_consensus(
+    found: Solution[ransac.Consensus[Matrix3], ransac.Summary],
+    bearings: tuple[NDArray[np.float64], NDArray[np.float64]],
+    threshold: float,
+) -> Solution[ransac.Consensus[Matrix3], ransac.Summary]:
+    """Refine E-RANSAC's model on its inliers, keeping it only if the MSAC cost drops.
+
+    Parameters
+    ----------
+    found : slamlab.foundations.solve.Solution
+        E-RANSAC's result.
+    bearings : tuple of ndarray of float64, shape (N, 3)
+        All the bearing pairs.
+    threshold : float
+        RANSAC's threshold: the MSAC cap and the refinement's Cauchy scale.
+
+    Returns
+    -------
+    slamlab.foundations.solve.Solution
+        The refined model, its inliers and a summary whose ``inlier_count`` and ``score``
+        describe it; `found` unchanged if the refinement did not lower the cost.
+    """
+    inliers = found.state.inliers
+    if np.count_nonzero(inliers) < fivepoint.SAMPLE_SIZE:
+        return found
+    b1, b2 = bearings
+    refined = refine_reference(found.state.model, b1[inliers], b2[inliers], threshold).state
+    errors = sampson(refined, normalised_plane(b1), normalised_plane(b2))
+    score = float(np.sum(np.minimum(errors, threshold**2)))
+    if not score < found.summary.score:
+        return found
+    kept = errors < threshold**2
+    summary = replace(found.summary, inlier_count=int(np.count_nonzero(kept)), score=score)
+    return Solution(state=ransac.Consensus(model=refined, inliers=kept), summary=summary)
+
+
+def essential_ransac(  # noqa: PLR0913 -- the solver choices are keyword-only
+    bearings1: ArrayLike,
+    bearings2: ArrayLike,
+    options: ransac.Options,
+    *,
+    minimal_solver: str = "nister",
+    refine: bool = True,
+    backend: str = "python",
+) -> Solution[ransac.Consensus[Matrix3], ransac.Summary]:
+    """Estimate the essential matrix robustly: LO-MSAC, then an optional Sampson refinement.
+
+    Parameters
+    ----------
+    bearings1, bearings2 : array_like, shape (N, 3)
+        Unit bearing pairs with positive z, N >= the minimal sample (5, or 8 for "8pt").
+    options : ransac.Options
+        The settings; ``threshold`` is a Sampson distance in the normalised plane (a pixel
+        threshold divided by the focal length).
+    minimal_solver : {"nister", "stewenius", "8pt"}, optional
+        The minimal solver (default Nistér's 5-point). The least-squares refits inside LO are
+        always the normalised 8-point algorithm.
+    refine : bool, optional
+        Refine the best model on its inliers (:func:`refine_essential`, Cauchy scale
+        ``threshold``), keeping it only if it lowers the MSAC cost (default: on).
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation runs (default: the Python reference).
+
+    Returns
+    -------
+    slamlab.foundations.solve.Solution
+        E and its inliers, and the run's :class:`ransac.Summary` (whose ``inlier_count`` and
+        ``score`` describe the returned E).
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If the bearings are invalid or too few, or `minimal_solver` is unknown.
     slamlab.foundations.errors.DegenerateError
         If no sample gave an essential matrix.
     """
-    b1, b2 = as_bearing_pairs(bearings1, bearings2, SAMPLE_SIZE)
-    estimator = essential_estimator(b1, b2)
+    if minimal_solver not in MINIMAL_SOLVERS:
+        raise InvalidInputError(
+            f"minimal_solver: expected one of {MINIMAL_SOLVERS}, got {minimal_solver!r}"
+        )
+    minimum = SAMPLE_SIZE if minimal_solver == "8pt" else fivepoint.SAMPLE_SIZE
+    b1, b2 = as_bearing_pairs(bearings1, bearings2, minimum)
+    estimator = essential_estimator(b1, b2, minimal_solver)
+    if backend == "python":
+        found = ransac.estimate(estimator, options)
+        return polish_consensus(found, (b1, b2), options.threshold) if refine else found
+    extra = {"minimal_solver": MINIMAL_SOLVERS.index(minimal_solver), "refine": refine}
     return ransac.run(
-        estimator, (b1, b2), options, backend=backend, target=(__name__, "essential_ransac")
+        estimator,
+        (b1, b2),
+        options,
+        backend=backend,
+        target=(__name__, "essential_ransac"),
+        extra=extra,
     )
 
 
