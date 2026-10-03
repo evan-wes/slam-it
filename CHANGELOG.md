@@ -4,6 +4,44 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.2.3.0] - 2026-10-03
+
+Absolute pose, completing milestone 1's slice B: a frame placed against known 3D points, from
+three correspondences to a refined, robust pose. Python reference and C++ core in lock-step,
+with identical RANSAC runs on the same seed. Three deferred panel items folded in.
+
+### Added
+
+- **P3P** (`foundations.p3p`): Ding et al.'s solver (CVPR 2023, the default) and Lambda Twist
+  (ECCV 2018) behind a `solver` option, following PoseLib's implementations; every pose
+  returned is a rigid motion with every point in front.
+- **EPnP** (`pnp.epnp`): Lepetit et al.'s least-squares PnP from five points, following
+  OpenCV's implementation; planar points raise `Degenerate`.
+- **The pose refinement** (`pnp.refine_pose`): Levenberg-Marquardt on SE(3) of the
+  Cauchy-robust reprojection error, with an analytic Jacobian.
+- **PnP RANSAC** (`pnp.pnp_ransac`): LO-MSAC with a P3P minimal solver and EPnP refits, the
+  consensus refined and kept only if the MSAC cost drops.
+- **Generic refined RANSAC** (`ransac.RefinedSummary`, `refine_consensus`,
+  `estimate_refined`, `run_refined`, in both languages), shared by E-RANSAC and PnP RANSAC.
+- **`backends.call`**: one dispatch for functions whose two sides differ, decoding the compiled
+  result with the module's `codes()` (PR 2 panel A8).
+- **TUM depth maps**: `tum.Sequence.depths` and `tum.DEPTH_SCALE`.
+- **Demo** `scripts/demo_absolute_pose.py`: PnP on TUM with points from depth or from two-view
+  initialisation, against the motion capture and OpenCV, with a survey mode.
+- **Parity fixtures** `p3p.json` and `pnp.json` (`generate_pose.py`), and the design note
+  `docs/notes/absolute-pose.md`.
+
+### Changed
+
+- `epipolar.EssentialSummary` is now `ransac.RefinedSummary` (`ransac::RefinedSolution` in
+  C++); `essential_summary_from_backend` is `ransac.refined_summary_from_backend`.
+- `codes()` keys are qualified: `ransac_termination` and `nls_termination` everywhere (PR 3
+  panel A7); `nls.summary_from_backend` takes the codes dict.
+- BA's options cross the bindings as one nested dict of `BAOptions`' fields, choices by name,
+  read strictly at every depth (PR 2 panel A7).
+- `nls` sits one layer lower in rung 0's order, so `ransac` may use it.
+- The bindings share one enum-code decoder and the `rows3`/`rows2` helpers.
+
 ## [0.2.2.0] - 2026-10-03
 
 The 5-point solver and the Sampson refinement of E (milestone 1, slice B): E-RANSAC samples

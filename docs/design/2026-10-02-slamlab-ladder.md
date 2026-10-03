@@ -8,8 +8,9 @@ so far. PR 2 adds two-view geometry: triangulation, LO-MSAC RANSAC, the 8-point 
 fundamental matrices, homographies, their decompositions, and two-view initialisation with
 GRIC model selection, demonstrated on TUM RGB-D. PR 3 adds the 5-point solvers (Stewénius',
 the default, and Nistér's) as E-RANSAC's minimal solver, and the Sampson refinement of E on
-its manifold. Milestone 1's slice B continues in PR 4 (absolute pose: P3P,
-EPnP, refinement, PnP RANSAC); the Rust showcase (slice C) is PR 5.
+its manifold. PR 4 completes slice B with absolute pose: P3P (Ding et al.'s, the default, and
+Lambda Twist), EPnP, the pose refinement on SE(3) and PnP RANSAC, demonstrated on three TUM
+sequences. The Rust showcase (slice C) is PR 5.
 
 ## Purpose
 
@@ -138,13 +139,13 @@ and a possible later phone target.
     BA wraps the least-squares summary in its own. A solver with no estimate at all to
     return (RANSAC that never finds a valid hypothesis) raises `Degenerate`.
 
-    **A summary that nests others** (BA's nests its least-squares solve; E-RANSAC's,
-    `epipolar.EssentialSummary`, nests the RANSAC run and the refinement's solve) names its
-    primary run. Its `iterations`, `termination` and `converged` are that run's: a nested
+    **A summary that nests others** (BA's nests its least-squares solve;
+    `ransac.RefinedSummary`, E-RANSAC's and PnP RANSAC's, nests the RANSAC run and the
+    refinement's solve) names its primary run. Its `iterations`, `termination` and `converged` are that run's: a nested
     solve's convergence is read from its own summary, never from the outer one. In Python
     such a summary satisfies the `Summary` Protocol through properties delegating to the
     primary run, so it fits the generic `Solution`. The C++ concept needs data members, so
-    C++ returns a named struct instead (`ba::Solution`, `epipolar::EssentialSolution`), with
+    C++ returns a named struct instead (`ba::Solution`, `ransac::RefinedSolution`), with
     the same `state` and `summary` fields (settled in PR 3, panel A11).
   - **Crossing the binding boundary:** the estimate crosses as float64 arrays and the
     summary as plain scalars, with the termination reason as an integer code. The Python
@@ -210,16 +211,19 @@ inside a damped solver means "reject the step and raise the damping", not an err
 **Options cross as one dict of their dataclass's fields** (from PR 2): a solver whose
 settings are a frozen dataclass (`ransac.Options`, `twoview.Options`) passes
 `dataclasses.asdict(options)` as one `options` argument, and the binding reads each field by
-name. The binding refuses a dict whose keys are not exactly the dataclass's fields
+name; a nested dataclass (`BAOptions.solver`, the losses) crosses as a nested dict. The binding refuses a dict whose keys are not exactly the dataclass's fields
 (`check_keys` in `cpp/bindings/common.hpp`), so a field added on one side fails loudly. Results
 cross as dicts of arrays and scalars, nested where they hold a sub-result (a RANSAC summary,
-or E-RANSAC's summary nesting the refinement's), with enums as integer codes and a `codes()`
-function giving their names; a test holds each module's Python tables to its `codes()`. A
+or a refined RANSAC's summary nesting the refinement's), with enums as integer codes and a
+`codes()` function giving their names, each key qualified by its solver where two could clash
+(`ransac_termination`, `nls_termination`); a test holds each module's Python tables to its
+`codes()`. `backends.call` runs a function whose two sides differ (Python objects against
+their crossing form) and decodes the compiled result with the module's `codes()`;
+`backends.dispatch` remains for array functions whose two sides take the same arguments. A
 choice field inside an options dataclass (`twoview.Options.essential_solver`) crosses by name,
 as `asdict` gives it, and the binding maps it through the core's `name()`, failing on an
 unknown name; a choice passed as its own argument (`essential_ransac`'s `minimal_solver`)
-crosses as a code. BA predates the rule and still passes its options as keyword scalars (see
-the open items).
+crosses as a code.
 
 The cores check index bounds and sizes and return `InvalidInput`, even though the Python
 entry point validates too. Standalone C++ and Rust callers get the same protection, and both
@@ -537,13 +541,11 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
   - A time-cap termination reason for the compute budgets.
 - **Deferred from PR 2's review panel**
   ([report](../reviews/2026-10-02-feature-two-view.md)):
-  - **BA's options as a dict (A7).** BA passes about 25 keyword scalars; RANSAC and two-view
-    pass one dict of their dataclass's fields (Conventions). Migrate BA to the dict so there
-    is one rule, before Rust implements either.
-  - **A generic `backends.dispatch` (A8).** It is typed for array results, so `ransac.run`,
-    `homography.decompose_homography`, `twoview.initialize` and BA hand-roll the same steps.
-    A dispatch generic over its return type, with an optional decoder, would remove the
-    copies without teaching `backends` about algorithms.
+  - Closed by PR 4: **BA's options as a dict (A7).** `BAOptions` crosses as one nested dict
+    (choices by name), read strictly at every depth, like every other options dataclass.
+  - Closed by PR 4: **a generic dispatch (A8).** `backends.call` takes the reference as a
+    thunk, the compiled arguments by keyword and a decoder given the module's `codes()`; the
+    five hand-rolled copies use it.
   - **PCG32's parity values as a fixture (A9).** The reference draws are literals in the
     Python and C++ tests; when Rust gains PCG32 (PR 5), move them to
     `tests/fixtures/foundations/rng.json`.
@@ -562,17 +564,25 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
     retries on later frames; revisit the thresholds there, against its success rate.
 - **Deferred from PR 3's review panel**
   ([report](../reviews/2026-10-03-feature-five-point.md)):
-  - **Where refinements live (A6).** The Sampson refinement grew `epipolar` (its `Motion`,
-    `SampsonProblem`, the S² tangent basis and retraction). PR 4 adds pose refinement for PnP:
-    decide before it whether refinements get their own modules, and move the S² basis and
-    retraction next to `so3` when a second user appears.
+  - Closed by PR 4: **where refinements live (A6).** Each refinement problem stays with its
+    model (`epipolar.SampsonProblem`, `pnp.ReprojectionProblem`); what E-RANSAC and PnP RANSAC
+    share, the refined summary and "refine the consensus, keep it if the MSAC cost drops", is
+    generic in `ransac` (`RefinedSummary`, `refine_consensus`, `estimate_refined`). The S²
+    basis and retraction stay in `epipolar` until a second user appears.
   - **Refining inside LO (L5).** LO's refits stay the algebraic 8-point; PoseLib refines on
     the Sampson error inside LO, and SupeRANSAC (Barath, arXiv 2506.04803, 2025) finishes E
     with LM on MAGSAC++-weighted Sampson error. An inlier-reselect and refine loop is the next
     step if the floor ratio matters.
-  - **`codes()` keys (A7).** `"termination"` is NLS' in BA and RANSAC's in epipolar and
-    two-view (where NLS' is `"nls_termination"`). Qualify both when another module nests
-    summaries; with A8 of PR 2 (a generic dispatch).
+  - Closed by PR 4: **`codes()` keys (A7).** RANSAC's termination is `ransac_termination`
+    and NLS' `nls_termination` in every module; each decoder reads its own key.
+- **Found while building PR 4:**
+  - **Two-view crashes on a rank-deficient homography.** On TUM fr1/desk, H-RANSAC can return
+    an H whose decomposition fails ("homography: rank below 2"), and `twoview.initialize`
+    raises `DegenerateError` instead of treating H as unavailable. `twoview` is PR 2's; the
+    absolute-pose demo counts such a reference frame as not initialised.
+  - **IPPE for planar scenes.** EPnP refuses planar points; PnP RANSAC still handles them
+    (P3P samples, the refinement), but its LO refits are skipped there. IPPE (Collins and
+    Bartoli, IJCV 2014) is the planar least-squares solver.
 - **Deferred from PR 1's review panel**
   ([report](../reviews/2026-10-02-feature-ba-spine.md)):
   - **Batched APIs for standalone callers (A11).** Batching over many inputs lives in the

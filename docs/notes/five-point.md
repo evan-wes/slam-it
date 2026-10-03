@@ -28,7 +28,7 @@ the geometric (Sampson) error, not an algebraic one, can go below the floor.
 |---|---|
 | `fivepoint.essential_5pt(b1, b2, solver=)` | every essential matrix five bearing pairs allow, (K, 3, 3), K ≤ 10 |
 | `fivepoint.real_roots(poly)` | a polynomial's distinct real roots, by Sturm sequences and bisection |
-| `epipolar.essential_ransac(b1, b2, options, minimal_solver=, refine=)` | LO-MSAC with a chosen minimal solver, then the refinement; an `EssentialSummary` |
+| `epipolar.essential_ransac(b1, b2, options, minimal_solver=, refine=)` | LO-MSAC with a chosen minimal solver, then the refinement; a `ransac.RefinedSummary` |
 | `epipolar.refine_essential(E, b1, b2, scale=)` | E refined on inlier pairs' robust Sampson distance; a `Solution` with `nls.Summary` |
 | `twoview.Options(essential_solver=, refine=)` | the same two choices for the initialiser |
 
@@ -37,10 +37,11 @@ also accept `"8pt"`, PR 2's behaviour. `refine` defaults to on. The C++ core imp
 it; the options cross the bindings as codes (`codes()["minimal_solver"]`) or, inside
 `twoview.Options`' dict, by name.
 
-E-RANSAC's summary, `EssentialSummary`, nests the RANSAC run's (`run`: samples, inliers,
-score of the returned E) and the refinement's `nls.Summary` (`refinement`, None when it did
-not run), with `refined`: whether the refined E was kept. The two-view result carries it as
-its `essential` summary, so whether the refinement ran, converged and helped is visible.
+E-RANSAC's summary, `ransac.RefinedSummary` (`EssentialSummary` until PR 4 made it generic
+for PnP), nests the RANSAC run's (`run`: samples, inliers, score of the returned E) and the
+refinement's `nls.Summary` (`refinement`, None when it did not run), with `refined`: whether
+the refined E was kept. The two-view result carries it as its `essential` summary, so whether
+the refinement ran, converged and helped is visible.
 
 ## The maths
 
@@ -121,7 +122,7 @@ RANSAC's threshold, so the consensus's few remaining outliers barely pull.
 `essential_ransac(refine=True)` refines the consensus on its inliers. It keeps the result only
 if the MSAC cost over all matches is lower, then recomputes the inliers and score
 (the refinement step of `essential_ransac`). A refinement that makes things worse is never
-kept, and the `EssentialSummary` says whether it ran and was kept.
+kept, and the `RefinedSummary` says whether it ran and was kept.
 
 ## How it's checked
 
