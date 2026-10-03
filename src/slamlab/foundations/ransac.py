@@ -54,7 +54,7 @@ from __future__ import annotations
 import enum
 import math
 from dataclasses import dataclass, field
-from typing import Generic, Protocol, TypeVar
+from typing import Any, Generic, Protocol, TypeVar
 
 import numpy as np
 from numpy.typing import NDArray
@@ -373,3 +373,38 @@ def estimate(
         score=best.score,
     )
     return Solution(state=Consensus(model=best.model, inliers=inliers), summary=summary)
+
+
+def from_backend(
+    raw: dict[str, Any], codes: dict[str, list[str]]
+) -> Solution[Consensus[NDArray[np.float64]], Summary]:
+    """Build a solution from a compiled backend's RANSAC result.
+
+    Parameters
+    ----------
+    raw : dict
+        ``model`` and ``inliers`` arrays, the :class:`Summary` fields as scalars, and
+        ``termination`` as an index into ``codes["termination"]``.
+    codes : dict of str to list of str
+        The backend's enum names in code order (its ``codes()``).
+
+    Returns
+    -------
+    slamlab.foundations.solve.Solution
+        The model, its inliers and the summary.
+    """
+    termination = Termination(codes["termination"][int(raw["termination"])])
+    summary = Summary(
+        iterations=int(raw["iterations"]),
+        termination=termination,
+        converged=termination in CONVERGED,
+        degenerate_samples=int(raw["degenerate_samples"]),
+        local_optimizations=int(raw["local_optimizations"]),
+        inlier_count=int(raw["inlier_count"]),
+        score=float(raw["score"]),
+    )
+    consensus = Consensus(
+        model=np.asarray(raw["model"], dtype=np.float64),
+        inliers=np.asarray(raw["inliers"], dtype=np.bool_),
+    )
+    return Solution(state=consensus, summary=summary)

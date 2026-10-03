@@ -12,29 +12,17 @@ from slamlab import backends
 from slamlab.foundations import se3, triangulation
 from slamlab.foundations.errors import InvalidInputError
 from tests.conftest import assert_matches_fixture, load_fixture, require_function
+from tests.foundations.scenes import POSE
+from tests.foundations.scenes import bearings as _bearings
+from tests.foundations.scenes import in_camera as _in_camera
+from tests.foundations.scenes import scene as _scene
 
 FIXTURE = load_fixture("foundations/triangulation.json")
-POSE = se3.exp([0.5, -0.1, 0.05, 0.02, -0.1, 0.03])
 
 
 def _packed(result: triangulation.Triangulation) -> NDArray[np.float64]:
     """Pack a result as the fixture stores it: point, in_front, parallax."""
     return np.column_stack([result.points, result.in_front, result.parallax])
-
-
-def _bearings(points: NDArray[np.float64]) -> NDArray[np.float64]:
-    """Return the unit directions of points."""
-    return np.asarray(points / np.linalg.norm(points, axis=-1, keepdims=True), dtype=np.float64)
-
-
-def _scene(n: int = 30, seed: int = 0) -> NDArray[np.float64]:
-    """Draw points 4-8 m in front of the origin."""
-    return np.random.default_rng(seed).uniform([-2.0, -2.0, 4.0], [2.0, 2.0, 8.0], size=(n, 3))
-
-
-def _in_camera(pose: NDArray[np.float64], points: NDArray[np.float64]) -> NDArray[np.float64]:
-    """Map points into a camera's frame: ``R X + t``."""
-    return np.asarray(points @ pose[:3, :3].T + pose[:3, 3], dtype=np.float64)
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
