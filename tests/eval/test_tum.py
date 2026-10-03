@@ -40,6 +40,19 @@ def test_reads_and_associates_frames(tmp_path: Path) -> None:
     quarter = so3.exp([0.0, 0.0, np.pi / 2])
     np.testing.assert_allclose(sequence.T_world_cam[1][:3, :3], quarter, rtol=0, atol=1e-12)
     np.testing.assert_array_equal(sequence.intrinsics, tum.INTRINSICS["freiburg1"])
+    assert sequence.depths == [None, None]
+
+
+def test_associates_depth_maps(tmp_path: Path) -> None:
+    """Each kept frame takes the nearest depth map within 0.02 s, or None."""
+    folder = tmp_path / "rgbd_dataset_freiburg1_xyz"
+    _write(folder)
+    (folder / "depth.txt").write_text(
+        "# depth maps\n# timestamp filename\n"
+        "100.010 depth/100.010.png\n99.900 depth/99.900.png\n100.600 depth/100.600.png\n"
+    )
+    sequence = tum.read_sequence(folder)
+    assert sequence.depths == [folder / "depth/100.010.png", None]
 
 
 def test_rejects_unknown_sensors_and_empty_associations(tmp_path: Path) -> None:
