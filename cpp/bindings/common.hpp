@@ -12,6 +12,7 @@
 #include <nanobind/ndarray.h>
 
 #include <Eigen/Core>
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -329,8 +330,11 @@ inline void check_keys(const nanobind::dict& values, std::span<const char* const
       throw std::invalid_argument(std::string("options: missing ") + key + " of " + what);
     }
   }
-  if (values.size() != keys.size()) {
-    throw std::invalid_argument(std::string("options: expected exactly ") + what + "'s fields");
+  for (const auto& [key, value] : values) {
+    const std::string name = nanobind::str(key).c_str();
+    if (std::ranges::find(keys, name) == keys.end()) {
+      throw std::invalid_argument("options: unexpected " + name + ", not a field of " + what);
+    }
   }
 }
 

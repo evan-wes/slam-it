@@ -17,6 +17,8 @@ from collections.abc import Callable
 import numpy as np
 from numpy.typing import NDArray
 
+from slamlab.foundations.errors import DegenerateError
+
 RANK_TOLERANCE = 1e-10
 """The 8-point system's second-smallest singular value must exceed this fraction of its
 largest; below it the solution is not unique."""
@@ -150,3 +152,28 @@ class PairEstimator:
     def residuals(self, model: Matrix3) -> NDArray[np.float64]:
         """Return every pair's squared residual."""
         return self._residual(model)
+
+
+def unique(found: Matrix3 | None, what: str) -> Matrix3:
+    """Return a solver's matrix, or raise as the C++ core does when the data determine none.
+
+    Parameters
+    ----------
+    found : ndarray of float64, shape (3, 3), or None
+        A solver's result; None when the correspondences do not determine a unique matrix.
+    what : str
+        The matrix's name ("E", "F", "H"), for the message.
+
+    Returns
+    -------
+    ndarray of float64, shape (3, 3)
+        `found`.
+
+    Raises
+    ------
+    slamlab.foundations.errors.DegenerateError
+        If `found` is None.
+    """
+    if found is None:
+        raise DegenerateError(f"{what}: the correspondences do not determine a unique solution")
+    return found

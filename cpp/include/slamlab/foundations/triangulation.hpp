@@ -10,19 +10,17 @@
 #include <Eigen/Core>
 #include <vector>
 
+#include "slamlab/foundations/correspondences.hpp"
 #include "slamlab/foundations/error.hpp"
 
 /// @brief Triangulation.
 namespace slamlab::foundations::triangulation {
 
-/// @brief Bearing vectors must have unit norm within this.
-inline constexpr double kBearingTolerance = 1e-9;
 /// @brief Rays meeting at an angle whose sine is below this are parallel; the DLT uses the
 ///        same ratio between the homogeneous point's last coordinate and the rest.
 inline constexpr double kParallelSine = 1e-12;
 
-/// @brief Rows of 3-vectors (points or bearings), row-major as numpy stores them.
-using Rows3 = Eigen::Matrix<double, Eigen::Dynamic, 3, Eigen::RowMajor>;
+using correspondences::Rows3;
 
 /// @brief Which views observe each point (P x V), row-major as numpy stores it.
 using MaskRef =

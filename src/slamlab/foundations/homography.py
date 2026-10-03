@@ -54,6 +54,7 @@ from slamlab.foundations.correspondences import (
     hartley_normalisation,
     homogeneous,
     null_vector,
+    unique,
 )
 from slamlab.foundations.errors import DegenerateError
 from slamlab.foundations.solve import Solution
@@ -210,10 +211,7 @@ def homography_estimator(
 
 def _dlt_reference(p1: NDArray[np.float64], p2: NDArray[np.float64]) -> Matrix3:
     """Run the normalised DLT (reference); raise if the pairs do not determine H."""
-    found = _homography_dlt(p1, p2)
-    if found is None:
-        raise DegenerateError("H: the correspondences do not determine a unique solution")
-    return found
+    return unique(_homography_dlt(p1, p2), "H")
 
 
 def homography_dlt(points1: ArrayLike, points2: ArrayLike, *, backend: str = "python") -> Matrix3:

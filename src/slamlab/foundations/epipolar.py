@@ -68,6 +68,7 @@ from slamlab.foundations.correspondences import (
     homogeneous,
     normalised_plane,
     null_vector,
+    unique,
 )
 from slamlab.foundations.errors import DegenerateError
 from slamlab.foundations.solve import Solution
@@ -265,21 +266,14 @@ def fundamental_estimator(
 # --- validation and dispatch --------------------------------------------------------------
 
 
-def _unique(found: Matrix3 | None, what: str) -> Matrix3:
-    """Return a solver's matrix, or raise as the C++ core does when there is none."""
-    if found is None:
-        raise DegenerateError(f"{what}: the correspondences do not determine a unique solution")
-    return found
-
-
 def _essential_reference(b1: NDArray[np.float64], b2: NDArray[np.float64]) -> Matrix3:
     """Run the 8-point E solver (reference); raise if the pairs do not determine E."""
-    return _unique(_essential_8pt(b1, b2), "E")
+    return unique(_essential_8pt(b1, b2), "E")
 
 
 def _fundamental_reference(p1: NDArray[np.float64], p2: NDArray[np.float64]) -> Matrix3:
     """Run the normalised 8-point F solver (reference); raise if the pairs do not determine F."""
-    return _unique(_fundamental_8pt(p1, p2), "F")
+    return unique(_fundamental_8pt(p1, p2), "F")
 
 
 def _sampson_essential(

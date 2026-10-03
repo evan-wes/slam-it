@@ -51,6 +51,17 @@ using Rows2 = Eigen::Matrix<double, Eigen::Dynamic, 2, Eigen::RowMajor>;
 [[nodiscard]] std::optional<Eigen::Matrix<double, 9, 1>> null_vector(
     const Eigen::Ref<const Eigen::Matrix<double, Eigen::Dynamic, 9>>& system);
 
+/// @brief Unit bearings must have norm 1 within this (`slamlab.foundations.arrays`' value).
+inline constexpr double kBearingTolerance = 1e-9;
+
+/// @brief Check one bearing: finite, with unit norm within `kBearingTolerance`.
+/// @param bearings The bearings.
+/// @param row The row to check.
+/// @param name The argument's name, for the message.
+/// @return Nothing, or `InvalidInput`.
+[[nodiscard]] Result<void> check_bearing(const Eigen::Ref<const Rows3>& bearings, Eigen::Index row,
+                                         const char* name);
+
 /// @brief Check bearing pairs: equal sizes, at least `minimum`, unit vectors with positive z.
 /// @param bearings1 Bearings in camera 1.
 /// @param bearings2 Bearings in camera 2.

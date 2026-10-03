@@ -45,5 +45,7 @@ int main() {
 
   expect(!twoview::check_options(twoview::Options{.focal = 0.0}).has_value(),
          "a zero focal length is rejected", failures);
+  expect(std::abs(twoview::kHomographyThresholdScale - std::sqrt(5.991 / 3.841)) < 1e-15,
+         "H's threshold scale is the ratio of the 95% chi-squared quantiles", failures);
   return slamlab::testing::finish("foundations/twoview", failures);
 }

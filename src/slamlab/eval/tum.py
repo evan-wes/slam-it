@@ -29,6 +29,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from slamlab.foundations import so3
+from slamlab.foundations.errors import InvalidInputError
 
 INTRINSICS: dict[str, NDArray[np.float64]] = {
     "freiburg1": np.array([517.3, 516.5, 318.6, 255.3, 0.2624, -0.9531, -0.0054, 0.0026, 1.1633]),
@@ -76,7 +77,7 @@ def _table(path: Path, columns: int) -> list[tuple[int, list[str]]]:
 
     Raises
     ------
-    ValueError
+    slamlab.foundations.errors.InvalidInputError
         If a row has fewer than `columns` fields.
     """
     rows = []
@@ -86,7 +87,9 @@ def _table(path: Path, columns: int) -> list[tuple[int, list[str]]]:
             continue
         fields = stripped.split()
         if len(fields) < columns:
-            raise ValueError(f"{path}:{number}: expected {columns} fields, got {len(fields)}")
+            raise InvalidInputError(
+                f"{path}:{number}: expected {columns} fields, got {len(fields)}"
+            )
         rows.append((number, fields))
     return rows
 
@@ -96,20 +99,22 @@ def _poses(path: Path) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
 
     Raises
     ------
-    ValueError
+    slamlab.foundations.errors.InvalidInputError
         If the file has no rows, or a row is not 8 finite numbers with a non-zero quaternion.
     """
     rows = _table(path, 8)
     if not rows:
-        raise ValueError(f"{path}: no ground-truth poses")
+        raise InvalidInputError(f"{path}: no ground-truth poses")
     values = np.empty((len(rows), 8))
     for k, (number, fields) in enumerate(rows):
         try:
             values[k] = [float(v) for v in fields[:8]]
         except ValueError as error:
-            raise ValueError(f"{path}:{number}: expected numbers ({error})") from None
+            raise InvalidInputError(f"{path}:{number}: expected numbers ({error})") from None
         if not np.all(np.isfinite(values[k])) or not np.linalg.norm(values[k, 4:8]) > 0.0:
-            raise ValueError(f"{path}:{number}: expected finite values and a non-zero quaternion")
+            raise InvalidInputError(
+                f"{path}:{number}: expected finite values and a non-zero quaternion"
+            )
     values = values[np.argsort(values[:, 0], kind="stable")]
     quaternions = values[:, 4:8] / np.linalg.norm(values[:, 4:8], axis=1, keepdims=True)
     poses = np.tile(np.eye(4), (len(values), 1, 1))
@@ -145,27 +150,33 @@ def read_sequence(root: str | Path, max_difference: float = MAX_DIFFERENCE) -> S
 
     Raises
     ------
-    ValueError
+    slamlab.foundations.errors.InvalidInputError
         If the folder's name does not say its sensor, `max_difference` is negative, a file is
         malformed (named with its line), or no frame has a pose.
     FileNotFoundError
         If ``rgb.txt`` or ``groundtruth.txt`` is missing.
     """
     if not (np.isfinite(max_difference) and max_difference >= 0.0):
-        raise ValueError(f"max_difference: must be non-negative, got {max_difference}")
+        raise InvalidInputError(f"max_difference: must be non-negative, got {max_difference}")
     folder = Path(root)
     sensor = next((s for s in INTRINSICS if s in folder.name), None)
     if sensor is None:
-        raise ValueError(f"{folder.name}: expected 'freiburg1', '2' or '3' in the folder's name")
+        raise InvalidInputError(
+            f"{folder.name}: expected 'freiburg1', '2' or '3' in the folder's name"
+        )
     frames = _table(folder / "rgb.txt", 2)
     truth_times, truth_poses = _poses(folder / "groundtruth.txt")
     try:
         stamps = np.array([float(fields[0]) for _, fields in frames])
     except ValueError as error:
-        raise ValueError(f"{folder / 'rgb.txt'}: expected numeric timestamps ({error})") from None
+        raise InvalidInputError(
+            f"{folder / 'rgb.txt'}: expected numeric timestamps ({error})"
+        ) from None
     nearest = _nearest(truth_times, stamps)
     kept = np.flatnonzero(np.abs(truth_times[nearest] - stamps) <= max_difference)
     if kept.size == 0:
-        raise ValueError(f"{folder}: no frame has a ground-truth pose within {max_difference} s")
+        raise InvalidInputError(
+            f"{folder}: no frame has a ground-truth pose within {max_difference} s"
+        )
     images = [folder / frames[k][1][1] for k in kept]
     return Sequence(folder, sensor, stamps[kept], images, truth_poses[nearest[kept]])

@@ -26,21 +26,6 @@ double angle(const Eigen::Vector3d& a, const Eigen::Vector3d& b) {
   return std::atan2(a.cross(b).norm(), a.dot(b));
 }
 
-/// @brief Check that every listed row is a unit vector.
-/// @param bearings The bearings.
-/// @param row The row to check.
-/// @param name The argument's name, for the message.
-/// @return Nothing, or `InvalidInput`.
-Result<void> check_unit(const Eigen::Ref<const Rows3>& bearings, Eigen::Index row,
-                        const char* name) {
-  if (!bearings.row(row).allFinite() ||
-      std::abs(bearings.row(row).norm() - 1.0) > kBearingTolerance) {
-    return fail(ErrorKind::kInvalidInput,
-                std::string(name) + ": expected unit vectors within 1e-09");
-  }
-  return {};
-}
-
 /// @brief An empty result of `n` points, to be filled.
 /// @param n The number of points.
 /// @return Points, cheirality and parallax of size `n`.
@@ -109,7 +94,9 @@ Result<std::vector<Eigen::Vector3d>> check_n_view(const std::vector<Eigen::Matri
                   "observed: every point needs at least two observing views");
     }
     for (Eigen::Index v = 0; v < views; ++v) {
-      auto ok = observed(p, v) ? check_unit(bearings, (p * views) + v, "bearings") : Result<void>{};
+      auto ok = observed(p, v)
+                    ? correspondences::check_bearing(bearings, (p * views) + v, "bearings")
+                    : Result<void>{};
       if (!ok) {
         return std::unexpected(ok.error());
       }
@@ -192,21 +179,10 @@ Result<Triangulation> two_view(const Eigen::Matrix4d& relative_pose,
     return fail(ErrorKind::kInvalidInput,
                 "relative_pose: zero translation; the depth is undetermined");
   }
+  if (auto ok = correspondences::check_bearing_pairs(bearings1, bearings2, 0); !ok) {
+    return std::unexpected(ok.error());
+  }
   const Eigen::Index n = bearings1.rows();
-  if (bearings2.rows() != n) {
-    return fail(ErrorKind::kInvalidInput, "bearings: expected equal (P, 3) shapes");
-  }
-  for (Eigen::Index i = 0; i < n; ++i) {
-    if (auto ok = check_unit(bearings1, i, "bearings1"); !ok) {
-      return std::unexpected(ok.error());
-    }
-    if (auto ok = check_unit(bearings2, i, "bearings2"); !ok) {
-      return std::unexpected(ok.error());
-    }
-    if (!(bearings1(i, 2) > 0.0) || !(bearings2(i, 2) > 0.0)) {
-      return fail(ErrorKind::kInvalidInput, "bearings: expected positive z (a pinhole view)");
-    }
-  }
   const Eigen::Matrix3d essential = so3::hat(t) * rotation;
   const Eigen::Matrix2d e2 = essential.topLeftCorner<2, 2>();
   const Eigen::Vector3d centre2 = -rotation.transpose() * t;

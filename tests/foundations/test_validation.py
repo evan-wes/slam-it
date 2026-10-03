@@ -76,3 +76,39 @@ def test_group_members_match_the_masks() -> None:
     assert [m.size for m in empty] == [0, 0]
     with pytest.raises(InvalidInputError, match="outside"):
         arrays.group_members(np.array([0, 5], dtype=np.int64), 2)
+
+
+_UNIT = np.full((8, 3), 1.0 / np.sqrt(3.0))
+"""Eight unit bearings with positive z."""
+
+
+@pytest.mark.parametrize(
+    ("call", "message"),
+    [
+        (lambda: arrays.as_bearings(np.ones((2, 3))), "unit vectors"),
+        (lambda: arrays.as_bearing_pairs(_UNIT, _UNIT[:7], 0), "equal"),
+        (lambda: arrays.as_bearing_pairs(_UNIT, _UNIT, 9), "at least 9"),
+        (lambda: arrays.as_bearing_pairs(-_UNIT, _UNIT, 0), "positive z"),
+        (lambda: arrays.as_point_pairs(np.ones((4, 2)), np.ones((5, 2)), 0), "equal"),
+        (lambda: arrays.as_point_pairs(np.ones((3, 2)), np.ones((3, 2)), 4), "at least 4"),
+        (lambda: arrays.as_point_pairs(np.ones((3, 3)), np.ones((3, 3)), 0), "shape"),
+        (lambda: arrays.as_matrix3(np.eye(4), "h"), "h"),
+        (lambda: arrays.as_matrix3(np.stack([np.eye(3)] * 2), "h"), "one"),
+    ],
+)
+def test_two_view_validators_reject_bad_input(call: object, message: str) -> None:
+    """The shared correspondence checks reject shapes, sizes, non-unit and backward bearings."""
+    assert callable(call)
+    with pytest.raises(InvalidInputError, match=message):
+        call()
+
+
+def test_two_view_validators_return_copies() -> None:
+    """Valid input comes back as C-contiguous float64 copies of the right shape."""
+    b1, _ = arrays.as_bearing_pairs(_UNIT, _UNIT, 8)
+    assert b1.shape == (8, 3)
+    assert b1 is not _UNIT
+    p1, _ = arrays.as_point_pairs([[0, 0], [1, 1]], [[1, 0], [0, 1]], 2)
+    assert p1.dtype == np.float64
+    assert p1.flags.c_contiguous
+    assert arrays.as_matrix3(np.eye(3).tolist(), "m").shape == (3, 3)

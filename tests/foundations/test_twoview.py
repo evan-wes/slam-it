@@ -173,6 +173,17 @@ def test_backends_agree_run_for_run(seed: int) -> None:
         assert other.essential.iterations == runs[0].essential.iterations
 
 
+def test_each_model_has_its_own_threshold_and_stream() -> None:
+    """E uses threshold_px on stream 0; H scales it by √(5.991/3.841) on stream 1 (panel L8)."""
+    options = twoview.Options(focal=500.0, threshold_px=2.0, seed=7)
+    e = options.ransac_options(twoview.Model.ESSENTIAL)
+    h = options.ransac_options(twoview.Model.HOMOGRAPHY)
+    assert pytest.approx(math.sqrt(5.991 / 3.841)) == twoview.HOMOGRAPHY_THRESHOLD_SCALE
+    assert (e.threshold, e.stream, e.seed) == (2.0 / 500.0, 0, 7)
+    assert h.threshold == pytest.approx(twoview.HOMOGRAPHY_THRESHOLD_SCALE * 2.0 / 500.0)
+    assert (h.stream, h.seed) == (1, 7)
+
+
 def test_gric_terms() -> None:
     """Torr's formula: the capped fit term plus the dimension and parameter penalties."""
     errors = np.array([0.0, 1.0, 100.0])  # in units of sigma²: 0, 1, capped at 2 (E)

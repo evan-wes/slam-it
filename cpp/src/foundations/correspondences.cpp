@@ -7,15 +7,9 @@
 #include <cmath>
 #include <numbers>
 #include <string>
+#include <utility>
 
 namespace slamlab::foundations::correspondences {
-
-namespace {
-
-/// @brief Unit bearings must have norm 1 within this (as in triangulation).
-constexpr double kBearingTolerance = 1e-9;
-
-}  // namespace
 
 Rows3 homogeneous(const Eigen::Ref<const Rows2>& points) {
   Rows3 out(points.rows(), 3);
@@ -56,6 +50,16 @@ std::optional<Eigen::Matrix<double, 9, 1>> null_vector(
   return svd.matrixV().col(8);
 }
 
+Result<void> check_bearing(const Eigen::Ref<const Rows3>& bearings, Eigen::Index row,
+                           const char* name) {
+  if (!bearings.row(row).allFinite() ||
+      std::abs(bearings.row(row).norm() - 1.0) > kBearingTolerance) {
+    return fail(ErrorKind::kInvalidInput,
+                std::string(name) + ": expected unit vectors within 1e-09");
+  }
+  return {};
+}
+
 Result<void> check_bearing_pairs(const Eigen::Ref<const Rows3>& bearings1,
                                  const Eigen::Ref<const Rows3>& bearings2, Eigen::Index minimum) {
   if (bearings1.rows() != bearings2.rows()) {
@@ -65,13 +69,15 @@ Result<void> check_bearing_pairs(const Eigen::Ref<const Rows3>& bearings1,
     return fail(ErrorKind::kInvalidInput, "bearings: need at least " + std::to_string(minimum) +
                                               " pairs, got " + std::to_string(bearings1.rows()));
   }
-  for (const auto* bearings : {&bearings1, &bearings2}) {
-    if (!bearings->allFinite() ||
-        ((bearings->rowwise().norm().array() - 1.0).abs() > kBearingTolerance).any()) {
-      return fail(ErrorKind::kInvalidInput, "bearings: expected unit vectors within 1e-09");
-    }
-    if ((bearings->col(2).array() <= 0.0).any()) {
-      return fail(ErrorKind::kInvalidInput, "bearings: expected positive z (a pinhole view)");
+  for (Eigen::Index i = 0; i < bearings1.rows(); ++i) {
+    for (const auto& [bearings, name] :
+         {std::pair{&bearings1, "bearings1"}, std::pair{&bearings2, "bearings2"}}) {
+      if (auto ok = check_bearing(*bearings, i, name); !ok) {
+        return ok;
+      }
+      if (!((*bearings)(i, 2) > 0.0)) {
+        return fail(ErrorKind::kInvalidInput, "bearings: expected positive z (a pinhole view)");
+      }
     }
   }
   return {};
