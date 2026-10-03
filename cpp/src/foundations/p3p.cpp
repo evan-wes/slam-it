@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "slamlab/foundations/alignment.hpp"
 #include "slamlab/foundations/so3.hpp"
 
 namespace slamlab::foundations::p3p {
@@ -139,6 +140,21 @@ std::vector<double> quadratic_roots(double a, double b, double c) {
   return half != 0.0 ? std::vector<double>{half / a, c / half} : std::vector<double>{half / a};
 }
 
+/// @brief The depth `sqrt(a / (t^2 - 2 b t + 1))` that one distance equation fixes (`_scaled`).
+/// @param squared The squared distance `a`.
+/// @param tau The depth ratio `t`.
+/// @param cosine The bearings' cosine `b`.
+/// @return The depth, or nothing where rounding pushed the denominator to zero or below (two
+///         coinciding bearings).
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (a, t, b), as in Python
+std::optional<double> scaled(double squared, double tau, double cosine) {
+  const double denominator = (tau * (tau - (2.0 * cosine))) + 1.0;
+  if (!(denominator > 0.0)) {
+    return std::nullopt;
+  }
+  return std::sqrt(squared / denominator);
+}
+
 /// @brief The distance equations' residuals at the depths.
 /// @param depths The depths.
 /// @param geometry The cosines and squared distances.
@@ -157,8 +173,8 @@ Eigen::Vector3d distance_residuals(const Eigen::Vector3d& depths, const Geometry
 /// @brief Polish the depths by Newton's method on the distance equations (`_polish_depths`).
 /// @param depths The depths.
 /// @param geometry The cosines and squared distances.
-/// @return The polished depths.
-Eigen::Vector3d polish_depths(Eigen::Vector3d depths, const Geometry& geometry) {
+/// @return The polished depths and the final residual's norm.
+std::pair<Eigen::Vector3d, double> polish_depths(Eigen::Vector3d depths, const Geometry& geometry) {
   Eigen::Vector3d current = distance_residuals(depths, geometry);
   for (int step_count = 0; step_count < kPolishMaxSteps; ++step_count) {
     Eigen::Matrix3d jacobian = Eigen::Matrix3d::Zero();
@@ -184,29 +200,23 @@ Eigen::Vector3d polish_depths(Eigen::Vector3d depths, const Geometry& geometry) 
       break;
     }
   }
-  return depths;
+  return {depths, current.norm()};
 }
 
-/// @brief `T_cam_world` from the depths: `R = Y X^-1`, `t = l1 y1 - R X1` (`_pose`).
+/// @brief `T_cam_world` aligning the world triangle to `l_i y_i` (`_pose`).
 /// @param depths The depths.
 /// @param bearings The bearings.
 /// @param points The world points.
-/// @return The pose.
-Eigen::Matrix4d pose_of(const Eigen::Vector3d& depths, const Rows3& bearings, const Rows3& points) {
-  const Eigen::Vector3d ray0 = depths(0) * bearings.row(0).transpose();
-  const Eigen::Vector3d v1 = ray0 - (depths(1) * bearings.row(1).transpose());
-  const Eigen::Vector3d v2 = ray0 - (depths(2) * bearings.row(2).transpose());
-  const Eigen::Vector3d d1 = (points.row(0) - points.row(1)).transpose();
-  const Eigen::Vector3d d2 = (points.row(0) - points.row(2)).transpose();
-  Eigen::Matrix3d camera;
-  camera << v1, v2, v1.cross(v2);
-  Eigen::Matrix3d world;
-  world << d1, d2, d1.cross(d2);
-  const Eigen::Matrix3d rotation = camera * world.inverse();
-  Eigen::Matrix4d pose = Eigen::Matrix4d::Identity();
-  pose.topLeftCorner<3, 3>() = rotation;
-  pose.topRightCorner<3, 1>() = ray0 - (rotation * points.row(0).transpose());
-  return pose;
+/// @return The pose, or nothing if the alignment is degenerate.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (bearings, points), as in Python
+std::optional<Eigen::Matrix4d> pose_of(const Eigen::Vector3d& depths, const Rows3& bearings,
+                                       const Rows3& points) {
+  const Rows3 camera = depths.asDiagonal() * bearings;
+  auto fitted = alignment::umeyama(points, camera, Eigen::Vector3d::Ones(), false);
+  if (!fitted) {
+    return std::nullopt;
+  }
+  return *fitted;
 }
 
 /// @brief Whether three world points are (nearly) collinear (`_collinear`).
@@ -218,7 +228,8 @@ bool collinear(const Rows3& points) {
   return !(d1.cross(d2).norm() > kCollinearTolerance * d1.norm() * d2.norm());
 }
 
-/// @brief Polish candidate depths and add the pose, if all three stay positive (`_finish`).
+/// @brief Polish candidate depths and add the pose, if all three stay positive and satisfy
+///        the distance equations (`_finish`).
 /// @param depths The candidate depths.
 /// @param bearings The bearings.
 /// @param points The world points.
@@ -226,13 +237,14 @@ bool collinear(const Rows3& points) {
 /// @param poses The poses found so far.
 void finish(const Eigen::Vector3d& depths, const Rows3& bearings, const Rows3& points,
             const Geometry& geometry, std::vector<Eigen::Matrix4d>& poses) {
-  const Eigen::Vector3d polished = polish_depths(depths, geometry);
-  if (!(polished.array() > 0.0).all()) {
+  const auto [polished, residual] = polish_depths(depths, geometry);
+  const bool positive = (polished.array() > 0.0).all();
+  if (!positive || residual > kDistanceTolerance * geometry.squared.maxCoeff()) {
     return;
   }
-  Eigen::Matrix4d pose = pose_of(polished, bearings, points);
-  if (pose.allFinite()) {
-    poses.push_back(std::move(pose));
+  auto pose = pose_of(polished, bearings, points);
+  if (pose && pose->allFinite()) {
+    poses.push_back(*pose);
   }
 }
 
@@ -312,10 +324,10 @@ std::vector<Eigen::Vector3d> twist_depths(const Eigen::Vector3d& u, const Geomet
          quadratic_roots((a13 * w1 * w1) - (2.0 * a13 * b23 * w1) + a13 - a23,
                          (2.0 * a13 * w0 * w1) - (2.0 * a13 * b23 * w0) + (2.0 * a23 * b13),
                          (a13 * w0 * w0) - a23)) {
-      if (tau > 0.0) {
-        const double lam1 = std::sqrt(a13 / ((tau * (tau - (2.0 * b13))) + 1.0));
-        const double lam3 = tau * lam1;
-        candidates.emplace_back(lam1, (w0 * lam1) + (w1 * lam3), lam3);
+      const auto lam1 = tau > 0.0 ? scaled(a13, tau, b13) : std::nullopt;
+      if (lam1) {
+        const double lam3 = tau * *lam1;
+        candidates.emplace_back(*lam1, (w0 * *lam1) + (w1 * lam3), lam3);
       }
     }
   } else {
@@ -326,10 +338,10 @@ std::vector<Eigen::Vector3d> twist_depths(const Eigen::Vector3d& u, const Geomet
              ((a13 - a12) * w1 * w1) + (2.0 * a12 * b13 * w1) - a12,
              (2.0 * (a13 - a12) * w0 * w1) - (2.0 * a13 * b12 * w1) + (2.0 * a12 * b13 * w0),
              ((a13 - a12) * w0 * w0) - (2.0 * a13 * b12 * w0) + a13)) {
-      if (tau > 0.0) {
-        const double lam2 = std::sqrt(a23 / ((tau * (tau - (2.0 * b23))) + 1.0));
-        const double lam3 = tau * lam2;
-        candidates.emplace_back((w0 * lam2) + (w1 * lam3), lam2, lam3);
+      const auto lam2 = tau > 0.0 ? scaled(a23, tau, b23) : std::nullopt;
+      if (lam2) {
+        const double lam3 = tau * *lam2;
+        candidates.emplace_back((w0 * *lam2) + (w1 * lam3), *lam2, lam3);
       }
     }
   }
@@ -413,10 +425,10 @@ std::vector<Eigen::Vector3d> ding_depths(const Eigen::Vector3d& p, const Geometr
     for (const double tau :
          quadratic_roots((w1 * w1) - b, 2.0 * ((b * m12) - (m02 * w1) + (w0 * w1)),
                          (w0 * w0) - (2.0 * m02 * w0) - b + 1.0)) {
-      if (tau > 0.0) {
-        const double d2 = std::sqrt(a12 / ((tau * (tau - (2.0 * m12))) + 1.0));
-        const double d1 = tau * d2;
-        candidates.emplace_back((w0 * d2) + (w1 * d1), d1, d2);
+      const auto d2 = tau > 0.0 ? scaled(a12, tau, m12) : std::nullopt;
+      if (d2) {
+        const double d1 = tau * *d2;
+        candidates.emplace_back((w0 * *d2) + (w1 * d1), d1, *d2);
       }
     }
   } else {
@@ -426,10 +438,10 @@ std::vector<Eigen::Vector3d> ding_depths(const Eigen::Vector3d& p, const Geometr
     for (const double tau :
          quadratic_roots((-a * w1 * w1) + (2.0 * a * m12 * w1) - a + 1.0,
                          2.0 * ((a * m12 * w0) - m01 - (a * w0 * w1)), 1.0 - (a * w0 * w0))) {
-      if (tau > 0.0) {
-        const double d0 = std::sqrt(a01 / ((tau * (tau - (2.0 * m01))) + 1.0));
-        const double d1 = tau * d0;
-        candidates.emplace_back(d0, d1, (w0 * d0) + (w1 * d1));
+      const auto d0 = tau > 0.0 ? scaled(a01, tau, m01) : std::nullopt;
+      if (d0) {
+        const double d1 = tau * *d0;
+        candidates.emplace_back(*d0, d1, (w0 * *d0) + (w1 * d1));
       }
     }
   }

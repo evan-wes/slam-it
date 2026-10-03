@@ -105,6 +105,34 @@ def test_collinear_points_give_no_solution(backend: str, solver: str) -> None:
     assert found.shape == (0, 4, 4)
 
 
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("solver", p3p.SOLVERS)
+def test_coinciding_bearings_give_no_false_pose(backend: str, solver: str) -> None:
+    """Keypoints detected at one pixel, matched to different points: a sample with no pose.
+
+    Three coinciding bearings see three points that are not collinear: no depths satisfy the
+    distance equations, so nothing is returned (the papers' closed form returned a matrix far
+    from a rotation here). Two coinciding bearings must not fail on a rounding-negative scale.
+    """
+    chosen = require_function(backend, p3p.__name__, "p3p")
+    # A sample PnP RANSAC drew on TUM fr1/xyz (points from depth): Ding's solver
+    # returned two poses for it before the distance check.
+    world = np.array(
+        [
+            [0.43377713272907875, 0.03152780954753013, 1.0192],
+            [0.4391719361395056, -0.0018883592376698233, 0.9992],
+            [0.43332093334344846, 0.023175747951696066, 1.0112],
+        ]
+    )
+    ray = np.array([-0.26834769777954354, -0.18065317409694256, 0.9462314430334253])
+    assert p3p.p3p(world, np.tile(ray, (3, 1)), solver=solver, backend=chosen).shape == (0, 4, 4)
+    for seed in range(20):
+        points, rays, _ = sc.posed(np.random.default_rng(seed), 3)
+        rays[1] = rays[0]
+        for pose in p3p.p3p(points, rays, solver=solver, backend=chosen):
+            np.testing.assert_allclose(pose[:3, :3] @ pose[:3, :3].T, np.eye(3), atol=1e-12)
+
+
 @pytest.mark.parametrize(
     ("roots", "atol"),
     [

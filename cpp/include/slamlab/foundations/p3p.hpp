@@ -4,10 +4,10 @@
 /// Mirrors `slamlab.foundations.p3p`, whose docstring states the maths: the three distance
 /// equations in the depths, two conics whose pencil holds a degenerate member (a root of a
 /// cubic), split into two lines and intersected with a conic, the depths polished by Newton's
-/// method, and the pose from the two triangles. Lambda Twist (Persson and Nordberg, ECCV 2018)
-/// splits the line pair by its eigen-decomposition; Ding et al. (CVPR 2023) by its adjugate,
-/// on depth ratios referred to the longest side. Every pose with all three depths positive is
-/// returned, as `T_cam_world`.
+/// method, and the pose as the rigid alignment of the two triangles. Lambda Twist (Persson and
+/// Nordberg, ECCV 2018) splits the line pair by its eigen-decomposition; Ding et al. (CVPR 2023) by
+/// its adjugate, on depth ratios referred to the longest side. Every pose with all three depths
+/// positive is returned, as `T_cam_world`.
 #pragma once
 
 #include <Eigen/Core>
@@ -30,6 +30,10 @@ inline constexpr double kPolishTolerance = 1e-14;
 /// @brief A negative discriminant above this times `-(b^2 + |4ac|)` counts as zero (a double
 ///        root); a positive one, however small, gives two roots.
 inline constexpr double kRealTolerance = 1e-12;
+/// @brief A solution is kept only if its polished depths satisfy the distance equations to
+///        within this times the largest squared distance (see
+///        `slamlab.foundations.p3p.DISTANCE_TOLERANCE`).
+inline constexpr double kDistanceTolerance = 1e-6;
 /// @brief The world points are collinear when `|X12 x X13|` is below this times
 ///        `|X12| |X13|`.
 inline constexpr double kCollinearTolerance = 1e-10;

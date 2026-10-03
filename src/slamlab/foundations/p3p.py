@@ -25,9 +25,13 @@ them fast and stable compared with the classic route through a quartic polynomia
    distance equation fixes.
 3. **Polish the depths** by Gauss-Newton on the three distance equations (to convergence,
    :data:`POLISH_MAX_STEPS`, :data:`POLISH_TOLERANCE`), as both papers do with a few steps.
-4. **The pose** follows from the two triangles, ``λᵢ yᵢ`` in the camera and ``Xᵢ`` in the
-   world: with ``Y = [v₁, v₂, v₁ × v₂]`` for ``v₁ = λ₁y₁ - λ₂y₂``, ``v₂ = λ₁y₁ - λ₃y₃``, and
-   ``X`` the same from the world points, ``R = Y X⁻¹`` and ``t = λ₁y₁ - R X₁``.
+4. **The pose** is the rigid motion taking the world triangle ``Xᵢ`` onto the camera's
+   ``λᵢ yᵢ`` (:func:`slamlab.foundations.alignment.align`, rigid). When the depths satisfy the
+   distance equations the triangles are congruent and this is the papers' closed form
+   ``R = Y X⁻¹`` (``Y = [v₁, v₂, v₁ × v₂]`` for ``v₁ = λ₁y₁ - λ₂y₂``, ``v₂ = λ₁y₁ - λ₃y₃``, X the
+   same from the world points). Near degeneracy, on noisy data, polishing can stop short; the
+   closed form is then not a rotation, and the alignment is the nearest rigid motion, so every
+   pose returned is one.
 
 **Lambda Twist** (Persson and Nordberg, "Lambda Twist: An Accurate Fast Robust Perspective
 Three Point (P3P) Solver", ECCV 2018) works on the depths themselves. Its conics are the
@@ -48,9 +52,10 @@ pair), so the second line is skipped once the first gave a solution. It is the d
 it is the more stable of the two on near-degenerate samples (``docs/notes/absolute-pose.md``).
 
 Both follow PoseLib's implementations (Larsson et al., BSD-3), restated here in slamlab's
-terms. Two departures, the same in both: the cubic's root and the depths are polished to
-convergence rather than for a fixed number of steps, and the line pair is split on its
-largest entry (PoseLib's ``MAX_ABS`` strategy) rather than its first row and column.
+terms. Three departures, the same in both: the cubic's root and the depths are polished to
+convergence rather than for a fixed number of steps, the line pair is split on its largest
+entry (PoseLib's ``MAX_ABS`` strategy) rather than its first row and column, and the pose is
+the triangles' rigid alignment rather than ``Y X⁻¹`` (above).
 
 A sample whose world points are collinear has no unique pose and gives no solution.
 
@@ -66,10 +71,10 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slamlab import backends
-from slamlab.foundations import so3
+from slamlab.foundations import alignment, so3
 from slamlab.foundations.arrays import as_correspondences
 from slamlab.foundations.correspondences import Matrix3
-from slamlab.foundations.errors import InvalidInputError
+from slamlab.foundations.errors import DegenerateError, InvalidInputError
 
 SAMPLE_SIZE = 3
 """Correspondences a P3P solver takes."""
@@ -87,6 +92,12 @@ REAL_TOLERANCE = 1e-12
 """A negative discriminant above this times ``-(b² + |4ac|)`` counts as zero (a double root), so
 rounding cannot turn a tangent line's one intersection into none. A positive one, however
 small, gives two roots: near the danger cylinder two true poses can be 1e-6 apart."""
+
+DISTANCE_TOLERANCE = 1e-6
+"""A solution is kept only if its polished depths satisfy the distance equations to within this
+times the largest squared distance. Measured residuals on solvable samples are about 1e-15; a
+sample with no solution (three coinciding bearings, from keypoints detected at one pixel, seen
+against points that are not collinear) leaves candidates whose polishing cannot converge."""
 
 COLLINEAR_TOLERANCE = 1e-10
 """The world points are collinear when ``|X₁₂ × X₁₃|`` is below this times ``|X₁₂| |X₁₃|``."""
@@ -222,11 +233,22 @@ def quadratic_roots(a: float, b: float, c: float) -> list[float]:
     return [half / a, c / half] if half != 0.0 else [half / a]
 
 
-def _polish_depths(depths: Vector3, cosines: Vector3, squared: Vector3) -> Vector3:
+def _scaled(squared: float, tau: float, cosine: float) -> float | None:
+    """Return the depth ``√(a / (τ² - 2bτ + 1))`` that one distance equation fixes.
+
+    ``τ² - 2bτ + 1 >= 1 - b²`` vanishes only when two bearings coincide (``b = 1``), where
+    rounding can push it below zero: no depth, rather than an error or a NaN.
+    """
+    denominator = tau * (tau - 2.0 * cosine) + 1.0
+    return math.sqrt(squared / denominator) if denominator > 0.0 else None
+
+
+def _polish_depths(depths: Vector3, cosines: Vector3, squared: Vector3) -> tuple[Vector3, float]:
     """Polish the depths by Newton's method on the three distance equations.
 
     ``rᵢⱼ = λᵢ² - 2 bᵢⱼ λᵢ λⱼ + λⱼ² - aᵢⱼ`` for ``ij = 12, 13, 23``, with `cosines` the ``bᵢⱼ``
-    and `squared` the ``aᵢⱼ`` in that order. A step is kept only if it lowers ``|r|``.
+    and `squared` the ``aᵢⱼ`` in that order. A step is kept only if it lowers ``|r|``. Returns
+    the depths and the final ``|r|``.
     """
     pairs = ((0, 1), (0, 2), (1, 2))
 
@@ -255,20 +277,19 @@ def _polish_depths(depths: Vector3, cosines: Vector3, squared: Vector3) -> Vecto
         depths, current = moved, moved_residuals
         if np.linalg.norm(step) <= POLISH_TOLERANCE * np.linalg.norm(depths):
             break
-    return depths
+    return depths, float(np.linalg.norm(current))
 
 
-def _pose(depths: Vector3, bearings: NDArray[np.float64], points: NDArray[np.float64]) -> Pose:
-    """Return ``T_cam_world`` from the depths: ``R = Y X⁻¹``, ``t = λ₁y₁ - R X₁``."""
-    rays = depths[:, None] * bearings
-    v1, v2 = rays[0] - rays[1], rays[0] - rays[2]
-    d1, d2 = points[0] - points[1], points[0] - points[2]
-    camera = np.column_stack([v1, v2, np.cross(v1, v2)])
-    world = np.column_stack([d1, d2, np.cross(d1, d2)])
-    rotation = camera @ np.linalg.inv(world)
+def _pose(
+    depths: Vector3, bearings: NDArray[np.float64], points: NDArray[np.float64]
+) -> Pose | None:
+    """Return ``T_cam_world`` aligning the world triangle to ``λᵢ yᵢ``; None if degenerate."""
+    try:
+        fitted = alignment.align(points, depths[:, None] * bearings)
+    except DegenerateError:
+        return None
     pose = np.eye(4)
-    pose[:3, :3] = rotation
-    pose[:3, 3] = rays[0] - rotation @ points[0]
+    pose[:3, :3], pose[:3, 3] = fitted.rotation, fitted.translation
     return pose
 
 
@@ -285,13 +306,17 @@ def _finish(
     points: NDArray[np.float64],
     geometry: tuple[Vector3, Vector3],
 ) -> Pose | None:
-    """Polish candidate depths and build the pose; None unless all three stay positive."""
+    """Polish candidate depths and build the pose.
+
+    None unless all three depths stay positive and satisfy the distance equations
+    (:data:`DISTANCE_TOLERANCE`).
+    """
     cosines, squared = geometry
-    polished = _polish_depths(depths, cosines, squared)
-    if not np.all(polished > 0.0):
+    polished, residual = _polish_depths(depths, cosines, squared)
+    if not (np.all(polished > 0.0) and residual <= DISTANCE_TOLERANCE * float(np.max(squared))):
         return None
     pose = _pose(polished, bearings, points)
-    return pose if np.all(np.isfinite(pose)) else None
+    return pose if pose is not None and np.all(np.isfinite(pose)) else None
 
 
 # --- Lambda Twist -------------------------------------------------------------------------
@@ -388,7 +413,8 @@ def _twist_depths(u: Vector3, geometry: tuple[Vector3, Vector3]) -> list[Vector3
             a13 * w0 * w0 - a23,
         )
         for tau in (t for t in taus if t > 0.0):
-            lam1 = math.sqrt(a13 / (tau * (tau - 2.0 * b13) + 1.0))
+            if (lam1 := _scaled(a13, tau, b13)) is None:
+                continue
             lam3 = tau * lam1
             candidates.append(np.array([lam1, w0 * lam1 + w1 * lam3, lam3]))
     else:
@@ -400,7 +426,8 @@ def _twist_depths(u: Vector3, geometry: tuple[Vector3, Vector3]) -> list[Vector3
             (a13 - a12) * w0 * w0 - 2.0 * a13 * b12 * w0 + a13,
         )
         for tau in (t for t in taus if t > 0.0):
-            lam2 = math.sqrt(a23 / (tau * (tau - 2.0 * b23) + 1.0))
+            if (lam2 := _scaled(a23, tau, b23)) is None:
+                continue
             lam3 = tau * lam2
             candidates.append(np.array([w0 * lam2 + w1 * lam3, lam2, lam3]))
     return [d for d in candidates if np.all(d > 0.0)]
@@ -495,7 +522,8 @@ def _ding_depths(p: Vector3, geometry: tuple[Vector3, Vector3]) -> list[Vector3]
             w1 * w1 - b, 2.0 * (b * m12 - m02 * w1 + w0 * w1), w0 * w0 - 2.0 * m02 * w0 - b + 1.0
         )
         for tau in (t for t in taus if t > 0.0):
-            d2 = math.sqrt(a12 / (tau * (tau - 2.0 * m12) + 1.0))
+            if (d2 := _scaled(a12, tau, m12)) is None:
+                continue
             d1 = tau * d2
             candidates.append(np.array([w0 * d2 + w1 * d1, d1, d2]))
     else:
@@ -507,7 +535,8 @@ def _ding_depths(p: Vector3, geometry: tuple[Vector3, Vector3]) -> list[Vector3]
             1.0 - a * w0 * w0,
         )
         for tau in (t for t in taus if t > 0.0):
-            d0 = math.sqrt(a01 / (tau * (tau - 2.0 * m01) + 1.0))
+            if (d0 := _scaled(a01, tau, m01)) is None:
+                continue
             d1 = tau * d0
             candidates.append(np.array([d0, d1, w0 * d0 + w1 * d1]))
     return [d for d in candidates if np.all(d > 0.0)]
