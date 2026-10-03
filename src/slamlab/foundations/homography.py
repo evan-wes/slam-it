@@ -45,7 +45,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slamlab import backends
-from slamlab.foundations import ransac
+from slamlab.foundations import ransac, so3
 from slamlab.foundations.epipolar import (
     RANK_TOLERANCE,
     Matrix3,
@@ -322,9 +322,14 @@ def _opposite_of_minor(m: Matrix3, row: int, col: int) -> float:
 def _rotation_from(
     h: Matrix3, t_star: NDArray[np.float64], n: NDArray[np.float64], v: float
 ) -> Matrix3:
-    """Return ``R = H (I - (2/v) t* nᵀ)``, made proper."""
+    """Return ``R = H (I - (2/v) t* nᵀ)``, made proper and projected onto SO(3).
+
+    The closed form assumes an exact ``H = R + t nᵀ``; for an estimated (noisy) H the product
+    is only near a rotation, so it is projected (the nearest rotation in Frobenius norm).
+    """
     rotation = h @ (np.eye(3) - (2.0 / v) * np.outer(t_star, n))
-    return rotation if np.linalg.det(rotation) > 0.0 else -rotation
+    proper = rotation if np.linalg.det(rotation) > 0.0 else -rotation
+    return so3.project_to_so3(proper)
 
 
 def decompose_reference(homography: Matrix3) -> dict[str, NDArray[np.float64]]:

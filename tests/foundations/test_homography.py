@@ -133,3 +133,18 @@ def test_singular_homographies_are_rejected() -> None:
     """A rank-1 matrix is no homography: DegenerateError."""
     with pytest.raises(DegenerateError, match="rank"):
         homography.decompose_homography(np.outer([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]))
+
+
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_candidates_of_a_noisy_h_are_rotations(backend: str) -> None:
+    """An estimated H is not exactly R + t nᵀ; every candidate rotation is still in SO(3).
+
+    Found on TUM fr1/xyz: unprojected, the closed form's rotation was off by more than 1e-6,
+    and triangulating with it was rejected.
+    """
+    b1, b2 = sc.pairs(sc.plane(60, seed=7), sigma=2e-3, seed=8)
+    h = homography.homography_dlt(sc.plane_xy(b1), sc.plane_xy(b2))
+    for pose in homography.decompose_homography(h, backend=backend).poses:
+        rotation = pose[:3, :3]
+        np.testing.assert_allclose(rotation.T @ rotation, np.eye(3), rtol=0, atol=1e-12)
+        assert np.linalg.det(rotation) == pytest.approx(1.0, abs=1e-12)

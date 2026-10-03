@@ -8,6 +8,8 @@
 #include <limits>
 #include <utility>
 
+#include "slamlab/foundations/so3.hpp"
+
 namespace slamlab::foundations::homography {
 
 std::optional<Eigen::Matrix3d> fit(const Eigen::Ref<const Rows2>& points1,
@@ -128,7 +130,7 @@ double opposite_of_minor(const Eigen::Matrix3d& m, int row, int col) {
   return (m(a, d) * m(b, c)) - (m(a, c) * m(b, d));
 }
 
-/// @brief `R = H (I - (2 / v) t* n^T)`, made proper.
+/// @brief `R = H (I - (2 / v) t* n^T)`, made proper and projected onto SO(3).
 /// @param h The scaled homography.
 /// @param t_star The candidate's `t*`.
 /// @param n The candidate's normal.
@@ -138,7 +140,9 @@ Eigen::Matrix3d rotation_from(const Eigen::Matrix3d& h, const Eigen::Vector3d& t
                               const Eigen::Vector3d& n, double v) {
   const Eigen::Matrix3d rotation =
       h * (Eigen::Matrix3d::Identity() - ((2.0 / v) * t_star * n.transpose()));
-  return rotation.determinant() > 0.0 ? rotation : Eigen::Matrix3d(-rotation);
+  // The closed form assumes an exact H; for an estimated one the product is only near a
+  // rotation, so it is projected onto SO(3).
+  return so3::project_to_so3(rotation.determinant() > 0.0 ? rotation : Eigen::Matrix3d(-rotation));
 }
 
 /// @brief A non-negative square root (rounding can push a zero just below).
