@@ -64,7 +64,12 @@ multiplication by `x`, whose eigenvectors are the solutions (a Gröbner-basis me
 original cubics, to convergence: a step is taken only if it lowers the constraints' residual,
 and the polish stops when a step is below 1e-14 of the solution, or after 10 steps. On 300
 exact generic problems the worst error in E is 1.6e-12 for both solvers, from 7e-4 (Nistér)
-and 1.2e-9 (Stewénius) unpolished; the two backends agree to 1e-10.
+and 1.2e-9 (Stewénius) unpolished; the two backends agree to 1e-10. That agreement is a
+property of well-posed samples. Near degeneracy, rounding decides whether a near-real root of
+Nistér's polynomial counts, so the backends' solution sets can differ (at a 1% forward
+baseline, for 64 of 100 samples; Stewénius' for 7). Two roots can also polish to the same
+solution there (Nistér 41 times in 300 such samples); the copy is dropped
+(`DUPLICATE_TOLERANCE`).
 
 **Near degeneracy, and the default.** Generic samples hide the solvers' weak spot, which the
 review panel found: a small baseline with forward motion, where the initialiser works.
@@ -115,20 +120,24 @@ RANSAC's threshold, so the consensus's few remaining outliers barely pull.
 
 `essential_ransac(refine=True)` refines the consensus on its inliers. It keeps the result only
 if the MSAC cost over all matches is lower, then recomputes the inliers and score
-(`polish_consensus`). A refinement that makes things worse is never kept.
+(the refinement step of `essential_ransac`). A refinement that makes things worse is never
+kept, and the `EssentialSummary` says whether it ran and was kept.
 
 ## How it's checked
 
 - **Parity fixtures** (`tests/fixtures/foundations/`, from `generate_twoview.py` in 50
   digits): `fivepoint.json` (exact samples, both solvers, the true E among the solutions to
-  1e-9); in `epipolar.json`, `essential_ransac` for Stewénius and Nistér refined and the
-  8-point unrefined (the true E and exactly the clean pairs), and `refine_essential` from a
-  perturbed start (the true E to 1e-8, converged).
+  1e-11, including three near-degenerate samples whose unpolished solutions miss by 6e-8 to
+  3e-3, so the fixture fails without the polish); in `epipolar.json`, `essential_ransac` for
+  Stewénius and Nistér refined and the 8-point unrefined (the true E, exactly the clean pairs,
+  and whether the refinement ran), and `refine_essential` from a perturbed start (the true E
+  to 1e-8, converged).
 - **The true E is among the solutions.** On 50 random exact problems, for both solvers and
   both backends, one solution matches the truth to 1e-8. Every solution has singular values
   (1, 1, 0) and satisfies the five equations to 1e-9. A repeated pair gives none.
 - **Near degeneracy.** On 100 exact forward-motion samples at a 5% baseline, Stewénius misses
-  the true E at most twice and Nistér at most eight times, in both backends.
+  the true E at most twice and Nistér at most twelve times, in both backends (measured: 0,
+  and 6 in Python, 7 in C++).
 - **The two solvers agree.** Nistér and Stewénius return the same number of solutions, equal
   to 1e-9, and the C++ core matches the reference to 1e-10. The solver codes are checked
   against the compiled `codes()`.
@@ -208,7 +217,7 @@ pairs we decline. Try it with `scripts/demo_two_view.py --essential-solver niste
   margin that thin is testing the noise.
 - **The refinement needs RANSAC's start.** From an 8-point fit to contaminated data, 20 LM
   iterations do not converge (the Cauchy cost is not convex). From the consensus they take 5
-  to 8. `polish_consensus` keeps a refinement only when it helps, so the cap is safe there.
+  to 8. `essential_ransac` keeps a refinement only when it helps, so the cap is safe there.
 
 ## References
 

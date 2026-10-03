@@ -231,3 +231,69 @@ in the table (by severity); the verbatim reviews below use their own headings.
 - **Input validation and seeding.**
 
 Sources: [SupeRANSAC (arXiv:2506.04803)](https://arxiv.org/abs/2506.04803).
+
+## Run 2 -- 2026-10-03
+
+| | |
+|---|---|
+| **Branch** | `feature/five-point` |
+| **Range** | `eddc19ffc4932aedfc70e7c9871c4fb7831fa5fc...c13e53a37547431e910dc838b9341772ae8f4291` (run 1's fixes) |
+| **Reviewers** | hygiene (sonnet), architecture (opus), algorithm (opus) |
+| **How they ran** | registered slamlab-* agents, briefed to review the fixes only |
+| **Layer 1** | all checks passed (`scripts/check.sh`; 1228 Python tests passed, 339 skipped; ctest 15/15) |
+
+All of run 1's findings were confirmed resolved or properly deferred (H1–H8, A1–A9, L1–L4, L6).
+The algorithm reviewer reproduced the note's near-degeneracy table exactly, and found the
+polish never loses a true E the unpolished solver had found.
+
+### Findings and resolutions
+
+| ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|---|
+| L8 | should-fix | algorithm | `generate_twoview.py` `_fivepoint_fixture` | `fivepoint.json` passes with the polish disabled: no near-degenerate case pins it, though Rust will be held to the fixture | fix | pending |
+| A11 | should-fix | architecture | design doc "Where the summary lives"; `EssentialSummary` | The composite summary satisfies the solver contract by delegation in Python but is a named struct in C++; the doc states neither, nor that `converged` is the RANSAC run's | fix (doc) | pending |
+| H9 | should-fix | hygiene | `twoview.Options.refine` docstring; `five-point.md` | References to `polish_consensus`, now private | fix | pending |
+| H10 / A12 | should-fix | hygiene, architecture | `epipolar.essential_ransac` compiled branch | Rebuilds `ransac.from_backend`'s consensus decoding | fix | pending |
+| L9 | note | algorithm | `fivepoint._keep` / `keep` | Polishing can merge two roots into duplicate solutions (Nistér 41/300 at 1% forward; Stewénius 3) | fix (drop duplicates) | pending |
+| L10 | note | algorithm | `five-point.md`; near-degenerate test | Backend parity is a well-posed-sample property; near degeneracy Nistér's root sets differ by backend, and its test bound is tight (7 measured vs ≤ 8) | fix (note wording; bound ≤ 12, stated as measured) | pending |
+| A13 | note | architecture | `essential_ransac` fixture | Records no summary field; whether the refinement ran is deterministic | fix | pending |
+| A14 / H14 | note | architecture, hygiene | `test_epipolar.py` code-table test | Two-view's table check lives in the epipolar tests and skips `status`/`model` | fix (move to `test_twoview.py`, cover all keys) | pending |
+| A15 | note | architecture | `pyproject.toml` oracle contract | Its comment gives the test-oracle reason; the lasting one is the numpy-only runtime | fix (wording) | pending |
+| H11 | note | hygiene | C++ `fivepoint::polish` | Builds the monomials' slope twice per accepted step | fix | pending |
+| H12 | note | hygiene | `_polish_consensus` / `polish` | The unrefined summary is built in two places per language | fix | pending |
+| H13 | note | hygiene | C++ `nister` | Determinant terms still inline (Python has `_DETERMINANT_TERMS`) | fix | pending |
+
+### Hygiene review
+
+All eight run-1 hygiene findings (H1–H8) resolved: H1 one `PairEstimator`; H2 `_terms` / `sampson_terms` shared by `residuals` and `linearize`; H3 preconditions stated, `_polish_consensus` private and "Unchecked"; H4 `solve_reference` raises, C++ explicit switch, native `kCount` test; H5 six pairs, unknown solver, repeated pair, pure rotation natively; H6 `_NISTER_ROW_PAIRS`, `_DETERMINANT_TERMS`, `kNisterRowPairs`; H7 blank line, `all1`/`all2` copy named once; H8 docstring points to the note. No must-fix.
+
+- **[should-fix] Stale references to `polish_consensus`, now private.** `twoview.py:157` (`Options.refine` docstring) and `docs/notes/five-point.md:118`, `:211`. The Sphinx cross-reference is dead and the note describes a function that no longer exists under that name. Point at `epipolar.essential_ransac_reference` or `EssentialSummary`; say "the refinement step of `essential_ransac`" in the note.
+- **[should-fix] `essential_ransac` re-decodes a backend consensus `ransac.from_backend` already decodes.** The compiled branch converts `model`/`inliers` by hand and repeats the dispatch calls. If the crossing format changes, the two decoders drift. A `consensus_from_backend(raw)` helper, or a summary-decoder parameter on `from_backend`.
+- **[note] C++ `fivepoint::polish` evaluates the monomials twice per step.** The slope for `moved` is built (unused) and rebuilt at the next iteration's top; per-sample cost inside RANSAC. Keep the pair from the accepted step, or split values from slope.
+- **[note] The "unrefined summary" is constructed in two places in each language.** A future field must be added twice; an `unrefined(run)` factory.
+- **[note] C++ Nistér determinant terms are still inline literals.** Mirror `_DETERMINANT_TERMS`.
+- **[note] `test_the_compiled_code_tables_match` does not check two-view's own codes** (`status`, `model`), and the `if module is epipolar:` branch fits awkwardly.
+
+Checked and fine: converged polish (named tolerances, documented stopping rule, residual-decrease acceptance, non-finite break); `real_roots` validation and tests; `EssentialSummary`/`EssentialSolution` documented and mirrored; `essential_crossing.hpp`; two-view's generic `_fit`, `_decide` on `Consensus`, `found<S>`; the import-linter contract; the new tests (fixture parity, near-degenerate recall, repeated pair, pure rotation, code tables, refinement parity, tightened tolerances); the fixture generator's docstring and reasons; the docs agree on the Stewénius default; no debug prints, TODOs, bare excepts or unexplained magic numbers.
+
+### Architecture review
+
+All seven run-1 architecture findings resolved or properly deferred (A1 fixtures and reasons; A2 the doc states the rule; A3 `fivepoint.codes()` and table tests; A4 one `essential_ransac_reference`, private `_polish_consensus`; A5 `EssentialSummary` in both languages; A6, A7 in the open items; A9 the contract). No must-fix.
+
+- **[should-fix] `EssentialSummary` follows a different composite pattern in each language, and the design doc does not say which applies.** Python returns it inside `solve.Solution[Consensus, EssentialSummary]` and satisfies `solve.Summary` by delegating `iterations`/`termination`/`converged` to the RANSAC run (which `twoview._fit`'s bound needs). C++'s `solve::Summary` concept needs data members, so C++ returns its own `EssentialSolution`, like `ba::Solution`; BA does the C++ way in both languages. PR 4 (PnP RANSAC plus refinement) will meet the same choice with no rule; and the passed-through `converged` reports only that sampling converged, so a caller generic over `solve.Summary` reads `True` when the refinement hit its cap. Recommend the doc: a composite summary names its primary run; in Python it satisfies `solve.Summary` through that run's fields; C++ returns a named struct; `converged`/`termination` are the primary run's, and a nested solve's convergence is read from its own summary.
+- **[note] `essential_ransac` rebuilds `ransac.from_backend`'s consensus decoding.** A `summary=` decoder argument on `from_backend`.
+- **[note] The `essential_ransac` fixture holds none of `EssentialSummary`'s fields.** Whether the refinement ran is deterministic and Rust would be held to it; `refined` is not deterministic on noise-free data, so leaving it out is right. Optionally record `refinement_ran`.
+- **[note] The two-view code-table test is in `test_epipolar.py`, and the doc's claim is wider than the test.** Two-view's `status`/`model` are decoded by name (a rename fails loudly, a reorder is harmless); move the case to `test_twoview.py` and word the doc as covering the codes Python sends.
+- **[note] The oracle contract also bans SciPy from every future rung.** The comment's reason is "test oracles"; the lasting reason is the numpy-only runtime.
+
+Checked and fine: A1–A5 as above (fixture coverage per motion and solver, `converged` recorded, per-solver RANSAC cases, rewritten reasons; the choice-field rule and its binding; `codes()` and Protocol; one Python composition; the refinement summary visible and compared run for run); `essential_crossing.hpp` as a thin layer included in layering order; the two-view refactor; layering unchanged; the default switch agrees across languages with the code order unchanged; deferrals recorded; the return-type change is one clean break, in the CHANGELOG.
+
+### Algorithm review
+
+The fixes resolve run 1's algorithm findings correctly. The polish to convergence is sound in both languages and never lost a true E the unpolished solver had found; the probe reproduces the note's table exactly; `EssentialSummary` is filled the same way in both languages. No must-fix.
+
+- **[should-fix] `fivepoint.json` passes without any polishing.** All six cases are generic, well-posed samples; with `_polish` replaced by the identity every case is still within the 1e-9 atol (worst 3.0e-11). On the test's own `_near_degenerate(seed, 0.05)` samples Stewénius exceeds 1e-9 on 56/100 without the polish (median 2.3e-9) and on 0/100 with it (median 1.9e-13). A Rust port that skips the polish would pass the fixture. Add forward 5%-baseline cases for both solvers from seeds where the unpolished error exceeds the atol; optionally tighten the atol to about 1e-11 (worst polished error on 300 generic samples 3.8e-12).
+- **[note] Polishing can merge two roots into duplicate solutions.** Pairs within 1e-6 up to sign, 300 samples: forward 1% Nistér 41, Stewénius 3; forward 5% Nistér 6, Stewénius 0; sideways 1% Nistér 26, Stewénius 0 (unpolished: none). "Lost" (truth found unpolished, missed polished) is 0 everywhere; "gained" is 91 / 72 at forward 1%. Harmless for RANSAC, but weakens the "every essential matrix, K ≤ 10" reading. Optionally drop a polished solution within a small distance (up to sign) of one already kept.
+- **[note] Backend parity holds on well-posed samples only.** Generic: 4.6e-12, no count differences over 300. Near degeneracy, rounding decides whether a near-real root counts: at 1% forward Nistér's sets differ 64/100 (truth in one backend only: 39), Stewénius 7/100 (6); at 5% Nistér 22/100 (11), Stewénius 0. The near-degenerate test's Nistér bound is tight (6 Python, 7 C++, against ≤ 8); Stewénius 0 against ≤ 2. Say in the note that agreement is a well-posed property; loosen the Nistér bound or call it a measured, platform-dependent count.
+
+Checked and fine: the polish (equivalent across languages, correct derivatives including zero exponents, strict-decrease acceptance, stopping rule, per-solver order; most polishes finish in 1–3 steps, 0.8% reach the cap, all near degeneracy); the note's table; generic precision after polishing (worst 3.8e-12 on the test's samples, consistent with the note's 1.6e-12 on the probe's); the default switch with no stale Nistér default; `EssentialSummary` semantics in both languages; the `refine_essential` fixture (atol 1e-8 against a measured 2.5e-9); the per-solver RANSAC fixtures; L1; L4; the Sampson terms refactor; seeded randomness everywhere.

@@ -137,6 +137,15 @@ and a possible later phone target.
 
     BA wraps the least-squares summary in its own. A solver with no estimate at all to
     return (RANSAC that never finds a valid hypothesis) raises `Degenerate`.
+
+    **A summary that nests others** (BA's nests its least-squares solve; E-RANSAC's,
+    `epipolar.EssentialSummary`, nests the RANSAC run and the refinement's solve) names its
+    primary run. Its `iterations`, `termination` and `converged` are that run's: a nested
+    solve's convergence is read from its own summary, never from the outer one. In Python
+    such a summary satisfies the `Summary` Protocol through properties delegating to the
+    primary run, so it fits the generic `Solution`. The C++ concept needs data members, so
+    C++ returns a named struct instead (`ba::Solution`, `epipolar::EssentialSolution`), with
+    the same `state` and `summary` fields (settled in PR 3, panel A11).
   - **Crossing the binding boundary:** the estimate crosses as float64 arrays and the
     summary as plain scalars, with the termination reason as an integer code. The Python
     entry point builds the dataclass, and there are no binding-side classes. This extends
