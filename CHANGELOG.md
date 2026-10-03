@@ -24,6 +24,10 @@ same seed.
   undetermined points are NaN and counted.
 - **RANSAC** (`foundations.ransac`): LO-MSAC, generic over an estimator: MSAC scoring, the
   adaptive bound, and Lebeda et al.'s local optimisation.
+- **Correspondences** (`foundations.correspondences`): the unchecked building blocks the
+  two-view estimators share (homogeneous and normalised points, Hartley's normalisation, the
+  null vector, `PairEstimator`), with their input checks in `foundations.arrays` and
+  `ransac.run`, so `epipolar` and `homography` are independent siblings.
 - **Epipolar geometry** (`foundations.epipolar`): the normalised 8-point essential and
   fundamental matrices, their Sampson distances, RANSAC, and E's four-pose decomposition.
 - **Homographies** (`foundations.homography`): the normalised DLT, its Sampson distance,
@@ -31,11 +35,13 @@ same seed.
 - **Two-view initialisation** (`foundations.twoview`): E and H by RANSAC, Torr's GRIC over
   the matches either explains, the motion chosen by triangulation, and a status
   (`initialized`, `pure_rotation`, `low_parallax`, `ambiguous`) instead of an exception;
-  an ambiguous H falls back to E.
+  an ambiguous H falls back to E. H-RANSAC's threshold is E's scaled for its two degrees of
+  freedom.
 - **`slamlab.eval.tum`**: TUM RGB-D sequences with their ground-truth poses and calibrations.
 - **`scripts/demo_two_view.py`**: initialisation on a TUM pair against the ground truth and
   OpenCV. On fr1/xyz frames 0 and 30: 0.47 deg rotation and 2.4 deg translation-direction
-  error (OpenCV's 5-point RANSAC: 1.30 and 5.1); 4 ms in C++.
+  error (OpenCV's 5-point RANSAC: 1.30 and 5.1); 4-6 ms in C++. `--survey` runs 38 pairs.
+- An import-linter contract keeps `cv2` out of slamlab.
 - Design notes: `triangulation.md`, `ransac.md`, `two-view.md`.
 
 ### Changed
@@ -46,8 +52,15 @@ same seed.
 
 ### Fixed
 
-- An estimated homography's candidate rotations are projected onto SO(3); the closed form
-  is only exact for an exact H.
+- An estimated homography's candidate rotations, and a pure rotation's, are projected onto
+  SO(3); the closed form is only exact for an exact H.
+- `opencv-python-headless` is in the dev extra, not only the lock.
+
+### Review
+
+- The full panel (hygiene, architecture, algorithm) ran on the slice: 3 must-fix, 13
+  should-fix and 10 notes, each decided with the owner
+  (`docs/reviews/2026-10-02-feature-two-view.md`).
 
 ### Tests
 

@@ -1,8 +1,8 @@
 # Two-view geometry and initialisation
 
-Design note for `slamlab.foundations.epipolar`, `.homography` and `.twoview` (the Python
-references) and `slamlab/foundations/epipolar.hpp`, `homography.hpp` and `twoview.hpp` (the
-C++ core). Triangulation and RANSAC have their own notes.
+Design note for `slamlab.foundations.epipolar`, `.homography`, `.twoview` and
+`.correspondences` (the Python references) and their headers in `slamlab/foundations/` (the C++
+core). Triangulation and RANSAC have their own notes.
 
 ## The problem
 
@@ -37,6 +37,13 @@ choose.
 | `homography.homography_ransac` | LO-MSAC with the DLT |
 | `homography.decompose_homography(H)` | Malis and Vargas: four `(R, t/d, n)` candidates, or one for a rotation |
 | `twoview.initialize(b1, b2, options)` | both RANSACs, GRIC, the decomposition, the choice of motion |
+
+The pieces the estimators share live below them, so that `epipolar` and `homography` are
+independent siblings that the 5-point solver and absolute pose can build on too: the input
+checks in `foundations.arrays` (`as_bearing_pairs`, `as_point_pairs`, `as_matrix3`), the
+unchecked building blocks in `foundations.correspondences` (homogeneous and normalised image
+points, Hartley's normalisation, the null vector, `PairEstimator`), and `ransac.run`, which
+runs an estimator with the reference or a compiled backend.
 
 `initialize` returns an `Initialization`: a **status** (`initialized`, `pure_rotation`,
 `low_parallax`, `ambiguous`), the model that decided and whether it was a fallback, the
@@ -95,7 +102,18 @@ candidates. Two details matter on real data:
   `H = R + t nᵀ`; for an estimated H it is only near a rotation. On TUM fr1/xyz pairs it was
   off by more than the 1e-6 our rotation checks allow, so the C++ triangulation refused the
   candidate while the unchecked Python reference used it: the backends diverged. Both now
-  project.
+  project, in the four-candidate path and, after the review panel found it unprojected, in
+  the pure-rotation branch too (a well-estimated rotation reached it with a pose 3e-4 off
+  orthonormal).
+
+**Thresholds per model.** Under image noise σ, a match's squared Sampson distance is about
+σ²χ²₁ to E, which puts one constraint on it, but σ²χ²₂ to H, which puts two. One threshold
+therefore kept 95% of E's true inliers but 86% of H's (measured on 20 000 matches). E-RANSAC
+uses `threshold_px` and H-RANSAC that times `√(5.991 / 3.841)`, the ratio of the two 95% χ²
+quantiles (Hartley and Zisserman, table 4.1; ORB-SLAM uses 3.841 and 5.991). Re-measured on
+the 38 TUM pairs below, it changed no decision: the same 22 initialise, the same 2 are wrong;
+the two pairs H decides lose a little accuracy (median rotation error 0.77° to 0.88°), the
+cost of admitting the noisier half of H's true inliers.
 
 **GRIC** (Torr, "Geometric motion segmentation and model selection", 1998) chooses between
 E and H:
@@ -127,7 +145,9 @@ of both cameras is best. Then:
    act on (wait for more motion), and because it usually makes the candidates hard to tell
    apart too; a noisy pure rotation usually ends here, its H not quite a rotation;
 3. a runner-up with more than `ambiguity_ratio` (0.75) of the best's support is `ambiguous`,
-   the same test ORB-SLAM uses.
+   the same ratio ORB-SLAM uses. Support here is every inlier triangulated in front of both
+   cameras, whatever its parallax; ORB-SLAM's `CheckRT` also counts low-parallax points
+   behind a camera as good, which makes its candidates harder to tell apart.
 
 **Falling back to E.** On TUM fr1/xyz, a desk seen from half a metre, GRIC preferred H on
 most pairs, rightly: with a few degrees of parallax, H explains most matches within the
@@ -180,19 +200,27 @@ both wrong.
 ## On real data
 
 `scripts/demo_two_view.py` runs the initialiser on a TUM RGB-D pair, with SIFT matches from
-OpenCV. On fr1/xyz frames 0 and 30 (1 s, 35 cm): 434 matches, H wins GRIC (1572 against
-1736) but is ambiguous, and E decides; rotation error 0.47°, translation direction 2.4°,
+OpenCV. On fr1/xyz frames 0 and 30 (1 s, 35 cm): 434 matches, H wins GRIC (1593 against
+1748) but is ambiguous, and E decides; rotation error 0.47°, translation direction 2.4°,
 against OpenCV's 5-point RANSAC on the same matches at 1.30° and 5.1°. The C++ core takes
-4 ms; the Python reference 2.8 s.
+4-6 ms; the Python reference 2.7 s.
 
-Over 38 pairs of the sequence (gaps of 15 and 30 frames), 22 initialise, with median errors
-of 0.77° and 4.2° (OpenCV on the same pairs: 1.12° and 4.3°); 13 report `low_parallax` and 3
-remain `ambiguous`.
+`--survey` runs 38 pairs of the sequence (every 40th frame, gaps of 15 and 30 frames):
 
-The motion-capture ground truth is good to about a degree, not to the pixel: the true E
-explains only 130 of 624 matches within 2 px on frames 0 and 10 (median Sampson distance
-3.6 px), against 547 for the estimated E. Errors of a degree or less against it are at its
-own accuracy.
+```
+python scripts/demo_two_view.py --survey
+```
+
+22 initialise (19 of them by the E fallback), with median errors of 0.88° and 4.2° (OpenCV on
+the same pairs: 1.12° and 4.3°); 2 are off by more than 20° in direction (OpenCV: 3); 13
+report `low_parallax` and 3 remain `ambiguous`.
+
+**The ground truth is not uniformly good.** The survey also prints how well the
+motion-capture pose explains each pair's matches: the median Sampson distance under the true
+E. Across the 38 pairs it ranges from 0.3 px to 62 px, with a median of 1.9 px; the first
+pairs are near 3.8 px, and frames 200 and 230 disagree with their images by 56 px. Errors
+of a degree or so against it are at its own accuracy on many pairs, so comparisons with
+OpenCV are the sharper measure.
 
 ## What was learned
 
@@ -203,6 +231,8 @@ own accuracy.
   better than a guess (median error 0.84 on the test scene); local optimisation's
   least-squares refits do most of the work. The 5-point solver (the next PR) needs a smaller
   sample and gives better minimal models.
+- **Residuals with different degrees of freedom need different thresholds.** The review panel
+  found that one Sampson threshold silently dropped 14% of H's inliers.
 - **The refits minimise an algebraic error.** LO-RANSAC stops at the 8-point fit to its
   inliers, whose MSAC cost was 4% (with 40% outliers) to 15% (with none) above the true
   model's in the 40-scene sweep. A refinement minimising

@@ -46,7 +46,7 @@ between them is a guess. In that case, if E on its own is unambiguous and has en
 parallax, E decides (``fallback`` is set). On 38 frame pairs of TUM fr1/xyz (1 to 1.5 s
 apart), refusing on an ambiguous H initialised 3 pairs; falling back to E initialised 22,
 2 with a translation direction off by more than 20 degrees (OpenCV's 5-point RANSAC: 3 of
-the same 22).
+the same 22). ``scripts/demo_two_view.py --survey`` reproduces the measurement.
 
 **The outcome is a status, not an exception.** Not being able to initialise from two frames is
 normal (the camera has not moved enough yet), so :func:`initialize` always returns its best

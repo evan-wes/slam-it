@@ -197,6 +197,15 @@ inside a damped solver means "reject the step and raise the damping", not an err
 - bool masks (fixed variables);
 - options as scalars, with integer codes for enums.
 
+**Options cross as one dict of their dataclass's fields** (from PR 2): a solver whose
+settings are a frozen dataclass (`ransac.Options`, `twoview.Options`) passes
+`dataclasses.asdict(options)` as one `options` argument, and the binding reads each field by
+name. The binding refuses a dict whose keys are not exactly the dataclass's fields
+(`check_keys` in `cpp/bindings/common.hpp`), so a field added on one side fails loudly. Results
+cross as dicts of arrays and scalars, nested where they hold a sub-result (a RANSAC summary),
+with enums as integer codes and a `codes()` function giving their names. BA predates the rule
+and still passes its options as keyword scalars (see the open items).
+
 The cores check index bounds and sizes and return `InvalidInput`, even though the Python
 entry point validates too. Standalone C++ and Rust callers get the same protection, and both
 languages fail the same way.
@@ -414,7 +423,7 @@ Disk space is checked before each download.
 
 | Dataset | Tests | Arrives with |
 |---|---|---|
-| TUM RGB-D | Handheld indoor, RGB-D, GT poses, a dynamic subset | Milestone 2 |
+| TUM RGB-D | Handheld indoor, RGB-D, GT poses, a dynamic subset | Milestone 1 (reader, two-view demo); milestone 2 |
 | EuRoC MAV | Drone, stereo + IMU, mocap GT | Milestone 2 (vision), 6 (IMU) |
 | TUM monoVO | Photometrically calibrated monocular | Milestone 2, optional |
 | KITTI odometry | Driving, long trajectories, loops | Milestone 4 |
@@ -511,6 +520,23 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
 
   Still open:
   - A time-cap termination reason for the compute budgets.
+- **Deferred from PR 2's review panel**
+  ([report](../reviews/2026-10-02-feature-two-view.md)):
+  - **BA's options as a dict (A7).** BA passes about 25 keyword scalars; RANSAC and two-view
+    pass one dict of their dataclass's fields (Conventions). Migrate BA to the dict so there
+    is one rule, before Rust implements either.
+  - **A generic `backends.dispatch` (A8).** It is typed for array results, so `ransac.run`,
+    `homography.decompose_homography`, `twoview.initialize` and BA hand-roll the same steps.
+    A dispatch generic over its return type, with an optional decoder, would remove the
+    copies without teaching `backends` about algorithms.
+  - **PCG32's parity values as a fixture (A9).** The reference draws are literals in the
+    Python and C++ tests; when Rust gains PCG32 (PR 5), move them to
+    `tests/fixtures/foundations/rng.json`.
+  - **The state of the art for robust estimation (L5).** Barath's SupeRANSAC (arXiv
+    2506.04803, 2025) is a component-by-component checklist for this module; MAGSAC++
+    (Barath et al., CVPR 2020) scores without a threshold by marginalising over σ; PROSAC
+    (Chum and Matas, CVPR 2005) samples by match quality, cheap here since the matcher
+    already has ratio-test scores.
 - **Found while building PR 2:**
   - **A Sampson-error refinement for E.** LO-RANSAC's refits are the 8-point fit to the
     inliers, which minimises an algebraic error; its MSAC cost stayed 4-15% above the true
@@ -544,7 +570,8 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
     null-space removal, lift it to `foundations.gauge` rather than importing it from `ba`.
   - **One mechanism for enum names (A27, run 3).** `Termination`'s names come from the core
     (`nls::name`), the other crossing enums' from the bindings' tables. Pick one when Rust
-    gains these enums.
+    gains these enums. PR 2 adds a third variant: the RANSAC and two-view bindings' `codes()`
+    built from the cores' `name()` functions, read by the Python side (its panel's A7).
   - **σ_f with the gauge left free (L30, run 5).** When a fixed recipe leaves gauge
     directions in the problem (`free_gauge > 0`), σ_f is infinite under `none` but finite
     under `first_pose`, where it depends on how the damping holds the free scale (0.13% off

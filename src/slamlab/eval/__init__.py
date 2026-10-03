@@ -3,7 +3,7 @@
 - :mod:`slamlab.eval.readers`: dataset and reconstruction formats (BAL, COLMAP text), read
   into this package's conventions.
 - :mod:`slamlab.eval.tum`: the TUM RGB-D benchmark's colour frames, ground-truth poses and
-  calibrations. EuRoC joins it at milestone 2.
+  calibrations. EuRoC gets a module of its own at milestone 2.
 - :mod:`slamlab.eval.colmap_reference`: COLMAP's Ceres bundle adjuster, as the reference
   :mod:`slamlab.foundations.ba` is compared against (needs the ``colmap`` extra).
 - :mod:`slamlab.eval.reprojection`: reprojection error, to compare solvers on one cost.
