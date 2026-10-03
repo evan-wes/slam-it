@@ -16,30 +16,30 @@
 
 | ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
 |---|---|---|---|---|---|---|
-| A1 | must-fix | architecture | `tests/fixtures/foundations/` | No parity fixture for `essential_5pt` or `refine_essential`; the `essential_ransac` and `initialize` fixtures' tolerance reasons describe the old 8-point default | fix | pending |
-| L1 | must-fix | algorithm | `fivepoint` tests (Python, C++) | The documented rank-deficient sample (a repeated pair gives no solution) is untested | fix | pending |
-| L2 | should-fix | algorithm | `fivepoint._polish` / `polish` | Nistér loses the true E on near-degenerate samples (18/300 at a 5% baseline vs Stewénius 3, PoseLib 35); the fixed 3-step polish has no convergence test; the note's precision is generic-geometry only | fix | pending |
-| A5 / L3 | should-fix | architecture, algorithm | `epipolar.polish_consensus` / `polish` | The refinement's `nls.Summary` is discarded; whether it ran, was kept or converged is invisible | fix | pending |
-| A4 | should-fix | architecture | `twoview._initialize`, `epipolar.polish_consensus` | E-RANSAC-then-refine is composed twice in Python and once in C++; `polish_consensus` is public with no C++ counterpart | fix | pending |
-| A3 | should-fix | architecture | `MINIMAL_SOLVERS`, `fivepoint.SOLVERS`, bindings | Integer code tables are not tested against the compiled ones; `fivepoint` has no `codes()` | fix | pending |
-| A2 | should-fix | architecture | design doc Conventions, `twoview` binding | The solver choice crosses as a code in `essential_ransac` and by name in `twoview.Options` | fix (amend design doc) | pending |
-| L4 | should-fix | algorithm | `fivepoint.real_roots` | Public, but NaN/inf coefficients silently return no roots | fix | pending |
-| H1 | should-fix | hygiene | `epipolar.essential_estimator` | Two near-identical `PairEstimator` constructions | fix | pending |
-| H2 | should-fix | hygiene | `SampsonProblem.residuals` / `linearize` (Python, C++) | The Sampson formula is computed independently in both methods | fix | pending |
-| H3 | should-fix | hygiene | `polish_consensus`, `refine_reference` | Unchecked public helpers don't state their preconditions | fix | pending |
-| H4 | should-fix | hygiene | `fivepoint.solve_reference` | Any name other than "nister" silently runs Stewénius | fix | pending |
-| H5 | should-fix | hygiene | `cpp/tests/foundations/test_fivepoint.cpp` | No pure-rotation, six-pair or unknown-solver case natively | fix | pending |
-| L6 | note | algorithm | `fivepoint._stewenius` | Stewénius could share the polish (1e-9 → Nistér's level; tighter parity) | fix (with L2) | pending |
-| A9 | note | architecture | `pyproject.toml` import-linter | Forbid importing test oracles (poselib, mpmath, manifpy, scipy) from `slamlab` by contract | fix | pending |
-| H8 | note | hygiene | `fivepoint.py` docstring | Measured numbers in a docstring will go stale; point to the note | fix | pending |
-| H6 | note | hygiene | `_nister` row pairs, action rows | Inline index literals; name them next to the orders | fix | pending |
-| H7 | note | hygiene | `fivepoint.py`, C++ `polish` | Missing blank line; a full copy before `gather` | fix | pending |
-| A6 | note | architecture | `epipolar.py` (896 lines) | The refinement could be its own module; decide before PR 4 adds PnP refinement | defer (design doc open items, before PR 4) | pending |
-| L5 | note | algorithm | `essential_estimator`, `polish_consensus` | LO's refits stay algebraic; current pipelines refine on Sampson inside LO (PoseLib, SupeRANSAC) | defer (design doc open items) | pending |
-| A7 | note | architecture | `codes()` keys | `"termination"` means NLS in BA and RANSAC in epipolar | defer (with A8 of PR 2: generic dispatch) | pending |
-| A8 | note | architecture | `ransac.run(extra=)` | Untyped keyword pass-through | waive: typed by the Implementation Protocol and checked by test_backends | pending |
-| A10 | note | architecture | `solver` / `minimal_solver` / `essential_solver` | One concept, three parameter names | waive: each names what it is at its layer; the note maps them | pending |
-| L7 | note | algorithm | `REFINE_ITERATIONS`, nls tolerances | The refinement stops ~1e-4 from SciPy's optimum in E | waive: ~0.006°, negligible against 1 px noise; documented | pending |
+| A1 | must-fix | architecture | `tests/fixtures/foundations/` | No parity fixture for `essential_5pt` or `refine_essential`; the `essential_ransac` and `initialize` fixtures' tolerance reasons describe the old 8-point default | fix | fixed (f5112b4) -- decided by evan-wes, 2026-10-03 |
+| L1 | must-fix | algorithm | `fivepoint` tests (Python, C++) | The documented rank-deficient sample (a repeated pair gives no solution) is untested | fix | fixed (f5112b4) -- decided by evan-wes, 2026-10-03 |
+| L2 | should-fix | algorithm | `fivepoint._polish` / `polish` | Nistér loses the true E on near-degenerate samples (18/300 at a 5% baseline vs Stewénius 3, PoseLib 35); the fixed 3-step polish has no convergence test; the note's precision is generic-geometry only | fix | fixed (4085638 polish, f5112b4 test); the default became Stewénius after the re-measure (4085638) -- decided by evan-wes, 2026-10-03 |
+| A5 / L3 | should-fix | architecture, algorithm | `epipolar.polish_consensus` / `polish` | The refinement's `nls.Summary` is discarded; whether it ran, was kept or converged is invisible | fix | fixed (4085638) -- decided by evan-wes, 2026-10-03 |
+| A4 | should-fix | architecture | `twoview._initialize`, `epipolar.polish_consensus` | E-RANSAC-then-refine is composed twice in Python and once in C++; `polish_consensus` is public with no C++ counterpart | fix | fixed (4085638) -- decided by evan-wes, 2026-10-03 |
+| A3 | should-fix | architecture | `MINIMAL_SOLVERS`, `fivepoint.SOLVERS`, bindings | Integer code tables are not tested against the compiled ones; `fivepoint` has no `codes()` | fix | fixed (f5112b4) -- decided by evan-wes, 2026-10-03 |
+| A2 | should-fix | architecture | design doc Conventions, `twoview` binding | The solver choice crosses as a code in `essential_ransac` and by name in `twoview.Options` | fix (amend design doc) | fixed (4965af6, design doc) -- decided by evan-wes, 2026-10-03 |
+| L4 | should-fix | algorithm | `fivepoint.real_roots` | Public, but NaN/inf coefficients silently return no roots | fix | fixed (f5112b4) -- decided by evan-wes, 2026-10-03 |
+| H1 | should-fix | hygiene | `epipolar.essential_estimator` | Two near-identical `PairEstimator` constructions | fix | fixed (4085638) -- decided by evan-wes, 2026-10-03 |
+| H2 | should-fix | hygiene | `SampsonProblem.residuals` / `linearize` (Python, C++) | The Sampson formula is computed independently in both methods | fix | fixed (f5112b4) -- decided by evan-wes, 2026-10-03 |
+| H3 | should-fix | hygiene | `polish_consensus`, `refine_reference` | Unchecked public helpers don't state their preconditions | fix | fixed (f5112b4) -- decided by evan-wes, 2026-10-03 |
+| H4 | should-fix | hygiene | `fivepoint.solve_reference` | Any name other than "nister" silently runs Stewénius | fix | fixed (4085638) -- decided by evan-wes, 2026-10-03 |
+| H5 | should-fix | hygiene | `cpp/tests/foundations/test_fivepoint.cpp` | No pure-rotation, six-pair or unknown-solver case natively | fix | fixed (f5112b4) -- decided by evan-wes, 2026-10-03 |
+| L6 | note | algorithm | `fivepoint._stewenius` | Stewénius could share the polish (1e-9 → Nistér's level; tighter parity) | fix (with L2) | fixed (4085638) -- decided by evan-wes, 2026-10-03 |
+| A9 | note | architecture | `pyproject.toml` import-linter | Forbid importing test oracles (poselib, mpmath, manifpy, scipy) from `slamlab` by contract | fix | fixed (f5112b4) -- decided by evan-wes, 2026-10-03 |
+| H8 | note | hygiene | `fivepoint.py` docstring | Measured numbers in a docstring will go stale; point to the note | fix | fixed (f5112b4) -- decided by evan-wes, 2026-10-03 |
+| H6 | note | hygiene | `_nister` row pairs, action rows | Inline index literals; name them next to the orders | fix | fixed (f5112b4) -- decided by evan-wes, 2026-10-03 |
+| H7 | note | hygiene | `fivepoint.py`, C++ `polish` | Missing blank line; a full copy before `gather` | fix | fixed (f5112b4) -- decided by evan-wes, 2026-10-03 |
+| A6 | note | architecture | `epipolar.py` (896 lines) | The refinement could be its own module; decide before PR 4 adds PnP refinement | defer (design doc open items, before PR 4) | deferred (design doc, deferred from PR 3) -- decided by evan-wes, 2026-10-03 |
+| L5 | note | algorithm | `essential_estimator`, `polish_consensus` | LO's refits stay algebraic; current pipelines refine on Sampson inside LO (PoseLib, SupeRANSAC) | defer (design doc open items) | deferred (design doc, deferred from PR 3) -- decided by evan-wes, 2026-10-03 |
+| A7 | note | architecture | `codes()` keys | `"termination"` means NLS in BA and RANSAC in epipolar | defer (with A8 of PR 2: generic dispatch) | deferred (design doc, deferred from PR 3) -- decided by evan-wes, 2026-10-03 |
+| A8 | note | architecture | `ransac.run(extra=)` | Untyped keyword pass-through | waive: typed by the Implementation Protocol and checked by test_backends | waived as decided; then moot: the A4/A5 fix removed `ransac.run`'s pass-through (4085638) -- decided by evan-wes, 2026-10-03 |
+| A10 | note | architecture | `solver` / `minimal_solver` / `essential_solver` | One concept, three parameter names | waive: each names what it is at its layer; the note maps them | waived: each names what it is at its layer; the note maps them -- decided by evan-wes, 2026-10-03 |
+| L7 | note | algorithm | `REFINE_ITERATIONS`, nls tolerances | The refinement stops ~1e-4 from SciPy's optimum in E | waive: ~0.006°, negligible against 1 px noise; documented | waived: ~0.006°, negligible against 1 px noise; documented -- decided by evan-wes, 2026-10-03 |
 
 Resolution values: `fixed (<commit>)`, `deferred (<where tracked>)`, `waived: <reason>`,
 `disputed: <reason>`, each followed by `-- decided by <user>, <date>`.
