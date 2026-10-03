@@ -55,19 +55,25 @@ def _bearings(rot: mp.matrix, t: mp.matrix, points: list[list[float]]) -> list[l
     return out
 
 
-def _cylinder_sample(margin: float) -> tuple[mp.matrix, mp.matrix, list[list[float]]]:
+def _cylinder_sample(
+    margin: float,
+    angles: tuple[float, float, float] = (0.4, 2.3, 4.1),
+    azimuth: float = 0.0,
+    height: float = 2.0,
+) -> tuple[mp.matrix, mp.matrix, list[list[float]]]:
     """Return a pose and three points with the camera near their danger cylinder.
 
-    The points lie on a circle of radius 1 in the plane ``z = 0``; the camera centre is at
-    ``(1 - margin, 0, 2)``, inside the cylinder over that circle by `margin`. On the cylinder
-    two of P3P's solutions coincide, so the problem is ill-conditioned close to it.
+    The points lie on the unit circle in the plane ``z = 0`` at `angles`; the camera centre is
+    at radius ``1 - margin`` (inside the cylinder over that circle for a positive `margin`,
+    outside for a negative one), at `azimuth` and `height`, looking at the circle's centre.
+    On the cylinder two of P3P's solutions coincide, so the problem is ill-conditioned close
+    to it.
     """
-    angles = (0.4, 2.3, 4.1)
     points = [[float(np.cos(a)), float(np.sin(a)), 0.0] for a in angles]
-    centre = mp.matrix([1 - mp.mpf(margin), 0, 2])
-    # Look down at the circle's centre: the camera's z towards (0, 0, 0) from the centre.
+    radius = 1 - mp.mpf(margin)
+    centre = mp.matrix([radius * mp.cos(azimuth), radius * mp.sin(azimuth), height])
     forward = -centre / mp.norm(centre)
-    side = mp.matrix([0, 1, 0])
+    side = mp.matrix([-mp.sin(azimuth), mp.cos(azimuth), 0])
     side = side - (side.T * forward)[0] * forward
     side = side / mp.norm(side)
     down = mp.matrix([forward[1] * side[2] - forward[2] * side[1],
@@ -223,6 +229,11 @@ def _p3p_fixture() -> dict[str, Any]:
     for margin in (1e-2, 1e-6):
         rot, t, points = _cylinder_sample(margin)
         samples.append((f"camera {margin:g} inside the danger cylinder", rot, t, points))
+    # 1e-8 outside: the cubic's single real root is decided by rounding, and the first line
+    # carries a near-tangent false pose; skipping the second line (PoseLib's shortcut) missed
+    # the true pose here by 0.73.
+    rot, t, points = _cylinder_sample(-1e-8, (0.9058, 3.2159, 5.9719), 5.9605, 1.6237)
+    samples.append(("camera 1e-08 outside the danger cylinder", rot, t, points))
     cases = []
     for name, rot, t, points in samples:
         bearings = _bearings(rot, t, points)
@@ -242,10 +253,10 @@ def _p3p_fixture() -> dict[str, Any]:
                 "tolerance": {
                     "comparison": "close",
                     "rtol": 0.0,
-                    "atol": 1e-8,
+                    "atol": 3e-8,
                     "reason": "the expected pose must be among the solutions; worst measured "
-                    "1e-9, 1e-6 inside the danger cylinder (the problem's condition number there "
-                    "is about 1e6); 2e-12 elsewhere",
+                    "1.5e-8 (Lambda Twist, 1e-8 outside the danger cylinder) and 1.3e-9 (1e-6 "
+                    "inside it), where the problem is ill-conditioned; 2e-12 elsewhere",
                 },
                 "cases": cases,
             }

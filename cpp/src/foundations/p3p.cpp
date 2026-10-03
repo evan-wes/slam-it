@@ -364,7 +364,7 @@ std::vector<Eigen::Matrix4d> lambda_twist(const Rows3& points, const Rows3& bear
   if (!(c3 != 0.0)) {
     return {};
   }
-  const double gamma = cubic_root(c2 / c3, c1 / c3, c0 / c3).first;
+  const double gamma = cubic_root(c2 / c3, c1 / c3, c0 / c3);
   const auto decomposed = eigen_known_zero(d1 + (gamma * d2));
   if (!decomposed || !(-decomposed->sigma2 / decomposed->sigma1 >= 0.0)) {
     return {};
@@ -484,7 +484,7 @@ std::vector<Eigen::Matrix4d> ding(const Rows3& points, const Rows3& bearings) {
   if (!(c3 != 0.0)) {
     return {};
   }
-  const auto [s, single] = cubic_root(c2 / c3, c1 / c3, c0 / c3);
+  const double s = cubic_root(c2 / c3, c1 / c3, c0 / c3);
   const auto lines = line_pair(first + (s * second));
   if (!lines) {
     return {};
@@ -493,9 +493,6 @@ std::vector<Eigen::Matrix4d> ding(const Rows3& points, const Rows3& bearings) {
   for (const Eigen::Vector3d& line : *lines) {
     for (const Eigen::Vector3d& depths : ding_depths(line, geometry)) {
       finish(depths, x, world, geometry, poses);
-    }
-    if (!poses.empty() && single) {
-      break;
     }
   }
   return poses;
@@ -515,21 +512,19 @@ const char* name(Solver solver) {
   return "unknown";
 }
 
-std::pair<double, bool> cubic_root(double c2, double c1, double c0) {
+double cubic_root(double c2, double c1, double c0) {
   const double p = c1 - (c2 * c2 / 3.0);
   const double q = ((2.0 * c2 * c2 * c2 - 9.0 * c2 * c1) / 27.0) + c0;
   const double discriminant = (q * q / 4.0) + (p * p * p / 27.0);
   double u = 0.0;
-  bool single = false;
   if (discriminant >= 0.0) {
     const double root = std::sqrt(discriminant);
     u = std::cbrt((-0.5 * q) + root) + std::cbrt((-0.5 * q) - root);
-    single = discriminant > 0.0;
   } else {
     const double cosine = std::clamp(1.5 * q / p * std::sqrt(-3.0 / p), -1.0, 1.0);
     u = 2.0 * std::sqrt(-p / 3.0) * std::cos(std::acos(cosine) / 3.0);
   }
-  return {polish_cubic(u - (c2 / 3.0), {c2, c1, c0}), single};
+  return polish_cubic(u - (c2 / 3.0), {c2, c1, c0});
 }
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (points, bearings), as in Python

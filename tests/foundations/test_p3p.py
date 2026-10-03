@@ -145,11 +145,7 @@ def test_coinciding_bearings_give_no_false_pose(backend: str, solver: str) -> No
     ],
 )
 def test_cubic_root_is_the_largest_real_root(roots: list[float], atol: float) -> None:
-    """The largest real root, and whether it is the only one.
-
-    Three real roots: the largest, not the only one. One real root (with a complex pair): that
-    root, the only one.
-    """
+    """The largest real root: of three, or the only one (beside a complex pair)."""
     if len(roots) == 1:
         poly = np.polynomial.polynomial.polymul(
             np.polynomial.polynomial.polyfromroots(roots), [2.0, -1.0, 1.0]
@@ -157,9 +153,7 @@ def test_cubic_root_is_the_largest_real_root(roots: list[float], atol: float) ->
     else:
         poly = np.polynomial.polynomial.polyfromroots(roots)
     c0, c1, c2, _ = poly / poly[3]
-    root, single = p3p.cubic_root(c2, c1, c0)
-    assert root == pytest.approx(max(roots), abs=atol)
-    assert single == (len(roots) == 1)
+    assert p3p.cubic_root(c2, c1, c0) == pytest.approx(max(roots), abs=atol)
 
 
 def test_quadratic_roots() -> None:

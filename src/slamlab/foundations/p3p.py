@@ -46,16 +46,21 @@ largest real root.
 the reference distance ``a₁₂`` between the second and third is the longest, which keeps the
 conics' coefficients bounded. It splits the degenerate conic without an eigen-decomposition:
 for a line pair ``C = p qᵀ + q pᵀ``, ``-adj(C) = w wᵀ`` with ``w = p × q``, and ``C + [w]ₓ`` is
-the rank-one ``2 q pᵀ``, whose column and row are the lines. If the cubic has only one real
-root, the real intersections both lie on one line (the other holds a complex-conjugate
-pair), so the second line is skipped once the first gave a solution. It is the default:
+the rank-one ``2 q pᵀ``, whose column and row are the lines. It is the default:
 it is the more stable of the two on near-degenerate samples (``docs/notes/absolute-pose.md``).
 
 Both follow PoseLib's implementations (Larsson et al., BSD-3), restated here in slamlab's
-terms. Three departures, the same in both: the cubic's root and the depths are polished to
-convergence rather than for a fixed number of steps, the line pair is split on its largest
-entry (PoseLib's ``MAX_ABS`` strategy) rather than its first row and column, and the pose is
-the triangles' rigid alignment rather than ``Y X⁻¹`` (above).
+terms. Five departures, the same in both:
+
+- the cubic's root and the depths are polished to convergence, not for a fixed step count;
+- the line pair is split on its largest entry (PoseLib's ``MAX_ABS`` strategy);
+- the pose is the triangles' rigid alignment rather than ``Y X⁻¹`` (above);
+- candidates whose depths miss the distance equations are dropped (:data:`DISTANCE_TOLERANCE`);
+- Ding's solver always intersects both lines. PoseLib skips the second once the first gave a
+  pose when the cubic has a single real root, where the two real intersections lie on one
+  line; but near the danger cylinder rounding decides whether the root is single, and the
+  first line can carry a near-tangent false pose, so the skip dropped the true one (485 of
+  2000 true poses 1e-8 outside the cylinder, against 39 without it).
 
 A sample whose world points are collinear has no unique pose and gives no solution.
 
@@ -145,8 +150,8 @@ def _polish_cubic(root: float, c2: float, c1: float, c0: float) -> float:
     return root
 
 
-def cubic_root(c2: float, c1: float, c0: float) -> tuple[float, bool]:
-    """Return the largest real root of ``z³ + c₂z² + c₁z + c₀``, and whether it is the only one.
+def cubic_root(c2: float, c1: float, c0: float) -> float:
+    """Return the largest real root of ``z³ + c₂z² + c₁z + c₀``.
 
     In closed form: with ``z = u - c₂/3`` the cubic is ``u³ + p u + q``; when
     ``Δ = q²/4 + p³/27 > 0`` it has one real root (Cardano), otherwise three, the largest
@@ -159,8 +164,8 @@ def cubic_root(c2: float, c1: float, c0: float) -> tuple[float, bool]:
 
     Returns
     -------
-    tuple of (float, bool)
-        The root, and True when it is the cubic's only real root.
+    float
+        The root.
     """
     p = c1 - c2 * c2 / 3.0
     q = (2.0 * c2 * c2 * c2 - 9.0 * c2 * c1) / 27.0 + c0
@@ -168,12 +173,10 @@ def cubic_root(c2: float, c1: float, c0: float) -> tuple[float, bool]:
     if discriminant >= 0.0:
         root = math.sqrt(discriminant)
         u = float(np.cbrt(-0.5 * q + root) + np.cbrt(-0.5 * q - root))
-        single = discriminant > 0.0
     else:
         cosine = min(1.0, max(-1.0, 1.5 * q / p * math.sqrt(-3.0 / p)))
         u = 2.0 * math.sqrt(-p / 3.0) * math.cos(math.acos(cosine) / 3.0)
-        single = False
-    return _polish_cubic(u - c2 / 3.0, c2, c1, c0), single
+    return _polish_cubic(u - c2 / 3.0, c2, c1, c0)
 
 
 def pencil_cubic(first: Matrix3, second: Matrix3) -> tuple[float, float, float, float]:
@@ -375,7 +378,7 @@ def _lambda_twist(bearings: NDArray[np.float64], points: NDArray[np.float64]) ->
     c3, c2, c1, c0 = pencil_cubic(d1, d2)
     if c3 == 0.0:
         return []
-    gamma, _ = cubic_root(c2 / c3, c1 / c3, c0 / c3)
+    gamma = cubic_root(c2 / c3, c1 / c3, c0 / c3)
     decomposed = _eigen_known_zero(d1 + gamma * d2)
     if decomposed is None or not -decomposed[2] / decomposed[1] >= 0.0:
         return []
@@ -485,7 +488,7 @@ def _ding(bearings: NDArray[np.float64], points: NDArray[np.float64]) -> list[Po
     c3, c2, c1, c0 = pencil_cubic(first, second)
     if c3 == 0.0:
         return []
-    s, single = cubic_root(c2 / c3, c1 / c3, c0 / c3)
+    s = cubic_root(c2 / c3, c1 / c3, c0 / c3)
     lines = _line_pair(first + s * second)
     if lines is None:
         return []
@@ -495,8 +498,6 @@ def _ding(bearings: NDArray[np.float64], points: NDArray[np.float64]) -> list[Po
         for depths in _ding_depths(line, geometry):
             if (pose := _finish(depths, x, world, geometry)) is not None:
                 poses.append(pose)
-        if poses and single:
-            break
     return poses
 
 

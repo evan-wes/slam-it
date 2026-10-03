@@ -68,12 +68,11 @@ int main() {
   }
 
   // (z - 2)(z + 1)(z - 0.5): three real roots, the largest 2.
-  const auto [three, three_single] = p3p::cubic_root(-1.5, -1.5, 1.0);
-  expect(std::abs(three - 2.0) < 1e-12 && !three_single, "the largest of three real roots",
-         failures);
+  expect(std::abs(p3p::cubic_root(-1.5, -1.5, 1.0) - 2.0) < 1e-12,
+         "the largest of three real roots", failures);
   // (z + 4)(z^2 - z + 2): one real root.
-  const auto [one, one_single] = p3p::cubic_root(3.0, -2.0, 8.0);
-  expect(std::abs(one + 4.0) < 1e-12 && one_single, "a cubic's only real root", failures);
+  expect(std::abs(p3p::cubic_root(3.0, -2.0, 8.0) + 4.0) < 1e-12, "a cubic's only real root",
+         failures);
 
   Rows3 line(3, 3);
   line << 0.0, 0.0, 5.0, 1.0, 0.5, 6.0, 2.0, 1.0, 7.0;

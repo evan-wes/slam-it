@@ -12,7 +12,6 @@
 
 #include <Eigen/Core>
 #include <cstdint>
-#include <utility>
 #include <vector>
 
 #include "slamlab/foundations/correspondences.hpp"
@@ -58,9 +57,9 @@ enum class Solver : std::uint8_t {
 /// @param c2 The `z^2` coefficient.
 /// @param c1 The `z` coefficient.
 /// @param c0 The constant.
-/// @return The root, and whether it is the cubic's only real root.
+/// @return The root.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the coefficients, highest first
-[[nodiscard]] std::pair<double, bool> cubic_root(double c2, double c1, double c0);
+[[nodiscard]] double cubic_root(double c2, double c1, double c0);
 
 /// @brief Every camera pose three world points and their bearings allow (unchecked).
 /// @param points Three world points.
