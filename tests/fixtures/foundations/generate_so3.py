@@ -106,6 +106,23 @@ def main() -> None:
         o.case(n, r.tolist(), [float(x) for x in o.so3_log(mpm(r))]) for n, r in rotations.items()
     ]
     log_cases.append(o.case("exactly pi (canonical sign)", exact_pi, [math.pi, 0.0, 0.0]))
+    # The ends of the angle's domain: rotations within ROTATION_TOLERANCE whose trace rounds
+    # just past 3 or -1, so (tr R - 1) / 2 leaves [-1, 1]. arccos would return NaN; log clamps
+    # the cosine and takes the angle from atan2. Expected values are the angle the skew part
+    # and the clamped cosine give, set by hand: the quaternion oracle assumes orthonormal input.
+    ulp = 2.0**-52
+    tiny = 1e-9
+    past_plus = [[1.0 + 2 * ulp, 0.0, 0.0], [0.0, 1.0 + 2 * ulp, 0.0], [0.0, 0.0, 1.0 + 2 * ulp]]
+    log_cases.append(o.case("trace past +3 (symmetric)", past_plus, [0.0, 0.0, 0.0]))
+    small = np.asarray(o.to_float(o.so3_exp(mpv([tiny, 0.0, 0.0]))))
+    small[0, 0] += 2 * ulp
+    log_cases.append(o.case("trace past +3, small angle", small.tolist(), [tiny, 0.0, 0.0]))
+    past_minus = [[1.0, 0.0, 0.0], [0.0, -1.0 - 2 * ulp, 0.0], [0.0, 0.0, -1.0 - 2 * ulp]]
+    log_cases.append(o.case("trace past -1 (exactly pi)", past_minus, [math.pi, 0.0, 0.0]))
+    near = np.asarray(o.to_float(o.so3_exp(mpv([math.pi - tiny, 0.0, 0.0]))))
+    near[1, 1] -= 2 * ulp
+    near[2, 2] -= 2 * ulp
+    log_cases.append(o.case("trace past -1, near pi", near.tolist(), [math.pi - tiny, 0.0, 0.0]))
     fx["log"] = {
         "tolerance": {
             "comparison": "close",

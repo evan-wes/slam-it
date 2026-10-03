@@ -500,10 +500,12 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
     each Taylor switch, near pi, exactly pi (canonical sign), above pi (wrap) and near 2 pi.
     `log` rejects a non-orthonormal input (`InvalidInput`); `project_to_so3` is the explicit
     SVD projection.
+  - Closed by PR 2: the `arccos` domain at both ends. The fixture adds rotations whose
+    trace rounds just past 3 and just past -1 (symmetric, and with a small or near-pi angle);
+    `log` clamps the cosine and takes the angle from `atan2`, and returns the exact angle.
   - Each termination reason maps explicitly to `converged`, as in Ceres (`CONVERGED`).
 
   Still open:
-  - The `arccos` domain at both ends: a rotation whose trace rounds just past +-1.
   - A time-cap termination reason for the compute budgets.
 - **Deferred from PR 1's review panel**
   ([report](../reviews/2026-10-02-feature-ba-spine.md)):
