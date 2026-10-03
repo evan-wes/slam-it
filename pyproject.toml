@@ -36,6 +36,9 @@ dev = [
   "mpmath>=1.3",
   # Visualisation for the demos (never imported by the library).
   "rerun-sdk>=0.38",
+  # Feature matching for the two-view demo (never imported by the library; a contract
+  # forbids cv2 in slamlab).
+  "opencv-python-headless>=5.0",
 ]
 
 [tool.scikit-build]
