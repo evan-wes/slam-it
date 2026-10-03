@@ -282,3 +282,139 @@ Resolution values: `fixed (<commit>)`, `deferred (<where tracked>)`, `waived: <r
 - The motion choice (`low_parallax` before ambiguity; ≥ 50 points with ≥ 1°) is equivalent to ORB-SLAM's 50th-parallax test.
 - The demo undistorts (radtan) before unprojecting; the OpenCV comparison uses the same undistorted matches.
 - Fixtures state `comparison`/`rtol`/`atol`/`reason` explicitly with `rtol` given; randomised tests are seeded.
+
+## Run 2 -- 2026-10-03
+
+| | |
+|---|---|
+| **Branch** | `feature/two-view` |
+| **Range** | `f737c9b36359944370b82965451169bbbb52b1f5..77bd4fda820aafef5bc773c0a30cb5a9dfaee758` (run 1's fixes only) |
+| **Reviewers** | architecture (opus), algorithm (opus); hygiene not re-run (its findings were mechanical and are covered by layer 1 and the other two) |
+| **How they ran** | registered slamlab-* agents |
+| **Layer 1** | all checks passed on `77bd4fd` (1154 Python tests passed, 337 skipped) |
+
+Run 1's findings: architecture A1-A7 and A11 resolved; algorithm L1, L2 and L6 resolved, L4 fixed but its reading wrong (L7 below).
+
+After run 2's fixes, layer 1 passed (1170 Python tests passed, 337 skipped); no run 3, as decided by evan-wes on 2026-10-03 (the fixes were mechanical plus a rewording).
+
+### Findings and resolutions
+
+| ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|---|
+| A12 | should-fix | architecture | `correspondences.cpp`, `triangulation.cpp/.hpp`, `pyproject.toml` | C++ keeps two bearing validators and two tolerances; the layering stops triangulation sharing one | fix | fixed (753958f) -- decided by evan-wes, 2026-10-03 |
+| A13 | should-fix | architecture | `eval/tum.py` | The TUM reader raises `ValueError` where the other readers raise `InvalidInputError` | fix | fixed (753958f) -- decided by evan-wes, 2026-10-03 |
+| L7 | should-fix | algorithm | `scripts/demo_two_view.py`, `docs/notes/two-view.md` | The survey's ground-truth consistency is a median over all matches, so on badly matched pairs it measures outliers, not the motion capture | fix | fixed (1b33563) -- decided by evan-wes, 2026-10-03 |
+| L8 | should-fix | algorithm | `twoview.py`, `twoview.cpp` | No test pins H-RANSAC's threshold scale | fix | fixed (753958f) -- decided by evan-wes, 2026-10-03 |
+| A14 | note | architecture | `correspondences.py/.cpp`, `arrays` validators | The new module and the moved validators have no tests of their own | fix | fixed (753958f) -- decided by evan-wes, 2026-10-03 |
+| A15 | note | architecture | `homography._dlt_reference`, `check_keys`, `error.hpp`, threshold constants | Small leftovers: a repeated `_unique`, `check_keys` not naming an extra key, `<sstream>` in `error.hpp`, mirrored constants | fix the first two; no action on the rest | fixed (753958f: `unique`, `check_keys`); waived: `<sstream>` in error.hpp and the mirrored constant are acceptable -- decided by evan-wes, 2026-10-03 |
+| L9 | note | algorithm | `docs/notes/two-view.md` | ORB-SLAM's ambiguity ratio is 0.75 for H but 0.7 for F | fix | fixed (1b33563) -- decided by evan-wes, 2026-10-03 |
+
+### Architecture review (run 2)
+
+## Architecture review
+
+**Scope:** Run 2, the fixes only: `git diff f737c9b..77bd4fd` (11 commits) on feature/two-view. Read every changed Python, C++ and binding file in that range, plus the parts of `triangulation.cpp`, `errors.py` and `eval/readers` needed to judge them; mapped the Python import graph and the C++ include graph of the moved modules. Layer 1 not re-run (the brief says it passes on 77bd4fd).
+
+**Summary:** All eight run-1 architecture findings in scope (A1-A7, A11) are resolved as decided; the fixes introduce no dependency-direction, binding-boundary or language-split violation. The A1 restructure is sound (epipolar and homography are independent siblings, with the shared blocks one layer lower in both languages), but it leaves one cross-language gap: Python now has a single bearing validator in `arrays`, while C++ still has two (and two copies of the tolerance), and the new contract layering prevents C++ `triangulation` from using the shared one. Two smaller follow-ups: the TUM reader's new failures use a different exception type from the other `eval` readers, and the new `correspondences` module has no tests of its own.
+
+### Status of the run-1 findings
+- **A1: resolved.** Python validators in `foundations.arrays`, building blocks in `foundations.correspondences`, `run_ransac` → `ransac.run`; nothing outside the report refers to an old location; the contract is `"(ba) | (twoview)", "(epipolar) | (homography)", "(camera) | (correspondences) | (nls) | (ransac) | (triangulation)"`. C++ mirrors it (`correspondences.hpp` includes only `error.hpp`; `epipolar.hpp`/`homography.hpp` include `correspondences.hpp` and `ransac.hpp` but not each other; `epipolar` no longer depends on `triangulation`). One gap remains (first finding).
+- **A2: resolved.** `opencv-python-headless>=5.0` is in the `dev` extra with a "never imported by the library" comment.
+- **A3: resolved.** A forbidden contract stops `slamlab` importing `cv2`, with its reason.
+- **A4: resolved.** `_or_nan`/`_solved` gone; the `_*_reference` functions raise `DegenerateError` like the C++ core; the estimators' internal solvers still return `None`, correct since RANSAC counts those as degenerate samples.
+- **A5: resolved.** One encoder (`ransac_summary`), reused by `ransac_result`; twoview returns nested summary dicts or None; `summary_from_backend` lost `prefix`; `in_front` is `new_array<std::int64_t>`; `twoview.Implementation`'s docstring describes the new shape.
+- **A6: resolved.** `Matrix3In`, `matrix3`, `matrix3_array`, `mask_array` and `check_keys` in `cpp/bindings/common.hpp`; both option readers call `check_keys`.
+- **A7: resolved, BA migration deferred.** The rule is in Conventions with `check_keys` as its guard; the BA migration and the third enum-name variant are in the open items.
+- **A11: resolved.** `test_twoview_solvers.cpp` split into `test_epipolar.cpp` and `test_homography.cpp` with shared `scene_support.hpp`; datasets table puts TUM at milestone 1; `eval` docstring corrected.
+
+### Findings
+
+#### [should-fix] C++ still has two bearing-pair validators and two bearing tolerances, and the new layering stops `triangulation` from sharing one
+- **Where:** `cpp/src/foundations/correspondences.cpp:16` (`constexpr double kBearingTolerance = 1e-9;`) and `:59-77` (`check_bearing_pairs`); `cpp/include/slamlab/foundations/triangulation.hpp:19` (`inline constexpr double kBearingTolerance = 1e-9;`) and `cpp/src/foundations/triangulation.cpp:29-40,196-209` (`two_view`'s own size/unit-norm/positive-z loop); `pyproject.toml` rung-0 layers (`correspondences` and `triangulation` in the same `|` layer).
+- **Issue:** The H2/A1 fix gave Python one source (`arrays.as_bearings`/`as_bearing_pairs`, called by `triangulation.two_view` with `minimum=0`). In C++ the fix moved `check_bearing_pairs` and its private tolerance from `epipolar.cpp` into `correspondences.cpp`, making `correspondences` an independent sibling of `triangulation`, so `check_layers.py` forbids `triangulation.cpp` from including it; C++ `triangulation::two_view` keeps its own copy of the same rules and messages. `correspondences.hpp`'s header says the checks live there "so each core validates once with the same rules", but C++ `triangulation` does not use them.
+- **Why it matters:** Python and C++ no longer mirror each other module for module; a change to the tolerance or the positive-z rule in one C++ copy drifts from the other and from Python, caught only by an error-path parity test. PR 4 (PnP) needs bearing checks in a module that may sit in the same layer.
+- **Evidence:** `grep -rn kBearingTolerance cpp/` finds both definitions. Python `triangulation.py:274` is `b1, b2 = as_bearing_pairs(bearings1, bearings2, 0)`; C++ `triangulation.cpp:200-208` repeats `check_unit` and the positive-z test inline.
+- **Suggested fix:** `correspondences` depends only on `error.hpp`, so give it its own layer below `(camera) | (nls) | (ransac) | (triangulation)`; C++ `triangulation::two_view` then calls `correspondences::check_bearing_pairs(..., 0)` and drops its copy, and `kBearingTolerance` gets one public home in `correspondences.hpp` (used by `check_unit` for the n-view case too). Python is unaffected (its validators are in `arrays`). Alternative: a small C++ checks header at the bottom of the rung mirroring `arrays`. The reorder is one line in the contract.
+
+#### [should-fix] The TUM reader's new failures are `ValueError`, while the other `eval` readers raise `InvalidInputError`
+- **Where:** `src/slamlab/eval/tum.py:89,104,110,112` (added by the H6 fix, 09cab62) and `:155,159,165,169`; compare `src/slamlab/eval/readers` (BAL and COLMAP raise `InvalidInputError(f"{path.name}:{number}: ...")`).
+- **Issue:** H6's file validation copies the readers' `path:line` message style but not their exception type. `InvalidInputError` subclasses `ValueError` (`errors.py:14-18`), so switching breaks no caller and no `pytest.raises(ValueError)` test.
+- **Why it matters:** The design reports malformed input as `InvalidInput`; two error types for the same failure inside one package weaken that contract as more dataset readers arrive (EuRoC at milestone 2).
+- **Suggested fix:** Raise `InvalidInputError` throughout `tum.py`; the tests can stay or be tightened.
+
+#### [note] The new `correspondences` module and the moved validators have no tests of their own
+- **Where:** `src/slamlab/foundations/correspondences.py`, `cpp/src/foundations/correspondences.cpp`, `arrays.as_bearing_pairs`/`as_point_pairs`/`as_matrix3`; no `tests/foundations/test_correspondences.py` or `cpp/tests/foundations/test_correspondences.cpp`, and `tests/foundations/test_validation.py` does not cover the new validators.
+- **Issue:** They are tested indirectly through `test_epipolar`, `test_homography` and `test_triangulation`, as they were while in `epipolar`. Now that PR 3 and PR 4 build on them as a module, mirrored tests would match "tests mirror the packages". (Test coverage is the hygiene reviewer's.)
+
+#### [note] Small leftovers from the fixes
+- `homography._dlt_reference` (`homography.py:213-217`) repeats `epipolar._unique` inline, since the siblings cannot share it; a `unique(found, what)` helper in `correspondences` would remove the copy.
+- `check_keys` (`cpp/bindings/common.hpp`) names a missing key but reports an extra key only as "expected exactly X's fields"; naming the unknown key would follow H3's "errors name the value".
+- `fail_setting` brings `<sstream>` into `error.hpp`, the header every core includes, for two callers; acceptable, but a non-inline definition in a `.cpp` would keep the bottom header light.
+- `kHomographyThresholdScale` (`twoview.hpp:40`) and `HOMOGRAPHY_THRESHOLD_SCALE` (`twoview.py:94`) are mirrored constants with the same formula: the normal lock-step pattern; the twoview parity fixture would catch drift.
+
+### Checked and fine
+- `ransac.run` lives in the generic module and uses only `backends` (the bottom layer), with the target as `(module, function)` strings, so `backends` still knows nothing about algorithms.
+- After the split, `twoview` imports `correspondences`, `epipolar`, `homography`, `ransac`, `triangulation`, all lower layers; no sibling or upward import in Python or C++.
+- L2 per-model thresholds: `Options.ransac_options(model)` and the C++ `ransac_options` match; the E/H stream assignment (0/1) is in one place per language; the binding's option keys are unchanged.
+- H3 `fail_setting`: one C++ helper builds `"<name>: <rule>, got <value>"`; the Python messages have the same shape.
+- H4 Malis-Vargas split and the L1 pure-rotation projection are internal to `homography` in both cores; no interface change.
+- Binding boundary: float64, bool and int64 arrays plus scalars, enums as codes; bindings only convert types; no nanobind in `cpp/include` or `cpp/src`.
+- Demo script: only public API (`tum`, `camera`, `epipolar`, `se3`, `so3`, `twoview`, `backends`); `cv2` and `rerun` stay in `scripts/`.
+- Design doc and notes point at the new locations (Conventions rule, deferred A7/A8/A9/L5, datasets table, `two-view.md`).
+- No compatibility shims: the old names (`run_ransac`, `epipolar.bearing_pairs`, `triangulation.as_bearings`, the `prefix` argument) are removed outright.
+
+### Algorithm review (run 2)
+
+## Algorithm review
+
+**Scope:** The fixes after run 1, `f737c9b..77bd4fd` (11 commits): `homography.py`/`.cpp` (L1, H4), `twoview.py`/`.cpp`/`.hpp` (L2), `correspondences.py`/`.cpp`, `arrays.py`, `ransac.run`, `epipolar.py`, `triangulation.py` (A1, A4), `eval/tum.py` (H6), `scripts/demo_two_view.py --survey` and `docs/notes/two-view.md` (L4, L6), and the new tests. Numerical probes on both backends and TUM fr1/xyz (scratch scripts in the session scratchpad).
+
+**Summary:** The maths of the fixes is sound. The Malis-Vargas split is bit-identical to the old code and C++ still matches Python to about 1e-12; the pure-rotation pose is a proper rotation in both backends; the H threshold scale is correct and applied in both; the searchsorted association equals the old argmin association. One new weakness: L4's ground-truth consistency number is a median over all matches, so where most matches are outliers it measures the matching, not the ground truth; the note's "0.3 to 62 px" range and its "frames 200 and 230 disagree … by 56 px" sentence blame the motion capture for bad matches. And no test pins the L2 scale.
+
+**Run-1 findings:**
+- **L1: resolved.** Over 500 noisy rotation-only H per backend forced into the pure-rotation branch, the worst orthonormality/determinant error was 2.4e-15 (Python) and 3.3e-15 (C++). `test_a_well_estimated_rotation_returns_a_rigid_pose` (focal 2000, 1000 points) runs on both lockstep backends and passes.
+- **L2: resolved.** `HOMOGRAPHY_THRESHOLD_SCALE` and `kHomographyThresholdScale` both equal 1.2488995416314383 = √(5.991/3.841); at focal 500, E's threshold is 2.0 px (stream 0) and H's 2.4978 px (stream 1). RANSAC compares squared residuals with θ², so scaling θ linearly is right. "86%" checks out: P(χ²₂ < 3.841) = 1 − e^(−1.92) = 0.853. The survey reproduces the stated figures (22 initialise, 19 by fallback, 2 off by > 20° vs OpenCV's 3, medians 0.88° and 4.16°). Test gap below.
+- **L4: fix in, reading wrong** (should-fix below).
+- **L6: resolved.** Checked against ORB-SLAM2's `Initializer::CheckRT`: it skips a point behind a camera only if `cosParallax<0.99998` and increments `nGood` before the parallax test, so low-parallax points behind a camera count. The claim is correct.
+
+### Findings
+
+#### [should-fix] The survey's ground-truth consistency measures match outliers, not motion-capture error, on poorly matched pairs
+- **Where:** `scripts/demo_two_view.py:107-130` (`truth_consistency_px`, median over all M matches); `docs/notes/two-view.md:218-223`; stale docstring at `scripts/demo_two_view.py:110` ("about 1 to 4 px on fr1/xyz").
+- **Issue:** The metric is the median Sampson distance under the true E over every ratio-test match; a median breaks down once more than half the matches are outliers. Every pair the note cites as bad ground truth is a pair where SIFT matching failed:
+
+  | pair | matches | share within 2 px of true E | metric | slamlab result |
+  |---|---|---|---|---|
+  | 200+30 | 62 | 0.08 | 56.0 px | 24 E inliers, pose 166° off |
+  | 280+30 | 12 | 0.08 | 61.5 px | 2 E inliers |
+  | 440+30 | 22 | 0.00 | 29.8 px | |
+  | 400+15 | 26 | 0.00 | 11.2 px | |
+
+  Pairs with a few hundred matches range from 0.3 to 3.9 px. The 30-frame pairs at 200 and 280 also have the largest true rotations (13.5° and 17.6°), so motion blur and viewpoint change are the likely cause, not the motion capture.
+- **Why it matters:** L4's purpose was to tell readers how far to trust errors against the ground truth; the note's "frames 200 and 230 disagree with their images by 56 px" and "the ground truth is not uniformly good" blame the ground truth for a matching failure, and a reader would wrongly discount pairs whose ground truth is fine.
+- **Evidence:** `gt_probe3.py` (scratch) calls `demo_two_view.pair` and `truth_consistency_px` for all 38 pairs, printing the match count, the share within 2 px and the median over the chosen inliers. A second probe (`gt_probe.py`) keeps the true rotation and grid-searches the translation direction: on 0+30 the median Sampson distance falls from 3.78 px to 0.82 px, so on the early pairs the true rotation fits; the translation direction disagrees, suggesting a timing offset rather than a uniformly poor ground truth.
+- **Suggested fix:** Print the match count and the share within `threshold_px` next to the median, or compute the consistency over the matches a RANSAC kept, flagging pairs with fewer than about 50 matches as unreliable rather than as bad ground truth; reword the note's paragraph; drop or correct the stale "1 to 4 px" (about 0.3 to 4 px for well-matched pairs); optionally separate rotation error from translation-direction error as above.
+
+#### [should-fix] No test pins H-RANSAC's threshold scale
+- **Where:** `src/slamlab/foundations/twoview.py` `Options.ransac_options`; `cpp/src/foundations/twoview.cpp:39-52` (`ransac_options`, anonymous namespace). No test in `tests/` or `cpp/tests/` references `HOMOGRAPHY_THRESHOLD_SCALE`, `kHomographyThresholdScale` or `ransac_options`; commit 4622ea6 changed no test file.
+- **Issue:** If either backend lost the scale, or applied it to E instead of H, no test would fail; a Python-vs-C++ parity test only catches a difference between backends, not a regression in both.
+- **Why it matters:** The scale changes which matches each model keeps and which pairs initialise (L2's re-measure shows it is load-bearing), and it is a policy constant duplicated in two languages.
+- **Evidence:** `grep -rn -i "THRESHOLD_SCALE\|ThresholdScale\|ransac_options" tests cpp/tests` returns nothing; `git show --stat 4622ea6` touches only `twoview.hpp`, `twoview.cpp`, `twoview.py`.
+- **Suggested fix:** A Python unit test that `Options(focal=f).ransac_options(Model.HOMOGRAPHY).threshold == HOMOGRAPHY_THRESHOLD_SCALE * threshold_px / f` with stream 1, and E's unscaled on stream 0; a C++ check that `kHomographyThresholdScale == std::sqrt(5.991 / 3.841)`; optionally a noisy planar-scene check that H keeps about 95% of true inliers.
+
+#### [note] ORB-SLAM's ambiguity ratio is 0.75 for H but 0.7 for F
+- **Where:** `docs/notes/two-view.md:147-148` ("the same ratio ORB-SLAM uses").
+- **Issue:** `ambiguity_ratio` 0.75 matches ORB-SLAM2's `ReconstructH` (`secondBestGood<0.75*bestGood`); `ReconstructF` counts a candidate as similar when `nGood>0.7*maxGood`. slamlab uses 0.75 for both, a defensible choice, but "the same ratio" is accurate only for H.
+- **Evidence:** ORB-SLAM2 `src/Initializer.cc` (Mur-Artal and Tardós, "ORB-SLAM2", T-RO 2017), https://github.com/raulmur/ORB_SLAM2/blob/master/src/Initializer.cc
+- **Suggested fix:** "the ratio ORB-SLAM uses for H (0.7 for F)", or leave as is.
+
+### Checked and fine
+- **Malis-Vargas split (H4), Python:** `_minors`, `_plane_normals`, `_motion_scalars` are bit-identical to the old `decompose_reference`: over 3000 random H (rotations 1e-3 to 3 rad, translations 1e-6 to 1, scales −3 to 3, a third with 1e-4 noise), the maximum absolute difference across the four-candidate poses and normals is exactly 0.
+- **Malis-Vargas split (H4), C++:** `MotionScalars`/`motion_scalars` reproduce the old expressions term for term; C++ against Python on the same 3000 H: 1.03e-12.
+- **Rank check** moved into `decompose_reference` in both backends; rank-1 H raises `DegenerateError("homography: rank below 2")` from python and cpp; `twoview._candidates` now raises as C++ `decide` propagates.
+- **Moved code (A1):** an AST comparison against f737c9b shows `hartley_normalisation`, `null_vector`, `homogeneous`, `normalised_plane`, `PairEstimator`, `as_bearings`, `as_matrix3`, the point- and bearing-pair validators, the solvers and the Sampson functions byte-identical apart from renames; the C++ `correspondences.cpp` bodies match the removed `epipolar.cpp` ones; `triangulation.two_view`'s `as_bearing_pairs(…, 0)` enforces exactly the old checks.
+- **References raise (A4):** degenerate inputs raise `DegenerateError` from python and cpp for `essential_8pt`, `fundamental_8pt`, `homography_dlt`; Rust raises `NotImplementedError`, unchanged.
+- **TUM association (H6):** on fr1/xyz `_nearest` and the old argmin keep the same 796 frames with identical timestamps and poses; 20,000 random trials matched distances, and 50,000 with unique times (ties included) matched indices (both pick the earlier sample on a tie); they differ only on duplicated ground-truth times, which TUM does not have, and the stable sort makes the choice deterministic.
+- **ransac.run and summaries** preserve the RANSAC semantics; option validation keeps the same ranges.
+- **Tests:** `test_twoview`, `test_homography`, `test_epipolar`, `test_tum`: 84 passed, 11 skipped on HEAD.
+- **Survey reproduction:** `--survey` (cpp) reproduces every number in the note's TUM paragraph.
