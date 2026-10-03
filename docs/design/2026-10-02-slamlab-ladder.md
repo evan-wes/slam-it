@@ -161,7 +161,11 @@ and fixture bakes in.
 - `T_a_b` maps coordinates in frame b to frame a: `p_a = T_a_b p_b`.
 - Inside a solver, a camera pose is the world-to-camera `T_cam_world`, as in ORB-SLAM and
   DROID.
-- Results returned to callers are camera-to-world `T_world_cam`, as in `SlamResult`.
+- Trajectory-level results returned to callers (BA's problems and results, `SlamResult`)
+  are camera-to-world `T_world_cam`.
+- Rung 0's geometric estimators return the transform they name, stated in every signature:
+  P3P and PnP `T_cam_world` (what OpenCV and PoseLib return), two-view `T_c2_c1`. A tracker
+  inverts PnP's pose once, where it writes the trajectory (settled in PR 4, panel A1).
 
 **Lie groups.**
 - **Perturbations are right (local):** `X ⊕ δ = X · Exp(δ)`, as in Solà et al. and GTSAM's
@@ -569,20 +573,35 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
     share, the refined summary and "refine the consensus, keep it if the MSAC cost drops", is
     generic in `ransac` (`RefinedSummary`, `refine_consensus`, `estimate_refined`). The S²
     basis and retraction stay in `epipolar` until a second user appears.
-  - **Refining inside LO (L5).** LO's refits stay the algebraic 8-point; PoseLib refines on
-    the Sampson error inside LO, and SupeRANSAC (Barath, arXiv 2506.04803, 2025) finishes E
-    with LM on MAGSAC++-weighted Sampson error. An inlier-reselect and refine loop is the next
-    step if the floor ratio matters.
+  - **Refining inside LO (L5).** LO's refits stay algebraic (the 8-point for E, EPnP for
+    pose); PoseLib refines on the geometric error inside LO, and SupeRANSAC (Barath, arXiv
+    2506.04803, 2025) finishes E with LM on MAGSAC++-weighted Sampson error. PR 4 added the
+    inlier-reselect and refine loop after LO (`refine_consensus`'s rounds); refining inside LO
+    itself remains open.
   - Closed by PR 4: **`codes()` keys (A7).** RANSAC's termination is `ransac_termination`
     and NLS' `nls_termination` in every module; each decoder reads its own key.
 - **Found while building PR 4:**
-  - **Two-view crashes on a rank-deficient homography.** On TUM fr1/desk, H-RANSAC can return
-    an H whose decomposition fails ("homography: rank below 2"), and `twoview.initialize`
-    raises `DegenerateError` instead of treating H as unavailable. `twoview` is PR 2's; the
-    absolute-pose demo counts such a reference frame as not initialised.
-  - **IPPE for planar scenes.** EPnP refuses planar points; PnP RANSAC still handles them
-    (P3P samples, the refinement), but its LO refits are skipped there. IPPE (Collins and
-    Bartoli, IJCV 2014) is the planar least-squares solver.
+  - Closed by PR 4: **two-view crashed on a rank-1 homography.** Duplicate keypoints at one
+    pixel let a rank-1 H win H-RANSAC (TUM fr1/desk); `twoview.initialize` raised from its
+    decomposition. Such an H is now no model, and E decides.
+  - **H-RANSAC can return a non-invertible H.** The two-view fix treats it as no model; the
+    deeper fix is for the homography estimator to reject a fitted H of rank below 3, which
+    changes H-RANSAC's results. Decide with the edge rung's tracker (milestone 2).
+  - **A least-squares PnP for planar scenes (panel L6).** EPnP refuses planar points, so LO's
+    refits do not run there; the refine-and-reselect rounds reach the noise floor anyway (the
+    absolute-pose note). IPPE (Collins and Bartoli, IJCV 2014) is the planar solver; SQPnP
+    (Terzakis and Lourakis, ECCV 2020; OpenCV's `SOLVEPNP_SQPNP`) is globally optimal for
+    planar and non-planar points in one solver, the better LO refit if the rung wants one.
+- **Deferred from PR 4's review panel**
+  ([report](../reviews/2026-10-03-feature-absolute-pose.md)):
+  - **One form for the refinement callback (A6).** `refine_consensus`'s callback takes an
+    inlier mask in Python and inlier indices in C++; pick one when Rust gains RANSAC (PR 5).
+  - **Depth maps in the library (A7).** `eval.tum` associates depth maps, but decoding the
+    16-bit PNGs happens in the demo, with OpenCV, which `slamlab` may not import. Milestone 2's
+    RGB-D mode needs an in-library loader: choose its PNG dependency then.
+  - **One feature front end (A8).** Each demo script has its own SIFT and ratio-test
+    matching. Fold them into the edge rung's front end when it lands (milestone 2), or into
+    one shared script helper if a third demo comes first.
 - **Deferred from PR 1's review panel**
   ([report](../reviews/2026-10-02-feature-ba-spine.md)):
   - **Batched APIs for standalone callers (A11).** Batching over many inputs lives in the

@@ -69,17 +69,19 @@ and less stable.
   reference distance is the triangle's longest side, which keeps the conics' coefficients
   bounded. It splits the line pair without an eigen-decomposition: for `C = p qᵀ + q pᵀ`,
   `−adj(C) = w wᵀ` with `w = p × q`, so `C + [w]ₓ = 2 q pᵀ` has rank one and its column and row
-  are the lines. When the cubic has a single real root, the two real intersections lie on one
-  line (the other holds a complex pair), so the second line is skipped once the first gave
-  solutions.
+  are the lines.
 
-Both follow PoseLib's implementations, with four departures:
+Both follow PoseLib's implementations, with five departures:
 - polishing to convergence, not a fixed step count;
 - splitting the line pair on its largest entry;
 - the pose by alignment rather than the papers' `R = Y X⁻¹`;
-- dropping candidates whose depths cannot satisfy the distance equations.
+- dropping candidates whose depths cannot satisfy the distance equations;
+- intersecting both lines in Ding's solver. When the cubic has a single real root the two
+  real intersections lie on one line, and PoseLib skips the second line once the first gave
+  a pose. Near the danger cylinder, rounding decides whether the root is single, and the
+  first line can carry a near-tangent false pose, so the skip drops the true one.
 
-The last two came from real data (below).
+The third and fourth came from real data, the fifth from the review panel (below).
 
 **EPnP** (Lepetit, Moreno-Noguer and Fua, IJCV 2009) writes each world point as a weighted sum
 of four control points, `Xᵢ = Σⱼ αᵢⱼ cⱼ`: the centroid and the three principal axes, scaled
@@ -98,14 +100,19 @@ the Jacobian is `∂π/∂p · [R | −R [X]ₓ]`.
 
 **RANSAC** samples three correspondences, scores by MSAC on the squared reprojection error
 (infinite behind the camera, so such a point is never an inlier), refits EPnP inside LO, and
-refines the consensus.
+refines the consensus in **refine-and-reselect rounds**. Each round refines on the current
+inliers, keeps the result only if the MSAC cost drops, and re-collects the inliers; the rounds
+stop when the inliers stop changing, or after four. On a planar scene EPnP refuses, so LO's
+refits cannot run, and these rounds are what bring the pose to the noise floor. The
+refinement's cost is infinite for a point behind the camera too, so LM never moves one there.
 
 ## How it's checked
 
 - **Fixtures** (`generate_pose.py`, 50-digit mpmath, nothing imported from slamlab):
   - P3P: the true pose among the solutions, on generic samples, each of Ding's three
-    orderings, and 1e-2 and 1e-6 inside the danger cylinder. The 1e-6 case catches a solver
-    that merges a quadratic's close roots.
+    orderings, 1e-2 and 1e-6 inside the danger cylinder, and 1e-8 outside it. The 1e-6 case
+    catches a solver that merges a quadratic's close roots; the 1e-8 case one that skips
+    Ding's second line (it misses by 0.73).
   - EPnP: exact on 5 and 20 points.
   - The refinement: from a perturbed start to the truth.
   - RANSAC: on noise-free inliers and far outliers, the true pose and exactly the clean
@@ -122,6 +129,9 @@ refines the consensus.
   - EPnP is exact on exact data from five points.
   - Planar points, four points, collinear points and coinciding bearings are refused or give
     no pose.
+  - PnP RANSAC on a planar scene reaches the noise floor (median below 1.6 times it; one
+    refinement round fails this).
+  - The refinement's cost is infinite for a point behind the camera.
 - **Backends.** Python and C++ return the same P3P poses in the same order (1e-10), and PnP
   RANSAC draws identical runs (inliers, iterations, refinement kept).
 - **Native C++ tests** for both modules.
@@ -130,18 +140,23 @@ refines the consensus.
 
 **Near degeneracy** (`p3p_degeneracy_probe.py`). This counts how
 often the true pose is missing from the solutions on exact samples, for 2000 random triangles
-with the camera a relative margin inside the **danger cylinder**. The cylinder stands over the
-triangle's circumcircle; on it, two of the four solutions coincide.
+with the camera at a relative margin from the **danger cylinder**. The cylinder stands over
+the triangle's circumcircle; on it, two of the four solutions coincide. A solution's error is
+relative: the larger of the rotation's max-abs error and the translation's error over its
+length. "Missing" means none within 1e-6, "gross" none within 1e-3.
 
-| Inside the cylinder by | Ding | Lambda Twist | PoseLib (Ding's) |
+| Margin from the cylinder | Ding (missing, gross) | Lambda Twist | PoseLib (Ding's) |
 |---|---|---|---|
-| 1e-2 | 3 | 8 | 6 |
-| 1e-3 | 11 | 34 | 15 |
-| 1e-4 | 36 | 85 | 28 |
-| 1e-6 | 141 | 237 | 133 |
+| 1e-2 inside | 3, 1 | 8, 1 | 4, 1 |
+| 1e-4 inside | 34, 4 | 85, 30 | 26, 3 |
+| 1e-6 inside | 109, 35 | 232, 94 | 128, 67 |
+| 1e-6 outside | 96, 34 | 213, 102 | 118, 66 |
+| 1e-8 outside | 126, 42 | 253, 120 | 552, 477 |
 
-That is why Ding's is the default. Far away (a 1 m triangle at 1000 m) every solver loses
-about 18%, to the conditioning, not the method.
+That is why Ding's is the default. PoseLib's single-root shortcut costs it most just outside
+the cylinder; with the shortcut, slamlab's Ding missed 485 of 2000 there. Far away (a 1 m
+triangle at 1000 m) every solver misses about 0.1%; precision is then limited by the
+conditioning (median relative error 5e-10).
 
 **EPnP's minimum.** On exact four-point samples, the exact pose comes back on 38% of samples
 (OpenCV's EPnP: 12%). With four points `MᵀM`'s null space is four-dimensional and the
@@ -155,13 +170,25 @@ C++ backend's, per RANSAC run.
 
 | Configuration | Error / floor (median, p90) | Samples | ms |
 |---|---|---|---|
-| Ding, refined | 1.21, 1.94 | 47 | 1.2 |
-| Lambda Twist, refined | 1.21, 1.94 | 47 | 1.1 |
+| Ding, refined | 1.25, 1.95 | 47 | 1.3 |
+| Lambda Twist, refined | 1.25, 1.95 | 47 | 1.2 |
 | Ding, unrefined | 1.55, 3.07 | 47 | 1.1 |
-| OpenCV `solvePnPRansac` (AP3P) + `solvePnPRefineLM` | 2.21, 5.38 | | 1.6 |
+| OpenCV `solvePnPRansac` (AP3P) + `solvePnPRefineLM` | 2.21, 5.38 | | 1.7 |
 
-The refinement closes most of the gap to the floor. OpenCV's least-squares refinement is not
-robust, so the inliers' tail pulls it.
+On a **planar** scene (the same points flattened onto a plane facing the camera):
+
+| Configuration | Error / floor (median, p90) |
+|---|---|
+| Ding, refined (rounds) | 1.21, 1.96 |
+| Ding, one refinement (before the rounds; the panel's measurement) | 2.02, 8.41 |
+| Ding, unrefined | 5.61, 15.0 |
+| OpenCV | 2.10, 4.40 |
+
+The refinement closes most of the gap to the floor, on planar scenes too, where LO cannot. OpenCV's
+least-squares refinement is not robust, so the inliers' tail pulls it. The rounds change
+E-RANSAC as well (the five-point note's sweep): median 0.78 of the 8-point floor (0.71 with
+one refinement), p90 2.94 (3.21), recall 0.953 (0.950); on TUM fr1/xyz the initialiser still
+initialises 24 of 38 pairs, at 0.51° rotation and 2.11° direction error (0.49° and 2.33°).
 
 **TUM RGB-D** (`scripts/demo_absolute_pose.py --survey`). Reference frames are taken every 40
 frames, and each places the frames 15 and 30 later. The points come either from the reference
@@ -171,12 +198,12 @@ require. Errors are medians against the motion capture, rotation then camera pos
 
 | Sequence | Points | Placed / rejected | Ding, refined | Unrefined | OpenCV |
 |---|---|---|---|---|---|
-| fr1/xyz | depth | 29 / 8 | 0.78°, 1.26 cm | 0.74°, 1.43 cm | 0.74°, 1.16 cm |
-| fr1/xyz | two-view | 24 / 0 | 0.75°, 0.86 cm | 0.69°, 0.92 cm | 0.77°, 0.80 cm |
-| fr1/desk | depth | 17 / 9 | 1.16°, 1.93 cm | 1.15°, 1.79 cm | 1.17°, 2.26 cm |
-| fr1/desk | two-view | 8 / 0 | 1.06°, 1.75 cm | 1.13°, 1.69 cm | 1.06°, 1.51 cm |
-| fr3/long_office_household | depth | 117 / 3 | 0.31°, 0.65 cm | 0.35°, 0.78 cm | 0.32°, 0.65 cm |
-| fr3/long_office_household | two-view | 122 / 0 | 0.39°, 0.73 cm | 0.42°, 0.79 cm | 0.40°, 0.78 cm |
+| fr1/xyz | depth | 31 / 8 | 0.76°, 1.11 cm | 0.72°, 1.37 cm | 0.72°, 1.06 cm |
+| fr1/xyz | two-view | 26 / 0 | 0.77°, 0.77 cm | 0.70°, 0.92 cm | 0.77°, 0.76 cm |
+| fr1/desk | depth | 17 / 9 | 1.13°, 1.87 cm | 1.15°, 1.79 cm | 1.17°, 2.26 cm |
+| fr1/desk | two-view | 8 / 0 | 1.25°, 1.43 cm | 1.32°, 1.30 cm | 1.06°, 1.38 cm |
+| fr3/long_office_household | depth | 117 / 3 | 0.31°, 0.61 cm | 0.35°, 0.78 cm | 0.32°, 0.65 cm |
+| fr3/long_office_household | two-view | 122 / 0 | 0.34°, 0.62 cm | 0.36°, 0.74 cm | 0.35°, 0.65 cm |
 
 - On real data slamlab and OpenCV agree to within the data's noise. The errors are the data's
   (rolling shutter, blur, depth noise, motion-capture sync), not the solvers'. Lambda Twist
@@ -186,8 +213,9 @@ require. Errors are medians against the motion capture, rotation then camera pos
 - The rejected frames are matching failures, not solver failures. On fr1's fast, blurred
   stretch, the ground-truth pose explains under 5% of some frames' matches; RANSAC then finds
   3 to 7 inliers, and the gate rejects the pose.
-- fr1/desk's two-view row is small: 22 of 30 references do not initialise. Some of those
-  references crash `twoview.initialize` (see the open items).
+- fr1/desk's two-view row is small: 22 of 30 references do not initialise (most for low
+  parallax). One of them used to crash `twoview.initialize`: duplicate keypoints let a rank-1
+  homography win H-RANSAC, and its decomposition raised. Such an H is now no model.
 
 ## What was learned
 
@@ -211,6 +239,16 @@ require. Errors are medians against the motion capture, rotation then camera pos
   discriminant is a double root.
 - **A minimal set is not always enough for a least-squares solver.** EPnP's paper allows four
   points, but its linearisations are approximate there; measuring showed it.
+- **An exact shortcut is not exact in floating point.** Skipping Ding's second line is a
+  theorem when the cubic has one real root; near the cylinder rounding decides that, and the
+  skip was the main source of gross misses. The review panel found it by sampling just
+  outside the cylinder, where the probe had never looked.
+- **Measure misses on the problem's own scale.** An absolute 1e-6 on a pose 1000 m away
+  demands a relative 1e-9, below the conditioning: the first far-field result, "every solver
+  loses 18%", was the test's, not the solvers'.
+- **LO is only as good as its refits.** On a planar scene EPnP cannot run, so LO did
+  nothing and one refinement from a minimal sample's consensus stayed 2x off the floor;
+  re-collecting the inliers and refining again closed it.
 - **Oracles need the same problem, not just the same name.** SciPy's robust loss applies per
   residual component, ours per correspondence. The first comparison disagreed by 5% for that
   reason alone.

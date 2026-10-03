@@ -14,7 +14,9 @@ with identical RANSAC runs on the same seed. Three deferred panel items folded i
 
 - **P3P** (`foundations.p3p`): Ding et al.'s solver (CVPR 2023, the default) and Lambda Twist
   (ECCV 2018) behind a `solver` option, following PoseLib's implementations; every pose
-  returned is a rigid motion with every point in front.
+  returned is a rigid motion with every point in front. Ding's always intersects both lines of
+  the degenerate conic (PoseLib's single-root shortcut dropped true poses near the danger
+  cylinder).
 - **EPnP** (`pnp.epnp`): Lepetit et al.'s least-squares PnP from five points, following
   OpenCV's implementation; planar points raise `Degenerate`.
 - **The pose refinement** (`pnp.refine_pose`): Levenberg-Marquardt on SE(3) of the
@@ -22,7 +24,10 @@ with identical RANSAC runs on the same seed. Three deferred panel items folded i
 - **PnP RANSAC** (`pnp.pnp_ransac`): LO-MSAC with a P3P minimal solver and EPnP refits, the
   consensus refined and kept only if the MSAC cost drops.
 - **Generic refined RANSAC** (`ransac.RefinedSummary`, `refine_consensus`,
-  `estimate_refined`, `run_refined`, in both languages), shared by E-RANSAC and PnP RANSAC.
+  `estimate_refined`, in both languages), shared by E-RANSAC and PnP RANSAC: refine the
+  consensus, re-collect the inliers and repeat while the MSAC cost drops
+  (`REFINE_ROUNDS = 4`; `RefinedSummary.rounds`).
+- **`correspondences.normalised_xy`** and **`p3p.rigid_pose`**, shared helpers.
 - **`backends.call`**: one dispatch for functions whose two sides differ, decoding the compiled
   result with the module's `codes()` (PR 2 panel A8).
 - **TUM depth maps**: `tum.Sequence.depths` and `tum.DEPTH_SCALE`.
@@ -35,12 +40,24 @@ with identical RANSAC runs on the same seed. Three deferred panel items folded i
 
 - `epipolar.EssentialSummary` is now `ransac.RefinedSummary` (`ransac::RefinedSolution` in
   C++); `essential_summary_from_backend` is `ransac.refined_summary_from_backend`.
+- E-RANSAC's refinement now runs in refine-and-reselect rounds: on the synthetic sweep the
+  median error is 0.78 of the 8-point floor (0.71 with one refinement), the p90 2.94 (3.21),
+  the recall 0.953 (0.950).
+- `ransac.run` takes the reference, the compiled arguments and the summary decoder.
+- The design doc's pose convention: rung 0's estimators return the transform they name
+  (`T_cam_world`, `T_c2_c1`); trajectory results stay `T_world_cam`.
 - `codes()` keys are qualified: `ransac_termination` and `nls_termination` everywhere (PR 3
   panel A7); `nls.summary_from_backend` takes the codes dict.
 - BA's options cross the bindings as one nested dict of `BAOptions`' fields, choices by name,
   read strictly at every depth (PR 2 panel A7).
 - `nls` sits one layer lower in rung 0's order, so `ransac` may use it.
-- The bindings share one enum-code decoder and the `rows3`/`rows2` helpers.
+- The bindings share one enum-code decoder, `enum_names` and the `rows3`/`rows2` helpers;
+  `pnp.codes()` carries `minimal_solver`.
+
+### Fixed
+
+- `twoview.initialize` no longer raises when H-RANSAC returns a rank-1 homography (duplicate
+  keypoints at one pixel, TUM fr1/desk): such an H is no model, and E decides.
 
 ## [0.2.2.0] - 2026-10-03
 

@@ -176,6 +176,12 @@ the C++ backend's wall time per RANSAC run (`five_point_sweep.py`).
 | Stewénius | no | 0.93, 4.40 | 110 | 0.923 | 5.1 |
 | **Stewénius** | **yes** | **0.71, 3.21** | **110** | **0.950** | **5.1** |
 
+Since PR 4 the refinement runs in refine-and-reselect rounds (`ransac.refine_consensus`; the
+absolute-pose note). Refined, the 5-point rows are now 0.78, 2.94 (recall 0.953) and the
+8-point's 0.81, 3.09 (0.951): a slightly higher median, a lower tail. On TUM fr1/xyz the
+refined 5-point rows are 24 / 38 initialised at 0.51° and 2.11°, and the refined 8-point's
+23 / 38 at 0.63° and 2.32°. The tables keep PR 3's numbers.
+
 - The 5-point needs a seventh of the samples, and its models are better before any refinement.
 - The refinement is what goes below the floor.
 - Nistér and Stewénius draw identical runs here (same samples, same models). Unpolished,
