@@ -643,6 +643,28 @@ enum Attempt<State> {
     Stop(Termination),
 }
 
+/// The largest absolute entry, NaN if any entry is NaN, 0 for an empty vector.
+///
+/// `f64::max` drops NaN, so a plain fold would let a corrupted linearisation pass as
+/// converged; numpy's `max`, the reference, keeps it.
+///
+/// # Arguments
+///
+/// * `vector` - The vector.
+///
+/// # Returns
+///
+/// The norm.
+fn max_abs(vector: &DVector<f64>) -> f64 {
+    vector.iter().fold(0.0_f64, |m, g| {
+        if m.is_nan() || g.is_nan() {
+            f64::NAN
+        } else {
+            m.max(g.abs())
+        }
+    })
+}
+
 /// Computes, applies and judges one step; or returns the convergence test it stops on.
 ///
 /// # Arguments
@@ -668,7 +690,7 @@ fn try_step<P: Problem>(
     options: &Options,
 ) -> Attempt<P::State> {
     let gradient = system.gradient();
-    let gradient_norm = gradient.iter().fold(0.0_f64, |m, g| m.max(g.abs()));
+    let gradient_norm = max_abs(gradient);
     if gradient_norm <= options.gradient_tolerance {
         return Attempt::Stop(Termination::Gradient);
     }
@@ -1103,6 +1125,51 @@ mod tests {
         let error = so3::log(&(rotation.transpose() * mean.state)).unwrap();
         assert!(error.norm() < 0.01);
         assert!((mean.state.transpose() * mean.state - Matrix3::identity()).norm() < 1e-12);
+    }
+
+    /// A Rosenbrock whose Jacobian carries a NaN in a parameter the residuals ignore.
+    struct NanJacobian;
+
+    impl Problem for NanJacobian {
+        type State = DVector<f64>;
+        type System = DenseSystem;
+
+        fn squared_norms(&self, state: &DVector<f64>) -> DVector<f64> {
+            Rosenbrock::residuals(state).map(|r| r * r)
+        }
+
+        fn linearize(&self, state: &DVector<f64>, weights: &DVector<f64>) -> DenseSystem {
+            let mut jacobian = DMatrix::zeros(2, 3);
+            jacobian[(0, 0)] = -20.0 * state[0];
+            jacobian[(0, 1)] = 10.0;
+            jacobian[(1, 0)] = -1.0;
+            jacobian[(0, 2)] = f64::NAN;
+            DenseSystem::build(&jacobian, &Rosenbrock::residuals(state), weights).unwrap()
+        }
+
+        fn retract(&self, state: &DVector<f64>, delta: &DVector<f64>) -> DVector<f64> {
+            state + delta
+        }
+    }
+
+    /// A NaN gradient entry is never read as convergence, even at the minimum where every
+    /// other entry is zero.
+    #[test]
+    fn nan_gradient_does_not_converge() {
+        assert!(max_abs(&DVector::from_vec(vec![f64::NAN, 0.0, 1e-12])).is_nan());
+        assert!(max_abs(&DVector::zeros(0)).abs() < f64::MIN_POSITIVE);
+        let at_minimum = DVector::from_vec(vec![1.0, 1.0, 0.0]);
+        for method in [Method::LevenbergMarquardt, Method::GaussNewton] {
+            let solved = solve(
+                &NanJacobian,
+                at_minimum.clone(),
+                &tight(method, Loss::default()),
+            );
+            assert!(
+                !solved.unwrap().summary.termination.is_converged(),
+                "{method:?}"
+            );
+        }
     }
 
     /// Strict mode turns an unconverged stop into an error; bad settings are rejected.

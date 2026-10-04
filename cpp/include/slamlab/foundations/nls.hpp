@@ -346,7 +346,10 @@ template <Problem P, LinearSystem S>
     double damping, int number, const Options& options) {
   constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
   const auto& gradient = system.gradient();
-  const double gradient_norm = gradient.size() == 0 ? 0.0 : gradient.cwiseAbs().maxCoeff();
+  // A NaN entry makes the norm NaN, so a corrupted linearisation never passes as converged
+  // (Eigen's default maxCoeff may drop NaN; numpy's max keeps it).
+  const double gradient_norm =
+      gradient.size() == 0 ? 0.0 : gradient.cwiseAbs().template maxCoeff<Eigen::PropagateNaN>();
   if (gradient_norm <= options.gradient_tolerance) {
     return Termination::kGradient;
   }
