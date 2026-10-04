@@ -197,7 +197,7 @@ fn solve<'py>(
         point_anchor: slice(&point_anchor)?.to_vec(),
     };
     let options = read_options(&options)?;
-    let solution = unwrap(py, py.detach(|| core::solve(&problem, &options)))?;
+    let solution = unwrap(py, py.detach(|| core::solve::solve(&problem, &options)))?;
     solution_dict(py, &solution)
 }
 

@@ -43,8 +43,10 @@ listed in the layers contract.
   That sets a convention: a file's tests are one inline ``#[cfg(test)] mod tests { ... }``
   at its end, the attribute directly on the module (not ``mod tests;`` in another file,
   nor another attribute between). A facade's items stand for one
-  layer, so an item the facade defines in a higher layer (``ba``'s ``solve``) passes, as in
-  C++ (panel A24).
+  layer, so an item it defined in a higher layer would pass; ``ba``'s ``solve`` therefore
+  lives in ``ba/solve.rs`` (``ba/solve.cpp`` in C++), not in the facade (panels A24, A13).
+  C++'s public ``ba.hpp`` still declares ``solve``, so a package module that includes it
+  could call it unchecked: the one gap left, recorded in the design doc.
 
 Usage::
 
@@ -71,11 +73,12 @@ _CPP_MODULE_ROOTS = ("cpp/include/slamlab", "cpp/src")
 _CPP_MODULE_ALIASES = {"error": "errors"}
 """C++ files whose Python module is named differently."""
 _CPP_FACADES: dict[tuple[str, ...], tuple[str | None, str | None]] = {
-    ("foundations", "ba"): ("problem", "solve")
+    ("foundations", "ba"): ("problem", "problem")
 }
-"""A package's C++ facade, as the Python modules it stands for: ``ba.hpp`` declares the
-problem types (``problem``, the bottom layer) when included from inside the package, and
-``ba.cpp`` implements ``solve`` (the top) when it includes the package's modules."""
+"""A package's C++ facade, as the Python modules it stands for: what it declares when included
+from inside the package, and what it implements when it includes the package's modules.
+``ba.hpp`` and ``ba.cpp`` are the problem types and their checks (``problem``, the bottom
+layer); ``solve`` is ``ba/solve.cpp``, as in Python and Rust."""
 _ADD_RUNG = re.compile(r"slamlab_add_rung\(\s*([a-z_]+)([^)]*)\)")
 _CPP_RUNG_ROOTS = (
     "cpp/include/slamlab",

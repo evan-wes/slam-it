@@ -35,12 +35,15 @@ origin and unit is an invertible map of ``g``, so the spans -- and the gauge -- 
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 
 import numpy as np
 
 from slamlab.foundations import so3
 from slamlab.foundations.ba.problem import POSE_DIM, Array, IndexArray
+from slamlab.foundations.errors import DegenerateError
 
 GENERATORS = 7
 """The similarity's directions: translation (3), rotation (3), scale (1)."""
@@ -151,11 +154,27 @@ def _rows(anchors: Anchors, centres: Array) -> Array:
     return np.concatenate(blocks)
 
 
+@contextmanager
+def _svd_failure_is_degenerate() -> Iterator[None]:
+    """Raise numpy's SVD failure (``LinAlgError``, on a non-finite matrix) as Degenerate.
+
+    The compiled cores report the same failure as ``Degenerate``, so the gauge fails the same
+    way on every backend.
+    """
+    try:
+        yield
+    except np.linalg.LinAlgError as error:
+        raise DegenerateError(
+            "gauge: the SVD of the pinned directions failed (a non-finite anchor or camera centre)"
+        ) from error
+
+
 def _null(matrix: Array, rank: int) -> Array:
     """Return an orthonormal basis of the null space of a rank-``rank`` matrix's rows."""
     if matrix.shape[0] == 0:
         return np.eye(matrix.shape[1])
-    vt = np.linalg.svd(matrix, full_matrices=True)[2]
+    with _svd_failure_is_degenerate():
+        vt = np.linalg.svd(matrix, full_matrices=True)[2]
     return np.asarray(vt[rank:].T, dtype=np.float64)
 
 
@@ -163,7 +182,8 @@ def _singular(matrix: Array) -> Array:
     """Return a matrix's singular values, largest first (none for an empty matrix)."""
     if matrix.size == 0:
         return np.zeros(0)
-    return np.asarray(np.linalg.svd(matrix, compute_uv=False), dtype=np.float64)
+    with _svd_failure_is_degenerate():
+        return np.asarray(np.linalg.svd(matrix, compute_uv=False), dtype=np.float64)
 
 
 def remaining(anchors: Anchors, centres: Array) -> Array:
@@ -324,7 +344,8 @@ def _canonical_span(matrix: Array, rank: int) -> list[Array]:
     normalised column, and deflate. Any two bases of the same span give the same vectors, so
     both cores agree whatever their SVDs return.
     """
-    u = np.linalg.svd(matrix, full_matrices=False)[0][:, :rank]
+    with _svd_failure_is_degenerate():
+        u = np.linalg.svd(matrix, full_matrices=False)[0][:, :rank]
     projector = u @ u.T
     out = []
     for _ in range(rank):

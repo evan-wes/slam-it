@@ -173,9 +173,10 @@ small excess.
   NaN-propagating norms, and finiteness checks on every input ahead of its tolerance
   comparisons, since NaN passes all of them.
 - **Where the languages still differ, on purpose.** A gauge SVD that fails at the start of a
-  Rust solve (a non-finite matrix, or one past the iteration cap) is a `Degenerate` error.
-  C++'s Eigen SVD always returns a result, and numpy raises its own `LinAlgError`. All three
-  check their inputs finite first, so the path is defensive and practically unreachable.
+  solve (a non-finite matrix, or in Rust one past the iteration cap) is a `Degenerate` error
+  in Rust and in Python, which maps numpy's `LinAlgError` to it (PR 6, panel A20). C++'s
+  Eigen SVD always returns a result. All three check their inputs finite first, so the path
+  is defensive and practically unreachable.
 - **Strictness is cheaper with serde.** `deny_unknown_fields` replaces a hand-written key
   check at every depth, which is why the C++ binding now borrows serde's wording.
 

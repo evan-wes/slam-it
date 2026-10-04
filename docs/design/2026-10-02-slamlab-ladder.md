@@ -149,7 +149,11 @@ and a possible later phone target.
     such a summary satisfies the `Summary` Protocol through properties delegating to the
     primary run, so it fits the generic `Solution`. The C++ concept needs data members, so
     C++ returns a named struct instead (`ba::Solution`, `ransac::RefinedSolution`), with
-    the same `state` and `summary` fields (settled in PR 3, panel A11).
+    the same `state` and `summary` fields (settled in PR 3, panel A11). Rust's trait has
+    methods, so there a nesting summary implements it by delegation, as in Python:
+    `ba::Summary` and `ransac::RefinedSummary` implement `solve::Summary`, and a refined run
+    returns the generic `solve::Solution` (settled in PR 6, panel A5 on PR 5). BA's own
+    `Solution` stays a named struct in every language, since its estimate is several arrays.
   - **Crossing the binding boundary:** the estimate crosses as float64 arrays and the
     summary as plain scalars, with the termination reason as an integer code. The Python
     entry point builds the dataclass, and there are no binding-side classes. This extends
@@ -657,11 +661,10 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
     one shared script helper if a third demo comes first.
 - **Deferred from PR 5's review panel**
   ([report](../reviews/2026-10-04-feature-rust-core.md)):
-  - **Nested summaries and the Rust `Summary` trait (A5).** `ba::Summary` holds the
-    least-squares summary but does not implement `solve::Summary`. In Rust it could, by
-    delegation, as Python's properties do; C++'s concept needs data members, hence its
-    named structs. Decide when PR 6 brings `RefinedSummary` to Rust, and record it under
-    "Where the summary lives".
+  - Closed by PR 6: **nested summaries and the Rust `Summary` trait (A5).** `ba::Summary`
+    and `ransac::RefinedSummary` implement `solve::Summary` by delegation; C++ keeps its
+    named structs, since its concept needs data members. Recorded under "Where the summary
+    lives".
 - **Deferred from PR 1's review panel**
   ([report](../reviews/2026-10-02-feature-ba-spine.md)):
   - **Batched APIs for standalone callers (A11).** Batching over many inputs lives in the
@@ -681,10 +684,12 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
     includes are checked as the implementation's; a facade with no `_CPP_FACADES` entry is
     exempt. Key facades by file kind, and fail on an unmapped one, when the next package gets
     a facade.
-    PR 5's panel (A13, run 2) found the same gap in Rust: `ba/mod.rs` holds `solve` and
-    `centring_origin`, so `use super::solve` from inside `ba` passes as the `problem`
-    layer. The structural fix in both languages is to move `solve` into its own module
-    (`ba/solve.rs`, `ba/solve.cpp`), mirroring Python's `ba/solve.py`.
+    PR 5's panel (A13, run 2) found the same gap in Rust. PR 6 closed the part that
+    `solve` caused: `solve`, `centring_origin` and `shifted` moved into `ba/solve.rs` and
+    `ba/solve.cpp`, mirroring Python's `ba/solve.py`, so the facade maps to `problem` both
+    ways and `super::solve` from inside `ba` is checked. Left open: C++'s public `ba.hpp`
+    still declares `solve`, so a package module that includes the header could call it
+    unchecked, and an unmapped facade is still exempt.
   - **The gauge in rung 0's own right (A26, run 3).** `ba/gauge` depends only on poses and
     points. When pose-graph optimisation (the classic rung's loop closure) needs the same
     null-space removal, lift it to `foundations.gauge` rather than importing it from `ba`.

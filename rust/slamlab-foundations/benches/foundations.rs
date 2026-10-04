@@ -59,7 +59,7 @@ fn bal(c: &mut Criterion) {
         .sample_size(10)
         .measurement_time(Duration::from_secs(60));
     group.bench_function("bal", |b| {
-        b.iter(|| ba::solve(black_box(&problem), &options).expect("the solve succeeds"));
+        b.iter(|| ba::solve::solve(black_box(&problem), &options).expect("the solve succeeds"));
     });
     group.finish();
 }
