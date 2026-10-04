@@ -7,7 +7,9 @@
 
 use nalgebra::SMatrix;
 use numpy::ndarray::{ArrayD, IxDyn};
-use numpy::{IntoPyArray, PyArrayDyn, PyReadonlyArrayDyn, PyUntypedArrayMethods};
+use numpy::{
+    Element, IntoPyArray, PyArrayDyn, PyReadonlyArray1, PyReadonlyArrayDyn, PyUntypedArrayMethods,
+};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyType;
@@ -210,6 +212,89 @@ pub fn decode<E: Copy>(all: &[E], code: i64, what: &str) -> PyResult<E> {
         .ok()
         .and_then(|index| all.get(index).copied())
         .ok_or_else(|| PyValueError::new_err(format!("{what}: unknown code {code}")))
+}
+
+/// Returns a one-dimensional array's values as a contiguous slice.
+///
+/// # Arguments
+///
+/// * `array` - The array.
+///
+/// # Returns
+///
+/// The values.
+///
+/// # Errors
+///
+/// `ValueError` if the array is not C-contiguous.
+pub fn slice<'a, T: Element>(array: &'a PyReadonlyArray1<'_, T>) -> PyResult<&'a [T]> {
+    array
+        .as_slice()
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+/// Copies items into a new array of shape `(N, *A::shape())`.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `items` - The items.
+///
+/// # Returns
+///
+/// The array.
+///
+/// # Errors
+///
+/// Never in practice (the shape always matches); see [`new_array`].
+pub fn items_array<'py, A: Item>(py: Python<'py>, items: &[A]) -> PyResult<ArrayOut<'py>> {
+    let mut out = Vec::with_capacity(items.len() * A::LEN);
+    for item in items {
+        item.write(&mut out);
+    }
+    new_array(py, &[&[items.len()][..], &A::shape()].concat(), out)
+}
+
+/// An enum's names in code order, for a `codes()` table.
+///
+/// # Arguments
+///
+/// * `all` - The enum's values in code order.
+/// * `name` - The core's name function.
+///
+/// # Returns
+///
+/// The names.
+pub fn enum_names<E: Copy>(all: &[E], name: fn(E) -> &'static str) -> Vec<&'static str> {
+    all.iter().map(|&e| name(e)).collect()
+}
+
+/// Looks an enum up by its name, as the core's name function spells it.
+///
+/// # Arguments
+///
+/// * `all` - The enum's values in code order.
+/// * `name` - The core's name function.
+/// * `value` - The name to find.
+/// * `what` - The field's name, for the message.
+///
+/// # Returns
+///
+/// The enum value.
+///
+/// # Errors
+///
+/// `ValueError` for an unknown name.
+pub fn by_name<E: Copy>(
+    all: &[E],
+    name: fn(E) -> &'static str,
+    value: &str,
+    what: &str,
+) -> PyResult<E> {
+    all.iter()
+        .copied()
+        .find(|&e| name(e) == value)
+        .ok_or_else(|| PyValueError::new_err(format!("{what}: unknown name {value}")))
 }
 
 /// Applies a per-item core function to every item of a batch.
