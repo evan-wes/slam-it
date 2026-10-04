@@ -500,8 +500,8 @@ def _summary(raw: dict[str, Any] | None, codes: backends.Codes) -> ransac.Summar
 def _from_backend(raw: dict[str, Any], codes: backends.Codes) -> Initialization:
     """Build the result from a compiled backend's dict."""
     return Initialization(
-        status=Status(codes["status"][int(raw["status"])]),
-        model=Model(codes["model"][int(raw["model"])]),
+        status=Status(backends.decode_name(codes, "status", raw["status"])),
+        model=Model(backends.decode_name(codes, "model", raw["model"])),
         fallback=bool(raw["fallback"]),
         relative_pose=np.asarray(raw["relative_pose"], dtype=np.float64),
         inliers=np.asarray(raw["inliers"], dtype=np.bool_),

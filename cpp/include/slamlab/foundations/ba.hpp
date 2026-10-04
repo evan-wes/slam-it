@@ -131,6 +131,22 @@ struct Problem {
   /// @brief Each point's anchor observation (N), or -1: an anchored point is one inverse
   ///        depth along its anchor pixel's ray, in the anchor's camera.
   Indices point_anchor;
+
+  /// @brief A problem with every optional array at its default, as `BAProblem.create` fills
+  ///        them: every camera in intrinsics group 0, every observation weighted 1, no pose or
+  ///        point fixed, every intrinsic fixed, no depth priors (affines fixed at `(1, 0)`),
+  ///        no pose priors, and no anchored points.
+  /// @param model The camera model.
+  /// @param intrinsics The intrinsics groups.
+  /// @param poses Camera-to-world poses `T_world_cam`.
+  /// @param points World points.
+  /// @param observations Observed pixels.
+  /// @param cam_idx Each observation's camera.
+  /// @param pt_idx Each observation's point.
+  /// @return The problem (unchecked: `solve` checks it).
+  [[nodiscard]] static Problem with_defaults(camera::Model model, Intrinsics intrinsics,
+                                             Poses poses, Points points, Pixels observations,
+                                             Indices cam_idx, Indices pt_idx);
 };
 
 /// @brief Settings for `solve`.

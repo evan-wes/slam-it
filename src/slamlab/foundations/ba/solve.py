@@ -205,7 +205,7 @@ def _result_from_backend(raw: BackendResult, codes: backends.Codes) -> BAResult:
     solve_summary = nls.summary_from_backend(raw["solve"], codes)
     summary = BASummary(
         solve_summary,
-        codes["gauge"][int(raw["gauge"])],
+        backends.decode_name(codes, "gauge", raw["gauge"]),
         variance_factor=float(raw["variance_factor"]),
         **{name: int(raw[name]) for name in COUNT_NAMES},
     )

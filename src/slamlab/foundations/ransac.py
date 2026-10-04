@@ -402,7 +402,7 @@ def summary_from_backend(raw: dict[str, Any], codes: backends.Codes) -> Summary:
     Summary
         The summary.
     """
-    termination = Termination(codes["ransac_termination"][int(raw["termination"])])
+    termination = Termination(backends.decode_name(codes, "ransac_termination", raw["termination"]))
     return Summary(
         iterations=int(raw["iterations"]),
         termination=termination,

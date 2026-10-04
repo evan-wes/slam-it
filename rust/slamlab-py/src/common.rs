@@ -10,7 +10,7 @@ use numpy::ndarray::{ArrayD, IxDyn};
 use numpy::{
     Element, IntoPyArray, PyArrayDyn, PyReadonlyArray1, PyReadonlyArrayDyn, PyUntypedArrayMethods,
 };
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyType;
 use slamlab_foundations::error::{Error, ErrorKind};
@@ -279,12 +279,17 @@ pub fn enum_names<E: Copy>(all: &[E], name: fn(E) -> &'static str) -> Vec<&'stat
 ///
 /// # Returns
 ///
-/// The code (-1 only for a value missing from `all`, which the cores' tests rule out).
-pub fn encode<E: Copy + PartialEq>(all: &[E], value: E) -> i64 {
+/// The code.
+///
+/// # Errors
+///
+/// `RuntimeError` for a value missing from `all` (a variant added to the enum but not to
+/// its `ALL`), rather than a code that would read as another name.
+pub fn encode<E: Copy + PartialEq + std::fmt::Debug>(all: &[E], value: E) -> PyResult<i64> {
     all.iter()
         .position(|&e| e == value)
         .and_then(|i| i64::try_from(i).ok())
-        .unwrap_or(-1)
+        .ok_or_else(|| PyRuntimeError::new_err(format!("{value:?} is missing from its ALL")))
 }
 
 /// Looks an enum up by its name, as the core's name function spells it.

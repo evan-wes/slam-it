@@ -243,7 +243,7 @@ fn solution_dict<'py>(py: Python<'py>, solution: &core::Solution) -> PyResult<Bo
         )?,
     )?;
     out.set_item("solve", nls_crossing::summary(py, &summary.solve)?)?;
-    out.set_item("gauge", encode(&Gauge::ALL, summary.gauge))?;
+    out.set_item("gauge", encode(&Gauge::ALL, summary.gauge)?)?;
     out.set_item("gauge_pose", code_of(summary.gauge_pose))?;
     out.set_item("confined_pose", code_of(summary.confined_pose))?;
     for (name, count) in [

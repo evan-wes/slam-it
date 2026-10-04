@@ -12,6 +12,7 @@
 use nalgebra::{DMatrix, DVector, Dyn, Matrix3, Matrix6, OMatrix, SMatrix, SVD, Vector3};
 
 use super::{Gauge, POSE_DIM};
+use crate::error::{ErrorKind, Result, fail};
 use crate::so3;
 
 /// The similarity's directions: translation (3), rotation (3), scale (1).
@@ -186,8 +187,9 @@ fn rows(anchors: &Anchors, centres: &[Vector3<f64>]) -> DMatrix<f64> {
 ///
 /// nalgebra's SVD is thin, so a wide matrix is padded with zero rows (which change neither
 /// its row space nor its right singular vectors) to get every right singular vector. A
-/// matrix the SVD fails on (a non-finite entry) gives a NaN basis, which makes every cost it
-/// touches non-finite, so the step is rejected rather than taken.
+/// matrix the SVD fails on (a non-finite entry) gives a NaN basis: at the start the plan
+/// reports that as an error ([`remaining`], [`plan`]); during the solve it makes every cost
+/// it touches non-finite, so the step is rejected rather than taken.
 ///
 /// # Arguments
 ///
@@ -427,6 +429,18 @@ fn best_candidate(
     (best, best_rank)
 }
 
+/// The failure of a gauge computation whose SVD failed (a non-finite anchor or centre).
+///
+/// # Returns
+///
+/// `Degenerate`, naming the gauge.
+fn gauge_failed<T>() -> Result<T> {
+    fail(
+        ErrorKind::Degenerate,
+        "gauge: the SVD of the pinned directions failed (a non-finite anchor or camera centre)",
+    )
+}
+
 /// The remaining gauge N.
 ///
 /// # Arguments
@@ -437,10 +451,18 @@ fn best_candidate(
 /// # Returns
 ///
 /// An orthonormal 7 x k basis over `(t, ω, s)` in the anchors' frame.
-pub fn remaining(anchors: &Anchors, centres: &[Vector3<f64>]) -> DMatrix<f64> {
+///
+/// # Errors
+///
+/// `Degenerate` if an SVD fails, rather than reading as "nothing pins anything".
+pub fn remaining(anchors: &Anchors, centres: &[Vector3<f64>]) -> Result<DMatrix<f64>> {
     let pinned = rows(anchors, centres);
-    let rank = rank_of(&singular_values(&pinned));
-    null_space(&pinned, rank)
+    let singular = singular_values(&pinned);
+    let null = null_space(&pinned, rank_of(&singular));
+    if singular.iter().chain(null.iter()).any(|x| !x.is_finite()) {
+        return gauge_failed();
+    }
+    Ok(null)
 }
 
 /// Names a remaining gauge: none, scale (about a point), first pose (the rigid motions),
@@ -486,8 +508,12 @@ pub fn classify(null: &DMatrix<f64>) -> Gauge {
 /// # Returns
 ///
 /// The plan, with what no pose could take.
-pub fn plan(anchors: &Anchors, centres: &[Vector3<f64>], candidates: &[usize]) -> Plan {
-    let mut null = remaining(anchors, centres);
+///
+/// # Errors
+///
+/// `Degenerate` if an SVD fails.
+pub fn plan(anchors: &Anchors, centres: &[Vector3<f64>], candidates: &[usize]) -> Result<Plan> {
+    let mut null = remaining(anchors, centres)?;
     let mut out = Plan::default();
     let mut left = candidates.to_vec();
     while null.ncols() > 0 && !left.is_empty() {
@@ -502,10 +528,13 @@ pub fn plan(anchors: &Anchors, centres: &[Vector3<f64>], candidates: &[usize]) -
         }
         let image = pose_image(&in_frame(&anchors.frame, &centres[best]), &null);
         null = &null * null_space(&image, rank);
+        if null.iter().any(|x| !x.is_finite()) {
+            return gauge_failed();
+        }
         left.retain(|&c| c != best);
     }
     out.free = null.ncols();
-    out
+    Ok(out)
 }
 
 /// Each confined pose's step basis at the current centres: one 6 x (6 - rank) basis per
@@ -564,20 +593,23 @@ mod tests {
     fn remaining_gauge_by_anchors() {
         let centres = [Vector3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 0.0, 0.0)];
         let free = Anchors::default();
-        assert_eq!(classify(&remaining(&free, &centres)), Gauge::Similarity);
+        assert_eq!(
+            classify(&remaining(&free, &centres).unwrap()),
+            Gauge::Similarity
+        );
         let one = Anchors {
             centre_cams: vec![0],
             orientation_cams: vec![0],
             frame: frame_of(&centres),
             ..Anchors::default()
         };
-        assert_eq!(classify(&remaining(&one, &centres)), Gauge::Scale);
+        assert_eq!(classify(&remaining(&one, &centres).unwrap()), Gauge::Scale);
         let both = Anchors {
             centre_cams: vec![0, 1],
             orientation_cams: vec![0, 1],
             ..one
         };
-        assert_eq!(classify(&remaining(&both, &centres)), Gauge::None);
+        assert_eq!(classify(&remaining(&both, &centres).unwrap()), Gauge::None);
     }
 
     /// The null space is orthonormal and annihilated by the matrix, wide or tall.
@@ -606,6 +638,25 @@ mod tests {
                     .all(|v| v.iter().all(|x| x.is_nan()))
             );
         }
+    }
+
+    /// At the start, a non-finite anchor makes the plan an error, not a free similarity
+    /// that reads as "nothing pins anything".
+    #[test]
+    fn a_failed_plan_is_an_error() {
+        let centres = [
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(f64::NAN, 0.0, 0.0),
+        ];
+        let anchors = Anchors {
+            centre_cams: vec![1],
+            orientation_cams: vec![1],
+            ..Anchors::default()
+        };
+        let kind = remaining(&anchors, &centres).unwrap_err().kind;
+        assert_eq!(kind, ErrorKind::Degenerate);
+        let kind = plan(&anchors, &centres, &[0]).unwrap_err().kind;
+        assert_eq!(kind, ErrorKind::Degenerate);
     }
 
     /// The complement of two normals is orthonormal and orthogonal to them.

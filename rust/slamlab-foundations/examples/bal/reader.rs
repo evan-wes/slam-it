@@ -117,14 +117,16 @@ pub fn demo_options() -> ba::Options {
 #[cfg(test)]
 mod tests {
     //! The conversion against `tests/fixtures/eval/bal.json`, which the Python reader
-    //! generates and the C++ benchmark's reader is tested against too.
+    //! generates and the C++ benchmark's reader is tested against too: the model and every
+    //! array field, defaults included.
     #![allow(
-        clippy::float_cmp,
-        reason = "indices and pixels are copied or negated, so exact comparison is right"
+        clippy::cast_precision_loss,
+        reason = "small indices compared as numbers"
     )]
 
     use std::path::PathBuf;
 
+    use nalgebra::Matrix4;
     use serde_json::Value;
 
     use super::*;
@@ -134,15 +136,62 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/eval")
     }
 
-    /// The values of a nested JSON array, flattened row-major.
+    /// The values of a nested JSON array, row-major: numbers as they are, booleans as 1/0,
+    /// null as NaN.
     fn flat(value: &Value) -> Vec<f64> {
         match value {
             Value::Array(items) => items.iter().flat_map(flat).collect(),
+            Value::Bool(b) => vec![f64::from(u8::from(*b))],
+            Value::Null => vec![f64::NAN],
             other => vec![other.as_f64().expect("a number")],
         }
     }
 
-    /// The reader gives the problem the Python reader does.
+    /// Poses as row-major values.
+    fn pose_values(poses: &[Matrix4<f64>]) -> Vec<f64> {
+        poses
+            .iter()
+            .flat_map(|p| p.transpose().iter().copied().collect::<Vec<_>>())
+            .collect()
+    }
+
+    /// Booleans as 1/0.
+    fn bools(values: &[bool]) -> Vec<f64> {
+        values.iter().map(|&b| f64::from(u8::from(b))).collect()
+    }
+
+    /// Indices as numbers.
+    fn ints(values: &[i64]) -> Vec<f64> {
+        values.iter().map(|&i| i as f64).collect()
+    }
+
+    /// Every array field of a problem, by the Python field's name, row-major.
+    fn fields(problem: &Problem) -> Vec<(&'static str, Vec<f64>)> {
+        let rows2 = |v: &[nalgebra::Vector2<f64>]| v.iter().flat_map(|x| [x[0], x[1]]).collect();
+        let rows3 = |v: &[Vector3<f64>]| v.iter().flat_map(|x| [x[0], x[1], x[2]]).collect();
+        vec![
+            ("intrinsics", problem.intrinsics.values.clone()),
+            ("poses", pose_values(&problem.poses)),
+            ("points", rows3(&problem.points)),
+            ("observations", rows2(&problem.observations)),
+            ("cam_idx", ints(&problem.cam_idx)),
+            ("pt_idx", ints(&problem.pt_idx)),
+            ("intrinsics_idx", ints(&problem.intrinsics_idx)),
+            ("weights", problem.weights.clone()),
+            ("fixed_poses", bools(&problem.fixed_poses)),
+            ("fixed_intrinsics", bools(&problem.fixed_intrinsics)),
+            ("fixed_points", bools(&problem.fixed_points)),
+            ("depth_prior", problem.depth_prior.clone()),
+            ("depth_prior_weights", problem.depth_prior_weights.clone()),
+            ("depth_affine", rows2(&problem.depth_affine)),
+            ("fixed_depth_affine", bools(&problem.fixed_depth_affine)),
+            ("pose_prior", pose_values(&problem.pose_prior)),
+            ("pose_prior_weights", rows2(&problem.pose_prior_weights)),
+            ("point_anchor", ints(&problem.point_anchor)),
+        ]
+    }
+
+    /// The reader gives the problem the Python reader does, every field.
     #[test]
     fn matches_the_python_reader() {
         let text = std::fs::read_to_string(fixtures().join("bal.json")).unwrap();
@@ -151,50 +200,14 @@ mod tests {
         let atol = fixture["tolerance"]["atol"].as_f64().unwrap();
         let problem = read_bal(&fixtures().join(fixture["input"].as_str().unwrap())).unwrap();
         assert_eq!(problem.model.name(), expected["model"].as_str().unwrap());
-        let close = |got: Vec<f64>, want: &Value| {
-            let want = flat(want);
-            assert_eq!(got.len(), want.len());
-            assert!(got.iter().zip(&want).all(|(g, w)| (g - w).abs() <= atol));
-        };
-        close(
-            problem
-                .poses
-                .iter()
-                .flat_map(|p| p.transpose().iter().copied().collect::<Vec<_>>())
-                .collect(),
-            &expected["poses"],
-        );
-        close(problem.intrinsics.values.clone(), &expected["intrinsics"]);
-        close(
-            problem
-                .points
-                .iter()
-                .flat_map(|p| p.iter().copied())
-                .collect(),
-            &expected["points"],
-        );
-        close(
-            problem
-                .observations
-                .iter()
-                .flat_map(|o| o.iter().copied())
-                .collect(),
-            &expected["observations"],
-        );
-        let indices = |v: &Value| flat(v);
-        #[allow(clippy::cast_precision_loss, reason = "small indices")]
-        let as_f64 = |v: &[i64]| v.iter().map(|&i| i as f64).collect::<Vec<_>>();
-        assert_eq!(as_f64(&problem.cam_idx), indices(&expected["cam_idx"]));
-        assert_eq!(as_f64(&problem.pt_idx), indices(&expected["pt_idx"]));
-        let fixed: Vec<bool> = flat_bools(&expected["fixed_intrinsics"]);
-        assert_eq!(problem.fixed_intrinsics, fixed);
-    }
-
-    /// The booleans of a nested JSON array, flattened row-major.
-    fn flat_bools(value: &Value) -> Vec<bool> {
-        match value {
-            Value::Array(items) => items.iter().flat_map(flat_bools).collect(),
-            other => vec![other.as_bool().expect("a boolean")],
+        let arrays = expected["arrays"].as_object().unwrap();
+        let ours = fields(&problem);
+        assert_eq!(ours.len(), arrays.len(), "every field is compared");
+        for (name, got) in ours {
+            let want = flat(&arrays[name]);
+            assert_eq!(got.len(), want.len(), "{name}");
+            let same = |(g, w): (&f64, &f64)| (g.is_nan() && w.is_nan()) || (g - w).abs() <= atol;
+            assert!(got.iter().zip(&want).all(same), "{name}");
         }
     }
 }

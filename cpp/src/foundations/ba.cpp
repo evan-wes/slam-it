@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -123,6 +124,41 @@ std::optional<Eigen::VectorXd> DenseCholesky::solve(const Eigen::MatrixXd& matri
     return std::nullopt;
   }
   return Eigen::VectorXd(factor.solve(rhs));
+}
+
+Problem Problem::with_defaults(camera::Model model, Intrinsics intrinsics, Poses poses,
+                               Points points, Pixels observations, Indices cam_idx,
+                               Indices pt_idx) {
+  const auto n_cams = static_cast<Eigen::Index>(poses.size());
+  const Index n_points = points.rows();
+  const Index n_obs = observations.rows();
+  const auto n_fixed = static_cast<std::size_t>(intrinsics.size());
+  Problem problem{
+      .model = model,
+      .intrinsics = std::move(intrinsics),
+      .poses = std::move(poses),
+      .points = std::move(points),
+      .observations = std::move(observations),
+      .cam_idx = std::move(cam_idx),
+      .pt_idx = std::move(pt_idx),
+      .intrinsics_idx = Indices(static_cast<std::size_t>(n_cams), 0),
+      .weights = Eigen::VectorXd::Ones(n_obs),
+      .fixed_poses = Mask(static_cast<std::size_t>(n_cams), false),
+      .fixed_intrinsics = Mask(n_fixed, true),
+      .fixed_points = Mask(static_cast<std::size_t>(n_points), false),
+      .depth_prior = Eigen::VectorXd::Constant(n_obs, std::numeric_limits<double>::quiet_NaN()),
+      .depth_prior_weights = Eigen::VectorXd::Ones(n_obs),
+      .depth_affine = {},
+      .fixed_depth_affine = Mask(static_cast<std::size_t>(n_cams), true),
+      .pose_prior = {},
+      .pose_prior_weights =
+          Eigen::Matrix<double, Eigen::Dynamic, 2, Eigen::RowMajor>::Zero(n_cams, 2),
+      .point_anchor = Indices(static_cast<std::size_t>(n_points), -1)};
+  problem.depth_affine.resize(n_cams, 2);
+  problem.depth_affine.col(0).setOnes();
+  problem.depth_affine.col(1).setZero();
+  problem.pose_prior = problem.poses;
+  return problem;
 }
 
 Result<void> check_problem(const Problem& problem) {

@@ -12,10 +12,44 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
+
+import numpy as np
 
 from slamlab.eval import readers
 
 HERE = Path(__file__).parent
+
+ARRAYS = (
+    "intrinsics",
+    "poses",
+    "points",
+    "observations",
+    "cam_idx",
+    "pt_idx",
+    "intrinsics_idx",
+    "weights",
+    "fixed_poses",
+    "fixed_intrinsics",
+    "fixed_points",
+    "depth_prior",
+    "depth_prior_weights",
+    "depth_affine",
+    "fixed_depth_affine",
+    "pose_prior",
+    "pose_prior_weights",
+    "point_anchor",
+)
+"""Every array field of ``BAProblem``: the BAL conversion and every default it leaves."""
+
+
+def _plain(values: np.ndarray) -> list[Any]:
+    """Return an array as nested lists, NaN as ``None`` (JSON has no NaN)."""
+    plain = values.astype(object)
+    if values.dtype.kind == "f":
+        plain[np.isnan(values)] = None
+    result: list[Any] = plain.tolist()
+    return result
 
 
 def main() -> None:
@@ -23,7 +57,8 @@ def main() -> None:
     problem = readers.read_bal(HERE / "bal_tiny.txt")
     fixture = {
         "description": "bal_tiny.txt as slamlab.eval.readers.read_bal converts it "
-        "(generate_bal.py); the native BAL readers must give the same problem.",
+        "(generate_bal.py): the model, and every array field (NaN as null, booleans as "
+        "true/false). The native BAL readers must give the same problem.",
         "tolerance": {
             "comparison": "close",
             "rtol": 0.0,
@@ -33,13 +68,7 @@ def main() -> None:
         "input": "bal_tiny.txt",
         "expected": {
             "model": problem.camera_model,
-            "poses": problem.poses.tolist(),
-            "intrinsics": problem.intrinsics.tolist(),
-            "fixed_intrinsics": problem.fixed_intrinsics.tolist(),
-            "points": problem.points.tolist(),
-            "observations": problem.observations.tolist(),
-            "cam_idx": problem.cam_idx.tolist(),
-            "pt_idx": problem.pt_idx.tolist(),
+            "arrays": {name: _plain(getattr(problem, name)) for name in ARRAYS},
         },
     }
     (HERE / "bal.json").write_text(json.dumps(fixture, indent=2) + "\n")

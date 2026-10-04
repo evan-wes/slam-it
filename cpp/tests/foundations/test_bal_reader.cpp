@@ -1,24 +1,31 @@
 /// @file
 /// @brief Native test of the C++ benchmark's BAL reader (cpp/bench/foundations/bal_reader.hpp)
 ///        against `tests/fixtures/eval/bal.json`, which the Python reader generates and the
-///        Rust example's reader is tested against too.
+///        Rust example's reader is tested against too: the model and every array field,
+///        defaults included.
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "../../bench/foundations/bal_reader.hpp"
 #include "fixture_support.hpp"
+#include "slamlab/foundations/camera.hpp"
 #include "test_support.hpp"
 
 namespace {
 
 using slamlab::testing::expect;
+namespace ba = slamlab::foundations::ba;
 
-/// @brief Flatten a nested JSON array of numbers, row-major (iteratively, depth first).
+/// @brief Flatten a nested JSON array, row-major (iteratively, depth first): numbers as they
+///        are, booleans as 1/0, null as NaN.
 /// @param value The array.
-/// @return The numbers.
+/// @return The values.
 std::vector<double> flatten(const nlohmann::json& value) {
   std::vector<double> out;
   std::vector<const nlohmann::json*> pending = {&value};
@@ -29,6 +36,10 @@ std::vector<double> flatten(const nlohmann::json& value) {
       for (auto it = item->rbegin(); it != item->rend(); ++it) {
         pending.push_back(&*it);
       }
+    } else if (item->is_null()) {
+      out.push_back(std::numeric_limits<double>::quiet_NaN());
+    } else if (item->is_boolean()) {
+      out.push_back(item->get<bool>() ? 1.0 : 0.0);
     } else {
       out.push_back(item->get<double>());
     }
@@ -36,22 +47,63 @@ std::vector<double> flatten(const nlohmann::json& value) {
   return out;
 }
 
-/// @brief Whether values match a fixture's nested array within `atol`.
-/// @param got The values, row-major.
-/// @param want The fixture's array.
+/// @brief Whether values match within `atol`, NaN matching NaN (and nothing else).
+/// @param got The values.
+/// @param want The expected values.
 /// @param atol The tolerance.
-/// @return True when every value is within `atol`.
-bool close(const std::vector<double>& got, const nlohmann::json& want, double atol) {
-  const std::vector<double> expected = flatten(want);
-  if (got.size() != expected.size()) {
+/// @return True when every value matches.
+bool same(const std::vector<double>& got, const std::vector<double>& want, double atol) {
+  if (got.size() != want.size()) {
     return false;
   }
   for (std::size_t i = 0; i < got.size(); ++i) {
-    if (std::abs(got[i] - expected[i]) > atol) {
+    const bool both_nan = std::isnan(got[i]) && std::isnan(want[i]);
+    if (!both_nan && !(std::abs(got[i] - want[i]) <= atol)) {
       return false;
     }
   }
   return true;
+}
+
+/// @brief A matrix's values, row-major.
+/// @tparam M The matrix type.
+/// @param matrix The matrix.
+/// @return The values.
+template <typename M>
+std::vector<double> rows(const M& matrix) {
+  std::vector<double> out;
+  for (Eigen::Index r = 0; r < matrix.rows(); ++r) {
+    for (Eigen::Index c = 0; c < matrix.cols(); ++c) {
+      out.push_back(static_cast<double>(matrix(r, c)));
+    }
+  }
+  return out;
+}
+
+/// @brief A list's values as numbers.
+/// @tparam T The element type (indices, flags).
+/// @param values The list.
+/// @return The values.
+template <typename T>
+std::vector<double> numbers(const std::vector<T>& values) {
+  std::vector<double> out;
+  out.reserve(values.size());
+  for (const T value : values) {
+    out.push_back(static_cast<double>(value));
+  }
+  return out;
+}
+
+/// @brief Poses' values, row-major.
+/// @param poses The poses.
+/// @return The values.
+std::vector<double> pose_values(const ba::Poses& poses) {
+  std::vector<double> out;
+  for (const Eigen::Matrix4d& pose : poses) {
+    const std::vector<double> one = rows(pose);
+    out.insert(out.end(), one.begin(), one.end());
+  }
+  return out;
 }
 
 /// @brief The test body.
@@ -67,40 +119,34 @@ int run() {
   if (!problem) {
     return slamlab::testing::finish("foundations/bal_reader", failures);
   }
-  std::vector<double> poses;
-  for (const Eigen::Matrix4d& pose : problem->poses) {
-    for (int r = 0; r < 4; ++r) {
-      for (int c = 0; c < 4; ++c) {
-        poses.push_back(pose(r, c));
-      }
-    }
-  }
-  const auto rows = [](const auto& matrix) {
-    std::vector<double> out;
-    for (Eigen::Index r = 0; r < matrix.rows(); ++r) {
-      for (Eigen::Index c = 0; c < matrix.cols(); ++c) {
-        out.push_back(matrix(r, c));
-      }
-    }
-    return out;
+  expect(std::string(slamlab::foundations::camera::name(problem->model)) ==
+             expected["model"].get<std::string>(),
+         "model matches the Python reader", failures);
+  const std::vector<std::pair<std::string, std::vector<double>>> fields = {
+      {"intrinsics", rows(problem->intrinsics)},
+      {"poses", pose_values(problem->poses)},
+      {"points", rows(problem->points)},
+      {"observations", rows(problem->observations)},
+      {"cam_idx", numbers(problem->cam_idx)},
+      {"pt_idx", numbers(problem->pt_idx)},
+      {"intrinsics_idx", numbers(problem->intrinsics_idx)},
+      {"weights", rows(problem->weights)},
+      {"fixed_poses", numbers(problem->fixed_poses)},
+      {"fixed_intrinsics", numbers(problem->fixed_intrinsics)},
+      {"fixed_points", numbers(problem->fixed_points)},
+      {"depth_prior", rows(problem->depth_prior)},
+      {"depth_prior_weights", rows(problem->depth_prior_weights)},
+      {"depth_affine", rows(problem->depth_affine)},
+      {"fixed_depth_affine", numbers(problem->fixed_depth_affine)},
+      {"pose_prior", pose_values(problem->pose_prior)},
+      {"pose_prior_weights", rows(problem->pose_prior_weights)},
+      {"point_anchor", numbers(problem->point_anchor)},
   };
-  expect(close(poses, expected["poses"], atol), "poses match the Python reader", failures);
-  expect(close(rows(problem->intrinsics), expected["intrinsics"], atol),
-         "intrinsics match the Python reader", failures);
-  expect(close(rows(problem->points), expected["points"], atol), "points match the Python reader",
-         failures);
-  expect(close(rows(problem->observations), expected["observations"], atol),
-         "observations match the Python reader", failures);
-  expect(problem->cam_idx == expected["cam_idx"].get<std::vector<std::int64_t>>() &&
-             problem->pt_idx == expected["pt_idx"].get<std::vector<std::int64_t>>(),
-         "indices match the Python reader", failures);
-  std::vector<bool> fixed;
-  for (const auto& row : expected["fixed_intrinsics"]) {
-    for (const auto& value : row) {
-      fixed.push_back(value.get<bool>());
-    }
+  expect(fields.size() == expected["arrays"].size(), "every field is compared", failures);
+  for (const auto& [name, got] : fields) {
+    expect(same(got, flatten(expected["arrays"][name]), atol),
+           (name + " matches the Python reader").c_str(), failures);
   }
-  expect(problem->fixed_intrinsics == fixed, "fixed intrinsics match the Python reader", failures);
   return slamlab::testing::finish("foundations/bal_reader", failures);
 }
 

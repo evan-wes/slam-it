@@ -168,7 +168,7 @@ pub fn summary<'py>(py: Python<'py>, summary: &nls::Summary) -> PyResult<Bound<'
     out.set_item("final_cost", summary.final_cost)?;
     out.set_item(
         "termination",
-        encode(&Termination::ALL, summary.termination),
+        encode(&Termination::ALL, summary.termination)?,
     )?;
     let rows: Vec<f64> = summary.trace.iter().flat_map(trace_row).collect();
     out.set_item(

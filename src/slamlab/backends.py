@@ -17,7 +17,7 @@ from __future__ import annotations
 import importlib
 from collections.abc import Callable, Mapping
 from types import ModuleType
-from typing import Any, TypeVar, cast
+from typing import Any, SupportsInt, TypeVar, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -235,6 +235,37 @@ def dispatch(
 
 Codes = dict[str, list[str]]
 """A compiled module's enum tables, from its ``codes()``: each enum's names in code order."""
+
+
+def decode_name(codes: Codes, table: str, code: SupportsInt) -> str:
+    """Return the name a compiled backend's code stands for in one of its enum tables.
+
+    Parameters
+    ----------
+    codes : Codes
+        The backend's tables (its ``codes()``).
+    table : str
+        The enum's table, e.g. ``"nls_termination"``.
+    code : int-like
+        The code the backend returned.
+
+    Returns
+    -------
+    str
+        The name.
+
+    Raises
+    ------
+    RuntimeError
+        If the code is outside the table. A negative code would otherwise index from the end
+        and read as a plausible wrong name.
+    """
+    names = codes[table]
+    index = int(code)
+    if not 0 <= index < len(names):
+        raise RuntimeError(f"{table}: backend returned code {index}, outside {names}")
+    return names[index]
+
 
 ResultT = TypeVar("ResultT")
 

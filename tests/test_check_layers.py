@@ -330,6 +330,58 @@ def test_rust_internal_order_allows_downward_paths_facades_comments_and_tests(
     assert list(check_layers.check_rust_internal(fake_repo, ORDERS)) == []
 
 
+def test_relative_include_into_another_rung_is_reported(fake_repo: Path) -> None:
+    """A quoted relative include is resolved to the rung directory it lands in (panel A9)."""
+    _write(fake_repo, "cpp/tests/foundations/test_x.cpp", '#include "../../bench/edge/foo.hpp"\n')
+    _write(
+        fake_repo, "cpp/tests/foundations/test_y.cpp", '#include "../../bench/foundations/ok.hpp"\n'
+    )
+    found = list(check_layers.check_cpp(fake_repo, ALLOWED))
+    assert [v.message for v in found] == ["rung 'foundations' may not include from rung 'edge'"]
+    assert found[0].location == "cpp/tests/foundations/test_x.cpp:1"
+
+
+@pytest.mark.parametrize(
+    ("path", "code", "message"),
+    [
+        ("ba/schur.rs", "use super::*;\nfn f() { bundle::adjust(); }", "glob import"),
+        ("ba/schur.rs", "use crate::ba::*;", "glob import"),
+        ("ba/mod.rs", "mod bundle;\npub use bundle::adjust;", "re-export in a package facade"),
+        (
+            "ba/gauge.rs",
+            "#[cfg(test)]\nfn helper() {}\nuse super::bundle;",
+            "#[cfg(test)] outside the trailing test module",
+        ),
+    ],
+)
+def test_rust_constructs_the_check_cannot_follow_are_reported(
+    fake_repo: Path, path: str, code: str, message: str
+) -> None:
+    """A glob import, a facade re-export or a stray ``#[cfg(test)]`` fails loudly (panel A8)."""
+    _write(fake_repo, f"{RUST}/ba/bundle.rs", "")
+    _write(fake_repo, f"{RUST}/{path}", code + "\n")
+    found = [v.message for v in check_layers.check_rust_internal(fake_repo, ORDERS)]
+    assert any(message in m for m in found), found
+
+
+def test_rust_literals_and_comments_neither_hide_nor_invent_edges(fake_repo: Path) -> None:
+    """Literals and comments neither hide code nor add edges.
+
+    A ``//`` inside a string does not hide the code after it; paths in comments, strings and
+    char literals are not edges.
+    """
+    _write(fake_repo, f"{RUST}/se3.rs", "")
+    _write(
+        fake_repo,
+        f"{RUST}/so3.rs",
+        'const U: &str = "http://x"; use crate::se3;\n'
+        "/* crate::se3 /* nested */ */ const Q: char = '\"'; // crate::se3\n"
+        'const R: &str = r#"crate::se3"#;\n',
+    )
+    found = [v.message for v in check_layers.check_rust_internal(fake_repo, ORDERS)]
+    assert found == ["in foundations, 'so3' may not use 'se3'"]
+
+
 def test_two_contracts_over_one_container_are_rejected() -> None:
     """Two layers contracts over the same package would silently replace one another."""
     contract = {"type": "layers", "containers": ["slamlab.foundations"], "layers": ["a", "b"]}

@@ -251,7 +251,8 @@ struct GaugeChoice {
 ///
 /// # Errors
 ///
-/// `InvalidInput` for a scale gauge with nothing to measure from.
+/// `InvalidInput` for a scale gauge with nothing to measure from; `Degenerate` if the
+/// gauge's SVD fails.
 fn fix_gauge(
     problem: &Problem,
     observed: &[bool],
@@ -274,9 +275,9 @@ fn fix_gauge(
         }
     } else if gauge != Gauge::None {
         if gauge == Gauge::Auto {
-            name = gauge::classify(&gauge::remaining(&anchors, &centres));
+            name = gauge::classify(&gauge::remaining(&anchors, &centres)?);
         }
-        plan = gauge::plan(&anchors, &centres, &candidates);
+        plan = gauge::plan(&anchors, &centres, &candidates)?;
     }
     for &c in &plan.fixed {
         anchors.centre_cams.push(c);
@@ -289,7 +290,7 @@ fn fix_gauge(
     if matches!(gauge, Gauge::None | Gauge::FirstPose) {
         // Fixed recipes: whatever they leave of the gauge stays in the problem, and is
         // counted.
-        plan.free = gauge::remaining(&anchors, &centres).ncols();
+        plan.free = gauge::remaining(&anchors, &centres)?.ncols();
     }
     Ok(GaugeChoice {
         name,

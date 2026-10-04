@@ -3,11 +3,13 @@
 import-linter enforces the layering for Python. This script enforces the same rules for
 the other two languages, reading the same contracts, so the three can never disagree:
 
-- C++: every ``#include "slamlab/<rung>/..."`` or ``#include <slamlab/<rung>/...>`` in
-  ``cpp/{include/slamlab,src,tests,bindings}/<rung>/`` must name the file's own rung or one
-  it may depend on; no C++ source may sit outside a rung directory (except the bindings'
-  root, which only wires the rungs); and every ``slamlab_add_rung(<rung> DEPENDS ...)`` in
-  ``CMakeLists.txt`` may only link the rungs it may depend on.
+- C++: every ``#include "slamlab/<rung>/..."`` or ``#include <slamlab/<rung>/...>``, and
+  every quoted relative include that resolves into a rung directory (``"../../bench/<rung>/
+  x.hpp"``), in ``cpp/{include/slamlab,src,tests,bench,bindings}/<rung>/`` must name the
+  file's own rung or one it may depend on; no C++ source may sit outside a rung directory
+  (except the bindings' root, which only wires the rungs); and every
+  ``slamlab_add_rung(<rung> DEPENDS ...)`` in ``CMakeLists.txt`` may only link the rungs it
+  may depend on.
 - Rust: every crate under ``rust/`` except the ``slamlab-py`` bindings crate -- listed
   workspace members and the implicit ones Cargo adds for path dependencies alike -- is a
   rung crate named ``slamlab-<rung>``. It may only depend on the crates of the rungs it may
@@ -32,10 +34,14 @@ listed in the layers contract.
 - Rust inside a rung: the same contracts apply to the modules of each rung crate,
   ``rust/slamlab-<rung>/src``. A file is the module its path names (``ba/schur.rs`` is
   ``schur`` in ``foundations.ba``; ``ba/mod.rs`` is the package's facade, mapped like
-  C++'s). Its edges are the ``crate::`` and ``super::`` paths in its code, outside comments
-  and the ``#[cfg(test)]`` module at its end; a path through a package names the module it
-  reaches (``super::gauge``), and an item of a package's own facade (``super::Gauge``) the
-  facade. Chains count, as in C++.
+  C++'s). Its edges are the ``crate::`` and ``super::`` paths in its code, outside comments,
+  literals and the ``#[cfg(test)] mod tests`` at its end; a path through a package names the
+  module it reaches (``super::gauge``), and an item of a package's own facade
+  (``super::Gauge``) the facade. Chains count, as in C++. What the edges cannot follow is a
+  violation itself: a glob import, a re-export in a ``mod.rs`` or ``lib.rs``, and a
+  ``#[cfg(test)]`` anywhere but the trailing test module. A facade's items stand for one
+  layer, so an item the facade defines in a higher layer (``ba``'s ``solve``) passes, as in
+  C++ (panel A24).
 
 Usage::
 
@@ -261,14 +267,86 @@ def _rust_modules(src: Path, rung: str) -> dict[Path, Module]:
     return modules
 
 
-def _rust_code(text: str) -> str:
-    """Return a Rust file's code: comments blanked and the trailing test module dropped.
+def _rust_blank(text: str) -> str:
+    """Return Rust source with every comment and string or char literal blanked to spaces.
 
-    Lines are kept, so match positions still give the right line numbers.
+    Newlines are kept, so positions still give the right line numbers. Handles line and
+    (nested) block comments, plain and raw strings with escapes, and char literals; a
+    lifetime (``'a``) is left as code.
     """
-    tests = text.find("#[cfg(test)]")
-    code = text if tests < 0 else text[:tests]
-    return re.sub(r"//[^\n]*", "", code)
+    out = list(text)
+    i, n = 0, len(text)
+
+    def blank(start: int, end: int) -> None:
+        for k in range(start, min(end, n)):
+            if out[k] != "\n":
+                out[k] = " "
+
+    while i < n:
+        if text.startswith("//", i):
+            end = text.find("\n", i)
+            end = n if end < 0 else end
+            blank(i, end)
+            i = end
+        elif text.startswith("/*", i):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if text.startswith("/*", j):
+                    depth, j = depth + 1, j + 2
+                elif text.startswith("*/", j):
+                    depth, j = depth - 1, j + 2
+                else:
+                    j += 1
+            blank(i, j)
+            i = j
+        elif raw := re.match(r'r(#*)"', text[i:]):
+            close = '"' + raw.group(1)
+            end = text.find(close, i + raw.end())
+            end = n if end < 0 else end + len(close)
+            blank(i, end)
+            i = end
+        elif text[i] == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            blank(i, j + 1)
+            i = j + 1
+        elif char := re.match(r"'(\\.[^']*|[^'\\])'", text[i:]):
+            blank(i, i + char.end())
+            i += char.end()
+        else:
+            i += 1
+    return "".join(out)
+
+
+_RUST_TEST_MODULE = re.compile(r"#\[cfg\(test\)\]\s*mod\s+tests\s*\{")
+
+
+def _rust_code(text: str) -> tuple[str, list[int]]:
+    """Return a Rust file's code without its trailing test module, and any stray test code.
+
+    Comments and literals are blanked (:func:`_rust_blank`). The trailing test module is a
+    ``#[cfg(test)] mod tests { ... }`` that closes at the end of the file; it is dropped.
+    Every other ``#[cfg(test)]`` is reported, since what it guards cannot be told apart.
+
+    Returns
+    -------
+    tuple of (str, list of int)
+        The code (lines kept), and the line of each stray ``#[cfg(test)]``.
+    """
+    code = _rust_blank(text)
+    tests = _RUST_TEST_MODULE.search(code)
+    if tests:
+        depth, end = 0, len(code)
+        for k in range(tests.end() - 1, len(code)):
+            depth += {"{": 1, "}": -1}.get(code[k], 0)
+            if depth == 0:
+                end = k + 1
+                break
+        if not code[end:].strip():
+            code = code[: tests.start()] + "\n" * code.count("\n", tests.start())
+    stray = [code.count("\n", 0, m.start()) + 1 for m in re.finditer(r"#\[cfg\(test\)\]", code)]
+    return code, stray
 
 
 def _rust_group(code: str, start: int) -> list[str]:
@@ -330,9 +408,22 @@ def _rust_target(base: Module, segments: list[str], known: set[Module]) -> Modul
     return here
 
 
-def _rust_graph(root: Path) -> dict[Module, list[tuple[Module, str]]]:
-    """Map each Rust rung module to the modules of its own crate it uses, with locations."""
+_RUST_GLOB = re.compile(r"\buse\s+(?:crate|super)(?:::\w+)*::\*")
+_RUST_REEXPORT = re.compile(r"\bpub(?:\([^)]*\))?\s+use\b")
+
+
+def _rust_graph(
+    root: Path,
+) -> tuple[dict[Module, list[tuple[Module, str]]], list[Violation]]:
+    """Map each Rust rung module to the modules of its own crate it uses, with locations.
+
+    Also returns what the graph cannot follow, as violations: a glob import (``use
+    super::*``, after which a sibling is reached by a bare path), a re-export in a package's
+    ``mod.rs`` or the crate's ``lib.rs`` (which would launder a module behind its facade),
+    and a ``#[cfg(test)]`` outside the trailing test module.
+    """
     graph: dict[Module, list[tuple[Module, str]]] = {}
+    hazards: list[Violation] = []
     rust = root / "rust"
     crates = sorted(rust.glob("slamlab-*/src")) if rust.is_dir() else []
     for src in crates:
@@ -345,7 +436,19 @@ def _rust_graph(root: Path) -> dict[Module, list[tuple[Module, str]]]:
             # super:: is the module's parent: a file's package, or a package's own parent.
             parent = here[:-1]
             edges = graph.setdefault(here, [])
-            code = _rust_code(source.read_text())
+            code, stray = _rust_code(source.read_text())
+            where = str(source.relative_to(root))
+            hazards.extend(
+                Violation(f"{where}:{line}", "#[cfg(test)] outside the trailing test module")
+                for line in stray
+            )
+            for found in _RUST_GLOB.finditer(code):
+                line = code.count("\n", 0, found.start()) + 1
+                hazards.append(Violation(f"{where}:{line}", "glob import: name what is used"))
+            if source.name in {"mod.rs", "lib.rs"}:
+                for found in _RUST_REEXPORT.finditer(code):
+                    line = code.count("\n", 0, found.start()) + 1
+                    hazards.append(Violation(f"{where}:{line}", "re-export in a package facade"))
             for match in _RUST_PATH.finditer(code):
                 base = here[:1] if match.group(1) == "crate" else parent
                 line = code.count("\n", 0, match.start()) + 1
@@ -353,8 +456,8 @@ def _rust_graph(root: Path) -> dict[Module, list[tuple[Module, str]]]:
                     _rust_target(base, path, known) for path in _rust_paths(code, match.end())
                 }
                 for target in sorted(targets - {here}):
-                    edges.append((target, f"{source.relative_to(root)}:{line}"))
-    return graph
+                    edges.append((target, f"{where}:{line}"))
+    return graph, hazards
 
 
 def _listed(module: tuple[str, ...], orders: dict[tuple[str, ...], list[Layer]]) -> bool:
@@ -386,9 +489,11 @@ def check_rust_internal(root: Path, orders: dict[Module, list[Layer]]) -> Iterat
     ------
     Violation
         Each path to a module the using module may not import, directly or through unlisted
-        modules.
+        modules, and each construct the check cannot follow (see :func:`_rust_graph`).
     """
-    yield from _check_graph(_rust_graph(root), orders, "use")
+    graph, hazards = _rust_graph(root)
+    yield from hazards
+    yield from _check_graph(graph, orders, "use")
 
 
 def check_cpp_internal(
@@ -525,14 +630,34 @@ def _check_cpp_includes(root: Path, allowed: dict[str, frozenset[str]]) -> Itera
             sources = (p for p in sorted(rung_dir.rglob("*")) if p.suffix in _CPP_SUFFIXES)
             for source in sources:
                 text = source.read_text()
-                for match in _INCLUDE.finditer(text):
-                    target = match.group(1)
-                    if target != rung and target not in allowed[rung]:
+                for match in _ANY_INCLUDE.finditer(text):
+                    target = _included_rung(root, source, *match.groups())
+                    if target is not None and target != rung and target not in allowed[rung]:
                         line = text.count("\n", 0, match.start()) + 1
                         yield Violation(
                             f"{source.relative_to(root)}:{line}",
                             f"rung {rung!r} may not include from rung {target!r}",
                         )
+
+
+def _included_rung(root: Path, source: Path, bracket: str, name: str) -> str | None:
+    """Return the rung an include names, or None if it names none.
+
+    ``slamlab/<rung>/...`` in either form, or a quoted relative path resolved against the
+    including file that lands in a rung directory of any of the C++ roots
+    (``"../../bench/<rung>/x.hpp"``).
+    """
+    named = _INCLUDE.match(f"#include {bracket}{name}")
+    if named:
+        return named.group(1)
+    if bracket != '"':
+        return None
+    resolved = Path(os.path.normpath(source.parent / name))
+    for rung_root in _CPP_RUNG_ROOTS:
+        base = Path(os.path.normpath(root / rung_root))
+        if resolved.is_relative_to(base) and len(resolved.relative_to(base).parts) > 1:
+            return resolved.relative_to(base).parts[0]
+    return None
 
 
 def _check_cmake(root: Path, allowed: dict[str, frozenset[str]]) -> Iterator[Violation]:

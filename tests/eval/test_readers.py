@@ -22,7 +22,7 @@ from slamlab import backends
 from slamlab.eval import colmap_reference, readers
 from slamlab.foundations import ba, camera, nls, se3
 from slamlab.foundations.errors import InvalidInputError
-from tests.conftest import FIXTURES, assert_matches_fixture, load_fixture, require_backend
+from tests.conftest import FIXTURES, load_fixture, require_backend
 
 Array = NDArray[np.float64]
 
@@ -304,17 +304,16 @@ def test_reference_rejects_what_it_cannot_represent(tmp_path: Path) -> None:
 
 
 def test_bal_conversion_matches_the_shared_fixture() -> None:
-    """The reader gives the problem ``tests/fixtures/eval/bal.json`` holds.
+    """The reader gives the problem ``tests/fixtures/eval/bal.json`` holds, every field.
 
     The native BAL readers (the Rust example's and the C++ benchmark's) are tested against
-    the same fixture, so the three conversions cannot drift apart.
+    the same fixture, so the three conversions, defaults included, cannot drift apart.
     """
     fixture = load_fixture("eval/bal.json")
     problem = readers.read_bal(FIXTURES / "eval" / fixture["input"])
     expected = fixture["expected"]
     assert problem.camera_model == expected["model"]
-    np.testing.assert_array_equal(problem.cam_idx, expected["cam_idx"])
-    np.testing.assert_array_equal(problem.pt_idx, expected["pt_idx"])
-    np.testing.assert_array_equal(problem.fixed_intrinsics, expected["fixed_intrinsics"])
-    for name in ("poses", "intrinsics", "points", "observations"):
-        assert_matches_fixture(getattr(problem, name), expected[name], fixture["tolerance"])
+    for name, values in expected["arrays"].items():
+        want = np.array(values, dtype=np.float64)  # None becomes NaN
+        got = np.asarray(getattr(problem, name), dtype=np.float64)
+        np.testing.assert_allclose(got, want, rtol=0.0, atol=fixture["tolerance"]["atol"])

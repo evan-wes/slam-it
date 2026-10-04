@@ -291,3 +291,12 @@ def test_call_rejects_an_unknown_backend() -> None:
             arguments={},
             decode=lambda raw, codes: 0,
         )
+
+
+def test_decode_name_rejects_codes_outside_the_table() -> None:
+    """A code outside its table fails loudly; -1 would otherwise read as the last name."""
+    codes = {"gauge": ["none", "first_pose", "partial"]}
+    assert backends.decode_name(codes, "gauge", 1) == "first_pose"
+    for bad in (-1, 3):
+        with pytest.raises(RuntimeError, match="outside"):
+            backends.decode_name(codes, "gauge", bad)
