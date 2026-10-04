@@ -248,14 +248,13 @@ languages fail the same way.
 - A generic module with no concrete binding of its own (e.g. `slamlab.foundations.nls`) is
   tested natively in each core, and in parity through the concrete problems that use it.
 
-**Languages per module.** Python and C++ are lock-step: C++ implements every function in a
-compiled module's `Implementation` Protocol. Rust implements a chosen set of modules, each in
-full: every function of a module it has, with that module's tests running on all three
-backends, so a Rust module that falls behind its Python reference fails layer 1 like a C++ one.
-A module Rust does not have yet holds nothing back. The tests enforce these rules
-(`test_backends`, `conftest.require_function`). Once PR 6 completes rung 0 in Rust, they will
-require every rung-0 module of Rust as they do of C++. Later rungs (the edge VO) return to a
-chosen set.
+**Languages per module.** Rung 0 is lock-step in all three languages: C++ and Rust implement
+every function of every compiled module's `Implementation` Protocol, and every module's tests
+run on all three backends (`backends.LOCKSTEP_BACKENDS`), so a compiled module that falls
+behind its Python reference fails layer 1. The tests enforce it (`test_backends`,
+`conftest.require_function`). Rust was a chosen set of modules until PR 6 completed rung 0 in
+it. Later rungs (the edge VO) may start Rust as a chosen set again; that rung then brings back
+a way for a module Rust lacks to skip rather than fail.
 
 ## Package layout
 

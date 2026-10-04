@@ -28,12 +28,11 @@ BACKENDS: tuple[str, ...] = ("python", "cpp", "rust")
 COMPILED_BACKENDS: tuple[str, ...] = BACKENDS[1:]
 """Every compiled backend: each implements in full every module it exposes."""
 
-LOCKSTEP_BACKENDS: frozenset[str] = frozenset({"python", "cpp"})
-"""Backends that implement every compiled module.
+LOCKSTEP_BACKENDS: frozenset[str] = frozenset(BACKENDS)
+"""Backends that implement every compiled module, so every module's tests run on each.
 
-C++ is built in lock-step with the Python reference. Rust implements a chosen set of modules
-(design doc, "Languages"), each in full, so a Rust backend may lack a module but never a
-function of a module it has.
+All three since PR 6, which completed rung 0 in Rust: a backend missing a module, or a
+function of one, fails the tests (design doc, "Languages per module").
 """
 
 _EXTENSIONS: dict[str, str] = {"cpp": "slamlab._cpp", "rust": "slamlab_rs"}
@@ -178,8 +177,8 @@ def function(backend: str, module_name: str, name: str) -> Callable[..., Any]:
     BackendNotBuiltError
         If the backend's extension is not installed.
     NotImplementedError
-        If the backend does not implement `module_name` (Rust implements a chosen set of
-        modules), or implements it without `name` (which the tests make a failure).
+        If the backend does not implement `module_name`, or implements it without `name`
+        (both of which the tests make a failure).
     """
     found = getattr(implementation(backend, module_name), name, None)
     if found is None or isinstance(found, ModuleType) or not callable(found):

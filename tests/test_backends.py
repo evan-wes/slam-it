@@ -189,8 +189,9 @@ def test_every_compiled_module_matches_its_protocol(name: str) -> None:
     For each submodule of the extension that holds functions, the slamlab module at the same
     path must exist and define an ``Implementation`` Protocol; every compiled function must
     be a Protocol member with the Protocol's parameter names, and every member of the Protocol
-    must be there: a backend implements each module it has in full (Rust has a chosen set of
-    modules, C++ all of them). This keeps bindings and their Python contract from drifting.
+    must be there: a backend implements each module it has in full. This keeps bindings and
+    their Python contract from drifting. That every backend has every module is checked by
+    each module's own tests, which run on all of them.
     """
     root_name = _EXTENSION_ROOTS[require_backend(name)]
     extension = importlib.import_module(root_name)
