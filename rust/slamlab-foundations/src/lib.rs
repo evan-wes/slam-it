@@ -6,4 +6,5 @@
 //! budgets. Modules mirror the Python package (`so3` implements `slamlab.foundations.so3`).
 
 pub mod error;
+pub mod se3;
 pub mod so3;
