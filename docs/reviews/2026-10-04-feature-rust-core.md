@@ -261,19 +261,19 @@ Sources: [faer-rs](https://github.com/cramt/faer-rs); [faer-cholesky docs](https
 
 | ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
 |---|---|---|---|---|---|---|
-| L10 | should-fix | algorithm | `cpp/tests/foundations/test_bal_reader.cpp` | The C++ reader test's comparison passes NaN | fix | pending |
-| L11 | should-fix | algorithm | `docs/notes/rust-port.md` | The new explanation of the COLMAP gap contradicts COLMAP's own solver choice (DENSE_SCHUR at 49 images) | fix | pending |
-| L12 | note | algorithm | `ba/gauge.rs` plan | A failed SVD in the gauge plan reads as "nothing pins anything", not a rejected step | fix | pending |
-| L13 | note | algorithm | `slamlab-py` `encode` | -1 decodes as the last enum name in Python (same as A12) | fix (with A12) | pending |
-| L14 | note | algorithm | `docs/notes/rust-port.md` | "finiteness checks ahead of every tolerance comparison" overstates (gauge `classify` uses `amax`) | fix | pending |
-| A8 | should-fix | architecture | `scripts/check_layers.py` | The Rust order check misses glob imports, `pub use` in `mod.rs`, a mid-file `#[cfg(test)]`, and `//` in strings | fix | pending |
-| A9 | should-fix | architecture | `cpp/tests/foundations/test_bal_reader.cpp`, `check_layers.py` | A relative `../../bench/...` include escapes the cross-rung check | fix | pending |
-| A10 | should-fix | architecture | `tests/fixtures/eval/generate_bal.py` | The BAL fixture omits `intrinsics_idx` and every defaulted field | fix | pending |
-| A11 | should-fix | architecture | `ba/mod.rs`, `cpp/.../ba.hpp` | `Problem::with_defaults` is Rust-only; the C++ bench fills defaults by hand | fix | pending |
-| A12 | should-fix | architecture | `slamlab-py/src/common.rs` | `encode`'s -1 fallback reads as a valid name; the pin tests cannot catch a variant missing from `ALL` | fix | pending |
-| A13 | note | architecture | `ba/mod.rs`, `_CPP_FACADES` | The BA facade stands for `problem` but holds `solve` (A24, now in two languages) | defer | pending |
-| A14 | note | architecture | Rust `examples/`, `cpp/bench` | Where the BAL readers live is asymmetric | no action | pending |
-| A15 | note | architecture | `so3.rs` `project_to_so3` | Uses nalgebra's SVD without the cap | dispute | pending |
+| L10 | should-fix | algorithm | `cpp/tests/foundations/test_bal_reader.cpp` | The C++ reader test's comparison passes NaN | fix | fixed (169cfad) -- decided by evan-wes, 2026-10-04 |
+| L11 | should-fix | algorithm | `docs/notes/rust-port.md` | The new explanation of the COLMAP gap contradicts COLMAP's own solver choice (DENSE_SCHUR at 49 images) | fix | fixed (979aaae) -- decided by evan-wes, 2026-10-04 |
+| L12 | note | algorithm | `ba/gauge.rs` plan | A failed SVD in the gauge plan reads as "nothing pins anything", not a rejected step | fix | fixed (169cfad; Rust only: C++'s SVD cannot hang, and both cores check the inputs finite) -- decided by evan-wes, 2026-10-04 |
+| L13 | note | algorithm | `slamlab-py` `encode` | -1 decodes as the last enum name in Python (same as A12) | fix (with A12) | fixed (169cfad) -- decided by evan-wes, 2026-10-04 |
+| L14 | note | algorithm | `docs/notes/rust-port.md` | "finiteness checks ahead of every tolerance comparison" overstates (gauge `classify` uses `amax`) | fix | fixed (979aaae) -- decided by evan-wes, 2026-10-04 |
+| A8 | should-fix | architecture | `scripts/check_layers.py` | The Rust order check misses glob imports, `pub use` in `mod.rs`, a mid-file `#[cfg(test)]`, and `//` in strings | fix | fixed (169cfad) -- decided by evan-wes, 2026-10-04 |
+| A9 | should-fix | architecture | `cpp/tests/foundations/test_bal_reader.cpp`, `check_layers.py` | A relative `../../bench/...` include escapes the cross-rung check | fix | fixed (169cfad) -- decided by evan-wes, 2026-10-04 |
+| A10 | should-fix | architecture | `tests/fixtures/eval/generate_bal.py` | The BAL fixture omits `intrinsics_idx` and every defaulted field | fix | fixed (169cfad) -- decided by evan-wes, 2026-10-04 |
+| A11 | should-fix | architecture | `ba/mod.rs`, `cpp/.../ba.hpp` | `Problem::with_defaults` is Rust-only; the C++ bench fills defaults by hand | fix | fixed (169cfad) -- decided by evan-wes, 2026-10-04 |
+| A12 | should-fix | architecture | `slamlab-py/src/common.rs` | `encode`'s -1 fallback reads as a valid name; the pin tests cannot catch a variant missing from `ALL` | fix | fixed (169cfad) -- decided by evan-wes, 2026-10-04 |
+| A13 | note | architecture | `ba/mod.rs`, `_CPP_FACADES` | The BA facade stands for `problem` but holds `solve` (A24, now in two languages) | defer | deferred (design doc open items, with A24) -- decided by evan-wes, 2026-10-04 |
+| A14 | note | architecture | Rust `examples/`, `cpp/bench` | Where the BAL readers live is asymmetric | no action | waived: no action -- decided by evan-wes, 2026-10-04 |
+| A15 | note | architecture | `so3.rs` `project_to_so3` | Uses nalgebra's SVD without the cap | dispute | disputed: nalgebra sends a 3x3 matrix to its separate svd3 routine, which run 1's probe showed returns on NaN; the hang is only in the general path, which the capped helper now covers -- decided by evan-wes, 2026-10-04 |
 
 ### Architecture review (run 2)
 
