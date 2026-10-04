@@ -49,7 +49,8 @@ check() {
 # Source lists come from git (tracked plus new, unignored files), so new rung directories are
 # covered without editing this file.
 mapfile -t CPP_FILES < <(git ls-files --cached --others --exclude-standard 'cpp/*.hpp' 'cpp/*.cpp')
-mapfile -t CPP_TU < <(git ls-files --cached --others --exclude-standard 'cpp/src/*.cpp' 'cpp/tests/*.cpp')
+mapfile -t CPP_TU < <(git ls-files --cached --others --exclude-standard 'cpp/src/*.cpp' 'cpp/tests/*.cpp' \
+  'cpp/bench/*.cpp')
 
 # Python
 check "ruff lint (numpy docstrings, type hints, style)" ruff check src tests scripts
@@ -61,7 +62,8 @@ check "C++/Rust layering (same contracts)" python scripts/check_layers.py
 # C++
 check "clang-format" clang-format --dry-run --Werror "${CPP_FILES[@]}"
 check "cmake configure (compile_commands.json)" \
-  cmake -S . -B build/native -G Ninja -DSLAMLAB_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
+  cmake -S . -B build/native -G Ninja -DSLAMLAB_BUILD_TESTS=ON -DSLAMLAB_BUILD_BENCHMARKS=ON \
+  -DCMAKE_BUILD_TYPE=Release
 check "C++ build" cmake --build build/native -j4
 # clang-tidy's clang does not know conda gcc's implicit include directory (<env>/include),
 # where the test-only headers live (nlohmann_json); pass it explicitly.

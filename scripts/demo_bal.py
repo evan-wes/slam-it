@@ -1,7 +1,7 @@
 """Bundle adjustment on a real BAL problem: slamlab's BA against COLMAP's Ceres BA.
 
 Downloads a problem from the Bundle Adjustment in the Large site (once, into ``--data``),
-solves it with slamlab (both backends, or one) and with COLMAP's bundle adjuster, and prints
+solves it with slamlab (every backend, or one) and with COLMAP's bundle adjuster, and prints
 the RMS reprojection error, the iterations and the time of each. With ``--rerun FILE.rrd`` it
 also saves a rerun recording of the cameras and points before and after (open it with
 ``rerun FILE.rrd``).
@@ -9,7 +9,8 @@ also saves a rerun recording of the cameras and points before and after (open it
 Run from the repository root, in the slamlab environment::
 
     python scripts/demo_bal.py --problem ladybug/problem-49-7776-pre
-    python scripts/demo_bal.py --backend cpp --rerun /tmp/ladybug.rrd
+    python scripts/demo_bal.py --backend all
+    python scripts/demo_bal.py --backend rust --rerun /tmp/ladybug.rrd
 
 The data stays outside the repository (default ``~/datasets/bal``).
 """
@@ -25,6 +26,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
+from slamlab.backends import BACKENDS
 from slamlab.eval import colmap_reference, readers
 from slamlab.eval.reprojection import in_front, rms
 from slamlab.foundations import ba, nls
@@ -67,7 +69,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--problem", default="ladybug/problem-49-7776-pre")
     parser.add_argument("--data", type=Path, default=Path.home() / "datasets" / "bal")
-    parser.add_argument("--backend", choices=["python", "cpp", "both"], default="cpp")
+    parser.add_argument("--backend", choices=[*BACKENDS, "all"], default="cpp")
     parser.add_argument("--rerun", type=Path, default=None, help="save a .rrd recording")
     args = parser.parse_args()
     problem = readers.read_bal(fetch(args.problem, args.data))
@@ -78,9 +80,9 @@ def main() -> None:
         f"camera, left out of every RMS); start RMS {rms(problem, used):.4f} px"
     )
     options = ba.BAOptions(solver=nls.Options(max_iterations=100), gauge="none")
-    backends = ["python", "cpp"] if args.backend == "both" else [args.backend]
+    chosen = list(BACKENDS) if args.backend == "all" else [args.backend]
     stages = {"start": (problem.poses, problem.points)}
-    for backend in backends:
+    for backend in chosen:
         start = time.perf_counter()
         result = ba.solve(problem, options, backend=backend)
         seconds = time.perf_counter() - start

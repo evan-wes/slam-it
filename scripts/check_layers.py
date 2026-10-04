@@ -62,7 +62,13 @@ _CPP_FACADES: dict[tuple[str, ...], tuple[str | None, str | None]] = {
 problem types (``problem``, the bottom layer) when included from inside the package, and
 ``ba.cpp`` implements ``solve`` (the top) when it includes the package's modules."""
 _ADD_RUNG = re.compile(r"slamlab_add_rung\(\s*([a-z_]+)([^)]*)\)")
-_CPP_RUNG_ROOTS = ("cpp/include/slamlab", "cpp/src", "cpp/tests", "cpp/bindings")
+_CPP_RUNG_ROOTS = (
+    "cpp/include/slamlab",
+    "cpp/src",
+    "cpp/tests",
+    "cpp/bench",
+    "cpp/bindings",
+)
 _CPP_SUFFIXES = frozenset({".hpp", ".cpp", ".h", ".cc"})
 _CPP_ROOT_FILES_ALLOWED = frozenset({"cpp/bindings"})
 """Rung roots whose top level may hold files: the bindings' root only wires the rungs."""

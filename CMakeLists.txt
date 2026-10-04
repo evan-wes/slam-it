@@ -9,6 +9,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # The C++ cores build standalone (no Python) for the edge budgets and native tests;
 # the nanobind module is added only when built through scikit-build-core.
 option(SLAMLAB_BUILD_TESTS "Build the native C++ tests" OFF)
+option(SLAMLAB_BUILD_BENCHMARKS "Build the native C++ benchmarks (Google Benchmark)" OFF)
 
 # Eigen is the cores' linear algebra: fixed-size types may appear in core headers, so it is
 # a PUBLIC dependency of every rung library. Provided by the conda env (setup_slamlab.sh).
@@ -42,6 +43,19 @@ function(slamlab_add_rung rung)
       add_test(NAME ${test_name} COMMAND ${test_name})
     endforeach()
   endif()
+  if(SLAMLAB_BUILD_BENCHMARKS)
+    # One executable per benchmark file: cpp/bench/<rung>/bench_<name>.cpp ->
+    # <rung>_bench_<name>, in build/<dir>/bench/.
+    file(GLOB benches CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/cpp/bench/${rung}/*.cpp)
+    foreach(bench_source IN LISTS benches)
+      get_filename_component(bench_stem ${bench_source} NAME_WE)
+      set(bench_name ${rung}_${bench_stem})
+      add_executable(${bench_name} ${bench_source})
+      target_link_libraries(${bench_name} PRIVATE slamlab_${rung} benchmark::benchmark)
+      target_compile_options(${bench_name} PRIVATE -Wall -Wextra -Wpedantic)
+      set_target_properties(${bench_name} PROPERTIES RUNTIME_OUTPUT_DIRECTORY bench)
+    endforeach()
+  endif()
 endfunction()
 
 if(SLAMLAB_BUILD_TESTS)
@@ -49,6 +63,10 @@ if(SLAMLAB_BUILD_TESTS)
   # Native tests read the shared parity fixtures (tests/fixtures/) with nlohmann_json, a
   # test-only dependency from the conda env.
   find_package(nlohmann_json 3 CONFIG REQUIRED)
+endif()
+if(SLAMLAB_BUILD_BENCHMARKS)
+  # Google Benchmark, a benchmark-only dependency from the conda env.
+  find_package(benchmark CONFIG REQUIRED)
 endif()
 
 slamlab_add_rung(foundations)
