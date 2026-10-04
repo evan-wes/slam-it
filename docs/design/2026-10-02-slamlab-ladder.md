@@ -500,6 +500,36 @@ Code is reviewed in two layers. The full rules are in `CLAUDE.md`.
 - **PR descriptions record the agentic process** (`.github/pull_request_template.md`): which
   agents did what, the panel's verdicts, and the owner's decisions.
 
+## Public presentation
+
+slamlab is presented the way reifyscene is: a static showcase page and an interactive run
+viewer, in the same visual style (IBM Plex, panel layout, a frame scrubber), published with
+GitHub Pages. Nothing is published before the repo goes public (see
+[Licensing and publication](#licensing-and-publication)).
+
+- **The showcase page** walks through the SLAM process on one sequence, stage by stage, with
+  stills, short clips and the measured results, as reifyscene's page takes one frame apart.
+- **The run viewer** replays a recorded run:
+  - **image panel:** the current frame with its tracked features, matches, and RANSAC
+    inliers and outliers;
+  - **3D panel:** camera frustums, the estimated trajectory against ground truth, and the map
+    points accumulating as the run is scrubbed;
+  - **solver panel:** per-frame diagnostics from the solve summaries (RANSAC samples and
+    inlier ratio, BA cost before and after, termination reasons);
+  - **backend toggle:** the same run in Python, C++ and Rust, with matching trajectories and
+    their timings. This is where the "same algorithm, three languages" comparison becomes
+    visible;
+  - later, **rungs side by side:** one sequence run by different rungs of the ladder.
+- **It grows with the ladder.** Milestone 1 has components but no pipeline: its demos record
+  single steps (two-view initialisation, PnP, BA) with rerun, and the Rust note compares the
+  three languages in a table. The viewer starts at milestone 2, the first end-to-end run;
+  loop closure (milestone 4) and the dense and learned rungs (milestones 5 and 9) add to it.
+- **The run format is milestone 2's,** defined with its pipeline: trajectory, keyframes, map
+  and per-frame diagnostics, written by the pipeline and read by both rerun and the viewer.
+  It lives in `slamlab.eval`, so the algorithm rungs never depend on the viewer.
+- **Run outputs stay outside the repo** (`../runs/`). The page ships only the assets built
+  from them.
+
 ## Licensing and publication
 
 - The repo is **private**. It goes public together with reifyscene, as one decision, and only on
