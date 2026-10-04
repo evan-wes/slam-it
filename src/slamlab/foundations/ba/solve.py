@@ -270,7 +270,7 @@ def solve(
         The problem (see :meth:`BAProblem.create`).
     options : BAOptions, optional
         Solver settings, losses, gauge and thresholds (default: ``BAOptions()``).
-    backend : {"python", "cpp"}, optional
+    backend : {"python", "cpp", "rust"}, optional
         Which implementation solves it (default: the Python reference).
 
     Returns

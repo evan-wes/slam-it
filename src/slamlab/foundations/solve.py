@@ -12,8 +12,9 @@ reports costs and a trace of steps; RANSAC reports samples drawn, inliers and wh
 target confidence was reached. What they share is :class:`Summary`, the three fields every
 summary has, and :class:`Solution`, the pair of estimate and summary.
 
-The C++ core mirrors this in ``slamlab/foundations/solve.hpp``: a ``Summary`` concept and a
-``Solution<State, Summary>`` template.
+The C++ core mirrors this in ``slamlab/foundations/solve.hpp``, a ``Summary`` concept and a
+``Solution<State, Summary>`` template; the Rust core in ``slamlab_foundations::solve``, a
+``Summary`` trait and a ``Solution<State, S>`` struct.
 """
 
 from __future__ import annotations

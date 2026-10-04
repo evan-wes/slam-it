@@ -4,6 +4,56 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.2.4.0] - 2026-10-04
+
+The Rust core reaches rung 0's geometry and optimisation, at parity with C++. This is the
+first of two PRs that give Python, C++ and Rust the same capabilities at the end of
+milestone 1; PR 6 adds the estimation core. Two deferred panel items are closed.
+
+### Added
+
+- **SO(3) and SE(3) in Rust** (`slamlab_foundations::so3`, `se3`): every function, term for
+  term with the C++ core, on nalgebra's fixed-size matrices.
+- **Camera models and Umeyama alignment in Rust**: pinhole, radtan and radial, with the
+  projection Jacobian and the Newton undistortion.
+- **PCG32 in Rust** (`slamlab_foundations::rng`), drawing the same samples as Python and
+  C++.
+- **Non-linear least squares in Rust** (`slamlab_foundations::nls`, `solve`): the generic
+  Gauss-Newton and Levenberg-Marquardt loop over `Problem` and `LinearSystem` traits.
+- **Bundle adjustment in Rust** (`slamlab_foundations::ba`): the gauge, layout, Schur system
+  over a `ReducedSystemSolver` and the bundle's blocks. All fifteen BA parity cases match the
+  Python reference, iteration counts included.
+- **The `slamlab_rs` bindings** for every module above. They share one batch layer (the
+  `batched!` macro), and the BA options are read through serde, with unknown fields denied at
+  every depth.
+- **Native benchmarks:** Google Benchmark (C++, `cpp/bench/`) and criterion (Rust) time the
+  same SO(3), SE(3) and camera operations, and a whole bundle adjustment on a BAL problem.
+  On ladybug-49 the C++ solve takes 1.430 s and the Rust solve 1.441 s.
+- **`cargo run --example bal`:** bundle adjustment on a BAL problem from Rust alone, with no
+  Python.
+- **`docs/notes/rust-port.md`:** how the port went, and the C++-versus-Rust speed and size
+  comparison.
+
+### Changed
+
+- **`demo_bal.py --backend`** takes `rust` and `all`. On ladybug-49, all three backends
+  reach 0.9147 px in 33 iterations.
+- **The property tests run on Rust:** every module Rust implements runs them on all three
+  backends.
+- **Enum names come from the cores (A27).** C++ gains core `name()` functions for the camera
+  models, NLS methods and losses, and BA gauges. The BA binding's own tables are gone, and one
+  `enum_by_name` reads every choice by name.
+- **Options-dict errors read as serde's** (``missing field `x` ``, ``unknown field `x` ``),
+  in both bindings.
+
+### Tests
+
+- **PCG32's parity values move to a shared fixture (A9),**
+  `tests/fixtures/foundations/rng.json`. The Python, native C++ and Rust tests all read it.
+  The native C++ tests read fixtures through nlohmann_json, a test-only conda package.
+- **Layer 1 builds and lints the benchmarks,** and holds `cpp/bench` to the ladder like the
+  rest of the code.
+
 ## [0.2.3.0] - 2026-10-03
 
 Absolute pose, completing milestone 1's slice B: a frame placed against known 3D points, from

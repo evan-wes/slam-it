@@ -17,8 +17,10 @@ The generator is a 64-bit linear congruential state with a permuted 32-bit outpu
 streams from one seed are independent sequences. The tests hold every backend to the reference
 library's published output.
 
-The C++ core mirrors it in ``slamlab/foundations/rng.hpp``. It is not bound to Python: it is
-reached through the RANSAC solvers built on it.
+The C++ and Rust cores mirror it (``slamlab/foundations/rng.hpp``,
+``slamlab_foundations::rng``). It is not bound to Python: it is reached through the RANSAC
+solvers built on it, and every language's tests read the same draws from
+``tests/fixtures/foundations/rng.json``.
 """
 
 from __future__ import annotations

@@ -1,16 +1,19 @@
 # slamlab: a learning ladder for visual SLAM
 
-Status, 2026-10-03: milestone 1 is under way. The scaffold (package-per-rung layout in three
+Status, 2026-10-04: milestone 1 is under way. The scaffold (package-per-rung layout in three
 languages, conda environment, CI, two-layer review process) is merged. PR 1, the BA spine,
 added rung 0's geometry and estimation in Python and C++: SO(3), SE(3), Umeyama alignment,
-camera models, nonlinear least squares and bundle adjustment; Rust's curated subset has SO(3)
-so far. PR 2 adds two-view geometry: triangulation, LO-MSAC RANSAC, the 8-point essential and
+camera models, nonlinear least squares and bundle adjustment. PR 2 adds two-view geometry: triangulation, LO-MSAC RANSAC, the 8-point essential and
 fundamental matrices, homographies, their decompositions, and two-view initialisation with
 GRIC model selection, demonstrated on TUM RGB-D. PR 3 adds the 5-point solvers (Stewénius',
 the default, and Nistér's) as E-RANSAC's minimal solver, and the Sampson refinement of E on
 its manifold. PR 4 completes slice B with absolute pose: P3P (Ding et al.'s, the default, and
 Lambda Twist), EPnP, the pose refinement on SE(3) and PnP RANSAC, demonstrated on three TUM
-sequences. The Rust showcase (slice C) is PR 5.
+sequences. Slice C brings the Rust core to parity in two PRs. PR 5 adds rung 0's geometry and
+optimisation: SO(3), SE(3), the camera models, Umeyama alignment, PCG32, the least-squares
+solver and bundle adjustment, with native C++ and Rust benchmarks on a BAL problem, where the
+two take the same time. PR 6 adds the estimation core: RANSAC, triangulation, the two-view and
+absolute-pose solvers. After it, Python, C++ and Rust have the same capabilities.
 
 ## Purpose
 
@@ -134,7 +137,7 @@ and a possible later phone target.
       generic `Solution[State, Summary]` dataclass;
     - C++: `cpp/include/slamlab/foundations/solve.hpp`, a `Summary` concept and
       `Solution<State, Summary>`, returned as `std::expected<Solution<…>, Error>`;
-    - Rust: `slamlab_foundations::solve`, when Rust gains a solver.
+    - Rust: `slamlab_foundations::solve`, a `Summary` trait and `Solution<State, S>`.
 
     BA wraps the least-squares summary in its own. A solver with no estimate at all to
     return (RANSAC that never finds a valid hypothesis) raises `Degenerate`.
@@ -243,7 +246,10 @@ languages fail the same way.
 
 **Languages per module.** Python and C++ are lock-step: C++ implements every function in a
 compiled module's `Implementation` Protocol. Rust implements a curated subset and never gates
-a merge. The tests enforce both rules.
+a merge. The tests enforce both rules. Each module Rust implements, it implements in full, and
+its tests run on all three backends. Once PR 6 completes rung 0 in Rust, the tests will
+require every rung-0 module of Rust as they do of C++. Later rungs (the edge VO) return to a
+Rust subset.
 
 ## Package layout
 
@@ -580,9 +586,9 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
   - Closed by PR 4: **a generic dispatch (A8).** `backends.call` takes the reference as a
     thunk, the compiled arguments by keyword and a decoder given the module's `codes()`; the
     five hand-rolled copies use it.
-  - **PCG32's parity values as a fixture (A9).** The reference draws are literals in the
-    Python and C++ tests; when Rust gains PCG32 (PR 5), move them to
-    `tests/fixtures/foundations/rng.json`.
+  - Closed by PR 5: **PCG32's parity values as a fixture (A9).** The reference library's
+    output and the Floyd samples are `tests/fixtures/foundations/rng.json`, which the Python,
+    native C++ (through nlohmann_json) and Rust tests read.
   - **The state of the art for robust estimation (L5).** Barath's SupeRANSAC (arXiv
     2506.04803, 2025) is a component-by-component checklist for this module; MAGSAC++
     (Barath et al., CVPR 2020) scores without a threshold by marginalising over σ; PROSAC
@@ -625,7 +631,7 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
 - **Deferred from PR 4's review panel**
   ([report](../reviews/2026-10-03-feature-absolute-pose.md)):
   - **One form for the refinement callback (A6).** `refine_consensus`'s callback takes an
-    inlier mask in Python and inlier indices in C++; pick one when Rust gains RANSAC (PR 5).
+    inlier mask in Python and inlier indices in C++; pick one when Rust gains RANSAC (PR 6).
   - **Depth maps in the library (A7).** `eval.tum` associates depth maps, but decoding the
     16-bit PNGs happens in the demo, with OpenCV, which `slamlab` may not import. Milestone 2's
     RGB-D mode needs an in-library loader: choose its PNG dependency then.
@@ -658,10 +664,10 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
   - **The gauge in rung 0's own right (A26, run 3).** `ba/gauge` depends only on poses and
     points. When pose-graph optimisation (the classic rung's loop closure) needs the same
     null-space removal, lift it to `foundations.gauge` rather than importing it from `ba`.
-  - **One mechanism for enum names (A27, run 3).** `Termination`'s names come from the core
-    (`nls::name`), the other crossing enums' from the bindings' tables. Pick one when Rust
-    gains these enums. PR 2 adds a third variant: the RANSAC and two-view bindings' `codes()`
-    built from the cores' `name()` functions, read by the Python side (its panel's A7).
+  - Closed by PR 5: **one mechanism for enum names (A27, run 3).** Every enum that crosses a
+    binding has its names in its core: `name()` in C++ (camera models, NLS methods and losses,
+    BA gauges joined the terminations and solvers) and `ALL` with `name()` in Rust. Each
+    binding's `codes()` is built from them, and choices are read by name through them.
   - **σ_f with the gauge left free (L30, run 5).** When a fixed recipe leaves gauge
     directions in the problem (`free_gauge > 0`), σ_f is infinite under `none` but finite
     under `first_pose`, where it depends on how the damping holds the free scale (0.13% off
