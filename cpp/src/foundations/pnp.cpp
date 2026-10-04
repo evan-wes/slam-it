@@ -352,16 +352,15 @@ Result<Eigen::Matrix4d> epnp(const Eigen::Ref<const Rows3>& points,
   return *pose;
 }
 
-solve::Solution<Eigen::Matrix4d, nls::Summary> refine(const Eigen::Matrix4d& pose,
-                                                      const Eigen::Ref<const Rows3>& points,
-                                                      const Eigen::Ref<const Rows3>& bearings,
-                                                      double scale) {
+Result<solve::Solution<Eigen::Matrix4d, nls::Summary>> refine(
+    const Eigen::Matrix4d& pose, const Eigen::Ref<const Rows3>& points,
+    const Eigen::Ref<const Rows3>& bearings, double scale) {
   const ReprojectionProblem problem(points, correspondences::normalised_xy(bearings));
   nls::Options options;
   options.loss = {.kind = nls::LossKind::kCauchy, .scale = scale};
   options.max_iterations = kRefineIterations;
-  // With the strict flag off the solve never fails: it returns its best state.
-  return *nls::solve(problem, pose, options);
+  // Not strict, so the solve fails only on a non-finite start: a point behind the camera.
+  return nls::solve(problem, pose, options);
 }
 
 Result<solve::Solution<Eigen::Matrix4d, nls::Summary>> refine_pose(
@@ -427,8 +426,10 @@ Result<ransac::RefinedSolution<Eigen::Matrix4d>> pnp_ransac(const Eigen::Ref<con
   return ransac::estimate_refined(
       PoseEstimator(points, bearings, minimal), options, refine,
       [&](const Eigen::Matrix4d& model, const ransac::Indices& inliers) {
+        // The consensus's inliers are within the threshold, so every start is finite.
         return pnp::refine(model, correspondences::gather(world, inliers),
-                           correspondences::gather(rays, inliers), options.threshold);
+                           correspondences::gather(rays, inliers), options.threshold)
+            .value();
       },
       p3p::kSampleSize);
 }

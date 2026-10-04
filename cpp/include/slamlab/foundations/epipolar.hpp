@@ -184,8 +184,9 @@ struct Motion {
 /// @param bearings1 Bearings in camera 1 (M x 3), positive z, M >= 5.
 /// @param bearings2 Bearings in camera 2 (M x 3).
 /// @param scale The Cauchy scale, a Sampson distance in the normalised plane.
-/// @return The refined E and the solve's summary.
-[[nodiscard]] solve::Solution<Eigen::Matrix3d, nls::Summary> refine(
+/// @return The refined E and the solve's summary; `InvalidInput` if a match's Sampson distance
+///         is not finite at the start (a match at both epipoles).
+[[nodiscard]] Result<solve::Solution<Eigen::Matrix3d, nls::Summary>> refine(
     const Eigen::Matrix3d& essential, const Eigen::Ref<const Rows3>& bearings1,
     const Eigen::Ref<const Rows3>& bearings2, double scale);
 

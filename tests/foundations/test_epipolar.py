@@ -393,6 +393,24 @@ def test_refine_rejects_invalid_input(backend: str) -> None:
         )
 
 
+@pytest.mark.filterwarnings("ignore:invalid value encountered in divide:RuntimeWarning")
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_refine_rejects_a_match_at_both_epipoles(backend: str) -> None:
+    """A match at both epipoles has a 0 / 0 Sampson distance: an error, not a crash.
+
+    Forward translation with no rotation puts both epipoles exactly at (0, 0, 1), so E maps
+    the match to two zero lines in floating point, not merely small ones.
+    """
+    points = np.array([[np.sin(1.7 * k), np.cos(0.9 * k), 4.0 + np.sin(0.3 * k)] for k in range(8)])
+    moved = points + np.array([0.0, 0.0, 1.0])
+    forward = np.array([0.0, 0.0, 1.0])
+    b1 = np.vstack([points / np.linalg.norm(points, axis=1, keepdims=True), forward])
+    b2 = np.vstack([moved / np.linalg.norm(moved, axis=1, keepdims=True), forward])
+    essential = so3.hat(forward)
+    with pytest.raises(InvalidInputError, match="initial cost is not finite"):
+        epipolar.refine_essential(essential, b1, b2, scale=1e-3, backend=backend)
+
+
 def test_the_compiled_code_tables_match() -> None:
     """The codes Python sends and decodes are the compiled core's, in the same order."""
     chosen = require_function("cpp", epipolar.__name__, "codes")

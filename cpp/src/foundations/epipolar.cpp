@@ -432,17 +432,21 @@ Motion start_motion(const Eigen::Matrix3d& essential) {
   return {.rotation = best->topLeftCorner<3, 3>(), .translation = translation};
 }
 
-solve::Solution<Eigen::Matrix3d, nls::Summary> refine(const Eigen::Matrix3d& essential,
-                                                      const Eigen::Ref<const Rows3>& bearings1,
-                                                      const Eigen::Ref<const Rows3>& bearings2,
-                                                      double scale) {
+Result<solve::Solution<Eigen::Matrix3d, nls::Summary>> refine(
+    const Eigen::Matrix3d& essential, const Eigen::Ref<const Rows3>& bearings1,
+    const Eigen::Ref<const Rows3>& bearings2, double scale) {
   const SampsonProblem problem(normalised_plane(bearings1), normalised_plane(bearings2));
   nls::Options options;
   options.loss = {.kind = nls::LossKind::kCauchy, .scale = scale};
   options.max_iterations = kRefineIterations;
-  // With the strict flag off the solve never fails: it returns its best state.
-  auto solved = *nls::solve(problem, start_motion(essential), options);
-  return {.state = essential_of(solved.state), .summary = std::move(solved.summary)};
+  // Not strict, so the solve fails only on a non-finite start: a match at both epipoles,
+  // whose Sampson distance is 0 / 0.
+  auto solved = nls::solve(problem, start_motion(essential), options);
+  if (!solved) {
+    return std::unexpected(solved.error());
+  }
+  return solve::Solution<Eigen::Matrix3d, nls::Summary>{.state = essential_of(solved->state),
+                                                        .summary = std::move(solved->summary)};
 }
 
 Result<solve::Solution<Eigen::Matrix3d, nls::Summary>> refine_essential(
@@ -481,8 +485,10 @@ Result<ransac::RefinedSolution<Eigen::Matrix3d>> essential_ransac(
   return ransac::estimate_refined(
       EssentialEstimator(bearings1, bearings2, minimal), options, refine,
       [&](const Eigen::Matrix3d& model, const ransac::Indices& inliers) {
+        // The consensus's inliers are within the threshold, so every start is finite.
         return epipolar::refine(model, gather(all1, inliers), gather(all2, inliers),
-                                options.threshold);
+                                options.threshold)
+            .value();
       },
       fivepoint::kSampleSize);
 }
