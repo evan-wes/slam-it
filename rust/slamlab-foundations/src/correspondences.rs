@@ -313,6 +313,28 @@ pub fn gather<T: Copy>(rows: &[T], indices: &[usize]) -> Vec<T> {
     indices.iter().map(|&i| rows[i]).collect()
 }
 
+/// Fits a 3x3 model on a sample of the pairs: an estimator's non-minimal fit.
+///
+/// # Arguments
+///
+/// * `fit` - The fit, on the gathered pairs.
+/// * `first`, `second` - Every pair's two sides.
+/// * `indices` - The sample.
+///
+/// # Returns
+///
+/// The model, or none if the sample does not determine it.
+pub fn fit_sample<T: Copy>(
+    fit: fn(&[T], &[T]) -> Option<Matrix3<f64>>,
+    first: &[T],
+    second: &[T],
+    indices: &[usize],
+) -> Vec<Matrix3<f64>> {
+    fit(&gather(first, indices), &gather(second, indices))
+        .into_iter()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     //! Native tests of the helpers.

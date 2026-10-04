@@ -89,7 +89,7 @@ pub fn options(options: &Bound<'_, PyDict>) -> PyResult<ransac::Options> {
 /// # Errors
 ///
 /// A Python error if the dict cannot be built.
-fn summary<'py>(py: Python<'py>, summary: &ransac::Summary) -> PyResult<Bound<'py, PyDict>> {
+pub fn summary<'py>(py: Python<'py>, summary: &ransac::Summary) -> PyResult<Bound<'py, PyDict>> {
     let out = PyDict::new(py);
     out.set_item("iterations", summary.iterations)?;
     out.set_item(
@@ -117,7 +117,7 @@ fn summary<'py>(py: Python<'py>, summary: &ransac::Summary) -> PyResult<Bound<'p
 /// # Errors
 ///
 /// A Python error if the dict cannot be built.
-fn refined_summary<'py>(
+pub fn refined_summary<'py>(
     py: Python<'py>,
     summary: &ransac::RefinedSummary,
 ) -> PyResult<Bound<'py, PyDict>> {

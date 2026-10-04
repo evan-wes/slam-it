@@ -7,8 +7,8 @@ use slamlab_foundations::epipolar::{self as core, MinimalSolver};
 
 use super::{nls_crossing, ransac_crossing};
 use crate::common::{
-    ArrayIn, ArrayOut, add_functions, decode, enum_names, item_array, items_array, new_array, one,
-    rows, unwrap,
+    ArrayIn, ArrayOut, add_functions, decode, enum_names, item_array, items_array, one, rows,
+    unwrap, vector_array,
 };
 
 /// E from (N, 3) bearing pairs.
@@ -95,8 +95,7 @@ fn sampson_essential<'py>(
         &rows::<Vector3<f64>>(&bearings1)?,
         &rows::<Vector3<f64>>(&bearings2)?,
     );
-    let errors = unwrap(py, errors)?;
-    new_array(py, &[errors.len()], errors.as_slice().to_vec())
+    vector_array(py, &unwrap(py, errors)?)
 }
 
 /// Squared Sampson errors under F.
@@ -129,8 +128,7 @@ fn sampson_fundamental<'py>(
         &rows::<Vector2<f64>>(&pixels1)?,
         &rows::<Vector2<f64>>(&pixels2)?,
     );
-    let errors = unwrap(py, errors)?;
-    new_array(py, &[errors.len()], errors.as_slice().to_vec())
+    vector_array(py, &unwrap(py, errors)?)
 }
 
 /// E's four candidate poses.

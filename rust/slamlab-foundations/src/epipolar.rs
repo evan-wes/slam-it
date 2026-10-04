@@ -9,8 +9,8 @@
 use nalgebra::{DMatrix, DVector, Matrix3, Matrix3x2, Matrix4, Vector2, Vector3};
 
 use crate::correspondences::{
-    RANK_TOLERANCE, check_bearing_pairs, check_point_pairs, gather, hartley_normalisation,
-    homogeneous, normalised_plane, null_vector,
+    RANK_TOLERANCE, check_bearing_pairs, check_point_pairs, fit_sample, gather,
+    hartley_normalisation, homogeneous, normalised_plane, null_vector,
 };
 use crate::error::{ErrorKind, Result, fail, fail_setting};
 use crate::ransac::{self, Estimator, Options, RefinedSolution};
@@ -294,28 +294,6 @@ pub fn sampson_fundamental(
     ))
 }
 
-/// Fits a model on a sample of the pairs: the estimators' non-minimal fit.
-///
-/// # Arguments
-///
-/// * `fit` - The fit, on the gathered pairs.
-/// * `first`, `second` - Every pair's two sides.
-/// * `indices` - The sample.
-///
-/// # Returns
-///
-/// The model, or none if the sample does not determine it.
-fn fit_sample<T: Copy>(
-    fit: fn(&[T], &[T]) -> Option<Matrix3<f64>>,
-    first: &[T],
-    second: &[T],
-    indices: &[usize],
-) -> Vec<Matrix3<f64>> {
-    fit(&gather(first, indices), &gather(second, indices))
-        .into_iter()
-        .collect()
-}
-
 /// The 8-point or 5-point E solver and its Sampson error, as a [`ransac::Estimator`].
 pub struct EssentialEstimator {
     /// The bearings in camera 1.
@@ -432,10 +410,6 @@ impl Estimator for FundamentalEstimator {
 
     fn size(&self) -> usize {
         self.pixels1.len()
-    }
-
-    fn fit_minimal(&self, indices: &[usize]) -> Vec<Matrix3<f64>> {
-        self.fit_nonminimal(indices)
     }
 
     fn fit_nonminimal(&self, indices: &[usize]) -> Vec<Matrix3<f64>> {

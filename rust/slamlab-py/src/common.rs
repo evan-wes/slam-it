@@ -5,7 +5,7 @@
 //! refused rather than silently copied, the same as the C++ binding. A core [`Error`] crosses
 //! as the Python exception of its kind, from `slamlab.foundations.errors`.
 
-use nalgebra::SMatrix;
+use nalgebra::{DVector, SMatrix};
 use numpy::ndarray::{ArrayD, IxDyn};
 use numpy::{
     Element, IntoPyArray, PyArrayDyn, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArrayDyn,
@@ -320,6 +320,24 @@ pub fn item_array<'py, A: Item>(py: Python<'py>, item: &A) -> PyResult<ArrayOut<
     let mut out = Vec::with_capacity(A::LEN);
     item.write(&mut out);
     new_array(py, &A::shape(), out)
+}
+
+/// Packs a vector as a new (N,) array.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `values` - The vector.
+///
+/// # Returns
+///
+/// The array.
+///
+/// # Errors
+///
+/// Never in practice (the shape always matches); see [`new_array`].
+pub fn vector_array<'py>(py: Python<'py>, values: &DVector<f64>) -> PyResult<ArrayOut<'py>> {
+    new_array(py, &[values.len()], values.as_slice().to_vec())
 }
 
 /// An enum's names in code order, for a `codes()` table.

@@ -34,7 +34,9 @@ pub trait Estimator {
     /// The count.
     fn size(&self) -> usize;
 
-    /// Every model a minimal sample admits.
+    /// Every model a minimal sample admits. By default the non-minimal fit, for a solver
+    /// whose minimal sample is just the smallest that determines it (the 8-point algorithm,
+    /// the DLT).
     ///
     /// # Arguments
     ///
@@ -43,7 +45,9 @@ pub trait Estimator {
     /// # Returns
     ///
     /// The models (none for a degenerate sample).
-    fn fit_minimal(&self, indices: &[usize]) -> Vec<Self::Model>;
+    fn fit_minimal(&self, indices: &[usize]) -> Vec<Self::Model> {
+        self.fit_nonminimal(indices)
+    }
 
     /// The least-squares models of a larger subset.
     ///
