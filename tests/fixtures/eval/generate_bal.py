@@ -11,35 +11,18 @@ cannot drift apart. Run from the repository root after changing ``bal_tiny.txt``
 from __future__ import annotations
 
 import json
+from dataclasses import fields
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from slamlab.eval import readers
+from slamlab.foundations.ba import BAProblem
 
 HERE = Path(__file__).parent
 
-ARRAYS = (
-    "intrinsics",
-    "poses",
-    "points",
-    "observations",
-    "cam_idx",
-    "pt_idx",
-    "intrinsics_idx",
-    "weights",
-    "fixed_poses",
-    "fixed_intrinsics",
-    "fixed_points",
-    "depth_prior",
-    "depth_prior_weights",
-    "depth_affine",
-    "fixed_depth_affine",
-    "pose_prior",
-    "pose_prior_weights",
-    "point_anchor",
-)
+ARRAYS = tuple(f.name for f in fields(BAProblem) if f.name != "camera_model")
 """Every array field of ``BAProblem``: the BAL conversion and every default it leaves."""
 
 

@@ -3,10 +3,10 @@
 import-linter enforces the layering for Python. This script enforces the same rules for
 the other two languages, reading the same contracts, so the three can never disagree:
 
-- C++: every ``#include "slamlab/<rung>/..."`` or ``#include <slamlab/<rung>/...>``, and
-  every quoted relative include that resolves into a rung directory (``"../../bench/<rung>/
-  x.hpp"``), in ``cpp/{include/slamlab,src,tests,bench,bindings}/<rung>/`` must name the
-  file's own rung or one it may depend on; no C++ source may sit outside a rung directory
+- C++: every include in ``cpp/{include/slamlab,src,tests,bench,bindings}/<rung>/``, resolved
+  as the compiler does (next to the including file, then the include directories CMake
+  gives that root), must reach the file's own rung or one it may depend on; a quoted include
+  found nowhere is reported; no C++ source may sit outside a rung directory
   (except the bindings' root, which only wires the rungs); and every
   ``slamlab_add_rung(<rung> DEPENDS ...)`` in ``CMakeLists.txt`` may only link the rungs it
   may depend on.
@@ -38,8 +38,11 @@ listed in the layers contract.
   literals and the ``#[cfg(test)] mod tests`` at its end; a path through a package names the
   module it reaches (``super::gauge``), and an item of a package's own facade
   (``super::Gauge``) the facade. Chains count, as in C++. What the edges cannot follow is a
-  violation itself: a glob import, a re-export in a ``mod.rs`` or ``lib.rs``, and a
-  ``#[cfg(test)]`` anywhere but the trailing test module. A facade's items stand for one
+  violation itself: a glob import (``use super::*``, ``use super::{*}``), a re-export in a
+  ``mod.rs`` or ``lib.rs``, and a ``#[cfg(test)]`` anywhere but the trailing test module.
+  That sets a convention: a file's tests are one inline ``#[cfg(test)] mod tests { ... }``
+  at its end, the attribute directly on the module (not ``mod tests;`` in another file,
+  nor another attribute between). A facade's items stand for one
   layer, so an item the facade defines in a higher layer (``ba``'s ``solve``) passes, as in
   C++ (panel A24).
 
@@ -267,6 +270,10 @@ def _rust_modules(src: Path, rung: str) -> dict[Path, Module]:
     return modules
 
 
+_RAW_STRING = re.compile(r'r(#*)"')
+_CHAR_LITERAL = re.compile(r"'(\\.[^']*|[^'\\])'")
+
+
 def _rust_blank(text: str) -> str:
     """Return Rust source with every comment and string or char literal blanked to spaces.
 
@@ -299,9 +306,9 @@ def _rust_blank(text: str) -> str:
                     j += 1
             blank(i, j)
             i = j
-        elif raw := re.match(r'r(#*)"', text[i:]):
+        elif raw := _RAW_STRING.match(text, i):
             close = '"' + raw.group(1)
-            end = text.find(close, i + raw.end())
+            end = text.find(close, raw.end())
             end = n if end < 0 else end + len(close)
             blank(i, end)
             i = end
@@ -311,9 +318,9 @@ def _rust_blank(text: str) -> str:
                 j += 2 if text[j] == "\\" else 1
             blank(i, j + 1)
             i = j + 1
-        elif char := re.match(r"'(\\.[^']*|[^'\\])'", text[i:]):
-            blank(i, i + char.end())
-            i += char.end()
+        elif char := _CHAR_LITERAL.match(text, i):
+            blank(i, char.end())
+            i = char.end()
         else:
             i += 1
     return "".join(out)
@@ -408,7 +415,7 @@ def _rust_target(base: Module, segments: list[str], known: set[Module]) -> Modul
     return here
 
 
-_RUST_GLOB = re.compile(r"\buse\s+(?:crate|super)(?:::\w+)*::\*")
+_RUST_USE = re.compile(r"\buse\s+(?:crate|super|self)\b[^;]*;")
 _RUST_REEXPORT = re.compile(r"\bpub(?:\([^)]*\))?\s+use\b")
 
 
@@ -439,12 +446,17 @@ def _rust_graph(
             code, stray = _rust_code(source.read_text())
             where = str(source.relative_to(root))
             hazards.extend(
-                Violation(f"{where}:{line}", "#[cfg(test)] outside the trailing test module")
+                Violation(
+                    f"{where}:{line}",
+                    "#[cfg(test)] outside the trailing test module (tests must be one inline "
+                    "#[cfg(test)] mod tests { ... } at the end of the file)",
+                )
                 for line in stray
             )
-            for found in _RUST_GLOB.finditer(code):
-                line = code.count("\n", 0, found.start()) + 1
-                hazards.append(Violation(f"{where}:{line}", "glob import: name what is used"))
+            for found in _RUST_USE.finditer(code):
+                if "*" in found.group():
+                    line = code.count("\n", 0, found.start()) + 1
+                    hazards.append(Violation(f"{where}:{line}", "glob import: name what is used"))
             if source.name in {"mod.rs", "lib.rs"}:
                 for found in _RUST_REEXPORT.finditer(code):
                     line = code.count("\n", 0, found.start()) + 1
@@ -631,33 +643,62 @@ def _check_cpp_includes(root: Path, allowed: dict[str, frozenset[str]]) -> Itera
             for source in sources:
                 text = source.read_text()
                 for match in _ANY_INCLUDE.finditer(text):
-                    target = _included_rung(root, source, *match.groups())
-                    if target is not None and target != rung and target not in allowed[rung]:
-                        line = text.count("\n", 0, match.start()) + 1
+                    target, found = _included_rung(root, rung_root, source, *match.groups())
+                    line = text.count("\n", 0, match.start()) + 1
+                    where = f"{source.relative_to(root)}:{line}"
+                    if not found:
+                        yield Violation(where, f"include {match.group(2)!r} found nowhere")
+                    elif target is not None and target != rung and target not in allowed[rung]:
                         yield Violation(
-                            f"{source.relative_to(root)}:{line}",
-                            f"rung {rung!r} may not include from rung {target!r}",
+                            where, f"rung {rung!r} may not include from rung {target!r}"
                         )
 
 
-def _included_rung(root: Path, source: Path, bracket: str, name: str) -> str | None:
-    """Return the rung an include names, or None if it names none.
+_CPP_SEARCH_DIRS: dict[str, tuple[str, ...]] = {
+    "cpp/include/slamlab": ("cpp/include",),
+    "cpp/src": ("cpp/include",),
+    "cpp/bench": ("cpp/include",),
+    "cpp/tests": ("cpp/include", "cpp/src"),
+    "cpp/bindings": ("cpp/include", "cpp/bindings"),
+}
+"""The include directories ``CMakeLists.txt`` gives the targets built from each C++ root:
+every rung library exports ``cpp/include``; tests add ``cpp/src``, the bindings
+``cpp/bindings``."""
 
-    ``slamlab/<rung>/...`` in either form, or a quoted relative path resolved against the
-    including file that lands in a rung directory of any of the C++ roots
-    (``"../../bench/<rung>/x.hpp"``).
+
+def _included_rung(
+    root: Path, rung_root: str, source: Path, bracket: str, name: str
+) -> tuple[str | None, bool]:
+    """Return the rung an include reaches, resolving it as the compiler does.
+
+    A quoted include is looked for next to the including file first; then, in either form,
+    in the include directories CMake gives the targets built from ``rung_root``
+    (:data:`_CPP_SEARCH_DIRS`). The first file that exists decides, and its rung is the
+    rung directory it sits in under any C++ root (none for a root-level file such as the
+    bindings' ``common.hpp``).
+
+    Returns
+    -------
+    tuple of (str or None, bool)
+        The rung (or None), and whether the include was found in the repository at all. A
+        quoted include found nowhere cannot be checked, so the caller reports it; an
+        angle-bracket one is a system or third-party header.
     """
+    candidates = [source.parent / name] if bracket == '"' else []
+    candidates += [root / d / name for d in _CPP_SEARCH_DIRS.get(rung_root, ())]
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        resolved = Path(os.path.normpath(candidate))
+        for other in _CPP_RUNG_ROOTS:
+            base = Path(os.path.normpath(root / other))
+            if resolved.is_relative_to(base) and len(resolved.relative_to(base).parts) > 1:
+                return resolved.relative_to(base).parts[0], True
+        return None, True
     named = _INCLUDE.match(f"#include {bracket}{name}")
     if named:
-        return named.group(1)
-    if bracket != '"':
-        return None
-    resolved = Path(os.path.normpath(source.parent / name))
-    for rung_root in _CPP_RUNG_ROOTS:
-        base = Path(os.path.normpath(root / rung_root))
-        if resolved.is_relative_to(base) and len(resolved.relative_to(base).parts) > 1:
-            return resolved.relative_to(base).parts[0]
-    return None
+        return named.group(1), True  # a slamlab header not yet written: its path names it
+    return None, bracket != '"'
 
 
 def _check_cmake(root: Path, allowed: dict[str, frozenset[str]]) -> Iterator[Violation]:

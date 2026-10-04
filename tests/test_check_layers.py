@@ -330,15 +330,40 @@ def test_rust_internal_order_allows_downward_paths_facades_comments_and_tests(
     assert list(check_layers.check_rust_internal(fake_repo, ORDERS)) == []
 
 
-def test_relative_include_into_another_rung_is_reported(fake_repo: Path) -> None:
-    """A quoted relative include is resolved to the rung directory it lands in (panel A9)."""
-    _write(fake_repo, "cpp/tests/foundations/test_x.cpp", '#include "../../bench/edge/foo.hpp"\n')
-    _write(
-        fake_repo, "cpp/tests/foundations/test_y.cpp", '#include "../../bench/foundations/ok.hpp"\n'
-    )
+@pytest.mark.parametrize(
+    ("source", "include", "target"),
+    [
+        ("cpp/tests/foundations/test_x.cpp", "../../bench/edge/foo.hpp", "cpp/bench/edge/foo.hpp"),
+        ("cpp/tests/foundations/test_x.cpp", "edge/frontend.hpp", "cpp/src/edge/frontend.hpp"),
+        ("cpp/bindings/foundations/x.cpp", "edge/x.hpp", "cpp/bindings/edge/x.hpp"),
+    ],
+    ids=["next-to-the-file", "tests-search-cpp-src", "bindings-search-cpp-bindings"],
+)
+def test_includes_resolve_as_the_compiler_does(
+    fake_repo: Path, source: str, include: str, target: str
+) -> None:
+    """A quoted include is found as the compiler finds it, then checked (panel A9, A16).
+
+    Next to the file first, then in the include directories CMake gives its root.
+    """
+    _write(fake_repo, target, "")
+    _write(fake_repo, source, f'#include "{include}"\n')
     found = list(check_layers.check_cpp(fake_repo, ALLOWED))
     assert [v.message for v in found] == ["rung 'foundations' may not include from rung 'edge'"]
-    assert found[0].location == "cpp/tests/foundations/test_x.cpp:1"
+    assert found[0].location == f"{source}:1"
+
+
+def test_same_rung_and_unresolvable_includes(fake_repo: Path) -> None:
+    """An include reaching the file's own rung passes; a quoted one found nowhere fails."""
+    _write(fake_repo, "cpp/bench/foundations/ok.hpp", "")
+    _write(
+        fake_repo,
+        "cpp/tests/foundations/test_y.cpp",
+        '#include "../../bench/foundations/ok.hpp"\n#include "missing.hpp"\n',
+    )
+    found = list(check_layers.check_cpp(fake_repo, ALLOWED))
+    assert [v.message for v in found] == ["include 'missing.hpp' found nowhere"]
+    assert found[0].location == "cpp/tests/foundations/test_y.cpp:2"
 
 
 @pytest.mark.parametrize(
@@ -346,6 +371,8 @@ def test_relative_include_into_another_rung_is_reported(fake_repo: Path) -> None
     [
         ("ba/schur.rs", "use super::*;\nfn f() { bundle::adjust(); }", "glob import"),
         ("ba/schur.rs", "use crate::ba::*;", "glob import"),
+        ("ba/schur.rs", "use super::{*};", "glob import"),
+        ("ba/schur.rs", "use crate::ba::{bundle::*, schur};", "glob import"),
         ("ba/mod.rs", "mod bundle;\npub use bundle::adjust;", "re-export in a package facade"),
         (
             "ba/gauge.rs",
