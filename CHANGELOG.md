@@ -45,6 +45,24 @@ milestone 1; PR 6 adds the estimation core. Two deferred panel items are closed.
   `enum_by_name` reads every choice by name.
 - **Options-dict errors read as serde's** (``missing field `x` ``, ``unknown field `x` ``),
   in both bindings.
+- **Every compiled backend implements each module it has in full.** The Protocol test and
+  `require_function` enforce it for Rust as for C++, and `backends.COMPILED_BACKENDS`
+  replaces the hand-written lists (panel A1, A6).
+- **Enum codes leave the Rust binding by their position in `ALL`,** the list that names and
+  decodes them (panel A3).
+- **`ba::Problem::with_defaults`** fills a problem's optional arrays as `BAProblem.create`
+  does.
+
+### Fixed
+
+- **A NaN gradient entry never reads as convergence** (panel L1). Rust's `f64::max` and
+  Eigen's default `maxCoeff` dropped NaN from the gradient's norm; both cores now propagate
+  it, as the reference does.
+- **A non-finite matrix no longer hangs the gauge's SVD** (panel L2). nalgebra's general SVD
+  has no iteration cap; one capped, finiteness-checked helper replaces it.
+- **The native cores reject non-finite input** in the rotation, skew, transform and
+  quaternion checks and in Umeyama, in both languages (panel L5, H2). NaN passes every
+  tolerance comparison.
 
 ### Tests
 
@@ -53,6 +71,12 @@ milestone 1; PR 6 adds the estimation core. Two deferred panel items are closed.
   The native C++ tests read fixtures through nlohmann_json, a test-only conda package.
 - **Layer 1 builds and lints the benchmarks,** and holds `cpp/bench` to the ladder like the
   rest of the code.
+- **`check_layers.py` holds Rust's modules inside a rung to the internal contracts,** reading
+  their `crate::` and `super::` paths, as it does C++'s includes (panel A2).
+- **The native BAL readers are tested against the Python reader** through a shared fixture,
+  `tests/fixtures/eval/bal.json` (panel A4).
+- **Native Rust tests for bundle adjustment:** a noise-free scene recovered, degenerate
+  points dropped, malformed problems rejected, and the Schur reduction (panel H1).
 
 ## [0.2.3.0] - 2026-10-03
 

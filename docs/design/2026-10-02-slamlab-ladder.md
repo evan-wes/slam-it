@@ -655,6 +655,13 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
   - **One feature front end (A8).** Each demo script has its own SIFT and ratio-test
     matching. Fold them into the edge rung's front end when it lands (milestone 2), or into
     one shared script helper if a third demo comes first.
+- **Deferred from PR 5's review panel**
+  ([report](../reviews/2026-10-04-feature-rust-core.md)):
+  - **Nested summaries and the Rust `Summary` trait (A5).** `ba::Summary` holds the
+    least-squares summary but does not implement `solve::Summary`. In Rust it could, by
+    delegation, as Python's properties do; C++'s concept needs data members, hence its
+    named structs. Decide when PR 6 brings `RefinedSummary` to Rust, and record it under
+    "Where the summary lives".
 - **Deferred from PR 1's review panel**
   ([report](../reviews/2026-10-02-feature-ba-spine.md)):
   - **Batched APIs for standalone callers (A11).** Batching over many inputs lives in the

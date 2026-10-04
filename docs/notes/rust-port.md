@@ -8,7 +8,7 @@ core's design carried over, where Rust changed it, and the measured comparison.
 
 ## The problem
 
-The same algorithms, three times, need to agree to the last few bits and fail the same way:
+The same algorithms, three times, need to take the same decisions and fail the same way:
 - the parity fixtures hold every language to the Python reference;
 - bundle adjustment's fixture compares iteration counts, terminations and gauge codes exactly
   (`"the two cores step alike"`), so the Rust solve has to take the same decisions at every
@@ -92,9 +92,17 @@ settings, every backend reaches the same solution (`scripts/demo_bal.py --backen
 | | RMS (px) | Iterations | Time |
 |---|---|---|---|
 | Python | 0.9147 | 33 | 63.8 s |
-| C++ | 0.9147 | 33 | 1.49 s |
-| Rust | 0.9147 | 33 | 1.44 s |
-| COLMAP (Ceres) | 0.9147 | -- | 0.36 s |
+| C++ | 0.9147 | 33 | 1.35-1.49 s |
+| Rust | 0.9147 | 33 | 1.29-1.44 s |
+| COLMAP (Ceres), one thread | 0.9147 | -- | 0.64-0.71 s |
+| COLMAP (Ceres), all 24 cores | 0.9147 | -- | 0.35-0.44 s |
+
+Our cores run on one thread. COLMAP's Ceres uses every core by default
+(`num_threads = -1`), and ladybug is large enough (63,686 residuals) for it to do so, so
+the fair comparison is its one-thread row: Ceres is about twice as fast. Ceres builds and
+factors the reduced camera system block by block; ours forms it as one dense matrix. That
+is the likely difference, and milestone 4's sparse reduced solver is where it goes. The
+ranges are separate runs on a shared machine.
 
 The native benchmarks (Google Benchmark in `cpp/bench/`, criterion in
 `rust/slamlab-foundations/benches/`), on the same machine, one core:
@@ -108,10 +116,10 @@ The native benchmarks (Google Benchmark in `cpp/bench/`, criterion in
 | radtan projection | 10.6 ns | 20.0 ns |
 
 Bundle adjustment, where the time goes into dense linear algebra and the Schur elimination, is
-level. The small operations differ either way by up to a factor of two, from how each
-library's small fixed-size code is compiled and from how much each port copies:
-- the Rust projection expands every model's intrinsics into a fixed nine-element array;
-- the C++ one passes an `Eigen::Ref` straight through.
+level. The small operations differ either way by up to a factor of two. They have not been
+profiled, so this note gives no cause. One plausible cause is ruled out: both projections
+copy the intrinsics (C++ into a heap-allocated `Eigen::VectorXd`, Rust into a stack array),
+yet C++ is the faster one there.
 
 Run them with:
 
@@ -139,14 +147,23 @@ small excess.
 
 ## What was learned
 
-- **Bit-level agreement survives a change of linear-algebra library.** The C++ and Python
-  cores were written so that their decisions depend on spans, not on the bases an SVD
-  happens to return (a canonical span from the projector, the Householder complement, a
-  tie-break margin). That design, made for Eigen against numpy, carried nalgebra too: all
-  fifteen BA cases match on the first run, iteration counts included.
+- **Decision-level agreement survives a change of linear-algebra library.** The values are
+  not bit-identical: ladybug's final costs differ by 9e-12 relative between C++ and Rust,
+  and the BA fixture holds values to about 1e-9. But the decisions are identical: iteration
+  counts, terminations and gauge codes. The C++ and Python cores were written so that their
+  decisions depend on spans, not on the bases an SVD happens to return (a canonical span
+  from the projector, the Householder complement, a tie-break margin). That design, made for
+  Eigen against numpy, carried nalgebra too: all fifteen BA cases match on the first run,
+  iteration counts included.
 - **A thin SVD is a trap for null spaces.** Taking the "last columns of V" silently returns
   too few vectors when the matrix is wide; the padding is a one-line fix, but only a test of
   a wide matrix shows it is needed.
+- **A library's defaults are part of the algorithm.** nalgebra's general SVD has no iteration
+  cap: on a NaN matrix it never returns, where LAPACK and Eigen stop. Rust's `f64::max`
+  drops NaN, where numpy's keeps it, and a NaN gradient could have read as convergence. Both
+  were found by the review panel and fixed in both cores. The fixes are one capped SVD helper,
+  NaN-propagating norms, and finiteness checks ahead of every tolerance comparison, since NaN
+  passes all of them.
 - **Strictness is cheaper with serde.** `deny_unknown_fields` replaces a hand-written key
   check at every depth, which is why the C++ binding now borrows serde's wording.
 
