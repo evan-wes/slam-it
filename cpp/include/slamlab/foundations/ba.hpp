@@ -55,6 +55,11 @@ enum class Gauge : std::uint8_t {
   kCount = 6,
 };
 
+/// @brief The gauge's name, as `slamlab.foundations.ba.GAUGES` spells it.
+/// @param gauge The gauge.
+/// @return A static string.
+[[nodiscard]] const char* name(Gauge gauge);
+
 /// @brief Solves the reduced camera system `S x = b`, S symmetric positive definite.
 template <typename S>
 concept ReducedSystemSolver =

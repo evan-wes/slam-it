@@ -96,6 +96,26 @@ Result<void> check_anchors(const Problem& problem) {
 
 }  // namespace
 
+const char* name(Gauge gauge) {
+  switch (gauge) {
+    case Gauge::kNone:
+      return "none";
+    case Gauge::kFirstPose:
+      return "first_pose";
+    case Gauge::kSimilarity:
+      return "similarity";
+    case Gauge::kAuto:
+      return "auto";
+    case Gauge::kScale:
+      return "scale";
+    case Gauge::kPartial:
+      return "partial";
+    case Gauge::kCount:
+      break;
+  }
+  return "unknown";
+}
+
 std::optional<Eigen::VectorXd> DenseCholesky::solve(const Eigen::MatrixXd& matrix,
                                                     const Eigen::VectorXd& rhs) {
   const Eigen::LLT<Eigen::MatrixXd> factor(matrix);

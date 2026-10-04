@@ -326,6 +326,24 @@ nanobind::list enum_names(const Name& name) {
   return out;
 }
 
+/// @brief Look an enum up by its name, as its core's `name` function spells it.
+/// @tparam E The enum, with a `kCount` sentinel.
+/// @tparam Name Callable as `name(E)`, returning the name.
+/// @param value The name to find.
+/// @param name The enum's name function.
+/// @param what The field's name, for the message.
+/// @return The enum value.
+/// @throws std::invalid_argument (Python `ValueError`) for an unknown name.
+template <typename E, typename Name>
+E enum_by_name(const std::string& value, const Name& name, const char* what) {
+  for (int k = 0; k < static_cast<int>(E::kCount); ++k) {
+    if (value == name(static_cast<E>(k))) {
+      return static_cast<E>(k);
+    }
+  }
+  throw std::invalid_argument(std::string(what) + ": unknown name " + value);
+}
+
 /// @brief One read-only (3, 3) matrix.
 using Matrix3In = nanobind::ndarray<const double, nanobind::shape<3, 3>, nanobind::c_contig,
                                     nanobind::device::cpu>;
@@ -374,7 +392,8 @@ inline nanobind::ndarray<nanobind::numpy, bool> mask_array(
 }
 
 /// @brief Refuse a dict whose keys are not exactly the expected ones (an options dict crossing
-///        from a Python dataclass), so the two sides cannot drift apart.
+///        from a Python dataclass), so the two sides cannot drift apart. The messages are
+///        serde's, which the Rust binding reads its options with, so both fail alike.
 /// @param values The dict.
 /// @param keys The expected keys.
 /// @param what The dataclass's name, for the message.
@@ -383,13 +402,13 @@ inline void check_keys(const nanobind::dict& values, std::span<const char* const
                        const char* what) {
   for (const char* key : keys) {
     if (!values.contains(key)) {
-      throw std::invalid_argument(std::string("options: missing ") + key + " of " + what);
+      throw std::invalid_argument(std::string("options: missing field `") + key + "` of " + what);
     }
   }
   for (const auto& [key, value] : values) {
     const std::string name = nanobind::str(key).c_str();
     if (std::ranges::find(keys, name) == keys.end()) {
-      throw std::invalid_argument("options: unexpected " + name + ", not a field of " + what);
+      throw std::invalid_argument("options: unknown field `" + name + "`, not a field of " + what);
     }
   }
 }

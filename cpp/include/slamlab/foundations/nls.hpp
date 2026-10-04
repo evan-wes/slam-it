@@ -113,6 +113,16 @@ struct Options {
   bool strict = false;
 };
 
+/// @brief The method's name, as `slamlab.foundations.nls.METHODS` spells it.
+/// @param method The method.
+/// @return A static string.
+[[nodiscard]] const char* name(Method method);
+
+/// @brief The loss's name, as `slamlab.foundations.nls.LOSSES` spells it.
+/// @param kind The loss.
+/// @return A static string.
+[[nodiscard]] const char* name(LossKind kind);
+
 /// @brief Check a loss and the solver settings.
 /// @param options The settings.
 /// @return Nothing, or `InvalidInput` naming the setting out of range.

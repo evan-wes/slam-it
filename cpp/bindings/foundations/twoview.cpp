@@ -30,20 +30,6 @@ constexpr std::array<const char*, 11> kOptionKeys = {
     "seed",  "min_parallax_deg", "min_points", "ambiguity_ratio", "essential_solver",
     "refine"};
 
-/// @brief Look a minimal solver up by the name `epipolar.MINIMAL_SOLVERS` spells it.
-/// @param name The name.
-/// @return The solver.
-/// @throws std::invalid_argument (Python `ValueError`) for an unknown name.
-foundations::epipolar::MinimalSolver essential_solver(const std::string& name) {
-  using foundations::epipolar::MinimalSolver;
-  for (int k = 0; k < static_cast<int>(MinimalSolver::kCount); ++k) {
-    if (name == foundations::epipolar::name(static_cast<MinimalSolver>(k))) {
-      return static_cast<MinimalSolver>(k);
-    }
-  }
-  throw std::invalid_argument("essential_solver: unknown solver " + name);
-}
-
 /// @brief Read the initialiser's options from a dict of scalars.
 /// @param options The dict, with exactly `kOptionKeys`.
 /// @return The options (checked by the core).
@@ -60,7 +46,10 @@ twoview::Options read_options(const nb::dict& options) {
       .min_parallax_deg = nb::cast<double>(options["min_parallax_deg"]),
       .min_points = nb::cast<int>(options["min_points"]),
       .ambiguity_ratio = nb::cast<double>(options["ambiguity_ratio"]),
-      .essential_solver = essential_solver(nb::cast<std::string>(options["essential_solver"])),
+      .essential_solver = enum_by_name<foundations::epipolar::MinimalSolver>(
+          nb::cast<std::string>(options["essential_solver"]),
+          [](foundations::epipolar::MinimalSolver m) { return foundations::epipolar::name(m); },
+          "essential_solver"),
       .refine = nb::cast<bool>(options["refine"])};
 }
 

@@ -547,9 +547,9 @@ def test_core_checks_indices_too(backend: str) -> None:
 @pytest.mark.parametrize(
     ("change", "message"),
     [
-        (lambda o: o.pop("gauge"), "missing gauge"),
-        (lambda o: o["solver"].update(trust_region=1.0), "unexpected trust_region"),
-        (lambda o: o["depth_loss"].pop("scale"), "missing scale"),
+        (lambda o: o.pop("gauge"), "missing field `gauge`"),
+        (lambda o: o["solver"].update(trust_region=1.0), "unknown field `trust_region`"),
+        (lambda o: o["depth_loss"].pop("scale"), "missing field `scale`"),
         (lambda o: o.update(gauge="sim3"), "gauge: unknown name sim3"),
         (lambda o: o["solver"]["loss"].update(kind="tukey"), "loss: unknown name tukey"),
         (lambda o: o["solver"].update(block_loss={}), "block_loss"),
