@@ -74,34 +74,27 @@ pub fn read_bal(path: &Path) -> Result<Problem, String> {
     let fixed_intrinsics = (0..n_cams)
         .flat_map(|_| [false, true, true, false, false])
         .collect();
-    Ok(Problem {
-        model: Model::Radial,
-        intrinsics: Intrinsics { values, params: 5 },
-        pose_prior: poses.clone(),
+    let points = points
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|&p| Vector3::from(p))
+        .collect();
+    let intrinsics = Intrinsics { values, params: 5 };
+    let mut problem = Problem::with_defaults(
+        Model::Radial,
+        intrinsics,
         poses,
-        points: points
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .map(|&p| Vector3::from(p))
-            .collect(),
+        points,
         observations,
         cam_idx,
         pt_idx,
-        intrinsics_idx: (0..n_cams)
-            .map(|c| i64::try_from(c).map_err(|e| e.to_string()))
-            .collect::<Result<_, _>>()?,
-        weights: vec![1.0; n_obs],
-        fixed_poses: vec![false; n_cams],
-        fixed_intrinsics,
-        fixed_points: vec![false; n_points],
-        depth_prior: vec![f64::NAN; n_obs],
-        depth_prior_weights: vec![1.0; n_obs],
-        depth_affine: vec![Vector2::new(1.0, 0.0); n_cams],
-        fixed_depth_affine: vec![true; n_cams],
-        pose_prior_weights: vec![Vector2::zeros(); n_cams],
-        point_anchor: vec![-1; n_points],
-    })
+    );
+    problem.intrinsics_idx = (0..n_cams)
+        .map(|c| i64::try_from(c).map_err(|e| e.to_string()))
+        .collect::<Result<_, _>>()?;
+    problem.fixed_intrinsics = fixed_intrinsics;
+    Ok(problem)
 }
 
 /// The BAL demo's settings (`scripts/demo_bal.py`): Levenberg-Marquardt, at most 100

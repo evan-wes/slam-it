@@ -459,3 +459,44 @@ impl<S: ReducedSystemSolver> LinearSystem for SchurSystem<S> {
         Some(step)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Native tests of the reduced coordinates, runnable without Python.
+    #![allow(
+        clippy::cast_precision_loss,
+        reason = "small indices fill test matrices"
+    )]
+
+    use super::*;
+
+    /// A reduction over a 14-entry vector: entries 0, 2 and 3 free, and entries 6..12 (one
+    /// confined pose) on a five-column orthonormal basis.
+    fn reduction() -> Reduction {
+        let raw = DMatrix::from_fn(6, 5, |i, j| ((i * 5 + j) as f64 * 0.37).sin());
+        let basis = raw.qr().q();
+        Reduction::new(vec![0, 2, 3], (6..12).collect(), basis, 14)
+    }
+
+    /// Expanding free coordinates and reducing them again is the identity, as the basis is
+    /// orthonormal and its rows apart from the free entries.
+    #[test]
+    fn expand_then_reduce_is_the_identity() {
+        let reduction = reduction();
+        let reduced = DVector::from_fn(reduction.size(), |i, _| 1.0 + i as f64);
+        let back = reduction.reduce_vector(&reduction.expand(&reduced));
+        assert!((back - reduced).amax() < 1e-14);
+    }
+
+    /// The reduced diagonal is the diagonal of the reduced matrix, `Bᵀ M B`.
+    #[test]
+    fn reduced_diagonal_matches_the_reduced_matrix() {
+        let reduction = reduction();
+        let m = DMatrix::from_fn(14, 14, |i, j| ((i + 2 * j) as f64).cos());
+        let symmetric = &m + m.transpose();
+        let reduced = reduction.reduce_matrix(&symmetric);
+        let diagonal = reduction.reduce_diagonal(&symmetric);
+        assert!((reduced.diagonal() - diagonal).amax() < 1e-13);
+        assert!((reduced.transpose() - &reduced).amax() < 1e-13);
+    }
+}

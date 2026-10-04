@@ -182,6 +182,61 @@ pub struct Problem {
     pub point_anchor: Vec<i64>,
 }
 
+impl Problem {
+    /// A problem with every optional array at its default, as `BAProblem.create` fills them.
+    ///
+    /// The defaults: every camera in intrinsics group 0, every observation weighted 1, no
+    /// pose or point fixed, every intrinsic fixed, no depth priors (affines fixed at
+    /// `(1, 0)`), no pose priors, and no anchored points.
+    ///
+    /// # Arguments
+    ///
+    /// * `model` - The camera model.
+    /// * `intrinsics` - The intrinsics groups.
+    /// * `poses` - Camera-to-world poses `T_world_cam`.
+    /// * `points` - World points.
+    /// * `observations` - Observed pixels.
+    /// * `cam_idx` - Each observation's camera.
+    /// * `pt_idx` - Each observation's point.
+    ///
+    /// # Returns
+    ///
+    /// The problem (unchecked: [`solve`] checks it).
+    #[must_use]
+    pub fn with_defaults(
+        model: Model,
+        intrinsics: Intrinsics,
+        poses: Vec<Matrix4<f64>>,
+        points: Vec<Vector3<f64>>,
+        observations: Vec<Vector2<f64>>,
+        cam_idx: Vec<i64>,
+        pt_idx: Vec<i64>,
+    ) -> Self {
+        let (n_cams, n_points, n_obs) = (poses.len(), points.len(), observations.len());
+        Self {
+            model,
+            fixed_intrinsics: vec![true; intrinsics.values.len()],
+            intrinsics,
+            pose_prior: poses.clone(),
+            poses,
+            points,
+            observations,
+            cam_idx,
+            pt_idx,
+            intrinsics_idx: vec![0; n_cams],
+            weights: vec![1.0; n_obs],
+            fixed_poses: vec![false; n_cams],
+            fixed_points: vec![false; n_points],
+            depth_prior: vec![f64::NAN; n_obs],
+            depth_prior_weights: vec![1.0; n_obs],
+            depth_affine: vec![Vector2::new(1.0, 0.0); n_cams],
+            fixed_depth_affine: vec![true; n_cams],
+            pose_prior_weights: vec![Vector2::zeros(); n_cams],
+            point_anchor: vec![-1; n_points],
+        }
+    }
+}
+
 /// Settings for [`solve`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Options {
@@ -620,10 +675,15 @@ pub fn solve(problem: &Problem, options: &Options) -> Result<Solution> {
 
 #[cfg(test)]
 mod tests {
-    //! Native tests of the facade: the gauge's codes. The solve is checked in its modules
-    //! and against the Python reference.
+    //! Native tests of bundle adjustment, runnable without Python: the gauge's codes, the
+    //! problem checks, and small synthetic scenes solved back to their truth. The Python
+    //! reference holds every value to its parity fixture.
+
+    use nalgebra::Vector6;
 
     use super::*;
+    use crate::camera::Model;
+    use crate::error::ErrorKind;
 
     /// Each gauge's discriminant is its position in `ALL`, the code it crosses as.
     #[test]
@@ -631,5 +691,159 @@ mod tests {
         for (i, gauge) in Gauge::ALL.iter().enumerate() {
             assert_eq!(*gauge as usize, i, "{}", gauge.name());
         }
+    }
+
+    /// Pinhole intrinsics.
+    const PINHOLE: [f64; 4] = [500.0, 500.0, 320.0, 240.0];
+
+    /// A noise-free scene: three cameras along x looking down z at a cloud of points, every
+    /// point seen by every camera, with the first two poses fixed.
+    fn scene() -> Problem {
+        let poses: Vec<Matrix4<f64>> = [-0.6, 0.0, 0.7]
+            .iter()
+            .enumerate()
+            .map(|(c, &x)| {
+                let angle = 0.05 * f64::from(u8::try_from(c).unwrap());
+                se3::exp(&Vector6::new(x, 0.1 * angle, 0.0, 0.0, angle, -angle))
+            })
+            .collect();
+        let points: Vec<Vector3<f64>> = (0..20)
+            .map(|i| {
+                let t = f64::from(i);
+                Vector3::new((1.3 * t).sin(), (0.7 * t).cos(), 5.0 + (0.9 * t).sin())
+            })
+            .collect();
+        let mut observations = Vec::new();
+        let (mut cam_idx, mut pt_idx) = (Vec::new(), Vec::new());
+        for (c, pose) in poses.iter().enumerate() {
+            let t_cam_world = se3::inverse(pose).unwrap();
+            for (p, point) in points.iter().enumerate() {
+                let in_camera = se3::act(&t_cam_world, point).unwrap();
+                observations.push(camera::project(Model::Pinhole, &PINHOLE, &in_camera).unwrap());
+                cam_idx.push(i64::try_from(c).unwrap());
+                pt_idx.push(i64::try_from(p).unwrap());
+            }
+        }
+        let intrinsics = Intrinsics {
+            values: PINHOLE.to_vec(),
+            params: 4,
+        };
+        let mut problem = Problem::with_defaults(
+            Model::Pinhole,
+            intrinsics,
+            poses,
+            points,
+            observations,
+            cam_idx,
+            pt_idx,
+        );
+        problem.fixed_poses = vec![true, true, false];
+        problem
+    }
+
+    /// Tight settings, so a noise-free solve reaches the truth.
+    fn tight() -> Options {
+        Options {
+            solver: nls::Options {
+                max_iterations: 100,
+                function_tolerance: 0.0,
+                gradient_tolerance: 1e-12,
+                step_tolerance: 1e-14,
+                ..nls::Options::default()
+            },
+            ..Options::default()
+        }
+    }
+
+    /// From a perturbed start, the free pose and the points return to the truth; the fixed
+    /// poses come back bit for bit. This runs the layout, the Schur system and the bundle.
+    #[test]
+    fn noise_free_scene_recovers_truth() {
+        let truth = scene();
+        let mut start = truth.clone();
+        start.poses[2] = se3::compose(
+            &truth.poses[2],
+            &se3::exp(&Vector6::new(0.02, -0.01, 0.03, 0.01, -0.02, 0.01)),
+        )
+        .unwrap();
+        for (p, point) in start.points.iter_mut().enumerate() {
+            let t = f64::from(u8::try_from(p).unwrap());
+            *point += Vector3::new(0.01 * t.sin(), 0.02 * t.cos(), -0.03 * (2.0 * t).sin());
+        }
+        let solved = solve(&start, &tight()).unwrap();
+        assert!(solved.summary.solve.termination.is_converged());
+        assert_eq!(solved.summary.gauge, Gauge::None);
+        assert_eq!(solved.poses[0], truth.poses[0]);
+        assert!((solved.poses[2] - truth.poses[2]).amax() < 1e-9);
+        for (got, want) in solved.points.iter().zip(&truth.points) {
+            assert!((got - want).amax() < 1e-8);
+        }
+    }
+
+    /// A point seen by one camera only is dropped and counted, with its observation.
+    #[test]
+    fn a_point_seen_once_is_dropped() {
+        let mut problem = scene();
+        problem.points.push(Vector3::new(0.2, -0.1, 4.0));
+        problem.fixed_points.push(false);
+        problem.point_anchor.push(-1);
+        problem.observations.push(Vector2::new(330.0, 230.0));
+        problem.cam_idx.push(0);
+        problem.pt_idx.push(20);
+        problem.weights.push(1.0);
+        problem.depth_prior.push(f64::NAN);
+        problem.depth_prior_weights.push(1.0);
+        let solved = solve(&problem, &tight()).unwrap();
+        assert_eq!(solved.summary.dropped_points, 1);
+        assert_eq!(solved.summary.dropped_observations, 1);
+        assert_eq!(solved.points[20], problem.points[20]);
+    }
+
+    /// Each malformed problem is `InvalidInput`, naming what is wrong.
+    #[test]
+    fn invalid_problems_are_rejected() {
+        type Change = Box<dyn Fn(&mut Problem)>;
+        let cases: Vec<(&str, Change)> = vec![
+            ("cam_idx", Box::new(|p| p.cam_idx[0] = 9)),
+            ("pt_idx", Box::new(|p| p.pt_idx[0] = -1)),
+            ("weights", Box::new(|p| p.weights[1] = -1.0)),
+            (
+                "points, observations",
+                Box::new(|p| p.points[0].x = f64::NAN),
+            ),
+            (
+                "fixed masks",
+                Box::new(|p| {
+                    p.fixed_points.pop();
+                }),
+            ),
+            ("depth_prior", Box::new(|p| p.depth_prior[0] = -0.5)),
+            ("transform", Box::new(|p| p.poses[1][(3, 0)] = 1.0)),
+            ("intrinsics", Box::new(|p| p.intrinsics.values[0] = 0.0)),
+            (
+                "fixed point cannot be anchored",
+                Box::new(|p| {
+                    p.point_anchor[0] = 0;
+                    p.fixed_points[0] = true;
+                }),
+            ),
+        ];
+        for (message, change) in cases {
+            let mut problem = scene();
+            change(&mut problem);
+            let err = solve(&problem, &tight()).unwrap_err();
+            assert_eq!(err.kind, ErrorKind::InvalidInput, "{message}");
+            assert!(err.message.contains(message), "{message}: {}", err.message);
+        }
+        let partial = Options {
+            gauge: Gauge::Partial,
+            ..tight()
+        };
+        assert!(
+            solve(&scene(), &partial)
+                .unwrap_err()
+                .message
+                .contains("partial")
+        );
     }
 }
