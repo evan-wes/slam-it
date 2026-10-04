@@ -474,7 +474,7 @@ class RefinedSummary:
 def refine_consensus(
     estimator: Estimator[ModelT],
     found: Solution[Consensus[ModelT], Summary],
-    refine: Callable[[ModelT, NDArray[np.bool_]], Solution[ModelT, nls.Summary]],
+    refine: Callable[[ModelT, NDArray[np.intp]], Solution[ModelT, nls.Summary]],
     *,
     threshold: float,
     minimum: int,
@@ -496,7 +496,8 @@ def refine_consensus(
     found : slamlab.foundations.solve.Solution
         RANSAC's result.
     refine : callable
-        Refines a model on the data an inlier mask selects.
+        Refines a model on the data the inlier indices select (ascending ``intp``; the same
+        form the C++ and Rust cores pass).
     threshold : float
         RANSAC's inlier threshold ``θ``.
     minimum : int
@@ -513,7 +514,7 @@ def refine_consensus(
     refinement: nls.Summary | None = None
     refined, rounds = False, 0
     while rounds < REFINE_ROUNDS and np.count_nonzero(state.inliers) >= minimum:
-        solved = refine(state.model, state.inliers)
+        solved = refine(state.model, np.flatnonzero(state.inliers))
         rounds += 1
         refinement = solved.summary
         residuals = estimator.residuals(solved.state)
@@ -535,7 +536,7 @@ def refine_consensus(
 def estimate_refined(
     estimator: Estimator[ModelT],
     options: Options,
-    refine: Callable[[ModelT, NDArray[np.bool_]], Solution[ModelT, nls.Summary]] | None,
+    refine: Callable[[ModelT, NDArray[np.intp]], Solution[ModelT, nls.Summary]] | None,
     *,
     minimum: int,
 ) -> Solution[Consensus[ModelT], RefinedSummary]:
@@ -548,7 +549,7 @@ def estimate_refined(
     options : Options
         The settings; ``threshold`` is also the MSAC cap the refined model is rescored with.
     refine : callable or None
-        Refines a model on the data an inlier mask selects (see :func:`refine_consensus`); None
+        Refines a model on the data the inlier indices select (see :func:`refine_consensus`); None
         skips the refinement.
     minimum : int
         The fewest inliers the refinement needs.

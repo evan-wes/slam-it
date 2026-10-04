@@ -255,6 +255,15 @@ NO_SOLVE = nls.Summary(
 """The stub refinement's summary."""
 
 
+def _indices_then(
+    inliers: NDArray[np.intp], result: solve.Solution[float, nls.Summary]
+) -> solve.Solution[float, nls.Summary]:
+    """Check the refiner receives ascending inlier indices (panel A6), then return `result`."""
+    assert inliers.dtype.kind == "i"
+    assert np.all(np.diff(inliers) > 0)
+    return result
+
+
 @pytest.mark.parametrize("name", list(EXITS))
 def test_refine_consensus_rounds_and_their_exits(name: str) -> None:
     """The rounds stop at the cap, on a worse refinement, on unchanged inliers, or never start.
@@ -268,7 +277,7 @@ def test_refine_consensus_rounds_and_their_exits(name: str) -> None:
     found = ransac.refine_consensus(
         estimator,
         _start(estimator, case.start),
-        lambda model, inliers: solve.Solution(model + case.step, NO_SOLVE),
+        lambda model, inliers: _indices_then(inliers, solve.Solution(model + case.step, NO_SOLVE)),
         threshold=0.5,
         minimum=case.minimum,
     )

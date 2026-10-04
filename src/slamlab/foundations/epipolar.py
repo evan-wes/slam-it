@@ -812,7 +812,7 @@ def essential_ransac_reference(
         If no sample gave an essential matrix.
     """
 
-    def refined(model: Matrix3, inliers: NDArray[np.bool_]) -> Solution[Matrix3, nls.Summary]:
+    def refined(model: Matrix3, inliers: NDArray[np.intp]) -> Solution[Matrix3, nls.Summary]:
         return refine_reference(model, bearings1[inliers], bearings2[inliers], options.threshold)
 
     return ransac.estimate_refined(

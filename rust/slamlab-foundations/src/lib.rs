@@ -12,6 +12,7 @@ pub mod correspondences;
 pub mod error;
 pub mod linalg;
 pub mod nls;
+pub mod ransac;
 pub mod rng;
 pub mod se3;
 pub mod so3;
