@@ -63,7 +63,11 @@ check "clang-format" clang-format --dry-run --Werror "${CPP_FILES[@]}"
 check "cmake configure (compile_commands.json)" \
   cmake -S . -B build/native -G Ninja -DSLAMLAB_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
 check "C++ build" cmake --build build/native -j4
-check "clang-tidy" clang-tidy -p build/native --quiet "${CPP_TU[@]}"
+# clang-tidy's clang does not know conda gcc's implicit include directory (<env>/include),
+# where the test-only headers live (nlohmann_json); pass it explicitly.
+ENV_INCLUDE="$("${RUN[@]}" python -c 'import os, sys; print(os.path.join(sys.prefix, "include"))')"
+check "clang-tidy" clang-tidy -p build/native --quiet --extra-arg=-isystem"${ENV_INCLUDE}" \
+  "${CPP_TU[@]}"
 check "doxygen (every declaration documented)" doxygen Doxyfile
 check "C++ tests (ctest)" ctest --test-dir build/native --output-on-failure
 

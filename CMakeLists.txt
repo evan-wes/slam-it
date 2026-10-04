@@ -33,7 +33,9 @@ function(slamlab_add_rung rung)
       get_filename_component(test_stem ${test_source} NAME_WE)
       set(test_name ${rung}_${test_stem})
       add_executable(${test_name} ${test_source})
-      target_link_libraries(${test_name} PRIVATE slamlab_${rung})
+      target_link_libraries(${test_name} PRIVATE slamlab_${rung} nlohmann_json::nlohmann_json)
+      target_compile_definitions(${test_name}
+        PRIVATE SLAMLAB_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
       # Tests may include a rung's internal headers (cpp/src/<rung>/...) to unit-test them.
       target_include_directories(${test_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cpp/src)
       target_compile_options(${test_name} PRIVATE -Wall -Wextra -Wpedantic)
@@ -44,6 +46,9 @@ endfunction()
 
 if(SLAMLAB_BUILD_TESTS)
   enable_testing()
+  # Native tests read the shared parity fixtures (tests/fixtures/) with nlohmann_json, a
+  # test-only dependency from the conda env.
+  find_package(nlohmann_json 3 CONFIG REQUIRED)
 endif()
 
 slamlab_add_rung(foundations)

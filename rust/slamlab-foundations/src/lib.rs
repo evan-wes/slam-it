@@ -8,5 +8,6 @@
 pub mod alignment;
 pub mod camera;
 pub mod error;
+pub mod rng;
 pub mod se3;
 pub mod so3;

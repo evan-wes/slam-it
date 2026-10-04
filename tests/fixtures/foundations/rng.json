@@ -1,0 +1,17 @@
+{
+  "description": "PCG32 parity values, read by the Python, C++ and Rust tests. 'reference' is the reference C library's published output: pcg32_srandom_r(&rng, 42, 54) then six pcg32_random_r (its demo, and the Rust rand_pcg reference test). 'samples' are Floyd samples drawn in order from one generator seeded (42, 54); every backend must draw exactly these.",
+  "reference": {
+    "seed": 42,
+    "stream": 54,
+    "next_u32": [2707161783, 2068313097, 3122475824, 2211639955, 3215226955, 3421331566]
+  },
+  "samples": {
+    "seed": 42,
+    "stream": 54,
+    "draws": [
+      {"population": 100, "count": 8, "expected": [45, 77, 54, 19, 62, 58, 44, 99]},
+      {"population": 5, "count": 5, "expected": [0, 1, 2, 3, 4]},
+      {"population": 1000, "count": 3, "expected": [71, 372, 987]}
+    ]
+  }
+}
