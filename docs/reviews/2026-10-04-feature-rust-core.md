@@ -421,11 +421,11 @@ Sources: [COLMAP source](https://github.com/colmap/colmap); [COLMAP bundle_adjus
 
 | ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
 |---|---|---|---|---|---|---|
-| A16 | should-fix | architecture | `scripts/check_layers.py` `_included_rung`, `CMakeLists.txt` | Quoted includes found through a CMake include directory (`-I cpp/src`, `-I cpp/bindings`) escape the cross-rung check | fix | pending |
-| A17 | should-fix | architecture | `scripts/check_layers.py` `_RUST_GLOB` | A glob inside a use group (`use super::{*}`) is not reported | fix | pending |
-| A18 | note | architecture | `check_layers.py` docstring, `rust-port.md` | The checker enforces an unwritten test convention (trailing inline `#[cfg(test)] mod tests {}`) | fix | pending |
-| A19 | note | architecture | `check_layers.py` `_rust_blank` | Quadratic in file size (slices at every position) | fix | pending |
-| A20 | note | architecture | `ba/gauge.rs`, `gauge.cpp`, `gauge.py` | A failed gauge SVD is handled three ways across the languages; unrecorded | fix (note) | pending |
+| A16 | should-fix | architecture | `scripts/check_layers.py` `_included_rung`, `CMakeLists.txt` | Quoted includes found through a CMake include directory (`-I cpp/src`, `-I cpp/bindings`) escape the cross-rung check | fix | fixed (a909d69) -- decided by evan-wes, 2026-10-04 |
+| A17 | should-fix | architecture | `scripts/check_layers.py` `_RUST_GLOB` | A glob inside a use group (`use super::{*}`) is not reported | fix | fixed (a909d69) -- decided by evan-wes, 2026-10-04 |
+| A18 | note | architecture | `check_layers.py` docstring, `rust-port.md` | The checker enforces an unwritten test convention (trailing inline `#[cfg(test)] mod tests {}`) | fix | fixed (a909d69 message, a79691f docs) -- decided by evan-wes, 2026-10-04 |
+| A19 | note | architecture | `check_layers.py` `_rust_blank` | Quadratic in file size (slices at every position) | fix | fixed (a909d69) -- decided by evan-wes, 2026-10-04 |
+| A20 | note | architecture | `ba/gauge.rs`, `gauge.cpp`, `gauge.py` | A failed gauge SVD is handled three ways across the languages; unrecorded | fix (note) | fixed (a79691f) -- decided by evan-wes, 2026-10-04 |
 
 ### Architecture review (run 3)
 
