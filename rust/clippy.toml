@@ -1,0 +1,2 @@
+# Proper names the docs use as words, not code (clippy's doc_markdown would want backticks).
+doc-valid-idents = ["OpenCV", "COLMAP", "PyO3", "SciPy", ".."]

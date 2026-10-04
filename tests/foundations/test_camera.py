@@ -43,7 +43,7 @@ def _points(n: int, seed: int = 0) -> np.ndarray[Any, np.dtype[np.float64]]:
     )
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize(("model", "intrinsics"), [("pinhole", RADTAN[:4]), ("radtan", RADTAN)])
 def test_unproject_inverts_project(
     backend: str, model: str, intrinsics: NDArray[np.float64]
@@ -57,7 +57,7 @@ def test_unproject_inverts_project(
     )
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_jacobians_match_finite_differences(backend: str) -> None:
     """The analytic Jacobians agree with central differences in every input."""
     points = _points(20, seed=1)
@@ -81,7 +81,7 @@ def test_jacobians_match_finite_differences(backend: str) -> None:
         np.testing.assert_allclose(d_intrinsics[..., k], numeric, rtol=1e-7, atol=1e-6)
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_undistortion_outside_the_invertible_region_is_reported(backend: str) -> None:
     """A pixel the distortion cannot reach raises NotConvergedError, not a wrong ray."""
     barrel = [500.0, 500.0, 320.0, 240.0, -0.9, 0.0, 0.0, 0.0, 0.0]
@@ -89,7 +89,7 @@ def test_undistortion_outside_the_invertible_region_is_reported(backend: str) ->
         camera.unproject("radtan", barrel, [[2000.0, 1500.0]], backend=backend)
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_unproject_or_nan_answers_per_pixel(backend: str) -> None:
     """Only the pixel the distortion cannot reach gets NaN; the others match unproject."""
     barrel = [500.0, 500.0, 320.0, 240.0, -0.9, 0.0, 0.0, 0.0, 0.0]
@@ -112,7 +112,7 @@ def test_pinhole_is_radtan_without_distortion() -> None:
 RADIAL = np.array([499.4, 320.0, 240.0, -0.31, 0.12])
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_radial_is_radtan_with_one_focal(backend: str) -> None:
     """Radial projects as radtan with fx = fy = f and no tangential or k3 terms."""
     require_backend(backend)

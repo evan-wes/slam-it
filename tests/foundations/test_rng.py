@@ -1,4 +1,4 @@
-"""PCG32 tests: the reference library's output, the C++ core's draws, and input checks."""
+"""PCG32 tests: the parity fixture (shared with the C++ and Rust tests), and input checks."""
 
 from __future__ import annotations
 
@@ -6,24 +6,24 @@ import pytest
 
 from slamlab.foundations.errors import InvalidInputError
 from slamlab.foundations.rng import Pcg32
+from tests.conftest import load_fixture
 
-REFERENCE = [0xA15C02B7, 0x7B47F409, 0xBA1D3330, 0x83D2F293, 0xBFA4784B, 0xCBED606E]
-"""``pcg32_srandom_r(&rng, 42, 54)`` then six ``pcg32_random_r``, from the reference library's
-demo (and the Rust ``rand_pcg`` reference test)."""
+RNG = load_fixture("foundations/rng.json")
 
 
 def test_matches_the_reference_library() -> None:
     """The output stream is the reference library's, bit for bit."""
-    rng = Pcg32(42, 54)
-    assert [rng.next_u32() for _ in REFERENCE] == REFERENCE
+    reference = RNG["reference"]
+    rng = Pcg32(reference["seed"], reference["stream"])
+    assert [rng.next_u32() for _ in reference["next_u32"]] == reference["next_u32"]
 
 
-def test_samples_match_the_cpp_core() -> None:
-    """The draws cpp/tests/foundations/test_rng.cpp expects from the same seed."""
-    rng = Pcg32(42, 54)
-    assert rng.sample(100, 8) == [45, 77, 54, 19, 62, 58, 44, 99]
-    assert rng.sample(5, 5) == [0, 1, 2, 3, 4]
-    assert rng.sample(1000, 3) == [71, 372, 987]
+def test_samples_match_the_fixture() -> None:
+    """Floyd samples from one generator are the fixture's, which the C++ and Rust tests share."""
+    samples = RNG["samples"]
+    rng = Pcg32(samples["seed"], samples["stream"])
+    for draw in samples["draws"]:
+        assert rng.sample(draw["population"], draw["count"]) == draw["expected"]
 
 
 def test_samples_are_distinct_and_uniform() -> None:

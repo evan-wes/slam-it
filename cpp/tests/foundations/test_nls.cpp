@@ -2,6 +2,7 @@
 /// @brief Native tests for slamlab::foundations::nls, runnable without Python.
 #include <Eigen/Dense>
 #include <cmath>
+#include <limits>
 #include <numbers>
 #include <utility>
 #include <vector>
@@ -65,6 +66,42 @@ class Rosenbrock {
 
  private:
   Eigen::Index unused_;
+};
+
+/// @brief Rosenbrock with a NaN in the Jacobian column of a parameter the residuals ignore.
+class NanJacobian {
+ public:
+  /// @brief `(x, y, unused)`.
+  using State = Eigen::VectorXd;
+
+  /// @brief The blocks' squared norms.
+  /// @param state The state.
+  /// @return Two squared norms.
+  [[nodiscard]] static Eigen::VectorXd squared_norms(const State& state) {
+    return Rosenbrock::squared_norms(state);
+  }
+
+  /// @brief Rosenbrock's normal equations, with a NaN in the unused column.
+  /// @param state The state.
+  /// @param weights The block weights.
+  /// @return The system.
+  [[nodiscard]] static nls::DenseSystem linearize(const State& state,
+                                                  const Eigen::VectorXd& weights) {
+    Eigen::MatrixXd jacobian = Eigen::MatrixXd::Zero(2, 3);
+    jacobian(0, 0) = -20.0 * state(0);
+    jacobian(0, 1) = 10.0;
+    jacobian(1, 0) = -1.0;
+    jacobian(0, 2) = std::numeric_limits<double>::quiet_NaN();
+    return *nls::DenseSystem::build(jacobian, Rosenbrock::residuals(state), weights);
+  }
+
+  /// @brief Euclidean retraction.
+  /// @param state The state.
+  /// @param delta The step.
+  /// @return `state + delta`.
+  [[nodiscard]] static State retract(const State& state, const Eigen::VectorXd& delta) {
+    return state + delta;
+  }
 };
 
 /// @brief Fit `y = a x + b` to points, one block per point.
@@ -289,6 +326,14 @@ int main() {
   expect(mean_ok && error.has_value() && error->norm() < 0.01 &&
              (mean->state.transpose() * mean->state - Eigen::Matrix3d::Identity()).norm() < 1e-12,
          "solve: robust rotation averaging on SO(3)", failures);
+
+  // A NaN gradient entry is never read as convergence, even at the minimum (panel L1).
+  for (const nls::Method method : {nls::Method::kLevenbergMarquardt, nls::Method::kGaussNewton}) {
+    const auto poisoned =
+        nls::solve(NanJacobian{}, Eigen::VectorXd(Eigen::Vector3d(1.0, 1.0, 0.0)), tight(method));
+    expect(poisoned.has_value() && !poisoned->summary.converged,
+           "solve: a NaN gradient entry does not converge", failures);
+  }
 
   // Strict mode turns an unconverged stop into an error; bad settings are rejected.
   nls::Options one_step = tight(nls::Method::kLevenbergMarquardt);

@@ -113,6 +113,16 @@ struct Options {
   bool strict = false;
 };
 
+/// @brief The method's name, as `slamlab.foundations.nls.METHODS` spells it.
+/// @param method The method.
+/// @return A static string.
+[[nodiscard]] const char* name(Method method);
+
+/// @brief The loss's name, as `slamlab.foundations.nls.LOSSES` spells it.
+/// @param kind The loss.
+/// @return A static string.
+[[nodiscard]] const char* name(LossKind kind);
+
 /// @brief Check a loss and the solver settings.
 /// @param options The settings.
 /// @return Nothing, or `InvalidInput` naming the setting out of range.
@@ -336,7 +346,10 @@ template <Problem P, LinearSystem S>
     double damping, int number, const Options& options) {
   constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
   const auto& gradient = system.gradient();
-  const double gradient_norm = gradient.size() == 0 ? 0.0 : gradient.cwiseAbs().maxCoeff();
+  // A NaN entry makes the norm NaN, so a corrupted linearisation never passes as converged
+  // (Eigen's default maxCoeff may drop NaN; numpy's max keeps it).
+  const double gradient_norm =
+      gradient.size() == 0 ? 0.0 : gradient.cwiseAbs().template maxCoeff<Eigen::PropagateNaN>();
   if (gradient_norm <= options.gradient_tolerance) {
     return Termination::kGradient;
   }

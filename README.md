@@ -5,9 +5,13 @@ implemented in Python, C++ and Rust and measured across compute budgets.
 
 *Working name -- to be renamed before the repository goes public.*
 
-Status: scaffold. The three-language build pipeline works; no SLAM algorithms yet. The design,
-the ladder and the milestones are in
-[`docs/design/2026-10-02-slamlab-ladder.md`](docs/design/2026-10-02-slamlab-ladder.md).
+Status: milestone 1 (rung 0, the foundations) is nearly complete:
+- Python and C++ have the geometry, bundle adjustment, two-view geometry and absolute pose.
+- Rust has the geometry and bundle adjustment.
+
+The design, the ladder and the milestones are in
+[`docs/design/2026-10-02-slamlab-ladder.md`](docs/design/2026-10-02-slamlab-ladder.md), and
+each component's note in [`docs/notes/`](docs/notes/).
 
 ## Layout
 
@@ -39,4 +43,14 @@ Native tests, without Python:
 cmake -S . -B build/native -G Ninja -DSLAMLAB_BUILD_TESTS=ON && cmake --build build/native -j4
 ctest --test-dir build/native
 cargo test --manifest-path rust/Cargo.toml --workspace --exclude slamlab-py
+```
+
+Native benchmarks (C++ and Rust) and bundle adjustment from Rust alone, on a decompressed BAL
+problem (see [`docs/notes/rust-port.md`](docs/notes/rust-port.md)):
+
+```bash
+cmake -S . -B build/native -G Ninja -DSLAMLAB_BUILD_BENCHMARKS=ON && cmake --build build/native -j4
+SLAMLAB_BAL=<problem.txt> build/native/bench/foundations_bench_foundations
+SLAMLAB_BAL=<problem.txt> cargo bench --manifest-path rust/Cargo.toml --bench foundations
+cargo run --release --manifest-path rust/Cargo.toml --example bal -- <problem.txt>
 ```

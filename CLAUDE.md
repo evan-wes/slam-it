@@ -51,9 +51,9 @@ before writing geometry code or a binding.
   sibling independence, no PyTorch on CPU rungs, and no depth-model imports.
 - C++ mirrors it with one library per rung (`slamlab_foundations`, from `cpp/src/foundations/`,
   namespace `slamlab::foundations`); Rust with one crate per rung (`slamlab-foundations`).
-  `scripts/check_layers.py` holds C++ includes (chains included, and the order inside a
-  rung), CMake links and crate dependencies to the same contracts; Rust's modules inside a
-  crate are not checked. Bindings are one file per module (`cpp/bindings/<rung>/<module>.cpp`,
+  `scripts/check_layers.py` holds C++ includes and Rust `crate::`/`super::` paths (chains
+  included, and the order inside a rung), CMake links and crate dependencies to the same
+  contracts. Bindings are one file per module (`cpp/bindings/<rung>/<module>.cpp`,
   `rust/slamlab-py/src/<rung>/<module>.rs`), and the extension submodules mirror the tree
   (`slamlab._cpp.foundations.so3`, `slamlab_rs.foundations.so3`).
 - **Binding boundary:** bindings take and return float64 numpy arrays (nanobind `ndarray`,
@@ -71,6 +71,10 @@ before writing geometry code or a binding.
   `tests/conftest.assert_matches_fixture`), and an `Implementation` Protocol in its Python
   module that `tests/test_backends.py` checks every extension submodule against. Bindings only convert types; algorithms live in
   the cores, which build without Python.
+- Native benchmarks are developer tools outside the cores: `cpp/bench/<rung>/` (Google
+  Benchmark, built with `-DSLAMLAB_BUILD_BENCHMARKS=ON`) and each crate's `benches/`
+  (criterion), held to the ladder by `check_layers.py`; layer 1 builds them, never runs them.
+  `slamlab.eval` keeps the Python benchmarks and, later, the budget harness.
 - Tests mirror the packages (`tests/foundations/`, `cpp/tests/foundations/`). Mark tests
   that need a GPU or a compute budget with `@pytest.mark.gpu` / `@pytest.mark.budget`;
   `check.sh` runs the CPU subset.

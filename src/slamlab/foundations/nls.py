@@ -61,6 +61,7 @@ from typing import Any, Generic, Protocol, TypeVar
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
+from slamlab import backends
 from slamlab.foundations.arrays import as_real
 from slamlab.foundations.errors import InvalidInputError, NotConvergedError
 from slamlab.foundations.solve import Solution
@@ -748,7 +749,7 @@ def summary_from_backend(raw: dict[str, Any], codes: dict[str, list[str]]) -> Su
         )
         for row in raw["trace"]
     )
-    termination = Termination(codes["nls_termination"][int(raw["termination"])])
+    termination = Termination(backends.decode_name(codes, "nls_termination", raw["termination"]))
     return Summary(
         initial_cost=float(raw["initial_cost"]),
         final_cost=float(raw["final_cost"]),

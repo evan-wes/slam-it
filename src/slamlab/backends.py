@@ -17,7 +17,7 @@ from __future__ import annotations
 import importlib
 from collections.abc import Callable, Mapping
 from types import ModuleType
-from typing import Any, TypeVar, cast
+from typing import Any, SupportsInt, TypeVar, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -25,11 +25,15 @@ from numpy.typing import NDArray
 BACKENDS: tuple[str, ...] = ("python", "cpp", "rust")
 """Every backend name, the Python reference first."""
 
-LOCKSTEP_BACKENDS: frozenset[str] = frozenset({"python", "cpp"})
-"""Backends that implement every function of every compiled module.
+COMPILED_BACKENDS: tuple[str, ...] = BACKENDS[1:]
+"""Every compiled backend: each implements in full every module it exposes."""
 
-C++ is built in lock-step with the Python reference. Rust implements a curated subset
-(design doc, "Languages") and never gates a merge, so a Rust module may lack functions.
+LOCKSTEP_BACKENDS: frozenset[str] = frozenset({"python", "cpp"})
+"""Backends that implement every compiled module.
+
+C++ is built in lock-step with the Python reference. Rust implements a chosen set of modules
+(design doc, "Languages"), each in full, so a Rust backend may lack a module but never a
+function of a module it has.
 """
 
 _EXTENSIONS: dict[str, str] = {"cpp": "slamlab._cpp", "rust": "slamlab_rs"}
@@ -174,8 +178,8 @@ def function(backend: str, module_name: str, name: str) -> Callable[..., Any]:
     BackendNotBuiltError
         If the backend's extension is not installed.
     NotImplementedError
-        If the backend does not implement `module_name`, or implements it without `name`
-        (Rust implements a curated subset).
+        If the backend does not implement `module_name` (Rust implements a chosen set of
+        modules), or implements it without `name` (which the tests make a failure).
     """
     found = getattr(implementation(backend, module_name), name, None)
     if found is None or isinstance(found, ModuleType) or not callable(found):
@@ -231,6 +235,37 @@ def dispatch(
 
 Codes = dict[str, list[str]]
 """A compiled module's enum tables, from its ``codes()``: each enum's names in code order."""
+
+
+def decode_name(codes: Codes, table: str, code: SupportsInt) -> str:
+    """Return the name a compiled backend's code stands for in one of its enum tables.
+
+    Parameters
+    ----------
+    codes : Codes
+        The backend's tables (its ``codes()``).
+    table : str
+        The enum's table, e.g. ``"nls_termination"``.
+    code : int-like
+        The code the backend returned.
+
+    Returns
+    -------
+    str
+        The name.
+
+    Raises
+    ------
+    RuntimeError
+        If the code is outside the table. A negative code would otherwise index from the end
+        and read as a plausible wrong name.
+    """
+    names = codes[table]
+    index = int(code)
+    if not 0 <= index < len(names):
+        raise RuntimeError(f"{table}: backend returned code {index}, outside {names}")
+    return names[index]
+
 
 ResultT = TypeVar("ResultT")
 

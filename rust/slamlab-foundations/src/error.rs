@@ -63,6 +63,46 @@ impl std::error::Error for Error {}
 /// The result type of every fallible slamlab core function.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Builds the failed result of a fallible function.
+///
+/// # Arguments
+///
+/// * `kind` - What went wrong.
+/// * `message` - A description naming the offending value or condition.
+///
+/// # Returns
+///
+/// `Err` holding the error, as any `Result<T>`.
+///
+/// # Errors
+///
+/// Always: it is the error.
+pub fn fail<T>(kind: ErrorKind, message: impl Into<String>) -> Result<T> {
+    Err(Error::new(kind, message))
+}
+
+/// Builds the `InvalidInput` failure for a setting out of range, naming its value.
+///
+/// # Arguments
+///
+/// * `name` - The setting's name.
+/// * `rule` - What it must satisfy, e.g. "must be at least 1".
+/// * `value` - Its value.
+///
+/// # Returns
+///
+/// `"<name>: <rule>, got <value>"` as an `InvalidInput` error.
+///
+/// # Errors
+///
+/// Always: it is the error.
+pub fn fail_setting<T>(name: &str, rule: &str, value: impl fmt::Display) -> Result<T> {
+    fail(
+        ErrorKind::InvalidInput,
+        format!("{name}: {rule}, got {value}"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     //! Unit tests for the error type.

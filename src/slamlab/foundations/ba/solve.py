@@ -205,7 +205,7 @@ def _result_from_backend(raw: BackendResult, codes: backends.Codes) -> BAResult:
     solve_summary = nls.summary_from_backend(raw["solve"], codes)
     summary = BASummary(
         solve_summary,
-        codes["gauge"][int(raw["gauge"])],
+        backends.decode_name(codes, "gauge", raw["gauge"]),
         variance_factor=float(raw["variance_factor"]),
         **{name: int(raw[name]) for name in COUNT_NAMES},
     )
@@ -270,7 +270,7 @@ def solve(
         The problem (see :meth:`BAProblem.create`).
     options : BAOptions, optional
         Solver settings, losses, gauge and thresholds (default: ``BAOptions()``).
-    backend : {"python", "cpp"}, optional
+    backend : {"python", "cpp", "rust"}, optional
         Which implementation solves it (default: the Python reference).
 
     Returns

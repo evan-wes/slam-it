@@ -55,8 +55,9 @@ def require_backend(name: str) -> str:
 def require_function(name: str, module_name: str, function: str) -> str:
     """Return backend `name` if it implements `function`; otherwise skip or fail.
 
-    A lock-step backend (Python, C++) missing a function fails the test. Rust implements a
-    curated subset, so a Rust function that does not exist skips the test instead.
+    A lock-step backend (Python, C++) missing the module fails the test. Rust implements a
+    chosen set of modules, so a module Rust does not have skips the test instead; a module it
+    has must have every function, so a missing one fails.
 
     Parameters
     ----------
@@ -76,12 +77,16 @@ def require_function(name: str, module_name: str, function: str) -> str:
     if name == "python":
         return name
     try:
-        backends.function(name, module_name, function)
+        backends.implementation(name, module_name)
     except NotImplementedError:
-        message = f"{name} does not implement {module_name}.{function}"
+        message = f"{name} does not implement {module_name}"
         if name in backends.LOCKSTEP_BACKENDS:
             pytest.fail(f"{message}, but {name} is a lock-step backend")
-        pytest.skip(f"{message} (curated subset)")
+        pytest.skip(f"{message} (not one of its modules yet)")
+    try:
+        backends.function(name, module_name, function)
+    except NotImplementedError:
+        pytest.fail(f"{name} implements {module_name} without {function}")
     return name
 
 

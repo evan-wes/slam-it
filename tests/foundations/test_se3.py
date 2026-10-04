@@ -41,7 +41,7 @@ def _random_twists(n: int, seed: int = 0) -> NDArray[np.float64]:
     return np.concatenate([rho, random_rotation_vectors(n, seed)], axis=-1)
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_group_properties(backend: str) -> None:
     """log(exp(ξ)) = ξ; T T⁻¹ = I; composition is associative; act matches the matrix."""
     xi = _random_twists(200)
@@ -66,7 +66,7 @@ def test_group_properties(backend: str) -> None:
     np.testing.assert_allclose(se3.act(t, points, backend=backend), homogeneous[:, :3], atol=1e-13)
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_adjoint_conjugates_the_exponential(backend: str) -> None:
     """T exp(ξ) T⁻¹ = exp(Ad_T ξ)."""
     t = se3.exp(_random_twists(50, seed=2))
@@ -76,7 +76,7 @@ def test_adjoint_conjugates_the_exponential(backend: str) -> None:
     np.testing.assert_allclose(left, right, rtol=0, atol=1e-12)
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_right_jacobian_matches_finite_differences(backend: str) -> None:
     """exp(ξ + δ) ≈ exp(ξ) exp(Jr(ξ) δ): Jr against central differences of log."""
     for xi in _random_twists(20, seed=4) * 0.8:
@@ -86,7 +86,7 @@ def test_right_jacobian_matches_finite_differences(backend: str) -> None:
         np.testing.assert_allclose(se3.right_jacobian(xi, backend=backend), numeric, atol=1e-8)
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_inverse_jacobians_invert(backend: str) -> None:
     """Jr⁻¹ Jr = I and Jl⁻¹ Jl = I."""
     xi = _random_twists(100, seed=5)

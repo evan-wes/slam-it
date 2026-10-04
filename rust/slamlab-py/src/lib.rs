@@ -8,6 +8,7 @@
 
 use pyo3::prelude::*;
 
+mod common;
 mod foundations;
 
 /// Registers the rung submodules.

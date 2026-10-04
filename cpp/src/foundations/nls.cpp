@@ -103,6 +103,32 @@ Result<void> check_options(const Options& options) {
   return {};
 }
 
+const char* name(Method method) {
+  switch (method) {
+    case Method::kLevenbergMarquardt:
+      return "levenberg_marquardt";
+    case Method::kGaussNewton:
+      return "gauss_newton";
+    case Method::kCount:
+      break;
+  }
+  return "unknown";
+}
+
+const char* name(LossKind kind) {
+  switch (kind) {
+    case LossKind::kTrivial:
+      return "trivial";
+    case LossKind::kHuber:
+      return "huber";
+    case LossKind::kCauchy:
+      return "cauchy";
+    case LossKind::kCount:
+      break;
+  }
+  return "unknown";
+}
+
 bool is_converged(Termination termination) {
   return termination == Termination::kGradient || termination == Termination::kFunction ||
          termination == Termination::kStep;

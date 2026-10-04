@@ -61,6 +61,9 @@ Eigen::Matrix3d q_matrix(const Vector6d& xi) noexcept {
 }  // namespace
 
 Result<void> check_transform(const Eigen::Matrix4d& transform) {
+  if (!transform.allFinite()) {
+    return fail(ErrorKind::kInvalidInput, "transform: expected finite values");
+  }
   const Eigen::RowVector4d bottom(0.0, 0.0, 0.0, 1.0);
   if ((transform.row(3) - bottom).cwiseAbs().maxCoeff() > kBottomRowTolerance) {
     return fail(ErrorKind::kInvalidInput, "transform: last row is not [0, 0, 0, 1]");

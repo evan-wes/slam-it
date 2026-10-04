@@ -14,6 +14,9 @@ Result<Eigen::Matrix4d> umeyama(
   if (target.rows() != n || weights.size() != n) {
     return fail(ErrorKind::kInvalidInput, "umeyama: source, target and weights differ in length");
   }
+  if (!source.allFinite() || !target.allFinite() || !weights.allFinite()) {
+    return fail(ErrorKind::kInvalidInput, "source, target, weights: expected finite values");
+  }
   if ((weights.array() < 0.0).any()) {
     return fail(ErrorKind::kInvalidInput, "weights: expected N non-negative values");
   }

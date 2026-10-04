@@ -22,8 +22,8 @@ inline constexpr double kDegeneracyRatio = 1e-10;
 /// @param weights Non-negative weights (N), at least three positive.
 /// @param with_scale Estimate a scale too (Sim(3)).
 /// @return The 4x4 matrix `[[s R, t], [0, 1]]`; `InvalidInput` for mismatched sizes or
-///         negative weights; `Degenerate` for fewer than three weighted points or collinear
-///         points.
+///         a non-finite value or negative weights; `Degenerate` for fewer than three weighted
+///         points or collinear points.
 [[nodiscard]] Result<Eigen::Matrix4d> umeyama(
     const Eigen::Ref<const Eigen::Matrix<double, Eigen::Dynamic, 3, Eigen::RowMajor>>& source,
     const Eigen::Ref<const Eigen::Matrix<double, Eigen::Dynamic, 3, Eigen::RowMajor>>& target,

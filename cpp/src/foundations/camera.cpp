@@ -104,6 +104,20 @@ Result<Eigen::Vector2d> normalise(Model model, const Eigen::Ref<const Eigen::Vec
 
 }  // namespace
 
+const char* name(Model model) {
+  switch (model) {
+    case Model::kPinhole:
+      return "pinhole";
+    case Model::kRadTan:
+      return "radtan";
+    case Model::kRadial:
+      return "radial";
+    case Model::kCount:
+      break;
+  }
+  return "unknown";
+}
+
 Result<void> check_intrinsics(Model model, const Eigen::Ref<const Eigen::VectorXd>& intrinsics) {
   if (model >= Model::kCount) {
     return fail(ErrorKind::kInvalidInput, "model: not a camera model (kCount)");

@@ -51,12 +51,11 @@ def test_batches_keep_their_leading_shape(backend: str) -> None:
     for name in ("hat", "exp", "right_jacobian"):
         chosen = require_function(backend, so3.__name__, name)
         assert FUNCTIONS[name](omega, backend=chosen).shape == (2, 5, 3, 3)
-    if backend in backends.LOCKSTEP_BACKENDS:
-        assert so3.log(so3.exp(omega), backend=backend).shape == (2, 5, 3)
-        assert so3.to_quaternion(so3.exp(omega), backend=backend).shape == (2, 5, 4)
+    assert so3.log(so3.exp(omega), backend=backend).shape == (2, 5, 3)
+    assert so3.to_quaternion(so3.exp(omega), backend=backend).shape == (2, 5, 4)
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_round_trips(backend: str) -> None:
     """log(exp(w)) = w for |w| < pi; vee(hat(w)) = w; quaternions round-trip."""
     omega = random_rotation_vectors(500)
@@ -69,7 +68,7 @@ def test_round_trips(backend: str) -> None:
     np.testing.assert_allclose(back, rotation, rtol=0.0, atol=1e-14)
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_rotations_are_orthonormal(backend: str) -> None:
     """The exponential produces orthonormal matrices with determinant +1."""
     rotation = so3.exp(random_rotation_vectors(500) * 1.7, backend=backend)
@@ -78,7 +77,7 @@ def test_rotations_are_orthonormal(backend: str) -> None:
     np.testing.assert_allclose(np.linalg.det(rotation), 1.0, rtol=0.0, atol=1e-14)
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_right_jacobian_matches_finite_differences(backend: str) -> None:
     """exp(w + d) ≈ exp(w) exp(Jr(w) d): Jr against central differences of log."""
     for omega in random_rotation_vectors(50, seed=3):
@@ -88,7 +87,7 @@ def test_right_jacobian_matches_finite_differences(backend: str) -> None:
         )
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_jacobian_identities(backend: str) -> None:
     """Jl(w) = Jr(-w), and the inverse Jacobians invert them."""
     omega = random_rotation_vectors(300) * 1.9  # up to ~1.9 pi, inside the 2 pi limit
@@ -116,8 +115,8 @@ def test_cross_check_with_scipy_and_manif() -> None:
 
 
 def test_log_at_pi_uses_the_canonical_sign() -> None:
-    """At exactly pi the largest-magnitude component is positive, in every lock-step backend."""
-    for backend in sorted(backends.LOCKSTEP_BACKENDS):
+    """At exactly pi the largest-magnitude component is positive, in every backend."""
+    for backend in backends.available():
         for axis in np.eye(3):
             rotation = 2.0 * np.outer(axis, axis) - np.eye(3)
             np.testing.assert_allclose(
@@ -131,7 +130,7 @@ def test_quaternion_double_cover() -> None:
     np.testing.assert_allclose(so3.from_quaternion(q), so3.from_quaternion(-q), rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("backend", ["cpp"])
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
 def test_core_errors_reach_python_as_slamlab_errors(backend: str) -> None:
     """A core error crosses the binding as the slamlab exception of its kind."""
     compiled = backends.function(

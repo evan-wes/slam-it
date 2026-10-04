@@ -64,6 +64,19 @@ class Rosenbrock(_Blocks):
 
 
 @dataclass(frozen=True)
+class NanJacobian(Rosenbrock):
+    """Rosenbrock with a NaN in the Jacobian column of a parameter the residuals ignore."""
+
+    unused: int = 1
+
+    def jacobian(self, state: Array) -> Array:
+        """Return Rosenbrock's Jacobians with a NaN in the unused column."""
+        jacobian = super().jacobian(state)
+        jacobian[0, 0, 2] = np.nan
+        return jacobian
+
+
+@dataclass(frozen=True)
 class LineFit(_Blocks):
     """Fit ``y = a x + b``, one block per point."""
 
@@ -322,3 +335,15 @@ def test_block_loss() -> None:
         nls.BlockLoss((nls.Loss(),), np.array([0, 1]))
     with pytest.raises(InvalidInputError, match="blocks"):
         block.evaluate(np.zeros(2))
+
+
+@pytest.mark.parametrize("method", ["levenberg_marquardt", "gauss_newton"])
+def test_nan_gradient_does_not_converge(method: str) -> None:
+    """A NaN Jacobian never reads as convergence, even at the minimum (panel L1).
+
+    The reference refuses it outright when the dense system is built; the C++ and Rust cores,
+    whose systems can also come from elsewhere (BA's Schur system), never count a NaN
+    gradient as converged, which their native tests check.
+    """
+    with pytest.raises(InvalidInputError, match="jacobian"):
+        nls.solve(NanJacobian(), np.array([1.0, 1.0, 0.0]), replace(TIGHT, method=method))

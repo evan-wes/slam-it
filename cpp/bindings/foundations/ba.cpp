@@ -4,8 +4,8 @@
 /// Everything crosses by name: the problem's arrays are keyword arguments, and the options
 /// one dict of `BAOptions`' fields, nested where `BAOptions` nests (`solver`, the losses),
 /// with each choice by its name. The camera model, a standalone argument, crosses as a code;
-/// so do the enums in the result. Every enum's names come from one table here (exported by
-/// `codes()`, so the Python side's tables are tested against them), and the result is a
+/// so do the enums in the result. Every enum's names come from its core's `name()` (exported
+/// by `codes()`, so the Python side's tables are tested against them), and the result is a
 /// dict of named arrays and scalars.
 #include "slamlab/foundations/ba.hpp"
 
@@ -37,20 +37,6 @@ namespace ba = foundations::ba;
 namespace camera = foundations::camera;
 namespace nls = foundations::nls;
 
-/// @brief Camera model names, indexed by `camera::Model` code.
-constexpr std::array<const char*, 3> kModels = {"pinhole", "radtan", "radial"};
-/// @brief Gauge names, indexed by `ba::Gauge` code.
-constexpr std::array<const char*, 6> kGauges = {"none", "first_pose", "similarity",
-                                                "auto", "scale",      "partial"};
-/// @brief Method names, indexed by `nls::Method` code.
-constexpr std::array<const char*, 2> kMethods = {"levenberg_marquardt", "gauss_newton"};
-/// @brief Loss names, indexed by `nls::LossKind` code.
-constexpr std::array<const char*, 3> kLosses = {"trivial", "huber", "cauchy"};
-static_assert(static_cast<std::size_t>(camera::Model::kCount) == kModels.size());
-static_assert(static_cast<std::size_t>(ba::Gauge::kCount) == kGauges.size());
-static_assert(static_cast<std::size_t>(nls::Method::kCount) == kMethods.size());
-static_assert(static_cast<std::size_t>(nls::LossKind::kCount) == kLosses.size());
-
 /// @brief `ba.BAOptions`' fields, as the options dict's keys.
 constexpr std::array<const char*, 6> kOptionKeys = {
     "solver", "depth_loss", "gauge", "min_parallax_deg", "focal_std_ratio", "scale_deviations"};
@@ -71,38 +57,14 @@ constexpr std::array<const char*, 13> kSolverKeys = {"method",
 /// @brief `nls.Loss`' fields, as a loss dict's keys.
 constexpr std::array<const char*, 2> kLossKeys = {"kind", "scale"};
 
-/// @brief Decode an enum's integer code, checking it against the enum's name table.
-/// @tparam E The enum.
-/// @tparam N The table's size.
-/// @param code The code.
-/// @param names The enum's names.
-/// @param what The argument's name, for the message.
-/// @return The enum value.
-/// @throws std::invalid_argument (Python `ValueError`) for an unknown code.
-template <typename E, std::size_t N>
-E decode(int code, const std::array<const char*, N>& names, const char* what) {
-  if (code < 0 || std::cmp_greater_equal(code, names.size())) {
-    throw std::invalid_argument(std::string(what) + ": unknown code " + std::to_string(code));
-  }
-  return static_cast<E>(code);
-}
-
-/// @brief Look an enum up by its name in the enum's name table.
-/// @tparam E The enum.
-/// @tparam N The table's size.
+/// @brief A robust loss's kind, by the name `nls.LOSSES` spells it.
 /// @param value The name, a Python `str`.
-/// @param names The enum's names.
 /// @param what The field's name, for the message.
-/// @return The enum value.
+/// @return The kind.
 /// @throws std::invalid_argument (Python `ValueError`) for an unknown name.
-template <typename E, std::size_t N>
-E by_name(const nb::handle& value, const std::array<const char*, N>& names, const char* what) {
-  const std::string name = nb::cast<std::string>(value);
-  const auto* found = std::ranges::find(names, name);
-  if (found == names.end()) {
-    throw std::invalid_argument(std::string(what) + ": unknown name " + name);
-  }
-  return static_cast<E>(std::distance(names.begin(), found));
+nls::LossKind loss_kind(const nb::handle& value, const char* what) {
+  return enum_by_name<nls::LossKind>(
+      nb::cast<std::string>(value), [](nls::LossKind k) { return nls::name(k); }, what);
 }
 
 /// @brief Read a robust loss from a dict of `nls.Loss`' fields.
@@ -112,8 +74,7 @@ E by_name(const nb::handle& value, const std::array<const char*, N>& names, cons
 /// @throws std::invalid_argument for a missing or unknown key, or an unknown kind.
 nls::Loss read_loss(const nb::dict& loss, const char* what) {
   check_keys(loss, kLossKeys, "nls.Loss");
-  return {.kind = by_name<nls::LossKind>(loss["kind"], kLosses, what),
-          .scale = nb::cast<double>(loss["scale"])};
+  return {.kind = loss_kind(loss["kind"], what), .scale = nb::cast<double>(loss["scale"])};
 }
 
 /// @brief Read bundle adjustment's options from a dict of `BAOptions`' fields.
@@ -129,7 +90,9 @@ ba::Options read_options(const nb::dict& options) {
     throw std::invalid_argument("solver.block_loss: set by bundle adjustment, not the caller");
   }
   return ba::Options{
-      .solver = {.method = by_name<nls::Method>(solver["method"], kMethods, "method"),
+      .solver = {.method = enum_by_name<nls::Method>(
+                     nb::cast<std::string>(solver["method"]),
+                     [](nls::Method m) { return nls::name(m); }, "method"),
                  .loss = read_loss(nb::cast<nb::dict>(solver["loss"]), "loss"),
                  .block_loss = {},
                  .max_iterations = nb::cast<int>(solver["max_iterations"]),
@@ -143,7 +106,9 @@ ba::Options read_options(const nb::dict& options) {
                  .min_relative_decrease = nb::cast<double>(solver["min_relative_decrease"]),
                  .strict = nb::cast<bool>(solver["strict"])},
       .depth_loss = read_loss(nb::cast<nb::dict>(options["depth_loss"]), "depth_loss"),
-      .gauge = by_name<ba::Gauge>(options["gauge"], kGauges, "gauge"),
+      .gauge = enum_by_name<ba::Gauge>(
+          nb::cast<std::string>(options["gauge"]), [](ba::Gauge g) { return ba::name(g); },
+          "gauge"),
       .min_parallax_deg = nb::cast<double>(options["min_parallax_deg"]),
       .focal_std_ratio = nb::cast<double>(options["focal_std_ratio"]),
       .scale_deviations = nb::cast<bool>(options["scale_deviations"])};
@@ -153,18 +118,11 @@ ba::Options read_options(const nb::dict& options) {
 /// @return `{"model": [...], "gauge": [...], "method": [...], "loss": [...],
 ///         "nls_termination": [...]}`.
 nb::dict codes() {
-  const auto as_list = [](const auto& names) {
-    nb::list out;
-    for (const char* name : names) {
-      out.append(name);
-    }
-    return out;
-  };
   nb::dict out;
-  out["model"] = as_list(kModels);
-  out["gauge"] = as_list(kGauges);
-  out["method"] = as_list(kMethods);
-  out["loss"] = as_list(kLosses);
+  out["model"] = enum_names<camera::Model>([](camera::Model m) { return camera::name(m); });
+  out["gauge"] = enum_names<ba::Gauge>([](ba::Gauge g) { return ba::name(g); });
+  out["method"] = enum_names<nls::Method>([](nls::Method m) { return nls::name(m); });
+  out["loss"] = enum_names<nls::LossKind>([](nls::LossKind k) { return nls::name(k); });
   out["nls_termination"] = nls_terminations();
   return out;
 }
@@ -186,7 +144,7 @@ nb::dict solve(const MatrixIn& intrinsics, const VectorIn<std::int64_t>& intrins
                const VectorIn<std::int64_t>& point_anchor, int model, const nb::dict& options) {
   using Pairs = Eigen::Matrix<double, Eigen::Dynamic, 2, Eigen::RowMajor>;
   const ba::Problem problem{
-      .model = decode<camera::Model>(model, kModels, "model"),
+      .model = enum_code<camera::Model>(model, "model"),
       .intrinsics =
           copy_matrix<ba::Intrinsics>(intrinsics.data(), intrinsics.shape(0), intrinsics.shape(1)),
       .poses = copy_poses(poses),

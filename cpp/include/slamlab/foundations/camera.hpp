@@ -39,6 +39,11 @@ inline constexpr double kUndistortTolerance = 1e-15;
 /// @brief A 2 x (3 + K) Jacobian: d(pixel)/d(point) then d(pixel)/d(intrinsics).
 using ProjectionJacobian = Eigen::Matrix<double, 2, Eigen::Dynamic>;
 
+/// @brief The model's name, as `slamlab.foundations.camera.MODELS` spells it.
+/// @param model The model.
+/// @return A static string.
+[[nodiscard]] const char* name(Model model);
+
 /// @brief Check a model code and its intrinsics vector.
 /// @param model The model.
 /// @param intrinsics The intrinsics.

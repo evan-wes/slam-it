@@ -267,6 +267,148 @@ def test_facade_included_from_inside_is_the_problem_layer(fake_repo: Path) -> No
     assert list(check_layers.check_cpp_internal(fake_repo, ORDERS)) == []
 
 
+RUST = "rust/slamlab-foundations/src"
+
+
+@pytest.mark.parametrize(
+    ("path", "code", "message"),
+    [
+        ("so3.rs", "use crate::se3;", "in foundations, 'so3' may not use 'se3'"),
+        (
+            "nls.rs",
+            "use crate::{camera::Model, se3};",
+            "in foundations, 'nls' may not use 'camera'",
+        ),
+        (
+            "ba/schur.rs",
+            "use super::bundle::adjust;",
+            "in foundations.ba, 'schur' may not use 'bundle'",
+        ),
+        (
+            "ba/schur.rs",
+            "use super::{Gauge, layout::{self, Layout}};",
+            "in foundations.ba, 'schur' may not use 'layout'",
+        ),
+        (
+            "ba/gauge.rs",
+            "let x = crate::ba::bundle::f();",
+            "in foundations.ba, 'gauge' may not use 'bundle'",
+        ),
+    ],
+)
+def test_rust_internal_order_is_checked(
+    fake_repo: Path, path: str, code: str, message: str
+) -> None:
+    """Upward and sibling ``crate::``/``super::`` paths inside a rung crate break its order."""
+    _write(fake_repo, f"{RUST}/ba/mod.rs", "mod bundle;\nmod gauge;\nmod layout;\nmod schur;\n")
+    for module in ("ba/bundle", "ba/gauge", "ba/layout", "ba/schur", "camera", "se3", "so3"):
+        if not (fake_repo / RUST / f"{module}.rs").exists():
+            _write(fake_repo, f"{RUST}/{module}.rs", "")
+    _write(fake_repo, f"{RUST}/{path}", code + "\n")
+    found = list(check_layers.check_rust_internal(fake_repo, ORDERS))
+    assert [v.message for v in found] == [message]
+    assert found[0].location == f"{RUST}/{path}:1"
+
+
+def test_rust_internal_order_allows_downward_paths_facades_comments_and_tests(
+    fake_repo: Path,
+) -> None:
+    """Downward paths, the package's facade items, comments and the test module all pass."""
+    _write(fake_repo, f"{RUST}/ba/mod.rs", "mod bundle;\nmod schur;\n")
+    _write(fake_repo, f"{RUST}/so3.rs", "")
+    _write(
+        fake_repo,
+        f"{RUST}/ba/bundle.rs",
+        "use super::{schur::Blocks, Gauge, Problem};\nuse crate::so3;\n",
+    )
+    _write(
+        fake_repo,
+        f"{RUST}/ba/schur.rs",
+        "use super::Gauge; // super::bundle in a comment\n"
+        "#[cfg(test)]\nmod tests {\n    use super::super::bundle;\n}\n",
+    )
+    assert list(check_layers.check_rust_internal(fake_repo, ORDERS)) == []
+
+
+@pytest.mark.parametrize(
+    ("source", "include", "target"),
+    [
+        ("cpp/tests/foundations/test_x.cpp", "../../bench/edge/foo.hpp", "cpp/bench/edge/foo.hpp"),
+        ("cpp/tests/foundations/test_x.cpp", "edge/frontend.hpp", "cpp/src/edge/frontend.hpp"),
+        ("cpp/bindings/foundations/x.cpp", "edge/x.hpp", "cpp/bindings/edge/x.hpp"),
+    ],
+    ids=["next-to-the-file", "tests-search-cpp-src", "bindings-search-cpp-bindings"],
+)
+def test_includes_resolve_as_the_compiler_does(
+    fake_repo: Path, source: str, include: str, target: str
+) -> None:
+    """A quoted include is found as the compiler finds it, then checked (panel A9, A16).
+
+    Next to the file first, then in the include directories CMake gives its root.
+    """
+    _write(fake_repo, target, "")
+    _write(fake_repo, source, f'#include "{include}"\n')
+    found = list(check_layers.check_cpp(fake_repo, ALLOWED))
+    assert [v.message for v in found] == ["rung 'foundations' may not include from rung 'edge'"]
+    assert found[0].location == f"{source}:1"
+
+
+def test_same_rung_and_unresolvable_includes(fake_repo: Path) -> None:
+    """An include reaching the file's own rung passes; a quoted one found nowhere fails."""
+    _write(fake_repo, "cpp/bench/foundations/ok.hpp", "")
+    _write(
+        fake_repo,
+        "cpp/tests/foundations/test_y.cpp",
+        '#include "../../bench/foundations/ok.hpp"\n#include "missing.hpp"\n',
+    )
+    found = list(check_layers.check_cpp(fake_repo, ALLOWED))
+    assert [v.message for v in found] == ["include 'missing.hpp' found nowhere"]
+    assert found[0].location == "cpp/tests/foundations/test_y.cpp:2"
+
+
+@pytest.mark.parametrize(
+    ("path", "code", "message"),
+    [
+        ("ba/schur.rs", "use super::*;\nfn f() { bundle::adjust(); }", "glob import"),
+        ("ba/schur.rs", "use crate::ba::*;", "glob import"),
+        ("ba/schur.rs", "use super::{*};", "glob import"),
+        ("ba/schur.rs", "use crate::ba::{bundle::*, schur};", "glob import"),
+        ("ba/mod.rs", "mod bundle;\npub use bundle::adjust;", "re-export in a package facade"),
+        (
+            "ba/gauge.rs",
+            "#[cfg(test)]\nfn helper() {}\nuse super::bundle;",
+            "#[cfg(test)] outside the trailing test module",
+        ),
+    ],
+)
+def test_rust_constructs_the_check_cannot_follow_are_reported(
+    fake_repo: Path, path: str, code: str, message: str
+) -> None:
+    """A glob import, a facade re-export or a stray ``#[cfg(test)]`` fails loudly (panel A8)."""
+    _write(fake_repo, f"{RUST}/ba/bundle.rs", "")
+    _write(fake_repo, f"{RUST}/{path}", code + "\n")
+    found = [v.message for v in check_layers.check_rust_internal(fake_repo, ORDERS)]
+    assert any(message in m for m in found), found
+
+
+def test_rust_literals_and_comments_neither_hide_nor_invent_edges(fake_repo: Path) -> None:
+    """Literals and comments neither hide code nor add edges.
+
+    A ``//`` inside a string does not hide the code after it; paths in comments, strings and
+    char literals are not edges.
+    """
+    _write(fake_repo, f"{RUST}/se3.rs", "")
+    _write(
+        fake_repo,
+        f"{RUST}/so3.rs",
+        'const U: &str = "http://x"; use crate::se3;\n'
+        "/* crate::se3 /* nested */ */ const Q: char = '\"'; // crate::se3\n"
+        'const R: &str = r#"crate::se3"#;\n',
+    )
+    found = [v.message for v in check_layers.check_rust_internal(fake_repo, ORDERS)]
+    assert found == ["in foundations, 'so3' may not use 'se3'"]
+
+
 def test_two_contracts_over_one_container_are_rejected() -> None:
     """Two layers contracts over the same package would silently replace one another."""
     contract = {"type": "layers", "containers": ["slamlab.foundations"], "layers": ["a", "b"]}

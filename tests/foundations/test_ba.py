@@ -447,7 +447,7 @@ def test_degenerate_data_is_dropped_and_counted() -> None:
     np.testing.assert_array_equal(result.poses[4], poses[4])
 
 
-@pytest.mark.parametrize("backend", sorted(set(backends.LOCKSTEP_BACKENDS) - {"python"}))
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
 def test_backend_parity(backend: str) -> None:
     """A compiled backend matches the reference on every kind of block.
 
@@ -489,7 +489,7 @@ def test_backend_parity(backend: str) -> None:
     )
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_strict_mode_raises(backend: str) -> None:
     """At the iteration cap, strict mode raises in every backend."""
     require_backend(backend)
@@ -531,7 +531,7 @@ def test_invalid_problems_are_rejected(change: dict[str, object], message: str) 
         ba.BAProblem.create(**args)  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("backend", sorted(set(backends.LOCKSTEP_BACKENDS) - {"python"}))
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
 def test_core_checks_indices_too(backend: str) -> None:
     """A compiled core rejects an out-of-range index even when Python's checks are bypassed."""
     require_backend(backend)
@@ -543,13 +543,13 @@ def test_core_checks_indices_too(backend: str) -> None:
         backends.function(backend, "slamlab.foundations.ba", "solve")(**arguments)
 
 
-@pytest.mark.parametrize("backend", sorted(set(backends.LOCKSTEP_BACKENDS) - {"python"}))
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
 @pytest.mark.parametrize(
     ("change", "message"),
     [
-        (lambda o: o.pop("gauge"), "missing gauge"),
-        (lambda o: o["solver"].update(trust_region=1.0), "unexpected trust_region"),
-        (lambda o: o["depth_loss"].pop("scale"), "missing scale"),
+        (lambda o: o.pop("gauge"), "missing field `gauge`"),
+        (lambda o: o["solver"].update(trust_region=1.0), "unknown field `trust_region`"),
+        (lambda o: o["depth_loss"].pop("scale"), "missing field `scale`"),
         (lambda o: o.update(gauge="sim3"), "gauge: unknown name sim3"),
         (lambda o: o["solver"]["loss"].update(kind="tukey"), "loss: unknown name tukey"),
         (lambda o: o["solver"].update(block_loss={}), "block_loss"),
@@ -596,7 +596,7 @@ def test_a_checked_problem_cannot_change() -> None:
         anchored.pt_idx[0] = 99
 
 
-@pytest.mark.parametrize("backend", sorted(set(backends.LOCKSTEP_BACKENDS) - {"python"}))
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
 def test_enum_tables_match_the_compiled_side(backend: str) -> None:
     """Every enum crossing the boundary has the same names in the same code order."""
     require_backend(backend)
@@ -694,7 +694,7 @@ def test_focal_observability() -> None:
     assert flagged == [0, 1, 1]
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_variance_factor_calibrates_the_deviations(backend: str) -> None:
     """The variance factor estimates the noise the weights leave out; it scales σ.
 
@@ -772,7 +772,7 @@ def test_anchor_validation_and_dropped_anchor() -> None:
     assert result.summary.dropped_points == 6
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_auto_gauge_motion_only(backend: str) -> None:
     """With every point fixed (motion-only BA), the points pin the gauge: auto fixes nothing.
 
@@ -787,7 +787,7 @@ def test_auto_gauge_motion_only(backend: str) -> None:
     np.testing.assert_allclose(result.poses, scene.poses, rtol=0, atol=1e-8)
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_auto_gauge_single_pose_prior(backend: str) -> None:
     """A full pose prior on one camera pins rigid motion, not scale: auto confines the scale.
 
@@ -807,7 +807,7 @@ def test_auto_gauge_single_pose_prior(backend: str) -> None:
     assert np.all(np.isfinite(result.intrinsics_std[0, :2]))
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_scale_gauge_needs_an_anchor(backend: str) -> None:
     """An explicit scale gauge without a fixed pose or full prior is rejected, in both cores."""
     require_backend(backend)
@@ -832,7 +832,7 @@ def _partially_anchored(case: str) -> ba.BAProblem:
     return replace(p, points=points, fixed_points=fixed)
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize(
     "case",
     [
@@ -858,7 +858,7 @@ def test_auto_gauge_removes_only_what_is_free(backend: str, case: str) -> None:
     assert result.summary.solve.final_cost < 1e-18
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_translation_priors_pin_centres_whatever_rotation_they_store(backend: str) -> None:
     """A GNSS-style prior carries a centre and no attitude: its stored rotation is unused.
 
@@ -885,7 +885,7 @@ def test_translation_priors_pin_centres_whatever_rotation_they_store(backend: st
     assert np.all(centre_error < 0.02)
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_translation_priors_on_three_cameras_leave_no_gauge(backend: str) -> None:
     """Three non-collinear known centres pin the whole similarity: no gauge, finite σ_f.
 
@@ -905,7 +905,7 @@ def test_translation_priors_on_three_cameras_leave_no_gauge(backend: str) -> Non
     assert np.all(np.isfinite(result.intrinsics_std[0, :2]))
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize("offset", [1e4, 1e6, 6.4e6])
 def test_far_from_the_world_origin(backend: str, offset: float) -> None:
     """A geo-referenced scene (up to ECEF's 6.4e6 m) solves as it does at the origin.
@@ -950,7 +950,7 @@ def test_far_from_the_world_origin(backend: str, offset: float) -> None:
     np.testing.assert_allclose(far_result.intrinsics_std, near_result.intrinsics_std, rtol=1e-5)
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize(("gauge", "free"), [("first_pose", 1), ("none", 7), ("auto", 0)])
 def test_free_gauge_counts_what_a_recipe_leaves(backend: str, gauge: str, free: int) -> None:
     """On monocular data ``first_pose`` leaves the scale and ``none`` all 7 directions.
@@ -962,7 +962,7 @@ def test_free_gauge_counts_what_a_recipe_leaves(backend: str, gauge: str, free: 
     assert result.summary.free_gauge == free
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_prior_on_an_unobserved_camera_pins_nothing(backend: str) -> None:
     """A prior on a camera nothing observes cannot anchor the scene: the gauge ignores it.
 
@@ -983,7 +983,7 @@ def test_prior_on_an_unobserved_camera_pins_nothing(backend: str) -> None:
     np.testing.assert_allclose(result.intrinsics_std, plain.intrinsics_std, rtol=1e-6)
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_variance_factor_counts_only_weighted_prior_rows(backend: str) -> None:
     """A translation-only prior adds 3 rows to m, not 6: its rotation rows carry nothing.
 
@@ -1004,7 +1004,7 @@ def test_variance_factor_counts_only_weighted_prior_rows(backend: str) -> None:
     assert redundancy[1] - redundancy[0] == pytest.approx(3 * 4, abs=1e-3)
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_variance_factor_under_a_robust_loss(backend: str) -> None:
     """Outliers count as much as their IRLS weight lets them, not by their ρ.
 
@@ -1037,15 +1037,14 @@ def _undistortion_scene(k1: float) -> ba.BAProblem:
 
 @pytest.mark.parametrize(("k1", "dropped"), [(-1.0, 0), (-1.1, 1)])
 def test_anchor_pixels_outside_the_invertible_region(k1: float, dropped: int) -> None:
-    """Both backends behave alike when an anchor pixel has no ray (panel finding L2).
+    """Every backend behaves alike when an anchor pixel has no ray (panel finding L2).
 
     From k1 = -1.0, trial steps push anchor pixels out of the invertible region; they are
     rejected, not raised (Python used to raise). From k1 = -1.1, one anchor has no ray at the
-    start; both backends drop it and count it. Both recover the true k1 = -0.08.
+    start; every backend drops it and counts it. All recover the true k1 = -0.08.
     """
-    require_backend("cpp")
     problem = _undistortion_scene(k1)
-    for backend in ("python", "cpp"):
+    for backend in map(require_backend, backends.BACKENDS):
         result = ba.solve(problem, ba.BAOptions(solver=TIGHT), backend=backend)
         assert result.summary.dropped_points == dropped
         assert result.summary.solve.converged

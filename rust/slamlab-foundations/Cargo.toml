@@ -7,6 +7,20 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+nalgebra.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+criterion = "0.8.2"
+serde_json = "1.0.151"
+
+[[bench]]
+name = "foundations"
+harness = false
+
+# The example's BAL reader is tested against the shared fixture by `cargo test`.
+[[example]]
+name = "bal"
+test = true

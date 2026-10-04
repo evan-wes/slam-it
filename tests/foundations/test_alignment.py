@@ -25,7 +25,7 @@ def test_matches_fixture(backend: str, case: dict[str, Any]) -> None:
     assert_matches_fixture(result.as_matrix(), case["expected"], SPEC["tolerance"])
 
 
-@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize("with_scale", [False, True])
 def test_recovers_a_known_transform(backend: str, with_scale: bool) -> None:
     """Noise-free correspondences recover R, t (and s) to rounding."""

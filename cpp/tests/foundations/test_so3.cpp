@@ -5,6 +5,7 @@
 /// these tests cover what the standalone C++ core must get right on its own: exact `hat`
 /// entries, round trips, the θ = π convention, and the error paths.
 #include <cmath>
+#include <limits>
 #include <numbers>
 
 #include "slamlab/foundations/so3.hpp"
@@ -62,6 +63,14 @@ int main() {
   expect(so3::right_jacobian_inverse(Eigen::Vector3d(7.0, 0, 0)).error().kind ==
              ErrorKind::kInvalidInput,
          "inverse Jacobian rejects |omega| >= 2 pi", failures);
+
+  // NaN passes every tolerance comparison, so finiteness is checked first.
+  Eigen::Matrix3d nan = Eigen::Matrix3d::Identity();
+  nan(0, 1) = std::numeric_limits<double>::quiet_NaN();
+  expect(so3::log(nan).error().kind == ErrorKind::kInvalidInput, "log rejects a NaN entry",
+         failures);
+  expect(so3::vee(nan).error().kind == ErrorKind::kInvalidInput, "vee rejects a NaN entry",
+         failures);
 
   return slamlab::testing::finish("foundations/so3", failures);
 }
