@@ -302,6 +302,26 @@ pub fn items_array<'py, A: Item>(py: Python<'py>, items: &[A]) -> PyResult<Array
     new_array(py, &[&[items.len()][..], &A::shape()].concat(), out)
 }
 
+/// Packs one fixed-size item as a new array of its own shape.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `item` - The item.
+///
+/// # Returns
+///
+/// The array, of shape `A::shape()`.
+///
+/// # Errors
+///
+/// Never in practice (the shape always matches); see [`new_array`].
+pub fn item_array<'py, A: Item>(py: Python<'py>, item: &A) -> PyResult<ArrayOut<'py>> {
+    let mut out = Vec::with_capacity(A::LEN);
+    item.write(&mut out);
+    new_array(py, &A::shape(), out)
+}
+
 /// An enum's names in code order, for a `codes()` table.
 ///
 /// # Arguments
