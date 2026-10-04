@@ -385,6 +385,9 @@ impl<'a> Bundle<'a> {
                 let rotation_t = se3::rotation(&state.poses[self.host_of(p)]).transpose();
                 let n_params = self.problem.intrinsics.params;
                 let d_pixel_d_ray: Matrix2<f64> = jacobian.fixed_columns::<2>(0).into_owned();
+                // An exactly singular pixel Jacobian (practically unreachable at a converged
+                // undistortion) leaves the point without a Jacobian, so its blocks drop out;
+                // C++ would carry inf or NaN, and the reference would raise.
                 let d_xy = -d_pixel_d_ray.try_inverse()? * jacobian.columns(3, n_params);
                 let mut d_ray = OMatrix::<f64, U3, Dyn>::zeros(n_params);
                 d_ray.rows_mut(0, 2).copy_from(&d_xy);
@@ -939,6 +942,58 @@ fn intrinsics_std(
     out
 }
 
+/// Counts the groups whose focal length is uncertain by more than `ratio` of itself.
+///
+/// # Arguments
+///
+/// * `model` - The camera model (radial has one focal length; pinhole and radtan two).
+/// * `std_dev` - The intrinsics' standard deviations (NaN where fixed).
+/// * `intrinsics` - The intrinsics.
+/// * `ratio` - The relative deviation above which a focal length is unobservable.
+///
+/// # Returns
+///
+/// The count.
+fn unobservable_focal(
+    model: Model,
+    std_dev: &Intrinsics,
+    intrinsics: &Intrinsics,
+    ratio: f64,
+) -> usize {
+    let n_focal = if model == Model::Radial { 1 } else { 2 };
+    (0..std_dev.groups())
+        .filter(|&g| (0..n_focal).any(|k| std_dev.group(g)[k] > ratio * intrinsics.group(g)[k]))
+        .count()
+}
+
+/// Every point in the world frame at a state, as the solution reports it.
+///
+/// # Arguments
+///
+/// * `bundle` - The problem.
+/// * `state` - The state.
+///
+/// # Returns
+///
+/// The points: plain ones as they are, anchored ones placed on their rays. An anchored point
+/// with no world position (rho <= 0, or a ray the lens cannot invert) is a NaN row, as in
+/// the Python reference.
+fn final_points(bundle: &Bundle<'_>, state: &BundleState) -> Vec<Vector3<f64>> {
+    let world = bundle.world_points(state);
+    state
+        .points
+        .iter()
+        .enumerate()
+        .map(|(p, point)| {
+            if bundle.layout.anchored[p] {
+                world[p].unwrap_or_else(|| Vector3::repeat(f64::NAN))
+            } else {
+                *point
+            }
+        })
+        .collect()
+}
+
 /// Solves a checked problem over its layout.
 ///
 /// # Arguments
@@ -985,30 +1040,13 @@ pub fn adjust(problem: &Problem, options: &Options, layout: &Layout) -> Result<S
         1.0
     };
     let std_dev = intrinsics_std(&bundle, &state, &settings, scaling);
-    // Radial has one focal length; pinhole and radtan have two.
-    let n_focal = if problem.model == Model::Radial { 1 } else { 2 };
-    let unobservable_focal = (0..std_dev.groups())
-        .filter(|&g| {
-            (0..n_focal).any(|k| {
-                std_dev.group(g)[k] > options.focal_std_ratio * state.intrinsics.group(g)[k]
-            })
-        })
-        .count();
-    let world = bundle.world_points(&state);
-    let points: Vec<Vector3<f64>> = state
-        .points
-        .iter()
-        .enumerate()
-        .map(|(p, point)| {
-            if layout.anchored[p] {
-                // An anchored point with no world position (rho <= 0, or a ray the lens
-                // cannot invert) is a NaN row, as in the Python reference.
-                world[p].unwrap_or_else(|| Vector3::repeat(f64::NAN))
-            } else {
-                *point
-            }
-        })
-        .collect();
+    let unobservable_focal = unobservable_focal(
+        problem.model,
+        &std_dev,
+        &state.intrinsics,
+        options.focal_std_ratio,
+    );
+    let points = final_points(&bundle, &state);
     let counts = &layout.counts;
     Ok(Solution {
         poses,

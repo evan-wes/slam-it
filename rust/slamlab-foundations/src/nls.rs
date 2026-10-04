@@ -1199,4 +1199,18 @@ mod tests {
         );
         assert_eq!(mismatched.unwrap_err().kind, ErrorKind::InvalidInput);
     }
+
+    /// Each crossing enum's discriminant is its position in `ALL`, the code it crosses as.
+    #[test]
+    fn codes_are_positions() {
+        for (i, method) in Method::ALL.iter().enumerate() {
+            assert_eq!(*method as usize, i, "{}", method.name());
+        }
+        for (i, kind) in LossKind::ALL.iter().enumerate() {
+            assert_eq!(*kind as usize, i, "{}", kind.name());
+        }
+        for (i, termination) in Termination::ALL.iter().enumerate() {
+            assert_eq!(*termination as usize, i, "{}", termination.name());
+        }
+    }
 }

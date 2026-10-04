@@ -617,3 +617,19 @@ pub fn solve(problem: &Problem, options: &Options) -> Result<Solution> {
     }
     Ok(solution)
 }
+
+#[cfg(test)]
+mod tests {
+    //! Native tests of the facade: the gauge's codes. The solve is checked in its modules
+    //! and against the Python reference.
+
+    use super::*;
+
+    /// Each gauge's discriminant is its position in `ALL`, the code it crosses as.
+    #[test]
+    fn codes_are_positions() {
+        for (i, gauge) in Gauge::ALL.iter().enumerate() {
+            assert_eq!(*gauge as usize, i, "{}", gauge.name());
+        }
+    }
+}

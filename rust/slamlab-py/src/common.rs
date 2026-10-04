@@ -269,6 +269,24 @@ pub fn enum_names<E: Copy>(all: &[E], name: fn(E) -> &'static str) -> Vec<&'stat
     all.iter().map(|&e| name(e)).collect()
 }
 
+/// Encodes an enum as its code: its position in `ALL`, the same list [`decode`] and
+/// [`enum_names`] read, so the three cannot disagree.
+///
+/// # Arguments
+///
+/// * `all` - The enum's values in code order.
+/// * `value` - The value.
+///
+/// # Returns
+///
+/// The code (-1 only for a value missing from `all`, which the cores' tests rule out).
+pub fn encode<E: Copy + PartialEq>(all: &[E], value: E) -> i64 {
+    all.iter()
+        .position(|&e| e == value)
+        .and_then(|i| i64::try_from(i).ok())
+        .unwrap_or(-1)
+}
+
 /// Looks an enum up by its name, as the core's name function spells it.
 ///
 /// # Arguments

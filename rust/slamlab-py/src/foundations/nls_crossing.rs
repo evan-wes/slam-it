@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde::de::IgnoredAny;
 use slamlab_foundations::nls::{self, Iteration, LossKind, Method, Termination};
 
-use crate::common::{by_name, enum_names, new_array};
+use crate::common::{by_name, encode, enum_names, new_array};
 
 /// The trace's column names (`nls::Iteration`'s fields), in row order.
 const TRACE_COLUMNS: [&str; 7] = [
@@ -166,7 +166,10 @@ pub fn summary<'py>(py: Python<'py>, summary: &nls::Summary) -> PyResult<Bound<'
     let out = PyDict::new(py);
     out.set_item("initial_cost", summary.initial_cost)?;
     out.set_item("final_cost", summary.final_cost)?;
-    out.set_item("termination", summary.termination as i64)?;
+    out.set_item(
+        "termination",
+        encode(&Termination::ALL, summary.termination),
+    )?;
     let rows: Vec<f64> = summary.trace.iter().flat_map(trace_row).collect();
     out.set_item(
         "trace",

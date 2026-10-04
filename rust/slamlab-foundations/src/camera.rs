@@ -366,6 +366,11 @@ pub fn project_jacobian(
 ///
 /// `InvalidInput` for bad intrinsics; `NotConverged` if the distortion cannot be inverted
 /// there (Newton leaves the invertible region, or does not converge in time).
+///
+/// # Panics
+///
+/// Never: a Newton step is taken only where the distortion Jacobian's determinant is
+/// positive, so it is invertible.
 pub fn unproject(model: Model, intrinsics: &[f64], pixel: &Vector2<f64>) -> Result<Vector3<f64>> {
     let camera = expand(model, intrinsics)?;
     let k = &camera.intrinsics;
@@ -389,13 +394,10 @@ pub fn unproject(model: Model, intrinsics: &[f64], pixel: &Vector2<f64>) -> Resu
                     "undistort: pixel outside the invertible region of the distortion",
                 );
             }
-            let Some(step) = jac.lu().solve(&residual) else {
-                return fail(
-                    ErrorKind::NotConverged,
-                    "undistort: singular distortion Jacobian",
-                );
-            };
-            xy -= step;
+            let inverse = jac
+                .try_inverse()
+                .expect("a positive determinant makes the 2x2 invertible");
+            xy -= inverse * residual;
         }
         if !done {
             return fail(
@@ -489,5 +491,13 @@ mod tests {
         let k = [500.0, 500.0, 320.0, 240.0, -0.9, 0.0, 0.0, 0.0, 0.0];
         let err = unproject(Model::RadTan, &k, &Vector2::new(2000.0, 1500.0)).unwrap_err();
         assert_eq!(err.kind, ErrorKind::NotConverged);
+    }
+
+    /// Each model's discriminant is its position in `ALL`, the code it crosses as.
+    #[test]
+    fn codes_are_positions() {
+        for (i, model) in Model::ALL.iter().enumerate() {
+            assert_eq!(*model as usize, i, "{}", model.name());
+        }
     }
 }

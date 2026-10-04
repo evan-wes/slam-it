@@ -12,18 +12,19 @@ use crate::se3;
 /// below it the points are collinear and the rotation is undetermined.
 pub const DEGENERACY_RATIO: f64 = 1e-10;
 
-/// Aligns corresponding point sets.
+/// Aligns corresponding point sets: the similarity mapping `source` onto `target`.
 ///
 /// # Arguments
 ///
-/// * `source` - Source points, N >= 3.
-/// * `target` - Target points, N.
+/// * `source` - Source points, N >= 3, each in the source frame (any unit).
+/// * `target` - The corresponding target points, N, in the target frame, same unit.
 /// * `weights` - Non-negative weights, N, at least three positive.
-/// * `with_scale` - Estimate a scale too (Sim(3)).
+/// * `with_scale` - Estimate a scale too (Sim(3)); otherwise `s = 1` (SE(3)).
 ///
 /// # Returns
 ///
-/// The 4x4 matrix `[[s R, t], [0, 1]]`.
+/// The 4x4 matrix `[[s R, t], [0, 1]]` minimising `Σ w_i |y_i - (s R x_i + t)|²`, which
+/// maps a source point `x` to `s R x + t` in the target frame.
 ///
 /// # Errors
 ///

@@ -19,8 +19,8 @@ use slamlab_foundations::nls::{LossKind, Method};
 
 use super::nls_crossing::{self, LossIn, OptionsIn};
 use crate::common::{
-    ArrayIn, add_functions, by_name, decode, enum_names, items_array, new_array, rows, slice,
-    unwrap,
+    ArrayIn, add_functions, by_name, decode, encode, enum_names, items_array, new_array, rows,
+    slice, unwrap,
 };
 
 /// `ba.BAOptions`' fields, as they cross.
@@ -92,7 +92,10 @@ fn codes(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     Ok(out)
 }
 
-/// A count, or -1 for none, as it crosses.
+/// A pose index, or -1 for none, as it crosses.
+///
+/// A pose index always fits in `i64` (there are far fewer than 2⁶³ poses), so -1 means
+/// "none" and nothing else.
 ///
 /// # Arguments
 ///
@@ -109,8 +112,18 @@ fn code_of(index: Option<usize>) -> i64 {
 ///
 /// # Arguments
 ///
-/// Every field of `BAProblem`, by keyword, then `model` (its code) and `options` (a dict
-/// of `BAOptions`' fields).
+/// Every field of `BAProblem`, by keyword, as the Python `Implementation` Protocol in
+/// `src/slamlab/foundations/ba/solve.py` passes them:
+///
+/// * `intrinsics` - float64 (K, P), one group per row; `intrinsics_idx` int64 (C).
+/// * `poses` - float64 (C, 4, 4), camera-to-world `T_world_cam`; `points` float64 (N, 3).
+/// * `observations` - float64 (M, 2), pixels; `cam_idx`, `pt_idx` int64 (M).
+/// * `weights`, `depth_prior`, `depth_prior_weights` - float64 (M).
+/// * `fixed_poses` bool (C), `fixed_intrinsics` bool (K P, row-major), `fixed_points` bool
+///   (N), `fixed_depth_affine` bool (C).
+/// * `depth_affine` - float64 (C, 2); `pose_prior` float64 (C, 4, 4);
+///   `pose_prior_weights` float64 (C, 2); `point_anchor` int64 (N).
+/// * `model` - the camera model's code; `options` - a dict of `BAOptions`' fields.
 ///
 /// # Returns
 ///
@@ -185,8 +198,26 @@ fn solve<'py>(
     };
     let options = read_options(&options)?;
     let solution = unwrap(py, py.detach(|| core::solve(&problem, &options)))?;
+    solution_dict(py, &solution)
+}
+
+/// A solution as the dict the Python side reads (see the `Implementation` Protocol).
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `solution` - The solution.
+///
+/// # Returns
+///
+/// The refined arrays, the least-squares summary, the gauge code and the counts.
+///
+/// # Errors
+///
+/// A Python error if the dict cannot be built.
+fn solution_dict<'py>(py: Python<'py>, solution: &core::Solution) -> PyResult<Bound<'py, PyDict>> {
     let summary = &solution.summary;
-    let groups = solution.intrinsics.groups();
+    let (groups, params) = (solution.intrinsics.groups(), solution.intrinsics.params);
     let out = PyDict::new(py);
     out.set_item("poses", items_array(py, &solution.poses)?)?;
     out.set_item(
@@ -212,7 +243,7 @@ fn solve<'py>(
         )?,
     )?;
     out.set_item("solve", nls_crossing::summary(py, &summary.solve)?)?;
-    out.set_item("gauge", summary.gauge as i64)?;
+    out.set_item("gauge", encode(&Gauge::ALL, summary.gauge))?;
     out.set_item("gauge_pose", code_of(summary.gauge_pose))?;
     out.set_item("confined_pose", code_of(summary.confined_pose))?;
     for (name, count) in [
