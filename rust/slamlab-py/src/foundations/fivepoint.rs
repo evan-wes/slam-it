@@ -2,11 +2,10 @@
 
 use nalgebra::Vector3;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
 use slamlab_foundations::fivepoint::{self as core, Solver};
 
 use crate::common::{
-    ArrayIn, ArrayOut, add_functions, decode, enum_names, items_array, rows, unwrap,
+    ArrayIn, ArrayOut, add_functions, decode, enum_codes, items_array, rows, unwrap,
 };
 
 /// Every essential matrix five bearing pairs allow.
@@ -44,25 +43,7 @@ fn essential_5pt<'py>(
     items_array(py, &unwrap(py, found)?)
 }
 
-/// The enum tables: the solvers' names in code order.
-///
-/// # Arguments
-///
-/// * `py` - The Python token.
-///
-/// # Returns
-///
-/// `{"solver": [...]}`.
-///
-/// # Errors
-///
-/// A Python error if the dict cannot be built.
-#[pyfunction]
-fn codes(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
-    let out = PyDict::new(py);
-    out.set_item("solver", enum_names(&Solver::ALL, Solver::name))?;
-    Ok(out)
-}
+enum_codes!("solver" => Solver);
 
 /// Registers the `fivepoint` functions.
 ///

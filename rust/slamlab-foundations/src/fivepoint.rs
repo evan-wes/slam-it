@@ -18,7 +18,7 @@ use nalgebra::{DMatrix, DVector, Matrix3, SMatrix, Schur, Vector3};
 
 use crate::correspondences::{RANK_TOLERANCE, check_bearing_pairs};
 use crate::error::{ErrorKind, Result, fail};
-use crate::linalg::{SVD_MAX_ITERATIONS, svd};
+use crate::linalg::{SVD_MAX_ITERATIONS, least_squares, svd};
 
 /// Correspondences a 5-point solver takes.
 pub const SAMPLE_SIZE: usize = 5;
@@ -685,14 +685,11 @@ fn least_squares_step(
     jacobian: &SMatrix<f64, 10, 3>,
     residual: &SMatrix<f64, 10, 1>,
 ) -> Option<Vector3<f64>> {
-    let decomposition = svd(
+    let step = least_squares(
         DMatrix::from_column_slice(10, 3, jacobian.as_slice()),
-        true,
-        true,
+        &DVector::from_column_slice((-residual).as_slice()),
+        3.0 * f64::EPSILON,
     )?;
-    let threshold = 3.0 * f64::EPSILON * decomposition.singular_values.max();
-    let rhs = DVector::from_column_slice((-residual).as_slice());
-    let step = decomposition.solve(&rhs, threshold).ok()?;
     Some(Vector3::new(step[0], step[1], step[2]))
 }
 

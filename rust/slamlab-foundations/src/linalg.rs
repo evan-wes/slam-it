@@ -1,4 +1,5 @@
-//! Dense linear algebra shared by rung 0's Rust modules: an SVD that always returns.
+//! Dense linear algebra shared by rung 0's Rust modules: an SVD that always returns, and the
+//! minimum-norm least squares built on it.
 //!
 //! nalgebra's general `svd` has no iteration cap, so a matrix with a NaN or an infinity never
 //! returns, where LAPACK (numpy) and Eigen stop. Every dynamic SVD in the crate goes through
@@ -6,7 +7,7 @@
 //! matrices take nalgebra's closed-form routines, which always return, and need no helper.
 //! There is no Python or C++ counterpart: numpy and Eigen need none.
 
-use nalgebra::{DMatrix, Dyn, SVD};
+use nalgebra::{DMatrix, DVector, Dyn, SVD};
 
 /// Golub-Kahan sweeps allowed in a dynamic SVD before it is abandoned.
 pub const SVD_MAX_ITERATIONS: usize = 10_000;
@@ -32,6 +33,32 @@ pub fn svd(matrix: DMatrix<f64>, compute_u: bool, compute_v: bool) -> Option<SVD
         return None;
     }
     matrix.try_svd(compute_u, compute_v, f64::EPSILON * 5.0, SVD_MAX_ITERATIONS)
+}
+
+/// The minimum-norm least-squares solution of `A x = b` by SVD, singular values at or below
+/// `relative` times the largest treated as zero.
+///
+/// `relative` picks whose convention the caller follows: `max(m, n) ε` is numpy's `lstsq`
+/// default, `min(m, n) ε` Eigen's `JacobiSVD::solve`.
+///
+/// # Arguments
+///
+/// * `matrix` - A (not empty).
+/// * `rhs` - b.
+/// * `relative` - The cutoff, relative to the largest singular value.
+///
+/// # Returns
+///
+/// x, or `None` if the SVD fails (a non-finite entry).
+#[must_use]
+pub fn least_squares(
+    matrix: DMatrix<f64>,
+    rhs: &DVector<f64>,
+    relative: f64,
+) -> Option<DVector<f64>> {
+    let decomposition = svd(matrix, true, true)?;
+    let threshold = relative * decomposition.singular_values.max();
+    decomposition.solve(rhs, threshold).ok()
 }
 
 #[cfg(test)]

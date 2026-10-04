@@ -13,7 +13,7 @@ use numpy::{
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyType;
+use pyo3::types::{PyDict, PyType};
 use slamlab_foundations::error::{Error, ErrorKind};
 
 /// A float64 numpy array returned to Python.
@@ -340,6 +340,31 @@ pub fn vector_array<'py>(py: Python<'py>, values: &DVector<f64>) -> PyResult<Arr
     new_array(py, &[values.len()], values.as_slice().to_vec())
 }
 
+/// A `codes()` dict from its tables.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `tables` - Each enum's key and its names in code order.
+///
+/// # Returns
+///
+/// `{key: names}`.
+///
+/// # Errors
+///
+/// A Python error if the dict cannot be built.
+pub fn codes_dict<'py>(
+    py: Python<'py>,
+    tables: &[(&str, Vec<&'static str>)],
+) -> PyResult<Bound<'py, PyDict>> {
+    let out = PyDict::new(py);
+    for (key, names) in tables {
+        out.set_item(*key, names)?;
+    }
+    Ok(out)
+}
+
 /// An enum's names in code order, for a `codes()` table.
 ///
 /// # Arguments
@@ -524,4 +549,31 @@ macro_rules! add_functions {
     };
 }
 
-pub(crate) use {add_functions, batched};
+/// `enum_codes!("solver" => Solver)` defines the module's `codes()`: each key with its enum's
+/// names in code order (the enum's `ALL` and `name`).
+macro_rules! enum_codes {
+    ($($key:literal => $enum:ty),+ $(,)?) => {
+        /// The enum tables: each enum's names in code order.
+        ///
+        /// # Arguments
+        ///
+        /// * `py` - The Python token.
+        ///
+        /// # Returns
+        ///
+        /// `{key: [names]}`.
+        ///
+        /// # Errors
+        ///
+        /// A Python error if the dict cannot be built.
+        #[pyfunction]
+        fn codes(py: Python<'_>) -> PyResult<Bound<'_, pyo3::types::PyDict>> {
+            $crate::common::codes_dict(
+                py,
+                &[$(($key, $crate::common::enum_names(&<$enum>::ALL, <$enum>::name))),+],
+            )
+        }
+    };
+}
+
+pub(crate) use {add_functions, batched, enum_codes};

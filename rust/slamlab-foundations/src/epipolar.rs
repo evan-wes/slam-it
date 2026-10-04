@@ -674,42 +674,32 @@ impl nls::Problem for SampsonProblem {
 /// # Arguments
 ///
 /// * `essential` - The starting E, of rank 2.
-/// * `bearings1`, `bearings2` - Bearings with positive z, M >= 5.
+/// * `x1`, `x2` - The matches' normalised image points `(x, y, 1)`, M >= 5.
 /// * `scale` - The Cauchy scale, a Sampson distance in the normalised plane.
 ///
 /// # Returns
 ///
 /// The refined E and the solve's summary.
 ///
+/// # Errors
+///
+/// `InvalidInput` if a match's Sampson distance is not finite at the start.
+///
 /// # Panics
 ///
 /// If E is not finite or its rank is below 2, which every caller has checked.
-#[must_use]
 pub fn refine(
     essential: &Matrix3<f64>,
-    bearings1: &[Vector3<f64>],
-    bearings2: &[Vector3<f64>],
+    x1: Vec<Vector3<f64>>,
+    x2: Vec<Vector3<f64>>,
     scale: f64,
-) -> nls::Solution<Matrix3<f64>> {
-    let problem = SampsonProblem {
-        x1: normalised_plane(bearings1),
-        x2: normalised_plane(bearings2),
-    };
-    let options = nls::Options {
-        loss: nls::Loss {
-            kind: nls::LossKind::Cauchy,
-            scale,
-        },
-        max_iterations: REFINE_ITERATIONS,
-        ..nls::Options::default()
-    };
-    // With the strict flag off the solve never fails: it returns its best state.
-    let solved = nls::solve(&problem, start_motion(essential), &options)
-        .expect("a non-strict solve returns its best state");
-    nls::Solution {
+) -> Result<nls::Solution<Matrix3<f64>>> {
+    let problem = SampsonProblem { x1, x2 };
+    let solved = nls::solve_cauchy(&problem, start_motion(essential), scale, REFINE_ITERATIONS)?;
+    Ok(nls::Solution {
         state: solved.state.essential(),
         summary: solved.summary,
-    }
+    })
 }
 
 /// Refines E on its inliers by minimising the robust Sampson distance over E's manifold.
@@ -726,7 +716,8 @@ pub fn refine(
 ///
 /// # Errors
 ///
-/// `InvalidInput` for bad input; `Degenerate` if E's rank is below 2.
+/// `InvalidInput` for bad input, or a Sampson distance that is not finite at the start;
+/// `Degenerate` if E's rank is below 2.
 pub fn refine_essential(
     essential: &Matrix3<f64>,
     bearings1: &[Vector3<f64>],
@@ -750,7 +741,12 @@ pub fn refine_essential(
             "essential: rank below 2, no translation direction",
         );
     }
-    Ok(refine(essential, bearings1, bearings2, scale))
+    refine(
+        essential,
+        normalised_plane(bearings1),
+        normalised_plane(bearings2),
+        scale,
+    )
 }
 
 /// Estimates E robustly: LO-MSAC, then (optionally) the Sampson refinement on the inliers,
@@ -770,6 +766,10 @@ pub fn refine_essential(
 /// # Errors
 ///
 /// `InvalidInput` or `Degenerate`.
+///
+/// # Panics
+///
+/// Never: the refinement starts from the consensus, whose inliers have finite residuals.
 pub fn essential_ransac(
     bearings1: &[Vector3<f64>],
     bearings2: &[Vector3<f64>],
@@ -778,13 +778,16 @@ pub fn essential_ransac(
     refine: bool,
 ) -> Result<RefinedSolution<Matrix3<f64>>> {
     check_bearing_pairs(bearings1, bearings2, minimal.sample_size(), true)?;
+    let (x1, x2) = (normalised_plane(bearings1), normalised_plane(bearings2));
     let refiner = |model: &Matrix3<f64>, inliers: &[usize]| {
+        // The consensus's inliers are within the threshold: every start is finite.
         self::refine(
             model,
-            &gather(bearings1, inliers),
-            &gather(bearings2, inliers),
+            gather(&x1, inliers),
+            gather(&x2, inliers),
             options.threshold,
         )
+        .expect("the inliers' Sampson distances are finite")
     };
     ransac::estimate_refined(
         &EssentialEstimator::new(bearings1, bearings2, minimal),

@@ -850,6 +850,40 @@ pub fn solve<P: Problem>(
     })
 }
 
+/// A robust refinement: [`solve`] with the default settings, a Cauchy loss at `scale` and an
+/// iteration cap, not strict (an unconverged solve returns its best state).
+///
+/// # Arguments
+///
+/// * `problem` - The residual blocks, their linearisation and the state's retraction.
+/// * `initial` - The starting state.
+/// * `scale` - The Cauchy loss's scale (positive).
+/// * `max_iterations` - The iteration cap.
+///
+/// # Returns
+///
+/// The lowest-cost state visited, with the summary.
+///
+/// # Errors
+///
+/// `InvalidInput` for a bad scale or a non-finite initial cost.
+pub fn solve_cauchy<P: Problem>(
+    problem: &P,
+    initial: P::State,
+    scale: f64,
+    max_iterations: i64,
+) -> Result<Solution<P::State>> {
+    let options = Options {
+        loss: Loss {
+            kind: LossKind::Cauchy,
+            scale,
+        },
+        max_iterations,
+        ..Options::default()
+    };
+    solve(problem, initial, &options)
+}
+
 #[cfg(test)]
 mod tests {
     //! Native tests, runnable without Python, mirroring the C++ core's: the losses, both

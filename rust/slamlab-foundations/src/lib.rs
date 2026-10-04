@@ -15,6 +15,8 @@ pub mod fivepoint;
 pub mod homography;
 pub mod linalg;
 pub mod nls;
+pub mod p3p;
+pub mod pnp;
 pub mod ransac;
 pub mod rng;
 pub mod se3;
