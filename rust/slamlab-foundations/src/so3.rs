@@ -210,8 +210,11 @@ pub fn hat(omega: &Vector3<f64>) -> Matrix3<f64> {
 ///
 /// # Errors
 ///
-/// `InvalidInput` if `skew` is not skew-symmetric.
+/// `InvalidInput` if `skew` has a non-finite entry or is not skew-symmetric.
 pub fn vee(skew: &Matrix3<f64>) -> Result<Vector3<f64>> {
+    if !skew.iter().all(|x| x.is_finite()) {
+        return fail(ErrorKind::InvalidInput, "skew: expected finite values");
+    }
     let scale = skew.amax().max(1.0);
     if (skew + skew.transpose()).amax() > SKEW_TOLERANCE * scale {
         return fail(
@@ -250,8 +253,11 @@ pub fn exp(omega: &Vector3<f64>) -> Matrix3<f64> {
 ///
 /// # Errors
 ///
-/// `InvalidInput` naming what failed: not orthonormal, or a reflection.
+/// `InvalidInput` naming what failed: a non-finite entry, not orthonormal, or a reflection.
 pub fn check_rotation(rotation: &Matrix3<f64>) -> Result<()> {
+    if !rotation.iter().all(|x| x.is_finite()) {
+        return fail(ErrorKind::InvalidInput, "rotation: expected finite values");
+    }
     let gram = rotation.transpose() * rotation;
     if (gram - Matrix3::identity()).amax() > ROTATION_TOLERANCE {
         return fail(
@@ -381,9 +387,12 @@ pub fn left_jacobian_inverse(omega: &Vector3<f64>) -> Result<Matrix3<f64>> {
 ///
 /// # Errors
 ///
-/// `InvalidInput` if the norm is not close to 1.
+/// `InvalidInput` for a non-finite entry, or a norm not close to 1.
 #[rustfmt::skip] // keep one matrix row per line
 pub fn from_quaternion(quaternion: &Vector4<f64>) -> Result<Matrix3<f64>> {
+    if !quaternion.iter().all(|x| x.is_finite()) {
+        return fail(ErrorKind::InvalidInput, "quaternion: expected finite values");
+    }
     let norm = quaternion.norm();
     if (norm - 1.0).abs() > QUATERNION_TOLERANCE {
         return fail(ErrorKind::InvalidInput, "quaternion: norm not within 1e-06 of 1");
@@ -576,5 +585,12 @@ mod tests {
         assert!(invalid(
             right_jacobian_inverse(&Vector3::new(7.0, 0.0, 0.0)).unwrap_err()
         ));
+        // NaN passes every tolerance comparison, so finiteness is checked first.
+        let mut nan = Matrix3::identity();
+        nan[(0, 1)] = f64::NAN;
+        assert!(invalid(log(&nan).unwrap_err()));
+        assert!(invalid(vee(&nan).unwrap_err()));
+        let nan_quaternion = Vector4::new(f64::NAN, 0.0, 0.0, 1.0);
+        assert!(invalid(from_quaternion(&nan_quaternion).unwrap_err()));
     }
 }

@@ -27,8 +27,8 @@ pub const DEGENERACY_RATIO: f64 = 1e-10;
 ///
 /// # Errors
 ///
-/// `InvalidInput` for mismatched lengths or negative weights; `Degenerate` for fewer than
-/// three weighted points, or collinear points.
+/// `InvalidInput` for mismatched lengths, a non-finite value or negative weights;
+/// `Degenerate` for fewer than three weighted points, or collinear points.
 ///
 /// # Panics
 ///
@@ -44,6 +44,13 @@ pub fn umeyama(
         return fail(
             ErrorKind::InvalidInput,
             "umeyama: source, target and weights differ in length",
+        );
+    }
+    let finite = |points: &[Vector3<f64>]| points.iter().all(|p| p.iter().all(|x| x.is_finite()));
+    if !finite(source) || !finite(target) || !weights.iter().all(|w| w.is_finite()) {
+        return fail(
+            ErrorKind::InvalidInput,
+            "source, target, weights: expected finite values",
         );
     }
     if weights.iter().any(|&w| w < 0.0) {
@@ -139,5 +146,17 @@ mod tests {
         assert_eq!(err.kind, ErrorKind::Degenerate);
         let err = umeyama(&cloud(), &cloud(), &[1.0, 1.0, 0.0, 0.0, 0.0], false).unwrap_err();
         assert_eq!(err.kind, ErrorKind::Degenerate);
+    }
+
+    /// A NaN weight or point is `InvalidInput`, not a NaN result returned as `Ok`.
+    #[test]
+    fn non_finite_input_is_rejected() {
+        let nan_weights = [1.0, f64::NAN, 1.0, 1.0, 1.0];
+        let err = umeyama(&cloud(), &cloud(), &nan_weights, false).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
+        let mut target = cloud();
+        target[2].x = f64::INFINITY;
+        let err = umeyama(&cloud(), &target, &[1.0; 5], true).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
     }
 }

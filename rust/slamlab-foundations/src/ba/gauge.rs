@@ -9,7 +9,7 @@
 //! complement of `J_cᵀ M` (`J_c` maps a step to the change in centre and orientation). A pose
 //! that sees six directions is fixed outright.
 
-use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, OMatrix, SMatrix, Vector3};
+use nalgebra::{DMatrix, DVector, Dyn, Matrix3, Matrix6, OMatrix, SMatrix, SVD, Vector3};
 
 use super::{Gauge, POSE_DIM};
 use crate::so3;
@@ -24,6 +24,29 @@ pub const GAUGE_TOLERANCE: f64 = 1e-9;
 /// Two scores within this relative margin are a tie, broken by the lower index: every core
 /// then chooses alike despite last-bit rounding between their SVDs.
 pub const TIE_RTOL: f64 = 1e-12;
+
+/// Golub-Kahan sweeps allowed in a dynamic SVD before it is abandoned. nalgebra's own `svd`
+/// has no cap and never returns on a non-finite matrix; LAPACK and Eigen stop.
+const SVD_MAX_ITERATIONS: usize = 10_000;
+
+/// A dynamic matrix's SVD, singular values largest first, or `None` for a matrix with a
+/// non-finite entry or one that does not converge within [`SVD_MAX_ITERATIONS`].
+///
+/// # Arguments
+///
+/// * `matrix` - The matrix (not empty).
+/// * `compute_u` - Whether to compute `U`.
+/// * `compute_v` - Whether to compute `Vᵀ`.
+///
+/// # Returns
+///
+/// The decomposition.
+fn svd(matrix: DMatrix<f64>, compute_u: bool, compute_v: bool) -> Option<SVD<f64, Dyn, Dyn>> {
+    if !matrix.iter().all(|x| x.is_finite()) {
+        return None;
+    }
+    matrix.try_svd(compute_u, compute_v, f64::EPSILON * 5.0, SVD_MAX_ITERATIONS)
+}
 
 /// Scene-normalised coordinates for the gauge: `X' = (X - origin) / scale`.
 ///
@@ -162,7 +185,9 @@ fn rows(anchors: &Anchors, centres: &[Vector3<f64>]) -> DMatrix<f64> {
 /// An orthonormal basis of the null space of a rank-`rank` matrix's rows.
 ///
 /// nalgebra's SVD is thin, so a wide matrix is padded with zero rows (which change neither
-/// its row space nor its right singular vectors) to get every right singular vector.
+/// its row space nor its right singular vectors) to get every right singular vector. A
+/// matrix the SVD fails on (a non-finite entry) gives a NaN basis, which makes every cost it
+/// touches non-finite, so the step is rejected rather than taken.
 ///
 /// # Arguments
 ///
@@ -182,11 +207,14 @@ fn null_space(matrix: &DMatrix<f64>, rank: usize) -> DMatrix<f64> {
     } else {
         matrix.clone()
     };
-    let v_t = padded.svd(false, true).v_t.expect("V^T was requested");
-    v_t.rows(rank, cols - rank).transpose()
+    match svd(padded, false, true).and_then(|d| d.v_t) {
+        Some(v_t) => v_t.rows(rank, cols - rank).transpose(),
+        None => DMatrix::from_element(cols, cols - rank, f64::NAN),
+    }
 }
 
-/// A matrix's singular values, largest first (none for an empty matrix).
+/// A matrix's singular values, largest first (none for an empty matrix; NaN where the SVD
+/// fails, which no rank test counts).
 ///
 /// # Arguments
 ///
@@ -199,7 +227,10 @@ fn singular_values(matrix: &DMatrix<f64>) -> DVector<f64> {
     if matrix.is_empty() {
         return DVector::zeros(0);
     }
-    matrix.clone().svd(false, false).singular_values
+    svd(matrix.clone(), false, false).map_or_else(
+        || DVector::from_element(matrix.nrows().min(matrix.ncols()), f64::NAN),
+        |d| d.singular_values,
+    )
 }
 
 /// The number of singular values above [`GAUGE_TOLERANCE`].
@@ -294,9 +325,11 @@ fn first_largest(values: &DVector<f64>) -> usize {
 ///
 /// # Returns
 ///
-/// The basis vectors.
+/// The basis vectors (NaN where the SVD fails).
 fn canonical_span(matrix: &DMatrix<f64>, rank: usize) -> Vec<DVector<f64>> {
-    let u = matrix.clone().svd(true, false).u.expect("U was requested");
+    let Some(u) = svd(matrix.clone(), true, false).and_then(|d| d.u) else {
+        return vec![DVector::from_element(matrix.nrows(), f64::NAN); rank];
+    };
     let u = u.columns(0, rank);
     let mut projector = u * u.transpose();
     let mut out = Vec::with_capacity(rank);
@@ -555,6 +588,24 @@ mod tests {
         assert_eq!(n.shape(), (4, 2));
         assert!((&m * &n).amax() < 1e-14);
         assert!((n.transpose() * &n - DMatrix::identity(2, 2)).amax() < 1e-14);
+    }
+
+    /// A non-finite matrix fails the SVD observably (NaN), instead of looping forever as
+    /// nalgebra's uncapped `svd` does (panel L2).
+    #[test]
+    fn non_finite_matrices_do_not_hang() {
+        for bad in [f64::NAN, f64::INFINITY] {
+            let mut m = DMatrix::from_element(7, 7, 1.0);
+            m[(3, 2)] = bad;
+            assert!(null_space(&m, 3).iter().all(|x| x.is_nan()));
+            assert!(singular_values(&m).iter().all(|x| x.is_nan()));
+            assert_eq!(rank_of(&singular_values(&m)), 0);
+            assert!(
+                canonical_span(&m, 2)
+                    .iter()
+                    .all(|v| v.iter().all(|x| x.is_nan()))
+            );
+        }
     }
 
     /// The complement of two normals is orthonormal and orthogonal to them.

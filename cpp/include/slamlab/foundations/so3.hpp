@@ -38,7 +38,7 @@ inline constexpr double kInverseJacobianLimit = (2.0 * std::numbers::pi) - 1e-6;
 /// @brief Map a skew-symmetric matrix back to its vector; the inverse of `hat`.
 /// @param skew A skew-symmetric matrix (within `kSkewTolerance`).
 /// @return The vector `ω` with `hat(ω) == skew`, or `InvalidInput` if `skew` is not
-///         skew-symmetric.
+///         skew-symmetric (or has a non-finite entry).
 [[nodiscard]] Result<Eigen::Vector3d> vee(const Eigen::Matrix3d& skew);
 
 /// @brief Map a rotation vector to a rotation matrix (Rodrigues' formula).

@@ -176,8 +176,11 @@ fn block_upper(diagonal: &Matrix3<f64>, upper: &Matrix3<f64>) -> Matrix6<f64> {
 ///
 /// # Errors
 ///
-/// `InvalidInput` naming what failed: the last row, or the rotation block.
+/// `InvalidInput` naming what failed: a non-finite entry, the last row, or the rotation block.
 pub fn check_transform(transform: &Matrix4<f64>) -> Result<()> {
+    if !transform.iter().all(|x| x.is_finite()) {
+        return fail(ErrorKind::InvalidInput, "transform: expected finite values");
+    }
     let bottom = RowVector4::new(0.0, 0.0, 0.0, 1.0);
     if (transform.row(3) - bottom).amax() > BOTTOM_ROW_TOLERANCE {
         return fail(
@@ -420,6 +423,9 @@ mod tests {
         let mut skewed = Matrix4::identity();
         skewed[(3, 0)] = 1e-3;
         assert_eq!(log(&skewed).unwrap_err().kind, ErrorKind::InvalidInput);
+        let mut nan = Matrix4::identity();
+        nan[(1, 3)] = f64::NAN;
+        assert_eq!(inverse(&nan).unwrap_err().kind, ErrorKind::InvalidInput);
         let full_turn = Vector6::new(0.0, 0.0, 0.0, 7.0, 0.0, 0.0);
         assert_eq!(
             left_jacobian_inverse(&full_turn).unwrap_err().kind,

@@ -114,6 +114,9 @@ Eigen::Matrix3d hat(const Eigen::Vector3d& omega) noexcept {
 }
 
 Result<Eigen::Vector3d> vee(const Eigen::Matrix3d& skew) {
+  if (!skew.allFinite()) {
+    return fail(ErrorKind::kInvalidInput, "skew: expected finite values");
+  }
   const double scale = std::max(1.0, skew.cwiseAbs().maxCoeff());
   if ((skew + skew.transpose()).cwiseAbs().maxCoeff() > kSkewTolerance * scale) {
     return fail(ErrorKind::kInvalidInput, "skew: not skew-symmetric within 1e-09");
@@ -129,6 +132,9 @@ Eigen::Matrix3d exp(const Eigen::Vector3d& omega) noexcept {
 }
 
 Result<void> check_rotation(const Eigen::Matrix3d& rotation) {
+  if (!rotation.allFinite()) {
+    return fail(ErrorKind::kInvalidInput, "rotation: expected finite values");
+  }
   const Eigen::Matrix3d gram = rotation.transpose() * rotation;
   if ((gram - Eigen::Matrix3d::Identity()).cwiseAbs().maxCoeff() > kRotationTolerance) {
     return fail(ErrorKind::kInvalidInput,
@@ -175,6 +181,9 @@ Result<Eigen::Matrix3d> left_jacobian_inverse(const Eigen::Vector3d& omega) {
 }
 
 Result<Eigen::Matrix3d> from_quaternion(const Eigen::Vector4d& quaternion) {
+  if (!quaternion.allFinite()) {
+    return fail(ErrorKind::kInvalidInput, "quaternion: expected finite values");
+  }
   const double norm = quaternion.norm();
   if (std::abs(norm - 1.0) > kQuaternionTolerance) {
     return fail(ErrorKind::kInvalidInput, "quaternion: norm not within 1e-06 of 1");
