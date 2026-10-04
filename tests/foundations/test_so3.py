@@ -130,7 +130,7 @@ def test_quaternion_double_cover() -> None:
     np.testing.assert_allclose(so3.from_quaternion(q), so3.from_quaternion(-q), rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("backend", ["cpp", "rust"])
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
 def test_core_errors_reach_python_as_slamlab_errors(backend: str) -> None:
     """A core error crosses the binding as the slamlab exception of its kind."""
     compiled = backends.function(

@@ -25,11 +25,15 @@ from numpy.typing import NDArray
 BACKENDS: tuple[str, ...] = ("python", "cpp", "rust")
 """Every backend name, the Python reference first."""
 
-LOCKSTEP_BACKENDS: frozenset[str] = frozenset({"python", "cpp"})
-"""Backends that implement every function of every compiled module.
+COMPILED_BACKENDS: tuple[str, ...] = BACKENDS[1:]
+"""Every compiled backend: each implements in full every module it exposes."""
 
-C++ is built in lock-step with the Python reference. Rust implements a curated subset
-(design doc, "Languages") and never gates a merge, so a Rust module may lack functions.
+LOCKSTEP_BACKENDS: frozenset[str] = frozenset({"python", "cpp"})
+"""Backends that implement every compiled module.
+
+C++ is built in lock-step with the Python reference. Rust implements a chosen set of modules
+(design doc, "Languages"), each in full, so a Rust backend may lack a module but never a
+function of a module it has.
 """
 
 _EXTENSIONS: dict[str, str] = {"cpp": "slamlab._cpp", "rust": "slamlab_rs"}
@@ -174,8 +178,8 @@ def function(backend: str, module_name: str, name: str) -> Callable[..., Any]:
     BackendNotBuiltError
         If the backend's extension is not installed.
     NotImplementedError
-        If the backend does not implement `module_name`, or implements it without `name`
-        (Rust implements a curated subset).
+        If the backend does not implement `module_name` (Rust implements a chosen set of
+        modules), or implements it without `name` (which the tests make a failure).
     """
     found = getattr(implementation(backend, module_name), name, None)
     if found is None or isinstance(found, ModuleType) or not callable(found):

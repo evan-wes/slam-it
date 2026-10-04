@@ -72,7 +72,7 @@ The ladder spans compute budgets. Every rung stands on rung 0.
 |---|---|
 | **Python** | The readable reference implementation of every algorithm; orchestration, evaluation, and the learned rungs (PyTorch) |
 | **C++** | The performance core: rung 0, the edge rung, the edge budgets, and dense-BA kernels if profiling calls for them. Showing C++ is a goal in its own right. |
-| **Rust** | A chosen subset: rung 0 and the edge VO. Kept parallel and off the critical path, so it never blocks a rung. |
+| **Rust** | A chosen subset: rung 0 and the edge VO. Kept parallel and off the critical path: a rung never waits for its Rust modules, but a Rust module, once it exists, keeps pace with its reference. |
 
 **Parity.** Shared fixtures (fixed inputs, expected outputs) live in `tests/fixtures/`. Every C++
 and Rust implementation is checked against the Python reference. All three are benchmarked under
@@ -245,11 +245,13 @@ languages fail the same way.
   tested natively in each core, and in parity through the concrete problems that use it.
 
 **Languages per module.** Python and C++ are lock-step: C++ implements every function in a
-compiled module's `Implementation` Protocol. Rust implements a curated subset and never gates
-a merge. The tests enforce both rules. Each module Rust implements, it implements in full, and
-its tests run on all three backends. Once PR 6 completes rung 0 in Rust, the tests will
+compiled module's `Implementation` Protocol. Rust implements a chosen set of modules, each in
+full: every function of a module it has, with that module's tests running on all three
+backends, so a Rust module that falls behind its Python reference fails layer 1 like a C++ one.
+A module Rust does not have yet holds nothing back. The tests enforce these rules
+(`test_backends`, `conftest.require_function`). Once PR 6 completes rung 0 in Rust, they will
 require every rung-0 module of Rust as they do of C++. Later rungs (the edge VO) return to a
-Rust subset.
+chosen set.
 
 ## Package layout
 

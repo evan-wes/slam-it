@@ -53,7 +53,7 @@ def test_module_outside_slamlab_is_an_error() -> None:
         backends.implementation("cpp", "numpy.linalg")
 
 
-@pytest.mark.parametrize("name", ["cpp", "rust"])
+@pytest.mark.parametrize("name", backends.COMPILED_BACKENDS)
 @pytest.mark.parametrize(
     "module_name",
     ["slamlab.foundations.no_such_module", "slamlab.foundations.so3.hat"],
@@ -182,16 +182,15 @@ def _public_callables(module: ModuleType) -> set[str]:
     }
 
 
-@pytest.mark.parametrize("name", ["cpp", "rust"])
+@pytest.mark.parametrize("name", backends.COMPILED_BACKENDS)
 def test_every_compiled_module_matches_its_protocol(name: str) -> None:
     """Every compiled submodule mirrors a slamlab module and matches its Implementation.
 
     For each submodule of the extension that holds functions, the slamlab module at the same
     path must exist and define an ``Implementation`` Protocol; every compiled function must
-    be a Protocol member with the Protocol's parameter names. A lock-step backend (C++)
-    must provide every member of every Protocol it implements a module for; Rust implements
-    a curated subset, so it may provide fewer. This keeps bindings and their Python contract
-    from drifting.
+    be a Protocol member with the Protocol's parameter names, and every member of the Protocol
+    must be there: a backend implements each module it has in full (Rust has a chosen set of
+    modules, C++ all of them). This keeps bindings and their Python contract from drifting.
     """
     root_name = _EXTENSION_ROOTS[require_backend(name)]
     extension = importlib.import_module(root_name)
@@ -216,8 +215,7 @@ def test_every_compiled_module_matches_its_protocol(name: str) -> None:
         members = {m for m in vars(protocol) if not m.startswith("_")}
         provided = _public_callables(compiled)
         assert provided <= members, f"{name}:{path} has functions outside the Protocol"
-        if name in backends.LOCKSTEP_BACKENDS:
-            assert provided == members, f"{name}:{path} lacks {sorted(members - provided)}"
+        assert provided == members, f"{name}:{path} lacks {sorted(members - provided)}"
         for member in provided:
             expected = [
                 p for p in inspect.signature(getattr(protocol, member)).parameters if p != "self"
@@ -226,7 +224,7 @@ def test_every_compiled_module_matches_its_protocol(name: str) -> None:
             assert got == expected, f"{name}:{path}.{member} parameters {got} != {expected}"
 
 
-@pytest.mark.parametrize("name", ["cpp", "rust"])
+@pytest.mark.parametrize("name", backends.COMPILED_BACKENDS)
 @pytest.mark.parametrize(
     "bad",
     [

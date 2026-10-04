@@ -447,7 +447,7 @@ def test_degenerate_data_is_dropped_and_counted() -> None:
     np.testing.assert_array_equal(result.poses[4], poses[4])
 
 
-@pytest.mark.parametrize("backend", ["cpp", "rust"])
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
 def test_backend_parity(backend: str) -> None:
     """A compiled backend matches the reference on every kind of block.
 
@@ -531,7 +531,7 @@ def test_invalid_problems_are_rejected(change: dict[str, object], message: str) 
         ba.BAProblem.create(**args)  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("backend", ["cpp", "rust"])
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
 def test_core_checks_indices_too(backend: str) -> None:
     """A compiled core rejects an out-of-range index even when Python's checks are bypassed."""
     require_backend(backend)
@@ -543,7 +543,7 @@ def test_core_checks_indices_too(backend: str) -> None:
         backends.function(backend, "slamlab.foundations.ba", "solve")(**arguments)
 
 
-@pytest.mark.parametrize("backend", ["cpp", "rust"])
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
 @pytest.mark.parametrize(
     ("change", "message"),
     [
@@ -596,7 +596,7 @@ def test_a_checked_problem_cannot_change() -> None:
         anchored.pt_idx[0] = 99
 
 
-@pytest.mark.parametrize("backend", ["cpp", "rust"])
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
 def test_enum_tables_match_the_compiled_side(backend: str) -> None:
     """Every enum crossing the boundary has the same names in the same code order."""
     require_backend(backend)
