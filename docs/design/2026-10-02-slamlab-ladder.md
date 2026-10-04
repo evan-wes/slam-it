@@ -1,6 +1,6 @@
 # slamlab: a learning ladder for visual SLAM
 
-Status, 2026-10-04: milestone 1 is under way. The scaffold (package-per-rung layout in three
+Status, 2026-10-04: milestone 1 is complete. The scaffold (package-per-rung layout in three
 languages, conda environment, CI, two-layer review process) is merged. PR 1, the BA spine,
 added rung 0's geometry and estimation in Python and C++: SO(3), SE(3), Umeyama alignment,
 camera models, nonlinear least squares and bundle adjustment. PR 2 adds two-view geometry: triangulation, LO-MSAC RANSAC, the 8-point essential and
@@ -13,7 +13,8 @@ sequences. Slice C brings the Rust core to parity in two PRs. PR 5 adds rung 0's
 optimisation: SO(3), SE(3), the camera models, Umeyama alignment, PCG32, the least-squares
 solver and bundle adjustment, with native C++ and Rust benchmarks on a BAL problem, where the
 two take the same time. PR 6 adds the estimation core: RANSAC, triangulation, the two-view and
-absolute-pose solvers. After it, Python, C++ and Rust have the same capabilities.
+absolute-pose solvers. Python, C++ and Rust now have the same capabilities, and every module's
+tests run on all three.
 
 ## Purpose
 
@@ -646,8 +647,8 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
     planar and non-planar points in one solver, the better LO refit if the rung wants one.
 - **Deferred from PR 4's review panel**
   ([report](../reviews/2026-10-03-feature-absolute-pose.md)):
-  - **One form for the refinement callback (A6).** `refine_consensus`'s callback takes an
-    inlier mask in Python and inlier indices in C++; pick one when Rust gains RANSAC (PR 6).
+  - Closed by PR 6: **one form for the refinement callback (A6).** `refine_consensus`'s
+    callback takes the consensus's inlier indices, ascending, in all three languages.
   - **Depth maps in the library (A7).** `eval.tum` associates depth maps, but decoding the
     16-bit PNGs happens in the demo, with OpenCV, which `slamlab` may not import. Milestone 2's
     RGB-D mode needs an in-library loader: choose its PNG dependency then.

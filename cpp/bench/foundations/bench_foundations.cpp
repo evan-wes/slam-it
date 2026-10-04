@@ -3,12 +3,16 @@
 ///        `rust/slamlab-foundations/benches/foundations.rs`.
 ///
 /// Small operations (SO(3), SE(3), a radtan projection) time the per-item cost the binding
-/// batches over; the headline is a whole bundle adjustment on a BAL problem, with the BAL
-/// demo's settings, registered only when `SLAMLAB_BAL` names a decompressed problem file:
+/// batches over. Two robust estimators run on one fixed synthetic scene, built from the same
+/// closed-form expressions as the Rust benches' (no random numbers, so both cores see identical
+/// data): E-RANSAC with Stewénius' 5-point solver and PnP RANSAC with Ding's P3P, each refined.
+/// The headline is a whole bundle adjustment on a BAL problem, with the BAL demo's settings,
+/// registered only when `SLAMLAB_BAL` names a decompressed problem file:
 /// `SLAMLAB_BAL=<problem.txt> build/native/bench/foundations_bench_foundations`.
 #include <benchmark/benchmark.h>
 
 #include <Eigen/Core>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -16,6 +20,11 @@
 #include "bal_reader.hpp"
 #include "slamlab/foundations/ba.hpp"
 #include "slamlab/foundations/camera.hpp"
+#include "slamlab/foundations/correspondences.hpp"
+#include "slamlab/foundations/epipolar.hpp"
+#include "slamlab/foundations/p3p.hpp"
+#include "slamlab/foundations/pnp.hpp"
+#include "slamlab/foundations/ransac.hpp"
 #include "slamlab/foundations/se3.hpp"
 #include "slamlab/foundations/so3.hpp"
 
@@ -64,6 +73,99 @@ void project_radtan(benchmark::State& state) {
   }
 }
 
+/// @brief Matches in the RANSAC scene.
+constexpr int kMatches = 500;
+/// @brief The scene's focal length in pixels: the noise and the threshold are set in pixels.
+constexpr double kFocal = 500.0;
+
+/// @brief The RANSAC benchmarks' scene: world points, their bearings in camera 1 (at the
+///        world origin) and camera 2, 30% of camera 2's replaced by outliers, half a pixel of
+///        noise on the rest. The same expressions as `ransac_scene` in the Rust benches.
+struct RansacScene {
+  /// @brief The world points.
+  slamlab::foundations::correspondences::Rows3 points;
+  /// @brief Their bearings in camera 1.
+  slamlab::foundations::correspondences::Rows3 bearings1;
+  /// @brief Their bearings in camera 2, outliers included.
+  slamlab::foundations::correspondences::Rows3 bearings2;
+};
+
+/// @brief Build the RANSAC scene.
+/// @return The scene.
+RansacScene ransac_scene() {
+  foundations::se3::Vector6d xi;
+  xi << 0.6, 0.05, -0.1, 0.03, -0.08, 0.04;
+  const Eigen::Matrix4d pose = foundations::se3::exp(xi);
+  RansacScene out{.points = {kMatches, 3}, .bearings1 = {kMatches, 3}, .bearings2 = {kMatches, 3}};
+  for (int i = 0; i < kMatches; ++i) {
+    const double t = i;
+    const Eigen::Vector3d point(2.0 * std::sin((0.37 * t) + 0.1), 1.5 * std::cos(0.53 * t),
+                                5.0 + (2.0 * std::sin((0.11 * t) + 0.3)));
+    const Eigen::Vector3d seen = (pose.topLeftCorner<3, 3>() * point) + pose.topRightCorner<3, 1>();
+    Eigen::Vector3d image((seen.x() / seen.z()) + (0.5 / kFocal * std::sin(1.3 * t)),
+                          (seen.y() / seen.z()) + (0.5 / kFocal * std::cos(1.7 * t)), 1.0);
+    if (i % 10 < 3) {
+      image = Eigen::Vector3d(0.4 * std::sin(2.9 * t), 0.3 * std::cos(3.1 * t), 1.0);
+    }
+    out.points.row(i) = point.transpose();
+    out.bearings1.row(i) = point.normalized().transpose();
+    out.bearings2.row(i) = image.normalized().transpose();
+  }
+  return out;
+}
+
+/// @brief The RANSAC benchmarks' settings: a one-pixel threshold, a fixed seed.
+/// @return The options.
+slamlab::foundations::ransac::Options ransac_options() {
+  slamlab::foundations::ransac::Options options;
+  options.threshold = 1.0 / kFocal;
+  options.seed = 7;
+  return options;
+}
+
+/// @brief E-RANSAC (Stewénius' 5-point solver) with the Sampson refinement.
+/// @param state The benchmark state.
+void essential_ransac(benchmark::State& state) {
+  const RansacScene scene = ransac_scene();
+  const auto options = ransac_options();
+  for (const auto _ : state) {
+    benchmark::DoNotOptimize(foundations::epipolar::essential_ransac(
+        scene.bearings1, scene.bearings2, options, foundations::epipolar::MinimalSolver::kStewenius,
+        true));
+  }
+}
+
+/// @brief PnP RANSAC (Ding's P3P, EPnP refits) with the pose refinement.
+/// @param state The benchmark state.
+void pnp_ransac(benchmark::State& state) {
+  const RansacScene scene = ransac_scene();
+  const auto options = ransac_options();
+  for (const auto _ : state) {
+    benchmark::DoNotOptimize(foundations::pnp::pnp_ransac(scene.points, scene.bearings2, options,
+                                                          foundations::p3p::Solver::kDing, true));
+  }
+}
+
+/// @brief Print each RANSAC's inliers and iterations once, so the two cores' runs can be
+///        seen to take the same decisions before their times are compared.
+void report_ransac_decisions() {
+  const RansacScene scene = ransac_scene();
+  const auto options = ransac_options();
+  const auto essential = foundations::epipolar::essential_ransac(
+      scene.bearings1, scene.bearings2, options, foundations::epipolar::MinimalSolver::kStewenius,
+      true);
+  const auto pose = foundations::pnp::pnp_ransac(scene.points, scene.bearings2, options,
+                                                 foundations::p3p::Solver::kDing, true);
+  if (essential && pose) {
+    std::cerr << "essential_ransac: " << essential->summary.run.inlier_count << " inliers, "
+              << essential->summary.run.iterations << " iterations\n"
+              << "pnp_ransac: " << pose->summary.run.inlier_count << " inliers, "
+              << pose->summary.run.iterations << " iterations\n";
+  }
+}
+
+BENCHMARK(essential_ransac)->Unit(benchmark::kMillisecond);
+BENCHMARK(pnp_ransac)->Unit(benchmark::kMillisecond);
 BENCHMARK(so3_exp);
 BENCHMARK(so3_log);
 BENCHMARK(se3_log);
@@ -73,6 +175,7 @@ BENCHMARK(project_radtan);
 
 int main(int argc, char** argv) {
   benchmark::Initialize(&argc, argv);
+  report_ransac_decisions();
   // NOLINTNEXTLINE(concurrency-mt-unsafe): read once, before any benchmark thread exists
   const char* bal = std::getenv("SLAMLAB_BAL");
   if (bal == nullptr) {

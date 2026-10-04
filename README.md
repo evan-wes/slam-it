@@ -5,9 +5,9 @@ implemented in Python, C++ and Rust and measured across compute budgets.
 
 *Working name -- to be renamed before the repository goes public.*
 
-Status: milestone 1 (rung 0, the foundations) is nearly complete:
-- Python and C++ have the geometry, bundle adjustment, two-view geometry and absolute pose.
-- Rust has the geometry and bundle adjustment.
+Status: milestone 1 (rung 0, the foundations) is complete. Python, C++ and Rust each have
+the geometry, bundle adjustment, two-view geometry and absolute pose, and every module's tests
+run on all three.
 
 The design, the ladder and the milestones are in
 [`docs/design/2026-10-02-slamlab-ladder.md`](docs/design/2026-10-02-slamlab-ladder.md), and

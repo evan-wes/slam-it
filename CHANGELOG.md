@@ -4,6 +4,68 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.3.0.0] - 2026-10-04
+
+Milestone 1 is complete: Python, C++ and Rust have the same capabilities. The Rust core
+gains the estimation half of rung 0, and Rust becomes a lock-step backend. Porting the
+refinement found a crash in the C++ core, fixed here. Four deferred panel items are closed.
+
+### Added
+
+- **Correspondences and triangulation in Rust** (`slamlab_foundations::correspondences`,
+  `triangulation`): the shared checks and normalisations, two-view triangulation (niter2)
+  and the n-view DLT.
+- **RANSAC in Rust** (`slamlab_foundations::ransac`): LO-MSAC over an `Estimator` trait,
+  drawing the same PCG32 samples as Python and C++, and the refined run that keeps a
+  refinement only if it lowers the MSAC cost.
+- **Five-point, epipolar and homography in Rust:** Nistér's and Stewénius' solvers, the
+  normalised 8-point E and F, Sampson errors, E's decomposition and its refinement on the
+  essential manifold, the normalised DLT, Malis and Vargas' decomposition of H, and E-, F-
+  and H-RANSAC.
+- **Two-view initialisation in Rust** (`slamlab_foundations::twoview`): E and H by RANSAC,
+  GRIC model selection and the choice of motion by triangulation.
+- **P3P and PnP in Rust:** Lambda Twist and Ding et al.'s P3P, EPnP, the pose refinement on
+  SE(3) and PnP RANSAC.
+- **The `slamlab_rs` bindings** for every module above, with a shared RANSAC crossing that
+  reads options through serde.
+- **RANSAC benchmarks** in both native suites: E-RANSAC and PnP RANSAC on one fixed
+  synthetic scene. Both cores keep the same inliers in the same number of iterations;
+  C++ takes 2.29 and 2.40 ms, Rust 2.69 and 2.25 ms.
+- **`linalg::least_squares`** (Rust): the minimum-norm SVD solve with an explicit cutoff,
+  so each caller states whose convention (numpy's or Eigen's) it follows.
+
+### Changed
+
+- **Rust is a lock-step backend.** Every module's tests run on Python, C++ and Rust, and a
+  compiled backend missing a module or a function fails them; the skip for a module Rust
+  lacked is gone. The demos run Rust by default, and the TUM two-view and absolute-pose
+  surveys print the same results on C++ and Rust.
+- **The refinement callback takes the inlier indices in every language** (panel A6 on
+  PR 4); Python passed a mask.
+- **BA's solve has its own module** (`ba/solve.rs`, `ba/solve.cpp`), as Python has
+  `ba/solve.py`, so the layer check holds it to the top of the package (panel A13, A24).
+  Rust callers name `ba::solve::solve`.
+- **Nesting summaries implement `solve::Summary` in Rust** by delegation: `ba::Summary` and
+  `ransac::RefinedSummary` (panel A5).
+- **`docs/notes/rust-port.md`** covers the estimation core: the port's choices, the RANSAC
+  benchmarks and the TUM results, and one code-size table for all of rung 0, counted by one
+  stated rule.
+
+### Fixed
+
+- **C++ `refine_essential` no longer segfaults** on a match at both epipoles, whose Sampson
+  distance is 0 / 0. `epipolar::refine` and `pnp::refine` return the solve's error and the
+  public refinements raise it as `InvalidInputError`, as Python and Rust do.
+- **A failed gauge SVD is `DegenerateError` in Python** too, not numpy's `LinAlgError`
+  (panel A20).
+
+### Tests
+
+- **An epipole match raises `InvalidInputError` on every backend** (the crash above).
+- **The layer check's facade cases** follow the move: the facade including a package module
+  fails as `problem`, and `super::solve` from below fails in Rust.
+- **Native Rust tests** for every new module, mirroring the native C++ ones.
+
 ## [0.2.4.0] - 2026-10-04
 
 The Rust core reaches rung 0's geometry and optimisation, at parity with C++. This is the
