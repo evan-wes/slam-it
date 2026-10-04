@@ -8,6 +8,7 @@ mod camera;
 mod nls_crossing;
 mod se3;
 mod so3;
+mod triangulation;
 
 /// Registers the foundations submodules.
 ///
@@ -21,5 +22,6 @@ pub fn foundations(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_wrapped(pyo3::wrap_pymodule!(camera::camera))?;
     m.add_wrapped(pyo3::wrap_pymodule!(se3::se3))?;
     m.add_wrapped(pyo3::wrap_pymodule!(so3::so3))?;
+    m.add_wrapped(pyo3::wrap_pymodule!(triangulation::triangulation))?;
     Ok(())
 }

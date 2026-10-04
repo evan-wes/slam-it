@@ -9,10 +9,11 @@
 //! complement of `J_cᵀ M` (`J_c` maps a step to the change in centre and orientation). A pose
 //! that sees six directions is fixed outright.
 
-use nalgebra::{DMatrix, DVector, Dyn, Matrix3, Matrix6, OMatrix, SMatrix, SVD, Vector3};
+use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, OMatrix, SMatrix, Vector3};
 
 use super::{Gauge, POSE_DIM};
 use crate::error::{ErrorKind, Result, fail};
+use crate::linalg::svd;
 use crate::so3;
 
 /// The similarity's directions: translation (3), rotation (3), scale (1).
@@ -25,29 +26,6 @@ pub const GAUGE_TOLERANCE: f64 = 1e-9;
 /// Two scores within this relative margin are a tie, broken by the lower index: every core
 /// then chooses alike despite last-bit rounding between their SVDs.
 pub const TIE_RTOL: f64 = 1e-12;
-
-/// Golub-Kahan sweeps allowed in a dynamic SVD before it is abandoned. nalgebra's own `svd`
-/// has no cap and never returns on a non-finite matrix; LAPACK and Eigen stop.
-const SVD_MAX_ITERATIONS: usize = 10_000;
-
-/// A dynamic matrix's SVD, singular values largest first, or `None` for a matrix with a
-/// non-finite entry or one that does not converge within [`SVD_MAX_ITERATIONS`].
-///
-/// # Arguments
-///
-/// * `matrix` - The matrix (not empty).
-/// * `compute_u` - Whether to compute `U`.
-/// * `compute_v` - Whether to compute `Vᵀ`.
-///
-/// # Returns
-///
-/// The decomposition.
-fn svd(matrix: DMatrix<f64>, compute_u: bool, compute_v: bool) -> Option<SVD<f64, Dyn, Dyn>> {
-    if !matrix.iter().all(|x| x.is_finite()) {
-        return None;
-    }
-    matrix.try_svd(compute_u, compute_v, f64::EPSILON * 5.0, SVD_MAX_ITERATIONS)
-}
 
 /// Scene-normalised coordinates for the gauge: `X' = (X - origin) / scale`.
 ///

@@ -8,9 +8,12 @@
 pub mod alignment;
 pub mod ba;
 pub mod camera;
+pub mod correspondences;
 pub mod error;
+pub mod linalg;
 pub mod nls;
 pub mod rng;
 pub mod se3;
 pub mod so3;
 pub mod solve;
+pub mod triangulation;

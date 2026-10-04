@@ -8,7 +8,8 @@
 use nalgebra::SMatrix;
 use numpy::ndarray::{ArrayD, IxDyn};
 use numpy::{
-    Element, IntoPyArray, PyArrayDyn, PyReadonlyArray1, PyReadonlyArrayDyn, PyUntypedArrayMethods,
+    Element, IntoPyArray, PyArrayDyn, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArrayDyn,
+    PyUntypedArrayMethods,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -228,6 +229,52 @@ pub fn decode<E: Copy>(all: &[E], code: i64, what: &str) -> PyResult<E> {
 ///
 /// `ValueError` if the array is not C-contiguous.
 pub fn slice<'a, T: Element>(array: &'a PyReadonlyArray1<'_, T>) -> PyResult<&'a [T]> {
+    array
+        .as_slice()
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+/// Reads one item, an array of exactly the item's shape (no batch dimension).
+///
+/// # Arguments
+///
+/// * `array` - A C-contiguous float64 array of shape `A::shape()`.
+///
+/// # Returns
+///
+/// The item.
+///
+/// # Errors
+///
+/// `ValueError` for a wrong shape or a non-contiguous array.
+pub fn one<A: Item>(array: &ArrayIn<'_>) -> PyResult<A> {
+    if array.shape() != A::shape().as_slice() {
+        return Err(PyValueError::new_err(format!(
+            "expected shape {:?}, got {:?}",
+            A::shape(),
+            array.shape()
+        )));
+    }
+    let values = array
+        .as_slice()
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok(A::read(values))
+}
+
+/// Returns a two-dimensional array's values as a contiguous row-major slice.
+///
+/// # Arguments
+///
+/// * `array` - The array.
+///
+/// # Returns
+///
+/// The values.
+///
+/// # Errors
+///
+/// `ValueError` if the array is not C-contiguous.
+pub fn slice2<'a, T: Element>(array: &'a PyReadonlyArray2<'_, T>) -> PyResult<&'a [T]> {
     array
         .as_slice()
         .map_err(|e| PyValueError::new_err(e.to_string()))

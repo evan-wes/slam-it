@@ -604,10 +604,6 @@ impl<'a> Bundle<'a> {
     /// # Returns
     ///
     /// The block, or `None` if its point is behind or invalid.
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "the model's notation: m observation, c camera, p point, g group"
-    )]
     fn reprojection_block(
         &self,
         state: &BundleState,
@@ -662,10 +658,6 @@ impl<'a> Bundle<'a> {
     /// # Returns
     ///
     /// The block, or `None` if its point is behind or invalid.
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "the model's notation: m observation, c camera, p point, g group"
-    )]
     fn depth_block(
         &self,
         state: &BundleState,
