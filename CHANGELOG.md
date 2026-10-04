@@ -49,9 +49,11 @@ milestone 1; PR 6 adds the estimation core. Two deferred panel items are closed.
   `require_function` enforce it for Rust as for C++, and `backends.COMPILED_BACKENDS`
   replaces the hand-written lists (panel A1, A6).
 - **Enum codes leave the Rust binding by their position in `ALL`,** the list that names and
-  decodes them (panel A3).
-- **`ba::Problem::with_defaults`** fills a problem's optional arrays as `BAProblem.create`
-  does.
+  decodes them, and fail loudly for a value missing from it; the Python side decodes every
+  code through `backends.decode_name`, which rejects a code outside its table (panel A3,
+  A12).
+- **`ba::Problem::with_defaults`,** in both cores, fills a problem's optional arrays as
+  `BAProblem.create` does; the native BAL readers use it (panel A11).
 
 ### Fixed
 
@@ -60,6 +62,8 @@ milestone 1; PR 6 adds the estimation core. Two deferred panel items are closed.
   it, as the reference does.
 - **A non-finite matrix no longer hangs the gauge's SVD** (panel L2). nalgebra's general SVD
   has no iteration cap; one capped, finiteness-checked helper replaces it.
+- **A failed SVD while planning the gauge is an error** (`Degenerate`), not a free similarity
+  read as "nothing pins anything" (panel L12, Rust).
 - **The native cores reject non-finite input** in the rotation, skew, transform and
   quaternion checks and in Umeyama, in both languages (panel L5, H2). NaN passes every
   tolerance comparison.
@@ -72,9 +76,11 @@ milestone 1; PR 6 adds the estimation core. Two deferred panel items are closed.
 - **Layer 1 builds and lints the benchmarks,** and holds `cpp/bench` to the ladder like the
   rest of the code.
 - **`check_layers.py` holds Rust's modules inside a rung to the internal contracts,** reading
-  their `crate::` and `super::` paths, as it does C++'s includes (panel A2).
-- **The native BAL readers are tested against the Python reader** through a shared fixture,
-  `tests/fixtures/eval/bal.json` (panel A4).
+  their `crate::` and `super::` paths, as it does C++'s includes, and fails on what it cannot
+  follow: glob imports, re-exports in a facade, test code outside the trailing test module
+  (panel A2, A8). It also resolves quoted relative includes to the rung they land in (A9).
+- **The native BAL readers are tested against the Python reader,** every field and default,
+  through a shared fixture, `tests/fixtures/eval/bal.json` (panel A4, A10, L10).
 - **Native Rust tests for bundle adjustment:** a noise-free scene recovered, degenerate
   points dropped, malformed problems rejected, and the Schur reduction (panel H1).
 

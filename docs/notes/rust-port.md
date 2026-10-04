@@ -99,9 +99,11 @@ settings, every backend reaches the same solution (`scripts/demo_bal.py --backen
 
 Our cores run on one thread. COLMAP's Ceres uses every core by default
 (`num_threads = -1`), and ladybug is large enough (63,686 residuals) for it to do so, so
-the fair comparison is its one-thread row: Ceres is about twice as fast. Ceres builds and
-factors the reduced camera system block by block; ours forms it as one dense matrix. That
-is the likely difference, and milestone 4's sparse reduced solver is where it goes. The
+the fair comparison is its one-thread row: Ceres is about twice as fast. Why has not been
+profiled. It is not a dense reduced system against a sparse one: at 50 images or fewer
+COLMAP chooses Ceres's `DENSE_SCHUR`, which forms ladybug's 49-camera reduced system densely
+too. Candidates are Ceres's fixed-size Schur eliminator (`SchurEliminator<2, 3, 9>`), its
+Jacobian evaluation, and its iteration count (the call used here does not report it). The
 ranges are separate runs on a shared machine.
 
 The native benchmarks (Google Benchmark in `cpp/bench/`, criterion in
@@ -162,8 +164,8 @@ small excess.
   cap: on a NaN matrix it never returns, where LAPACK and Eigen stop. Rust's `f64::max`
   drops NaN, where numpy's keeps it, and a NaN gradient could have read as convergence. Both
   were found by the review panel and fixed in both cores. The fixes are one capped SVD helper,
-  NaN-propagating norms, and finiteness checks ahead of every tolerance comparison, since NaN
-  passes all of them.
+  NaN-propagating norms, and finiteness checks on every input ahead of its tolerance
+  comparisons, since NaN passes all of them.
 - **Strictness is cheaper with serde.** `deny_unknown_fields` replaces a hand-written key
   check at every depth, which is why the C++ binding now borrows serde's wording.
 

@@ -246,3 +246,163 @@ Resolution values: `fixed (<commit>)`, `deferred (<where tracked>)`, `waived: <r
 Probe scripts in the session scratchpad (outside the repo): `svdprobe/`, `colmap_threads.py`, `hang.py`.
 
 Sources: [faer-rs](https://github.com/cramt/faer-rs); [faer-cholesky docs](https://docs.rs/crate/faer-cholesky/^0.16.0); [nalgebra issue #1072 (SVD accuracy)](https://github.com/dimforge/nalgebra/issues/1072).
+
+## Run 2 -- 2026-10-04
+
+| | |
+|---|---|
+| **Branch** | `feature/rust-core` |
+| **Range** | `4ad3eb9e54850d978262a4ec1d9d4a9278ed2a07...f80e4896dd6bb2ec507039ed5a719129fe810cc5` (the fixes after run 1) |
+| **Reviewers** | architecture (opus), algorithm (opus) |
+| **How they ran** | registered slamlab-* agents |
+| **Layer 1** | all checks passed (`scripts/check.sh`): 1692 pytest passed, 20 skipped; 18 ctest; cargo clean |
+
+### Findings and resolutions
+
+| ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|---|
+| L10 | should-fix | algorithm | `cpp/tests/foundations/test_bal_reader.cpp` | The C++ reader test's comparison passes NaN | fix | pending |
+| L11 | should-fix | algorithm | `docs/notes/rust-port.md` | The new explanation of the COLMAP gap contradicts COLMAP's own solver choice (DENSE_SCHUR at 49 images) | fix | pending |
+| L12 | note | algorithm | `ba/gauge.rs` plan | A failed SVD in the gauge plan reads as "nothing pins anything", not a rejected step | fix | pending |
+| L13 | note | algorithm | `slamlab-py` `encode` | -1 decodes as the last enum name in Python (same as A12) | fix (with A12) | pending |
+| L14 | note | algorithm | `docs/notes/rust-port.md` | "finiteness checks ahead of every tolerance comparison" overstates (gauge `classify` uses `amax`) | fix | pending |
+| A8 | should-fix | architecture | `scripts/check_layers.py` | The Rust order check misses glob imports, `pub use` in `mod.rs`, a mid-file `#[cfg(test)]`, and `//` in strings | fix | pending |
+| A9 | should-fix | architecture | `cpp/tests/foundations/test_bal_reader.cpp`, `check_layers.py` | A relative `../../bench/...` include escapes the cross-rung check | fix | pending |
+| A10 | should-fix | architecture | `tests/fixtures/eval/generate_bal.py` | The BAL fixture omits `intrinsics_idx` and every defaulted field | fix | pending |
+| A11 | should-fix | architecture | `ba/mod.rs`, `cpp/.../ba.hpp` | `Problem::with_defaults` is Rust-only; the C++ bench fills defaults by hand | fix | pending |
+| A12 | should-fix | architecture | `slamlab-py/src/common.rs` | `encode`'s -1 fallback reads as a valid name; the pin tests cannot catch a variant missing from `ALL` | fix | pending |
+| A13 | note | architecture | `ba/mod.rs`, `_CPP_FACADES` | The BA facade stands for `problem` but holds `solve` (A24, now in two languages) | defer | pending |
+| A14 | note | architecture | Rust `examples/`, `cpp/bench` | Where the BAL readers live is asymmetric | no action | pending |
+| A15 | note | architecture | `so3.rs` `project_to_so3` | Uses nalgebra's SVD without the cap | dispute | pending |
+
+### Architecture review (run 2)
+
+**Scope:** Run 2 of PR 5 (`feature/rust-core`): `git diff 4ad3eb9...f80e489` (8 commits). Checked the fixes against the run-1 findings A1-A7 in `docs/reviews/2026-10-04-feature-rust-core.md`: `scripts/check_layers.py` and `tests/test_check_layers.py`; `tests/test_backends.py`, `tests/conftest.py`, `src/slamlab/backends.py`; the BAL fixture and the native BAL readers and tests; the Rust binding changes (`common::encode`, `ba.rs`, `nls_crossing.rs`); the new `ba::Problem::with_defaults`; the finiteness changes in both cores; the CLAUDE.md and design-doc edits. Probed the new Rust path checker and the C++ rung check with scratch repos outside the tree, and called the three backends on NaN input.
+
+**Summary:** A1, A3 (but one point), A4, A6 and A7 are fixed correctly, and A5 is properly deferred. A2 works: on the real tree the Rust module graph is complete and right. But it has blind spots that CLAUDE.md's new wording ("held to the same contracts") does not admit: glob imports (`use super::*`) followed by a bare path to a sibling module, re-exports (`pub use`) in a package's `mod.rs`, and `#[cfg(test)]` anywhere but right before the trailing test module. Each passes silently today. Separately, the fixes introduce three new weaknesses: the new C++ test uses a relative include (`../../bench/...`) the cross-rung check cannot see; the BAL fixture leaves out exactly the fields the readers fill by default, including `intrinsics_idx`; and `encode`'s `-1` fallback becomes a valid-looking name on the Python side. No must-fix.
+
+#### [should-fix] The Rust order check has silent gaps: glob imports, re-exports in `mod.rs`, and a `#[cfg(test)]` not at the end of the file
+- **Where:** `scripts/check_layers.py:247-357` (`_RUST_PATH`, `_rust_code`, `_rust_paths`, `_rust_target`, `_rust_graph`); the claim it supports is in `CLAUDE.md:55-57` and the design doc.
+- **Issue:** Edges come only from literal `crate::`/`super::` paths. Three ordinary Rust patterns create a real upward dependency the checker never sees:
+  1. **Glob imports.** `use super::*;` in `ba/schur.rs` brings in `ba`'s private `mod bundle;`; `bundle::adjust()` is then a bare path and records no edge.
+  2. **Re-exports.** `pub use bundle::adjust;` in `ba/mod.rs`, then `use super::adjust;` in `ba/gauge.rs`. The checker maps this to the facade, which counts as `problem` (the bottom layer), so a `gauge` -> `bundle` dependency passes. `mod.rs`'s own bare paths to its children (`layout::make_layout`, `bundle::adjust` at `ba/mod.rs:644-645`) also produce no edges; harmless today only because the facade counts as `solve` (the top layer) when it does the using.
+  3. **`#[cfg(test)]` cut-off.** `_rust_code` drops everything after the *first* `#[cfg(test)]` in the file, though its docstring says it drops only "the `#[cfg(test)]` module at its end". A test-only helper in the middle of a file would silently exempt every line below it.
+
+  A smaller fourth gap: `//` is stripped even inside string literals, so `"http://x"; use crate::se3;` on one line hides the `use`.
+- **Why it matters:** A2 exists because PR 6 adds five estimation modules to this crate. Glob imports and re-exports are idiomatic Rust, and either one turns the check into a false pass. "Chains count, as in C++" reads as parity it does not have.
+- **Evidence:** Each case run through `check_rust_internal` on a fake crate with the real `pyproject.toml` orders:
+  ```
+  glob_then_bare     use super::*; ... bundle::adjust();           -> PASS (no violation)
+  reexport_launder   mod.rs: pub use bundle::adjust; gauge: use super::adjust; -> PASS
+  cfg_test_midfile   #[cfg(test)] fn helper() {} \n use super::bundle;   -> PASS
+  string_url         const U: &str = "http://x"; use crate::se3;  (in so3)  -> PASS
+  ```
+  Controls are caught (`/* crate::se3 */`, `$crate::se3`, inline `mod` blocks: false positives, which at least fail loudly).
+- **Suggested fix:** Make the checker fail loudly instead of guessing: report any `use crate::…::*` or `use super::*` outside the test module, and any `pub use` in a rung crate's `mod.rs`/`lib.rs` (none exists today); cut the test module only where `#[cfg(test)]` is directly followed by `mod tests` and nothing follows its closing brace, otherwise report an error; one test per rule; list the remaining limits in the module docstring next to the C++ facade caveat (A24).
+
+#### [should-fix] The new C++ BAL test's relative include escapes the cross-rung check
+- **Where:** `cpp/tests/foundations/test_bal_reader.cpp:11` (`#include "../../bench/foundations/bal_reader.hpp"`); `scripts/check_layers.py` `check_cpp`, which matches only `slamlab/<rung>/` includes (`_INCLUDE`, line 58).
+- **Issue:** The first include in the tree that crosses from `cpp/tests` into `cpp/bench`, by a relative path. `check_cpp` never resolves relative quoted includes, so the same pattern pointed at another rung would pass.
+- **Why it matters:** The design doc says native benchmarks "are held to the ladder like the code they time". With `#include "../../bench/<rung>/..."` now a precedent, a foundations test or bench can depend on an edge rung's bench header unseen.
+- **Evidence:** A fake repo with `cpp/tests/foundations/test_x.cpp` containing `#include "../../bench/edge/foo.hpp"` gives `check_cpp(...) == []`; the control, `#include "slamlab/edge/foo.hpp"` from `cpp/bench/foundations/bar.hpp`, gives `rung 'foundations' may not include from rung 'edge'`.
+- **Suggested fix:** Resolve quoted relative includes in `check_cpp` (as `_include_graph` already does with `..`) and take the target's rung from its resolved path under any `_CPP_RUNG_ROOTS` entry; or give test targets `cpp/bench` as an include directory and extend the regex. Add a test case either way.
+
+#### [should-fix] The BAL fixture leaves out the fields the native readers fill by default, so the defaults can drift
+- **Where:** `tests/fixtures/eval/generate_bal.py:36-45`; `cpp/tests/foundations/test_bal_reader.cpp:83-104`; the Rust reader's test in `rust/slamlab-foundations/examples/bal/reader.rs:117+`; `rust/slamlab-foundations/src/ba/mod.rs:206-238` (`with_defaults`); `cpp/bench/foundations/bal_reader.hpp`.
+- **Issue:** The fixture holds `model, poses, intrinsics, fixed_intrinsics, points, observations, cam_idx, pt_idx`. It omits `intrinsics_idx` (part of the BAL conversion itself, one group per camera, which both native readers override) and every defaulted array (`weights`, `fixed_poses`, `fixed_points`, `depth_prior(_weights)`, `depth_affine`, `fixed_depth_affine`, `pose_prior(_weights)`, `point_anchor`). The C++ test also never checks `model`. These defaults now live in three hand-written places (`BAProblem.create`, `Problem::with_defaults`, the C++ reader), and nothing ties them together.
+- **Why it matters:** A4's goal was that "the three cannot drift apart". Two of the three can disagree on intrinsics grouping or a default without any test failing, changing what the benchmarks time.
+- **Evidence:** `bal.json`'s `expected` keys are `['model', 'poses', 'intrinsics', 'fixed_intrinsics', 'points', 'observations', 'cam_idx', 'pt_idx']`.
+- **Suggested fix:** Have `generate_bal.py` write every `BAProblem` field, and both native tests compare all of them, `model` included.
+
+#### [should-fix] `ba::Problem::with_defaults` exists in the Rust core only; C++ has no equivalent
+- **Where:** `rust/slamlab-foundations/src/ba/mod.rs:185-239`; missing from `cpp/include/slamlab/foundations/ba.hpp:94+`; `cpp/bench/foundations/bal_reader.hpp` sets every default by hand.
+- **Issue:** The constructor belongs in the core (the native form of `BAProblem.create`'s defaults; standalone callers need it), but it makes the two cores' public BA surfaces differ, and the C++ bench repeats the logic inline.
+- **Why it matters:** The cores are meant to mirror each other and the Python reference; a Rust-only constructor is how the defaults end up in three places.
+- **Suggested fix:** Add the same constructor to the C++ core (e.g. a static `Problem::with_defaults(...)`) and use it in `bal_reader.hpp`; then the extended BAL fixture covers both cores' defaults. Or record a Rust-only choice in the design doc.
+
+#### [should-fix] `encode`'s `-1` fallback reads as the last enum name on the Python side
+- **Where:** `rust/slamlab-py/src/common.rs:272-288`; read in `src/slamlab/foundations/ba/solve.py:208` and `nls.summary_from_backend`; pin tests at `ba/mod.rs:688-694`, `camera.rs:496-502`, `nls.rs:1203+`.
+- **Issue:** Python indexes a list with the code, so `-1` silently gives the last name (`"partial"` for gauges) instead of an error. The doc comment says the core tests rule this out, but each test iterates over `ALL`, so a variant added to the enum but not to `ALL` passes and crosses as `-1`.
+- **Why it matters:** The one failure mode left produces a plausible wrong answer instead of failing loudly.
+- **Evidence:** `codes["gauge"][-1]` is a valid Python index; the test body never looks at variants outside `ALL`.
+- **Suggested fix:** Make `encode` return `PyResult<i64>` and raise on a missing value (or `expect`), or make the pin tests complete with an exhaustive `match` checking `ALL.contains(&v)`. Rejecting negative codes on the Python side costs one line.
+
+#### [note] The BA facade stands for `problem` but also holds `solve`; same as C++ (A24)
+- **Where:** `rust/slamlab-foundations/src/ba/mod.rs:550-615` (`centring_origin`, `solve`), `scripts/check_layers.py:64-66` (`_CPP_FACADES`).
+- **Issue:** `use super::solve;` or `super::centring_origin(...)` from `ba/bundle.rs` or `ba/gauge.rs` is an upward dependency on the `solve` layer, but maps to `problem` and passes. C++ has the same gap (`ba.hpp` declares `solve`): the deferred A24, now in two languages.
+- **Suggested fix:** When A24 is taken up, move `solve`, `centring_origin` and `shifted` into `ba/solve.rs`, mirroring Python's `ba/solve.py`, so `super::solve` resolves to the module and is checked. Note under A24 in the design doc that it now covers Rust too.
+
+#### [note] Where the BAL readers live and are tested is asymmetric
+- **Where:** `rust/slamlab-foundations/examples/bal/reader.rs` (pulled into `benches/foundations.rs` via `#[path]`; tested through `[[example]] test = true`); `cpp/bench/foundations/bal_reader.hpp`, tested from `cpp/tests/foundations/`.
+- **Issue:** The Rust reader is shared code under `examples/`; the C++ reader lives under `bench/`; the C++ test of a bench tool sits in a directory that otherwise mirrors package modules. All of it works, is documented, and stays outside the cores.
+- **Suggested fix:** None now. If a second dataset reader arrives, give each language one home for bench support, with tests next to it.
+
+#### [note] (numerical reviewer) The capped SVD is private to `ba/gauge`; `so3::project_to_so3` still uses the uncapped SVD
+- **Where:** `rust/slamlab-foundations/src/ba/gauge.rs:28-49`; `rust/slamlab-foundations/src/so3.rs:488-490` (`matrix.svd(true, true)`).
+- **Issue:** The helper's comment says nalgebra's uncapped SVD "never returns on a non-finite matrix". `project_to_so3` is public, infallible, and documented as taking "any real 3x3 matrix". Python rejects NaN before calling it, but a direct Rust caller with a NaN matrix would hang. If more modules need a capped SVD, it belongs in a shared rung-0 module.
+
+#### Checked and fine
+- A1: the Protocol test requires `provided == members` for every compiled backend; `require_function` skips only a module Rust lacks and fails on a missing function; `LOCKSTEP_BACKENDS`' docstring, `backends.function`'s docs and the design doc agree.
+- A2 on the real tree: the dumped Rust graph matches the actual `use` lines; `_check_graph` and the `verb` parameter generalise the C++ path cleanly; the bindings crate is excluded; inline `mod` blocks and block comments err toward false positives.
+- A3: no `as i64` enum casts remain in `slamlab-py`; codes go through `encode` from the same `ALL` as `decode` and `enum_names`.
+- A4: native benchmarks placed in CLAUDE.md and the design doc; one fixture read by the generator, the Python reader test, the Rust example test and the C++ test (gaps above).
+- A5 recorded with a trigger (PR 6); A6 `COMPILED_BACKENDS` used in all parametrisations; A7 `rng.json` has its tolerance.
+- Error contracts: the new finiteness checks use the same kind and messages in both cores; all three backends raise `InvalidInputError` on NaN for `vee`, `log`, `from_quaternion`; the C++ `PropagateNaN` gradient norm matches Rust and numpy.
+- The BA binding split (`solution_dict`) only converts types; the docstring lists the argument shapes.
+- Native Rust BA tests live in the crate's trailing test module, with no Python dependency.
+- No new crate dependencies, nothing heavy reachable from rung 0, no import-time side effects, no compatibility shims.
+
+### Algorithm review (run 2)
+
+**Scope:** Run 2 of PR 5, the fixes in `git diff 4ad3eb9...f80e489` (8 commits), against run-1 findings L1-L8 and H2/A3. Read the changed algorithm code and tests in both cores (`rust/slamlab-foundations/src/{nls,alignment,so3,se3,camera}.rs`, `src/ba/{gauge,mod,bundle,schur}.rs`, `cpp/include/slamlab/foundations/nls.hpp`, `cpp/src/foundations/{so3,se3,alignment}.cpp`, the native tests), the BAL fixture and readers, and `docs/notes/rust-port.md`.
+
+**Summary:** Every run-1 algorithm finding is fixed correctly. The NaN-propagating gradient norm is right in both cores and its new tests would fail without the fix; the capped SVD gives the same results as before on finite input and cannot hang; the finiteness checks are in the right places. Nothing is must-fix. The two should-fix items are small: a NaN-blind comparison in the new C++ BAL-reader test (with a fixture that leaves out `intrinsics_idx`), and a new cause in the rust-port note that COLMAP's own solver choice contradicts.
+
+#### [should-fix] The C++ BAL-reader test lets NaN through, and the shared fixture leaves out `intrinsics_idx`
+- **Where:** `cpp/tests/foundations/test_bal_reader.cpp:50`; `tests/fixtures/eval/generate_bal.py` (`expected`); `tests/fixtures/eval/bal.json`
+- **Issue:** `close()` rejects only when `std::abs(got[i] - expected[i]) > atol`, which is false for NaN, so a NaN pose, point or observation from the C++ reader passes (the Rust test checks `(g - w).abs() <= atol`, the right way round). The fixture also lacks `intrinsics_idx`, which each reader sets on its own (Python `np.arange(n_cams)` at `src/slamlab/eval/readers.py:116`, Rust in `examples/bal/reader.rs`); nothing checks they agree.
+- **Why it matters:** `intrinsics_idx` decides whether BAL's per-camera intrinsics stay per-camera or collapse into one group, which changes the problem completely; a drift there, or a NaN from the C++ reader, would pass unseen.
+- **Evidence:** `if (std::abs(got[i] - expected[i]) > atol) { return false; }`; the fixture's `expected` keys omit `intrinsics_idx`.
+- **Suggested fix:** `!(std::abs(...) <= atol)` (or `std::isfinite` first); add `intrinsics_idx` to the fixture and assert it in all three tests.
+
+#### [should-fix] The rust-port note's new explanation of the COLMAP gap contradicts COLMAP's own solver choice
+- **Where:** `docs/notes/rust-port.md:100-105` ("Ceres builds and factors the reduced camera system block by block; ours forms it as one dense matrix. That is the likely difference")
+- **Issue:** ladybug-49 has 49 images; COLMAP chooses `DENSE_SCHUR` at 50 images or fewer on CPU, which also forms the reduced camera system as one dense matrix (441 square), and `colmap_reference.solve` does not override that.
+- **Why it matters:** L4 was resolved by removing an unprofiled cause; this replaces it with another, one the evidence argues against, and would steer milestone 4's sparse-solver work as if it closed this gap.
+- **Evidence:** pycolmap 4.2.1 in the slamlab env: `ceres.max_num_images_direct_dense_cpu_solver 50`, `use_gpu False`; COLMAP's `src/colmap/estimators/bundle_adjustment.cc` sets `DENSE_SCHUR` when `num_images <= max_num_images_direct_dense_cpu_solver`. Unmeasured candidates: Ceres's fixed-size `SchurEliminator<2,3,9>` specialisations, and the iteration count (the table shows `--` for COLMAP; fewer iterations alone could explain 2x).
+- **Suggested fix:** Report COLMAP's iteration count, and either profile or say "not profiled"; drop the dense-matrix explanation.
+
+#### [note] A failed SVD in the gauge plan reads as "nothing pins anything", not as a rejected step
+- **Where:** `rust/slamlab-foundations/src/ba/gauge.rs` `remaining`/`plan`/`best_candidate`, and the doc comments on `null_space` and `singular_values`
+- **Issue:** Inside `confinement` the NaN fallback works as documented (the step is rejected). In the plan, decided once at the start, a failed SVD gives NaN singular values, rank 0, a NaN 7x7 basis classified `Similarity`, every candidate rank 0, nothing confined, `free = 7`: the solve runs with the whole similarity free and reports "similarity". The doc comment's "the step is rejected rather than taken" does not hold on this path.
+- **Why it matters:** Little in practice: inputs are checked finite, nalgebra scales before iterating so a finite matrix cannot overflow, and every gauge SVD is at most 7 wide, far from the cap. It is defence in depth and not silent (`free_gauge = 7` is reported), but the claim and the behaviour differ.
+- **Evidence:** the path above; the new test asserts `rank_of(&singular_values(&m)) == 0`, which encodes the "sees nothing" reading.
+- **Suggested fix:** Reword the comments, or propagate the SVD failure as a `Result` from `remaining`/`plan` so `solve` returns an error, which fits "failure is observable" better.
+
+#### [note] `encode`'s -1 decodes on the Python side as the last enum name (architecture's area)
+- **Where:** `rust/slamlab-py/src/common.rs` `encode`; `src/slamlab/foundations/nls.py:751`, `ba/solve.py:208`, `ransac.py:405`
+- **Issue:** -1 indexes the last name ("singular", "partial"); `codes_are_positions` iterates over `ALL` only and cannot catch a variant missing from it.
+- **Why it matters:** Unreachable today, but it would misreport a termination with no error.
+- **Suggested fix:** Have the Python decoders reject negative codes, or `encode` return a `PyErr`.
+
+#### [note] "finiteness checks ahead of every tolerance comparison" claims a little more than the code does
+- **Where:** `docs/notes/rust-port.md:162-166`
+- **Issue:** `gauge.rs` `classify` still uses nalgebra `amax()` (drops NaN), and C++ `gauge.cpp:233,236` the default `maxCoeff()`; both reachable only from the NaN-basis path above.
+- **Suggested fix:** Say "ahead of every input check", or leave it.
+
+#### Checked and fine
+- **L1, Rust:** `max_abs` is NaN when any entry is, 0 for an empty vector; the new test (NaN at index 2, at the minimum) fails without the fix; after a NaN gradient the step-norm and acceptance tests cannot read as convergence either.
+- **L1, C++:** `maxCoeff<Eigen::PropagateNaN>()` is valid for the installed Eigen 5.0.1-dev; probed at `-O0` and `-O3 -march=native`: with NaN at index 1, 2 or 7 the default gives 0 and PropagateNaN NaN; the C++ test's NaN at index 2 discriminates.
+- **L1, Python:** `DenseSystem.build` refuses a non-finite Jacobian, asserted for both methods; the compiled cores differ on purpose (not converged instead of an error), as the test docstring says.
+- **L2:** `try_svd(5·EPSILON, 10_000)` uses `svd()`'s epsilon and sorts the same way, so finite results are unchanged (the BA fixture confirms); the finiteness pre-check catches NaN and inf before any iteration.
+- **L5/H2:** finiteness checked first in `check_rotation`, `vee`, `from_quaternion`, `check_transform`, `umeyama`, both cores, with native tests.
+- **L7:** the comment is accurate. **L8:** the `expect` cannot fire: the guard uses the same determinant formula `try_inverse` does, which fails only on an exact zero; a NaN Jacobian gives `Some(NaN)` and ends `NotConverged`.
+- **A3:** `encode`/`decode` both use the position in `ALL`; `codes_are_positions` pins every crossing enum.
+- **`Problem::with_defaults`:** every default matches `BAProblem.create`.
+- **Native BA tests:** sound (recovery to 1e-9/1e-8 with convergence asserted, single-view drop, invalid inputs with messages, the reduction round trip and diagonal).
+- **BAL fixture:** inputs not exactly representable in float32; `atol 1e-13` (about 45 ulp at translations of about 5) suits it; policy stated.
+- **L3/L4:** the one-thread COLMAP row and "decision-level agreement" are accurate; the 9e-12 cost difference is stated.
+- **Rust tests:** `cargo test -p slamlab-foundations --all-targets` at f80e489 passed 42 tests plus the BAL reader test; the repository was left unmodified.
+
+Sources: [COLMAP source](https://github.com/colmap/colmap); [COLMAP bundle_adjustment.cc mirror](https://huggingface.co/camenduru/ceres-solver-v1/blob/main/colmap/src/optim/bundle_adjustment.cc).
+

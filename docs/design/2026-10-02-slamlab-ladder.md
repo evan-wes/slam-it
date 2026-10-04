@@ -681,6 +681,10 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
     includes are checked as the implementation's; a facade with no `_CPP_FACADES` entry is
     exempt. Key facades by file kind, and fail on an unmapped one, when the next package gets
     a facade.
+    PR 5's panel (A13, run 2) found the same gap in Rust: `ba/mod.rs` holds `solve` and
+    `centring_origin`, so `use super::solve` from inside `ba` passes as the `problem`
+    layer. The structural fix in both languages is to move `solve` into its own module
+    (`ba/solve.rs`, `ba/solve.cpp`), mirroring Python's `ba/solve.py`.
   - **The gauge in rung 0's own right (A26, run 3).** `ba/gauge` depends only on poses and
     points. When pose-graph optimisation (the classic rung's loop closure) needs the same
     null-space removal, lift it to `foundations.gauge` rather than importing it from `ba`.
