@@ -267,6 +267,69 @@ def test_facade_included_from_inside_is_the_problem_layer(fake_repo: Path) -> No
     assert list(check_layers.check_cpp_internal(fake_repo, ORDERS)) == []
 
 
+RUST = "rust/slamlab-foundations/src"
+
+
+@pytest.mark.parametrize(
+    ("path", "code", "message"),
+    [
+        ("so3.rs", "use crate::se3;", "in foundations, 'so3' may not use 'se3'"),
+        (
+            "nls.rs",
+            "use crate::{camera::Model, se3};",
+            "in foundations, 'nls' may not use 'camera'",
+        ),
+        (
+            "ba/schur.rs",
+            "use super::bundle::adjust;",
+            "in foundations.ba, 'schur' may not use 'bundle'",
+        ),
+        (
+            "ba/schur.rs",
+            "use super::{Gauge, layout::{self, Layout}};",
+            "in foundations.ba, 'schur' may not use 'layout'",
+        ),
+        (
+            "ba/gauge.rs",
+            "let x = crate::ba::bundle::f();",
+            "in foundations.ba, 'gauge' may not use 'bundle'",
+        ),
+    ],
+)
+def test_rust_internal_order_is_checked(
+    fake_repo: Path, path: str, code: str, message: str
+) -> None:
+    """Upward and sibling ``crate::``/``super::`` paths inside a rung crate break its order."""
+    _write(fake_repo, f"{RUST}/ba/mod.rs", "mod bundle;\nmod gauge;\nmod layout;\nmod schur;\n")
+    for module in ("ba/bundle", "ba/gauge", "ba/layout", "ba/schur", "camera", "se3", "so3"):
+        if not (fake_repo / RUST / f"{module}.rs").exists():
+            _write(fake_repo, f"{RUST}/{module}.rs", "")
+    _write(fake_repo, f"{RUST}/{path}", code + "\n")
+    found = list(check_layers.check_rust_internal(fake_repo, ORDERS))
+    assert [v.message for v in found] == [message]
+    assert found[0].location == f"{RUST}/{path}:1"
+
+
+def test_rust_internal_order_allows_downward_paths_facades_comments_and_tests(
+    fake_repo: Path,
+) -> None:
+    """Downward paths, the package's facade items, comments and the test module all pass."""
+    _write(fake_repo, f"{RUST}/ba/mod.rs", "mod bundle;\nmod schur;\n")
+    _write(fake_repo, f"{RUST}/so3.rs", "")
+    _write(
+        fake_repo,
+        f"{RUST}/ba/bundle.rs",
+        "use super::{schur::Blocks, Gauge, Problem};\nuse crate::so3;\n",
+    )
+    _write(
+        fake_repo,
+        f"{RUST}/ba/schur.rs",
+        "use super::Gauge; // super::bundle in a comment\n"
+        "#[cfg(test)]\nmod tests {\n    use super::super::bundle;\n}\n",
+    )
+    assert list(check_layers.check_rust_internal(fake_repo, ORDERS)) == []
+
+
 def test_two_contracts_over_one_container_are_rejected() -> None:
     """Two layers contracts over the same package would silently replace one another."""
     contract = {"type": "layers", "containers": ["slamlab.foundations"], "layers": ["a", "b"]}

@@ -313,9 +313,20 @@ crate, so a rung can only link what it declares. `scripts/check_layers.py` reads
 contracts above from `pyproject.toml` and fails layer 1 on:
 - a cross-rung `#include` that the contracts forbid;
 - a forbidden `slamlab_add_rung(... DEPENDS ...)` link;
-- a forbidden crate dependency.
+- a forbidden crate dependency;
+- inside a rung, a C++ `#include` or a Rust `crate::`/`super::` path that breaks the rung's
+  or a package's internal order (such as "Rung 0's internal order"), chains through unlisted
+  modules included.
 
 The three languages therefore share one source of truth.
+
+**Native benchmarks** are developer tools outside the cores: `cpp/bench/<rung>/` (Google
+Benchmark, behind the CMake option `SLAMLAB_BUILD_BENCHMARKS`) and each Rust crate's
+`benches/` (criterion), with a crate's `examples/` for standalone runs. They are held to the
+ladder like the code they time, built and linted by layer 1, and never run by it. The
+dataset readers they need are copies of `slamlab.eval`'s, checked against the same shared
+fixture; `slamlab.eval` keeps the Python benchmarks and, from milestone 7, the budget
+harness, which will drive the native benchmarks on the edge targets.
 
 ## Milestones
 

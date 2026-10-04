@@ -120,3 +120,88 @@ pub fn demo_options() -> ba::Options {
         ..ba::Options::default()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! The conversion against `tests/fixtures/eval/bal.json`, which the Python reader
+    //! generates and the C++ benchmark's reader is tested against too.
+    #![allow(
+        clippy::float_cmp,
+        reason = "indices and pixels are copied or negated, so exact comparison is right"
+    )]
+
+    use std::path::PathBuf;
+
+    use serde_json::Value;
+
+    use super::*;
+
+    /// The fixture directory.
+    fn fixtures() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/eval")
+    }
+
+    /// The values of a nested JSON array, flattened row-major.
+    fn flat(value: &Value) -> Vec<f64> {
+        match value {
+            Value::Array(items) => items.iter().flat_map(flat).collect(),
+            other => vec![other.as_f64().expect("a number")],
+        }
+    }
+
+    /// The reader gives the problem the Python reader does.
+    #[test]
+    fn matches_the_python_reader() {
+        let text = std::fs::read_to_string(fixtures().join("bal.json")).unwrap();
+        let fixture: Value = serde_json::from_str(&text).unwrap();
+        let expected = &fixture["expected"];
+        let atol = fixture["tolerance"]["atol"].as_f64().unwrap();
+        let problem = read_bal(&fixtures().join(fixture["input"].as_str().unwrap())).unwrap();
+        assert_eq!(problem.model.name(), expected["model"].as_str().unwrap());
+        let close = |got: Vec<f64>, want: &Value| {
+            let want = flat(want);
+            assert_eq!(got.len(), want.len());
+            assert!(got.iter().zip(&want).all(|(g, w)| (g - w).abs() <= atol));
+        };
+        close(
+            problem
+                .poses
+                .iter()
+                .flat_map(|p| p.transpose().iter().copied().collect::<Vec<_>>())
+                .collect(),
+            &expected["poses"],
+        );
+        close(problem.intrinsics.values.clone(), &expected["intrinsics"]);
+        close(
+            problem
+                .points
+                .iter()
+                .flat_map(|p| p.iter().copied())
+                .collect(),
+            &expected["points"],
+        );
+        close(
+            problem
+                .observations
+                .iter()
+                .flat_map(|o| o.iter().copied())
+                .collect(),
+            &expected["observations"],
+        );
+        let indices = |v: &Value| flat(v);
+        #[allow(clippy::cast_precision_loss, reason = "small indices")]
+        let as_f64 = |v: &[i64]| v.iter().map(|&i| i as f64).collect::<Vec<_>>();
+        assert_eq!(as_f64(&problem.cam_idx), indices(&expected["cam_idx"]));
+        assert_eq!(as_f64(&problem.pt_idx), indices(&expected["pt_idx"]));
+        let fixed: Vec<bool> = flat_bools(&expected["fixed_intrinsics"]);
+        assert_eq!(problem.fixed_intrinsics, fixed);
+    }
+
+    /// The booleans of a nested JSON array, flattened row-major.
+    fn flat_bools(value: &Value) -> Vec<bool> {
+        match value {
+            Value::Array(items) => items.iter().flat_map(flat_bools).collect(),
+            other => vec![other.as_bool().expect("a boolean")],
+        }
+    }
+}

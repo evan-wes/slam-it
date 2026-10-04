@@ -10,6 +10,11 @@
 //! ```
 
 #[path = "../examples/bal/reader.rs"]
+#[allow(
+    dead_code,
+    unused_imports,
+    reason = "the reader's own tests compile here too, but only the example's run them"
+)]
 mod reader;
 
 use std::hint::black_box;

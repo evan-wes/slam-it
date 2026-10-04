@@ -22,7 +22,7 @@ from slamlab import backends
 from slamlab.eval import colmap_reference, readers
 from slamlab.foundations import ba, camera, nls, se3
 from slamlab.foundations.errors import InvalidInputError
-from tests.conftest import require_backend
+from tests.conftest import FIXTURES, assert_matches_fixture, load_fixture, require_backend
 
 Array = NDArray[np.float64]
 
@@ -301,3 +301,20 @@ def test_reference_rejects_what_it_cannot_represent(tmp_path: Path) -> None:
     centre_free = replace(problem, fixed_intrinsics=np.zeros((1, 4), dtype=bool))
     with pytest.raises(InvalidInputError, match="principal point"):
         colmap_reference.solve(centre_free)
+
+
+def test_bal_conversion_matches_the_shared_fixture() -> None:
+    """The reader gives the problem ``tests/fixtures/eval/bal.json`` holds.
+
+    The native BAL readers (the Rust example's and the C++ benchmark's) are tested against
+    the same fixture, so the three conversions cannot drift apart.
+    """
+    fixture = load_fixture("eval/bal.json")
+    problem = readers.read_bal(FIXTURES / "eval" / fixture["input"])
+    expected = fixture["expected"]
+    assert problem.camera_model == expected["model"]
+    np.testing.assert_array_equal(problem.cam_idx, expected["cam_idx"])
+    np.testing.assert_array_equal(problem.pt_idx, expected["pt_idx"])
+    np.testing.assert_array_equal(problem.fixed_intrinsics, expected["fixed_intrinsics"])
+    for name in ("poses", "intrinsics", "points", "observations"):
+        assert_matches_fixture(getattr(problem, name), expected[name], fixture["tolerance"])
