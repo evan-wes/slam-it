@@ -147,6 +147,24 @@ pub fn batch<'a>(array: &'a ArrayIn<'_>, item: &[usize]) -> PyResult<(&'a [f64],
     Ok((values, shape[0]))
 }
 
+/// Reads a batch as a vector of items.
+///
+/// # Arguments
+///
+/// * `array` - A C-contiguous float64 array of shape `(N, *A::shape())`.
+///
+/// # Returns
+///
+/// The N items.
+///
+/// # Errors
+///
+/// `ValueError` for a wrong shape or a non-contiguous array.
+pub fn rows<A: Item>(array: &ArrayIn<'_>) -> PyResult<Vec<A>> {
+    let (values, _) = batch(array, &A::shape())?;
+    Ok(items(values, A::LEN).map(A::read).collect())
+}
+
 /// Wraps row-major values as a new numpy array of the given shape.
 ///
 /// # Arguments
@@ -170,6 +188,28 @@ pub fn new_array<'py>(
     let array = ArrayD::from_shape_vec(IxDyn(shape), values)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
     Ok(array.into_pyarray(py))
+}
+
+/// Decodes an enum crossing as its integer code.
+///
+/// # Arguments
+///
+/// * `all` - The enum's values in code order (its `ALL`).
+/// * `code` - The code.
+/// * `what` - The argument's name, for the message.
+///
+/// # Returns
+///
+/// The enum value.
+///
+/// # Errors
+///
+/// `ValueError` for an unknown code.
+pub fn decode<E: Copy>(all: &[E], code: i64, what: &str) -> PyResult<E> {
+    usize::try_from(code)
+        .ok()
+        .and_then(|index| all.get(index).copied())
+        .ok_or_else(|| PyValueError::new_err(format!("{what}: unknown code {code}")))
 }
 
 /// Applies a per-item core function to every item of a batch.

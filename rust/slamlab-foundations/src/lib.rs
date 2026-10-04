@@ -5,6 +5,8 @@
 //! `scripts/check_layers.py`). Builds standalone, without Python, for the edge compute
 //! budgets. Modules mirror the Python package (`so3` implements `slamlab.foundations.so3`).
 
+pub mod alignment;
+pub mod camera;
 pub mod error;
 pub mod se3;
 pub mod so3;
