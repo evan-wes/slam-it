@@ -67,6 +67,12 @@ them), so a field added on one side only fails loudly. The C++ binding's key che
 words its errors the way serde does (``missing field `x` ``, ``unknown field `x` ``), so both
 fail with the same message.
 
+**Tests sit at the end of each file.** A file's native tests are one inline
+`#[cfg(test)] mod tests { ... }` at its end. `scripts/check_layers.py` holds the crate's
+modules to the ladder from their `crate::` and `super::` paths, and drops only that trailing
+module. Every other `#[cfg(test)]`, every glob import and every re-export in a `mod.rs`
+fails the check, because it could hide a dependency.
+
 **The batch layer is one macro.** C++ binds each function with a lambda over `map_batch`;
 the Rust binding declares each with `batched!`, which writes the `#[pyfunction]` from the
 Protocol's signature and maps the batch item by item with any fixed-size nalgebra type as
@@ -166,6 +172,10 @@ small excess.
   were found by the review panel and fixed in both cores. The fixes are one capped SVD helper,
   NaN-propagating norms, and finiteness checks on every input ahead of its tolerance
   comparisons, since NaN passes all of them.
+- **Where the languages still differ, on purpose.** A gauge SVD that fails at the start of a
+  Rust solve (a non-finite matrix, or one past the iteration cap) is a `Degenerate` error.
+  C++'s Eigen SVD always returns a result, and numpy raises its own `LinAlgError`. All three
+  check their inputs finite first, so the path is defensive and practically unreachable.
 - **Strictness is cheaper with serde.** `deny_unknown_fields` replaces a hand-written key
   check at every depth, which is why the C++ binding now borrows serde's wording.
 

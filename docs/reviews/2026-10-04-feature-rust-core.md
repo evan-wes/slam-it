@@ -406,3 +406,70 @@ Sources: [faer-rs](https://github.com/cramt/faer-rs); [faer-cholesky docs](https
 
 Sources: [COLMAP source](https://github.com/colmap/colmap); [COLMAP bundle_adjustment.cc mirror](https://huggingface.co/camenduru/ceres-solver-v1/blob/main/colmap/src/optim/bundle_adjustment.cc).
 
+
+## Run 3 -- 2026-10-04
+
+| | |
+|---|---|
+| **Branch** | `feature/rust-core` |
+| **Range** | `f80e4896dd6bb2ec507039ed5a719129fe810cc5...b556bdb92135c8a1387428a074e4cd796dd8004a` (the fixes after run 2) |
+| **Reviewers** | architecture (opus) |
+| **How they ran** | registered slamlab-architecture-reviewer agent |
+| **Layer 1** | all checks passed (`scripts/check.sh`): 1699 pytest passed, 20 skipped; 18 ctest; cargo clean |
+
+### Findings and resolutions
+
+| ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|---|
+| A16 | should-fix | architecture | `scripts/check_layers.py` `_included_rung`, `CMakeLists.txt` | Quoted includes found through a CMake include directory (`-I cpp/src`, `-I cpp/bindings`) escape the cross-rung check | fix | pending |
+| A17 | should-fix | architecture | `scripts/check_layers.py` `_RUST_GLOB` | A glob inside a use group (`use super::{*}`) is not reported | fix | pending |
+| A18 | note | architecture | `check_layers.py` docstring, `rust-port.md` | The checker enforces an unwritten test convention (trailing inline `#[cfg(test)] mod tests {}`) | fix | pending |
+| A19 | note | architecture | `check_layers.py` `_rust_blank` | Quadratic in file size (slices at every position) | fix | pending |
+| A20 | note | architecture | `ba/gauge.rs`, `gauge.cpp`, `gauge.py` | A failed gauge SVD is handled three ways across the languages; unrecorded | fix (note) | pending |
+
+### Architecture review (run 3)
+
+**Scope:** Run 3 of PR 5 (`feature/rust-core`): the fixes after run 2, `git diff f80e489...b556bdb` (169cfad code, 979aaae docs, b556bdb review record), against run-2 findings A8-A15 and L10/L12/L13. Probed `scripts/check_layers.py` on fake trees and the real tree.
+
+**Summary:** A10, A11, A12/L13 and A13 are correct and complete; `backends.decode_name` sits fine in `backends`; the Rust-only L12 change is acceptable. The A8 and A9 fixes do what was asked but each leaves one gap of the kind it was meant to close: a grouped glob (`use super::{*}`) still hides edges from the Rust check, and a quoted include found through a CMake include directory (`-I cpp/src` for tests, `-I cpp/bindings`) still escapes the cross-rung check. The checker passes on the real tree in 0.76 s with no false positives.
+
+#### [should-fix] A9 is only half closed: includes found through `cpp/src` or `cpp/bindings` search paths escape the cross-rung check
+- **Where:** `scripts/check_layers.py:643-660` (`_included_rung`); `CMakeLists.txt:41` (tests get `-I cpp/src`) and `:80` (bindings get `-I cpp/bindings`).
+- **Issue:** `_included_rung` resolves a quoted include only against the including file. The compiler then searches the target's include directories, and the tree already relies on that (`cpp/tests/foundations/test_gauge.cpp:7`: `#include "foundations/ba/gauge.hpp"`, through `-I cpp/src`). So a foundations test writing `#include "edge/frontend.hpp"` compiles against `cpp/src/edge/frontend.hpp`, while the checker resolves it under `cpp/tests/foundations/` (rung `foundations`) and reports nothing. Bindings likewise through `-I cpp/bindings`.
+- **Why it matters:** The same escape A9 was about, by the include form the tree already uses.
+- **Evidence:** A fake tree with `cpp/tests/foundations/test_x.cpp` including `"edge/frontend.hpp"` and an existing `cpp/src/edge/frontend.hpp`: `check_cpp(...)` returns `[]`.
+- **Suggested fix:** Resolve as the compiler does: the including file's directory, then the search directories CMake gives that root (`cpp/include`, plus `cpp/src` for `cpp/tests`, plus `cpp/bindings` for bindings); the first candidate that exists gives the rung; fail if none exists. One test per search directory.
+
+#### [should-fix] A8: a glob inside a use group is not reported
+- **Where:** `scripts/check_layers.py:411` (`_RUST_GLOB`).
+- **Issue:** The pattern matches only a `*` straight after a path; Rust also allows `use super::{*};`, `use super::{*, Gauge};`, `use crate::{ba::*};`, after which a sibling is reached by a bare path, the hidden edge the rule exists to report.
+- **Why it matters:** A8 asked the checker to fail loudly rather than guess; this form passes silently. Narrow, but one regex closes it.
+- **Evidence:** `_rust_code` + `_RUST_GLOB` on `use crate::ba::{bundle::*, schur};` and `use super::{*};`: `glob: False` both.
+- **Suggested fix:** Report any `use (crate|super|self)…;` whose text up to the `;` (outside comments and literals) contains `*`; add the grouped form to the hazards test.
+
+#### [note] The checker now forbids two common test idioms, which should be stated as a convention
+- **Where:** `scripts/check_layers.py:322` (`_RUST_TEST_MODULE`), module docstring `:34-44`.
+- **Issue:** `#[cfg(test)] mod tests;` (tests in a separate `tests.rs`) and `#[cfg(test)]` followed by another attribute before `mod tests {` are both reported, with messages that do not explain why. Failing loudly is right and nothing in the tree uses either, but the convention enforced (tests inline, `#[cfg(test)]` directly on `mod tests {`, closing at the end of the file) is not written down. `#[cfg(any(test, …))]` is not reported, but its code is kept and checked, so nothing is hidden.
+- **Suggested fix:** Name the convention in the docstring's limits and in `docs/notes/rust-port.md`, and in the message ("tests must be the trailing inline `#[cfg(test)] mod tests { … }`").
+
+#### [note] `_rust_blank` is quadratic in file size
+- **Where:** `scripts/check_layers.py:302`, `:313` (`re.match(..., text[i:])` at every position).
+- **Issue:** Every position that opens no comment or string slices the rest of the file twice.
+- **Evidence:** `ba/bundle.rs` (37.6 kB) 0.066 s; four times the text (150 kB) 0.57 s. The whole check runs in 0.76 s today.
+- **Suggested fix:** Compile both patterns and call `pattern.match(text, i)`.
+
+#### [note] L12: the three languages handle a failed gauge SVD three ways; worth one line in the port notes
+- **Where:** `rust/slamlab-foundations/src/ba/gauge.rs:432-465`, `:511-537`; `cpp/src/foundations/ba/gauge.cpp:59,70`; `src/slamlab/foundations/ba/gauge.py:158,166`.
+- **Issue:** The capped `svd` helper also returns `None` when a *finite* matrix does not converge within `SVD_MAX_ITERATIONS`; then Rust returns `Degenerate`, Eigen's `JacobiSVD` always returns a result, and numpy raises `LinAlgError` (not a shared error kind). Practically unreachable at at most 7 columns and a 10,000-iteration cap, but an unrecorded per-language difference in the error contract.
+- **Suggested fix:** One sentence in `docs/notes/rust-port.md` that this Rust-only `Degenerate` path is defensive with no counterpart; if Python ever wraps `LinAlgError`, map it to `DegenerateError`.
+
+#### Checked and fine
+- **`backends.decode_name` placement:** generic over the `codes()` protocol `backends` already owns (`Codes`, `call`'s decoder), knows no algorithm's tables; no new dependency direction.
+- **Decode migration:** every enum decode in `src/slamlab` goes through `decode_name`; no `codes[...][int(...)]` remains.
+- **Rust `encode`:** returns `PyResult` with `RuntimeError` (as `decode_name`); both call sites propagate it.
+- **A8 rules otherwise:** lifetimes, char and byte-char literals, raw identifiers, `br#"…"#`, nested block comments and `//` inside strings all handled in probes; only a trailing `#[cfg(test)] mod tests {}` is dropped; re-exports flagged only in `mod.rs`/`lib.rs` (a leaf re-export needs a checked edge itself); no false positives on the real tree.
+- **A9 for file-relative includes:** `../../bench/<rung>/…` resolved against the including file; the real `test_bal_reader.cpp` include passes as same-rung.
+- **A10/L10:** the model and all 18 array fields, NaN as null; the C++ test asserts the field count. Residual: `generate_bal.py`'s `ARRAYS` is a hand-kept copy of `BAProblem`'s fields; deriving it from `dataclasses.fields(BAProblem)` minus `camera_model` would remove the last place a new field could be skipped (too minor to list).
+- **A11:** C++ `Problem::with_defaults` has the same defaults as Rust's and `BAProblem.create`'s; the C++ reader uses it and overrides only the per-camera grouping, as the Rust reader does.
+- **L12 code:** `remaining`/`plan` return `Result`, `fix_gauge` propagates all three calls, docs list the error, a unit test covers it.
+- **A13:** recorded under A24 with the structural fix named for both languages. **A14, A15:** consistent with the code.
