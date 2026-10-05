@@ -98,7 +98,10 @@ code or a binding.
 **Layer 1, every PR:** `scripts/check.sh` must pass. It runs ruff (numpy docstrings, type
 hints), mypy --strict, import-linter, clang-format, clang-tidy, doxygen (every declaration
 documented), rustfmt, clippy (pedantic, missing docs), jscpd (duplication), and the C++,
-Rust and Python test suites. CI runs the same script.
+Rust and Python test suites. CI runs the same script, offline: `scripts/offline_ci.sh`
+repeats `.github/workflows/test.yml` on a clean checkout with its own env built from the
+lock, gates every PR, and its result goes in the PR template. The GitHub workflow runs on
+demand and on pushes to `main` (the Actions minutes are shared with other projects).
 
 **PRs are slices, not steps.** A PR makes meaningful progress toward a stated goal: a slice
 of a milestone (e.g. milestone 1's "BA spine"). The individual steps are semantic commits

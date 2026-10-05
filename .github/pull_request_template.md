@@ -42,7 +42,7 @@ Report: [`docs/reviews/<file>.md`](https://github.com/evan-wes/slamlab/blob/<bra
 <!-- What was run and what it showed. -->
 
 - [ ] Layer 1: `scripts/check.sh` passes locally
-- [ ] CI passes
+- [ ] Offline CI: `scripts/offline_ci.sh` passed at `<sha>` (its line in `~/.cache/slamlab-offline-ci/results.tsv`: `<sha>  <ref>  merged=<yes|no>  passed  <log>`)
 -
 
 ## Version

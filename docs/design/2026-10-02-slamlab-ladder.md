@@ -576,7 +576,8 @@ was learned. The notes double as showcase content when the repo goes public.
 Code is reviewed in two layers. The full rules are in `CLAUDE.md`.
 
 - **Layer 1, every PR:** `scripts/check.sh` runs deterministic checks in all three languages,
-  locally and in CI:
+  locally and in CI (offline for every PR, `scripts/offline_ci.sh`; on GitHub on demand and
+  for releases):
   - documentation present and well-formed: numpy-style in Python, Doxygen in C++, rustdoc in
     Rust;
   - type hints (`mypy --strict`);
@@ -654,6 +655,15 @@ two layers:
 Each env builds the C++ extension in its own `build/<env name>` folder. Envs with the same Python
 version otherwise share one CMake tree and silently reuse each other's cached compiler. This
 matters at milestone 3, when reifyscene's env also installs slamlab.
+
+**CI runs offline.** `scripts/offline_ci.sh` does what `.github/workflows/test.yml` does, on
+the developer's machine: a clean checkout of the committed files (in
+`~/.cache/slamlab-offline-ci/`, cleaned with `git clean -ffdx` each run), merged with
+`develop` when it is not based on it, an env of its own, `slamlab-ci`, built from the lock by
+`setup_slamlab.sh` (recreated whenever the lock or the setup script changes), then
+`scripts/check.sh`. It gates every PR, whose template records its result. The GitHub workflow
+runs on demand (`workflow_dispatch`) and on pushes to `main`; the GitHub Actions minutes are
+shared with the owner's other projects.
 
 ## Open items
 

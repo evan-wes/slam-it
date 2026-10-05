@@ -4,6 +4,23 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.3.1.1] - 2026-10-05
+
+CI moves off GitHub Actions for PRs: their minutes are shared with other projects, and an
+Actions outage held up PR 7's merge though everything had passed locally.
+
+### Changed
+
+- **CI runs offline** (`scripts/offline_ci.sh`): `.github/workflows/test.yml`'s steps on the
+  developer's machine. A clean checkout of the committed files (merged with `develop` when
+  needed), an env of its own built from the lock (`slamlab-ci`, recreated when the lock or
+  setup script changes), then `scripts/check.sh`, under an 8G memory cap; each result is
+  appended to `~/.cache/slamlab-offline-ci/results.tsv`. It gates every PR.
+- **GitHub's Test workflow** runs on demand (`workflow_dispatch`) and on pushes to `main`
+  only; the tag workflows are unchanged.
+- **The PR template** records the offline CI result in place of "CI passes"; `CLAUDE.md`, the
+  design doc and the review-panel skill say how CI runs.
+
 ## [0.3.1.0] - 2026-10-05
 
 Milestone 2's first slice: the front end and the evaluation. Images, ORB features, descriptor
