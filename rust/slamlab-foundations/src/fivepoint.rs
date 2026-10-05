@@ -7,18 +7,17 @@
 //! constraints. Every real solution that is essential is returned, scaled to singular values
 //! (1, 1, 0).
 //!
-//! nalgebra has no eigenvectors for a general real matrix, so Stewénius' method takes the
-//! action matrix's eigenvalues from a (capped) real Schur decomposition and each real
-//! eigenvalue's eigenvector as the null vector of `A - λ I`, by SVD: the same vector Eigen and
-//! numpy return, up to scale, which the method divides out.
+//! nalgebra has no eigenvectors for a general real matrix, so Stewénius' action matrix is
+//! decomposed by faer ([`crate::linalg::eigen_real`]), once per sample, as Eigen's
+//! `EigenSolver` and numpy's `eig` decompose it.
 
 use std::f64::consts::SQRT_2;
 
-use nalgebra::{DMatrix, DVector, Matrix3, SMatrix, Schur, Vector3};
+use nalgebra::{DMatrix, DVector, Matrix3, SMatrix, Vector3};
 
 use crate::correspondences::{RANK_TOLERANCE, check_bearing_pairs};
 use crate::error::{ErrorKind, Result, fail};
-use crate::linalg::{MAX_ITERATIONS, least_squares, singular_values3, svd};
+use crate::linalg::{eigen_real, least_squares, singular_values3, svd};
 
 /// Correspondences a 5-point solver takes.
 pub const SAMPLE_SIZE: usize = 5;
@@ -813,26 +812,6 @@ fn nister(bearings1: &[Vector3<f64>], bearings2: &[Vector3<f64>]) -> Vec<Matrix3
     solutions
 }
 
-/// A real eigenvector of `matrix` for a real eigenvalue: the null vector of `A - λ I`.
-///
-/// # Arguments
-///
-/// * `matrix` - A.
-/// * `value` - λ.
-///
-/// # Returns
-///
-/// The unit eigenvector, or `None` if the SVD fails.
-fn eigenvector(matrix: &SMatrix<f64, 10, 10>, value: f64) -> Option<DVector<f64>> {
-    let shifted = matrix - SMatrix::<f64, 10, 10>::identity() * value;
-    let decomposition = svd(
-        &DMatrix::from_column_slice(10, 10, shifted.as_slice()),
-        false,
-        true,
-    )?;
-    Some(decomposition.v_t?.row(9).transpose())
-}
-
 /// Stewénius' action-matrix method.
 ///
 /// # Arguments
@@ -854,17 +833,17 @@ fn stewenius(bearings1: &[Vector3<f64>], bearings2: &[Vector3<f64>]) -> Vec<Matr
     for (r, index) in [(6, 0), (7, 1), (8, 2), (9, 6)] {
         action[(r, index)] = 1.0;
     }
-    let Some(schur) = Schur::try_new(action, f64::EPSILON, MAX_ITERATIONS) else {
+    let Some((re, im, vectors)) =
+        eigen_real(&DMatrix::from_column_slice(10, 10, action.as_slice()))
+    else {
         return Vec::new();
     };
     let mut solutions = Vec::new();
-    for value in schur.complex_eigenvalues().iter() {
-        if value.im.abs() > REAL_TOLERANCE * value.norm().max(1.0) {
+    for j in 0..10 {
+        if im[j].abs() > REAL_TOLERANCE * re[j].hypot(im[j]).max(1.0) {
             continue;
         }
-        let Some(vector) = eigenvector(&action, value.re) else {
-            continue;
-        };
+        let vector = vectors.column(j);
         if !(vector[9].abs() > 0.0) {
             continue;
         }

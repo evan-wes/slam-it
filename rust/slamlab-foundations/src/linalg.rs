@@ -1,7 +1,8 @@
 //! Dense linear algebra shared by rung 0's Rust modules: the SVD every module uses, and the
 //! minimum-norm least squares built on it.
 //!
-//! Every SVD in the crate, dynamic or 3x3, goes through [`svd`] or [`svd3`], which call faer.
+//! Every SVD in the crate, dynamic or 3x3, goes through [`svd`] or [`svd3`], which call faer,
+//! as does the one general eigendecomposition ([`eigen_real`], Stewénius' action matrix).
 //! nalgebra 0.35's SVDs are not backward stable: its 3x3 SVD works on `MᵀM`, squaring the
 //! condition number (thin P3P triangles gave rotations off by 0.7), and its dynamic SVD
 //! leaves errors near 1e-4 in some graded matrices' trailing singular pairs (8-point E and F
@@ -10,12 +11,13 @@
 //! There is no Python or C++ counterpart: numpy (LAPACK) and Eigen (`JacobiSVD`) need none.
 
 use faer::dyn_stack::{MemBuffer, MemStack};
+use faer::linalg::evd::{self as faer_evd, ComputeEigenvectors};
 use faer::linalg::svd::{self as faer_svd, ComputeSvdVectors};
 use faer::{Mat, Par};
 use nalgebra::{DMatrix, DVector, Matrix3, Vector3};
 
-/// Iterations allowed in nalgebra's iterative eigen and Schur decompositions (EPnP, the
-/// Stewénius solver) before they are abandoned.
+/// Iterations allowed in nalgebra's symmetric eigen-decomposition (EPnP) before it is
+/// abandoned.
 pub const MAX_ITERATIONS: usize = 10_000;
 
 /// A matrix's thin SVD: `M = U diag(σ) Vᵀ` with k = min(m, n) singular triplets, as
@@ -87,6 +89,54 @@ pub fn svd(matrix: &DMatrix<f64>, compute_u: bool, compute_v: bool) -> Option<Sv
         singular_values: DVector::from_fn(k, |i, _| s[i]),
         v_t: v.map(|v| DMatrix::from_fn(k, n, |i, j| v[(j, i)])),
     })
+}
+
+/// A real square matrix's eigenvalues and right eigenvectors, as LAPACK's `dgeev` returns
+/// them.
+///
+/// # Arguments
+///
+/// * `matrix` - The square matrix.
+///
+/// # Returns
+///
+/// The eigenvalues' real and imaginary parts, and the eigenvectors as columns: for a real
+/// eigenvalue, column j is its eigenvector; a complex pair's columns hold the real and
+/// imaginary parts of the first one's. `None` for a non-finite matrix or one that does not
+/// converge.
+#[must_use]
+pub fn eigen_real(matrix: &DMatrix<f64>) -> Option<(DVector<f64>, DVector<f64>, DMatrix<f64>)> {
+    if !matrix.is_square() || !matrix.iter().all(|x| x.is_finite()) {
+        return None;
+    }
+    let n = matrix.nrows();
+    let a = Mat::<f64>::from_fn(n, n, |i, j| matrix[(i, j)]);
+    let mut workspace = MemBuffer::new(faer_evd::evd_scratch::<f64>(
+        n,
+        ComputeEigenvectors::No,
+        ComputeEigenvectors::Yes,
+        Par::Seq,
+        faer::Spec::default(),
+    ));
+    let mut re = faer::diag::Diag::<f64>::zeros(n);
+    let mut im = faer::diag::Diag::<f64>::zeros(n);
+    let mut vectors = Mat::<f64>::zeros(n, n);
+    faer_evd::evd_real(
+        a.as_ref(),
+        re.as_mut(),
+        im.as_mut(),
+        None,
+        Some(vectors.as_mut()),
+        Par::Seq,
+        MemStack::new(&mut workspace),
+        faer::Spec::default(),
+    )
+    .ok()?;
+    Some((
+        DVector::from_fn(n, |i, _| re[i]),
+        DVector::from_fn(n, |i, _| im[i]),
+        DMatrix::from_fn(n, n, |i, j| vectors[(i, j)]),
+    ))
 }
 
 /// A 3x3 matrix's SVD, singular values largest first.
@@ -250,6 +300,24 @@ mod tests {
             let (u, s, v_t) = svd3(&m).unwrap();
             assert!((u * Matrix3::from_diagonal(&s) * v_t - m).amax() < 1e-15);
         }
+    }
+
+    /// A real eigenvector satisfies `A v = λ v`; a rotation block's pair is complex.
+    #[test]
+    fn eigenpairs_of_a_real_matrix() {
+        #[rustfmt::skip] // keep one matrix row per line
+        let a = DMatrix::from_row_slice(3, 3, &[
+            0.0, -1.0, 0.0,
+            1.0, 0.0, 0.0,
+            0.0, 0.0, 2.0,
+        ]);
+        let (re, im, vectors) = eigen_real(&a).unwrap();
+        let real: Vec<usize> = (0..3).filter(|&j| im[j] == 0.0).collect();
+        assert_eq!(real.len(), 1);
+        let (j, v) = (real[0], vectors.column(real[0]));
+        assert!((re[j] - 2.0).abs() < 1e-14);
+        assert!((&a * v - v * re[j]).amax() < 1e-14);
+        assert!(eigen_real(&DMatrix::zeros(2, 3)).is_none());
     }
 
     /// The minimum-norm solution of a rank-deficient system ignores the null direction.
