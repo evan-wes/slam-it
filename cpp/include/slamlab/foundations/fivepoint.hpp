@@ -62,7 +62,9 @@ enum class Solver : std::uint8_t {
 /// @param bearings1 Five unit bearings in camera 1.
 /// @param bearings2 Five unit bearings in camera 2.
 /// @param solver The solver.
-/// @return The real solutions (none for a degenerate sample).
+/// @return The real solutions (none for a degenerate sample), in canonical order: each
+///         signed so its first largest-magnitude entry, row by row, is positive, then sorted
+///         lexicographically by its row-major entries.
 [[nodiscard]] std::vector<Eigen::Matrix3d> solve(
     const Eigen::Ref<const correspondences::Rows3>& bearings1,
     const Eigen::Ref<const correspondences::Rows3>& bearings2, Solver solver);
@@ -71,7 +73,8 @@ enum class Solver : std::uint8_t {
 /// @param bearings1 Five unit bearings in camera 1.
 /// @param bearings2 Five unit bearings in camera 2.
 /// @param solver The solver.
-/// @return The solutions; `InvalidInput` unless there are five unit pairs.
+/// @return The solutions, in canonical order (see `solve`); `InvalidInput` unless there are
+///         five unit pairs.
 [[nodiscard]] Result<std::vector<Eigen::Matrix3d>> essential_5pt(
     const Eigen::Ref<const correspondences::Rows3>& bearings1,
     const Eigen::Ref<const correspondences::Rows3>& bearings2, Solver solver);

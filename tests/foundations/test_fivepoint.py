@@ -72,17 +72,21 @@ def test_nister_and_stewenius_find_the_same_solutions(backend: str) -> None:
             assert _distance(stewenius, e) < 1e-9
 
 
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
 @pytest.mark.parametrize("solver", fivepoint.SOLVERS)
-def test_backends_agree(solver: str) -> None:
-    """The C++ core returns the reference's solutions, in any order."""
-    chosen = require_function("cpp", fivepoint.__name__, "essential_5pt")
+def test_backends_agree(backend: str, solver: str) -> None:
+    """Every compiled core returns the reference's solutions, signed and ordered alike.
+
+    The canonical order (the module's "Canonical order") makes the order independent of each
+    library's null-space basis and Schur form, so the lists match element for element.
+    """
+    chosen = require_function(backend, fivepoint.__name__, "essential_5pt")
     for seed in range(TRIALS):
         b1, b2, _ = _sample(seed)
         reference = fivepoint.essential_5pt(b1, b2, solver=solver)
         compiled = fivepoint.essential_5pt(b1, b2, solver=solver, backend=chosen)
-        assert len(reference) == len(compiled)
-        for e in reference:
-            assert _distance(compiled, e) < 1e-10
+        assert compiled.shape == reference.shape
+        np.testing.assert_allclose(compiled, reference, rtol=0, atol=1e-10)
 
 
 def test_poselib_solutions_are_among_ours() -> None:

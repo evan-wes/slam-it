@@ -871,17 +871,63 @@ fn stewenius(bearings1: &[Vector3<f64>], bearings2: &[Vector3<f64>]) -> Vec<Matr
 ///
 /// # Returns
 ///
-/// The real solutions (none for a degenerate sample).
+/// The real solutions (none for a degenerate sample), in canonical order (see `canonical`).
 #[must_use]
 pub fn solve(
     bearings1: &[Vector3<f64>],
     bearings2: &[Vector3<f64>],
     solver: Solver,
 ) -> Vec<Matrix3<f64>> {
-    match solver {
+    canonical(match solver {
         Solver::Nister => nister(bearings1, bearings2),
         Solver::Stewenius => stewenius(bearings1, bearings2),
+    })
+}
+
+/// A matrix's entries in row-major order, the canonical order's key.
+///
+/// # Arguments
+///
+/// * `m` - The matrix.
+///
+/// # Returns
+///
+/// Its nine entries, row by row.
+fn row_major(m: &Matrix3<f64>) -> [f64; 9] {
+    std::array::from_fn(|k| m[(k / 3, k % 3)])
+}
+
+/// Puts the solutions in canonical order (`slamlab.foundations.fivepoint`'s "Canonical
+/// order"): each signed so its first largest-magnitude entry, row by row, is positive, then
+/// all sorted lexicographically by their row-major entries.
+///
+/// # Arguments
+///
+/// * `solutions` - The solutions.
+///
+/// # Returns
+///
+/// The same solutions, signed and sorted.
+fn canonical(mut solutions: Vec<Matrix3<f64>>) -> Vec<Matrix3<f64>> {
+    for essential in &mut solutions {
+        let entries = row_major(essential);
+        let mut largest = 0;
+        for k in 1..entries.len() {
+            if entries[k].abs() > entries[largest].abs() {
+                largest = k;
+            }
+        }
+        if !(entries[largest] > 0.0) {
+            *essential = -*essential;
+        }
     }
+    // Every solution is finite, so the comparison is total.
+    solutions.sort_by(|a, b| {
+        row_major(a)
+            .partial_cmp(&row_major(b))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    solutions
 }
 
 /// Every essential matrix five bearing pairs allow.

@@ -53,6 +53,13 @@ report are arbitrary, and some do not even give an essential matrix. Those are d
 (:data:`ESSENTIAL_TOLERANCE`); the rest fit, with an arbitrary ``t``, which RANSAC's scoring
 and two-view's homography handle.
 
+**Canonical order.** The solvers find the same solutions in every language, but in an order
+that depends on each library's null-space basis and Schur form. So every core returns them
+canonically: each E signed so its largest-magnitude entry (the first, in row-major order) is
+positive, then sorted lexicographically by its row-major entries. RANSAC keeps the first of
+equally good models, so this keeps the cores' decisions alike; only solutions that agree to
+roundoff in their leading entries could still be ordered differently.
+
 The C++ core (``slamlab/foundations/fivepoint.hpp``) implements both.
 """
 
@@ -420,6 +427,19 @@ def _stewenius(bearings1: NDArray[np.float64], bearings2: NDArray[np.float64]) -
     return solutions
 
 
+def _canonical(solutions: list[Matrix3]) -> list[Matrix3]:
+    """Put the solutions in canonical order (see the module's "Canonical order").
+
+    Each is signed so its first largest-magnitude entry is positive, then all are sorted
+    lexicographically by their row-major entries.
+    """
+    signed = []
+    for essential in solutions:
+        flat = essential.ravel()
+        signed.append(essential if flat[np.argmax(np.abs(flat))] > 0.0 else -essential)
+    return sorted(signed, key=lambda e: tuple(e.ravel()))
+
+
 def solve_reference(
     bearings1: NDArray[np.float64], bearings2: NDArray[np.float64], solver: str
 ) -> list[Matrix3]:
@@ -435,7 +455,8 @@ def solve_reference(
     Returns
     -------
     list of ndarray of float64, shape (3, 3)
-        Every real solution that is essential (none for a degenerate sample).
+        Every real solution that is essential (none for a degenerate sample), in canonical
+        order (see the module's "Canonical order").
 
     Raises
     ------
@@ -443,9 +464,9 @@ def solve_reference(
         If `solver` is unknown.
     """
     if solver == "nister":
-        return _nister(bearings1, bearings2)
+        return _canonical(_nister(bearings1, bearings2))
     if solver == "stewenius":
-        return _stewenius(bearings1, bearings2)
+        return _canonical(_stewenius(bearings1, bearings2))
     raise InvalidInputError(f"solver: expected one of {SOLVERS}, got {solver!r}")
 
 
@@ -476,8 +497,8 @@ def essential_5pt(
     Returns
     -------
     ndarray of float64, shape (K, 3, 3)
-        The real solutions, K <= 10, each with singular values (1, 1, 0), up to sign; K = 0
-        for a degenerate sample.
+        The real solutions, K <= 10, each with singular values (1, 1, 0), in canonical order
+        (see the module's "Canonical order"); K = 0 for a degenerate sample.
 
     Raises
     ------
