@@ -6,8 +6,10 @@
 //! nalgebra 0.35's SVDs are not backward stable: its 3x3 SVD works on `MᵀM`, squaring the
 //! condition number (thin P3P triangles gave rotations off by 0.7), and its dynamic SVD
 //! leaves errors near 1e-4 in some graded matrices' trailing singular pairs (8-point E and F
-//! off by up to 6e-3). faer's matches LAPACK to roundoff on both (PR 6 panel, L1 and L2).
-//! nalgebra stays the crate's matrix type; the factors are copied across at each call.
+//! off by up to 6e-3). faer's matches LAPACK to roundoff on both (PR 6 panel, L1 and L2),
+//! once the matrix is scaled into a safe range as LAPACK's `dlascl` does (faer does not; PR 6
+//! panel, run 2, L8). nalgebra stays the crate's matrix type; the factors are copied across at
+//! each call. Only the crate uses this module.
 //! There is no Python or C++ counterpart: numpy (LAPACK) and Eigen (`JacobiSVD`) need none.
 
 use faer::dyn_stack::{MemBuffer, MemStack};
@@ -15,10 +17,6 @@ use faer::linalg::evd::{self as faer_evd, ComputeEigenvectors};
 use faer::linalg::svd::{self as faer_svd, ComputeSvdVectors};
 use faer::{Mat, Par};
 use nalgebra::{DMatrix, DVector, Matrix3, Vector3};
-
-/// Iterations allowed in nalgebra's symmetric eigen-decomposition (EPnP) before it is
-/// abandoned.
-pub const MAX_ITERATIONS: usize = 10_000;
 
 /// A matrix's thin SVD: `M = U diag(σ) Vᵀ` with k = min(m, n) singular triplets, as
 /// nalgebra's and LAPACK's thin SVDs return them. A caller that needs all n right singular
@@ -53,7 +51,25 @@ pub fn svd(matrix: &DMatrix<f64>, compute_u: bool, compute_v: bool) -> Option<Sv
     }
     let (m, n) = matrix.shape();
     let k = m.min(n);
-    let a = Mat::<f64>::from_fn(m, n, |i, j| matrix[(i, j)]);
+    // Scale the largest entry to about 1 by a power of two (exact), as LAPACK does before its
+    // SVD: faer works on the matrix as given, and its squares underflow below about 1e-154
+    // (silently wrong factors) and overflow above about 1e154. U and V are unchanged; σ
+    // scales back. The factor is applied in two halves so that neither overflows.
+    let largest = matrix.amax();
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a finite f64's binary exponent is within ±1100"
+    )]
+    let exponent = if largest > 0.0 {
+        -(largest.log2().round() as i32)
+    } else {
+        0
+    };
+    let (half, rest) = (
+        f64::from(exponent / 2).exp2(),
+        f64::from(exponent - exponent / 2).exp2(),
+    );
+    let a = Mat::<f64>::from_fn(m, n, |i, j| matrix[(i, j)] * half * rest);
     let vectors = |wanted: bool| {
         if wanted {
             ComputeSvdVectors::Thin
@@ -86,7 +102,7 @@ pub fn svd(matrix: &DMatrix<f64>, compute_u: bool, compute_v: bool) -> Option<Sv
     .ok()?;
     Some(Svd {
         u: u.map(|u| DMatrix::from_fn(m, k, |i, j| u[(i, j)])),
-        singular_values: DVector::from_fn(k, |i, _| s[i]),
+        singular_values: DVector::from_fn(k, |i, _| s[i] / half / rest),
         v_t: v.map(|v| DMatrix::from_fn(k, n, |i, j| v[(j, i)])),
     })
 }
@@ -102,8 +118,9 @@ pub fn svd(matrix: &DMatrix<f64>, compute_u: bool, compute_v: bool) -> Option<Sv
 ///
 /// The eigenvalues' real and imaginary parts, and the eigenvectors as columns: for a real
 /// eigenvalue, column j is its eigenvector; a complex pair's columns hold the real and
-/// imaginary parts of the first one's. `None` for a non-finite matrix or one that does not
-/// converge.
+/// imaginary parts of the first one's. `None` for a non-finite matrix. faer does not report a
+/// Schur iteration that fails to converge (numpy raises there); on the small matrices the
+/// crate decomposes this is not observed, and the callers filter what they find.
 #[must_use]
 pub fn eigen_real(matrix: &DMatrix<f64>) -> Option<(DVector<f64>, DVector<f64>, DMatrix<f64>)> {
     if !matrix.is_square() || !matrix.iter().all(|x| x.is_finite()) {
@@ -285,6 +302,29 @@ mod tests {
                 assert!((d.u.unwrap() * s * d.v_t.unwrap() - m).amax() < 1e-13);
             }
         }
+    }
+
+    /// Scaled far from 1, a matrix keeps its singular values (relative) and vectors, where an
+    /// unscaled faer SVD underflows below about 1e-154 and overflows above 1e154 (L8).
+    #[test]
+    fn extreme_scales_decompose_exactly() {
+        #[rustfmt::skip] // keep one matrix row per line
+        let base = DMatrix::from_row_slice(3, 3, &[
+            4.0, 1.0, 0.0,
+            1.0, 3.0, 1.0,
+            0.0, 1.0, 2.0,
+        ]);
+        let reference = svd(&base, true, true).unwrap();
+        for scale in [1e-300, 1e-200, 1e-160, 1e160, 1e200, 1e300] {
+            let d = svd(&(&base * scale), true, true).unwrap();
+            let relative = (&d.singular_values / scale - &reference.singular_values).amax();
+            assert!(relative < 1e-14, "scale {scale:e}");
+            let (u, v_t) = (d.u.unwrap(), d.v_t.unwrap());
+            let rebuilt = &u * DMatrix::from_diagonal(&reference.singular_values) * &v_t;
+            assert!((rebuilt - &base).amax() < 1e-14, "scale {scale:e}");
+        }
+        let zero = svd(&DMatrix::zeros(3, 3), true, true).unwrap();
+        assert!(zero.singular_values.iter().all(|&s| s == 0.0));
     }
 
     /// A rank-2 3x3 with σ = (1, 1e-8, 0) keeps σ₂ to 1e-6 relative, where nalgebra 0.35's

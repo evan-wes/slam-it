@@ -21,6 +21,10 @@ use crate::linalg::{eigen_real, least_squares, singular_values3, svd};
 
 /// Correspondences a 5-point solver takes.
 pub const SAMPLE_SIZE: usize = 5;
+/// Entries of E within this relative margin of the largest magnitude are tied for the
+/// canonical sign; the first in row-major order decides (see
+/// `slamlab.foundations.fivepoint.SIGN_TIE_RTOL`).
+pub const SIGN_TIE_RTOL: f64 = 1e-6;
 /// At most this many Gauss-Newton steps polish each solution on the ten cubics.
 pub const POLISH_MAX_STEPS: usize = 10;
 /// Polishing stops when a step is below this, relative to the solution (at least 1).
@@ -843,18 +847,31 @@ fn stewenius(bearings1: &[Vector3<f64>], bearings2: &[Vector3<f64>]) -> Vec<Matr
         if im[j].abs() > REAL_TOLERANCE * re[j].hypot(im[j]).max(1.0) {
             continue;
         }
-        let vector = vectors.column(j);
-        if !(vector[9].abs() > 0.0) {
+        // The eigenvector as real and imaginary parts: a real eigenvalue's is column j; a
+        // near-real complex pair's is (column j, ±column j + 1) in dgeev's layout, the
+        // conjugate member taking the first member's columns (panel run 2, L12).
+        let (real, imaginary) = if im[j] == 0.0 {
+            (vectors.column(j), None)
+        } else if im[j] > 0.0 {
+            (vectors.column(j), Some(vectors.column(j + 1)))
+        } else {
+            (vectors.column(j - 1), Some(vectors.column(j)))
+        };
+        // Re(v_k / v_9), as Python and C++ take it: the same for both members of a pair, and
+        // exactly v_k / v_9 for a real eigenvector.
+        let (c, d) = (real[9], imaginary.map_or(0.0, |v| v[9]));
+        let modulus = c * c + d * d;
+        if !(modulus > 0.0) {
             continue;
         }
+        let ratio = |k: usize| match imaginary {
+            None => real[k] / c,
+            Some(v) => (real[k] * c + v[k] * d) / modulus,
+        };
         let xyz = polish(
             &system.constraints,
             &GREVLEX_ORDER,
-            Vector3::new(
-                vector[6] / vector[9],
-                vector[7] / vector[9],
-                vector[8] / vector[9],
-            ),
+            Vector3::new(ratio(6), ratio(7), ratio(8)),
         );
         keep(&mut solutions, &system.basis, &xyz);
     }
@@ -898,8 +915,9 @@ fn row_major(m: &Matrix3<f64>) -> [f64; 9] {
 }
 
 /// Puts the solutions in canonical order (`slamlab.foundations.fivepoint`'s "Canonical
-/// order"): each signed so its first largest-magnitude entry, row by row, is positive, then
-/// all sorted lexicographically by their row-major entries.
+/// order"): each signed so that its first entry, row by row, within [`SIGN_TIE_RTOL`] of the
+/// largest magnitude is positive, then all sorted lexicographically by their row-major
+/// entries.
 ///
 /// # Arguments
 ///
@@ -911,13 +929,12 @@ fn row_major(m: &Matrix3<f64>) -> [f64; 9] {
 fn canonical(mut solutions: Vec<Matrix3<f64>>) -> Vec<Matrix3<f64>> {
     for essential in &mut solutions {
         let entries = row_major(essential);
-        let mut largest = 0;
-        for k in 1..entries.len() {
-            if entries[k].abs() > entries[largest].abs() {
-                largest = k;
-            }
-        }
-        if !(entries[largest] > 0.0) {
+        let largest = entries.iter().fold(0.0_f64, |m, e| m.max(e.abs()));
+        let first = entries
+            .iter()
+            .position(|e| e.abs() >= largest * (1.0 - SIGN_TIE_RTOL))
+            .unwrap_or(0);
+        if !(entries[first] > 0.0) {
             *essential = -*essential;
         }
     }

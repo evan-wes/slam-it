@@ -89,6 +89,27 @@ def test_backends_agree(backend: str, solver: str) -> None:
         np.testing.assert_allclose(compiled, reference, rtol=0, atol=1e-10)
 
 
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+@pytest.mark.parametrize("solver", fivepoint.SOLVERS)
+def test_backends_agree_on_pure_translation(backend: str, solver: str) -> None:
+    """Without rotation, E = [t]ₓ is skew: its two largest entries tie, with opposite signs.
+
+    The canonical sign takes the first tied entry in row-major order, so every core signs and
+    orders the solutions alike (panel run 2, L10).
+    """
+    chosen = require_function(backend, fivepoint.__name__, "essential_5pt")
+    rng = np.random.default_rng(3)
+    for _ in range(TRIALS):
+        points = rng.uniform(-1.0, 1.0, (fivepoint.SAMPLE_SIZE, 3)) + np.array([0.0, 0.0, 5.0])
+        moved = points + rng.normal(size=3)
+        b1 = points / np.linalg.norm(points, axis=1, keepdims=True)
+        b2 = moved / np.linalg.norm(moved, axis=1, keepdims=True)
+        reference = fivepoint.essential_5pt(b1, b2, solver=solver)
+        compiled = fivepoint.essential_5pt(b1, b2, solver=solver, backend=chosen)
+        assert compiled.shape == reference.shape
+        np.testing.assert_allclose(compiled, reference, rtol=0, atol=1e-8)
+
+
 def test_poselib_solutions_are_among_ours() -> None:
     """Every accurate solution PoseLib's 5-point solver returns is one of ours.
 

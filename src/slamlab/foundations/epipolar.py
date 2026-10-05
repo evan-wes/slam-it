@@ -686,8 +686,15 @@ def start_motion(essential: Matrix3) -> Motion:
     -------
     Motion
         The start.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If E is not finite.
+    slamlab.foundations.errors.DegenerateError
+        If E's rank is below 2 (no translation direction), as in the C++ and Rust cores.
     """
-    candidates = decompose_reference(essential)
+    candidates = decompose_essential(essential)
     best = max(candidates, key=lambda pose: float(np.trace(pose[:3, :3])))
     translation = best[:3, 3]
     if translation[np.argmax(np.abs(translation))] < 0.0:

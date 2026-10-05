@@ -591,20 +591,23 @@ std::array<double, 9> row_major(const Eigen::Matrix3d& m) {
 }
 
 /// @brief Put the solutions in canonical order (`slamlab.foundations.fivepoint`'s "Canonical
-///        order"): each signed so its first largest-magnitude entry, row by row, is positive,
-///        then all sorted lexicographically by their row-major entries.
+///        order"): each signed so that its first entry, row by row, within `kSignTieRtol` of
+///        the largest magnitude is positive, then all sorted lexicographically by their
+///        row-major entries.
 /// @param solutions The solutions.
 /// @return The same solutions, signed and sorted.
 std::vector<Eigen::Matrix3d> canonical(std::vector<Eigen::Matrix3d> solutions) {
   for (Eigen::Matrix3d& essential : solutions) {
     const std::array<double, 9> entries = row_major(essential);
-    std::size_t largest = 0;
-    for (std::size_t k = 1; k < entries.size(); ++k) {
-      if (std::abs(entries.at(k)) > std::abs(entries.at(largest))) {
-        largest = k;
-      }
+    double largest = 0.0;
+    for (const double entry : entries) {
+      largest = std::max(largest, std::abs(entry));
     }
-    if (!(entries.at(largest) > 0.0)) {
+    std::size_t first = 0;
+    while (std::abs(entries.at(first)) < largest * (1.0 - kSignTieRtol)) {
+      ++first;
+    }
+    if (!(entries.at(first) > 0.0)) {
       essential = -essential;
     }
   }

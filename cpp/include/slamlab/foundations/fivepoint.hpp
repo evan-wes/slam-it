@@ -25,6 +25,10 @@ inline constexpr std::uint32_t kSampleSize = 5;
 inline constexpr int kPolishMaxSteps = 10;
 /// @brief Polishing stops when a step is below this, relative to the solution (at least 1).
 inline constexpr double kPolishTolerance = 1e-14;
+/// @brief Entries of E within this relative margin of the largest magnitude are tied for the
+///        canonical sign; the first in row-major order decides (see
+///        `slamlab.foundations.fivepoint.SIGN_TIE_RTOL`).
+inline constexpr double kSignTieRtol = 1e-6;
 /// @brief An eigenvalue counts as real when its imaginary part is below this, relative to its
 ///        modulus (at least 1).
 inline constexpr double kRealTolerance = 1e-10;
@@ -63,8 +67,8 @@ enum class Solver : std::uint8_t {
 /// @param bearings2 Five unit bearings in camera 2.
 /// @param solver The solver.
 /// @return The real solutions (none for a degenerate sample), in canonical order: each
-///         signed so its first largest-magnitude entry, row by row, is positive, then sorted
-///         lexicographically by its row-major entries.
+///         signed so that its first entry, row by row, within `kSignTieRtol` of the largest
+///         magnitude is positive, then sorted lexicographically by its row-major entries.
 [[nodiscard]] std::vector<Eigen::Matrix3d> solve(
     const Eigen::Ref<const correspondences::Rows3>& bearings1,
     const Eigen::Ref<const correspondences::Rows3>& bearings2, Solver solver);

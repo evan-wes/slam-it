@@ -47,6 +47,21 @@ def test_ill_conditioned_decomposition_matches_fixture(backend: str) -> None:
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("scale", [1e-200, 1e200])
+def test_decomposition_does_not_depend_on_scale(backend: str, scale: float) -> None:
+    """E scaled far from 1 gives E's own candidates (panel run 2, L8).
+
+    LAPACK and Eigen scale a matrix into a safe range before its SVD; an SVD that does not
+    loses the factors to underflow below about 1e-154, or fails above about 1e154.
+    """
+    chosen = require_function(backend, epipolar.__name__, "decompose_essential")
+    essential = _true_essential()
+    reference = epipolar.decompose_essential(essential, backend="python")
+    scaled = epipolar.decompose_essential(scale * essential, backend=chosen)
+    sc.assert_contains(scaled, reference, 1e-12)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize("function", DIRECT)
 def test_matches_fixture(backend: str, function: str) -> None:
     """Each backend matches the 50-digit oracle (matrices up to sign)."""
@@ -457,3 +472,11 @@ def test_the_summary_reports_the_refinement(backend: str) -> None:
     assert refined.summary.refined
     assert refined.summary.run.score < plain.summary.run.score
     assert refined.summary.iterations == plain.summary.iterations
+
+
+def test_start_motion_rejects_what_does_not_decompose() -> None:
+    """A non-finite or rank-1 E has no start motion: errors, as in the compiled cores."""
+    with pytest.raises(InvalidInputError):
+        epipolar.start_motion(np.full((3, 3), np.nan))
+    with pytest.raises(DegenerateError, match="rank"):
+        epipolar.start_motion(np.diag([1.0, 0.0, 0.0]))

@@ -55,8 +55,11 @@ and two-view's homography handle.
 
 **Canonical order.** The solvers find the same solutions in every language, but in an order
 that depends on each library's null-space basis and Schur form. So every core returns them
-canonically: each E signed so its largest-magnitude entry (the first, in row-major order) is
-positive, then sorted lexicographically by its row-major entries. RANSAC keeps the first of
+canonically: each E signed so its largest-magnitude entry is positive, then sorted
+lexicographically by its row-major entries. Entries within :data:`SIGN_TIE_RTOL` of the
+largest count as tied, and the first of them in row-major order decides the sign: a pure
+translation's E is skew-symmetric, so its two largest entries are equal with opposite signs,
+and roundoff alone would otherwise choose. RANSAC keeps the first of
 equally good models, so this keeps the cores' decisions alike; only solutions that agree to
 roundoff in their leading entries could still be ordered differently.
 
@@ -427,16 +430,26 @@ def _stewenius(bearings1: NDArray[np.float64], bearings2: NDArray[np.float64]) -
     return solutions
 
 
+SIGN_TIE_RTOL = 1e-6
+"""Entries of E within this relative margin of the largest magnitude are tied for its sign.
+
+Wider than the cores' disagreement on a solution (about 1e-10 relative), so they choose the
+same entry; see the module's "Canonical order"."""
+
+
 def _canonical(solutions: list[Matrix3]) -> list[Matrix3]:
     """Put the solutions in canonical order (see the module's "Canonical order").
 
-    Each is signed so its first largest-magnitude entry is positive, then all are sorted
-    lexicographically by their row-major entries.
+    Each is signed so that its first entry, in row-major order, within :data:`SIGN_TIE_RTOL`
+    of the largest magnitude is positive; then all are sorted lexicographically by their
+    row-major entries.
     """
     signed = []
     for essential in solutions:
         flat = essential.ravel()
-        signed.append(essential if flat[np.argmax(np.abs(flat))] > 0.0 else -essential)
+        magnitude = np.abs(flat)
+        first = int(np.flatnonzero(magnitude >= magnitude.max() * (1.0 - SIGN_TIE_RTOL))[0])
+        signed.append(essential if flat[first] > 0.0 else -essential)
     return sorted(signed, key=lambda e: tuple(e.ravel()))
 
 

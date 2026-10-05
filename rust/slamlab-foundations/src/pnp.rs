@@ -14,7 +14,7 @@ use nalgebra::{
 
 use crate::correspondences::{check_correspondences, gather, normalised_xy};
 use crate::error::{ErrorKind, Result, fail, fail_setting};
-use crate::linalg::{MAX_ITERATIONS, least_squares};
+use crate::linalg::least_squares;
 use crate::p3p::{self, Solver};
 use crate::ransac::{self, Estimator, Options, RefinedSolution};
 use crate::{alignment, nls, se3, so3};
@@ -30,6 +30,10 @@ pub const POLISH_MAX_STEPS: usize = 10;
 pub const POLISH_TOLERANCE: f64 = 1e-14;
 /// Levenberg-Marquardt iterations of the pose refinement.
 pub const REFINE_ITERATIONS: i64 = 20;
+
+/// Iterations allowed in nalgebra's symmetric eigen-decomposition (EPnP's control points and
+/// null space) before it is abandoned.
+const MAX_ITERATIONS: usize = 10_000;
 
 /// The control points' six pairs, in the rows of EPnP's distance system.
 const PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
@@ -277,15 +281,20 @@ fn monomials(betas: &Vector4<f64>) -> SVector<f64, 10> {
 }
 
 /// Below this, relative to the largest, an `R` diagonal entry sends a beta step to the SVD.
-const QR_RANK_CUTOFF: f64 = 1e-8;
+/// The diagonal of an unpivoted R does not bound J's conditioning, so this is a heuristic,
+/// chosen by measurement (PR 6 panel, run 2, L9): over 6000 EPnP scenes it matched `lstsq` on
+/// every generic, near-planar and near-collinear one, and differed on 23 of 1500 scenes a few
+/// micrometres to centimetres across, where every backend (C++ included) already disagrees
+/// with Python's at roundoff.
+const QR_RANK_CUTOFF: f64 = 1e-4;
 
 /// One Gauss-Newton step of the beta polish, `argmin |J δ - r|`.
 ///
-/// A full-rank J (every diagonal entry of R above [`QR_RANK_CUTOFF`] of the largest) is solved
-/// by Householder QR, backward stable for full-rank least squares and equal to the SVD solution
-/// to roundoff; anything nearer rank deficiency takes the minimum-norm SVD solve, numpy's
-/// `lstsq`. The QR path keeps faer's per-call cost off these tiny systems (several hundred per
-/// PnP RANSAC run).
+/// A J whose R has every diagonal entry above [`QR_RANK_CUTOFF`] of the largest is solved by
+/// Householder QR, backward stable for full-rank least squares, which agrees with the SVD
+/// solution to within ε κ(J); anything nearer rank deficiency takes the minimum-norm SVD
+/// solve, numpy's `lstsq`. The QR path keeps faer's per-call cost off these tiny systems
+/// (several hundred per PnP RANSAC run).
 ///
 /// # Arguments
 ///
@@ -728,5 +737,22 @@ mod tests {
         points[0] = 2.0 * centre - points[0]; // mirrored through the camera centre
         let failed = refine(&pose, points, normalised_xy(&bearings), 1e-3).unwrap_err();
         assert_eq!(failed.kind, ErrorKind::InvalidInput);
+    }
+
+    /// A rank-deficient beta step takes the SVD fallback: the minimum-norm solution, as numpy's
+    /// `lstsq` gives it, not QR's (panel run 2, L9).
+    #[test]
+    fn a_rank_deficient_beta_step_takes_the_minimum_norm_solution() {
+        // Columns 0 and 1 are equal, so R's second diagonal entry is zero.
+        let column = SVector::<f64, 6>::new(1.0, 2.0, 3.0, 4.0, 5.0, 6.0);
+        let mut jacobian = Matrix6x4::zeros();
+        jacobian.set_column(0, &column);
+        jacobian.set_column(1, &column);
+        jacobian.set_column(2, &SVector::<f64, 6>::new(0.0, 1.0, 0.0, 1.0, 0.0, 1.0));
+        jacobian.set_column(3, &SVector::<f64, 6>::new(1.0, 0.0, 1.0, 0.0, 1.0, 0.0));
+        let residual = column * 2.0;
+        let step = beta_step(&jacobian, &residual);
+        // x0 + x1 = 2 is determined, x0 - x1 is not: the minimum norm splits it evenly.
+        assert!((step - Vector4::new(1.0, 1.0, 0.0, 0.0)).amax() < 1e-12);
     }
 }

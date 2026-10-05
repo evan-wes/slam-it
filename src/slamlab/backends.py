@@ -28,6 +28,14 @@ BACKENDS: tuple[str, ...] = ("python", "cpp", "rust")
 COMPILED_BACKENDS: tuple[str, ...] = BACKENDS[1:]
 """Every compiled backend: each implements in full every module it exposes."""
 
+COMPILED_RUNGS: dict[str, tuple[str, ...]] = {
+    "cpp": ("foundations", "edge"),
+    "rust": ("foundations", "edge"),
+}
+"""The rungs each compiled backend covers (design doc, "Languages"): C++ rung 0 and the edge
+rung, Rust rung 0 and the edge VO. Every module with an ``Implementation`` Protocol in one of
+them must be in that backend; the other rungs are Python's (or PyTorch's) alone."""
+
 LOCKSTEP_BACKENDS: frozenset[str] = frozenset(BACKENDS)
 """Backends that implement every compiled module, so every module's tests run on each.
 

@@ -182,24 +182,47 @@ def _public_callables(module: ModuleType) -> set[str]:
     }
 
 
-def _protocol_modules() -> set[str]:
-    """Return every slamlab module that defines an ``Implementation`` Protocol (its path)."""
+def _protocol_modules(rungs: tuple[str, ...]) -> set[str]:
+    """Return every module of `rungs` that defines an ``Implementation`` Protocol (its path).
+
+    Only those rungs are imported: the PyTorch rungs, which no compiled backend covers, stay
+    out of the CPU tests.
+    """
     found = set()
-    for info in pkgutil.walk_packages(slamlab.__path__, "slamlab."):
-        module = importlib.import_module(info.name)
+    for rung in rungs:
+        package = importlib.import_module(f"slamlab.{rung}")
+        found |= _protocols_below(package)
+    return found
+
+
+def _protocols_below(package: ModuleType) -> set[str]:
+    """Return the modules of `package` (itself included) that define ``Implementation``."""
+    found = set()
+    infos = pkgutil.walk_packages(package.__path__, f"{package.__name__}.")
+    for name in [package.__name__, *(info.name for info in infos)]:
+        module = importlib.import_module(name)
         protocol = vars(module).get("Implementation")
         if protocol is not None and protocol.__module__ == module.__name__:
             found.add(module.__name__)
     return found
 
 
+def test_compiled_rungs_name_every_compiled_backend_and_real_rungs() -> None:
+    """``COMPILED_RUNGS`` covers exactly the compiled backends, with slamlab's own rungs."""
+    assert set(backends.COMPILED_RUNGS) == set(backends.COMPILED_BACKENDS)
+    rungs = {m.name for m in pkgutil.iter_modules(slamlab.__path__) if m.ispkg}
+    for name, covered in backends.COMPILED_RUNGS.items():
+        assert set(covered) <= rungs, f"{name}: {sorted(set(covered) - rungs)}"
+
+
 @pytest.mark.parametrize("name", backends.COMPILED_BACKENDS)
 def test_every_compiled_backend_has_every_module(name: str) -> None:
-    """Each compiled backend implements every module with an ``Implementation`` Protocol.
+    """Each compiled backend implements every Protocol module of the rungs it covers.
 
-    Every backend is lock-step, so this is one assertion rather than a property spread over
-    each module's tests (panel A1 on PR 6). A compiled submodule stands for the module that
-    defines its Protocol (``foundations.ba`` for ``slamlab.foundations.ba.solve``'s).
+    Every backend is lock-step within its rungs (``backends.COMPILED_RUNGS``), so this is one
+    assertion rather than a property spread over each module's tests (panel A1 on PR 6). A
+    compiled submodule stands for the module that defines its Protocol (``foundations.ba``
+    for ``slamlab.foundations.ba.solve``'s).
     """
     root_name = _EXTENSION_ROOTS[require_backend(name)]
     extension = importlib.import_module(root_name)
@@ -210,7 +233,7 @@ def test_every_compiled_backend_has_every_module(name: str) -> None:
         if isinstance(getattr(extension, rung, None), ModuleType)
         for path, _ in _implementation_modules(getattr(extension, rung), rung)
     }
-    missing = _protocol_modules() - provided
+    missing = _protocol_modules(backends.COMPILED_RUNGS[name]) - provided
     assert not missing, f"{name} lacks {sorted(missing)}"
 
 
