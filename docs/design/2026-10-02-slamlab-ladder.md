@@ -1,6 +1,7 @@
 # slamlab: a learning ladder for visual SLAM
 
-Status, 2026-10-04: milestone 1 is complete. The scaffold (package-per-rung layout in three
+Status, 2026-10-04: milestone 1 is complete, and milestone 2 is planned (see
+[Milestones](#milestones)). The scaffold (package-per-rung layout in three
 languages, conda environment, CI, two-layer review process) is merged. PR 1, the BA spine,
 added rung 0's geometry and estimation in Python and C++: SO(3), SE(3), Umeyama alignment,
 camera models, nonlinear least squares and bundle adjustment. PR 2 adds two-view geometry: triangulation, LO-MSAC RANSAC, the 8-point essential and
@@ -60,7 +61,7 @@ The ladder spans compute budgets. Every rung stands on rung 0.
 | Rung | What it is | Compute target |
 |---|---|---|
 | **0: Foundations** | Camera models, SE(3)/Sim(3), 8/5-point, RANSAC, triangulation, PnP, Gauss-Newton/LM bundle adjustment with a Schur complement; state estimation, batch (Gauss-Newton/LM) and recursive (error-state filter) | CPU |
-| **Edge: sparse VO** | Features, tracking, keyframes, local BA (ORB-SLAM-lite); optional RGB-D mode with predicted depth | Real-time under an edge budget |
+| **Edge: sparse VO** | ORB features, tracking, keyframes, local BA (ORB-SLAM-lite); monocular, stereo and RGB-D modes (RGB-D from a sensor now, predicted depth later) | Real-time under an edge budget |
 | **Visual-inertial** | IMU preintegration shared by two estimators, a filter (MSCKF) and a smoother (sliding-window optimisation), on top of the edge VO | Edge budget |
 | **Classic heavy** | Incremental SfM, global BA, place recognition, loop closure | Offline, minutes per clip |
 | **Dense BA + depth prior** | Dense bundle adjustment over per-pixel depth, with a monocular depth prior and motion masks | GPU |
@@ -73,13 +74,19 @@ The ladder spans compute budgets. Every rung stands on rung 0.
 |---|---|
 | **Python** | The readable reference implementation of every algorithm; orchestration, evaluation, and the learned rungs (PyTorch) |
 | **C++** | The performance core: rung 0, the edge rung, the edge budgets, and dense-BA kernels if profiling calls for them. Showing C++ is a goal in its own right. |
-| **Rust** | A chosen subset: rung 0 and the edge VO. Kept parallel and off the critical path: a rung never waits for its Rust modules, but a Rust module, once it exists, keeps pace with its reference. |
+| **Rust** | Rung 0 and the edge rung, each in lock-step with Python and C++: every slice of those rungs lands in all three languages together. The other rungs have no Rust. |
 
-**The cores' runtime dependencies.** C++: Eigen. Rust: nalgebra, the matrix type, and faer for
-every SVD and the general eigendecomposition, single-threaded, behind the crate-private
-`linalg` (nalgebra's SVDs are not backward stable; see the Rust port's note). Adding a runtime
-library to a core is a change to this document first, as a runtime dependency of the Python
-package is.
+**Runtime dependencies.** Adding one, to the Python package or to a core, is a change to this
+document first.
+- **Python:** numpy. Pillow too, but in `slamlab.eval` alone, which loads datasets (milestone 2
+  reads PNG frames and depth maps): the algorithm rungs take arrays, never files, and an
+  import-linter contract keeps Pillow out of them.
+- **C++:** Eigen, and one small, widely used PNG decoder for the images (chosen with milestone
+  2's first PR and recorded here).
+- **Rust:** nalgebra, the matrix type, and faer for every SVD and the general
+  eigendecomposition, single-threaded, behind the crate-private `linalg` (nalgebra's SVDs are
+  not backward stable; see the Rust port's note); and a PNG decoder crate, chosen with the C++
+  one.
 
 **Parity.** Shared fixtures (fixed inputs, expected outputs) live in `tests/fixtures/`. Every C++
 and Rust implementation is checked against the Python reference. All three are benchmarked under
@@ -260,8 +267,10 @@ every function of every compiled module's `Implementation` Protocol, and every m
 run on all three backends (`backends.LOCKSTEP_BACKENDS`), so a compiled module that falls
 behind its Python reference fails layer 1. The tests enforce it (`test_backends`,
 `conftest.require_function`). Rust was a chosen set of modules until PR 6 completed rung 0 in
-it. Later rungs (the edge VO) may start Rust as a chosen set again; that rung then brings back
-a way for a module Rust lacks to skip rather than fail.
+it. The edge rung is lock-step from its first slice (decided when milestone 2 was planned):
+each of milestone 2's PRs lands every module in Python, C++ and Rust together, so
+`backends.COMPILED_RUNGS` lists both rungs for both compiled backends and nothing needs a skip.
+A rung a compiled backend does not cover is simply absent from its entry.
 
 ## Package layout
 
@@ -346,7 +355,7 @@ reifyscene a measured payoff.
 | # | Milestone | Languages | Measured on |
 |---|---|---|---|
 | 1 | Rung 0: foundations | Py, C++, Rust | Synthetic scenes with exact answers |
-| 2 | Sparse VO under a laptop-CPU budget | Py, C++, Rust | TUM RGB-D, EuRoC |
+| 2 | Sparse VO under a laptop-CPU budget: monocular, stereo and RGB-D, and the run viewer | Py, C++, Rust | TUM RGB-D, EuRoC |
 | 3 | **reifyscene payoff 1:** depth-aware, motion-masked BA refining VGGT's cameras | Py (+C++ solver) | reifyscene lab-coat masked PSNR; spin GT poses |
 | 4 | Classic heavy: incremental SfM, place recognition, loop closure | Py, C++ | KITTI odometry |
 | 5 | **reifyscene payoff 2:** DROID-style rung with DROID's published weights loaded, plus dense BA with a depth prior (the full Shape-of-Motion recipe) | Py (PyTorch) | Parity with the DROID reference; reifyscene lab-coat and spin |
@@ -354,6 +363,21 @@ reifyscene a measured payoff.
 | 7 | Edge budgets: Pi-class and Jetson-class runs, ARM build check | C++ (Rust) | Same benchmarks, budget-capped |
 | 8 | Train the DROID-style network ourselves | Py (PyTorch) | TartanAir subset; compare against DROID's weights |
 | 9 | Heaviest rung: MegaSaM-style | Py (PyTorch) | Sintel, Bonn RGB-D Dynamic |
+
+**Milestone 2: sparse VO.** The first end-to-end pipeline: ORB-SLAM-lite in the edge rung, in
+monocular, stereo and RGB-D modes, real time under the `laptop-cpu` budget. Rung 0 already has
+its geometry (two-view, PnP, triangulation, BA); what is new is the front end, the pipeline's
+state, evaluation and the budget harness. Every PR lands in Python, C++ and Rust together.
+
+| PR | Slice |
+|---|---|
+| 7 | **Front end and evaluation.** Images (Pillow in `slamlab.eval`; a PNG decoder in each core), grayscale pyramids, blur and bilinear remapping. ORB, our own: multi-scale FAST spread over the image, intensity-centroid orientation, rBRIEF descriptors, Hamming matching with a ratio test. Stereo rectification from EuRoC's calibration, row-constrained matching with subpixel refinement, depth from disparity. The EuRoC reader; TUM's depth maps in the library; the demos on the shared front end. ATE (Sim(3) alignment for monocular, SE(3) for stereo and RGB-D) and RPE; the run format. |
+| 8 | **The pipeline.** Initialisation: two-view for monocular, retrying on later frames when the parallax is low; from depth for stereo and RGB-D, metric from the start. Tracking: a constant-velocity prediction, map points matched by projection, PnP RANSAC as the fallback, motion-only pose refinement. Keyframe selection; local mapping (triangulation, local BA over a keyframe window, culling of points and keyframes). Results on TUM (monocular, RGB-D) and EuRoC (monocular, stereo), with rerun recordings. |
+| 9 | **Budgets and real time.** The `laptop-cpu` harness (pinned cores, capped memory, a per-frame deadline); latency (p50, p95) and peak memory; profiling the C++ and Rust pipelines to real time; the three-language comparison. Python is measured but not held to real time. |
+| 10 | **The run viewer** (see [Public presentation](#public-presentation)), on the run format, used locally until the repo goes public. |
+
+The open items aimed at milestone 2 close in these PRs: the depth-map loader and the shared
+front end in PR 7; the low-parallax retry and the non-invertible homography in PR 8.
 
 **Why milestone 3 sits where it does.** reifyscene's old `pose_refine` was a depth-blind BA with no
 motion masks. Swapping its new poses in while keeping the old depth produced the "shadow" behind
@@ -475,8 +499,8 @@ Disk space is checked before each download.
 
 | Dataset | Tests | Arrives with |
 |---|---|---|
-| TUM RGB-D | Handheld indoor, RGB-D, GT poses, a dynamic subset | Milestone 1 (reader, two-view demo); milestone 2 |
-| EuRoC MAV | Drone, stereo + IMU, mocap GT | Milestone 2 (vision), 6 (IMU) |
+| TUM RGB-D | Handheld indoor, RGB-D, GT poses, a dynamic subset | Milestone 1 (reader, two-view demo); milestone 2 (monocular and RGB-D) |
+| EuRoC MAV | Drone, stereo + IMU, mocap GT | Milestone 2 (monocular and stereo), 6 (IMU) |
 | TUM monoVO | Photometrically calibrated monocular | Milestone 2, optional |
 | KITTI odometry | Driving, long trajectories, loops | Milestone 4 |
 | TUM-VI | Visual-inertial, handheld | Milestone 6 |
@@ -551,8 +575,9 @@ GitHub Pages. Nothing is published before the repo goes public (see
   - later, **rungs side by side:** one sequence run by different rungs of the ladder.
 - **It grows with the ladder.** Milestone 1 has components but no pipeline: its demos record
   single steps (two-view initialisation, PnP, BA) with rerun, and the Rust note compares the
-  three languages in a table. The viewer starts at milestone 2, the first end-to-end run;
-  loop closure (milestone 4) and the dense and learned rungs (milestones 5 and 9) add to it.
+  three languages in a table. The viewer is built in milestone 2 (its last PR), on the first
+  end-to-end runs, and used locally until the repo goes public; loop closure (milestone 4)
+  and the dense and learned rungs (milestones 5 and 9) add to it.
 - **The run format is milestone 2's,** defined with its pipeline: trajectory, keyframes, map
   and per-frame diagnostics, written by the pipeline and read by both rerun and the viewer.
   It lives in `slamlab.eval`, so the algorithm rungs never depend on the viewer.
