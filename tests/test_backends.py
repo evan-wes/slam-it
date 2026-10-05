@@ -182,6 +182,38 @@ def _public_callables(module: ModuleType) -> set[str]:
     }
 
 
+def _protocol_modules() -> set[str]:
+    """Return every slamlab module that defines an ``Implementation`` Protocol (its path)."""
+    found = set()
+    for info in pkgutil.walk_packages(slamlab.__path__, "slamlab."):
+        module = importlib.import_module(info.name)
+        protocol = vars(module).get("Implementation")
+        if protocol is not None and protocol.__module__ == module.__name__:
+            found.add(module.__name__)
+    return found
+
+
+@pytest.mark.parametrize("name", backends.COMPILED_BACKENDS)
+def test_every_compiled_backend_has_every_module(name: str) -> None:
+    """Each compiled backend implements every module with an ``Implementation`` Protocol.
+
+    Every backend is lock-step, so this is one assertion rather than a property spread over
+    each module's tests (panel A1 on PR 6). A compiled submodule stands for the module that
+    defines its Protocol (``foundations.ba`` for ``slamlab.foundations.ba.solve``'s).
+    """
+    root_name = _EXTENSION_ROOTS[require_backend(name)]
+    extension = importlib.import_module(root_name)
+    rungs = [m.name for m in pkgutil.iter_modules(slamlab.__path__) if m.ispkg]
+    provided = {
+        importlib.import_module(f"slamlab.{path}").Implementation.__module__
+        for rung in rungs
+        if isinstance(getattr(extension, rung, None), ModuleType)
+        for path, _ in _implementation_modules(getattr(extension, rung), rung)
+    }
+    missing = _protocol_modules() - provided
+    assert not missing, f"{name} lacks {sorted(missing)}"
+
+
 @pytest.mark.parametrize("name", backends.COMPILED_BACKENDS)
 def test_every_compiled_module_matches_its_protocol(name: str) -> None:
     """Every compiled submodule mirrors a slamlab module and matches its Implementation.
@@ -190,8 +222,8 @@ def test_every_compiled_module_matches_its_protocol(name: str) -> None:
     path must exist and define an ``Implementation`` Protocol; every compiled function must
     be a Protocol member with the Protocol's parameter names, and every member of the Protocol
     must be there: a backend implements each module it has in full. This keeps bindings and
-    their Python contract from drifting. That every backend has every module is checked by
-    each module's own tests, which run on all of them.
+    their Python contract from drifting; that it has every module is
+    :func:`test_every_compiled_backend_has_every_module`.
     """
     root_name = _EXTENSION_ROOTS[require_backend(name)]
     extension = importlib.import_module(root_name)

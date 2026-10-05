@@ -285,9 +285,10 @@ def test_the_refinement_lowers_the_error(backend: str) -> None:
     assert np.median(errors[True]) < np.median(errors[False])
 
 
-def test_backends_agree_on_ransac() -> None:
-    """The C++ core draws the same samples: same inliers, iterations, refinement and pose."""
-    chosen = require_function("cpp", pnp.__name__, "pnp_ransac")
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+def test_backends_agree_on_ransac(backend: str) -> None:
+    """Every compiled core draws the same samples: same inliers, iterations, refinement, pose."""
+    chosen = require_function(backend, pnp.__name__, "pnp_ransac")
     for seed in range(5):
         world, rays, _, _ = _correspondences(seed, 120, sigma_px=1.0, outliers=0.3)
         options = ransac.Options(threshold=2.0 / FOCAL, seed=seed)
@@ -316,9 +317,10 @@ def test_a_point_behind_the_camera_is_never_an_inlier() -> None:
     assert np.all(errors[1:] < 1e-20)
 
 
-def test_the_compiled_codes_match() -> None:
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+def test_the_compiled_codes_match(backend: str) -> None:
     """The solver codes Python sends are P3P's; the termination codes RANSAC's and NLS'."""
-    chosen = require_function("cpp", pnp.__name__, "pnp_ransac")
+    chosen = require_function(backend, pnp.__name__, "pnp_ransac")
     codes = backends.implementation(chosen, pnp.__name__).codes()
     assert tuple(codes["minimal_solver"]) == p3p.SOLVERS
     sc.assert_refined_codes(codes)

@@ -433,9 +433,10 @@ def test_refine_rejects_a_match_at_both_epipoles(backend: str) -> None:
         epipolar.refine_essential(essential, b1, b2, scale=1e-3, backend=backend)
 
 
-def test_the_compiled_code_tables_match() -> None:
-    """The codes Python sends and decodes are the compiled core's, in the same order."""
-    chosen = require_function("cpp", epipolar.__name__, "codes")
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+def test_the_compiled_code_tables_match(backend: str) -> None:
+    """The codes Python sends and decodes are each compiled core's, in the same order."""
+    chosen = require_function(backend, epipolar.__name__, "codes")
     codes = backends.implementation(chosen, epipolar.__name__).codes()
     sc.assert_refined_codes(codes)
     assert tuple(codes["minimal_solver"]) == epipolar.MINIMAL_SOLVERS

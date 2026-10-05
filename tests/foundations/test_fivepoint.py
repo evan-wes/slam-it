@@ -171,9 +171,10 @@ def test_a_repeated_pair_gives_no_solution(backend: str, solver: str) -> None:
     assert fivepoint.essential_5pt(b1, b2, solver=solver, backend=chosen).shape == (0, 3, 3)
 
 
-def test_the_compiled_solver_codes_match() -> None:
-    """The solver codes Python sends are the compiled core's."""
-    chosen = require_function("cpp", fivepoint.__name__, "essential_5pt")
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+def test_the_compiled_solver_codes_match(backend: str) -> None:
+    """The solver codes Python sends are each compiled core's."""
+    chosen = require_function(backend, fivepoint.__name__, "essential_5pt")
     codes = backends.implementation(chosen, fivepoint.__name__).codes()
     assert tuple(codes["solver"]) == fivepoint.SOLVERS
 
