@@ -36,14 +36,13 @@ double smallest_focal(camera::Model model, const Eigen::Ref<const Eigen::VectorX
 /// @brief Check an image shape: each side from 1 to `image::kMaxSide`.
 /// @param rows The rows.
 /// @param cols The columns.
-/// @return Nothing, or `InvalidInput`.
+/// @return Nothing, or `InvalidInput` naming the side out of range.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (rows, cols), as numpy's shape
 Result<void> check_shape(std::int64_t rows, std::int64_t cols) {
-  if (rows < 1 || cols < 1 || rows > image::kMaxSide || cols > image::kMaxSide) {
-    return fail(ErrorKind::kInvalidInput,
-                "shape: expected (rows, cols), each from 1 to " + std::to_string(image::kMaxSide));
+  if (auto ok = check_range("rows", rows, 1, image::kMaxSide); !ok) {
+    return ok;
   }
-  return {};
+  return check_range("cols", cols, 1, image::kMaxSide);
 }
 
 /// @brief A vector's index from a signed count.
@@ -59,8 +58,8 @@ Result<void> check_pyramids(const orb::Features& left, const orb::Features& righ
   if (auto ok = check_range("left.levels", left.levels, 1, orb::kMaxLevels); !ok) {
     return ok;
   }
-  if (!std::isfinite(left.scale_factor) || left.scale_factor <= 1.0) {
-    return fail_setting("left.scale_factor", "must be finite and above 1", left.scale_factor);
+  if (auto ok = image::check_scale_factor(left.scale_factor, "left.scale_factor"); !ok) {
+    return ok;
   }
   if (right.levels != left.levels || right.scale_factor != left.scale_factor) {
     return fail(ErrorKind::kInvalidInput,
@@ -386,7 +385,7 @@ Result<void> check_options(const MatchOptions& options) {
   if (auto ok = check_range("window", options.window, 1, orb::kEdgeThreshold); !ok) {
     return ok;
   }
-  if (auto ok = check_range("search", options.search, 2, kMaxSearch); !ok) {
+  if (auto ok = check_range("search", options.search, 1, kMaxSearch); !ok) {
     return ok;
   }
   if (!std::isfinite(options.outlier_factor) || options.outlier_factor < 1.0) {
@@ -411,12 +410,15 @@ Result<std::vector<StereoMatch>> match(const image::Image& left_image,
   if (!left_levels || !right_levels) {
     return std::unexpected(left_levels ? right_levels.error() : left_levels.error());
   }
-  for (const auto& ok :
-       {check_side(left, *left_levels, "left"), check_side(right, *left_levels, "right"),
-        check_inside(left, *left_levels, options.window)}) {
-    if (!ok) {
-      return std::unexpected(ok.error());
-    }
+  // One after another: check_inside indexes the pyramid by levels check_side has checked.
+  if (auto ok = check_side(left, *left_levels, "left"); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  if (auto ok = check_side(right, *left_levels, "right"); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  if (auto ok = check_inside(left, *left_levels, options.window); !ok) {
+    return std::unexpected(std::move(ok.error()));
   }
   std::vector<double> scales{1.0};
   while (scales.size() < left_levels->size()) {

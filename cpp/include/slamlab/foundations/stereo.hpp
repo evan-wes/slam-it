@@ -18,7 +18,8 @@
 /// @brief Rectified stereo.
 namespace slamlab::foundations::stereo {
 
-/// @brief The largest half-range `MatchOptions::search` accepts, in level pixels.
+/// @brief The largest half-range `MatchOptions::search` accepts, in level pixels: a bound on
+///        a match's work, `2 search + 1` patch sums, far above ORB-SLAM's 5.
 inline constexpr std::int64_t kMaxSearch = 64;
 /// @brief Camera centres closer than this count as coinciding.
 inline constexpr double kMinBaseline = 1e-9;
@@ -46,7 +47,8 @@ struct Rectification {
 /// @param rows The images' rows.
 /// @param cols The images' columns.
 /// @return The rectification; `InvalidInput` for bad intrinsics, a non-rigid transform, a bad
-///         shape or a baseline closer to vertical; `Degenerate` if the centres coincide.
+///         shape, a baseline closer to vertical, or a right camera to the left of the left
+///         one; `Degenerate` if the centres coincide.
 [[nodiscard]] Result<Rectification> rectify(
     camera::Model model_left, const Eigen::Ref<const Eigen::VectorXd>& intrinsics_left,
     camera::Model model_right, const Eigen::Ref<const Eigen::VectorXd>& intrinsics_right,
@@ -69,13 +71,15 @@ struct Rectification {
 
 /// @brief Stereo-matching settings (`slamlab.foundations.stereo.Options`, ORB-SLAM's).
 struct MatchOptions {
-  /// @brief A match's Hamming distance must be below this, from 1 to 257.
+  /// @brief A match's Hamming distance must be below this, from 1 to
+  ///        `matching::kMaxDistance` + 1.
   std::int64_t max_distance{75};
   /// @brief The row band, in multiples of the right keypoint's level scale, positive.
   double band{2.0};
   /// @brief The SAD patch's half-width, from 1 to `orb::kEdgeThreshold`.
   std::int64_t window{5};
-  /// @brief The SAD search's half-range, from 2 to 64.
+  /// @brief The SAD search's half-range, from 1 (the V fit needs the best offset to have a
+  ///        neighbour on each side) to `kMaxSearch`.
   std::int64_t search{5};
   /// @brief Matches whose best sum exceeds this times the median are dropped; at least 1.
   double outlier_factor{2.1};

@@ -18,7 +18,8 @@ use super::image_crossing::image_in;
 use super::orb_crossing::features_in;
 
 use crate::common::{
-    ArrayIn, ArrayOut, Item, add_functions, contiguous, decode, item_array, new_array, one, unwrap,
+    ArrayIn, ArrayOut, Item, add_functions, contiguous, decode, int64_array, item_array, new_array,
+    one, to_i64, unwrap,
 };
 
 /// Reads a camera from its model code and intrinsics.
@@ -221,12 +222,11 @@ fn match_rows<'py>(
             &settings,
         ),
     )?;
-    let to_i64 = |i: usize| i64::try_from(i).expect("indices fit an i64");
     let out = PyDict::new(py);
-    let lefts: Vec<i64> = matches.iter().map(|m| to_i64(m.left)).collect();
-    out.set_item("left", Array1::from_vec(lefts).into_pyarray(py))?;
-    let rights: Vec<i64> = matches.iter().map(|m| to_i64(m.right)).collect();
-    out.set_item("right", Array1::from_vec(rights).into_pyarray(py))?;
+    let lefts = matches.iter().map(|m| to_i64(m.left)).collect();
+    out.set_item("left", int64_array(py, lefts))?;
+    let rights = matches.iter().map(|m| to_i64(m.right)).collect();
+    out.set_item("right", int64_array(py, rights))?;
     for (key, value) in [
         (
             "right_x",

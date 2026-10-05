@@ -66,8 +66,8 @@ Departures from ORB-SLAM, each measured or a fix:
 - **Exact coordinates.** Keypoints and refined columns map between levels and the full image
   exactly, not by ``s^l`` (see :func:`slamlab.foundations.image.full_image_coordinate`).
 - **A non-positive disparity is dropped.** ORB-SLAM clamps it to 0.01, a point near infinity.
-- **The outlier filter keeps matches equal to the limit, and every match when the median sum
-  is 0.** ORB-SLAM's strict test drops them all then.
+- **The outlier filter keeps matches equal to its limit**, so when the median sum is 0 it keeps
+  every match whose sum is 0. ORB-SLAM's strict test drops them all then.
 - **The search's bounds are checked exactly.** ORB-SLAM's ``iniu = u0 + L - w`` should read
   ``u0 - L - w``.
 
@@ -80,7 +80,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass
-from typing import Any, Protocol
+from typing import Any, NamedTuple, Protocol
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -97,11 +97,18 @@ from slamlab.foundations.arrays import (
     holds_integers,
 )
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
-from slamlab.foundations.image import full_image_coordinate, level_shapes, pyramid
+from slamlab.foundations.image import (
+    as_scale_factor,
+    full_image_coordinate,
+    level_shapes,
+    pyramid,
+)
 from slamlab.foundations.matching import MAX_DISTANCE, distances
 
 MAX_SEARCH = 64
-"""The largest half-range :attr:`Options.search` accepts, in level pixels."""
+"""The largest half-range :attr:`Options.search` accepts, in level pixels: a bound on a
+match's work, ``2 search + 1`` patch sums, far above ORB-SLAM's 5 (a wider search only finds
+false minima)."""
 
 MIN_BASELINE = 1e-9
 """Camera centres closer than this (in the translation's units) count as coinciding."""
@@ -158,8 +165,8 @@ class Options:
     window : int
         The SAD patch's half-width, from 1 to :data:`slamlab.foundations.orb.EDGE_THRESHOLD`.
     search : int
-        The SAD search's half-range, from 2 (a parabola needs both neighbours) to
-        :data:`MAX_SEARCH`.
+        The SAD search's half-range, from 1 (three offsets, the best of which must be the
+        middle one: the V fit needs a neighbour on each side) to :data:`MAX_SEARCH`.
     outlier_factor : float
         Matches whose best sum exceeds this times the median are dropped; at least 1.
     """
@@ -185,7 +192,7 @@ class Options:
             raise InvalidInputError(f"band: must be positive and finite, got {band}")
         set_(self, "band", band)
         set_(self, "window", as_count(self.window, "window", 1, orb.EDGE_THRESHOLD))
-        set_(self, "search", as_count(self.search, "search", 2, MAX_SEARCH))
+        set_(self, "search", as_count(self.search, "search", 1, MAX_SEARCH))
         factor = as_number(self.outlier_factor, "outlier_factor")
         if not (math.isfinite(factor) and factor >= 1.0):
             raise InvalidInputError(f"outlier_factor: must be at least 1, got {factor}")
@@ -338,18 +345,14 @@ def _rectification_map(
 
 
 def _as_shape(shape: tuple[int, int]) -> tuple[int, int]:
-    """Check an image shape: two integers from 1 to MAX_IMAGE_SIDE."""
+    """Check an image shape: ``(rows, cols)``, each an integer from 1 to MAX_IMAGE_SIDE."""
     values = tuple(shape)
-    if len(values) != 2 or any(
-        isinstance(n, (bool, np.bool_))
-        or not isinstance(n, (int, np.integer))
-        or not 1 <= n <= MAX_IMAGE_SIDE
-        for n in values
-    ):
-        raise InvalidInputError(
-            f"shape: expected (rows, cols), each from 1 to {MAX_IMAGE_SIDE}, got {shape!r}"
-        )
-    return int(values[0]), int(values[1])
+    if len(values) != 2:
+        raise InvalidInputError(f"shape: expected (rows, cols), got {shape!r}")
+    return (
+        as_count(values[0], "rows", 1, MAX_IMAGE_SIDE),
+        as_count(values[1], "cols", 1, MAX_IMAGE_SIDE),
+    )
 
 
 def _decode_rectification(raw: dict[str, Any], codes: backends.Codes) -> dict[str, Any]:
@@ -409,7 +412,8 @@ def rectify(  # noqa: PLR0913 -- two cameras, their pose, the image shape
     ------
     slamlab.foundations.errors.InvalidInputError
         If a model or its intrinsics are invalid, `T_right_left` is not one rigid transform,
-        the shape is out of range, or the baseline is closer to vertical than horizontal.
+        the shape is out of range, the baseline is closer to vertical than horizontal, or
+        the right camera lies to the left of the left one.
     slamlab.foundations.errors.DegenerateError
         If the camera centres coincide.
     """
@@ -594,20 +598,29 @@ def _nearest_column(x: int, from_cols: int, to_cols: int) -> int:
     return ((2 * x + 1) * to_cols) // (2 * from_cols)
 
 
-def _drop_outliers(
-    found: list[tuple[int, int, float, float, float, int]], factor: float
-) -> StereoMatches:
+class _Found(NamedTuple):
+    """A match before the outlier filter."""
+
+    left: int
+    right: int
+    right_x: float
+    disparity: float
+    depth: float
+    cost: int
+
+
+def _drop_outliers(found: list[_Found], factor: float) -> StereoMatches:
     """Drop matches whose best sum exceeds `factor` times the median; return the rest."""
     if found:
-        costs = sorted(f[5] for f in found)
+        costs = sorted(f.cost for f in found)
         limit = factor * costs[len(costs) // 2]
-        found = [f for f in found if f[5] <= limit]
+        found = [f for f in found if f.cost <= limit]
     return StereoMatches(
-        left=np.array([f[0] for f in found], dtype=np.int64),
-        right=np.array([f[1] for f in found], dtype=np.int64),
-        right_x=np.array([f[2] for f in found], dtype=np.float64),
-        disparity=np.array([f[3] for f in found], dtype=np.float64),
-        depth=np.array([f[4] for f in found], dtype=np.float64),
+        left=np.array([f.left for f in found], dtype=np.int64),
+        right=np.array([f.right for f in found], dtype=np.int64),
+        right_x=np.array([f.right_x for f in found], dtype=np.float64),
+        disparity=np.array([f.disparity for f in found], dtype=np.float64),
+        depth=np.array([f.depth for f in found], dtype=np.float64),
     )
 
 
@@ -630,7 +643,7 @@ def _match(  # noqa: PLR0913 -- two images, their features, the camera, the sett
         scales.append(scales[-1] * factor)
     scale = np.asarray(scales)
     hamming = distances(left.descriptors, right.descriptors)
-    found: list[tuple[int, int, float, float, float, int]] = []
+    found: list[_Found] = []
     for i in range(len(left.level)):
         j = _nearest_candidate(
             i, left, right, hamming[i], scale=scale, focal=focal, options=options
@@ -650,7 +663,7 @@ def _match(  # noqa: PLR0913 -- two images, their features, the camera, the sett
         disparity = float(left.xy[i, 0]) - right_x
         if not 0.0 < disparity < focal:
             continue
-        found.append((i, j, right_x, disparity, focal * baseline / disparity, cost))
+        found.append(_Found(i, j, right_x, disparity, focal * baseline / disparity, cost))
     return _drop_outliers(found, options.outlier_factor)
 
 
@@ -673,9 +686,7 @@ def _as_side(features: orb.Features, name: str) -> _Side:
     ):
         raise InvalidInputError(f"{name}: expected one keypoint and descriptor per row")
     levels = as_count(features.levels, f"{name}.levels", 1, orb.MAX_LEVELS)
-    factor = as_number(features.scale_factor, f"{name}.scale_factor")
-    if not (math.isfinite(factor) and factor > 1.0):
-        raise InvalidInputError(f"{name}.scale_factor: must be finite and above 1, got {factor}")
+    factor = as_scale_factor(features.scale_factor, f"{name}.scale_factor")
     return _Side(
         xy=xy,
         level=level.astype(np.int64),

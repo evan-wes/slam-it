@@ -514,8 +514,8 @@ Result<void> check_options(const Options& options) {
   if (auto ok = check_range("levels", options.levels, 1, kMaxLevels); !ok) {
     return ok;
   }
-  if (!std::isfinite(options.scale_factor) || options.scale_factor <= 1.0) {
-    return fail_setting("scale_factor", "must be finite and above 1", options.scale_factor);
+  if (auto ok = image::check_scale_factor(options.scale_factor, "scale_factor"); !ok) {
+    return ok;
   }
   if (auto ok = check_range("fast_threshold", options.fast_threshold, 1, kMaxFastThreshold); !ok) {
     return ok;

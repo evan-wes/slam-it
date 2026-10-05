@@ -27,7 +27,7 @@ inline constexpr double kSecondaryFraction = 0.1;
 
 /// @brief Matching filters (`slamlab.foundations.matching.Options`).
 struct Options {
-  /// @brief The largest Hamming distance a match may have, from 0 to 256.
+  /// @brief The largest Hamming distance a match may have, from 0 to `kMaxDistance`.
   std::int64_t max_distance{50};
   /// @brief The ratio test's bound, in (0, 1].
   double ratio{0.8};

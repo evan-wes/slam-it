@@ -8,7 +8,7 @@
 
 use std::sync::OnceLock;
 
-use crate::error::{ErrorKind, Result, check_range, fail, fail_setting};
+use crate::error::{ErrorKind, Result, check_range, fail};
 use crate::image::{self, Image};
 
 /// Keypoints lie at least this many pixels inside their level (ORB-SLAM's).
@@ -79,7 +79,8 @@ pub const ROTATIONS: [[i64; 2]; ANGLE_BINS] = [
 ];
 /// The most pyramid levels [`Options`] accepts.
 pub const MAX_LEVELS: usize = 32;
-/// The largest feature budget [`Options`] and [`distribute`] accept.
+/// The largest feature budget [`Options`] and [`distribute`] accept: a bound on the work one
+/// call may ask for, far above any real budget (ORB-SLAM extracts 1000 to 2000).
 pub const MAX_FEATURES: usize = 1 << 20;
 /// The largest FAST threshold: a margin of 255, the most an 8-bit difference can be, less one
 /// (a corner needs every margin strictly above the threshold).
@@ -187,15 +188,15 @@ pub type Descriptor = [u8; DESCRIPTOR_BYTES];
 /// ORB extraction settings (`slamlab.foundations.orb.Options`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Options {
-    /// The feature budget over all levels, from 1 to [`image::MAX_SIDE`].
+    /// The feature budget over all levels, from 1 to [`MAX_FEATURES`].
     pub n_features: usize,
     /// Pyramid levels, from 1 to [`MAX_LEVELS`].
     pub levels: usize,
     /// Each level's downscale from the previous one, above 1.
     pub scale_factor: f64,
-    /// The FAST threshold a cell tries first, from 0 to 254.
+    /// The FAST threshold a cell tries first, from 1 to [`MAX_FAST_THRESHOLD`].
     pub fast_threshold: i64,
-    /// The threshold for cells with no corner at `fast_threshold`.
+    /// The threshold for cells with no corner at `fast_threshold`, from 1 to it.
     pub min_fast_threshold: i64,
 }
 
@@ -267,13 +268,7 @@ pub struct Bounds {
 pub fn check_options(options: &Options) -> Result<()> {
     check_range("n_features", options.n_features, 1, MAX_FEATURES)?;
     check_range("levels", options.levels, 1, MAX_LEVELS)?;
-    if !options.scale_factor.is_finite() || options.scale_factor <= 1.0 {
-        return fail_setting(
-            "scale_factor",
-            "must be finite and above 1",
-            options.scale_factor,
-        );
-    }
+    image::check_scale_factor(options.scale_factor, "scale_factor")?;
     check_range(
         "fast_threshold",
         options.fast_threshold,
@@ -575,7 +570,7 @@ fn distribute_checked(
 /// * `xy` - Integer pixel coordinates, each inside `bounds`.
 /// * `response` - Each corner's strength.
 /// * `bounds` - The box the corners lie in, non-empty.
-/// * `target` - How many corners to keep, from 0 to [`image::MAX_SIDE`].
+/// * `target` - How many corners to keep, from 0 to [`MAX_FEATURES`].
 ///
 /// # Returns
 ///
@@ -1166,7 +1161,10 @@ mod tests {
             scale_factor: 2.0,
             ..defaults
         };
-        assert!(detect(&tiny, &deep).is_err());
+        assert_eq!(
+            detect(&tiny, &deep).unwrap_err().kind,
+            ErrorKind::InvalidInput
+        );
         let xy = [[1, 2], [3, 4]];
         let bounds = Bounds {
             x_min: 0,
@@ -1174,12 +1172,16 @@ mod tests {
             y_min: 0,
             y_max: 5,
         };
-        assert!(distribute(&xy, &[1], bounds, 1).is_err());
         let empty = Bounds { x_max: 0, ..bounds };
-        assert!(distribute(&xy, &[1, 2], empty, 1).is_err());
         let narrow = Bounds { x_max: 3, ..bounds };
-        assert!(distribute(&xy, &[1, 2], narrow, 1).is_err());
-        assert!(distribute(&xy, &[1, 2], bounds, image::MAX_SIDE + 1).is_err());
+        for refused in [
+            distribute(&xy, &[1], bounds, 1),
+            distribute(&xy, &[1, 2], empty, 1),
+            distribute(&xy, &[1, 2], narrow, 1),
+            distribute(&xy, &[1, 2], bounds, MAX_FEATURES + 1),
+        ] {
+            assert_eq!(refused.unwrap_err().kind, ErrorKind::InvalidInput);
+        }
         assert_eq!(
             level_budgets(1000, 8, 1.2),
             [217, 181, 151, 126, 105, 87, 73, 60]

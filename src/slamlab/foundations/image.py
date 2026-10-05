@@ -210,13 +210,35 @@ def _resize(image: Image, rows: int, cols: int) -> Image:
     return np.ascontiguousarray((total + (1 << (shift - 1))) >> shift, dtype=np.uint8)
 
 
+def as_scale_factor(value: object, name: str = "scale_factor") -> float:
+    """Check a pyramid's scale factor: a finite real number above 1.
+
+    Parameters
+    ----------
+    value : object
+        The factor: a Python or numpy integer or float (a bool is refused).
+    name : str, optional
+        Its name, for messages.
+
+    Returns
+    -------
+    float
+        The factor, as a Python float.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If `value` is not a real number, or not finite and above 1.
+    """
+    factor = as_number(value, name)
+    if not (math.isfinite(factor) and factor > 1.0):
+        raise InvalidInputError(f"{name}: must be finite and above 1, got {factor}")
+    return factor
+
+
 def _as_levels(levels: object, scale_factor: object) -> tuple[int, float]:
     """Check a pyramid's level count and scale factor."""
-    count = as_count(levels, "levels", 1, MAX_IMAGE_SIDE)
-    factor = as_number(scale_factor, "scale_factor")
-    if not (math.isfinite(factor) and factor > 1.0):
-        raise InvalidInputError(f"scale_factor: must be finite and above 1, got {factor}")
-    return count, factor
+    return as_count(levels, "levels", 1, MAX_IMAGE_SIDE), as_scale_factor(scale_factor)
 
 
 def level_shapes(rows: int, cols: int, levels: int, scale_factor: float) -> list[tuple[int, int]]:

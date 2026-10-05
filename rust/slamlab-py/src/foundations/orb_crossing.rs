@@ -2,43 +2,14 @@
 //! a dict of `slamlab.foundations.orb.Keypoints`' fields, one array each, with `descriptors`,
 //! `scale_factor` and `levels` for features.
 
-use numpy::ndarray::{Array1, Array2};
-use numpy::{
-    IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods,
-};
+use numpy::ndarray::Array2;
+use numpy::{IntoPyArray, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use slamlab_foundations::orb::{DESCRIPTOR_BYTES, Features, Keypoint};
 
-use crate::common::contiguous;
-
-/// Converts a non-negative index to `i64` for numpy.
-///
-/// # Arguments
-///
-/// * `value` - The index.
-///
-/// # Returns
-///
-/// It as an `i64`.
-pub fn to_i64(value: usize) -> i64 {
-    i64::try_from(value).expect("indices fit an i64")
-}
-
-/// Wraps values as a new 1D int64 array.
-///
-/// # Arguments
-///
-/// * `py` - The Python token.
-/// * `values` - The values.
-///
-/// # Returns
-///
-/// The array.
-pub fn int64_array(py: Python<'_>, values: Vec<i64>) -> Bound<'_, PyArray1<i64>> {
-    Array1::from_vec(values).into_pyarray(py)
-}
+use crate::common::{contiguous, int64_array, to_i64};
 
 /// Wraps row-major pairs as a new (N, 2) array.
 ///

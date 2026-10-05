@@ -19,7 +19,7 @@ pub const SECONDARY_FRACTION: f64 = 0.1;
 /// Matching filters (`slamlab.foundations.matching.Options`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Options {
-    /// The largest Hamming distance a match may have, from 0 to 256.
+    /// The largest Hamming distance a match may have, from 0 to [`MAX_DISTANCE`].
     pub max_distance: i64,
     /// The ratio test's bound, in (0, 1].
     pub ratio: f64,

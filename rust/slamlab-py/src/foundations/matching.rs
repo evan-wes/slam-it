@@ -13,7 +13,7 @@ use serde::Deserialize;
 use slamlab_foundations::matching as core;
 use slamlab_foundations::orb::{DESCRIPTOR_BYTES, Descriptor};
 
-use crate::common::{add_functions, contiguous, unwrap};
+use crate::common::{add_functions, contiguous, to_i64, unwrap};
 
 /// `matching.Options`' fields, as they cross.
 #[derive(Debug, Deserialize)]
@@ -96,19 +96,6 @@ fn int64_matrix(
     let array =
         Array2::from_shape_vec(shape, values).map_err(|e| PyValueError::new_err(e.to_string()))?;
     Ok(array.into_pyarray(py))
-}
-
-/// Converts an index to `i64` for numpy.
-///
-/// # Arguments
-///
-/// * `value` - The index.
-///
-/// # Returns
-///
-/// It as an `i64`.
-fn to_i64(value: usize) -> i64 {
-    i64::try_from(value).expect("indices fit an i64")
 }
 
 /// Returns every pair's Hamming distance.

@@ -62,7 +62,8 @@ inline constexpr std::array<std::array<std::int64_t, 2>, 30> kRotations{
      {8192, -14189},  {10963, -12176}, {13255, -9630},  {14968, -6664},  {16026, -3406}}};
 /// @brief The most pyramid levels `Options` accepts.
 inline constexpr std::int64_t kMaxLevels = 32;
-/// @brief The largest feature budget `Options` and `distribute` accept.
+/// @brief The largest feature budget `Options` and `distribute` accept: a bound on the work
+///        one call may ask for, far above any real budget (ORB-SLAM extracts 1000 to 2000).
 inline constexpr std::int64_t kMaxFeatures = image::pow2(20);
 /// @brief The largest FAST threshold: a margin of 255, the most an 8-bit difference can be,
 ///        less one (a corner needs every margin strictly above the threshold).
@@ -167,15 +168,15 @@ inline constexpr std::array<std::array<std::int64_t, 4>, 256> kPattern{{
 
 /// @brief ORB extraction settings (`slamlab.foundations.orb.Options`).
 struct Options {
-  /// @brief The feature budget over all levels, from 1 to `image::kMaxSide`.
+  /// @brief The feature budget over all levels, from 1 to `kMaxFeatures`.
   std::int64_t n_features{1000};
   /// @brief Pyramid levels, from 1 to `kMaxLevels`.
   std::int64_t levels{8};
   /// @brief Each level's downscale from the previous one, above 1.
   double scale_factor{1.2};
-  /// @brief The FAST threshold a cell tries first, from 0 to 254.
+  /// @brief The FAST threshold a cell tries first, from 1 to `kMaxFastThreshold`.
   std::int64_t fast_threshold{20};
-  /// @brief The threshold for cells with no corner at `fast_threshold`.
+  /// @brief The threshold for cells with no corner at `fast_threshold`, from 1 to it.
   std::int64_t min_fast_threshold{7};
 };
 

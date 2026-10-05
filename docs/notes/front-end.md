@@ -111,8 +111,9 @@ docstring lists them all):
   keypoint's level as the nearest pixel to its centre, in integers, and the refined column
   back to the full image by the exact map.
 - **Defined edge cases.** A non-positive disparity is dropped (ORB-SLAM clamps it to 0.01, a
-  point near infinity); the outlier filter keeps matches equal to its limit, and every match
-  when the median sum is 0 (ORB-SLAM drops them all); the search's bounds are checked as
+  point near infinity); the outlier filter keeps matches equal to its limit, so at a median
+  sum of 0 it keeps every match whose sum is 0 (ORB-SLAM drops them all); the search's
+  bounds are checked as
   `u0 - L - w` (ORB-SLAM's `u0 + L - w` is a slip). The first smallest sum always has a
   larger left neighbour, so the fit's denominator is positive and its offset within half a
   pixel; ORB-SLAM's strict comparison guarantees the same, so neither needs a flat-valley

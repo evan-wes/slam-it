@@ -239,6 +239,12 @@ void check_match_rejections(int& failures) {
   orb::Features shallow = one_keypoint(30, 30);
   shallow.levels = 0;
   expect(refused(shallow, shallow), "match rejects a pyramid without levels", failures);
+  for (const std::int64_t level : {std::int64_t{-1}, std::int64_t{1'000'000}}) {
+    orb::Features off = one_keypoint(30, 30);
+    off.keypoints[0].level = level;
+    expect(refused(off, one_keypoint(25, 30)), "match rejects a level outside the pyramid",
+           failures);
+  }
 }
 
 /// @brief The test body.

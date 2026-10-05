@@ -12,7 +12,8 @@ use crate::image::{self, Image, MAX_SIDE};
 use crate::orb::{self, Features, Keypoint};
 use crate::{matching, se3, so3};
 
-/// The largest half-range [`MatchOptions::search`] accepts, in level pixels.
+/// The largest half-range [`MatchOptions::search`] accepts, in level pixels: a bound on a
+/// match's work, `2 search + 1` patch sums, far above ORB-SLAM's 5.
 pub const MAX_SEARCH: usize = 64;
 /// Camera centres closer than this count as coinciding.
 pub const MIN_BASELINE: f64 = 1e-9;
@@ -68,16 +69,10 @@ fn smallest_focal(camera: Camera<'_>) -> f64 {
 ///
 /// # Errors
 ///
-/// `InvalidInput` if a side is out of range.
+/// `InvalidInput` naming the side out of range.
 fn check_shape(rows: usize, cols: usize) -> Result<()> {
-    if (1..=MAX_SIDE).contains(&rows) && (1..=MAX_SIDE).contains(&cols) {
-        Ok(())
-    } else {
-        fail(
-            ErrorKind::InvalidInput,
-            format!("shape: expected (rows, cols), each from 1 to {MAX_SIDE}"),
-        )
-    }
+    check_range("rows", rows, 1, MAX_SIDE)?;
+    check_range("cols", cols, 1, MAX_SIDE)
 }
 
 /// Rectifies a calibrated pair (Bouguet's algorithm).
@@ -96,8 +91,9 @@ fn check_shape(rows: usize, cols: usize) -> Result<()> {
 ///
 /// # Errors
 ///
-/// `InvalidInput` for bad intrinsics, a non-rigid transform, a bad shape or a baseline closer
-/// to vertical; `Degenerate` if the centres coincide.
+/// `InvalidInput` for bad intrinsics, a non-rigid transform, a bad shape, a baseline closer
+/// to vertical, or a right camera to the left of the left one; `Degenerate` if the centres
+/// coincide.
 #[allow(
     clippy::cast_precision_loss,
     reason = "image sides are at most 2^20, exact in f64"
@@ -217,13 +213,14 @@ pub fn rectification_map(
 /// Stereo-matching settings (`slamlab.foundations.stereo.Options`, ORB-SLAM's).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MatchOptions {
-    /// A match's Hamming distance must be below this, from 1 to 257.
+    /// A match's Hamming distance must be below this, from 1 to [`matching::MAX_DISTANCE`] + 1.
     pub max_distance: i64,
     /// The row band, in multiples of the right keypoint's level scale, positive.
     pub band: f64,
     /// The SAD patch's half-width, from 1 to [`orb::EDGE_THRESHOLD`].
     pub window: usize,
-    /// The SAD search's half-range, from 2 to 64.
+    /// The SAD search's half-range, from 1 (the V fit needs the best offset to have a
+    /// neighbour on each side) to [`MAX_SEARCH`].
     pub search: usize,
     /// Matches whose best sum exceeds this times the median are dropped; at least 1.
     pub outlier_factor: f64,
@@ -277,7 +274,7 @@ pub fn check_options(options: &MatchOptions) -> Result<()> {
         return fail_setting("band", "must be positive and finite", options.band);
     }
     check_range("window", options.window, 1, orb::EDGE_THRESHOLD)?;
-    check_range("search", options.search, 2, MAX_SEARCH)?;
+    check_range("search", options.search, 1, MAX_SEARCH)?;
     if !(options.outlier_factor.is_finite() && options.outlier_factor >= 1.0) {
         return fail_setting(
             "outlier_factor",
@@ -301,13 +298,7 @@ pub fn check_options(options: &MatchOptions) -> Result<()> {
 #[allow(clippy::float_cmp, reason = "the same pyramid: an exact equality")]
 fn check_pyramids(left: &Features, right: &Features) -> Result<()> {
     check_range("left.levels", left.levels, 1, orb::MAX_LEVELS)?;
-    if !(left.scale_factor.is_finite() && left.scale_factor > 1.0) {
-        return fail_setting(
-            "left.scale_factor",
-            "must be finite and above 1",
-            left.scale_factor,
-        );
-    }
+    image::check_scale_factor(left.scale_factor, "left.scale_factor")?;
     if right.levels != left.levels || right.scale_factor != left.scale_factor {
         return fail(
             ErrorKind::InvalidInput,
@@ -981,5 +972,8 @@ mod tests {
             ..one_keypoint(30, 30)
         };
         assert!(refused(&shallow, &shallow));
+        let mut off = one_keypoint(30, 30);
+        off.keypoints[0].level = 1_000_000;
+        assert!(refused(&off, &one_keypoint(25, 30)));
     }
 }

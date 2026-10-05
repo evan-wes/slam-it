@@ -14,8 +14,8 @@ use serde::Deserialize;
 use slamlab_foundations::orb::{self as core, Bounds};
 
 use super::image_crossing::image_in;
-use super::orb_crossing::{features_dict, int64_array, keypoints_dict, to_i64};
-use crate::common::{add_functions, contiguous, unwrap};
+use super::orb_crossing::{features_dict, keypoints_dict};
+use crate::common::{add_functions, contiguous, int64_array, to_i64, unwrap};
 
 /// `orb.Options`' fields, as they cross.
 #[derive(Debug, Deserialize)]

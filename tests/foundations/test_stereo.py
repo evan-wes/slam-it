@@ -192,7 +192,7 @@ def test_rectify_rejects(backend: str, args: tuple[Any, ...], error: type, messa
 @pytest.mark.parametrize("shape", [(0, 640), (480,), (480, 2.0), (1 << 21, 10)])
 def test_rectify_rejects_bad_shapes(shape: Any) -> None:  # noqa: ANN401 -- malformed on purpose
     """The image shape must be two positive integers within MAX_IMAGE_SIDE."""
-    with pytest.raises(InvalidInputError, match="shape: expected"):
+    with pytest.raises(InvalidInputError, match=r"shape: expected|rows: must|cols: must"):
         stereo.rectify("pinhole", PINHOLE, "pinhole", PINHOLE, _pose([-0.1, 0, 0]), shape=shape)
 
 
@@ -240,6 +240,20 @@ def test_match_recovers_a_known_disparity(backend: str, disparity: float) -> Non
     level_pixel = 1.2 ** features[0].keypoints.level[found.left].astype(np.float64)
     assert np.mean(np.abs(error) < level_pixel) >= 0.99
     np.testing.assert_allclose(found.depth, 500.0 * 0.1 / found.disparity, rtol=1e-15)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_the_narrowest_search_still_refines(backend: str) -> None:
+    """With a search of 1, the three offsets still give sub-pixel disparities, unbiased."""
+    chosen = require_function(backend, stereo.__name__, "match")
+    left, right = _area_sampled_pair(9.6, seed=5)
+    features = orb.extract(left), orb.extract(right)
+    narrow = stereo.Options(search=1)
+    found = stereo.match(
+        left, right, *features, focal=500.0, baseline=0.1, options=narrow, backend=chosen
+    )
+    assert len(found.left) > 100
+    assert abs(np.median(found.disparity - 9.6)) < 0.05
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -342,9 +356,9 @@ def test_rectification_maps_reject(backend: str, change: dict[str, Any], message
         ({"max_distance": 0}, "max_distance: must be from 1 to 257"),
         ({"band": 0.0}, "band: must be positive and finite"),
         ({"window": 20}, "window: must be from 1 to 19"),
-        ({"search": 1}, "search: must be from 2 to 64"),
+        ({"search": 0}, "search: must be from 1 to 64"),
         ({"outlier_factor": 0.5}, "outlier_factor: must be at least 1"),
-        ({"search": stereo.MAX_SEARCH + 1}, "search: must be from 2 to 64"),
+        ({"search": stereo.MAX_SEARCH + 1}, "search: must be from 1 to 64"),
         ({"max_distance": 7.0}, "max_distance: must be an integer, got float"),
         ({"band": "2"}, "band: must be a real number, got str"),
         ({"window": True}, "window: must be an integer, got bool"),

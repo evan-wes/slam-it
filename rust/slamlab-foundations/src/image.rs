@@ -23,6 +23,24 @@ pub const MAX_KERNEL_BITS: u32 = 15;
 /// integer arithmetic's intermediate values then fit 64 bits.
 pub const MAX_SIDE: usize = 1 << 20;
 
+/// Checks a pyramid's scale factor (`slamlab.foundations.image.as_scale_factor`).
+///
+/// # Arguments
+///
+/// * `scale_factor` - The factor.
+/// * `name` - Its name, for the message.
+///
+/// # Errors
+///
+/// `InvalidInput` unless it is finite and above 1.
+pub fn check_scale_factor(scale_factor: f64, name: &str) -> Result<()> {
+    if scale_factor.is_finite() && scale_factor > 1.0 {
+        Ok(())
+    } else {
+        fail_setting(name, "must be finite and above 1", scale_factor)
+    }
+}
+
 /// A pyramid-level position's coordinate in the full image, along one axis
 /// (`slamlab.foundations.image.full_image_coordinate`): the resizes' aligned-centre maps
 /// composed, `((2 x + 1) n_0 - n_l) / (2 n_l)`, computed in that order. For an integer `x`
@@ -372,9 +390,7 @@ pub fn level_shapes(
     scale_factor: f64,
 ) -> Result<Vec<(usize, usize)>> {
     check_side(levels, "levels")?;
-    if !(scale_factor.is_finite() && scale_factor > 1.0) {
-        return fail_setting("scale_factor", "must be finite and above 1", scale_factor);
-    }
+    check_scale_factor(scale_factor, "scale_factor")?;
     let mut shapes = vec![(rows, cols)];
     let mut scale = 1.0;
     for level in 1..levels {

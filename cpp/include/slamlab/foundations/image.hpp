@@ -54,6 +54,12 @@ inline constexpr int kMaxKernelBits = 15;
 ///        the integer arithmetic's intermediate values then fit 64 bits.
 inline constexpr std::int64_t kMaxSide = pow2(20);
 
+/// @brief Check a pyramid's scale factor (`slamlab.foundations.image.as_scale_factor`).
+/// @param scale_factor The factor.
+/// @param name Its name, for the message.
+/// @return Nothing, or `InvalidInput` unless it is finite and above 1.
+[[nodiscard]] Result<void> check_scale_factor(double scale_factor, const char* name);
+
 /// @brief A pyramid-level position's coordinate in the full image, along one axis
 ///        (`slamlab.foundations.image.full_image_coordinate`): the resizes' aligned-centre maps
 ///        composed, `((2 x + 1) n_0 - n_l) / (2 n_l)`, computed in that order. For an integer

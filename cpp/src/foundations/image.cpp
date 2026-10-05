@@ -235,8 +235,8 @@ Result<std::vector<std::array<std::int64_t, 2>>> level_shapes(std::int64_t rows,
   if (auto ok = check_side(levels, "levels"); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
-  if (!std::isfinite(scale_factor) || scale_factor <= 1.0) {
-    return fail_setting("scale_factor", "must be finite and above 1", scale_factor);
+  if (auto ok = check_scale_factor(scale_factor, "scale_factor"); !ok) {
+    return std::unexpected(std::move(ok.error()));
   }
   std::vector<std::array<std::int64_t, 2>> shapes{{rows, cols}};
   double scale = 1.0;
@@ -361,6 +361,13 @@ Result<Image> remap(const Image& image, const Eigen::Ref<const Coordinates>& coo
     out.pixels[at(i)] = round_shift(total, 2 * kRemapBits);
   }
   return out;
+}
+
+Result<void> check_scale_factor(double scale_factor, const char* name) {
+  if (!std::isfinite(scale_factor) || scale_factor <= 1.0) {
+    return fail_setting(name, "must be finite and above 1", scale_factor);
+  }
+  return {};
 }
 
 }  // namespace slamlab::foundations::image

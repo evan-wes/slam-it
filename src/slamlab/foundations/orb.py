@@ -63,11 +63,16 @@ from slamlab.foundations.arrays import (
     MAX_IMAGE_SIDE,
     as_count,
     as_image,
-    as_number,
     holds_integers,
 )
 from slamlab.foundations.errors import InvalidInputError
-from slamlab.foundations.image import blur, full_image_coordinate, level_shapes, pyramid
+from slamlab.foundations.image import (
+    as_scale_factor,
+    blur,
+    full_image_coordinate,
+    level_shapes,
+    pyramid,
+)
 
 EDGE_THRESHOLD = 19
 """Keypoints lie at least this many pixels inside their level (ORB-SLAM's): the rotated
@@ -113,7 +118,8 @@ MAX_LEVELS = 32
 """The most pyramid levels :class:`Options` accepts."""
 
 MAX_FEATURES = 1 << 20
-"""The largest feature budget :class:`Options` and :func:`distribute` accept."""
+"""The largest feature budget :class:`Options` and :func:`distribute` accept: a bound on the
+work one call may ask for, far above any real budget (ORB-SLAM extracts 1000 to 2000)."""
 
 MAX_FAST_THRESHOLD = 254
 """The largest FAST threshold: a margin of 255, the most an 8-bit difference can be, less
@@ -255,10 +261,7 @@ class Options:
         set_ = object.__setattr__  # frozen: store the checked, normalised values
         set_(self, "n_features", as_count(self.n_features, "n_features", 1, MAX_FEATURES))
         set_(self, "levels", as_count(self.levels, "levels", 1, MAX_LEVELS))
-        factor = as_number(self.scale_factor, "scale_factor")
-        if not (math.isfinite(factor) and factor > 1.0):
-            raise InvalidInputError(f"scale_factor: must be finite and above 1, got {factor}")
-        set_(self, "scale_factor", factor)
+        set_(self, "scale_factor", as_scale_factor(self.scale_factor))
         threshold = as_count(self.fast_threshold, "fast_threshold", 1, MAX_FAST_THRESHOLD)
         set_(self, "fast_threshold", threshold)
         set_(

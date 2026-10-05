@@ -214,6 +214,27 @@ def test_full_image_coordinate_inverts_the_pyramid() -> None:
         image.full_image_coordinate(1, 100, half)
 
 
+def test_full_image_coordinate_is_where_the_pyramid_samples() -> None:
+    """Each level's column samples the full image where the exact map says, not at x s^l.
+
+    A noisy ramp (dithered, so every level keeps its sub-pixel shift) goes through the pyramid;
+    each level column's mean, inverted through the ramp, is the full-image x it sampled.
+    """
+    rows, cols, slope, base = 2000, 640, 0.25, 40.0
+    x = np.arange(cols, dtype=np.float64)
+    noise = np.random.default_rng(0).uniform(-40, 41, (rows, cols))
+    frame = np.floor(base + slope * x[None, :] + noise).astype(np.uint8)
+    scale, naive_offsets = 1.0, []
+    for level, pixels in enumerate(image.pyramid(frame, 8, 1.2)):
+        inner = np.arange(4, pixels.shape[1] - 4)
+        sampled = (pixels[:, inner].astype(np.float64).mean(axis=0) - base) / slope
+        exact = image.full_image_coordinate(inner, pixels.shape[1], cols)
+        assert abs(np.mean(sampled - exact)) < 0.1, level
+        naive_offsets.append(np.mean(sampled - inner * scale))
+        scale *= 1.2
+    assert max(naive_offsets) > 1.0  # ORB-SLAM's x s^l, on its worst level
+
+
 def test_rejects_oversized_images() -> None:
     """A side above MAX_IMAGE_SIDE is refused (a broadcast view, so nothing is allocated)."""
     wide = np.broadcast_to(np.uint8(0), (1, MAX_IMAGE_SIDE + 1))
