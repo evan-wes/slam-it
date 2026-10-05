@@ -18,6 +18,10 @@ use faer::linalg::svd::{self as faer_svd, ComputeSvdVectors};
 use faer::{Mat, Par};
 use nalgebra::{DMatrix, DVector, Matrix3, Vector3};
 
+/// The largest absolute entries (2^-400, 2^400) [`svd`] decomposes without scaling: well inside
+/// the range where faer's intermediate squares neither underflow nor overflow (about 2^±511).
+const SAFE_RANGE: (f64, f64) = (3.872_591_914_849_318_3e-121, 2.582_249_878_086_908_6e120);
+
 /// A matrix's thin SVD: `M = U diag(σ) Vᵀ` with k = min(m, n) singular triplets, as
 /// nalgebra's and LAPACK's thin SVDs return them. A caller that needs all n right singular
 /// vectors pads the matrix to at least n rows first (which changes neither its row space nor
@@ -51,16 +55,17 @@ pub fn svd(matrix: &DMatrix<f64>, compute_u: bool, compute_v: bool) -> Option<Sv
     }
     let (m, n) = matrix.shape();
     let k = m.min(n);
-    // Scale the largest entry to about 1 by a power of two (exact), as LAPACK does before its
-    // SVD: faer works on the matrix as given, and its squares underflow below about 1e-154
-    // (silently wrong factors) and overflow above about 1e154. U and V are unchanged; σ
-    // scales back. The factor is applied in two halves so that neither overflows.
+    // Outside a safe range, scale the largest entry to about 1 by a power of two (exact), as
+    // LAPACK's dlascl does: faer works on the matrix as given, and its squares underflow below
+    // about 1e-154 (silently wrong factors) and overflow above about 1e154. Inside the range
+    // (every matrix real data produces) nothing is scaled. U and V are unchanged by scaling;
+    // σ scales back. The factor is applied in two halves so that neither overflows.
     let largest = matrix.amax();
     #[allow(
         clippy::cast_possible_truncation,
         reason = "a finite f64's binary exponent is within ±1100"
     )]
-    let exponent = if largest > 0.0 {
+    let exponent = if largest > 0.0 && !(SAFE_RANGE.0..=SAFE_RANGE.1).contains(&largest) {
         -(largest.log2().round() as i32)
     } else {
         0
@@ -325,6 +330,14 @@ mod tests {
         }
         let zero = svd(&DMatrix::zeros(3, 3), true, true).unwrap();
         assert!(zero.singular_values.iter().all(|&s| s == 0.0));
+    }
+
+    /// The safe range's bounds are exactly 2^-400 and 2^400.
+    #[test]
+    fn safe_range_is_powers_of_two() {
+        #[allow(clippy::float_cmp, reason = "exact powers of two")]
+        let exact = SAFE_RANGE == ((-400.0_f64).exp2(), 400.0_f64.exp2());
+        assert!(exact);
     }
 
     /// A rank-2 3x3 with σ = (1, 1e-8, 0) keeps σ₂ to 1e-6 relative, where nalgebra 0.35's
