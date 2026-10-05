@@ -357,7 +357,8 @@ fn best_of<E: Estimator>(
     best
 }
 
-/// A count setting as a `usize` (checked non-negative by [`check_options`]).
+/// A count setting as a `usize`. [`check_options`] has checked it non-negative, so the clamp
+/// to 0 never applies.
 ///
 /// # Arguments
 ///
@@ -426,12 +427,18 @@ fn least_squares<E: Estimator>(
 /// # Returns
 ///
 /// The refined model.
+///
+/// # Errors
+///
+/// `InvalidInput` if a draw fails, which [`estimate`]'s checks rule out (the inliers are at
+/// most the data, fewer than 2^32, and the draw is at most half of them): one policy with
+/// `estimate`'s own draws.
 fn local_optimization<E: Estimator>(
     estimator: &E,
     start: Scored<E::Model>,
     rng: &mut Pcg32,
     options: &Options,
-) -> Scored<E::Model> {
+) -> Result<Scored<E::Model>> {
     let threshold2 = options.threshold * options.threshold;
     let mut best = least_squares(estimator, start, options);
     for _ in 0..count(options.lo_inner_iterations) {
@@ -441,13 +448,10 @@ fn local_optimization<E: Estimator>(
         if draw < estimator.sample_size() {
             break;
         }
-        // The draw is at most half the inliers, so it cannot fail.
         let (Ok(population), Ok(size)) = (u32::try_from(inliers.len()), u32::try_from(draw)) else {
-            break;
+            return fail(ErrorKind::InvalidInput, "ransac: more data than 2^32");
         };
-        let Ok(picks) = rng.sample(population, size) else {
-            break;
-        };
+        let picks = rng.sample(population, size)?;
         let subset: Vec<usize> = picks.iter().map(|&p| inliers[p as usize]).collect();
         let Some(fitted) = best_of(estimator, estimator.fit_nonminimal(&subset), threshold2) else {
             continue;
@@ -457,7 +461,7 @@ fn local_optimization<E: Estimator>(
             best = refined;
         }
     }
-    best
+    Ok(best)
 }
 
 /// Fits a model robustly by LO-MSAC.
@@ -515,10 +519,10 @@ pub fn estimate<E: Estimator>(estimator: &E, options: &Options) -> Result<Soluti
             continue;
         }
         if options.local_optimization {
-            fitted = local_optimization(estimator, fitted, &mut rng, options);
+            fitted = local_optimization(estimator, fitted, &mut rng, options)?;
             local += 1;
         }
-        let inliers = fitted.residuals.iter().filter(|r| **r < threshold2).count();
+        let inliers = below(&fitted.residuals, threshold2).len();
         bound = required_iterations(inliers as f64 / n as f64, s, options.confidence);
         best = Some(fitted);
     }
@@ -892,5 +896,15 @@ mod tests {
         assert_eq!(failed.summary.rounds, 1);
         assert!(!failed.summary.refined && failed.summary.refinement.is_none());
         assert_eq!(failed.state.model, found.state.model);
+    }
+
+    /// Points that all coincide give no model from any sample: `Degenerate`, not a result.
+    #[test]
+    fn no_model_from_any_sample_is_degenerate() {
+        let coincident = Line {
+            points: vec![Vector2::new(1.0, 2.0); 10],
+        };
+        let kind = estimate(&coincident, &Options::default()).unwrap_err().kind;
+        assert_eq!(kind, ErrorKind::Degenerate);
     }
 }

@@ -188,11 +188,12 @@ pub fn fit_fundamental(pixels1: &[Vector2<f64>], pixels2: &[Vector2<f64>]) -> Op
     Some(fundamental / fundamental.norm())
 }
 
-/// Estimates E from eight or more bearing pairs.
+/// Estimates E from eight or more bearing pairs: `x2ᵀ E x1 = 0` for each pair's normalised
+/// image points, camera 1 then camera 2, so E = [t]ₓ R for `T_c2_c1 = (R, t)`.
 ///
 /// # Arguments
 ///
-/// * `bearings1`, `bearings2` - Unit bearings with positive z.
+/// * `bearings1`, `bearings2` - The pairs' unit bearings in cameras 1 and 2, positive z.
 ///
 /// # Returns
 ///
@@ -215,11 +216,12 @@ pub fn essential_8pt(
     }
 }
 
-/// Estimates F from eight or more pixel pairs (normalised 8-point).
+/// Estimates F from eight or more pixel pairs (normalised 8-point): `x2ᵀ F x1 = 0` for each
+/// pair's homogeneous pixels, image 1 then image 2.
 ///
 /// # Arguments
 ///
-/// * `pixels1`, `pixels2` - Pixels.
+/// * `pixels1`, `pixels2` - The pairs' pixels in images 1 and 2.
 ///
 /// # Returns
 ///
@@ -239,12 +241,12 @@ pub fn fundamental_8pt(pixels1: &[Vector2<f64>], pixels2: &[Vector2<f64>]) -> Re
     }
 }
 
-/// Squared Sampson errors of bearing pairs under E, in the normalised plane.
+/// Squared Sampson errors of bearing pairs under E (`x2ᵀ E x1 = 0`), in the normalised plane.
 ///
 /// # Arguments
 ///
 /// * `essential` - E.
-/// * `bearings1`, `bearings2` - Unit bearings with positive z.
+/// * `bearings1`, `bearings2` - The pairs' unit bearings in cameras 1 and 2, positive z.
 ///
 /// # Returns
 ///
@@ -266,12 +268,12 @@ pub fn sampson_essential(
     ))
 }
 
-/// Squared Sampson errors of pixel pairs under F.
+/// Squared Sampson errors of pixel pairs under F, in pixels² (`x2ᵀ F x1 = 0`).
 ///
 /// # Arguments
 ///
 /// * `fundamental` - F.
-/// * `pixels1`, `pixels2` - Pixels.
+/// * `pixels1`, `pixels2` - The pairs' pixels in images 1 and 2.
 ///
 /// # Returns
 ///
@@ -859,5 +861,27 @@ mod tests {
         let found = essential_ransac(&b1, &b2, &options, MinimalSolver::Stewenius, true).unwrap();
         assert_eq!(found.summary.run.inlier_count, 28);
         assert!(crate::solve::Summary::converged(&found.summary));
+    }
+
+    /// A match at both epipoles has a 0 / 0 Sampson distance: the refinement is an error (as
+    /// in Python), and a rank-1 E has no start motion rather than a panic (panel H1, A2).
+    #[test]
+    fn a_match_at_both_epipoles_is_an_error() {
+        // Forward motion, no rotation: both epipoles are exactly (0, 0, 1).
+        let forward = Vector3::new(0.0, 0.0, 1.0);
+        let (mut b1, mut b2) = (vec![forward], vec![forward]);
+        for i in 0..8_u32 {
+            let t = f64::from(i);
+            let point = Vector3::new((1.7 * t).sin(), (0.9 * t).cos(), 4.0 + (0.3 * t).sin());
+            b1.push(point.normalize());
+            b2.push((point + forward).normalize());
+        }
+        let found = refine_essential(&so3::hat(&forward), &b1, &b2, 1e-3).unwrap_err();
+        assert_eq!(found.kind, ErrorKind::InvalidInput);
+        let rank_one = Matrix3::new(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        assert_eq!(
+            start_motion(&rank_one).unwrap_err().kind,
+            ErrorKind::Degenerate
+        );
     }
 }

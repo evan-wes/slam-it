@@ -24,10 +24,6 @@ use crate::common::{
 ///
 /// `ValueError` for malformed arrays or an unknown code; `InvalidInputError` from the core.
 #[pyfunction]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
-)]
 fn essential_5pt<'py>(
     py: Python<'py>,
     bearings1: ArrayIn<'py>,

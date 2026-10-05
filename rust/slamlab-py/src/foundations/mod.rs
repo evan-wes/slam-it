@@ -1,4 +1,13 @@
 //! Bindings for rung 0, foundations (`slamlab_rs.foundations`).
+//!
+//! PyO3 extracts every `#[pyfunction]` argument by value, and an array's read-only borrow
+//! guard *is* the argument, so clippy's `needless_pass_by_value` is allowed once here for all
+//! the binding modules below, rather than on each function.
+
+#![allow(
+    clippy::needless_pass_by_value,
+    reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
+)]
 
 use pyo3::prelude::*;
 

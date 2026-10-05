@@ -11,7 +11,7 @@ use crate::common::{
     unwrap, vector_array,
 };
 
-/// E from (N, 3) bearing pairs.
+/// E from (N, 3) bearing pairs: `x2ᵀ E x1 = 0`, camera 1 then camera 2.
 ///
 /// # Arguments
 ///
@@ -25,10 +25,6 @@ use crate::common::{
 ///
 /// `ValueError` for malformed arrays; `InvalidInputError` or `DegenerateError` from the core.
 #[pyfunction]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
-)]
 fn essential_8pt<'py>(
     py: Python<'py>,
     bearings1: ArrayIn<'py>,
@@ -38,7 +34,7 @@ fn essential_8pt<'py>(
     item_array(py, &unwrap(py, found)?)
 }
 
-/// F from (N, 2) pixel pairs.
+/// F from (N, 2) pixel pairs: `x2ᵀ F x1 = 0`, image 1 then image 2.
 ///
 /// # Arguments
 ///
@@ -52,10 +48,6 @@ fn essential_8pt<'py>(
 ///
 /// `ValueError` for malformed arrays; `InvalidInputError` or `DegenerateError` from the core.
 #[pyfunction]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
-)]
 fn fundamental_8pt<'py>(
     py: Python<'py>,
     pixels1: ArrayIn<'py>,
@@ -80,10 +72,6 @@ fn fundamental_8pt<'py>(
 ///
 /// `ValueError` for malformed arrays; `InvalidInputError` from the core.
 #[pyfunction]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
-)]
 fn sampson_essential<'py>(
     py: Python<'py>,
     essential: ArrayIn<'py>,
@@ -113,10 +101,6 @@ fn sampson_essential<'py>(
 ///
 /// `ValueError` for malformed arrays; `InvalidInputError` from the core.
 #[pyfunction]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
-)]
 fn sampson_fundamental<'py>(
     py: Python<'py>,
     fundamental: ArrayIn<'py>,
@@ -139,16 +123,12 @@ fn sampson_fundamental<'py>(
 ///
 /// # Returns
 ///
-/// A new (4, 4, 4) array.
+/// A new (4, 4, 4) array: the candidates `T_c2_c1`, each with a unit translation.
 ///
 /// # Errors
 ///
 /// `ValueError` for a malformed array; `InvalidInputError` or `DegenerateError` from the core.
 #[pyfunction]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
-)]
 fn decompose_essential<'py>(py: Python<'py>, essential: ArrayIn<'py>) -> PyResult<ArrayOut<'py>> {
     let poses = core::decompose_essential(&one::<Matrix3<f64>>(&essential)?);
     items_array(py, &unwrap(py, poses)?)
@@ -170,10 +150,6 @@ fn decompose_essential<'py>(py: Python<'py>, essential: ArrayIn<'py>) -> PyResul
 ///
 /// `ValueError` for malformed arrays; `InvalidInputError` or `DegenerateError` from the core.
 #[pyfunction]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
-)]
 fn refine_essential<'py>(
     py: Python<'py>,
     bearings1: ArrayIn<'py>,
@@ -187,11 +163,7 @@ fn refine_essential<'py>(
         &rows(&bearings2)?,
         scale,
     );
-    let solved = unwrap(py, solved)?;
-    let out = PyDict::new(py);
-    out.set_item("essential", item_array(py, &solved.state)?)?;
-    out.set_item("summary", nls_crossing::summary(py, &solved.summary)?)?;
-    Ok(out)
+    nls_crossing::refined(py, "essential", &unwrap(py, solved)?)
 }
 
 /// LO-MSAC with a minimal E solver, then (optionally) the Sampson refinement.
@@ -212,10 +184,6 @@ fn refine_essential<'py>(
 /// `ValueError` for malformed arguments; `InvalidInputError` or `DegenerateError` from the
 /// core.
 #[pyfunction]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
-)]
 fn essential_ransac<'py>(
     py: Python<'py>,
     bearings1: ArrayIn<'py>,
@@ -227,7 +195,7 @@ fn essential_ransac<'py>(
     let found = core::essential_ransac(
         &rows(&bearings1)?,
         &rows(&bearings2)?,
-        &ransac_crossing::options(&options)?,
+        &ransac_crossing::read_options(&options)?,
         decode(&MinimalSolver::ALL, minimal_solver, "minimal_solver")?,
         refine,
     );
@@ -250,10 +218,6 @@ fn essential_ransac<'py>(
 /// `ValueError` for malformed arguments; `InvalidInputError` or `DegenerateError` from the
 /// core.
 #[pyfunction]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
-)]
 fn fundamental_ransac<'py>(
     py: Python<'py>,
     pixels1: ArrayIn<'py>,
@@ -263,7 +227,7 @@ fn fundamental_ransac<'py>(
     let found = core::fundamental_ransac(
         &rows(&pixels1)?,
         &rows(&pixels2)?,
-        &ransac_crossing::options(&options)?,
+        &ransac_crossing::read_options(&options)?,
     );
     ransac_crossing::ransac_result(py, &unwrap(py, found)?)
 }

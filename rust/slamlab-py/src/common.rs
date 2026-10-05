@@ -6,10 +6,9 @@
 //! as the Python exception of its kind, from `slamlab.foundations.errors`.
 
 use nalgebra::{DVector, SMatrix};
-use numpy::ndarray::{ArrayD, IxDyn};
+use numpy::ndarray::{ArrayD, Dimension, IxDyn};
 use numpy::{
-    Element, IntoPyArray, PyArrayDyn, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArrayDyn,
-    PyUntypedArrayMethods,
+    Element, IntoPyArray, PyArrayDyn, PyReadonlyArray, PyReadonlyArrayDyn, PyUntypedArrayMethods,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -144,10 +143,7 @@ pub fn batch<'a>(array: &'a ArrayIn<'_>, item: &[usize]) -> PyResult<(&'a [f64],
                 .join(", ")
         )));
     }
-    let values = array
-        .as_slice()
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    Ok((values, shape[0]))
+    Ok((contiguous(array)?, shape[0]))
 }
 
 /// Reads a batch as a vector of items.
@@ -215,11 +211,11 @@ pub fn decode<E: Copy>(all: &[E], code: i64, what: &str) -> PyResult<E> {
         .ok_or_else(|| PyValueError::new_err(format!("{what}: unknown code {code}")))
 }
 
-/// Returns a one-dimensional array's values as a contiguous slice.
+/// Returns an array's values as one contiguous row-major slice.
 ///
 /// # Arguments
 ///
-/// * `array` - The array.
+/// * `array` - The array, of any dimension.
 ///
 /// # Returns
 ///
@@ -228,7 +224,9 @@ pub fn decode<E: Copy>(all: &[E], code: i64, what: &str) -> PyResult<E> {
 /// # Errors
 ///
 /// `ValueError` if the array is not C-contiguous.
-pub fn slice<'a, T: Element>(array: &'a PyReadonlyArray1<'_, T>) -> PyResult<&'a [T]> {
+pub fn contiguous<'a, T: Element, D: Dimension>(
+    array: &'a PyReadonlyArray<'_, T, D>,
+) -> PyResult<&'a [T]> {
     array
         .as_slice()
         .map_err(|e| PyValueError::new_err(e.to_string()))
@@ -255,29 +253,7 @@ pub fn one<A: Item>(array: &ArrayIn<'_>) -> PyResult<A> {
             array.shape()
         )));
     }
-    let values = array
-        .as_slice()
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    Ok(A::read(values))
-}
-
-/// Returns a two-dimensional array's values as a contiguous row-major slice.
-///
-/// # Arguments
-///
-/// * `array` - The array.
-///
-/// # Returns
-///
-/// The values.
-///
-/// # Errors
-///
-/// `ValueError` if the array is not C-contiguous.
-pub fn slice2<'a, T: Element>(array: &'a PyReadonlyArray2<'_, T>) -> PyResult<&'a [T]> {
-    array
-        .as_slice()
-        .map_err(|e| PyValueError::new_err(e.to_string()))
+    Ok(A::read(contiguous(array)?))
 }
 
 /// Copies items into a new array of shape `(N, *A::shape())`.
@@ -523,10 +499,6 @@ macro_rules! batched {
     ($(#[$meta:meta])* $name:ident($($arg:ident: $ty:ty),+) -> $out:ty = $f:expr) => {
         $(#[$meta])*
         #[pyfunction]
-        #[allow(
-            clippy::needless_pass_by_value,
-            reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
-        )]
         fn $name<'py>(
             py: Python<'py>,
             $($arg: $crate::common::ArrayIn<'py>),+

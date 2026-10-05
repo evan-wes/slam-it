@@ -58,7 +58,7 @@ struct OptionsIn {
 /// # Errors
 ///
 /// `ValueError` for a missing or unknown field, or a value of the wrong type.
-pub fn options(options: &Bound<'_, PyDict>) -> PyResult<ransac::Options> {
+pub fn read_options(options: &Bound<'_, PyDict>) -> PyResult<ransac::Options> {
     let raw: OptionsIn = pythonize::depythonize(options.as_any())
         .map_err(|e| PyValueError::new_err(format!("options: {e}")))?;
     Ok(ransac::Options {
@@ -123,10 +123,11 @@ pub fn refined_summary<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     let out = PyDict::new(py);
     out.set_item("run", self::summary(py, &summary.run)?)?;
-    let refinement = match &summary.refinement {
-        Some(refinement) => Some(nls_crossing::summary(py, refinement)?),
-        None => None,
-    };
+    let refinement = summary
+        .refinement
+        .as_ref()
+        .map(|refinement| nls_crossing::summary(py, refinement))
+        .transpose()?;
     out.set_item("refinement", refinement)?;
     out.set_item("refined", summary.refined)?;
     out.set_item("rounds", summary.rounds)?;

@@ -19,8 +19,8 @@ use slamlab_foundations::nls::{LossKind, Method};
 
 use super::nls_crossing::{self, LossIn, OptionsIn};
 use crate::common::{
-    ArrayIn, add_functions, by_name, decode, encode, enum_names, items_array, new_array, rows,
-    slice, unwrap,
+    ArrayIn, add_functions, by_name, contiguous, decode, encode, enum_names, items_array,
+    new_array, rows, unwrap,
 };
 
 /// `ba.BAOptions`' fields, as they cross.
@@ -141,9 +141,8 @@ fn code_of(index: Option<usize>) -> i64 {
     options
 ))]
 #[allow(
-    clippy::needless_pass_by_value,
     clippy::too_many_arguments,
-    reason = "every argument crosses by keyword, by name; PyO3 extracts them by value"
+    reason = "every argument crosses by keyword, by name"
 )]
 fn solve<'py>(
     py: Python<'py>,
@@ -181,20 +180,20 @@ fn solve<'py>(
         poses: rows::<Matrix4<f64>>(&poses)?,
         points: rows::<Vector3<f64>>(&points)?,
         observations: rows::<Vector2<f64>>(&observations)?,
-        cam_idx: slice(&cam_idx)?.to_vec(),
-        pt_idx: slice(&pt_idx)?.to_vec(),
-        intrinsics_idx: slice(&intrinsics_idx)?.to_vec(),
-        weights: slice(&weights)?.to_vec(),
-        fixed_poses: slice(&fixed_poses)?.to_vec(),
-        fixed_intrinsics: slice(&fixed_intrinsics)?.to_vec(),
-        fixed_points: slice(&fixed_points)?.to_vec(),
-        depth_prior: slice(&depth_prior)?.to_vec(),
-        depth_prior_weights: slice(&depth_prior_weights)?.to_vec(),
+        cam_idx: contiguous(&cam_idx)?.to_vec(),
+        pt_idx: contiguous(&pt_idx)?.to_vec(),
+        intrinsics_idx: contiguous(&intrinsics_idx)?.to_vec(),
+        weights: contiguous(&weights)?.to_vec(),
+        fixed_poses: contiguous(&fixed_poses)?.to_vec(),
+        fixed_intrinsics: contiguous(&fixed_intrinsics)?.to_vec(),
+        fixed_points: contiguous(&fixed_points)?.to_vec(),
+        depth_prior: contiguous(&depth_prior)?.to_vec(),
+        depth_prior_weights: contiguous(&depth_prior_weights)?.to_vec(),
         depth_affine: rows::<Vector2<f64>>(&depth_affine)?,
-        fixed_depth_affine: slice(&fixed_depth_affine)?.to_vec(),
+        fixed_depth_affine: contiguous(&fixed_depth_affine)?.to_vec(),
         pose_prior: rows::<Matrix4<f64>>(&pose_prior)?,
         pose_prior_weights: rows::<Vector2<f64>>(&pose_prior_weights)?,
-        point_anchor: slice(&point_anchor)?.to_vec(),
+        point_anchor: contiguous(&point_anchor)?.to_vec(),
     };
     let options = read_options(&options)?;
     let solution = unwrap(py, py.detach(|| core::solve::solve(&problem, &options)))?;

@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 use slamlab_foundations::triangulation::{self as core, Triangulation};
 
 use crate::common::{
-    ArrayIn, ArrayOut, add_functions, batch, new_array, one, rows, slice2, unwrap,
+    ArrayIn, ArrayOut, add_functions, batch, contiguous, new_array, one, rows, unwrap,
 };
 
 /// Packs a triangulation as a new (P, 5) array.
@@ -60,10 +60,6 @@ fn pack<'py>(py: Python<'py>, result: &Triangulation) -> PyResult<ArrayOut<'py>>
 ///
 /// `ValueError` for malformed arrays; `InvalidInputError` from the core.
 #[pyfunction]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
-)]
 fn two_view<'py>(
     py: Python<'py>,
     relative_pose: ArrayIn<'py>,
@@ -95,10 +91,6 @@ fn two_view<'py>(
 ///
 /// `ValueError` for malformed arrays; `InvalidInputError` from the core.
 #[pyfunction]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
-)]
 fn n_view<'py>(
     py: Python<'py>,
     poses: ArrayIn<'py>,
@@ -113,7 +105,11 @@ fn n_view<'py>(
         .iter()
         .map(|&r| Vector3::from(r))
         .collect();
-    let result = core::n_view(&rows::<Matrix4<f64>>(&poses)?, &rays, slice2(&observed)?);
+    let result = core::n_view(
+        &rows::<Matrix4<f64>>(&poses)?,
+        &rays,
+        contiguous(&observed)?,
+    );
     pack(py, &unwrap(py, result)?)
 }
 

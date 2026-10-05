@@ -24,10 +24,6 @@ use crate::common::{
 ///
 /// `ValueError` for malformed arrays; `InvalidInputError` or `DegenerateError` from the core.
 #[pyfunction]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
-)]
 fn homography_dlt<'py>(
     py: Python<'py>,
     points1: ArrayIn<'py>,
@@ -52,10 +48,6 @@ fn homography_dlt<'py>(
 ///
 /// `ValueError` for malformed arrays; `InvalidInputError` from the core.
 #[pyfunction]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
-)]
 fn sampson_homography<'py>(
     py: Python<'py>,
     homography: ArrayIn<'py>,
@@ -84,10 +76,6 @@ fn sampson_homography<'py>(
 ///
 /// `ValueError` for a malformed array; `InvalidInputError` or `DegenerateError` from the core.
 #[pyfunction]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
-)]
 fn decompose_homography<'py>(
     py: Python<'py>,
     homography: ArrayIn<'py>,
@@ -116,10 +104,6 @@ fn decompose_homography<'py>(
 /// `ValueError` for malformed arguments; `InvalidInputError` or `DegenerateError` from the
 /// core.
 #[pyfunction]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
-)]
 fn homography_ransac<'py>(
     py: Python<'py>,
     points1: ArrayIn<'py>,
@@ -129,7 +113,7 @@ fn homography_ransac<'py>(
     let found = core::homography_ransac(
         &rows(&points1)?,
         &rows(&points2)?,
-        &ransac_crossing::options(&options)?,
+        &ransac_crossing::read_options(&options)?,
     );
     ransac_crossing::ransac_result(py, &unwrap(py, found)?)
 }

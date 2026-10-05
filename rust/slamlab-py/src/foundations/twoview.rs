@@ -93,10 +93,6 @@ fn read_options(options: &Bound<'_, PyDict>) -> PyResult<core::Options> {
 /// `ValueError` for malformed arguments; `InvalidInputError`, or `DegenerateError` if neither
 /// RANSAC found a model.
 #[pyfunction]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
-)]
 fn initialize<'py>(
     py: Python<'py>,
     bearings1: ArrayIn<'py>,
@@ -125,15 +121,17 @@ fn initialize<'py>(
         .map(|&count| i64::try_from(count).unwrap_or(i64::MAX))
         .collect();
     out.set_item("in_front", in_front.into_pyarray(py))?;
-    let essential = match &result.essential {
-        Some(summary) => Some(ransac_crossing::refined_summary(py, summary)?),
-        None => None,
-    };
+    let essential = result
+        .essential
+        .as_ref()
+        .map(|summary| ransac_crossing::refined_summary(py, summary))
+        .transpose()?;
     out.set_item("essential", essential)?;
-    let homography = match &result.homography {
-        Some(summary) => Some(ransac_crossing::summary(py, summary)?),
-        None => None,
-    };
+    let homography = result
+        .homography
+        .as_ref()
+        .map(|summary| ransac_crossing::summary(py, summary))
+        .transpose()?;
     out.set_item("homography", homography)?;
     Ok(out)
 }

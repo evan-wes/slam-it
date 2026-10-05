@@ -25,10 +25,6 @@ use crate::common::{ArrayIn, ArrayOut, Item, add_functions, new_array, rows, unw
 ///
 /// `ValueError` for malformed arrays; `InvalidInputError` or `DegenerateError` from the core.
 #[pyfunction]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
-)]
 fn umeyama<'py>(
     py: Python<'py>,
     source: ArrayIn<'py>,

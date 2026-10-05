@@ -15,21 +15,17 @@ use crate::common::{
 ///
 /// # Arguments
 ///
-/// * `points` - (N, 3) world points.
+/// * `points` - (N, 3) world points, in the world frame's units.
 /// * `bearings` - (N, 3) unit bearings.
 ///
 /// # Returns
 ///
-/// A new (4, 4) array, `T_cam_world`.
+/// A new (4, 4) array, `T_cam_world`: it maps world points into the camera.
 ///
 /// # Errors
 ///
 /// `ValueError` for malformed arrays; `InvalidInputError` or `DegenerateError` from the core.
 #[pyfunction]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
-)]
 fn epnp<'py>(
     py: Python<'py>,
     points: ArrayIn<'py>,
@@ -43,9 +39,9 @@ fn epnp<'py>(
 ///
 /// # Arguments
 ///
-/// * `points` - The inliers' (M, 3) world points.
+/// * `points` - The inliers' (M, 3) world points, in the world frame's units.
 /// * `bearings` - Their (M, 3) bearings.
-/// * `pose` - The starting (4, 4) pose.
+/// * `pose` - The starting (4, 4) `T_cam_world`.
 /// * `scale` - The Cauchy loss's scale.
 ///
 /// # Returns
@@ -56,10 +52,6 @@ fn epnp<'py>(
 ///
 /// `ValueError` for malformed arrays; `InvalidInputError` from the core.
 #[pyfunction]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
-)]
 fn refine_pose<'py>(
     py: Python<'py>,
     points: ArrayIn<'py>,
@@ -73,18 +65,14 @@ fn refine_pose<'py>(
         &rows(&bearings)?,
         scale,
     );
-    let solved = unwrap(py, solved)?;
-    let out = PyDict::new(py);
-    out.set_item("pose", item_array(py, &solved.state)?)?;
-    out.set_item("summary", nls_crossing::summary(py, &solved.summary)?)?;
-    Ok(out)
+    nls_crossing::refined(py, "pose", &unwrap(py, solved)?)
 }
 
 /// LO-MSAC with a P3P solver and EPnP refits, then (optionally) the refinement.
 ///
 /// # Arguments
 ///
-/// * `points` - (N, 3) world points.
+/// * `points` - (N, 3) world points, in the world frame's units.
 /// * `bearings` - Their (N, 3) bearings.
 /// * `options` - `ransac.Options`' fields.
 /// * `minimal_solver` - The P3P solver's code (an index into `p3p.SOLVERS`).
@@ -99,10 +87,6 @@ fn refine_pose<'py>(
 /// `ValueError` for malformed arguments; `InvalidInputError` or `DegenerateError` from the
 /// core.
 #[pyfunction]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
-)]
 fn pnp_ransac<'py>(
     py: Python<'py>,
     points: ArrayIn<'py>,
@@ -114,7 +98,7 @@ fn pnp_ransac<'py>(
     let found = core::pnp_ransac(
         &rows(&points)?,
         &rows(&bearings)?,
-        &ransac_crossing::options(&options)?,
+        &ransac_crossing::read_options(&options)?,
         decode(&Solver::ALL, minimal_solver, "minimal_solver")?,
         refine,
     );

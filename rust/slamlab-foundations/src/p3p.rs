@@ -91,7 +91,8 @@ const PAIRS: [(usize, usize); 3] = [(0, 1), (0, 2), (1, 2)];
 /// makes it the pair of the second and third.
 const LONGEST_LAST: [[usize; 3]; 3] = [[2, 1, 0], [1, 0, 2], [0, 1, 2]];
 
-/// The index of the first largest entry, as Eigen's `maxCoeff` and numpy's `argmax` pick it.
+/// The index of the first largest entry in the order given, as Eigen's `maxCoeff` and numpy's
+/// `argmax` pick the first of equal maxima.
 ///
 /// # Arguments
 ///
@@ -573,7 +574,10 @@ fn line_pair(c: &Matrix3<f64>) -> Option<[Vector3<f64>; 2]> {
     }
     let w: Vector3<f64> = adjugate.column(k) / adjugate[(k, k)].sqrt();
     let rank_one = c + so3::hat(&w);
-    // Column-major order, as Eigen's maxCoeff visits a column-major matrix.
+    // Column-major order, as Eigen's maxCoeff visits a column-major matrix. numpy's argmax on
+    // Python's C-ordered array is row-major, so on an exact tie Python can pick another entry;
+    // harmless, since a rank-one matrix's rows (and columns) are parallel and the depths use
+    // only their ratios.
     let largest = first_max(rank_one.iter().map(|x| x.abs()));
     let (row, column) = (largest % 3, largest / 3);
     Some([

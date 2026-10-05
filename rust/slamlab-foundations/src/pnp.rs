@@ -718,4 +718,15 @@ mod tests {
         assert_eq!(found.summary.run.inlier_count, 35);
         assert!((found.state.model - pose).amax() < 1e-9);
     }
+
+    /// The unchecked refinement from a pose with a point behind the camera is an error (an
+    /// infinite start), not a panic (panel A2).
+    #[test]
+    fn a_point_behind_the_start_is_an_error() {
+        let (mut points, bearings, pose) = scene(10);
+        let centre = -se3::rotation(&pose).transpose() * se3::translation(&pose);
+        points[0] = 2.0 * centre - points[0]; // mirrored through the camera centre
+        let failed = refine(&pose, points, normalised_xy(&bearings), 1e-3).unwrap_err();
+        assert_eq!(failed.kind, ErrorKind::InvalidInput);
+    }
 }

@@ -54,10 +54,6 @@ fn read_camera<'a>(
 ///
 /// `ValueError` for malformed arrays or an unknown code; `InvalidInputError` from the core.
 #[pyfunction]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
-)]
 fn project<'py>(
     py: Python<'py>,
     model: i64,
@@ -84,10 +80,6 @@ fn project<'py>(
 ///
 /// `ValueError` for malformed arrays or an unknown code; `InvalidInputError` from the core.
 #[pyfunction]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
-)]
 fn project_jacobians<'py>(
     py: Python<'py>,
     model: i64,
@@ -124,10 +116,6 @@ fn project_jacobians<'py>(
 /// `ValueError` for malformed arrays or an unknown code; `InvalidInputError` or
 /// `NotConvergedError` from the core.
 #[pyfunction]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
-)]
 fn unproject<'py>(
     py: Python<'py>,
     model: i64,

@@ -18,6 +18,9 @@ use crate::linalg::svd;
 pub const RANK_TOLERANCE: f64 = 1e-10;
 /// Unit bearings must have norm 1 within this (`slamlab.foundations.arrays`' value).
 pub const BEARING_TOLERANCE: f64 = 1e-9;
+// check_bearing's message spells the tolerance out ("1e-09", as Python prints it).
+#[allow(clippy::float_cmp, reason = "an exact constant, not a computed value")]
+const _: () = assert!(BEARING_TOLERANCE == 1e-9, "update check_bearing's message");
 
 /// Appends a 1 to each 2D point.
 ///
@@ -135,6 +138,8 @@ pub fn null_vector(system: &DMatrix<f64>) -> Option<SVector<f64, 9>> {
 /// `InvalidInput` naming the argument.
 pub fn check_bearing(bearing: &Vector3<f64>, name: &str) -> Result<()> {
     if !bearing.iter().all(|x| x.is_finite()) || (bearing.norm() - 1.0).abs() > BEARING_TOLERANCE {
+        // Spelled as Python formats BEARING_TOLERANCE, so the cores' messages match; the
+        // assertion below keeps the two in step.
         return fail(
             ErrorKind::InvalidInput,
             format!("{name}: expected unit vectors within 1e-09"),
