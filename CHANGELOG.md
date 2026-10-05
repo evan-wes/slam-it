@@ -7,8 +7,10 @@ with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 ## [0.3.0.0] - 2026-10-04
 
 Milestone 1 is complete: Python, C++ and Rust have the same capabilities. The Rust core
-gains the estimation half of rung 0, and Rust becomes a lock-step backend. Porting the
-refinement found a crash in the C++ core, fixed here. Four deferred panel items are closed.
+gains the estimation half of rung 0, and Rust becomes a lock-step backend. Every SVD in the
+Rust core now goes through faer, since nalgebra's were not accurate on ill-conditioned input.
+Porting the refinement found a crash in the C++ core, fixed here. Four deferred panel items
+are closed, and this PR's own panel findings are resolved.
 
 ### Added
 
@@ -30,9 +32,11 @@ refinement found a crash in the C++ core, fixed here. Four deferred panel items 
   reads options through serde.
 - **RANSAC benchmarks** in both native suites: E-RANSAC and PnP RANSAC on one fixed
   synthetic scene. Both cores keep the same inliers in the same number of iterations;
-  C++ takes 2.29 and 2.40 ms, Rust 2.69 and 2.25 ms.
-- **`linalg::least_squares`** (Rust): the minimum-norm SVD solve with an explicit cutoff,
-  so each caller states whose convention (numpy's or Eigen's) it follows.
+  C++ takes 2.29 and 2.40 ms, Rust 3.29 and 2.08 ms.
+- **`linalg`** (Rust): faer's SVD (`svd`, `svd3`, `singular_values3`) and real
+  eigendecomposition (`eigen_real`) for the whole crate, and `least_squares`, the
+  minimum-norm SVD solve with an explicit cutoff, so each caller states whose convention
+  (numpy's or Eigen's) it follows.
 
 ### Changed
 
@@ -47,12 +51,28 @@ refinement found a crash in the C++ core, fixed here. Four deferred panel items 
   Rust callers name `ba::solve::solve`.
 - **Nesting summaries implement `solve::Summary` in Rust** by delegation: `ba::Summary` and
   `ransac::RefinedSummary` (panel A5).
-- **`docs/notes/rust-port.md`** covers the estimation core: the port's choices, the RANSAC
-  benchmarks and the TUM results, and one code-size table for all of rung 0, counted by one
-  stated rule.
+- **Five-point solutions come back in one canonical order in every language** (panel L3):
+  each E signed so its first largest entry is positive, then sorted row-major. RANSAC keeps
+  the first of equally good models, so the cores' decisions no longer depend on each
+  library's null-space basis or Schur form.
+- **The refinement callback may fail, in every language** (panel A2): a failed round is not
+  kept, where the refiners used to unwrap. `start_motion` returns an error for an E that does
+  not decompose, in C++ and Rust.
+- **Rust's Stewénius solver** takes its eigenvectors from one eigendecomposition per sample,
+  as Eigen and numpy do, and **EPnP's beta steps** use Householder QR when clearly full rank;
+  together they recover most of the cost of the accurate SVD.
+- **`linalg`** is an optional layer at the bottom of rung 0's contract (panel A4).
+- **`docs/notes/rust-port.md`** covers the estimation core: the port's choices, the SVD
+  finding and the faer switch, the RANSAC benchmarks and the TUM results, and one code-size
+  table for all of rung 0, counted by one stated rule.
 
 ### Fixed
 
+- **Rust's SVDs are accurate on ill-conditioned input** (panel L1, L2). nalgebra 0.35's 3x3
+  SVD squares the condition number, so Rust's Umeyama, and so P3P, returned rotations off by
+  up to 0.7 on thin triangles; its dynamic SVD left the 8-point E and F up to 6e-3 from
+  Python's on a few near-planar scenes. Every SVD now goes through faer, which matches
+  LAPACK to roundoff on both.
 - **C++ `refine_essential` no longer segfaults** on a match at both epipoles, whose Sampson
   distance is 0 / 0. `epipolar::refine` and `pnp::refine` return the solve's error and the
   public refinements raise it as `InvalidInputError`, as Python and Rust do.
@@ -64,7 +84,15 @@ refinement found a crash in the C++ core, fixed here. Four deferred panel items 
 - **An epipole match raises `InvalidInputError` on every backend** (the crash above).
 - **The layer check's facade cases** follow the move: the facade including a package module
   fails as `problem`, and `super::solve` from below fails in Rust.
-- **Native Rust tests** for every new module, mirroring the native C++ ones.
+- **`ill_conditioned.json`** (50-digit mpmath) holds every backend to near-planar 8-point
+  scenes, a near-rank-deficient E and thin-triangle Umeyama, the inputs the old SVD got
+  wrong.
+- **The compiled-side tests run on every compiled backend** (panel A1), not only C++, and
+  one test requires every module with an `Implementation` Protocol of each.
+- **Native Rust tests** for each new module's main cases, the SVD's graded and thin cases,
+  and the failure paths (no model from any sample, an epipole match, a rank-1 E, a point
+  behind the camera); the rest of each module's behaviour is covered through the lock-step
+  tests.
 
 ## [0.2.4.0] - 2026-10-04
 

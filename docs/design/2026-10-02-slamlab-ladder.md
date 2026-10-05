@@ -659,6 +659,13 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
   - **One feature front end (A8).** Each demo script has its own SIFT and ratio-test
     matching. Fold them into the edge rung's front end when it lands (milestone 2), or into
     one shared script helper if a third demo comes first.
+- **Deferred from PR 6's review panel**
+  ([report](../reviews/2026-10-04-feature-rust-estimation.md)):
+  - **P3P's depth polish stops at a relative singularity in C++ only (L6).** C++ tests the
+    Newton step's Jacobian with `FullPivLU::isInvertible()` (a threshold near 3ε), while
+    Python's `np.linalg.solve` and Rust's `full_piv_lu().solve` stop only on an exactly zero
+    pivot. Near-singular Jacobians therefore polish one step less in C++. Align it if exact
+    three-way agreement on near-degenerate triangles matters.
 - **Deferred from PR 5's review panel**
   ([report](../reviews/2026-10-04-feature-rust-core.md)):
   - Closed by PR 6: **nested summaries and the Rust `Summary` trait (A5).** `ba::Summary`
@@ -688,8 +695,9 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
     `solve` caused: `solve`, `centring_origin` and `shifted` moved into `ba/solve.rs` and
     `ba/solve.cpp`, mirroring Python's `ba/solve.py`, so the facade maps to `problem` both
     ways and `super::solve` from inside `ba` is checked. Left open: C++'s public `ba.hpp`
-    still declares `solve`, so a package module that includes the header could call it
-    unchecked, and an unmapped facade is still exempt.
+    still declares `solve`, and every internal `ba` header includes it (PR 6's panel, A3), so
+    `bundle` or `layout` could call `solve` unchecked; and an unmapped facade is still exempt.
+    The fix is a public `slamlab/foundations/ba/solve.hpp` mapped to the `solve` layer.
   - **The gauge in rung 0's own right (A26, run 3).** `ba/gauge` depends only on poses and
     points. When pose-graph optimisation (the classic rung's loop closure) needs the same
     null-space removal, lift it to `foundations.gauge` rather than importing it from `ba`.
