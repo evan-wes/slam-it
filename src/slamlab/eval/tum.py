@@ -18,7 +18,8 @@ the nearest depth map within ``max_difference``, if there is one.
 
 **Depth.** The depth maps are 16-bit PNGs registered to the colour image: pixel ``(u, v)`` of
 the depth map is pixel ``(u, v)`` of the colour frame, and its value over :data:`DEPTH_SCALE`
-is the point's z in the colour camera, in metres (0: no measurement).
+is the point's z in the colour camera, in metres (0: no measurement). :func:`read_depth`
+reads one in metres.
 
 **Intrinsics.** The ROS default for each sensor (``freiburg1``, ``2``, ``3``) is published as a
 pinhole with Brown-Conrady (radial-tangential) distortion. :data:`INTRINSICS` holds them in
@@ -34,6 +35,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
+from slamlab.eval import images
 from slamlab.foundations import so3
 from slamlab.foundations.errors import InvalidInputError
 
@@ -216,3 +218,30 @@ def read_sequence(root: str | Path, max_difference: float = MAX_DIFFERENCE) -> S
             for k, d in zip(kept, closest, strict=True)
         ]
     return Sequence(folder, sensor, stamps[kept], images, truth_poses[nearest[kept]], depths)
+
+
+def read_depth(path: str | Path) -> NDArray[np.float64]:
+    """Read a depth map in metres.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        A 16-bit depth PNG (:attr:`Sequence.depths`).
+
+    Returns
+    -------
+    ndarray of float64, shape (H, W)
+        Each pixel's z in the colour camera, in metres: its value over :data:`DEPTH_SCALE`;
+        NaN where the sensor measured nothing (a stored 0).
+
+    Raises
+    ------
+    FileNotFoundError
+        If the file does not exist.
+    slamlab.foundations.errors.InvalidInputError
+        If it is not a 16-bit single-channel image.
+    """
+    raw = images.read_depth(path)
+    depth = raw.astype(np.float64) / DEPTH_SCALE
+    depth[raw == 0] = np.nan
+    return depth

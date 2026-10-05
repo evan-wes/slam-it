@@ -70,6 +70,10 @@ if(SLAMLAB_BUILD_BENCHMARKS)
 endif()
 
 slamlab_add_rung(foundations)
+# Evaluation: dataset readers outside the algorithm cores. PNGs decode with the vendored
+# stb_image (third_party/stb), included as a system header so its own warnings stay out.
+slamlab_add_rung(eval DEPENDS slamlab_foundations)
+target_include_directories(slamlab_eval SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb)
 
 if(SKBUILD)
   find_package(Python 3.11 REQUIRED COMPONENTS Interpreter Development.Module)

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["slamlab-foundations", "slamlab-py"]
+members = ["slamlab-eval", "slamlab-foundations", "slamlab-py"]
 
 [workspace.dependencies]
 nalgebra = "0.35.0"

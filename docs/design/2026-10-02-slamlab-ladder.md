@@ -78,15 +78,17 @@ The ladder spans compute budgets. Every rung stands on rung 0.
 
 **Runtime dependencies.** Adding one, to the Python package or to a core, is a change to this
 document first.
-- **Python:** numpy. Pillow too, but in `slamlab.eval` alone, which loads datasets (milestone 2
-  reads PNG frames and depth maps): the algorithm rungs take arrays, never files, and an
-  import-linter contract keeps Pillow out of them.
-- **C++:** Eigen, and one small, widely used PNG decoder for the images (chosen with milestone
-  2's first PR and recorded here).
+- **Python:** numpy. Pillow too, but in `slamlab.eval.images` alone, which reads image files
+  (milestone 2 reads PNG frames and depth maps): the algorithm rungs take arrays, never files,
+  and an import-linter contract keeps Pillow in that one module.
+- **C++:** Eigen. The `slamlab_eval` library reads PNGs with stb_image (vendored in
+  `third_party/stb`, PNG support only; MIT or public domain), outside the algorithm cores.
 - **Rust:** nalgebra, the matrix type, and faer for every SVD and the general
   eigendecomposition, single-threaded, behind the crate-private `linalg` (nalgebra's SVDs are
-  not backward stable; see the Rust port's note); and a PNG decoder crate, chosen with the C++
-  one.
+  not backward stable; see the Rust port's note). The `slamlab-eval` crate reads PNGs with
+  the pure-Rust `png` crate, outside the algorithm cores.
+- The three readers read a file the same way (gray from a gray file as stored, from a colour
+  one through `image.to_gray`), held to shared PNG fixtures.
 
 **Parity.** Shared fixtures (fixed inputs, expected outputs) live in `tests/fixtures/`. Every C++
 and Rust implementation is checked against the Python reference. All three are benchmarked under

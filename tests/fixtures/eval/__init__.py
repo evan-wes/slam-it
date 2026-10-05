@@ -1,1 +1,1 @@
-"""Parity fixtures for slamlab.eval (the BAL reader shared with the native benchmarks)."""
+"""Evaluation fixtures: image files the Python, C++ and Rust readers share."""
