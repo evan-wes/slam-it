@@ -4,58 +4,13 @@
 //! as an (H, W, 2) float64 array.
 
 use nalgebra::Vector2;
-use numpy::ndarray::Array2;
-use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2, PyReadonlyArray3, PyUntypedArrayMethods};
+use numpy::{PyReadonlyArray2, PyReadonlyArray3, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use slamlab_foundations::image::{self as core, Image};
+use slamlab_foundations::image as core;
 
+use super::image_crossing::{ImageOut, image_array, image_in};
 use crate::common::{add_functions, contiguous, unwrap};
-
-/// A uint8 numpy image returned to Python.
-type ImageOut<'py> = Bound<'py, PyArray2<u8>>;
-
-/// Copies an (H, W) uint8 array in.
-///
-/// # Arguments
-///
-/// * `image` - The array.
-///
-/// # Returns
-///
-/// The core's image.
-///
-/// # Errors
-///
-/// `ValueError` if the array is not C-contiguous.
-fn image_in(image: &PyReadonlyArray2<'_, u8>) -> PyResult<Image> {
-    let shape = image.shape();
-    Ok(Image {
-        rows: shape[0],
-        cols: shape[1],
-        pixels: contiguous(image)?.to_vec(),
-    })
-}
-
-/// Moves an image out as a new (rows, cols) uint8 array.
-///
-/// # Arguments
-///
-/// * `py` - The Python token.
-/// * `image` - The core's image.
-///
-/// # Returns
-///
-/// The array.
-///
-/// # Errors
-///
-/// `ValueError` if the pixel count does not match the shape (a core bug).
-fn image_array(py: Python<'_>, image: Image) -> PyResult<ImageOut<'_>> {
-    let array = Array2::from_shape_vec((image.rows, image.cols), image.pixels)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    Ok(array.into_pyarray(py))
-}
 
 /// Converts an (H, W, 3) RGB image to (H, W) gray.
 ///

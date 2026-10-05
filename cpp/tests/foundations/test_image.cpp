@@ -9,30 +9,16 @@
 #include <vector>
 
 #include "fixture_support.hpp"
-#include "slamlab/foundations/error.hpp"
+#include "image_support.hpp"
 #include "slamlab/foundations/image.hpp"
 #include "test_support.hpp"
 
 namespace {
 
 namespace image = slamlab::foundations::image;
-using slamlab::foundations::ErrorKind;
 using slamlab::testing::expect;
-
-/// @brief Read a nested list of intensities as an image.
-/// @param rows The fixture's list of rows.
-/// @return The image.
-image::Image read_image(const nlohmann::json& rows) {
-  image::Image out{.rows = static_cast<std::int64_t>(rows.size()),
-                   .cols = static_cast<std::int64_t>(rows[0].size()),
-                   .pixels = {}};
-  for (const auto& row : rows) {
-    for (const auto& value : row) {
-      out.pixels.push_back(value.get<std::uint8_t>());
-    }
-  }
-  return out;
-}
+using slamlab::testing::is_invalid_input;
+using slamlab::testing::read_image;
 
 /// @brief Whether a result holds exactly the expected image.
 /// @param got The result.
@@ -41,15 +27,6 @@ image::Image read_image(const nlohmann::json& rows) {
 bool same(const slamlab::foundations::Result<image::Image>& got, const image::Image& expected) {
   return got.has_value() && got->rows == expected.rows && got->cols == expected.cols &&
          got->pixels == expected.pixels;
-}
-
-/// @brief Whether a result failed with `InvalidInput`.
-/// @tparam T The result's value type.
-/// @param result The result.
-/// @return True if it is an `InvalidInput` error.
-template <typename T>
-bool invalid(const slamlab::foundations::Result<T>& result) {
-  return !result.has_value() && result.error().kind == ErrorKind::kInvalidInput;
 }
 
 /// @brief Check every fixture case.
@@ -113,30 +90,31 @@ void check_rejections(int& failures) {
   image::Image short_image = gray;
   short_image.pixels.pop_back();
   const std::vector<std::uint32_t> unit{1};
-  expect(invalid(image::blur(short_image, unit)), "blur rejects a short buffer", failures);
-  expect(invalid(image::blur(image::Image{.rows = 0, .cols = 4, .pixels = {}}, unit)),
+  expect(is_invalid_input(image::blur(short_image, unit)), "blur rejects a short buffer", failures);
+  expect(is_invalid_input(image::blur(image::Image{.rows = 0, .cols = 4, .pixels = {}}, unit)),
          "blur rejects an empty image", failures);
-  expect(invalid(image::blur(gray, std::vector<std::uint32_t>{1, 1})),
+  expect(is_invalid_input(image::blur(gray, std::vector<std::uint32_t>{1, 1})),
          "blur rejects an even kernel", failures);
-  expect(invalid(image::blur(gray, std::vector<std::uint32_t>{1, 1, 1})),
+  expect(is_invalid_input(image::blur(gray, std::vector<std::uint32_t>{1, 1, 1})),
          "blur rejects a sum that is not a power of two", failures);
-  expect(invalid(image::blur(gray, std::vector<std::uint32_t>{1U << 16U})),
+  expect(is_invalid_input(image::blur(gray, std::vector<std::uint32_t>{1U << 16U})),
          "blur rejects a sum above 2^15", failures);
-  expect(invalid(image::resize(gray, 0, 4)), "resize rejects zero rows", failures);
-  expect(invalid(image::resize(gray, 3, image::kMaxSide + 1)), "resize rejects wide output",
-         failures);
-  expect(invalid(image::to_gray(2, 2, std::vector<std::uint8_t>(11))),
+  expect(is_invalid_input(image::resize(gray, 0, 4)), "resize rejects zero rows", failures);
+  expect(is_invalid_input(image::resize(gray, 3, image::kMaxSide + 1)),
+         "resize rejects wide output", failures);
+  expect(is_invalid_input(image::to_gray(2, 2, std::vector<std::uint8_t>(11))),
          "to_gray rejects a short buffer", failures);
   image::Coordinates nan(1, 2);
   nan << std::numeric_limits<double>::quiet_NaN(), 0.0;
-  expect(invalid(image::remap(gray, nan, 1, 1)), "remap rejects NaN", failures);
-  expect(invalid(image::remap(gray, image::Coordinates::Zero(2, 2), 1, 1)),
+  expect(is_invalid_input(image::remap(gray, nan, 1, 1)), "remap rejects NaN", failures);
+  expect(is_invalid_input(image::remap(gray, image::Coordinates::Zero(2, 2), 1, 1)),
          "remap rejects a map of another size", failures);
-  expect(invalid(image::pyramid(gray, 0, 1.2)), "pyramid rejects zero levels", failures);
-  expect(invalid(image::pyramid(gray, 2, 1.0)), "pyramid rejects a scale of 1", failures);
-  expect(invalid(image::pyramid(gray, 2, std::numeric_limits<double>::infinity())),
+  expect(is_invalid_input(image::pyramid(gray, 0, 1.2)), "pyramid rejects zero levels", failures);
+  expect(is_invalid_input(image::pyramid(gray, 2, 1.0)), "pyramid rejects a scale of 1", failures);
+  expect(is_invalid_input(image::pyramid(gray, 2, std::numeric_limits<double>::infinity())),
          "pyramid rejects an infinite scale", failures);
-  expect(invalid(image::pyramid(gray, 3, 4.0)), "pyramid rejects an empty level", failures);
+  expect(is_invalid_input(image::pyramid(gray, 3, 4.0)), "pyramid rejects an empty level",
+         failures);
 }
 
 /// @brief The test body.

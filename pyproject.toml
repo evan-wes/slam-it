@@ -141,7 +141,7 @@ layers = [
   "(ba) | (twoview)",
   "(epipolar) | (homography) | (pnp)",
   "(camera) | (fivepoint) | (p3p) | (ransac) | (triangulation)",
-  "(nls)",
+  "(nls) | (orb)",
   "(correspondences) | (image)",
   "(alignment)",
   "(se3)",

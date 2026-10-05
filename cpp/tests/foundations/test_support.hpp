@@ -4,6 +4,8 @@
 
 #include <iostream>
 
+#include "slamlab/foundations/error.hpp"
+
 /// @brief Helpers for slamlab's native tests.
 namespace slamlab::testing {
 
@@ -27,6 +29,15 @@ inline int finish(const char* name, int failures) {
     std::cout << name << ": ok\n";
   }
   return failures == 0 ? 0 : 1;
+}
+
+/// @brief Whether a core result failed with `InvalidInput`.
+/// @tparam T The result's value type.
+/// @param result The result.
+/// @return True if it is an `InvalidInput` error.
+template <typename T>
+bool is_invalid_input(const foundations::Result<T>& result) {
+  return !result.has_value() && result.error().kind == foundations::ErrorKind::kInvalidInput;
 }
 
 }  // namespace slamlab::testing

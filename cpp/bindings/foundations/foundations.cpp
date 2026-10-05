@@ -14,6 +14,8 @@ void bind_foundations(nanobind::module_& parent) {
   bind_camera(camera);
   nanobind::module_ image = foundations.def_submodule("image", "Grayscale images in fixed point.");
   bind_image(image);
+  nanobind::module_ orb = foundations.def_submodule("orb", "ORB keypoints and descriptors.");
+  bind_orb(orb);
   nanobind::module_ alignment =
       foundations.def_submodule("alignment", "Point-set alignment (Umeyama).");
   bind_alignment(alignment);

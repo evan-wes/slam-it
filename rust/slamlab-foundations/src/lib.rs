@@ -16,6 +16,7 @@ pub mod homography;
 pub mod image;
 pub(crate) mod linalg;
 pub mod nls;
+pub mod orb;
 pub mod p3p;
 pub mod pnp;
 pub mod ransac;

@@ -27,6 +27,10 @@ void bind_camera(nanobind::module_& m);
 /// @param m The `foundations.image` submodule.
 void bind_image(nanobind::module_& m);
 
+/// @brief Add the `orb` functions to the `foundations.orb` submodule.
+/// @param m The `foundations.orb` submodule.
+void bind_orb(nanobind::module_& m);
+
 /// @brief Add the `alignment` functions to the `foundations.alignment` submodule.
 /// @param m The `foundations.alignment` submodule.
 void bind_alignment(nanobind::module_& m);
