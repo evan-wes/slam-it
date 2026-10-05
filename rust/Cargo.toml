@@ -4,6 +4,9 @@ members = ["slamlab-foundations", "slamlab-py"]
 
 [workspace.dependencies]
 nalgebra = "0.35.0"
+# Every SVD in the crate (slamlab-foundations' linalg): backward stable, where nalgebra 0.35's
+# are not (PR 6 panel, L1 and L2). Single-threaded: no rayon, like the cores.
+faer = { version = "0.24.4", default-features = false, features = ["std"] }
 
 [workspace.package]
 edition = "2024"

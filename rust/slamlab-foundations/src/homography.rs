@@ -11,6 +11,7 @@ use crate::correspondences::{
     RANK_TOLERANCE, check_point_pairs, fit_sample, hartley_normalisation, null_vector,
 };
 use crate::error::{ErrorKind, Result, fail};
+use crate::linalg::singular_values3;
 use crate::ransac::{self, Estimator, Options};
 use crate::{se3, so3};
 
@@ -331,7 +332,7 @@ fn normal_candidates(s: &Matrix3<f64>, k: usize) -> (Vector3<f64>, Vector3<f64>)
 /// `InvalidInput` if not finite; `Degenerate` if its rank is below 2.
 pub fn decompose_homography(homography: &Matrix3<f64>) -> Result<PlanarMotions> {
     check_finite(homography)?;
-    let singular = homography.singular_values();
+    let singular = singular_values3(homography);
     if !(singular[1] > RANK_TOLERANCE * singular[0]) {
         return fail(ErrorKind::Degenerate, "homography: rank below 2");
     }

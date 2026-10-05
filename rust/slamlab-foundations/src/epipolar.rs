@@ -13,6 +13,7 @@ use crate::correspondences::{
     hartley_normalisation, homogeneous, normalised_plane, null_vector,
 };
 use crate::error::{ErrorKind, Result, fail, fail_setting};
+use crate::linalg::{singular_values3, svd3};
 use crate::ransac::{self, Estimator, Options, RefinedSolution};
 use crate::{fivepoint, nls, se3, so3};
 
@@ -165,8 +166,7 @@ pub fn fit_essential(
 ) -> Option<Matrix3<f64>> {
     let (raw, t1, t2) = normalised_8pt(&plane_xy(bearings1), &plane_xy(bearings2))?;
     // Project after mapping back: the normalisation does not preserve the essential structure.
-    let svd = (t2.transpose() * raw * t1).svd(true, true);
-    let (u, v_t) = (svd.u?, svd.v_t?);
+    let (u, _, v_t) = svd3(&(t2.transpose() * raw * t1))?;
     Some(u * Matrix3::from_diagonal(&Vector3::new(1.0, 1.0, 0.0)) * v_t)
 }
 
@@ -182,9 +182,8 @@ pub fn fit_essential(
 #[must_use]
 pub fn fit_fundamental(pixels1: &[Vector2<f64>], pixels2: &[Vector2<f64>]) -> Option<Matrix3<f64>> {
     let (raw, t1, t2) = normalised_8pt(pixels1, pixels2)?;
-    let svd = raw.svd(true, true);
-    let s = svd.singular_values;
-    let rank2 = svd.u? * Matrix3::from_diagonal(&Vector3::new(s[0], s[1], 0.0)) * svd.v_t?;
+    let (u, s, v_t) = svd3(&raw)?;
+    let rank2 = u * Matrix3::from_diagonal(&Vector3::new(s[0], s[1], 0.0)) * v_t;
     let fundamental = t2.transpose() * rank2 * t1;
     Some(fundamental / fundamental.norm())
 }
@@ -442,9 +441,7 @@ pub fn decompose_essential(essential: &Matrix3<f64>) -> Result<Vec<Matrix4<f64>>
             "essential: expected a finite (3, 3) matrix",
         );
     }
-    let svd = essential.svd(true, true);
-    let singular = svd.singular_values;
-    let (Some(mut u), Some(v_t)) = (svd.u, svd.v_t) else {
+    let Some((mut u, singular, v_t)) = svd3(essential) else {
         return fail(ErrorKind::Degenerate, "essential: no decomposition");
     };
     if !(singular[1] > RANK_TOLERANCE * singular[0]) {
@@ -734,7 +731,7 @@ pub fn refine_essential(
     if !scale.is_finite() || scale <= 0.0 {
         return fail_setting("scale", "must be positive and finite", scale);
     }
-    let singular = essential.singular_values();
+    let singular = singular_values3(essential);
     if !(singular[1] > RANK_TOLERANCE * essential.norm()) {
         return fail(
             ErrorKind::Degenerate,

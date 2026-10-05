@@ -187,7 +187,7 @@ fn null_space(matrix: &DMatrix<f64>, rank: usize) -> DMatrix<f64> {
     } else {
         matrix.clone()
     };
-    match svd(padded, false, true).and_then(|d| d.v_t) {
+    match svd(&padded, false, true).and_then(|d| d.v_t) {
         Some(v_t) => v_t.rows(rank, cols - rank).transpose(),
         None => DMatrix::from_element(cols, cols - rank, f64::NAN),
     }
@@ -207,7 +207,7 @@ fn singular_values(matrix: &DMatrix<f64>) -> DVector<f64> {
     if matrix.is_empty() {
         return DVector::zeros(0);
     }
-    svd(matrix.clone(), false, false).map_or_else(
+    svd(matrix, false, false).map_or_else(
         || DVector::from_element(matrix.nrows().min(matrix.ncols()), f64::NAN),
         |d| d.singular_values,
     )
@@ -307,7 +307,7 @@ fn first_largest(values: &DVector<f64>) -> usize {
 ///
 /// The basis vectors (NaN where the SVD fails).
 fn canonical_span(matrix: &DMatrix<f64>, rank: usize) -> Vec<DVector<f64>> {
-    let Some(u) = svd(matrix.clone(), true, false).and_then(|d| d.u) else {
+    let Some(u) = svd(matrix, true, false).and_then(|d| d.u) else {
         return vec![DVector::from_element(matrix.nrows(), f64::NAN); rank];
     };
     let u = u.columns(0, rank);

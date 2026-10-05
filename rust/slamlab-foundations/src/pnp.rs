@@ -14,7 +14,7 @@ use nalgebra::{
 
 use crate::correspondences::{check_correspondences, gather, normalised_xy};
 use crate::error::{ErrorKind, Result, fail, fail_setting};
-use crate::linalg::{SVD_MAX_ITERATIONS, least_squares};
+use crate::linalg::{MAX_ITERATIONS, least_squares};
 use crate::p3p::{self, Solver};
 use crate::ransac::{self, Estimator, Options, RefinedSolution};
 use crate::{alignment, nls, se3, so3};
@@ -99,7 +99,7 @@ pub fn reprojection(
 ///
 /// The eigenvalues and the eigenvectors as columns, or `None` if it does not converge.
 fn ascending_eigen(matrix: DMatrix<f64>) -> Option<(DVector<f64>, DMatrix<f64>)> {
-    let eigen = SymmetricEigen::try_new(matrix, f64::EPSILON, SVD_MAX_ITERATIONS)?;
+    let eigen = SymmetricEigen::try_new(matrix, f64::EPSILON, MAX_ITERATIONS)?;
     let mut order: Vec<usize> = (0..eigen.eigenvalues.len()).collect();
     order.sort_by(|&a, &b| eigen.eigenvalues[a].total_cmp(&eigen.eigenvalues[b]));
     let values = DVector::from_iterator(order.len(), order.iter().map(|&i| eigen.eigenvalues[i]));
@@ -203,7 +203,7 @@ fn distance_system(basis: &SMatrix<f64, 4, 12>, controls: &[Vector3<f64>; 4]) ->
     clippy::cast_precision_loss,
     reason = "a matrix dimension is far below 2^52"
 )]
-fn lstsq(matrix: DMatrix<f64>, rhs: &DVector<f64>) -> DVector<f64> {
+fn lstsq(matrix: &DMatrix<f64>, rhs: &DVector<f64>) -> DVector<f64> {
     let relative = matrix.nrows().max(matrix.ncols()) as f64 * f64::EPSILON;
     let columns = matrix.ncols();
     least_squares(matrix, rhs, relative).unwrap_or_else(|| DVector::zeros(columns))
@@ -223,7 +223,7 @@ fn initial_betas(distances: &DistanceSystem, kind: usize) -> Vector4<f64> {
     let kept = DMatrix::from_fn(6, APPROXIMATIONS[kind].len(), |r, c| {
         distances.system[(r, APPROXIMATIONS[kind][c])]
     });
-    let products = lstsq(kept, &DVector::from_column_slice(distances.rho.as_slice()));
+    let products = lstsq(&kept, &DVector::from_column_slice(distances.rho.as_slice()));
     let mut betas = Vector4::zeros();
     if kind == 0 {
         let first = products[0].abs().sqrt();
@@ -297,7 +297,7 @@ fn polish_betas(mut betas: Vector4<f64>, distances: &DistanceSystem) -> Vector4<
             col_m += distances.system.column(column) * betas[k];
         }
         let step = lstsq(
-            DMatrix::from_column_slice(6, 4, jacobian.as_slice()),
+            &DMatrix::from_column_slice(6, 4, jacobian.as_slice()),
             &DVector::from_column_slice(residual.as_slice()),
         );
         let moved = betas + Vector4::from_column_slice(step.as_slice());

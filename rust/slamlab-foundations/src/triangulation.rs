@@ -181,7 +181,7 @@ fn dlt(track: &Track<'_>) -> (Vector3<f64>, bool) {
             .fixed_view_mut::<3, 1>(3 * j, 3)
             .copy_from(&(skew * t_norm));
     }
-    let Some(decomposition) = svd(system, false, true) else {
+    let Some(decomposition) = svd(&system, false, true) else {
         return (Vector3::repeat(f64::NAN), true);
     };
     let Some(v_t) = decomposition.v_t else {

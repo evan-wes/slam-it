@@ -1,38 +1,138 @@
-//! Dense linear algebra shared by rung 0's Rust modules: an SVD that always returns, and the
+//! Dense linear algebra shared by rung 0's Rust modules: the SVD every module uses, and the
 //! minimum-norm least squares built on it.
 //!
-//! nalgebra's general `svd` has no iteration cap, so a matrix with a NaN or an infinity never
-//! returns, where LAPACK (numpy) and Eigen stop. Every dynamic SVD in the crate goes through
-//! [`svd`], which checks finiteness first and caps the iterations. Fixed 2x2 and 3x3
-//! matrices take nalgebra's closed-form routines, which always return, and need no helper.
-//! There is no Python or C++ counterpart: numpy and Eigen need none.
+//! Every SVD in the crate, dynamic or 3x3, goes through [`svd`] or [`svd3`], which call faer.
+//! nalgebra 0.35's SVDs are not backward stable: its 3x3 SVD works on `MᵀM`, squaring the
+//! condition number (thin P3P triangles gave rotations off by 0.7), and its dynamic SVD
+//! leaves errors near 1e-4 in some graded matrices' trailing singular pairs (8-point E and F
+//! off by up to 6e-3). faer's matches LAPACK to roundoff on both (PR 6 panel, L1 and L2).
+//! nalgebra stays the crate's matrix type; the factors are copied across at each call.
+//! There is no Python or C++ counterpart: numpy (LAPACK) and Eigen (`JacobiSVD`) need none.
 
-use nalgebra::{DMatrix, DVector, Dyn, SVD};
+use faer::dyn_stack::{MemBuffer, MemStack};
+use faer::linalg::svd::{self as faer_svd, ComputeSvdVectors};
+use faer::{Mat, Par};
+use nalgebra::{DMatrix, DVector, Matrix3, Vector3};
 
-/// Golub-Kahan sweeps allowed in a dynamic SVD before it is abandoned.
-pub const SVD_MAX_ITERATIONS: usize = 10_000;
+/// Iterations allowed in nalgebra's iterative eigen and Schur decompositions (EPnP, the
+/// Stewénius solver) before they are abandoned.
+pub const MAX_ITERATIONS: usize = 10_000;
+
+/// A matrix's thin SVD: `M = U diag(σ) Vᵀ` with k = min(m, n) singular triplets, as
+/// nalgebra's and LAPACK's thin SVDs return them. A caller that needs all n right singular
+/// vectors pads the matrix to at least n rows first (which changes neither its row space nor
+/// its right singular vectors).
+#[derive(Debug, Clone)]
+pub struct Svd {
+    /// U (m x k), if asked for.
+    pub u: Option<DMatrix<f64>>,
+    /// The singular values, largest first (k of them).
+    pub singular_values: DVector<f64>,
+    /// Vᵀ (k x n), if asked for.
+    pub v_t: Option<DMatrix<f64>>,
+}
 
 /// A dynamic matrix's SVD, singular values largest first, or `None` for a matrix with a
-/// non-finite entry or one that does not converge within [`SVD_MAX_ITERATIONS`].
-///
-/// The convergence tolerance is nalgebra's own (`5 ε`), so finite results are those of its
-/// `svd`.
+/// non-finite entry or one faer cannot decompose.
 ///
 /// # Arguments
 ///
 /// * `matrix` - The matrix (not empty).
-/// * `compute_u` - Whether to compute `U`.
-/// * `compute_v` - Whether to compute `Vᵀ`.
+/// * `compute_u` - Whether to return `U`.
+/// * `compute_v` - Whether to return `Vᵀ`.
 ///
 /// # Returns
 ///
-/// The decomposition.
+/// The thin decomposition.
 #[must_use]
-pub fn svd(matrix: DMatrix<f64>, compute_u: bool, compute_v: bool) -> Option<SVD<f64, Dyn, Dyn>> {
+pub fn svd(matrix: &DMatrix<f64>, compute_u: bool, compute_v: bool) -> Option<Svd> {
     if !matrix.iter().all(|x| x.is_finite()) {
         return None;
     }
-    matrix.try_svd(compute_u, compute_v, f64::EPSILON * 5.0, SVD_MAX_ITERATIONS)
+    let (m, n) = matrix.shape();
+    let k = m.min(n);
+    let a = Mat::<f64>::from_fn(m, n, |i, j| matrix[(i, j)]);
+    let vectors = |wanted: bool| {
+        if wanted {
+            ComputeSvdVectors::Thin
+        } else {
+            ComputeSvdVectors::No
+        }
+    };
+    // faer's low-level SVD, sequential, with its workspace sized for this call. Its
+    // convenience `thin_svd` took 18 times as long on a tall LO refit (350 x 9).
+    let mut workspace = MemBuffer::new(faer_svd::svd_scratch::<f64>(
+        m,
+        n,
+        vectors(compute_u),
+        vectors(compute_v),
+        Par::Seq,
+        faer::Spec::default(),
+    ));
+    let mut s = faer::diag::Diag::<f64>::zeros(k);
+    let mut u = compute_u.then(|| Mat::<f64>::zeros(m, k));
+    let mut v = compute_v.then(|| Mat::<f64>::zeros(n, k));
+    faer_svd::svd(
+        a.as_ref(),
+        s.as_mut(),
+        u.as_mut().map(Mat::as_mut),
+        v.as_mut().map(Mat::as_mut),
+        Par::Seq,
+        MemStack::new(&mut workspace),
+        faer::Spec::default(),
+    )
+    .ok()?;
+    Some(Svd {
+        u: u.map(|u| DMatrix::from_fn(m, k, |i, j| u[(i, j)])),
+        singular_values: DVector::from_fn(k, |i, _| s[i]),
+        v_t: v.map(|v| DMatrix::from_fn(k, n, |i, j| v[(j, i)])),
+    })
+}
+
+/// A 3x3 matrix's SVD, singular values largest first.
+///
+/// # Arguments
+///
+/// * `matrix` - The matrix.
+///
+/// # Returns
+///
+/// `(U, σ, Vᵀ)`, or `None` for a non-finite matrix.
+#[must_use]
+pub fn svd3(matrix: &Matrix3<f64>) -> Option<(Matrix3<f64>, Vector3<f64>, Matrix3<f64>)> {
+    let decomposition = svd(
+        &DMatrix::from_column_slice(3, 3, matrix.as_slice()),
+        true,
+        true,
+    )?;
+    Some((
+        Matrix3::from_column_slice(decomposition.u?.as_slice()),
+        Vector3::from_column_slice(decomposition.singular_values.as_slice()),
+        Matrix3::from_column_slice(decomposition.v_t?.as_slice()),
+    ))
+}
+
+/// A 3x3 matrix's singular values, largest first.
+///
+/// # Arguments
+///
+/// * `matrix` - The matrix.
+///
+/// # Returns
+///
+/// σ, or NaN for a non-finite matrix (which every rank test, written so NaN fails it, then
+/// rejects).
+#[must_use]
+pub fn singular_values3(matrix: &Matrix3<f64>) -> Vector3<f64> {
+    svd(
+        &DMatrix::from_column_slice(3, 3, matrix.as_slice()),
+        false,
+        false,
+    )
+    .map_or_else(
+        || Vector3::repeat(f64::NAN),
+        |d| Vector3::from_column_slice(d.singular_values.as_slice()),
+    )
 }
 
 /// The minimum-norm least-squares solution of `A x = b` by SVD, singular values at or below
@@ -52,30 +152,112 @@ pub fn svd(matrix: DMatrix<f64>, compute_u: bool, compute_v: bool) -> Option<SVD
 /// x, or `None` if the SVD fails (a non-finite entry).
 #[must_use]
 pub fn least_squares(
-    matrix: DMatrix<f64>,
+    matrix: &DMatrix<f64>,
     rhs: &DVector<f64>,
     relative: f64,
 ) -> Option<DVector<f64>> {
     let decomposition = svd(matrix, true, true)?;
-    let threshold = relative * decomposition.singular_values.max();
-    decomposition.solve(rhs, threshold).ok()
+    let (u, v_t) = (decomposition.u?, decomposition.v_t?);
+    let singular = &decomposition.singular_values;
+    let threshold = relative * singular.max();
+    let mut x = DVector::zeros(v_t.ncols());
+    for (k, &sigma) in singular.iter().enumerate() {
+        if sigma > threshold {
+            x += v_t.row(k).transpose() * (u.column(k).dot(rhs) / sigma);
+        }
+    }
+    Some(x)
 }
 
 #[cfg(test)]
 mod tests {
-    //! Native tests of the capped SVD.
+    //! Native tests of the SVD: factors, failure, and the graded and thin cases nalgebra's
+    //! SVDs got wrong (PR 6 panel, L1 and L2).
+
+    use nalgebra::Rotation3;
 
     use super::*;
 
-    /// A finite matrix decomposes as nalgebra's own SVD does; a non-finite one fails at once.
+    /// A test generator: the probe's LCG, uniform in [-1, 1).
+    fn lcg(seed: u64) -> impl FnMut() -> f64 {
+        let mut state = seed;
+        move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            #[allow(clippy::cast_precision_loss, reason = "53 bits of a 64-bit draw")]
+            let unit = (state >> 11) as f64 / (1_u64 << 53) as f64;
+            unit * 2.0 - 1.0
+        }
+    }
+
+    /// The thin factors are orthonormal and multiply back to the matrix; a non-finite matrix
+    /// fails at once.
     #[test]
-    fn finite_matrices_decompose_and_others_fail() {
+    fn factors_reconstruct_and_non_finite_fails() {
         let m = DMatrix::from_row_slice(3, 2, &[1.0, 2.0, 3.0, 4.0, 5.0, 7.0]);
-        let ours = svd(m.clone(), false, false).unwrap().singular_values;
-        let theirs = m.clone().svd(false, false).singular_values;
-        assert!((ours - theirs).amax() < 1e-15);
+        let d = svd(&m, true, true).unwrap();
+        let (u, v_t) = (d.u.unwrap(), d.v_t.unwrap());
+        assert_eq!((u.shape(), v_t.shape()), ((3, 2), (2, 2)));
+        let sigma = DMatrix::from_diagonal(&d.singular_values);
+        assert!((&u * sigma * &v_t - &m).amax() < 1e-14);
+        assert!((u.transpose() * &u - DMatrix::identity(2, 2)).amax() < 1e-14);
         let mut bad = m;
         bad[(1, 1)] = f64::NAN;
-        assert!(svd(bad, true, true).is_none());
+        assert!(svd(&bad, true, true).is_none());
+        assert!(
+            singular_values3(&Matrix3::repeat(f64::INFINITY))
+                .iter()
+                .all(|x| x.is_nan())
+        );
+    }
+
+    /// Graded matrices (σ from 1 down to 1e-8) decompose to roundoff, where nalgebra 0.35's
+    /// dynamic SVD left errors up to 3e-4 in about 1% of them.
+    #[test]
+    fn graded_matrices_decompose_to_roundoff() {
+        let mut rnd = lcg(5);
+        for (rows, cols) in [(3, 3), (10, 4), (9, 9), (12, 9)] {
+            for _ in 0..300 {
+                let qa = DMatrix::from_fn(rows, rows, |_, _| rnd()).qr().q();
+                let qb = DMatrix::from_fn(cols, cols, |_, _| rnd()).qr().q();
+                let mut sigma = DMatrix::zeros(rows, cols);
+                for i in 0..rows.min(cols) {
+                    sigma[(i, i)] = if i == 0 {
+                        1.0
+                    } else {
+                        10_f64.powf(-4.0 * (rnd() + 1.0))
+                    };
+                }
+                let m = &qa * &sigma * qb.transpose();
+                let d = svd(&m, true, true).unwrap();
+                let s = DMatrix::from_diagonal(&d.singular_values);
+                assert!((d.u.unwrap() * s * d.v_t.unwrap() - m).amax() < 1e-13);
+            }
+        }
+    }
+
+    /// A rank-2 3x3 with σ = (1, 1e-8, 0) keeps σ₂ to 1e-6 relative, where nalgebra 0.35's
+    /// 3x3 SVD (through `MᵀM`) lost up to 30%.
+    #[test]
+    fn small_singular_values_of_a_3x3_are_accurate() {
+        let mut rnd = lcg(11);
+        for _ in 0..200 {
+            let a = Rotation3::new(Vector3::new(rnd(), rnd(), rnd()) * 2.0).into_inner();
+            let b = Rotation3::new(Vector3::new(rnd(), rnd(), rnd()) * 2.0).into_inner();
+            let m = a * Matrix3::from_diagonal(&Vector3::new(1.0, 1e-8, 0.0)) * b;
+            assert!((singular_values3(&m)[1] / 1e-8 - 1.0).abs() < 1e-6);
+            let (u, s, v_t) = svd3(&m).unwrap();
+            assert!((u * Matrix3::from_diagonal(&s) * v_t - m).amax() < 1e-15);
+        }
+    }
+
+    /// The minimum-norm solution of a rank-deficient system ignores the null direction.
+    #[test]
+    fn least_squares_is_minimum_norm() {
+        // Columns 0 and 1 are equal: x0 + x1 is determined, x0 - x1 is not, and is zero.
+        let a = DMatrix::from_row_slice(3, 2, &[1.0, 1.0, 2.0, 2.0, 3.0, 3.0]);
+        let x = least_squares(&a, &DVector::from_vec(vec![2.0, 4.0, 6.0]), 1e-12).unwrap();
+        assert!((x - DVector::from_vec(vec![1.0, 1.0])).amax() < 1e-14);
     }
 }

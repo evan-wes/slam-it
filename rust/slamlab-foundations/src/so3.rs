@@ -12,6 +12,7 @@ use std::f64::consts::PI;
 use nalgebra::{Matrix3, Vector3, Vector4};
 
 use crate::error::{ErrorKind, Result, fail};
+use crate::linalg::svd3;
 
 /// Below this angle, `sin θ / θ` and `θ / sin θ` use their series.
 pub const EXP_TAYLOR_THRESHOLD: f64 = 1e-4;
@@ -480,16 +481,12 @@ pub fn to_quaternion(rotation: &Matrix3<f64>) -> Result<Vector4<f64>> {
 ///
 /// # Returns
 ///
-/// `U diag(1, 1, det(U Vᵀ)) Vᵀ` for `matrix = U S Vᵀ`.
-///
-/// # Panics
-///
-/// Never: the SVD is asked for both `U` and `Vᵀ`, so both are present.
+/// `U diag(1, 1, det(U Vᵀ)) Vᵀ` for `matrix = U S Vᵀ`; NaN for a non-finite matrix.
 #[must_use]
 pub fn project_to_so3(matrix: &Matrix3<f64>) -> Matrix3<f64> {
-    let svd = matrix.svd(true, true);
-    let mut u = svd.u.expect("U was requested");
-    let v_t = svd.v_t.expect("V^T was requested");
+    let Some((mut u, _, v_t)) = svd3(matrix) else {
+        return Matrix3::repeat(f64::NAN);
+    };
     if (u * v_t).determinant() < 0.0 {
         u.column_mut(2).neg_mut();
     }

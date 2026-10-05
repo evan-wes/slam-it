@@ -18,7 +18,7 @@ use nalgebra::{DMatrix, DVector, Matrix3, SMatrix, Schur, Vector3};
 
 use crate::correspondences::{RANK_TOLERANCE, check_bearing_pairs};
 use crate::error::{ErrorKind, Result, fail};
-use crate::linalg::{SVD_MAX_ITERATIONS, least_squares, svd};
+use crate::linalg::{MAX_ITERATIONS, least_squares, singular_values3, svd};
 
 /// Correspondences a 5-point solver takes.
 pub const SAMPLE_SIZE: usize = 5;
@@ -209,7 +209,7 @@ fn null_space(bearings1: &[Vector3<f64>], bearings2: &[Vector3<f64>]) -> Option<
             }
         }
     }
-    let decomposition = svd(system, false, true)?;
+    let decomposition = svd(&system, false, true)?;
     if !(decomposition.singular_values[4] > RANK_TOLERANCE * decomposition.singular_values[0]) {
         return None;
     }
@@ -320,7 +320,7 @@ fn gauss_jordan(mut matrix: Constraints) -> Option<SMatrix<f64, 10, 10>> {
 fn keep(solutions: &mut Vec<Matrix3<f64>>, basis: &[Matrix3<f64>; 4], xyz: &Vector3<f64>) {
     let essential = basis[0] * xyz.x + basis[1] * xyz.y + basis[2] * xyz.z + basis[3];
     let scaled = essential * (SQRT_2 / essential.norm());
-    let singular = scaled.singular_values();
+    let singular = singular_values3(&scaled);
     if !((singular[0] - singular[1]).max(singular[2]) <= ESSENTIAL_TOLERANCE) {
         return;
     }
@@ -686,7 +686,7 @@ fn least_squares_step(
     residual: &SMatrix<f64, 10, 1>,
 ) -> Option<Vector3<f64>> {
     let step = least_squares(
-        DMatrix::from_column_slice(10, 3, jacobian.as_slice()),
+        &DMatrix::from_column_slice(10, 3, jacobian.as_slice()),
         &DVector::from_column_slice((-residual).as_slice()),
         3.0 * f64::EPSILON,
     )?;
@@ -826,7 +826,7 @@ fn nister(bearings1: &[Vector3<f64>], bearings2: &[Vector3<f64>]) -> Vec<Matrix3
 fn eigenvector(matrix: &SMatrix<f64, 10, 10>, value: f64) -> Option<DVector<f64>> {
     let shifted = matrix - SMatrix::<f64, 10, 10>::identity() * value;
     let decomposition = svd(
-        DMatrix::from_column_slice(10, 10, shifted.as_slice()),
+        &DMatrix::from_column_slice(10, 10, shifted.as_slice()),
         false,
         true,
     )?;
@@ -854,7 +854,7 @@ fn stewenius(bearings1: &[Vector3<f64>], bearings2: &[Vector3<f64>]) -> Vec<Matr
     for (r, index) in [(6, 0), (7, 1), (8, 2), (9, 6)] {
         action[(r, index)] = 1.0;
     }
-    let Some(schur) = Schur::try_new(action, f64::EPSILON, SVD_MAX_ITERATIONS) else {
+    let Some(schur) = Schur::try_new(action, f64::EPSILON, MAX_ITERATIONS) else {
         return Vec::new();
     };
     let mut solutions = Vec::new();

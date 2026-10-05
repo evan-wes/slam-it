@@ -6,6 +6,7 @@
 use nalgebra::{Matrix3, Matrix4, Vector3};
 
 use crate::error::{ErrorKind, Result, fail};
+use crate::linalg::svd3;
 use crate::se3;
 
 /// The cross-covariance's second singular value must exceed this fraction of its first;
@@ -79,10 +80,12 @@ pub fn umeyama(
         cov += (yc * *wi) * xc.transpose();
         spread += wi * xc.norm_squared();
     }
-    let svd = cov.svd(true, true);
-    let u = svd.u.expect("U was requested");
-    let v_t = svd.v_t.expect("V^T was requested");
-    let d = svd.singular_values;
+    let Some((u, d, v_t)) = svd3(&cov) else {
+        return fail(
+            ErrorKind::Degenerate,
+            "umeyama: the cross-covariance does not decompose",
+        );
+    };
     if d[1] <= DEGENERACY_RATIO * d[0] {
         return fail(
             ErrorKind::Degenerate,

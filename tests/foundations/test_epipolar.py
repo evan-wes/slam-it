@@ -15,6 +15,7 @@ from tests.conftest import load_fixture, require_function
 from tests.foundations import scenes as sc
 
 FIXTURE = load_fixture("foundations/epipolar.json")
+ILL_CONDITIONED = load_fixture("foundations/ill_conditioned.json")
 DIRECT = ["essential_8pt", "fundamental_8pt", "sampson_essential", "sampson_fundamental"]
 K = np.array([[520.0, 0.0, 320.0], [0.0, 515.0, 240.0], [0.0, 0.0, 1.0]])
 
@@ -22,6 +23,27 @@ K = np.array([[520.0, 0.0, 320.0], [0.0, 515.0, 240.0], [0.0, 0.0, 1.0]])
 def _pixels(rays: np.ndarray) -> np.ndarray:
     """Project bearings through K."""
     return np.ascontiguousarray((rays / rays[:, 2:3] @ K.T)[:, :2])
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("function", ["essential_8pt", "fundamental_8pt"])
+def test_ill_conditioned_8pt_matches_fixture(backend: str, function: str) -> None:
+    """Near-planar, noisy scenes, where a weaker SVD gave E and F off by up to 6e-3 (panel L2)."""
+    chosen = require_function(backend, epipolar.__name__, function)
+    sc.check_fixture(epipolar, ILL_CONDITIONED, function, chosen)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_ill_conditioned_decomposition_matches_fixture(backend: str) -> None:
+    """Singular values (1, 1e-6, 0): every backend's candidates are the oracle's (panel L1).
+
+    A 3x3 SVD through ``MᵀM`` loses the third singular pair here.
+    """
+    spec: dict[str, Any] = ILL_CONDITIONED["functions"]["decompose_essential"]
+    chosen = require_function(backend, epipolar.__name__, "decompose_essential")
+    for case in spec["cases"]:
+        found = epipolar.decompose_essential(**case["input"], backend=chosen)
+        sc.assert_contains(found, case["expected"], spec["tolerance"]["atol"])
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)

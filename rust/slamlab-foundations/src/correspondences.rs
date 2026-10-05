@@ -110,7 +110,7 @@ pub fn null_vector(system: &DMatrix<f64>) -> Option<SVector<f64, 9>> {
     } else {
         system.clone()
     };
-    let decomposition = svd(padded, false, true)?;
+    let decomposition = svd(&padded, false, true)?;
     let singular = &decomposition.singular_values;
     if !(singular[7] > RANK_TOLERANCE * singular[0]) {
         return None;

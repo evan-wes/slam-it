@@ -14,6 +14,7 @@ from tests.conftest import assert_matches_fixture, load_fixture, require_functio
 
 FIXTURE = load_fixture("foundations/alignment.json")
 SPEC = FIXTURE["functions"]["umeyama"]
+THIN = load_fixture("foundations/ill_conditioned.json")["functions"]["umeyama"]
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -23,6 +24,19 @@ def test_matches_fixture(backend: str, case: dict[str, Any]) -> None:
     chosen = require_function(backend, alignment.__name__, "umeyama")
     result = alignment.align(**case["input"], backend=chosen)
     assert_matches_fixture(result.as_matrix(), case["expected"], SPEC["tolerance"])
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("case", THIN["cases"], ids=[c["name"] for c in THIN["cases"]])
+def test_thin_triangles_match_fixture(backend: str, case: dict[str, Any]) -> None:
+    """Three points on a thin triangle give the oracle's rotation (panel L1).
+
+    The covariance has σ₂/σ₁ near 1e-3; a 3x3 SVD through ``MᵀM`` turned it into a rotation off
+    by 0.7.
+    """
+    chosen = require_function(backend, alignment.__name__, "umeyama")
+    result = alignment.align(**case["input"], backend=chosen)
+    assert_matches_fixture(result.as_matrix(), case["expected"], THIN["tolerance"])
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
