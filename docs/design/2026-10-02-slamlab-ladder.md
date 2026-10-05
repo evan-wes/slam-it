@@ -523,7 +523,13 @@ Disk space is checked before each download.
 
 ## Metrics
 
-- **Trajectory:** ATE (after Sim(3) or SE(3) alignment, as the rung warrants) and RPE.
+- **Trajectory:** ATE (after Sim(3) or SE(3) alignment, as the rung warrants) and RPE, as in
+  Sturm et al.'s TUM benchmark (`slamlab.eval.metrics`): Sim(3) for monocular runs, SE(3) for
+  stereo and RGB-D; the RPE's estimate scaled by the ATE's scale.
+- **The run format** (`slamlab.eval.runs`), written by every backend's pipeline and read by the
+  evaluation and the run viewer: a folder of `run.json` (dataset, sequence, mode, backend,
+  settings), `trajectory.txt` in TUM's format (so other systems' trajectories score the same
+  way), the keyframes and map points as `.npy`, and `diagnostics.jsonl`, one object per frame.
 - **Map:** depth error against GT depth where it exists; reconstruction accuracy and completeness
   on Replica-style data.
 - **Cost, per budget:** frames per second, per-frame latency (p50/p95), peak memory.
