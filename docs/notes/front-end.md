@@ -132,15 +132,18 @@ only in its CRC decodes in C++ and is refused by the other two. `tum.read_depth`
 depth map in metres (NaN where nothing was measured); `euroc.read_sequence` reads the ASL
 format's stereo frames, calibrations and ground truth, refusing non-finite values and
 repeated timestamps. Both readers pair a frame with its nearest ground-truth sample through
-`eval.timing`, the one nearest-time search the eval modules share.
+`eval.timestamps`, the one nearest-time search the eval modules share.
 
 ## Scoring
 
 `metrics.absolute_error` is the ATE after a Sim(3) (monocular) or SE(3) (stereo, RGB-D)
 alignment, `metrics.relative_error` the RPE; both follow the TUM benchmark. The RPE pairs
-poses by time, as TUM's `evaluate_rpe.py` does: each pose with the one nearest `delta` seconds
-later, if one is within a tolerance, so a tracking gap is skipped rather than counted as one
-step (paired by index, a 60-frame gap read as 60 frames' drift in one). `metrics.associate`
+poses by time, as TUM's `evaluate_rpe.py` does with a fixed delta: each pose with the one
+nearest `delta` seconds later. A tolerance, slamlab's own, skips a pose with no pose that
+close to `delta` later, so a tracking gap is not counted as one step (paired by index, a
+60-frame gap read as 60 frames' drift in one; TUM's script pairs across it too). The error is
+Sturm et al.'s `(Q_i^-1 Q_j)^-1 (P_i^-1 P_j)`, as evo computes it; TUM's script composes
+`P_rel Q_rel^-1`, which differs in translation at long intervals. `metrics.associate`
 pairs an estimate's timestamps with the ground truth's as TUM's `associate.py` does, closest
 first, each used once.
 

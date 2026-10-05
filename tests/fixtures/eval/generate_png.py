@@ -7,7 +7,8 @@ Run from the repository root after changing the cases (the fixtures are committe
 Pillow writes each PNG from a known array; the expected values follow from that array by the
 readers' definitions, written out here: gray as stored, colour through BT.601's 15-bit
 weights rounded half up (OpenCV's), a palette through its table, a 1-bit image as 0 and 255,
-16-bit values as stored. The Python, C++ and Rust readers are held to them exactly.
+16-bit values as stored. The Python, C++ and Rust readers are held to them exactly, and to
+refusing ``truncated.png`` (``rgb.png``'s first half), the case ``unreadable``.
 """
 
 from __future__ import annotations
@@ -75,6 +76,9 @@ def main() -> None:
         "rgb": np.repeat(widened[..., None], 3, 2).tolist(),
     }
 
+    whole = (FOLDER / "rgb.png").read_bytes()
+    (FOLDER / "truncated.png").write_bytes(whole[: len(whole) // 2])
+    cases["truncated.png"] = {"unreadable": True}
     depth = rng.integers(0, 65536, (6, 9)).astype(np.uint16)
     depth[0, :3] = [0, 1, 65535]
     Image.fromarray(depth).save(FOLDER / "depth16.png")

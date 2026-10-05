@@ -33,8 +33,9 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slamlab.eval import metrics
+from slamlab.eval.timestamps import as_times
 from slamlab.foundations import se3, so3
-from slamlab.foundations.arrays import as_batch, as_real
+from slamlab.foundations.arrays import as_batch
 from slamlab.foundations.errors import InvalidInputError
 
 FORMAT = "slamlab-run"
@@ -106,12 +107,10 @@ def _as_stamped(
     timestamps: ArrayLike, poses: ArrayLike, name: str
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     """Check stamped poses: ascending finite times, one rigid transform each."""
-    times = as_real(timestamps, f"{name} timestamps")
+    times = as_times(timestamps, f"{name} timestamps")
     flat, lead = as_batch(poses, (4, 4), f"{name} poses")
-    if times.ndim != 1 or lead != (len(times),):
+    if lead != (len(times),):
         raise InvalidInputError(f"{name}: expected (F,) timestamps and (F, 4, 4) poses")
-    if np.any(np.diff(times) <= 0.0):
-        raise InvalidInputError(f"{name}: timestamps must ascend strictly")
     if len(flat):
         se3.check_transform(flat)
     return times, flat
@@ -146,6 +145,14 @@ def _trajectory_text(times: NDArray[np.float64], poses: NDArray[np.float64]) -> 
         values = [t, *pose[:3, 3], *q]
         lines.append(" ".join(repr(float(v)) for v in values))
     return "\n".join(lines) + "\n"
+
+
+def _read_text(path: Path) -> str:
+    """Read a text file, refusing one that is not UTF-8."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as error:
+        raise InvalidInputError(f"{path}: not UTF-8 text ({error})") from None
 
 
 def _replace(path: Path, data: bytes) -> None:
@@ -195,7 +202,7 @@ def read_trajectory(path: str | Path) -> tuple[NDArray[np.float64], NDArray[np.f
     """
     file = Path(path)
     rows = []
-    for number, line in enumerate(file.read_text().splitlines(), start=1):
+    for number, line in enumerate(_read_text(file).splitlines(), start=1):
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
@@ -289,11 +296,12 @@ def _load(path: Path, shape: tuple[int, ...]) -> NDArray[np.float64]:
         raise FileNotFoundError(f"no {path.name} in {path.parent}")
     try:
         data: NDArray[np.float64] = np.load(path, allow_pickle=False)
-    except ValueError as error:  # not an .npy file, or one holding objects
+    except (ValueError, EOFError) as error:  # not an .npy file, an empty one, or objects
         raise InvalidInputError(f"{path}: not a readable .npy array ({error})") from None
     if not isinstance(data, np.ndarray) or data.dtype != np.float64 or data.shape[1:] != shape:
+        expected = ", ".join(["N", *map(str, shape)])
         raise InvalidInputError(
-            f"{path}: expected float64 (N, {shape}), got {data.dtype} {data.shape}"
+            f"{path}: expected float64 ({expected}), got {data.dtype} {data.shape}"
         )
     return data
 
@@ -301,7 +309,7 @@ def _load(path: Path, shape: tuple[int, ...]) -> NDArray[np.float64]:
 def _read_info(path: Path) -> dict[str, Any]:
     """Read ``run.json``: this format's version, with every key, each of its type."""
     try:
-        info = json.loads(path.read_text())
+        info = json.loads(_read_text(path))
     except json.JSONDecodeError as error:
         raise InvalidInputError(f"{path}: not JSON ({error})") from None
     if not isinstance(info, dict):
@@ -326,7 +334,7 @@ def _read_info(path: Path) -> dict[str, Any]:
 def _read_diagnostics(path: Path) -> list[dict[str, Any]]:
     """Read ``diagnostics.jsonl``: one object with a ``timestamp`` per line."""
     out = []
-    for number, line in enumerate(path.read_text().splitlines(), start=1):
+    for number, line in enumerate(_read_text(path).splitlines(), start=1):
         try:
             entry = json.loads(line)
         except json.JSONDecodeError as error:

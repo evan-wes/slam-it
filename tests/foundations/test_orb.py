@@ -389,3 +389,20 @@ def test_numpy_settings_reach_every_backend(backend: str) -> None:
     features, reference = orb.extract(frame, options, backend=chosen), orb.extract(frame, plain)
     _check_keypoints(features.keypoints, reference.keypoints)
     _check_descriptors(features.descriptors, reference.descriptors)
+
+
+def _fake_backend(monkeypatch: pytest.MonkeyPatch, raw: object) -> None:
+    """Make every compiled function return `raw`, as a broken binding would."""
+    monkeypatch.setattr(backends, "function", lambda *_: lambda **__: raw)
+    monkeypatch.setattr(backends, "implementation", lambda *_: object())
+
+
+def test_a_malformed_compiled_result_is_a_runtime_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Features whose pyramid fields have the wrong types are refused, never converted."""
+    frame = _scene(80, 90, seed=9)
+    found = orb.extract(frame)
+    raw = {field: getattr(found.keypoints, field) for field in FIELDS}
+    raw.update(descriptors=found.descriptors, scale_factor=1.2, levels=8.0)
+    _fake_backend(monkeypatch, raw)
+    with pytest.raises(RuntimeError, match="levels float, expected float and int"):
+        orb.extract(frame, backend="cpp")

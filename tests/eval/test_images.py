@@ -28,6 +28,14 @@ def test_gray_and_colour_match_the_fixture(name: str) -> None:
     np.testing.assert_array_equal(rgb, CASES[name]["rgb"])
 
 
+@pytest.mark.parametrize("reader", [images.read_gray, images.read_rgb, images.read_depth])
+def test_refuses_the_truncated_fixture(reader: Any) -> None:  # noqa: ANN401 -- a reader
+    """A truncated PNG is not a readable image, for every reader (as natively)."""
+    assert CASES["truncated.png"] == {"unreadable": True}
+    with pytest.raises(InvalidInputError, match="not a readable image"):
+        reader(FOLDER / "png" / "truncated.png")
+
+
 def test_depth_matches_the_fixture() -> None:
     """A 16-bit file reads as its raw values, the extremes included."""
     depth = images.read_depth(FOLDER / "png" / "depth16.png")

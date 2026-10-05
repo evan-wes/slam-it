@@ -35,7 +35,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
-from slamlab.eval import images, timing
+from slamlab.eval import images, timestamps
 from slamlab.foundations import so3
 from slamlab.foundations.errors import InvalidInputError
 
@@ -144,7 +144,8 @@ def _stamped(path: Path) -> tuple[NDArray[np.float64], list[str]]:
     Raises
     ------
     slamlab.foundations.errors.InvalidInputError
-        If a stamp is not a number (the message names the file and line).
+        If a stamp is not a number (the message names the file and line), or the stamps are
+        not finite or do not ascend.
     """
     rows = _table(path, 2)
     stamps = np.empty(len(rows))
@@ -155,7 +156,7 @@ def _stamped(path: Path) -> tuple[NDArray[np.float64], list[str]]:
             raise InvalidInputError(
                 f"{path}:{number}: expected a numeric timestamp ({error})"
             ) from None
-    return stamps, [fields[1] for _, fields in rows]
+    return timestamps.as_times(stamps, str(path), strict=False), [f[1] for _, f in rows]
 
 
 def read_sequence(root: str | Path, max_difference: float = MAX_DIFFERENCE) -> Sequence:
@@ -191,7 +192,7 @@ def read_sequence(root: str | Path, max_difference: float = MAX_DIFFERENCE) -> S
         )
     stamps, names = _stamped(folder / "rgb.txt")
     truth_times, truth_poses = _poses(folder / "groundtruth.txt")
-    nearest = timing.nearest(truth_times, stamps)
+    nearest = timestamps.nearest(truth_times, stamps)
     kept = np.flatnonzero(np.abs(truth_times[nearest] - stamps) <= max_difference)
     if kept.size == 0:
         raise InvalidInputError(
@@ -201,8 +202,7 @@ def read_sequence(root: str | Path, max_difference: float = MAX_DIFFERENCE) -> S
     depths: list[Path | None] = [None] * len(kept)
     if (folder / "depth.txt").exists():
         depth_times, depth_names = _stamped(folder / "depth.txt")
-        order = np.argsort(depth_times, kind="stable")
-        closest = order[timing.nearest(depth_times[order], stamps[kept])]
+        closest = timestamps.nearest(depth_times, stamps[kept])
         depths = [
             folder / depth_names[d] if abs(depth_times[d] - stamps[k]) <= max_difference else None
             for k, d in zip(kept, closest, strict=True)

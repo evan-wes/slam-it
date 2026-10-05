@@ -13,8 +13,8 @@
   alignment) and the relative pose error, as the TUM benchmark defines them, and associating
   timestamps.
 - :mod:`slamlab.eval.runs`: the run format every backend's pipeline writes, and scoring a run.
-- :mod:`slamlab.eval.timing`: checking timestamps and finding the nearest, for the readers and
-  metrics.
+- :mod:`slamlab.eval.timestamps`: checking timestamps and finding the nearest, for the readers
+  and metrics.
 - :mod:`slamlab.eval.colmap_reference`: COLMAP's Ceres bundle adjuster, as the reference
   :mod:`slamlab.foundations.ba` is compared against (needs the ``colmap`` extra).
 - :mod:`slamlab.eval.reprojection`: reprojection error, to compare solvers on one cost.

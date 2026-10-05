@@ -183,6 +183,19 @@ type = "forbidden"
 source_modules = ["slamlab"]
 forbidden_modules = ["poselib", "mpmath", "manifpy", "scipy"]
 
+# The order of modules inside eval: the timestamp helpers and the image reader at the bottom,
+# the dataset readers and metrics on them, runs (and the COLMAP reference) on top. New modules
+# are optional layers, as in rung 0's contract.
+[[tool.importlinter.contracts]]
+name = "Eval's internal order"
+type = "layers"
+containers = ["slamlab.eval"]
+layers = [
+  "(runs) | (colmap_reference)",
+  "(metrics) | (tum) | (euroc) | (readers) | (reprojection)",
+  "(timestamps) | (images)",
+]
+
 # Pillow reads image files in slamlab.eval.images alone: the cores decode PNGs natively, and
 # the algorithms take arrays, never files.
 [[tool.importlinter.contracts]]

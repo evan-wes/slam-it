@@ -9,12 +9,15 @@ the two arrays hold ``T_world_cam`` at the same instants (associate them by time
   runs, whose scale is unobservable, SE(3) for stereo and RGB-D. The error of each pose is the
   distance between its aligned centre and the true one; the headline is their RMSE.
 - **RPE:** the drift over a fixed interval of time. Each pose ``i`` pairs with the pose ``j``
-  nearest ``delta`` seconds later, if one lies within a tolerance, as TUM's ``evaluate_rpe.py``
-  pairs them; a pose without one (near the end, or before a tracking gap) is skipped, so a gap
-  never counts as one step. The error is ``(Q_i^-1 Q_j)^-1 (P_i^-1 P_j)``, ``Q`` the truth and
-  ``P`` the estimate (its translations multiplied by the ATE's scale for a monocular run); its
-  translation's norm and rotation's angle are reported, with their RMSE. No alignment is
-  needed: relative motion does not depend on the world frame.
+  nearest ``delta`` seconds later, as TUM's ``evaluate_rpe.py`` pairs them with a fixed delta.
+  The tolerance is slamlab's own: a pose with no pose within it of ``delta`` later (near the
+  end, or before a tracking gap) is skipped, so a gap never counts as one step, where TUM's
+  script pairs across it. The error is Sturm et al.'s ``(Q_i^-1 Q_j)^-1 (P_i^-1 P_j)``, ``Q``
+  the truth and ``P`` the estimate (its translations multiplied by the ATE's scale for a
+  monocular run), as evo computes it; TUM's script composes ``P_rel Q_rel^-1`` instead, the
+  same rotation but a translation that differs at long intervals. Its translation's norm and
+  rotation's angle are reported, with their RMSE. No alignment is needed: relative motion
+  does not depend on the world frame.
 
 :func:`associate` pairs an estimate's timestamps with the ground truth's first, as TUM's
 ``associate.py`` does.
@@ -28,7 +31,7 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from slamlab.eval import timing
+from slamlab.eval import timestamps
 from slamlab.foundations import alignment, se3, so3
 from slamlab.foundations.arrays import as_batch, as_number
 from slamlab.foundations.errors import InvalidInputError
@@ -189,7 +192,7 @@ def relative_error(  # noqa: PLR0913 -- two trajectories, their times, the inter
         range, or no pose has another `delta` seconds later.
     """
     est, tru = _as_trajectories(estimate, truth)
-    stamps = timing.as_times(times, "times")
+    stamps = timestamps.as_times(times, "times")
     if len(stamps) != len(est) or len(est) < 2:  # an interval needs two poses
         raise InvalidInputError(
             f"times: expected one per pose and at least 2, got {len(stamps)} for {len(est)}"
@@ -205,7 +208,7 @@ def relative_error(  # noqa: PLR0913 -- two trajectories, their times, the inter
     if not (math.isfinite(factor) and factor > 0.0):
         raise InvalidInputError(f"scale: must be positive and finite, got {factor}")
     targets = stamps + interval
-    later = timing.nearest(stamps, targets)
+    later = timestamps.nearest(stamps, targets)
     first = np.flatnonzero(
         (np.abs(stamps[later] - targets) <= window) & (later > np.arange(len(stamps)))
     )
@@ -258,8 +261,8 @@ def associate(
         If an array is not a finite 1D array that ascends strictly, or `max_difference` is
         negative.
     """
-    ours = timing.as_times(times, "times")
-    theirs = timing.as_times(reference, "reference")
+    ours = timestamps.as_times(times, "times")
+    theirs = timestamps.as_times(reference, "reference")
     reach = as_number(max_difference, "max_difference")
     if not (math.isfinite(reach) and reach >= 0.0):
         raise InvalidInputError(f"max_difference: must be non-negative, got {reach}")

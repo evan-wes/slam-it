@@ -105,14 +105,14 @@ def test_evaluate_rejects_a_run_whose_times_do_not_ascend() -> None:
     times = np.arange(0.0, 1.0, 0.05)
     poses = np.tile(np.eye(4), (len(times), 1, 1))
     run = runs.Run("synthetic", "still", "rgbd", "python", times[::-1], poses)
-    with pytest.raises(InvalidInputError, match="run: timestamps must ascend"):
+    with pytest.raises(InvalidInputError, match="run timestamps: must ascend"):
         runs.evaluate(run, times, poses)
 
 
 @pytest.mark.parametrize(
     ("change", "message"),
     [
-        ({"timestamps": np.arange(12.0)[::-1]}, "trajectory: timestamps must ascend"),
+        ({"timestamps": np.arange(12.0)[::-1]}, "trajectory timestamps: must ascend"),
         ({"settings": {"seed": np.int64(3)}}, "settings: not JSON"),
         ({"diagnostics": [{"tracked": 3}]}, r"diagnostics\[0\]: expected an object"),
         ({"diagnostics": [{"timestamp": float("nan")}]}, r"diagnostics\[0\]: not JSON"),
@@ -174,6 +174,10 @@ def test_read_run_rejects_unknown_info(tmp_path: Path, edit: object, message: st
         ("diagnostics.jsonl", '{"timestamp": 1}\n{oops\n', "diagnostics.jsonl:2: not JSON"),
         ("diagnostics.jsonl", "[1]\n", "expected an object with a timestamp"),
         ("points.npy", "not an array", "points.npy: not a readable .npy array"),
+        ("points.npy", "", "points.npy: not a readable .npy array"),
+        ("run.json", "\udcff", "run.json: not UTF-8 text"),
+        ("trajectory.txt", "\udcff", "trajectory.txt: not UTF-8 text"),
+        ("diagnostics.jsonl", "\udcff", "diagnostics.jsonl: not UTF-8 text"),
     ],
 )
 def test_read_run_rejects_malformed_files(
@@ -181,8 +185,16 @@ def test_read_run_rejects_malformed_files(
 ) -> None:
     """Files that do not parse are InvalidInputError, named with their line where they have one."""
     runs.write_run(tmp_path, _run())
-    (tmp_path / name).write_text(text)
+    (tmp_path / name).write_bytes(text.encode("utf-8", "surrogateescape"))  # \udcff: byte 0xff
     with pytest.raises(InvalidInputError, match=message):
+        runs.read_run(tmp_path)
+
+
+def test_read_run_names_the_expected_shape(tmp_path: Path) -> None:
+    """A mis-shaped array's message reads (N, 4, 4), not a nested tuple."""
+    runs.write_run(tmp_path, _run())
+    np.save(tmp_path / "keyframe_poses.npy", np.zeros((3, 4)))
+    with pytest.raises(InvalidInputError, match=r"expected float64 \(N, 4, 4\)"):
         runs.read_run(tmp_path)
 
 

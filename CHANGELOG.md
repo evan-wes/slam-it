@@ -39,7 +39,7 @@ will score it.
   (vendored, PNG only, its symbols private to the library) and the Rust `slamlab-eval` crate
   on `png`, with Python's names (`read_gray`, `read_rgb`, `read_depth`), held with Pillow to
   seven shared PNG fixtures.
-- **Trajectory metrics and the run format** (`eval.metrics`, `eval.runs`, `eval.timing`):
+- **Trajectory metrics and the run format** (`eval.metrics`, `eval.runs`, `eval.timestamps`):
   ATE after Sim(3) or SE(3) alignment and RPE over an interval of time (a tracking gap
   skipped, not counted as one step), with timestamps paired closest first, as in the TUM
   benchmark's tools; and the run folder every backend's pipeline will write (`run.json`, a

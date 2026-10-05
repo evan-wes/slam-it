@@ -3,10 +3,6 @@
 ///        `tests/fixtures/eval/png/` and their expected values `png.json`, which the Python and
 ///        Rust tests read too, and its failures.
 #include <cstdint>
-#include <filesystem>
-#include <fstream>
-#include <ios>
-#include <iterator>
 #include <string>
 #include <vector>
 
@@ -67,6 +63,13 @@ void check_fixture(int& failures) {
              ("read_rgb matches the fixture: " + name).c_str(), failures);
       expect(fails_with(png::read_depth(fixture_png(name)), "expected a 16-bit"),
              ("read_depth refuses an 8-bit file: " + name).c_str(), failures);
+    } else if (expected.contains("unreadable")) {
+      for (const bool refused :
+           {fails_with(png::read_gray(fixture_png(name)), "not a readable"),
+            fails_with(png::read_rgb(fixture_png(name)), "not a readable"),
+            fails_with(png::read_depth(fixture_png(name)), "not a readable")}) {
+        expect(refused, ("every reader refuses: " + name).c_str(), failures);
+      }
     } else {
       const auto depth = png::read_depth(fixture_png(name));
       expect(depth.has_value() &&
@@ -78,7 +81,7 @@ void check_fixture(int& failures) {
   }
 }
 
-/// @brief Check that missing, truncated and non-PNG files are refused, each named.
+/// @brief Check that missing and non-PNG files are refused, each named.
 /// @param failures Running failure count.
 void check_failures(int& failures) {
   const std::string missing = fixture_png("missing.png");
@@ -86,18 +89,6 @@ void check_failures(int& failures) {
          failures);
   expect(fails_with(png::read_depth(missing), "no such file"), "read_depth: a missing file",
          failures);
-  std::ifstream source(fixture_png("rgb.png"), std::ios::binary);
-  const std::vector<char> whole((std::istreambuf_iterator<char>(source)),
-                                std::istreambuf_iterator<char>());
-  const std::filesystem::path truncated =
-      std::filesystem::temp_directory_path() / "slamlab_test_png_truncated.png";
-  {
-    std::ofstream out(truncated, std::ios::binary);
-    out.write(whole.data(), static_cast<std::streamsize>(whole.size() / 2));
-  }
-  expect(fails_with(png::read_rgb(truncated.string()), "not a readable PNG"),
-         "read_rgb: a truncated file", failures);
-  std::filesystem::remove(truncated);
   const std::string json = std::string(SLAMLAB_FIXTURES_DIR) + "/eval/png.json";
   expect(fails_with(png::read_depth(json), "not a readable PNG"), "read_depth: not a PNG",
          failures);

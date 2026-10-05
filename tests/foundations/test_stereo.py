@@ -370,3 +370,22 @@ def test_options_reject_out_of_range(settings: dict[str, Any], message: str) -> 
     """Every matching setting is range-checked when the options are built."""
     with pytest.raises(InvalidInputError, match=message):
         stereo.Options(**settings)
+
+
+def test_a_malformed_compiled_rectification_is_a_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rectification whose baseline is not a float is refused, never converted."""
+    raw = {
+        "rotation_left": np.eye(3),
+        "rotation_right": np.eye(3),
+        "intrinsics": np.array([500.0, 500.0, 319.5, 239.5]),
+        "baseline": 1,
+    }
+    monkeypatch.setattr(backends, "function", lambda *_: lambda **__: raw)
+    monkeypatch.setattr(backends, "implementation", lambda *_: object())
+    with pytest.raises(RuntimeError, match="stereo baseline: backend returned int"):
+        stereo.rectify(
+            "pinhole", PINHOLE, "pinhole", PINHOLE, _pose([-0.1, 0, 0]), shape=(480, 640),
+            backend="cpp",
+        )  # fmt: skip

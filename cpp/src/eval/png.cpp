@@ -77,6 +77,19 @@ Result<Encoded> encoded(const std::string& path) {
   return Encoded{.bytes = std::move(bytes), .size = size, .sixteen_bit = sixteen_bit};
 }
 
+/// @brief Whether a file decodes at all, at whatever bit depth: a file of the wrong depth is
+///        reported as such only if it is readable, as Pillow and the `png` crate report it.
+/// @param file The file.
+/// @return True if stb_image decodes it.
+bool decodes(const Encoded& file) {
+  int cols = 0;
+  int rows = 0;
+  int channels = 0;
+  const std::unique_ptr<stbi_uc, StbFree> data(
+      stbi_load_from_memory(file.bytes.data(), file.size, &cols, &rows, &channels, 0));
+  return data != nullptr;
+}
+
 /// @brief An 8-bit image as stored: 1 (gray), 2 (gray, alpha), 3 (RGB) or 4 (RGBA) channels.
 struct Raster8 {
   /// @brief Rows.
@@ -98,6 +111,9 @@ Result<Raster8> read8(const std::string& path) {
     return std::unexpected(file.error());
   }
   if (file->sixteen_bit) {
+    if (!decodes(*file)) {
+      return unreadable(path);
+    }
     return fail(ErrorKind::kInvalidInput, path + ": expected an 8-bit image");
   }
   int cols = 0;
@@ -168,6 +184,9 @@ Result<DepthImage> read_depth(const std::string& path) {
     return std::unexpected(file.error());
   }
   if (!file->sixteen_bit) {
+    if (!decodes(*file)) {
+      return unreadable(path);
+    }
     return fail(ErrorKind::kInvalidInput, path + ": expected a 16-bit single-channel image");
   }
   int cols = 0;

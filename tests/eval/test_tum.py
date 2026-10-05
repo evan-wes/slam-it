@@ -49,10 +49,26 @@ def test_associates_depth_maps(tmp_path: Path) -> None:
     _write(folder)
     (folder / "depth.txt").write_text(
         "# depth maps\n# timestamp filename\n"
-        "100.010 depth/100.010.png\n99.900 depth/99.900.png\n100.600 depth/100.600.png\n"
+        "99.900 depth/99.900.png\n100.010 depth/100.010.png\n100.600 depth/100.600.png\n"
     )
     sequence = tum.read_sequence(folder)
     assert sequence.depths == [folder / "depth/100.010.png", None]
+
+
+@pytest.mark.parametrize(
+    ("lines", "message"),
+    [
+        ("100.0 rgb/a.png\nnan rgb/b.png\n", "expected finite values"),
+        ("100.5 rgb/a.png\n100.0 rgb/b.png\n", "must ascend"),
+    ],
+)
+def test_rejects_unordered_or_non_finite_stamps(tmp_path: Path, lines: str, message: str) -> None:
+    """A NaN or out-of-order stamp in rgb.txt is refused, not silently dropped or kept."""
+    folder = tmp_path / "rgbd_dataset_freiburg1_xyz"
+    _write(folder)
+    (folder / "rgb.txt").write_text("# colour images\n" + lines)
+    with pytest.raises(ValueError, match=message):
+        tum.read_sequence(folder)
 
 
 def test_rejects_unknown_sensors_and_empty_associations(tmp_path: Path) -> None:

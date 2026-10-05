@@ -31,7 +31,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
-from slamlab.eval import timing
+from slamlab.eval import timestamps
 from slamlab.foundations import se3, so3
 from slamlab.foundations.arrays import MAX_IMAGE_SIDE
 from slamlab.foundations.errors import InvalidInputError
@@ -277,7 +277,7 @@ def read_sequence(root: str | Path, max_difference: float = MAX_DIFFERENCE) -> S
     stamps = np.asarray(sorted(set(left) & set(right)), dtype=np.int64)
     if len(stamps) == 0:
         raise InvalidInputError(f"{root}: no frame has both a left and a right image")
-    nearest = timing.nearest(times, stamps)  # in nanoseconds, exactly
+    nearest = timestamps.nearest(times, stamps)  # in nanoseconds, exactly
     kept = np.abs(times[nearest] - stamps) <= round(max_difference * NANOSECONDS)
     if not np.any(kept):
         raise InvalidInputError(

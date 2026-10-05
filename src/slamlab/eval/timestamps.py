@@ -57,10 +57,10 @@ def nearest(times: NDArray[Any], stamps: ArrayLike) -> NDArray[np.int64]:
 
     Parameters
     ----------
-    times : ndarray, shape (N,)
+    times : ndarray of float64 or int64, shape (N,)
         Ascending times, N >= 1: seconds, or integer nanoseconds (compared exactly).
     stamps : array_like, shape (M,)
-        The times to look up, in the same unit, in any order.
+        The times to look up, in the same unit and dtype, in any order.
 
     Returns
     -------
@@ -70,11 +70,17 @@ def nearest(times: NDArray[Any], stamps: ArrayLike) -> NDArray[np.int64]:
     Raises
     ------
     slamlab.foundations.errors.InvalidInputError
-        If `times` is empty, not 1D, or does not ascend.
+        If `times` is empty, not 1D or does not ascend, or either array is not float64 or
+        int64 (unsigned differences would wrap), or the two differ in dtype.
     """
+    lookups = np.asarray(stamps)
+    if times.dtype not in (np.float64, np.int64) or lookups.dtype != times.dtype:
+        raise InvalidInputError(
+            f"times and stamps: expected one dtype, float64 or int64, got {times.dtype} and "
+            f"{lookups.dtype}"
+        )
     if times.ndim != 1 or len(times) == 0 or np.any(np.diff(times) < 0):
         raise InvalidInputError("times: expected a non-empty, ascending 1D array")
-    lookups = np.asarray(stamps)
     if len(times) == 1:
         return np.zeros(lookups.shape, dtype=np.int64)
     after = np.clip(np.searchsorted(times, lookups), 1, len(times) - 1)

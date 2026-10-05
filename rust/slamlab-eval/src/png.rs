@@ -303,6 +303,19 @@ mod tests {
                     message(read_depth(&path)).contains("expected a 16-bit"),
                     "{name}"
                 );
+            } else if expected.get("unreadable").is_some() {
+                assert!(
+                    message(read_gray(&path)).contains("not a readable"),
+                    "{name}"
+                );
+                assert!(
+                    message(read_rgb(&path)).contains("not a readable"),
+                    "{name}"
+                );
+                assert!(
+                    message(read_depth(&path)).contains("not a readable"),
+                    "{name}"
+                );
             } else {
                 let got = read_depth(&path).unwrap();
                 let want: Vec<u16> = flat(&expected["depth"])
@@ -325,17 +338,12 @@ mod tests {
         error.message
     }
 
-    /// Missing, truncated and non-PNG files are refused, each named.
+    /// Missing and non-PNG files are refused, each named.
     #[test]
     fn readers_refuse_bad_files() {
         let missing = folder().join("png/missing.png");
         assert!(message(read_gray(&missing)).contains("no such file"));
         assert!(message(read_depth(&missing)).contains("no such file"));
-        let whole = std::fs::read(folder().join("png/rgb.png")).expect("the fixture");
-        let truncated = std::env::temp_dir().join("slamlab_eval_png_truncated.png");
-        std::fs::write(&truncated, &whole[..whole.len() / 2]).expect("a temporary file");
-        assert!(message(read_rgb(&truncated)).contains("not a readable PNG"));
-        std::fs::remove_file(&truncated).expect("removed");
         assert!(message(read_depth(&folder().join("png.json"))).contains("not a readable PNG"));
     }
 }
