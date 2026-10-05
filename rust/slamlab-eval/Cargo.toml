@@ -1,0 +1,18 @@
+[package]
+name = "slamlab-eval"
+version = "0.1.0"
+description = "slamlab's evaluation helpers in Rust: dataset readers outside the algorithm cores."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Decodes dataset PNGs, pure Rust (the C++ side vendors stb_image).
+png = "0.18.1"
+slamlab-foundations = { path = "../slamlab-foundations" }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+serde_json = "1.0.151"

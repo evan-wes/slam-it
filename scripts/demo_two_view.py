@@ -1,11 +1,13 @@
 """Two-view initialisation on a real image pair: slamlab against the ground truth and OpenCV.
 
-Takes two colour frames of a TUM RGB-D sequence (default: ``freiburg1_xyz``), matches SIFT
-features between them (OpenCV, with Lowe's ratio test), unprojects the matches through the
-sensor's calibrated radial-tangential model, and runs :func:`slamlab.foundations.twoview.
-initialize` with each backend. It prints the status, the chosen model, the inliers and
-triangulated points, and the motion's error against the motion-capture ground truth: the
-rotation's angle and the translation direction's angle (two views cannot fix the scale).
+Takes two colour frames of a TUM RGB-D sequence (default: ``freiburg1_xyz``), matches
+slamlab's ORB features between them (:mod:`slamlab.foundations.orb` and
+:mod:`slamlab.foundations.matching`, ORB-SLAM's extractor and filters), unprojects the matches
+through the sensor's calibrated radial-tangential model, and runs
+:func:`slamlab.foundations.twoview.initialize` with each backend. It prints the status, the
+chosen model, the inliers and triangulated points, and the motion's error against the
+motion-capture ground truth: the rotation's angle and the translation direction's angle (two
+views cannot fix the scale).
 OpenCV's ``findEssentialMat`` and ``recoverPose`` (the 5-point solver, RANSAC) run on the same
 matches as an end-to-end reference.
 
@@ -34,19 +36,19 @@ import numpy as np
 from numpy.typing import NDArray
 
 from slamlab import backends
-from slamlab.eval import tum
-from slamlab.foundations import camera, epipolar, se3, so3, twoview
+from slamlab.eval import images, tum
+from slamlab.foundations import camera, epipolar, matching, orb, se3, so3, twoview
 
 DEFAULT_SEQUENCE = Path("../datasets/tum/rgbd_dataset_freiburg1_xyz")
-SIFT_FEATURES = 3000
-"""SIFT keypoints detected per image."""
-RATIO = 0.75
-"""Lowe's ratio test: a match is kept if its distance is below this fraction of the
-second-best match's."""
+FEATURES = orb.Options(n_features=2000)
+"""ORB features per image: twice ORB-SLAM's per-frame budget, as its initialiser uses."""
 
 
 def matches(first: Path, second: Path) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Match SIFT features between two images, with Lowe's ratio test.
+    """Match slamlab's ORB features between two images.
+
+    Every backend extracts and matches the same features, bit for bit, so the fastest built
+    one does it.
 
     Parameters
     ----------
@@ -57,25 +59,13 @@ def matches(first: Path, second: Path) -> tuple[NDArray[np.float64], NDArray[np.
     -------
     tuple of ndarray of float64, shape (M, 2)
         The matched pixels in each image.
-
-    Raises
-    ------
-    FileNotFoundError
-        If an image cannot be read.
     """
-    sift = cv2.SIFT.create(nfeatures=SIFT_FEATURES)
-    images = []
-    for path in (first, second):
-        image = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-        if image is None:
-            raise FileNotFoundError(f"cannot read the image {path}")
-        images.append(image)
-    (k1, d1), (k2, d2) = (sift.detectAndCompute(image, None) for image in images)
-    pairs = cv2.BFMatcher(cv2.NORM_L2).knnMatch(d1, d2, k=2)
-    kept = [m for m, n in pairs if m.distance < RATIO * n.distance]
-    p1 = np.array([k1[m.queryIdx].pt for m in kept], dtype=np.float64)
-    p2 = np.array([k2[m.trainIdx].pt for m in kept], dtype=np.float64)
-    return p1, p2
+    backend = next(b for b in ("cpp", "rust", "python") if b in backends.available())
+    a, b = (orb.extract(images.read_gray(p), FEATURES, backend=backend) for p in (first, second))
+    found = matching.match(
+        a.descriptors, b.descriptors, a.keypoints.angle, b.keypoints.angle, backend=backend
+    )
+    return a.keypoints.xy[found.pairs[:, 0]], b.keypoints.xy[found.pairs[:, 1]]
 
 
 def errors_deg(found: NDArray[np.float64], truth: NDArray[np.float64]) -> tuple[float, float]:

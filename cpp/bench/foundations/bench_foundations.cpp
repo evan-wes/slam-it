@@ -6,6 +6,8 @@
 /// batches over. Two robust estimators run on one fixed synthetic scene, built from the same
 /// closed-form expressions as the Rust benches' (no random numbers, so both cores see identical
 /// data): E-RANSAC with Stewénius' 5-point solver and PnP RANSAC with Ding's P3P, each refined.
+/// The front end extracts ORB features (ORB-SLAM's settings) from a 640x480 synthetic frame
+/// built from one integer expression, the Rust benches' too.
 /// The headline is a whole bundle adjustment on a BAL problem, with the BAL demo's settings,
 /// registered only when `SLAMLAB_BAL` names a decompressed problem file:
 /// `SLAMLAB_BAL=<problem.txt> build/native/bench/foundations_bench_foundations`.
@@ -13,6 +15,8 @@
 
 #include <Eigen/Core>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -22,6 +26,8 @@
 #include "slamlab/foundations/camera.hpp"
 #include "slamlab/foundations/correspondences.hpp"
 #include "slamlab/foundations/epipolar.hpp"
+#include "slamlab/foundations/image.hpp"
+#include "slamlab/foundations/orb.hpp"
 #include "slamlab/foundations/p3p.hpp"
 #include "slamlab/foundations/pnp.hpp"
 #include "slamlab/foundations/ransac.hpp"
@@ -146,6 +152,33 @@ void pnp_ransac(benchmark::State& state) {
   }
 }
 
+/// @brief A 640x480 synthetic frame: 16-pixel blocks of varied intensity with a fine texture,
+///        from the same integer expression as the Rust benches'.
+/// @return The frame.
+foundations::image::Image bench_frame() {
+  constexpr std::int64_t kRows = 480;
+  constexpr std::int64_t kCols = 640;
+  foundations::image::Image frame{.rows = kRows, .cols = kCols, .pixels = {}};
+  frame.pixels.reserve(static_cast<std::size_t>(kRows * kCols));
+  for (std::int64_t r = 0; r < kRows; ++r) {
+    for (std::int64_t c = 0; c < kCols; ++c) {
+      const std::int64_t value = (((c / 16) * 37 + (r / 16) * 61) % 200) + 28 + ((r * c) % 7);
+      frame.pixels.push_back(static_cast<std::uint8_t>(value));
+    }
+  }
+  return frame;
+}
+
+/// @brief ORB extraction with ORB-SLAM's settings (1000 features, 8 levels at 1.2).
+/// @param state The benchmark state.
+void orb_extract(benchmark::State& state) {
+  const foundations::image::Image frame = bench_frame();
+  const foundations::orb::Options options{};
+  for (const auto _ : state) {
+    benchmark::DoNotOptimize(foundations::orb::extract(frame, options));
+  }
+}
+
 /// @brief Print each RANSAC's inliers and iterations once, so the two cores' runs can be
 ///        seen to take the same decisions before their times are compared.
 void report_ransac_decisions() {
@@ -166,6 +199,7 @@ void report_ransac_decisions() {
 
 BENCHMARK(essential_ransac)->Unit(benchmark::kMillisecond);
 BENCHMARK(pnp_ransac)->Unit(benchmark::kMillisecond);
+BENCHMARK(orb_extract)->Unit(benchmark::kMillisecond);
 BENCHMARK(so3_exp);
 BENCHMARK(so3_log);
 BENCHMARK(se3_log);

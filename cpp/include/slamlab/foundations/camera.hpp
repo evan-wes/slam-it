@@ -9,6 +9,7 @@
 
 #include <Eigen/Core>
 #include <cstdint>
+#include <span>
 
 #include "slamlab/foundations/error.hpp"
 
@@ -43,6 +44,12 @@ using ProjectionJacobian = Eigen::Matrix<double, 2, Eigen::Dynamic>;
 /// @param model The model.
 /// @return A static string.
 [[nodiscard]] const char* name(Model model);
+
+/// @brief The model's focal-length entries in its intrinsics vector
+///        (`slamlab.foundations.camera.FOCAL_INDICES`).
+/// @param model The model.
+/// @return Their indices: `{0, 1}`, or `{0}` for the radial model.
+[[nodiscard]] std::span<const Eigen::Index> focal_indices(Model model);
 
 /// @brief Check a model code and its intrinsics vector.
 /// @param model The model.

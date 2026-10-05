@@ -18,7 +18,8 @@ the nearest depth map within ``max_difference``, if there is one.
 
 **Depth.** The depth maps are 16-bit PNGs registered to the colour image: pixel ``(u, v)`` of
 the depth map is pixel ``(u, v)`` of the colour frame, and its value over :data:`DEPTH_SCALE`
-is the point's z in the colour camera, in metres (0: no measurement).
+is the point's z in the colour camera, in metres (0: no measurement). :func:`read_depth`
+reads one in metres.
 
 **Intrinsics.** The ROS default for each sensor (``freiburg1``, ``2``, ``3``) is published as a
 pinhole with Brown-Conrady (radial-tangential) distortion. :data:`INTRINSICS` holds them in
@@ -34,6 +35,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
+from slamlab.eval import images, timestamps
 from slamlab.foundations import so3
 from slamlab.foundations.errors import InvalidInputError
 
@@ -142,7 +144,8 @@ def _stamped(path: Path) -> tuple[NDArray[np.float64], list[str]]:
     Raises
     ------
     slamlab.foundations.errors.InvalidInputError
-        If a stamp is not a number (the message names the file and line).
+        If a stamp is not a number (the message names the file and line), or the stamps are
+        not finite or do not ascend.
     """
     rows = _table(path, 2)
     stamps = np.empty(len(rows))
@@ -153,17 +156,7 @@ def _stamped(path: Path) -> tuple[NDArray[np.float64], list[str]]:
             raise InvalidInputError(
                 f"{path}:{number}: expected a numeric timestamp ({error})"
             ) from None
-    return stamps, [fields[1] for _, fields in rows]
-
-
-def _nearest(times: NDArray[np.float64], stamps: NDArray[np.float64]) -> NDArray[np.int64]:
-    """Return, for each stamp, the index of the nearest of the ascending `times`."""
-    if len(times) == 1:
-        return np.zeros(len(stamps), dtype=np.int64)
-    right = np.clip(np.searchsorted(times, stamps), 1, len(times) - 1)
-    left = right - 1
-    closer_left = np.abs(times[left] - stamps) <= np.abs(times[right] - stamps)
-    return np.asarray(np.where(closer_left, left, right), dtype=np.int64)
+    return timestamps.as_times(stamps, str(path), strict=False), [f[1] for _, f in rows]
 
 
 def read_sequence(root: str | Path, max_difference: float = MAX_DIFFERENCE) -> Sequence:
@@ -199,7 +192,7 @@ def read_sequence(root: str | Path, max_difference: float = MAX_DIFFERENCE) -> S
         )
     stamps, names = _stamped(folder / "rgb.txt")
     truth_times, truth_poses = _poses(folder / "groundtruth.txt")
-    nearest = _nearest(truth_times, stamps)
+    nearest = timestamps.nearest(truth_times, stamps)
     kept = np.flatnonzero(np.abs(truth_times[nearest] - stamps) <= max_difference)
     if kept.size == 0:
         raise InvalidInputError(
@@ -209,10 +202,36 @@ def read_sequence(root: str | Path, max_difference: float = MAX_DIFFERENCE) -> S
     depths: list[Path | None] = [None] * len(kept)
     if (folder / "depth.txt").exists():
         depth_times, depth_names = _stamped(folder / "depth.txt")
-        order = np.argsort(depth_times, kind="stable")
-        closest = order[_nearest(depth_times[order], stamps[kept])]
+        closest = timestamps.nearest(depth_times, stamps[kept])
         depths = [
             folder / depth_names[d] if abs(depth_times[d] - stamps[k]) <= max_difference else None
             for k, d in zip(kept, closest, strict=True)
         ]
     return Sequence(folder, sensor, stamps[kept], images, truth_poses[nearest[kept]], depths)
+
+
+def read_depth(path: str | Path) -> NDArray[np.float64]:
+    """Read a depth map in metres.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        A 16-bit depth PNG (:attr:`Sequence.depths`).
+
+    Returns
+    -------
+    ndarray of float64, shape (H, W)
+        Each pixel's z in the colour camera, in metres: its value over :data:`DEPTH_SCALE`;
+        NaN where the sensor measured nothing (a stored 0).
+
+    Raises
+    ------
+    FileNotFoundError
+        If the file does not exist.
+    slamlab.foundations.errors.InvalidInputError
+        If it is not a 16-bit single-channel image.
+    """
+    raw = images.read_depth(path)
+    depth = raw.astype(np.float64) / DEPTH_SCALE
+    depth[raw == 0] = np.nan
+    return depth

@@ -39,6 +39,20 @@ impl Model {
         }
     }
 
+    /// The model's focal-length entries in its intrinsics vector
+    /// (`slamlab.foundations.camera.FOCAL_INDICES`).
+    ///
+    /// # Returns
+    ///
+    /// Their indices: `[0, 1]`, or `[0]` for the radial model.
+    #[must_use]
+    pub const fn focal_indices(self) -> &'static [usize] {
+        match self {
+            Self::Pinhole | Self::RadTan => &[0, 1],
+            Self::Radial => &[0],
+        }
+    }
+
     /// The length of the model's intrinsics.
     ///
     /// # Returns
@@ -187,7 +201,7 @@ pub fn check_intrinsics(model: Model, intrinsics: &[f64]) -> Result<()> {
             "intrinsics: wrong length for the camera model",
         );
     }
-    if intrinsics[0] <= 0.0 || (model != Model::Radial && intrinsics[1] <= 0.0) {
+    if model.focal_indices().iter().any(|&i| intrinsics[i] <= 0.0) {
         return fail(
             ErrorKind::InvalidInput,
             "intrinsics: focal lengths must be positive",

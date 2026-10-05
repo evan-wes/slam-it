@@ -27,6 +27,10 @@ function(slamlab_add_rung rung)
   target_link_libraries(slamlab_${rung} PUBLIC Eigen3::Eigen ${ARG_DEPENDS})
   set_target_properties(slamlab_${rung} PROPERTIES POSITION_INDEPENDENT_CODE ON)
   target_compile_options(slamlab_${rung} PRIVATE -Wall -Wextra -Wpedantic)
+  # Exact parity needs every float operation rounded on its own: no fused multiply-add,
+  # which GCC and Clang would otherwise form on ARM. PUBLIC, so code inlining a core
+  # header's arithmetic (tests, bindings) is compiled the same way.
+  target_compile_options(slamlab_${rung} PUBLIC -ffp-contract=off)
   if(SLAMLAB_BUILD_TESTS)
     # One executable per test file: cpp/tests/<rung>/test_<name>.cpp -> <rung>_test_<name>.
     file(GLOB_RECURSE tests CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/cpp/tests/${rung}/*.cpp)
@@ -70,6 +74,14 @@ if(SLAMLAB_BUILD_BENCHMARKS)
 endif()
 
 slamlab_add_rung(foundations)
+# Evaluation: dataset readers outside the algorithm cores. PNGs decode with the vendored
+# stb_image (third_party/stb), included as a system header so its own warnings stay out. The
+# Python extension never links it, so a wheel build compiles it only with the native tests.
+if(NOT SKBUILD OR SLAMLAB_BUILD_TESTS)
+  slamlab_add_rung(eval DEPENDS slamlab_foundations)
+  target_include_directories(slamlab_eval SYSTEM PRIVATE
+                             ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb)
+endif()
 
 if(SKBUILD)
   find_package(Python 3.11 REQUIRED COMPONENTS Interpreter Development.Module)

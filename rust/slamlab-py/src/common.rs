@@ -1,14 +1,16 @@
 //! Shared helpers for every binding: array conversion, batch mapping, error translation.
 //!
 //! Bindings take float64 C-contiguous numpy arrays with a leading batch dimension and return
-//! new arrays (design doc, "Conventions"). Anything else (another dtype, a strided view) is
-//! refused rather than silently copied, the same as the C++ binding. A core [`Error`] crosses
-//! as the Python exception of its kind, from `slamlab.foundations.errors`.
+//! new arrays (design doc, "Conventions"); images cross as uint8 (`foundations::image`).
+//! Anything else (another dtype, a strided view) is refused rather than silently copied, the
+//! same as the C++ binding. A core [`Error`] crosses as the Python exception of its kind, from
+//! `slamlab.foundations.errors`.
 
 use nalgebra::{DVector, SMatrix};
 use numpy::ndarray::{ArrayD, Dimension, IxDyn};
 use numpy::{
-    Element, IntoPyArray, PyArrayDyn, PyReadonlyArray, PyReadonlyArrayDyn, PyUntypedArrayMethods,
+    Element, IntoPyArray, PyArray1, PyArrayDyn, PyReadonlyArray, PyReadonlyArrayDyn,
+    PyUntypedArrayMethods,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -162,6 +164,33 @@ pub fn batch<'a>(array: &'a ArrayIn<'_>, item: &[usize]) -> PyResult<(&'a [f64],
 pub fn rows<A: Item>(array: &ArrayIn<'_>) -> PyResult<Vec<A>> {
     let (values, _) = batch(array, &A::shape())?;
     Ok(items(values, A::LEN).map(A::read).collect())
+}
+
+/// Converts an index to `i64` for numpy.
+///
+/// # Arguments
+///
+/// * `value` - The index.
+///
+/// # Returns
+///
+/// It as an `i64`.
+pub fn to_i64(value: usize) -> i64 {
+    i64::try_from(value).expect("indices fit an i64")
+}
+
+/// Wraps values as a new 1D int64 array.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `values` - The values.
+///
+/// # Returns
+///
+/// The array.
+pub fn int64_array(py: Python<'_>, values: Vec<i64>) -> Bound<'_, PyArray1<i64>> {
+    numpy::ndarray::Array1::from_vec(values).into_pyarray(py)
 }
 
 /// Wraps row-major values as a new numpy array of the given shape.

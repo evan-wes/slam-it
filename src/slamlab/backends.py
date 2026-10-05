@@ -330,3 +330,35 @@ def call(  # noqa: PLR0913 -- the two sides and the decoder are keyword-only
     raw = function(backend, module_name, name)(**arguments)
     tables = getattr(implementation(backend, module_name), "codes", None)
     return decode(raw, tables() if callable(tables) else {})
+
+
+def checked_array(raw: Any, dtype: type[np.generic], ndim: int, name: str) -> NDArray[Any]:  # noqa: ANN401 -- a compiled backend's value
+    """Return a compiled backend's array, checked (never cast) to the dtype and rank expected.
+
+    Parameters
+    ----------
+    raw : object
+        What the backend returned.
+    dtype : numpy scalar type
+        The dtype it must have.
+    ndim : int
+        The number of dimensions it must have.
+    name : str
+        What it is, for the message.
+
+    Returns
+    -------
+    ndarray
+        `raw` as an array.
+
+    Raises
+    ------
+    RuntimeError
+        If the dtype or rank differs: a binding bug, never the caller's.
+    """
+    out = np.asarray(raw)
+    if out.dtype != dtype or out.ndim != ndim:
+        raise RuntimeError(
+            f"{name}: backend returned {out.dtype} {out.shape}, expected {ndim}-D {np.dtype(dtype)}"
+        )
+    return out

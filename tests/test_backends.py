@@ -356,3 +356,23 @@ def test_decode_name_rejects_codes_outside_the_table() -> None:
     for bad in (-1, 3):
         with pytest.raises(RuntimeError, match="outside"):
             backends.decode_name(codes, "gauge", bad)
+
+
+@pytest.mark.parametrize(
+    ("raw", "message"),
+    [
+        (np.zeros(3, np.float32), "values: backend returned float32"),
+        (np.zeros((3, 1)), r"expected 1-D float64"),
+        ([1, 2, 3], "backend returned int64"),
+    ],
+)
+def test_checked_array_refuses_a_wrong_dtype_or_rank(raw: object, message: str) -> None:
+    """A compiled result of another dtype or rank is a binding bug: RuntimeError, never a cast."""
+    with pytest.raises(RuntimeError, match=message):
+        backends.checked_array(raw, np.float64, 1, "values")
+
+
+def test_checked_array_returns_a_good_array_as_is() -> None:
+    """A result of the expected dtype and rank comes back unchanged, not copied."""
+    values = np.arange(3.0)
+    assert backends.checked_array(values, np.float64, 1, "values") is values

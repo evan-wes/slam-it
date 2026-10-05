@@ -1,8 +1,10 @@
 """Absolute pose on a real sequence: PnP RANSAC against the ground truth and OpenCV.
 
 A reference frame A provides 3D points, in A's camera frame (the world here); a later frame C
-is matched to A with SIFT (OpenCV, Lowe's ratio test), and :func:`slamlab.foundations.pnp.
-pnp_ransac` places C against the points: ``T_C_A``. The points come from one of two sources:
+is matched to A with slamlab's ORB features (:mod:`slamlab.foundations.orb` and
+:mod:`slamlab.foundations.matching`, ORB-SLAM's extractor and filters), and
+:func:`slamlab.foundations.pnp.pnp_ransac` places C against the points: ``T_C_A``. The
+points come from one of two sources:
 
 - ``depth`` (default): A's keypoints back-projected through its registered depth map, metric
   and independent of slamlab's two-view code;
@@ -31,7 +33,6 @@ from __future__ import annotations
 import argparse
 import collections
 import math
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias
 
@@ -40,18 +41,15 @@ import numpy as np
 from numpy.typing import NDArray
 
 from slamlab import backends
-from slamlab.eval import tum
-from slamlab.foundations import camera, p3p, pnp, ransac, se3, so3, twoview
+from slamlab.eval import images, tum
+from slamlab.foundations import camera, matching, orb, p3p, pnp, ransac, se3, so3, twoview
 from slamlab.foundations.correspondences import normalised_xy
 from slamlab.foundations.errors import DegenerateError
 from slamlab.foundations.solve import Solution
 
 DEFAULT_SEQUENCE = Path("../datasets/tum/rgbd_dataset_freiburg1_xyz")
-SIFT_FEATURES = 3000
-"""SIFT keypoints detected per image."""
-RATIO = 0.75
-"""Lowe's ratio test: a match is kept if its distance is below this fraction of the
-second-best match's."""
+FEATURES = orb.Options(n_features=2000)
+"""ORB features per image: twice ORB-SLAM's per-frame budget, as its initialiser uses."""
 THRESHOLD_PX = 2.0
 """PnP RANSAC's inlier threshold, in pixels."""
 MIN_CORRESPONDENCES = 12
@@ -75,16 +73,13 @@ CONFIGURATIONS = (("ding", True), ("lambda_twist", True), ("ding", False))
 """The (P3P solver, refine) configurations the survey compares."""
 
 
-@dataclass(frozen=True)
-class Features:
-    """One image's SIFT keypoints: their pixels and descriptors."""
-
-    pixels: NDArray[np.float64]
-    descriptors: NDArray[np.float32]
+def _backend() -> str:
+    """Return the fastest built backend: every one extracts and matches the same features."""
+    return next(b for b in ("cpp", "rust", "python") if b in backends.available())
 
 
-def features(path: Path) -> Features:
-    """Detect SIFT keypoints in an image.
+def features(path: Path) -> orb.Features:
+    """Extract slamlab's ORB features from an image.
 
     Parameters
     ----------
@@ -93,41 +88,34 @@ def features(path: Path) -> Features:
 
     Returns
     -------
-    Features
-        The keypoints' pixels (K, 2) and descriptors (K, 128).
-
-    Raises
-    ------
-    FileNotFoundError
-        If the image cannot be read.
+    slamlab.foundations.orb.Features
+        Its keypoints and descriptors.
     """
-    image = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-    if image is None:
-        raise FileNotFoundError(f"cannot read the image {path}")
-    keypoints, descriptors = cv2.SIFT.create(nfeatures=SIFT_FEATURES).detectAndCompute(image, None)
-    pixels = np.array([k.pt for k in keypoints], dtype=np.float64).reshape(-1, 2)
-    return Features(pixels, np.asarray(descriptors, dtype=np.float32))
+    return orb.extract(images.read_gray(path), FEATURES, backend=_backend())
 
 
-def match(a: Features, b: Features) -> NDArray[np.int64]:
-    """Match two images' keypoints with Lowe's ratio test.
+def match(a: orb.Features, b: orb.Features) -> NDArray[np.int64]:
+    """Match two images' features with ORB-SLAM's filters.
 
     Parameters
     ----------
-    a, b : Features
-        The two images' keypoints.
+    a, b : slamlab.foundations.orb.Features
+        The two images' features.
 
     Returns
     -------
     ndarray of int64, shape (M, 2)
         Each match's keypoint index in `a`, then in `b`.
     """
-    pairs = cv2.BFMatcher(cv2.NORM_L2).knnMatch(a.descriptors, b.descriptors, k=2)
-    kept = [(m.queryIdx, m.trainIdx) for m, n in pairs if m.distance < RATIO * n.distance]
-    return np.array(kept, dtype=np.int64).reshape(-1, 2)
+    found = matching.match(
+        a.descriptors, b.descriptors, a.keypoints.angle, b.keypoints.angle, backend=_backend()
+    )
+    return found.pairs
 
 
-def depth_points(sequence: tum.Sequence, frame: int, keypoints: Features) -> NDArray[np.float64]:
+def depth_points(
+    sequence: tum.Sequence, frame: int, keypoints: orb.Features
+) -> NDArray[np.float64]:
     """Back-project keypoints through the frame's depth map, in its camera frame.
 
     Parameters
@@ -136,7 +124,7 @@ def depth_points(sequence: tum.Sequence, frame: int, keypoints: Features) -> NDA
         The sequence.
     frame : int
         The frame's index.
-    keypoints : Features
+    keypoints : slamlab.foundations.orb.Features
         Its keypoints.
 
     Returns
@@ -154,21 +142,19 @@ def depth_points(sequence: tum.Sequence, frame: int, keypoints: Features) -> NDA
     path = sequence.depths[frame]
     if path is None:
         raise ValueError(f"frame {frame} has no depth map within the association tolerance")
-    raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
-    if raw is None:
-        raise FileNotFoundError(f"cannot read the depth map {path}")
-    pixel = np.rint(keypoints.pixels).astype(np.int64)
-    height, width = raw.shape
+    depth = tum.read_depth(path)
+    pixels = keypoints.keypoints.xy
+    pixel = np.rint(pixels).astype(np.int64)
+    height, width = depth.shape
     inside = np.all((pixel >= 0) & (pixel < [width, height]), axis=1)
     z = np.full(len(pixel), np.nan)
-    z[inside] = raw[pixel[inside, 1], pixel[inside, 0]] / tum.DEPTH_SCALE
-    z[z <= 0.0] = np.nan
-    rays = camera.unproject("radtan", sequence.intrinsics, keypoints.pixels)
+    z[inside] = depth[pixel[inside, 1], pixel[inside, 0]]
+    rays = camera.unproject("radtan", sequence.intrinsics, pixels)
     return np.asarray(rays * (z / rays[:, 2])[:, None], dtype=np.float64)
 
 
 def twoview_points(
-    sequence: tum.Sequence, first: int, gap: int, found: dict[int, Features]
+    sequence: tum.Sequence, first: int, gap: int, found: dict[int, orb.Features]
 ) -> NDArray[np.float64] | None:
     """Triangulate frame `first`'s keypoints with frame ``first + gap``, at the true scale.
 
@@ -178,7 +164,7 @@ def twoview_points(
         The sequence.
     first, gap : int
         The reference frame, and the frames to the second view.
-    found : dict of int to Features
+    found : dict of int to slamlab.foundations.orb.Features
         Keypoints already detected, by frame (filled as needed).
 
     Returns
@@ -190,8 +176,8 @@ def twoview_points(
     a, b = keypoints(sequence, first, found), keypoints(sequence, first + gap, found)
     pairs = match(a, b)
     intrinsics = sequence.intrinsics
-    rays_a = camera.unproject("radtan", intrinsics, a.pixels[pairs[:, 0]])
-    rays_b = camera.unproject("radtan", intrinsics, b.pixels[pairs[:, 1]])
+    rays_a = camera.unproject("radtan", intrinsics, a.keypoints.xy[pairs[:, 0]])
+    rays_b = camera.unproject("radtan", intrinsics, b.keypoints.xy[pairs[:, 1]])
     try:
         result = twoview.initialize(rays_a, rays_b, twoview.Options(focal=float(intrinsics[0])))
     except DegenerateError:  # neither RANSAC found a model
@@ -200,13 +186,13 @@ def twoview_points(
         return None
     truth = se3.inverse(sequence.T_world_cam[first + gap]) @ sequence.T_world_cam[first]
     scale = float(np.linalg.norm(truth[:3, 3]) / np.linalg.norm(result.relative_pose[:3, 3]))
-    points = np.full((len(a.pixels), 3), np.nan)
+    points = np.full((len(a.keypoints.xy), 3), np.nan)
     good = pairs[result.triangulated, 0]
     points[good] = scale * result.points[result.triangulated]
     return points
 
 
-def keypoints(sequence: tum.Sequence, frame: int, found: dict[int, Features]) -> Features:
+def keypoints(sequence: tum.Sequence, frame: int, found: dict[int, orb.Features]) -> orb.Features:
     """Return a frame's keypoints, detecting them once."""
     if frame not in found:
         found[frame] = features(sequence.images[frame])
@@ -215,7 +201,7 @@ def keypoints(sequence: tum.Sequence, frame: int, found: dict[int, Features]) ->
 
 def correspondences(
     sequence: tum.Sequence, points: NDArray[np.float64], first: int, target: int,
-    found: dict[int, Features],
+    found: dict[int, orb.Features],
 ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:  # fmt: skip
     """Match the reference frame to the target; keep the matches whose keypoint has a point.
 
@@ -231,7 +217,7 @@ def correspondences(
     a, c = keypoints(sequence, first, found), keypoints(sequence, target, found)
     pairs = match(a, c)
     pairs = pairs[np.all(np.isfinite(points[pairs[:, 0]]), axis=1)]
-    pixels = c.pixels[pairs[:, 1]]
+    pixels = c.keypoints.xy[pairs[:, 1]]
     return points[pairs[:, 0]], camera.unproject("radtan", sequence.intrinsics, pixels), pixels
 
 
@@ -313,7 +299,7 @@ def place(
 
 
 def reference_points(
-    sequence: tum.Sequence, source: str, first: int, init_gap: int, found: dict[int, Features]
+    sequence: tum.Sequence, source: str, first: int, init_gap: int, found: dict[int, orb.Features]
 ) -> NDArray[np.float64] | None:
     """Return the reference frame's points from the chosen source (None: not initialised)."""
     if source == "depth":
@@ -347,7 +333,7 @@ def survey(sequence: tum.Sequence, source: str, init_gap: int, backend: str) -> 
         if source == "depth" and sequence.depths[first] is None:
             skipped["no depth map"] += len(SURVEY_OFFSETS)
             continue
-        found: dict[int, Features] = {}
+        found: dict[int, orb.Features] = {}
         points = reference_points(sequence, source, first, init_gap, found)
         if points is None:
             skipped["not initialised"] += len(SURVEY_OFFSETS)
@@ -395,7 +381,7 @@ def report_single(sequence: tum.Sequence, args: argparse.Namespace, chosen: list
         The backends to run.
     """
     target = args.first + args.offset
-    found: dict[int, Features] = {}
+    found: dict[int, orb.Features] = {}
     points = reference_points(sequence, args.source, args.first, args.init_gap, found)
     if points is None:
         print(

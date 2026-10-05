@@ -103,6 +103,32 @@ pub fn fail_setting<T>(name: &str, rule: &str, value: impl fmt::Display) -> Resu
     )
 }
 
+/// Checks that an integer setting lies in `[low, high]`.
+///
+/// # Arguments
+///
+/// * `name` - The setting's name.
+/// * `value` - Its value.
+/// * `low` - The smallest value allowed.
+/// * `high` - The largest.
+///
+/// # Errors
+///
+/// `InvalidInput`: `"<name>: must be from <low> to <high>, got <value>"`, the message of
+/// Python's `slamlab.foundations.arrays.as_count`.
+pub fn check_range<T: PartialOrd + fmt::Display + Copy>(
+    name: &str,
+    value: T,
+    low: T,
+    high: T,
+) -> Result<()> {
+    if low <= value && value <= high {
+        Ok(())
+    } else {
+        fail_setting(name, &format!("must be from {low} to {high}"), value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Unit tests for the error type.

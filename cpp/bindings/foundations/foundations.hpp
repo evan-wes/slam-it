@@ -23,6 +23,22 @@ void bind_se3(nanobind::module_& m);
 /// @param m The `foundations.camera` submodule.
 void bind_camera(nanobind::module_& m);
 
+/// @brief Add the `image` functions to the `foundations.image` submodule.
+/// @param m The `foundations.image` submodule.
+void bind_image(nanobind::module_& m);
+
+/// @brief Add the `orb` functions to the `foundations.orb` submodule.
+/// @param m The `foundations.orb` submodule.
+void bind_orb(nanobind::module_& m);
+
+/// @brief Add the `matching` functions to the `foundations.matching` submodule.
+/// @param m The `foundations.matching` submodule.
+void bind_matching(nanobind::module_& m);
+
+/// @brief Add the `stereo` functions to the `foundations.stereo` submodule.
+/// @param m The `foundations.stereo` submodule.
+void bind_stereo(nanobind::module_& m);
+
 /// @brief Add the `alignment` functions to the `foundations.alignment` submodule.
 /// @param m The `foundations.alignment` submodule.
 void bind_alignment(nanobind::module_& m);

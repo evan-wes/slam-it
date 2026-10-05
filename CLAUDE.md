@@ -33,15 +33,16 @@ suggest starting a session inside slamlab. Consequences:
 | Language | Role |
 |---|---|
 | Python (`src/slamlab`) | Reference implementation of every algorithm; orchestration, evaluation, learned rungs |
-| C++ (`cpp/`, module `slamlab._cpp`) | Performance core: rung 0, edge rung, edge budgets |
-| Rust (`rust/`, module `slamlab_rs`) | Rung 0 and the edge VO only |
+| C++ (`cpp/`, module `slamlab._cpp`) | Performance core: rung 0, edge rung, edge budgets; `eval`'s native PNG readers (`slamlab_eval`) |
+| Rust (`rust/`, module `slamlab_rs`) | Rung 0 and the edge VO only; `eval`'s native PNG readers (`slamlab-eval`) |
 
 ## Conventions
 
 Frames (`T_a_b`; solvers use `T_cam_world`), right perturbations, `(ρ, θ)` tangent order,
-xyzw Hamilton quaternions, the array encoding of every geometric type, pixel centres, Eigen
-storage and plain Cholesky are fixed in the design doc's "Conventions" section. Read it
-before writing geometry code or a binding.
+xyzw Hamilton quaternions, the array encoding of every geometric type, pixel centres, exact
+pyramid coordinates (never `x s^l`), exact floats (scalar, unfused), Eigen storage and plain
+Cholesky are fixed in the design doc's "Conventions" section. Read it before writing geometry
+code or a binding.
 
 ## Layout: one package per rung, mirrored in every language
 
@@ -56,8 +57,9 @@ before writing geometry code or a binding.
   contracts. Bindings are one file per module (`cpp/bindings/<rung>/<module>.cpp`,
   `rust/slamlab-py/src/<rung>/<module>.rs`), and the extension submodules mirror the tree
   (`slamlab._cpp.foundations.so3`, `slamlab_rs.foundations.so3`).
-- **Binding boundary:** bindings take and return float64 numpy arrays (nanobind `ndarray`,
-  the Rust `numpy` crate); the cores stay numpy-free and take arrays, spans or slices.
+- **Binding boundary:** bindings take and return float64 numpy arrays, uint8 for images
+  (nanobind `ndarray`, the Rust `numpy` crate); the cores stay numpy-free and take arrays,
+  spans or slices.
 - **Error contract:** fallible core functions return C++23 `std::expected<T, Error>` /
   Rust `Result<T, Error>` with one shared kind list (InvalidInput, Degenerate,
   NotConverged); Python raises the matching `slamlab.foundations.errors` exception.

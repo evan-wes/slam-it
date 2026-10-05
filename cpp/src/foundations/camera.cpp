@@ -4,6 +4,7 @@
 
 #include <Eigen/Dense>
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace slamlab::foundations::camera {
@@ -118,6 +119,15 @@ const char* name(Model model) {
   return "unknown";
 }
 
+std::span<const Eigen::Index> focal_indices(Model model) {
+  static constexpr std::array<Eigen::Index, 2> kBoth{0, 1};
+  static constexpr std::array<Eigen::Index, 1> kOne{0};
+  if (model == Model::kRadial) {
+    return kOne;
+  }
+  return kBoth;
+}
+
 Result<void> check_intrinsics(Model model, const Eigen::Ref<const Eigen::VectorXd>& intrinsics) {
   if (model >= Model::kCount) {
     return fail(ErrorKind::kInvalidInput, "model: not a camera model (kCount)");
@@ -131,7 +141,8 @@ Result<void> check_intrinsics(Model model, const Eigen::Ref<const Eigen::VectorX
   if (intrinsics.size() != expected) {
     return fail(ErrorKind::kInvalidInput, "intrinsics: wrong length for the camera model");
   }
-  if (intrinsics(0) <= 0.0 || (model != Model::kRadial && intrinsics(1) <= 0.0)) {
+  if (std::ranges::any_of(focal_indices(model),
+                          [&](Eigen::Index i) { return intrinsics(i) <= 0.0; })) {
     return fail(ErrorKind::kInvalidInput, "intrinsics: focal lengths must be positive");
   }
   return {};

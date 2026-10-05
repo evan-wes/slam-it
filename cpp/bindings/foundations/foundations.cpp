@@ -12,6 +12,13 @@ void bind_foundations(nanobind::module_& parent) {
   bind_se3(se3);
   nanobind::module_ camera = foundations.def_submodule("camera", "Camera models.");
   bind_camera(camera);
+  nanobind::module_ image = foundations.def_submodule("image", "Grayscale images in fixed point.");
+  bind_image(image);
+  nanobind::module_ orb = foundations.def_submodule("orb", "ORB keypoints and descriptors.");
+  bind_orb(orb);
+  nanobind::module_ matching =
+      foundations.def_submodule("matching", "Matching binary descriptors.");
+  bind_matching(matching);
   nanobind::module_ alignment =
       foundations.def_submodule("alignment", "Point-set alignment (Umeyama).");
   bind_alignment(alignment);
@@ -30,6 +37,8 @@ void bind_foundations(nanobind::module_& parent) {
   bind_pnp(pnp);
   nanobind::module_ homography = foundations.def_submodule("homography", "Homographies.");
   bind_homography(homography);
+  nanobind::module_ stereo = foundations.def_submodule("stereo", "Rectified stereo.");
+  bind_stereo(stereo);
   nanobind::module_ twoview = foundations.def_submodule("twoview", "Two-view initialisation.");
   bind_twoview(twoview);
   nanobind::module_ ba = foundations.def_submodule("ba", "Bundle adjustment.");

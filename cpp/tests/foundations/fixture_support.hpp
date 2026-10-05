@@ -11,6 +11,7 @@
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <vector>
 
 namespace slamlab::testing {
 
@@ -21,6 +22,21 @@ namespace slamlab::testing {
 inline nlohmann::json load_fixture(const std::string& relative) {
   std::ifstream file(std::string(SLAMLAB_FIXTURES_DIR) + "/" + relative);
   return nlohmann::json::parse(file);
+}
+
+/// @brief Read a fixture's list of rows as one row-major vector.
+/// @tparam T The element type.
+/// @param rows The list of rows.
+/// @return The rows' values, concatenated.
+template <typename T>
+std::vector<T> flatten_rows(const nlohmann::json& rows) {
+  std::vector<T> out;
+  for (const auto& row : rows) {
+    for (const auto& value : row) {
+      out.push_back(value.get<T>());
+    }
+  }
+  return out;
 }
 
 /// @brief Run a test body, reporting an escaping exception as a failure.

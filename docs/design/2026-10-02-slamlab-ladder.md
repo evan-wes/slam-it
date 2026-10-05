@@ -45,7 +45,8 @@ The ladder spans compute budgets. Every rung stands on rung 0.
 
 ```
               rung 0: foundations
-   (camera models, Lie groups, two-view geometry, BA solver)
+   (camera models, Lie groups, two-view geometry, BA solver,
+    the front end: images, ORB, matching, stereo)
                         │
         ┌───────────────┼──────────────────────┐
         ▼               ▼                      ▼
@@ -60,8 +61,8 @@ The ladder spans compute budgets. Every rung stands on rung 0.
 
 | Rung | What it is | Compute target |
 |---|---|---|
-| **0: Foundations** | Camera models, SE(3)/Sim(3), 8/5-point, RANSAC, triangulation, PnP, Gauss-Newton/LM bundle adjustment with a Schur complement; state estimation, batch (Gauss-Newton/LM) and recursive (error-state filter) | CPU |
-| **Edge: sparse VO** | ORB features, tracking, keyframes, local BA (ORB-SLAM-lite); monocular, stereo and RGB-D modes (RGB-D from a sensor now, predicted depth later) | Real-time under an edge budget |
+| **0: Foundations** | Camera models, SE(3)/Sim(3), 8/5-point, RANSAC, triangulation, PnP, Gauss-Newton/LM bundle adjustment with a Schur complement; state estimation, batch (Gauss-Newton/LM) and recursive (error-state filter); the front end: fixed-point images, ORB features, Hamming matching, rectified stereo | CPU |
+| **Edge: sparse VO** | Tracking on rung 0's ORB front end, keyframes, local BA (ORB-SLAM-lite); monocular, stereo and RGB-D modes (RGB-D from a sensor now, predicted depth later) | Real-time under an edge budget |
 | **Visual-inertial** | IMU preintegration shared by two estimators, a filter (MSCKF) and a smoother (sliding-window optimisation), on top of the edge VO | Edge budget |
 | **Classic heavy** | Incremental SfM, global BA, place recognition, loop closure | Offline, minutes per clip |
 | **Dense BA + depth prior** | Dense bundle adjustment over per-pixel depth, with a monocular depth prior and motion masks | GPU |
@@ -73,20 +74,22 @@ The ladder spans compute budgets. Every rung stands on rung 0.
 | Language | Role |
 |---|---|
 | **Python** | The readable reference implementation of every algorithm; orchestration, evaluation, and the learned rungs (PyTorch) |
-| **C++** | The performance core: rung 0, the edge rung, the edge budgets, and dense-BA kernels if profiling calls for them. Showing C++ is a goal in its own right. |
-| **Rust** | Rung 0 and the edge rung, each in lock-step with Python and C++: every slice of those rungs lands in all three languages together. The other rungs have no Rust. |
+| **C++** | The performance core: rung 0, the edge rung, the edge budgets, and dense-BA kernels if profiling calls for them; and `eval`'s native PNG readers (`slamlab_eval`), outside the cores. Showing C++ is a goal in its own right. |
+| **Rust** | Rung 0 and the edge rung, each in lock-step with Python and C++: every slice of those rungs lands in all three languages together; and `eval`'s native PNG readers (`slamlab-eval`), outside the cores. The other rungs have no Rust. |
 
 **Runtime dependencies.** Adding one, to the Python package or to a core, is a change to this
 document first.
-- **Python:** numpy. Pillow too, but in `slamlab.eval` alone, which loads datasets (milestone 2
-  reads PNG frames and depth maps): the algorithm rungs take arrays, never files, and an
-  import-linter contract keeps Pillow out of them.
-- **C++:** Eigen, and one small, widely used PNG decoder for the images (chosen with milestone
-  2's first PR and recorded here).
+- **Python:** numpy. Pillow too, but in `slamlab.eval.images` alone, which reads image files
+  (milestone 2 reads PNG frames and depth maps): the algorithm rungs take arrays, never files,
+  and an import-linter contract keeps Pillow in that one module.
+- **C++:** Eigen. The `slamlab_eval` library reads PNGs with stb_image (vendored in
+  `third_party/stb`, PNG support only; MIT or public domain), outside the algorithm cores.
 - **Rust:** nalgebra, the matrix type, and faer for every SVD and the general
   eigendecomposition, single-threaded, behind the crate-private `linalg` (nalgebra's SVDs are
-  not backward stable; see the Rust port's note); and a PNG decoder crate, chosen with the C++
-  one.
+  not backward stable; see the Rust port's note). The `slamlab-eval` crate reads PNGs with
+  the pure-Rust `png` crate, outside the algorithm cores.
+- The three readers read a file the same way (gray from a gray file as stored, from a colour
+  one through `image.to_gray`), held to shared PNG fixtures.
 
 **Parity.** Shared fixtures (fixed inputs, expected outputs) live in `tests/fixtures/`. Every C++
 and Rust implementation is checked against the Python reference. All three are benchmarked under
@@ -111,8 +114,8 @@ C++ and Rust sources also build standalone (CMake, cargo) without Python, for th
 and a possible later phone target.
 
 **The binding boundary is numpy arrays.**
-- Bindings take and return float64 C-contiguous numpy arrays: nanobind's `ndarray` and the
-  Rust `numpy` crate.
+- Bindings take and return float64 C-contiguous numpy arrays (uint8 for images): nanobind's
+  `ndarray` and the Rust `numpy` crate.
 - The cores stay numpy-free, taking fixed-size arrays, spans or slices.
 - Batched data therefore crosses the boundary without per-element Python objects, so the
   "same algorithm, three languages" comparison measures the algorithms, not marshalling.
@@ -127,6 +130,10 @@ and a possible later phone target.
   - `NotConverged`: strict mode was requested and the convergence criteria were not met, or
     the iteration diverged with no usable estimate. Reaching the iteration cap is not an
     error (see the solver contract below).
+- `eval`'s native readers (`slamlab_eval`, `slamlab-eval`) use the same kinds. Every failure
+  there, a missing or unreadable file included, is `InvalidInput` naming the file, since the
+  kinds have none for I/O; Python's `slamlab.eval` raises `FileNotFoundError` for a missing
+  file instead.
 - The bindings raise the Python exception of the same kind, from `slamlab.foundations.errors`
   (`InvalidInputError`, `DegenerateError`, `NotConvergedError`, all `ValueError`
   subclasses). The Python reference raises the same ones, so every language fails the same
@@ -227,6 +234,33 @@ against this convention when its cameras are imported.
 nalgebra's `Cholesky`; numpy's `cholesky`) in all three languages. A failed factorisation
 inside a damped solver means "reject the step and raise the damping", not an error.
 
+**Images are uint8, and every image operation is exact** (from PR 7). A grayscale image is a
+C-contiguous `(H, W)` uint8 array (RGB `(H, W, 3)`), `image[y, x]`, with the pixel convention
+above; the cores hold it as an `Image` of rows, columns and row-major pixels. Colour
+conversion, blur, resizing, pyramids and remapping are fixed-point integer arithmetic
+(`slamlab.foundations.image` states each rounding), so the three languages' images are
+bit-identical, and so are the FAST corners and descriptors computed from them: a fixture
+compares them exactly, with no tolerance. Floating point could not promise that across
+platforms, since a fused multiply-add rounds once where separate operations round twice.
+
+**Pyramid coordinates are exact** (from PR 7). The resizes' aligned-centre maps compose, so a
+position `x` on a level of `n_l` pixels lies at `((2x + 1) n_0 - n_l) / (2 n_l)` in a full
+image of `n_0`, along each axis (`image.full_image_coordinate`, in all three languages), and a
+full-image position `u` at `((2u + 1) n_l - n_0) / (2 n_0)` on the level. A keypoint's `xy` is
+that map of its level pixel, and the cores refuse features whose `xy` is not. Never scale by
+`s^l`, as ORB-SLAM and OpenCV do: it drops the half-pixel term and uses `s^l` for
+`n_0 / n_l`, up to about 2 pixels off on a coarse level.
+
+**Floats compared exactly are scalar, unfused operations** (from PR 7). Where the parity
+fixtures compare floats with no tolerance (keypoint coordinates, stereo's columns, disparities
+and depths), each value is a fixed sequence of scalar IEEE operations, written in the same
+order in every language. Every C++ core library compiles with `-ffp-contract=off`, PUBLIC so
+that code inlining a core header is compiled the same way; Rust never contracts on its own;
+numpy evaluates one operation at a time. Eigen's and nalgebra's vectorised kernels may fuse
+on ARM whatever the flag says (Eigen enables FMA packets wherever the target has them), so an
+exactly compared path never goes through them; results that do, such as rectification, are
+compared to a tolerance.
+
 **Structured problems cross as structs of arrays.** A BA problem, for example, crosses as:
 - float64 values;
 - `int64` index arrays (`cam_idx`, `pt_idx`);
@@ -285,7 +319,7 @@ visible from its path and enforceable by contract.
 | `slamlab.classic` | library `slamlab_classic` | -- | Classic heavy |
 | `slamlab.dense` | -- | -- | Dense BA + depth prior |
 | `slamlab.learned` | -- | -- | DROID- and MegaSaM-style |
-| `slamlab.eval` | -- | -- | Dataset readers, external references (COLMAP), metrics, benchmarks, budget harness |
+| `slamlab.eval` | library `slamlab_eval`, `slamlab::eval` (native PNG readers) | crate `slamlab-eval` (native PNG readers) | Dataset readers, external references (COLMAP), metrics, benchmarks, budget harness |
 | `slamlab.orchestration` | -- | -- | End-to-end pipelines |
 
 Packages for rungs that have no code yet are stubs: a docstring stating the rung, its
@@ -342,10 +376,12 @@ The three languages therefore share one source of truth.
 **Native benchmarks** are developer tools outside the cores: `cpp/bench/<rung>/` (Google
 Benchmark, behind the CMake option `SLAMLAB_BUILD_BENCHMARKS`) and each Rust crate's
 `benches/` (criterion), with a crate's `examples/` for standalone runs. They are held to the
-ladder like the code they time, built and linted by layer 1, and never run by it. The
-dataset readers they need are copies of `slamlab.eval`'s, checked against the same shared
-fixture; `slamlab.eval` keeps the Python benchmarks and, from milestone 7, the budget
-harness, which will drive the native benchmarks on the edge targets.
+ladder like the code they time, built and linted by layer 1, and never run by it. A
+benchmark that reads dataset files links the native readers (`slamlab_eval`,
+`slamlab-eval`), so it sits above them, in `cpp/bench/eval/` or the `slamlab-eval` crate's
+`benches/`; a rung-0 benchmark builds its input in code (as `orb_extract` does).
+`slamlab.eval` keeps the Python benchmarks and, from milestone 7, the budget harness, which
+will drive the native benchmarks on the edge targets.
 
 ## Milestones
 
@@ -371,13 +407,18 @@ state, evaluation and the budget harness. Every PR lands in Python, C++ and Rust
 
 | PR | Slice |
 |---|---|
-| 7 | **Front end and evaluation.** Images (Pillow in `slamlab.eval`; a PNG decoder in each core), grayscale pyramids, blur and bilinear remapping. ORB, our own: multi-scale FAST spread over the image, intensity-centroid orientation, rBRIEF descriptors, Hamming matching with a ratio test. Stereo rectification from EuRoC's calibration, row-constrained matching with subpixel refinement, depth from disparity. The EuRoC reader; TUM's depth maps in the library; the demos on the shared front end. ATE (Sim(3) alignment for monocular, SE(3) for stereo and RGB-D) and RPE; the run format. |
+| 7 | **Front end and evaluation.** Images (Pillow in `slamlab.eval`; native PNG readers outside the cores, `slamlab_eval` and `slamlab-eval`), grayscale pyramids, blur and bilinear remapping. ORB, our own: multi-scale FAST spread over the image, intensity-centroid orientation, rBRIEF descriptors, Hamming matching with a ratio test. Stereo rectification from EuRoC's calibration, row-constrained matching with subpixel refinement, depth from disparity. The EuRoC reader; TUM's depth maps in the library; the demos on the shared front end. ATE (Sim(3) alignment for monocular, SE(3) for stereo and RGB-D) and RPE; the run format. |
 | 8 | **The pipeline.** Initialisation: two-view for monocular, retrying on later frames when the parallax is low; from depth for stereo and RGB-D, metric from the start. Tracking: a constant-velocity prediction, map points matched by projection, PnP RANSAC as the fallback, motion-only pose refinement. Keyframe selection; local mapping (triangulation, local BA over a keyframe window, culling of points and keyframes). Results on TUM (monocular, RGB-D) and EuRoC (monocular, stereo), with rerun recordings. |
 | 9 | **Budgets and real time.** The `laptop-cpu` harness (pinned cores, capped memory, a per-frame deadline); latency (p50, p95) and peak memory; profiling the C++ and Rust pipelines to real time; the three-language comparison. Python is measured but not held to real time. |
 | 10 | **The run viewer** (see [Public presentation](#public-presentation)), on the run format, used locally until the repo goes public. |
 
 The open items aimed at milestone 2 close in these PRs: the depth-map loader and the shared
 front end in PR 7; the low-parallax retry and the non-invertible homography in PR 8.
+
+**The front end is rung 0's** (decided in PR 7). Fixed-point images, ORB features, Hamming
+matching and rectified stereo live in `slamlab.foundations`, not in the edge rung: the
+classic rung (milestone 4) matches the same features, so both build on one front end. The
+edge rung holds what is its own, tracking, keyframes and local mapping.
 
 **Why milestone 3 sits where it does.** reifyscene's old `pose_refine` was a depth-blind BA with no
 motion masks. Swapping its new poses in while keeping the old depth produced the "shadow" behind
@@ -512,7 +553,13 @@ Disk space is checked before each download.
 
 ## Metrics
 
-- **Trajectory:** ATE (after Sim(3) or SE(3) alignment, as the rung warrants) and RPE.
+- **Trajectory:** ATE (after Sim(3) or SE(3) alignment, as the rung warrants) and RPE, as in
+  Sturm et al.'s TUM benchmark (`slamlab.eval.metrics`): Sim(3) for monocular runs, SE(3) for
+  stereo and RGB-D; the RPE's estimate scaled by the ATE's scale.
+- **The run format** (`slamlab.eval.runs`), written by every backend's pipeline and read by the
+  evaluation and the run viewer: a folder of `run.json` (dataset, sequence, mode, backend,
+  settings), `trajectory.txt` in TUM's format (so other systems' trajectories score the same
+  way), the keyframes and map points as `.npy`, and `diagnostics.jsonl`, one object per frame.
 - **Map:** depth error against GT depth where it exists; reconstruction accuracy and completeness
   on Replica-style data.
 - **Cost, per budget:** frames per second, per-frame latency (p50/p95), peak memory.
@@ -680,18 +727,56 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
   ([report](../reviews/2026-10-03-feature-absolute-pose.md)):
   - Closed by PR 6: **one form for the refinement callback (A6).** `refine_consensus`'s
     callback takes the consensus's inlier indices, ascending, in all three languages.
-  - **Depth maps in the library (A7).** `eval.tum` associates depth maps, but decoding the
-    16-bit PNGs happens in the demo, with OpenCV, which `slamlab` may not import. Milestone 2's
-    RGB-D mode needs an in-library loader: choose its PNG dependency then.
+  - Closed by PR 7: **depth maps in the library (A7).** `tum.read_depth` reads a depth map in
+    metres through `slamlab.eval.images` (Pillow); C++'s `slamlab_eval` and Rust's
+    `slamlab-eval` read PNGs natively, outside the cores.
   - **Why the refinement rounds stopped (L9, run 2).** On planar scenes the cap of four
     rounds, not stable inliers, ends most runs, and `RefinedSummary` cannot say which
     (`rounds == REFINE_ROUNDS` is either). Add a stop reason (cost, stable, cap, too few
     inliers, refinement failed) when a caller needs it, with the summary-convention's
     termination enum. Since PR 6 the refiner may fail (panel A2), and a failure in round 2 or
     later reads as "no improvement" (PR 6's panel, run 2, A6).
-  - **One feature front end (A8).** Each demo script has its own SIFT and ratio-test
-    matching. Fold them into the edge rung's front end when it lands (milestone 2), or into
-    one shared script helper if a third demo comes first.
+  - Closed by PR 7: **one feature front end (A8).** Both demos match slamlab's ORB features
+    (`foundations.orb` and `foundations.matching`) in place of their own SIFT.
+- **Deferred from PR 7's review panel**
+  ([report](../reviews/2026-10-05-feature-front-end.md)):
+  - **Reusing the extraction's pyramid (A1), with PR 9's real time.** `stereo.match` rebuilds
+    both pyramids `orb.extract` already built (2.9 ms in C++, 1.2 ms in Rust per 752x480
+    pyramid through the binding). Give extraction a result that holds its pyramid, or split
+    the cores into `image::pyramid` and an `orb::extract_levels`, as ORB-SLAM's
+    `ComputeStereoMatches` reads the extractor's `mvImagePyramid`.
+  - **The run format's golden folder and its native writers (A9), for PR 8.** C++ and Rust
+    will write runs against a golden folder in `tests/fixtures/eval/run/` that `read_run`
+    validates; they need an `.npy` writer (hand-written, or a dependency named here first);
+    and a native pipeline links both the edge rung and `eval`, so it sits above `eval`, in
+    orchestration, which the Package-layout table gives no C++ or Rust yet.
+  - **Guided matching beside `matching` (A10), for PR 8.** Tracking matches map points by
+    projection: a windowed, guided matcher and a per-frame feature grid (ORB-SLAM's
+    `SearchByProjection` and `GetFeaturesInArea`). Their generic parts belong in
+    `foundations.matching`, for the classic rung too, not in `edge`. Projecting into a level
+    needs the full-image-to-level map (run 2, A17): add it beside `full_image_coordinate` in
+    all three languages, and state stereo's level-to-level column (private to stereo today)
+    in its terms.
+  - **The rotation histogram's bin width (L8).** ORB-SLAM's `ORBmatcher` bins orientation
+    changes at 30 degrees (`round(rot / 30)`, bins 0 to 12), 2.5 times wider than slamlab's
+    12-degree orientation bins; on six TUM pairs the recall of true matches was 0.90-1.00
+    against 0.91-1.00. Revisit if PR 8's tracking loses inliers under fast rotation.
+  - **Shared Rust fixture helpers (H8).** Four `slamlab-foundations` test modules each parse
+    the shared fixtures with their own copies of `count`, `list` and `picture`; a
+    `#[cfg(test)]` fixture module would hold them once.
+  - **One "fastest built backend" choice (H18/A13).** The demos each pick a backend with
+    their own code; `slamlab.backends` could offer it once.
+  - **C++'s `at()` index helper (H19)** is copied into three anonymous namespaces
+    (`image.cpp`, `orb.cpp`, `stereo.cpp`); an internal header would hold it once.
+  - **`matching`'s popcount temporary (H19).** `_POPCOUNT[block]` makes a (256, M, 32) int64
+    array per block of 256 rows, about 130 MB at M = 2000; `np.bitwise_count` (NumPy 2) or
+    uint64 views avoid it.
+  - **The state of the art, for later rungs (L11).** Learned features that run on a CPU,
+    XFeat (Potje et al., CVPR 2024), and SuperPoint with LightGlue (DeTone et al., CVPRW
+    2018; Lindenberger et al., ICCV 2023), for the edge-budget comparison. For evaluation,
+    the 4-DoF (position and yaw) alignment of visual-inertial runs and relative error over
+    sub-trajectory lengths (Zhang and Scaramuzza, IROS 2018) for milestone 6, and KITTI's
+    translational error over 100-800 m segments (Geiger et al., CVPR 2012) for milestone 4.
 - **Deferred from PR 6's review panel**
   ([report](../reviews/2026-10-04-feature-rust-estimation.md)):
   - **P3P's depth polish stops at a relative singularity in C++ only (L6).** C++ tests the
