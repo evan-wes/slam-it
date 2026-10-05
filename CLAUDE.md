@@ -39,9 +39,10 @@ suggest starting a session inside slamlab. Consequences:
 ## Conventions
 
 Frames (`T_a_b`; solvers use `T_cam_world`), right perturbations, `(ρ, θ)` tangent order,
-xyzw Hamilton quaternions, the array encoding of every geometric type, pixel centres, Eigen
-storage and plain Cholesky are fixed in the design doc's "Conventions" section. Read it
-before writing geometry code or a binding.
+xyzw Hamilton quaternions, the array encoding of every geometric type, pixel centres, exact
+pyramid coordinates (never `x s^l`), exact floats (scalar, unfused), Eigen storage and plain
+Cholesky are fixed in the design doc's "Conventions" section. Read it before writing geometry
+code or a binding.
 
 ## Layout: one package per rung, mirrored in every language
 

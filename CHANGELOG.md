@@ -59,7 +59,8 @@ will score it.
   0.76 deg, 1.11 cm).
 - **The design doc** records that the front end is rung 0's (the classic rung reuses it),
   names the native PNG readers in its Languages and Package-layout tables and its error
-  contract, and carries PR 7's deferred panel findings in its open items.
+  contract, makes exact pyramid coordinates and exact (scalar, unfused) floats conventions,
+  and carries PR 7's deferred panel findings in its open items.
 - **`camera.as_model`** replaces the private `_model_and_intrinsics`.
 - **The fixture generators share one JSON layout** (`tests/fixtures/foundations/_layout.py`).
 - **Rust's fixture tests parse floats exactly** (serde_json's `float_roundtrip`).

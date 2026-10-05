@@ -243,6 +243,24 @@ bit-identical, and so are the FAST corners and descriptors computed from them: a
 compares them exactly, with no tolerance. Floating point could not promise that across
 platforms, since a fused multiply-add rounds once where separate operations round twice.
 
+**Pyramid coordinates are exact** (from PR 7). The resizes' aligned-centre maps compose, so a
+position `x` on a level of `n_l` pixels lies at `((2x + 1) n_0 - n_l) / (2 n_l)` in a full
+image of `n_0`, along each axis (`image.full_image_coordinate`, in all three languages), and a
+full-image position `u` at `((2u + 1) n_l - n_0) / (2 n_0)` on the level. A keypoint's `xy` is
+that map of its level pixel, and the cores refuse features whose `xy` is not. Never scale by
+`s^l`, as ORB-SLAM and OpenCV do: it drops the half-pixel term and uses `s^l` for
+`n_0 / n_l`, up to about 2 pixels off on a coarse level.
+
+**Floats compared exactly are scalar, unfused operations** (from PR 7). Where the parity
+fixtures compare floats with no tolerance (keypoint coordinates, stereo's columns, disparities
+and depths), each value is a fixed sequence of scalar IEEE operations, written in the same
+order in every language. Every C++ core library compiles with `-ffp-contract=off`, PUBLIC so
+that code inlining a core header is compiled the same way; Rust never contracts on its own;
+numpy evaluates one operation at a time. Eigen's and nalgebra's vectorised kernels may fuse
+on ARM whatever the flag says (Eigen enables FMA packets wherever the target has them), so an
+exactly compared path never goes through them; results that do, such as rectification, are
+compared to a tolerance.
+
 **Structured problems cross as structs of arrays.** A BA problem, for example, crosses as:
 - float64 values;
 - `int64` index arrays (`cam_idx`, `pt_idx`);
@@ -735,7 +753,10 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
   - **Guided matching beside `matching` (A10), for PR 8.** Tracking matches map points by
     projection: a windowed, guided matcher and a per-frame feature grid (ORB-SLAM's
     `SearchByProjection` and `GetFeaturesInArea`). Their generic parts belong in
-    `foundations.matching`, for the classic rung too, not in `edge`.
+    `foundations.matching`, for the classic rung too, not in `edge`. Projecting into a level
+    needs the full-image-to-level map (run 2, A17): add it beside `full_image_coordinate` in
+    all three languages, and state stereo's level-to-level column (private to stereo today)
+    in its terms.
   - **The rotation histogram's bin width (L8).** ORB-SLAM's `ORBmatcher` bins orientation
     changes at 30 degrees (`round(rot / 30)`, bins 0 to 12), 2.5 times wider than slamlab's
     12-degree orientation bins; on six TUM pairs the recall of true matches was 0.90-1.00
