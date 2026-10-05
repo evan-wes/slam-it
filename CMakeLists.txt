@@ -27,6 +27,10 @@ function(slamlab_add_rung rung)
   target_link_libraries(slamlab_${rung} PUBLIC Eigen3::Eigen ${ARG_DEPENDS})
   set_target_properties(slamlab_${rung} PROPERTIES POSITION_INDEPENDENT_CODE ON)
   target_compile_options(slamlab_${rung} PRIVATE -Wall -Wextra -Wpedantic)
+  # Exact parity needs every float operation rounded on its own: no fused multiply-add,
+  # which GCC and Clang would otherwise form on ARM. PUBLIC, so code inlining a core
+  # header's arithmetic (tests, bindings) is compiled the same way.
+  target_compile_options(slamlab_${rung} PUBLIC -ffp-contract=off)
   if(SLAMLAB_BUILD_TESTS)
     # One executable per test file: cpp/tests/<rung>/test_<name>.cpp -> <rung>_test_<name>.
     file(GLOB_RECURSE tests CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/cpp/tests/${rung}/*.cpp)

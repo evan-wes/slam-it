@@ -20,13 +20,18 @@ will score it.
 - **ORB, as ORB-SLAM extracts it** (`foundations.orb`): FAST-9 scores (OpenCV's, exactly),
   30-pixel cells with thresholds 20 and 7, the quadtree, intensity-centroid orientation in
   30 bins, and rBRIEF with OpenCV's learned pattern (BSD, attributed). `detect`, `extract`,
-  `fast_scores`, `distribute`, `level_budgets`.
+  `fast_scores`, `distribute`, `level_budgets`. Keypoints carry exact full-image coordinates
+  (`image.full_image_coordinate`, where ORB-SLAM's `x s^l` is up to 2 px off on a coarse
+  level), and features record the pyramid they span.
 - **Descriptor matching** (`foundations.matching`): Hamming distances and ORB-SLAM's filtered
   nearest neighbours (distance cap, ratio test, one match per descriptor, the
   rotation-consistency histogram).
 - **Stereo** (`foundations.stereo`): Bouguet's rectification (OpenCV's rotations to 1e-15),
   rectification maps through each camera's model, and ORB-SLAM's matching along rectified
-  rows with SAD sub-pixel refinement, disparity and depth.
+  rows, disparity and depth. The sub-pixel refinement is zero-mean SAD with a V fit, unbiased
+  to 0.002 px where ORB-SLAM2's centre-subtracted SAD over-estimates disparity by up to
+  0.27 px; every keypoint is checked against its features' pyramid, and a pair with the right
+  camera on the left is refused.
 - **Datasets** (`eval.images`, `eval.euroc`, `tum.read_depth`): image files on Pillow (in
   that one module; Pillow is now a runtime dependency), TUM depth maps in metres, and the
   EuRoC ASL format's stereo frames, calibrations and ground truth.
@@ -47,7 +52,7 @@ will score it.
 
 - **The demos match slamlab's ORB features** in place of their own SIFT (closes A8), and the
   absolute-pose demo reads depth with `tum.read_depth` (closes A7). Results are comparable:
-  the absolute-pose survey places 32 frames at a median 0.73 deg and 1.07 cm (SIFT: 31,
+  the absolute-pose survey places 32 frames at a median 0.77 deg and 0.98 cm (SIFT: 31,
   0.76 deg, 1.11 cm).
 - **`camera.as_model`** replaces the private `_model_and_intrinsics`.
 - **The fixture generators share one JSON layout** (`tests/fixtures/foundations/_layout.py`).

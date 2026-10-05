@@ -181,7 +181,8 @@ struct Options {
 
 /// @brief One oriented keypoint.
 struct Keypoint {
-  /// @brief Its pixel in the full image: the level's pixel times `scale_factor^level`.
+  /// @brief Its coordinates in the full image: the level pixel mapped exactly
+  ///        (`image::full_image_coordinate`); on level 0, the pixel itself.
   std::array<double, 2> xy{};
   /// @brief The pyramid level it was detected on.
   std::int64_t level{0};
@@ -196,12 +197,17 @@ struct Keypoint {
 /// @brief A 256-bit rBRIEF descriptor, least significant bit first.
 using Descriptor = std::array<std::uint8_t, kDescriptorBytes>;
 
-/// @brief ORB features: keypoints and their descriptors, element for element.
+/// @brief ORB features: keypoints and their descriptors, element for element, and the
+///        pyramid they span (with the image's shape, every level's shape).
 struct Features {
   /// @brief The keypoints.
   std::vector<Keypoint> keypoints;
   /// @brief Each keypoint's descriptor.
   std::vector<Descriptor> descriptors;
+  /// @brief The pyramid's scale factor (`Options::scale_factor`).
+  double scale_factor{0.0};
+  /// @brief Its number of levels (`Options::levels`).
+  std::int64_t levels{0};
 };
 
 /// @brief A half-open box `[x_min, x_max) x [y_min, y_max)`, in pixels.

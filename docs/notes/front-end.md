@@ -33,9 +33,10 @@ images, and so identical corners and descriptors.
 | Remap | coordinates rounded to a 32nd of a pixel; neighbours outside the image read as 0 |
 
 Floating point could not promise this: a fused multiply-add rounds once where separate
-operations round twice, and compilers fuse by default on ARM. Where floats remain, each is one
-IEEE operation on exact inputs (a level coordinate times a power of the scale factor; the
-stereo parabola's vertex), which every language rounds alike.
+operations round twice, and compilers fuse by default on ARM. Where floats remain, each is a
+fixed sequence of IEEE operations on exact inputs (a level position's full-image coordinate,
+`((2x + 1) n_0 - n_l) / (2 n_l)`; the stereo fit's sub-pixel offset), which every language
+rounds alike; the C++ cores are compiled with `-ffp-contract=off`, so no compiler fuses them.
 
 ## ORB
 
@@ -61,6 +62,13 @@ over the whole level rather than inside each cell (ORB-SLAM's per-cell FAST can 
 adjacent corners across a cell edge); quadtree ties break by raster order rather than by
 memory address; the orientation is a bin rather than a float angle.
 
+A fourth, for accuracy: a keypoint's full-image `xy` is its level pixel carried exactly
+through the pyramid's resizes, `((2x + 1) n_0 - n_l) / (2 n_l)` per axis
+(`image.full_image_coordinate`). ORB-SLAM and OpenCV scale by `s^l`, which drops the resize's
+half-pixel term and uses `s^l` for `n_0 / n_l`: a systematic offset of up to about 2 pixels on
+a coarse level, in every observation a tracker then consumes. The features also record the
+pyramid they span (`scale_factor` and `levels`), so stereo matching never has to be told it.
+
 ## Matching
 
 `matching.match` is brute-force Hamming matching with ORB-SLAM's filters: a distance cap (50),
@@ -77,14 +85,35 @@ OpenCV's to 1e-15. The rectified camera is one pinhole: the smallest input focal
 principal point at the image centre. `rectification_maps` maps each rectified pixel back
 through each camera's own model, distortion included, for `image.remap`.
 
+`stereo.rectify` refuses a pair whose right camera lies to the left of the left one (its
+disparities would be negative, and matching would find only false matches); swap the cameras.
+
 `stereo.match` follows ORB-SLAM's `ComputeStereoMatches`: candidates within a level and a row
-band, the nearest descriptor, then a sum-of-absolute-differences search along the row on the
-left keypoint's level, and a parabola through the best three sums for the sub-pixel disparity;
-matches whose best sum exceeds 2.1 times the median are dropped. On a synthetic pair shifted
-by 9.6 pixels, the median disparity is within a third of a pixel: the parabola is pulled
-toward whole pixels ("pixel locking"), a known bias of this refinement that ORB-SLAM shares.
-Where ORB-SLAM's code is loose (a flat SAD valley divides by zero and the NaN passes its
-range check), the cases are defined: a flat valley is rejected.
+band, the nearest descriptor, then a search along the row on the left keypoint's level and a
+sub-pixel fit through the best three sums; matches whose best sum exceeds 2.1 times the median
+are dropped. It checks every keypoint against the pyramid its features record: inside its
+level, with `xy` exactly its level pixel's full-image coordinate. The departures (the module
+docstring lists them all):
+
+- **Zero-mean SAD and the V fit.** ORB-SLAM2 subtracts each patch's centre pixel before
+  summing absolute differences, then fits a parabola. The centre is a FAST corner, the
+  steepest point of its patch, so subtracting it shifts the whole patch by an amount that
+  changes with the sub-pixel shift. On pairs whose two views are both area-sampled from one
+  texture, that over-estimated disparity by a median 0.07 to 0.27 pixels (2.7% of depth at 10
+  pixels), a systematic bias. ORB-SLAM3 drops the subtraction. slamlab sums `|n (L - R) - (sum L - sum R)|`, zero-mean SAD in integers (still
+  invariant to a brightness offset between the cameras), and fits a V (equiangular; Shimizu
+  and Okutomi, IJCV 2005), which suits absolute differences better than a parabola: the
+  median error is under 0.002 pixels, and under 0.06 on every level.
+- **Exact coordinates**, as for keypoints: the right keypoint's column is carried to the left
+  keypoint's level as the nearest pixel to its centre, in integers, and the refined column
+  back to the full image by the exact map.
+- **Defined edge cases.** A non-positive disparity is dropped (ORB-SLAM clamps it to 0.01, a
+  point near infinity); the outlier filter keeps matches equal to its limit, and every match
+  when the median sum is 0 (ORB-SLAM drops them all); the search's bounds are checked as
+  `u0 - L - w` (ORB-SLAM's `u0 + L - w` is a slip). The first smallest sum always has a
+  larger left neighbour, so the fit's denominator is positive and its offset within half a
+  pixel; ORB-SLAM's strict comparison guarantees the same, so neither needs a flat-valley
+  check.
 
 ## Reading datasets
 
@@ -108,9 +137,9 @@ and per-frame diagnostics as JSON lines, written by every backend's pipeline and
 |---|---|
 | Parity | images, FAST scores, keypoints, descriptors, matches and stereo matches bit-identical in Python, C++ and Rust on TUM and EuRoC frames and every fixture |
 | OpenCV | gray exact; FAST exact; resize and blur within one intensity; descriptors 0.15 bits apart; rectifying rotations to 1e-15 |
-| Two-view demo (TUM fr1/xyz, frames 0 and 30) | ORB: 237 matches, rotation 0.92 deg, translation direction 2.17 deg; SIFT before: 434, 0.63 and 2.32 |
-| Absolute-pose survey (fr1/xyz) | ORB: 32 placed, median 0.73 deg and 1.07 cm; SIFT before: 31, 0.76 deg and 1.11 cm |
-| EuRoC V1_01, MH_01 | 559 and 529 stereo matches on a rectified frame, at 1.2-3.5 m and 2.6-9.1 m |
+| Two-view demo (TUM fr1/xyz, frames 0 and 30) | ORB: 237 matches, rotation 0.88 deg, translation direction 2.27 deg; SIFT before: 434, 0.63 and 2.32 |
+| Absolute-pose survey (fr1/xyz) | ORB: 32 placed, median 0.77 deg and 0.98 cm; SIFT before: 31, 0.76 deg and 1.11 cm |
+| EuRoC V1_01, MH_01 | 563 and 529 stereo matches on a rectified frame, at 1.2-2.8 m and 2.6-8.6 m (5th to 95th percentile depth) |
 | Extraction time (640x480, 1000 features) | C++ 24 ms, Rust 35 ms, Python 160 ms |
 
 The extraction times are first versions: making them fit the `laptop-cpu` budget is PR 9's

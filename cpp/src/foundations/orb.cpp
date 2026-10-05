@@ -418,11 +418,8 @@ std::vector<Keypoint> detect_levels(const std::vector<image::Image>& levels,
   const std::vector<std::int64_t> budgets =
       level_budgets(options.n_features, options.levels, options.scale_factor);
   std::vector<Keypoint> out;
-  double scale = 1.0;
+  const image::Image& full = levels.front();
   for (std::size_t level = 0; level < levels.size(); ++level) {
-    if (level > 0) {
-      scale *= options.scale_factor;
-    }
     const image::Image& pixels = levels[level];
     const Bounds region{.x_min = kEdgeThreshold,
                         .x_max = pixels.cols - kEdgeThreshold,
@@ -435,11 +432,13 @@ std::vector<Keypoint> detect_levels(const std::vector<image::Image>& levels,
     for (const std::int64_t i :
          distribute_checked(corners.xy, corners.response, region, budgets[level])) {
       const auto [x, y] = corners.xy[at(i)];
-      out.push_back({.xy = {static_cast<double>(x) * scale, static_cast<double>(y) * scale},
-                     .level = static_cast<std::int64_t>(level),
-                     .level_xy = {x, y},
-                     .response = corners.response[at(i)],
-                     .angle = orientation(pixels, x, y)});
+      out.push_back(
+          {.xy = {image::full_image_coordinate(static_cast<double>(x), pixels.cols, full.cols),
+                  image::full_image_coordinate(static_cast<double>(y), pixels.rows, full.rows)},
+           .level = static_cast<std::int64_t>(level),
+           .level_xy = {x, y},
+           .response = corners.response[at(i)],
+           .angle = orientation(pixels, x, y)});
     }
   }
   return out;
@@ -601,7 +600,10 @@ Result<Features> extract(const image::Image& image, const Options& options) {
   if (!descriptors) {
     return std::unexpected(descriptors.error());
   }
-  return Features{.keypoints = std::move(keypoints), .descriptors = std::move(*descriptors)};
+  return Features{.keypoints = std::move(keypoints),
+                  .descriptors = std::move(*descriptors),
+                  .scale_factor = options.scale_factor,
+                  .levels = options.levels};
 }
 
 }  // namespace slamlab::foundations::orb

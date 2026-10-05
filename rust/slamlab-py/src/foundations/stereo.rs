@@ -1,22 +1,21 @@
 //! Bindings for `slamlab.foundations.stereo` (`slamlab_rs.foundations.stereo`).
 //!
 //! Camera models cross as their integer codes; a rectification comes back as a dict of its
-//! rotations, rectified intrinsics and baseline. Features cross as dicts of `xy`, `level`,
-//! `level_xy` and `descriptors`; settings as dicts of their dataclasses' fields, read strictly
-//! by serde.
+//! rotations, rectified intrinsics and baseline. Features cross as dicts (`orb_crossing`);
+//! settings as dicts of their dataclasses' fields, read strictly by serde.
 
 use nalgebra::{Matrix3, Matrix4, Vector4};
 use numpy::ndarray::Array1;
-use numpy::{IntoPyArray, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
+use numpy::{IntoPyArray, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use serde::Deserialize;
 use slamlab_foundations::camera::Model;
-use slamlab_foundations::orb::{self, DESCRIPTOR_BYTES, Features, Keypoint};
 use slamlab_foundations::stereo::{self as core, Camera};
 
 use super::image_crossing::image_in;
+use super::orb_crossing::features_in;
 
 use crate::common::{
     ArrayIn, ArrayOut, Item, add_functions, contiguous, decode, item_array, new_array, one, unwrap,
@@ -167,107 +166,6 @@ struct MatchOptionsIn {
     outlier_factor: f64,
 }
 
-/// `orb.Options`' fields, as they cross.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct OrbOptionsIn {
-    /// The feature budget.
-    n_features: usize,
-    /// Pyramid levels.
-    levels: usize,
-    /// Each level's downscale.
-    scale_factor: f64,
-    /// The first FAST threshold.
-    fast_threshold: i64,
-    /// The fallback FAST threshold.
-    min_fast_threshold: i64,
-}
-
-/// Reads one item of a features dict.
-///
-/// # Arguments
-///
-/// * `features` - The dict.
-/// * `key` - The item's key.
-///
-/// # Returns
-///
-/// The item.
-///
-/// # Errors
-///
-/// `ValueError` if the key is missing.
-fn item<'py>(features: &Bound<'py, PyDict>, key: &str) -> PyResult<Bound<'py, PyAny>> {
-    features
-        .get_item(key)?
-        .ok_or_else(|| PyValueError::new_err(format!("features: missing `{key}`")))
-}
-
-/// Converts a non-negative int64 to an index.
-///
-/// # Arguments
-///
-/// * `value` - The value.
-///
-/// # Returns
-///
-/// It as a `usize`.
-///
-/// # Errors
-///
-/// `ValueError` if it is negative.
-fn index(value: i64) -> PyResult<usize> {
-    usize::try_from(value).map_err(|e| PyValueError::new_err(format!("features: {e}")))
-}
-
-/// Reads one camera's features from a dict of arrays.
-///
-/// # Arguments
-///
-/// * `features` - The dict: `xy` (N, 2) float64, `level` (N,) and `level_xy` (N, 2) int64,
-///   `descriptors` (N, 32) uint8.
-///
-/// # Returns
-///
-/// The features (responses and angles, unused by matching, are zero).
-///
-/// # Errors
-///
-/// `ValueError` for a missing key or a malformed array.
-fn features_in(features: &Bound<'_, PyDict>) -> PyResult<Features> {
-    let xy: PyReadonlyArray2<'_, f64> = item(features, "xy")?.extract()?;
-    let level: PyReadonlyArray1<'_, i64> = item(features, "level")?.extract()?;
-    let level_xy: PyReadonlyArray2<'_, i64> = item(features, "level_xy")?.extract()?;
-    let descriptors: PyReadonlyArray2<'_, u8> = item(features, "descriptors")?.extract()?;
-    let n = xy.shape()[0];
-    if xy.shape()[1] != 2
-        || level.len() != n
-        || level_xy.shape() != [n, 2]
-        || descriptors.shape() != [n, DESCRIPTOR_BYTES]
-    {
-        return Err(PyValueError::new_err(
-            "features: expected one row per keypoint in every array",
-        ));
-    }
-    let (xy, level) = (contiguous(&xy)?, contiguous(&level)?);
-    let (level_xy, bytes) = (contiguous(&level_xy)?, contiguous(&descriptors)?);
-    let keypoints = (0..n)
-        .map(|i| {
-            Ok(Keypoint {
-                xy: [xy[2 * i], xy[2 * i + 1]],
-                level: index(level[i])?,
-                level_xy: [index(level_xy[2 * i])?, index(level_xy[2 * i + 1])?],
-                response: 0,
-                angle: 0,
-            })
-        })
-        .collect::<PyResult<Vec<Keypoint>>>()?;
-    Ok(Features {
-        keypoints,
-        descriptors: bytes.as_chunks::<DESCRIPTOR_BYTES>().0.to_vec(),
-    })
-}
-
 /// Matches features along rows; returns a dict of `StereoMatches`' fields.
 ///
 /// # Arguments
@@ -278,7 +176,6 @@ fn features_in(features: &Bound<'_, PyDict>) -> PyResult<Features> {
 /// * `right` - The right features, as a dict.
 /// * `focal` - The rectified focal length.
 /// * `baseline` - The baseline.
-/// * `orb_options` - The extraction settings, as a dict.
 /// * `options` - The matching settings, as a dict.
 ///
 /// # Returns
@@ -302,18 +199,8 @@ fn match_rows<'py>(
     right: &Bound<'py, PyDict>,
     focal: f64,
     baseline: f64,
-    orb_options: &Bound<'py, PyDict>,
     options: &Bound<'py, PyDict>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let raw: OrbOptionsIn = pythonize::depythonize(orb_options.as_any())
-        .map_err(|e| PyValueError::new_err(format!("orb_options: {e}")))?;
-    let extraction = orb::Options {
-        n_features: raw.n_features,
-        levels: raw.levels,
-        scale_factor: raw.scale_factor,
-        fast_threshold: raw.fast_threshold,
-        min_fast_threshold: raw.min_fast_threshold,
-    };
     let raw: MatchOptionsIn = pythonize::depythonize(options.as_any())
         .map_err(|e| PyValueError::new_err(format!("options: {e}")))?;
     let settings = core::MatchOptions {
@@ -331,7 +218,6 @@ fn match_rows<'py>(
             &features_in(right)?,
             focal,
             baseline,
-            &extraction,
             &settings,
         ),
     )?;

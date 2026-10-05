@@ -114,11 +114,15 @@ void check_fixture(int& failures) {
 }
 
 /// @brief Read a match case's features (responses and angles, unused, are zero).
-/// @param fields The dict of `xy`, `level`, `level_xy` and `descriptors`.
+/// @param fields The dict of `xy`, `level`, `level_xy`, `descriptors`, `scale_factor` and
+///        `levels`.
 /// @return The features.
 slamlab::foundations::orb::Features read_features(const nlohmann::json& fields) {
   namespace orb = slamlab::foundations::orb;
-  orb::Features out;
+  orb::Features out{.keypoints = {},
+                    .descriptors = {},
+                    .scale_factor = fields["scale_factor"].get<double>(),
+                    .levels = fields["levels"].get<std::int64_t>()};
   for (std::size_t i = 0; i < fields["level"].size(); ++i) {
     out.keypoints.push_back({.xy = fields["xy"][i].get<std::array<double, 2>>(),
                              .level = fields["level"][i].get<std::int64_t>(),
@@ -137,14 +141,7 @@ void check_matches(int& failures) {
       slamlab::testing::load_fixture("foundations/stereo.json")["functions"]["match"]["cases"];
   for (const auto& c : cases) {
     const auto& in = c["input"];
-    const auto& o = in[6];
-    const auto& s = in[7];
-    const slamlab::foundations::orb::Options extraction{
-        .n_features = o["n_features"].get<std::int64_t>(),
-        .levels = o["levels"].get<std::int64_t>(),
-        .scale_factor = o["scale_factor"].get<double>(),
-        .fast_threshold = o["fast_threshold"].get<std::int64_t>(),
-        .min_fast_threshold = o["min_fast_threshold"].get<std::int64_t>()};
+    const auto& s = in[6];
     const stereo::MatchOptions settings{.max_distance = s["max_distance"].get<std::int64_t>(),
                                         .band = s["band"].get<double>(),
                                         .window = s["window"].get<std::int64_t>(),
@@ -153,7 +150,7 @@ void check_matches(int& failures) {
     const auto got =
         stereo::match(slamlab::testing::read_image(in[0]), slamlab::testing::read_image(in[1]),
                       read_features(in[2]), read_features(in[3]), in[4].get<double>(),
-                      in[5].get<double>(), extraction, settings);
+                      in[5].get<double>(), settings);
     const auto& e = c["expected"];
     bool ok = got.has_value() && got->size() == e["left"].size();
     for (std::size_t k = 0; ok && k < got->size(); ++k) {
@@ -187,6 +184,61 @@ void check_rejections(int& failures) {
       stereo::rectify(camera::Model::kPinhole, k, camera::Model::kPinhole, k, side, 0, 640);
   expect(!flat && flat.error().kind == ErrorKind::kInvalidInput, "rectify rejects an empty shape",
          failures);
+  Eigen::Matrix4d swapped = Eigen::Matrix4d::Identity();
+  swapped(0, 3) = 0.1;
+  const auto crossed =
+      stereo::rectify(camera::Model::kPinhole, k, camera::Model::kPinhole, k, swapped, 480, 640);
+  expect(!crossed && crossed.error().kind == ErrorKind::kInvalidInput,
+         "rectify rejects a right camera on the left", failures);
+}
+
+/// @brief One-level features at one level-0 pixel, with a zero descriptor.
+/// @param x The column.
+/// @param y The row.
+/// @return The features.
+slamlab::foundations::orb::Features one_keypoint(std::int64_t x, std::int64_t y) {
+  namespace orb = slamlab::foundations::orb;
+  return {.keypoints = {{.xy = {static_cast<double>(x), static_cast<double>(y)},
+                         .level = 0,
+                         .level_xy = {x, y},
+                         .response = 0,
+                         .angle = 0}},
+          .descriptors = {orb::Descriptor{}},
+          .scale_factor = 1.2,
+          .levels = 1};
+}
+
+/// @brief Check that features off their pyramid are refused, not read out of bounds.
+/// @param failures Running failure count.
+void check_match_rejections(int& failures) {
+  namespace orb = slamlab::foundations::orb;
+  const slamlab::foundations::image::Image frame{
+      .rows = 60, .cols = 80, .pixels = std::vector<std::uint8_t>(std::size_t{60} * 80)};
+  const stereo::MatchOptions settings{};
+  const auto refused = [&](const orb::Features& left, const orb::Features& right) {
+    const auto got = stereo::match(frame, frame, left, right, 100.0, 0.1, settings);
+    return !got && got.error().kind == ErrorKind::kInvalidInput;
+  };
+  expect(!refused(one_keypoint(30, 30), one_keypoint(25, 30)), "match accepts good features",
+         failures);
+  for (const double x : {1e300, -1e19, 25.5, std::nan("")}) {
+    orb::Features right = one_keypoint(25, 30);
+    right.keypoints[0].xy[0] = x;
+    expect(refused(one_keypoint(30, 30), right), "match rejects xy off its level pixel", failures);
+  }
+  expect(refused(one_keypoint(30, 30), one_keypoint(80, 30)),
+         "match rejects a level pixel outside its level", failures);
+  orb::Features coarser = one_keypoint(25, 30);
+  coarser.scale_factor = 1.3;
+  expect(refused(one_keypoint(30, 30), coarser), "match rejects features from another pyramid",
+         failures);
+  orb::Features deep = one_keypoint(30, 30);
+  deep.levels = 5;
+  deep.scale_factor = 4.0;
+  expect(refused(deep, deep), "match rejects a pyramid too deep for the image", failures);
+  orb::Features shallow = one_keypoint(30, 30);
+  shallow.levels = 0;
+  expect(refused(shallow, shallow), "match rejects a pyramid without levels", failures);
 }
 
 /// @brief The test body.
@@ -196,6 +248,7 @@ int run() {
   check_fixture(failures);
   check_matches(failures);
   check_rejections(failures);
+  check_match_rejections(failures);
   return slamlab::testing::finish("foundations/stereo", failures);
 }
 

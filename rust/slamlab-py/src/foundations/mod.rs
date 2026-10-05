@@ -22,6 +22,7 @@ mod image_crossing;
 mod matching;
 mod nls_crossing;
 mod orb;
+mod orb_crossing;
 mod p3p;
 mod pnp;
 mod ransac_crossing;

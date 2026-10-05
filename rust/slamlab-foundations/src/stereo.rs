@@ -49,14 +49,14 @@ pub struct Camera<'a> {
 ///
 /// # Returns
 ///
-/// `min(fx, fy)`, or `f` for the radial model.
+/// The smallest of its focal-length entries ([`Model::focal_indices`]).
 fn smallest_focal(camera: Camera<'_>) -> f64 {
-    let k = camera.intrinsics;
-    if camera.model == Model::Radial {
-        k[0]
-    } else {
-        k[0].min(k[1])
-    }
+    camera
+        .model
+        .focal_indices()
+        .iter()
+        .map(|&i| camera.intrinsics[i])
+        .fold(f64::INFINITY, f64::min)
 }
 
 /// Checks an image shape: each side from 1 to [`MAX_SIDE`].
@@ -131,7 +131,13 @@ pub fn rectify(
             "T_right_left: the baseline is closer to vertical; only side-by-side pairs rectify",
         );
     }
-    let target = Vector3::new(1.0_f64.copysign(t.x), 0.0, 0.0);
+    if t.x > 0.0 {
+        return fail(
+            ErrorKind::InvalidInput,
+            "T_right_left: the right camera lies left of the left one; swap the cameras",
+        );
+    }
+    let target = Vector3::new(-1.0, 0.0, 0.0); // the left camera's centre, seen from the right
     let mut axis = t.cross(&target);
     let norm = axis.norm();
     if norm > 0.0 {
@@ -282,29 +288,85 @@ pub fn check_options(options: &MatchOptions) -> Result<()> {
     Ok(())
 }
 
-/// Checks one camera's features: one descriptor per keypoint, levels in range.
+/// Checks the two sides' pyramids: a valid one, the same for both.
+///
+/// # Arguments
+///
+/// * `left` - The left features.
+/// * `right` - The right features.
+///
+/// # Errors
+///
+/// `InvalidInput` for an invalid pyramid or two different ones.
+#[allow(clippy::float_cmp, reason = "the same pyramid: an exact equality")]
+fn check_pyramids(left: &Features, right: &Features) -> Result<()> {
+    check_range("left.levels", left.levels, 1, orb::MAX_LEVELS)?;
+    if !(left.scale_factor.is_finite() && left.scale_factor > 1.0) {
+        return fail_setting(
+            "left.scale_factor",
+            "must be finite and above 1",
+            left.scale_factor,
+        );
+    }
+    if right.levels != left.levels || right.scale_factor != left.scale_factor {
+        return fail(
+            ErrorKind::InvalidInput,
+            "right: extracted on another pyramid than left (levels and scale_factor differ)",
+        );
+    }
+    Ok(())
+}
+
+/// Checks one camera's features against their pyramid: one descriptor per keypoint, every
+/// keypoint inside its level, and its `xy` exactly its level pixel's full-image coordinate.
 ///
 /// # Arguments
 ///
 /// * `features` - The features.
-/// * `levels` - The pyramid's levels.
+/// * `levels` - The pyramid.
 /// * `name` - The side's name, for the message.
 ///
 /// # Errors
 ///
-/// `InvalidInput` if either fails.
-fn check_side(features: &Features, levels: usize, name: &str) -> Result<()> {
+/// `InvalidInput` for the first keypoint that fails.
+#[allow(
+    clippy::float_cmp,
+    reason = "xy must be the exact map, computed identically everywhere"
+)]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "level pixels are at most MAX_SIDE, exact in f64"
+)]
+fn check_side(features: &Features, levels: &[Image], name: &str) -> Result<()> {
     if features.descriptors.len() != features.keypoints.len() {
         return fail(
             ErrorKind::InvalidInput,
             format!("{name}: expected one keypoint and descriptor per row"),
         );
     }
-    if features.keypoints.iter().any(|k| k.level >= levels) {
-        return fail(
-            ErrorKind::InvalidInput,
-            format!("{name}: levels must lie in [0, {levels})"),
-        );
+    let full = &levels[0];
+    for k in &features.keypoints {
+        let Some(level) = levels.get(k.level) else {
+            return fail(
+                ErrorKind::InvalidInput,
+                format!("{name}: levels must lie in [0, {})", levels.len()),
+            );
+        };
+        let [x, y] = k.level_xy;
+        if x >= level.cols || y >= level.rows {
+            return fail(
+                ErrorKind::InvalidInput,
+                format!("{name}: level_xy must lie inside its level"),
+            );
+        }
+        if k.xy[0] != image::full_image_coordinate(x as f64, level.cols, full.cols)
+            || k.xy[1] != image::full_image_coordinate(y as f64, level.rows, full.rows)
+        {
+            return fail(
+                ErrorKind::InvalidInput,
+                format!("{name}: xy must be level_xy mapped to the full image (orb.Keypoints.xy)"),
+            );
+        }
     }
     Ok(())
 }
@@ -313,7 +375,7 @@ fn check_side(features: &Features, levels: usize, name: &str) -> Result<()> {
 ///
 /// # Arguments
 ///
-/// * `features` - The left features, levels checked.
+/// * `features` - The left features, checked against the pyramid.
 /// * `levels` - The pyramid.
 /// * `margin` - The SAD window's half-width.
 ///
@@ -334,20 +396,66 @@ fn check_inside(features: &Features, levels: &[Image], margin: usize) -> Result<
     Ok(())
 }
 
-/// Slides the left patch along the right row and fits a parabola to the best sum.
+/// The column on one level nearest a pixel's centre on another.
+///
+/// # Arguments
+///
+/// * `x` - The pixel's column, inside its level.
+/// * `from_cols` - Its level's columns.
+/// * `to_cols` - The other level's columns.
+///
+/// # Returns
+///
+/// `floor((2 x + 1) to_cols / (2 from_cols))`, inside the other level.
+fn nearest_column(x: usize, from_cols: usize, to_cols: usize) -> usize {
+    (2 * x + 1) * to_cols / (2 * from_cols)
+}
+
+/// The zero-mean sum of absolute differences between two patches, times their size.
+///
+/// # Arguments
+///
+/// * `left` - The left level.
+/// * `right` - The right level.
+/// * `pixel` - The left patch's centre `(x, y)`.
+/// * `column` - The right patch's centre column, on row `y`.
+/// * `w` - The patches' half-width.
+///
+/// # Returns
+///
+/// `sum |n (L - R) - (sum L - sum R)|`, `n = (2 w + 1)^2`.
+#[allow(
+    clippy::cast_possible_wrap,
+    reason = "a patch holds at most (2 EDGE_THRESHOLD + 1)^2 pixels"
+)]
+fn zero_mean_sad(left: &Image, right: &Image, pixel: [usize; 2], column: usize, w: usize) -> i64 {
+    let [x, y] = pixel;
+    let n = ((2 * w + 1) * (2 * w + 1)) as i64;
+    let difference = |dy: usize, dx: usize| {
+        i64::from(left.at(y + dy - w, x + dx - w))
+            - i64::from(right.at(y + dy - w, column + dx - w))
+    };
+    let window = || (0..=2 * w).flat_map(|dy| (0..=2 * w).map(move |dx| (dy, dx)));
+    let offset: i64 = window().map(|(dy, dx)| difference(dy, dx)).sum(); // sum L - sum R
+    window()
+        .map(|(dy, dx)| (n * difference(dy, dx) - offset).abs())
+        .sum()
+}
+
+/// Slides the left patch along the right row by zero-mean SAD and V-fits the best sum.
 ///
 /// # Arguments
 ///
 /// * `left` - The left level.
 /// * `right` - The right level.
 /// * `pixel` - The left keypoint's level pixel `(x, y)`.
-/// * `column` - The right keypoint's column on that level.
+/// * `column` - The right keypoint's column on that level, inside it.
 /// * `options` - The settings.
 ///
 /// # Returns
 ///
 /// The sub-pixel offset from `column` and the best sum, or `None` if the search leaves the
-/// image, the best offset is an end, the valley is flat, or the vertex is over a pixel away.
+/// image or the best offset is an end.
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_wrap,
@@ -357,46 +465,25 @@ fn refine(
     left: &Image,
     right: &Image,
     pixel: [usize; 2],
-    column: i64,
+    column: usize,
     options: &MatchOptions,
 ) -> Option<(f64, i64)> {
     let (w, reach) = (options.window, options.search);
-    let [x, y] = pixel;
-    let lowest = column - (reach + w) as i64;
-    if lowest < 0 || column + (reach + w) as i64 >= right.cols as i64 {
+    // Every value is below 2^21 (a column inside its level, reach and w small): no overflow.
+    if column < reach + w || column + reach + w >= right.cols {
         return None;
     }
-    let first = usize::try_from(lowest).ok()? + w;
-    let left_centre = i64::from(left.at(y, x));
     let sums: Vec<i64> = (0..=2 * reach)
-        .map(|step| {
-            let c = first + step;
-            let right_centre = i64::from(right.at(y, c));
-            let mut sum = 0;
-            for dy in 0..=2 * w {
-                for dx in 0..=2 * w {
-                    let a = i64::from(left.at(y + dy - w, x + dx - w)) - left_centre;
-                    let b = i64::from(right.at(y + dy - w, c + dx - w)) - right_centre;
-                    sum += (a - b).abs();
-                }
-            }
-            sum
-        })
+        .map(|step| zero_mean_sad(left, right, pixel, column - reach + step, w))
         .collect();
-    // The first smallest sum: the leftmost offset on a tie.
+    // The first smallest sum, so d1 > d2 <= d3 below: the V fit's denominator is positive and
+    // its offset within half a pixel.
     let best = (0..sums.len()).fold(0, |b, i| if sums[i] < sums[b] { i } else { b });
     if best == 0 || best == 2 * reach {
         return None;
     }
     let (d1, d2, d3) = (sums[best - 1], sums[best], sums[best + 1]);
-    let curvature = 2 * (d1 + d3 - 2 * d2);
-    if curvature == 0 {
-        return None; // a flat valley: no sub-pixel position
-    }
-    let delta = (d1 - d3) as f64 / curvature as f64;
-    if !(-1.0..=1.0).contains(&delta) {
-        return None;
-    }
+    let delta = (d1 - d3) as f64 / (2 * (d1 - d2).max(d3 - d2)) as f64;
     Some(((best as i64 - reach as i64) as f64 + delta, d2))
 }
 
@@ -442,17 +529,16 @@ fn nearest(
     best
 }
 
-/// Matches ORB features along the rows of a rectified pair (ORB-SLAM's stereo matching;
-/// Python's and C++'s `match`, a Rust keyword).
+/// Matches ORB features along the rows of a rectified pair (ORB-SLAM's stereo matching, with
+/// `slamlab.foundations.stereo`'s departures; Python's and C++'s `match`, a Rust keyword).
 ///
 /// # Arguments
 ///
 /// * `images` - The rectified left and right images, of one shape.
-/// * `left` - The left features, extracted with `orb_options`.
-/// * `right` - The right features.
+/// * `left` - The left features.
+/// * `right` - The right features, extracted on the same pyramid.
 /// * `focal` - The rectified focal length, in pixels.
 /// * `baseline` - The distance between the camera centres.
-/// * `orb_options` - The settings the features were extracted with.
 /// * `options` - The matching settings.
 ///
 /// # Returns
@@ -461,12 +547,13 @@ fn nearest(
 ///
 /// # Errors
 ///
-/// `InvalidInput` for malformed images, features or settings, or a left keypoint closer than
-/// `options.window` to its level's border.
+/// `InvalidInput` for malformed images, features or settings, features from different
+/// pyramids or one too deep for the image, a keypoint outside its level or whose `xy` is not
+/// its level pixel's full-image coordinate, or a left keypoint closer than `options.window` to
+/// its level's border.
 #[allow(
-    clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
-    reason = "columns are at most 2^20, exact in f64 and an i64"
+    reason = "columns are at most 2^20, exact in f64"
 )]
 pub fn match_rows(
     images: (&Image, &Image),
@@ -474,7 +561,6 @@ pub fn match_rows(
     right: &Features,
     focal: f64,
     baseline: f64,
-    orb_options: &orb::Options,
     options: &MatchOptions,
 ) -> Result<Vec<StereoMatch>> {
     let (left_image, right_image) = images;
@@ -491,23 +577,25 @@ pub fn match_rows(
         return fail_setting("baseline", "must be positive and finite", baseline);
     }
     check_options(options)?;
-    orb::check_options(orb_options)?;
-    let left_levels = image::pyramid(left_image, orb_options.levels, orb_options.scale_factor)?;
-    let right_levels = image::pyramid(right_image, orb_options.levels, orb_options.scale_factor)?;
-    check_side(left, left_levels.len(), "left")?;
-    check_side(right, left_levels.len(), "right")?;
+    check_pyramids(left, right)?;
+    let left_levels = image::pyramid(left_image, left.levels, left.scale_factor)?;
+    let right_levels = image::pyramid(right_image, left.levels, left.scale_factor)?;
+    check_side(left, &left_levels, "left")?;
+    check_side(right, &left_levels, "right")?;
     check_inside(left, &left_levels, options.window)?;
     let mut scales = vec![1.0];
     while scales.len() < left_levels.len() {
-        scales.push(scales[scales.len() - 1] * orb_options.scale_factor);
+        scales.push(scales[scales.len() - 1] * left.scale_factor);
     }
+    let cols = left_image.cols;
     let mut found: Vec<(StereoMatch, i64)> = Vec::new();
     for (i, (k, descriptor)) in left.keypoints.iter().zip(&left.descriptors).enumerate() {
         let Some(j) = nearest(k, descriptor, right, &scales, focal, options) else {
             continue;
         };
-        let scale = scales[k.level];
-        let column = (right.keypoints[j].xy[0] / scale + 0.5).floor() as i64;
+        let r = &right.keypoints[j];
+        let level_cols = left_levels[k.level].cols;
+        let column = nearest_column(r.level_xy[0], left_levels[r.level].cols, level_cols);
         let Some((offset, cost)) = refine(
             &left_levels[k.level],
             &right_levels[k.level],
@@ -517,7 +605,7 @@ pub fn match_rows(
         ) else {
             continue;
         };
-        let right_x = scale * (column as f64 + offset);
+        let right_x = image::full_image_coordinate(column as f64 + offset, level_cols, cols);
         let disparity = k.xy[0] - right_x;
         if disparity <= 0.0 || disparity >= focal {
             continue;
@@ -533,17 +621,32 @@ pub fn match_rows(
             cost,
         ));
     }
+    Ok(drop_outliers(found, options.outlier_factor))
+}
+
+/// Drops matches whose best sum exceeds `factor` times the median.
+///
+/// # Arguments
+///
+/// * `found` - The matches and their best sums, by left index.
+/// * `factor` - The factor.
+///
+/// # Returns
+///
+/// The kept matches, by left index.
+#[allow(clippy::cast_precision_loss, reason = "sums are far below 2^52")]
+fn drop_outliers(found: Vec<(StereoMatch, i64)>, factor: f64) -> Vec<StereoMatch> {
     if found.is_empty() {
-        return Ok(Vec::new());
+        return Vec::new();
     }
     let mut costs: Vec<i64> = found.iter().map(|&(_, cost)| cost).collect();
     costs.sort_unstable();
-    let limit = options.outlier_factor * costs[costs.len() / 2] as f64;
-    Ok(found
+    let limit = factor * costs[costs.len() / 2] as f64;
+    found
         .into_iter()
         .filter(|&(_, cost)| cost as f64 <= limit)
         .map(|(m, _)| m)
-        .collect())
+        .collect()
 }
 
 #[cfg(test)]
@@ -745,6 +848,8 @@ mod tests {
         Features {
             keypoints,
             descriptors,
+            scale_factor: fields["scale_factor"].as_f64().unwrap(),
+            levels: count(&fields["levels"]),
         }
     }
 
@@ -753,14 +858,7 @@ mod tests {
     fn match_matches_the_fixture() {
         for case in functions()["match"]["cases"].as_array().expect("cases") {
             let input = &case["input"];
-            let (o, s) = (&input[6], &input[7]);
-            let extraction = orb::Options {
-                n_features: count(&o["n_features"]),
-                levels: count(&o["levels"]),
-                scale_factor: o["scale_factor"].as_f64().unwrap(),
-                fast_threshold: o["fast_threshold"].as_i64().unwrap(),
-                min_fast_threshold: o["min_fast_threshold"].as_i64().unwrap(),
-            };
+            let s = &input[6];
             let settings = MatchOptions {
                 max_distance: s["max_distance"].as_i64().unwrap(),
                 band: s["band"].as_f64().unwrap(),
@@ -774,7 +872,6 @@ mod tests {
                 &features(&input[3]),
                 input[4].as_f64().unwrap(),
                 input[5].as_f64().unwrap(),
-                &extraction,
                 &settings,
             )
             .unwrap();
@@ -816,7 +913,73 @@ mod tests {
         );
         let mut side = Matrix4::identity();
         side[(0, 3)] = -0.1;
-        assert!(rectify(camera, camera, &side, 0, 640).is_err());
+        assert_eq!(
+            rectify(camera, camera, &side, 0, 640).unwrap_err().kind,
+            ErrorKind::InvalidInput
+        );
         assert!(rectify(camera, camera, &side, 480, 640).is_ok());
+        let mut swapped = Matrix4::identity();
+        swapped[(0, 3)] = 0.1;
+        assert_eq!(
+            rectify(camera, camera, &swapped, 480, 640)
+                .unwrap_err()
+                .kind,
+            ErrorKind::InvalidInput
+        );
+    }
+
+    /// One-level features at one level-0 pixel, with a zero descriptor.
+    #[allow(clippy::cast_precision_loss, reason = "small pixels")]
+    fn one_keypoint(x: usize, y: usize) -> Features {
+        Features {
+            keypoints: vec![Keypoint {
+                xy: [x as f64, y as f64],
+                level: 0,
+                level_xy: [x, y],
+                response: 0,
+                angle: 0,
+            }],
+            descriptors: vec![[0; orb::DESCRIPTOR_BYTES]],
+            scale_factor: 1.2,
+            levels: 1,
+        }
+    }
+
+    /// Features off their pyramid are refused, not read out of bounds.
+    #[test]
+    fn rejects_features_off_their_pyramid() {
+        let frame = Image {
+            rows: 60,
+            cols: 80,
+            pixels: vec![0; 60 * 80],
+        };
+        let settings = MatchOptions::default();
+        let refused = |left: &Features, right: &Features| {
+            match_rows((&frame, &frame), left, right, 100.0, 0.1, &settings)
+                .is_err_and(|e| e.kind == ErrorKind::InvalidInput)
+        };
+        assert!(!refused(&one_keypoint(30, 30), &one_keypoint(25, 30)));
+        for x in [1e300, -1e19, 25.5, f64::NAN] {
+            let mut right = one_keypoint(25, 30);
+            right.keypoints[0].xy[0] = x;
+            assert!(refused(&one_keypoint(30, 30), &right), "xy {x}");
+        }
+        assert!(refused(&one_keypoint(30, 30), &one_keypoint(80, 30)));
+        let coarser = Features {
+            scale_factor: 1.3,
+            ..one_keypoint(25, 30)
+        };
+        assert!(refused(&one_keypoint(30, 30), &coarser));
+        let deep = Features {
+            levels: 5,
+            scale_factor: 4.0,
+            ..one_keypoint(30, 30)
+        };
+        assert!(refused(&deep, &deep));
+        let shallow = Features {
+            levels: 0,
+            ..one_keypoint(30, 30)
+        };
+        assert!(refused(&shallow, &shallow));
     }
 }

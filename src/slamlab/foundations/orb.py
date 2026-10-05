@@ -59,9 +59,15 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slamlab import backends
-from slamlab.foundations.arrays import MAX_IMAGE_SIDE, as_count, as_image, as_number
+from slamlab.foundations.arrays import (
+    MAX_IMAGE_SIDE,
+    as_count,
+    as_image,
+    as_number,
+    holds_integers,
+)
 from slamlab.foundations.errors import InvalidInputError
-from slamlab.foundations.image import blur, level_shapes, pyramid
+from slamlab.foundations.image import blur, full_image_coordinate, level_shapes, pyramid
 
 EDGE_THRESHOLD = 19
 """Keypoints lie at least this many pixels inside their level (ORB-SLAM's): the rotated
@@ -269,7 +275,9 @@ class Keypoints:
     Attributes
     ----------
     xy : ndarray of float64, shape (N, 2)
-        Pixel coordinates in the full image: the level's pixel times ``scale_factor^level``.
+        Coordinates in the full image: the level pixel mapped through the pyramid's resizes
+        exactly (:func:`slamlab.foundations.image.full_image_coordinate`); on level 0, the
+        pixel itself.
     level : ndarray of int64, shape (N,)
         The pyramid level each was detected on.
     level_xy : ndarray of int64, shape (N, 2)
@@ -290,7 +298,7 @@ class Keypoints:
 
 @dataclass(frozen=True)
 class Features:
-    """ORB features: keypoints and their descriptors, row for row.
+    """ORB features: keypoints and their descriptors, row for row, and the pyramid they span.
 
     Attributes
     ----------
@@ -298,10 +306,18 @@ class Features:
         The keypoints.
     descriptors : ndarray of uint8, shape (N, DESCRIPTOR_BYTES)
         Each keypoint's 256-bit rBRIEF descriptor.
+    scale_factor : float
+        The pyramid's scale factor (:attr:`Options.scale_factor`).
+    levels : int
+        Its number of levels (:attr:`Options.levels`). With the image's shape, these two give
+        every level's shape (:func:`slamlab.foundations.image.level_shapes`), so a consumer
+        such as :func:`slamlab.foundations.stereo.match` needs no extraction settings.
     """
 
     keypoints: Keypoints
     descriptors: NDArray[np.uint8]
+    scale_factor: float
+    levels: int
 
 
 class Implementation(Protocol):
@@ -554,12 +570,17 @@ def _detect_levels(levels: list[NDArray[np.uint8]], options: Options) -> Keypoin
     pixel_parts: list[NDArray[np.int64]] = []
     response_parts: list[NDArray[np.int64]] = []
     angle_parts: list[NDArray[np.int64]] = []
-    scale = 1.0
+    rows, cols = levels[0].shape
     for level, (pixels, budget) in enumerate(zip(levels, budgets, strict=True)):
-        if level > 0:
-            scale *= options.scale_factor
         xy, response = _detect_level(pixels, budget, options)
-        xy_parts.append(xy.astype(np.float64) * scale)
+        xy_parts.append(
+            np.column_stack(
+                [
+                    full_image_coordinate(xy[:, 0], pixels.shape[1], cols),
+                    full_image_coordinate(xy[:, 1], pixels.shape[0], rows),
+                ]
+            )
+        )
         level_parts.append(np.full(len(xy), level, dtype=np.int64))
         pixel_parts.append(xy)
         response_parts.append(response)
@@ -601,7 +622,12 @@ def _extract(image: NDArray[np.uint8], options: Options) -> Features:
     """Detect keypoints and describe them (reference)."""
     levels = pyramid(image, options.levels, options.scale_factor)
     keypoints = _detect_levels(levels, options)
-    return Features(keypoints=keypoints, descriptors=_describe(levels, keypoints))
+    return Features(
+        keypoints=keypoints,
+        descriptors=_describe(levels, keypoints),
+        scale_factor=options.scale_factor,
+        levels=options.levels,
+    )
 
 
 def _decode_keypoints(raw: dict[str, Any], codes: backends.Codes) -> Keypoints:
@@ -618,10 +644,18 @@ def _decode_keypoints(raw: dict[str, Any], codes: backends.Codes) -> Keypoints:
 
 
 def _decode_features(raw: dict[str, Any], codes: backends.Codes) -> Features:
-    """Rebuild :class:`Features` from a compiled backend's dict, each array checked."""
+    """Rebuild :class:`Features` from a compiled backend's dict, each field checked."""
+    scale_factor, levels = raw["scale_factor"], raw["levels"]
+    if not isinstance(scale_factor, float) or type(levels) is not int:
+        raise RuntimeError(
+            f"orb features: backend returned scale_factor {type(scale_factor).__name__} and "
+            f"levels {type(levels).__name__}, expected float and int"
+        )
     return Features(
         keypoints=_decode_keypoints(raw, codes),
         descriptors=backends.checked_array(raw["descriptors"], np.uint8, 2, "orb descriptors"),
+        scale_factor=scale_factor,
+        levels=levels,
     )
 
 
@@ -673,21 +707,16 @@ def fast_scores(image: ArrayLike, *, backend: str = "python") -> NDArray[np.int6
     )
 
 
-def _integer(values: NDArray[Any]) -> bool:
-    """Whether an array holds integers that fit int64 (booleans are not integers here)."""
-    return values.dtype.kind in "iu" and np.can_cast(values.dtype, np.int64)
-
-
 def _as_corners(
     xy: ArrayLike, response: ArrayLike, bounds: tuple[int, int, int, int], target: int
 ) -> tuple[NDArray[np.int64], NDArray[np.int64], tuple[int, int, int, int], int]:
     """Check :func:`distribute`'s arguments; return them as int64 arrays and Python ints."""
     points, strengths = np.asarray(xy), np.asarray(response)
-    if points.ndim != 2 or points.shape[1] != 2 or not _integer(points):
+    if points.ndim != 2 or points.shape[1] != 2 or not holds_integers(points):
         raise InvalidInputError(
             f"xy: expected an (N, 2) integer array, got {points.dtype} {points.shape}"
         )
-    if strengths.shape != (len(points),) or not _integer(strengths):
+    if strengths.shape != (len(points),) or not holds_integers(strengths):
         raise InvalidInputError(
             f"response: expected {len(points)} integers, got {strengths.dtype} {strengths.shape}"
         )

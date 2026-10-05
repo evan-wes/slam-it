@@ -81,9 +81,12 @@ void check_fixture(int& failures) {
   }
   for (const auto& c : functions["extract"]["cases"]) {
     const auto got = orb::extract(read_image(c["input"][0]), read_options(c["input"][1]));
-    expect(got.has_value() && same_keypoints(got->keypoints, c["expected"]) &&
-               got->descriptors == c["expected"]["descriptors"].get<std::vector<orb::Descriptor>>(),
-           "extract matches the fixture", failures);
+    expect(
+        got.has_value() && same_keypoints(got->keypoints, c["expected"]) &&
+            got->descriptors == c["expected"]["descriptors"].get<std::vector<orb::Descriptor>>() &&
+            got->scale_factor == c["expected"]["scale_factor"].get<double>() &&
+            got->levels == c["expected"]["levels"].get<std::int64_t>(),
+        "extract matches the fixture", failures);
   }
 }
 
@@ -94,6 +97,8 @@ void check_rejections(int& failures) {
                                               {.levels = 33},
                                               {.scale_factor = 1.0},
                                               {.fast_threshold = 255},
+                                              {.fast_threshold = 0},
+                                              {.min_fast_threshold = 0},
                                               {.fast_threshold = 20, .min_fast_threshold = 21}};
   for (const orb::Options& options : bad_options) {
     expect(is_invalid_input(orb::check_options(options)), "check_options rejects a bad setting",

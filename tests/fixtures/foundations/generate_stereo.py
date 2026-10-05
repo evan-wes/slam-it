@@ -12,13 +12,12 @@ distortion polynomial's rounding (``1e-9`` pixels).
 
 The matching cases' inputs are prepared with slamlab's image and ORB modules (a synthetic pair
 and its features: the matcher's input, not its oracle); their expected matches come from a
-plain-Python brute force over the definition, written here. Those are exact.
+plain-Python brute force over the definition, written here: zero-mean SAD, the V fit, and the
+exact maps between levels and the full image. Those are exact.
 """
 
 from __future__ import annotations
 
-import math
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -136,45 +135,42 @@ def _sad_refine(
     w: int,
     reach: int,
 ) -> tuple[float, int] | None:
-    """Slide the left patch along the right row; fit a parabola through the best sum."""
+    """Slide the left patch along the right row by zero-mean SAD; V-fit the best sum."""
     x, y = pixel
     if column - reach - w < 0 or column + reach + w >= len(right[0]):
         return None
+    window = [(dy, dx) for dy in range(-w, w + 1) for dx in range(-w, w + 1)]
+    n = len(window)
+    left_sum = sum(left[y + dy][x + dx] for dy, dx in window)
     sums = []
     for step in range(-reach, reach + 1):
         c = column + step
+        right_sum = sum(right[y + dy][c + dx] for dy, dx in window)
         sums.append(
             sum(
-                abs((left[y + dy][x + dx] - left[y][x]) - (right[y + dy][c + dx] - right[y][c]))
-                for dy in range(-w, w + 1)
-                for dx in range(-w, w + 1)
+                abs(n * (left[y + dy][x + dx] - right[y + dy][c + dx]) - (left_sum - right_sum))
+                for dy, dx in window
             )
         )
     best = min(range(len(sums)), key=lambda k: (sums[k], k))
     if best in (0, 2 * reach):
         return None
     d1, d2, d3 = sums[best - 1 : best + 2]
-    curvature = 2 * (d1 + d3 - 2 * d2)
-    if curvature == 0:
-        return None
-    delta = (d1 - d3) / curvature
-    return None if abs(delta) > 1 else ((best - reach) + delta, d2)
+    return (best - reach) + (d1 - d3) / (2 * max(d1 - d2, d3 - d2)), d2
 
 
 def _match_rows(case: dict[str, Any]) -> dict[str, Any]:
     """Match by the definition: candidates, nearest descriptor, SAD refinement, outliers."""
-    left_image, right_image, left, right, focal, baseline, extraction, options = case["input"]
-    levels = extraction["levels"]
+    left_image, right_image, left, right, focal, baseline, options = case["input"]
+    levels, factor = left["levels"], left["scale_factor"]
     pyramids = [
-        [
-            p.tolist()
-            for p in image.pyramid(np.asarray(im, np.uint8), levels, extraction["scale_factor"])
-        ]
+        [p.tolist() for p in image.pyramid(np.asarray(im, np.uint8), levels, factor)]
         for im in (left_image, right_image)
     ]
+    cols = [len(level[0]) for level in pyramids[0]]
     scales = [1.0]
     for _ in range(1, levels):
-        scales.append(scales[-1] * extraction["scale_factor"])
+        scales.append(scales[-1] * factor)
     found = []
     for i, (x_left, y_left) in enumerate(left["xy"]):
         lvl = left["level"][i]
@@ -195,7 +191,10 @@ def _match_rows(case: dict[str, Any]) -> dict[str, Any]:
                 best, nearest = d, j
         if nearest is None:
             continue
-        column = math.floor(right["xy"][nearest][0] / scales[lvl] + 0.5)
+        # The right keypoint's column, carried to the left keypoint's level: the nearest pixel
+        # to its centre, (x + 1/2) n_l / n_r - 1/2 rounded half up.
+        x_right = right["level_xy"][nearest][0]
+        column = ((2 * x_right + 1) * cols[lvl]) // (2 * cols[right["level"][nearest]])
         x, y = left["level_xy"][i]
         refined = _sad_refine(
             pyramids[0][lvl],
@@ -207,7 +206,9 @@ def _match_rows(case: dict[str, Any]) -> dict[str, Any]:
         )
         if refined is None:
             continue
-        right_x = scales[lvl] * (column + refined[0])
+        # Its refined position, mapped to the full image: (p + 1/2) n_0 / n_l - 1/2.
+        position = column + refined[0]
+        right_x = ((2.0 * position + 1.0) * cols[0] - cols[lvl]) / (2.0 * cols[lvl])
         disparity = x_left - right_x
         if 0.0 < disparity < focal:
             found.append((i, nearest, right_x, disparity, focal * baseline / disparity, refined[1]))
@@ -245,6 +246,8 @@ def _features(picture: NDArray[np.uint8], options: orb.Options) -> dict[str, Any
         "level": k.level.tolist(),
         "level_xy": k.level_xy.tolist(),
         "descriptors": found.descriptors.tolist(),
+        "scale_factor": found.scale_factor,
+        "levels": found.levels,
     }
 
 
@@ -272,7 +275,6 @@ def _match_cases() -> list[dict[str, Any]]:
                 _features(right, extraction),
                 500.0,
                 0.08,
-                asdict(extraction),
                 options,
             ],
         }
@@ -293,10 +295,10 @@ def main() -> None:
             "shape": [480, 752],
         },
         {
-            "name": "pinhole pair, right camera to the left",
+            "name": "pinhole pair, turned and offset",
             "left": ["pinhole", [500.0, 505.0, 320.0, 240.0]],
             "right": ["pinhole", [498.0, 502.0, 318.0, 243.0]],
-            "T_right_left": _pose([0.01, -0.03, 0.02], [0.12, 0.004, -0.01]).tolist(),
+            "T_right_left": _pose([0.01, -0.03, 0.02], [-0.12, 0.004, -0.01]).tolist(),
             "shape": [480, 640],
         },
         {

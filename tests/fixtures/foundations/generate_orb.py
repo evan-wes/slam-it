@@ -8,8 +8,8 @@ FAST scores come from an independent brute force: for every pixel, every thresho
 down is tried against every arc of nine, by the corner's definition. The quadtree and the
 extractor have no independent oracle (they are procedures, not formulas), so their cases are
 the Python reference's output, as ``ba.json``'s are: the fixture holds the C++ and Rust cores
-to it exactly. Every value is an integer, or a pixel times a power of the scale factor, so
-the policy is ``exact``.
+to it exactly. Every value is an integer, or a level pixel's full-image coordinate (one
+division of exact integers), so the policy is ``exact``.
 """
 
 from __future__ import annotations
@@ -77,6 +77,8 @@ def _features(image: NDArray[np.uint8], options: orb.Options) -> dict[str, Any]:
     return {
         **{field: getattr(found.keypoints, field).tolist() for field in _FIELDS},
         "descriptors": found.descriptors.tolist(),
+        "scale_factor": found.scale_factor,
+        "levels": found.levels,
     }
 
 

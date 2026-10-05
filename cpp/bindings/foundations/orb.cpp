@@ -1,8 +1,8 @@
 /// @file
 /// @brief Bindings for `slamlab.foundations.orb` (`slamlab._cpp.foundations.orb`).
 ///
-/// Options cross as one dict of `slamlab.foundations.orb.Options`' fields; keypoints come
-/// back as a dict of `Keypoints`' fields, one array each, with `descriptors` for features.
+/// Options cross as one dict of `slamlab.foundations.orb.Options`' fields; keypoints and
+/// features come back as dicts (orb_crossing.hpp).
 #include "slamlab/foundations/orb.hpp"
 
 #include <nanobind/nanobind.h>
@@ -18,6 +18,7 @@
 #include "common.hpp"
 #include "foundations/foundations.hpp"
 #include "foundations/image_crossing.hpp"
+#include "foundations/orb_crossing.hpp"
 
 namespace nb = nanobind;
 
@@ -87,37 +88,6 @@ nb::ndarray<nb::numpy, std::int64_t> distribute(const PixelsIn& xy,
   return int64_array(unwrap(foundations::orb::distribute(pixels, strengths, box, target)));
 }
 
-/// @brief Keypoints as a dict of `Keypoints`' fields, one array each.
-/// @param keypoints The keypoints.
-/// @return The dict: `xy`, `level`, `level_xy`, `response` and `angle`.
-nb::dict keypoints_dict(const std::vector<foundations::orb::Keypoint>& keypoints) {
-  const std::size_t n = keypoints.size();
-  auto [xy, xy_data] = new_array({n, 2});
-  auto [level, level_data] = new_array<std::int64_t>({n});
-  auto [level_xy, level_xy_data] = new_array<std::int64_t>({n, 2});
-  auto [response, response_data] = new_array<std::int64_t>({n});
-  auto [angle, angle_data] = new_array<std::int64_t>({n});
-  for (std::size_t i = 0; i < n; ++i) {
-    const foundations::orb::Keypoint& k = keypoints[i];
-    // NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic): array fill
-    xy_data[2 * i] = k.xy[0];
-    xy_data[(2 * i) + 1] = k.xy[1];
-    level_data[i] = k.level;
-    level_xy_data[2 * i] = k.level_xy[0];
-    level_xy_data[(2 * i) + 1] = k.level_xy[1];
-    response_data[i] = k.response;
-    angle_data[i] = k.angle;
-    // NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-  }
-  nb::dict out;
-  out["xy"] = xy;
-  out["level"] = level;
-  out["level_xy"] = level_xy;
-  out["response"] = response;
-  out["angle"] = angle;
-  return out;
-}
-
 /// @brief Detect oriented keypoints.
 /// @param image The image.
 /// @param options The settings, as a dict.
@@ -130,20 +100,10 @@ nb::dict detect(const ImageIn& image, const nb::dict& options) {
 /// @brief Extract features.
 /// @param image The image.
 /// @param options The settings, as a dict.
-/// @return A dict of `Keypoints`' fields and `descriptors`, an (N, 32) uint8 array.
+/// @return A dict of `Features`' fields (orb_crossing.hpp).
 /// @throws CoreError for invalid input; std::invalid_argument for a malformed dict.
 nb::dict extract(const ImageIn& image, const nb::dict& options) {
-  const foundations::orb::Features features =
-      unwrap(foundations::orb::extract(image_in(image), orb_options(options)));
-  nb::dict out = keypoints_dict(features.keypoints);
-  auto [descriptors, data] =
-      new_array<std::uint8_t>({features.descriptors.size(), foundations::orb::kDescriptorBytes});
-  for (std::size_t i = 0; i < features.descriptors.size(); ++i) {
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic): row offset
-    std::ranges::copy(features.descriptors[i], data + (i * foundations::orb::kDescriptorBytes));
-  }
-  out["descriptors"] = descriptors;
-  return out;
+  return features_dict(unwrap(foundations::orb::extract(image_in(image), orb_options(options))));
 }
 
 }  // namespace

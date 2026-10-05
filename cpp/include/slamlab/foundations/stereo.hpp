@@ -100,20 +100,24 @@ struct StereoMatch {
 /// @return Nothing, or `InvalidInput` naming the first one out of range.
 [[nodiscard]] Result<void> check_options(const MatchOptions& options);
 
-/// @brief Match ORB features along the rows of a rectified pair (ORB-SLAM's stereo matching).
+/// @brief Match ORB features along the rows of a rectified pair (ORB-SLAM's stereo matching,
+///        with `slamlab.foundations.stereo`'s departures: zero-mean SAD, the V fit, exact
+///        coordinates).
 /// @param left_image The rectified left image.
 /// @param right_image The rectified right image, of the same shape.
-/// @param left The left features, extracted with `orb_options`.
-/// @param right The right features.
+/// @param left The left features.
+/// @param right The right features, extracted on the same pyramid.
 /// @param focal The rectified focal length, in pixels.
 /// @param baseline The distance between the camera centres.
-/// @param orb_options The settings the features were extracted with.
 /// @param options The matching settings.
 /// @return The matches, by left index; `InvalidInput` for malformed images, features or
-///         settings, or a left keypoint closer than `options.window` to its level's border.
-[[nodiscard]] Result<std::vector<StereoMatch>> match(
-    const image::Image& left_image, const image::Image& right_image, const orb::Features& left,
-    const orb::Features& right, double focal, double baseline, const orb::Options& orb_options,
-    const MatchOptions& options);
+///         settings, features from different pyramids or one too deep for the image, a
+///         keypoint outside its level or whose `xy` is not its level pixel's full-image
+///         coordinate, or a left keypoint closer than `options.window` to its level's border.
+[[nodiscard]] Result<std::vector<StereoMatch>> match(const image::Image& left_image,
+                                                     const image::Image& right_image,
+                                                     const orb::Features& left,
+                                                     const orb::Features& right, double focal,
+                                                     double baseline, const MatchOptions& options);
 
 }  // namespace slamlab::foundations::stereo

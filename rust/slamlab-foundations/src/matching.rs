@@ -373,7 +373,13 @@ mod tests {
             );
         }
         let set = vec![[0_u8; DESCRIPTOR_BYTES]; 3];
-        assert!(match_descriptors(&set, &set, &[0, 1], &[0, 1, 2], &defaults).is_err());
-        assert!(match_descriptors(&set, &set, &[0, 1, 2], &[0, 1, 30], &defaults).is_err());
+        for (angles1, angles2) in [(&[0, 1][..], &[0, 1, 2][..]), (&[0, 1, 2], &[0, 1, 30])] {
+            assert_eq!(
+                match_descriptors(&set, &set, angles1, angles2, &defaults)
+                    .unwrap_err()
+                    .kind,
+                ErrorKind::InvalidInput
+            );
+        }
     }
 }

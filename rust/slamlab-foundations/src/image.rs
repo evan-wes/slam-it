@@ -23,6 +23,30 @@ pub const MAX_KERNEL_BITS: u32 = 15;
 /// integer arithmetic's intermediate values then fit 64 bits.
 pub const MAX_SIDE: usize = 1 << 20;
 
+/// A pyramid-level position's coordinate in the full image, along one axis
+/// (`slamlab.foundations.image.full_image_coordinate`): the resizes' aligned-centre maps
+/// composed, `((2 x + 1) n_0 - n_l) / (2 n_l)`, computed in that order. For an integer `x`
+/// only the division rounds, and level 0 maps to itself.
+///
+/// # Arguments
+///
+/// * `x` - The position on the level, in its pixels.
+/// * `level_size` - The level's size along the axis, `n_l`.
+/// * `size` - The full image's size along it, `n_0`.
+///
+/// # Returns
+///
+/// The full-image coordinate.
+#[must_use]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "sizes are at most MAX_SIDE, exact in f64"
+)]
+pub fn full_image_coordinate(x: f64, level_size: usize, size: usize) -> f64 {
+    let level = level_size as f64;
+    ((2.0 * x + 1.0) * size as f64 - level) / (2.0 * level)
+}
+
 /// A grayscale image, row-major.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Image {

@@ -12,6 +12,7 @@ from numpy.typing import NDArray
 from slamlab import backends
 from slamlab.foundations import image
 from slamlab.foundations.arrays import MAX_IMAGE_SIDE
+from slamlab.foundations.errors import InvalidInputError
 from tests.conftest import (
     check_rejects,
     load_fixture,
@@ -197,6 +198,20 @@ def test_rejects_invalid_input(
 ) -> None:
     """Bad images, kernels, shapes and settings raise InvalidInputError before any backend."""
     check_rejects(image, function, args, message, backend)
+
+
+def test_full_image_coordinate_inverts_the_pyramid() -> None:
+    """A level position maps to where the resizes sampled it; level 0 maps to itself."""
+    np.testing.assert_array_equal(image.full_image_coordinate([0, 7, 2.5], 640, 640), [0, 7, 2.5])
+    # A level of 179 columns from 640: column 0's centre is at 0.5 * 640 / 179 - 0.5.
+    assert image.full_image_coordinate(0, 179, 640) == 0.5 * 640 / 179 - 0.5
+    assert image.full_image_coordinate(np.int64(19), 179, 640).shape == ()
+    np.testing.assert_array_equal(image.full_image_coordinate([1, 1], [100, 50], 200), [2.5, 5.5])
+    with pytest.raises(InvalidInputError, match="level_size"):
+        image.full_image_coordinate(1, [0], 200)
+    half: Any = 1.5  # a size of the wrong type, on purpose
+    with pytest.raises(InvalidInputError, match="size"):
+        image.full_image_coordinate(1, 100, half)
 
 
 def test_rejects_oversized_images() -> None:

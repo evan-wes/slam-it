@@ -215,7 +215,8 @@ impl Default for Options {
 /// One oriented keypoint.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Keypoint {
-    /// Its pixel in the full image: the level's pixel times `scale_factor^level`.
+    /// Its coordinates in the full image: the level pixel mapped exactly
+    /// ([`image::full_image_coordinate`]); on level 0, the pixel itself.
     pub xy: [f64; 2],
     /// The pyramid level it was detected on.
     pub level: usize,
@@ -227,13 +228,18 @@ pub struct Keypoint {
     pub angle: usize,
 }
 
-/// ORB features: keypoints and their descriptors, element for element.
+/// ORB features: keypoints and their descriptors, element for element, and the pyramid they
+/// span (with the image's shape, every level's shape).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Features {
     /// The keypoints.
     pub keypoints: Vec<Keypoint>,
     /// Each keypoint's descriptor.
     pub descriptors: Vec<Descriptor>,
+    /// The pyramid's scale factor ([`Options::scale_factor`]).
+    pub scale_factor: f64,
+    /// Its number of levels ([`Options::levels`]).
+    pub levels: usize,
 }
 
 /// A half-open box `[x_min, x_max) x [y_min, y_max)`, in pixels.
@@ -649,6 +655,122 @@ fn orientation(image: &Image, x: usize, y: usize) -> usize {
     best.0
 }
 
+/// FAST scores over a detection region and a one-pixel ring around it (its maxima's
+/// neighbours). A score below the lower threshold reads as -1, which leaves every comparison
+/// that decides a maximum at or above that threshold unchanged.
+struct ScoreWindow {
+    /// The ring's first row.
+    top: usize,
+    /// The ring's first column.
+    left: usize,
+    /// The window's columns.
+    cols: usize,
+    /// The scores, row-major.
+    scores: Vec<i64>,
+}
+
+impl ScoreWindow {
+    /// Scores every pixel of the region and its ring.
+    ///
+    /// # Arguments
+    ///
+    /// * `image` - The level.
+    /// * `region` - The detection region, at least 4 pixels inside the level.
+    /// * `floor` - The lower threshold.
+    ///
+    /// # Returns
+    ///
+    /// The window.
+    fn new(image: &Image, region: Bounds, floor: i64) -> Self {
+        let (top, left) = (region.y_min - 1, region.x_min - 1);
+        let rows = region.y_max - region.y_min + 2;
+        let cols = region.x_max - region.x_min + 2;
+        let mut scores = vec![-1_i64; rows * cols];
+        for r in 0..rows {
+            for c in 0..cols {
+                scores[r * cols + c] = fast_score(image, top + r, left + c, floor);
+            }
+        }
+        Self {
+            top,
+            left,
+            cols,
+            scores,
+        }
+    }
+
+    /// A pixel's score.
+    ///
+    /// # Arguments
+    ///
+    /// * `y` - Its row, in the region or its ring.
+    /// * `x` - Its column, in the region or its ring.
+    ///
+    /// # Returns
+    ///
+    /// The score, or -1 below the lower threshold.
+    fn score(&self, y: usize, x: usize) -> i64 {
+        self.scores[(y - self.top) * self.cols + (x - self.left)]
+    }
+
+    /// Whether a region pixel is a corner at a threshold: a strict 3x3 maximum scoring at
+    /// least it.
+    ///
+    /// # Arguments
+    ///
+    /// * `y` - Its row, in the region.
+    /// * `x` - Its column, in the region.
+    /// * `threshold` - The threshold.
+    ///
+    /// # Returns
+    ///
+    /// True for a corner.
+    fn is_corner(&self, y: usize, x: usize, threshold: i64) -> bool {
+        let s = self.score(y, x);
+        s >= threshold
+            && (y - 1..=y + 1)
+                .all(|ny| (x - 1..=x + 1).all(|nx| (ny, nx) == (y, x) || s > self.score(ny, nx)))
+    }
+}
+
+/// The threshold each region pixel's cell uses: the upper one where the cell has a corner at
+/// it, the lower one elsewhere.
+///
+/// # Arguments
+///
+/// * `window` - The region's scores.
+/// * `region` - The detection region.
+/// * `options` - The settings.
+///
+/// # Returns
+///
+/// One threshold per region pixel, row-major.
+fn cell_thresholds(window: &ScoreWindow, region: Bounds, options: &Options) -> Vec<i64> {
+    let width = region.x_max - region.x_min;
+    let height = region.y_max - region.y_min;
+    let cell_w = width.div_ceil((width / CELL_SIZE).max(1));
+    let cell_h = height.div_ceil((height / CELL_SIZE).max(1));
+    let mut out = vec![0_i64; width * height];
+    for y0 in (region.y_min..region.y_max).step_by(cell_h) {
+        for x0 in (region.x_min..region.x_max).step_by(cell_w) {
+            let y1 = (y0 + cell_h).min(region.y_max);
+            let x1 = (x0 + cell_w).min(region.x_max);
+            let strong =
+                (y0..y1).any(|y| (x0..x1).any(|x| window.is_corner(y, x, options.fast_threshold)));
+            let threshold = if strong {
+                options.fast_threshold
+            } else {
+                options.min_fast_threshold
+            };
+            for y in y0..y1 {
+                let row = (y - region.y_min) * width;
+                out[row + (x0 - region.x_min)..row + (x1 - region.x_min)].fill(threshold);
+            }
+        }
+    }
+    out
+}
+
 /// One level's corners before distribution: their pixels and scores, in raster order.
 ///
 /// FAST maxima over 3x3, at the threshold each cell uses.
@@ -663,55 +785,17 @@ fn orientation(image: &Image, x: usize, y: usize) -> usize {
 ///
 /// The corners' pixels and their scores.
 fn level_corners(image: &Image, region: Bounds, options: &Options) -> (Vec<[usize; 2]>, Vec<i64>) {
-    // Scores over the region and a one-pixel ring around it (its maxima's neighbours); a
-    // score below the lower threshold reads as -1, which leaves every comparison that decides
-    // a maximum at or above that threshold unchanged.
-    let (top, left) = (region.y_min - 1, region.x_min - 1);
-    let rows = region.y_max - region.y_min + 2;
-    let cols = region.x_max - region.x_min + 2;
-    let mut scores = vec![-1_i64; rows * cols];
-    for r in 0..rows {
-        for c in 0..cols {
-            scores[r * cols + c] = fast_score(image, top + r, left + c, options.min_fast_threshold);
-        }
-    }
-    let score = |y: usize, x: usize| scores[(y - top) * cols + (x - left)];
-    let is_maximum = |y: usize, x: usize| {
-        let s = score(y, x);
-        (y - 1..=y + 1).all(|ny| (x - 1..=x + 1).all(|nx| (ny, nx) == (y, x) || s > score(ny, nx)))
-    };
+    let window = ScoreWindow::new(image, region, options.min_fast_threshold);
+    let thresholds = cell_thresholds(&window, region, options);
     let width = region.x_max - region.x_min;
-    let height = region.y_max - region.y_min;
-    let cell_w = width.div_ceil((width / CELL_SIZE).max(1));
-    let cell_h = height.div_ceil((height / CELL_SIZE).max(1));
-    let mut threshold = vec![0_i64; width * height];
-    for y0 in (region.y_min..region.y_max).step_by(cell_h) {
-        for x0 in (region.x_min..region.x_max).step_by(cell_w) {
-            let y1 = (y0 + cell_h).min(region.y_max);
-            let x1 = (x0 + cell_w).min(region.x_max);
-            let strong = (y0..y1).any(|y| {
-                (x0..x1).any(|x| score(y, x) >= options.fast_threshold && is_maximum(y, x))
-            });
-            let cell_threshold = if strong {
-                options.fast_threshold
-            } else {
-                options.min_fast_threshold
-            };
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    threshold[(y - region.y_min) * width + (x - region.x_min)] = cell_threshold;
-                }
-            }
-        }
-    }
     let mut xy = Vec::new();
     let mut response = Vec::new();
     for y in region.y_min..region.y_max {
         for x in region.x_min..region.x_max {
-            let t = threshold[(y - region.y_min) * width + (x - region.x_min)];
-            if score(y, x) >= t && is_maximum(y, x) {
+            let t = thresholds[(y - region.y_min) * width + (x - region.x_min)];
+            if window.is_corner(y, x, t) {
                 xy.push([x, y]);
-                response.push(score(y, x));
+                response.push(window.score(y, x));
             }
         }
     }
@@ -754,11 +838,8 @@ fn checked_pyramid(image: &Image, options: &Options) -> Result<Vec<Image>> {
 fn detect_levels(levels: &[Image], options: &Options) -> Vec<Keypoint> {
     let budgets = level_budgets(options.n_features, options.levels, options.scale_factor);
     let mut out = Vec::new();
-    let mut scale = 1.0;
+    let full = &levels[0];
     for (level, (pixels, &budget)) in levels.iter().zip(&budgets).enumerate() {
-        if level > 0 {
-            scale *= options.scale_factor;
-        }
         if pixels.cols <= 2 * EDGE_THRESHOLD || pixels.rows <= 2 * EDGE_THRESHOLD || budget == 0 {
             continue;
         }
@@ -772,7 +853,10 @@ fn detect_levels(levels: &[Image], options: &Options) -> Vec<Keypoint> {
         for i in distribute_checked(&xy, &response, region, budget) {
             let [x, y] = xy[i];
             out.push(Keypoint {
-                xy: [x as f64 * scale, y as f64 * scale],
+                xy: [
+                    image::full_image_coordinate(x as f64, pixels.cols, full.cols),
+                    image::full_image_coordinate(y as f64, pixels.rows, full.rows),
+                ],
                 level,
                 level_xy: [x, y],
                 response: response[i],
@@ -890,6 +974,8 @@ pub fn extract(image: &Image, options: &Options) -> Result<Features> {
     Ok(Features {
         keypoints,
         descriptors,
+        scale_factor: options.scale_factor,
+        levels: options.levels,
     })
 }
 
@@ -1019,6 +1105,16 @@ mod tests {
                 bytes.try_into().expect("32 bytes")
             });
             assert_eq!(got.descriptors, descriptors, "{}", case["name"]);
+            let expected = &case["expected"];
+            assert_eq!(
+                (got.scale_factor, got.levels),
+                (
+                    expected["scale_factor"].as_f64().unwrap(),
+                    count(&expected["levels"])
+                ),
+                "{}",
+                case["name"]
+            );
         }
     }
 
@@ -1041,6 +1137,14 @@ mod tests {
             },
             Options {
                 fast_threshold: 255,
+                ..defaults
+            },
+            Options {
+                fast_threshold: 0,
+                ..defaults
+            },
+            Options {
+                min_fast_threshold: 0,
                 ..defaults
             },
             Options {

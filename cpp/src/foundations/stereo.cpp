@@ -24,9 +24,13 @@ namespace {
 /// @brief A camera's smallest focal length.
 /// @param model The model.
 /// @param intrinsics Its intrinsics, checked.
-/// @return `min(fx, fy)`, or `f` for the radial model.
+/// @return The smallest of its focal-length entries (`camera::focal_indices`).
 double smallest_focal(camera::Model model, const Eigen::Ref<const Eigen::VectorXd>& intrinsics) {
-  return model == camera::Model::kRadial ? intrinsics(0) : std::min(intrinsics(0), intrinsics(1));
+  double out = std::numeric_limits<double>::infinity();
+  for (const Eigen::Index i : camera::focal_indices(model)) {
+    out = std::min(out, intrinsics(i));
+  }
+  return out;
 }
 
 /// @brief Check an image shape: each side from 1 to `image::kMaxSide`.
@@ -47,27 +51,58 @@ Result<void> check_shape(std::int64_t rows, std::int64_t cols) {
 /// @return It as a `std::size_t`.
 std::size_t at(std::int64_t index) { return static_cast<std::size_t>(index); }
 
-/// @brief Check one camera's features: one descriptor per keypoint, levels in range.
+/// @brief Check the two sides' pyramids: a valid one, the same for both.
+/// @param left The left features.
+/// @param right The right features.
+/// @return Nothing, or `InvalidInput`.
+Result<void> check_pyramids(const orb::Features& left, const orb::Features& right) {
+  if (auto ok = check_range("left.levels", left.levels, 1, orb::kMaxLevels); !ok) {
+    return ok;
+  }
+  if (!std::isfinite(left.scale_factor) || left.scale_factor <= 1.0) {
+    return fail_setting("left.scale_factor", "must be finite and above 1", left.scale_factor);
+  }
+  if (right.levels != left.levels || right.scale_factor != left.scale_factor) {
+    return fail(ErrorKind::kInvalidInput,
+                "right: extracted on another pyramid than left (levels and scale_factor differ)");
+  }
+  return {};
+}
+
+/// @brief Check one camera's features against their pyramid: one descriptor per keypoint,
+///        every keypoint inside its level, and its `xy` exactly its level pixel's full-image
+///        coordinate.
 /// @param features The features.
-/// @param levels The pyramid's levels.
+/// @param levels The pyramid.
 /// @param name The side's name, for the message.
 /// @return Nothing, or `InvalidInput`.
-Result<void> check_side(const orb::Features& features, std::size_t levels, const char* name) {
+Result<void> check_side(const orb::Features& features, const std::vector<image::Image>& levels,
+                        const std::string& name) {
   if (features.descriptors.size() != features.keypoints.size()) {
-    return fail(ErrorKind::kInvalidInput,
-                std::string(name) + ": expected one keypoint and descriptor per row");
+    return fail(ErrorKind::kInvalidInput, name + ": expected one keypoint and descriptor per row");
   }
+  const image::Image& full = levels.front();
   for (const orb::Keypoint& k : features.keypoints) {
-    if (k.level < 0 || std::cmp_greater_equal(k.level, levels)) {
+    if (k.level < 0 || std::cmp_greater_equal(k.level, levels.size())) {
       return fail(ErrorKind::kInvalidInput,
-                  std::string(name) + ": levels must lie in [0, " + std::to_string(levels) + ")");
+                  name + ": levels must lie in [0, " + std::to_string(levels.size()) + ")");
+    }
+    const image::Image& level = levels[at(k.level)];
+    const auto [x, y] = k.level_xy;
+    if (x < 0 || y < 0 || x >= level.cols || y >= level.rows) {
+      return fail(ErrorKind::kInvalidInput, name + ": level_xy must lie inside its level");
+    }
+    if (k.xy[0] != image::full_image_coordinate(static_cast<double>(x), level.cols, full.cols) ||
+        k.xy[1] != image::full_image_coordinate(static_cast<double>(y), level.rows, full.rows)) {
+      return fail(ErrorKind::kInvalidInput,
+                  name + ": xy must be level_xy mapped to the full image (orb.Keypoints.xy)");
     }
   }
   return {};
 }
 
 /// @brief Check every left keypoint lies at least `margin` inside its level.
-/// @param features The left features, levels checked.
+/// @param features The left features, checked against the pyramid.
 /// @param levels The pyramid.
 /// @param margin The SAD window's half-width.
 /// @return Nothing, or `InvalidInput`.
@@ -85,15 +120,54 @@ Result<void> check_inside(const orb::Features& features, const std::vector<image
   return {};
 }
 
-/// @brief Slide the left patch along the right row and fit a parabola to the best sum.
+/// @brief The column on one level nearest a pixel's centre on another.
+/// @param x The pixel's column, inside its level.
+/// @param from_cols Its level's columns.
+/// @param to_cols The other level's columns.
+/// @return `floor((2 x + 1) to_cols / (2 from_cols))`, inside the other level.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (x, from, to), as in Python
+std::int64_t nearest_column(std::int64_t x, std::int64_t from_cols, std::int64_t to_cols) {
+  return (((2 * x) + 1) * to_cols) / (2 * from_cols);
+}
+
+/// @brief The zero-mean sum of absolute differences between two patches, times their size.
+/// @param left The left level.
+/// @param right The right level.
+/// @param pixel The left patch's centre `(x, y)`.
+/// @param column The right patch's centre column, on row `y`.
+/// @param options The settings: the patches' half-width `w` is `options.window`.
+/// @return `sum |n (L - R) - (sum L - sum R)|`, `n = (2 w + 1)^2`.
+std::int64_t zero_mean_sad(const image::Image& left, const image::Image& right,
+                           std::array<std::int64_t, 2> pixel, std::int64_t column,
+                           const MatchOptions& options) {
+  const std::int64_t w = options.window;
+  const auto [x, y] = pixel;
+  const std::int64_t n = ((2 * w) + 1) * ((2 * w) + 1);
+  std::int64_t offset = 0;  // sum L - sum R
+  for (std::int64_t dy = -w; dy <= w; ++dy) {
+    for (std::int64_t dx = -w; dx <= w; ++dx) {
+      offset += image::pixel(left, y + dy, x + dx) - image::pixel(right, y + dy, column + dx);
+    }
+  }
+  std::int64_t sum = 0;
+  for (std::int64_t dy = -w; dy <= w; ++dy) {
+    for (std::int64_t dx = -w; dx <= w; ++dx) {
+      const std::int64_t difference =
+          image::pixel(left, y + dy, x + dx) - image::pixel(right, y + dy, column + dx);
+      sum += std::abs((n * difference) - offset);
+    }
+  }
+  return sum;
+}
+
+/// @brief Slide the left patch along the right row by zero-mean SAD and V-fit the best sum.
 /// @param left The left level.
 /// @param right The right level.
 /// @param pixel The left keypoint's level pixel `(x, y)`.
-/// @param column The right keypoint's column on that level.
+/// @param column The right keypoint's column on that level, inside it.
 /// @param options The settings.
 /// @return The sub-pixel offset from `column` and the best sum, or nothing if the search
-///         leaves the image, the best offset is an end, the valley is flat, or the parabola's
-///         vertex is more than a pixel away.
+///         leaves the image or the best offset is an end.
 std::optional<std::pair<double, std::int64_t>> refine(const image::Image& left,
                                                       const image::Image& right,
                                                       std::array<std::int64_t, 2> pixel,
@@ -101,40 +175,26 @@ std::optional<std::pair<double, std::int64_t>> refine(const image::Image& left,
                                                       const MatchOptions& options) {
   const std::int64_t w = options.window;
   const std::int64_t reach = options.search;
-  const auto [x, y] = pixel;
+  // Every value is below 2^21 (a column inside its level, reach and w small): no overflow.
   if (column - reach - w < 0 || column + reach + w >= right.cols) {
     return std::nullopt;
   }
-  const std::int64_t left_centre = image::pixel(left, y, x);
   std::vector<std::int64_t> sums;
   for (std::int64_t step = -reach; step <= reach; ++step) {
-    const std::int64_t c = column + step;
-    const std::int64_t right_centre = image::pixel(right, y, c);
-    std::int64_t sum = 0;
-    for (std::int64_t dy = -w; dy <= w; ++dy) {
-      for (std::int64_t dx = -w; dx <= w; ++dx) {
-        sum += std::abs((image::pixel(left, y + dy, x + dx) - left_centre) -
-                        (image::pixel(right, y + dy, c + dx) - right_centre));
-      }
-    }
-    sums.push_back(sum);
+    sums.push_back(zero_mean_sad(left, right, pixel, column + step, options));
   }
-  const auto best = static_cast<std::int64_t>(
-      std::distance(sums.begin(), std::ranges::min_element(sums)));  // ties: the leftmost
+  // The first smallest sum, so d1 > d2 <= d3 below: the V fit's denominator is positive and
+  // its offset within half a pixel.
+  const auto best =
+      static_cast<std::int64_t>(std::distance(sums.begin(), std::ranges::min_element(sums)));
   if (best == 0 || best == 2 * reach) {
     return std::nullopt;
   }
   const std::int64_t d1 = sums[at(best - 1)];
   const std::int64_t d2 = sums[at(best)];
   const std::int64_t d3 = sums[at(best + 1)];
-  const std::int64_t curvature = 2 * (d1 + d3 - (2 * d2));
-  if (curvature == 0) {  // a flat valley: no sub-pixel position
-    return std::nullopt;
-  }
-  const double delta = static_cast<double>(d1 - d3) / static_cast<double>(curvature);
-  if (delta < -1.0 || delta > 1.0) {
-    return std::nullopt;
-  }
+  const double delta =
+      static_cast<double>(d1 - d3) / static_cast<double>(2 * std::max(d1 - d2, d3 - d2));
   return std::pair{static_cast<double>(best - reach) + delta, d2};
 }
 
@@ -255,7 +315,11 @@ Result<Rectification> rectify(camera::Model model_left,
                 "T_right_left: the baseline is closer to vertical; only side-by-side pairs "
                 "rectify");
   }
-  const Eigen::Vector3d target(std::copysign(1.0, t.x()), 0.0, 0.0);
+  if (t.x() > 0.0) {
+    return fail(ErrorKind::kInvalidInput,
+                "T_right_left: the right camera lies left of the left one; swap the cameras");
+  }
+  const Eigen::Vector3d target(-1.0, 0.0, 0.0);  // the left camera's centre, seen from the right
   Eigen::Vector3d axis = t.cross(target);
   const double norm = axis.norm();
   if (norm > 0.0) {
@@ -335,33 +399,30 @@ Result<void> check_options(const MatchOptions& options) {
 Result<std::vector<StereoMatch>> match(const image::Image& left_image,
                                        const image::Image& right_image, const orb::Features& left,
                                        const orb::Features& right, double focal, double baseline,
-                                       const orb::Options& orb_options,
                                        const MatchOptions& options) {
   for (const auto& ok : {check_camera(left_image, right_image, focal, baseline),
-                         check_options(options), orb::check_options(orb_options)}) {
+                         check_options(options), check_pyramids(left, right)}) {
     if (!ok) {
       return std::unexpected(ok.error());
     }
   }
-  const auto left_levels = image::pyramid(left_image, orb_options.levels, orb_options.scale_factor);
-  const auto right_levels =
-      image::pyramid(right_image, orb_options.levels, orb_options.scale_factor);
+  const auto left_levels = image::pyramid(left_image, left.levels, left.scale_factor);
+  const auto right_levels = image::pyramid(right_image, left.levels, left.scale_factor);
   if (!left_levels || !right_levels) {
     return std::unexpected(left_levels ? right_levels.error() : left_levels.error());
   }
-  for (const auto& ok : {check_side(left, left_levels->size(), "left"),
-                         check_side(right, left_levels->size(), "right")}) {
+  for (const auto& ok :
+       {check_side(left, *left_levels, "left"), check_side(right, *left_levels, "right"),
+        check_inside(left, *left_levels, options.window)}) {
     if (!ok) {
       return std::unexpected(ok.error());
     }
   }
-  if (auto ok = check_inside(left, *left_levels, options.window); !ok) {
-    return std::unexpected(std::move(ok.error()));
-  }
   std::vector<double> scales{1.0};
   while (scales.size() < left_levels->size()) {
-    scales.push_back(scales.back() * orb_options.scale_factor);
+    scales.push_back(scales.back() * left.scale_factor);
   }
+  const std::int64_t cols = left_image.cols;
   std::vector<Candidate> found;
   for (std::size_t i = 0; i < left.keypoints.size(); ++i) {
     const orb::Keypoint& k = left.keypoints[i];
@@ -369,15 +430,17 @@ Result<std::vector<StereoMatch>> match(const image::Image& left_image,
     if (!j) {
       continue;
     }
-    const double scale = scales[at(k.level)];
-    const auto column =
-        static_cast<std::int64_t>(std::floor((right.keypoints[*j].xy[0] / scale) + 0.5));
+    const orb::Keypoint& r = right.keypoints[*j];
+    const std::int64_t level_cols = (*left_levels)[at(k.level)].cols;
+    const std::int64_t column =
+        nearest_column(r.level_xy[0], (*left_levels)[at(r.level)].cols, level_cols);
     const auto refined = refine((*left_levels)[at(k.level)], (*right_levels)[at(k.level)],
                                 k.level_xy, column, options);
     if (!refined) {
       continue;
     }
-    const double right_x = scale * (static_cast<double>(column) + refined->first);
+    const double right_x = image::full_image_coordinate(
+        static_cast<double>(column) + refined->first, level_cols, cols);
     const double disparity = k.xy[0] - right_x;
     if (disparity <= 0.0 || disparity >= focal) {
       continue;

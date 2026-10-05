@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict
+from fractions import Fraction
 from typing import Any
 
 import cv2
@@ -14,7 +15,7 @@ from numpy.typing import NDArray
 from slamlab import backends
 from slamlab.foundations import orb
 from slamlab.foundations.errors import InvalidInputError
-from slamlab.foundations.image import level_shapes
+from slamlab.foundations.image import full_image_coordinate, level_shapes
 from tests.conftest import (
     check_rejects,
     load_fixture,
@@ -92,6 +93,28 @@ def test_matches_fixture(backend: str, function: str, case: dict[str, Any]) -> N
         )
         _check_keypoints(features.keypoints, case["expected"])
         _check_descriptors(features.descriptors, case["expected"]["descriptors"])
+        assert (features.scale_factor, features.levels) == (
+            case["expected"]["scale_factor"],
+            case["expected"]["levels"],
+        )
+
+
+def test_xy_is_the_exact_full_image_coordinate() -> None:
+    """Each keypoint's xy is its level pixel's centre carried through the resizes, exactly.
+
+    The composed resize maps x to (x + 1/2) n_0 / n_l - 1/2, a rational: the float64 value is
+    that rational correctly rounded.
+    """
+    frame = _scene(120, 160, seed=8)
+    options = orb.Options(n_features=300, levels=6)
+    keypoints = orb.detect(frame, options)
+    shapes = level_shapes(120, 160, options.levels, options.scale_factor)
+    assert len(set(keypoints.level.tolist())) == options.levels
+    pixels = zip(keypoints.xy, keypoints.level, keypoints.level_xy, strict=True)
+    for (x, y), level, (u, v) in pixels:
+        rows, cols = shapes[level]
+        assert x == float(Fraction(2 * int(u) + 1, 2) * Fraction(160, cols) - Fraction(1, 2))
+        assert y == float(Fraction(2 * int(v) + 1, 2) * Fraction(120, rows) - Fraction(1, 2))
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -160,9 +183,15 @@ def test_extract_describes_what_detect_finds() -> None:
 
 
 def test_rotated_pattern_stays_inside_the_edge() -> None:
-    """Every rotated test pixel lies within EDGE_THRESHOLD - 1 of the keypoint."""
+    """Every test pixel, rotated to every bin, lies within EDGE_THRESHOLD - 1 of the keypoint."""
     assert len(orb.PATTERN) == 8 * orb.DESCRIPTOR_BYTES
-    reach = int(np.abs(orb._PATTERNS).max())
+    points = np.asarray(orb.PATTERN, dtype=np.int64).reshape(-1, 2)  # (x, y), two per test
+    half = 1 << (orb.ROTATION_BITS - 1)
+    reach = 0
+    for c, s in orb.ROTATIONS:  # (x c - y s, x s + y c) / 2^14, rounded half up
+        x = (points[:, 0] * c - points[:, 1] * s + half) >> orb.ROTATION_BITS
+        y = (points[:, 0] * s + points[:, 1] * c + half) >> orb.ROTATION_BITS
+        reach = max(reach, int(np.abs(x).max()), int(np.abs(y).max()))
     assert reach == orb.EDGE_THRESHOLD - 1
 
 
@@ -223,8 +252,14 @@ def test_keypoints_stay_inside_and_distinct(backend: str) -> None:
         assert np.all(pixels[:, 0] < cols - orb.EDGE_THRESHOLD)
         assert np.all(pixels[:, 1] < rows - orb.EDGE_THRESHOLD)
         assert len(np.unique(pixels, axis=0)) == len(pixels)
-    scales = np.cumprod([1.0, 1.2, 1.2, 1.2])  # the products the detector accumulates
-    np.testing.assert_array_equal(found.xy, found.level_xy * scales[found.level][:, None])
+    sizes = np.asarray(level_shapes(300, 400, 4, 1.2))[found.level]  # (rows, cols) each
+    exact = np.column_stack(
+        [
+            full_image_coordinate(found.level_xy[:, 0], sizes[:, 1], 400),
+            full_image_coordinate(found.level_xy[:, 1], sizes[:, 0], 300),
+        ]
+    )
+    np.testing.assert_array_equal(found.xy, exact)
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)

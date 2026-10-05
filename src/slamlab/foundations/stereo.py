@@ -16,7 +16,9 @@ OpenCV's ``stereoRectify`` does:
 With ``T_right_left`` mapping left-camera to right-camera coordinates
 (``p_right = R p_left + t``), the rectified right camera sits at ``(baseline, 0, 0)`` in the
 rectified left frame, so a point at depth ``Z`` appears ``f baseline / Z`` columns further
-left in the right image.
+left in the right image. A pair whose right camera lies to the left of the left one is
+refused (its disparities would be negative, and matching would find only false matches):
+swap the cameras.
 
 :func:`rectification_maps` gives, for each rectified pixel, where to sample the original
 image (through each camera's own model, distortion included), for
@@ -33,19 +35,45 @@ value within rounding of a 64th of a pixel, which is vanishingly rare.
    ``f`` columns to its left (a point no nearer than the baseline). The nearest by Hamming
    distance is kept if it is under ``max_distance`` (ORB-SLAM's 75, midway between its
    matcher's thresholds).
-2. The column is refined on the left keypoint's pyramid level: a ``2 window + 1`` square
-   patch around the left keypoint, minus its centre value, slides along the right row over
-   ``2 search + 1`` integer offsets around the right keypoint; the offset with the smallest
-   sum of absolute differences wins (it must not be an end), and a parabola through it and
-   its neighbours gives the sub-pixel offset ``(d1 - d3) / (2 (d1 + d3 - 2 d2))``, kept
-   within one pixel.
+2. The column is refined on the left keypoint's pyramid level. The right keypoint's column
+   is carried to that level (the pixel nearest its centre, in integers); a ``2 window + 1``
+   square patch around the left keypoint slides along the right row over ``2 search + 1``
+   integer offsets around it, scored by zero-mean SAD ``sum |n (L - R) - (sum L - sum R)|``
+   (``n`` the patch's pixel count: the zero-mean sum of absolute differences times ``n``, in
+   integers). The first smallest sum wins and must not be an end; the V (equiangular) fit
+   through it and its neighbours gives the sub-pixel offset
+   ``(d1 - d3) / (2 max(d1 - d2, d3 - d2))`` (Shimizu and Okutomi, IJCV 2005), within half a
+   pixel since the first smallest sum makes ``d1 > d2 <= d3``. The refined column is mapped
+   to the full image as keypoints are
+   (:func:`slamlab.foundations.image.full_image_coordinate`).
 3. The disparity ``x_left - x_right`` must lie in ``(0, f)``; the depth is
    ``f baseline / disparity``.
 4. Matches whose best sum exceeds ``outlier_factor`` times the median (ORB-SLAM's 2.1) are
    dropped.
 
-The sums are integers, and every float is one IEEE operation on exact inputs, so the three
-languages find the same matches with the same depths.
+The features carry the pyramid they were extracted on (:class:`slamlab.foundations.orb.Features`),
+and every keypoint is checked against it: inside its level, with ``xy`` exactly its level
+pixel's full-image coordinate.
+
+Departures from ORB-SLAM, each measured or a fix:
+
+- **Zero-mean SAD and the V fit.** ORB-SLAM2 subtracts each patch's centre pixel and fits a
+  parabola; ORB-SLAM3 drops the subtraction. The centre is a FAST corner, the steepest point
+  of its patch, so subtracting it shifts the whole patch by an amount that changes with the
+  sub-pixel shift: on area-sampled pairs ORB-SLAM2's sum over-estimates disparity by a median
+  0.07 to 0.27 pixels, the parabola alone by 0.07, and zero-mean SAD with the V fit by under
+  0.002, while staying invariant to a brightness offset between the cameras.
+- **Exact coordinates.** Keypoints and refined columns map between levels and the full image
+  exactly, not by ``s^l`` (see :func:`slamlab.foundations.image.full_image_coordinate`).
+- **A non-positive disparity is dropped.** ORB-SLAM clamps it to 0.01, a point near infinity.
+- **The outlier filter keeps matches equal to the limit, and every match when the median sum
+  is 0.** ORB-SLAM's strict test drops them all then.
+- **The search's bounds are checked exactly.** ORB-SLAM's ``iniu = u0 + L - w`` should read
+  ``u0 - L - w``.
+
+The sums are integers, and every float is computed by the same sequence of IEEE operations
+in each language (none fused into a multiply-add), so the three languages find the same
+matches with the same depths.
 """
 
 from __future__ import annotations
@@ -66,9 +94,10 @@ from slamlab.foundations.arrays import (
     as_image,
     as_number,
     as_real,
+    holds_integers,
 )
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
-from slamlab.foundations.image import level_shapes, pyramid
+from slamlab.foundations.image import full_image_coordinate, level_shapes, pyramid
 from slamlab.foundations.matching import MAX_DISTANCE, distances
 
 MAX_SEARCH = 64
@@ -230,7 +259,6 @@ class Implementation(Protocol):
         right: dict[str, Any],
         focal: float,
         baseline: float,
-        orb_options: dict[str, Any],
         options: dict[str, Any],
     ) -> dict[str, Any]:
         """Match features along rows; return a dict of :class:`StereoMatches`' fields."""
@@ -254,7 +282,11 @@ def _rectify(
         raise InvalidInputError(
             "T_right_left: the baseline is closer to vertical; only side-by-side pairs rectify"
         )
-    target = np.array([math.copysign(1.0, t[0]), 0.0, 0.0])
+    if t[0] > 0.0:
+        raise InvalidInputError(
+            "T_right_left: the right camera lies left of the left one; swap the cameras"
+        )
+    target = np.array([-1.0, 0.0, 0.0])  # the left camera's centre, seen from the right
     axis = np.cross(t, target)
     norm = math.sqrt(float(axis @ axis))
     norm_t = math.sqrt(float(t @ t))
@@ -498,6 +530,8 @@ class _Side:
     level: NDArray[np.int64]
     level_xy: NDArray[np.int64]
     descriptors: NDArray[np.uint8]
+    levels: int
+    scale_factor: float
 
 
 def _refine(
@@ -507,80 +541,66 @@ def _refine(
     right_column: int,
     options: Options,
 ) -> tuple[float, int] | None:
-    """Slide the left patch along the right row; return the sub-pixel offset and its sum."""
+    """Slide the left patch along the right row; return the sub-pixel offset and its sum.
+
+    The offset is from `right_column`, in level pixels; ``None`` if the search would leave the
+    level or its best offset is an end.
+    """
     w, reach = options.window, options.search
     x, y = left_pixel
     if right_column - reach - w < 0 or right_column + reach + w >= right_level.shape[1]:
         return None
-    patch = left_level[y - w : y + w + 1, x - w : x + w + 1] - left_level[y, x]
+    patch = left_level[y - w : y + w + 1, x - w : x + w + 1]
+    count, total = patch.size, int(patch.sum())
     sums = []
     for step in range(-reach, reach + 1):
         c = right_column + step
-        other = right_level[y - w : y + w + 1, c - w : c + w + 1] - right_level[y, c]
-        sums.append(int(np.abs(patch - other).sum()))
-    best = int(np.argmin(sums))  # ties: the leftmost offset
+        other = right_level[y - w : y + w + 1, c - w : c + w + 1]
+        sums.append(int(np.abs(count * (patch - other) - (total - int(other.sum()))).sum()))
+    best = int(np.argmin(sums))  # the first smallest: d1 > d2 <= d3 below
     if best in (0, 2 * reach):
         return None
-    d1, d2, d3 = sums[best - 1], sums[best], sums[best + 1]
-    curvature = 2 * (d1 + d3 - 2 * d2)
-    if curvature == 0:  # a flat valley: no sub-pixel position
-        return None
-    delta = (d1 - d3) / curvature
-    if not -1.0 <= delta <= 1.0:
-        return None
+    d1, d2, d3 = sums[best - 1 : best + 2]
+    delta = (d1 - d3) / (2 * max(d1 - d2, d3 - d2))  # the V fit: |delta| <= 1/2
     return (best - reach) + delta, d2
 
 
-def _match(  # noqa: PLR0913 -- two images, their features, the camera, the settings
-    images: tuple[NDArray[np.uint8], NDArray[np.uint8]],
+def _nearest_candidate(  # noqa: PLR0913 -- the keypoint, both sides, the camera, the settings
+    i: int,
     left: _Side,
     right: _Side,
+    hamming: NDArray[np.int64],
     *,
+    scale: NDArray[np.float64],
     focal: float,
-    baseline: float,
-    orb_options: orb.Options,
     options: Options,
+) -> int | None:
+    """Return left keypoint `i`'s nearest right candidate (ties: the lowest index), or None."""
+    x_left, y_left = float(left.xy[i, 0]), float(left.xy[i, 1])
+    candidates = (
+        (np.abs(right.level - left.level[i]) <= 1)
+        & (np.abs(right.xy[:, 1] - y_left) <= options.band * scale[right.level])
+        & (right.xy[:, 0] >= x_left - focal)
+        & (right.xy[:, 0] <= x_left)
+        & (hamming < options.max_distance)
+    )
+    if not np.any(candidates):
+        return None
+    return int(np.flatnonzero(candidates)[np.argmin(hamming[candidates])])
+
+
+def _nearest_column(x: int, from_cols: int, to_cols: int) -> int:
+    """Return the column of a level `to_cols` wide nearest pixel `x`'s centre on another."""
+    return ((2 * x + 1) * to_cols) // (2 * from_cols)
+
+
+def _drop_outliers(
+    found: list[tuple[int, int, float, float, float, int]], factor: float
 ) -> StereoMatches:
-    """Match features along rows (reference)."""
-    left_levels = [
-        p.astype(np.int64) for p in pyramid(images[0], orb_options.levels, orb_options.scale_factor)
-    ]
-    right_levels = [
-        p.astype(np.int64) for p in pyramid(images[1], orb_options.levels, orb_options.scale_factor)
-    ]
-    scales = [1.0]
-    for _ in range(1, orb_options.levels):
-        scales.append(scales[-1] * orb_options.scale_factor)
-    scale = np.asarray(scales)
-    hamming = distances(left.descriptors, right.descriptors)
-    found: list[tuple[int, int, float, float, float, int]] = []
-    for i in range(len(left.level)):
-        x_left, y_left = float(left.xy[i, 0]), float(left.xy[i, 1])
-        lvl = int(left.level[i])
-        candidates = (
-            (np.abs(right.level - lvl) <= 1)
-            & (np.abs(right.xy[:, 1] - y_left) <= options.band * scale[right.level])
-            & (right.xy[:, 0] >= x_left - focal)
-            & (right.xy[:, 0] <= x_left)
-            & (hamming[i] < options.max_distance)
-        )
-        if not np.any(candidates):
-            continue
-        j = int(np.flatnonzero(candidates)[np.argmin(hamming[i][candidates])])
-        right_column = math.floor(float(right.xy[j, 0]) / scales[lvl] + 0.5)
-        x, y = int(left.level_xy[i, 0]), int(left.level_xy[i, 1])
-        refined = _refine(left_levels[lvl], right_levels[lvl], (x, y), right_column, options)
-        if refined is None:
-            continue
-        offset, cost = refined
-        right_x = scales[lvl] * (right_column + offset)
-        disparity = x_left - right_x
-        if not 0.0 < disparity < focal:
-            continue
-        found.append((i, j, right_x, disparity, focal * baseline / disparity, cost))
+    """Drop matches whose best sum exceeds `factor` times the median; return the rest."""
     if found:
         costs = sorted(f[5] for f in found)
-        limit = options.outlier_factor * costs[len(costs) // 2]
+        limit = factor * costs[len(costs) // 2]
         found = [f for f in found if f[5] <= limit]
     return StereoMatches(
         left=np.array([f[0] for f in found], dtype=np.int64),
@@ -591,8 +611,51 @@ def _match(  # noqa: PLR0913 -- two images, their features, the camera, the sett
     )
 
 
-def _as_side(features: orb.Features, shapes: list[tuple[int, int]], name: str) -> _Side:
-    """Check one camera's features against the pyramid they came from."""
+def _match(  # noqa: PLR0913 -- two images, their features, the camera, the settings
+    images: tuple[NDArray[np.uint8], NDArray[np.uint8]],
+    left: _Side,
+    right: _Side,
+    *,
+    focal: float,
+    baseline: float,
+    options: Options,
+) -> StereoMatches:
+    """Match features along rows (reference)."""
+    levels, factor = left.levels, left.scale_factor
+    rows, cols = images[0].shape
+    shapes = level_shapes(rows, cols, levels, factor)
+    pyramids = [[p.astype(np.int64) for p in pyramid(im, levels, factor)] for im in images]
+    scales = [1.0]
+    for _ in range(1, levels):
+        scales.append(scales[-1] * factor)
+    scale = np.asarray(scales)
+    hamming = distances(left.descriptors, right.descriptors)
+    found: list[tuple[int, int, float, float, float, int]] = []
+    for i in range(len(left.level)):
+        j = _nearest_candidate(
+            i, left, right, hamming[i], scale=scale, focal=focal, options=options
+        )
+        if j is None:
+            continue
+        lvl = int(left.level[i])
+        level_cols = shapes[lvl][1]
+        right_cols = shapes[int(right.level[j])][1]
+        column = _nearest_column(int(right.level_xy[j, 0]), right_cols, level_cols)
+        pixel = (int(left.level_xy[i, 0]), int(left.level_xy[i, 1]))
+        refined = _refine(pyramids[0][lvl], pyramids[1][lvl], pixel, column, options)
+        if refined is None:
+            continue
+        offset, cost = refined
+        right_x = float(full_image_coordinate(column + offset, level_cols, cols))
+        disparity = float(left.xy[i, 0]) - right_x
+        if not 0.0 < disparity < focal:
+            continue
+        found.append((i, j, right_x, disparity, focal * baseline / disparity, cost))
+    return _drop_outliers(found, options.outlier_factor)
+
+
+def _as_side(features: orb.Features, name: str) -> _Side:
+    """Check one camera's features: one keypoint per descriptor, and a valid pyramid."""
     keypoints = features.keypoints
     xy = as_real(keypoints.xy, f"{name}.xy")
     count = len(xy)
@@ -603,20 +666,44 @@ def _as_side(features: orb.Features, shapes: list[tuple[int, int]], name: str) -
         xy.shape != (count, 2)
         or level.shape != (count,)
         or level_xy.shape != (count, 2)
-        or not np.can_cast(level.dtype, np.int64)
-        or not np.can_cast(level_xy.dtype, np.int64)
+        or not holds_integers(level)
+        or not holds_integers(level_xy)
         or descriptors.shape != (count, orb.DESCRIPTOR_BYTES)
         or descriptors.dtype != np.uint8
     ):
         raise InvalidInputError(f"{name}: expected one keypoint and descriptor per row")
-    if count and (level.min() < 0 or level.max() >= len(shapes)):
-        raise InvalidInputError(f"{name}: levels must lie in [0, {len(shapes)})")
+    levels = as_count(features.levels, f"{name}.levels", 1, orb.MAX_LEVELS)
+    factor = as_number(features.scale_factor, f"{name}.scale_factor")
+    if not (math.isfinite(factor) and factor > 1.0):
+        raise InvalidInputError(f"{name}.scale_factor: must be finite and above 1, got {factor}")
     return _Side(
         xy=xy,
         level=level.astype(np.int64),
         level_xy=level_xy.astype(np.int64),
         descriptors=np.ascontiguousarray(descriptors),
+        levels=levels,
+        scale_factor=factor,
     )
+
+
+def _check_positions(side: _Side, shapes: list[tuple[int, int]], name: str) -> None:
+    """Check every keypoint against its pyramid: inside its level, ``xy`` its exact map."""
+    if len(side.level) == 0:
+        return
+    if side.level.min() < 0 or side.level.max() >= len(shapes):
+        raise InvalidInputError(f"{name}: levels must lie in [0, {len(shapes)})")
+    sizes = np.asarray(shapes, dtype=np.int64)[side.level]  # each keypoint's (rows, cols)
+    x, y = side.level_xy[:, 0], side.level_xy[:, 1]
+    if np.any(x < 0) or np.any(y < 0) or np.any(x >= sizes[:, 1]) or np.any(y >= sizes[:, 0]):
+        raise InvalidInputError(f"{name}: level_xy must lie inside its level")
+    rows, cols = shapes[0]
+    exact = np.column_stack(
+        [full_image_coordinate(x, sizes[:, 1], cols), full_image_coordinate(y, sizes[:, 0], rows)]
+    )
+    if not np.array_equal(side.xy, exact):
+        raise InvalidInputError(
+            f"{name}: xy must be level_xy mapped to the full image (orb.Keypoints.xy)"
+        )
 
 
 def _check_inside(side: _Side, shapes: list[tuple[int, int]], margin: int, name: str) -> None:
@@ -655,7 +742,6 @@ def match(  # noqa: PLR0913 -- two images, their features, the camera, the setti
     *,
     focal: float,
     baseline: float,
-    orb_options: orb.Options | None = None,
     options: Options | None = None,
     backend: str = "python",
 ) -> StereoMatches:
@@ -666,13 +752,11 @@ def match(  # noqa: PLR0913 -- two images, their features, the camera, the setti
     left_image, right_image : array_like of uint8, shape (H, W)
         The rectified images.
     left, right : slamlab.foundations.orb.Features
-        Their features, extracted with `orb_options`.
+        Their features, extracted on one pyramid (the same ``levels`` and ``scale_factor``).
     focal : float
         The rectified focal length, in pixels (:attr:`Rectification.intrinsics`' first).
     baseline : float
         The distance between the camera centres; depths come out in its units.
-    orb_options : slamlab.foundations.orb.Options, optional
-        The settings the features were extracted with (for their pyramid).
     options : Options, optional
         The matching settings (default: ORB-SLAM's).
     backend : {"python", "cpp", "rust"}, optional
@@ -687,8 +771,10 @@ def match(  # noqa: PLR0913 -- two images, their features, the camera, the setti
     ------
     slamlab.foundations.errors.InvalidInputError
         If an image is malformed or the two differ in shape, `focal` or `baseline` is not
-        positive and finite, a feature set is malformed, or a left keypoint lies closer than
-        ``options.window`` to its level's border.
+        positive and finite, a feature set is malformed, the two sets come from different
+        pyramids or one too deep for the image, a keypoint lies outside its level or its
+        ``xy`` is not its level pixel's full-image coordinate, or a left keypoint lies
+        closer than ``options.window`` to its level's border.
     """
     first = as_image(left_image, "left_image")
     second = as_image(right_image, "right_image")
@@ -701,15 +787,25 @@ def match(  # noqa: PLR0913 -- two images, their features, the camera, the setti
     for name, value in (("focal", focal), ("baseline", baseline)):
         if not (math.isfinite(value) and value > 0.0):
             raise InvalidInputError(f"{name}: must be positive and finite, got {value}")
-    extraction = orb.Options() if orb_options is None else orb_options
     settings = Options() if options is None else options
-    shapes = level_shapes(
-        first.shape[0], first.shape[1], extraction.levels, extraction.scale_factor
-    )
-    sides = (_as_side(left, shapes, "left"), _as_side(right, shapes, "right"))
+    sides = (_as_side(left, "left"), _as_side(right, "right"))
+    if (sides[1].levels, sides[1].scale_factor) != (sides[0].levels, sides[0].scale_factor):
+        raise InvalidInputError(
+            "right: extracted on another pyramid than left (levels and scale_factor differ)"
+        )
+    shapes = level_shapes(first.shape[0], first.shape[1], sides[0].levels, sides[0].scale_factor)
+    for side, name in zip(sides, ("left", "right"), strict=True):
+        _check_positions(side, shapes, name)
     _check_inside(sides[0], shapes, settings.window, "left")
     crossing = [
-        {"xy": s.xy, "level": s.level, "level_xy": s.level_xy, "descriptors": s.descriptors}
+        {
+            "xy": s.xy,
+            "level": s.level,
+            "level_xy": s.level_xy,
+            "descriptors": s.descriptors,
+            "scale_factor": s.scale_factor,
+            "levels": s.levels,
+        }
         for s in sides
     ]
     return backends.call(
@@ -722,7 +818,6 @@ def match(  # noqa: PLR0913 -- two images, their features, the camera, the setti
             sides[1],
             focal=focal,
             baseline=baseline,
-            orb_options=extraction,
             options=settings,
         ),
         arguments={
@@ -732,7 +827,6 @@ def match(  # noqa: PLR0913 -- two images, their features, the camera, the setti
             "right": crossing[1],
             "focal": focal,
             "baseline": baseline,
-            "orb_options": asdict(extraction),
             "options": asdict(settings),
         },
         decode=_decode_matches,

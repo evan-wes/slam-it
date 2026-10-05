@@ -54,6 +54,21 @@ inline constexpr int kMaxKernelBits = 15;
 ///        the integer arithmetic's intermediate values then fit 64 bits.
 inline constexpr std::int64_t kMaxSide = pow2(20);
 
+/// @brief A pyramid-level position's coordinate in the full image, along one axis
+///        (`slamlab.foundations.image.full_image_coordinate`): the resizes' aligned-centre maps
+///        composed, `((2 x + 1) n_0 - n_l) / (2 n_l)`, computed in that order. For an integer
+///        `x` only the division rounds, and level 0 maps to itself.
+/// @param x The position on the level, in its pixels.
+/// @param level_size The level's size along the axis, `n_l`.
+/// @param size The full image's size along it, `n_0`.
+/// @return The full-image coordinate.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (level_size, size), as in Python
+[[nodiscard]] constexpr double full_image_coordinate(double x, std::int64_t level_size,
+                                                     std::int64_t size) {
+  const auto level = static_cast<double>(level_size);
+  return ((((2.0 * x) + 1.0) * static_cast<double>(size)) - level) / (2.0 * level);
+}
+
 /// @brief A grayscale image, row-major.
 struct Image {
   /// @brief The number of rows (the height), at least 1.

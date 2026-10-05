@@ -34,7 +34,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slamlab import backends
-from slamlab.foundations.arrays import as_count, as_flag, as_number
+from slamlab.foundations.arrays import as_count, as_flag, as_number, holds_integers
 from slamlab.foundations.errors import InvalidInputError
 from slamlab.foundations.orb import ANGLE_BINS, DESCRIPTOR_BYTES
 
@@ -230,7 +230,7 @@ def _as_angles(value: ArrayLike, count: int, name: str) -> NDArray[np.int64]:
     arr = np.asarray(value)
     if arr.size == 0 and count == 0:
         return np.zeros(0, dtype=np.int64)  # an empty list is float64 to numpy
-    if arr.shape != (count,) or arr.dtype.kind not in "iu" or not np.can_cast(arr.dtype, np.int64):
+    if arr.shape != (count,) or not holds_integers(arr):
         raise InvalidInputError(f"{name}: expected {count} integers, got {arr.dtype} {arr.shape}")
     if count and (arr.min() < 0 or arr.max() >= ANGLE_BINS):
         raise InvalidInputError(f"{name}: bins must lie in [0, {ANGLE_BINS})")

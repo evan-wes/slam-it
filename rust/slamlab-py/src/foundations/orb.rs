@@ -1,10 +1,9 @@
 //! Bindings for `slamlab.foundations.orb` (`slamlab_rs.foundations.orb`).
 //!
 //! Options cross as one dict of `slamlab.foundations.orb.Options`' fields, read strictly by
-//! serde; keypoints come back as a dict of `Keypoints`' fields, one array each, with
-//! `descriptors` for features.
+//! serde; keypoints and features come back as dicts (`orb_crossing`).
 
-use numpy::ndarray::{Array1, Array2};
+use numpy::ndarray::Array2;
 use numpy::{
     IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods,
 };
@@ -12,9 +11,10 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use serde::Deserialize;
-use slamlab_foundations::orb::{self as core, Bounds, Keypoint};
+use slamlab_foundations::orb::{self as core, Bounds};
 
 use super::image_crossing::image_in;
+use super::orb_crossing::{features_dict, int64_array, keypoints_dict, to_i64};
 use crate::common::{add_functions, contiguous, unwrap};
 
 /// `orb.Options`' fields, as they cross.
@@ -31,58 +31,6 @@ struct OptionsIn {
     fast_threshold: i64,
     /// The fallback FAST threshold.
     min_fast_threshold: i64,
-}
-
-/// Converts a non-negative index to `i64` for numpy.
-///
-/// # Arguments
-///
-/// * `value` - The index.
-///
-/// # Returns
-///
-/// It as an `i64`.
-fn to_i64(value: usize) -> i64 {
-    i64::try_from(value).expect("indices fit an i64")
-}
-
-/// Wraps values as a new 1D int64 array.
-///
-/// # Arguments
-///
-/// * `py` - The Python token.
-/// * `values` - The values.
-///
-/// # Returns
-///
-/// The array.
-fn int64_array(py: Python<'_>, values: Vec<i64>) -> Bound<'_, PyArray1<i64>> {
-    Array1::from_vec(values).into_pyarray(py)
-}
-
-/// Wraps row-major pairs as a new (N, 2) array.
-///
-/// # Arguments
-///
-/// * `py` - The Python token.
-/// * `pairs` - The rows.
-///
-/// # Returns
-///
-/// The array.
-///
-/// # Errors
-///
-/// `ValueError` if the shape does not match (a binding bug).
-fn pairs_array<T: numpy::Element>(
-    py: Python<'_>,
-    pairs: Vec<[T; 2]>,
-) -> PyResult<Bound<'_, PyArray2<T>>> {
-    let n = pairs.len();
-    let flat: Vec<T> = pairs.into_iter().flatten().collect();
-    let array =
-        Array2::from_shape_vec((n, 2), flat).map_err(|e| PyValueError::new_err(e.to_string()))?;
-    Ok(array.into_pyarray(py))
 }
 
 /// Returns every pixel's FAST-9 score.
@@ -188,37 +136,6 @@ fn read_options(options: &Bound<'_, PyDict>) -> PyResult<core::Options> {
     })
 }
 
-/// Builds the dict of `Keypoints`' fields, one array each.
-///
-/// # Arguments
-///
-/// * `py` - The Python token.
-/// * `keypoints` - The keypoints.
-///
-/// # Returns
-///
-/// A dict with `xy`, `level`, `level_xy`, `response` and `angle`.
-///
-/// # Errors
-///
-/// A Python error if an item cannot be set.
-fn keypoints_dict<'py>(py: Python<'py>, keypoints: &[Keypoint]) -> PyResult<Bound<'py, PyDict>> {
-    let out = PyDict::new(py);
-    out.set_item(
-        "xy",
-        pairs_array(py, keypoints.iter().map(|k| k.xy).collect())?,
-    )?;
-    let levels = keypoints.iter().map(|k| to_i64(k.level)).collect();
-    out.set_item("level", int64_array(py, levels))?;
-    let level_xy = keypoints.iter().map(|k| k.level_xy.map(to_i64)).collect();
-    out.set_item("level_xy", pairs_array(py, level_xy)?)?;
-    let responses = keypoints.iter().map(|k| k.response).collect();
-    out.set_item("response", int64_array(py, responses))?;
-    let angles = keypoints.iter().map(|k| to_i64(k.angle)).collect();
-    out.set_item("angle", int64_array(py, angles))?;
-    Ok(out)
-}
-
 /// Detects oriented keypoints; returns a dict of `Keypoints`' fields.
 ///
 /// # Arguments
@@ -246,7 +163,7 @@ fn detect<'py>(
     keypoints_dict(py, &keypoints)
 }
 
-/// Extracts features: `Keypoints`' fields, and `descriptors`.
+/// Extracts features; returns a dict of `Features`' fields.
 ///
 /// # Arguments
 ///
@@ -255,7 +172,7 @@ fn detect<'py>(
 ///
 /// # Returns
 ///
-/// The keypoints' dict with `descriptors`, an (N, 32) uint8 array.
+/// The features' dict (`orb_crossing`).
 ///
 /// # Errors
 ///
@@ -270,13 +187,7 @@ fn extract<'py>(
         py,
         core::extract(&image_in(&image)?, &read_options(options)?),
     )?;
-    let out = keypoints_dict(py, &features.keypoints)?;
-    let n = features.descriptors.len();
-    let bytes = features.descriptors.concat();
-    let descriptors = Array2::from_shape_vec((n, core::DESCRIPTOR_BYTES), bytes)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    out.set_item("descriptors", descriptors.into_pyarray(py))?;
-    Ok(out)
+    features_dict(py, &features)
 }
 
 /// Registers the `orb` functions.

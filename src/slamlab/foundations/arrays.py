@@ -462,6 +462,22 @@ def as_image(value: ArrayLike, name: str = "image", *, channels: int = 1) -> NDA
     return np.ascontiguousarray(arr).copy()
 
 
+def holds_integers(values: NDArray[Any]) -> bool:
+    """Whether an array's dtype is an integer type that fits int64 (booleans are not integers).
+
+    Parameters
+    ----------
+    values : ndarray
+        The array.
+
+    Returns
+    -------
+    bool
+        True for a signed or unsigned integer dtype that casts safely to int64.
+    """
+    return values.dtype.kind in "iu" and np.can_cast(values.dtype, np.int64)
+
+
 def as_count(value: object, name: str, low: int, high: int) -> int:
     """Check an integer setting in ``[low, high]``.
 
