@@ -1,8 +1,10 @@
 name: Test
+# On demand and for releases only. PRs and develop are gated by scripts/offline_ci.sh, the
+# same steps on a local machine, since the Actions minutes are shared with other projects.
 on:
+  workflow_dispatch:
   push:
-    branches: [develop, main]
-  pull_request:
+    branches: [main]
 
 permissions:
   contents: read

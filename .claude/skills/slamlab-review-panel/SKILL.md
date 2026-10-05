@@ -8,7 +8,8 @@ argument-hint: "[hygiene|architecture|algorithm] [--base <ref>]"
 
 slamlab reviews in two layers:
 
-- **Layer 1, every PR:** deterministic checks in `scripts/check.sh`, also run by CI.
+- **Layer 1, every PR:** deterministic checks in `scripts/check.sh`, also run by CI
+  (`scripts/offline_ci.sh`, from a clean checkout).
 - **Layer 2, this panel:** three reviewer agents, **once per PR, on the finished slice**,
   against the PR's stated goal. A PR is a slice of a milestone built as semantic commits;
   the panel never runs per commit. Or run one reviewer alone on a small PR that touches its
@@ -114,4 +115,5 @@ response means wait.
 
 The PR body's "How this was built" section (`$REPO/.github/pull_request_template.md`) links the
 report and summarises the panel: reviewers and models, finding counts by severity, and how
-each must-fix was resolved.
+each must-fix was resolved. Before asking for the merge, run `scripts/offline_ci.sh` on the
+final branch head and record its result line in the PR's Verification section.
