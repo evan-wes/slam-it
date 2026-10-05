@@ -385,3 +385,280 @@ The existing fixtures exercise neither case. Separately, the five-point solvers 
 - **The methods are current for rung 0:** Lambda Twist (Persson & Nordberg, ECCV 2018), Ding et al. (CVPR 2023), Stewénius' action matrix, and LO-RANSAC with MSAC scoring (Lebeda et al., BMVC 2012).
 
 The probe scripts are saved for reuse in `nalgebra-svd-probe/` (`src/main.rs`, `compare.py`, `end_to_end_8pt.py`, `umeyama_three_points.py`, `p3p_thin_triangles.py`). No repository files were modified.
+
+## Run 2 -- 2026-10-04
+
+| | |
+|---|---|
+| **Branch** | `feature/rust-estimation` |
+| **Range** | `57c9d8d...16e919d` (the fixes of run 1's findings) |
+| **Reviewers** | architecture (opus), algorithm (opus); hygiene not re-run (its findings were mechanical and are fixed) |
+| **How they ran** | registered slamlab-* agents |
+| **Layer 1** | all checks passed (`scripts/check.sh`; 1,818 tests, none skipped) |
+
+### Findings and resolutions
+
+| ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|---|
+| L8 | must-fix | algorithm | `linalg.rs` `svd` | faer does not rescale: wrong singular vectors below ~1e-154, `None` above ~1e154 (numpy, Eigen exact) | fix (scale by a power of two) | fixed (3f14582, 78db5c8): power-of-two scaling outside [2^-400, 2^400], as LAPACK does -- decided by evan-wes, 2026-10-04 |
+| L9 | should-fix | algorithm | `pnp.rs` `beta_step` | Unpivoted QR's diagonal does not bound κ; the fast path admits κ ~ 1e13 and differs from `lstsq` on ill-posed scenes | fix | fixed (3f14582): cutoff 1e-4, documented as measured, not a bound (a κ gate measured no better); fallback test -- decided by evan-wes, 2026-10-04 |
+| L10 | should-fix | algorithm | `fivepoint` canonical sign, 3 languages | For R = I, E is skew: the two largest entries tie and the sign is roundoff (~45% of pure-translation samples) | fix (tie tolerance, as `TIE_RTOL`) | fixed (3f14582): SIGN_TIE_RTOL 1e-6 in all three languages; pure-translation test; the probe now shows 0 sign differences -- decided by evan-wes, 2026-10-04 |
+| A6 | should-fix | architecture | `refine_consensus`, 3 languages | A failed refinement leaves no trace in the summary (round k's failure reads as "no improvement") | fix | deferred (design doc: the stop-reason item gains 'refinement failed'; 60e7c92) -- decided by evan-wes, 2026-10-04 |
+| A7 | should-fix | architecture | design doc | faer (and the cores' runtime dependencies) not recorded in the design doc | fix | fixed (60e7c92) -- decided by evan-wes, 2026-10-04 |
+| A8 | should-fix | architecture | `lib.rs` | `linalg` is public API with no reference or fixture | fix (`pub(crate)`) | fixed (3f14582) -- decided by evan-wes, 2026-10-04 |
+| A9 | should-fix | architecture | `test_backends.py` | The structural test walks every rung, incl. Rust-less and PyTorch rungs | fix | fixed (3f14582): backends.COMPILED_RUNGS -- decided by evan-wes, 2026-10-04 |
+| L11 | note | algorithm | `linalg::eigen_real` | faer does not report Schur non-convergence; the doc says it does | fix the doc | fixed (3f14582) -- decided by evan-wes, 2026-10-04 |
+| L12 | note | algorithm | `fivepoint.rs` Stewénius | A near-real complex pair would be read as two eigenvectors (unreachable in practice) | fix | fixed (3f14582) -- decided by evan-wes, 2026-10-04 |
+| L13 | note | algorithm | `pnp.epnp` | EPnP backends already diverge on noisy 5-point problems (pre-existing) | defer (design doc) | deferred (design doc, 60e7c92) -- decided by evan-wes, 2026-10-04 |
+| A10 | note | architecture | faer | faer selects SIMD kernels at run time: rounding can differ by CPU | fix (one sentence in the note) | fixed (60e7c92, the note) -- decided by evan-wes, 2026-10-04 |
+| A11 | note | architecture | `svd3` | Every 3x3 SVD allocates; the edge rung will want a stack path | defer (design doc, edge milestone) | deferred (design doc, edge milestone, 60e7c92) -- decided by evan-wes, 2026-10-04 |
+| A12 | note | architecture | `linalg::MAX_ITERATIONS` | Serves only EPnP's nalgebra eigensolver | fix (move to `pnp.rs`) | fixed (3f14582) -- decided by evan-wes, 2026-10-04 |
+| A13 | note | architecture | `epipolar.py` `start_motion` | Python's docstring lacks the errors C++ and Rust declare | fix | fixed (3f14582): Python's start_motion also validates now (the reviewer's premise that it already raised did not hold) -- decided by evan-wes, 2026-10-04 |
+
+### Architecture review
+
+**Scope:** `git diff 57c9d8d...16e919d` (run 2: the fixes for PR 6 `feature/rust-estimation`). I read in full the faer dependency (`rust/Cargo.toml`, `rust/slamlab-foundations/Cargo.toml`, `rust/Cargo.lock`), `rust/slamlab-foundations/src/linalg.rs`, the `pyproject.toml` rung-0 contract, how `scripts/check_layers.py` parses optional and `|` layers (`internal_orders`, `_may_import`), the fallible refiner in all three languages (`ransac.py`, `ransac.hpp`, `ransac.rs`, the `epipolar`/`pnp` refiners and `start_motion` in C++, Rust and Python) and its tests, `tests/test_backends.py`, the five-point canonical order (Python, C++, Rust), the binding hygiene diff (`common.rs`, `nls_crossing.rs`, `ransac_crossing.rs`, `foundations/mod.rs`, `epipolar.rs`), and the design-doc and `rust-port.md` diffs. I resolved faer's dependency tree with `cargo tree -e normal --offline`. I did not modify any file.
+
+**Summary:** The fixes resolve run 1's findings structurally:
+- faer is confined to `linalg.rs`, and no faer type leaks into a signature;
+- `linalg`'s optional layer is coherent across import-linter, `check_layers` and the C++ tree;
+- the refiner's error contract has the same shape in all three languages;
+- the bindings stay thin.
+
+Four things are weaker than they should be, all should-fix:
+- a failed refinement is invisible in the result (half of run 1's A2 suggestion was not carried out);
+- the crate's new runtime dependency is recorded only in a note, not in the design doc;
+- `linalg` is `pub`, so a Rust-only helper with no reference is public API;
+- the new structural test walks every slamlab package, which ties it to rungs no compiled backend covers.
+
+Nothing is must-fix.
+
+#### Findings
+
+##### [should-fix] A failed refinement is swallowed without trace in the refined summary
+- **Where:**
+  - `src/slamlab/foundations/ransac.py:520-524` (`except SlamlabError: break`);
+  - `rust/slamlab-foundations/src/ransac.rs:650-653` (`let Ok(solved) = refine(...) else { break; }`);
+  - `cpp/include/slamlab/foundations/ransac.hpp:399-402` (`if (!solved) { break; }`).
+- **Issue:** All three languages now handle the error the same way: the round counts, its result is not kept, and the error itself is dropped. Nothing in `RefinedSummary` records that a round failed.
+  - A failure in round 1 can still be told apart: `rounds == 1` with `refinement` empty.
+  - A failure in round 2 or later looks exactly like "round k did not lower the cost". The only difference is that `refinement` holds round k-1's summary rather than round k's, which a caller cannot detect.
+
+  Run 1's suggested fix asked for "not kept" *and* "record it in the summary"; the resolution did only the first. The Python catch is as broad as the cores' `Result` (all three kinds), which is consistent. But `refine_consensus` is public in Python and takes a user callable, so an `InvalidInputError` caused by a bug in that callable is silently absorbed too.
+- **Why it matters:** CLAUDE.md says "make failure observable; no swallowed errors", and iterative solvers report a termination reason. A refinement that fails on every run for some input (for example, a match at both epipoles among the inliers) would look like refinement that "never helps", and a caller could not tell the two apart.
+- **Evidence:** In the Rust test at `ransac.rs:~883`, the only thing to observe is `failed.summary.rounds == 1 && failed.summary.refinement.is_none()`. A second-round failure has no equivalent assertion, because there is nothing to assert on.
+- **Suggested fix:** Add a stop reason to the refined summary in all three languages: rounds exhausted, no improvement, inliers unchanged, too few inliers, or refinement failed. A minimal version is an optional failure kind. Cross it as an integer code with `codes()`, as `ransac_termination` and `nls_termination` do, and assert it in `test_a_failed_refinement_is_not_kept`, the Rust test and `test_ransac.cpp`.
+
+##### [should-fix] The Rust core's new runtime dependency is not recorded in the design doc
+- **Where:** `rust/Cargo.toml:7-9`. The design doc's "C++ storage" paragraph (`docs/design/2026-10-02-slamlab-ladder.md`, around lines 210-215) names Eigen for C++ and nalgebra only for Cholesky. The rationale for faer lives only in `docs/notes/rust-port.md`.
+- **Issue:** The crate's runtime dependencies grew from nalgebra alone to nalgebra plus faer. `cargo tree -e normal` shows about 45 new crates, among them gemm (5 element types), nano-gemm, pulp, raw-cpuid, qd and dyn-stack. `slamlab-edge` will inherit all of them through `slamlab-foundations`.
+  - For Python, the design states its runtime policy explicitly: "the library's runtime is numpy alone … a rung that needs one at run time changes the dependencies first" (`pyproject.toml:175-178`).
+  - Nothing states a policy for the cores, and `check_layers` checks only rung-crate dependencies, so a future crate can add any external dependency unseen.
+- **Why it matters:** The design doc, not a note, is the authority on the language split and on edge budgets. The edge rung (milestone 7: Pi-class, ARM build check) will be the first place the size and portability of this tree matters.
+
+  The choice itself is sound: it lives in rung 0, uses `default-features = false` and `Par::Seq`, and has no rayon (`cargo tree -i rayon -e normal` prints nothing; rayon in the lock file comes only from criterion). It should be visible where the edge rung's author will look.
+- **Suggested fix:** Change the doc. Add one sentence to "Languages" or "C++ storage" giving the cores' runtime dependencies (C++: Eigen; Rust: nalgebra as the matrix type, faer for SVD and EVD behind `linalg`, single-threaded) and the rule that a new runtime crate is a design-doc change. Optionally, add an external-crate allow-list per rung crate to `check_layers.py`, so the rule is enforced like Python's forbidden-imports contract.
+
+##### [should-fix] `linalg` is public API with no reference and no parity fixture
+- **Where:** `rust/slamlab-foundations/src/lib.rs:16` (`pub mod linalg;`); `linalg.rs`:
+  - `pub struct Svd`, with public fields;
+  - `pub fn svd`, `eigen_real`, `svd3`, `singular_values3`, `least_squares`;
+  - `pub const MAX_ITERATIONS`.
+- **Issue:** The module doc itself says "There is no Python or C++ counterpart". The module has grown from two functions to five, plus a struct and a constant, and a standalone Rust caller can reach all of them. Nothing outside the crate uses it: a grep over `rust/slamlab-py`, `benches` and `examples` finds no `linalg` reference. Every other public Rust item mirrors a Python module with a fixture.
+- **Why it matters:** The rubric asks for small, stable public interfaces, and for every compiled implementation to have a Python reference. A public `Svd` with public fields makes the shape of the faer wrapper (thin factors, `Option` factors) part of the crate's API, which then constrains a later swap, such as a stack-based 3x3 path for the edge rung.
+- **Suggested fix:** Make it `pub(crate) mod linalg;` and keep the rustdoc (clippy's `missing_docs` covers private items in this crate anyway). Make it public again, with a reason, only when a bench or another crate needs it.
+
+##### [should-fix] The "every backend has every module" test walks every rung, including rungs no compiled backend covers
+- **Where:** `tests/test_backends.py:185-214` (`_protocol_modules`, `test_every_compiled_backend_has_every_module`).
+- **Issue:** The test's logic is sound and closes run 1's A1 suggestion:
+  - it collects the modules that define their own `Implementation` and compares them with the modules each compiled extension provides;
+  - `Implementation.__module__` maps `foundations.ba` to `ba.solve`;
+  - an empty or missing submodule shows up as missing;
+  - completeness within a module stays with the protocol test.
+
+  Its scope is the problem. `pkgutil.walk_packages(slamlab.__path__)` imports every module of every rung, and every Protocol is required of every compiled backend. Two predictable breaks follow:
+  - The design table gives Rust no `vi` or `classic` rung, so the first C++ module there with an `Implementation` fails this test for `rust`, by design.
+  - `learned` and `dense` are PyTorch rungs, and PyTorch is "only ever in an optional extra". A top-level `import torch` there makes the CPU layer-1 test import torch, and it errors in an environment without it. The existing protocol test imports only the modules that mirror compiled submodules, so it has no such coupling.
+- **Why it matters:** The design doc anticipates chosen sets returning ("that rung then brings back a way for a module Rust lacks to skip rather than fail"). Today this test hard-codes "every rung, every backend", so it will be the first thing to break, and the obvious quick fix is a skip.
+- **Suggested fix:** Walk only the rungs a backend covers: the CPU rungs (`foundations`, `edge`, `vi`, `classic`), which the import-linter contract already keeps free of PyTorch, intersected with the backend's rungs. That needs one small table beside `LOCKSTEP_BACKENDS`, mirroring the design doc's package table. That is also where the edge rung's chosen set will go.
+
+##### [note] faer's results depend on the CPU it runs on
+- **Where:** faer's dependency tree: `pulp v0.22.3 → raw-cpuid` and `gemm-common → raw-cpuid` (`cargo tree -e normal`).
+- **Issue:** faer selects its SIMD kernels at run time, so the same `slamlab_rs` binary can round differently on AVX2, AVX-512 and NEON machines. Eigen in the C++ core fixes its code path at compile time. Values stay within the fixtures' tolerances. But decision-level lock-step is already sensitive to roundoff at near-ties (L3), and decisions may now also differ between CI, the desktop and the Pi.
+- **Suggested fix:** Nothing now; add one sentence to `rust-port.md`. If cross-machine bit-reproducibility ever matters (the budget harness comparing decisions across machines), check whether pulp's dispatch can be pinned.
+
+##### [note] Every 3x3 SVD now allocates on the heap
+- **Where:** `linalg.rs` `svd3` and `singular_values3`. Each call builds a `DMatrix`, a faer `Mat`, a `MemBuffer`, three faer outputs and three `DMatrix` copies. They serve `so3::project_to_so3`, `alignment::umeyama`, `decompose_essential`, the 8-point fits and others.
+- **Issue:** The note records the cost (E-RANSAC is 1.4x slower in Rust), and EPnP's QR beta step is a workaround for the same per-call overhead. The edge VO (Rust, Pi-class budget) will call `project_to_so3` and Umeyama per frame.
+- **Suggested fix:** Before the edge rung, give `linalg` a fixed-size, stack-only 3x3 path that is backward stable (one-sided Jacobi, as Eigen's `JacobiSVD` does for fixed sizes), behind the same `svd3` signature. Record it in the design doc's backlog under the edge milestone.
+
+##### [note] `linalg::MAX_ITERATIONS` now serves only EPnP's nalgebra eigensolver
+- **Where:** `linalg.rs:21`. Its only user is `pnp.rs:102` (`SymmetricEigen::try_new(..., MAX_ITERATIONS)`).
+- **Issue:** The module doc says `linalg` is "the SVD every module uses … and the one general eigendecomposition", all through faer. This constant is a nalgebra setting, for a decomposition `linalg` does not wrap. Move it to `pnp.rs`, next to its single use, or route the symmetric eigendecomposition through `linalg`, so the module holds one kind of thing.
+
+##### [note] Python's `start_motion` does not document the errors C++ and Rust now declare
+- **Where:** `src/slamlab/foundations/epipolar.py:672-689`.
+- **Issue:** C++ (`epipolar.hpp:179`) and Rust (`epipolar.rs`, `# Errors`) now say "InvalidInput if not finite, Degenerate if rank < 2". The Python reference raises the same errors (through `decompose_reference`), but its docstring says only "E, of rank 2" and has no `Raises` section. This is a small gap in the stated error contract; hygiene owns the wording.
+
+#### Checked and fine
+- **faer's placement:** it is a workspace dependency used only by `slamlab-foundations` (rung 0, shared by later rungs, as the rubric asks), not by `slamlab-py`.
+  - No faer type appears outside `linalg.rs`; nalgebra remains the matrix type at every boundary.
+  - It uses `default-features = false` with `std` only and `Par::Seq`, and `cargo tree -i rayon -e normal` finds no rayon.
+  - It is pure Rust, so the crate still builds standalone, without Python.
+  - The aarch64 build could not be verified here (no target installed). pulp and gemm have NEON paths, and milestone 7's ARM build check is where it gets proved.
+- **`linalg` in the layer contracts:** `"arrays | (linalg)"` places it below `so3` and above `(rng) | (solve)`.
+  - `linalg.rs` has no `crate::` paths, and its users (`so3`, `alignment`, `correspondences`, `triangulation`, `fivepoint`, `epipolar`, `homography`, `pnp`, `ba/gauge`) all sit above it.
+  - `check_layers.internal_orders` strips the parentheses and keeps the `|` independence, and `_may_import` would reject `linalg → so3`.
+  - Python and C++ have no `linalg`, which the optional layer allows. The `pyproject.toml` comment states both meanings of the parentheses.
+- **The fallible refiner's error contract:** Rust's `Refiner` and `refine_consensus`, C++'s `Refine` (returning `Result<solve::Solution<…>>`) and Python's `SlamlabError` catch all behave alike: the round counts before the call, and the failed result is not kept.
+  - The `.value()` and `.expect` calls are gone.
+  - `start_motion` returns `Result` in C++ and Rust, and propagates `decompose_essential`'s error kinds.
+  - The new tests cover all three languages.
+- **`local_optimization`:** it now propagates a failed draw with `?`, the same policy as `estimate`.
+- **A1:** no compiled-side test in `tests/foundations/` is pinned to `"cpp"` any more. The `"cpp"` literals left in `test_backends.py` are locator tests.
+- **L3, the canonical order:** the same rule is implemented in each of the three `fivepoint` modules. The Python docstring is its reference, and the C++ and Rust docs cite it. It is applied at the solver boundary, so RANSAC and the bindings are unchanged.
+- **The bindings stay thin:**
+  - `common::contiguous` is one generic conversion;
+  - `nls_crossing::refined` and `ransac_crossing::read_options` only build or read dicts;
+  - the crate-level `needless_pass_by_value` allow sits once, with its reason, in `foundations/mod.rs`;
+  - no algorithm logic moved into `slamlab-py`.
+- **EPnP's QR beta step:** a Rust-only numerical path, documented in the code and in `rust-port.md` ("Where the libraries differ"), with an SVD/`lstsq` fallback that matches the reference. Whether its `1e-8` cutoff is the right boundary is for the algorithm reviewer.
+- **The ill-conditioned fixture:** its generator (mpmath) lives under `tests/fixtures/`, outside `slamlab`, consistent with the "never imports its test oracles" contract.
+- **Docs:** the A3 wording, the L6 backlog entry and the `rust-port.md` updates match the code. The `linalg.rs` module doc and the note no longer claim that nalgebra's 3x3 SVD is closed-form.
+
+### Algorithm review
+
+**Scope:** `git diff 57c9d8d...16e919d` (run 2: the fixes), HEAD 16e919d. Read in full:
+- `rust/slamlab-foundations/src/linalg.rs`, and every changed caller (`alignment`, `epipolar`, `fivepoint`, `homography`, `p3p`, `pnp`, `ransac`, `so3`, `triangulation`, `ba/gauge`);
+- the C++ and Python counterparts of the canonical order and the fallible refiner;
+- the new tests, and `ill_conditioned.json` with its generator;
+- the matching sections of `rust-port.md`;
+- faer 0.24.4's source: `linalg/evd/mod.rs` and `evd/schur/real_schur.rs`.
+
+The experiments ran outside the repository, against the installed extension (newer than HEAD's sources). The probes are saved under a private scripts folder: `linalg-svd-scale-probe/`, `faer_scale_probe.py`, `faer-eig-probe/` (`compare.py`, `near_real.py`), `epnp_qr_fastpath_probe.py`, `epnp_backend_parity.py`, `epnp_generic_divergence.py` and `fivepoint_canonical_ties.py`.
+
+**Summary:** The L1/L2 fix works. faer's SVD is backward stable on the graded and thin cases, the new fixture guards them, and the thin-factor semantics suit every caller: each caller that needs the full V pads, and wide matrices decompose correctly too.
+
+One must-fix remains. faer does not rescale its input the way LAPACK does:
+- matrices whose entries are below about 1e-154 get silently wrong singular vectors;
+- matrices above about 1e154 fail.
+
+Through the public API that gives a rotation off by 0.4 where Python and C++ are exact. The fix is a few lines.
+
+Three smaller issues:
+- EPnP's QR fast path admits Jacobians with a condition number near 1e13, so the claim "equal to the SVD to roundoff" fails on ill-posed scenes.
+- The canonical five-point sign has an exact tie when R = I, so the signs differ across backends in about 45% of pure-translation samples.
+- `eigen_real`'s documentation promises more than faer delivers.
+
+#### Findings
+
+##### [must-fix] `linalg::svd` does not rescale: wrong singular vectors below about 1e-154, and `None` above about 1e154, where numpy and Eigen are exact
+- **Where:** `rust/slamlab-foundations/src/linalg.rs:50-90` (`svd`), and so `svd3`, `singular_values3` and `least_squares`. Every caller inherits it: `decompose_essential`, `project_to_so3`, `umeyama`, `decompose_homography`, `refine_essential`, the 8-point projection and the others.
+- **Issue:** faer 0.24's low-level `svd` works on the matrix as given. LAPACK's `dgesdd`/`dgesvd` first scale A by its largest absolute entry into a safe range (`dlascl`), and Eigen's `JacobiSVD` scales too.
+  - With faer, once the entries fall below about √(DBL_MIN) ≈ 1.5e-154, intermediate squares underflow and the factors come back wrong, with no error.
+  - Once they rise above about 1e154 they overflow, and the SVD returns `NoConvergence`, which becomes `None`.
+- **Why it matters:** These are finite, valid inputs to public functions whose maths does not depend on scale. Python and C++ return the right answer. Rust returns a wrong pose, with no error, at small scales, and a spurious `Degenerate` or a NaN at large ones.
+
+  The helper exists to be the crate's one backward-stable SVD, so it should not have a silent failure range. Real data does not reach these scales. But a standalone Rust caller who passes, for example, an un-normalised E built from tiny units gets no signal that anything went wrong.
+- **Evidence:**
+  - The Rust probe `linalg-svd-scale-probe/` prints σ / scale for a fixed SPD 3x3 (true values 4.732, 3, 1.268):
+    ```
+    scale 1e-160: [4.732050807568878, 2.9999999999999996, 1.2679491924311226]
+    scale 1e-200: [3.286335345030997, 2.4494897427831788, 2.23606797749979]   <- wrong, Some(..)
+    scale 1e-300: [3.2863353450309964, 2.4494897427831783, 2.23606797749979]
+    scale 1e160:  None
+    numpy at every scale from 1e-310 to 1e307: [4.73205081 3. 1.26794919]
+    ```
+  - Through the bindings (`faer_scale_probe.py`), with E = [t]x R and a near-rotation M, each multiplied by a scale:
+    ```
+    scale 1e-170 python: decompose_essential best |R-R_true| 2.2e-16; project_to_so3 err 3.9e-16
+    scale 1e-170 cpp   : decompose_essential best |R-R_true| 2.2e-16; project_to_so3 err 8.9e-16
+    scale 1e-170 rust  : decompose_essential best |R-R_true| 4.0e-01; project_to_so3 err 9.2e-04
+    scale 1e+170 rust  : DegenerateError: essential: no decomposition; project_to_so3 err nan
+    ```
+  - `eigen_real` is unaffected: on a random 10x10 at scales from 1e-200 to 1e250, its eigenvalues agree with numpy to 4e-15.
+- **Suggested fix:** In `svd`, take the largest absolute entry.
+  - If it is 0, return the zero decomposition (σ = 0 and identity-like factors, as LAPACK does).
+  - Otherwise, divide A by the power of two nearest to it (`f64::exp2(-max.log2().round())`, which is exact), call faer, and multiply σ back. U and Vᵀ are unchanged by the scaling.
+
+  Add a native test at 1e-200 and 1e200, and a parity case through `decompose_essential`. The `rust-port.md` sentence "faer's matches LAPACK to roundoff" then holds without a caveat.
+
+##### [should-fix] EPnP's QR fast path checks the |R_ii| of an unpivoted QR, which does not bound conditioning: it admits κ ≈ 1.5e13, where the claim "equal to the SVD solution to roundoff" fails
+- **Where:** `rust/slamlab-foundations/src/pnp.rs:279-312` (`QR_RANK_CUTOFF`, `beta_step`); `docs/notes/rust-port.md:86-89`.
+- **Issue:** `jacobian.qr()` is nalgebra's Householder QR without column pivoting. In an unpivoted R, a large off-diagonal entry can make the matrix nearly singular while every diagonal entry stays comparable; for example, `R = [[1, 1e8], [0, 1]]` has κ ≈ 1e16. So the gate `min|R_ii| > 1e-8·max|R_ii|` does not limit the QR path to well-conditioned J.
+  - For full-rank J, QR and the SVD differ by about ε·κ.
+  - Gauss-Newton's accept/reject test (`moved_residual < residual`) then amplifies that difference into different poses.
+- **Why it matters:** The goal is to take the same decisions as Python's `lstsq`. On generic, near-planar and near-collinear scenes the fast path is harmless. On ill-posed scenes, such as a point cloud only 1e-6 to 1e-2 m across seen from 5 m, it changes EPnP's result. No step was found where `lstsq` would drop a singular value while QR solved the full system, so this is purely a conditioning effect.
+- **Evidence:** `epnp_qr_fastpath_probe.py` emulates Rust's rule inside Python's `_polish_betas` (numpy QR, same gate) and compares the result with stock `lstsq`, over 6000 scenes with n ∈ {4, 5, 6, 8, 12} and noise 0 or 1e-3:
+  ```
+  steps 46006, QR path 45076, QR path where lstsq would truncate 0
+  worst κ on the QR path 1.5e13 (its diag ratio 1.16e-8); worst step difference 0.7% relative
+  EPnP pose diff > 1e-6: generic 0 (worst 5.4e-8), near-planar 0, near-collinear 0,
+                         tiny extent 136/1500 (worst 4.1e-3)
+  ```
+  For context, on those same tiny-extent scenes C++ (with `completeOrthogonalDecomposition`) and Rust already differ from Python in 280 and 275 of 1500 (`epnp_backend_parity.py`). This is not a new class of disagreement; it adds to an existing one.
+- **Suggested fix:** Either use `col_piv_qr()` and gate on `|R_kk| > c·|R_11|` (with column pivoting, |R_11| is the largest column norm, so this is a real rank-revealing test), or tighten the gate to around 1e-4. With either, ε·κ stays below about 1e-8. Then correct the doc's "to roundoff" wording, and add a native test that reaches the SVD fallback, which no test exercises today.
+
+##### [should-fix] When R = I, roundoff decides the canonical five-point sign: E is skew-symmetric, so its two largest entries tie exactly, with opposite signs
+- **Where:**
+  - `src/slamlab/foundations/fivepoint.py:430-440` (`_canonical`), `cpp/src/foundations/fivepoint.cpp:598-615`, `rust/slamlab-foundations/src/fivepoint.rs:461-481`;
+  - the "Canonical order" module docs in all three languages;
+  - `rust-port.md:96-98` and `:297-299` ("agreement by construction").
+- **Issue:** For pure translation E = [t]x, so `E[i,j] = -E[j,i]`. "The first largest-magnitude entry" is then a coin toss between the pair, decided by the last bit, and each backend picks its own sign.
+  - The three languages implement the rule identically: the first maximum in row-major order, a sign test that NaN fails, then a lexicographic sort. The implementations agree; the rule itself is ill-defined at this tie.
+  - The lexicographic key has the same exposure on the structurally zero diagonal (`E[0,0] ≈ ±1e-17`), although in the runs below the order never changed, only the sign.
+- **Why it matters:** RANSAC decisions are unaffected, since Sampson residuals and `start_motion` are both invariant to sign. But `essential_5pt`'s stated contract, "the lists match element for element", fails on the most common synthetic case, pure translation. `test_backends_agree` passes only because its samples are generic.
+- **Evidence:** `fivepoint_canonical_ties.py`, 500 samples per row. Each row counts the samples that differ from Python; every one of them differs by sign only, in the same order:
+  ```
+  angle 0      nister    cpp 223  rust 225     stewenius  cpp 223  rust 207
+  angle 1e-14  nister    cpp 124  rust 134     stewenius  cpp 122  rust 137
+  angle 1e-10  nister    cpp 0    rust 0       stewenius  cpp 0    rust 0
+  ```
+- **Suggested fix:** In all three languages, pick the first entry whose magnitude is within a relative tie tolerance of the largest, as `ba/gauge.rs::first_largest` already does with `TIE_RTOL`. Or document that the sign is canonical only up to such ties. Add a pure-translation sample to `test_backends_agree`.
+
+##### [note] `eigen_real` cannot report non-convergence: faer discards the Schur iteration's status
+- **Where:** `rust/slamlab-foundations/src/linalg.rs:93-140`, whose doc says "`None` for a non-finite matrix or one that does not converge". In faer, `faer-0.24.4/src/linalg/evd/mod.rs:1083-1094` ignores the `(info, ..)` that `real_schur::multishift_qr` and `lahqr` return, and `evd_imp` returns `Err` only for non-finite entries (`mod.rs:1021-1027`).
+- **Issue:** If the QR iteration ever stalled, Rust would quietly use an unconverged Schur form, where numpy raises `LinAlgError`. C++ is no better: `fivepoint.cpp:561` never checks `EigenSolver::info()`. The old nalgebra `Schur::try_new` path did report it. Non-convergence on a 10x10 is practically unreachable, and `keep` filters out results that are not essential, so this is a documentation issue.
+- **Suggested fix:** Change the doc to "`None` for a non-finite matrix (faer does not report non-convergence)", or check `‖A V - V Λ‖` cheaply where it matters.
+
+##### [note] A near-real complex pair would be read as two eigenvectors, the second being the imaginary part
+- **Where:** `rust/slamlab-foundations/src/fivepoint.rs:842-860`.
+- **Issue:** `eigen_real` uses `dgeev`'s layout: for a complex pair at columns j and j+1, column j holds Re(v) and column j+1 holds Im(v). The probe confirms faer follows it: `|A z - λ z| = 6e-15` for `z = v_j + i v_{j+1}`. When `|im| ≤ REAL_TOLERANCE·max(1, |λ|)`, both columns pass the test:
+  - Rust then polishes from `Re(v)[6:9]/Re(v)[9]` and from `Im(v)[6:9]/Im(v)[9]`;
+  - Python and C++ use `(v[6:9]/v[9]).real` of the complex vector, which is the same for both conjugates;
+  - on an ordinary pair those starts differ: 1.519 (the Re ratio) and -1.066 (the Im ratio), against 1.304 (the complex ratio).
+
+  A pair with |im| ≤ 1e-10 after a similarity transform would take a perturbation of about 1e-20, so this cannot happen in floating point. `keep` would also reject or deduplicate whatever `polish` produced.
+- **Suggested fix:** For `im[j] > 0`, form the complex column from (j, j+1), take the real part of the complex ratio, and skip column j+1. That matches the references exactly.
+
+##### [note] EPnP backends already diverge on noisy five-point problems (not introduced here)
+- **Where:** `pnp.epnp`, on all compiled backends.
+- **Issue:** Over 1500 generic scenes, the pose differs from Python's by more than 1e-6 in 13 scenes on C++ and 10 on Rust, all with n = 5 and 1e-3 noise. The worst difference is about 1.7, because the choice between approximations flips. Each backend diverges on different scenes (`epnp_generic_divergence.py`).
+
+  The QR emulation shows no such difference on generic scenes, so the cause lies elsewhere: the kernel's symmetric eigenvectors and their near-ties. Lock-step for EPnP therefore holds only for well-determined problems, as the previous run's 12-point check reflected. This is context for the design doc, not a defect in this diff.
+
+#### Checked and fine
+- **Thin factors, caller by caller:**
+  - `null_vector` (pads to 9 rows), the five-point `null_space` (9x9, zero-padded) and the gauge's `null_space` (pads to `cols`) each read rows of a full V;
+  - the triangulation DLT is at least 6x4, since at least two views are enforced;
+  - the gauge's `canonical_span` needs rank ≤ min(m, n);
+  - `svd3` is 3x3;
+  - probed on wide matrices (3x9, 2x7, 1x4, 6x10): reconstruction error ≤ 1.1e-15, and `least_squares` matches the pseudo-inverse to 8e-16.
+- **NaN and infinity:**
+  - `svd` and `eigen_real` reject non-finite input up front;
+  - `singular_values3` returns NaN, which every rank test fails;
+  - `umeyama` and `fit_*` turn `None` into `Degenerate` or `None`, and `project_to_so3` returns NaN;
+  - the public boundaries check finiteness first.
+- **`least_squares`:** the cutoff `σ > rel·σ_max` keeps exactly what numpy's `lstsq` (rcond) and Eigen's threshold keep. It sums over min(m, n) triplets, which is correct for wide systems too.
+- **Real eigenvectors** (`im == 0`): column j is the eigenvector, and its scale cancels in `v[6:9]/v[9]`. Repeated non-defective eigenvalues now give independent vectors, which resolves L7.
+- **The L1/L2 fixture:** a 50-digit oracle; each tolerance states `comparison`, `rtol` (explicitly 0), `atol` and `reason`; it runs on every backend, with seeded scenes. It covers both of run 1's failure modes.
+- **The canonical order, apart from the sign tie:** identical across the three languages.
+  - The first maximum is taken row-major; the sign test treats 0 and NaN alike (negate); the sort is lexicographic.
+  - Solutions are finite, so `partial_cmp` is total. C++'s unstable `std::ranges::sort` only reorders bit-identical keys, and ±0 compares equal everywhere.
+- **The fallible refiner (A2):** Rust and C++ (`Result`) and Python (`except SlamlabError`) all count the failed round, keep the model, and leave `refinement` at the last successful round's summary (`None` if the first round fails). The tests in all three languages assert `(rounds, refined, model) == (1, False, start)`.
+- **`start_motion` returns a `Result`** in C++ and Rust: it propagates through `refine`, and the rank-1 case is tested natively.
+- **H2:** local optimisation's failed draw now propagates with `?`, the same policy as `estimate`'s draws.
+- **The QR fast path on well-posed inputs:** on generic, near-planar and near-collinear EPnP scenes it matches `lstsq` to within 5.4e-8.
+- **The methods are still current for rung 0.** faer is a reasonable pure-Rust stand-in for LAPACK: its SVD is a bidiagonal divide-and-conquer, as LAPACK's `dgesdd` is, and once the input is rescaled (see the must-fix) it is backward stable at every scale.
+
+No repository files were modified.
