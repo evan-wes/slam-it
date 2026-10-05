@@ -18,7 +18,9 @@ filters as ORB-SLAM's matcher does (Mur-Artal et al., T-RO 2015):
   and only matches in its three highest bins are kept; the second and third are dropped when
   they hold under a tenth of the highest (ORB-SLAM's ``ComputeThreeMaxima``). With ORB's
   orientation bins of 12 degrees, a match's histogram bin is exactly
-  ``(angle1 - angle2) mod 30``.
+  ``(angle1 - angle2) mod 30``. (ORB-SLAM's matcher bins at 30 degrees, ``round(rot / 30)``
+  over its float angles, 2.5 times wider; on TUM pairs the recall of true matches is about the
+  same either way.)
 
 Nearest neighbours tie to the lowest second-set index. Every quantity is an integer except
 the ratio test's one float64 product, so the three languages agree exactly.

@@ -46,7 +46,7 @@ will score it.
   TUM-format trajectory, keyframes, points, diagnostics), checked whole before it is written
   and replaced file by file.
 - **Native benchmarks:** `orb_extract` on one closed-form VGA frame in both suites (C++
-  24 ms, Rust 35 ms).
+  23 ms, Rust 35 ms).
 - **`THIRD_PARTY_NOTICES`**, the design doc's file for copied material: OpenCV's ORB pattern
   and stb_image.
 - **A design note**, `docs/notes/front-end.md`.
@@ -57,6 +57,9 @@ will score it.
   absolute-pose demo reads depth with `tum.read_depth` (closes A7). Results are comparable:
   the absolute-pose survey places 32 frames at a median 0.77 deg and 0.98 cm (SIFT: 31,
   0.76 deg, 1.11 cm).
+- **The design doc** records that the front end is rung 0's (the classic rung reuses it),
+  names the native PNG readers in its Languages and Package-layout tables and its error
+  contract, and carries PR 7's deferred panel findings in its open items.
 - **`camera.as_model`** replaces the private `_model_and_intrinsics`.
 - **The fixture generators share one JSON layout** (`tests/fixtures/foundations/_layout.py`).
 - **Rust's fixture tests parse floats exactly** (serde_json's `float_roundtrip`).

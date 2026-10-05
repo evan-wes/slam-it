@@ -33,8 +33,8 @@ suggest starting a session inside slamlab. Consequences:
 | Language | Role |
 |---|---|
 | Python (`src/slamlab`) | Reference implementation of every algorithm; orchestration, evaluation, learned rungs |
-| C++ (`cpp/`, module `slamlab._cpp`) | Performance core: rung 0, edge rung, edge budgets |
-| Rust (`rust/`, module `slamlab_rs`) | Rung 0 and the edge VO only |
+| C++ (`cpp/`, module `slamlab._cpp`) | Performance core: rung 0, edge rung, edge budgets; `eval`'s native PNG readers (`slamlab_eval`) |
+| Rust (`rust/`, module `slamlab_rs`) | Rung 0 and the edge VO only; `eval`'s native PNG readers (`slamlab-eval`) |
 
 ## Conventions
 

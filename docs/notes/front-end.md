@@ -75,7 +75,10 @@ pyramid they span (`scale_factor` and `levels`), so stereo matching never has to
 Lowe's ratio test (0.8), one match per second-set descriptor, and the rotation-consistency
 histogram, which keeps only matches whose orientation change falls in the three most common
 bins. With 12-degree orientation bins, a match's histogram bin is exactly
-`(angle1 - angle2) mod 30`.
+`(angle1 - angle2) mod 30`. ORB-SLAM's matcher bins at 30 degrees instead (`round(rot / 30)`
+over its float angles), 2.5 times wider; on six TUM pairs the recall of true matches is
+0.90-1.00 here against 0.91-1.00 there. The design doc's open items keep it in view for the
+tracker.
 
 ## Stereo
 
@@ -155,7 +158,7 @@ a malformed file with `InvalidInputError`, naming it.
 | Two-view demo (TUM fr1/xyz, frames 0 and 30) | ORB: 237 matches, rotation 0.88 deg, translation direction 2.27 deg; SIFT before: 434, 0.63 and 2.32 |
 | Absolute-pose survey (fr1/xyz) | ORB: 32 placed, median 0.77 deg and 0.98 cm; SIFT before: 31, 0.76 deg and 1.11 cm |
 | EuRoC V1_01, MH_01 | 563 and 529 stereo matches on a rectified frame, at 1.2-2.8 m and 2.6-8.6 m (5th to 95th percentile depth) |
-| Extraction time (640x480, 1000 features) | C++ 24 ms, Rust 35 ms, Python 160 ms |
+| Extraction time (640x480, 1000 features) | C++ 23 ms, Rust 35 ms, Python 160 ms |
 
 The extraction times are first versions: making them fit the `laptop-cpu` budget is PR 9's
 work, with the profiler.
