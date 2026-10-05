@@ -4,6 +4,55 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.3.1.0] - 2026-10-05
+
+Milestone 2's first slice: the front end and the evaluation. Images, ORB features, descriptor
+matching and stereo, in Python, C++ and Rust, bit-identical across the three; the datasets
+the pipeline will run on, read the same way in each; and the metrics and run format that
+will score it.
+
+### Added
+
+- **Fixed-point images** (`foundations.image`): gray conversion (OpenCV's `cvtColor`, bit for
+  bit), a separable integer blur, bilinear resizing, pyramids and remapping, all in integer
+  arithmetic, so the three languages' images are identical. Images cross the bindings as
+  uint8.
+- **ORB, as ORB-SLAM extracts it** (`foundations.orb`): FAST-9 scores (OpenCV's, exactly),
+  30-pixel cells with thresholds 20 and 7, the quadtree, intensity-centroid orientation in
+  30 bins, and rBRIEF with OpenCV's learned pattern (BSD, attributed). `detect`, `extract`,
+  `fast_scores`, `distribute`, `level_budgets`.
+- **Descriptor matching** (`foundations.matching`): Hamming distances and ORB-SLAM's filtered
+  nearest neighbours (distance cap, ratio test, one match per descriptor, the
+  rotation-consistency histogram).
+- **Stereo** (`foundations.stereo`): Bouguet's rectification (OpenCV's rotations to 1e-15),
+  rectification maps through each camera's model, and ORB-SLAM's matching along rectified
+  rows with SAD sub-pixel refinement, disparity and depth.
+- **Datasets** (`eval.images`, `eval.euroc`, `tum.read_depth`): image files on Pillow (in
+  that one module; Pillow is now a runtime dependency), TUM depth maps in metres, and the
+  EuRoC ASL format's stereo frames, calibrations and ground truth.
+- **Native PNG decoders** outside the cores: the C++ `slamlab_eval` library on stb_image
+  (vendored, PNG only) and the Rust `slamlab-eval` crate on `png`, held with Pillow to seven
+  shared PNG fixtures.
+- **Trajectory metrics and the run format** (`eval.metrics`, `eval.runs`): ATE after Sim(3)
+  or SE(3) alignment and RPE, as in the TUM benchmark, and the run folder every backend's
+  pipeline will write (`run.json`, a TUM-format trajectory, keyframes, points,
+  diagnostics).
+- **Native benchmarks:** `orb_extract` on one closed-form VGA frame in both suites (C++
+  24 ms, Rust 35 ms).
+- **`THIRD_PARTY_NOTICES`**, the design doc's file for copied material: OpenCV's ORB pattern
+  and stb_image.
+- **A design note**, `docs/notes/front-end.md`.
+
+### Changed
+
+- **The demos match slamlab's ORB features** in place of their own SIFT (closes A8), and the
+  absolute-pose demo reads depth with `tum.read_depth` (closes A7). Results are comparable:
+  the absolute-pose survey places 32 frames at a median 0.73 deg and 1.07 cm (SIFT: 31,
+  0.76 deg, 1.11 cm).
+- **`camera.as_model`** replaces the private `_model_and_intrinsics`.
+- **The fixture generators share one JSON layout** (`tests/fixtures/foundations/_layout.py`).
+- **Rust's fixture tests parse floats exactly** (serde_json's `float_roundtrip`).
+
 ## [0.3.0.0] - 2026-10-04
 
 Milestone 1 is complete: Python, C++ and Rust have the same capabilities. The Rust core
