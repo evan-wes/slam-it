@@ -32,7 +32,7 @@ are closed, and this PR's own panel findings are resolved.
   reads options through serde.
 - **RANSAC benchmarks** in both native suites: E-RANSAC and PnP RANSAC on one fixed
   synthetic scene. Both cores keep the same inliers in the same number of iterations;
-  C++ takes 2.29 and 2.40 ms, Rust 3.29 and 2.08 ms.
+  C++ takes 2.29 and 2.40 ms, Rust 3.39 and 2.05 ms.
 - **`linalg`** (Rust): faer's SVD (`svd`, `svd3`, `singular_values3`) and real
   eigendecomposition (`eigen_real`) for the whole crate, and `least_squares`, the
   minimum-norm SVD solve with an explicit cutoff, so each caller states whose convention
@@ -52,7 +52,8 @@ are closed, and this PR's own panel findings are resolved.
 - **Nesting summaries implement `solve::Summary` in Rust** by delegation: `ba::Summary` and
   `ransac::RefinedSummary` (panel A5).
 - **Five-point solutions come back in one canonical order in every language** (panel L3):
-  each E signed so its first largest entry is positive, then sorted row-major. RANSAC keeps
+  each E signed so its first entry within 1e-6 of the largest magnitude is positive (a pure
+  translation's skew E ties its two largest entries), then sorted row-major. RANSAC keeps
   the first of equally good models, so the cores' decisions no longer depend on each
   library's null-space basis or Schur form.
 - **The refinement callback may fail, in every language** (panel A2): a failed round is not
@@ -61,7 +62,10 @@ are closed, and this PR's own panel findings are resolved.
 - **Rust's Stewénius solver** takes its eigenvectors from one eigendecomposition per sample,
   as Eigen and numpy do, and **EPnP's beta steps** use Householder QR when clearly full rank;
   together they recover most of the cost of the accurate SVD.
-- **`linalg`** is an optional layer at the bottom of rung 0's contract (panel A4).
+- **`linalg`** is crate-private and an optional layer at the bottom of rung 0's contract
+  (panel A4, A8); the design doc records the cores' runtime dependencies (A7).
+- **Python's `start_motion`** raises for an E that does not decompose, as the compiled cores
+  return an error (A13).
 - **`docs/notes/rust-port.md`** covers the estimation core: the port's choices, the SVD
   finding and the faer switch, the RANSAC benchmarks and the TUM results, and one code-size
   table for all of rung 0, counted by one stated rule.
@@ -72,7 +76,8 @@ are closed, and this PR's own panel findings are resolved.
   SVD squares the condition number, so Rust's Umeyama, and so P3P, returned rotations off by
   up to 0.7 on thin triangles; its dynamic SVD left the 8-point E and F up to 6e-3 from
   Python's on a few near-planar scenes. Every SVD now goes through faer, which matches
-  LAPACK to roundoff on both.
+  LAPACK to roundoff on both, scaling its input into a safe range first as LAPACK does
+  (faer alone gave wrong factors below about 1e-154).
 - **C++ `refine_essential` no longer segfaults** on a match at both epipoles, whose Sampson
   distance is 0 / 0. `epipolar::refine` and `pnp::refine` return the solve's error and the
   public refinements raise it as `InvalidInputError`, as Python and Rust do.

@@ -75,6 +75,12 @@ The ladder spans compute budgets. Every rung stands on rung 0.
 | **C++** | The performance core: rung 0, the edge rung, the edge budgets, and dense-BA kernels if profiling calls for them. Showing C++ is a goal in its own right. |
 | **Rust** | A chosen subset: rung 0 and the edge VO. Kept parallel and off the critical path: a rung never waits for its Rust modules, but a Rust module, once it exists, keeps pace with its reference. |
 
+**The cores' runtime dependencies.** C++: Eigen. Rust: nalgebra, the matrix type, and faer for
+every SVD and the general eigendecomposition, single-threaded, behind the crate-private
+`linalg` (nalgebra's SVDs are not backward stable; see the Rust port's note). Adding a runtime
+library to a core is a change to this document first, as a runtime dependency of the Python
+package is.
+
 **Parity.** Shared fixtures (fixed inputs, expected outputs) live in `tests/fixtures/`. Every C++
 and Rust implementation is checked against the Python reference. All three are benchmarked under
 the same compute budgets, which gives a "same algorithm, three languages" comparison of speed,
@@ -655,7 +661,9 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
   - **Why the refinement rounds stopped (L9, run 2).** On planar scenes the cap of four
     rounds, not stable inliers, ends most runs, and `RefinedSummary` cannot say which
     (`rounds == REFINE_ROUNDS` is either). Add a stop reason (cost, stable, cap, too few
-    inliers) when a caller needs it, with the summary-convention's termination enum.
+    inliers, refinement failed) when a caller needs it, with the summary-convention's
+    termination enum. Since PR 6 the refiner may fail (panel A2), and a failure in round 2 or
+    later reads as "no improvement" (PR 6's panel, run 2, A6).
   - **One feature front end (A8).** Each demo script has its own SIFT and ratio-test
     matching. Fold them into the edge rung's front end when it lands (milestone 2), or into
     one shared script helper if a third demo comes first.
@@ -666,6 +674,18 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
     Python's `np.linalg.solve` and Rust's `full_piv_lu().solve` stop only on an exactly zero
     pivot. Near-singular Jacobians therefore polish one step less in C++. Align it if exact
     three-way agreement on near-degenerate triangles matters.
+  - **EPnP agrees across the cores only on well-determined problems (L13, run 2).** On noisy
+    five-point problems, and on point clouds a few micrometres to centimetres across, C++ and
+    Rust already differ from Python on about 1% and about 19% of scenes respectively: the choice
+    between EPnP's approximations, and Gauss-Newton's accept test, amplify roundoff in the
+    kernel's eigenvectors. Every backend is accurate on such scenes to their conditioning; only
+    the decisions differ. A tie margin on the approximations' errors would be the place to
+    start if it matters.
+  - **A stack-only 3x3 SVD before the edge rung (A11, run 2).** Every 3x3 SVD in Rust now
+    allocates (a faer call through `linalg::svd3`), and the edge VO calls `project_to_so3` and
+    Umeyama per frame. Give `svd3` a fixed-size, backward-stable path (one-sided Jacobi, as
+    Eigen's `JacobiSVD` uses for fixed sizes) behind the same signature, with the edge
+    milestone.
 - **Deferred from PR 5's review panel**
   ([report](../reviews/2026-10-04-feature-rust-core.md)):
   - Closed by PR 6: **nested summaries and the Rust `Summary` trait (A5).** `ba::Summary`

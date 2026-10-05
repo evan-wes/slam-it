@@ -43,13 +43,18 @@ the code rather than the library, and the cores read alike. It stores dense matr
 column-major, like Eigen's default, so the Schur complement's upper-triangle updates walk
 memory in the same order as in C++.
 
-nalgebra's SVDs turned out not to be backward stable (PR 6's panel, L1 and L2), so every SVD
-in the crate, and the one general eigendecomposition, goes through `linalg`, which calls faer
-(a pure-Rust library benchmarked against LAPACK): its low-level routines, sequential, with
-thin factors and a workspace sized per call. nalgebra stays the matrix type; each call copies
-across. The thin SVD returns as many right singular vectors as the matrix has rows, so the
-null spaces that need all of them (the gauge's, the 8-point system's) pad a wide matrix with
-zero rows first, which changes neither its row space nor its right singular vectors.
+nalgebra's SVDs turned out not to be backward stable (PR 6's panel, L1 and L2), so every SVD in the
+crate, and the one general eigendecomposition, goes through `linalg`, which calls faer (a pure-Rust
+library benchmarked against LAPACK): its low-level routines, sequential, with thin factors and a
+workspace sized per call. faer works on a matrix as given, so `linalg` first scales one whose
+largest entry is outside [2^-400, 2^400] by a power of two, as LAPACK's `dlascl` does; without it,
+entries below about 1e-154 gave silently wrong factors (PR 6's panel, run 2, L8). nalgebra stays the
+matrix type; each call copies across. faer picks its SIMD kernels when it runs, so the same build
+can round differently on different CPUs, where Eigen fixes its code path at compile time: values
+stay within every tolerance, but a decision at a near-tie could differ between machines. The thin
+SVD returns as many right singular vectors as the matrix has rows, so the null spaces that need all
+of them (the gauge's, the 8-point system's) pad a wide matrix with zero rows first, which changes
+neither its row space nor its right singular vectors.
 
 **Templates and concepts became traits.** The C++ solver is a template over a `Problem`
 concept; the Rust one is generic over a `Problem` trait with associated `State` and `System`
@@ -84,9 +89,12 @@ is undefined behaviour.
   `linalg::least_squares` takes it explicitly: EPnP uses numpy's `lstsq` default
   (`max(m, n) ε`), since Python is the reference, and the five-point polish uses Eigen's
   `JacobiSVD` one (`min(m, n) ε`), as the C++ core does. EPnP's beta polish solves its
-  several hundred 6x4 steps per RANSAC run by Householder QR when the Jacobian is clearly
-  full rank (the SVD's answer to roundoff, without faer's per-call cost), and by that SVD
-  only near rank deficiency.
+  several hundred 6x4 steps per RANSAC run by Householder QR when R's diagonal stays within
+  1e-4 of its largest entry (without faer's per-call cost), and by that SVD otherwise. QR
+  agrees with the SVD to within ε κ, and an unpivoted diagonal does not bound κ, so the cutoff
+  is a measured choice: it matched `lstsq` on every well-posed EPnP scene tried, and differed
+  only on scenes a few micrometres to centimetres across, where every backend, C++ included,
+  already disagrees with Python at roundoff.
 - Ties go to the first maximum, as Eigen's `maxCoeff` and numpy's `argmax` pick it.
   nalgebra's `iamax` agrees on vectors. On a matrix, Eigen scans column-major and numpy
   (on C-ordered arrays) row-major; P3P's line split walks the entries column-major, as C++
@@ -94,8 +102,10 @@ is undefined behaviour.
   are parallel).
 - The five-point solvers find the same solutions in every library, in an order that follows
   each library's null-space basis and Schur form. All three cores therefore return them in
-  one canonical order (each E signed so its first largest entry is positive, then sorted
-  row-major), since RANSAC keeps the first of equally good models.
+  one canonical order (each E signed so its first entry, row by row, within 1e-6 of the
+  largest magnitude is positive, then sorted row-major), since RANSAC keeps the first of
+  equally good models. The tie margin matters: a pure translation's E is skew-symmetric, and
+  its two largest entries are equal with opposite signs.
 
 **Enums carry their names.** Each crossing enum (camera models, NLS methods, losses and
 terminations, BA gauges, RANSAC's terminations, the minimal solvers, two-view's models and
@@ -197,8 +207,8 @@ iterations, PnP RANSAC 350 after 17.
 
 | Benchmark | C++ | Rust |
 |---|---|---|
-| E-RANSAC (Stewénius, refined) | 2.29 ms | 3.29 ms |
-| PnP RANSAC (Ding's P3P, EPnP refits, refined) | 2.40 ms | 2.08 ms |
+| E-RANSAC (Stewénius, refined) | 2.29 ms | 3.39 ms |
+| PnP RANSAC (Ding's P3P, EPnP refits, refined) | 2.40 ms | 2.05 ms |
 
 With nalgebra's SVDs Rust took 2.69 and 2.25 ms. faer's SVD is accurate where nalgebra's was
 not, but on the small matrices RANSAC decomposes (3x3 to 20x9) it costs about twice as much
