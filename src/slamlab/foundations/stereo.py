@@ -1,4 +1,4 @@
-"""Rectified stereo: Bouguet's rectification of a calibrated pair.
+"""Rectified stereo: Bouguet's rectification, and ORB-SLAM's matching along rows.
 
 **Rectification** turns both cameras about their centres so that their image rows become
 epipolar lines: a point at row ``v`` in the left image lies on row ``v`` in the right one,
@@ -24,21 +24,45 @@ image (through each camera's own model, distortion included), for
 languages to rounding (the rotations come from SO(3)'s exponential and logarithm); the
 remap's rounding to a 32nd of a pixel makes the rectified images agree exactly but for a map
 value within rounding of a 64th of a pixel, which is vanishingly rare.
+
+**Matching** (:func:`match`) pairs ORB features across a rectified pair as ORB-SLAM's
+``ComputeStereoMatches`` does (Mur-Artal and Tardos, T-RO 2017):
+
+1. A left keypoint's candidates are the right keypoints within one pyramid level of it,
+   within ``band`` times the right keypoint's level scale of its row, and at most
+   ``f`` columns to its left (a point no nearer than the baseline). The nearest by Hamming
+   distance is kept if it is under ``max_distance`` (ORB-SLAM's 75, midway between its
+   matcher's thresholds).
+2. The column is refined on the left keypoint's pyramid level: a ``2 window + 1`` square
+   patch around the left keypoint, minus its centre value, slides along the right row over
+   ``2 search + 1`` integer offsets around the right keypoint; the offset with the smallest
+   sum of absolute differences wins (it must not be an end), and a parabola through it and
+   its neighbours gives the sub-pixel offset ``(d1 - d3) / (2 (d1 + d3 - 2 d2))``, kept
+   within one pixel.
+3. The disparity ``x_left - x_right`` must lie in ``(0, f)``; the depth is
+   ``f baseline / disparity``.
+4. Matches whose best sum exceeds ``outlier_factor`` times the median (ORB-SLAM's 2.1) are
+   dropped.
+
+The sums are integers, and every float is one IEEE operation on exact inputs, so the three
+languages find the same matches with the same depths.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slamlab import backends
-from slamlab.foundations import camera, se3, so3
-from slamlab.foundations.arrays import MAX_IMAGE_SIDE, as_batch, as_real
+from slamlab.foundations import camera, orb, se3, so3
+from slamlab.foundations.arrays import MAX_IMAGE_SIDE, as_batch, as_image, as_real
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
+from slamlab.foundations.image import level_shapes, pyramid
+from slamlab.foundations.matching import distances
 
 MIN_BASELINE = 1e-9
 """Camera centres closer than this (in the translation's units) count as coinciding."""
@@ -81,6 +105,79 @@ class Rectification:
     right_intrinsics: NDArray[np.float64]
 
 
+@dataclass(frozen=True)
+class Options:
+    """Stereo-matching settings (ORB-SLAM's).
+
+    Attributes
+    ----------
+    max_distance : int
+        A match's Hamming distance must be below this, from 1 to 257.
+    band : float
+        The row band, in multiples of the right keypoint's level scale, positive.
+    window : int
+        The SAD patch's half-width, from 1 to :data:`slamlab.foundations.orb.EDGE_THRESHOLD`.
+    search : int
+        The SAD search's half-range, from 2 to 64.
+    outlier_factor : float
+        Matches whose best sum exceeds this times the median are dropped; at least 1.
+    """
+
+    max_distance: int = 75
+    band: float = 2.0
+    window: int = 5
+    search: int = 5
+    outlier_factor: float = 2.1
+
+    def __post_init__(self) -> None:
+        """Check the settings.
+
+        Raises
+        ------
+        slamlab.foundations.errors.InvalidInputError
+            If a setting is out of range.
+        """
+        if not 1 <= self.max_distance <= 8 * orb.DESCRIPTOR_BYTES + 1:
+            raise InvalidInputError(f"max_distance: must be from 1 to 257, got {self.max_distance}")
+        if not (math.isfinite(self.band) and self.band > 0.0):
+            raise InvalidInputError(f"band: must be positive and finite, got {self.band}")
+        if not 1 <= self.window <= orb.EDGE_THRESHOLD:
+            raise InvalidInputError(
+                f"window: must be from 1 to {orb.EDGE_THRESHOLD}, got {self.window}"
+            )
+        if not 2 <= self.search <= 64:  # a parabola needs both neighbours
+            raise InvalidInputError(f"search: must be from 2 to 64, got {self.search}")
+        if not (math.isfinite(self.outlier_factor) and self.outlier_factor >= 1.0):
+            raise InvalidInputError(
+                f"outlier_factor: must be at least 1, got {self.outlier_factor}"
+            )
+
+
+@dataclass(frozen=True)
+class StereoMatches:
+    """Left keypoints matched along their rows, ordered by left index.
+
+    Attributes
+    ----------
+    left : ndarray of int64, shape (K,)
+        The left keypoints' indices.
+    right : ndarray of int64, shape (K,)
+        Their right keypoints' indices.
+    right_x : ndarray of float64, shape (K,)
+        The refined right column, in full-image pixels.
+    disparity : ndarray of float64, shape (K,)
+        ``x_left - right_x``, positive.
+    depth : ndarray of float64, shape (K,)
+        ``focal baseline / disparity``, in the baseline's units.
+    """
+
+    left: NDArray[np.int64]
+    right: NDArray[np.int64]
+    right_x: NDArray[np.float64]
+    disparity: NDArray[np.float64]
+    depth: NDArray[np.float64]
+
+
 class Implementation(Protocol):
     """The functions a compiled backend's ``foundations.stereo`` submodule provides.
 
@@ -112,6 +209,21 @@ class Implementation(Protocol):
         cols: int,
     ) -> NDArray[np.float64]:
         """Return the (rows, cols, 2) map from rectified pixels to the original image."""
+        ...
+
+    def match(  # noqa: PLR0913 -- two images, their features, the camera, the settings
+        self,
+        *,
+        left_image: NDArray[np.uint8],
+        right_image: NDArray[np.uint8],
+        left: dict[str, Any],
+        right: dict[str, Any],
+        focal: float,
+        baseline: float,
+        orb_options: dict[str, Any],
+        options: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Match features along rows; return a dict of :class:`StereoMatches`' fields."""
         ...
 
 
@@ -361,3 +473,249 @@ def rectification_maps(
         rectified, shape=(rows, cols), backend=backend,
     )  # fmt: skip
     return left, right
+
+
+@dataclass(frozen=True)
+class _Side:
+    """One camera's features, as the matcher reads them."""
+
+    xy: NDArray[np.float64]
+    level: NDArray[np.int64]
+    level_xy: NDArray[np.int64]
+    descriptors: NDArray[np.uint8]
+
+
+def _refine(
+    left_level: NDArray[np.int64],
+    right_level: NDArray[np.int64],
+    left_pixel: tuple[int, int],
+    right_column: int,
+    options: Options,
+) -> tuple[float, int] | None:
+    """Slide the left patch along the right row; return the sub-pixel offset and its sum."""
+    w, reach = options.window, options.search
+    x, y = left_pixel
+    if right_column - reach - w < 0 or right_column + reach + w >= right_level.shape[1]:
+        return None
+    patch = left_level[y - w : y + w + 1, x - w : x + w + 1] - left_level[y, x]
+    sums = []
+    for step in range(-reach, reach + 1):
+        c = right_column + step
+        other = right_level[y - w : y + w + 1, c - w : c + w + 1] - right_level[y, c]
+        sums.append(int(np.abs(patch - other).sum()))
+    best = int(np.argmin(sums))  # ties: the leftmost offset
+    if best in (0, 2 * reach):
+        return None
+    d1, d2, d3 = sums[best - 1], sums[best], sums[best + 1]
+    curvature = 2 * (d1 + d3 - 2 * d2)
+    if curvature == 0:  # a flat valley: no sub-pixel position
+        return None
+    delta = (d1 - d3) / curvature
+    if not -1.0 <= delta <= 1.0:
+        return None
+    return (best - reach) + delta, d2
+
+
+def _match(  # noqa: PLR0913 -- two images, their features, the camera, the settings
+    images: tuple[NDArray[np.uint8], NDArray[np.uint8]],
+    left: _Side,
+    right: _Side,
+    *,
+    focal: float,
+    baseline: float,
+    orb_options: orb.Options,
+    options: Options,
+) -> StereoMatches:
+    """Match features along rows (reference)."""
+    left_levels = [
+        p.astype(np.int64) for p in pyramid(images[0], orb_options.levels, orb_options.scale_factor)
+    ]
+    right_levels = [
+        p.astype(np.int64) for p in pyramid(images[1], orb_options.levels, orb_options.scale_factor)
+    ]
+    scales = [1.0]
+    for _ in range(1, orb_options.levels):
+        scales.append(scales[-1] * orb_options.scale_factor)
+    scale = np.asarray(scales)
+    hamming = distances(left.descriptors, right.descriptors)
+    found: list[tuple[int, int, float, float, float, int]] = []
+    for i in range(len(left.level)):
+        x_left, y_left = float(left.xy[i, 0]), float(left.xy[i, 1])
+        lvl = int(left.level[i])
+        candidates = (
+            (np.abs(right.level - lvl) <= 1)
+            & (np.abs(right.xy[:, 1] - y_left) <= options.band * scale[right.level])
+            & (right.xy[:, 0] >= x_left - focal)
+            & (right.xy[:, 0] <= x_left)
+            & (hamming[i] < options.max_distance)
+        )
+        if not np.any(candidates):
+            continue
+        j = int(np.flatnonzero(candidates)[np.argmin(hamming[i][candidates])])
+        right_column = math.floor(float(right.xy[j, 0]) / scales[lvl] + 0.5)
+        x, y = int(left.level_xy[i, 0]), int(left.level_xy[i, 1])
+        refined = _refine(left_levels[lvl], right_levels[lvl], (x, y), right_column, options)
+        if refined is None:
+            continue
+        offset, cost = refined
+        right_x = scales[lvl] * (right_column + offset)
+        disparity = x_left - right_x
+        if not 0.0 < disparity < focal:
+            continue
+        found.append((i, j, right_x, disparity, focal * baseline / disparity, cost))
+    if found:
+        costs = sorted(f[5] for f in found)
+        limit = options.outlier_factor * costs[len(costs) // 2]
+        found = [f for f in found if f[5] <= limit]
+    return StereoMatches(
+        left=np.array([f[0] for f in found], dtype=np.int64),
+        right=np.array([f[1] for f in found], dtype=np.int64),
+        right_x=np.array([f[2] for f in found], dtype=np.float64),
+        disparity=np.array([f[3] for f in found], dtype=np.float64),
+        depth=np.array([f[4] for f in found], dtype=np.float64),
+    )
+
+
+def _as_side(features: orb.Features, shapes: list[tuple[int, int]], name: str) -> _Side:
+    """Check one camera's features against the pyramid they came from."""
+    keypoints = features.keypoints
+    xy = as_real(keypoints.xy, f"{name}.xy")
+    count = len(xy)
+    level = np.asarray(keypoints.level)
+    level_xy = np.asarray(keypoints.level_xy)
+    descriptors = np.asarray(features.descriptors)
+    if (
+        xy.shape != (count, 2)
+        or level.shape != (count,)
+        or level_xy.shape != (count, 2)
+        or not np.can_cast(level.dtype, np.int64)
+        or not np.can_cast(level_xy.dtype, np.int64)
+        or descriptors.shape != (count, orb.DESCRIPTOR_BYTES)
+        or descriptors.dtype != np.uint8
+    ):
+        raise InvalidInputError(f"{name}: expected one keypoint and descriptor per row")
+    if count and (level.min() < 0 or level.max() >= len(shapes)):
+        raise InvalidInputError(f"{name}: levels must lie in [0, {len(shapes)})")
+    return _Side(
+        xy=xy,
+        level=level.astype(np.int64),
+        level_xy=level_xy.astype(np.int64),
+        descriptors=np.ascontiguousarray(descriptors),
+    )
+
+
+def _check_inside(side: _Side, shapes: list[tuple[int, int]], margin: int, name: str) -> None:
+    """Check every keypoint's level pixel lies at least `margin` inside its level."""
+    for lvl, (rows, cols) in enumerate(shapes):
+        pixels = side.level_xy[side.level == lvl]
+        if len(pixels) and not (
+            np.all(pixels[:, 0] >= margin)
+            and np.all(pixels[:, 0] < cols - margin)
+            and np.all(pixels[:, 1] >= margin)
+            and np.all(pixels[:, 1] < rows - margin)
+        ):
+            raise InvalidInputError(
+                f"{name}: keypoints must lie at least {margin} pixels inside their level"
+            )
+
+
+def _decode_matches(raw: dict[str, Any], codes: backends.Codes) -> StereoMatches:
+    """Rebuild :class:`StereoMatches` from a compiled backend's dict."""
+    del codes
+    return StereoMatches(
+        left=np.asarray(raw["left"], dtype=np.int64),
+        right=np.asarray(raw["right"], dtype=np.int64),
+        right_x=np.asarray(raw["right_x"], dtype=np.float64),
+        disparity=np.asarray(raw["disparity"], dtype=np.float64),
+        depth=np.asarray(raw["depth"], dtype=np.float64),
+    )
+
+
+def match(  # noqa: PLR0913 -- two images, their features, the camera, the settings
+    left_image: ArrayLike,
+    right_image: ArrayLike,
+    left: orb.Features,
+    right: orb.Features,
+    *,
+    focal: float,
+    baseline: float,
+    orb_options: orb.Options | None = None,
+    options: Options | None = None,
+    backend: str = "python",
+) -> StereoMatches:
+    """Match ORB features along the rows of a rectified pair (ORB-SLAM's stereo matching).
+
+    Parameters
+    ----------
+    left_image, right_image : array_like of uint8, shape (H, W)
+        The rectified images.
+    left, right : slamlab.foundations.orb.Features
+        Their features, extracted with `orb_options`.
+    focal : float
+        The rectified focal length, in pixels (:attr:`Rectification.intrinsics`' first).
+    baseline : float
+        The distance between the camera centres; depths come out in its units.
+    orb_options : slamlab.foundations.orb.Options, optional
+        The settings the features were extracted with (for their pyramid).
+    options : Options, optional
+        The matching settings (default: ORB-SLAM's).
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    StereoMatches
+        The matched left keypoints, with their right column, disparity and depth.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If an image is malformed or the two differ in shape, `focal` or `baseline` is not
+        positive and finite, a feature set is malformed, or a left keypoint lies closer than
+        ``options.window`` to its level's border.
+    """
+    first = as_image(left_image, "left_image")
+    second = as_image(right_image, "right_image")
+    if first.shape != second.shape:
+        raise InvalidInputError(
+            f"right_image: expected the left image's shape {first.shape}, got {second.shape}"
+        )
+    for name, value in (("focal", focal), ("baseline", baseline)):
+        if not (math.isfinite(value) and value > 0.0):
+            raise InvalidInputError(f"{name}: must be positive and finite, got {value}")
+    extraction = orb.Options() if orb_options is None else orb_options
+    settings = Options() if options is None else options
+    shapes = level_shapes(
+        first.shape[0], first.shape[1], extraction.levels, extraction.scale_factor
+    )
+    sides = (_as_side(left, shapes, "left"), _as_side(right, shapes, "right"))
+    _check_inside(sides[0], shapes, settings.window, "left")
+    crossing = [
+        {"xy": s.xy, "level": s.level, "level_xy": s.level_xy, "descriptors": s.descriptors}
+        for s in sides
+    ]
+    return backends.call(
+        backend,
+        __name__,
+        "match",
+        reference=lambda: _match(
+            (first, second),
+            sides[0],
+            sides[1],
+            focal=float(focal),
+            baseline=float(baseline),
+            orb_options=extraction,
+            options=settings,
+        ),
+        arguments={
+            "left_image": first,
+            "right_image": second,
+            "left": crossing[0],
+            "right": crossing[1],
+            "focal": float(focal),
+            "baseline": float(baseline),
+            "orb_options": asdict(extraction),
+            "options": asdict(settings),
+        },
+        decode=_decode_matches,
+    )

@@ -1,16 +1,19 @@
 /// @file
 /// @brief Rectified stereo: the C++ core's mirror of `slamlab.foundations.stereo`.
 ///
-/// Bouguet's rectification of a calibrated pair, and the maps that resample each original
-/// image into the rectified view (the Python module's docstring defines both).
+/// Bouguet's rectification of a calibrated pair, the maps that resample each original image
+/// into the rectified view, and ORB-SLAM's matching along rectified rows (the Python module's
+/// docstring defines each).
 #pragma once
 
 #include <Eigen/Core>
 #include <cstdint>
+#include <vector>
 
 #include "slamlab/foundations/camera.hpp"
 #include "slamlab/foundations/error.hpp"
 #include "slamlab/foundations/image.hpp"
+#include "slamlab/foundations/orb.hpp"
 
 /// @brief Rectified stereo.
 namespace slamlab::foundations::stereo {
@@ -61,5 +64,54 @@ struct Rectification {
     camera::Model model, const Eigen::Ref<const Eigen::VectorXd>& intrinsics,
     const Eigen::Matrix3d& rotation, const Eigen::Vector4d& rectified, std::int64_t rows,
     std::int64_t cols);
+
+/// @brief Stereo-matching settings (`slamlab.foundations.stereo.Options`, ORB-SLAM's).
+struct MatchOptions {
+  /// @brief A match's Hamming distance must be below this, from 1 to 257.
+  std::int64_t max_distance{75};
+  /// @brief The row band, in multiples of the right keypoint's level scale, positive.
+  double band{2.0};
+  /// @brief The SAD patch's half-width, from 1 to `orb::kEdgeThreshold`.
+  std::int64_t window{5};
+  /// @brief The SAD search's half-range, from 2 to 64.
+  std::int64_t search{5};
+  /// @brief Matches whose best sum exceeds this times the median are dropped; at least 1.
+  double outlier_factor{2.1};
+};
+
+/// @brief One left keypoint matched along its row.
+struct StereoMatch {
+  /// @brief The left keypoint's index.
+  std::int64_t left{0};
+  /// @brief The right keypoint's index.
+  std::int64_t right{0};
+  /// @brief The refined right column, in full-image pixels.
+  double right_x{0.0};
+  /// @brief `x_left - right_x`, positive.
+  double disparity{0.0};
+  /// @brief `focal baseline / disparity`.
+  double depth{0.0};
+};
+
+/// @brief Check stereo-matching settings.
+/// @param options The settings.
+/// @return Nothing, or `InvalidInput` naming the first one out of range.
+[[nodiscard]] Result<void> check_options(const MatchOptions& options);
+
+/// @brief Match ORB features along the rows of a rectified pair (ORB-SLAM's stereo matching).
+/// @param left_image The rectified left image.
+/// @param right_image The rectified right image, of the same shape.
+/// @param left The left features, extracted with `orb_options`.
+/// @param right The right features.
+/// @param focal The rectified focal length, in pixels.
+/// @param baseline The distance between the camera centres.
+/// @param orb_options The settings the features were extracted with.
+/// @param options The matching settings.
+/// @return The matches, by left index; `InvalidInput` for malformed images, features or
+///         settings, or a left keypoint closer than `options.window` to its level's border.
+[[nodiscard]] Result<std::vector<StereoMatch>> match(
+    const image::Image& left_image, const image::Image& right_image, const orb::Features& left,
+    const orb::Features& right, double focal, double baseline, const orb::Options& orb_options,
+    const MatchOptions& options);
 
 }  // namespace slamlab::foundations::stereo

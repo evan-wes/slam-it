@@ -3,6 +3,7 @@
 ///        parity fixture `tests/fixtures/foundations/stereo.json` that the Python and Rust tests
 ///        share, and the core's own input checks.
 #include <Eigen/Core>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -11,7 +12,9 @@
 #include <vector>
 
 #include "fixture_support.hpp"
+#include "image_support.hpp"
 #include "slamlab/foundations/camera.hpp"
+#include "slamlab/foundations/orb.hpp"
 #include "slamlab/foundations/stereo.hpp"
 #include "test_support.hpp"
 
@@ -110,6 +113,60 @@ void check_fixture(int& failures) {
   }
 }
 
+/// @brief Read a match case's features (responses and angles, unused, are zero).
+/// @param fields The dict of `xy`, `level`, `level_xy` and `descriptors`.
+/// @return The features.
+slamlab::foundations::orb::Features read_features(const nlohmann::json& fields) {
+  namespace orb = slamlab::foundations::orb;
+  orb::Features out;
+  for (std::size_t i = 0; i < fields["level"].size(); ++i) {
+    out.keypoints.push_back({.xy = fields["xy"][i].get<std::array<double, 2>>(),
+                             .level = fields["level"][i].get<std::int64_t>(),
+                             .level_xy = fields["level_xy"][i].get<std::array<std::int64_t, 2>>(),
+                             .response = 0,
+                             .angle = 0});
+    out.descriptors.push_back(fields["descriptors"][i].get<orb::Descriptor>());
+  }
+  return out;
+}
+
+/// @brief Check every match case, exactly.
+/// @param failures Running failure count.
+void check_matches(int& failures) {
+  const nlohmann::json cases =
+      slamlab::testing::load_fixture("foundations/stereo.json")["functions"]["match"]["cases"];
+  for (const auto& c : cases) {
+    const auto& in = c["input"];
+    const auto& o = in[6];
+    const auto& s = in[7];
+    const slamlab::foundations::orb::Options extraction{
+        .n_features = o["n_features"].get<std::int64_t>(),
+        .levels = o["levels"].get<std::int64_t>(),
+        .scale_factor = o["scale_factor"].get<double>(),
+        .fast_threshold = o["fast_threshold"].get<std::int64_t>(),
+        .min_fast_threshold = o["min_fast_threshold"].get<std::int64_t>()};
+    const stereo::MatchOptions settings{.max_distance = s["max_distance"].get<std::int64_t>(),
+                                        .band = s["band"].get<double>(),
+                                        .window = s["window"].get<std::int64_t>(),
+                                        .search = s["search"].get<std::int64_t>(),
+                                        .outlier_factor = s["outlier_factor"].get<double>()};
+    const auto got =
+        stereo::match(slamlab::testing::read_image(in[0]), slamlab::testing::read_image(in[1]),
+                      read_features(in[2]), read_features(in[3]), in[4].get<double>(),
+                      in[5].get<double>(), extraction, settings);
+    const auto& e = c["expected"];
+    bool ok = got.has_value() && got->size() == e["left"].size();
+    for (std::size_t k = 0; ok && k < got->size(); ++k) {
+      const stereo::StereoMatch& m = (*got)[k];
+      ok = m.left == e["left"][k].get<std::int64_t>() &&
+           m.right == e["right"][k].get<std::int64_t>() &&
+           m.right_x == e["right_x"][k].get<double>() &&
+           m.disparity == e["disparity"][k].get<double>() && m.depth == e["depth"][k].get<double>();
+    }
+    expect(ok, "match matches the fixture", failures);
+  }
+}
+
 /// @brief Check that vertical, coincident and malformed pairs are refused.
 /// @param failures Running failure count.
 void check_rejections(int& failures) {
@@ -137,6 +194,7 @@ void check_rejections(int& failures) {
 int run() {
   int failures = 0;
   check_fixture(failures);
+  check_matches(failures);
   check_rejections(failures);
   return slamlab::testing::finish("foundations/stereo", failures);
 }

@@ -1,14 +1,16 @@
 //! Rectified stereo: the Rust core's mirror of `slamlab.foundations.stereo`.
 //!
-//! Bouguet's rectification of a calibrated pair, and the maps that resample each original
-//! image into the rectified view (the Python module's docstring defines both).
+//! Bouguet's rectification of a calibrated pair, the maps that resample each original image
+//! into the rectified view, and ORB-SLAM's matching along rectified rows (the Python module's
+//! docstring defines each).
 
 use nalgebra::{Matrix3, Matrix4, Vector2, Vector3, Vector4};
 
 use crate::camera::{self, Model};
-use crate::error::{ErrorKind, Result, fail};
-use crate::image::MAX_SIDE;
-use crate::{se3, so3};
+use crate::error::{ErrorKind, Result, fail, fail_setting};
+use crate::image::{self, Image, MAX_SIDE};
+use crate::orb::{self, Features, Keypoint};
+use crate::{matching, se3, so3};
 
 /// Camera centres closer than this count as coinciding.
 pub const MIN_BASELINE: f64 = 1e-9;
@@ -204,6 +206,349 @@ pub fn rectification_map(
     Ok(out)
 }
 
+/// Stereo-matching settings (`slamlab.foundations.stereo.Options`, ORB-SLAM's).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MatchOptions {
+    /// A match's Hamming distance must be below this, from 1 to 257.
+    pub max_distance: i64,
+    /// The row band, in multiples of the right keypoint's level scale, positive.
+    pub band: f64,
+    /// The SAD patch's half-width, from 1 to [`orb::EDGE_THRESHOLD`].
+    pub window: usize,
+    /// The SAD search's half-range, from 2 to 64.
+    pub search: usize,
+    /// Matches whose best sum exceeds this times the median are dropped; at least 1.
+    pub outlier_factor: f64,
+}
+
+impl Default for MatchOptions {
+    /// ORB-SLAM's settings.
+    fn default() -> Self {
+        Self {
+            max_distance: 75,
+            band: 2.0,
+            window: 5,
+            search: 5,
+            outlier_factor: 2.1,
+        }
+    }
+}
+
+/// One left keypoint matched along its row.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StereoMatch {
+    /// The left keypoint's index.
+    pub left: usize,
+    /// The right keypoint's index.
+    pub right: usize,
+    /// The refined right column, in full-image pixels.
+    pub right_x: f64,
+    /// `x_left - right_x`, positive.
+    pub disparity: f64,
+    /// `focal baseline / disparity`.
+    pub depth: f64,
+}
+
+/// Checks stereo-matching settings.
+///
+/// # Arguments
+///
+/// * `options` - The settings.
+///
+/// # Errors
+///
+/// `InvalidInput` naming the first one out of range.
+pub fn check_options(options: &MatchOptions) -> Result<()> {
+    if !(1..=257).contains(&options.max_distance) {
+        return fail_setting(
+            "max_distance",
+            "must be from 1 to 257",
+            options.max_distance,
+        );
+    }
+    if !(options.band.is_finite() && options.band > 0.0) {
+        return fail_setting("band", "must be positive and finite", options.band);
+    }
+    if !(1..=orb::EDGE_THRESHOLD).contains(&options.window) {
+        return fail_setting("window", "must be from 1 to 19", options.window);
+    }
+    if !(2..=64).contains(&options.search) {
+        return fail_setting("search", "must be from 2 to 64", options.search);
+    }
+    if !(options.outlier_factor.is_finite() && options.outlier_factor >= 1.0) {
+        return fail_setting(
+            "outlier_factor",
+            "must be at least 1",
+            options.outlier_factor,
+        );
+    }
+    Ok(())
+}
+
+/// Checks one camera's features: one descriptor per keypoint, levels in range.
+///
+/// # Arguments
+///
+/// * `features` - The features.
+/// * `levels` - The pyramid's levels.
+/// * `name` - The side's name, for the message.
+///
+/// # Errors
+///
+/// `InvalidInput` if either fails.
+fn check_side(features: &Features, levels: usize, name: &str) -> Result<()> {
+    if features.descriptors.len() != features.keypoints.len() {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!("{name}: expected one keypoint and descriptor per row"),
+        );
+    }
+    if features.keypoints.iter().any(|k| k.level >= levels) {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!("{name}: levels must lie in [0, {levels})"),
+        );
+    }
+    Ok(())
+}
+
+/// Checks every left keypoint lies at least `margin` inside its level.
+///
+/// # Arguments
+///
+/// * `features` - The left features, levels checked.
+/// * `levels` - The pyramid.
+/// * `margin` - The SAD window's half-width.
+///
+/// # Errors
+///
+/// `InvalidInput` for a keypoint too close to its level's border.
+fn check_inside(features: &Features, levels: &[Image], margin: usize) -> Result<()> {
+    for k in &features.keypoints {
+        let level = &levels[k.level];
+        let [x, y] = k.level_xy;
+        if x < margin || x + margin >= level.cols || y < margin || y + margin >= level.rows {
+            return fail(
+                ErrorKind::InvalidInput,
+                format!("left: keypoints must lie at least {margin} pixels inside their level"),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Slides the left patch along the right row and fits a parabola to the best sum.
+///
+/// # Arguments
+///
+/// * `left` - The left level.
+/// * `right` - The right level.
+/// * `pixel` - The left keypoint's level pixel `(x, y)`.
+/// * `column` - The right keypoint's column on that level.
+/// * `options` - The settings.
+///
+/// # Returns
+///
+/// The sub-pixel offset from `column` and the best sum, or `None` if the search leaves the
+/// image, the best offset is an end, the valley is flat, or the vertex is over a pixel away.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap,
+    reason = "sums and offsets are far below 2^52"
+)]
+fn refine(
+    left: &Image,
+    right: &Image,
+    pixel: [usize; 2],
+    column: i64,
+    options: &MatchOptions,
+) -> Option<(f64, i64)> {
+    let (w, reach) = (options.window, options.search);
+    let [x, y] = pixel;
+    let lowest = column - (reach + w) as i64;
+    if lowest < 0 || column + (reach + w) as i64 >= right.cols as i64 {
+        return None;
+    }
+    let first = usize::try_from(lowest).ok()? + w;
+    let left_centre = i64::from(left.at(y, x));
+    let sums: Vec<i64> = (0..=2 * reach)
+        .map(|step| {
+            let c = first + step;
+            let right_centre = i64::from(right.at(y, c));
+            let mut sum = 0;
+            for dy in 0..=2 * w {
+                for dx in 0..=2 * w {
+                    let a = i64::from(left.at(y + dy - w, x + dx - w)) - left_centre;
+                    let b = i64::from(right.at(y + dy - w, c + dx - w)) - right_centre;
+                    sum += (a - b).abs();
+                }
+            }
+            sum
+        })
+        .collect();
+    // The first smallest sum: the leftmost offset on a tie.
+    let best = (0..sums.len()).fold(0, |b, i| if sums[i] < sums[b] { i } else { b });
+    if best == 0 || best == 2 * reach {
+        return None;
+    }
+    let (d1, d2, d3) = (sums[best - 1], sums[best], sums[best + 1]);
+    let curvature = 2 * (d1 + d3 - 2 * d2);
+    if curvature == 0 {
+        return None; // a flat valley: no sub-pixel position
+    }
+    let delta = (d1 - d3) as f64 / curvature as f64;
+    if !(-1.0..=1.0).contains(&delta) {
+        return None;
+    }
+    Some(((best as i64 - reach as i64) as f64 + delta, d2))
+}
+
+/// A left keypoint's nearest right candidate: within a level, within the row band, at most
+/// `focal` columns to its left, under the distance cap.
+///
+/// # Arguments
+///
+/// * `k` - The left keypoint.
+/// * `descriptor` - Its descriptor.
+/// * `right` - The right features.
+/// * `scales` - Each level's scale.
+/// * `focal` - The rectified focal length.
+/// * `options` - The settings.
+///
+/// # Returns
+///
+/// The nearest candidate's index (ties: the lowest), or `None`.
+fn nearest(
+    k: &Keypoint,
+    descriptor: &orb::Descriptor,
+    right: &Features,
+    scales: &[f64],
+    focal: f64,
+    options: &MatchOptions,
+) -> Option<usize> {
+    let mut best = None;
+    let mut best_distance = options.max_distance;
+    for (j, (r, other)) in right.keypoints.iter().zip(&right.descriptors).enumerate() {
+        if r.level.abs_diff(k.level) > 1
+            || (r.xy[1] - k.xy[1]).abs() > options.band * scales[r.level]
+            || r.xy[0] < k.xy[0] - focal
+            || r.xy[0] > k.xy[0]
+        {
+            continue;
+        }
+        let d = matching::distance(descriptor, other);
+        if d < best_distance {
+            best_distance = d;
+            best = Some(j);
+        }
+    }
+    best
+}
+
+/// Matches ORB features along the rows of a rectified pair (ORB-SLAM's stereo matching;
+/// Python's and C++'s `match`, a Rust keyword).
+///
+/// # Arguments
+///
+/// * `images` - The rectified left and right images, of one shape.
+/// * `left` - The left features, extracted with `orb_options`.
+/// * `right` - The right features.
+/// * `focal` - The rectified focal length, in pixels.
+/// * `baseline` - The distance between the camera centres.
+/// * `orb_options` - The settings the features were extracted with.
+/// * `options` - The matching settings.
+///
+/// # Returns
+///
+/// The matches, by left index.
+///
+/// # Errors
+///
+/// `InvalidInput` for malformed images, features or settings, or a left keypoint closer than
+/// `options.window` to its level's border.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "columns are at most 2^20, exact in f64 and an i64"
+)]
+pub fn match_rows(
+    images: (&Image, &Image),
+    left: &Features,
+    right: &Features,
+    focal: f64,
+    baseline: f64,
+    orb_options: &orb::Options,
+    options: &MatchOptions,
+) -> Result<Vec<StereoMatch>> {
+    let (left_image, right_image) = images;
+    if (right_image.rows, right_image.cols) != (left_image.rows, left_image.cols) {
+        return fail(
+            ErrorKind::InvalidInput,
+            "right_image: expected the left image's shape",
+        );
+    }
+    if !(focal.is_finite() && focal > 0.0) {
+        return fail_setting("focal", "must be positive and finite", focal);
+    }
+    if !(baseline.is_finite() && baseline > 0.0) {
+        return fail_setting("baseline", "must be positive and finite", baseline);
+    }
+    check_options(options)?;
+    orb::check_options(orb_options)?;
+    let left_levels = image::pyramid(left_image, orb_options.levels, orb_options.scale_factor)?;
+    let right_levels = image::pyramid(right_image, orb_options.levels, orb_options.scale_factor)?;
+    check_side(left, left_levels.len(), "left")?;
+    check_side(right, left_levels.len(), "right")?;
+    check_inside(left, &left_levels, options.window)?;
+    let mut scales = vec![1.0];
+    while scales.len() < left_levels.len() {
+        scales.push(scales[scales.len() - 1] * orb_options.scale_factor);
+    }
+    let mut found: Vec<(StereoMatch, i64)> = Vec::new();
+    for (i, (k, descriptor)) in left.keypoints.iter().zip(&left.descriptors).enumerate() {
+        let Some(j) = nearest(k, descriptor, right, &scales, focal, options) else {
+            continue;
+        };
+        let scale = scales[k.level];
+        let column = (right.keypoints[j].xy[0] / scale + 0.5).floor() as i64;
+        let Some((offset, cost)) = refine(
+            &left_levels[k.level],
+            &right_levels[k.level],
+            k.level_xy,
+            column,
+            options,
+        ) else {
+            continue;
+        };
+        let right_x = scale * (column as f64 + offset);
+        let disparity = k.xy[0] - right_x;
+        if disparity <= 0.0 || disparity >= focal {
+            continue;
+        }
+        found.push((
+            StereoMatch {
+                left: i,
+                right: j,
+                right_x,
+                disparity,
+                depth: focal * baseline / disparity,
+            },
+            cost,
+        ));
+    }
+    if found.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut costs: Vec<i64> = found.iter().map(|&(_, cost)| cost).collect();
+    costs.sort_unstable();
+    let limit = options.outlier_factor * costs[costs.len() / 2] as f64;
+    Ok(found
+        .into_iter()
+        .filter(|&(_, cost)| cost as f64 <= limit)
+        .map(|(m, _)| m)
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     //! Native tests against the parity fixture `tests/fixtures/foundations/stereo.json`, which
@@ -337,6 +682,116 @@ mod tests {
                 let flat: Vec<f64> = got.iter().flat_map(|p| [p.x, p.y]).collect();
                 assert!(worst(&flat, &expected) <= tolerance);
             }
+        }
+    }
+
+    /// Reads a list of non-negative integers.
+    fn counts(value: &Value) -> Vec<usize> {
+        value
+            .as_array()
+            .expect("a list")
+            .iter()
+            .map(count)
+            .collect()
+    }
+
+    /// Reads a nested list of intensities as an image.
+    fn picture(value: &Value) -> Image {
+        let rows: Vec<Vec<u8>> = value
+            .as_array()
+            .expect("rows")
+            .iter()
+            .map(|row| {
+                counts(row)
+                    .into_iter()
+                    .map(|v| u8::try_from(v).expect("a byte"))
+                    .collect()
+            })
+            .collect();
+        Image {
+            rows: rows.len(),
+            cols: rows[0].len(),
+            pixels: rows.concat(),
+        }
+    }
+
+    /// Reads a match case's features (responses and angles, unused, are zero).
+    fn features(fields: &Value) -> Features {
+        let levels = counts(&fields["level"]);
+        let keypoints = (0..levels.len())
+            .map(|i| Keypoint {
+                xy: [
+                    fields["xy"][i][0].as_f64().unwrap(),
+                    fields["xy"][i][1].as_f64().unwrap(),
+                ],
+                level: levels[i],
+                level_xy: [
+                    count(&fields["level_xy"][i][0]),
+                    count(&fields["level_xy"][i][1]),
+                ],
+                response: 0,
+                angle: 0,
+            })
+            .collect();
+        let descriptors = fields["descriptors"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .map(|row| {
+                let bytes: Vec<u8> = counts(row)
+                    .into_iter()
+                    .map(|v| u8::try_from(v).expect("a byte"))
+                    .collect();
+                bytes.try_into().expect("32 bytes")
+            })
+            .collect();
+        Features {
+            keypoints,
+            descriptors,
+        }
+    }
+
+    /// `match_rows` matches the fixture exactly.
+    #[test]
+    fn match_matches_the_fixture() {
+        for case in functions()["match"]["cases"].as_array().expect("cases") {
+            let input = &case["input"];
+            let (o, s) = (&input[6], &input[7]);
+            let extraction = orb::Options {
+                n_features: count(&o["n_features"]),
+                levels: count(&o["levels"]),
+                scale_factor: o["scale_factor"].as_f64().unwrap(),
+                fast_threshold: o["fast_threshold"].as_i64().unwrap(),
+                min_fast_threshold: o["min_fast_threshold"].as_i64().unwrap(),
+            };
+            let settings = MatchOptions {
+                max_distance: s["max_distance"].as_i64().unwrap(),
+                band: s["band"].as_f64().unwrap(),
+                window: count(&s["window"]),
+                search: count(&s["search"]),
+                outlier_factor: s["outlier_factor"].as_f64().unwrap(),
+            };
+            let got = match_rows(
+                (&picture(&input[0]), &picture(&input[1])),
+                &features(&input[2]),
+                &features(&input[3]),
+                input[4].as_f64().unwrap(),
+                input[5].as_f64().unwrap(),
+                &extraction,
+                &settings,
+            )
+            .unwrap();
+            let e = &case["expected"];
+            let expected: Vec<StereoMatch> = (0..counts(&e["left"]).len())
+                .map(|k| StereoMatch {
+                    left: count(&e["left"][k]),
+                    right: count(&e["right"][k]),
+                    right_x: e["right_x"][k].as_f64().unwrap(),
+                    disparity: e["disparity"][k].as_f64().unwrap(),
+                    depth: e["depth"][k].as_f64().unwrap(),
+                })
+                .collect();
+            assert_eq!(got, expected, "{}", case["name"]);
         }
     }
 

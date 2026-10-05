@@ -1,4 +1,4 @@
-"""Stereo-rectification tests: parity with OpenCV's rotations, epipolar rows, failure modes."""
+"""Stereo tests: OpenCV's rectification, epipolar rows, row matching, failure modes."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest
 from numpy.typing import NDArray
 
 from slamlab import backends
-from slamlab.foundations import image, stereo
+from slamlab.foundations import image, orb, stereo
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
 from tests.conftest import (
     assert_matches_fixture,
@@ -40,6 +40,31 @@ def _rectification(case_input: list[Any]) -> stereo.Rectification:
     )
 
 
+def _features(fields: dict[str, Any]) -> orb.Features:
+    """Build a match case's features (responses and angles, unused, are zero)."""
+    count = len(fields["level"])
+    return orb.Features(
+        keypoints=orb.Keypoints(
+            xy=np.asarray(fields["xy"], dtype=np.float64).reshape(-1, 2),
+            level=np.asarray(fields["level"], dtype=np.int64),
+            level_xy=np.asarray(fields["level_xy"], dtype=np.int64).reshape(-1, 2),
+            response=np.zeros(count, dtype=np.int64),
+            angle=np.zeros(count, dtype=np.int64),
+        ),
+        descriptors=np.asarray(fields["descriptors"], dtype=np.uint8).reshape(-1, 32),
+    )
+
+
+def _shifted_pair(disparity: float, seed: int) -> tuple[NDArray[np.uint8], NDArray[np.uint8]]:
+    """Draw a textured VGA image and its right view at one constant disparity."""
+    rng = np.random.default_rng(seed)
+    blocks = rng.integers(20, 236, (480 // 10 + 1, 640 // 10 + 1))
+    tiles = np.kron(blocks, np.ones((10, 10), dtype=np.int64))[:480, :640]
+    left = np.asarray(cv2.GaussianBlur(tiles.astype(np.uint8), (5, 5), 1.2), dtype=np.uint8)
+    v, u = np.mgrid[0:480, 0:640].astype(np.float64)
+    return left, image.remap(left, np.stack([u + disparity, v], axis=-1))
+
+
 def test_fixture_covers_the_protocol() -> None:
     """Every function in the compiled-backend Protocol has fixture cases."""
     assert set(STEREO["functions"]) == protocol_members(stereo)
@@ -60,10 +85,27 @@ def test_matches_fixture(backend: str, function: str, case: dict[str, Any]) -> N
         for field in ("rotation_left", "rotation_right", "intrinsics"):
             assert_matches_fixture(getattr(got, field), expected[field], tolerance)
         assert_matches_fixture(got.baseline, expected["baseline"], tolerance)
-    else:
+    elif function == "rectification_map":
         left, right = stereo.rectification_maps(_rectification(case["input"]), backend=chosen)
         assert_matches_fixture(left, case["expected"][0], tolerance)
         assert_matches_fixture(right, case["expected"][1], tolerance)
+    else:
+        left_image, right_image, left_f, right_f, focal, baseline, extraction, options = case[
+            "input"
+        ]
+        found = stereo.match(
+            np.asarray(left_image, np.uint8),
+            np.asarray(right_image, np.uint8),
+            _features(left_f),
+            _features(right_f),
+            focal=focal,
+            baseline=baseline,
+            orb_options=orb.Options(**extraction),
+            options=stereo.Options(**options),
+            backend=chosen,
+        )
+        for field in ("left", "right", "right_x", "disparity", "depth"):
+            assert_matches_fixture(getattr(found, field), case["expected"][field], tolerance)
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -151,3 +193,97 @@ def test_rectify_rejects_bad_shapes(shape: Any) -> None:  # noqa: ANN401 -- malf
     """The image shape must be two positive integers within MAX_IMAGE_SIDE."""
     with pytest.raises(InvalidInputError, match="shape: expected"):
         stereo.rectify("pinhole", PINHOLE, "pinhole", PINHOLE, _pose([-0.1, 0, 0]), shape=shape)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_match_recovers_a_known_disparity(backend: str) -> None:
+    """Matches of a pair shifted by 9.6 pixels find it to within a pixel of their level.
+
+    All but a rare false match on the repetitive texture (99%); the median within a third of
+    a pixel, since a parabola through sums of absolute differences is pulled toward whole
+    pixels ("pixel locking"), as in ORB-SLAM.
+    """
+    chosen = require_function(backend, stereo.__name__, "match")
+    left, right = _shifted_pair(9.6, seed=3)
+    features = orb.extract(left), orb.extract(right)
+    found = stereo.match(left, right, *features, focal=500.0, baseline=0.1, backend=chosen)
+    assert len(found.left) > 300
+    assert np.all(np.diff(found.left) > 0)
+    np.testing.assert_allclose(np.median(found.disparity), 9.6, atol=0.35)
+    level_pixel = 1.2 ** features[0].keypoints.level[found.left].astype(np.float64)
+    assert np.mean(np.abs(found.disparity - 9.6) < level_pixel) >= 0.99
+    np.testing.assert_allclose(found.depth, 500.0 * 0.1 / found.disparity, rtol=1e-15)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_match_agrees_across_backends(backend: str) -> None:
+    """Every backend finds the reference's matches on a VGA pair, bit for bit."""
+    chosen = require_function(backend, stereo.__name__, "match")
+    left, right = _shifted_pair(17.3, seed=4)
+    features = orb.extract(left), orb.extract(right)
+    reference = stereo.match(left, right, *features, focal=450.0, baseline=0.12)
+    got = stereo.match(left, right, *features, focal=450.0, baseline=0.12, backend=chosen)
+    for field in ("left", "right", "right_x", "disparity", "depth"):
+        np.testing.assert_array_equal(getattr(got, field), getattr(reference, field))
+
+
+def _tiny_features(level_xy: list[list[int]]) -> orb.Features:
+    """Build features at the given level-0 pixels, with zero descriptors."""
+    pixels = np.asarray(level_xy, dtype=np.int64).reshape(-1, 2)
+    count = len(pixels)
+    return orb.Features(
+        keypoints=orb.Keypoints(
+            xy=pixels.astype(np.float64),
+            level=np.zeros(count, dtype=np.int64),
+            level_xy=pixels,
+            response=np.zeros(count, dtype=np.int64),
+            angle=np.zeros(count, dtype=np.int64),
+        ),
+        descriptors=np.zeros((count, 32), dtype=np.uint8),
+    )
+
+
+FRAME = np.zeros((60, 80), dtype=np.uint8)
+ONE_LEVEL = orb.Options(levels=1)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"right_image": np.zeros((60, 81), np.uint8)}, "right_image: expected the left image"),
+        ({"focal": 0.0}, "focal: must be positive and finite"),
+        ({"baseline": float("inf")}, "baseline: must be positive and finite"),
+        ({"left": _tiny_features([[2, 30]])}, "left: keypoints must lie at least 5 pixels"),
+        ({"orb_options": orb.Options(levels=5, scale_factor=4.0)}, "would be empty"),
+    ],
+)
+def test_match_rejects(kwargs: dict[str, Any], message: str) -> None:
+    """Mismatched images, bad cameras and keypoints at the border are refused."""
+    arguments: dict[str, Any] = {
+        "left_image": FRAME,
+        "right_image": FRAME,
+        "left": _tiny_features([[30, 30]]),
+        "right": _tiny_features([[25, 30]]),
+        "focal": 100.0,
+        "baseline": 0.1,
+        "orb_options": ONE_LEVEL,
+    }
+    arguments.update(kwargs)
+    with pytest.raises(InvalidInputError, match=message):
+        stereo.match(**arguments)
+
+
+@pytest.mark.parametrize(
+    ("settings", "message"),
+    [
+        ({"max_distance": 0}, "max_distance: must be from 1 to 257"),
+        ({"band": 0.0}, "band: must be positive and finite"),
+        ({"window": 20}, "window: must be from 1 to 19"),
+        ({"search": 1}, "search: must be from 2 to 64"),
+        ({"outlier_factor": 0.5}, "outlier_factor: must be at least 1"),
+    ],
+)
+def test_options_reject_out_of_range(settings: dict[str, Any], message: str) -> None:
+    """Every matching setting is range-checked when the options are built."""
+    with pytest.raises(InvalidInputError, match=message):
+        stereo.Options(**settings)

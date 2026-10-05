@@ -4,15 +4,21 @@ Run from the repository root after changing the cases (the fixture is committed)
 
     python -m tests.fixtures.foundations.generate_stereo
 
-Independent of the module under test, nothing imported from slamlab: the rectifying rotations
-are OpenCV's ``stereoRectify`` (Bouguet's algorithm, the same construction); the rectified
-camera and the baseline follow from their definitions; each map pixel is computed from the
-pinhole inverse and the Brown-Conrady formula written out here. Rotations agree to rounding
-(``1e-12``), maps to the distortion polynomial's rounding (``1e-9`` pixels).
+Independent of the module under test: the rectifying rotations are OpenCV's ``stereoRectify``
+(Bouguet's algorithm, the same construction); the rectified camera and the baseline follow
+from their definitions; each map pixel is computed from the pinhole inverse and the
+Brown-Conrady formula written out here. Rotations agree to rounding (``1e-12``), maps to the
+distortion polynomial's rounding (``1e-9`` pixels).
+
+The matching cases' inputs are prepared with slamlab's image and ORB modules (a synthetic pair
+and its features: the matcher's input, not its oracle); their expected matches come from a
+plain-Python brute force over the definition, written here. Those are exact.
 """
 
 from __future__ import annotations
 
+import math
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +26,7 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
+from slamlab.foundations import image, orb
 from tests.fixtures.foundations._layout import dumps
 
 OUT = Path(__file__).with_name("stereo.json")
@@ -120,6 +127,160 @@ def _map(
     return out
 
 
+def _sad_refine(
+    left: list[list[int]],
+    right: list[list[int]],
+    pixel: tuple[int, int],
+    column: int,
+    *,
+    w: int,
+    reach: int,
+) -> tuple[float, int] | None:
+    """Slide the left patch along the right row; fit a parabola through the best sum."""
+    x, y = pixel
+    if column - reach - w < 0 or column + reach + w >= len(right[0]):
+        return None
+    sums = []
+    for step in range(-reach, reach + 1):
+        c = column + step
+        sums.append(
+            sum(
+                abs((left[y + dy][x + dx] - left[y][x]) - (right[y + dy][c + dx] - right[y][c]))
+                for dy in range(-w, w + 1)
+                for dx in range(-w, w + 1)
+            )
+        )
+    best = min(range(len(sums)), key=lambda k: (sums[k], k))
+    if best in (0, 2 * reach):
+        return None
+    d1, d2, d3 = sums[best - 1 : best + 2]
+    curvature = 2 * (d1 + d3 - 2 * d2)
+    if curvature == 0:
+        return None
+    delta = (d1 - d3) / curvature
+    return None if abs(delta) > 1 else ((best - reach) + delta, d2)
+
+
+def _match_rows(case: dict[str, Any]) -> dict[str, Any]:
+    """Match by the definition: candidates, nearest descriptor, SAD refinement, outliers."""
+    left_image, right_image, left, right, focal, baseline, extraction, options = case["input"]
+    levels = extraction["levels"]
+    pyramids = [
+        [
+            p.tolist()
+            for p in image.pyramid(np.asarray(im, np.uint8), levels, extraction["scale_factor"])
+        ]
+        for im in (left_image, right_image)
+    ]
+    scales = [1.0]
+    for _ in range(1, levels):
+        scales.append(scales[-1] * extraction["scale_factor"])
+    found = []
+    for i, (x_left, y_left) in enumerate(left["xy"]):
+        lvl = left["level"][i]
+        best, nearest = options["max_distance"], None
+        for j, (x_right, y_right) in enumerate(right["xy"]):
+            other = right["level"][j]
+            if (
+                abs(other - lvl) > 1
+                or abs(y_right - y_left) > options["band"] * scales[other]
+                or not x_left - focal <= x_right <= x_left
+            ):
+                continue
+            d = sum(
+                (a ^ b).bit_count()
+                for a, b in zip(left["descriptors"][i], right["descriptors"][j], strict=True)
+            )
+            if d < best:
+                best, nearest = d, j
+        if nearest is None:
+            continue
+        column = math.floor(right["xy"][nearest][0] / scales[lvl] + 0.5)
+        x, y = left["level_xy"][i]
+        refined = _sad_refine(
+            pyramids[0][lvl],
+            pyramids[1][lvl],
+            (x, y),
+            column,
+            w=options["window"],
+            reach=options["search"],
+        )
+        if refined is None:
+            continue
+        right_x = scales[lvl] * (column + refined[0])
+        disparity = x_left - right_x
+        if 0.0 < disparity < focal:
+            found.append((i, nearest, right_x, disparity, focal * baseline / disparity, refined[1]))
+    if found:
+        median = sorted(f[5] for f in found)[len(found) // 2]
+        found = [f for f in found if f[5] <= options["outlier_factor"] * median]
+    return {
+        "left": [f[0] for f in found],
+        "right": [f[1] for f in found],
+        "right_x": [f[2] for f in found],
+        "disparity": [f[3] for f in found],
+        "depth": [f[4] for f in found],
+    }
+
+
+def _stereo_pair(
+    rng: np.random.Generator, rows: int, cols: int
+) -> tuple[NDArray[np.uint8], NDArray[np.uint8]]:
+    """Draw a textured left image and a right view of two fronto-parallel planes."""
+    blocks = rng.integers(20, 236, (rows // 6 + 1, cols // 6 + 1))
+    left = np.kron(blocks, np.ones((6, 6), dtype=np.int64))[:rows, :cols]
+    left = np.clip(left + rng.integers(-8, 9, (rows, cols)), 0, 255).astype(np.uint8)
+    v, u = np.mgrid[0:rows, 0:cols].astype(np.float64)
+    disparity = np.where(u < cols / 2, 6.3, 11.7)
+    right = image.remap(left, np.stack([u + disparity, v], axis=-1))
+    return left, right
+
+
+def _features(picture: NDArray[np.uint8], options: orb.Options) -> dict[str, Any]:
+    """Extract the matcher's input features, as lists."""
+    found = orb.extract(picture, options)
+    k = found.keypoints
+    return {
+        "xy": k.xy.tolist(),
+        "level": k.level.tolist(),
+        "level_xy": k.level_xy.tolist(),
+        "descriptors": found.descriptors.tolist(),
+    }
+
+
+def _match_cases() -> list[dict[str, Any]]:
+    """Build the matching cases: synthetic pairs, their features, the brute force's matches."""
+    rng = np.random.default_rng(31)
+    default = {"max_distance": 75, "band": 2.0, "window": 5, "search": 5, "outlier_factor": 2.1}
+    cases = []
+    for name, shape, extraction, options in [
+        ("two planes, two levels at 1.2", (80, 112), orb.Options(n_features=90, levels=2), default),
+        (
+            "one level, a tight band and a short search",
+            (64, 96),
+            orb.Options(n_features=60, levels=1),
+            {**default, "band": 1.0, "window": 3, "search": 3},
+        ),
+    ]:
+        left, right = _stereo_pair(rng, *shape)
+        case: dict[str, Any] = {
+            "name": name,
+            "input": [
+                left.tolist(),
+                right.tolist(),
+                _features(left, extraction),
+                _features(right, extraction),
+                500.0,
+                0.08,
+                asdict(extraction),
+                options,
+            ],
+        }
+        case["expected"] = _match_rows(case)
+        cases.append(case)
+    return cases
+
+
 def main() -> None:
     """Write the fixture."""
     euroc = np.linalg.inv(np.reshape(EUROC_B_RIGHT, (4, 4))) @ np.reshape(EUROC_B_LEFT, (4, 4))
@@ -192,6 +353,16 @@ def main() -> None:
             },
             "cases": rectify_cases,
         },
+        "match": {
+            "unpack": True,
+            "tolerance": {
+                "comparison": "exact",
+                "rtol": 0.0,
+                "atol": 0.0,
+                "reason": "integer sums; one rounding per float",
+            },
+            "cases": _match_cases(),
+        },
         "rectification_map": {
             "unpack": True,
             "tolerance": {
@@ -205,7 +376,7 @@ def main() -> None:
     }
     fixture = {
         "description": "Stereo rectification: parity fixture (generate_stereo.py).",
-        "oracle": "OpenCV's stereoRectify; the maps from their defining formulas",
+        "oracle": "OpenCV's stereoRectify; maps and matches from their definitions",
         "functions": functions,
     }
     OUT.write_text(dumps(fixture))
