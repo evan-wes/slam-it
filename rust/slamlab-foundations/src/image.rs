@@ -7,7 +7,7 @@
 
 use nalgebra::Vector2;
 
-use crate::error::{ErrorKind, Result, fail, fail_setting};
+use crate::error::{ErrorKind, Result, check_range, fail, fail_setting};
 
 /// BT.601's red, green and blue weights over `2^GRAY_BITS` (OpenCV's `cvtColor`).
 pub const GRAY_WEIGHTS: [i64; 3] = [9798, 19235, 3735];
@@ -130,11 +130,7 @@ pub fn check_image(image: &Image, name: &str) -> Result<()> {
 ///
 /// `InvalidInput` if it is out of range.
 fn check_side(value: usize, name: &str) -> Result<()> {
-    if (1..=MAX_SIDE).contains(&value) {
-        Ok(())
-    } else {
-        fail_setting(name, &format!("must be from 1 to {MAX_SIDE}"), value)
-    }
+    check_range(name, value, 1, MAX_SIDE)
 }
 
 /// Checks a blur kernel and finds `b` with its weights summing to `2^b`.

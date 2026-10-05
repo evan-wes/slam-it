@@ -18,6 +18,8 @@
 /// @brief Rectified stereo.
 namespace slamlab::foundations::stereo {
 
+/// @brief The largest half-range `MatchOptions::search` accepts, in level pixels.
+inline constexpr std::int64_t kMaxSearch = 64;
 /// @brief Camera centres closer than this count as coinciding.
 inline constexpr double kMinBaseline = 1e-9;
 /// @brief Where a map sends a pixel whose ray points behind the camera: outside every image.

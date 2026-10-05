@@ -52,7 +52,7 @@ def _open(path: str | Path) -> Image.Image:
         with Image.open(file) as opened:
             opened.load()
             return opened.copy()
-    except OSError as error:
+    except (OSError, Image.DecompressionBombError) as error:  # a bomb: far above any dataset's
         raise InvalidInputError(f"{file}: not a readable image ({error})") from None
 
 

@@ -63,4 +63,22 @@ using Result = std::expected<T, Error>;
   return fail(ErrorKind::kInvalidInput, message.str());
 }
 
+/// @brief Check that an integer setting lies in `[low, high]`.
+/// @param name The setting's name.
+/// @param value Its value.
+/// @param low The smallest value allowed.
+/// @param high The largest.
+/// @return Nothing, or `InvalidInput`: `"<name>: must be from <low> to <high>, got <value>"`,
+///         the message of Python's `slamlab.foundations.arrays.as_count`.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (value, low, high), as in as_count
+[[nodiscard]] inline Result<void> check_range(const char* name, std::int64_t value,
+                                              std::int64_t low, std::int64_t high) {
+  if (value >= low && value <= high) {
+    return {};
+  }
+  std::ostringstream message;
+  message << name << ": must be from " << low << " to " << high << ", got " << value;
+  return fail(ErrorKind::kInvalidInput, message.str());
+}
+
 }  // namespace slamlab::foundations

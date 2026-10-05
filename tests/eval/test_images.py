@@ -57,3 +57,10 @@ def test_rejects(reader: Any, name: str, error: type, message: str) -> None:  # 
     """Wrong bit depths, missing files and non-images are refused."""
     with pytest.raises(error, match=message):
         reader(FOLDER / "png" / name)
+
+
+def test_rejects_a_decompression_bomb(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An image past Pillow's pixel limit is refused like any unreadable file."""
+    monkeypatch.setattr("PIL.Image.MAX_IMAGE_PIXELS", 1)
+    with pytest.raises(InvalidInputError, match="not a readable image"):
+        images.read_gray(FOLDER / "png" / "gray.png")

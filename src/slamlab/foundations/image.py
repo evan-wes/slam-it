@@ -40,7 +40,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slamlab import backends
-from slamlab.foundations.arrays import MAX_IMAGE_SIDE, as_image, as_real
+from slamlab.foundations.arrays import MAX_IMAGE_SIDE, as_count, as_image, as_number, as_real
 from slamlab.foundations.errors import InvalidInputError
 
 Image = NDArray[np.uint8]
@@ -93,9 +93,7 @@ class Implementation(Protocol):
 def _decode_image(raw: Any, codes: backends.Codes) -> Image:  # noqa: ANN401 -- a backend's array
     """Return a compiled backend's image, checked to be (H, W) uint8 (never cast)."""
     del codes  # the image module crosses no codes
-    out = np.asarray(raw)
-    if out.dtype != np.uint8 or out.ndim != 2:
-        raise RuntimeError(f"image: backend returned {out.dtype} {out.shape}, not (H, W) uint8")
+    out: Image = backends.checked_array(raw, np.uint8, 2, "image")
     return out
 
 
@@ -203,6 +201,15 @@ def _resize(image: Image, rows: int, cols: int) -> Image:
     return np.ascontiguousarray((total + (1 << (shift - 1))) >> shift, dtype=np.uint8)
 
 
+def _as_levels(levels: object, scale_factor: object) -> tuple[int, float]:
+    """Check a pyramid's level count and scale factor."""
+    count = as_count(levels, "levels", 1, MAX_IMAGE_SIDE)
+    factor = as_number(scale_factor, "scale_factor")
+    if not (math.isfinite(factor) and factor > 1.0):
+        raise InvalidInputError(f"scale_factor: must be finite and above 1, got {factor}")
+    return count, factor
+
+
 def level_shapes(rows: int, cols: int, levels: int, scale_factor: float) -> list[tuple[int, int]]:
     """Return each pyramid level's ``(rows, cols)``: ``round(n / s^l)``, half up.
 
@@ -224,8 +231,13 @@ def level_shapes(rows: int, cols: int, levels: int, scale_factor: float) -> list
     Raises
     ------
     slamlab.foundations.errors.InvalidInputError
-        If a level would be empty.
+        If `rows` or `cols` is not an integer from 1 to
+        :data:`slamlab.foundations.arrays.MAX_IMAGE_SIDE`, `levels` is not one from 1 to
+        that, `scale_factor` is not a finite number above 1, or a level would be empty.
     """
+    rows = as_count(rows, "rows", 1, MAX_IMAGE_SIDE)
+    cols = as_count(cols, "cols", 1, MAX_IMAGE_SIDE)
+    levels, scale_factor = _as_levels(levels, scale_factor)
     shapes = [(rows, cols)]
     scale = 1.0
     for level in range(1, levels):
@@ -274,15 +286,6 @@ def _remap(image: Image, coordinates: NDArray[np.float64]) -> Image:
     )
     shift = 2 * REMAP_BITS
     return np.ascontiguousarray((total + (1 << (shift - 1))) >> shift, dtype=np.uint8)
-
-
-def _as_count(value: object, name: str, low: int, high: int) -> int:
-    """Check an integer setting in ``[low, high]``."""
-    if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
-        raise InvalidInputError(f"{name}: must be an integer, got {type(value).__name__}")
-    if not low <= int(value) <= high:
-        raise InvalidInputError(f"{name}: must be from {low} to {high}, got {value}")
-    return int(value)
 
 
 def to_gray(rgb: ArrayLike, *, backend: str = "python") -> Image:
@@ -376,8 +379,8 @@ def resize(image: ArrayLike, rows: int, cols: int, *, backend: str = "python") -
         If `image` is not a non-empty (H, W) uint8 array, or the shape is out of range.
     """
     pixels = as_image(image, "image")
-    out_rows = _as_count(rows, "rows", 1, MAX_IMAGE_SIDE)
-    out_cols = _as_count(cols, "cols", 1, MAX_IMAGE_SIDE)
+    out_rows = as_count(rows, "rows", 1, MAX_IMAGE_SIDE)
+    out_cols = as_count(cols, "cols", 1, MAX_IMAGE_SIDE)
     return backends.call(
         backend,
         __name__,
@@ -417,14 +420,7 @@ def pyramid(
         `scale_factor` is not a finite number above 1, or a level would be empty.
     """
     pixels = as_image(image, "image")
-    count = _as_count(levels, "levels", 1, MAX_IMAGE_SIDE)
-    if isinstance(scale_factor, bool) or not isinstance(scale_factor, (int, float, np.number)):
-        raise InvalidInputError(
-            f"scale_factor: must be a number, got {type(scale_factor).__name__}"
-        )
-    factor = float(scale_factor)
-    if not (math.isfinite(factor) and factor > 1.0):
-        raise InvalidInputError(f"scale_factor: must be finite and above 1, got {factor}")
+    count, factor = _as_levels(levels, scale_factor)
     level_shapes(pixels.shape[0], pixels.shape[1], count, factor)
     return backends.call(
         backend,

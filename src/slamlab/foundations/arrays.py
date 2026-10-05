@@ -1,8 +1,9 @@
-"""Input validation shared by every rung: convert and check array arguments.
+"""Input validation shared by every rung: convert and check array arguments and settings.
 
 Public functions validate their inputs here, once, before any backend runs, so all
-three language implementations see the same clean float64 data and every bad input
-fails the same way, with :class:`slamlab.foundations.errors.InvalidInputError`.
+three language implementations see the same clean data (float64 arrays, uint8 images,
+Python integers, booleans and floats for settings) and every bad input fails the same
+way, with :class:`slamlab.foundations.errors.InvalidInputError`.
 
 Batched functions accept any number of leading dimensions. :func:`as_batch` checks the
 trailing shape and flattens the leading ones, so a compiled backend always receives a
@@ -24,6 +25,11 @@ _NUMERIC_KINDS = frozenset("iuf")
 Booleans, complex numbers, strings and objects (e.g. ``None``) are rejected rather
 than coerced, because numpy would silently turn them into numbers.
 """
+
+
+MAX_IMAGE_SIDE = 1 << 20
+"""The largest image side, in pixels, that :mod:`slamlab.foundations.image`'s fixed-point
+arithmetic is sized for (its intermediate values then fit 64 bits)."""
 
 
 def as_real(
@@ -411,11 +417,6 @@ def as_matrix3(value: ArrayLike, name: str) -> NDArray[np.float64]:
     return np.ascontiguousarray(flat[0])
 
 
-MAX_IMAGE_SIDE = 1 << 20
-"""The largest image side, in pixels, that :mod:`slamlab.foundations.image`'s fixed-point
-arithmetic is sized for (its intermediate values then fit 64 bits)."""
-
-
 def as_image(value: ArrayLike, name: str = "image", *, channels: int = 1) -> NDArray[np.uint8]:
     """Check an image: a non-empty uint8 array, each side at most :data:`MAX_IMAGE_SIDE`.
 
@@ -459,3 +460,85 @@ def as_image(value: ArrayLike, name: str = "image", *, channels: int = 1) -> NDA
             f"{name}: sides must be at most {MAX_IMAGE_SIDE} pixels, got {arr.shape[:2]}"
         )
     return np.ascontiguousarray(arr).copy()
+
+
+def as_count(value: object, name: str, low: int, high: int) -> int:
+    """Check an integer setting in ``[low, high]``.
+
+    Parameters
+    ----------
+    value : object
+        The setting: a Python or numpy integer (a bool is refused, not read as 0 or 1).
+    name : str
+        Its name, for messages.
+    low, high : int
+        The inclusive range.
+
+    Returns
+    -------
+    int
+        The value, as a Python int.
+
+    Raises
+    ------
+    InvalidInputError
+        If `value` is not an integer or lies outside the range.
+    """
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)):
+        raise InvalidInputError(f"{name}: must be an integer, got {type(value).__name__}")
+    if not low <= int(value) <= high:
+        raise InvalidInputError(f"{name}: must be from {low} to {high}, got {value}")
+    return int(value)
+
+
+def as_flag(value: object, name: str) -> bool:
+    """Check a boolean setting.
+
+    Parameters
+    ----------
+    value : object
+        The setting: a Python or numpy bool (an integer is refused, not read as a truth value).
+    name : str
+        Its name, for messages.
+
+    Returns
+    -------
+    bool
+        The value, as a Python bool.
+
+    Raises
+    ------
+    InvalidInputError
+        If `value` is not a boolean.
+    """
+    if not isinstance(value, (bool, np.bool_)):
+        raise InvalidInputError(f"{name}: must be a boolean, got {type(value).__name__}")
+    return bool(value)
+
+
+def as_number(value: object, name: str) -> float:
+    """Check a real-number setting.
+
+    Parameters
+    ----------
+    value : object
+        The setting: a Python or numpy integer or float (a bool is refused). Its range,
+        finiteness included, is the caller's to check.
+    name : str
+        Its name, for messages.
+
+    Returns
+    -------
+    float
+        The value, as a Python float.
+
+    Raises
+    ------
+    InvalidInputError
+        If `value` is not a real number.
+    """
+    if isinstance(value, (bool, np.bool_)) or not isinstance(
+        value, (int, float, np.integer, np.floating)
+    ):
+        raise InvalidInputError(f"{name}: must be a real number, got {type(value).__name__}")
+    return float(value)

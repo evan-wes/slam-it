@@ -59,7 +59,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slamlab import backends
-from slamlab.foundations.arrays import MAX_IMAGE_SIDE, as_image
+from slamlab.foundations.arrays import MAX_IMAGE_SIDE, as_count, as_image, as_number
 from slamlab.foundations.errors import InvalidInputError
 from slamlab.foundations.image import blur, level_shapes, pyramid
 
@@ -105,6 +105,13 @@ the rotations of the descriptor's pattern."""
 
 MAX_LEVELS = 32
 """The most pyramid levels :class:`Options` accepts."""
+
+MAX_FEATURES = 1 << 20
+"""The largest feature budget :class:`Options` and :func:`distribute` accept."""
+
+MAX_FAST_THRESHOLD = 254
+"""The largest FAST threshold: a margin of 255, the most an 8-bit difference can be, less
+one (a corner needs every margin strictly above the threshold)."""
 
 BLUR_KERNEL = (287, 537, 781, 886, 781, 537, 287)
 """The descriptor's smoothing: a 7-tap Gaussian, sigma 2 (ORB-SLAM's), in integers summing to
@@ -212,16 +219,17 @@ class Options:
     Attributes
     ----------
     n_features : int
-        The feature budget over all levels, from 1 to ``2^20``.
+        The feature budget over all levels, from 1 to :data:`MAX_FEATURES`.
     levels : int
         Pyramid levels, from 1 to :data:`MAX_LEVELS`.
     scale_factor : float
         Each level's downscale from the previous one, above 1.
     fast_threshold : int
-        The FAST threshold a cell tries first, from 0 to 254.
+        The FAST threshold a cell tries first, from 1 to :data:`MAX_FAST_THRESHOLD`.
     min_fast_threshold : int
-        The threshold for cells with no corner at `fast_threshold`, from 0 to
-        `fast_threshold`.
+        The threshold for cells with no corner at `fast_threshold`, from 1 to
+        `fast_threshold`. (From 1, FAST's corners are OpenCV's exactly: at 0, OpenCV
+        suppresses a corner of score 0 against non-corners it also scores 0.)
     """
 
     n_features: int = 1000
@@ -231,32 +239,27 @@ class Options:
     min_fast_threshold: int = 7
 
     def __post_init__(self) -> None:
-        """Check the settings.
+        """Check the settings' types and ranges.
 
         Raises
         ------
         slamlab.foundations.errors.InvalidInputError
-            If a setting is out of range.
+            If a setting has the wrong type or is out of range.
         """
-        if not 1 <= self.n_features <= MAX_IMAGE_SIDE:
-            raise InvalidInputError(
-                f"n_features: must be from 1 to {MAX_IMAGE_SIDE}, got {self.n_features}"
-            )
-        if not 1 <= self.levels <= MAX_LEVELS:
-            raise InvalidInputError(f"levels: must be from 1 to {MAX_LEVELS}, got {self.levels}")
-        if not (math.isfinite(self.scale_factor) and self.scale_factor > 1.0):
-            raise InvalidInputError(
-                f"scale_factor: must be finite and above 1, got {self.scale_factor}"
-            )
-        if not 0 <= self.fast_threshold <= 254:  # the largest FAST score
-            raise InvalidInputError(
-                f"fast_threshold: must be from 0 to 254, got {self.fast_threshold}"
-            )
-        if not 0 <= self.min_fast_threshold <= self.fast_threshold:
-            raise InvalidInputError(
-                "min_fast_threshold: must be from 0 to fast_threshold, "
-                f"got {self.min_fast_threshold}"
-            )
+        set_ = object.__setattr__  # frozen: store the checked, normalised values
+        set_(self, "n_features", as_count(self.n_features, "n_features", 1, MAX_FEATURES))
+        set_(self, "levels", as_count(self.levels, "levels", 1, MAX_LEVELS))
+        factor = as_number(self.scale_factor, "scale_factor")
+        if not (math.isfinite(factor) and factor > 1.0):
+            raise InvalidInputError(f"scale_factor: must be finite and above 1, got {factor}")
+        set_(self, "scale_factor", factor)
+        threshold = as_count(self.fast_threshold, "fast_threshold", 1, MAX_FAST_THRESHOLD)
+        set_(self, "fast_threshold", threshold)
+        set_(
+            self,
+            "min_fast_threshold",
+            as_count(self.min_fast_threshold, "min_fast_threshold", 1, threshold),
+        )
 
 
 @dataclass(frozen=True)
@@ -602,34 +605,37 @@ def _extract(image: NDArray[np.uint8], options: Options) -> Features:
 
 
 def _decode_keypoints(raw: dict[str, Any], codes: backends.Codes) -> Keypoints:
-    """Rebuild :class:`Keypoints` from a compiled backend's dict."""
+    """Rebuild :class:`Keypoints` from a compiled backend's dict, each array checked."""
     del codes  # the ORB module crosses no codes
+    check = backends.checked_array
     return Keypoints(
-        xy=np.asarray(raw["xy"], dtype=np.float64).reshape(-1, 2),
-        level=np.asarray(raw["level"], dtype=np.int64),
-        level_xy=np.asarray(raw["level_xy"], dtype=np.int64).reshape(-1, 2),
-        response=np.asarray(raw["response"], dtype=np.int64),
-        angle=np.asarray(raw["angle"], dtype=np.int64),
+        xy=check(raw["xy"], np.float64, 2, "orb xy"),
+        level=check(raw["level"], np.int64, 1, "orb level"),
+        level_xy=check(raw["level_xy"], np.int64, 2, "orb level_xy"),
+        response=check(raw["response"], np.int64, 1, "orb response"),
+        angle=check(raw["angle"], np.int64, 1, "orb angle"),
     )
 
 
 def _decode_features(raw: dict[str, Any], codes: backends.Codes) -> Features:
-    """Rebuild :class:`Features` from a compiled backend's dict."""
-    descriptors = np.asarray(raw["descriptors"])
-    if descriptors.dtype != np.uint8:
-        raise RuntimeError(f"orb: backend returned {descriptors.dtype} descriptors, not uint8")
+    """Rebuild :class:`Features` from a compiled backend's dict, each array checked."""
     return Features(
         keypoints=_decode_keypoints(raw, codes),
-        descriptors=descriptors.reshape(-1, DESCRIPTOR_BYTES),
+        descriptors=backends.checked_array(raw["descriptors"], np.uint8, 2, "orb descriptors"),
     )
 
 
-def _decode_indices(raw: Any, codes: backends.Codes) -> NDArray[np.int64]:  # noqa: ANN401 -- a backend's array
-    """Return a compiled backend's int64 array, checked (never cast)."""
+def _decode_scores(raw: Any, codes: backends.Codes) -> NDArray[np.int64]:  # noqa: ANN401 -- a backend's array
+    """Return a compiled backend's FAST scores, checked (never cast)."""
     del codes
-    out = np.asarray(raw)
-    if out.dtype != np.int64:
-        raise RuntimeError(f"orb: backend returned {out.dtype}, not int64")
+    out: NDArray[np.int64] = backends.checked_array(raw, np.int64, 2, "orb fast_scores")
+    return out
+
+
+def _decode_kept(raw: Any, codes: backends.Codes) -> NDArray[np.int64]:  # noqa: ANN401 -- a backend's array
+    """Return a compiled backend's kept indices, checked (never cast)."""
+    del codes
+    out: NDArray[np.int64] = backends.checked_array(raw, np.int64, 1, "orb distribute")
     return out
 
 
@@ -663,8 +669,13 @@ def fast_scores(image: ArrayLike, *, backend: str = "python") -> NDArray[np.int6
         "fast_scores",
         reference=lambda: _fast_scores(pixels),
         arguments={"image": pixels},
-        decode=_decode_indices,
+        decode=_decode_scores,
     )
+
+
+def _integer(values: NDArray[Any]) -> bool:
+    """Whether an array holds integers that fit int64 (booleans are not integers here)."""
+    return values.dtype.kind in "iu" and np.can_cast(values.dtype, np.int64)
 
 
 def _as_corners(
@@ -672,11 +683,11 @@ def _as_corners(
 ) -> tuple[NDArray[np.int64], NDArray[np.int64], tuple[int, int, int, int], int]:
     """Check :func:`distribute`'s arguments; return them as int64 arrays and Python ints."""
     points, strengths = np.asarray(xy), np.asarray(response)
-    if points.ndim != 2 or points.shape[1] != 2 or not np.can_cast(points.dtype, np.int64):
+    if points.ndim != 2 or points.shape[1] != 2 or not _integer(points):
         raise InvalidInputError(
             f"xy: expected an (N, 2) integer array, got {points.dtype} {points.shape}"
         )
-    if strengths.shape != (len(points),) or not np.can_cast(strengths.dtype, np.int64):
+    if strengths.shape != (len(points),) or not _integer(strengths):
         raise InvalidInputError(
             f"response: expected {len(points)} integers, got {strengths.dtype} {strengths.shape}"
         )
@@ -696,11 +707,8 @@ def _as_corners(
     )
     if not np.all(inside):
         raise InvalidInputError("xy: every corner must lie inside bounds")
-    if isinstance(target, bool) or not isinstance(target, (int, np.integer)):
-        raise InvalidInputError(f"target: must be an integer, got {type(target).__name__}")
-    if not 0 <= int(target) <= MAX_IMAGE_SIDE:
-        raise InvalidInputError(f"target: must be from 0 to {MAX_IMAGE_SIDE}, got {target}")
-    return corners, strengths.astype(np.int64), (x0, x1, y0, y1), int(target)
+    count = as_count(target, "target", 0, MAX_FEATURES)
+    return corners, strengths.astype(np.int64), (x0, x1, y0, y1), count
 
 
 def distribute(
@@ -730,7 +738,7 @@ def distribute(
         ``(x_min, x_max, y_min, y_max)``: the half-open box the corners lie in, non-empty and
         inside ``[0, MAX_IMAGE_SIDE]`` on both axes.
     target : int
-        How many corners to keep, from 0 to :data:`slamlab.foundations.arrays.MAX_IMAGE_SIDE`.
+        How many corners to keep, from 0 to :data:`MAX_FEATURES`.
         Fewer are kept when the corners run out; up to two more when the last quartering adds
         several nodes at once, or more when the initial columns alone outnumber `target`.
     backend : {"python", "cpp", "rust"}, optional
@@ -753,7 +761,7 @@ def distribute(
         "distribute",
         reference=lambda: _distribute(corners, strengths, box, count),
         arguments={"xy": corners, "response": strengths, "bounds": box, "target": count},
-        decode=_decode_indices,
+        decode=_decode_kept,
     )
 
 

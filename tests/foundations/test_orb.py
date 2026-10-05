@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import asdict
 from typing import Any
 
 import cv2
@@ -12,7 +13,6 @@ from numpy.typing import NDArray
 
 from slamlab import backends
 from slamlab.foundations import orb
-from slamlab.foundations.arrays import MAX_IMAGE_SIDE
 from slamlab.foundations.errors import InvalidInputError
 from slamlab.foundations.image import level_shapes
 from tests.conftest import (
@@ -283,8 +283,11 @@ POINTS = np.array([[1, 2], [3, 4]])
         ("distribute", (POINTS, [1, 2], (-1, 5, 0, 5), 1), "bounds: expected a non-empty box"),
         ("distribute", (POINTS, [1, 2], (0, 3, 0, 5), 1), "every corner must lie inside"),
         ("distribute", (POINTS, [1, 2], (0, 5, 0, 5), -1), "target: must be from 0 to"),
-        ("distribute", (POINTS, [1, 2], (0, 5, 0, 5), MAX_IMAGE_SIDE + 1), "target: must be from"),
+        ("distribute", (POINTS, [1, 2], (0, 5, 0, 5), orb.MAX_FEATURES + 1), "target: must be"),
         ("distribute", (POINTS, [1, 2], (0, 5, 0, 5), 1.0), "target: must be an integer"),
+        ("distribute", (POINTS, [1, 2], (0, 5, 0, 5), True), "target: must be an integer"),
+        ("distribute", (POINTS.astype(bool), [1, 2], (0, 5, 0, 5), 1), "xy: expected"),
+        ("distribute", (POINTS, [True, False], (0, 5, 0, 5), 1), "response: expected"),
     ],
 )
 def test_rejects_invalid_input(
@@ -302,12 +305,52 @@ def test_rejects_invalid_input(
         ({"levels": 33}, "levels: must be from 1 to 32"),
         ({"scale_factor": 1.0}, "scale_factor: must be finite and above 1"),
         ({"scale_factor": math.inf}, "scale_factor: must be finite and above 1"),
-        ({"fast_threshold": 255}, "fast_threshold: must be from 0 to 254"),
-        ({"min_fast_threshold": 21}, "min_fast_threshold: must be from 0 to fast_threshold"),
-        ({"min_fast_threshold": -1}, "min_fast_threshold: must be from 0 to fast_threshold"),
+        ({"n_features": orb.MAX_FEATURES + 1}, "n_features: must be from 1 to 1048576"),
+        ({"fast_threshold": 0}, "fast_threshold: must be from 1 to 254"),
+        ({"fast_threshold": 255}, "fast_threshold: must be from 1 to 254"),
+        ({"min_fast_threshold": 21}, "min_fast_threshold: must be from 1 to 20, got 21"),
+        ({"min_fast_threshold": 0}, "min_fast_threshold: must be from 1 to 20, got 0"),
     ],
 )
 def test_options_reject_out_of_range(settings: dict[str, Any], message: str) -> None:
     """Every setting is range-checked when the options are built."""
     with pytest.raises(InvalidInputError, match=message):
         orb.Options(**settings)
+
+
+@pytest.mark.parametrize(
+    ("settings", "message"),
+    [
+        ({"n_features": 1000.0}, "n_features: must be an integer, got float"),
+        ({"n_features": True}, "n_features: must be an integer, got bool"),
+        ({"levels": "8"}, "levels: must be an integer, got str"),
+        ({"scale_factor": "1.2"}, "scale_factor: must be a real number, got str"),
+        ({"scale_factor": np.True_}, "scale_factor: must be a real number, got bool"),
+        ({"fast_threshold": 20.5}, "fast_threshold: must be an integer, got float"),
+        ({"min_fast_threshold": None}, "min_fast_threshold: must be an integer, got NoneType"),
+    ],
+)
+def test_options_reject_wrong_types(settings: dict[str, Any], message: str) -> None:
+    """A setting of the wrong type is refused, not converted differently by each backend."""
+    with pytest.raises(InvalidInputError, match=message):
+        orb.Options(**settings)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_numpy_settings_reach_every_backend(backend: str) -> None:
+    """NumPy scalar settings are stored as Python numbers, so every backend reads them alike."""
+    chosen = require_function(backend, orb.__name__, "extract")
+    settings: dict[str, Any] = {
+        "n_features": np.int64(300),
+        "levels": np.int32(4),
+        "scale_factor": np.float32(1.25),
+        "fast_threshold": np.uint8(20),
+        "min_fast_threshold": np.int16(7),
+    }
+    options = orb.Options(**settings)
+    assert [type(value) for value in asdict(options).values()] == [int, int, float, int, int]
+    plain = orb.Options(n_features=300, levels=4, scale_factor=1.25)
+    frame = _scene(120, 160, seed=5)
+    features, reference = orb.extract(frame, options, backend=chosen), orb.extract(frame, plain)
+    _check_keypoints(features.keypoints, reference.keypoints)
+    _check_descriptors(features.descriptors, reference.descriptors)

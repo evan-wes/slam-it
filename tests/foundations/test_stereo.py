@@ -253,6 +253,8 @@ ONE_LEVEL = orb.Options(levels=1)
         ({"right_image": np.zeros((60, 81), np.uint8)}, "right_image: expected the left image"),
         ({"focal": 0.0}, "focal: must be positive and finite"),
         ({"baseline": float("inf")}, "baseline: must be positive and finite"),
+        ({"focal": "100"}, "focal: must be a real number, got str"),
+        ({"baseline": True}, "baseline: must be a real number, got bool"),
         ({"left": _tiny_features([[2, 30]])}, "left: keypoints must lie at least 5 pixels"),
         ({"orb_options": orb.Options(levels=5, scale_factor=4.0)}, "would be empty"),
     ],
@@ -281,6 +283,12 @@ def test_match_rejects(kwargs: dict[str, Any], message: str) -> None:
         ({"window": 20}, "window: must be from 1 to 19"),
         ({"search": 1}, "search: must be from 2 to 64"),
         ({"outlier_factor": 0.5}, "outlier_factor: must be at least 1"),
+        ({"search": stereo.MAX_SEARCH + 1}, "search: must be from 2 to 64"),
+        ({"max_distance": 7.0}, "max_distance: must be an integer, got float"),
+        ({"band": "2"}, "band: must be a real number, got str"),
+        ({"window": True}, "window: must be an integer, got bool"),
+        ({"search": 5.0}, "search: must be an integer, got float"),
+        ({"outlier_factor": None}, "outlier_factor: must be a real number, got NoneType"),
     ],
 )
 def test_options_reject_out_of_range(settings: dict[str, Any], message: str) -> None:

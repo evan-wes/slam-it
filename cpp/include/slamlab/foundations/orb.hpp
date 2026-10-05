@@ -62,6 +62,11 @@ inline constexpr std::array<std::array<std::int64_t, 2>, 30> kRotations{
      {8192, -14189},  {10963, -12176}, {13255, -9630},  {14968, -6664},  {16026, -3406}}};
 /// @brief The most pyramid levels `Options` accepts.
 inline constexpr std::int64_t kMaxLevels = 32;
+/// @brief The largest feature budget `Options` and `distribute` accept.
+inline constexpr std::int64_t kMaxFeatures = image::pow2(20);
+/// @brief The largest FAST threshold: a margin of 255, the most an 8-bit difference can be,
+///        less one (a corner needs every margin strictly above the threshold).
+inline constexpr std::int64_t kMaxFastThreshold = 254;
 /// @brief The descriptor's smoothing: a 7-tap Gaussian, sigma 2, summing to `2^12`.
 inline constexpr std::array<std::uint32_t, 7> kBlurKernel{287, 537, 781, 886, 781, 537, 287};
 /// @brief A descriptor's length: 256 bits.

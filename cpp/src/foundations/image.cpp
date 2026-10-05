@@ -65,12 +65,7 @@ Result<void> check_values(std::int64_t rows, std::int64_t cols, std::int64_t cha
 /// @param name Its name, for the message.
 /// @return Nothing, or `InvalidInput`.
 Result<void> check_side(std::int64_t value, const char* name) {
-  if (value < 1 || value > kMaxSide) {
-    return fail(ErrorKind::kInvalidInput, std::string(name) + ": must be from 1 to " +
-                                              std::to_string(kMaxSide) + ", got " +
-                                              std::to_string(value));
-  }
-  return {};
+  return check_range(name, value, 1, kMaxSide);
 }
 
 /// @brief Check a resampling's input image and output shape.

@@ -509,25 +509,19 @@ Result<std::vector<Descriptor>> describe(const std::vector<image::Image>& levels
 }  // namespace
 
 Result<void> check_options(const Options& options) {
-  if (options.n_features < 1 || options.n_features > image::kMaxSide) {
-    return fail_setting("n_features", "must be from 1 to 1048576",
-                        static_cast<double>(options.n_features));
+  if (auto ok = check_range("n_features", options.n_features, 1, kMaxFeatures); !ok) {
+    return ok;
   }
-  if (options.levels < 1 || options.levels > kMaxLevels) {
-    return fail_setting("levels", "must be from 1 to 32", static_cast<double>(options.levels));
+  if (auto ok = check_range("levels", options.levels, 1, kMaxLevels); !ok) {
+    return ok;
   }
   if (!std::isfinite(options.scale_factor) || options.scale_factor <= 1.0) {
     return fail_setting("scale_factor", "must be finite and above 1", options.scale_factor);
   }
-  if (options.fast_threshold < 0 || options.fast_threshold > 254) {
-    return fail_setting("fast_threshold", "must be from 0 to 254",
-                        static_cast<double>(options.fast_threshold));
+  if (auto ok = check_range("fast_threshold", options.fast_threshold, 1, kMaxFastThreshold); !ok) {
+    return ok;
   }
-  if (options.min_fast_threshold < 0 || options.min_fast_threshold > options.fast_threshold) {
-    return fail_setting("min_fast_threshold", "must be from 0 to fast_threshold",
-                        static_cast<double>(options.min_fast_threshold));
-  }
-  return {};
+  return check_range("min_fast_threshold", options.min_fast_threshold, 1, options.fast_threshold);
 }
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (n_features, levels), as in Python
@@ -583,8 +577,8 @@ Result<std::vector<std::int64_t>> distribute(std::span<const std::array<std::int
       return fail(ErrorKind::kInvalidInput, "xy: every corner must lie inside bounds");
     }
   }
-  if (target < 0 || target > image::kMaxSide) {
-    return fail_setting("target", "must be from 0 to 1048576", static_cast<double>(target));
+  if (auto ok = check_range("target", target, 0, kMaxFeatures); !ok) {
+    return std::unexpected(std::move(ok.error()));
   }
   return distribute_checked(xy, response, bounds, target);
 }

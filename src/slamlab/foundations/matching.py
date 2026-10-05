@@ -34,11 +34,19 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slamlab import backends
+from slamlab.foundations.arrays import as_count, as_flag, as_number
 from slamlab.foundations.errors import InvalidInputError
 from slamlab.foundations.orb import ANGLE_BINS, DESCRIPTOR_BYTES
 
 MAX_DESCRIPTORS = 1 << 20
 """The most descriptors a set may hold."""
+
+MAX_DISTANCE = 8 * DESCRIPTOR_BYTES
+"""The largest Hamming distance: every bit differs."""
+
+SECONDARY_FRACTION = 0.1
+"""The rotation histogram's second and third bins are kept only if they hold at least this
+fraction of the highest (ORB-SLAM's ``ComputeThreeMaxima``)."""
 
 _POPCOUNT = np.array([bin(b).count("1") for b in range(256)], dtype=np.int64)
 """Set bits per byte value."""
@@ -54,7 +62,8 @@ class Options:
     Attributes
     ----------
     max_distance : int
-        The largest Hamming distance a match may have, from 0 to 256 (ORB-SLAM's 50).
+        The largest Hamming distance a match may have, from 0 to :data:`MAX_DISTANCE`
+        (ORB-SLAM's 50).
     ratio : float
         The ratio test's bound, in (0, 1]: the nearest must be nearer than ``ratio`` times
         the second nearest. 1 keeps every nearest that is not tied.
@@ -67,19 +76,20 @@ class Options:
     check_orientation: bool = True
 
     def __post_init__(self) -> None:
-        """Check the settings.
+        """Check the settings' types and ranges.
 
         Raises
         ------
         slamlab.foundations.errors.InvalidInputError
-            If a setting is out of range.
+            If a setting has the wrong type or is out of range.
         """
-        if not 0 <= self.max_distance <= 8 * DESCRIPTOR_BYTES:
-            raise InvalidInputError(
-                f"max_distance: must be from 0 to {8 * DESCRIPTOR_BYTES}, got {self.max_distance}"
-            )
-        if not (math.isfinite(self.ratio) and 0.0 < self.ratio <= 1.0):
-            raise InvalidInputError(f"ratio: must be in (0, 1], got {self.ratio}")
+        set_ = object.__setattr__  # frozen: store the checked, normalised values
+        set_(self, "max_distance", as_count(self.max_distance, "max_distance", 0, MAX_DISTANCE))
+        ratio = as_number(self.ratio, "ratio")
+        if not (math.isfinite(ratio) and 0.0 < ratio <= 1.0):
+            raise InvalidInputError(f"ratio: must be in (0, 1], got {ratio}")
+        set_(self, "ratio", ratio)
+        set_(self, "check_orientation", as_flag(self.check_orientation, "check_orientation"))
 
 
 @dataclass(frozen=True)
@@ -140,10 +150,35 @@ def _three_maxima(counts: NDArray[np.int64]) -> list[int]:
     highest = top[0][0]
     kept = [top[0][1]]
     for count, k in top[1:]:
-        if count < 0.1 * highest:
+        if count < SECONDARY_FRACTION * highest:
             break
         kept.append(k)
     return kept
+
+
+def _nearest_two(
+    descriptors1: NDArray[np.uint8], descriptors2: NDArray[np.uint8]
+) -> tuple[NDArray[np.int64], NDArray[np.int64], NDArray[np.int64]]:
+    """Each first-set row's nearest index and distance, and its second-nearest distance.
+
+    Ties go to the lowest index; the second nearest equals the nearest on a tie. Rows are
+    taken a block at a time, so memory stays linear in the second set.
+    """
+    n = len(descriptors1)
+    best = np.empty(n, dtype=np.int64)
+    best_distance = np.empty(n, dtype=np.int64)
+    second = np.full(n, np.iinfo(np.int64).max, dtype=np.int64)
+    rows = np.arange(min(n, _CHUNK))
+    for start in range(0, n, _CHUNK):
+        block = _distances(descriptors1[start : start + _CHUNK], descriptors2)
+        index = np.argmin(block, axis=1)
+        here = rows[: len(block)]
+        best[start : start + _CHUNK] = index
+        best_distance[start : start + _CHUNK] = block[here, index]
+        if block.shape[1] > 1:
+            block[here, index] = np.iinfo(np.int64).max
+            second[start : start + _CHUNK] = block.min(axis=1)
+    return best, best_distance, second
 
 
 def _match(
@@ -156,16 +191,11 @@ def _match(
     """Match two descriptor sets (reference)."""
     if len(descriptors1) == 0 or len(descriptors2) == 0:
         return Matches(np.zeros((0, 2), dtype=np.int64), np.zeros(0, dtype=np.int64))
-    distances = _distances(descriptors1, descriptors2)
-    best = np.argmin(distances, axis=1)  # ties: the lowest second-set index
-    best_distance = distances[np.arange(len(distances)), best]
-    if distances.shape[1] > 1:
-        masked = distances.copy()
-        masked[np.arange(len(masked)), best] = np.iinfo(np.int64).max
-        second = masked.min(axis=1).astype(np.float64)
-        passes = best_distance < options.ratio * second
+    best, best_distance, second = _nearest_two(descriptors1, descriptors2)
+    if len(descriptors2) > 1:
+        passes = best_distance < options.ratio * second.astype(np.float64)
     else:
-        passes = np.ones(len(distances), dtype=bool)
+        passes = np.ones(len(descriptors1), dtype=bool)
     candidates = np.flatnonzero(passes & (best_distance <= options.max_distance))
     # One match per second-set descriptor: the nearest (ties: the lowest first-set index).
     order = np.lexsort((candidates, best_distance[candidates], best[candidates]))
@@ -196,9 +226,11 @@ def _as_descriptors(value: ArrayLike, name: str) -> NDArray[np.uint8]:
 
 
 def _as_angles(value: ArrayLike, count: int, name: str) -> NDArray[np.int64]:
-    """Check orientation bins: `count` integers in ``[0, ANGLE_BINS)``."""
+    """Check orientation bins: `count` integers in ``[0, ANGLE_BINS)`` (booleans refused)."""
     arr = np.asarray(value)
-    if arr.shape != (count,) or not np.can_cast(arr.dtype, np.int64):
+    if arr.size == 0 and count == 0:
+        return np.zeros(0, dtype=np.int64)  # an empty list is float64 to numpy
+    if arr.shape != (count,) or arr.dtype.kind not in "iu" or not np.can_cast(arr.dtype, np.int64):
         raise InvalidInputError(f"{name}: expected {count} integers, got {arr.dtype} {arr.shape}")
     if count and (arr.min() < 0 or arr.max() >= ANGLE_BINS):
         raise InvalidInputError(f"{name}: bins must lie in [0, {ANGLE_BINS})")
@@ -206,19 +238,18 @@ def _as_angles(value: ArrayLike, count: int, name: str) -> NDArray[np.int64]:
 
 
 def _decode_distances(raw: Any, codes: backends.Codes) -> NDArray[np.int64]:  # noqa: ANN401 -- a backend's array
-    """Return a compiled backend's distances, checked to be int64 (never cast)."""
+    """Return a compiled backend's distance matrix, checked (never cast)."""
     del codes  # the matching module crosses no codes
-    out = np.asarray(raw)
-    if out.dtype != np.int64:
-        raise RuntimeError(f"matching: backend returned {out.dtype}, not int64")
+    out: NDArray[np.int64] = backends.checked_array(raw, np.int64, 2, "matching distances")
     return out
 
 
 def _decode_matches(raw: dict[str, Any], codes: backends.Codes) -> Matches:
     """Rebuild :class:`Matches` from a compiled backend's dict."""
+    del codes
     return Matches(
-        pairs=_decode_distances(raw["pairs"], codes).reshape(-1, 2),
-        distances=_decode_distances(raw["distances"], codes),
+        pairs=backends.checked_array(raw["pairs"], np.int64, 2, "matching pairs"),
+        distances=backends.checked_array(raw["distances"], np.int64, 1, "matching distances"),
     )
 
 
@@ -226,6 +257,10 @@ def distances(
     descriptors1: ArrayLike, descriptors2: ArrayLike, *, backend: str = "python"
 ) -> NDArray[np.int64]:
     """Return the Hamming distance between every pair of descriptors.
+
+    The result holds N x M int64 values (8 bytes each), so two sets of
+    :data:`MAX_DESCRIPTORS` would need 8 TiB; :func:`match` never forms it, taking the
+    first set a block of rows at a time.
 
     Parameters
     ----------
@@ -239,7 +274,7 @@ def distances(
     Returns
     -------
     ndarray of int64, shape (N, M)
-        The number of differing bits, from 0 to 256.
+        The number of differing bits, from 0 to :data:`MAX_DISTANCE`.
 
     Raises
     ------

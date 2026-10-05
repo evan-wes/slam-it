@@ -59,10 +59,20 @@ from numpy.typing import ArrayLike, NDArray
 
 from slamlab import backends
 from slamlab.foundations import camera, orb, se3, so3
-from slamlab.foundations.arrays import MAX_IMAGE_SIDE, as_batch, as_image, as_real
+from slamlab.foundations.arrays import (
+    MAX_IMAGE_SIDE,
+    as_batch,
+    as_count,
+    as_image,
+    as_number,
+    as_real,
+)
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
 from slamlab.foundations.image import level_shapes, pyramid
-from slamlab.foundations.matching import distances
+from slamlab.foundations.matching import MAX_DISTANCE, distances
+
+MAX_SEARCH = 64
+"""The largest half-range :attr:`Options.search` accepts, in level pixels."""
 
 MIN_BASELINE = 1e-9
 """Camera centres closer than this (in the translation's units) count as coinciding."""
@@ -112,13 +122,15 @@ class Options:
     Attributes
     ----------
     max_distance : int
-        A match's Hamming distance must be below this, from 1 to 257.
+        A match's Hamming distance must be below this, from 1 to
+        :data:`slamlab.foundations.matching.MAX_DISTANCE` + 1.
     band : float
         The row band, in multiples of the right keypoint's level scale, positive.
     window : int
         The SAD patch's half-width, from 1 to :data:`slamlab.foundations.orb.EDGE_THRESHOLD`.
     search : int
-        The SAD search's half-range, from 2 to 64.
+        The SAD search's half-range, from 2 (a parabola needs both neighbours) to
+        :data:`MAX_SEARCH`.
     outlier_factor : float
         Matches whose best sum exceeds this times the median are dropped; at least 1.
     """
@@ -130,27 +142,25 @@ class Options:
     outlier_factor: float = 2.1
 
     def __post_init__(self) -> None:
-        """Check the settings.
+        """Check the settings' types and ranges.
 
         Raises
         ------
         slamlab.foundations.errors.InvalidInputError
-            If a setting is out of range.
+            If a setting has the wrong type or is out of range.
         """
-        if not 1 <= self.max_distance <= 8 * orb.DESCRIPTOR_BYTES + 1:
-            raise InvalidInputError(f"max_distance: must be from 1 to 257, got {self.max_distance}")
-        if not (math.isfinite(self.band) and self.band > 0.0):
-            raise InvalidInputError(f"band: must be positive and finite, got {self.band}")
-        if not 1 <= self.window <= orb.EDGE_THRESHOLD:
-            raise InvalidInputError(
-                f"window: must be from 1 to {orb.EDGE_THRESHOLD}, got {self.window}"
-            )
-        if not 2 <= self.search <= 64:  # a parabola needs both neighbours
-            raise InvalidInputError(f"search: must be from 2 to 64, got {self.search}")
-        if not (math.isfinite(self.outlier_factor) and self.outlier_factor >= 1.0):
-            raise InvalidInputError(
-                f"outlier_factor: must be at least 1, got {self.outlier_factor}"
-            )
+        set_ = object.__setattr__  # frozen: store the checked, normalised values
+        set_(self, "max_distance", as_count(self.max_distance, "max_distance", 1, MAX_DISTANCE + 1))
+        band = as_number(self.band, "band")
+        if not (math.isfinite(band) and band > 0.0):
+            raise InvalidInputError(f"band: must be positive and finite, got {band}")
+        set_(self, "band", band)
+        set_(self, "window", as_count(self.window, "window", 1, orb.EDGE_THRESHOLD))
+        set_(self, "search", as_count(self.search, "search", 2, MAX_SEARCH))
+        factor = as_number(self.outlier_factor, "outlier_factor")
+        if not (math.isfinite(factor) and factor >= 1.0):
+            raise InvalidInputError(f"outlier_factor: must be at least 1, got {factor}")
+        set_(self, "outlier_factor", factor)
 
 
 @dataclass(frozen=True)
@@ -299,7 +309,9 @@ def _as_shape(shape: tuple[int, int]) -> tuple[int, int]:
     """Check an image shape: two integers from 1 to MAX_IMAGE_SIDE."""
     values = tuple(shape)
     if len(values) != 2 or any(
-        isinstance(n, bool) or not isinstance(n, (int, np.integer)) or not 1 <= n <= MAX_IMAGE_SIDE
+        isinstance(n, (bool, np.bool_))
+        or not isinstance(n, (int, np.integer))
+        or not 1 <= n <= MAX_IMAGE_SIDE
         for n in values
     ):
         raise InvalidInputError(
@@ -309,22 +321,25 @@ def _as_shape(shape: tuple[int, int]) -> tuple[int, int]:
 
 
 def _decode_rectification(raw: dict[str, Any], codes: backends.Codes) -> dict[str, Any]:
-    """Return a compiled backend's rectification as float64 arrays and a float."""
+    """Return a compiled backend's rectification, each array checked (never cast)."""
     del codes  # the stereo module crosses no codes
+    check = backends.checked_array
+    if not isinstance(raw["baseline"], float):
+        raise RuntimeError(f"stereo baseline: backend returned {type(raw['baseline']).__name__}")
     return {
-        "rotation_left": np.asarray(raw["rotation_left"], dtype=np.float64).reshape(3, 3),
-        "rotation_right": np.asarray(raw["rotation_right"], dtype=np.float64).reshape(3, 3),
-        "intrinsics": np.asarray(raw["intrinsics"], dtype=np.float64).reshape(4),
-        "baseline": float(raw["baseline"]),
+        "rotation_left": check(raw["rotation_left"], np.float64, 2, "stereo rotation_left"),
+        "rotation_right": check(raw["rotation_right"], np.float64, 2, "stereo rotation_right"),
+        "intrinsics": check(raw["intrinsics"], np.float64, 1, "stereo intrinsics"),
+        "baseline": raw["baseline"],
     }
 
 
 def _decode_map(raw: Any, codes: backends.Codes) -> NDArray[np.float64]:  # noqa: ANN401 -- a backend's array
-    """Return a compiled backend's map as a float64 (rows, cols, 2) array."""
+    """Return a compiled backend's map, checked to be a float64 (rows, cols, 2) array."""
     del codes
-    out = np.asarray(raw, dtype=np.float64)
-    if out.ndim != 3 or out.shape[2] != 2:
-        raise RuntimeError(f"stereo: backend returned a map of shape {out.shape}")
+    out: NDArray[np.float64] = backends.checked_array(raw, np.float64, 3, "stereo map")
+    if out.shape[2] != 2:
+        raise RuntimeError(f"stereo map: backend returned shape {out.shape}")
     return out
 
 
@@ -620,14 +635,15 @@ def _check_inside(side: _Side, shapes: list[tuple[int, int]], margin: int, name:
 
 
 def _decode_matches(raw: dict[str, Any], codes: backends.Codes) -> StereoMatches:
-    """Rebuild :class:`StereoMatches` from a compiled backend's dict."""
+    """Rebuild :class:`StereoMatches` from a compiled backend's dict, each array checked."""
     del codes
+    check = backends.checked_array
     return StereoMatches(
-        left=np.asarray(raw["left"], dtype=np.int64),
-        right=np.asarray(raw["right"], dtype=np.int64),
-        right_x=np.asarray(raw["right_x"], dtype=np.float64),
-        disparity=np.asarray(raw["disparity"], dtype=np.float64),
-        depth=np.asarray(raw["depth"], dtype=np.float64),
+        left=check(raw["left"], np.int64, 1, "stereo left"),
+        right=check(raw["right"], np.int64, 1, "stereo right"),
+        right_x=check(raw["right_x"], np.float64, 1, "stereo right_x"),
+        disparity=check(raw["disparity"], np.float64, 1, "stereo disparity"),
+        depth=check(raw["depth"], np.float64, 1, "stereo depth"),
     )
 
 
@@ -680,6 +696,8 @@ def match(  # noqa: PLR0913 -- two images, their features, the camera, the setti
         raise InvalidInputError(
             f"right_image: expected the left image's shape {first.shape}, got {second.shape}"
         )
+    focal = as_number(focal, "focal")
+    baseline = as_number(baseline, "baseline")
     for name, value in (("focal", focal), ("baseline", baseline)):
         if not (math.isfinite(value) and value > 0.0):
             raise InvalidInputError(f"{name}: must be positive and finite, got {value}")
@@ -702,8 +720,8 @@ def match(  # noqa: PLR0913 -- two images, their features, the camera, the setti
             (first, second),
             sides[0],
             sides[1],
-            focal=float(focal),
-            baseline=float(baseline),
+            focal=focal,
+            baseline=baseline,
             orb_options=extraction,
             options=settings,
         ),
@@ -712,8 +730,8 @@ def match(  # noqa: PLR0913 -- two images, their features, the camera, the setti
             "right_image": second,
             "left": crossing[0],
             "right": crossing[1],
-            "focal": float(focal),
-            "baseline": float(baseline),
+            "focal": focal,
+            "baseline": baseline,
             "orb_options": asdict(extraction),
             "options": asdict(settings),
         },

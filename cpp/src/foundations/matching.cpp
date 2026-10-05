@@ -84,7 +84,8 @@ std::vector<std::int64_t> three_maxima(const std::array<std::int64_t, orb::kAngl
   }
   std::vector<std::int64_t> kept{top.front().second};
   for (std::size_t place = 1; place < top.size(); ++place) {
-    if (static_cast<double>(top[place].first) < 0.1 * static_cast<double>(top.front().first)) {
+    if (static_cast<double>(top[place].first) <
+        kSecondaryFraction * static_cast<double>(top.front().first)) {
       break;
     }
     kept.push_back(top[place].second);
@@ -95,9 +96,8 @@ std::vector<std::int64_t> three_maxima(const std::array<std::int64_t, orb::kAngl
 }  // namespace
 
 Result<void> check_options(const Options& options) {
-  if (options.max_distance < 0 || options.max_distance > 8 * std::int64_t{orb::kDescriptorBytes}) {
-    return fail_setting("max_distance", "must be from 0 to 256",
-                        static_cast<double>(options.max_distance));
+  if (auto ok = check_range("max_distance", options.max_distance, 0, kMaxDistance); !ok) {
+    return ok;
   }
   if (!std::isfinite(options.ratio) || options.ratio <= 0.0 || options.ratio > 1.0) {
     return fail_setting("ratio", "must be in (0, 1]", options.ratio);
@@ -106,6 +106,8 @@ Result<void> check_options(const Options& options) {
 }
 
 std::int64_t distance(const orb::Descriptor& a, const orb::Descriptor& b) {
+  static_assert(orb::kDescriptorBytes % sizeof(std::uint64_t) == 0,
+                "the distance reads whole 64-bit words");
   std::int64_t bits = 0;
   for (std::size_t offset = 0; offset < orb::kDescriptorBytes; offset += sizeof(std::uint64_t)) {
     std::uint64_t x = 0;

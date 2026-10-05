@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Any
 
 import cv2
@@ -144,6 +145,7 @@ GOOD = np.zeros((3, DESCRIPTOR_BYTES), dtype=np.uint8)
         ("match", (GOOD, GOOD, [0, 1, 2], [0.0, 1.0, 2.0]), "angles2: expected 3 integers"),
         ("match", (GOOD, GOOD, [0, 1, 30], [0, 1, 2]), r"angles1: bins must lie in \[0, 30\)"),
         ("match", (GOOD, GOOD, [0, 1, 2], [-1, 1, 2]), r"angles2: bins must lie in \[0, 30\)"),
+        ("match", (GOOD, GOOD, [True, False, True], [0, 1, 2]), "angles1: expected 3 integers"),
     ],
 )
 def test_rejects_invalid_input(
@@ -167,3 +169,49 @@ def test_options_reject_out_of_range(settings: dict[str, Any], message: str) -> 
     """Every filter is range-checked when the options are built."""
     with pytest.raises(InvalidInputError, match=message):
         matching.Options(**settings)
+
+
+@pytest.mark.parametrize(
+    ("settings", "message"),
+    [
+        ({"max_distance": 50.0}, "max_distance: must be an integer, got float"),
+        ({"max_distance": False}, "max_distance: must be an integer, got bool"),
+        ({"ratio": "0.8"}, "ratio: must be a real number, got str"),
+        ({"ratio": True}, "ratio: must be a real number, got bool"),
+        ({"check_orientation": 1}, "check_orientation: must be a boolean, got int"),
+    ],
+)
+def test_options_reject_wrong_types(settings: dict[str, Any], message: str) -> None:
+    """A filter of the wrong type is refused, not converted differently by each backend."""
+    with pytest.raises(InvalidInputError, match=message):
+        matching.Options(**settings)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_numpy_settings_and_empty_lists_reach_every_backend(backend: str) -> None:
+    """NumPy scalar filters become Python numbers; empty sets may come with empty lists."""
+    chosen = require_function(backend, matching.__name__, "match")
+    settings: dict[str, Any] = {
+        "max_distance": np.int16(40),
+        "ratio": np.float32(0.75),
+        "check_orientation": np.False_,
+    }
+    options = matching.Options(**settings)
+    assert [type(value) for value in asdict(options).values()] == [int, float, bool]
+    first, second, _ = _planted(30, 50, 8, seed=6)
+    zeros = np.zeros(len(first), np.int64), np.zeros(len(second), np.int64)
+    plain = matching.Options(max_distance=40, ratio=0.75, check_orientation=False)
+    got = matching.match(first, second, *zeros, options, backend=chosen)
+    reference = matching.match(first, second, *zeros, plain)
+    np.testing.assert_array_equal(got.pairs, reference.pairs)
+    empty = matching.match(first[:0], second, [], zeros[1], backend=chosen)
+    assert empty.pairs.shape == (0, 2)
+
+
+def test_matching_takes_the_first_set_in_blocks() -> None:
+    """A first set larger than one block matches as if taken whole."""
+    first, second, where = _planted(700, 300, 6, seed=7)
+    zeros = np.zeros(len(first), np.int64), np.zeros(len(second), np.int64)
+    found = matching.match(first, second, *zeros)
+    np.testing.assert_array_equal(found.pairs[:, 0], np.arange(700))
+    np.testing.assert_array_equal(found.pairs[:, 1], where)

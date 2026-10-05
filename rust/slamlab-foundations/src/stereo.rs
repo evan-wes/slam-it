@@ -7,11 +7,13 @@
 use nalgebra::{Matrix3, Matrix4, Vector2, Vector3, Vector4};
 
 use crate::camera::{self, Model};
-use crate::error::{ErrorKind, Result, fail, fail_setting};
+use crate::error::{ErrorKind, Result, check_range, fail, fail_setting};
 use crate::image::{self, Image, MAX_SIDE};
 use crate::orb::{self, Features, Keypoint};
 use crate::{matching, se3, so3};
 
+/// The largest half-range [`MatchOptions::search`] accepts, in level pixels.
+pub const MAX_SEARCH: usize = 64;
 /// Camera centres closer than this count as coinciding.
 pub const MIN_BASELINE: f64 = 1e-9;
 /// Where a map sends a pixel whose ray points behind the camera: outside every image.
@@ -259,22 +261,17 @@ pub struct StereoMatch {
 ///
 /// `InvalidInput` naming the first one out of range.
 pub fn check_options(options: &MatchOptions) -> Result<()> {
-    if !(1..=257).contains(&options.max_distance) {
-        return fail_setting(
-            "max_distance",
-            "must be from 1 to 257",
-            options.max_distance,
-        );
-    }
+    check_range(
+        "max_distance",
+        options.max_distance,
+        1,
+        matching::MAX_DISTANCE + 1,
+    )?;
     if !(options.band.is_finite() && options.band > 0.0) {
         return fail_setting("band", "must be positive and finite", options.band);
     }
-    if !(1..=orb::EDGE_THRESHOLD).contains(&options.window) {
-        return fail_setting("window", "must be from 1 to 19", options.window);
-    }
-    if !(2..=64).contains(&options.search) {
-        return fail_setting("search", "must be from 2 to 64", options.search);
-    }
+    check_range("window", options.window, 1, orb::EDGE_THRESHOLD)?;
+    check_range("search", options.search, 2, MAX_SEARCH)?;
     if !(options.outlier_factor.is_finite() && options.outlier_factor >= 1.0) {
         return fail_setting(
             "outlier_factor",

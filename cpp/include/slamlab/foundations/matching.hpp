@@ -19,6 +19,11 @@ namespace slamlab::foundations::matching {
 
 /// @brief The most descriptors a set may hold.
 inline constexpr std::size_t kMaxDescriptors = std::size_t{1} << 20U;
+/// @brief The largest Hamming distance: every bit differs.
+inline constexpr std::int64_t kMaxDistance = 8 * static_cast<std::int64_t>(orb::kDescriptorBytes);
+/// @brief The rotation histogram's second and third bins are kept only if they hold at least
+///        this fraction of the highest (ORB-SLAM's `ComputeThreeMaxima`).
+inline constexpr double kSecondaryFraction = 0.1;
 
 /// @brief Matching filters (`slamlab.foundations.matching.Options`).
 struct Options {

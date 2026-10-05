@@ -8,7 +8,7 @@
 
 use std::sync::OnceLock;
 
-use crate::error::{ErrorKind, Result, fail, fail_setting};
+use crate::error::{ErrorKind, Result, check_range, fail, fail_setting};
 use crate::image::{self, Image};
 
 /// Keypoints lie at least this many pixels inside their level (ORB-SLAM's).
@@ -79,6 +79,11 @@ pub const ROTATIONS: [[i64; 2]; ANGLE_BINS] = [
 ];
 /// The most pyramid levels [`Options`] accepts.
 pub const MAX_LEVELS: usize = 32;
+/// The largest feature budget [`Options`] and [`distribute`] accept.
+pub const MAX_FEATURES: usize = 1 << 20;
+/// The largest FAST threshold: a margin of 255, the most an 8-bit difference can be, less one
+/// (a corner needs every margin strictly above the threshold).
+pub const MAX_FAST_THRESHOLD: i64 = 254;
 /// The descriptor's smoothing: a 7-tap Gaussian, sigma 2, summing to `2^12`.
 pub const BLUR_KERNEL: [u32; 7] = [287, 537, 781, 886, 781, 537, 287];
 /// A descriptor's length: 256 bits.
@@ -254,16 +259,8 @@ pub struct Bounds {
 ///
 /// `InvalidInput` naming the first setting out of range.
 pub fn check_options(options: &Options) -> Result<()> {
-    if !(1..=image::MAX_SIDE).contains(&options.n_features) {
-        return fail_setting(
-            "n_features",
-            "must be from 1 to 1048576",
-            options.n_features,
-        );
-    }
-    if !(1..=MAX_LEVELS).contains(&options.levels) {
-        return fail_setting("levels", "must be from 1 to 32", options.levels);
-    }
+    check_range("n_features", options.n_features, 1, MAX_FEATURES)?;
+    check_range("levels", options.levels, 1, MAX_LEVELS)?;
     if !options.scale_factor.is_finite() || options.scale_factor <= 1.0 {
         return fail_setting(
             "scale_factor",
@@ -271,20 +268,18 @@ pub fn check_options(options: &Options) -> Result<()> {
             options.scale_factor,
         );
     }
-    if !(0..=254).contains(&options.fast_threshold) {
-        return fail_setting(
-            "fast_threshold",
-            "must be from 0 to 254",
-            options.fast_threshold,
-        );
-    }
-    if !(0..=options.fast_threshold).contains(&options.min_fast_threshold) {
-        return fail_setting(
-            "min_fast_threshold",
-            "must be from 0 to fast_threshold",
-            options.min_fast_threshold,
-        );
-    }
+    check_range(
+        "fast_threshold",
+        options.fast_threshold,
+        1,
+        MAX_FAST_THRESHOLD,
+    )?;
+    check_range(
+        "min_fast_threshold",
+        options.min_fast_threshold,
+        1,
+        options.fast_threshold,
+    )?;
     Ok(())
 }
 
@@ -336,8 +331,12 @@ pub fn level_budgets(n_features: usize, levels: usize, scale_factor: f64) -> Vec
 ///
 /// The intensity.
 fn offset_pixel(image: &Image, row: usize, col: usize, offset: [i64; 2]) -> i64 {
-    let r = row.checked_add_signed(to_isize(offset[1])).expect("inside");
-    let c = col.checked_add_signed(to_isize(offset[0])).expect("inside");
+    let r = row
+        .checked_add_signed(to_isize(offset[1]))
+        .expect("callers keep a point at least the offset's reach inside its level");
+    let c = col
+        .checked_add_signed(to_isize(offset[0]))
+        .expect("callers keep a point at least the offset's reach inside its level");
     i64::from(image.at(r, c))
 }
 
@@ -615,9 +614,7 @@ pub fn distribute(
             "xy: every corner must lie inside bounds",
         );
     }
-    if target > image::MAX_SIDE {
-        return fail_setting("target", "must be from 0 to 1048576", target);
-    }
+    check_range("target", target, 0, MAX_FEATURES)?;
     Ok(distribute_checked(xy, response, bounds, target))
 }
 

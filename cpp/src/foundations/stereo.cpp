@@ -312,18 +312,18 @@ Result<image::Coordinates> rectification_map(camera::Model model,
 }
 
 Result<void> check_options(const MatchOptions& options) {
-  if (options.max_distance < 1 || options.max_distance > 257) {
-    return fail_setting("max_distance", "must be from 1 to 257",
-                        static_cast<double>(options.max_distance));
+  if (auto ok = check_range("max_distance", options.max_distance, 1, matching::kMaxDistance + 1);
+      !ok) {
+    return ok;
   }
   if (!std::isfinite(options.band) || options.band <= 0.0) {
     return fail_setting("band", "must be positive and finite", options.band);
   }
-  if (options.window < 1 || options.window > orb::kEdgeThreshold) {
-    return fail_setting("window", "must be from 1 to 19", static_cast<double>(options.window));
+  if (auto ok = check_range("window", options.window, 1, orb::kEdgeThreshold); !ok) {
+    return ok;
   }
-  if (options.search < 2 || options.search > 64) {
-    return fail_setting("search", "must be from 2 to 64", static_cast<double>(options.search));
+  if (auto ok = check_range("search", options.search, 2, kMaxSearch); !ok) {
+    return ok;
   }
   if (!std::isfinite(options.outlier_factor) || options.outlier_factor < 1.0) {
     return fail_setting("outlier_factor", "must be at least 1", options.outlier_factor);

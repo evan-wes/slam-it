@@ -4,14 +4,17 @@
 //! test, one match per second-set descriptor, and the rotation-consistency histogram (the
 //! Python module's docstring defines each filter).
 
-use crate::error::{ErrorKind, Result, fail, fail_setting};
+use crate::error::{ErrorKind, Result, check_range, fail, fail_setting};
 use crate::orb::{ANGLE_BINS, DESCRIPTOR_BYTES, Descriptor};
 
 /// The most descriptors a set may hold.
 pub const MAX_DESCRIPTORS: usize = 1 << 20;
-/// A descriptor's bits: the largest Hamming distance.
-const DESCRIPTOR_BITS: i64 = 8 * 32;
-const _: () = assert!(DESCRIPTOR_BYTES == 32, "update DESCRIPTOR_BITS");
+/// The largest Hamming distance: every bit differs.
+pub const MAX_DISTANCE: i64 = 8 * 32;
+const _: () = assert!(DESCRIPTOR_BYTES == 32, "update MAX_DISTANCE");
+/// The rotation histogram's second and third bins are kept only if they hold at least this
+/// fraction of the highest (ORB-SLAM's `ComputeThreeMaxima`).
+pub const SECONDARY_FRACTION: f64 = 0.1;
 
 /// Matching filters (`slamlab.foundations.matching.Options`).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -56,13 +59,7 @@ pub struct Match {
 ///
 /// `InvalidInput` naming the first one out of range.
 pub fn check_options(options: &Options) -> Result<()> {
-    if !(0..=DESCRIPTOR_BITS).contains(&options.max_distance) {
-        return fail_setting(
-            "max_distance",
-            "must be from 0 to 256",
-            options.max_distance,
-        );
-    }
+    check_range("max_distance", options.max_distance, 0, MAX_DISTANCE)?;
     if !(options.ratio.is_finite() && options.ratio > 0.0 && options.ratio <= 1.0) {
         return fail_setting("ratio", "must be in (0, 1]", options.ratio);
     }
@@ -197,7 +194,7 @@ fn three_maxima(counts: &[i64; ANGLE_BINS]) -> Vec<usize> {
     let highest = top[0].0;
     let mut kept = vec![top[0].1];
     for &(count, k) in &top[1..] {
-        if (count as f64) < 0.1 * highest as f64 {
+        if (count as f64) < SECONDARY_FRACTION * highest as f64 {
             break;
         }
         kept.push(k);
