@@ -4,6 +4,101 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.3.0.0] - 2026-10-04
+
+Milestone 1 is complete: Python, C++ and Rust have the same capabilities. The Rust core
+gains the estimation half of rung 0, and Rust becomes a lock-step backend. Every SVD in the
+Rust core now goes through faer, since nalgebra's were not accurate on ill-conditioned input.
+Porting the refinement found a crash in the C++ core, fixed here. Four deferred panel items
+are closed, and this PR's own panel findings are resolved.
+
+### Added
+
+- **Correspondences and triangulation in Rust** (`slamlab_foundations::correspondences`,
+  `triangulation`): the shared checks and normalisations, two-view triangulation (niter2)
+  and the n-view DLT.
+- **RANSAC in Rust** (`slamlab_foundations::ransac`): LO-MSAC over an `Estimator` trait,
+  drawing the same PCG32 samples as Python and C++, and the refined run that keeps a
+  refinement only if it lowers the MSAC cost.
+- **Five-point, epipolar and homography in Rust:** Nistér's and Stewénius' solvers, the
+  normalised 8-point E and F, Sampson errors, E's decomposition and its refinement on the
+  essential manifold, the normalised DLT, Malis and Vargas' decomposition of H, and E-, F-
+  and H-RANSAC.
+- **Two-view initialisation in Rust** (`slamlab_foundations::twoview`): E and H by RANSAC,
+  GRIC model selection and the choice of motion by triangulation.
+- **P3P and PnP in Rust:** Lambda Twist and Ding et al.'s P3P, EPnP, the pose refinement on
+  SE(3) and PnP RANSAC.
+- **The `slamlab_rs` bindings** for every module above, with a shared RANSAC crossing that
+  reads options through serde.
+- **RANSAC benchmarks** in both native suites: E-RANSAC and PnP RANSAC on one fixed
+  synthetic scene. Both cores keep the same inliers in the same number of iterations;
+  C++ takes 2.29 and 2.40 ms, Rust 3.39 and 2.05 ms.
+- **`linalg`** (Rust): faer's SVD (`svd`, `svd3`, `singular_values3`) and real
+  eigendecomposition (`eigen_real`) for the whole crate, and `least_squares`, the
+  minimum-norm SVD solve with an explicit cutoff, so each caller states whose convention
+  (numpy's or Eigen's) it follows.
+
+### Changed
+
+- **Rust is a lock-step backend.** Every module's tests run on Python, C++ and Rust, and a
+  compiled backend missing a module or a function fails them; the skip for a module Rust
+  lacked is gone. The demos run Rust by default, and the TUM two-view and absolute-pose
+  surveys print the same results on C++ and Rust.
+- **The refinement callback takes the inlier indices in every language** (panel A6 on
+  PR 4); Python passed a mask.
+- **BA's solve has its own module** (`ba/solve.rs`, `ba/solve.cpp`), as Python has
+  `ba/solve.py`, so the layer check holds it to the top of the package (panel A13, A24).
+  Rust callers name `ba::solve::solve`.
+- **Nesting summaries implement `solve::Summary` in Rust** by delegation: `ba::Summary` and
+  `ransac::RefinedSummary` (panel A5).
+- **Five-point solutions come back in one canonical order in every language** (panel L3):
+  each E signed so its first entry within 1e-6 of the largest magnitude is positive (a pure
+  translation's skew E ties its two largest entries), then sorted row-major. RANSAC keeps
+  the first of equally good models, so the cores' decisions no longer depend on each
+  library's null-space basis or Schur form.
+- **The refinement callback may fail, in every language** (panel A2): a failed round is not
+  kept, where the refiners used to unwrap. `start_motion` returns an error for an E that does
+  not decompose, in C++ and Rust.
+- **Rust's Stewénius solver** takes its eigenvectors from one eigendecomposition per sample,
+  as Eigen and numpy do, and **EPnP's beta steps** use Householder QR when clearly full rank;
+  together they recover most of the cost of the accurate SVD.
+- **`linalg`** is crate-private and an optional layer at the bottom of rung 0's contract
+  (panel A4, A8); the design doc records the cores' runtime dependencies (A7).
+- **Python's `start_motion`** raises for an E that does not decompose, as the compiled cores
+  return an error (A13).
+- **`docs/notes/rust-port.md`** covers the estimation core: the port's choices, the SVD
+  finding and the faer switch, the RANSAC benchmarks and the TUM results, and one code-size
+  table for all of rung 0, counted by one stated rule.
+
+### Fixed
+
+- **Rust's SVDs are accurate on ill-conditioned input** (panel L1, L2). nalgebra 0.35's 3x3
+  SVD squares the condition number, so Rust's Umeyama, and so P3P, returned rotations off by
+  up to 0.7 on thin triangles; its dynamic SVD left the 8-point E and F up to 6e-3 from
+  Python's on a few near-planar scenes. Every SVD now goes through faer, which matches
+  LAPACK to roundoff on both, scaling its input into a safe range first as LAPACK does
+  (faer alone gave wrong factors below about 1e-154).
+- **C++ `refine_essential` no longer segfaults** on a match at both epipoles, whose Sampson
+  distance is 0 / 0. `epipolar::refine` and `pnp::refine` return the solve's error and the
+  public refinements raise it as `InvalidInputError`, as Python and Rust do.
+- **A failed gauge SVD is `DegenerateError` in Python** too, not numpy's `LinAlgError`
+  (panel A20).
+
+### Tests
+
+- **An epipole match raises `InvalidInputError` on every backend** (the crash above).
+- **The layer check's facade cases** follow the move: the facade including a package module
+  fails as `problem`, and `super::solve` from below fails in Rust.
+- **`ill_conditioned.json`** (50-digit mpmath) holds every backend to near-planar 8-point
+  scenes, a near-rank-deficient E and thin-triangle Umeyama, the inputs the old SVD got
+  wrong.
+- **The compiled-side tests run on every compiled backend** (panel A1), not only C++, and
+  one test requires every module with an `Implementation` Protocol of each.
+- **Native Rust tests** for each new module's main cases, the SVD's graded and thin cases,
+  and the failure paths (no model from any sample, an epipole match, a rank-1 E, a point
+  behind the camera); the rest of each module's behaviour is covered through the lock-step
+  tests.
+
 ## [0.2.4.0] - 2026-10-04
 
 The Rust core reaches rung 0's geometry and optimisation, at parity with C++. This is the

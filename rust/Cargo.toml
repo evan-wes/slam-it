@@ -4,6 +4,9 @@ members = ["slamlab-foundations", "slamlab-py"]
 
 [workspace.dependencies]
 nalgebra = "0.35.0"
+# Every SVD in the crate (slamlab-foundations' linalg): backward stable, where nalgebra 0.35's
+# are not (PR 6 panel, L1 and L2). Single-threaded: no rayon, like the cores.
+faer = { version = "0.24.4", default-features = false, features = ["std"] }
 
 [workspace.package]
 edition = "2024"
@@ -21,3 +24,9 @@ pedantic = { level = "deny", priority = -1 }
 missing_docs_in_private_items = "deny"
 missing_errors_doc = "deny"
 missing_panics_doc = "deny"
+# `!(x > tolerance)` is deliberate throughout: a NaN fails the test instead of passing it,
+# which `x <= tolerance` would not. The C++ core uses the same form.
+neg_cmp_op_on_partial_ord = "allow"
+# The numerical code follows its papers' notation (a, b, c, d for a quadratic; R, t, E, H),
+# which reads better against the references than longer names would.
+many_single_char_names = "allow"

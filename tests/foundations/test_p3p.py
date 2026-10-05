@@ -70,10 +70,11 @@ def test_ding_and_lambda_twist_find_the_same_poses(backend: str) -> None:
             assert _distance(twist, pose) < 1e-9
 
 
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
 @pytest.mark.parametrize("solver", p3p.SOLVERS)
-def test_backends_agree(solver: str) -> None:
-    """The C++ core returns the reference's solutions, in the same order."""
-    chosen = require_function("cpp", p3p.__name__, "p3p")
+def test_backends_agree(backend: str, solver: str) -> None:
+    """Every compiled core returns the reference's solutions, in the same order."""
+    chosen = require_function(backend, p3p.__name__, "p3p")
     for seed in range(SAMPLES):
         world, rays, _ = _sample(seed)
         reference = p3p.p3p(world, rays, solver=solver)
@@ -201,9 +202,10 @@ def test_quadratic_roots() -> None:
     assert p3p.quadratic_roots(0.0, 2.0, -1.0) == [0.5]
 
 
-def test_the_compiled_solver_codes_match() -> None:
-    """The solver codes Python sends are the compiled core's."""
-    chosen = require_function("cpp", p3p.__name__, "p3p")
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+def test_the_compiled_solver_codes_match(backend: str) -> None:
+    """The solver codes Python sends are each compiled core's."""
+    chosen = require_function(backend, p3p.__name__, "p3p")
     codes = backends.implementation(chosen, p3p.__name__).codes()
     assert tuple(codes["solver"]) == p3p.SOLVERS
 

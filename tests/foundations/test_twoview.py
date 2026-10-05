@@ -234,9 +234,10 @@ def test_core_checks_its_own_input(backend: str) -> None:
         impl.initialize(b1, b2, {**asdict(OPTIONS), "essential_solver": "sturm"})
 
 
-def test_the_compiled_code_tables_match() -> None:
-    """Every code table two-view's compiled core returns is Python's, in the same order."""
-    chosen = require_function("cpp", twoview.__name__, "initialize")
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+def test_the_compiled_code_tables_match(backend: str) -> None:
+    """Every code table each compiled two-view core returns is Python's, in the same order."""
+    chosen = require_function(backend, twoview.__name__, "initialize")
     codes = backends.implementation(chosen, twoview.__name__).codes()
     assert tuple(codes["status"]) == tuple(twoview.Status)
     assert tuple(codes["model"]) == tuple(twoview.Model)

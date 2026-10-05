@@ -130,7 +130,9 @@ layers = [
 ]
 
 # The order of modules inside rung 0. Parenthesised layers are optional: they are the modules
-# milestone 1 adds, so the contract covers each as it lands.
+# milestone 1 adds, so the contract covers each as it lands, and Rust's `linalg` (the SVD and
+# eigendecomposition its modules share), which Python does not need; check_layers.py holds the
+# Rust crate to the same order.
 [[tool.importlinter.contracts]]
 name = "Rung 0's internal order"
 type = "layers"
@@ -144,7 +146,7 @@ layers = [
   "(alignment)",
   "(se3)",
   "so3",
-  "arrays",
+  "arrays | (linalg)",
   "(rng) | (solve)",
   "errors",
 ]

@@ -66,12 +66,13 @@ inline constexpr int kRefineIterations = 20;
 
 /// @brief Refine a pose by Levenberg-Marquardt on the Cauchy-robust reprojection error
 ///        (unchecked).
-/// @param pose The starting `T_cam_world`, every point in front.
+/// @param pose The starting `T_cam_world`.
 /// @param points World points.
 /// @param bearings Their unit bearings, positive z.
 /// @param scale The Cauchy loss's scale, in the normalised plane.
-/// @return The refined pose and the solve's summary.
-[[nodiscard]] solve::Solution<Eigen::Matrix4d, nls::Summary> refine(
+/// @return The refined pose and the solve's summary; `InvalidInput` if a point is behind the
+///         starting camera (an infinite start).
+[[nodiscard]] Result<solve::Solution<Eigen::Matrix4d, nls::Summary>> refine(
     const Eigen::Matrix4d& pose, const Eigen::Ref<const Rows3>& points,
     const Eigen::Ref<const Rows3>& bearings, double scale);
 

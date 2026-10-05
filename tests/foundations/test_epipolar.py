@@ -15,6 +15,7 @@ from tests.conftest import load_fixture, require_function
 from tests.foundations import scenes as sc
 
 FIXTURE = load_fixture("foundations/epipolar.json")
+ILL_CONDITIONED = load_fixture("foundations/ill_conditioned.json")
 DIRECT = ["essential_8pt", "fundamental_8pt", "sampson_essential", "sampson_fundamental"]
 K = np.array([[520.0, 0.0, 320.0], [0.0, 515.0, 240.0], [0.0, 0.0, 1.0]])
 
@@ -22,6 +23,42 @@ K = np.array([[520.0, 0.0, 320.0], [0.0, 515.0, 240.0], [0.0, 0.0, 1.0]])
 def _pixels(rays: np.ndarray) -> np.ndarray:
     """Project bearings through K."""
     return np.ascontiguousarray((rays / rays[:, 2:3] @ K.T)[:, :2])
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("function", ["essential_8pt", "fundamental_8pt"])
+def test_ill_conditioned_8pt_matches_fixture(backend: str, function: str) -> None:
+    """Near-planar, noisy scenes, where a weaker SVD gave E and F off by up to 6e-3 (panel L2)."""
+    chosen = require_function(backend, epipolar.__name__, function)
+    sc.check_fixture(epipolar, ILL_CONDITIONED, function, chosen)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_ill_conditioned_decomposition_matches_fixture(backend: str) -> None:
+    """Singular values (1, 1e-6, 0): every backend's candidates are the oracle's (panel L1).
+
+    A 3x3 SVD through ``MᵀM`` loses the third singular pair here.
+    """
+    spec: dict[str, Any] = ILL_CONDITIONED["functions"]["decompose_essential"]
+    chosen = require_function(backend, epipolar.__name__, "decompose_essential")
+    for case in spec["cases"]:
+        found = epipolar.decompose_essential(**case["input"], backend=chosen)
+        sc.assert_contains(found, case["expected"], spec["tolerance"]["atol"])
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("scale", [1e-200, 1e200])
+def test_decomposition_does_not_depend_on_scale(backend: str, scale: float) -> None:
+    """E scaled far from 1 gives E's own candidates (panel run 2, L8).
+
+    LAPACK and Eigen scale a matrix into a safe range before its SVD; an SVD that does not
+    loses the factors to underflow below about 1e-154, or fails above about 1e154.
+    """
+    chosen = require_function(backend, epipolar.__name__, "decompose_essential")
+    essential = _true_essential()
+    reference = epipolar.decompose_essential(essential, backend="python")
+    scaled = epipolar.decompose_essential(scale * essential, backend=chosen)
+    sc.assert_contains(scaled, reference, 1e-12)
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -393,9 +430,28 @@ def test_refine_rejects_invalid_input(backend: str) -> None:
         )
 
 
-def test_the_compiled_code_tables_match() -> None:
-    """The codes Python sends and decodes are the compiled core's, in the same order."""
-    chosen = require_function("cpp", epipolar.__name__, "codes")
+@pytest.mark.filterwarnings("ignore:invalid value encountered in divide:RuntimeWarning")
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_refine_rejects_a_match_at_both_epipoles(backend: str) -> None:
+    """A match at both epipoles has a 0 / 0 Sampson distance: an error, not a crash.
+
+    Forward translation with no rotation puts both epipoles exactly at (0, 0, 1), so E maps
+    the match to two zero lines in floating point, not merely small ones.
+    """
+    points = np.array([[np.sin(1.7 * k), np.cos(0.9 * k), 4.0 + np.sin(0.3 * k)] for k in range(8)])
+    moved = points + np.array([0.0, 0.0, 1.0])
+    forward = np.array([0.0, 0.0, 1.0])
+    b1 = np.vstack([points / np.linalg.norm(points, axis=1, keepdims=True), forward])
+    b2 = np.vstack([moved / np.linalg.norm(moved, axis=1, keepdims=True), forward])
+    essential = so3.hat(forward)
+    with pytest.raises(InvalidInputError, match="initial cost is not finite"):
+        epipolar.refine_essential(essential, b1, b2, scale=1e-3, backend=backend)
+
+
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+def test_the_compiled_code_tables_match(backend: str) -> None:
+    """The codes Python sends and decodes are each compiled core's, in the same order."""
+    chosen = require_function(backend, epipolar.__name__, "codes")
     codes = backends.implementation(chosen, epipolar.__name__).codes()
     sc.assert_refined_codes(codes)
     assert tuple(codes["minimal_solver"]) == epipolar.MINIMAL_SOLVERS
@@ -416,3 +472,11 @@ def test_the_summary_reports_the_refinement(backend: str) -> None:
     assert refined.summary.refined
     assert refined.summary.run.score < plain.summary.run.score
     assert refined.summary.iterations == plain.summary.iterations
+
+
+def test_start_motion_rejects_what_does_not_decompose() -> None:
+    """A non-finite or rank-1 E has no start motion: errors, as in the compiled cores."""
+    with pytest.raises(InvalidInputError):
+        epipolar.start_motion(np.full((3, 3), np.nan))
+    with pytest.raises(DegenerateError, match="rank"):
+        epipolar.start_motion(np.diag([1.0, 0.0, 0.0]))

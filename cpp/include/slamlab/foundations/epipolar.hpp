@@ -176,16 +176,17 @@ struct Motion {
 ///        the candidate rotation with the largest trace, and the translation's sign that makes
 ///        its largest-magnitude component positive.
 /// @param essential E, of rank 2.
-/// @return The start.
-[[nodiscard]] Motion start_motion(const Eigen::Matrix3d& essential);
+/// @return The start; `decompose_essential`'s errors if E is not finite or its rank is below 2.
+[[nodiscard]] Result<Motion> start_motion(const Eigen::Matrix3d& essential);
 
 /// @brief Refine E by Levenberg-Marquardt on the Cauchy-robust Sampson distance (unchecked).
 /// @param essential The starting E.
 /// @param bearings1 Bearings in camera 1 (M x 3), positive z, M >= 5.
 /// @param bearings2 Bearings in camera 2 (M x 3).
 /// @param scale The Cauchy scale, a Sampson distance in the normalised plane.
-/// @return The refined E and the solve's summary.
-[[nodiscard]] solve::Solution<Eigen::Matrix3d, nls::Summary> refine(
+/// @return The refined E and the solve's summary; `InvalidInput` if a match's Sampson distance
+///         is not finite at the start (a match at both epipoles).
+[[nodiscard]] Result<solve::Solution<Eigen::Matrix3d, nls::Summary>> refine(
     const Eigen::Matrix3d& essential, const Eigen::Ref<const Rows3>& bearings1,
     const Eigen::Ref<const Rows3>& bearings2, double scale);
 

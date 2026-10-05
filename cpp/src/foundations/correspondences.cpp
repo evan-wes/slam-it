@@ -54,6 +54,10 @@ std::optional<Eigen::Matrix<double, 9, 1>> null_vector(
   return svd.matrixV().col(8);
 }
 
+// check_bearing's message spells the tolerance out ("1e-09", as Python prints it), so the
+// cores' messages match; this keeps the two in step.
+static_assert(kBearingTolerance == 1e-9, "update check_bearing's message");
+
 Result<void> check_bearing(const Eigen::Ref<const Rows3>& bearings, Eigen::Index row,
                            const char* name) {
   if (!bearings.row(row).allFinite() ||

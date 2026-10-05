@@ -105,7 +105,7 @@ fn main() -> Result<(), String> {
     );
     let options = reader::demo_options();
     let began = Instant::now();
-    let solution = ba::solve(&problem, &options).map_err(|e| e.to_string())?;
+    let solution = ba::solve::solve(&problem, &options).map_err(|e| e.to_string())?;
     let seconds = began.elapsed().as_secs_f64();
     let summary = &solution.summary.solve;
     println!(

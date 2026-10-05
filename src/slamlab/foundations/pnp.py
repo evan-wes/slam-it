@@ -641,7 +641,7 @@ def pnp_ransac_reference(
         If no sample gave a pose.
     """
 
-    def refined(model: Pose, inliers: NDArray[np.bool_]) -> Solution[Pose, nls.Summary]:
+    def refined(model: Pose, inliers: NDArray[np.intp]) -> Solution[Pose, nls.Summary]:
         return refine_reference(model, points[inliers], bearings[inliers], options.threshold)
 
     return ransac.estimate_refined(

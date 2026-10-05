@@ -5,14 +5,14 @@
 //! refused rather than silently copied, the same as the C++ binding. A core [`Error`] crosses
 //! as the Python exception of its kind, from `slamlab.foundations.errors`.
 
-use nalgebra::SMatrix;
-use numpy::ndarray::{ArrayD, IxDyn};
+use nalgebra::{DVector, SMatrix};
+use numpy::ndarray::{ArrayD, Dimension, IxDyn};
 use numpy::{
-    Element, IntoPyArray, PyArrayDyn, PyReadonlyArray1, PyReadonlyArrayDyn, PyUntypedArrayMethods,
+    Element, IntoPyArray, PyArrayDyn, PyReadonlyArray, PyReadonlyArrayDyn, PyUntypedArrayMethods,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyType;
+use pyo3::types::{PyDict, PyType};
 use slamlab_foundations::error::{Error, ErrorKind};
 
 /// A float64 numpy array returned to Python.
@@ -143,10 +143,7 @@ pub fn batch<'a>(array: &'a ArrayIn<'_>, item: &[usize]) -> PyResult<(&'a [f64],
                 .join(", ")
         )));
     }
-    let values = array
-        .as_slice()
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    Ok((values, shape[0]))
+    Ok((contiguous(array)?, shape[0]))
 }
 
 /// Reads a batch as a vector of items.
@@ -214,11 +211,11 @@ pub fn decode<E: Copy>(all: &[E], code: i64, what: &str) -> PyResult<E> {
         .ok_or_else(|| PyValueError::new_err(format!("{what}: unknown code {code}")))
 }
 
-/// Returns a one-dimensional array's values as a contiguous slice.
+/// Returns an array's values as one contiguous row-major slice.
 ///
 /// # Arguments
 ///
-/// * `array` - The array.
+/// * `array` - The array, of any dimension.
 ///
 /// # Returns
 ///
@@ -227,10 +224,36 @@ pub fn decode<E: Copy>(all: &[E], code: i64, what: &str) -> PyResult<E> {
 /// # Errors
 ///
 /// `ValueError` if the array is not C-contiguous.
-pub fn slice<'a, T: Element>(array: &'a PyReadonlyArray1<'_, T>) -> PyResult<&'a [T]> {
+pub fn contiguous<'a, T: Element, D: Dimension>(
+    array: &'a PyReadonlyArray<'_, T, D>,
+) -> PyResult<&'a [T]> {
     array
         .as_slice()
         .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+/// Reads one item, an array of exactly the item's shape (no batch dimension).
+///
+/// # Arguments
+///
+/// * `array` - A C-contiguous float64 array of shape `A::shape()`.
+///
+/// # Returns
+///
+/// The item.
+///
+/// # Errors
+///
+/// `ValueError` for a wrong shape or a non-contiguous array.
+pub fn one<A: Item>(array: &ArrayIn<'_>) -> PyResult<A> {
+    if array.shape() != A::shape().as_slice() {
+        return Err(PyValueError::new_err(format!(
+            "expected shape {:?}, got {:?}",
+            A::shape(),
+            array.shape()
+        )));
+    }
+    Ok(A::read(contiguous(array)?))
 }
 
 /// Copies items into a new array of shape `(N, *A::shape())`.
@@ -253,6 +276,69 @@ pub fn items_array<'py, A: Item>(py: Python<'py>, items: &[A]) -> PyResult<Array
         item.write(&mut out);
     }
     new_array(py, &[&[items.len()][..], &A::shape()].concat(), out)
+}
+
+/// Packs one fixed-size item as a new array of its own shape.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `item` - The item.
+///
+/// # Returns
+///
+/// The array, of shape `A::shape()`.
+///
+/// # Errors
+///
+/// Never in practice (the shape always matches); see [`new_array`].
+pub fn item_array<'py, A: Item>(py: Python<'py>, item: &A) -> PyResult<ArrayOut<'py>> {
+    let mut out = Vec::with_capacity(A::LEN);
+    item.write(&mut out);
+    new_array(py, &A::shape(), out)
+}
+
+/// Packs a vector as a new (N,) array.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `values` - The vector.
+///
+/// # Returns
+///
+/// The array.
+///
+/// # Errors
+///
+/// Never in practice (the shape always matches); see [`new_array`].
+pub fn vector_array<'py>(py: Python<'py>, values: &DVector<f64>) -> PyResult<ArrayOut<'py>> {
+    new_array(py, &[values.len()], values.as_slice().to_vec())
+}
+
+/// A `codes()` dict from its tables.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `tables` - Each enum's key and its names in code order.
+///
+/// # Returns
+///
+/// `{key: names}`.
+///
+/// # Errors
+///
+/// A Python error if the dict cannot be built.
+pub fn codes_dict<'py>(
+    py: Python<'py>,
+    tables: &[(&str, Vec<&'static str>)],
+) -> PyResult<Bound<'py, PyDict>> {
+    let out = PyDict::new(py);
+    for (key, names) in tables {
+        out.set_item(*key, names)?;
+    }
+    Ok(out)
 }
 
 /// An enum's names in code order, for a `codes()` table.
@@ -413,10 +499,6 @@ macro_rules! batched {
     ($(#[$meta:meta])* $name:ident($($arg:ident: $ty:ty),+) -> $out:ty = $f:expr) => {
         $(#[$meta])*
         #[pyfunction]
-        #[allow(
-            clippy::needless_pass_by_value,
-            reason = "PyO3 extracts arguments by value; the read-only borrow guard is the argument"
-        )]
         fn $name<'py>(
             py: Python<'py>,
             $($arg: $crate::common::ArrayIn<'py>),+
@@ -439,4 +521,31 @@ macro_rules! add_functions {
     };
 }
 
-pub(crate) use {add_functions, batched};
+/// `enum_codes!("solver" => Solver)` defines the module's `codes()`: each key with its enum's
+/// names in code order (the enum's `ALL` and `name`).
+macro_rules! enum_codes {
+    ($($key:literal => $enum:ty),+ $(,)?) => {
+        /// The enum tables: each enum's names in code order.
+        ///
+        /// # Arguments
+        ///
+        /// * `py` - The Python token.
+        ///
+        /// # Returns
+        ///
+        /// `{key: [names]}`.
+        ///
+        /// # Errors
+        ///
+        /// A Python error if the dict cannot be built.
+        #[pyfunction]
+        fn codes(py: Python<'_>) -> PyResult<Bound<'_, pyo3::types::PyDict>> {
+            $crate::common::codes_dict(
+                py,
+                &[$(($key, $crate::common::enum_names(&<$enum>::ALL, <$enum>::name))),+],
+            )
+        }
+    };
+}
+
+pub(crate) use {add_functions, batched, enum_codes};

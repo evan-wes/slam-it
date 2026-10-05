@@ -72,17 +72,42 @@ def test_nister_and_stewenius_find_the_same_solutions(backend: str) -> None:
             assert _distance(stewenius, e) < 1e-9
 
 
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
 @pytest.mark.parametrize("solver", fivepoint.SOLVERS)
-def test_backends_agree(solver: str) -> None:
-    """The C++ core returns the reference's solutions, in any order."""
-    chosen = require_function("cpp", fivepoint.__name__, "essential_5pt")
+def test_backends_agree(backend: str, solver: str) -> None:
+    """Every compiled core returns the reference's solutions, signed and ordered alike.
+
+    The canonical order (the module's "Canonical order") makes the order independent of each
+    library's null-space basis and Schur form, so the lists match element for element.
+    """
+    chosen = require_function(backend, fivepoint.__name__, "essential_5pt")
     for seed in range(TRIALS):
         b1, b2, _ = _sample(seed)
         reference = fivepoint.essential_5pt(b1, b2, solver=solver)
         compiled = fivepoint.essential_5pt(b1, b2, solver=solver, backend=chosen)
-        assert len(reference) == len(compiled)
-        for e in reference:
-            assert _distance(compiled, e) < 1e-10
+        assert compiled.shape == reference.shape
+        np.testing.assert_allclose(compiled, reference, rtol=0, atol=1e-10)
+
+
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+@pytest.mark.parametrize("solver", fivepoint.SOLVERS)
+def test_backends_agree_on_pure_translation(backend: str, solver: str) -> None:
+    """Without rotation, E = [t]ₓ is skew: its two largest entries tie, with opposite signs.
+
+    The canonical sign takes the first tied entry in row-major order, so every core signs and
+    orders the solutions alike (panel run 2, L10).
+    """
+    chosen = require_function(backend, fivepoint.__name__, "essential_5pt")
+    rng = np.random.default_rng(3)
+    for _ in range(TRIALS):
+        points = rng.uniform(-1.0, 1.0, (fivepoint.SAMPLE_SIZE, 3)) + np.array([0.0, 0.0, 5.0])
+        moved = points + rng.normal(size=3)
+        b1 = points / np.linalg.norm(points, axis=1, keepdims=True)
+        b2 = moved / np.linalg.norm(moved, axis=1, keepdims=True)
+        reference = fivepoint.essential_5pt(b1, b2, solver=solver)
+        compiled = fivepoint.essential_5pt(b1, b2, solver=solver, backend=chosen)
+        assert compiled.shape == reference.shape
+        np.testing.assert_allclose(compiled, reference, rtol=0, atol=1e-8)
 
 
 def test_poselib_solutions_are_among_ours() -> None:
@@ -167,9 +192,10 @@ def test_a_repeated_pair_gives_no_solution(backend: str, solver: str) -> None:
     assert fivepoint.essential_5pt(b1, b2, solver=solver, backend=chosen).shape == (0, 3, 3)
 
 
-def test_the_compiled_solver_codes_match() -> None:
-    """The solver codes Python sends are the compiled core's."""
-    chosen = require_function("cpp", fivepoint.__name__, "essential_5pt")
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+def test_the_compiled_solver_codes_match(backend: str) -> None:
+    """The solver codes Python sends are each compiled core's."""
+    chosen = require_function(backend, fivepoint.__name__, "essential_5pt")
     codes = backends.implementation(chosen, fivepoint.__name__).codes()
     assert tuple(codes["solver"]) == fivepoint.SOLVERS
 

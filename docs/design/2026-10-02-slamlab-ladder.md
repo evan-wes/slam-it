@@ -1,6 +1,6 @@
 # slamlab: a learning ladder for visual SLAM
 
-Status, 2026-10-04: milestone 1 is under way. The scaffold (package-per-rung layout in three
+Status, 2026-10-04: milestone 1 is complete. The scaffold (package-per-rung layout in three
 languages, conda environment, CI, two-layer review process) is merged. PR 1, the BA spine,
 added rung 0's geometry and estimation in Python and C++: SO(3), SE(3), Umeyama alignment,
 camera models, nonlinear least squares and bundle adjustment. PR 2 adds two-view geometry: triangulation, LO-MSAC RANSAC, the 8-point essential and
@@ -13,7 +13,8 @@ sequences. Slice C brings the Rust core to parity in two PRs. PR 5 adds rung 0's
 optimisation: SO(3), SE(3), the camera models, Umeyama alignment, PCG32, the least-squares
 solver and bundle adjustment, with native C++ and Rust benchmarks on a BAL problem, where the
 two take the same time. PR 6 adds the estimation core: RANSAC, triangulation, the two-view and
-absolute-pose solvers. After it, Python, C++ and Rust have the same capabilities.
+absolute-pose solvers. Python, C++ and Rust now have the same capabilities, and every module's
+tests run on all three.
 
 ## Purpose
 
@@ -73,6 +74,12 @@ The ladder spans compute budgets. Every rung stands on rung 0.
 | **Python** | The readable reference implementation of every algorithm; orchestration, evaluation, and the learned rungs (PyTorch) |
 | **C++** | The performance core: rung 0, the edge rung, the edge budgets, and dense-BA kernels if profiling calls for them. Showing C++ is a goal in its own right. |
 | **Rust** | A chosen subset: rung 0 and the edge VO. Kept parallel and off the critical path: a rung never waits for its Rust modules, but a Rust module, once it exists, keeps pace with its reference. |
+
+**The cores' runtime dependencies.** C++: Eigen. Rust: nalgebra, the matrix type, and faer for
+every SVD and the general eigendecomposition, single-threaded, behind the crate-private
+`linalg` (nalgebra's SVDs are not backward stable; see the Rust port's note). Adding a runtime
+library to a core is a change to this document first, as a runtime dependency of the Python
+package is.
 
 **Parity.** Shared fixtures (fixed inputs, expected outputs) live in `tests/fixtures/`. Every C++
 and Rust implementation is checked against the Python reference. All three are benchmarked under
@@ -149,7 +156,11 @@ and a possible later phone target.
     such a summary satisfies the `Summary` Protocol through properties delegating to the
     primary run, so it fits the generic `Solution`. The C++ concept needs data members, so
     C++ returns a named struct instead (`ba::Solution`, `ransac::RefinedSolution`), with
-    the same `state` and `summary` fields (settled in PR 3, panel A11).
+    the same `state` and `summary` fields (settled in PR 3, panel A11). Rust's trait has
+    methods, so there a nesting summary implements it by delegation, as in Python:
+    `ba::Summary` and `ransac::RefinedSummary` implement `solve::Summary`, and a refined run
+    returns the generic `solve::Solution` (settled in PR 6, panel A5 on PR 5). BA's own
+    `Solution` stays a named struct in every language, since its estimate is several arrays.
   - **Crossing the binding boundary:** the estimate crosses as float64 arrays and the
     summary as plain scalars, with the termination reason as an integer code. The Python
     entry point builds the dataclass, and there are no binding-side classes. This extends
@@ -244,14 +255,13 @@ languages fail the same way.
 - A generic module with no concrete binding of its own (e.g. `slamlab.foundations.nls`) is
   tested natively in each core, and in parity through the concrete problems that use it.
 
-**Languages per module.** Python and C++ are lock-step: C++ implements every function in a
-compiled module's `Implementation` Protocol. Rust implements a chosen set of modules, each in
-full: every function of a module it has, with that module's tests running on all three
-backends, so a Rust module that falls behind its Python reference fails layer 1 like a C++ one.
-A module Rust does not have yet holds nothing back. The tests enforce these rules
-(`test_backends`, `conftest.require_function`). Once PR 6 completes rung 0 in Rust, they will
-require every rung-0 module of Rust as they do of C++. Later rungs (the edge VO) return to a
-chosen set.
+**Languages per module.** Rung 0 is lock-step in all three languages: C++ and Rust implement
+every function of every compiled module's `Implementation` Protocol, and every module's tests
+run on all three backends (`backends.LOCKSTEP_BACKENDS`), so a compiled module that falls
+behind its Python reference fails layer 1. The tests enforce it (`test_backends`,
+`conftest.require_function`). Rust was a chosen set of modules until PR 6 completed rung 0 in
+it. Later rungs (the edge VO) may start Rust as a chosen set again; that rung then brings back
+a way for a module Rust lacks to skip rather than fail.
 
 ## Package layout
 
@@ -643,25 +653,45 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
     planar and non-planar points in one solver, the better LO refit if the rung wants one.
 - **Deferred from PR 4's review panel**
   ([report](../reviews/2026-10-03-feature-absolute-pose.md)):
-  - **One form for the refinement callback (A6).** `refine_consensus`'s callback takes an
-    inlier mask in Python and inlier indices in C++; pick one when Rust gains RANSAC (PR 6).
+  - Closed by PR 6: **one form for the refinement callback (A6).** `refine_consensus`'s
+    callback takes the consensus's inlier indices, ascending, in all three languages.
   - **Depth maps in the library (A7).** `eval.tum` associates depth maps, but decoding the
     16-bit PNGs happens in the demo, with OpenCV, which `slamlab` may not import. Milestone 2's
     RGB-D mode needs an in-library loader: choose its PNG dependency then.
   - **Why the refinement rounds stopped (L9, run 2).** On planar scenes the cap of four
     rounds, not stable inliers, ends most runs, and `RefinedSummary` cannot say which
     (`rounds == REFINE_ROUNDS` is either). Add a stop reason (cost, stable, cap, too few
-    inliers) when a caller needs it, with the summary-convention's termination enum.
+    inliers, refinement failed) when a caller needs it, with the summary-convention's
+    termination enum. Since PR 6 the refiner may fail (panel A2), and a failure in round 2 or
+    later reads as "no improvement" (PR 6's panel, run 2, A6).
   - **One feature front end (A8).** Each demo script has its own SIFT and ratio-test
     matching. Fold them into the edge rung's front end when it lands (milestone 2), or into
     one shared script helper if a third demo comes first.
+- **Deferred from PR 6's review panel**
+  ([report](../reviews/2026-10-04-feature-rust-estimation.md)):
+  - **P3P's depth polish stops at a relative singularity in C++ only (L6).** C++ tests the
+    Newton step's Jacobian with `FullPivLU::isInvertible()` (a threshold near 3ε), while
+    Python's `np.linalg.solve` and Rust's `full_piv_lu().solve` stop only on an exactly zero
+    pivot. Near-singular Jacobians therefore polish one step less in C++. Align it if exact
+    three-way agreement on near-degenerate triangles matters.
+  - **EPnP agrees across the cores only on well-determined problems (L13, run 2).** On noisy
+    five-point problems, and on point clouds a few micrometres to centimetres across, C++ and
+    Rust already differ from Python on about 1% and about 19% of scenes respectively: the choice
+    between EPnP's approximations, and Gauss-Newton's accept test, amplify roundoff in the
+    kernel's eigenvectors. Every backend is accurate on such scenes to their conditioning; only
+    the decisions differ. A tie margin on the approximations' errors would be the place to
+    start if it matters.
+  - **A stack-only 3x3 SVD before the edge rung (A11, run 2).** Every 3x3 SVD in Rust now
+    allocates (a faer call through `linalg::svd3`), and the edge VO calls `project_to_so3` and
+    Umeyama per frame. Give `svd3` a fixed-size, backward-stable path (one-sided Jacobi, as
+    Eigen's `JacobiSVD` uses for fixed sizes) behind the same signature, with the edge
+    milestone.
 - **Deferred from PR 5's review panel**
   ([report](../reviews/2026-10-04-feature-rust-core.md)):
-  - **Nested summaries and the Rust `Summary` trait (A5).** `ba::Summary` holds the
-    least-squares summary but does not implement `solve::Summary`. In Rust it could, by
-    delegation, as Python's properties do; C++'s concept needs data members, hence its
-    named structs. Decide when PR 6 brings `RefinedSummary` to Rust, and record it under
-    "Where the summary lives".
+  - Closed by PR 6: **nested summaries and the Rust `Summary` trait (A5).** `ba::Summary`
+    and `ransac::RefinedSummary` implement `solve::Summary` by delegation; C++ keeps its
+    named structs, since its concept needs data members. Recorded under "Where the summary
+    lives".
 - **Deferred from PR 1's review panel**
   ([report](../reviews/2026-10-02-feature-ba-spine.md)):
   - **Batched APIs for standalone callers (A11).** Batching over many inputs lives in the
@@ -681,10 +711,13 @@ matters at milestone 3, when reifyscene's env also installs slamlab.
     includes are checked as the implementation's; a facade with no `_CPP_FACADES` entry is
     exempt. Key facades by file kind, and fail on an unmapped one, when the next package gets
     a facade.
-    PR 5's panel (A13, run 2) found the same gap in Rust: `ba/mod.rs` holds `solve` and
-    `centring_origin`, so `use super::solve` from inside `ba` passes as the `problem`
-    layer. The structural fix in both languages is to move `solve` into its own module
-    (`ba/solve.rs`, `ba/solve.cpp`), mirroring Python's `ba/solve.py`.
+    PR 5's panel (A13, run 2) found the same gap in Rust. PR 6 closed the part that
+    `solve` caused: `solve`, `centring_origin` and `shifted` moved into `ba/solve.rs` and
+    `ba/solve.cpp`, mirroring Python's `ba/solve.py`, so the facade maps to `problem` both
+    ways and `super::solve` from inside `ba` is checked. Left open: C++'s public `ba.hpp`
+    still declares `solve`, and every internal `ba` header includes it (PR 6's panel, A3), so
+    `bundle` or `layout` could call `solve` unchecked; and an unmapped facade is still exempt.
+    The fix is a public `slamlab/foundations/ba/solve.hpp` mapped to the `solve` layer.
   - **The gauge in rung 0's own right (A26, run 3).** `ba/gauge` depends only on poses and
     points. When pose-graph optimisation (the classic rung's loop closure) needs the same
     null-space removal, lift it to `foundations.gauge` rather than importing it from `ba`.

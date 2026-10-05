@@ -62,7 +62,7 @@ from numpy.typing import NDArray
 
 from slamlab import backends
 from slamlab.foundations import nls, solve
-from slamlab.foundations.errors import DegenerateError, InvalidInputError
+from slamlab.foundations.errors import DegenerateError, InvalidInputError, SlamlabError
 from slamlab.foundations.rng import Pcg32
 from slamlab.foundations.solve import Solution
 
@@ -474,7 +474,7 @@ class RefinedSummary:
 def refine_consensus(
     estimator: Estimator[ModelT],
     found: Solution[Consensus[ModelT], Summary],
-    refine: Callable[[ModelT, NDArray[np.bool_]], Solution[ModelT, nls.Summary]],
+    refine: Callable[[ModelT, NDArray[np.intp]], Solution[ModelT, nls.Summary]],
     *,
     threshold: float,
     minimum: int,
@@ -484,7 +484,9 @@ def refine_consensus(
     Each round refines the model on the current inliers, rescores it by MSAC over all the data,
     and keeps it only if the cost drops; the kept model's inliers are re-collected and the next
     round starts from them. It stops when a round does not lower the cost, the inliers stop
-    changing, or after :data:`REFINE_ROUNDS` rounds. The refinement minimises its own (robust,
+    changing, after :data:`REFINE_ROUNDS` rounds, or when a refinement fails (raises a slamlab
+    error, such as a start whose cost is not finite): that round counts, and its result is not
+    kept, as the compiled cores treat a refiner's error. The refinement minimises its own (robust,
     geometric) cost, not MSAC's truncated one, so a refined model can score worse; it is then
     discarded. Re-collecting matters where LO's least-squares refits cannot run (EPnP on planar
     points): one refinement on the minimal sample's consensus leaves the inliers it missed.
@@ -496,7 +498,9 @@ def refine_consensus(
     found : slamlab.foundations.solve.Solution
         RANSAC's result.
     refine : callable
-        Refines a model on the data an inlier mask selects.
+        Refines a model on the data the inlier indices select (ascending ``intp``; the same
+        form the C++ and Rust cores pass). It may raise a
+        :class:`~slamlab.foundations.errors.SlamlabError`: that round is not kept.
     threshold : float
         RANSAC's inlier threshold ``θ``.
     minimum : int
@@ -513,8 +517,11 @@ def refine_consensus(
     refinement: nls.Summary | None = None
     refined, rounds = False, 0
     while rounds < REFINE_ROUNDS and np.count_nonzero(state.inliers) >= minimum:
-        solved = refine(state.model, state.inliers)
         rounds += 1
+        try:
+            solved = refine(state.model, np.flatnonzero(state.inliers))
+        except SlamlabError:
+            break
         refinement = solved.summary
         residuals = estimator.residuals(solved.state)
         candidate = _score(residuals, threshold2)
@@ -535,7 +542,7 @@ def refine_consensus(
 def estimate_refined(
     estimator: Estimator[ModelT],
     options: Options,
-    refine: Callable[[ModelT, NDArray[np.bool_]], Solution[ModelT, nls.Summary]] | None,
+    refine: Callable[[ModelT, NDArray[np.intp]], Solution[ModelT, nls.Summary]] | None,
     *,
     minimum: int,
 ) -> Solution[Consensus[ModelT], RefinedSummary]:
@@ -548,7 +555,7 @@ def estimate_refined(
     options : Options
         The settings; ``threshold`` is also the MSAC cap the refined model is rescored with.
     refine : callable or None
-        Refines a model on the data an inlier mask selects (see :func:`refine_consensus`); None
+        Refines a model on the data the inlier indices select (see :func:`refine_consensus`); None
         skips the refinement.
     minimum : int
         The fewest inliers the refinement needs.

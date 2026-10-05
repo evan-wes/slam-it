@@ -364,14 +364,14 @@ RefinedSolution<Model> unrefined(Solution<Model> found) {
 
 /// @brief Refine RANSAC's model on its inliers, re-collect them, and repeat while the MSAC
 ///        cost drops (see `slamlab.foundations.ransac.refine_consensus`): at most
-///        `kRefineRounds` rounds, stopping when a round does not lower the cost or the inliers
-///        stop changing.
+///        `kRefineRounds` rounds, stopping when a round does not lower the cost, the inliers
+///        stop changing, or the refinement fails (that round counts, and is not kept).
 /// @tparam E The estimator type.
 /// @tparam Refine Callable as `refine(model, inlier indices)`, returning
-///         `solve::Solution<E::Model, nls::Summary>`.
+///         `Result<solve::Solution<E::Model, nls::Summary>>`.
 /// @param estimator The estimator RANSAC ran with; its residuals rescore the refined model.
 /// @param found RANSAC's result.
-/// @param refine Refines a model on the data the indices select.
+/// @param refine Refines a model on the data the indices select, or fails.
 /// @param threshold RANSAC's inlier threshold.
 /// @param minimum The fewest inliers the refinement needs; with fewer it does not run.
 /// @return The kept model, its inliers and the summary, whose run's inlier count and score
@@ -396,17 +396,20 @@ RefinedSolution<typename E::Model> refine_consensus(const E& estimator,
     if (inliers.size() < minimum) {
       break;
     }
-    auto solved = refine(std::as_const(out.state.model), std::as_const(inliers));
     ++out.summary.rounds;
-    out.summary.refinement = std::move(solved.summary);
-    const Eigen::VectorXd residuals = estimator.residuals(solved.state);
+    auto solved = refine(std::as_const(out.state.model), std::as_const(inliers));
+    if (!solved) {
+      break;
+    }
+    out.summary.refinement = std::move(solved->summary);
+    const Eigen::VectorXd residuals = estimator.residuals(solved->state);
     const double score = detail::score(residuals, threshold2);
     if (!(score < out.summary.run.score)) {
       break;
     }
     Eigen::Array<bool, Eigen::Dynamic, 1> kept = residuals.array() < threshold2;
     const bool unchanged = (kept == out.state.inliers).all();
-    out.state.model = std::move(solved.state);
+    out.state.model = std::move(solved->state);
     out.state.inliers = std::move(kept);
     out.summary.run.inlier_count = static_cast<int>(out.state.inliers.count());
     out.summary.run.score = score;

@@ -15,6 +15,7 @@
 #include <string>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 namespace slamlab::foundations::fivepoint {
 
@@ -576,6 +577,46 @@ std::vector<Eigen::Matrix3d> stewenius(const Eigen::Ref<const correspondences::R
   return solutions;
 }
 
+/// @brief A matrix's entries in row-major order, the canonical order's key.
+/// @param m The matrix.
+/// @return Its nine entries, row by row.
+std::array<double, 9> row_major(const Eigen::Matrix3d& m) {
+  std::array<double, 9> out{};
+  for (Eigen::Index r = 0; r < 3; ++r) {
+    for (Eigen::Index c = 0; c < 3; ++c) {
+      out.at(static_cast<std::size_t>((3 * r) + c)) = m(r, c);
+    }
+  }
+  return out;
+}
+
+/// @brief Put the solutions in canonical order (`slamlab.foundations.fivepoint`'s "Canonical
+///        order"): each signed so that its first entry, row by row, within `kSignTieRtol` of
+///        the largest magnitude is positive, then all sorted lexicographically by their
+///        row-major entries.
+/// @param solutions The solutions.
+/// @return The same solutions, signed and sorted.
+std::vector<Eigen::Matrix3d> canonical(std::vector<Eigen::Matrix3d> solutions) {
+  for (Eigen::Matrix3d& essential : solutions) {
+    const std::array<double, 9> entries = row_major(essential);
+    double largest = 0.0;
+    for (const double entry : entries) {
+      largest = std::max(largest, std::abs(entry));
+    }
+    std::size_t first = 0;
+    while (std::abs(entries.at(first)) < largest * (1.0 - kSignTieRtol)) {
+      ++first;
+    }
+    if (!(entries.at(first) > 0.0)) {
+      essential = -essential;
+    }
+  }
+  std::ranges::sort(solutions, [](const Eigen::Matrix3d& a, const Eigen::Matrix3d& b) {
+    return std::ranges::lexicographical_compare(row_major(a), row_major(b));
+  });
+  return solutions;
+}
+
 }  // namespace
 
 const char* name(Solver solver) {
@@ -647,9 +688,9 @@ std::vector<Eigen::Matrix3d> solve(const Eigen::Ref<const correspondences::Rows3
                                    Solver solver) {
   switch (solver) {
     case Solver::kNister:
-      return nister(bearings1, bearings2);
+      return canonical(nister(bearings1, bearings2));
     case Solver::kStewenius:
-      return stewenius(bearings1, bearings2);
+      return canonical(stewenius(bearings1, bearings2));
     case Solver::kCount:
       break;
   }

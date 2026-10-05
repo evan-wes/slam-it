@@ -7,6 +7,7 @@ import pytest
 
 from slamlab.foundations.ba import gauge
 from slamlab.foundations.ba.gauge import Anchors, Frame
+from slamlab.foundations.errors import DegenerateError
 
 CENTRES = np.array(
     [[0.0, 0.0, 0.0], [0.4, 0.1, 0.0], [0.8, -0.1, 0.05], [1.2, 0.2, -0.05], [1.6, 0.0, 0.1]]
@@ -104,3 +105,18 @@ def test_far_from_the_origin_nothing_changes(offset: float) -> None:
         list(near.ranks),
         near.free,
     )
+
+
+def test_a_failed_gauge_svd_is_degenerate() -> None:
+    """A non-finite matrix fails the gauge's SVDs as DegenerateError, as in the Rust core.
+
+    numpy raises its own ``LinAlgError`` there. Python's input checks reject a non-finite
+    centre before the gauge, so the SVD helpers are called directly, as Rust's native test
+    calls its own.
+    """
+    bad = np.ones((3, 7))
+    bad[1, 2] = np.nan
+    with pytest.raises(DegenerateError, match="gauge"):
+        gauge._singular(bad)
+    with pytest.raises(DegenerateError, match="gauge"):
+        gauge._null(bad, 1)

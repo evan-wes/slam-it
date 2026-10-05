@@ -208,6 +208,11 @@ ORDERS = check_layers.internal_orders(tomllib.loads((REPO / "pyproject.toml").re
             '#include "schur.hpp"',
             "in foundations.ba, 'layout' may not include 'schur'",
         ),
+        (
+            "cpp/src/foundations/ba.cpp",
+            '#include "ba/bundle.hpp"',
+            "in foundations.ba, 'problem' may not include 'bundle'",
+        ),
     ],
 )
 def test_internal_order_is_checked(fake_repo: Path, path: str, include: str, message: str) -> None:
@@ -223,7 +228,7 @@ def test_internal_order_is_checked(fake_repo: Path, path: str, include: str, mes
     [
         ("cpp/include/slamlab/foundations/so3.hpp", '#include "slamlab/foundations/error.hpp"'),
         ("cpp/src/foundations/ba/bundle.cpp", '#include "schur.hpp"'),
-        ("cpp/src/foundations/ba.cpp", '#include "ba/bundle.hpp"'),
+        ("cpp/src/foundations/ba/solve.cpp", '#include "bundle.hpp"'),
         ("cpp/src/foundations/ba/layout.hpp", '#include "common.hpp"'),
         ("cpp/src/foundations/ba/schur.hpp", "#include <Eigen/Core>"),
     ],
@@ -231,8 +236,8 @@ def test_internal_order_is_checked(fake_repo: Path, path: str, include: str, mes
 def test_internal_order_allows_downward_includes(fake_repo: Path, path: str, include: str) -> None:
     """Downward includes, the facade, unlisted helpers and system headers all pass.
 
-    ``error.hpp`` is the ``errors`` module; ``ba.cpp`` is the package's facade, above its
-    modules; ``common.hpp`` is listed in no contract.
+    ``error.hpp`` is the ``errors`` module; ``ba/solve.cpp`` is the package's top layer;
+    ``common.hpp`` is listed in no contract.
     """
     _write(fake_repo, path, include + "\n")
     assert list(check_layers.check_cpp_internal(fake_repo, ORDERS)) == []
@@ -294,14 +299,32 @@ RUST = "rust/slamlab-foundations/src"
             "let x = crate::ba::bundle::f();",
             "in foundations.ba, 'gauge' may not use 'bundle'",
         ),
+        (
+            "ba/bundle.rs",
+            "use super::solve::centring_origin;",
+            "in foundations.ba, 'bundle' may not use 'solve'",
+        ),
     ],
 )
 def test_rust_internal_order_is_checked(
     fake_repo: Path, path: str, code: str, message: str
 ) -> None:
     """Upward and sibling ``crate::``/``super::`` paths inside a rung crate break its order."""
-    _write(fake_repo, f"{RUST}/ba/mod.rs", "mod bundle;\nmod gauge;\nmod layout;\nmod schur;\n")
-    for module in ("ba/bundle", "ba/gauge", "ba/layout", "ba/schur", "camera", "se3", "so3"):
+    _write(
+        fake_repo,
+        f"{RUST}/ba/mod.rs",
+        "mod bundle;\nmod gauge;\nmod layout;\nmod schur;\npub mod solve;\n",
+    )
+    for module in (
+        "ba/bundle",
+        "ba/gauge",
+        "ba/layout",
+        "ba/schur",
+        "ba/solve",
+        "camera",
+        "se3",
+        "so3",
+    ):
         if not (fake_repo / RUST / f"{module}.rs").exists():
             _write(fake_repo, f"{RUST}/{module}.rs", "")
     _write(fake_repo, f"{RUST}/{path}", code + "\n")

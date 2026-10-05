@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde::de::IgnoredAny;
 use slamlab_foundations::nls::{self, Iteration, LossKind, Method, Termination};
 
-use crate::common::{by_name, encode, enum_names, new_array};
+use crate::common::{Item, by_name, encode, enum_names, item_array, new_array};
 
 /// The trace's column names (`nls::Iteration`'s fields), in row order.
 const TRACE_COLUMNS: [&str; 7] = [
@@ -176,6 +176,32 @@ pub fn summary<'py>(py: Python<'py>, summary: &nls::Summary) -> PyResult<Bound<'
         new_array(py, &[summary.trace.len(), TRACE_COLUMNS.len()], rows)?,
     )?;
     out.set_item("trace_columns", TRACE_COLUMNS.to_vec())?;
+    Ok(out)
+}
+
+/// A refinement's result as a dict: the refined state under `key`, and the solve's summary.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `key` - The state's key (`"essential"`, `"pose"`).
+/// * `solved` - The refinement's solution.
+///
+/// # Returns
+///
+/// `{key: state, "summary": summary}`.
+///
+/// # Errors
+///
+/// A Python error if the dict cannot be built.
+pub fn refined<'py, A: Item>(
+    py: Python<'py>,
+    key: &str,
+    solved: &nls::Solution<A>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let out = PyDict::new(py);
+    out.set_item(key, item_array(py, &solved.state)?)?;
+    out.set_item("summary", summary(py, &solved.summary)?)?;
     Ok(out)
 }
 

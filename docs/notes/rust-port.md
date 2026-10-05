@@ -1,10 +1,12 @@
-# The Rust core: rung 0's geometry and optimisation
+# The Rust core: rung 0 in a third language
 
-PR 5 brings rung 0's geometry and optimisation to Rust: SO(3), SE(3), the camera models, Umeyama
-alignment, PCG32, the generic least-squares solver and bundle adjustment. PR 6 adds the
-estimation core (RANSAC and the minimal solvers), after which Python, C++ and Rust have the
-same capabilities at the end of milestone 1. This note is about the port itself: how the C++
-core's design carried over, where Rust changed it, and the measured comparison.
+PR 5 brought rung 0's geometry and optimisation to Rust: SO(3), SE(3), the camera models,
+Umeyama alignment, PCG32, the generic least-squares solver and bundle adjustment. PR 6 added
+the estimation core: correspondences, triangulation, RANSAC, the five-point, epipolar,
+homography and two-view modules, P3P and PnP. With it Python, C++ and Rust have the same
+capabilities at the end of milestone 1, and Rust is a lock-step backend. This note is about the
+port itself: how the C++ core's design carried over, where Rust changed it, and the measured
+comparison.
 
 ## The problem
 
@@ -12,7 +14,11 @@ The same algorithms, three times, need to take the same decisions and fail the s
 - the parity fixtures hold every language to the Python reference;
 - bundle adjustment's fixture compares iteration counts, terminations and gauge codes exactly
   (`"the two cores step alike"`), so the Rust solve has to take the same decisions at every
-  step, not merely land near the same optimum.
+  step, not merely land near the same optimum;
+- RANSAC draws its samples from PCG32, which every language implements alike, so a seed
+  draws the same samples everywhere, and the fixtures compare inlier sets and iteration
+  counts: a minimal solver has to return its models in the same order, and every
+  comparison has to break ties the same way.
 
 ## The interface
 
@@ -31,14 +37,24 @@ solves a BAL problem from Rust alone, as the edge budgets will need.
 
 ## The port, module by module
 
-**Linear algebra: nalgebra.** Its fixed-size matrices (`Matrix3<f64>`, `Vector6<f64>`) are the
-closest match to Eigen's, so the comparison measures the code rather than the library, and the
-cores read alike. Two differences mattered:
-- nalgebra's SVD is thin: a wide matrix gets only as many right singular vectors as it has
-  rows. The gauge's null spaces need all of them, so a wide matrix is padded with zero rows
-  first (which changes neither its row space nor its right singular vectors).
-- nalgebra stores dense matrices column-major, like Eigen's default, so the Schur
-  complement's upper-triangle updates walk memory in the same order as in C++.
+**Linear algebra: nalgebra, with faer for the SVD.** nalgebra's fixed-size matrices
+(`Matrix3<f64>`, `Vector6<f64>`) are the closest match to Eigen's, so the comparison measures
+the code rather than the library, and the cores read alike. It stores dense matrices
+column-major, like Eigen's default, so the Schur complement's upper-triangle updates walk
+memory in the same order as in C++.
+
+nalgebra's SVDs turned out not to be backward stable (PR 6's panel, L1 and L2), so every SVD in the
+crate, and the one general eigendecomposition, goes through `linalg`, which calls faer (a pure-Rust
+library benchmarked against LAPACK): its low-level routines, sequential, with thin factors and a
+workspace sized per call. faer works on a matrix as given, so `linalg` first scales one whose
+largest entry is outside [2^-400, 2^400] by a power of two, as LAPACK's `dlascl` does; without it,
+entries below about 1e-154 gave silently wrong factors (PR 6's panel, run 2, L8). nalgebra stays the
+matrix type; each call copies across. faer picks its SIMD kernels when it runs, so the same build
+can round differently on different CPUs, where Eigen fixes its code path at compile time: values
+stay within every tolerance, but a decision at a near-tie could differ between machines. The thin
+SVD returns as many right singular vectors as the matrix has rows, so the null spaces that need all
+of them (the gauge's, the 8-point system's) pad a wide matrix with zero rows first, which changes
+neither its row space nor its right singular vectors.
 
 **Templates and concepts became traits.** The C++ solver is a template over a `Problem`
 concept; the Rust one is generic over a `Problem` trait with associated `State` and `System`
@@ -46,6 +62,14 @@ types, and `LinearSystem` is a trait the dense system and bundle adjustment's Sc
 implement. The C++ `ReducedSystemSolver` concept is a trait too, so milestone 4's sparse
 solver goes behind the same seam in both languages. `solve::Summary` is a trait with an
 associated `Termination` type; the C++ concept only names fields.
+
+**RANSAC's estimator is a trait too.** `ransac::Estimator` has an associated `Model` and the
+four operations of C++'s concept. Its one addition is a default: `fit_minimal` falls back to
+`fit_nonminimal`, which is what the 8-point F and the DLT do, so those two estimators
+implement four methods, not five. The refinement callback takes the consensus's inlier
+indices in all three languages (panel A6 on PR 4). A summary that nests another (BA's, and
+the refined RANSAC run's) implements `solve::Summary` by delegation, as Python's
+properties do (A5).
 
 **Errors.** C++23's `std::expected<T, Error>` and Rust's `Result<T, Error>` are the same
 contract, but Rust's `?` makes the error path a single character where C++ needs
@@ -55,17 +79,46 @@ its `U`; on a public function it is documented under `# Panics`. Indexing relies
 checks every entry point runs first, as in C++. A bad index panics in Rust, where in C++ it
 is undefined behaviour.
 
+**Where the libraries differ, the port matches Eigen and numpy explicitly.**
+- nalgebra has no eigenvectors for a general matrix. Stewénius' five-point solver
+  decomposes its action matrix with faer (`linalg::eigen_real`, LAPACK's `dgeev` layout),
+  once per sample, as Eigen's `EigenSolver` and numpy's `eig` do.
+- nalgebra's symmetric eigen-decomposition does not sort its eigenvalues; Eigen's and numpy's
+  are ascending. EPnP's null space and control points sort them first.
+- A rank-deficient least-squares solve depends on where the cutoff lies.
+  `linalg::least_squares` takes it explicitly: EPnP uses numpy's `lstsq` default
+  (`max(m, n) ε`), since Python is the reference, and the five-point polish uses Eigen's
+  `JacobiSVD` one (`min(m, n) ε`), as the C++ core does. EPnP's beta polish solves its
+  several hundred 6x4 steps per RANSAC run by Householder QR when R's diagonal stays within
+  1e-4 of its largest entry (without faer's per-call cost), and by that SVD otherwise. QR
+  agrees with the SVD to within ε κ, and an unpivoted diagonal does not bound κ, so the cutoff
+  is a measured choice: it matched `lstsq` on every well-posed EPnP scene tried, and differed
+  only on scenes a few micrometres to centimetres across, where every backend, C++ included,
+  already disagrees with Python at roundoff.
+- Ties go to the first maximum, as Eigen's `maxCoeff` and numpy's `argmax` pick it.
+  nalgebra's `iamax` agrees on vectors. On a matrix, Eigen scans column-major and numpy
+  (on C-ordered arrays) row-major; P3P's line split walks the entries column-major, as C++
+  does, and the exact tie where Python could differ is harmless (a rank-one matrix's rows
+  are parallel).
+- The five-point solvers find the same solutions in every library, in an order that follows
+  each library's null-space basis and Schur form. All three cores therefore return them in
+  one canonical order (each E signed so its first entry, row by row, within 1e-6 of the
+  largest magnitude is positive, then sorted row-major), since RANSAC keeps the first of
+  equally good models. The tie margin matters: a pure translation's E is skew-symmetric, and
+  its two largest entries are equal with opposite signs.
+
 **Enums carry their names.** Each crossing enum (camera models, NLS methods, losses and
-terminations, BA gauges) has `ALL` (its values in code order) and `name()`. The bindings
+terminations, BA gauges, RANSAC's terminations, the minimal solvers, two-view's models and
+statuses) has `ALL` (its values in code order) and `name()`. The bindings
 build `codes()` from them and read choices by name through them. Settling this mechanism
 closed panel item A27 in both languages: the C++ BA binding's own name tables went, and every
 C++ enum that crosses has a core `name()` too.
 
-**Options cross through serde.** The binding reads `BAOptions` with
-`#[serde(deny_unknown_fields)]` structs at every depth (`pythonize` turns the dict into
-them), so a field added on one side only fails loudly. The C++ binding's key check now
-words its errors the way serde does (``missing field `x` ``, ``unknown field `x` ``), so both
-fail with the same message.
+**Options cross through serde.** The binding reads `BAOptions`, `ransac.Options` and
+`twoview.Options` with `#[serde(deny_unknown_fields)]` structs at every depth (`pythonize` turns the
+dict into them), so a field added on one side only fails loudly. The C++ binding's key check now
+words its errors the way serde does (``missing field `x` ``, ``unknown field `x` ``), so both fail
+with the same message.
 
 **Tests sit at the end of each file.** A file's native tests are one inline
 `#[cfg(test)] mod tests { ... }` at its end. `scripts/check_layers.py` holds the crate's
@@ -81,14 +134,27 @@ the item.
 ## How it's checked
 
 - The parity fixtures, for every module on every backend: SO(3) and SE(3) against the
-  mpmath oracle, the cameras, Umeyama, and all fifteen bundle-adjustment cases, iteration
-  counts and codes included.
-- Each module the Rust core implements in full runs its property tests (round trips, group
-  laws, Jacobians against finite differences, every BA behaviour test) on all three backends.
+  mpmath oracle, the cameras, Umeyama, all fifteen bundle-adjustment cases, and every
+  estimator's models, inlier sets and iteration counts.
+- Rust is a lock-step backend since PR 6 (`backends.LOCKSTEP_BACKENDS`): every module's
+  property tests (round trips, group laws, Jacobians against finite differences, every BA
+  and RANSAC behaviour test) run on all three backends, and a compiled backend missing a
+  module or a function fails them; one test checks that each compiled backend provides every
+  module with an `Implementation` Protocol. Layer 1 runs 1,818 tests, none skipped.
+- An ill-conditioned fixture (`ill_conditioned.json`, 50-digit mpmath) holds every backend to
+  inputs where a weaker SVD answers differently: eight near-planar 8-point scenes, an E with
+  singular values (1, 1e-6, 0), and thin-triangle Umeyama. The ordinary fixtures are well
+  conditioned, which is how nalgebra's SVDs passed them (PR 6's panel, L1 and L2).
+- The five-point solutions come back in the same canonical order on every backend; a test
+  compares the lists element for element.
 - PCG32's reference output and Floyd samples are one fixture,
   `tests/fixtures/foundations/rng.json`, read by the Python tests, the native C++ tests
   (through nlohmann_json) and the Rust tests (through serde_json); panel item A9 for PCG32.
 - Native Rust tests mirror the native C++ ones, so the crate is checked without Python.
+- On real data, the TUM demos agree across the cores decision for decision: the two-view
+  survey's 38 pairs and the absolute-pose survey's frames print the same statuses, models,
+  inlier counts and errors on C++ and Rust (`scripts/demo_two_view.py --survey --backend
+  rust`, likewise `demo_absolute_pose.py`).
 
 ## Measured
 
@@ -100,6 +166,9 @@ settings, every backend reaches the same solution (`scripts/demo_bal.py --backen
 | Python | 0.9147 | 33 | 63.8 s |
 | C++ | 0.9147 | 33 | 1.35-1.49 s |
 | Rust | 0.9147 | 33 | 1.29-1.44 s |
+
+(Rust's row is from before the switch of its SVDs to faer; after it, three runs took
+1.41-1.43 s, within the same range.)
 | COLMAP (Ceres), one thread | 0.9147 | -- | 0.64-0.71 s |
 | COLMAP (Ceres), all 24 cores | 0.9147 | -- | 0.35-0.44 s |
 
@@ -117,17 +186,38 @@ The native benchmarks (Google Benchmark in `cpp/bench/`, criterion in
 
 | Benchmark | C++ | Rust |
 |---|---|---|
-| Bundle adjustment, ladybug-49 | 1.430 s | 1.441 s |
+| Bundle adjustment, ladybug-49 | 1.430 s | 1.27 s (1.441 s with nalgebra's SVD) |
 | `so3::exp` | 14.9 ns | 11.7 ns |
 | `so3::log` | 30.7 ns | 17.5 ns |
 | `se3::log` | 73.9 ns | 89.5 ns |
 | radtan projection | 10.6 ns | 20.0 ns |
 
 Bundle adjustment, where the time goes into dense linear algebra and the Schur elimination, is
-level. The small operations differ either way by up to a factor of two. They have not been
-profiled, so this note gives no cause. One plausible cause is ruled out: both projections
-copy the intrinsics (C++ into a heap-allocated `Eigen::VectorXd`, Rust into a stack array),
-yet C++ is the faster one there.
+level, or slightly in Rust's favour since its gauge's SVDs moved to faer (the end-to-end demo,
+through Python, does not show the difference). The small operations differ either way by up to a
+factor of two. They have not been profiled, so this note gives no cause. One plausible cause is
+ruled out: both projections copy the intrinsics (C++ into a heap-allocated `Eigen::VectorXd`, Rust
+into a stack array), yet C++ is the faster one there.
+
+The robust estimators run on one fixed synthetic scene, built from the same closed-form
+expressions in both benches: 500 matches, 30% outliers, half a pixel of noise at a 500 px
+focal length, a one-pixel threshold and seed 7, each estimator refined. Both cores take the
+same decisions on it, printed before the timings: E-RANSAC keeps 352 inliers after 36
+iterations, PnP RANSAC 350 after 17.
+
+| Benchmark | C++ | Rust |
+|---|---|---|
+| E-RANSAC (Stewénius, refined) | 2.29 ms | 3.39 ms |
+| PnP RANSAC (Ding's P3P, EPnP refits, refined) | 2.40 ms | 2.05 ms |
+
+With nalgebra's SVDs Rust took 2.69 and 2.25 ms. faer's SVD is accurate where nalgebra's was
+not, but on the small matrices RANSAC decomposes (3x3 to 20x9) it costs about twice as much
+per call, and one E-RANSAC run makes several hundred: hence E-RANSAC's 1.4x. Two changes
+kept the cost down: Stewénius' eigenvectors come from one eigendecomposition per sample
+instead of an SVD per eigenvalue, and EPnP's beta steps use QR (see above), which put PnP
+ahead of C++. Through Python, on TUM's fr1/xyz pair 0-30 (434 matches), two-view
+initialisation takes 4 ms in C++, 7 ms in Rust and 130-180 ms in the numpy reference
+(single runs).
 
 Run them with:
 
@@ -136,22 +226,38 @@ SLAMLAB_BAL=<problem.txt> build/native/bench/foundations_bench_foundations
 SLAMLAB_BAL=<problem.txt> cargo bench --manifest-path rust/Cargo.toml --bench foundations
 ```
 
-Code lines, counted without blank lines, comments or tests:
+Code lines, counted without blank lines, comments, docstrings or tests (a line with any code
+on it counts once; Python's modules include their `Implementation` Protocols and backend
+dispatch, a C++ module is its header and its source):
 
 | Module | Python | C++ | Rust |
 |---|---|---|---|
-| SO(3) | 194 | 202 | 217 |
-| SE(3) | 184 | 158 | 128 |
-| Cameras | 104 | 237 | 215 |
-| Alignment | 50 | 50 | 67 |
+| SO(3) | 223 | 211 | 227 |
+| SE(3) | 184 | 161 | 131 |
+| Cameras | 192 | 237 | 212 |
+| Alignment | 77 | 53 | 77 |
 | PCG32 | 40 | 57 | 60 |
-| NLS and `solve` | 348 | 461 | 519 |
-| Bundle adjustment | 946 | 1806 | 1931 |
-| **Total** | **1866** | **2971** | **3137** |
+| NLS and `solve` | 349 | 462 | 545 |
+| Bundle adjustment | 1344 | 1855 | 2015 |
+| *Geometry and optimisation* | *2409* | *3036* | *3267* |
+| Correspondences | 59 | 156 | 175 |
+| Triangulation | 167 | 221 | 187 |
+| RANSAC | 286 | 350 | 405 |
+| Five-point | 268 | 579 | 586 |
+| Epipolar | 338 | 496 | 450 |
+| Homography | 193 | 241 | 221 |
+| Two-view | 270 | 375 | 395 |
+| P3P | 310 | 444 | 448 |
+| PnP | 286 | 390 | 412 |
+| Rust's `linalg` (faer wrappers) | -- | -- | 131 |
+| *Estimation* | *2177* | *3252* | *3410* |
+| **Total** | **4586** | **6288** | **6677** |
 
-The compiled cores are about the same size, and both are 60-70% larger than vectorised numpy
-for the same algorithms. rustfmt's one-argument-per-line layout accounts for much of Rust's
-small excess.
+The compiled cores are about the same size, and 37% (C++) and 46% (Rust) larger than vectorised
+numpy for the same algorithms: a quarter to a third for geometry and optimisation, half for
+estimation. rustfmt's one-argument-per-line layout accounts for much of Rust's small excess. (These
+counts replace PR 5's, whose counting rule was not recorded; every module is counted the same way
+here.)
 
 ## What was learned
 
@@ -169,19 +275,47 @@ small excess.
 - **A library's defaults are part of the algorithm.** nalgebra's general SVD has no iteration
   cap: on a NaN matrix it never returns, where LAPACK and Eigen stop. Rust's `f64::max`
   drops NaN, where numpy's keeps it, and a NaN gradient could have read as convergence. Both
-  were found by the review panel and fixed in both cores. The fixes are one capped SVD helper,
-  NaN-propagating norms, and finiteness checks on every input ahead of its tolerance
-  comparisons, since NaN passes all of them.
-- **Where the languages still differ, on purpose.** A gauge SVD that fails at the start of a
-  Rust solve (a non-finite matrix, or one past the iteration cap) is a `Degenerate` error.
-  C++'s Eigen SVD always returns a result, and numpy raises its own `LinAlgError`. All three
-  check their inputs finite first, so the path is defensive and practically unreachable.
+  were found by PR 5's review panel and fixed in both cores: NaN-propagating norms, and
+  finiteness checks on every input ahead of its tolerance comparisons, since NaN passes all
+  of them.
+- **Parity fixtures that are well conditioned cannot see an inaccurate SVD.** nalgebra 0.35's
+  3x3 SVD forms `MᵀM`, squaring the condition number: Rust's Umeyama, and so P3P, returned
+  rotations off by up to 0.7 on thin triangles. Its dynamic SVD left errors near 1e-4 in
+  some graded matrices: the 8-point E and F differed from Python by up to 6e-3 on 0.1-0.2%
+  of near-planar scenes. Every fixture and survey passed; PR 6's algorithm reviewer found it
+  by probing with ill-conditioned inputs. Every SVD now goes through faer, verified against
+  LAPACK on those probes before the switch, and a fixture of such inputs guards it.
+- **A library's convenience call can cost more than its algorithm.** faer's `thin_svd` took
+  18 times as long as its low-level routine on a tall 350x9 system, and asking for the full
+  factors built a 350x350 U nobody used. Measured per call shape, inside a real RANSAC run,
+  before deciding what to change.
+- **Where the languages still differ, on purpose.** A gauge SVD that fails at the start of a solve
+  (a non-finite matrix, or one the SVD cannot decompose) is a `Degenerate` error in Rust (faer
+  reports it) and in Python, which maps numpy's `LinAlgError` to it (PR 6, panel A20). C++'s Eigen
+  SVD always returns a result. All three check their inputs finite first, so the path is defensive
+  and practically unreachable.
+- **A port is a second reading of the reference.** Porting the Sampson refinement showed that
+  C++'s `refine_essential` dereferenced `nls::solve`'s result unchecked. A match at both
+  epipoles makes its Sampson distance 0 / 0, the solve rejects the non-finite start, and the
+  C++ backend segfaulted, taking the Python process with it, where Python and Rust raise
+  `InvalidInputError`. PR 6 fixed C++ and added a test on every backend. The refinement
+  callback RANSAC calls may now fail in every language: a failed round is not kept (panel
+  A2), where the refiners used to unwrap on an argument ("the inliers are finite") that did
+  not quite hold for E, whose refinement restarts from E rebuilt by its decomposition.
+- **Decision-level agreement held for RANSAC too.** The same PCG32 streams, comparisons that
+  NaN fails, and first-maximum ties give identical inlier sets and iteration counts on the
+  synthetic benches and through both TUM surveys, though faer and Eigen differ in the last
+  bits. Agreement by construction needed one more step: the five-point solvers' canonical
+  order, since each library ordered the same solutions its own way.
 - **Strictness is cheaper with serde.** `deny_unknown_fields` replaces a hand-written key
   check at every depth, which is why the C++ binding now borrows serde's wording.
 
 ## References
 
-- nalgebra: <https://nalgebra.rs>.
+- nalgebra: <https://nalgebra.rs>; faer: <https://codeberg.org/sarah-quinones/faer> (and its
+  JOSS paper, <https://doi.org/10.21105/joss.06099>).
+- Golub and Van Loan, *Matrix Computations*, section 8.6 (forming `AᵀA` squares the
+  condition number).
 - PyO3 and rust-numpy: <https://pyo3.rs>, <https://github.com/PyO3/rust-numpy>.
 - pythonize: <https://github.com/davidhewitt/pythonize>.
 - criterion.rs: <https://github.com/bheisler/criterion.rs>; Google Benchmark:

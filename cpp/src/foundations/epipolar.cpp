@@ -417,9 +417,12 @@ class SampsonProblem {
 
 }  // namespace
 
-Motion start_motion(const Eigen::Matrix3d& essential) {
-  // decompose_essential succeeds on any matrix of rank 2, which every caller has checked.
-  const std::vector<Eigen::Matrix4d> candidates = *decompose_essential(essential);
+Result<Motion> start_motion(const Eigen::Matrix3d& essential) {
+  const auto decomposed = decompose_essential(essential);
+  if (!decomposed) {
+    return std::unexpected(decomposed.error());
+  }
+  const std::vector<Eigen::Matrix4d>& candidates = *decomposed;
   const auto best = std::ranges::max_element(candidates, {}, [](const Eigen::Matrix4d& pose) {
     return pose.topLeftCorner<3, 3>().trace();
   });
@@ -429,20 +432,28 @@ Motion start_motion(const Eigen::Matrix3d& essential) {
   if (translation(k) < 0.0) {
     translation = -translation;
   }
-  return {.rotation = best->topLeftCorner<3, 3>(), .translation = translation};
+  return Motion{.rotation = best->topLeftCorner<3, 3>(), .translation = translation};
 }
 
-solve::Solution<Eigen::Matrix3d, nls::Summary> refine(const Eigen::Matrix3d& essential,
-                                                      const Eigen::Ref<const Rows3>& bearings1,
-                                                      const Eigen::Ref<const Rows3>& bearings2,
-                                                      double scale) {
+Result<solve::Solution<Eigen::Matrix3d, nls::Summary>> refine(
+    const Eigen::Matrix3d& essential, const Eigen::Ref<const Rows3>& bearings1,
+    const Eigen::Ref<const Rows3>& bearings2, double scale) {
   const SampsonProblem problem(normalised_plane(bearings1), normalised_plane(bearings2));
   nls::Options options;
   options.loss = {.kind = nls::LossKind::kCauchy, .scale = scale};
   options.max_iterations = kRefineIterations;
-  // With the strict flag off the solve never fails: it returns its best state.
-  auto solved = *nls::solve(problem, start_motion(essential), options);
-  return {.state = essential_of(solved.state), .summary = std::move(solved.summary)};
+  // Not strict, so the solve fails only on a non-finite start: a match at both epipoles,
+  // whose Sampson distance is 0 / 0.
+  const auto start = start_motion(essential);
+  if (!start) {
+    return std::unexpected(start.error());
+  }
+  auto solved = nls::solve(problem, *start, options);
+  if (!solved) {
+    return std::unexpected(solved.error());
+  }
+  return solve::Solution<Eigen::Matrix3d, nls::Summary>{.state = essential_of(solved->state),
+                                                        .summary = std::move(solved->summary)};
 }
 
 Result<solve::Solution<Eigen::Matrix3d, nls::Summary>> refine_essential(
