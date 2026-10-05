@@ -19,6 +19,7 @@ mod fivepoint;
 mod homography;
 mod image;
 mod image_crossing;
+mod matching;
 mod nls_crossing;
 mod orb;
 mod p3p;
@@ -43,6 +44,7 @@ pub fn foundations(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_wrapped(pyo3::wrap_pymodule!(fivepoint::fivepoint))?;
     m.add_wrapped(pyo3::wrap_pymodule!(homography::homography))?;
     m.add_wrapped(pyo3::wrap_pymodule!(image::image))?;
+    m.add_wrapped(pyo3::wrap_pymodule!(matching::matching))?;
     m.add_wrapped(pyo3::wrap_pymodule!(orb::orb))?;
     m.add_wrapped(pyo3::wrap_pymodule!(p3p::p3p))?;
     m.add_wrapped(pyo3::wrap_pymodule!(pnp::pnp))?;

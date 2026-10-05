@@ -140,7 +140,7 @@ containers = ["slamlab.foundations"]
 layers = [
   "(ba) | (twoview)",
   "(epipolar) | (homography) | (pnp)",
-  "(camera) | (fivepoint) | (p3p) | (ransac) | (triangulation)",
+  "(camera) | (fivepoint) | (matching) | (p3p) | (ransac) | (triangulation)",
   "(nls) | (orb)",
   "(correspondences) | (image)",
   "(alignment)",

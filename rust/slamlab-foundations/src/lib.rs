@@ -15,6 +15,7 @@ pub mod fivepoint;
 pub mod homography;
 pub mod image;
 pub(crate) mod linalg;
+pub mod matching;
 pub mod nls;
 pub mod orb;
 pub mod p3p;

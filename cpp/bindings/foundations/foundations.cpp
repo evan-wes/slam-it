@@ -16,6 +16,9 @@ void bind_foundations(nanobind::module_& parent) {
   bind_image(image);
   nanobind::module_ orb = foundations.def_submodule("orb", "ORB keypoints and descriptors.");
   bind_orb(orb);
+  nanobind::module_ matching =
+      foundations.def_submodule("matching", "Matching binary descriptors.");
+  bind_matching(matching);
   nanobind::module_ alignment =
       foundations.def_submodule("alignment", "Point-set alignment (Umeyama).");
   bind_alignment(alignment);

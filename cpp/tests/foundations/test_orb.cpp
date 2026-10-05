@@ -59,12 +59,7 @@ void check_fixture(int& failures) {
   const nlohmann::json functions =
       slamlab::testing::load_fixture("foundations/orb.json")["functions"];
   for (const auto& c : functions["fast_scores"]["cases"]) {
-    std::vector<std::int64_t> expected;
-    for (const auto& row : c["expected"]) {
-      for (const auto& value : row) {
-        expected.push_back(value.get<std::int64_t>());
-      }
-    }
+    const auto expected = slamlab::testing::flatten_rows<std::int64_t>(c["expected"]);
     const auto got = orb::fast_scores(read_image(c["input"][0]));
     expect(got.has_value() && *got == expected, "fast_scores matches the fixture", failures);
   }
