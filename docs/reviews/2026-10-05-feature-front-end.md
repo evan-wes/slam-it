@@ -582,3 +582,418 @@ I compared against these references: ORB-SLAM2 `Frame.cc` and ORB-SLAM3 `Frame.c
 - Potje et al., "XFeat: Accelerated Features for Lightweight Image Matching", CVPR 2024, [arXiv:2404.19174](https://arxiv.org/abs/2404.19174)
 - DeTone et al., "SuperPoint", CVPRW 2018, [arXiv:1712.07629](https://arxiv.org/abs/1712.07629); Lindenberger et al., "LightGlue", ICCV 2023, [arXiv:2306.13643](https://arxiv.org/abs/2306.13643)
 - Geiger, Lenz & Urtasun, "Are we ready for autonomous driving? The KITTI vision benchmark suite", CVPR 2012, [PDF](https://www.cvlibs.net/publications/Geiger2012CVPR.pdf)
+
+## Run 2 -- 2026-10-05
+
+| | |
+|---|---|
+| **Branch** | `feature/front-end` |
+| **Range** | `59bccd8d6ce7f1b6ed9017ee45c75bb577c146cd...7277bdb` (base: `origin/develop`); the fixes since Run 1 are `5b4f709..7277bdb` |
+| **Reviewers** | hygiene (sonnet), architecture (opus), algorithm (opus): each verified its Run 1 findings and reviewed the fixes |
+| **How they ran** | registered slamlab-* agents |
+| **Layer 1** | all checks passed (`scripts/check.sh`) at 7277bdb |
+
+### Run 1 findings, verified
+
+Every Run 1 finding marked fixed was verified fixed by its reviewer, except H1, whose fix left
+one gap (H20 below); the deferrals are all in the design doc's open items. The reviews below
+give the evidence per finding.
+
+### Findings and resolutions
+
+| ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|---|
+| H20 | must-fix | hygiene | `stereo.cpp:414-420` | C++ `stereo::match` reads out of bounds (segfaults) on an out-of-range keypoint `level`: a braced check list runs `check_inside` before `check_side`'s result is read (introduced by a3a54b9) | fix | fixed (f69ddd7): the checks run one after another; C++ and Rust tests refuse levels 1,000,000 and -1 (the probe now gets `InvalidInputError` at 1e6 and 1e12) -- decided by evan-wes, 2026-10-05 |
+| H21 | should-fix | hygiene | `runs.py:291-329` | `read_run` still leaks `UnicodeDecodeError` (non-UTF-8 text files) and `EOFError` (empty `.npy`); the shape message prints `(N, (4, 4))` | fix | fixed (9c03417) -- decided by evan-wes, 2026-10-05 |
+| H22 | should-fix | hygiene | `orb.hpp`, `orb.rs`, `matching.{hpp,rs}`, `stereo.{py,hpp,rs}` | C++/Rust doc comments state the old ranges (`kMaxSide`, 0 to 254, 256, 257, 64); `rectify`'s errors omit the swapped pair | fix | fixed (f69ddd7) -- decided by evan-wes, 2026-10-05 |
+| H23 | should-fix | hygiene | `runs.py:113`, `stereo.py:340`, `stereo.{cpp,rs}` `check_shape`; `scale_factor` rule x3 per language | Checks hand-rolled where the shared helpers now exist; the shape messages differ by language | fix | fixed (f69ddd7, 9c03417): `image.as_scale_factor` / `image::check_scale_factor`; shapes through `as_count` / `check_range`; `runs` uses `as_times` -- decided by evan-wes, 2026-10-05 |
+| H24 | should-fix | hygiene | `timing.py:55` | `timing.nearest` wraps on unsigned integer times and mis-pairs silently | fix | fixed (9c03417): float64 or int64 only, one dtype for both -- decided by evan-wes, 2026-10-05 |
+| H25 | should-fix | hygiene | `backends.py:335`, `orb._decode_features`, `stereo._decode_rectification` | `checked_array` and the decoders' type guards have no test | fix | fixed (9c03417) -- decided by evan-wes, 2026-10-05 |
+| H26 | note | hygiene | `tum.py:142-210` | TUM reader accepts NaN and unsorted stamps (EuRoC's now refuses them) | fix | fixed (9c03417) -- decided by evan-wes, 2026-10-05 |
+| H27 | note | hygiene | `orb.rs:1169`, PNG tests, `MAX_SEARCH`, `_drop_outliers` | Smaller: kind-less Rust asserts and `MAX_SIDE` for `MAX_FEATURES`; truncated PNG not a shared fixture; `MAX_SEARCH`/`MAX_FEATURES` unexplained; a 6-tuple indexed by position | fix | fixed (f69ddd7, 9c03417): a shared `truncated.png` fixture, refused in all three languages -- decided by evan-wes, 2026-10-05 |
+| A14 | should-fix | architecture | design doc Conventions, `CLAUDE.md:42` | Exact pyramid coordinates and exact floats (no FMA; scalar paths only, since Eigen/nalgebra fuse on aarch64) are contracts now, recorded only in the note | fix | fixed (75bbf85) -- decided by evan-wes, 2026-10-05 |
+| A15 | should-fix | architecture | `eval/timing.py`, `runs.py:113` | `eval.timing` is the name the budget harness will want; `runs` does not use its check (with H23) | fix (rename to `eval.timestamps`) | fixed (9c03417): `eval.timestamps` -- decided by evan-wes, 2026-10-05 |
+| A16 | note | architecture | `pyproject.toml` | `eval` has an internal order; give it an import-linter contract like rung 0's | fix | fixed (9c03417): "Eval's internal order" -- decided by evan-wes, 2026-10-05 |
+| A17 | note | architecture | `stereo.{py,cpp,rs}` `nearest_column` | Only the level-to-full map is public; PR 8's projection needs the full-to-level map | defer (PR 8, with A10) | deferred (PR 8, with A10 in the design doc's open items) -- decided by evan-wes, 2026-10-05 |
+| A18 | note | architecture | `orb_crossing.rs:25,39`, `matching.rs:110`, `stereo.rs:224` | Generic binding helpers (`to_i64`, `int64_array`) live in the ORB crossing and are copied | fix | fixed (f69ddd7): Rust's helpers in `common`; C++'s `int64_array` has one user and stays in `orb.cpp` -- decided by evan-wes, 2026-10-05 |
+| L12 | note | algorithm | `stereo.py:69,161`, `front-end.md:114` | Docs misstate the outlier filter at a zero median; `search >= 2` still cites the parabola | fix (docs; lower `search` to 1) | fixed (f69ddd7): `search` from 1; the zero-median wording corrected -- decided by evan-wes, 2026-10-05 |
+| L13 | note | algorithm | `metrics.py:11-17`, `front-end.md:139` | RPE docs credit the time tolerance to TUM's `evaluate_rpe.py`, which has none and composes `P_rel Q_rel^-1` | fix (docs) | fixed (9c03417) -- decided by evan-wes, 2026-10-05 |
+| L14 | note | algorithm | `test_orb.py`, `test_image.py` | Optional known-answer test tying `full_image_coordinate` to what `image.pyramid` samples | fix | fixed (f69ddd7): `test_full_image_coordinate_is_where_the_pyramid_samples` -- decided by evan-wes, 2026-10-05 |
+
+Resolution values: `fixed (<commit>)`, `deferred (<where tracked>)`, `waived: <reason>`,
+`disputed: <reason>`, each followed by `-- decided by <user>, <date>`.
+
+Run 2's fixes are small and each is tested; layer 1 passed on every commit, and the must-fix
+was re-checked with the hygiene reviewer's probe (`r2_level_probe.py`). No run 3 was held.
+
+### Hygiene review
+
+**Scope:** PR 7 (`feature/front-end`), the fix commits `5b4f709..7277bdb` (63 files), read in full in all three languages. That covers the Python `foundations` (`arrays`, `backends`, `image`, `orb`, `matching`, `stereo`) and `eval` (`timing`, `metrics`, `runs`, `tum`, `euroc`, `images`) modules, the C++ and Rust cores, the `orb_crossing` bindings, the native PNG readers, the tests and fixture generators, and the design doc, note and CHANGELOG. I ran probes against the built cpp and rust extensions and ran 322 eval, matching and stereo tests (all pass). Scratch scripts are `r2_*.py` in the session scratchpad. No repo file was changed and `git status` is clean.
+
+**Summary:** 18 of the 19 hygiene findings are verified fixed. H1 is fixed for the reported input in all three languages. It is not fixed completely: the C++ stereo core crashes on a keypoint with an out-of-range `level`. The fix for H1 introduced that crash (a braced check list that evaluates `check_inside` before `check_side`'s result is read), so it is the one must-fix. H4 is mostly fixed; two failure modes still escape as raw exceptions. The rest are small: stale C++/Rust doc comments, three call sites that hand-roll checks the new shared helpers do, one unsigned-integer wrap in `timing.nearest`, and a test gap on the new `checked_array`. All nine deferred items are in the design doc's open items.
+
+### Run 1 findings: verified
+
+| ID | Status |
+|---|---|
+| H1 | Fixed for the reported input. The huge `xy` fuzz (1e300, 1e19, NaN, negative, 25.5) now gives `InvalidInputError` on Python, and on the cpp and rust cores called directly. Not fully fixed: the C++ core still segfaults on an out-of-range `level` (N1). Rust is fine. |
+| H2 | Fixed. `arrays.as_count`/`as_flag`/`as_number` run in every `Options` and normalise numpy scalars to Python types. Wrong-type tests exist for orb, matching and stereo, and numpy scalars are tested on every backend. |
+| H3 | Fixed. `associate` and `evaluate` check order through `timing.as_times`, with tests. |
+| H4 | Mostly fixed. JSON, `[]`, missing keys, wrong types and bad lines now give `InvalidInputError` naming the file. Binary text files and an empty `.npy` still leak raw exceptions (S1). |
+| H5 | Fixed. 3000 random cases (ties, tolerance edges, empty inputs) matched a transcription of TUM's `associate.py`, with 0 mismatches. 30k frames against 200k ground-truth poses takes 0.07 s. |
+| H6 | Fixed. `tum`, `euroc` and `metrics` use `timing.nearest`, and no other copy remains. |
+| H7 | Fixed. `orb_crossing.hpp` and `orb_crossing.rs` hold the features reader and writer. `stereo` no longer reads `orb.Options` at all. |
+| H8 | Deferred, recorded in the open items. |
+| H9 | Fixed, with two leftovers. The constants are named in all three languages and the messages are built from them (`check_range`). Doc comments still carry the old numbers (S2), and `MAX_SEARCH`/`MAX_FEATURES` state what they are, not why (note). |
+| H10 | Fixed. `write_run` checks everything first and leaves no folder on failure. Each file is written to a temporary and renamed, with tests. |
+| H11 | Fixed. `runs.MAX_DIFFERENCE` is named and documented, and the default is stated in the docstring. |
+| H12 | Fixed, with tests for finite values, duplicates and resolutions. The TUM reader has the same gaps (note). |
+| H13 | Fixed. `backends.checked_array` is the only policy and nothing casts. The helper has no direct test (S5). |
+| H14 | Fixed. `_nearest_two` takes the first set in blocks, and `distances` documents N x M. |
+| H15 | Fixed. A missing file is named as such, the CRC difference is documented in `png.hpp`, and truncated and non-PNG tests exist. `nm` on `build/native/libslamlab_eval.a` shows 0 exported `stbi_*` symbols. |
+| H16 | Fixed except for the following. The C++ core has no test for an out-of-range `level` (N1). `orb.rs` `rejects_invalid_input` still asserts `.is_err()` with no kind (note). The truncated-PNG case is ad hoc, not a shared fixture (note). |
+| H17 | Fixed. Rust now has `ScoreWindow` and `cell_thresholds`. Python has `_nearest_candidate` and `_drop_outliers`. |
+| H18 | Deferred, recorded. |
+| H19 | The first five are fixed: the `arrays` docstring and the `MAX_IMAGE_SIDE` position, `_as_angles` on `[]` and booleans, the C++ `static_assert`, the bomb error, and the Rust `expect` message. `at()` and `_POPCOUNT` are deferred and recorded. |
+
+### Findings
+
+#### [must-fix] C++ `stereo::match` reads out of bounds, and segfaults, on a keypoint with an out-of-range `level`
+- **Where:** `cpp/src/foundations/stereo.cpp:414-420`, calling `check_inside` (`:109-121`, `levels[at(k.level)]`).
+- **Issue:** The three checks sit in one braced list, `for (const auto& ok : {check_side(left,...), check_side(right,...), check_inside(left,...)})`. A braced list evaluates every element before the loop reads any result. So `check_inside` runs on left features that `check_side` is about to reject, and indexes `levels` with the unvalidated `k.level`. In `5b4f709` the checks ran one after another; commit `a3a54b9` merged them. Rust runs them in order with `?`, and Python's `_check_positions` runs first, so only the C++ core is affected.
+- **Why it matters:** `stereo::match` is the C++ API's own boundary. It is documented to return `InvalidInput` for "a keypoint outside its level", and H1 was exactly this class of crash. The Python wrapper hides it. A C++ caller, or anything calling `slamlab._cpp` directly, crashes instead of getting an error.
+- **Evidence:** `conda run -n slamlab python r2_level_probe.py cpp <level>`. The probe calls `impl.match` with one left keypoint `level=<level>`, `levels=1`, a valid right side and a 60x80 image.
+  ```
+  level 100            InvalidInputError "left: levels must lie in [0, 1)"   (an out-of-bounds read that happened not to fault)
+  level 1000000        Segmentation fault (core dumped), exit 139
+  level 1000000000000  Segmentation fault (core dumped), exit 139
+  rust, same levels    InvalidInputError "left: levels must lie in [0, 1)"
+  ```
+- **Suggested fix:**
+  - Run the checks one after another, for example `check_side(left)`, `check_side(right)` and then `check_inside`, each with its own `if (!ok) return ...`.
+  - Add a case to `check_match_rejections` in `cpp/tests/foundations/test_stereo.cpp` with `level = 1'000'000` and `level = -1`. Add the same case to the Rust test.
+  - The other braced lists (`rectify` at `:293`, `rectification_map` at `:343`, `match` at `:403`) hold independent checks and are safe.
+
+#### [should-fix] `read_run` still leaks raw exceptions for two malformed files, and a shape message is garbled
+- **Where:** `src/slamlab/eval/runs.py:304` (`path.read_text()`), `:329` and `:198` (the same in the diagnostics and trajectory readers), `:291` (`np.load`), `:295-297`.
+- **Issue:** H4's fix catches `JSONDecodeError`, but a non-UTF-8 `run.json`, `trajectory.txt` or `diagnostics.jsonl` raises `UnicodeDecodeError`, and the message does not name the file. A 0-byte `.npy` raises `EOFError`. The docstring promises `InvalidInputError` for a malformed file. The shape message also reads `expected float64 (N, (4, 4)), got ...`.
+- **Why it matters:** A file left empty by an interrupted native writer is the realistic case. The caller gets an exception that does not name the file. No crash and no wrong answer, which is why this is should-fix.
+- **Evidence:** `r2_runs_probe.py`:
+  ```
+  run.json binary         -> UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff ...
+  points.npy empty file   -> EOFError: No data left in file
+  points.npy truncated    -> InvalidInputError (fine)
+  ```
+- **Suggested fix:** Catch `UnicodeDecodeError` around the three `read_text` calls and `EOFError` next to `ValueError` in `_load`, each naming the path. Format the shape message as `(N, *shape)`. Add the two cases to `test_read_run_rejects_malformed_files`.
+
+#### [should-fix] C++ and Rust doc comments still state the ranges from before the fixes, and `rectify`'s errors omit the swapped pair
+- **Where:**
+  - `cpp/include/slamlab/foundations/orb.hpp:170` (`n_features` "from 1 to `image::kMaxSide`") and `:176` (`fast_threshold` "from 0 to 254").
+  - `rust/slamlab-foundations/src/orb.rs:190` (`image::MAX_SIDE`), `:196` ("from 0 to 254") and `:578` (`distribute`'s `target`, "from 0 to `image::MAX_SIDE`").
+  - Neither language's `min_fast_threshold` states its range.
+  - `rectify`'s error list omits the new right-camera-on-the-left rejection in all three languages: `stereo.py:408-414`, `stereo.hpp:46-47`, `stereo.rs:98-100`.
+  - Smaller: `matching.hpp:30` and `matching.rs:22` still say "from 0 to 256". `MatchOptions` docs (`stereo.hpp:92`, `:96`; `stereo.rs:220`, `:226`) say "257" and "64" where `kMaxDistance + 1` and `kMaxSearch` exist.
+- **Issue:** The code now checks 1 to 254 (L7), `kMaxFeatures` (H9/A12) and the swapped pair (L3). The Python docstrings were updated; the C++ and Rust ones were not.
+- **Why it matters:** The docs contradict the code, in the very settings H9/A12 decoupled from the image-side limit.
+- **Suggested fix:** Update the comments, citing the constants as the Python docstrings do. Add the swapped pair to each `rectify` error list.
+
+#### [should-fix] Three call sites hand-roll checks that the new shared helpers already do
+- **Where:**
+  - `src/slamlab/eval/runs.py:113` (`_as_stamped` writes its own ascending check beside `timing.as_times`).
+  - `src/slamlab/foundations/stereo.py:340-352` (`_as_shape`), `cpp/src/foundations/stereo.cpp:41`, `rust/slamlab-foundations/src/stereo.rs:72` (hand-written range tests where `as_count` and `check_range` now exist).
+  - The "scale_factor must be finite and above 1" rule is written three times in Python (`orb.py:259`, `image.py:216`, `stereo.py:677`) and in each core: `orb::check_options`, `image::pyramid` and `stereo::check_pyramids` in C++, and the same three in Rust.
+- **Issue:** The same rule is written several ways, and the shape checks differ in what they report: Python's `_as_shape` names the bad value and C++/Rust's `check_shape` do not.
+- **Why it matters:** A change to the rule (a limit, a message) must be made in three or more places per language, and the messages already differ.
+- **Suggested fix:**
+  - `_as_stamped` calls `timing.as_times` for the ordering, then checks the length against the poses.
+  - Replace `_as_shape` and the native `check_shape` with `as_count` / `check_range` on `rows` and `cols`.
+  - Add one `as_scale_factor` next to `as_count`, used by `orb.Options`, `image._as_levels` and `stereo._as_side`, with a native counterpart.
+
+#### [should-fix] `timing.nearest` silently mis-pairs unsigned integer times
+- **Where:** `src/slamlab/eval/timing.py:55-83`.
+- **Issue:** The docstring accepts "integer nanoseconds (compared exactly)" but never checks the dtype. For uint64, `times[before] - lookups` wraps.
+- **Why it matters:** It gives wrong indices with no error. EuRoC passes int64, so nothing in the repo triggers it today, but this is a public module-level function.
+- **Evidence:** `timing.nearest(np.array([1,5,9], np.uint64), np.array([4,6], np.uint64))` returns `[1 2]`. The correct answer is `[1 1]`. The same data as int64 is right.
+- **Suggested fix:** Accept only int64 or float64 (raise `InvalidInputError` otherwise), or cast unsigned input to int64 after a range check. Add a test.
+
+#### [should-fix] The new `backends.checked_array` and the type guards in the decoders have no test
+- **Where:** `src/slamlab/backends.py:335-364`; `orb._decode_features` (`orb.py:643-657`) and `stereo._decode_rectification` (`stereo.py:355-366`).
+- **Issue:** H13 made this one helper the policy for every decoder, but no test reaches its `RuntimeError` branch, nor the `scale_factor`/`levels` and `baseline` type guards.
+- **Suggested fix:** A unit test of `checked_array` with a wrong dtype, a wrong rank and a good array. A fake backend returning a bad `levels` for `_decode_features`.
+
+#### [note] The TUM reader accepts NaN and unsorted stamps, unlike the EuRoC reader
+- **Where:** `src/slamlab/eval/tum.py:142-158` (`_stamped`) and `:204-210`.
+- **Issue:** `float("nan")` parses. A NaN-stamped frame is silently dropped, and an unsorted `rgb.txt` returns unsorted `timestamps`, although `read_sequence`'s docstring says "in time order".
+- **Evidence:** `r2_tum_nan.py`: rgb stamps `[1.0, nan, 2.0]` give `timestamps [1. 2.]` with no error. `[2.0, 1.0, 1.5]` gives `[2. 1. 1.5]`.
+- **Suggested fix:** `timing.as_times(..., strict=False)` in `_stamped`, as H12 did for EuRoC.
+
+#### [note] Smaller test and constant items
+- `rust/slamlab-foundations/src/orb.rs:1169-1182`: the docstring of `rejects_invalid_input` says "are `InvalidInput`", but the `detect` and `distribute` asserts are kind-less `.is_err()`, the pattern H16 fixed in `matching.rs`. Line 1182 also uses `image::MAX_SIDE + 1` where `MAX_FEATURES + 1` is meant.
+- The truncated-PNG tests write a fixed-name file to the system temp directory (`rust/slamlab-eval/src/png.rs`, `cpp/tests/eval/test_png.cpp`). Run 1 suggested a shared fixture. A committed truncated PNG would also give Python a truncated-file test, which it lacks.
+- `MAX_SEARCH = 64` (`stereo.py:103`, and the C++ and Rust twins) is named but still has no stated reason, which H9 asked for. The same goes for `MAX_FEATURES`.
+- `stereo._drop_outliers` indexes a 6-tuple (`f[0]` to `f[5]`). A `NamedTuple` would read better.
+
+### Checked and fine
+- **Parity:** `r2_core_probe.py` run on cpp and rust for huge, NaN, negative and oversized `level_xy`, `levels` 0 and 2^40, NaN `scale_factor` and mismatched counts. All give `InvalidInputError` or `ValueError`. The only crashes are the `level` case above.
+- **Rust and Python ordering:** The Rust cores check sequentially with `?`. Python's `_check_positions` runs before dispatch.
+- **Native check messages:** `check_range` in C++ and Rust matches Python's `as_count` message format.
+- **New eval code:** `metrics.relative_error`, `associate`, `timing.as_times`, the `runs` write path (validate, then temporary, then rename) and the EuRoC checks are clean, and their tests assert values. `timing.nearest` is right for float64 and int64, for ties, and for ends.
+- **Rust and C++ restructure:** `ScoreWindow` and `cell_thresholds` are faithful to the old code, and the doc comments on the new functions are complete.
+- **Suppressions:** every `noqa`, `NOLINT` and `#[allow]` added in the range carries a reason. There are no TODOs, prints or commented-out code.
+- **Documentation:** the CHANGELOG, `front-end.md` and design doc agree. The `-ffp-contract=off` note is consistent with `CMakeLists.txt`. The wheel build skips `slamlab_eval`.
+- **Deferred items (request 3):** all nine are in the design doc's "Deferred from PR 7's review panel" open items, with the report link: A1 (pyramid reuse, PR 9), A9, A10, L8, H8, H18/A13, H19 `at()`, H19 `_POPCOUNT` (the 130 MB figure checks out against the 256-row block), and L11. No new deferral is required. If you defer any of the findings above, they need adding there.
+
+Files: `cpp/src/foundations/stereo.cpp` (the must-fix); probes in `/tmp/scratch/` (`r2_level_probe.py`, `r2_core_probe.py`, `r2_assoc_fuzz.py`, `r2_runs_probe.py`, `r2_tum_nan.py`).
+
+### Architecture review
+
+**Scope:** slamlab PR 7 (`feature/front-end`). I reviewed the fix commits `5b4f709..7277bdb` (b536911, a3a54b9, 35141c1, 96dbdef, plus the report commit) against Run 1's A1-A13, and read the whole PR (`59bccd8...7277bdb`) for context. I read every non-fixture file in the 63-file fix diff, plus the neighbours needed to judge fit: `pyproject.toml` contracts, `backends.py`, the bindings' `common`, `CMakeLists.txt`, the design doc and `CLAUDE.md`.
+
+Repo root is the repository root. My probes are in the scratchpad (`/tmp/scratch/`): `arch_run2_cross.py` (cross-backend stereo) and `eval_order.toml` (a proposed contract). No repo file was changed.
+
+**Summary:**
+- **Run 1 findings:** all nine architecture findings marked fixed are fixed, correctly and completely. The four deferrals (pyramid reuse, A9, A10, A13) are in the design doc's open items.
+- **A1 works across backends.** Features from each backend, matched by each backend, gave identical results in all 9 combinations (131 matches, median disparity 10.0085 on a 10 px shift). Mismatched pyramids, a relabelled `scale_factor` and `xy = 1e300` all raise `InvalidInputError` on Python, C++ and Rust.
+- **New findings:** no must-fix. Two should-fixes:
+  - The design doc's Conventions section does not record the two conventions this run introduced: exact pyramid coordinates, and exact floats with no fused multiply-add (and where that holds).
+  - `eval.timing` is named for something the budget harness will also mean.
+- Three notes.
+
+### Run 1 findings: verified
+
+| ID | Status | Evidence |
+|---|---|---|
+| A1 | **fixed** | `Features` carry `scale_factor` and `levels` in all three languages: `src/slamlab/foundations/orb.py` `Features`, `cpp/include/slamlab/foundations/orb.hpp` `Features`, Rust `orb::Features`. `orb_options` is gone from `stereo.match` in Python, both cores, both bindings and the `Implementation` Protocol; a grep finds no leftover use. Every backend checks keypoints against the pyramid: inside their level, and `xy` exactly equal to its level pixel's mapped coordinate (`stereo.py:689` `_check_positions`, `stereo.cpp:58,79`, `stereo.rs:302,340`). The cross-backend probe passed, as above. Pyramid reuse is deferred to PR 9 in the open items. |
+| A2 | **fixed** | Design doc: rung-0 box (:48-49), rung table (:64-65), the "front end is rung 0's" paragraph (:400-403), PR 7's row (:392), A7's line (:713-714). The `foundations/__init__.py` docstring names the front end and milestone 2. |
+| A3 | **fixed** | Languages table (:77-78), Package-layout row (:304), native-benchmark paragraph (:361-366), `CLAUDE.md:37-38`. The `eval/__init__.py` docstring lists `metrics`, `runs` and `timing`. |
+| A4 | **fixed** | `cpp/bindings/foundations/orb_crossing.hpp` and `rust/slamlab-py/src/foundations/orb_crossing.rs` hold `keypoints_dict`, `features_dict` and `features_in`, used by both `orb` and `stereo`. The `orb.Options` reader stays in `orb`'s binding alone, which is right now that stereo no longer takes it. |
+| A5 | **fixed** | `STB_IMAGE_STATIC` is defined in `cpp/src/eval/png.cpp`. `nm --defined-only build/native/libslamlab_eval.a` finds 0 `stbi_*` symbols (was 42). `build/slamlab/libslamlab_eval.a` (11:53) is a stale pre-fix artifact, no longer a build target. |
+| A6 | **fixed** | Both native readers are now named `read_gray`, `read_rgb` and `read_depth`, like Python's. The error-kind difference is recorded in the design doc's error contract (:133-136). |
+| A7 | **fixed** | `camera::focal_indices` (C++) and `Model::focal_indices` (Rust) are used by stereo's `smallest_focal` and by `check_intrinsics`. |
+| A8 | **fixed** | `timing.nearest` is used by `tum`, `euroc` and `metrics.relative_error`. `associate` is rebuilt as TUM's closest-first greedy. |
+| A9 | **deferred, recorded** | Open items, "Deferred from PR 7's review panel" (PR 8). |
+| A10 | **deferred, recorded** | Same section (PR 8). |
+| A11 | **fixed** | `CMakeLists.txt:79` guard. `build/slamlab/build.ninja` has no `slamlab_eval` target (grep count 0). |
+| A12 | **fixed** | `MAX_FEATURES` / `kMaxFeatures` / `MAX_FEATURES` in the three languages; `distribute`'s `target` is bounded by it. |
+| A13 | **deferred, recorded** | Open items ("One 'fastest built backend' choice (H18/A13)"). |
+
+### Findings
+
+#### [should-fix] The design doc's Conventions section does not record exact pyramid coordinates or exact floats, which this run made contracts
+- **Where:**
+  - `docs/design/2026-10-02-slamlab-ladder.md:227` (the pixel convention) and `:237-244` (still says floating point "could not promise" exactness)
+  - `CLAUDE.md:42-45` (the list of conventions)
+  - The code that now depends on them: `src/slamlab/foundations/image.py:264`, `CMakeLists.txt:30-33`, `tests/fixtures/foundations/stereo.json` (`match`: `"comparison": "exact"`, "integer sums; one rounding per float").
+- **Issue:** a3a54b9 established two rules that every future front-end consumer must follow. They live only in `docs/notes/front-end.md` and in docstrings.
+  - **Pyramid coordinates.** A position on level l maps to the full image by `((2x + 1) n_0 - n_l) / (2 n_l)`, not by ORB-SLAM's `x * s^l`. All three cores now reject features whose `xy` is not that map.
+  - **Exact floats.** Keypoint `xy` and stereo's `right_x`, `disparity` and `depth` are compared exactly, across languages, by the parity fixture and by the cores' input checks. This rests on three things: `-ffp-contract=off` in C++, Rust never fusing implicitly, and numpy evaluating one operation at a time.
+  - **Where exactness holds is unstated.** Eigen fuses explicitly on every aarch64 target, whatever `-ffp-contract` says: `Eigen/src/Core/util/ConfigureVectorization.h:461-463` (`#if defined(__ARM_FEATURE_FMA)` → `#define EIGEN_VECTORIZE_FMA`), and NEON `pmadd` → `vfmaq_f64` (`arch/NEON/PacketMath.h:5106-5110`, in the env's Eigen). So exactness holds for scalar code only. Every exactly compared path is scalar today, and rectification, which uses Eigen, has a tolerance.
+- **Why it matters:** `CLAUDE.md` sends agents to the design doc's Conventions before they write geometry code.
+  - PR 8's tracking projects map points into pyramid levels (ORB-SLAM's `SearchByProjection`). An agent following ORB-SLAM writes `u / s^l` and brings back L4's offset of up to 2 px. That happens in tracking, where no exact check would catch it.
+  - Milestone 7's ARM build is where an exact comparison that routes through Eigen or nalgebra would first diverge.
+- **Evidence:** `grep -n "full_image\|s\^l\|pyramid" docs/design/...` finds no coordinate rule. The only exactness statement (`:243`) argues against floats.
+- **Suggested fix (change the doc):**
+  - Add a pyramid-coordinates convention: both directions of the map, naming `image.full_image_coordinate`, and "never `s^l`".
+  - Add an exact-floats convention:
+    - a result compared exactly is a fixed sequence of scalar IEEE operations;
+    - every core library compiles with `-ffp-contract=off` PUBLIC;
+    - Rust never contracts;
+    - Eigen and nalgebra kernels may fuse on aarch64, so exactly compared paths stay scalar.
+  - Add "pyramid coordinates" to `CLAUDE.md`'s Conventions line.
+
+#### [should-fix] `slamlab.eval.timing` is named for what the budget harness will do; and `runs` does not use its shared check
+- **Where:**
+  - `src/slamlab/eval/timing.py`
+  - its importers: `eval/tum.py:38`, `eval/euroc.py:34`, `eval/metrics.py:31`
+  - the repeated check: `eval/runs.py:113`
+- **Issue:**
+  - The module holds timestamp checks and nearest-time lookup. But `slamlab.eval` is also where the Python benchmarks and the budget harness go: per-frame latency p50/p95 (design doc :304, :365, :394; `eval/__init__.py:22-23`). There, "timing" will mean measuring time.
+  - `timing`'s docstring says it holds "the check … they share", yet `runs._as_stamped` writes its own strict-ascending check (`np.any(np.diff(times) <= 0.0)`) instead of using `timing.as_times`.
+- **Why it matters:** PR 9 adds latency code to `eval`. It would then have to either share the name with an unrelated module or take a less obvious one. Renaming now costs three imports and one test file.
+- **Suggested fix:**
+  - Rename to `slamlab.eval.timestamps` (and `tests/eval/test_timestamps.py`).
+  - Use `as_times` in `runs._as_stamped`.
+  - Record a forward rule: the day an algorithm rung needs these (milestone 6's IMU streams must ascend, and `vi` may not import `eval`), they move down to rung 0 beside `arrays` rather than being copied.
+
+#### [note] `eval` now has an internal order; give it a contract like rung 0's
+- **Where:** `pyproject.toml` (import-linter section)
+- **Issue:** `timing` (and `images`) form a shared bottom that `tum`, `euroc` and `metrics` build on, and `runs` sits on `metrics`. Nothing stops a reader from importing `metrics` or `runs`, or the bottom from importing upward. PR 8-10 add to `eval`: native-run fixtures, the harness, the viewer's reader.
+- **Evidence:** this contract is KEPT at HEAD (`lint-imports --config <scratchpad>/eval_order.toml`: "1 kept, 0 broken"):
+  ```toml
+  containers = ["slamlab.eval"]
+  layers = ["(runs) | (colmap_reference)",
+            "(metrics) | (tum) | (euroc) | (readers) | (reprojection)",
+            "(timing) | (images)"]
+  ```
+- **Suggested fix:** Add it, with the rename above. It is one block, and new modules are optional layers, as in rung 0's contract.
+
+#### [note] The pyramid map is public in one direction only; the other form is private to stereo in all three languages
+- **Where:**
+  - `src/slamlab/foundations/stereo.py:592` (`_nearest_column`)
+  - `cpp/src/foundations/stereo.cpp:129`
+  - `rust/slamlab-foundations/src/stereo.rs:410`
+  - against `image.full_image_coordinate` (`image.py:264`, `image.hpp`, `image.rs`)
+- **Issue:** `image` owns the level-to-full-image map. Stereo's level-to-level integer form, `floor((2x + 1) to / (2 from))`, follows the same aligned-centre convention but is private, written three times. PR 8's projection into a level needs the full-image-to-level map, `((2u + 1) n_l - n_0) / (2 n_0)`, which does not exist yet.
+- **Suggested fix:** When PR 8 needs it, together with A10's guided matching, add the full-image-to-level map (for example `image.level_coordinate`) beside `full_image_coordinate` in all three languages, and state stereo's column mapping in terms of it. Record this with A10 in the open items.
+
+#### [note] Generic binding helpers live in the ORB crossing
+- **Where:**
+  - `rust/slamlab-py/src/foundations/orb_crossing.rs:25,39` (`pub fn to_i64`, `pub fn int64_array`, imported by `orb.rs:17`)
+  - copies of `to_i64` in `rust/slamlab-py/src/foundations/matching.rs:110` and as a closure in `stereo.rs:224`
+  - C++ keeps `int64_array` local to `cpp/bindings/foundations/orb.cpp:53`
+- **Issue:** A feature-specific crossing exports type-conversion helpers that every binding needs.
+- **Suggested fix:** Move `to_i64` and `int64_array` to `crate::common` (Rust) and `common.hpp` (C++), so `orb_crossing` holds only the features crossing. This overlaps the hygiene reviewer's lane; it can go to the backlog.
+
+### Checked and fine
+- **`image.full_image_coordinate`'s home:** `image` defines the resize's aligned-centre map and `level_shapes`, so the composed map is `image`'s knowledge. Its users, `orb` (layer `nls | orb`) and `stereo` (layer `epipolar | …`), both sit above `image`. The C++ `constexpr` header and Rust `pub fn` mirror it.
+- **`-ffp-contract=off` PUBLIC is right:**
+  - Arithmetic inlined from core headers (`full_image_coordinate`, `image::pixel`) compiles in the bindings', tests' and benches' own translation units, which PUBLIC covers. A PRIVATE flag would leave them out.
+  - `compile_commands.json`: 43 of 43 slamlab sources in `build/slamlab` and 49 of 49 in `build/native` carry it. nanobind's own 11 sources correctly do not.
+  - The flag is GCC/Clang-specific, which matches the project's toolchains.
+  - For integer `x`, the map is exact even under contraction, so keypoints extracted in one language pass the exact check in another on any target.
+- **New public API:**
+  - `arrays.as_count`, `as_flag`, `as_number` and `holds_integers` are in the shared validation module.
+  - C++/Rust `check_range` sits beside `fail_setting` in `error.hpp`/`error.rs`, with Python's message.
+  - The constants are mirrored by name in all three languages: `MAX_FEATURES`, `MAX_FAST_THRESHOLD`, `MAX_DISTANCE`, `SECONDARY_FRACTION`, `MAX_SEARCH`.
+  - `focal_indices` follows each language's idiom.
+  - `backends.checked_array` checks only dtype and rank, so `backends` still knows nothing of what an algorithm computes.
+- **Error contract (front end):** the messages for pyramid mismatch, bad `xy` and too-deep pyramids are identical in Python, C++ and Rust (probe). `rectify`'s refusal of a right camera on the left is the same in all three.
+- **Dependency direction:** `eval` imports only `foundations` (and itself). `stereo` takes `MAX_DISTANCE` from the lower `matching`. No new package; the layer contracts are unchanged and kept.
+- **Native readers:** `Raster8` is now private. `RgbImage` and `DepthImage` are the public types. Both stay outside the cores, in the `eval` library and crate.
+- **Clean breaks:** `relative_error`'s new signature (times, `delta` in seconds), `stereo.match` without `orb_options`, and the reader renames carry no shims, and every caller is updated (grep).
+- **Run format:** `write_run` validates everything before writing and replaces files one at a time, as its docstring now says. Native writers remain A9's deferral.
+- **Fixtures:** the stereo `match` fixture stays exact, and orb's exact `xy` comparison is what keeps the three languages' maps identical, so cross-backend features always pass each other's checks.
+
+### Algorithm review
+
+**Scope:** PR 7 (`feature/front-end`), the full range `59bccd8...7277bdb`, with the Run 1 fixes `5b4f709..7277bdb` read closely. All paths are under REPO=the repository root.
+- **Read in full:** `src/slamlab/foundations/{stereo,image}.py`, the matcher and `rectify` in `cpp/src/foundations/stereo.cpp` and `rust/slamlab-foundations/src/stereo.rs`, and `full_image_coordinate` in `cpp/include/slamlab/foundations/image.hpp` and `rust/slamlab-foundations/src/image.rs`.
+- **Also read:** `src/slamlab/eval/{metrics,timing,runs,euroc,tum}.py` (the changed parts), the diffs to `orb.py` and `matching.py`, `CMakeLists.txt`, `docs/notes/front-end.md`, the stereo, metrics and timing tests, `generate_stereo.py`, and the stereo fixture's coverage.
+- **Compared against:** TUM's `evaluate_rpe.py` (fetched), the logic of TUM's `associate.py` (ported), evo's `metrics.py` (fetched), ORB-SLAM2's `ComputeStereoMatches`, and Shimizu & Okutomi (IJCV 2005).
+- **Probes:** in the session scratchpad. I saved four to a private scripts folder with header comments: `stereo_core_rejects_probe.py`, `associate_vs_tum.py`, `pyramid_coordinate_ramp.py` and `euroc_stereo_parity.py`. I also marked `stereo_xy_crash.py` as superseded, because it targets the old API.
+- **Repo state:** no repository files were changed; `git status` is clean. I ran the stereo, image and eval tests: 338 passed.
+
+**Summary:** Every Run 1 algorithm finding marked fixed is fixed, and fixed correctly. The new maths holds:
+- The exact level-to-full-image map, and the column carried between levels, are both right and computed in the same order in all three languages.
+- The V fit's guarantees hold. The zero-mean SAD bounds are far inside int64.
+- `associate` reproduces TUM's `associate.py` exactly.
+- Time-paired RPE no longer counts a tracking gap as one step.
+- On real EuRoC frames the three backends match bit for bit.
+
+There are no new must-fix or should-fix findings. There are three notes: two pieces of documentation that misstate the code or the reference, and an optional known-answer test.
+
+### Run 1 findings: verified
+
+- **L1 fixed.** I called the C++ and Rust cores directly, bypassing Python's checks:
+  - xy of 1e300, NaN xy, a level of -1 or 5, level_xy of -3 or 2^62, `levels` of 0 or 2^40, and a NaN `scale_factor` are each refused with `InvalidInputError`. A negative count is refused with the binding's `ValueError`.
+  - Neither core crashes any more; before the fix the huge-xy case segfaulted C++ and panicked Rust.
+  - The cores' check is `xy != full_image_coordinate(level_xy)`, which also rejects NaN.
+  - The three-backend rejects test covers huge, negative, off-by-0.5 and NaN `xy`.
+- **L2 fixed.** `stereo_bias_check.py` (python backend, area-sampled VGA pairs):
+  - Median disparity error is -0.0005, -0.0020, +0.0017 and +0.0015 px at d = 9.0, 9.2, 9.6 and 9.8 (Run 1 measured +0.07 to +0.27).
+  - The median on every level is within 0.054 px.
+  - The test now asserts a median under 0.01 px on an area-sampled pair.
+- **L3 fixed.** The `t.x > 0` refusal comes after the half rotation in Python, C++ and Rust, and is tested on every backend. The fixture case that had the right camera on the left now uses `t_x < 0`.
+- **L4 fixed.**
+  - **Algebra:** `full_image_coordinate` matches the composed resize maps, computed as exact rationals and correctly rounded, in 3000 random (n_0, s, levels, x) trials with 0 mismatches. Level 0 maps to itself.
+  - **On the real pyramid** (`pyramid_coordinate_ramp.py`, a 9600x640 dithered ramp): the mean residual against the exact map is -0.05 to -0.01 px on every level. Against ORB-SLAM's `x * s^l` it is +0.26 to +1.48 px.
+- **L5 fixed.** 300 frames at 30 Hz with 2 mm of drift per frame:
+  - Without a gap, the RPE RMSE is 2.000 mm over 299 pairs.
+  - With frames 100-159 lost, it is 2.000 mm over 238 pairs, with a maximum of 2.000 mm. Run 1 gave a maximum of 119.9 mm.
+  - At delta = 1 s, the pairs that would span the gap are skipped.
+- **L6 fixed.** `associate_vs_tum.py` compared 3000 random cases against a direct port of `associate.py`: dense random stamps, jittered 30 Hz against 100 Hz grids, grids full of exact ties, time bases of 0 and 1.3e9 s, and tolerances including 0 and exact gaps. There were 0 differences, with TUM called either way round (times first, or the ground truth first as `evaluate_ate.py` does). Order checks come from `timing.as_times`.
+- **L7 fixed.** Both FAST thresholds start at 1 in all three languages.
+- **L8 fixed (documented).** The note is in the `matching` docstring, the front-end note, and the design doc's open items (`:739`).
+- **L9 fixed.** The unreachable branches are gone, the departures are listed and the NaN claim is corrected. One sentence I worded loosely in Run 1 was carried over; see the first note.
+- **L10 fixed.** `-ffp-contract=off` is PUBLIC on every core target (`CMakeLists.txt:33`).
+- **L11 deferred.** It is tracked in the design doc's open items (`:753`).
+
+### Findings
+
+#### [note] The stereo docs misstate the outlier filter at a zero median, and still give the parabola as the reason for `search >= 2`
+- **Where:**
+  - `src/slamlab/foundations/stereo.py:69-70` ("keeps … every match when the median sum is 0")
+  - `docs/notes/front-end.md:114-115` (the same claim)
+  - `src/slamlab/foundations/stereo.py:161` (`search`: "from 2 (a parabola needs both neighbours)")
+- **Issue:**
+  - **Zero median:** the limit becomes 0, so only matches whose sum is exactly 0 are kept. Any match with a positive sum is still dropped. ORB-SLAM2's loop (`if(vDistIdx[i].first<thDist) break;`, otherwise `mvuRight = -1`) drops every match in that case. The accurate contrast is "keeps the matches whose sum is 0, where ORB-SLAM drops them all". The inaccurate wording comes from my own Run 1 text for L9 ("keeps all of them when the median is 0").
+  - **Search lower bound:** the refinement is now the V fit. Its only requirement is that the best offset is not an end, so the stated reason is stale.
+- **Evidence:**
+  ```
+  stereo._drop_outliers(costs [0, 0, 0, 5], factor 2.1) -> kept left indices [0, 1, 2]
+  ```
+- **Suggested fix:** Reword both places to "every match whose sum is 0". For `search`, either cite the V fit with the real reason for the bound, or lower the bound to 1: with three offsets, a best offset of 0 is still fittable.
+
+#### [note] The RPE docs credit the time tolerance to TUM's `evaluate_rpe.py`, which has none; its numbers will not match that script at delta = 1 s
+- **Where:** `src/slamlab/eval/metrics.py:11-17` ("pairs with the pose j nearest delta seconds later, if one lies within a tolerance, as TUM's `evaluate_rpe.py` pairs them") and `docs/notes/front-end.md:139-142`.
+- **Issue:** TUM's fixed-delta branch is `j = find_closest_index(index_est, index_est[i] + param_delta); if j != len(traj_est)-1: pairs.append((i, j))`.
+  - It never checks `|t_j - (t_i + delta)|`, so TUM's tool does pair across a gap. That is the very behaviour L5 removed; slamlab's tolerance is its own improvement.
+  - It drops every pair whose j is the last pose.
+  - It composes the error as `P_rel Q_rel^-1`. slamlab follows Sturm et al.'s paper and evo with `Q_rel^-1 P_rel`; Run 1 accepted that. The rotation angle is the same, but the translational error picks up about theta·|t_Q|.
+- **Why it matters:** The docs invite a direct comparison with numbers from `evaluate_rpe.py`, and PR 8 will set its RPE beside published ones. Frame to frame, the difference is negligible (~0.01 mm). At TUM's usual delta = 1 s it can be centimetres.
+- **Evidence:**
+  - TUM's code: `evaluate_rpe.py`'s `evaluate_trajectory` (quoted above; fetched).
+  - Probe: the truth moves 1 m per second; the estimate has the same translation plus 1 degree of extra yaw per second, at delta = 1 s.
+    ```
+    slamlab (Sturm/evo) trans 0.0   TUM evaluate_rpe trans 0.01745   angles 1.0 deg
+    ```
+  - evo's `rpe_base`: `E_i = lie.relative_se3(Q_rel, P_rel)`, citing "the notation of the TUM RGB-D paper".
+- **Suggested fix:** Reword the docs:
+  - Pairing by nearest time with delta in seconds is "as TUM's `evaluate_rpe.py` (fixed delta)".
+  - The tolerance and skipped gaps are slamlab's own.
+  - The error is Sturm et al.'s `(Q_i^-1 Q_j)^-1 (P_i^-1 P_j)`, as evo computes it; TUM's script composes `P_rel Q_rel^-1`, which differs in translation at long intervals.
+
+#### [note] Optional: a known-answer test that ties `full_image_coordinate` to what `image.pyramid` actually samples
+- **Where:** `tests/foundations/test_orb.py:102-115` (`test_xy_is_the_exact_full_image_coordinate`) and `tests/foundations/test_image.py:203`.
+- **Issue:** Both tests check the formula against the same formula written as a rational. Neither checks it against the pyramid's resampling, so the coupling between the composed map and the resize is guarded only indirectly, through the resize's own fixture and its OpenCV comparison.
+- **Evidence:** `pyramid_coordinate_ramp.py` inverts a dithered ramp through each level's column means:
+  ```
+  L1 mean(measured-exact) -0.041   mean(measured-naive) +0.259
+  L6 mean(measured-exact) -0.013   mean(measured-naive) +1.480
+  L7 mean(measured-exact) -0.008   mean(measured-naive) +0.589
+  ```
+- **Suggested fix:** A small version of this: a horizontal ramp, a few levels, and an assertion that the mean residual is within about 0.1 px of the exact map on every level. It would fail if the resize convention ever changed without `full_image_coordinate` changing with it. Low priority.
+
+### Checked and fine
+- **`full_image_coordinate` exactness:**
+  - For integer x, `(2x+1) n_0 <= (2^21 - 1) 2^20 < 2^41` is exact and only the division rounds. Level 0 gives `2x n_0 / 2 n_0 = x` exactly.
+  - All three languages compute `((2.0*x + 1.0) * n0 - nl) / (2.0*nl)` in the same order (`image.py:301`, `image.hpp:69`, `image.rs:47`).
+  - Under FMA contraction the integer-x path would still be exact. So the inline header's `!=` check in `check_side` stays safe even in a consumer built without the flag.
+- **Carrying the right keypoint's column:** `((2 x_r + 1) n_l) // (2 n_r) = floor((x_r + 1/2) n_l / n_r)` is the level-l pixel nearest the right pixel's centre. It is non-negative and below `n_l`, and below 2^42. C++'s `/` equals Python's `//` for non-negative operands; Rust's `usize` is fine on 64-bit targets.
+- **`right_x` operation order:** `float(best - reach) + delta`, then `float(column) + offset`, then the map, then `x_left - right_x`, then `(f*b)/disparity`. These are identical in Python (`stereo.py:565,649-653`), C++ (`stereo.cpp:198,442-452`) and Rust (`stereo.rs:487,608-618`). There is no contraction: `-ffp-contract=off` in C++, rustc never fuses, and numpy runs one ufunc at a time.
+- **V fit:**
+  - The first smallest sum gives `d1 > d2 <= d3`, so the denominator `2 max(d1 - d2, d3 - d2) >= 2(d1 - d2) > 0`. delta lies in [0, 1/2] when d1 >= d3, and in (-1/2, 0) otherwise.
+  - The sign and form match the intersection of the two lines of equal and opposite slope (Shimizu & Okutomi, IJCV 2005).
+  - Python's int/int true division and IEEE division of the exactly converted doubles are both correctly rounded, so they agree.
+  - Python's `argmin`, C++'s `min_element` and Rust's strict-`<` fold all take the first minimum.
+- **Zero-mean SAD bounds:**
+  - n <= 39^2 = 1521. Each term is at most 2·255·n, so a sum is at most 2·255·n^2 ≈ 1.18e9 and the doubled denominator at most 2.4e9. That would overflow int32, so the int64 used everywhere matters; it is far inside int64 and exact in double.
+  - The sum is invariant to a brightness offset between the cameras, and the C++ and Rust loops match Python's expression term for term.
+- **Outlier filter parity:** Python compares an int with a float exactly. C++ and Rust convert the cost to double, which is exact below 2^53, then compare. Both give the same result.
+- **Real-data parity:** on EuRoC V1_01 (rectified frames 0, 400, 1200 and 2000), `orb.extract` plus `stereo.match` gave 467-641 matches per frame, bit-identical on python, cpp and rust in every field. Every `right_x` is non-integer, so the exact-map path is exercised. Median depths are 2-3 m.
+- **Fixture coverage:** the match fixture has 4 matches carried across levels and only non-integer `right_x`. The VGA agreement test covers all 8 levels.
+- **Rectification:** the refusal sits after the half rotation; the target (-1, 0, 0) and the angle `acos(|t_x|/|t|)` rotate t onto -x, as cvStereoRectify does.
+- **`associate`:**
+  - Widening each candidate run by one keeps every pair whose computed gap is under the tolerance; a pair lost to rounding of `t ± reach` would need two references within about 1 ulp.
+  - The lexsort key order is (gap, time, reference), with an exclusive tolerance. 0 differences from TUM in 3000 trials.
+- **RPE pairing:**
+  - `later > i` stops a pose pairing with itself, and the tolerance check removes pairs at the end and across gaps.
+  - `runs.evaluate` uses the run's median frame period for delta and half of it for the tolerance, and pairs only matched frames.
+  - The Sim(3) scale is applied to the estimate's relative translations.
+- **Readers:** EuRoC associates in exact int64 nanoseconds. TUM nearest-per-frame association gives no frame a shared ground-truth sample on fr1/xyz, fr1/desk or fr3/long_office (0 duplicates; the largest gaps kept are 7.6, 13.1 and 9.1 ms).
+- **Matching refactor:** `_nearest_two` gives the same best and second-best as the full matrix (the second equals the best on a tie), with memory linear in the second set.
+
+### Sources
+- Sturm et al., "A Benchmark for the Evaluation of RGB-D SLAM Systems", IROS 2012. Tools: https://cvg.cit.tum.de/data/datasets/rgbd-dataset/tools. `evaluate_rpe.py` as fetched from the mirror https://github.com/jbriales/rgbd_benchmark_tools/blob/master/src/rgbd_benchmark_tools/evaluate_rpe.py
+- Grupp, evo (2017), `evo/core/metrics.py` `RPE.rpe_base`: https://github.com/MichaelGrupp/evo/blob/master/evo/core/metrics.py
+- Mur-Artal & Tardós, ORB-SLAM2 (T-RO 2017), `Frame::ComputeStereoMatches`: https://github.com/raulmur/ORB_SLAM2/blob/master/src/Frame.cc
+- Shimizu & Okutomi, "Sub-Pixel Estimation Error Cancellation on Area-Based Matching", IJCV 63(3):207-224, 2005, doi:10.1007/s11263-005-6878-5
+
+### Files
+- Saved probes:
+  - `stereo_core_rejects_probe.py`
+  - `associate_vs_tum.py`
+  - `pyramid_coordinate_ramp.py`
+  - `euroc_stereo_parity.py`
+- Superseded: `stereo_xy_crash.py` (header marked superseded).
+- Scratch: `/tmp/scratch/` (`xy_core_probe.py`, `fic_exact.py`, `ramp_level.py`, `assoc2.py`, `rpe_gap2.py`, `tum_dupes.py`, `euroc_stereo_parity.py`)
