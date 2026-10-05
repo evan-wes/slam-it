@@ -276,6 +276,41 @@ fn monomials(betas: &Vector4<f64>) -> SVector<f64, 10> {
     })
 }
 
+/// Below this, relative to the largest, an `R` diagonal entry sends a beta step to the SVD.
+const QR_RANK_CUTOFF: f64 = 1e-8;
+
+/// One Gauss-Newton step of the beta polish, `argmin |J δ - r|`.
+///
+/// A full-rank J (every diagonal entry of R above [`QR_RANK_CUTOFF`] of the largest) is solved
+/// by Householder QR, backward stable for full-rank least squares and equal to the SVD solution
+/// to roundoff; anything nearer rank deficiency takes the minimum-norm SVD solve, numpy's
+/// `lstsq`. The QR path keeps faer's per-call cost off these tiny systems (several hundred per
+/// PnP RANSAC run).
+///
+/// # Arguments
+///
+/// * `jacobian` - J.
+/// * `residual` - r.
+///
+/// # Returns
+///
+/// δ.
+fn beta_step(jacobian: &Matrix6x4<f64>, residual: &SVector<f64, 6>) -> Vector4<f64> {
+    let qr = jacobian.qr();
+    let r = qr.r();
+    let diagonal = r.diagonal().map(f64::abs);
+    if diagonal.min() > QR_RANK_CUTOFF * diagonal.max()
+        && let Some(step) = r.solve_upper_triangular(&(qr.q().transpose() * residual))
+    {
+        return step;
+    }
+    let step = lstsq(
+        &DMatrix::from_column_slice(6, 4, jacobian.as_slice()),
+        &DVector::from_column_slice(residual.as_slice()),
+    );
+    Vector4::from_column_slice(step.as_slice())
+}
+
 /// Polishes the betas by Gauss-Newton on the distance equations.
 ///
 /// # Arguments
@@ -296,11 +331,8 @@ fn polish_betas(mut betas: Vector4<f64>, distances: &DistanceSystem) -> Vector4<
             let mut col_m = jacobian.column_mut(m);
             col_m += distances.system.column(column) * betas[k];
         }
-        let step = lstsq(
-            &DMatrix::from_column_slice(6, 4, jacobian.as_slice()),
-            &DVector::from_column_slice(residual.as_slice()),
-        );
-        let moved = betas + Vector4::from_column_slice(step.as_slice());
+        let step = beta_step(&jacobian, &residual);
+        let moved = betas + step;
         let moved_residual = distances.rho - distances.system * monomials(&moved);
         if !(moved_residual.norm() < residual.norm()) {
             break;
