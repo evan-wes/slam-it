@@ -3,8 +3,8 @@
 //! One file per bound module, mirroring the Python package tree (`src/foundations/so3.rs`
 //! binds `slamlab.foundations.so3` as `slamlab_rs.foundations.so3`), so no file grows with
 //! every rung. This root only wires the rung modules. Bindings only convert types: float64
-//! numpy arrays in and out, plain slices and arrays into the cores. The Python entry points
-//! validate input before calling.
+//! numpy arrays (uint8 for images) in and out, plain slices and arrays into the cores. The
+//! Python entry points validate input before calling.
 
 use pyo3::prelude::*;
 

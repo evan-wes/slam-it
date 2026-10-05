@@ -13,6 +13,7 @@ pub mod epipolar;
 pub mod error;
 pub mod fivepoint;
 pub mod homography;
+pub mod image;
 pub(crate) mod linalg;
 pub mod nls;
 pub mod p3p;

@@ -56,8 +56,9 @@ before writing geometry code or a binding.
   contracts. Bindings are one file per module (`cpp/bindings/<rung>/<module>.cpp`,
   `rust/slamlab-py/src/<rung>/<module>.rs`), and the extension submodules mirror the tree
   (`slamlab._cpp.foundations.so3`, `slamlab_rs.foundations.so3`).
-- **Binding boundary:** bindings take and return float64 numpy arrays (nanobind `ndarray`,
-  the Rust `numpy` crate); the cores stay numpy-free and take arrays, spans or slices.
+- **Binding boundary:** bindings take and return float64 numpy arrays, uint8 for images
+  (nanobind `ndarray`, the Rust `numpy` crate); the cores stay numpy-free and take arrays,
+  spans or slices.
 - **Error contract:** fallible core functions return C++23 `std::expected<T, Error>` /
   Rust `Result<T, Error>` with one shared kind list (InvalidInput, Degenerate,
   NotConverged); Python raises the matching `slamlab.foundations.errors` exception.

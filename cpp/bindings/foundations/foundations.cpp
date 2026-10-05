@@ -12,6 +12,8 @@ void bind_foundations(nanobind::module_& parent) {
   bind_se3(se3);
   nanobind::module_ camera = foundations.def_submodule("camera", "Camera models.");
   bind_camera(camera);
+  nanobind::module_ image = foundations.def_submodule("image", "Grayscale images in fixed point.");
+  bind_image(image);
   nanobind::module_ alignment =
       foundations.def_submodule("alignment", "Point-set alignment (Umeyama).");
   bind_alignment(alignment);

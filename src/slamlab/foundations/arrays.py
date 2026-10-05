@@ -409,3 +409,53 @@ def as_matrix3(value: ArrayLike, name: str) -> NDArray[np.float64]:
     if lead != ():
         raise InvalidInputError(f"{name}: expected one (3, 3) matrix, got {lead}")
     return np.ascontiguousarray(flat[0])
+
+
+MAX_IMAGE_SIDE = 1 << 20
+"""The largest image side, in pixels, that :mod:`slamlab.foundations.image`'s fixed-point
+arithmetic is sized for (its intermediate values then fit 64 bits)."""
+
+
+def as_image(value: ArrayLike, name: str = "image", *, channels: int = 1) -> NDArray[np.uint8]:
+    """Check an image: a non-empty uint8 array, each side at most :data:`MAX_IMAGE_SIDE`.
+
+    Parameters
+    ----------
+    value : array_like of uint8
+        The image: (H, W) when `channels` is 1, (H, W, channels) otherwise. Other dtypes
+        are rejected, not converted: an image's values are its exact intensities.
+    name : str, optional
+        The argument's name, used in error messages.
+    channels : int, optional
+        The number of channels (1 for gray, 3 for RGB).
+
+    Returns
+    -------
+    ndarray of uint8
+        A new C-contiguous copy.
+
+    Raises
+    ------
+    InvalidInputError
+        If `value` is a masked array, is not uint8, has another shape, is empty, or has a
+        side above :data:`MAX_IMAGE_SIDE`.
+    """
+    if isinstance(value, np.ma.MaskedArray):
+        raise InvalidInputError(f"{name}: masked arrays are not accepted")
+    arr = np.asarray(value)
+    shape = "(H, W)" if channels == 1 else f"(H, W, {channels})"
+    expected_ndim = 2 if channels == 1 else 3
+    if (
+        arr.dtype != np.uint8
+        or arr.ndim != expected_ndim
+        or (channels != 1 and arr.shape[2] != channels)
+        or 0 in arr.shape
+    ):
+        raise InvalidInputError(
+            f"{name}: expected a non-empty {shape} uint8 array, got {arr.dtype} {arr.shape}"
+        )
+    if max(arr.shape[:2]) > MAX_IMAGE_SIDE:
+        raise InvalidInputError(
+            f"{name}: sides must be at most {MAX_IMAGE_SIDE} pixels, got {arr.shape[:2]}"
+        )
+    return np.ascontiguousarray(arr).copy()

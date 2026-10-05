@@ -23,6 +23,10 @@ void bind_se3(nanobind::module_& m);
 /// @param m The `foundations.camera` submodule.
 void bind_camera(nanobind::module_& m);
 
+/// @brief Add the `image` functions to the `foundations.image` submodule.
+/// @param m The `foundations.image` submodule.
+void bind_image(nanobind::module_& m);
+
 /// @brief Add the `alignment` functions to the `foundations.alignment` submodule.
 /// @param m The `foundations.alignment` submodule.
 void bind_alignment(nanobind::module_& m);

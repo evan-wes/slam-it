@@ -111,8 +111,8 @@ C++ and Rust sources also build standalone (CMake, cargo) without Python, for th
 and a possible later phone target.
 
 **The binding boundary is numpy arrays.**
-- Bindings take and return float64 C-contiguous numpy arrays: nanobind's `ndarray` and the
-  Rust `numpy` crate.
+- Bindings take and return float64 C-contiguous numpy arrays (uint8 for images): nanobind's
+  `ndarray` and the Rust `numpy` crate.
 - The cores stay numpy-free, taking fixed-size arrays, spans or slices.
 - Batched data therefore crosses the boundary without per-element Python objects, so the
   "same algorithm, three languages" comparison measures the algorithms, not marshalling.
@@ -226,6 +226,15 @@ against this convention when its cameras are imported.
 `Eigen::Map<…, Eigen::RowMajor>`. Matrices are factorised with plain Cholesky (`Eigen::LLT`;
 nalgebra's `Cholesky`; numpy's `cholesky`) in all three languages. A failed factorisation
 inside a damped solver means "reject the step and raise the damping", not an error.
+
+**Images are uint8, and every image operation is exact** (from PR 7). A grayscale image is a
+C-contiguous `(H, W)` uint8 array (RGB `(H, W, 3)`), `image[y, x]`, with the pixel convention
+above; the cores hold it as an `Image` of rows, columns and row-major pixels. Colour
+conversion, blur, resizing, pyramids and remapping are fixed-point integer arithmetic
+(`slamlab.foundations.image` states each rounding), so the three languages' images are
+bit-identical, and so are the FAST corners and descriptors computed from them: a fixture
+compares them exactly, with no tolerance. Floating point could not promise that across
+platforms, since a fused multiply-add rounds once where separate operations round twice.
 
 **Structured problems cross as structs of arrays.** A BA problem, for example, crosses as:
 - float64 values;

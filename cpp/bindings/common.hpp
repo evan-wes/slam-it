@@ -2,10 +2,10 @@
 /// @brief Shared helpers for every binding: array types, owned outputs, error translation.
 ///
 /// Bindings take float64 C-contiguous numpy arrays with a leading batch dimension and return
-/// new arrays (design doc, "Conventions"). Arguments are `noconvert`: anything else (another
-/// dtype, a strided view, a misaligned buffer) is refused rather than silently copied, the
-/// same as the Rust binding. A core `Error` crosses as the Python exception of its kind, from
-/// `slamlab.foundations.errors`.
+/// new arrays (design doc, "Conventions"); images cross as uint8 (`image_crossing.hpp`).
+/// Arguments are `noconvert`: anything else (another dtype, a strided view, a misaligned
+/// buffer) is refused rather than silently copied, the same as the Rust binding. A core
+/// `Error` crosses as the Python exception of its kind, from `slamlab.foundations.errors`.
 #pragma once
 
 #include <nanobind/nanobind.h>

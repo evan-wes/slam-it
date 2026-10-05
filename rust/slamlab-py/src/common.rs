@@ -1,9 +1,10 @@
 //! Shared helpers for every binding: array conversion, batch mapping, error translation.
 //!
 //! Bindings take float64 C-contiguous numpy arrays with a leading batch dimension and return
-//! new arrays (design doc, "Conventions"). Anything else (another dtype, a strided view) is
-//! refused rather than silently copied, the same as the C++ binding. A core [`Error`] crosses
-//! as the Python exception of its kind, from `slamlab.foundations.errors`.
+//! new arrays (design doc, "Conventions"); images cross as uint8 (`foundations::image`).
+//! Anything else (another dtype, a strided view) is refused rather than silently copied, the
+//! same as the C++ binding. A core [`Error`] crosses as the Python exception of its kind, from
+//! `slamlab.foundations.errors`.
 
 use nalgebra::{DVector, SMatrix};
 use numpy::ndarray::{ArrayD, Dimension, IxDyn};

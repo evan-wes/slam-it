@@ -17,6 +17,7 @@ mod camera;
 mod epipolar;
 mod fivepoint;
 mod homography;
+mod image;
 mod nls_crossing;
 mod p3p;
 mod pnp;
@@ -39,6 +40,7 @@ pub fn foundations(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_wrapped(pyo3::wrap_pymodule!(epipolar::epipolar))?;
     m.add_wrapped(pyo3::wrap_pymodule!(fivepoint::fivepoint))?;
     m.add_wrapped(pyo3::wrap_pymodule!(homography::homography))?;
+    m.add_wrapped(pyo3::wrap_pymodule!(image::image))?;
     m.add_wrapped(pyo3::wrap_pymodule!(p3p::p3p))?;
     m.add_wrapped(pyo3::wrap_pymodule!(pnp::pnp))?;
     m.add_wrapped(pyo3::wrap_pymodule!(se3::se3))?;

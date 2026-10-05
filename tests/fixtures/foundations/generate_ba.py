@@ -18,9 +18,7 @@ NaN (fixed intrinsics' deviations, plain points' inverse depths) is written as `
 
 from __future__ import annotations
 
-import json
 import math
-import re
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
@@ -29,6 +27,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from slamlab.foundations import ba, camera, nls, se3
+from tests.fixtures.foundations._layout import dumps
 
 OUT = Path(__file__).with_name("ba.json")
 CAMERAS = 5
@@ -374,15 +373,6 @@ def _expected(result: ba.BAResult) -> dict[str, Any]:
     }
 
 
-def _compact(text: str) -> str:
-    """Put each innermost list of numbers on one line (``indent`` gives each its own)."""
-    return re.sub(
-        r"\[\s*([-+0-9.eE,\snul]*?)\s*\]",
-        lambda match: "[" + re.sub(r"\s+", " ", match.group(1)).replace(" ,", ",") + "]",
-        text,
-    )
-
-
 def main() -> None:
     """Solve every case with the reference and write ``ba.json``."""
     cases = []
@@ -407,7 +397,7 @@ def main() -> None:
         "tolerance": TOLERANCES,
         "cases": _json(cases),
     }
-    OUT.write_text(_compact(json.dumps(doc, indent=1)) + "\n")
+    OUT.write_text(dumps(doc))
     print(f"wrote {OUT.name} ({len(cases)} cases)")
 
 

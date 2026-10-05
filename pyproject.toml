@@ -39,8 +39,8 @@ dev = [
   "poselib>=2.0.5",
   # Visualisation for the demos (never imported by the library).
   "rerun-sdk>=0.38",
-  # Feature matching for the two-view demo (never imported by the library; a contract
-  # forbids cv2 in slamlab).
+  # Test-only oracle for the front end's image operations, and the reference the demos
+  # compare against (never imported by the library; a contract forbids cv2 in slamlab).
   "opencv-python-headless>=5.0",
 ]
 
@@ -142,7 +142,7 @@ layers = [
   "(epipolar) | (homography) | (pnp)",
   "(camera) | (fivepoint) | (p3p) | (ransac) | (triangulation)",
   "(nls)",
-  "(correspondences)",
+  "(correspondences) | (image)",
   "(alignment)",
   "(se3)",
   "so3",
