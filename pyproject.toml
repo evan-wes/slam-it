@@ -139,7 +139,7 @@ type = "layers"
 containers = ["slamlab.foundations"]
 layers = [
   "(ba) | (twoview)",
-  "(epipolar) | (homography) | (pnp)",
+  "(epipolar) | (homography) | (pnp) | (stereo)",
   "(camera) | (fivepoint) | (matching) | (p3p) | (ransac) | (triangulation)",
   "(nls) | (orb)",
   "(correspondences) | (image)",

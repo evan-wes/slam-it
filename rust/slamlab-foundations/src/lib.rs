@@ -25,5 +25,6 @@ pub mod rng;
 pub mod se3;
 pub mod so3;
 pub mod solve;
+pub mod stereo;
 pub mod triangulation;
 pub mod twoview;

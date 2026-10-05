@@ -37,6 +37,8 @@ void bind_foundations(nanobind::module_& parent) {
   bind_pnp(pnp);
   nanobind::module_ homography = foundations.def_submodule("homography", "Homographies.");
   bind_homography(homography);
+  nanobind::module_ stereo = foundations.def_submodule("stereo", "Rectified stereo.");
+  bind_stereo(stereo);
   nanobind::module_ twoview = foundations.def_submodule("twoview", "Two-view initialisation.");
   bind_twoview(twoview);
   nanobind::module_ ba = foundations.def_submodule("ba", "Bundle adjustment.");

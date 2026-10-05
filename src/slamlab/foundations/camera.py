@@ -89,8 +89,29 @@ class Implementation(Protocol):
 # --- validation ---------------------------------------------------------------------------
 
 
-def _model_and_intrinsics(model: str, intrinsics: ArrayLike) -> tuple[int, NDArray[np.float64]]:
-    """Validate a model name and its intrinsics vector; return the model's code."""
+def as_model(model: str, intrinsics: ArrayLike) -> tuple[int, NDArray[np.float64]]:
+    """Check a model name and its intrinsics vector.
+
+    Parameters
+    ----------
+    model : str
+        A model from :data:`MODELS`.
+    intrinsics : array_like
+        The intrinsics vector.
+
+    Returns
+    -------
+    code : int
+        The model's code, as it crosses to a compiled backend.
+    intrinsics : ndarray of float64
+        A checked copy of the intrinsics.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If the model is unknown, the vector has the wrong length or is not finite, or a
+        focal length is not positive.
+    """
     if model not in MODELS:
         raise InvalidInputError(f"model: unknown camera model {model!r}; expected {sorted(MODELS)}")
     code, length = MODELS[model]
@@ -120,7 +141,7 @@ def check_intrinsics(model: str, intrinsics: ArrayLike) -> None:
         If the model is unknown, the vector has the wrong length or is not finite, or a
         focal length is not positive.
     """
-    _model_and_intrinsics(model, intrinsics)
+    as_model(model, intrinsics)
 
 
 def _points_in_front(points: ArrayLike) -> tuple[NDArray[np.float64], tuple[int, ...]]:
@@ -289,7 +310,7 @@ def project(
         If the model is unknown, the intrinsics have the wrong length or non-positive focal
         lengths, or a point is not in front of the camera.
     """
-    code, params = _model_and_intrinsics(model, intrinsics)
+    code, params = as_model(model, intrinsics)
     flat, lead = _points_in_front(points)
     result = backends.dispatch(backend, __name__, "project", _project, code, params, flat)
     return np.asarray(result.reshape((*lead, 2)), dtype=np.float64)
@@ -323,7 +344,7 @@ def project_jacobians(
     slamlab.foundations.errors.InvalidInputError
         As :func:`project`.
     """
-    code, params = _model_and_intrinsics(model, intrinsics)
+    code, params = as_model(model, intrinsics)
     flat, lead = _points_in_front(points)
     both = backends.dispatch(
         backend, __name__, "project_jacobians", _project_jacobians, code, params, flat
@@ -360,7 +381,7 @@ def unproject(
     slamlab.foundations.errors.NotConvergedError
         If a pixel lies outside the region where the distortion can be inverted.
     """
-    code, params = _model_and_intrinsics(model, intrinsics)
+    code, params = as_model(model, intrinsics)
     flat, lead = as_batch(pixels, (2,), "pixels")
     result = backends.dispatch(backend, __name__, "unproject", _unproject, code, params, flat)
     return np.asarray(result.reshape((*lead, 3)), dtype=np.float64)
