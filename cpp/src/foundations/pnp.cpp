@@ -426,10 +426,8 @@ Result<ransac::RefinedSolution<Eigen::Matrix4d>> pnp_ransac(const Eigen::Ref<con
   return ransac::estimate_refined(
       PoseEstimator(points, bearings, minimal), options, refine,
       [&](const Eigen::Matrix4d& model, const ransac::Indices& inliers) {
-        // The consensus's inliers are within the threshold, so every start is finite.
         return pnp::refine(model, correspondences::gather(world, inliers),
-                           correspondences::gather(rays, inliers), options.threshold)
-            .value();
+                           correspondences::gather(rays, inliers), options.threshold);
       },
       p3p::kSampleSize);
 }

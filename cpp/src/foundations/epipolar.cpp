@@ -417,9 +417,12 @@ class SampsonProblem {
 
 }  // namespace
 
-Motion start_motion(const Eigen::Matrix3d& essential) {
-  // decompose_essential succeeds on any matrix of rank 2, which every caller has checked.
-  const std::vector<Eigen::Matrix4d> candidates = *decompose_essential(essential);
+Result<Motion> start_motion(const Eigen::Matrix3d& essential) {
+  const auto decomposed = decompose_essential(essential);
+  if (!decomposed) {
+    return std::unexpected(decomposed.error());
+  }
+  const std::vector<Eigen::Matrix4d>& candidates = *decomposed;
   const auto best = std::ranges::max_element(candidates, {}, [](const Eigen::Matrix4d& pose) {
     return pose.topLeftCorner<3, 3>().trace();
   });
@@ -429,7 +432,7 @@ Motion start_motion(const Eigen::Matrix3d& essential) {
   if (translation(k) < 0.0) {
     translation = -translation;
   }
-  return {.rotation = best->topLeftCorner<3, 3>(), .translation = translation};
+  return Motion{.rotation = best->topLeftCorner<3, 3>(), .translation = translation};
 }
 
 Result<solve::Solution<Eigen::Matrix3d, nls::Summary>> refine(
@@ -441,7 +444,11 @@ Result<solve::Solution<Eigen::Matrix3d, nls::Summary>> refine(
   options.max_iterations = kRefineIterations;
   // Not strict, so the solve fails only on a non-finite start: a match at both epipoles,
   // whose Sampson distance is 0 / 0.
-  auto solved = nls::solve(problem, start_motion(essential), options);
+  const auto start = start_motion(essential);
+  if (!start) {
+    return std::unexpected(start.error());
+  }
+  auto solved = nls::solve(problem, *start, options);
   if (!solved) {
     return std::unexpected(solved.error());
   }
@@ -485,10 +492,8 @@ Result<ransac::RefinedSolution<Eigen::Matrix3d>> essential_ransac(
   return ransac::estimate_refined(
       EssentialEstimator(bearings1, bearings2, minimal), options, refine,
       [&](const Eigen::Matrix3d& model, const ransac::Indices& inliers) {
-        // The consensus's inliers are within the threshold, so every start is finite.
         return epipolar::refine(model, gather(all1, inliers), gather(all2, inliers),
-                                options.threshold)
-            .value();
+                                options.threshold);
       },
       fivepoint::kSampleSize);
 }

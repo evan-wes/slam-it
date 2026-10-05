@@ -523,13 +523,12 @@ pub fn tangent_basis(direction: &Vector3<f64>) -> Matrix3x2<f64> {
 ///
 /// The start.
 ///
-/// # Panics
+/// # Errors
 ///
-/// If E is not finite or its rank is below 2, which every caller has checked.
-#[must_use]
-pub fn start_motion(essential: &Matrix3<f64>) -> Motion {
-    let candidates =
-        decompose_essential(essential).expect("every caller has checked E finite and of rank 2");
+/// [`decompose_essential`]'s: `InvalidInput` if E is not finite, `Degenerate` if its rank is
+/// below 2.
+pub fn start_motion(essential: &Matrix3<f64>) -> Result<Motion> {
+    let candidates = decompose_essential(essential)?;
     // The first of the largest traces, as max_element (C++) and argmax (Python) pick it.
     let mut best = &candidates[0];
     for candidate in &candidates[1..] {
@@ -541,10 +540,10 @@ pub fn start_motion(essential: &Matrix3<f64>) -> Motion {
     if translation[translation.iamax()] < 0.0 {
         translation = -translation;
     }
-    Motion {
+    Ok(Motion {
         rotation: se3::rotation(best),
         translation,
-    }
+    })
 }
 
 /// One match's Sampson terms under E: the epipolar lines, `c = x2ᵀ E x1` and `g`, the sum of
@@ -680,11 +679,8 @@ impl nls::Problem for SampsonProblem {
 ///
 /// # Errors
 ///
-/// `InvalidInput` if a match's Sampson distance is not finite at the start.
-///
-/// # Panics
-///
-/// If E is not finite or its rank is below 2, which every caller has checked.
+/// `InvalidInput` if a match's Sampson distance is not finite at the start, and
+/// [`start_motion`]'s if E does not decompose.
 pub fn refine(
     essential: &Matrix3<f64>,
     x1: Vec<Vector3<f64>>,
@@ -692,7 +688,7 @@ pub fn refine(
     scale: f64,
 ) -> Result<nls::Solution<Matrix3<f64>>> {
     let problem = SampsonProblem { x1, x2 };
-    let solved = nls::solve_cauchy(&problem, start_motion(essential), scale, REFINE_ITERATIONS)?;
+    let solved = nls::solve_cauchy(&problem, start_motion(essential)?, scale, REFINE_ITERATIONS)?;
     Ok(nls::Solution {
         state: solved.state.essential(),
         summary: solved.summary,
@@ -763,10 +759,6 @@ pub fn refine_essential(
 /// # Errors
 ///
 /// `InvalidInput` or `Degenerate`.
-///
-/// # Panics
-///
-/// Never: the refinement starts from the consensus, whose inliers have finite residuals.
 pub fn essential_ransac(
     bearings1: &[Vector3<f64>],
     bearings2: &[Vector3<f64>],
@@ -777,14 +769,12 @@ pub fn essential_ransac(
     check_bearing_pairs(bearings1, bearings2, minimal.sample_size(), true)?;
     let (x1, x2) = (normalised_plane(bearings1), normalised_plane(bearings2));
     let refiner = |model: &Matrix3<f64>, inliers: &[usize]| {
-        // The consensus's inliers are within the threshold: every start is finite.
         self::refine(
             model,
             gather(&x1, inliers),
             gather(&x2, inliers),
             options.threshold,
         )
-        .expect("the inliers' Sampson distances are finite")
     };
     ransac::estimate_refined(
         &EssentialEstimator::new(bearings1, bearings2, minimal),

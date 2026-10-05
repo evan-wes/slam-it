@@ -285,3 +285,20 @@ def test_refine_consensus_rounds_and_their_exits(name: str) -> None:
     assert outcome == (case.rounds, case.refined, case.model)
     expected_score = float(np.sum(np.minimum(estimator.residuals(case.model), 0.25)))
     assert found.summary.run.score == pytest.approx(expected_score)
+
+
+def test_a_failed_refinement_is_not_kept() -> None:
+    """A refiner that raises ends the rounds: the round counts, the start model stays.
+
+    The compiled cores treat a refiner's error the same way (panel A2 on PR 6).
+    """
+    estimator = ScoreEstimator(moving=True)
+
+    def failing(model: float, inliers: NDArray[np.intp]) -> solve.Solution[float, nls.Summary]:
+        raise InvalidInputError("solve: the initial cost is not finite")
+
+    found = ransac.refine_consensus(
+        estimator, _start(estimator, 3.0), failing, threshold=0.5, minimum=0
+    )
+    assert (found.summary.rounds, found.summary.refined, found.state.model) == (1, False, 3.0)
+    assert found.summary.refinement is None

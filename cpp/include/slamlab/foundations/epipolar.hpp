@@ -176,8 +176,8 @@ struct Motion {
 ///        the candidate rotation with the largest trace, and the translation's sign that makes
 ///        its largest-magnitude component positive.
 /// @param essential E, of rank 2.
-/// @return The start.
-[[nodiscard]] Motion start_motion(const Eigen::Matrix3d& essential);
+/// @return The start; `decompose_essential`'s errors if E is not finite or its rank is below 2.
+[[nodiscard]] Result<Motion> start_motion(const Eigen::Matrix3d& essential);
 
 /// @brief Refine E by Levenberg-Marquardt on the Cauchy-robust Sampson distance (unchecked).
 /// @param essential The starting E.

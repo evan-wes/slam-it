@@ -611,13 +611,14 @@ pub type RefinedSolution<Model> = solve::Solution<Consensus<Model>, RefinedSumma
 
 /// Refines RANSAC's model on its inliers, re-collects them, and repeats while the MSAC cost
 /// drops (see `slamlab.foundations.ransac.refine_consensus`): at most [`REFINE_ROUNDS`]
-/// rounds, stopping when a round does not lower the cost or the inliers stop changing.
+/// rounds, stopping when a round does not lower the cost, the inliers stop changing, or the
+/// refinement fails (that round counts, and is not kept).
 ///
 /// # Arguments
 ///
 /// * `estimator` - The estimator RANSAC ran with; its residuals rescore the refined model.
 /// * `found` - RANSAC's result.
-/// * `refine` - Refines a model on the data the inlier indices select.
+/// * `refine` - Refines a model on the data the inlier indices select, or fails.
 /// * `threshold` - RANSAC's inlier threshold.
 /// * `minimum` - The fewest inliers the refinement needs; with fewer it does not run.
 ///
@@ -628,7 +629,7 @@ pub type RefinedSolution<Model> = solve::Solution<Consensus<Model>, RefinedSumma
 pub fn refine_consensus<E: Estimator>(
     estimator: &E,
     found: Solution<E::Model>,
-    refine: impl Fn(&E::Model, &[usize]) -> nls::Solution<E::Model>,
+    refine: impl Fn(&E::Model, &[usize]) -> Result<nls::Solution<E::Model>>,
     threshold: f64,
     minimum: usize,
 ) -> RefinedSolution<E::Model> {
@@ -642,8 +643,10 @@ pub fn refine_consensus<E: Estimator>(
         if inliers.len() < minimum {
             break;
         }
-        let solved = refine(&state.model, &inliers);
         summary.rounds += 1;
+        let Ok(solved) = refine(&state.model, &inliers) else {
+            break;
+        };
         summary.refinement = Some(solved.summary);
         let residuals = estimator.residuals(&solved.state);
         let candidate = score(&residuals, threshold2);
@@ -666,8 +669,9 @@ pub fn refine_consensus<E: Estimator>(
     solve::Solution { state, summary }
 }
 
-/// Refines a model on the data the inlier indices select (A6: indices in every language).
-pub type Refiner<'a, Model> = &'a dyn Fn(&Model, &[usize]) -> nls::Solution<Model>;
+/// Refines a model on the data the inlier indices select (A6: indices in every language), or
+/// fails; a failed round is not kept (A2).
+pub type Refiner<'a, Model> = &'a dyn Fn(&Model, &[usize]) -> Result<nls::Solution<Model>>;
 
 /// Runs LO-MSAC, then, if `refine` is given, refines the consensus (see
 /// `slamlab.foundations.ransac.estimate_refined`).
@@ -846,9 +850,11 @@ mod tests {
         let worse = refine_consensus(
             &estimator,
             found.clone(),
-            |m, _| nls::Solution {
-                state: (m.0 + 1.0, m.1),
-                summary: unsolved.clone(),
+            |m, _| {
+                Ok(nls::Solution {
+                    state: (m.0 + 1.0, m.1),
+                    summary: unsolved.clone(),
+                })
             },
             0.1,
             2,
@@ -859,14 +865,32 @@ mod tests {
         assert!(solve::Summary::converged(&worse.summary));
         let too_few = refine_consensus(
             &estimator,
-            found,
-            |m, _| nls::Solution {
-                state: *m,
-                summary: unsolved.clone(),
+            found.clone(),
+            |m, _| {
+                Ok(nls::Solution {
+                    state: *m,
+                    summary: unsolved.clone(),
+                })
             },
             0.1,
             100,
         );
         assert_eq!(too_few.summary.rounds, 0);
+        // A failed refinement counts as a round and is not kept (A2).
+        let failed = refine_consensus(
+            &estimator,
+            found.clone(),
+            |_, _| {
+                fail(
+                    ErrorKind::InvalidInput,
+                    "solve: the initial cost is not finite",
+                )
+            },
+            0.1,
+            2,
+        );
+        assert_eq!(failed.summary.rounds, 1);
+        assert!(!failed.summary.refined && failed.summary.refinement.is_none());
+        assert_eq!(failed.state.model, found.state.model);
     }
 }

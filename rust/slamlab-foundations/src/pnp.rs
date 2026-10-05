@@ -645,10 +645,6 @@ impl Estimator for PoseEstimator {
 /// # Errors
 ///
 /// `InvalidInput` for invalid input or settings; `Degenerate` if no sample gave a pose.
-///
-/// # Panics
-///
-/// Never: the refinement starts from the consensus, whose inliers have finite residuals.
 pub fn pnp_ransac(
     points: &[Vector3<f64>],
     bearings: &[Vector3<f64>],
@@ -659,14 +655,12 @@ pub fn pnp_ransac(
     check_correspondences(points, bearings, p3p::SAMPLE_SIZE, true)?;
     let image = normalised_xy(bearings);
     let refiner = |model: &Matrix4<f64>, inliers: &[usize]| {
-        // The consensus's inliers are within the threshold: every start is finite.
         self::refine(
             model,
             gather(points, inliers),
             gather(&image, inliers),
             options.threshold,
         )
-        .expect("the inliers are in front of the camera")
     };
     ransac::estimate_refined(
         &PoseEstimator::new(points, bearings, minimal),

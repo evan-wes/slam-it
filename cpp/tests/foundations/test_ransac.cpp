@@ -8,7 +8,10 @@
 #include <span>
 #include <vector>
 
+#include "slamlab/foundations/error.hpp"
+#include "slamlab/foundations/nls.hpp"
 #include "slamlab/foundations/ransac.hpp"
+#include "slamlab/foundations/solve.hpp"
 #include "test_support.hpp"
 
 namespace {
@@ -133,6 +136,21 @@ int main() {
          "no model from any sample is Degenerate", failures);
   expect(!ransac::estimate(estimator, ransac::Options{.threshold = 0.0}).has_value(),
          "a zero threshold is rejected", failures);
+  if (result) {
+    // A failed refinement counts as a round and is not kept (panel A2 on PR 6).
+    const auto failed = ransac::refine_consensus(
+        estimator, *result,
+        [](const LineEstimator::Model& /*model*/, const ransac::Indices& /*inliers*/)
+            -> slamlab::foundations::Result<slamlab::foundations::solve::Solution<
+                LineEstimator::Model, slamlab::foundations::nls::Summary>> {
+          return slamlab::foundations::fail(slamlab::foundations::ErrorKind::kInvalidInput,
+                                            "solve: the initial cost is not finite");
+        },
+        options.threshold, 2);
+    expect(failed.summary.rounds == 1 && !failed.summary.refined &&
+               !failed.summary.refinement.has_value() && failed.state.model == result->state.model,
+           "a failed refinement counts as a round and is not kept", failures);
+  }
   expect(ransac::required_iterations(1.0, 4, 0.99) == 0.0 &&
              std::isinf(ransac::required_iterations(0.0, 4, 0.99)),
          "the bound's edges", failures);
