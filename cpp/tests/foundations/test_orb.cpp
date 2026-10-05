@@ -1,5 +1,5 @@
 /// @file
-/// @brief Native tests for the ORB detector (slamlab/foundations/orb.hpp), against the parity
+/// @brief Native tests for the ORB extractor (slamlab/foundations/orb.hpp), against the parity
 ///        fixture `tests/fixtures/foundations/orb.json` that the Python and Rust tests share,
 ///        and the core's own input checks.
 #include <array>
@@ -42,6 +42,17 @@ bool same_keypoints(const std::vector<orb::Keypoint>& got, const nlohmann::json&
   return true;
 }
 
+/// @brief Read a fixture's settings.
+/// @param settings The dict of `Options`' fields.
+/// @return The settings.
+orb::Options read_options(const nlohmann::json& settings) {
+  return orb::Options{.n_features = settings["n_features"].get<std::int64_t>(),
+                      .levels = settings["levels"].get<std::int64_t>(),
+                      .scale_factor = settings["scale_factor"].get<double>(),
+                      .fast_threshold = settings["fast_threshold"].get<std::int64_t>(),
+                      .min_fast_threshold = settings["min_fast_threshold"].get<std::int64_t>()};
+}
+
 /// @brief Check every fixture case.
 /// @param failures Running failure count.
 void check_fixture(int& failures) {
@@ -69,16 +80,15 @@ void check_fixture(int& failures) {
            "distribute matches the fixture", failures);
   }
   for (const auto& c : functions["detect"]["cases"]) {
-    const auto& settings = c["input"][1];
-    const orb::Options options{
-        .n_features = settings["n_features"].get<std::int64_t>(),
-        .levels = settings["levels"].get<std::int64_t>(),
-        .scale_factor = settings["scale_factor"].get<double>(),
-        .fast_threshold = settings["fast_threshold"].get<std::int64_t>(),
-        .min_fast_threshold = settings["min_fast_threshold"].get<std::int64_t>()};
-    const auto got = orb::detect(read_image(c["input"][0]), options);
+    const auto got = orb::detect(read_image(c["input"][0]), read_options(c["input"][1]));
     expect(got.has_value() && same_keypoints(*got, c["expected"]), "detect matches the fixture",
            failures);
+  }
+  for (const auto& c : functions["extract"]["cases"]) {
+    const auto got = orb::extract(read_image(c["input"][0]), read_options(c["input"][1]));
+    expect(got.has_value() && same_keypoints(got->keypoints, c["expected"]) &&
+               got->descriptors == c["expected"]["descriptors"].get<std::vector<orb::Descriptor>>(),
+           "extract matches the fixture", failures);
   }
 }
 

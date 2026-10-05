@@ -1,7 +1,8 @@
 //! Bindings for `slamlab.foundations.orb` (`slamlab_rs.foundations.orb`).
 //!
 //! Options cross as one dict of `slamlab.foundations.orb.Options`' fields, read strictly by
-//! serde; keypoints come back as a dict of `Keypoints`' fields, one array each.
+//! serde; keypoints come back as a dict of `Keypoints`' fields, one array each, with
+//! `descriptors` for features.
 
 use numpy::ndarray::{Array1, Array2};
 use numpy::{
@@ -11,7 +12,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use serde::Deserialize;
-use slamlab_foundations::orb::{self as core, Bounds};
+use slamlab_foundations::orb::{self as core, Bounds, Keypoint};
 
 use super::image_crossing::image_in;
 use crate::common::{add_functions, contiguous, unwrap};
@@ -162,6 +163,62 @@ fn distribute<'py>(
     Ok(int64_array(py, kept.into_iter().map(to_i64).collect()))
 }
 
+/// Reads the options dict.
+///
+/// # Arguments
+///
+/// * `options` - The dict, with exactly `orb.Options`' fields.
+///
+/// # Returns
+///
+/// The settings (checked by the core when it runs).
+///
+/// # Errors
+///
+/// `ValueError` for a missing or unknown field, or a value of the wrong type.
+fn read_options(options: &Bound<'_, PyDict>) -> PyResult<core::Options> {
+    let raw: OptionsIn = pythonize::depythonize(options.as_any())
+        .map_err(|e| PyValueError::new_err(format!("options: {e}")))?;
+    Ok(core::Options {
+        n_features: raw.n_features,
+        levels: raw.levels,
+        scale_factor: raw.scale_factor,
+        fast_threshold: raw.fast_threshold,
+        min_fast_threshold: raw.min_fast_threshold,
+    })
+}
+
+/// Builds the dict of `Keypoints`' fields, one array each.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `keypoints` - The keypoints.
+///
+/// # Returns
+///
+/// A dict with `xy`, `level`, `level_xy`, `response` and `angle`.
+///
+/// # Errors
+///
+/// A Python error if an item cannot be set.
+fn keypoints_dict<'py>(py: Python<'py>, keypoints: &[Keypoint]) -> PyResult<Bound<'py, PyDict>> {
+    let out = PyDict::new(py);
+    out.set_item(
+        "xy",
+        pairs_array(py, keypoints.iter().map(|k| k.xy).collect())?,
+    )?;
+    let levels = keypoints.iter().map(|k| to_i64(k.level)).collect();
+    out.set_item("level", int64_array(py, levels))?;
+    let level_xy = keypoints.iter().map(|k| k.level_xy.map(to_i64)).collect();
+    out.set_item("level_xy", pairs_array(py, level_xy)?)?;
+    let responses = keypoints.iter().map(|k| k.response).collect();
+    out.set_item("response", int64_array(py, responses))?;
+    let angles = keypoints.iter().map(|k| to_i64(k.angle)).collect();
+    out.set_item("angle", int64_array(py, angles))?;
+    Ok(out)
+}
+
 /// Detects oriented keypoints; returns a dict of `Keypoints`' fields.
 ///
 /// # Arguments
@@ -182,31 +239,43 @@ fn detect<'py>(
     image: PyReadonlyArray2<'py, u8>,
     options: &Bound<'py, PyDict>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let raw: OptionsIn = pythonize::depythonize(options.as_any())
-        .map_err(|e| PyValueError::new_err(format!("options: {e}")))?;
-    let settings = core::Options {
-        n_features: raw.n_features,
-        levels: raw.levels,
-        scale_factor: raw.scale_factor,
-        fast_threshold: raw.fast_threshold,
-        min_fast_threshold: raw.min_fast_threshold,
-    };
-    let keypoints = unwrap(py, core::detect(&image_in(&image)?, &settings))?;
-    let out = PyDict::new(py);
-    out.set_item(
-        "xy",
-        pairs_array(py, keypoints.iter().map(|k| k.xy).collect())?,
+    let keypoints = unwrap(
+        py,
+        core::detect(&image_in(&image)?, &read_options(options)?),
     )?;
-    let levels = keypoints.iter().map(|k| to_i64(k.level)).collect();
-    out.set_item("level", int64_array(py, levels))?;
-    let level_xy = keypoints.iter().map(|k| k.level_xy.map(to_i64)).collect();
-    out.set_item("level_xy", pairs_array(py, level_xy)?)?;
-    out.set_item(
-        "response",
-        int64_array(py, keypoints.iter().map(|k| k.response).collect()),
+    keypoints_dict(py, &keypoints)
+}
+
+/// Extracts features: `Keypoints`' fields, and `descriptors`.
+///
+/// # Arguments
+///
+/// * `image` - The image.
+/// * `options` - The settings, as a dict.
+///
+/// # Returns
+///
+/// The keypoints' dict with `descriptors`, an (N, 32) uint8 array.
+///
+/// # Errors
+///
+/// `ValueError` for a malformed array or dict; `InvalidInputError` from the core.
+#[pyfunction]
+fn extract<'py>(
+    py: Python<'py>,
+    image: PyReadonlyArray2<'py, u8>,
+    options: &Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let features = unwrap(
+        py,
+        core::extract(&image_in(&image)?, &read_options(options)?),
     )?;
-    let angles = keypoints.iter().map(|k| to_i64(k.angle)).collect();
-    out.set_item("angle", int64_array(py, angles))?;
+    let out = keypoints_dict(py, &features.keypoints)?;
+    let n = features.descriptors.len();
+    let bytes = features.descriptors.concat();
+    let descriptors = Array2::from_shape_vec((n, core::DESCRIPTOR_BYTES), bytes)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    out.set_item("descriptors", descriptors.into_pyarray(py))?;
     Ok(out)
 }
 
@@ -217,6 +286,6 @@ fn detect<'py>(
 /// Returns a Python error if a function cannot be added.
 #[pymodule]
 pub fn orb(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    add_functions!(m; fast_scores, distribute, detect);
+    add_functions!(m; fast_scores, distribute, detect, extract);
     Ok(())
 }

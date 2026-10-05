@@ -397,6 +397,115 @@ LevelCorners level_corners(const image::Image& image, const Bounds& region,
   return out;
 }
 
+/// @brief Check the settings and build the pyramid.
+/// @param image The image.
+/// @param options The settings.
+/// @return The levels, or `InvalidInput`.
+Result<std::vector<image::Image>> checked_pyramid(const image::Image& image,
+                                                  const Options& options) {
+  if (auto ok = check_options(options); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  return image::pyramid(image, options.levels, options.scale_factor);
+}
+
+/// @brief Detect oriented keypoints on every level of a pyramid.
+/// @param levels The pyramid.
+/// @param options The settings, checked.
+/// @return The keypoints by level, then row, then column.
+std::vector<Keypoint> detect_levels(const std::vector<image::Image>& levels,
+                                    const Options& options) {
+  const std::vector<std::int64_t> budgets =
+      level_budgets(options.n_features, options.levels, options.scale_factor);
+  std::vector<Keypoint> out;
+  double scale = 1.0;
+  for (std::size_t level = 0; level < levels.size(); ++level) {
+    if (level > 0) {
+      scale *= options.scale_factor;
+    }
+    const image::Image& pixels = levels[level];
+    const Bounds region{.x_min = kEdgeThreshold,
+                        .x_max = pixels.cols - kEdgeThreshold,
+                        .y_min = kEdgeThreshold,
+                        .y_max = pixels.rows - kEdgeThreshold};
+    if (region.x_max <= region.x_min || region.y_max <= region.y_min || budgets[level] == 0) {
+      continue;
+    }
+    const LevelCorners corners = level_corners(pixels, region, options);
+    for (const std::int64_t i :
+         distribute_checked(corners.xy, corners.response, region, budgets[level])) {
+      const auto [x, y] = corners.xy[at(i)];
+      out.push_back({.xy = {static_cast<double>(x) * scale, static_cast<double>(y) * scale},
+                     .level = static_cast<std::int64_t>(level),
+                     .level_xy = {x, y},
+                     .response = corners.response[at(i)],
+                     .angle = orientation(pixels, x, y)});
+    }
+  }
+  return out;
+}
+
+/// @brief `kPattern` rotated to every orientation bin.
+using RotatedPatterns = std::array<std::array<std::array<std::int64_t, 4>, 256>, kAngleBins>;
+
+/// @brief Rotate `kPattern` to every bin: `(x, y)` turns to `(x c - y s, x s + y c) / 2^14`,
+///        rounded half up, for each bin's fixed-point `(c, s)`.
+/// @return The rotated pairs, built once.
+const RotatedPatterns& rotated_patterns() {
+  static const RotatedPatterns kRotated = [] {
+    constexpr std::int64_t kScale = image::pow2(kRotationBits);
+    const auto turn = [](std::int64_t value) {
+      return image::floor_div(value + (kScale / 2), kScale);
+    };
+    RotatedPatterns out{};
+    for (std::size_t k = 0; k < out.size(); ++k) {
+      const auto& [c, s] = kRotations.at(k);
+      for (std::size_t i = 0; i < kPattern.size(); ++i) {
+        const auto& [x1, y1, x2, y2] = kPattern.at(i);
+        out.at(k).at(i) = {turn((x1 * c) - (y1 * s)), turn((x1 * s) + (y1 * c)),
+                           turn((x2 * c) - (y2 * s)), turn((x2 * s) + (y2 * c))};
+      }
+    }
+    return out;
+  }();
+  return kRotated;
+}
+
+/// @brief Every keypoint's rBRIEF descriptor, on its level blurred by `kBlurKernel`.
+/// @param levels The pyramid.
+/// @param keypoints The keypoints, each at least `kEdgeThreshold` inside its level.
+/// @return One descriptor per keypoint, or the blur's error (none for a checked level).
+Result<std::vector<Descriptor>> describe(const std::vector<image::Image>& levels,
+                                         const std::vector<Keypoint>& keypoints) {
+  const RotatedPatterns& patterns = rotated_patterns();
+  std::vector<Descriptor> out(keypoints.size());
+  for (std::size_t level = 0; level < levels.size(); ++level) {
+    const auto smooth = image::blur(levels[level], kBlurKernel);
+    if (!smooth) {
+      return std::unexpected(smooth.error());
+    }
+    for (std::size_t n = 0; n < keypoints.size(); ++n) {
+      const Keypoint& k = keypoints[n];
+      if (std::cmp_not_equal(k.level, level)) {
+        continue;
+      }
+      const auto [x, y] = k.level_xy;
+      const auto& pairs = patterns.at(at(k.angle));
+      for (std::size_t byte = 0; byte < kDescriptorBytes; ++byte) {
+        unsigned bits = 0;
+        for (std::size_t bit = 0; bit < 8; ++bit) {
+          const auto& [x1, y1, x2, y2] = pairs.at((8 * byte) + bit);
+          const bool darker =
+              image::pixel(*smooth, y + y1, x + x1) < image::pixel(*smooth, y + y2, x + x2);
+          bits |= (darker ? 1U : 0U) << bit;
+        }
+        out[n].at(byte) = static_cast<std::uint8_t>(bits);
+      }
+    }
+  }
+  return out;
+}
+
 }  // namespace
 
 Result<void> check_options(const Options& options) {
@@ -481,41 +590,24 @@ Result<std::vector<std::int64_t>> distribute(std::span<const std::array<std::int
 }
 
 Result<std::vector<Keypoint>> detect(const image::Image& image, const Options& options) {
-  if (auto ok = check_options(options); !ok) {
-    return std::unexpected(std::move(ok.error()));
-  }
-  const auto levels = image::pyramid(image, options.levels, options.scale_factor);
+  const auto levels = checked_pyramid(image, options);
   if (!levels) {
     return std::unexpected(levels.error());
   }
-  const std::vector<std::int64_t> budgets =
-      level_budgets(options.n_features, options.levels, options.scale_factor);
-  std::vector<Keypoint> out;
-  double scale = 1.0;
-  for (std::size_t level = 0; level < levels->size(); ++level) {
-    if (level > 0) {
-      scale *= options.scale_factor;
-    }
-    const image::Image& pixels = (*levels)[level];
-    const Bounds region{.x_min = kEdgeThreshold,
-                        .x_max = pixels.cols - kEdgeThreshold,
-                        .y_min = kEdgeThreshold,
-                        .y_max = pixels.rows - kEdgeThreshold};
-    if (region.x_max <= region.x_min || region.y_max <= region.y_min || budgets[level] == 0) {
-      continue;
-    }
-    const LevelCorners corners = level_corners(pixels, region, options);
-    for (const std::int64_t i :
-         distribute_checked(corners.xy, corners.response, region, budgets[level])) {
-      const auto [x, y] = corners.xy[at(i)];
-      out.push_back({.xy = {static_cast<double>(x) * scale, static_cast<double>(y) * scale},
-                     .level = static_cast<std::int64_t>(level),
-                     .level_xy = {x, y},
-                     .response = corners.response[at(i)],
-                     .angle = orientation(pixels, x, y)});
-    }
+  return detect_levels(*levels, options);
+}
+
+Result<Features> extract(const image::Image& image, const Options& options) {
+  const auto levels = checked_pyramid(image, options);
+  if (!levels) {
+    return std::unexpected(levels.error());
   }
-  return out;
+  std::vector<Keypoint> keypoints = detect_levels(*levels, options);
+  auto descriptors = describe(*levels, keypoints);
+  if (!descriptors) {
+    return std::unexpected(descriptors.error());
+  }
+  return Features{.keypoints = std::move(keypoints), .descriptors = std::move(*descriptors)};
 }
 
 }  // namespace slamlab::foundations::orb

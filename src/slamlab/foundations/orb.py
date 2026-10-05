@@ -1,4 +1,4 @@
-"""ORB keypoints as ORB-SLAM detects them: FAST corners spread by a quadtree, with orientations.
+"""ORB features as ORB-SLAM extracts them: spread FAST corners, oriented, with rBRIEF descriptors.
 
 ORB (Rublee et al., "ORB: an efficient alternative to SIFT or SURF", ICCV 2011) is FAST
 corners with an intensity-centroid orientation and a rotated binary descriptor. ORB-SLAM
@@ -26,9 +26,20 @@ module follows its extractor:
   discretises it for its pattern lookup. Bin ``k`` is the one whose direction
   :data:`ROTATIONS` ``[k]`` has the largest dot product with ``(m10, m01)``.
 
-**Exact by construction**, as :mod:`slamlab.foundations.image` is: scores, moments and bins
-are integers, the bin directions are fixed-point constants, and level coordinates map to the
-full image by one float64 product, so the three languages return identical keypoints.
+- **Descriptors (rBRIEF):** 256 intensity comparisons on the level blurred by a 7-tap
+  Gaussian (:data:`BLUR_KERNEL`, sigma 2), between the pairs of OpenCV's learned pattern
+  (:data:`PATTERN`, from Rublee et al.) rotated to the keypoint's bin: bit ``i`` is set when
+  the pair's first pixel is darker than its second, packed least significant bit first into
+  :data:`DESCRIPTOR_BYTES` bytes, as OpenCV and ORB-SLAM pack them. The rotated pairs are
+  rounded from the fixed-point :data:`ROTATIONS`, half up.
+
+**Exact by construction**, as :mod:`slamlab.foundations.image` is: scores, moments, bins and
+descriptor bits are integers, the bin directions are fixed-point constants, and level
+coordinates map to the full image by one float64 product, so the three languages return
+identical features.
+
+:data:`PATTERN` is OpenCV's ``bit_pattern_31_``, under OpenCV's BSD licence (its notice is
+next to the table and in ``THIRD_PARTY_NOTICES``).
 
 Where this differs from ORB-SLAM, deliberately: non-maximum suppression runs over the whole
 level rather than inside each cell, so a corner on a cell's edge yields to a stronger one
@@ -40,6 +51,7 @@ from __future__ import annotations
 
 import bisect
 import math
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
@@ -49,7 +61,7 @@ from numpy.typing import ArrayLike, NDArray
 from slamlab import backends
 from slamlab.foundations.arrays import MAX_IMAGE_SIDE, as_image
 from slamlab.foundations.errors import InvalidInputError
-from slamlab.foundations.image import level_shapes, pyramid
+from slamlab.foundations.image import blur, level_shapes, pyramid
 
 EDGE_THRESHOLD = 19
 """Keypoints lie at least this many pixels inside their level (ORB-SLAM's): the rotated
@@ -93,6 +105,104 @@ the rotations of the descriptor's pattern."""
 
 MAX_LEVELS = 32
 """The most pyramid levels :class:`Options` accepts."""
+
+BLUR_KERNEL = (287, 537, 781, 886, 781, 537, 287)
+"""The descriptor's smoothing: a 7-tap Gaussian, sigma 2 (ORB-SLAM's), in integers summing to
+``2^12`` (:func:`slamlab.foundations.image.blur`)."""
+
+DESCRIPTOR_BYTES = 32
+"""A descriptor's length: 256 bits."""
+
+# rBRIEF's learned test pairs (x1, y1, x2, y2): OpenCV's bit_pattern_31_
+# (modules/features2d/src/orb.cpp), learned by Ethan Rublee, Vincent Rabaud and Gary Bradski
+# for the ORB paper. Reproduced under OpenCV's licence for that file:
+#
+# Software License Agreement (BSD License)
+#
+#  Copyright (c) 2009, Willow Garage, Inc.
+#  All rights reserved.
+#
+#  Redistribution and use in source and binary forms, with or without
+#  modification, are permitted provided that the following conditions
+#  are met:
+#
+#   * Redistributions of source code must retain the above copyright
+#     notice, this list of conditions and the following disclaimer.
+#   * Redistributions in binary form must reproduce the above
+#     copyright notice, this list of conditions and the following
+#     disclaimer in the documentation and/or other materials provided
+#     with the distribution.
+#   * Neither the name of the Willow Garage nor the names of its
+#     contributors may be used to endorse or promote products derived
+#     from this software without specific prior written permission.
+#
+#  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+#  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+#  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+#  FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+#  COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+#  INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+#  BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+#  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+#  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+#  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+#  ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+#  POSSIBILITY OF SUCH DAMAGE.
+PATTERN = (
+    (8, -3, 9, 5), (4, 2, 7, -12), (-11, 9, -8, 2), (7, -12, 12, -13), (2, -13, 2, 12),
+    (1, -7, 1, 6), (-2, -10, -2, -4), (-13, -13, -11, -8), (-13, -3, -12, -9), (10, 4, 11, 9),
+    (-13, -8, -8, -9), (-11, 7, -9, 12), (7, 7, 12, 6), (-4, -5, -3, 0), (-13, 2, -12, -3),
+    (-9, 0, -7, 5), (12, -6, 12, -1), (-3, 6, -2, 12), (-6, -13, -4, -8), (11, -13, 12, -8),
+    (4, 7, 5, 1), (5, -3, 10, -3), (3, -7, 6, 12), (-8, -7, -6, -2), (-2, 11, -1, -10),
+    (-13, 12, -8, 10), (-7, 3, -5, -3), (-4, 2, -3, 7), (-10, -12, -6, 11), (5, -12, 6, -7),
+    (5, -6, 7, -1), (1, 0, 4, -5), (9, 11, 11, -13), (4, 7, 4, 12), (2, -1, 4, 4),
+    (-4, -12, -2, 7), (-8, -5, -7, -10), (4, 11, 9, 12), (0, -8, 1, -13), (-13, -2, -8, 2),
+    (-3, -2, -2, 3), (-6, 9, -4, -9), (8, 12, 10, 7), (0, 9, 1, 3), (7, -5, 11, -10),
+    (-13, -6, -11, 0), (10, 7, 12, 1), (-6, -3, -6, 12), (10, -9, 12, -4), (-13, 8, -8, -12),
+    (-13, 0, -8, -4), (3, 3, 7, 8), (5, 7, 10, -7), (-1, 7, 1, -12), (3, -10, 5, 6),
+    (2, -4, 3, -10), (-13, 0, -13, 5), (-13, -7, -12, 12), (-13, 3, -11, 8), (-7, 12, -4, 7),
+    (6, -10, 12, 8), (-9, -1, -7, -6), (-2, -5, 0, 12), (-12, 5, -7, 5), (3, -10, 8, -13),
+    (-7, -7, -4, 5), (-3, -2, -1, -7), (2, 9, 5, -11), (-11, -13, -5, -13), (-1, 6, 0, -1),
+    (5, -3, 5, 2), (-4, -13, -4, 12), (-9, -6, -9, 6), (-12, -10, -8, -4), (10, 2, 12, -3),
+    (7, 12, 12, 12), (-7, -13, -6, 5), (-4, 9, -3, 4), (7, -1, 12, 2), (-7, 6, -5, 1),
+    (-13, 11, -12, 5), (-3, 7, -2, -6), (7, -8, 12, -7), (-13, -7, -11, -12), (1, -3, 12, 12),
+    (2, -6, 3, 0), (-4, 3, -2, -13), (-1, -13, 1, 9), (7, 1, 8, -6), (1, -1, 3, 12),
+    (9, 1, 12, 6), (-1, -9, -1, 3), (-13, -13, -10, 5), (7, 7, 10, 12), (12, -5, 12, 9),
+    (6, 3, 7, 11), (5, -13, 6, 10), (2, -12, 2, 3), (3, 8, 4, -6), (2, 6, 12, -13),
+    (9, -12, 10, 3), (-8, 4, -7, 9), (-11, 12, -4, -6), (1, 12, 2, -8), (6, -9, 7, -4),
+    (2, 3, 3, -2), (6, 3, 11, 0), (3, -3, 8, -8), (7, 8, 9, 3), (-11, -5, -6, -4),
+    (-10, 11, -5, 10), (-5, -8, -3, 12), (-10, 5, -9, 0), (8, -1, 12, -6), (4, -6, 6, -11),
+    (-10, 12, -8, 7), (4, -2, 6, 7), (-2, 0, -2, 12), (-5, -8, -5, 2), (7, -6, 10, 12),
+    (-9, -13, -8, -8), (-5, -13, -5, -2), (8, -8, 9, -13), (-9, -11, -9, 0), (1, -8, 1, -2),
+    (7, -4, 9, 1), (-2, 1, -1, -4), (11, -6, 12, -11), (-12, -9, -6, 4), (3, 7, 7, 12),
+    (5, 5, 10, 8), (0, -4, 2, 8), (-9, 12, -5, -13), (0, 7, 2, 12), (-1, 2, 1, 7),
+    (5, 11, 7, -9), (3, 5, 6, -8), (-13, -4, -8, 9), (-5, 9, -3, -3), (-4, -7, -3, -12),
+    (6, 5, 8, 0), (-7, 6, -6, 12), (-13, 6, -5, -2), (1, -10, 3, 10), (4, 1, 8, -4),
+    (-2, -2, 2, -13), (2, -12, 12, 12), (-2, -13, 0, -6), (4, 1, 9, 3), (-6, -10, -3, -5),
+    (-3, -13, -1, 1), (7, 5, 12, -11), (4, -2, 5, -7), (-13, 9, -9, -5), (7, 1, 8, 6),
+    (7, -8, 7, 6), (-7, -4, -7, 1), (-8, 11, -7, -8), (-13, 6, -12, -8), (2, 4, 3, 9),
+    (10, -5, 12, 3), (-6, -5, -6, 7), (8, -3, 9, -8), (2, -12, 2, 8), (-11, -2, -10, 3),
+    (-12, -13, -7, -9), (-11, 0, -10, -5), (5, -3, 11, 8), (-2, -13, -1, 12), (-1, -8, 0, 9),
+    (-13, -11, -12, -5), (-10, -2, -10, 11), (-3, 9, -2, -13), (2, -3, 3, 2), (-9, -13, -4, 0),
+    (-4, 6, -3, -10), (-4, 12, -2, -7), (-6, -11, -4, 9), (6, -3, 6, 11), (-13, 11, -5, 5),
+    (11, 11, 12, 6), (7, -5, 12, -2), (-1, 12, 0, 7), (-4, -8, -3, -2), (-7, 1, -6, 7),
+    (-13, -12, -8, -13), (-7, -2, -6, -8), (-8, 5, -6, -9), (-5, -1, -4, 5), (-13, 7, -8, 10),
+    (1, 5, 5, -13), (1, 0, 10, -13), (9, 12, 10, -1), (5, -8, 10, -9), (-1, 11, 1, -13),
+    (-9, -3, -6, 2), (-1, -10, 1, 12), (-13, 1, -8, -10), (8, -11, 10, -6), (2, -13, 3, -6),
+    (7, -13, 12, -9), (-10, -10, -5, -7), (-10, -8, -8, -13), (4, -6, 8, 5), (3, 12, 8, -13),
+    (-4, 2, -3, -3), (5, -13, 10, -12), (4, -13, 5, -1), (-9, 9, -4, 3), (0, 3, 3, -9),
+    (-12, 1, -6, 1), (3, 2, 4, -8), (-10, -10, -10, 9), (8, -13, 12, 12), (-8, -12, -6, -5),
+    (2, 2, 3, 7), (10, 6, 11, -8), (6, 8, 8, -12), (-7, 10, -6, 5), (-3, -9, -3, 9),
+    (-1, -13, -1, 5), (-3, -7, -3, 4), (-8, -2, -8, 3), (4, 2, 12, 12), (2, -5, 3, 11),
+    (6, -9, 11, -13), (3, -1, 7, 12), (11, -1, 12, 4), (-3, 0, -3, 6), (4, -11, 4, 12),
+    (2, -4, 2, 1), (-10, -6, -8, 1), (-13, 7, -11, 1), (-13, 12, -11, -13), (6, 0, 11, -13),
+    (0, -1, 1, 4), (-13, 3, -9, -2), (-9, 8, -6, -3), (-13, -6, -8, -2), (5, -9, 8, 10),
+    (2, 7, 3, -9), (-1, -6, -1, -1), (9, 5, 11, -2), (11, -3, 12, -8), (3, 0, 3, 5),
+    (-1, 4, 0, 10), (3, -6, 4, 5), (-13, 0, -10, 5), (5, 8, 12, 11), (8, 9, 9, -6),
+    (7, -4, 8, -12), (-10, 4, -10, 9), (7, 3, 12, 4), (9, -7, 10, -2), (7, 0, 12, -2),
+    (-1, -6, 0, -11),
+)  # fmt: skip
+"""rBRIEF's 256 test pairs ``(x1, y1, x2, y2)``, in pixels from the keypoint (OpenCV's)."""
 
 
 @dataclass(frozen=True)
@@ -175,6 +285,22 @@ class Keypoints:
     angle: NDArray[np.int64]
 
 
+@dataclass(frozen=True)
+class Features:
+    """ORB features: keypoints and their descriptors, row for row.
+
+    Attributes
+    ----------
+    keypoints : Keypoints
+        The keypoints.
+    descriptors : ndarray of uint8, shape (N, DESCRIPTOR_BYTES)
+        Each keypoint's 256-bit rBRIEF descriptor.
+    """
+
+    keypoints: Keypoints
+    descriptors: NDArray[np.uint8]
+
+
 class Implementation(Protocol):
     """The functions a compiled backend's ``foundations.orb`` submodule provides."""
 
@@ -196,6 +322,10 @@ class Implementation(Protocol):
         """Detect oriented keypoints; return a dict of :class:`Keypoints`' fields."""
         ...
 
+    def extract(self, image: NDArray[np.uint8], options: dict[str, Any]) -> dict[str, Any]:
+        """Extract features: :class:`Keypoints`' fields, and ``descriptors``."""
+        ...
+
 
 def _offsets() -> tuple[NDArray[np.int64], NDArray[np.int64]]:
     """Return the orientation disc's pixel offsets ``(u, v)``, row by row."""
@@ -209,6 +339,26 @@ def _offsets() -> tuple[NDArray[np.int64], NDArray[np.int64]]:
 
 
 _DISC_U, _DISC_V = _offsets()
+
+
+def _rotated_patterns() -> NDArray[np.int64]:
+    """Return :data:`PATTERN` rotated to every bin: shape (ANGLE_BINS, 256, 4).
+
+    ``(x, y)`` turns to ``(x c - y s, x s + y c) / 2^14``, rounded half up, for each bin's
+    fixed-point ``(c, s)``.
+    """
+    base = np.asarray(PATTERN, dtype=np.int64)
+    half = 1 << (ROTATION_BITS - 1)
+    out = np.empty((ANGLE_BINS, len(PATTERN), 4), dtype=np.int64)
+    for k, (c, s) in enumerate(ROTATIONS):
+        for j in (0, 2):
+            x, y = base[:, j], base[:, j + 1]
+            out[k, :, j] = (x * c - y * s + half) >> ROTATION_BITS
+            out[k, :, j + 1] = (x * s + y * c + half) >> ROTATION_BITS
+    return out
+
+
+_PATTERNS = _rotated_patterns()
 
 
 def level_budgets(n_features: int, levels: int, scale_factor: float) -> list[int]:
@@ -393,9 +543,8 @@ def _detect_level(
     return xy[kept], response[kept]
 
 
-def _detect(image: NDArray[np.uint8], options: Options) -> Keypoints:
-    """Detect oriented keypoints on every level (reference)."""
-    levels = pyramid(image, options.levels, options.scale_factor)
+def _detect_levels(levels: list[NDArray[np.uint8]], options: Options) -> Keypoints:
+    """Detect oriented keypoints on every level of a pyramid (reference)."""
     budgets = level_budgets(options.n_features, options.levels, options.scale_factor)
     xy_parts: list[NDArray[np.float64]] = []
     level_parts: list[NDArray[np.int64]] = []
@@ -421,6 +570,37 @@ def _detect(image: NDArray[np.uint8], options: Options) -> Keypoints:
     )
 
 
+def _detect(image: NDArray[np.uint8], options: Options) -> Keypoints:
+    """Detect oriented keypoints (reference)."""
+    return _detect_levels(pyramid(image, options.levels, options.scale_factor), options)
+
+
+def _describe(levels: list[NDArray[np.uint8]], keypoints: Keypoints) -> NDArray[np.uint8]:
+    """Compute every keypoint's rBRIEF descriptor on its blurred level (reference)."""
+    bits = np.zeros((len(keypoints.level), len(PATTERN)), dtype=bool)
+    for level, pixels in enumerate(levels):
+        rows = np.flatnonzero(keypoints.level == level)
+        if len(rows) == 0:
+            continue
+        smooth = blur(pixels, BLUR_KERNEL)
+        x, y = keypoints.level_xy[rows, 0:1], keypoints.level_xy[rows, 1:2]
+        pairs = _PATTERNS[keypoints.angle[rows]]  # (n, 256, 4)
+        first = smooth[y + pairs[..., 1], x + pairs[..., 0]]
+        second = smooth[y + pairs[..., 3], x + pairs[..., 2]]
+        bits[rows] = first < second
+    packed: NDArray[np.uint8] = np.packbits(
+        bits.reshape(-1, DESCRIPTOR_BYTES, 8), axis=-1, bitorder="little"
+    ).reshape(-1, DESCRIPTOR_BYTES)
+    return packed
+
+
+def _extract(image: NDArray[np.uint8], options: Options) -> Features:
+    """Detect keypoints and describe them (reference)."""
+    levels = pyramid(image, options.levels, options.scale_factor)
+    keypoints = _detect_levels(levels, options)
+    return Features(keypoints=keypoints, descriptors=_describe(levels, keypoints))
+
+
 def _decode_keypoints(raw: dict[str, Any], codes: backends.Codes) -> Keypoints:
     """Rebuild :class:`Keypoints` from a compiled backend's dict."""
     del codes  # the ORB module crosses no codes
@@ -430,6 +610,17 @@ def _decode_keypoints(raw: dict[str, Any], codes: backends.Codes) -> Keypoints:
         level_xy=np.asarray(raw["level_xy"], dtype=np.int64).reshape(-1, 2),
         response=np.asarray(raw["response"], dtype=np.int64),
         angle=np.asarray(raw["angle"], dtype=np.int64),
+    )
+
+
+def _decode_features(raw: dict[str, Any], codes: backends.Codes) -> Features:
+    """Rebuild :class:`Features` from a compiled backend's dict."""
+    descriptors = np.asarray(raw["descriptors"])
+    if descriptors.dtype != np.uint8:
+        raise RuntimeError(f"orb: backend returned {descriptors.dtype} descriptors, not uint8")
+    return Features(
+        keypoints=_decode_keypoints(raw, codes),
+        descriptors=descriptors.reshape(-1, DESCRIPTOR_BYTES),
     )
 
 
@@ -566,6 +757,29 @@ def distribute(
     )
 
 
+def _run(  # noqa: PLR0913 -- the call's two sides and its decoder
+    image: ArrayLike,
+    options: Options | None,
+    *,
+    backend: str,
+    name: str,
+    reference: Callable[[NDArray[np.uint8], Options], backends.ResultT],
+    decode: Callable[[Any, backends.Codes], backends.ResultT],
+) -> backends.ResultT:
+    """Check an image and settings, then run one extractor function on the chosen backend."""
+    pixels = as_image(image, "image")
+    settings = Options() if options is None else options
+    level_shapes(pixels.shape[0], pixels.shape[1], settings.levels, settings.scale_factor)
+    return backends.call(
+        backend,
+        __name__,
+        name,
+        reference=lambda: reference(pixels, settings),
+        arguments={"image": pixels, "options": asdict(settings)},
+        decode=decode,
+    )
+
+
 def detect(
     image: ArrayLike, options: Options | None = None, *, backend: str = "python"
 ) -> Keypoints:
@@ -590,14 +804,35 @@ def detect(
     slamlab.foundations.errors.InvalidInputError
         If `image` is not a non-empty (H, W) uint8 array, or a pyramid level would be empty.
     """
-    pixels = as_image(image, "image")
-    settings = Options() if options is None else options
-    level_shapes(pixels.shape[0], pixels.shape[1], settings.levels, settings.scale_factor)
-    return backends.call(
-        backend,
-        __name__,
-        "detect",
-        reference=lambda: _detect(pixels, settings),
-        arguments={"image": pixels, "options": asdict(settings)},
-        decode=_decode_keypoints,
+    return _run(
+        image, options, backend=backend, name="detect", reference=_detect, decode=_decode_keypoints
+    )
+
+
+def extract(
+    image: ArrayLike, options: Options | None = None, *, backend: str = "python"
+) -> Features:
+    """Extract ORB features as ORB-SLAM does: :func:`detect`, then rBRIEF descriptors.
+
+    Parameters
+    ----------
+    image : array_like of uint8, shape (H, W)
+        The grayscale image.
+    options : Options, optional
+        The settings (default: ORB-SLAM's for 640x480 images).
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    Features
+        The keypoints :func:`detect` finds, and a 256-bit descriptor for each.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If `image` is not a non-empty (H, W) uint8 array, or a pyramid level would be empty.
+    """
+    return _run(
+        image, options, backend=backend, name="extract", reference=_extract, decode=_decode_features
     )

@@ -2,7 +2,7 @@
 /// @brief Bindings for `slamlab.foundations.orb` (`slamlab._cpp.foundations.orb`).
 ///
 /// Options cross as one dict of `slamlab.foundations.orb.Options`' fields; keypoints come
-/// back as a dict of `Keypoints`' fields, one array each.
+/// back as a dict of `Keypoints`' fields, one array each, with `descriptors` for features.
 #include "slamlab/foundations/orb.hpp"
 
 #include <nanobind/nanobind.h>
@@ -87,14 +87,10 @@ nb::ndarray<nb::numpy, std::int64_t> distribute(const PixelsIn& xy,
   return int64_array(unwrap(foundations::orb::distribute(pixels, strengths, box, target)));
 }
 
-/// @brief Detect oriented keypoints.
-/// @param image The image.
-/// @param options The settings, as a dict.
-/// @return A dict of `Keypoints`' fields.
-/// @throws CoreError for invalid input; std::invalid_argument for a malformed dict.
-nb::dict detect(const ImageIn& image, const nb::dict& options) {
-  const std::vector<foundations::orb::Keypoint> keypoints =
-      unwrap(foundations::orb::detect(image_in(image), orb_options(options)));
+/// @brief Keypoints as a dict of `Keypoints`' fields, one array each.
+/// @param keypoints The keypoints.
+/// @return The dict: `xy`, `level`, `level_xy`, `response` and `angle`.
+nb::dict keypoints_dict(const std::vector<foundations::orb::Keypoint>& keypoints) {
   const std::size_t n = keypoints.size();
   auto [xy, xy_data] = new_array({n, 2});
   auto [level, level_data] = new_array<std::int64_t>({n});
@@ -122,6 +118,34 @@ nb::dict detect(const ImageIn& image, const nb::dict& options) {
   return out;
 }
 
+/// @brief Detect oriented keypoints.
+/// @param image The image.
+/// @param options The settings, as a dict.
+/// @return A dict of `Keypoints`' fields.
+/// @throws CoreError for invalid input; std::invalid_argument for a malformed dict.
+nb::dict detect(const ImageIn& image, const nb::dict& options) {
+  return keypoints_dict(unwrap(foundations::orb::detect(image_in(image), orb_options(options))));
+}
+
+/// @brief Extract features.
+/// @param image The image.
+/// @param options The settings, as a dict.
+/// @return A dict of `Keypoints`' fields and `descriptors`, an (N, 32) uint8 array.
+/// @throws CoreError for invalid input; std::invalid_argument for a malformed dict.
+nb::dict extract(const ImageIn& image, const nb::dict& options) {
+  const foundations::orb::Features features =
+      unwrap(foundations::orb::extract(image_in(image), orb_options(options)));
+  nb::dict out = keypoints_dict(features.keypoints);
+  auto [descriptors, data] =
+      new_array<std::uint8_t>({features.descriptors.size(), foundations::orb::kDescriptorBytes});
+  for (std::size_t i = 0; i < features.descriptors.size(); ++i) {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic): row offset
+    std::ranges::copy(features.descriptors[i], data + (i * foundations::orb::kDescriptorBytes));
+  }
+  out["descriptors"] = descriptors;
+  return out;
+}
+
 }  // namespace
 
 void bind_orb(nb::module_& m) {
@@ -132,6 +156,8 @@ void bind_orb(nb::module_& m) {
         "Return the indices of the corners a quadtree keeps.");
   m.def("detect", &detect, nb::arg("image").noconvert(), nb::arg("options"),
         "Detect oriented keypoints; return a dict of Keypoints' fields.");
+  m.def("extract", &extract, nb::arg("image").noconvert(), nb::arg("options"),
+        "Extract features: Keypoints' fields, and descriptors.");
 }
 
 }  // namespace slamlab::bindings

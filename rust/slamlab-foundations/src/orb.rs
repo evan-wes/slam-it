@@ -1,9 +1,12 @@
-//! ORB keypoints as ORB-SLAM detects them: the Rust core's mirror of
+//! ORB features as ORB-SLAM extracts them: the Rust core's mirror of
 //! `slamlab.foundations.orb`.
 //!
 //! FAST-9 corners in 30-pixel cells, spread by a quadtree and oriented by their intensity
-//! centroid, on every level of a pyramid; all in integer arithmetic, so the three languages
-//! return identical keypoints (the Python module's docstring defines each step).
+//! centroid, on every level of a pyramid, with rBRIEF descriptors from OpenCV's learned
+//! pattern; all in integer arithmetic, so the three languages return identical features (the
+//! Python module's docstring defines each step).
+
+use std::sync::OnceLock;
 
 use crate::error::{ErrorKind, Result, fail, fail_setting};
 use crate::image::{self, Image};
@@ -39,6 +42,8 @@ pub const HALF_PATCH_SIZE: i64 = 15;
 pub const UMAX: [i64; 16] = [15, 15, 15, 15, 14, 14, 14, 13, 13, 12, 11, 10, 9, 8, 6, 3];
 /// Orientation bins, 12 degrees each.
 pub const ANGLE_BINS: usize = 30;
+/// The fixed-point bits of [`ROTATIONS`].
+pub const ROTATION_BITS: u32 = 14;
 /// `round(2^14 (cos, sin))` of `12 k` degrees for each bin `k`.
 pub const ROTATIONS: [[i64; 2]; ANGLE_BINS] = [
     [16384, 0],
@@ -74,6 +79,105 @@ pub const ROTATIONS: [[i64; 2]; ANGLE_BINS] = [
 ];
 /// The most pyramid levels [`Options`] accepts.
 pub const MAX_LEVELS: usize = 32;
+/// The descriptor's smoothing: a 7-tap Gaussian, sigma 2, summing to `2^12`.
+pub const BLUR_KERNEL: [u32; 7] = [287, 537, 781, 886, 781, 537, 287];
+/// A descriptor's length: 256 bits.
+pub const DESCRIPTOR_BYTES: usize = 32;
+
+// rBRIEF's learned test pairs (x1, y1, x2, y2): OpenCV's bit_pattern_31_
+// (modules/features2d/src/orb.cpp), learned by Ethan Rublee, Vincent Rabaud and Gary Bradski
+// for the ORB paper. Reproduced under OpenCV's licence for that file:
+//
+// Software License Agreement (BSD License)
+//
+//  Copyright (c) 2009, Willow Garage, Inc.
+//  All rights reserved.
+//
+//  Redistribution and use in source and binary forms, with or without
+//  modification, are permitted provided that the following conditions
+//  are met:
+//
+//   * Redistributions of source code must retain the above copyright
+//     notice, this list of conditions and the following disclaimer.
+//   * Redistributions in binary form must reproduce the above
+//     copyright notice, this list of conditions and the following
+//     disclaimer in the documentation and/or other materials provided
+//     with the distribution.
+//   * Neither the name of the Willow Garage nor the names of its
+//     contributors may be used to endorse or promote products derived
+//     from this software without specific prior written permission.
+//
+//  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+//  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+//  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+//  FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+//  COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+//  INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+//  BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+//  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+//  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+//  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+//  ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+//  POSSIBILITY OF SUCH DAMAGE.
+/// rBRIEF's 256 test pairs `(x1, y1, x2, y2)`, in pixels from the keypoint (OpenCV's).
+#[rustfmt::skip]
+pub const PATTERN: [[i64; 4]; 256] = [
+    [8, -3, 9, 5], [4, 2, 7, -12], [-11, 9, -8, 2], [7, -12, 12, -13], [2, -13, 2, 12],
+    [1, -7, 1, 6], [-2, -10, -2, -4], [-13, -13, -11, -8], [-13, -3, -12, -9], [10, 4, 11, 9],
+    [-13, -8, -8, -9], [-11, 7, -9, 12], [7, 7, 12, 6], [-4, -5, -3, 0], [-13, 2, -12, -3],
+    [-9, 0, -7, 5], [12, -6, 12, -1], [-3, 6, -2, 12], [-6, -13, -4, -8], [11, -13, 12, -8],
+    [4, 7, 5, 1], [5, -3, 10, -3], [3, -7, 6, 12], [-8, -7, -6, -2], [-2, 11, -1, -10],
+    [-13, 12, -8, 10], [-7, 3, -5, -3], [-4, 2, -3, 7], [-10, -12, -6, 11], [5, -12, 6, -7],
+    [5, -6, 7, -1], [1, 0, 4, -5], [9, 11, 11, -13], [4, 7, 4, 12], [2, -1, 4, 4],
+    [-4, -12, -2, 7], [-8, -5, -7, -10], [4, 11, 9, 12], [0, -8, 1, -13], [-13, -2, -8, 2],
+    [-3, -2, -2, 3], [-6, 9, -4, -9], [8, 12, 10, 7], [0, 9, 1, 3], [7, -5, 11, -10],
+    [-13, -6, -11, 0], [10, 7, 12, 1], [-6, -3, -6, 12], [10, -9, 12, -4], [-13, 8, -8, -12],
+    [-13, 0, -8, -4], [3, 3, 7, 8], [5, 7, 10, -7], [-1, 7, 1, -12], [3, -10, 5, 6],
+    [2, -4, 3, -10], [-13, 0, -13, 5], [-13, -7, -12, 12], [-13, 3, -11, 8], [-7, 12, -4, 7],
+    [6, -10, 12, 8], [-9, -1, -7, -6], [-2, -5, 0, 12], [-12, 5, -7, 5], [3, -10, 8, -13],
+    [-7, -7, -4, 5], [-3, -2, -1, -7], [2, 9, 5, -11], [-11, -13, -5, -13], [-1, 6, 0, -1],
+    [5, -3, 5, 2], [-4, -13, -4, 12], [-9, -6, -9, 6], [-12, -10, -8, -4], [10, 2, 12, -3],
+    [7, 12, 12, 12], [-7, -13, -6, 5], [-4, 9, -3, 4], [7, -1, 12, 2], [-7, 6, -5, 1],
+    [-13, 11, -12, 5], [-3, 7, -2, -6], [7, -8, 12, -7], [-13, -7, -11, -12], [1, -3, 12, 12],
+    [2, -6, 3, 0], [-4, 3, -2, -13], [-1, -13, 1, 9], [7, 1, 8, -6], [1, -1, 3, 12],
+    [9, 1, 12, 6], [-1, -9, -1, 3], [-13, -13, -10, 5], [7, 7, 10, 12], [12, -5, 12, 9],
+    [6, 3, 7, 11], [5, -13, 6, 10], [2, -12, 2, 3], [3, 8, 4, -6], [2, 6, 12, -13],
+    [9, -12, 10, 3], [-8, 4, -7, 9], [-11, 12, -4, -6], [1, 12, 2, -8], [6, -9, 7, -4],
+    [2, 3, 3, -2], [6, 3, 11, 0], [3, -3, 8, -8], [7, 8, 9, 3], [-11, -5, -6, -4],
+    [-10, 11, -5, 10], [-5, -8, -3, 12], [-10, 5, -9, 0], [8, -1, 12, -6], [4, -6, 6, -11],
+    [-10, 12, -8, 7], [4, -2, 6, 7], [-2, 0, -2, 12], [-5, -8, -5, 2], [7, -6, 10, 12],
+    [-9, -13, -8, -8], [-5, -13, -5, -2], [8, -8, 9, -13], [-9, -11, -9, 0], [1, -8, 1, -2],
+    [7, -4, 9, 1], [-2, 1, -1, -4], [11, -6, 12, -11], [-12, -9, -6, 4], [3, 7, 7, 12],
+    [5, 5, 10, 8], [0, -4, 2, 8], [-9, 12, -5, -13], [0, 7, 2, 12], [-1, 2, 1, 7],
+    [5, 11, 7, -9], [3, 5, 6, -8], [-13, -4, -8, 9], [-5, 9, -3, -3], [-4, -7, -3, -12],
+    [6, 5, 8, 0], [-7, 6, -6, 12], [-13, 6, -5, -2], [1, -10, 3, 10], [4, 1, 8, -4],
+    [-2, -2, 2, -13], [2, -12, 12, 12], [-2, -13, 0, -6], [4, 1, 9, 3], [-6, -10, -3, -5],
+    [-3, -13, -1, 1], [7, 5, 12, -11], [4, -2, 5, -7], [-13, 9, -9, -5], [7, 1, 8, 6],
+    [7, -8, 7, 6], [-7, -4, -7, 1], [-8, 11, -7, -8], [-13, 6, -12, -8], [2, 4, 3, 9],
+    [10, -5, 12, 3], [-6, -5, -6, 7], [8, -3, 9, -8], [2, -12, 2, 8], [-11, -2, -10, 3],
+    [-12, -13, -7, -9], [-11, 0, -10, -5], [5, -3, 11, 8], [-2, -13, -1, 12], [-1, -8, 0, 9],
+    [-13, -11, -12, -5], [-10, -2, -10, 11], [-3, 9, -2, -13], [2, -3, 3, 2], [-9, -13, -4, 0],
+    [-4, 6, -3, -10], [-4, 12, -2, -7], [-6, -11, -4, 9], [6, -3, 6, 11], [-13, 11, -5, 5],
+    [11, 11, 12, 6], [7, -5, 12, -2], [-1, 12, 0, 7], [-4, -8, -3, -2], [-7, 1, -6, 7],
+    [-13, -12, -8, -13], [-7, -2, -6, -8], [-8, 5, -6, -9], [-5, -1, -4, 5], [-13, 7, -8, 10],
+    [1, 5, 5, -13], [1, 0, 10, -13], [9, 12, 10, -1], [5, -8, 10, -9], [-1, 11, 1, -13],
+    [-9, -3, -6, 2], [-1, -10, 1, 12], [-13, 1, -8, -10], [8, -11, 10, -6], [2, -13, 3, -6],
+    [7, -13, 12, -9], [-10, -10, -5, -7], [-10, -8, -8, -13], [4, -6, 8, 5], [3, 12, 8, -13],
+    [-4, 2, -3, -3], [5, -13, 10, -12], [4, -13, 5, -1], [-9, 9, -4, 3], [0, 3, 3, -9],
+    [-12, 1, -6, 1], [3, 2, 4, -8], [-10, -10, -10, 9], [8, -13, 12, 12], [-8, -12, -6, -5],
+    [2, 2, 3, 7], [10, 6, 11, -8], [6, 8, 8, -12], [-7, 10, -6, 5], [-3, -9, -3, 9],
+    [-1, -13, -1, 5], [-3, -7, -3, 4], [-8, -2, -8, 3], [4, 2, 12, 12], [2, -5, 3, 11],
+    [6, -9, 11, -13], [3, -1, 7, 12], [11, -1, 12, 4], [-3, 0, -3, 6], [4, -11, 4, 12],
+    [2, -4, 2, 1], [-10, -6, -8, 1], [-13, 7, -11, 1], [-13, 12, -11, -13], [6, 0, 11, -13],
+    [0, -1, 1, 4], [-13, 3, -9, -2], [-9, 8, -6, -3], [-13, -6, -8, -2], [5, -9, 8, 10],
+    [2, 7, 3, -9], [-1, -6, -1, -1], [9, 5, 11, -2], [11, -3, 12, -8], [3, 0, 3, 5],
+    [-1, 4, 0, 10], [3, -6, 4, 5], [-13, 0, -10, 5], [5, 8, 12, 11], [8, 9, 9, -6],
+    [7, -4, 8, -12], [-10, 4, -10, 9], [7, 3, 12, 4], [9, -7, 10, -2], [7, 0, 12, -2],
+    [-1, -6, 0, -11],
+];
+
+/// A 256-bit rBRIEF descriptor, least significant bit first.
+pub type Descriptor = [u8; DESCRIPTOR_BYTES];
 
 /// ORB extraction settings (`slamlab.foundations.orb.Options`).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -116,6 +220,15 @@ pub struct Keypoint {
     pub response: i64,
     /// Its orientation bin, in `[0, ANGLE_BINS)`: `12 * angle` degrees.
     pub angle: usize,
+}
+
+/// ORB features: keypoints and their descriptors, element for element.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Features {
+    /// The keypoints.
+    pub keypoints: Vec<Keypoint>,
+    /// Each keypoint's descriptor.
+    pub descriptors: Vec<Descriptor>,
 }
 
 /// A half-open box `[x_min, x_max) x [y_min, y_max)`, in pixels.
@@ -608,7 +721,7 @@ fn level_corners(image: &Image, region: Bounds, options: &Options) -> (Vec<[usiz
     (xy, response)
 }
 
-/// Detects oriented keypoints on every pyramid level.
+/// Checks the settings and builds the pyramid.
 ///
 /// # Arguments
 ///
@@ -617,18 +730,31 @@ fn level_corners(image: &Image, region: Bounds, options: &Options) -> (Vec<[usiz
 ///
 /// # Returns
 ///
-/// The keypoints by level, then row, then column.
+/// The levels.
 ///
 /// # Errors
 ///
-/// `InvalidInput` for a malformed image or setting, or a pyramid level that would be empty.
+/// `InvalidInput` for a malformed image or setting, or a level that would be empty.
+fn checked_pyramid(image: &Image, options: &Options) -> Result<Vec<Image>> {
+    check_options(options)?;
+    image::pyramid(image, options.levels, options.scale_factor)
+}
+
+/// Detects oriented keypoints on every level of a pyramid.
+///
+/// # Arguments
+///
+/// * `levels` - The pyramid.
+/// * `options` - The settings, checked.
+///
+/// # Returns
+///
+/// The keypoints by level, then row, then column.
 #[allow(
     clippy::cast_precision_loss,
     reason = "pixel coordinates are at most 2^20, exact in f64"
 )]
-pub fn detect(image: &Image, options: &Options) -> Result<Vec<Keypoint>> {
-    check_options(options)?;
-    let levels = image::pyramid(image, options.levels, options.scale_factor)?;
+fn detect_levels(levels: &[Image], options: &Options) -> Vec<Keypoint> {
     let budgets = level_budgets(options.n_features, options.levels, options.scale_factor);
     let mut out = Vec::new();
     let mut scale = 1.0;
@@ -657,7 +783,117 @@ pub fn detect(image: &Image, options: &Options) -> Result<Vec<Keypoint>> {
             });
         }
     }
+    out
+}
+
+/// [`PATTERN`] rotated to every orientation bin.
+type RotatedPatterns = Vec<[[i64; 4]; 256]>;
+
+/// Rotates [`PATTERN`] to every bin: `(x, y)` turns to `(x c - y s, x s + y c) / 2^14`,
+/// rounded half up, for each bin's fixed-point `(c, s)`.
+///
+/// # Returns
+///
+/// The rotated pairs, built once.
+fn rotated_patterns() -> &'static RotatedPatterns {
+    static ROTATED: OnceLock<RotatedPatterns> = OnceLock::new();
+    ROTATED.get_or_init(|| {
+        let half = 1_i64 << (ROTATION_BITS - 1);
+        let turn = |value: i64| (value + half) >> ROTATION_BITS;
+        ROTATIONS
+            .iter()
+            .map(|&[c, s]| {
+                PATTERN.map(|[x1, y1, x2, y2]| {
+                    [
+                        turn(x1 * c - y1 * s),
+                        turn(x1 * s + y1 * c),
+                        turn(x2 * c - y2 * s),
+                        turn(x2 * s + y2 * c),
+                    ]
+                })
+            })
+            .collect()
+    })
+}
+
+/// Computes every keypoint's rBRIEF descriptor, on its level blurred by [`BLUR_KERNEL`].
+///
+/// # Arguments
+///
+/// * `levels` - The pyramid.
+/// * `keypoints` - The keypoints, each at least [`EDGE_THRESHOLD`] inside its level.
+///
+/// # Returns
+///
+/// One descriptor per keypoint.
+///
+/// # Errors
+///
+/// The blur's error (none for a checked level).
+fn describe(levels: &[Image], keypoints: &[Keypoint]) -> Result<Vec<Descriptor>> {
+    let patterns = rotated_patterns();
+    let mut out = vec![[0_u8; DESCRIPTOR_BYTES]; keypoints.len()];
+    for (level, pixels) in levels.iter().enumerate() {
+        let smooth = image::blur(pixels, &BLUR_KERNEL)?;
+        for (descriptor, k) in out.iter_mut().zip(keypoints) {
+            if k.level != level {
+                continue;
+            }
+            let [x, y] = k.level_xy;
+            let pairs = &patterns[k.angle];
+            for (byte, tests) in descriptor.iter_mut().zip(pairs.as_chunks::<8>().0) {
+                for (bit, &[x1, y1, x2, y2]) in tests.iter().enumerate() {
+                    let darker = offset_pixel(&smooth, y, x, [x1, y1])
+                        < offset_pixel(&smooth, y, x, [x2, y2]);
+                    *byte |= u8::from(darker) << bit;
+                }
+            }
+        }
+    }
     Ok(out)
+}
+
+/// Detects oriented keypoints on every pyramid level.
+///
+/// # Arguments
+///
+/// * `image` - The image.
+/// * `options` - The settings.
+///
+/// # Returns
+///
+/// The keypoints by level, then row, then column.
+///
+/// # Errors
+///
+/// `InvalidInput` for a malformed image or setting, or a pyramid level that would be empty.
+pub fn detect(image: &Image, options: &Options) -> Result<Vec<Keypoint>> {
+    Ok(detect_levels(&checked_pyramid(image, options)?, options))
+}
+
+/// Extracts features: [`detect`], then each keypoint's rBRIEF descriptor on its level
+/// blurred by [`BLUR_KERNEL`].
+///
+/// # Arguments
+///
+/// * `image` - The image.
+/// * `options` - The settings.
+///
+/// # Returns
+///
+/// The features.
+///
+/// # Errors
+///
+/// `InvalidInput` as [`detect`].
+pub fn extract(image: &Image, options: &Options) -> Result<Features> {
+    let levels = checked_pyramid(image, options)?;
+    let keypoints = detect_levels(&levels, options);
+    let descriptors = describe(&levels, &keypoints)?;
+    Ok(Features {
+        keypoints,
+        descriptors,
+    })
 }
 
 #[cfg(test)]
@@ -734,33 +970,58 @@ mod tests {
         }
     }
 
+    /// Reads a fixture's settings.
+    fn options(settings: &Value) -> Options {
+        Options {
+            n_features: count(&settings["n_features"]),
+            levels: count(&settings["levels"]),
+            scale_factor: settings["scale_factor"].as_f64().expect("a float"),
+            fast_threshold: int(&settings["fast_threshold"]),
+            min_fast_threshold: int(&settings["min_fast_threshold"]),
+        }
+    }
+
+    /// Reads a fixture's keypoints from its dict of fields.
+    fn keypoints(e: &Value) -> Vec<Keypoint> {
+        (0..e["level"].as_array().expect("levels").len())
+            .map(|i| Keypoint {
+                xy: [
+                    e["xy"][i][0].as_f64().unwrap(),
+                    e["xy"][i][1].as_f64().unwrap(),
+                ],
+                level: count(&e["level"][i]),
+                level_xy: [count(&e["level_xy"][i][0]), count(&e["level_xy"][i][1])],
+                response: int(&e["response"][i]),
+                angle: count(&e["angle"][i]),
+            })
+            .collect()
+    }
+
     /// `detect` matches the fixture, every field exactly.
     #[test]
     fn detect_matches_the_fixture() {
         for case in list(&functions()["detect"]["cases"], Clone::clone) {
-            let settings = &case["input"][1];
-            let options = Options {
-                n_features: count(&settings["n_features"]),
-                levels: count(&settings["levels"]),
-                scale_factor: settings["scale_factor"].as_f64().expect("a float"),
-                fast_threshold: int(&settings["fast_threshold"]),
-                min_fast_threshold: int(&settings["min_fast_threshold"]),
-            };
-            let got = detect(&image(&case["input"][0]), &options).unwrap();
-            let e = &case["expected"];
-            let expected: Vec<Keypoint> = (0..e["level"].as_array().expect("levels").len())
-                .map(|i| Keypoint {
-                    xy: [
-                        e["xy"][i][0].as_f64().unwrap(),
-                        e["xy"][i][1].as_f64().unwrap(),
-                    ],
-                    level: count(&e["level"][i]),
-                    level_xy: [count(&e["level_xy"][i][0]), count(&e["level_xy"][i][1])],
-                    response: int(&e["response"][i]),
-                    angle: count(&e["angle"][i]),
-                })
-                .collect();
-            assert_eq!(got, expected, "{}", case["name"]);
+            let got = detect(&image(&case["input"][0]), &options(&case["input"][1])).unwrap();
+            assert_eq!(got, keypoints(&case["expected"]), "{}", case["name"]);
+        }
+    }
+
+    /// `extract` matches the fixture: keypoints and descriptors exactly.
+    #[test]
+    fn extract_matches_the_fixture() {
+        for case in list(&functions()["extract"]["cases"], Clone::clone) {
+            let got = extract(&image(&case["input"][0]), &options(&case["input"][1])).unwrap();
+            assert_eq!(
+                got.keypoints,
+                keypoints(&case["expected"]),
+                "{}",
+                case["name"]
+            );
+            let descriptors: Vec<Descriptor> = list(&case["expected"]["descriptors"], |row| {
+                let bytes = list(row, |v| u8::try_from(count(v)).expect("a byte"));
+                bytes.try_into().expect("32 bytes")
+            });
+            assert_eq!(got.descriptors, descriptors, "{}", case["name"]);
         }
     }
 

@@ -38,15 +38,6 @@ std::uint8_t round_shift(std::int64_t value, int bits) {
   return static_cast<std::uint8_t>((value + (scale / 2)) / scale);
 }
 
-/// @brief Divide, rounding toward negative infinity (as Python's `//`).
-/// @param numerator The numerator.
-/// @param denominator The denominator, positive.
-/// @return `floor(numerator / denominator)`.
-std::int64_t floor_div(std::int64_t numerator, std::int64_t denominator) {
-  const std::int64_t quotient = numerator / denominator;
-  return (numerator % denominator != 0 && numerator < 0) ? quotient - 1 : quotient;
-}
-
 /// @brief Check an image's shape and its number of values.
 /// @param rows Its rows, from 1 to `kMaxSide`.
 /// @param cols Its columns, from 1 to `kMaxSide`.

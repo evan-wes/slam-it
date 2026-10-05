@@ -4,6 +4,8 @@
 //! batches over. Two robust estimators run on one fixed synthetic scene, built from the same
 //! closed-form expressions as the C++ benches' (no random numbers, so both cores see identical
 //! data): E-RANSAC with Stewénius' 5-point solver and PnP RANSAC with Ding's P3P, each refined.
+//! The front end extracts ORB features (ORB-SLAM's settings) from a 640x480 synthetic frame
+//! built from one integer expression, the C++ benches' too.
 //! The headline is a whole bundle adjustment on a BAL problem, with the BAL demo's settings.
 //! The BAL benchmark runs only when `SLAMLAB_BAL` names a decompressed problem file:
 //!
@@ -27,8 +29,9 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use nalgebra::{Vector3, Vector6};
 use slamlab_foundations::camera::{self, Model};
 use slamlab_foundations::epipolar::{self, MinimalSolver};
+use slamlab_foundations::image::Image;
 use slamlab_foundations::p3p::Solver;
-use slamlab_foundations::{ba, pnp, ransac, se3, so3};
+use slamlab_foundations::{ba, orb, pnp, ransac, se3, so3};
 
 /// SO(3)'s exponential and logarithm, SE(3)'s logarithm, and a radtan projection.
 fn small_operations(c: &mut Criterion) {
@@ -167,5 +170,37 @@ fn bal(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, small_operations, robust_estimators, bal);
+/// A 640x480 synthetic frame: 16-pixel blocks of varied intensity with a fine texture, from
+/// the same integer expression as the C++ benches'.
+///
+/// # Returns
+///
+/// The frame.
+fn bench_frame() -> Image {
+    let (rows, cols) = (480_usize, 640_usize);
+    let pixels = (0..rows)
+        .flat_map(|r| {
+            (0..cols).map(move |c| {
+                let value = ((c / 16) * 37 + (r / 16) * 61) % 200 + 28 + (r * c) % 7;
+                u8::try_from(value).expect("at most 234")
+            })
+        })
+        .collect();
+    Image { rows, cols, pixels }
+}
+
+/// ORB extraction with ORB-SLAM's settings (1000 features, 8 levels at 1.2).
+///
+/// # Panics
+///
+/// If the extraction fails (it cannot on this frame).
+fn front_end(c: &mut Criterion) {
+    let frame = bench_frame();
+    let options = orb::Options::default();
+    c.bench_function("orb_extract", |b| {
+        b.iter(|| orb::extract(black_box(&frame), &options).expect("a valid frame"));
+    });
+}
+
+criterion_group!(benches, small_operations, robust_estimators, front_end, bal);
 criterion_main!(benches);

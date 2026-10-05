@@ -31,6 +31,15 @@ namespace slamlab::foundations::image {
   return scale;
 }
 
+/// @brief Divide, rounding toward negative infinity (as Python's `//` and `>>`).
+/// @param numerator The numerator.
+/// @param denominator The denominator, positive.
+/// @return `floor(numerator / denominator)`.
+[[nodiscard]] constexpr std::int64_t floor_div(std::int64_t numerator, std::int64_t denominator) {
+  const std::int64_t quotient = numerator / denominator;
+  return (numerator % denominator != 0 && numerator < 0) ? quotient - 1 : quotient;
+}
+
 /// @brief BT.601's red, green and blue weights over `2^kGrayBits` (OpenCV's `cvtColor`).
 inline constexpr std::array<std::int64_t, 3> kGrayWeights{9798, 19235, 3735};
 /// @brief The fixed-point bits of `kGrayWeights`.

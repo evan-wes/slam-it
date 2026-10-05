@@ -1,4 +1,4 @@
-"""Generate ``orb.json``, the ORB detector's parity fixture.
+"""Generate ``orb.json``, the ORB extractor's parity fixture.
 
 Run from the repository root after changing the cases (the fixture is committed)::
 
@@ -6,7 +6,7 @@ Run from the repository root after changing the cases (the fixture is committed)
 
 FAST scores come from an independent brute force: for every pixel, every threshold from 254
 down is tried against every arc of nine, by the corner's definition. The quadtree and the
-detector have no independent oracle (they are procedures, not formulas), so their cases are
+extractor have no independent oracle (they are procedures, not formulas), so their cases are
 the Python reference's output, as ``ba.json``'s are: the fixture holds the C++ and Rust cores
 to it exactly. Every value is an integer, or a pixel times a power of the scale factor, so
 the policy is ``exact``.
@@ -62,15 +62,21 @@ def _scene(rng: np.random.Generator, rows: int, cols: int) -> NDArray[np.uint8]:
     return out
 
 
+_FIELDS = ("xy", "level", "level_xy", "response", "angle")
+
+
 def _keypoints(image: NDArray[np.uint8], options: orb.Options) -> dict[str, Any]:
     """Return the reference's keypoints, as lists."""
     found = orb.detect(image, options)
+    return {field: getattr(found, field).tolist() for field in _FIELDS}
+
+
+def _features(image: NDArray[np.uint8], options: orb.Options) -> dict[str, Any]:
+    """Return the reference's features, as lists."""
+    found = orb.extract(image, options)
     return {
-        "xy": found.xy.tolist(),
-        "level": found.level.tolist(),
-        "level_xy": found.level_xy.tolist(),
-        "response": found.response.tolist(),
-        "angle": found.angle.tolist(),
+        **{field: getattr(found.keypoints, field).tolist() for field in _FIELDS},
+        "descriptors": found.descriptors.tolist(),
     }
 
 
@@ -134,6 +140,14 @@ def main() -> None:
             orb.Options(n_features=60, levels=2),
         ),
     ]
+    extract_cases = [
+        ("a 90x110 scene, 2 levels", _scene(rng, 90, 110), orb.Options(n_features=70, levels=2)),
+        (
+            "a 100x140 scene, 3 levels at 1.5",
+            _scene(rng, 100, 140),
+            orb.Options(n_features=80, levels=3, scale_factor=1.5),
+        ),
+    ]
     functions: dict[str, Any] = {
         "fast_scores": {
             "unpack": True,
@@ -154,16 +168,28 @@ def main() -> None:
             "cases": [
                 {
                     "name": name,
-                    "input": [image.tolist(), {k: v for k, v in vars(options).items()}],
+                    "input": [image.tolist(), dict(vars(options))],
                     "expected": _keypoints(image, options),
                 }
                 for name, image, options in detect_cases
             ],
         },
+        "extract": {
+            "unpack": True,
+            "tolerance": EXACT,
+            "cases": [
+                {
+                    "name": name,
+                    "input": [image.tolist(), dict(vars(options))],
+                    "expected": _features(image, options),
+                }
+                for name, image, options in extract_cases
+            ],
+        },
     }
     fixture = {
-        "description": "ORB detection: parity fixture (generate_orb.py).",
-        "oracle": "FAST scores by brute force; quadtree and detect from the reference",
+        "description": "ORB features: parity fixture (generate_orb.py).",
+        "oracle": "FAST scores by brute force; the rest from the reference",
         "functions": functions,
     }
     OUT.write_text(dumps(fixture))

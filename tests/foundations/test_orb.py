@@ -1,4 +1,4 @@
-"""ORB detection tests: exact parity, OpenCV's FAST, the quadtree's contract, orientations."""
+"""ORB tests: exact parity, OpenCV's FAST and descriptors, the quadtree, orientations."""
 
 from __future__ import annotations
 
@@ -54,6 +54,13 @@ def _check_keypoints(got: orb.Keypoints, expected: orb.Keypoints | dict[str, Any
         np.testing.assert_array_equal(value, np.asarray(want).reshape(value.shape), err_msg=field)
 
 
+def _check_descriptors(got: object, expected: object) -> None:
+    """Check descriptors: an (N, 32) uint8 array equal to `expected`."""
+    assert isinstance(got, np.ndarray)
+    assert got.dtype == np.uint8
+    np.testing.assert_array_equal(got, np.asarray(expected, dtype=np.uint8).reshape(got.shape))
+
+
 def test_fixture_covers_the_protocol() -> None:
     """Every function in the compiled-backend Protocol has fixture cases."""
     assert set(ORB["functions"]) == protocol_members(orb)
@@ -76,9 +83,15 @@ def test_matches_fixture(backend: str, function: str, case: dict[str, Any]) -> N
             xy, np.asarray(args[1], np.int64), tuple(args[2]), args[3], backend=chosen
         )
         _check_int64(kept, case["expected"])
-    else:
+    elif function == "detect":
         found = orb.detect(np.asarray(args[0], np.uint8), orb.Options(**args[1]), backend=chosen)
         _check_keypoints(found, case["expected"])
+    else:
+        features = orb.extract(
+            np.asarray(args[0], np.uint8), orb.Options(**args[1]), backend=chosen
+        )
+        _check_keypoints(features.keypoints, case["expected"])
+        _check_descriptors(features.descriptors, case["expected"]["descriptors"])
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -88,6 +101,9 @@ def test_backends_agree_on_a_vga_frame(backend: str) -> None:
     frame = _scene(480, 640, seed=3)
     _check_keypoints(orb.detect(frame, backend=chosen), orb.detect(frame))
     _check_int64(orb.fast_scores(frame, backend=chosen), orb.fast_scores(frame))
+    features, reference = orb.extract(frame, backend=chosen), orb.extract(frame)
+    _check_keypoints(features.keypoints, reference.keypoints)
+    _check_descriptors(features.descriptors, reference.descriptors)
 
 
 @pytest.mark.parametrize("threshold", [7, 20])
@@ -111,6 +127,43 @@ def test_fast_is_opencvs(threshold: int) -> None:
             assert ours == theirs
         else:
             assert set(ours) == set(theirs)
+
+
+def test_descriptors_are_opencvs_up_to_rounding() -> None:
+    """OpenCV's ORB, given our keypoints and angles, computes nearly the same descriptors.
+
+    Its blur and its rotation of the pattern round in float, so a few bits differ; a wrong
+    rotation, sign or bit order would differ in about half of them.
+    """
+    frame = _scene(240, 320, seed=8)
+    features = orb.extract(frame, orb.Options(n_features=300, levels=1))
+    given = [
+        cv2.KeyPoint(float(x), float(y), 31, 12.0 * float(a), 0, 0)
+        for (x, y), a in zip(features.keypoints.level_xy, features.keypoints.angle, strict=True)
+    ]
+    detector = cv2.ORB.create(nlevels=1, edgeThreshold=orb.EDGE_THRESHOLD, patchSize=31)
+    described, theirs = detector.compute(frame, given)
+    assert len(described) == len(given)
+    differing = np.unpackbits(features.descriptors ^ np.asarray(theirs, np.uint8), axis=1).sum(
+        axis=1
+    )
+    assert differing.mean() < 1.0
+    assert differing.max() <= 8
+
+
+def test_extract_describes_what_detect_finds() -> None:
+    """Extraction's keypoints are detection's, and every descriptor is 32 bytes."""
+    frame = _scene(200, 260, seed=9)
+    features = orb.extract(frame, orb.Options(n_features=200, levels=3))
+    _check_keypoints(features.keypoints, orb.detect(frame, orb.Options(n_features=200, levels=3)))
+    assert features.descriptors.shape == (len(features.keypoints.xy), orb.DESCRIPTOR_BYTES)
+
+
+def test_rotated_pattern_stays_inside_the_edge() -> None:
+    """Every rotated test pixel lies within EDGE_THRESHOLD - 1 of the keypoint."""
+    assert len(orb.PATTERN) == 8 * orb.DESCRIPTOR_BYTES
+    reach = int(np.abs(orb._PATTERNS).max())
+    assert reach == orb.EDGE_THRESHOLD - 1
 
 
 def test_constants_follow_their_definitions() -> None:
