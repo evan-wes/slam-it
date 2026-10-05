@@ -10,6 +10,14 @@ from slamlab.eval import metrics
 from slamlab.foundations import se3, so3
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
 
+PERIOD = 0.1
+"""The synthetic trajectories' frame period, in seconds."""
+
+
+def _times(n: int) -> NDArray[np.float64]:
+    """Return `n` frame times, one period apart."""
+    return np.asarray(PERIOD * np.arange(n), dtype=np.float64)
+
 
 def _trajectory(n: int = 40, seed: int = 0) -> NDArray[np.float64]:
     """Draw a smooth trajectory of ``T_world_cam`` poses: a curve with turning cameras."""
@@ -88,18 +96,44 @@ def test_rpe_measures_drift_per_step() -> None:
     for k in range(1, len(truth)):
         motion = se3.compose(se3.inverse(truth[k - 1]), truth[k])
         estimate[k] = estimate[k - 1] @ motion @ step
-    rpe = metrics.relative_error(estimate, truth)
+    times = _times(len(truth))
+    rpe = metrics.relative_error(estimate, truth, times, delta=PERIOD)
     np.testing.assert_allclose(rpe.translation, 0.02, rtol=1e-9)
     np.testing.assert_allclose(rpe.rotation, 0.0, atol=1e-9)
-    assert metrics.relative_error(truth, truth, delta=5).translation_rmse < 1e-12
+    np.testing.assert_array_equal(rpe.pairs[:, 1] - rpe.pairs[:, 0], 1)
+    assert rpe.delta == PERIOD
+    five = metrics.relative_error(truth, truth, times, delta=5 * PERIOD)
+    assert len(five.pairs) == len(truth) - 5
+    assert five.translation_rmse < 1e-12
+
+
+def test_rpe_does_not_count_a_tracking_gap_as_one_step() -> None:
+    """Poses before a gap find no pose one period later and are skipped, not paired across it.
+
+    2 mm of drift per frame, frames 10 to 19 lost: every pair still reads 2 mm (paired by
+    pose index, the frame before the gap and the frame after it would read 22 mm).
+    """
+    truth = _trajectory()
+    estimate = truth.copy()
+    step = np.eye(4)
+    step[:3, 3] = [0.0, 0.002, 0.0]
+    for k in range(1, len(truth)):
+        motion = se3.compose(se3.inverse(truth[k - 1]), truth[k])
+        estimate[k] = estimate[k - 1] @ motion @ step
+    kept = np.r_[0:10, 20:40]
+    rpe = metrics.relative_error(estimate[kept], truth[kept], _times(40)[kept], delta=PERIOD)
+    assert len(rpe.pairs) == len(kept) - 2  # none from the last frame, none across the gap
+    np.testing.assert_allclose(rpe.translation, 0.002, rtol=1e-9)
 
 
 def test_rpe_scale_undoes_a_monocular_scale() -> None:
     """A trajectory at half scale has no drift once scaled back."""
     truth = _trajectory()
     estimate = _moved(truth, _similarity(0.5))
-    assert metrics.relative_error(estimate, truth).translation_rmse > 0.01
-    assert metrics.relative_error(estimate, truth, scale=2.0).translation_rmse < 1e-9
+    times = _times(len(truth))
+    assert metrics.relative_error(estimate, truth, times, delta=PERIOD).translation_rmse > 0.01
+    halved = metrics.relative_error(estimate, truth, times, delta=PERIOD, scale=2.0)
+    assert halved.translation_rmse < 1e-9
 
 
 def test_associate_pairs_nearest_times_once() -> None:
@@ -111,15 +145,61 @@ def test_associate_pairs_nearest_times_once() -> None:
     np.testing.assert_array_equal(theirs, [0, 1, 2])
 
 
+def test_associate_is_tums_greedy_pairing() -> None:
+    """Closest pairs first, so a time whose nearest is taken falls back to its next nearest.
+
+    TUM's associate.py pairs (0.004, 0.0045) first, then (0.0, 0.005): two pairs, where
+    keeping only each time's nearest would give one. The tolerance is exclusive.
+    """
+    ours, theirs = metrics.associate([0.0, 0.004], [0.0045, 0.005], 0.01)
+    np.testing.assert_array_equal(ours, [0, 1])
+    np.testing.assert_array_equal(theirs, [1, 0])
+    assert len(metrics.associate([0.0], [0.01], 0.01)[0]) == 0
+    assert len(metrics.associate([], [0.0], 0.1)[0]) == 0
+
+
 @pytest.mark.parametrize(
     ("call", "error", "message"),
     [
         (lambda t: metrics.absolute_error(t, t[:-1]), InvalidInputError, "equal"),
         (lambda t: metrics.absolute_error(t[:2], t[:2]), DegenerateError, "fewer than three"),
-        (lambda t: metrics.relative_error(t, t, delta=0), InvalidInputError, "delta"),
-        (lambda t: metrics.relative_error(t, t, delta=len(t)), InvalidInputError, "delta"),
-        (lambda t: metrics.relative_error(t, t, scale=0.0), InvalidInputError, "scale"),
+        (lambda t: metrics.relative_error(t, t, _times(10), delta=0.0), InvalidInputError, "delta"),
+        (
+            lambda t: metrics.relative_error(t, t, _times(10), delta=PERIOD * len(t)),
+            InvalidInputError,
+            "no pose has another",
+        ),
+        (
+            lambda t: metrics.relative_error(t, t, _times(10), delta=PERIOD, scale=0.0),
+            InvalidInputError,
+            "scale",
+        ),
+        (
+            lambda t: metrics.relative_error(t, t, _times(10)[::-1], delta=PERIOD),
+            InvalidInputError,
+            "times: must ascend",
+        ),
+        (
+            lambda t: metrics.relative_error(t, t, _times(9), delta=PERIOD),
+            InvalidInputError,
+            "one per pose",
+        ),
+        (
+            lambda t: metrics.relative_error(t, t, _times(10), delta=PERIOD, tolerance=-1.0),
+            InvalidInputError,
+            "tolerance",
+        ),
         (lambda t: metrics.associate([0.0], [0.0], -1.0), InvalidInputError, "max_difference"),
+        (
+            lambda t: metrics.associate([1.0, 2.0, 3.0], [3.0, 1.0, 2.0], 0.1),
+            InvalidInputError,
+            "reference: must ascend",
+        ),
+        (
+            lambda t: metrics.associate([2.0, 1.0], [1.0, 2.0], 0.1),
+            InvalidInputError,
+            "times: must ascend",
+        ),
     ],
 )
 def test_rejects(call: object, error: type, message: str) -> None:

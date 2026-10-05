@@ -35,7 +35,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
-from slamlab.eval import images
+from slamlab.eval import images, timing
 from slamlab.foundations import so3
 from slamlab.foundations.errors import InvalidInputError
 
@@ -158,16 +158,6 @@ def _stamped(path: Path) -> tuple[NDArray[np.float64], list[str]]:
     return stamps, [fields[1] for _, fields in rows]
 
 
-def _nearest(times: NDArray[np.float64], stamps: NDArray[np.float64]) -> NDArray[np.int64]:
-    """Return, for each stamp, the index of the nearest of the ascending `times`."""
-    if len(times) == 1:
-        return np.zeros(len(stamps), dtype=np.int64)
-    right = np.clip(np.searchsorted(times, stamps), 1, len(times) - 1)
-    left = right - 1
-    closer_left = np.abs(times[left] - stamps) <= np.abs(times[right] - stamps)
-    return np.asarray(np.where(closer_left, left, right), dtype=np.int64)
-
-
 def read_sequence(root: str | Path, max_difference: float = MAX_DIFFERENCE) -> Sequence:
     """Read a TUM RGB-D sequence's colour frames and associate their ground-truth poses.
 
@@ -201,7 +191,7 @@ def read_sequence(root: str | Path, max_difference: float = MAX_DIFFERENCE) -> S
         )
     stamps, names = _stamped(folder / "rgb.txt")
     truth_times, truth_poses = _poses(folder / "groundtruth.txt")
-    nearest = _nearest(truth_times, stamps)
+    nearest = timing.nearest(truth_times, stamps)
     kept = np.flatnonzero(np.abs(truth_times[nearest] - stamps) <= max_difference)
     if kept.size == 0:
         raise InvalidInputError(
@@ -212,7 +202,7 @@ def read_sequence(root: str | Path, max_difference: float = MAX_DIFFERENCE) -> S
     if (folder / "depth.txt").exists():
         depth_times, depth_names = _stamped(folder / "depth.txt")
         order = np.argsort(depth_times, kind="stable")
-        closest = order[_nearest(depth_times[order], stamps[kept])]
+        closest = order[timing.nearest(depth_times[order], stamps[kept])]
         depths = [
             folder / depth_names[d] if abs(depth_times[d] - stamps[k]) <= max_difference else None
             for k, d in zip(kept, closest, strict=True)

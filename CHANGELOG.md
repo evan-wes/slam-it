@@ -36,12 +36,15 @@ will score it.
   that one module; Pillow is now a runtime dependency), TUM depth maps in metres, and the
   EuRoC ASL format's stereo frames, calibrations and ground truth.
 - **Native PNG decoders** outside the cores: the C++ `slamlab_eval` library on stb_image
-  (vendored, PNG only) and the Rust `slamlab-eval` crate on `png`, held with Pillow to seven
-  shared PNG fixtures.
-- **Trajectory metrics and the run format** (`eval.metrics`, `eval.runs`): ATE after Sim(3)
-  or SE(3) alignment and RPE, as in the TUM benchmark, and the run folder every backend's
-  pipeline will write (`run.json`, a TUM-format trajectory, keyframes, points,
-  diagnostics).
+  (vendored, PNG only, its symbols private to the library) and the Rust `slamlab-eval` crate
+  on `png`, with Python's names (`read_gray`, `read_rgb`, `read_depth`), held with Pillow to
+  seven shared PNG fixtures.
+- **Trajectory metrics and the run format** (`eval.metrics`, `eval.runs`, `eval.timing`):
+  ATE after Sim(3) or SE(3) alignment and RPE over an interval of time (a tracking gap
+  skipped, not counted as one step), with timestamps paired closest first, as in the TUM
+  benchmark's tools; and the run folder every backend's pipeline will write (`run.json`, a
+  TUM-format trajectory, keyframes, points, diagnostics), checked whole before it is written
+  and replaced file by file.
 - **Native benchmarks:** `orb_extract` on one closed-form VGA frame in both suites (C++
   24 ms, Rust 35 ms).
 - **`THIRD_PARTY_NOTICES`**, the design doc's file for copied material: OpenCV's ORB pattern

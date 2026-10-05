@@ -144,6 +144,10 @@ def test_frames_without_a_close_pose_are_dropped(tmp_path: Path) -> None:
             "expected 4 intrinsics",
         ),
         (("resolution: [752, 480]", "resolution: [752, x]"), "`resolution` holds a non-number"),
+        (("resolution: [752, 480]", "resolution: [752.5, 480]"), "a resolution of two integers"),
+        (("resolution: [752, 480]", "resolution: [752, 0]"), "a resolution of two integers"),
+        (("resolution: [752, 480]", "resolution: [752, inf]"), "expected finite numbers"),
+        (("248.375]", "nan]"), "expected finite numbers"),
         (("0.999660727178", "1.999660727178"), "rotation"),
     ],
 )
@@ -152,6 +156,54 @@ def test_rejects_malformed_calibration(
 ) -> None:
     """Unsupported models, short lists, non-numbers and non-rigid poses are refused."""
     _write(tmp_path, cam0=CAM0.replace(*change))
+    with pytest.raises(InvalidInputError, match=message):
+        euroc.read_sequence(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("file", "edit", "message"),
+    [
+        ("cam0/data.csv", lambda text: text + "12345\n", "expected `timestamp,filename`"),
+        ("cam0/data.csv", lambda text: text + "x1,a.png\n", "expected `timestamp,filename`"),
+        (
+            "cam0/data.csv",
+            lambda text: text + text.splitlines()[1] + "\n",
+            r"timestamp \d+ repeats",
+        ),
+        (
+            "state_groundtruth_estimate0/data.csv",
+            lambda text: text + "1,0,0\n",
+            "expected 7 finite values",
+        ),
+        (
+            "state_groundtruth_estimate0/data.csv",
+            lambda text: text + "1,nan,0,0,1,0,0,0\n",
+            "expected 7 finite values",
+        ),
+        (
+            "state_groundtruth_estimate0/data.csv",
+            lambda text: text + "1,x,0,0,1,0,0,0\n",
+            "expected numbers",
+        ),
+        (
+            "state_groundtruth_estimate0/data.csv",
+            lambda text: text + "1,0,0,0,0,0,0,0\n",
+            "a non-zero quaternion",
+        ),
+        (
+            "state_groundtruth_estimate0/data.csv",
+            lambda text: text + text.splitlines()[1] + "\n",
+            "a timestamp repeats",
+        ),
+        ("state_groundtruth_estimate0/data.csv", lambda text: "#header\n", "no ground-truth"),
+    ],
+)
+def test_rejects_malformed_rows(tmp_path: Path, file: str, edit: object, message: str) -> None:
+    """Short or non-numeric rows, non-finite poses and repeated timestamps are refused."""
+    _write(tmp_path)
+    path = tmp_path / "mav0" / file
+    assert callable(edit)
+    path.write_text(edit(path.read_text()))
     with pytest.raises(InvalidInputError, match=message):
         euroc.read_sequence(tmp_path)
 

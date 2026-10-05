@@ -1,9 +1,15 @@
 //! Reading PNG files natively: the Rust side of `slamlab.eval.images`.
 //!
-//! Decoded by the `png` crate. A file reads the way Python's Pillow-based reader reads it:
-//! gray from an 8-bit gray file as stored (without its alpha), from an 8-bit colour file (RGB,
-//! RGBA, or a palette expanded to RGB) through `image::to_gray`; depth from a 16-bit
-//! single-channel file as stored.
+//! Decoded by the `png` crate. A file reads the way Python's Pillow-based reader reads it,
+//! under the same names: [`read_gray`] gives gray from an 8-bit gray file as stored (without
+//! its alpha), or from an 8-bit colour file (RGB, RGBA, or a palette expanded to RGB) through
+//! `image::to_gray`; [`read_rgb`] gives an 8-bit file's colour (gray repeated to three
+//! channels, alpha dropped); [`read_depth`] a 16-bit single-channel file as stored.
+//!
+//! Every failure is `InvalidInput`, its message naming the file: a missing or unreadable file
+//! ("no such file, or not readable"), one the decoder refuses ("not a readable PNG", a bad
+//! checksum included), or the wrong bit depth. Python raises `FileNotFoundError` for a missing
+//! file instead; the cores have no I/O error kind.
 
 use std::fs::File;
 use std::io::BufReader;
@@ -14,21 +20,31 @@ use slamlab_foundations::error::{ErrorKind, Result, fail};
 use slamlab_foundations::image::{self, Image};
 
 /// An 8-bit image as stored: 1 (gray), 2 (gray, alpha), 3 (RGB) or 4 (RGBA) channels.
+struct Raster8 {
+    /// Rows.
+    rows: usize,
+    /// Columns.
+    cols: usize,
+    /// Channels per pixel.
+    channels: usize,
+    /// The values, row by row, the channels of a pixel together.
+    values: Vec<u8>,
+}
+
+/// An 8-bit colour image.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Raster8 {
+pub struct RgbImage {
     /// Rows.
     pub rows: usize,
     /// Columns.
     pub cols: usize,
-    /// Channels per pixel.
-    pub channels: usize,
-    /// The values, row by row, the channels of a pixel together.
+    /// The values, row by row, each pixel's red, green and blue together.
     pub values: Vec<u8>,
 }
 
 /// A 16-bit single-channel image.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Raster16 {
+pub struct DepthImage {
     /// Rows.
     pub rows: usize,
     /// Columns.
@@ -71,9 +87,11 @@ fn decode(path: &Path) -> Result<Decoded> {
             format!("{}: not a readable PNG ({reason})", path.display()),
         )
     };
-    let file = match File::open(path) {
-        Ok(file) => file,
-        Err(error) => return unreadable(error.to_string()),
+    let Ok(file) = File::open(path) else {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!("{}: no such file, or not readable", path.display()),
+        );
     };
     let mut decoder = Decoder::new(BufReader::new(file));
     decoder.set_transformations(Transformations::EXPAND);
@@ -112,7 +130,7 @@ fn decode(path: &Path) -> Result<Decoded> {
 /// # Errors
 ///
 /// `InvalidInput` if the file cannot be read or is not 8-bit.
-pub fn read8(path: &Path) -> Result<Raster8> {
+fn read8(path: &Path) -> Result<Raster8> {
     let decoded = decode(path)?;
     if decoded.depth != BitDepth::Eight {
         return fail(
@@ -128,7 +146,28 @@ pub fn read8(path: &Path) -> Result<Raster8> {
     })
 }
 
-/// Reads a 16-bit single-channel PNG.
+/// The colour of an 8-bit raster: gray repeated to three channels, alpha dropped.
+///
+/// # Arguments
+///
+/// * `raster` - The raster.
+///
+/// # Returns
+///
+/// Three values per pixel, red first.
+fn rgb_values(raster: &Raster8) -> Vec<u8> {
+    raster
+        .values
+        .chunks_exact(raster.channels)
+        .flat_map(|pixel| {
+            // Gray (with or without alpha) repeats channel 0; colour takes channels 0 to 2.
+            let gray = raster.channels <= 2;
+            (0..3).map(move |c| pixel[if gray { 0 } else { c }])
+        })
+        .collect()
+}
+
+/// Reads an 8-bit PNG as colour, as `slamlab.eval.images.read_rgb` does.
 ///
 /// # Arguments
 ///
@@ -136,12 +175,34 @@ pub fn read8(path: &Path) -> Result<Raster8> {
 ///
 /// # Returns
 ///
-/// The raster.
+/// The colour image.
+///
+/// # Errors
+///
+/// `InvalidInput` if the file cannot be read or is not 8-bit.
+pub fn read_rgb(path: &Path) -> Result<RgbImage> {
+    let raster = read8(path)?;
+    Ok(RgbImage {
+        rows: raster.rows,
+        cols: raster.cols,
+        values: rgb_values(&raster),
+    })
+}
+
+/// Reads a 16-bit single-channel PNG, as `slamlab.eval.images.read_depth` does.
+///
+/// # Arguments
+///
+/// * `path` - The file.
+///
+/// # Returns
+///
+/// The image.
 ///
 /// # Errors
 ///
 /// `InvalidInput` if the file cannot be read or is not 16-bit gray.
-pub fn read16(path: &Path) -> Result<Raster16> {
+pub fn read_depth(path: &Path) -> Result<DepthImage> {
     let decoded = decode(path)?;
     if decoded.depth != BitDepth::Sixteen || decoded.color != ColorType::Grayscale {
         return fail(
@@ -156,7 +217,7 @@ pub fn read16(path: &Path) -> Result<Raster16> {
         .iter()
         .map(|&pair| u16::from_be_bytes(pair))
         .collect();
-    Ok(Raster16 {
+    Ok(DepthImage {
         rows: decoded.rows,
         cols: decoded.cols,
         values,
@@ -175,7 +236,7 @@ pub fn read16(path: &Path) -> Result<Raster16> {
 ///
 /// # Errors
 ///
-/// `InvalidInput` as [`read8`].
+/// `InvalidInput` if the file cannot be read or is not 8-bit.
 pub fn read_gray(path: &Path) -> Result<Image> {
     let raster = read8(path)?;
     let channels = raster.channels;
@@ -188,12 +249,7 @@ pub fn read_gray(path: &Path) -> Result<Image> {
             pixels,
         });
     }
-    let rgb: Vec<u8> = raster
-        .values
-        .chunks_exact(channels)
-        .flat_map(|pixel| pixel[..3].iter().copied())
-        .collect();
-    image::to_gray(raster.rows, raster.cols, &rgb)
+    image::to_gray(raster.rows, raster.cols, &rgb_values(&raster))
 }
 
 #[cfg(test)]
@@ -235,19 +291,51 @@ mod tests {
                     .map(|v| u8::try_from(v).unwrap())
                     .collect();
                 assert_eq!(got.pixels, want, "{name}");
-                assert!(read16(&path).is_err(), "{name}");
+                let rgb: Vec<u8> = expected["rgb"]
+                    .as_array()
+                    .expect("rows")
+                    .iter()
+                    .flat_map(flat)
+                    .map(|v| u8::try_from(v).unwrap())
+                    .collect();
+                assert_eq!(read_rgb(&path).unwrap().values, rgb, "{name}");
+                assert!(
+                    message(read_depth(&path)).contains("expected a 16-bit"),
+                    "{name}"
+                );
             } else {
-                let got = read16(&path).unwrap();
+                let got = read_depth(&path).unwrap();
                 let want: Vec<u16> = flat(&expected["depth"])
                     .into_iter()
                     .map(|v| u16::try_from(v).unwrap())
                     .collect();
                 assert_eq!(got.values, want, "{name}");
-                assert!(read8(&path).is_err(), "{name}");
+                assert!(
+                    message(read_gray(&path)).contains("expected an 8-bit"),
+                    "{name}"
+                );
             }
         }
-        let rgb = read8(&folder().join("png/rgb.png")).unwrap();
-        assert_eq!((rgb.rows, rgb.cols, rgb.channels), (6, 8, 3));
-        assert!(read_gray(&folder().join("png/missing.png")).is_err());
+    }
+
+    /// The failure's message, for an `InvalidInput` error.
+    fn message<T: std::fmt::Debug>(result: Result<T>) -> String {
+        let error = result.unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidInput);
+        error.message
+    }
+
+    /// Missing, truncated and non-PNG files are refused, each named.
+    #[test]
+    fn readers_refuse_bad_files() {
+        let missing = folder().join("png/missing.png");
+        assert!(message(read_gray(&missing)).contains("no such file"));
+        assert!(message(read_depth(&missing)).contains("no such file"));
+        let whole = std::fs::read(folder().join("png/rgb.png")).expect("the fixture");
+        let truncated = std::env::temp_dir().join("slamlab_eval_png_truncated.png");
+        std::fs::write(&truncated, &whole[..whole.len() / 2]).expect("a temporary file");
+        assert!(message(read_rgb(&truncated)).contains("not a readable PNG"));
+        std::fs::remove_file(&truncated).expect("removed");
+        assert!(message(read_depth(&folder().join("png.json"))).contains("not a readable PNG"));
     }
 }

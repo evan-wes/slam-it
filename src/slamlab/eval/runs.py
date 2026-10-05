@@ -15,12 +15,14 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
 - ``diagnostics.jsonl``: one JSON object per line, per frame, free-form but each with a
   ``timestamp``; what the pipeline wants to report (tracked points, state, time spent).
 
-:func:`read_run` checks every file's shape; :func:`evaluate` scores a run against the ground
-truth.
+:func:`write_run` checks everything before it writes, and replaces each file whole (written
+to a temporary sibling, then renamed); :func:`read_run` checks every file's shape;
+:func:`evaluate` scores a run against the ground truth.
 """
 
 from __future__ import annotations
 
+import io
 import json
 import math
 from dataclasses import dataclass, field
@@ -46,6 +48,15 @@ MODES = ("monocular", "stereo", "rgbd")
 
 BACKENDS = ("python", "cpp", "rust")
 """The backends a run may come from."""
+
+MAX_DIFFERENCE = 0.02
+"""The largest time difference, in seconds, between a run's frame and its ground-truth pose:
+TUM's ``associate.py`` default, and :data:`slamlab.eval.tum.MAX_DIFFERENCE`. Pairing is
+closest first (:func:`slamlab.eval.metrics.associate`), so a denser ground truth (EuRoC's
+200 Hz) still pairs each frame with its nearest pose."""
+
+_INFO_KEYS = ("dataset", "sequence", "mode", "backend", "settings")
+"""``run.json``'s keys besides ``format`` and ``version``."""
 
 
 @dataclass(frozen=True)
@@ -124,12 +135,39 @@ def write_trajectory(path: str | Path, timestamps: ArrayLike, poses: ArrayLike) 
         If the times do not ascend or a pose is not a rigid transform.
     """
     times, flat = _as_stamped(timestamps, poses, "trajectory")
-    quaternions = so3.to_quaternion(flat[:, :3, :3]) if len(flat) else np.zeros((0, 4))
+    _replace(Path(path), _trajectory_text(times, flat).encode())
+
+
+def _trajectory_text(times: NDArray[np.float64], poses: NDArray[np.float64]) -> str:
+    """Return checked stamped poses as TUM-format lines, each number round-tripping."""
+    quaternions = so3.to_quaternion(poses[:, :3, :3]) if len(poses) else np.zeros((0, 4))
     lines = ["# timestamp tx ty tz qx qy qz qw"]
-    for t, pose, q in zip(times, flat, quaternions, strict=True):
+    for t, pose, q in zip(times, poses, quaternions, strict=True):
         values = [t, *pose[:3, 3], *q]
         lines.append(" ".join(repr(float(v)) for v in values))
-    Path(path).write_text("\n".join(lines) + "\n")
+    return "\n".join(lines) + "\n"
+
+
+def _replace(path: Path, data: bytes) -> None:
+    """Write a file whole: to a temporary sibling, then renamed over it."""
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_bytes(data)
+    temporary.replace(path)
+
+
+def _npy(array: NDArray[np.float64]) -> bytes:
+    """Return an array as the bytes of a ``.npy`` file."""
+    buffer = io.BytesIO()
+    np.save(buffer, array, allow_pickle=False)
+    return buffer.getvalue()
+
+
+def _json(value: Any, name: str) -> str:  # noqa: ANN401 -- a run's free-form JSON values
+    """Return a value as JSON text, refusing what JSON cannot hold."""
+    try:
+        return json.dumps(value, allow_nan=False)
+    except (TypeError, ValueError) as error:
+        raise InvalidInputError(f"{name}: not JSON ({error})") from None
 
 
 def read_trajectory(path: str | Path) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
@@ -195,17 +233,23 @@ def write_run(folder: str | Path, run: Run) -> None:
     Raises
     ------
     slamlab.foundations.errors.InvalidInputError
-        If the mode or backend is unknown, or an array is malformed.
+        If the dataset or sequence is not a string, the mode or backend is unknown, an array
+        is malformed, or the settings or a diagnostic are not JSON (a diagnostic must be an
+        object with a ``timestamp``). Nothing is written then.
     """
+    for name in ("dataset", "sequence"):
+        if not isinstance(getattr(run, name), str):
+            raise InvalidInputError(f"{name}: expected a string")
     _check_names(run.mode, run.backend)
+    times, poses = _as_stamped(run.timestamps, run.poses, "trajectory")
     keyframe_times, keyframe_poses = _as_stamped(
         run.keyframe_timestamps, run.keyframe_poses, "keyframes"
     )
     points, lead = as_batch(run.points, (3,), "points")
     if len(lead) != 1:
         raise InvalidInputError(f"points: expected (M, 3), got {lead}")
-    out = Path(folder)
-    out.mkdir(parents=True, exist_ok=True)
+    if not isinstance(run.settings, dict):
+        raise InvalidInputError("settings: expected a dict")
     info = {
         "format": FORMAT,
         "version": VERSION,
@@ -215,13 +259,20 @@ def write_run(folder: str | Path, run: Run) -> None:
         "backend": run.backend,
         "settings": run.settings,
     }
-    (out / "run.json").write_text(json.dumps(info, indent=1) + "\n")
-    write_trajectory(out / "trajectory.txt", run.timestamps, run.poses)
-    np.save(out / "keyframes.npy", keyframe_times)
-    np.save(out / "keyframe_poses.npy", keyframe_poses)
-    np.save(out / "points.npy", points)
-    lines = [json.dumps(entry) for entry in run.diagnostics]
-    (out / "diagnostics.jsonl").write_text("".join(line + "\n" for line in lines))
+    _json(info, "settings")
+    diagnostics = []
+    for k, entry in enumerate(run.diagnostics):
+        if not isinstance(entry, dict) or "timestamp" not in entry:
+            raise InvalidInputError(f"diagnostics[{k}]: expected an object with a timestamp")
+        diagnostics.append(_json(entry, f"diagnostics[{k}]") + "\n")
+    out = Path(folder)
+    out.mkdir(parents=True, exist_ok=True)
+    _replace(out / "run.json", (json.dumps(info, indent=1) + "\n").encode())
+    _replace(out / "trajectory.txt", _trajectory_text(times, poses).encode())
+    _replace(out / "keyframes.npy", _npy(keyframe_times))
+    _replace(out / "keyframe_poses.npy", _npy(keyframe_poses))
+    _replace(out / "points.npy", _npy(points))
+    _replace(out / "diagnostics.jsonl", "".join(diagnostics).encode())
 
 
 def _check_names(mode: str, backend: str) -> None:
@@ -234,12 +285,56 @@ def _check_names(mode: str, backend: str) -> None:
 
 def _load(path: Path, shape: tuple[int, ...]) -> NDArray[np.float64]:
     """Load a float64 .npy file whose trailing dimensions are `shape`."""
-    data: NDArray[np.float64] = np.load(path, allow_pickle=False)
-    if data.dtype != np.float64 or data.shape[1:] != shape:
+    if not path.is_file():
+        raise FileNotFoundError(f"no {path.name} in {path.parent}")
+    try:
+        data: NDArray[np.float64] = np.load(path, allow_pickle=False)
+    except ValueError as error:  # not an .npy file, or one holding objects
+        raise InvalidInputError(f"{path}: not a readable .npy array ({error})") from None
+    if not isinstance(data, np.ndarray) or data.dtype != np.float64 or data.shape[1:] != shape:
         raise InvalidInputError(
             f"{path}: expected float64 (N, {shape}), got {data.dtype} {data.shape}"
         )
     return data
+
+
+def _read_info(path: Path) -> dict[str, Any]:
+    """Read ``run.json``: this format's version, with every key, each of its type."""
+    try:
+        info = json.loads(path.read_text())
+    except json.JSONDecodeError as error:
+        raise InvalidInputError(f"{path}: not JSON ({error})") from None
+    if not isinstance(info, dict):
+        raise InvalidInputError(f"{path}: expected a JSON object")
+    if info.get("format") != FORMAT or info.get("version") != VERSION:
+        raise InvalidInputError(
+            f"{path}: expected format {FORMAT!r} version {VERSION}, got "
+            f"{info.get('format')!r} version {info.get('version')!r}"
+        )
+    missing = [key for key in _INFO_KEYS if key not in info]
+    if missing:
+        raise InvalidInputError(f"{path}: missing {', '.join(missing)}")
+    for key in ("dataset", "sequence", "mode", "backend"):
+        if not isinstance(info[key], str):
+            raise InvalidInputError(f"{path}: {key} must be a string")
+    if not isinstance(info["settings"], dict):
+        raise InvalidInputError(f"{path}: settings must be an object")
+    _check_names(info["mode"], info["backend"])
+    return info
+
+
+def _read_diagnostics(path: Path) -> list[dict[str, Any]]:
+    """Read ``diagnostics.jsonl``: one object with a ``timestamp`` per line."""
+    out = []
+    for number, line in enumerate(path.read_text().splitlines(), start=1):
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise InvalidInputError(f"{path}:{number}: not JSON ({error})") from None
+        if not isinstance(entry, dict) or "timestamp" not in entry:
+            raise InvalidInputError(f"{path}:{number}: expected an object with a timestamp")
+        out.append(entry)
+    return out
 
 
 def read_run(folder: str | Path) -> Run:
@@ -260,31 +355,18 @@ def read_run(folder: str | Path) -> Run:
     FileNotFoundError
         If a file is missing.
     slamlab.foundations.errors.InvalidInputError
-        If ``run.json`` is not this format's version, or a file is malformed.
+        If ``run.json`` is not JSON, not this format's version, or lacks a key or has one of
+        the wrong type, or another file is malformed (named, with its line where it has one).
     """
     root = Path(folder)
-    info = json.loads((root / "run.json").read_text())
-    if info.get("format") != FORMAT or info.get("version") != VERSION:
-        raise InvalidInputError(
-            f"{root / 'run.json'}: expected format {FORMAT!r} version {VERSION}, got "
-            f"{info.get('format')!r} version {info.get('version')!r}"
-        )
-    _check_names(info["mode"], info["backend"])
+    info = _read_info(root / "run.json")
     times, poses = read_trajectory(root / "trajectory.txt")
     keyframe_times = _load(root / "keyframes.npy", ())
     keyframe_poses = _load(root / "keyframe_poses.npy", (4, 4))
     _as_stamped(keyframe_times, keyframe_poses, "keyframes")
-    diagnostics = []
-    for number, line in enumerate((root / "diagnostics.jsonl").read_text().splitlines(), start=1):
-        entry = json.loads(line)
-        if not isinstance(entry, dict) or "timestamp" not in entry:
-            raise InvalidInputError(
-                f"{root / 'diagnostics.jsonl'}:{number}: expected an object with a timestamp"
-            )
-        diagnostics.append(entry)
     return Run(
-        dataset=str(info["dataset"]),
-        sequence=str(info["sequence"]),
+        dataset=info["dataset"],
+        sequence=info["sequence"],
         mode=info["mode"],
         backend=info["backend"],
         timestamps=times,
@@ -292,8 +374,8 @@ def read_run(folder: str | Path) -> Run:
         keyframe_timestamps=keyframe_times,
         keyframe_poses=keyframe_poses,
         points=_load(root / "points.npy", (3,)),
-        settings=dict(info.get("settings", {})),
-        diagnostics=diagnostics,
+        settings=info["settings"],
+        diagnostics=_read_diagnostics(root / "diagnostics.jsonl"),
     )
 
 
@@ -308,7 +390,8 @@ class Evaluation:
     absolute : slamlab.eval.metrics.AbsoluteError
         The ATE: Sim(3)-aligned for a monocular run, SE(3) otherwise.
     relative : slamlab.eval.metrics.RelativeError
-        The frame-to-frame RPE, the estimate scaled by the ATE's scale.
+        The RPE over one frame period (or the interval asked for), the estimate scaled by the
+        ATE's scale.
     """
 
     matched: int
@@ -321,7 +404,8 @@ def evaluate(
     timestamps: ArrayLike,
     poses: ArrayLike,
     *,
-    max_difference: float = 0.01,
+    max_difference: float = MAX_DIFFERENCE,
+    rpe_delta: float | None = None,
 ) -> Evaluation:
     """Score a run against the ground truth.
 
@@ -334,26 +418,38 @@ def evaluate(
     poses : array_like, shape (G, 4, 4)
         Its ``T_world_cam``.
     max_difference : float, optional
-        The largest time difference, in seconds, between a run frame and its ground truth.
+        The largest time difference, in seconds, between a run frame and its ground truth
+        (default :data:`MAX_DIFFERENCE`).
+    rpe_delta : float, optional
+        The RPE's interval, in seconds (default: the run's frame period, the median spacing
+        of its timestamps). Pairs are sought within half a frame period.
 
     Returns
     -------
     Evaluation
-        The ATE and the frame-to-frame RPE over the matched frames.
+        The ATE and the RPE over the matched frames.
 
     Raises
     ------
     slamlab.foundations.errors.InvalidInputError
-        If an array is malformed, or fewer than three frames match.
+        If an array is malformed or its times do not ascend, fewer than three frames match,
+        or no matched frame has another `rpe_delta` seconds later.
     """
     truth_times, truth_poses = _as_stamped(timestamps, poses, "ground truth")
-    if not (math.isfinite(max_difference) and max_difference >= 0.0):
-        raise InvalidInputError(f"max_difference: must be non-negative, got {max_difference}")
-    ours, theirs = metrics.associate(run.timestamps, truth_times, max_difference)
+    run_times, run_poses = _as_stamped(run.timestamps, run.poses, "run")
+    ours, theirs = metrics.associate(run_times, truth_times, max_difference)
     if len(ours) < 3:  # the alignment's minimum
         raise InvalidInputError(f"only {len(ours)} frames have a ground-truth pose; need 3")
+    period = float(np.median(np.diff(run_times)))
     absolute = metrics.absolute_error(
-        run.poses[ours], truth_poses[theirs], with_scale=run.mode == "monocular"
+        run_poses[ours], truth_poses[theirs], with_scale=run.mode == "monocular"
     )
-    relative = metrics.relative_error(run.poses[ours], truth_poses[theirs], scale=absolute.scale)
+    relative = metrics.relative_error(
+        run_poses[ours],
+        truth_poses[theirs],
+        run_times[ours],
+        delta=period if rpe_delta is None else rpe_delta,
+        tolerance=0.5 * period,
+        scale=absolute.scale,
+    )
     return Evaluation(matched=len(ours), absolute=absolute, relative=relative)

@@ -8,11 +8,16 @@ the two arrays hold ``T_world_cam`` at the same instants (associate them by time
   camera centres (Umeyama, :func:`slamlab.foundations.alignment.align`): Sim(3) for monocular
   runs, whose scale is unobservable, SE(3) for stereo and RGB-D. The error of each pose is the
   distance between its aligned centre and the true one; the headline is their RMSE.
-- **RPE:** the drift over a fixed interval. For each pose ``i`` and the pose ``delta`` steps
-  later, the error is ``(Q_i^-1 Q_j)^-1 (P_i^-1 P_j)``, ``Q`` the truth and ``P`` the estimate
-  (its translations multiplied by the ATE's scale for a monocular run); its translation's norm
-  and rotation's angle are reported, with their RMSE. No alignment is needed: relative motion
-  does not depend on the world frame.
+- **RPE:** the drift over a fixed interval of time. Each pose ``i`` pairs with the pose ``j``
+  nearest ``delta`` seconds later, if one lies within a tolerance, as TUM's ``evaluate_rpe.py``
+  pairs them; a pose without one (near the end, or before a tracking gap) is skipped, so a gap
+  never counts as one step. The error is ``(Q_i^-1 Q_j)^-1 (P_i^-1 P_j)``, ``Q`` the truth and
+  ``P`` the estimate (its translations multiplied by the ATE's scale for a monocular run); its
+  translation's norm and rotation's angle are reported, with their RMSE. No alignment is
+  needed: relative motion does not depend on the world frame.
+
+:func:`associate` pairs an estimate's timestamps with the ground truth's first, as TUM's
+``associate.py`` does.
 """
 
 from __future__ import annotations
@@ -23,8 +28,9 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
+from slamlab.eval import timing
 from slamlab.foundations import alignment, se3, so3
-from slamlab.foundations.arrays import as_batch
+from slamlab.foundations.arrays import as_batch, as_number
 from slamlab.foundations.errors import InvalidInputError
 
 
@@ -55,10 +61,12 @@ class AbsoluteError:
 
 @dataclass(frozen=True)
 class RelativeError:
-    """A relative pose error over a fixed interval.
+    """A relative pose error over a fixed interval of time.
 
     Attributes
     ----------
+    pairs : ndarray of int64, shape (M, 2)
+        The poses ``(i, j)`` compared, ``j`` about `delta` seconds after ``i``.
     translation : ndarray of float64, shape (M,)
         Each pair's translational drift, in the truth's units.
     rotation : ndarray of float64, shape (M,)
@@ -67,15 +75,16 @@ class RelativeError:
         The translational drifts' root mean square.
     rotation_rmse : float
         The rotational drifts' root mean square, in radians.
-    delta : int
-        The interval, in poses.
+    delta : float
+        The interval, in seconds.
     """
 
+    pairs: NDArray[np.int64]
     translation: NDArray[np.float64]
     rotation: NDArray[np.float64]
     translation_rmse: float
     rotation_rmse: float
-    delta: int
+    delta: float
 
 
 def _as_trajectories(
@@ -141,17 +150,28 @@ def absolute_error(
     )
 
 
-def relative_error(
-    estimate: ArrayLike, truth: ArrayLike, *, delta: int = 1, scale: float = 1.0
+def relative_error(  # noqa: PLR0913 -- two trajectories, their times, the interval
+    estimate: ArrayLike,
+    truth: ArrayLike,
+    times: ArrayLike,
+    *,
+    delta: float,
+    tolerance: float | None = None,
+    scale: float = 1.0,
 ) -> RelativeError:
-    """Return the relative pose error over `delta` poses.
+    """Return the relative pose error over an interval of `delta` seconds.
 
     Parameters
     ----------
     estimate, truth : array_like, shape (N, 4, 4)
-        ``T_world_cam`` at the same instants, N > `delta`.
-    delta : int, optional
-        The interval, in poses (default 1: frame to frame).
+        ``T_world_cam`` at the same instants, N >= 2.
+    times : array_like, shape (N,)
+        Those instants, in seconds, strictly ascending.
+    delta : float
+        The interval, in seconds: one frame period gives the frame-to-frame drift.
+    tolerance : float, optional
+        How far, in seconds, a pose may lie from ``times[i] + delta`` and still pair with
+        pose ``i`` (default: half the median spacing of `times`).
     scale : float, optional
         Multiplies the estimate's relative translations: the ATE's Sim(3) scale for a
         monocular estimate (default 1).
@@ -164,78 +184,102 @@ def relative_error(
     Raises
     ------
     slamlab.foundations.errors.InvalidInputError
-        If the trajectories are not equal-length batches of rigid transforms, `delta` is not a
-        positive integer below their length, or `scale` is not positive and finite.
+        If the trajectories are not equal-length batches of rigid transforms, `times` does
+        not ascend strictly or differs in length, `delta`, `tolerance` or `scale` is out of
+        range, or no pose has another `delta` seconds later.
     """
     est, tru = _as_trajectories(estimate, truth)
-    if isinstance(delta, bool) or not isinstance(delta, int) or not 1 <= delta < len(est):
-        raise InvalidInputError(f"delta: must be from 1 to {len(est) - 1}, got {delta}")
-    if not (math.isfinite(scale) and scale > 0.0):
-        raise InvalidInputError(f"scale: must be positive and finite, got {scale}")
-    moved = se3.compose(se3.inverse(est[:-delta]), est[delta:])
-    moved[:, :3, 3] *= scale
-    true_moved = se3.compose(se3.inverse(tru[:-delta]), tru[delta:])
+    stamps = timing.as_times(times, "times")
+    if len(stamps) != len(est) or len(est) < 2:  # an interval needs two poses
+        raise InvalidInputError(
+            f"times: expected one per pose and at least 2, got {len(stamps)} for {len(est)}"
+        )
+    interval = as_number(delta, "delta")
+    if not (math.isfinite(interval) and interval > 0.0):
+        raise InvalidInputError(f"delta: must be positive and finite, got {interval}")
+    window = 0.5 * float(np.median(np.diff(stamps))) if tolerance is None else tolerance
+    window = as_number(window, "tolerance")
+    if not (math.isfinite(window) and window >= 0.0):
+        raise InvalidInputError(f"tolerance: must be non-negative and finite, got {window}")
+    factor = as_number(scale, "scale")
+    if not (math.isfinite(factor) and factor > 0.0):
+        raise InvalidInputError(f"scale: must be positive and finite, got {factor}")
+    targets = stamps + interval
+    later = timing.nearest(stamps, targets)
+    first = np.flatnonzero(
+        (np.abs(stamps[later] - targets) <= window) & (later > np.arange(len(stamps)))
+    )
+    if len(first) == 0:
+        raise InvalidInputError(f"no pose has another {interval} s (+-{window} s) later")
+    second = later[first]
+    moved = se3.compose(se3.inverse(est[first]), est[second])
+    moved[:, :3, 3] *= factor
+    true_moved = se3.compose(se3.inverse(tru[first]), tru[second])
     error = se3.compose(se3.inverse(true_moved), moved)
     translation = np.linalg.norm(error[:, :3, 3], axis=1)
     rotation = np.linalg.norm(so3.log(error[:, :3, :3]), axis=1)
     return RelativeError(
+        pairs=np.column_stack([first, second]).astype(np.int64),
         translation=translation,
         rotation=rotation,
         translation_rmse=_rms(translation),
         rotation_rmse=_rms(rotation),
-        delta=delta,
+        delta=interval,
     )
 
 
 def associate(
     times: ArrayLike, reference: ArrayLike, max_difference: float
 ) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
-    """Pair each time with the nearest reference time, as TUM's ``associate.py`` does.
+    """Pair times with reference times as TUM's ``associate.py`` does: closest first.
+
+    Every pair of a time and a reference time less than `max_difference` apart is a
+    candidate. Candidates are taken in order of their gap (ties: the earlier time, then the
+    earlier reference), each time and each reference time once, so a time whose nearest
+    reference is taken still pairs with its next nearest within reach.
 
     Parameters
     ----------
     times : array_like, shape (F,)
-        The times to pair, ascending.
+        The times to pair, strictly ascending.
     reference : array_like, shape (G,)
-        The reference times, ascending.
+        The reference times, strictly ascending.
     max_difference : float
-        The largest time difference accepted.
+        The largest time difference accepted, exclusive (TUM's ``<``).
 
     Returns
     -------
     ours, theirs : ndarray of int64
-        The paired indices into `times` and `reference`, ascending. A reference time is used
-        once, by its nearest time (ties: the earlier).
+        The paired indices into `times` and `reference`, `ours` ascending.
 
     Raises
     ------
     slamlab.foundations.errors.InvalidInputError
-        If an array is not 1D and finite, or `max_difference` is negative.
+        If an array is not a finite 1D array that ascends strictly, or `max_difference` is
+        negative.
     """
-    ours = np.asarray(times, dtype=np.float64)
-    theirs = np.asarray(reference, dtype=np.float64)
-    if (
-        ours.ndim != 1
-        or theirs.ndim != 1
-        or not np.all(np.isfinite(ours))
-        or not np.all(np.isfinite(theirs))
-    ):
-        raise InvalidInputError("times and reference: expected finite 1D arrays")
-    if not (math.isfinite(max_difference) and max_difference >= 0.0):
-        raise InvalidInputError(f"max_difference: must be non-negative, got {max_difference}")
-    if len(ours) == 0 or len(theirs) == 0:
-        empty = np.zeros(0, dtype=np.int64)
-        return empty, empty
-    after = np.clip(np.searchsorted(theirs, ours), 1, max(len(theirs) - 1, 1))
-    before = np.maximum(after - 1, 0)
-    after = np.minimum(after, len(theirs) - 1)
-    nearest = np.where(np.abs(theirs[before] - ours) <= np.abs(theirs[after] - ours), before, after)
-    gap = np.abs(theirs[nearest] - ours)
-    candidates = np.flatnonzero(gap <= max_difference)
-    # Each reference time keeps its closest pairing (ties: the earlier time).
-    order = np.lexsort((candidates, gap[candidates], nearest[candidates]))
-    ranked = candidates[order]
-    first = np.ones(len(ranked), dtype=bool)
-    first[1:] = nearest[ranked][1:] != nearest[ranked][:-1]
-    kept = np.sort(ranked[first])
-    return kept.astype(np.int64), nearest[kept].astype(np.int64)
+    ours = timing.as_times(times, "times")
+    theirs = timing.as_times(reference, "reference")
+    reach = as_number(max_difference, "max_difference")
+    if not (math.isfinite(reach) and reach >= 0.0):
+        raise InvalidInputError(f"max_difference: must be non-negative, got {reach}")
+    # Each time's candidates are a run of references; widen each run by one on both sides so
+    # the rounding of t -/+ reach loses none, then keep the gaps below reach exactly.
+    low = np.maximum(np.searchsorted(theirs, ours - reach, side="right") - 1, 0)
+    high = np.minimum(np.searchsorted(theirs, ours + reach, side="left") + 1, len(theirs))
+    counts = np.maximum(high - low, 0)
+    i = np.repeat(np.arange(len(ours)), counts)
+    j = np.arange(counts.sum()) - np.repeat(np.cumsum(counts) - counts - low, counts)
+    gap = np.abs(theirs[j] - ours[i])
+    close = gap < reach
+    i, j, gap = i[close], j[close], gap[close]
+    used_ours = np.zeros(len(ours), dtype=bool)
+    used_theirs = np.zeros(len(theirs), dtype=bool)
+    pairs = []
+    for k in np.lexsort((j, i, gap)):  # by gap, then time, then reference
+        if not (used_ours[i[k]] or used_theirs[j[k]]):
+            used_ours[i[k]] = used_theirs[j[k]] = True
+            pairs.append((int(i[k]), int(j[k])))
+    pairs.sort()
+    matched = np.asarray(pairs, dtype=np.int64).reshape(-1, 2)
+    return matched[:, 0].copy(), matched[:, 1].copy()

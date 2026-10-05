@@ -23,6 +23,7 @@ are Hamilton, stored ``w`` first in the file (unlike TUM).
 from __future__ import annotations
 
 import csv
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,7 +31,9 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
+from slamlab.eval import timing
 from slamlab.foundations import se3, so3
+from slamlab.foundations.arrays import MAX_IMAGE_SIDE
 from slamlab.foundations.errors import InvalidInputError
 
 MAX_DIFFERENCE = 0.0025
@@ -163,6 +166,12 @@ def read_camera(path: str | Path) -> Camera:
             f"{file}: expected 4 intrinsics, 4 distortion coefficients, a 2-value resolution "
             "and a 16-value T_BS"
         )
+    if not all(map(math.isfinite, [*pinhole, *distortion, *resolution, *pose])):
+        raise InvalidInputError(f"{file}: expected finite numbers")
+    if not all(v == int(v) and 1 <= v <= MAX_IMAGE_SIDE for v in resolution):
+        raise InvalidInputError(
+            f"{file}: expected a resolution of two integers from 1 to {MAX_IMAGE_SIDE}"
+        )
     transform = np.asarray(pose).reshape(4, 4)
     se3.check_transform(transform.reshape(1, 4, 4))
     return Camera(
@@ -178,7 +187,7 @@ def _frames(folder: Path) -> dict[int, Path]:
     Raises
     ------
     slamlab.foundations.errors.InvalidInputError
-        If a row is not ``timestamp,filename``.
+        If a row is not ``timestamp,filename``, or a timestamp repeats.
     """
     path = folder / "data.csv"
     out = {}
@@ -188,7 +197,10 @@ def _frames(folder: Path) -> dict[int, Path]:
                 continue
             if len(row) < 2 or not row[0].strip().isdigit():  # two columns
                 raise InvalidInputError(f"{path}:{number}: expected `timestamp,filename`")
-            out[int(row[0])] = folder / "data" / row[1].strip()
+            stamp = int(row[0])
+            if stamp in out:
+                raise InvalidInputError(f"{path}:{number}: timestamp {stamp} repeats")
+            out[stamp] = folder / "data" / row[1].strip()
     return out
 
 
@@ -198,8 +210,8 @@ def _ground_truth(path: Path) -> tuple[NDArray[np.int64], NDArray[np.float64]]:
     Raises
     ------
     slamlab.foundations.errors.InvalidInputError
-        If the file has no rows, or a row is not at least 8 numbers with a non-zero
-        quaternion.
+        If the file has no rows, a row is not at least 8 finite numbers with a non-zero
+        quaternion, or a timestamp repeats.
     """
     stamps, values = [], []
     with path.open(newline="") as file:
@@ -212,15 +224,19 @@ def _ground_truth(path: Path) -> tuple[NDArray[np.int64], NDArray[np.float64]]:
             except (ValueError, IndexError) as error:
                 raise InvalidInputError(f"{path}:{number}: expected numbers ({error})") from None
             if (
-                len(values[-1]) != 7 or not np.linalg.norm(values[-1][3:7]) > 0.0
+                len(values[-1]) != 7
+                or not all(map(math.isfinite, values[-1]))
+                or not np.linalg.norm(values[-1][3:7]) > 0.0
             ):  # position and quaternion
                 raise InvalidInputError(
-                    f"{path}:{number}: expected 7 values, a non-zero quaternion"
+                    f"{path}:{number}: expected 7 finite values, a non-zero quaternion"
                 )
     if not stamps:
         raise InvalidInputError(f"{path}: no ground-truth poses")
     order = np.argsort(stamps, kind="stable")
     times = np.asarray(stamps, dtype=np.int64)[order]
+    if np.any(np.diff(times) == 0):
+        raise InvalidInputError(f"{path}: a timestamp repeats")
     table = np.asarray(values)[order]
     wxyz = table[:, 3:7] / np.linalg.norm(table[:, 3:7], axis=1, keepdims=True)
     poses = np.tile(np.eye(4), (len(table), 1, 1))
@@ -261,13 +277,7 @@ def read_sequence(root: str | Path, max_difference: float = MAX_DIFFERENCE) -> S
     stamps = np.asarray(sorted(set(left) & set(right)), dtype=np.int64)
     if len(stamps) == 0:
         raise InvalidInputError(f"{root}: no frame has both a left and a right image")
-    after = np.clip(np.searchsorted(times, stamps), 1, len(times) - 1)
-    before = after - 1
-    nearest = np.where(
-        np.abs(times[before] - stamps) <= np.abs(times[after] - stamps), before, after
-    )
-    if len(times) == 1:
-        nearest = np.zeros(len(stamps), dtype=np.int64)
+    nearest = timing.nearest(times, stamps)  # in nanoseconds, exactly
     kept = np.abs(times[nearest] - stamps) <= round(max_difference * NANOSECONDS)
     if not np.any(kept):
         raise InvalidInputError(

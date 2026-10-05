@@ -118,18 +118,33 @@ docstring lists them all):
 ## Reading datasets
 
 Images reach the algorithms as arrays; files are read in `slamlab.eval.images` (Pillow, the
-one module allowed to import it), C++'s `slamlab_eval` (the vendored stb_image) and Rust's
-`slamlab-eval` (the `png` crate), held to seven shared PNG fixtures. `tum.read_depth` gives a
+one module allowed to import it), C++'s `slamlab_eval` (the vendored stb_image, its symbols
+private to the library) and Rust's `slamlab-eval` (the `png` crate), each as `read_gray`,
+`read_rgb` and `read_depth`, held to seven shared PNG fixtures. They refuse the same files,
+in different kinds: the native readers report every failure, a missing file included, as
+`InvalidInput` naming the file (the cores have no I/O kind), where Python raises
+`FileNotFoundError` for a missing one; and stb_image skips PNG checksums, so a file damaged
+only in its CRC decodes in C++ and is refused by the other two. `tum.read_depth` gives a
 depth map in metres (NaN where nothing was measured); `euroc.read_sequence` reads the ASL
-format's stereo frames, calibrations and ground truth.
+format's stereo frames, calibrations and ground truth, refusing non-finite values and
+repeated timestamps. Both readers pair a frame with its nearest ground-truth sample through
+`eval.timing`, the one nearest-time search the eval modules share.
 
 ## Scoring
 
 `metrics.absolute_error` is the ATE after a Sim(3) (monocular) or SE(3) (stereo, RGB-D)
-alignment, `metrics.relative_error` the RPE; both follow the TUM benchmark. A run is a folder
-(`runs.write_run`): `run.json`, a TUM-format `trajectory.txt`, keyframes and points as `.npy`,
-and per-frame diagnostics as JSON lines, written by every backend's pipeline and scored by
-`runs.evaluate`.
+alignment, `metrics.relative_error` the RPE; both follow the TUM benchmark. The RPE pairs
+poses by time, as TUM's `evaluate_rpe.py` does: each pose with the one nearest `delta` seconds
+later, if one is within a tolerance, so a tracking gap is skipped rather than counted as one
+step (paired by index, a 60-frame gap read as 60 frames' drift in one). `metrics.associate`
+pairs an estimate's timestamps with the ground truth's as TUM's `associate.py` does, closest
+first, each used once.
+
+A run is a folder (`runs.write_run`): `run.json`, a TUM-format `trajectory.txt`, keyframes
+and points as `.npy`, and per-frame diagnostics as JSON lines, written by every backend's
+pipeline and scored by `runs.evaluate` (the ATE, and the RPE over one frame period).
+`write_run` checks everything before writing and replaces each file whole; `read_run` refuses
+a malformed file with `InvalidInputError`, naming it.
 
 ## Results
 

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -94,6 +96,51 @@ def test_evaluate_scores_a_noisy_run() -> None:
     assert scored.matched == len(frames)
     assert 0.01 < scored.absolute.rmse < 0.025
     assert scored.absolute.scale == 1.0
+    assert scored.relative.delta == pytest.approx(0.05)  # the run's frame period
+    assert len(scored.relative.pairs) == len(frames) - 1
+
+
+def test_evaluate_rejects_a_run_whose_times_do_not_ascend() -> None:
+    """The run's times are checked before they are paired with the ground truth."""
+    times = np.arange(0.0, 1.0, 0.05)
+    poses = np.tile(np.eye(4), (len(times), 1, 1))
+    run = runs.Run("synthetic", "still", "rgbd", "python", times[::-1], poses)
+    with pytest.raises(InvalidInputError, match="run: timestamps must ascend"):
+        runs.evaluate(run, times, poses)
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"timestamps": np.arange(12.0)[::-1]}, "trajectory: timestamps must ascend"),
+        ({"settings": {"seed": np.int64(3)}}, "settings: not JSON"),
+        ({"diagnostics": [{"tracked": 3}]}, r"diagnostics\[0\]: expected an object"),
+        ({"diagnostics": [{"timestamp": float("nan")}]}, r"diagnostics\[0\]: not JSON"),
+        ({"dataset": 3}, "dataset: expected a string"),
+    ],
+)
+def test_write_run_checks_everything_before_writing(
+    tmp_path: Path, change: dict[str, Any], message: str
+) -> None:
+    """A bad run raises InvalidInputError and leaves no folder behind."""
+    with pytest.raises(InvalidInputError, match=message):
+        runs.write_run(tmp_path / "run", replace(_run(), **change))
+    assert not (tmp_path / "run").exists()
+
+
+def test_write_run_replaces_files_whole(tmp_path: Path) -> None:
+    """Writing again replaces every file and leaves no temporary file."""
+    runs.write_run(tmp_path, _run())
+    runs.write_run(tmp_path, replace(_run(), sequence="V1_02_medium"))
+    assert runs.read_run(tmp_path).sequence == "V1_02_medium"
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "diagnostics.jsonl",
+        "keyframe_poses.npy",
+        "keyframes.npy",
+        "points.npy",
+        "run.json",
+        "trajectory.txt",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -103,16 +150,47 @@ def test_evaluate_scores_a_noisy_run() -> None:
         (lambda info: info.update(format="other"), "format"),
         (lambda info: info.update(mode="lidar"), "mode"),
         (lambda info: info.update(backend="java"), "backend"),
+        (lambda info: info.pop("mode"), "missing mode"),
+        (lambda info: info.update(sequence=7), "sequence must be a string"),
+        (lambda info: info.update(settings=[1]), "settings must be an object"),
     ],
 )
 def test_read_run_rejects_unknown_info(tmp_path: Path, edit: object, message: str) -> None:
-    """A run.json of another format, version, mode or backend is refused."""
+    """A run.json of another format, version, mode or backend, or missing a key, is refused."""
     runs.write_run(tmp_path, _run())
     info = json.loads((tmp_path / "run.json").read_text())
     assert callable(edit)
     edit(info)
     (tmp_path / "run.json").write_text(json.dumps(info))
     with pytest.raises(InvalidInputError, match=message):
+        runs.read_run(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("name", "text", "message"),
+    [
+        ("run.json", "{not json", "run.json: not JSON"),
+        ("run.json", "[]", "expected a JSON object"),
+        ("diagnostics.jsonl", '{"timestamp": 1}\n{oops\n', "diagnostics.jsonl:2: not JSON"),
+        ("diagnostics.jsonl", "[1]\n", "expected an object with a timestamp"),
+        ("points.npy", "not an array", "points.npy: not a readable .npy array"),
+    ],
+)
+def test_read_run_rejects_malformed_files(
+    tmp_path: Path, name: str, text: str, message: str
+) -> None:
+    """Files that do not parse are InvalidInputError, named with their line where they have one."""
+    runs.write_run(tmp_path, _run())
+    (tmp_path / name).write_text(text)
+    with pytest.raises(InvalidInputError, match=message):
+        runs.read_run(tmp_path)
+
+
+def test_read_run_reports_a_missing_file(tmp_path: Path) -> None:
+    """A missing array file is FileNotFoundError, as a missing trajectory is."""
+    runs.write_run(tmp_path, _run())
+    (tmp_path / "points.npy").unlink()
+    with pytest.raises(FileNotFoundError, match=r"points\.npy"):
         runs.read_run(tmp_path)
 
 
