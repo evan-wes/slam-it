@@ -113,9 +113,8 @@ foundations::Result<void> check_options(const Options& options) {
       return foundations::fail_setting(setting, "must be finite and positive", value);
     }
   }
-  const std::array<RealSetting, 8> fractions{{
+  const std::array<RealSetting, 7> fractions{{
       {"init_ratio", options.init_ratio},
-      {"triangulation_ratio", options.triangulation_ratio},
       {"ref_ratio", options.ref_ratio},
       {"mono_ref_ratio", options.mono_ref_ratio},
       {"found_ratio", options.found_ratio},

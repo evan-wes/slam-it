@@ -35,7 +35,7 @@ from slamlab.edge.frames import Camera, Frame, Tracked
 from slamlab.edge.map import Map, frame_dict
 from slamlab.edge.options import MODES, TH_HIGH, Options
 from slamlab.foundations import matching, pnp, ransac
-from slamlab.foundations.arrays import as_number, as_real
+from slamlab.foundations.arrays import as_number
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
 
 Array = NDArray[np.float64]
@@ -164,49 +164,9 @@ class Implementation(Protocol):
         ...
 
 
-def tracked_dict(tracked: Tracked) -> dict[str, Any]:
-    """Return a tracked frame as it crosses the bindings.
-
-    Parameters
-    ----------
-    tracked : slamlab.edge.frames.Tracked
-        The tracked frame.
-
-    Returns
-    -------
-    dict
-        ``pose`` (4, 4) and ``points`` (N,).
-    """
-    return {"pose": tracked.pose, "points": tracked.points}
-
-
-def decode_tracked(raw: dict[str, Any] | None, codes: backends.Codes) -> Tracked | None:
-    """Rebuild a tracked frame from a compiled backend's dict, its arrays checked.
-
-    Parameters
-    ----------
-    raw : dict or None
-        ``pose`` and ``points``, or None.
-    codes : dict
-        The backend module's code tables (a tracked frame crosses none).
-
-    Returns
-    -------
-    Tracked or None
-        The tracked frame.
-    """
-    del codes
-    if raw is None:
-        return None
-    return Tracked(
-        pose=backends.checked_array(raw["pose"], np.float64, 2, "tracked pose"),
-        points=backends.checked_array(raw["points"], np.int64, 1, "tracked points"),
-    )
-
-
 def _decode_found(raw: dict[str, Any], codes: backends.Codes) -> Tracked:
     """Rebuild a tracked frame that is never None."""
-    tracked = decode_tracked(raw, codes)
+    tracked = frames.decode_tracked(raw, codes)
     assert tracked is not None
     return tracked
 
@@ -229,32 +189,6 @@ def _decode_local(raw: dict[str, Any], codes: backends.Codes) -> LocalTracking:
         tracked=_decode_found(raw, codes),
         visible=backends.checked_array(raw["visible"], np.int64, 1, "visible ids"),
         found=backends.checked_array(raw["found"], np.int64, 1, "found ids"),
-    )
-
-
-def _as_pose(pose: ArrayLike, name: str) -> Array:
-    """Check a 4x4 pose: finite."""
-    matrix = as_real(pose, name)
-    if matrix.shape != (4, 4):
-        raise InvalidInputError(f"{name}: expected shape (4, 4), got {matrix.shape}")
-    return matrix
-
-
-def _as_matches(points: ArrayLike, frame: Frame, name: str) -> IntArray:
-    """Check a frame's matches: one point id (or -1) per keypoint."""
-    ids = np.asarray(points)
-    if ids.shape != (frame.size,) or (
-        ids.size and (not np.issubdtype(ids.dtype, np.integer) or ids.min() < -1)
-    ):
-        raise InvalidInputError(f"{name}: expected one point id (or -1) per keypoint")
-    return np.ascontiguousarray(ids, dtype=np.int64)
-
-
-def _as_tracked(tracked: Tracked, frame: Frame, name: str) -> Tracked:
-    """Check a tracked frame: a finite 4x4 pose and one match per keypoint."""
-    return Tracked(
-        pose=_as_pose(tracked.pose, f"{name}.pose"),
-        points=_as_matches(tracked.points, frame, f"{name}.points"),
     )
 
 
@@ -359,7 +293,7 @@ def optimize_pose(  # noqa: PLR0913 -- the map, its camera, the frame tracked, t
     slamlab.foundations.errors.InvalidInputError
         If the pose is not a finite 4x4 matrix, or the matches are not one per keypoint.
     """
-    start = _as_tracked(tracked, frame, "tracked")
+    start = frames.checked_tracked(tracked, frame, "tracked")
     return backends.call(
         backend,
         __name__,
@@ -369,7 +303,7 @@ def optimize_pose(  # noqa: PLR0913 -- the map, its camera, the frame tracked, t
             "m": m.as_dict(),
             "camera": camera.as_dict(),
             "frame": frame_dict(frame),
-            "tracked": tracked_dict(start),
+            "tracked": start.as_dict(),
             "options": options.as_dict(),
         },
         decode=_decode_found,
@@ -443,7 +377,7 @@ def in_view(  # noqa: PLR0913 -- the map, its camera, a pose, the candidates, th
     slamlab.foundations.errors.InvalidInputError
         If the pose is not a finite 4x4 matrix, or a row is out of range.
     """
-    matrix = _as_pose(pose, "pose")
+    matrix = frames.as_pose(pose, "pose")
     given = np.asarray(rows)
     chosen = maps.as_point_rows(m, given)
     return backends.call(
@@ -589,8 +523,8 @@ def track_last_frame(  # noqa: PLR0913 -- the stage's state, and the backend
         are not one per keypoint.
     """
     _check_mode(mode)
-    matrix = _as_pose(predicted, "predicted")
-    previous = _as_tracked(last_tracked, last, "last_tracked")
+    matrix = frames.as_pose(predicted, "predicted")
+    previous = frames.checked_tracked(last_tracked, last, "last_tracked")
     return backends.call(
         backend,
         __name__,
@@ -603,12 +537,12 @@ def track_last_frame(  # noqa: PLR0913 -- the stage's state, and the backend
             "camera": camera.as_dict(),
             "frame": frame_dict(frame),
             "last": frame_dict(last),
-            "last_tracked": tracked_dict(previous),
+            "last_tracked": previous.as_dict(),
             "predicted": matrix,
             "mode": mode,
             "options": options.as_dict(),
         },
-        decode=decode_tracked,
+        decode=frames.decode_tracked,
     )
 
 
@@ -701,7 +635,7 @@ def track_local_map(  # noqa: PLR0913 -- the stage's state, the widening, and th
     factor = as_number(widen, "widen")
     if not (math.isfinite(factor) and factor > 0.0):
         raise InvalidInputError(f"widen: must be finite and positive, got {factor}")
-    so_far = _as_tracked(tracked, frame, "tracked")
+    so_far = frames.checked_tracked(tracked, frame, "tracked")
     return backends.call(
         backend,
         __name__,
@@ -713,7 +647,7 @@ def track_local_map(  # noqa: PLR0913 -- the stage's state, the widening, and th
             "m": m.as_dict(),
             "camera": camera.as_dict(),
             "frame": frame_dict(frame),
-            "tracked": tracked_dict(so_far),
+            "tracked": so_far.as_dict(),
             "mode": mode,
             "options": options.as_dict(),
             "widen": factor,
@@ -793,5 +727,5 @@ def relocalize_locally(
             "frame": frame_dict(frame),
             "options": options.as_dict(),
         },
-        decode=decode_tracked,
+        decode=frames.decode_tracked,
     )

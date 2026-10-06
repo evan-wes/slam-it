@@ -19,7 +19,7 @@ camera model, so nothing is undistorted.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -437,3 +437,96 @@ class Tracked:
     def inliers(self) -> int:
         """How many keypoints matched a map point."""
         return int(np.count_nonzero(self.points >= 0))
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the tracked frame as it crosses the bindings.
+
+        Returns
+        -------
+        dict
+            ``pose`` (4, 4) and ``points`` (N,).
+        """
+        return {"pose": self.pose, "points": self.points}
+
+
+def as_pose(pose: ArrayLike, name: str = "pose") -> Array:
+    """Check a pose: a finite 4x4 matrix.
+
+    Parameters
+    ----------
+    pose : array_like, shape (4, 4)
+        The pose.
+    name : str, optional
+        Its name, for messages.
+
+    Returns
+    -------
+    ndarray of float64, shape (4, 4)
+        The pose.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If it is not a finite 4x4 matrix.
+    """
+    matrix = as_real(pose, name)
+    if matrix.shape != (4, 4):
+        raise InvalidInputError(f"{name}: expected shape (4, 4), got {matrix.shape}")
+    return matrix
+
+
+def checked_tracked(tracked: Tracked, frame: Frame, name: str = "tracked") -> Tracked:
+    """Check a tracked frame: a finite 4x4 pose and one point id (or -1) per keypoint.
+
+    Parameters
+    ----------
+    tracked : Tracked
+        The tracked frame.
+    frame : Frame
+        The frame it tracks.
+    name : str, optional
+        Its name, for messages.
+
+    Returns
+    -------
+    Tracked
+        The tracked frame, its arrays contiguous.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If the pose is not a finite 4x4 matrix, or the matches are not one per keypoint.
+    """
+    ids = np.asarray(tracked.points)
+    if ids.shape != (frame.size,) or (
+        ids.size and (not np.issubdtype(ids.dtype, np.integer) or ids.min() < -1)
+    ):
+        raise InvalidInputError(f"{name}.points: expected one point id (or -1) per keypoint")
+    return Tracked(
+        pose=as_pose(tracked.pose, f"{name}.pose"),
+        points=np.ascontiguousarray(ids, dtype=np.int64),
+    )
+
+
+def decode_tracked(raw: dict[str, Any] | None, codes: backends.Codes) -> Tracked | None:
+    """Rebuild a tracked frame from a compiled backend's dict, its arrays checked.
+
+    Parameters
+    ----------
+    raw : dict or None
+        ``pose`` and ``points``, or None.
+    codes : dict
+        The backend module's code tables (a tracked frame crosses none).
+
+    Returns
+    -------
+    Tracked or None
+        The tracked frame.
+    """
+    del codes
+    if raw is None:
+        return None
+    return Tracked(
+        pose=backends.checked_array(raw["pose"], np.float64, 2, "tracked pose"),
+        points=backends.checked_array(raw["points"], np.int64, 1, "tracked points"),
+    )

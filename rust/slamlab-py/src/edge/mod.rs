@@ -11,6 +11,7 @@ mod edge_crossing;
 mod frames;
 mod initialization;
 mod map;
+mod mapping;
 mod residuals;
 mod tracking;
 
@@ -27,5 +28,6 @@ pub fn edge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_wrapped(pyo3::wrap_pymodule!(adjust::adjust))?;
     m.add_wrapped(pyo3::wrap_pymodule!(initialization::initialization))?;
     m.add_wrapped(pyo3::wrap_pymodule!(tracking::tracking))?;
+    m.add_wrapped(pyo3::wrap_pymodule!(mapping::mapping))?;
     Ok(())
 }

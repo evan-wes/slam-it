@@ -512,7 +512,7 @@ pub fn options_in(values: &Bound<'_, PyDict>) -> PyResult<Options> {
         init_min_matches, motion_window, stereo_motion_window, min_motion_matches, local_window,
         rgbd_local_window, min_tracked, chi2_mono, chi2_stereo, pose_rounds, view_cos_limit,
         max_frames, ref_ratio, mono_ref_ratio, min_keyframe_inliers, close_tracked,
-        close_untracked, window, min_new_points, triangulation_ratio, max_parallax_cos,
+        close_untracked, window, min_new_points, max_parallax_cos,
         scale_ratio, fuse_window, ba_iterations, ba_refine_iterations, found_ratio,
         min_point_observations, min_point_observations_depth, redundant_fraction,
         redundant_observers, pnp_threshold, pnp_min_inliers, lost_frames, seed,

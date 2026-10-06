@@ -363,7 +363,7 @@ inline constexpr std::array<IntegerOption, 25> kIntegerOptions{{
 }};
 
 /// @brief `Options`' real fields.
-inline constexpr std::array<RealOption, 20> kRealOptions{{
+inline constexpr std::array<RealOption, 19> kRealOptions{{
     {"scale_factor", &edge::Options::scale_factor},
     {"close_depth", &edge::Options::close_depth},
     {"init_window", &edge::Options::init_window},
@@ -377,7 +377,6 @@ inline constexpr std::array<RealOption, 20> kRealOptions{{
     {"view_cos_limit", &edge::Options::view_cos_limit},
     {"ref_ratio", &edge::Options::ref_ratio},
     {"mono_ref_ratio", &edge::Options::mono_ref_ratio},
-    {"triangulation_ratio", &edge::Options::triangulation_ratio},
     {"max_parallax_cos", &edge::Options::max_parallax_cos},
     {"scale_ratio", &edge::Options::scale_ratio},
     {"fuse_window", &edge::Options::fuse_window},

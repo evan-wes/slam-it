@@ -101,9 +101,6 @@ class Options:
     min_new_points : int
         A stereo or RGB-D keyframe creates points from depth, nearest first, until it has at
         least this many and has passed the close depth (100).
-    triangulation_ratio : float
-        The ratio test when matching two keyframes for triangulation (``ORBmatcher(0.6,
-        false)``).
     max_parallax_cos : float
         Rays whose cosine is above this are too parallel to triangulate (0.9998).
     scale_ratio : float
@@ -169,7 +166,6 @@ class Options:
     close_untracked: int = 70
     window: int = 10
     min_new_points: int = 100
-    triangulation_ratio: float = 0.6
     max_parallax_cos: float = 0.9998
     scale_ratio: float = 1.5
     fuse_window: float = 3.0
@@ -257,7 +253,6 @@ _MAY_BE_ZERO = frozenset({"seed", "min_init_features", "min_depth_features"})
 _FRACTIONS = frozenset(
     {
         "init_ratio",
-        "triangulation_ratio",
         "ref_ratio",
         "mono_ref_ratio",
         "found_ratio",

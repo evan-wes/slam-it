@@ -97,8 +97,6 @@ struct Options {
   std::int64_t window{10};
   /// @brief Points a stereo or RGB-D keyframe creates from depth, at least.
   std::int64_t min_new_points{100};
-  /// @brief The ratio test when matching keyframes for triangulation.
-  double triangulation_ratio{0.6};
   /// @brief Rays whose cosine is above this are too parallel to triangulate.
   double max_parallax_cos{0.9998};
   /// @brief The scale-consistency factor of a triangulated point.

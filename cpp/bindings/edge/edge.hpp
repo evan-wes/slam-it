@@ -34,4 +34,8 @@ void bind_initialization(nanobind::module_& m);
 /// @param m The submodule.
 void bind_tracking(nanobind::module_& m);
 
+/// @brief Bind `slamlab.edge.mapping`'s compiled functions.
+/// @param m The submodule.
+void bind_mapping(nanobind::module_& m);
+
 }  // namespace slamlab::bindings

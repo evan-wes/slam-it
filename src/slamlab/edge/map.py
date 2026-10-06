@@ -705,6 +705,31 @@ def _decode_int64(raw: Any, codes: backends.Codes) -> NDArray[np.int64]:  # noqa
     return out
 
 
+def as_keyframe_row(m: Map, k: object, name: str = "k") -> int:
+    """Check a keyframe row: an integer in ``[0, K)`` (a boolean refused).
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    k : object
+        The row.
+    name : str, optional
+        The argument's name, for messages.
+
+    Returns
+    -------
+    int
+        The row.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If it is not an integer in range.
+    """
+    return as_count(k, name, 0, m.keyframes - 1)
+
+
 def as_point_rows(m: Map, rows: ArrayLike, name: str = "rows") -> IntArray:
     """Check point rows: a vector of integers in ``[0, P)`` (booleans refused).
 

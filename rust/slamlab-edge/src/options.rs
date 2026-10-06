@@ -107,8 +107,6 @@ pub struct Options {
     pub window: usize,
     /// Points a stereo or RGB-D keyframe creates from depth, at least.
     pub min_new_points: usize,
-    /// The ratio test when matching keyframes for triangulation.
-    pub triangulation_ratio: f64,
     /// Rays whose cosine is above this are too parallel to triangulate.
     pub max_parallax_cos: f64,
     /// The scale-consistency factor of a triangulated point.
@@ -173,7 +171,6 @@ impl Default for Options {
             close_untracked: 70,
             window: 10,
             min_new_points: 100,
-            triangulation_ratio: 0.6,
             max_parallax_cos: 0.9998,
             scale_ratio: 1.5,
             fuse_window: 3.0,
@@ -285,7 +282,6 @@ pub fn check_options(options: &Options) -> Result<()> {
     }
     for (name, value) in [
         ("init_ratio", options.init_ratio),
-        ("triangulation_ratio", options.triangulation_ratio),
         ("ref_ratio", options.ref_ratio),
         ("mono_ref_ratio", options.mono_ref_ratio),
         ("found_ratio", options.found_ratio),

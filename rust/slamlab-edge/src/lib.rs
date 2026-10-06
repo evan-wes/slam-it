@@ -7,6 +7,7 @@ pub mod adjust;
 pub mod frames;
 pub mod initialization;
 pub mod map;
+pub mod mapping;
 pub mod options;
 pub mod residuals;
 pub mod tracking;
