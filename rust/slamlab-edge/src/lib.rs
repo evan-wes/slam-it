@@ -9,5 +9,6 @@ pub mod initialization;
 pub mod map;
 pub mod mapping;
 pub mod options;
+pub mod pipeline;
 pub mod residuals;
 pub mod tracking;

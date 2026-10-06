@@ -13,6 +13,7 @@
 #include "slamlab/foundations/matching.hpp"
 #include "slamlab/foundations/pnp.hpp"
 #include "slamlab/foundations/ransac.hpp"
+#include "slamlab/foundations/so3.hpp"
 
 namespace slamlab::edge {
 
@@ -305,7 +306,12 @@ std::pair<std::int64_t, std::int64_t> level_range(const Map& m, const Camera& ca
 
 Eigen::Matrix4d predict(const Eigen::Matrix4d& last_pose,
                         const std::optional<Eigen::Matrix4d>& velocity) {
-  return velocity ? Eigen::Matrix4d(*velocity * last_pose) : last_pose;
+  if (!velocity) {
+    return last_pose;
+  }
+  Eigen::Matrix4d out = *velocity * last_pose;
+  out.topLeftCorner<3, 3>() = foundations::so3::project_to_so3(out.topLeftCorner<3, 3>());
+  return out;
 }
 
 Result<Tracked> optimize_pose(const Map& m, const Camera& camera, const Frame& frame,

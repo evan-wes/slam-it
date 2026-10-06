@@ -5,7 +5,7 @@ use nalgebra::{Matrix4, Vector3};
 use slamlab_foundations::error::{ErrorKind, Result, fail, fail_setting};
 use slamlab_foundations::matching::{self, Match, Projection, SearchOptions, match_descriptors};
 use slamlab_foundations::p3p::Solver;
-use slamlab_foundations::{pnp, ransac};
+use slamlab_foundations::{pnp, ransac, so3};
 
 use crate::frames::{Camera, Frame, Tracked, check_camera, search};
 use crate::map::{Map, predict_level};
@@ -151,7 +151,8 @@ fn count_matched(points: &[i64]) -> usize {
     points.iter().filter(|&&id| id >= 0).count()
 }
 
-/// Predicts a frame's pose by the constant-velocity model (`slamlab.edge.tracking.predict`).
+/// Predicts a frame's pose by the constant-velocity model (`slamlab.edge.tracking.predict`),
+/// its rotation projected back onto SO(3).
 ///
 /// # Arguments
 ///
@@ -160,10 +161,15 @@ fn count_matched(points: &[i64]) -> usize {
 ///
 /// # Returns
 ///
-/// `velocity * last_pose`, or the last pose.
+/// `velocity * last_pose`, its rotation the nearest one; or the last pose.
 #[must_use]
 pub fn predict(last_pose: &Matrix4<f64>, velocity: Option<&Matrix4<f64>>) -> Matrix4<f64> {
-    velocity.map_or(*last_pose, |v| v * last_pose)
+    velocity.map_or(*last_pose, |v| {
+        let mut out = v * last_pose;
+        let rotation = so3::project_to_so3(&out.fixed_view::<3, 3>(0, 0).into_owned());
+        out.fixed_view_mut::<3, 3>(0, 0).copy_from(&rotation);
+        out
+    })
 }
 
 /// Refines a pose (`slamlab.edge.tracking._optimize_pose`), unchecked.

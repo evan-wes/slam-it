@@ -51,10 +51,10 @@ struct LocalTracking {
 };
 
 /// @brief Predict a frame's pose by the constant-velocity model
-///        (`slamlab.edge.tracking.predict`).
+///        (`slamlab.edge.tracking.predict`), its rotation projected back onto SO(3).
 /// @param last_pose The last frame's `T_cam_world`.
 /// @param velocity The last motion `T_last_previous`, or nothing before there is one.
-/// @return `velocity * last_pose`, or the last pose.
+/// @return `velocity * last_pose`, its rotation the nearest one; or the last pose.
 [[nodiscard]] Eigen::Matrix4d predict(const Eigen::Matrix4d& last_pose,
                                       const std::optional<Eigen::Matrix4d>& velocity);
 

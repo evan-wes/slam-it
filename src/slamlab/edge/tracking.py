@@ -34,7 +34,7 @@ from slamlab.edge import map as maps
 from slamlab.edge.frames import Camera, Frame, Tracked
 from slamlab.edge.map import Map, frame_dict
 from slamlab.edge.options import MODES, TH_HIGH, Options
-from slamlab.foundations import matching, pnp, ransac
+from slamlab.foundations import matching, pnp, ransac, so3
 from slamlab.foundations.arrays import as_number
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
 
@@ -201,6 +201,10 @@ def _check_mode(mode: str) -> None:
 def predict(last_pose: Array, velocity: Array | None) -> Array:
     """Predict a frame's pose by the constant-velocity model.
 
+    The product's rotation is projected back onto SO(3): refinement keeps whatever drift its
+    starting pose has, and the motion model, inverting by transposing, would otherwise feed
+    that drift back to every later frame, compounding it.
+
     Parameters
     ----------
     last_pose : ndarray of float64, shape (4, 4)
@@ -211,9 +215,13 @@ def predict(last_pose: Array, velocity: Array | None) -> Array:
     Returns
     -------
     ndarray of float64, shape (4, 4)
-        ``velocity @ last_pose``.
+        ``velocity @ last_pose``, its rotation the nearest one.
     """
-    return last_pose.copy() if velocity is None else velocity @ last_pose
+    if velocity is None:
+        return last_pose.copy()
+    out = velocity @ last_pose
+    out[:3, :3] = so3.project_to_so3(out[:3, :3])
+    return np.asarray(out, dtype=np.float64)
 
 
 def _local(pose: Array, xyz: Array) -> Array:

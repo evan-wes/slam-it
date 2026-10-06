@@ -1,11 +1,12 @@
-"""The edge rung's test states: a synthetic room, and a map of it built from its ground truth.
+"""The edge rung's test states: a synthetic room, its truth map, and the pipeline's runs.
 
 Edge parity states (maps of hundreds of points, keyframes of hundreds of keypoints) would run
 to megabytes as stored fixtures, so they are generated here, deterministically: the room is
 rendered (:mod:`tests.edge.room`), its frames built in RGB-D, and a map assembled from the
-true poses with the map's own operations (:func:`truth_map`). Each operation's parity test
-then runs every backend on these states and compares with the Python reference under
-:data:`tests.edge.support.TOLERANCE`.
+true poses with the map's own operations (:func:`truth_map`), independent of the pipeline.
+Each stage's parity test runs every backend on these states and compares with the Python
+reference under :data:`tests.edge.support.TOLERANCE`. The pipeline's own tests run the whole
+room in each mode (:func:`run_room`).
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-from slamlab.edge import frames
+from slamlab.edge import frames, pipeline
 from slamlab.edge import map as maps
 from slamlab.edge.map import Map
 from slamlab.edge.options import Options
@@ -145,3 +146,60 @@ def monocular_pair(rendered: list[room.Frame]) -> tuple[frames.Frame, frames.Fra
         frames.monocular(first.gray, first.timestamp, CAMERA, extraction),
         frames.monocular(second.gray, second.timestamp, CAMERA, extraction),
     )
+
+
+@dataclass(frozen=True)
+class Run:
+    """The room run through the Python pipeline in one mode."""
+
+    camera: frames.Camera
+    results: list[pipeline.FrameResult]
+    truth: list[np.ndarray]
+    pipeline: pipeline.Pipeline
+
+
+def run_room(mode: str, rendered: list[room.Frame]) -> Run:
+    """Run the rendered room through the Python pipeline, its frames built by the C++ core.
+
+    Parameters
+    ----------
+    mode : {"monocular", "stereo", "rgbd"}
+        The mode; stereo needs the right views rendered.
+    rendered : list of tests.edge.room.Frame
+        The room.
+
+    Returns
+    -------
+    Run
+        Each frame's result and true ``T_world_cam``, and the pipeline after the last.
+    """
+    baseline = 0.0 if mode == "monocular" else room.BASELINE
+    camera = frames.Camera(
+        "pinhole", room.SMALL.intrinsics, room.SMALL.width, room.SMALL.height, baseline
+    )
+    run = pipeline.Pipeline(mode, camera, OPTIONS)
+    results = []
+    for f in rendered:
+        if mode == "monocular":
+            frame = frames.monocular(f.gray, f.timestamp, camera, run.extraction(), backend="cpp")
+        elif mode == "rgbd":
+            frame = frames.rgbd(
+                f.gray, f.depth, f.timestamp, camera, run.extraction(), backend="cpp"
+            )
+        else:
+            assert f.right is not None
+            frame = frames.stereo_pair(
+                f.gray, f.right, f.timestamp, camera, run.extraction(), backend="cpp"
+            )
+        results.append(run.track(frame))
+    return Run(camera, results, [f.T_world_cam for f in rendered], run)
+
+
+@pytest.fixture(scope="session")
+def runs(rendered: list[room.Frame], rendered_stereo: list[room.Frame]) -> dict[str, Run]:
+    """Run the room in every mode."""
+    return {
+        "monocular": run_room("monocular", rendered),
+        "stereo": run_room("stereo", rendered_stereo),
+        "rgbd": run_room("rgbd", rendered),
+    }
