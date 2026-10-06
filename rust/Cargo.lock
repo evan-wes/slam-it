@@ -1265,6 +1265,7 @@ dependencies = [
 name = "slamlab-eval"
 version = "0.1.0"
 dependencies = [
+ "nalgebra",
  "png",
  "serde_json",
  "slamlab-foundations",

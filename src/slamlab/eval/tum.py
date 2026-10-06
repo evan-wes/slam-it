@@ -25,6 +25,23 @@ reads one in metres.
 pinhole with Brown-Conrady (radial-tangential) distortion. :data:`INTRINSICS` holds them in
 the ``radtan`` layout ``[fx, fy, cx, cy, k1, k2, p1, p2, k3]``; ``freiburg3`` images are
 already undistorted.
+
+**Other TUM-format folders** (a recording exported to this layout) describe their camera in
+a ``camera.txt`` instead, which takes precedence over the folder's name (:func:`read_camera`):
+one ``key values`` line each for ``model`` (a name from
+:data:`slamlab.foundations.camera.MODELS`), ``intrinsics`` (that model's), ``size`` (width,
+height) and ``depth_scale`` (a depth map's value per metre), ``#`` comments allowed::
+
+    # the recording's camera
+    model pinhole
+    intrinsics 525.0 525.0 319.5 239.5
+    size 640 480
+    depth_scale 1000
+
+**Frames and ground truth.** :func:`read_frames` reads what a run consumes: every colour
+frame, each with its nearest depth map, and the camera; it never reads the ground truth, so
+a folder without one runs the same, and the native readers mirror it. :func:`read_sequence`
+reads what an evaluation scores: the frames that have a ground-truth pose.
 """
 
 from __future__ import annotations
@@ -36,7 +53,9 @@ import numpy as np
 from numpy.typing import NDArray
 
 from slamlab.eval import images, timestamps
+from slamlab.foundations import camera as camera_model
 from slamlab.foundations import so3
+from slamlab.foundations.arrays import MAX_IMAGE_SIDE
 from slamlab.foundations.errors import InvalidInputError
 
 INTRINSICS: dict[str, NDArray[np.float64]] = {
@@ -50,7 +69,66 @@ DEPTH_SCALE = 5000.0
 """A depth map's value per metre of z."""
 
 MAX_DIFFERENCE = 0.02
-"""The largest time difference, in seconds, between a frame and its ground-truth pose."""
+"""The largest time difference, in seconds, between a frame and its ground-truth pose (and
+its depth map)."""
+
+SIZE = (640, 480)
+"""The benchmark's images' width and height."""
+
+CAMERA_FILE = "camera.txt"
+"""The file a TUM-format folder describes its own camera in."""
+
+CAMERA_KEYS = ("model", "intrinsics", "size", "depth_scale")
+"""``camera.txt``'s keys, each on one line."""
+
+
+@dataclass(frozen=True)
+class Camera:
+    """A TUM-format folder's colour camera.
+
+    Attributes
+    ----------
+    model : str
+        A model from :data:`slamlab.foundations.camera.MODELS`.
+    intrinsics : ndarray of float64, shape (P,)
+        Its intrinsics.
+    width, height : int
+        The images' size, in pixels.
+    depth_scale : float
+        A depth map's value per metre of z.
+    """
+
+    model: str
+    intrinsics: NDArray[np.float64]
+    width: int
+    height: int
+    depth_scale: float
+
+
+@dataclass(frozen=True)
+class Frames:
+    """A TUM-format folder's colour frames, as a run reads them (no ground truth).
+
+    Attributes
+    ----------
+    root : pathlib.Path
+        The folder.
+    timestamps : ndarray of float64, shape (F,)
+        Each frame's timestamp, in seconds, in ``rgb.txt``'s order (non-decreasing).
+    images : list of pathlib.Path
+        Each frame's colour image.
+    depths : list of pathlib.Path or None
+        Each frame's nearest depth map within :data:`MAX_DIFFERENCE`, None where there is
+        none (every frame, for a folder without ``depth.txt``).
+    camera : Camera
+        The camera.
+    """
+
+    root: Path
+    timestamps: NDArray[np.float64]
+    images: list[Path]
+    depths: list[Path | None]
+    camera: Camera
 
 
 @dataclass(frozen=True)
@@ -61,8 +139,8 @@ class Sequence:
     ----------
     root : pathlib.Path
         The sequence folder.
-    sensor : str
-        ``"freiburg1"``, ``"freiburg2"`` or ``"freiburg3"``, from the folder's name.
+    camera : Camera
+        Its camera (:func:`read_camera`).
     timestamps : ndarray of float64, shape (F,)
         Each frame's timestamp, in seconds.
     images : list of pathlib.Path
@@ -75,7 +153,7 @@ class Sequence:
     """
 
     root: Path
-    sensor: str
+    camera: Camera
     timestamps: NDArray[np.float64]
     images: list[Path]
     T_world_cam: NDArray[np.float64]
@@ -83,8 +161,8 @@ class Sequence:
 
     @property
     def intrinsics(self) -> NDArray[np.float64]:
-        """The sensor's ``radtan`` intrinsics."""
-        return INTRINSICS[self.sensor].copy()
+        """The camera's intrinsics."""
+        return self.camera.intrinsics.copy()
 
 
 def _table(path: Path, columns: int) -> list[tuple[int, list[str]]]:
@@ -159,6 +237,123 @@ def _stamped(path: Path) -> tuple[NDArray[np.float64], list[str]]:
     return timestamps.as_times(stamps, str(path), strict=False), [f[1] for _, f in rows]
 
 
+def _camera_file(path: Path) -> Camera:
+    """Read a ``camera.txt``.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If a key is unknown, repeated or missing, or its values are malformed.
+    """
+    values: dict[str, list[str]] = {}
+    for number, line in enumerate(path.read_text().splitlines(), start=1):
+        fields = line.split("#", 1)[0].split()
+        if not fields:
+            continue
+        key = fields[0]
+        if key not in CAMERA_KEYS or key in values:
+            raise InvalidInputError(f"{path}:{number}: unknown or repeated key {key!r}")
+        values[key] = fields[1:]
+    missing = [key for key in CAMERA_KEYS if key not in values]
+    if missing:
+        raise InvalidInputError(f"{path}: missing {', '.join(missing)}")
+    if len(values["model"]) != 1 or len(values["size"]) != 2 or len(values["depth_scale"]) != 1:
+        raise InvalidInputError(f"{path}: expected one model, two sizes and one depth scale")
+    model = values["model"][0]
+    try:
+        intrinsics = np.array([float(v) for v in values["intrinsics"]])
+        width, height = (int(v) for v in values["size"])
+        depth_scale = float(values["depth_scale"][0])
+    except ValueError as error:
+        raise InvalidInputError(f"{path}: expected numbers ({error})") from None
+    camera_model.check_intrinsics(model, intrinsics)
+    if not (1 <= width <= MAX_IMAGE_SIDE and 1 <= height <= MAX_IMAGE_SIDE):
+        raise InvalidInputError(f"{path}: size must lie in [1, {MAX_IMAGE_SIDE}]")
+    if not (np.isfinite(depth_scale) and depth_scale > 0.0):
+        raise InvalidInputError(f"{path}: depth_scale must be finite and positive")
+    return Camera(model, intrinsics, width, height, depth_scale)
+
+
+def read_camera(root: str | Path) -> Camera:
+    """Read a TUM-format folder's camera: its ``camera.txt``, or the sensor its name says.
+
+    Parameters
+    ----------
+    root : str or pathlib.Path
+        The folder.
+
+    Returns
+    -------
+    Camera
+        From ``camera.txt`` if the folder has one; otherwise the benchmark's published
+        ``radtan`` calibration of the ``freiburg1``, ``2`` or ``3`` sensor its name holds, at
+        640x480 and :data:`DEPTH_SCALE`.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If ``camera.txt`` is malformed, or there is none and the name holds no sensor.
+    """
+    folder = Path(root)
+    if (folder / CAMERA_FILE).exists():
+        return _camera_file(folder / CAMERA_FILE)
+    sensor = next((s for s in INTRINSICS if s in folder.name), None)
+    if sensor is None:
+        raise InvalidInputError(
+            f"{folder.name}: expected a {CAMERA_FILE}, or 'freiburg1', '2' or '3' in the "
+            "folder's name"
+        )
+    return Camera("radtan", INTRINSICS[sensor].copy(), *SIZE, DEPTH_SCALE)
+
+
+def _depth_files(
+    folder: Path, stamps: NDArray[np.float64], max_difference: float
+) -> list[Path | None]:
+    """Each stamp's nearest depth map within `max_difference`, if the folder has depth."""
+    if not (folder / "depth.txt").exists():
+        return [None] * len(stamps)
+    depth_times, depth_names = _stamped(folder / "depth.txt")
+    if len(depth_times) == 0:
+        return [None] * len(stamps)
+    closest = timestamps.nearest(depth_times, stamps)
+    return [
+        folder / depth_names[d] if abs(depth_times[d] - t) <= max_difference else None
+        for t, d in zip(stamps, closest, strict=True)
+    ]
+
+
+def read_frames(root: str | Path, max_difference: float = MAX_DIFFERENCE) -> Frames:
+    """Read a TUM-format folder's colour frames as a run consumes them, without ground truth.
+
+    Parameters
+    ----------
+    root : str or pathlib.Path
+        The folder.
+    max_difference : float, optional
+        The largest frame-to-depth-map time difference accepted, in seconds.
+
+    Returns
+    -------
+    Frames
+        Every row of ``rgb.txt``, each with its nearest depth map, and the camera.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If `max_difference` is negative, a file is malformed (named with its line), or the
+        camera cannot be read (:func:`read_camera`).
+    FileNotFoundError
+        If ``rgb.txt`` is missing (``depth.txt`` is optional).
+    """
+    if not (np.isfinite(max_difference) and max_difference >= 0.0):
+        raise InvalidInputError(f"max_difference: must be non-negative, got {max_difference}")
+    folder = Path(root)
+    camera = read_camera(folder)
+    stamps, names = _stamped(folder / "rgb.txt")
+    depths = _depth_files(folder, stamps, max_difference)
+    return Frames(folder, stamps, [folder / n for n in names], depths, camera)
+
+
 def read_sequence(root: str | Path, max_difference: float = MAX_DIFFERENCE) -> Sequence:
     """Read a TUM RGB-D sequence's colour frames and associate their ground-truth poses.
 
@@ -177,20 +372,13 @@ def read_sequence(root: str | Path, max_difference: float = MAX_DIFFERENCE) -> S
     Raises
     ------
     slamlab.foundations.errors.InvalidInputError
-        If the folder's name does not say its sensor, `max_difference` is negative, a file is
-        malformed (named with its line), or no frame has a pose.
+        If the camera cannot be read (:func:`read_camera`), `max_difference` is negative, a
+        file is malformed (named with its line), or no frame has a pose.
     FileNotFoundError
         If ``rgb.txt`` or ``groundtruth.txt`` is missing (``depth.txt`` is optional).
     """
-    if not (np.isfinite(max_difference) and max_difference >= 0.0):
-        raise InvalidInputError(f"max_difference: must be non-negative, got {max_difference}")
-    folder = Path(root)
-    sensor = next((s for s in INTRINSICS if s in folder.name), None)
-    if sensor is None:
-        raise InvalidInputError(
-            f"{folder.name}: expected 'freiburg1', '2' or '3' in the folder's name"
-        )
-    stamps, names = _stamped(folder / "rgb.txt")
+    frames = read_frames(root, max_difference)
+    folder, stamps = frames.root, frames.timestamps
     truth_times, truth_poses = _poses(folder / "groundtruth.txt")
     nearest = timestamps.nearest(truth_times, stamps)
     kept = np.flatnonzero(np.abs(truth_times[nearest] - stamps) <= max_difference)
@@ -198,40 +386,43 @@ def read_sequence(root: str | Path, max_difference: float = MAX_DIFFERENCE) -> S
         raise InvalidInputError(
             f"{folder}: no frame has a ground-truth pose within {max_difference} s"
         )
-    images = [folder / names[k] for k in kept]
-    depths: list[Path | None] = [None] * len(kept)
-    if (folder / "depth.txt").exists():
-        depth_times, depth_names = _stamped(folder / "depth.txt")
-        closest = timestamps.nearest(depth_times, stamps[kept])
-        depths = [
-            folder / depth_names[d] if abs(depth_times[d] - stamps[k]) <= max_difference else None
-            for k, d in zip(kept, closest, strict=True)
-        ]
-    return Sequence(folder, sensor, stamps[kept], images, truth_poses[nearest[kept]], depths)
+    return Sequence(
+        folder,
+        frames.camera,
+        stamps[kept],
+        [frames.images[k] for k in kept],
+        truth_poses[nearest[kept]],
+        [frames.depths[k] for k in kept],
+    )
 
 
-def read_depth(path: str | Path) -> NDArray[np.float64]:
+def read_depth(path: str | Path, depth_scale: float = DEPTH_SCALE) -> NDArray[np.float64]:
     """Read a depth map in metres.
 
     Parameters
     ----------
     path : str or pathlib.Path
-        A 16-bit depth PNG (:attr:`Sequence.depths`).
+        A 16-bit depth PNG (:attr:`Frames.depths`).
+    depth_scale : float, optional
+        Its value per metre (:attr:`Camera.depth_scale`; default the benchmark's).
 
     Returns
     -------
     ndarray of float64, shape (H, W)
-        Each pixel's z in the colour camera, in metres: its value over :data:`DEPTH_SCALE`;
-        NaN where the sensor measured nothing (a stored 0).
+        Each pixel's z in the colour camera, in metres: its value over `depth_scale`; NaN
+        where the sensor measured nothing (a stored 0).
 
     Raises
     ------
     FileNotFoundError
         If the file does not exist.
     slamlab.foundations.errors.InvalidInputError
-        If it is not a 16-bit single-channel image.
+        If it is not a 16-bit single-channel image, or `depth_scale` is not finite and
+        positive.
     """
+    if not (np.isfinite(depth_scale) and depth_scale > 0.0):
+        raise InvalidInputError(f"depth_scale: must be finite and positive, got {depth_scale}")
     raw = images.read_depth(path)
-    depth = raw.astype(np.float64) / DEPTH_SCALE
+    depth = raw.astype(np.float64) / depth_scale
     depth[raw == 0] = np.nan
     return depth

@@ -1,0 +1,14 @@
+{
+ "format": "slamlab-run",
+ "version": 1,
+ "dataset": "tum",
+ "sequence": "rgbd_dataset_freiburg1_fixture",
+ "mode": "rgbd",
+ "backend": "python",
+ "settings": {
+  "n_features": 1000,
+  "scale_factor": 1.2,
+  "window": 10,
+  "chi2_mono": 5.991
+ }
+}

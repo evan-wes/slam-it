@@ -213,3 +213,15 @@ def test_rejects_a_negative_tolerance(tmp_path: Path) -> None:
     _write(tmp_path)
     with pytest.raises(InvalidInputError, match="max_difference"):
         euroc.read_sequence(tmp_path, max_difference=-1.0)
+
+
+def test_frames_need_no_ground_truth(tmp_path: Path) -> None:
+    """A run's frames: every stamp with both images, read without the ground truth."""
+    _write(tmp_path, gaps=(2,))
+    (tmp_path / "mav0" / "state_groundtruth_estimate0" / "data.csv").unlink()
+    frames = euroc.read_frames(tmp_path)
+    assert len(frames.timestamps) == len(frames.left) == len(frames.right) == 4
+    assert np.all(np.diff(frames.timestamps) > 0.0)
+    np.testing.assert_allclose(
+        frames.T_right_left, euroc.right_from_left(frames.left_camera, frames.right_camera)
+    )

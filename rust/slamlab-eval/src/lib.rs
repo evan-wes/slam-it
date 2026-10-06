@@ -4,4 +4,8 @@
 //! image files. It sits above every rung in the ladder (`scripts/check_layers.py` holds it to
 //! that), so no rung crate may depend on it.
 
+pub mod euroc;
 pub mod png;
+pub mod runs;
+pub mod text;
+pub mod tum;

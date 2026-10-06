@@ -18,6 +18,10 @@ camera's pose in the body frame, ``T_BS``: ``T_body_cam`` (the design doc's ``T_
 T_body_cam0``, from the body pose nearest in time, if one is within ``max_difference``
 seconds; frames without one, or whose right image is missing, are dropped. The quaternions
 are Hamilton, stored ``w`` first in the file (unlike TUM).
+
+**Frames and ground truth.** :func:`read_frames` reads what a run consumes: every frame with
+both images, and the cameras; it never reads the ground truth, and the native readers mirror
+it. :func:`read_sequence` reads what an evaluation scores: the frames that have a pose.
 """
 
 from __future__ import annotations
@@ -63,6 +67,51 @@ class Camera:
     shape: tuple[int, int]
 
 
+def right_from_left(left: Camera, right: Camera) -> NDArray[np.float64]:
+    """Return the rigid transform from left-camera to right-camera coordinates.
+
+    Parameters
+    ----------
+    left, right : Camera
+        The stereo pair's cameras, each with its pose in the body frame.
+
+    Returns
+    -------
+    ndarray of float64, shape (4, 4)
+        ``T_right_left = T_body_right^-1 T_body_left``.
+    """
+    return np.asarray(se3.inverse(right.T_body_cam) @ left.T_body_cam, dtype=np.float64)
+
+
+@dataclass(frozen=True)
+class Frames:
+    """A EuRoC sequence's stereo frames, as a run reads them (no ground truth).
+
+    Attributes
+    ----------
+    root : pathlib.Path
+        The sequence folder (the one holding ``mav0``).
+    timestamps : ndarray of float64, shape (F,)
+        Each frame's timestamp, in seconds, ascending.
+    left, right : list of pathlib.Path
+        Each frame's left (``cam0``) and right (``cam1``) image.
+    left_camera, right_camera : Camera
+        The two cameras.
+    """
+
+    root: Path
+    timestamps: NDArray[np.float64]
+    left: list[Path]
+    right: list[Path]
+    left_camera: Camera
+    right_camera: Camera
+
+    @property
+    def T_right_left(self) -> NDArray[np.float64]:  # noqa: N802 -- the frame convention's name
+        """The rigid transform from left-camera to right-camera coordinates."""
+        return right_from_left(self.left_camera, self.right_camera)
+
+
 @dataclass(frozen=True)
 class Sequence:
     """A EuRoC sequence's stereo frames that have a ground-truth pose.
@@ -92,7 +141,7 @@ class Sequence:
     @property
     def T_right_left(self) -> NDArray[np.float64]:  # noqa: N802 -- the frame convention's name
         """The rigid transform from left-camera to right-camera coordinates."""
-        return se3.inverse(self.right_camera.T_body_cam) @ self.left_camera.T_body_cam
+        return right_from_left(self.left_camera, self.right_camera)
 
 
 def _numbers(text: str, key: str, path: Path) -> list[float]:
@@ -245,6 +294,49 @@ def _ground_truth(path: Path) -> tuple[NDArray[np.int64], NDArray[np.float64]]:
     return times, poses
 
 
+def _stereo_stamps(mav: Path) -> tuple[NDArray[np.int64], dict[int, Path], dict[int, Path]]:
+    """Return the timestamps (ns, ascending) with both images, and each camera's frames."""
+    left, right = _frames(mav / "cam0"), _frames(mav / "cam1")
+    stamps = np.asarray(sorted(set(left) & set(right)), dtype=np.int64)
+    if len(stamps) == 0:
+        raise InvalidInputError(f"{mav.parent}: no frame has both a left and a right image")
+    return stamps, left, right
+
+
+def read_frames(root: str | Path) -> Frames:
+    """Read a EuRoC sequence's stereo frames as a run consumes them, without ground truth.
+
+    Parameters
+    ----------
+    root : str or pathlib.Path
+        The sequence folder, holding ``mav0`` (e.g. ``MH_01_easy``).
+
+    Returns
+    -------
+    Frames
+        Every frame with both a left and a right image, in time order, and the cameras.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If a file is malformed, or no frame has both images.
+    FileNotFoundError
+        If a camera's files are missing.
+    """
+    mav = Path(root) / "mav0"
+    left_camera = read_camera(mav / "cam0" / "sensor.yaml")
+    right_camera = read_camera(mav / "cam1" / "sensor.yaml")
+    stamps, left, right = _stereo_stamps(mav)
+    return Frames(
+        root=Path(root),
+        timestamps=stamps.astype(np.float64) / NANOSECONDS,
+        left=[left[int(s)] for s in stamps],
+        right=[right[int(s)] for s in stamps],
+        left_camera=left_camera,
+        right_camera=right_camera,
+    )
+
+
 def read_sequence(root: str | Path, max_difference: float = MAX_DIFFERENCE) -> Sequence:
     """Read a EuRoC sequence's stereo frames and associate their ground-truth poses.
 
@@ -272,11 +364,8 @@ def read_sequence(root: str | Path, max_difference: float = MAX_DIFFERENCE) -> S
     mav = Path(root) / "mav0"
     left_camera = read_camera(mav / "cam0" / "sensor.yaml")
     right_camera = read_camera(mav / "cam1" / "sensor.yaml")
-    left, right = _frames(mav / "cam0"), _frames(mav / "cam1")
+    stamps, left, right = _stereo_stamps(mav)
     times, body = _ground_truth(mav / "state_groundtruth_estimate0" / "data.csv")
-    stamps = np.asarray(sorted(set(left) & set(right)), dtype=np.int64)
-    if len(stamps) == 0:
-        raise InvalidInputError(f"{root}: no frame has both a left and a right image")
     nearest = timestamps.nearest(times, stamps)  # in nanoseconds, exactly
     kept = np.abs(times[nearest] - stamps) <= round(max_difference * NANOSECONDS)
     if not np.any(kept):
