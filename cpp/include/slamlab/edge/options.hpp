@@ -5,7 +5,9 @@
 /// ORB-SLAM quantity each stands for.
 #pragma once
 
+#include <array>
 #include <cstdint>
+#include <utility>
 
 #include "slamlab/foundations/error.hpp"
 #include "slamlab/foundations/orb.hpp"
@@ -126,6 +128,64 @@ struct Options {
   /// @brief Every RANSAC's seed.
   std::int64_t seed{0};
 };
+
+/// @brief An integer setting's name and member.
+using IntegerOption = std::pair<const char*, std::int64_t Options::*>;
+
+/// @brief A real setting's name and member.
+using RealOption = std::pair<const char*, double Options::*>;
+
+/// @brief `Options`' integer fields, by their Python names.
+inline constexpr std::array<IntegerOption, 25> kIntegerOptions{{
+    {"n_features", &Options::n_features},
+    {"levels", &Options::levels},
+    {"fast_threshold", &Options::fast_threshold},
+    {"min_fast_threshold", &Options::min_fast_threshold},
+    {"init_feature_factor", &Options::init_feature_factor},
+    {"min_init_features", &Options::min_init_features},
+    {"min_depth_features", &Options::min_depth_features},
+    {"init_min_matches", &Options::init_min_matches},
+    {"min_motion_matches", &Options::min_motion_matches},
+    {"min_tracked", &Options::min_tracked},
+    {"pose_rounds", &Options::pose_rounds},
+    {"max_frames", &Options::max_frames},
+    {"min_keyframe_inliers", &Options::min_keyframe_inliers},
+    {"close_tracked", &Options::close_tracked},
+    {"close_untracked", &Options::close_untracked},
+    {"window", &Options::window},
+    {"min_new_points", &Options::min_new_points},
+    {"ba_iterations", &Options::ba_iterations},
+    {"ba_refine_iterations", &Options::ba_refine_iterations},
+    {"min_point_observations", &Options::min_point_observations},
+    {"min_point_observations_depth", &Options::min_point_observations_depth},
+    {"redundant_observers", &Options::redundant_observers},
+    {"pnp_min_inliers", &Options::pnp_min_inliers},
+    {"lost_frames", &Options::lost_frames},
+    {"seed", &Options::seed},
+}};
+
+/// @brief `Options`' real fields, by their Python names.
+inline constexpr std::array<RealOption, 19> kRealOptions{{
+    {"scale_factor", &Options::scale_factor},
+    {"close_depth", &Options::close_depth},
+    {"init_window", &Options::init_window},
+    {"init_ratio", &Options::init_ratio},
+    {"motion_window", &Options::motion_window},
+    {"stereo_motion_window", &Options::stereo_motion_window},
+    {"local_window", &Options::local_window},
+    {"rgbd_local_window", &Options::rgbd_local_window},
+    {"chi2_mono", &Options::chi2_mono},
+    {"chi2_stereo", &Options::chi2_stereo},
+    {"view_cos_limit", &Options::view_cos_limit},
+    {"ref_ratio", &Options::ref_ratio},
+    {"mono_ref_ratio", &Options::mono_ref_ratio},
+    {"max_parallax_cos", &Options::max_parallax_cos},
+    {"scale_ratio", &Options::scale_ratio},
+    {"fuse_window", &Options::fuse_window},
+    {"found_ratio", &Options::found_ratio},
+    {"redundant_fraction", &Options::redundant_fraction},
+    {"pnp_threshold", &Options::pnp_threshold},
+}};
 
 /// @brief The ORB extraction settings.
 /// @param options The settings.

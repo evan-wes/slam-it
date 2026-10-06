@@ -47,6 +47,20 @@ def test_python_has_no_compiled_implementation() -> None:
         backends.implementation("python", "slamlab.foundations.so3")
 
 
+def test_program_is_only_for_compiled_backends() -> None:
+    """Python's pipelines run in-process; an unknown backend is an error."""
+    with pytest.raises(ValueError, match="in-process"):
+        backends.program("python", "slamlab_vo")
+    with pytest.raises(ValueError, match="unknown backend"):
+        backends.program("fortran", "slamlab_vo")
+
+
+def test_missing_program_is_reported() -> None:
+    """A program that is not built is BackendNotBuiltError, naming where it was looked for."""
+    with pytest.raises(backends.BackendNotBuiltError, match="no program 'no_such_program'"):
+        backends.program("rust", "no_such_program")
+
+
 def test_module_outside_slamlab_is_an_error() -> None:
     """The locator only resolves slamlab modules."""
     with pytest.raises(ValueError, match="not a slamlab module"):

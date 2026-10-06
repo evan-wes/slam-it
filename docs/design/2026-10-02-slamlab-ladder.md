@@ -75,7 +75,7 @@ The ladder spans compute budgets. Every rung stands on rung 0.
 |---|---|
 | **Python** | The readable reference implementation of every algorithm; orchestration, evaluation, and the learned rungs (PyTorch) |
 | **C++** | The performance core: rung 0, the edge rung, the edge budgets, and dense-BA kernels if profiling calls for them; outside the cores, `eval`'s native readers and run writer (`slamlab_eval`) and the native VO program (`slamlab_vo`, in orchestration); and the calibration side track (`slamlab_calib`), beside Python, without Rust. Showing C++ is a goal in its own right. |
-| **Rust** | Rung 0 and the edge rung, each in lock-step with Python and C++: every slice of those rungs lands in all three languages together; outside the cores, `eval`'s native readers and run writer (`slamlab-eval`) and the native VO program (`slamlab-vo`, in orchestration). The other rungs have no Rust. |
+| **Rust** | Rung 0 and the edge rung, each in lock-step with Python and C++: every slice of those rungs lands in all three languages together; outside the cores, `eval`'s native readers and run writer (`slamlab-eval`) and the native VO program (`slamlab_vo`, crate `slamlab-orchestration`). The other rungs have no Rust. |
 
 **Runtime dependencies.** Adding one, to the Python package or to a core, is a change to this
 document first.
@@ -117,7 +117,7 @@ under editable installs.
 C++ and Rust sources also build standalone (CMake, cargo) without Python, for the edge budgets
 and a possible later phone target.
 
-**The native VO programs** (`slamlab_vo`, `slamlab-vo`; from PR 8) run a whole sequence
+**The native VO programs** (`slamlab_vo`, in C++ and in Rust; from PR 8) run a whole sequence
 without Python: they read the dataset natively and write the run folder.
 `slamlab.orchestration.vo.run(..., backend=)` runs the Python pipeline in-process, or launches
 the chosen native program and reads its run back. scikit-build installs the C++ program into
@@ -332,7 +332,7 @@ visible from its path and enforceable by contract.
 | `slamlab.dense` | -- | -- | Dense BA + depth prior |
 | `slamlab.learned` | -- | -- | DROID- and MegaSaM-style |
 | `slamlab.eval` | library `slamlab_eval`, `slamlab::eval` (native PNG and dataset readers, run writer) | crate `slamlab-eval` (native PNG and dataset readers, run writer) | Dataset readers, external references (COLMAP), metrics, benchmarks, budget harness |
-| `slamlab.orchestration` | library `slamlab_orchestration` and program `slamlab_vo` (from PR 8) | crate `slamlab-vo`, a program (from PR 8) | End-to-end pipelines |
+| `slamlab.orchestration` | library `slamlab_orchestration` and program `slamlab_vo` (`cpp/apps/orchestration/`; from PR 8) | crate `slamlab-orchestration` and its program `slamlab_vo` (from PR 8) | End-to-end pipelines |
 
 Packages for rungs that have no code yet are stubs: a docstring stating the rung, its
 milestone and its compute budget. C++ libraries and Rust crates appear as each rung gets
@@ -800,7 +800,7 @@ shared with the owner's other projects.
     will write runs against a golden folder in `tests/fixtures/eval/run/` that `read_run`
     validates, with hand-written `.npy` and JSON writers (decided for PR 8); and a native
     pipeline links both the edge rung and `eval`, so it sits above `eval`, in orchestration
-    (`slamlab_vo`, `slamlab-vo`; see the Package-layout table).
+    (`slamlab_vo`, in C++ and in Rust; see the Package-layout table).
   - Closed by PR 8: **guided matching beside `matching` (A10).** `matching.features_in_area`
     and `matching.search_by_projection` (ORB-SLAM's `GetFeaturesInArea` and
     `SearchByProjection`) are in `foundations.matching`, for the classic rung too; the C++ and

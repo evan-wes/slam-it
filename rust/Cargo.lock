@@ -1282,6 +1282,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "slamlab-orchestration"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "slamlab-edge",
+ "slamlab-eval",
+ "slamlab-foundations",
+]
+
+[[package]]
 name = "slamlab-py"
 version = "0.1.0"
 dependencies = [

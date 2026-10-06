@@ -3,7 +3,7 @@
 //! Every threshold named and defaulted to ORB-SLAM2's; the Python class's docstring says which
 //! ORB-SLAM quantity each stands for.
 
-use slamlab_foundations::error::{Result, check_range, fail_setting};
+use slamlab_foundations::error::{ErrorKind, Result, check_range, fail, fail_setting};
 use slamlab_foundations::orb;
 
 /// The pipeline's sensor modes.
@@ -217,6 +217,96 @@ impl Options {
     }
 }
 
+/// A setting's value, by its kind: what a command line gives, and what a run records.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Setting {
+    /// An integer setting's.
+    Integer(i64),
+    /// A real setting's.
+    Real(f64),
+}
+
+/// Implements [`Options::settings`] and [`Options::set`] over every field, each with its
+/// kind. `settings` destructures the struct without `..`, so a field missing from the list
+/// fails to build.
+macro_rules! named_settings {
+    ($($field:ident: $kind:ident),+ $(,)?) => {
+        impl Options {
+            /// Every setting's name, as the Python class's field, and value, in its order.
+            ///
+            /// # Returns
+            ///
+            /// The settings.
+            #[must_use]
+            pub fn settings(&self) -> Vec<(&'static str, Setting)> {
+                let Self { $($field),+ } = *self;
+                vec![$((stringify!($field), named_settings!(@value $kind $field))),+]
+            }
+
+            /// Sets one setting by its name, as the Python class's field.
+            ///
+            /// # Arguments
+            ///
+            /// * `name` - The setting.
+            /// * `value` - Its value, of its kind.
+            ///
+            /// # Errors
+            ///
+            /// `InvalidInput` for an unknown name, a value of the other kind, or an integer
+            /// the setting cannot hold (negative, for a count).
+            pub fn set(&mut self, name: &str, value: Setting) -> Result<()> {
+                match name {
+                    $(stringify!($field) => named_settings!(@set $kind self.$field, name, value),)+
+                    _ => fail(ErrorKind::InvalidInput, format!("options: no setting {name:?}")),
+                }
+            }
+        }
+    };
+    (@value Integer $value:ident) => {
+        Setting::Integer(i64::try_from($value).unwrap_or(i64::MAX))
+    };
+    (@value Real $value:ident) => {
+        Setting::Real($value)
+    };
+    (@set Integer $slot:expr, $name:ident, $value:ident) => {
+        match $value {
+            Setting::Integer(integer) => match integer.try_into() {
+                Ok(held) => {
+                    $slot = held;
+                    Ok(())
+                }
+                Err(_) => fail_setting($name, "out of range", integer),
+            },
+            Setting::Real(real) => fail_setting($name, "expected an integer", real),
+        }
+    };
+    (@set Real $slot:expr, $name:ident, $value:ident) => {
+        match $value {
+            Setting::Real(real) => {
+                $slot = real;
+                Ok(())
+            }
+            Setting::Integer(integer) => fail_setting($name, "expected a real", integer),
+        }
+    };
+}
+
+named_settings!(
+    n_features: Integer, levels: Integer, scale_factor: Real, fast_threshold: Integer,
+    min_fast_threshold: Integer, close_depth: Real, init_feature_factor: Integer,
+    min_init_features: Integer, min_depth_features: Integer, init_window: Real,
+    init_ratio: Real, init_min_matches: Integer, motion_window: Real,
+    stereo_motion_window: Real, min_motion_matches: Integer, local_window: Real,
+    rgbd_local_window: Real, min_tracked: Integer, chi2_mono: Real, chi2_stereo: Real,
+    pose_rounds: Integer, view_cos_limit: Real, max_frames: Integer, ref_ratio: Real,
+    mono_ref_ratio: Real, min_keyframe_inliers: Integer, close_tracked: Integer,
+    close_untracked: Integer, window: Integer, min_new_points: Integer, max_parallax_cos: Real,
+    scale_ratio: Real, fuse_window: Real, ba_iterations: Integer, ba_refine_iterations: Integer,
+    found_ratio: Real, min_point_observations: Integer, min_point_observations_depth: Integer,
+    redundant_fraction: Real, redundant_observers: Integer, pnp_threshold: Real,
+    pnp_min_inliers: Integer, lost_frames: Integer, seed: Integer,
+);
+
 /// Checks the settings (`Options.__post_init__`).
 ///
 /// # Arguments
@@ -301,7 +391,32 @@ mod tests {
     //! Native tests of the settings' checks and extraction.
 
     use super::*;
-    use slamlab_foundations::error::ErrorKind;
+
+    /// Settings are read and set by name; an unknown name, a value of the other kind, or a
+    /// count out of range is refused.
+    #[test]
+    fn settings_by_name() {
+        let mut options = Options::default();
+        let settings = options.settings();
+        assert_eq!(settings.len(), 44);
+        assert_eq!(settings[0], ("n_features", Setting::Integer(1000)));
+        assert_eq!(settings[2], ("scale_factor", Setting::Real(1.2)));
+        options.set("window", Setting::Integer(7)).unwrap();
+        options.set("close_depth", Setting::Real(35.5)).unwrap();
+        assert_eq!(options.window, 7);
+        assert!((options.close_depth - 35.5).abs() < f64::EPSILON);
+        for (name, value) in [
+            ("windows", Setting::Integer(1)),
+            ("window", Setting::Real(1.0)),
+            ("close_depth", Setting::Integer(1)),
+            ("window", Setting::Integer(-1)),
+        ] {
+            assert_eq!(
+                options.set(name, value).unwrap_err().kind,
+                ErrorKind::InvalidInput
+            );
+        }
+    }
 
     /// The defaults pass; settings out of range are `InvalidInput`.
     #[test]

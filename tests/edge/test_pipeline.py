@@ -11,14 +11,7 @@ from slamlab.eval.metrics import absolute_error
 from slamlab.foundations import orb
 from slamlab.foundations.errors import InvalidInputError
 from tests.edge import room
-from tests.edge.conftest import CAMERA, OPTIONS, Run
-
-ATE_BOUND = {"rgbd": 0.02, "stereo": 0.02, "monocular": 0.03}
-"""The room's ATE (RMSE, metres) each mode stays under: about half again its measured value
-(1.2, 1.4 and 2.0 cm; monocular aligned with a similarity)."""
-
-MONOCULAR_START = 10
-"""The monocular map starts within this many frames."""
+from tests.edge.conftest import ATE_BOUND, CAMERA, MONOCULAR_START, OPTIONS, Run
 
 
 @pytest.mark.parametrize("mode", ["monocular", "stereo", "rgbd"])

@@ -29,6 +29,13 @@ FRAMES = 40
 OPTIONS = Options(n_features=600, init_window=50.0, init_min_matches=50, min_depth_features=200)
 """ORB-SLAM's defaults scaled to the room's 320x240 images (its are for 640x480)."""
 
+ATE_BOUND = {"rgbd": 0.02, "stereo": 0.02, "monocular": 0.03}
+"""The room's ATE (RMSE, metres) each mode stays under: about half again its measured value
+(1.2, 1.4 and 2.0 cm; monocular aligned with a similarity)."""
+
+MONOCULAR_START = 10
+"""The monocular map starts within this many frames."""
+
 KEYFRAMES = (0, 12, 24, 36)
 """The frames the truth map makes keyframes."""
 

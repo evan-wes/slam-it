@@ -51,7 +51,7 @@ check() {
 # covered without editing this file.
 mapfile -t CPP_FILES < <(git ls-files --cached --others --exclude-standard 'cpp/*.hpp' 'cpp/*.cpp')
 mapfile -t CPP_TU < <(git ls-files --cached --others --exclude-standard 'cpp/src/*.cpp' 'cpp/tests/*.cpp' \
-  'cpp/bench/*.cpp')
+  'cpp/bench/*.cpp' 'cpp/apps/*.cpp')
 
 # Python
 check "ruff lint (numpy docstrings, type hints, style)" ruff check src tests scripts
@@ -80,6 +80,9 @@ check "clippy (pedantic, missing docs)" \
   cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets
 # Every rung crate; the cdylib bindings crate cannot be tested standalone.
 check "Rust tests" cargo test --manifest-path rust/Cargo.toml --workspace --exclude slamlab-py
+# The native program the rust backend runs (slamlab.backends.program), rebuilt for pytest.
+check "Rust programs (release)" \
+  cargo build --release --manifest-path rust/Cargo.toml -p slamlab-orchestration
 
 # All languages
 check "jscpd (duplication)" jscpd --config .jscpd.json

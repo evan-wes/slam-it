@@ -15,12 +15,19 @@
 
 namespace slamlab::testing {
 
+/// @brief A path under `tests/fixtures/`.
+/// @param relative The path under it, e.g. `"eval/sequences/euroc"`.
+/// @return The full path.
+inline std::string fixture_path(const std::string& relative) {
+  return std::string(SLAMLAB_FIXTURES_DIR) + "/" + relative;
+}
+
 /// @brief Load a parity fixture.
 /// @param relative Path under `tests/fixtures/`, e.g. `"foundations/rng.json"`.
 /// @return The parsed fixture.
 /// @throws nlohmann::json::exception if the file is missing or malformed.
 inline nlohmann::json load_fixture(const std::string& relative) {
-  std::ifstream file(std::string(SLAMLAB_FIXTURES_DIR) + "/" + relative);
+  std::ifstream file(fixture_path(relative));
   return nlohmann::json::parse(file);
 }
 

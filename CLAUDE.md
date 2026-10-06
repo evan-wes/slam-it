@@ -77,6 +77,11 @@ code or a binding.
   Benchmark, built with `-DSLAMLAB_BUILD_BENCHMARKS=ON`) and each crate's `benches/`
   (criterion), held to the ladder by `check_layers.py`; layer 1 builds them, never runs them.
   `slamlab.eval` keeps the Python benchmarks and, later, the budget harness.
+- Native programs run a whole pipeline without Python: `cpp/apps/<rung>/<program>.cpp`
+  (linked to the rung's library, installed into `slamlab/bin/` by scikit-build) and a rung
+  crate's binary (built by cargo into `rust/target/release/`), found by
+  `slamlab.backends.program` and held to the ladder by `check_layers.py`. Layer 1 builds them
+  and the Python tests run them (`slamlab.orchestration.vo` runs `slamlab_vo`).
 - Tests mirror the packages (`tests/foundations/`, `cpp/tests/foundations/`). Mark tests
   that need a GPU or a compute budget with `@pytest.mark.gpu` / `@pytest.mark.budget`;
   `check.sh` runs the CPU subset.

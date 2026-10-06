@@ -18,7 +18,7 @@ use pyo3::types::PyDict;
 use slamlab_edge::frames::{Camera, Frame, Tracked};
 use slamlab_edge::initialization::Started;
 use slamlab_edge::map::{Map, check_map};
-use slamlab_edge::options::{Mode, Options};
+use slamlab_edge::options::{Mode, Options, Setting};
 use slamlab_foundations::camera::Model;
 use slamlab_foundations::orb::{DESCRIPTOR_BYTES, Descriptor, Features, Keypoint};
 
@@ -483,15 +483,6 @@ pub fn camera_in(values: &Bound<'_, PyDict>) -> PyResult<Camera> {
     })
 }
 
-/// Reads `edge.Options` from a dict holding exactly the named fields: the struct literal
-/// lists every field, so one missing here fails to build.
-macro_rules! read_options {
-    ($values:ident; $($field:ident),+ $(,)?) => {{
-        const KEYS: &[&str] = &[$(stringify!($field)),+];
-        Options { $($field: item($values, KEYS, stringify!($field))?.extract()?,)+ }
-    }};
-}
-
 /// Reads the settings from a dict of scalars.
 ///
 /// # Arguments
@@ -504,19 +495,21 @@ macro_rules! read_options {
 ///
 /// # Errors
 ///
-/// `ValueError` for a missing or unknown key; a Python error for a value of the wrong type.
+/// `ValueError` for a missing or unknown key; a Python error for a value of the wrong type;
+/// `InvalidInputError` for an integer the setting cannot hold.
 pub fn options_in(values: &Bound<'_, PyDict>) -> PyResult<Options> {
-    Ok(read_options!(values;
-        n_features, levels, scale_factor, fast_threshold, min_fast_threshold, close_depth,
-        init_feature_factor, min_init_features, min_depth_features, init_window, init_ratio,
-        init_min_matches, motion_window, stereo_motion_window, min_motion_matches, local_window,
-        rgbd_local_window, min_tracked, chi2_mono, chi2_stereo, pose_rounds, view_cos_limit,
-        max_frames, ref_ratio, mono_ref_ratio, min_keyframe_inliers, close_tracked,
-        close_untracked, window, min_new_points, max_parallax_cos,
-        scale_ratio, fuse_window, ba_iterations, ba_refine_iterations, found_ratio,
-        min_point_observations, min_point_observations_depth, redundant_fraction,
-        redundant_observers, pnp_threshold, pnp_min_inliers, lost_frames, seed,
-    ))
+    let mut out = Options::default();
+    let settings = out.settings();
+    let keys: Vec<&str> = settings.iter().map(|&(name, _)| name).collect();
+    for (name, kind) in settings {
+        let value = item(values, &keys, name)?;
+        let setting = match kind {
+            Setting::Integer(_) => Setting::Integer(value.extract()?),
+            Setting::Real(_) => Setting::Real(value.extract()?),
+        };
+        unwrap(values.py(), out.set(name, setting))?;
+    }
+    Ok(out)
 }
 
 /// Reads a 4x4 pose.

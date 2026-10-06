@@ -27,7 +27,7 @@ using slamlab::testing::is_invalid_input;
 /// @param name Its name.
 /// @return The path.
 std::string folder(const std::string& name) {
-  return std::string(SLAMLAB_FIXTURES_DIR) + "/eval/sequences/" + name;
+  return slamlab::testing::fixture_path("eval/sequences/" + name);
 }
 
 /// @brief A path relative to a folder, as the fixtures list them.
