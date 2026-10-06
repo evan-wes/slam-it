@@ -74,6 +74,7 @@ if(SLAMLAB_BUILD_BENCHMARKS)
 endif()
 
 slamlab_add_rung(foundations)
+slamlab_add_rung(edge DEPENDS slamlab_foundations)
 # Evaluation: dataset readers outside the algorithm cores. PNGs decode with the vendored
 # stb_image (third_party/stb), included as a system header so its own warnings stay out. The
 # Python extension never links it, so a wheel build compiles it only with the native tests.
@@ -90,6 +91,6 @@ if(SKBUILD)
   file(GLOB_RECURSE SLAMLAB_BINDING_SOURCES CONFIGURE_DEPENDS cpp/bindings/*.cpp)
   nanobind_add_module(_cpp NB_STATIC ${SLAMLAB_BINDING_SOURCES})
   target_include_directories(_cpp PRIVATE cpp/bindings)
-  target_link_libraries(_cpp PRIVATE slamlab_foundations)
+  target_link_libraries(_cpp PRIVATE slamlab_foundations slamlab_edge)
   install(TARGETS _cpp LIBRARY DESTINATION slamlab)
 endif()

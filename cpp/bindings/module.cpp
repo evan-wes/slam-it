@@ -8,10 +8,12 @@
 #include <nanobind/nanobind.h>
 
 #include "common.hpp"
+#include "edge/edge.hpp"
 #include "foundations/foundations.hpp"
 
 NB_MODULE(_cpp, m) {
   m.doc() = "slamlab's C++ core. Submodules mirror the slamlab package tree.";
   slamlab::bindings::register_error_translation();
   slamlab::bindings::bind_foundations(m);
+  slamlab::bindings::bind_edge(m);
 }

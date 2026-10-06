@@ -9,6 +9,7 @@
 use pyo3::prelude::*;
 
 mod common;
+mod edge;
 mod foundations;
 
 /// Registers the rung submodules.
@@ -19,5 +20,6 @@ mod foundations;
 #[pymodule]
 fn slamlab_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_wrapped(pyo3::wrap_pymodule!(foundations::foundations))?;
+    m.add_wrapped(pyo3::wrap_pymodule!(edge::edge))?;
     Ok(())
 }
