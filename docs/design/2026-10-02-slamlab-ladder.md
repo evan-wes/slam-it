@@ -1,6 +1,6 @@
 # slamlab: a learning ladder for visual SLAM
 
-Status, 2026-10-04: milestone 1 is complete, and milestone 2 is planned (see
+Status, 2026-10-06: milestone 1 is complete, and milestone 2 is under way (see
 [Milestones](#milestones)). The scaffold (package-per-rung layout in three
 languages, conda environment, CI, two-layer review process) is merged. PR 1, the BA spine,
 added rung 0's geometry and estimation in Python and C++: SO(3), SE(3), Umeyama alignment,
@@ -15,7 +15,11 @@ optimisation: SO(3), SE(3), the camera models, Umeyama alignment, PCG32, the lea
 solver and bundle adjustment, with native C++ and Rust benchmarks on a BAL problem, where the
 two take the same time. PR 6 adds the estimation core: RANSAC, triangulation, the two-view and
 absolute-pose solvers. Python, C++ and Rust now have the same capabilities, and every module's
-tests run on all three.
+tests run on all three. Milestone 2's PR 7 adds the front end (fixed-point images, ORB as
+ORB-SLAM extracts it, matching and rectified stereo) and the evaluation (dataset readers,
+metrics, the run format). PR 8 adds the edge VO pipeline, ORB-SLAM-lite in monocular, stereo
+and RGB-D, with native C++ and Rust programs that run a whole sequence and make the same
+decisions as the Python reference ([the edge VO note](../notes/edge-vo.md)).
 
 ## Purpose
 
@@ -422,7 +426,7 @@ state, evaluation and the budget harness. Every PR lands in Python, C++ and Rust
 | PR | Slice |
 |---|---|
 | 7 | **Front end and evaluation.** Images (Pillow in `slamlab.eval`; native PNG readers outside the cores, `slamlab_eval` and `slamlab-eval`), grayscale pyramids, blur and bilinear remapping. ORB, our own: multi-scale FAST spread over the image, intensity-centroid orientation, rBRIEF descriptors, Hamming matching with a ratio test. Stereo rectification from EuRoC's calibration, row-constrained matching with subpixel refinement, depth from disparity. The EuRoC reader; TUM's depth maps in the library; the demos on the shared front end. ATE (Sim(3) alignment for monocular, SE(3) for stereo and RGB-D) and RPE; the run format. |
-| 8 | **The pipeline.** Initialisation: two-view for monocular, retrying on later frames when the parallax is low; from depth for stereo and RGB-D, metric from the start. Tracking: a constant-velocity prediction, map points matched by projection, PnP RANSAC as the fallback, motion-only pose refinement. Keyframe selection; local mapping (triangulation, local BA over a keyframe window, culling of points and keyframes). Native programs (C++ and Rust) that run a whole sequence. Results on TUM (monocular, RGB-D) and EuRoC (monocular, stereo), with rerun recordings. Planned in [the edge VO design](2026-10-05-edge-vo.md). |
+| 8 | **The pipeline.** Initialisation: two-view for monocular, retrying on later frames when the parallax is low; from depth for stereo and RGB-D, metric from the start. Tracking: a constant-velocity prediction, map points matched by projection, PnP RANSAC as the fallback, motion-only pose refinement. Keyframe selection; local mapping (triangulation, local BA over a keyframe window, culling of points and keyframes). Native programs (C++ and Rust) that run a whole sequence. Results on TUM (monocular, RGB-D) and EuRoC (monocular, stereo), with rerun recordings. Planned in [the edge VO design](2026-10-05-edge-vo.md); built as [the edge VO note](../notes/edge-vo.md) describes. |
 | 9 | **Budgets and real time.** The `laptop-cpu` harness (pinned cores, capped memory, a per-frame deadline); latency (p50, p95) and peak memory; profiling the C++ and Rust pipelines to real time; the three-language comparison. Python is measured but not held to real time. |
 | 10 | **The run viewer** (see [Public presentation](#public-presentation)), on the run format, used locally until the repo goes public. |
 
@@ -796,11 +800,11 @@ shared with the owner's other projects.
     pyramid through the binding). Give extraction a result that holds its pyramid, or split
     the cores into `image::pyramid` and an `orb::extract_levels`, as ORB-SLAM's
     `ComputeStereoMatches` reads the extractor's `mvImagePyramid`.
-  - **The run format's golden folder and its native writers (A9), for PR 8.** C++ and Rust
-    will write runs against a golden folder in `tests/fixtures/eval/run/` that `read_run`
-    validates, with hand-written `.npy` and JSON writers (decided for PR 8); and a native
-    pipeline links both the edge rung and `eval`, so it sits above `eval`, in orchestration
-    (`slamlab_vo`, in C++ and in Rust; see the Package-layout table).
+  - Closed by PR 8: **the run format's golden folder and its native writers (A9).** C++ and
+    Rust write runs held to a golden folder in `tests/fixtures/eval/run/` that `read_run`
+    validates, with hand-written `.npy` and JSON writers; the native pipeline links both the
+    edge rung and `eval`, so it sits above `eval`, in orchestration (`slamlab_vo`, in C++ and
+    in Rust; see the Package-layout table).
   - Closed by PR 8: **guided matching beside `matching` (A10).** `matching.features_in_area`
     and `matching.search_by_projection` (ORB-SLAM's `GetFeaturesInArea` and
     `SearchByProjection`) are in `foundations.matching`, for the classic rung too; the C++ and

@@ -4,7 +4,7 @@ Every mode ends in the same :class:`Frame`, so tracking and mapping never ask wh
 they run in:
 
 - **Monocular** (:func:`monocular`): ORB features and their bearings; no depth.
-- **Stereo** (:func:`stereo`): rectified left and right images, matched along rows
+- **Stereo** (:func:`stereo_pair`): rectified left and right images, matched along rows
   (:func:`slamlab.foundations.stereo.match`); a matched left keypoint has the depth
   ``f b / d`` and its right column.
 - **RGB-D** (:func:`rgbd`): the depth map's value at each keypoint's nearest pixel, and a
