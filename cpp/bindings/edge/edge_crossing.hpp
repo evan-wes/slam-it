@@ -430,6 +430,51 @@ inline edge::Camera camera_in(const nanobind::dict& values) {
           .baseline = nanobind::cast<double>(values["baseline"])};
 }
 
+/// @brief A tracked frame's fields, as the dict's keys.
+inline constexpr std::array<const char*, 2> kTrackedKeys = {"pose", "points"};
+
+/// @brief Read a tracked frame from its dict.
+/// @param values The dict: `pose` (4, 4) and `points` (N,).
+/// @return The tracked frame.
+/// @throws std::invalid_argument for a missing or unknown key, or a malformed array.
+inline edge::Tracked tracked_in(const nanobind::dict& values) {
+  check_keys(values, kTrackedKeys, "edge.frames.Tracked");
+  const auto pose = item<double, nanobind::shape<4, 4>>(values, "pose");
+  edge::Tracked out{.pose = Eigen::Matrix4d::Zero(),
+                    .points = vector_item<std::int64_t>(values, "points")};
+  for (std::size_t r = 0; r < 4; ++r) {
+    for (std::size_t c = 0; c < 4; ++c) {
+      out.pose(static_cast<Eigen::Index>(r), static_cast<Eigen::Index>(c)) = pose(r, c);
+    }
+  }
+  return out;
+}
+
+/// @brief A tracked frame as a dict.
+/// @param tracked The tracked frame.
+/// @return `pose` (4, 4) and `points` (N,).
+inline nanobind::dict tracked_dict(const edge::Tracked& tracked) {
+  nanobind::dict out;
+  out["pose"] = matrix_array(tracked.pose);
+  out["points"] = vector_array(tracked.points);
+  return out;
+}
+
+/// @brief A tracked frame as a dict, or None.
+/// @param tracked The tracked frame, if any.
+/// @return The dict (see `tracked_dict`), or None.
+inline nanobind::object maybe_tracked(const std::optional<edge::Tracked>& tracked) {
+  return tracked ? nanobind::object(tracked_dict(*tracked)) : nanobind::none();
+}
+
+/// @brief Read a mode by its name (`slamlab.edge.options.MODES`).
+/// @param name The name.
+/// @return The mode.
+/// @throws std::invalid_argument for an unknown name.
+inline edge::Mode mode_in(const std::string& name) {
+  return enum_by_name<edge::Mode>(name, [](edge::Mode m) { return edge::name(m); }, "mode");
+}
+
 /// @brief A started map as a dict, or None.
 /// @param started The map and its tracked frame, if any.
 /// @return `map` (as `map_dict`), `pose` (4, 4) and `points` (N,); or None.
@@ -437,10 +482,8 @@ inline nanobind::object started_dict(const std::optional<edge::Started>& started
   if (!started) {
     return nanobind::none();
   }
-  nanobind::dict out;
+  nanobind::dict out = tracked_dict(started->tracked);
   out["map"] = map_dict(started->map);
-  out["pose"] = matrix_array(started->tracked.pose);
-  out["points"] = vector_array(started->tracked.points);
   return out;
 }
 

@@ -141,15 +141,9 @@ Result<std::vector<matching::Match>> match_for_initialization(const Frame& refer
                              .right = std::numeric_limits<double>::quiet_NaN()});
     }
   }
-  auto grid = matching::FeatureGrid::build(frame.features.keypoints);
-  if (!grid) {
-    return std::unexpected(std::move(grid.error()));
-  }
-  const std::vector<double> right(keypoint_count(frame), std::numeric_limits<double>::quiet_NaN());
-  const std::vector<std::uint8_t> taken(keypoint_count(frame), 0);
-  auto found = matching::search_by_projection(
-      projections, frame.features, *grid, right, taken,
-      {.max_distance = kThLow, .ratio = options.init_ratio, .check_orientation = true});
+  auto found =
+      search(frame, projections,
+             {.max_distance = kThLow, .ratio = options.init_ratio, .check_orientation = true});
   if (!found) {
     return std::unexpected(std::move(found.error()));
   }

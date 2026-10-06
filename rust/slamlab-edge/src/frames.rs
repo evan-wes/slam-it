@@ -8,6 +8,7 @@ use nalgebra::{Matrix4, Vector2, Vector3};
 use slamlab_foundations::camera::{self, Model};
 use slamlab_foundations::error::{ErrorKind, Result, check_range, fail, fail_setting};
 use slamlab_foundations::image::{self, Image};
+use slamlab_foundations::matching::{self, FeatureGrid, Match, Projection, SearchOptions};
 use slamlab_foundations::orb::{self, Features};
 use slamlab_foundations::stereo::{self, MatchOptions};
 
@@ -378,6 +379,42 @@ pub fn stereo_pair(
         columns[m.left] = m.right_x;
     }
     Ok(assemble(timestamp, features, camera, depth, columns))
+}
+
+/// Matches projected map points to a frame's keypoints, its right columns checked
+/// (`slamlab.edge.frames.search`): `matching::search_by_projection` over the frame's grid and
+/// right columns (NaN for a monocular frame: no check).
+///
+/// # Arguments
+///
+/// * `frame` - The frame.
+/// * `projections` - The projected points.
+/// * `options` - The filters.
+/// * `taken` - One flag per keypoint, true if already matched; empty for none.
+///
+/// # Returns
+///
+/// `(projection, keypoint)` matches.
+///
+/// # Errors
+///
+/// The search's `InvalidInput`.
+pub fn search(
+    frame: &Frame,
+    projections: &[Projection],
+    options: &SearchOptions,
+    taken: &[bool],
+) -> Result<Vec<Match>> {
+    let grid = FeatureGrid::build(&frame.features.keypoints)?;
+    let none = vec![false; if taken.is_empty() { frame.size() } else { 0 }];
+    matching::search_by_projection(
+        projections,
+        &frame.features,
+        &grid,
+        &frame.right,
+        if taken.is_empty() { &none } else { taken },
+        options,
+    )
 }
 
 #[cfg(test)]

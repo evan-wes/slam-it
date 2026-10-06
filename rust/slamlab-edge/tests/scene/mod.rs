@@ -68,13 +68,14 @@ pub fn pose(k: usize) -> Matrix4<f64> {
     out
 }
 
-/// A keyframe's frame: one level-0 keypoint at each point's projection, each with its own
-/// descriptor, and its depth and right column when asked.
+/// A frame of the scene: one keypoint at each point's projection, on one level, each with its
+/// own descriptor, and its depth and right column when asked.
 ///
 /// # Arguments
 ///
-/// * `k` - The keyframe.
+/// * `t` - The camera's `T_cam_world`.
 /// * `with_depth` - Whether the keypoints have depth.
+/// * `level` - The keypoints' level.
 ///
 /// # Returns
 ///
@@ -83,11 +84,12 @@ pub fn pose(k: usize) -> Matrix4<f64> {
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
     reason = "small indices and in-image pixels"
 )]
-pub fn frame(k: usize, with_depth: bool) -> Frame {
+pub fn frame_at(t: &Matrix4<f64>, with_depth: bool, level: usize) -> Frame {
     let cam = camera();
-    let t = pose(k);
+    let scale = 1.2_f64.powf(level as f64);
     let mut keypoints = Vec::new();
     let mut descriptors = Vec::new();
     let (mut bearings, mut depth, mut right) = (Vec::new(), Vec::new(), Vec::new());
@@ -96,8 +98,11 @@ pub fn frame(k: usize, with_depth: bool) -> Frame {
         let px = cam.project(&local);
         keypoints.push(Keypoint {
             xy: [px.x, px.y],
-            level: 0,
-            level_xy: [px.x.round() as usize, px.y.round() as usize],
+            level,
+            level_xy: [
+                (px.x / scale).round() as usize,
+                (px.y / scale).round() as usize,
+            ],
             response: 0,
             angle: 0,
         });
@@ -111,7 +116,7 @@ pub fn frame(k: usize, with_depth: bool) -> Frame {
         });
     }
     Frame {
-        timestamp: k as f64,
+        timestamp: 0.0,
         features: Features {
             keypoints,
             descriptors,
@@ -122,6 +127,39 @@ pub fn frame(k: usize, with_depth: bool) -> Frame {
         depth,
         right,
     }
+}
+
+/// A keyframe's frame: its keypoints on level 0 (see [`frame_at`]).
+///
+/// # Arguments
+///
+/// * `k` - The keyframe.
+/// * `with_depth` - Whether the keypoints have depth.
+///
+/// # Returns
+///
+/// The frame.
+#[allow(clippy::cast_precision_loss, reason = "keyframes below 3")]
+pub fn frame(k: usize, with_depth: bool) -> Frame {
+    Frame {
+        timestamp: k as f64,
+        ..frame_at(&pose(k), with_depth, 0)
+    }
+}
+
+/// The pose of a camera moved along its axis from the origin.
+///
+/// # Arguments
+///
+/// * `dz` - How far, in metres.
+///
+/// # Returns
+///
+/// Its `T_cam_world`.
+pub fn moved(dz: f64) -> Matrix4<f64> {
+    let mut out = Matrix4::identity();
+    out[(2, 3)] = -dz;
+    out
 }
 
 /// The scene's map: the first keyframe makes a point at each keypoint, the others observe

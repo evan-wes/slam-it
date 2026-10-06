@@ -23,7 +23,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from slamlab import backends
-from slamlab.edge import adjust
+from slamlab.edge import adjust, frames
 from slamlab.edge import map as maps
 from slamlab.edge.frames import Camera, Frame, Tracked
 from slamlab.edge.map import Map, frame_dict
@@ -161,7 +161,7 @@ def _match_for_initialization(reference: Frame, frame: Frame, options: Options) 
     searched = matching.SearchOptions(
         max_distance=TH_LOW, ratio=options.init_ratio, check_orientation=True
     )
-    found = matching.search_by_projection(projections, frame.features, searched)
+    found = frames.search(frame, projections, searched)
     return matching.Matches(
         pairs=np.column_stack([rows[found.pairs[:, 0]], found.pairs[:, 1]]).astype(np.int64),
         distances=found.distances,

@@ -12,6 +12,7 @@ mod frames;
 mod initialization;
 mod map;
 mod residuals;
+mod tracking;
 
 /// Registers the edge submodules.
 ///
@@ -25,5 +26,6 @@ pub fn edge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_wrapped(pyo3::wrap_pymodule!(residuals::residuals))?;
     m.add_wrapped(pyo3::wrap_pymodule!(adjust::adjust))?;
     m.add_wrapped(pyo3::wrap_pymodule!(initialization::initialization))?;
+    m.add_wrapped(pyo3::wrap_pymodule!(tracking::tracking))?;
     Ok(())
 }

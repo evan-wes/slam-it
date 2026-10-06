@@ -705,8 +705,28 @@ def _decode_int64(raw: Any, codes: backends.Codes) -> NDArray[np.int64]:  # noqa
     return out
 
 
-def _as_point_rows(m: Map, rows: ArrayLike, name: str = "rows") -> IntArray:
-    """Check point rows: integers in ``[0, P)``."""
+def as_point_rows(m: Map, rows: ArrayLike, name: str = "rows") -> IntArray:
+    """Check point rows: a vector of integers in ``[0, P)`` (booleans refused).
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    rows : array_like of int
+        The rows.
+    name : str, optional
+        The argument's name, for messages.
+
+    Returns
+    -------
+    ndarray of int64
+        The rows, contiguous.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If they are not integers, or one is out of range.
+    """
     return _as_rows(rows, m.points, name)
 
 
@@ -761,7 +781,7 @@ def predict_level(
         If a row is out of range, or a distance is not finite and positive, or there is not
         one per row.
     """
-    chosen = _as_point_rows(m, rows)
+    chosen = as_point_rows(m, rows)
     distances = as_real(distance, "distance")
     if distances.shape != chosen.shape or np.any(distances <= 0.0):
         raise InvalidInputError("distance: expected one positive distance per row")
@@ -953,7 +973,7 @@ def refresh_points(m: Map, rows: ArrayLike, *, backend: str = "python") -> Map:
     slamlab.foundations.errors.InvalidInputError
         If a row is out of range or its point has no observation.
     """
-    chosen = _as_point_rows(m, rows)
+    chosen = as_point_rows(m, rows)
     if np.any(~np.isin(m.pt_id[chosen], m.kp_point)):
         raise InvalidInputError("rows: every point must have an observation")
     return backends.call(
@@ -1021,7 +1041,7 @@ def observation_weight(m: Map, rows: ArrayLike, *, backend: str = "python") -> I
     slamlab.foundations.errors.InvalidInputError
         If a row is out of range.
     """
-    chosen = _as_point_rows(m, rows)
+    chosen = as_point_rows(m, rows)
     return backends.call(
         backend,
         __name__,

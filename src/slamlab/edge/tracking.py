@@ -1,0 +1,797 @@
+"""Tracking: place each frame against the map (ORB-SLAM's ``Tracking``, lite).
+
+- **Tracking the last frame** (:func:`track_last_frame`, ``TrackWithMotionModel``): the pose
+  predicted by a constant velocity (:func:`predict`); the last frame's map points projected
+  with it and matched in a window (:func:`slamlab.foundations.matching.search_by_projection`),
+  twice as wide if too few match; the pose refined (:func:`optimize_pose`).
+- **Tracking the local map** (:func:`track_local_map`, ``TrackLocalMap``): the points the
+  sliding window's keyframes observe, those in view (:func:`in_view`, ``isInFrustum``)
+  projected and matched at their predicted level; the pose refined again. Its inliers decide
+  whether the frame is tracked.
+- **The fallback** (:func:`relocalize_locally`): when the prediction fails, the frame's
+  descriptors are matched to the local map's and PnP RANSAC
+  (:func:`slamlab.foundations.pnp.pnp_ransac`) places it. No bag of words: this recovers only
+  near the local map; a lost track ends the run.
+
+**Pose refinement** (:func:`optimize_pose`, ORB-SLAM's ``PoseOptimization``) runs rounds of
+:func:`slamlab.foundations.pnp.refine_pose` (Cauchy, on the round's inliers) and classifies
+every match afresh after each, by the chi-square test (:func:`slamlab.edge.residuals.chi2`).
+The solve itself uses the left image only (ORB-SLAM's stereo edges add the right column).
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from typing import Any, Protocol
+
+import numpy as np
+from numpy.typing import ArrayLike, NDArray
+
+from slamlab import backends
+from slamlab.edge import frames, residuals
+from slamlab.edge import map as maps
+from slamlab.edge.frames import Camera, Frame, Tracked
+from slamlab.edge.map import Map, frame_dict
+from slamlab.edge.options import MODES, TH_HIGH, Options
+from slamlab.foundations import matching, pnp, ransac
+from slamlab.foundations.arrays import as_number, as_real
+from slamlab.foundations.errors import DegenerateError, InvalidInputError
+
+Array = NDArray[np.float64]
+IntArray = NDArray[np.int64]
+Mask = NDArray[np.bool_]
+
+NARROW_VIEW_COS = 0.998
+"""A point seen within this cosine of its mean viewing direction is searched in a narrower
+window (``RadiusByViewingCos``: 2.5 rather than 4)."""
+
+MIN_MOTION_INLIERS = 10
+"""Inliers tracking the last frame must keep after refinement (``TrackWithMotionModel``)."""
+
+
+@dataclass(frozen=True)
+class InView:
+    """Map points in a camera's view (``isInFrustum``), with where and how to search them.
+
+    Attributes
+    ----------
+    rows : ndarray of int64, shape (V,)
+        The points' rows.
+    xy : ndarray of float64, shape (V, 2)
+        Their projections.
+    right : ndarray of float64, shape (V,)
+        Their predicted right columns (NaN without a baseline).
+    level : ndarray of int64, shape (V,)
+        Their predicted levels.
+    view_cos : ndarray of float64, shape (V,)
+        The cosine between each viewing ray and the point's mean viewing direction.
+    """
+
+    rows: IntArray
+    xy: Array
+    right: Array
+    level: IntArray
+    view_cos: Array
+
+
+@dataclass(frozen=True)
+class LocalTracking:
+    """A frame tracked against the local map, and the counts it adds to.
+
+    Attributes
+    ----------
+    tracked : slamlab.edge.frames.Tracked
+        The refined pose and the inlier matches.
+    visible : ndarray of int64
+        The ids of the points that were in view (their visible counts grow).
+    found : ndarray of int64
+        The ids of the inliers (their found counts grow).
+    """
+
+    tracked: Tracked
+    visible: IntArray
+    found: IntArray
+
+
+class Implementation(Protocol):
+    """The functions a compiled backend's ``edge.tracking`` submodule provides.
+
+    A tracked frame crosses as a dict of ``pose`` and ``points`` (or None where the stage may
+    fail); :class:`InView` and :class:`LocalTracking` as dicts of their fields, the latter's
+    tracked frame flattened into ``pose`` and ``points``.
+    """
+
+    def optimize_pose(
+        self,
+        m: dict[str, Any],
+        camera: dict[str, Any],
+        frame: dict[str, Any],
+        tracked: dict[str, Any],
+        options: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Refine a frame's pose against its matched points."""
+        ...
+
+    def in_view(
+        self,
+        m: dict[str, Any],
+        camera: dict[str, Any],
+        pose: NDArray[np.float64],
+        rows: NDArray[np.int64],
+        options: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Select the points a camera sees."""
+        ...
+
+    def track_last_frame(  # noqa: PLR0913 -- the stage's state, as the reference takes it
+        self,
+        *,
+        m: dict[str, Any],
+        camera: dict[str, Any],
+        frame: dict[str, Any],
+        last: dict[str, Any],
+        last_tracked: dict[str, Any],
+        predicted: NDArray[np.float64],
+        mode: str,
+        options: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Track the last frame's points into this one."""
+        ...
+
+    def track_local_map(  # noqa: PLR0913 -- the stage's state, as the reference takes it
+        self,
+        *,
+        m: dict[str, Any],
+        camera: dict[str, Any],
+        frame: dict[str, Any],
+        tracked: dict[str, Any],
+        mode: str,
+        options: dict[str, Any],
+        widen: float,
+    ) -> dict[str, Any]:
+        """Match the local map's points in view and refine the pose."""
+        ...
+
+    def relocalize_locally(
+        self,
+        m: dict[str, Any],
+        camera: dict[str, Any],
+        frame: dict[str, Any],
+        options: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Place a frame against the local map by descriptors and PnP RANSAC."""
+        ...
+
+
+def tracked_dict(tracked: Tracked) -> dict[str, Any]:
+    """Return a tracked frame as it crosses the bindings.
+
+    Parameters
+    ----------
+    tracked : slamlab.edge.frames.Tracked
+        The tracked frame.
+
+    Returns
+    -------
+    dict
+        ``pose`` (4, 4) and ``points`` (N,).
+    """
+    return {"pose": tracked.pose, "points": tracked.points}
+
+
+def decode_tracked(raw: dict[str, Any] | None, codes: backends.Codes) -> Tracked | None:
+    """Rebuild a tracked frame from a compiled backend's dict, its arrays checked.
+
+    Parameters
+    ----------
+    raw : dict or None
+        ``pose`` and ``points``, or None.
+    codes : dict
+        The backend module's code tables (a tracked frame crosses none).
+
+    Returns
+    -------
+    Tracked or None
+        The tracked frame.
+    """
+    del codes
+    if raw is None:
+        return None
+    return Tracked(
+        pose=backends.checked_array(raw["pose"], np.float64, 2, "tracked pose"),
+        points=backends.checked_array(raw["points"], np.int64, 1, "tracked points"),
+    )
+
+
+def _decode_found(raw: dict[str, Any], codes: backends.Codes) -> Tracked:
+    """Rebuild a tracked frame that is never None."""
+    tracked = decode_tracked(raw, codes)
+    assert tracked is not None
+    return tracked
+
+
+def _decode_in_view(raw: dict[str, Any], codes: backends.Codes) -> InView:
+    """Rebuild :class:`InView` from a compiled backend's dict."""
+    del codes
+    return InView(
+        rows=backends.checked_array(raw["rows"], np.int64, 1, "in_view rows"),
+        xy=backends.checked_array(raw["xy"], np.float64, 2, "in_view xy"),
+        right=backends.checked_array(raw["right"], np.float64, 1, "in_view right"),
+        level=backends.checked_array(raw["level"], np.int64, 1, "in_view level"),
+        view_cos=backends.checked_array(raw["view_cos"], np.float64, 1, "in_view view_cos"),
+    )
+
+
+def _decode_local(raw: dict[str, Any], codes: backends.Codes) -> LocalTracking:
+    """Rebuild :class:`LocalTracking` from a compiled backend's dict."""
+    return LocalTracking(
+        tracked=_decode_found(raw, codes),
+        visible=backends.checked_array(raw["visible"], np.int64, 1, "visible ids"),
+        found=backends.checked_array(raw["found"], np.int64, 1, "found ids"),
+    )
+
+
+def _as_pose(pose: ArrayLike, name: str) -> Array:
+    """Check a 4x4 pose: finite."""
+    matrix = as_real(pose, name)
+    if matrix.shape != (4, 4):
+        raise InvalidInputError(f"{name}: expected shape (4, 4), got {matrix.shape}")
+    return matrix
+
+
+def _as_matches(points: ArrayLike, frame: Frame, name: str) -> IntArray:
+    """Check a frame's matches: one point id (or -1) per keypoint."""
+    ids = np.asarray(points)
+    if ids.shape != (frame.size,) or (
+        ids.size and (not np.issubdtype(ids.dtype, np.integer) or ids.min() < -1)
+    ):
+        raise InvalidInputError(f"{name}: expected one point id (or -1) per keypoint")
+    return np.ascontiguousarray(ids, dtype=np.int64)
+
+
+def _as_tracked(tracked: Tracked, frame: Frame, name: str) -> Tracked:
+    """Check a tracked frame: a finite 4x4 pose and one match per keypoint."""
+    return Tracked(
+        pose=_as_pose(tracked.pose, f"{name}.pose"),
+        points=_as_matches(tracked.points, frame, f"{name}.points"),
+    )
+
+
+def _check_mode(mode: str) -> None:
+    """Refuse an unknown mode."""
+    if mode not in MODES:
+        raise InvalidInputError(f"mode: expected one of {MODES}, got {mode!r}")
+
+
+def predict(last_pose: Array, velocity: Array | None) -> Array:
+    """Predict a frame's pose by the constant-velocity model.
+
+    Parameters
+    ----------
+    last_pose : ndarray of float64, shape (4, 4)
+        The last frame's ``T_cam_world``.
+    velocity : ndarray of float64, shape (4, 4) or None
+        The last motion, ``T_last_previous``; None before there is one (the pose is kept).
+
+    Returns
+    -------
+    ndarray of float64, shape (4, 4)
+        ``velocity @ last_pose``.
+    """
+    return last_pose.copy() if velocity is None else velocity @ last_pose
+
+
+def _local(pose: Array, xyz: Array) -> Array:
+    """Move world points into a camera's frame: ``R X + t``."""
+    return np.asarray(xyz @ pose[:3, :3].T + pose[:3, 3], dtype=np.float64)
+
+
+def _optimize_pose(
+    m: Map, camera: Camera, frame: Frame, tracked: Tracked, options: Options
+) -> Tracked:
+    """Refine a frame's pose against its matched points (reference)."""
+    points = tracked.points
+    rows = m.point_rows(points)
+    matched = (rows >= 0) & (frame.bearings[:, 2] > 0.0)  # NaN bearings fail too
+    xyz = np.zeros((frame.size, 3))
+    xyz[matched] = m.pt_xyz[rows[matched]]
+    keypoints = frame.features.keypoints
+    variance = residuals.sigma2(m, keypoints.level[matched])
+    limit = residuals.thresholds(frame.right[matched], options)
+    scale = math.sqrt(options.chi2_mono) / camera.focal
+    use = matched.copy()
+    current = np.asarray(tracked.pose, dtype=np.float64)
+    for _ in range(options.pose_rounds):
+        use[np.flatnonzero(use)[_local(current, xyz[use])[:, 2] <= 0.0]] = False
+        if np.count_nonzero(use) < 3:
+            break
+        current = pnp.refine_pose(current, xyz[use], frame.bearings[use], scale=scale).state
+        error = residuals.chi2(
+            camera,
+            _local(current, xyz[matched]),
+            keypoints.xy[matched],
+            frame.right[matched],
+            variance,
+        )
+        use = matched.copy()
+        use[matched] = error < limit
+    return Tracked(pose=current, points=np.where(use, points, -1).astype(np.int64))
+
+
+def optimize_pose(  # noqa: PLR0913 -- the map, its camera, the frame tracked, the settings
+    m: Map,
+    camera: Camera,
+    frame: Frame,
+    tracked: Tracked,
+    options: Options,
+    *,
+    backend: str = "python",
+) -> Tracked:
+    """Refine a frame's pose against its matched points, dropping outliers (``PoseOptimization``).
+
+    ``pose_rounds`` rounds, each refining the pose on the matches the last one kept (those in
+    front of the camera) and classifying every match afresh by the chi-square test.
+
+    Parameters
+    ----------
+    m : Map
+        The map (the points' positions).
+    camera : slamlab.edge.frames.Camera
+        The camera.
+    frame : slamlab.edge.frames.Frame
+        The frame.
+    tracked : slamlab.edge.frames.Tracked
+        The starting ``T_cam_world``, and the point id each keypoint matched (or -1).
+    options : Options
+        The rounds and chi-square thresholds.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    slamlab.edge.frames.Tracked
+        The refined pose and the inlier matches (outliers set to -1). With fewer than three
+        usable matches the pose is returned as it was.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If the pose is not a finite 4x4 matrix, or the matches are not one per keypoint.
+    """
+    start = _as_tracked(tracked, frame, "tracked")
+    return backends.call(
+        backend,
+        __name__,
+        "optimize_pose",
+        reference=lambda: _optimize_pose(m, camera, frame, start, options),
+        arguments={
+            "m": m.as_dict(),
+            "camera": camera.as_dict(),
+            "frame": frame_dict(frame),
+            "tracked": tracked_dict(start),
+            "options": options.as_dict(),
+        },
+        decode=_decode_found,
+    )
+
+
+def _in_view(m: Map, camera: Camera, pose: Array, rows: IntArray, options: Options) -> InView:
+    """Select the points a camera sees (reference)."""
+    xyz = m.pt_xyz[rows]
+    local = _local(pose, xyz)
+    keep = local[:, 2] > 0.0
+    pixels = np.full((len(rows), 2), np.nan)
+    pixels[keep] = camera.project(local[keep])
+    keep &= camera.inside(np.nan_to_num(pixels, nan=-1.0))
+    offset = xyz - (-pose[:3, :3].T @ pose[:3, 3])
+    distance = np.linalg.norm(offset, axis=1)
+    keep &= distance >= 0.8 * m.pt_min_distance[rows]
+    keep &= distance <= 1.2 * m.pt_max_distance[rows]
+    view_cos = np.sum(offset * m.pt_normal[rows], axis=1) / np.where(keep, distance, 1.0)
+    keep &= view_cos >= options.view_cos_limit
+    chosen = rows[keep]
+    right = np.full(len(chosen), np.nan)
+    if camera.baseline > 0.0:
+        right = pixels[keep, 0] - camera.focal * camera.baseline / local[keep, 2]
+    return InView(
+        rows=chosen,
+        xy=pixels[keep],
+        right=right,
+        level=maps.predict_level(m, chosen, distance[keep]),
+        view_cos=view_cos[keep],
+    )
+
+
+def in_view(  # noqa: PLR0913 -- the map, its camera, a pose, the candidates, the settings
+    m: Map,
+    camera: Camera,
+    pose: ArrayLike,
+    rows: ArrayLike,
+    options: Options,
+    *,
+    backend: str = "python",
+) -> InView:
+    """Select the points a camera sees, at a distance and angle they are matchable from.
+
+    A point is in view when it is in front, projects inside the image, lies between 0.8 of
+    its minimum and 1.2 of its maximum distance, and is seen within ``view_cos_limit`` of
+    its mean viewing direction (ORB-SLAM's ``isInFrustum``).
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    camera : slamlab.edge.frames.Camera
+        The camera.
+    pose : array_like, shape (4, 4)
+        Its ``T_cam_world``.
+    rows : array_like of int
+        The candidate points' rows.
+    options : Options
+        The viewing-angle limit.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    InView
+        The points in view, in the order of `rows`.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If the pose is not a finite 4x4 matrix, or a row is out of range.
+    """
+    matrix = _as_pose(pose, "pose")
+    given = np.asarray(rows)
+    chosen = maps.as_point_rows(m, given)
+    return backends.call(
+        backend,
+        __name__,
+        "in_view",
+        reference=lambda: _in_view(m, camera, matrix, chosen, options),
+        arguments={
+            "m": m.as_dict(),
+            "camera": camera.as_dict(),
+            "pose": matrix,
+            "rows": chosen,
+            "options": options.as_dict(),
+        },
+        decode=_decode_in_view,
+    )
+
+
+def _search(
+    frame: Frame,
+    projections: matching.Projections,
+    ids: IntArray,
+    options: matching.SearchOptions,
+    *,
+    taken: Mask,
+) -> IntArray:
+    """Match projected points (their ids) to the frame; return the id each keypoint matched."""
+    found = frames.search(frame, projections, options, taken=taken)
+    points = np.full(frame.size, -1, dtype=np.int64)
+    points[found.pairs[:, 1]] = ids[found.pairs[:, 0]]
+    return points
+
+
+def _track_last_frame(  # noqa: PLR0913 -- the stage's state
+    m: Map,
+    camera: Camera,
+    frame: Frame,
+    last: Frame,
+    last_tracked: Tracked,
+    *,
+    predicted: Array,
+    mode: str,
+    options: Options,
+) -> Tracked | None:
+    """Track the last frame's points into this one (reference)."""
+    rows = m.point_rows(last_tracked.points)
+    have = np.flatnonzero(rows >= 0)
+    local = _local(predicted, m.pt_xyz[rows[have]])
+    front = local[:, 2] > 0.0
+    pixels = np.full((len(have), 2), np.nan)
+    pixels[front] = camera.project(local[front])
+    ok = front & camera.inside(np.nan_to_num(pixels, nan=-1.0))
+    have, local, pixels = have[ok], local[ok], pixels[ok]
+    last_level = last.features.keypoints.level[have]
+    low, high = last_level - 1, last_level + 1
+    right = np.full(len(have), np.nan)
+    window = options.stereo_motion_window if mode == "stereo" else options.motion_window
+    if mode != "monocular":
+        right = pixels[:, 0] - camera.focal * camera.baseline / local[:, 2]
+        # The current camera's centre in the last camera's frame (ORB-SLAM's tlc): moving
+        # forward, a point appears larger, so it is found on no finer level than before;
+        # moving backward, on no coarser one.
+        ahead = last_tracked.pose[2, :3] @ (-predicted[:3, :3].T @ predicted[:3, 3])
+        ahead += last_tracked.pose[2, 3]
+        if ahead > camera.baseline:
+            low, high = last_level, np.full(len(have), m.levels - 1)
+        elif -ahead > camera.baseline:
+            low, high = np.zeros(len(have), dtype=np.int64), last_level
+    searched = matching.SearchOptions(max_distance=TH_HIGH, ratio=1.0, check_orientation=True)
+    points = np.full(frame.size, -1, dtype=np.int64)
+    for factor in (1.0, 2.0):
+        projections = matching.Projections(
+            xy=pixels,
+            radius=np.asarray(factor * window * m.scale_factor**last_level, dtype=np.float64),
+            min_level=low,
+            max_level=high,
+            descriptors=m.pt_descriptor[rows[have]],
+            angle=last.features.keypoints.angle[have],
+            right=right,
+        )
+        points = _search(
+            frame, projections, m.pt_id[rows[have]], searched, taken=np.zeros(frame.size, bool)
+        )
+        if np.count_nonzero(points >= 0) >= options.min_motion_matches:
+            break
+    if np.count_nonzero(points >= 0) < options.min_motion_matches:
+        return None
+    tracked = _optimize_pose(m, camera, frame, Tracked(pose=predicted, points=points), options)
+    return tracked if tracked.inliers >= MIN_MOTION_INLIERS else None
+
+
+def track_last_frame(  # noqa: PLR0913 -- the stage's state, and the backend
+    m: Map,
+    camera: Camera,
+    frame: Frame,
+    last: Frame,
+    last_tracked: Tracked,
+    *,
+    predicted: ArrayLike,
+    mode: str,
+    options: Options,
+    backend: str = "python",
+) -> Tracked | None:
+    """Track the last frame's points into this one (``TrackWithMotionModel``).
+
+    The last frame's inlier points are projected with the predicted pose and searched in a
+    window of ``motion_window`` (``stereo_motion_window`` in stereo) pixels at the last
+    keypoint's level, on its level and the next ones (with depth: on its level and the
+    coarser ones when moving forward, the finer ones when moving back); twice as wide if fewer
+    than ``min_motion_matches`` match. The pose is then refined (:func:`optimize_pose`).
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    camera : slamlab.edge.frames.Camera
+        The camera.
+    frame : slamlab.edge.frames.Frame
+        The frame to track.
+    last : slamlab.edge.frames.Frame
+        The last frame.
+    last_tracked : slamlab.edge.frames.Tracked
+        Its pose and matches.
+    predicted : array_like, shape (4, 4)
+        The predicted pose.
+    mode : {"monocular", "stereo", "rgbd"}
+        The pipeline's mode.
+    options : Options
+        The windows and minimums.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    slamlab.edge.frames.Tracked or None
+        The tracked frame, or None if fewer than ``min_motion_matches`` points matched or
+        fewer than :data:`MIN_MOTION_INLIERS` survived refinement.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If the mode is unknown, a pose is not a finite 4x4 matrix, or the last frame's matches
+        are not one per keypoint.
+    """
+    _check_mode(mode)
+    matrix = _as_pose(predicted, "predicted")
+    previous = _as_tracked(last_tracked, last, "last_tracked")
+    return backends.call(
+        backend,
+        __name__,
+        "track_last_frame",
+        reference=lambda: _track_last_frame(
+            m, camera, frame, last, previous, predicted=matrix, mode=mode, options=options
+        ),
+        arguments={
+            "m": m.as_dict(),
+            "camera": camera.as_dict(),
+            "frame": frame_dict(frame),
+            "last": frame_dict(last),
+            "last_tracked": tracked_dict(previous),
+            "predicted": matrix,
+            "mode": mode,
+            "options": options.as_dict(),
+        },
+        decode=decode_tracked,
+    )
+
+
+def _track_local_map(  # noqa: PLR0913 -- the stage's state
+    m: Map,
+    camera: Camera,
+    frame: Frame,
+    tracked: Tracked,
+    *,
+    mode: str,
+    options: Options,
+    widen: float,
+) -> LocalTracking:
+    """Match the local map's points in view and refine the pose (reference)."""
+    local = m.observed_by(m.window(options.window))
+    already = m.point_rows(tracked.points)
+    already = already[already >= 0]
+    view = _in_view(m, camera, tracked.pose, np.setdiff1d(local, already), options)
+    th = options.rgbd_local_window if mode == "rgbd" else options.local_window
+    narrow = np.where(view.view_cos > NARROW_VIEW_COS, 2.5, 4.0)
+    projections = matching.Projections(
+        xy=view.xy,
+        radius=widen * th * narrow * m.scale_factor**view.level,
+        min_level=view.level - 1,
+        max_level=view.level,
+        descriptors=m.pt_descriptor[view.rows],
+        angle=np.zeros(len(view.rows), dtype=np.int64),
+        right=view.right,
+    )
+    searched = matching.SearchOptions(max_distance=TH_HIGH, ratio=0.8, check_orientation=False)
+    found = _search(frame, projections, m.pt_id[view.rows], searched, taken=tracked.points >= 0)
+    points = np.where(tracked.points >= 0, tracked.points, found)
+    refined = _optimize_pose(m, camera, frame, Tracked(pose=tracked.pose, points=points), options)
+    return LocalTracking(
+        tracked=refined,
+        visible=np.concatenate([m.pt_id[already], m.pt_id[view.rows]]),
+        found=refined.points[refined.points >= 0],
+    )
+
+
+def track_local_map(  # noqa: PLR0913 -- the stage's state, the widening, and the backend
+    m: Map,
+    camera: Camera,
+    frame: Frame,
+    tracked: Tracked,
+    *,
+    mode: str,
+    options: Options,
+    widen: float = 1.0,
+    backend: str = "python",
+) -> LocalTracking:
+    """Match the local map's points in view and refine the pose (``TrackLocalMap``).
+
+    The local map is the points the window's keyframes observe. Those the frame has not
+    matched yet and that are in view (:func:`in_view`) are searched at their predicted level
+    and the one below, in a window of ``local_window`` (``rgbd_local_window`` in RGB-D)
+    times 2.5 or 4 pixels at that level (``RadiusByViewingCos``), with a 0.8 ratio test.
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    camera : slamlab.edge.frames.Camera
+        The camera.
+    frame : slamlab.edge.frames.Frame
+        The frame.
+    tracked : slamlab.edge.frames.Tracked
+        Its pose and matches so far.
+    mode : {"monocular", "stereo", "rgbd"}
+        The pipeline's mode.
+    options : Options
+        The window, thresholds and minimums.
+    widen : float, optional
+        A factor on the search window (ORB-SLAM widens it after a recovery).
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    LocalTracking
+        The refined frame, and the ids of the points in view and of the inliers.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If the mode is unknown, the pose is not a finite 4x4 matrix, the matches are not one
+        per keypoint, or `widen` is not finite and positive.
+    """
+    _check_mode(mode)
+    factor = as_number(widen, "widen")
+    if not (math.isfinite(factor) and factor > 0.0):
+        raise InvalidInputError(f"widen: must be finite and positive, got {factor}")
+    so_far = _as_tracked(tracked, frame, "tracked")
+    return backends.call(
+        backend,
+        __name__,
+        "track_local_map",
+        reference=lambda: _track_local_map(
+            m, camera, frame, so_far, mode=mode, options=options, widen=factor
+        ),
+        arguments={
+            "m": m.as_dict(),
+            "camera": camera.as_dict(),
+            "frame": frame_dict(frame),
+            "tracked": tracked_dict(so_far),
+            "mode": mode,
+            "options": options.as_dict(),
+            "widen": factor,
+        },
+        decode=_decode_local,
+    )
+
+
+def _relocalize_locally(m: Map, camera: Camera, frame: Frame, options: Options) -> Tracked | None:
+    """Place a frame against the local map by descriptors and PnP RANSAC (reference)."""
+    local = m.observed_by(m.window(options.window))
+    if len(local) < options.pnp_min_inliers:
+        return None
+    found = matching.match(
+        frame.features.descriptors,
+        m.pt_descriptor[local],
+        frame.features.keypoints.angle,
+        np.zeros(len(local), dtype=np.int64),
+        matching.Options(max_distance=TH_HIGH, ratio=0.75, check_orientation=False),
+    )
+    pairs = found.pairs[frame.bearings[found.pairs[:, 0], 2] > 0.0]
+    if len(pairs) < options.pnp_min_inliers:
+        return None
+    settings = ransac.Options(threshold=options.pnp_threshold / camera.focal, seed=options.seed)
+    try:
+        solved = pnp.pnp_ransac(m.pt_xyz[local[pairs[:, 1]]], frame.bearings[pairs[:, 0]], settings)
+    except DegenerateError:
+        return None
+    inliers = solved.state.inliers
+    if np.count_nonzero(inliers) < options.pnp_min_inliers:
+        return None
+    points = np.full(frame.size, -1, dtype=np.int64)
+    points[pairs[inliers, 0]] = m.pt_id[local[pairs[inliers, 1]]]
+    tracked = _optimize_pose(
+        m, camera, frame, Tracked(pose=solved.state.model, points=points), options
+    )
+    return tracked if tracked.inliers >= options.pnp_min_inliers else None
+
+
+def relocalize_locally(
+    m: Map, camera: Camera, frame: Frame, options: Options, *, backend: str = "python"
+) -> Tracked | None:
+    """Place a frame against the local map by descriptors and PnP RANSAC (the fallback).
+
+    The frame's descriptors are matched to the local map's points' (``TH_HIGH``, a 0.75 ratio
+    test), PnP RANSAC places it on the matches (``pnp_threshold`` pixels, ``seed``), and the
+    pose is refined (:func:`optimize_pose`). ORB-SLAM relocalises against keyframes found by
+    its bag of words; this recovers only near the local map.
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    camera : slamlab.edge.frames.Camera
+        The camera.
+    frame : slamlab.edge.frames.Frame
+        The frame.
+    options : Options
+        The RANSAC threshold, minimum inliers and seed.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    slamlab.edge.frames.Tracked or None
+        The frame placed and refined, or None if fewer than ``pnp_min_inliers`` points match,
+        RANSAC finds no pose, or fewer inliers survive.
+    """
+    return backends.call(
+        backend,
+        __name__,
+        "relocalize_locally",
+        reference=lambda: _relocalize_locally(m, camera, frame, options),
+        arguments={
+            "m": m.as_dict(),
+            "camera": camera.as_dict(),
+            "frame": frame_dict(frame),
+            "options": options.as_dict(),
+        },
+        decode=decode_tracked,
+    )

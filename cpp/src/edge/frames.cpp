@@ -178,4 +178,17 @@ foundations::Result<Frame> stereo_pair(const foundations::image::Image& left,
   return assemble(timestamp, std::move(*features), camera, std::move(depth), std::move(columns));
 }
 
+foundations::Result<std::vector<foundations::matching::Match>> search(
+    const Frame& frame, std::span<const foundations::matching::Projection> projections,
+    const foundations::matching::SearchOptions& options, std::span<const std::uint8_t> taken) {
+  auto grid = foundations::matching::FeatureGrid::build(frame.features.keypoints);
+  if (!grid) {
+    return std::unexpected(std::move(grid.error()));
+  }
+  const std::vector<std::uint8_t> none(taken.empty() ? keypoint_count(frame) : 0, 0);
+  return foundations::matching::search_by_projection(
+      projections, frame.features, *grid, frame.right,
+      taken.empty() ? std::span<const std::uint8_t>(none) : taken, options);
+}
+
 }  // namespace slamlab::edge

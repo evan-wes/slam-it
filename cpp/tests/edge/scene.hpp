@@ -56,28 +56,29 @@ inline Eigen::Matrix4d pose(std::size_t k) {
   return out;
 }
 
-/// @brief A keyframe's frame: one level-0 keypoint at each point's projection, each with its
-///        own descriptor, and its depth and right column when asked.
-/// @param k The keyframe.
+/// @brief A frame of the scene: one keypoint at each point's projection, on one level, each
+///        with its own descriptor, and its depth and right column when asked.
+/// @param t The camera's `T_cam_world`.
 /// @param with_depth Whether the keypoints have depth.
+/// @param level The keypoints' level.
 /// @return The frame.
-inline edge::Frame frame(std::size_t k, bool with_depth) {
+inline edge::Frame frame_at(const Eigen::Matrix4d& t, bool with_depth, std::int64_t level = 0) {
   const edge::Camera cam = camera();
   const double nan = std::numeric_limits<double>::quiet_NaN();
   edge::Frame out;
-  out.timestamp = static_cast<double>(k);
   out.features.levels = 8;
   out.features.scale_factor = 1.2;
-  const Eigen::Matrix4d t = pose(k);
+  const double scale = std::pow(1.2, static_cast<double>(level));
   const std::vector<Eigen::Vector3d> world = points();
   for (std::size_t p = 0; p < kPoints; ++p) {
     const Eigen::Vector3d local = (t.topLeftCorner<3, 3>() * world[p]) + t.topRightCorner<3, 1>();
     const Eigen::Vector2d px = edge::project(cam, local);
-    out.features.keypoints.push_back({.xy = {px.x(), px.y()},
-                                      .level = 0,
-                                      .level_xy = {std::llround(px.x()), std::llround(px.y())},
-                                      .response = 0,
-                                      .angle = 0});
+    out.features.keypoints.push_back(
+        {.xy = {px.x(), px.y()},
+         .level = level,
+         .level_xy = {std::llround(px.x() / scale), std::llround(px.y() / scale)},
+         .response = 0,
+         .angle = 0});
     foundations::orb::Descriptor d{};
     for (std::size_t b = 0; b < d.size(); ++b) {
       d.at(b) = static_cast<std::uint8_t>(((p * 37U) + (b * 11U)) & 0xFFU);
@@ -87,6 +88,25 @@ inline edge::Frame frame(std::size_t k, bool with_depth) {
     out.depth.push_back(with_depth ? local.z() : nan);
     out.right.push_back(with_depth ? px.x() - (edge::focal(cam) * cam.baseline / local.z()) : nan);
   }
+  return out;
+}
+
+/// @brief A keyframe's frame: its keypoints on level 0 (see `frame_at`).
+/// @param k The keyframe.
+/// @param with_depth Whether the keypoints have depth.
+/// @return The frame.
+inline edge::Frame frame(std::size_t k, bool with_depth) {
+  edge::Frame out = frame_at(pose(k), with_depth);
+  out.timestamp = static_cast<double>(k);
+  return out;
+}
+
+/// @brief The pose of a camera moved along its axis from the origin.
+/// @param dz How far, in metres.
+/// @return Its `T_cam_world`.
+inline Eigen::Matrix4d moved(double dz) {
+  Eigen::Matrix4d out = Eigen::Matrix4d::Identity();
+  out(2, 3) = -dz;
   return out;
 }
 

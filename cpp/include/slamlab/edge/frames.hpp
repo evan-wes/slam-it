@@ -15,6 +15,7 @@
 #include "slamlab/foundations/camera.hpp"
 #include "slamlab/foundations/error.hpp"
 #include "slamlab/foundations/image.hpp"
+#include "slamlab/foundations/matching.hpp"
 #include "slamlab/foundations/orb.hpp"
 #include "slamlab/foundations/stereo.hpp"
 
@@ -150,5 +151,17 @@ struct DepthMap {
     const foundations::image::Image& left, const foundations::image::Image& right, double timestamp,
     const Camera& camera, const foundations::orb::Options& options,
     const foundations::stereo::MatchOptions& stereo_options);
+
+/// @brief Match projected map points to a frame's keypoints, its right columns checked
+///        (`slamlab.edge.frames.search`): `foundations::matching::search_by_projection` over
+///        the frame's grid and right columns (NaN for a monocular frame: no check).
+/// @param frame The frame.
+/// @param projections The projected points.
+/// @param options The filters.
+/// @param taken One flag per keypoint, nonzero if already matched; empty for none.
+/// @return `(projection, keypoint)` matches; the search's `InvalidInput`.
+[[nodiscard]] foundations::Result<std::vector<foundations::matching::Match>> search(
+    const Frame& frame, std::span<const foundations::matching::Projection> projections,
+    const foundations::matching::SearchOptions& options, std::span<const std::uint8_t> taken = {});
 
 }  // namespace slamlab::edge

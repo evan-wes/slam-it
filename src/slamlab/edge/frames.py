@@ -26,12 +26,13 @@ from numpy.typing import ArrayLike, NDArray
 
 from slamlab import backends
 from slamlab.foundations import camera as camera_model
-from slamlab.foundations import orb, stereo
+from slamlab.foundations import matching, orb, stereo
 from slamlab.foundations.arrays import MAX_IMAGE_SIDE, as_count, as_number, as_real
 from slamlab.foundations.errors import InvalidInputError
 
 Array = NDArray[np.float64]
 IntArray = NDArray[np.int64]
+Mask = NDArray[np.bool_]
 
 
 @dataclass(frozen=True)
@@ -382,6 +383,39 @@ def stereo_pair(  # noqa: PLR0913 -- the pair, its time, the camera, both settin
     depth[found.left] = found.depth
     columns[found.left] = found.right_x
     return _frame(timestamp, features, camera, depth, columns)
+
+
+def search(
+    frame: Frame,
+    projections: matching.Projections,
+    options: matching.SearchOptions,
+    *,
+    taken: Mask | None = None,
+) -> matching.Matches:
+    """Match projected map points to a frame's keypoints, its right columns checked.
+
+    :func:`slamlab.foundations.matching.search_by_projection` with the frame's features and
+    right columns (NaN for a monocular frame: no check).
+
+    Parameters
+    ----------
+    frame : Frame
+        The frame.
+    projections : slamlab.foundations.matching.Projections
+        The projected points.
+    options : slamlab.foundations.matching.SearchOptions
+        The filters.
+    taken : ndarray of bool, shape (N,), optional
+        The keypoints already matched, never candidates (default: none).
+
+    Returns
+    -------
+    slamlab.foundations.matching.Matches
+        ``(projection, keypoint)`` pairs.
+    """
+    return matching.search_by_projection(
+        projections, frame.features, options, right=frame.right, taken=taken
+    )
 
 
 @dataclass(frozen=True)

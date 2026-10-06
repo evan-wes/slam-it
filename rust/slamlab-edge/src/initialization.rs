@@ -3,11 +3,11 @@
 
 use nalgebra::{Matrix4, Vector3};
 use slamlab_foundations::error::{ErrorKind, Result, fail};
-use slamlab_foundations::matching::{self, FeatureGrid, Match, Projection, SearchOptions};
+use slamlab_foundations::matching::{Match, Projection, SearchOptions};
 use slamlab_foundations::twoview::{self, Status};
 
 use crate::adjust::bundle_adjust;
-use crate::frames::{Camera, Frame, Tracked, check_camera};
+use crate::frames::{Camera, Frame, Tracked, check_camera, search};
 use crate::map::{self, Map};
 use crate::options::{Options, TH_LOW, check_options};
 
@@ -199,18 +199,15 @@ pub fn match_for_initialization(
             }
         })
         .collect();
-    let grid = FeatureGrid::build(&frame.features.keypoints)?;
-    let mut found = matching::search_by_projection(
+    let mut found = search(
+        frame,
         &projections,
-        &frame.features,
-        &grid,
-        &vec![f64::NAN; frame.size()],
-        &vec![false; frame.size()],
         &SearchOptions {
             max_distance: TH_LOW,
             ratio: options.init_ratio,
             check_orientation: true,
         },
+        &[],
     )?;
     for m in &mut found {
         m.first = rows[m.first];

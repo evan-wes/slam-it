@@ -17,6 +17,8 @@ void bind_edge(nanobind::module_& parent) {
   nanobind::module_ initialization =
       edge.def_submodule("initialization", "Initialisation: starting the map.");
   bind_initialization(initialization);
+  nanobind::module_ tracking = edge.def_submodule("tracking", "Tracking: placing each frame.");
+  bind_tracking(tracking);
 }
 
 }  // namespace slamlab::bindings

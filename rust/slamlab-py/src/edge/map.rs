@@ -3,7 +3,6 @@
 //! The map crosses as a dict of `Map`'s fields both ways (`edge_crossing`); an operation
 //! copies it in, changes the copy, and returns it.
 
-use nalgebra::Matrix4;
 use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -11,29 +10,10 @@ use pyo3::types::PyDict;
 use slamlab_edge::map as core;
 
 use super::edge_crossing::{
-    frame_in, indices, indices_array, map_dict, map_in, rows, vector, vector_array, vectors,
+    frame_in, indices, indices_array, map_dict, map_in, pose_in, rows, vector, vector_array,
+    vectors,
 };
 use crate::common::{add_functions, contiguous, to_i64, unwrap};
-
-/// Reads a 4x4 pose.
-///
-/// # Arguments
-///
-/// * `pose` - The (4, 4) array.
-///
-/// # Returns
-///
-/// The pose.
-///
-/// # Errors
-///
-/// `ValueError` for another shape.
-fn pose_in(pose: &PyReadonlyArray2<'_, f64>) -> PyResult<Matrix4<f64>> {
-    if pose.shape() != [4, 4] {
-        return Err(PyValueError::new_err("pose: expected shape (4, 4)"));
-    }
-    Ok(Matrix4::from_row_slice(contiguous(pose)?))
-}
 
 /// Predicts points' levels from their distances.
 ///

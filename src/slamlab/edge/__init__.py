@@ -11,6 +11,7 @@ ORB-SLAM-lite"; the plan is ``docs/design/2026-10-05-edge-vo.md``).
 - :mod:`slamlab.edge.residuals`: each level's variance and the chi-square outlier test.
 - :mod:`slamlab.edge.adjust`: bundle adjustment over keyframes and the points they observe.
 - :mod:`slamlab.edge.initialization`: starting the map, from depth or from two views.
+- :mod:`slamlab.edge.tracking`: placing each frame against the map, and the fallback.
 
 **Compute budget:** real time under ``laptop-cpu``, then ``jetson-class`` and
 ``pi-class``. CPU only; implemented in Python, C++ and Rust in lock-step. Must never import

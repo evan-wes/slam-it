@@ -15,10 +15,10 @@ use numpy::{
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use slamlab_edge::frames::{Camera, Frame};
+use slamlab_edge::frames::{Camera, Frame, Tracked};
 use slamlab_edge::initialization::Started;
 use slamlab_edge::map::{Map, check_map};
-use slamlab_edge::options::Options;
+use slamlab_edge::options::{Mode, Options};
 use slamlab_foundations::camera::Model;
 use slamlab_foundations::orb::{DESCRIPTOR_BYTES, Descriptor, Features, Keypoint};
 
@@ -519,6 +519,109 @@ pub fn options_in(values: &Bound<'_, PyDict>) -> PyResult<Options> {
     ))
 }
 
+/// Reads a 4x4 pose.
+///
+/// # Arguments
+///
+/// * `pose` - The (4, 4) array.
+///
+/// # Returns
+///
+/// The pose.
+///
+/// # Errors
+///
+/// `ValueError` for another shape.
+pub fn pose_in(pose: &PyReadonlyArray2<'_, f64>) -> PyResult<Matrix4<f64>> {
+    if pose.shape() != [4, 4] {
+        return Err(PyValueError::new_err("pose: expected shape (4, 4)"));
+    }
+    Ok(Matrix4::from_row_slice(contiguous(pose)?))
+}
+
+/// A tracked frame's fields, as the dict's keys.
+const TRACKED_KEYS: [&str; 2] = ["pose", "points"];
+
+/// Reads a tracked frame from its dict.
+///
+/// # Arguments
+///
+/// * `values` - The dict: `pose` (4, 4) and `points` (N,).
+///
+/// # Returns
+///
+/// The tracked frame.
+///
+/// # Errors
+///
+/// `ValueError` for a missing or unknown key, or a malformed array.
+pub fn tracked_in(values: &Bound<'_, PyDict>) -> PyResult<Tracked> {
+    let get = |key| item(values, &TRACKED_KEYS, key);
+    Ok(Tracked {
+        pose: pose_in(&get("pose")?.extract()?)?,
+        points: vector(&get("points")?)?,
+    })
+}
+
+/// Builds a tracked frame's dict.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `tracked` - The tracked frame.
+///
+/// # Returns
+///
+/// `pose` (4, 4) and `points` (N,).
+///
+/// # Errors
+///
+/// A Python error if the dict cannot be built.
+pub fn tracked_dict<'py>(py: Python<'py>, tracked: &Tracked) -> PyResult<Bound<'py, PyDict>> {
+    let out = PyDict::new(py);
+    out.set_item("pose", item_array(py, &tracked.pose)?)?;
+    out.set_item("points", vector_array(py, &tracked.points))?;
+    Ok(out)
+}
+
+/// Builds a tracked frame's dict, or None.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `tracked` - The tracked frame, if any.
+///
+/// # Returns
+///
+/// The dict (see [`tracked_dict`]), or None.
+///
+/// # Errors
+///
+/// A Python error if the dict cannot be built.
+pub fn maybe_tracked(py: Python<'_>, tracked: Option<Tracked>) -> PyResult<Bound<'_, PyAny>> {
+    match tracked {
+        Some(tracked) => Ok(tracked_dict(py, &tracked)?.into_any()),
+        None => Ok(py.None().into_bound(py)),
+    }
+}
+
+/// Reads a mode by its name (`slamlab.edge.options.MODES`).
+///
+/// # Arguments
+///
+/// * `name` - The name.
+///
+/// # Returns
+///
+/// The mode.
+///
+/// # Errors
+///
+/// `ValueError` for an unknown name.
+pub fn mode_in(name: &str) -> PyResult<Mode> {
+    by_name(&Mode::ALL, Mode::name, name, "mode")
+}
+
 /// Builds a started map's dict, or None.
 ///
 /// # Arguments
@@ -537,9 +640,7 @@ pub fn started_dict(py: Python<'_>, started: Option<Started>) -> PyResult<Bound<
     let Some(started) = started else {
         return Ok(py.None().into_bound(py));
     };
-    let out = PyDict::new(py);
+    let out = tracked_dict(py, &started.tracked)?;
     out.set_item("map", map_dict(py, &started.map)?)?;
-    out.set_item("pose", item_array(py, &started.tracked.pose)?)?;
-    out.set_item("points", vector_array(py, &started.tracked.points))?;
     Ok(out.into_any())
 }
