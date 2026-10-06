@@ -668,8 +668,21 @@ def frame_dict(frame: Frame) -> dict[str, Any]:
     }
 
 
-def _decode(raw: dict[str, Any], codes: backends.Codes) -> Map:
-    """Rebuild a map from a compiled backend's dict, its arrays checked (never cast)."""
+def decode(raw: dict[str, Any], codes: backends.Codes) -> Map:
+    """Rebuild a map from a compiled backend's dict, its arrays checked (never cast).
+
+    Parameters
+    ----------
+    raw : dict
+        The map's fields, as :meth:`Map.as_dict` gives them.
+    codes : dict
+        The backend module's code tables (the map crosses none).
+
+    Returns
+    -------
+    Map
+        The map, checked.
+    """
     del codes  # the map crosses no codes
     arrays = {
         name: backends.checked_array(raw[name], dtype, 1 + len(item), f"map.{name}")
@@ -811,7 +824,7 @@ def insert_keyframe(
         "insert_keyframe",
         reference=lambda: _insert_keyframe(m, frame, matrix, ids),
         arguments={"m": m.as_dict(), "frame": frame_dict(frame), "pose": matrix, "points": ids},
-        decode=_decode,
+        decode=decode,
     )
 
 
@@ -869,7 +882,7 @@ def add_points(m: Map, xyz: ArrayLike, observers: ArrayLike, *, backend: str = "
         "add_points",
         reference=lambda: _add_points(m, points, rows),
         arguments={"m": m.as_dict(), "xyz": points, "observers": rows},
-        decode=_decode,
+        decode=decode,
     )
 
 
@@ -949,7 +962,7 @@ def refresh_points(m: Map, rows: ArrayLike, *, backend: str = "python") -> Map:
         "refresh_points",
         reference=lambda: _refresh_points(m, chosen),
         arguments={"m": m.as_dict(), "rows": chosen},
-        decode=_decode,
+        decode=decode,
     )
 
 
@@ -982,7 +995,7 @@ def erase_points(m: Map, erase: ArrayLike, *, backend: str = "python") -> Map:
         "erase_points",
         reference=lambda: _erase_points(m, mask),
         arguments={"m": m.as_dict(), "erase": mask},
-        decode=_decode,
+        decode=decode,
     )
 
 
@@ -1051,7 +1064,7 @@ def forget_observations(m: Map, rows: ArrayLike, *, backend: str = "python") -> 
         "forget_observations",
         reference=lambda: _forget_observations(m, chosen),
         arguments={"m": m.as_dict(), "rows": chosen},
-        decode=_decode,
+        decode=decode,
     )
 
 
@@ -1086,7 +1099,7 @@ def erase_keyframe(m: Map, k: int, *, backend: str = "python") -> Map:
         "erase_keyframe",
         reference=lambda: _erase_keyframe(m, row),
         arguments={"m": m.as_dict(), "k": row},
-        decode=_decode,
+        decode=decode,
     )
 
 
@@ -1138,5 +1151,5 @@ def count(
         "count",
         reference=lambda: _count(m, chosen, seen, matched),
         arguments={"m": m.as_dict(), "ids": chosen, "visible": seen, "found": matched},
-        decode=_decode,
+        decode=decode,
     )

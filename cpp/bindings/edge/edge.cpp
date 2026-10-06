@@ -10,6 +10,13 @@ void bind_edge(nanobind::module_& parent) {
   bind_frames(frames);
   nanobind::module_ map = edge.def_submodule("map", "The map: keyframes, keypoints, points.");
   bind_map(map);
+  nanobind::module_ residuals = edge.def_submodule("residuals", "Observation errors.");
+  bind_residuals(residuals);
+  nanobind::module_ adjust = edge.def_submodule("adjust", "Bundle adjustment over the map.");
+  bind_adjust(adjust);
+  nanobind::module_ initialization =
+      edge.def_submodule("initialization", "Initialisation: starting the map.");
+  bind_initialization(initialization);
 }
 
 }  // namespace slamlab::bindings

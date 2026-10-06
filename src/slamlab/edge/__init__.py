@@ -8,6 +8,9 @@ ORB-SLAM-lite"; the plan is ``docs/design/2026-10-05-edge-vo.md``).
 - :mod:`slamlab.edge.options`: every setting, ORB-SLAM's defaults.
 - :mod:`slamlab.edge.frames`: a frame's features, bearings, depth and right columns, per mode.
 - :mod:`slamlab.edge.map`: keyframes, their keypoints and the map points, a struct of arrays.
+- :mod:`slamlab.edge.residuals`: each level's variance and the chi-square outlier test.
+- :mod:`slamlab.edge.adjust`: bundle adjustment over keyframes and the points they observe.
+- :mod:`slamlab.edge.initialization`: starting the map, from depth or from two views.
 
 **Compute budget:** real time under ``laptop-cpu``, then ``jetson-class`` and
 ``pi-class``. CPU only; implemented in Python, C++ and Rust in lock-step. Must never import

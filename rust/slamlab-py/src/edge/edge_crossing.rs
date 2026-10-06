@@ -1,7 +1,8 @@
 //! Shared by the edge rung's bindings: the map and a frame cross as dicts of arrays.
 //!
 //! A map is a dict of `slamlab.edge.map.Map`'s fields; a frame is the dict
-//! `slamlab.edge.map.frame_dict` builds. Arrays are C-contiguous, of the dtype and shape the
+//! `slamlab.edge.map.frame_dict` builds; the camera and the settings are the dicts of scalars
+//! `Camera.as_dict` and `Options.as_dict` give. Arrays are C-contiguous, of the dtype and shape the
 //! Python dataclasses hold; a malformed dict raises `ValueError`, and the map is then checked
 //! by the core (`check_map`, an `InvalidInputError`).
 
@@ -14,11 +15,14 @@ use numpy::{
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use slamlab_edge::frames::Frame;
+use slamlab_edge::frames::{Camera, Frame};
+use slamlab_edge::initialization::Started;
 use slamlab_edge::map::{Map, check_map};
+use slamlab_edge::options::Options;
+use slamlab_foundations::camera::Model;
 use slamlab_foundations::orb::{DESCRIPTOR_BYTES, Descriptor, Features, Keypoint};
 
-use crate::common::{contiguous, to_i64, unwrap};
+use crate::common::{by_name, contiguous, item_array, to_i64, unwrap};
 
 /// The map's fields, as the dict's keys.
 const MAP_KEYS: [&str; 26] = [
@@ -449,4 +453,93 @@ pub fn frame_in(values: &Bound<'_, PyDict>) -> PyResult<Frame> {
         depth,
         right,
     })
+}
+
+/// The camera's fields, as the dict's keys.
+const CAMERA_KEYS: [&str; 5] = ["model", "intrinsics", "width", "height", "baseline"];
+
+/// Reads the camera from its dict.
+///
+/// # Arguments
+///
+/// * `values` - The dict, with exactly `Camera`'s fields.
+///
+/// # Returns
+///
+/// The camera (checked by the core).
+///
+/// # Errors
+///
+/// `ValueError` for a missing or unknown key, a malformed array, or an unknown model.
+pub fn camera_in(values: &Bound<'_, PyDict>) -> PyResult<Camera> {
+    let get = |key| item(values, &CAMERA_KEYS, key);
+    let model: String = get("model")?.extract()?;
+    Ok(Camera {
+        model: by_name(&Model::ALL, Model::name, &model, "model")?,
+        intrinsics: vector(&get("intrinsics")?)?,
+        width: get("width")?.extract()?,
+        height: get("height")?.extract()?,
+        baseline: get("baseline")?.extract()?,
+    })
+}
+
+/// Reads `edge.Options` from a dict holding exactly the named fields: the struct literal
+/// lists every field, so one missing here fails to build.
+macro_rules! read_options {
+    ($values:ident; $($field:ident),+ $(,)?) => {{
+        const KEYS: &[&str] = &[$(stringify!($field)),+];
+        Options { $($field: item($values, KEYS, stringify!($field))?.extract()?,)+ }
+    }};
+}
+
+/// Reads the settings from a dict of scalars.
+///
+/// # Arguments
+///
+/// * `values` - The dict, with exactly `Options`' fields.
+///
+/// # Returns
+///
+/// The settings (checked by the core).
+///
+/// # Errors
+///
+/// `ValueError` for a missing or unknown key; a Python error for a value of the wrong type.
+pub fn options_in(values: &Bound<'_, PyDict>) -> PyResult<Options> {
+    Ok(read_options!(values;
+        n_features, levels, scale_factor, fast_threshold, min_fast_threshold, close_depth,
+        init_feature_factor, min_init_features, min_depth_features, init_window, init_ratio,
+        init_min_matches, motion_window, stereo_motion_window, min_motion_matches, local_window,
+        rgbd_local_window, min_tracked, chi2_mono, chi2_stereo, pose_rounds, view_cos_limit,
+        max_frames, ref_ratio, mono_ref_ratio, min_keyframe_inliers, close_tracked,
+        close_untracked, window, min_new_points, triangulation_ratio, max_parallax_cos,
+        scale_ratio, fuse_window, ba_iterations, ba_refine_iterations, found_ratio,
+        min_point_observations, min_point_observations_depth, redundant_fraction,
+        redundant_observers, pnp_threshold, pnp_min_inliers, lost_frames, seed,
+    ))
+}
+
+/// Builds a started map's dict, or None.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `started` - The map and its tracked frame, if any.
+///
+/// # Returns
+///
+/// `map` (as [`map_dict`]), `pose` (4, 4) and `points` (N,); or None.
+///
+/// # Errors
+///
+/// A Python error if the dict cannot be built.
+pub fn started_dict(py: Python<'_>, started: Option<Started>) -> PyResult<Bound<'_, PyAny>> {
+    let Some(started) = started else {
+        return Ok(py.None().into_bound(py));
+    };
+    let out = PyDict::new(py);
+    out.set_item("map", map_dict(py, &started.map)?)?;
+    out.set_item("pose", item_array(py, &started.tracked.pose)?)?;
+    out.set_item("points", vector_array(py, &started.tracked.points))?;
+    Ok(out.into_any())
 }

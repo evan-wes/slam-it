@@ -18,4 +18,16 @@ void bind_frames(nanobind::module_& m);
 /// @param m The submodule.
 void bind_map(nanobind::module_& m);
 
+/// @brief Bind `slamlab.edge.residuals`' compiled functions.
+/// @param m The submodule.
+void bind_residuals(nanobind::module_& m);
+
+/// @brief Bind `slamlab.edge.adjust`'s compiled functions.
+/// @param m The submodule.
+void bind_adjust(nanobind::module_& m);
+
+/// @brief Bind `slamlab.edge.initialization`'s compiled functions.
+/// @param m The submodule.
+void bind_initialization(nanobind::module_& m);
+
 }  // namespace slamlab::bindings

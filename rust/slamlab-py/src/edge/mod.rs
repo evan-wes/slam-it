@@ -6,9 +6,12 @@
 
 use pyo3::prelude::*;
 
+mod adjust;
 mod edge_crossing;
 mod frames;
+mod initialization;
 mod map;
+mod residuals;
 
 /// Registers the edge submodules.
 ///
@@ -19,5 +22,8 @@ mod map;
 pub fn edge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_wrapped(pyo3::wrap_pymodule!(frames::frames))?;
     m.add_wrapped(pyo3::wrap_pymodule!(map::map))?;
+    m.add_wrapped(pyo3::wrap_pymodule!(residuals::residuals))?;
+    m.add_wrapped(pyo3::wrap_pymodule!(adjust::adjust))?;
+    m.add_wrapped(pyo3::wrap_pymodule!(initialization::initialization))?;
     Ok(())
 }

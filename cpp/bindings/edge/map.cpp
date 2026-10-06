@@ -21,18 +21,10 @@ namespace slamlab::bindings {
 
 namespace {
 
+using edge_crossing::int64_in;
+using edge_crossing::Int64In;
 using edge_crossing::map_dict;
 using edge_crossing::map_in;
-
-/// @brief A read-only, contiguous int64 vector.
-using Int64In = VectorIn<std::int64_t>;
-
-/// @brief Copy an int64 vector in.
-/// @param in The array.
-/// @return The values.
-std::vector<std::int64_t> int64_in(const Int64In& in) {
-  return copy_vector<std::vector<std::int64_t>>(in);
-}
 
 /// @brief Predict points' levels from their distances.
 /// @param m The map, as a dict.
@@ -121,12 +113,8 @@ nb::dict refresh_points(const nb::dict& m, const Int64In& rows) {
 /// @return The new map, as a dict.
 /// @throws CoreError for invalid input.
 nb::dict erase_points(const nb::dict& m, const VectorIn<bool>& erase) {
-  std::vector<std::uint8_t> flags(erase.shape(0));
-  for (std::size_t i = 0; i < flags.size(); ++i) {
-    flags[i] = erase(i) ? 1 : 0;
-  }
   edge::Map out = map_in(m);
-  unwrap(edge::erase_points(out, flags));
+  unwrap(edge::erase_points(out, edge_crossing::flags_in(erase)));
   return map_dict(out);
 }
 

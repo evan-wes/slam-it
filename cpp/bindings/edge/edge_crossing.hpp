@@ -2,26 +2,32 @@
 /// @brief Shared by the edge rung's bindings: the map and a frame cross as dicts of arrays.
 ///
 /// A map is a dict of `slamlab.edge.map.Map`'s fields; a frame is the dict
-/// `slamlab.edge.map.frame_dict` builds. Arrays are C-contiguous, of the dtype and shape the
+/// `slamlab.edge.map.frame_dict` builds; the camera and the settings are the dicts of scalars
+/// `Camera.as_dict` and `Options.as_dict` give. Arrays are C-contiguous, of the dtype and shape the
 /// Python dataclasses hold; a malformed dict raises `std::invalid_argument` (a `ValueError`),
 /// and the map is then checked by the core (`check_map`, an `InvalidInputError`).
 #pragma once
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
+#include <nanobind/stl/string.h>
 
 #include <Eigen/Core>
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "common.hpp"
 #include "slamlab/edge/frames.hpp"
+#include "slamlab/edge/initialization.hpp"
 #include "slamlab/edge/map.hpp"
+#include "slamlab/edge/options.hpp"
 
 namespace slamlab::bindings::edge_crossing {
 
@@ -58,6 +64,27 @@ std::vector<T> vector_item(const nanobind::dict& values, const char* key) {
   std::vector<T> out(in.shape(0));
   for (std::size_t i = 0; i < out.size(); ++i) {
     out[i] = in(i);
+  }
+  return out;
+}
+
+/// @brief A read-only, contiguous int64 vector (rows, ids).
+using Int64In = VectorIn<std::int64_t>;
+
+/// @brief Copy an int64 vector in.
+/// @param in The array.
+/// @return The values.
+inline std::vector<std::int64_t> int64_in(const Int64In& in) {
+  return copy_vector<std::vector<std::int64_t>>(in);
+}
+
+/// @brief Copy a boolean vector in as the core's flags.
+/// @param in The array.
+/// @return One flag per element: 1 for true, 0 for false.
+inline std::vector<std::uint8_t> flags_in(const VectorIn<bool>& in) {
+  std::vector<std::uint8_t> out(in.shape(0));
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    out[i] = in(i) ? 1 : 0;
   }
   return out;
 }
@@ -298,6 +325,123 @@ inline edge::Frame frame_in(const nanobind::dict& values) {
                                    .angle = angle[i]};
   }
   return frame;
+}
+
+/// @brief An integer setting's name and member.
+using IntegerOption = std::pair<const char*, std::int64_t edge::Options::*>;
+
+/// @brief A real setting's name and member.
+using RealOption = std::pair<const char*, double edge::Options::*>;
+
+/// @brief `Options`' integer fields.
+inline constexpr std::array<IntegerOption, 25> kIntegerOptions{{
+    {"n_features", &edge::Options::n_features},
+    {"levels", &edge::Options::levels},
+    {"fast_threshold", &edge::Options::fast_threshold},
+    {"min_fast_threshold", &edge::Options::min_fast_threshold},
+    {"init_feature_factor", &edge::Options::init_feature_factor},
+    {"min_init_features", &edge::Options::min_init_features},
+    {"min_depth_features", &edge::Options::min_depth_features},
+    {"init_min_matches", &edge::Options::init_min_matches},
+    {"min_motion_matches", &edge::Options::min_motion_matches},
+    {"min_tracked", &edge::Options::min_tracked},
+    {"pose_rounds", &edge::Options::pose_rounds},
+    {"max_frames", &edge::Options::max_frames},
+    {"min_keyframe_inliers", &edge::Options::min_keyframe_inliers},
+    {"close_tracked", &edge::Options::close_tracked},
+    {"close_untracked", &edge::Options::close_untracked},
+    {"window", &edge::Options::window},
+    {"min_new_points", &edge::Options::min_new_points},
+    {"ba_iterations", &edge::Options::ba_iterations},
+    {"ba_refine_iterations", &edge::Options::ba_refine_iterations},
+    {"min_point_observations", &edge::Options::min_point_observations},
+    {"min_point_observations_depth", &edge::Options::min_point_observations_depth},
+    {"redundant_observers", &edge::Options::redundant_observers},
+    {"pnp_min_inliers", &edge::Options::pnp_min_inliers},
+    {"lost_frames", &edge::Options::lost_frames},
+    {"seed", &edge::Options::seed},
+}};
+
+/// @brief `Options`' real fields.
+inline constexpr std::array<RealOption, 20> kRealOptions{{
+    {"scale_factor", &edge::Options::scale_factor},
+    {"close_depth", &edge::Options::close_depth},
+    {"init_window", &edge::Options::init_window},
+    {"init_ratio", &edge::Options::init_ratio},
+    {"motion_window", &edge::Options::motion_window},
+    {"stereo_motion_window", &edge::Options::stereo_motion_window},
+    {"local_window", &edge::Options::local_window},
+    {"rgbd_local_window", &edge::Options::rgbd_local_window},
+    {"chi2_mono", &edge::Options::chi2_mono},
+    {"chi2_stereo", &edge::Options::chi2_stereo},
+    {"view_cos_limit", &edge::Options::view_cos_limit},
+    {"ref_ratio", &edge::Options::ref_ratio},
+    {"mono_ref_ratio", &edge::Options::mono_ref_ratio},
+    {"triangulation_ratio", &edge::Options::triangulation_ratio},
+    {"max_parallax_cos", &edge::Options::max_parallax_cos},
+    {"scale_ratio", &edge::Options::scale_ratio},
+    {"fuse_window", &edge::Options::fuse_window},
+    {"found_ratio", &edge::Options::found_ratio},
+    {"redundant_fraction", &edge::Options::redundant_fraction},
+    {"pnp_threshold", &edge::Options::pnp_threshold},
+}};
+
+/// @brief Read the settings from a dict of scalars.
+/// @param values The dict, with exactly `Options`' fields.
+/// @return The settings (checked by the core).
+/// @throws std::invalid_argument for a missing or unknown key.
+inline edge::Options options_in(const nanobind::dict& values) {
+  std::vector<const char*> keys;
+  for (const auto& [key, member] : kIntegerOptions) {
+    keys.push_back(key);
+  }
+  for (const auto& [key, member] : kRealOptions) {
+    keys.push_back(key);
+  }
+  check_keys(values, keys, "edge.Options");
+  edge::Options out;
+  for (const auto& [key, member] : kIntegerOptions) {
+    out.*member = nanobind::cast<std::int64_t>(values[key]);
+  }
+  for (const auto& [key, member] : kRealOptions) {
+    out.*member = nanobind::cast<double>(values[key]);
+  }
+  return out;
+}
+
+/// @brief The camera's fields, as the dict's keys.
+inline constexpr std::array<const char*, 5> kCameraKeys = {"model", "intrinsics", "width", "height",
+                                                           "baseline"};
+
+/// @brief Read the camera from its dict.
+/// @param values The dict, with exactly `Camera`'s fields.
+/// @return The camera (checked by the core).
+/// @throws std::invalid_argument for a missing or unknown key, or an unknown model.
+inline edge::Camera camera_in(const nanobind::dict& values) {
+  check_keys(values, kCameraKeys, "edge.frames.Camera");
+  const std::vector<double> intrinsics = vector_item<double>(values, "intrinsics");
+  return {.model = enum_by_name<foundations::camera::Model>(
+              nanobind::cast<std::string>(values["model"]),
+              [](foundations::camera::Model m) { return foundations::camera::name(m); }, "model"),
+          .intrinsics = Eigen::Map<const Eigen::VectorXd>(
+              intrinsics.data(), static_cast<Eigen::Index>(intrinsics.size())),
+          .width = nanobind::cast<std::int64_t>(values["width"]),
+          .height = nanobind::cast<std::int64_t>(values["height"]),
+          .baseline = nanobind::cast<double>(values["baseline"])};
+}
+
+/// @brief A started map as a dict, or None.
+/// @param started The map and its tracked frame, if any.
+/// @return `map` (as `map_dict`), `pose` (4, 4) and `points` (N,); or None.
+inline nanobind::object started_dict(const std::optional<edge::Started>& started) {
+  if (!started) {
+    return nanobind::none();
+  }
+  nanobind::dict out;
+  out["map"] = map_dict(started->map);
+  out["pose"] = matrix_array(started->tracked.pose);
+  out["points"] = vector_array(started->tracked.points);
+  return out;
 }
 
 }  // namespace slamlab::bindings::edge_crossing

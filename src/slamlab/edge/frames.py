@@ -76,6 +76,22 @@ class Camera:
             raise InvalidInputError(f"baseline: must be finite and non-negative, got {baseline}")
         set_(self, "baseline", baseline)
 
+    def as_dict(self) -> dict[str, object]:
+        """Return the camera as it crosses the bindings.
+
+        Returns
+        -------
+        dict
+            ``model``, ``intrinsics``, ``width``, ``height`` and ``baseline``.
+        """
+        return {
+            "model": self.model,
+            "intrinsics": self.intrinsics,
+            "width": self.width,
+            "height": self.height,
+            "baseline": self.baseline,
+        }
+
     @property
     def focal(self) -> float:
         """The horizontal focal length, in pixels."""

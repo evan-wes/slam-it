@@ -528,8 +528,21 @@ def _decode_distances(raw: Any, codes: backends.Codes) -> NDArray[np.int64]:  # 
     return out
 
 
-def _decode_matches(raw: dict[str, Any], codes: backends.Codes) -> Matches:
-    """Rebuild :class:`Matches` from a compiled backend's dict."""
+def decode_matches(raw: dict[str, Any], codes: backends.Codes) -> Matches:
+    """Rebuild :class:`Matches` from a compiled backend's dict, its arrays checked.
+
+    Parameters
+    ----------
+    raw : dict
+        ``pairs`` (M, 2) and ``distances`` (M,), int64.
+    codes : dict
+        The backend module's code tables (matches cross none).
+
+    Returns
+    -------
+    Matches
+        The matches.
+    """
     del codes
     return Matches(
         pairs=backends.checked_array(raw["pairs"], np.int64, 2, "matching pairs"),
@@ -632,7 +645,7 @@ def match(  # noqa: PLR0913 -- two sets, their angles, the filters
             "angles2": bins2,
             "options": asdict(settings),
         },
-        decode=_decode_matches,
+        decode=decode_matches,
     )
 
 
@@ -776,5 +789,5 @@ def search_by_projection(  # noqa: PLR0913 -- the projections, the frame and its
             "keypoints": asdict(frame),
             "options": asdict(settings),
         },
-        decode=_decode_matches,
+        decode=decode_matches,
     )

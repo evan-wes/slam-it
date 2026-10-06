@@ -31,6 +31,9 @@ OPTIONS = Options(n_features=600, init_window=50.0, init_min_matches=50, min_dep
 KEYFRAMES = (0, 12, 24, 36)
 """The frames the truth map makes keyframes."""
 
+MONOCULAR_PAIR = (0, 10)
+"""The frames the monocular initialisation's tests start the map from."""
+
 MATCH_PIXELS = 2.0
 """A point observed by a later keyframe projects within this of the keypoint."""
 
@@ -131,3 +134,14 @@ def truth(rendered: list[room.Frame]) -> Truth:
     built = [frames.rgbd(f.gray, f.depth, f.timestamp, CAMERA, extraction) for f in rendered]
     poses = [np.linalg.inv(f.T_world_cam) for f in rendered]
     return Truth(CAMERA, built, poses, truth_map(built, poses))
+
+
+@pytest.fixture(scope="session")
+def monocular_pair(rendered: list[room.Frame]) -> tuple[frames.Frame, frames.Frame]:
+    """Build :data:`MONOCULAR_PAIR` as monocular frames, with initialisation's features."""
+    extraction = OPTIONS.extraction(initializing=True)
+    first, second = (rendered[i] for i in MONOCULAR_PAIR)
+    return (
+        frames.monocular(first.gray, first.timestamp, CAMERA, extraction),
+        frames.monocular(second.gray, second.timestamp, CAMERA, extraction),
+    )

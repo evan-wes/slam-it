@@ -3,6 +3,9 @@
 //!
 //! Builds on `slamlab-foundations` alone. Every module mirrors the Python module of its name.
 
+pub mod adjust;
 pub mod frames;
+pub mod initialization;
 pub mod map;
 pub mod options;
+pub mod residuals;
