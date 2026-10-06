@@ -56,25 +56,22 @@ fn build(
     fixed: &[bool],
     points: &[usize],
 ) -> Result<Adjustment> {
-    let keyframe_of = m.keypoint_keyframe();
     let mut free = vec![false; m.keyframes()];
     for &k in keyframes {
         free[k] = !fixed[k];
     }
-    let mut point_index = vec![None; m.points()];
-    for (i, &p) in points.iter().enumerate() {
-        point_index[p] = Some(i);
-    }
-    let mut rows = Vec::new();
-    let mut point_of = Vec::new();
-    let mut observing = BTreeSet::new();
-    for (r, &id) in m.kp_point.iter().enumerate() {
-        if let Some(i) = m.point_row(id).and_then(|p| point_index[p]) {
-            rows.push(r);
-            point_of.push(i);
-            observing.insert(keyframe_of[r]);
-        }
-    }
+    // (keypoint row, point index): the observations in keypoint order, as Python's scan finds
+    // them.
+    let mut seen: Vec<(usize, usize)> = points
+        .iter()
+        .enumerate()
+        .flat_map(|(i, &p)| m.pt_observations[p].iter().map(move |&r| (r, i)))
+        .collect();
+    seen.sort_unstable();
+    let rows: Vec<usize> = seen.iter().map(|&(r, _)| r).collect();
+    let point_of: Vec<usize> = seen.iter().map(|&(_, i)| i).collect();
+    let keyframe_of: Vec<usize> = rows.iter().map(|&r| m.keyframe_of(r)).collect();
+    let observing: BTreeSet<usize> = keyframe_of.iter().copied().collect();
     let observing: Vec<usize> = observing.into_iter().collect();
     let mut camera_index = vec![0; m.keyframes()];
     let mut poses = Vec::with_capacity(observing.len());
@@ -93,7 +90,7 @@ fn build(
         rows.iter()
             .map(|&r| Vector2::new(m.kp_xy[r][0], m.kp_xy[r][1]))
             .collect(),
-        rows.iter().map(|&r| camera_index[keyframe_of[r]]).collect(),
+        keyframe_of.iter().map(|&k| camera_index[k]).collect(),
         point_of.iter().map(|&i| to_i64(i)).collect(),
     );
     let bf = camera.focal() * camera.baseline;

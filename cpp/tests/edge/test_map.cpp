@@ -1,7 +1,7 @@
 /// @file
 /// @brief Native tests for the edge rung's state (slamlab/edge/{options,frames,map}.hpp): a
-///        small hand-built map's operations, the checks, depth lookup. Parity with the Python
-///        reference is checked through the bindings by tests/edge.
+///        small hand-built map's operations and observation index, the checks, depth lookup.
+///        Parity with the Python reference is checked through the bindings by tests/edge.
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -45,6 +45,28 @@ edge::Frame frame_of(std::size_t n, bool with_depth) {
   return frame;
 }
 
+/// @brief A map of two keyframes: the first, with depth, creating points at its first two
+///        keypoints; the second, 0.2 m along x, observing them.
+/// @param failures Running failure count.
+/// @return The map.
+edge::Map two_keyframes(int& failures) {
+  edge::Map m = edge::empty_map(8, 1.2);
+  const std::vector<std::int64_t> none(4, -1);
+  expect(edge::insert_keyframe(m, frame_of(4, true), Eigen::Matrix4d::Identity(), none).has_value(),
+         "the setup succeeds", failures);
+  expect(edge::add_points(m, std::vector<Eigen::Vector3d>{{0.0, 0.0, 2.0}, {0.1, 0.0, 2.0}},
+                          std::vector<std::vector<std::int64_t>>{{0}, {1}})
+             .has_value(),
+         "the setup succeeds", failures);
+  Eigen::Matrix4d moved = Eigen::Matrix4d::Identity();
+  moved(0, 3) = -0.2;
+  expect(
+      edge::insert_keyframe(m, frame_of(4, false), moved, std::vector<std::int64_t>{0, 1, -1, -1})
+          .has_value(),
+      "the setup succeeds", failures);
+  return m;
+}
+
 /// @brief Check building a map: keyframes, points, ids, links and counts.
 /// @param failures Running failure count.
 void check_building(int& failures) {
@@ -81,20 +103,7 @@ void check_building(int& failures) {
 /// @brief Check removing: forgetting, erasing points and keyframes.
 /// @param failures Running failure count.
 void check_removing(int& failures) {
-  edge::Map m = edge::empty_map(8, 1.2);
-  const std::vector<std::int64_t> none(4, -1);
-  expect(edge::insert_keyframe(m, frame_of(4, true), Eigen::Matrix4d::Identity(), none).has_value(),
-         "the setup succeeds", failures);
-  expect(edge::add_points(m, std::vector<Eigen::Vector3d>{{0.0, 0.0, 2.0}, {0.1, 0.0, 2.0}},
-                          std::vector<std::vector<std::int64_t>>{{0}, {1}})
-             .has_value(),
-         "the setup succeeds", failures);
-  Eigen::Matrix4d moved = Eigen::Matrix4d::Identity();
-  moved(0, 3) = -0.2;
-  expect(
-      edge::insert_keyframe(m, frame_of(4, false), moved, std::vector<std::int64_t>{0, 1, -1, -1})
-          .has_value(),
-      "the setup succeeds", failures);
+  edge::Map m = two_keyframes(failures);
   expect(edge::forget_observations(m, std::vector<std::int64_t>{4}).has_value() &&
              edge::point_count(m) == 1 && m.pt_id[0] == 1 && m.kp_point[0] == -1,
          "a point left seen once with depth (weight 2) is erased", failures);
@@ -105,6 +114,42 @@ void check_removing(int& failures) {
          failures);
   expect(is_invalid_input(edge::erase_points(m, std::vector<std::uint8_t>{1})),
          "erase_points rejects flags that are not one per point", failures);
+}
+
+/// @brief Check the observation index: kept by the operations, refused by `check_map` stale.
+/// @param failures Running failure count.
+void check_index(int& failures) {
+  using Lists = std::vector<std::vector<std::int64_t>>;
+  edge::Map m = two_keyframes(failures);
+  expect(m.pt_observations == Lists{{0, 4}, {1, 5}}, "each point lists its observing keypoint rows",
+         failures);
+  Eigen::Matrix4d further = Eigen::Matrix4d::Identity();
+  further(0, 3) = -0.4;
+  expect(
+      edge::insert_keyframe(m, frame_of(4, false), further, std::vector<std::int64_t>{0, 1, -1, -1})
+              .has_value() &&
+          edge::erase_keyframe(m, 1).has_value(),
+      "the setup succeeds", failures);
+  expect(m.pt_observations == Lists{{0, 4}, {1, 5}} && edge::check_map(m).has_value(),
+         "erasing a keyframe moves the later keyframes' rows up", failures);
+  expect(edge::observe(m, 4, -1).has_value() && m.kp_point[4] == -1 &&
+             m.pt_observations[0] == std::vector<std::int64_t>{0},
+         "observe points a keypoint at nothing", failures);
+  expect(edge::observe(m, 4, 0).has_value() &&
+             m.pt_observations[0] == std::vector<std::int64_t>{0, 4} &&
+             edge::check_map(m).has_value(),
+         "observe points it at a point, in row order", failures);
+  expect(is_invalid_input(edge::observe(m, 8, 0)) && is_invalid_input(edge::observe(m, 2, 7)),
+         "observe rejects a row out of range and a point not in the map", failures);
+  edge::Map erased = m;
+  expect(edge::erase_points(erased, std::vector<std::uint8_t>{0, 1}).has_value() &&
+             erased.pt_observations == Lists{{0, 4}} && edge::check_map(erased).has_value(),
+         "erasing a point keeps the lists of the points before it", failures);
+  edge::Map stale = m;
+  stale.pt_observations[0].pop_back();
+  expect(is_invalid_input(edge::check_map(stale)), "check_map rejects a stale index", failures);
+  edge::index_observations(stale);
+  expect(stale.pt_observations == m.pt_observations, "index_observations rebuilds it", failures);
 }
 
 /// @brief Check the checks: a map's structure, arguments, options, cameras, depth lookup.
@@ -151,6 +196,7 @@ int run() {
   int failures = 0;
   check_building(failures);
   check_removing(failures);
+  check_index(failures);
   check_checks(failures);
   return slamlab::testing::finish("edge/map", failures);
 }

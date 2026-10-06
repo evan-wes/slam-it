@@ -783,22 +783,24 @@ pub fn triangulate_new_points(
 ///
 /// The map's error.
 fn merge_points(m: &mut Map, lose: i64, keep: i64) -> Result<()> {
-    let keyframe_of = m.keypoint_keyframe();
-    let kept_in: BTreeSet<usize> = (0..m.keypoints())
-        .filter(|&r| m.kp_point[r] == keep)
-        .map(|r| keyframe_of[r])
-        .collect();
-    for (point, kf) in m.kp_point.iter_mut().zip(&keyframe_of) {
-        if *point == lose {
-            *point = if kept_in.contains(kf) { -1 } else { keep };
-        }
-    }
     let (Some(p_lose), Some(p_keep)) = (m.point_row(lose), m.point_row(keep)) else {
         return fail(
             ErrorKind::InvalidInput,
             "merge: both points must be in the map",
         );
     };
+    let kept_in: BTreeSet<usize> = m.pt_observations[p_keep]
+        .iter()
+        .map(|&r| m.keyframe_of(r))
+        .collect();
+    for r in m.pt_observations[p_lose].clone() {
+        let to = if kept_in.contains(&m.keyframe_of(r)) {
+            -1
+        } else {
+            keep
+        };
+        map::observe(m, r, to)?;
+    }
     m.pt_visible[p_keep] += m.pt_visible[p_lose];
     m.pt_found[p_keep] += m.pt_found[p_lose];
     let mut erase = vec![false; m.points()];
@@ -920,7 +922,7 @@ fn fuse_one(
     let Some(p) = m.point_row(id) else {
         return Ok(()); // merged away
     };
-    if rows_of(m, k).any(|r| m.kp_point[r] == id) {
+    if m.pt_observations[p].iter().any(|&r| m.keyframe_of(r) == k) {
         return Ok(()); // already in the keyframe
     }
     let Some(row) = fuse_target(m, camera, k, grid, p, options)? else {
@@ -928,8 +930,7 @@ fn fuse_one(
     };
     let held = m.kp_point[row];
     let Some(q) = m.point_row(held) else {
-        m.kp_point[row] = id;
-        return Ok(());
+        return map::observe(m, row, id);
     };
     let weights = map::observation_weight(m, &[q, p])?;
     if weights[0] > weights[1] {
@@ -1020,13 +1021,6 @@ pub fn fuse_points(m: &mut Map, camera: &Camera, options: &Options) -> Result<()
 ///
 /// The map's error.
 fn redundant(m: &Map, k: usize, rows: &[usize], threshold: usize) -> Result<usize> {
-    let keyframe_of = m.keypoint_keyframe();
-    let mut seen_by: BTreeMap<i64, Vec<usize>> = BTreeMap::new();
-    for (r, (&point, &kf)) in m.kp_point.iter().zip(&keyframe_of).enumerate() {
-        if point >= 0 && kf != k {
-            seen_by.entry(point).or_default().push(r);
-        }
-    }
     let point_rows: Vec<usize> = rows
         .iter()
         .filter_map(|&r| m.point_row(m.kp_point[r]))
@@ -1035,15 +1029,15 @@ fn redundant(m: &Map, k: usize, rows: &[usize], threshold: usize) -> Result<usiz
     let limit = i64::try_from(threshold).unwrap_or(i64::MAX);
     Ok(rows
         .iter()
+        .zip(&point_rows)
         .zip(&weights)
-        .filter(|&(&row, &weight)| {
+        .filter(|&((&row, &p), &weight)| {
             weight > limit
-                && seen_by.get(&m.kp_point[row]).map_or(0, |others| {
-                    others
-                        .iter()
-                        .filter(|&&r| m.kp_level[r] <= m.kp_level[row] + 1)
-                        .count()
-                }) >= threshold
+                && m.pt_observations[p]
+                    .iter()
+                    .filter(|&&r| m.keyframe_of(r) != k && m.kp_level[r] <= m.kp_level[row] + 1)
+                    .count()
+                    >= threshold
         })
         .count())
 }

@@ -5,6 +5,11 @@
 /// keyframes referred to by id, the id columns ascending (the Python module's docstring states
 /// the tables and the rules a point's descriptor, normal and distances follow). Operations
 /// change the map in place and leave it as Python's return it, array for array.
+///
+/// One column has no Python twin: `pt_observations`, each point's observing keypoint rows,
+/// which the operations keep in step with `kp_point` (as ORB-SLAM's `MapPoint` keeps its
+/// observations). With it, an operation on a point costs what the point's observations cost,
+/// however many keyframes the map holds; Python's reference scans `kp_point` instead.
 #pragma once
 
 #include <Eigen/Core>
@@ -73,6 +78,10 @@ struct Map {
   std::int64_t next_kf_id{0};
   /// @brief The next point id to give.
   std::int64_t next_pt_id{0};
+  /// @brief Each point's observing keypoint rows, ascending: the index of `kp_point` the
+  ///        operations here keep. It does not cross to Python; `index_observations` builds it
+  ///        for a map assembled column by column.
+  std::vector<std::vector<std::int64_t>> pt_observations;
 };
 
 /// @brief A map's number of keyframes.
@@ -101,8 +110,13 @@ struct Map {
 /// @param m The map.
 /// @return Nothing, or `InvalidInput` for arrays of the wrong length, offsets that do not run
 ///         from 0 to the keypoint count, id columns that are not strictly ascending from 0 or
-///         reach their next id, or a keypoint observing a point not in the map.
+///         reach their next id, a keypoint observing a point not in the map, or observation
+///         lists that are not `kp_point`'s.
 [[nodiscard]] foundations::Result<void> check_map(const Map& m);
+
+/// @brief Build `pt_observations` from `kp_point`, for a map assembled column by column.
+/// @param m The map (ids in `kp_point` not in the map are left out; `check_map` refuses them).
+void index_observations(Map& m);
 
 /// @brief Find a point by id.
 /// @param m The map.
@@ -116,10 +130,11 @@ struct Map {
 /// @return Its row, or -1.
 [[nodiscard]] std::int64_t keyframe_row(const Map& m, std::int64_t id);
 
-/// @brief Each keypoint's keyframe row.
+/// @brief A keypoint's keyframe row.
 /// @param m The map.
-/// @return The rows, one per keypoint.
-[[nodiscard]] std::vector<std::int64_t> keypoint_keyframe(const Map& m);
+/// @param row The keypoint's row, in range.
+/// @return The row of the keyframe whose keypoints hold it.
+[[nodiscard]] std::size_t keyframe_of(const Map& m, std::int64_t row);
 
 /// @brief A keyframe's camera centre in the world, `-Rᵀ t`.
 /// @param m The map.
@@ -210,6 +225,14 @@ struct Map {
 /// @param k The keyframe's row.
 /// @return Nothing, or `InvalidInput` for a row out of range.
 [[nodiscard]] foundations::Result<void> erase_keyframe(Map& m, std::int64_t k);
+
+/// @brief Point a keypoint at a point, or at none, keeping the observation lists.
+/// @param m The map.
+/// @param row The keypoint's row.
+/// @param id The point's id, or -1.
+/// @return Nothing, or `InvalidInput` for a row out of range or an id not in the map.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (row, id), a keypoint and its point
+[[nodiscard]] foundations::Result<void> observe(Map& m, std::int64_t row, std::int64_t id);
 
 /// @brief Add to points' visible and found counts (ids no longer in the map are skipped).
 /// @param m The map.

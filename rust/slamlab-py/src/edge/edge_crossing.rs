@@ -17,7 +17,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use slamlab_edge::frames::{Camera, Frame, Tracked};
 use slamlab_edge::initialization::Started;
-use slamlab_edge::map::{Map, check_map};
+use slamlab_edge::map::{Map, check_map, index_observations};
 use slamlab_edge::options::{Mode, Options, Setting};
 use slamlab_foundations::camera::Model;
 use slamlab_foundations::orb::{DESCRIPTOR_BYTES, Descriptor, Features, Keypoint};
@@ -206,7 +206,7 @@ fn poses(value: &Bound<'_, PyAny>) -> PyResult<Vec<Matrix4<f64>>> {
         .collect())
 }
 
-/// Reads a map from a dict of its fields, checked.
+/// Reads a map from a dict of its fields, its observations indexed, checked.
 ///
 /// # Arguments
 ///
@@ -223,7 +223,7 @@ fn poses(value: &Bound<'_, PyAny>) -> PyResult<Vec<Matrix4<f64>>> {
 /// map that fails `check_map`.
 pub fn map_in(py: Python<'_>, values: &Bound<'_, PyDict>) -> PyResult<Map> {
     let get = |key| item(values, &MAP_KEYS, key);
-    let m = Map {
+    let mut m = Map {
         levels: get("levels")?.extract()?,
         scale_factor: get("scale_factor")?.extract()?,
         kf_id: vector(&get("kf_id")?)?,
@@ -250,7 +250,9 @@ pub fn map_in(py: Python<'_>, values: &Bound<'_, PyDict>) -> PyResult<Map> {
         pt_reference_kf: vector(&get("pt_reference_kf")?)?,
         next_kf_id: get("next_kf_id")?.extract()?,
         next_pt_id: get("next_pt_id")?.extract()?,
+        pt_observations: Vec::new(),
     };
+    index_observations(&mut m);
     unwrap(py, check_map(&m))?;
     Ok(m)
 }

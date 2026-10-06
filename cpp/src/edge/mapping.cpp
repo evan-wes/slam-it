@@ -418,20 +418,18 @@ std::optional<double> median_depth(const Map& m, std::size_t k) {
 /// @param keep The kept point's id.
 /// @return Nothing, or the map's error.
 Result<void> merge_points(Map& m, std::int64_t lose, std::int64_t keep) {
-  const std::vector<std::int64_t> keyframe_of = keypoint_keyframe(m);
-  std::set<std::int64_t> kept_in;
-  for (std::size_t r = 0; r < keypoint_count(m); ++r) {
-    if (m.kp_point[r] == keep) {
-      kept_in.insert(keyframe_of[r]);
-    }
-  }
-  for (std::size_t r = 0; r < keypoint_count(m); ++r) {
-    if (m.kp_point[r] == lose) {
-      m.kp_point[r] = kept_in.contains(keyframe_of[r]) ? -1 : keep;
-    }
-  }
   const auto p_lose = static_cast<std::size_t>(point_row(m, lose));
   const auto p_keep = static_cast<std::size_t>(point_row(m, keep));
+  std::set<std::size_t> kept_in;
+  for (const std::int64_t r : m.pt_observations[p_keep]) {
+    kept_in.insert(keyframe_of(m, r));
+  }
+  const std::vector<std::int64_t> moving = m.pt_observations[p_lose];  // observe() changes it
+  for (const std::int64_t r : moving) {
+    if (auto ok = observe(m, r, kept_in.contains(keyframe_of(m, r)) ? -1 : keep); !ok) {
+      return ok;
+    }
+  }
   m.pt_visible[p_keep] += m.pt_visible[p_lose];
   m.pt_found[p_keep] += m.pt_found[p_lose];
   std::vector<std::uint8_t> erase(point_count(m), 0);
@@ -529,10 +527,9 @@ Result<std::optional<std::int64_t>> fuse_target(const Map& m, const Camera& came
 Result<void> fuse_one(Map& m, const Camera& camera, std::size_t k,
                       const matching::FeatureGrid& grid, std::int64_t id, const Options& options) {
   const std::int64_t p = point_row(m, id);
-  if (p < 0 ||
-      std::ranges::any_of(
-          rows_of(m, k),
-          [&m, id](std::int64_t row) { return m.kp_point[static_cast<std::size_t>(row)] == id; })) {
+  if (p < 0 || std::ranges::any_of(
+                   m.pt_observations[static_cast<std::size_t>(p)],
+                   [&m, k](std::int64_t r) { return keyframe_of(m, r) == k; })) {
     return {};  // merged away, or already in the keyframe
   }
   auto target = fuse_target(m, camera, k, grid, static_cast<std::size_t>(p), options);
@@ -545,8 +542,7 @@ Result<void> fuse_one(Map& m, const Camera& camera, std::size_t k,
   const auto row = static_cast<std::size_t>(**target);
   const std::int64_t held = m.kp_point[row];
   if (held < 0) {
-    m.kp_point[row] = id;
-    return {};
+    return observe(m, static_cast<std::int64_t>(row), id);
   }
   auto weights = observation_weight(m, std::vector<std::int64_t>{point_row(m, held), p});
   if (!weights) {
@@ -597,13 +593,6 @@ std::vector<std::int64_t> observed_ids(const Map& m, std::span<const std::int64_
 /// @return The count, or the map's error.
 Result<std::int64_t> redundant(const Map& m, std::size_t k, const std::vector<std::int64_t>& rows,
                                std::int64_t threshold) {
-  const std::vector<std::int64_t> keyframe_of = keypoint_keyframe(m);
-  std::map<std::int64_t, std::vector<std::size_t>> seen_by;
-  for (std::size_t r = 0; r < keypoint_count(m); ++r) {
-    if (m.kp_point[r] >= 0 && std::cmp_not_equal(keyframe_of[r], k)) {
-      seen_by[m.kp_point[r]].push_back(r);
-    }
-  }
   std::vector<std::int64_t> point_rows;
   point_rows.reserve(rows.size());
   for (const std::int64_t row : rows) {
@@ -619,9 +608,9 @@ Result<std::int64_t> redundant(const Map& m, std::size_t k, const std::vector<st
       continue;
     }
     const std::int64_t level = m.kp_level[static_cast<std::size_t>(rows[i])];
-    const auto& others = seen_by[m.kp_point[static_cast<std::size_t>(rows[i])]];
-    if (std::ranges::count_if(others, [&m, level](std::size_t r) {
-          return m.kp_level[r] <= level + 1;
+    const auto& seen = m.pt_observations[static_cast<std::size_t>(point_rows[i])];
+    if (std::ranges::count_if(seen, [&m, k, level](std::int64_t r) {
+          return keyframe_of(m, r) != k && m.kp_level[static_cast<std::size_t>(r)] <= level + 1;
         }) >= threshold) {
       ++out;
     }

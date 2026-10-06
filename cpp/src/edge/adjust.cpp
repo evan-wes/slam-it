@@ -45,28 +45,27 @@ Result<Adjustment> build(const Map& m, const Camera& camera,
                          std::span<const std::int64_t> keyframes,
                          std::span<const std::uint8_t> fixed,
                          const std::vector<std::int64_t>& points) {
-  const std::vector<std::int64_t> keyframe_of = keypoint_keyframe(m);
   std::vector<bool> free(keyframe_count(m), false);
   for (const std::int64_t k : keyframes) {
     free[static_cast<std::size_t>(k)] = fixed[static_cast<std::size_t>(k)] == 0;
   }
-  std::vector<std::int64_t> point_index(point_count(m), -1);
+  // (keypoint row, point index): the observations in keypoint order, as Python's scan finds them.
+  std::vector<std::pair<std::int64_t, std::int64_t>> seen;
   for (std::size_t i = 0; i < points.size(); ++i) {
-    point_index[static_cast<std::size_t>(points[i])] = static_cast<std::int64_t>(i);
+    for (const std::int64_t r : m.pt_observations[static_cast<std::size_t>(points[i])]) {
+      seen.emplace_back(r, static_cast<std::int64_t>(i));
+    }
   }
+  std::ranges::sort(seen);
   Adjustment out;
   std::vector<std::int64_t> point_of;
+  std::vector<std::size_t> keyframe_rows;
   std::set<std::int64_t> observing;
-  for (std::size_t r = 0; r < keypoint_count(m); ++r) {
-    if (m.kp_point[r] < 0) {
-      continue;
-    }
-    const std::int64_t p = point_row(m, m.kp_point[r]);
-    if (p >= 0 && point_index[static_cast<std::size_t>(p)] >= 0) {
-      out.rows.push_back(static_cast<std::int64_t>(r));
-      point_of.push_back(point_index[static_cast<std::size_t>(p)]);
-      observing.insert(keyframe_of[r]);
-    }
+  for (const auto& [r, i] : seen) {
+    out.rows.push_back(r);
+    point_of.push_back(i);
+    keyframe_rows.push_back(keyframe_of(m, r));
+    observing.insert(static_cast<std::int64_t>(keyframe_rows.back()));
   }
   out.observing.assign(observing.begin(), observing.end());
   std::vector<std::int64_t> camera_index(keyframe_count(m), -1);
@@ -90,7 +89,7 @@ Result<Adjustment> build(const Map& m, const Camera& camera,
   for (std::size_t i = 0; i < n; ++i) {
     const auto r = static_cast<std::size_t>(out.rows[i]);
     observations.row(static_cast<Eigen::Index>(i)) << m.kp_xy[r][0], m.kp_xy[r][1];
-    cam_idx[i] = camera_index[static_cast<std::size_t>(keyframe_of[r])];
+    cam_idx[i] = camera_index[keyframe_rows[i]];
   }
   ba::Intrinsics intrinsics = camera.intrinsics.transpose();
   out.problem = ba::Problem::with_defaults(camera.model, std::move(intrinsics), std::move(poses),

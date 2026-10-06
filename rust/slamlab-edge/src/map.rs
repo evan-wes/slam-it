@@ -4,8 +4,13 @@
 //! keyframes referred to by id, the id columns ascending (the Python module's docstring states
 //! the tables and the rules a point's descriptor, normal and distances follow). Operations
 //! change the map in place and leave it as Python's return it, array for array.
+//!
+//! One column has no Python twin: `pt_observations`, each point's observing keypoint rows,
+//! which the operations keep in step with `kp_point` (as ORB-SLAM's `MapPoint` keeps its
+//! observations). With it, an operation on a point costs what the point's observations cost,
+//! however many keyframes the map holds; Python's reference scans `kp_point` instead.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use nalgebra::{Matrix4, Vector3};
 use slamlab_foundations::error::{ErrorKind, Result, check_range, fail, fail_setting};
@@ -69,6 +74,10 @@ pub struct Map {
     pub next_kf_id: i64,
     /// The next point id to give.
     pub next_pt_id: i64,
+    /// Each point's observing keypoint rows, ascending: the index of `kp_point` the operations
+    /// here keep. It does not cross to Python; `index_observations` builds it for a map
+    /// assembled column by column.
+    pub pt_observations: Vec<Vec<usize>>,
 }
 
 impl Map {
@@ -111,6 +120,7 @@ impl Map {
             pt_reference_kf: Vec::new(),
             next_kf_id: 0,
             next_pt_id: 0,
+            pt_observations: Vec::new(),
         }
     }
 
@@ -172,18 +182,18 @@ impl Map {
         row_of(&self.kf_id, id)
     }
 
-    /// Each keypoint's keyframe row.
+    /// A keypoint's keyframe row.
+    ///
+    /// # Arguments
+    ///
+    /// * `row` - The keypoint's row, in range.
     ///
     /// # Returns
     ///
-    /// The rows, one per keypoint.
+    /// The row of the keyframe whose keypoints hold it.
     #[must_use]
-    pub fn keypoint_keyframe(&self) -> Vec<usize> {
-        let mut out = vec![0; self.keypoints()];
-        for k in 0..self.keyframes() {
-            out[self.kf_start[k]..self.kf_start[k + 1]].fill(k);
-        }
-        out
+    pub fn keyframe_of(&self, row: usize) -> usize {
+        self.kf_start.partition_point(|&start| start <= row) - 1
     }
 
     /// A keyframe's camera centre in the world, `-Rᵀ t`.
@@ -271,7 +281,7 @@ fn row_of(ids: &[i64], id: i64) -> Option<usize> {
 ///
 /// `InvalidInput` for arrays of the wrong length, offsets that do not run from 0 to the
 /// keypoint count, id columns that are not strictly ascending from 0 or reach their next id,
-/// or a keypoint observing a point not in the map.
+/// a keypoint observing a point not in the map, or observation lists that are not `kp_point`'s.
 pub fn check_map(m: &Map) -> Result<()> {
     check_range("map.levels", m.levels, 1, MAX_LEVELS)?;
     if !(m.scale_factor.is_finite() && m.scale_factor > 1.0) {
@@ -342,10 +352,25 @@ pub fn check_map(m: &Map) -> Result<()> {
             "map.kp_point: every observed point must be in the map",
         );
     }
+    if m.pt_observations != indexed(m) {
+        return fail(
+            ErrorKind::InvalidInput,
+            "map.pt_observations: expected each point's observing keypoint rows, ascending",
+        );
+    }
     Ok(())
 }
 
-/// Each observed point id's keypoint rows, ascending.
+/// Builds `pt_observations` from `kp_point`, for a map assembled column by column.
+///
+/// # Arguments
+///
+/// * `m` - The map (ids in `kp_point` not in the map are left out; `check_map` refuses them).
+pub fn index_observations(m: &mut Map) {
+    m.pt_observations = indexed(m);
+}
+
+/// Each point's observing keypoint rows, ascending, found by scanning `kp_point`.
 ///
 /// # Arguments
 ///
@@ -353,15 +378,44 @@ pub fn check_map(m: &Map) -> Result<()> {
 ///
 /// # Returns
 ///
-/// Id to rows.
-fn observations(m: &Map) -> BTreeMap<i64, Vec<usize>> {
-    let mut out: BTreeMap<i64, Vec<usize>> = BTreeMap::new();
+/// One list per point.
+fn indexed(m: &Map) -> Vec<Vec<usize>> {
+    let mut out = vec![Vec::new(); m.points()];
     for (row, &id) in m.kp_point.iter().enumerate() {
-        if id >= 0 {
-            out.entry(id).or_default().push(row);
+        if let Some(p) = m.point_row(id) {
+            out[p].push(row);
         }
     }
     out
+}
+
+/// Points a keypoint at nothing, unchecked.
+///
+/// # Arguments
+///
+/// * `m` - The map.
+/// * `row` - The keypoint's row.
+fn detach(m: &mut Map, row: usize) {
+    if let Some(p) = m.point_row(m.kp_point[row]) {
+        let seen = &mut m.pt_observations[p];
+        if let Ok(at) = seen.binary_search(&row) {
+            seen.remove(at);
+        }
+    }
+    m.kp_point[row] = -1;
+}
+
+/// Points a keypoint observing nothing at a point, unchecked.
+///
+/// # Arguments
+///
+/// * `m` - The map.
+/// * `row` - The keypoint's row.
+/// * `p` - The point's row.
+fn attach(m: &mut Map, row: usize, p: usize) {
+    let seen = &mut m.pt_observations[p];
+    seen.insert(seen.partition_point(|&r| r < row), row);
+    m.kp_point[row] = m.pt_id[p];
 }
 
 /// Checks rows against a bound.
@@ -486,33 +540,33 @@ pub fn distinctive_descriptor(descriptors: &[Descriptor]) -> Result<usize> {
     reason = "observation counts and levels are small, exact in f64 and i32"
 )]
 fn refresh(m: &mut Map, rows: &[usize]) {
-    if rows.is_empty() {
-        return;
-    }
-    let seen_by = observations(m);
-    let keyframe_of = m.keypoint_keyframe();
     for &p in rows {
-        let seen = &seen_by[&m.pt_id[p]];
+        let seen = &m.pt_observations[p];
+        let keyframes: Vec<usize> = seen.iter().map(|&r| m.keyframe_of(r)).collect();
         let descriptors: Vec<Descriptor> = seen.iter().map(|&r| m.kp_descriptor[r]).collect();
         let chosen = distinctive_descriptor(&descriptors).unwrap_or(0);
-        m.pt_descriptor[p] = descriptors[chosen];
         let mut sum = Vector3::zeros();
-        for &r in seen {
-            let direction = m.pt_xyz[p] - m.centre(keyframe_of[r]);
+        for &k in &keyframes {
+            let direction = m.pt_xyz[p] - m.centre(k);
             sum += direction / direction.norm();
         }
         let mean = sum / seen.len() as f64;
-        m.pt_normal[p] = mean / mean.norm();
-        let observer = |r: usize| m.kf_id[keyframe_of[r]];
-        if !seen.iter().any(|&r| observer(r) == m.pt_reference_kf[p]) {
-            m.pt_reference_kf[p] = seen.iter().map(|&r| observer(r)).min().unwrap_or(-1);
-        }
-        let at = *seen
+        let observers: Vec<i64> = keyframes.iter().map(|&k| m.kf_id[k]).collect();
+        let reference = if observers.contains(&m.pt_reference_kf[p]) {
+            m.pt_reference_kf[p]
+        } else {
+            observers.iter().copied().min().unwrap_or(-1)
+        };
+        let at = observers
             .iter()
-            .find(|&&r| observer(r) == m.pt_reference_kf[p])
-            .unwrap_or(&seen[0]);
-        let distance = (m.pt_xyz[p] - m.centre(keyframe_of[at])).norm();
-        m.pt_max_distance[p] = distance * m.scale_factor.powf(m.kp_level[at] as f64);
+            .position(|&id| id == reference)
+            .unwrap_or(0);
+        let distance = (m.pt_xyz[p] - m.centre(keyframes[at])).norm();
+        let level = m.kp_level[seen[at]];
+        m.pt_descriptor[p] = descriptors[chosen];
+        m.pt_normal[p] = mean / mean.norm();
+        m.pt_reference_kf[p] = reference;
+        m.pt_max_distance[p] = distance * m.scale_factor.powf(level as f64);
         m.pt_min_distance[p] = m.pt_max_distance[p] / m.scale_factor.powf((m.levels - 1) as f64);
     }
 }
@@ -527,16 +581,9 @@ fn erase(m: &mut Map, erase: &[bool]) {
     if !erase.contains(&true) {
         return;
     }
-    let gone: BTreeSet<i64> = m
-        .pt_id
-        .iter()
-        .zip(erase)
-        .filter(|&(_, &e)| e)
-        .map(|(&id, _)| id)
-        .collect();
-    for point in &mut m.kp_point {
-        if gone.contains(point) {
-            *point = -1;
+    for (p, _) in erase.iter().enumerate().filter(|&(_, &e)| e) {
+        for &r in &m.pt_observations[p] {
+            m.kp_point[r] = -1;
         }
     }
     let keep: Vec<bool> = erase.iter().map(|&e| !e).collect();
@@ -550,6 +597,7 @@ fn erase(m: &mut Map, erase: &[bool]) {
     keep_where(&mut m.pt_found, &keep);
     keep_where(&mut m.pt_first_kf, &keep);
     keep_where(&mut m.pt_reference_kf, &keep);
+    keep_where(&mut m.pt_observations, &keep);
 }
 
 /// Points' observation weights, unchecked.
@@ -563,14 +611,13 @@ fn erase(m: &mut Map, erase: &[bool]) {
 ///
 /// The weights.
 fn weights(m: &Map, rows: &[usize]) -> Vec<i64> {
-    let mut by_id: BTreeMap<i64, i64> = BTreeMap::new();
-    for (&id, right) in m.kp_point.iter().zip(&m.kp_right) {
-        if id >= 0 {
-            *by_id.entry(id).or_default() += if right.is_nan() { 1 } else { 2 };
-        }
-    }
     rows.iter()
-        .map(|&p| by_id.get(&m.pt_id[p]).copied().unwrap_or(0))
+        .map(|&p| {
+            m.pt_observations[p]
+                .iter()
+                .map(|&r| if m.kp_right[r].is_nan() { 1 } else { 2 })
+                .sum()
+        })
         .collect()
 }
 
@@ -590,7 +637,7 @@ fn forget(m: &mut Map, rows: &[usize]) {
         return;
     }
     for &r in rows {
-        m.kp_point[r] = -1;
+        detach(m, r);
     }
     let points: Vec<usize> = touched
         .into_iter()
@@ -663,11 +710,12 @@ pub fn insert_keyframe(
             );
         }
     }
+    let first = m.keypoints();
     m.kf_id.push(m.next_kf_id);
     m.next_kf_id += 1;
     m.kf_time.push(frame.timestamp);
     m.kf_pose.push(*pose);
-    m.kf_start.push(m.keypoints() + n);
+    m.kf_start.push(first + n);
     for (i, k) in frame.features.keypoints.iter().enumerate() {
         m.kp_xy.push(k.xy);
         m.kp_level.push(k.level);
@@ -677,6 +725,9 @@ pub fn insert_keyframe(
         m.kp_depth.push(frame.depth[i]);
         m.kp_right.push(frame.right[i]);
         m.kp_point.push(points[i]);
+        if let Some(p) = m.point_row(points[i]) {
+            m.pt_observations[p].push(first + i);
+        }
     }
     let rows: Vec<usize> = observed
         .into_iter()
@@ -706,7 +757,6 @@ pub fn add_points(m: &mut Map, xyz: &[Vector3<f64>], observers: &[Vec<usize>]) -
             "xyz: expected finite points, and one row of observers per point",
         );
     }
-    let keyframe_of = m.keypoint_keyframe();
     let mut used = BTreeSet::new();
     for rows in observers {
         let mut keyframes = BTreeSet::new();
@@ -715,7 +765,7 @@ pub fn add_points(m: &mut Map, xyz: &[Vector3<f64>], observers: &[Vec<usize>]) -
                 r < m.keypoints()
                     && m.kp_point[r] < 0
                     && used.insert(r)
-                    && keyframes.insert(keyframe_of[r])
+                    && keyframes.insert(m.keyframe_of(r))
             });
         if !ok {
             return fail(
@@ -728,11 +778,12 @@ pub fn add_points(m: &mut Map, xyz: &[Vector3<f64>], observers: &[Vec<usize>]) -
     for (point, rows) in xyz.iter().zip(observers) {
         let id = m.next_pt_id;
         m.next_pt_id += 1;
-        for &r in rows {
+        let mut seen = rows.clone();
+        seen.sort_unstable();
+        for &r in &seen {
             m.kp_point[r] = id;
         }
-        let last = rows.iter().copied().max().unwrap_or(0);
-        let creator = m.kf_id[keyframe_of[last]];
+        let creator = m.kf_id[m.keyframe_of(seen.last().copied().unwrap_or(0))];
         m.pt_id.push(id);
         m.pt_xyz.push(*point);
         m.pt_descriptor.push([0; 32]);
@@ -743,6 +794,7 @@ pub fn add_points(m: &mut Map, xyz: &[Vector3<f64>], observers: &[Vec<usize>]) -
         m.pt_found.push(1);
         m.pt_first_kf.push(creator);
         m.pt_reference_kf.push(creator);
+        m.pt_observations.push(seen);
     }
     let rows: Vec<usize> = (first..m.points()).collect();
     refresh(m, &rows);
@@ -761,8 +813,7 @@ pub fn add_points(m: &mut Map, xyz: &[Vector3<f64>], observers: &[Vec<usize>]) -
 /// `InvalidInput` for a row out of range or a point with no observation.
 pub fn refresh_points(m: &mut Map, rows: &[usize]) -> Result<()> {
     check_rows(rows, m.points(), "rows")?;
-    let seen_by = observations(m);
-    if rows.iter().any(|&p| !seen_by.contains_key(&m.pt_id[p])) {
+    if rows.iter().any(|&p| m.pt_observations[p].is_empty()) {
         return fail(
             ErrorKind::InvalidInput,
             "rows: every point must have an observation",
@@ -867,6 +918,38 @@ pub fn erase_keyframe(m: &mut Map, k: usize) -> Result<()> {
     m.kf_start.remove(k + 1);
     for start_of in &mut m.kf_start[k + 1..] {
         *start_of -= stop - start;
+    }
+    for seen in &mut m.pt_observations {
+        for r in seen.iter_mut().filter(|r| **r >= stop) {
+            *r -= stop - start;
+        }
+    }
+    Ok(())
+}
+
+/// Points a keypoint at a point, or at none, keeping the observation lists.
+///
+/// # Arguments
+///
+/// * `m` - The map.
+/// * `row` - The keypoint's row.
+/// * `id` - The point's id, or -1.
+///
+/// # Errors
+///
+/// `InvalidInput` for a row out of range or an id not in the map.
+pub fn observe(m: &mut Map, row: usize, id: i64) -> Result<()> {
+    check_rows(&[row], m.keypoints(), "row")?;
+    let p = m.point_row(id);
+    if id != -1 && p.is_none() {
+        return fail(
+            ErrorKind::InvalidInput,
+            "id: expected -1 or a point in the map",
+        );
+    }
+    detach(m, row);
+    if let Some(p) = p {
+        attach(m, row, p);
     }
     Ok(())
 }
@@ -996,6 +1079,39 @@ mod tests {
             erase_keyframe(&mut m, 1).unwrap_err().kind,
             ErrorKind::InvalidInput
         );
+    }
+
+    /// The observation lists follow the operations; `check_map` refuses a stale one.
+    #[test]
+    fn the_index_follows_the_operations() {
+        let mut m = two_keyframes();
+        assert_eq!(m.pt_observations, vec![vec![0, 4], vec![1, 5]]);
+        let mut further = Matrix4::identity();
+        further[(0, 3)] = -0.4;
+        insert_keyframe(&mut m, &frame_of(4, false), &further, &[0, 1, -1, -1]).unwrap();
+        erase_keyframe(&mut m, 1).unwrap();
+        assert_eq!(m.pt_observations, vec![vec![0, 4], vec![1, 5]]);
+        check_map(&m).unwrap();
+        observe(&mut m, 4, -1).unwrap();
+        assert_eq!((m.kp_point[4], m.pt_observations[0].clone()), (-1, vec![0]));
+        observe(&mut m, 4, 0).unwrap();
+        assert_eq!(m.pt_observations[0], vec![0, 4]);
+        check_map(&m).unwrap();
+        for (row, id) in [(8, 0), (2, 7)] {
+            assert_eq!(
+                observe(&mut m, row, id).unwrap_err().kind,
+                ErrorKind::InvalidInput
+            );
+        }
+        let mut erased = m.clone();
+        erase_points(&mut erased, &[false, true]).unwrap();
+        assert_eq!(erased.pt_observations, vec![vec![0, 4]]);
+        check_map(&erased).unwrap();
+        let mut stale = m.clone();
+        stale.pt_observations[0].pop();
+        assert_eq!(check_map(&stale).unwrap_err().kind, ErrorKind::InvalidInput);
+        index_observations(&mut stale);
+        assert_eq!(stale.pt_observations, m.pt_observations);
     }
 
     /// Malformed maps and arguments are `InvalidInput`.

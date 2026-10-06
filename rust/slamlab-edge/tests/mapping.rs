@@ -107,6 +107,7 @@ fn fusion_merges_duplicates() {
     #[allow(clippy::cast_possible_wrap, reason = "ids below 120")]
     let duplicated = POINTS as i64;
     assert!(m.kp_point.iter().all(|&p| p >= duplicated));
+    check_map(&m).unwrap();
 }
 
 #[test]
@@ -116,6 +117,7 @@ fn culling_and_a_whole_step_keep_the_map_valid() {
     map::insert_keyframe(&mut copy, &frame(2, true), &pose(2), &ids(0, 60)).unwrap();
     cull_keyframes(&mut copy, &camera(), Mode::Rgbd, &Options::default()).unwrap();
     assert_eq!(copy.kf_id, vec![0, 2, 3]);
+    check_map(&copy).unwrap();
     let mut m = built;
     let mut ahead = pose(2);
     ahead[(2, 3)] -= 0.05;

@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <map>
 #include <set>
 #include <string>
 #include <utility>
@@ -19,17 +18,41 @@ using foundations::ErrorKind;
 using foundations::fail;
 using foundations::Result;
 
-/// @brief Each observed point id's keypoint rows, ascending.
+/// @brief Each point's observing keypoint rows, ascending, found by scanning `kp_point`.
 /// @param m The map.
-/// @return Id to rows.
-std::map<std::int64_t, std::vector<std::size_t>> observations(const Map& m) {
-  std::map<std::int64_t, std::vector<std::size_t>> out;
+/// @return One list per point.
+std::vector<std::vector<std::int64_t>> indexed(const Map& m) {
+  std::vector<std::vector<std::int64_t>> out(point_count(m));
   for (std::size_t row = 0; row < keypoint_count(m); ++row) {
-    if (m.kp_point[row] >= 0) {
-      out[m.kp_point[row]].push_back(row);
+    if (const std::int64_t p = point_row(m, m.kp_point[row]); p >= 0) {
+      out[static_cast<std::size_t>(p)].push_back(static_cast<std::int64_t>(row));
     }
   }
   return out;
+}
+
+/// @brief Point a keypoint at nothing, unchecked.
+/// @param m The map.
+/// @param row The keypoint's row.
+void detach(Map& m, std::int64_t row) {
+  const auto r = static_cast<std::size_t>(row);
+  if (const std::int64_t p = point_row(m, m.kp_point[r]); p >= 0) {
+    std::vector<std::int64_t>& seen = m.pt_observations[static_cast<std::size_t>(p)];
+    if (const auto at = std::ranges::lower_bound(seen, row); at != seen.end() && *at == row) {
+      seen.erase(at);
+    }
+  }
+  m.kp_point[r] = -1;
+}
+
+/// @brief Point a keypoint observing nothing at a point, unchecked.
+/// @param m The map.
+/// @param row The keypoint's row.
+/// @param p The point's row.
+void attach(Map& m, std::int64_t row, std::size_t p) {
+  std::vector<std::int64_t>& seen = m.pt_observations[p];
+  seen.insert(std::ranges::lower_bound(seen, row), row);
+  m.kp_point[static_cast<std::size_t>(row)] = m.pt_id[p];
 }
 
 /// @brief Check rows against a bound.
@@ -55,7 +78,10 @@ void keep_where(std::vector<T>& values, const std::vector<bool>& keep) {
   std::size_t at = 0;
   for (std::size_t i = 0; i < values.size(); ++i) {
     if (keep[i]) {
-      values[at++] = std::move(values[i]);
+      if (at != i) {  // a vector moved onto itself is left empty
+        values[at] = std::move(values[i]);
+      }
+      ++at;
     }
   }
   values.resize(at);
@@ -65,45 +91,40 @@ void keep_where(std::vector<T>& values, const std::vector<bool>& keep) {
 /// @param m The map.
 /// @param rows The points' rows, each observed.
 void refresh(Map& m, std::span<const std::int64_t> rows) {
-  if (rows.empty()) {
-    return;
-  }
-  const auto seen_by = observations(m);
-  const std::vector<std::int64_t> keyframe_of = keypoint_keyframe(m);
+  const auto observer = [&m](std::int64_t r) { return m.kf_id[keyframe_of(m, r)]; };
   for (const std::int64_t row : rows) {
     const auto p = static_cast<std::size_t>(row);
-    const std::vector<std::size_t>& seen = seen_by.at(m.pt_id[p]);
+    const std::vector<std::int64_t>& seen = m.pt_observations[p];
     std::vector<foundations::orb::Descriptor> descriptors;
     descriptors.reserve(seen.size());
-    for (const std::size_t r : seen) {
-      descriptors.push_back(m.kp_descriptor[r]);
+    for (const std::int64_t r : seen) {
+      descriptors.push_back(m.kp_descriptor[static_cast<std::size_t>(r)]);
     }
     const auto chosen = distinctive_descriptor(descriptors);
     m.pt_descriptor[p] = descriptors[static_cast<std::size_t>(*chosen)];
     Eigen::Vector3d sum = Eigen::Vector3d::Zero();
-    for (const std::size_t r : seen) {
-      Eigen::Vector3d direction = m.pt_xyz[p] - centre(m, static_cast<std::size_t>(keyframe_of[r]));
+    for (const std::int64_t r : seen) {
+      Eigen::Vector3d direction = m.pt_xyz[p] - centre(m, keyframe_of(m, r));
       direction /= direction.norm();
       sum += direction;
     }
     const Eigen::Vector3d mean = sum / static_cast<double>(seen.size());
     m.pt_normal[p] = mean / mean.norm();
-    const bool still_reference = std::ranges::any_of(seen, [&](std::size_t r) {
-      return m.kf_id[static_cast<std::size_t>(keyframe_of[r])] == m.pt_reference_kf[p];
-    });
+    const bool still_reference = std::ranges::any_of(
+        seen, [&](std::int64_t r) { return observer(r) == m.pt_reference_kf[p]; });
     if (!still_reference) {
-      std::int64_t lowest = m.kf_id[static_cast<std::size_t>(keyframe_of[seen.front()])];
-      for (const std::size_t r : seen) {
-        lowest = std::min(lowest, m.kf_id[static_cast<std::size_t>(keyframe_of[r])]);
+      std::int64_t lowest = observer(seen.front());
+      for (const std::int64_t r : seen) {
+        lowest = std::min(lowest, observer(r));
       }
       m.pt_reference_kf[p] = lowest;
     }
-    const auto at = *std::ranges::find_if(seen, [&](std::size_t r) {
-      return m.kf_id[static_cast<std::size_t>(keyframe_of[r])] == m.pt_reference_kf[p];
-    });
-    const double distance =
-        (m.pt_xyz[p] - centre(m, static_cast<std::size_t>(keyframe_of[at]))).norm();
-    m.pt_max_distance[p] = distance * std::pow(m.scale_factor, static_cast<double>(m.kp_level[at]));
+    const std::int64_t at = *std::ranges::find_if(
+        seen, [&](std::int64_t r) { return observer(r) == m.pt_reference_kf[p]; });
+    const double distance = (m.pt_xyz[p] - centre(m, keyframe_of(m, at))).norm();
+    m.pt_max_distance[p] =
+        distance *
+        std::pow(m.scale_factor, static_cast<double>(m.kp_level[static_cast<std::size_t>(at)]));
     m.pt_min_distance[p] =
         m.pt_max_distance[p] / std::pow(m.scale_factor, static_cast<double>(m.levels - 1));
   }
@@ -116,17 +137,13 @@ void erase(Map& m, const std::vector<bool>& erase) {
   if (std::ranges::none_of(erase, [](bool e) { return e; })) {
     return;
   }
-  std::set<std::int64_t> gone;
   std::vector<bool> keep(erase.size());
   for (std::size_t p = 0; p < erase.size(); ++p) {
     keep[p] = !erase[p];
     if (erase[p]) {
-      gone.insert(m.pt_id[p]);
-    }
-  }
-  for (std::int64_t& point : m.kp_point) {
-    if (gone.contains(point)) {
-      point = -1;
+      for (const std::int64_t r : m.pt_observations[p]) {
+        m.kp_point[static_cast<std::size_t>(r)] = -1;
+      }
     }
   }
   keep_where(m.pt_id, keep);
@@ -139,6 +156,7 @@ void erase(Map& m, const std::vector<bool>& erase) {
   keep_where(m.pt_found, keep);
   keep_where(m.pt_first_kf, keep);
   keep_where(m.pt_reference_kf, keep);
+  keep_where(m.pt_observations, keep);
 }
 
 /// @brief Points' observation weights, unchecked.
@@ -146,17 +164,14 @@ void erase(Map& m, const std::vector<bool>& erase) {
 /// @param rows The points' rows.
 /// @return The weights.
 std::vector<std::int64_t> weights(const Map& m, std::span<const std::int64_t> rows) {
-  std::map<std::int64_t, std::int64_t> by_id;
-  for (std::size_t r = 0; r < keypoint_count(m); ++r) {
-    if (m.kp_point[r] >= 0) {
-      by_id[m.kp_point[r]] += std::isnan(m.kp_right[r]) ? 1 : 2;
-    }
-  }
   std::vector<std::int64_t> out;
   out.reserve(rows.size());
   for (const std::int64_t p : rows) {
-    const auto found = by_id.find(m.pt_id[static_cast<std::size_t>(p)]);
-    out.push_back(found == by_id.end() ? 0 : found->second);
+    std::int64_t weight = 0;
+    for (const std::int64_t r : m.pt_observations[static_cast<std::size_t>(p)]) {
+      weight += std::isnan(m.kp_right[static_cast<std::size_t>(r)]) ? 1 : 2;
+    }
+    out.push_back(weight);
   }
   return out;
 }
@@ -175,7 +190,7 @@ void forget(Map& m, std::span<const std::int64_t> rows) {
     return;
   }
   for (const std::int64_t r : rows) {
-    m.kp_point[static_cast<std::size_t>(r)] = -1;
+    detach(m, r);
   }
   std::vector<std::int64_t> points;
   for (const std::int64_t id : touched) {
@@ -283,20 +298,22 @@ Result<void> check_map(const Map& m) {
       })) {
     return fail(ErrorKind::kInvalidInput, "map.kp_point: every observed point must be in the map");
   }
+  if (m.pt_observations != indexed(m)) {
+    return fail(ErrorKind::kInvalidInput,
+                "map.pt_observations: expected each point's observing keypoint rows, ascending");
+  }
   return {};
 }
+
+void index_observations(Map& m) { m.pt_observations = indexed(m); }
 
 std::int64_t point_row(const Map& m, std::int64_t id) { return row_of(m.pt_id, id); }
 
 std::int64_t keyframe_row(const Map& m, std::int64_t id) { return row_of(m.kf_id, id); }
 
-std::vector<std::int64_t> keypoint_keyframe(const Map& m) {
-  std::vector<std::int64_t> out(keypoint_count(m));
-  for (std::size_t k = 0; k < keyframe_count(m); ++k) {
-    std::fill(out.begin() + m.kf_start[k], out.begin() + m.kf_start[k + 1],
-              static_cast<std::int64_t>(k));
-  }
-  return out;
+std::size_t keyframe_of(const Map& m, std::int64_t row) {
+  return static_cast<std::size_t>(std::ranges::upper_bound(m.kf_start, row) - m.kf_start.begin()) -
+         1;
 }
 
 Eigen::Vector3d centre(const Map& m, std::size_t k) {
@@ -373,10 +390,11 @@ Result<void> insert_keyframe(Map& m, const Frame& frame, const Eigen::Matrix4d& 
       return fail(ErrorKind::kInvalidInput, "points: each must be in the map, and observed once");
     }
   }
+  const std::int64_t first = m.kf_start.back();
   m.kf_id.push_back(m.next_kf_id++);
   m.kf_time.push_back(frame.timestamp);
   m.kf_pose.push_back(pose);
-  m.kf_start.push_back(m.kf_start.back() + static_cast<std::int64_t>(n));
+  m.kf_start.push_back(first + static_cast<std::int64_t>(n));
   for (std::size_t i = 0; i < n; ++i) {
     const foundations::orb::Keypoint& k = frame.features.keypoints[i];
     m.kp_xy.push_back(k.xy);
@@ -387,6 +405,10 @@ Result<void> insert_keyframe(Map& m, const Frame& frame, const Eigen::Matrix4d& 
     m.kp_depth.push_back(frame.depth[i]);
     m.kp_right.push_back(frame.right[i]);
     m.kp_point.push_back(points[i]);
+    if (points[i] >= 0) {
+      m.pt_observations[static_cast<std::size_t>(point_row(m, points[i]))].push_back(
+          first + static_cast<std::int64_t>(i));
+    }
   }
   std::vector<std::int64_t> rows;
   rows.reserve(observed.size());
@@ -404,15 +426,14 @@ Result<void> add_points(Map& m, std::span<const Eigen::Vector3d> xyz,
     return fail(ErrorKind::kInvalidInput,
                 "xyz: expected finite points, and one row of observers per point");
   }
-  const std::vector<std::int64_t> keyframe_of = keypoint_keyframe(m);
   std::set<std::int64_t> used;
   for (const std::vector<std::int64_t>& rows : observers) {
-    std::set<std::int64_t> keyframes;
+    std::set<std::size_t> keyframes;
     bool ok = !rows.empty();
     for (const std::int64_t r : rows) {
       ok = ok && r >= 0 && std::cmp_less(r, keypoint_count(m)) &&
            m.kp_point[static_cast<std::size_t>(r)] < 0 && used.insert(r).second &&
-           keyframes.insert(keyframe_of[static_cast<std::size_t>(r)]).second;
+           keyframes.insert(keyframe_of(m, r)).second;
     }
     if (!ok) {
       return fail(ErrorKind::kInvalidInput,
@@ -423,12 +444,12 @@ Result<void> add_points(Map& m, std::span<const Eigen::Vector3d> xyz,
   const std::size_t first = point_count(m);
   for (std::size_t i = 0; i < xyz.size(); ++i) {
     const std::int64_t id = m.next_pt_id++;
-    for (const std::int64_t r : observers[i]) {
+    std::vector<std::int64_t> seen = observers[i];
+    std::ranges::sort(seen);
+    for (const std::int64_t r : seen) {
       m.kp_point[static_cast<std::size_t>(r)] = id;
     }
-    const std::int64_t last = std::ranges::max(observers[i]);
-    const std::int64_t creator =
-        m.kf_id[static_cast<std::size_t>(keyframe_of[static_cast<std::size_t>(last)])];
+    const std::int64_t creator = m.kf_id[keyframe_of(m, seen.back())];
     m.pt_id.push_back(id);
     m.pt_xyz.push_back(xyz[i]);
     m.pt_descriptor.push_back({});
@@ -439,6 +460,7 @@ Result<void> add_points(Map& m, std::span<const Eigen::Vector3d> xyz,
     m.pt_found.push_back(1);
     m.pt_first_kf.push_back(creator);
     m.pt_reference_kf.push_back(creator);
+    m.pt_observations.push_back(std::move(seen));
   }
   std::vector<std::int64_t> rows;
   for (std::size_t p = first; p < point_count(m); ++p) {
@@ -475,9 +497,8 @@ Result<void> refresh_points(Map& m, std::span<const std::int64_t> rows) {
   if (auto ok = check_rows(rows, point_count(m), "rows"); !ok) {
     return ok;
   }
-  const auto seen_by = observations(m);
-  if (std::ranges::any_of(rows, [&](std::int64_t p) {
-        return !seen_by.contains(m.pt_id[static_cast<std::size_t>(p)]);
+  if (std::ranges::any_of(rows, [&m](std::int64_t p) {
+        return m.pt_observations[static_cast<std::size_t>(p)].empty();
       })) {
     return fail(ErrorKind::kInvalidInput, "rows: every point must have an observation");
   }
@@ -544,6 +565,29 @@ Result<void> erase_keyframe(Map& m, std::int64_t k) {
   m.kf_start.erase(m.kf_start.begin() + at + 1);
   for (std::size_t i = row + 1; i < m.kf_start.size(); ++i) {
     m.kf_start[i] -= stop - start;
+  }
+  for (std::vector<std::int64_t>& seen : m.pt_observations) {
+    for (std::int64_t& r : seen) {
+      if (r >= stop) {
+        r -= stop - start;
+      }
+    }
+  }
+  return {};
+}
+
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (row, id), a keypoint and its point
+Result<void> observe(Map& m, std::int64_t row, std::int64_t id) {
+  if (auto ok = check_rows(std::span(&row, 1), keypoint_count(m), "row"); !ok) {
+    return ok;
+  }
+  const std::int64_t p = point_row(m, id);
+  if (id != -1 && p < 0) {
+    return fail(ErrorKind::kInvalidInput, "id: expected -1 or a point in the map");
+  }
+  detach(m, row);
+  if (p >= 0) {
+    attach(m, row, static_cast<std::size_t>(p));
   }
   return {};
 }

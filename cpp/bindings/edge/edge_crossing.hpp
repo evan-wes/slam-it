@@ -214,7 +214,7 @@ inline constexpr std::array<const char*, 26> kMapKeys = {
     "pt_visible", "pt_found",      "pt_first_kf", "pt_reference_kf", "next_kf_id",
     "next_pt_id"};
 
-/// @brief Read a map from a dict of its fields, checked.
+/// @brief Read a map from a dict of its fields, its observations indexed, checked.
 /// @param values The dict.
 /// @return The map.
 /// @throws std::invalid_argument for a missing or unknown key or a malformed array;
@@ -246,7 +246,9 @@ inline edge::Map map_in(const nanobind::dict& values) {
               .pt_first_kf = vector_item<std::int64_t>(values, "pt_first_kf"),
               .pt_reference_kf = vector_item<std::int64_t>(values, "pt_reference_kf"),
               .next_kf_id = nanobind::cast<std::int64_t>(values["next_kf_id"]),
-              .next_pt_id = nanobind::cast<std::int64_t>(values["next_pt_id"])};
+              .next_pt_id = nanobind::cast<std::int64_t>(values["next_pt_id"]),
+              .pt_observations = {}};
+  edge::index_observations(m);
   unwrap(edge::check_map(m));
   return m;
 }

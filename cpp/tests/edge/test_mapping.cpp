@@ -138,8 +138,9 @@ void check_fusion(int& failures) {
   for (const std::int64_t point : m.kp_point) {
     linked = linked && std::cmp_greater_equal(point, scene::kPoints);
   }
-  expect(fused && edge::point_count(m) == scene::kPoints && linked,
-         "duplicates merge into the newest keyframe's points, seen by both", failures);
+  expect(
+      fused && edge::point_count(m) == scene::kPoints && linked && edge::check_map(m).has_value(),
+      "duplicates merge into the newest keyframe's points, seen by both, the index kept", failures);
 }
 
 /// @brief Check culling keyframes and a whole mapping step.
@@ -154,13 +155,14 @@ void check_culling_and_process(int& failures) {
   const auto culled = [&] {
     edge::Map copy = m;
     if (!edge::insert_keyframe(copy, scene::frame(2, true), scene::pose(2), ids(0, 60)) ||
-        !edge::cull_keyframes(copy, scene::camera(), edge::Mode::kRgbd, edge::Options{})) {
+        !edge::cull_keyframes(copy, scene::camera(), edge::Mode::kRgbd, edge::Options{}) ||
+        !edge::check_map(copy)) {
       return std::vector<std::int64_t>{};
     }
     return copy.kf_id;
   }();
   expect(culled == std::vector<std::int64_t>{0, 2, 3},
-         "the first redundant keyframe goes, the first keyframe stays", failures);
+         "the first redundant keyframe goes, the first keyframe stays, the index kept", failures);
   Eigen::Matrix4d ahead = scene::pose(2);
   ahead(2, 3) -= 0.05;
   const bool processed =
