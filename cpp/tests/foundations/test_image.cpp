@@ -3,6 +3,8 @@
 ///        against the parity fixture `tests/fixtures/foundations/image.json` that the Python
 ///        and Rust tests share, and the core's own input checks.
 #include <Eigen/Core>
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -119,10 +121,37 @@ void check_rejections(int& failures) {
 
 /// @brief The test body.
 /// @return The exit code.
+/// @brief Check the two coordinate maps: inverses, level 0 the identity, and their
+///        composition the level-to-level map stereo matching uses.
+/// @param failures Running failure count.
+void check_coordinate_maps(int& failures) {
+  namespace image = slamlab::foundations::image;
+  constexpr std::array<std::int64_t, 8> kLevels{640, 533, 444, 370, 309, 257, 214, 179};
+  expect(image::level_coordinate(7.0, 640, 640) == 7.0 &&
+             image::level_coordinate(2.5, 640, 640) == 2.5,
+         "level_coordinate maps level 0 to itself", failures);
+  bool inverse = true;
+  bool composed = true;
+  for (const std::int64_t a : kLevels) {
+    for (const std::int64_t b : kLevels) {
+      for (std::int64_t x = 0; x < a; x += 7) {
+        const double u = image::full_image_coordinate(static_cast<double>(x), a, 640);
+        inverse = inverse &&
+                  std::fabs(image::level_coordinate(u, a, 640) - static_cast<double>(x)) < 1e-12;
+        const double on_b = static_cast<double>(((2 * x) + 1) * b - a) / static_cast<double>(2 * a);
+        composed = composed && std::fabs(image::level_coordinate(u, b, 640) - on_b) < 1e-12;
+      }
+    }
+  }
+  expect(inverse, "level_coordinate inverts full_image_coordinate", failures);
+  expect(composed, "the two maps compose to the level-to-level map", failures);
+}
+
 int run() {
   int failures = 0;
   check_fixture(failures);
   check_rejections(failures);
+  check_coordinate_maps(failures);
   return slamlab::testing::finish("foundations/image", failures);
 }
 

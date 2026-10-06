@@ -17,6 +17,10 @@ use crate::{se3, so3};
 
 /// Correspondences in a minimal sample.
 pub const SAMPLE_SIZE: usize = 4;
+/// The DLT refuses an H whose smallest singular value is below this fraction of its largest,
+/// in the Hartley-normalised frame it is fitted in
+/// (`slamlab.foundations.homography.CONDITION_TOLERANCE`, which states the evidence).
+pub const CONDITION_TOLERANCE: f64 = 1e-4;
 /// Below this largest entry of `HᵀH - I` (H scaled to a middle singular value of 1), H is a
 /// rotation (OpenCV's `HomographyDecompInria` value).
 pub const PURE_ROTATION_TOLERANCE: f64 = 1e-3;
@@ -29,7 +33,9 @@ pub const PURE_ROTATION_TOLERANCE: f64 = 1e-3;
 ///
 /// # Returns
 ///
-/// H with unit norm, or `None` if the pairs do not determine it.
+/// H with unit norm, or `None` if the pairs do not determine it or fit one of rank below 3
+/// (smallest singular value under [`CONDITION_TOLERANCE`] of the largest, in the normalised
+/// frame).
 #[must_use]
 pub fn fit(points1: &[Vector2<f64>], points2: &[Vector2<f64>]) -> Option<Matrix3<f64>> {
     let t1 = hartley_normalisation(points1)?;
@@ -48,6 +54,10 @@ pub fn fit(points1: &[Vector2<f64>], points2: &[Vector2<f64>]) -> Option<Matrix3
         }
     }
     let normalised = Matrix3::from_row_slice(null_vector(&system)?.as_slice());
+    let singular = singular_values3(&normalised);
+    if !(singular[2] > CONDITION_TOLERANCE * singular[0]) {
+        return None; // numerically of rank below 3: no homography
+    }
     let homography = t2.try_inverse()? * normalised * t1;
     Some(homography / homography.norm())
 }
@@ -111,7 +121,7 @@ pub fn sampson(
 ///
 /// # Errors
 ///
-/// `InvalidInput` for mismatched sizes or N < 4; `Degenerate` if not unique.
+/// `InvalidInput` for mismatched sizes or N < 4; `Degenerate` if not unique or of rank below 3.
 pub fn homography_dlt(points1: &[Vector2<f64>], points2: &[Vector2<f64>]) -> Result<Matrix3<f64>> {
     check_point_pairs(points1, points2, SAMPLE_SIZE, "points")?;
     match fit(points1, points2) {

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+from fractions import Fraction
 from typing import Any
 
 import cv2
@@ -212,6 +214,43 @@ def test_full_image_coordinate_inverts_the_pyramid() -> None:
     half: Any = 1.5  # a size of the wrong type, on purpose
     with pytest.raises(InvalidInputError, match="size"):
         image.full_image_coordinate(1, 100, half)
+
+
+LEVEL_SIZES = (640, 533, 444, 370, 309, 257, 214, 179)
+"""The columns of a 640-wide image's eight levels at scale factor 1.2."""
+
+
+def test_level_coordinate_inverts_full_image_coordinate() -> None:
+    """A full-image position maps onto a level and back; level 0 maps to itself."""
+    np.testing.assert_array_equal(image.level_coordinate([0, 7, 2.5], 640, 640), [0, 7, 2.5])
+    assert abs(image.level_coordinate(0.5 * 640 / 179 - 0.5, 179, 640)) < 1e-15
+    assert image.level_coordinate(np.float64(19.0), 179, 640).shape == ()
+    u = np.random.default_rng(3).uniform(-0.5, 639.5, 500)
+    for n in LEVEL_SIZES:
+        there = image.level_coordinate(u, n, 640)
+        np.testing.assert_allclose(image.full_image_coordinate(there, n, 640), u, atol=1e-12)
+    with pytest.raises(InvalidInputError, match="u: expected finite"):
+        image.level_coordinate(np.nan, 100, 200)
+    with pytest.raises(InvalidInputError, match="level_size"):
+        image.level_coordinate(1, [0], 200)
+
+
+def test_the_two_maps_give_stereos_level_to_level_column() -> None:
+    """Pixel x of one level lies at ((2 x + 1) n_b - n_a) / (2 n_a) on another.
+
+    Its nearest pixel there is floor((2 x + 1) n_b / (2 n_a)), the integer column stereo
+    matching searches from. Checked in exact rationals over every pair of levels, and the
+    float64 maps agree to rounding.
+    """
+    for a in LEVEL_SIZES:
+        for b in LEVEL_SIZES:
+            for x in range(0, a, 7):
+                full = Fraction((2 * x + 1) * 640 - a, 2 * a)
+                on_b = ((2 * full + 1) * b - 640) / (2 * 640)
+                assert on_b == Fraction((2 * x + 1) * b - a, 2 * a)
+                assert math.floor(on_b + Fraction(1, 2)) == ((2 * x + 1) * b) // (2 * a)
+                there = image.level_coordinate(image.full_image_coordinate(x, a, 640), b, 640)
+                assert abs(float(there) - float(on_b)) < 1e-12
 
 
 def test_full_image_coordinate_is_where_the_pyramid_samples() -> None:

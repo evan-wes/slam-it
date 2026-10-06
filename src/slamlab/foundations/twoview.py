@@ -250,9 +250,8 @@ class Initialization:
     essential : ransac.RefinedSummary or None
         E-RANSAC's summary, with the refinement's (None if it found no model).
     homography : ransac.Summary or None
-        H-RANSAC's summary (None if it found no usable model: none, or one of rank below 2,
-        which has no motion to decompose; duplicate keypoints at one pixel can make such an H
-        win).
+        H-RANSAC's summary (None if it found no model; it never returns one of rank below 3,
+        see :mod:`slamlab.foundations.homography`).
     """
 
     status: Status
@@ -333,18 +332,6 @@ def _fit(
         return run()
     except DegenerateError:
         return None
-
-
-def _decomposable(matrix: correspondences.Matrix3) -> bool:
-    """Whether H decomposes into motions: rank 2 or more.
-
-    H-RANSAC can return rank 1 when many matches share one pixel.
-    """
-    try:
-        homography.decompose_reference(matrix)
-    except DegenerateError:
-        return False
-    return True
 
 
 @dataclass(frozen=True)
@@ -443,8 +430,6 @@ def _initialize(
             options.ransac_options(Model.HOMOGRAPHY),
         )
     )
-    if planar is not None and not _decomposable(planar.state.model):
-        planar = None
     if essential is None and planar is None:
         raise DegenerateError("initialize: neither RANSAC found a model")
     sigma = options.sigma_px / options.focal

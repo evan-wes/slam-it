@@ -22,13 +22,19 @@ namespace slamlab::foundations::homography {
 
 /// @brief Correspondences in a minimal sample.
 inline constexpr std::uint32_t kSampleSize = 4;
+/// @brief The DLT refuses an H whose smallest singular value is below this fraction of its
+///        largest, in the Hartley-normalised frame it is fitted in
+///        (`slamlab.foundations.homography.CONDITION_TOLERANCE`, which states the evidence).
+inline constexpr double kConditionTolerance = 1e-4;
 
 using correspondences::Rows2;
 
 /// @brief The normalised DLT (unchecked).
 /// @param points1 Points in image 1 (N x 2), N >= 4.
 /// @param points2 Points in image 2 (N x 2).
-/// @return H with unit norm, or nothing if the pairs do not determine it.
+/// @return H with unit norm, or nothing if the pairs do not determine it or fit one of rank
+///         below 3 (smallest singular value under `kConditionTolerance` of the largest, in the
+///         normalised frame).
 [[nodiscard]] std::optional<Eigen::Matrix3d> fit(const Eigen::Ref<const Rows2>& points1,
                                                  const Eigen::Ref<const Rows2>& points2);
 
@@ -44,7 +50,8 @@ using correspondences::Rows2;
 /// @brief Estimate H from four or more point pairs (normalised DLT).
 /// @param points1 Points in image 1 (N x 2).
 /// @param points2 Points in image 2 (N x 2).
-/// @return H; `InvalidInput` for mismatched sizes or N < 4; `Degenerate` if not unique.
+/// @return H; `InvalidInput` for mismatched sizes or N < 4; `Degenerate` if not unique or of
+///         rank below 3.
 [[nodiscard]] Result<Eigen::Matrix3d> homography_dlt(const Eigen::Ref<const Rows2>& points1,
                                                      const Eigen::Ref<const Rows2>& points2);
 

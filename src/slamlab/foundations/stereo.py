@@ -594,7 +594,13 @@ def _nearest_candidate(  # noqa: PLR0913 -- the keypoint, both sides, the camera
 
 
 def _nearest_column(x: int, from_cols: int, to_cols: int) -> int:
-    """Return the column of a level `to_cols` wide nearest pixel `x`'s centre on another."""
+    """Return the column of a level `to_cols` wide nearest pixel `x`'s centre on another.
+
+    Pixel `x` maps to the full image (:func:`slamlab.foundations.image.full_image_coordinate`)
+    and on to the other level (:func:`slamlab.foundations.image.level_coordinate`), at
+    ``((2 x + 1) to_cols - from_cols) / (2 from_cols)``; rounded half up, that is
+    ``floor((2 x + 1) to_cols / (2 from_cols))``, computed here in integers.
+    """
     return ((2 * x + 1) * to_cols) // (2 * from_cols)
 
 

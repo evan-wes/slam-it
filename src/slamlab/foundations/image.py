@@ -26,7 +26,8 @@ give that across languages (a fused multiply-add on ARM rounds once where x86 ro
   repeated multiplication in float64) and is resized from level ``l - 1``, as ORB-SLAM builds
   its pyramid. The resizes' aligned-centre maps compose exactly, so a position ``x`` on level
   ``l`` lies at ``((2 x + 1) n_0 - n_l) / (2 n_l)`` in the full image
-  (:func:`full_image_coordinate`).
+  (:func:`full_image_coordinate`), and a full-image position ``u`` at
+  ``((2 u + 1) n_l - n_0) / (2 n_0)`` on the level (:func:`level_coordinate`).
 - **Remap:** each output pixel samples the input at a coordinate from a float64 map, rounded
   half up to :data:`REMAP_BITS` bits (a 32nd of a pixel, as OpenCV's ``remap``); a neighbour
   outside the image counts as 0.
@@ -314,14 +315,58 @@ def full_image_coordinate(x: ArrayLike, level_size: ArrayLike, size: int) -> NDA
         If `x` is not finite, or a size is not an integer from 1 to
         :data:`slamlab.foundations.arrays.MAX_IMAGE_SIDE`.
     """
-    positions = as_real(x, "x").reshape(np.shape(x))  # a scalar stays 0-d
+    positions, level, full = _axis_map(x, "x", level_size, size)
+    out: NDArray[np.float64] = ((2.0 * positions + 1.0) * full - level) / (2.0 * level)
+    return out
+
+
+def level_coordinate(u: ArrayLike, level_size: ArrayLike, size: int) -> NDArray[np.float64]:
+    """Map full-image positions to a pyramid level, along one axis.
+
+    The inverse of :func:`full_image_coordinate`: full-image position ``u`` lies at
+    ``(u + 1/2) n_l / n_0 - 1/2`` on a level of ``n_l`` pixels, computed as
+    ``((2 u + 1) n_l - n_0) / (2 n_0)`` in float64, one operation at a time, as every backend
+    does. Level 0 maps to itself. Composed with :func:`full_image_coordinate`, it maps one
+    level onto another: pixel ``x`` of a level of ``n_a`` lies at
+    ``((2 x + 1) n_b - n_a) / (2 n_a)`` on a level of ``n_b``, whose nearest pixel is
+    ``floor((2 x + 1) n_b / (2 n_a))`` (the column :func:`slamlab.foundations.stereo.match`
+    searches from, in integers).
+
+    Parameters
+    ----------
+    u : array_like of float
+        Positions in the full image, in its pixels.
+    level_size : int or array_like of int
+        The level's size along the axis, broadcast against `u`.
+    size : int
+        The full image's size along it.
+
+    Returns
+    -------
+    ndarray of float64
+        The level coordinates, `u`'s shape.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If `u` is not finite, or a size is not an integer from 1 to
+        :data:`slamlab.foundations.arrays.MAX_IMAGE_SIDE`.
+    """
+    positions, level, full = _axis_map(u, "u", level_size, size)
+    out: NDArray[np.float64] = ((2.0 * positions + 1.0) * level - full) / (2.0 * full)
+    return out
+
+
+def _axis_map(
+    positions: ArrayLike, name: str, level_size: ArrayLike, size: int
+) -> tuple[NDArray[np.float64], NDArray[np.float64], float]:
+    """Check a coordinate map's inputs: finite positions, a level's size and the image's."""
+    values = as_real(positions, name).reshape(np.shape(positions))  # a scalar stays 0-d
     sizes = np.asarray(level_size)
     if not holds_integers(sizes) or np.any(sizes < 1) or np.any(sizes > MAX_IMAGE_SIDE):
         raise InvalidInputError(f"level_size: must be integers from 1 to {MAX_IMAGE_SIDE}")
     full = float(as_count(size, "size", 1, MAX_IMAGE_SIDE))
-    level = sizes.astype(np.float64)
-    out: NDArray[np.float64] = ((2.0 * positions + 1.0) * full - level) / (2.0 * level)
-    return out
+    return values, sizes.astype(np.float64), full
 
 
 def _pyramid(image: Image, levels: int, scale_factor: float) -> list[Image]:

@@ -129,6 +129,23 @@ def test_every_candidate_reproduces_h(backend: str) -> None:
             assert min(np.abs(rebuilt - target).max(), np.abs(rebuilt + target).max()) < 1e-10
 
 
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_the_dlt_refuses_a_singular_fit(backend: str) -> None:
+    """Two points matched to one: the only exact fit is singular, so there is no homography.
+
+    Four correspondences determine H, but with two of image 1's points on one point of image 2
+    the exact fit maps their line onto that point: rank below 3, which no two views of a plane
+    give. The DLT, H-RANSAC's minimal and least-squares solver, refuses it.
+    """
+    chosen = require_function(backend, homography.__name__, "homography_dlt")
+    points1 = [[0.0, 0.0], [100.0, 0.0], [0.0, 100.0], [100.0, 100.0]]
+    points2 = [[10.0, 10.0], [10.0, 10.0], [20.0, 120.0], [120.0, 110.0]]
+    with pytest.raises(DegenerateError, match="H: the correspondences"):
+        homography.homography_dlt(points1, points2, backend=chosen)
+    moved = [[10.0, 10.0], [110.0, 12.0], [20.0, 120.0], [120.0, 110.0]]
+    assert homography.homography_dlt(points1, moved, backend=chosen).shape == (3, 3)
+
+
 def test_singular_homographies_are_rejected() -> None:
     """A rank-1 matrix is no homography: DegenerateError."""
     with pytest.raises(DegenerateError, match="rank"):

@@ -8,10 +8,10 @@ from typing import Any
 import cv2
 import numpy as np
 import pytest
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 
 from slamlab import backends
-from slamlab.foundations import matching
+from slamlab.foundations import matching, orb
 from slamlab.foundations.errors import InvalidInputError
 from slamlab.foundations.orb import DESCRIPTOR_BYTES
 from tests.conftest import (
@@ -35,6 +35,46 @@ def _check_int64(got: object, expected: object) -> None:
     assert isinstance(got, np.ndarray)
     assert got.dtype == np.int64
     np.testing.assert_array_equal(got, np.asarray(expected, dtype=np.int64).reshape(got.shape))
+
+
+def _column(values: list[float | None]) -> NDArray[np.float64]:
+    """Return a fixture's right columns, ``null`` as NaN."""
+    return np.array([np.nan if v is None else v for v in values], dtype=np.float64)
+
+
+def _projections(raw: dict[str, Any]) -> matching.Projections:
+    """Build a fixture case's projections."""
+    return matching.Projections(
+        xy=np.asarray(raw["xy"], dtype=np.float64).reshape(-1, 2),
+        radius=np.asarray(raw["radius"], dtype=np.float64),
+        min_level=np.asarray(raw["min_level"], dtype=np.int64),
+        max_level=np.asarray(raw["max_level"], dtype=np.int64),
+        descriptors=_descriptors(raw["descriptors"]),
+        angle=np.asarray(raw["angle"], dtype=np.int64),
+        right=_column(raw["right"]),
+    )
+
+
+def _features(
+    xy: ArrayLike, level: ArrayLike, angle: ArrayLike, descriptors: ArrayLike, levels: int = 8
+) -> orb.Features:
+    """Build features from their matched fields (pixels and responses zero)."""
+    positions = np.asarray(xy, dtype=np.float64).reshape(-1, 2)
+    n = len(positions)
+    keypoints = orb.Keypoints(
+        xy=positions,
+        level=np.asarray(level, dtype=np.int64).reshape(n),
+        level_xy=np.zeros((n, 2), dtype=np.int64),
+        response=np.zeros(n, dtype=np.int64),
+        angle=np.asarray(angle, dtype=np.int64).reshape(n),
+    )
+    return orb.Features(keypoints, _descriptors(descriptors), 1.2, levels)
+
+
+def _frame(raw: dict[str, Any]) -> tuple[orb.Features, NDArray[np.float64], NDArray[np.bool_]]:
+    """Build a fixture case's frame: its features, right columns and taken flags."""
+    features = _features(raw["xy"], raw["level"], raw["angle"], raw["descriptors"], raw["levels"])
+    return features, _column(raw["right"]), np.asarray(raw["taken"], dtype=bool)
 
 
 def _planted(
@@ -68,6 +108,25 @@ def test_matches_fixture(backend: str, function: str, case: dict[str, Any]) -> N
     if function == "distances":
         got = matching.distances(_descriptors(args[0]), _descriptors(args[1]), backend=chosen)
         _check_int64(got, case["expected"])
+    elif function == "features_in_area":
+        xy = np.asarray(args[0], dtype=np.float64).reshape(-1, 2)
+        level = np.asarray(args[1], dtype=np.int64)
+        got = matching.features_in_area(
+            xy, level, args[2], args[3], min_level=args[4], max_level=args[5], backend=chosen
+        )
+        _check_int64(got, case["expected"])
+    elif function == "search_by_projection":
+        features, right, taken = _frame(args[1])
+        found = matching.search_by_projection(
+            _projections(args[0]),
+            features,
+            matching.SearchOptions(**args[2]),
+            right=right,
+            taken=taken,
+            backend=chosen,
+        )
+        _check_int64(found.pairs, case["expected"]["pairs"])
+        _check_int64(found.distances, case["expected"]["distances"])
     else:
         found = matching.match(
             _descriptors(args[0]),
@@ -215,3 +274,197 @@ def test_matching_takes_the_first_set_in_blocks() -> None:
     found = matching.match(first, second, *zeros)
     np.testing.assert_array_equal(found.pairs[:, 0], np.arange(700))
     np.testing.assert_array_equal(found.pairs[:, 1], where)
+
+
+def _random_frame(
+    rng: np.random.Generator, n: int, spread: tuple[float, float] = (640.0, 480.0)
+) -> tuple[orb.Features, NDArray[np.float64], NDArray[np.bool_]]:
+    """Draw a frame: positions over `spread`, some right columns, a few keypoints taken."""
+    xy = rng.uniform(0.0, 1.0, (n, 2)) * np.asarray(spread)
+    features = _features(
+        xy,
+        rng.integers(0, 8, n),
+        rng.integers(0, 30, n),
+        rng.integers(0, 256, (n, DESCRIPTOR_BYTES), dtype=np.uint8),
+    )
+    right = np.where(rng.random(n) < 0.5, xy[:, 0] - rng.uniform(0.0, 40.0, n), np.nan)
+    return features, right, rng.random(n) < 0.1
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize(
+    "spread", [(640.0, 480.0), (0.0, 480.0), (1e-9, 1e-9), (5000.0, 3.0)], ids=str
+)
+def test_compiled_grids_find_what_the_brute_force_finds(
+    backend: str, spread: tuple[float, float]
+) -> None:
+    """Every backend's search equals the reference's, whatever the keypoints' spread.
+
+    The compiled cores search a grid over the keypoints' bounding box; a box of zero width,
+    a tiny one, and a very flat one exercise its cell maps. Projections reuse noisy keypoint
+    descriptors so that windows hold near and far candidates, ties and conflicts.
+    """
+    chosen = require_function(backend, matching.__name__, "search_by_projection")
+    rng = np.random.default_rng(11)
+    features, right, taken = _random_frame(rng, 1500, spread)
+    m = 900
+    source = rng.integers(0, 1500, m)
+    descriptors = features.descriptors[source].copy()
+    descriptors[:, 0] ^= rng.integers(0, 256, m, dtype=np.uint8)
+    level = features.keypoints.level[source]
+    projections = matching.Projections(
+        xy=features.keypoints.xy[source] + rng.normal(0.0, 2.0, (m, 2)),
+        radius=rng.uniform(0.5, 30.0, m),
+        min_level=level - rng.integers(0, 2, m),
+        max_level=level + rng.integers(0, 2, m),
+        descriptors=descriptors,
+        angle=np.where(  # one turn for most, so the rotation check keeps them; a few strays
+            rng.random(m) < 0.9, (features.keypoints.angle[source] + 2) % 30, rng.integers(0, 30, m)
+        ),
+        right=np.where(rng.random(m) < 0.5, right[source] + rng.normal(0.0, 3.0, m), np.nan),
+    )
+    for options in [
+        matching.SearchOptions(),
+        matching.SearchOptions(max_distance=50, ratio=0.8, check_orientation=False),
+    ]:
+        reference = matching.search_by_projection(
+            projections, features, options, right=right, taken=taken
+        )
+        got = matching.search_by_projection(
+            projections, features, options, right=right, taken=taken, backend=chosen
+        )
+        assert len(reference.pairs) > 100
+        np.testing.assert_array_equal(got.pairs, reference.pairs)
+        np.testing.assert_array_equal(got.distances, reference.distances)
+    for u, v, r in [(320.0, 240.0, 25.0), (0.0, 0.0, 1e-12), (-1e9, 0.0, 2e9)]:
+        area = (features.keypoints.xy, features.keypoints.level, (u, v), r)
+        expected = matching.features_in_area(*area, min_level=2, max_level=5)
+        area_found = matching.features_in_area(*area, min_level=2, max_level=5, backend=chosen)
+        np.testing.assert_array_equal(area_found, expected)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_defaults_track_the_last_frame(backend: str) -> None:
+    """With no right columns or taken keypoints given, every keypoint is a candidate."""
+    chosen = require_function(backend, matching.__name__, "search_by_projection")
+    features, _, _ = _random_frame(np.random.default_rng(12), 50)
+    kp = features.keypoints
+    projections = matching.Projections(
+        xy=kp.xy,
+        radius=np.full(50, 0.5),
+        min_level=kp.level,
+        max_level=kp.level,
+        descriptors=features.descriptors,
+        angle=kp.angle,
+        right=np.full(50, np.nan),
+    )
+    found = matching.search_by_projection(projections, features, backend=chosen)
+    np.testing.assert_array_equal(found.pairs, np.column_stack([np.arange(50), np.arange(50)]))
+    assert np.all(found.distances == 0)
+
+
+def _good_projections(**changes: object) -> dict[str, Any]:
+    """Two valid projections' fields, with `changes` applied."""
+    fields: dict[str, Any] = {
+        "xy": np.zeros((2, 2)),
+        "radius": np.ones(2),
+        "min_level": np.zeros(2, dtype=np.int64),
+        "max_level": np.ones(2, dtype=np.int64),
+        "descriptors": np.zeros((2, DESCRIPTOR_BYTES), dtype=np.uint8),
+        "angle": np.zeros(2, dtype=np.int64),
+        "right": np.full(2, np.nan),
+    }
+    fields.update(changes)
+    return fields
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"xy": np.zeros((3, 2))}, r"projections.xy: expected shape \(2, 2\)"),
+        ({"xy": np.array([[0.0, np.nan], [0.0, 0.0]])}, "projections.xy: expected finite"),
+        ({"radius": np.array([1.0, 0.0])}, "projections.radius: must be positive"),
+        ({"radius": np.array([1.0, np.inf])}, "projections.radius: expected finite"),
+        ({"min_level": np.zeros(2)}, "projections.min_level: expected 2 integers"),
+        ({"max_level": np.array([True, False])}, "projections.max_level: expected 2 integers"),
+        ({"angle": np.array([0, 30])}, r"projections.angle: bins must lie in \[0, 30\)"),
+        ({"right": np.array([np.inf, 1.0])}, "projections.right: expected finite"),
+        ({"descriptors": np.zeros((2, 16), dtype=np.uint8)}, r"projections.descriptors: expected"),
+    ],
+)
+def test_projections_reject_malformed_input(changes: dict[str, object], message: str) -> None:
+    """Projections are checked when built, so every backend sees the same clean arrays."""
+    with pytest.raises(InvalidInputError, match=message):
+        matching.Projections(**_good_projections(**changes))
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize(
+    ("frame", "extras", "message"),
+    [
+        ({"xy": [[0.0, np.nan], [1.0, 1.0]]}, {}, "features.keypoints.xy: expected finite"),
+        ({"level": [0, 8]}, {}, r"features.keypoints.level: levels must lie in \[0, 8\)"),
+        ({"level": [-1, 0]}, {}, r"features.keypoints.level: levels must lie in \[0, 8\)"),
+        ({"angle": [0, 30]}, {}, r"features.keypoints.angle: bins must lie in \[0, 30\)"),
+        ({}, {"right": [1.0]}, r"right: expected shape \(2,\)"),
+        ({}, {"right": [np.inf, 1.0]}, "right: expected finite"),
+        ({}, {"taken": [1, 0]}, r"taken: expected booleans of shape \(2,\)"),
+    ],
+)
+def test_search_rejects_a_malformed_frame(
+    backend: str, frame: dict[str, Any], extras: dict[str, Any], message: str
+) -> None:
+    """A frame's features and extras are checked before any backend runs."""
+    fields: dict[str, Any] = {
+        "xy": [[0.0, 0.0], [1.0, 1.0]],
+        "level": [0, 1],
+        "angle": [0, 1],
+        "descriptors": np.zeros((2, DESCRIPTOR_BYTES), dtype=np.uint8),
+    }
+    fields.update(frame)
+    features = _features(**fields)
+    projections = matching.Projections(**_good_projections())
+    with pytest.raises(InvalidInputError, match=message):
+        matching.search_by_projection(projections, features, backend=backend, **extras)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (([[0.0, np.inf]], [0], (0.0, 0.0), 1.0), "xy: expected finite"),
+        (([0.0, 1.0], [0], (0.0, 0.0), 1.0), r"xy: expected shape \(N, 2\)"),
+        (([[0.0, 0.0]], [-1], (0.0, 0.0), 1.0), "level: levels must be non-negative"),
+        (([[0.0, 0.0]], [0.0], (0.0, 0.0), 1.0), "level: expected 1 integers"),
+        (([[0.0, 0.0]], [0], (0.0, np.nan), 1.0), "center: expected finite"),
+        (([[0.0, 0.0]], [0], (0.0, 0.0, 0.0), 1.0), r"center: expected shape \(2,\)"),
+        (([[0.0, 0.0]], [0], (0.0, 0.0), 0.0), "radius: must be finite and positive"),
+        (([[0.0, 0.0]], [0], (0.0, 0.0), np.inf), "radius: must be finite and positive"),
+    ],
+)
+def test_features_in_area_rejects_invalid_input(
+    backend: str, args: tuple[object, ...], message: str
+) -> None:
+    """Malformed keypoints and windows raise InvalidInputError before any backend."""
+    check_rejects(matching, "features_in_area", args, message, backend)
+
+
+def test_features_in_area_rejects_a_level_bound_of_the_wrong_type() -> None:
+    """A level bound must be an integer."""
+    bound: Any = 0.0  # the wrong type, on purpose
+    with pytest.raises(InvalidInputError, match="min_level: must be an integer"):
+        matching.features_in_area([[0.0, 0.0]], [0], (0.0, 0.0), 1.0, min_level=bound)
+
+
+@pytest.mark.parametrize(
+    ("settings", "message"),
+    [
+        ({"max_distance": 257}, "max_distance: must be from 0 to 256"),
+        ({"ratio": 0.0}, r"ratio: must be in \(0, 1\]"),
+        ({"check_orientation": 1}, "check_orientation: must be a boolean, got int"),
+    ],
+)
+def test_search_options_are_checked(settings: dict[str, Any], message: str) -> None:
+    """The search's filters are checked as :class:`Options`' are."""
+    with pytest.raises(InvalidInputError, match=message):
+        matching.SearchOptions(**settings)

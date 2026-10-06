@@ -763,10 +763,12 @@ shared with the owner's other projects.
   - Closed by PR 4: **two-view crashed on a rank-1 homography.** Duplicate keypoints at one
     pixel let a rank-1 H win H-RANSAC (TUM fr1/desk); `twoview.initialize` raised from its
     decomposition. Such an H is now no model, and E decides.
-  - **H-RANSAC can return a non-invertible H.** The two-view fix treats it as no model; the
-    deeper fix is for the homography estimator to reject a fitted H of rank below 3, which
-    changes H-RANSAC's results. Decided for PR 8: the estimator refuses such an H, and
-    two-view's workaround goes.
+  - Closed by PR 8: **H-RANSAC can return a non-invertible H.** The DLT refuses a fitted H
+    whose smallest singular value, in the Hartley-normalised frame it fits in, is below
+    `homography.CONDITION_TOLERANCE` (1e-4) of its largest: real homographies stay above
+    3.7e-4 there, the H that fr1/desk's duplicate matches fit is at 1.9e-5. Two-view's
+    workaround is gone. Duplicate matches can still fit an invertible H that explains only
+    them (34 matches onto 2 pixels there); E wins against it.
   - **A least-squares PnP for planar scenes (panel L6).** EPnP refuses planar points, so LO's
     refits do not run there; the refine-and-reselect rounds reach the noise floor anyway (the
     absolute-pose note). IPPE (Collins and Bartoli, IJCV 2014) is the planar solver; SQPnP
@@ -799,13 +801,13 @@ shared with the owner's other projects.
     validates, with hand-written `.npy` and JSON writers (decided for PR 8); and a native
     pipeline links both the edge rung and `eval`, so it sits above `eval`, in orchestration
     (`slamlab_vo`, `slamlab-vo`; see the Package-layout table).
-  - **Guided matching beside `matching` (A10), for PR 8.** Tracking matches map points by
-    projection: a windowed, guided matcher and a per-frame feature grid (ORB-SLAM's
-    `SearchByProjection` and `GetFeaturesInArea`). Their generic parts belong in
-    `foundations.matching`, for the classic rung too, not in `edge`. Projecting into a level
-    needs the full-image-to-level map (run 2, A17): add it beside `full_image_coordinate` in
-    all three languages, and state stereo's level-to-level column (private to stereo today)
-    in its terms.
+  - Closed by PR 8: **guided matching beside `matching` (A10).** `matching.features_in_area`
+    and `matching.search_by_projection` (ORB-SLAM's `GetFeaturesInArea` and
+    `SearchByProjection`) are in `foundations.matching`, for the classic rung too; the C++ and
+    Rust cores search a feature grid that finds exactly what Python's brute force finds. The
+    full-image-to-level map (run 2, A17) is `image.level_coordinate`, beside
+    `full_image_coordinate` in all three languages, and stereo's level-to-level column is
+    stated in its terms.
   - **The rotation histogram's bin width (L8).** ORB-SLAM's `ORBmatcher` bins orientation
     changes at 30 degrees (`round(rot / 30)`, bins 0 to 12), 2.5 times wider than slamlab's
     12-degree orientation bins; on six TUM pairs the recall of true matches was 0.90-1.00

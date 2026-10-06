@@ -37,6 +37,10 @@ std::optional<Eigen::Matrix3d> fit(const Eigen::Ref<const Rows2>& points1,
   }
   const Eigen::Matrix3d normalised =
       Eigen::Map<const Eigen::Matrix<double, 3, 3, Eigen::RowMajor>>(solution->data());
+  const Eigen::Vector3d singular = Eigen::JacobiSVD<Eigen::Matrix3d>(normalised).singularValues();
+  if (!(singular(2) > kConditionTolerance * singular(0))) {
+    return std::nullopt;  // numerically of rank below 3: no homography
+  }
   const Eigen::Matrix3d homography = t2->inverse() * normalised * *t1;
   return homography / homography.norm();
 }

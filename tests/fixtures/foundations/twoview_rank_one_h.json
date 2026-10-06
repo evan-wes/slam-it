@@ -1,5 +1,5 @@
 {
- "description": "Real matches on which H-RANSAC returns a homography of rank 1: TUM RGB-D fr1/desk, frames 160 and 190 (SIFT, Lowe's ratio 0.75, scripts/demo_absolute_pose.py's front end), unprojected through the freiburg1 radtan model. 38 of the 88 matches share one pixel in frame 190 (duplicate keypoints), so the rank-1 H mapping every point there wins.",
+ "description": "Real matches on which a homography of rank 1 explains the most: TUM RGB-D fr1/desk, frames 160 and 190 (SIFT, Lowe's ratio 0.75, scripts/demo_absolute_pose.py's front end), unprojected through the freiburg1 radtan model. 38 of the 88 matches share one pixel in frame 190 (duplicate keypoints), so the rank-1 H mapping every point there would win H-RANSAC, whose DLT refuses an H of rank below 3.",
  "focal": 517.3,
  "bearings1": [
   [
