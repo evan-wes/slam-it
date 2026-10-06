@@ -74,14 +74,15 @@ The ladder spans compute budgets. Every rung stands on rung 0.
 | Language | Role |
 |---|---|
 | **Python** | The readable reference implementation of every algorithm; orchestration, evaluation, and the learned rungs (PyTorch) |
-| **C++** | The performance core: rung 0, the edge rung, the edge budgets, and dense-BA kernels if profiling calls for them; outside the cores, `eval`'s native readers and run writer (`slamlab_eval`) and the native VO program (`slamlab_vo`, in orchestration). Showing C++ is a goal in its own right. |
+| **C++** | The performance core: rung 0, the edge rung, the edge budgets, and dense-BA kernels if profiling calls for them; outside the cores, `eval`'s native readers and run writer (`slamlab_eval`) and the native VO program (`slamlab_vo`, in orchestration); and the calibration side track (`slamlab_calib`), beside Python, without Rust. Showing C++ is a goal in its own right. |
 | **Rust** | Rung 0 and the edge rung, each in lock-step with Python and C++: every slice of those rungs lands in all three languages together; outside the cores, `eval`'s native readers and run writer (`slamlab-eval`) and the native VO program (`slamlab-vo`, in orchestration). The other rungs have no Rust. |
 
 **Runtime dependencies.** Adding one, to the Python package or to a core, is a change to this
 document first.
 - **Python:** numpy. Pillow too, but in `slamlab.eval.images` alone, which reads image files
   (milestone 2 reads PNG frames and depth maps): the algorithm rungs take arrays, never files,
-  and an import-linter contract keeps Pillow in that one module.
+  and an import-linter contract keeps Pillow in that one module. `slamlab.eval.rosbag` reads
+  ROS 1 bags by hand, with no dependency (the calibration side track).
 - **C++:** Eigen. The `slamlab_eval` library reads PNGs with stb_image (vendored in
   `third_party/stb`, PNG support only; MIT or public domain), outside the algorithm cores.
 - **Rust:** nalgebra, the matrix type, and faer for every SVD and the general
@@ -327,6 +328,7 @@ visible from its path and enforceable by contract.
 | `slamlab.edge` | library `slamlab_edge` | crate `slamlab-edge` | Edge VO |
 | `slamlab.vi` | library `slamlab_vi` | -- | Visual-inertial |
 | `slamlab.classic` | library `slamlab_classic` | -- | Classic heavy |
+| `slamlab.calib` | library `slamlab_calib` | -- | Sensor calibration (the side track) |
 | `slamlab.dense` | -- | -- | Dense BA + depth prior |
 | `slamlab.learned` | -- | -- | DROID- and MegaSaM-style |
 | `slamlab.eval` | library `slamlab_eval`, `slamlab::eval` (native PNG and dataset readers, run writer) | crate `slamlab-eval` (native PNG and dataset readers, run writer) | Dataset readers, external references (COLMAP), metrics, benchmarks, budget harness |
@@ -361,7 +363,7 @@ thin roots that only wire them.
 
 **Dependency contracts** (import-linter, `pyproject.toml`):
 - **Layers,** top to bottom: `orchestration`, `eval`, `learned | vi`,
-  `dense | edge | classic`, `foundations`, `backends`. Siblings joined by `|` are independent
+  `dense | edge | classic | calib`, `foundations`, `backends`. Siblings joined by `|` are independent
   of each other. The contract is exhaustive: a new top-level package fails until it is
   placed.
 - **Visual-inertial** builds on `edge` only; **learned** builds on `dense` only.
@@ -448,6 +450,12 @@ edge rung holds what is its own, tracking, keyframes and local mapping.
   results are reported, not gated.
 - **Its generic parts go in rung 0:** guided matching by projection and a feature grid in
   `foundations.matching`, the full-image-to-level map in `foundations.image`.
+
+**A side track: rig calibration** (Python and C++; planned in
+[the rig calibration design](2026-10-05-rig-calibration.md)). Beside milestone 2, and
+independent of it: an RGB-D camera, a 2D lidar and a rangefinder calibrated against each other
+from the rig's own motion, as a study in observability. Two PRs, C1 (reading ROS 1 bags,
+Python) and C2 (`slamlab.calib`, Python and C++), in their own worktree.
 
 **Why milestone 3 sits where it does.** reifyscene's old `pose_refine` was a depth-blind BA with no
 motion masks. Swapping its new poses in while keeping the old depth produced the "shadow" behind
@@ -571,6 +579,7 @@ Disk space is checked before each download.
 |---|---|---|
 | TUM RGB-D | Handheld indoor, RGB-D, GT poses, a dynamic subset | Milestone 1 (reader, two-view demo); milestone 2 (monocular and RGB-D) |
 | EuRoC MAV | Drone, stereo + IMU, mocap GT | Milestone 2 (monocular and stereo), 6 (IMU) |
+| Own recordings (private) | Described only in their configs, outside the repo | The calibration side track; never in the repo |
 | TUM monoVO | Photometrically calibrated monocular | Milestone 2, optional |
 | KITTI odometry | Driving, long trajectories, loops | Milestone 4 |
 | TUM-VI | Visual-inertial, handheld | Milestone 6 |
