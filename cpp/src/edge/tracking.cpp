@@ -11,6 +11,7 @@
 #include "slamlab/edge/residuals.hpp"
 #include "slamlab/foundations/correspondences.hpp"
 #include "slamlab/foundations/matching.hpp"
+#include "slamlab/foundations/p3p.hpp"
 #include "slamlab/foundations/pnp.hpp"
 #include "slamlab/foundations/ransac.hpp"
 #include "slamlab/foundations/so3.hpp"
@@ -180,7 +181,7 @@ Result<Tracked> refine(const Map& m, const Camera& camera, const Frame& frame,
         chosen.push_back(j);
       }
     }
-    if (chosen.size() < 3) {
+    if (chosen.size() < foundations::p3p::kSampleSize) {  // refine_pose's minimum
       std::ranges::fill(use, false);
       for (const std::size_t j : chosen) {
         use[j] = true;
@@ -233,7 +234,7 @@ Result<InView> select_in_view(const Map& m, const Camera& camera, const Eigen::M
     if (!inside(camera, pixel) || !in_distance_range(m, p, distance, options)) {
       continue;
     }
-    const double view_cos = offset.dot(m.pt_normal[p]) / distance;
+    const double view_cos = viewing_cos(m, p, offset, distance);
     if (!(view_cos >= options.view_cos_limit)) {
       continue;
     }

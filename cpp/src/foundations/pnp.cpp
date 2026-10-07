@@ -389,7 +389,10 @@ Result<solve::Solution<Eigen::Matrix4d, nls::Summary>> refine_pose(
   }
   if (weights.size() != points.rows() || !weights.allFinite() || !(weights.array() > 0.0).all()) {
     return fail(ErrorKind::kInvalidInput,
-                "weights: expected positive values, one per correspondence");
+                "weights: expected " + std::to_string(points.rows()) +
+                    " positive values, one per correspondence, got " +
+                    std::to_string(weights.size()) + " with the least " +
+                    (weights.size() > 0 ? std::to_string(weights.minCoeff()) : "none"));
   }
   const Eigen::VectorXd depths = (points * pose.block<1, 3>(2, 0).transpose()).array() + pose(2, 3);
   if (!(depths.array() > 0.0).all()) {

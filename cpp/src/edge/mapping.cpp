@@ -479,7 +479,7 @@ Result<std::optional<std::int64_t>> fuse_target(const Map& m, const Camera& came
   const Eigen::Vector3d offset = m.pt_xyz[p] - centre(m, k);
   const double distance = offset.norm();
   if (!inside(camera, pixel) || !in_distance_range(m, p, distance, options) ||
-      !(offset.dot(m.pt_normal[p]) >= options.view_cos_limit * distance)) {
+      !(viewing_cos(m, p, offset, distance) >= options.view_cos_limit)) {
     return std::nullopt;
   }
   auto levels = predict_level(m, std::vector<std::int64_t>{static_cast<std::int64_t>(p)},
@@ -727,7 +727,10 @@ Result<void> cull_points(Map& m, Mode mode, const Options& options) {
     const auto p = static_cast<std::size_t>(recent[i]);
     const double ratio = static_cast<double>(m.pt_found[p]) / static_cast<double>(m.pt_visible[p]);
     const std::int64_t age = current - m.pt_first_kf[p];
-    erase[p] = (ratio < options.found_ratio || (age >= 2 && (*weights)[i] <= minimum)) ? 1 : 0;
+    erase[p] =
+        (ratio < options.found_ratio || (age >= options.point_cull_age && (*weights)[i] <= minimum))
+            ? 1
+            : 0;
   }
   return erase_points(m, erase);
 }

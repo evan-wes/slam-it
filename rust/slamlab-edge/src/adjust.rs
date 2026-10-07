@@ -15,9 +15,9 @@ use slamlab_foundations::ba::{self, Intrinsics};
 use slamlab_foundations::error::{ErrorKind, Result, fail};
 use slamlab_foundations::{nls, se3};
 
-use crate::frames::{Camera, check_camera};
+use crate::frames::{Camera, check_setup};
 use crate::map::{self, Map};
-use crate::options::{Options, check_options};
+use crate::options::Options;
 use crate::residuals::{chi2, sigma2, threshold};
 
 /// The BA problem built from the map, and where its rows came from.
@@ -235,8 +235,7 @@ pub fn bundle_adjust(
     fixed: &[bool],
     options: &Options,
 ) -> Result<()> {
-    check_camera(camera)?;
-    check_options(options)?;
+    check_setup(camera, options)?;
     if keyframes.iter().any(|&k| k >= m.keyframes()) {
         return fail(
             ErrorKind::InvalidInput,

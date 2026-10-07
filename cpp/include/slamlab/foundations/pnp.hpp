@@ -83,8 +83,9 @@ inline constexpr int kRefineIterations = 20;
 /// @param points The inliers' world points (M x 3), M >= 3.
 /// @param bearings Their unit bearings, positive z.
 /// @param scale The Cauchy loss's scale, a whitened error in the normalised plane (positive).
-/// @param weights Each correspondence's weight, its information relative to the others
-///        (ORB-SLAM's keypoint-level weighting): its residual is scaled by the square root.
+/// @param weights Each correspondence's weight, its information in the units of `scale`
+///        (ORB-SLAM's keypoint-level weighting): its residual is scaled by the square root. Not
+///        relative: a common factor k on the weights acts as 1/√k on the scale.
 /// @return The refined pose and the summary; `InvalidInput` for an invalid pose or
 ///         correspondences, M < 3, a non-positive scale, weights that are not positive and one
 ///         per correspondence, or a point behind the start.

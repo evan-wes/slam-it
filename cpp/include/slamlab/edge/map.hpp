@@ -167,6 +167,16 @@ void index_observations(Map& m);
 [[nodiscard]] std::vector<std::int64_t> observed_by(const Map& m,
                                                     std::span<const std::int64_t> keyframes);
 
+/// @brief The cosine between a point's mean viewing direction and a view of it
+///        (`slamlab.edge.map.viewing_cos`, `isInFrustum`'s `viewCos`), unchecked.
+/// @param m The map.
+/// @param p The point's row.
+/// @param offset The point minus the viewing camera's centre.
+/// @param distance The offset's length, positive.
+/// @return The cosine.
+[[nodiscard]] double viewing_cos(const Map& m, std::size_t p, const Eigen::Vector3d& offset,
+                                 double distance);
+
 /// @brief Whether a point lies within the distances it is matchable from
 ///        (`slamlab.edge.map.in_distance_range`): from `min_distance_margin` of its minimum
 ///        distance to `max_distance_margin` of its maximum (`isInFrustum`, `Fuse`), unchecked.

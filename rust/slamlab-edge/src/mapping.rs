@@ -11,7 +11,7 @@ use slamlab_foundations::orb::Keypoint;
 use slamlab_foundations::triangulation;
 
 use crate::adjust::bundle_adjust;
-use crate::frames::{Camera, Frame, Tracked, check_camera};
+use crate::frames::{Camera, Frame, Tracked, check_setup};
 use crate::map::{self, Map};
 use crate::options::{Mode, Options, check_options};
 use crate::residuals::{chi2, sigma2, threshold};
@@ -72,8 +72,7 @@ fn from_depth(m: &Map, k: usize, row: usize) -> Vector3<f64> {
 ///
 /// `InvalidInput` otherwise.
 fn check_newest(m: &Map, camera: &Camera, options: &Options) -> Result<()> {
-    check_camera(camera)?;
-    check_options(options)?;
+    check_setup(camera, options)?;
     if m.keyframes() == 0 {
         return fail(
             ErrorKind::InvalidInput,
@@ -242,6 +241,7 @@ pub fn cull_points(m: &mut Map, mode: Mode, options: &Options) -> Result<()> {
         );
     };
     let recent_keyframes = i64::try_from(options.recent_point_keyframes).unwrap_or(i64::MAX);
+    let cull_age = i64::try_from(options.point_cull_age).unwrap_or(i64::MAX);
     let recent: Vec<usize> = (0..m.points())
         .filter(|&p| current - m.pt_first_kf[p] <= recent_keyframes)
         .collect();
@@ -259,7 +259,7 @@ pub fn cull_points(m: &mut Map, mode: Mode, options: &Options) -> Result<()> {
     for (&p, &weight) in recent.iter().zip(&weights) {
         let ratio = m.pt_found[p] as f64 / m.pt_visible[p] as f64;
         let age = current - m.pt_first_kf[p];
-        erase[p] = ratio < options.found_ratio || (age >= 2 && weight <= minimum);
+        erase[p] = ratio < options.found_ratio || (age >= cull_age && weight <= minimum);
     }
     map::erase_points(m, &erase)
 }
@@ -455,8 +455,7 @@ pub fn match_for_triangulation(
     k2: usize,
     options: &Options,
 ) -> Result<Vec<[usize; 2]>> {
-    check_camera(camera)?;
-    check_options(options)?;
+    check_setup(camera, options)?;
     if k1 >= m.keyframes() || k2 >= m.keyframes() || k1 == k2 {
         return fail(
             ErrorKind::InvalidInput,
@@ -866,7 +865,7 @@ fn fuse_target(
     let distance = offset.norm();
     if !(camera.inside(&pixel)
         && map::in_distance_range(m, p, distance, options)
-        && offset.dot(&m.pt_normal[p]) >= options.view_cos_limit * distance)
+        && map::viewing_cos(m, p, &offset, distance) >= options.view_cos_limit)
     {
         return Ok(None);
     }
@@ -1052,8 +1051,7 @@ fn redundant(m: &Map, k: usize, rows: &[usize], threshold: usize) -> Result<usiz
     reason = "counts of keypoints, exact in f64"
 )]
 pub fn cull_keyframes(m: &mut Map, camera: &Camera, mode: Mode, options: &Options) -> Result<()> {
-    check_camera(camera)?;
-    check_options(options)?;
+    check_setup(camera, options)?;
     let limit = close_depth(camera, options);
     let mut ids: Vec<i64> = m
         .window(options.window)

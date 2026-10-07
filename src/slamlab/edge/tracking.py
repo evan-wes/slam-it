@@ -14,7 +14,8 @@
   near the local map; a lost track ends the run.
 
 **Pose refinement** (:func:`optimize_pose`, ORB-SLAM's ``PoseOptimization``) runs rounds of
-:func:`slamlab.foundations.pnp.refine_pose` (Cauchy, on the round's inliers) and classifies
+:func:`slamlab.foundations.pnp.refine_pose` (Cauchy, on the round's inliers, each match
+weighted by its level's information ``1/s^(2l)``, ORB-SLAM's ``invSigma2``) and classifies
 every match afresh after each, by the chi-square test (:func:`slamlab.edge.residuals.chi2`).
 The solve itself uses the left image only (ORB-SLAM's stereo edges add the right column).
 """
@@ -34,7 +35,7 @@ from slamlab.edge import map as maps
 from slamlab.edge.frames import Camera, Frame, Tracked
 from slamlab.edge.map import Map
 from slamlab.edge.options import Options, check_mode
-from slamlab.foundations import matching, pnp, ransac, so3
+from slamlab.foundations import matching, p3p, pnp, ransac, so3
 from slamlab.foundations.arrays import as_flag
 from slamlab.foundations.errors import DegenerateError
 
@@ -223,12 +224,14 @@ def _optimize_pose(
     keypoints = frame.features.keypoints
     variance = residuals.sigma2(m, keypoints.level[matched])
     limit = residuals.thresholds(frame.right[matched], options)
+    # The Cauchy scale: the chi-square bound at level 0, in pixels, in the normalised plane;
+    # the level weights whiten each residual to level-0 units, so one scale serves all.
     scale = math.sqrt(options.chi2_mono) / camera.focal
     use = matched.copy()
     current = np.asarray(tracked.pose, dtype=np.float64)
     for _ in range(options.pose_rounds):
         use[np.flatnonzero(use)[maps.to_camera(current, xyz[use])[:, 2] <= 0.0]] = False
-        if np.count_nonzero(use) < 3:
+        if np.count_nonzero(use) < p3p.SAMPLE_SIZE:  # refine_pose's minimum
             break
         weights = 1.0 / variance[use[matched]]  # each level's information (invSigma2)
         current = pnp.refine_pose(
@@ -258,7 +261,8 @@ def optimize_pose(  # noqa: PLR0913 -- the map, its camera, the frame tracked, t
     """Refine a frame's pose against its matched points, dropping outliers (``PoseOptimization``).
 
     ``pose_rounds`` rounds, each refining the pose on the matches the last one kept (those in
-    front of the camera) and classifying every match afresh by the chi-square test.
+    front of the camera), each weighted by its level's information ``1/s^(2l)``, and
+    classifying every match afresh by the chi-square test.
 
     Parameters
     ----------
@@ -314,7 +318,7 @@ def _in_view(m: Map, camera: Camera, pose: Array, rows: IntArray, options: Optio
     offset = xyz - maps.camera_centre(pose)
     distance = np.linalg.norm(offset, axis=1)
     keep &= maps.in_distance_range(m, rows, distance, options)
-    view_cos = np.sum(offset * m.pt_normal[rows], axis=1) / np.where(keep, distance, 1.0)
+    view_cos = maps.viewing_cos(m, rows, offset, np.where(keep, distance, 1.0))
     keep &= view_cos >= options.view_cos_limit
     chosen = rows[keep]
     right = np.full(len(chosen), np.nan)
@@ -355,7 +359,7 @@ def in_view(  # noqa: PLR0913 -- the map, its camera, a pose, the candidates, th
     rows : array_like of int
         The candidate points' rows.
     options : Options
-        The viewing-angle limit.
+        The viewing-angle limit and the distance margins.
     backend : {"python", "cpp", "rust"}, optional
         Which implementation computes the result (default: the Python reference).
 
@@ -432,7 +436,7 @@ def _track_last_frame(  # noqa: PLR0913 -- the stage's state
         # The current camera's centre in the last camera's frame (ORB-SLAM's tlc): moving
         # forward, a point appears larger, so it is found on no finer level than before;
         # moving backward, on no coarser one.
-        ahead = last_tracked.pose[2, :3] @ (-predicted[:3, :3].T @ predicted[:3, 3])
+        ahead = last_tracked.pose[2, :3] @ maps.camera_centre(predicted)
         ahead += last_tracked.pose[2, 3]
         if ahead > camera.baseline:
             low, high = last_level, np.full(len(have), m.levels - 1)

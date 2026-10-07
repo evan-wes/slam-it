@@ -479,6 +479,24 @@ fn keep_where<T>(values: &mut Vec<T>, keep: &[bool]) {
     values.retain(|_| *flags.next().unwrap_or(&false));
 }
 
+/// The cosine between a point's mean viewing direction and a view of it
+/// (`slamlab.edge.map.viewing_cos`, `isInFrustum`'s `viewCos`), unchecked.
+///
+/// # Arguments
+///
+/// * `m` - The map.
+/// * `p` - The point's row.
+/// * `offset` - The point minus the viewing camera's centre.
+/// * `distance` - The offset's length, positive.
+///
+/// # Returns
+///
+/// The cosine.
+#[must_use]
+pub fn viewing_cos(m: &Map, p: usize, offset: &Vector3<f64>, distance: f64) -> f64 {
+    offset.dot(&m.pt_normal[p]) / distance
+}
+
 /// Whether a point lies within the distances it is matchable from
 /// (`slamlab.edge.map.in_distance_range`): from `min_distance_margin` of its minimum distance
 /// to `max_distance_margin` of its maximum (`isInFrustum`, `Fuse`), unchecked.

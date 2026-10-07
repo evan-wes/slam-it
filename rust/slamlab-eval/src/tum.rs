@@ -291,7 +291,7 @@ fn camera_file(path: &Path) -> Result<Camera> {
         return fail(
             ErrorKind::InvalidInput,
             format!(
-                "{}: expected one model, two sizes, one depth scale, one bf",
+                "{}: expected one model, two sizes, one depth scale, at most one bf",
                 path.display()
             ),
         );

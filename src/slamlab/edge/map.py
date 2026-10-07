@@ -782,6 +782,33 @@ def camera_centre(pose: Array) -> Array:
     return np.asarray(-pose[:3, :3].T @ pose[:3, 3], dtype=np.float64)
 
 
+def viewing_cos(
+    m: Map, rows: NDArray[np.int64], offset: Array, distance: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    """Return the cosine between each point's mean viewing direction and a view of it.
+
+    The one viewing-angle test of tracking's in-view check and fusion (``isInFrustum``'s
+    ``viewCos``), compared with ``view_cos_limit``.
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    rows : ndarray of int64, shape (N,)
+        The points' rows.
+    offset : ndarray of float64, shape (N, 3)
+        Each point minus the viewing camera's centre.
+    distance : ndarray of float64, shape (N,)
+        The offsets' lengths, positive.
+
+    Returns
+    -------
+    ndarray of float64, shape (N,)
+        The cosines.
+    """
+    return np.asarray(np.sum(offset * m.pt_normal[rows], axis=1) / distance, dtype=np.float64)
+
+
 def in_distance_range(
     m: Map, rows: NDArray[np.int64], distance: NDArray[np.float64], options: Options
 ) -> NDArray[np.bool_]:

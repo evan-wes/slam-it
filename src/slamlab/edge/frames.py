@@ -194,7 +194,8 @@ class Frame:
             ("right", self.right, (n,)),
         ):
             if not isinstance(value, np.ndarray) or value.dtype != np.float64:
-                raise InvalidInputError(f"frame.{name}: expected a float64 array")
+                received = getattr(value, "dtype", type(value).__name__)
+                raise InvalidInputError(f"frame.{name}: expected a float64 array, got {received}")
             if value.shape != shape:
                 raise InvalidInputError(
                     f"frame.{name}: expected shape {shape}, one row per keypoint, got {value.shape}"

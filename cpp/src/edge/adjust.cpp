@@ -179,10 +179,7 @@ Result<std::vector<bool>> outliers(const Map& m, const Camera& camera, const ba:
 /// @return Nothing, or `InvalidInput`.
 Result<void> check(const Map& m, const Camera& camera, std::span<const std::int64_t> keyframes,
                    std::span<const std::uint8_t> fixed, const Options& options) {
-  if (auto ok = check_camera(camera); !ok) {
-    return ok;
-  }
-  if (auto ok = check_options(options); !ok) {
+  if (auto ok = check_setup(camera, options); !ok) {
     return ok;
   }
   if (std::ranges::any_of(keyframes, [&m](std::int64_t k) {

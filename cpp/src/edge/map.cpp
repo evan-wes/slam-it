@@ -355,6 +355,10 @@ std::vector<std::int64_t> observed_by(const Map& m, std::span<const std::int64_t
   return out;
 }
 
+double viewing_cos(const Map& m, std::size_t p, const Eigen::Vector3d& offset, double distance) {
+  return offset.dot(m.pt_normal[p]) / distance;
+}
+
 bool in_distance_range(const Map& m, std::size_t p, double distance, const Options& options) {
   return distance >= options.min_distance_margin * m.pt_min_distance[p] &&
          distance <= options.max_distance_margin * m.pt_max_distance[p];

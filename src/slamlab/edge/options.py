@@ -98,7 +98,7 @@ class Options:
         The frames, the recovery's included, searched in ``recovery_local_window``
         (``SearchLocalPoints``' ``mnLastRelocFrameId + 2``).
     aligned_view_cos : float
-        A point seen within this cosine of its mean viewing direction is searched in
+        A point seen at a cosine above this to its mean viewing direction is searched in
         ``aligned_view_radius`` times the window, the others in ``oblique_view_radius`` times
         it (``RadiusByViewingCos``).
     aligned_view_radius : float
@@ -145,7 +145,8 @@ class Options:
     ref_min_observations_early : int
         ...2 while the map holds two keyframes or fewer.
     min_keyframe_inliers : int
-        ...and still tracks more than this many (15).
+        A frame becomes a keyframe only if it tracks more than this many inliers
+        (``NeedNewKeyFrame``'s 15).
     close_tracked, close_untracked : int
         Stereo and RGB-D also need one when fewer than ``close_tracked`` close points are
         tracked and more than ``close_untracked`` could be created (100, 70).
@@ -164,8 +165,9 @@ class Options:
         A match for triangulation must lie within this chi-square (1 dof, 95%) of its
         epipolar line (``CheckDistEpipolarLine``'s 3.84)...
     min_epipole_distance2 : float
-        ...and, without depth, at least this squared distance from the epipole, in pixels at
-        its level (``SearchForTriangulation``'s 100).
+        ...and, without depth, a squared distance from the epipole of at least this times
+        the keypoint's level scale s^l (``SearchForTriangulation``'s ``100 * mvScaleFactors``,
+        ORB-SLAM's mixed units).
     min_baseline_depth : float
         A monocular keyframe triangulates only against one whose baseline is at least this
         fraction of that keyframe's median depth (``CreateNewMapPoints``' 0.01).
@@ -193,8 +195,12 @@ class Options:
     recent_point_keyframes : int
         A point is culled on evidence while created at most this many keyframes ago
         (``MapPointCulling``' recent list: 3).
+    point_cull_age : int
+        A recent point at least this many keyframes old is culled on too few observations
+        (``MapPointCulling``' 2).
     min_point_observations : int
-        A point two keyframes old is culled with this few observations or fewer (``cnThObs``:
+        A point ``point_cull_age`` keyframes old is culled with this few observations or fewer
+        (``cnThObs``:
         2 for monocular)...
     min_point_observations_depth : int
         ...3 for stereo and RGB-D.
@@ -281,6 +287,7 @@ class Options:
     init_ba_iterations: int = 20
     found_ratio: float = 0.25
     recent_point_keyframes: int = 3
+    point_cull_age: int = 2
     min_point_observations: int = 2
     min_point_observations_depth: int = 3
     redundant_fraction: float = 0.9

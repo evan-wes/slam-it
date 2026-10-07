@@ -164,7 +164,7 @@ Result<Camera> camera_file(const std::string& path) {
   if (v["model"].size() != 1 || v["size"].size() != 2 || v["depth_scale"].size() != 1 ||
       (v.contains("bf") && v["bf"].size() != 1)) {
     return fail(ErrorKind::kInvalidInput,
-                path + ": expected one model, two sizes, one depth scale, one bf");
+                path + ": expected one model, two sizes, one depth scale, at most one bf");
   }
   const auto model = model_named(v["model"][0]);
   if (!model) {

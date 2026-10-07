@@ -8,11 +8,11 @@ use nalgebra::Matrix4;
 use slamlab_foundations::error::{ErrorKind, Result, fail};
 use slamlab_foundations::{orb, se3};
 
-use crate::frames::{Camera, Frame, Tracked, check_camera};
+use crate::frames::{Camera, Frame, Tracked, check_setup};
 use crate::initialization::{self, Started};
 use crate::map::{self, Map};
 use crate::mapping;
-use crate::options::{Mode, Options, check_options};
+use crate::options::{Mode, Options};
 use crate::tracking;
 
 /// Where the pipeline is, with the codes it is written as.
@@ -109,8 +109,7 @@ impl Pipeline {
     /// `InvalidInput` for an invalid camera or settings, or a stereo or RGB-D camera without a
     /// baseline.
     pub fn new(mode: Mode, camera: Camera, options: Options) -> Result<Self> {
-        check_camera(&camera)?;
-        check_options(&options)?;
+        check_setup(&camera, &options)?;
         if mode != Mode::Monocular && !(camera.baseline > 0.0) {
             return fail(
                 ErrorKind::InvalidInput,

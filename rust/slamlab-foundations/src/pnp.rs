@@ -545,8 +545,9 @@ pub fn refine(
 /// * `points` - The inliers' world points, M >= 3.
 /// * `bearings` - Their unit bearings, positive z.
 /// * `scale` - The Cauchy loss's scale, a whitened error in the normalised plane (positive).
-/// * `weights` - Each correspondence's weight, its information relative to the others
-///   (ORB-SLAM's keypoint-level weighting): its residual is scaled by the square root.
+/// * `weights` - Each correspondence's weight, its information in the units of `scale`
+///   (ORB-SLAM's keypoint-level weighting): its residual is scaled by the square root. Not
+///   relative: a common factor k on the weights acts as 1/√k on the scale.
 ///
 /// # Returns
 ///
@@ -575,9 +576,15 @@ pub fn refine_pose(
         return fail_setting("scale", "must be positive and finite", scale);
     }
     if weights.len() != points.len() || !weights.iter().all(|&w| w.is_finite() && w > 0.0) {
+        let least = weights.iter().copied().fold(f64::INFINITY, f64::min);
         return fail(
             ErrorKind::InvalidInput,
-            "weights: expected positive values, one per correspondence",
+            format!(
+                "weights: expected {} positive values, one per correspondence, got {} with the \
+                 least {least}",
+                points.len(),
+                weights.len()
+            ),
         );
     }
     let (rotation, translation) = (se3::rotation(pose), se3::translation(pose));

@@ -81,7 +81,7 @@ foundations::Result<void> check_options(const Options& options) {
       return ok;
     }
   }
-  const std::array<IntSetting, 32> counts{{
+  const std::array<IntSetting, 33> counts{{
       {"n_features", options.n_features},
       {"levels", options.levels},
       {"fast_threshold", options.fast_threshold},
@@ -113,6 +113,7 @@ foundations::Result<void> check_options(const Options& options) {
       {"triangulation_neighbours", options.triangulation_neighbours},
       {"mono_triangulation_neighbours", options.mono_triangulation_neighbours},
       {"recent_point_keyframes", options.recent_point_keyframes},
+      {"point_cull_age", options.point_cull_age},
       {"init_ba_iterations", options.init_ba_iterations},
   }};
   for (const auto& [setting, value] : counts) {

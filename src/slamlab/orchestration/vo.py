@@ -10,8 +10,7 @@ builds each frame for the mode (:mod:`slamlab.edge.frames`), tracks it
   baseline of the camera's ``bf`` over its focal length (ORB-SLAM's ``Camera.bf``: depth gives
   each keypoint a virtual right column that baseline away, and points nearer than
   ``close_depth`` baselines count as close); a folder whose camera gives no ``bf`` runs
-  monocular only. A EuRoC
-  sequence's left camera for monocular; for stereo, the pair rectified
+  monocular only. A EuRoC sequence's left camera for monocular; for stereo, the pair rectified
   (:func:`slamlab.foundations.stereo.rectify`), each image remapped, and the rectified left
   camera (pinhole) with the pair's baseline. A stereo run's poses are therefore the rectified
   left camera's: the left camera's centre, turned by a fixed rotation. TUM has no stereo

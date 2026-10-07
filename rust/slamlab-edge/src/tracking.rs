@@ -5,10 +5,10 @@ use nalgebra::{Matrix4, Vector3};
 use slamlab_foundations::error::{ErrorKind, Result, fail};
 use slamlab_foundations::matching::{self, Match, Projection, SearchOptions, match_descriptors};
 use slamlab_foundations::p3p::Solver;
-use slamlab_foundations::{pnp, ransac, so3};
+use slamlab_foundations::{p3p, pnp, ransac, so3};
 
 use crate::frames::{Camera, Frame, Tracked, check_setup, search};
-use crate::map::{Map, camera_centre, in_distance_range, predict_level, to_camera};
+use crate::map::{Map, camera_centre, in_distance_range, predict_level, to_camera, viewing_cos};
 use crate::options::{Mode, Options};
 use crate::residuals::{chi2, sigma2, threshold};
 
@@ -178,7 +178,8 @@ fn refine(
             .copied()
             .filter(|&i| used[i] && to_camera(&current, &xyz[i]).z > 0.0)
             .collect();
-        if chosen.len() < 3 {
+        // refine_pose's minimum
+        if chosen.len() < p3p::SAMPLE_SIZE {
             used.fill(false);
             for &i in &chosen {
                 used[i] = true;
@@ -248,7 +249,7 @@ fn select_in_view(
         if !(camera.inside(&pixel) && in_distance_range(m, p, distance, options)) {
             continue;
         }
-        let view_cos = offset.dot(&m.pt_normal[p]) / distance;
+        let view_cos = viewing_cos(m, p, &offset, distance);
         if !(view_cos >= options.view_cos_limit) {
             continue;
         }
@@ -267,7 +268,8 @@ fn select_in_view(
 }
 
 /// Refines a frame's pose against its matched points, dropping outliers
-/// (`slamlab.edge.tracking.optimize_pose`, ORB-SLAM's `PoseOptimization`).
+/// (`slamlab.edge.tracking.optimize_pose`, ORB-SLAM's `PoseOptimization`): each match
+/// weighted by its level's information `1/s^(2l)`.
 ///
 /// # Arguments
 ///

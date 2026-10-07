@@ -274,7 +274,9 @@ def _camera_file(path: Path) -> Camera:
         raise InvalidInputError(f"{path}: missing {', '.join(missing)}")
     counts = (len(values["model"]), len(values["size"]), len(values["depth_scale"]))
     if counts != (1, 2, 1) or len(values.get("bf", [0])) != 1:
-        raise InvalidInputError(f"{path}: expected one model, two sizes, one depth scale, one bf")
+        raise InvalidInputError(
+            f"{path}: expected one model, two sizes, one depth scale, at most one bf"
+        )
     model = values["model"][0]
     try:
         intrinsics = np.array([float(v) for v in values["intrinsics"]])

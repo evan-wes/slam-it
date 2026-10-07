@@ -94,7 +94,8 @@ struct Options {
   double recovery_local_window{5.0};
   /// @brief The frames, the recovery's included, searched in the recovery window.
   std::int64_t recovery_window_frames{2};
-  /// @brief Points seen within this cosine of their viewing direction get the narrower window.
+  /// @brief Points seen at a cosine above this to their viewing direction get the narrower
+  ///        window.
   double aligned_view_cos{0.998};
   /// @brief The narrower window's factor.
   double aligned_view_radius{2.5};
@@ -118,8 +119,8 @@ struct Options {
   double min_distance_margin{0.8};
   /// @brief ...to this multiple of its maximum.
   double max_distance_margin{1.2};
-  /// @brief Frames after a recovery that need more inliers and make no keyframe (the frame
-  ///        rate).
+  /// @brief Frames after a recovery that need more inliers, and that make no keyframe once the
+  ///        map holds more than this many (the frame rate).
   std::int64_t max_frames{30};
   /// @brief Stereo and RGB-D keyframe ratio of the reference keyframe's points.
   double ref_ratio{0.75};
@@ -147,7 +148,7 @@ struct Options {
   std::int64_t mono_triangulation_neighbours{20};
   /// @brief A triangulation match's chi-square bound to its epipolar line (1 dof).
   double epipolar_chi2{3.84};
-  /// @brief Without depth, its least squared distance from the epipole, in pixels at its level.
+  /// @brief Without depth, its least squared distance from the epipole over the level scale s^l.
   double min_epipole_distance2{100.0};
   /// @brief A monocular keyframe's least baseline to a neighbour, over its median depth.
   double min_baseline_depth{0.01};
@@ -169,6 +170,8 @@ struct Options {
   double found_ratio{0.25};
   /// @brief A point is culled on evidence until this many keyframes after its creation.
   std::int64_t recent_point_keyframes{3};
+  /// @brief A recent point this many keyframes old is culled on too few observations.
+  std::int64_t point_cull_age{2};
   /// @brief Monocular points this weakly observed two keyframes on are culled.
   std::int64_t min_point_observations{2};
   /// @brief The same for stereo and RGB-D.
@@ -196,7 +199,7 @@ using IntegerOption = std::pair<const char*, std::int64_t Options::*>;
 using RealOption = std::pair<const char*, double Options::*>;
 
 /// @brief `Options`' integer fields, by their Python names.
-inline constexpr std::array<IntegerOption, 41> kIntegerOptions{{
+inline constexpr std::array<IntegerOption, 42> kIntegerOptions{{
     {"n_features", &Options::n_features},
     {"levels", &Options::levels},
     {"fast_threshold", &Options::fast_threshold},
@@ -237,6 +240,7 @@ inline constexpr std::array<IntegerOption, 41> kIntegerOptions{{
     {"triangulation_neighbours", &Options::triangulation_neighbours},
     {"mono_triangulation_neighbours", &Options::mono_triangulation_neighbours},
     {"recent_point_keyframes", &Options::recent_point_keyframes},
+    {"point_cull_age", &Options::point_cull_age},
     {"init_ba_iterations", &Options::init_ba_iterations},
 }};
 

@@ -109,7 +109,8 @@ class Pipeline {
   /// @return Nothing, or an error if the last pose cannot be inverted.
   foundations::Result<void> accept(const Frame& frame, const Tracked& tracked);
 
-  /// @brief Count a frame that was not tracked; enough in a row lose the track.
+  /// @brief Count a frame that was not tracked and end the velocity; enough in a row lose the
+  ///        track.
   void record_failure();
 
   /// @brief Track the last frame, or recover by PnP.

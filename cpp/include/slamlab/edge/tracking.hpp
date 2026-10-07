@@ -52,7 +52,8 @@ struct LocalTracking {
                                       const std::optional<Eigen::Matrix4d>& velocity);
 
 /// @brief Refine a frame's pose against its matched points, dropping outliers
-///        (`slamlab.edge.tracking.optimize_pose`, ORB-SLAM's `PoseOptimization`).
+///        (`slamlab.edge.tracking.optimize_pose`, ORB-SLAM's `PoseOptimization`): each match
+///        weighted by its level's information `1/s^(2l)`.
 /// @param m The map (the points' positions).
 /// @param camera The camera.
 /// @param frame The frame.

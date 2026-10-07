@@ -2,7 +2,7 @@
 /// @brief Shared by the edge rung's bindings: the map and a frame cross as dicts of arrays.
 ///
 /// A map is a dict of `slamlab.edge.map.Map`'s fields; a frame is the dict
-/// `slamlab.edge.map.frame_dict` builds; the camera and the settings are the dicts of scalars
+/// `slamlab.edge.frames.Frame.as_dict` builds; the camera and the settings are the dicts of scalars
 /// `Camera.as_dict` and `Options.as_dict` give. Arrays are C-contiguous, of the dtype and shape the
 /// Python dataclasses hold; a malformed dict raises `std::invalid_argument` (a `ValueError`),
 /// and the map is then checked by the core (`check_map`, an `InvalidInputError`).

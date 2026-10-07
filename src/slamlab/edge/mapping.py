@@ -328,7 +328,9 @@ def _cull_points(m: Map, mode: str, options: Options) -> Map:
     ratio = m.pt_found[recent] / m.pt_visible[recent]
     weight = maps.observation_weight(m, recent)
     erase = np.zeros(m.points, dtype=bool)
-    erase[recent] = (ratio < options.found_ratio) | ((age[recent] >= 2) & (weight <= minimum))
+    erase[recent] = (ratio < options.found_ratio) | (
+        (age[recent] >= options.point_cull_age) & (weight <= minimum)
+    )
     return maps.erase_points(m, erase)
 
 
@@ -584,8 +586,7 @@ def triangulate_new_points(
     ORB-SLAM's ``CreateNewMapPoints``. For each neighbour (the window's other keyframes,
     newest first, at most ``triangulation_neighbours``, ``mono_triangulation_neighbours`` for
     monocular): skip it if the baseline is too short (shorter than the stereo baseline, or
-    under ``min_baseline_depth`` of its
-    median depth for monocular);
+    under ``min_baseline_depth`` of its median depth for monocular);
     match (:func:`match_for_triangulation`); for each match take the point from the rays
     (:func:`slamlab.foundations.triangulation.two_view`) if their parallax beats what depth
     gives, else from the keypoint with the better depth; keep it if it is in front of both,
@@ -640,7 +641,8 @@ def _fuse_target(m: Map, camera: Camera, k: int, p: int, options: Options) -> in
     if not (
         camera.inside(pixel[None])[0]
         and maps.in_distance_range(m, np.array([p]), np.array([distance]), options)[0]
-        and offset @ m.pt_normal[p] >= options.view_cos_limit * distance
+        and maps.viewing_cos(m, np.array([p]), offset[None], np.array([distance]))[0]
+        >= options.view_cos_limit
     ):
         return None
     level = int(maps.predict_level(m, np.array([p]), np.array([distance]))[0])

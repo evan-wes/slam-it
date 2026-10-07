@@ -521,8 +521,9 @@ def refine_pose(  # noqa: PLR0913 -- the correspondences, their weights, the los
         The Cauchy loss's scale, a whitened reprojection error in the normalised plane
         (positive).
     weights : array_like, shape (M,), optional
-        Each correspondence's weight, its information relative to the others (default: all
-        1); positive and finite.
+        Each correspondence's weight, its information in the units of `scale` (default: all
+        1); positive and finite. Not relative: a common factor k on the weights acts as
+        ``1/√k`` on the scale.
     backend : {"python", "cpp", "rust"}, optional
         Which implementation runs (default: the Python reference).
 
@@ -543,7 +544,9 @@ def refine_pose(  # noqa: PLR0913 -- the correspondences, their weights, the los
         raise InvalidInputError(f"scale: must be positive and finite, got {scale}")
     w = np.ones(len(world)) if weights is None else as_weights(weights, (len(world),), "weights")
     if not np.all(w > 0.0):
-        raise InvalidInputError("weights: expected positive values, one per correspondence")
+        raise InvalidInputError(
+            f"weights: expected positive values, one per correspondence, got {w.min()}"
+        )
     if np.any(world @ matrix[2, :3] + matrix[2, 3] <= 0.0):
         raise InvalidInputError("pose: a point is behind the starting camera")
     return backends.call(

@@ -100,7 +100,7 @@ pub struct Options {
     pub recovery_local_window: f64,
     /// The frames, the recovery's included, searched in the recovery window.
     pub recovery_window_frames: usize,
-    /// Points seen within this cosine of their viewing direction get the narrower window.
+    /// Points seen at a cosine above this to their viewing direction get the narrower window.
     pub aligned_view_cos: f64,
     /// The narrower window's factor.
     pub aligned_view_radius: f64,
@@ -124,7 +124,8 @@ pub struct Options {
     pub min_distance_margin: f64,
     /// ...to this multiple of its maximum.
     pub max_distance_margin: f64,
-    /// Frames after a recovery that need more inliers and make no keyframe (the frame rate).
+    /// Frames after a recovery that need more inliers, and that make no keyframe once the map
+    /// holds more than this many (the frame rate).
     pub max_frames: usize,
     /// Stereo and RGB-D keyframe ratio of the reference keyframe's points.
     pub ref_ratio: f64,
@@ -152,7 +153,7 @@ pub struct Options {
     pub mono_triangulation_neighbours: usize,
     /// A triangulation match's chi-square bound to its epipolar line (1 dof).
     pub epipolar_chi2: f64,
-    /// Without depth, its least squared distance from the epipole, in pixels at its level.
+    /// Without depth, its least squared distance from the epipole over the level scale s^l.
     pub min_epipole_distance2: f64,
     /// A monocular keyframe's least baseline to a neighbour, over its median depth.
     pub min_baseline_depth: f64,
@@ -174,6 +175,8 @@ pub struct Options {
     pub found_ratio: f64,
     /// A point is culled on evidence until this many keyframes after its creation.
     pub recent_point_keyframes: usize,
+    /// A recent point this many keyframes old is culled on too few observations.
+    pub point_cull_age: usize,
     /// Monocular points this weakly observed two keyframes on are culled.
     pub min_point_observations: usize,
     /// The same for stereo and RGB-D.
@@ -264,6 +267,7 @@ impl Default for Options {
             init_ba_iterations: 20,
             found_ratio: 0.25,
             recent_point_keyframes: 3,
+            point_cull_age: 2,
             min_point_observations: 2,
             min_point_observations_depth: 3,
             redundant_fraction: 0.9,
@@ -431,6 +435,7 @@ named_settings!(
     min_epipole_distance2: Real,
     min_baseline_depth: Real,
     recent_point_keyframes: Integer,
+    point_cull_age: Integer,
     init_ba_iterations: Integer,
     relocalize_ratio: Real,
     pnp_min_inliers: Integer, lost_frames: Integer, seed: Integer,
@@ -510,6 +515,7 @@ pub fn check_options(options: &Options) -> Result<()> {
             options.mono_triangulation_neighbours,
         ),
         ("recent_point_keyframes", options.recent_point_keyframes),
+        ("point_cull_age", options.point_cull_age),
         ("init_ba_iterations", options.init_ba_iterations),
     ] {
         check_range(name, value, 1, MAX_SETTING)?;
@@ -573,7 +579,7 @@ mod tests {
     fn settings_by_name() {
         let mut options = Options::default();
         let settings = options.settings();
-        assert_eq!(settings.len(), 75);
+        assert_eq!(settings.len(), 76);
         assert_eq!(settings[0], ("n_features", Setting::Integer(1000)));
         assert_eq!(settings[2], ("scale_factor", Setting::Real(1.2)));
         options.set("window", Setting::Integer(7)).unwrap();

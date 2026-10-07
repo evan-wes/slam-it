@@ -1,5 +1,6 @@
 /// @file
-/// @brief Reading the shared parity fixtures (tests/fixtures/) in the native tests.
+/// @brief Reading the shared parity fixtures (tests/fixtures/) in the native tests, and the
+///        scratch folders (`ScratchDir`) the tests that write files use.
 ///
 /// The fixtures are JSON, read with nlohmann_json (a test-only dependency). Parsing throws on
 /// a missing or malformed file, so a test that reads one runs its body through `guarded`,
