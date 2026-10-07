@@ -490,3 +490,504 @@ Sources:
 - [ORB_SLAM3 source](https://github.com/UZ-SLAMLab/ORB_SLAM3)
 - [DPV-SLAM, arXiv:2408.01654](https://arxiv.org/abs/2408.01654)
 - [DPV-SLAM, ECCV 2024](https://www.ecva.net/papers/eccv_2024/papers_ECCV/html/272_ECCV_2024_paper.php)
+
+## Run 2 -- 2026-10-07
+
+| | |
+|---|---|
+| **Branch** | `feature/edge-vo` |
+| **Range** | `6c04d7bf8c2d3ad84bb56dd5904d0f6e80c1968e...e0e82087cc0dabfcec7715c7d3bc527b9a88a3a0` (base: `origin/develop`); the scope is run 1's fixes, `6151c45..e0e8208` |
+| **Reviewers** | hygiene (sonnet), architecture (opus), algorithm (opus): the fixes changed each one's area substantially (a hygiene batch across 48 files, 20 settings in three languages, behaviour changes in tracking, mapping and initialisation, a golden record) |
+| **How they ran** | registered slamlab-* agents |
+| **Layer 1** | all checks passed at `09eb6a2` (`scripts/check.sh`, exit 0): 2869 pytest, every ctest and cargo test; the later commits are docs only |
+
+### Findings and resolutions
+
+Numbering continues from run 1. Duplicates across reviewers are cross-referenced ("same as")
+and resolved together.
+
+| ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|---|
+| H20 | should-fix | hygiene | `test_initialization.py:154` | L2's parallax rule has no test that fails without it: the room's pair has no inlier between 0.36 and 1 degree | fix | fixed (7684f34) -- decided by evan-wes, 2026-10-07 |
+| H21 | should-fix | hygiene | `tests/edge/`, native tests | None of the 20 new settings is ever run off its default; the native check lists are complete but nothing pins them (with A22, H31) | fix | fixed (7684f34): a table-driven refusal test per language; the gap room with every new setting moved off its default, every native against Python -- decided by evan-wes, 2026-10-07 |
+| H22 | should-fix | hygiene | `pipeline.cpp:134`, `pipeline.rs` | L4's native fixes are untested (same as A14) | fix with A14 | fixed (7684f34, with A14) -- decided by evan-wes, 2026-10-07 |
+| H23 | should-fix | hygiene | `frames.py:177` | `Frame.__post_init__` (H2's fix) is untested; its message does not name the received dtype | fix | fixed (349dbb8: the message; 7684f34: the tests) -- decided by evan-wes, 2026-10-07 |
+| H24 | should-fix | hygiene | `tracking.py:435`, `mapping.rs:75`, `adjust.cpp:182`, ... | H4 and H5 not fully done: an inlined camera centre, `check_setup` unused at seven sites, the in-view cosine written two ways, bare literals | fix | fixed (349dbb8) -- decided by evan-wes, 2026-10-07 |
+| H25 | should-fix | hygiene | `initialization.py:4`, `options.py:124`, `tracking.py:357`, `edge_crossing.hpp:4`, ... | Docs the fixes left misstating the code | fix | fixed (349dbb8) -- decided by evan-wes, 2026-10-07 |
+| H26 | should-fix | hygiene | `test_vo.py:75` | `test_the_gap_forces_a_recovery` asserts less than it claims, and in Python's TUM RGB-D only (with A14) | fix with A14 | fixed (7684f34, with A14) -- decided by evan-wes, 2026-10-07 |
+| H27 | should-fix | hygiene | `runs.rs:536`, `tum.rs:574`, `vo.rs:804` | H7 half done in Rust: no drop guard, so a failed test leaves a PID-named folder | fix | fixed (29134df) -- decided by evan-wes, 2026-10-07 |
+| H28 | note | hygiene | `generate_room_runs.py:64`, `room_runs.json` | The golden record is hard to review: 8,343 lines, a copied tolerance, the gap written twice, two identical cases (same as A20) | fix with A20 | fixed (7684f34, with A20) -- decided by evan-wes, 2026-10-07 |
+| H29 | note | hygiene | various | Smaller doc and error-message items | fix | fixed (349dbb8: docs and messages; 7684f34, 29134df: the tests) -- decided by evan-wes, 2026-10-07 |
+| H30 | note | hygiene | the gap room | The gap room recovers twice, not once (its velocity spans the gap) | document in the fixture | fixed (7684f34: the gap room's docs) -- decided by evan-wes, 2026-10-07 |
+| H31 | note | hygiene | `options.cpp`, `options.rs` | A13's hand-kept check lists grew by 20 entries (with H21, A22) | covered by H21's test | covered by H21's test (7684f34) -- decided by evan-wes, 2026-10-07 |
+| A14 | should-fix | architecture | `datasets.py:106`, `test_vo.py:75`, `pipeline.py:264`, `edge-vo.md:180` | The failure path and the keyframe hold run in no cross-backend test; the native half of L4 has none; the note says the gap room loses the track (same as H22, H26) | fix | fixed (7684f34): a blank frame and max_frames 2 in the gap room, its test in every case, the golden record regenerated -- decided by evan-wes, 2026-10-07 |
+| A15 | should-fix | architecture | `vo.py:294`, `vo.cpp:181`, `vo.rs:269`, `edge-vo.md:160` | A2's stereo-matcher settings and `TH_LOW`/`TH_HIGH` were neither fixed nor deferred; the note says every threshold is a setting | decision | fixed (0c699ba): th_low, th_high and the stereo matcher's settings in Options (flat stereo_* fields, as the extraction's), passed through every vo source -- decided by evan-wes, 2026-10-07 |
+| A16 | should-fix | architecture | ladder doc :454 | The ladder doc still says the edge's stage parity runs on fixture states | fix | fixed (8065548) -- decided by evan-wes, 2026-10-07 |
+| A17 | should-fix | architecture | `rig-calibration.md:54`, `edge-vo.md:111` | The rig-calibration export has no `bf`, so an RGB-D run on it would now be refused | fix | fixed (8065548) -- decided by evan-wes, 2026-10-07 |
+| A18 | should-fix | architecture | `tests/orchestration/conftest.py:23`, `backends.py:52`, `run_vo.py:211` | The stale-program check's crate list is hand-kept, ignores manifests, and guards pytest only | fix | fixed (e8b1338) -- decided by evan-wes, 2026-10-07 |
+| A19 | note | architecture | `check.sh:82`, `setup_slamlab.sh:107` | The Rust extension has no rebuild in layer 1 and no stale check (predates the PR) | defer | deferred (ladder design doc, open items: "Deferred from PR 8's review panel"; 8065548) -- decided by evan-wes, 2026-10-07 |
+| A20 | note | architecture | `generate_room_runs.py:29`, `test_vo.py:121` | Small gaps in the golden record: the copied tolerance, no recorded inputs, stale extra cases unnoticed, a generator importing a conftest (same as H28) | fix | fixed (7684f34) -- decided by evan-wes, 2026-10-07 |
+| A21 | note | architecture | `generate_pose.py` | The weighted `refine_pose` fixture case cannot tell weighted from unweighted | fix | fixed (29134df) -- decided by evan-wes, 2026-10-07 |
+| A22 | note | architecture | ladder doc :823, `options.rs` | A13's open item names C++ only; Rust lists the fields by hand too (with H21, H31) | fix | fixed (8065548: the open item; 7684f34: the tests) -- decided by evan-wes, 2026-10-07 |
+| A23 | note | architecture | `map.py:751` | `to_camera` and `camera_centre` belong with A8's move to rung 0 | fix (the open item) | fixed (8065548) -- decided by evan-wes, 2026-10-07 |
+| L13 | should-fix | algorithm | `initialization.py:95`, `pipeline.py:215` | A depth start from a frame with almost no depth now ends the run: ORB-SLAM's `N > 500` relies on a reset this pipeline does not have | decision | fixed (d7565ce): min_init_depth_points (100); the reset deferred (ladder design doc, open items: "Deferred from PR 8's review panel", milestone 4; 8065548) -- decided by evan-wes, 2026-10-07 |
+| L14 | should-fix | algorithm | `edge-vo.md:255` | The note says the DSO row is a median of ten runs; ORB-SLAM3 reprints DSO's authors' figure | fix | fixed (8065548) -- decided by evan-wes, 2026-10-07 |
+| L15 | note | algorithm | `edge-vo.md:223` | MH_01 stereo's 3.16 to 6.24 cm is start-frame variance: the pre-fix code has the same median over ten starts (5.17 against 5.14 cm) | decision (how results are reported) | fixed (8065548): the whole-sequence ATE is the median over five starts, with its range, a run that loses the track counted as a failure (decided by evan-wes, 2026-10-07); the 6 of 20 monocular runs that lose it deferred (ladder design doc, open items: "Deferred from PR 8's review panel", milestone 4) -- decided by evan-wes, 2026-10-07 |
+| L16 | note | algorithm | `edge-vo.md:267` | MH_01 monocular's 11.2 cm is drift between the newly tracked first minute and the rest (3.77 cm on the frames the old run tracked) | fix | fixed (8065548) -- decided by evan-wes, 2026-10-07 |
+| L17 | note | algorithm | `initialization.py:239,286,95`, `pipeline.py:185` | Four small departures in monocular initialisation remain (no reprojection test, counting after outliers, two off-by-ones, the next reference) | fix | fixed (d7565ce: ORB-SLAM's strict counts; 8065548: the other two documented) -- decided by evan-wes, 2026-10-07 |
+| L18 | note | algorithm | `pnp.py:524`, `pnp.hpp:86`, `pnp.rs:548` | `refine_pose`'s weights are information in the scale's units, not relative | fix (the doc) | fixed (349dbb8) -- decided by evan-wes, 2026-10-07 |
+| L19 | note | algorithm | `options.py:155`, `options.hpp:138`, `options.rs:145` | `min_epipole_distance2`'s docstring describes 100·s^(2l); the code uses 100·s^l, as ORB-SLAM | fix (the doc) | fixed (349dbb8) -- decided by evan-wes, 2026-10-07 |
+
+Resolution values: `fixed (<commit>)`, `deferred (<where tracked>)`, `waived: <reason>`,
+`disputed: <reason>`, each followed by `-- decided by <user>, <date>`.
+
+**After the fixes.** Layer 1 passed at every fix commit and at `8065548` (2985 pytest, every
+ctest and cargo test). No run 3: each fix answers one finding above, with a test where it
+changes behaviour, and none changes a design. Applying L15's decision, the five starts showed
+6 of 20 monocular runs losing the track; how a lost run counts in the median (as a failure)
+and the losses themselves (relocalisation, milestone 4) were decided with the owner on
+2026-10-07.
+
+### Hygiene review
+
+## Hygiene review
+
+**Scope:** Run 2, `git diff 6151c45..e0e8208` on `feature/edge-vo` in the repository root. I read in full the Python edge package (`options`, `pipeline`, `tracking`, `mapping`, `initialization`, parts of `map` and `frames`), `tests/orchestration/*`, the golden-record generator and its JSON, the delta's diffs in `tests/edge`, `eval/tum`, `pnp`, `vo`, `scripts/`, and the C++ and Rust options, pipeline, `pnp`, `tum`, `vo` and frame tests. I also read `docs/notes/edge-vo.md`, the CHANGELOG, CLAUDE.md and the design-doc diffs. I spot-checked C++ and Rust use of every new Options field, and grepped the delta for privacy, debug leftovers and stale names. I ran three probes from the session scratchpad, outside the repo. The editable install re-ran its build step, and `git status` stayed clean.
+
+**Summary:** The fixes are sound and mostly complete. The 20 Options fields are live in all three languages, and their defaults and ORB-SLAM citations match ORB-SLAM2 (`ThDepth`, `th = 5`, the 0.998, 2.5 and 4 radii, the 0.8 and 1.2 margins, 3.84, 0.01, the neighbour counts, the 0.9, 3 and 50 values). H1-H3, H8-H13, H16 and H18 check out. I found **no must-fix**. The should-fix items are test gaps and leftovers from H4, H5 and H7. On a strict reading of "tests exist for the behaviour", the first four findings would be must-fix. I kept them at should-fix because Run 1 graded the equivalent gap (H9) that way. The privacy grep on the delta is clean: no topics, frame ids, rig intrinsics or paths. The only `$HOME/...` paths are in the review report, as in earlier PRs' reports.
+
+### Findings
+
+#### [should-fix] The monocular parallax rule (L2) has no test that fails without it
+- **Where:** `tests/edge/test_initialization.py:154-170` (`test_monocular_keeps_points_of_orb_slams_parallax`); also `:96` (`test_monocular_matches_the_reference`), the only check of the C++ and Rust versions.
+- **Issue:** The docstring says "Every two-view point is kept, and the inliers between 0.36 and 1 degree too". The assertions are that kept contains the triangulated set, that all kept points are in front, and that their cosine is below `init_parallax_cos`. All of these hold under the old behaviour (keep only two-view's own points). The room's pair (frames 0 and 10) has no inlier between 0.36 and 1 degree.
+- **Why it matters:** The core of L2's fix could be reverted in any language and nothing fails. Parity runs the same pair, so C++ and Rust are equally unexercised. The test also calls the private `_kept_points`.
+- **Evidence:** My probe on that pair printed `status initialized inliers 69 triangulated 69 kept 69`. Kept equals triangulated.
+- **Suggested fix:** Add a pair, or synthetic bearings, with near points above 1 degree and far points between 0.36 and 1 degree. Assert `len(kept) > triangulated` through `initialize_monocular` in every backend.
+
+#### [should-fix] None of the 20 new settings is ever run off its default
+- **Where:** `tests/edge/test_tracking.py`, `test_mapping.py`, `test_initialization.py` and `tests/orchestration/*`. The new helpers `maps.in_distance_range`, `to_camera` and `camera_centre` (`src/slamlab/edge/map.py:751-815`) and their C++ and Rust twins have no direct test either.
+- **Issue:** Every stage-parity call passes `OPTIONS` with default values for the new fields. Only `ba_min_keyframes`, `min_init_features_depth`, `init_min_matches`, `pnp_min_inliers` and the motion windows are varied, and none of those are among the 20 new ones.
+- **Why it matters:** A2's purpose was one definition per threshold, read by every language. A native that hard-codes 0.998, or swaps `min_distance_margin` and `max_distance_margin` while keeping the defaults, passes everything. The run-settings test pins defaults only.
+- **Evidence:** `grep` for each new field name in `tests`, `cpp/tests` and `rust/*/tests` finds nothing. The native range tests (`cpp/tests/edge/test_map.cpp:172-175`, `rust/slamlab-edge/src/options.rs:549-562`) touch only `window`, `ref_range` and a NaN `chi2_mono`. I set each of the 67 fields to 0, -1 or NaN through `initialize_from_depth` with `backend="cpp"` and `"rust"`. All were rejected by name; `levels` and `scale_factor` were caught first by the pyramid check. So the hand-written C++ and Rust check lists are complete today, but nothing pins that.
+- **Suggested fix:**
+  - Run stage parity with each new setting moved so the Python result differs from the default result, asserting the difference, and compare the natives.
+  - Add a table-driven test per language over `kIntegerOptions`, `kRealOptions` and the Rust settings, setting each field out of range and expecting `InvalidInput`. This also keeps A13's hand lists honest.
+
+#### [should-fix] The L4 native fixes (velocity cleared on failure) are untested
+- **Where:** `cpp/src/edge/pipeline.cpp:134`, `rust/slamlab-edge/src/pipeline.rs` (`record_failure`). The only test is Python's `tests/edge/test_pipeline.py:74`.
+- **Issue:** The C++ and Rust pipelines never see a failed frame followed by a tracked one in any test. Whole-run parity and the golden record cover only rooms where every frame after the start is tracked.
+- **Why it matters:** Deleting `velocity_.reset()` or `self.velocity = None` fails nothing.
+- **Evidence:** In `tests/fixtures/edge/room_runs.json`, the only frames with 0 tracked are the monocular pre-start frames, and every gap case tracks every frame. The native pipeline tests (`cpp/tests/edge/test_pipeline.cpp:110-125`, `rust/slamlab-edge/tests/pipeline.rs:83-101`) only run empty frames until the track is lost.
+- **Suggested fix:** Add a room variant with one blanked frame, so the gauge changes if the next prediction does. Put it in `datasets.py` and the golden record, or write a native test that tracks, fails once, then tracks.
+
+#### [should-fix] `Frame.__post_init__` (H2's fix) is untested
+- **Where:** `src/slamlab/edge/frames.py:177-199`; `tests/edge/test_frames.py` is untouched by the delta.
+- **Issue:** The three refusals (descriptor count, non-float64 or non-array, wrong shape) are never exercised. Also `frame.{name}: expected a float64 array` does not name the dtype or type received.
+- **Why it matters:** This is the new boundary check every stage relies on, and it has no test.
+- **Evidence:** `grep -rn "one descriptor\|expected a float64 array" tests/` finds nothing.
+- **Suggested fix:** A parametrised test of `replace(frame, depth=...)` with a float32 array, a wrong-length array and a missing descriptor, matching the messages. Put the received dtype or shape in the message.
+
+#### [should-fix] H4 and H5 are not fully done
+- **Where and evidence:**
+  - Python still inlines the camera centre: `src/slamlab/edge/tracking.py:435` has `-predicted[:3, :3].T @ predicted[:3, 3]`. C++ and Rust use `camera_centre(predicted)` (`tracking.cpp:271`, `tracking.rs:363`).
+  - Rust's new `check_setup` (`rust/slamlab-edge/src/frames.rs:105`) is used only by `tracking.rs:62,323,633`. The `check_camera(..)?; check_options(..)?;` pair is still written out at `mapping.rs:75-76,458-459,1055-1056`, `adjust.rs:238-239` and `pipeline.rs:112-113`. In C++ the pair remains in `adjust.cpp:182-185`.
+  - H4's "in-view test written twice" was fixed for the distance half only. The cosine half is still written two ways per language: `view_cos >= limit` after dividing by distance (`tracking.py:318`, `tracking.cpp:237`, `tracking.rs:252`) against `offset @ normal >= limit * distance` (`mapping.py:643`, `mapping.cpp:482`, `mapping.rs:869`).
+  - Literals Run 1 named are still bare: the `< 3` usable matches (`tracking.py:231`, `tracking.cpp:183`, `tracking.rs:181`) and `age >= 2` in point culling (`mapping.py:331`, `mapping.cpp:730`, `mapping.rs:262`). The Cauchy scale `sqrt(chi2_mono)/focal` (`tracking.py:226`) still has no comment saying why.
+- **Why it matters:** These are the drift pattern H4 and H5 were meant to remove, and the resolutions mark them fixed.
+- **Suggested fix:** Use `maps.camera_centre`; use `check_setup` at the remaining sites; add one `in_view_angle` helper per language; name the two counts (`p3p.SAMPLE_SIZE` for the 3) or comment them.
+
+#### [should-fix] Docs the fixes left misstating the code
+- **Where and issue:**
+  - `src/slamlab/edge/initialization.py:4-6` says the first frame "with enough keypoints with depth" starts the map, "a point created at every one of them". After eb74c18 it counts every keypoint, with points only where depth exists, and uses `>=` (`test_from_depth_counts_every_keypoint` pins the boundary). `docs/notes/edge-vo.md:53` says "more than 500 keypoints", an off-by-one against the code.
+  - `src/slamlab/edge/options.py:124-137`: the `...` chain is broken. `min_keyframe_inliers` ("...and still tracks more than this many (15)") now follows `ref_min_observations_early`, so it reads as nonsense. Make the entries self-contained.
+  - `src/slamlab/edge/tracking.py:357-358`: `in_view`'s `options` is documented as "The viewing-angle limit", but it now takes the distance margins too.
+  - The L1 level weighting appears only as a code comment (`tracking.py:233`, `tracking.cpp` `refine_round`). The module docstring (`tracking.py:16-19`), `optimize_pose`, and the C++ and Rust headers do not say that matches are weighted by `1/s^(2l)`.
+  - `cpp/bindings/edge/edge_crossing.hpp:4-5` and `rust/slamlab-py/src/edge/edge_crossing.rs:3-4` cite the removed `slamlab.edge.map.frame_dict`. A7 moved it to `Frame.as_dict`. `grep -rn frame_dict` finds only these two.
+  - `cpp/include/slamlab/edge/pipeline.hpp:112`: `record_failure`'s doc omits "ends the velocity". The Python and Rust docs were updated.
+- **Why it matters:** The fixes changed behaviour and the docs next to it did not follow.
+- **Suggested fix:** One-line edits at each place.
+
+#### [should-fix] `test_the_gap_forces_a_recovery` asserts less than it claims
+- **Where:** `tests/orchestration/test_vo.py:75-93`.
+- **Issue:** The docstring says "every frame is tracked". The test checks `state == "tracking"`, which stays true for a frame that failed once (only 5 in a row lose the track). It also asserts the recovery only in Python, for TUM RGB-D.
+- **Why it matters:** The test cannot catch a gap frame that goes untracked.
+- **Evidence:** My probe ran all four gap cases: each takes the fallback and tracks all 30 frames (`tum rgbd relocalize calls [True, True] frames 30 tracked 30`; the same for the other three modes, with 23 tracked for the monocular ones). The test would not notice if that changed.
+- **Suggested fix:** Add `assert len(run.timestamps) == len(run.diagnostics)`, and parametrise over `CASES`. The natives are held to Python's decisions by parity and the golden record.
+
+#### [should-fix] H7 is half done in Rust
+- **Where:** `rust/slamlab-eval/src/runs.rs:536,567,577`, `tum.rs:574,609`, `rust/slamlab-orchestration/src/vo.rs:804,826`.
+- **Issue:** The names now include the PID and pre-clean, but cleanup is a trailing `remove_dir_all(...).unwrap()`. C++ got a drop guard (`ScratchDir`); Rust did not, although Run 1 asked for one.
+- **Why it matters:** A failed assertion leaves `slamlab_*_<pid>` behind, and now each failing run leaves a new folder instead of reusing one fixed name.
+- **Suggested fix:** A small `Drop` guard in each test module, or `tempfile` as a dev-dependency.
+
+#### [note] The golden record is hard to review
+- **Where:** `tests/fixtures/edge/generate_room_runs.py:64-76`, `room_runs.json`.
+- **Detail:** The record is 130 kB and 8,343 lines (`json.dumps(indent=1)`: five lines per frame, about 24 per pose). The generator promises "its diff shows them [the decisions]". The repo has a layout helper for this, `tests/fixtures/foundations/_layout.py`. The `1e-9` tolerance is a literal copy of `SOLVER_TOLERANCE`. The gap expression `rendered[:GAP[0]] + rendered[GAP[1]:]` is written in both `tests/orchestration/conftest.py:91` and the generator (`:51`); a `gap_frames` helper in `datasets.py` would hold it once. The `tum/monocular` and `euroc/monocular` cases are identical.
+
+#### [note] Smaller doc and error-message items
+- `src/slamlab/edge/mapping.py:584-589`, `src/slamlab/orchestration/vo.py:10-14` and `docs/design/2026-10-05-edge-vo.md:134-137` have leftover wrap artefacts. The last one splits `` `tests/fixtures/edge/ room_runs.json` `` across a line break inside code.
+- `aligned_view_cos` reads "within this cosine" in all three languages; it means a cosine above it. The C++ and Rust `max_frames` one-liners drop "once the map holds more than this many".
+- `weights: expected positive values, one per correspondence` (`pnp.py:544`, C++ and Rust) names no value.
+- The "one bf" message (`tum.py`, `tum.cpp:164`) reads as if `bf` were required; it is optional.
+- `cpp/tests/foundations/fixture_support.hpp` now holds `ScratchDir`, but its file brief says it only reads fixtures.
+- `test_frames_need_no_ground_truth` (`tests/eval/test_tum.py:139`) now also tests the optional `bf`.
+- `tests/orchestration/datasets.py` imports `OPTIONS` from a conftest.
+- `_tilted_view`'s `while fitted < 2000` loop (`tests/foundations/test_homography.py`) has no bound.
+
+#### [note] The gap room recovers twice, not once
+- **Detail:** In my probe, each case calls the fallback twice. The recovery frame's velocity spans the ten dropped frames, so the next frame is also predicted ten frames ahead and also falls back. This is a property of the fixture, not a defect, and consecutive real frames would not do it. It is worth knowing when reading the golden record (algorithm reviewer's lane).
+
+#### [note] A13 (C++ and Rust check lists by hand) grew by 20 entries
+- **Detail:** The deferral stands. My probe shows the lists complete today (see the second finding). The table-driven test suggested there closes it cheaply.
+
+### Checked and fine
+- **Options docs against ORB-SLAM2:** the 20 new fields' values and citations, and `Options`'s `max_frames` doc against `pipeline` (`recent`, `held`). The Python, C++ and Rust defaults match. The Python and native range classes (fractions versus positives) match field for field.
+- **Wiring:** each new field is read in all three languages, spot-checked at the code sites (`tracking`, `mapping`, `initialization`, `pipeline`).
+- **C++ and Rust consistency:** C++ and Rust `need_keyframe`, `track_local_map` and `initialize_monocular` mirror the Python rules, including the monocular ratio override and `ba_min_keyframes`.
+- **H1:** `max_frames` is documented correctly everywhere; `RECOVERY_WIDEN` is gone.
+- **H10:** exit codes have an explicit `exit_code` in C++ and Rust, with a unit test in each and a Python fake-program test for 3, 4 and 5.
+- **H9, H11, H12, H13, H16, H18, A4-A7:** the native frame tests, `require_backend("cpp")`, the eval and CLAUDE.md descriptions, token-naming parse errors (asserted in both natives), `last_tracked` removal, the design-doc module list, the `mode` convention text, and `--target-dir rust/target` with the stale-program check all hold. The freiburg2 and freiburg3 fixtures hold the `bf`.
+- **`pnp.refine_pose` weights:** the three implementations are equivalent, with documented shapes, validation, and a SciPy-referenced weighted test.
+- **Dataset and run tests:** `datasets.py` and `conftest.py` are clean. The settings test still pins every native default through `run.settings == options.as_dict()`.
+- **Version docs:** CHANGELOG 0.3.2.0's findings count (1, 23, 20) and ATE and timing ranges match the table. The note's start frames, 96% track rates and ORB-SLAM comparison all agree with the table. CLAUDE.md's edge-fixture policy matches the code.
+- **Leftovers:** no debug prints, TODOs or non-test `unwrap`/`expect` in the delta; the `print` in `generate_room_runs.py` is CLI output. Every `#[allow]` carries a reason.
+
+### Architecture review
+
+## Architecture review
+
+**Scope:** Run 2 of PR 8 (`feature/edge-vo`). I reviewed the delta `git diff 6151c45..e0e8208`: 9 commits, 100 files, in repo the repository root.
+- **Read in full:** the doc changes (CLAUDE.md, the ladder doc, the edge-vo design, the note), every Python, C++ and Rust edge source and binding diff, rung 0's `refine_pose` change in all three languages, the eval readers' `bf` change, `orchestration/vo` in all three languages, the scripts, the golden record and its generator, `tests/orchestration/{datasets,conftest,test_vo}.py`, and the Run 1 report.
+- **Probes:** three read-only probes of the room, run under a 4G cap with outputs in a temp dir; the working tree stayed clean.
+- **Not done:** I did not re-run layer 1.
+
+**Summary:** No must-fix. The fixes for A1, A2, A4–A7, A9 and A12 are correct and follow the owner's decisions:
+- live parity is documented and a golden record is committed, with every backend held to it;
+- the thresholds moved into `Options`;
+- `bf` is a `camera.txt` key, with `SENSOR_BF` for the freiburg sensors, and an RGB-D run without it is refused.
+
+The three languages stay in lock-step: every new setting is used in all three, and the backends agree on the room to about 1e-14. The five should-fixes are about what the fixes did not carry through:
+- A3 is only half done: the failure path, including the native half of L4, and the keyframe hold run in no test across backends.
+- Part of A2 was dropped without being fixed or deferred.
+- Two design docs still describe the old behaviour.
+- The stale-program check depends on a hand-kept list of crates.
+
+### Findings
+
+#### [should-fix] The failure path and the keyframe hold run in no cross-backend test; the native half of L4 has no test at all (A3's remainder)
+- **Where:**
+  - `tests/orchestration/datasets.py:106-110` (`GAP`, `GAP_OPTIONS`)
+  - `tests/orchestration/test_vo.py:75`
+  - `src/slamlab/edge/pipeline.py:264` (`held = recent and m.keyframes > options.max_frames`)
+  - `cpp/src/edge/pipeline.cpp:147` and `rust/slamlab-edge/src/pipeline.rs:303` (L4's `velocity` reset)
+  - `docs/notes/edge-vo.md:180-181`
+- **Issue:**
+  - Run 1's A3 listed five parts of the pipeline loop that no test compared across backends. The gap room now covers the PnP recovery and the widened window.
+  - It never reaches `record_failure`: the frame after the motion model fails is always placed by the fallback. So no test, in any language, holds L4's velocity reset in C++ or Rust. Commit c22e30e added a Python test only, and the native pipeline tests only feed empty frames until the track is lost.
+  - The held-keyframe rule never decides: the room's maps hold at most 7 keyframes, against `max_frames = 30`.
+  - The note says "every mode loses the track and recovers"; in fact no frame is lost or counted as failed.
+- **Why it matters:** these are the rules that L4 and L5 just changed in three languages at once. Only a cross-backend run or the golden record would catch one language drifting, and neither reaches them.
+- **Evidence:** three probes on the room, in the scratch dir; two are saved as `edge_gap_blank_frame_*.py`.
+  - **The gap room as it is**, Python, in all four `CASES`: every case shows `relocalize: 2, relocalized: 2, failures: 0`.
+  - **One blank frame added** (zeros, no depth), inserted at index 10 of the gap room. I compared Python with L4's rule against the rule before L4:
+    ```
+    tum rgbd       decisions differ at [11, 12, 14]      max pose diff 0.0037
+    tum monocular  decisions differ at [11, 23, 25, 27]  max pose diff 0.0016
+    euroc stereo   decisions differ at [11]              max pose diff 0.0029
+    ```
+    So this variant would catch a regression of L4 in any one language.
+  - **The native programs today**, on the gap room with a blank frame after the gap: C++ and Rust make the same decisions as Python, with poses within 7e-15. L4 is correct in all three languages; only the test is missing. With `max_frames=1`, the gap room changes monocular's keyframe decisions, so the hold then decides.
+- **Suggested fix:**
+  - Add one blank frame mid-run to the gap room, and lower `max_frames` in `GAP_OPTIONS` so the map holds more keyframes than it at the recovery.
+  - Regenerate the golden record.
+  - Have the gap test also assert that a failure was recorded.
+  - Reword the note: "the motion model fails and the fallback recovers".
+
+#### [should-fix] A2's stereo-matcher settings were neither fixed nor deferred, and the note now says every threshold is a setting
+- **Where:**
+  - `src/slamlab/orchestration/vo.py:294` (`frames.stereo_pair(...)` without `stereo_options`)
+  - `cpp/src/orchestration/vo.cpp:181` (`MatchOptions{}`)
+  - `rust/slamlab-orchestration/src/vo.rs:269` (`MatchOptions::default()`)
+  - `docs/notes/edge-vo.md:160-162`
+- **Issue:** Run 1's A2 named the stereo matcher's settings explicitly; they run at each language's own defaults. The resolution records only "the thresholds in `Options`; `bf`", and the ladder doc's open items do not mention them. Meanwhile the note now says: "Every threshold is a setting … 67 in all, so each is recorded in a run's `run.json` and defined once per language." That is not true of:
+  - the matcher's Hamming limit 75, band 2.0, SAD window 5, search 5 and outlier factor 2.1;
+  - `TH_LOW` / `TH_HIGH`, still defined three times.
+- **Why it matters:** a stereo run's `run.json` does not record what matched its pairs, and part of a finding disappeared without a decision.
+- **Evidence:** the three calls quoted above. `grep -n "stereo" docs/design/2026-10-02-slamlab-ladder.md` shows no open item for them.
+- **Suggested fix:** the owner decides. ORB-SLAM2 also hard-codes these in `ComputeStereoMatches` and `ORBmatcher`, so I recommend (b).
+  - **(a)** Add `stereo_*` settings to `edge.Options` and pass them through all three `vo` sources.
+  - **(b)** Record the item in the open items, and qualify the note: "every edge threshold; the stereo matcher's and the descriptor thresholds are ORB-SLAM's constants".
+
+#### [should-fix] The ladder design doc still says the edge's stage parity runs on fixture states
+- **Where:** `docs/design/2026-10-02-slamlab-ladder.md:454`
+- **Issue:** the line reads: "Parity is held per stage, on fixture states, and per sequence … the three backends' ATEs within a stated tolerance of each other." A1's decision amended CLAUDE.md and edge-vo §3. What was built is different: states built from the room when the tests run, the same decisions and poses within 1e-9, and a golden record.
+- **Why it matters:** the ladder doc is the authority, and the next rungs will plan their parity from it. My Run 1 suggested fix named only CLAUDE.md and edge-vo §3, so this gap is mine.
+- **Evidence:** the line as quoted; edge-vo §3's "As built (PR 8's panel, A1)" says otherwise.
+- **Suggested fix:** amend the doc (the code is right) with one sentence pointing to edge-vo §3.
+
+#### [should-fix] The rig-calibration design's export has no `bf`, so an RGB-D run on it would now be refused
+- **Where:**
+  - `docs/design/2026-10-05-rig-calibration.md:54-57`
+  - `docs/design/2026-10-05-edge-vo.md:111-113`
+- **Issue:** the export is specified as "a `camera.txt` with the model, intrinsics, image size and depth scale … so every backend's VO runs on the rig". Since ace10d7, every backend refuses an RGB-D run on such a folder with "an RGB-D run needs the depth sensor's bf". The edge-vo design's native-readers line lists the same four keys.
+- **Why it matters:** the side track would be built to a spec that no longer works. This was the very case that motivated A2: `bf` belongs to the sensor.
+- **Evidence:**
+  - `vo.py` `_tum_source` and `vo.cpp` `tum_source` refuse when `bf` is missing;
+  - `test_rgbd_needs_the_depth_sensors_bf` checks the refusal for every backend.
+- **Suggested fix:**
+  - Amend the rig design: the export writes `bf`, taken from the rig config, which lives outside the repo; the repo's template holds a placeholder, so no rig value enters the repo.
+  - Say what `bf` means for a depth sensor: the virtual baseline times fx, which sets the close-depth threshold and the virtual right column.
+  - Add `bf` to edge-vo's native-readers line.
+
+#### [should-fix] The stale-program check's crate list is hand-kept, and only pytest gets the check
+- **Where:**
+  - `tests/orchestration/conftest.py:23-38`
+  - `src/slamlab/backends.py:52`
+  - `scripts/run_vo.py:211`
+- **Issue:**
+  - `RUST_PROGRAM_CRATES` copies by hand the path dependencies in `rust/slamlab-orchestration/Cargo.toml`. A crate the program gains later (for example at milestone 4) would silently escape the check.
+  - Only `src/**/*.rs` is compared; changes to `Cargo.toml` and `Cargo.lock` are not.
+  - The checkout's `rust/` path is worked out a second time, beside `backends._RUST_PROGRAMS`.
+  - `scripts/run_vo.py --backend rust`, which produces the note's numbers, runs whatever binary is there.
+- **Why it matters:** a guard against silent staleness that can itself go stale silently.
+- **Evidence:** the tuple at `conftest.py:23-28`; `conftest.py:35` `Path(__file__).resolve().parents[2] / "rust"`.
+- **Suggested fix:**
+  - Derive the crates from the manifests: read them with `tomllib` and follow the `path =` dependencies from `slamlab-orchestration`.
+  - Include each crate's `Cargo.toml` and `rust/Cargo.lock` in the comparison.
+  - Consider putting the check behind `backends.program("rust", …)`, raising a "stale" `BackendNotBuiltError` subclass. Then `run_vo.py` and pytest share one check, and the path lives in one place.
+
+#### [note] The Rust extension has no rebuild in layer 1 and no stale check
+- **Where:** `scripts/check.sh:82-91`, `scripts/setup_slamlab.sh:107`
+- **What:** every `backend="rust"` stage-parity test goes through `slamlab_rs`, which is built only by `setup_slamlab.sh`'s `maturin develop`. After a Rust edit, `check.sh` rebuilds the program, so the whole-run and golden tests are current, while stage parity runs the old extension.
+- **Status:** this predates the delta; A5's fix only made the asymmetry visible. Offline CI builds from clean, so it is not affected.
+- **Suggestion:** have `check.sh` run `maturin develop --release -m rust/slamlab-py/Cargo.toml` before pytest, or apply the same staleness check to the extension.
+
+#### [note] Small gaps in the golden record
+- **Where:** `tests/fixtures/edge/generate_room_runs.py:29,69-72`, `tests/orchestration/test_vo.py:121`
+- **What:**
+  - The generator copies 1e-9 instead of importing `SOLVER_TOLERANCE`, which its own reason string names.
+  - The record holds no inputs (`FRAMES`, `GAP`, the two settings). A failure after a change to `tests/edge/conftest.py`'s `OPTIONS` or to the renderer therefore reads as a pipeline change. Recording them, and asserting them first, would say which changed.
+  - Only the parametrised cases are looked up, so a stale extra case in the record goes unnoticed.
+  - The generator is a tool run outside pytest, but it imports constants from a pytest `conftest`. That conftest pulls in `tests.conftest` and its environment-driven `REQUIRED_BACKENDS`. `FRAMES` and `OPTIONS` would sit better in `tests/edge/support.py`.
+
+#### [note] The weighted `refine_pose` fixture case cannot tell weighted from unweighted
+- **Where:** `tests/fixtures/foundations/generate_pose.py` (the case "noise-free, 20 points, weighted by pyramid level")
+- **What:** on exact correspondences every positive weighting has the same minimum, the true pose, so this case cannot catch a backend that ignores or misapplies the weights. The check that can is `test_refining_matches_scipy_least_squares[weighted=True]`: noisy data, every lock-step backend, and SciPy is a dev dependency, so it always runs. A noisy weighted case with its expected cost would make the fixture discriminating. This is mostly the algorithm reviewer's lane.
+
+#### [note] A13's open item names C++ only; Rust lists the fields by hand too
+- **Where:** `docs/design/2026-10-02-slamlab-ladder.md:823`; `rust/slamlab-edge/src/options.rs` (`check_options`, `named_settings!`)
+- **What:**
+  - Both languages cover all 67 fields today:
+    - C++: integers 3 + 32 = 35, reals 18 + 14 = 32;
+    - Rust: 65 by name, plus `fast_threshold` and `min_fast_threshold` through `orb::check_options`.
+  - The fixes added 23 fields to each hand-kept list, so the deferred risk grew.
+  - Widen the item to name Rust.
+
+#### [note] `to_camera` and `camera_centre` belong with A8's move to rung 0
+- **Where:** `src/slamlab/edge/map.py:751,769`, with twins in `map.hpp` and `map.rs`; `mapping._world`, their inverse, stays in `mapping.py`.
+- **What:** these are generic SE(3) helpers. Rung 0's `se3.act` validates its input and takes one transform per point, so an unchecked one-pose helper in the edge is justified for the hot loops. When A8 lifts the camera to rung 0 at milestone 4, these should go too. Add them to A8's open item.
+
+### Checked and fine
+- **A1:** the live-parity policy is in CLAUDE.md and edge-vo §3. `tests/fixtures/edge/room_runs.json` states its tolerance policy and is applied by `assert_matches_fixture`. Every backend, Python included, is held to it, and regenerating it is one documented command.
+- **A2:** 23 thresholds moved into `Options` in all three languages, with the same names and defaults. A script check found each new setting read in all three languages, and the settings test holds the native defaults to Python's.
+- **A2's `bf`:**
+  - It is optional in all three readers, with the same validation.
+  - `SENSOR_BF` / `kSensorBf` are used for the freiburg sensors, matching ORB-SLAM2's `TUM1/2/3.yaml`.
+  - `sequences.json` holds `bf`, including `null`, for all three languages.
+  - An RGB-D run without it is refused by every backend.
+- **A4:** the ladder doc's amendment and the C++ `Mode` comment.
+- **A5:** `--target-dir rust/target` in both scripts (`check.sh` changes to the repo root first); the documentation; the build runs before pytest.
+- **A6:** the freiburg2 and freiburg3 fixture folders are compared exactly in C++ and Rust.
+- **A7:** `Frame.as_dict`.
+- **A9:** an explicit `exit_code` switch in `vo.hpp`; codes 3, 4 and 5 are tested.
+- **A12:** §2 is marked as the plan as it stood.
+- **Rung 0's `refine_pose`:**
+  - the weights are validated in all three cores with the same error kind and message;
+  - Python's argument is optional, the natives' required;
+  - `pnp_ransac` passes ones;
+  - the only caller is `edge.tracking`, in all three languages;
+  - the `Implementation` Protocol, the thin bindings and the fixture were all updated.
+- **Dependency direction:** `map → options` and `frames → options` stay within the edge's declared internal order. `check_setup` is in the native `frames`, `check_mode` in `options`. There are no new crates, libraries or runtime dependencies, nothing imports reifyscene, and no GPU dependency entered the edge.
+- **Monocular initialisation:** splitting it into a match stage and an initialise stage mirrors ORB-SLAM's `MonocularInitialization`. The Pipeline carries the matched positions identically in all three languages, and the bindings only convert types.
+- **The gap room's recovery:** it forces two recoveries in all four cases, and the backends agree.
+- **Deferred items:** all 11 deferred findings appear in the ladder doc's open items, described accurately (A13's wording aside, above).
+- **Privacy:** nothing rig-specific in the delta. The synthetic room's `camera.txt` uses TUM's public `bf` of 40. The committed review report contains absolute local paths (the home directory and the scratch dir); they are harmless while the repo is private and worth a sweep before it goes public.
+
+### Algorithm review
+
+## Algorithm review
+
+**Scope:** Run 2 covers the delta `6151c45..e0e8208` on `feature/edge-vo` (PR 8). I read the code changes in c22e30e (L4), eb74c18 (L5, L7, H1), 87acf3d (L1), 9c521de (L2), ace10d7 (A2/H4 Options and `bf`), aee51bf (the L10 test) and 09eb6a2 (the gap room and the golden record), in Python, C++ and Rust. I also read the note at c0f8289 and the report at e0e8208.
+
+**References and method:**
+- The ORB-SLAM2 sources were fetched today (raulmur/ORB_SLAM2 master: `Tracking.cc`, `LocalMapping.cc`, `Optimizer.cc`, `Initializer.cc`, `ORBmatcher.cc`, `Examples/*.yaml`), with ORB-SLAM3's `Tracking.cc` and the text of the ORB-SLAM3 paper (arXiv:2007.11898).
+- For the results I ran 39 whole-sequence runs on public EuRoC MH_01 and TUM fr1/desk. They used the Rust `slamlab_vo`, built from `git archive` copies of 6151c45 and e0e8208 in the session scratchpad; one copy was patched to revert L1. The repo's working tree was not touched (`git status` is clean), and no background process is still running.
+
+**Summary:**
+- Every fix Run 1 resolved as fixed (L1, L2, L3, L4, L5, L6, L7, L8, L10) is correct and matches the ORB-SLAM2 lines it cites. Its intent is the same in all three languages. There is no must-fix.
+- **Two should-fix:**
+  - L5's "count every keypoint" depth start copies ORB-SLAM's `N > 500` but not the reset that makes it safe. A first frame with almost no depth now starts a map of 0 to 17 points and ends the run (demonstrated below).
+  - The L3 rewrite of the note added a new misstatement about the DSO row.
+- **On the results:** the MH_01 stereo change from 3.16 to 6.24 cm is the start frame, not a fix.
+  - The pre-fix code over ten starts has a median of 5.17 cm (range 3.16 to 7.47); HEAD's is 5.14 cm (range 4.11 to 6.24).
+  - Reverting L1, L7 and L8 together at the old start reproduces 3.16 cm exactly.
+  - The note's reading in "How much one run says" is sound, and these measurements make it stronger.
+
+### Findings
+
+#### [should-fix] A depth start from a frame with almost no depth now ends the run: ORB-SLAM's `N > 500` relies on a reset this pipeline does not have
+- **Where:**
+  - The start: `src/slamlab/edge/initialization.py:95-97`, `cpp/src/edge/initialization.cpp:142`, `rust/slamlab-edge/src/initialization.rs:127`.
+  - The lost rule that ends the run: `src/slamlab/edge/pipeline.py:215-220`, `cpp/src/edge/pipeline.cpp:145`, `rust/slamlab-edge/src/pipeline.rs:304`.
+  - `tests/edge/test_initialization.py:56` starts a 5-point map on purpose.
+- **Issue:**
+  - eb74c18 counts every keypoint, as ORB-SLAM2's `StereoInitialization` does (`Tracking.cc:511`, `if(mCurrentFrame.N>500)`), and makes points only where there is depth.
+  - ORB-SLAM can afford that rule because a track lost soon after initialisation resets the system:
+    - ORB-SLAM2 `Tracking.cc:474-476`: `if(mpMap->KeyFramesInMap()<=5) { ... "Track lost soon after initialisation, reseting..." ... mpSystem->Reset();`
+    - ORB-SLAM3 `Tracking.cc:2019-2021`: `if (pCurrentMap->KeyFramesInMap()<10) mpSystem->ResetActiveMap();`
+  - The lite pipeline has no reset: after `lost_frames` failures the run ends. The old floor of 500 keypoints *with depth* did the reset's job. Removing it without adding the reset makes a first frame with little valid depth fatal, where the pre-fix code, ORB-SLAM2 and ORB-SLAM3 would all wait or restart.
+  - The same gap applies to an early monocular loss. L2 now starts monocular maps earlier, from lower-parallax points.
+- **Why it matters:** Several kinds of first frame would end the run:
+  - an RGB-D frame facing a far wall or a window;
+  - a dark or textureless near field;
+  - a stereo pair whose matching fails on a repeated pattern.
+
+  In every case a map of a few points is accepted as initialised, and after `lost_frames` frames the run is over. A map of **zero** points is also accepted.
+- **Evidence:** `edge_sparse_depth_start_probe.py` uses the room in RGB-D mode at HEAD. Frame 0's depth map is blanked except at K random pixels:
+  ```
+  keep=None: frame 0 keypoints 605, with depth 605, state tracking, map points 605 -> ended after 25 frames, tracked 25, final state tracking
+  keep=2000: frame 0 keypoints 605, with depth 17, state tracking, map points 17  -> ended after 6 frames, tracked 1, final state lost
+  keep=200:  frame 0 keypoints 605, with depth 1,  state tracking, map points 1   -> ended after 6 frames, tracked 1, final state lost
+  keep=20:   frame 0 keypoints 605, with depth 0,  state tracking, map points 0   -> ended after 6 frames, tracked 1, final state lost
+  ```
+- **Suggested fix:**
+  - **Recommended:** implement ORB-SLAM's remedy. When the track is lost with at most 5 keyframes, go back to `NOT_INITIALIZED` and drop the map instead of ending the run, in all three languages. Add a room test and a line in the note's step 1. This also covers an early monocular loss.
+  - **If that is out of this PR's scope:** keep a floor on keypoints with depth as a documented lite stand-in for the reset (for example `min_new_points` = 100, or a new setting), and defer the reset to the backlog.
+
+#### [should-fix] The note now says the DSO row is a median of ten runs; ORB-SLAM3 reprints it as DSO's authors reported it
+- **Where:** `docs/notes/edge-vo.md:255-256`.
+- **Issue:** The note reads: "ORB-SLAM3's EuRoC numbers, and the DSO row beside them (Campos et al., T-RO 2021, Table II), are medians of ten runs over every frame." The paper says otherwise:
+  - Table II's caption: "Except where noted, we show results reported by the authors of each system, for all the frames in the trajectory, comparing with the processed GT."
+  - §VII-A: "Our reported values are the median after 10 executions."
+
+  Only ORB-SLAM3's own rows are medians of ten. The DSO row is DSO's authors' figure, and ORB-SLAM3 does not state how it was obtained.
+- **Why it matters:** The L3 fix introduced this, in the paragraph whose whole purpose is a like-for-like comparison.
+- **Evidence:** arXiv:2007.11898, p. 12: Table II caption and §VII-A (from pdftotext of the arXiv PDF).
+- **Suggested fix:** "ORB-SLAM3's EuRoC numbers are medians of ten runs over every frame; the DSO row beside them is DSO's authors' figure, as ORB-SLAM3 reprints it."
+
+#### [note] MH_01 stereo going from 3.16 to 6.24 cm is start-frame variance: the pre-fix code has the same median over ten starts
+- **Where:** `docs/notes/edge-vo.md:223-234` ("How much one run says") and `:265-266`.
+- **Detail:** The note measures HEAD's spread but not the pre-fix code's, so it shows that one run says little without showing that the fixes left the distribution alone. I measured both. The settings are the note's: 1200 features; `close_depth` 35 and `max_frames` 20 at HEAD; 40 and 30 for the pre-fix code, as its run used. The C++ and Rust programs take identical decisions.
+
+  ATE over every frame, cm:
+
+  | Code | First frame | ATE (cm) | Median |
+  |---|---|---|---|
+  | HEAD e0e8208 | 0-9 | 6.24 5.73 4.11 4.58 5.44 5.62 5.33 4.95 4.77 4.79 | **5.14** |
+  | pre-fix 6151c45 | 1, 2, 3, 4, 28, 29-33 | 3.16 3.75 3.87 6.34 4.88 5.46 5.55 6.21 7.47 4.71 | **5.17** |
+  | HEAD, L1 reverted (unit weights) | 0-4 | 5.12 5.25 6.41 4.55 6.26 | 5.25 |
+  | HEAD, L7+L8 reverted (`ba_min_keyframes=2`, 40/30) | 1-5 | 5.74 4.52 5.64 4.87 5.48 | 5.48 |
+  | HEAD, L1+L7+L8 reverted | 1 | 3.16, 539 keyframes: the pre-fix run exactly | |
+
+  The pre-fix depth start needs 500 keypoints with depth. Frames 5 to 27 have fewer, so its starts 5-9 all begin at frame 28; I used starts 29-33 for five more distinct ones.
+
+  What the runs show:
+  - **3.16 cm was the pre-fix code's best of ten starts.** HEAD's median is the same and its spread is narrower.
+  - **Part of the change is L5 itself.** It moved MH_01's first keyframe from frame 1 (501 points) to frame 0 (477 points), which is a start perturbation.
+  - **No single fix is a systematic cause.** Reverting L1 alone, or L7 and L8 alone, leaves the median at 5.3-5.5 cm; each rule change moves one run by 1 to 2 cm either way.
+  - **The rest of the delta is neutral over the whole sequence.** Reverting L1, L7 and L8 together reproduces the old run bit for bit. So L4, the recovery window and the Options/`bf` refactors leave all 3682 frames unchanged; the commits had checked them only on the first 300.
+  - **L4 barely acts on MH_01.** Every run's failures lie in frames 3662-3667.
+  - **fr1/desk RGB-D (starts 0, 18-21):**
+    - pre-fix: 2.36 2.95 2.85 3.17 3.22 (median 2.95);
+    - HEAD: 3.43 2.56 3.13 2.98 3.16 (median 3.13);
+    - HEAD with L1 reverted: 3.53 3.99 2.58 3.14 2.82 (median 3.14).
+
+    The old 2.36 was again its best start, and the medians differ by 0.2 cm within a 1 cm spread.
+  - **L1's Monte Carlo gain (+24% without weights) does not show at sequence level.** It is neutral on both sequences. That is worth one sentence in the note, so the weighting is read as the right noise model rather than a measured accuracy gain.
+- **Suggestion:** Add one sentence with the pre-fix spread (the same median), and for the long sequences give the median over starts as the headline number.
+- **Evidence:** the run folders are in the session scratchpad. Scoring script: `edge_score_runs.py`. Sweep driver: `edge_start_sweep.sh` (archives a revision, optionally patches it, builds it and runs N starts).
+
+#### [note] MH_01 monocular's 11.2 cm is drift between the newly tracked first minute and the rest, not worse tracking
+- **Where:** `docs/notes/edge-vo.md:267-269` and the table row.
+- **Detail:** L2 made the run start at frame 140, which adds 1254 tracked frames (the first 63 s).
+  - Over the frames the pre-fix run tracked (t ≥ 1403636649.41), HEAD's error is **3.77 cm**; the pre-fix run had 3.72 cm on the same frames.
+  - The newly tracked segment alone, under its own Sim(3), is **1.45 cm**. The two segments' Sim(3) scales are 0.534 and 0.518.
+  - The 11.2 cm comes from aligning both segments with one similarity: the drift built up through the nearly stationary stretch from 20 to 40 s (0.57 m of ground-truth path) sits between them.
+
+  Saying this beside "against ORB-SLAM3's 1.6 cm" would show that the comparison now includes MH_01's slow start, which ORB-SLAM3's loop closure and map merging absorb. Separately, "close to ORB-SLAM" for 2.47 against 1.69 cm on fr1/desk (46% above) is generous wording.
+- **Evidence:** `edge_mono_segment_split.py` (all 11.2; early 1.45; late 3.77).
+
+#### [note] Monocular initialisation: four small departures from ORB-SLAM2 remain, none of which binds on MH_01
+- **(a) No reprojection test on kept points.** `_kept_points` (`initialization.py:239-251`, and C++/Rust `kept_points`) has none. CheckRT drops points that reproject beyond th2 = 4σ² (`Initializer.cc:874, 885`; th2 = `4.0*mSigma2` at `:494-497`).
+- **(b) "100 points after BA" counts after outliers are forgotten.** The edge's initial BA is local BA's two passes (20, then 10 iterations) and forgets chi-square outliers before counting (`initialization.py:286-297`). ORB-SLAM2's `GlobalBundleAdjustemnt(map,20)` forgets none (`Optimizer::BundleAdjustment` has no `EraseObservation`), then checks `TrackedMapPoints(1)<100` (`Tracking.cc:692`). The comment at `:297` is right about the threshold but not about what is counted.
+- **(c) Off by one at both thresholds.** ORB-SLAM starts on `N>500` (`Tracking.cc:511`) and keeps a reference on `mvKeys.size()>100` (`:569`, `:590`). The edge accepts exactly 500 and exactly 100 (`initialization.py:95`, `pipeline.py:185`), and the note's step 1 says "more than 500".
+- **(d) The next reference after too few matches.** With fewer than 100 matches ORB-SLAM deletes the initializer, so the *next* frame becomes the reference (`Tracking.cc:603-608`); the edge uses the current frame. The note already documents this.
+- **Evidence:** `edge_mono_init_rules_probe.py` on MH_01 frames 0-140. At all 21 pairs that two-view initialises, 0 kept points reproject beyond 2 px, and the points after the initial BA equal the points kept (72 to 101). The map starts at frame 140, as the note says.
+- **Suggested fix:** Document (a) and (b) as lite departures; align (c) or document it.
+
+#### [note] `refine_pose`'s weights are absolute information in the scale's units, not relative; uniformly tiny weights stop on the absolute gradient tolerance
+- **Where:** `src/slamlab/foundations/pnp.py:524`, `cpp/include/slamlab/foundations/pnp.hpp:86`, `rust/slamlab-foundations/src/pnp.rs:548` ("its information relative to the others").
+- **Detail:**
+  - With a robust loss, multiplying every weight by k is the same as dividing `scale` by √k, so a common factor changes the answer.
+  - The NLS gradient tolerance (1e-10, absolute, as in Ceres) makes uniformly tiny weights stop early while reporting converged.
+  - The edge is correct and unaffected: it passes 1/s^(2l) in [0.078, 1], with level 0 at 1 and the scale in level-0 whitened units.
+- **Evidence:** `pnp_weight_scale_probe.py` (60 points, 20% outliers):
+  ```
+  w=1, scale s           centre error 6.791 mm  iterations 7   converged True reason function
+  w=4, scale s           centre error 8.985 mm  iterations 10  converged True reason function
+  w=1, scale s/2         centre error 8.985 mm  iterations 10  converged True reason function
+  w=1e-8, scale s*1e-4   centre error 5.565 mm  iterations 3   converged True reason gradient   (same problem up to a cost factor)
+  w=1e-12, scale s       centre error 61.644 mm iterations 0   converged True reason gradient   (never moved)
+  ```
+- **Suggested fix:** Change the doc to "information in the units of `scale` (whitened); a common factor k on the weights acts as 1/√k on the scale". Optionally, scale the gradient tolerance by the initial cost.
+
+#### [note] `min_epipole_distance2`'s docstring describes a different rule from the code
+- **Where:** `src/slamlab/edge/options.py:155-157`, `cpp/include/slamlab/edge/options.hpp:138`, `rust/slamlab-edge/src/options.rs:145`.
+- **Detail:** "At least this squared distance from the epipole, in pixels at its level" reads as 100·s^(2l). The code uses 100·s^l (`mapping.py:409`), as ORB-SLAM does (`ORBmatcher.cc:747`, `100*pKF2->mvScaleFactors[kp2.octave]`). The code is right; the docstring should say "100 times the level's scale factor s^l (ORB-SLAM's mixed units)".
+
+### Checked and fine
+- **L4 (c22e30e):** All three languages clear the velocity in `record_failure`. `accept` still requires `failures == 0`, so the first frame after a failure also predicts no motion. That is the lite counterpart of ORB-SLAM2 using `TrackReferenceKeyFrame` while `mnId < mnLastRelocFrameId+2` (`Tracking.cc:307`). The test checks both frames.
+- **L5/H1 (eb74c18):**
+  - In every mode, th = 5 on the recovery frame and the next (`Tracking.cc:1189-1190`).
+  - The radius is th · {2.5, 4} · s^l, as `SearchByProjection` computes it.
+  - 50 inliers within `max_frames`, and held keyframes once nKFs > mMaxFrames.
+  - The `max_frames` doc is right: c1b holds when mapping is idle, so c2 decides.
+- **L7 (eb74c18):** BA runs when `keyframes >= 3`, counted after insertion and before keyframe culling. That matches `LocalMapping.cc:80` (`KeyFramesInMap()>2`). Culling still runs every time, and the code is identical in all three languages.
+- **L1 (87acf3d):**
+  - The cost is ρ(w‖r‖²), J and r are scaled by √w, and the IRLS weights come from the whitened norms. That equals g2o's kernel on eᵀΩe with Ω = invSigma2·I (`Optimizer.cc:299-300`, δ = √5.991). The relative function tolerance is unaffected.
+  - The `variance[use[matched]]` indexing is correct.
+  - SciPy is the oracle for every backend.
+  - Weights of 0, inf or the wrong length are refused.
+  - `pnp_ransac` stays unweighted.
+- **L2 (9c521de):**
+  - The search starts at `vbPrevMatched` (`ORBmatcher.cc:425`), moves with each match (`:517`) and resets with the reference.
+  - Kept points are inliers in front of both views with cos < 0.99998 (`Initializer.cc:857-892`).
+  - The matches are passed in rather than re-matched.
+  - C++ and Rust `kept_points` and `set_reference` match Python.
+- **Options (ace10d7):** I checked every ORB-SLAM-attributed default against the sources and the Examples yaml.
+  - Windows 15/7/1/3/5, factors 2.5/4 at 0.998, ratios 0.9/0.8/0.75, margins 0.8/1.2, view cosine 0.5.
+  - Inliers 10/30/50, `thRefRatio` 0.4/0.75/0.9, nMinObs 2/3, 15, close 100/70.
+  - nn 10/20, 3.84σ², 0.01, 0.9998, 1.5·s, fuse 3, BA 5+10 and 20.
+  - Culling 0.25/3/2/3, keyframe culling 0.9/3.
+  - `bf` 40 matches TUM1, TUM2 and TUM3.yaml. EuRoC.yaml has `ThDepth` 35, fps 20, and 1200/1000 features, which the note's runs use.
+- **L6:** The keyframe ATE comes from the final map's keyframes, Sim(3) for monocular and SE(3) otherwise, as `KeyFrameTrajectory.txt`.
+- **L8:** The run settings are confirmed in `run.json`.
+- **L10:** 2000 seeded steep-plane scenes run in every backend; the least condition is 4.5e-4 against the 1e-4 threshold.
+- **L3:** Run 1's three points are fixed: coverage 96%, ORB-SLAM3's ten runs, and the fr1/desk row.
+- **A1/A3, from the algorithm side:** the gap room forces the PnP recovery in every mode, and the golden record holds the decisions.
+- **State of the art:** nothing new since Run 1's L12.
+
+**Scripts saved** (all in a private scripts folder, outside the repo):
+- `edge_score_runs.py`
+- `edge_start_sweep.sh`
+- `edge_sparse_depth_start_probe.py`
+- `edge_mono_init_rules_probe.py`
+- `edge_mono_segment_split.py`
+- `pnp_weight_scale_probe.py`
+
+Sources:
+- [ORB_SLAM2 source](https://github.com/raulmur/ORB_SLAM2): `src/Tracking.cc`, `LocalMapping.cc`, `Optimizer.cc`, `Initializer.cc`, `ORBmatcher.cc`, `Examples/{Stereo,Monocular}/EuRoC.yaml`, `Examples/RGB-D/TUM{1,2,3}.yaml`
+- [ORB_SLAM3 source](https://github.com/UZ-SLAMLab/ORB_SLAM3): `src/Tracking.cc`
+- [Campos et al., ORB-SLAM3, T-RO 2021, arXiv:2007.11898](https://arxiv.org/abs/2007.11898): Table II caption, §VII-A
+- [Mur-Artal and Tardós, ORB-SLAM2, T-RO 2017, arXiv:1610.06475](https://arxiv.org/abs/1610.06475)
