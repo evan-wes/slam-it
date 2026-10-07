@@ -6,6 +6,7 @@ The room from its TUM and EuRoC folders, the native programs' command line, and 
 from __future__ import annotations
 
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -182,6 +183,29 @@ def test_rgbd_needs_the_depth_sensors_bf(backend: str, tmp_path: Path) -> None:
             backend=require_program(backend),
             count=1,
         )
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_a_stereo_run_matches_with_its_settings(
+    backend: str, room_folders: Room, tmp_path: Path
+) -> None:
+    """The stereo matcher's settings reach every backend's frames (review panel finding A15).
+
+    Below a Hamming distance of 1 hardly a pair matches, so no frame has the depths to start
+    the map; the run records the setting.
+    """
+    strict = replace(OPTIONS, stereo_max_distance=1)
+    run = vo.run(
+        "euroc",
+        room_folders.euroc,
+        "stereo",
+        tmp_path,
+        backend=require_program(backend),
+        options=strict,
+        count=3,
+    )
+    assert len(run.timestamps) == 0
+    assert run.settings["stereo_max_distance"] == 1
 
 
 def test_refuses_negative_frames() -> None:

@@ -34,7 +34,7 @@ from slamlab.edge import adjust, residuals
 from slamlab.edge import map as maps
 from slamlab.edge.frames import Camera, Frame, Tracked, as_pose, checked_tracked
 from slamlab.edge.map import Map
-from slamlab.edge.options import TH_LOW, Options, check_mode
+from slamlab.edge.options import Options, check_mode
 from slamlab.foundations import matching, triangulation
 from slamlab.foundations.arrays import as_real
 from slamlab.foundations.errors import InvalidInputError
@@ -411,11 +411,11 @@ def _match_for_triangulation(
         no_depth = np.isnan(m.kp_depth[rows1])[:, None] & np.isnan(m.kp_depth[rows2])[None, :]
         band &= ~(no_depth & near[None, :])
     hamming = matching.distances(m.kp_descriptor[rows1], m.kp_descriptor[rows2])
-    hamming = np.where(band & (hamming <= TH_LOW), hamming, np.iinfo(np.int64).max)
+    hamming = np.where(band & (hamming <= options.th_low), hamming, np.iinfo(np.int64).max)
     best = np.argmin(hamming, axis=1)
     best_distance = hamming[np.arange(len(rows1)), best]
     claims: dict[int, tuple[int, int]] = {}
-    for i in np.flatnonzero(best_distance <= TH_LOW):
+    for i in np.flatnonzero(best_distance <= options.th_low):
         j, d = int(best[i]), int(best_distance[i])
         if j not in claims or d < claims[j][0]:
             claims[j] = (d, int(i))
@@ -429,7 +429,7 @@ def match_for_triangulation(  # noqa: PLR0913 -- the map, its camera, two keyfra
     """Match two keyframes' free keypoints for triangulation (``SearchForTriangulation``, lite).
 
     No bag of words: for each free keypoint of `k1` (one observing no point), the nearest
-    free keypoint of `k2` within ``TH_LOW`` (ties: the first) that lies within the epipolar
+    free keypoint of `k2` within ``th_low`` (ties: the first) that lies within the epipolar
     band (``epipolar_chi2`` of its level's variance, in pixels at the focal length) and,
     when neither has depth, not near the epipole (``min_epipole_distance2``). One match per
     keypoint of `k2`: the nearest keeps it (ties: the lower `k1` keypoint).
@@ -666,7 +666,7 @@ def _fuse_target(m: Map, camera: Camera, k: int, p: int, options: Options) -> in
         return None
     hamming = matching.distances(m.pt_descriptor[p : p + 1], m.kp_descriptor[candidates])[0]
     best = int(np.argmin(hamming))
-    return int(candidates[best]) if hamming[best] <= TH_LOW else None
+    return int(candidates[best]) if hamming[best] <= options.th_low else None
 
 
 def _fuse_one(m: Map, camera: Camera, k: int, point_id: int, options: Options) -> Map:
@@ -738,7 +738,7 @@ def fuse_points(m: Map, camera: Camera, options: Options, *, backend: str = "pyt
     front, inside the image, in its distance range (:func:`slamlab.edge.map.in_distance_range`) and
     seen within ``view_cos_limit`` of its viewing direction, is compared with the keyframe's
     keypoints within ``fuse_window`` pixels at its predicted level (on that level or the one
-    below) that pass the chi-square test; the nearest within ``TH_LOW`` takes it: a free
+    below) that pass the chi-square test; the nearest within ``th_low`` takes it: a free
     keypoint observes it, one observing another point merges the two (the one with the lower
     observation weight replaced). The newest keyframe's points are refreshed at the end.
 

@@ -13,7 +13,7 @@ use slamlab_foundations::triangulation;
 use crate::adjust::bundle_adjust;
 use crate::frames::{Camera, Frame, Tracked, check_camera};
 use crate::map::{self, Map};
-use crate::options::{Mode, Options, TH_LOW, check_options};
+use crate::options::{Mode, Options, check_options};
 use crate::residuals::{chi2, sigma2, threshold};
 
 /// Moves a camera-frame point into the world: `R^T (X - t)`.
@@ -407,7 +407,7 @@ fn triangulation_pairs(
         let mut best: Option<(i64, usize)> = None;
         for (j, &r2) in rows2.iter().enumerate() {
             let d = matching::distance(&m.kp_descriptor[r1], &m.kp_descriptor[r2]);
-            if d <= TH_LOW
+            if d <= options.th_low
                 && best.is_none_or(|(b, _)| d < b)
                 && epipolar_ok(m, &epipolar, &line, r1, r2)
             {
@@ -886,7 +886,7 @@ fn fuse_target(
             best = Some((d, row));
         }
     }
-    Ok(best.and_then(|(d, row)| (d <= TH_LOW).then_some(row)))
+    Ok(best.and_then(|(d, row)| (d <= options.th_low).then_some(row)))
 }
 
 /// Fuses one point into a keyframe (`slamlab.edge.mapping._fuse_one`).

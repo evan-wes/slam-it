@@ -275,7 +275,7 @@ def _tum_source(root: Path, mode: str) -> _Source:
     return _Source(camera, len(read.images), build)
 
 
-def _stereo_source(read: euroc.Frames) -> _Source:
+def _stereo_source(read: euroc.Frames, matching: stereo.Options) -> _Source:
     """Open a EuRoC sequence's stereo pairs, rectified: the rectified left camera."""
     left, right = read.left_camera, read.right_camera
     rectification = stereo.rectify(
@@ -291,16 +291,18 @@ def _stereo_source(read: euroc.Frames) -> _Source:
             for path, coordinates in zip((read.left[i], read.right[i]), maps, strict=True)
         )
         timestamp = float(read.timestamps[i])
-        return frames.stereo_pair(left_image, right_image, timestamp, camera, extraction)
+        return frames.stereo_pair(
+            left_image, right_image, timestamp, camera, extraction, stereo_options=matching
+        )
 
     return _Source(camera, len(read.left), build)
 
 
-def _euroc_source(root: Path, mode: str) -> _Source:
+def _euroc_source(root: Path, mode: str, matching: stereo.Options) -> _Source:
     """Open a EuRoC sequence: its left camera for monocular, the pairs rectified for stereo."""
     read = euroc.read_frames(root)
     if mode == "stereo":
-        return _stereo_source(read)
+        return _stereo_source(read, matching)
     left = read.left_camera
     rows, cols = left.shape
     camera = frames.Camera("radtan", left.intrinsics, cols, rows)
@@ -317,7 +319,7 @@ def _run_here(request: Request) -> runs.Run:
     if request.dataset == "tum":
         source = _tum_source(request.sequence, request.mode)
     else:
-        source = _euroc_source(request.sequence, request.mode)
+        source = _euroc_source(request.sequence, request.mode, request.options.stereo_matching())
     tracker = Pipeline(request.mode, source.camera, request.options)
     end = source.count
     if request.count is not None:

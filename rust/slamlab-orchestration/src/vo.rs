@@ -230,7 +230,7 @@ fn rectified(path: &Path, coordinates: &[Vector2<f64>], camera: &Camera) -> Resu
 /// # Errors
 ///
 /// The rectification's.
-fn stereo_source(read: euroc::Frames) -> Result<Source> {
+fn stereo_source(read: euroc::Frames, matching: stereo::MatchOptions) -> Result<Source> {
     let (left, right) = (&read.left_camera, &read.right_camera);
     let pose = euroc::right_from_left(left, right)?;
     let rectification = stereo::rectify(radtan(left), radtan(right), &pose, left.rows, left.cols)?;
@@ -266,7 +266,7 @@ fn stereo_source(read: euroc::Frames) -> Result<Source> {
             read.timestamps[i],
             &built,
             extraction,
-            &stereo::MatchOptions::default(),
+            &matching,
         )
         .map(Some)
     });
@@ -291,10 +291,10 @@ fn stereo_source(read: euroc::Frames) -> Result<Source> {
 /// # Errors
 ///
 /// The reader's.
-fn euroc_source(root: &Path, mode: Mode) -> Result<Source> {
+fn euroc_source(root: &Path, mode: Mode, matching: stereo::MatchOptions) -> Result<Source> {
     let read = euroc::read_frames(root)?;
     if mode == Mode::Stereo {
-        return stereo_source(read);
+        return stereo_source(read, matching);
     }
     let left = &read.left_camera;
     let camera = Camera {
@@ -638,7 +638,11 @@ pub fn run(request: &Request) -> Result<Run> {
     let source = if request.dataset == "tum" {
         tum_source(&request.sequence, request.mode)?
     } else {
-        euroc_source(&request.sequence, request.mode)?
+        euroc_source(
+            &request.sequence,
+            request.mode,
+            request.options.stereo_matching(),
+        )?
     };
     let mut pipeline = Pipeline::new(request.mode, source.camera.clone(), request.options)?;
     let mut out = Run {

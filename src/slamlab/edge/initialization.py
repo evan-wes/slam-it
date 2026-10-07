@@ -28,7 +28,7 @@ from slamlab.edge import adjust, frames
 from slamlab.edge import map as maps
 from slamlab.edge.frames import Camera, Frame, Tracked
 from slamlab.edge.map import Map
-from slamlab.edge.options import TH_LOW, Options
+from slamlab.edge.options import Options
 from slamlab.foundations import matching, triangulation, twoview
 from slamlab.foundations.arrays import as_indices, as_real
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
@@ -167,7 +167,7 @@ def _match_for_initialization(
         right=np.full(n, np.nan),
     )
     searched = matching.SearchOptions(
-        max_distance=TH_LOW, ratio=options.init_ratio, check_orientation=True
+        max_distance=options.th_low, ratio=options.init_ratio, check_orientation=True
     )
     found = frames.search(frame, projections, searched)
     return matching.Matches(

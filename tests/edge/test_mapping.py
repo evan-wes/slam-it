@@ -17,7 +17,6 @@ from slamlab.edge import map as maps
 from slamlab.edge import mapping, residuals, tracking
 from slamlab.edge.frames import Frame, Tracked
 from slamlab.edge.map import Map
-from slamlab.edge.options import TH_LOW
 from slamlab.foundations import matching
 from slamlab.foundations.errors import InvalidInputError
 from tests.conftest import require_function
@@ -177,7 +176,7 @@ def test_triangulation_matches_free_keypoints_once(mapped: Mapped) -> None:
     assert np.all(m.kp_point[pairs] < 0)
     assert len(np.unique(pairs[:, 0])) == len(pairs) == len(np.unique(pairs[:, 1]))
     bits = matching.distances(m.kp_descriptor[pairs[:, 0]], m.kp_descriptor[pairs[:, 1]])
-    assert np.all(np.diagonal(bits) <= TH_LOW)
+    assert np.all(np.diagonal(bits) <= OPTIONS.th_low)
 
 
 def test_triangulated_points_reproject_in_both_views(mapped: Mapped) -> None:

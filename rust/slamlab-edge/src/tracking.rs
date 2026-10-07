@@ -9,7 +9,7 @@ use slamlab_foundations::{pnp, ransac, so3};
 
 use crate::frames::{Camera, Frame, Tracked, check_setup, search};
 use crate::map::{Map, camera_centre, in_distance_range, predict_level, to_camera};
-use crate::options::{Mode, Options, TH_HIGH};
+use crate::options::{Mode, Options};
 use crate::residuals::{chi2, sigma2, threshold};
 
 /// Map points in a camera's view (`slamlab.edge.tracking.InView`).
@@ -455,7 +455,7 @@ pub fn track_last_frame(
         });
     }
     let searched = SearchOptions {
-        max_distance: TH_HIGH,
+        max_distance: options.th_high,
         ratio: 1.0,
         check_orientation: true,
     };
@@ -567,7 +567,7 @@ pub fn track_local_map(
         frame,
         &projections,
         &SearchOptions {
-            max_distance: TH_HIGH,
+            max_distance: options.th_high,
             ratio: options.local_map_ratio,
             check_orientation: false,
         },
@@ -643,7 +643,7 @@ pub fn relocalize_locally(
         &angles,
         &vec![0; local_points.len()],
         &matching::Options {
-            max_distance: TH_HIGH,
+            max_distance: options.th_high,
             ratio: options.relocalize_ratio,
             check_orientation: false,
         },

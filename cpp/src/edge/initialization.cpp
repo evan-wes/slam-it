@@ -200,9 +200,9 @@ Result<std::vector<matching::Match>> match_for_initialization(
                              .right = std::numeric_limits<double>::quiet_NaN()});
     }
   }
-  auto found =
-      search(frame, projections,
-             {.max_distance = kThLow, .ratio = options.init_ratio, .check_orientation = true});
+  auto found = search(
+      frame, projections,
+      {.max_distance = options.th_low, .ratio = options.init_ratio, .check_orientation = true});
   if (!found) {
     return std::unexpected(std::move(found.error()));
   }

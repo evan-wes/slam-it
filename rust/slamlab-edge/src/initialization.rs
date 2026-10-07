@@ -10,7 +10,7 @@ use slamlab_foundations::twoview::{self, Status};
 use crate::adjust::bundle_adjust;
 use crate::frames::{Camera, Frame, Tracked, check_camera, search};
 use crate::map::{self, Map};
-use crate::options::{Options, TH_LOW, check_options};
+use crate::options::{Options, check_options};
 
 /// A started map and the frame it was started on, tracked.
 #[derive(Debug, Clone, PartialEq)]
@@ -218,7 +218,7 @@ pub fn match_for_initialization(
         frame,
         &projections,
         &SearchOptions {
-            max_distance: TH_LOW,
+            max_distance: options.th_low,
             ratio: options.init_ratio,
             check_orientation: true,
         },

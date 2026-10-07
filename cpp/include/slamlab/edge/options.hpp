@@ -11,6 +11,7 @@
 
 #include "slamlab/foundations/error.hpp"
 #include "slamlab/foundations/orb.hpp"
+#include "slamlab/foundations/stereo.hpp"
 
 /// @brief The edge rung: sparse visual odometry (ORB-SLAM-lite).
 namespace slamlab::edge {
@@ -33,11 +34,6 @@ enum class Mode : std::uint8_t {
 /// @return A static string.
 [[nodiscard]] const char* name(Mode mode);
 
-/// @brief ORB-SLAM's stricter descriptor distance (initialisation, triangulation, fusion).
-inline constexpr std::int64_t kThLow = 50;
-/// @brief Its looser one (tracking).
-inline constexpr std::int64_t kThHigh = 100;
-
 /// @brief The edge pipeline's settings (`slamlab.edge.options.Options`).
 struct Options {
   /// @brief ORB features per frame.
@@ -50,6 +46,20 @@ struct Options {
   std::int64_t fast_threshold{20};
   /// @brief The FAST threshold for cells with no corner at the first.
   std::int64_t min_fast_threshold{7};
+  /// @brief The stricter descriptor distance: initialisation, triangulation, fusion (`TH_LOW`).
+  std::int64_t th_low{50};
+  /// @brief The looser one: tracking (`TH_HIGH`).
+  std::int64_t th_high{100};
+  /// @brief The stereo row matching's Hamming distance must be below this.
+  std::int64_t stereo_max_distance{75};
+  /// @brief Its row band, in multiples of the right keypoint's level scale.
+  double stereo_band{2.0};
+  /// @brief Its SAD patch's half-width.
+  std::int64_t stereo_window{5};
+  /// @brief Its SAD search's half-range.
+  std::int64_t stereo_search{5};
+  /// @brief Its matches whose best sum exceeds this times the median are dropped.
+  double stereo_outlier_factor{2.1};
   /// @brief Keypoints nearer than this many baselines are close.
   double close_depth{40.0};
   /// @brief A monocular frame's features are this many times `n_features` before the map.
@@ -186,11 +196,16 @@ using IntegerOption = std::pair<const char*, std::int64_t Options::*>;
 using RealOption = std::pair<const char*, double Options::*>;
 
 /// @brief `Options`' integer fields, by their Python names.
-inline constexpr std::array<IntegerOption, 36> kIntegerOptions{{
+inline constexpr std::array<IntegerOption, 41> kIntegerOptions{{
     {"n_features", &Options::n_features},
     {"levels", &Options::levels},
     {"fast_threshold", &Options::fast_threshold},
     {"min_fast_threshold", &Options::min_fast_threshold},
+    {"th_low", &Options::th_low},
+    {"th_high", &Options::th_high},
+    {"stereo_max_distance", &Options::stereo_max_distance},
+    {"stereo_window", &Options::stereo_window},
+    {"stereo_search", &Options::stereo_search},
     {"init_feature_factor", &Options::init_feature_factor},
     {"min_init_features", &Options::min_init_features},
     {"min_init_features_depth", &Options::min_init_features_depth},
@@ -226,8 +241,10 @@ inline constexpr std::array<IntegerOption, 36> kIntegerOptions{{
 }};
 
 /// @brief `Options`' real fields, by their Python names.
-inline constexpr std::array<RealOption, 32> kRealOptions{{
+inline constexpr std::array<RealOption, 34> kRealOptions{{
     {"scale_factor", &Options::scale_factor},
+    {"stereo_band", &Options::stereo_band},
+    {"stereo_outlier_factor", &Options::stereo_outlier_factor},
     {"close_depth", &Options::close_depth},
     {"init_window", &Options::init_window},
     {"init_ratio", &Options::init_ratio},
@@ -268,6 +285,11 @@ inline constexpr std::array<RealOption, 32> kRealOptions{{
 /// @return The extraction settings.
 [[nodiscard]] foundations::orb::Options extraction(const Options& options,
                                                    bool initializing = false);
+
+/// @brief The stereo pair's row-matching settings (`Options.stereo_matching`).
+/// @param options The settings.
+/// @return The `stereo_*` settings.
+[[nodiscard]] foundations::stereo::MatchOptions stereo_matching(const Options& options);
 
 /// @brief Check the settings (`Options.__post_init__`).
 /// @param options The settings.

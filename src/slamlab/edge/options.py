@@ -11,18 +11,12 @@ import math
 from dataclasses import asdict, dataclass, fields
 from typing import Any
 
-from slamlab.foundations import orb
+from slamlab.foundations import matching, orb, stereo
 from slamlab.foundations.arrays import as_count, as_number
 from slamlab.foundations.errors import InvalidInputError
 
 MODES = ("monocular", "stereo", "rgbd")
 """The pipeline's modes."""
-
-TH_LOW = 50
-"""ORB-SLAM's stricter descriptor distance (initialisation, triangulation, fusion)."""
-
-TH_HIGH = 100
-"""Its looser one (tracking)."""
 
 
 @dataclass(frozen=True)
@@ -39,6 +33,17 @@ class Options:
         The pyramid's scale factor (``scaleFactor``).
     fast_threshold, min_fast_threshold : int
         FAST thresholds (``iniThFAST``, ``minThFAST``).
+    th_low : int
+        The stricter descriptor distance, for initialisation, triangulation and fusion
+        (ORB-SLAM's ``ORBmatcher::TH_LOW``, 50), at most
+        :data:`slamlab.foundations.matching.MAX_DISTANCE`.
+    th_high : int
+        The looser one, for tracking (``TH_HIGH``, 100).
+    stereo_max_distance, stereo_band, stereo_window, stereo_search, stereo_outlier_factor
+        The stereo pair's row matching (:class:`slamlab.foundations.stereo.Options`, ORB-SLAM's
+        ``ComputeStereoMatches``: a Hamming distance below 75, a band of 2 times the level's
+        scale, a SAD window of 5 searched over 5 pixels either side, matches beyond 2.1 times
+        the median SAD dropped).
     close_depth : float
         Keypoints nearer than this many baselines are "close" (``ThDepth``, 40): only close
         points become map points from depth, and their tracking decides keyframes.
@@ -215,6 +220,13 @@ class Options:
     scale_factor: float = 1.2
     fast_threshold: int = 20
     min_fast_threshold: int = 7
+    th_low: int = 50
+    th_high: int = 100
+    stereo_max_distance: int = 75
+    stereo_band: float = 2.0
+    stereo_window: int = 5
+    stereo_search: int = 5
+    stereo_outlier_factor: float = 2.1
     close_depth: float = 40.0
     init_feature_factor: int = 2
     min_init_features: int = 100
@@ -310,6 +322,12 @@ class Options:
                         f"{item.name}: must be finite and positive, got {number}"
                     )
                 set_(self, item.name, number)
+        for name in ("th_low", "th_high"):
+            as_count(getattr(self, name), name, 1, matching.MAX_DISTANCE)
+        try:
+            self.stereo_matching()
+        except InvalidInputError as error:
+            raise InvalidInputError(f"stereo_{error}") from error
 
     def extraction(self, *, initializing: bool = False) -> orb.Options:
         """Return the ORB extraction settings.
@@ -332,6 +350,22 @@ class Options:
             self.scale_factor,
             self.fast_threshold,
             self.min_fast_threshold,
+        )
+
+    def stereo_matching(self) -> stereo.Options:
+        """Return the stereo pair's row-matching settings.
+
+        Returns
+        -------
+        slamlab.foundations.stereo.Options
+            The ``stereo_*`` settings.
+        """
+        return stereo.Options(
+            self.stereo_max_distance,
+            self.stereo_band,
+            self.stereo_window,
+            self.stereo_search,
+            self.stereo_outlier_factor,
         )
 
     def as_dict(self) -> dict[str, Any]:

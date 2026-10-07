@@ -4,7 +4,7 @@
 //! ORB-SLAM quantity each stands for.
 
 use slamlab_foundations::error::{ErrorKind, Result, check_range, fail, fail_setting};
-use slamlab_foundations::orb;
+use slamlab_foundations::{matching, orb, stereo};
 
 /// The pipeline's sensor modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,11 +36,6 @@ impl Mode {
     }
 }
 
-/// ORB-SLAM's stricter descriptor distance (initialisation, triangulation, fusion).
-pub const TH_LOW: i64 = 50;
-/// Its looser one (tracking).
-pub const TH_HIGH: i64 = 100;
-
 /// The largest an integer setting may be (Python's `1 << 30`).
 const MAX_SETTING: usize = 1 << 30;
 
@@ -57,6 +52,20 @@ pub struct Options {
     pub fast_threshold: i64,
     /// The FAST threshold for cells with no corner at the first.
     pub min_fast_threshold: i64,
+    /// The stricter descriptor distance: initialisation, triangulation, fusion (`TH_LOW`).
+    pub th_low: i64,
+    /// The looser one: tracking (`TH_HIGH`).
+    pub th_high: i64,
+    /// The stereo row matching's Hamming distance must be below this.
+    pub stereo_max_distance: i64,
+    /// Its row band, in multiples of the right keypoint's level scale.
+    pub stereo_band: f64,
+    /// Its SAD patch's half-width.
+    pub stereo_window: usize,
+    /// Its SAD search's half-range.
+    pub stereo_search: usize,
+    /// Its matches whose best sum exceeds this times the median are dropped.
+    pub stereo_outlier_factor: f64,
     /// Keypoints nearer than this many baselines are close.
     pub close_depth: f64,
     /// A monocular frame's features are this many times `n_features` before the map.
@@ -194,6 +203,13 @@ impl Default for Options {
             scale_factor: 1.2,
             fast_threshold: 20,
             min_fast_threshold: 7,
+            th_low: 50,
+            th_high: 100,
+            stereo_max_distance: 75,
+            stereo_band: 2.0,
+            stereo_window: 5,
+            stereo_search: 5,
+            stereo_outlier_factor: 2.1,
             close_depth: 40.0,
             init_feature_factor: 2,
             min_init_features: 100,
@@ -287,6 +303,22 @@ impl Options {
             min_fast_threshold: self.min_fast_threshold,
         }
     }
+
+    /// The stereo pair's row-matching settings.
+    ///
+    /// # Returns
+    ///
+    /// The `stereo_*` settings.
+    #[must_use]
+    pub fn stereo_matching(&self) -> stereo::MatchOptions {
+        stereo::MatchOptions {
+            max_distance: self.stereo_max_distance,
+            band: self.stereo_band,
+            window: self.stereo_window,
+            search: self.stereo_search,
+            outlier_factor: self.stereo_outlier_factor,
+        }
+    }
 }
 
 /// A setting's value, by its kind: what a command line gives, and what a run records.
@@ -365,7 +397,10 @@ macro_rules! named_settings {
 
 named_settings!(
     n_features: Integer, levels: Integer, scale_factor: Real, fast_threshold: Integer,
-    min_fast_threshold: Integer, close_depth: Real, init_feature_factor: Integer,
+    min_fast_threshold: Integer, th_low: Integer, th_high: Integer,
+    stereo_max_distance: Integer, stereo_band: Real, stereo_window: Integer,
+    stereo_search: Integer, stereo_outlier_factor: Real, close_depth: Real,
+    init_feature_factor: Integer,
     min_init_features: Integer, min_init_features_depth: Integer,
     min_init_depth_points: Integer, init_window: Real,
     init_ratio: Real, init_min_matches: Integer, init_parallax_cos: Real, motion_window: Real,
@@ -401,6 +436,21 @@ named_settings!(
     pnp_min_inliers: Integer, lost_frames: Integer, seed: Integer,
 );
 
+/// Checks the descriptor distances and the stereo matching's settings, named as `Options`' fields.
+///
+/// # Errors
+///
+/// `InvalidInput` naming the first one out of range.
+fn check_matching(options: &Options) -> Result<()> {
+    if let Err(error) = stereo::check_options(&options.stereo_matching()) {
+        return fail(error.kind, format!("stereo_{}", error.message));
+    }
+    for (name, value) in [("th_low", options.th_low), ("th_high", options.th_high)] {
+        check_range(name, value, 1, matching::MAX_DISTANCE)?;
+    }
+    Ok(())
+}
+
 /// Checks the settings (`Options.__post_init__`).
 ///
 /// # Arguments
@@ -412,6 +462,7 @@ named_settings!(
 /// `InvalidInput` naming the first one out of range.
 pub fn check_options(options: &Options) -> Result<()> {
     orb::check_options(&options.extraction(false))?;
+    check_matching(options)?;
     for (name, value) in [
         ("min_init_features", options.min_init_features),
         ("min_init_features_depth", options.min_init_features_depth),
@@ -522,7 +573,7 @@ mod tests {
     fn settings_by_name() {
         let mut options = Options::default();
         let settings = options.settings();
-        assert_eq!(settings.len(), 68);
+        assert_eq!(settings.len(), 75);
         assert_eq!(settings[0], ("n_features", Setting::Integer(1000)));
         assert_eq!(settings[2], ("scale_factor", Setting::Real(1.2)));
         options.set("window", Setting::Integer(7)).unwrap();

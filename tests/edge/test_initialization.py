@@ -15,7 +15,7 @@ from slamlab import backends
 from slamlab.edge import initialization
 from slamlab.edge.frames import Frame, Tracked
 from slamlab.edge.map import Map
-from slamlab.edge.options import TH_LOW, Options
+from slamlab.edge.options import Options
 from slamlab.foundations import matching, triangulation, twoview
 from slamlab.foundations.errors import InvalidInputError
 from tests.conftest import require_function
@@ -125,7 +125,7 @@ def test_matches_pair_level_zero_keypoints_within_the_window(monocular_pair: Pai
     assert np.all(second.level[found.pairs[:, 1]] == 0)
     gap = np.abs(first.xy[found.pairs[:, 0]] - second.xy[found.pairs[:, 1]])
     assert np.all(gap < OPTIONS.init_window)
-    assert np.all(found.distances <= TH_LOW)
+    assert np.all(found.distances <= OPTIONS.th_low)
     assert len(np.unique(found.pairs[:, 1])) == len(found.pairs)
 
 

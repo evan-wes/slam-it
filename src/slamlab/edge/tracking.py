@@ -33,7 +33,7 @@ from slamlab.edge import frames, residuals
 from slamlab.edge import map as maps
 from slamlab.edge.frames import Camera, Frame, Tracked
 from slamlab.edge.map import Map
-from slamlab.edge.options import TH_HIGH, Options, check_mode
+from slamlab.edge.options import Options, check_mode
 from slamlab.foundations import matching, pnp, ransac, so3
 from slamlab.foundations.arrays import as_flag
 from slamlab.foundations.errors import DegenerateError
@@ -438,7 +438,9 @@ def _track_last_frame(  # noqa: PLR0913 -- the stage's state
             low, high = last_level, np.full(len(have), m.levels - 1)
         elif -ahead > camera.baseline:
             low, high = np.zeros(len(have), dtype=np.int64), last_level
-    searched = matching.SearchOptions(max_distance=TH_HIGH, ratio=1.0, check_orientation=True)
+    searched = matching.SearchOptions(
+        max_distance=options.th_high, ratio=1.0, check_orientation=True
+    )
     points = np.full(frame.size, -1, dtype=np.int64)
     for factor in (1.0, 2.0):
         projections = matching.Projections(
@@ -572,7 +574,7 @@ def _track_local_map(  # noqa: PLR0913 -- the stage's state
         right=view.right,
     )
     searched = matching.SearchOptions(
-        max_distance=TH_HIGH, ratio=options.local_map_ratio, check_orientation=False
+        max_distance=options.th_high, ratio=options.local_map_ratio, check_orientation=False
     )
     found = _search(frame, projections, m.pt_id[view.rows], searched, taken=tracked.points >= 0)
     points = np.where(tracked.points >= 0, tracked.points, found)
@@ -669,7 +671,7 @@ def _relocalize_locally(m: Map, camera: Camera, frame: Frame, options: Options) 
         frame.features.keypoints.angle,
         np.zeros(len(local), dtype=np.int64),
         matching.Options(
-            max_distance=TH_HIGH, ratio=options.relocalize_ratio, check_orientation=False
+            max_distance=options.th_high, ratio=options.relocalize_ratio, check_orientation=False
         ),
     )
     pairs = found.pairs[frame.bearings[found.pairs[:, 0], 2] > 0.0]
@@ -696,7 +698,7 @@ def relocalize_locally(
 ) -> Tracked | None:
     """Place a frame against the local map by descriptors and PnP RANSAC (the fallback).
 
-    The frame's descriptors are matched to the local map's points' (``TH_HIGH``, the
+    The frame's descriptors are matched to the local map's points' (``th_high``, the
     ``relocalize_ratio`` test), PnP RANSAC places it on the matches (``pnp_threshold``
     pixels, ``seed``), and the pose is refined (:func:`optimize_pose`). ORB-SLAM relocalises
     against keyframes found by its bag of words; this recovers only near the local map.

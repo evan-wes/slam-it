@@ -206,12 +206,12 @@ std::vector<std::array<std::int64_t, 2>> triangulation_pairs(const Map& m, const
     for (std::size_t j = 0; j < rows2.size(); ++j) {
       const std::int64_t d = matching::distance(
           m.kp_descriptor[r1], m.kp_descriptor[static_cast<std::size_t>(rows2[j])]);
-      if (d <= kThLow && d < best && epipolar_ok(m, epipolar, line, rows1[i], rows2[j])) {
+      if (d <= options.th_low && d < best && epipolar_ok(m, epipolar, line, rows1[i], rows2[j])) {
         best = d;
         best_j = j;
       }
     }
-    if (best <= kThLow) {
+    if (best <= options.th_low) {
       const auto it = claims.find(best_j);
       if (it == claims.end() || best < it->second.first) {
         claims[best_j] = {best, i};
@@ -509,7 +509,7 @@ Result<std::optional<std::int64_t>> fuse_target(const Map& m, const Camera& came
       best_row = row;
     }
   }
-  if (best > kThLow) {
+  if (best > options.th_low) {
     return std::nullopt;
   }
   return best_row;

@@ -7,6 +7,8 @@
 #include <cmath>
 #include <utility>
 
+#include "slamlab/foundations/matching.hpp"
+
 namespace slamlab::edge {
 
 namespace {
@@ -45,9 +47,28 @@ foundations::orb::Options extraction(const Options& options, bool initializing) 
           .min_fast_threshold = options.min_fast_threshold};
 }
 
+foundations::stereo::MatchOptions stereo_matching(const Options& options) {
+  return {.max_distance = options.stereo_max_distance,
+          .band = options.stereo_band,
+          .window = options.stereo_window,
+          .search = options.stereo_search,
+          .outlier_factor = options.stereo_outlier_factor};
+}
+
 foundations::Result<void> check_options(const Options& options) {
   if (auto ok = foundations::orb::check_options(extraction(options)); !ok) {
     return ok;
+  }
+  if (auto ok = foundations::stereo::check_options(stereo_matching(options)); !ok) {
+    return std::unexpected(
+        foundations::Error{.kind = ok.error().kind, .message = "stereo_" + ok.error().message});
+  }
+  for (const auto& [setting, value] :
+       {std::pair{"th_low", options.th_low}, std::pair{"th_high", options.th_high}}) {
+    if (auto ok = foundations::check_range(setting, value, 1, foundations::matching::kMaxDistance);
+        !ok) {
+      return ok;
+    }
   }
   // Settings that may be 0, then those that must be at least 1.
   const std::array<IntSetting, 4> may_be_zero{

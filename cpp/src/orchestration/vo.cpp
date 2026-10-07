@@ -139,7 +139,8 @@ Result<foundations::image::Image> rectified(const std::string& path,
 ///        (pinhole) with the pair's baseline.
 /// @param frames The sequence's frames.
 /// @return The source; the rectification's error.
-Result<Source> stereo_source(eval::euroc::Frames frames) {
+Result<Source> stereo_source(eval::euroc::Frames frames,
+                             const foundations::stereo::MatchOptions& matching) {
   const eval::euroc::Camera& left = frames.left_camera;
   const eval::euroc::Camera& right = frames.right_camera;
   const auto pose = eval::euroc::right_from_left(left, right);
@@ -167,8 +168,8 @@ Result<Source> stereo_source(eval::euroc::Frames frames) {
                             .height = left.rows,
                             .baseline = rectification->baseline};
   const std::size_t count = frames.left.size();
-  Builder frame = [frames = std::move(frames), maps = std::array{*map_left, *map_right}, camera](
-                      std::size_t i, const foundations::orb::Options& extraction) -> Built {
+  Builder frame = [frames = std::move(frames), maps = std::array{*map_left, *map_right}, camera,
+                   matching](std::size_t i, const foundations::orb::Options& extraction) -> Built {
     const auto image_left = rectified(frames.left.at(i), maps[0], camera);
     if (!image_left) {
       return std::unexpected(image_left.error());
@@ -178,7 +179,7 @@ Result<Source> stereo_source(eval::euroc::Frames frames) {
       return std::unexpected(image_right.error());
     }
     return built(edge::stereo_pair(*image_left, *image_right, frames.timestamps.at(i), camera,
-                                   extraction, foundations::stereo::MatchOptions{}));
+                                   extraction, matching));
   };
   return Source{.camera = camera, .frames = count, .frame = std::move(frame)};
 }
@@ -188,13 +189,14 @@ Result<Source> stereo_source(eval::euroc::Frames frames) {
 /// @param root The sequence folder.
 /// @param mode Monocular or stereo.
 /// @return The source; the reader's error.
-Result<Source> euroc_source(const std::string& root, edge::Mode mode) {
+Result<Source> euroc_source(const std::string& root, edge::Mode mode,
+                            const foundations::stereo::MatchOptions& matching) {
   auto read = eval::euroc::read_frames(root);
   if (!read) {
     return std::unexpected(read.error());
   }
   if (mode == edge::Mode::kStereo) {
-    return stereo_source(std::move(*read));
+    return stereo_source(std::move(*read), matching);
   }
   const eval::euroc::Camera& left = read->left_camera;
   const edge::Camera camera{.model = Model::kRadTan,
@@ -459,7 +461,8 @@ Result<eval::runs::Run> run(const Request& request) {
     return std::unexpected(checked.error());
   }
   auto source = request.dataset == "tum" ? tum_source(request.sequence, request.mode)
-                                         : euroc_source(request.sequence, request.mode);
+                                         : euroc_source(request.sequence, request.mode,
+                                                        edge::stereo_matching(request.options));
   if (!source) {
     return std::unexpected(source.error());
   }

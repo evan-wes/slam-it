@@ -360,7 +360,7 @@ Result<std::optional<Tracked>> track_last_frame(const Map& m, const Camera& came
           factor * window * std::pow(m.scale_factor, static_cast<double>(levels[j]));
     }
     auto found = search(frame, projections,
-                        {.max_distance = kThHigh, .ratio = 1.0, .check_orientation = true});
+                        {.max_distance = options.th_high, .ratio = 1.0, .check_orientation = true});
     if (!found) {
       return std::unexpected(std::move(found.error()));
     }
@@ -426,10 +426,11 @@ Result<LocalTracking> track_local_map(const Map& m, const Camera& camera, const 
   for (std::size_t i = 0; i < taken.size(); ++i) {
     taken[i] = tracked.points[i] >= 0 ? 1 : 0;
   }
-  auto found = search(
-      frame, projections,
-      {.max_distance = kThHigh, .ratio = options.local_map_ratio, .check_orientation = false},
-      taken);
+  auto found = search(frame, projections,
+                      {.max_distance = options.th_high,
+                       .ratio = options.local_map_ratio,
+                       .check_orientation = false},
+                      taken);
   if (!found) {
     return std::unexpected(std::move(found.error()));
   }
@@ -475,9 +476,10 @@ Result<std::optional<Tracked>> relocalize_locally(const Map& m, const Camera& ca
     angles.push_back(k.angle);
   }
   const std::vector<std::int64_t> zeros(local_points.size(), 0);
-  auto found = matching::match(
-      frame.features.descriptors, descriptors, angles, zeros,
-      {.max_distance = kThHigh, .ratio = options.relocalize_ratio, .check_orientation = false});
+  auto found = matching::match(frame.features.descriptors, descriptors, angles, zeros,
+                               {.max_distance = options.th_high,
+                                .ratio = options.relocalize_ratio,
+                                .check_orientation = false});
   if (!found) {
     return std::unexpected(std::move(found.error()));
   }
