@@ -4,8 +4,10 @@
 ///        `MonocularInitialization`).
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include "slamlab/edge/frames.hpp"
@@ -43,23 +45,31 @@ struct Started {
 ///        `SearchForInitialization`).
 /// @param reference The reference frame.
 /// @param frame The later frame.
+/// @param previous Where each reference keypoint was last matched, in pixels (its own position
+///        until it is matched; ORB-SLAM's `vbPrevMatched`).
 /// @param options The window and ratio.
 /// @return `(reference keypoint, frame keypoint)` matches, by reference keypoint;
-///         `InvalidInput` for a frame whose pyramid is not the settings', or invalid settings.
+///         `InvalidInput` for a frame whose pyramid is not the settings', `previous` that is not
+///         one finite pixel per reference keypoint, or invalid settings.
 [[nodiscard]] foundations::Result<std::vector<foundations::matching::Match>>
-match_for_initialization(const Frame& reference, const Frame& frame, const Options& options);
+match_for_initialization(const Frame& reference, const Frame& frame,
+                         std::span<const std::array<double, 2>> previous, const Options& options);
 
 /// @brief Start the map from two monocular frames
 ///        (`slamlab.edge.initialization.initialize_monocular`).
 /// @param camera The camera.
 /// @param reference The reference frame (the first keyframe, at the origin).
 /// @param frame The later frame.
-/// @param options The window, the minimum matches, the seed, and the pyramid.
-/// @return The map of two keyframes and their points, scaled so the first's median depth is
-///         1, or nothing if too few keypoints match, the views do not initialise, or too few
-///         points survive the adjustment; `InvalidInput` for a frame whose pyramid is not the
-///         settings', or an invalid camera or settings.
+/// @param pairs `(reference keypoint, frame keypoint)` matches.
+/// @param options The minimum matches, the parallax, the seed, and the pyramid.
+/// @return The map of two keyframes and their points (the chosen motion's inliers in front of
+///         both views with rays whose cosine is below `init_parallax_cos`, `CheckRT`), scaled
+///         so the first's median depth is 1, or nothing if too few keypoints match, the views
+///         do not initialise, or too few points survive the adjustment; `InvalidInput` for a
+///         frame whose pyramid is not the settings', a pair that is not a keypoint of each
+///         frame, or an invalid camera or settings.
 [[nodiscard]] foundations::Result<std::optional<Started>> initialize_monocular(
-    const Camera& camera, const Frame& reference, const Frame& frame, const Options& options);
+    const Camera& camera, const Frame& reference, const Frame& frame,
+    std::span<const std::array<std::int64_t, 2>> pairs, const Options& options);
 
 }  // namespace slamlab::edge

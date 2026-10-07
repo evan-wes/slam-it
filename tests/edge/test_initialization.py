@@ -9,12 +9,14 @@ from dataclasses import replace
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 from slamlab import backends
 from slamlab.edge import initialization
 from slamlab.edge.frames import Frame, Tracked
 from slamlab.edge.map import Map
 from slamlab.edge.options import TH_LOW, Options
+from slamlab.foundations import matching, triangulation, twoview
 from slamlab.foundations.errors import InvalidInputError
 from tests.conftest import require_function
 from tests.edge.conftest import CAMERA, OPTIONS, Truth
@@ -80,20 +82,35 @@ def test_from_depth_puts_a_point_at_every_keypoint_with_depth(truth: Truth) -> N
     np.testing.assert_allclose(m.pt_xyz[:, 2], frame.depth[has_depth])
 
 
+def _own(frame: Frame) -> NDArray[np.float64]:
+    """Return a reference's keypoints' own positions: where a search starts."""
+    return frame.features.keypoints.xy.copy()
+
+
+def _matched(pair: Pair, options: Options = OPTIONS) -> matching.Matches:
+    """Match a pair from the reference's own positions."""
+    return initialization.match_for_initialization(*pair, _own(pair[0]), options)
+
+
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_matching_matches_the_reference(backend: str, monocular_pair: Pair) -> None:
-    """Every backend finds the same initialisation matches."""
+    """Every backend finds the same initialisation matches, from any previous positions."""
     chosen = require_function(backend, initialization.__name__, "match_for_initialization")
-    expected = initialization.match_for_initialization(*monocular_pair, OPTIONS)
-    got = initialization.match_for_initialization(*monocular_pair, OPTIONS, backend=chosen)
-    np.testing.assert_array_equal(got.pairs, expected.pairs)
-    np.testing.assert_array_equal(got.distances, expected.distances)
+    moved = _own(monocular_pair[0])
+    moved[::2] += 3.0  # half the keypoints last matched elsewhere
+    for previous in (_own(monocular_pair[0]), moved):
+        expected = initialization.match_for_initialization(*monocular_pair, previous, OPTIONS)
+        got = initialization.match_for_initialization(
+            *monocular_pair, previous, OPTIONS, backend=chosen
+        )
+        np.testing.assert_array_equal(got.pairs, expected.pairs)
+        np.testing.assert_array_equal(got.distances, expected.distances)
 
 
 def test_matches_pair_level_zero_keypoints_within_the_window(monocular_pair: Pair) -> None:
     """Each match joins two level-0 keypoints within the window, close in descriptor."""
     reference, frame = monocular_pair
-    found = initialization.match_for_initialization(reference, frame, OPTIONS)
+    found = _matched(monocular_pair)
     assert len(found.pairs) > OPTIONS.init_min_matches
     first, second = reference.features.keypoints, frame.features.keypoints
     assert np.all(first.level[found.pairs[:, 0]] == 0)
@@ -104,21 +121,56 @@ def test_matches_pair_level_zero_keypoints_within_the_window(monocular_pair: Pai
     assert len(np.unique(found.pairs[:, 1])) == len(found.pairs)
 
 
+def test_the_search_follows_the_previous_matches(monocular_pair: Pair) -> None:
+    """A keypoint is searched where it was last matched, not where it started."""
+    reference, frame = monocular_pair
+    away = _own(reference) + 10 * OPTIONS.init_window
+    assert len(initialization.match_for_initialization(*monocular_pair, away, OPTIONS).pairs) == 0
+    found = _matched(monocular_pair)
+    followed = _own(reference)
+    followed[found.pairs[:, 0]] = frame.features.keypoints.xy[found.pairs[:, 1]]
+    again = initialization.match_for_initialization(*monocular_pair, followed, OPTIONS)
+    assert len(again.pairs) >= len(found.pairs)
+
+
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_monocular_matches_the_reference(backend: str, monocular_pair: Pair) -> None:
     """Every backend starts the same monocular map, and agrees when it does not start."""
     chosen = require_function(backend, initialization.__name__, "initialize_monocular")
-    expected = initialization.initialize_monocular(CAMERA, *monocular_pair, OPTIONS)
+    matches = _matched(monocular_pair)
+    expected = initialization.initialize_monocular(CAMERA, *monocular_pair, matches, OPTIONS)
     assert expected is not None
-    got = initialization.initialize_monocular(CAMERA, *monocular_pair, OPTIONS, backend=chosen)
+    got = initialization.initialize_monocular(
+        CAMERA, *monocular_pair, matches, OPTIONS, backend=chosen
+    )
     _assert_started_match(got, expected, SOLVER_TOLERANCE)
     same = (monocular_pair[0], monocular_pair[0])  # no parallax at all
-    assert initialization.initialize_monocular(CAMERA, *same, OPTIONS, backend=chosen) is None
+    assert (
+        initialization.initialize_monocular(CAMERA, *same, _matched(same), OPTIONS, backend=chosen)
+        is None
+    )
+
+
+def test_monocular_keeps_points_of_orb_slams_parallax(monocular_pair: Pair) -> None:
+    """Every two-view point is kept, and the inliers between 0.36 and 1 degree too (CheckRT)."""
+    reference, frame = monocular_pair
+    pairs = _matched(monocular_pair).pairs
+    rays = (reference.bearings[pairs[:, 0]], frame.bearings[pairs[:, 1]])
+    result = twoview.initialize(*rays, twoview.Options(focal=CAMERA.focal, seed=OPTIONS.seed))
+    assert result.status is twoview.Status.INITIALIZED
+    kept, xyz = initialization._kept_points(result, *rays, OPTIONS)
+    assert set(np.flatnonzero(result.triangulated)) <= set(kept)
+    np.testing.assert_allclose(xyz[np.isin(kept, np.flatnonzero(result.triangulated))],
+                               result.points[result.triangulated], atol=1e-12)  # fmt: skip
+    seen = triangulation.two_view(result.relative_pose, rays[0][kept], rays[1][kept])
+    assert np.all(seen.in_front)
+    assert np.all(np.cos(seen.parallax) < OPTIONS.init_parallax_cos)
 
 
 def test_monocular_map_has_unit_median_depth(monocular_pair: Pair) -> None:
     """Two keyframes, the first at the origin and fixed; the points' median depth is 1."""
-    started = initialization.initialize_monocular(CAMERA, *monocular_pair, OPTIONS)
+    matches = _matched(monocular_pair)
+    started = initialization.initialize_monocular(CAMERA, *monocular_pair, matches, OPTIONS)
     assert started is not None
     m, tracked = started
     assert m.keyframes == 2
@@ -132,7 +184,8 @@ def test_monocular_map_has_unit_median_depth(monocular_pair: Pair) -> None:
 def test_monocular_needs_enough_matches(monocular_pair: Pair) -> None:
     """With fewer matches than ``init_min_matches``, no map."""
     strict = replace(OPTIONS, init_min_matches=10_000)
-    assert initialization.initialize_monocular(CAMERA, *monocular_pair, strict) is None
+    matches = _matched(monocular_pair)
+    assert initialization.initialize_monocular(CAMERA, *monocular_pair, matches, strict) is None
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -143,7 +196,18 @@ def test_rejects_frames_of_another_pyramid(
     other = Options(levels=OPTIONS.levels - 1)
     with pytest.raises(InvalidInputError, match="pyramid"):
         initialization.initialize_from_depth(truth.frames[0], other, backend=backend)
+    own, matches = _own(monocular_pair[0]), _matched(monocular_pair)
     with pytest.raises(InvalidInputError, match="pyramid"):
-        initialization.match_for_initialization(*monocular_pair, other, backend=backend)
+        initialization.match_for_initialization(*monocular_pair, own, other, backend=backend)
     with pytest.raises(InvalidInputError, match="pyramid"):
-        initialization.initialize_monocular(CAMERA, *monocular_pair, other, backend=backend)
+        initialization.initialize_monocular(
+            CAMERA, *monocular_pair, matches, other, backend=backend
+        )
+    with pytest.raises(InvalidInputError, match="previous"):
+        initialization.match_for_initialization(*monocular_pair, own[1:], OPTIONS, backend=backend)
+    shifted = matches.pairs + monocular_pair[1].size
+    beyond = matching.Matches(pairs=shifted, distances=matches.distances)
+    with pytest.raises(InvalidInputError, match="pairs"):
+        initialization.initialize_monocular(
+            CAMERA, *monocular_pair, beyond, OPTIONS, backend=backend
+        )

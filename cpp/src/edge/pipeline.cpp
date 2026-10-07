@@ -99,19 +99,35 @@ Result<std::optional<Started>> Pipeline::initialize_monocular(const Frame& frame
     return std::nullopt;
   }
   if (!reference_) {
-    reference_ = frame;
+    set_reference(frame);
     return std::nullopt;
   }
-  auto matched = match_for_initialization(*reference_, frame, options_);
+  auto matched = match_for_initialization(*reference_, frame, previous_, options_);
   if (!matched) {
     return std::unexpected(std::move(matched.error()));
   }
   if (std::cmp_less(matched->size(), options_.init_min_matches)) {
-    reference_ = frame;  // the views no longer overlap enough: start again
+    set_reference(frame);  // the views no longer overlap enough: start again
     return std::nullopt;
   }
+  // The search follows each matched keypoint (SearchForInitialization's vbPrevMatched).
+  std::vector<std::array<std::int64_t, 2>> pairs;
+  pairs.reserve(matched->size());
+  for (const foundations::matching::Match& match : *matched) {
+    previous_[static_cast<std::size_t>(match.first)] =
+        frame.features.keypoints[static_cast<std::size_t>(match.second)].xy;
+    pairs.push_back({match.first, match.second});
+  }
   // Nothing keeps the reference: a later frame may have the parallax.
-  return edge::initialize_monocular(camera_, *reference_, frame, options_);
+  return edge::initialize_monocular(camera_, *reference_, frame, pairs, options_);
+}
+
+void Pipeline::set_reference(const Frame& frame) {
+  reference_ = frame;
+  previous_.clear();
+  for (const foundations::orb::Keypoint& k : frame.features.keypoints) {
+    previous_.push_back(k.xy);
+  }
 }
 
 Result<void> Pipeline::accept(const Frame& frame, const Tracked& tracked) {

@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "slamlab/edge/adjust.hpp"
+#include "slamlab/foundations/triangulation.hpp"
 #include "slamlab/foundations/twoview.hpp"
 
 namespace slamlab::edge {
@@ -35,6 +36,18 @@ Result<void> check_frame(const Frame& frame, const Options& options, const char*
                 std::string(name) + ": its pyramid must be the settings'");
   }
   return {};
+}
+
+/// @brief Check a monocular pair of frames against the settings.
+/// @param reference The reference frame.
+/// @param frame The later frame.
+/// @param options The settings.
+/// @return Nothing, or `InvalidInput` naming the frame whose pyramid is not the settings'.
+Result<void> check_frames(const Frame& reference, const Frame& frame, const Options& options) {
+  if (auto ok = check_frame(reference, options, "reference"); !ok) {
+    return ok;
+  }
+  return check_frame(frame, options, "frame");
 }
 
 /// @brief Add a keyframe that observes no point yet.
@@ -81,6 +94,45 @@ double median(std::vector<double>& values) {
   return (lower + upper) / 2.0;
 }
 
+/// @brief The matches a monocular start keeps, and their points
+///        (`slamlab.edge.initialization._kept_points`, ORB-SLAM's `CheckRT`): the chosen
+///        motion's inliers in front of both views with rays whose cosine is below
+///        `init_parallax_cos`.
+/// @param result The two-view initialisation.
+/// @param bearings1 The matches' bearings in the reference (N x 3).
+/// @param bearings2 In the later frame.
+/// @param options The parallax.
+/// @return The kept matches' indices and their points; the triangulation's error.
+Result<std::pair<std::vector<Eigen::Index>, std::vector<Eigen::Vector3d>>> kept_points(
+    const twoview::Initialization& result, const foundations::correspondences::Rows3& bearings1,
+    const foundations::correspondences::Rows3& bearings2, const Options& options) {
+  std::vector<Eigen::Index> inliers;
+  for (Eigen::Index i = 0; i < result.inliers.size(); ++i) {
+    if (result.inliers(i)) {
+      inliers.push_back(i);
+    }
+  }
+  const auto count = static_cast<Eigen::Index>(inliers.size());
+  foundations::correspondences::Rows3 rays1(count, 3);
+  foundations::correspondences::Rows3 rays2(count, 3);
+  for (Eigen::Index j = 0; j < count; ++j) {
+    rays1.row(j) = bearings1.row(inliers[static_cast<std::size_t>(j)]);
+    rays2.row(j) = bearings2.row(inliers[static_cast<std::size_t>(j)]);
+  }
+  auto seen = foundations::triangulation::two_view(result.relative_pose, rays1, rays2);
+  if (!seen) {
+    return std::unexpected(std::move(seen.error()));
+  }
+  std::pair<std::vector<Eigen::Index>, std::vector<Eigen::Vector3d>> out;
+  for (Eigen::Index j = 0; j < count; ++j) {
+    if (seen->in_front(j) && std::cos(seen->parallax(j)) < options.init_parallax_cos) {
+      out.first.push_back(inliers[static_cast<std::size_t>(j)]);
+      out.second.emplace_back(seen->points.row(j).transpose());
+    }
+  }
+  return out;
+}
+
 }  // namespace
 
 Result<std::optional<Started>> initialize_from_depth(const Frame& frame, const Options& options) {
@@ -117,14 +169,18 @@ Result<std::optional<Started>> initialize_from_depth(const Frame& frame, const O
   return out;
 }
 
-Result<std::vector<matching::Match>> match_for_initialization(const Frame& reference,
-                                                              const Frame& frame,
-                                                              const Options& options) {
-  if (auto ok = check_frame(reference, options, "reference"); !ok) {
+Result<std::vector<matching::Match>> match_for_initialization(
+    const Frame& reference, const Frame& frame, std::span<const std::array<double, 2>> previous,
+    const Options& options) {
+  if (auto ok = check_frames(reference, frame, options); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
-  if (auto ok = check_frame(frame, options, "frame"); !ok) {
-    return std::unexpected(std::move(ok.error()));
+  if (previous.size() != keypoint_count(reference) ||
+      std::ranges::any_of(previous, [](const std::array<double, 2>& xy) {
+        return !std::isfinite(xy[0]) || !std::isfinite(xy[1]);
+      })) {
+    return fail(ErrorKind::kInvalidInput,
+                "previous: expected one finite pixel per reference keypoint");
   }
   std::vector<std::int64_t> rows;
   std::vector<matching::Projection> projections;
@@ -132,7 +188,7 @@ Result<std::vector<matching::Match>> match_for_initialization(const Frame& refer
     const foundations::orb::Keypoint& k = reference.features.keypoints[i];
     if (k.level == 0) {
       rows.push_back(static_cast<std::int64_t>(i));
-      projections.push_back({.xy = k.xy,
+      projections.push_back({.xy = previous[i],
                              .radius = options.init_window,
                              .min_level = 0,
                              .max_level = 0,
@@ -153,32 +209,40 @@ Result<std::vector<matching::Match>> match_for_initialization(const Frame& refer
   return found;
 }
 
-Result<std::optional<Started>> initialize_monocular(const Camera& camera, const Frame& reference,
-                                                    const Frame& frame, const Options& options) {
+Result<std::optional<Started>> initialize_monocular(
+    const Camera& camera, const Frame& reference, const Frame& frame,
+    std::span<const std::array<std::int64_t, 2>> pairs, const Options& options) {
   if (auto ok = check_camera(camera); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
-  auto found = match_for_initialization(reference, frame, options);
-  if (!found) {
-    return std::unexpected(std::move(found.error()));
+  if (auto ok = check_frames(reference, frame, options); !ok) {
+    return std::unexpected(std::move(ok.error()));
   }
-  std::vector<matching::Match> pairs;
-  for (const matching::Match& match : *found) {
-    if (!std::isnan(reference.bearings[static_cast<std::size_t>(match.first)].x()) &&
-        !std::isnan(frame.bearings[static_cast<std::size_t>(match.second)].x())) {
-      pairs.push_back(match);
+  if (std::ranges::any_of(pairs, [&](const std::array<std::int64_t, 2>& pair) {
+        return pair[0] < 0 || pair[1] < 0 ||
+               std::cmp_greater_equal(pair[0], keypoint_count(reference)) ||
+               std::cmp_greater_equal(pair[1], keypoint_count(frame));
+      })) {
+    return fail(ErrorKind::kInvalidInput,
+                "matches.pairs: each must be a keypoint of the reference and of the frame");
+  }
+  std::vector<std::array<std::int64_t, 2>> usable;
+  for (const std::array<std::int64_t, 2>& pair : pairs) {
+    if (!std::isnan(reference.bearings[static_cast<std::size_t>(pair[0])].x()) &&
+        !std::isnan(frame.bearings[static_cast<std::size_t>(pair[1])].x())) {
+      usable.push_back(pair);
     }
   }
-  if (std::cmp_less(pairs.size(), options.init_min_matches)) {
+  if (std::cmp_less(usable.size(), options.init_min_matches)) {
     return std::nullopt;
   }
-  const auto n = static_cast<Eigen::Index>(pairs.size());
+  const auto n = static_cast<Eigen::Index>(usable.size());
   foundations::correspondences::Rows3 bearings1(n, 3);
   foundations::correspondences::Rows3 bearings2(n, 3);
   for (Eigen::Index i = 0; i < n; ++i) {
-    const matching::Match& match = pairs[static_cast<std::size_t>(i)];
-    bearings1.row(i) = reference.bearings[static_cast<std::size_t>(match.first)].transpose();
-    bearings2.row(i) = frame.bearings[static_cast<std::size_t>(match.second)].transpose();
+    const std::array<std::int64_t, 2>& pair = usable[static_cast<std::size_t>(i)];
+    bearings1.row(i) = reference.bearings[static_cast<std::size_t>(pair[0])].transpose();
+    bearings2.row(i) = frame.bearings[static_cast<std::size_t>(pair[1])].transpose();
   }
   auto result = twoview::initialize(
       bearings1, bearings2,
@@ -200,16 +264,17 @@ Result<std::optional<Started>> initialize_monocular(const Camera& camera, const 
   if (auto ok = insert_unobserving(m, frame, result->relative_pose); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
-  const std::int64_t second = m.kf_start[1];
-  std::vector<Eigen::Vector3d> xyz;
-  std::vector<std::vector<std::int64_t>> observers;
-  for (Eigen::Index i = 0; i < n; ++i) {
-    if (result->triangulated(i)) {
-      const matching::Match& match = pairs[static_cast<std::size_t>(i)];
-      xyz.emplace_back(result->points.row(i).transpose());
-      observers.push_back({match.first, second + match.second});
-    }
+  auto kept = kept_points(*result, bearings1, bearings2, options);
+  if (!kept) {
+    return std::unexpected(std::move(kept.error()));
   }
+  const std::int64_t second = m.kf_start[1];
+  std::vector<std::vector<std::int64_t>> observers;
+  for (const Eigen::Index i : kept->first) {
+    const std::array<std::int64_t, 2>& pair = usable[static_cast<std::size_t>(i)];
+    observers.push_back({pair[0], second + pair[1]});
+  }
+  const std::vector<Eigen::Vector3d>& xyz = kept->second;
   if (auto ok = add_points(m, xyz, observers); !ok) {
     return std::unexpected(std::move(ok.error()));
   }

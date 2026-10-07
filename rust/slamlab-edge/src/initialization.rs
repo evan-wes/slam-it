@@ -4,6 +4,7 @@
 use nalgebra::{Matrix4, Vector3};
 use slamlab_foundations::error::{ErrorKind, Result, fail};
 use slamlab_foundations::matching::{Match, Projection, SearchOptions};
+use slamlab_foundations::triangulation;
 use slamlab_foundations::twoview::{self, Status};
 
 use crate::adjust::bundle_adjust;
@@ -165,6 +166,8 @@ pub fn initialize_from_depth(frame: &Frame, options: &Options) -> Result<Option<
 ///
 /// * `reference` - The reference frame.
 /// * `frame` - The later frame.
+/// * `previous` - Where each reference keypoint was last matched, in pixels (its own position
+///   until it is matched; ORB-SLAM's `vbPrevMatched`).
 /// * `options` - The window and ratio.
 ///
 /// # Returns
@@ -173,14 +176,26 @@ pub fn initialize_from_depth(frame: &Frame, options: &Options) -> Result<Option<
 ///
 /// # Errors
 ///
-/// `InvalidInput` for a frame whose pyramid is not the settings', or invalid settings.
+/// `InvalidInput` for a frame whose pyramid is not the settings', `previous` that is not one
+/// finite pixel per reference keypoint, or invalid settings.
 pub fn match_for_initialization(
     reference: &Frame,
     frame: &Frame,
+    previous: &[[f64; 2]],
     options: &Options,
 ) -> Result<Vec<Match>> {
     check_frame(reference, options, "reference")?;
     check_frame(frame, options, "frame")?;
+    if previous.len() != reference.size()
+        || !previous
+            .iter()
+            .all(|xy| xy[0].is_finite() && xy[1].is_finite())
+    {
+        return fail(
+            ErrorKind::InvalidInput,
+            "previous: expected one finite pixel per reference keypoint",
+        );
+    }
     let rows: Vec<usize> = (0..reference.size())
         .filter(|&i| reference.features.keypoints[i].level == 0)
         .collect();
@@ -189,7 +204,7 @@ pub fn match_for_initialization(
         .map(|&i| {
             let k = &reference.features.keypoints[i];
             Projection {
-                xy: k.xy,
+                xy: previous[i],
                 radius: options.init_window,
                 min_level: 0,
                 max_level: 0,
@@ -215,6 +230,44 @@ pub fn match_for_initialization(
     Ok(found)
 }
 
+/// The matches a monocular start keeps, and their points
+/// (`slamlab.edge.initialization._kept_points`, ORB-SLAM's `CheckRT`): the chosen motion's
+/// inliers in front of both views with rays whose cosine is below `init_parallax_cos`.
+///
+/// # Arguments
+///
+/// * `result` - The two-view initialisation.
+/// * `bearings1` - The matches' bearings in the reference.
+/// * `bearings2` - In the later frame.
+/// * `options` - The parallax.
+///
+/// # Returns
+///
+/// The kept matches' indices and their points.
+///
+/// # Errors
+///
+/// The triangulation's error.
+fn kept_points(
+    result: &twoview::Initialization,
+    bearings1: &[Vector3<f64>],
+    bearings2: &[Vector3<f64>],
+    options: &Options,
+) -> Result<(Vec<usize>, Vec<Vector3<f64>>)> {
+    let inliers: Vec<usize> = (0..result.inliers.len())
+        .filter(|&i| result.inliers[i])
+        .collect();
+    let rays1: Vec<Vector3<f64>> = inliers.iter().map(|&i| bearings1[i]).collect();
+    let rays2: Vec<Vector3<f64>> = inliers.iter().map(|&i| bearings2[i]).collect();
+    let seen = triangulation::two_view(&result.relative_pose, &rays1, &rays2)?;
+    Ok(inliers
+        .iter()
+        .enumerate()
+        .filter(|&(j, _)| seen.in_front[j] && seen.parallax[j].cos() < options.init_parallax_cos)
+        .map(|(j, &i)| (i, seen.points[j]))
+        .unzip())
+}
+
 /// Starts the map from two monocular frames
 /// (`slamlab.edge.initialization.initialize_monocular`).
 ///
@@ -223,34 +276,49 @@ pub fn match_for_initialization(
 /// * `camera` - The camera.
 /// * `reference` - The reference frame (the first keyframe, at the origin).
 /// * `frame` - The later frame.
-/// * `options` - The window, the minimum matches, the seed, and the pyramid.
+/// * `matches` - `(reference keypoint, frame keypoint)` pairs.
+/// * `options` - The minimum matches, the parallax, the seed, and the pyramid.
 ///
 /// # Returns
 ///
-/// The map of two keyframes and their points, scaled so the first's median depth is 1, or
-/// `None` if too few keypoints match, the views do not initialise, or too few points survive
-/// the adjustment.
+/// The map of two keyframes and their points (the chosen motion's inliers in front of both
+/// views with rays whose cosine is below `init_parallax_cos`, `CheckRT`), scaled so the
+/// first's median depth is 1, or `None` if too few keypoints match, the views do not
+/// initialise, or too few points survive the adjustment.
 ///
 /// # Errors
 ///
-/// `InvalidInput` for a frame whose pyramid is not the settings', or an invalid camera or
-/// settings.
+/// `InvalidInput` for a frame whose pyramid is not the settings', a pair that is not a
+/// keypoint of each frame, or an invalid camera or settings.
 pub fn initialize_monocular(
     camera: &Camera,
     reference: &Frame,
     frame: &Frame,
+    matches: &[[usize; 2]],
     options: &Options,
 ) -> Result<Option<Started>> {
     check_camera(camera)?;
-    let pairs: Vec<Match> = match_for_initialization(reference, frame, options)?
-        .into_iter()
-        .filter(|p| !reference.bearings[p.first].x.is_nan() && !frame.bearings[p.second].x.is_nan())
+    check_frame(reference, options, "reference")?;
+    check_frame(frame, options, "frame")?;
+    if matches
+        .iter()
+        .any(|p| p[0] >= reference.size() || p[1] >= frame.size())
+    {
+        return fail(
+            ErrorKind::InvalidInput,
+            "matches.pairs: each must be a keypoint of the reference and of the frame",
+        );
+    }
+    let pairs: Vec<[usize; 2]> = matches
+        .iter()
+        .copied()
+        .filter(|p| !reference.bearings[p[0]].x.is_nan() && !frame.bearings[p[1]].x.is_nan())
         .collect();
     if pairs.len() < options.init_min_matches {
         return Ok(None);
     }
-    let bearings1: Vec<Vector3<f64>> = pairs.iter().map(|p| reference.bearings[p.first]).collect();
-    let bearings2: Vec<Vector3<f64>> = pairs.iter().map(|p| frame.bearings[p.second]).collect();
+    let bearings1: Vec<Vector3<f64>> = pairs.iter().map(|p| reference.bearings[p[0]]).collect();
+    let bearings2: Vec<Vector3<f64>> = pairs.iter().map(|p| frame.bearings[p[1]]).collect();
     let result = match twoview::initialize(
         &bearings1,
         &bearings2,
@@ -271,12 +339,11 @@ pub fn initialize_monocular(
     insert_unobserving(&mut m, reference, &Matrix4::identity())?;
     insert_unobserving(&mut m, frame, &result.relative_pose)?;
     let second = m.kf_start[1];
-    let (xyz, observers): (Vec<Vector3<f64>>, Vec<Vec<usize>>) = pairs
+    let (kept, xyz) = kept_points(&result, &bearings1, &bearings2, options)?;
+    let observers: Vec<Vec<usize>> = kept
         .iter()
-        .enumerate()
-        .filter(|&(i, _)| result.triangulated[i])
-        .map(|(i, p)| (result.points[i], vec![p.first, second + p.second]))
-        .unzip();
+        .map(|&i| vec![pairs[i][0], second + pairs[i][1]])
+        .collect();
     map::add_points(&mut m, &xyz, &observers)?;
     let adjusted = Options {
         ba_iterations: INIT_BA_ITERATIONS,

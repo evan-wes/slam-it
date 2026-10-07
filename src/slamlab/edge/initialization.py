@@ -20,7 +20,7 @@ from dataclasses import replace
 from typing import Any, Protocol
 
 import numpy as np
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 
 from slamlab import backends
 from slamlab.edge import adjust, frames
@@ -28,10 +28,12 @@ from slamlab.edge import map as maps
 from slamlab.edge.frames import Camera, Frame, Tracked
 from slamlab.edge.map import Map, frame_dict
 from slamlab.edge.options import TH_LOW, Options
-from slamlab.foundations import matching, twoview
+from slamlab.foundations import matching, triangulation, twoview
+from slamlab.foundations.arrays import as_indices, as_real
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
 
 Array = NDArray[np.float64]
+IntArray = NDArray[np.int64]
 
 INIT_BA_ITERATIONS = 20
 """The monocular map's first bundle adjustment's iterations (ORB-SLAM's
@@ -52,9 +54,13 @@ class Implementation(Protocol):
         ...
 
     def match_for_initialization(
-        self, reference: dict[str, Any], frame: dict[str, Any], options: dict[str, Any]
+        self,
+        reference: dict[str, Any],
+        frame: dict[str, Any],
+        previous: NDArray[np.float64],
+        options: dict[str, Any],
     ) -> dict[str, Any]:
-        """Match a monocular reference frame to a later one."""
+        """Match a monocular reference frame to a later one, where each was last matched."""
         ...
 
     def initialize_monocular(
@@ -62,9 +68,10 @@ class Implementation(Protocol):
         camera: dict[str, Any],
         reference: dict[str, Any],
         frame: dict[str, Any],
+        pairs: NDArray[np.int64],
         options: dict[str, Any],
     ) -> dict[str, Any] | None:
-        """Start the map from two monocular frames."""
+        """Start the map from two monocular frames and their matches."""
         ...
 
 
@@ -144,13 +151,15 @@ def initialize_from_depth(
     )
 
 
-def _match_for_initialization(reference: Frame, frame: Frame, options: Options) -> matching.Matches:
+def _match_for_initialization(
+    reference: Frame, frame: Frame, previous: Array, options: Options
+) -> matching.Matches:
     """Match a monocular reference frame to a later one (reference)."""
     keypoints = reference.features.keypoints
     rows = np.flatnonzero(keypoints.level == 0)
     n = len(rows)
     projections = matching.Projections(
-        xy=keypoints.xy[rows],
+        xy=previous[rows],
         radius=np.full(n, options.init_window),
         min_level=np.zeros(n, dtype=np.int64),
         max_level=np.zeros(n, dtype=np.int64),
@@ -169,13 +178,20 @@ def _match_for_initialization(reference: Frame, frame: Frame, options: Options) 
 
 
 def match_for_initialization(
-    reference: Frame, frame: Frame, options: Options, *, backend: str = "python"
+    reference: Frame,
+    frame: Frame,
+    previous: ArrayLike,
+    options: Options,
+    *,
+    backend: str = "python",
 ) -> matching.Matches:
     """Match a monocular reference frame to a later one (``SearchForInitialization``).
 
-    Each level-0 keypoint of the reference is searched at its own position, within
-    ``init_window``, among the later frame's level-0 keypoints, with ORB-SLAM's stricter
-    distance, its 0.9 ratio test and the rotation check.
+    Each level-0 keypoint of the reference is searched where it was last matched
+    (``previous``, ORB-SLAM's ``vbPrevMatched``: the caller moves a keypoint's position to its
+    match's after each search, so the window follows the motion), within ``init_window``,
+    among the later frame's level-0 keypoints, with ORB-SLAM's stricter distance, its 0.9
+    ratio test and the rotation check.
 
     Parameters
     ----------
@@ -183,6 +199,9 @@ def match_for_initialization(
         The reference frame.
     frame : slamlab.edge.frames.Frame
         The later frame.
+    previous : array_like, shape (N, 2)
+        Where each of the reference's N keypoints was last matched, in pixels (its own
+        position until it is matched).
     options : Options
         The window and ratio.
     backend : {"python", "cpp", "rust"}, optional
@@ -196,33 +215,54 @@ def match_for_initialization(
     Raises
     ------
     slamlab.foundations.errors.InvalidInputError
-        If a frame's pyramid is not the settings'.
+        If a frame's pyramid is not the settings', or `previous` is not one finite pixel per
+        reference keypoint.
     """
     _check_pyramid(reference, options, "reference")
     _check_pyramid(frame, options, "frame")
+    positions = as_real(previous, "previous")
+    if positions.shape != (reference.size, 2) or not np.all(np.isfinite(positions)):
+        raise InvalidInputError(
+            f"previous: expected ({reference.size}, 2) finite pixels, got {positions.shape}"
+        )
     return backends.call(
         backend,
         __name__,
         "match_for_initialization",
-        reference=lambda: _match_for_initialization(reference, frame, options),
+        reference=lambda: _match_for_initialization(reference, frame, positions, options),
         arguments={
             "reference": frame_dict(reference),
             "frame": frame_dict(frame),
+            "previous": positions,
             "options": options.as_dict(),
         },
         decode=matching.decode_matches,
     )
 
 
+def _kept_points(
+    result: twoview.Initialization, bearings1: Array, bearings2: Array, options: Options
+) -> tuple[IntArray, Array]:
+    """Return the matches a monocular start keeps, and their points (``CheckRT``).
+
+    The chosen motion's inliers in front of both views whose rays' cosine is below
+    ``init_parallax_cos``: two-view's own triangulated points need its larger parallax, which
+    only decides whether the views initialise.
+    """
+    inliers = np.flatnonzero(result.inliers)
+    found = triangulation.two_view(result.relative_pose, bearings1[inliers], bearings2[inliers])
+    keep = found.in_front & (np.cos(found.parallax) < options.init_parallax_cos)
+    return inliers[keep], found.points[keep]
+
+
 def _initialize_monocular(
-    camera: Camera, reference: Frame, frame: Frame, options: Options
+    camera: Camera, reference: Frame, frame: Frame, matched: IntArray, options: Options
 ) -> tuple[Map, Tracked] | None:
     """Start the map from two monocular frames (reference)."""
-    found = _match_for_initialization(reference, frame, options)
-    valid = ~np.isnan(reference.bearings[found.pairs[:, 0], 0]) & ~np.isnan(
-        frame.bearings[found.pairs[:, 1], 0]
+    valid = ~np.isnan(reference.bearings[matched[:, 0], 0]) & ~np.isnan(
+        frame.bearings[matched[:, 1], 0]
     )
-    pairs = found.pairs[valid]
+    pairs = matched[valid]
     if len(pairs) < options.init_min_matches:
         return None
     try:
@@ -235,7 +275,9 @@ def _initialize_monocular(
         return None
     if result.status is not twoview.Status.INITIALIZED:
         return None
-    good = np.flatnonzero(result.triangulated)
+    good, xyz = _kept_points(
+        result, reference.bearings[pairs[:, 0]], frame.bearings[pairs[:, 1]], options
+    )
     m = maps.insert_keyframe(
         maps.empty(options.levels, options.scale_factor),
         reference,
@@ -247,7 +289,7 @@ def _initialize_monocular(
     )
     second = int(m.kf_start[1])
     observers = np.column_stack([pairs[good, 0], second + pairs[good, 1]]).astype(np.int64)
-    m = maps.add_points(m, result.points[good], observers)
+    m = maps.add_points(m, xyz, observers)
     m = adjust.bundle_adjust(
         m,
         camera,
@@ -265,15 +307,23 @@ def _initialize_monocular(
     return m, Tracked(pose=m.kf_pose[1].copy(), points=m.kp_point[m.keypoint_rows(1)].copy())
 
 
-def initialize_monocular(
-    camera: Camera, reference: Frame, frame: Frame, options: Options, *, backend: str = "python"
+def initialize_monocular(  # noqa: PLR0913 -- the two frames, their matches, the settings
+    camera: Camera,
+    reference: Frame,
+    frame: Frame,
+    matches: matching.Matches,
+    options: Options,
+    *,
+    backend: str = "python",
 ) -> tuple[Map, Tracked] | None:
-    """Start the map from two monocular frames (``MonocularInitialization``).
+    """Start the map from two monocular frames and their matches (``MonocularInitialization``).
 
-    The two frames are matched (:func:`match_for_initialization`) and initialised by
-    :func:`slamlab.foundations.twoview.initialize`; they become keyframes, a bundle adjustment
-    of :data:`INIT_BA_ITERATIONS` refines them with the first held fixed, and the map is
-    scaled so the first keyframe's median depth is 1.
+    The matches (:func:`match_for_initialization`) are initialised by
+    :func:`slamlab.foundations.twoview.initialize`. The chosen motion's inliers in front of
+    both views with rays whose cosine is below ``init_parallax_cos`` become points
+    (``CheckRT``); the frames become keyframes, a bundle adjustment of
+    :data:`INIT_BA_ITERATIONS` refines them with the first held fixed, and the map is scaled
+    so the first keyframe's median depth is 1.
 
     Parameters
     ----------
@@ -283,6 +333,8 @@ def initialize_monocular(
         The reference frame (the first keyframe, at the origin).
     frame : slamlab.edge.frames.Frame
         The later frame.
+    matches : slamlab.foundations.matching.Matches
+        ``(reference keypoint, frame keypoint)`` pairs.
     options : Options
         The window, the minimum matches, the seed, and the pyramid.
     backend : {"python", "cpp", "rust"}, optional
@@ -298,19 +350,29 @@ def initialize_monocular(
     Raises
     ------
     slamlab.foundations.errors.InvalidInputError
-        If a frame's pyramid is not the settings'.
+        If a frame's pyramid is not the settings', or a pair is not a keypoint of each frame.
     """
     _check_pyramid(reference, options, "reference")
     _check_pyramid(frame, options, "frame")
+    pairs = np.asarray(matches.pairs)
+    if pairs.ndim != 2 or pairs.shape[1] != 2:
+        raise InvalidInputError(f"matches.pairs: expected shape (M, 2), got {pairs.shape}")
+    pairs = np.column_stack(
+        [
+            as_indices(pairs[:, 0], len(pairs), reference.size, "matches.pairs"),
+            as_indices(pairs[:, 1], len(pairs), frame.size, "matches.pairs"),
+        ]
+    ).astype(np.int64)
     return backends.call(
         backend,
         __name__,
         "initialize_monocular",
-        reference=lambda: _initialize_monocular(camera, reference, frame, options),
+        reference=lambda: _initialize_monocular(camera, reference, frame, pairs, options),
         arguments={
             "camera": camera.as_dict(),
             "reference": frame_dict(reference),
             "frame": frame_dict(frame),
+            "pairs": pairs,
             "options": options.as_dict(),
         },
         decode=_decode_started,

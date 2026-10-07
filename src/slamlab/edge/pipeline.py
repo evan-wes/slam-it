@@ -116,6 +116,7 @@ class Pipeline:
     _last_tracked: Tracked | None = field(default=None, repr=False)
     _velocity: Array | None = field(default=None, repr=False)
     _reference: Frame | None = field(default=None, repr=False)
+    _previous: Array | None = field(default=None, repr=False)
     _failures: int = field(default=0, repr=False)
     _since_recovery: int | None = field(default=None, repr=False)
 
@@ -197,16 +198,21 @@ class Pipeline:
         if frame.size < self.options.min_init_features:
             self._reference = None  # too few features: ORB-SLAM drops its initializer
             return None
-        if self._reference is None:
-            self._reference = frame
+        if self._reference is None or self._previous is None:
+            self._reference, self._previous = frame, frame.features.keypoints.xy.copy()
             return None
-        matched = initialization.match_for_initialization(self._reference, frame, self.options)
+        matched = initialization.match_for_initialization(
+            self._reference, frame, self._previous, self.options
+        )
         if len(matched.pairs) < self.options.init_min_matches:
-            self._reference = frame  # the views no longer overlap enough: start again
+            # The views no longer overlap enough: start again from this frame.
+            self._reference, self._previous = frame, frame.features.keypoints.xy.copy()
             return None
+        # The search follows each matched keypoint (SearchForInitialization's vbPrevMatched).
+        self._previous[matched.pairs[:, 0]] = frame.features.keypoints.xy[matched.pairs[:, 1]]
         # None keeps the reference: a later frame may have the parallax.
         return initialization.initialize_monocular(
-            self.camera, self._reference, frame, self.options
+            self.camera, self._reference, frame, matched, self.options
         )
 
     def _accept(self, frame: Frame, tracked: Tracked) -> None:

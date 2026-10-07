@@ -9,7 +9,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use slamlab_edge::initialization as core;
 
-use super::edge_crossing::{camera_in, frame_in, options_in, started_dict, vector_array};
+use super::edge_crossing::{camera_in, frame_in, options_in, rows, started_dict, vector_array};
 use crate::common::{add_functions, to_i64, unwrap};
 
 /// Starts the map from a stereo or RGB-D frame.
@@ -46,6 +46,7 @@ fn initialize_from_depth<'py>(
 ///
 /// * `reference` - The reference frame, as a dict.
 /// * `frame` - The later frame, as a dict.
+/// * `previous` - Where each reference keypoint was last matched, (N, 2).
 /// * `options` - The settings, as a dict.
 ///
 /// # Returns
@@ -56,11 +57,12 @@ fn initialize_from_depth<'py>(
 ///
 /// `ValueError` for a malformed argument; `InvalidInputError` from the core.
 #[pyfunction]
-#[pyo3(signature = (reference, frame, options))]
+#[pyo3(signature = (reference, frame, previous, options))]
 fn match_for_initialization<'py>(
     py: Python<'py>,
     reference: &Bound<'py, PyDict>,
     frame: &Bound<'py, PyDict>,
+    previous: &Bound<'py, PyAny>,
     options: &Bound<'py, PyDict>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let found = unwrap(
@@ -68,6 +70,7 @@ fn match_for_initialization<'py>(
         core::match_for_initialization(
             &frame_in(reference)?,
             &frame_in(frame)?,
+            &rows::<f64, 2>(previous)?,
             &options_in(options)?,
         ),
     )?;
@@ -91,6 +94,7 @@ fn match_for_initialization<'py>(
 /// * `camera` - The camera, as a dict.
 /// * `reference` - The reference frame, as a dict.
 /// * `frame` - The later frame, as a dict.
+/// * `pairs` - The matches, (M, 2) int64.
 /// * `options` - The settings, as a dict.
 ///
 /// # Returns
@@ -99,22 +103,34 @@ fn match_for_initialization<'py>(
 ///
 /// # Errors
 ///
-/// `ValueError` for a malformed argument; `InvalidInputError` from the core.
+/// `ValueError` for a malformed argument or a negative keypoint; `InvalidInputError` from the
+/// core.
 #[pyfunction]
-#[pyo3(signature = (camera, reference, frame, options))]
+#[pyo3(signature = (camera, reference, frame, pairs, options))]
 fn initialize_monocular<'py>(
     py: Python<'py>,
     camera: &Bound<'py, PyDict>,
     reference: &Bound<'py, PyDict>,
     frame: &Bound<'py, PyDict>,
+    pairs: &Bound<'py, PyAny>,
     options: &Bound<'py, PyDict>,
 ) -> PyResult<Bound<'py, PyAny>> {
+    let matches = rows::<i64, 2>(pairs)?
+        .into_iter()
+        .map(|[a, b]| {
+            let index = |v: i64| {
+                usize::try_from(v).map_err(|e| PyValueError::new_err(format!("pairs: {e}")))
+            };
+            Ok([index(a)?, index(b)?])
+        })
+        .collect::<PyResult<Vec<[usize; 2]>>>()?;
     let started = unwrap(
         py,
         core::initialize_monocular(
             &camera_in(camera)?,
             &frame_in(reference)?,
             &frame_in(frame)?,
+            &matches,
             &options_in(options)?,
         ),
     )?;

@@ -71,6 +71,8 @@ pub struct Options {
     pub init_ratio: f64,
     /// Matches it needs (fewer: the reference frame is replaced).
     pub init_min_matches: usize,
+    /// A monocular start keeps the points whose rays' cosine is below this.
+    pub init_parallax_cos: f64,
     /// The motion model's search window, in pixels at level 0.
     pub motion_window: f64,
     /// The same for stereo.
@@ -157,6 +159,7 @@ impl Default for Options {
             init_window: 100.0,
             init_ratio: 0.9,
             init_min_matches: 100,
+            init_parallax_cos: 0.99998,
             motion_window: 15.0,
             stereo_motion_window: 7.0,
             min_motion_matches: 20,
@@ -301,7 +304,7 @@ named_settings!(
     n_features: Integer, levels: Integer, scale_factor: Real, fast_threshold: Integer,
     min_fast_threshold: Integer, close_depth: Real, init_feature_factor: Integer,
     min_init_features: Integer, min_init_features_depth: Integer, init_window: Real,
-    init_ratio: Real, init_min_matches: Integer, motion_window: Real,
+    init_ratio: Real, init_min_matches: Integer, init_parallax_cos: Real, motion_window: Real,
     stereo_motion_window: Real, min_motion_matches: Integer, local_window: Real,
     rgbd_local_window: Real, recovery_local_window: Real, min_tracked: Integer, chi2_mono: Real, chi2_stereo: Real,
     pose_rounds: Integer, view_cos_limit: Real, max_frames: Integer, ref_ratio: Real,
@@ -387,6 +390,7 @@ pub fn check_options(options: &Options) -> Result<()> {
         ("redundant_fraction", options.redundant_fraction),
         ("view_cos_limit", options.view_cos_limit),
         ("max_parallax_cos", options.max_parallax_cos),
+        ("init_parallax_cos", options.init_parallax_cos),
     ] {
         if !(value.is_finite() && value > 0.0 && value <= 1.0) {
             return fail_setting(name, "must be in (0, 1]", value);
@@ -407,7 +411,7 @@ mod tests {
     fn settings_by_name() {
         let mut options = Options::default();
         let settings = options.settings();
-        assert_eq!(settings.len(), 46);
+        assert_eq!(settings.len(), 47);
         assert_eq!(settings[0], ("n_features", Setting::Integer(1000)));
         assert_eq!(settings[2], ("scale_factor", Setting::Real(1.2)));
         options.set("window", Setting::Integer(7)).unwrap();

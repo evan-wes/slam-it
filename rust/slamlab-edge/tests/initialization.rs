@@ -43,16 +43,31 @@ fn from_depth_puts_a_point_at_every_keypoint() {
 #[test]
 fn monocular_starts_a_unit_depth_map() {
     let (first, last) = (frame(0, false), frame(2, false));
-    let found = match_for_initialization(&first, &last, &Options::default()).unwrap();
+    let own: Vec<[f64; 2]> = first.features.keypoints.iter().map(|k| k.xy).collect();
+    let found = match_for_initialization(&first, &last, &own, &Options::default()).unwrap();
     assert_eq!(found.len(), POINTS);
     assert!(found.iter().all(|m| m.first == m.second));
-    let few = initialize_monocular(&camera(), &first, &last, &Options::default()).unwrap();
+    let away: Vec<[f64; 2]> = own.iter().map(|xy| [xy[0] + 1000.0, xy[1]]).collect();
+    let none = match_for_initialization(&first, &last, &away, &Options::default()).unwrap();
+    assert!(none.is_empty());
+    let short = match_for_initialization(&first, &last, &own[1..], &Options::default());
+    assert_eq!(short.unwrap_err().kind, ErrorKind::InvalidInput);
+    let pairs: Vec<[usize; 2]> = found.iter().map(|m| [m.first, m.second]).collect();
+    let few = initialize_monocular(&camera(), &first, &last, &pairs, &Options::default()).unwrap();
     assert!(few.is_none());
+    let beyond = initialize_monocular(
+        &camera(),
+        &first,
+        &last,
+        &[[0, POINTS]],
+        &Options::default(),
+    );
+    assert_eq!(beyond.unwrap_err().kind, ErrorKind::InvalidInput);
     let options = Options {
         init_min_matches: 20,
         ..Options::default()
     };
-    let started = initialize_monocular(&camera(), &first, &last, &options)
+    let started = initialize_monocular(&camera(), &first, &last, &pairs, &options)
         .unwrap()
         .unwrap();
     let m = &started.map;

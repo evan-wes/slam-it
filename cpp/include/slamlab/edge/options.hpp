@@ -63,6 +63,8 @@ struct Options {
   double init_ratio{0.9};
   /// @brief Matches it needs (fewer: the reference frame is replaced).
   std::int64_t init_min_matches{100};
+  /// @brief A monocular start keeps the points whose rays' cosine is below this.
+  double init_parallax_cos{0.99998};
   /// @brief The motion model's search window, in pixels at level 0.
   double motion_window{15.0};
   /// @brief The same for stereo.
@@ -171,11 +173,12 @@ inline constexpr std::array<IntegerOption, 26> kIntegerOptions{{
 }};
 
 /// @brief `Options`' real fields, by their Python names.
-inline constexpr std::array<RealOption, 20> kRealOptions{{
+inline constexpr std::array<RealOption, 21> kRealOptions{{
     {"scale_factor", &Options::scale_factor},
     {"close_depth", &Options::close_depth},
     {"init_window", &Options::init_window},
     {"init_ratio", &Options::init_ratio},
+    {"init_parallax_cos", &Options::init_parallax_cos},
     {"motion_window", &Options::motion_window},
     {"stereo_motion_window", &Options::stereo_motion_window},
     {"local_window", &Options::local_window},

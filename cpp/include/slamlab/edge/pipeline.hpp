@@ -110,6 +110,10 @@ class Pipeline {
   /// @return The started map, if any; a stage's error.
   foundations::Result<std::optional<Started>> initialize_monocular(const Frame& frame);
 
+  /// @brief Make a frame the monocular reference, each keypoint searched from its own position.
+  /// @param frame The frame.
+  void set_reference(const Frame& frame);
+
   /// @brief Make a tracked frame the last one; the velocity only spans consecutive frames.
   /// @param frame The frame.
   /// @param tracked Its pose and matches.
@@ -160,6 +164,8 @@ class Pipeline {
   std::optional<Eigen::Matrix4d> velocity_;
   /// @brief The monocular initialisation's reference frame.
   std::optional<Frame> reference_;
+  /// @brief Where each of the reference's keypoints was last matched.
+  std::vector<std::array<double, 2>> previous_;
   /// @brief Frames in a row not tracked.
   std::int64_t failures_{0};
   /// @brief Frames since the last recovery, if any.

@@ -58,7 +58,12 @@ class Options:
     init_min_matches : int
         Matches a monocular initialisation needs (100). With fewer, the reference frame is
         replaced by the current one; otherwise it is kept, and later frames are tried
-        against it until the two initialise (ORB-SLAM's ``MonocularInitialization``).
+        against it until the two initialise (ORB-SLAM's ``MonocularInitialization``); the
+        map then needs as many points after its first adjustment.
+    init_parallax_cos : float
+        A monocular start keeps every inlier in front of both views whose two rays' cosine is
+        below this (``CheckRT``'s 0.99998, 0.36 degrees); two-view's own 1 degree only decides
+        whether the views initialise.
     motion_window : float
         The search window, in pixels at level 0, around a point predicted by the motion model
         (``TrackWithMotionModel``'s ``th``: 15, or 7 for stereo).
@@ -159,6 +164,7 @@ class Options:
     init_window: float = 100.0
     init_ratio: float = 0.9
     init_min_matches: int = 100
+    init_parallax_cos: float = 0.99998
     motion_window: float = 15.0
     stereo_motion_window: float = 7.0
     min_motion_matches: int = 20
@@ -266,6 +272,7 @@ _MAY_BE_ZERO = frozenset({"seed", "min_init_features", "min_init_features_depth"
 _FRACTIONS = frozenset(
     {
         "init_ratio",
+        "init_parallax_cos",
         "ref_ratio",
         "mono_ref_ratio",
         "found_ratio",

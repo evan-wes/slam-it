@@ -90,6 +90,8 @@ pub struct Pipeline {
     velocity: Option<Matrix4<f64>>,
     /// The monocular initialisation's reference frame.
     reference: Option<Frame>,
+    /// Where each of the reference's keypoints was last matched.
+    previous: Vec<[f64; 2]>,
     /// Frames in a row not tracked.
     failures: usize,
     /// Frames since the last recovery, if any.
@@ -132,6 +134,7 @@ impl Pipeline {
             last_tracked: None,
             velocity: None,
             reference: None,
+            previous: Vec::new(),
             failures: 0,
             since_recovery: None,
         })
@@ -260,16 +263,36 @@ impl Pipeline {
             return Ok(None);
         }
         let Some(reference) = &self.reference else {
-            self.reference = Some(frame.clone());
+            self.set_reference(frame);
             return Ok(None);
         };
-        let matched = initialization::match_for_initialization(reference, frame, &self.options)?;
+        let matched = initialization::match_for_initialization(
+            reference,
+            frame,
+            &self.previous,
+            &self.options,
+        )?;
         if matched.len() < self.options.init_min_matches {
-            self.reference = Some(frame.clone()); // the views no longer overlap enough: start again
+            self.set_reference(frame); // the views no longer overlap enough: start again
             return Ok(None);
         }
+        // The search follows each matched keypoint (SearchForInitialization's vbPrevMatched).
+        for m in &matched {
+            self.previous[m.first] = frame.features.keypoints[m.second].xy;
+        }
+        let pairs: Vec<[usize; 2]> = matched.iter().map(|m| [m.first, m.second]).collect();
         // `None` keeps the reference: a later frame may have the parallax.
-        initialization::initialize_monocular(&self.camera, reference, frame, &self.options)
+        initialization::initialize_monocular(&self.camera, reference, frame, &pairs, &self.options)
+    }
+
+    /// Makes a frame the monocular reference, each keypoint searched from its own position.
+    ///
+    /// # Arguments
+    ///
+    /// * `frame` - The frame.
+    fn set_reference(&mut self, frame: &Frame) {
+        self.previous = frame.features.keypoints.iter().map(|k| k.xy).collect();
+        self.reference = Some(frame.clone());
     }
 
     /// Makes a tracked frame the last one; the velocity only spans consecutive frames.
