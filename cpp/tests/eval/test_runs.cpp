@@ -140,8 +140,8 @@ bool same_trajectory(const std::vector<std::vector<double>>& got,
 /// @param failures Running failure count.
 void check_golden(int& failures) {
   const fs::path golden = fs::path(SLAMLAB_FIXTURES_DIR) / "eval" / "run";
-  const fs::path out = fs::temp_directory_path() / "slamlab_test_runs";
-  fs::remove_all(out);
+  const slamlab::testing::ScratchDir scratch("slamlab_test_runs");
+  const fs::path& out = scratch.path();
   expect(runs::write_run(out.string(), golden_run()).has_value(), "the run is written", failures);
   for (const char* name : {"keyframes.npy", "keyframe_poses.npy", "points.npy"}) {
     expect(bytes(out / name) == bytes(golden / name),
@@ -158,14 +158,13 @@ void check_golden(int& failures) {
   expect(json_lines(out / "diagnostics.jsonl") == json_lines(golden / "diagnostics.jsonl"),
          "diagnostics.jsonl holds Python's values", failures);
   expect(!fs::exists(out / ".run.json.tmp"), "no temporary file is left", failures);
-  fs::remove_all(out);
 }
 
 /// @brief Check the refusals: nothing is written.
 /// @param failures Running failure count.
 void check_refusals(int& failures) {
-  const fs::path out = fs::temp_directory_path() / "slamlab_test_runs_refused";
-  fs::remove_all(out);
+  const slamlab::testing::ScratchDir scratch("slamlab_test_runs_refused");
+  const fs::path& out = scratch.path();
   runs::Run run = golden_run();
   run.mode = "lidar";
   expect(is_invalid_input(runs::write_run(out.string(), run)), "an unknown mode is refused",

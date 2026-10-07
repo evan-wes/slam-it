@@ -174,10 +174,62 @@ class Frame:
     depth: Array
     right: Array
 
+    def __post_init__(self) -> None:
+        """Check that every array holds one float64 row per keypoint.
+
+        Raises
+        ------
+        slamlab.foundations.errors.InvalidInputError
+            If the descriptors, bearings, depths or right columns are not one per keypoint.
+        """
+        n = len(self.features.keypoints.xy)
+        if len(self.features.descriptors) != n:
+            raise InvalidInputError(
+                f"frame: expected one descriptor per keypoint ({n}), got "
+                f"{len(self.features.descriptors)}"
+            )
+        for name, value, shape in (
+            ("bearings", self.bearings, (n, 3)),
+            ("depth", self.depth, (n,)),
+            ("right", self.right, (n,)),
+        ):
+            if not isinstance(value, np.ndarray) or value.dtype != np.float64:
+                raise InvalidInputError(f"frame.{name}: expected a float64 array")
+            if value.shape != shape:
+                raise InvalidInputError(
+                    f"frame.{name}: expected shape {shape}, one row per keypoint, got {value.shape}"
+                )
+
     @property
     def size(self) -> int:
         """The number of keypoints."""
         return len(self.features.descriptors)
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the frame as it crosses the bindings: its features' fields and its arrays.
+
+        Returns
+        -------
+        dict
+            ``timestamp``, the keypoints' ``xy``, ``level``, ``level_xy``, ``response`` and
+            ``angle``, ``descriptors``, ``scale_factor``, ``levels``, and ``bearings``,
+            ``depth`` and ``right``.
+        """
+        keypoints = self.features.keypoints
+        return {
+            "timestamp": float(self.timestamp),
+            "xy": keypoints.xy,
+            "level": keypoints.level,
+            "level_xy": keypoints.level_xy,
+            "response": keypoints.response,
+            "angle": keypoints.angle,
+            "descriptors": self.features.descriptors,
+            "scale_factor": float(self.features.scale_factor),
+            "levels": int(self.features.levels),
+            "bearings": self.bearings,
+            "depth": self.depth,
+            "right": self.right,
+        }
 
 
 def _frame(
@@ -311,7 +363,6 @@ def rgbd(  # noqa: PLR0913 -- the image and its depth, its time, the camera, the
     slamlab.foundations.errors.InvalidInputError
         If the depth map's shape differs from the image's, or the baseline is 0.
     """
-    features = orb.extract(image, options, backend=backend)
     depths = as_real(depth_map, "depth_map", allow_nan=True)
     if depths.shape != np.shape(image):
         raise InvalidInputError(
@@ -319,6 +370,7 @@ def rgbd(  # noqa: PLR0913 -- the image and its depth, its time, the camera, the
         )
     if camera.baseline <= 0.0:
         raise InvalidInputError("camera.baseline: an RGB-D camera needs a virtual baseline")
+    features = orb.extract(image, options, backend=backend)
     xy = features.keypoints.xy
     depth = _depth_at(xy, depths)
     right = xy[:, 0] - camera.focal * camera.baseline / depth

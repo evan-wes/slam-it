@@ -6,7 +6,10 @@
 /// which reports the exception as a failure instead of letting it escape `main`.
 #pragma once
 
+#include <unistd.h>
+
 #include <exception>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <nlohmann/json.hpp>
@@ -21,6 +24,35 @@ namespace slamlab::testing {
 inline std::string fixture_path(const std::string& relative) {
   return std::string(SLAMLAB_FIXTURES_DIR) + "/" + relative;
 }
+
+/// @brief A scratch folder under the temp directory, named for this process so concurrent
+///        test runs never share one, and removed when it goes out of scope (a failed check
+///        leaves nothing behind).
+class ScratchDir {
+ public:
+  /// @brief Name the folder; anything left there by an earlier run is removed.
+  /// @param name Its name's prefix.
+  explicit ScratchDir(const std::string& name)
+      : path_(std::filesystem::temp_directory_path() / (name + "_" + std::to_string(::getpid()))) {
+    std::filesystem::remove_all(path_);
+  }
+  ScratchDir(const ScratchDir&) = delete;
+  ScratchDir& operator=(const ScratchDir&) = delete;
+  ScratchDir(ScratchDir&&) = delete;
+  ScratchDir& operator=(ScratchDir&&) = delete;
+  /// @brief Remove the folder, quietly.
+  ~ScratchDir() {
+    std::error_code ignored;
+    std::filesystem::remove_all(path_, ignored);
+  }
+  /// @brief The folder.
+  /// @return Its path (not created).
+  [[nodiscard]] const std::filesystem::path& path() const { return path_; }
+
+ private:
+  /// @brief The folder.
+  std::filesystem::path path_;
+};
 
 /// @brief Load a parity fixture.
 /// @param relative Path under `tests/fixtures/`, e.g. `"foundations/rng.json"`.

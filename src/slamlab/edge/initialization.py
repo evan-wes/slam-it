@@ -26,7 +26,7 @@ from slamlab import backends
 from slamlab.edge import adjust, frames
 from slamlab.edge import map as maps
 from slamlab.edge.frames import Camera, Frame, Tracked
-from slamlab.edge.map import Map, frame_dict
+from slamlab.edge.map import Map
 from slamlab.edge.options import TH_LOW, Options
 from slamlab.foundations import matching, triangulation, twoview
 from slamlab.foundations.arrays import as_indices, as_real
@@ -142,7 +142,7 @@ def initialize_from_depth(
         __name__,
         "initialize_from_depth",
         reference=lambda: _initialize_from_depth(frame, options),
-        arguments={"frame": frame_dict(frame), "options": options.as_dict()},
+        arguments={"frame": frame.as_dict(), "options": options.as_dict()},
         decode=_decode_started,
     )
 
@@ -227,8 +227,8 @@ def match_for_initialization(
         "match_for_initialization",
         reference=lambda: _match_for_initialization(reference, frame, positions, options),
         arguments={
-            "reference": frame_dict(reference),
-            "frame": frame_dict(frame),
+            "reference": reference.as_dict(),
+            "frame": frame.as_dict(),
             "previous": positions,
             "options": options.as_dict(),
         },
@@ -366,8 +366,8 @@ def initialize_monocular(  # noqa: PLR0913 -- the two frames, their matches, the
         reference=lambda: _initialize_monocular(camera, reference, frame, pairs, options),
         arguments={
             "camera": camera.as_dict(),
-            "reference": frame_dict(reference),
-            "frame": frame_dict(frame),
+            "reference": reference.as_dict(),
+            "frame": frame.as_dict(),
             "pairs": pairs,
             "options": options.as_dict(),
         },

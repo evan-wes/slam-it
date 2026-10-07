@@ -360,3 +360,20 @@ _FRACTIONS = frozenset(
     }
 )
 """The real settings in (0, 1]."""
+
+
+def check_mode(mode: str) -> None:
+    """Refuse an unknown mode.
+
+    Parameters
+    ----------
+    mode : str
+        The mode.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If it is not one of :data:`MODES`.
+    """
+    if mode not in MODES:
+        raise InvalidInputError(f"mode: expected one of {MODES}, got {mode!r}")

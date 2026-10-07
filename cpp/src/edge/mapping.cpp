@@ -32,14 +32,6 @@ using foundations::correspondences::Rows3;
 /// @brief NaN, for a point not triangulated.
 constexpr double kNanPoint = std::numeric_limits<double>::quiet_NaN();
 
-/// @brief Move a world point into a camera's frame: `R X + t`.
-/// @param pose The camera's `T_cam_world`.
-/// @param x The point.
-/// @return The point in the camera's frame.
-Eigen::Vector3d to_local(const Eigen::Matrix4d& pose, const Eigen::Vector3d& x) {
-  return (pose.topLeftCorner<3, 3>() * x) + pose.topRightCorner<3, 1>();
-}
-
 /// @brief Move a camera-frame point into the world: `R^T (X - t)`.
 /// @param pose The camera's `T_cam_world`.
 /// @param x The point in the camera's frame.
@@ -300,7 +292,7 @@ Source choose_source(const Map& m, const Camera& camera, std::array<std::size_t,
 Result<bool> reprojects(const Map& m, const Camera& camera, const Eigen::Matrix4d& pose,
                         std::int64_t row, const Eigen::Vector3d& x, const Options& options) {
   const auto r = static_cast<std::size_t>(row);
-  const std::array<Eigen::Vector3d, 1> local{to_local(pose, x)};
+  const std::array<Eigen::Vector3d, 1> local{to_camera(pose, x)};
   const std::array<std::array<double, 2>, 1> xy{m.kp_xy[r]};
   const std::array<double, 1> right{m.kp_right[r]};
   const std::array<double, 1> variance{sigma2(m, m.kp_level[r])};
@@ -409,7 +401,7 @@ std::optional<double> median_depth(const Map& m, std::size_t k) {
   std::vector<double> depths;
   for (const std::int64_t row : rows_of(m, k)) {
     if (const std::int64_t p = point_row(m, m.kp_point[static_cast<std::size_t>(row)]); p >= 0) {
-      depths.push_back(to_local(m.kf_pose[k], m.pt_xyz[static_cast<std::size_t>(p)]).z());
+      depths.push_back(to_camera(m.kf_pose[k], m.pt_xyz[static_cast<std::size_t>(p)]).z());
     }
   }
   if (depths.empty()) {
@@ -479,7 +471,7 @@ Result<std::optional<std::int64_t>> fuse_target(const Map& m, const Camera& came
                                                 const matching::FeatureGrid& grid, std::size_t p,
                                                 const Options& options) {
   const Eigen::Matrix4d& pose = m.kf_pose[k];
-  const Eigen::Vector3d at = to_local(pose, m.pt_xyz[p]);
+  const Eigen::Vector3d at = to_camera(pose, m.pt_xyz[p]);
   if (!(at.z() > 0.0)) {
     return std::nullopt;
   }

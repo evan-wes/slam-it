@@ -12,6 +12,8 @@ use slamlab_foundations::matching::{self, FeatureGrid, Match, Projection, Search
 use slamlab_foundations::orb::{self, Features};
 use slamlab_foundations::stereo::{self, MatchOptions};
 
+use crate::options::{Options, check_options};
+
 /// The camera a sequence was taken with (`slamlab.edge.frames.Camera`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Camera {
@@ -88,6 +90,21 @@ impl Camera {
             && pixel.y >= 0.0
             && pixel.y < self.height as f64
     }
+}
+
+/// Checks a camera and the settings, as every stage does first.
+///
+/// # Arguments
+///
+/// * `camera` - The camera.
+/// * `options` - The settings.
+///
+/// # Errors
+///
+/// `InvalidInput` from `check_camera` or `check_options`.
+pub fn check_setup(camera: &Camera, options: &Options) -> Result<()> {
+    check_camera(camera)?;
+    check_options(options)
 }
 
 /// Checks a camera.

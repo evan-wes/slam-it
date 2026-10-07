@@ -65,8 +65,9 @@ Result<Stamped> stamped(const std::string& path) {
     }
     const auto stamp = text::number(parts[0]);
     if (!stamp) {
-      return fail(ErrorKind::kInvalidInput,
-                  text::where(path, k + 1) + "expected a numeric timestamp");
+      return fail(ErrorKind::kInvalidInput, text::where(path, k + 1) +
+                                                "expected a numeric timestamp, got '" +
+                                                std::string(parts[0]) + "'");
     }
     out.stamps.push_back(*stamp);
     out.names.emplace_back(parts[1]);
@@ -140,6 +141,17 @@ Result<std::map<std::string, std::vector<std::string>>> camera_values(const std:
   return out;
 }
 
+/// @brief The error for a `camera.txt` value that is not a number, naming it.
+/// @param path The file.
+/// @param key Its key.
+/// @param value The value.
+/// @return `InvalidInput`.
+foundations::Error not_a_number(const std::string& path, const std::string& key,
+                                const std::string& value) {
+  return foundations::Error{.kind = ErrorKind::kInvalidInput,
+                            .message = path + ": expected numbers (" + key + ": '" + value + "')"};
+}
+
 /// @brief Read a `camera.txt` (`slamlab.eval.tum._camera_file`).
 /// @param path The file.
 /// @return The camera; `InvalidInput` for a malformed one.
@@ -167,15 +179,18 @@ Result<Camera> camera_file(const std::string& path) {
   for (std::size_t k = 0; k < v["intrinsics"].size(); ++k) {
     const auto value = text::number(v["intrinsics"][k]);
     if (!value) {
-      return fail(ErrorKind::kInvalidInput, path + ": expected numbers");
+      return std::unexpected(not_a_number(path, "intrinsics", v["intrinsics"][k]));
     }
     out.intrinsics(static_cast<Eigen::Index>(k)) = *value;
   }
   const auto width = text::integer(v["size"][0]);
   const auto height = text::integer(v["size"][1]);
+  if (!width || !height) {
+    return std::unexpected(not_a_number(path, "size", v["size"][0] + " " + v["size"][1]));
+  }
   const auto scale = text::number(v["depth_scale"][0]);
-  if (!width || !height || !scale) {
-    return fail(ErrorKind::kInvalidInput, path + ": expected numbers");
+  if (!scale) {
+    return std::unexpected(not_a_number(path, "depth_scale", v["depth_scale"][0]));
   }
   if (auto ok = foundations::camera::check_intrinsics(out.model, out.intrinsics); !ok) {
     return std::unexpected(std::move(ok.error()));
@@ -191,7 +206,7 @@ Result<Camera> camera_file(const std::string& path) {
   if (v.contains("bf")) {
     const auto bf = text::number(v["bf"][0]);
     if (!bf) {
-      return fail(ErrorKind::kInvalidInput, path + ": expected numbers");
+      return std::unexpected(not_a_number(path, "bf", v["bf"][0]));
     }
     if (!std::isfinite(*bf) || !(*bf > 0.0)) {
       return fail(ErrorKind::kInvalidInput, path + ": bf must be finite and positive");

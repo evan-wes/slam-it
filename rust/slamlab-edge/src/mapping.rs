@@ -16,20 +16,6 @@ use crate::map::{self, Map};
 use crate::options::{Mode, Options, TH_LOW, check_options};
 use crate::residuals::{chi2, sigma2, threshold};
 
-/// Moves a world point into a camera's frame: `R X + t`.
-///
-/// # Arguments
-///
-/// * `pose` - The camera's `T_cam_world`.
-/// * `x` - The point.
-///
-/// # Returns
-///
-/// The point in the camera's frame.
-fn to_local(pose: &Matrix4<f64>, x: &Vector3<f64>) -> Vector3<f64> {
-    pose.fixed_view::<3, 3>(0, 0) * x + pose.fixed_view::<3, 1>(0, 3)
-}
-
 /// Moves a camera-frame point into the world: `R^T (X - t)`.
 ///
 /// # Arguments
@@ -589,7 +575,7 @@ fn reprojects(
 ) -> Result<bool> {
     let error = chi2(
         camera,
-        &[to_local(&m.kf_pose[k], x)],
+        &[map::to_camera(&m.kf_pose[k], x)],
         &[m.kp_xy[row]],
         &[m.kp_right[row]],
         &[sigma2(m, m.kp_level[row])],
@@ -718,7 +704,7 @@ fn triangulate(
 fn median_depth(m: &Map, k: usize) -> Option<f64> {
     let mut depths: Vec<f64> = rows_of(m, k)
         .filter_map(|r| m.point_row(m.kp_point[r]))
-        .map(|p| to_local(&m.kf_pose[k], &m.pt_xyz[p]).z)
+        .map(|p| map::to_camera(&m.kf_pose[k], &m.pt_xyz[p]).z)
         .collect();
     if depths.is_empty() {
         return None;
@@ -871,7 +857,7 @@ fn fuse_target(
     p: usize,
     options: &Options,
 ) -> Result<Option<usize>> {
-    let at = to_local(&m.kf_pose[k], &m.pt_xyz[p]);
+    let at = map::to_camera(&m.kf_pose[k], &m.pt_xyz[p]);
     if !(at.z > 0.0) {
         return Ok(None);
     }

@@ -689,6 +689,19 @@ mod tests {
         out.into_iter().map(str::to_owned).collect()
     }
 
+    /// Each error kind exits with its own code, from `EXIT_FAILED` on (Python's `_ERRORS`).
+    #[test]
+    fn each_error_kind_has_an_exit_code() {
+        assert_eq!(
+            [
+                exit_code(ErrorKind::InvalidInput),
+                exit_code(ErrorKind::Degenerate),
+                exit_code(ErrorKind::NotConverged),
+            ],
+            [3, 4, 5]
+        );
+    }
+
     /// Every flag is read; the options named are set, the rest default.
     #[test]
     fn parses_a_command_line() {
@@ -787,7 +800,8 @@ mod tests {
     /// fails the run.
     #[test]
     fn runs_the_fixture_folders() {
-        let out = std::env::temp_dir().join("slamlab_test_vo_rust");
+        let out = std::env::temp_dir().join(format!("slamlab_test_vo_rust_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
         let mut request = Request::new("tum", &folder("tum_camera"), Mode::Rgbd, &out);
         request.count = Some(0);
         let empty = run(&request).unwrap();

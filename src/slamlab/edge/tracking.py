@@ -32,11 +32,11 @@ from slamlab import backends
 from slamlab.edge import frames, residuals
 from slamlab.edge import map as maps
 from slamlab.edge.frames import Camera, Frame, Tracked
-from slamlab.edge.map import Map, frame_dict
-from slamlab.edge.options import MODES, TH_HIGH, Options
+from slamlab.edge.map import Map
+from slamlab.edge.options import TH_HIGH, Options, check_mode
 from slamlab.foundations import matching, pnp, ransac, so3
 from slamlab.foundations.arrays import as_flag
-from slamlab.foundations.errors import DegenerateError, InvalidInputError
+from slamlab.foundations.errors import DegenerateError
 
 Array = NDArray[np.float64]
 IntArray = NDArray[np.int64]
@@ -185,12 +185,6 @@ def _decode_local(raw: dict[str, Any], codes: backends.Codes) -> LocalTracking:
     )
 
 
-def _check_mode(mode: str) -> None:
-    """Refuse an unknown mode."""
-    if mode not in MODES:
-        raise InvalidInputError(f"mode: expected one of {MODES}, got {mode!r}")
-
-
 def predict(last_pose: Array, velocity: Array | None) -> Array:
     """Predict a frame's pose by the constant-velocity model.
 
@@ -217,11 +211,6 @@ def predict(last_pose: Array, velocity: Array | None) -> Array:
     return np.asarray(out, dtype=np.float64)
 
 
-def _local(pose: Array, xyz: Array) -> Array:
-    """Move world points into a camera's frame: ``R X + t``."""
-    return np.asarray(xyz @ pose[:3, :3].T + pose[:3, 3], dtype=np.float64)
-
-
 def _optimize_pose(
     m: Map, camera: Camera, frame: Frame, tracked: Tracked, options: Options
 ) -> Tracked:
@@ -238,7 +227,7 @@ def _optimize_pose(
     use = matched.copy()
     current = np.asarray(tracked.pose, dtype=np.float64)
     for _ in range(options.pose_rounds):
-        use[np.flatnonzero(use)[_local(current, xyz[use])[:, 2] <= 0.0]] = False
+        use[np.flatnonzero(use)[maps.to_camera(current, xyz[use])[:, 2] <= 0.0]] = False
         if np.count_nonzero(use) < 3:
             break
         weights = 1.0 / variance[use[matched]]  # each level's information (invSigma2)
@@ -247,7 +236,7 @@ def _optimize_pose(
         ).state
         error = residuals.chi2(
             camera,
-            _local(current, xyz[matched]),
+            maps.to_camera(current, xyz[matched]),
             keypoints.xy[matched],
             frame.right[matched],
             variance,
@@ -306,7 +295,7 @@ def optimize_pose(  # noqa: PLR0913 -- the map, its camera, the frame tracked, t
         arguments={
             "m": m.as_dict(),
             "camera": camera.as_dict(),
-            "frame": frame_dict(frame),
+            "frame": frame.as_dict(),
             "tracked": start.as_dict(),
             "options": options.as_dict(),
         },
@@ -317,12 +306,12 @@ def optimize_pose(  # noqa: PLR0913 -- the map, its camera, the frame tracked, t
 def _in_view(m: Map, camera: Camera, pose: Array, rows: IntArray, options: Options) -> InView:
     """Select the points a camera sees (reference)."""
     xyz = m.pt_xyz[rows]
-    local = _local(pose, xyz)
+    local = maps.to_camera(pose, xyz)
     keep = local[:, 2] > 0.0
     pixels = np.full((len(rows), 2), np.nan)
     pixels[keep] = camera.project(local[keep])
-    keep &= camera.inside(np.nan_to_num(pixels, nan=-1.0))
-    offset = xyz - (-pose[:3, :3].T @ pose[:3, 3])
+    keep &= camera.inside(pixels)
+    offset = xyz - maps.camera_centre(pose)
     distance = np.linalg.norm(offset, axis=1)
     keep &= maps.in_distance_range(m, rows, distance, options)
     view_cos = np.sum(offset * m.pt_normal[rows], axis=1) / np.where(keep, distance, 1.0)
@@ -428,11 +417,11 @@ def _track_last_frame(  # noqa: PLR0913 -- the stage's state
     """Track the last frame's points into this one (reference)."""
     rows = m.point_rows(last_tracked.points)
     have = np.flatnonzero(rows >= 0)
-    local = _local(predicted, m.pt_xyz[rows[have]])
+    local = maps.to_camera(predicted, m.pt_xyz[rows[have]])
     front = local[:, 2] > 0.0
     pixels = np.full((len(have), 2), np.nan)
     pixels[front] = camera.project(local[front])
-    ok = front & camera.inside(np.nan_to_num(pixels, nan=-1.0))
+    ok = front & camera.inside(pixels)
     have, local, pixels = have[ok], local[ok], pixels[ok]
     last_level = last.features.keypoints.level[have]
     low, high = last_level - 1, last_level + 1
@@ -525,7 +514,7 @@ def track_last_frame(  # noqa: PLR0913 -- the stage's state, and the backend
         If the mode is unknown, a pose is not a finite 4x4 matrix, or the last frame's matches
         are not one per keypoint.
     """
-    _check_mode(mode)
+    check_mode(mode)
     matrix = frames.as_pose(predicted, "predicted")
     previous = frames.checked_tracked(last_tracked, last, "last_tracked")
     return backends.call(
@@ -538,8 +527,8 @@ def track_last_frame(  # noqa: PLR0913 -- the stage's state, and the backend
         arguments={
             "m": m.as_dict(),
             "camera": camera.as_dict(),
-            "frame": frame_dict(frame),
-            "last": frame_dict(last),
+            "frame": frame.as_dict(),
+            "last": last.as_dict(),
             "last_tracked": previous.as_dict(),
             "predicted": matrix,
             "mode": mode,
@@ -646,7 +635,7 @@ def track_local_map(  # noqa: PLR0913 -- the stage's state, the recovery flag, a
         If the mode is unknown, the pose is not a finite 4x4 matrix, the matches are not one
         per keypoint, or `recovering` is not a bool.
     """
-    _check_mode(mode)
+    check_mode(mode)
     flag = as_flag(recovering, "recovering")
     so_far = frames.checked_tracked(tracked, frame, "tracked")
     return backends.call(
@@ -659,7 +648,7 @@ def track_local_map(  # noqa: PLR0913 -- the stage's state, the recovery flag, a
         arguments={
             "m": m.as_dict(),
             "camera": camera.as_dict(),
-            "frame": frame_dict(frame),
+            "frame": frame.as_dict(),
             "tracked": so_far.as_dict(),
             "mode": mode,
             "options": options.as_dict(),
@@ -739,7 +728,7 @@ def relocalize_locally(
         arguments={
             "m": m.as_dict(),
             "camera": camera.as_dict(),
-            "frame": frame_dict(frame),
+            "frame": frame.as_dict(),
             "options": options.as_dict(),
         },
         decode=frames.decode_tracked,

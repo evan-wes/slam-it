@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use slamlab_foundations::camera::{self, Model};
-use slamlab_foundations::error::{ErrorKind, Result, fail};
+use slamlab_foundations::error::{Error, ErrorKind, Result, fail};
 use slamlab_foundations::image::MAX_SIDE;
 
 use crate::png;
@@ -144,8 +144,9 @@ fn stamped(path: &Path) -> Result<Stamped> {
             return fail(
                 ErrorKind::InvalidInput,
                 format!(
-                    "{}expected a numeric timestamp",
-                    text::location(path, k + 1)
+                    "{}expected a numeric timestamp, got '{}'",
+                    text::location(path, k + 1),
+                    parts[0]
                 ),
             );
         };
@@ -229,6 +230,43 @@ fn camera_values(path: &Path) -> Result<BTreeMap<String, Vec<String>>> {
     Ok(out)
 }
 
+/// The error for a `camera.txt` value that is not a number, naming it.
+///
+/// # Arguments
+///
+/// * `path` - The file.
+/// * `key` - Its key.
+/// * `value` - The value.
+///
+/// # Returns
+///
+/// `InvalidInput`.
+fn not_a_number(path: &Path, key: &str, value: &str) -> Error {
+    Error {
+        kind: ErrorKind::InvalidInput,
+        message: format!("{}: expected numbers ({key}: '{value}')", path.display()),
+    }
+}
+
+/// Reads a `camera.txt` value as a number.
+///
+/// # Arguments
+///
+/// * `path` - The file.
+/// * `key` - Its key.
+/// * `value` - The value.
+///
+/// # Returns
+///
+/// The number.
+///
+/// # Errors
+///
+/// `InvalidInput` naming the value if it is not one.
+fn number_of(path: &Path, key: &str, value: &str) -> Result<f64> {
+    text::number(value).ok_or_else(|| not_a_number(path, key, value))
+}
+
 /// Reads a `camera.txt` (`slamlab.eval.tum._camera_file`).
 ///
 /// # Arguments
@@ -264,21 +302,14 @@ fn camera_file(path: &Path) -> Result<Camera> {
             format!("{}: unknown camera model '{}'", path.display(), model[0]),
         );
     };
-    let intrinsics: Option<Vec<f64>> = values["intrinsics"]
+    let intrinsics = values["intrinsics"]
         .iter()
-        .map(|v| text::number(v))
-        .collect();
-    let (Some(intrinsics), Some(width), Some(height), Some(depth_scale)) = (
-        intrinsics,
-        text::integer(&size[0]),
-        text::integer(&size[1]),
-        text::number(&scale[0]),
-    ) else {
-        return fail(
-            ErrorKind::InvalidInput,
-            format!("{}: expected numbers", path.display()),
-        );
+        .map(|v| number_of(path, "intrinsics", v))
+        .collect::<Result<Vec<f64>>>()?;
+    let (Some(width), Some(height)) = (text::integer(&size[0]), text::integer(&size[1])) else {
+        return Err(not_a_number(path, "size", &size.join(" ")));
     };
+    let depth_scale = number_of(path, "depth_scale", &scale[0])?;
     camera::check_intrinsics(model, &intrinsics)?;
     let within = |v: i64| {
         usize::try_from(v)
@@ -300,24 +331,16 @@ fn camera_file(path: &Path) -> Result<Camera> {
             ),
         );
     }
-    let bf = match values.get("bf") {
-        None => None,
-        Some(bf) => match text::number(&bf[0]) {
-            Some(v) if v.is_finite() && v > 0.0 => Some(v),
-            Some(_) => {
-                return fail(
-                    ErrorKind::InvalidInput,
-                    format!("{}: bf must be finite and positive", path.display()),
-                );
-            }
-            None => {
-                return fail(
-                    ErrorKind::InvalidInput,
-                    format!("{}: expected numbers", path.display()),
-                );
-            }
-        },
-    };
+    let bf = values
+        .get("bf")
+        .map(|bf| number_of(path, "bf", &bf[0]))
+        .transpose()?;
+    if bf.is_some_and(|v| !(v.is_finite() && v > 0.0)) {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!("{}: bf must be finite and positive", path.display()),
+        );
+    }
     Ok(Camera {
         model,
         intrinsics,
@@ -545,7 +568,9 @@ mod tests {
 
     #[test]
     fn malformed_folders_are_refused() {
-        let scratch = std::env::temp_dir().join("slamlab_rust_test_tum");
+        // Named for this process: concurrent test runs never share the folder.
+        let scratch =
+            std::env::temp_dir().join(format!("slamlab_rust_test_tum_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&scratch);
         let folder = scratch.join("recording");
         std::fs::create_dir_all(&folder).unwrap();
@@ -568,9 +593,18 @@ mod tests {
             "model pinhole\nintrinsics 1 1 0 0\nsize 4 4\ndepth_scale 1\n",
         )
         .unwrap();
-        assert_eq!(
-            read_frames(&folder, MAX_DIFFERENCE).unwrap_err().kind,
-            ErrorKind::InvalidInput
+        let stamp = read_frames(&folder, MAX_DIFFERENCE).unwrap_err();
+        assert!(stamp.message.contains("got 'x'"), "{}", stamp.message);
+        std::fs::write(
+            folder.join("camera.txt"),
+            "model pinhole\nintrinsics 1 y 0 0\nsize 4 4\ndepth_scale 1\n",
+        )
+        .unwrap();
+        let camera = read_camera(&folder).unwrap_err();
+        assert!(
+            camera.message.contains("intrinsics: 'y'"),
+            "{}",
+            camera.message
         );
         std::fs::remove_dir_all(&scratch).unwrap();
     }

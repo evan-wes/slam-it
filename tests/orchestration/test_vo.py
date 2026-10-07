@@ -14,7 +14,7 @@ import pytest
 from slamlab import backends
 from slamlab.edge.options import Options
 from slamlab.eval import runs
-from slamlab.foundations.errors import InvalidInputError
+from slamlab.foundations.errors import DegenerateError, InvalidInputError, NotConvergedError
 from slamlab.orchestration import vo
 from tests.conftest import FIXTURES
 from tests.edge.conftest import ATE_BOUND, FRAMES, MONOCULAR_START, OPTIONS
@@ -143,6 +143,23 @@ def test_a_failed_program_raises_its_error(backend: str, tmp_path: Path) -> None
             backend=require_program(backend),
             count=1,
         )
+
+
+@pytest.mark.parametrize(
+    ("code", "error"),
+    [(vo.EXIT_FAILED, InvalidInputError), (vo.EXIT_FAILED + 1, DegenerateError),
+     (vo.EXIT_FAILED + 2, NotConvergedError)],
+)  # fmt: skip
+def test_a_programs_exit_code_names_its_error(
+    code: int, error: type[Exception], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed program's exit code raises the error of its kind, with the program's message."""
+    program = tmp_path / "slamlab_vo"
+    program.write_text(f"#!/bin/sh\necho 'slamlab_vo: it failed' >&2\nexit {code}\n")
+    program.chmod(0o755)
+    monkeypatch.setattr(backends, "program", lambda backend, name: program)
+    with pytest.raises(error, match="it failed"):
+        vo.run("tum", SEQUENCES / "tum_camera", "rgbd", tmp_path / "run", backend="cpp", count=0)
 
 
 @pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)

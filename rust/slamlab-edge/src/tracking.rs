@@ -7,9 +7,9 @@ use slamlab_foundations::matching::{self, Match, Projection, SearchOptions, matc
 use slamlab_foundations::p3p::Solver;
 use slamlab_foundations::{pnp, ransac, so3};
 
-use crate::frames::{Camera, Frame, Tracked, check_camera, search};
-use crate::map::{Map, in_distance_range, predict_level};
-use crate::options::{Mode, Options, TH_HIGH, check_options};
+use crate::frames::{Camera, Frame, Tracked, check_setup, search};
+use crate::map::{Map, camera_centre, in_distance_range, predict_level, to_camera};
+use crate::options::{Mode, Options, TH_HIGH};
 use crate::residuals::{chi2, sigma2, threshold};
 
 /// Map points in a camera's view (`slamlab.edge.tracking.InView`).
@@ -37,48 +37,6 @@ pub struct LocalTracking {
     pub visible: Vec<i64>,
     /// The ids of the inliers.
     pub found: Vec<i64>,
-}
-
-/// Moves a world point into a camera's frame: `R X + t`.
-///
-/// # Arguments
-///
-/// * `pose` - The camera's `T_cam_world`.
-/// * `x` - The point.
-///
-/// # Returns
-///
-/// The point in the camera's frame.
-fn local(pose: &Matrix4<f64>, x: &Vector3<f64>) -> Vector3<f64> {
-    pose.fixed_view::<3, 3>(0, 0) * x + pose.fixed_view::<3, 1>(0, 3)
-}
-
-/// A camera's centre in the world: `-R^T t`.
-///
-/// # Arguments
-///
-/// * `pose` - The camera's `T_cam_world`.
-///
-/// # Returns
-///
-/// The centre.
-fn centre_of(pose: &Matrix4<f64>) -> Vector3<f64> {
-    -(pose.fixed_view::<3, 3>(0, 0).transpose() * pose.fixed_view::<3, 1>(0, 3))
-}
-
-/// Checks the camera and the settings.
-///
-/// # Arguments
-///
-/// * `camera` - The camera.
-/// * `options` - The settings.
-///
-/// # Errors
-///
-/// `InvalidInput` for either.
-fn check_setup(camera: &Camera, options: &Options) -> Result<()> {
-    check_camera(camera)?;
-    check_options(options)
 }
 
 /// Checks the camera, the settings, and a frame's matches: one point id (or -1) per keypoint.
@@ -218,7 +176,7 @@ fn refine(
         let chosen: Vec<usize> = matched
             .iter()
             .copied()
-            .filter(|&i| used[i] && local(&current, &xyz[i]).z > 0.0)
+            .filter(|&i| used[i] && to_camera(&current, &xyz[i]).z > 0.0)
             .collect();
         if chosen.len() < 3 {
             used.fill(false);
@@ -234,7 +192,10 @@ fn refine(
             .map(|&i| 1.0 / sigma2(m, keypoints[i].level))
             .collect();
         current = pnp::refine_pose(&current, &world, &rays, scale, &weights)?.state;
-        let moved: Vec<Vector3<f64>> = matched.iter().map(|&i| local(&current, &xyz[i])).collect();
+        let moved: Vec<Vector3<f64>> = matched
+            .iter()
+            .map(|&i| to_camera(&current, &xyz[i]))
+            .collect();
         let error = chi2(camera, &moved, &xy, &right, &variance)?;
         for (j, &i) in matched.iter().enumerate() {
             used[i] = error[j] < threshold(right[j], options);
@@ -272,12 +233,12 @@ fn select_in_view(
     rows: &[usize],
     options: &Options,
 ) -> Result<InView> {
-    let centre = centre_of(pose);
+    let centre = camera_centre(pose);
     let bf = camera.focal() * camera.baseline;
     let mut out = InView::default();
     let mut distances = Vec::new();
     for &p in rows {
-        let at = local(pose, &m.pt_xyz[p]);
+        let at = to_camera(pose, &m.pt_xyz[p]);
         if !(at.z > 0.0) {
             continue;
         }
@@ -399,7 +360,7 @@ fn level_range(
         // The current camera's centre in the last camera's frame (ORB-SLAM's tlc).
         let ahead = last_pose
             .fixed_view::<1, 3>(2, 0)
-            .dot(&centre_of(predicted).transpose())
+            .dot(&camera_centre(predicted).transpose())
             + last_pose[(2, 3)];
         if ahead > camera.baseline {
             return (level, m.levels as i64 - 1);
@@ -468,7 +429,7 @@ pub fn track_last_frame(
         let Some(p) = m.point_row(last_tracked.points[i]) else {
             continue;
         };
-        let at = local(predicted, &m.pt_xyz[p]);
+        let at = to_camera(predicted, &m.pt_xyz[p]);
         if !(at.z > 0.0) {
             continue;
         }

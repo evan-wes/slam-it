@@ -32,6 +32,21 @@ inline constexpr int kExitUsage = 2;
 ///        `Degenerate`, 5 for `NotConverged` (`slamlab.orchestration.vo.EXIT_FAILED`).
 inline constexpr int kExitFailed = 3;
 
+/// @brief The exit code of a run that failed with an error of a kind (Rust's `exit_code`).
+/// @param kind The error's kind.
+/// @return `kExitFailed` for `InvalidInput`, then `Degenerate`, then `NotConverged`.
+[[nodiscard]] constexpr int exit_code(foundations::ErrorKind kind) {
+  switch (kind) {
+    case foundations::ErrorKind::kInvalidInput:
+      return kExitFailed;
+    case foundations::ErrorKind::kDegenerate:
+      return kExitFailed + 1;
+    case foundations::ErrorKind::kNotConverged:
+      return kExitFailed + 2;
+  }
+  return kExitFailed;
+}
+
 /// @brief A run asked for: the program's command line.
 struct Request {
   /// @brief One of `kDatasets`.

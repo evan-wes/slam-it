@@ -33,8 +33,8 @@ from slamlab import backends
 from slamlab.edge import adjust, residuals
 from slamlab.edge import map as maps
 from slamlab.edge.frames import Camera, Frame, Tracked, as_pose, checked_tracked
-from slamlab.edge.map import Map, frame_dict
-from slamlab.edge.options import MODES, TH_LOW, Options
+from slamlab.edge.map import Map
+from slamlab.edge.options import TH_LOW, Options, check_mode
 from slamlab.foundations import matching, triangulation
 from slamlab.foundations.arrays import as_real
 from slamlab.foundations.errors import InvalidInputError
@@ -51,7 +51,7 @@ Crossing = dict[str, Any]
 class Implementation(Protocol):
     """The functions a compiled backend's ``edge.mapping`` submodule provides.
 
-    The map crosses as :meth:`Map.as_dict`, a frame as :func:`slamlab.edge.map.frame_dict`, a
+    The map crosses as :meth:`Map.as_dict`, a frame as :meth:`slamlab.edge.frames.Frame.as_dict`, a
     tracked frame as :meth:`Tracked.as_dict`, the mode by name.
     """
 
@@ -122,12 +122,6 @@ def _arguments(m: Map, camera: Camera | None, options: Options, **items: object)
     return out
 
 
-def _check_mode(mode: str) -> None:
-    """Refuse an unknown mode."""
-    if mode not in MODES:
-        raise InvalidInputError(f"mode: expected one of {MODES}, got {mode!r}")
-
-
 def _check_newest(m: Map) -> None:
     """Refuse a map without keyframes (the steps work on its newest)."""
     if m.keyframes == 0:
@@ -152,17 +146,12 @@ def close_depth(camera: Camera, options: Options) -> float:
     return options.close_depth * camera.baseline
 
 
-def _local(pose: Array, xyz: Array) -> Array:
-    """Move world points into a camera's frame: ``R X + t``."""
-    return np.asarray(xyz @ pose[:3, :3].T + pose[:3, 3], dtype=np.float64)
-
-
 def _world(pose: Array, local: Array) -> Array:
     """Move camera-frame points into the world: ``R^T (X - t)``."""
     return np.asarray((local - pose[:3, 3]) @ pose[:3, :3], dtype=np.float64)
 
 
-def _rows(m: Map, k: int) -> IntArray:
+def _keypoint_indices(m: Map, k: int) -> IntArray:
     """Return a keyframe's keypoint rows."""
     return np.arange(m.kf_start[k], m.kf_start[k + 1], dtype=np.int64)
 
@@ -245,7 +234,7 @@ def need_keyframe(  # noqa: PLR0913 -- the stage's state, and the backend
         If the mode is unknown, the map has no keyframe, the depths are infinite, or the
         matches are not one per depth.
     """
-    _check_mode(mode)
+    check_mode(mode)
     _check_newest(m)
     depths = as_real(depth, "depth", allow_nan=True).reshape(-1)
     ids = np.asarray(tracked.points)
@@ -267,7 +256,7 @@ def need_keyframe(  # noqa: PLR0913 -- the stage's state, and the backend
 def _create_points_from_depth(m: Map, camera: Camera, options: Options) -> Map:
     """Create points from the newest keyframe's close depth (reference)."""
     k = m.keyframes - 1
-    rows = _rows(m, k)
+    rows = _keypoint_indices(m, k)
     depth = m.kp_depth[rows]
     usable = (depth > 0.0) & (m.kp_bearing[rows, 2] > 0.0)
     order = rows[usable][np.argsort(depth[usable], kind="stable")]
@@ -372,7 +361,7 @@ def cull_points(m: Map, mode: str, options: Options, *, backend: str = "python")
     slamlab.foundations.errors.InvalidInputError
         If the mode is unknown, or the map has no keyframe.
     """
-    _check_mode(mode)
+    check_mode(mode)
     _check_newest(m)
     return backends.call(
         backend,
@@ -393,7 +382,7 @@ def _relative(m: Map, k1: int, k2: int) -> tuple[Array, Array]:
 
 def _free_rows(m: Map, k: int) -> IntArray:
     """Return a keyframe's keypoints observing no point, with a bearing in front."""
-    rows = _rows(m, k)
+    rows = _keypoint_indices(m, k)
     free: IntArray = rows[(m.kp_point[rows] < 0) & (m.kp_bearing[rows, 2] > 0.0)]
     return free
 
@@ -532,7 +521,7 @@ def _triangulate(  # noqa: PLR0913 -- the two keyframes, their matches, the sett
     for k, rows in ((k1, rows1), (k2, rows2)):
         error = residuals.chi2(
             camera,
-            _local(m.kf_pose[k], filled),
+            maps.to_camera(m.kf_pose[k], filled),
             m.kp_xy[rows],
             m.kp_right[rows],
             residuals.sigma2(m, m.kp_level[rows]),
@@ -556,7 +545,7 @@ def _median_depth(m: Map, k: int) -> float | None:
     rows = rows[rows >= 0]
     if len(rows) == 0:
         return None
-    depths = np.sort(_local(m.kf_pose[k], m.pt_xyz[rows])[:, 2])
+    depths = np.sort(maps.to_camera(m.kf_pose[k], m.pt_xyz[rows])[:, 2])
     return float(depths[(len(depths) - 1) // 2])
 
 
@@ -626,7 +615,7 @@ def triangulate_new_points(
     slamlab.foundations.errors.InvalidInputError
         If the mode is unknown, or the map has no keyframe.
     """
-    _check_mode(mode)
+    check_mode(mode)
     _check_newest(m)
     return backends.call(
         backend,
@@ -642,11 +631,11 @@ def _fuse_target(m: Map, camera: Camera, k: int, p: int, options: Options) -> in
     """Return the keypoint row of keyframe `k` that point row `p` fuses into, if any (``Fuse``)."""
     pose = m.kf_pose[k]
     xyz = m.pt_xyz[p]
-    local = _local(pose, xyz[None])
+    local = maps.to_camera(pose, xyz[None])
     if not local[0, 2] > 0.0:
         return None
     pixel = camera.project(local)[0]
-    offset = xyz - (-pose[:3, :3].T @ pose[:3, 3])
+    offset = xyz - maps.camera_centre(pose)
     distance = float(np.linalg.norm(offset))
     if not (
         camera.inside(pixel[None])[0]
@@ -655,7 +644,7 @@ def _fuse_target(m: Map, camera: Camera, k: int, p: int, options: Options) -> in
     ):
         return None
     level = int(maps.predict_level(m, np.array([p]), np.array([distance]))[0])
-    rows = _rows(m, k)
+    rows = _keypoint_indices(m, k)
     near = matching.features_in_area(
         m.kp_xy[rows],
         m.kp_level[rows],
@@ -683,7 +672,7 @@ def _fuse_target(m: Map, camera: Camera, k: int, p: int, options: Options) -> in
 def _fuse_one(m: Map, camera: Camera, k: int, point_id: int, options: Options) -> Map:
     """Fuse one point into a keyframe: a free keypoint observes it, a held one merges two."""
     p = int(m.point_rows(np.array([point_id]))[0])
-    if p < 0 or np.any(m.kp_point[_rows(m, k)] == point_id):
+    if p < 0 or np.any(m.kp_point[_keypoint_indices(m, k)] == point_id):
         return m  # merged away, or already in the keyframe
     row = _fuse_target(m, camera, k, p, options)
     if row is None:
@@ -807,7 +796,7 @@ def _cull_keyframes(m: Map, camera: Camera, mode: str, options: Options) -> Map:
         if kf_id == 0:
             continue
         k = int(m.keyframe_rows(np.array([kf_id]))[0])
-        rows = _rows(m, k)
+        rows = _keypoint_indices(m, k)
         rows = rows[m.kp_point[rows] >= 0]
         if mode != "monocular":
             depth = m.kp_depth[rows]
@@ -852,7 +841,7 @@ def cull_keyframes(
     slamlab.foundations.errors.InvalidInputError
         If the mode is unknown.
     """
-    _check_mode(mode)
+    check_mode(mode)
     return backends.call(
         backend,
         __name__,
@@ -917,7 +906,7 @@ def process(  # noqa: PLR0913 -- the stage's state, and the backend
     slamlab.foundations.errors.InvalidInputError
         If the mode is unknown, or the matches are not one per keypoint.
     """
-    _check_mode(mode)
+    check_mode(mode)
     checked = checked_tracked(tracked, frame)
     return backends.call(
         backend,
@@ -925,7 +914,7 @@ def process(  # noqa: PLR0913 -- the stage's state, and the backend
         "process",
         reference=lambda: _process(m, camera, frame, checked, mode=mode, options=options),
         arguments=_arguments(
-            m, camera, options, frame=frame_dict(frame), tracked=checked.as_dict(), mode=mode
+            m, camera, options, frame=frame.as_dict(), tracked=checked.as_dict(), mode=mode
         ),
         decode=maps.decode,
     )

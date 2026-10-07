@@ -81,10 +81,6 @@ class Pipeline {
   /// @return The map, if any.
   [[nodiscard]] const std::optional<Map>& map() const { return map_; }
 
-  /// @brief The last tracked frame's pose and matches.
-  /// @return They, if any.
-  [[nodiscard]] const std::optional<Tracked>& last_tracked() const { return last_tracked_; }
-
  private:
   /// @brief A pipeline before its first frame.
   /// @param mode The sensor mode.

@@ -5,11 +5,11 @@ Run from the repository root after changing the cases (the fixtures are committe
     python -m tests.fixtures.eval.generate_sequences
 
 Each folder holds a dataset's text files only (the readers list images, they do not open
-them): a TUM folder named for its sensor, one describing its camera in ``camera.txt``, one
-without depth maps, and a EuRoC folder whose right camera misses a frame. The expected values
-are what the Python readers' run inputs give (:func:`slamlab.eval.tum.read_frames`,
-:func:`slamlab.eval.euroc.read_frames`), paths relative to each folder; the C++ and Rust
-readers are held to them exactly.
+them): a TUM folder named for each sensor (freiburg1, 2 and 3), one describing its camera in
+``camera.txt``, one without depth maps, and a EuRoC folder whose right camera misses a frame.
+The expected values are what the Python readers' run inputs give
+(:func:`slamlab.eval.tum.read_frames`, :func:`slamlab.eval.euroc.read_frames`), paths
+relative to each folder; the C++ and Rust readers are held to them exactly.
 """
 
 from __future__ import annotations
@@ -98,14 +98,14 @@ STAMPS = [1403715273262142976 + k * 50_000_000 for k in range(5)]
 
 
 def _write_tum() -> None:
-    """Write the three TUM folders."""
-    named = FOLDER / "rgbd_dataset_freiburg1_fixture"
+    """Write the TUM folders: one named for each sensor, and two describing their camera."""
+    named = [FOLDER / f"rgbd_dataset_{sensor}_fixture" for sensor in tum.INTRINSICS]
     recorded = FOLDER / "tum_camera"
     flat = FOLDER / "tum_no_depth"
-    for folder in (named, recorded, flat):
+    for folder in (*named, recorded, flat):
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "rgb.txt").write_text(RGB)
-    for folder in (named, recorded):
+    for folder in (*named, recorded):
         (folder / "depth.txt").write_text(DEPTH)
     (recorded / "camera.txt").write_text(CAMERA)
     (flat / "camera.txt").write_text(MONOCULAR_CAMERA)
@@ -167,7 +167,11 @@ def main() -> None:
     cases = {
         "tum": {
             name: _tum_case(name)
-            for name in ("rgbd_dataset_freiburg1_fixture", "tum_camera", "tum_no_depth")
+            for name in (
+                *(f"rgbd_dataset_{sensor}_fixture" for sensor in tum.INTRINSICS),
+                "tum_camera",
+                "tum_no_depth",
+            )
         },
         "euroc": {
             "euroc": {

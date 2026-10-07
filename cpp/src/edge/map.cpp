@@ -316,10 +316,15 @@ std::size_t keyframe_of(const Map& m, std::int64_t row) {
          1;
 }
 
-Eigen::Vector3d centre(const Map& m, std::size_t k) {
-  const Eigen::Matrix4d& pose = m.kf_pose[k];
+Eigen::Vector3d to_camera(const Eigen::Matrix4d& pose, const Eigen::Vector3d& x) {
+  return (pose.topLeftCorner<3, 3>() * x) + pose.topRightCorner<3, 1>();
+}
+
+Eigen::Vector3d camera_centre(const Eigen::Matrix4d& pose) {
   return -(pose.topLeftCorner<3, 3>().transpose() * pose.topRightCorner<3, 1>());
 }
+
+Eigen::Vector3d centre(const Map& m, std::size_t k) { return camera_centre(m.kf_pose[k]); }
 
 std::vector<std::int64_t> window(const Map& m, std::int64_t size) {
   const auto count = static_cast<std::int64_t>(keyframe_count(m));

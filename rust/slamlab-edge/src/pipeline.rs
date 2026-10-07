@@ -165,16 +165,6 @@ impl Pipeline {
         self.map.as_ref()
     }
 
-    /// The last tracked frame's pose and matches.
-    ///
-    /// # Returns
-    ///
-    /// They, if any.
-    #[must_use]
-    pub const fn last_tracked(&self) -> Option<&Tracked> {
-        self.last_tracked.as_ref()
-    }
-
     /// Tracks one frame (and maps, if it becomes a keyframe).
     ///
     /// # Arguments

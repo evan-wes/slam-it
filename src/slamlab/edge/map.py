@@ -577,7 +577,7 @@ class Implementation(Protocol):
     """The functions a compiled backend's ``edge.map`` submodule provides.
 
     Each takes the map as a dict of :class:`Map`'s fields and returns the new one the same
-    way; a frame crosses as :func:`frame_dict` builds it.
+    way; a frame crosses as :meth:`slamlab.edge.frames.Frame.as_dict` builds it.
     """
 
     def predict_level(
@@ -635,38 +635,6 @@ class Implementation(Protocol):
     ) -> dict[str, Any]:
         """Add to points' visible and found counts."""
         ...
-
-
-def frame_dict(frame: Frame) -> dict[str, Any]:
-    """Return a frame as it crosses the bindings: its features' fields and its own arrays.
-
-    Parameters
-    ----------
-    frame : slamlab.edge.frames.Frame
-        The frame.
-
-    Returns
-    -------
-    dict
-        ``timestamp``, the keypoints' ``xy``, ``level``, ``level_xy``, ``response`` and
-        ``angle``, ``descriptors``, ``scale_factor``, ``levels``, and ``bearings``,
-        ``depth`` and ``right``.
-    """
-    keypoints = frame.features.keypoints
-    return {
-        "timestamp": float(frame.timestamp),
-        "xy": keypoints.xy,
-        "level": keypoints.level,
-        "level_xy": keypoints.level_xy,
-        "response": keypoints.response,
-        "angle": keypoints.angle,
-        "descriptors": frame.features.descriptors,
-        "scale_factor": float(frame.features.scale_factor),
-        "levels": int(frame.features.levels),
-        "bearings": frame.bearings,
-        "depth": frame.depth,
-        "right": frame.right,
-    }
 
 
 def decode(raw: dict[str, Any], codes: backends.Codes) -> Map:
@@ -778,6 +746,40 @@ def _as_ids(ids: ArrayLike, name: str) -> IntArray:
     if arr.ndim != 1 or not holds_integers(arr) or arr.min() < -1:
         raise InvalidInputError(f"{name}: expected a vector of ids (-1 or more)")
     return np.ascontiguousarray(arr, dtype=np.int64)
+
+
+def to_camera(pose: Array, xyz: Array) -> Array:
+    """Move world points into a camera's frame: ``R X + t``.
+
+    Parameters
+    ----------
+    pose : ndarray of float64, shape (4, 4)
+        The camera's ``T_cam_world``.
+    xyz : ndarray of float64, shape (N, 3)
+        World points.
+
+    Returns
+    -------
+    ndarray of float64, shape (N, 3)
+        The points in the camera's frame.
+    """
+    return np.asarray(xyz @ pose[:3, :3].T + pose[:3, 3], dtype=np.float64)
+
+
+def camera_centre(pose: Array) -> Array:
+    """Return a camera's centre in the world, ``-Rᵀ t``.
+
+    Parameters
+    ----------
+    pose : ndarray of float64, shape (4, 4)
+        The camera's ``T_cam_world``.
+
+    Returns
+    -------
+    ndarray of float64, shape (3,)
+        Its centre.
+    """
+    return np.asarray(-pose[:3, :3].T @ pose[:3, 3], dtype=np.float64)
 
 
 def in_distance_range(
@@ -898,7 +900,7 @@ def insert_keyframe(
         __name__,
         "insert_keyframe",
         reference=lambda: _insert_keyframe(m, frame, matrix, ids),
-        arguments={"m": m.as_dict(), "frame": frame_dict(frame), "pose": matrix, "points": ids},
+        arguments={"m": m.as_dict(), "frame": frame.as_dict(), "pose": matrix, "points": ids},
         decode=decode,
     )
 

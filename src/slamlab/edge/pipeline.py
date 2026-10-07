@@ -102,15 +102,15 @@ class Pipeline:
     mode: str
     camera: Camera
     options: Options = field(default_factory=Options)
-    state: State = State.NOT_INITIALIZED
-    map: Map | None = None
-    _last_frame: Frame | None = field(default=None, repr=False)
-    _last_tracked: Tracked | None = field(default=None, repr=False)
-    _velocity: Array | None = field(default=None, repr=False)
-    _reference: Frame | None = field(default=None, repr=False)
-    _previous: Array | None = field(default=None, repr=False)
-    _failures: int = field(default=0, repr=False)
-    _since_recovery: int | None = field(default=None, repr=False)
+    state: State = field(default=State.NOT_INITIALIZED, init=False)
+    map: Map | None = field(default=None, init=False)
+    _last_frame: Frame | None = field(default=None, init=False, repr=False)
+    _last_tracked: Tracked | None = field(default=None, init=False, repr=False)
+    _velocity: Array | None = field(default=None, init=False, repr=False)
+    _reference: Frame | None = field(default=None, init=False, repr=False)
+    _previous: Array | None = field(default=None, init=False, repr=False)
+    _failures: int = field(default=0, init=False, repr=False)
+    _since_recovery: int | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Check the mode.
@@ -124,11 +124,6 @@ class Pipeline:
             raise InvalidInputError(f"mode: expected one of {MODES}, got {self.mode!r}")
         if self.mode != "monocular" and not self.camera.baseline > 0.0:
             raise InvalidInputError(f"camera.baseline: {self.mode} needs a positive baseline")
-
-    @property
-    def last_tracked(self) -> Tracked | None:
-        """The last tracked frame's pose and matches, if any."""
-        return self._last_tracked
 
     def extraction(self) -> orb.Options:
         """Return the extraction settings the next frame should be built with.

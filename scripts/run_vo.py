@@ -83,11 +83,17 @@ def ground_truth(dataset: str, sequence: Path) -> Truth | None:
     Returns
     -------
     Truth or None
-        The frames' times and their true ``T_world_cam``.
+        The frames' times and their true ``T_world_cam``; None if the sequence has no
+        ground-truth file.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If the ground truth is malformed.
     """
     try:
         read = tum.read_sequence(sequence) if dataset == "tum" else euroc.read_sequence(sequence)
-    except (FileNotFoundError, InvalidInputError):
+    except FileNotFoundError:
         return None
     return read.timestamps, read.T_world_cam
 

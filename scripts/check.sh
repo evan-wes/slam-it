@@ -80,9 +80,11 @@ check "clippy (pedantic, missing docs)" \
   cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets
 # Every rung crate; the cdylib bindings crate cannot be tested standalone.
 check "Rust tests" cargo test --manifest-path rust/Cargo.toml --workspace --exclude slamlab-py
-# The native program the rust backend runs (slamlab.backends.program), rebuilt for pytest.
+# The native program the rust backend runs (slamlab.backends.program), rebuilt for pytest,
+# always into rust/target (whatever CARGO_TARGET_DIR says), where slamlab.backends looks.
 check "Rust programs (release)" \
-  cargo build --release --manifest-path rust/Cargo.toml -p slamlab-orchestration
+  cargo build --release --manifest-path rust/Cargo.toml --target-dir rust/target \
+  -p slamlab-orchestration
 
 # All languages
 check "jscpd (duplication)" jscpd --config .jscpd.json

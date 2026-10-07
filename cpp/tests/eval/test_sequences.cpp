@@ -129,8 +129,8 @@ void check_euroc(const nlohmann::json& expected, int& failures) {
 /// @brief Check the refusals: a malformed camera.txt, a nameless folder, a bad stamp.
 /// @param failures Running failure count.
 void check_refusals(int& failures) {
-  const fs::path scratch = fs::temp_directory_path() / "slamlab_test_sequences";
-  fs::remove_all(scratch);
+  const slamlab::testing::ScratchDir folder("slamlab_test_sequences");
+  const fs::path& scratch = folder.path();
   fs::create_directories(scratch / "recording");
   std::ofstream(scratch / "recording" / "rgb.txt") << "1.0 a.png\nx b.png\n";
   expect(is_invalid_input(tum::read_frames((scratch / "recording").string())),
@@ -141,11 +141,16 @@ void check_refusals(int& failures) {
          "an unknown camera.txt key is refused", failures);
   std::ofstream(scratch / "recording" / "camera.txt")
       << "model pinhole\nintrinsics 1 1 0 0\nsize 4 4\ndepth_scale 1\n";
-  expect(is_invalid_input(tum::read_frames((scratch / "recording").string())),
-         "a non-numeric stamp is refused", failures);
+  const auto stamp = tum::read_frames((scratch / "recording").string());
+  expect(!stamp && stamp.error().message.contains("got 'x'"),
+         "a non-numeric stamp is refused, named", failures);
+  std::ofstream(scratch / "recording" / "camera.txt")
+      << "model pinhole\nintrinsics 1 y 0 0\nsize 4 4\ndepth_scale 1\n";
+  const auto camera = tum::read_camera((scratch / "recording").string());
+  expect(!camera && camera.error().message.contains("intrinsics: 'y'"),
+         "a camera.txt value that is not a number is named", failures);
   expect(is_invalid_input(euroc::read_frames(scratch.string())), "a folder without mav0 is refused",
          failures);
-  fs::remove_all(scratch);
 }
 
 /// @brief The test body.

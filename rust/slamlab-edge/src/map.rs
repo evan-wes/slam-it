@@ -208,8 +208,7 @@ impl Map {
     /// The centre.
     #[must_use]
     pub fn centre(&self, k: usize) -> Vector3<f64> {
-        let pose = &self.kf_pose[k];
-        -(pose.fixed_view::<3, 3>(0, 0).transpose() * pose.fixed_view::<3, 1>(0, 3))
+        camera_centre(&self.kf_pose[k])
     }
 
     /// The sliding window: the rows of the last `size` keyframes, oldest first.
@@ -253,6 +252,35 @@ impl Map {
         out.sort_unstable();
         out
     }
+}
+
+/// Moves a world point into a camera's frame: `R X + t` (`slamlab.edge.map.to_camera`).
+///
+/// # Arguments
+///
+/// * `pose` - The camera's `T_cam_world`.
+/// * `x` - The point.
+///
+/// # Returns
+///
+/// The point in the camera's frame.
+#[must_use]
+pub fn to_camera(pose: &Matrix4<f64>, x: &Vector3<f64>) -> Vector3<f64> {
+    pose.fixed_view::<3, 3>(0, 0) * x + pose.fixed_view::<3, 1>(0, 3)
+}
+
+/// A camera's centre in the world, `-Rᵀ t` (`slamlab.edge.map.camera_centre`).
+///
+/// # Arguments
+///
+/// * `pose` - The camera's `T_cam_world`.
+///
+/// # Returns
+///
+/// The centre.
+#[must_use]
+pub fn camera_centre(pose: &Matrix4<f64>) -> Vector3<f64> {
+    -(pose.fixed_view::<3, 3>(0, 0).transpose() * pose.fixed_view::<3, 1>(0, 3))
 }
 
 /// Finds an id in an ascending id column.

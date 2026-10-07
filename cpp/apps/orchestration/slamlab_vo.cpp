@@ -41,7 +41,7 @@ int run(std::span<const std::string> arguments) {
   const auto written = vo::run(*request);
   if (!written) {
     report(written.error());
-    return vo::kExitFailed + static_cast<int>(written.error().kind);
+    return vo::exit_code(written.error().kind);
   }
   std::println("slamlab_vo: {} of {} frames tracked, {} keyframes, {} points -> {}",
                written->timestamps.size(), written->diagnostics.size(),

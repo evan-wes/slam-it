@@ -205,8 +205,10 @@ def program(backend: str, name: str) -> Path:
 
     C++'s programs are installed with the package, in ``slamlab/bin/`` (an editable install
     rebuilds them when the extension is imported, which this does first). Rust's are built by
-    cargo in the checkout, in ``rust/target/release/``, by ``scripts/setup_slamlab.sh`` and
-    ``scripts/check.sh``.
+    cargo in the checkout, in ``rust/target/release/`` (``scripts/setup_slamlab.sh`` and
+    ``scripts/check.sh`` pass ``--target-dir rust/target``, so ``CARGO_TARGET_DIR`` does not
+    move them), and nothing rebuilds them on import: after a change to a Rust crate, rebuild
+    (``scripts/check.sh`` does), or the tests that run them fail as stale.
 
     Parameters
     ----------

@@ -15,7 +15,8 @@
 /// @brief The edge rung: sparse visual odometry (ORB-SLAM-lite).
 namespace slamlab::edge {
 
-/// @brief The pipeline's sensor modes, with the codes they cross the bindings as.
+/// @brief The pipeline's sensor modes (they cross the bindings by name, as `run.json` records
+///        them).
 enum class Mode : std::uint8_t {
   /// @brief One camera.
   kMonocular = 0,

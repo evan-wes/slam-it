@@ -21,6 +21,7 @@ from slamlab.edge import map as maps
 from slamlab.edge.map import Map
 from slamlab.edge.options import Options
 from slamlab.foundations import matching
+from tests.conftest import require_backend
 from tests.edge import room
 
 FRAMES = 40
@@ -170,6 +171,9 @@ class Run:
 def run_room(mode: str, rendered: list[room.Frame]) -> Run:
     """Run the rendered room through the Python pipeline, its frames built by the C++ core.
 
+    The C++ core extracts the features to keep the session fast (rung 0 holds it to Python's
+    ORB); a checkout without it skips, or fails where it is required.
+
     Parameters
     ----------
     mode : {"monocular", "stereo", "rgbd"}
@@ -182,6 +186,7 @@ def run_room(mode: str, rendered: list[room.Frame]) -> Run:
     Run
         Each frame's result and true ``T_world_cam``, and the pipeline after the last.
     """
+    require_backend("cpp")
     baseline = 0.0 if mode == "monocular" else room.BASELINE
     camera = frames.Camera(
         "pinhole", room.SMALL.intrinsics, room.SMALL.width, room.SMALL.height, baseline

@@ -33,8 +33,8 @@ suggest starting a session inside slamlab. Consequences:
 | Language | Role |
 |---|---|
 | Python (`src/slamlab`) | Reference implementation of every algorithm; orchestration, evaluation, learned rungs |
-| C++ (`cpp/`, module `slamlab._cpp`) | Performance core: rung 0, edge rung, edge budgets; `eval`'s native PNG readers (`slamlab_eval`) |
-| Rust (`rust/`, module `slamlab_rs`) | Rung 0 and the edge VO only; `eval`'s native PNG readers (`slamlab-eval`) |
+| C++ (`cpp/`, module `slamlab._cpp`) | Performance core: rung 0, edge rung, edge budgets; `eval`'s native readers and run writer (`slamlab_eval`); the native programs (`slamlab_orchestration`, `slamlab_vo`) |
+| Rust (`rust/`, module `slamlab_rs`) | Rung 0 and the edge VO only; `eval`'s native readers and run writer (`slamlab-eval`); the native programs (`slamlab-orchestration`, `slamlab_vo`) |
 
 ## Conventions
 
@@ -79,9 +79,11 @@ code or a binding.
   `slamlab.eval` keeps the Python benchmarks and, later, the budget harness.
 - Native programs run a whole pipeline without Python: `cpp/apps/<rung>/<program>.cpp`
   (linked to the rung's library, installed into `slamlab/bin/` by scikit-build) and a rung
-  crate's binary (built by cargo into `rust/target/release/`), found by
-  `slamlab.backends.program` and held to the ladder by `check_layers.py`. Layer 1 builds them
-  and the Python tests run them (`slamlab.orchestration.vo` runs `slamlab_vo`).
+  crate's binary (built by cargo into `rust/target/release/`, `--target-dir rust/target`),
+  found by `slamlab.backends.program` and held to the ladder by `check_layers.py`. Layer 1
+  builds them and the Python tests run them (`slamlab.orchestration.vo` runs `slamlab_vo`).
+  The Rust program is not rebuilt on import: after changing a Rust crate, rebuild it (layer 1
+  does), or the tests fail it as older than its sources.
 - Tests mirror the packages (`tests/foundations/`, `cpp/tests/foundations/`). Mark tests
   that need a GPU or a compute budget with `@pytest.mark.gpu` / `@pytest.mark.budget`;
   `check.sh` runs the CPU subset.

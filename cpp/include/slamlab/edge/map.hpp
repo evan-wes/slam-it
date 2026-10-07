@@ -137,6 +137,17 @@ void index_observations(Map& m);
 /// @return The row of the keyframe whose keypoints hold it.
 [[nodiscard]] std::size_t keyframe_of(const Map& m, std::int64_t row);
 
+/// @brief Move a world point into a camera's frame: `R X + t` (`slamlab.edge.map.to_camera`).
+/// @param pose The camera's `T_cam_world`.
+/// @param x The point.
+/// @return The point in the camera's frame.
+[[nodiscard]] Eigen::Vector3d to_camera(const Eigen::Matrix4d& pose, const Eigen::Vector3d& x);
+
+/// @brief A camera's centre in the world, `-Rᵀ t` (`slamlab.edge.map.camera_centre`).
+/// @param pose The camera's `T_cam_world`.
+/// @return The centre.
+[[nodiscard]] Eigen::Vector3d camera_centre(const Eigen::Matrix4d& pose);
+
 /// @brief A keyframe's camera centre in the world, `-Rᵀ t`.
 /// @param m The map.
 /// @param k The keyframe's row.

@@ -297,7 +297,10 @@ their crossing form) and decodes the compiled result with the module's `codes()`
 choice field inside an options dataclass (`twoview.Options.essential_solver`) crosses by name,
 as `asdict` gives it, and the binding maps it through the core's `name()`, failing on an
 unknown name; a choice passed as its own argument (`essential_ransac`'s `minimal_solver`)
-crosses as a code.
+crosses as a code. The edge rung's `mode`, an argument of most of its stage functions, crosses
+by name too, each binding reading it with its `mode_in` and failing on an unknown name: a name
+reads in a test's failure message and is what a run's `run.json` records (PR 8's panel, A4);
+rung 0's argument choices stay codes.
 
 The cores check index bounds and sizes and return `InvalidInput`, even though the Python
 entry point validates too. Standalone C++ and Rust callers get the same protection, and both

@@ -28,21 +28,6 @@ using foundations::correspondences::Rows3;
 /// @brief NaN, for an unknown right column.
 constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
 
-/// @brief Move a world point into a camera's frame: `R X + t`.
-/// @param pose The camera's `T_cam_world`.
-/// @param x The point.
-/// @return The point in the camera's frame.
-Eigen::Vector3d local(const Eigen::Matrix4d& pose, const Eigen::Vector3d& x) {
-  return (pose.topLeftCorner<3, 3>() * x) + pose.topRightCorner<3, 1>();
-}
-
-/// @brief A camera's centre in the world: `-R^T t`.
-/// @param pose The camera's `T_cam_world`.
-/// @return The centre.
-Eigen::Vector3d centre_of(const Eigen::Matrix4d& pose) {
-  return -(pose.topLeftCorner<3, 3>().transpose() * pose.topRightCorner<3, 1>());
-}
-
 /// @brief Check the camera, the settings, and a frame's matches: one point id (or -1) per
 ///        keypoint.
 /// @param camera The camera.
@@ -162,7 +147,7 @@ Result<std::vector<bool>> classify(const Camera& camera, const Observations& obs
   std::vector<Eigen::Vector3d> moved;
   moved.reserve(observations.xyz.size());
   for (const Eigen::Vector3d& x : observations.xyz) {
-    moved.push_back(local(pose, x));
+    moved.push_back(to_camera(pose, x));
   }
   auto error = chi2(camera, moved, observations.xy, observations.right, observations.variance);
   if (!error) {
@@ -191,7 +176,7 @@ Result<Tracked> refine(const Map& m, const Camera& camera, const Frame& frame,
   for (std::int64_t round = 0; round < options.pose_rounds; ++round) {
     std::vector<std::size_t> chosen;
     for (std::size_t j = 0; j < use.size(); ++j) {
-      if (use[j] && local(current, observations.xyz[j]).z() > 0.0) {
+      if (use[j] && to_camera(current, observations.xyz[j]).z() > 0.0) {
         chosen.push_back(j);
       }
     }
@@ -232,13 +217,13 @@ Result<Tracked> refine(const Map& m, const Camera& camera, const Frame& frame,
 /// @return The points in view, or the level prediction's error.
 Result<InView> select_in_view(const Map& m, const Camera& camera, const Eigen::Matrix4d& pose,
                               std::span<const std::int64_t> rows, const Options& options) {
-  const Eigen::Vector3d centre = centre_of(pose);
+  const Eigen::Vector3d centre = camera_centre(pose);
   const double bf = focal(camera) * camera.baseline;
   InView out;
   std::vector<double> distances;
   for (const std::int64_t row : rows) {
     const auto p = static_cast<std::size_t>(row);
-    const Eigen::Vector3d at = local(pose, m.pt_xyz[p]);
+    const Eigen::Vector3d at = to_camera(pose, m.pt_xyz[p]);
     if (!(at.z() > 0.0)) {
       continue;
     }
@@ -282,7 +267,8 @@ std::pair<std::int64_t, std::int64_t> level_range(const Map& m, const Camera& ca
                                                   std::int64_t level) {
   if (mode != Mode::kMonocular) {
     // The current camera's centre in the last camera's frame (ORB-SLAM's tlc).
-    const double ahead = last_pose.block<1, 3>(2, 0).dot(centre_of(predicted)) + last_pose(2, 3);
+    const double ahead =
+        last_pose.block<1, 3>(2, 0).dot(camera_centre(predicted)) + last_pose(2, 3);
     if (ahead > camera.baseline) {
       return {level, m.levels - 1};
     }
@@ -347,7 +333,7 @@ Result<std::optional<Tracked>> track_last_frame(const Map& m, const Camera& came
     if (p < 0) {
       continue;
     }
-    const Eigen::Vector3d at = local(predicted, m.pt_xyz[static_cast<std::size_t>(p)]);
+    const Eigen::Vector3d at = to_camera(predicted, m.pt_xyz[static_cast<std::size_t>(p)]);
     if (!(at.z() > 0.0)) {
       continue;
     }

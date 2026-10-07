@@ -17,7 +17,8 @@ set -euo pipefail
 # - slamlab_rs, the Rust extension (maturin + PyO3), rebuilt with
 #   `maturin develop -m rust/slamlab-py/Cargo.toml` after Rust changes.
 # and the native programs: C++'s are installed with slamlab (and rebuilt with it); Rust's are
-# built with `cargo build --release -p slamlab-orchestration` (scripts/check.sh rebuilds them).
+# built into rust/target with `cargo build --release --target-dir rust/target
+# -p slamlab-orchestration` (scripts/check.sh rebuilds them; nothing does on import).
 #
 # Usage:
 #   scripts/setup_slamlab.sh [--env NAME] [--unlocked]
@@ -105,7 +106,7 @@ run python -m pip install --no-build-isolation \
   -C build-dir="build/${ENV_NAME}" -e "${ROOT_DIR}"
 (cd "${ROOT_DIR}" && run maturin develop --release -m rust/slamlab-py/Cargo.toml)
 (cd "${ROOT_DIR}" && run cargo build --release --manifest-path rust/Cargo.toml \
-  -p slamlab-orchestration)
+  --target-dir rust/target -p slamlab-orchestration)
 
 # Every backend must load, and find its programs: a C++ or Rust extension that built but
 # cannot import, or a program that did not build, fails here.

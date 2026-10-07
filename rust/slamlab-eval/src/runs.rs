@@ -530,7 +530,9 @@ mod tests {
     #[test]
     fn the_golden_folder_is_reproduced() {
         let golden = fixtures().join("run");
-        let out = std::env::temp_dir().join("slamlab_rust_test_runs");
+        // Named for this process: concurrent test runs never share the folder.
+        let out =
+            std::env::temp_dir().join(format!("slamlab_rust_test_runs_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
         write_run(&out, &golden_run()).unwrap();
         for name in ["keyframes.npy", "keyframe_poses.npy", "points.npy"] {
@@ -567,7 +569,11 @@ mod tests {
 
     #[test]
     fn a_malformed_run_writes_nothing() {
-        let out = std::env::temp_dir().join("slamlab_rust_test_runs_refused");
+        // Named for this process: concurrent test runs never share the folder.
+        let out = std::env::temp_dir().join(format!(
+            "slamlab_rust_test_runs_refused_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&out);
         let mut run = golden_run();
         run.mode = "lidar".into();

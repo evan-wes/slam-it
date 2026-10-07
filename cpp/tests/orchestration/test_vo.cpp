@@ -53,6 +53,16 @@ std::vector<std::string> command(const std::vector<std::string>& more) {
   return out;
 }
 
+/// @brief Check the exit code each kind of failure gives (Python's `_ERRORS` order).
+/// @param failures Running failure count.
+void check_exit_codes(int& failures) {
+  using slamlab::foundations::ErrorKind;
+  expect(vo::exit_code(ErrorKind::kInvalidInput) == 3 &&
+             vo::exit_code(ErrorKind::kDegenerate) == 4 &&
+             vo::exit_code(ErrorKind::kNotConverged) == 5,
+         "each error kind exits with its own code, from kExitFailed on", failures);
+}
+
 /// @brief Check reading a command line, and its refusals.
 /// @param failures Running failure count.
 void check_parse(int& failures) {
@@ -104,8 +114,8 @@ void check_requests(int& failures) {
 /// @brief Check runs on the fixture folders: none of their images exist.
 /// @param failures Running failure count.
 void check_runs(int& failures) {
-  const fs::path out = fs::temp_directory_path() / "slamlab_test_vo";
-  fs::remove_all(out);
+  const slamlab::testing::ScratchDir scratch("slamlab_test_vo");
+  const fs::path& out = scratch.path();
   vo::Request request = request_for("tum", edge::Mode::kRgbd, "tum_camera");
   request.out = out.string();
   request.count = 0;
@@ -126,13 +136,13 @@ void check_runs(int& failures) {
   expect(is_invalid_input(vo::run(request)), "a missing stereo image fails the run", failures);
   request.sequence = sequence("no_such_sequence");
   expect(is_invalid_input(vo::run(request)), "a missing sequence fails the run", failures);
-  fs::remove_all(out);
 }
 
 /// @brief The test body.
 /// @return The exit code.
 int run() {
   int failures = 0;
+  check_exit_codes(failures);
   check_parse(failures);
   check_requests(failures);
   check_runs(failures);
