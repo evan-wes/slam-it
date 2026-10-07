@@ -26,31 +26,13 @@ from tests.orchestration.datasets import (
     write_room,
 )
 
-RUST_PROGRAM_CRATES = (
-    "slamlab-foundations",
-    "slamlab-edge",
-    "slamlab-eval",
-    "slamlab-orchestration",
-)
-"""The crates the Rust program is built from: a source newer than it means it is stale."""
-
-
-def _newer_source(program: Path) -> Path | None:
-    """Return a Rust source of the program newer than the program, if any."""
-    built = program.stat().st_mtime
-    root = Path(__file__).resolve().parents[2] / "rust"
-    for crate in RUST_PROGRAM_CRATES:
-        for source in (root / crate / "src").rglob("*.rs"):
-            if source.stat().st_mtime > built:
-                return source
-    return None
-
 
 def require_program(name: str) -> str:
     """Return backend `name` if its native program is built; otherwise skip, or fail.
 
-    The Rust program is not rebuilt on import (the C++ one is), so a Rust program older than
-    one of its crates' sources fails: its runs would not be of the code under test.
+    The Rust program is not rebuilt on import (the C++ one is): one older than a file it is
+    built from (:class:`slamlab.backends.StaleProgramError`) fails, since its runs would not be
+    of the code under test.
 
     Parameters
     ----------
@@ -65,17 +47,13 @@ def require_program(name: str) -> str:
     require_backend(name)
     if name != "python":
         try:
-            program = backends.program(name, vo.PROGRAM)
+            backends.program(name, vo.PROGRAM)
+        except backends.StaleProgramError as error:
+            pytest.fail(str(error))
         except backends.BackendNotBuiltError as error:
             if name in REQUIRED_BACKENDS:
                 pytest.fail(f"{error}, but SLAMLAB_REQUIRE_BACKENDS requires it")
             pytest.skip(str(error))
-        newer = _newer_source(program) if name == "rust" else None
-        if newer is not None:
-            pytest.fail(
-                f"{program} is older than {newer}: rebuild it (cargo build --release "
-                "--manifest-path rust/Cargo.toml --target-dir rust/target -p slamlab-orchestration)"
-            )
     return name
 
 

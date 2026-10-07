@@ -206,7 +206,8 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
     ValueError
         If `backend` is unknown.
     slamlab.backends.BackendNotBuiltError
-        If the backend's program is not built.
+        If the backend's program is not built (:class:`~slamlab.backends.StaleProgramError`:
+        a Rust program older than a file it is built from).
     slamlab.foundations.errors.SlamlabError
         The request's check (:func:`check`), or a reader's, the pipeline's or the writer's
         error, of the same kind whichever backend ran.
