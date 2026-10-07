@@ -12,17 +12,17 @@ import numpy as np
 import pytest
 
 from slamlab import backends
+from slamlab.edge import frames, tracking
+from slamlab.edge.map import Map
 from slamlab.edge.options import Options
 from slamlab.eval import runs
 from slamlab.foundations.errors import DegenerateError, InvalidInputError, NotConvergedError
 from slamlab.orchestration import vo
-from tests.conftest import FIXTURES
+from tests.conftest import FIXTURES, assert_matches_fixture, load_fixture
 from tests.edge.conftest import ATE_BOUND, FRAMES, MONOCULAR_START, OPTIONS
 from tests.edge.support import SOLVER_TOLERANCE, assert_close
-from tests.orchestration.conftest import Room, RoomRun, require_program
-
-CASES = [("tum", "rgbd"), ("tum", "monocular"), ("euroc", "stereo"), ("euroc", "monocular")]
-"""Each dataset in each mode it records."""
+from tests.orchestration.conftest import RoomRun, require_program
+from tests.orchestration.datasets import CASES, GAP_OPTIONS, Room
 
 SEQUENCES = FIXTURES / "eval" / "sequences"
 """The readers' fixture folders: their files listed, their images absent."""
@@ -49,15 +49,12 @@ def test_every_backend_tracks_the_room(
     assert error.absolute.rmse < ATE_BOUND[mode]
 
 
-@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
-@pytest.mark.parametrize(("dataset", "mode"), CASES)
-def test_the_backends_agree(dataset: str, mode: str, backend: str, room_runs: RoomRun) -> None:
-    """A native program makes Python's decisions and places every pose and point as Python does.
+def _assert_same_run(native: runs.Run, reference: runs.Run) -> None:
+    """Check that a native run made the reference's decisions and placed what it placed.
 
     The same frames tracked with the same matches, the same keyframes, and poses and points
     within the solver tolerance.
     """
-    reference, native = room_runs(dataset, mode, "python"), room_runs(dataset, mode, backend)
     np.testing.assert_array_equal(native.timestamps, reference.timestamps)
     np.testing.assert_array_equal(native.keyframe_timestamps, reference.keyframe_timestamps)
     assert native.points.shape == reference.points.shape
@@ -66,6 +63,68 @@ def test_the_backends_agree(dataset: str, mode: str, backend: str, room_runs: Ro
     assert_close(native.points, reference.points, SOLVER_TOLERANCE)
     states = [(d["state"], d["tracked"], d["keyframe"]) for d in native.diagnostics]
     assert states == [(d["state"], d["tracked"], d["keyframe"]) for d in reference.diagnostics]
+
+
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+@pytest.mark.parametrize(("dataset", "mode"), CASES)
+def test_the_backends_agree(dataset: str, mode: str, backend: str, room_runs: RoomRun) -> None:
+    """A native program makes Python's decisions and places every pose and point as Python does."""
+    _assert_same_run(room_runs(dataset, mode, backend), room_runs(dataset, mode, "python"))
+
+
+def test_the_gap_forces_a_recovery(
+    gap_folders: Room, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Across the gap the motion model fails, PnP recovers, and every frame is tracked."""
+    recovered: list[bool] = []
+    relocalize = tracking.relocalize_locally
+
+    def counting(
+        m: Map, camera: frames.Camera, frame: frames.Frame, options: Options
+    ) -> frames.Tracked | None:
+        found = relocalize(m, camera, frame, options)
+        recovered.append(found is not None)
+        return found
+
+    monkeypatch.setattr(tracking, "relocalize_locally", counting)
+    run = vo.run("tum", gap_folders.tum, "rgbd", tmp_path, options=GAP_OPTIONS)
+    assert recovered
+    assert all(recovered)
+    assert all(d["state"] == "tracking" for d in run.diagnostics)
+
+
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+@pytest.mark.parametrize(("dataset", "mode"), CASES)
+def test_the_backends_agree_across_the_gap(
+    dataset: str, mode: str, backend: str, gap_runs: RoomRun
+) -> None:
+    """Through a recovery, a native program makes Python's decisions as on the whole room."""
+    _assert_same_run(gap_runs(dataset, mode, backend), gap_runs(dataset, mode, "python"))
+
+
+GOLDEN = load_fixture("edge/room_runs.json")
+"""What the pipeline decided on the room and the gap room (``generate_room_runs.py``)."""
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("name", ["room", "gap"])
+@pytest.mark.parametrize(("dataset", "mode"), CASES)
+def test_every_backend_matches_the_golden_record(  # noqa: PLR0917 -- the case, both rooms
+    dataset: str, mode: str, name: str, backend: str, room_runs: RoomRun, gap_runs: RoomRun
+) -> None:
+    """Every backend's run is the recorded one.
+
+    A decision changed in all three languages fails here until the record is regenerated
+    (review panel finding A1).
+    """
+    run = (room_runs if name == "room" else gap_runs)(dataset, mode, backend)
+    expected = GOLDEN["cases"][f"{name}/{dataset}/{mode}"]
+    decisions = [[d["state"], d["tracked"], d["keyframe"]] for d in run.diagnostics]
+    assert decisions == expected["diagnostics"]
+    np.testing.assert_array_equal(run.timestamps, expected["timestamps"])
+    np.testing.assert_array_equal(run.keyframe_timestamps, expected["keyframe_timestamps"])
+    assert len(run.points) == expected["points"]
+    assert_matches_fixture(run.poses, expected["poses"], GOLDEN["tolerance"])
 
 
 def test_a_request_crosses_as_a_command_line() -> None:

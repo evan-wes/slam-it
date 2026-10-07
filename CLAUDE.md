@@ -71,8 +71,13 @@ code or a binding.
 - Every C++/Rust implementation has a Python reference, a parity fixture in
   `tests/fixtures/<rung>/` that states its tolerance policy (applied by
   `tests/conftest.assert_matches_fixture`), and an `Implementation` Protocol in its Python
-  module that `tests/test_backends.py` checks every extension submodule against. Bindings only convert types; algorithms live in
-  the cores, which build without Python.
+  module that `tests/test_backends.py` checks every extension submodule against. The edge
+  rung's stages compare live with the Python reference on states built from the synthetic
+  room (stored, they would run to megabytes), at `tests/edge/support.py`'s tolerances; its
+  fixture is a golden record of the room's runs (`tests/fixtures/edge/room_runs.json`) that
+  every backend is held to, so a decision changed in all three languages fails until the
+  record is regenerated. Bindings only convert types; algorithms live in the cores, which
+  build without Python.
 - Native benchmarks are developer tools outside the cores: `cpp/bench/<rung>/` (Google
   Benchmark, built with `-DSLAMLAB_BUILD_BENCHMARKS=ON`) and each crate's `benches/`
   (criterion), held to the ladder by `check_layers.py`; layer 1 builds them, never runs them.
