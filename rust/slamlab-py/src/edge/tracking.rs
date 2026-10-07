@@ -164,7 +164,7 @@ fn track_last_frame<'py>(
 /// * `tracked` - Its pose and matches so far, as a dict.
 /// * `mode` - The mode's name.
 /// * `options` - The settings, as a dict.
-/// * `widen` - The search window's factor.
+/// * `recovering` - Whether the frame is a recovery's or the next.
 ///
 /// # Returns
 ///
@@ -174,7 +174,7 @@ fn track_last_frame<'py>(
 ///
 /// `ValueError` for a malformed argument; `InvalidInputError` from the core.
 #[pyfunction]
-#[pyo3(signature = (m, camera, frame, tracked, mode, options, widen))]
+#[pyo3(signature = (m, camera, frame, tracked, mode, options, recovering))]
 #[allow(
     clippy::too_many_arguments,
     reason = "the stage's state, as the reference takes it"
@@ -187,7 +187,7 @@ fn track_local_map<'py>(
     tracked: &Bound<'py, PyDict>,
     mode: &str,
     options: &Bound<'py, PyDict>,
-    widen: f64,
+    recovering: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     let local = unwrap(
         py,
@@ -198,7 +198,7 @@ fn track_local_map<'py>(
             &tracked_in(tracked)?,
             mode_in(mode)?,
             &options_in(options)?,
-            widen,
+            recovering,
         ),
     )?;
     let out = tracked_dict(py, &local.tracked)?;

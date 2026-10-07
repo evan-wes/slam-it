@@ -407,12 +407,9 @@ Result<std::optional<Tracked>> track_last_frame(const Map& m, const Camera& came
 
 Result<LocalTracking> track_local_map(const Map& m, const Camera& camera, const Frame& frame,
                                       const Tracked& tracked, Mode mode, const Options& options,
-                                      double widen) {
+                                      bool recovering) {
   if (auto ok = check_tracking(camera, options, tracked.points, frame, "tracked.points"); !ok) {
     return std::unexpected(std::move(ok.error()));
-  }
-  if (!std::isfinite(widen) || widen <= 0.0) {
-    return foundations::fail_setting("widen", "must be finite and positive", widen);
   }
   const std::vector<std::int64_t> local_points = observed_by(m, window(m, options.window));
   std::vector<std::int64_t> already;
@@ -429,14 +426,17 @@ Result<LocalTracking> track_local_map(const Map& m, const Camera& camera, const 
   if (!view) {
     return std::unexpected(std::move(view.error()));
   }
-  const double th = mode == Mode::kRgbd ? options.rgbd_local_window : options.local_window;
+  double th = mode == Mode::kRgbd ? options.rgbd_local_window : options.local_window;
+  if (recovering) {
+    th = options.recovery_local_window;
+  }
   std::vector<matching::Projection> projections;
   for (std::size_t j = 0; j < view->rows.size(); ++j) {
     const double narrow = view->view_cos[j] > kNarrowViewCos ? 2.5 : 4.0;
     const std::int64_t level = view->level[j];
     projections.push_back(
         {.xy = view->xy[j],
-         .radius = widen * th * narrow * std::pow(m.scale_factor, static_cast<double>(level)),
+         .radius = th * narrow * std::pow(m.scale_factor, static_cast<double>(level)),
          .min_level = level - 1,
          .max_level = level,
          .descriptor = m.pt_descriptor[static_cast<std::size_t>(view->rows[j])],

@@ -31,9 +31,9 @@ struct Started {
 /// @brief Start the map from a stereo or RGB-D frame
 ///        (`slamlab.edge.initialization.initialize_from_depth`).
 /// @param frame The frame.
-/// @param options The minimum keypoints with depth, and the pyramid.
+/// @param options The minimum keypoints, and the pyramid.
 /// @return The map of one keyframe at the origin with a point at every keypoint with depth
-///         (and a bearing), or nothing if fewer than `min_depth_features` have depth;
+///         (and a bearing), or nothing if it has fewer than `min_init_features_depth` keypoints;
 ///         `InvalidInput` for a frame whose pyramid is not the settings', or invalid settings.
 [[nodiscard]] foundations::Result<std::optional<Started>> initialize_from_depth(
     const Frame& frame, const Options& options);

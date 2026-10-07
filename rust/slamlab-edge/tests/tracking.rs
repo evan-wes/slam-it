@@ -127,7 +127,7 @@ fn the_local_map_and_the_fallback_place_the_frame() {
         &none,
         Mode::Rgbd,
         &options,
-        1.0,
+        false,
     )
     .unwrap();
     assert_eq!(local.tracked.inliers(), POINTS);
@@ -138,17 +138,17 @@ fn the_local_map_and_the_fallback_place_the_frame() {
         .unwrap();
     assert_eq!(placed.inliers(), POINTS);
     assert!(gap(&placed.pose, &pose(2)) < 1e-6);
-    let err = track_local_map(
+    let recovering = track_local_map(
         &m,
         &camera(),
         &frame(2, true),
         &none,
         Mode::Rgbd,
         &options,
-        0.0,
+        true,
     )
-    .unwrap_err();
-    assert_eq!(err.kind, ErrorKind::InvalidInput);
+    .unwrap();
+    assert_eq!(recovering.tracked.inliers(), POINTS);
     let short = Tracked {
         pose: start,
         points: vec![0],

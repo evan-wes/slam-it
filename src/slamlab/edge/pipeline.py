@@ -11,9 +11,10 @@
 2. **Tracking:** predict by constant velocity (no motion when the last frame was not
    tracked) and track the last frame; if that fails, fall back to PnP against the local map
    (:func:`slamlab.edge.tracking.relocalize_locally`); then track the local map, its window
-   widened just after a recovery. Fewer than ``min_tracked`` inliers (:data:`RECOVERY_TRACKED`
-   within ``max_frames`` of a recovery) counts as a failure; after ``lost_frames`` failures
-   in a row the track is lost, and the run ends there.
+   widened just after a recovery (``recovery_local_window``). Fewer than ``min_tracked``
+   inliers (:data:`RECOVERY_TRACKED` within ``max_frames`` of a recovery) counts as a
+   failure; after ``lost_frames`` failures in a row the track is lost, and the run ends
+   there.
 3. **Mapping:** a tracked frame that needs a keyframe (:func:`slamlab.edge.mapping.need_keyframe`;
    none within ``max_frames`` of a recovery once the map holds more than ``max_frames``) is
    inserted and mapped (:func:`slamlab.edge.mapping.process`).
@@ -40,12 +41,9 @@ from slamlab.foundations.errors import InvalidInputError
 
 Array = NDArray[np.float64]
 
-RECOVERY_WIDEN = 5.0
-"""On a recovery's frame and the next, the local map is searched in this many times the
-window (``SearchLocalPoints``' ``th = 5``)."""
-
 RECOVERY_WIDE_FRAMES = 2
-"""The frames, counting the recovery's, searched that wide."""
+"""The frames, counting the recovery's, whose local map is searched in
+``recovery_local_window`` (``SearchLocalPoints``' ``mnLastRelocFrameId + 2``)."""
 
 RECOVERY_TRACKED = 50
 """Within ``max_frames`` of a recovery, a frame needs this many inliers
@@ -260,7 +258,7 @@ class Pipeline:
         if placed is not None:
             local = tracking.track_local_map(
                 m, self.camera, frame, placed, mode=self.mode, options=options,
-                widen=RECOVERY_WIDEN if wide else 1.0,
+                recovering=wide,
             )  # fmt: skip
             m = maps.count(m, local.visible, visible=np.ones(len(local.visible), dtype=np.int64))
             m = maps.count(m, local.found, found=np.ones(len(local.found), dtype=np.int64))

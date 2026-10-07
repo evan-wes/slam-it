@@ -92,15 +92,15 @@ nb::object track_last_frame(const nb::dict& m, const nb::dict& camera, const nb:
 /// @param tracked Its pose and matches so far, as a dict.
 /// @param mode The mode's name.
 /// @param options The settings, as a dict.
-/// @param widen The search window's factor.
+/// @param recovering Whether the frame is a recovery's or the next.
 /// @return `pose`, `points`, `visible` and `found`.
 /// @throws CoreError for invalid input.
 nb::dict track_local_map(const nb::dict& m, const nb::dict& camera, const nb::dict& frame,
                          const nb::dict& tracked, const std::string& mode, const nb::dict& options,
-                         double widen) {
+                         bool recovering) {
   const edge::LocalTracking local = unwrap(edge::track_local_map(
       map_in(m), camera_in(camera), frame_in(frame), edge_crossing::tracked_in(tracked),
-      edge_crossing::mode_in(mode), options_in(options), widen));
+      edge_crossing::mode_in(mode), options_in(options), recovering));
   nb::dict out = edge_crossing::tracked_dict(local.tracked);
   out["visible"] = edge_crossing::vector_array(local.visible);
   out["found"] = edge_crossing::vector_array(local.found);
@@ -132,7 +132,7 @@ void bind_tracking(nb::module_& m) {
         nb::arg("last"), nb::arg("last_tracked"), nb::arg("predicted").noconvert(), nb::arg("mode"),
         nb::arg("options"), "Track the last frame's points into this one.");
   m.def("track_local_map", &track_local_map, nb::arg("m"), nb::arg("camera"), nb::arg("frame"),
-        nb::arg("tracked"), nb::arg("mode"), nb::arg("options"), nb::arg("widen"),
+        nb::arg("tracked"), nb::arg("mode"), nb::arg("options"), nb::arg("recovering"),
         "Match the local map's points in view and refine the pose.");
   m.def("relocalize_locally", &relocalize_locally, nb::arg("m"), nb::arg("camera"),
         nb::arg("frame"), nb::arg("options"),

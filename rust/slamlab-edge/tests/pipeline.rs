@@ -28,7 +28,7 @@ fn along(i: usize) -> Matrix4<f64> {
 fn small_scene() -> Options {
     Options {
         min_init_features: 20,
-        min_depth_features: 20,
+        min_init_features_depth: 20,
         init_min_matches: 20,
         ..Options::default()
     }

@@ -55,8 +55,8 @@ struct Options {
   std::int64_t init_feature_factor{2};
   /// @brief Keypoints a monocular frame needs to take part in initialisation.
   std::int64_t min_init_features{100};
-  /// @brief Keypoints with depth the first stereo or RGB-D keyframe needs.
-  std::int64_t min_depth_features{500};
+  /// @brief Keypoints a stereo or RGB-D frame needs to start the map.
+  std::int64_t min_init_features_depth{500};
   /// @brief The monocular initialisation's search window, in pixels.
   double init_window{100.0};
   /// @brief Its ratio test.
@@ -73,6 +73,8 @@ struct Options {
   double local_window{1.0};
   /// @brief The same for RGB-D.
   double rgbd_local_window{3.0};
+  /// @brief The same on a recovery's frame and the next, in every mode.
+  double recovery_local_window{5.0};
   /// @brief Inliers the local map must give for the frame to be tracked.
   std::int64_t min_tracked{30};
   /// @brief The outlier test for a 2D observation (chi-square, 2 dof, 95%).
@@ -83,7 +85,8 @@ struct Options {
   std::int64_t pose_rounds{4};
   /// @brief A point is in view only within this cosine of its mean viewing direction.
   double view_cos_limit{0.5};
-  /// @brief A keyframe is due at the latest this many frames after the last.
+  /// @brief Frames after a recovery that need more inliers and make no keyframe (the frame
+  ///        rate).
   std::int64_t max_frames{30};
   /// @brief Stereo and RGB-D keyframe ratio of the reference keyframe's points.
   double ref_ratio{0.75};
@@ -109,6 +112,8 @@ struct Options {
   std::int64_t ba_iterations{5};
   /// @brief And after.
   std::int64_t ba_refine_iterations{10};
+  /// @brief Local BA runs once the map holds this many keyframes.
+  std::int64_t ba_min_keyframes{3};
   /// @brief A new point found in less than this fraction of its views is culled.
   double found_ratio{0.25};
   /// @brief Monocular points this weakly observed two keyframes on are culled.
@@ -136,14 +141,14 @@ using IntegerOption = std::pair<const char*, std::int64_t Options::*>;
 using RealOption = std::pair<const char*, double Options::*>;
 
 /// @brief `Options`' integer fields, by their Python names.
-inline constexpr std::array<IntegerOption, 25> kIntegerOptions{{
+inline constexpr std::array<IntegerOption, 26> kIntegerOptions{{
     {"n_features", &Options::n_features},
     {"levels", &Options::levels},
     {"fast_threshold", &Options::fast_threshold},
     {"min_fast_threshold", &Options::min_fast_threshold},
     {"init_feature_factor", &Options::init_feature_factor},
     {"min_init_features", &Options::min_init_features},
-    {"min_depth_features", &Options::min_depth_features},
+    {"min_init_features_depth", &Options::min_init_features_depth},
     {"init_min_matches", &Options::init_min_matches},
     {"min_motion_matches", &Options::min_motion_matches},
     {"min_tracked", &Options::min_tracked},
@@ -156,6 +161,7 @@ inline constexpr std::array<IntegerOption, 25> kIntegerOptions{{
     {"min_new_points", &Options::min_new_points},
     {"ba_iterations", &Options::ba_iterations},
     {"ba_refine_iterations", &Options::ba_refine_iterations},
+    {"ba_min_keyframes", &Options::ba_min_keyframes},
     {"min_point_observations", &Options::min_point_observations},
     {"min_point_observations_depth", &Options::min_point_observations_depth},
     {"redundant_observers", &Options::redundant_observers},
@@ -165,7 +171,7 @@ inline constexpr std::array<IntegerOption, 25> kIntegerOptions{{
 }};
 
 /// @brief `Options`' real fields, by their Python names.
-inline constexpr std::array<RealOption, 19> kRealOptions{{
+inline constexpr std::array<RealOption, 20> kRealOptions{{
     {"scale_factor", &Options::scale_factor},
     {"close_depth", &Options::close_depth},
     {"init_window", &Options::init_window},
@@ -174,6 +180,7 @@ inline constexpr std::array<RealOption, 19> kRealOptions{{
     {"stereo_motion_window", &Options::stereo_motion_window},
     {"local_window", &Options::local_window},
     {"rgbd_local_window", &Options::rgbd_local_window},
+    {"recovery_local_window", &Options::recovery_local_window},
     {"chi2_mono", &Options::chi2_mono},
     {"chi2_stereo", &Options::chi2_stereo},
     {"view_cos_limit", &Options::view_cos_limit},

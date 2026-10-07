@@ -89,9 +89,9 @@ def _decode_started(
 
 def _initialize_from_depth(frame: Frame, options: Options) -> tuple[Map, Tracked] | None:
     """Start the map from a stereo or RGB-D frame (reference)."""
-    has_depth = np.flatnonzero(~np.isnan(frame.depth) & ~np.isnan(frame.bearings[:, 0]))
-    if len(has_depth) < options.min_depth_features:
+    if frame.size < options.min_init_features_depth:
         return None
+    has_depth = np.flatnonzero(~np.isnan(frame.depth) & ~np.isnan(frame.bearings[:, 0]))
     pose = np.eye(4)
     m = maps.insert_keyframe(
         maps.empty(options.levels, options.scale_factor),
@@ -117,7 +117,7 @@ def initialize_from_depth(
     frame : slamlab.edge.frames.Frame
         The frame.
     options : Options
-        The minimum keypoints with depth, and the pyramid.
+        The minimum keypoints, and the pyramid.
     backend : {"python", "cpp", "rust"}, optional
         Which implementation computes the result (default: the Python reference).
 
@@ -125,8 +125,8 @@ def initialize_from_depth(
     -------
     tuple of (Map, Tracked) or None
         The map, its one keyframe at the origin with a point at every keypoint with depth
-        (and a bearing), and the frame tracked; None if fewer than ``min_depth_features``
-        keypoints have depth.
+        (and a bearing), and the frame tracked; None if the frame has fewer than
+        ``min_init_features_depth`` keypoints.
 
     Raises
     ------

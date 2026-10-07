@@ -15,11 +15,8 @@ use crate::mapping;
 use crate::options::{Mode, Options, check_options};
 use crate::tracking;
 
-/// On a recovery's frame and the next, the local map is searched in this many times the window
-/// (`SearchLocalPoints`' `th = 5`).
-pub const RECOVERY_WIDEN: f64 = 5.0;
-
-/// The frames, counting the recovery's, searched that wide.
+/// The frames, counting the recovery's, whose local map is searched in `recovery_local_window`
+/// (`SearchLocalPoints`' `mnLastRelocFrameId + 2`).
 pub const RECOVERY_WIDE_FRAMES: usize = 2;
 
 /// Within `max_frames` of a recovery, a frame needs this many inliers.
@@ -415,9 +412,8 @@ impl Pipeline {
         let Some(placed) = placed else {
             return Ok((None, false));
         };
-        let widen = if wide { RECOVERY_WIDEN } else { 1.0 };
         let local =
-            tracking::track_local_map(m, &self.camera, frame, &placed, self.mode, &options, widen)?;
+            tracking::track_local_map(m, &self.camera, frame, &placed, self.mode, &options, wide)?;
         map::count(
             m,
             &local.visible,

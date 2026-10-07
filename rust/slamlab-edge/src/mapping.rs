@@ -1123,8 +1123,10 @@ pub fn process(
     cull_points(m, mode, options)?;
     triangulate_new_points(m, camera, mode, options)?;
     fuse_points(m, camera, options)?;
-    let fixed: Vec<bool> = m.kf_id.iter().map(|&id| id == 0).collect();
-    let window = m.window(options.window);
-    bundle_adjust(m, camera, &window, &fixed, options)?;
+    if m.keyframes() >= options.ba_min_keyframes {
+        let fixed: Vec<bool> = m.kf_id.iter().map(|&id| id == 0).collect();
+        let window = m.window(options.window);
+        bundle_adjust(m, camera, &window, &fixed, options)?;
+    }
     cull_keyframes(m, camera, mode, options)
 }

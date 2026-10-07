@@ -115,24 +115,24 @@ fn median(values: &mut [f64]) -> f64 {
 /// # Arguments
 ///
 /// * `frame` - The frame.
-/// * `options` - The minimum keypoints with depth, and the pyramid.
+/// * `options` - The minimum keypoints, and the pyramid.
 ///
 /// # Returns
 ///
 /// The map of one keyframe at the origin with a point at every keypoint with depth (and a
-/// bearing), or `None` if fewer than `min_depth_features` have depth.
+/// bearing), or `None` if it has fewer than `min_init_features_depth` keypoints.
 ///
 /// # Errors
 ///
 /// `InvalidInput` for a frame whose pyramid is not the settings', or invalid settings.
 pub fn initialize_from_depth(frame: &Frame, options: &Options) -> Result<Option<Started>> {
     check_frame(frame, options, "frame")?;
+    if frame.size() < options.min_init_features_depth {
+        return Ok(None);
+    }
     let has_depth: Vec<usize> = (0..frame.size())
         .filter(|&i| !frame.depth[i].is_nan() && !frame.bearings[i].x.is_nan())
         .collect();
-    if has_depth.len() < options.min_depth_features {
-        return Ok(None);
-    }
     let mut m = Map::empty(options.levels, options.scale_factor);
     insert_unobserving(&mut m, frame, &Matrix4::identity())?;
     let xyz: Vec<Vector3<f64>> = has_depth

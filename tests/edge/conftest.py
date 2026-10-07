@@ -26,7 +26,9 @@ from tests.edge import room
 FRAMES = 40
 """Frames rendered for the session's states."""
 
-OPTIONS = Options(n_features=600, init_window=50.0, init_min_matches=50, min_depth_features=200)
+OPTIONS = Options(
+    n_features=600, init_window=50.0, init_min_matches=50, min_init_features_depth=200
+)
 """ORB-SLAM's defaults scaled to the room's 320x240 images (its are for 640x480)."""
 
 ATE_BOUND = {"rgbd": 0.02, "stereo": 0.02, "monocular": 0.03}

@@ -106,6 +106,20 @@ def test_process_matches_the_reference(backend: str, mode: str, mapped: Mapped) 
           mode=mode, options=OPTIONS)  # fmt: skip
 
 
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_local_ba_waits_for_enough_keyframes(backend: str, mapped: Mapped) -> None:
+    """Before the map holds ``ba_min_keyframes``, no local BA: the poses stay as tracked."""
+    waiting = replace(OPTIONS, ba_min_keyframes=mapped.map.keyframes + 2)
+    args = (mapped.map, CAMERA, mapped.frame, mapped.tracked)
+    held = mapping.process(*args, mode="rgbd", options=waiting)
+    np.testing.assert_array_equal(held.kf_pose[-1], mapped.tracked.pose)
+    rows = mapped.map.keyframe_rows(held.kf_id[:-1])
+    np.testing.assert_array_equal(held.kf_pose[:-1], mapped.map.kf_pose[rows])
+    adjusted = mapping.process(*args, mode="rgbd", options=OPTIONS)
+    assert not np.array_equal(adjusted.kf_pose[-1], mapped.tracked.pose)
+    _same(backend, "process", *args, mode="rgbd", options=waiting)
+
+
 def test_keyframe_needed_when_tracking_thins(mapped: Mapped) -> None:
     """Few tracked points against the reference: a keyframe; too few to be one: none."""
     m, frame, tracked = mapped.map, mapped.frame, mapped.tracked

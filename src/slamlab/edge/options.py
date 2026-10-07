@@ -47,8 +47,9 @@ class Options:
         exists (ORB-SLAM's initialisation extractor, ``2 * nFeatures``).
     min_init_features : int
         Keypoints a monocular frame needs to take part in initialisation (ORB-SLAM: 100).
-    min_depth_features : int
-        Keypoints with depth the first stereo or RGB-D keyframe needs (ORB-SLAM: 500).
+    min_init_features_depth : int
+        Keypoints a stereo or RGB-D frame needs to start the map, a point made at each one
+        with depth (``StereoInitialization``'s 500 counts every keypoint).
     init_window : float
         The window, in pixels, in which a monocular initialisation matches a keypoint of the
         reference frame (``SearchForInitialization``'s 100).
@@ -71,6 +72,9 @@ class Options:
         for RGB-D), scaled by the predicted level and the viewing angle.
     rgbd_local_window : float
         The same, for RGB-D.
+    recovery_local_window : float
+        The same on a recovery's frame and the next, in every mode (``SearchLocalPoints``'
+        ``th = 5`` just after a relocalisation).
     min_tracked : int
         Inliers the local map must give for the frame to be tracked (``TrackLocalMap``'s 30).
     chi2_mono : float
@@ -83,8 +87,12 @@ class Options:
         A map point is in view only when the angle to its mean viewing direction has at least
         this cosine (``isInFrustum``'s 0.5).
     max_frames : int
-        A keyframe is due at the latest this many frames after the last (``mMaxFrames``: the
-        frame rate).
+        Frames after a recovery during which a frame needs
+        :data:`slamlab.edge.pipeline.RECOVERY_TRACKED` inliers, and no keyframe is made once
+        the map holds more than this many (``mMaxFrames``, the frame rate, in
+        ``TrackLocalMap`` and ``NeedNewKeyFrame``). Its other use in ``NeedNewKeyFrame``,
+        condition c1a, only allows a keyframe; with local mapping idle, as the one-thread
+        pipeline always is, c1b allows one anyway, and c2 decides.
     ref_ratio : float
         A keyframe is needed when the frame tracks fewer than this fraction of the reference
         keyframe's points (``thRefRatio``: 0.75 for stereo and RGB-D)...
@@ -113,6 +121,9 @@ class Options:
         Local BA's iterations before dropping outliers (5)...
     ba_refine_iterations : int
         ...and after (10).
+    ba_min_keyframes : int
+        Local BA runs once the map holds this many keyframes (``LocalMapping``'s
+        ``KeyFramesInMap() > 2``).
     found_ratio : float
         A new point is culled when found in less than this fraction of the frames that should
         have seen it (0.25).
@@ -144,7 +155,7 @@ class Options:
     close_depth: float = 40.0
     init_feature_factor: int = 2
     min_init_features: int = 100
-    min_depth_features: int = 500
+    min_init_features_depth: int = 500
     init_window: float = 100.0
     init_ratio: float = 0.9
     init_min_matches: int = 100
@@ -153,6 +164,7 @@ class Options:
     min_motion_matches: int = 20
     local_window: float = 1.0
     rgbd_local_window: float = 3.0
+    recovery_local_window: float = 5.0
     min_tracked: int = 30
     chi2_mono: float = 5.991
     chi2_stereo: float = 7.815
@@ -171,6 +183,7 @@ class Options:
     fuse_window: float = 3.0
     ba_iterations: int = 5
     ba_refine_iterations: int = 10
+    ba_min_keyframes: int = 3
     found_ratio: float = 0.25
     min_point_observations: int = 2
     min_point_observations_depth: int = 3
@@ -247,7 +260,7 @@ class Options:
         return asdict(self)
 
 
-_MAY_BE_ZERO = frozenset({"seed", "min_init_features", "min_depth_features"})
+_MAY_BE_ZERO = frozenset({"seed", "min_init_features", "min_init_features_depth"})
 """The integer settings that may be 0."""
 
 _FRACTIONS = frozenset(

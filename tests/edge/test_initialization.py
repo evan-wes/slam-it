@@ -46,8 +46,24 @@ def test_from_depth_matches_the_reference(backend: str, truth: Truth) -> None:
     assert expected is not None
     got = initialization.initialize_from_depth(frame, OPTIONS, backend=chosen)
     _assert_started_match(got, expected, TOLERANCE)
-    too_many = replace(OPTIONS, min_depth_features=frame.size + 1)
+    too_many = replace(OPTIONS, min_init_features_depth=frame.size + 1)
     assert initialization.initialize_from_depth(frame, too_many, backend=chosen) is None
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_from_depth_counts_every_keypoint(backend: str, truth: Truth) -> None:
+    """The start needs keypoints, not depths: points are made only where there is depth."""
+    chosen = require_function(backend, initialization.__name__, "initialize_from_depth")
+    frame = truth.frames[0]
+    sparse = replace(
+        frame,
+        depth=np.where(np.arange(frame.size) < 5, frame.depth, np.nan),
+        right=np.where(np.arange(frame.size) < 5, frame.right, np.nan),
+    )
+    options = replace(OPTIONS, min_init_features_depth=frame.size)
+    started = initialization.initialize_from_depth(sparse, options, backend=chosen)
+    assert started is not None
+    assert started[0].points == np.count_nonzero(~np.isnan(sparse.depth)) > 0
 
 
 def test_from_depth_puts_a_point_at_every_keypoint_with_depth(truth: Truth) -> None:

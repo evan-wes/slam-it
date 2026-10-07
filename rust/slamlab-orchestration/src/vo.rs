@@ -792,7 +792,7 @@ mod tests {
                 empty.backend.as_str(),
                 empty.settings.len()
             ),
-            ("tum_camera", "rust", 44)
+            ("tum_camera", "rust", Options::default().settings().len())
         );
         let text = std::fs::read_to_string(out.join("run.json")).unwrap();
         assert!(text.contains("\"window\": 10") && out.join("trajectory.txt").exists());

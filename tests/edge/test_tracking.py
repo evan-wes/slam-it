@@ -76,12 +76,12 @@ def test_tracking_matches_the_reference(backend: str, mode: str, room_state: Roo
         *args, predicted=r.predicted, mode=mode, options=OPTIONS, backend=backend
     )
     _close(got_last, expected)
-    for widen in (1.0, 2.0):
+    for recovering in (False, True):
         local = tracking.track_local_map(
-            r.map, CAMERA, r.frame, expected, mode=mode, options=OPTIONS, widen=widen
+            r.map, CAMERA, r.frame, expected, mode=mode, options=OPTIONS, recovering=recovering
         )
         got = tracking.track_local_map(
-            r.map, CAMERA, r.frame, expected, mode=mode, options=OPTIONS, widen=widen,
+            r.map, CAMERA, r.frame, expected, mode=mode, options=OPTIONS, recovering=recovering,
             backend=backend,
         )  # fmt: skip
         _close(got.tracked, local.tracked)
@@ -247,7 +247,7 @@ def test_moving_forward_searches_no_finer_level(
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_rejects_malformed_arguments(backend: str, room_state: Room) -> None:
-    """A bad mode, pose, matches or widening raises before any backend runs."""
+    """A bad mode, pose, matches or recovery flag raises before any backend runs."""
     r = room_state
     short = Tracked(pose=r.last_tracked.pose, points=r.last_tracked.points[:-1])
     flat = Tracked(pose=np.eye(3), points=r.last_tracked.points)
@@ -262,7 +262,8 @@ def test_rejects_malformed_arguments(backend: str, room_state: Room) -> None:
         ),
         lambda: tracking.track_local_map(
             r.map, CAMERA, r.last, r.last_tracked,
-            mode="rgbd", options=OPTIONS, widen=0.0, backend=backend,
+            mode="rgbd", options=OPTIONS, recovering="yes",  # type: ignore[arg-type]
+            backend=backend,
         ),
         lambda: tracking.optimize_pose(r.map, CAMERA, r.last, flat, OPTIONS, backend=backend),
         lambda: tracking.in_view(r.map, CAMERA, r.truth, [r.map.points], OPTIONS, backend=backend),

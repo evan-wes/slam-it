@@ -63,8 +63,8 @@ pub struct Options {
     pub init_feature_factor: usize,
     /// Keypoints a monocular frame needs to take part in initialisation.
     pub min_init_features: usize,
-    /// Keypoints with depth the first stereo or RGB-D keyframe needs.
-    pub min_depth_features: usize,
+    /// Keypoints a stereo or RGB-D frame needs to start the map.
+    pub min_init_features_depth: usize,
     /// The monocular initialisation's search window, in pixels.
     pub init_window: f64,
     /// Its ratio test.
@@ -81,6 +81,8 @@ pub struct Options {
     pub local_window: f64,
     /// The same for RGB-D.
     pub rgbd_local_window: f64,
+    /// The same on a recovery's frame and the next, in every mode.
+    pub recovery_local_window: f64,
     /// Inliers the local map must give for the frame to be tracked.
     pub min_tracked: usize,
     /// The outlier test for a 2D observation (chi-square, 2 dof, 95%).
@@ -91,7 +93,7 @@ pub struct Options {
     pub pose_rounds: usize,
     /// A point is in view only within this cosine of its mean viewing direction.
     pub view_cos_limit: f64,
-    /// A keyframe is due at the latest this many frames after the last.
+    /// Frames after a recovery that need more inliers and make no keyframe (the frame rate).
     pub max_frames: usize,
     /// Stereo and RGB-D keyframe ratio of the reference keyframe's points.
     pub ref_ratio: f64,
@@ -117,6 +119,8 @@ pub struct Options {
     pub ba_iterations: usize,
     /// And after.
     pub ba_refine_iterations: usize,
+    /// Local BA runs once the map holds this many keyframes.
+    pub ba_min_keyframes: usize,
     /// A new point found in less than this fraction of its views is culled.
     pub found_ratio: f64,
     /// Monocular points this weakly observed two keyframes on are culled.
@@ -149,7 +153,7 @@ impl Default for Options {
             close_depth: 40.0,
             init_feature_factor: 2,
             min_init_features: 100,
-            min_depth_features: 500,
+            min_init_features_depth: 500,
             init_window: 100.0,
             init_ratio: 0.9,
             init_min_matches: 100,
@@ -158,6 +162,7 @@ impl Default for Options {
             min_motion_matches: 20,
             local_window: 1.0,
             rgbd_local_window: 3.0,
+            recovery_local_window: 5.0,
             min_tracked: 30,
             chi2_mono: 5.991,
             chi2_stereo: 7.815,
@@ -176,6 +181,7 @@ impl Default for Options {
             fuse_window: 3.0,
             ba_iterations: 5,
             ba_refine_iterations: 10,
+            ba_min_keyframes: 3,
             found_ratio: 0.25,
             min_point_observations: 2,
             min_point_observations_depth: 3,
@@ -294,14 +300,15 @@ macro_rules! named_settings {
 named_settings!(
     n_features: Integer, levels: Integer, scale_factor: Real, fast_threshold: Integer,
     min_fast_threshold: Integer, close_depth: Real, init_feature_factor: Integer,
-    min_init_features: Integer, min_depth_features: Integer, init_window: Real,
+    min_init_features: Integer, min_init_features_depth: Integer, init_window: Real,
     init_ratio: Real, init_min_matches: Integer, motion_window: Real,
     stereo_motion_window: Real, min_motion_matches: Integer, local_window: Real,
-    rgbd_local_window: Real, min_tracked: Integer, chi2_mono: Real, chi2_stereo: Real,
+    rgbd_local_window: Real, recovery_local_window: Real, min_tracked: Integer, chi2_mono: Real, chi2_stereo: Real,
     pose_rounds: Integer, view_cos_limit: Real, max_frames: Integer, ref_ratio: Real,
     mono_ref_ratio: Real, min_keyframe_inliers: Integer, close_tracked: Integer,
     close_untracked: Integer, window: Integer, min_new_points: Integer, max_parallax_cos: Real,
     scale_ratio: Real, fuse_window: Real, ba_iterations: Integer, ba_refine_iterations: Integer,
+    ba_min_keyframes: Integer,
     found_ratio: Real, min_point_observations: Integer, min_point_observations_depth: Integer,
     redundant_fraction: Real, redundant_observers: Integer, pnp_threshold: Real,
     pnp_min_inliers: Integer, lost_frames: Integer, seed: Integer,
@@ -320,7 +327,7 @@ pub fn check_options(options: &Options) -> Result<()> {
     orb::check_options(&options.extraction(false))?;
     for (name, value) in [
         ("min_init_features", options.min_init_features),
-        ("min_depth_features", options.min_depth_features),
+        ("min_init_features_depth", options.min_init_features_depth),
     ] {
         check_range(name, value, 0, MAX_SETTING)?;
     }
@@ -341,6 +348,7 @@ pub fn check_options(options: &Options) -> Result<()> {
         ("min_new_points", options.min_new_points),
         ("ba_iterations", options.ba_iterations),
         ("ba_refine_iterations", options.ba_refine_iterations),
+        ("ba_min_keyframes", options.ba_min_keyframes),
         ("min_point_observations", options.min_point_observations),
         (
             "min_point_observations_depth",
@@ -360,6 +368,7 @@ pub fn check_options(options: &Options) -> Result<()> {
         ("stereo_motion_window", options.stereo_motion_window),
         ("local_window", options.local_window),
         ("rgbd_local_window", options.rgbd_local_window),
+        ("recovery_local_window", options.recovery_local_window),
         ("chi2_mono", options.chi2_mono),
         ("chi2_stereo", options.chi2_stereo),
         ("scale_ratio", options.scale_ratio),
@@ -398,7 +407,7 @@ mod tests {
     fn settings_by_name() {
         let mut options = Options::default();
         let settings = options.settings();
-        assert_eq!(settings.len(), 44);
+        assert_eq!(settings.len(), 46);
         assert_eq!(settings[0], ("n_features", Setting::Integer(1000)));
         assert_eq!(settings[2], ("scale_factor", Setting::Real(1.2)));
         options.set("window", Setting::Integer(7)).unwrap();

@@ -50,15 +50,16 @@ foundations::Result<void> check_options(const Options& options) {
     return ok;
   }
   // Settings that may be 0, then those that must be at least 1.
-  const std::array<IntSetting, 3> may_be_zero{{{"seed", options.seed},
-                                               {"min_init_features", options.min_init_features},
-                                               {"min_depth_features", options.min_depth_features}}};
+  const std::array<IntSetting, 3> may_be_zero{
+      {{"seed", options.seed},
+       {"min_init_features", options.min_init_features},
+       {"min_init_features_depth", options.min_init_features_depth}}};
   for (const auto& [setting, value] : may_be_zero) {
     if (auto ok = foundations::check_range(setting, value, 0, kMaxSetting); !ok) {
       return ok;
     }
   }
-  const std::array<IntSetting, 17> counts{{
+  const std::array<IntSetting, 18> counts{{
       {"n_features", options.n_features},
       {"levels", options.levels},
       {"fast_threshold", options.fast_threshold},
@@ -76,6 +77,7 @@ foundations::Result<void> check_options(const Options& options) {
       {"min_new_points", options.min_new_points},
       {"ba_iterations", options.ba_iterations},
       {"ba_refine_iterations", options.ba_refine_iterations},
+      {"ba_min_keyframes", options.ba_min_keyframes},
   }};
   for (const auto& [setting, value] : counts) {
     if (auto ok = foundations::check_range(setting, value, 1, kMaxSetting); !ok) {
@@ -94,7 +96,7 @@ foundations::Result<void> check_options(const Options& options) {
       return ok;
     }
   }
-  const std::array<RealSetting, 12> positive{{
+  const std::array<RealSetting, 13> positive{{
       {"scale_factor", options.scale_factor},
       {"close_depth", options.close_depth},
       {"init_window", options.init_window},
@@ -102,6 +104,7 @@ foundations::Result<void> check_options(const Options& options) {
       {"stereo_motion_window", options.stereo_motion_window},
       {"local_window", options.local_window},
       {"rgbd_local_window", options.rgbd_local_window},
+      {"recovery_local_window", options.recovery_local_window},
       {"chi2_mono", options.chi2_mono},
       {"chi2_stereo", options.chi2_stereo},
       {"scale_ratio", options.scale_ratio},

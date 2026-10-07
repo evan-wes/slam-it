@@ -111,15 +111,16 @@ struct LocalTracking {
 /// @param tracked Its pose and matches so far.
 /// @param mode The pipeline's mode.
 /// @param options The window, thresholds and minimums.
-/// @param widen A factor on the search window, finite and positive.
+/// @param recovering Whether the frame is a recovery's or the next: the window is then
+///        `recovery_local_window`.
 /// @return The refined frame and the ids of the points in view and of the inliers;
-///         `InvalidInput` for matches that are not one per keypoint, a bad `widen`, or an
-///         invalid camera or settings.
+///         `InvalidInput` for matches that are not one per keypoint, or an invalid camera or
+///         settings.
 [[nodiscard]] foundations::Result<LocalTracking> track_local_map(const Map& m, const Camera& camera,
                                                                  const Frame& frame,
                                                                  const Tracked& tracked, Mode mode,
                                                                  const Options& options,
-                                                                 double widen = 1.0);
+                                                                 bool recovering = false);
 
 /// @brief Place a frame against the local map by descriptors and PnP RANSAC
 ///        (`slamlab.edge.tracking.relocalize_locally`, the fallback).

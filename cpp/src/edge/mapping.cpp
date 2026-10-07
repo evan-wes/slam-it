@@ -883,8 +883,10 @@ Result<void> process(Map& m, const Camera& camera, const Frame& frame, const Tra
   for (std::size_t k = 0; k < fixed.size(); ++k) {
     fixed[k] = m.kf_id[k] == 0 ? 1 : 0;
   }
-  if (auto ok = bundle_adjust(m, camera, window(m, options.window), fixed, options); !ok) {
-    return ok;
+  if (std::cmp_greater_equal(keyframe_count(m), options.ba_min_keyframes)) {
+    if (auto ok = bundle_adjust(m, camera, window(m, options.window), fixed, options); !ok) {
+      return ok;
+    }
   }
   return cull_keyframes(m, camera, mode, options);
 }

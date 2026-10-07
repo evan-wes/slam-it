@@ -121,9 +121,10 @@ void check_local_map(const edge::Map& m, int& failures) {
   expect(placed.has_value() && placed->has_value() && edge::inliers(**placed) == 60 &&
              gap((*placed)->pose, scene::pose(2)) < 1e-6,
          "the fallback places the frame from descriptors alone", failures);
-  expect(is_invalid_input(edge::track_local_map(m, scene::camera(), scene::frame(2, true), none,
-                                                edge::Mode::kRgbd, edge::Options{}, 0.0)),
-         "track_local_map rejects a window factor of 0", failures);
+  const auto recovering = edge::track_local_map(m, scene::camera(), scene::frame(2, true), none,
+                                                edge::Mode::kRgbd, edge::Options{}, true);
+  expect(recovering.has_value() && edge::inliers(recovering->tracked) == 60,
+         "a recovery's wider search matches every point too", failures);
   expect(is_invalid_input(edge::optimize_pose(m, scene::camera(), scene::frame(2, true),
                                               {.pose = start, .points = {0}}, edge::Options{})),
          "optimize_pose rejects matches that are not one per keypoint", failures);

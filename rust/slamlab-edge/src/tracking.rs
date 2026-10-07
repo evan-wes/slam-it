@@ -2,7 +2,7 @@
 //! `slamlab.edge.tracking` (ORB-SLAM's `Tracking`, lite), whose docstring states the stages.
 
 use nalgebra::{Matrix4, Vector3};
-use slamlab_foundations::error::{ErrorKind, Result, fail, fail_setting};
+use slamlab_foundations::error::{ErrorKind, Result, fail};
 use slamlab_foundations::matching::{self, Match, Projection, SearchOptions, match_descriptors};
 use slamlab_foundations::p3p::Solver;
 use slamlab_foundations::{pnp, ransac, so3};
@@ -542,7 +542,8 @@ pub fn track_last_frame(
 /// * `tracked` - Its pose and matches so far.
 /// * `mode` - The pipeline's mode.
 /// * `options` - The window, thresholds and minimums.
-/// * `widen` - A factor on the search window, finite and positive.
+/// * `recovering` - Whether the frame is a recovery's or the next: the window is then
+///   `recovery_local_window`.
 ///
 /// # Returns
 ///
@@ -550,8 +551,8 @@ pub fn track_last_frame(
 ///
 /// # Errors
 ///
-/// `InvalidInput` for matches that are not one per keypoint, a bad `widen`, or an invalid
-/// camera or settings.
+/// `InvalidInput` for matches that are not one per keypoint, or an invalid camera or
+/// settings.
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_wrap,
@@ -564,12 +565,9 @@ pub fn track_local_map(
     tracked: &Tracked,
     mode: Mode,
     options: &Options,
-    widen: f64,
+    recovering: bool,
 ) -> Result<LocalTracking> {
     check_tracking(camera, options, &tracked.points, frame, "tracked.points")?;
-    if !(widen.is_finite() && widen > 0.0) {
-        return fail_setting("widen", "must be finite and positive", widen);
-    }
     let local_points = m.observed_by(&m.window(options.window));
     let already: Vec<usize> = tracked
         .points
@@ -583,7 +581,9 @@ pub fn track_local_map(
         .filter(|p| sorted_already.binary_search(p).is_err())
         .collect();
     let view = select_in_view(m, camera, &tracked.pose, &candidates, options)?;
-    let th = if mode == Mode::Rgbd {
+    let th = if recovering {
+        options.recovery_local_window
+    } else if mode == Mode::Rgbd {
         options.rgbd_local_window
     } else {
         options.local_window
@@ -598,7 +598,7 @@ pub fn track_local_map(
             let level = view.level[j];
             Projection {
                 xy: view.xy[j],
-                radius: widen * th * narrow * m.scale_factor.powf(level as f64),
+                radius: th * narrow * m.scale_factor.powf(level as f64),
                 min_level: level as i64 - 1,
                 max_level: level as i64,
                 descriptor: m.pt_descriptor[view.rows[j]],

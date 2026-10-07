@@ -111,7 +111,8 @@ void check_runs(int& failures) {
   request.count = 0;
   const auto empty = vo::run(request);
   expect(empty.has_value() && empty->timestamps.empty() && empty->sequence == "tum_camera" &&
-             empty->backend == "cpp" && empty->settings.size() == 44,
+             empty->backend == "cpp" &&
+             empty->settings.size() == edge::kIntegerOptions.size() + edge::kRealOptions.size(),
          "a run of no frames records the sequence and every setting", failures);
   std::ifstream file(out / "run.json");
   const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());

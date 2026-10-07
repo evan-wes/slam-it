@@ -11,7 +11,7 @@ runs ORB-SLAM's local mapping steps in order, single-threaded:
    (:func:`triangulate_new_points`, ``CreateNewMapPoints``).
 4. **Fuse duplicates** (:func:`fuse_points`, ``SearchInNeighbors``).
 5. **Local BA** over the window (:func:`slamlab.edge.adjust.bundle_adjust`), the map's first
-   keyframe fixed.
+   keyframe fixed, once the map holds ``ba_min_keyframes`` (``KeyFramesInMap() > 2``).
 6. **Cull redundant keyframes** (:func:`cull_keyframes`, ``KeyFrameCulling``).
 
 Lite: the sliding window of the last ``window`` keyframes stands in for the covisibility
@@ -878,7 +878,8 @@ def _process(  # noqa: PLR0913 -- the stage's state
     m = _cull_points(m, mode, options)
     m = _triangulate_new_points(m, camera, mode, options)
     m = _fuse_points(m, camera, options)
-    m = adjust.bundle_adjust(m, camera, m.window(options.window), m.kf_id == 0, options)
+    if m.keyframes >= options.ba_min_keyframes:
+        m = adjust.bundle_adjust(m, camera, m.window(options.window), m.kf_id == 0, options)
     return _cull_keyframes(m, camera, mode, options)
 
 

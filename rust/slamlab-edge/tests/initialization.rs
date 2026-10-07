@@ -17,7 +17,7 @@ use scene::{POINTS, camera, frame, points, pose};
 fn from_depth_puts_a_point_at_every_keypoint() {
     let f = frame(0, true);
     let options = Options {
-        min_depth_features: 10,
+        min_init_features_depth: 10,
         ..Options::default()
     };
     let started = initialize_from_depth(&f, &options).unwrap().unwrap();
@@ -28,7 +28,7 @@ fn from_depth_puts_a_point_at_every_keypoint() {
         assert!((x - truth).norm() < 1e-12);
     }
     let strict = Options {
-        min_depth_features: 100,
+        min_init_features_depth: 100,
         ..Options::default()
     };
     assert!(initialize_from_depth(&f, &strict).unwrap().is_none());

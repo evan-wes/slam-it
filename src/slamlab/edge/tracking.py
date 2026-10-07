@@ -35,7 +35,7 @@ from slamlab.edge.frames import Camera, Frame, Tracked
 from slamlab.edge.map import Map, frame_dict
 from slamlab.edge.options import MODES, TH_HIGH, Options
 from slamlab.foundations import matching, pnp, ransac, so3
-from slamlab.foundations.arrays import as_number
+from slamlab.foundations.arrays import as_flag
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
 
 Array = NDArray[np.float64]
@@ -148,7 +148,7 @@ class Implementation(Protocol):
         tracked: dict[str, Any],
         mode: str,
         options: dict[str, Any],
-        widen: float,
+        recovering: bool,
     ) -> dict[str, Any]:
         """Match the local map's points in view and refine the pose."""
         ...
@@ -562,18 +562,21 @@ def _track_local_map(  # noqa: PLR0913 -- the stage's state
     *,
     mode: str,
     options: Options,
-    widen: float,
+    recovering: bool,
 ) -> LocalTracking:
     """Match the local map's points in view and refine the pose (reference)."""
     local = m.observed_by(m.window(options.window))
     already = m.point_rows(tracked.points)
     already = already[already >= 0]
     view = _in_view(m, camera, tracked.pose, np.setdiff1d(local, already), options)
-    th = options.rgbd_local_window if mode == "rgbd" else options.local_window
+    if recovering:
+        th = options.recovery_local_window
+    else:
+        th = options.rgbd_local_window if mode == "rgbd" else options.local_window
     narrow = np.where(view.view_cos > NARROW_VIEW_COS, 2.5, 4.0)
     projections = matching.Projections(
         xy=view.xy,
-        radius=widen * th * narrow * m.scale_factor**view.level,
+        radius=th * narrow * m.scale_factor**view.level,
         min_level=view.level - 1,
         max_level=view.level,
         descriptors=m.pt_descriptor[view.rows],
@@ -591,7 +594,7 @@ def _track_local_map(  # noqa: PLR0913 -- the stage's state
     )
 
 
-def track_local_map(  # noqa: PLR0913 -- the stage's state, the widening, and the backend
+def track_local_map(  # noqa: PLR0913 -- the stage's state, the recovery flag, and the backend
     m: Map,
     camera: Camera,
     frame: Frame,
@@ -599,15 +602,16 @@ def track_local_map(  # noqa: PLR0913 -- the stage's state, the widening, and th
     *,
     mode: str,
     options: Options,
-    widen: float = 1.0,
+    recovering: bool = False,
     backend: str = "python",
 ) -> LocalTracking:
     """Match the local map's points in view and refine the pose (``TrackLocalMap``).
 
     The local map is the points the window's keyframes observe. Those the frame has not
     matched yet and that are in view (:func:`in_view`) are searched at their predicted level
-    and the one below, in a window of ``local_window`` (``rgbd_local_window`` in RGB-D)
-    times 2.5 or 4 pixels at that level (``RadiusByViewingCos``), with a 0.8 ratio test.
+    and the one below, in a window of ``local_window`` (``rgbd_local_window`` in RGB-D,
+    ``recovery_local_window`` just after a recovery) times 2.5 or 4 pixels at that level
+    (``RadiusByViewingCos``), with a 0.8 ratio test.
 
     Parameters
     ----------
@@ -623,8 +627,9 @@ def track_local_map(  # noqa: PLR0913 -- the stage's state, the widening, and th
         The pipeline's mode.
     options : Options
         The window, thresholds and minimums.
-    widen : float, optional
-        A factor on the search window (ORB-SLAM widens it after a recovery).
+    recovering : bool, optional
+        Whether the frame is a recovery's or the next (``mnLastRelocFrameId + 2``): the
+        window is then ``recovery_local_window``.
     backend : {"python", "cpp", "rust"}, optional
         Which implementation computes the result (default: the Python reference).
 
@@ -637,19 +642,17 @@ def track_local_map(  # noqa: PLR0913 -- the stage's state, the widening, and th
     ------
     slamlab.foundations.errors.InvalidInputError
         If the mode is unknown, the pose is not a finite 4x4 matrix, the matches are not one
-        per keypoint, or `widen` is not finite and positive.
+        per keypoint, or `recovering` is not a bool.
     """
     _check_mode(mode)
-    factor = as_number(widen, "widen")
-    if not (math.isfinite(factor) and factor > 0.0):
-        raise InvalidInputError(f"widen: must be finite and positive, got {factor}")
+    flag = as_flag(recovering, "recovering")
     so_far = frames.checked_tracked(tracked, frame, "tracked")
     return backends.call(
         backend,
         __name__,
         "track_local_map",
         reference=lambda: _track_local_map(
-            m, camera, frame, so_far, mode=mode, options=options, widen=factor
+            m, camera, frame, so_far, mode=mode, options=options, recovering=flag
         ),
         arguments={
             "m": m.as_dict(),
@@ -658,7 +661,7 @@ def track_local_map(  # noqa: PLR0913 -- the stage's state, the widening, and th
             "tracked": so_far.as_dict(),
             "mode": mode,
             "options": options.as_dict(),
-            "widen": factor,
+            "recovering": flag,
         },
         decode=_decode_local,
     )

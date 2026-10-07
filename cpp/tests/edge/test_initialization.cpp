@@ -23,7 +23,7 @@ using slamlab::testing::is_invalid_input;
 /// @param failures Running failure count.
 void check_from_depth(int& failures) {
   const edge::Frame frame = scene::frame(0, true);
-  const edge::Options options{.min_depth_features = 10};
+  const edge::Options options{.min_init_features_depth = 10};
   const auto started = edge::initialize_from_depth(frame, options);
   expect(started.has_value() && started->has_value(), "a frame with depth starts the map",
          failures);
@@ -38,9 +38,9 @@ void check_from_depth(int& failures) {
                worst < 1e-12 && edge::inliers((*started)->tracked) == 60,
            "it puts a point at every keypoint's depth", failures);
   }
-  const auto few = edge::initialize_from_depth(frame, edge::Options{.min_depth_features = 100});
-  expect(few.has_value() && !few->has_value(), "too few keypoints with depth start nothing",
-         failures);
+  const auto few =
+      edge::initialize_from_depth(frame, edge::Options{.min_init_features_depth = 100});
+  expect(few.has_value() && !few->has_value(), "too few keypoints start nothing", failures);
   expect(is_invalid_input(edge::initialize_from_depth(frame, edge::Options{.levels = 4})),
          "a frame of another pyramid is rejected", failures);
 }

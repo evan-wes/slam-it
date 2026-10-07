@@ -18,11 +18,8 @@
 
 namespace slamlab::edge {
 
-/// @brief On a recovery's frame and the next, the local map is searched in this many times the
-///        window (`SearchLocalPoints`' `th = 5`).
-inline constexpr double kRecoveryWiden = 5.0;
-
-/// @brief The frames, counting the recovery's, searched that wide.
+/// @brief The frames, counting the recovery's, whose local map is searched in
+///        `recovery_local_window` (`SearchLocalPoints`' `mnLastRelocFrameId + 2`).
 inline constexpr std::int64_t kRecoveryWideFrames = 2;
 
 /// @brief Within `max_frames` of a recovery, a frame needs this many inliers.
@@ -133,7 +130,7 @@ class Pipeline {
   /// @param m The map, its counts changed.
   /// @param frame The frame.
   /// @param placed The placed frame.
-  /// @param wide Whether to widen the search (just after a recovery).
+  /// @param wide Whether the frame is a recovery's or the next (the search widened).
   /// @param recent Whether a recovery was recent (more inliers needed).
   /// @return The tracked frame, if it keeps enough inliers; a stage's error.
   [[nodiscard]] foundations::Result<std::optional<Tracked>> refine(Map& m, const Frame& frame,

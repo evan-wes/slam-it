@@ -162,8 +162,7 @@ Result<std::pair<std::optional<Tracked>, bool>> Pipeline::place(const Map& m,
 
 Result<std::optional<Tracked>> Pipeline::refine(Map& m, const Frame& frame, const Tracked& placed,
                                                 bool wide, bool recent) const {
-  auto local =
-      track_local_map(m, camera_, frame, placed, mode_, options_, wide ? kRecoveryWiden : 1.0);
+  auto local = track_local_map(m, camera_, frame, placed, mode_, options_, wide);
   if (!local) {
     return std::unexpected(std::move(local.error()));
   }
