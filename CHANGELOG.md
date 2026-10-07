@@ -9,17 +9,19 @@ with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 Milestone 2's pipeline: ORB-SLAM-lite in the edge rung, monocular, stereo and RGB-D, in
 Python, C++ and Rust in lock-step, and native programs that run a whole sequence without
 Python. On the synthetic room the three backends make the same decisions, frame by frame.
-On TUM and EuRoC with ORB-SLAM's settings: RGB-D 1.1 to 7.0 cm ATE, stereo 3.2 and 6.0 cm,
-monocular 1.2 to 17 cm, at 2 to 21 ms of tracking and mapping a frame in C++; on each
-sequence's first 300 frames the three backends take the same decisions on every frame.
+On TUM and EuRoC with ORB-SLAM2's settings, no run losing the track: RGB-D 1.1 to 5.4 cm ATE
+over every frame, stereo 5.3 and 6.2 cm, monocular 1.1 to 11 cm, at 2 to 29 ms of tracking
+and mapping a frame in C++; on each sequence's first 300 frames the three backends take the
+same decisions on every frame.
 
 ### Added
 
 - **The edge rung** (`slamlab.edge`, `slamlab_edge`, `slamlab-edge`), each stage a function of
   explicit state with C++ and Rust ports held to the Python reference:
-  - `options`: every setting named and defaulted to ORB-SLAM2's;
+  - `options`: every setting named and defaulted to ORB-SLAM2's, its constants included (67
+    settings), and recorded in every run;
   - `frames`: one frame's features with each keypoint's bearing, depth and right column, per
-    mode (RGB-D with a virtual baseline, as ORB-SLAM);
+    mode (RGB-D with the camera's virtual baseline, as ORB-SLAM), checked at the boundary;
   - `map`: keyframes, keypoints and points as one struct of arrays, ORB-SLAM's `MapPoint`
     bookkeeping (distinctive descriptor, normal, scale range, counts); the C++ and Rust maps
     also index each point's observations (`pt_observations`, as `MapPoint::mObservations`), so
@@ -27,19 +29,23 @@ sequence's first 300 frames the three backends take the same decisions on every 
   - `residuals`: the chi-square test every stage shares;
   - `adjust`: local BA on rung 0's solver (level weights, inverse-depth priors, Huber; two
     passes, outliers forgotten);
-  - `initialization`: from depth, and monocular two-view with unit median depth;
-  - `tracking`: the motion model, the local map, pose refinement, PnP against the local map
-    as the fallback;
+  - `initialization`: from depth, and monocular two-view on ORB-SLAM2's rules (the inliers
+    with more than 0.36° of parallax, 100 points after BA, each match followed), at unit
+    median depth;
+  - `tracking`: the motion model, the local map, pose refinement weighted by level, PnP
+    against the local map as the fallback;
   - `mapping`: the keyframe decision, points from depth, culling, triangulation, fusion,
-    local BA over a 10-keyframe window, keyframe culling;
-  - `pipeline`: the per-frame loop, recovery rules, and a lost track ending the run.
+    local BA over a 10-keyframe window once the map holds three, keyframe culling;
+  - `pipeline`: the per-frame loop, ORB-SLAM's rules after a recovery, a failed frame ending
+    the velocity, and a lost track ending the run.
 - **Guided matching** (`matching.features_in_area`, `matching.search_by_projection`): ORB-SLAM's
   `GetFeaturesInArea` and `SearchByProjection` in rung 0; the C++ and Rust cores search a
   64 x 48-cell feature grid that finds exactly what Python's brute force finds. And
   `image.level_coordinate`, the full-image-to-level map.
 - **What a run reads** (`eval.tum.read_frames`, `eval.euroc.read_frames`, in all three
   languages): every frame a run consumes and the camera, never the ground truth. A TUM-format
-  folder may describe its own camera in `camera.txt` (model, intrinsics, size, depth scale).
+  folder may describe its own camera in `camera.txt` (model, intrinsics, size, depth scale,
+  and for RGB-D the virtual baseline `bf`; TUM's freiburg cameras have ORB-SLAM2's 40).
 - **The native run writer** (`eval::runs`, `slamlab_eval::runs`): the run folder written by
   hand (JSON, `.npy` byte for byte as numpy writes it), held to a golden folder.
 - **The native programs** `slamlab_vo` (C++ `cpp/apps/orchestration/`, library
@@ -52,11 +58,15 @@ sequence's first 300 frames the three backends take the same decisions on every 
   (ATE, RPE), and save a rerun recording.
 - **The synthetic room** (`tests/edge/room.py`): a textured box room ray-cast along a known
   path, with depth and stereo views, generated at test time; every stage's parity and the
-  whole-run agreement run on it.
+  whole-run agreement run on it, whole and with a gap of dropped frames that forces a
+  recovery. Every backend's runs of it are held to a golden record
+  (`tests/fixtures/edge/room_runs.json`).
 - **A design note**, `docs/notes/edge-vo.md`, with the results.
 
 ### Changed
 
+- **`pnp.refine_pose` takes a weight per correspondence**, in all three languages, whitening
+  each residual and its Jacobian by √w; the edge rung passes each level's information.
 - **H-RANSAC refuses a numerically singular homography** (its smallest singular value below
   1e-4 of its largest, in the normalised frame); two-view's own rank workaround is gone.
 - **`tum.Sequence.camera` replaces `Sequence.sensor`**, read from `camera.txt` or the folder
@@ -66,7 +76,23 @@ sequence's first 300 frames the three backends take the same decisions on every 
   internal order in C++ and Rust; `check.sh` builds the Rust program before pytest;
   `setup_slamlab.sh` builds it and checks that both programs are found.
 - **The design doc** records the native programs, closes A9 and A10 and the non-invertible
-  homography, and links the edge VO note.
+  homography, links the edge VO note, and lists the panel's deferred items.
+
+### Review
+
+- The full panel (hygiene, architecture, algorithm) ran on the slice: 1 must-fix, 23
+  should-fix and 20 notes, each decided with the owner
+  (`docs/reviews/2026-10-06-feature-edge-vo.md`).
+
+### Tests
+
+- **Native tests for the frame builders** in C++ and Rust, their refusals included; the
+  program's exit code checked for every error kind.
+- **The native TUM readers' freiburg2 and freiburg3 calibrations** in
+  `tests/fixtures/eval/sequences.json`.
+- **H-RANSAC's condition margin**: 2000 minimal samples of steep planes under wide motions
+  all fit, in every backend, so a threshold raised into the range real scenes reach fails.
+- Native tests write to folders of their own, not fixed names under the shared temp dir.
 
 ## [0.3.1.1] - 2026-10-05
 

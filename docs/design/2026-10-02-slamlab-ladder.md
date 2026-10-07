@@ -796,6 +796,49 @@ shared with the owner's other projects.
     later reads as "no improvement" (PR 6's panel, run 2, A6).
   - Closed by PR 7: **one feature front end (A8).** Both demos match slamlab's ORB features
     (`foundations.orb` and `foundations.matching`) in place of their own SIFT.
+- **Deferred from PR 8's review panel**
+  ([report](../reviews/2026-10-06-feature-edge-vo.md)):
+  - **Re-anchoring the last frame after local BA (L6).** Local BA moves a new keyframe, but
+    the pipeline keeps the frame's pose from before it, so the next velocity carries the
+    correction; ORB-SLAM re-anchors the last frame to its reference keyframe every frame
+    (`UpdateLastFrame`) and saves each frame relative to its BA-refined reference keyframe.
+    A run's frame poses are the tracking-time estimates; the edge note scores the final
+    keyframes too, ORB-SLAM's protocol, for the like-for-like column.
+  - **The keyframe time's growth on long sequences (H19).** Keyframe time still grows along
+    EuRoC MH_01 (see the edge note), unprofiled. The candidates: `refresh`'s per-point
+    allocations and its O(n² log n) distinctive descriptor, and the feature grid rebuilt on
+    every search (A11). Python's per-point loops stay, as the plain statement of the rules.
+  - **The real-time items, with PR 9 (A11).** `edge::search` rebuilds its `FeatureGrid` on
+    every call, where the design says per frame; the prediction's SO(3) projection runs
+    through Rust's allocating `svd3` every frame (PR 6's A11, below).
+  - **Lifting the edge camera into rung 0, with milestone 4 (A8).** `edge.frames.Camera` (a
+    model and intrinsics with an image size and a baseline) and the chi-square test by
+    pyramid level in `edge.residuals` belong in `foundations` once the classic rung needs
+    them, rather than copied.
+  - **Shorter native stage functions (H6).** `track_last_frame`, `track_local_map` and
+    `relocalize_locally` in C++ and Rust, and C++'s `initialize_monocular`, run 70-95 lines
+    each (Python's longest is 50); helpers such as `project_last_frame_points`,
+    `local_map_projections` and `placed_by_pnp` behind the same stage functions would leave
+    stage parity untouched.
+  - **C++'s option checks from the tables (A13).** `check_options` lists the fields by hand
+    in its range lists, beside `kIntegerOptions` and `kRealOptions`; a field added to the
+    tables but not a list goes unchecked in C++, where Python checks every field by its type.
+    A range class per table entry would drive the checks.
+  - **Loud preconditions in the map's refresh (H14).** Rust's `refresh` helpers fall back
+    with `unwrap_or` and C++ dereferences its searches unchecked; both rely on every point
+    having an observation, which `refresh_points` checks and the operations keep. A
+    `debug_assert!` or an error would make a violation loud.
+  - **The map's count invariants (H15).** `Map`'s checks do not hold `pt_visible >= 1`,
+    `found <= visible` or finite poses and points, which `cull_points` divides by; the
+    operations keep them, so only a hand-built or decoded map can break them.
+  - **Solve summaries in the diagnostics (L9).** Local BA and pose refinement drop their
+    summaries. Rung 0's LM only accepts steps that lower the cost, so nothing diverges
+    silently, but the iterations, the costs and the termination in `diagnostics.jsonl`
+    would make long-sequence drift (fr3/long_office) investigable.
+  - **Where the two-view fixture's duplicate matches come from (L11).** 38 of its 88
+    matches share one pixel; the homography's rank rule handles the symptom.
+  - **The C++ edge tests' layout (H18).** Options' checks live in `test_map.cpp` and the
+    residuals' in `test_adjust.cpp`, not in tests mirroring their modules.
 - **Deferred from PR 7's review panel**
   ([report](../reviews/2026-10-05-feature-front-end.md)):
   - **Reusing the extraction's pyramid (A1), with PR 9's real time.** `stereo.match` rebuilds
@@ -853,7 +896,7 @@ shared with the owner's other projects.
     allocates (a faer call through `linalg::svd3`), and the edge VO calls `project_to_so3` and
     Umeyama per frame. Give `svd3` a fixed-size, backward-stable path (one-sided Jacobi, as
     Eigen's `JacobiSVD` uses for fixed sizes) behind the same signature, with the edge
-    milestone.
+    milestone. PR 8's panel (A11) moves it to PR 9, the rung's real-time PR.
 - **Deferred from PR 5's review panel**
   ([report](../reviews/2026-10-04-feature-rust-core.md)):
   - Closed by PR 6: **nested summaries and the Rust `Summary` trait (A5).** `ba::Summary`

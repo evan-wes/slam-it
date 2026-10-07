@@ -50,24 +50,30 @@ has a compiled twin that the tests call on the same state.
 
 ## A frame, step by step
 
-1. **Initialise**, until there is a map. Stereo and RGB-D: the first frame with enough
-   keypoints that have depth is the first keyframe, a point at each, metric from the start.
-   Monocular: a reference frame and a later one are matched in a window and initialised by
-   rung 0's two-view (`twoview.initialize`: E or H by GRIC), refined by a 20-iteration BA and
-   scaled to a median depth of 1. Too few matches make the current frame the reference; too
-   few features drop it. Monocular frames are extracted with twice the features until then.
+1. **Initialise**, until there is a map. Stereo and RGB-D: the first frame with more than
+   500 keypoints is the first keyframe, a point at each keypoint with depth, metric from the
+   start. Monocular: a reference frame and a later one are matched, each reference keypoint
+   searched where it last matched (ORB-SLAM's `vbPrevMatched`), and initialised by rung 0's
+   two-view (`twoview.initialize`: E or H by GRIC). The chosen motion's inliers in front of
+   both views with more than 0.36° of parallax become points (`CheckRT`), a 20-iteration BA
+   refines them, at least 100 must remain, and the map is scaled to a median depth of 1. Too
+   few matches make the current frame the reference; too few features drop it. Monocular
+   frames are extracted with twice the features until then.
 2. **Track the last frame** (`TrackWithMotionModel`): predict by constant velocity, project
    the last frame's map points, and match each within 15 pixels (7 for stereo) times its
    level's scale, twice as wide if fewer than 20 match. Refine the pose: four rounds of rung
-   0's `refine_pose`, each match classified afresh by the chi-square test after each round.
+   0's `refine_pose`, each residual weighted by its level's information (`1/s^(2l)`, ORB-SLAM's
+   `invSigma2`), each match classified afresh by the chi-square test after each round. Lite:
+   a Cauchy loss in every round and the left image only, where ORB-SLAM drops its Huber loss
+   after the third round and gives a match with depth a stereo edge.
 3. **Track the local map** (`TrackLocalMap`): the window's points that are in view (in front,
    in the image, within 0.8 to 1.2 of their scale range, within 60 degrees of their viewing
    direction) are matched at their predicted level, and the pose refined again. Fewer than 30
    inliers is a failed frame.
 4. **Recover** when the motion model fails: the frame's descriptors matched against the local
-   map, then PnP RANSAC (rung 0). The recovery frame and the next search the local map five
-   times wider, and for `max_frames` frames after it a frame needs 50 inliers (ORB-SLAM's
-   rules after a relocalisation).
+   map, then PnP RANSAC (rung 0). The recovery frame and the next search the local map with a
+   window of 5 in place of 1 (3 for RGB-D), and for `max_frames` frames after it a frame needs
+   50 inliers (ORB-SLAM's `th` and rules after a relocalisation).
 5. **Decide on a keyframe** (`NeedNewKeyFrame`): the frame tracks fewer than 90% (75% with
    depth, 40% while the map has one keyframe) of the points the newest keyframe shares with
    others, or, with depth, fewer than 100 close points while more than 70 close keypoints go
@@ -76,8 +82,9 @@ has a compiled twin that the tests call on the same state.
 6. **Map** around a new keyframe (`LocalMapping`, in order): insert it, with points from its
    close depth for stereo and RGB-D; cull the recent points found in under 25% of the frames
    that should have seen them; triangulate its free keypoints against the window's other
-   keyframes; fuse duplicates; run local BA over the window with the first keyframe fixed;
-   and cull keyframes 90% of whose points three others see at the same or a finer scale.
+   keyframes; fuse duplicates; once the map holds three keyframes, run local BA over the
+   window with the first keyframe fixed (ORB-SLAM's `KeyFramesInMap() > 2`); and cull
+   keyframes 90% of whose points three others see at the same or a finer scale.
 
 The **chi-square test** is one function for every stage: a keypoint on pyramid level `l` is
 located to `s^l` pixels, so an observation is an outlier when its squared reprojection error
@@ -88,6 +95,14 @@ keyframe observing those points (held fixed) into rung 0's bundle adjustment: ea
 observation weighted by its level's information, an observation with depth adding an
 inverse-depth prior, a Huber loss. It solves, drops the observations failing the chi-square
 test, solves again, forgets the observations still failing, and refreshes the points.
+
+Its depth model is not ORB-SLAM's stereo edge. The prior has no robust loss, where ORB-SLAM's
+three-row edge has Huber at √7.815; the Huber loss stays on in the second solve, where ORB-SLAM
+drops it; and the prior's information `(f b)²/σ²` treats the disparity as independent of the
+column with variance σ², where ORB-SLAM's isotropic edge on (u, v, u_r) implies var(d) = 2σ²
+and cov(u, d) = σ². A Huber loss on the prior did not help on the room with a tenth of its
+depths read 2.5 times too far (the largest keyframe-centre error 58 mm with it, 29 mm without;
+17 mm either way on clean depth), so the prior stays as it is.
 
 ## Decisions taken while building it
 
@@ -108,8 +123,8 @@ test, solves again, forgets the observations still failing, and refreshes the po
   moved forward by more than the baseline searches the last frame's level and coarser ones,
   one that moved back that level and finer ones (ORB-SLAM's `tlc` test). A draft had the
   test inverted; a scene whose keypoints sit on chosen levels now checks it in every language.
-- **The velocity spans consecutive tracked frames only**: after a failed frame the motion
-  model starts from no motion.
+- **The velocity spans consecutive tracked frames only**: a failed frame clears it, so the
+  next frame is predicted with no motion. A draft kept the last velocity through failures.
 - **No ratio test for triangulation**: ORB-SLAM's `SearchForTriangulation` has none, so the
   setting was removed. Without a bag of words, every pair of free keypoints within the
   stricter descriptor distance and the epipolar band is a candidate, the nearest kept.
@@ -130,6 +145,23 @@ test, solves again, forgets the observations still failing, and refreshes the po
   its keyframes 123 ms at the median. Its keyframes still take longer as it goes, from 57 ms in
   its first quarter to 160 ms in its last; that remainder is not yet profiled. Python's
   reference still scans: it runs short sequences, and stays the plain statement of the rules.
+- **Pose refinement weighs each match by its level.** Rung 0's `refine_pose` takes a weight
+  per correspondence, whitening its residual and Jacobian by √w, and tracking passes
+  `1/s^(2l)`: the noise model its chi-square test already used. Unweighted, a keypoint on the
+  coarsest level (σ = 3.6 pixels) pulled as hard as one on the finest; in a Monte Carlo of
+  pose-only refinement, the camera centre's error was 24% larger.
+- **Monocular initialisation follows ORB-SLAM2.** The map keeps every inlier in front of both
+  views with more than 0.36° of parallax (`cos < 0.99998`), not only the points two-view
+  triangulates for its own decision (more than 1°), and needs 100 of them after its bundle
+  adjustment (ORB-SLAM3 relaxes it to 50); each reference keypoint is searched where it last
+  matched. Keeping only two-view's points refused every early start on MH_01: two-view
+  initialised from frame 6, but no map kept 100 points until frame 1393 (an earlier version
+  of this note blamed two-view). It now starts at frame 140.
+- **Every threshold is a setting.** ORB-SLAM's constants (the windows, the ratio tests, the
+  distance margins, the observation counts, the iterations) are `Options` fields, 67 in all,
+  so each is recorded in a run's `run.json` and defined once per language. The virtual
+  baseline is the sensor's: `camera.txt`'s optional `bf`, 40 for TUM's freiburg cameras from
+  the readers' table; an RGB-D run without one is refused.
 
 ## Three languages, one run
 
@@ -145,69 +177,96 @@ folder with their own readers and write the run folder with their own writers. T
 runs track the same frames with the same matches and make the same keyframes as Python's,
 and place every pose and point within 1e-9 of Python's; measured, within 6e-15 m.
 
+A second room drops ten frames and narrows the motion model's window, so every mode loses
+the track and recovers through the fallback; the backends agree across it too. Both rooms'
+runs are also held to a committed golden record (`tests/fixtures/edge/room_runs.json`): the
+decisions, frame times, keyframes and point count exactly, the poses to 1e-9. Live parity
+with Python cannot catch a rule changed in all three languages at once; the record can, until
+it is deliberately regenerated (`python -m tests.fixtures.edge.generate_room_runs`).
+
 ## Results
 
-Each sequence ran once through each native program with ORB-SLAM's settings (1000 ORB
-features, 1200 for EuRoC stereo as in ORB-SLAM2's EuRoC stereo settings; 8 levels, scale 1.2),
-never tuned per sequence, on one desktop (Intel Core Ultra 9 285). The ATE is the RMSE over
-every tracked frame, SE(3)-aligned with depth and Sim(3)-aligned for monocular; the RPE is
-over one frame period (30 Hz for TUM, 20 Hz for EuRoC), at the alignment's scale. The time is
-the pipeline's per frame, tracking and mapping, frame building aside.
+Each sequence ran once through each native program with ORB-SLAM2's settings, never tuned per
+sequence: 1000 ORB features (1200 for EuRoC stereo), 8 levels, scale 1.2, and for EuRoC
+`EuRoC.yaml`'s `ThDepth` of 35 baselines and `Camera.fps` of 20 (`close_depth` and
+`max_frames`); on one desktop (Intel Core Ultra 9 285). The ATE is the RMSE, SE(3)-aligned
+with depth and Sim(3)-aligned for monocular, twice: over every tracked frame, at its pose when
+it was tracked, and over the map's keyframes at the end of the run, after their last local BA
+(ORB-SLAM's `KeyFrameTrajectory.txt`). The RPE is over one frame period (30 Hz for TUM, 20 Hz
+for EuRoC), at the alignment's scale. The time is the pipeline's per frame, tracking and
+mapping, frame building aside.
 
 **Whole sequences.** C++'s numbers. Rust's runs take the same decisions on every frame, and
-their poses differ from C++'s by at most 6e-12 (5e-8 on fr3/long_office monocular, after 2585
-frames of bundle adjustment).
+their poses differ from C++'s by at most 8e-12.
 
-| Sequence | Mode | Frames tracked | Keyframes | ATE | RPE | Time, C++ / Rust | Published ATE |
-|---|---|---|---|---|---|---|---|
-| fr1/xyz | RGB-D | 798 of 798 | 30 | 1.08 cm | 0.62 cm, 0.41° | 3.0 / 2.5 ms | — |
-| fr1/desk | RGB-D | 596 of 596 | 41 | 2.36 cm | 0.99 cm, 0.60° | 2.7 / 2.2 ms | 1.6 cm (ORB-SLAM2) |
-| fr3/long_office | RGB-D | 2488 of 2488 | 58 | 7.04 cm | 0.77 cm, 0.33° | 1.7 / 1.3 ms | 1.0 cm (ORB-SLAM2) |
-| fr1/xyz | monocular | 772 of 798 | 46 | 1.21 cm | 0.65 cm, 0.42° | 6.5 / 5.0 ms | 0.90 cm (ORB-SLAM) |
-| fr1/desk | monocular | 342 of 409, lost | 49 | 2.66 cm | 1.32 cm, 0.75° | 7.7 / 5.9 ms | 1.69 cm (ORB-SLAM) |
-| fr3/long_office | monocular | 2563 of 2585 | 177 | 16.99 cm | 0.69 cm, 0.30° | 9.2 / 7.7 ms | 3.45 cm (ORB-SLAM) |
-| MH_01 | stereo | 3679 of 3682 | 539 | 3.16 cm | 0.29 cm, 0.04° | 21.1 / 18.0 ms | 3.5 cm (ORB-SLAM2), 2.9 cm (ORB-SLAM3) |
-| V1_01 | stereo | 2912 of 2912 | 104 | 6.02 cm | 0.62 cm, 0.12° | 2.3 / 1.6 ms | 3.5 cm (ORB-SLAM2, ORB-SLAM3) |
-| MH_01 | monocular | 2288 of 3682 | 111 | 3.72 cm | 1.13 cm, 0.09° | 3.8 / 3.5 ms | 1.6 cm (ORB-SLAM3), 4.6 cm (DSO) |
-| V1_01 | monocular | 2761 of 2912 | 150 | 6.03 cm | 1.04 cm, 0.20° | 4.7 / 3.7 ms | 3.3 cm (ORB-SLAM3), 8.9 cm (DSO) |
+| Sequence | Mode | Frames tracked | Keyframes | ATE, every frame | ATE, keyframes | RPE | Time, C++ / Rust | Published ATE |
+|---|---|---|---|---|---|---|---|---|
+| fr1/xyz | RGB-D | 798 of 798 | 27 | 1.06 cm | 1.39 cm | 0.64 cm, 0.40° | 2.7 / 2.2 ms | — |
+| fr1/desk | RGB-D | 596 of 596 | 45 | 3.43 cm | 2.86 cm | 1.03 cm, 0.62° | 2.9 / 2.4 ms | 1.6 cm (ORB-SLAM2) |
+| fr3/long_office | RGB-D | 2488 of 2488 | 70 | 5.36 cm | 3.72 cm | 0.86 cm, 0.34° | 2.2 / 1.8 ms | 1.0 cm (ORB-SLAM2) |
+| fr1/xyz | monocular | 793 of 798 | 41 | 1.05 cm | 1.06 cm | 0.63 cm, 0.41° | 5.4 / 4.0 ms | 0.90 cm (ORB-SLAM) |
+| fr1/desk | monocular | 551 of 613 | 72 | 2.68 cm | 2.47 cm | 1.18 cm, 0.68° | 8.6 / 6.4 ms | 1.69 cm (ORB-SLAM) |
+| fr3/long_office | monocular | 2564 of 2585 | 289 | 4.96 cm | 4.74 cm | 0.54 cm, 0.26° | 29.3 / 26.1 ms | 3.45 cm (ORB-SLAM) |
+| MH_01 | stereo | 3681 of 3682 | 602 | 6.24 cm | 6.34 cm | 0.27 cm, 0.04° | 27.1 / 22.1 ms | 3.5 cm (ORB-SLAM2), 2.9 cm (ORB-SLAM3) |
+| V1_01 | stereo | 2912 of 2912 | 122 | 5.25 cm | 4.28 cm | 0.54 cm, 0.11° | 2.9 / 2.0 ms | 3.5 cm (ORB-SLAM2, ORB-SLAM3) |
+| MH_01 | monocular | 3542 of 3682 | 187 | 11.20 cm | 9.96 cm | 0.80 cm, 0.09° | 4.9 / 3.7 ms | 1.6 cm (ORB-SLAM3), 4.6 cm (DSO) |
+| V1_01 | monocular | 2799 of 2912 | 89 | 4.35 cm | 3.68 cm | 1.76 cm, 0.31° | 2.2 / 1.6 ms | 3.3 cm (ORB-SLAM3), 8.9 cm (DSO) |
 
-fr1/desk monocular loses the track at frame 409 of 596, and the run ends there (there is no
-relocalisation). MH_01 monocular initialises at frame 1393: no earlier pair of frames passed
-two-view initialisation. Rust's pipeline is a fifth faster than C++'s, but its frame building
-is slower, and whole runs, reading the images and building the frames included, take 31 to
-92 ms a frame in C++ and 38 to 125 ms in Rust: building the frames, not the pipeline, sets
-the frame rate.
+No run loses the track. Monocular runs start at the first pair of frames that initialises:
+frame 5 on fr1/xyz, 21 on fr3/long_office, 62 on fr1/desk, 140 on MH_01 and 113 on V1_01; their
+frame counts include the images RGB-D skips for want of a depth map (17 on fr1/desk, 97 on
+fr3/long_office). Rust's pipeline is a fifth faster than C++'s, but its frame building is
+slower, and whole runs, reading the images and building the frames included, take 31 to 101 ms
+a frame in C++ and 38 to 130 ms in Rust: building the frames, not the pipeline, sets the frame
+rate.
 
-**The first 300 frames, in three languages.** Python takes 0.05 to 1.2 s a frame, so it runs
+**How much one run says.** A run is deterministic, but a long one is sensitive to small
+perturbations. Started one to four frames later, with the same rules, MH_01 stereo's ATE
+ranges from 4.1 to 6.2 cm (the median of the five starts is 5.4 cm), and fr1/desk RGB-D's
+from 2.6 to 3.4 cm (median 3.1 cm). Changing one rule moves a result about as much: local BA
+from the second keyframe, not the third, gives 4.7 cm on MH_01 stereo and 2.6 cm on fr1/desk
+RGB-D. A difference of a centimetre between two single runs of these sequences says little
+about either rule. ORB-SLAM's papers report the median of five or ten runs for the same
+reason (theirs vary with thread timing).
+
+**The first 300 frames, in three languages.** Python takes 0.05 to 3.1 s a frame, so it runs
 the first 300 frames of each sequence. Every backend takes the same decisions on every frame
 (the frames tracked, their inlier counts, the keyframes), and every pose entry agrees with
-Python's to 6e-12 (6e-10 on fr3/long_office monocular).
+Python's to 8e-12.
 
 | Sequence | Mode | Frames tracked | Keyframes | ATE | Largest pose difference from Python, C++ / Rust | Time, Python / C++ / Rust |
 |---|---|---|---|---|---|---|
-| fr1/xyz | RGB-D | 300 of 300 | 15 | 1.20 cm | 2e-15 / 2e-15 | 219 / 2.8 / 2.1 ms |
-| fr1/desk | RGB-D | 283 of 283 | 23 | 1.95 cm | 1e-14 / 8e-15 | 247 / 3.2 / 2.4 ms |
-| fr3/long_office | RGB-D | 289 of 289 | 10 | 0.94 cm | 1e-14 / 7e-15 | 120 / 2.2 / 1.7 ms |
-| fr1/xyz | monocular | 274 of 300 | 35 | 1.53 cm | 3e-15 / 6e-15 | 902 / 11.9 / 9.4 ms |
-| fr1/desk | monocular | 238 of 300 | 42 | 2.53 cm | 6e-14 / 6e-14 | 604 / 9.6 / 7.3 ms |
-| fr3/long_office | monocular | 278 of 300 | 30 | 1.26 cm | 6e-10 / 6e-10 | 1184 / 14.6 / 11.9 ms |
-| MH_01 | stereo | 299 of 300 | 42 | 0.48 cm | 2e-15 / 2e-15 | 657 / 8.5 / 5.7 ms |
-| V1_01 | stereo | 300 of 300 | 9 | 1.36 cm | 2e-12 / 6e-12 | 46 / 1.4 / 0.9 ms |
-| V1_01 | monocular | 149 of 300 | 28 | 1.23 cm | 6e-15 / 9e-15 | 948 / 12.3 / 10.8 ms |
+| fr1/xyz | RGB-D | 300 of 300 | 15 | 1.19 cm | 2e-15 / 2e-15 | 215 / 2.9 / 2.2 ms |
+| fr1/desk | RGB-D | 283 of 283 | 25 | 2.36 cm | 8e-15 / 1e-14 | 272 / 3.2 / 2.6 ms |
+| fr3/long_office | RGB-D | 289 of 289 | 10 | 1.10 cm | 6e-15 / 6e-15 | 122 / 2.1 / 1.7 ms |
+| fr1/xyz | monocular | 295 of 300 | 35 | 1.16 cm | 4e-13 / 4e-13 | 830 / 10.4 / 8.3 ms |
+| fr1/desk | monocular | 238 of 300 | 54 | 1.81 cm | 1e-14 / 5e-14 | 1097 / 13.8 / 11.1 ms |
+| fr3/long_office | monocular | 279 of 300 | 30 | 1.05 cm | 9e-15 / 5e-15 | 974 / 11.9 / 9.9 ms |
+| MH_01 | stereo | 300 of 300 | 73 | 0.50 cm | 1e-15 / 2e-15 | 3061 / 23.0 / 18.1 ms |
+| V1_01 | stereo | 300 of 300 | 9 | 1.42 cm | 1e-12 / 8e-12 | 45 / 1.3 / 0.9 ms |
+| MH_01 | monocular | 160 of 300 | 17 | 0.37 cm | 5e-15 / 2e-15 | 183 / 4.1 / 3.4 ms |
+| V1_01 | monocular | 187 of 300 | 23 | 1.16 cm | 1e-14 / 1e-14 | 465 / 7.0 / 6.1 ms |
 
-MH_01 monocular is left out: no backend initialises in its first 300 frames. The RGB-D runs
-have fewer than 300 frames where frames without a depth map were skipped.
+The RGB-D runs have fewer than 300 frames where frames without a depth map were skipped.
 
-**Against ORB-SLAM.** The published numbers come from complete SLAM systems with loop
-closure, each the median of five runs, the monocular TUM ones over keyframes only; ours are
-odometry, one deterministic run, every frame. Loop closure removes accumulated drift, so the
-gap widens with a sequence's length and its revisits (fr3/long_office returns to its start;
-the EuRoC sequences revisit their rooms). With depth on short sequences the edge pipeline is
-within a centimetre of ORB-SLAM2 (fr1/desk, 2.4 cm against 1.6 cm), and on MH_01 stereo it
-matches it (3.2 cm against 3.5 cm); where a loop closes it falls far behind (fr3/long_office,
-seven times ORB-SLAM2's error with depth, five times ORB-SLAM's monocular). Monocular on
-EuRoC, its error over the frames it tracks is below DSO's, the other odometry in the table
-(3.7 and 6.0 cm against 4.6 and 8.9 cm), and about twice ORB-SLAM3's.
+**Against ORB-SLAM.** The published numbers come from complete SLAM systems with loop closure.
+ORB-SLAM's TUM monocular numbers (Mur-Artal et al., T-RO 2015, Table III) and ORB-SLAM2's
+(Mur-Artal and Tardós, T-RO 2017, Tables II and III) are medians of five runs, ORB-SLAM's over
+keyframes. ORB-SLAM3's EuRoC numbers, and the DSO row beside them (Campos et al., T-RO 2021,
+Table II), are medians of ten runs over every frame. Ours are odometry, one deterministic run.
+Loop closure removes accumulated drift, so the gap widens with a sequence's length and its
+revisits (fr3/long_office returns to its start; the EuRoC sequences revisit their rooms).
+
+- **Short TUM sequences:** monocular over keyframes is close to ORB-SLAM (1.06 against
+  0.90 cm on fr1/xyz, 2.47 against 1.69 cm on fr1/desk). RGB-D on fr1/desk is about twice
+  ORB-SLAM2's error (3.4 cm, 2.9 over keyframes, against 1.6 cm).
+- **Where a loop closes**, the pipeline falls behind: on fr3/long_office RGB-D, 3.7 cm over
+  keyframes against ORB-SLAM2's 1.0 cm, and 4.7 cm monocular against ORB-SLAM's 3.45 cm.
+- **EuRoC stereo:** 6.2 and 5.3 cm (5.4 cm, the median over five starts, on MH_01) against
+  ORB-SLAM2's 3.5 cm and ORB-SLAM3's 2.9 and 3.5 cm.
+- **EuRoC monocular:** the runs track 96% of each sequence's frames, all but those before
+  initialisation. On those frames, the error is 11.2 cm on MH_01, against ORB-SLAM3's 1.6 cm
+  and DSO's 4.6 cm; on V1_01 it is 4.4 cm, against 3.3 and 8.9 cm.
 
 ## What it does not do yet
 
@@ -217,3 +276,6 @@ EuRoC, its error over the frames it tracks is below DSO's, the other odometry in
   timings above are an unconstrained desktop's.
 - **Monocular scale** drifts without loop closure; the Sim(3) alignment hides a single scale
   error, not its drift along the run.
+- **Re-anchoring after local BA:** a frame keeps its pose from when it was tracked, so the
+  every-frame ATE scores tracking-time poses; ORB-SLAM re-expresses each frame relative to
+  its BA-refined reference keyframe (the ladder's open items).
