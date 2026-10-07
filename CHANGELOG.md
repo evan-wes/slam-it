@@ -9,17 +9,19 @@ with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 Milestone 2's pipeline: ORB-SLAM-lite in the edge rung, monocular, stereo and RGB-D, in
 Python, C++ and Rust in lock-step, and native programs that run a whole sequence without
 Python. On the synthetic room the three backends make the same decisions, frame by frame.
-On TUM and EuRoC with ORB-SLAM2's settings, no run losing the track: RGB-D 1.1 to 5.4 cm ATE
-over every frame, stereo 5.3 and 6.2 cm, monocular 1.1 to 11 cm, at 2 to 29 ms of tracking
-and mapping a frame in C++; on each sequence's first 300 frames the three backends take the
-same decisions on every frame.
+On TUM and EuRoC with ORB-SLAM2's settings, the medians of five starts: RGB-D 1.1 to 5.4 cm
+ATE over every frame, stereo 5.3 and 5.4 cm, monocular 1.1 to 11 cm, at 2 to 30 ms of
+tracking and mapping a frame in C++. No RGB-D or stereo run loses the track; 6 of 20
+monocular runs do, where ORB-SLAM relocalises (milestone 4). On each sequence's first 300
+frames the three backends take the same decisions on every frame.
 
 ### Added
 
 - **The edge rung** (`slamlab.edge`, `slamlab_edge`, `slamlab-edge`), each stage a function of
   explicit state with C++ and Rust ports held to the Python reference:
-  - `options`: every setting named and defaulted to ORB-SLAM2's, its constants included (67
-    settings), and recorded in every run;
+  - `options`: every setting named and defaulted to ORB-SLAM2's, its constants, descriptor
+    distances and stereo matcher's included (76 settings), recorded in every run and each
+    refused by name when out of range;
   - `frames`: one frame's features with each keypoint's bearing, depth and right column, per
     mode (RGB-D with the camera's virtual baseline, as ORB-SLAM), checked at the boundary;
   - `map`: keyframes, keypoints and points as one struct of arrays, ORB-SLAM's `MapPoint`
@@ -29,9 +31,10 @@ same decisions on every frame.
   - `residuals`: the chi-square test every stage shares;
   - `adjust`: local BA on rung 0's solver (level weights, inverse-depth priors, Huber; two
     passes, outliers forgotten);
-  - `initialization`: from depth, and monocular two-view on ORB-SLAM2's rules (the inliers
-    with more than 0.36° of parallax, 100 points after BA, each match followed), at unit
-    median depth;
+  - `initialization`: from depth (more than 500 keypoints, as ORB-SLAM, and 100 with depth,
+    the lite stand-in for its reset of a map lost early), and monocular two-view on
+    ORB-SLAM2's rules (the inliers with more than 0.36° of parallax, 100 points after BA,
+    each match followed), at unit median depth;
   - `tracking`: the motion model, the local map, pose refinement weighted by level, PnP
     against the local map as the fallback;
   - `mapping`: the keyframe decision, points from depth, culling, triangulation, fusion,
@@ -61,7 +64,8 @@ same decisions on every frame.
   whole-run agreement run on it, whole and with a gap of dropped frames that forces a
   recovery. Every backend's runs of it are held to a golden record
   (`tests/fixtures/edge/room_runs.json`).
-- **A design note**, `docs/notes/edge-vo.md`, with the results.
+- **A design note**, `docs/notes/edge-vo.md`, with the results: each whole-sequence ATE the
+  median of five starts, with its range, a run that loses the track counted as a failure.
 
 ### Changed
 
@@ -72,17 +76,22 @@ same decisions on every frame.
 - **`tum.Sequence.camera` replaces `Sequence.sensor`**, read from `camera.txt` or the folder
   name; `tum.read_depth` takes the depth scale.
 - **The eval rung builds in the wheel too**, since the C++ program links it.
+- **`backends.program` refuses a stale Rust program** (`StaleProgramError`, a
+  `BackendNotBuiltError`): one older than a file it is built from, its crates read from the
+  workspace's manifests, the lock included; the tests and the scripts share the check.
 - **Layer 1:** `check_layers.py` holds `cpp/apps/<rung>/` to the ladder and the edge rung's
   internal order in C++ and Rust; `check.sh` builds the Rust program before pytest;
   `setup_slamlab.sh` builds it and checks that both programs are found.
 - **The design doc** records the native programs, closes A9 and A10 and the non-invertible
-  homography, links the edge VO note, and lists the panel's deferred items.
+  homography, links the edge VO note, and lists the panel's deferred items; the rig
+  calibration design's export writes `bf`.
 
 ### Review
 
 - The full panel (hygiene, architecture, algorithm) ran on the slice: 1 must-fix, 23
   should-fix and 20 notes, each decided with the owner
-  (`docs/reviews/2026-10-06-feature-edge-vo.md`).
+  (`docs/reviews/2026-10-06-feature-edge-vo.md`). Run 2, on the fixes, all three reviewers:
+  no must-fix, 15 should-fix and 14 notes, decided the same way.
 
 ### Tests
 
@@ -92,7 +101,17 @@ same decisions on every frame.
   `tests/fixtures/eval/sequences.json`.
 - **H-RANSAC's condition margin**: 2000 minimal samples of steep planes under wide motions
   all fit, in every backend, so a threshold raised into the range real scenes reach fails.
-- Native tests write to folders of their own, not fixed names under the shared temp dir.
+- Native tests write to folders of their own, not fixed names under the shared temp dir, and
+  Rust's remove theirs even when a test fails.
+- **A gap room** (ten frames dropped, a blank frame, narrow motion windows, a low
+  `max_frames`): a frame fails, the fallback recovers twice, and the keyframe hold after a
+  recovery decides, every backend held to Python's decisions; again with every setting the
+  review's fixes added moved off its default, which changes Python's decisions.
+- **Every setting refuses a bad value by its own name**, one table-driven test per language.
+- **ORB-SLAM's parallax rule tested:** views of near and far points start a map of 300 points
+  where two-view's 1-degree rule keeps 200, in every backend.
+- **A noisy weighted refinement case** in `pnp.json`, its minimum and cost found in 50 digits:
+  ignoring the weights fails it.
 
 ## [0.3.1.1] - 2026-10-05
 

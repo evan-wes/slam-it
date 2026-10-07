@@ -52,9 +52,13 @@ lever arm along its beam (1; the beam taken along the motion's axis, or its dire
 - **The rig config** (TOML, read with the standard library's `tomllib`): which topic is which
   sensor, outside the repo beside its recording; the repo holds its template.
 - **The export:** the RGB-D stream to a TUM-format folder (`rgb/`, `depth/`, `rgb.txt`,
-  `depth.txt`, and a `camera.txt` with the model, intrinsics, image size and depth scale),
-  which PR 8's readers accept in all three languages (see
-  [the edge VO design](2026-10-05-edge-vo.md)), so every backend's VO runs on the rig.
+  `depth.txt`, and a `camera.txt` with the model, intrinsics, image size, depth scale and
+  `bf`), which PR 8's readers accept in all three languages (see
+  [the edge VO design](2026-10-05-edge-vo.md)), so every backend's VO runs on the rig. `bf` is
+  the depth sensor's virtual baseline times fx (ORB-SLAM's `Camera.bf`): it sets which depths
+  count as close and each keypoint's virtual right column, and an RGB-D run on a folder
+  without it is refused (PR 8's panel, run 2, A17). It comes from the rig config, outside the
+  repo, like every rig value; the repo's template holds a placeholder.
 
 ### Calibrating (`slamlab.calib`; C++ library `slamlab_calib`)
 

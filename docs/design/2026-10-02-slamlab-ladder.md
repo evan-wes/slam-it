@@ -454,7 +454,10 @@ edge rung holds what is its own, tracking, keyframes and local mapping.
 - **Parity is held per stage,** on fixture states, and per sequence, on synthetic box-room
   sequences with a known trajectory: every backend completes them, with an ATE under a stated
   bound and the three backends' ATEs within a stated tolerance of each other. TUM and EuRoC
-  results are reported, not gated.
+  results are reported, not gated. *As built (PR 8's panel, A1, A16):* the states are built
+  from the room when the tests run and compared live with the Python reference; on whole
+  runs, every backend takes the same decisions, with poses within 1e-9, and is held to a
+  golden record of the room's runs (the edge VO design, §3).
 - **Its generic parts go in rung 0:** guided matching by projection and a feature grid in
   `foundations.matching`, the full-image-to-level map in `foundations.image`.
 
@@ -814,16 +817,20 @@ shared with the owner's other projects.
   - **Lifting the edge camera into rung 0, with milestone 4 (A8).** `edge.frames.Camera` (a
     model and intrinsics with an image size and a baseline) and the chi-square test by
     pyramid level in `edge.residuals` belong in `foundations` once the classic rung needs
-    them, rather than copied.
+    them, rather than copied; with them the one-pose SE(3) helpers `edge.map.to_camera` and
+    `camera_centre`, unchecked for the hot loops where rung 0's `se3.act` checks (run 2,
+    A23).
   - **Shorter native stage functions (H6).** `track_last_frame`, `track_local_map` and
     `relocalize_locally` in C++ and Rust, and C++'s `initialize_monocular`, run 70-95 lines
     each (Python's longest is 50); helpers such as `project_last_frame_points`,
     `local_map_projections` and `placed_by_pnp` behind the same stage functions would leave
     stage parity untouched.
-  - **C++'s option checks from the tables (A13).** `check_options` lists the fields by hand
-    in its range lists, beside `kIntegerOptions` and `kRealOptions`; a field added to the
-    tables but not a list goes unchecked in C++, where Python checks every field by its type.
-    A range class per table entry would drive the checks.
+  - **The native option checks from the tables (A13; run 2, A22).** C++'s `check_options`
+    lists the fields by hand in its range lists, beside `kIntegerOptions` and `kRealOptions`,
+    and Rust's beside `named_settings!`; a field added to a table but not a list would go
+    unchecked natively, where Python checks every field by its type. Run 2's table-driven
+    tests (every setting refuses a bad value by name, in every language) now catch such a
+    field; a range class per table entry would make the lists unnecessary.
   - **Loud preconditions in the map's refresh (H14).** Rust's `refresh` helpers fall back
     with `unwrap_or` and C++ dereferences its searches unchecked; both rely on every point
     having an observation, which `refresh_points` checks and the operations keep. A
@@ -837,6 +844,24 @@ shared with the owner's other projects.
     would make long-sequence drift (fr3/long_office) investigable.
   - **Where the two-view fixture's duplicate matches come from (L11).** 38 of its 88
     matches share one pixel; the homography's rank rule handles the symptom.
+  - **ORB-SLAM's reset of a map lost early, with milestone 4 (run 2, L13).** ORB-SLAM2
+    resets the system when the track is lost with five keyframes or fewer (ORB-SLAM3 the
+    active map, under ten), which is what lets it start a depth map from any 500 keypoints and
+    a monocular map from low parallax. The lite pipeline ends the run instead, so a depth start
+    also needs `min_init_depth_points` (100) keypoints with depth, a stand-in. The reset drops
+    the frames before it from the trajectory, as ORB-SLAM's does: it belongs with the classic
+    rung's relocalisation and maps.
+  - **Relocalising monocular runs that lose the track, with milestone 4 (run 2, L15).**
+    Started one to four frames after the frame the first run initialises from, 6 of 20
+    monocular runs on TUM and EuRoC lose the track (3 of 5 on fr1/desk), each deep into the
+    run (44 to 128 keyframes), when its inliers fall below ORB-SLAM's 30. ORB-SLAM relocalises
+    there with the bag of words (`Tracking::Relocalization`); the lite pipeline ends the run.
+    The edge note counts a lost run as a failure in its five-start medians.
+  - **The Rust extension in layer 1 (run 2, A19).** `scripts/check.sh` rebuilds the Rust
+    program before pytest but not the extension `slamlab_rs` (`maturin develop`), so after a
+    Rust change the stage-parity tests run the old extension while the whole-run tests run
+    the new program. Rebuild it in `check.sh`, or give it the program's stale check
+    (`backends.StaleProgramError`). Offline CI builds from clean and is not affected.
   - **The C++ edge tests' layout (H18).** Options' checks live in `test_map.cpp` and the
     residuals' in `test_adjust.cpp`, not in tests mirroring their modules.
 - **Deferred from PR 7's review panel**
