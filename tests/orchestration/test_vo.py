@@ -20,10 +20,17 @@ from slamlab.eval import runs
 from slamlab.foundations.errors import DegenerateError, InvalidInputError, NotConvergedError
 from slamlab.orchestration import vo
 from tests.conftest import FIXTURES, assert_matches_fixture, load_fixture
-from tests.edge.conftest import ATE_BOUND, FRAMES, MONOCULAR_START, OPTIONS
-from tests.edge.support import SOLVER_TOLERANCE, assert_close
+from tests.edge.support import (
+    ATE_BOUND,
+    FRAMES,
+    MONOCULAR_START,
+    OPTIONS,
+    SOLVER_TOLERANCE,
+    assert_close,
+)
+from tests.fixtures.edge.generate_room_runs import record
 from tests.orchestration.conftest import RoomRun, require_program
-from tests.orchestration.datasets import CASES, GAP_OPTIONS, Room
+from tests.orchestration.datasets import BLANK_AT, CASES, GAP_OPTIONS, Room, room_inputs
 
 SEQUENCES = FIXTURES / "eval" / "sequences"
 """The readers' fixture folders: their files listed, their images absent."""
@@ -73,10 +80,16 @@ def test_the_backends_agree(dataset: str, mode: str, backend: str, room_runs: Ro
     _assert_same_run(room_runs(dataset, mode, backend), room_runs(dataset, mode, "python"))
 
 
-def test_the_gap_forces_a_recovery(
-    gap_folders: Room, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize(("dataset", "mode"), CASES)
+def test_the_gap_room_fails_once_and_recovers_twice(
+    dataset: str, mode: str, gap_folders: Room, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Across the gap the motion model fails, PnP recovers, and every frame is tracked."""
+    """The blank frame fails; across the gap PnP recovers twice; every other frame is tracked.
+
+    The blank frame fails, the fallback too; across the gap the motion model fails and PnP
+    recovers, twice (the recovery's velocity spans the gap); every other frame from the start
+    is tracked (review panel findings A3, A14).
+    """
     recovered: list[bool] = []
     relocalize = tracking.relocalize_locally
 
@@ -88,10 +101,14 @@ def test_the_gap_forces_a_recovery(
         return found
 
     monkeypatch.setattr(tracking, "relocalize_locally", counting)
-    run = vo.run("tum", gap_folders.tum, "rgbd", tmp_path, options=GAP_OPTIONS)
-    assert recovered
-    assert all(recovered)
-    assert all(d["state"] == "tracking" for d in run.diagnostics)
+    folder = gap_folders.tum if dataset == "tum" else gap_folders.euroc
+    run = vo.run(dataset, folder, mode, tmp_path, options=GAP_OPTIONS)
+    assert recovered == [False, True, True]
+    started = next(i for i, d in enumerate(run.diagnostics) if d["tracked"] > 0)
+    untracked = [i for i, d in enumerate(run.diagnostics) if i >= started and d["tracked"] == 0]
+    assert untracked == [BLANK_AT]
+    assert len(run.timestamps) == len(run.diagnostics) - started - 1
+    assert all(d["state"] == "tracking" for d in run.diagnostics[started:])
 
 
 @pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
@@ -103,8 +120,43 @@ def test_the_backends_agree_across_the_gap(
     _assert_same_run(gap_runs(dataset, mode, backend), gap_runs(dataset, mode, "python"))
 
 
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+@pytest.mark.parametrize(("dataset", "mode"), CASES)
+def test_the_backends_agree_off_the_defaults(
+    dataset: str, mode: str, backend: str, moved_runs: RoomRun
+) -> None:
+    """With the newer settings off their defaults, a native program makes Python's decisions.
+
+    Review panel finding H21: at the defaults, a native that hard-coded a setting would agree.
+    """
+    _assert_same_run(moved_runs(dataset, mode, backend), moved_runs(dataset, mode, "python"))
+
+
+@pytest.mark.parametrize(("dataset", "mode"), CASES)
+def test_the_moved_settings_change_the_decisions(
+    dataset: str, mode: str, moved_runs: RoomRun, gap_runs: RoomRun
+) -> None:
+    """Off their defaults, the settings change what Python decides on the gap room.
+
+    So the agreement off the defaults is evidence that the natives read them.
+    """
+    moved, default = moved_runs(dataset, mode, "python"), gap_runs(dataset, mode, "python")
+    assert record(moved) != record(default)
+
+
 GOLDEN = load_fixture("edge/room_runs.json")
 """What the pipeline decided on the room and the gap room (``generate_room_runs.py``)."""
+
+
+def test_the_golden_record_is_of_these_rooms() -> None:
+    """The record is of the rooms and settings the tests run, and holds exactly their cases.
+
+    Checked before any decision, so a change to the rooms, rather than to the pipeline, is
+    named as one (review panel finding A20).
+    """
+    assert GOLDEN["inputs"] == room_inputs()
+    names = {f"{name}/{dataset}/{mode}" for name in ("room", "gap") for dataset, mode in CASES}
+    assert set(GOLDEN["cases"]) == names
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -120,12 +172,8 @@ def test_every_backend_matches_the_golden_record(  # noqa: PLR0917 -- the case, 
     """
     run = (room_runs if name == "room" else gap_runs)(dataset, mode, backend)
     expected = GOLDEN["cases"][f"{name}/{dataset}/{mode}"]
-    decisions = [[d["state"], d["tracked"], d["keyframe"]] for d in run.diagnostics]
-    assert decisions == expected["diagnostics"]
-    np.testing.assert_array_equal(run.timestamps, expected["timestamps"])
-    np.testing.assert_array_equal(run.keyframe_timestamps, expected["keyframe_timestamps"])
-    assert len(run.points) == expected["points"]
-    assert_matches_fixture(run.poses, expected["poses"], GOLDEN["tolerance"])
+    assert record(run) | {"poses": None} == expected | {"poses": None}
+    assert_matches_fixture(run.poses.reshape(-1, 16), expected["poses"], GOLDEN["tolerance"])
 
 
 def test_a_request_crosses_as_a_command_line() -> None:

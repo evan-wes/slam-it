@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+import math
+from dataclasses import asdict, fields
 
 import pytest
 
@@ -58,3 +59,14 @@ def test_settings_out_of_range_are_refused(settings: dict[str, object], message:
     """Every setting is checked when the options are built."""
     with pytest.raises(InvalidInputError, match=message):
         Options(**settings)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("name", [item.name for item in fields(Options)])
+def test_every_setting_refuses_a_bad_value_by_name(name: str) -> None:
+    """Each setting refuses an integer above 2**30, or a real that is not a number, by name.
+
+    The native checks are held to the same table (review panel finding H21).
+    """
+    bad = (1 << 30) + 1 if isinstance(getattr(Options(), name), int) else math.nan
+    with pytest.raises(InvalidInputError, match=rf"^{name}: "):
+        Options(**{name: bad})  # type: ignore[arg-type]

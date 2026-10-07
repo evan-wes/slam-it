@@ -19,8 +19,8 @@ from slamlab.edge.map import Map
 from slamlab.foundations import orb
 from slamlab.foundations.errors import InvalidInputError
 from tests.conftest import require_function
-from tests.edge.conftest import CAMERA, OPTIONS, Truth
-from tests.edge.support import SOLVER_TOLERANCE, assert_close
+from tests.edge.conftest import Truth
+from tests.edge.support import CAMERA, OPTIONS, SOLVER_TOLERANCE, assert_close
 
 LAST, CURRENT = 36, 37
 """The room's frames tracked: the last keyframe, and the frame after it."""

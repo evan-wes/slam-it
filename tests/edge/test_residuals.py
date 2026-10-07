@@ -10,8 +10,8 @@ from slamlab import backends
 from slamlab.edge import residuals
 from slamlab.foundations.errors import InvalidInputError
 from tests.conftest import require_function
-from tests.edge.conftest import CAMERA, OPTIONS, Truth
-from tests.edge.support import assert_close
+from tests.edge.conftest import Truth
+from tests.edge.support import CAMERA, OPTIONS, assert_close
 
 
 def _observations(truth: Truth) -> tuple[np.ndarray, ...]:

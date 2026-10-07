@@ -17,8 +17,14 @@ from slamlab.eval import runs
 from slamlab.orchestration import vo
 from tests.conftest import REQUIRED_BACKENDS, require_backend
 from tests.edge import room
-from tests.edge.conftest import FRAMES, OPTIONS
-from tests.orchestration.datasets import GAP, GAP_OPTIONS, Room, write_room
+from tests.edge.support import FRAMES, OPTIONS
+from tests.orchestration.datasets import (
+    GAP_OPTIONS,
+    MOVED_OPTIONS,
+    Room,
+    gap_frames,
+    write_room,
+)
 
 RUST_PROGRAM_CRATES = (
     "slamlab-foundations",
@@ -87,9 +93,8 @@ def room_folders(rendered_room: list[room.Frame], tmp_path_factory: pytest.TempP
 
 @pytest.fixture(scope="session")
 def gap_folders(rendered_room: list[room.Frame], tmp_path_factory: pytest.TempPathFactory) -> Room:
-    """Write the room without the frames of :data:`GAP`, as both datasets' folders."""
-    kept = rendered_room[: GAP[0]] + rendered_room[GAP[1] :]
-    return write_room(tmp_path_factory.mktemp("gap"), kept)
+    """Write the gap room (:func:`gap_frames`) as both datasets' folders."""
+    return write_room(tmp_path_factory.mktemp("gap"), gap_frames(rendered_room))
 
 
 RoomRun = Callable[[str, str, str], runs.Run]
@@ -122,3 +127,9 @@ def room_runs(room_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> R
 def gap_runs(gap_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> RoomRun:
     """Run the gap room with :data:`GAP_OPTIONS`, each case once per session."""
     return _runs(gap_folders, GAP_OPTIONS, tmp_path_factory.mktemp("gap_runs"))
+
+
+@pytest.fixture(scope="session")
+def moved_runs(gap_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> RoomRun:
+    """Run the gap room with :data:`MOVED_OPTIONS`, each case once per session."""
+    return _runs(gap_folders, MOVED_OPTIONS, tmp_path_factory.mktemp("moved_runs"))

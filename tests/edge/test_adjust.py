@@ -16,8 +16,8 @@ from slamlab.edge import adjust
 from slamlab.edge.map import Map
 from slamlab.foundations.errors import InvalidInputError
 from tests.conftest import require_function
-from tests.edge.conftest import CAMERA, OPTIONS, Truth
-from tests.edge.support import SOLVER_TOLERANCE, assert_maps_match
+from tests.edge.conftest import Truth
+from tests.edge.support import CAMERA, OPTIONS, SOLVER_TOLERANCE, assert_maps_match
 
 
 def _perturbed(m: Map, seed: int = 1) -> Map:

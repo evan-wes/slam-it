@@ -13,14 +13,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
 from PIL import Image
 
+from slamlab.edge.options import Options
 from slamlab.eval import tum
 from tests.edge import room
-from tests.edge.conftest import OPTIONS
+from tests.edge.support import FRAMES, OPTIONS
 
 SENSOR = """sensor_type: camera
 comment: the room's {name}
@@ -104,11 +106,84 @@ def write_euroc(folder: Path, rendered: list[room.Frame]) -> None:
 
 
 GAP = (20, 30)
-"""The frames the gap room drops: a jump the motion model, narrowed, cannot bridge."""
+"""The frames the gap room drops: a jump the motion model, narrowed, cannot bridge. The
+recovery frame's velocity then spans the gap, so the frame after it falls back too: the gap
+room recovers twice."""
 
-GAP_OPTIONS = replace(OPTIONS, motion_window=2.0, stereo_motion_window=2.0)
+BLANK_AT = 10
+"""Where the gap room has a blank frame (no texture, no depth), before the gap: a frame that
+fails, after which the motion model predicts no motion (review panel finding A14)."""
+
+GAP_OPTIONS = replace(OPTIONS, motion_window=2.0, stereo_motion_window=2.0, max_frames=2)
 """The room's settings with the motion model's window narrowed: across the gap, tracking the
-last frame fails and the pipeline recovers by PnP against the local map."""
+last frame fails and the pipeline recovers by PnP against the local map. ``max_frames`` is
+lowered below the keyframes the map holds, so the hold on keyframes just after a recovery
+decides (monocular)."""
+
+
+MOVED_OPTIONS = replace(
+    GAP_OPTIONS,
+    th_low=45,
+    th_high=90,
+    stereo_max_distance=70,
+    stereo_band=2.5,
+    stereo_window=4,
+    stereo_search=6,
+    stereo_outlier_factor=2.5,
+    min_motion_inliers=12,
+    aligned_view_cos=0.995,
+    aligned_view_radius=2.0,
+    oblique_view_radius=5.0,
+    local_map_ratio=0.75,
+    min_distance_margin=0.7,
+    max_distance_margin=1.3,
+    first_ref_ratio=0.5,
+    ref_min_observations=2,
+    ref_min_observations_early=1,
+    triangulation_neighbours=5,
+    mono_triangulation_neighbours=8,
+    epipolar_chi2=5.0,
+    min_epipole_distance2=80.0,
+    min_baseline_depth=0.02,
+    recent_point_keyframes=4,
+    point_cull_age=3,
+    init_ba_iterations=15,
+    init_parallax_cos=0.99995,
+    relocalize_ratio=0.8,
+    recovery_window_frames=3,
+    recovery_tracked=40,
+    recovery_local_window=4.0,
+    ba_min_keyframes=4,
+    min_init_depth_points=150,
+)
+"""The gap room's settings with every one the review panel's fixes added moved off its default
+(finding H21): a native that read one at its default, or hard-coded it, would decide unlike
+Python here, where at the defaults it could not."""
+
+
+def gap_frames(rendered: list[room.Frame]) -> list[room.Frame]:
+    """Return the gap room: the room without :data:`GAP`'s frames, and a blank frame.
+
+    Parameters
+    ----------
+    rendered : list of tests.edge.room.Frame
+        The room's frames.
+
+    Returns
+    -------
+    list of tests.edge.room.Frame
+        The gap room's frames, the blank one halfway in time between its neighbours.
+    """
+    kept = rendered[: GAP[0]] + rendered[GAP[1] :]
+    before, after = kept[BLANK_AT - 1], kept[BLANK_AT]
+    blank = replace(
+        after,
+        gray=np.zeros_like(after.gray),
+        right=None if after.right is None else np.zeros_like(after.right),
+        depth=np.zeros_like(after.depth),
+        timestamp=(before.timestamp + after.timestamp) / 2,
+    )
+    return [*kept[:BLANK_AT], blank, *kept[BLANK_AT:]]
 
 
 def write_room(base: Path, rendered: list[room.Frame]) -> Room:
@@ -126,3 +201,27 @@ def write_room(base: Path, rendered: list[room.Frame]) -> Room:
 
 CASES = [("tum", "rgbd"), ("tum", "monocular"), ("euroc", "stereo"), ("euroc", "monocular")]
 """Each dataset in each mode it records."""
+
+
+def room_inputs() -> dict[str, Any]:
+    """Return what the golden record's runs depend on besides the pipeline.
+
+    Returns
+    -------
+    dict
+        The frames rendered, the gap, the blank frame, and each room's settings off their
+        defaults: recorded with the runs and checked first, so a change to the rooms reads as
+        one, not as a change to what the pipeline decides.
+    """
+    defaults = Options().as_dict()
+
+    def moved(options: Options) -> dict[str, Any]:
+        return {k: v for k, v in options.as_dict().items() if v != defaults[k]}
+
+    return {
+        "frames": FRAMES,
+        "gap": list(GAP),
+        "blank_at": BLANK_AT,
+        "room": moved(OPTIONS),
+        "gap_room": moved(GAP_OPTIONS),
+    }

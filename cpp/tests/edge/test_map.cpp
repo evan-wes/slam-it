@@ -4,7 +4,9 @@
 ///        Parity with the Python reference is checked through the bindings by tests/edge.
 #include <cmath>
 #include <cstdint>
+#include <iostream>
 #include <limits>
+#include <string>
 #include <vector>
 
 #include "../foundations/fixture_support.hpp"
@@ -192,12 +194,40 @@ void check_checks(int& failures) {
 
 /// @brief The test body.
 /// @return The exit code.
+/// @brief Check that every setting refuses a bad value by name: an integer above 2^30, a real
+///        that is not a number (review panel finding H21; Python's options test holds the same).
+/// @param failures Running failure count.
+void check_every_setting(int& failures) {
+  std::vector<std::string> unnamed;
+  const auto refused = [&unnamed](const edge::Options& options, const std::string& name) {
+    const auto ok = edge::check_options(options);
+    if (ok || !ok.error().message.starts_with(name + ": ")) {
+      unnamed.push_back(name);
+    }
+  };
+  for (const auto& [name, member] : edge::kIntegerOptions) {
+    edge::Options options{};
+    options.*member = 1'073'741'825;  // 2^30 + 1, above every integer setting's range
+    refused(options, name);
+  }
+  for (const auto& [name, member] : edge::kRealOptions) {
+    edge::Options options{};
+    options.*member = kNan;
+    refused(options, name);
+  }
+  for (const std::string& name : unnamed) {
+    std::cerr << "  not refused by name: " << name << "\n";
+  }
+  expect(unnamed.empty(), "every setting refuses a bad value by name", failures);
+}
+
 int run() {
   int failures = 0;
   check_building(failures);
   check_removing(failures);
   check_index(failures);
   check_checks(failures);
+  check_every_setting(failures);
   return slamlab::testing::finish("edge/map", failures);
 }
 

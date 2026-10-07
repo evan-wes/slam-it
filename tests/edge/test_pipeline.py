@@ -12,7 +12,8 @@ from slamlab.eval.metrics import absolute_error
 from slamlab.foundations import orb
 from slamlab.foundations.errors import InvalidInputError
 from tests.edge import room
-from tests.edge.conftest import ATE_BOUND, CAMERA, MONOCULAR_START, OPTIONS, Run
+from tests.edge.conftest import Run
+from tests.edge.support import ATE_BOUND, CAMERA, MONOCULAR_START, OPTIONS
 
 
 @pytest.mark.parametrize("mode", ["monocular", "stereo", "rgbd"])

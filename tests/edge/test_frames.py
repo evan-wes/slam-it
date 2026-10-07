@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import replace
+
 import numpy as np
 import pytest
 from numpy.typing import ArrayLike
@@ -11,7 +14,8 @@ from slamlab.edge import frames
 from slamlab.foundations.errors import InvalidInputError
 from tests.conftest import require_function
 from tests.edge import room
-from tests.edge.conftest import CAMERA, OPTIONS, Truth
+from tests.edge.conftest import Truth
+from tests.edge.support import CAMERA, OPTIONS
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -110,3 +114,29 @@ def test_cameras_are_checked(settings: dict[str, object], message: str) -> None:
     fields.update(settings)
     with pytest.raises(InvalidInputError, match=message):
         frames.Camera(**fields)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("field", "make", "message"),
+    [
+        ("depth", lambda n: np.zeros(n, dtype=np.float32), r"frame\.depth: .*got float32"),
+        ("right", lambda n: [0.0] * n, r"frame\.right: .*got list"),
+        ("depth", lambda n: np.zeros(n + 1), r"frame\.depth: expected shape"),
+        ("bearings", lambda n: np.zeros((n, 2)), r"frame\.bearings: expected shape"),
+    ],
+)
+def test_a_frame_holds_one_float64_row_per_keypoint(
+    field: str, make: Callable[[int], object], message: str, truth: Truth
+) -> None:
+    """A frame's arrays are checked when it is built, naming what they got (finding H23)."""
+    frame = truth.frames[0]
+    with pytest.raises(InvalidInputError, match=message):
+        replace(frame, **{field: make(frame.size)})  # type: ignore[arg-type]
+
+
+def test_a_frame_holds_one_descriptor_per_keypoint(truth: Truth) -> None:
+    """Descriptors that are not one per keypoint are refused."""
+    frame = truth.frames[0]
+    fewer = replace(frame.features, descriptors=frame.features.descriptors[:-1])
+    with pytest.raises(InvalidInputError, match="one descriptor per keypoint"):
+        replace(frame, features=fewer)

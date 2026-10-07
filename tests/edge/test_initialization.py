@@ -16,11 +16,18 @@ from slamlab.edge import initialization
 from slamlab.edge.frames import Frame, Tracked
 from slamlab.edge.map import Map
 from slamlab.edge.options import Options
-from slamlab.foundations import matching, triangulation, twoview
+from slamlab.foundations import matching, orb, triangulation, twoview
 from slamlab.foundations.errors import InvalidInputError
 from tests.conftest import require_function
-from tests.edge.conftest import CAMERA, OPTIONS, Truth
-from tests.edge.support import SOLVER_TOLERANCE, TOLERANCE, assert_close, assert_maps_match
+from tests.edge.conftest import Truth
+from tests.edge.support import (
+    CAMERA,
+    OPTIONS,
+    SOLVER_TOLERANCE,
+    TOLERANCE,
+    assert_close,
+    assert_maps_match,
+)
 
 Pair = tuple[Frame, Frame]
 
@@ -173,6 +180,67 @@ def test_monocular_keeps_points_of_orb_slams_parallax(monocular_pair: Pair) -> N
     seen = triangulation.two_view(result.relative_pose, rays[0][kept], rays[1][kept])
     assert np.all(seen.in_front)
     assert np.all(np.cos(seen.parallax) < OPTIONS.init_parallax_cos)
+
+
+def _imaged(template: Frame, xy: NDArray[np.float64]) -> Frame:
+    """Return a frame of level-0 keypoints at these pixels, without depth, on the room's pyramid."""
+    n = len(xy)
+    keypoints = orb.Keypoints(
+        xy=xy,
+        level=np.zeros(n, dtype=np.int64),
+        level_xy=np.rint(xy).astype(np.int64),
+        response=np.ones(n, dtype=np.int64),
+        angle=np.zeros(n, dtype=np.int64),
+    )
+    features = replace(
+        template.features, keypoints=keypoints, descriptors=template.features.descriptors[:n]
+    )
+    return replace(
+        template,
+        features=features,
+        bearings=CAMERA.bearings(xy),
+        depth=np.full(n, np.nan),
+        right=np.full(n, np.nan),
+    )
+
+
+def _near_and_far(template: Frame) -> tuple[Frame, Frame, matching.Matches]:
+    """Return two views, 10 cm apart, of near points and far ones, matched.
+
+    Seen across the baseline, the near points (1.5 to 3 m) have over 1 degree of parallax, the
+    far ones (7 to 13 m) between 0.44 and 0.82 degrees.
+    """
+    rng = np.random.default_rng(5)
+    xy = rng.uniform([40.0, 40.0], [280.0, 200.0], (300, 2))
+    depth = np.concatenate([rng.uniform(1.5, 3.0, 200), rng.uniform(7.0, 13.0, 100)])
+    rays = CAMERA.bearings(xy)
+    points = rays * (depth / rays[:, 2])[:, None]
+    seen = CAMERA.project(points - np.array([0.1, 0.0, 0.0]))
+    pairs = np.column_stack([np.arange(300), np.arange(300)]).astype(np.int64)
+    matches = matching.Matches(pairs=pairs, distances=np.zeros(300, dtype=np.int64))
+    return _imaged(template, xy), _imaged(template, seen), matches
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_monocular_keeps_the_far_points_two_view_does_not(
+    backend: str, monocular_pair: Pair
+) -> None:
+    """Points seen at 0.36 to 1 degree of parallax join two-view's (review panel finding H20).
+
+    Two-view triangulates, for its own decision, only points seen at over 1 degree; ORB-SLAM's
+    ``CheckRT`` keeps every inlier over 0.36. Of near and far points, only the near ones are
+    two-view's: a map of more points has kept far ones, in every backend.
+    """
+    chosen = require_function(backend, initialization.__name__, "initialize_monocular")
+    reference, frame, matches = _near_and_far(monocular_pair[0])
+    rays = (reference.bearings, frame.bearings)
+    result = twoview.initialize(*rays, twoview.Options(focal=CAMERA.focal, seed=OPTIONS.seed))
+    assert result.status is twoview.Status.INITIALIZED
+    started = initialization.initialize_monocular(
+        CAMERA, reference, frame, matches, OPTIONS, backend=chosen
+    )
+    assert started is not None
+    assert started[0].points > np.count_nonzero(result.triangulated)
 
 
 def test_monocular_map_has_unit_median_depth(monocular_pair: Pair) -> None:

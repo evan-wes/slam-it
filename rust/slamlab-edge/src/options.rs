@@ -624,6 +624,28 @@ mod tests {
         }
     }
 
+    /// Every setting refuses a bad value by name: an integer above 2^30, a real that is not a
+    /// number (review panel finding H21; Python's options test holds the same).
+    #[test]
+    fn every_setting_refuses_a_bad_value_by_name() {
+        let unnamed: Vec<&str> = Options::default()
+            .settings()
+            .into_iter()
+            .filter_map(|(name, setting)| {
+                let bad = match setting {
+                    Setting::Integer(_) => Setting::Integer((1 << 30) + 1),
+                    Setting::Real(_) => Setting::Real(f64::NAN),
+                };
+                let mut options = Options::default();
+                options.set(name, bad).unwrap();
+                let refused = check_options(&options)
+                    .is_err_and(|error| error.message.starts_with(&format!("{name}: ")));
+                (!refused).then_some(name)
+            })
+            .collect();
+        assert!(unnamed.is_empty(), "not refused by name: {unnamed:?}");
+    }
+
     /// Initialisation's extraction has `init_feature_factor` times the features.
     #[test]
     fn initializing_doubles_the_features() {
