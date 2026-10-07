@@ -669,6 +669,15 @@ mod tests {
 
     use super::*;
 
+    /// A scratch folder, removed when the test ends, failed or not.
+    struct Scratch(std::path::PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     /// A fixture sequence's folder.
     fn folder(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -806,6 +815,7 @@ mod tests {
     fn runs_the_fixture_folders() {
         let out = std::env::temp_dir().join(format!("slamlab_test_vo_rust_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
+        let _guard = Scratch(out.clone());
         let mut request = Request::new("tum", &folder("tum_camera"), Mode::Rgbd, &out);
         request.count = Some(0);
         let empty = run(&request).unwrap();
@@ -827,6 +837,5 @@ mod tests {
         assert_eq!(run(&stereo).unwrap_err().kind, ErrorKind::InvalidInput);
         stereo.sequence = folder("no_such_sequence");
         assert_eq!(run(&stereo).unwrap_err().kind, ErrorKind::InvalidInput);
-        std::fs::remove_dir_all(&out).unwrap();
     }
 }

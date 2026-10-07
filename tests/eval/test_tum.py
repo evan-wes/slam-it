@@ -156,9 +156,16 @@ def test_frames_need_no_ground_truth(tmp_path: Path) -> None:
         480,
         1000.0,
     )
-    assert frames.camera.bf == 41.5
+
+
+def test_the_camera_file_may_give_bf(tmp_path: Path) -> None:
+    """``bf`` is read when camera.txt gives it, and optional: monocular runs need none."""
+    folder = tmp_path / "my_recording"
+    folder.mkdir()
+    _camera_file(folder, CAMERA_TXT)
+    assert tum.read_camera(folder).bf == 41.5
     _camera_file(folder, CAMERA_TXT.replace("bf 41.5\n", ""))
-    assert tum.read_camera(folder).bf is None  # bf is optional: monocular runs need none
+    assert tum.read_camera(folder).bf is None
 
 
 def test_camera_file_takes_precedence_over_the_name(tmp_path: Path) -> None:

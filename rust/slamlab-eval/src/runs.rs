@@ -411,6 +411,15 @@ mod tests {
     use serde_json::Value;
     use std::path::PathBuf;
 
+    /// A scratch folder, removed when the test ends, failed or not.
+    struct Scratch(std::path::PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     /// The fixtures' folder.
     fn fixtures() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/eval")
@@ -534,6 +543,7 @@ mod tests {
         let out =
             std::env::temp_dir().join(format!("slamlab_rust_test_runs_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
+        let _guard = Scratch(out.clone());
         write_run(&out, &golden_run()).unwrap();
         for name in ["keyframes.npy", "keyframe_poses.npy", "points.npy"] {
             assert_eq!(
@@ -564,7 +574,6 @@ mod tests {
             json(&golden.join("diagnostics.jsonl"), true)
         );
         assert!(!out.join(".run.json.tmp").exists());
-        std::fs::remove_dir_all(&out).unwrap();
     }
 
     #[test]
@@ -575,6 +584,7 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&out);
+        let _guard = Scratch(out.clone());
         let mut run = golden_run();
         run.mode = "lidar".into();
         assert_eq!(

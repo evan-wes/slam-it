@@ -12,7 +12,9 @@ chosen one, which the solvers must return among their solutions:
 - P3P must return it among its solutions;
 - EPnP must return it on exact samples (five points, its minimum, and twenty);
 - the refinement, from a perturbed start on exact correspondences, must reach it (the cost's
-  minimum, zero);
+  minimum, zero); on noisy correspondences weighted by pyramid level, it must reach the
+  weighted cost's minimum, found here by iteratively reweighted Gauss-Newton in 50 digits, and
+  its cost (the case's own tolerance: LM stops where the cost is flat);
 - RANSAC on exact inliers and outliers far from the pose must return it, with exactly the
   clean correspondences as inliers, for each P3P solver, refined or not.
 """
@@ -63,6 +65,61 @@ def _pose_list(rot: mp.matrix, t: mp.matrix) -> list[list[float]]:
     """Round ``[R | t]`` to a float64 4x4 pose."""
     rows = [[float(rot[i, j]) for j in range(3)] + [float(t[i])] for i in range(3)]
     return [*rows, [0.0, 0.0, 0.0, 1.0]]
+
+
+def _noisy_bearings(
+    rot: mp.matrix, t: mp.matrix, points: list[list[float]], noise: list[list[float]]
+) -> list[list[float]]:
+    """Return unit bearings of the points' normalised-plane projections plus noise, rounded once."""
+    out = []
+    for p, (du, dv) in zip(points, noise, strict=True):
+        c = rot * mp.matrix(p) + t
+        out.append(_unit_float([c[0] / c[2] + du, c[1] / c[2] + dv, mp.mpf(1)]))
+    return out
+
+
+def _weighted_minimum(
+    rot: mp.matrix,
+    t: mp.matrix,
+    points: list[list[float]],
+    bearings: list[list[float]],
+    weights: list[float],
+    *,
+    scale: float,
+) -> tuple[mp.matrix, mp.matrix, Any]:
+    """Return the pose and cost at the minimum of the weighted Cauchy reprojection cost.
+
+    ``½ Σ ρ(wᵢ |rᵢ|²)``, ``ρ(s) = c² log(1 + s / c²)``, ``rᵢ`` the normalised-plane error, as
+    ``slamlab.foundations.pnp.refine_pose`` defines it; found by iteratively reweighted
+    Gauss-Newton on ``T exp(δ)`` in 50 digits until the step vanishes. The minimum does not
+    depend on the retraction, so ``t`` moves by ``R ρ``.
+    """
+    c2 = mp.mpf(scale) ** 2
+    image = [(mp.mpf(b[0]) / mp.mpf(b[2]), mp.mpf(b[1]) / mp.mpf(b[2])) for b in bearings]
+    world = [mp.matrix(x) for x in points]
+    for _ in range(500):
+        normal, gradient, cost = mp.zeros(6, 6), mp.zeros(6, 1), mp.mpf(0)
+        for x, (u, v), w in zip(world, image, weights, strict=True):
+            c = rot * x + t
+            r = mp.matrix([c[0] / c[2] - u, c[1] / c[2] - v])
+            s = w * (r[0] ** 2 + r[1] ** 2)
+            cost += c2 * mp.log(1 + s / c2) / 2
+            k = w / (1 + s / c2)  # the weight times the loss's IRLS weight
+            projection = mp.matrix([[1 / c[2], 0, -c[0] / c[2] ** 2],
+                                    [0, 1 / c[2], -c[1] / c[2] ** 2]])  # fmt: skip
+            j = projection * _hstack(rot, -(rot * mp.matrix(o.hat(list(x)))))
+            normal += k * (j.T * j)
+            gradient += k * (j.T * r)
+        step = mp.lu_solve(normal, -gradient)
+        rot, t = rot * mp.matrix(o.so3_exp([step[3], step[4], step[5]])), t + rot * step[0:3, 0]
+        if mp.norm(step) < mp.mpf(10) ** -40:
+            return rot, t, cost
+    raise RuntimeError("the reweighted Gauss-Newton did not converge")
+
+
+def _hstack(a: mp.matrix, b: mp.matrix) -> mp.matrix:
+    """Return ``[a | b]`` for two 3x3 matrices."""
+    return mp.matrix([[a[i, j] for j in range(3)] + [b[i, j] for j in range(3)] for i in range(3)])
 
 
 def _bearings(rot: mp.matrix, t: mp.matrix, points: list[list[float]]) -> list[list[float]]:
@@ -135,6 +192,56 @@ def _unit_float(v: list[float]) -> list[float]:
     return [float(x / n) for x in m]
 
 
+def _noisy_weighted_case(
+    rot: mp.matrix,
+    t: mp.matrix,
+    points: list[list[float]],
+    start_rot: mp.matrix,
+    start_t: mp.matrix,
+) -> dict[str, Any]:
+    """Return a refinement case whose minimum depends on the weights (review panel A21).
+
+    Each point is seen on a pyramid level, with noise of that level's scale (1e-3 times
+    ``1.2^l`` in the normalised plane) and the level's information as its weight. On exact
+    correspondences every weighting has the same minimum; here the weighted minimum is checked
+    to lie well beyond the tolerance from the unweighted one, so ignoring or misapplying the
+    weights fails the case.
+    """
+    rng = np.random.default_rng(31)
+    levels = [k % 8 for k in range(len(points))]
+    noise = [(1e-3 * 1.2**level * rng.standard_normal(2)).tolist() for level in levels]
+    bearings = _noisy_bearings(rot, t, points, noise)
+    weights = [1.2 ** (-2 * level) for level in levels]
+    scale, atol = 2e-3, 1e-5
+    best_rot, best_t, cost = _weighted_minimum(rot, t, points, bearings, weights, scale=scale)
+    flat_rot, flat_t, _ = _weighted_minimum(
+        rot, t, points, bearings, [1.0] * len(points), scale=scale
+    )
+    apart = max(abs(float(x)) for x in [*(best_rot - flat_rot), *(best_t - flat_t)])
+    if not apart > 100 * atol:
+        raise RuntimeError(f"the weighted minimum is only {apart} from the unweighted one")
+    return o.case(
+        "noisy, 20 points weighted by pyramid level, a perturbed start",
+        {
+            "pose": _pose_list(start_rot, start_t),
+            "points": points,
+            "bearings": bearings,
+            "scale": scale,
+            "weights": weights,
+        },
+        _pose_list(best_rot, best_t),
+        summary={"converged": True, "cost": float(cost)},
+        tolerance={
+            "comparison": "close",
+            "rtol": 0.0,
+            "atol": atol,
+            "cost_rtol": 1e-6,
+            "reason": "noisy correspondences: LM stops on its function tolerance where the "
+            "cost is flat, so the pose agrees to the cost's flatness and the cost closely",
+        },
+    )
+
+
 def _pnp_fixture() -> dict[str, Any]:
     """Build the EPnP, refinement and PnP RANSAC cases."""
     rng = np.random.default_rng(29)
@@ -175,6 +282,7 @@ def _pnp_fixture() -> dict[str, Any]:
             summary={"converged": True},
         ),
     ]
+    refine.append(_noisy_weighted_case(rot, t, twenty, start_rot, start_t))
     run_points = _world_points(rng, rot, t, 100)
     run_bearings = _bearings(rot, t, run_points)
     mask = [True] * len(run_points)

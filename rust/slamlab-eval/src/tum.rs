@@ -566,12 +566,22 @@ mod tests {
         }
     }
 
+    /// A scratch folder, removed when the test ends, failed or not.
+    struct Scratch(std::path::PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
     fn malformed_folders_are_refused() {
         // Named for this process: concurrent test runs never share the folder.
         let scratch =
             std::env::temp_dir().join(format!("slamlab_rust_test_tum_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&scratch);
+        let _guard = Scratch(scratch.clone());
         let folder = scratch.join("recording");
         std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(folder.join("rgb.txt"), "1.0 a.png\nx b.png\n").unwrap();
@@ -606,6 +616,5 @@ mod tests {
             "{}",
             camera.message
         );
-        std::fs::remove_dir_all(&scratch).unwrap();
     }
 }

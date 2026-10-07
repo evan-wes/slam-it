@@ -196,12 +196,15 @@ def test_steep_planes_keep_the_rank_margin(backend: str) -> None:
     chosen = require_function(backend, homography.__name__, "homography_dlt")
     rng = np.random.default_rng(31)
     least, fitted = np.inf, 0
-    while fitted < 2000:
+    for _ in range(20_000):  # bounded: the seeded draws give 2000 views well within it
         view = _tilted_view(rng)
         if view is None:
             continue
         least = min(least, _condition(*view, homography.homography_dlt(*view, backend=chosen)))
         fitted += 1
+        if fitted == 2000:
+            break
+    assert fitted == 2000
     assert least > homography.CONDITION_TOLERANCE
 
 
