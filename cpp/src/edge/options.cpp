@@ -50,10 +50,11 @@ foundations::Result<void> check_options(const Options& options) {
     return ok;
   }
   // Settings that may be 0, then those that must be at least 1.
-  const std::array<IntSetting, 3> may_be_zero{
+  const std::array<IntSetting, 4> may_be_zero{
       {{"seed", options.seed},
        {"min_init_features", options.min_init_features},
-       {"min_init_features_depth", options.min_init_features_depth}}};
+       {"min_init_features_depth", options.min_init_features_depth},
+       {"min_init_depth_points", options.min_init_depth_points}}};
   for (const auto& [setting, value] : may_be_zero) {
     if (auto ok = foundations::check_range(setting, value, 0, kMaxSetting); !ok) {
       return ok;

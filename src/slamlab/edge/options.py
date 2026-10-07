@@ -46,10 +46,16 @@ class Options:
         A monocular frame is extracted with this many times ``n_features`` until the map
         exists (ORB-SLAM's initialisation extractor, ``2 * nFeatures``).
     min_init_features : int
-        Keypoints a monocular frame needs to take part in initialisation (ORB-SLAM: 100).
+        A monocular frame takes part in initialisation with more than this many keypoints
+        (``MonocularInitialization``'s ``mvKeys.size() > 100``).
     min_init_features_depth : int
-        Keypoints a stereo or RGB-D frame needs to start the map, a point made at each one
-        with depth (``StereoInitialization``'s 500 counts every keypoint).
+        A stereo or RGB-D frame starts the map with more than this many keypoints, a point
+        made at each one with depth (``StereoInitialization``'s ``N > 500`` counts every
+        keypoint)...
+    min_init_depth_points : int
+        ...and at least this many of them with depth (100). Lite: ORB-SLAM starts from any
+        500 keypoints because it resets a map lost within its first five keyframes; without
+        that reset, a start from a frame with almost no depth would end the run.
     init_window : float
         The window, in pixels, in which a monocular initialisation matches a keypoint of the
         reference frame (``SearchForInitialization``'s 100).
@@ -213,6 +219,7 @@ class Options:
     init_feature_factor: int = 2
     min_init_features: int = 100
     min_init_features_depth: int = 500
+    min_init_depth_points: int = 100
     init_window: float = 100.0
     init_ratio: float = 0.9
     init_min_matches: int = 100
@@ -338,7 +345,9 @@ class Options:
         return asdict(self)
 
 
-_MAY_BE_ZERO = frozenset({"seed", "min_init_features", "min_init_features_depth"})
+_MAY_BE_ZERO = frozenset(
+    {"seed", "min_init_features", "min_init_features_depth", "min_init_depth_points"}
+)
 """The integer settings that may be 0."""
 
 _FRACTIONS = frozenset(

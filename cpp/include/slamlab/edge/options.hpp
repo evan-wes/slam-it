@@ -54,10 +54,12 @@ struct Options {
   double close_depth{40.0};
   /// @brief A monocular frame's features are this many times `n_features` before the map.
   std::int64_t init_feature_factor{2};
-  /// @brief Keypoints a monocular frame needs to take part in initialisation.
+  /// @brief A monocular frame takes part in initialisation with more than this many keypoints.
   std::int64_t min_init_features{100};
-  /// @brief Keypoints a stereo or RGB-D frame needs to start the map.
+  /// @brief A stereo or RGB-D frame starts the map with more than this many keypoints...
   std::int64_t min_init_features_depth{500};
+  /// @brief ...and at least this many with depth (lite: ORB-SLAM resets a map lost early).
+  std::int64_t min_init_depth_points{100};
   /// @brief The monocular initialisation's search window, in pixels.
   double init_window{100.0};
   /// @brief Its ratio test.
@@ -184,7 +186,7 @@ using IntegerOption = std::pair<const char*, std::int64_t Options::*>;
 using RealOption = std::pair<const char*, double Options::*>;
 
 /// @brief `Options`' integer fields, by their Python names.
-inline constexpr std::array<IntegerOption, 35> kIntegerOptions{{
+inline constexpr std::array<IntegerOption, 36> kIntegerOptions{{
     {"n_features", &Options::n_features},
     {"levels", &Options::levels},
     {"fast_threshold", &Options::fast_threshold},
@@ -192,6 +194,7 @@ inline constexpr std::array<IntegerOption, 35> kIntegerOptions{{
     {"init_feature_factor", &Options::init_feature_factor},
     {"min_init_features", &Options::min_init_features},
     {"min_init_features_depth", &Options::min_init_features_depth},
+    {"min_init_depth_points", &Options::min_init_depth_points},
     {"init_min_matches", &Options::init_min_matches},
     {"min_motion_matches", &Options::min_motion_matches},
     {"min_tracked", &Options::min_tracked},

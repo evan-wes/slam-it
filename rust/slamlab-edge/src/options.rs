@@ -61,10 +61,12 @@ pub struct Options {
     pub close_depth: f64,
     /// A monocular frame's features are this many times `n_features` before the map.
     pub init_feature_factor: usize,
-    /// Keypoints a monocular frame needs to take part in initialisation.
+    /// A monocular frame takes part in initialisation with more than this many keypoints.
     pub min_init_features: usize,
-    /// Keypoints a stereo or RGB-D frame needs to start the map.
+    /// A stereo or RGB-D frame starts the map with more than this many keypoints...
     pub min_init_features_depth: usize,
+    /// ...and at least this many with depth (lite: ORB-SLAM resets a map lost early).
+    pub min_init_depth_points: usize,
     /// The monocular initialisation's search window, in pixels.
     pub init_window: f64,
     /// Its ratio test.
@@ -196,6 +198,7 @@ impl Default for Options {
             init_feature_factor: 2,
             min_init_features: 100,
             min_init_features_depth: 500,
+            min_init_depth_points: 100,
             init_window: 100.0,
             init_ratio: 0.9,
             init_min_matches: 100,
@@ -363,7 +366,8 @@ macro_rules! named_settings {
 named_settings!(
     n_features: Integer, levels: Integer, scale_factor: Real, fast_threshold: Integer,
     min_fast_threshold: Integer, close_depth: Real, init_feature_factor: Integer,
-    min_init_features: Integer, min_init_features_depth: Integer, init_window: Real,
+    min_init_features: Integer, min_init_features_depth: Integer,
+    min_init_depth_points: Integer, init_window: Real,
     init_ratio: Real, init_min_matches: Integer, init_parallax_cos: Real, motion_window: Real,
     stereo_motion_window: Real, min_motion_matches: Integer, local_window: Real,
     rgbd_local_window: Real, recovery_local_window: Real, min_tracked: Integer, chi2_mono: Real, chi2_stereo: Real,
@@ -411,6 +415,7 @@ pub fn check_options(options: &Options) -> Result<()> {
     for (name, value) in [
         ("min_init_features", options.min_init_features),
         ("min_init_features_depth", options.min_init_features_depth),
+        ("min_init_depth_points", options.min_init_depth_points),
     ] {
         check_range(name, value, 0, MAX_SETTING)?;
     }
@@ -517,7 +522,7 @@ mod tests {
     fn settings_by_name() {
         let mut options = Options::default();
         let settings = options.settings();
-        assert_eq!(settings.len(), 67);
+        assert_eq!(settings.len(), 68);
         assert_eq!(settings[0], ("n_features", Setting::Integer(1000)));
         assert_eq!(settings[2], ("scale_factor", Setting::Real(1.2)));
         options.set("window", Setting::Integer(7)).unwrap();

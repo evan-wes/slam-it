@@ -91,7 +91,7 @@ Result<std::optional<Tracked>> Pipeline::initialize(const Frame& frame) {
 }
 
 Result<std::optional<Started>> Pipeline::initialize_monocular(const Frame& frame) {
-  if (std::cmp_less(keypoint_count(frame), options_.min_init_features)) {
+  if (std::cmp_less_equal(keypoint_count(frame), options_.min_init_features)) {
     reference_.reset();  // too few features: ORB-SLAM drops its initializer
     return std::nullopt;
   }

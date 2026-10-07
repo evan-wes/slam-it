@@ -31,7 +31,8 @@ struct Started {
 /// @param frame The frame.
 /// @param options The minimum keypoints, and the pyramid.
 /// @return The map of one keyframe at the origin with a point at every keypoint with depth
-///         (and a bearing), or nothing if it has fewer than `min_init_features_depth` keypoints;
+///         (and a bearing), or nothing unless it has more than `min_init_features_depth`
+///         keypoints and `min_init_depth_points` with depth;
 ///         `InvalidInput` for a frame whose pyramid is not the settings', or invalid settings.
 [[nodiscard]] foundations::Result<std::optional<Started>> initialize_from_depth(
     const Frame& frame, const Options& options);

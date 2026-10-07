@@ -18,6 +18,7 @@ fn from_depth_puts_a_point_at_every_keypoint() {
     let f = frame(0, true);
     let options = Options {
         min_init_features_depth: 10,
+        min_init_depth_points: 10,
         ..Options::default()
     };
     let started = initialize_from_depth(&f, &options).unwrap().unwrap();
@@ -32,6 +33,16 @@ fn from_depth_puts_a_point_at_every_keypoint() {
         ..Options::default()
     };
     assert!(initialize_from_depth(&f, &strict).unwrap().is_none());
+    let exactly = Options {
+        min_init_features_depth: POINTS,
+        ..options
+    };
+    assert!(initialize_from_depth(&f, &exactly).unwrap().is_none()); // more than, as N > 500
+    let shallow = Options {
+        min_init_depth_points: POINTS + 1,
+        ..options
+    };
+    assert!(initialize_from_depth(&f, &shallow).unwrap().is_none());
     let other = Options {
         levels: 4,
         ..Options::default()

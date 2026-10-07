@@ -29,6 +29,7 @@ fn small_scene() -> Options {
     Options {
         min_init_features: 20,
         min_init_features_depth: 20,
+        min_init_depth_points: 20,
         init_min_matches: 20,
         ..Options::default()
     }

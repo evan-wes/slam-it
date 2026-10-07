@@ -2,9 +2,10 @@
 
 ORB-SLAM's ``StereoInitialization`` and ``MonocularInitialization``:
 
-- **Stereo and RGB-D** (:func:`initialize_from_depth`): the first frame with enough keypoints
-  with depth is the first keyframe, at the origin, a point created at every one of them, so
-  the map is metric from the start.
+- **Stereo and RGB-D** (:func:`initialize_from_depth`): the first frame with more than
+  ``min_init_features_depth`` keypoints, ``min_init_depth_points`` of them with depth, is the
+  first keyframe, at the origin, with a point at every keypoint with depth, so the map is
+  metric from the start.
 - **Monocular** (:func:`initialize_monocular`): a reference frame and a later one are matched
   within a window (:func:`match_for_initialization`, ``SearchForInitialization``) and
   initialised by :func:`slamlab.foundations.twoview.initialize`; the two become keyframes, a
@@ -92,9 +93,11 @@ def _decode_started(
 
 def _initialize_from_depth(frame: Frame, options: Options) -> tuple[Map, Tracked] | None:
     """Start the map from a stereo or RGB-D frame (reference)."""
-    if frame.size < options.min_init_features_depth:
+    if frame.size <= options.min_init_features_depth:
         return None
     has_depth = np.flatnonzero(~np.isnan(frame.depth) & ~np.isnan(frame.bearings[:, 0]))
+    if len(has_depth) < options.min_init_depth_points:
+        return None
     pose = np.eye(4)
     m = maps.insert_keyframe(
         maps.empty(options.levels, options.scale_factor),
@@ -128,8 +131,8 @@ def initialize_from_depth(
     -------
     tuple of (Map, Tracked) or None
         The map, its one keyframe at the origin with a point at every keypoint with depth
-        (and a bearing), and the frame tracked; None if the frame has fewer than
-        ``min_init_features_depth`` keypoints.
+        (and a bearing), and the frame tracked; None unless the frame has more than
+        ``min_init_features_depth`` keypoints and ``min_init_depth_points`` with depth.
 
     Raises
     ------

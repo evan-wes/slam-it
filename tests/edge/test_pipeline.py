@@ -94,6 +94,25 @@ def test_a_failed_frame_ends_the_velocity(
     assert velocities[-1] is None
 
 
+def test_a_frame_with_little_depth_waits_for_the_next(rendered: list[room.Frame]) -> None:
+    """A first frame with almost no depth starts no map: the next one does (finding L13).
+
+    ORB-SLAM starts from any 500 keypoints and resets a map lost within five keyframes; the
+    lite pipeline has no reset, so a start from a handful of depths would end the run.
+    """
+    run = pipeline.Pipeline("rgbd", CAMERA, OPTIONS)
+    first, second = rendered[0], rendered[1]
+    sparse = np.zeros_like(first.depth)
+    sparse[::40, ::40] = first.depth[::40, ::40]  # a few dozen pixels of depth
+    waited = run.track(frames.rgbd(first.gray, sparse, 0.0, CAMERA, run.extraction()))
+    assert waited.pose is None
+    assert run.state is pipeline.State.NOT_INITIALIZED
+    started = run.track(frames.rgbd(second.gray, second.depth, 1.0, CAMERA, run.extraction()))
+    assert started.state is pipeline.State.TRACKING
+    assert run.map is not None
+    assert run.map.points >= OPTIONS.min_init_depth_points
+
+
 def test_a_monocular_reference_needs_enough_features(rendered: list[room.Frame]) -> None:
     """A frame with too few features drops the monocular reference rather than pairing."""
     camera = frames.Camera("pinhole", room.SMALL.intrinsics, 320, 240)

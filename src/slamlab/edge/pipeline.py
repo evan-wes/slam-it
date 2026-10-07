@@ -182,7 +182,7 @@ class Pipeline:
 
     def _initialize_monocular(self, frame: Frame) -> tuple[Map, Tracked] | None:
         """Pair a monocular frame with the reference, or make it the reference."""
-        if frame.size < self.options.min_init_features:
+        if frame.size <= self.options.min_init_features:
             self._reference = None  # too few features: ORB-SLAM drops its initializer
             return None
         if self._reference is None or self._previous is None:

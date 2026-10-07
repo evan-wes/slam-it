@@ -241,7 +241,7 @@ impl Pipeline {
     ///
     /// A stage's error.
     fn initialize_monocular(&mut self, frame: &Frame) -> Result<Option<Started>> {
-        if frame.size() < self.options.min_init_features {
+        if frame.size() <= self.options.min_init_features {
             self.reference = None; // too few features: ORB-SLAM drops its initializer
             return Ok(None);
         }

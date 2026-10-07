@@ -48,13 +48,17 @@ def test_from_depth_matches_the_reference(backend: str, truth: Truth) -> None:
     assert expected is not None
     got = initialization.initialize_from_depth(frame, OPTIONS, backend=chosen)
     _assert_started_match(got, expected, TOLERANCE)
-    too_many = replace(OPTIONS, min_init_features_depth=frame.size + 1)
-    assert initialization.initialize_from_depth(frame, too_many, backend=chosen) is None
+    exactly = replace(OPTIONS, min_init_features_depth=frame.size)  # N > 500: more than
+    assert initialization.initialize_from_depth(frame, exactly, backend=chosen) is None
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
-def test_from_depth_counts_every_keypoint(backend: str, truth: Truth) -> None:
-    """The start needs keypoints, not depths: points are made only where there is depth."""
+def test_from_depth_counts_keypoints_then_depths(backend: str, truth: Truth) -> None:
+    """The start counts every keypoint, as ORB-SLAM's, then needs a floor of them with depth.
+
+    Points are made only where there is depth; the floor stands in for ORB-SLAM's reset of a
+    map lost soon after it started (review panel finding L13).
+    """
     chosen = require_function(backend, initialization.__name__, "initialize_from_depth")
     frame = truth.frames[0]
     sparse = replace(
@@ -62,10 +66,14 @@ def test_from_depth_counts_every_keypoint(backend: str, truth: Truth) -> None:
         depth=np.where(np.arange(frame.size) < 5, frame.depth, np.nan),
         right=np.where(np.arange(frame.size) < 5, frame.right, np.nan),
     )
-    options = replace(OPTIONS, min_init_features_depth=frame.size)
+    depths = int(np.count_nonzero(~np.isnan(sparse.depth)))
+    assert depths > 0
+    options = replace(OPTIONS, min_init_features_depth=frame.size - 1, min_init_depth_points=depths)
     started = initialization.initialize_from_depth(sparse, options, backend=chosen)
     assert started is not None
-    assert started[0].points == np.count_nonzero(~np.isnan(sparse.depth)) > 0
+    assert started[0].points == depths
+    deeper = replace(options, min_init_depth_points=depths + 1)
+    assert initialization.initialize_from_depth(sparse, deeper, backend=chosen) is None
 
 
 def test_from_depth_puts_a_point_at_every_keypoint_with_depth(truth: Truth) -> None:

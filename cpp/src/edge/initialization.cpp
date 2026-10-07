@@ -139,7 +139,7 @@ Result<std::optional<Started>> initialize_from_depth(const Frame& frame, const O
   if (auto ok = check_frame(frame, options, "frame"); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
-  if (std::cmp_less(keypoint_count(frame), options.min_init_features_depth)) {
+  if (std::cmp_less_equal(keypoint_count(frame), options.min_init_features_depth)) {
     return std::nullopt;
   }
   std::vector<std::int64_t> has_depth;
@@ -147,6 +147,9 @@ Result<std::optional<Started>> initialize_from_depth(const Frame& frame, const O
     if (!std::isnan(frame.depth[i]) && !std::isnan(frame.bearings[i].x())) {
       has_depth.push_back(static_cast<std::int64_t>(i));
     }
+  }
+  if (std::cmp_less(has_depth.size(), options.min_init_depth_points)) {
+    return std::nullopt;
   }
   Started out{.map = empty_map(options.levels, options.scale_factor), .tracked = {}};
   if (auto ok = insert_unobserving(out.map, frame, Eigen::Matrix4d::Identity()); !ok) {

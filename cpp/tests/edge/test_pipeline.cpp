@@ -33,7 +33,10 @@ Eigen::Matrix4d along(std::int64_t i) {
 /// @brief The settings for a 60-point scene: the counts ORB-SLAM sizes for hundreds lowered.
 /// @return The settings.
 edge::Options small_scene() {
-  return {.min_init_features = 20, .min_init_features_depth = 20, .init_min_matches = 20};
+  return {.min_init_features = 20,
+          .min_init_features_depth = 20,
+          .min_init_depth_points = 20,
+          .init_min_matches = 20};
 }
 
 /// @brief Run the path through a pipeline.
