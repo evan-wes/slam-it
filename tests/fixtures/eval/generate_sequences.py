@@ -46,7 +46,11 @@ model pinhole
 intrinsics 525.0 525.5 319.5 239.5   # fx fy cx cy
 size 640 480
 depth_scale 1000
+bf 40.0
 """
+
+MONOCULAR_CAMERA = CAMERA.replace("bf 40.0\n", "")
+"""A camera.txt with no bf: a folder that runs monocular only."""
 
 SENSOR = """# General sensor definitions.
 sensor_type: camera
@@ -103,8 +107,8 @@ def _write_tum() -> None:
         (folder / "rgb.txt").write_text(RGB)
     for folder in (named, recorded):
         (folder / "depth.txt").write_text(DEPTH)
-    for folder in (recorded, flat):
-        (folder / "camera.txt").write_text(CAMERA)
+    (recorded / "camera.txt").write_text(CAMERA)
+    (flat / "camera.txt").write_text(MONOCULAR_CAMERA)
 
 
 def _write_euroc() -> None:
@@ -140,6 +144,7 @@ def _tum_case(name: str) -> dict[str, Any]:
             "width": camera.width,
             "height": camera.height,
             "depth_scale": camera.depth_scale,
+            "bf": camera.bf,
         },
     }
 

@@ -132,6 +132,7 @@ model pinhole
 intrinsics 525.0 526.0 319.5 239.5  # fx fy cx cy
 size 640 480
 depth_scale 1000
+bf 41.5
 """
 
 
@@ -155,6 +156,9 @@ def test_frames_need_no_ground_truth(tmp_path: Path) -> None:
         480,
         1000.0,
     )
+    assert frames.camera.bf == 41.5
+    _camera_file(folder, CAMERA_TXT.replace("bf 41.5\n", ""))
+    assert tum.read_camera(folder).bf is None  # bf is optional: monocular runs need none
 
 
 def test_camera_file_takes_precedence_over_the_name(tmp_path: Path) -> None:
@@ -167,6 +171,7 @@ def test_camera_file_takes_precedence_over_the_name(tmp_path: Path) -> None:
     without.mkdir()
     camera = tum.read_camera(without)
     assert (camera.model, camera.width, camera.depth_scale) == ("radtan", 640, tum.DEPTH_SCALE)
+    assert camera.bf == tum.SENSOR_BF
 
 
 @pytest.mark.parametrize(
@@ -181,6 +186,9 @@ def test_camera_file_takes_precedence_over_the_name(tmp_path: Path) -> None:
         (CAMERA_TXT.replace("model pinhole", "model fisheye"), "unknown camera model"),
         (CAMERA_TXT.replace("size 640 480", "size 0 480"), "size"),
         (CAMERA_TXT.replace("depth_scale 1000", "depth_scale -1"), "depth_scale"),
+        (CAMERA_TXT.replace("bf 41.5", "bf 0"), "bf must be"),
+        (CAMERA_TXT.replace("bf 41.5", "bf 40 41"), "one bf"),
+        (CAMERA_TXT + "bf 40\n", "unknown or repeated key 'bf'"),
     ],
 )
 def test_rejects_a_malformed_camera_file(tmp_path: Path, text: str, message: str) -> None:

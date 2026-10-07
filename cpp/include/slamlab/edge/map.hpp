@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "slamlab/edge/frames.hpp"
+#include "slamlab/edge/options.hpp"
 #include "slamlab/foundations/error.hpp"
 #include "slamlab/foundations/orb.hpp"
 
@@ -154,6 +155,17 @@ void index_observations(Map& m);
 /// @return The points' rows, ascending, each once.
 [[nodiscard]] std::vector<std::int64_t> observed_by(const Map& m,
                                                     std::span<const std::int64_t> keyframes);
+
+/// @brief Whether a point lies within the distances it is matchable from
+///        (`slamlab.edge.map.in_distance_range`): from `min_distance_margin` of its minimum
+///        distance to `max_distance_margin` of its maximum (`isInFrustum`, `Fuse`), unchecked.
+/// @param m The map.
+/// @param p The point's row.
+/// @param distance Its distance from the camera centre.
+/// @param options The margins.
+/// @return Whether it is in range.
+[[nodiscard]] bool in_distance_range(const Map& m, std::size_t p, double distance,
+                                     const Options& options);
 
 /// @brief Predict the pyramid level points appear at from a distance (`PredictScale`).
 /// @param m The map.

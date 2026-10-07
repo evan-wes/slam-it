@@ -43,17 +43,6 @@ Eigen::Vector3d centre_of(const Eigen::Matrix4d& pose) {
   return -(pose.topLeftCorner<3, 3>().transpose() * pose.topRightCorner<3, 1>());
 }
 
-/// @brief Check the camera and the settings.
-/// @param camera The camera.
-/// @param options The settings.
-/// @return Nothing, or `InvalidInput`.
-Result<void> check_setup(const Camera& camera, const Options& options) {
-  if (auto ok = check_camera(camera); !ok) {
-    return ok;
-  }
-  return check_options(options);
-}
-
 /// @brief Check the camera, the settings, and a frame's matches: one point id (or -1) per
 ///        keypoint.
 /// @param camera The camera.
@@ -256,8 +245,7 @@ Result<InView> select_in_view(const Map& m, const Camera& camera, const Eigen::M
     const Eigen::Vector2d pixel = project(camera, at);
     const Eigen::Vector3d offset = m.pt_xyz[p] - centre;
     const double distance = offset.norm();
-    if (!inside(camera, pixel) || !(distance >= 0.8 * m.pt_min_distance[p]) ||
-        !(distance <= 1.2 * m.pt_max_distance[p])) {
+    if (!inside(camera, pixel) || !in_distance_range(m, p, distance, options)) {
       continue;
     }
     const double view_cos = offset.dot(m.pt_normal[p]) / distance;
@@ -402,7 +390,7 @@ Result<std::optional<Tracked>> track_last_frame(const Map& m, const Camera& came
   if (!tracked) {
     return std::unexpected(std::move(tracked.error()));
   }
-  if (inliers(*tracked) < kMinMotionInliers) {
+  if (inliers(*tracked) < options.min_motion_inliers) {
     return std::nullopt;
   }
   return *tracked;
@@ -435,7 +423,9 @@ Result<LocalTracking> track_local_map(const Map& m, const Camera& camera, const 
   }
   std::vector<matching::Projection> projections;
   for (std::size_t j = 0; j < view->rows.size(); ++j) {
-    const double narrow = view->view_cos[j] > kNarrowViewCos ? 2.5 : 4.0;
+    const double narrow = view->view_cos[j] > options.aligned_view_cos
+                              ? options.aligned_view_radius
+                              : options.oblique_view_radius;
     const std::int64_t level = view->level[j];
     projections.push_back(
         {.xy = view->xy[j],
@@ -450,8 +440,10 @@ Result<LocalTracking> track_local_map(const Map& m, const Camera& camera, const 
   for (std::size_t i = 0; i < taken.size(); ++i) {
     taken[i] = tracked.points[i] >= 0 ? 1 : 0;
   }
-  auto found = search(frame, projections,
-                      {.max_distance = kThHigh, .ratio = 0.8, .check_orientation = false}, taken);
+  auto found = search(
+      frame, projections,
+      {.max_distance = kThHigh, .ratio = options.local_map_ratio, .check_orientation = false},
+      taken);
   if (!found) {
     return std::unexpected(std::move(found.error()));
   }
@@ -497,9 +489,9 @@ Result<std::optional<Tracked>> relocalize_locally(const Map& m, const Camera& ca
     angles.push_back(k.angle);
   }
   const std::vector<std::int64_t> zeros(local_points.size(), 0);
-  auto found =
-      matching::match(frame.features.descriptors, descriptors, angles, zeros,
-                      {.max_distance = kThHigh, .ratio = 0.75, .check_orientation = false});
+  auto found = matching::match(
+      frame.features.descriptors, descriptors, angles, zeros,
+      {.max_distance = kThHigh, .ratio = options.relocalize_ratio, .check_orientation = false});
   if (!found) {
     return std::unexpected(std::move(found.error()));
   }

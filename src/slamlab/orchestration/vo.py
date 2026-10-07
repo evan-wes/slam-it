@@ -7,7 +7,10 @@ builds each frame for the mode (:mod:`slamlab.edge.frames`), tracks it
 
 - **The camera.** A TUM-format folder's (its ``camera.txt``, or the sensor its name says:
   :func:`slamlab.eval.tum.read_camera`): as it is for monocular, and for RGB-D with a virtual
-  baseline of :data:`RGBD_BF` over its focal length (ORB-SLAM's ``Camera.bf``). A EuRoC
+  baseline of the camera's ``bf`` over its focal length (ORB-SLAM's ``Camera.bf``: depth gives
+  each keypoint a virtual right column that baseline away, and points nearer than
+  ``close_depth`` baselines count as close); a folder whose camera gives no ``bf`` runs
+  monocular only. A EuRoC
   sequence's left camera for monocular; for stereo, the pair rectified
   (:func:`slamlab.foundations.stereo.rectify`), each image remapped, and the rectified left
   camera (pinhole) with the pair's baseline. A stereo run's poses are therefore the rectified
@@ -54,11 +57,6 @@ from slamlab.foundations.errors import (
 
 DATASETS = ("tum", "euroc")
 """The datasets a sequence can come from."""
-
-RGBD_BF = 40.0
-"""An RGB-D camera's virtual baseline times its focal length, in pixel-metres: ORB-SLAM's
-``Camera.bf`` for TUM. Depth gives each keypoint a virtual right column this baseline away,
-and points nearer than ``close_depth`` baselines count as close."""
 
 PROGRAM = "slamlab_vo"
 """The native programs' name, in C++ (``cpp/apps/orchestration/``) and Rust
@@ -253,7 +251,14 @@ def _tum_source(root: Path, mode: str) -> _Source:
     """Open a TUM-format folder: its camera, an RGB-D one with the virtual baseline."""
     read = tum.read_frames(root)
     sensor = read.camera
-    baseline = RGBD_BF / float(sensor.intrinsics[0]) if mode == "rgbd" else 0.0
+    baseline = 0.0
+    if mode == "rgbd":
+        if sensor.bf is None:
+            raise InvalidInputError(
+                f"{root}: an RGB-D run needs the depth sensor's bf: add a 'bf' line to "
+                f"{tum.CAMERA_FILE}"
+            )
+        baseline = sensor.bf / float(sensor.intrinsics[0])
     camera = frames.Camera(sensor.model, sensor.intrinsics, sensor.width, sensor.height, baseline)
 
     def build(i: int, extraction: orb.Options) -> frames.Frame | None:

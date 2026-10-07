@@ -79,14 +79,28 @@ pub struct Options {
     pub stereo_motion_window: f64,
     /// Matches the motion model needs before refining.
     pub min_motion_matches: usize,
+    /// Inliers the motion model must keep after refinement.
+    pub min_motion_inliers: usize,
     /// The local map's search window factor.
     pub local_window: f64,
     /// The same for RGB-D.
     pub rgbd_local_window: f64,
     /// The same on a recovery's frame and the next, in every mode.
     pub recovery_local_window: f64,
+    /// The frames, the recovery's included, searched in the recovery window.
+    pub recovery_window_frames: usize,
+    /// Points seen within this cosine of their viewing direction get the narrower window.
+    pub aligned_view_cos: f64,
+    /// The narrower window's factor.
+    pub aligned_view_radius: f64,
+    /// The wider window's factor.
+    pub oblique_view_radius: f64,
+    /// The local map search's ratio test.
+    pub local_map_ratio: f64,
     /// Inliers the local map must give for the frame to be tracked.
     pub min_tracked: usize,
+    /// Inliers a frame needs just after a recovery.
+    pub recovery_tracked: usize,
     /// The outlier test for a 2D observation (chi-square, 2 dof, 95%).
     pub chi2_mono: f64,
     /// The same for a 3D (left and right) one.
@@ -95,12 +109,22 @@ pub struct Options {
     pub pose_rounds: usize,
     /// A point is in view only within this cosine of its mean viewing direction.
     pub view_cos_limit: f64,
+    /// A point is in view from this fraction of its minimum distance...
+    pub min_distance_margin: f64,
+    /// ...to this multiple of its maximum.
+    pub max_distance_margin: f64,
     /// Frames after a recovery that need more inliers and make no keyframe (the frame rate).
     pub max_frames: usize,
     /// Stereo and RGB-D keyframe ratio of the reference keyframe's points.
     pub ref_ratio: f64,
     /// The same for monocular.
     pub mono_ref_ratio: f64,
+    /// The keyframe ratio while the map has a single keyframe.
+    pub first_ref_ratio: f64,
+    /// The reference keyframe's points counted have this many observations...
+    pub ref_min_observations: usize,
+    /// ...this many while the map holds two keyframes or fewer.
+    pub ref_min_observations_early: usize,
     /// A keyframe needs more inliers than this.
     pub min_keyframe_inliers: usize,
     /// Close points tracked below which stereo and RGB-D may need a keyframe.
@@ -111,6 +135,16 @@ pub struct Options {
     pub window: usize,
     /// Points a stereo or RGB-D keyframe creates from depth, at least.
     pub min_new_points: usize,
+    /// Keyframes a new stereo or RGB-D keyframe triangulates against.
+    pub triangulation_neighbours: usize,
+    /// The same for monocular.
+    pub mono_triangulation_neighbours: usize,
+    /// A triangulation match's chi-square bound to its epipolar line (1 dof).
+    pub epipolar_chi2: f64,
+    /// Without depth, its least squared distance from the epipole, in pixels at its level.
+    pub min_epipole_distance2: f64,
+    /// A monocular keyframe's least baseline to a neighbour, over its median depth.
+    pub min_baseline_depth: f64,
     /// Rays whose cosine is above this are too parallel to triangulate.
     pub max_parallax_cos: f64,
     /// The scale-consistency factor of a triangulated point.
@@ -123,8 +157,12 @@ pub struct Options {
     pub ba_refine_iterations: usize,
     /// Local BA runs once the map holds this many keyframes.
     pub ba_min_keyframes: usize,
+    /// The monocular map's first bundle adjustment's iterations.
+    pub init_ba_iterations: usize,
     /// A new point found in less than this fraction of its views is culled.
     pub found_ratio: f64,
+    /// A point is culled on evidence until this many keyframes after its creation.
+    pub recent_point_keyframes: usize,
     /// Monocular points this weakly observed two keyframes on are culled.
     pub min_point_observations: usize,
     /// The same for stereo and RGB-D.
@@ -137,6 +175,8 @@ pub struct Options {
     pub pnp_threshold: f64,
     /// Inliers the PnP fallback needs.
     pub pnp_min_inliers: usize,
+    /// The fallback's descriptor ratio test.
+    pub relocalize_ratio: f64,
     /// Failed frames in a row before the track is lost.
     pub lost_frames: usize,
     /// Every RANSAC's seed.
@@ -163,35 +203,55 @@ impl Default for Options {
             motion_window: 15.0,
             stereo_motion_window: 7.0,
             min_motion_matches: 20,
+            min_motion_inliers: 10,
             local_window: 1.0,
             rgbd_local_window: 3.0,
             recovery_local_window: 5.0,
+            recovery_window_frames: 2,
+            aligned_view_cos: 0.998,
+            aligned_view_radius: 2.5,
+            oblique_view_radius: 4.0,
+            local_map_ratio: 0.8,
             min_tracked: 30,
+            recovery_tracked: 50,
             chi2_mono: 5.991,
             chi2_stereo: 7.815,
             pose_rounds: 4,
             view_cos_limit: 0.5,
+            min_distance_margin: 0.8,
+            max_distance_margin: 1.2,
             max_frames: 30,
             ref_ratio: 0.75,
             mono_ref_ratio: 0.9,
+            first_ref_ratio: 0.4,
+            ref_min_observations: 3,
+            ref_min_observations_early: 2,
             min_keyframe_inliers: 15,
             close_tracked: 100,
             close_untracked: 70,
             window: 10,
             min_new_points: 100,
+            triangulation_neighbours: 10,
+            mono_triangulation_neighbours: 20,
+            epipolar_chi2: 3.84,
+            min_epipole_distance2: 100.0,
+            min_baseline_depth: 0.01,
             max_parallax_cos: 0.9998,
             scale_ratio: 1.5,
             fuse_window: 3.0,
             ba_iterations: 5,
             ba_refine_iterations: 10,
             ba_min_keyframes: 3,
+            init_ba_iterations: 20,
             found_ratio: 0.25,
+            recent_point_keyframes: 3,
             min_point_observations: 2,
             min_point_observations_depth: 3,
             redundant_fraction: 0.9,
             redundant_observers: 3,
             pnp_threshold: 4.0,
             pnp_min_inliers: 30,
+            relocalize_ratio: 0.75,
             lost_frames: 5,
             seed: 0,
         }
@@ -314,6 +374,26 @@ named_settings!(
     ba_min_keyframes: Integer,
     found_ratio: Real, min_point_observations: Integer, min_point_observations_depth: Integer,
     redundant_fraction: Real, redundant_observers: Integer, pnp_threshold: Real,
+    min_motion_inliers: Integer,
+    recovery_window_frames: Integer,
+    aligned_view_cos: Real,
+    aligned_view_radius: Real,
+    oblique_view_radius: Real,
+    local_map_ratio: Real,
+    recovery_tracked: Integer,
+    min_distance_margin: Real,
+    max_distance_margin: Real,
+    first_ref_ratio: Real,
+    ref_min_observations: Integer,
+    ref_min_observations_early: Integer,
+    triangulation_neighbours: Integer,
+    mono_triangulation_neighbours: Integer,
+    epipolar_chi2: Real,
+    min_epipole_distance2: Real,
+    min_baseline_depth: Real,
+    recent_point_keyframes: Integer,
+    init_ba_iterations: Integer,
+    relocalize_ratio: Real,
     pnp_min_inliers: Integer, lost_frames: Integer, seed: Integer,
 );
 
@@ -360,6 +440,21 @@ pub fn check_options(options: &Options) -> Result<()> {
         ("redundant_observers", options.redundant_observers),
         ("pnp_min_inliers", options.pnp_min_inliers),
         ("lost_frames", options.lost_frames),
+        ("min_motion_inliers", options.min_motion_inliers),
+        ("recovery_window_frames", options.recovery_window_frames),
+        ("recovery_tracked", options.recovery_tracked),
+        ("ref_min_observations", options.ref_min_observations),
+        (
+            "ref_min_observations_early",
+            options.ref_min_observations_early,
+        ),
+        ("triangulation_neighbours", options.triangulation_neighbours),
+        (
+            "mono_triangulation_neighbours",
+            options.mono_triangulation_neighbours,
+        ),
+        ("recent_point_keyframes", options.recent_point_keyframes),
+        ("init_ba_iterations", options.init_ba_iterations),
     ] {
         check_range(name, value, 1, MAX_SETTING)?;
     }
@@ -377,6 +472,11 @@ pub fn check_options(options: &Options) -> Result<()> {
         ("scale_ratio", options.scale_ratio),
         ("fuse_window", options.fuse_window),
         ("pnp_threshold", options.pnp_threshold),
+        ("aligned_view_radius", options.aligned_view_radius),
+        ("oblique_view_radius", options.oblique_view_radius),
+        ("max_distance_margin", options.max_distance_margin),
+        ("epipolar_chi2", options.epipolar_chi2),
+        ("min_epipole_distance2", options.min_epipole_distance2),
     ] {
         if !(value.is_finite() && value > 0.0) {
             return fail_setting(name, "must be finite and positive", value);
@@ -391,6 +491,12 @@ pub fn check_options(options: &Options) -> Result<()> {
         ("view_cos_limit", options.view_cos_limit),
         ("max_parallax_cos", options.max_parallax_cos),
         ("init_parallax_cos", options.init_parallax_cos),
+        ("aligned_view_cos", options.aligned_view_cos),
+        ("local_map_ratio", options.local_map_ratio),
+        ("min_distance_margin", options.min_distance_margin),
+        ("first_ref_ratio", options.first_ref_ratio),
+        ("min_baseline_depth", options.min_baseline_depth),
+        ("relocalize_ratio", options.relocalize_ratio),
     ] {
         if !(value.is_finite() && value > 0.0 && value <= 1.0) {
             return fail_setting(name, "must be in (0, 1]", value);
@@ -411,7 +517,7 @@ mod tests {
     fn settings_by_name() {
         let mut options = Options::default();
         let settings = options.settings();
-        assert_eq!(settings.len(), 47);
+        assert_eq!(settings.len(), 67);
         assert_eq!(settings[0], ("n_features", Setting::Integer(1000)));
         assert_eq!(settings[2], ("scale_factor", Setting::Real(1.2)));
         options.set("window", Setting::Integer(7)).unwrap();

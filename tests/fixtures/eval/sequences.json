@@ -38,7 +38,8 @@
      ],
      "width": 640,
      "height": 480,
-     "depth_scale": 5000.0
+     "depth_scale": 5000.0,
+     "bf": 40.0
     }
    },
    "tum_camera": {
@@ -73,7 +74,8 @@
      ],
      "width": 640,
      "height": 480,
-     "depth_scale": 1000.0
+     "depth_scale": 1000.0,
+     "bf": 40.0
     }
    },
    "tum_no_depth": {
@@ -108,7 +110,8 @@
      ],
      "width": 640,
      "height": 480,
-     "depth_scale": 1000.0
+     "depth_scale": 1000.0,
+     "bf": null
     }
    }
   },

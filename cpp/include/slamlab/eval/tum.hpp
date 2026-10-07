@@ -32,6 +32,10 @@ inline constexpr std::int64_t kHeight = 480;
 /// @brief The file a TUM-format folder describes its own camera in.
 inline constexpr const char* kCameraFile = "camera.txt";
 
+/// @brief Every freiburg sensor's virtual stereo baseline times focal length, in pixel-metres
+///        (`slamlab.eval.tum.SENSOR_BF`: ORB-SLAM2's TUM RGB-D settings' `Camera.bf`).
+inline constexpr double kSensorBf = 40.0;
+
 /// @brief A folder's colour camera (`slamlab.eval.tum.Camera`).
 struct Camera {
   /// @brief The camera model.
@@ -44,6 +48,9 @@ struct Camera {
   std::int64_t height{0};
   /// @brief A depth map's value per metre of z.
   double depth_scale{kDepthScale};
+  /// @brief The depth sensor's virtual stereo baseline times the focal length, in pixel-metres
+  ///        (ORB-SLAM's `Camera.bf`); none if `camera.txt` gives none (no RGB-D run).
+  std::optional<double> bf;
 };
 
 /// @brief A folder's colour frames, as a run reads them (`slamlab.eval.tum.Frames`).

@@ -227,6 +227,7 @@ fn cull_points<'py>(
 /// * `camera` - The camera, as a dict.
 /// * `k1` - The first keyframe's row.
 /// * `k2` - The second's.
+/// * `options` - The settings, as a dict.
 ///
 /// # Returns
 ///
@@ -236,17 +237,24 @@ fn cull_points<'py>(
 ///
 /// `ValueError` for a malformed argument; `InvalidInputError` from the core.
 #[pyfunction]
-#[pyo3(signature = (m, camera, k1, k2))]
+#[pyo3(signature = (m, camera, k1, k2, options))]
 fn match_for_triangulation<'py>(
     py: Python<'py>,
     m: &Bound<'py, PyDict>,
     camera: &Bound<'py, PyDict>,
     k1: usize,
     k2: usize,
+    options: &Bound<'py, PyDict>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let pairs = unwrap(
         py,
-        core::match_for_triangulation(&map_in(py, m)?, &camera_in(camera)?, k1, k2),
+        core::match_for_triangulation(
+            &map_in(py, m)?,
+            &camera_in(camera)?,
+            k1,
+            k2,
+            &options_in(options)?,
+        ),
     )?;
     let rows: Vec<[i64; 2]> = pairs
         .iter()

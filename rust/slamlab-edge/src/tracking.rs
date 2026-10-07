@@ -8,16 +8,9 @@ use slamlab_foundations::p3p::Solver;
 use slamlab_foundations::{pnp, ransac, so3};
 
 use crate::frames::{Camera, Frame, Tracked, check_camera, search};
-use crate::map::{Map, predict_level};
+use crate::map::{Map, in_distance_range, predict_level};
 use crate::options::{Mode, Options, TH_HIGH, check_options};
 use crate::residuals::{chi2, sigma2, threshold};
-
-/// A point seen within this cosine of its mean viewing direction is searched in a narrower
-/// window (`RadiusByViewingCos`: 2.5 rather than 4).
-pub const NARROW_VIEW_COS: f64 = 0.998;
-
-/// Inliers tracking the last frame must keep after refinement.
-pub const MIN_MOTION_INLIERS: usize = 10;
 
 /// Map points in a camera's view (`slamlab.edge.tracking.InView`).
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -291,10 +284,7 @@ fn select_in_view(
         let pixel = camera.project(&at);
         let offset = m.pt_xyz[p] - centre;
         let distance = offset.norm();
-        if !(camera.inside(&pixel)
-            && distance >= 0.8 * m.pt_min_distance[p]
-            && distance <= 1.2 * m.pt_max_distance[p])
-        {
+        if !(camera.inside(&pixel) && in_distance_range(m, p, distance, options)) {
             continue;
         }
         let view_cos = offset.dot(&m.pt_normal[p]) / distance;
@@ -532,7 +522,7 @@ pub fn track_last_frame(
         },
         options,
     )?;
-    Ok((tracked.inliers() >= MIN_MOTION_INLIERS).then_some(tracked))
+    Ok((tracked.inliers() >= options.min_motion_inliers).then_some(tracked))
 }
 
 /// Matches the local map's points in view and refines the pose
@@ -594,10 +584,10 @@ pub fn track_local_map(
     };
     let projections: Vec<Projection> = (0..view.rows.len())
         .map(|j| {
-            let narrow = if view.view_cos[j] > NARROW_VIEW_COS {
-                2.5
+            let narrow = if view.view_cos[j] > options.aligned_view_cos {
+                options.aligned_view_radius
             } else {
-                4.0
+                options.oblique_view_radius
             };
             let level = view.level[j];
             Projection {
@@ -617,7 +607,7 @@ pub fn track_local_map(
         &projections,
         &SearchOptions {
             max_distance: TH_HIGH,
-            ratio: 0.8,
+            ratio: options.local_map_ratio,
             check_orientation: false,
         },
         &taken,
@@ -693,7 +683,7 @@ pub fn relocalize_locally(
         &vec![0; local_points.len()],
         &matching::Options {
             max_distance: TH_HIGH,
-            ratio: 0.75,
+            ratio: options.relocalize_ratio,
             check_orientation: false,
         },
     )?;

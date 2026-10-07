@@ -43,28 +43,6 @@ Array = NDArray[np.float64]
 IntArray = NDArray[np.int64]
 Mask = NDArray[np.bool_]
 
-TRIANGULATION_NEIGHBOURS = {"monocular": 20, "stereo": 10, "rgbd": 10}
-"""Keyframes a new keyframe triangulates against (``CreateNewMapPoints``' ``nn``)."""
-
-EPIPOLAR_CHI2 = 3.84
-"""A match for triangulation must lie within this chi-square (1 dof, 95%) of its epipolar
-line (``CheckDistEpipolarLine``)."""
-
-EPIPOLE_DISTANCE2 = 100.0
-"""...and, without depth, at least this squared distance from the epipole, in pixels at
-level 0 (``SearchForTriangulation``)."""
-
-MIN_BASELINE_DEPTH = 0.01
-"""A monocular keyframe triangulates only against one whose baseline is at least this
-fraction of its median depth (``CreateNewMapPoints``)."""
-
-FIRST_REF_RATIO = 0.4
-"""The keyframe ratio while the map has a single keyframe (``NeedNewKeyFrame``)."""
-
-RECENT_KEYFRAMES = 3
-"""A point is culled on evidence while created at most this many keyframes ago
-(``MapPointCulling``' recent list)."""
-
 
 Crossing = dict[str, Any]
 """A map, camera, tracked frame or the settings, as it crosses the bindings."""
@@ -101,7 +79,7 @@ class Implementation(Protocol):
         ...
 
     def match_for_triangulation(
-        self, m: Crossing, camera: Crossing, k1: int, k2: int
+        self, m: Crossing, camera: Crossing, k1: int, k2: int, options: Crossing
     ) -> NDArray[np.int64]:
         """Match two keyframes' free keypoints for triangulation."""
         ...
@@ -199,7 +177,8 @@ def _need_keyframe(  # noqa: PLR0913 -- the stage's state
     m: Map, camera: Camera, depth: Array, tracked: Tracked, *, mode: str, options: Options
 ) -> bool:
     """Decide whether a tracked frame becomes a keyframe (reference)."""
-    min_observations = 2 if m.keyframes <= 2 else 3
+    early = m.keyframes <= 2  # NeedNewKeyFrame's nKFs <= 2
+    min_observations = options.ref_min_observations_early if early else options.ref_min_observations
     seen = m.kp_point[m.keypoint_rows(m.keyframes - 1)]
     rows = m.point_rows(seen[seen >= 0])
     weights = maps.observation_weight(m, rows[rows >= 0])
@@ -212,7 +191,7 @@ def _need_keyframe(  # noqa: PLR0913 -- the stage's state
         need_close = (
             tracked_close < options.close_tracked and untracked_close > options.close_untracked
         )
-    ratio = FIRST_REF_RATIO if m.keyframes < 2 else options.ref_ratio
+    ratio = options.first_ref_ratio if m.keyframes < 2 else options.ref_ratio
     if mode == "monocular":
         ratio = options.mono_ref_ratio
     weak = tracked.inliers < tracked_reference * ratio or need_close
@@ -232,7 +211,7 @@ def need_keyframe(  # noqa: PLR0913 -- the stage's state, and the backend
     """Decide whether a tracked frame becomes a keyframe (``NeedNewKeyFrame``, single-threaded).
 
     With mapping never busy, ORB-SLAM's conditions reduce to: the frame tracks fewer than
-    ``ref_ratio`` (``mono_ref_ratio``; :data:`FIRST_REF_RATIO` with one keyframe) of the
+    ``ref_ratio`` (``mono_ref_ratio``; ``first_ref_ratio`` with one keyframe) of the
     points the reference keyframe (here the newest) sees from two keyframes (three once
     there are more than two), or, with depth, fewer than ``close_tracked`` close points while
     more than ``close_untracked`` close ones go untracked; and it tracks more than
@@ -349,7 +328,7 @@ def create_points_from_depth(
 def _cull_points(m: Map, mode: str, options: Options) -> Map:
     """Cull recently created points tracking rarely finds (reference)."""
     age = m.kf_id[-1] - m.pt_first_kf
-    recent = np.flatnonzero(age <= RECENT_KEYFRAMES)
+    recent = np.flatnonzero(age <= options.recent_point_keyframes)
     if len(recent) == 0:
         return m
     minimum = (
@@ -367,7 +346,7 @@ def _cull_points(m: Map, mode: str, options: Options) -> Map:
 def cull_points(m: Map, mode: str, options: Options, *, backend: str = "python") -> Map:
     """Cull recently created points that tracking rarely finds (``MapPointCulling``).
 
-    A point created at most :data:`RECENT_KEYFRAMES` keyframes ago goes when found in under
+    A point created at most ``recent_point_keyframes`` keyframes ago goes when found in under
     ``found_ratio`` of the frames that had it in view, or when, two or more keyframes after
     its creation, it is observed with weight ``min_point_observations`` or less
     (``min_point_observations_depth`` with depth).
@@ -419,7 +398,9 @@ def _free_rows(m: Map, k: int) -> IntArray:
     return free
 
 
-def _match_for_triangulation(m: Map, camera: Camera, k1: int, k2: int) -> IntArray:
+def _match_for_triangulation(
+    m: Map, camera: Camera, k1: int, k2: int, options: Options
+) -> IntArray:
     """Match two keyframes' free keypoints for triangulation (reference)."""
     rows1, rows2 = _free_rows(m, k1), _free_rows(m, k2)
     if len(rows1) == 0 or len(rows2) == 0:
@@ -432,11 +413,11 @@ def _match_for_triangulation(m: Map, camera: Camera, k1: int, k2: int) -> IntArr
     lines = x1 @ essential.T  # each k1 keypoint's epipolar line in k2, normalised plane
     numerator = lines @ x2.T
     distance2 = numerator**2 / (lines[:, :1] ** 2 + lines[:, 1:2] ** 2) * camera.focal**2
-    band = distance2 < EPIPOLAR_CHI2 * residuals.sigma2(m, m.kp_level[rows2])[None, :]
+    band = distance2 < options.epipolar_chi2 * residuals.sigma2(m, m.kp_level[rows2])[None, :]
     if t[2] != 0.0:  # camera 1's centre in camera 2 is t: the epipole
         epipole = t[:2] / t[2]
         near = np.sum((x2[:, :2] - epipole) ** 2, axis=1) * camera.focal**2 < (
-            EPIPOLE_DISTANCE2 * m.scale_factor ** m.kp_level[rows2].astype(np.float64)
+            options.min_epipole_distance2 * m.scale_factor ** m.kp_level[rows2].astype(np.float64)
         )
         no_depth = np.isnan(m.kp_depth[rows1])[:, None] & np.isnan(m.kp_depth[rows2])[None, :]
         band &= ~(no_depth & near[None, :])
@@ -453,15 +434,15 @@ def _match_for_triangulation(m: Map, camera: Camera, k1: int, k2: int) -> IntArr
     return np.array([[rows1[i], rows2[j]] for i, j in pairs], dtype=np.int64).reshape(-1, 2)
 
 
-def match_for_triangulation(
-    m: Map, camera: Camera, k1: int, k2: int, *, backend: str = "python"
+def match_for_triangulation(  # noqa: PLR0913 -- the map, its camera, two keyframes, the settings
+    m: Map, camera: Camera, k1: int, k2: int, options: Options, *, backend: str = "python"
 ) -> IntArray:
     """Match two keyframes' free keypoints for triangulation (``SearchForTriangulation``, lite).
 
     No bag of words: for each free keypoint of `k1` (one observing no point), the nearest
     free keypoint of `k2` within ``TH_LOW`` (ties: the first) that lies within the epipolar
-    band (:data:`EPIPOLAR_CHI2` of its level's variance, in pixels at the focal length) and,
-    when neither has depth, not near the epipole (:data:`EPIPOLE_DISTANCE2`). One match per
+    band (``epipolar_chi2`` of its level's variance, in pixels at the focal length) and,
+    when neither has depth, not near the epipole (``min_epipole_distance2``). One match per
     keypoint of `k2`: the nearest keeps it (ties: the lower `k1` keypoint).
 
     Parameters
@@ -472,6 +453,8 @@ def match_for_triangulation(
         The camera.
     k1, k2 : int
         The two keyframes' rows.
+    options : Options
+        The epipolar band and the epipole's distance.
     backend : {"python", "cpp", "rust"}, optional
         Which implementation computes the result (default: the Python reference).
 
@@ -493,8 +476,14 @@ def match_for_triangulation(
         backend,
         __name__,
         "match_for_triangulation",
-        reference=lambda: _match_for_triangulation(m, camera, first, second),
-        arguments={"m": m.as_dict(), "camera": camera.as_dict(), "k1": first, "k2": second},
+        reference=lambda: _match_for_triangulation(m, camera, first, second, options),
+        arguments={
+            "m": m.as_dict(),
+            "camera": camera.as_dict(),
+            "k1": first,
+            "k2": second,
+            "options": options.as_dict(),
+        },
         decode=lambda raw, codes: backends.checked_array(raw, np.int64, 2, "triangulation pairs"),
     )
 
@@ -574,17 +563,22 @@ def _median_depth(m: Map, k: int) -> float | None:
 def _triangulate_new_points(m: Map, camera: Camera, mode: str, options: Options) -> Map:
     """Triangulate the newest keyframe's free keypoints against the window's (reference)."""
     k1 = m.keyframes - 1
-    others = m.window(options.window)[:-1][::-1][: TRIANGULATION_NEIGHBOURS[mode]]
+    neighbours = (
+        options.mono_triangulation_neighbours
+        if mode == "monocular"
+        else options.triangulation_neighbours
+    )
+    others = m.window(options.window)[:-1][::-1][:neighbours]
     centres = m.centres()
     for k2 in (int(k) for k in others):
         baseline = float(np.linalg.norm(centres[k2] - centres[k1]))
         if mode == "monocular":
             median = _median_depth(m, k2)
-            if median is None or baseline / median < MIN_BASELINE_DEPTH:
+            if median is None or baseline / median < options.min_baseline_depth:
                 continue
         elif baseline < camera.baseline:
             continue
-        pairs = _match_for_triangulation(m, camera, k1, k2)
+        pairs = _match_for_triangulation(m, camera, k1, k2, options)
         if len(pairs) == 0:
             continue
         xyz, keep = _triangulate(m, camera, k1, k2, pairs, options=options)
@@ -599,8 +593,9 @@ def triangulate_new_points(
     """Triangulate the newest keyframe's free keypoints against the window's keyframes.
 
     ORB-SLAM's ``CreateNewMapPoints``. For each neighbour (the window's other keyframes,
-    newest first, at most :data:`TRIANGULATION_NEIGHBOURS`): skip it if the baseline is too
-    short (shorter than the stereo baseline, or under :data:`MIN_BASELINE_DEPTH` of its
+    newest first, at most ``triangulation_neighbours``, ``mono_triangulation_neighbours`` for
+    monocular): skip it if the baseline is too short (shorter than the stereo baseline, or
+    under ``min_baseline_depth`` of its
     median depth for monocular);
     match (:func:`match_for_triangulation`); for each match take the point from the rays
     (:func:`slamlab.foundations.triangulation.two_view`) if their parallax beats what depth
@@ -655,7 +650,7 @@ def _fuse_target(m: Map, camera: Camera, k: int, p: int, options: Options) -> in
     distance = float(np.linalg.norm(offset))
     if not (
         camera.inside(pixel[None])[0]
-        and 0.8 * m.pt_min_distance[p] <= distance <= 1.2 * m.pt_max_distance[p]
+        and maps.in_distance_range(m, np.array([p]), np.array([distance]), options)[0]
         and offset @ m.pt_normal[p] >= options.view_cos_limit * distance
     ):
         return None
@@ -751,7 +746,7 @@ def fuse_points(m: Map, camera: Camera, options: Options, *, backend: str = "pyt
 
     The newest keyframe's points are fused into each other window keyframe, then all the
     others' points into the newest (``Fuse``): each point not already in the keyframe, in
-    front, inside the image, between 0.8 of its minimum and 1.2 of its maximum distance and
+    front, inside the image, in its distance range (:func:`slamlab.edge.map.in_distance_range`) and
     seen within ``view_cos_limit`` of its viewing direction, is compared with the keyframe's
     keypoints within ``fuse_window`` pixels at its predicted level (on that level or the one
     below) that pass the chi-square test; the nearest within ``TH_LOW`` takes it: a free

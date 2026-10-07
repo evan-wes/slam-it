@@ -38,6 +38,7 @@ from numpy.typing import ArrayLike, NDArray
 
 from slamlab import backends
 from slamlab.edge.frames import Frame
+from slamlab.edge.options import Options
 from slamlab.foundations import matching, orb
 from slamlab.foundations.arrays import as_count, as_mask, as_real, holds_integers
 from slamlab.foundations.errors import InvalidInputError
@@ -777,6 +778,35 @@ def _as_ids(ids: ArrayLike, name: str) -> IntArray:
     if arr.ndim != 1 or not holds_integers(arr) or arr.min() < -1:
         raise InvalidInputError(f"{name}: expected a vector of ids (-1 or more)")
     return np.ascontiguousarray(arr, dtype=np.int64)
+
+
+def in_distance_range(
+    m: Map, rows: NDArray[np.int64], distance: NDArray[np.float64], options: Options
+) -> NDArray[np.bool_]:
+    """Return which points lie within the distances they are matchable from.
+
+    From ``min_distance_margin`` of a point's minimum distance to ``max_distance_margin`` of
+    its maximum (``isInFrustum``'s and ``Fuse``'s 0.8 and 1.2). Unchecked: `rows` are the
+    map's point rows and `distance` holds one distance per row.
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    rows : ndarray of int64, shape (N,)
+        The points' rows.
+    distance : ndarray of float64, shape (N,)
+        Each point's distance from the camera centre.
+    options : slamlab.edge.options.Options
+        The margins.
+
+    Returns
+    -------
+    ndarray of bool, shape (N,)
+        Which are in range.
+    """
+    near = distance >= options.min_distance_margin * m.pt_min_distance[rows]
+    return np.asarray(near & (distance <= options.max_distance_margin * m.pt_max_distance[rows]))
 
 
 def predict_level(

@@ -59,7 +59,7 @@ foundations::Result<void> check_options(const Options& options) {
       return ok;
     }
   }
-  const std::array<IntSetting, 18> counts{{
+  const std::array<IntSetting, 32> counts{{
       {"n_features", options.n_features},
       {"levels", options.levels},
       {"fast_threshold", options.fast_threshold},
@@ -78,25 +78,27 @@ foundations::Result<void> check_options(const Options& options) {
       {"ba_iterations", options.ba_iterations},
       {"ba_refine_iterations", options.ba_refine_iterations},
       {"ba_min_keyframes", options.ba_min_keyframes},
+      {"min_point_observations", options.min_point_observations},
+      {"min_point_observations_depth", options.min_point_observations_depth},
+      {"redundant_observers", options.redundant_observers},
+      {"pnp_min_inliers", options.pnp_min_inliers},
+      {"lost_frames", options.lost_frames},
+      {"min_motion_inliers", options.min_motion_inliers},
+      {"recovery_window_frames", options.recovery_window_frames},
+      {"recovery_tracked", options.recovery_tracked},
+      {"ref_min_observations", options.ref_min_observations},
+      {"ref_min_observations_early", options.ref_min_observations_early},
+      {"triangulation_neighbours", options.triangulation_neighbours},
+      {"mono_triangulation_neighbours", options.mono_triangulation_neighbours},
+      {"recent_point_keyframes", options.recent_point_keyframes},
+      {"init_ba_iterations", options.init_ba_iterations},
   }};
   for (const auto& [setting, value] : counts) {
     if (auto ok = foundations::check_range(setting, value, 1, kMaxSetting); !ok) {
       return ok;
     }
   }
-  const std::array<IntSetting, 5> more{{
-      {"min_point_observations", options.min_point_observations},
-      {"min_point_observations_depth", options.min_point_observations_depth},
-      {"redundant_observers", options.redundant_observers},
-      {"pnp_min_inliers", options.pnp_min_inliers},
-      {"lost_frames", options.lost_frames},
-  }};
-  for (const auto& [setting, value] : more) {
-    if (auto ok = foundations::check_range(setting, value, 1, kMaxSetting); !ok) {
-      return ok;
-    }
-  }
-  const std::array<RealSetting, 13> positive{{
+  const std::array<RealSetting, 18> positive{{
       {"scale_factor", options.scale_factor},
       {"close_depth", options.close_depth},
       {"init_window", options.init_window},
@@ -110,13 +112,18 @@ foundations::Result<void> check_options(const Options& options) {
       {"scale_ratio", options.scale_ratio},
       {"fuse_window", options.fuse_window},
       {"pnp_threshold", options.pnp_threshold},
+      {"aligned_view_radius", options.aligned_view_radius},
+      {"oblique_view_radius", options.oblique_view_radius},
+      {"max_distance_margin", options.max_distance_margin},
+      {"epipolar_chi2", options.epipolar_chi2},
+      {"min_epipole_distance2", options.min_epipole_distance2},
   }};
   for (const auto& [setting, value] : positive) {
     if (!std::isfinite(value) || value <= 0.0) {
       return foundations::fail_setting(setting, "must be finite and positive", value);
     }
   }
-  const std::array<RealSetting, 8> fractions{{
+  const std::array<RealSetting, 14> fractions{{
       {"init_ratio", options.init_ratio},
       {"init_parallax_cos", options.init_parallax_cos},
       {"ref_ratio", options.ref_ratio},
@@ -125,6 +132,12 @@ foundations::Result<void> check_options(const Options& options) {
       {"redundant_fraction", options.redundant_fraction},
       {"view_cos_limit", options.view_cos_limit},
       {"max_parallax_cos", options.max_parallax_cos},
+      {"aligned_view_cos", options.aligned_view_cos},
+      {"local_map_ratio", options.local_map_ratio},
+      {"min_distance_margin", options.min_distance_margin},
+      {"first_ref_ratio", options.first_ref_ratio},
+      {"min_baseline_depth", options.min_baseline_depth},
+      {"relocalize_ratio", options.relocalize_ratio},
   }};
   for (const auto& [setting, value] : fractions) {
     if (!std::isfinite(value) || value <= 0.0 || value > 1.0) {

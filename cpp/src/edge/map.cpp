@@ -350,6 +350,11 @@ std::vector<std::int64_t> observed_by(const Map& m, std::span<const std::int64_t
   return out;
 }
 
+bool in_distance_range(const Map& m, std::size_t p, double distance, const Options& options) {
+  return distance >= options.min_distance_margin * m.pt_min_distance[p] &&
+         distance <= options.max_distance_margin * m.pt_max_distance[p];
+}
+
 Result<std::vector<std::int64_t>> predict_level(const Map& m, std::span<const std::int64_t> rows,
                                                 std::span<const double> distance) {
   if (auto ok = check_rows(rows, point_count(m), "rows"); !ok) {

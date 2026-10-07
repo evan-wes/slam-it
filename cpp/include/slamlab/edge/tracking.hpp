@@ -18,13 +18,6 @@
 
 namespace slamlab::edge {
 
-/// @brief A point seen within this cosine of its mean viewing direction is searched in a
-///        narrower window (`RadiusByViewingCos`: 2.5 rather than 4).
-inline constexpr double kNarrowViewCos = 0.998;
-
-/// @brief Inliers tracking the last frame must keep after refinement.
-inline constexpr std::int64_t kMinMotionInliers = 10;
-
 /// @brief Map points in a camera's view (`slamlab.edge.tracking.InView`).
 struct InView {
   /// @brief The points' rows.

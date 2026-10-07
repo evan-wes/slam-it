@@ -90,7 +90,7 @@ def test_matching_and_counts_match_the_reference(backend: str, mapped: Mapped) -
     m = mapped.inserted
     newest = m.keyframes - 1
     for k2 in range(newest):
-        _same(backend, "match_for_triangulation", m, CAMERA, newest, k2)
+        _same(backend, "match_for_triangulation", m, CAMERA, newest, k2, OPTIONS)
     rng = np.random.default_rng(5)
     visible = rng.integers(1, 9, m.points)
     counted = replace(m, pt_visible=visible, pt_found=rng.integers(0, visible + 1))
@@ -158,8 +158,8 @@ def test_rarely_found_new_points_are_culled(mapped: Mapped) -> None:
     m = mapped.inserted
     found = m.pt_found.copy()
     visible = m.pt_visible.copy()
-    recent = np.flatnonzero(m.kf_id[-1] - m.pt_first_kf <= mapping.RECENT_KEYFRAMES)
-    old = np.flatnonzero(m.kf_id[-1] - m.pt_first_kf > mapping.RECENT_KEYFRAMES)
+    recent = np.flatnonzero(m.kf_id[-1] - m.pt_first_kf <= OPTIONS.recent_point_keyframes)
+    old = np.flatnonzero(m.kf_id[-1] - m.pt_first_kf > OPTIONS.recent_point_keyframes)
     assert len(recent)
     assert len(old)
     visible[[recent[0], old[0]]] = 10
@@ -172,7 +172,7 @@ def test_rarely_found_new_points_are_culled(mapped: Mapped) -> None:
 def test_triangulation_matches_free_keypoints_once(mapped: Mapped) -> None:
     """Each pair joins two free keypoints, close in descriptor; no keypoint twice."""
     m = mapped.inserted
-    pairs = mapping.match_for_triangulation(m, CAMERA, m.keyframes - 1, m.keyframes - 2)
+    pairs = mapping.match_for_triangulation(m, CAMERA, m.keyframes - 1, m.keyframes - 2, OPTIONS)
     assert len(pairs) > 0
     assert np.all(m.kp_point[pairs] < 0)
     assert len(np.unique(pairs[:, 0])) == len(pairs) == len(np.unique(pairs[:, 1]))
@@ -239,8 +239,10 @@ def test_rejects_malformed_arguments(backend: str, mapped: Mapped) -> None:
     calls: list[Callable[[], object]] = [
         lambda: mapping.cull_points(m, "lidar", OPTIONS, backend=backend),
         lambda: mapping.cull_points(empty, "rgbd", OPTIONS, backend=backend),
-        lambda: mapping.match_for_triangulation(m, CAMERA, 0, 0, backend=backend),
-        lambda: mapping.match_for_triangulation(m, CAMERA, 0, m.keyframes, backend=backend),
+        lambda: mapping.match_for_triangulation(m, CAMERA, 0, 0, OPTIONS, backend=backend),
+        lambda: mapping.match_for_triangulation(
+            m, CAMERA, 0, m.keyframes, OPTIONS, backend=backend
+        ),
         lambda: mapping.create_points_from_depth(empty, CAMERA, OPTIONS, backend=backend),
         lambda: mapping.process(
             m, CAMERA, mapped.frame, short, mode="rgbd", options=OPTIONS, backend=backend

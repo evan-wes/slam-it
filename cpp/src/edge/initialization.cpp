@@ -279,7 +279,7 @@ Result<std::optional<Started>> initialize_monocular(
     return std::unexpected(std::move(ok.error()));
   }
   Options adjusted = options;
-  adjusted.ba_iterations = kInitBaIterations;
+  adjusted.ba_iterations = options.init_ba_iterations;
   const std::vector<std::int64_t> both{0, 1};
   const std::vector<std::uint8_t> fixed{1, 0};
   if (auto ok = bundle_adjust(m, camera, both, fixed, adjusted); !ok) {

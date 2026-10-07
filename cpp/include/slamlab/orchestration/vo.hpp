@@ -20,10 +20,6 @@ namespace slamlab::orchestration::vo {
 /// @brief The datasets a sequence can come from (`slamlab.orchestration.vo.DATASETS`).
 inline constexpr std::array<const char*, 2> kDatasets{"tum", "euroc"};
 
-/// @brief An RGB-D camera's virtual baseline times its focal length, in pixel-metres:
-///        ORB-SLAM's `Camera.bf` for TUM (`RGBD_BF`).
-inline constexpr double kRgbdBf = 40.0;
-
 /// @brief The program's command line.
 inline constexpr const char* kUsage =
     "usage: slamlab_vo --dataset tum|euroc --sequence PATH --mode monocular|stereo|rgbd "

@@ -30,10 +30,7 @@ const char* name(State state) {
 }
 
 Result<Pipeline> Pipeline::create(Mode mode, Camera camera, Options options) {
-  if (auto ok = check_camera(camera); !ok) {
-    return std::unexpected(std::move(ok.error()));
-  }
-  if (auto ok = check_options(options); !ok) {
+  if (auto ok = check_setup(camera, options); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   if (mode != Mode::kMonocular && !(camera.baseline > 0.0)) {
@@ -192,7 +189,7 @@ Result<std::optional<Tracked>> Pipeline::refine(Map& m, const Frame& frame, cons
   if (auto ok = count(m, local->found, unfound, found); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
-  const std::int64_t needed = recent ? kRecoveryTracked : options_.min_tracked;
+  const std::int64_t needed = recent ? options_.recovery_tracked : options_.min_tracked;
   if (inliers(local->tracked) < needed) {
     return std::nullopt;
   }
@@ -215,7 +212,7 @@ Result<std::pair<std::optional<Tracked>, bool>> Pipeline::track_frame(const Fram
     ++*since_recovery_;
   }
   const bool recent = since_recovery_ && *since_recovery_ < options_.max_frames;
-  const bool wide = since_recovery_ && *since_recovery_ < kRecoveryWideFrames;
+  const bool wide = since_recovery_ && *since_recovery_ < options_.recovery_window_frames;
   std::optional<Tracked> tracked;
   if (where) {
     auto refined = refine(m, frame, *where, wide, recent);

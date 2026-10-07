@@ -12,10 +12,6 @@ use crate::frames::{Camera, Frame, Tracked, check_camera, search};
 use crate::map::{self, Map};
 use crate::options::{Options, TH_LOW, check_options};
 
-/// The monocular map's first bundle adjustment's iterations (ORB-SLAM's
-/// `GlobalBundleAdjustemnt(map, 20)`).
-pub const INIT_BA_ITERATIONS: usize = 20;
-
 /// A started map and the frame it was started on, tracked.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Started {
@@ -346,7 +342,7 @@ pub fn initialize_monocular(
         .collect();
     map::add_points(&mut m, &xyz, &observers)?;
     let adjusted = Options {
-        ba_iterations: INIT_BA_ITERATIONS,
+        ba_iterations: options.init_ba_iterations,
         ..*options
     };
     bundle_adjust(&mut m, camera, &[0, 1], &[true, false], &adjusted)?;

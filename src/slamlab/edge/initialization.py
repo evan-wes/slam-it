@@ -35,10 +35,6 @@ from slamlab.foundations.errors import DegenerateError, InvalidInputError
 Array = NDArray[np.float64]
 IntArray = NDArray[np.int64]
 
-INIT_BA_ITERATIONS = 20
-"""The monocular map's first bundle adjustment's iterations (ORB-SLAM's
-``GlobalBundleAdjustemnt(map, 20)``)."""
-
 
 class Implementation(Protocol):
     """The functions a compiled backend's ``edge.initialization`` submodule provides.
@@ -295,7 +291,7 @@ def _initialize_monocular(
         camera,
         np.arange(2, dtype=np.int64),
         np.array([True, False]),
-        replace(options, ba_iterations=INIT_BA_ITERATIONS),
+        replace(options, ba_iterations=options.init_ba_iterations),
     )
     if m.points < options.init_min_matches:
         return None  # ORB-SLAM resets with fewer than 100 tracked points
@@ -322,7 +318,7 @@ def initialize_monocular(  # noqa: PLR0913 -- the two frames, their matches, the
     :func:`slamlab.foundations.twoview.initialize`. The chosen motion's inliers in front of
     both views with rays whose cosine is below ``init_parallax_cos`` become points
     (``CheckRT``); the frames become keyframes, a bundle adjustment of
-    :data:`INIT_BA_ITERATIONS` refines them with the first held fixed, and the map is scaled
+    ``init_ba_iterations`` refines them with the first held fixed, and the map is scaled
     so the first keyframe's median depth is 1.
 
     Parameters

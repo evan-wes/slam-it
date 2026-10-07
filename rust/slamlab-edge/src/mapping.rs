@@ -16,27 +16,6 @@ use crate::map::{self, Map};
 use crate::options::{Mode, Options, TH_LOW, check_options};
 use crate::residuals::{chi2, sigma2, threshold};
 
-/// Keyframes a new keyframe triangulates against, by mode (`CreateNewMapPoints`' `nn`).
-pub const TRIANGULATION_NEIGHBOURS: [usize; 3] = [20, 10, 10];
-
-/// A match for triangulation must lie within this chi-square (1 dof, 95%) of its epipolar
-/// line (`CheckDistEpipolarLine`).
-pub const EPIPOLAR_CHI2: f64 = 3.84;
-
-/// ...and, without depth, at least this squared distance from the epipole, in pixels at
-/// level 0.
-pub const EPIPOLE_DISTANCE2: f64 = 100.0;
-
-/// A monocular keyframe triangulates only against one whose baseline is at least this
-/// fraction of its median depth.
-pub const MIN_BASELINE_DEPTH: f64 = 0.01;
-
-/// The keyframe ratio while the map has a single keyframe (`NeedNewKeyFrame`).
-pub const FIRST_REF_RATIO: f64 = 0.4;
-
-/// A point is culled on evidence while created at most this many keyframes ago.
-pub const RECENT_KEYFRAMES: i64 = 3;
-
 /// Moves a world point into a camera's frame: `R X + t`.
 ///
 /// # Arguments
@@ -172,7 +151,13 @@ pub fn need_keyframe(
             "tracked.points: expected one point id (or -1) per depth",
         );
     }
-    let min_observations = if m.keyframes() <= 2 { 2 } else { 3 };
+    // NeedNewKeyFrame's nKFs <= 2.
+    let min_observations = i64::try_from(if m.keyframes() <= 2 {
+        options.ref_min_observations_early
+    } else {
+        options.ref_min_observations
+    })
+    .unwrap_or(i64::MAX);
     let rows: Vec<usize> = rows_of(m, m.keyframes() - 1)
         .filter_map(|r| m.point_row(m.kp_point[r]))
         .collect();
@@ -197,7 +182,7 @@ pub fn need_keyframe(
             tracked_close < options.close_tracked && untracked_close > options.close_untracked;
     }
     let mut ratio = if m.keyframes() < 2 {
-        FIRST_REF_RATIO
+        options.first_ref_ratio
     } else {
         options.ref_ratio
     };
@@ -270,8 +255,9 @@ pub fn cull_points(m: &mut Map, mode: Mode, options: &Options) -> Result<()> {
             "m: expected a map with at least one keyframe",
         );
     };
+    let recent_keyframes = i64::try_from(options.recent_point_keyframes).unwrap_or(i64::MAX);
     let recent: Vec<usize> = (0..m.points())
-        .filter(|&p| current - m.pt_first_kf[p] <= RECENT_KEYFRAMES)
+        .filter(|&p| current - m.pt_first_kf[p] <= recent_keyframes)
         .collect();
     if recent.is_empty() {
         return Ok(());
@@ -349,6 +335,10 @@ struct Epipolar {
     epipole: Option<Vector2<f64>>,
     /// The focal length, in pixels.
     focal: f64,
+    /// The band's chi-square bound (`epipolar_chi2`).
+    chi2: f64,
+    /// The least squared distance from the epipole at level 0 (`min_epipole_distance2`).
+    epipole_distance2: f64,
 }
 
 /// Whether a candidate pair passes the epipolar band and the epipole test.
@@ -376,7 +366,7 @@ fn epipolar_ok(
     let numerator = line.dot(&x2);
     let distance2 = (numerator * numerator) / (line.x * line.x + line.y * line.y)
         * (epipolar.focal * epipolar.focal);
-    if !(distance2 < EPIPOLAR_CHI2 * sigma2(m, m.kp_level[row2])) {
+    if !(distance2 < epipolar.chi2 * sigma2(m, m.kp_level[row2])) {
         return false;
     }
     if let Some(epipole) = epipolar.epipole
@@ -385,7 +375,7 @@ fn epipolar_ok(
     {
         let gap = Vector2::new(x2.x, x2.y) - epipole;
         let near = (gap.x * gap.x + gap.y * gap.y) * (epipolar.focal * epipolar.focal);
-        if near < EPIPOLE_DISTANCE2 * m.scale_factor.powf(m.kp_level[row2] as f64) {
+        if near < epipolar.epipole_distance2 * m.scale_factor.powf(m.kp_level[row2] as f64) {
             return false;
         }
     }
@@ -400,11 +390,18 @@ fn epipolar_ok(
 /// * `camera` - The camera.
 /// * `k1` - The first keyframe's row.
 /// * `k2` - The second's.
+/// * `options` - The epipolar band and the epipole's distance.
 ///
 /// # Returns
 ///
 /// The pairs.
-fn triangulation_pairs(m: &Map, camera: &Camera, k1: usize, k2: usize) -> Vec<[usize; 2]> {
+fn triangulation_pairs(
+    m: &Map,
+    camera: &Camera,
+    k1: usize,
+    k2: usize,
+    options: &Options,
+) -> Vec<[usize; 2]> {
     let rows1 = free_rows(m, k1);
     let rows2 = free_rows(m, k2);
     let (rotation, t) = relative(m, k1, k2);
@@ -413,6 +410,8 @@ fn triangulation_pairs(m: &Map, camera: &Camera, k1: usize, k2: usize) -> Vec<[u
         essential: skew * rotation,
         epipole: (t.z != 0.0).then(|| Vector2::new(t.x / t.z, t.y / t.z)),
         focal: camera.focal(),
+        chi2: options.epipolar_chi2,
+        epipole_distance2: options.min_epipole_distance2,
     };
     // For each keyframe-1 keypoint, the nearest candidate (ties: the first); then one match per
     // keyframe-2 keypoint, the nearest keeping it (ties: the lower keyframe-1 keypoint).
@@ -453,6 +452,7 @@ fn triangulation_pairs(m: &Map, camera: &Camera, k1: usize, k2: usize) -> Vec<[u
 /// * `camera` - The camera.
 /// * `k1` - The first keyframe's row.
 /// * `k2` - The second's.
+/// * `options` - The epipolar band and the epipole's distance.
 ///
 /// # Returns
 ///
@@ -460,14 +460,17 @@ fn triangulation_pairs(m: &Map, camera: &Camera, k1: usize, k2: usize) -> Vec<[u
 ///
 /// # Errors
 ///
-/// `InvalidInput` for a row out of range, the same row twice, or an invalid camera.
+/// `InvalidInput` for a row out of range, the same row twice, or an invalid camera or
+/// settings.
 pub fn match_for_triangulation(
     m: &Map,
     camera: &Camera,
     k1: usize,
     k2: usize,
+    options: &Options,
 ) -> Result<Vec<[usize; 2]>> {
     check_camera(camera)?;
+    check_options(options)?;
     if k1 >= m.keyframes() || k2 >= m.keyframes() || k1 == k2 {
         return fail(
             ErrorKind::InvalidInput,
@@ -477,7 +480,7 @@ pub fn match_for_triangulation(
             ),
         );
     }
-    Ok(triangulation_pairs(m, camera, k1, k2))
+    Ok(triangulation_pairs(m, camera, k1, k2, options))
 }
 
 /// How a pair is triangulated (`CreateNewMapPoints`' choice).
@@ -748,18 +751,22 @@ pub fn triangulate_new_points(
     let mut others = m.window(options.window);
     others.pop();
     others.reverse();
-    others.truncate(TRIANGULATION_NEIGHBOURS[mode as usize]);
+    others.truncate(if mode == Mode::Monocular {
+        options.mono_triangulation_neighbours
+    } else {
+        options.triangulation_neighbours
+    });
     for k2 in others {
         let baseline = (m.centre(k2) - m.centre(k1)).norm();
         if mode == Mode::Monocular {
             match median_depth(m, k2) {
-                Some(median) if baseline / median >= MIN_BASELINE_DEPTH => {}
+                Some(median) if baseline / median >= options.min_baseline_depth => {}
                 _ => continue,
             }
         } else if baseline < camera.baseline {
             continue;
         }
-        let pairs = triangulation_pairs(m, camera, k1, k2);
+        let pairs = triangulation_pairs(m, camera, k1, k2, options);
         if pairs.is_empty() {
             continue;
         }
@@ -872,8 +879,7 @@ fn fuse_target(
     let offset = m.pt_xyz[p] - m.centre(k);
     let distance = offset.norm();
     if !(camera.inside(&pixel)
-        && 0.8 * m.pt_min_distance[p] <= distance
-        && distance <= 1.2 * m.pt_max_distance[p]
+        && map::in_distance_range(m, p, distance, options)
         && offset.dot(&m.pt_normal[p]) >= options.view_cos_limit * distance)
     {
         return Ok(None);

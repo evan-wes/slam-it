@@ -56,6 +56,13 @@ bool inside(const Camera& camera, const Eigen::Vector2d& pixel) {
          pixel.y() < static_cast<double>(camera.height);
 }
 
+foundations::Result<void> check_setup(const Camera& camera, const Options& options) {
+  if (auto ok = check_camera(camera); !ok) {
+    return ok;
+  }
+  return check_options(options);
+}
+
 foundations::Result<void> check_camera(const Camera& camera) {
   if (auto ok = foundations::camera::check_intrinsics(camera.model, camera.intrinsics); !ok) {
     return ok;

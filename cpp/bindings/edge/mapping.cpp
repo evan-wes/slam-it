@@ -75,12 +75,15 @@ nb::dict cull_points(const nb::dict& m, const std::string& mode, const nb::dict&
 /// @param camera The camera, as a dict.
 /// @param k1 The first keyframe's row.
 /// @param k2 The second's.
+/// @param options The settings, as a dict.
 /// @return A new (Q, 2) int64 array of keypoint rows.
 /// @throws CoreError for invalid input.
 nb::ndarray<nb::numpy, std::int64_t> match_for_triangulation(const nb::dict& m,
                                                              const nb::dict& camera,
-                                                             std::int64_t k1, std::int64_t k2) {
-  const auto pairs = unwrap(edge::match_for_triangulation(map_in(m), camera_in(camera), k1, k2));
+                                                             std::int64_t k1, std::int64_t k2,
+                                                             const nb::dict& options) {
+  const auto pairs = unwrap(
+      edge::match_for_triangulation(map_in(m), camera_in(camera), k1, k2, options_in(options)));
   auto [out, data] = new_array<std::int64_t>({pairs.size(), 2});
   for (std::size_t i = 0; i < pairs.size(); ++i) {
     // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic): row offset
@@ -157,7 +160,8 @@ void bind_mapping(nb::module_& m) {
   m.def("cull_points", &cull_points, nb::arg("m"), nb::arg("mode"), nb::arg("options"),
         "Cull recently created points tracking rarely finds.");
   m.def("match_for_triangulation", &match_for_triangulation, nb::arg("m"), nb::arg("camera"),
-        nb::arg("k1"), nb::arg("k2"), "Match two keyframes' free keypoints for triangulation.");
+        nb::arg("k1"), nb::arg("k2"), nb::arg("options"),
+        "Match two keyframes' free keypoints for triangulation.");
   m.def("triangulate_new_points", &triangulate_new_points, nb::arg("m"), nb::arg("camera"),
         nb::arg("mode"), nb::arg("options"),
         "Triangulate the newest keyframe's free keypoints against the window's.");

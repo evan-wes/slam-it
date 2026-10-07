@@ -30,13 +30,16 @@ already undistorted.
 a ``camera.txt`` instead, which takes precedence over the folder's name (:func:`read_camera`):
 one ``key values`` line each for ``model`` (a name from
 :data:`slamlab.foundations.camera.MODELS`), ``intrinsics`` (that model's), ``size`` (width,
-height) and ``depth_scale`` (a depth map's value per metre), ``#`` comments allowed::
+height) and ``depth_scale`` (a depth map's value per metre), and, for an RGB-D run, ``bf``
+(the depth sensor's virtual stereo baseline times the focal length, in pixel-metres:
+ORB-SLAM's ``Camera.bf``), ``#`` comments allowed::
 
     # the recording's camera
     model pinhole
     intrinsics 525.0 525.0 319.5 239.5
     size 640 480
     depth_scale 1000
+    bf 40
 
 **Frames and ground truth.** :func:`read_frames` reads what a run consumes: every colour
 frame, each with its nearest depth map, and the camera; it never reads the ground truth, so
@@ -81,6 +84,13 @@ CAMERA_FILE = "camera.txt"
 CAMERA_KEYS = ("model", "intrinsics", "size", "depth_scale")
 """``camera.txt``'s keys, each on one line."""
 
+OPTIONAL_CAMERA_KEYS = ("bf",)
+"""The keys it may hold too."""
+
+SENSOR_BF = 40.0
+"""Every freiburg sensor's virtual stereo baseline times focal length, in pixel-metres
+(ORB-SLAM2's TUM RGB-D settings' ``Camera.bf``)."""
+
 
 @dataclass(frozen=True)
 class Camera:
@@ -96,6 +106,9 @@ class Camera:
         The images' size, in pixels.
     depth_scale : float
         A depth map's value per metre of z.
+    bf : float or None
+        The depth sensor's virtual stereo baseline times the focal length, in pixel-metres
+        (ORB-SLAM's ``Camera.bf``); None if ``camera.txt`` gives none (no RGB-D run).
     """
 
     model: str
@@ -103,6 +116,7 @@ class Camera:
     width: int
     height: int
     depth_scale: float
+    bf: float | None
 
 
 @dataclass(frozen=True)
@@ -246,24 +260,27 @@ def _camera_file(path: Path) -> Camera:
         If a key is unknown, repeated or missing, or its values are malformed.
     """
     values: dict[str, list[str]] = {}
+    known = CAMERA_KEYS + OPTIONAL_CAMERA_KEYS
     for number, line in enumerate(path.read_text().splitlines(), start=1):
         fields = line.split("#", 1)[0].split()
         if not fields:
             continue
         key = fields[0]
-        if key not in CAMERA_KEYS or key in values:
+        if key not in known or key in values:
             raise InvalidInputError(f"{path}:{number}: unknown or repeated key {key!r}")
         values[key] = fields[1:]
     missing = [key for key in CAMERA_KEYS if key not in values]
     if missing:
         raise InvalidInputError(f"{path}: missing {', '.join(missing)}")
-    if len(values["model"]) != 1 or len(values["size"]) != 2 or len(values["depth_scale"]) != 1:
-        raise InvalidInputError(f"{path}: expected one model, two sizes and one depth scale")
+    counts = (len(values["model"]), len(values["size"]), len(values["depth_scale"]))
+    if counts != (1, 2, 1) or len(values.get("bf", [0])) != 1:
+        raise InvalidInputError(f"{path}: expected one model, two sizes, one depth scale, one bf")
     model = values["model"][0]
     try:
         intrinsics = np.array([float(v) for v in values["intrinsics"]])
         width, height = (int(v) for v in values["size"])
         depth_scale = float(values["depth_scale"][0])
+        bf = float(values["bf"][0]) if "bf" in values else None
     except ValueError as error:
         raise InvalidInputError(f"{path}: expected numbers ({error})") from None
     camera_model.check_intrinsics(model, intrinsics)
@@ -271,7 +288,9 @@ def _camera_file(path: Path) -> Camera:
         raise InvalidInputError(f"{path}: size must lie in [1, {MAX_IMAGE_SIDE}]")
     if not (np.isfinite(depth_scale) and depth_scale > 0.0):
         raise InvalidInputError(f"{path}: depth_scale must be finite and positive")
-    return Camera(model, intrinsics, width, height, depth_scale)
+    if bf is not None and not (np.isfinite(bf) and bf > 0.0):
+        raise InvalidInputError(f"{path}: bf must be finite and positive")
+    return Camera(model, intrinsics, width, height, depth_scale, bf)
 
 
 def read_camera(root: str | Path) -> Camera:
@@ -287,7 +306,7 @@ def read_camera(root: str | Path) -> Camera:
     Camera
         From ``camera.txt`` if the folder has one; otherwise the benchmark's published
         ``radtan`` calibration of the ``freiburg1``, ``2`` or ``3`` sensor its name holds, at
-        640x480 and :data:`DEPTH_SCALE`.
+        640x480, :data:`DEPTH_SCALE` and :data:`SENSOR_BF`.
 
     Raises
     ------
@@ -303,7 +322,7 @@ def read_camera(root: str | Path) -> Camera:
             f"{folder.name}: expected a {CAMERA_FILE}, or 'freiburg1', '2' or '3' in the "
             "folder's name"
         )
-    return Camera("radtan", INTRINSICS[sensor].copy(), *SIZE, DEPTH_SCALE)
+    return Camera("radtan", INTRINSICS[sensor].copy(), *SIZE, DEPTH_SCALE, SENSOR_BF)
 
 
 def _depth_files(

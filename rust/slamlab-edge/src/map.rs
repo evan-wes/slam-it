@@ -18,6 +18,7 @@ use slamlab_foundations::matching;
 use slamlab_foundations::orb::{Descriptor, MAX_LEVELS};
 
 use crate::frames::Frame;
+use crate::options::Options;
 
 /// Keyframes, their keypoints and the map points (`slamlab.edge.map.Map`).
 #[derive(Debug, Clone, PartialEq)]
@@ -448,6 +449,26 @@ fn check_rows(rows: &[usize], bound: usize, name: &str) -> Result<()> {
 fn keep_where<T>(values: &mut Vec<T>, keep: &[bool]) {
     let mut flags = keep.iter();
     values.retain(|_| *flags.next().unwrap_or(&false));
+}
+
+/// Whether a point lies within the distances it is matchable from
+/// (`slamlab.edge.map.in_distance_range`): from `min_distance_margin` of its minimum distance
+/// to `max_distance_margin` of its maximum (`isInFrustum`, `Fuse`), unchecked.
+///
+/// # Arguments
+///
+/// * `m` - The map.
+/// * `p` - The point's row.
+/// * `distance` - Its distance from the camera centre.
+/// * `options` - The margins.
+///
+/// # Returns
+///
+/// Whether it is in range.
+#[must_use]
+pub fn in_distance_range(m: &Map, p: usize, distance: f64, options: &Options) -> bool {
+    distance >= options.min_distance_margin * m.pt_min_distance[p]
+        && distance <= options.max_distance_margin * m.pt_max_distance[p]
 }
 
 /// Predicts the pyramid level points appear at from a distance (`PredictScale`).

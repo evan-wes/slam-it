@@ -86,7 +86,7 @@ fn triangulation_recovers_the_scene() {
     map::insert_keyframe(&mut m, &frame(0, false), &pose(0), &ids(0, 0)).unwrap();
     add_scene_points(&mut m, 0, 10);
     map::insert_keyframe(&mut m, &frame(2, false), &pose(2), &ids(0, 10)).unwrap();
-    let pairs = match_for_triangulation(&m, &camera(), 1, 0).unwrap();
+    let pairs = match_for_triangulation(&m, &camera(), 1, 0, &Options::default()).unwrap();
     assert_eq!((pairs.len(), pairs[0]), (50, [70, 10]));
     triangulate_new_points(&mut m, &camera(), Mode::Monocular, &Options::default()).unwrap();
     assert_eq!(m.points(), POINTS);

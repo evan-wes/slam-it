@@ -15,13 +15,6 @@ use crate::mapping;
 use crate::options::{Mode, Options, check_options};
 use crate::tracking;
 
-/// The frames, counting the recovery's, whose local map is searched in `recovery_local_window`
-/// (`SearchLocalPoints`' `mnLastRelocFrameId + 2`).
-pub const RECOVERY_WIDE_FRAMES: usize = 2;
-
-/// Within `max_frames` of a recovery, a frame needs this many inliers.
-pub const RECOVERY_TRACKED: usize = 50;
-
 /// Where the pipeline is, with the codes it is written as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
@@ -431,7 +424,7 @@ impl Pipeline {
         let recent = self.since_recovery.is_some_and(|s| s < options.max_frames);
         let wide = self
             .since_recovery
-            .is_some_and(|s| s < RECOVERY_WIDE_FRAMES);
+            .is_some_and(|s| s < options.recovery_window_frames);
         let Some(placed) = placed else {
             return Ok((None, false));
         };
@@ -450,7 +443,7 @@ impl Pipeline {
             &vec![1; local.found.len()],
         )?;
         let needed = if recent {
-            RECOVERY_TRACKED
+            options.recovery_tracked
         } else {
             options.min_tracked
         };

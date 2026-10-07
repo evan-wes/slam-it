@@ -27,6 +27,13 @@ pub const CAMERA_FILE: &str = "camera.txt";
 /// `camera.txt`'s keys.
 const CAMERA_KEYS: [&str; 4] = ["model", "intrinsics", "size", "depth_scale"];
 
+/// The keys it may hold too.
+const OPTIONAL_CAMERA_KEYS: [&str; 1] = ["bf"];
+
+/// Every freiburg sensor's virtual stereo baseline times focal length, in pixel-metres
+/// (`slamlab.eval.tum.SENSOR_BF`: ORB-SLAM2's TUM RGB-D settings' `Camera.bf`).
+pub const SENSOR_BF: f64 = 40.0;
+
 /// The benchmark's sensors' published `radtan` intrinsics, by the name a folder holds.
 const SENSORS: [(&str, [f64; 9]); 3] = [
     (
@@ -60,6 +67,9 @@ pub struct Camera {
     pub height: usize,
     /// A depth map's value per metre of z.
     pub depth_scale: f64,
+    /// The depth sensor's virtual stereo baseline times the focal length, in pixel-metres
+    /// (ORB-SLAM's `Camera.bf`); `None` if `camera.txt` gives none (no RGB-D run).
+    pub bf: Option<f64>,
 }
 
 /// A folder's colour frames, as a run reads them (`slamlab.eval.tum.Frames`).
@@ -198,7 +208,8 @@ fn camera_values(path: &Path) -> Result<BTreeMap<String, Vec<String>>> {
         let Some(key) = parts.next() else {
             continue;
         };
-        if !CAMERA_KEYS.contains(&key) || out.contains_key(key) {
+        let known = CAMERA_KEYS.contains(&key) || OPTIONAL_CAMERA_KEYS.contains(&key);
+        if !known || out.contains_key(key) {
             return fail(
                 ErrorKind::InvalidInput,
                 format!(
@@ -234,11 +245,15 @@ fn camera_values(path: &Path) -> Result<BTreeMap<String, Vec<String>>> {
 fn camera_file(path: &Path) -> Result<Camera> {
     let values = camera_values(path)?;
     let (model, size, scale) = (&values["model"], &values["size"], &values["depth_scale"]);
-    if model.len() != 1 || size.len() != 2 || scale.len() != 1 {
+    if model.len() != 1
+        || size.len() != 2
+        || scale.len() != 1
+        || values.get("bf").is_some_and(|bf| bf.len() != 1)
+    {
         return fail(
             ErrorKind::InvalidInput,
             format!(
-                "{}: expected one model, two sizes and one depth scale",
+                "{}: expected one model, two sizes, one depth scale, one bf",
                 path.display()
             ),
         );
@@ -285,12 +300,31 @@ fn camera_file(path: &Path) -> Result<Camera> {
             ),
         );
     }
+    let bf = match values.get("bf") {
+        None => None,
+        Some(bf) => match text::number(&bf[0]) {
+            Some(v) if v.is_finite() && v > 0.0 => Some(v),
+            Some(_) => {
+                return fail(
+                    ErrorKind::InvalidInput,
+                    format!("{}: bf must be finite and positive", path.display()),
+                );
+            }
+            None => {
+                return fail(
+                    ErrorKind::InvalidInput,
+                    format!("{}: expected numbers", path.display()),
+                );
+            }
+        },
+    };
     Ok(Camera {
         model,
         intrinsics,
         width,
         height,
         depth_scale,
+        bf,
     })
 }
 
@@ -323,6 +357,7 @@ pub fn read_camera(root: &Path) -> Result<Camera> {
             width: SIZE.0,
             height: SIZE.1,
             depth_scale: DEPTH_SCALE,
+            bf: Some(SENSOR_BF),
         }),
         None => fail(
             ErrorKind::InvalidInput,
@@ -504,6 +539,7 @@ mod tests {
                 (frames.camera.depth_scale - camera["depth_scale"].as_f64().unwrap()).abs()
                     < f64::EPSILON
             );
+            assert_eq!(frames.camera.bf, camera["bf"].as_f64());
         }
     }
 

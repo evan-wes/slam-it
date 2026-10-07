@@ -18,13 +18,6 @@
 
 namespace slamlab::edge {
 
-/// @brief The frames, counting the recovery's, whose local map is searched in
-///        `recovery_local_window` (`SearchLocalPoints`' `mnLastRelocFrameId + 2`).
-inline constexpr std::int64_t kRecoveryWideFrames = 2;
-
-/// @brief Within `max_frames` of a recovery, a frame needs this many inliers.
-inline constexpr std::int64_t kRecoveryTracked = 50;
-
 /// @brief Where the pipeline is, with the codes it is written as.
 enum class State : std::uint8_t {
   /// @brief No map yet.

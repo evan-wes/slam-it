@@ -111,6 +111,20 @@ def test_refuses_what_a_dataset_does_not_record(dataset: str, mode: str, message
         vo.run(dataset, SEQUENCES / "tum_camera", mode, "unused")
 
 
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_rgbd_needs_the_depth_sensors_bf(backend: str, tmp_path: Path) -> None:
+    """An RGB-D run on a folder whose camera gives no bf is refused, by every backend."""
+    with pytest.raises(InvalidInputError, match="bf"):
+        vo.run(
+            "tum",
+            SEQUENCES / "tum_no_depth",
+            "rgbd",
+            tmp_path,
+            backend=require_program(backend),
+            count=1,
+        )
+
+
 def test_refuses_negative_frames() -> None:
     """A negative first frame or count is refused."""
     with pytest.raises(InvalidInputError, match="at least 0"):

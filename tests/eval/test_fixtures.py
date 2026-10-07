@@ -40,6 +40,7 @@ def test_tum_folders_read_as_expected() -> None:
         assert frames.camera.intrinsics.tolist() == camera["intrinsics"]
         assert (frames.camera.width, frames.camera.height) == (camera["width"], camera["height"])
         assert frames.camera.depth_scale == camera["depth_scale"]
+        assert frames.camera.bf == camera["bf"]
 
 
 def test_the_euroc_folder_reads_as_expected() -> None:

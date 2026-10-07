@@ -12,7 +12,7 @@
    tracked) and track the last frame; if that fails, fall back to PnP against the local map
    (:func:`slamlab.edge.tracking.relocalize_locally`); then track the local map, its window
    widened just after a recovery (``recovery_local_window``). Fewer than ``min_tracked``
-   inliers (:data:`RECOVERY_TRACKED` within ``max_frames`` of a recovery) counts as a
+   inliers (``recovery_tracked`` within ``max_frames`` of a recovery) counts as a
    failure; after ``lost_frames`` failures in a row the track is lost, and the run ends
    there.
 3. **Mapping:** a tracked frame that needs a keyframe (:func:`slamlab.edge.mapping.need_keyframe`;
@@ -40,14 +40,6 @@ from slamlab.foundations import orb, se3
 from slamlab.foundations.errors import InvalidInputError
 
 Array = NDArray[np.float64]
-
-RECOVERY_WIDE_FRAMES = 2
-"""The frames, counting the recovery's, whose local map is searched in
-``recovery_local_window`` (``SearchLocalPoints``' ``mnLastRelocFrameId + 2``)."""
-
-RECOVERY_TRACKED = 50
-"""Within ``max_frames`` of a recovery, a frame needs this many inliers
-(``TrackLocalMap``)."""
 
 
 class State(enum.StrEnum):
@@ -259,7 +251,7 @@ class Pipeline:
             self._since_recovery += 1
         since = self._since_recovery
         recent = since is not None and since < options.max_frames
-        wide = since is not None and since < RECOVERY_WIDE_FRAMES
+        wide = since is not None and since < options.recovery_window_frames
         tracked = None
         if placed is not None:
             local = tracking.track_local_map(
@@ -268,7 +260,7 @@ class Pipeline:
             )  # fmt: skip
             m = maps.count(m, local.visible, visible=np.ones(len(local.visible), dtype=np.int64))
             m = maps.count(m, local.found, found=np.ones(len(local.found), dtype=np.int64))
-            needed = RECOVERY_TRACKED if recent else options.min_tracked
+            needed = options.recovery_tracked if recent else options.min_tracked
             tracked = local.tracked if local.tracked.inliers >= needed else None
         self.map = m
         if tracked is None:

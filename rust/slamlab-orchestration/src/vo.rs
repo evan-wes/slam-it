@@ -19,10 +19,6 @@ use slamlab_foundations::{orb, se3, stereo};
 /// The datasets a sequence can come from (`slamlab.orchestration.vo.DATASETS`).
 pub const DATASETS: [&str; 2] = ["tum", "euroc"];
 
-/// An RGB-D camera's virtual baseline times its focal length, in pixel-metres: ORB-SLAM's
-/// `Camera.bf` for TUM (`RGBD_BF`).
-pub const RGBD_BF: f64 = 40.0;
-
 /// The program's command line.
 pub const USAGE: &str = "usage: slamlab_vo --dataset tum|euroc --sequence PATH --mode \
                          monocular|stereo|rgbd --out RUN_DIR [--first I] [--count N] \
@@ -133,16 +129,26 @@ struct Source {
 fn tum_source(root: &Path, mode: Mode) -> Result<Source> {
     let read = tum::read_frames(root, tum::MAX_DIFFERENCE)?;
     let sensor = &read.camera;
+    let baseline = match (mode, sensor.bf) {
+        (Mode::Rgbd, Some(bf)) => bf / sensor.intrinsics[0],
+        (Mode::Rgbd, None) => {
+            return fail(
+                ErrorKind::InvalidInput,
+                format!(
+                    "{}: an RGB-D run needs the depth sensor's bf: add a 'bf' line to {}",
+                    root.display(),
+                    tum::CAMERA_FILE
+                ),
+            );
+        }
+        _ => 0.0,
+    };
     let camera = Camera {
         model: sensor.model,
         intrinsics: sensor.intrinsics.clone(),
         width: sensor.width,
         height: sensor.height,
-        baseline: if mode == Mode::Rgbd {
-            RGBD_BF / sensor.intrinsics[0]
-        } else {
-            0.0
-        },
+        baseline,
     };
     let count = read.images.len();
     let built = camera.clone();

@@ -18,10 +18,6 @@
 
 namespace slamlab::edge {
 
-/// @brief The monocular map's first bundle adjustment's iterations (ORB-SLAM's
-///        `GlobalBundleAdjustemnt(map, 20)`).
-inline constexpr std::int64_t kInitBaIterations = 20;
-
 /// @brief A started map and the frame it was started on, tracked.
 struct Started {
   /// @brief The map.

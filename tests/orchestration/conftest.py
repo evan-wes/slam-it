@@ -2,10 +2,10 @@
 
 The room (:mod:`tests.edge.room`) is rendered once with its right views and written as a
 TUM-format folder (gray PNGs, 16-bit depth PNGs, ``rgb.txt``, ``depth.txt`` and
-``camera.txt``) and as a EuRoC sequence (``mav0/cam0`` and ``cam1``: PNGs, ``data.csv`` and
-``sensor.yaml``, the right camera :data:`tests.edge.room.BASELINE` to the left one's right,
-no distortion). :func:`room_runs` runs them through :func:`slamlab.orchestration.vo.run`,
-each case once per session.
+``camera.txt``, with ORB-SLAM's TUM ``bf``) and as a EuRoC sequence (``mav0/cam0`` and
+``cam1``: PNGs, ``data.csv`` and ``sensor.yaml``, the right camera
+:data:`tests.edge.room.BASELINE` to the left one's right, no distortion). :func:`room_runs`
+runs them through :func:`slamlab.orchestration.vo.run`, each case once per session.
 """
 
 from __future__ import annotations
@@ -98,6 +98,7 @@ def _write_tum(folder: Path, rendered: list[room.Frame]) -> None:
     (folder / "camera.txt").write_text(
         f"model pinhole\nintrinsics {camera.fx} {camera.fy} {camera.cx} {camera.cy}\n"
         f"size {camera.width} {camera.height}\ndepth_scale {tum.DEPTH_SCALE}\n"
+        f"bf {tum.SENSOR_BF}\n"
     )
 
 

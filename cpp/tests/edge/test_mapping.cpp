@@ -107,7 +107,7 @@ void check_triangulation(int& failures) {
     expect(false, "the triangulation scene builds", failures);
     return;
   }
-  const auto pairs = edge::match_for_triangulation(m, scene::camera(), 1, 0);
+  const auto pairs = edge::match_for_triangulation(m, scene::camera(), 1, 0, edge::Options{});
   expect(pairs.has_value() && pairs->size() == 50 && (*pairs)[0][0] == 70 && (*pairs)[0][1] == 10,
          "the free keypoints match one to one", failures);
   expect(edge::triangulate_new_points(m, scene::camera(), edge::Mode::kMonocular, edge::Options{})

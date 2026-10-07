@@ -3,3 +3,4 @@ model pinhole
 intrinsics 525.0 525.5 319.5 239.5   # fx fy cx cy
 size 640 480
 depth_scale 1000
+bf 40.0

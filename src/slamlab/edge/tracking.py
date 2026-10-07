@@ -42,13 +42,6 @@ Array = NDArray[np.float64]
 IntArray = NDArray[np.int64]
 Mask = NDArray[np.bool_]
 
-NARROW_VIEW_COS = 0.998
-"""A point seen within this cosine of its mean viewing direction is searched in a narrower
-window (``RadiusByViewingCos``: 2.5 rather than 4)."""
-
-MIN_MOTION_INLIERS = 10
-"""Inliers tracking the last frame must keep after refinement (``TrackWithMotionModel``)."""
-
 
 @dataclass(frozen=True)
 class InView:
@@ -331,8 +324,7 @@ def _in_view(m: Map, camera: Camera, pose: Array, rows: IntArray, options: Optio
     keep &= camera.inside(np.nan_to_num(pixels, nan=-1.0))
     offset = xyz - (-pose[:3, :3].T @ pose[:3, 3])
     distance = np.linalg.norm(offset, axis=1)
-    keep &= distance >= 0.8 * m.pt_min_distance[rows]
-    keep &= distance <= 1.2 * m.pt_max_distance[rows]
+    keep &= maps.in_distance_range(m, rows, distance, options)
     view_cos = np.sum(offset * m.pt_normal[rows], axis=1) / np.where(keep, distance, 1.0)
     keep &= view_cos >= options.view_cos_limit
     chosen = rows[keep]
@@ -359,8 +351,8 @@ def in_view(  # noqa: PLR0913 -- the map, its camera, a pose, the candidates, th
 ) -> InView:
     """Select the points a camera sees, at a distance and angle they are matchable from.
 
-    A point is in view when it is in front, projects inside the image, lies between 0.8 of
-    its minimum and 1.2 of its maximum distance, and is seen within ``view_cos_limit`` of
+    A point is in view when it is in front, projects inside the image, lies in its distance
+    range (:func:`slamlab.edge.map.in_distance_range`), and is seen within ``view_cos_limit`` of
     its mean viewing direction (ORB-SLAM's ``isInFrustum``).
 
     Parameters
@@ -477,7 +469,7 @@ def _track_last_frame(  # noqa: PLR0913 -- the stage's state
     if np.count_nonzero(points >= 0) < options.min_motion_matches:
         return None
     tracked = _optimize_pose(m, camera, frame, Tracked(pose=predicted, points=points), options)
-    return tracked if tracked.inliers >= MIN_MOTION_INLIERS else None
+    return tracked if tracked.inliers >= options.min_motion_inliers else None
 
 
 def track_last_frame(  # noqa: PLR0913 -- the stage's state, and the backend
@@ -525,7 +517,7 @@ def track_last_frame(  # noqa: PLR0913 -- the stage's state, and the backend
     -------
     slamlab.edge.frames.Tracked or None
         The tracked frame, or None if fewer than ``min_motion_matches`` points matched or
-        fewer than :data:`MIN_MOTION_INLIERS` survived refinement.
+        fewer than ``min_motion_inliers`` survived refinement.
 
     Raises
     ------
@@ -576,7 +568,11 @@ def _track_local_map(  # noqa: PLR0913 -- the stage's state
         th = options.recovery_local_window
     else:
         th = options.rgbd_local_window if mode == "rgbd" else options.local_window
-    narrow = np.where(view.view_cos > NARROW_VIEW_COS, 2.5, 4.0)
+    narrow = np.where(
+        view.view_cos > options.aligned_view_cos,
+        options.aligned_view_radius,
+        options.oblique_view_radius,
+    )
     projections = matching.Projections(
         xy=view.xy,
         radius=th * narrow * m.scale_factor**view.level,
@@ -586,7 +582,9 @@ def _track_local_map(  # noqa: PLR0913 -- the stage's state
         angle=np.zeros(len(view.rows), dtype=np.int64),
         right=view.right,
     )
-    searched = matching.SearchOptions(max_distance=TH_HIGH, ratio=0.8, check_orientation=False)
+    searched = matching.SearchOptions(
+        max_distance=TH_HIGH, ratio=options.local_map_ratio, check_orientation=False
+    )
     found = _search(frame, projections, m.pt_id[view.rows], searched, taken=tracked.points >= 0)
     points = np.where(tracked.points >= 0, tracked.points, found)
     refined = _optimize_pose(m, camera, frame, Tracked(pose=tracked.pose, points=points), options)
@@ -613,8 +611,9 @@ def track_local_map(  # noqa: PLR0913 -- the stage's state, the recovery flag, a
     The local map is the points the window's keyframes observe. Those the frame has not
     matched yet and that are in view (:func:`in_view`) are searched at their predicted level
     and the one below, in a window of ``local_window`` (``rgbd_local_window`` in RGB-D,
-    ``recovery_local_window`` just after a recovery) times 2.5 or 4 pixels at that level
-    (``RadiusByViewingCos``), with a 0.8 ratio test.
+    ``recovery_local_window`` just after a recovery) times ``aligned_view_radius`` or
+    ``oblique_view_radius`` pixels at that level (``RadiusByViewingCos``), with the
+    ``local_map_ratio`` test.
 
     Parameters
     ----------
@@ -680,7 +679,9 @@ def _relocalize_locally(m: Map, camera: Camera, frame: Frame, options: Options) 
         m.pt_descriptor[local],
         frame.features.keypoints.angle,
         np.zeros(len(local), dtype=np.int64),
-        matching.Options(max_distance=TH_HIGH, ratio=0.75, check_orientation=False),
+        matching.Options(
+            max_distance=TH_HIGH, ratio=options.relocalize_ratio, check_orientation=False
+        ),
     )
     pairs = found.pairs[frame.bearings[found.pairs[:, 0], 2] > 0.0]
     if len(pairs) < options.pnp_min_inliers:
@@ -706,10 +707,10 @@ def relocalize_locally(
 ) -> Tracked | None:
     """Place a frame against the local map by descriptors and PnP RANSAC (the fallback).
 
-    The frame's descriptors are matched to the local map's points' (``TH_HIGH``, a 0.75 ratio
-    test), PnP RANSAC places it on the matches (``pnp_threshold`` pixels, ``seed``), and the
-    pose is refined (:func:`optimize_pose`). ORB-SLAM relocalises against keyframes found by
-    its bag of words; this recovers only near the local map.
+    The frame's descriptors are matched to the local map's points' (``TH_HIGH``, the
+    ``relocalize_ratio`` test), PnP RANSAC places it on the matches (``pnp_threshold``
+    pixels, ``seed``), and the pose is refined (:func:`optimize_pose`). ORB-SLAM relocalises
+    against keyframes found by its bag of words; this recovers only near the local map.
 
     Parameters
     ----------

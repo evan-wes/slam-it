@@ -75,10 +75,7 @@ Eigen::Vector3d from_depth(const Map& m, const Eigen::Matrix4d& pose, std::int64
 /// @param options The settings.
 /// @return Nothing, or `InvalidInput`.
 Result<void> check_newest(const Map& m, const Camera& camera, const Options& options) {
-  if (auto ok = check_camera(camera); !ok) {
-    return ok;
-  }
-  if (auto ok = check_options(options); !ok) {
+  if (auto ok = check_setup(camera, options); !ok) {
     return ok;
   }
   if (keyframe_count(m) == 0) {
@@ -146,6 +143,10 @@ struct Epipolar {
   std::optional<Eigen::Vector2d> epipole;
   /// @brief The focal length, in pixels.
   double focal{1.0};
+  /// @brief The band's chi-square bound (`epipolar_chi2`).
+  double chi2{0.0};
+  /// @brief The least squared distance from the epipole at level 0 (`min_epipole_distance2`).
+  double epipole_distance2{0.0};
 };
 
 /// @brief Whether a candidate pair passes the epipolar band and the epipole test.
@@ -163,7 +164,7 @@ bool epipolar_ok(const Map& m, const Epipolar& epipolar, const Eigen::Vector3d& 
   const double distance2 = (numerator * numerator) /
                            ((line.x() * line.x()) + (line.y() * line.y())) *
                            (epipolar.focal * epipolar.focal);
-  if (!(distance2 < kEpipolarChi2 * sigma2(m, m.kp_level[r2]))) {
+  if (!(distance2 < epipolar.chi2 * sigma2(m, m.kp_level[r2]))) {
     return false;
   }
   if (epipolar.epipole && std::isnan(m.kp_depth[static_cast<std::size_t>(row1)]) &&
@@ -171,7 +172,8 @@ bool epipolar_ok(const Map& m, const Epipolar& epipolar, const Eigen::Vector3d& 
     const Eigen::Vector2d gap = x2.head<2>() - *epipolar.epipole;
     const double near =
         ((gap.x() * gap.x()) + (gap.y() * gap.y())) * (epipolar.focal * epipolar.focal);
-    if (near < kEpipoleDistance2 * std::pow(m.scale_factor, static_cast<double>(m.kp_level[r2]))) {
+    if (near < epipolar.epipole_distance2 *
+                   std::pow(m.scale_factor, static_cast<double>(m.kp_level[r2]))) {
       return false;
     }
   }
@@ -183,15 +185,21 @@ bool epipolar_ok(const Map& m, const Epipolar& epipolar, const Eigen::Vector3d& 
 /// @param camera The camera.
 /// @param k1 The first keyframe's row.
 /// @param k2 The second's.
+/// @param options The epipolar band and the epipole's distance.
 /// @return The pairs.
 std::vector<std::array<std::int64_t, 2>> triangulation_pairs(const Map& m, const Camera& camera,
-                                                             std::size_t k1, std::size_t k2) {
+                                                             std::size_t k1, std::size_t k2,
+                                                             const Options& options) {
   const std::vector<std::int64_t> rows1 = free_rows(m, k1);
   const std::vector<std::int64_t> rows2 = free_rows(m, k2);
   const auto [rotation, t] = relative(m, k1, k2);
   Eigen::Matrix3d skew;
   skew << 0.0, -t.z(), t.y(), t.z(), 0.0, -t.x(), -t.y(), t.x(), 0.0;
-  Epipolar epipolar{.essential = skew * rotation, .epipole = std::nullopt, .focal = focal(camera)};
+  Epipolar epipolar{.essential = skew * rotation,
+                    .epipole = std::nullopt,
+                    .focal = focal(camera),
+                    .chi2 = options.epipolar_chi2,
+                    .epipole_distance2 = options.min_epipole_distance2};
   if (t.z() != 0.0) {
     epipolar.epipole = Eigen::Vector2d(t.x() / t.z(), t.y() / t.z());
   }
@@ -478,8 +486,7 @@ Result<std::optional<std::int64_t>> fuse_target(const Map& m, const Camera& came
   const Eigen::Vector2d pixel = project(camera, at);
   const Eigen::Vector3d offset = m.pt_xyz[p] - centre(m, k);
   const double distance = offset.norm();
-  if (!inside(camera, pixel) || !(0.8 * m.pt_min_distance[p] <= distance) ||
-      !(distance <= 1.2 * m.pt_max_distance[p]) ||
+  if (!inside(camera, pixel) || !in_distance_range(m, p, distance, options) ||
       !(offset.dot(m.pt_normal[p]) >= options.view_cos_limit * distance)) {
     return std::nullopt;
   }
@@ -633,7 +640,9 @@ Result<bool> need_keyframe(const Map& m, const Camera& camera, std::span<const d
     return fail(ErrorKind::kInvalidInput,
                 "tracked.points: expected one point id (or -1) per depth");
   }
-  const std::int64_t min_observations = keyframe_count(m) <= 2 ? 2 : 3;
+  const std::int64_t min_observations = keyframe_count(m) <= 2  // NeedNewKeyFrame's nKFs <= 2
+                                            ? options.ref_min_observations_early
+                                            : options.ref_min_observations;
   std::vector<std::int64_t> rows;
   for (const std::int64_t row : rows_of(m, keyframe_count(m) - 1)) {
     if (const std::int64_t p = point_row(m, m.kp_point[static_cast<std::size_t>(row)]); p >= 0) {
@@ -652,7 +661,7 @@ Result<bool> need_keyframe(const Map& m, const Camera& camera, std::span<const d
         close_counts(depth, tracked, close_depth(camera, options));
     need_close = tracked_close < options.close_tracked && untracked_close > options.close_untracked;
   }
-  double ratio = keyframe_count(m) < 2 ? kFirstRefRatio : options.ref_ratio;
+  double ratio = keyframe_count(m) < 2 ? options.first_ref_ratio : options.ref_ratio;
   if (mode == Mode::kMonocular) {
     ratio = options.mono_ref_ratio;
   }
@@ -708,7 +717,7 @@ Result<void> cull_points(Map& m, Mode mode, const Options& options) {
   const std::int64_t current = m.kf_id.back();
   std::vector<std::int64_t> recent;
   for (std::size_t p = 0; p < point_count(m); ++p) {
-    if (current - m.pt_first_kf[p] <= kRecentKeyframes) {
+    if (current - m.pt_first_kf[p] <= options.recent_point_keyframes) {
       recent.push_back(static_cast<std::int64_t>(p));
     }
   }
@@ -731,11 +740,9 @@ Result<void> cull_points(Map& m, Mode mode, const Options& options) {
   return erase_points(m, erase);
 }
 
-Result<std::vector<std::array<std::int64_t, 2>>> match_for_triangulation(const Map& m,
-                                                                         const Camera& camera,
-                                                                         std::int64_t k1,
-                                                                         std::int64_t k2) {
-  if (auto ok = check_camera(camera); !ok) {
+Result<std::vector<std::array<std::int64_t, 2>>> match_for_triangulation(
+    const Map& m, const Camera& camera, std::int64_t k1, std::int64_t k2, const Options& options) {
+  if (auto ok = check_setup(camera, options); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   const auto count = static_cast<std::int64_t>(keyframe_count(m));
@@ -743,7 +750,8 @@ Result<std::vector<std::array<std::int64_t, 2>>> match_for_triangulation(const M
     return fail(ErrorKind::kInvalidInput, "k1, k2: expected two different keyframe rows in [0, " +
                                               std::to_string(count) + ")");
   }
-  return triangulation_pairs(m, camera, static_cast<std::size_t>(k1), static_cast<std::size_t>(k2));
+  return triangulation_pairs(m, camera, static_cast<std::size_t>(k1), static_cast<std::size_t>(k2),
+                             options);
 }
 
 Result<void> triangulate_new_points(Map& m, const Camera& camera, Mode mode,
@@ -755,22 +763,23 @@ Result<void> triangulate_new_points(Map& m, const Camera& camera, Mode mode,
   std::vector<std::int64_t> others = window(m, options.window);
   others.pop_back();
   std::ranges::reverse(others);
-  if (std::cmp_greater(others.size(), kTriangulationNeighbours[static_cast<std::size_t>(mode)])) {
-    others.resize(
-        static_cast<std::size_t>(kTriangulationNeighbours[static_cast<std::size_t>(mode)]));
+  const std::int64_t neighbours = mode == Mode::kMonocular ? options.mono_triangulation_neighbours
+                                                           : options.triangulation_neighbours;
+  if (std::cmp_greater(others.size(), neighbours)) {
+    others.resize(static_cast<std::size_t>(neighbours));
   }
   for (const std::int64_t other : others) {
     const auto k2 = static_cast<std::size_t>(other);
     const double baseline = (centre(m, k2) - centre(m, k1)).norm();
     if (mode == Mode::kMonocular) {
       const std::optional<double> median = median_depth(m, k2);
-      if (!median || !(baseline / *median >= kMinBaselineDepth)) {
+      if (!median || !(baseline / *median >= options.min_baseline_depth)) {
         continue;
       }
     } else if (baseline < camera.baseline) {
       continue;
     }
-    const auto pairs = triangulation_pairs(m, camera, k1, k2);
+    const auto pairs = triangulation_pairs(m, camera, k1, k2, options);
     if (pairs.empty()) {
       continue;
     }
@@ -816,10 +825,7 @@ Result<void> fuse_points(Map& m, const Camera& camera, const Options& options) {
 }
 
 Result<void> cull_keyframes(Map& m, const Camera& camera, Mode mode, const Options& options) {
-  if (auto ok = check_camera(camera); !ok) {
-    return ok;
-  }
-  if (auto ok = check_options(options); !ok) {
+  if (auto ok = check_setup(camera, options); !ok) {
     return ok;
   }
   const double limit = close_depth(camera, options);

@@ -32,6 +32,9 @@ constexpr std::array<std::pair<const char*, std::array<double, 9>>, 3> kSensors{
 /// @brief `camera.txt`'s keys.
 constexpr std::array<const char*, 4> kCameraKeys = {"model", "intrinsics", "size", "depth_scale"};
 
+/// @brief The keys it may hold too.
+constexpr std::array<const char*, 1> kOptionalCameraKeys = {"bf"};
+
 /// @brief A `timestamp filename` file's rows.
 struct Stamped {
   /// @brief The stamps, non-decreasing.
@@ -121,7 +124,9 @@ Result<std::map<std::string, std::vector<std::string>>> camera_values(const std:
       continue;
     }
     const std::string key(parts[0]);
-    if (std::ranges::find(kCameraKeys, key) == kCameraKeys.end() || out.contains(key)) {
+    const bool known = std::ranges::find(kCameraKeys, key) != kCameraKeys.end() ||
+                       std::ranges::find(kOptionalCameraKeys, key) != kOptionalCameraKeys.end();
+    if (!known || out.contains(key)) {
       return fail(ErrorKind::kInvalidInput,
                   text::where(path, k + 1) + "unknown or repeated key '" + key + "'");
     }
@@ -144,9 +149,10 @@ Result<Camera> camera_file(const std::string& path) {
     return std::unexpected(std::move(values.error()));
   }
   auto& v = *values;
-  if (v["model"].size() != 1 || v["size"].size() != 2 || v["depth_scale"].size() != 1) {
+  if (v["model"].size() != 1 || v["size"].size() != 2 || v["depth_scale"].size() != 1 ||
+      (v.contains("bf") && v["bf"].size() != 1)) {
     return fail(ErrorKind::kInvalidInput,
-                path + ": expected one model, two sizes and one depth scale");
+                path + ": expected one model, two sizes, one depth scale, one bf");
   }
   const auto model = model_named(v["model"][0]);
   if (!model) {
@@ -156,7 +162,8 @@ Result<Camera> camera_file(const std::string& path) {
              .intrinsics = Eigen::VectorXd(static_cast<Eigen::Index>(v["intrinsics"].size())),
              .width = 0,
              .height = 0,
-             .depth_scale = 0.0};
+             .depth_scale = 0.0,
+             .bf = std::nullopt};
   for (std::size_t k = 0; k < v["intrinsics"].size(); ++k) {
     const auto value = text::number(v["intrinsics"][k]);
     if (!value) {
@@ -181,6 +188,16 @@ Result<Camera> camera_file(const std::string& path) {
   if (!std::isfinite(*scale) || !(*scale > 0.0)) {
     return fail(ErrorKind::kInvalidInput, path + ": depth_scale must be finite and positive");
   }
+  if (v.contains("bf")) {
+    const auto bf = text::number(v["bf"][0]);
+    if (!bf) {
+      return fail(ErrorKind::kInvalidInput, path + ": expected numbers");
+    }
+    if (!std::isfinite(*bf) || !(*bf > 0.0)) {
+      return fail(ErrorKind::kInvalidInput, path + ": bf must be finite and positive");
+    }
+    out.bf = bf;
+  }
   out.width = *width;
   out.height = *height;
   out.depth_scale = *scale;
@@ -201,7 +218,8 @@ Result<Camera> read_camera(const std::string& root) {
                     .intrinsics = Eigen::Map<const Eigen::VectorXd>(values.data(), 9),
                     .width = kWidth,
                     .height = kHeight,
-                    .depth_scale = kDepthScale};
+                    .depth_scale = kDepthScale,
+                    .bf = kSensorBf};
     }
   }
   return fail(ErrorKind::kInvalidInput, name + ": expected a " + kCameraFile +

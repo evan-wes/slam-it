@@ -16,27 +16,6 @@
 
 namespace slamlab::edge {
 
-/// @brief Keyframes a new keyframe triangulates against, by mode (`CreateNewMapPoints`' `nn`).
-inline constexpr std::array<std::int64_t, 3> kTriangulationNeighbours = {20, 10, 10};
-
-/// @brief A match for triangulation must lie within this chi-square (1 dof, 95%) of its
-///        epipolar line (`CheckDistEpipolarLine`).
-inline constexpr double kEpipolarChi2 = 3.84;
-
-/// @brief ...and, without depth, at least this squared distance from the epipole, in pixels at
-///        level 0.
-inline constexpr double kEpipoleDistance2 = 100.0;
-
-/// @brief A monocular keyframe triangulates only against one whose baseline is at least this
-///        fraction of its median depth.
-inline constexpr double kMinBaselineDepth = 0.01;
-
-/// @brief The keyframe ratio while the map has a single keyframe (`NeedNewKeyFrame`).
-inline constexpr double kFirstRefRatio = 0.4;
-
-/// @brief A point is culled on evidence while created at most this many keyframes ago.
-inline constexpr std::int64_t kRecentKeyframes = 3;
-
 /// @brief The depth below which a point is close (`slamlab.edge.mapping.close_depth`).
 /// @param camera The camera (its baseline).
 /// @param options The factor.
@@ -83,10 +62,11 @@ inline constexpr std::int64_t kRecentKeyframes = 3;
 /// @param camera The camera.
 /// @param k1 The first keyframe's row.
 /// @param k2 The second's.
+/// @param options The epipolar band and the epipole's distance.
 /// @return Keypoint rows `(in k1, in k2)`, by `k1` keypoint; `InvalidInput` for a row out of
-///         range, the same row twice, or an invalid camera.
+///         range, the same row twice, or an invalid camera or settings.
 [[nodiscard]] foundations::Result<std::vector<std::array<std::int64_t, 2>>> match_for_triangulation(
-    const Map& m, const Camera& camera, std::int64_t k1, std::int64_t k2);
+    const Map& m, const Camera& camera, std::int64_t k1, std::int64_t k2, const Options& options);
 
 /// @brief Triangulate the newest keyframe's free keypoints against the window's
 ///        (`slamlab.edge.mapping.triangulate_new_points`, ORB-SLAM's `CreateNewMapPoints`).

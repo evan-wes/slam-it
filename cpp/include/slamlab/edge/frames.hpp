@@ -12,6 +12,7 @@
 #include <span>
 #include <vector>
 
+#include "slamlab/edge/options.hpp"
 #include "slamlab/foundations/camera.hpp"
 #include "slamlab/foundations/error.hpp"
 #include "slamlab/foundations/image.hpp"
@@ -63,6 +64,12 @@ struct Camera {
 /// @return Nothing, or `InvalidInput` for bad intrinsics, a side out of range, or a negative
 ///         or non-finite baseline.
 [[nodiscard]] foundations::Result<void> check_camera(const Camera& camera);
+
+/// @brief Check a camera and the settings, as every stage does first.
+/// @param camera The camera.
+/// @param options The settings.
+/// @return Nothing, or `InvalidInput` from `check_camera` or `check_options`.
+[[nodiscard]] foundations::Result<void> check_setup(const Camera& camera, const Options& options);
 
 /// @brief One frame's features, as tracking and mapping read them (`slamlab.edge.frames.Frame`).
 struct Frame {

@@ -80,12 +80,20 @@ Result<Source> tum_source(const std::string& root, edge::Mode mode) {
     return std::unexpected(read.error());
   }
   const eval::tum::Camera& sensor = read->camera;
-  const edge::Camera camera{
-      .model = sensor.model,
-      .intrinsics = sensor.intrinsics,
-      .width = sensor.width,
-      .height = sensor.height,
-      .baseline = mode == edge::Mode::kRgbd ? kRgbdBf / sensor.intrinsics(0) : 0.0};
+  double baseline = 0.0;
+  if (mode == edge::Mode::kRgbd) {
+    if (!sensor.bf) {
+      return fail(ErrorKind::kInvalidInput,
+                  root + ": an RGB-D run needs the depth sensor's bf: add a 'bf' line to " +
+                      eval::tum::kCameraFile);
+    }
+    baseline = *sensor.bf / sensor.intrinsics(0);
+  }
+  const edge::Camera camera{.model = sensor.model,
+                            .intrinsics = sensor.intrinsics,
+                            .width = sensor.width,
+                            .height = sensor.height,
+                            .baseline = baseline};
   const std::size_t count = read->images.size();
   Builder frame = [frames = std::move(*read), camera, mode](
                       std::size_t i, const foundations::orb::Options& extraction) -> Built {

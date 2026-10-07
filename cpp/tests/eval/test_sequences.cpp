@@ -87,7 +87,9 @@ void check_tum(const nlohmann::json& cases, int& failures) {
          same(frames->camera.intrinsics, camera["intrinsics"]) &&
          frames->camera.width == camera["width"].get<std::int64_t>() &&
          frames->camera.height == camera["height"].get<std::int64_t>() &&
-         frames->camera.depth_scale == camera["depth_scale"].get<double>();
+         frames->camera.depth_scale == camera["depth_scale"].get<double>() &&
+         (camera["bf"].is_null() ? !frames->camera.bf
+                                 : frames->camera.bf == camera["bf"].get<double>());
     expect(ok, ("tum folder " + name + " reads as Python's").c_str(), failures);
   }
 }
