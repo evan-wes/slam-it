@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 
-from slamlab.edge import frames, pipeline
+from slamlab.edge import frames, pipeline, tracking
 from slamlab.edge.options import Options
 from slamlab.eval.metrics import absolute_error
 from slamlab.foundations import orb
@@ -68,6 +69,29 @@ def test_empty_frames_lose_the_track(rendered: list[room.Frame]) -> None:
     again = run.track(frames.rgbd(first.gray, first.depth, 1.0, CAMERA, run.extraction()))
     assert again.pose is None
     assert again.state is pipeline.State.LOST
+
+
+def test_a_failed_frame_ends_the_velocity(
+    rendered: list[room.Frame], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The frame after one that was not tracked is predicted with no motion."""
+    velocities: list[NDArray[np.float64] | None] = []
+    predict = tracking.predict
+
+    def recording(
+        last_pose: NDArray[np.float64], velocity: NDArray[np.float64] | None
+    ) -> NDArray[np.float64]:
+        velocities.append(velocity)
+        return predict(last_pose, velocity)
+
+    monkeypatch.setattr(tracking, "predict", recording)
+    run = pipeline.Pipeline("rgbd", CAMERA, OPTIONS)
+    for f in rendered[:4]:
+        run.track(frames.rgbd(f.gray, f.depth, f.timestamp, CAMERA, run.extraction()))
+        if f is rendered[2]:
+            assert run.track(_empty()).pose is None
+            assert velocities[-1] is not None  # the failed frame was predicted with motion
+    assert velocities[-1] is None
 
 
 def test_a_monocular_reference_needs_enough_features(rendered: list[room.Frame]) -> None:

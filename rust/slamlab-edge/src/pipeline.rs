@@ -296,9 +296,11 @@ impl Pipeline {
         Ok(())
     }
 
-    /// Counts a frame that was not tracked; enough in a row lose the track.
+    /// Counts a frame that was not tracked: it ends the velocity; enough in a row lose the
+    /// track.
     fn record_failure(&mut self) {
         self.failures += 1;
+        self.velocity = None;
         if self.failures >= self.options.lost_frames {
             self.state = State::Lost;
         }

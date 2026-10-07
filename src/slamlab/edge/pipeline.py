@@ -222,8 +222,9 @@ class Pipeline:
         self._failures = 0
 
     def _record_failure(self) -> None:
-        """Count a frame that was not tracked; enough in a row lose the track."""
+        """Count an untracked frame: it ends the velocity, and enough in a row lose the track."""
         self._failures += 1
+        self._velocity = None
         if self._failures >= self.options.lost_frames:
             self.state = State.LOST
 

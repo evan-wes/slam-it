@@ -131,6 +131,7 @@ Result<void> Pipeline::accept(const Frame& frame, const Tracked& tracked) {
 
 void Pipeline::record_failure() {
   ++failures_;
+  velocity_.reset();
   if (failures_ >= options_.lost_frames) {
     state_ = State::kLost;
   }
