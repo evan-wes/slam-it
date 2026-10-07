@@ -135,24 +135,27 @@ Observations gather(const Map& m, const Frame& frame, std::span<const std::int64
   return out;
 }
 
-/// @brief Refine a pose on the observations a round uses.
+/// @brief Refine a pose on the observations a round uses, each weighted by its level's
+///        information (`PoseOptimization`'s `invSigma2`).
 /// @param pose The starting pose.
 /// @param observations The observations.
 /// @param chosen Which of them, by index.
 /// @param frame The frame (the bearings).
-/// @param scale The Cauchy loss's scale.
+/// @param scale The Cauchy loss's scale, in whitened units.
 /// @return The refined pose, or the refinement's error.
 Result<Eigen::Matrix4d> refine_round(const Eigen::Matrix4d& pose, const Observations& observations,
                                      const std::vector<std::size_t>& chosen, const Frame& frame,
                                      double scale) {
   Rows3 world(static_cast<Eigen::Index>(chosen.size()), 3);
   Rows3 rays(static_cast<Eigen::Index>(chosen.size()), 3);
+  Eigen::VectorXd weights(static_cast<Eigen::Index>(chosen.size()));
   for (std::size_t j = 0; j < chosen.size(); ++j) {
-    world.row(static_cast<Eigen::Index>(j)) = observations.xyz[chosen[j]].transpose();
-    rays.row(static_cast<Eigen::Index>(j)) =
-        frame.bearings[observations.keypoints[chosen[j]]].transpose();
+    const auto row = static_cast<Eigen::Index>(j);
+    world.row(row) = observations.xyz[chosen[j]].transpose();
+    rays.row(row) = frame.bearings[observations.keypoints[chosen[j]]].transpose();
+    weights(row) = 1.0 / observations.variance[chosen[j]];
   }
-  auto solved = foundations::pnp::refine_pose(pose, world, rays, scale);
+  auto solved = foundations::pnp::refine_pose(pose, world, rays, scale, weights);
   if (!solved) {
     return std::unexpected(std::move(solved.error()));
   }

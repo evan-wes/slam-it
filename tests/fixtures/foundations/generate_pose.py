@@ -161,7 +161,19 @@ def _pnp_fixture() -> dict[str, Any]:
             },
             expected,
             summary={"converged": True},
-        )
+        ),
+        o.case(
+            "noise-free, 20 points, weighted by pyramid level, a perturbed start",
+            {
+                "pose": _pose_list(start_rot, start_t),
+                "points": twenty,
+                "bearings": _bearings(rot, t, twenty),
+                "scale": 1e-3,
+                "weights": [1.2 ** (-2 * (k % 8)) for k in range(len(twenty))],
+            },
+            expected,
+            summary={"converged": True},
+        ),
     ]
     run_points = _world_points(rng, rot, t, 100)
     run_bearings = _bearings(rot, t, run_points)

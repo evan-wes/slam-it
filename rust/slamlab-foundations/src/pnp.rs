@@ -449,6 +449,8 @@ struct ReprojectionProblem {
     points: Vec<Vector3<f64>>,
     /// Their normalised image points.
     image: Vec<Vector2<f64>>,
+    /// Each block's weight, positive: its residual and Jacobian are scaled by the square root.
+    weights: Vec<f64>,
 }
 
 impl nls::Problem for ReprojectionProblem {
@@ -459,6 +461,7 @@ impl nls::Problem for ReprojectionProblem {
     /// point there is rejected (cheirality).
     fn squared_norms(&self, state: &Matrix4<f64>) -> DVector<f64> {
         reprojection(state, &self.points, &self.image)
+            .component_mul(&DVector::from_column_slice(&self.weights))
     }
 
     fn linearize(&self, state: &Matrix4<f64>, weights: &DVector<f64>) -> nls::DenseSystem {
@@ -466,7 +469,14 @@ impl nls::Problem for ReprojectionProblem {
         let n = self.points.len();
         let mut jacobian = DMatrix::zeros(2 * n, 6);
         let mut residuals = DVector::zeros(2 * n);
-        for (i, (world, observed)) in self.points.iter().zip(&self.image).enumerate() {
+        for (i, ((world, observed), weight)) in self
+            .points
+            .iter()
+            .zip(&self.image)
+            .zip(&self.weights)
+            .enumerate()
+        {
+            let root = weight.sqrt();
             let p = rotation * world + translation;
             #[rustfmt::skip] // keep one matrix row per line
             let projection = SMatrix::<f64, 2, 3>::new(
@@ -480,10 +490,10 @@ impl nls::Problem for ReprojectionProblem {
                 .copy_from(&(-rotation * so3::hat(world)));
             jacobian
                 .fixed_view_mut::<2, 6>(2 * i, 0)
-                .copy_from(&(projection * motion));
+                .copy_from(&(root * (projection * motion)));
             residuals
                 .fixed_rows_mut::<2>(2 * i)
-                .copy_from(&(p.xy() / p[2] - observed));
+                .copy_from(&(root * (p.xy() / p[2] - observed)));
         }
         nls::DenseSystem::build(&jacobian, &residuals, weights)
             .expect("two residuals and one weight per correspondence")
@@ -502,7 +512,8 @@ impl nls::Problem for ReprojectionProblem {
 /// * `pose` - The starting `T_cam_world`.
 /// * `points` - World points.
 /// * `image` - Their bearings' normalised image points.
-/// * `scale` - The Cauchy loss's scale, in the normalised plane.
+/// * `scale` - The Cauchy loss's scale, a whitened error in the normalised plane.
+/// * `weights` - Each correspondence's weight, positive.
 ///
 /// # Returns
 ///
@@ -516,8 +527,13 @@ pub fn refine(
     points: Vec<Vector3<f64>>,
     image: Vec<Vector2<f64>>,
     scale: f64,
+    weights: Vec<f64>,
 ) -> Result<nls::Solution<Matrix4<f64>>> {
-    let problem = ReprojectionProblem { points, image };
+    let problem = ReprojectionProblem {
+        points,
+        image,
+        weights,
+    };
     nls::solve_cauchy(&problem, *pose, scale, REFINE_ITERATIONS)
 }
 
@@ -528,7 +544,9 @@ pub fn refine(
 /// * `pose` - The starting `T_cam_world`.
 /// * `points` - The inliers' world points, M >= 3.
 /// * `bearings` - Their unit bearings, positive z.
-/// * `scale` - The Cauchy loss's scale, in the normalised plane (positive).
+/// * `scale` - The Cauchy loss's scale, a whitened error in the normalised plane (positive).
+/// * `weights` - Each correspondence's weight, its information relative to the others
+///   (ORB-SLAM's keypoint-level weighting): its residual is scaled by the square root.
 ///
 /// # Returns
 ///
@@ -536,13 +554,14 @@ pub fn refine(
 ///
 /// # Errors
 ///
-/// `InvalidInput` for an invalid pose or correspondences, M < 3, a non-positive scale, or a
-/// point behind the start.
+/// `InvalidInput` for an invalid pose or correspondences, M < 3, a non-positive scale, weights
+/// that are not positive and one per correspondence, or a point behind the start.
 pub fn refine_pose(
     pose: &Matrix4<f64>,
     points: &[Vector3<f64>],
     bearings: &[Vector3<f64>],
     scale: f64,
+    weights: &[f64],
 ) -> Result<nls::Solution<Matrix4<f64>>> {
     if !pose.iter().all(|x| x.is_finite()) {
         return fail(
@@ -555,6 +574,12 @@ pub fn refine_pose(
     if !scale.is_finite() || scale <= 0.0 {
         return fail_setting("scale", "must be positive and finite", scale);
     }
+    if weights.len() != points.len() || !weights.iter().all(|&w| w.is_finite() && w > 0.0) {
+        return fail(
+            ErrorKind::InvalidInput,
+            "weights: expected positive values, one per correspondence",
+        );
+    }
     let (rotation, translation) = (se3::rotation(pose), se3::translation(pose));
     if !points.iter().all(|x| (rotation * x + translation)[2] > 0.0) {
         return fail(
@@ -562,7 +587,13 @@ pub fn refine_pose(
             "pose: a point is behind the starting camera",
         );
     }
-    refine(pose, points.to_vec(), normalised_xy(bearings), scale)
+    refine(
+        pose,
+        points.to_vec(),
+        normalised_xy(bearings),
+        scale,
+        weights.to_vec(),
+    )
 }
 
 /// P3P and EPnP with the reprojection error, as a [`ransac::Estimator`].
@@ -669,6 +700,7 @@ pub fn pnp_ransac(
             gather(points, inliers),
             gather(&image, inliers),
             options.threshold,
+            vec![1.0; inliers.len()],
         )
     };
     ransac::estimate_refined(
@@ -728,6 +760,27 @@ mod tests {
         assert!((found.state.model - pose).amax() < 1e-9);
     }
 
+    /// Weighted exact correspondences still refine to the true pose; a weight of 0, or weights
+    /// that are not one per correspondence, are refused.
+    #[test]
+    #[allow(clippy::cast_precision_loss, reason = "levels below 8")]
+    fn the_refinement_takes_positive_weights() {
+        let (points, bearings, pose) = scene(20);
+        let mut start = pose;
+        start[(0, 3)] += 0.03;
+        let weights: Vec<f64> = (0..points.len())
+            .map(|k| 1.2_f64.powf(-2.0 * (k % 8) as f64))
+            .collect();
+        let refined = refine_pose(&start, &points, &bearings, 1e-3, &weights).unwrap();
+        assert!((refined.state - pose).amax() < 1e-8);
+        let mut zero = weights.clone();
+        zero[0] = 0.0;
+        for bad in [zero, weights[..3].to_vec()] {
+            let err = refine_pose(&pose, &points, &bearings, 1e-3, &bad).unwrap_err();
+            assert_eq!(err.kind, ErrorKind::InvalidInput);
+        }
+    }
+
     /// The unchecked refinement from a pose with a point behind the camera is an error (an
     /// infinite start), not a panic (panel A2).
     #[test]
@@ -735,7 +788,8 @@ mod tests {
         let (mut points, bearings, pose) = scene(10);
         let centre = -se3::rotation(&pose).transpose() * se3::translation(&pose);
         points[0] = 2.0 * centre - points[0]; // mirrored through the camera centre
-        let failed = refine(&pose, points, normalised_xy(&bearings), 1e-3).unwrap_err();
+        let ones = vec![1.0; points.len()];
+        let failed = refine(&pose, points, normalised_xy(&bearings), 1e-3, ones).unwrap_err();
         assert_eq!(failed.kind, ErrorKind::InvalidInput);
     }
 

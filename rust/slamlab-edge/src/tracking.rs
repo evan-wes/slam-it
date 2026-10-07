@@ -236,7 +236,11 @@ fn refine(
         }
         let world: Vec<Vector3<f64>> = chosen.iter().map(|&i| xyz[i]).collect();
         let rays: Vec<Vector3<f64>> = chosen.iter().map(|&i| frame.bearings[i]).collect();
-        current = pnp::refine_pose(&current, &world, &rays, scale)?.state;
+        let weights: Vec<f64> = chosen
+            .iter()
+            .map(|&i| 1.0 / sigma2(m, keypoints[i].level))
+            .collect();
+        current = pnp::refine_pose(&current, &world, &rays, scale, &weights)?.state;
         let moved: Vec<Vector3<f64>> = matched.iter().map(|&i| local(&current, &xyz[i])).collect();
         let error = chi2(camera, &moved, &xy, &right, &variance)?;
         for (j, &i) in matched.iter().enumerate() {

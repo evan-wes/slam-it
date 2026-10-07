@@ -248,7 +248,10 @@ def _optimize_pose(
         use[np.flatnonzero(use)[_local(current, xyz[use])[:, 2] <= 0.0]] = False
         if np.count_nonzero(use) < 3:
             break
-        current = pnp.refine_pose(current, xyz[use], frame.bearings[use], scale=scale).state
+        weights = 1.0 / variance[use[matched]]  # each level's information (invSigma2)
+        current = pnp.refine_pose(
+            current, xyz[use], frame.bearings[use], scale=scale, weights=weights
+        ).state
         error = residuals.chi2(
             camera,
             _local(current, xyz[matched]),
