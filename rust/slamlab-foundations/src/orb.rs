@@ -354,48 +354,152 @@ fn to_isize(value: i64) -> isize {
     isize::try_from(value).expect("offsets are small")
 }
 
-/// A pixel's FAST-9 score, when it reaches `floor`.
+/// The circle's pixels as offsets into a level's row-major pixels.
+type CircleOffsets = [isize; FAST_CIRCLE.len()];
+
+/// The circle's offsets on a level.
 ///
 /// # Arguments
 ///
-/// * `image` - The image.
-/// * `row` - The pixel's row, at least 3 from the border.
-/// * `col` - The pixel's column, at least 3 from the border.
-/// * `floor` - The smallest score of interest, non-negative.
+/// * `cols` - The level's columns.
 ///
 /// # Returns
 ///
-/// The score if it is at least `floor`, else -1.
-fn fast_score(image: &Image, row: usize, col: usize, floor: i64) -> i64 {
-    let centre = i64::from(image.at(row, col));
-    // Each circle pixel minus the centre, then the first eight again so every arc is
-    // contiguous.
-    let mut d = [0_i64; FAST_CIRCLE.len() + FAST_ARC - 1];
-    for (k, &offset) in FAST_CIRCLE.iter().enumerate() {
-        d[k] = offset_pixel(image, row, col, offset) - centre;
+/// Each circle pixel's offset from the centre's index.
+fn circle_offsets(cols: usize) -> CircleOffsets {
+    let stride = isize::try_from(cols).expect("a level's side fits an isize");
+    FAST_CIRCLE.map(|[dx, dy]| to_isize(dy) * stride + to_isize(dx))
+}
+
+/// The index `offset` from `index`.
+///
+/// # Arguments
+///
+/// * `index` - An index.
+/// * `offset` - The offset, which keeps it inside its level.
+///
+/// # Returns
+///
+/// The index.
+fn shifted(index: usize, offset: isize) -> usize {
+    index
+        .checked_add_signed(offset)
+        .expect("callers keep a point at least the offset's reach inside its level")
+}
+
+/// A pixel's FAST-9 score: the largest threshold at which some arc of nine is all brighter,
+/// or all darker, than the centre by more.
+///
+/// Every arc's smallest and largest difference, all sixteen arcs at once, in branch-free
+/// 16-bit loops a compiler vectorizes; the arcs' starts are the lanes.
+///
+/// # Arguments
+///
+/// * `pixels` - The level's pixels, row-major.
+/// * `index` - The pixel's index, at least 3 rows and columns from the border.
+/// * `circle` - The circle's offsets on the level.
+///
+/// # Returns
+///
+/// The score: one below the best arc's smallest margin (-1 when no arc has one).
+fn arc_score(pixels: &[u8], index: usize, circle: &CircleOffsets) -> i64 {
+    const CIRCLE: usize = FAST_CIRCLE.len();
+    let centre = i16::from(pixels[index]);
+    // Each circle pixel minus the centre, twice round, so every arc is contiguous.
+    let mut d = [0_i16; 2 * CIRCLE];
+    for (k, &offset) in circle.iter().enumerate() {
+        d[k] = i16::from(pixels[shifted(index, offset)]) - centre;
+        d[k + CIRCLE] = d[k];
     }
-    // Every arc of nine holds one pixel of each opposite pair, (0, 8) and (4, 12): if both of
-    // either pair are within `floor` of the centre, no arc clears it.
-    let clears = |v: i64| v > floor || v < -floor;
-    if (!clears(d[0]) && !clears(d[8])) || (!clears(d[4]) && !clears(d[12])) {
-        return -1;
+    let mut low = [0_i16; CIRCLE];
+    let mut high = [0_i16; CIRCLE];
+    low.copy_from_slice(&d[..CIRCLE]);
+    high.copy_from_slice(&d[..CIRCLE]);
+    for j in 1..FAST_ARC {
+        for ((low, high), &value) in low.iter_mut().zip(&mut high).zip(&d[j..j + CIRCLE]) {
+            *low = (*low).min(value);
+            *high = (*high).max(value);
+        }
     }
-    for k in 0..FAST_ARC - 1 {
-        d[FAST_CIRCLE.len() + k] = d[k];
-    }
-    let best = d
-        .windows(FAST_ARC)
-        .map(|arc| {
-            let low = arc.iter().min().expect("an arc is not empty");
-            let high = arc.iter().max().expect("an arc is not empty");
-            (*low).max(-*high)
-        })
+    let best = low
+        .iter()
+        .zip(&high)
+        .map(|(&low, &high)| low.max(-high))
         .max()
         .expect("16 arcs");
     // A corner needs every margin strictly above the threshold: the largest it passes is one
     // below the best arc's smallest margin.
-    let score = best - 1;
-    if score >= floor { score } else { -1 }
+    i64::from(best) - 1
+}
+
+/// Per-pixel runs along a row of pixels, reused across rows.
+#[derive(Debug, Default)]
+struct RowRuns {
+    /// The current run of circle pixels brighter than the centre by more than the floor.
+    brighter: Vec<u8>,
+    /// The current run of circle pixels darker than the centre by more than the floor.
+    darker: Vec<u8>,
+    /// The longest run of either.
+    longest: Vec<u8>,
+}
+
+/// FAST-9 scores of a run of pixels along a row, where they reach `floor`.
+///
+/// FAST's segment test first, for the whole run at once, as OpenCV's SSE2 FAST makes it: the
+/// circle walked twice round, a pixel at a time for every centre, counting each centre's
+/// current run of brighter and of darker circle pixels and keeping its longest, in byte-wide
+/// branch-free loops a compiler vectorizes. A pixel scores at least `floor` exactly when its
+/// longest run reaches `FAST_ARC`; only those are scored (`arc_score`).
+///
+/// # Arguments
+///
+/// * `pixels` - The level's pixels, row-major.
+/// * `index` - The run's first pixel's index, at least 3 rows and columns from the border.
+/// * `circle` - The circle's offsets on the level.
+/// * `floor` - The smallest score of interest, from 0 to [`MAX_FAST_THRESHOLD`].
+/// * `scores` - Each pixel's score if it reaches `floor`, else -1 (the run's length).
+/// * `runs` - Scratch space.
+fn score_run(
+    pixels: &[u8],
+    index: usize,
+    circle: &CircleOffsets,
+    floor: i64,
+    scores: &mut [i16],
+    runs: &mut RowRuns,
+) {
+    let count = scores.len();
+    for scratch in [&mut runs.brighter, &mut runs.darker, &mut runs.longest] {
+        scratch.clear();
+        scratch.resize(count, 0);
+    }
+    let centres = &pixels[index..index + count];
+    let margin = u8::try_from(floor).expect("a FAST threshold fits a byte");
+    for k in 0..FAST_CIRCLE.len() + FAST_ARC {
+        let start = shifted(index, circle[k % FAST_CIRCLE.len()]);
+        let ring = &pixels[start..start + count];
+        let lanes = ring
+            .iter()
+            .zip(centres)
+            .zip(&mut runs.brighter)
+            .zip(&mut runs.darker)
+            .zip(&mut runs.longest);
+        for ((((&p, &v), brighter), darker), longest) in lanes {
+            // Saturating differences and all-ones masks: no branch, so the loop vectorizes.
+            let low = p.min(v);
+            let keep_up = 0_u8.wrapping_sub(u8::from(p - low > margin));
+            let keep_down = 0_u8.wrapping_sub(u8::from(v - low > margin));
+            *brighter = brighter.wrapping_add(1) & keep_up;
+            *darker = darker.wrapping_add(1) & keep_down;
+            *longest = (*longest).max((*brighter).max(*darker));
+        }
+    }
+    for (c, (score, &longest)) in scores.iter_mut().zip(&runs.longest).enumerate() {
+        *score = if usize::from(longest) >= FAST_ARC {
+            i16::try_from(arc_score(pixels, index + c, circle)).expect("a FAST score fits i16")
+        } else {
+            -1
+        };
+    }
 }
 
 /// Every pixel's FAST-9 score: the largest threshold at which it is a corner, or -1.
@@ -412,11 +516,20 @@ fn fast_score(image: &Image, row: usize, col: usize, floor: i64) -> i64 {
 ///
 /// `InvalidInput` for a malformed image.
 pub fn fast_scores(image: &Image) -> Result<Vec<i64>> {
+    const RADIUS: usize = 3;
     image::check_image(image, "image")?;
     let mut out = vec![-1; image.pixels.len()];
-    for r in 3..image.rows.saturating_sub(3) {
-        for c in 3..image.cols.saturating_sub(3) {
-            out[r * image.cols + c] = fast_score(image, r, c, 0);
+    if image.rows <= 2 * RADIUS || image.cols <= 2 * RADIUS {
+        return Ok(out);
+    }
+    let circle = circle_offsets(image.cols);
+    let mut row = vec![0_i16; image.cols - 2 * RADIUS];
+    let mut runs = RowRuns::default();
+    for r in RADIUS..image.rows - RADIUS {
+        let start = r * image.cols + RADIUS;
+        score_run(&image.pixels, start, &circle, 0, &mut row, &mut runs);
+        for (value, &score) in out[start..start + row.len()].iter_mut().zip(&row) {
+            *value = i64::from(score);
         }
     }
     Ok(out)
@@ -660,8 +773,8 @@ struct ScoreWindow {
     left: usize,
     /// The window's columns.
     cols: usize,
-    /// The scores, row-major.
-    scores: Vec<i64>,
+    /// The scores, row-major (from -1 to 254: 16 bits keep the window small).
+    scores: Vec<i16>,
 }
 
 impl ScoreWindow {
@@ -680,11 +793,12 @@ impl ScoreWindow {
         let (top, left) = (region.y_min - 1, region.x_min - 1);
         let rows = region.y_max - region.y_min + 2;
         let cols = region.x_max - region.x_min + 2;
-        let mut scores = vec![-1_i64; rows * cols];
-        for r in 0..rows {
-            for c in 0..cols {
-                scores[r * cols + c] = fast_score(image, top + r, left + c, floor);
-            }
+        let mut scores = vec![-1_i16; rows * cols];
+        let circle = circle_offsets(image.cols);
+        let mut runs = RowRuns::default();
+        for (r, line) in scores.chunks_exact_mut(cols).enumerate() {
+            let start = (top + r) * image.cols + left;
+            score_run(&image.pixels, start, &circle, floor, line, &mut runs);
         }
         Self {
             top,
@@ -705,7 +819,7 @@ impl ScoreWindow {
     ///
     /// The score, or -1 below the lower threshold.
     fn score(&self, y: usize, x: usize) -> i64 {
-        self.scores[(y - self.top) * self.cols + (x - self.left)]
+        i64::from(self.scores[(y - self.top) * self.cols + (x - self.left)])
     }
 
     /// Whether a region pixel is a corner at a threshold: a strict 3x3 maximum scoring at

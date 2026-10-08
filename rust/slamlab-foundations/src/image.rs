@@ -492,28 +492,82 @@ pub fn blur(image: &Image, kernel: &[u32]) -> Result<Image> {
     let row_index: Vec<usize> = (-radius..to_i64(rows) + radius)
         .map(|r| reflect101(r, rows))
         .collect();
-    let mut across = vec![0_i64; rows * cols];
-    for r in 0..rows {
-        for c in 0..cols {
-            across[r * cols + c] = kernel
+    // The horizontal sums reach 255 * 2^bits, bits at most MAX_KERNEL_BITS: 32 bits hold them.
+    // The interior reads its neighbours directly, a tap at a time, so the loops vectorize; the
+    // border reflects. Integer sums are exact in any order.
+    let mut across = vec![0_u32; rows * cols];
+    let reach = kernel.len() / 2;
+    let first = reach.min(cols);
+    let last = first.max(cols.saturating_sub(reach));
+    for (row, sums) in image
+        .pixels
+        .chunks_exact(cols)
+        .zip(across.chunks_exact_mut(cols))
+    {
+        if last > first {
+            for (k, &weight) in kernel.iter().enumerate() {
+                for (sum, &value) in sums[first..last].iter_mut().zip(&row[k..]) {
+                    *sum += weight * u32::from(value);
+                }
+            }
+        }
+        for c in (0..first).chain(last..cols) {
+            sums[c] = kernel
                 .iter()
                 .zip(&column_index[c..])
-                .map(|(&w, &source)| i64::from(w) * i64::from(image.at(r, source)))
+                .map(|(&weight, &source)| weight * u32::from(row[source]))
                 .sum();
         }
     }
+    // The vertical sums reach 255 * 2^(2 bits): 32 bits hold them up to 12-bit kernels
+    // (ORB's), which lets the loop vectorize; 64 bits above.
     let mut out = Image::blank(rows, cols);
-    for r in 0..rows {
-        for c in 0..cols {
-            let total: i64 = kernel
-                .iter()
-                .zip(&row_index[r..])
-                .map(|(&w, &source)| i64::from(w) * across[source * cols + c])
-                .sum();
-            out.pixels[r * cols + c] = round_shift(total, 2 * bits);
-        }
+    if 2 * bits + 8 <= 32 {
+        blur_columns::<u32>(&across, kernel, &row_index, bits, &mut out);
+    } else {
+        blur_columns::<u64>(&across, kernel, &row_index, bits, &mut out);
     }
     Ok(out)
+}
+
+/// A separable blur's vertical pass, rounded to intensities.
+///
+/// # Arguments
+///
+/// * `across` - The horizontal pass's sums, row-major, `out`'s shape.
+/// * `kernel` - The weights.
+/// * `row_index` - Each padded row's reflected row.
+/// * `bits` - The kernel's bits.
+/// * `out` - The blurred image, its pixels written.
+fn blur_columns<T>(across: &[u32], kernel: &[u32], row_index: &[usize], bits: u32, out: &mut Image)
+where
+    T: Copy
+        + From<u32>
+        + std::ops::Add<Output = T>
+        + std::ops::AddAssign
+        + std::ops::Mul<Output = T>
+        + std::ops::Shl<u32, Output = T>
+        + std::ops::Shr<u32, Output = T>,
+    u8: TryFrom<T>,
+{
+    let cols = out.cols;
+    let zero = T::from(0);
+    let half = (T::from(1) << (2 * bits)) >> 1; // 0 for a 0-bit kernel, as round_shift's
+    let mut sums = vec![zero; cols];
+    for (r, row) in out.pixels.chunks_exact_mut(cols).enumerate() {
+        sums.fill(zero);
+        for (&weight, &source) in kernel.iter().zip(&row_index[r..]) {
+            let weight = T::from(weight);
+            let line = &across[source * cols..(source + 1) * cols];
+            for (sum, &value) in sums.iter_mut().zip(line) {
+                *sum += weight * T::from(value);
+            }
+        }
+        // A weighted mean of intensities: it fits a byte (the fallback never applies).
+        for (pixel, &sum) in row.iter_mut().zip(&sums) {
+            *pixel = u8::try_from((sum + half) >> (2 * bits)).unwrap_or(u8::MAX);
+        }
+    }
 }
 
 /// Resizes bilinearly, pixel centres aligned, in 11-bit fixed point.
