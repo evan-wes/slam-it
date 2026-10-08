@@ -284,6 +284,55 @@ def level_shapes(rows: int, cols: int, levels: int, scale_factor: float) -> list
     return shapes
 
 
+def as_pyramid(
+    levels: Sequence[ArrayLike], count: int, scale_factor: float, name: str = "levels"
+) -> list[Image]:
+    """Check a pyramid already built: its levels, each the shape :func:`level_shapes` gives.
+
+    `count` images, level 0 first, each level the shape :func:`level_shapes` gives from level
+    0's; what :func:`pyramid` returns passes. A consumer that reads the pyramid its features were
+    extracted on (:func:`slamlab.foundations.orb.extract_levels`,
+    :func:`slamlab.foundations.stereo.match`) takes it through this check.
+
+    Parameters
+    ----------
+    levels : sequence of array_like of uint8
+        The levels, level 0 first.
+    count : int
+        The number of levels expected.
+    scale_factor : float
+        The pyramid's scale factor.
+    name : str, optional
+        The argument's name, used in error messages.
+
+    Returns
+    -------
+    list of ndarray of uint8
+        Each level, checked (:func:`slamlab.foundations.arrays.as_image`).
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If `levels` is not a sequence of `count` images, a level is malformed or not the
+        shape :func:`level_shapes` gives, or the settings are out of range.
+    """
+    if isinstance(levels, np.ndarray) or not isinstance(levels, Sequence):
+        raise InvalidInputError(f"{name}: expected a sequence of images, one per level")
+    if len(levels) != count:
+        raise InvalidInputError(f"{name}: expected {count} levels, got {len(levels)}")
+    checked = [as_image(level, f"{name}[{k}]") for k, level in enumerate(levels)]
+    if not checked:
+        raise InvalidInputError(f"{name}: expected at least one level")
+    shapes = level_shapes(checked[0].shape[0], checked[0].shape[1], count, scale_factor)
+    for k, (level, shape) in enumerate(zip(checked, shapes, strict=True)):
+        if level.shape != shape:
+            raise InvalidInputError(
+                f"{name}: level {k} is {level.shape[0]}x{level.shape[1]}, expected "
+                f"{shape[0]}x{shape[1]}"
+            )
+    return checked
+
+
 def full_image_coordinate(x: ArrayLike, level_size: ArrayLike, size: int) -> NDArray[np.float64]:
     """Map positions on a pyramid level to the full image, along one axis.
 

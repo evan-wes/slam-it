@@ -379,10 +379,13 @@ pub fn stereo_pair(
             "camera: a stereo pair needs a rectified pinhole camera and baseline",
         );
     }
-    let features = orb::extract(images.0, options)?;
-    let other = orb::extract(images.1, options)?;
+    // Each image's pyramid, built once: extraction and the row matching both read it.
+    let left_levels = image::pyramid(images.0, options.levels, options.scale_factor)?;
+    let right_levels = image::pyramid(images.1, options.levels, options.scale_factor)?;
+    let features = orb::extract_levels(&left_levels, options)?;
+    let other = orb::extract_levels(&right_levels, options)?;
     let found = stereo::match_rows(
-        images,
+        (&left_levels, &right_levels),
         &features,
         &other,
         camera.focal(),

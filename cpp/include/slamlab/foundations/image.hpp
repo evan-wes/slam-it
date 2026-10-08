@@ -167,6 +167,17 @@ using Coordinates = Eigen::Matrix<double, Eigen::Dynamic, 2, Eigen::RowMajor>;
 [[nodiscard]] Result<std::vector<Image>> pyramid(const Image& image, std::int64_t levels,
                                                  double scale_factor);
 
+/// @brief Check a pyramid (`slamlab.foundations.image.as_pyramid`): `count` images, each a
+///        valid image of the shape `level_shapes` gives from level 0's.
+/// @param levels The levels.
+/// @param count The number of levels expected.
+/// @param scale_factor The pyramid's scale factor.
+/// @param name The argument's name, for the message.
+/// @return Nothing, or `InvalidInput` for another number of levels, a malformed level, one of
+///         another shape, or settings `level_shapes` refuses.
+[[nodiscard]] Result<void> check_pyramid(std::span<const Image> levels, std::int64_t count,
+                                         double scale_factor, const char* name);
+
 /// @brief Sample an image bilinearly at a map of coordinates, rounded to a 32nd of a pixel;
 ///        neighbours outside the image count as 0.
 /// @param image The image.

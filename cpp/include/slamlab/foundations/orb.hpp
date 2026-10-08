@@ -267,4 +267,15 @@ struct Bounds {
 /// @return The features; `InvalidInput` as `detect`.
 [[nodiscard]] Result<Features> extract(const image::Image& image, const Options& options);
 
+/// @brief Extract features from a pyramid already built (`image::pyramid` with the settings'
+///        levels and scale factor), as `extract` does from its image: for a consumer that
+///        needs the pyramid too, such as stereo matching (ORB-SLAM's `ComputeStereoMatches`
+///        reads its extractor's pyramid) (`slamlab.foundations.orb.extract_levels`).
+/// @param levels The pyramid.
+/// @param options The settings.
+/// @return The features; `InvalidInput` for a malformed setting or a pyramid that is not of
+///         the settings' levels and scale factor (`image::check_pyramid`).
+[[nodiscard]] Result<Features> extract_levels(std::span<const image::Image> levels,
+                                              const Options& options);
+
 }  // namespace slamlab::foundations::orb

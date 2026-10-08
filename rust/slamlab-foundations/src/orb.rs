@@ -1077,9 +1077,50 @@ pub fn detect(image: &Image, options: &Options) -> Result<Vec<Keypoint>> {
 ///
 /// `InvalidInput` as [`detect`].
 pub fn extract(image: &Image, options: &Options) -> Result<Features> {
-    let levels = checked_pyramid(image, options)?;
-    let keypoints = detect_levels(&levels, options);
-    let descriptors = describe(&levels, &keypoints)?;
+    extract_checked(&checked_pyramid(image, options)?, options)
+}
+
+/// Extracts features from a pyramid already built ([`image::pyramid`] with the settings'
+/// levels and scale factor), as [`extract`] does from its image: for a consumer that needs the
+/// pyramid too, such as stereo matching (ORB-SLAM's `ComputeStereoMatches` reads its
+/// extractor's pyramid) (`slamlab.foundations.orb.extract_levels`).
+///
+/// # Arguments
+///
+/// * `levels` - The pyramid.
+/// * `options` - The settings.
+///
+/// # Returns
+///
+/// The features.
+///
+/// # Errors
+///
+/// `InvalidInput` for a malformed setting or a pyramid that is not of the settings' levels and
+/// scale factor ([`image::check_pyramid`]).
+pub fn extract_levels(levels: &[Image], options: &Options) -> Result<Features> {
+    check_options(options)?;
+    image::check_pyramid(levels, options.levels, options.scale_factor, "levels")?;
+    extract_checked(levels, options)
+}
+
+/// Detects keypoints on a checked pyramid and describes them.
+///
+/// # Arguments
+///
+/// * `levels` - The pyramid.
+/// * `options` - The settings, checked.
+///
+/// # Returns
+///
+/// The features.
+///
+/// # Errors
+///
+/// The blur's (none for a checked level).
+fn extract_checked(levels: &[Image], options: &Options) -> Result<Features> {
+    let keypoints = detect_levels(levels, options);
+    let descriptors = describe(levels, &keypoints)?;
     Ok(Features {
         keypoints,
         descriptors,
@@ -1224,7 +1265,41 @@ mod tests {
                 "{}",
                 case["name"]
             );
+            let settings = options(&case["input"][1]);
+            let levels = image::pyramid(
+                &image(&case["input"][0]),
+                settings.levels,
+                settings.scale_factor,
+            )
+            .unwrap();
+            assert_eq!(
+                extract_levels(&levels, &settings).unwrap(),
+                got,
+                "{}",
+                case["name"]
+            );
         }
+    }
+
+    /// `extract_levels` refuses a pyramid that is not the settings' and takes one that is.
+    #[test]
+    fn extract_levels_checks_its_pyramid() {
+        let two = Options {
+            levels: 2,
+            scale_factor: 1.25,
+            ..Options::default()
+        };
+        let blank = |side: usize| Image {
+            rows: side,
+            cols: side,
+            pixels: vec![0; side * side],
+        };
+        let refused = |levels: &[Image]| {
+            extract_levels(levels, &two).is_err_and(|e| e.kind == ErrorKind::InvalidInput)
+        };
+        assert!(refused(&[blank(10)]), "another number of levels");
+        assert!(refused(&[blank(10), blank(10)]), "a level of another shape");
+        assert!(extract_levels(&[blank(10), blank(8)], &two).is_ok());
     }
 
     /// Bad settings, corners and boxes are `InvalidInput`.

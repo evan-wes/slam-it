@@ -106,6 +106,16 @@ nb::dict extract(const ImageIn& image, const nb::dict& options) {
   return features_dict(unwrap(foundations::orb::extract(image_in(image), orb_options(options))));
 }
 
+/// @brief Extract features from a pyramid already built.
+/// @param levels The pyramid's levels.
+/// @param options The settings, as a dict.
+/// @return A dict of `Features`' fields (orb_crossing.hpp).
+/// @throws CoreError for invalid input; std::invalid_argument for a malformed dict.
+nb::dict extract_levels(const std::vector<ImageIn>& levels, const nb::dict& options) {
+  return features_dict(
+      unwrap(foundations::orb::extract_levels(levels_in(levels), orb_options(options))));
+}
+
 }  // namespace
 
 void bind_orb(nb::module_& m) {
@@ -118,6 +128,8 @@ void bind_orb(nb::module_& m) {
         "Detect oriented keypoints; return a dict of Keypoints' fields.");
   m.def("extract", &extract, nb::arg("image").noconvert(), nb::arg("options"),
         "Extract features: Keypoints' fields, and descriptors.");
+  m.def("extract_levels", &extract_levels, nb::arg("levels"), nb::arg("options"),
+        "Extract features from a pyramid already built: Keypoints' fields, and descriptors.");
 }
 
 }  // namespace slamlab::bindings

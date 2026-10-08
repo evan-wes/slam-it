@@ -489,8 +489,7 @@ Result<std::vector<image::Image>> checked_pyramid(const image::Image& image,
 /// @param levels The pyramid.
 /// @param options The settings, checked.
 /// @return The keypoints by level, then row, then column.
-std::vector<Keypoint> detect_levels(const std::vector<image::Image>& levels,
-                                    const Options& options) {
+std::vector<Keypoint> detect_levels(std::span<const image::Image> levels, const Options& options) {
   const std::vector<std::int64_t> budgets =
       level_budgets(options.n_features, options.levels, options.scale_factor);
   std::vector<Keypoint> out;
@@ -550,7 +549,7 @@ const RotatedPatterns& rotated_patterns() {
 /// @param levels The pyramid.
 /// @param keypoints The keypoints, each at least `kEdgeThreshold` inside its level.
 /// @return One descriptor per keypoint, or the blur's error (none for a checked level).
-Result<std::vector<Descriptor>> describe(const std::vector<image::Image>& levels,
+Result<std::vector<Descriptor>> describe(std::span<const image::Image> levels,
                                          const std::vector<Keypoint>& keypoints) {
   const RotatedPatterns& patterns = rotated_patterns();
   std::vector<Descriptor> out(keypoints.size());
@@ -579,6 +578,22 @@ Result<std::vector<Descriptor>> describe(const std::vector<image::Image>& levels
     }
   }
   return out;
+}
+
+/// @brief Detect keypoints on a checked pyramid and describe them.
+/// @param levels The pyramid.
+/// @param options The settings, checked.
+/// @return The features, or the blur's error (none for a checked level).
+Result<Features> extract_checked(std::span<const image::Image> levels, const Options& options) {
+  std::vector<Keypoint> keypoints = detect_levels(levels, options);
+  auto descriptors = describe(levels, keypoints);
+  if (!descriptors) {
+    return std::unexpected(descriptors.error());
+  }
+  return Features{.keypoints = std::move(keypoints),
+                  .descriptors = std::move(*descriptors),
+                  .scale_factor = options.scale_factor,
+                  .levels = options.levels};
 }
 
 }  // namespace
@@ -678,15 +693,17 @@ Result<Features> extract(const image::Image& image, const Options& options) {
   if (!levels) {
     return std::unexpected(levels.error());
   }
-  std::vector<Keypoint> keypoints = detect_levels(*levels, options);
-  auto descriptors = describe(*levels, keypoints);
-  if (!descriptors) {
-    return std::unexpected(descriptors.error());
+  return extract_checked(*levels, options);
+}
+
+Result<Features> extract_levels(std::span<const image::Image> levels, const Options& options) {
+  if (auto ok = check_options(options); !ok) {
+    return std::unexpected(std::move(ok.error()));
   }
-  return Features{.keypoints = std::move(keypoints),
-                  .descriptors = std::move(*descriptors),
-                  .scale_factor = options.scale_factor,
-                  .levels = options.levels};
+  if (auto ok = image::check_pyramid(levels, options.levels, options.scale_factor, "levels"); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  return extract_checked(levels, options);
 }
 
 }  // namespace slamlab::foundations::orb

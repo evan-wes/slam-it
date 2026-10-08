@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import bisect
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
@@ -67,6 +67,7 @@ from slamlab.foundations.arrays import (
 )
 from slamlab.foundations.errors import InvalidInputError
 from slamlab.foundations.image import (
+    as_pyramid,
     as_scale_factor,
     blur,
     full_image_coordinate,
@@ -348,6 +349,12 @@ class Implementation(Protocol):
         """Extract features: :class:`Keypoints`' fields, and ``descriptors``."""
         ...
 
+    def extract_levels(
+        self, levels: list[NDArray[np.uint8]], options: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Extract features from a pyramid already built, as :meth:`extract` does."""
+        ...
+
 
 def _offsets() -> tuple[NDArray[np.int64], NDArray[np.int64]]:
     """Return the orientation disc's pixel offsets ``(u, v)``, row by row."""
@@ -623,7 +630,11 @@ def _describe(levels: list[NDArray[np.uint8]], keypoints: Keypoints) -> NDArray[
 
 def _extract(image: NDArray[np.uint8], options: Options) -> Features:
     """Detect keypoints and describe them (reference)."""
-    levels = pyramid(image, options.levels, options.scale_factor)
+    return _extract_levels(pyramid(image, options.levels, options.scale_factor), options)
+
+
+def _extract_levels(levels: list[NDArray[np.uint8]], options: Options) -> Features:
+    """Detect keypoints on a pyramid and describe them (reference)."""
     keypoints = _detect_levels(levels, options)
     return Features(
         keypoints=keypoints,
@@ -875,4 +886,47 @@ def extract(
     """
     return _run(
         image, options, backend=backend, name="extract", reference=_extract, decode=_decode_features
+    )
+
+
+def extract_levels(
+    levels: Sequence[ArrayLike], options: Options | None = None, *, backend: str = "python"
+) -> Features:
+    """Extract ORB features from a pyramid already built, as :func:`extract` does from its image.
+
+    For a consumer that needs the pyramid too: stereo matching reads the levels the features
+    were extracted on (:func:`slamlab.foundations.stereo.match`), as ORB-SLAM's
+    ``ComputeStereoMatches`` reads its extractor's ``mvImagePyramid``, so a stereo frame builds
+    each image's pyramid once.
+
+    Parameters
+    ----------
+    levels : sequence of array_like of uint8
+        The pyramid (:func:`slamlab.foundations.image.pyramid` with the settings' ``levels``
+        and ``scale_factor``).
+    options : Options, optional
+        The settings (default: ORB-SLAM's for 640x480 images).
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    Features
+        What :func:`extract` returns for the pyramid's level 0.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If `levels` is not a pyramid of the settings' levels and scale factor
+        (:func:`slamlab.foundations.image.as_pyramid`).
+    """
+    settings = Options() if options is None else options
+    checked = as_pyramid(levels, settings.levels, settings.scale_factor)
+    return backends.call(
+        backend,
+        __name__,
+        "extract_levels",
+        reference=lambda: _extract_levels(checked, settings),
+        arguments={"levels": checked, "options": asdict(settings)},
+        decode=_decode_features,
     )

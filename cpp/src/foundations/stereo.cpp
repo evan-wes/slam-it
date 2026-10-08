@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -75,7 +76,7 @@ Result<void> check_pyramids(const orb::Features& left, const orb::Features& righ
 /// @param levels The pyramid.
 /// @param name The side's name, for the message.
 /// @return Nothing, or `InvalidInput`.
-Result<void> check_side(const orb::Features& features, const std::vector<image::Image>& levels,
+Result<void> check_side(const orb::Features& features, std::span<const image::Image> levels,
                         const std::string& name) {
   if (features.descriptors.size() != features.keypoints.size()) {
     return fail(ErrorKind::kInvalidInput, name + ": expected one keypoint and descriptor per row");
@@ -105,7 +106,7 @@ Result<void> check_side(const orb::Features& features, const std::vector<image::
 /// @param levels The pyramid.
 /// @param margin The SAD window's half-width.
 /// @return Nothing, or `InvalidInput`.
-Result<void> check_inside(const orb::Features& features, const std::vector<image::Image>& levels,
+Result<void> check_inside(const orb::Features& features, std::span<const image::Image> levels,
                           std::int64_t margin) {
   for (const orb::Keypoint& k : features.keypoints) {
     const image::Image& level = levels[at(k.level)];
@@ -241,7 +242,7 @@ std::optional<std::size_t> nearest(const orb::Keypoint& k, const orb::Descriptor
 Result<void> check_camera(const image::Image& left_image, const image::Image& right_image,
                           double focal, double baseline) {
   if (right_image.rows != left_image.rows || right_image.cols != left_image.cols) {
-    return fail(ErrorKind::kInvalidInput, "right_image: expected the left image's shape");
+    return fail(ErrorKind::kInvalidInput, "right_levels: expected the left pyramid's shapes");
   }
   if (!std::isfinite(focal) || focal <= 0.0) {
     return fail_setting("focal", "must be positive and finite", focal);
@@ -398,36 +399,41 @@ Result<void> check_options(const MatchOptions& options) {
 }
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (focal, baseline), as in Python
-Result<std::vector<StereoMatch>> match(const image::Image& left_image,
-                                       const image::Image& right_image, const orb::Features& left,
-                                       const orb::Features& right, double focal, double baseline,
-                                       const MatchOptions& options) {
-  for (const auto& ok : {check_camera(left_image, right_image, focal, baseline),
-                         check_options(options), check_pyramids(left, right)}) {
+Result<std::vector<StereoMatch>> match(std::span<const image::Image> left_levels,
+                                       std::span<const image::Image> right_levels,
+                                       const orb::Features& left, const orb::Features& right,
+                                       double focal, double baseline, const MatchOptions& options) {
+  if (auto ok = check_pyramids(left, right); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  for (const auto& ok :
+       {image::check_pyramid(left_levels, left.levels, left.scale_factor, "left_levels"),
+        image::check_pyramid(right_levels, left.levels, left.scale_factor, "right_levels")}) {
     if (!ok) {
       return std::unexpected(ok.error());
     }
   }
-  const auto left_levels = image::pyramid(left_image, left.levels, left.scale_factor);
-  const auto right_levels = image::pyramid(right_image, left.levels, left.scale_factor);
-  if (!left_levels || !right_levels) {
-    return std::unexpected(left_levels ? right_levels.error() : left_levels.error());
+  for (const auto& ok : {check_camera(left_levels.front(), right_levels.front(), focal, baseline),
+                         check_options(options)}) {
+    if (!ok) {
+      return std::unexpected(ok.error());
+    }
   }
   // One after another: check_inside indexes the pyramid by levels check_side has checked.
-  if (auto ok = check_side(left, *left_levels, "left"); !ok) {
+  if (auto ok = check_side(left, left_levels, "left"); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
-  if (auto ok = check_side(right, *left_levels, "right"); !ok) {
+  if (auto ok = check_side(right, left_levels, "right"); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
-  if (auto ok = check_inside(left, *left_levels, options.window); !ok) {
+  if (auto ok = check_inside(left, left_levels, options.window); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   std::vector<double> scales{1.0};
-  while (scales.size() < left_levels->size()) {
+  while (scales.size() < left_levels.size()) {
     scales.push_back(scales.back() * left.scale_factor);
   }
-  const std::int64_t cols = left_image.cols;
+  const std::int64_t cols = left_levels.front().cols;
   std::vector<Candidate> found;
   for (std::size_t i = 0; i < left.keypoints.size(); ++i) {
     const orb::Keypoint& k = left.keypoints[i];
@@ -436,11 +442,11 @@ Result<std::vector<StereoMatch>> match(const image::Image& left_image,
       continue;
     }
     const orb::Keypoint& r = right.keypoints[*j];
-    const std::int64_t level_cols = (*left_levels)[at(k.level)].cols;
+    const std::int64_t level_cols = left_levels[at(k.level)].cols;
     const std::int64_t column =
-        nearest_column(r.level_xy[0], (*left_levels)[at(r.level)].cols, level_cols);
-    const auto refined = refine((*left_levels)[at(k.level)], (*right_levels)[at(k.level)],
-                                k.level_xy, column, options);
+        nearest_column(r.level_xy[0], left_levels[at(r.level)].cols, level_cols);
+    const auto refined =
+        refine(left_levels[at(k.level)], right_levels[at(k.level)], k.level_xy, column, options);
     if (!refined) {
       continue;
     }

@@ -1,10 +1,12 @@
 /// @file
 /// @brief Shared by every binding that takes or returns images: a C-contiguous (H, W) uint8
-///        array crossing as `image::Image`, and back as a new array.
+///        array crossing as `image::Image`, and back as a new array; a list of them as a
+///        pyramid.
 #pragma once
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
+#include <nanobind/stl/vector.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -33,6 +35,18 @@ inline foundations::image::Image image_in(const ImageIn& in) {
       .cols = static_cast<std::int64_t>(in.shape(1)),
       // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic): the buffer's end
       .pixels = std::vector<std::uint8_t>(in.data(), in.data() + size)};
+}
+
+/// @brief Copy a pyramid in.
+/// @param in The levels' arrays.
+/// @return The core's images, in order.
+inline std::vector<foundations::image::Image> levels_in(const std::vector<ImageIn>& in) {
+  std::vector<foundations::image::Image> out;
+  out.reserve(in.size());
+  for (const ImageIn& level : in) {
+    out.push_back(image_in(level));
+  }
+  return out;
 }
 
 /// @brief Copy an image out.

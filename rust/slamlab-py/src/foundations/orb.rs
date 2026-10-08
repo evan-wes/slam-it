@@ -13,7 +13,7 @@ use pyo3::types::PyDict;
 use serde::Deserialize;
 use slamlab_foundations::orb::{self as core, Bounds};
 
-use super::image_crossing::image_in;
+use super::image_crossing::{image_in, levels_in};
 use super::orb_crossing::{features_dict, keypoints_dict};
 use crate::common::{add_functions, contiguous, int64_array, to_i64, unwrap};
 
@@ -190,6 +190,34 @@ fn extract<'py>(
     features_dict(py, &features)
 }
 
+/// Extracts features from a pyramid already built.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `levels` - The pyramid's levels.
+/// * `options` - The settings, as a dict.
+///
+/// # Returns
+///
+/// A dict of `Features`' fields.
+///
+/// # Errors
+///
+/// `ValueError` for a malformed array or dict; `InvalidInputError` from the core.
+#[pyfunction]
+fn extract_levels<'py>(
+    py: Python<'py>,
+    levels: Vec<PyReadonlyArray2<'py, u8>>,
+    options: &Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let features = unwrap(
+        py,
+        core::extract_levels(&levels_in(&levels)?, &read_options(options)?),
+    )?;
+    features_dict(py, &features)
+}
+
 /// Registers the `orb` functions.
 ///
 /// # Errors
@@ -197,6 +225,6 @@ fn extract<'py>(
 /// Returns a Python error if a function cannot be added.
 #[pymodule]
 pub fn orb(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    add_functions!(m; fast_scores, distribute, detect, extract);
+    add_functions!(m; fast_scores, distribute, detect, extract, extract_levels);
     Ok(())
 }

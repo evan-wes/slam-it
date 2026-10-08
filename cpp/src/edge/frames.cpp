@@ -162,16 +162,23 @@ foundations::Result<Frame> stereo_pair(const foundations::image::Image& left,
     return foundations::fail(foundations::ErrorKind::kInvalidInput,
                              "camera: a stereo pair needs a rectified pinhole camera and baseline");
   }
-  auto features = foundations::orb::extract(left, options);
+  // Each image's pyramid, built once: extraction and the row matching both read it.
+  const auto left_levels = foundations::image::pyramid(left, options.levels, options.scale_factor);
+  const auto right_levels =
+      foundations::image::pyramid(right, options.levels, options.scale_factor);
+  if (!left_levels || !right_levels) {
+    return std::unexpected(left_levels ? right_levels.error() : left_levels.error());
+  }
+  auto features = foundations::orb::extract_levels(*left_levels, options);
   if (!features) {
     return std::unexpected(std::move(features.error()));
   }
-  const auto other = foundations::orb::extract(right, options);
+  const auto other = foundations::orb::extract_levels(*right_levels, options);
   if (!other) {
     return std::unexpected(other.error());
   }
-  const auto found = foundations::stereo::match(left, right, *features, *other, focal(camera),
-                                                camera.baseline, stereo_options);
+  const auto found = foundations::stereo::match(*left_levels, *right_levels, *features, *other,
+                                                focal(camera), camera.baseline, stereo_options);
   if (!found) {
     return std::unexpected(found.error());
   }

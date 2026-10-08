@@ -21,6 +21,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from slamlab.foundations import orb
+from slamlab.foundations.image import pyramid
 from tests.fixtures.foundations._layout import dumps
 
 OUT = Path(__file__).with_name("orb.json")
@@ -183,6 +184,24 @@ def main() -> None:
                 {
                     "name": name,
                     "input": [image.tolist(), dict(vars(options))],
+                    "expected": _features(image, options),
+                }
+                for name, image, options in extract_cases
+            ],
+        },
+        "extract_levels": {
+            "unpack": True,
+            "tolerance": EXACT,
+            "cases": [
+                {
+                    "name": f"{name}, from its pyramid",
+                    "input": [
+                        [
+                            level.tolist()
+                            for level in pyramid(image, options.levels, options.scale_factor)
+                        ],
+                        dict(vars(options)),
+                    ],
                     "expected": _features(image, options),
                 }
                 for name, image, options in extract_cases

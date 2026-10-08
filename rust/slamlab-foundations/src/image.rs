@@ -631,6 +631,51 @@ pub fn pyramid(image: &Image, levels: usize, scale_factor: f64) -> Result<Vec<Im
     Ok(out)
 }
 
+/// Checks a pyramid already built (`slamlab.foundations.image.as_pyramid`): `count` images,
+/// each a valid image of the shape [`level_shapes`] gives from level 0's.
+///
+/// # Arguments
+///
+/// * `levels` - The levels, level 0 first.
+/// * `count` - The number of levels expected.
+/// * `scale_factor` - The pyramid's scale factor.
+/// * `name` - The argument's name, for the message.
+///
+/// # Errors
+///
+/// `InvalidInput` for another number of levels, a malformed level, one of another shape, or
+/// settings [`level_shapes`] refuses.
+pub fn check_pyramid(levels: &[Image], count: usize, scale_factor: f64, name: &str) -> Result<()> {
+    if levels.len() != count {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!("{name}: expected {count} levels, got {}", levels.len()),
+        );
+    }
+    for level in levels {
+        check_image(level, name)?;
+    }
+    let Some(first) = levels.first() else {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!("{name}: expected at least one level"),
+        );
+    };
+    let shapes = level_shapes(first.rows, first.cols, count, scale_factor)?;
+    for (k, (level, &(rows, cols))) in levels.iter().zip(&shapes).enumerate() {
+        if (level.rows, level.cols) != (rows, cols) {
+            return fail(
+                ErrorKind::InvalidInput,
+                format!(
+                    "{name}: level {k} is {}x{}, expected {rows}x{cols}",
+                    level.rows, level.cols
+                ),
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Samples an image bilinearly at a map of coordinates, rounded to a 32nd of a pixel;
 /// neighbours outside the image count as 0.
 ///

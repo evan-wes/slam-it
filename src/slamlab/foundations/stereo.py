@@ -51,9 +51,11 @@ value within rounding of a 64th of a pixel, which is vanishingly rare.
 4. Matches whose best sum exceeds ``outlier_factor`` times the median (ORB-SLAM's 2.1) are
    dropped.
 
-The features carry the pyramid they were extracted on (:class:`slamlab.foundations.orb.Features`),
-and every keypoint is checked against it: inside its level, with ``xy`` exactly its level
-pixel's full-image coordinate.
+The features carry the pyramid's settings they were extracted on
+(:class:`slamlab.foundations.orb.Features`), and the matching reads that pyramid itself, as
+ORB-SLAM reads its extractor's, so a stereo frame builds each image's pyramid once
+(:func:`slamlab.foundations.orb.extract_levels`). Every keypoint is checked against it: inside
+its level, with ``xy`` exactly its level pixel's full-image coordinate.
 
 Departures from ORB-SLAM, each measured or a fix:
 
@@ -79,6 +81,7 @@ matches with the same depths.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from typing import Any, NamedTuple, Protocol
 
@@ -91,17 +94,15 @@ from slamlab.foundations.arrays import (
     MAX_IMAGE_SIDE,
     as_batch,
     as_count,
-    as_image,
     as_number,
     as_real,
     holds_integers,
 )
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
 from slamlab.foundations.image import (
+    as_pyramid,
     as_scale_factor,
     full_image_coordinate,
-    level_shapes,
-    pyramid,
 )
 from slamlab.foundations.matching import MAX_DISTANCE, distances
 
@@ -257,11 +258,11 @@ class Implementation(Protocol):
         """Return the (rows, cols, 2) map from rectified pixels to the original image."""
         ...
 
-    def match(  # noqa: PLR0913 -- two images, their features, the camera, the settings
+    def match(  # noqa: PLR0913 -- two pyramids, their features, the camera, the settings
         self,
         *,
-        left_image: NDArray[np.uint8],
-        right_image: NDArray[np.uint8],
+        left_levels: list[NDArray[np.uint8]],
+        right_levels: list[NDArray[np.uint8]],
         left: dict[str, Any],
         right: dict[str, Any],
         focal: float,
@@ -630,8 +631,8 @@ def _drop_outliers(found: list[_Found], factor: float) -> StereoMatches:
     )
 
 
-def _match(  # noqa: PLR0913 -- two images, their features, the camera, the settings
-    images: tuple[NDArray[np.uint8], NDArray[np.uint8]],
+def _match(  # noqa: PLR0913 -- two pyramids, their features, the camera, the settings
+    levels: tuple[list[NDArray[np.uint8]], list[NDArray[np.uint8]]],
     left: _Side,
     right: _Side,
     *,
@@ -640,12 +641,12 @@ def _match(  # noqa: PLR0913 -- two images, their features, the camera, the sett
     options: Options,
 ) -> StereoMatches:
     """Match features along rows (reference)."""
-    levels, factor = left.levels, left.scale_factor
-    rows, cols = images[0].shape
-    shapes = level_shapes(rows, cols, levels, factor)
-    pyramids = [[p.astype(np.int64) for p in pyramid(im, levels, factor)] for im in images]
+    factor = left.scale_factor
+    cols = levels[0][0].shape[1]
+    shapes = [level.shape for level in levels[0]]
+    pyramids = [[level.astype(np.int64) for level in side] for side in levels]
     scales = [1.0]
-    for _ in range(1, levels):
+    for _ in range(1, left.levels):
         scales.append(scales[-1] * factor)
     scale = np.asarray(scales)
     hamming = distances(left.descriptors, right.descriptors)
@@ -751,9 +752,9 @@ def _decode_matches(raw: dict[str, Any], codes: backends.Codes) -> StereoMatches
     )
 
 
-def match(  # noqa: PLR0913 -- two images, their features, the camera, the settings
-    left_image: ArrayLike,
-    right_image: ArrayLike,
+def match(  # noqa: PLR0913 -- two pyramids, their features, the camera, the settings
+    left_levels: Sequence[ArrayLike],
+    right_levels: Sequence[ArrayLike],
     left: orb.Features,
     right: orb.Features,
     *,
@@ -764,12 +765,17 @@ def match(  # noqa: PLR0913 -- two images, their features, the camera, the setti
 ) -> StereoMatches:
     """Match ORB features along the rows of a rectified pair (ORB-SLAM's stereo matching).
 
+    The matching reads the pyramids the features were extracted on
+    (:func:`slamlab.foundations.orb.extract_levels`), as ORB-SLAM's ``ComputeStereoMatches``
+    reads its extractor's, rather than building them again.
+
     Parameters
     ----------
-    left_image, right_image : array_like of uint8, shape (H, W)
-        The rectified images.
+    left_levels, right_levels : sequence of array_like of uint8
+        The rectified images' pyramids (:func:`slamlab.foundations.image.pyramid`), with the
+        features' ``levels`` and ``scale_factor``, level 0 the image.
     left, right : slamlab.foundations.orb.Features
-        Their features, extracted on one pyramid (the same ``levels`` and ``scale_factor``).
+        Their features, extracted on them (the same ``levels`` and ``scale_factor``).
     focal : float
         The rectified focal length, in pixels (:attr:`Rectification.intrinsics`' first).
     baseline : float
@@ -787,30 +793,34 @@ def match(  # noqa: PLR0913 -- two images, their features, the camera, the setti
     Raises
     ------
     slamlab.foundations.errors.InvalidInputError
-        If an image is malformed or the two differ in shape, `focal` or `baseline` is not
-        positive and finite, a feature set is malformed, the two sets come from different
-        pyramids or one too deep for the image, a keypoint lies outside its level or its
-        ``xy`` is not its level pixel's full-image coordinate, or a left keypoint lies
-        closer than ``options.window`` to its level's border.
+        If a feature set is malformed, the two sets come from different pyramids, a pyramid is
+        not of their levels and scale factor or the two differ in shape, `focal` or `baseline`
+        is not positive and finite, a keypoint lies outside its level or its ``xy`` is not its
+        level pixel's full-image coordinate, or a left keypoint lies closer than
+        ``options.window`` to its level's border.
     """
-    first = as_image(left_image, "left_image")
-    second = as_image(right_image, "right_image")
-    if first.shape != second.shape:
-        raise InvalidInputError(
-            f"right_image: expected the left image's shape {first.shape}, got {second.shape}"
-        )
-    focal = as_number(focal, "focal")
-    baseline = as_number(baseline, "baseline")
-    for name, value in (("focal", focal), ("baseline", baseline)):
-        if not (math.isfinite(value) and value > 0.0):
-            raise InvalidInputError(f"{name}: must be positive and finite, got {value}")
     settings = Options() if options is None else options
     sides = (_as_side(left, "left"), _as_side(right, "right"))
     if (sides[1].levels, sides[1].scale_factor) != (sides[0].levels, sides[0].scale_factor):
         raise InvalidInputError(
             "right: extracted on another pyramid than left (levels and scale_factor differ)"
         )
-    shapes = level_shapes(first.shape[0], first.shape[1], sides[0].levels, sides[0].scale_factor)
+    count, factor = sides[0].levels, sides[0].scale_factor
+    pyramids = (
+        as_pyramid(left_levels, count, factor, "left_levels"),
+        as_pyramid(right_levels, count, factor, "right_levels"),
+    )
+    if pyramids[1][0].shape != pyramids[0][0].shape:
+        raise InvalidInputError(
+            f"right_levels: expected the left pyramid's shapes, level 0 "
+            f"{pyramids[0][0].shape}, got {pyramids[1][0].shape}"
+        )
+    focal = as_number(focal, "focal")
+    baseline = as_number(baseline, "baseline")
+    for name, value in (("focal", focal), ("baseline", baseline)):
+        if not (math.isfinite(value) and value > 0.0):
+            raise InvalidInputError(f"{name}: must be positive and finite, got {value}")
+    shapes = [level.shape for level in pyramids[0]]
     for side, name in zip(sides, ("left", "right"), strict=True):
         _check_positions(side, shapes, name)
     _check_inside(sides[0], shapes, settings.window, "left")
@@ -830,7 +840,7 @@ def match(  # noqa: PLR0913 -- two images, their features, the camera, the setti
         __name__,
         "match",
         reference=lambda: _match(
-            (first, second),
+            pyramids,
             sides[0],
             sides[1],
             focal=focal,
@@ -838,8 +848,8 @@ def match(  # noqa: PLR0913 -- two images, their features, the camera, the setti
             options=settings,
         ),
         arguments={
-            "left_image": first,
-            "right_image": second,
+            "left_levels": pyramids[0],
+            "right_levels": pyramids[1],
             "left": crossing[0],
             "right": crossing[1],
             "focal": focal,

@@ -389,6 +389,37 @@ Result<std::vector<Image>> pyramid(const Image& image, std::int64_t levels, doub
   return out;
 }
 
+Result<void> check_pyramid(std::span<const Image> levels, std::int64_t count, double scale_factor,
+                           const char* name) {
+  if (std::cmp_not_equal(levels.size(), count)) {
+    return fail(ErrorKind::kInvalidInput, std::string(name) + ": expected " +
+                                              std::to_string(count) + " levels, got " +
+                                              std::to_string(levels.size()));
+  }
+  for (const Image& level : levels) {
+    if (auto ok = check_image(level, name); !ok) {
+      return ok;
+    }
+  }
+  if (levels.empty()) {
+    return fail(ErrorKind::kInvalidInput, std::string(name) + ": expected at least one level");
+  }
+  const auto shapes = level_shapes(levels.front().rows, levels.front().cols, count, scale_factor);
+  if (!shapes) {
+    return std::unexpected(shapes.error());
+  }
+  for (std::size_t k = 0; k < levels.size(); ++k) {
+    const auto [rows, cols] = (*shapes)[k];
+    if (levels[k].rows != rows || levels[k].cols != cols) {
+      return fail(ErrorKind::kInvalidInput, std::string(name) + ": level " + std::to_string(k) +
+                                                " is " + std::to_string(levels[k].rows) + "x" +
+                                                std::to_string(levels[k].cols) + ", expected " +
+                                                std::to_string(rows) + "x" + std::to_string(cols));
+    }
+  }
+  return {};
+}
+
 Result<Image> remap(const Image& image, const Eigen::Ref<const Coordinates>& coordinates,
                     std::int64_t rows, std::int64_t cols) {
   if (auto ok = check_resampling(image, rows, cols); !ok) {
