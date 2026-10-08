@@ -164,6 +164,11 @@ pub fn eigen_real(matrix: &DMatrix<f64>) -> Option<(DVector<f64>, DVector<f64>, 
     ))
 }
 
+/// The most sweeps [`svd3`] makes before it gives up. Eigen's `JacobiSVD` has no cap; cyclic
+/// Jacobi converges quadratically, in about six sweeps on the hardest 3x3s, so a cap this
+/// generous never changes a result where Eigen ends, and turns a non-termination into `None`.
+const MAX_SWEEPS: usize = 64;
+
 /// A plane rotation `[c s; -s c]`, as Eigen's real `JacobiRotation`.
 #[derive(Debug, Clone, Copy)]
 struct Rotation {
@@ -338,7 +343,8 @@ fn jacobi_2x2(matrix: &Matrix3<f64>, p: usize, q: usize) -> (Rotation, Rotation)
 ///
 /// # Returns
 ///
-/// `(U, σ, V)`, or `None` for a non-finite matrix.
+/// `(U, σ, V)`, or `None` for a non-finite matrix (or one not diagonalised within
+/// [`MAX_SWEEPS`], never observed).
 fn jacobi_svd3(
     matrix: &Matrix3<f64>,
     vectors: bool,
@@ -354,7 +360,12 @@ fn jacobi_svd3(
     let precision = 2.0 * f64::EPSILON;
     let mut max_diagonal = work.diagonal().amax();
     let mut finished = false;
+    let mut sweeps = 0;
     while !finished {
+        if sweeps == MAX_SWEEPS {
+            return None;
+        }
+        sweeps += 1;
         finished = true;
         for p in 1..3 {
             for q in 0..p {
@@ -581,6 +592,45 @@ mod tests {
             let (u, s, v_t) = svd3(&m).unwrap();
             assert!((u * Matrix3::from_diagonal(&s) * v_t - m).amax() < 1e-14);
             assert!((u.transpose() * u - Matrix3::identity()).amax() < 1e-14);
+        }
+    }
+
+    /// The 3x3 SVD gives Eigen's factors bit for bit, on the golden fixture C++'s
+    /// `foundations_test_svd3` writes from `Eigen::JacobiSVD` and checks Eigen against
+    /// (random, graded, rank-deficient, repeated and near-repeated singular values, signs, a
+    /// permutation, extreme scales).
+    #[test]
+    fn svd3_gives_eigens_factors_bit_for_bit() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/foundations/svd3.json"
+        );
+        let text = std::fs::read_to_string(path).expect("the fixture is in the repository");
+        let fixture: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        let numbers = |value: &serde_json::Value| -> Vec<f64> {
+            value
+                .as_array()
+                .expect("a list")
+                .iter()
+                .map(|x| x.as_f64().expect("a number"))
+                .collect()
+        };
+        let cases = fixture["cases"].as_array().expect("cases");
+        assert!(cases.len() >= 20);
+        for case in cases {
+            let name = case["name"].as_str().expect("a name");
+            let m = Matrix3::from_row_slice(&numbers(&case["matrix"]));
+            let (u, s, v_t) = svd3(&m).expect("a finite matrix");
+            assert_eq!(
+                u,
+                Matrix3::from_row_slice(&numbers(&case["u"])),
+                "{name}: U"
+            );
+            let singular = Vector3::from_column_slice(&numbers(&case["singular_values"]));
+            assert_eq!(s, singular, "{name}: σ");
+            assert_eq!(singular_values3(&m), singular, "{name}: σ alone");
+            let v = Matrix3::from_row_slice(&numbers(&case["v"]));
+            assert_eq!(v_t, v.transpose(), "{name}: V");
         }
     }
 
