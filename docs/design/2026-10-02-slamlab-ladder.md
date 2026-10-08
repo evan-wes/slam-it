@@ -21,7 +21,7 @@ metrics, the run format). PR 8 adds the edge VO pipeline, ORB-SLAM-lite in monoc
 and RGB-D, with native C++ and Rust programs that run a whole sequence and make the same
 decisions as the Python reference ([the edge VO note](../notes/edge-vo.md)). PR 9 adds the
 budget harness and brings the C++ and Rust pipelines to real time within a laptop-CPU budget
-on every TUM and EuRoC sequence ([the real-time note](../notes/real-time.md)).
+on every sequence of the edge note's set ([the real-time note](../notes/real-time.md)).
 
 ## Purpose
 
@@ -80,8 +80,8 @@ The ladder spans compute budgets. Every rung stands on rung 0.
 | Language | Role |
 |---|---|
 | **Python** | The readable reference implementation of every algorithm; orchestration, evaluation, and the learned rungs (PyTorch) |
-| **C++** | The performance core: rung 0, the edge rung, the edge budgets, and dense-BA kernels if profiling calls for them; outside the cores, `eval`'s native readers and run writer (`slamlab_eval`) and the native VO program (`slamlab_vo`, in orchestration); and the calibration side track (`slamlab_calib`), beside Python, without Rust. Showing C++ is a goal in its own right. |
-| **Rust** | Rung 0 and the edge rung, each in lock-step with Python and C++: every slice of those rungs lands in all three languages together; outside the cores, `eval`'s native readers and run writer (`slamlab-eval`) and the native VO program (`slamlab_vo`, crate `slamlab-orchestration`). The other rungs have no Rust. |
+| **C++** | The performance core: rung 0, the edge rung, the edge budgets, and dense-BA kernels if profiling calls for them; outside the cores, `eval`'s native readers, run writer and process readings for a budget (`slamlab_eval`) and the native VO program (`slamlab_vo`, in orchestration); and the calibration side track (`slamlab_calib`), beside Python, without Rust. Showing C++ is a goal in its own right. |
+| **Rust** | Rung 0 and the edge rung, each in lock-step with Python and C++: every slice of those rungs lands in all three languages together; outside the cores, `eval`'s native readers, run writer and process readings for a budget (`slamlab-eval`) and the native VO program (`slamlab_vo`, crate `slamlab-orchestration`). The other rungs have no Rust. |
 
 **Runtime dependencies.** Adding one, to the Python package or to a core, is a change to this
 document first.
@@ -91,9 +91,10 @@ document first.
   ROS 1 bags by hand, with no dependency (the calibration side track).
 - **C++:** Eigen. The `slamlab_eval` library reads PNGs with stb_image (vendored in
   `third_party/stb`, PNG support only; MIT or public domain), outside the algorithm cores.
-- **Rust:** nalgebra, the matrix type, and faer for every SVD and the general
+- **Rust:** nalgebra, the matrix type, and faer for the general SVDs and the general
   eigendecomposition, single-threaded, behind the crate-private `linalg` (nalgebra's SVDs are
-  not backward stable; see the Rust port's note). The `slamlab-eval` crate reads PNGs with
+  not backward stable; see the Rust port's note); the 3x3 SVDs, since PR 9, a port of Eigen's
+  `JacobiSVD` in the same module (the real-time note). The `slamlab-eval` crate reads PNGs with
   the pure-Rust `png` crate, outside the algorithm cores.
 - The three readers read a file the same way (gray from a gray file as stored, from a colour
   one through `image.to_gray`), held to shared PNG fixtures.
@@ -340,7 +341,7 @@ visible from its path and enforceable by contract.
 | `slamlab.calib` | library `slamlab_calib` | -- | Sensor calibration (the side track) |
 | `slamlab.dense` | -- | -- | Dense BA + depth prior |
 | `slamlab.learned` | -- | -- | DROID- and MegaSaM-style |
-| `slamlab.eval` | library `slamlab_eval`, `slamlab::eval` (native PNG and dataset readers, run writer) | crate `slamlab-eval` (native PNG and dataset readers, run writer) | Dataset readers, external references (COLMAP), metrics, benchmarks, budget harness |
+| `slamlab.eval` | library `slamlab_eval`, `slamlab::eval` (native PNG and dataset readers, run writer, a program's process for its run) | crate `slamlab-eval` (the same) | Dataset readers, external references (COLMAP), metrics, benchmarks, budget harness |
 | `slamlab.orchestration` | library `slamlab_orchestration` and program `slamlab_vo` (`cpp/apps/orchestration/`; from PR 8) | crate `slamlab-orchestration` and its program `slamlab_vo` (from PR 8) | End-to-end pipelines |
 
 Packages for rungs that have no code yet are stubs: a docstring stating the rung, its
@@ -617,8 +618,8 @@ Disk space is checked before each download.
   stereo and RGB-D; the RPE's estimate scaled by the ATE's scale.
 - **The run format** (`slamlab.eval.runs`), written by every backend's pipeline and read by the
   evaluation and the run viewer: a folder of `run.json` (dataset, sequence, mode, backend,
-  settings, and the program's peak memory), `trajectory.txt` in TUM's format (so other systems' trajectories score the same
-  way), the keyframes and map points as `.npy`, and `diagnostics.jsonl`, one object per frame.
+  settings, and what the program recorded of its process: peak memory, CPUs, memory cap),
+  `trajectory.txt` in TUM's format (so other systems' trajectories score the same way), the keyframes and map points as `.npy`, and `diagnostics.jsonl`, one object per frame.
 - **Map:** depth error against GT depth where it exists; reconstruction accuracy and completeness
   on Replica-style data.
 - **Cost, per budget:** frames per second, per-frame latency (p50/p95), peak memory.
@@ -822,19 +823,15 @@ shared with the owner's other projects.
     was four fifths of mapping, not the candidates named (`refresh`, the grid). Its problem
     grows with the map: on MH_01 stereo the median local BA holds 6.8k observations in the
     sequence's first quarter and 11k to 12k after, as more fixed keyframes see the window's
-    points. Rung 0's BA now forms only the coordinates it solves ([the real-time
-    note](../notes/real-time.md)), which brought mapping's busiest 10 seconds below a thread's
-    budget (MH_01 stereo 1.15 to 0.50, fr3/long_office monocular 2.28 to 0.88, in C++).
+    points. Rung 0's C++ and Rust BA now form only the coordinates they solve (the Python
+    reference is unchanged; [the real-time note](../notes/real-time.md)), which brought
+    mapping's busiest 10 seconds below a thread's budget (MH_01 stereo 1.15 to 0.52,
+    fr3/long_office monocular 2.28 to 0.92, in C++).
     Keyframe time still grows along a run; ORB-SLAM's mapping thread bounds it by stopping a
     BA when a keyframe arrives, which this rung's single thread cannot (below).
   - Closed by PR 9: **the real-time items (A11).** Each C++ and Rust frame builds its
     `FeatureGrid` once, when it is assembled, as ORB-SLAM's `Frame` does; Rust's 3x3 SVD runs
     on the stack (PR 6's A11, below).
-  - **Mapping in a thread of its own, with milestone 7.** The edge rung maps after tracking in
-    one thread, so runs are deterministic and the languages compare frame by frame; PR 9
-    judges mapping by its load, as a thread of its own would run it. A real mapping thread, and
-    ORB-SLAM's interruption of a local BA when a keyframe arrives, belong with the edge
-    targets' budgets, where keyframe bursts would otherwise delay frames.
   - **Lifting the edge camera into rung 0, with milestone 4 (A8).** `edge.frames.Camera` (a
     model and intrinsics with an image size and a baseline) and the chi-square test by
     pyramid level in `edge.residuals` belong in `foundations` once the classic rung needs
@@ -885,6 +882,28 @@ shared with the owner's other projects.
     (`backends.StaleProgramError`). Offline CI builds from clean and is not affected.
   - **The C++ edge tests' layout (H18).** Options' checks live in `test_map.cpp` and the
     residuals' in `test_adjust.cpp`, not in tests mirroring their modules.
+- **Found while building PR 9:**
+  - **Mapping in a thread of its own, with milestone 7.** The edge rung maps after tracking in
+    one thread, so runs are deterministic and the languages compare frame by frame; PR 9
+    judges mapping by its load, as a thread of its own would run it. A real mapping thread, and
+    ORB-SLAM's interruption of a local BA when a keyframe arrives, belong with the edge
+    targets' budgets, where keyframe bursts would otherwise delay frames.
+- **Deferred from PR 9's review panel**
+  ([report](../reviews/2026-10-08-feature-real-time.md)):
+  - **A mapping thread's backlog, with milestone 7 (L8).** `judge` measures mapping by its load
+    over the run and over its busiest window; the lag a mapping thread of its own would build
+    up is the waiting time of a FIFO queue, Lindley's recursion (`W' = max(0, W + S - A)`,
+    keyframe arrivals A, mapping times S), an upper bound where ORB-SLAM also holds back
+    keyframes and stops its local BA. Add it with the thread.
+  - **Physical cores for a budget, with milestone 7 (L12).** A budget's cores are logical
+    CPUs: this machine has no SMT, but on one that has, the four highest-numbered CPUs can be
+    two physical cores. Read `topology/thread_siblings_list` when a budget runs threads.
+  - **The anchored point's own observation (L10).** A host's observation of its own anchored
+    point is analytically null (the point is on the host's ray whatever the host pose,
+    intrinsics or inverse depth), but the BA's pairwise products over its repeated columns leave
+    roundoff of about eps times |J|^2 where an exact zero belongs. Merging repeated columns at
+    layout time, summing the Jacobian's columns before the products, would cancel it and cost
+    fewer products. Harmless today (the real-time note's per-solve check).
 - **Deferred from PR 7's review panel**
   ([report](../reviews/2026-10-05-feature-front-end.md)):
   - Closed by PR 9: **reusing the extraction's pyramid (A1).** The stereo frame builder builds

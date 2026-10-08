@@ -2,6 +2,6 @@
 
 The top layer: may use every rung and :mod:`slamlab.eval`; nothing imports it.
 
-- :mod:`slamlab.orchestration.vo`: a sequence through the edge pipeline, in Python or a native
-  program (C++ or Rust), its run folder written.
+- :mod:`slamlab.orchestration.vo`: a sequence through the edge pipeline, in Python in-process
+  or as any backend's program (Python's, C++'s or Rust's), its run folder written.
 """

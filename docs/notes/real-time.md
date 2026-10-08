@@ -5,7 +5,8 @@ program (`python -m slamlab.orchestration.vo`), and the speed-ups in rung 0 (`fo
 `foundations.orb`, `foundations.stereo`, `foundations.ba`, Rust's 3x3 SVD) and the edge rung's
 frames. The plan was the ladder's PR 9 row; its three rules were decided with the owner on
 2026-10-07. This note is what was built, where the time went, and how the C++ and Rust
-pipelines came to run every TUM and EuRoC sequence in real time.
+pipelines came to run every sequence of the edge note's set (five TUM and EuRoC sequences, ten
+runs of a sequence in a mode) in real time.
 
 ## The problem
 
@@ -31,7 +32,10 @@ follow (decided 2026-10-07):
    Mapping, which runs after tracking in the same thread, is judged as a thread of its own
    would be: by its **load**, its total time over the sequence's, which must stay below 1. A
    second thread for mapping would make runs depend on thread timing, and the three languages
-   could no longer be compared frame by frame; it is milestone 7's question.
+   could no longer be compared frame by frame; it is milestone 7's question. Mapping here
+   includes making the keyframe and, with depth, its close points, which ORB-SLAM2's tracking
+   thread does (`Tracking::CreateNewKeyFrame`) before it hands the keyframe over, so
+   tracking's latency here leaves that step out.
 2. **Threads inside frame building only if needed.** ORB-SLAM2 extracts a stereo pair's two
    images in two threads. Single-threaded fixes came first, and were enough.
 3. **The clock starts with the frame's images decoded**, as a camera delivers them. Reading
@@ -59,7 +63,9 @@ plans: there is no edge hardware.
   it. (The user session here has no cpuset controller, so `taskset` pins, not `AllowedCPUs`.)
 - **Peak memory** is the program's own: each program reads Linux's `VmHWM` from
   `/proc/self/status` before it writes its run, into `run.json`'s `peak_memory` (the run format's
-  version 2). Measuring from outside does not work: `getrusage`'s `ru_maxrss` folds the parent's
+  version 2), with what it ran within: its `cpus` (its affinity, `Cpus_allowed_list`) and its
+  `memory_cap` (its control group's `memory.max`), so a run folder says whether, and how, it
+  was budgeted. Measuring from outside does not work: `getrusage`'s `ru_maxrss` folds the parent's
   peak into the child at `exec`, so `true`, spawned from a bare Python, reads 12 MB, and from a
   test process a hundred megabytes or more. `VmHWM` starts again at `exec`.
 - **Python's program**: `python -m slamlab.orchestration.vo`, with the native programs'
@@ -67,7 +73,9 @@ plans: there is no edge hardware.
   Python's in-process run records no peak memory: its process holds more than the run.
 - **The judgement** (`budgets.judge`): the deadline (the median spacing of the frames' times),
   the median, 95th percentile and maximum of building plus tracking, the frames past the
-  deadline, reading's spread apart, and mapping's time per keyframe and load.
+  deadline, reading's spread apart, and mapping's time per keyframe, its load over the run and
+  its load over its busiest 10 seconds (`mapping_peak_load`). It refuses a run it cannot judge:
+  times that do not advance, a step time that is negative or not finite.
 
 `scripts/run_vo.py --budget laptop-cpu` runs a sequence within the budget and prints the
 judgement; the budgeted tests (`python -m pytest -m budget`, outside layer 1) run the room
@@ -103,16 +111,18 @@ Each of these leaves every pixel, keypoint and descriptor as it was, so every ru
 after them is the same to the bit.
 
 - **FAST** (`orb`): the segment test comes first, for a whole row at once, as OpenCV's SSE2
-  FAST makes it: the circle walked twice round, each centre's current run of brighter and of
-  darker pixels counted in byte-wide, branch-free loops. A pixel scores at least the floor
+  FAST makes it: the circle walked once round plus an arc (so a run that wraps past the start
+  is counted whole), each centre's current run of brighter and of darker pixels counted in
+  byte-wide, branch-free loops. A pixel scores at least the floor
   exactly when its longest run reaches nine, so only those (about one in nine) are scored,
   all 16 arcs' extremes at once in 16-bit lanes, and scores are kept in 16 bits. Detection on
   a 640x480 frame: 14.2 to 9.1 ms in C++.
 - **The descriptors' blur** (`image`): rows a tap at a time, so they vectorise; the horizontal
   sums in 32 bits, and the vertical ones in 32 bits whenever 255 · 2^(2 bits) fits (ORB's
-  12-bit kernel), 64 above. 8.1 to 1.6 ms a frame in C++. On the way, a 0-bit kernel's
-  rounding half became 0 by construction; it had been a shift by -1, undefined in C++, which
-  ORB's kernel never reached.
+  12-bit kernel), 64 above. 8.1 to 1.6 ms a frame in C++. The review panel found the C++
+  interior pass reading past a row when the kernel is wider than the image (the fixture's
+  one-pixel case), which a release build runs silently; it is guarded as Rust's was, and the
+  native tests now run with libstdc++'s assertions, which catch such a read.
 - **The resize** (`image`): the pyramid's bilinear resize in 32-bit sums, four times as fast.
 - **One pyramid per image (PR 7's A1)**: `orb.extract_levels` extracts from a pyramid the
   caller built (`image.as_pyramid`), and `stereo.match` takes both images' pyramids, as
@@ -160,7 +170,9 @@ bit-identity here, with the verification below.
   to 2ε of the largest diagonal entry, signs moved into U, values sorted), where faer
   allocated. It is the algorithm C++ runs, and gives C++'s bits: on 39,005 test matrices
   (random, graded, rotations, rank 1 and 2, essential-like, zero, scaled to 1e±300) its U, σ
-  and V equal Eigen's exactly. 0.5 µs a call, against faer's 1 µs.
+  and V equal Eigen's exactly. 0.5 µs a call, against faer's 1 µs. A golden fixture of 20 hard
+  matrices, written by Eigen itself (`foundations_test_svd3 --regenerate`), holds both: the C++
+  test fails if Eigen's factors move, the Rust one if the port's do.
 
 ## Verifying what is no longer the same to the bit
 
@@ -168,7 +180,9 @@ Three checks, chosen with the owner:
 
 1. **Per solve.** Every local BA of three whole runs and a short one (MH_01 stereo, V1_01
    stereo, fr3/long_office monocular, fr1/desk RGB-D: 3,136 problems) was saved from the old
-   code with its solution, then solved by the new. In both languages, every solve takes the
+   code with its solution, then solved by the new. (The problems and the comparison programs
+   are kept outside the repository; a point's difference is relative to the larger of 1 and
+   its size, so absolute below a metre.) In both languages, every solve takes the
    same iterations and ends the same way, and no residual crosses the chi-square threshold
    either way. Poses agree to 1.7e-14 and points to 1.5e-9 relative in C++, and to 1.5e-14
    and 3.2e-10 in Rust; old Rust and old C++ differed by as much (1.4e-14 and 2.3e-9), and new
@@ -269,9 +283,11 @@ as more fixed keyframes see the window's points.
   out the restructuring that made it two to four times as fast. Verifying the new code
   against the old per solve, by parity and on whole runs said what bit-identity had said:
   every whole run still takes the same decisions on every frame.
-- **Port the algorithm, not just its contract.** Rust's SVD now matches C++'s to the bit
+- **Port the algorithm, not just its contract.** Rust's SVD now gives C++'s factors to the bit
   because it is Eigen's Jacobi rotation for rotation; two backward-stable SVDs would have
-  agreed only to roundoff, and where a decision hangs on roundoff, the two languages would
-  have differed.
+  agreed only to roundoff. What is built from the factors still agrees only to an ulp
+  (nalgebra and Eigen round a 3x3 product differently: `project_to_so3` differs in the last
+  bit on about half of random matrices), so the decisions that hang on roundoff move one step
+  further from the SVD, not away.
 - **A process's peak memory is its own to report.** `ru_maxrss` of a child carries its
   parent's peak across `exec`; `VmHWM`, read by the program itself, does not.

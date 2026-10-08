@@ -66,10 +66,11 @@ testpaths = ["tests", "src"]
 # Docstring Examples are run as tests so they cannot go stale.
 addopts = "--doctest-modules --strict-markers"
 # Resource markers. scripts/check.sh runs the default CPU subset (`-m "not gpu and not budget"`);
-# GPU and budget-capped runs get their own opt-in scripts when those rungs arrive.
+# the budget runs are opt-in (`python -m pytest -m budget`, since PR 9); GPU runs get their own
+# opt-in script with the first PyTorch rung.
 markers = [
   "gpu: needs a CUDA GPU (learned and dense rungs)",
-  "budget: runs under a simulated compute budget (edge rungs, milestone 7)",
+  "budget: runs under a simulated compute budget (slamlab.eval.budgets)",
   "slow: takes more than a few seconds",
 ]
 
