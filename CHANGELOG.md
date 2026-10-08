@@ -4,6 +4,75 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.3.3.0] - 2026-10-08
+
+Milestone 2's real time: a budget harness, and the C++ and Rust pipelines within a laptop-CPU
+budget (4 performance cores, 8 GiB) on every TUM and EuRoC sequence, no frame late. Building
+and tracking a frame takes a median of 9 to 13 ms in either language on TUM and EuRoC
+monocular, and 21 to 26 ms on EuRoC stereo, against deadlines of 32 and 50 ms; before, 23 to
+72 ms in C++ and 34 to 113 ms in Rust. Mapping, judged as a thread of its own, keeps a load of
+at most 0.37 over a run and 0.92 over its busiest 10 seconds (2.28 before). Frame building
+stays exact; local BA is restructured, no longer the same to the bit, and every whole run
+still takes PR 8's decisions on every frame, in both languages and from all five starts, so
+the edge note's medians stand.
+
+### Added
+
+- **The budget harness** (`slamlab.eval.budgets`): `laptop-cpu`, 4 cores and 8 GiB, its
+  cores the highest-numbered performance cores the process may use; a program run within it
+  through `systemd-run --scope` (memory capped, no swap, so going over kills it) and
+  `taskset`; `judge`, the frames against their deadline (the median frame spacing): building
+  plus tracking (median, 95th percentile, maximum, late frames), reading apart, and mapping's
+  time per keyframe and load. C++ and Rust read their peak memory from `VmHWM`
+  (`eval::budgets`, `slamlab_eval::budgets`).
+- **Each frame's steps timed**, in every backend's diagnostics: `read_seconds`,
+  `build_seconds`, `track_seconds` and `map_seconds`.
+- **Peak memory in the run** (`run.json`'s `peak_memory`, the run format's version 2), recorded
+  by each program.
+- **Python's program**, `python -m slamlab.orchestration.vo`, with the native programs'
+  command line, exit codes and messages; `vo.run(..., budget=...)` runs any backend's program
+  within a budget, and `scripts/run_vo.py --budget` prints the judgement.
+- **Extraction from a built pyramid** (`orb.extract_levels`, `image.as_pyramid`), in all three
+  languages.
+- **A design note**, `docs/notes/real-time.md`: the rules, the harness, where the time went,
+  each speed-up, the verification and the results.
+
+### Changed
+
+- **`stereo.match` takes both images' pyramids** (PR 7's A1), in all three languages; the
+  stereo frame builder builds each pyramid once, as ORB-SLAM's `ComputeStereoMatches` reads
+  its extractor's.
+- **ORB extraction faster, to the bit** (frame building in half the time in C++, a quarter in
+  Rust): FAST's segment test over a row at once, byte-wide and branch-free, and its scores in
+  16-bit lanes; the blur's sums laid out to vectorise; the pyramid's resize in 32-bit sums.
+- **Local BA 2.5 times as fast in C++, 3.8 times in Rust:** the normal equations over the
+  coordinates the reduced system reads only, a coupling layout fixed per problem, fixed-size
+  blocks by kind. Results agree with the old code to roundoff (per solve, over 3,136 saved
+  problems: the same iterations, poses within 2e-14, points 1.5e-9 relative), not to the bit.
+- **Rust's 3x3 SVD is Eigen's `JacobiSVD`**, ported: on the stack, and C++'s factors to the
+  bit.
+- **C++ and Rust frames hold their feature grid**, built once with the frame, as ORB-SLAM's
+  `Frame` (PR 8's A11).
+- **The run format is version 2**; runs of version 1 are no longer read.
+- **The design doc** records the harness as built, closes A1, A11, H19 and the 3x3 SVD, and
+  adds mapping's thread to milestone 7; the edge VO note points to the real-time numbers.
+
+### Fixed
+
+- **A 0-bit blur kernel's rounding half** is 0 by construction; it was a shift by -1,
+  undefined in C++ (ORB's 12-bit kernel never reached it).
+
+### Tests
+
+- **The budget tests** (`python -m pytest -m budget`, outside layer 1): the room through every
+  backend's program within `laptop-cpu`, each taking the decisions it takes unbudgeted, and a
+  program over a 16 MiB budget killed; native tests of the peak-memory readers.
+- **Every frame times its steps**, in every backend; Python's program's command line, exit
+  codes and messages against the native programs'.
+- **ORB fixture cases for `extract_levels`**, and stereo matching on given pyramids.
+- **The kept-coordinate reduction** and **the 3x3 SVD's order and signs** (Rust native
+  tests).
+
 ## [0.3.2.0] - 2026-10-06
 
 Milestone 2's pipeline: ORB-SLAM-lite in the edge rung, monocular, stereo and RGB-D, in

@@ -240,7 +240,9 @@ that initialises: frame 5 on fr1/xyz, 21 on fr3/long_office, 62 on fr1/desk, 140
 on fr1/desk, 97 on fr3/long_office). Rust's pipeline is a fifth faster than C++'s, but its
 frame building is slower, and whole runs, reading the images and building the frames
 included, take 29 to 95 ms a frame in C++ and 37 to 132 ms in Rust: building the frames, not
-the pipeline, sets the frame rate.
+the pipeline, sets the frame rate. PR 9 brought building and tracking a frame to 9 to 26 ms
+(medians) in both languages, within a laptop-CPU budget, no frame late on any sequence
+([the real-time note](real-time.md)).
 
 **How much one run says.** A run is deterministic, but a long one is sensitive to small
 perturbations. Started one to four frames later, with the same rules, MH_01 stereo's ATE
@@ -312,8 +314,9 @@ sequences revisit their rooms).
 - **Relocalisation and loop closure** need a place-recognition index (the bag of words): the
   classic rung (milestone 4). Without relocalisation, a run that loses the track ends: six of
   the twenty monocular runs above.
-- **The edge budgets** (milestone 7) run these programs under a simulated compute budget; the
-  timings above are an unconstrained desktop's.
+- **The timings above** are an unconstrained desktop's, from before PR 9, which runs these
+  programs within a laptop-CPU budget ([the real-time note](real-time.md)); the edge budgets
+  (milestone 7) add smaller ones.
 - **Monocular scale** drifts without loop closure; the Sim(3) alignment hides a single scale
   error, not its drift along the run.
 - **Re-anchoring after local BA:** a frame keeps its pose from when it was tracked, so the
