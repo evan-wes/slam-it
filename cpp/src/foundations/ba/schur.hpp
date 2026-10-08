@@ -19,8 +19,9 @@
 
 namespace slamlab::foundations::ba::detail {
 
-/// @brief Maps between the full camera-side vector (6 per pose, P per group) and the free
-///        coordinates: the free full entries, in order, then the scale pose's five.
+/// @brief Maps between the full camera-side vector (6 per pose, P per group, 2 per affine) and
+///        the free coordinates: the free full entries, in order, then each confined pose's
+///        basis coordinates.
 class Reduction {
  public:
   /// @brief Build the reduction.
@@ -33,10 +34,6 @@ class Reduction {
         rows_(std::move(rows)),
         basis_(std::move(basis)),
         full_size_(full_size) {}
-
-  /// @brief The full camera-side vector's length.
-  /// @return The length.
-  [[nodiscard]] Index full_size() const { return full_size_; }
 
   /// @brief The full coordinates the reduced system reads, ascending: the free entries and
   ///        the confined rows. The rest (fixed poses, intrinsics and affines) it never reads.
