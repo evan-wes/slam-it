@@ -46,6 +46,13 @@ class Reduction {
     return out;
   }
 
+  /// @brief This reduction with another basis for its confined rows (a state's).
+  /// @param basis The basis, block-diagonal, as the constructor takes it.
+  /// @return The reduction.
+  [[nodiscard]] Reduction rebased(Eigen::MatrixXd basis) const {
+    return {free_, rows_, std::move(basis), full_size_};
+  }
+
   /// @brief This reduction over the positions of `kept()`: for a vector or matrix that holds
   ///        only those coordinates, in their order.
   /// @return The compacted reduction.
@@ -137,6 +144,8 @@ struct CouplingLayout {
   IndexList offset;
   /// @brief Each coupling row's camera-side coordinate, as a position among the kept ones.
   IndexList column;
+  /// @brief The most rows any point has: what elimination's scratch must hold.
+  Index max_rows = 0;
 };
 
 /// @brief The normal equations with the points eliminated: an `nls::LinearSystem`. Every
@@ -288,7 +297,7 @@ class SchurSystem {
     const CouplingLayout& layout = *blocks_.layout;
     Eigen::MatrixXd schur = blocks_.hessian_cc;
     Eigen::VectorXd rhs = blocks_.gradient_c;
-    Eigen::Matrix<double, Eigen::Dynamic, 3> weighted(blocks_.coupling.rows(), 3);
+    Eigen::Matrix<double, Eigen::Dynamic, 3> weighted(layout.max_rows, 3);
     for (std::size_t p = 0; p < n_points; ++p) {
       const Index first = layout.offset[p];
       const Index count = layout.offset[p + 1] - first;

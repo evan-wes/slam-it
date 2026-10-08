@@ -208,6 +208,13 @@ class Bundle {
   /// @param state The state.
   /// @return The reduction.
   [[nodiscard]] Reduction reduction(const State& state) const {
+    return {free_, confined_rows_, basis(state), full_size_};
+  }
+
+  /// @brief The confined poses' basis at `state` (`Reduction`'s), block-diagonal.
+  /// @param state The state.
+  /// @return The basis.
+  [[nodiscard]] Eigen::MatrixXd basis(const State& state) const {
     Positions centres;
     for (const Eigen::Matrix4d& pose : state.poses) {
       centres.push_back(centre(pose));
@@ -225,7 +232,7 @@ class Bundle {
       basis.block(kPoseDim * static_cast<Index>(i), column, kPoseDim, bases[i].cols()) = bases[i];
       column += bases[i].cols();
     }
-    return {free_, confined_rows_, basis, full_size_};
+    return basis;
   }
 
   /// @brief Every point in the world frame (empty where an anchored point is invalid).
@@ -304,6 +311,7 @@ class Bundle {
     for (std::size_t k = 0; k < layout_->prior_cams.size(); ++k, ++b) {
       accumulate(b, pose_prior_block(state, k), weight(b), blocks);
     }
+    blocks.hessian_cc.triangularView<Eigen::StrictlyLower>() = blocks.hessian_cc.transpose();
     // An anchored point's two unused dimensions: inert, so their step is exactly zero.
     for (std::size_t s = 0; s < n_free; ++s) {
       if (point_dims_[s] == 1) {
@@ -311,7 +319,7 @@ class Bundle {
         blocks.hessian_pp[s](2, 2) = 1.0;
       }
     }
-    return {reduction(state).compacted(), std::move(blocks), DenseCholesky{}};
+    return {kept_reduction_.rebased(basis(state)), std::move(blocks), DenseCholesky{}};
   }
 
   /// @brief Apply a step in the free coordinates.
@@ -427,7 +435,9 @@ class Bundle {
   ///        each block's columns among them, and each free point's coupling rows (its distinct
   ///        kept coordinates, ascending), with each block's row in its point's coupling.
   void lay_out_blocks() {
-    const IndexList kept = Reduction(free_, confined_rows_, Eigen::MatrixXd(), full_size_).kept();
+    const Reduction unbased(free_, confined_rows_, Eigen::MatrixXd(), full_size_);
+    const IndexList kept = unbased.kept();
+    kept_reduction_ = unbased.compacted();
     n_kept_ = static_cast<Index>(kept.size());
     IndexList kept_position(static_cast<std::size_t>(full_size_), -1);
     for (std::size_t k = 0; k < kept.size(); ++k) {
@@ -461,6 +471,7 @@ class Bundle {
       std::ranges::sort(coupled);  // ascending: the elimination walks memory in order
       coupling->column.insert(coupling->column.end(), coupled.begin(), coupled.end());
       coupling->offset.push_back(static_cast<Index>(coupling->column.size()));
+      coupling->max_rows = std::max(coupling->max_rows, static_cast<Index>(coupled.size()));
     }
     for (std::size_t b = 0; b < n_blocks; ++b) {
       const Index s = block_slot(b);
@@ -524,7 +535,8 @@ class Bundle {
       }
       blocks.gradient_c(cj) += w * jacobian.col(j).dot(residual);
       for (Index i = 0; i < width; ++i) {
-        if (const Index ci = kept[at(i)]; ci >= 0) {
+        // The upper triangle only; `linearize` mirrors it.
+        if (const Index ci = kept[at(i)]; ci >= 0 && ci <= cj) {
           blocks.hessian_cc(ci, cj) += w * jacobian.col(i).dot(jacobian.col(j));
         }
       }
@@ -871,6 +883,9 @@ class Bundle {
   IndexList anchor_index_;
   /// @brief The number of kept camera-side coordinates (`lay_out_blocks`).
   Index n_kept_ = 0;
+  /// @brief The reduction over the kept coordinates, its basis left for each state's
+  ///        (`Reduction::rebased`).
+  Reduction kept_reduction_{{}, {}, Eigen::MatrixXd(), 0};
   /// @brief Each block's columns as positions among the kept coordinates, or -1.
   std::vector<IndexList> block_kept_;
   /// @brief Each block's columns' rows in its point's coupling, or -1.

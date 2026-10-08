@@ -7,6 +7,9 @@
 #include <cstdint>
 #include <vector>
 
+#include "slamlab/foundations/ba.hpp"
+#include "slamlab/foundations/camera.hpp"
+
 /// @brief Bundle adjustment's internals (not part of the public API).
 namespace slamlab::foundations::ba::detail {
 
@@ -14,12 +17,12 @@ using Eigen::Index;
 /// @brief A list of indices into a vector or matrix.
 using IndexList = std::vector<Index>;
 /// @brief The most rows a residual block has: a pose prior's six.
-inline constexpr Index kMaxBlockRows = 6;
-/// @brief The most intrinsics a camera model has: radtan's nine.
-inline constexpr Index kMaxIntrinsics = 9;
+inline constexpr Index kMaxBlockRows = kPoseDim;
+/// @brief The most intrinsics a camera model has (radtan's nine, today).
+inline constexpr Index kMaxIntrinsics = camera::kMaxIntrinsicsSize;
 /// @brief The most camera-side columns a residual block touches: its camera's pose and
 ///        intrinsics, and an anchored point's host's.
-inline constexpr Index kMaxBlockColumns = 2 * (6 + kMaxIntrinsics);
+inline constexpr Index kMaxBlockColumns = 2 * (kPoseDim + kMaxIntrinsics);
 /// @brief A residual block's camera-side Jacobian: bounded, so it lives on the stack.
 using Block = Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor, kMaxBlockRows,
                             kMaxBlockColumns>;

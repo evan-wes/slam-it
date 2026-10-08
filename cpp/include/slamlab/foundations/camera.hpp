@@ -8,6 +8,7 @@
 #pragma once
 
 #include <Eigen/Core>
+#include <algorithm>
 #include <cstdint>
 #include <span>
 
@@ -29,6 +30,30 @@ enum class Model : std::uint8_t {
   ///        checked against it, so an enumerator added without its name fails to build.
   kCount = 3,
 };
+
+/// @brief The length of a model's intrinsics (Rust's `Model::intrinsics_len`).
+/// @param model The model (not `kCount`).
+/// @return 4 (pinhole), 9 (radtan) or 5 (radial).
+[[nodiscard]] constexpr Eigen::Index intrinsics_size(Model model) {
+  switch (model) {
+    case Model::kPinhole:
+      return 4;
+    case Model::kRadial:
+      return 5;
+    default:
+      return 9;
+  }
+}
+
+/// @brief The most intrinsics any model has: what a fixed-size buffer of a model's
+///        intrinsics, or of a Jacobian over them, must hold.
+inline constexpr Eigen::Index kMaxIntrinsicsSize = [] {
+  Eigen::Index most = 0;
+  for (int m = 0; m < static_cast<int>(Model::kCount); ++m) {
+    most = std::max(most, intrinsics_size(static_cast<Model>(m)));
+  }
+  return most;
+}();
 
 /// @brief Points with `Z` at or below this are behind the camera and cannot project.
 inline constexpr double kMinDepth = 1e-9;

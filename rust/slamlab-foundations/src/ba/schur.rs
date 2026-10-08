@@ -63,6 +63,24 @@ impl Reduction {
         out
     }
 
+    /// This reduction with another basis for its confined rows (a state's).
+    ///
+    /// # Arguments
+    ///
+    /// * `basis` - The basis, block-diagonal, as [`Reduction::new`] takes it.
+    ///
+    /// # Returns
+    ///
+    /// The reduction.
+    pub fn rebased(&self, basis: DMatrix<f64>) -> Self {
+        Self {
+            free: self.free.clone(),
+            rows: self.rows.clone(),
+            basis,
+            full_size: self.full_size,
+        }
+    }
+
     /// This reduction over the positions of [`Reduction::kept`]: for a vector or matrix that
     /// holds only those coordinates, in their order.
     ///
@@ -198,6 +216,8 @@ pub struct CouplingLayout {
     pub offset: Vec<usize>,
     /// Each coupling row's camera-side coordinate, as a position among the kept ones.
     pub column: Vec<usize>,
+    /// The most rows any point has: what elimination's scratch must hold.
+    pub max_rows: usize,
 }
 
 /// The blocks of the normal equations, formed once per linearisation. Every camera-side
@@ -347,7 +367,7 @@ impl<S: ReducedSystemSolver> SchurSystem<S> {
         let layout = &*self.blocks.layout;
         let mut schur = self.blocks.hessian_cc.clone();
         let mut rhs = self.blocks.gradient_c.clone();
-        let mut weighted = Coupling::zeros(self.blocks.coupling.nrows());
+        let mut weighted = Coupling::zeros(layout.max_rows);
         for (p, inverse) in inverse_pp.iter().enumerate() {
             let first = layout.offset[p];
             let count = layout.offset[p + 1] - first;

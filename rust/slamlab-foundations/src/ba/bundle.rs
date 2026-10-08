@@ -16,8 +16,19 @@ use crate::error::Result;
 use crate::nls;
 use crate::{se3, so3};
 
-/// The most intrinsics a camera model has: radtan's nine.
-const MAX_INTRINSICS: usize = Model::RadTan.intrinsics_len();
+/// The most intrinsics a camera model has (radtan's nine, today).
+const MAX_INTRINSICS: usize = {
+    let mut most = 0;
+    let mut m = 0;
+    while m < Model::ALL.len() {
+        let size = Model::ALL[m].intrinsics_len();
+        if size > most {
+            most = size;
+        }
+        m += 1;
+    }
+    most
+};
 /// The most camera-side columns a residual block touches: its camera's pose and intrinsics, and
 /// an anchored point's host's.
 const MAX_COLUMNS: usize = 2 * (POSE_DIM + MAX_INTRINSICS);
@@ -156,6 +167,9 @@ struct Bundle<'a> {
     point_dims: Vec<usize>,
     /// The number of kept camera-side coordinates (`lay_out_blocks`).
     n_kept: usize,
+    /// The reduction over the kept coordinates, its basis left for each state's
+    /// ([`Reduction::rebased`]).
+    kept_reduction: Reduction,
     /// Each block's columns as positions among the kept coordinates (`None` where dropped).
     block_kept: Vec<Vec<Option<usize>>>,
     /// Each block's columns' rows in its point's coupling.
@@ -227,6 +241,7 @@ impl<'a> Bundle<'a> {
             anchor_index,
             point_dims,
             n_kept: 0,
+            kept_reduction: Reduction::new(Vec::new(), Vec::new(), DMatrix::zeros(0, 0), 0),
             block_kept: Vec::new(),
             block_rows: Vec::new(),
             coupling_layout: Rc::default(),
@@ -328,6 +343,24 @@ impl<'a> Bundle<'a> {
     ///
     /// The reduction.
     fn reduction(&self, state: &BundleState) -> Reduction {
+        Reduction::new(
+            self.free.clone(),
+            self.confined_rows.clone(),
+            self.basis(state),
+            self.full_size,
+        )
+    }
+
+    /// The confined poses' basis at `state` ([`Reduction`]'s), block-diagonal.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - The state.
+    ///
+    /// # Returns
+    ///
+    /// The basis.
+    fn basis(&self, state: &BundleState) -> DMatrix<f64> {
         let centres: Vec<Vector3<f64>> = state.poses.iter().map(centre).collect();
         let pose_bases = gauge::confinement(
             &self.layout.gauge_anchors,
@@ -343,12 +376,7 @@ impl<'a> Bundle<'a> {
                 .copy_from(block);
             column += block.ncols();
         }
-        Reduction::new(
-            self.free.clone(),
-            self.confined_rows.clone(),
-            basis,
-            self.full_size,
-        )
+        basis
     }
 
     /// Every point in the world frame (`None` where an anchored point is invalid).
@@ -847,13 +875,14 @@ impl<'a> Bundle<'a> {
     /// block's columns among them, and each free point's coupling rows (its distinct kept
     /// coordinates, ascending), with each block's row in its point's coupling.
     fn lay_out_blocks(&mut self) {
-        let kept = Reduction::new(
+        let unbased = Reduction::new(
             self.free.clone(),
             self.confined_rows.clone(),
             DMatrix::zeros(0, 0),
             self.full_size,
-        )
-        .kept();
+        );
+        let kept = unbased.kept();
+        self.kept_reduction = unbased.compacted();
         self.n_kept = kept.len();
         let mut kept_position = vec![None; self.full_size];
         for (k, &c) in kept.iter().enumerate() {
@@ -883,11 +912,13 @@ impl<'a> Bundle<'a> {
         let mut coupling = CouplingLayout {
             offset: vec![0],
             column: Vec::new(),
+            max_rows: 0,
         };
         for coupled in &mut point_columns {
             coupled.sort_unstable(); // ascending: the elimination walks memory in order
             coupling.column.extend_from_slice(coupled);
             coupling.offset.push(coupling.column.len());
+            coupling.max_rows = coupling.max_rows.max(coupled.len());
         }
         self.block_rows = self
             .block_kept
@@ -935,7 +966,10 @@ impl<'a> Bundle<'a> {
             };
             blocks.gradient_c[cj] += w * jacobian.column(j).dot(&block.residual);
             for (i, &ci) in kept.iter().enumerate() {
-                if let Some(ci) = ci {
+                // The upper triangle only; `linearize` mirrors it.
+                if let Some(ci) = ci
+                    && ci <= cj
+                {
                     blocks.hessian_cc[(ci, cj)] += w * jacobian.column(i).dot(&jacobian.column(j));
                 }
             }
@@ -1006,6 +1040,7 @@ impl nls::Problem for Bundle<'_> {
             self.accumulate(b, block.as_ref(), weights[b], &mut blocks);
             b += 1;
         }
+        blocks.hessian_cc.fill_lower_triangle_with_upper_triangle();
         // An anchored point's two unused dimensions: inert, so their step is exactly zero.
         for (slot, &dims) in self.point_dims.iter().enumerate() {
             if dims == 1 {
@@ -1013,7 +1048,11 @@ impl nls::Problem for Bundle<'_> {
                 blocks.hessian_pp[slot][(2, 2)] = 1.0;
             }
         }
-        SchurSystem::new(self.reduction(state).compacted(), blocks, DenseCholesky)
+        SchurSystem::new(
+            self.kept_reduction.rebased(self.basis(state)),
+            blocks,
+            DenseCholesky,
+        )
     }
 
     fn retract(&self, state: &BundleState, delta: &DVector<f64>) -> BundleState {
