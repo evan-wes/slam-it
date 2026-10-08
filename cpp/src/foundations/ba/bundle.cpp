@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <optional>
 #include <utility>
@@ -60,19 +61,20 @@ struct BundleState {
   Eigen::VectorXd inverse_depth;
 };
 
-/// @brief One residual block linearised at a state (rows already scaled by sqrt(w)).
+/// @brief One residual block linearised at a state (rows already scaled by sqrt(w)). Its
+///        camera-side coordinates are fixed for the problem (`Bundle::block_columns`).
 struct LinearBlock {
   /// @brief The weighted residual.
-  Eigen::VectorXd residual;
-  /// @brief d residual / d(camera-side variables).
+  BlockResidual residual;
+  /// @brief d residual / d(camera-side variables), in `block_columns`' order.
   Block camera_side;
-  /// @brief The camera-side columns in the full vector.
-  IndexList columns;
   /// @brief d residual / d(point variables): xyz, or (rho, 0, 0) for an anchored point (no
   ///        rows for blocks that touch no point).
-  Eigen::Matrix<double, Eigen::Dynamic, 3> point;
+  BlockPoint point;
   /// @brief The point's free slot, or -1.
   Index slot = -1;
+  /// @brief Whether the block could be linearised (its point valid and in front).
+  bool valid = false;
 };
 
 /// @brief An anchored point's world position and its Jacobians at a state.
@@ -134,6 +136,7 @@ class Bundle {
         point_dims_[static_cast<std::size_t>(layout.point_slot[p])] = 1;
       }
     }
+    lay_out_blocks();
   }
 
   /// @brief Each block's loss: 0 reprojection, 1 depth prior, 2 pose prior.
@@ -280,25 +283,26 @@ class Bundle {
                                                      const Eigen::VectorXd& weights) const {
     const auto n_free = static_cast<std::size_t>(layout_->free_points);
     SchurSystem<DenseCholesky>::Blocks blocks{
-        .hessian_cc = Eigen::MatrixXd::Zero(full_size_, full_size_),
-        .gradient_c = Eigen::VectorXd::Zero(full_size_),
+        .hessian_cc = Eigen::MatrixXd::Zero(n_kept_, n_kept_),
+        .gradient_c = Eigen::VectorXd::Zero(n_kept_),
         .hessian_pp = std::vector<Eigen::Matrix3d>(n_free, Eigen::Matrix3d::Zero()),
         .gradient_p = std::vector<Eigen::Vector3d>(n_free, Eigen::Vector3d::Zero()),
-        .coupling = {},
-        .columns = {},
-        .slots = {},
+        .coupling = Eigen::Matrix<double, Eigen::Dynamic, 3>::Zero(
+            static_cast<Index>(coupling_layout_->column.size()), 3),
+        .layout = coupling_layout_,
         .point_dims = point_dims_};
     const WorldPoints world = world_points(state);
     const Anchors anchor_jacobians = anchors(state, world);
-    Index row = 0;
-    for (std::size_t i = 0; i < layout_->reprojection.size(); ++i) {
-      accumulate(reprojection_block(state, world, anchor_jacobians, i), weights(row++), blocks);
+    const auto weight = [&weights](std::size_t b) { return weights(static_cast<Index>(b)); };
+    std::size_t b = 0;  // the block, in `squared_norms` order (its weight's row)
+    for (std::size_t i = 0; i < layout_->reprojection.size(); ++i, ++b) {
+      accumulate(b, reprojection_block(state, world, anchor_jacobians, i), weight(b), blocks);
     }
-    for (std::size_t d = 0; d < layout_->depth.size(); ++d) {
-      accumulate(depth_block(state, world, anchor_jacobians, d), weights(row++), blocks);
+    for (std::size_t d = 0; d < layout_->depth.size(); ++d, ++b) {
+      accumulate(b, depth_block(state, world, anchor_jacobians, d), weight(b), blocks);
     }
-    for (std::size_t k = 0; k < layout_->prior_cams.size(); ++k) {
-      accumulate(pose_prior_block(state, k), weights(row++), blocks);
+    for (std::size_t k = 0; k < layout_->prior_cams.size(); ++k, ++b) {
+      accumulate(b, pose_prior_block(state, k), weight(b), blocks);
     }
     // An anchored point's two unused dimensions: inert, so their step is exactly zero.
     for (std::size_t s = 0; s < n_free; ++s) {
@@ -307,7 +311,7 @@ class Bundle {
         blocks.hessian_pp[s](2, 2) = 1.0;
       }
     }
-    return {reduction(state), std::move(blocks), DenseCholesky{}};
+    return {reduction(state).compacted(), std::move(blocks), DenseCholesky{}};
   }
 
   /// @brief Apply a step in the free coordinates.
@@ -362,37 +366,182 @@ class Bundle {
     }
   }
 
-  /// @brief A camera's six pose columns.
-  /// @param c The camera.
-  /// @return The columns.
-  static IndexList pose_columns(std::int64_t c) {
-    IndexList cols;
-    append_range(cols, kPoseDim * at(c), kPoseDim, true);
-    return cols;
+  /// @brief A block's observation.
+  /// @param b The block, in `squared_norms` order.
+  /// @return The observation, or -1 for a pose prior.
+  [[nodiscard]] Index block_observation(std::size_t b) const {
+    const std::size_t n_obs = layout_->reprojection.size();
+    if (b < n_obs) {
+      return layout_->obs[at(layout_->reprojection[b])];
+    }
+    if (b - n_obs < layout_->depth.size()) {
+      return layout_->obs[at(layout_->depth[b - n_obs])];
+    }
+    return -1;
   }
 
-  /// @brief Add one block's weighted contribution to the normal equations.
+  /// @brief A block's camera-side coordinates in the full vector, in its Jacobian's column
+  ///        order: its camera's pose, then its intrinsics (a reprojection) or depth affine (a
+  ///        depth prior), then an anchored point's host's pose and intrinsics; a pose prior's
+  ///        camera's pose.
+  /// @param b The block, in `squared_norms` order.
+  /// @return The coordinates (repeated where an anchored point's host is the observer).
+  [[nodiscard]] IndexList block_columns(std::size_t b) const {
+    const Index n_params = problem_->intrinsics.cols();
+    const auto intrinsics_of = [&](std::int64_t c) {
+      return intrinsics_offset_ + (n_params * at(problem_->intrinsics_idx[at(c)]));
+    };
+    IndexList out;
+    const Index m = block_observation(b);
+    if (m < 0) {
+      const std::size_t n_observing = layout_->reprojection.size() + layout_->depth.size();
+      append_range(out, kPoseDim * at(layout_->prior_cams[b - n_observing]), kPoseDim, true);
+      return out;
+    }
+    const std::int64_t c = problem_->cam_idx[at(m)];
+    append_range(out, kPoseDim * at(c), kPoseDim, true);
+    if (b < layout_->reprojection.size()) {
+      append_range(out, intrinsics_of(c), n_params, true);
+    } else {
+      append_range(out, affine_offset_ + (2 * at(c)), 2, true);
+    }
+    const std::int64_t p = problem_->pt_idx[at(m)];
+    if (anchor_index_[at(p)] >= 0) {
+      const std::int64_t host = host_of(p);
+      append_range(out, kPoseDim * at(host), kPoseDim, true);
+      append_range(out, intrinsics_of(host), n_params, true);
+    }
+    return out;
+  }
+
+  /// @brief A block's free point slot.
+  /// @param b The block, in `squared_norms` order.
+  /// @return The slot, or -1 for a pose prior or a fixed point.
+  [[nodiscard]] Index block_slot(std::size_t b) const {
+    const Index m = block_observation(b);
+    return m < 0 ? -1 : layout_->point_slot[at(problem_->pt_idx[at(m)])];
+  }
+
+  /// @brief Lay out what every linearisation of the problem shares: the kept camera-side
+  ///        coordinates (the free and confined ones, the only ones the reduced system reads),
+  ///        each block's columns among them, and each free point's coupling rows (its distinct
+  ///        kept coordinates, ascending), with each block's row in its point's coupling.
+  void lay_out_blocks() {
+    const IndexList kept = Reduction(free_, confined_rows_, Eigen::MatrixXd(), full_size_).kept();
+    n_kept_ = static_cast<Index>(kept.size());
+    IndexList kept_position(static_cast<std::size_t>(full_size_), -1);
+    for (std::size_t k = 0; k < kept.size(); ++k) {
+      kept_position[at(kept[k])] = static_cast<Index>(k);
+    }
+    const std::size_t n_blocks =
+        layout_->reprojection.size() + layout_->depth.size() + layout_->prior_cams.size();
+    block_kept_.resize(n_blocks);
+    block_rows_.resize(n_blocks);
+    std::vector<IndexList> point_columns(static_cast<std::size_t>(layout_->free_points));
+    for (std::size_t b = 0; b < n_blocks; ++b) {
+      IndexList& columns = block_kept_[b];
+      columns = block_columns(b);
+      for (Index& c : columns) {
+        c = kept_position[at(c)];
+      }
+      const Index s = block_slot(b);
+      if (s < 0) {
+        continue;
+      }
+      IndexList& coupled = point_columns[at(s)];
+      for (const Index c : columns) {
+        if (c >= 0 && std::ranges::find(coupled, c) == coupled.end()) {
+          coupled.push_back(c);
+        }
+      }
+    }
+    auto coupling = std::make_shared<CouplingLayout>();
+    coupling->offset.push_back(0);
+    for (IndexList& coupled : point_columns) {
+      std::ranges::sort(coupled);  // ascending: the elimination walks memory in order
+      coupling->column.insert(coupling->column.end(), coupled.begin(), coupled.end());
+      coupling->offset.push_back(static_cast<Index>(coupling->column.size()));
+    }
+    for (std::size_t b = 0; b < n_blocks; ++b) {
+      const Index s = block_slot(b);
+      block_rows_[b].assign(block_kept_[b].size(), -1);
+      for (std::size_t j = 0; s >= 0 && j < block_kept_[b].size(); ++j) {
+        if (block_kept_[b][j] >= 0) {
+          const IndexList& coupled = point_columns[at(s)];
+          block_rows_[b][j] =
+              coupling->offset[at(s)] +
+              (std::ranges::lower_bound(coupled, block_kept_[b][j]) - coupled.begin());
+        }
+      }
+    }
+    coupling_layout_ = std::move(coupling);
+  }
+
+  /// @brief Add one block's weighted contribution to the normal equations: over its kept
+  ///        camera-side columns only, and its coupling straight into its point's rows.
+  /// @param b The block, in `squared_norms` order.
   /// @param block The linearised block.
   /// @param w Its IRLS weight.
   /// @param blocks The normal equations' blocks.
-  static void accumulate(const LinearBlock& block, double w,
-                         SchurSystem<DenseCholesky>::Blocks& blocks) {
-    if (block.columns.empty()) {
+  void accumulate(std::size_t b, const LinearBlock& block, double w,
+                  SchurSystem<DenseCholesky>::Blocks& blocks) const {
+    if (!block.valid) {
       return;  // unreachable: accepted states keep every point valid
     }
-    scatter_add(blocks.hessian_cc, block.columns, block.columns,
-                w * block.camera_side.transpose() * block.camera_side);
-    scatter_add(blocks.gradient_c, block.columns,
-                w * block.camera_side.transpose() * block.residual);
+    // A block's rows are fixed by its kind (a reprojection's 2, a depth prior's 1, a pose
+    // prior's 6): fixed-size views let the small products unroll.
+    switch (block.residual.size()) {
+      case 1:
+        accumulate_rows<1>(b, block, w, blocks);
+        return;
+      case 2:
+        accumulate_rows<2>(b, block, w, blocks);
+        return;
+      default:
+        accumulate_rows<kPoseDim>(b, block, w, blocks);
+        return;
+    }
+  }
+
+  /// @brief `accumulate` for a block of `Rows` rows.
+  /// @tparam Rows The block's rows.
+  /// @param b The block, in `squared_norms` order.
+  /// @param block The linearised block.
+  /// @param w Its IRLS weight.
+  /// @param blocks The normal equations' blocks.
+  template <int Rows>
+  void accumulate_rows(std::size_t b, const LinearBlock& block, double w,
+                       SchurSystem<DenseCholesky>::Blocks& blocks) const {
+    const Index width = block.camera_side.cols();
+    const Eigen::Map<const Eigen::Matrix<double, Rows, Eigen::Dynamic>> jacobian(
+        block.camera_side.data(), Rows, width);
+    const Eigen::Map<const Eigen::Matrix<double, Rows, 1>> residual(block.residual.data());
+    const IndexList& kept = block_kept_[b];
+    for (Index j = 0; j < width; ++j) {
+      const Index cj = kept[at(j)];
+      if (cj < 0) {
+        continue;
+      }
+      blocks.gradient_c(cj) += w * jacobian.col(j).dot(residual);
+      for (Index i = 0; i < width; ++i) {
+        if (const Index ci = kept[at(i)]; ci >= 0) {
+          blocks.hessian_cc(ci, cj) += w * jacobian.col(i).dot(jacobian.col(j));
+        }
+      }
+    }
     if (block.slot < 0) {
       return;
     }
+    const Eigen::Map<const Eigen::Matrix<double, Rows, 3>> point(block.point.data());
     const auto s = static_cast<std::size_t>(block.slot);
-    blocks.hessian_pp[s] += w * block.point.transpose() * block.point;
-    blocks.gradient_p[s] += w * block.point.transpose() * block.residual;
-    blocks.coupling.emplace_back(w * block.camera_side.transpose() * block.point);
-    blocks.columns.push_back(block.columns);
-    blocks.slots.push_back(block.slot);
+    blocks.hessian_pp[s] += w * (point.transpose() * point);
+    blocks.gradient_p[s] += w * (point.transpose() * residual);
+    const IndexList& rows = block_rows_[b];
+    for (Index j = 0; j < width; ++j) {
+      if (const Index r = rows[at(j)]; r >= 0) {
+        blocks.coupling.row(r) += w * (jacobian.col(j).transpose() * point);
+      }
+    }
   }
 
   /// @brief An anchored point's host camera.
@@ -479,20 +628,14 @@ class Bundle {
     if (!anchor) {
       return false;
     }
-    const Eigen::Matrix<double, Eigen::Dynamic, 3> j_world = block.point;
+    const BlockPoint j_world = block.point;
     const Index rows = j_world.rows();
     const Index n_params = problem_->intrinsics.cols();
     const Index width = block.camera_side.cols();
     block.camera_side.conservativeResize(rows, width + kPoseDim + n_params);
     block.camera_side.middleCols(width, kPoseDim) = j_world * anchor->d_pose;
     block.camera_side.rightCols(n_params) = j_world * anchor->d_intrinsics;
-    const std::int64_t host = host_of(p);
-    append_range(block.columns, kPoseDim * at(host), kPoseDim, true);
-    append_range(block.columns,
-                 intrinsics_offset_ +
-                     (n_params * at(problem_->intrinsics_idx[static_cast<std::size_t>(host)])),
-                 n_params, true);
-    block.point = Eigen::Matrix<double, Eigen::Dynamic, 3>::Zero(rows, 3);
+    block.point = BlockPoint::Zero(rows, 3);
     block.point.col(0) = j_world * anchor->d_rho;
     return true;
   }
@@ -531,9 +674,9 @@ class Bundle {
       return std::nullopt;
     }
     const auto c = static_cast<std::size_t>(problem_->cam_idx[static_cast<std::size_t>(m)]);
-    const Eigen::VectorXd params =
-        state.intrinsics.row(at(problem_->intrinsics_idx[c])).transpose();
-    const auto pixel = camera::project(problem_->model, params, in_camera(state, *point, m));
+    const auto pixel =
+        camera::project(problem_->model, state.intrinsics.row(at(problem_->intrinsics_idx[c])),
+                        in_camera(state, *point, m));
     if (!pixel) {
       return std::nullopt;
     }
@@ -611,7 +754,7 @@ class Bundle {
   /// @param world The world points.
   /// @param anchor_jacobians Every anchored point's Jacobians.
   /// @param i The block.
-  /// @return The block (with no columns if its point is behind or invalid).
+  /// @return The block (invalid if its point is behind or invalid).
   [[nodiscard]] LinearBlock reprojection_block(const State& state, const WorldPoints& world,
                                                const Anchors& anchor_jacobians,
                                                std::size_t i) const {
@@ -626,23 +769,37 @@ class Bundle {
       return {};
     }
     const Eigen::Matrix3d rotation = state.poses[c].topLeftCorner<3, 3>();
-    const Eigen::VectorXd params = state.intrinsics.row(at(g)).transpose();
-    const auto jacobian =
-        camera::project_jacobian(problem_->model, params, in_camera(state, *point, m));
+    const auto jacobian = camera::project_jacobian(problem_->model, state.intrinsics.row(at(g)),
+                                                   in_camera(state, *point, m));
     if (!jacobian) {
       return {};
     }
     const double scale = std::sqrt(problem_->weights(m));
     const Eigen::Matrix<double, 2, 3> j_world = scale * jacobian->leftCols<3>() * rotation;
-    LinearBlock block{.residual = *residual,
-                      .camera_side = Block(2, kPoseDim + n_params),
-                      .columns = pose_columns(static_cast<std::int64_t>(c)),
-                      .point = j_world,
-                      .slot = layout_->point_slot[static_cast<std::size_t>(p)]};
-    block.camera_side << j_world, -j_world * so3::hat(*point),
-        scale * jacobian->rightCols(n_params);
-    append_range(block.columns, intrinsics_offset_ + (n_params * at(g)), n_params, true);
+    LinearBlock block = observing(p, *residual, j_world, *point, kPoseDim + n_params);
+    block.camera_side.rightCols(n_params) = scale * jacobian->rightCols(n_params);
     return couple(block, p, anchor_jacobians) ? block : LinearBlock{};
+  }
+
+  /// @brief A block observing a point: its camera's pose columns from the world-point
+  ///        Jacobian, `(J, -J hat(X))`; the rest of its `width` columns are the caller's to fill.
+  /// @param p The point.
+  /// @param residual The weighted residual.
+  /// @param j_world d residual / d world point.
+  /// @param point The point in the world frame.
+  /// @param width The number of camera-side columns.
+  /// @return The block.
+  [[nodiscard]] LinearBlock observing(std::int64_t p, const BlockResidual& residual,
+                                      const BlockPoint& j_world, const Eigen::Vector3d& point,
+                                      Index width) const {
+    LinearBlock block{.residual = residual,
+                      .camera_side = Block::Zero(j_world.rows(), width),
+                      .point = j_world,
+                      .slot = layout_->point_slot[static_cast<std::size_t>(p)],
+                      .valid = true};
+    block.camera_side.leftCols<3>() = j_world;
+    block.camera_side.middleCols<3>(3) = -j_world * so3::hat(point);
+    return block;
   }
 
   /// @brief Linearise a depth-prior block: `d(1/z) = -dz / z^2`.
@@ -650,7 +807,7 @@ class Bundle {
   /// @param world The world points.
   /// @param anchor_jacobians Every anchored point's Jacobians.
   /// @param d The depth block.
-  /// @return The block (with no columns if its point is behind or invalid).
+  /// @return The block (invalid if its point is behind or invalid).
   [[nodiscard]] LinearBlock depth_block(const State& state, const WorldPoints& world,
                                         const Anchors& anchor_jacobians, std::size_t d) const {
     const Index m = layout_->obs[static_cast<std::size_t>(layout_->depth[d])];
@@ -665,14 +822,10 @@ class Bundle {
     const double scale = std::sqrt(problem_->depth_prior_weights(m));
     const Eigen::RowVector3d j_world =
         (-scale / (z * z)) * state.poses[static_cast<std::size_t>(c)].row(2).head<3>();
-    LinearBlock block{.residual = Eigen::VectorXd::Constant(1, *residual),
-                      .camera_side = Block(1, kPoseDim + 2),
-                      .columns = pose_columns(c),
-                      .point = j_world,
-                      .slot = layout_->point_slot[static_cast<std::size_t>(p)]};
-    block.camera_side << j_world, -j_world * so3::hat(*point), -scale * problem_->depth_prior(m),
-        -scale;
-    append_range(block.columns, affine_offset_ + (2 * at(c)), 2, true);
+    LinearBlock block =
+        observing(p, BlockResidual::Constant(1, *residual), j_world, *point, kPoseDim + 2);
+    block.camera_side(0, kPoseDim) = -scale * problem_->depth_prior(m);
+    block.camera_side(0, kPoseDim + 1) = -scale;
     return couple(block, p, anchor_jacobians) ? block : LinearBlock{};
   }
 
@@ -701,9 +854,9 @@ class Bundle {
     const se3::Vector6d weights = pose_sqrt_weights(k);
     LinearBlock block{.residual = weights.cwiseProduct(*error),
                       .camera_side = Block(weights.asDiagonal() * jacobian),
-                      .columns = pose_columns(layout_->prior_cams[k]),
-                      .point = Eigen::Matrix<double, Eigen::Dynamic, 3>(0, 3),
-                      .slot = -1};
+                      .point = BlockPoint(0, 3),
+                      .slot = -1,
+                      .valid = true};
     return block;
   }
 
@@ -716,6 +869,14 @@ class Bundle {
   IndexList confined_rows_;
   IndexList anchored_points_;
   IndexList anchor_index_;
+  /// @brief The number of kept camera-side coordinates (`lay_out_blocks`).
+  Index n_kept_ = 0;
+  /// @brief Each block's columns as positions among the kept coordinates, or -1.
+  std::vector<IndexList> block_kept_;
+  /// @brief Each block's columns' rows in its point's coupling, or -1.
+  std::vector<IndexList> block_rows_;
+  /// @brief Each free point's coupling rows.
+  std::shared_ptr<const CouplingLayout> coupling_layout_;
   std::vector<Index> point_dims_;
 };
 
