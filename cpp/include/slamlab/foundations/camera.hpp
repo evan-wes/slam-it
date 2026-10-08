@@ -32,17 +32,21 @@ enum class Model : std::uint8_t {
 };
 
 /// @brief The length of a model's intrinsics (Rust's `Model::intrinsics_len`).
-/// @param model The model (not `kCount`).
-/// @return 4 (pinhole), 9 (radtan) or 5 (radial).
+/// @param model The model.
+/// @return 4 (pinhole), 9 (radtan) or 5 (radial); 0 for `kCount`. Every model is a case, so a
+///         model added without its length fails to build (`-Wswitch`), as Rust's `match` does.
 [[nodiscard]] constexpr Eigen::Index intrinsics_size(Model model) {
   switch (model) {
     case Model::kPinhole:
       return 4;
+    case Model::kRadTan:
+      return 9;
     case Model::kRadial:
       return 5;
-    default:
-      return 9;
+    case Model::kCount:
+      break;
   }
+  return 0;
 }
 
 /// @brief The most intrinsics any model has: what a fixed-size buffer of a model's

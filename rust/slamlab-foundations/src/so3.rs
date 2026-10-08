@@ -481,7 +481,8 @@ pub fn to_quaternion(rotation: &Matrix3<f64>) -> Result<Vector4<f64>> {
 ///
 /// # Returns
 ///
-/// `U diag(1, 1, det(U Vᵀ)) Vᵀ` for `matrix = U S Vᵀ`; NaN for a non-finite matrix.
+/// `U diag(1, 1, det(U Vᵀ)) Vᵀ` for `matrix = U S Vᵀ`; NaN for a non-finite matrix (or one
+/// the 3x3 SVD gives up on, never observed).
 #[must_use]
 pub fn project_to_so3(matrix: &Matrix3<f64>) -> Matrix3<f64> {
     let Some((mut u, _, v_t)) = svd3(matrix) else {

@@ -423,7 +423,8 @@ fn jacobi_svd3(
 ///
 /// # Returns
 ///
-/// `(U, σ, Vᵀ)`, or `None` for a non-finite matrix.
+/// `(U, σ, Vᵀ)`, or `None` for a non-finite matrix (or one not diagonalised within
+/// [`MAX_SWEEPS`] sweeps, never observed).
 #[must_use]
 pub fn svd3(matrix: &Matrix3<f64>) -> Option<(Matrix3<f64>, Vector3<f64>, Matrix3<f64>)> {
     let (u, singular, v) = jacobi_svd3(matrix, true)?;
@@ -438,7 +439,8 @@ pub fn svd3(matrix: &Matrix3<f64>) -> Option<(Matrix3<f64>, Vector3<f64>, Matrix
 ///
 /// # Returns
 ///
-/// σ, or NaN for a non-finite matrix (which every rank test, written so NaN fails it, then
+/// σ, or NaN for a non-finite matrix or one [`svd3`] gives up on (which every rank test,
+/// written so NaN fails it, then
 /// rejects).
 #[must_use]
 pub fn singular_values3(matrix: &Matrix3<f64>) -> Vector3<f64> {
@@ -615,22 +617,26 @@ mod tests {
                 .map(|x| x.as_f64().expect("a number"))
                 .collect()
         };
+        // Bits, not values: `==` equates 0.0 and -0.0, whose sign Eigen moves into U.
+        let bits = |values: &[f64]| values.iter().map(|x| x.to_bits()).collect::<Vec<u64>>();
         let cases = fixture["cases"].as_array().expect("cases");
-        assert!(cases.len() >= 20);
+        assert!(cases.len() >= 21);
         for case in cases {
             let name = case["name"].as_str().expect("a name");
             let m = Matrix3::from_row_slice(&numbers(&case["matrix"]));
             let (u, s, v_t) = svd3(&m).expect("a finite matrix");
-            assert_eq!(
-                u,
-                Matrix3::from_row_slice(&numbers(&case["u"])),
-                "{name}: U"
-            );
-            let singular = Vector3::from_column_slice(&numbers(&case["singular_values"]));
-            assert_eq!(s, singular, "{name}: σ");
-            assert_eq!(singular_values3(&m), singular, "{name}: σ alone");
+            let expected_u = Matrix3::from_row_slice(&numbers(&case["u"]));
+            assert_eq!(bits(u.as_slice()), bits(expected_u.as_slice()), "{name}: U");
+            let singular = numbers(&case["singular_values"]);
+            assert_eq!(bits(s.as_slice()), bits(&singular), "{name}: σ");
+            let alone = singular_values3(&m);
+            assert_eq!(bits(alone.as_slice()), bits(&singular), "{name}: σ alone");
             let v = Matrix3::from_row_slice(&numbers(&case["v"]));
-            assert_eq!(v_t, v.transpose(), "{name}: V");
+            assert_eq!(
+                bits(v_t.as_slice()),
+                bits(v.transpose().as_slice()),
+                "{name}: V"
+            );
         }
     }
 

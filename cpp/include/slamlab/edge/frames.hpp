@@ -91,7 +91,8 @@ struct Frame {
 };
 
 /// @brief A frame from its parts, its feature grid built from its keypoints: how every frame is
-///        made (the builders, the bindings, the tests), so none lacks its grid.
+///        made (the builders, the bindings, the tests), so none lacks its grid. It does not
+///        check that the parts hold one entry per keypoint; a search's `check_frame` does.
 /// @param timestamp Its time, in seconds.
 /// @param features Its ORB features.
 /// @param bearings Each keypoint's unit bearing.

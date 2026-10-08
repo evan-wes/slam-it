@@ -337,11 +337,13 @@ Result<Image> blur(const Image& image, std::span<const std::uint32_t> kernel) {
         std::span(image.pixels).subspan(at(r * cols), at(cols));
     const std::span<std::int32_t> sums = std::span(across).subspan(at(r * cols), at(cols));
     // A kernel wider than the row leaves no interior: every column reflects.
-    for (std::int64_t k = 0; last > first && k < taps; ++k) {
-      const auto weight = static_cast<std::int32_t>(kernel[at(k)]);
-      const std::span<const std::uint8_t> shifted = row.subspan(at(k), at(last - first));
-      for (std::int64_t c = 0; c < last - first; ++c) {
-        sums[at(first + c)] += weight * shifted[at(c)];
+    if (last > first) {
+      for (std::int64_t k = 0; k < taps; ++k) {
+        const auto weight = static_cast<std::int32_t>(kernel[at(k)]);
+        const std::span<const std::uint8_t> shifted = row.subspan(at(k), at(last - first));
+        for (std::int64_t c = 0; c < last - first; ++c) {
+          sums[at(first + c)] += weight * shifted[at(c)];
+        }
       }
     }
     const auto reflecting = [&](std::int64_t c) {

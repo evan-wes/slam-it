@@ -152,7 +152,8 @@ pub struct Frame {
 
 impl Frame {
     /// A frame from its parts, its feature grid built from its keypoints: how every frame is
-    /// made (the builders, the bindings, the tests), so none lacks its grid.
+    /// made (the builders, the bindings, the tests), so none lacks its grid. It does not check
+    /// that the parts hold one entry per keypoint; a search's `check_frame` does.
     ///
     /// # Arguments
     ///
@@ -477,9 +478,50 @@ pub fn search(
 
 #[cfg(test)]
 mod tests {
-    //! Native tests of depth lookup and the camera check.
+    //! Native tests of depth lookup, the camera check and the one constructor.
 
     use super::*;
+    use slamlab_foundations::orb::Keypoint;
+
+    /// `Frame::new` builds the keypoints' grid, and refuses a position the grid cannot hold.
+    #[test]
+    #[allow(clippy::cast_precision_loss, reason = "small indices")]
+    fn new_builds_the_keypoints_grid() {
+        let mut keypoints: Vec<Keypoint> = (0..6)
+            .map(|i| Keypoint {
+                xy: [10.0 + 7.0 * i as f64, 20.0 + 3.0 * i as f64],
+                level: i % 2,
+                level_xy: [0, 0],
+                response: 0,
+                angle: 0,
+            })
+            .collect();
+        let parts = |keypoints: Vec<Keypoint>| {
+            let n = keypoints.len();
+            let features = Features {
+                keypoints,
+                descriptors: vec![[0; 32]; n],
+                scale_factor: 1.2,
+                levels: 8,
+            };
+            (
+                features,
+                vec![Vector3::zeros(); n],
+                vec![0.0; n],
+                vec![0.0; n],
+            )
+        };
+        let (features, bearings, depth, right) = parts(keypoints.clone());
+        let frame = Frame::new(2.0, features, bearings, depth, right).unwrap();
+        assert_eq!(frame.grid, FeatureGrid::build(&keypoints).unwrap());
+        keypoints[2].xy[0] = f64::NAN;
+        let (features, bearings, depth, right) = parts(keypoints);
+        let refused = Frame::new(2.0, features, bearings, depth, right);
+        assert_eq!(
+            refused.unwrap_err().kind,
+            slamlab_foundations::error::ErrorKind::InvalidInput
+        );
+    }
 
     /// Depth is read half up, clamped, and NaN where the map holds none.
     #[test]

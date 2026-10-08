@@ -11,6 +11,7 @@
 ///        languages cannot drift apart unnoticed.
 #include <Eigen/Geometry>
 #include <Eigen/SVD>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -69,7 +70,7 @@ class Draws {
 /// @return The cases.
 std::vector<std::pair<std::string, Eigen::Matrix3d>> matrices() {
   Draws draws;
-  constexpr std::size_t kCases = 20;
+  constexpr std::size_t kCases = 21;
   std::vector<std::pair<std::string, Eigen::Matrix3d>> out;
   out.reserve(kCases);
   for (int k = 0; k < 4; ++k) {
@@ -102,6 +103,10 @@ std::vector<std::pair<std::string, Eigen::Matrix3d>> matrices() {
   out.emplace_back("minus identity", Eigen::Matrix3d(-Eigen::Matrix3d::Identity()));
   out.emplace_back("scaled by 1e-300", Eigen::Matrix3d(draws.matrix() * 1e-300));
   out.emplace_back("scaled by 1e300", Eigen::Matrix3d(draws.matrix() * 1e300));
+  // Symmetric 2x2 blocks take the symmetrising rotation's identity branch (Umeyama's
+  // covariance of a set aligned to itself is symmetric).
+  const Eigen::Matrix3d spread = draws.matrix();
+  out.emplace_back("symmetric: a covariance", Eigen::Matrix3d(spread.transpose() * spread));
   return out;
 }
 
@@ -129,6 +134,21 @@ Eigen::Matrix3d from_rows(const std::vector<double>& values) {
     }
   }
   return out;
+}
+
+/// @brief Whether two matrices hold the same bits, signs of zero included (`==` equates 0.0
+///        and -0.0).
+/// @param a A matrix.
+/// @param b Another, of the same size.
+/// @return Whether every entry's bits agree.
+template <typename A, typename B>
+bool same_bits(const A& a, const B& b) {
+  for (Eigen::Index k = 0; k < a.size(); ++k) {
+    if (std::bit_cast<std::uint64_t>(a(k)) != std::bit_cast<std::uint64_t>(b(k))) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /// @brief Eigen's factors of a matrix.
@@ -171,9 +191,9 @@ int run() {
     const Eigen::Matrix3d m = from_rows(entry["matrix"].get<std::vector<double>>());
     const auto [u, s, v] = factors(m);
     const auto expected_s = entry["singular_values"].get<std::vector<double>>();
-    const bool same = u == from_rows(entry["u"].get<std::vector<double>>()) &&
-                      s == Eigen::Vector3d(expected_s[0], expected_s[1], expected_s[2]) &&
-                      v == from_rows(entry["v"].get<std::vector<double>>());
+    const bool same = same_bits(u, from_rows(entry["u"].get<std::vector<double>>())) &&
+                      same_bits(s, Eigen::Vector3d(expected_s[0], expected_s[1], expected_s[2])) &&
+                      same_bits(v, from_rows(entry["v"].get<std::vector<double>>()));
     const std::string message =
         entry["name"].get<std::string>() + ": Eigen's factors are the fixture's";
     expect(same, message.c_str(), failures);

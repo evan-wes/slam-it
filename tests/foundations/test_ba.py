@@ -472,7 +472,8 @@ def test_backend_parity(backend: str, fixed_hosts: bool) -> None:
     problem = _every_kind(scene)
     if fixed_hosts:
         problem = replace(problem, fixed_poses=np.arange(5) < 2)
-        assert np.all(problem.point_anchor[problem.point_anchor >= 0] < 50)  # camera 0's
+        anchored = problem.point_anchor[problem.point_anchor >= 0]
+        assert np.all(problem.cam_idx[anchored] == 0)  # every host is a fixed camera
     options = ba.BAOptions(
         solver=replace(TIGHT, loss=nls.Loss("cauchy", 2.0)), depth_loss=nls.Loss("huber", 0.5)
     )
