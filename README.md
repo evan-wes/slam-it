@@ -49,8 +49,8 @@ Native benchmarks (C++ and Rust) and bundle adjustment from Rust alone, on a dec
 problem (see [`docs/notes/rust-port.md`](docs/notes/rust-port.md)):
 
 ```bash
-cmake -S . -B build/native -G Ninja -DSLAMLAB_BUILD_BENCHMARKS=ON && cmake --build build/native -j4
-SLAMLAB_BAL=<problem.txt> build/native/bench/foundations_bench_foundations
+cmake -S . -B build/bench -G Ninja -DSLAMLAB_BUILD_BENCHMARKS=ON && cmake --build build/bench -j4
+SLAMLAB_BAL=<problem.txt> build/bench/bench/foundations_bench_foundations
 SLAMLAB_BAL=<problem.txt> cargo bench --manifest-path rust/Cargo.toml --bench foundations
 cargo run --release --manifest-path rust/Cargo.toml --example bal -- <problem.txt>
 ```

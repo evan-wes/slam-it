@@ -80,7 +80,9 @@ code or a binding.
   build without Python.
 - Native benchmarks are developer tools outside the cores: `cpp/bench/<rung>/` (Google
   Benchmark, built with `-DSLAMLAB_BUILD_BENCHMARKS=ON`) and each crate's `benches/`
-  (criterion), held to the ladder by `check_layers.py`; layer 1 builds them, never runs them.
+  (criterion), held to the ladder by `check_layers.py`; layer 1 builds them, never runs them,
+  the C++ ones in their own unhardened tree, `build/bench`, the one to time from (the tests'
+  `build/native` runs with libstdc++'s assertions, which would slow a timing).
   `slamlab.eval` keeps the Python benchmarks and the budget harness (`slamlab.eval.budgets`):
   a program pinned to a budget's cores and its memory capped, its frames judged against their
   deadline. Its runs are the tests marked `budget`, outside layer 1:
