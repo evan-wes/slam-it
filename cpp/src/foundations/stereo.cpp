@@ -119,7 +119,10 @@ Result<void> check_inside(const orb::Features& features, const std::vector<image
   return {};
 }
 
-/// @brief The column on one level nearest a pixel's centre on another.
+/// @brief The column on one level nearest a pixel's centre on another: the pixel mapped to the
+///        full image (`image::full_image_coordinate`) and on to the other level
+///        (`image::level_coordinate`), at `((2 x + 1) to_cols - from_cols) / (2 from_cols)`,
+///        rounded half up, in integers.
 /// @param x The pixel's column, inside its level.
 /// @param from_cols Its level's columns.
 /// @param to_cols The other level's columns.

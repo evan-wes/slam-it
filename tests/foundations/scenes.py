@@ -103,7 +103,8 @@ def check_fixture(module: ModuleType, fixture: dict[str, Any], function: str, ba
     A RANSAC function (name ending in ``_ransac``) takes ``threshold`` and ``seed`` from each
     case's input beside the correspondences, and is held to the expected model and inliers. A
     refinement (name starting ``refine_``) is held to the expected state and to whether it
-    converged.
+    converged, and, where the case records one, to its final cost; a case may carry its own
+    tolerance (with ``cost_rtol`` for the cost).
 
     Parameters
     ----------
@@ -121,8 +122,13 @@ def check_fixture(module: ModuleType, fixture: dict[str, Any], function: str, ba
         inputs = dict(case["input"])
         if function.startswith("refine_"):
             solved = getattr(module, function)(**inputs, backend=backend)
-            assert_matches_fixture(solved.state, case["expected"], spec["tolerance"])
+            tolerance = case.get("tolerance", spec["tolerance"])
+            pose_tolerance = {k: v for k, v in tolerance.items() if k != "cost_rtol"}
+            assert_matches_fixture(solved.state, case["expected"], pose_tolerance)
             assert solved.summary.converged == case["summary"]["converged"]
+            if "cost" in case["summary"]:
+                cost, rtol = case["summary"]["cost"], tolerance["cost_rtol"]
+                assert abs(solved.summary.final_cost - cost) <= rtol * abs(cost)
             continue
         if not function.endswith("_ransac"):
             got = getattr(module, function)(**inputs, backend=backend)

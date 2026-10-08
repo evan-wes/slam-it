@@ -66,10 +66,15 @@ int main() {
       slamlab::foundations::so3::exp(Eigen::Vector3d(0.01, -0.02, 0.015)) *
       truth.topLeftCorner<3, 3>();
   start.topRightCorner<3, 1>() += Eigen::Vector3d(0.03, -0.02, 0.05);
-  const auto refined = pnp::refine_pose(start, points, bearings, 1e-3);
+  const Eigen::VectorXd ones = Eigen::VectorXd::Ones(points.rows());
+  const auto refined = pnp::refine_pose(start, points, bearings, 1e-3, ones);
   expect(refined.has_value() && refined->summary.converged &&
              (refined->state - truth).cwiseAbs().maxCoeff() < 1e-8,
          "the refinement converges to the true pose", failures);
+  const Eigen::VectorXd levels = Eigen::VectorXd::LinSpaced(points.rows(), 1.0, 0.05);
+  const auto weighted = pnp::refine_pose(start, points, bearings, 1e-3, levels);
+  expect(weighted.has_value() && (weighted->state - truth).cwiseAbs().maxCoeff() < 1e-8,
+         "weighted, exact correspondences still give the true pose", failures);
 
   // Every third bearing replaced by a direction no pose explains.
   Rows3 dirty = bearings;
@@ -98,8 +103,17 @@ int main() {
          "EPnP rejects four points", failures);
   Eigen::Matrix4d behind = truth;
   behind(2, 3) -= 20.0;
-  const auto rejected = pnp::refine_pose(behind, points, bearings, 1e-3);
+  const Eigen::VectorXd unit = Eigen::VectorXd::Ones(points.rows());
+  const auto rejected = pnp::refine_pose(behind, points, bearings, 1e-3, unit);
   expect(!rejected.has_value() && rejected.error().kind == ErrorKind::kInvalidInput,
          "the refinement rejects a start with points behind the camera", failures);
+  Eigen::VectorXd zero = unit;
+  zero(0) = 0.0;
+  const auto unweighted = pnp::refine_pose(truth, points, bearings, 1e-3, zero);
+  expect(!unweighted.has_value() && unweighted.error().kind == ErrorKind::kInvalidInput,
+         "the refinement rejects a weight of 0", failures);
+  const auto short_weights = pnp::refine_pose(truth, points, bearings, 1e-3, unit.head(3));
+  expect(!short_weights.has_value() && short_weights.error().kind == ErrorKind::kInvalidInput,
+         "the refinement rejects weights that are not one per correspondence", failures);
   return slamlab::testing::finish("foundations/pnp", failures);
 }

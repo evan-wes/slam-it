@@ -75,6 +75,20 @@ inline constexpr std::int64_t kMaxSide = pow2(20);
   return ((((2.0 * x) + 1.0) * static_cast<double>(size)) - level) / (2.0 * level);
 }
 
+/// @brief A full-image position's coordinate on a pyramid level, along one axis
+///        (`slamlab.foundations.image.level_coordinate`): `full_image_coordinate`'s inverse,
+///        `((2 u + 1) n_l - n_0) / (2 n_0)`, computed in that order. Level 0 maps to itself.
+/// @param u The position in the full image, in its pixels.
+/// @param level_size The level's size along the axis, `n_l`.
+/// @param size The full image's size along it, `n_0`.
+/// @return The level coordinate.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (level_size, size), as in Python
+[[nodiscard]] constexpr double level_coordinate(double u, std::int64_t level_size,
+                                                std::int64_t size) {
+  const auto full = static_cast<double>(size);
+  return ((((2.0 * u) + 1.0) * static_cast<double>(level_size)) - full) / (2.0 * full);
+}
+
 /// @brief A grayscale image, row-major.
 struct Image {
   /// @brief The number of rows (the height), at least 1.

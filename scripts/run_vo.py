@@ -1,0 +1,245 @@
+"""Run a sequence through the edge pipeline with any backend, score the run, and record it.
+
+Writes the run's folder with :func:`slamlab.orchestration.vo.run` (or reads one already
+written, with ``--reuse``), then prints what it holds: frames tracked, keyframes, map points,
+the tracking time per frame. With the sequence's ground truth (TUM's ``groundtruth.txt``, EuRoC's
+``state_groundtruth_estimate0``) it prints the ATE (Sim(3)-aligned for monocular, SE(3)
+otherwise) and the RPE over one frame period (:func:`slamlab.eval.runs.evaluate`). With
+``--rerun FILE.rrd`` it saves a rerun recording of the trajectory, the keyframes and the map
+points (open it with ``rerun FILE.rrd``).
+
+Example, the C++ program on 300 frames of a TUM sequence::
+
+    python scripts/run_vo.py --dataset tum --sequence PATH --mode rgbd --out RUN_DIR
+        --backend cpp --count 300 --rerun RUN.rrd
+
+``--option KEY=VALUE`` sets a field of :class:`slamlab.edge.options.Options` (repeatable).
+"""
+
+from __future__ import annotations
+
+import argparse
+import dataclasses
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+from numpy.typing import NDArray
+
+from slamlab import backends
+from slamlab.edge.options import MODES, Options
+from slamlab.eval import euroc, runs, tum
+from slamlab.foundations.errors import InvalidInputError
+from slamlab.orchestration import vo
+
+
+def parse_options(pairs: list[str]) -> Options:
+    """Build the settings from ``KEY=VALUE`` pairs, each value of its field's type.
+
+    Parameters
+    ----------
+    pairs : list of str
+        The pairs.
+
+    Returns
+    -------
+    slamlab.edge.options.Options
+        The defaults, with the pairs' fields set.
+
+    Raises
+    ------
+    SystemExit
+        For a pair without ``=``, an unknown field, or a value of the wrong type.
+    """
+    defaults = Options()
+    known = {field.name for field in dataclasses.fields(Options)}
+    changes: dict[str, Any] = {}
+    for pair in pairs:
+        key, equals, value = pair.partition("=")
+        if not equals or key not in known:
+            raise SystemExit(f"--option {pair!r}: expected KEY=VALUE with KEY a field of Options")
+        kind = type(getattr(defaults, key))
+        try:
+            changes[key] = kind(value)
+        except ValueError:
+            raise SystemExit(f"--option {pair!r}: expected a {kind.__name__}") from None
+    return dataclasses.replace(defaults, **changes)
+
+
+Truth = tuple[NDArray[np.float64], NDArray[np.float64]]
+"""A sequence's ground truth at its frames: their times and true ``T_world_cam``."""
+
+
+def ground_truth(dataset: str, sequence: Path) -> Truth | None:
+    """Return the sequence's ground truth at its frames, or None if it has none.
+
+    Parameters
+    ----------
+    dataset : {"tum", "euroc"}
+        The dataset.
+    sequence : pathlib.Path
+        The sequence's folder.
+
+    Returns
+    -------
+    Truth or None
+        The frames' times and their true ``T_world_cam``; None if the sequence has no
+        ground-truth file.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If the ground truth is malformed.
+    """
+    try:
+        read = tum.read_sequence(sequence) if dataset == "tum" else euroc.read_sequence(sequence)
+    except FileNotFoundError:
+        return None
+    return read.timestamps, read.T_world_cam
+
+
+def score(run: runs.Run, truth: Truth | None) -> runs.Evaluation | None:
+    """Score a run against the ground truth, if there is one and enough of the run matches it.
+
+    Parameters
+    ----------
+    run : slamlab.eval.runs.Run
+        The run.
+    truth : Truth or None
+        The ground truth.
+
+    Returns
+    -------
+    slamlab.eval.runs.Evaluation or None
+        The ATE and RPE, or None (the reason printed).
+    """
+    if truth is None:
+        print("no ground truth: not scored")
+        return None
+    try:
+        return runs.evaluate(run, *truth)
+    except InvalidInputError as error:
+        print(f"not scored: {error}")
+        return None
+
+
+def summarize(run: runs.Run, scored: runs.Evaluation | None) -> None:
+    """Print what a run holds and, if it was scored, its errors.
+
+    Parameters
+    ----------
+    run : slamlab.eval.runs.Run
+        The run.
+    scored : slamlab.eval.runs.Evaluation or None
+        Its errors.
+    """
+    seconds = [float(d.get("seconds", 0.0)) for d in run.diagnostics]
+    per_frame = 1000.0 * float(np.mean(seconds)) if seconds else 0.0
+    print(
+        f"{run.sequence} ({run.dataset}, {run.mode}, {run.backend}): "
+        f"{len(run.timestamps)} of {len(run.diagnostics)} frames tracked, "
+        f"{len(run.keyframe_timestamps)} keyframes, {len(run.points)} points, "
+        f"{per_frame:.1f} ms tracking per frame (frame building aside)"
+    )
+    if scored is None:
+        return
+    absolute, relative = scored.absolute, scored.relative
+    scale = f", scale {absolute.scale:.4f}" if run.mode == "monocular" else ""
+    print(
+        f"ATE over {scored.matched} frames: RMSE {100 * absolute.rmse:.2f} cm, median "
+        f"{100 * absolute.median:.2f} cm, max {100 * absolute.max:.2f} cm{scale}"
+    )
+    print(
+        f"RPE per frame: translation RMSE {100 * relative.translation_rmse:.3f} cm, "
+        f"rotation RMSE {np.degrees(relative.rotation_rmse):.3f} deg"
+    )
+
+
+def record(path: Path, run: runs.Run, truth: Truth | None, scored: runs.Evaluation | None) -> None:
+    """Save a rerun recording of the run: its trajectory, keyframes and points.
+
+    The run is drawn in the ground truth's frame when it was scored (its ATE alignment
+    applied), beside the true trajectory.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        The ``.rrd`` file to write.
+    run : slamlab.eval.runs.Run
+        The run.
+    truth : Truth or None
+        The ground truth.
+    scored : slamlab.eval.runs.Evaluation or None
+        The run's errors, for the alignment.
+    """
+    import rerun as rr  # noqa: PLC0415 -- optional, only for --rerun
+
+    rr.init("slamlab_vo")
+    rr.save(str(path))
+    if scored is not None:
+        alignment = scored.absolute.alignment
+        rr.log(
+            "world/run",
+            rr.Transform3D(translation=alignment[:3, 3], mat3x3=alignment[:3, :3]),
+            static=True,
+        )
+    if truth is not None:
+        centres = truth[1][:, :3, 3]
+        rr.log("world/truth", rr.LineStrips3D([centres], colors=[[80, 200, 80]]), static=True)
+    rr.log("world/run/points", rr.Points3D(run.points, radii=0.005), static=True)
+    rr.log("world/run/trajectory", rr.LineStrips3D([run.poses[:, :3, 3]]), static=True)
+    for k, pose in enumerate(run.keyframe_poses):
+        rr.log(
+            f"world/run/keyframes/{k}",
+            rr.Transform3D(translation=pose[:3, 3], mat3x3=pose[:3, :3]),
+            static=True,
+        )
+        rr.log(
+            f"world/run/keyframes/{k}/frustum",
+            rr.Pinhole(focal_length=0.5, width=1.0, height=0.75),
+            static=True,
+        )
+
+
+def main() -> None:
+    """Run the script."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--dataset", choices=vo.DATASETS, required=True)
+    parser.add_argument("--sequence", type=Path, required=True, help="the sequence's folder")
+    parser.add_argument("--mode", choices=MODES, required=True)
+    parser.add_argument("--out", type=Path, required=True, help="the run's folder")
+    parser.add_argument("--backend", choices=backends.BACKENDS, default="cpp")
+    parser.add_argument("--first", type=int, default=0, help="the first frame run")
+    parser.add_argument("--count", type=int, help="the frames run (default: all)")
+    parser.add_argument(
+        "--option", action="append", default=[], metavar="KEY=VALUE", help="a setting"
+    )
+    parser.add_argument(
+        "--reuse", action="store_true", help="read the run already in --out instead of running"
+    )
+    parser.add_argument("--rerun", type=Path, help="save a rerun recording to this .rrd file")
+    args = parser.parse_args()
+
+    if args.reuse:
+        run = runs.read_run(args.out)
+    else:
+        run = vo.run(
+            args.dataset,
+            args.sequence,
+            args.mode,
+            args.out,
+            backend=args.backend,
+            options=parse_options(args.option),
+            first=args.first,
+            count=args.count,
+        )
+    truth = ground_truth(args.dataset, args.sequence)
+    scored = score(run, truth)
+    summarize(run, scored)
+    if args.rerun:
+        record(args.rerun, run, truth, scored)
+        print(f"recording: {args.rerun}")
+
+
+if __name__ == "__main__":
+    main()

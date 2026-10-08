@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from slamlab import backends
-from slamlab.foundations import homography, ransac, se3
+from slamlab.foundations import correspondences, homography, ransac, se3
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
 from tests.conftest import load_fixture, require_function
 from tests.foundations import scenes as sc
@@ -127,6 +127,85 @@ def test_every_candidate_reproduces_h(backend: str) -> None:
             rebuilt = candidate[:3, :3] + np.outer(candidate[:3, 3], n)
             rebuilt /= np.linalg.norm(rebuilt)
             assert min(np.abs(rebuilt - target).max(), np.abs(rebuilt + target).max()) < 1e-10
+
+
+@pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
+def test_the_dlt_refuses_a_singular_fit(backend: str) -> None:
+    """Two points matched to one: the only exact fit is singular, so there is no homography.
+
+    Four correspondences determine H, but with two of image 1's points on one point of image 2
+    the exact fit maps their line onto that point: rank below 3, which no two views of a plane
+    give. The DLT, H-RANSAC's minimal and least-squares solver, refuses it.
+    """
+    chosen = require_function(backend, homography.__name__, "homography_dlt")
+    points1 = [[0.0, 0.0], [100.0, 0.0], [0.0, 100.0], [100.0, 100.0]]
+    points2 = [[10.0, 10.0], [10.0, 10.0], [20.0, 120.0], [120.0, 110.0]]
+    with pytest.raises(DegenerateError, match="H: the correspondences"):
+        homography.homography_dlt(points1, points2, backend=chosen)
+    moved = [[10.0, 10.0], [110.0, 12.0], [20.0, 120.0], [120.0, 110.0]]
+    assert homography.homography_dlt(points1, moved, backend=chosen).shape == (3, 3)
+
+
+def _tilted_view(rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray] | None:
+    """Return a minimal sample of a steep plane seen in two wide views, in pixels, or None.
+
+    A plane tilted up to 85 degrees from facing camera 1, at 1 to 10 m, and four points on it
+    anywhere in camera 1's 60-degree field of view; camera 2 rotated up to 30 degrees about
+    each axis and moved up to the plane's distance along each. None if a ray misses the
+    plane's front, or a point is behind a camera or outside camera 2's view.
+    """
+    focal, half = 320.0, np.tan(np.radians(30.0))
+    depth = rng.uniform(1.0, 10.0)
+    tilt, azimuth = np.radians(rng.uniform(0.0, 85.0)), rng.uniform(0.0, 2.0 * np.pi)
+    normal = np.array(
+        [np.sin(tilt) * np.cos(azimuth), np.sin(tilt) * np.sin(azimuth), -np.cos(tilt)]
+    )
+    rays = np.column_stack([rng.uniform(-half, half, (4, 2)), np.ones(4)])
+    along = rays @ normal
+    if np.any(along >= -1e-6):
+        return None
+    points = rays * (normal[2] * depth / along)[:, None]  # the plane passes through (0, 0, d)
+    pose = se3.exp(np.r_[rng.uniform(-1.0, 1.0, 3) * depth, rng.uniform(-1.0, 1.0, 3) * 0.5236])
+    seen = points @ pose[:3, :3].T + pose[:3, 3]
+    if np.any(points[:, 2] <= 0.0) or np.any(seen[:, 2] <= 0.0):
+        return None
+    image1, image2 = focal * points[:, :2] / points[:, 2:], focal * seen[:, :2] / seen[:, 2:]
+    if np.any(np.abs(image2) > focal * half):
+        return None
+    return image1, image2
+
+
+def _condition(points1: np.ndarray, points2: np.ndarray, h: np.ndarray) -> float:
+    """Return H's smallest over largest singular value in the Hartley-normalised frame."""
+    t1 = correspondences.hartley_normalisation(points1)
+    t2 = correspondences.hartley_normalisation(points2)
+    assert t1 is not None
+    assert t2 is not None
+    singular = np.linalg.svd(t2 @ h @ np.linalg.inv(t1), compute_uv=False)
+    return float(singular[2] / singular[0])
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_steep_planes_keep_the_rank_margin(backend: str) -> None:
+    """Minimal samples of steep planes under wide motions all fit (review panel finding L10).
+
+    The DLT refuses an H below :data:`CONDITION_TOLERANCE` of its largest singular value; on
+    these 2000 scenes the least is 4.5e-4, so a threshold raised into the range real scenes
+    reach refuses one of them and fails here.
+    """
+    chosen = require_function(backend, homography.__name__, "homography_dlt")
+    rng = np.random.default_rng(31)
+    least, fitted = np.inf, 0
+    for _ in range(20_000):  # bounded: the seeded draws give 2000 views well within it
+        view = _tilted_view(rng)
+        if view is None:
+            continue
+        least = min(least, _condition(*view, homography.homography_dlt(*view, backend=chosen)))
+        fitted += 1
+        if fitted == 2000:
+            break
+    assert fitted == 2000
+    assert least > homography.CONDITION_TOLERANCE
 
 
 def test_singular_homographies_are_rejected() -> None:

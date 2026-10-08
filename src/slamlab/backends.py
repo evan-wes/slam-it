@@ -8,6 +8,9 @@ optional extensions whose submodules mirror the Python package tree:
 - ``cpp``: ``slamlab._cpp`` (nanobind), e.g. ``slamlab._cpp.foundations.so3``;
 - ``rust``: ``slamlab_rs`` (PyO3), e.g. ``slamlab_rs.foundations.so3``.
 
+Pipelines that run a whole sequence also come as native programs (:func:`program`): C++'s
+installed with the package, Rust's built in the checkout.
+
 This module only finds implementations. It knows nothing about what they compute,
 and it sits below every algorithm package in the dependency layers.
 """
@@ -15,7 +18,9 @@ and it sits below every algorithm package in the dependency layers.
 from __future__ import annotations
 
 import importlib
+import tomllib
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from types import ModuleType
 from typing import Any, SupportsInt, TypeVar, cast
 
@@ -45,10 +50,63 @@ function of one, fails the tests (design doc, "Languages per module").
 
 _EXTENSIONS: dict[str, str] = {"cpp": "slamlab._cpp", "rust": "slamlab_rs"}
 _PACKAGE_PREFIX = "slamlab."
+_RUST = Path(__file__).resolve().parents[2] / "rust"
+"""The Rust workspace of the checkout this module was imported from."""
+
+_RUST_PROGRAMS = _RUST / "target" / "release"
+"""Where cargo builds the Rust programs."""
 
 
 class BackendNotBuiltError(ImportError):
     """A compiled backend was requested but its extension is not installed."""
+
+
+class StaleProgramError(BackendNotBuiltError):
+    """A Rust program is older than a file it is built from: its runs are not of this code."""
+
+
+def _program_inputs(workspace: Path, name: str) -> list[Path]:
+    """Return the files a Rust program is built from, read from the workspace's manifests.
+
+    The workspace's ``Cargo.toml`` and ``Cargo.lock``, and, for the crate whose ``[[bin]]`` is
+    the program and every crate it depends on by path, its manifest, ``build.rs`` and sources.
+    Empty if no crate builds it (not a checkout).
+    """
+    manifests: dict[Path, dict[str, Any]] = {}
+    for manifest in sorted(workspace.glob("*/Cargo.toml")):
+        with manifest.open("rb") as f:
+            manifests[manifest.parent.resolve()] = tomllib.load(f)
+    todo = [
+        folder
+        for folder, parsed in manifests.items()
+        if any(entry.get("name") == name for entry in parsed.get("bin", []))
+    ]
+    seen: set[Path] = set()
+    while todo:
+        folder = todo.pop()
+        if folder in seen or folder not in manifests:
+            continue
+        seen.add(folder)
+        for spec in manifests[folder].get("dependencies", {}).values():
+            if isinstance(spec, dict) and "path" in spec:
+                todo.append((folder / spec["path"]).resolve())
+    if not seen:
+        return []
+    files = [workspace / "Cargo.toml", workspace / "Cargo.lock"]
+    for folder in sorted(seen):
+        files += [folder / "Cargo.toml", folder / "build.rs", *sorted(folder.glob("src/**/*.rs"))]
+    return [f for f in files if f.is_file()]
+
+
+def _check_fresh(program: Path, workspace: Path) -> None:
+    """Raise :class:`StaleProgramError` if a file the program is built from is newer than it."""
+    built = program.stat().st_mtime
+    for source in _program_inputs(workspace, program.name):
+        if source.stat().st_mtime > built:
+            raise StaleProgramError(
+                f"{program} is older than {source}: rebuild it (cargo build --release "
+                f"--manifest-path {workspace / 'Cargo.toml'} --target-dir {workspace / 'target'})"
+            )
 
 
 def check_name(name: str) -> None:
@@ -192,6 +250,60 @@ def function(backend: str, module_name: str, name: str) -> Callable[..., Any]:
     if found is None or isinstance(found, ModuleType) or not callable(found):
         raise NotImplementedError(f"backend {backend!r} does not implement {module_name}.{name}")
     return cast("Callable[..., Any]", found)
+
+
+def program(backend: str, name: str) -> Path:
+    """Return a compiled backend's native program.
+
+    C++'s programs are installed with the package, in ``slamlab/bin/`` (an editable install
+    rebuilds them when the extension is imported, which this does first). Rust's are built by
+    cargo in the checkout, in ``rust/target/release/`` (``scripts/setup_slamlab.sh`` and
+    ``scripts/check.sh`` pass ``--target-dir rust/target``, so ``CARGO_TARGET_DIR`` does not
+    move them), and nothing rebuilds them on import: after a change to a Rust crate, rebuild
+    (``scripts/check.sh`` does): a Rust program older than a file it is built from (its crates'
+    manifests and sources, read from the workspace's manifests, and the lock) is refused.
+
+    Parameters
+    ----------
+    backend : {"cpp", "rust"}
+        The compiled backend.
+    name : str
+        The program, e.g. ``"slamlab_vo"``.
+
+    Returns
+    -------
+    pathlib.Path
+        The program's file.
+
+    Raises
+    ------
+    ValueError
+        If `backend` is unknown or ``"python"`` (whose pipelines run in-process).
+    BackendNotBuiltError
+        If the program is not built.
+    StaleProgramError
+        If a Rust program is older than a file it is built from.
+    ImportError
+        If the C++ extension is installed but fails to load.
+    """
+    check_name(backend)
+    if backend == "python":
+        raise ValueError("the python reference runs in-process; it has no program")
+    if backend == "cpp":
+        _extension(backend)
+        package = importlib.import_module(_PACKAGE_PREFIX.rstrip("."))
+        candidates = [Path(entry) / "bin" / name for entry in package.__path__]
+    else:
+        candidates = [_RUST_PROGRAMS / name]
+    for candidate in candidates:
+        if candidate.is_file():
+            if backend == "rust":
+                _check_fresh(candidate, _RUST)
+            return candidate
+    raise BackendNotBuiltError(
+        f"backend {backend!r} has no program {name!r} (looked in "
+        f"{', '.join(str(c.parent) for c in candidates)}); run scripts/setup_slamlab.sh"
+    )
 
 
 def dispatch(

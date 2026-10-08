@@ -16,7 +16,11 @@ correspondences give ``A vec(H) = 0``, solved by the right singular vector of th
 singular value. Points are first **normalised** (Hartley: centroid to the origin, mean distance
 √2 in each image) and the result mapped back. A system whose second-smallest singular value is
 below :data:`slamlab.foundations.correspondences.RANK_TOLERANCE` of its largest (three collinear
-points in a minimal sample) does not determine H.
+points in a minimal sample) does not determine H. Nor is a fitted H of **rank below 3** a
+homography: it maps the image onto a line or a point, which no two views of a plane do, yet
+duplicate points (many matches at one pixel) can fit one, and it then explains them all. The
+DLT refuses an H whose smallest singular value, in the Hartley-normalised frame it is fitted
+in, is below :data:`CONDITION_TOLERANCE` of its largest, so H-RANSAC never returns one.
 
 **The Sampson error** is the first-order approximation of the squared distance the
 correspondence must move, in both images together, to satisfy the two equations
@@ -61,6 +65,14 @@ from slamlab.foundations.solve import Solution
 
 SAMPLE_SIZE = 4
 """Correspondences in a minimal sample (and the fewest the DLT accepts)."""
+
+CONDITION_TOLERANCE = 1e-4
+"""The DLT refuses an H whose smallest singular value is below this fraction of its largest,
+measured in the Hartley-normalised frame it is fitted in (so in pixels and in the normalised
+plane alike): numerically singular, a map onto a line or a point. Real homographies stay above
+3.7e-4 there, even for planes tilted 85 degrees under large motions in a 60-degree field of
+view, minimal samples included (40,000 scenes swept); the H that 38 duplicate matches fit on
+TUM fr1/desk (``twoview_rank_one_h.json``) is at 1.9e-5."""
 
 PURE_ROTATION_TOLERANCE = 1e-3
 """Below this largest entry of ``HᵀH - I`` (H scaled to a middle singular value of 1), H is a
@@ -131,7 +143,7 @@ class Implementation(Protocol):
 
 
 def _homography_dlt(points1: NDArray[np.float64], points2: NDArray[np.float64]) -> Matrix3 | None:
-    """Fit H by the normalised DLT, unit norm (reference); None if undetermined."""
+    """Fit H by the normalised DLT, unit norm (reference); None if undetermined or singular."""
     t1, t2 = hartley_normalisation(points1), hartley_normalisation(points2)
     if t1 is None or t2 is None:
         return None
@@ -147,7 +159,11 @@ def _homography_dlt(points1: NDArray[np.float64], points2: NDArray[np.float64]) 
     solution = null_vector(system)
     if solution is None:
         return None
-    homography = np.linalg.inv(t2) @ solution.reshape(3, 3) @ t1
+    normalised = solution.reshape(3, 3)
+    singular = np.linalg.svd(normalised, compute_uv=False)
+    if not singular[2] > CONDITION_TOLERANCE * singular[0]:
+        return None  # numerically of rank below 3: no homography
+    homography = np.linalg.inv(t2) @ normalised @ t1
     return np.asarray(homography / np.linalg.norm(homography), dtype=np.float64)
 
 
@@ -234,7 +250,8 @@ def homography_dlt(points1: ArrayLike, points2: ArrayLike, *, backend: str = "py
     slamlab.foundations.errors.InvalidInputError
         If the points are not matching (N, 2) arrays, or N < 4.
     slamlab.foundations.errors.DegenerateError
-        If the correspondences do not determine H (three collinear points in four).
+        If the correspondences do not determine H (three collinear points in four), or fit one
+        of rank below 3 (duplicate points).
     """
     p1, p2 = as_point_pairs(points1, points2, SAMPLE_SIZE, "points")
     return backends.dispatch(backend, __name__, "homography_dlt", _dlt_reference, p1, p2)

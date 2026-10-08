@@ -19,6 +19,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -62,7 +63,9 @@ T unwrap(foundations::Result<T> result) {
   if (!result) {
     throw CoreError(std::move(result.error()));
   }
-  return std::move(*result);
+  if constexpr (!std::is_void_v<T>) {
+    return std::move(*result);
+  }
 }
 
 /// @brief Register the translator that raises a `CoreError` as the Python exception of its

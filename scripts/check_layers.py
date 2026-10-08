@@ -3,7 +3,7 @@
 import-linter enforces the layering for Python. This script enforces the same rules for
 the other two languages, reading the same contracts, so the three can never disagree:
 
-- C++: every include in ``cpp/{include/slamlab,src,tests,bench,bindings}/<rung>/``, resolved
+- C++: every include in ``cpp/{include/slamlab,src,tests,bench,apps,bindings}/<rung>/``, resolved
   as the compiler does (next to the including file, then the include directories CMake
   gives that root), must reach the file's own rung or one it may depend on; a quoted include
   found nowhere is reported; no C++ source may sit outside a rung directory
@@ -85,6 +85,7 @@ _CPP_RUNG_ROOTS = (
     "cpp/src",
     "cpp/tests",
     "cpp/bench",
+    "cpp/apps",
     "cpp/bindings",
 )
 _CPP_SUFFIXES = frozenset({".hpp", ".cpp", ".h", ".cc"})
@@ -661,6 +662,7 @@ _CPP_SEARCH_DIRS: dict[str, tuple[str, ...]] = {
     "cpp/include/slamlab": ("cpp/include",),
     "cpp/src": ("cpp/include",),
     "cpp/bench": ("cpp/include",),
+    "cpp/apps": ("cpp/include",),
     "cpp/tests": ("cpp/include", "cpp/src"),
     "cpp/bindings": ("cpp/include", "cpp/bindings"),
 }

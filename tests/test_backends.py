@@ -5,8 +5,10 @@ from __future__ import annotations
 import ast
 import importlib
 import inspect
+import os
 import pkgutil
 from collections.abc import Iterator
+from pathlib import Path
 from types import ModuleType
 
 import numpy as np
@@ -45,6 +47,69 @@ def test_python_has_no_compiled_implementation() -> None:
     """Asking the locator for the python backend is an error: it lives in each module."""
     with pytest.raises(ValueError, match="python reference"):
         backends.implementation("python", "slamlab.foundations.so3")
+
+
+def test_program_is_only_for_compiled_backends() -> None:
+    """Python's pipelines run in-process; an unknown backend is an error."""
+    with pytest.raises(ValueError, match="in-process"):
+        backends.program("python", "slamlab_vo")
+    with pytest.raises(ValueError, match="unknown backend"):
+        backends.program("fortran", "slamlab_vo")
+
+
+def test_missing_program_is_reported() -> None:
+    """A program that is not built is BackendNotBuiltError, naming where it was looked for."""
+    with pytest.raises(backends.BackendNotBuiltError, match="no program 'no_such_program'"):
+        backends.program("rust", "no_such_program")
+
+
+def _workspace(root: Path) -> Path:
+    """Write a Rust workspace: a program's crate, the crates it depends on, one it does not."""
+    (root / "Cargo.toml").write_text('[workspace]\nmembers = ["app", "core", "util", "other"]\n')
+    (root / "Cargo.lock").write_text("# lock\n")
+    crates = {
+        "app": '[[bin]]\nname = "prog"\npath = "src/main.rs"\n\n[dependencies]\n'
+        'core = { path = "../core" }\nnalgebra = "0.33"\n',
+        "core": '[dependencies]\nutil = { path = "../util" }\n',
+        "util": "",
+        "other": "",
+    }
+    for crate, rest in crates.items():
+        (root / crate / "src").mkdir(parents=True)
+        (root / crate / "Cargo.toml").write_text(f'[package]\nname = "{crate}"\n\n{rest}')
+        (root / crate / "src" / "lib.rs").write_text("// source\n")
+    program = root / "target" / "release" / "prog"
+    program.parent.mkdir(parents=True)
+    program.write_text("")
+    for path in root.rglob("*"):
+        os.utime(path, (1000.0, 1000.0))
+    os.utime(program, (2000.0, 2000.0))
+    return program
+
+
+@pytest.mark.parametrize(
+    ("touched", "stale"),
+    [
+        ("util/src/lib.rs", True),  # a crate it depends on through another
+        ("core/Cargo.toml", True),
+        ("Cargo.lock", True),
+        ("other/src/lib.rs", False),  # a crate it does not depend on
+        (None, False),
+    ],
+)
+def test_a_rust_program_older_than_its_inputs_is_stale(
+    tmp_path: Path, touched: str | None, stale: bool
+) -> None:
+    """The inputs come from the manifests: the bin's crate, its path dependencies, the lock."""
+    program = _workspace(tmp_path)
+    if touched is not None:
+        os.utime(tmp_path / touched, (3000.0, 3000.0))
+    if stale:
+        with pytest.raises(backends.StaleProgramError, match=f"older than .*{touched}"):
+            backends._check_fresh(program, tmp_path)
+    else:
+        backends._check_fresh(program, tmp_path)
+    assert isinstance(backends.StaleProgramError("x"), backends.BackendNotBuiltError)
 
 
 def test_module_outside_slamlab_is_an_error() -> None:

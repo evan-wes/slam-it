@@ -6,9 +6,11 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from PIL import Image
 
 from slamlab.eval import tum
 from slamlab.foundations import so3
+from slamlab.foundations.errors import InvalidInputError
 
 
 def _write(folder: Path) -> None:
@@ -31,7 +33,7 @@ def test_reads_and_associates_frames(tmp_path: Path) -> None:
     folder = tmp_path / "rgbd_dataset_freiburg1_xyz"
     _write(folder)
     sequence = tum.read_sequence(folder)
-    assert sequence.sensor == "freiburg1"
+    assert sequence.camera.model == "radtan"
     np.testing.assert_array_equal(sequence.timestamps, [100.0, 100.5])
     assert sequence.images == [folder / "rgb/100.000.png", folder / "rgb/100.500.png"]
     first = np.eye(4)
@@ -118,3 +120,98 @@ def test_a_malformed_depth_file_is_named_with_its_line(tmp_path: Path) -> None:
     (folder / "depth.txt").write_text("# depth maps\n100.010 depth/a.png\nnoon depth/b.png\n")
     with pytest.raises(ValueError, match=r"depth.txt:3: expected a numeric timestamp"):
         tum.read_sequence(folder)
+
+
+def _camera_file(folder: Path, text: str) -> None:
+    """Write a camera.txt."""
+    (folder / "camera.txt").write_text(text)
+
+
+CAMERA_TXT = """# the recording's camera
+model pinhole
+intrinsics 525.0 526.0 319.5 239.5  # fx fy cx cy
+size 640 480
+depth_scale 1000
+bf 41.5
+"""
+
+
+def test_frames_need_no_ground_truth(tmp_path: Path) -> None:
+    """A run's frames: every rgb.txt row and its depth map, no groundtruth.txt needed."""
+    folder = tmp_path / "my_recording"
+    folder.mkdir()
+    (folder / "rgb.txt").write_text(
+        "1.0 rgb/1.png\n1.5 rgb/1b.png\n1.5 rgb/1c.png\n2.0 rgb/2.png\n"
+    )
+    (folder / "depth.txt").write_text("1.01 depth/1.png\n2.5 depth/2.png\n")
+    _camera_file(folder, CAMERA_TXT)
+    frames = tum.read_frames(folder)
+    np.testing.assert_array_equal(frames.timestamps, [1.0, 1.5, 1.5, 2.0])
+    assert frames.images[-1] == folder / "rgb/2.png"
+    assert frames.depths == [folder / "depth/1.png", None, None, None]
+    assert frames.camera.model == "pinhole"
+    np.testing.assert_array_equal(frames.camera.intrinsics, [525.0, 526.0, 319.5, 239.5])
+    assert (frames.camera.width, frames.camera.height, frames.camera.depth_scale) == (
+        640,
+        480,
+        1000.0,
+    )
+
+
+def test_the_camera_file_may_give_bf(tmp_path: Path) -> None:
+    """``bf`` is read when camera.txt gives it, and optional: monocular runs need none."""
+    folder = tmp_path / "my_recording"
+    folder.mkdir()
+    _camera_file(folder, CAMERA_TXT)
+    assert tum.read_camera(folder).bf == 41.5
+    _camera_file(folder, CAMERA_TXT.replace("bf 41.5\n", ""))
+    assert tum.read_camera(folder).bf is None
+
+
+def test_camera_file_takes_precedence_over_the_name(tmp_path: Path) -> None:
+    """A benchmark-named folder with a camera.txt reads its camera from the file."""
+    folder = tmp_path / "rgbd_dataset_freiburg1_xyz"
+    _write(folder)
+    _camera_file(folder, CAMERA_TXT)
+    assert tum.read_sequence(folder).camera.model == "pinhole"
+    without = tmp_path / "rgbd_dataset_freiburg3_x"
+    without.mkdir()
+    camera = tum.read_camera(without)
+    assert (camera.model, camera.width, camera.depth_scale) == ("radtan", 640, tum.DEPTH_SCALE)
+    assert camera.bf == tum.SENSOR_BF
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        (CAMERA_TXT + "baseline 0.1\n", "unknown or repeated key 'baseline'"),
+        (CAMERA_TXT + "size 1 1\n", "unknown or repeated key 'size'"),
+        (CAMERA_TXT.replace("depth_scale 1000\n", ""), "missing depth_scale"),
+        (CAMERA_TXT.replace("size 640 480", "size 640"), "two sizes"),
+        (CAMERA_TXT.replace("525.0 526.0", "525.0 x"), "expected numbers"),
+        (CAMERA_TXT.replace("model pinhole", "model radtan"), "intrinsics"),
+        (CAMERA_TXT.replace("model pinhole", "model fisheye"), "unknown camera model"),
+        (CAMERA_TXT.replace("size 640 480", "size 0 480"), "size"),
+        (CAMERA_TXT.replace("depth_scale 1000", "depth_scale -1"), "depth_scale"),
+        (CAMERA_TXT.replace("bf 41.5", "bf 0"), "bf must be"),
+        (CAMERA_TXT.replace("bf 41.5", "bf 40 41"), "one bf"),
+        (CAMERA_TXT + "bf 40\n", "unknown or repeated key 'bf'"),
+    ],
+)
+def test_rejects_a_malformed_camera_file(tmp_path: Path, text: str, message: str) -> None:
+    """Every key once, each with well-formed values."""
+    _camera_file(tmp_path, text)
+    with pytest.raises(InvalidInputError, match=message):
+        tum.read_camera(tmp_path)
+
+
+def test_depth_scale_divides_the_stored_values(tmp_path: Path) -> None:
+    """A depth map's values over the camera's depth scale, zeros as NaN."""
+    path = tmp_path / "d.png"
+    Image.fromarray(np.array([[0, 1000], [2500, 65535]], dtype=np.uint16)).save(path)
+    depth = tum.read_depth(path, 1000.0)
+    assert np.isnan(depth[0, 0])
+    np.testing.assert_allclose(depth[0, 1:], [1.0])
+    np.testing.assert_allclose(depth[1], [2.5, 65.535])
+    with pytest.raises(InvalidInputError, match="depth_scale"):
+        tum.read_depth(path, 0.0)

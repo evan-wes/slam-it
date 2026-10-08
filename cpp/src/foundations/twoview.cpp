@@ -130,7 +130,7 @@ struct Planes {
 struct Runs {
   /// @brief E's run, if it found a model.
   std::optional<ransac::RefinedSolution<Eigen::Matrix3d>> essential;
-  /// @brief H's run, if it found a usable model (one that decomposes).
+  /// @brief H's run, if it found a model.
   std::optional<ransac::Solution<Eigen::Matrix3d>> planar;
 };
 
@@ -154,10 +154,6 @@ Result<Runs> run_both(const Eigen::Ref<const correspondences::Rows3>& bearings1,
                                           ransac_options(options, Model::kHomography)));
   if (!planar) {
     return std::unexpected(planar.error());
-  }
-  // An H of rank below 2 has no motion to decompose: no usable model (see `_decomposable`).
-  if (*planar && !homography::decompose_homography((*planar)->state.model)) {
-    planar->reset();
   }
   if (!*essential && !*planar) {
     return fail(ErrorKind::kDegenerate, "initialize: neither RANSAC found a model");

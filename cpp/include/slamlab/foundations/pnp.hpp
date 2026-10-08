@@ -69,23 +69,30 @@ inline constexpr int kRefineIterations = 20;
 /// @param pose The starting `T_cam_world`.
 /// @param points World points.
 /// @param bearings Their unit bearings, positive z.
-/// @param scale The Cauchy loss's scale, in the normalised plane.
+/// @param scale The Cauchy loss's scale, a whitened error in the normalised plane.
+/// @param weights Each correspondence's weight, positive.
 /// @return The refined pose and the solve's summary; `InvalidInput` if a point is behind the
 ///         starting camera (an infinite start).
 [[nodiscard]] Result<solve::Solution<Eigen::Matrix4d, nls::Summary>> refine(
     const Eigen::Matrix4d& pose, const Eigen::Ref<const Rows3>& points,
-    const Eigen::Ref<const Rows3>& bearings, double scale);
+    const Eigen::Ref<const Rows3>& bearings, double scale,
+    const Eigen::Ref<const Eigen::VectorXd>& weights);
 
 /// @brief Refine a pose by minimising the inliers' robust reprojection error over SE(3).
 /// @param pose The starting `T_cam_world`.
 /// @param points The inliers' world points (M x 3), M >= 3.
 /// @param bearings Their unit bearings, positive z.
-/// @param scale The Cauchy loss's scale, in the normalised plane (positive).
+/// @param scale The Cauchy loss's scale, a whitened error in the normalised plane (positive).
+/// @param weights Each correspondence's weight, its information in the units of `scale`
+///        (ORB-SLAM's keypoint-level weighting): its residual is scaled by the square root. Not
+///        relative: a common factor k on the weights acts as 1/√k on the scale.
 /// @return The refined pose and the summary; `InvalidInput` for an invalid pose or
-///         correspondences, M < 3, a non-positive scale, or a point behind the start.
+///         correspondences, M < 3, a non-positive scale, weights that are not positive and one
+///         per correspondence, or a point behind the start.
 [[nodiscard]] Result<solve::Solution<Eigen::Matrix4d, nls::Summary>> refine_pose(
     const Eigen::Matrix4d& pose, const Eigen::Ref<const Rows3>& points,
-    const Eigen::Ref<const Rows3>& bearings, double scale);
+    const Eigen::Ref<const Rows3>& bearings, double scale,
+    const Eigen::Ref<const Eigen::VectorXd>& weights);
 
 /// @brief P3P and EPnP with the reprojection error, as a `ransac::Estimator`.
 class PoseEstimator {

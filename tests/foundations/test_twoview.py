@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from slamlab import backends
-from slamlab.foundations import epipolar, se3, so3, twoview
+from slamlab.foundations import epipolar, homography, se3, so3, twoview
 from slamlab.foundations.errors import InvalidInputError
 from tests.conftest import load_fixture, require_function
 from tests.foundations import scenes as sc
@@ -245,19 +245,25 @@ def test_the_compiled_code_tables_match(backend: str) -> None:
 
 
 @pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
-def test_a_homography_of_rank_one_is_not_a_model(backend: str) -> None:
-    """A rank-1 H is not a model: H is unavailable and E decides.
+def test_duplicate_matches_cannot_make_a_singular_homography_win(backend: str) -> None:
+    """On matches crowded onto one pixel, H-RANSAC finds no singular H, and E decides.
 
-    On these real matches, many sharing one pixel, a rank-1 H wins H-RANSAC; it has no motion
-    to decompose, and the initialiser used to raise here.
+    On these real matches, 38 of 88 sharing one pixel, a rank-1 H mapping them there would
+    explain the most; the initialiser once raised decomposing it. The DLT now refuses any H
+    that is numerically singular (:data:`slamlab.foundations.homography.CONDITION_TOLERANCE`),
+    so the H it returns has rank 3, and E wins the model selection.
     """
     chosen = require_function(backend, twoview.__name__, "initialize")
     data = load_fixture("foundations/twoview_rank_one_h.json")
-    result = twoview.initialize(
-        data["bearings1"],
-        data["bearings2"],
-        twoview.Options(focal=data["focal"]),
+    options = twoview.Options(focal=data["focal"])
+    result = twoview.initialize(data["bearings1"], data["bearings2"], options, backend=chosen)
+    assert result.model is twoview.Model.ESSENTIAL
+    b1, b2 = np.asarray(data["bearings1"]), np.asarray(data["bearings2"])
+    planar = homography.homography_ransac(
+        b1[:, :2] / b1[:, 2:],
+        b2[:, :2] / b2[:, 2:],
+        options.ransac_options(twoview.Model.HOMOGRAPHY),
         backend=chosen,
     )
-    assert result.homography is None
-    assert result.model is twoview.Model.ESSENTIAL
+    singular = np.linalg.svd(planar.state.model, compute_uv=False)
+    assert singular[2] > 1e-6 * singular[0]

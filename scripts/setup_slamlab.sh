@@ -16,6 +16,9 @@ set -euo pipefail
 #   rebuilt automatically on import when C++ sources change;
 # - slamlab_rs, the Rust extension (maturin + PyO3), rebuilt with
 #   `maturin develop -m rust/slamlab-py/Cargo.toml` after Rust changes.
+# and the native programs: C++'s are installed with slamlab (and rebuilt with it); Rust's are
+# built into rust/target with `cargo build --release --target-dir rust/target
+# -p slamlab-orchestration` (scripts/check.sh rebuilds them; nothing does on import).
 #
 # Usage:
 #   scripts/setup_slamlab.sh [--env NAME] [--unlocked]
@@ -102,12 +105,17 @@ run npm install -g --silent "jscpd@${JSCPD_VERSION}"
 run python -m pip install --no-build-isolation \
   -C build-dir="build/${ENV_NAME}" -e "${ROOT_DIR}"
 (cd "${ROOT_DIR}" && run maturin develop --release -m rust/slamlab-py/Cargo.toml)
+(cd "${ROOT_DIR}" && run cargo build --release --manifest-path rust/Cargo.toml \
+  --target-dir rust/target -p slamlab-orchestration)
 
-# Every backend must load: a C++ or Rust extension that built but cannot import fails here.
+# Every backend must load, and find its programs: a C++ or Rust extension that built but
+# cannot import, or a program that did not build, fails here.
 run python -c "
 import slamlab
 from slamlab import backends
 found = backends.available()
 print('slamlab', slamlab.__version__, 'backends:', found)
 assert found == list(backends.BACKENDS), f'expected {list(backends.BACKENDS)}, got {found}'
+for name in backends.COMPILED_BACKENDS:
+    print(name, 'slamlab_vo:', backends.program(name, 'slamlab_vo'))
 "

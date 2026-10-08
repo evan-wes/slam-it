@@ -41,12 +41,13 @@ ArrayOut epnp(const BatchIn<3>& points, const BatchIn<3>& bearings) {
 /// @param bearings Their bearings.
 /// @param pose The starting pose.
 /// @param scale The Cauchy loss's scale.
+/// @param weights Each correspondence's weight.
 /// @return `{"pose": (4, 4), "summary": the solve's summary}`.
 /// @throws CoreError for invalid input.
 nb::dict refine_pose(const BatchIn<3>& points, const BatchIn<3>& bearings, const Matrix4In& pose,
-                     double scale) {
-  const auto solved =
-      unwrap(pnp::refine_pose(matrix4(pose), rows3(points), rows3(bearings), scale));
+                     double scale, const VectorIn<double>& weights) {
+  const auto solved = unwrap(pnp::refine_pose(matrix4(pose), rows3(points), rows3(bearings), scale,
+                                              copy_vector<Eigen::VectorXd>(weights)));
   nb::dict out;
   out["pose"] = model_array(solved.state);
   out["summary"] = nls_summary(solved.summary);
@@ -76,8 +77,8 @@ void bind_pnp(nb::module_& m) {
   m.def("epnp", &epnp, nb::arg("points").noconvert(), nb::arg("bearings").noconvert(),
         "Return EPnP's pose T_cam_world from (N, 3) correspondences, N >= 5.");
   m.def("refine_pose", &refine_pose, nb::arg("points").noconvert(), nb::arg("bearings").noconvert(),
-        nb::arg("pose").noconvert(), nb::arg("scale"),
-        "Refine a pose on (M, 3) correspondences' reprojection errors, M >= 3.");
+        nb::arg("pose").noconvert(), nb::arg("scale"), nb::arg("weights").noconvert(),
+        "Refine a pose on (M, 3) weighted correspondences' reprojection errors, M >= 3.");
   m.def("pnp_ransac", &pnp_ransac, nb::arg("points").noconvert(), nb::arg("bearings").noconvert(),
         nb::arg("options"), nb::arg("minimal_solver"), nb::arg("refine"),
         "Run LO-MSAC with a P3P solver and EPnP refits, then the refinement.");

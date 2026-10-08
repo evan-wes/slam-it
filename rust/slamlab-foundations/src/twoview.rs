@@ -414,7 +414,7 @@ struct Planes {
 struct Runs {
     /// E's run, if it found a model.
     essential: Option<RefinedSolution<Matrix3<f64>>>,
-    /// H's run, if it found a usable model (one that decomposes).
+    /// H's run, if it found a model.
     planar: Option<ransac::Solution<Matrix3<f64>>>,
 }
 
@@ -449,9 +449,7 @@ fn run_both(
         &xy(&planes.x1),
         &xy(&planes.x2),
         &ransac_options(options, Model::Homography),
-    ))?
-    // An H of rank below 2 has no motion to decompose: no usable model (see `_decomposable`).
-    .filter(|run| homography::decompose_homography(&run.state.model).is_ok());
+    ))?;
     if essential.is_none() && planar.is_none() {
         return fail(
             ErrorKind::Degenerate,

@@ -65,6 +65,29 @@ pub fn full_image_coordinate(x: f64, level_size: usize, size: usize) -> f64 {
     ((2.0 * x + 1.0) * size as f64 - level) / (2.0 * level)
 }
 
+/// A full-image position's coordinate on a pyramid level, along one axis
+/// (`slamlab.foundations.image.level_coordinate`): [`full_image_coordinate`]'s inverse,
+/// `((2 u + 1) n_l - n_0) / (2 n_0)`, computed in that order. Level 0 maps to itself.
+///
+/// # Arguments
+///
+/// * `u` - The position in the full image, in its pixels.
+/// * `level_size` - The level's size along the axis, `n_l`.
+/// * `size` - The full image's size along it, `n_0`.
+///
+/// # Returns
+///
+/// The level coordinate.
+#[must_use]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "sizes are at most MAX_SIDE, exact in f64"
+)]
+pub fn level_coordinate(u: f64, level_size: usize, size: usize) -> f64 {
+    let full = size as f64;
+    ((2.0 * u + 1.0) * level_size as f64 - full) / (2.0 * full)
+}
+
 /// A grayscale image, row-major.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Image {
@@ -630,6 +653,26 @@ mod tests {
 
     use super::*;
     use serde_json::Value;
+
+    /// The two coordinate maps are inverses, level 0 maps to itself, and their composition is
+    /// the level-to-level map stereo matching uses.
+    #[test]
+    #[allow(clippy::cast_precision_loss, reason = "small integers, exact in f64")]
+    fn coordinate_maps_invert_and_compose() {
+        assert_eq!(level_coordinate(7.0, 640, 640).to_bits(), 7.0_f64.to_bits());
+        let levels = [640_usize, 533, 444, 370, 309, 257, 214, 179];
+        for a in levels {
+            for b in levels {
+                for x in (0..a).step_by(7) {
+                    let u = full_image_coordinate(x as f64, a, 640);
+                    assert!((level_coordinate(u, a, 640) - x as f64).abs() < 1e-12);
+                    let on_b = ((2 * x + 1) * b) as f64 - a as f64;
+                    let on_b = on_b / (2 * a) as f64;
+                    assert!((level_coordinate(u, b, 640) - on_b).abs() < 1e-12);
+                }
+            }
+        }
+    }
 
     /// Reads the shared fixture.
     fn fixture() -> Value {

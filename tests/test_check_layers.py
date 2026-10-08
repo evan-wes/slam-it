@@ -97,6 +97,16 @@ def test_both_include_forms_are_checked(fake_repo: Path, include: str) -> None:
     assert len(found) == 1
 
 
+def test_a_program_is_held_to_its_rung(fake_repo: Path) -> None:
+    """A program in ``cpp/apps/<rung>/`` may include what its rung may, nothing above it."""
+    _write(fake_repo, "cpp/apps/orchestration/run.cpp", '#include "slamlab/eval/runs.hpp"\n')
+    _write(fake_repo, "cpp/apps/edge/run.cpp", '#include "slamlab/eval/runs.hpp"\n')
+    _write(fake_repo, "cpp/apps/stray.cpp", "int main() { return 0; }\n")
+    found = sorted((v.location, v.message) for v in check_layers.check_cpp(fake_repo, ALLOWED))
+    assert [location for location, _ in found] == ["cpp/apps/edge/run.cpp:1", "cpp/apps/stray.cpp"]
+    assert "may not include from rung 'eval'" in found[0][1]
+
+
 def test_source_outside_a_rung_is_reported(fake_repo: Path) -> None:
     """A header directly in cpp/include/slamlab/ belongs to no rung; the bindings root may."""
     _write(fake_repo, "cpp/include/slamlab/top.hpp", '#include "slamlab/dense/y.hpp"\n')

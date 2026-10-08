@@ -203,15 +203,20 @@ class ReprojectionProblem {
   /// @brief Hold the inliers.
   /// @param points World points (M x 3).
   /// @param image Their normalised image points (M x 2).
-  ReprojectionProblem(Rows3 points, Rows2 image)
-      : points_(std::move(points)), image_(std::move(image)) {}
+  /// @param weights Each block's weight, positive: its residual and Jacobian are scaled by the
+  ///        weight's square root.
+  ReprojectionProblem(Rows3 points, Rows2 image, Eigen::VectorXd weights)
+      : points_(std::move(points)),
+        image_(std::move(image)),
+        weights_(std::move(weights)),
+        root_(weights_.cwiseSqrt()) {}
 
   /// @brief Each block's squared residual; infinity behind the camera, so a step that moves a
   ///        point there is rejected (cheirality).
   /// @param state The pose.
   /// @return The squared residuals.
   [[nodiscard]] Eigen::VectorXd squared_norms(const State& state) const {
-    return reprojection(state, points_, image_);
+    return reprojection(state, points_, image_).cwiseProduct(weights_);
   }
 
   /// @brief The weighted normal equations over `(rho, theta)`.
@@ -230,8 +235,8 @@ class ReprojectionProblem {
       projection << 1.0 / p(2), 0.0, -p(0) / (p(2) * p(2)), 0.0, 1.0 / p(2), -p(1) / (p(2) * p(2));
       Eigen::Matrix<double, 3, 6> motion;
       motion << rotation, -rotation * so3::hat(world);
-      jacobian.middleRows<2>(2 * i) = projection * motion;
-      residuals.segment<2>(2 * i) = residual(state, i);
+      jacobian.middleRows<2>(2 * i) = root_(i) * (projection * motion);
+      residuals.segment<2>(2 * i) = root_(i) * residual(state, i);
     }
     return *nls::DenseSystem::build(jacobian, residuals, weights);
   }
@@ -259,6 +264,10 @@ class ReprojectionProblem {
   Rows3 points_;
   /// @brief Their normalised image points.
   Rows2 image_;
+  /// @brief Each block's weight.
+  Eigen::VectorXd weights_;
+  /// @brief Its square root.
+  Eigen::VectorXd root_;
 };
 
 /// @brief Check one rigid (4, 4) transform (`_as_pose`).
@@ -354,8 +363,9 @@ Result<Eigen::Matrix4d> epnp(const Eigen::Ref<const Rows3>& points,
 
 Result<solve::Solution<Eigen::Matrix4d, nls::Summary>> refine(
     const Eigen::Matrix4d& pose, const Eigen::Ref<const Rows3>& points,
-    const Eigen::Ref<const Rows3>& bearings, double scale) {
-  const ReprojectionProblem problem(points, correspondences::normalised_xy(bearings));
+    const Eigen::Ref<const Rows3>& bearings, double scale,
+    const Eigen::Ref<const Eigen::VectorXd>& weights) {
+  const ReprojectionProblem problem(points, correspondences::normalised_xy(bearings), weights);
   nls::Options options;
   options.loss = {.kind = nls::LossKind::kCauchy, .scale = scale};
   options.max_iterations = kRefineIterations;
@@ -365,7 +375,8 @@ Result<solve::Solution<Eigen::Matrix4d, nls::Summary>> refine(
 
 Result<solve::Solution<Eigen::Matrix4d, nls::Summary>> refine_pose(
     const Eigen::Matrix4d& pose, const Eigen::Ref<const Rows3>& points,
-    const Eigen::Ref<const Rows3>& bearings, double scale) {
+    const Eigen::Ref<const Rows3>& bearings, double scale,
+    const Eigen::Ref<const Eigen::VectorXd>& weights) {
   if (auto ok = check_pose(pose); !ok) {
     return std::unexpected(ok.error());
   }
@@ -376,11 +387,18 @@ Result<solve::Solution<Eigen::Matrix4d, nls::Summary>> refine_pose(
     return fail(ErrorKind::kInvalidInput,
                 "scale: must be positive and finite, got " + std::to_string(scale));
   }
+  if (weights.size() != points.rows() || !weights.allFinite() || !(weights.array() > 0.0).all()) {
+    return fail(ErrorKind::kInvalidInput,
+                "weights: expected " + std::to_string(points.rows()) +
+                    " positive values, one per correspondence, got " +
+                    std::to_string(weights.size()) + " with the least " +
+                    (weights.size() > 0 ? std::to_string(weights.minCoeff()) : "none"));
+  }
   const Eigen::VectorXd depths = (points * pose.block<1, 3>(2, 0).transpose()).array() + pose(2, 3);
   if (!(depths.array() > 0.0).all()) {
     return fail(ErrorKind::kInvalidInput, "pose: a point is behind the starting camera");
   }
-  return refine(pose, points, bearings, scale);
+  return refine(pose, points, bearings, scale, weights);
 }
 
 PoseEstimator::PoseEstimator(Rows3 points, Rows3 bearings, p3p::Solver solver)
@@ -427,7 +445,8 @@ Result<ransac::RefinedSolution<Eigen::Matrix4d>> pnp_ransac(const Eigen::Ref<con
       PoseEstimator(points, bearings, minimal), options, refine,
       [&](const Eigen::Matrix4d& model, const ransac::Indices& inliers) {
         return pnp::refine(model, correspondences::gather(world, inliers),
-                           correspondences::gather(rays, inliers), options.threshold);
+                           correspondences::gather(rays, inliers), options.threshold,
+                           Eigen::VectorXd::Ones(static_cast<Eigen::Index>(inliers.size())));
       },
       p3p::kSampleSize);
 }

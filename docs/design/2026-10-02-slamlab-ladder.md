@@ -1,6 +1,6 @@
 # slamlab: a learning ladder for visual SLAM
 
-Status, 2026-10-04: milestone 1 is complete, and milestone 2 is planned (see
+Status, 2026-10-06: milestone 1 is complete, and milestone 2 is under way (see
 [Milestones](#milestones)). The scaffold (package-per-rung layout in three
 languages, conda environment, CI, two-layer review process) is merged. PR 1, the BA spine,
 added rung 0's geometry and estimation in Python and C++: SO(3), SE(3), Umeyama alignment,
@@ -15,7 +15,11 @@ optimisation: SO(3), SE(3), the camera models, Umeyama alignment, PCG32, the lea
 solver and bundle adjustment, with native C++ and Rust benchmarks on a BAL problem, where the
 two take the same time. PR 6 adds the estimation core: RANSAC, triangulation, the two-view and
 absolute-pose solvers. Python, C++ and Rust now have the same capabilities, and every module's
-tests run on all three.
+tests run on all three. Milestone 2's PR 7 adds the front end (fixed-point images, ORB as
+ORB-SLAM extracts it, matching and rectified stereo) and the evaluation (dataset readers,
+metrics, the run format). PR 8 adds the edge VO pipeline, ORB-SLAM-lite in monocular, stereo
+and RGB-D, with native C++ and Rust programs that run a whole sequence and make the same
+decisions as the Python reference ([the edge VO note](../notes/edge-vo.md)).
 
 ## Purpose
 
@@ -75,7 +79,7 @@ The ladder spans compute budgets. Every rung stands on rung 0.
 |---|---|
 | **Python** | The readable reference implementation of every algorithm; orchestration, evaluation, and the learned rungs (PyTorch) |
 | **C++** | The performance core: rung 0, the edge rung, the edge budgets, and dense-BA kernels if profiling calls for them; outside the cores, `eval`'s native readers and run writer (`slamlab_eval`) and the native VO program (`slamlab_vo`, in orchestration); and the calibration side track (`slamlab_calib`), beside Python, without Rust. Showing C++ is a goal in its own right. |
-| **Rust** | Rung 0 and the edge rung, each in lock-step with Python and C++: every slice of those rungs lands in all three languages together; outside the cores, `eval`'s native readers and run writer (`slamlab-eval`) and the native VO program (`slamlab-vo`, in orchestration). The other rungs have no Rust. |
+| **Rust** | Rung 0 and the edge rung, each in lock-step with Python and C++: every slice of those rungs lands in all three languages together; outside the cores, `eval`'s native readers and run writer (`slamlab-eval`) and the native VO program (`slamlab_vo`, crate `slamlab-orchestration`). The other rungs have no Rust. |
 
 **Runtime dependencies.** Adding one, to the Python package or to a core, is a change to this
 document first.
@@ -117,7 +121,7 @@ under editable installs.
 C++ and Rust sources also build standalone (CMake, cargo) without Python, for the edge budgets
 and a possible later phone target.
 
-**The native VO programs** (`slamlab_vo`, `slamlab-vo`; from PR 8) run a whole sequence
+**The native VO programs** (`slamlab_vo`, in C++ and in Rust; from PR 8) run a whole sequence
 without Python: they read the dataset natively and write the run folder.
 `slamlab.orchestration.vo.run(..., backend=)` runs the Python pipeline in-process, or launches
 the chosen native program and reads its run back. scikit-build installs the C++ program into
@@ -293,7 +297,10 @@ their crossing form) and decodes the compiled result with the module's `codes()`
 choice field inside an options dataclass (`twoview.Options.essential_solver`) crosses by name,
 as `asdict` gives it, and the binding maps it through the core's `name()`, failing on an
 unknown name; a choice passed as its own argument (`essential_ransac`'s `minimal_solver`)
-crosses as a code.
+crosses as a code. The edge rung's `mode`, an argument of most of its stage functions, crosses
+by name too, each binding reading it with its `mode_in` and failing on an unknown name: a name
+reads in a test's failure message and is what a run's `run.json` records (PR 8's panel, A4);
+rung 0's argument choices stay codes.
 
 The cores check index bounds and sizes and return `InvalidInput`, even though the Python
 entry point validates too. Standalone C++ and Rust callers get the same protection, and both
@@ -332,7 +339,7 @@ visible from its path and enforceable by contract.
 | `slamlab.dense` | -- | -- | Dense BA + depth prior |
 | `slamlab.learned` | -- | -- | DROID- and MegaSaM-style |
 | `slamlab.eval` | library `slamlab_eval`, `slamlab::eval` (native PNG and dataset readers, run writer) | crate `slamlab-eval` (native PNG and dataset readers, run writer) | Dataset readers, external references (COLMAP), metrics, benchmarks, budget harness |
-| `slamlab.orchestration` | library `slamlab_orchestration` and program `slamlab_vo` (from PR 8) | crate `slamlab-vo`, a program (from PR 8) | End-to-end pipelines |
+| `slamlab.orchestration` | library `slamlab_orchestration` and program `slamlab_vo` (`cpp/apps/orchestration/`; from PR 8) | crate `slamlab-orchestration` and its program `slamlab_vo` (from PR 8) | End-to-end pipelines |
 
 Packages for rungs that have no code yet are stubs: a docstring stating the rung, its
 milestone and its compute budget. C++ libraries and Rust crates appear as each rung gets
@@ -422,7 +429,7 @@ state, evaluation and the budget harness. Every PR lands in Python, C++ and Rust
 | PR | Slice |
 |---|---|
 | 7 | **Front end and evaluation.** Images (Pillow in `slamlab.eval`; native PNG readers outside the cores, `slamlab_eval` and `slamlab-eval`), grayscale pyramids, blur and bilinear remapping. ORB, our own: multi-scale FAST spread over the image, intensity-centroid orientation, rBRIEF descriptors, Hamming matching with a ratio test. Stereo rectification from EuRoC's calibration, row-constrained matching with subpixel refinement, depth from disparity. The EuRoC reader; TUM's depth maps in the library; the demos on the shared front end. ATE (Sim(3) alignment for monocular, SE(3) for stereo and RGB-D) and RPE; the run format. |
-| 8 | **The pipeline.** Initialisation: two-view for monocular, retrying on later frames when the parallax is low; from depth for stereo and RGB-D, metric from the start. Tracking: a constant-velocity prediction, map points matched by projection, PnP RANSAC as the fallback, motion-only pose refinement. Keyframe selection; local mapping (triangulation, local BA over a keyframe window, culling of points and keyframes). Native programs (C++ and Rust) that run a whole sequence. Results on TUM (monocular, RGB-D) and EuRoC (monocular, stereo), with rerun recordings. Planned in [the edge VO design](2026-10-05-edge-vo.md). |
+| 8 | **The pipeline.** Initialisation: two-view for monocular, retrying on later frames when the parallax is low; from depth for stereo and RGB-D, metric from the start. Tracking: a constant-velocity prediction, map points matched by projection, PnP RANSAC as the fallback, motion-only pose refinement. Keyframe selection; local mapping (triangulation, local BA over a keyframe window, culling of points and keyframes). Native programs (C++ and Rust) that run a whole sequence. Results on TUM (monocular, RGB-D) and EuRoC (monocular, stereo), with rerun recordings. Planned in [the edge VO design](2026-10-05-edge-vo.md); built as [the edge VO note](../notes/edge-vo.md) describes. |
 | 9 | **Budgets and real time.** The `laptop-cpu` harness (pinned cores, capped memory, a per-frame deadline); latency (p50, p95) and peak memory; profiling the C++ and Rust pipelines to real time; the three-language comparison. Python is measured but not held to real time. |
 | 10 | **The run viewer** (see [Public presentation](#public-presentation)), on the run format, used locally until the repo goes public. |
 
@@ -447,7 +454,10 @@ edge rung holds what is its own, tracking, keyframes and local mapping.
 - **Parity is held per stage,** on fixture states, and per sequence, on synthetic box-room
   sequences with a known trajectory: every backend completes them, with an ATE under a stated
   bound and the three backends' ATEs within a stated tolerance of each other. TUM and EuRoC
-  results are reported, not gated.
+  results are reported, not gated. *As built (PR 8's panel, A1, A16):* the states are built
+  from the room when the tests run and compared live with the Python reference; on whole
+  runs, every backend takes the same decisions, with poses within 1e-9, and is held to a
+  golden record of the room's runs (the edge VO design, §3).
 - **Its generic parts go in rung 0:** guided matching by projection and a feature grid in
   `foundations.matching`, the full-image-to-level map in `foundations.image`.
 
@@ -763,10 +773,12 @@ shared with the owner's other projects.
   - Closed by PR 4: **two-view crashed on a rank-1 homography.** Duplicate keypoints at one
     pixel let a rank-1 H win H-RANSAC (TUM fr1/desk); `twoview.initialize` raised from its
     decomposition. Such an H is now no model, and E decides.
-  - **H-RANSAC can return a non-invertible H.** The two-view fix treats it as no model; the
-    deeper fix is for the homography estimator to reject a fitted H of rank below 3, which
-    changes H-RANSAC's results. Decided for PR 8: the estimator refuses such an H, and
-    two-view's workaround goes.
+  - Closed by PR 8: **H-RANSAC can return a non-invertible H.** The DLT refuses a fitted H
+    whose smallest singular value, in the Hartley-normalised frame it fits in, is below
+    `homography.CONDITION_TOLERANCE` (1e-4) of its largest: real homographies stay above
+    3.7e-4 there, the H that fr1/desk's duplicate matches fit is at 1.9e-5. Two-view's
+    workaround is gone. Duplicate matches can still fit an invertible H that explains only
+    them (34 matches onto 2 pixels there); E wins against it.
   - **A least-squares PnP for planar scenes (panel L6).** EPnP refuses planar points, so LO's
     refits do not run there; the refine-and-reselect rounds reach the noise floor anyway (the
     absolute-pose note). IPPE (Collins and Bartoli, IJCV 2014) is the planar solver; SQPnP
@@ -787,6 +799,71 @@ shared with the owner's other projects.
     later reads as "no improvement" (PR 6's panel, run 2, A6).
   - Closed by PR 7: **one feature front end (A8).** Both demos match slamlab's ORB features
     (`foundations.orb` and `foundations.matching`) in place of their own SIFT.
+- **Deferred from PR 8's review panel**
+  ([report](../reviews/2026-10-06-feature-edge-vo.md)):
+  - **Re-anchoring the last frame after local BA (L6).** Local BA moves a new keyframe, but
+    the pipeline keeps the frame's pose from before it, so the next velocity carries the
+    correction; ORB-SLAM re-anchors the last frame to its reference keyframe every frame
+    (`UpdateLastFrame`) and saves each frame relative to its BA-refined reference keyframe.
+    A run's frame poses are the tracking-time estimates; the edge note scores the final
+    keyframes too, ORB-SLAM's protocol, for the like-for-like column.
+  - **The keyframe time's growth on long sequences (H19).** Keyframe time still grows along
+    EuRoC MH_01 (see the edge note), unprofiled. The candidates: `refresh`'s per-point
+    allocations and its O(n² log n) distinctive descriptor, and the feature grid rebuilt on
+    every search (A11). Python's per-point loops stay, as the plain statement of the rules.
+  - **The real-time items, with PR 9 (A11).** `edge::search` rebuilds its `FeatureGrid` on
+    every call, where the design says per frame; the prediction's SO(3) projection runs
+    through Rust's allocating `svd3` every frame (PR 6's A11, below).
+  - **Lifting the edge camera into rung 0, with milestone 4 (A8).** `edge.frames.Camera` (a
+    model and intrinsics with an image size and a baseline) and the chi-square test by
+    pyramid level in `edge.residuals` belong in `foundations` once the classic rung needs
+    them, rather than copied; with them the one-pose SE(3) helpers `edge.map.to_camera` and
+    `camera_centre`, unchecked for the hot loops where rung 0's `se3.act` checks (run 2,
+    A23).
+  - **Shorter native stage functions (H6).** `track_last_frame`, `track_local_map` and
+    `relocalize_locally` in C++ and Rust, and C++'s `initialize_monocular`, run 70-95 lines
+    each (Python's longest is 50); helpers such as `project_last_frame_points`,
+    `local_map_projections` and `placed_by_pnp` behind the same stage functions would leave
+    stage parity untouched.
+  - **The native option checks from the tables (A13; run 2, A22).** C++'s `check_options`
+    lists the fields by hand in its range lists, beside `kIntegerOptions` and `kRealOptions`,
+    and Rust's beside `named_settings!`; a field added to a table but not a list would go
+    unchecked natively, where Python checks every field by its type. Run 2's table-driven
+    tests (every setting refuses a bad value by name, in every language) now catch such a
+    field; a range class per table entry would make the lists unnecessary.
+  - **Loud preconditions in the map's refresh (H14).** Rust's `refresh` helpers fall back
+    with `unwrap_or` and C++ dereferences its searches unchecked; both rely on every point
+    having an observation, which `refresh_points` checks and the operations keep. A
+    `debug_assert!` or an error would make a violation loud.
+  - **The map's count invariants (H15).** `Map`'s checks do not hold `pt_visible >= 1`,
+    `found <= visible` or finite poses and points, which `cull_points` divides by; the
+    operations keep them, so only a hand-built or decoded map can break them.
+  - **Solve summaries in the diagnostics (L9).** Local BA and pose refinement drop their
+    summaries. Rung 0's LM only accepts steps that lower the cost, so nothing diverges
+    silently, but the iterations, the costs and the termination in `diagnostics.jsonl`
+    would make long-sequence drift (fr3/long_office) investigable.
+  - **Where the two-view fixture's duplicate matches come from (L11).** 38 of its 88
+    matches share one pixel; the homography's rank rule handles the symptom.
+  - **ORB-SLAM's reset of a map lost early, with milestone 4 (run 2, L13).** ORB-SLAM2
+    resets the system when the track is lost with five keyframes or fewer (ORB-SLAM3 the
+    active map, under ten), which is what lets it start a depth map from any 500 keypoints and
+    a monocular map from low parallax. The lite pipeline ends the run instead, so a depth start
+    also needs `min_init_depth_points` (100) keypoints with depth, a stand-in. The reset drops
+    the frames before it from the trajectory, as ORB-SLAM's does: it belongs with the classic
+    rung's relocalisation and maps.
+  - **Relocalising monocular runs that lose the track, with milestone 4 (run 2, L15).**
+    Started one to four frames after the frame the first run initialises from, 6 of 20
+    monocular runs on TUM and EuRoC lose the track (3 of 5 on fr1/desk), each deep into the
+    run (44 to 128 keyframes), when its inliers fall below ORB-SLAM's 30. ORB-SLAM relocalises
+    there with the bag of words (`Tracking::Relocalization`); the lite pipeline ends the run.
+    The edge note counts a lost run as a failure in its five-start medians.
+  - **The Rust extension in layer 1 (run 2, A19).** `scripts/check.sh` rebuilds the Rust
+    program before pytest but not the extension `slamlab_rs` (`maturin develop`), so after a
+    Rust change the stage-parity tests run the old extension while the whole-run tests run
+    the new program. Rebuild it in `check.sh`, or give it the program's stale check
+    (`backends.StaleProgramError`). Offline CI builds from clean and is not affected.
+  - **The C++ edge tests' layout (H18).** Options' checks live in `test_map.cpp` and the
+    residuals' in `test_adjust.cpp`, not in tests mirroring their modules.
 - **Deferred from PR 7's review panel**
   ([report](../reviews/2026-10-05-feature-front-end.md)):
   - **Reusing the extraction's pyramid (A1), with PR 9's real time.** `stereo.match` rebuilds
@@ -794,18 +871,18 @@ shared with the owner's other projects.
     pyramid through the binding). Give extraction a result that holds its pyramid, or split
     the cores into `image::pyramid` and an `orb::extract_levels`, as ORB-SLAM's
     `ComputeStereoMatches` reads the extractor's `mvImagePyramid`.
-  - **The run format's golden folder and its native writers (A9), for PR 8.** C++ and Rust
-    will write runs against a golden folder in `tests/fixtures/eval/run/` that `read_run`
-    validates, with hand-written `.npy` and JSON writers (decided for PR 8); and a native
-    pipeline links both the edge rung and `eval`, so it sits above `eval`, in orchestration
-    (`slamlab_vo`, `slamlab-vo`; see the Package-layout table).
-  - **Guided matching beside `matching` (A10), for PR 8.** Tracking matches map points by
-    projection: a windowed, guided matcher and a per-frame feature grid (ORB-SLAM's
-    `SearchByProjection` and `GetFeaturesInArea`). Their generic parts belong in
-    `foundations.matching`, for the classic rung too, not in `edge`. Projecting into a level
-    needs the full-image-to-level map (run 2, A17): add it beside `full_image_coordinate` in
-    all three languages, and state stereo's level-to-level column (private to stereo today)
-    in its terms.
+  - Closed by PR 8: **the run format's golden folder and its native writers (A9).** C++ and
+    Rust write runs held to a golden folder in `tests/fixtures/eval/run/` that `read_run`
+    validates, with hand-written `.npy` and JSON writers; the native pipeline links both the
+    edge rung and `eval`, so it sits above `eval`, in orchestration (`slamlab_vo`, in C++ and
+    in Rust; see the Package-layout table).
+  - Closed by PR 8: **guided matching beside `matching` (A10).** `matching.features_in_area`
+    and `matching.search_by_projection` (ORB-SLAM's `GetFeaturesInArea` and
+    `SearchByProjection`) are in `foundations.matching`, for the classic rung too; the C++ and
+    Rust cores search a feature grid that finds exactly what Python's brute force finds. The
+    full-image-to-level map (run 2, A17) is `image.level_coordinate`, beside
+    `full_image_coordinate` in all three languages, and stereo's level-to-level column is
+    stated in its terms.
   - **The rotation histogram's bin width (L8).** ORB-SLAM's `ORBmatcher` bins orientation
     changes at 30 degrees (`round(rot / 30)`, bins 0 to 12), 2.5 times wider than slamlab's
     12-degree orientation bins; on six TUM pairs the recall of true matches was 0.90-1.00
@@ -844,7 +921,7 @@ shared with the owner's other projects.
     allocates (a faer call through `linalg::svd3`), and the edge VO calls `project_to_so3` and
     Umeyama per frame. Give `svd3` a fixed-size, backward-stable path (one-sided Jacobi, as
     Eigen's `JacobiSVD` uses for fixed sizes) behind the same signature, with the edge
-    milestone.
+    milestone. PR 8's panel (A11) moves it to PR 9, the rung's real-time PR.
 - **Deferred from PR 5's review panel**
   ([report](../reviews/2026-10-04-feature-rust-core.md)):
   - Closed by PR 6: **nested summaries and the Rust `Summary` trait (A5).** `ba::Summary`

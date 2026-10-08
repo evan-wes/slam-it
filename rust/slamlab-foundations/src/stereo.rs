@@ -387,7 +387,10 @@ fn check_inside(features: &Features, levels: &[Image], margin: usize) -> Result<
     Ok(())
 }
 
-/// The column on one level nearest a pixel's centre on another.
+/// The column on one level nearest a pixel's centre on another: the pixel mapped to the full
+/// image ([`image::full_image_coordinate`]) and on to the other level
+/// ([`image::level_coordinate`]), at `((2 x + 1) to_cols - from_cols) / (2 from_cols)`, rounded
+/// half up, in integers.
 ///
 /// # Arguments
 ///

@@ -1,6 +1,8 @@
 //! Bindings for `slamlab.foundations.pnp` (`slamlab_rs.foundations.pnp`).
 
 use nalgebra::Matrix4;
+use numpy::PyReadonlyArray1;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use slamlab_foundations::p3p::Solver;
@@ -43,6 +45,7 @@ fn epnp<'py>(
 /// * `bearings` - Their (M, 3) bearings.
 /// * `pose` - The starting (4, 4) `T_cam_world`.
 /// * `scale` - The Cauchy loss's scale.
+/// * `weights` - Each correspondence's weight.
 ///
 /// # Returns
 ///
@@ -58,12 +61,17 @@ fn refine_pose<'py>(
     bearings: ArrayIn<'py>,
     pose: ArrayIn<'py>,
     scale: f64,
+    weights: PyReadonlyArray1<'py, f64>,
 ) -> PyResult<Bound<'py, PyDict>> {
+    let weights = weights
+        .as_slice()
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
     let solved = core::refine_pose(
         &one::<Matrix4<f64>>(&pose)?,
         &rows(&points)?,
         &rows(&bearings)?,
         scale,
+        weights,
     );
     nls_crossing::refined(py, "pose", &unwrap(py, solved)?)
 }

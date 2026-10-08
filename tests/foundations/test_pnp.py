@@ -130,13 +130,16 @@ def test_epnp_rejects_too_few_points(backend: str) -> None:
 # --- the refinement -----------------------------------------------------------------------
 
 
-def test_refining_matches_scipy_least_squares() -> None:
+@pytest.mark.parametrize("weighted", [False, True])
+def test_refining_matches_scipy_least_squares(weighted: bool) -> None:
     """From RANSAC's consensus, the refinement reaches SciPy's minimum of the same problem.
 
     SciPy solves the same 6-DOF problem (the same retraction, a Cauchy loss of the same scale)
     to tolerances of 1e-15; ours stops on its function tolerance, where the cost is flat. SciPy
     applies its loss to each residual, ours to each block's squared norm, so SciPy is given one
-    residual per correspondence, the reprojection error's length: the same cost.
+    residual per correspondence, the reprojection error's length: the same cost. Weighted, as
+    the edge rung weights keypoints by their pyramid level, each length is scaled by its
+    weight's square root.
     """
     optimize = pytest.importorskip("scipy.optimize")
     scale = 2.0 / FOCAL
@@ -148,9 +151,12 @@ def test_refining_matches_scipy_least_squares() -> None:
         origin = run.state.model
 
         image = sc.plane_xy(rays)
+        levels = np.random.default_rng(seed).integers(0, 8, len(world))
+        weights = 1.2 ** (-2.0 * levels) if weighted else np.ones(len(world))
+        root = np.sqrt(weights)
         fitted = optimize.least_squares(
-            lambda delta, o=origin, w=world, x=image: _lengths(
-                pnp.ReprojectionProblem.retract(o, delta), w, x
+            lambda delta, o=origin, w=world, x=image, r=root: (
+                r * _lengths(pnp.ReprojectionProblem.retract(o, delta), w, x)
             ),
             np.zeros(6),
             loss="cauchy",
@@ -161,7 +167,9 @@ def test_refining_matches_scipy_least_squares() -> None:
         )
         expected = problem.retract(origin, fitted.x)
         for backend in sorted(backends.LOCKSTEP_BACKENDS):
-            solved = pnp.refine_pose(origin, world, rays, scale=scale, backend=backend)
+            solved = pnp.refine_pose(
+                origin, world, rays, scale=scale, weights=weights, backend=backend
+            )
             assert solved.summary.converged
             assert solved.summary.final_cost == pytest.approx(fitted.cost, rel=1e-6)
             np.testing.assert_allclose(solved.state, expected, atol=1e-5)
@@ -203,7 +211,7 @@ def test_a_point_behind_the_camera_has_an_infinite_cost() -> None:
 
 @pytest.mark.parametrize("backend", sorted(backends.LOCKSTEP_BACKENDS))
 def test_refine_rejects_invalid_input(backend: str) -> None:
-    """A pose that is not rigid, too few points, a bad scale, a point behind the camera."""
+    """A pose that is not rigid, too few points, a bad scale or weight, a point behind."""
     world, rays, truth, _ = _correspondences(0, 10)
     stretched = truth.copy()
     stretched[:3, :3] *= 2.0
@@ -213,6 +221,9 @@ def test_refine_rejects_invalid_input(backend: str) -> None:
         pnp.refine_pose(truth, world[:2], rays[:2], scale=1e-3, backend=backend)
     with pytest.raises(InvalidInputError, match="scale"):
         pnp.refine_pose(truth, world, rays, scale=0.0, backend=backend)
+    for weights in (np.zeros(len(world)), np.ones(len(world) - 1), np.full(len(world), np.inf)):
+        with pytest.raises(InvalidInputError, match="weights"):
+            pnp.refine_pose(truth, world, rays, scale=1e-3, weights=weights, backend=backend)
     behind = truth.copy()
     behind[2, 3] -= 20.0
     with pytest.raises(InvalidInputError, match="behind"):

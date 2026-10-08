@@ -47,6 +47,18 @@ function(slamlab_add_rung rung)
       add_test(NAME ${test_name} COMMAND ${test_name})
     endforeach()
   endif()
+  # One program per app file: cpp/apps/<rung>/<name>.cpp -> <name>, installed with the
+  # package (slamlab/bin/) when built through scikit-build, where slamlab.backends finds it.
+  file(GLOB apps CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/cpp/apps/${rung}/*.cpp)
+  foreach(app_source IN LISTS apps)
+    get_filename_component(app_name ${app_source} NAME_WE)
+    add_executable(${app_name} ${app_source})
+    target_link_libraries(${app_name} PRIVATE slamlab_${rung})
+    target_compile_options(${app_name} PRIVATE -Wall -Wextra -Wpedantic)
+    if(SKBUILD)
+      install(TARGETS ${app_name} RUNTIME DESTINATION slamlab/bin)
+    endif()
+  endforeach()
   if(SLAMLAB_BUILD_BENCHMARKS)
     # One executable per benchmark file: cpp/bench/<rung>/bench_<name>.cpp ->
     # <rung>_bench_<name>, in build/<dir>/bench/.
@@ -74,14 +86,14 @@ if(SLAMLAB_BUILD_BENCHMARKS)
 endif()
 
 slamlab_add_rung(foundations)
-# Evaluation: dataset readers outside the algorithm cores. PNGs decode with the vendored
-# stb_image (third_party/stb), included as a system header so its own warnings stay out. The
-# Python extension never links it, so a wheel build compiles it only with the native tests.
-if(NOT SKBUILD OR SLAMLAB_BUILD_TESTS)
-  slamlab_add_rung(eval DEPENDS slamlab_foundations)
-  target_include_directories(slamlab_eval SYSTEM PRIVATE
-                             ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb)
-endif()
+slamlab_add_rung(edge DEPENDS slamlab_foundations)
+# Evaluation: dataset readers and the run writer, outside the algorithm cores. PNGs decode
+# with the vendored stb_image (third_party/stb), included as a system header so its own
+# warnings stay out. The Python extension never links it; the native programs do.
+slamlab_add_rung(eval DEPENDS slamlab_foundations)
+target_include_directories(slamlab_eval SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb)
+# Orchestration: the native programs that run a whole sequence (cpp/apps/orchestration/).
+slamlab_add_rung(orchestration DEPENDS slamlab_edge slamlab_eval)
 
 if(SKBUILD)
   find_package(Python 3.11 REQUIRED COMPONENTS Interpreter Development.Module)
@@ -90,6 +102,6 @@ if(SKBUILD)
   file(GLOB_RECURSE SLAMLAB_BINDING_SOURCES CONFIGURE_DEPENDS cpp/bindings/*.cpp)
   nanobind_add_module(_cpp NB_STATIC ${SLAMLAB_BINDING_SOURCES})
   target_include_directories(_cpp PRIVATE cpp/bindings)
-  target_link_libraries(_cpp PRIVATE slamlab_foundations)
+  target_link_libraries(_cpp PRIVATE slamlab_foundations slamlab_edge)
   install(TARGETS _cpp LIBRARY DESTINATION slamlab)
 endif()

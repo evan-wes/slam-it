@@ -37,9 +37,12 @@ refine-and-reselect rounds (:func:`slamlab.foundations.ransac.refine_consensus`)
 pose to the noise floor (median 1.2 times it, against 2.0 with one refinement).
 
 **The refinement.** :func:`refine_pose` minimises the inliers' robust reprojection error,
-``½ Σ ρ(|rᵢ|²)`` with ρ Cauchy's loss, by Levenberg-Marquardt (:mod:`slamlab.foundations.nls`)
-on SE(3): the step ``T ← T exp(δ)`` (right perturbation, ``(ρ, θ)`` order), with the analytic
-Jacobian ``∂π/∂p · [R | -R [X]ₓ]``.
+``½ Σ ρ(wᵢ |rᵢ|²)`` with ρ Cauchy's loss and ``wᵢ`` each correspondence's weight (its
+information, as ORB-SLAM's ``PoseOptimization`` weights a keypoint by its pyramid level; 1 by
+default), by Levenberg-Marquardt (:mod:`slamlab.foundations.nls`) on SE(3): the step
+``T ← T exp(δ)`` (right perturbation, ``(ρ, θ)`` order), with the analytic Jacobian
+``∂π/∂p · [R | -R [X]ₓ]``. Each residual and its Jacobian are scaled by ``√wᵢ``, so the loss
+acts on whitened residuals and its scale is in whitened units.
 
 **RANSAC.** :func:`pnp_ransac` runs LO-MSAC (:mod:`slamlab.foundations.ransac`) with a P3P
 minimal solver and EPnP for the least-squares refits, then refines the consensus and keeps the
@@ -60,7 +63,7 @@ from numpy.typing import ArrayLike, NDArray
 
 from slamlab import backends
 from slamlab.foundations import nls, p3p, ransac, se3, so3
-from slamlab.foundations.arrays import as_correspondences
+from slamlab.foundations.arrays import as_correspondences, as_weights
 from slamlab.foundations.correspondences import normalised_xy
 from slamlab.foundations.errors import DegenerateError, InvalidInputError
 from slamlab.foundations.solve import Solution
@@ -118,8 +121,9 @@ class Implementation(Protocol):
         bearings: NDArray[np.float64],
         pose: NDArray[np.float64],
         scale: float,
+        weights: NDArray[np.float64],
     ) -> dict[str, Any]:
-        """Refine a pose on (M, 3) correspondences: ``pose`` and its NLS ``summary``."""
+        """Refine a pose on (M, 3) weighted correspondences: ``pose`` and its NLS ``summary``."""
         ...
 
     def pnp_ransac(
@@ -373,10 +377,20 @@ class ReprojectionProblem:
         The inliers' world points.
     image : ndarray of float64, shape (M, 2)
         Their bearings' normalised image points.
+    weights : ndarray of float64, shape (M,), optional
+        Each block's weight, positive: its residual and Jacobian are scaled by the weight's
+        square root (default: all 1).
     """
 
-    def __init__(self, points: NDArray[np.float64], image: NDArray[np.float64]) -> None:
+    def __init__(
+        self,
+        points: NDArray[np.float64],
+        image: NDArray[np.float64],
+        weights: NDArray[np.float64] | None = None,
+    ) -> None:
         self._points, self._image = points, image
+        self._weights = np.ones(len(points)) if weights is None else weights
+        self._root = np.sqrt(self._weights)
 
     def _projection(self, state: Pose) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         """Return the camera points and the residuals."""
@@ -397,7 +411,7 @@ class ReprojectionProblem:
             The squared residuals; infinity for a point behind the camera, so a step that
             moves one there has an infinite cost and is rejected (cheirality).
         """
-        return _reprojection(state, self._points, self._image)
+        return _reprojection(state, self._points, self._image) * self._weights
 
     def linearize(self, state: Pose, weights: NDArray[np.float64]) -> nls.DenseSystem:
         """Linearise at `state` into weighted normal equations over ``(ρ, θ)``.
@@ -425,7 +439,9 @@ class ReprojectionProblem:
             [np.broadcast_to(rotation, (len(z), 3, 3)), -rotation @ so3.hat(self._points)], axis=2
         )
         return nls.DenseSystem.build(
-            projection @ motion, residuals, np.asarray(weights, dtype=np.float64)
+            (projection @ motion) * self._root[:, None, None],
+            residuals * self._root[:, None],
+            np.asarray(weights, dtype=np.float64),
         )
 
     @staticmethod
@@ -448,7 +464,11 @@ class ReprojectionProblem:
 
 
 def refine_reference(
-    pose: Pose, points: NDArray[np.float64], bearings: NDArray[np.float64], scale: float
+    pose: Pose,
+    points: NDArray[np.float64],
+    bearings: NDArray[np.float64],
+    scale: float,
+    weights: NDArray[np.float64] | None = None,
 ) -> Solution[Pose, nls.Summary]:
     """Refine a pose on validated correspondences by Levenberg-Marquardt (the reference).
 
@@ -463,24 +483,28 @@ def refine_reference(
     bearings : ndarray of float64, shape (M, 3)
         Their unit bearings, positive z.
     scale : float
-        The Cauchy loss's scale, a reprojection error in the normalised plane (positive).
+        The Cauchy loss's scale, a whitened reprojection error in the normalised plane
+        (positive).
+    weights : ndarray of float64, shape (M,), optional
+        Each correspondence's weight, positive (default: all 1).
 
     Returns
     -------
     slamlab.foundations.solve.Solution
         The refined pose and the solve's summary.
     """
-    problem = ReprojectionProblem(points, normalised_xy(bearings))
+    problem = ReprojectionProblem(points, normalised_xy(bearings), weights)
     options = nls.Options(loss=nls.Loss("cauchy", scale), max_iterations=REFINE_ITERATIONS)
     return nls.solve(problem, pose, options)
 
 
-def refine_pose(
+def refine_pose(  # noqa: PLR0913 -- the correspondences, their weights, the loss, the backend
     pose: ArrayLike,
     points: ArrayLike,
     bearings: ArrayLike,
     *,
     scale: float,
+    weights: ArrayLike | None = None,
     backend: str = "python",
 ) -> Solution[Pose, nls.Summary]:
     """Refine a pose by minimising the inliers' robust reprojection error over SE(3).
@@ -494,7 +518,12 @@ def refine_pose(
     bearings : array_like, shape (M, 3)
         Their unit bearings, positive z.
     scale : float
-        The Cauchy loss's scale, a reprojection error in the normalised plane (positive).
+        The Cauchy loss's scale, a whitened reprojection error in the normalised plane
+        (positive).
+    weights : array_like, shape (M,), optional
+        Each correspondence's weight, its information in the units of `scale` (default: all
+        1); positive and finite. Not relative: a common factor k on the weights acts as
+        ``1/√k`` on the scale.
     backend : {"python", "cpp", "rust"}, optional
         Which implementation runs (default: the Python reference).
 
@@ -506,21 +535,26 @@ def refine_pose(
     Raises
     ------
     slamlab.foundations.errors.InvalidInputError
-        If the pose or the correspondences are invalid, M < 3, `scale` is not positive, or a
-        point is behind the starting camera.
+        If the pose or the correspondences are invalid, M < 3, `scale` is not positive, a
+        weight is not positive and finite, or a point is behind the starting camera.
     """
     matrix = _as_pose(pose)
     world, rays = as_correspondences(points, bearings, p3p.SAMPLE_SIZE)
     if not (np.isfinite(scale) and scale > 0.0):
         raise InvalidInputError(f"scale: must be positive and finite, got {scale}")
+    w = np.ones(len(world)) if weights is None else as_weights(weights, (len(world),), "weights")
+    if not np.all(w > 0.0):
+        raise InvalidInputError(
+            f"weights: expected positive values, one per correspondence, got {w.min()}"
+        )
     if np.any(world @ matrix[2, :3] + matrix[2, 3] <= 0.0):
         raise InvalidInputError("pose: a point is behind the starting camera")
     return backends.call(
         backend,
         __name__,
         "refine_pose",
-        reference=lambda: refine_reference(matrix, world, rays, scale),
-        arguments={"points": world, "bearings": rays, "pose": matrix, "scale": scale},
+        reference=lambda: refine_reference(matrix, world, rays, scale, w),
+        arguments={"points": world, "bearings": rays, "pose": matrix, "scale": scale, "weights": w},
         decode=lambda raw, codes: Solution(
             state=np.asarray(raw["pose"], dtype=np.float64),
             summary=nls.summary_from_backend(raw["summary"], codes),

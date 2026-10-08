@@ -165,6 +165,23 @@ layers = [
   "problem",
 ]
 
+# The order of modules inside the edge rung: the settings, a frame and the map at the bottom;
+# the observation test and bundle adjustment on them; initialisation, tracking and mapping,
+# independent of each other, on those; the pipeline on top. New modules are optional layers.
+[[tool.importlinter.contracts]]
+name = "The edge rung's internal order"
+type = "layers"
+containers = ["slamlab.edge"]
+layers = [
+  "(pipeline)",
+  "(initialization) | (tracking) | (mapping)",
+  "(adjust)",
+  "(residuals)",
+  "map",
+  "frames",
+  "options",
+]
+
 # OpenCV serves the demos as an external reference only: slamlab never wraps it (a stated
 # non-goal), and the edge rungs need a light dependency set.
 [[tool.importlinter.contracts]]

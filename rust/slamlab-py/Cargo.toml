@@ -16,6 +16,7 @@ numpy = "0.29.0"
 pyo3 = "0.29.3"
 pythonize = "0.29.0"
 serde = { version = "1.0.229", features = ["derive"] }
+slamlab-edge = { path = "../slamlab-edge" }
 slamlab-foundations = { path = "../slamlab-foundations" }
 
 [lints]
