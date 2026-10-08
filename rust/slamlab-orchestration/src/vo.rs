@@ -420,7 +420,12 @@ fn sequence_name(sequence: &Path) -> String {
 /// # Errors
 ///
 /// The pose's inversion's.
-fn record(out: &mut Run, result: &FrameResult, read_seconds: f64, build_seconds: f64) -> Result<()> {
+fn record(
+    out: &mut Run,
+    result: &FrameResult,
+    read_seconds: f64,
+    build_seconds: f64,
+) -> Result<()> {
     out.diagnostics.push(vec![
         ("timestamp".to_owned(), JsonValue::Number(result.timestamp)),
         (
