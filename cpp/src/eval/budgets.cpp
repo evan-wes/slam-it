@@ -16,28 +16,30 @@
 
 namespace slamlab::eval::budgets {
 
-std::optional<std::int64_t> peak_memory(const std::string& status) {
-  constexpr std::int64_t kKilobyte = 1024;
+namespace {
+
+/// @brief The words after a key on a status file's line, as `slamlab.eval.budgets` splits it.
+/// @param status The status file.
+/// @param key The line's first word, e.g. `VmHWM:`.
+/// @return The line's other words, or nothing if no line starts with the key (or no file).
+std::optional<std::vector<std::string>> status_words(const std::string& status,
+                                                     std::string_view key) {
   std::ifstream file(status);
   std::string line;
   while (std::getline(file, line)) {
     std::istringstream words(line);
-    std::string key;
-    std::string value;
-    std::string unit;
-    std::string extra;
-    if (!(words >> key >> value >> unit) || (words >> extra) || key != "VmHWM:" || unit != "kB") {
+    std::string first;
+    if (!(words >> first) || first != key) {
       continue;
     }
-    const std::optional<std::int64_t> kilobytes = text::integer(value);
-    if (kilobytes.has_value() && *kilobytes >= 0) {
-      return *kilobytes * kKilobyte;
+    std::vector<std::string> rest;
+    for (std::string word; words >> word;) {
+      rest.push_back(word);
     }
+    return rest;
   }
   return std::nullopt;
 }
-
-namespace {
 
 /// @brief Read a Linux CPU list, e.g. `0-7,16`.
 /// @param text The list.
@@ -65,19 +67,25 @@ std::optional<std::vector<std::int64_t>> cpu_list(std::string_view text) {
 
 }  // namespace
 
-std::optional<std::vector<std::int64_t>> allowed_cpus(const std::string& status) {
-  std::ifstream file(status);
-  std::string line;
-  while (std::getline(file, line)) {
-    std::istringstream words(line);
-    std::string key;
-    std::string value;
-    std::string extra;
-    if ((words >> key >> value) && !(words >> extra) && key == "Cpus_allowed_list:") {
-      return cpu_list(value);
-    }
+std::optional<std::int64_t> peak_memory(const std::string& status) {
+  constexpr std::int64_t kKilobyte = 1024;
+  const auto words = status_words(status, "VmHWM:");
+  if (!words || words->size() != 2 || (*words)[1] != "kB") {
+    return std::nullopt;
   }
-  return std::nullopt;
+  const std::optional<std::int64_t> kilobytes = text::integer((*words)[0]);
+  if (!kilobytes || *kilobytes < 0) {
+    return std::nullopt;
+  }
+  return *kilobytes * kKilobyte;
+}
+
+std::optional<std::vector<std::int64_t>> allowed_cpus(const std::string& status) {
+  const auto words = status_words(status, "Cpus_allowed_list:");
+  if (!words || words->size() != 1) {
+    return std::nullopt;
+  }
+  return cpu_list(words->front());
 }
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): two paths, as Python's (cgroup, root)
