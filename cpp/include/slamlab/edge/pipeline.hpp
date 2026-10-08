@@ -47,8 +47,12 @@ struct FrameResult {
   std::int64_t tracked{0};
   /// @brief Whether it became a keyframe (or started the map).
   bool keyframe{false};
-  /// @brief The time tracking (and mapping) it took.
-  double seconds{0.0};
+  /// @brief The time tracking it took, in seconds, initialisation included: what ORB-SLAM's
+  ///        tracking thread does.
+  double track_seconds{0.0};
+  /// @brief The time mapping it took as a keyframe (`process`), 0 for any other frame: what
+  ///        ORB-SLAM's local-mapping thread does.
+  double map_seconds{0.0};
 };
 
 /// @brief The edge pipeline for one sequence (`slamlab.edge.pipeline.Pipeline`).
@@ -82,6 +86,16 @@ class Pipeline {
   [[nodiscard]] const std::optional<Map>& map() const { return map_; }
 
  private:
+  /// @brief A frame tracked against the map, as `track_frame` gives it.
+  struct Step {
+    /// @brief The tracked frame, if it kept enough inliers.
+    std::optional<Tracked> tracked;
+    /// @brief Whether it became a keyframe.
+    bool keyframe{false};
+    /// @brief The time mapping it took, in seconds, if it did.
+    double map_seconds{0.0};
+  };
+
   /// @brief A pipeline before its first frame.
   /// @param mode The sensor mode.
   /// @param camera The camera.
@@ -131,10 +145,11 @@ class Pipeline {
                                                                    const Tracked& placed, bool wide,
                                                                    bool recent) const;
 
-  /// @brief Track a frame against the map; insert a keyframe if one is needed.
+  /// @brief Track a frame against the map; insert a keyframe if one is needed (and time it).
   /// @param frame The frame.
-  /// @return The tracked frame, if any, and whether it became a keyframe; a stage's error.
-  foundations::Result<std::pair<std::optional<Tracked>, bool>> track_frame(const Frame& frame);
+  /// @return The tracked frame, if any, whether it became a keyframe, and the time mapping it
+  ///         took; a stage's error.
+  foundations::Result<Step> track_frame(const Frame& frame);
 
   /// @brief The sensor mode.
   Mode mode_;

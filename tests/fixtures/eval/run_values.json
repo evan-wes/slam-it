@@ -233,35 +233,50 @@
    "state": "tracking",
    "tracked": 300,
    "keyframe": true,
-   "seconds": 0.0125
+   "read_seconds": 0.0025,
+   "build_seconds": 0.0125,
+   "track_seconds": 0.005,
+   "map_seconds": 0.0
   },
   {
    "timestamp": 1305031102.2086039,
    "state": "tracking",
    "tracked": 301,
    "keyframe": false,
-   "seconds": 0.025
+   "read_seconds": 0.005,
+   "build_seconds": 0.025,
+   "track_seconds": 0.01,
+   "map_seconds": 0.0
   },
   {
    "timestamp": 1305031102.241904,
    "state": "tracking",
    "tracked": 302,
    "keyframe": false,
-   "seconds": 0.037500000000000006
+   "read_seconds": 0.0075,
+   "build_seconds": 0.037500000000000006,
+   "track_seconds": 0.015,
+   "map_seconds": 0.0
   },
   {
    "timestamp": 1305031102.275204,
    "state": "tracking",
    "tracked": 303,
    "keyframe": true,
-   "seconds": 0.05
+   "read_seconds": 0.01,
+   "build_seconds": 0.05,
+   "track_seconds": 0.02,
+   "map_seconds": 0.0625
   },
   {
    "timestamp": 1305031102.3085039,
    "state": "tracking",
    "tracked": 304,
    "keyframe": false,
-   "seconds": 0.0625
+   "read_seconds": 0.0125,
+   "build_seconds": 0.0625,
+   "track_seconds": 0.025,
+   "map_seconds": 0.0
   }
  ]
 }

@@ -2,11 +2,12 @@
 
 Writes the run's folder with :func:`slamlab.orchestration.vo.run` (or reads one already
 written, with ``--reuse``), then prints what it holds: frames tracked, keyframes, map points,
-the tracking time per frame. With the sequence's ground truth (TUM's ``groundtruth.txt``, EuRoC's
-``state_groundtruth_estimate0``) it prints the ATE (Sim(3)-aligned for monocular, SE(3)
-otherwise) and the RPE over one frame period (:func:`slamlab.eval.runs.evaluate`). With
-``--rerun FILE.rrd`` it saves a rerun recording of the trajectory, the keyframes and the map
-points (open it with ``rerun FILE.rrd``).
+and the time per frame of each step (reading, building, tracking, mapping). With the
+sequence's ground truth (TUM's ``groundtruth.txt``, EuRoC's ``state_groundtruth_estimate0``) it
+prints the ATE (Sim(3)-aligned for monocular, SE(3) otherwise) and the RPE over one frame
+period (:func:`slamlab.eval.runs.evaluate`). With ``--rerun FILE.rrd`` it saves a rerun
+recording of the trajectory, the keyframes and the map points (open it with
+``rerun FILE.rrd``).
 
 Example, the C++ program on 300 frames of a TUM sequence::
 
@@ -133,14 +134,20 @@ def summarize(run: runs.Run, scored: runs.Evaluation | None) -> None:
     scored : slamlab.eval.runs.Evaluation or None
         Its errors.
     """
-    seconds = [float(d.get("seconds", 0.0)) for d in run.diagnostics]
-    per_frame = 1000.0 * float(np.mean(seconds)) if seconds else 0.0
     print(
         f"{run.sequence} ({run.dataset}, {run.mode}, {run.backend}): "
         f"{len(run.timestamps)} of {len(run.diagnostics)} frames tracked, "
-        f"{len(run.keyframe_timestamps)} keyframes, {len(run.points)} points, "
-        f"{per_frame:.1f} ms tracking per frame (frame building aside)"
+        f"{len(run.keyframe_timestamps)} keyframes, {len(run.points)} points"
     )
+    if run.diagnostics:
+        steps = ("read", "build", "track", "map")
+        per_frame = [np.mean([d[f"{step}_seconds"] for d in run.diagnostics]) for step in steps]
+        print(
+            "per frame: "
+            + ", ".join(
+                f"{step} {1000 * t:.1f} ms" for step, t in zip(steps, per_frame, strict=True)
+            )
+        )
     if scored is None:
         return
     absolute, relative = scored.absolute, scored.relative

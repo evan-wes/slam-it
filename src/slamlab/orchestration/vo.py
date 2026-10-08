@@ -18,8 +18,16 @@ builds each frame for the mode (:mod:`slamlab.edge.frames`), tracks it
 - **The frames.** ``count`` of them from ``first`` (all by default), in the sequence's order.
   An RGB-D frame without a depth map within the reader's tolerance is skipped.
 - **Each frame** gives one diagnostics line (``timestamp``, ``state``, ``tracked``,
-  ``keyframe``, ``seconds``) and, if tracked, its ``T_world_cam``. The run ends at the frame
-  that loses the track.
+  ``keyframe``, and the time each step took, in seconds) and, if tracked, its ``T_world_cam``.
+  The run ends at the frame that loses the track. The steps, as a camera and ORB-SLAM's
+  threads divide them:
+
+  - ``read_seconds``: delivering the frame's images, decoded (a depth map in metres), and a
+    stereo pair rectified, as ORB-SLAM2's examples do before they hand a frame over;
+  - ``build_seconds``: building the frame from them (:mod:`slamlab.edge.frames`: the pyramid,
+    the features, and the stereo matches or the depth at each keypoint);
+  - ``track_seconds`` and ``map_seconds``: tracking it, and mapping it if it became a
+    keyframe (:class:`slamlab.edge.pipeline.FrameResult`).
 - **At the end,** the map's keyframes (their times and ``T_world_cam``) and points. The run's
   ``sequence`` is its folder's name (the path resolved), its ``settings`` the pipeline's
   options.
@@ -34,6 +42,7 @@ run's error kind (:data:`EXIT_FAILED`), raised here as the same exception.
 from __future__ import annotations
 
 import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -233,18 +242,50 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
     return runs.read_run(request.out)
 
 
-_Builder = Callable[[int, orb.Options], frames.Frame | None]
-"""Builds the frame at an index with the extraction settings the pipeline asks for: None for a
-frame the run skips."""
+@dataclass(frozen=True)
+class _Delivered:
+    """A frame's images as a camera delivers them: decoded, and a stereo pair rectified.
+
+    A monocular frame has its image only, a stereo frame the right image too, and an RGB-D
+    frame its depth map, in metres.
+    """
+
+    timestamp: float
+    image: NDArray[np.uint8]
+    right: NDArray[np.uint8] | None = None
+    depth: NDArray[np.float64] | None = None
+
+
+_Reader = Callable[[int], _Delivered | None]
+"""Delivers the images at an index: None for a frame the run skips."""
 
 
 @dataclass(frozen=True)
 class _Source:
-    """A sequence opened for a run: the camera, its frames, and how to build each."""
+    """A sequence opened for a run: the camera, its frames, and how to read each."""
 
     camera: frames.Camera
     count: int
-    frame: _Builder
+    read: _Reader
+
+
+def _build(
+    delivered: _Delivered,
+    camera: frames.Camera,
+    extraction: orb.Options,
+    matching: stereo.Options,
+) -> frames.Frame:
+    """Build a frame from its images, for the mode they were delivered for."""
+    if delivered.right is not None:
+        return frames.stereo_pair(
+            delivered.image, delivered.right, delivered.timestamp, camera, extraction,
+            stereo_options=matching,
+        )  # fmt: skip
+    if delivered.depth is not None:
+        return frames.rgbd(
+            delivered.image, delivered.depth, delivered.timestamp, camera, extraction
+        )
+    return frames.monocular(delivered.image, delivered.timestamp, camera, extraction)
 
 
 def _tum_source(root: Path, mode: str) -> _Source:
@@ -261,21 +302,20 @@ def _tum_source(root: Path, mode: str) -> _Source:
         baseline = sensor.bf / float(sensor.intrinsics[0])
     camera = frames.Camera(sensor.model, sensor.intrinsics, sensor.width, sensor.height, baseline)
 
-    def build(i: int, extraction: orb.Options) -> frames.Frame | None:
+    def deliver(i: int) -> _Delivered | None:
         gray = images.read_gray(read.images[i])
         timestamp = float(read.timestamps[i])
         if mode == "monocular":
-            return frames.monocular(gray, timestamp, camera, extraction)
+            return _Delivered(timestamp, gray)
         depth_file = read.depths[i]
         if depth_file is None:
             return None
-        depth = tum.read_depth(depth_file, sensor.depth_scale)
-        return frames.rgbd(gray, depth, timestamp, camera, extraction)
+        return _Delivered(timestamp, gray, depth=tum.read_depth(depth_file, sensor.depth_scale))
 
-    return _Source(camera, len(read.images), build)
+    return _Source(camera, len(read.images), deliver)
 
 
-def _stereo_source(read: euroc.Frames, matching: stereo.Options) -> _Source:
+def _stereo_source(read: euroc.Frames) -> _Source:
     """Open a EuRoC sequence's stereo pairs, rectified: the rectified left camera."""
     left, right = read.left_camera, read.right_camera
     rectification = stereo.rectify(
@@ -285,33 +325,29 @@ def _stereo_source(read: euroc.Frames, matching: stereo.Options) -> _Source:
     rows, cols = left.shape
     camera = frames.Camera("pinhole", rectification.intrinsics, cols, rows, rectification.baseline)
 
-    def build(i: int, extraction: orb.Options) -> frames.Frame:
+    def deliver(i: int) -> _Delivered:
         left_image, right_image = (
             image.remap(images.read_gray(path), coordinates)
             for path, coordinates in zip((read.left[i], read.right[i]), maps, strict=True)
         )
-        timestamp = float(read.timestamps[i])
-        return frames.stereo_pair(
-            left_image, right_image, timestamp, camera, extraction, stereo_options=matching
-        )
+        return _Delivered(float(read.timestamps[i]), left_image, right=right_image)
 
-    return _Source(camera, len(read.left), build)
+    return _Source(camera, len(read.left), deliver)
 
 
-def _euroc_source(root: Path, mode: str, matching: stereo.Options) -> _Source:
+def _euroc_source(root: Path, mode: str) -> _Source:
     """Open a EuRoC sequence: its left camera for monocular, the pairs rectified for stereo."""
     read = euroc.read_frames(root)
     if mode == "stereo":
-        return _stereo_source(read, matching)
+        return _stereo_source(read)
     left = read.left_camera
     rows, cols = left.shape
     camera = frames.Camera("radtan", left.intrinsics, cols, rows)
 
-    def build(i: int, extraction: orb.Options) -> frames.Frame:
-        gray = images.read_gray(read.left[i])
-        return frames.monocular(gray, float(read.timestamps[i]), camera, extraction)
+    def deliver(i: int) -> _Delivered:
+        return _Delivered(float(read.timestamps[i]), images.read_gray(read.left[i]))
 
-    return _Source(camera, len(read.left), build)
+    return _Source(camera, len(read.left), deliver)
 
 
 def _run_here(request: Request) -> runs.Run:
@@ -319,7 +355,8 @@ def _run_here(request: Request) -> runs.Run:
     if request.dataset == "tum":
         source = _tum_source(request.sequence, request.mode)
     else:
-        source = _euroc_source(request.sequence, request.mode, request.options.stereo_matching())
+        source = _euroc_source(request.sequence, request.mode)
+    matching = request.options.stereo_matching()
     tracker = Pipeline(request.mode, source.camera, request.options)
     end = source.count
     if request.count is not None:
@@ -328,9 +365,13 @@ def _run_here(request: Request) -> runs.Run:
     poses: list[NDArray[np.float64]] = []
     diagnostics: list[dict[str, object]] = []
     for i in range(request.first, end):
-        frame = source.frame(i, tracker.extraction())
-        if frame is None:
+        start = time.perf_counter()
+        delivered = source.read(i)
+        read = time.perf_counter()
+        if delivered is None:
             continue
+        frame = _build(delivered, source.camera, tracker.extraction(), matching)
+        built = time.perf_counter()
         result = tracker.track(frame)
         diagnostics.append(
             {
@@ -338,7 +379,10 @@ def _run_here(request: Request) -> runs.Run:
                 "state": result.state.value,
                 "tracked": result.tracked,
                 "keyframe": result.keyframe,
-                "seconds": result.seconds,
+                "read_seconds": read - start,
+                "build_seconds": built - read,
+                "track_seconds": result.track_seconds,
+                "map_seconds": result.map_seconds,
             }
         )
         if result.pose is not None:

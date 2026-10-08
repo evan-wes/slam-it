@@ -57,6 +57,29 @@ def test_every_backend_tracks_the_room(
     assert error.absolute.rmse < ATE_BOUND[mode]
 
 
+STEPS = ("read_seconds", "build_seconds", "track_seconds", "map_seconds")
+"""The steps each frame's diagnostics time (see :mod:`slamlab.orchestration.vo`)."""
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize(("dataset", "mode"), CASES)
+def test_every_frame_times_its_steps(
+    dataset: str, mode: str, backend: str, room_runs: RoomRun
+) -> None:
+    """Every frame times reading, building and tracking; only keyframes after the start map.
+
+    The frame that starts the map is initialisation, which tracking's time holds, as ORB-SLAM's
+    tracking thread initialises.
+    """
+    run = room_runs(dataset, mode, backend)
+    for d in run.diagnostics:
+        assert all(d[step] > 0.0 for step in STEPS[:3])
+    start = next(i for i, d in enumerate(run.diagnostics) if d["keyframe"])
+    mapped = [d["map_seconds"] > 0.0 for d in run.diagnostics]
+    assert mapped == [d["keyframe"] and i > start for i, d in enumerate(run.diagnostics)]
+    assert all(d["map_seconds"] == 0.0 for d in run.diagnostics if not d["keyframe"])
+
+
 def _assert_same_run(native: runs.Run, reference: runs.Run) -> None:
     """Check that a native run made the reference's decisions and placed what it placed.
 

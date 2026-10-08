@@ -58,8 +58,23 @@ pub struct FrameResult {
     pub tracked: usize,
     /// Whether it became a keyframe (or started the map).
     pub keyframe: bool,
-    /// The time tracking (and mapping) it took.
-    pub seconds: f64,
+    /// The time tracking it took, in seconds, initialisation included: what ORB-SLAM's
+    /// tracking thread does.
+    pub track_seconds: f64,
+    /// The time mapping it took as a keyframe (`mapping::process`), 0 for any other frame:
+    /// what ORB-SLAM's local-mapping thread does.
+    pub map_seconds: f64,
+}
+
+/// A frame tracked against the map, as `Pipeline::track_frame` gives it.
+#[derive(Debug, Default)]
+struct Step {
+    /// The tracked frame, if it kept enough inliers.
+    tracked: Option<Tracked>,
+    /// Whether it became a keyframe.
+    keyframe: bool,
+    /// The time mapping it took, in seconds, if it did.
+    map_seconds: f64,
 }
 
 /// The edge pipeline for one sequence (`slamlab.edge.pipeline.Pipeline`).
@@ -179,22 +194,27 @@ impl Pipeline {
     /// A stage's error.
     pub fn track(&mut self, frame: &Frame) -> Result<FrameResult> {
         let start = Instant::now();
-        let (tracked, keyframe) = match self.state {
+        let step = match self.state {
             State::NotInitialized => {
                 let tracked = self.initialize(frame)?;
-                let started = tracked.is_some();
-                (tracked, started)
+                Step {
+                    keyframe: tracked.is_some(),
+                    tracked,
+                    map_seconds: 0.0,
+                }
             }
             State::Tracking => self.track_frame(frame)?,
-            State::Lost => (None, false),
+            State::Lost => Step::default(),
         };
+        let tracked = step.tracked.as_ref();
         Ok(FrameResult {
             timestamp: frame.timestamp,
             state: self.state,
-            pose: tracked.as_ref().map(|t| t.pose),
-            tracked: tracked.as_ref().map_or(0, Tracked::inliers),
-            keyframe,
-            seconds: start.elapsed().as_secs_f64(),
+            pose: tracked.map(|t| t.pose),
+            tracked: tracked.map_or(0, Tracked::inliers),
+            keyframe: step.keyframe,
+            track_seconds: start.elapsed().as_secs_f64() - step.map_seconds,
+            map_seconds: step.map_seconds,
         })
     }
 
@@ -351,7 +371,7 @@ impl Pipeline {
         ))
     }
 
-    /// Tracks a frame against the map; inserts a keyframe if one is needed.
+    /// Tracks a frame against the map; inserts a keyframe if one is needed (and times it).
     ///
     /// # Arguments
     ///
@@ -359,12 +379,12 @@ impl Pipeline {
     ///
     /// # Returns
     ///
-    /// The tracked frame, if any, and whether it became a keyframe.
+    /// The tracked frame, if any, whether it became a keyframe, and the time mapping it took.
     ///
     /// # Errors
     ///
     /// A stage's error.
-    fn track_frame(&mut self, frame: &Frame) -> Result<(Option<Tracked>, bool)> {
+    fn track_frame(&mut self, frame: &Frame) -> Result<Step> {
         let Some(mut m) = self.map.take() else {
             return fail(ErrorKind::InvalidInput, "track: no map to track against");
         };
@@ -372,12 +392,12 @@ impl Pipeline {
         let outcome =
             placed.and_then(|(placed, recovered)| self.refine(&mut m, frame, placed, recovered));
         self.map = Some(m);
-        let (tracked, keyframe) = outcome?;
-        match &tracked {
+        let step = outcome?;
+        match &step.tracked {
             Some(t) => self.accept(frame, t)?,
             None => self.record_failure(),
         }
-        Ok((tracked, keyframe))
+        Ok(step)
     }
 
     /// Tracks the local map from a placed frame, counts its points, and maps it if it needs a
@@ -392,7 +412,7 @@ impl Pipeline {
     ///
     /// # Returns
     ///
-    /// The tracked frame, if any, and whether it became a keyframe.
+    /// The tracked frame, if any, whether it became a keyframe, and the time mapping it took.
     ///
     /// # Errors
     ///
@@ -403,7 +423,7 @@ impl Pipeline {
         frame: &Frame,
         placed: Option<Tracked>,
         recovered: bool,
-    ) -> Result<(Option<Tracked>, bool)> {
+    ) -> Result<Step> {
         let options = self.options;
         if recovered && placed.is_some() {
             self.since_recovery = Some(0);
@@ -415,7 +435,7 @@ impl Pipeline {
             .since_recovery
             .is_some_and(|s| s < options.recovery_window_frames);
         let Some(placed) = placed else {
-            return Ok((None, false));
+            return Ok(Step::default());
         };
         let local =
             tracking::track_local_map(m, &self.camera, frame, &placed, self.mode, &options, wide)?;
@@ -437,7 +457,7 @@ impl Pipeline {
             options.min_tracked
         };
         if local.tracked.inliers() < needed {
-            return Ok((None, false));
+            return Ok(Step::default());
         }
         let tracked = local.tracked;
         let held = recent && m.keyframes() > options.max_frames;
@@ -450,9 +470,16 @@ impl Pipeline {
                 self.mode,
                 &options,
             )?;
+        let mut map_seconds = 0.0;
         if keyframe {
+            let start = Instant::now();
             mapping::process(m, &self.camera, frame, &tracked, self.mode, &options)?;
+            map_seconds = start.elapsed().as_secs_f64();
         }
-        Ok((Some(tracked), keyframe))
+        Ok(Step {
+            tracked: Some(tracked),
+            keyframe,
+            map_seconds,
+        })
     }
 }

@@ -46,30 +46,30 @@ foundations::orb::Options Pipeline::extraction() const {
 
 Result<FrameResult> Pipeline::track(const Frame& frame) {
   const auto start = std::chrono::steady_clock::now();
-  std::optional<Tracked> tracked;
-  bool keyframe = false;
+  Step step;
   if (state_ == State::kNotInitialized) {
     auto started = initialize(frame);
     if (!started) {
       return std::unexpected(std::move(started.error()));
     }
-    tracked = std::move(*started);
-    keyframe = tracked.has_value();
+    step.tracked = std::move(*started);
+    step.keyframe = step.tracked.has_value();
   } else if (state_ == State::kTracking) {
     auto placed = track_frame(frame);
     if (!placed) {
       return std::unexpected(std::move(placed.error()));
     }
-    tracked = std::move(placed->first);
-    keyframe = placed->second;
+    step = std::move(*placed);
   }
   const std::chrono::duration<double> took = std::chrono::steady_clock::now() - start;
+  const std::optional<Tracked>& tracked = step.tracked;
   return FrameResult{.timestamp = frame.timestamp,
                      .state = state_,
                      .pose = tracked ? std::optional<Eigen::Matrix4d>(tracked->pose) : std::nullopt,
                      .tracked = tracked ? inliers(*tracked) : 0,
-                     .keyframe = keyframe,
-                     .seconds = took.count()};
+                     .keyframe = step.keyframe,
+                     .track_seconds = took.count() - step.map_seconds,
+                     .map_seconds = step.map_seconds};
 }
 
 Result<std::optional<Tracked>> Pipeline::initialize(const Frame& frame) {
@@ -196,7 +196,7 @@ Result<std::optional<Tracked>> Pipeline::refine(Map& m, const Frame& frame, cons
   return std::move(local->tracked);
 }
 
-Result<std::pair<std::optional<Tracked>, bool>> Pipeline::track_frame(const Frame& frame) {
+Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
   if (!map_) {
     return fail(ErrorKind::kInvalidInput, "track: no map to track against");
   }
@@ -223,7 +223,7 @@ Result<std::pair<std::optional<Tracked>, bool>> Pipeline::track_frame(const Fram
   }
   if (!tracked) {
     record_failure();
-    return std::pair{std::optional<Tracked>{}, false};
+    return Step{};
   }
   const bool held = recent && std::cmp_greater(keyframe_count(m), options_.max_frames);
   auto need = held ? Result<bool>(false)
@@ -231,15 +231,18 @@ Result<std::pair<std::optional<Tracked>, bool>> Pipeline::track_frame(const Fram
   if (!need) {
     return std::unexpected(std::move(need.error()));
   }
+  std::chrono::duration<double> mapped{0.0};
   if (*need) {
+    const auto start = std::chrono::steady_clock::now();
     if (auto ok = process(m, camera_, frame, *tracked, mode_, options_); !ok) {
       return std::unexpected(std::move(ok.error()));
     }
+    mapped = std::chrono::steady_clock::now() - start;
   }
   if (auto ok = accept(frame, *tracked); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
-  return std::pair{std::move(tracked), *need};
+  return Step{.tracked = std::move(tracked), .keyframe = *need, .map_seconds = mapped.count()};
 }
 
 }  // namespace slamlab::edge

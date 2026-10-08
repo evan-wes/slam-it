@@ -55,7 +55,10 @@ def values() -> dict[str, Any]:
                 "state": "tracking",
                 "tracked": 300 + k,
                 "keyframe": k in (0, 3),
-                "seconds": 0.0125 * (k + 1),
+                "read_seconds": 0.0025 * (k + 1),
+                "build_seconds": 0.0125 * (k + 1),
+                "track_seconds": 0.005 * (k + 1),
+                "map_seconds": 0.0625 if k == 3 else 0.0,
             }
             for k, t in enumerate(times)
         ],

@@ -5,6 +5,7 @@
 #include <Eigen/Core>
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -16,7 +17,9 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "slamlab/edge/frames.hpp"
@@ -44,11 +47,38 @@ using foundations::fail;
 using foundations::Result;
 using foundations::camera::Model;
 
-/// @brief A frame built, or nothing for one the run skips.
-using Built = Result<std::optional<edge::Frame>>;
+using foundations::image::Image;
 
-/// @brief Builds the frame at an index with the extraction settings the pipeline asks for.
-using Builder = std::function<Built(std::size_t, const foundations::orb::Options&)>;
+/// @brief A stereo pair, rectified.
+struct StereoImages {
+  /// @brief The left image.
+  Image left;
+  /// @brief The right image.
+  Image right;
+};
+
+/// @brief An RGB-D frame's image and its depth map.
+struct RgbdImages {
+  /// @brief The image.
+  Image image;
+  /// @brief The depth map, in metres.
+  edge::DepthMap depth;
+};
+
+/// @brief A frame's images as a camera delivers them: decoded, and a stereo pair rectified
+///        (`slamlab.orchestration.vo._Delivered`).
+struct Delivered {
+  /// @brief The frame's time.
+  double timestamp{0.0};
+  /// @brief A monocular frame's image, a stereo pair, or an RGB-D frame's image and depth.
+  std::variant<Image, StereoImages, RgbdImages> images;
+};
+
+/// @brief Delivered images, or nothing for a frame the run skips.
+using Read = Result<std::optional<Delivered>>;
+
+/// @brief Delivers the images at an index.
+using Reader = std::function<Read(std::size_t)>;
 
 /// @brief A sequence opened for a run.
 struct Source {
@@ -56,18 +86,32 @@ struct Source {
   edge::Camera camera;
   /// @brief The sequence's frames.
   std::size_t frames{0};
-  /// @brief Builds one.
-  Builder frame;
+  /// @brief Reads one.
+  Reader read;
 };
 
-/// @brief A frame built, as the builders return it.
-/// @param frame The frame, or the builder's error.
-/// @return It.
-Built built(Result<edge::Frame> frame) {
-  if (!frame) {
-    return std::unexpected(frame.error());
-  }
-  return std::optional<edge::Frame>(std::move(*frame));
+/// @brief Build a frame from its images, for the mode they were delivered for.
+/// @param delivered The images.
+/// @param camera The camera.
+/// @param extraction The extraction settings the pipeline asks for.
+/// @param matching The stereo matcher's settings.
+/// @return The frame; the frame builder's error.
+Result<edge::Frame> build(const Delivered& delivered, const edge::Camera& camera,
+                          const foundations::orb::Options& extraction,
+                          const foundations::stereo::MatchOptions& matching) {
+  return std::visit(
+      [&](const auto& images) -> Result<edge::Frame> {
+        using Images = std::decay_t<decltype(images)>;
+        if constexpr (std::is_same_v<Images, StereoImages>) {
+          return edge::stereo_pair(images.left, images.right, delivered.timestamp, camera,
+                                   extraction, matching);
+        } else if constexpr (std::is_same_v<Images, RgbdImages>) {
+          return edge::rgbd(images.image, images.depth, delivered.timestamp, camera, extraction);
+        } else {
+          return edge::monocular(images, delivered.timestamp, camera, extraction);
+        }
+      },
+      delivered.images);
 }
 
 /// @brief Open a TUM-format folder: its camera, an RGB-D one with the virtual baseline.
@@ -95,29 +139,30 @@ Result<Source> tum_source(const std::string& root, edge::Mode mode) {
                             .height = sensor.height,
                             .baseline = baseline};
   const std::size_t count = read->images.size();
-  Builder frame = [frames = std::move(*read), camera, mode](
-                      std::size_t i, const foundations::orb::Options& extraction) -> Built {
-    const auto image = eval::png::read_gray(frames.images.at(i));
+  Reader deliver = [frames = std::move(*read), mode](std::size_t i) -> Read {
+    auto image = eval::png::read_gray(frames.images.at(i));
     if (!image) {
       return std::unexpected(image.error());
     }
     const double timestamp = frames.timestamps.at(i);
     if (mode == edge::Mode::kMonocular) {
-      return built(edge::monocular(*image, timestamp, camera, extraction));
+      return Delivered{.timestamp = timestamp, .images = std::move(*image)};
     }
     const std::optional<std::string>& depth_file = frames.depths.at(i);
     if (!depth_file.has_value()) {
-      return std::optional<edge::Frame>();
+      return std::optional<Delivered>();
     }
     auto depth = eval::tum::read_depth(*depth_file, frames.camera.depth_scale);
     if (!depth) {
       return std::unexpected(depth.error());
     }
-    const edge::DepthMap depth_map{
+    edge::DepthMap depth_map{
         .rows = depth->rows, .cols = depth->cols, .values = std::move(depth->values)};
-    return built(edge::rgbd(*image, depth_map, timestamp, camera, extraction));
+    return Delivered{
+        .timestamp = timestamp,
+        .images = RgbdImages{.image = std::move(*image), .depth = std::move(depth_map)}};
   };
-  return Source{.camera = camera, .frames = count, .frame = std::move(frame)};
+  return Source{.camera = camera, .frames = count, .read = std::move(deliver)};
 }
 
 /// @brief Read an image and rectify it.
@@ -139,8 +184,7 @@ Result<foundations::image::Image> rectified(const std::string& path,
 ///        (pinhole) with the pair's baseline.
 /// @param frames The sequence's frames.
 /// @return The source; the rectification's error.
-Result<Source> stereo_source(eval::euroc::Frames frames,
-                             const foundations::stereo::MatchOptions& matching) {
+Result<Source> stereo_source(eval::euroc::Frames frames) {
   const eval::euroc::Camera& left = frames.left_camera;
   const eval::euroc::Camera& right = frames.right_camera;
   const auto pose = eval::euroc::right_from_left(left, right);
@@ -168,20 +212,21 @@ Result<Source> stereo_source(eval::euroc::Frames frames,
                             .height = left.rows,
                             .baseline = rectification->baseline};
   const std::size_t count = frames.left.size();
-  Builder frame = [frames = std::move(frames), maps = std::array{*map_left, *map_right}, camera,
-                   matching](std::size_t i, const foundations::orb::Options& extraction) -> Built {
-    const auto image_left = rectified(frames.left.at(i), maps[0], camera);
+  Reader deliver = [frames = std::move(frames), maps = std::array{*map_left, *map_right},
+                    camera](std::size_t i) -> Read {
+    auto image_left = rectified(frames.left.at(i), maps[0], camera);
     if (!image_left) {
       return std::unexpected(image_left.error());
     }
-    const auto image_right = rectified(frames.right.at(i), maps[1], camera);
+    auto image_right = rectified(frames.right.at(i), maps[1], camera);
     if (!image_right) {
       return std::unexpected(image_right.error());
     }
-    return built(edge::stereo_pair(*image_left, *image_right, frames.timestamps.at(i), camera,
-                                   extraction, matching));
+    return Delivered{
+        .timestamp = frames.timestamps.at(i),
+        .images = StereoImages{.left = std::move(*image_left), .right = std::move(*image_right)}};
   };
-  return Source{.camera = camera, .frames = count, .frame = std::move(frame)};
+  return Source{.camera = camera, .frames = count, .read = std::move(deliver)};
 }
 
 /// @brief Open a EuRoC sequence: its left camera for monocular, the pairs rectified for
@@ -189,14 +234,13 @@ Result<Source> stereo_source(eval::euroc::Frames frames,
 /// @param root The sequence folder.
 /// @param mode Monocular or stereo.
 /// @return The source; the reader's error.
-Result<Source> euroc_source(const std::string& root, edge::Mode mode,
-                            const foundations::stereo::MatchOptions& matching) {
+Result<Source> euroc_source(const std::string& root, edge::Mode mode) {
   auto read = eval::euroc::read_frames(root);
   if (!read) {
     return std::unexpected(read.error());
   }
   if (mode == edge::Mode::kStereo) {
-    return stereo_source(std::move(*read), matching);
+    return stereo_source(std::move(*read));
   }
   const eval::euroc::Camera& left = read->left_camera;
   const edge::Camera camera{.model = Model::kRadTan,
@@ -205,15 +249,14 @@ Result<Source> euroc_source(const std::string& root, edge::Mode mode,
                             .height = left.rows,
                             .baseline = 0.0};
   const std::size_t count = read->left.size();
-  Builder frame = [frames = std::move(*read), camera](
-                      std::size_t i, const foundations::orb::Options& extraction) -> Built {
-    const auto image = eval::png::read_gray(frames.left.at(i));
+  Reader deliver = [frames = std::move(*read)](std::size_t i) -> Read {
+    auto image = eval::png::read_gray(frames.left.at(i));
     if (!image) {
       return std::unexpected(image.error());
     }
-    return built(edge::monocular(*image, frames.timestamps.at(i), camera, extraction));
+    return Delivered{.timestamp = frames.timestamps.at(i), .images = std::move(*image)};
   };
-  return Source{.camera = camera, .frames = count, .frame = std::move(frame)};
+  return Source{.camera = camera, .frames = count, .read = std::move(deliver)};
 }
 
 /// @brief The settings as a run records them, by their Python names.
@@ -242,13 +285,19 @@ std::string sequence_name(const std::string& sequence) {
 /// @brief Record a frame's result: its diagnostics, and its pose if it was tracked.
 /// @param out The run.
 /// @param result The result.
+/// @param read The time delivering its images took, in seconds.
+/// @param build The time building the frame took, in seconds.
 /// @return Nothing, or the pose's inversion's error.
-Result<void> record(eval::runs::Run& out, const edge::FrameResult& result) {
+Result<void> record(eval::runs::Run& out, const edge::FrameResult& result, double read,
+                    double build) {
   out.diagnostics.push_back({{"timestamp", result.timestamp},
                              {"state", std::string(edge::name(result.state))},
                              {"tracked", result.tracked},
                              {"keyframe", result.keyframe},
-                             {"seconds", result.seconds}});
+                             {"read_seconds", read},
+                             {"build_seconds", build},
+                             {"track_seconds", result.track_seconds},
+                             {"map_seconds", result.map_seconds}});
   if (!result.pose.has_value()) {
     return {};
   }
@@ -284,27 +333,39 @@ Result<void> record_map(eval::runs::Run& out, const edge::Map& m) {
 /// @param pipeline The pipeline.
 /// @param request The request.
 /// @param out The run, each frame recorded.
-/// @return Nothing; a builder's or the pipeline's error.
+/// @return Nothing; a reader's, a frame builder's or the pipeline's error.
 Result<void> track(const Source& source, edge::Pipeline& pipeline, const Request& request,
                    eval::runs::Run& out) {
+  using Clock = std::chrono::steady_clock;
+  using Seconds = std::chrono::duration<double>;
   const auto first = static_cast<std::size_t>(request.first);
   const std::size_t end =
       request.count.has_value()
           ? std::min(source.frames, first + static_cast<std::size_t>(*request.count))
           : source.frames;
+  const foundations::stereo::MatchOptions matching = edge::stereo_matching(request.options);
   for (std::size_t i = first; i < end; ++i) {
-    const Built frame = source.frame(i, pipeline.extraction());
+    const auto start = Clock::now();
+    const Read delivered = source.read(i);
+    const auto read = Clock::now();
+    if (!delivered) {
+      return std::unexpected(delivered.error());
+    }
+    if (!delivered->has_value()) {
+      continue;
+    }
+    const auto frame = build(**delivered, source.camera, pipeline.extraction(), matching);
+    const auto built = Clock::now();
     if (!frame) {
       return std::unexpected(frame.error());
     }
-    if (!frame->has_value()) {
-      continue;
-    }
-    const auto result = pipeline.track(**frame);
+    const auto result = pipeline.track(*frame);
     if (!result) {
       return std::unexpected(result.error());
     }
-    if (const auto recorded = record(out, *result); !recorded) {
+    if (const auto recorded =
+            record(out, *result, Seconds(read - start).count(), Seconds(built - read).count());
+        !recorded) {
       return recorded;
     }
     if (result->state == edge::State::kLost) {
@@ -461,8 +522,7 @@ Result<eval::runs::Run> run(const Request& request) {
     return std::unexpected(checked.error());
   }
   auto source = request.dataset == "tum" ? tum_source(request.sequence, request.mode)
-                                         : euroc_source(request.sequence, request.mode,
-                                                        edge::stereo_matching(request.options));
+                                         : euroc_source(request.sequence, request.mode);
   if (!source) {
     return std::unexpected(source.error());
   }
