@@ -11,5 +11,12 @@
   "window": 10,
   "chi2_mono": 5.991
  },
- "peak_memory": 48381952
+ "peak_memory": 48381952,
+ "cpus": [
+  4,
+  5,
+  6,
+  7
+ ],
+ "memory_cap": 8589934592
 }

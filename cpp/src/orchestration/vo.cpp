@@ -26,7 +26,6 @@
 #include "slamlab/edge/map.hpp"
 #include "slamlab/edge/options.hpp"
 #include "slamlab/edge/pipeline.hpp"
-#include "slamlab/eval/budgets.hpp"
 #include "slamlab/eval/euroc.hpp"
 #include "slamlab/eval/png.hpp"
 #include "slamlab/eval/runs.hpp"
@@ -286,17 +285,17 @@ std::string sequence_name(const std::string& sequence) {
 /// @brief Record a frame's result: its diagnostics, and its pose if it was tracked.
 /// @param out The run.
 /// @param result The result.
-/// @param read The time delivering its images took, in seconds.
-/// @param build The time building the frame took, in seconds.
+/// @param read_seconds The time delivering its images took, in seconds.
+/// @param build_seconds The time building the frame took, in seconds.
 /// @return Nothing, or the pose's inversion's error.
-Result<void> record(eval::runs::Run& out, const edge::FrameResult& result, double read,
-                    double build) {
+Result<void> record(eval::runs::Run& out, const edge::FrameResult& result, double read_seconds,
+                    double build_seconds) {
   out.diagnostics.push_back({{"timestamp", result.timestamp},
                              {"state", std::string(edge::name(result.state))},
                              {"tracked", result.tracked},
                              {"keyframe", result.keyframe},
-                             {"read_seconds", read},
-                             {"build_seconds", build},
+                             {"read_seconds", read_seconds},
+                             {"build_seconds", build_seconds},
                              {"track_seconds", result.track_seconds},
                              {"map_seconds", result.map_seconds}});
   if (!result.pose.has_value()) {
@@ -544,10 +543,6 @@ Result<eval::runs::Run> run(const Request& request) {
     if (const auto recorded = record_map(out, *m); !recorded) {
       return std::unexpected(recorded.error());
     }
-  }
-  out.peak_memory = eval::budgets::peak_memory();
-  if (const auto written = eval::runs::write_run(request.out, out); !written) {
-    return std::unexpected(written.error());
   }
   return out;
 }

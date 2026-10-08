@@ -3,8 +3,9 @@
 Writes the run's folder with :func:`slamlab.orchestration.vo.run` (or reads one already
 written, with ``--reuse``), then prints what it holds: frames tracked, keyframes, map points,
 its frames judged against their real-time deadline (:func:`slamlab.eval.budgets.judge`), and
-its program's peak memory. ``--budget laptop-cpu`` runs the backend's program within that
-compute budget (:mod:`slamlab.eval.budgets`), pinned and its memory capped. With the
+what its program recorded of its process (peak memory, CPUs, memory cap). ``--budget
+laptop-cpu`` runs the backend's program within that compute budget
+(:mod:`slamlab.eval.budgets`), pinned and its memory capped. With the
 sequence's ground truth (TUM's ``groundtruth.txt``, EuRoC's ``state_groundtruth_estimate0``) it
 prints the ATE (Sim(3)-aligned for monocular, SE(3) otherwise) and the RPE over one frame
 period (:func:`slamlab.eval.runs.evaluate`). With ``--rerun FILE.rrd`` it saves a rerun
@@ -16,7 +17,8 @@ Example, the C++ program on 300 frames of a TUM sequence::
     python scripts/run_vo.py --dataset tum --sequence PATH --mode rgbd --out RUN_DIR
         --backend cpp --count 300 --rerun RUN.rrd
 
-``--option KEY=VALUE`` sets a field of :class:`slamlab.edge.options.Options` (repeatable).
+``--option KEY=VALUE`` sets a field of :class:`slamlab.edge.options.Options` (repeatable),
+read as the programs read it (:func:`slamlab.orchestration.vo.parse_setting`).
 """
 
 from __future__ import annotations
@@ -52,21 +54,15 @@ def parse_options(pairs: list[str]) -> Options:
     Raises
     ------
     SystemExit
-        For a pair without ``=``, an unknown field, or a value of the wrong type.
+        For a pair without ``=``, an unknown field, or a value not of its type
+        (:func:`slamlab.orchestration.vo.parse_setting`).
     """
-    defaults = Options()
-    known = {field.name for field in dataclasses.fields(Options)}
-    changes: dict[str, Any] = {}
-    for pair in pairs:
-        key, equals, value = pair.partition("=")
-        if not equals or key not in known:
-            raise SystemExit(f"--option {pair!r}: expected KEY=VALUE with KEY a field of Options")
-        kind = type(getattr(defaults, key))
-        try:
-            changes[key] = kind(value)
-        except ValueError:
-            raise SystemExit(f"--option {pair!r}: expected a {kind.__name__}") from None
-    return dataclasses.replace(defaults, **changes)
+    changes: dict[str, Any] = {}  # each of its field's type (parse_setting)
+    try:
+        changes.update(vo.parse_setting(pair) for pair in pairs)
+    except vo.UsageError as error:
+        raise SystemExit(f"--option: {error}") from None
+    return dataclasses.replace(Options(), **changes)
 
 
 Truth = tuple[NDArray[np.float64], NDArray[np.float64]]
@@ -156,16 +152,15 @@ def summarize(run: runs.Run, scored: runs.Evaluation | None) -> None:
         )
         if judged.mapping is not None:
             print(
-                f"mapping {judged.keyframes} keyframes: median {ms(judged.mapping.median)}, max "
-                f"{ms(judged.mapping.max)}; load {judged.mapping_load:.2f} (below 1, a mapping "
-                f"thread would keep up)"
+                f"mapping {judged.mapped} keyframes: median {ms(judged.mapping.median)}, max "
+                f"{ms(judged.mapping.max)}; load {judged.mapping_load:.2f} over the run, "
+                f"{judged.mapping_peak_load:.2f} over its busiest {budgets.WINDOW:.0f} s (below "
+                f"1, a mapping thread would keep up)"
             )
-    peak = (
-        "unknown (an in-process run)"
-        if run.peak_memory is None
-        else (f"{run.peak_memory / 2**20:.0f} MiB")
-    )
-    print(f"peak memory: {peak}")
+    peak = "not recorded" if run.peak_memory is None else f"{run.peak_memory / 2**20:.0f} MiB"
+    cpus = "not recorded" if run.cpus is None else ",".join(map(str, run.cpus))
+    cap = "none recorded" if run.memory_cap is None else f"{run.memory_cap / 2**30:.2f} GiB"
+    print(f"the program's peak memory: {peak}; CPUs: {cpus}; memory cap: {cap}")
     if scored is None:
         return
     absolute, relative = scored.absolute, scored.relative
@@ -247,6 +242,8 @@ def main() -> None:
         "--budget", choices=budgets.BUDGETS, help="run the backend's program within this budget"
     )
     args = parser.parse_args()
+    if args.reuse and args.budget is not None:
+        parser.error("--budget runs the program; --reuse only reads the run in --out")
     budget = None if args.budget is None else budgets.BUDGETS[args.budget]
 
     if args.reuse:
@@ -264,8 +261,7 @@ def main() -> None:
             budget=budget,
         )
         if budget is not None:
-            pinned = ",".join(map(str, budgets.cpus(budget)))
-            print(f"within {budget.name}: CPUs {pinned}, {budget.memory / 2**30:.0f} GiB")
+            print(f"within {budget.name} ({budget.stands_for})")
     truth = ground_truth(args.dataset, args.sequence)
     scored = score(run, truth)
     summarize(run, scored)

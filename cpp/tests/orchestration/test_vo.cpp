@@ -124,6 +124,9 @@ void check_runs(int& failures) {
              empty->backend == "cpp" &&
              empty->settings.size() == edge::kIntegerOptions.size() + edge::kRealOptions.size(),
          "a run of no frames records the sequence and every setting", failures);
+  expect(!fs::exists(out / "run.json") && empty.has_value() &&
+             slamlab::eval::runs::write_run(request.out, *empty).has_value(),
+         "the run is the program's to write", failures);
   std::ifstream file(out / "run.json");
   const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
   expect(text.contains("\"window\": 10") && fs::exists(out / "trajectory.txt"),

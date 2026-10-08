@@ -5,6 +5,7 @@ The room from its TUM and EuRoC folders, the native programs' command line, and 
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from dataclasses import replace
@@ -58,10 +59,6 @@ def test_every_backend_tracks_the_room(
     assert error.absolute.rmse < ATE_BOUND[mode]
 
 
-STEPS = ("read_seconds", "build_seconds", "track_seconds", "map_seconds")
-"""The steps each frame's diagnostics time (see :mod:`slamlab.orchestration.vo`)."""
-
-
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize(("dataset", "mode"), CASES)
 def test_every_frame_times_its_steps(
@@ -74,7 +71,7 @@ def test_every_frame_times_its_steps(
     """
     run = room_runs(dataset, mode, backend)
     for d in run.diagnostics:
-        assert all(d[step] > 0.0 for step in STEPS[:3])
+        assert all(d[step] > 0.0 for step in runs.STEPS[:3])
     start = next(i for i, d in enumerate(run.diagnostics) if d["keyframe"])
     mapped = [d["map_seconds"] > 0.0 for d in run.diagnostics]
     assert mapped == [d["keyframe"] and i > start for i, d in enumerate(run.diagnostics)]
@@ -268,8 +265,8 @@ def test_a_setting_out_of_range_is_a_failed_run_not_a_usage_error() -> None:
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
-def test_every_program_records_its_peak_memory(backend: str, tmp_path: Path) -> None:
-    """Each backend's program writes its run with its own peak memory, and says what it did."""
+def test_every_program_records_its_process(backend: str, tmp_path: Path) -> None:
+    """Each backend's program writes its run with its own peak memory and CPUs, and says so."""
     request = vo.Request("tum", SEQUENCES / "tum_camera", "rgbd", tmp_path, count=0)
     done = subprocess.run(
         [*vo.command(require_program(backend)), *request.arguments()],
@@ -277,9 +274,10 @@ def test_every_program_records_its_peak_memory(backend: str, tmp_path: Path) -> 
     )  # fmt: skip
     assert done.returncode == 0, done.stderr
     assert done.stdout.startswith("slamlab_vo: 0 of 0 frames tracked")
-    peak = runs.read_run(tmp_path).peak_memory
-    assert peak is not None
-    assert peak > 2**20
+    run = runs.read_run(tmp_path)
+    assert run.peak_memory is not None
+    assert run.peak_memory > 2**20
+    assert run.cpus == sorted(os.sched_getaffinity(0))
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -362,14 +360,29 @@ def test_refuses_negative_frames() -> None:
         vo.run("tum", SEQUENCES / "tum_camera", "rgbd", "unused", count=-1)
 
 
-def test_pythons_program_fails_a_missing_file_as_the_natives_do(tmp_path: Path) -> None:
-    """A missing image is a failed run of kind InvalidInput, its message prefixed and naming it."""
-    request = vo.Request("euroc", SEQUENCES / "euroc", "stereo", tmp_path, count=1)
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_a_program_fails_a_file_it_cannot_read_or_write_alike(backend: str, tmp_path: Path) -> None:
+    """A file a program cannot read or write fails the run alike in every program.
+
+    A missing image, or a run folder it cannot write, is a failed run of kind InvalidInput, its
+    message prefixed and naming the file.
+    """
+    command = vo.command(require_program(backend))
+    missing = vo.Request("euroc", SEQUENCES / "euroc", "stereo", tmp_path, count=1)
     done = subprocess.run(
-        [*vo.command("python"), *request.arguments()], capture_output=True, text=True, check=False
+        [*command, *missing.arguments()], capture_output=True, text=True, check=False
     )
     assert done.returncode == vo.EXIT_FAILED
-    assert re.match(r"slamlab_vo: .*/mav0/cam0/data/\d+\.png", done.stderr)
+    assert re.match(r"slamlab_vo: .*mav0/cam0/data/\d+\.png", done.stderr)
+    blocked = tmp_path / "a_file"
+    blocked.write_text("")
+    unwritable = vo.Request("tum", SEQUENCES / "tum_camera", "rgbd", blocked / "run", count=0)
+    done = subprocess.run(
+        [*command, *unwritable.arguments()], capture_output=True, text=True, check=False
+    )
+    assert done.returncode == vo.EXIT_FAILED, done.stderr
+    assert done.stderr.startswith("slamlab_vo: ")
+    assert "a_file" in done.stderr
 
 
 @pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
@@ -412,6 +425,8 @@ def test_every_backend_runs_the_room_within_the_laptop_budget(  # noqa: PLR0917 
     _assert_same_run(run, room_runs(dataset, mode, "python"))
     assert run.peak_memory is not None
     assert 0 < run.peak_memory < budget.memory
+    assert run.cpus == budgets.cpus(budget)
+    assert run.memory_cap == budget.memory
     assert budgets.judge(run).count == FRAMES
 
 

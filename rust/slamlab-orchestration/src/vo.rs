@@ -10,8 +10,8 @@ use slamlab_edge::frames::{self, Camera, DepthMap, Frame};
 use slamlab_edge::map::Map;
 use slamlab_edge::options::{Mode, Options, Setting, check_options};
 use slamlab_edge::pipeline::{FrameResult, Pipeline, State};
-use slamlab_eval::runs::{self, JsonObject, JsonValue, Run};
-use slamlab_eval::{budgets, euroc, png, text, tum};
+use slamlab_eval::runs::{JsonObject, JsonValue, Run};
+use slamlab_eval::{euroc, png, text, tum};
 use slamlab_foundations::camera::Model;
 use slamlab_foundations::error::{ErrorKind, Result, fail};
 use slamlab_foundations::image::{self, Image};
@@ -414,13 +414,13 @@ fn sequence_name(sequence: &Path) -> String {
 ///
 /// * `out` - The run.
 /// * `result` - The result.
-/// * `read` - The time delivering its images took, in seconds.
-/// * `build` - The time building the frame took, in seconds.
+/// * `read_seconds` - The time delivering its images took, in seconds.
+/// * `build_seconds` - The time building the frame took, in seconds.
 ///
 /// # Errors
 ///
 /// The pose's inversion's.
-fn record(out: &mut Run, result: &FrameResult, read: f64, build: f64) -> Result<()> {
+fn record(out: &mut Run, result: &FrameResult, read_seconds: f64, build_seconds: f64) -> Result<()> {
     out.diagnostics.push(vec![
         ("timestamp".to_owned(), JsonValue::Number(result.timestamp)),
         (
@@ -432,8 +432,8 @@ fn record(out: &mut Run, result: &FrameResult, read: f64, build: f64) -> Result<
             JsonValue::Integer(i64::try_from(result.tracked).unwrap_or(i64::MAX)),
         ),
         ("keyframe".to_owned(), JsonValue::Bool(result.keyframe)),
-        ("read_seconds".to_owned(), JsonValue::Number(read)),
-        ("build_seconds".to_owned(), JsonValue::Number(build)),
+        ("read_seconds".to_owned(), JsonValue::Number(read_seconds)),
+        ("build_seconds".to_owned(), JsonValue::Number(build_seconds)),
         (
             "track_seconds".to_owned(),
             JsonValue::Number(result.track_seconds),
@@ -693,8 +693,9 @@ pub fn check(request: &Request) -> Result<()> {
     check_options(&request.options)
 }
 
-/// Runs a sequence through the pipeline and writes its run folder
-/// (`slamlab.orchestration.vo.run`).
+/// Runs a sequence through the pipeline (`slamlab.orchestration.vo.run`): the run, not yet
+/// written. The program records its own process in it (`slamlab_eval::budgets`) and writes it
+/// to `request.out`, as Python's program does.
 ///
 /// # Arguments
 ///
@@ -702,11 +703,11 @@ pub fn check(request: &Request) -> Result<()> {
 ///
 /// # Returns
 ///
-/// The run written.
+/// The run.
 ///
 /// # Errors
 ///
-/// The check's, a reader's, the pipeline's or the writer's.
+/// The check's, a reader's or the pipeline's.
 pub fn run(request: &Request) -> Result<Run> {
     check(request)?;
     let source = if request.dataset == "tum" {
@@ -727,8 +728,6 @@ pub fn run(request: &Request) -> Result<Run> {
     if let Some(m) = pipeline.map() {
         record_map(&mut out, m)?;
     }
-    out.peak_memory = budgets::peak_memory(Path::new(budgets::STATUS));
-    runs::write_run(&request.out, &out)?;
     Ok(out)
 }
 
@@ -891,6 +890,11 @@ mod tests {
         request.count = Some(0);
         let empty = run(&request).unwrap();
         assert!(empty.timestamps.is_empty());
+        assert!(
+            !out.join("run.json").exists(),
+            "the run is the program's to write"
+        );
+        slamlab_eval::runs::write_run(&out, &empty).unwrap();
         assert_eq!(
             (
                 empty.sequence.as_str(),

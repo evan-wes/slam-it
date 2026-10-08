@@ -50,6 +50,8 @@ def values() -> dict[str, Any]:
         "points": rng.normal(0.0, 3.0, (4, 3)).tolist(),
         "settings": {"n_features": 1000, "scale_factor": 1.2, "window": 10, "chi2_mono": 5.991},
         "peak_memory": 48_381_952,
+        "cpus": [4, 5, 6, 7],
+        "memory_cap": 8_589_934_592,
         "diagnostics": [
             {
                 "timestamp": float(t),
@@ -85,6 +87,8 @@ def main() -> None:
             settings=run["settings"],
             diagnostics=run["diagnostics"],
             peak_memory=run["peak_memory"],
+            cpus=run["cpus"],
+            memory_cap=run["memory_cap"],
         ),
     )
 

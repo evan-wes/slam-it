@@ -12,7 +12,7 @@ use slamlab_foundations::{se3, so3};
 /// `run.json`'s `format`.
 pub const FORMAT: &str = "slamlab-run";
 
-/// `run.json`'s `version` (2 added `peak_memory`).
+/// `run.json`'s `version` (2 added `peak_memory`, `cpus` and `memory_cap`).
 pub const VERSION: i64 = 2;
 
 /// The modes a run may have.
@@ -66,11 +66,19 @@ pub struct Run {
     pub points: Vec<Vector3<f64>>,
     /// The pipeline's options.
     pub settings: JsonObject,
-    /// One object per frame, each with a `timestamp`.
+    /// One object per frame, each with a `timestamp`; the edge pipeline's also time its steps
+    /// (`read_seconds`, `build_seconds`, `track_seconds`, `map_seconds`, as
+    /// `slamlab.eval.runs.STEPS` defines them).
     pub diagnostics: Vec<JsonObject>,
     /// The largest resident set of the program that ran it, in bytes, if known
     /// (`crate::budgets::peak_memory`); written as null otherwise.
     pub peak_memory: Option<u64>,
+    /// The CPUs the program that ran it could run on, ascending, if known
+    /// (`crate::budgets::allowed_cpus`); written as null otherwise.
+    pub cpus: Option<Vec<usize>>,
+    /// Its memory cap, in bytes, if it had one (`crate::budgets::memory_cap`); written as null
+    /// otherwise.
+    pub memory_cap: Option<u64>,
 }
 
 /// A finite number as JSON, shortest round-trip (`.0` kept on a whole number, as Python
@@ -263,6 +271,20 @@ fn check(run: &Run) -> Result<()> {
             "settings: not JSON (a number is not finite)",
         );
     }
+    if let Some(cpus) = &run.cpus
+        && (cpus.is_empty() || cpus.windows(2).any(|pair| pair[0] >= pair[1]))
+    {
+        return fail(
+            ErrorKind::InvalidInput,
+            "cpus: expected CPU numbers, ascending",
+        );
+    }
+    if run.memory_cap == Some(0) {
+        return fail(
+            ErrorKind::InvalidInput,
+            "memory_cap: expected a positive number of bytes",
+        );
+    }
     for (k, entry) in run.diagnostics.iter().enumerate() {
         if !entry.iter().any(|(key, _)| key == "timestamp") || !finite(entry) {
             return fail(
@@ -366,11 +388,20 @@ pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
     info_text.pop();
     info_text.push_str(", \"settings\": ");
     info_text.push_str(&json_object(&run.settings));
+    let integer_or_null =
+        |value: Option<u64>| value.map_or_else(|| "null".to_owned(), |v| v.to_string());
     info_text.push_str(", \"peak_memory\": ");
-    info_text.push_str(
-        &run.peak_memory
-            .map_or_else(|| "null".to_owned(), |b| b.to_string()),
-    );
+    info_text.push_str(&integer_or_null(run.peak_memory));
+    info_text.push_str(", \"cpus\": ");
+    info_text.push_str(&run.cpus.as_ref().map_or_else(
+        || "null".to_owned(),
+        |cpus| {
+            let listed: Vec<String> = cpus.iter().map(ToString::to_string).collect();
+            format!("[{}]", listed.join(", "))
+        },
+    ));
+    info_text.push_str(", \"memory_cap\": ");
+    info_text.push_str(&integer_or_null(run.memory_cap));
     info_text.push_str("}\n");
     let diagnostics: String = run
         .diagnostics
@@ -504,6 +535,12 @@ mod tests {
                 .map(flat)
                 .collect(),
             peak_memory: values["peak_memory"].as_u64(),
+            cpus: values["cpus"].as_array().map(|cpus| {
+                cpus.iter()
+                    .map(|cpu| usize::try_from(cpu.as_u64().unwrap()).unwrap())
+                    .collect()
+            }),
+            memory_cap: values["memory_cap"].as_u64(),
         }
     }
 
@@ -585,10 +622,15 @@ mod tests {
         assert!(!out.join(".run.json.tmp").exists());
         let unknown = Run {
             peak_memory: None,
+            cpus: None,
+            memory_cap: None,
             ..golden_run()
         };
         write_run(&out, &unknown).unwrap();
-        assert!(json(&out.join("run.json"), false)[0]["peak_memory"].is_null());
+        let info = &json(&out.join("run.json"), false)[0];
+        for key in ["peak_memory", "cpus", "memory_cap"] {
+            assert!(info[key].is_null(), "{key}");
+        }
     }
 
     #[test]
@@ -614,6 +656,24 @@ mod tests {
         );
         let mut run = golden_run();
         run.diagnostics[0].retain(|(key, _)| key != "timestamp");
+        assert_eq!(
+            write_run(&out, &run).unwrap_err().kind,
+            ErrorKind::InvalidInput
+        );
+        for cpus in [vec![], vec![5, 4], vec![4, 4]] {
+            let run = Run {
+                cpus: Some(cpus),
+                ..golden_run()
+            };
+            assert_eq!(
+                write_run(&out, &run).unwrap_err().kind,
+                ErrorKind::InvalidInput
+            );
+        }
+        let run = Run {
+            memory_cap: Some(0),
+            ..golden_run()
+        };
         assert_eq!(
             write_run(&out, &run).unwrap_err().kind,
             ErrorKind::InvalidInput

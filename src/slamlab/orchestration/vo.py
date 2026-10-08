@@ -18,16 +18,18 @@ builds each frame for the mode (:mod:`slamlab.edge.frames`), tracks it
 - **The frames.** ``count`` of them from ``first`` (all by default), in the sequence's order.
   An RGB-D frame without a depth map within the reader's tolerance is skipped.
 - **Each frame** gives one diagnostics line (``timestamp``, ``state``, ``tracked``,
-  ``keyframe``, and the time each step took, in seconds) and, if tracked, its ``T_world_cam``.
-  The run ends at the frame that loses the track. The steps, as a camera and ORB-SLAM's
-  threads divide them:
+  ``keyframe``, and the time each step took, in seconds: the run format's
+  :data:`slamlab.eval.runs.STEPS`) and, if tracked, its ``T_world_cam``. The run ends at the
+  frame that loses the track. The steps, as a camera and ORB-SLAM's threads divide them:
 
   - ``read_seconds``: delivering the frame's images, decoded (a depth map in metres), and a
     stereo pair rectified, as ORB-SLAM2's examples do before they hand a frame over;
   - ``build_seconds``: building the frame from them (:mod:`slamlab.edge.frames`: the pyramid,
     the features, and the stereo matches or the depth at each keypoint);
   - ``track_seconds`` and ``map_seconds``: tracking it, and mapping it if it became a
-    keyframe (:class:`slamlab.edge.pipeline.FrameResult`).
+    keyframe (:class:`slamlab.edge.pipeline.FrameResult`). Mapping here includes making the
+    keyframe and, with depth, its close points, which ORB-SLAM2's tracking thread does
+    (``Tracking::CreateNewKeyFrame``) before it hands the keyframe to local mapping.
 - **At the end,** the map's keyframes (their times and ``T_world_cam``) and points. The run's
   ``sequence`` is its folder's name (the path resolved), its ``settings`` the pipeline's
   options.
@@ -41,8 +43,9 @@ run's error kind (:data:`EXIT_FAILED`), raised here as the same exception.
 **The programs.** Each backend has one (:func:`command`): the native ``slamlab_vo`` in C++ and
 Rust, and this module for Python (``python -m slamlab.orchestration.vo``, :func:`main`), with
 the same command line (:func:`parse`), exit codes and messages. A program records its own
-peak memory in its run (:func:`slamlab.eval.budgets.peak_memory`); Python's in-process run
-records none, since its process holds more than the run.
+process in its run before writing it: its peak memory, the CPUs it could run on and its
+memory cap (:mod:`slamlab.eval.budgets`); Python's in-process run records none, since its
+process holds more than the run.
 """
 
 from __future__ import annotations
@@ -205,22 +208,38 @@ def _integer(flag: str, text: str) -> int:
     return int(text)
 
 
-def _setting(text: str) -> tuple[str, int | float]:
-    """Read one ``--option KEY=VALUE``: the setting's name and its value, of its type."""
+_DECIMAL = re.compile(r"[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][-+]?[0-9]+)?")
+"""A decimal number, as the native programs read one (``eval::text::number``)."""
+
+
+def parse_setting(text: str) -> tuple[str, int | float]:
+    """Read one ``--option KEY=VALUE``, as the programs read it.
+
+    Parameters
+    ----------
+    text : str
+        ``KEY=VALUE``: a field of :class:`~slamlab.edge.options.Options` and its value.
+
+    Returns
+    -------
+    tuple of (str, int or float)
+        The setting's name and its value, of its type: a whole integer for an integer
+        setting, a finite decimal number otherwise.
+
+    Raises
+    ------
+    UsageError
+        For no ``=``, an unknown setting, or a value that is not a number of its type.
+    """
     key, equals, value = text.partition("=")
     if not equals:
         raise UsageError(f"--option: expected KEY=VALUE, got '{text}'")
-    defaults = Options()
     if key not in {setting.name for setting in fields(Options)}:
         raise UsageError(f"--option: no setting '{key}'")
-    if isinstance(getattr(defaults, key), int):
+    if isinstance(getattr(Options(), key), int):
         return key, _integer(key, value)
-    number = value.strip().removeprefix("+")  # as eval::text::number reads one
-    try:
-        real = float("nan" if "_" in number else number)
-    except ValueError:
-        real = float("nan")
-    if not np.isfinite(real):
+    real = float(value) if _DECIMAL.fullmatch(value.strip()) else float("nan")
+    if not np.isfinite(real):  # past float64's range, the native readers refuse it too
         raise UsageError(f"{key}: expected a finite number, got '{value}'")
     return key, real
 
@@ -250,36 +269,36 @@ def parse(arguments: Sequence[str]) -> Request:
         setting, or a value that is not a number.
     """
     values: dict[str, str] = {}
-    changes: dict[str, Any] = {}  # each of its field's type (_setting)
+    numbers: dict[str, int] = {}
+    changes: dict[str, Any] = {}  # each of its field's type (parse_setting)
     for i in range(0, len(arguments), 2):
         flag = arguments[i]
         if i + 1 == len(arguments):
             raise UsageError(f"{flag}: expected a value")
-        if flag != "--option" and flag in values:
-            raise UsageError(f"{flag}: given twice")
         value = arguments[i + 1]
         if flag == "--option":
-            key, setting = _setting(value)
+            key, setting = parse_setting(value)
             changes[key] = setting
-        elif flag in (*_REQUIRED, "--first", "--count"):
-            values[flag] = value
-        else:
+            continue
+        if flag in values:
+            raise UsageError(f"{flag}: given twice")
+        if flag not in (*_REQUIRED, "--first", "--count"):
             raise UsageError(f"unknown argument '{flag}'")
         if flag == "--mode" and value not in MODES:
             raise UsageError(f"--mode: expected monocular, stereo or rgbd, got '{value}'")
         if flag in ("--first", "--count"):
-            _integer(flag, value)
+            numbers[flag] = _integer(flag, value)
+        values[flag] = value
     for required in _REQUIRED:
         if required not in values:
             raise UsageError(f"{required}: missing")
-    count = values.get("--count")
     return Request(
         values["--dataset"],
         Path(values["--sequence"]),
         values["--mode"],
         Path(values["--out"]),
-        first=int(values.get("--first", "0")),
-        count=None if count is None else int(count),
+        first=numbers.get("--first", 0),
+        count=numbers.get("--count"),
         options=replace(Options(), **changes),
     )
 
@@ -513,11 +532,11 @@ def _run_here(request: Request) -> runs.Run:
     for i in range(request.first, end):
         start = time.perf_counter()
         delivered = source.read(i)
-        read = time.perf_counter()
+        after_read = time.perf_counter()
         if delivered is None:
             continue
         frame = _build(delivered, source.camera, tracker.extraction(), matching)
-        built = time.perf_counter()
+        after_build = time.perf_counter()
         result = tracker.track(frame)
         diagnostics.append(
             {
@@ -525,8 +544,8 @@ def _run_here(request: Request) -> runs.Run:
                 "state": result.state.value,
                 "tracked": result.tracked,
                 "keyframe": result.keyframe,
-                "read_seconds": read - start,
-                "build_seconds": built - read,
+                "read_seconds": after_read - start,
+                "build_seconds": after_build - after_read,
                 "track_seconds": result.track_seconds,
                 "map_seconds": result.map_seconds,
             }
@@ -589,18 +608,24 @@ def main(arguments: Sequence[str]) -> int:
     int
         0 for a run written, with a one-line summary on stdout; :data:`EXIT_USAGE` for a
         command line it cannot read, with the usage; :data:`EXIT_FAILED` plus the error's kind
-        for a failed run (a missing file is ``InvalidInput``, the native programs' kind for
-        it). Messages go to stderr, each prefixed with :data:`PROGRAM`.
+        for a failed run (a file it cannot read or write is ``InvalidInput``, the native
+        programs' kind for it). Messages go to stderr, each prefixed with :data:`PROGRAM`.
     """
     try:
         request = parse(arguments)
         check(request)
-        done = replace(_run_here(request), peak_memory=budgets.peak_memory())
+        # What the program records of its own process, before it writes the run.
+        done = replace(
+            _run_here(request),
+            peak_memory=budgets.peak_memory(),
+            cpus=budgets.allowed_cpus(),
+            memory_cap=budgets.memory_cap(),
+        )
         runs.write_run(request.out, done)
     except UsageError as error:
         print(f"{PROGRAM}: {error}\n{USAGE}", file=sys.stderr)
         return EXIT_USAGE
-    except FileNotFoundError as error:
+    except OSError as error:
         print(f"{PROGRAM}: {error}", file=sys.stderr)
         return EXIT_FAILED
     except SlamlabError as error:

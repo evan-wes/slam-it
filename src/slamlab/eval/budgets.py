@@ -10,12 +10,12 @@ not claim.
 - :func:`cpus`: the CPUs a budget pins a program to: this machine's performance cores, on a
   CPU that has two kinds.
 - :func:`command`: a command line wrapped to run within a budget.
-- :func:`peak_memory`: the calling process's largest resident set, which a program records in
-  its run (:mod:`slamlab.eval.runs`); C++'s ``slamlab::eval::budgets`` and Rust's
-  ``slamlab_eval::budgets`` read it the same way.
+- :func:`peak_memory`, :func:`allowed_cpus` and :func:`memory_cap`: what a program records in
+  its run (:mod:`slamlab.eval.runs`) of the process that ran it: its largest resident set, the
+  CPUs it could run on and its memory cap. C++'s ``slamlab::eval::budgets`` and Rust's
+  ``slamlab_eval::budgets`` read them the same way.
 - :func:`judge`: a run's frames against their real-time deadline, from the time each step
-  took (``read_seconds``, ``build_seconds``, ``track_seconds``, ``map_seconds``; see
-  :mod:`slamlab.orchestration.vo`).
+  took (the run format's :data:`slamlab.eval.runs.STEPS`).
 
 **Real time, as ORB-SLAM's threads divide it** (decided for PR 9, 2026-10-07). A frame must
 be built and tracked before the next arrives, its deadline the sequence's frame period: what
@@ -42,7 +42,16 @@ from slamlab.eval import runs
 from slamlab.foundations.errors import InvalidInputError
 
 STATUS = Path("/proc/self/status")
-"""Where Linux states the calling process's memory."""
+"""Where Linux states the calling process's memory and the CPUs it may run on."""
+
+CGROUP = Path("/proc/self/cgroup")
+"""Where Linux names the calling process's control group."""
+
+CGROUP_ROOT = Path("/sys/fs/cgroup")
+"""Where the control groups (version 2) are mounted."""
+
+WINDOW = 10.0
+"""The window, in seconds, over which :func:`judge` finds mapping's busiest stretch."""
 
 PERFORMANCE_CORES = Path("/sys/devices/cpu_core/cpus")
 """Where Linux lists a hybrid CPU's performance cores (Intel's ``cpu_core``)."""
@@ -68,6 +77,23 @@ class Budget:
     cores: int
     memory: int
     stands_for: str
+
+    def __post_init__(self) -> None:
+        """Check the budget: a name, at least one core and a byte of memory.
+
+        Raises
+        ------
+        slamlab.foundations.errors.InvalidInputError
+            If the name is empty, or the cores or memory are not positive integers.
+        """
+        if not isinstance(self.name, str) or not self.name:
+            raise InvalidInputError(f"budget: expected a name, got {self.name!r}")
+        for key in ("cores", "memory"):
+            value = getattr(self, key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise InvalidInputError(
+                    f"{self.name}: {key}: expected a positive integer, got {value!r}"
+                )
 
 
 BUDGETS = {
@@ -156,6 +182,15 @@ def command(budget: Budget, pinned: Sequence[int], argv: Sequence[str]) -> list[
     ]
 
 
+def _status_lines(status: str | Path) -> list[list[str]] | None:
+    """Return a status file's lines split into words, or None if there is no such file."""
+    try:
+        text = Path(status).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    return [line.split() for line in text.splitlines()]
+
+
 def peak_memory(status: str | Path = STATUS) -> int | None:
     """Return the calling process's largest resident set so far, in bytes.
 
@@ -180,15 +215,70 @@ def peak_memory(status: str | Path = STATUS) -> int | None:
     >>> sys.platform != "linux" or peak_memory() > 0
     True
     """
-    try:
-        text = Path(status).read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return None
-    for line in text.splitlines():
-        words = line.split()
+    for words in _status_lines(status) or []:
         if len(words) == 3 and words[0] == "VmHWM:" and words[1].isdigit() and words[2] == "kB":
             return int(words[1]) * 1024
     return None
+
+
+def allowed_cpus(status: str | Path = STATUS) -> list[int] | None:
+    """Return the CPUs the calling process may run on: its affinity, as a budget pins it.
+
+    Linux's ``Cpus_allowed_list``, which ``taskset`` sets.
+
+    Parameters
+    ----------
+    status : str or pathlib.Path, optional
+        The status file to read (default :data:`STATUS`).
+
+    Returns
+    -------
+    list of int or None
+        The CPUs, ascending, or None where the system does not say: no such file, or no
+        ``Cpus_allowed_list`` line that reads as a CPU list.
+
+    Examples
+    --------
+    >>> import sys
+    >>> sys.platform != "linux" or len(allowed_cpus()) > 0
+    True
+    """
+    for words in _status_lines(status) or []:
+        if len(words) == 2 and words[0] == "Cpus_allowed_list:":
+            try:
+                return sorted(_cpu_list(words[1])) or None
+            except ValueError:
+                return None
+    return None
+
+
+def memory_cap(cgroup: str | Path = CGROUP, root: str | Path = CGROUP_ROOT) -> int | None:
+    """Return the calling process's memory cap: its control group's ``memory.max``.
+
+    A budget's ``systemd-run --scope -p MemoryMax=...`` sets it on the scope the program runs
+    in (control groups version 2). A cap set on an enclosing group only is not reported.
+
+    Parameters
+    ----------
+    cgroup : str or pathlib.Path, optional
+        The file naming the process's control group (default :data:`CGROUP`).
+    root : str or pathlib.Path, optional
+        Where the control groups are mounted (default :data:`CGROUP_ROOT`).
+
+    Returns
+    -------
+    int or None
+        The bytes, or None where there is no cap (``max``) or the system does not say: no
+        such file, no version-2 group (a ``0::`` line), or no ``memory.max`` in it.
+    """
+    try:
+        lines = Path(cgroup).read_text(encoding="utf-8").splitlines()
+        group = next(line.removeprefix("0::") for line in lines if line.startswith("0::"))
+        text = (Path(root) / group.lstrip("/") / "memory.max").read_text(encoding="utf-8")
+    except (FileNotFoundError, NotADirectoryError, StopIteration):
+        return None
+    value = text.strip()
+    return int(value) if value.isdigit() and int(value) > 0 else None
 
 
 @dataclass(frozen=True)
@@ -233,13 +323,17 @@ class Frames:
         Building and tracking a frame: what the deadline holds.
     late : int
         The frames whose latency passed the deadline.
-    keyframes : int
-        The frames mapped as keyframes.
+    mapped : int
+        The keyframes mapped: every keyframe but the one that starts the map, whose mapping is
+        part of initialisation (in ``track_seconds``).
     mapping : Spread or None
         Mapping's time per keyframe mapped; None if none was.
     mapping_load : float
         Mapping's total time over the sequence's (the frames' span plus one period): below 1,
-        a mapping thread of its own would keep up.
+        a mapping thread of its own would keep up on average.
+    mapping_peak_load : float
+        Mapping's largest load over any window of the judgement's ``window`` seconds that
+        starts at a frame: below 1, a mapping thread of its own would keep up there too.
     """
 
     count: int
@@ -249,18 +343,56 @@ class Frames:
     track: Spread
     latency: Spread
     late: int
-    keyframes: int
+    mapped: int
     mapping: Spread | None
     mapping_load: float
+    mapping_peak_load: float
 
 
-def judge(run: runs.Run) -> Frames:
+def _times(run: runs.Run) -> NDArray[np.float64]:
+    """Return a run's frame times, checked finite and strictly increasing."""
+    try:
+        times = np.array([float(d["timestamp"]) for d in run.diagnostics])
+    except KeyError:
+        raise InvalidInputError("judge: a frame has no timestamp") from None
+    if not np.all(np.isfinite(times)):
+        raise InvalidInputError("judge: the frames' timestamps must be finite")
+    if np.any(np.diff(times) <= 0.0):
+        k = int(np.argmax(np.diff(times) <= 0.0)) + 1
+        raise InvalidInputError(f"judge: frame {k}'s timestamp does not follow frame {k - 1}'s")
+    return times
+
+
+def _steps(run: runs.Run) -> dict[str, NDArray[np.float64]]:
+    """Return each step's time per frame (:data:`slamlab.eval.runs.STEPS`), checked."""
+    out = {}
+    for key in runs.STEPS:
+        try:
+            seconds = np.array([float(d[key]) for d in run.diagnostics])
+        except KeyError:
+            raise InvalidInputError(f"judge: a frame has no {key}") from None
+        bad = ~np.isfinite(seconds) | (seconds < 0.0)
+        if np.any(bad):
+            raise InvalidInputError(
+                f"judge: frame {int(np.argmax(bad))}'s {key} must be finite and at least 0"
+            )
+        out[key.removesuffix("_seconds")] = seconds
+    return out
+
+
+def judge(run: runs.Run, *, window: float = WINDOW) -> Frames:
     """Judge a run's frames against their real-time deadline.
+
+    The split is the edge pipeline's, as ORB-SLAM's threads divide the work: building and
+    tracking a frame hold its deadline, and mapping is judged by its load.
 
     Parameters
     ----------
     run : slamlab.eval.runs.Run
-        The run, each diagnostic with its steps' times.
+        The run, each diagnostic with its time and its steps' times
+        (:data:`slamlab.eval.runs.STEPS`).
+    window : float, optional
+        The seconds over which mapping's busiest stretch is found (default :data:`WINDOW`).
 
     Returns
     -------
@@ -270,22 +402,24 @@ def judge(run: runs.Run) -> Frames:
     Raises
     ------
     slamlab.foundations.errors.InvalidInputError
-        If the run has fewer than two frames (no period), or a diagnostic lacks a step's time.
+        If the run has fewer than two frames (no period), its frames' times are not finite
+        and strictly increasing, a frame lacks a step's time or has one that is negative or
+        not finite, or `window` is not positive and finite.
     """
+    if not (np.isfinite(window) and window > 0.0):
+        raise InvalidInputError(f"judge: window: expected a positive time, got {window}")
     entries = run.diagnostics
     if len(entries) < 2:
         raise InvalidInputError(f"judge: needs two frames for their period, got {len(entries)}")
-    try:
-        steps = {
-            step: np.array([float(d[f"{step}_seconds"]) for d in entries])
-            for step in ("read", "build", "track", "map")
-        }
-    except KeyError as error:
-        raise InvalidInputError(f"judge: a frame has no {error.args[0]}") from None
-    times = np.array([float(d["timestamp"]) for d in entries])
+    times = _times(run)
+    steps = _steps(run)
     deadline = float(np.median(np.diff(times)))
     latency = steps["build"] + steps["track"]
     mapped = steps["map"][steps["map"] > 0.0]
+    # The busiest window: mapping's time over [t_i, t_i + window), for each frame i.
+    ends = np.searchsorted(times, times + window)
+    cumulative = np.concatenate([[0.0], np.cumsum(steps["map"])])
+    windows = cumulative[ends] - cumulative[: len(times)]
     return Frames(
         count=len(entries),
         deadline=deadline,
@@ -294,7 +428,8 @@ def judge(run: runs.Run) -> Frames:
         track=_spread(steps["track"]),
         latency=_spread(latency),
         late=int(np.sum(latency > deadline)),
-        keyframes=len(mapped),
+        mapped=len(mapped),
         mapping=_spread(mapped) if len(mapped) else None,
         mapping_load=float(np.sum(mapped) / (times[-1] - times[0] + deadline)),
+        mapping_peak_load=float(np.max(windows) / window),
     )
