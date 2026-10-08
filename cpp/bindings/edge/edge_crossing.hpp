@@ -305,30 +305,30 @@ inline edge::Frame frame_in(const nanobind::dict& values) {
   const auto level_xy = item<std::int64_t, nanobind::shape<-1, 2>>(values, "level_xy");
   const auto response = vector_item<std::int64_t>(values, "response");
   const auto angle = vector_item<std::int64_t>(values, "angle");
-  edge::Frame frame{.timestamp = nanobind::cast<double>(values["timestamp"]),
-                    .features = {.keypoints = {},
-                                 .descriptors = descriptors_item(values, "descriptors"),
-                                 .scale_factor = nanobind::cast<double>(values["scale_factor"]),
-                                 .levels = nanobind::cast<std::int64_t>(values["levels"])},
-                    .bearings = vectors_item(values, "bearings"),
-                    .depth = vector_item<double>(values, "depth"),
-                    .right = vector_item<double>(values, "right")};
+  foundations::orb::Features features{
+      .keypoints = {},
+      .descriptors = descriptors_item(values, "descriptors"),
+      .scale_factor = nanobind::cast<double>(values["scale_factor"]),
+      .levels = nanobind::cast<std::int64_t>(values["levels"])};
+  std::vector<Eigen::Vector3d> bearings = vectors_item(values, "bearings");
+  std::vector<double> depth = vector_item<double>(values, "depth");
+  std::vector<double> right = vector_item<double>(values, "right");
   const std::size_t n = xy.size();
   if (level.size() != n || level_xy.shape(0) != n || response.size() != n || angle.size() != n ||
-      frame.features.descriptors.size() != n || frame.bearings.size() != n ||
-      frame.depth.size() != n || frame.right.size() != n) {
+      features.descriptors.size() != n || bearings.size() != n || depth.size() != n ||
+      right.size() != n) {
     throw std::invalid_argument("frame: expected one row per keypoint in every array");
   }
-  frame.features.keypoints.resize(n);
+  features.keypoints.resize(n);
   for (std::size_t i = 0; i < n; ++i) {
-    frame.features.keypoints[i] = {.xy = xy[i],
-                                   .level = level[i],
-                                   .level_xy = {level_xy(i, 0), level_xy(i, 1)},
-                                   .response = response[i],
-                                   .angle = angle[i]};
+    features.keypoints[i] = {.xy = xy[i],
+                             .level = level[i],
+                             .level_xy = {level_xy(i, 0), level_xy(i, 1)},
+                             .response = response[i],
+                             .angle = angle[i]};
   }
-  frame.grid = unwrap(foundations::matching::FeatureGrid::build(frame.features.keypoints));
-  return frame;
+  return unwrap(edge::make_frame(nanobind::cast<double>(values["timestamp"]), std::move(features),
+                                 std::move(bearings), std::move(depth), std::move(right)));
 }
 
 /// @brief Read the settings from a dict of scalars.

@@ -7,6 +7,7 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "../foundations/fixture_support.hpp"
@@ -14,7 +15,6 @@
 #include "slamlab/edge/frames.hpp"
 #include "slamlab/edge/map.hpp"
 #include "slamlab/edge/options.hpp"
-#include "slamlab/foundations/matching.hpp"
 
 namespace {
 
@@ -45,8 +45,9 @@ edge::Frame frame_of(std::size_t n, bool with_depth) {
     frame.depth.push_back(with_depth ? 2.0 : kNan);
     frame.right.push_back(with_depth ? x - 5.0 : kNan);
   }
-  frame.grid = slamlab::foundations::matching::FeatureGrid::build(frame.features.keypoints).value();
-  return frame;
+  return edge::make_frame(frame.timestamp, std::move(frame.features), std::move(frame.bearings),
+                          std::move(frame.depth), std::move(frame.right))
+      .value();
 }
 
 /// @brief A map of two keyframes: the first, with depth, creating points at its first two

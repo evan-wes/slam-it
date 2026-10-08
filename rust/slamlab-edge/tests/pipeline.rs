@@ -9,7 +9,6 @@ use slamlab_edge::frames::Frame;
 use slamlab_edge::options::{Mode, Options};
 use slamlab_edge::pipeline::{FrameResult, Pipeline, State};
 use slamlab_foundations::error::ErrorKind;
-use slamlab_foundations::matching::FeatureGrid;
 use slamlab_foundations::orb::Features;
 
 use scene::{camera, frame_at};
@@ -85,19 +84,13 @@ fn monocular_tracks_the_path_direction() {
 fn empty_frames_lose_the_track() {
     let mut pipeline = Pipeline::new(Mode::Rgbd, camera(), small_scene()).unwrap();
     pipeline.track(&frame_at(&along(0), true, 0)).unwrap();
-    let empty = Frame {
-        timestamp: 1.0,
-        features: Features {
-            keypoints: Vec::new(),
-            descriptors: Vec::new(),
-            scale_factor: 1.2,
-            levels: 8,
-        },
-        bearings: Vec::new(),
-        depth: Vec::new(),
-        right: Vec::new(),
-        grid: FeatureGrid::build(&[]).unwrap(),
+    let features = Features {
+        keypoints: Vec::new(),
+        descriptors: Vec::new(),
+        scale_factor: 1.2,
+        levels: 8,
     };
+    let empty = Frame::new(1.0, features, Vec::new(), Vec::new(), Vec::new()).unwrap();
     for _ in 0..Options::default().lost_frames {
         assert!(pipeline.track(&empty).unwrap().pose.is_none());
     }

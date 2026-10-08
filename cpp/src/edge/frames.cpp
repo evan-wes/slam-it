@@ -30,6 +30,15 @@ foundations::Result<Frame> assemble(double timestamp, foundations::orb::Features
   for (const foundations::orb::Keypoint& k : features.keypoints) {
     bearings.push_back(bearing(camera, {k.xy[0], k.xy[1]}));
   }
+  return make_frame(timestamp, std::move(features), std::move(bearings), std::move(depth),
+                    std::move(right));
+}
+
+}  // namespace
+
+foundations::Result<Frame> make_frame(double timestamp, foundations::orb::Features features,
+                                      std::vector<Eigen::Vector3d> bearings,
+                                      std::vector<double> depth, std::vector<double> right) {
   auto grid = foundations::matching::FeatureGrid::build(features.keypoints);
   if (!grid) {
     return std::unexpected(std::move(grid.error()));
@@ -41,8 +50,6 @@ foundations::Result<Frame> assemble(double timestamp, foundations::orb::Features
                .right = std::move(right),
                .grid = std::move(*grid)};
 }
-
-}  // namespace
 
 double focal(const Camera& camera) {
   return camera.intrinsics(foundations::camera::focal_indices(camera.model)[0]);

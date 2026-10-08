@@ -146,11 +146,48 @@ pub struct Frame {
     pub right: Vec<f64>,
     /// Its keypoints bucketed for search by projection, built with the frame as ORB-SLAM's
     /// `Frame` assigns its features to a grid (the compiled cores' search structure; Python's
-    /// search needs none).
+    /// search needs none). [`Frame::new`] builds it; a frame's keypoints are not changed after.
     pub grid: FeatureGrid,
 }
 
 impl Frame {
+    /// A frame from its parts, its feature grid built from its keypoints: how every frame is
+    /// made (the builders, the bindings, the tests), so none lacks its grid.
+    ///
+    /// # Arguments
+    ///
+    /// * `timestamp` - Its time, in seconds.
+    /// * `features` - Its ORB features.
+    /// * `bearings` - Each keypoint's unit bearing.
+    /// * `depth` - Each keypoint's depth (NaN where unknown).
+    /// * `right` - Each keypoint's right-image column (NaN where unknown).
+    ///
+    /// # Returns
+    ///
+    /// The frame.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidInput` from the grid for a keypoint position that is not finite (never one
+    /// extracted).
+    pub fn new(
+        timestamp: f64,
+        features: Features,
+        bearings: Vec<Vector3<f64>>,
+        depth: Vec<f64>,
+        right: Vec<f64>,
+    ) -> Result<Self> {
+        let grid = FeatureGrid::build(&features.keypoints)?;
+        Ok(Self {
+            timestamp,
+            features,
+            bearings,
+            depth,
+            right,
+            grid,
+        })
+    }
+
     /// The number of keypoints.
     ///
     /// # Returns
@@ -270,15 +307,7 @@ fn assemble(
         .iter()
         .map(|k| camera.bearing(&Vector2::new(k.xy[0], k.xy[1])))
         .collect();
-    let grid = FeatureGrid::build(&features.keypoints)?;
-    Ok(Frame {
-        timestamp,
-        features,
-        bearings,
-        depth,
-        right,
-        grid,
-    })
+    Frame::new(timestamp, features, bearings, depth, right)
 }
 
 /// Builds a monocular frame: features and bearings, no depth.

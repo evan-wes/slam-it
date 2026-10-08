@@ -20,7 +20,6 @@ use slamlab_edge::initialization::Started;
 use slamlab_edge::map::{Map, check_map, index_observations};
 use slamlab_edge::options::{Mode, Options, Setting};
 use slamlab_foundations::camera::Model;
-use slamlab_foundations::matching::FeatureGrid;
 use slamlab_foundations::orb::{DESCRIPTOR_BYTES, Descriptor, Features, Keypoint};
 
 use crate::common::{by_name, contiguous, item_array, to_i64, unwrap};
@@ -444,20 +443,17 @@ pub fn frame_in(values: &Bound<'_, PyDict>) -> PyResult<Frame> {
             })
         })
         .collect::<PyResult<Vec<Keypoint>>>()?;
-    let grid = unwrap(values.py(), FeatureGrid::build(&keypoints))?;
-    Ok(Frame {
-        timestamp: get("timestamp")?.extract()?,
-        features: Features {
-            keypoints,
-            descriptors,
-            scale_factor: get("scale_factor")?.extract()?,
-            levels: get("levels")?.extract()?,
-        },
-        bearings,
-        depth,
-        right,
-        grid,
-    })
+    let features = Features {
+        keypoints,
+        descriptors,
+        scale_factor: get("scale_factor")?.extract()?,
+        levels: get("levels")?.extract()?,
+    };
+    let timestamp = get("timestamp")?.extract()?;
+    unwrap(
+        values.py(),
+        Frame::new(timestamp, features, bearings, depth, right),
+    )
 }
 
 /// The camera's fields, as the dict's keys.

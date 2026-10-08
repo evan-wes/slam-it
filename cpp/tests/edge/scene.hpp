@@ -8,11 +8,11 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <utility>
 #include <vector>
 
 #include "slamlab/edge/frames.hpp"
 #include "slamlab/edge/map.hpp"
-#include "slamlab/foundations/matching.hpp"
 
 namespace slamlab::testing::scene {
 
@@ -89,8 +89,9 @@ inline edge::Frame frame_at(const Eigen::Matrix4d& t, bool with_depth, std::int6
     out.depth.push_back(with_depth ? local.z() : nan);
     out.right.push_back(with_depth ? px.x() - (edge::focal(cam) * cam.baseline / local.z()) : nan);
   }
-  out.grid = foundations::matching::FeatureGrid::build(out.features.keypoints).value();
-  return out;
+  return edge::make_frame(out.timestamp, std::move(out.features), std::move(out.bearings),
+                          std::move(out.depth), std::move(out.right))
+      .value();
 }
 
 /// @brief A keyframe's frame: its keypoints on level 0 (see `frame_at`).

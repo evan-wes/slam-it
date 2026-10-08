@@ -7,7 +7,6 @@ use nalgebra::{Matrix4, Vector2, Vector3};
 use slamlab_edge::frames::{Camera, Frame};
 use slamlab_edge::map::{self, Map};
 use slamlab_foundations::camera::Model;
-use slamlab_foundations::matching::FeatureGrid;
 use slamlab_foundations::orb::{Features, Keypoint};
 
 /// The scene's points.
@@ -116,20 +115,13 @@ pub fn frame_at(t: &Matrix4<f64>, with_depth: bool, level: usize) -> Frame {
             f64::NAN
         });
     }
-    let grid = FeatureGrid::build(&keypoints).unwrap();
-    Frame {
-        timestamp: 0.0,
-        features: Features {
-            keypoints,
-            descriptors,
-            scale_factor: 1.2,
-            levels: 8,
-        },
-        bearings,
-        depth,
-        right,
-        grid,
-    }
+    let features = Features {
+        keypoints,
+        descriptors,
+        scale_factor: 1.2,
+        levels: 8,
+    };
+    Frame::new(0.0, features, bearings, depth, right).unwrap()
 }
 
 /// A keyframe's frame: its keypoints on level 0 (see [`frame_at`]).
