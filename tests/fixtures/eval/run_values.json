@@ -227,6 +227,7 @@
   "window": 10,
   "chi2_mono": 5.991
  },
+ "peak_memory": 48381952,
  "diagnostics": [
   {
    "timestamp": 1305031102.175304,

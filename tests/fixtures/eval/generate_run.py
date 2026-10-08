@@ -49,6 +49,7 @@ def values() -> dict[str, Any]:
         "keyframe_poses": poses[[0, 3]].tolist(),
         "points": rng.normal(0.0, 3.0, (4, 3)).tolist(),
         "settings": {"n_features": 1000, "scale_factor": 1.2, "window": 10, "chi2_mono": 5.991},
+        "peak_memory": 48_381_952,
         "diagnostics": [
             {
                 "timestamp": float(t),
@@ -83,6 +84,7 @@ def main() -> None:
             points=np.array(run["points"]),
             settings=run["settings"],
             diagnostics=run["diagnostics"],
+            peak_memory=run["peak_memory"],
         ),
     )
 

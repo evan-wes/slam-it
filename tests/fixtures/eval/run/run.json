@@ -1,6 +1,6 @@
 {
  "format": "slamlab-run",
- "version": 1,
+ "version": 2,
  "dataset": "tum",
  "sequence": "rgbd_dataset_freiburg1_fixture",
  "mode": "rgbd",
@@ -10,5 +10,6 @@
   "scale_factor": 1.2,
   "window": 10,
   "chi2_mono": 5.991
- }
+ },
+ "peak_memory": 48381952
 }

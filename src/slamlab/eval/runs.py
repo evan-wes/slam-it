@@ -2,9 +2,12 @@
 
 A run is a folder, written by any backend's pipeline (C++ and Rust write the same files):
 
-- ``run.json``: what ran: ``{"format": "slamlab-run", "version": 1, "dataset", "sequence",
-  "mode", "backend", "settings"}``, ``mode`` one of :data:`MODES` and ``backend`` one of
-  ``python``, ``cpp`` and ``rust``; ``settings`` holds the pipeline's options as JSON.
+- ``run.json``: what ran: ``{"format": "slamlab-run", "version": 2, "dataset", "sequence",
+  "mode", "backend", "settings", "peak_memory"}``, ``mode`` one of :data:`MODES` and
+  ``backend`` one of ``python``, ``cpp`` and ``rust``; ``settings`` holds the pipeline's
+  options as JSON; ``peak_memory`` is the largest resident set, in bytes, of the program that
+  ran it (:func:`slamlab.eval.budgets.peak_memory`), or null when the run was not a program's
+  of its own (Python's in-process run) or the system does not say.
 - ``trajectory.txt``: each tracked frame's ``T_world_cam`` in TUM's format, one
   ``timestamp tx ty tz qx qy qz qw`` line per frame, ``#`` comments allowed: what ORB-SLAM and
   the TUM tools write, so other systems' trajectories evaluate the same way. Numbers are
@@ -41,8 +44,8 @@ from slamlab.foundations.errors import InvalidInputError
 FORMAT = "slamlab-run"
 """``run.json``'s ``format``."""
 
-VERSION = 1
-"""``run.json``'s ``version``: this module's layout."""
+VERSION = 2
+"""``run.json``'s ``version``: this module's layout (2 added ``peak_memory``)."""
 
 MODES = ("monocular", "stereo", "rgbd")
 """A run's sensor modes."""
@@ -56,7 +59,7 @@ TUM's ``associate.py`` default, and :data:`slamlab.eval.tum.MAX_DIFFERENCE`. Pai
 closest first (:func:`slamlab.eval.metrics.associate`), so a denser ground truth (EuRoC's
 200 Hz) still pairs each frame with its nearest pose."""
 
-_INFO_KEYS = ("dataset", "sequence", "mode", "backend", "settings")
+_INFO_KEYS = ("dataset", "sequence", "mode", "backend", "settings", "peak_memory")
 """``run.json``'s keys besides ``format`` and ``version``."""
 
 
@@ -88,6 +91,8 @@ class Run:
         The pipeline's options, as JSON values.
     diagnostics : list of dict
         One JSON object per frame, each with a ``timestamp``.
+    peak_memory : int or None
+        The largest resident set of the program that ran it, in bytes; None if unknown.
     """
 
     dataset: str
@@ -101,6 +106,13 @@ class Run:
     points: NDArray[np.float64] = field(default_factory=lambda: np.zeros((0, 3)))
     settings: dict[str, Any] = field(default_factory=dict)
     diagnostics: list[dict[str, Any]] = field(default_factory=list)
+    peak_memory: int | None = None
+
+
+def _check_peak_memory(value: object, name: str) -> None:
+    """Check a peak memory: a whole number of bytes, at least 0, or None."""
+    if value is not None and (type(value) is not int or value < 0):
+        raise InvalidInputError(f"{name}: expected a whole number of bytes or null")
 
 
 def _as_stamped(
@@ -241,8 +253,9 @@ def write_run(folder: str | Path, run: Run) -> None:
     ------
     slamlab.foundations.errors.InvalidInputError
         If the dataset or sequence is not a string, the mode or backend is unknown, an array
-        is malformed, or the settings or a diagnostic are not JSON (a diagnostic must be an
-        object with a ``timestamp``). Nothing is written then.
+        is malformed, the settings or a diagnostic are not JSON (a diagnostic must be an
+        object with a ``timestamp``), or the peak memory is not a whole number of bytes or
+        None. Nothing is written then.
     """
     for name in ("dataset", "sequence"):
         if not isinstance(getattr(run, name), str):
@@ -257,6 +270,7 @@ def write_run(folder: str | Path, run: Run) -> None:
         raise InvalidInputError(f"points: expected (M, 3), got {lead}")
     if not isinstance(run.settings, dict):
         raise InvalidInputError("settings: expected a dict")
+    _check_peak_memory(run.peak_memory, "peak_memory")
     info = {
         "format": FORMAT,
         "version": VERSION,
@@ -265,6 +279,7 @@ def write_run(folder: str | Path, run: Run) -> None:
         "mode": run.mode,
         "backend": run.backend,
         "settings": run.settings,
+        "peak_memory": run.peak_memory,
     }
     _json(info, "settings")
     diagnostics = []
@@ -327,6 +342,7 @@ def _read_info(path: Path) -> dict[str, Any]:
             raise InvalidInputError(f"{path}: {key} must be a string")
     if not isinstance(info["settings"], dict):
         raise InvalidInputError(f"{path}: settings must be an object")
+    _check_peak_memory(info["peak_memory"], f"{path}: peak_memory")
     _check_names(info["mode"], info["backend"])
     return info
 
@@ -384,6 +400,7 @@ def read_run(folder: str | Path) -> Run:
         points=_load(root / "points.npy", (3,)),
         settings=info["settings"],
         diagnostics=_read_diagnostics(root / "diagnostics.jsonl"),
+        peak_memory=info["peak_memory"],
     )
 
 

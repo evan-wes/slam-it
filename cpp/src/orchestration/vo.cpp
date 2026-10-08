@@ -26,6 +26,7 @@
 #include "slamlab/edge/map.hpp"
 #include "slamlab/edge/options.hpp"
 #include "slamlab/edge/pipeline.hpp"
+#include "slamlab/eval/budgets.hpp"
 #include "slamlab/eval/euroc.hpp"
 #include "slamlab/eval/png.hpp"
 #include "slamlab/eval/runs.hpp"
@@ -544,6 +545,7 @@ Result<eval::runs::Run> run(const Request& request) {
       return std::unexpected(recorded.error());
     }
   }
+  out.peak_memory = eval::budgets::peak_memory();
   if (const auto written = eval::runs::write_run(request.out, out); !written) {
     return std::unexpected(written.error());
   }

@@ -156,6 +156,9 @@ Result<void> check(const Run& run) {
   if (!finite(run.settings)) {
     return fail(ErrorKind::kInvalidInput, "settings: not JSON (a number is not finite)");
   }
+  if (run.peak_memory.value_or(0) < 0) {
+    return fail(ErrorKind::kInvalidInput, "peak_memory: expected a whole number of bytes");
+  }
   for (std::size_t k = 0; k < run.diagnostics.size(); ++k) {
     const auto& entry = run.diagnostics[k];
     const bool stamped =
@@ -283,7 +286,9 @@ Result<void> write_run(const std::string& folder, const Run& run) {
       {"sequence", run.sequence},       {"mode", run.mode},    {"backend", run.backend}};
   std::string info_text = json_object(info);
   info_text.pop_back();
-  info_text += ", \"settings\": " + json_object(run.settings) + "}\n";
+  info_text += ", \"settings\": " + json_object(run.settings);
+  info_text += ", \"peak_memory\": " +
+               (run.peak_memory ? std::to_string(*run.peak_memory) : std::string("null")) + "}\n";
   std::string diagnostics;
   for (const JsonObject& entry : run.diagnostics) {
     diagnostics += json_object(entry) + "\n";

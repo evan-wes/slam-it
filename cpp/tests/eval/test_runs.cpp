@@ -79,7 +79,8 @@ runs::Run golden_run() {
                 .keyframe_poses = poses(values["keyframe_poses"]),
                 .points = {},
                 .settings = flat(values["settings"]),
-                .diagnostics = {}};
+                .diagnostics = {},
+                .peak_memory = values["peak_memory"].get<std::int64_t>()};
   for (const auto& point : values["points"]) {
     run.points.emplace_back(point[0].get<double>(), point[1].get<double>(), point[2].get<double>());
   }
@@ -158,6 +159,11 @@ void check_golden(int& failures) {
   expect(json_lines(out / "diagnostics.jsonl") == json_lines(golden / "diagnostics.jsonl"),
          "diagnostics.jsonl holds Python's values", failures);
   expect(!fs::exists(out / ".run.json.tmp"), "no temporary file is left", failures);
+  runs::Run unknown = golden_run();
+  unknown.peak_memory.reset();
+  expect(runs::write_run(out.string(), unknown).has_value() &&
+             nlohmann::json::parse(bytes(out / "run.json"))["peak_memory"].is_null(),
+         "an unknown peak memory is written as null", failures);
 }
 
 /// @brief Check the refusals: nothing is written.
@@ -177,6 +183,10 @@ void check_refusals(int& failures) {
   std::erase_if(run.diagnostics[0], [](const auto& item) { return item.first == "timestamp"; });
   expect(is_invalid_input(runs::write_run(out.string(), run)),
          "a diagnostic without a timestamp is refused", failures);
+  run = golden_run();
+  run.peak_memory = -1;
+  expect(is_invalid_input(runs::write_run(out.string(), run)), "a negative peak memory is refused",
+         failures);
   expect(!fs::exists(out), "nothing is written for a refused run", failures);
   expect(runs::json_number(1.0) == "1.0" && runs::json_number(0.1) == "0.1" &&
              runs::json_number(1e-05) == "1e-05",

@@ -11,7 +11,7 @@ use slamlab_edge::map::Map;
 use slamlab_edge::options::{Mode, Options, Setting, check_options};
 use slamlab_edge::pipeline::{FrameResult, Pipeline, State};
 use slamlab_eval::runs::{self, JsonObject, JsonValue, Run};
-use slamlab_eval::{euroc, png, text, tum};
+use slamlab_eval::{budgets, euroc, png, text, tum};
 use slamlab_foundations::camera::Model;
 use slamlab_foundations::error::{ErrorKind, Result, fail};
 use slamlab_foundations::image::{self, Image};
@@ -727,6 +727,7 @@ pub fn run(request: &Request) -> Result<Run> {
     if let Some(m) = pipeline.map() {
         record_map(&mut out, m)?;
     }
+    out.peak_memory = budgets::peak_memory(Path::new(budgets::STATUS));
     runs::write_run(&request.out, &out)?;
     Ok(out)
 }

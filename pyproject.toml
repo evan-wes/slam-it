@@ -201,13 +201,15 @@ source_modules = ["slamlab"]
 forbidden_modules = ["poselib", "mpmath", "manifpy", "scipy"]
 
 # The order of modules inside eval: the timestamp helpers and the image reader at the bottom,
-# the dataset readers and metrics on them, runs (and the COLMAP reference) on top. New modules
-# are optional layers, as in rung 0's contract.
+# the dataset readers and metrics on them, runs (and the COLMAP reference) on them, and the
+# compute budgets, which judge runs, on top. New modules are optional layers, as in rung 0's
+# contract.
 [[tool.importlinter.contracts]]
 name = "Eval's internal order"
 type = "layers"
 containers = ["slamlab.eval"]
 layers = [
+  "(budgets)",
   "(runs) | (colmap_reference)",
   "(metrics) | (tum) | (euroc) | (readers) | (reprojection)",
   "(timestamps) | (images)",

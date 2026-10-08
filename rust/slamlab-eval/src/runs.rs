@@ -12,8 +12,8 @@ use slamlab_foundations::{se3, so3};
 /// `run.json`'s `format`.
 pub const FORMAT: &str = "slamlab-run";
 
-/// `run.json`'s `version`.
-pub const VERSION: i64 = 1;
+/// `run.json`'s `version` (2 added `peak_memory`).
+pub const VERSION: i64 = 2;
 
 /// The modes a run may have.
 pub const MODES: [&str; 3] = ["monocular", "stereo", "rgbd"];
@@ -68,6 +68,9 @@ pub struct Run {
     pub settings: JsonObject,
     /// One object per frame, each with a `timestamp`.
     pub diagnostics: Vec<JsonObject>,
+    /// The largest resident set of the program that ran it, in bytes, if known
+    /// (`crate::budgets::peak_memory`); written as null otherwise.
+    pub peak_memory: Option<u64>,
 }
 
 /// A finite number as JSON, shortest round-trip (`.0` kept on a whole number, as Python
@@ -363,6 +366,11 @@ pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
     info_text.pop();
     info_text.push_str(", \"settings\": ");
     info_text.push_str(&json_object(&run.settings));
+    info_text.push_str(", \"peak_memory\": ");
+    info_text.push_str(
+        &run.peak_memory
+            .map_or_else(|| "null".to_owned(), |b| b.to_string()),
+    );
     info_text.push_str("}\n");
     let diagnostics: String = run
         .diagnostics
@@ -495,6 +503,7 @@ mod tests {
                 .iter()
                 .map(flat)
                 .collect(),
+            peak_memory: values["peak_memory"].as_u64(),
         }
     }
 
@@ -574,6 +583,12 @@ mod tests {
             json(&golden.join("diagnostics.jsonl"), true)
         );
         assert!(!out.join(".run.json.tmp").exists());
+        let unknown = Run {
+            peak_memory: None,
+            ..golden_run()
+        };
+        write_run(&out, &unknown).unwrap();
+        assert!(json(&out.join("run.json"), false)[0]["peak_memory"].is_null());
     }
 
     #[test]
