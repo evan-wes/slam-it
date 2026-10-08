@@ -86,8 +86,9 @@ struct Run {
 /// @param run The run.
 /// @return Nothing; `InvalidInput` for an unknown mode or backend, times that are not finite
 ///         and strictly ascending, poses that are not rigid or not one per time, a point that
-///         is not finite, a diagnostic without a `timestamp`, a number JSON cannot hold, or a
-///         negative peak memory (nothing is written then); or a file that cannot be written.
+///         is not finite, a diagnostic without a `timestamp`, a number JSON cannot hold, a
+///         negative peak memory, CPUs that are empty or not ascending, or a memory cap of 0
+///         (nothing is written then); or a file that cannot be written.
 [[nodiscard]] foundations::Result<void> write_run(const std::string& folder, const Run& run);
 
 }  // namespace slamlab::eval::runs

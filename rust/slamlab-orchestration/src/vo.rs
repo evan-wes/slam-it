@@ -698,9 +698,9 @@ pub fn check(request: &Request) -> Result<()> {
     check_options(&request.options)
 }
 
-/// Runs a sequence through the pipeline (`slamlab.orchestration.vo.run`): the run, not yet
-/// written. The program records its own process in it (`slamlab_eval::budgets`) and writes it
-/// to `request.out`, as Python's program does.
+/// Runs a sequence through the pipeline: the run, not yet written, as Python's program builds
+/// it before writing (`slamlab.orchestration.vo.main`). The program records its own process in
+/// it (`slamlab_eval::budgets`) and writes it to `request.out`.
 ///
 /// # Arguments
 ///
@@ -832,6 +832,7 @@ mod tests {
             &["--option", "windows=7"],
             &["--option", "window=7.5"],
             &["--option", "close_depth=inf"],
+            &["--option", "close_depth=+-5"],
             &["--option", "window"],
             &["--dataset", "euroc"],
             &["--verbose", "1"],

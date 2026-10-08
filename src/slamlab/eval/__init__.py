@@ -18,8 +18,9 @@
 - :mod:`slamlab.eval.colmap_reference`: COLMAP's Ceres bundle adjuster, as the reference
   :mod:`slamlab.foundations.ba` is compared against (needs the ``colmap`` extra).
 - :mod:`slamlab.eval.reprojection`: reprojection error, to compare solvers on one cost.
-- :mod:`slamlab.eval.budgets`: compute budgets: a program's peak memory, and (PR 9) running
-  it within a budget and judging its frames against their deadline.
+- :mod:`slamlab.eval.budgets`: compute budgets: running a program within one, judging its
+  frames against their deadline, and what a program records of its own process (its peak
+  memory, the CPUs it could run on, its memory cap).
 
 Still to come (design doc, "Metrics"): depth error.
 

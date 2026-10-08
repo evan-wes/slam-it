@@ -232,6 +232,7 @@ def test_parse_reads_a_command_line() -> None:
         (["--option", "window=7.5"], "window: expected an integer, got '7.5'"),
         (["--option", "close_depth=inf"], "close_depth: expected a finite number, got 'inf'"),
         (["--option", "close_depth=3_5"], "close_depth: expected a finite number"),
+        (["--option", "close_depth=+-5"], "close_depth: expected a finite number"),
         (["--option", "window"], "--option: expected KEY=VALUE, got 'window'"),
         (["--dataset", "euroc"], "--dataset: given twice"),
         (["--verbose", "1"], "unknown argument '--verbose'"),
@@ -245,6 +246,48 @@ def test_parse_refuses_what_the_native_programs_refuse(more: list[str], message:
     base = ["--dataset", "tum", "--sequence", "seq", "--mode", "rgbd", "--out", "out"]
     with pytest.raises(vo.UsageError, match=re.escape(message)):
         vo.parse([*base, *more])
+
+
+@pytest.mark.parametrize(
+    ("text", "value"),
+    [
+        ("close_depth=35.5", 35.5),
+        ("close_depth=+0.5", 0.5),
+        ("close_depth=.5", 0.5),
+        ("close_depth=5.", 5.0),
+        ("close_depth=1e5", 1e5),
+        ("close_depth= 2.0 ", 2.0),
+        ("close_depth=-1", -1.0),  # a number; its range is the settings' to check
+        ("window=10", 10),
+    ],
+)
+def test_parse_setting_reads_what_the_programs_read(text: str, value: float) -> None:
+    """Decimals with a sign, a lone point or an exponent; integers whole."""
+    key, read = vo.parse_setting(text)
+    assert (key, read, type(read)) == (text.partition("=")[0], value, type(value))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "close_depth=inf",
+        "close_depth=nan",
+        "close_depth=1e999",
+        "close_depth=3_5",
+        "close_depth=1e",
+        "close_depth=+-5",
+        "close_depth=",
+        "close_depth=0x10",
+        "window=1.0",
+        "window=1_000",
+        "no_such_setting=1",
+        "close_depth",
+    ],
+)
+def test_parse_setting_refuses_what_the_programs_refuse(text: str) -> None:
+    """Not finite, past float64, underscores, two signs, hex, a fraction for an integer."""
+    with pytest.raises(vo.UsageError):
+        vo.parse_setting(text)
 
 
 def test_parse_refuses_an_unknown_mode_or_a_missing_flag() -> None:

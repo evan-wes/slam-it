@@ -371,8 +371,8 @@ fn replace(path: &Path, data: &[u8]) -> Result<()> {
 ///
 /// `InvalidInput` for an unknown mode or backend, times that are not finite and strictly
 /// ascending, poses that are not rigid or not one per time, a point that is not finite, a
-/// diagnostic without a `timestamp`, or a number JSON cannot hold (nothing is written then);
-/// or a file that cannot be written.
+/// diagnostic without a `timestamp`, a number JSON cannot hold, CPUs that are empty or not
+/// ascending, or a memory cap of 0 (nothing is written then); or a file that cannot be written.
 pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
     check(run)?;
     let trajectory = trajectory_text(&run.timestamps, &run.poses)?;

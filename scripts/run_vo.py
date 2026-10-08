@@ -154,7 +154,7 @@ def summarize(run: runs.Run, scored: runs.Evaluation | None) -> None:
             print(
                 f"mapping {judged.mapped} keyframes: median {ms(judged.mapping.median)}, max "
                 f"{ms(judged.mapping.max)}; load {judged.mapping_load:.2f} over the run, "
-                f"{judged.mapping_peak_load:.2f} over its busiest {budgets.WINDOW:.0f} s (below "
+                f"{judged.mapping_peak_load:.2f} over its busiest {judged.window:.1f} s (below "
                 f"1, a mapping thread would keep up)"
             )
     peak = "not recorded" if run.peak_memory is None else f"{run.peak_memory / 2**20:.0f} MiB"
@@ -228,8 +228,8 @@ def main() -> None:
     parser.add_argument("--sequence", type=Path, required=True, help="the sequence's folder")
     parser.add_argument("--mode", choices=MODES, required=True)
     parser.add_argument("--out", type=Path, required=True, help="the run's folder")
-    parser.add_argument("--backend", choices=backends.BACKENDS, default="cpp")
-    parser.add_argument("--first", type=int, default=0, help="the first frame run")
+    parser.add_argument("--backend", choices=backends.BACKENDS, help="default: cpp")
+    parser.add_argument("--first", type=int, help="the first frame run (default: 0)")
     parser.add_argument("--count", type=int, help="the frames run (default: all)")
     parser.add_argument(
         "--option", action="append", default=[], metavar="KEY=VALUE", help="a setting"
@@ -242,8 +242,17 @@ def main() -> None:
         "--budget", choices=budgets.BUDGETS, help="run the backend's program within this budget"
     )
     args = parser.parse_args()
-    if args.reuse and args.budget is not None:
-        parser.error("--budget runs the program; --reuse only reads the run in --out")
+    if args.reuse:
+        running = {
+            "--backend": args.backend,
+            "--first": args.first,
+            "--count": args.count,
+            "--option": args.option or None,
+            "--budget": args.budget,
+        }
+        given = [flag for flag, value in running.items() if value is not None]
+        if given:
+            parser.error(f"--reuse only reads the run in --out; {', '.join(given)} would not apply")
     budget = None if args.budget is None else budgets.BUDGETS[args.budget]
 
     if args.reuse:
@@ -254,9 +263,9 @@ def main() -> None:
             args.sequence,
             args.mode,
             args.out,
-            backend=args.backend,
+            backend=args.backend or "cpp",
             options=parse_options(args.option),
-            first=args.first,
+            first=args.first or 0,
             count=args.count,
             budget=budget,
         )

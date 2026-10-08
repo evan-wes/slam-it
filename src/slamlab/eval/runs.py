@@ -136,19 +136,22 @@ class Run:
     memory_cap: int | None = None
 
 
-def _check_process(peak_memory: object, cpus: object, memory_cap: object, name: str) -> None:
-    """Check what a run records of its program: each None, or of its type and range."""
+def _check_process(peak_memory: object, cpus: object, memory_cap: object, prefix: str) -> None:
+    """Check what a run records of its program: each None, or of its type and range.
+
+    `prefix` begins each message (the file's path when reading).
+    """
     if peak_memory is not None and (type(peak_memory) is not int or peak_memory < 0):
-        raise InvalidInputError(f"{name}peak_memory: expected a whole number of bytes or null")
+        raise InvalidInputError(f"{prefix}peak_memory: expected a whole number of bytes or null")
     if cpus is not None and not (
         isinstance(cpus, list)
         and len(cpus) > 0
         and all(type(cpu) is int and cpu >= 0 for cpu in cpus)
         and all(a < b for a, b in itertools.pairwise(cpus))
     ):
-        raise InvalidInputError(f"{name}cpus: expected CPU numbers, ascending, or null")
+        raise InvalidInputError(f"{prefix}cpus: expected CPU numbers, ascending, or null")
     if memory_cap is not None and (type(memory_cap) is not int or memory_cap < 1):
-        raise InvalidInputError(f"{name}memory_cap: expected a positive number of bytes or null")
+        raise InvalidInputError(f"{prefix}memory_cap: expected a positive number of bytes or null")
 
 
 def _as_stamped(

@@ -49,7 +49,9 @@ int run() {
   write(status, "Cpus_allowed_list:\t0-3,8,10-11\n");
   expect(budgets::allowed_cpus(status.string()) == std::vector<std::int64_t>{0, 1, 2, 3, 8, 10, 11},
          "a CPU list with single CPUs is read", failures);
-  for (const char* text : {"Name:\tx\n", "Cpus_allowed_list:\t7-4\n", "Cpus_allowed_list:\tf0\n"}) {
+  for (const char* text :
+       {"Name:\tx\n", "Cpus_allowed_list:\t7-4\n", "Cpus_allowed_list:\tf0\n",
+        "Cpus_allowed_list:\t1-\n", "Cpus_allowed_list:\t0-3,7-4\n", "Cpus_allowed_list:\t1_0\n"}) {
     write(status, text);
     expect(!budgets::allowed_cpus(status.string()).has_value(),
            "no CPU list that reads as one: nothing", failures);

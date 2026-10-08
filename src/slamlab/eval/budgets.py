@@ -31,6 +31,7 @@ The budgeted runs are tests marked ``budget``, outside layer 1: ``python -m pyte
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,7 +52,9 @@ CGROUP_ROOT = Path("/sys/fs/cgroup")
 """Where the control groups (version 2) are mounted."""
 
 WINDOW = 10.0
-"""The window, in seconds, over which :func:`judge` finds mapping's busiest stretch."""
+"""The window, in seconds, over which :func:`judge` finds mapping's busiest stretch: long
+enough to hold a burst of keyframes' local BAs (a few seconds of camera motion), short enough
+that the run's average does not hide it."""
 
 PERFORMANCE_CORES = Path("/sys/devices/cpu_core/cpus")
 """Where Linux lists a hybrid CPU's performance cores (Intel's ``cpu_core``)."""
@@ -103,12 +106,21 @@ BUDGETS = {
 budgets come with milestone 7."""
 
 
+_CPU_RANGE = re.compile(r"([0-9]+)(?:-([0-9]+))?")
+"""One part of a Linux CPU list: a CPU, or an ascending range of them."""
+
+
 def _cpu_list(text: str) -> set[int]:
-    """Read a Linux CPU list, e.g. ``0-7,16``."""
+    """Read a Linux CPU list, e.g. ``0-7,16``; raise ValueError if it is not one."""
     out: set[int] = set()
     for part in text.strip().split(","):
-        first, _, last = part.partition("-")
-        out.update(range(int(first), int(last or first) + 1))
+        match = _CPU_RANGE.fullmatch(part)
+        if match is None:
+            raise ValueError(f"not a CPU list: {text!r}")
+        first, last = int(match[1]), int(match[2] or match[1])
+        if last < first:
+            raise ValueError(f"not a CPU list: {text!r}")
+        out.update(range(first, last + 1))
     return out
 
 
@@ -182,12 +194,12 @@ def command(budget: Budget, pinned: Sequence[int], argv: Sequence[str]) -> list[
     ]
 
 
-def _status_lines(status: str | Path) -> list[list[str]] | None:
-    """Return a status file's lines split into words, or None if there is no such file."""
+def _status_lines(status: str | Path) -> list[list[str]]:
+    """Return a status file's lines split into words; none if it cannot be read."""
     try:
         text = Path(status).read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return None
+    except OSError:
+        return []
     return [line.split() for line in text.splitlines()]
 
 
@@ -206,8 +218,8 @@ def peak_memory(status: str | Path = STATUS) -> int | None:
     Returns
     -------
     int or None
-        The bytes, or None where the system does not say: no such file, or no ``VmHWM`` line
-        in kilobytes.
+        The bytes, or None where the system does not say: a file it cannot read, or no
+        ``VmHWM`` line in kilobytes.
 
     Examples
     --------
@@ -215,7 +227,7 @@ def peak_memory(status: str | Path = STATUS) -> int | None:
     >>> sys.platform != "linux" or peak_memory() > 0
     True
     """
-    for words in _status_lines(status) or []:
+    for words in _status_lines(status):
         if len(words) == 3 and words[0] == "VmHWM:" and words[1].isdigit() and words[2] == "kB":
             return int(words[1]) * 1024
     return None
@@ -234,8 +246,8 @@ def allowed_cpus(status: str | Path = STATUS) -> list[int] | None:
     Returns
     -------
     list of int or None
-        The CPUs, ascending, or None where the system does not say: no such file, or no
-        ``Cpus_allowed_list`` line that reads as a CPU list.
+        The CPUs, ascending, or None where the system does not say: a file it cannot read, or
+        no ``Cpus_allowed_list`` line that reads as a CPU list.
 
     Examples
     --------
@@ -243,7 +255,7 @@ def allowed_cpus(status: str | Path = STATUS) -> list[int] | None:
     >>> sys.platform != "linux" or len(allowed_cpus()) > 0
     True
     """
-    for words in _status_lines(status) or []:
+    for words in _status_lines(status):
         if len(words) == 2 and words[0] == "Cpus_allowed_list:":
             try:
                 return sorted(_cpu_list(words[1])) or None
@@ -268,14 +280,14 @@ def memory_cap(cgroup: str | Path = CGROUP, root: str | Path = CGROUP_ROOT) -> i
     Returns
     -------
     int or None
-        The bytes, or None where there is no cap (``max``) or the system does not say: no
-        such file, no version-2 group (a ``0::`` line), or no ``memory.max`` in it.
+        The bytes, or None where there is no cap (``max``) or the system does not say: a file
+        it cannot read, no version-2 group (a ``0::`` line), or no ``memory.max`` in it.
     """
     try:
         lines = Path(cgroup).read_text(encoding="utf-8").splitlines()
         group = next(line.removeprefix("0::") for line in lines if line.startswith("0::"))
         text = (Path(root) / group.lstrip("/") / "memory.max").read_text(encoding="utf-8")
-    except (FileNotFoundError, NotADirectoryError, StopIteration):
+    except (OSError, StopIteration):
         return None
     value = text.strip()
     return int(value) if value.isdigit() and int(value) > 0 else None
@@ -331,9 +343,13 @@ class Frames:
     mapping_load : float
         Mapping's total time over the sequence's (the frames' span plus one period): below 1,
         a mapping thread of its own would keep up on average.
+    window : float
+        The window ``mapping_peak_load`` is over, in seconds: the judgement's ``window``, or
+        the run's length (its span plus one period) if that is shorter.
     mapping_peak_load : float
-        Mapping's largest load over any window of the judgement's ``window`` seconds that
-        starts at a frame: below 1, a mapping thread of its own would keep up there too.
+        Mapping's largest load over any window of ``window`` seconds that starts at a frame:
+        below 1, a mapping thread of its own would keep up there too. On a run no longer than
+        the judgement's window it is the run's own load, ``mapping_load``.
     """
 
     count: int
@@ -346,15 +362,23 @@ class Frames:
     mapped: int
     mapping: Spread | None
     mapping_load: float
+    window: float
     mapping_peak_load: float
+
+
+def _number(entry: dict[str, object], key: str, k: int) -> float:
+    """Return a diagnostic's number: a JSON number (not a bool), or InvalidInputError."""
+    if key not in entry:
+        raise InvalidInputError(f"judge: a frame has no {key}")
+    value = entry[key]
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise InvalidInputError(f"judge: frame {k}'s {key} must be a number, got {value!r}")
+    return float(value)
 
 
 def _times(run: runs.Run) -> NDArray[np.float64]:
     """Return a run's frame times, checked finite and strictly increasing."""
-    try:
-        times = np.array([float(d["timestamp"]) for d in run.diagnostics])
-    except KeyError:
-        raise InvalidInputError("judge: a frame has no timestamp") from None
+    times = np.array([_number(d, "timestamp", k) for k, d in enumerate(run.diagnostics)])
     if not np.all(np.isfinite(times)):
         raise InvalidInputError("judge: the frames' timestamps must be finite")
     if np.any(np.diff(times) <= 0.0):
@@ -367,10 +391,7 @@ def _steps(run: runs.Run) -> dict[str, NDArray[np.float64]]:
     """Return each step's time per frame (:data:`slamlab.eval.runs.STEPS`), checked."""
     out = {}
     for key in runs.STEPS:
-        try:
-            seconds = np.array([float(d[key]) for d in run.diagnostics])
-        except KeyError:
-            raise InvalidInputError(f"judge: a frame has no {key}") from None
+        seconds = np.array([_number(d, key, k) for k, d in enumerate(run.diagnostics)])
         bad = ~np.isfinite(seconds) | (seconds < 0.0)
         if np.any(bad):
             raise InvalidInputError(
@@ -402,9 +423,9 @@ def judge(run: runs.Run, *, window: float = WINDOW) -> Frames:
     Raises
     ------
     slamlab.foundations.errors.InvalidInputError
-        If the run has fewer than two frames (no period), its frames' times are not finite
-        and strictly increasing, a frame lacks a step's time or has one that is negative or
-        not finite, or `window` is not positive and finite.
+        If the run has fewer than two frames (no period), a frame's time or a step's time is
+        missing or not a number, the frames' times are not finite and strictly increasing, a
+        step's time is negative or not finite, or `window` is not positive and finite.
     """
     if not (np.isfinite(window) and window > 0.0):
         raise InvalidInputError(f"judge: window: expected a positive time, got {window}")
@@ -416,8 +437,11 @@ def judge(run: runs.Run, *, window: float = WINDOW) -> Frames:
     deadline = float(np.median(np.diff(times)))
     latency = steps["build"] + steps["track"]
     mapped = steps["map"][steps["map"] > 0.0]
-    # The busiest window: mapping's time over [t_i, t_i + window), for each frame i.
-    ends = np.searchsorted(times, times + window)
+    # The busiest window: mapping's time over [t_i, t_i + width), for each frame i, the width
+    # no longer than the run, whose load a shorter run's window would otherwise dilute.
+    length = times[-1] - times[0] + deadline
+    width = min(window, length)
+    ends = np.searchsorted(times, times + width)
     cumulative = np.concatenate([[0.0], np.cumsum(steps["map"])])
     windows = cumulative[ends] - cumulative[: len(times)]
     return Frames(
@@ -430,6 +454,7 @@ def judge(run: runs.Run, *, window: float = WINDOW) -> Frames:
         late=int(np.sum(latency > deadline)),
         mapped=len(mapped),
         mapping=_spread(mapped) if len(mapped) else None,
-        mapping_load=float(np.sum(mapped) / (times[-1] - times[0] + deadline)),
-        mapping_peak_load=float(np.max(windows) / window),
+        mapping_load=float(np.sum(mapped) / length),
+        window=float(width),
+        mapping_peak_load=float(np.max(windows) / width),
     )

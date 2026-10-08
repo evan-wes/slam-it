@@ -44,14 +44,28 @@ pub fn peak_memory(status: &Path) -> Option<u64> {
 ///
 /// The bytes, or `None` if no `VmHWM` line states them in kilobytes.
 fn peak_in(status: &str) -> Option<u64> {
+    match status_words(status, "VmHWM:")?.as_slice() {
+        [value, "kB"] => text::integer(value)
+            .and_then(|kilobytes| u64::try_from(kilobytes).ok())
+            .map(|kilobytes| kilobytes * 1024),
+        _ => None,
+    }
+}
+
+/// The words after a key on a status text's line, as `slamlab.eval.budgets` splits it.
+///
+/// # Arguments
+///
+/// * `status` - The text of a `/proc/<pid>/status` file.
+/// * `key` - The line's first word, e.g. `VmHWM:`.
+///
+/// # Returns
+///
+/// The line's other words, or `None` if no line starts with the key.
+fn status_words<'a>(status: &'a str, key: &str) -> Option<Vec<&'a str>> {
     status.lines().find_map(|line| {
-        let words: Vec<&str> = line.split_whitespace().collect();
-        match words.as_slice() {
-            ["VmHWM:", value, "kB"] => text::integer(value)
-                .and_then(|kilobytes| u64::try_from(kilobytes).ok())
-                .map(|kilobytes| kilobytes * 1024),
-            _ => None,
-        }
+        let mut words = line.split_whitespace();
+        (words.next() == Some(key)).then(|| words.collect())
     })
 }
 
@@ -81,13 +95,10 @@ pub fn allowed_cpus(status: &Path) -> Option<Vec<usize>> {
 ///
 /// The CPUs, ascending, or `None` if no such line reads as a CPU list.
 fn cpus_in(status: &str) -> Option<Vec<usize>> {
-    let line = status.lines().find_map(|line| {
-        let words: Vec<&str> = line.split_whitespace().collect();
-        match words.as_slice() {
-            ["Cpus_allowed_list:", list] => Some(*list),
-            _ => None,
-        }
-    })?;
+    let words = status_words(status, "Cpus_allowed_list:")?;
+    let [line] = words.as_slice() else {
+        return None;
+    };
     let mut out = BTreeSet::new();
     for part in line.split(',') {
         let (first, last) = part.split_once('-').unwrap_or((part, part));
@@ -156,6 +167,9 @@ mod tests {
             "Name:\tx\n",
             "Cpus_allowed_list:\t7-4\n",
             "Cpus_allowed_list:\tf0\n",
+            "Cpus_allowed_list:\t1-\n",
+            "Cpus_allowed_list:\t0-3,7-4\n",
+            "Cpus_allowed_list:\t1_0\n",
         ] {
             assert_eq!(cpus_in(text), None, "{text:?}");
         }
