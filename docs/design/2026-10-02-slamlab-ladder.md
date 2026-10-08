@@ -579,7 +579,9 @@ machine, and are labelled that way.
   program over the cap is killed. No `CPUQuota`: the laptop's cores are whole. The deadline is
   judged, not enforced: a frame past it is reported late, none is dropped. It holds building and
   tracking a frame, ORB-SLAM's tracking thread; mapping, in the same thread here so a run stays
-  deterministic, is judged by its load. Each program records its own peak memory.
+  deterministic, is judged by its load, over the run and over its busiest 10 seconds. Each
+  program records its own process in its run: its peak memory, the CPUs it could run on and its
+  memory cap.
 - **Where a rung declares its budget:**
   - its package docstring states the target budgets and what it may depend on;
   - the import-linter contracts enforce the part that is checkable, namely no PyTorch or GPU
@@ -619,7 +621,8 @@ Disk space is checked before each download.
 - **The run format** (`slamlab.eval.runs`), written by every backend's pipeline and read by the
   evaluation and the run viewer: a folder of `run.json` (dataset, sequence, mode, backend,
   settings, and what the program recorded of its process: peak memory, CPUs, memory cap),
-  `trajectory.txt` in TUM's format (so other systems' trajectories score the same way), the keyframes and map points as `.npy`, and `diagnostics.jsonl`, one object per frame.
+  `trajectory.txt` in TUM's format (so other systems' trajectories score the same way), the
+  keyframes and map points as `.npy`, and `diagnostics.jsonl`, one object per frame.
 - **Map:** depth error against GT depth where it exists; reconstruction accuracy and completeness
   on Replica-style data.
 - **Cost, per budget:** frames per second, per-frame latency (p50/p95), peak memory.

@@ -74,8 +74,9 @@ plans: there is no edge hardware.
 - **The judgement** (`budgets.judge`): the deadline (the median spacing of the frames' times),
   the median, 95th percentile and maximum of building plus tracking, the frames past the
   deadline, reading's spread apart, and mapping's time per keyframe, its load over the run and
-  its load over its busiest 10 seconds (`mapping_peak_load`). It refuses a run it cannot judge:
-  times that do not advance, a step time that is negative or not finite.
+  its load over its busiest 10 seconds (`mapping_peak_load`; the whole run's, on a run shorter
+  than that). It refuses a run it cannot judge: times that do not advance, a time or step time
+  that is not a number, negative or not finite.
 
 `scripts/run_vo.py --budget laptop-cpu` runs a sequence within the budget and prints the
 judgement; the budgeted tests (`python -m pytest -m budget`, outside layer 1) run the room
@@ -120,9 +121,10 @@ after them is the same to the bit.
 - **The descriptors' blur** (`image`): rows a tap at a time, so they vectorise; the horizontal
   sums in 32 bits, and the vertical ones in 32 bits whenever 255 · 2^(2 bits) fits (ORB's
   12-bit kernel), 64 above. 8.1 to 1.6 ms a frame in C++. The review panel found the C++
-  interior pass reading past a row when the kernel is wider than the image (the fixture's
-  one-pixel case), which a release build runs silently; it is guarded as Rust's was, and the
-  native tests now run with libstdc++'s assertions, which catch such a read.
+  interior pass forming a span past the row's end when the kernel is wider than the image (the
+  fixture's one-pixel case): it read nothing, but a span's precondition was broken, which a
+  release build runs silently. It is guarded as Rust's was, and the native tests now run with
+  libstdc++'s assertions, which catch it (the benchmarks build apart, unhardened).
 - **The resize** (`image`): the pyramid's bilinear resize in 32-bit sums, four times as fast.
 - **One pyramid per image (PR 7's A1)**: `orb.extract_levels` extracts from a pyramid the
   caller built (`image.as_pyramid`), and `stereo.match` takes both images' pyramids, as

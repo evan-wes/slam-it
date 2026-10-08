@@ -25,8 +25,8 @@ medians stand.
   going over kills it) and `taskset`; `judge`, the frames against their deadline (the median
   frame spacing): building plus tracking (median, 95th percentile, maximum, late frames),
   reading apart, and mapping's time per keyframe, its load over the run and over its busiest
-  10 seconds; a run it cannot judge (times that do not advance, a step time negative or not
-  finite) refused.
+  10 seconds (or the whole run, if shorter); a run it cannot judge (times that do not advance,
+  a time or step time that is not a number, negative or not finite) refused.
 - **Each frame's steps timed**, in every backend's diagnostics: `read_seconds`,
   `build_seconds`, `track_seconds` and `map_seconds`, named by the run format
   (`runs.STEPS`).
@@ -34,11 +34,12 @@ medians stand.
   `peak_memory` (`VmHWM`), its `cpus` (its affinity) and its `memory_cap` (its control group's
   `memory.max`), each read by the program before it writes the run (`budgets.peak_memory`,
   `allowed_cpus`, `memory_cap` in all three languages; `eval::budgets`,
-  `slamlab_eval::budgets`); null for an in-process run.
+  `slamlab_eval::budgets`); null for an in-process run, or a file the program cannot read.
 - **Python's program**, `python -m slamlab.orchestration.vo`, with the native programs'
   command line, exit codes and messages (`vo.parse`, `vo.parse_setting`); `vo.run(...,
   budget=...)` runs any backend's program within a budget, and `scripts/run_vo.py --budget`
-  prints the judgement and what the run recorded of its process.
+  prints the judgement and what the run recorded of its process (`--reuse` refuses the flags
+  that would not apply).
 - **Extraction from a built pyramid** (`orb.extract_levels`, `image.as_pyramid`), in all three
   languages.
 - **One constructor per frame** (`edge::make_frame`, `Frame::new`): every C++ and Rust frame,
@@ -69,16 +70,20 @@ medians stand.
 - **The native programs record their process in `main`**, as Python's does; the native
   `vo::run` returns the run unwritten.
 - **Layer 1's native tests run hardened** (`-D_GLIBCXX_ASSERTIONS`): libstdc++'s bounds
-  checks catch an out-of-range read a release build would run silently.
+  checks catch an out-of-range span or access a release build would run silently. The C++
+  benchmarks build apart, unhardened, in `build/bench`, the tree to time from.
+- **C++ reads one sign on a number** (`eval::text::number`), as Rust and Python do: `+-5` is
+  refused.
 - **The design doc** records the harness as built, closes A1, A11, H19 and the 3x3 SVD, adds
   mapping's thread to milestone 7 with PR 9's panel's deferrals; the edge VO note points to
   the real-time numbers.
 
 ### Review
 
-- The full panel (hygiene, architecture, algorithm) ran on the slice: 3 must-fix, 23
-  should-fix and 12 notes, each decided with the owner
-  (`docs/reviews/2026-10-08-feature-real-time.md`).
+- The full panel (hygiene, architecture, algorithm) ran on the slice: 34 findings (3 must-fix,
+  20 should-fix, 11 notes), each decided with the owner
+  (`docs/reviews/2026-10-08-feature-real-time.md`). Run 2, on the fixes, all three reviewers:
+  18 findings (1 must-fix, 12 should-fix, 5 notes), decided the same way.
 
 ### Tests
 
@@ -93,7 +98,14 @@ medians stand.
 - **ORB fixture cases for `extract_levels`**, stereo matching on given pyramids, and blur
   cases for both widths of its vertical sums (12-, 13- and 15-bit kernels).
 - **The 3x3 SVD's golden fixture**, written by Eigen (`foundations_test_svd3 --regenerate`)
-  and held in C++ (Eigen) and Rust (`svd3`), bit for bit; its order and signs.
+  and held in C++ (Eigen) and Rust (`svd3`) bit for bit, signs of zero included, a symmetric
+  case among its 21; its order and signs.
+- **The raw pyramid bindings**, called with valid options and features, refuse a level that
+  is not a contiguous uint8 image, and name a malformed one; each frame constructor builds
+  the keypoints' grid and refuses a position that is not finite.
+- **The `--option` readers** (`vo.parse_setting`, `run_vo.py`'s) against what the programs
+  accept and refuse; the process readers on unreadable files and malformed CPU lists, in all
+  three languages.
 - **BA parity with fixed hosts**: anchored points hosted by fixed cameras, a pose prior on
   one; the kept-coordinate reduction (Rust native).
 

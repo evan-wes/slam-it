@@ -44,11 +44,10 @@ column-major, like Eigen's default, so the Schur complement's upper-triangle upd
 memory in the same order as in C++.
 
 nalgebra's SVDs turned out not to be backward stable (PR 6's panel, L1 and L2), so every SVD in the
-crate, and the one general eigendecomposition, goes through `linalg`, which calls faer (since PR 9,
-the 3x3 SVDs run a port of Eigen's `JacobiSVD` there instead, on the stack and C++'s to the bit:
-[the real-time note](real-time.md)) (a pure-Rust
+crate, and the one general eigendecomposition, goes through `linalg`, which calls faer (a pure-Rust
 library benchmarked against LAPACK): its low-level routines, sequential, with thin factors and a
-workspace sized per call. faer works on a matrix as given, so `linalg` first scales one whose
+workspace sized per call. (Since PR 9, the 3x3 SVDs run a port of Eigen's `JacobiSVD` in `linalg`
+instead, on the stack and C++'s to the bit: [the real-time note](real-time.md).) faer works on a matrix as given, so `linalg` first scales one whose
 largest entry is outside [2^-400, 2^400] by a power of two, as LAPACK's `dlascl` does; without it,
 entries below about 1e-154 gave silently wrong factors (PR 6's panel, run 2, L8). nalgebra stays the
 matrix type; each call copies across. faer picks its SIMD kernels when it runs, so the same build
@@ -224,7 +223,7 @@ initialisation takes 4 ms in C++, 7 ms in Rust and 130-180 ms in the numpy refer
 Run them with:
 
 ```text
-SLAMLAB_BAL=<problem.txt> build/native/bench/foundations_bench_foundations
+SLAMLAB_BAL=<problem.txt> build/bench/bench/foundations_bench_foundations
 SLAMLAB_BAL=<problem.txt> cargo bench --manifest-path rust/Cargo.toml --bench foundations
 ```
 
