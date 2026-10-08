@@ -182,26 +182,35 @@ AxisSamples axis_samples(std::int64_t n_in, std::int64_t n_out) {
 /// @param cols The output's columns.
 /// @return The resized image.
 Image resize_checked(const Image& image, std::int64_t rows, std::int64_t cols) {
-  constexpr std::int64_t kOne = pow2(kResizeBits);
+  constexpr std::int32_t kOne = pow2(kResizeBits);
   const AxisSamples xs = axis_samples(image.cols, cols);
   const AxisSamples ys = axis_samples(image.rows, rows);
-  std::vector<std::int64_t> across(at(image.rows * cols));
+  // Every sum fits 32 bits: across a row at most 255 * 2^11, down a column 255 * 2^22.
+  std::vector<std::int32_t> across(at(image.rows * cols));
   for (std::int64_t r = 0; r < image.rows; ++r) {
+    const std::span<const std::uint8_t> row =
+        std::span(image.pixels).subspan(at(r * image.cols), at(image.cols));
+    const std::span<std::int32_t> sums = std::span(across).subspan(at(r * cols), at(cols));
     for (std::int64_t c = 0; c < cols; ++c) {
-      const std::int64_t fx = xs.fraction[at(c)];
-      across[at((r * cols) + c)] = (pixel(image, r, xs.first[at(c)]) * (kOne - fx)) +
-                                   (pixel(image, r, xs.second[at(c)]) * fx);
+      const auto fx = static_cast<std::int32_t>(xs.fraction[at(c)]);
+      sums[at(c)] = (row[at(xs.first[at(c)])] * (kOne - fx)) + (row[at(xs.second[at(c)])] * fx);
     }
   }
   Image out = blank(rows, cols);
+  constexpr unsigned kShift = 2 * kResizeBits;
+  constexpr std::uint32_t kHalf = pow2(kShift - 1);
   for (std::int64_t r = 0; r < rows; ++r) {
-    const std::int64_t fy = ys.fraction[at(r)];
-    const std::int64_t top = ys.first[at(r)] * cols;
-    const std::int64_t bottom = ys.second[at(r)] * cols;
+    const auto fy = static_cast<std::int32_t>(ys.fraction[at(r)]);
+    const std::span<const std::int32_t> top =
+        std::span(across).subspan(at(ys.first[at(r)] * cols), at(cols));
+    const std::span<const std::int32_t> bottom =
+        std::span(across).subspan(at(ys.second[at(r)] * cols), at(cols));
+    // A local view: a byte store may alias anything, the image's own pointer included.
+    const std::span<std::uint8_t> line = std::span(out.pixels).subspan(at(r * cols), at(cols));
     for (std::int64_t c = 0; c < cols; ++c) {
-      const std::int64_t total =
-          (across[at(top + c)] * (kOne - fy)) + (across[at(bottom + c)] * fy);
-      out.pixels[at((r * cols) + c)] = round_shift(total, 2 * kResizeBits);
+      const auto total =
+          static_cast<std::uint32_t>((top[at(c)] * (kOne - fy)) + (bottom[at(c)] * fy));
+      line[at(c)] = static_cast<std::uint8_t>((total + kHalf) >> kShift);
     }
   }
   return out;

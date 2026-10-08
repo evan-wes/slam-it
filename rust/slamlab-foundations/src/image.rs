@@ -362,22 +362,33 @@ fn axis_samples(n_in: usize, n_out: usize) -> Vec<AxisSample> {
 ///
 /// The resized image.
 fn resize_checked(image: &Image, rows: usize, cols: usize) -> Image {
-    let one = 1_i64 << RESIZE_BITS;
+    let one = 1_i32 << RESIZE_BITS;
     let xs = axis_samples(image.cols, cols);
     let ys = axis_samples(image.rows, rows);
-    let mut across = vec![0_i64; image.rows * cols];
-    for r in 0..image.rows {
-        for (c, x) in xs.iter().enumerate() {
-            across[r * cols + c] = i64::from(image.at(r, x.first)) * (one - x.fraction)
-                + i64::from(image.at(r, x.second)) * x.fraction;
+    // Every sum fits 32 bits: across a row at most 255 * 2^11, down a column 255 * 2^22.
+    let fraction =
+        |sample: &AxisSample| i32::try_from(sample.fraction).expect("an 11-bit fraction");
+    let mut across = vec![0_i32; image.rows * cols];
+    for (row, sums) in image
+        .pixels
+        .chunks_exact(image.cols)
+        .zip(across.chunks_exact_mut(cols))
+    {
+        for (sum, x) in sums.iter_mut().zip(&xs) {
+            let fx = fraction(x);
+            *sum = i32::from(row[x.first]) * (one - fx) + i32::from(row[x.second]) * fx;
         }
     }
+    let shift = 2 * RESIZE_BITS;
+    let half = 1_i32 << (shift - 1);
     let mut out = Image::blank(rows, cols);
-    for (r, y) in ys.iter().enumerate() {
-        for c in 0..cols {
-            let total = across[y.first * cols + c] * (one - y.fraction)
-                + across[y.second * cols + c] * y.fraction;
-            out.pixels[r * cols + c] = round_shift(total, 2 * RESIZE_BITS);
+    for (line, y) in out.pixels.chunks_exact_mut(cols).zip(&ys) {
+        let fy = fraction(y);
+        let top = &across[y.first * cols..(y.first + 1) * cols];
+        let bottom = &across[y.second * cols..(y.second + 1) * cols];
+        for ((pixel, &a), &b) in line.iter_mut().zip(top).zip(bottom) {
+            let total = a * (one - fy) + b * fy;
+            *pixel = u8::try_from((total + half) >> shift).unwrap_or(u8::MAX);
         }
     }
     out
