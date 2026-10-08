@@ -462,3 +462,527 @@ Two things need fixing. The C++ blur's interior pass breaks `std::span::subspan`
 - **Shared pyramid:** `extract_levels`, the `check_pyramid` shape checks and stereo reading the extraction's pyramid all match ORB-SLAM's `ComputeStereoMatches`. Python, C++ and Rust validate alike.
 - **Frame grid:** each `Frame` owns its `FeatureGrid`, built from `features.keypoints` at assembly. Nothing mutates the keypoints afterwards (grep across `cpp/src/edge` and `rust/slamlab-edge/src`).
 - **Verification design:** checking per solve (iterations, termination, chi-square flips), by parity, and over all 100 whole-run decisions is a sound way to accept a change that is no longer bit-identical. The BA fixture covers the hard cases: anchored points whose host observes them ("every kind of block"), confined poses ("partial: rotation priors confine two poses"), fixed poses ("explicit none with two fixed poses") and `intrinsics_std`.
+
+## Run 2 -- 2026-10-08
+
+| | |
+|---|---|
+| **Branch** | `feature/real-time` |
+| **Range** | `aeb6121...50a11bb` (run 1's fixes) |
+| **Reviewers** | hygiene (sonnet), architecture (opus), algorithm (opus) |
+| **How they ran** | registered slamlab-* agents |
+| **Layer 1** | all checks passed (`scripts/check.sh`, exit 0; pytest 3130 passed); budget tests 13 passed |
+
+Every run-1 fix was checked against its resolution; the findings below are new. Findings more
+than one reviewer raised share a row; a row takes its highest severity.
+
+### Findings and resolutions
+
+| ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|---|
+| L13 / A13 / H18 | must-fix | all three | `src/slamlab/eval/budgets.py:420-434` | `mapping_peak_load` divides by the window even on a run shorter than it, so a short run's peak load reads below its whole-run load (and `run_vo.py` prints a false 'would keep up') | fix | fixed (8fa9567): the window is the shorter of `window` and the run, recorded as `Frames.window` -- decided by evan-wes, 2026-10-08 |
+| A12 | should-fix | architecture | `scripts/check.sh:66-70; docs/notes/rust-port.md:227` | layer 1's hardening also hardens the benchmark binary the docs point to: `orb_extract` times 2.9x slower | fix | fixed (52ebcc3): the benchmarks in their own unhardened tree, `build/bench`, built and linted by layer 1 (the owner chose the second tree) -- decided by evan-wes, 2026-10-08 |
+| A14 / H21 | should-fix | architecture, hygiene | `tests/test_backends.py:370-394` | the A2 binding test passes `{}` options, which fail on their own, so it cannot catch `noconvert` dropped; H16's level names untested through the raw bindings | fix | fixed (23f8251) -- decided by evan-wes, 2026-10-08 |
+| A15 / H22 | should-fix | architecture, hygiene | `cpp/include/slamlab/foundations/camera.hpp:37-46` | `intrinsics_size`'s `default:` arm returns 9 for any new model, so C++ loses the compile-time check Rust's exhaustive match keeps | fix | fixed (23f8251) -- decided by evan-wes, 2026-10-08 |
+| A16 | should-fix | architecture | `ladder :581-582; eval/__init__.py:21; runs.hpp:86-90; runs.rs:370-375; vo.hpp:82; vo.rs:701` | docs that still describe the code before A8, A4 and A11 | fix | fixed (8fa9567, e20b5ae) -- decided by evan-wes, 2026-10-08 |
+| H19 / L15 | should-fix | hygiene, algorithm | `src/slamlab/eval/budgets.py:352-380` | `judge` still lets a non-numeric time through: null or a list raise a bare TypeError, a string or bool is taken as a number | fix | fixed (8fa9567) -- decided by evan-wes, 2026-10-08 |
+| H20 (A17, L16) | should-fix | all three | `src/slamlab/eval/budgets.py:106-112,185-192,255-280` | Python's process readers raise on an unreadable file (a run then fails where C++ and Rust write it) and `_cpu_list` reads malformed lists the natives refuse | fix | fixed (8fa9567) -- decided by evan-wes, 2026-10-08 |
+| H23 / L14 | should-fix | hygiene, algorithm | `linalg.rs:603-635; cpp/tests/foundations/test_svd3.cpp:174` | the svd3 golden compares values, not bits (signed zeros pass), and no case reaches the symmetric-block branch | fix | fixed (23f8251): bits compared in C++ and Rust; a symmetric case, the first 20 unchanged -- decided by evan-wes, 2026-10-08 |
+| H24 / H25 (A18) | should-fix | hygiene, architecture | `ladder :622; docs/notes/rust-port.md:46-50` | the ladder's run-format line is 178 columns; the rust-port sentence is garbled by the PR 9 insertion | fix | fixed (e20b5ae) -- decided by evan-wes, 2026-10-08 |
+| H26 | should-fix | hygiene | `src/slamlab/orchestration/vo.py:211-243; scripts/run_vo.py:41-63` | `parse_setting`'s regex and `parse_options` have thin tests | fix | fixed (8fa9567) -- decided by evan-wes, 2026-10-08 |
+| H27 | should-fix | hygiene | `frames.hpp:92-107; frames.cpp:39-52; frames.rs:152-189` | `make_frame` / `Frame::new` have no test of their own, and their docs leave out that sizes are unchecked | fix | fixed (23f8251) -- decided by evan-wes, 2026-10-08 |
+| H28 | should-fix | hygiene | `cpp/tests/orchestration/test_vo.cpp:128-129` | a write hidden inside a C++ test assertion | fix | fixed (8fa9567) -- decided by evan-wes, 2026-10-08 |
+| H29 | should-fix | hygiene | `runs.py:139,310,384; tests/foundations/test_ba.py:475` | `_check_process`'s `name` is a prefix; the fixed-hosts assertion repeats the scene's point count | fix | fixed (8fa9567, 23f8251) -- decided by evan-wes, 2026-10-08 |
+| H30 | note | hygiene | `CHANGELOG.md:77-80` | the panel counts match neither the report's rows nor its IDs | fix | fixed (e20b5ae) -- decided by evan-wes, 2026-10-08 |
+| H31 / L17b | note | hygiene, algorithm | `linalg.rs:170,365,426; so3.rs` | the sweep cap is in the private routine's docs only; untested | fix the docs; waive the test | fixed (23f8251): the public docs name the cap; its test waived: reaching it needs a test-only parameter, and no input does (at most 6 sweeps seen) -- decided by evan-wes, 2026-10-08 |
+| H32 | note | hygiene | `cpp/src/eval/text.cpp` | C++ `text::number` accepts `+-5`, which Rust and Python refuse | fix | fixed (8fa9567) -- decided by evan-wes, 2026-10-08 |
+| H33 | note | hygiene | `image.cpp:340; slamlab-eval/src/budgets.rs:42-82; scripts/run_vo.py` | small asymmetries: the C++ blur guard's form, Rust's two line readers, `--reuse` ignoring other flags | fix | fixed (8fa9567, 23f8251) -- decided by evan-wes, 2026-10-08 |
+| L17a | note | algorithm | `docs/notes/real-time.md:122-125` | the blur 'read past a row'; it formed a span past the row's end and read nothing | fix | fixed (e20b5ae) -- decided by evan-wes, 2026-10-08 |
+
+### Hygiene review
+
+## Hygiene review
+
+**Scope:** `git diff aeb6121...50a11bb` on `feature/real-time` (commits 1915567 through 50a11bb; 65 files). REPO is the repository root. I read the run-1 report and every changed source, test, fixture and doc in context, in Python, C++ and Rust. Read-only probes ran against the built `slamlab_vo` binaries and the `slamlab` env, with scratch files outside the repo. Layer-1 items are not re-reported.
+
+**Summary:** Every run-1 fix in the hygiene lane does what its resolution says, and the new code is generally clean, documented and mirrored across the three languages. The 13 fixes I checked are listed under "Checked and fine". Two fixes are incomplete in small ways (H8 in C++, H17), and two new tests cannot fail for the thing they claim to guard: the raw-binding pyramid test (A2/H16) and the svd3 golden's "bit for bit". The rest are edge-case gaps in the new harness code and a handful of doc and readability slips. I found no must-fix.
+
+### Findings
+
+#### [should-fix] H18: `mapping_peak_load` reports less than the run's mean load on a run shorter than the window
+- **Where:** `src/slamlab/eval/budgets.py:419-434`; `tests/eval/test_budgets.py:185`; `Frames` (`budgets.py:311-349`); `scripts/run_vo.py:155-158`.
+- **Issue:** The window sum is always divided by `window`, even when the run (or the stretch after a late frame) is shorter than the window. The peak over any window then falls below the mean over the whole run, which cannot be right.
+  - The first harness test encodes it: a 1 s run has `mapping_load` 0.300 and `mapping_peak_load` 0.030.
+  - Separately, `Frames` does not record which `window` was used, but `run_vo.py` prints `budgets.WINDOW`, so a caller passing `window=5` gets a mislabelled line.
+  - Nothing says why `WINDOW` is 10 s.
+- **Why it matters:** The harness's whole point for this metric is "below 1 means a mapping thread keeps up". For the budget tests' short room runs it says the opposite of the load beside it, and a reader of the printed line sees "0.30 over the run, 0.09 over its busiest 10 s".
+- **Evidence:** Probe (60 frames at 20 Hz, five 0.18 s mappings): `short run: load 0.3 peak over window 0.09`.
+- **Suggested fix:**
+  - Divide by `min(window, span + deadline)` so the peak is never below the mean.
+  - Store `window` in `Frames`.
+  - Give `WINDOW` one line of reason in its docstring (a burst of keyframes' local BAs against the run's mean).
+  - Change the test's "fits one window" expectation to the mean load.
+
+#### [should-fix] H19: `judge` still raises `ValueError`/`TypeError` for a non-numeric timestamp or step time, not the documented `InvalidInputError`
+- **Where:** `src/slamlab/eval/budgets.py:352-380` (`_times`, `_steps`: `float(d[key])`, with `except KeyError` only).
+- **Issue:** H1's fix handles missing, non-finite and negative values. A `null`, string or list value is outside it. `runs.read_run` only checks that a diagnostic has a `timestamp` key, so `{"timestamp": null}` or a `null` step time reads fine and `judge` then fails with a bare exception.
+- **Why it matters:** `judge`'s docstring promises `InvalidInputError` for what it cannot judge, and the error contract says Python raises the matching `slamlab` exception.
+- **Evidence:** Probe: `timestamp 'x' -> ValueError could not convert string to float: 'x'`, `timestamp None -> TypeError float() argument must be a string or a real number, not 'NoneType'`; `build_seconds` the same.
+- **Suggested fix:** Catch `(KeyError, TypeError, ValueError)` in both helpers and name the frame and key. Add one parametrised case with `None` and `"x"`.
+
+#### [should-fix] H20: the Python process readers raise on any unreadable file, and `main` now turns that into a failed run; C++ and Rust return nothing
+- **Where:** `src/slamlab/eval/budgets.py:185-192` (`_status_lines`: `except FileNotFoundError`) and `:255-280` (`memory_cap`: `except (FileNotFoundError, NotADirectoryError, StopIteration)`); `src/slamlab/orchestration/vo.py` `main` (`except OSError` from H2).
+- **Issue:** The docstrings say "None where the system does not say". C++ (`std::ifstream` failing) and Rust (`.ok()?`) honour that for any failure. Python honours it only for a missing file.
+- **Why it matters:** H2's fix made `main` catch `OSError` as a failed run (exit 3). A `PermissionError` on `/sys/fs/cgroup/.../memory.max` (a sandbox or container) now fails an otherwise good Python run, where the same run succeeds in C++ and Rust.
+- **Evidence:** Probe with a `memory.max` of mode 000: `memory_cap raised PermissionError [Errno 13] Permission denied: '.../memory.max'`.
+- **Suggested fix:** Catch `OSError` in `_status_lines` and `memory_cap`. Add a test with an unreadable file. Have `_status_lines` return `[]` rather than `None` (callers write `or []`).
+
+#### [should-fix] H21: the raw-binding pyramid test cannot detect A2 or H16, the fixes it covers
+- **Where:** `tests/test_backends.py:370-394` (`test_compiled_pyramid_bindings_refuse_unconverted_levels`); `tests/foundations/test_orb.py:156`.
+- **Issue:** The test passes `{}` as the options and accepts `(TypeError, ValueError)`. The raw bindings reject `{}` with a `ValueError` whatever the levels are, so the call raises even if `.noconvert()` were removed.
+  - For Rust's `stereo.match` with strided levels, the error comes from the options, not the levels.
+  - Separately, the new level-naming messages in C++ and Rust `check_pyramid` (H16) have no test. The only `levels\[1\]` assertion (`test_orb.py:156`) goes through Python's `as_pyramid`, which validates before dispatch.
+- **Why it matters:** Both fixes were accepted on the strength of a test that passes without them. I did not rebuild without `.noconvert()`; this follows from the probe below.
+- **Evidence:** `cpp orb good levels, {} options -> ValueError options: missing field n_features`, and `rust stereo strided -> ValueError options: missing field max_distance`. With real options (`asdict(orb.Options(levels=2, scale_factor=1.25))`) the refusals are right: cpp `TypeError` for int64, float64 and strided; rust `TypeError` for int64 and float64, `ValueError` for strided. `levels[1]: sides must be from 1 to 1048576, got 0x8` comes from both compiled cores.
+- **Suggested fix:** Pass real options. Assert `TypeError` (and the message for Rust's strided `ValueError`). Add a raw-binding case with a malformed level 1 expecting `levels[1]`.
+
+#### [should-fix] H22: C++ `intrinsics_size` returns radtan's 9 for any unlisted model, so H8's bound can still go stale silently in C++
+- **Where:** `cpp/include/slamlab/foundations/camera.hpp:36-55`.
+- **Issue:** The switch lists `kPinhole` and `kRadial` and uses `default: return 9`. A fourth model would compile and report 9. `kMaxIntrinsicsSize`, and through it `kMaxBlockColumns`, would not grow if the new model had more intrinsics, which is the release-build overflow H8 was about. Rust's `intrinsics_len` is an exhaustive `match`, so a new model fails to build there. The `kCount` comment promises "an enumerator added without its name fails to build", which this switch breaks.
+- **Suggested fix:** Name `kRadTan` explicitly and handle `kCount` in its own case, with no `default`, so `-Wswitch` flags a new enumerator.
+
+#### [should-fix] H23: the svd3 golden says "bit for bit" but compares with `==`, which equates +0.0 and -0.0
+- **Where:** `rust/slamlab-foundations/src/linalg.rs:598-635` (`svd3_gives_eigens_factors_bit_for_bit`, `assert_eq!` on `Matrix3`/`Vector3` of `f64`); `cpp/tests/foundations/test_svd3.cpp` `run()` (`u == ...`); the same wording in the CHANGELOG and the note.
+- **Issue:** The fixture holds 19 negative zeros (`tests/fixtures/foundations/svd3.json:439`, `:481`, `:514`, ...). Float equality cannot tell a port that produces +0.0 from Eigen's -0.0. Run 1's H5 asked for the bit patterns.
+- **Why it matters:** The claim and the test name are stronger than the check. The note's lesson ("port the algorithm, not just the contract") is about exactly this level of agreement.
+- **Suggested fix:** Compare `to_bits()` per element in Rust and `std::bit_cast<std::uint64_t>` in C++. Both parsers keep `-0.0`. If Rust turns out to differ only in zero signs, decide whether that matters, or reword the claims to "equal". The owner should run the stricter test, since I could not (`linalg` is crate-private).
+
+#### [should-fix] H24: H17 is not resolved for the ladder's run-format bullet; the line is now 178 columns
+- **Where:** `docs/design/2026-10-02-slamlab-ladder.md:622`.
+- **Issue:** The edit rewrote the bullet but left `trajectory.txt ... one object per frame.` on one line (178 columns; the original was about 124).
+- **Suggested fix:** Reflow to about 100 columns. The rest of that bullet is already wrapped.
+
+#### [should-fix] H25: the `rust-port.md` sentence is garbled by the PR 9 insertion
+- **Where:** `docs/notes/rust-port.md:46-50`.
+- **Issue:** The new text sits between "faer" and its own parenthetical, giving "calls faer (since PR 9, the 3x3 SVDs run a port ... [the real-time note](real-time.md)) (a pure-Rust library benchmarked against LAPACK): its low-level routines...". The lines are also ragged. A reader cannot tell what "its" refers to.
+- **Suggested fix:** Keep "faer (a pure-Rust library benchmarked against LAPACK)" intact. Add the 3x3 exception as its own sentence after the colon clause.
+
+#### [should-fix] H26: the new `parse_setting` regex and `scripts/run_vo.py` `parse_options` have thin tests
+- **Where:** `src/slamlab/orchestration/vo.py:211-243`; `tests/orchestration/test_vo.py:216-238`; `scripts/run_vo.py:41-63`.
+- **Issue:** H11 and A10 replaced the clever `float(...)` trick with `_DECIMAL`. The tests cover `35.5`, `inf` and `3_5` only. They do not cover `+0.5`, `.5`, `5.`, `1e5`, `1e`, `nan`, or `1e999` (the overflow the in-code comment names). `parse_options`, now the script's only reader of the flag, has no test at all.
+- **Evidence:** My probe of Python's rule against both native programs over 24 strings agreed everywhere except C++'s `+-5` (see H32). So the code is right; it is unguarded.
+- **Suggested fix:** Add one parametrised accept/refuse list for `parse_setting`, and a two-case test of `parse_options` (a good pair, and a refusal turned into `SystemExit`).
+
+#### [should-fix] H27: `edge::make_frame` / `Frame::new` have no test of their own, and their docs leave out that sizes are unchecked
+- **Where:** `cpp/include/slamlab/edge/frames.hpp:92-107`, `cpp/src/edge/frames.cpp:39-52`; `rust/slamlab-edge/src/frames.rs:152-189`.
+- **Issue:** Every producer now goes through the constructor (I grepped: no `.grid =` or `grid:` literal is left outside it). But nothing asserts that the grid equals `FeatureGrid::build(keypoints)`, or that a non-finite keypoint gives the documented `InvalidInput`. The docs do not say the constructor does not check that `bearings`, `depth` and `right` match the keypoint count; `check_frame` does, later.
+- **Suggested fix:** Add a small native test in each language: the non-finite error, and a frame whose grid agrees with a fresh build. Add one sentence to the docs.
+
+#### [should-fix] H28: a side effect hidden inside a C++ test assertion
+- **Where:** `cpp/tests/orchestration/test_vo.cpp:128-129`.
+- **Issue:** `expect(!fs::exists(out / "run.json") && empty.has_value() && write_run(request.out, *empty).has_value(), "the run is the program's to write", ...)`. The write is a side effect inside the condition, and the next assertion ("it writes the run folder") depends on it. Rust's version of the same test is three plain statements.
+- **Suggested fix:** Assert the absence, write, then assert the write succeeded, as Rust's does.
+
+#### [should-fix] H29: small naming and clarity slips in the new Python code and tests
+- **Where:**
+  - `src/slamlab/eval/runs.py:139` and `:310`, `:384`.
+  - `tests/foundations/test_ba.py:475`.
+- **Issue:**
+  - `_check_process(..., name)`: `name` is a message prefix (`""` or `f"{path}: "`), not a name, so `_check_process(..., "")` reads oddly. Call it `prefix` or `where`.
+  - The fixed-hosts assertion `point_anchor[...] < 50  # camera 0's` repeats the scene's `points=50`, and relies on observations being camera-major. `point_anchor` holds observation indices, so state it directly: `problem.cam_idx[problem.point_anchor[anchored]] == 0`.
+- **Suggested fix:** Rename the parameter, and use `cam_idx` in the assertion.
+
+#### [note] H30: the CHANGELOG's panel counts match neither the report's rows nor its IDs
+- **Where:** `CHANGELOG.md:77-80` ("3 must-fix, 23 should-fix and 12 notes").
+- **Evidence:** The report's table has 3 / 20 / 11 rows (34, as commit 50a11bb says) and 4 / 24 / 12 distinct IDs (40). 23 is neither 20 nor 24.
+- **Suggested fix:** Use 3 / 20 / 11 (34 findings), or the ID counts.
+
+#### [note] H31: the new sweep cap is untested, and the public docs of `svd3` and its callers do not mention it
+- **Where:** `rust/slamlab-foundations/src/linalg.rs:170, 365`; the public `svd3`, `singular_values3` docs; `so3.rs` `project_to_so3`.
+- **Issue:** Only the private `jacobi_svd3` says `None` can now also mean "not diagonalised within `MAX_SWEEPS`". The public docs and `project_to_so3` ("NaN for a non-finite matrix") still describe `None` as non-finite only. No test reaches the cap; a `max_sweeps` argument on the private routine would make it testable.
+- **Suggested fix:** Add the phrase to the public docs, and consider the small refactor above.
+
+#### [note] H32: C++ `text::number` accepts `+-5`; Python's new rule says it reads "as the native programs read one"
+- **Where:** `cpp/src/eval/text.cpp` `number` (strips one `+`, then parses); `src/slamlab/orchestration/vo.py:211`.
+- **Evidence:** `slamlab_vo --option close_depth=+-5` is accepted (exit 3, out of range) by the C++ program and refused as usage (exit 2) by the Rust program and by Python's rule. The C++ trim is also ASCII-only, where Rust's and Python's are Unicode. It predates this diff.
+- **Suggested fix:** Refuse a second sign in C++ `number`, or narrow the Python comment to say where the readers differ.
+
+#### [note] H33: other small asymmetries
+- **Where:**
+  - `cpp/src/foundations/image.cpp:340`: the blur guard is `for (...; last > first && k < taps; ...)`, while Rust's is an `if last > first { for ... }` (`image.rs:522`). The Rust form says it more directly.
+  - `rust/slamlab-eval/src/budgets.rs:42-56` (`peak_in`) and `:72-82` (`cpus_in`) each split lines into words. Python and C++ share one helper since 3926048.
+  - `scripts/run_vo.py`: H12 made `--budget` with `--reuse` an error, but `--first`, `--count`, `--option` and `--backend` are still silently ignored with `--reuse` (run 1's issue text named them).
+
+### Checked and fine
+- **H1/A1:** `Budget.__post_init__`, `_times`, `_steps` and the `window` check refuse what they claim, and tests assert the message for each case (bool and float cores included).
+- **H2:** `except OSError` in `main`. The new test runs every backend's program on a missing image and an unwritable `--out`, and checks exit 3, the prefix and the file name.
+- **H3:** The peak-memory test now measures in a child process (`GROW`), asserts a rise of at least 60 MiB, and can fail.
+- **H4:** The three new blur fixture cases (12-bit white, 13-bit noise, 15-bit white) hit both vertical widths. I rechecked the 32-bit bound: 255·2^24 plus half is below 2^32.
+- **H6:** The parity test now runs again with fixed hosts. Its docstring states the structure; the assertion's form is in H29.
+- **H7:** The ladder, note and CHANGELOG now agree on 0.52 and 0.92.
+- **H8, Rust:** Rust derives `MAX_INTRINSICS` from `Model::ALL` in a const loop. C++ derives it via `kMaxIntrinsicsSize` (see H22 for the gap).
+- **H9:** The Rust `byte` helper and `AxisSample.fraction: i32` remove the `expect` and the silent saturation. `debug_assert!` plus a documented cast replace them, and the unused trait bound is gone.
+- **H10:** The upper triangle is accumulated and mirrored once per linearisation (C++ `triangularView<StrictlyLower>`, Rust `fill_lower_triangle_with_upper_triangle`). `CouplingLayout.max_rows` sizes `weighted`, and `kept_reduction_.rebased(basis)` avoids recomputing `kept()`. The code comments say what is mirrored and why. The mirror's aliasing is safe: the strict lower triangle is written from the upper, which is never written.
+- **H11:** `_DECIMAL`, one parse per flag, `after_read`/`after_build`, and `read_seconds`/`build_seconds` in the C++ and Rust `record`. I compared the regex against the C++ and Rust programs over 24 strings (see H32 for the one difference).
+- **H12:** `--budget` with `--reuse` is a parser error, and a missing peak prints "not recorded".
+- **H13, H14, H15, H16:** The comments say "once round plus an arc". `Frames.mapped` is documented as excluding the initialising keyframe. The Rust sweep cap is in (see H31). The check_pyramid messages name the level (see H21 for the missing test).
+- **A3, A8, A10, A11:** `runs.STEPS` is documented in the Python, C++ and Rust run modules. `cpus` and `memory_cap` are validated on write in all three languages, with a parity test per language (empty, descending, duplicate, negative, zero). The golden folder and `run_values.json` match. `parse_setting` is the one reader of the flag. Process recording sits in each program's `main`, and native `vo::run` returns the run unwritten, with tests in both languages.
+- **Readers:** the `cpus` and `memory_cap` readers agree across languages on malformed input (`7-4`, `f0`, `max`, a `1:` cgroup line, a missing file), each tested.
+- **L1/H4:** The C++ blur guard is correct for every width and radius. Layer 1 now builds with `-D_GLIBCXX_ASSERTIONS`, and the comment in `check.sh` says why.
+- **Frame construction:** All producers route through `make_frame`/`Frame::new`: the builders, both bindings and every test scene.
+- **Hygiene:** no debug prints, TODOs or hard-coded paths. Test temp dirs follow the crate's existing `temp_dir()` pattern. There are no rig-bag specifics in the diff, and CHANGELOG sections follow earlier entries.
+
+Housekeeping: I wrote probe scripts and a `cg/` fixture under the session scratchpad only. Importing `slamlab` in the env ran the editable install's no-op rebuild into the git-ignored `build/`, and `git status` stayed clean.
+
+### Architecture review
+
+## Architecture review
+
+**Scope:** Run 2 of PR 9 ("Budgets and real time"): the fixes, `git diff aeb6121...50a11bb`. That is 9 commits and 65 files, checked out on `feature/real-time` at 50a11bb. I checked each run-1 architecture finding (A1-A11) against its recorded resolution. I also read the structure the fixes added, in all three languages:
+- the process readers and run format v2's `cpus`/`memory_cap`;
+- the native `main`s that now record the process and write the run;
+- `runs.STEPS` and `judge`'s window;
+- `make_frame`/`Frame::new`;
+- `camera::intrinsics_size`;
+- the svd3 golden;
+- the hardened `check.sh`;
+- the ladder, CLAUDE.md, the notes and the CHANGELOG.
+
+To get evidence I ran:
+- read-only probes in the `slamlab` env;
+- one unhardened build of the C++ benchmark, in the session scratchpad (`/tmp/scratch/native_plain`, outside the repo).
+
+**Summary:** The fixes keep the dependency direction and the three-language lock-step:
+- the process readers sit in eval in all three languages;
+- the three programs' `main`s now do the same thing: run, record, write;
+- the new public items are on the right rung (`camera::kMaxIntrinsicsSize` in rung 0, `make_frame` in the edge rung).
+
+A1, A3, A7, A8, A9, A10 and A11 do what their resolutions say. Problems remain in A2, A4, A5's surroundings and A6:
+- the hardening flag added for L1 now also applies to the documented benchmark binary, which times ORB 2.9 times slower;
+- `mapping_peak_load` reads below the whole-run load on short runs;
+- A2's regression test cannot fail;
+- C++'s `intrinsics_size` gives up the compile-time check that Rust's version has;
+- a few docs still describe the code before A8, A4 and A11.
+
+No must-fix.
+
+### Findings
+
+#### [should-fix] A12: Layer 1's hardening flag also hardens the documented benchmark binary, which now times ORB 2.9 times slower
+- **Where:** `scripts/check.sh:66-70` (`-DSLAMLAB_BUILD_BENCHMARKS=ON` and `-DCMAKE_CXX_FLAGS=-D_GLIBCXX_ASSERTIONS` in one tree, `build/native`); `docs/notes/rust-port.md:227` (`build/native/bench/foundations_bench_foundations`, the documented way to run the benchmarks).
+- **Issue:** L1's fix hardens the whole `build/native` tree, and the native benchmarks are built in that same tree.
+  - After any layer-1 run, the benchmark binary the docs point to is compiled with libstdc++'s bounds checks on every span, vector and array access.
+  - The hot loops this PR made fast are written over spans.
+  - The test-only setting reaches a measurement tool, and nothing in the binary's output says so.
+- **Why it matters:** This PR is about speed. A developer who follows the documented command after `check.sh` gets timings about three times too slow for code built over spans. Those timings disagree with the shipped program (built by scikit-build, unhardened) and with Rust's criterion benches.
+- **Evidence:**
+  - `build/native/CMakeCache.txt`: `CMAKE_CXX_FLAGS:STRING=-D_GLIBCXX_ASSERTIONS`.
+  - Same commit, both runs pinned to CPU 7, 5 repetitions, medians:
+
+    | Benchmark | `build/native` (hardened) | Scratch tree, no define |
+    |---|---|---|
+    | `orb_extract` | 32.0 ms | 11.2 ms |
+    | `so3_exp` | 14.7 ns | 15.0 ns |
+    | `project_radtan` | 12.0 ns | 12.4 ns |
+
+    Only the code built over spans and containers pays.
+- **Suggested fix:** Keep the hardening for tests only. Either:
+  - configure the benchmarks in a second, unhardened tree (e.g. `build/bench`, with clang-tidy run over both compile databases) and point `rust-port.md` there; or
+  - make the hardening an explicit CMake option (`SLAMLAB_HARDENED`) and have each benchmark report it (`benchmark::AddCustomContext`) or refuse to configure benchmarks with it.
+
+  Either way, say in CLAUDE.md's benchmark bullet which tree to time from.
+
+#### [should-fix] A13: `mapping_peak_load` reads below the whole-run load on any run shorter than the window (A4's fix)
+- **Where:** `src/slamlab/eval/budgets.py:420-434`; the test pins the behaviour at `tests/eval/test_budgets.py:185`.
+- **Issue:** Each window's mapping time is divided by `window` (10 s) even when the run is shorter, so a short run's "busiest window" is diluted.
+  - The field is documented as the busiest stretch, and `run_vo.py` prints it next to the whole-run load as the stricter figure.
+  - On a run shorter than the window it is the smaller one.
+  - On long runs it matches the out-of-repo script that produced the note's numbers (`budget_mapping.py:44-47`, same definition), so the published figures stand.
+- **Why it matters:**
+  - The summary contradicts itself ("load 0.57 over the run, 0.17 over its busiest 10 s").
+  - Any short run, such as a `--count 90`, looks safer at its peak than on average.
+  - The test suite enshrines this: `mapping_load == 0.3` while `mapping_peak_load == 0.03` ("the run fits one window").
+- **Evidence:** A probe with `budgets.judge` on synthetic runs at 30 Hz, a keyframe every 5th frame mapped in 0.1 s:
+  - 3 s run: `load 0.57, peak 0.17`;
+  - 30 s run: `load 0.60, peak 0.61`.
+- **Suggested fix:** Use `w = min(window, times[-1] - times[0] + deadline)` as the window and denominator, so a run shorter than the window has peak == whole-run load. Longer runs are unchanged. Update line 185's expectation, and state the rule in the `Frames` docstring. The algorithm reviewer may want to confirm the definition.
+
+#### [should-fix] A14: A2's regression test passes whether or not the C++ bindings refuse the levels
+- **Where:** `tests/test_backends.py:380-393` (`orb.extract_levels(levels, {})`, `stereo.match(levels, levels, {}, {}, 1.0, 0.1, {})`, `pytest.raises((TypeError, ValueError))`).
+- **Issue:** Both calls pass empty options, and empty options alone raise `ValueError` in both modules.
+  - Without `.noconvert()`, nanobind would convert the int64, float64 or strided level as it did at aeb6121.
+  - The body would then fail on the options with `ValueError`, which the test accepts.
+  - The test therefore cannot fail on the code A2 fixed.
+- **Why it matters:** A2's fix is correct today; I checked it with valid options. But nothing would catch the flag being dropped when the binding is next edited. The test's docstring claims the guard.
+- **Evidence:** With valid uint8 levels and `{}` options:
+  - `cpp orb ... ValueError options: missing field 'n_features' of orb.Options`;
+  - `cpp stereo ... ValueError options: missing field 'max_distance'`;
+  - Rust gives the same.
+
+  With valid options (`dataclasses.asdict(orb.Options())`), C++ now raises `TypeError: extract_levels(): incompatible function arguments` for the int64, float64 and strided levels. So the fix works; the test does not hold it.
+- **Suggested fix:** Pass valid options, and for `stereo.match` valid features (e.g. from an `extract_levels` call on good levels), so the level is the only thing that can be refused. Keep `(TypeError, ValueError)`, since Rust refuses a strided array with `ValueError`.
+
+#### [should-fix] A15: C++'s `intrinsics_size` has a `default:` arm, so a new model still compiles silently (A6 only partly fixed)
+- **Where:** `cpp/include/slamlab/foundations/camera.hpp:37-46`.
+- **Issue:** The switch lists pinhole and radial, and returns radtan's 9 under `default:`.
+  - That arm also catches `kCount`, although the doc says "(not `kCount`)".
+  - It also catches any model added later, so GCC's `-Wswitch` (on through `-Wall`) cannot warn.
+  - Rust's `intrinsics_len` is an exhaustive `match`, and `name(Model)` in `camera.cpp:108-119` lists every enumerator, `kCount` included, for this reason.
+- **Why it matters:** A6 asked that a larger model be caught at build time. In C++ it is now caught only at run time: `check_intrinsics` refuses the new model's own intrinsics as the wrong length. Rust catches it at compile time. The two languages again fail differently on the same change.
+- **Suggested fix:**
+
+  ```cpp
+  case Model::kRadTan: return 9;
+  case Model::kCount: break;
+  }
+  return 0;
+  ```
+
+  This is the pattern `name()` uses. `kMaxIntrinsicsSize` already excludes `kCount`.
+
+#### [should-fix] A16: Docs still describe the code before A8, A4 and A11
+- **Where and what (change the docs; the code is right):**
+  - **Ladder** `docs/design/2026-10-02-slamlab-ladder.md:581-582`, the harness's "As built" bullet: "mapping ... is judged by its load. Each program records its own peak memory." It now records CPUs and memory cap too (A8), and mapping is also judged over its busiest window (A4). The design doc is the authority on the harness.
+  - **`src/slamlab/eval/__init__.py:21`:** "compute budgets: a program's peak memory, and (PR 9) running it within a budget". The "(PR 9)" reads as future, and it omits `allowed_cpus`/`memory_cap`.
+  - **`cpp/include/slamlab/eval/runs.hpp:86-90`** (`write_run`'s `@return`) and **`rust/slamlab-eval/src/runs.rs:370-375`** (`# Errors`): neither lists the new refusals (CPUs empty or not ascending, a memory cap of 0). Python's `write_run` does.
+  - **`cpp/include/slamlab/orchestration/vo.hpp:82`** and **`rust/slamlab-orchestration/src/vo.rs:701`:** "Run a sequence through the pipeline (`slamlab.orchestration.vo.run`): the run, not yet written." Python's `vo.run` writes the folder and reads it back, for any backend. After A11 the native function mirrors Python's `_run_here`, and the program `main`s mirror `vo.main`.
+- **Why it matters:** These cross-references are how a reader checks the lock-step. Two of them now point at a different contract.
+- **Suggested fix:** Update the four places as listed. For the last, say "the run of `slamlab.orchestration.vo`'s pipeline, as Python's program builds it before writing (`vo.main`)".
+
+#### [note] A17: Python's process readers fail the run on I/O errors the native readers ignore
+- **Where:** `src/slamlab/eval/budgets.py:189` (`_status_lines`: only `FileNotFoundError`), `:278` (`memory_cap`: `FileNotFoundError`, `NotADirectoryError`, `StopIteration`); against `cpp/src/eval/budgets.cpp` (a failed `std::ifstream` gives nothing) and `rust/slamlab-eval/src/budgets.rs` (`.ok()?`).
+- **Issue:** Any other `OSError`, for example a `PermissionError` on `memory.max`, propagates from Python's reader. Since H2, Python's `main` catches `OSError`, so the run fails with exit 3. C++ and Rust record null and write the run.
+- **Why it matters:** The readers' docstrings promise None "where the system does not say" in every language. On standard Linux these files are world-readable, so this is latent.
+- **Suggested fix:** Catch `OSError` in both Python readers.
+
+#### [note] A18: Two prose regressions in the fixes' docs (hygiene's lane)
+- `docs/design/2026-10-02-slamlab-ladder.md:622` is now 174 columns; it was 123 at aeb6121. H17 was about this bullet, and its fix made the line longer.
+- `docs/notes/rust-port.md:47-50` now has two parentheticals in a row, so "(a pure-Rust library benchmarked against LAPACK)" reads as describing the real-time note rather than faer.
+
+### Checked and fine
+- **A1:** `Budget.__post_init__` refuses an empty name, and cores or memory that are not a positive int (bool excluded), with `InvalidInputError`; it is parametrised-tested. `cpus` still refuses a budget larger than the machine.
+- **A2 (the fix itself):** `.noconvert()` on `levels`, `left_levels` and `right_levels` reaches the elements. C++ now raises `TypeError` for int64, float64 and strided levels, as Rust does.
+- **A3:** `runs.STEPS` is the one Python name, documented in `runs.py`. It is cross-referenced on `Run::diagnostics` in `runs.hpp` and `runs.rs`, and in the orchestration docstring.
+  - `judge` reads it, and states that it judges the edge pipeline's split.
+  - The orchestration test uses it rather than its own copy.
+  - Steps stay optional in the format and are required only by `judge`, which is the right layering.
+- **A4 (beyond A13):** `judge(window=WINDOW)` is keyword-only and validated; `Frames.mapping_peak_load` is printed by `run_vo.py`. The definition matches the script behind the note's numbers, so they can now be reproduced in the repo.
+- **A5:** The golden is written by Eigen itself (`foundations_test_svd3 --regenerate`, which exists at the documented path).
+  - It is held in C++ (nlohmann, `strtod`) and in Rust; serde_json has `float_roundtrip` on, so the decimals parse exactly.
+  - Its provenance is stated in the fixture's `description`, the test's `@file`, the note and the CHANGELOG.
+  - The C++ test fails on an Eigen upgrade; the Rust test fails if the port drifts.
+  - Python is rightly not held to it, since numpy's LAPACK SVD is not Eigen's.
+  - `MAX_SWEEPS` turns a non-termination into `None`.
+- **A6 (beyond A15):** both block bounds are now derived from the camera models and the pose dimension (`kPoseDim`, `POSE_DIM`); `check_intrinsics` uses `intrinsics_size`. The public `kMaxIntrinsicsSize` belongs in rung 0's camera, which owns the fact.
+- **A7:** `edge::make_frame` and `Frame::new` are used by `assemble`, both bindings' `frame_in` and every C++ and Rust test helper.
+  - The remaining Rust struct-update literals (`Frame { timestamp, ..frame_at(..) }`) change only the timestamp, so the grid stays valid.
+  - The bindings again only convert types.
+- **A8:**
+  - **Recorded:** `cpus` (affinity) and `memory_cap` (the cgroup's `memory.max`) are recorded by each program.
+  - **Validated:** on write in all three languages, and on read in Python.
+  - **Golden and version:** the golden folder and `run_values.json` are regenerated. The version stays 2, which is correct because v2 is new in this unmerged PR, so no shim is needed.
+  - **Tests:** the budget tests assert `cpus == budgets.cpus(budget)` and `memory_cap == budget.memory`.
+  - **Readers alike:** the three readers parse CPU lists the same way (deduplicated, ascending) and resolve the cgroup path the same way, including a namespaced `0::/`.
+- **A9:** every item listed in run 1 is corrected: the sequence-set wording, faer/Jacobi in the ladder and rust-port, the BA scope, the Rust-subset rows in the ladder and CLAUDE.md, the pyproject marker, and the orchestration docstring.
+- **A10:** `run_vo.py` reads `--option` through `vo.parse_setting`, so the script's and the programs' rules agree.
+- **A11:** the native `vo::run` returns the run unwritten. The C++, Rust and Python `main`s each record the peak, CPUs and cap, then write, in the same order. The native in-process tests no longer record the test process's peak.
+- **Dependency direction:**
+  - the app (`slamlab_vo.cpp`) and the Rust binary use `eval::budgets` and `eval::runs`, which orchestration already depends on;
+  - no rung includes eval;
+  - `backends` is untouched;
+  - nothing references reifyscene;
+  - `check_layers.py` and import-linter pass, per layer 1.
+- **BA internals (H10's restructuring):** mirrored structurally in C++ and Rust (`Reduction::rebased`, `CouplingLayout::max_rows`, a per-problem kept reduction) and kept private (`detail`, `mod schur`).
+- **No side effects:** no import-time side effects or hidden state. `/proc` and `/sys` paths are explicit parameters with defaults in all three languages.
+- **Ladder's new blocks:** "Found while building PR 9" (the mapping thread, moved out of PR 8's panel block, where it did not belong) and "Deferred from PR 9's review panel" (L8, L12, L10) match the report's resolutions.
+- **No new dependencies:** none in any language.
+- **Privacy:** only generic values in the fixtures (CPUs 4-7, 8 GiB); no rig specifics.
+
+Housekeeping: importing `slamlab` triggered the editable install's no-op rebuild into the git-ignored `build/`. The unhardened benchmark build for A12 lives only in the session scratchpad. `git status` is clean at 50a11bb on `feature/real-time`.
+
+### Algorithm review
+
+## Algorithm review
+
+**Scope:** Run 2 of PR 9, the fixes `git diff aeb6121...50a11bb` on `feature/real-time` (65 files). REPO is the repository root. I checked them against run 1's report (`docs/reviews/2026-10-08-feature-real-time.md`) and `docs/notes/real-time.md`.
+
+Read in full:
+- `src/slamlab/eval/budgets.py`, `src/slamlab/eval/runs.py`;
+- the C++ and Rust `eval::budgets` and run writers;
+- the C++ blur (`cpp/src/foundations/image.cpp`), and Rust's `byte` and `AxisSample` (`rust/slamlab-foundations/src/image.rs`);
+- the BA changes: `bundle.cpp`, `schur.hpp`, `common.hpp`, `camera.hpp`, `bundle.rs`, `schur.rs`;
+- `linalg.rs`, `cpp/tests/foundations/test_svd3.cpp`, `tests/fixtures/foundations/svd3.json`;
+- the new tests.
+
+Experiments ran in the session scratchpad:
+- a build with libstdc++ and Eigen assertions on;
+- a scratch `_cpp` with the BA mirror removed, plus a control build with it;
+- an instrumented port of the SVD, against Eigen;
+- probes of `judge` and the process readers.
+
+`git status` was clean before and after. I saved two reusable probes to a private scripts folder (`svd3_golden_coverage.py`, `eigen_svd3_symmetric.cpp`) and removed my scratch builds.
+
+**Summary:**
+- **Run-1 fixes:** every fix in my lane is correct, and every numerical fix I was asked to check is correct and complete, with two exceptions noted below.
+  - The C++ blur guard (L1) is right.
+  - The upper-triangle accumulation with its mirror (H10) is right, repeated columns included, and a test holds it: removing the mirror fails a parity fixture.
+  - The derived block bounds (H8/A6/L5) are right.
+  - The sweep cap (H15/L6) is right.
+  - `Reduction::rebased` and `max_rows` are right.
+- **One must-fix in the new code:** `mapping_peak_load` divides by the window even when the run is shorter than the window. A short run's "busiest window" then comes out below its whole-run load, and `run_vo.py` prints a false "would keep up".
+- **The two exceptions (should-fix):** the SVD golden compares values rather than bits and never reaches the symmetric-block branch; `judge` still lets non-numeric times through.
+- **Notes:** two.
+
+### Findings
+
+#### [must-fix] L13: `mapping_peak_load` divides by the window even when the run is shorter, so a short run's peak load is below its whole-run load
+- **Where:**
+  - `src/slamlab/eval/budgets.py:420-434` (`windows`; `mapping_peak_load=float(np.max(windows) / window)`).
+  - The diluted value is held by `tests/eval/test_budgets.py:185` (`0.300 / 10.0  # the run fits one window`).
+  - It is printed by `scripts/run_vo.py:154-158`.
+- **Issue:**
+  - Each window sums the mapping time of the frames in [t_i, t_i + W) and divides by W.
+  - When the run covers less than W (its span plus one period), every window runs past the run's end. The load is then diluted by a factor of (run length / W), with no bound.
+  - So `mapping_peak_load` can fall far below `mapping_load` for the same run. The docstring's meaning ("below 1, a mapping thread of its own would keep up there too") then does not hold.
+- **Why it matters:**
+  - `run_vo.py` prints this figure for every run of two or more frames, followed by "(below 1, a mapping thread would keep up)".
+  - Runs shorter than 10 s are routine: `--count`, short TUM runs, the synthetic room. For them the printed verdict can be false.
+  - The note's published figures are not affected. Every sequence in its table is longer than 10 s, and the formula is identical to the one in the script that produced them (`budget_mapping.py`).
+- **Evidence:** a probe on runs built like `_timed_run`, at 20 Hz:
+  ```
+  2-s run (40 frames), 10 keyframes x 0.3 s mapped:  mapping_load 1.5   mapping_peak_load 0.3
+  ```
+  The existing test's run (1 s, 0.3 s mapped) has `mapping_load` 0.30 and pins `mapping_peak_load` at 0.03.
+- **Suggested fix:**
+  - Use `width = min(window, times[-1] - times[0] + deadline)`, the time the run covers, and divide by `width`. A run shorter than the window then reports its whole-run load.
+  - Change the assertion at `test_budgets.py:185` to expect `mapping_load`.
+  - Add a short-run case whose load exceeds 1.
+  - Optionally record the width actually used, so that `run_vo.py` does not label a 2-s run "busiest 10 s".
+
+#### [should-fix] L14: The svd3 golden checks values, not bits, and no case reaches the symmetric-block branch
+- **Where:**
+  - `rust/slamlab-foundations/src/linalg.rs:603-635` (`assert_eq!` on nalgebra matrices).
+  - `cpp/tests/foundations/test_svd3.cpp:174` (Eigen `==`), and its `matrices()`.
+  - The branch never reached: `linalg.rs:310` (`skew.abs() < f64::MIN_POSITIVE`). It mirrors `abs(d) < min()` in Eigen's `real_2x2_jacobi_svd`.
+- **Issue:**
+  1. **Signed zeros:** both tests compare with `==`, which treats -0.0 and +0.0 as equal.
+     - The fixture's U holds 13 negative zeros in five cases (`a reflection`, `rank 1`, `diagonal, one negative`, `a permutation`, `minus identity`), where a sign is moved into U.
+     - A port that wrote +0.0 there would pass, yet the test is named "bit for bit" and the note says the golden holds the port to the bit.
+     - The project's exact-fixture policy compares the sign of zeros. Downstream, the sign of a zero is visible through `atan2` and `signum`.
+  2. **Symmetric blocks:** no golden matrix reaches the branch for an exactly symmetric 2x2 block, where the symmetrising rotation is the identity.
+     - Symmetric inputs are not exotic. Umeyama's cross-covariance is symmetric when the two point sets coincide, for example when a perfect trajectory is aligned to itself.
+- **Why it matters:** the golden exists so that an edit to the port, or an Eigen upgrade, cannot change the bits unnoticed. Neither of these two changes would be seen today.
+- **Evidence:**
+  - I ported `jacobi_svd3` line by line to Python, with a counter on each branch (`svd3_golden_coverage.py`).
+    - It reproduces all 20 golden cases bitwise. It compares packed bytes, so signed zeros are included.
+    - It reports `branches never reached: ['sym_identity']`.
+  - I generated 3,000 symmetric matrices (AᵀA, A+Aᵀ, covariances) and solved them with Eigen 5.0.1-dev's `JacobiSVD` (`eigen_svd3_symmetric.cpp`, `-ffp-contract=off`).
+    - The symmetric branch runs 7,964 times.
+    - Every factor from the port matches Eigen's bit for bit.
+  - So the algorithm is right; only the pin is missing.
+- **Suggested fix:**
+  - Compare bits: `to_bits()` in Rust, and `std::bit_cast<std::uint64_t>` (or `memcmp`) in C++.
+  - Add one symmetric case, such as a covariance, and regenerate the fixture.
+
+#### [should-fix] L15: `judge` still lets a non-numeric time through: a raw `TypeError`, or a string or bool taken as a number
+- **Where:**
+  - `src/slamlab/eval/budgets.py:355,371` (`float(d["timestamp"])`, `float(d[key])`).
+  - `runs._read_diagnostics` (`src/slamlab/eval/runs.py:389-400`) accepts any JSON value.
+- **Issue:** the H1/L2 fix checks finiteness, sign and order after `float(...)`. But `float` raises `TypeError` for null or a list, and quietly accepts the string `"0.5"` and the bool `true`.
+- **Why it matters:**
+  - `judge`'s docstring promises `InvalidInputError` for a step time it cannot judge.
+  - A run folder with a null `map_seconds` crashes `run_vo.py --reuse` with a traceback.
+  - A string time is judged as if it were a number.
+- **Evidence:**
+  ```
+  timestamp None      -> TypeError float() argument must be a string or a real number, not 'NoneType'
+  map_seconds None    -> TypeError (same)
+  map_seconds '0.5'   -> accepted; mapped 1, mapping_load 3.33
+  build_seconds True  -> accepted
+  ```
+- **Suggested fix:**
+  - In `_times` and `_steps`, require `type(v) in (int, float)`, with bool excluded as `runs._check_process` already does.
+  - Raise `InvalidInputError` naming the frame.
+  - Add a parametrised test case.
+
+#### [note] L16: The three languages' process readers disagree on malformed or unreadable input
+- **Where:**
+  - Python: `src/slamlab/eval/budgets.py:106-112` (`_cpu_list`, used by `allowed_cpus` at :224), and `:278` (`memory_cap`'s `except` clause).
+  - C++: `cpp/src/eval/budgets.cpp` (`cpu_list`, `memory_cap`).
+  - Rust: `rust/slamlab-eval/src/budgets.rs` (`cpus_in`, `memory_cap`).
+- **Issue:**
+  - **Malformed CPU lists:** Python's `_cpu_list` reads `1-` as [1], `0-3,7-4` as [0, 1, 2, 3] (it silently drops the backwards range) and `1_0` as [10]. C++ and Rust return none for all three. All three agree only on the bare `7-4` that the tests check.
+  - **An unreadable cgroup file:** Python's `memory_cap` catches only `FileNotFoundError`, `NotADirectoryError` and `StopIteration`.
+    - A `memory.max` it may not read (EACCES, as in some containers) raises `PermissionError`.
+    - `vo.main` catches that as an `OSError` (`src/slamlab/orchestration/vo.py:628`) and exits 3, so the finished run is not written.
+    - The native programs record null and write the run.
+- **Why it matters:** low today. Linux writes these lists, so malformed ones should not occur; the unreadable cgroup file is the plausible case.
+- **Suggested fix:**
+  - Catch `OSError` in `memory_cap`.
+  - Make `_cpu_list` strict: each part `\d+(-\d+)?` with first ≤ last, else `ValueError`. `cpus()` reads sysfs through the same function and would benefit too.
+
+#### [note] L17: Two wording slips in the fixes
+- **The blur fix's wording:** the note (`docs/notes/real-time.md:122-125`) and commit c286113's title say the C++ blur read past a row.
+  - It read nothing: the loop body ran zero times.
+  - The fault was forming `row.subspan(k, 0)` with `k > cols`, which breaks `subspan`'s `offset <= size()` precondition. That is undefined behaviour without any access.
+  - Suggested wording: "formed a span past the row's end".
+- **`svd3`'s rustdoc** (`rust/slamlab-foundations/src/linalg.rs:426`) still says `None` only "for a non-finite matrix".
+  - `jacobi_svd3`'s doc now also names the sweep cap.
+  - The callers map `None` to `Degenerate` (`alignment.rs:83`, `epipolar.rs:446`) or to NaN (`so3.rs:487`), which is acceptable. The public doc should still name both causes.
+
+### Checked and fine
+- **L1, C++ blur guard:**
+  - The `last > first` guard empties the interior loop exactly when there is no interior.
+  - When the loop runs, `first = radius` and `last = cols - radius`, so `row.subspan(k, cols - 2·radius)` ends at most at `cols`.
+  - Hardened build (`-O1 -D_GLIBCXX_ASSERTIONS`, no `NDEBUG`, so Eigen's assertions are on too): these native tests pass:
+    - `foundations_test_{image,svd3,ba,gauge,nls}`;
+    - `edge_test_{frames,map,mapping,adjust,pipeline}`.
+- **H4, blur widths:** the new fixture cases sit exactly on the boundaries.
+  - The 12-bit white case is the 32-bit ceiling: 255·2^24 + 2^23 = 4,286,578,688 < 2^32.
+  - The 13-bit noise case would overflow u32 for any pixel mean ≥ 64 if the width test were one bit too lax.
+  - The 15-bit white case is the 64-bit ceiling. Its expected 255 is exact.
+- **H9, Rust `byte` and the `i32` fraction:**
+  - `(sum + half) >> 2b ≤ 255` for any sum ≤ 255·2^(2b). The resize's sums stay ≤ 255·2^22 + 2^21, so it holds there too.
+  - The fraction stays in [0, 2^11): `axis_samples` carries a rounded-up fraction of exactly one into the whole index.
+  - The `debug_assert`s state exactly these bounds.
+- **H10, upper triangle and mirror:** checked analytically and by a mutation experiment.
+  - **Accumulation:** entry (ci, cj) with ci ≤ cj sums every column pair that maps to it, which gives (Σ J_i)ᵀ(Σ J_j).
+  - **Repeated columns:** where ci == cj, both orders of the pair are added, which supplies the cross terms the full square needs. This covers an anchored host that observes its own point (repeated pose and intrinsics columns) and a fixed host (repeated intrinsics, dropped poses).
+  - **Bit-identity with the old code:** the upper triangle's bits equal the old code's (same pairs, same order). The edge rung has no repeated columns, so its old lower triangle already equalled its upper bitwise. That is consistent with the byte-identical whole runs.
+  - **The mirror is needed:** `reduce_diagonal` reads `H(rows, rows)` for confined poses.
+  - **The mirror is held by a test:**
+    - With the mirror removed, a scratch `_cpp` fails `test_matches_fixture[similarity: auto gauge with nothing anchored-cpp]` (pose translations off by up to 2.3e-7 against atol 1e-9).
+    - The control build, with the mirror, passes all 45 C++ BA tests.
+  - **Aliasing:** `H.triangularView<StrictlyLower>() = H.transpose()` reads only the strict upper triangle, so it is alias-safe. I checked it with Eigen's assertions on. Rust's `fill_lower_triangle_with_upper_triangle` is the same operation.
+- **`Reduction::rebased` (C++ and Rust):** `kept_reduction_.rebased(basis(state))` equals the old `reduction(state).compacted()`. Compaction only remaps the free and confined indices, and the basis rows keep `rows_` order.
+- **`CouplingLayout::max_rows`:** it is taken from the same `coupled` lists that define `offset`, so every `count ≤ max_rows`. Zero free points give an empty scratch buffer and no loop.
+- **H8/A6/L5, block bounds:**
+  - `camera::kMaxIntrinsicsSize` and Rust's `MAX_INTRINSICS` are maxima over every model (a loop to `kCount`; `Model::ALL`).
+  - `check_intrinsics` uses the same `intrinsics_size`, so a model the bound does not know is refused at input instead of overflowing the stack block.
+- **H6, parity with fixed hosts:** the new case covers:
+  - a fixed host observed by free cameras;
+  - the host's own observation (repeated intrinsics columns, with the pose columns dropped);
+  - a pose prior on a fixed camera.
+
+  It passes on both backends; I re-ran 215 budget, BA-parity and image tests.
+- **H15/L6, sweep cap:** the cap is 64 sweeps. The port needs at most 5 on the golden, and run 1 saw at most 6 on 20,007 adversarial matrices, so the cap cannot change a result where Eigen terminates.
+- **H1/L2, the cases raised in run 1:** each of these now raises `InvalidInputError` naming the frame, and each has a test:
+  - timestamps that are not finite or not strictly increasing (so the deadline and the span are now positive);
+  - step times that are negative or not finite;
+  - a window that is not positive and finite;
+  - a missing timestamp.
+- **`mapping_peak_load`'s window, apart from L13:**
+  - `searchsorted` (left side) plus prefix sums gives exactly [t_i, t_i + W).
+  - Windows starting at frames reach the maximum over all start times: a window starting between two frames holds a subset of the frames in the window starting at the next frame.
+  - The formula matches the script behind the note's table, so the note's figures can be reproduced with the harness.
+- **`allowed_cpus` and `memory_cap` on well-formed input:** the three languages agree on the affinity list, on the cgroup v2 `0::` path joined under the mount, and on `max` → none. The budgeted test asserts that the recorded values equal the budget's.
+- **H5/A5/L4, how the golden is built:**
+  - Eigen writes it through nlohmann (shortest round-trip). Rust reads it with serde_json's `float_roundtrip` (enabled in `rust/slamlab-foundations/Cargo.toml:19`). Every value therefore crosses JSON exactly.
+  - The C++ test runs Eigen on the fixture's stored matrices, not on regenerated ones, so what it detects is a change in Eigen.
+- **The note's corrected claims:**
+  - The FAST walk is once round plus an arc (16 + 9 = 25 steps).
+  - "About half" of `project_to_so3` results differ in the last bit: run 1 measured 2,637 of 5,000.
+  - The point metric is relative to max(1, |x|) (L9).
+  - Keyframe creation is counted as mapping (L7).
+  - The 0-bit rounding entry is removed (L3).
+  - The deferrals L8, L10 and L12 are recorded in the note and the ladder.
