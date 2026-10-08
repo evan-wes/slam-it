@@ -144,6 +144,10 @@ pub struct Frame {
     pub depth: Vec<f64>,
     /// Each keypoint's right-image column (NaN where its depth is unknown).
     pub right: Vec<f64>,
+    /// Its keypoints bucketed for search by projection, built with the frame as ORB-SLAM's
+    /// `Frame` assigns its features to a grid (the compiled cores' search structure; Python's
+    /// search needs none).
+    pub grid: FeatureGrid,
 }
 
 impl Frame {
@@ -237,7 +241,7 @@ pub fn depth_at(xy: &[[f64; 2]], depth_map: &DepthMap) -> Result<Vec<f64>> {
         .collect()
 }
 
-/// Assembles a frame from its features: their bearings, and the depths and columns.
+/// Assembles a frame from its features: their bearings and grid, and the depths and columns.
 ///
 /// # Arguments
 ///
@@ -250,25 +254,31 @@ pub fn depth_at(xy: &[[f64; 2]], depth_map: &DepthMap) -> Result<Vec<f64>> {
 /// # Returns
 ///
 /// The frame.
+///
+/// # Errors
+///
+/// `InvalidInput` from the grid (unreachable for extracted features).
 fn assemble(
     timestamp: f64,
     features: Features,
     camera: &Camera,
     depth: Vec<f64>,
     right: Vec<f64>,
-) -> Frame {
+) -> Result<Frame> {
     let bearings = features
         .keypoints
         .iter()
         .map(|k| camera.bearing(&Vector2::new(k.xy[0], k.xy[1])))
         .collect();
-    Frame {
+    let grid = FeatureGrid::build(&features.keypoints)?;
+    Ok(Frame {
         timestamp,
         features,
         bearings,
         depth,
         right,
-    }
+        grid,
+    })
 }
 
 /// Builds a monocular frame: features and bearings, no depth.
@@ -295,13 +305,13 @@ pub fn monocular(
 ) -> Result<Frame> {
     let features = orb::extract(image, options)?;
     let n = features.keypoints.len();
-    Ok(assemble(
+    assemble(
         timestamp,
         features,
         camera,
         vec![f64::NAN; n],
         vec![f64::NAN; n],
-    ))
+    )
 }
 
 /// Builds an RGB-D frame: each keypoint's depth and virtual right column.
@@ -345,7 +355,7 @@ pub fn rgbd(
     let depth = depth_at(&xy, depth_map)?;
     let bf = camera.focal() * camera.baseline;
     let right = xy.iter().zip(&depth).map(|(p, &z)| p[0] - bf / z).collect();
-    Ok(assemble(timestamp, features, camera, depth, right))
+    assemble(timestamp, features, camera, depth, right)
 }
 
 /// Builds a stereo frame from a rectified pair: left features, matched along rows.
@@ -398,7 +408,7 @@ pub fn stereo_pair(
         depth[m.left] = m.depth;
         columns[m.left] = m.right_x;
     }
-    Ok(assemble(timestamp, features, camera, depth, columns))
+    assemble(timestamp, features, camera, depth, columns)
 }
 
 /// Matches projected map points to a frame's keypoints, its right columns checked
@@ -425,12 +435,11 @@ pub fn search(
     options: &SearchOptions,
     taken: &[bool],
 ) -> Result<Vec<Match>> {
-    let grid = FeatureGrid::build(&frame.features.keypoints)?;
     let none = vec![false; if taken.is_empty() { frame.size() } else { 0 }];
     matching::search_by_projection(
         projections,
         &frame.features,
-        &grid,
+        &frame.grid,
         &frame.right,
         if taken.is_empty() { &none } else { taken },
         options,

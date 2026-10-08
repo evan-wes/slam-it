@@ -28,6 +28,7 @@
 #include "slamlab/edge/initialization.hpp"
 #include "slamlab/edge/map.hpp"
 #include "slamlab/edge/options.hpp"
+#include "slamlab/foundations/matching.hpp"
 
 namespace slamlab::bindings::edge_crossing {
 
@@ -296,7 +297,7 @@ inline constexpr std::array<const char*, 12> kFrameKeys = {
 /// @param values The dict.
 /// @return The frame.
 /// @throws std::invalid_argument for a missing or unknown key, or arrays that are malformed
-///         or not one row per keypoint.
+///         or not one row per keypoint; CoreError for a keypoint position that is not finite.
 inline edge::Frame frame_in(const nanobind::dict& values) {
   check_keys(values, kFrameKeys, "the frame");
   const auto xy = pixels_item(values, "xy");
@@ -326,6 +327,7 @@ inline edge::Frame frame_in(const nanobind::dict& values) {
                                    .response = response[i],
                                    .angle = angle[i]};
   }
+  frame.grid = unwrap(foundations::matching::FeatureGrid::build(frame.features.keypoints));
   return frame;
 }
 

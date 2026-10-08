@@ -20,6 +20,7 @@ use slamlab_edge::initialization::Started;
 use slamlab_edge::map::{Map, check_map, index_observations};
 use slamlab_edge::options::{Mode, Options, Setting};
 use slamlab_foundations::camera::Model;
+use slamlab_foundations::matching::FeatureGrid;
 use slamlab_foundations::orb::{DESCRIPTOR_BYTES, Descriptor, Features, Keypoint};
 
 use crate::common::{by_name, contiguous, item_array, to_i64, unwrap};
@@ -396,7 +397,7 @@ pub fn map_dict<'py>(py: Python<'py>, m: &Map) -> PyResult<Bound<'py, PyDict>> {
 /// # Errors
 ///
 /// `ValueError` for a missing or unknown key, or arrays that are malformed or not one row per
-/// keypoint.
+/// keypoint; the core error for a keypoint position that is not finite.
 pub fn frame_in(values: &Bound<'_, PyDict>) -> PyResult<Frame> {
     let get = |key| item(values, &FRAME_KEYS, key);
     let xy = rows::<f64, 2>(&get("xy")?)?;
@@ -443,6 +444,7 @@ pub fn frame_in(values: &Bound<'_, PyDict>) -> PyResult<Frame> {
             })
         })
         .collect::<PyResult<Vec<Keypoint>>>()?;
+    let grid = unwrap(values.py(), FeatureGrid::build(&keypoints))?;
     Ok(Frame {
         timestamp: get("timestamp")?.extract()?,
         features: Features {
@@ -454,6 +456,7 @@ pub fn frame_in(values: &Bound<'_, PyDict>) -> PyResult<Frame> {
         bearings,
         depth,
         right,
+        grid,
     })
 }
 

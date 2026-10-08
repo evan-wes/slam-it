@@ -14,6 +14,7 @@
 #include "slamlab/edge/frames.hpp"
 #include "slamlab/edge/map.hpp"
 #include "slamlab/edge/options.hpp"
+#include "slamlab/foundations/matching.hpp"
 
 namespace {
 
@@ -44,6 +45,7 @@ edge::Frame frame_of(std::size_t n, bool with_depth) {
     frame.depth.push_back(with_depth ? 2.0 : kNan);
     frame.right.push_back(with_depth ? x - 5.0 : kNan);
   }
+  frame.grid = slamlab::foundations::matching::FeatureGrid::build(frame.features.keypoints).value();
   return frame;
 }
 

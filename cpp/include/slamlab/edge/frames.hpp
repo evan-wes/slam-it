@@ -83,6 +83,10 @@ struct Frame {
   std::vector<double> depth;
   /// @brief Each keypoint's right-image column (NaN where its depth is unknown).
   std::vector<double> right;
+  /// @brief Its keypoints bucketed for search by projection, built with the frame as ORB-SLAM's
+  ///        `Frame` assigns its features to a grid (the compiled cores' search structure; Python's
+  ///        search needs none).
+  foundations::matching::FeatureGrid grid;
 };
 
 /// @brief A frame's number of keypoints.

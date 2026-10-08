@@ -1084,6 +1084,7 @@ mod tests {
             descriptors.push(d);
             bearings.push(Vector3::new((x - 160.0) / 250.0, 0.0, 1.0).normalize());
         }
+        let grid = matching::FeatureGrid::build(&keypoints).unwrap();
         Frame {
             timestamp: 0.0,
             features: Features {
@@ -1092,6 +1093,7 @@ mod tests {
                 scale_factor: 1.2,
                 levels: 8,
             },
+            grid,
             bearings,
             depth: vec![if with_depth { 2.0 } else { f64::NAN }; n],
             right: (0..n)

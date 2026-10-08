@@ -9,6 +9,7 @@ use slamlab_edge::frames::Frame;
 use slamlab_edge::options::{Mode, Options};
 use slamlab_edge::pipeline::{FrameResult, Pipeline, State};
 use slamlab_foundations::error::ErrorKind;
+use slamlab_foundations::matching::FeatureGrid;
 use slamlab_foundations::orb::Features;
 
 use scene::{camera, frame_at};
@@ -95,6 +96,7 @@ fn empty_frames_lose_the_track() {
         bearings: Vec::new(),
         depth: Vec::new(),
         right: Vec::new(),
+        grid: FeatureGrid::build(&[]).unwrap(),
     };
     for _ in 0..Options::default().lost_frames {
         assert!(pipeline.track(&empty).unwrap().pose.is_none());
