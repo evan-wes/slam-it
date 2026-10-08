@@ -446,7 +446,8 @@ struct RowRuns {
 /// FAST-9 scores of a run of pixels along a row, where they reach `floor`.
 ///
 /// FAST's segment test first, for the whole run at once, as OpenCV's SSE2 FAST makes it: the
-/// circle walked twice round, a pixel at a time for every centre, counting each centre's
+/// circle walked once round plus an arc (so every run that wraps past its start is counted
+/// whole), a pixel at a time for every centre, counting each centre's
 /// current run of brighter and of darker circle pixels and keeping its longest, in byte-wide
 /// branch-free loops a compiler vectorizes. A pixel scores at least `floor` exactly when its
 /// longest run reaches `FAST_ARC`; only those are scored (`arc_score`).

@@ -158,6 +158,7 @@ def main() -> None:
     rng = np.random.default_rng(7)
     noise = rng.integers(0, 256, (9, 11)).tolist()
     scene = _smooth(rng, 12, 16)
+    white = [[255] * 7 for _ in range(5)]  # the largest sums a kernel can make
     primaries = [
         [[255, 255, 255], [0, 0, 0], [255, 0, 0]],
         [[0, 255, 0], [0, 0, 255], [128, 128, 128]],
@@ -198,6 +199,10 @@ def main() -> None:
                     ("one pixel", [[200]], [1, 2, 1]),
                     ("identity kernel", noise, [1]),
                     ("uneven weights", scene, [0, 3, 1, 4, 0]),
+                    # The vertical sums' widths: 32 bits up to 12-bit kernels, 64 above.
+                    ("12-bit kernel on white, the widest 32-bit sums", white, [1, 4094, 1]),
+                    ("13-bit kernel on noise, 64-bit sums", noise, [1, 8190, 1]),
+                    ("15-bit kernel on white, the widest 64-bit sums", white, [1, 32766, 1]),
                 ]
             ],
         },

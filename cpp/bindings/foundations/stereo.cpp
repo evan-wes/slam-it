@@ -149,9 +149,9 @@ void bind_stereo(nb::module_& m) {
         nb::arg("intrinsics").noconvert(), nb::arg("rotation").noconvert(),
         nb::arg("rectified").noconvert(), nb::arg("rows"), nb::arg("cols"),
         "Return the (rows, cols, 2) map from rectified pixels to the original image.");
-  m.def("match", &match, nb::arg("left_levels"), nb::arg("right_levels"), nb::arg("left"),
-        nb::arg("right"), nb::arg("focal"), nb::arg("baseline"), nb::arg("options"),
-        "Match features along rows; return a dict of StereoMatches' fields.");
+  m.def("match", &match, nb::arg("left_levels").noconvert(), nb::arg("right_levels").noconvert(),
+        nb::arg("left"), nb::arg("right"), nb::arg("focal"), nb::arg("baseline"),
+        nb::arg("options"), "Match features along rows; return a dict of StereoMatches' fields.");
 }
 
 }  // namespace slamlab::bindings

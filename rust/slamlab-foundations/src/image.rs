@@ -302,8 +302,8 @@ struct AxisSample {
     first: usize,
     /// The second source index (the first's neighbour, clamped).
     second: usize,
-    /// The second index's weight, over `2^RESIZE_BITS`.
-    fraction: i64,
+    /// The second index's weight, over `2^RESIZE_BITS` (below it, so 11 bits).
+    fraction: i32,
 }
 
 /// Sample positions along one axis: destination `d` samples
@@ -341,6 +341,12 @@ fn axis_samples(n_in: usize, n_out: usize) -> Vec<AxisSample> {
                 whole = n_in - 1;
                 fraction = 0;
             }
+            debug_assert!((0..one).contains(&fraction));
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "a fraction below 2^RESIZE_BITS"
+            )]
+            let fraction = fraction as i32;
             AxisSample {
                 first: to_usize(whole),
                 second: to_usize((whole + 1).min(n_in - 1)),
@@ -366,8 +372,6 @@ fn resize_checked(image: &Image, rows: usize, cols: usize) -> Image {
     let xs = axis_samples(image.cols, cols);
     let ys = axis_samples(image.rows, rows);
     // Every sum fits 32 bits: across a row at most 255 * 2^11, down a column 255 * 2^22.
-    let fraction =
-        |sample: &AxisSample| i32::try_from(sample.fraction).expect("an 11-bit fraction");
     let mut across = vec![0_i32; image.rows * cols];
     for (row, sums) in image
         .pixels
@@ -375,7 +379,7 @@ fn resize_checked(image: &Image, rows: usize, cols: usize) -> Image {
         .zip(across.chunks_exact_mut(cols))
     {
         for (sum, x) in sums.iter_mut().zip(&xs) {
-            let fx = fraction(x);
+            let fx = x.fraction;
             *sum = i32::from(row[x.first]) * (one - fx) + i32::from(row[x.second]) * fx;
         }
     }
@@ -383,12 +387,12 @@ fn resize_checked(image: &Image, rows: usize, cols: usize) -> Image {
     let half = 1_i32 << (shift - 1);
     let mut out = Image::blank(rows, cols);
     for (line, y) in out.pixels.chunks_exact_mut(cols).zip(&ys) {
-        let fy = fraction(y);
+        let fy = y.fraction;
         let top = &across[y.first * cols..(y.first + 1) * cols];
         let bottom = &across[y.second * cols..(y.second + 1) * cols];
         for ((pixel, &a), &b) in line.iter_mut().zip(top).zip(bottom) {
             let total = a * (one - fy) + b * fy;
-            *pixel = u8::try_from((total + half) >> shift).unwrap_or(u8::MAX);
+            *pixel = byte((total + half) >> shift);
         }
     }
     out
@@ -541,6 +545,27 @@ pub fn blur(image: &Image, kernel: &[u32]) -> Result<Image> {
     Ok(out)
 }
 
+/// A rounded weighted mean of intensities as one: at most 255 by construction (weights that
+/// sum to the scale divided out).
+///
+/// # Arguments
+///
+/// * `value` - The mean, from 0 to 255.
+///
+/// # Returns
+///
+/// The intensity.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a weighted mean of bytes is a byte"
+)]
+fn byte(value: impl Into<i128>) -> u8 {
+    let value = value.into();
+    debug_assert!((0..=255).contains(&value));
+    value as u8
+}
+
 /// A separable blur's vertical pass, rounded to intensities.
 ///
 /// # Arguments
@@ -558,8 +583,8 @@ where
         + std::ops::AddAssign
         + std::ops::Mul<Output = T>
         + std::ops::Shl<u32, Output = T>
-        + std::ops::Shr<u32, Output = T>,
-    u8: TryFrom<T>,
+        + std::ops::Shr<u32, Output = T>
+        + Into<i128>,
 {
     let cols = out.cols;
     let zero = T::from(0);
@@ -574,9 +599,8 @@ where
                 *sum += weight * T::from(value);
             }
         }
-        // A weighted mean of intensities: it fits a byte (the fallback never applies).
         for (pixel, &sum) in row.iter_mut().zip(&sums) {
-            *pixel = u8::try_from((sum + half) >> (2 * bits)).unwrap_or(u8::MAX);
+            *pixel = byte((sum + half) >> (2 * bits));
         }
     }
 }
@@ -652,8 +676,8 @@ pub fn check_pyramid(levels: &[Image], count: usize, scale_factor: f64, name: &s
             format!("{name}: expected {count} levels, got {}", levels.len()),
         );
     }
-    for level in levels {
-        check_image(level, name)?;
+    for (k, level) in levels.iter().enumerate() {
+        check_image(level, &format!("{name}[{k}]"))?;
     }
     let Some(first) = levels.first() else {
         return fail(

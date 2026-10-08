@@ -336,7 +336,8 @@ Result<Image> blur(const Image& image, std::span<const std::uint32_t> kernel) {
     const std::span<const std::uint8_t> row =
         std::span(image.pixels).subspan(at(r * cols), at(cols));
     const std::span<std::int32_t> sums = std::span(across).subspan(at(r * cols), at(cols));
-    for (std::int64_t k = 0; k < taps; ++k) {
+    // A kernel wider than the row leaves no interior: every column reflects.
+    for (std::int64_t k = 0; last > first && k < taps; ++k) {
       const auto weight = static_cast<std::int32_t>(kernel[at(k)]);
       const std::span<const std::uint8_t> shifted = row.subspan(at(k), at(last - first));
       for (std::int64_t c = 0; c < last - first; ++c) {
@@ -396,8 +397,9 @@ Result<void> check_pyramid(std::span<const Image> levels, std::int64_t count, do
                                               std::to_string(count) + " levels, got " +
                                               std::to_string(levels.size()));
   }
-  for (const Image& level : levels) {
-    if (auto ok = check_image(level, name); !ok) {
+  for (std::size_t k = 0; k < levels.size(); ++k) {
+    const std::string level_name = std::string(name) + "[" + std::to_string(k) + "]";
+    if (auto ok = check_image(levels[k], level_name.c_str()); !ok) {
       return ok;
     }
   }

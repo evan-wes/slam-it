@@ -128,7 +128,7 @@ void bind_orb(nb::module_& m) {
         "Detect oriented keypoints; return a dict of Keypoints' fields.");
   m.def("extract", &extract, nb::arg("image").noconvert(), nb::arg("options"),
         "Extract features: Keypoints' fields, and descriptors.");
-  m.def("extract_levels", &extract_levels, nb::arg("levels"), nb::arg("options"),
+  m.def("extract_levels", &extract_levels, nb::arg("levels").noconvert(), nb::arg("options"),
         "Extract features from a pyramid already built: Keypoints' fields, and descriptors.");
 }
 

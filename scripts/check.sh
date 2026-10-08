@@ -62,9 +62,11 @@ check "C++/Rust layering (same contracts)" python scripts/check_layers.py
 
 # C++
 check "clang-format" clang-format --dry-run --Werror "${CPP_FILES[@]}"
+# The native tests run hardened: libstdc++'s assertions (bounds of spans and containers) catch
+# an out-of-range access that a release build would run silently (PR 9's panel, L1).
 check "cmake configure (compile_commands.json)" \
   cmake -S . -B build/native -G Ninja -DSLAMLAB_BUILD_TESTS=ON -DSLAMLAB_BUILD_BENCHMARKS=ON \
-  -DCMAKE_BUILD_TYPE=Release
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=-D_GLIBCXX_ASSERTIONS
 check "C++ build" cmake --build build/native -j4
 # clang-tidy's clang does not know conda gcc's implicit include directory (<env>/include),
 # where the test-only headers live (nlohmann_json); pass it explicitly.

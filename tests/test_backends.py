@@ -367,6 +367,32 @@ def test_compiled_bindings_refuse_unconverted_input(name: str, bad: object) -> N
         impl.hat(bad)
 
 
+@pytest.mark.parametrize("name", backends.COMPILED_BACKENDS)
+@pytest.mark.parametrize(
+    "bad",
+    [
+        np.full((10, 10), 300, dtype=np.int64),
+        np.zeros((10, 10), dtype=np.float64),
+        np.zeros((10, 20), dtype=np.uint8)[:, ::2],
+    ],
+    ids=["int64", "float64", "strided"],
+)
+def test_compiled_pyramid_bindings_refuse_unconverted_levels(name: str, bad: object) -> None:
+    """Both raw bindings refuse a pyramid level that is not a contiguous uint8 image.
+
+    As for a single image: a direct caller pays no hidden conversion, and gets no silent
+    truncation of 300 to a byte, in either language.
+    """
+    backend = require_backend(name)
+    levels = [bad, np.zeros((8, 8), dtype=np.uint8)]
+    orb = backends.implementation(backend, "slamlab.foundations.orb")
+    with pytest.raises((TypeError, ValueError)):
+        orb.extract_levels(levels, {})
+    stereo = backends.implementation(backend, "slamlab.foundations.stereo")
+    with pytest.raises((TypeError, ValueError)):
+        stereo.match(levels, levels, {}, {}, 1.0, 0.1, {})
+
+
 def test_call_runs_the_reference_for_python() -> None:
     """With the Python backend, ``call`` runs the reference and never touches an extension."""
     result = backends.call(
