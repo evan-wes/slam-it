@@ -321,6 +321,7 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
     options: Options | None = None,
     first: int = 0,
     count: int | None = None,
+    budget: budgets.Budget | None = None,
 ) -> runs.Run:
     """Run a sequence through the edge pipeline and write its run folder.
 
@@ -342,6 +343,10 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
         The first frame run.
     count : int, optional
         The frames run from it (default: all).
+    budget : slamlab.eval.budgets.Budget, optional
+        A compute budget to run within: the backend's program (Python's too, rather than the
+        in-process run) pinned to the budget's cores and its memory capped
+        (:func:`slamlab.eval.budgets.command`).
 
     Returns
     -------
@@ -359,8 +364,11 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
         The request's check (:func:`check`), or a reader's, the pipeline's or the writer's
         error, of the same kind whichever backend ran.
     FileNotFoundError
-        From the Python backend, if a file of the sequence is missing (the native programs
-        raise :class:`~slamlab.foundations.errors.InvalidInputError`, their only kind for it).
+        From the Python backend in-process, if a file of the sequence is missing (the
+        programs raise :class:`~slamlab.foundations.errors.InvalidInputError`, their only
+        kind for it).
+    RuntimeError
+        If a program dies otherwise: killed, for one, past a budget's memory.
     """
     request = Request(
         dataset,
@@ -373,10 +381,10 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
     )
     backends.check_name(backend)
     check(request)
-    if backend == "python":
+    if backend == "python" and budget is None:
         runs.write_run(request.out, _run_here(request))
     else:
-        _run_program(backend, request)
+        _run_program(backend, request, budget)
     return runs.read_run(request.out)
 
 
@@ -544,14 +552,18 @@ def _run_here(request: Request) -> runs.Run:
     )
 
 
-def _run_program(backend: str, request: Request) -> None:
-    """Run the request with a backend's program (:func:`command`)."""
+def _run_program(backend: str, request: Request, budget: budgets.Budget | None) -> None:
+    """Run the request with a backend's program (:func:`command`), within a budget if given."""
     program = command(backend)
-    done = subprocess.run(
-        [*program, *request.arguments()], capture_output=True, text=True, check=False
-    )
+    argv = [*program, *request.arguments()]
+    if budget is not None:
+        argv = budgets.command(budget, budgets.cpus(budget), argv)
+    done = subprocess.run(argv, capture_output=True, text=True, check=False)
     if done.returncode == 0:
         return
+    if done.returncode < 0:
+        within = "" if budget is None else f", within {budget.name}'s {budget.memory} bytes"
+        raise RuntimeError(f"{' '.join(program)} was killed by signal {-done.returncode}{within}")
     lines = done.stderr.strip().splitlines()
     message = lines[0].removeprefix(f"{PROGRAM}: ") if lines else ""
     kind = done.returncode - EXIT_FAILED

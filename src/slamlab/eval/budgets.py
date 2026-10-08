@@ -1,19 +1,159 @@
-"""Compute budgets: what a program costs, and running it as a smaller machine would.
+"""Compute budgets: running a program as a smaller machine would, and judging its frames.
 
+There is no edge hardware, so a budget is simulated on this machine (the ladder's design doc,
+"Compute budgets"): a program is pinned to the budget's cores with ``taskset`` and its memory
+capped by a systemd scope (``MemoryMax``, no swap), so going over the cap kills it. What a
+budget cannot reproduce (another microarchitecture, thermal throttling, power modes) it does
+not claim.
+
+- :data:`BUDGETS`: the budgets by name; ``laptop-cpu`` for milestone 2.
+- :func:`cpus`: the CPUs a budget pins a program to: this machine's performance cores, on a
+  CPU that has two kinds.
+- :func:`command`: a command line wrapped to run within a budget.
 - :func:`peak_memory`: the calling process's largest resident set, which a program records in
   its run (:mod:`slamlab.eval.runs`); C++'s ``slamlab::eval::budgets`` and Rust's
   ``slamlab_eval::budgets`` read it the same way.
+- :func:`judge`: a run's frames against their real-time deadline, from the time each step
+  took (``read_seconds``, ``build_seconds``, ``track_seconds``, ``map_seconds``; see
+  :mod:`slamlab.orchestration.vo`).
 
-Still to come with PR 9's harness: the budgets themselves, pinning and capping a program to
-one, and judging a run's frames against their real-time deadline.
+**Real time, as ORB-SLAM's threads divide it** (decided for PR 9, 2026-10-07). A frame must
+be built and tracked before the next arrives, its deadline the sequence's frame period: what
+ORB-SLAM's tracking thread does. The clock starts with the frame's images decoded, as a
+camera delivers them, so reading them is reported but not held to the deadline. Mapping a
+keyframe runs after tracking in the same thread here, so a run stays deterministic; it is
+judged as ORB-SLAM's local-mapping thread would be, by its load: its total time over the
+sequence's, which must stay below 1 for a thread of its own to keep up.
+
+The budgeted runs are tests marked ``budget``, outside layer 1: ``python -m pytest -m budget``.
 """
 
 from __future__ import annotations
 
+import os
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
+
+import numpy as np
+from numpy.typing import NDArray
+
+from slamlab.eval import runs
+from slamlab.foundations.errors import InvalidInputError
 
 STATUS = Path("/proc/self/status")
 """Where Linux states the calling process's memory."""
+
+PERFORMANCE_CORES = Path("/sys/devices/cpu_core/cpus")
+"""Where Linux lists a hybrid CPU's performance cores (Intel's ``cpu_core``)."""
+
+
+@dataclass(frozen=True)
+class Budget:
+    """A compute budget: the machine a run is held to.
+
+    Attributes
+    ----------
+    name : str
+        Its name, e.g. ``"laptop-cpu"``.
+    cores : int
+        The CPU cores the program may run on.
+    memory : int
+        The most memory it may hold, in bytes; past it, it is killed.
+    stands_for : str
+        The machine it stands in for.
+    """
+
+    name: str
+    cores: int
+    memory: int
+    stands_for: str
+
+
+BUDGETS = {
+    "laptop-cpu": Budget("laptop-cpu", cores=4, memory=8 * 2**30, stands_for="a laptop, no GPU"),
+}
+"""The budgets by name (the ladder's design doc, "Compute budgets"). The Pi- and Jetson-class
+budgets come with milestone 7."""
+
+
+def _cpu_list(text: str) -> set[int]:
+    """Read a Linux CPU list, e.g. ``0-7,16``."""
+    out: set[int] = set()
+    for part in text.strip().split(","):
+        first, _, last = part.partition("-")
+        out.update(range(int(first), int(last or first) + 1))
+    return out
+
+
+def cpus(budget: Budget, *, performance: str | Path = PERFORMANCE_CORES) -> list[int]:
+    """Return the CPUs a budget pins a program to.
+
+    On a hybrid CPU, its performance cores (a budget's cores are fast ones), else any; of
+    those this process may run on, the highest-numbered, which leaves CPU 0, where the
+    system's interrupts land, alone.
+
+    Parameters
+    ----------
+    budget : Budget
+        The budget.
+    performance : str or pathlib.Path, optional
+        The file listing the performance cores (default :data:`PERFORMANCE_CORES`); a CPU
+        without one has one kind of core.
+
+    Returns
+    -------
+    list of int
+        ``budget.cores`` CPUs, ascending.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If this machine offers fewer.
+    """
+    offered = os.sched_getaffinity(0)
+    listed = Path(performance)
+    if listed.is_file():
+        offered &= _cpu_list(listed.read_text(encoding="utf-8"))
+    if len(offered) < budget.cores:
+        raise InvalidInputError(
+            f"{budget.name}: needs {budget.cores} cores, this machine offers {len(offered)}"
+        )
+    return sorted(offered)[-budget.cores :]
+
+
+def command(budget: Budget, pinned: Sequence[int], argv: Sequence[str]) -> list[str]:
+    """Return a command line wrapped to run within a budget.
+
+    ``systemd-run --scope`` caps its memory (``MemoryMax``, and no swap, so going over the cap
+    kills it rather than slowing it) and ``taskset`` pins it to its CPUs; each runs the next
+    in its own process, so the program's peak memory is its own.
+
+    Parameters
+    ----------
+    budget : Budget
+        The budget.
+    pinned : sequence of int
+        The CPUs (:func:`cpus`).
+    argv : sequence of str
+        The program and its arguments.
+
+    Returns
+    -------
+    list of str
+        The wrapped command line.
+
+    Examples
+    --------
+    >>> command(BUDGETS["laptop-cpu"], [4, 5, 6, 7], ["slamlab_vo", "--help"])[-4:]
+    ['--cpu-list', '4,5,6,7', 'slamlab_vo', '--help']
+    """
+    return [
+        *("systemd-run", "--user", "--scope", "--quiet"),
+        *("-p", f"MemoryMax={budget.memory}", "-p", "MemorySwapMax=0", "--"),
+        *("taskset", "--cpu-list", ",".join(map(str, pinned))),
+        *argv,
+    ]
 
 
 def peak_memory(status: str | Path = STATUS) -> int | None:
@@ -49,3 +189,112 @@ def peak_memory(status: str | Path = STATUS) -> int | None:
         if len(words) == 3 and words[0] == "VmHWM:" and words[1].isdigit() and words[2] == "kB":
             return int(words[1]) * 1024
     return None
+
+
+@dataclass(frozen=True)
+class Spread:
+    """How a time is spread over frames.
+
+    Attributes
+    ----------
+    median : float
+        Its median, in seconds.
+    p95 : float
+        Its 95th percentile (numpy's linear interpolation).
+    max : float
+        Its largest.
+    """
+
+    median: float
+    p95: float
+    max: float
+
+
+def _spread(seconds: NDArray[np.float64]) -> Spread:
+    """Return how times are spread."""
+    return Spread(
+        float(np.median(seconds)), float(np.percentile(seconds, 95)), float(np.max(seconds))
+    )
+
+
+@dataclass(frozen=True)
+class Frames:
+    """A run's frames judged against their real-time deadline (see the module docstring).
+
+    Attributes
+    ----------
+    count : int
+        The frames run.
+    deadline : float
+        The sequence's frame period, in seconds: the median spacing of the frames' times.
+    read, build, track : Spread
+        Each step's time per frame.
+    latency : Spread
+        Building and tracking a frame: what the deadline holds.
+    late : int
+        The frames whose latency passed the deadline.
+    keyframes : int
+        The frames mapped as keyframes.
+    mapping : Spread or None
+        Mapping's time per keyframe mapped; None if none was.
+    mapping_load : float
+        Mapping's total time over the sequence's (the frames' span plus one period): below 1,
+        a mapping thread of its own would keep up.
+    """
+
+    count: int
+    deadline: float
+    read: Spread
+    build: Spread
+    track: Spread
+    latency: Spread
+    late: int
+    keyframes: int
+    mapping: Spread | None
+    mapping_load: float
+
+
+def judge(run: runs.Run) -> Frames:
+    """Judge a run's frames against their real-time deadline.
+
+    Parameters
+    ----------
+    run : slamlab.eval.runs.Run
+        The run, each diagnostic with its steps' times.
+
+    Returns
+    -------
+    Frames
+        The judgement.
+
+    Raises
+    ------
+    slamlab.foundations.errors.InvalidInputError
+        If the run has fewer than two frames (no period), or a diagnostic lacks a step's time.
+    """
+    entries = run.diagnostics
+    if len(entries) < 2:
+        raise InvalidInputError(f"judge: needs two frames for their period, got {len(entries)}")
+    try:
+        steps = {
+            step: np.array([float(d[f"{step}_seconds"]) for d in entries])
+            for step in ("read", "build", "track", "map")
+        }
+    except KeyError as error:
+        raise InvalidInputError(f"judge: a frame has no {error.args[0]}") from None
+    times = np.array([float(d["timestamp"]) for d in entries])
+    deadline = float(np.median(np.diff(times)))
+    latency = steps["build"] + steps["track"]
+    mapped = steps["map"][steps["map"] > 0.0]
+    return Frames(
+        count=len(entries),
+        deadline=deadline,
+        read=_spread(steps["read"]),
+        build=_spread(steps["build"]),
+        track=_spread(steps["track"]),
+        latency=_spread(latency),
+        late=int(np.sum(latency > deadline)),
+        keyframes=len(mapped),
+        mapping=_spread(mapped) if len(mapped) else None,
+        mapping_load=float(np.sum(mapped) / (times[-1] - times[0] + deadline)),
+    )

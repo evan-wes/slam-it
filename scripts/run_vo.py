@@ -2,7 +2,9 @@
 
 Writes the run's folder with :func:`slamlab.orchestration.vo.run` (or reads one already
 written, with ``--reuse``), then prints what it holds: frames tracked, keyframes, map points,
-and the time per frame of each step (reading, building, tracking, mapping). With the
+its frames judged against their real-time deadline (:func:`slamlab.eval.budgets.judge`), and
+its program's peak memory. ``--budget laptop-cpu`` runs the backend's program within that
+compute budget (:mod:`slamlab.eval.budgets`), pinned and its memory capped. With the
 sequence's ground truth (TUM's ``groundtruth.txt``, EuRoC's ``state_groundtruth_estimate0``) it
 prints the ATE (Sim(3)-aligned for monocular, SE(3) otherwise) and the RPE over one frame
 period (:func:`slamlab.eval.runs.evaluate`). With ``--rerun FILE.rrd`` it saves a rerun
@@ -29,7 +31,7 @@ from numpy.typing import NDArray
 
 from slamlab import backends
 from slamlab.edge.options import MODES, Options
-from slamlab.eval import euroc, runs, tum
+from slamlab.eval import budgets, euroc, runs, tum
 from slamlab.foundations.errors import InvalidInputError
 from slamlab.orchestration import vo
 
@@ -139,15 +141,31 @@ def summarize(run: runs.Run, scored: runs.Evaluation | None) -> None:
         f"{len(run.timestamps)} of {len(run.diagnostics)} frames tracked, "
         f"{len(run.keyframe_timestamps)} keyframes, {len(run.points)} points"
     )
-    if run.diagnostics:
-        steps = ("read", "build", "track", "map")
-        per_frame = [np.mean([d[f"{step}_seconds"] for d in run.diagnostics]) for step in steps]
+    if len(run.diagnostics) >= 2:
+        judged = budgets.judge(run)
+
+        def ms(seconds: float) -> str:
+            return f"{1000 * seconds:.1f} ms"
+
+        latency = judged.latency
         print(
-            "per frame: "
-            + ", ".join(
-                f"{step} {1000 * t:.1f} ms" for step, t in zip(steps, per_frame, strict=True)
-            )
+            f"building and tracking a frame: median {ms(latency.median)}, 95th percentile "
+            f"{ms(latency.p95)}, max {ms(latency.max)}; {judged.late} of {judged.count} frames "
+            f"past the {ms(judged.deadline)} deadline (reading the images aside: median "
+            f"{ms(judged.read.median)})"
         )
+        if judged.mapping is not None:
+            print(
+                f"mapping {judged.keyframes} keyframes: median {ms(judged.mapping.median)}, max "
+                f"{ms(judged.mapping.max)}; load {judged.mapping_load:.2f} (below 1, a mapping "
+                f"thread would keep up)"
+            )
+    peak = (
+        "unknown (an in-process run)"
+        if run.peak_memory is None
+        else (f"{run.peak_memory / 2**20:.0f} MiB")
+    )
+    print(f"peak memory: {peak}")
     if scored is None:
         return
     absolute, relative = scored.absolute, scored.relative
@@ -225,7 +243,11 @@ def main() -> None:
         "--reuse", action="store_true", help="read the run already in --out instead of running"
     )
     parser.add_argument("--rerun", type=Path, help="save a rerun recording to this .rrd file")
+    parser.add_argument(
+        "--budget", choices=budgets.BUDGETS, help="run the backend's program within this budget"
+    )
     args = parser.parse_args()
+    budget = None if args.budget is None else budgets.BUDGETS[args.budget]
 
     if args.reuse:
         run = runs.read_run(args.out)
@@ -239,7 +261,11 @@ def main() -> None:
             options=parse_options(args.option),
             first=args.first,
             count=args.count,
+            budget=budget,
         )
+        if budget is not None:
+            pinned = ",".join(map(str, budgets.cpus(budget)))
+            print(f"within {budget.name}: CPUs {pinned}, {budget.memory / 2**30:.0f} GiB")
     truth = ground_truth(args.dataset, args.sequence)
     scored = score(run, truth)
     summarize(run, scored)

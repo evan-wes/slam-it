@@ -17,7 +17,7 @@ from slamlab import backends
 from slamlab.edge import frames, tracking
 from slamlab.edge.map import Map
 from slamlab.edge.options import Options
-from slamlab.eval import runs
+from slamlab.eval import budgets, runs
 from slamlab.foundations.errors import DegenerateError, InvalidInputError, NotConvergedError
 from slamlab.orchestration import vo
 from tests.conftest import FIXTURES, assert_matches_fixture, load_fixture
@@ -384,6 +384,43 @@ def test_a_failed_program_raises_its_error(backend: str, tmp_path: Path) -> None
             backend=require_program(backend),
             count=1,
         )
+
+
+def test_a_killed_program_says_so(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A program killed by a signal (a budget's memory cap kills with 9) raises, naming it."""
+    program = tmp_path / "slamlab_vo"
+    program.write_text("#!/bin/sh\nkill -9 $$\n")
+    program.chmod(0o755)
+    monkeypatch.setattr(backends, "program", lambda backend, name: program)
+    with pytest.raises(RuntimeError, match="killed by signal 9"):
+        vo.run("tum", SEQUENCES / "tum_camera", "rgbd", tmp_path / "run", backend="cpp", count=0)
+
+
+@pytest.mark.budget
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize(("dataset", "mode"), CASES)
+def test_every_backend_runs_the_room_within_the_laptop_budget(  # noqa: PLR0917 -- case, fixtures
+    dataset: str, mode: str, backend: str, room_folders: Room, room_runs: RoomRun, tmp_path: Path
+) -> None:
+    """Pinned and capped, each program takes the decisions it takes unbudgeted, within memory."""
+    budget = budgets.BUDGETS["laptop-cpu"]
+    folder = room_folders.tum if dataset == "tum" else room_folders.euroc
+    run = vo.run(
+        dataset, folder, mode, tmp_path, backend=require_program(backend), options=OPTIONS,
+        budget=budget,
+    )  # fmt: skip
+    _assert_same_run(run, room_runs(dataset, mode, "python"))
+    assert run.peak_memory is not None
+    assert 0 < run.peak_memory < budget.memory
+    assert budgets.judge(run).count == FRAMES
+
+
+@pytest.mark.budget
+def test_a_program_past_its_budgets_memory_is_killed(room_folders: Room, tmp_path: Path) -> None:
+    """Python's program within 16 MiB (its interpreter alone holds more) is killed, not swapped."""
+    tiny = budgets.Budget("tiny", cores=1, memory=16 * 2**20, stands_for="nothing real")
+    with pytest.raises(RuntimeError, match="killed by signal 9, within tiny's 16777216 bytes"):
+        vo.run("tum", room_folders.tum, "rgbd", tmp_path, backend="python", budget=tiny)
 
 
 @pytest.mark.parametrize(
