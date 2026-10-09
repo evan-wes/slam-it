@@ -40,6 +40,9 @@ def _run(n: int = 12) -> runs.Run:
         points=np.random.default_rng(1).normal(size=(30, 3)),
         settings={"orb": {"n_features": 1000}, "window": 7},
         diagnostics=[{"timestamp": float(t), "tracked": 120 + k} for k, t in enumerate(times)],
+        peak_memory=123_456_789,
+        cpus=[4, 5, 6, 7],
+        memory_cap=8 * 2**30,
     )
 
 
@@ -61,6 +64,20 @@ def test_round_trip(tmp_path: Path) -> None:
     np.testing.assert_array_equal(back.points, run.points)
     assert back.settings == run.settings
     assert back.diagnostics == run.diagnostics
+    assert (back.peak_memory, back.cpus, back.memory_cap) == (
+        run.peak_memory,
+        run.cpus,
+        run.memory_cap,
+    )
+
+
+def test_an_unknown_process_round_trips_as_none(tmp_path: Path) -> None:
+    """A run that was not a program's own (an in-process run's) writes nulls and reads None."""
+    runs.write_run(tmp_path, replace(_run(), peak_memory=None, cpus=None, memory_cap=None))
+    info = json.loads((tmp_path / "run.json").read_text())
+    assert (info["peak_memory"], info["cpus"], info["memory_cap"]) == (None, None, None)
+    back = runs.read_run(tmp_path)
+    assert (back.peak_memory, back.cpus, back.memory_cap) == (None, None, None)
 
 
 def test_reads_a_tum_trajectory(tmp_path: Path) -> None:
@@ -117,6 +134,16 @@ def test_evaluate_rejects_a_run_whose_times_do_not_ascend() -> None:
         ({"diagnostics": [{"tracked": 3}]}, r"diagnostics\[0\]: expected an object"),
         ({"diagnostics": [{"timestamp": float("nan")}]}, r"diagnostics\[0\]: not JSON"),
         ({"dataset": 3}, "dataset: expected a string"),
+        ({"peak_memory": -1}, "peak_memory: expected a whole number of bytes"),
+        ({"peak_memory": 1.5e9}, "peak_memory: expected a whole number of bytes"),
+        ({"peak_memory": True}, "peak_memory: expected a whole number of bytes"),
+        ({"cpus": []}, "cpus: expected CPU numbers, ascending"),
+        ({"cpus": [5, 4]}, "cpus: expected CPU numbers, ascending"),
+        ({"cpus": [4, 4]}, "cpus: expected CPU numbers, ascending"),
+        ({"cpus": [-1, 4]}, "cpus: expected CPU numbers, ascending"),
+        ({"cpus": (4, 5)}, "cpus: expected CPU numbers, ascending"),
+        ({"memory_cap": 0}, "memory_cap: expected a positive number of bytes"),
+        ({"memory_cap": 2.0**30}, "memory_cap: expected a positive number of bytes"),
     ],
 )
 def test_write_run_checks_everything_before_writing(
@@ -146,13 +173,19 @@ def test_write_run_replaces_files_whole(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("edit", "message"),
     [
-        (lambda info: info.update(version=2), "version 1"),
+        (lambda info: info.update(version=1), "version 2"),
         (lambda info: info.update(format="other"), "format"),
         (lambda info: info.update(mode="lidar"), "mode"),
         (lambda info: info.update(backend="java"), "backend"),
         (lambda info: info.pop("mode"), "missing mode"),
         (lambda info: info.update(sequence=7), "sequence must be a string"),
         (lambda info: info.update(settings=[1]), "settings must be an object"),
+        (lambda info: info.pop("peak_memory"), "missing peak_memory"),
+        (lambda info: info.update(peak_memory="1 GB"), "peak_memory: expected a whole number"),
+        (lambda info: info.pop("cpus"), "missing cpus"),
+        (lambda info: info.update(cpus=[7, 4]), "cpus: expected CPU numbers"),
+        (lambda info: info.pop("memory_cap"), "missing memory_cap"),
+        (lambda info: info.update(memory_cap=-1), "memory_cap: expected a positive number"),
     ],
 )
 def test_read_run_rejects_unknown_info(tmp_path: Path, edit: object, message: str) -> None:

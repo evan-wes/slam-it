@@ -6,8 +6,10 @@
 //! the usage; `exit_code` of the error's kind (from 3) for a failed run. Messages go to stderr,
 //! a one-line summary to stdout.
 
+use std::path::Path;
 use std::process::ExitCode;
 
+use slamlab_eval::{budgets, runs};
 use slamlab_orchestration::vo;
 
 fn main() -> ExitCode {
@@ -23,14 +25,23 @@ fn main() -> ExitCode {
             return ExitCode::from(vo::EXIT_USAGE);
         }
     };
-    match vo::run(&request) {
-        Ok(written) => {
+    let written = vo::run(&request).and_then(|mut done| {
+        // What the program records of its own process, before it writes the run.
+        done.peak_memory = budgets::peak_memory(Path::new(budgets::STATUS));
+        done.cpus = budgets::allowed_cpus(Path::new(budgets::STATUS));
+        done.memory_cap =
+            budgets::memory_cap(Path::new(budgets::CGROUP), Path::new(budgets::CGROUP_ROOT));
+        runs::write_run(&request.out, &done)?;
+        Ok(done)
+    });
+    match written {
+        Ok(done) => {
             println!(
                 "slamlab_vo: {} of {} frames tracked, {} keyframes, {} points -> {}",
-                written.timestamps.len(),
-                written.diagnostics.len(),
-                written.keyframe_timestamps.len(),
-                written.points.len(),
+                done.timestamps.len(),
+                done.diagnostics.len(),
+                done.keyframe_timestamps.len(),
+                done.points.len(),
                 request.out.display()
             );
             ExitCode::SUCCESS

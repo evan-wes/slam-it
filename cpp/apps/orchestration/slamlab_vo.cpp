@@ -14,12 +14,14 @@
 #include <string>
 #include <vector>
 
+#include "slamlab/eval/budgets.hpp"
 #include "slamlab/eval/runs.hpp"
 #include "slamlab/foundations/error.hpp"
 #include "slamlab/orchestration/vo.hpp"
 
 namespace {
 
+namespace budgets = slamlab::eval::budgets;
 namespace vo = slamlab::orchestration::vo;
 
 /// @brief Report an error on stderr.
@@ -38,14 +40,22 @@ int run(std::span<const std::string> arguments) {
     std::println(stderr, "{}", vo::kUsage);
     return vo::kExitUsage;
   }
-  const auto written = vo::run(*request);
-  if (!written) {
+  auto done = vo::run(*request);
+  if (!done) {
+    report(done.error());
+    return vo::exit_code(done.error().kind);
+  }
+  // What the program records of its own process, before it writes the run.
+  done->peak_memory = budgets::peak_memory();
+  done->cpus = budgets::allowed_cpus();
+  done->memory_cap = budgets::memory_cap();
+  if (const auto written = slamlab::eval::runs::write_run(request->out, *done); !written) {
     report(written.error());
     return vo::exit_code(written.error().kind);
   }
   std::println("slamlab_vo: {} of {} frames tracked, {} keyframes, {} points -> {}",
-               written->timestamps.size(), written->diagnostics.size(),
-               written->keyframe_timestamps.size(), written->points.size(), request->out);
+               done->timestamps.size(), done->diagnostics.size(), done->keyframe_timestamps.size(),
+               done->points.size(), request->out);
   return 0;
 }
 

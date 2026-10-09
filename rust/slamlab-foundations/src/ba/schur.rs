@@ -1,12 +1,15 @@
 //! Bundle adjustment internals: the reduced camera-side coordinates and the
 //! Schur-complement normal equations.
 
+use std::rc::Rc;
+
 use nalgebra::{DMatrix, DVector, Dyn, Matrix3, OMatrix, U3, Vector3};
 
 use super::ReducedSystemSolver;
 use crate::nls::LinearSystem;
 
-/// A camera-side coupling block: one row per camera-side column, three point columns.
+/// Points' camera-side couplings: one row per coupled camera-side coordinate, three point
+/// columns.
 pub type Coupling = OMatrix<f64, Dyn, U3>;
 
 /// Maps between the full camera-side vector (6 per pose, P per group, 2 per affine) and the
@@ -43,6 +46,55 @@ impl Reduction {
             rows,
             basis,
             full_size,
+        }
+    }
+
+    /// The full coordinates the reduced system reads, ascending: the free entries and the
+    /// confined rows. The rest (fixed poses, intrinsics and affines) it never reads.
+    ///
+    /// # Returns
+    ///
+    /// The coordinates.
+    pub fn kept(&self) -> Vec<usize> {
+        let mut out = self.free.clone();
+        out.extend_from_slice(&self.rows);
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// This reduction with another basis for its confined rows (a state's).
+    ///
+    /// # Arguments
+    ///
+    /// * `basis` - The basis, block-diagonal, as [`Reduction::new`] takes it.
+    ///
+    /// # Returns
+    ///
+    /// The reduction.
+    pub fn rebased(&self, basis: DMatrix<f64>) -> Self {
+        Self {
+            free: self.free.clone(),
+            rows: self.rows.clone(),
+            basis,
+            full_size: self.full_size,
+        }
+    }
+
+    /// This reduction over the positions of [`Reduction::kept`]: for a vector or matrix that
+    /// holds only those coordinates, in their order.
+    ///
+    /// # Returns
+    ///
+    /// The compacted reduction.
+    pub fn compacted(&self) -> Self {
+        let coordinates = self.kept();
+        let position = |full: usize| coordinates.partition_point(|&c| c < full);
+        Self {
+            free: self.free.iter().map(|&c| position(c)).collect(),
+            rows: self.rows.iter().map(|&c| position(c)).collect(),
+            basis: self.basis.clone(),
+            full_size: coordinates.len(),
         }
     }
 
@@ -154,59 +206,37 @@ impl Reduction {
     }
 }
 
-/// Scatter-adds a block into a matrix, accumulating repeated indices (a block's columns
-/// repeat when an anchored point's host is the observing camera).
-///
-/// # Arguments
-///
-/// * `target` - The matrix.
-/// * `rows` - The block's rows in `target`.
-/// * `cols` - The block's columns in `target`.
-/// * `block` - The block.
-pub fn scatter_add(
-    target: &mut DMatrix<f64>,
-    rows: &[usize],
-    cols: &[usize],
-    block: &DMatrix<f64>,
-) {
-    // Column-outer: the matrices are column-major.
-    for (j, &c) in cols.iter().enumerate() {
-        for (i, &r) in rows.iter().enumerate() {
-            target[(r, c)] += block[(i, j)];
-        }
-    }
+/// Where each free point's coupling rows lie, fixed for a problem: each point's rows are its
+/// distinct kept camera-side coordinates, ascending (a point's blocks share, for one, their
+/// camera's intrinsics coordinates), so elimination does one product per point rather than one
+/// per pair of its blocks.
+#[derive(Debug, Clone, Default)]
+pub struct CouplingLayout {
+    /// Each free point's first coupling row, and one past the last point's last row.
+    pub offset: Vec<usize>,
+    /// Each coupling row's camera-side coordinate, as a position among the kept ones.
+    pub column: Vec<usize>,
+    /// The most rows any point has: what elimination's scratch must hold.
+    pub max_rows: usize,
 }
 
-/// Scatter-adds a vector, accumulating repeated indices.
-///
-/// # Arguments
-///
-/// * `target` - The vector.
-/// * `rows` - The entries' positions in `target`.
-/// * `values` - The values.
-pub fn scatter_add_vector(target: &mut DVector<f64>, rows: &[usize], values: &DVector<f64>) {
-    for (i, &r) in rows.iter().enumerate() {
-        target[r] += values[i];
-    }
-}
-
-/// The blocks of the normal equations, formed once per linearisation.
+/// The blocks of the normal equations, formed once per linearisation. Every camera-side
+/// quantity is over the kept coordinates ([`Reduction::kept`]) only: the fixed poses',
+/// intrinsics' and affines' entries the reduced system would drop are never formed.
 #[derive(Debug, Clone)]
 pub struct Blocks {
-    /// The full camera-side Hessian.
+    /// The camera-side Hessian over the kept coordinates, in their order.
     pub hessian_cc: DMatrix<f64>,
-    /// The full camera-side gradient.
+    /// The camera-side gradient over the kept coordinates.
     pub gradient_c: DVector<f64>,
     /// Each free point's 3x3 Hessian block (inert identity on unused dimensions).
     pub hessian_pp: Vec<Matrix3<f64>>,
     /// Each free point's gradient.
     pub gradient_p: Vec<Vector3<f64>>,
-    /// Each point-coupled block's coupling `J_cᵀ W J_p` (w x 3).
-    pub coupling: Vec<Coupling>,
-    /// Those blocks' camera-side columns.
-    pub columns: Vec<Vec<usize>>,
-    /// Those blocks' free-point slots.
-    pub slots: Vec<usize>,
+    /// Every free point's coupling `J_cᵀ W J_p`, its rows where `layout` puts them.
+    pub coupling: Coupling,
+    /// The coupling's rows, shared by every linearisation of the problem.
+    pub layout: Rc<CouplingLayout>,
     /// Each free point's number of variables: 3 (xyz), or 1 (an inverse depth).
     pub point_dims: Vec<usize>,
 }
@@ -224,16 +254,12 @@ struct Eliminated {
 /// The normal equations with the points eliminated: an [`LinearSystem`].
 #[derive(Debug, Clone)]
 pub struct SchurSystem<S: ReducedSystemSolver> {
-    /// The free camera-side coordinates.
+    /// The free camera-side coordinates, over the kept ones ([`Reduction::compacted`]).
     reduction: Reduction,
-    /// The normal equations' blocks (couplings merged into `point_coupling`).
+    /// The normal equations' blocks.
     blocks: Blocks,
     /// Factors the reduced camera system.
     solver: S,
-    /// Each free point's distinct camera-side columns, ascending.
-    point_columns: Vec<Vec<usize>>,
-    /// Each free point's merged coupling over those columns.
-    point_coupling: Vec<Coupling>,
     /// Each free point's offset in the point part of the free coordinates.
     offsets: Vec<usize>,
     /// The gradient in the free coordinates, formed once.
@@ -241,11 +267,12 @@ pub struct SchurSystem<S: ReducedSystemSolver> {
 }
 
 impl<S: ReducedSystemSolver> SchurSystem<S> {
-    /// Holds the blocks, merging each point's couplings.
+    /// Holds the blocks.
     ///
     /// # Arguments
     ///
-    /// * `reduction` - The free camera-side coordinates.
+    /// * `reduction` - The free camera-side coordinates, over the kept ones
+    ///   ([`Reduction::compacted`]).
     /// * `blocks` - The normal equations' blocks.
     /// * `solver` - Factors the reduced camera system.
     ///
@@ -261,12 +288,9 @@ impl<S: ReducedSystemSolver> SchurSystem<S> {
             reduction,
             blocks,
             solver,
-            point_columns: Vec::new(),
-            point_coupling: Vec::new(),
             offsets,
             gradient: DVector::zeros(0),
         };
-        system.merge_couplings();
         system.gradient = system.free_gradient();
         system
     }
@@ -338,15 +362,25 @@ impl<S: ReducedSystemSolver> SchurSystem<S> {
             }
             inverse_pp.push(damped.cholesky()?.inverse());
         }
+        // S = H_cc - sum_p E_p H_p⁻¹ E_pᵀ and b = g_c - sum_p E_p H_p⁻¹ g_p, one product per
+        // point over its coupled coordinates; the upper triangle, then mirrored.
+        let layout = &*self.blocks.layout;
         let mut schur = self.blocks.hessian_cc.clone();
         let mut rhs = self.blocks.gradient_c.clone();
+        let mut weighted = Coupling::zeros(layout.max_rows);
         for (p, inverse) in inverse_pp.iter().enumerate() {
-            // One product per point: S -= E_p H_p⁻¹ E_pᵀ, b -= E_p H_p⁻¹ g_p.
-            let coupling = &self.point_coupling[p];
-            let weighted = coupling * inverse;
-            let columns = &self.point_columns[p];
-            subtract_upper(&mut schur, columns, &(&weighted * coupling.transpose()));
-            scatter_add_vector(&mut rhs, columns, &-(&weighted * self.blocks.gradient_p[p]));
+            let first = layout.offset[p];
+            let count = layout.offset[p + 1] - first;
+            let coupling = self.blocks.coupling.rows(first, count);
+            let mut rows = weighted.rows_mut(0, count);
+            coupling.mul_to(inverse, &mut rows);
+            let columns = &layout.column[first..first + count];
+            for (j, &cj) in columns.iter().enumerate() {
+                for (i, &ci) in columns.iter().enumerate().take(j + 1) {
+                    schur[(ci, cj)] -= rows.row(i).dot(&coupling.row(j));
+                }
+                rhs[cj] -= rows.row(j).dot(&self.blocks.gradient_p[p].transpose());
+            }
         }
         schur.fill_lower_triangle_with_upper_triangle();
         let mut reduced = self.reduction.reduce_matrix(&schur);
@@ -358,68 +392,6 @@ impl<S: ReducedSystemSolver> SchurSystem<S> {
             rhs: self.reduction.reduce_vector(&rhs),
             inverse_pp,
         })
-    }
-
-    /// Merges each point's blocks into one coupling matrix over its distinct camera-side
-    /// columns (a point's blocks share, for one, their camera's intrinsics columns), so
-    /// elimination does one product per point rather than one per pair of its blocks.
-    fn merge_couplings(&mut self) {
-        let n_points = self.blocks.hessian_pp.len();
-        let mut by_point: Vec<Vec<usize>> = vec![Vec::new(); n_points];
-        for (m, &slot) in self.blocks.slots.iter().enumerate() {
-            by_point[slot].push(m);
-        }
-        let mut position: Vec<Option<usize>> = vec![None; self.blocks.hessian_cc.nrows()];
-        self.point_columns = Vec::with_capacity(n_points);
-        self.point_coupling = Vec::with_capacity(n_points);
-        for blocks_of_point in &by_point {
-            let mut columns: Vec<usize> = Vec::new();
-            for &m in blocks_of_point {
-                for &c in &self.blocks.columns[m] {
-                    if position[c].is_none() {
-                        position[c] = Some(columns.len());
-                        columns.push(c);
-                    }
-                }
-            }
-            let mut coupling = Coupling::zeros(columns.len());
-            for &m in blocks_of_point {
-                for (i, &c) in self.blocks.columns[m].iter().enumerate() {
-                    if let Some(row) = position[c] {
-                        let mut target = coupling.row_mut(row);
-                        target += self.blocks.coupling[m].row(i);
-                    }
-                }
-            }
-            for &c in &columns {
-                position[c] = None;
-            }
-            // Ascending columns: the elimination's scatter then walks memory in order.
-            let mut order: Vec<usize> = (0..columns.len()).collect();
-            order.sort_by_key(|&k| columns[k]);
-            let sorted_columns: Vec<usize> = order.iter().map(|&k| columns[k]).collect();
-            let sorted_coupling = coupling.select_rows(&order);
-            self.point_columns.push(sorted_columns);
-            self.point_coupling.push(sorted_coupling);
-        }
-        // Merged: the per-block copies are no longer needed.
-        self.blocks.coupling = Vec::new();
-        self.blocks.columns = Vec::new();
-    }
-}
-
-/// Subtracts a symmetric block from the upper triangle of a matrix.
-///
-/// # Arguments
-///
-/// * `target` - The matrix (only its upper triangle is updated).
-/// * `columns` - The block's rows and columns in `target`, ascending and distinct.
-/// * `block` - The symmetric block.
-fn subtract_upper(target: &mut DMatrix<f64>, columns: &[usize], block: &DMatrix<f64>) {
-    for (j, &cj) in columns.iter().enumerate() {
-        for (i, &ci) in columns.iter().enumerate().take(j + 1) {
-            target[(ci, cj)] -= block[(i, j)];
-        }
     }
 }
 
@@ -444,13 +416,17 @@ impl<S: ReducedSystemSolver> LinearSystem for SchurSystem<S> {
     fn solve(&self, damping: &DVector<f64>) -> Option<DVector<f64>> {
         let eliminated = self.eliminate(damping)?;
         let step_c = self.solver.solve(eliminated.reduced, &-eliminated.rhs)?;
-        let full_c = self.reduction.expand(&step_c);
+        // Back-substitute: each point's step from the camera steps of its coupled coordinates.
+        let kept_step = self.reduction.expand(&step_c);
+        let layout = &*self.blocks.layout;
         let n_cam = self.reduction.size();
         let mut step = DVector::zeros(n_cam + self.point_size());
         step.rows_mut(0, n_cam).copy_from(&step_c);
         for (p, inverse) in eliminated.inverse_pp.iter().enumerate() {
-            let back = self.blocks.gradient_p[p]
-                + self.point_coupling[p].transpose() * full_c.select_rows(&self.point_columns[p]);
+            let mut back = self.blocks.gradient_p[p];
+            for r in layout.offset[p]..layout.offset[p + 1] {
+                back += self.blocks.coupling.row(r).transpose() * kept_step[layout.column[r]];
+            }
             let point_step = -(inverse * back);
             let dims = self.blocks.point_dims[p];
             step.rows_mut(n_cam + self.offsets[p], dims)
@@ -486,6 +462,35 @@ mod tests {
         let reduced = DVector::from_fn(reduction.size(), |i, _| 1.0 + i as f64);
         let back = reduction.reduce_vector(&reduction.expand(&reduced));
         assert!((back - reduced).amax() < 1e-14);
+    }
+
+    /// The compacted reduction reads a vector or matrix over the kept coordinates as the
+    /// reduction reads the full one: the dropped entries never reach the reduced system.
+    #[test]
+    fn compacting_drops_only_unread_coordinates() {
+        let reduction = reduction();
+        let kept = reduction.kept();
+        assert_eq!(kept, [0, 2, 3, 6, 7, 8, 9, 10, 11]);
+        let compacted = reduction.compacted();
+        let vector = DVector::from_fn(14, |i, _| (i as f64 * 0.71).sin());
+        let m = DMatrix::from_fn(14, 14, |i, j| ((i + 3 * j) as f64).cos());
+        let symmetric = &m + m.transpose();
+        let kept_vector = vector.select_rows(&kept);
+        let kept_matrix = symmetric.select_rows(&kept).select_columns(&kept);
+        assert_eq!(compacted.size(), reduction.size());
+        assert_eq!(
+            compacted.reduce_vector(&kept_vector),
+            reduction.reduce_vector(&vector)
+        );
+        assert_eq!(
+            compacted.reduce_matrix(&kept_matrix),
+            reduction.reduce_matrix(&symmetric)
+        );
+        let step = DVector::from_fn(reduction.size(), |i, _| 1.0 + i as f64);
+        assert_eq!(
+            compacted.expand(&step),
+            reduction.expand(&step).select_rows(&kept)
+        );
     }
 
     /// The reduced diagonal is the diagonal of the reduced matrix, `Bᵀ M B`.

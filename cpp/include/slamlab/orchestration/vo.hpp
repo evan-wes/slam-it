@@ -79,10 +79,11 @@ struct Request {
 ///         out of range.
 [[nodiscard]] foundations::Result<void> check(const Request& request);
 
-/// @brief Run a sequence through the pipeline and write its run folder
-///        (`slamlab.orchestration.vo.run`).
+/// @brief Run a sequence through the pipeline: the run, not yet written, as Python's program
+///        builds it before writing (`slamlab.orchestration.vo.main`). The program records its
+///        own process in it (slamlab/eval/budgets.hpp) and writes it to `request.out`.
 /// @param request The request.
-/// @return The run written; the check's, a reader's, the pipeline's or the writer's error.
+/// @return The run; the check's, a reader's or the pipeline's error.
 [[nodiscard]] foundations::Result<eval::runs::Run> run(const Request& request);
 
 }  // namespace slamlab::orchestration::vo

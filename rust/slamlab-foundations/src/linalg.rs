@@ -1,15 +1,18 @@
 //! Dense linear algebra shared by rung 0's Rust modules: the SVD every module uses, and the
 //! minimum-norm least squares built on it.
 //!
-//! Every SVD in the crate, dynamic or 3x3, goes through [`svd`] or [`svd3`], which call faer,
-//! as does the one general eigendecomposition ([`eigen_real`], Stewénius' action matrix).
-//! nalgebra 0.35's SVDs are not backward stable: its 3x3 SVD works on `MᵀM`, squaring the
-//! condition number (thin P3P triangles gave rotations off by 0.7), and its dynamic SVD
-//! leaves errors near 1e-4 in some graded matrices' trailing singular pairs (8-point E and F
-//! off by up to 6e-3). faer's matches LAPACK to roundoff on both (PR 6 panel, L1 and L2),
-//! once the matrix is scaled into a safe range as LAPACK's `dlascl` does (faer does not; PR 6
-//! panel, run 2, L8). nalgebra stays the crate's matrix type; the factors are copied across at
-//! each call. Only the crate uses this module.
+//! Every SVD in the crate goes through [`svd`], which calls faer, or, for a 3x3, [`svd3`] and
+//! [`singular_values3`], which run Eigen's `JacobiSVD` algorithm on the stack; faer also does
+//! the one general eigendecomposition ([`eigen_real`], Stewénius' action matrix). nalgebra
+//! 0.35's SVDs are not backward stable: its 3x3 SVD works on `MᵀM`, squaring the condition
+//! number (thin P3P triangles gave rotations off by 0.7), and its dynamic SVD leaves errors
+//! near 1e-4 in some graded matrices' trailing singular pairs (8-point E and F off by up to
+//! 6e-3). faer's matches LAPACK to roundoff on both (PR 6 panel, L1 and L2), once the matrix is
+//! scaled into a safe range as LAPACK's `dlascl` does (faer does not; PR 6 panel, run 2, L8).
+//! faer allocates, which the per-frame 3x3s of the edge VO (`so3::project_to_so3`, Umeyama)
+//! should not (PR 6 panel, A11): two-sided Jacobi is backward stable and needs no workspace,
+//! and is what C++'s `Eigen::JacobiSVD<Matrix3d>` computes. nalgebra stays the crate's matrix
+//! type; faer's factors are copied across at each call. Only the crate uses this module.
 //! There is no Python or C++ counterpart: numpy (LAPACK) and Eigen (`JacobiSVD`) need none.
 
 use faer::dyn_stack::{MemBuffer, MemStack};
@@ -161,30 +164,258 @@ pub fn eigen_real(matrix: &DMatrix<f64>) -> Option<(DVector<f64>, DVector<f64>, 
     ))
 }
 
-/// A 3x3 matrix's SVD, singular values largest first.
-///
-/// # Arguments
-///
-/// * `matrix` - The matrix.
-///
-/// # Returns
-///
-/// `(U, σ, Vᵀ)`, or `None` for a non-finite matrix.
-#[must_use]
-pub fn svd3(matrix: &Matrix3<f64>) -> Option<(Matrix3<f64>, Vector3<f64>, Matrix3<f64>)> {
-    let decomposition = svd(
-        &DMatrix::from_column_slice(3, 3, matrix.as_slice()),
-        true,
-        true,
-    )?;
-    Some((
-        Matrix3::from_column_slice(decomposition.u?.as_slice()),
-        Vector3::from_column_slice(decomposition.singular_values.as_slice()),
-        Matrix3::from_column_slice(decomposition.v_t?.as_slice()),
-    ))
+/// The most sweeps [`svd3`] makes before it gives up. Eigen's `JacobiSVD` has no cap; cyclic
+/// Jacobi converges quadratically, in about six sweeps on the hardest 3x3s, so a cap this
+/// generous never changes a result where Eigen ends, and turns a non-termination into `None`.
+const MAX_SWEEPS: usize = 64;
+
+/// A plane rotation `[c s; -s c]`, as Eigen's real `JacobiRotation`.
+#[derive(Debug, Clone, Copy)]
+struct Rotation {
+    /// The cosine.
+    c: f64,
+    /// The sine.
+    s: f64,
 }
 
-/// A 3x3 matrix's singular values, largest first.
+impl Rotation {
+    /// No rotation.
+    const IDENTITY: Self = Self { c: 1.0, s: 0.0 };
+
+    /// The transposed rotation.
+    ///
+    /// # Returns
+    ///
+    /// `[c -s; s c]`.
+    fn transpose(self) -> Self {
+        Self {
+            c: self.c,
+            s: -self.s,
+        }
+    }
+
+    /// The product of two rotations.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - The rotation on the right.
+    ///
+    /// # Returns
+    ///
+    /// `self * other`.
+    fn times(self, other: Self) -> Self {
+        Self {
+            c: self.c * other.c - self.s * other.s,
+            s: self.c * other.s + self.s * other.c,
+        }
+    }
+
+    /// The rotation that diagonalises the symmetric `[x y; y z]` from both sides, as Eigen's
+    /// `JacobiRotation::makeJacobi`.
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - The upper-left entry.
+    /// * `y` - The off-diagonal entry.
+    /// * `z` - The lower-right entry.
+    ///
+    /// # Returns
+    ///
+    /// The rotation (none when `y` is zero or subnormal).
+    fn jacobi(x: f64, y: f64, z: f64) -> Self {
+        let deno = 2.0 * y.abs();
+        if deno < f64::MIN_POSITIVE {
+            return Self::IDENTITY;
+        }
+        let tau = (x - z) / deno;
+        let w = (tau * tau + 1.0).sqrt();
+        let t = if tau > 0.0 {
+            1.0 / (tau + w)
+        } else {
+            1.0 / (tau - w)
+        };
+        let sign_t = if t > 0.0 { 1.0 } else { -1.0 };
+        let n = 1.0 / (t * t + 1.0).sqrt();
+        Self {
+            c: n,
+            s: -sign_t * (y / y.abs()) * t.abs() * n,
+        }
+    }
+
+    /// Whether this is no rotation (applying it is then skipped, as Eigen skips it).
+    ///
+    /// # Returns
+    ///
+    /// Whether `c` is 1 and `s` is 0.
+    #[allow(clippy::float_cmp, reason = "exactly no rotation, as Eigen tests it")]
+    fn is_identity(self) -> bool {
+        self.c == 1.0 && self.s == 0.0
+    }
+
+    /// Applies the rotation to rows `p` and `q` from the left: `B = J B`.
+    ///
+    /// # Arguments
+    ///
+    /// * `matrix` - The matrix.
+    /// * `p` - The first row.
+    /// * `q` - The second row.
+    fn rotate_rows(self, matrix: &mut Matrix3<f64>, p: usize, q: usize) {
+        if self.is_identity() {
+            return;
+        }
+        for k in 0..3 {
+            let (x, y) = (matrix[(p, k)], matrix[(q, k)]);
+            matrix[(p, k)] = self.c * x + self.s * y;
+            matrix[(q, k)] = -self.s * x + self.c * y;
+        }
+    }
+
+    /// Applies the rotation to columns `p` and `q` from the right: `B = B J`.
+    ///
+    /// # Arguments
+    ///
+    /// * `matrix` - The matrix.
+    /// * `p` - The first column.
+    /// * `q` - The second column.
+    fn rotate_columns(self, matrix: &mut Matrix3<f64>, p: usize, q: usize) {
+        let t = self.transpose();
+        if t.is_identity() {
+            return;
+        }
+        for k in 0..3 {
+            let (x, y) = (matrix[(k, p)], matrix[(k, q)]);
+            matrix[(k, p)] = t.c * x + t.s * y;
+            matrix[(k, q)] = -t.s * x + t.c * y;
+        }
+    }
+}
+
+/// The SVD of a 2x2 block `(p, q)` of a matrix, as Eigen's `real_2x2_jacobi_svd`: a rotation
+/// symmetrises the block, then a Jacobi rotation diagonalises it.
+///
+/// # Arguments
+///
+/// * `matrix` - The matrix.
+/// * `p` - The block's second index.
+/// * `q` - Its first.
+///
+/// # Returns
+///
+/// The left and right rotations `(J_l, J_r)`: `J_l B J_r` is diagonal.
+fn jacobi_2x2(matrix: &Matrix3<f64>, p: usize, q: usize) -> (Rotation, Rotation) {
+    let (a, b) = (matrix[(p, p)], matrix[(p, q)]);
+    let (c, d) = (matrix[(q, p)], matrix[(q, q)]);
+    let t = a + d;
+    let skew = c - b;
+    let symmetrise = if skew.abs() < f64::MIN_POSITIVE {
+        Rotation::IDENTITY
+    } else {
+        let u = t / skew;
+        let tmp = (1.0 + u * u).sqrt();
+        Rotation {
+            c: u / tmp,
+            s: 1.0 / tmp,
+        }
+    };
+    // The block's rows rotated: `[x y; y z]`, symmetric.
+    let (x, y, z) = if symmetrise.is_identity() {
+        (a, b, d)
+    } else {
+        (
+            symmetrise.c * a + symmetrise.s * c,
+            symmetrise.c * b + symmetrise.s * d,
+            -symmetrise.s * b + symmetrise.c * d,
+        )
+    };
+    let right = Rotation::jacobi(x, y, z);
+    (symmetrise.times(right.transpose()), right)
+}
+
+/// A 3x3 matrix's SVD by two-sided Jacobi, Eigen's `JacobiSVD` for a square matrix: the
+/// matrix scaled by its largest entry, sweeps of 2x2 SVDs over each off-diagonal pair until
+/// every pair is below `2ε` times the largest diagonal entry, the diagonal made positive (its
+/// signs moved into `U`), then sorted.
+///
+/// # Arguments
+///
+/// * `matrix` - The matrix.
+/// * `vectors` - Whether to accumulate `U` and `V` (identity otherwise).
+///
+/// # Returns
+///
+/// `(U, σ, V)`, or `None` for a non-finite matrix (or one not diagonalised within
+/// [`MAX_SWEEPS`], never observed).
+fn jacobi_svd3(
+    matrix: &Matrix3<f64>,
+    vectors: bool,
+) -> Option<(Matrix3<f64>, Vector3<f64>, Matrix3<f64>)> {
+    if !matrix.iter().all(|x| x.is_finite()) {
+        return None;
+    }
+    let largest = matrix.amax();
+    let scale = if largest == 0.0 { 1.0 } else { largest };
+    let mut work = matrix / scale;
+    let mut u = Matrix3::identity();
+    let mut v = Matrix3::identity();
+    let precision = 2.0 * f64::EPSILON;
+    let mut max_diagonal = work.diagonal().amax();
+    let mut finished = false;
+    let mut sweeps = 0;
+    while !finished {
+        if sweeps == MAX_SWEEPS {
+            return None;
+        }
+        sweeps += 1;
+        finished = true;
+        for p in 1..3 {
+            for q in 0..p {
+                // Subnormal entries count as zero, so the sweeps end.
+                let threshold = f64::MIN_POSITIVE.max(precision * max_diagonal);
+                if work[(p, q)].abs() > threshold || work[(q, p)].abs() > threshold {
+                    finished = false;
+                    let (left, right) = jacobi_2x2(&work, p, q);
+                    left.rotate_rows(&mut work, p, q);
+                    right.rotate_columns(&mut work, p, q);
+                    if vectors {
+                        left.transpose().rotate_columns(&mut u, p, q);
+                        right.rotate_columns(&mut v, p, q);
+                    }
+                    max_diagonal = max_diagonal.max(work[(p, p)].abs().max(work[(q, q)].abs()));
+                }
+            }
+        }
+    }
+    let mut singular = Vector3::zeros();
+    for i in 0..3 {
+        let a = work[(i, i)];
+        singular[i] = a.abs();
+        if vectors && a < 0.0 {
+            u.set_column(i, &-u.column(i));
+        }
+    }
+    singular *= scale;
+    // Largest first; the first of equal values stays first, as Eigen's `maxCoeff`.
+    for i in 0..3 {
+        let mut pos = i;
+        for k in i + 1..3 {
+            if singular[k] > singular[pos] {
+                pos = k;
+            }
+        }
+        if singular[pos] == 0.0 {
+            break;
+        }
+        if pos != i {
+            singular.swap_rows(i, pos);
+            u.swap_columns(i, pos);
+            v.swap_columns(i, pos);
+        }
+    }
+    Some((u, singular, v))
+}
+
+/// A 3x3 matrix's SVD, singular values largest first: two-sided Jacobi, on the stack, as
+/// C++'s `Eigen::JacobiSVD<Matrix3d>`.
 ///
 /// # Arguments
 ///
@@ -192,19 +423,28 @@ pub fn svd3(matrix: &Matrix3<f64>) -> Option<(Matrix3<f64>, Vector3<f64>, Matrix
 ///
 /// # Returns
 ///
-/// σ, or NaN for a non-finite matrix (which every rank test, written so NaN fails it, then
+/// `(U, σ, Vᵀ)`, or `None` for a non-finite matrix (or one not diagonalised within
+/// [`MAX_SWEEPS`] sweeps, never observed).
+#[must_use]
+pub fn svd3(matrix: &Matrix3<f64>) -> Option<(Matrix3<f64>, Vector3<f64>, Matrix3<f64>)> {
+    let (u, singular, v) = jacobi_svd3(matrix, true)?;
+    Some((u, singular, v.transpose()))
+}
+
+/// A 3x3 matrix's singular values, largest first (as [`svd3`]).
+///
+/// # Arguments
+///
+/// * `matrix` - The matrix.
+///
+/// # Returns
+///
+/// σ, or NaN for a non-finite matrix or one [`svd3`] gives up on (which every rank test,
+/// written so NaN fails it, then
 /// rejects).
 #[must_use]
 pub fn singular_values3(matrix: &Matrix3<f64>) -> Vector3<f64> {
-    svd(
-        &DMatrix::from_column_slice(3, 3, matrix.as_slice()),
-        false,
-        false,
-    )
-    .map_or_else(
-        || Vector3::repeat(f64::NAN),
-        |d| Vector3::from_column_slice(d.singular_values.as_slice()),
-    )
+    jacobi_svd3(matrix, false).map_or_else(|| Vector3::repeat(f64::NAN), |(_, s, _)| s)
 }
 
 /// The minimum-norm least-squares solution of `A x = b` by SVD, singular values at or below
@@ -341,7 +581,8 @@ mod tests {
     }
 
     /// A rank-2 3x3 with σ = (1, 1e-8, 0) keeps σ₂ to 1e-6 relative, where nalgebra 0.35's
-    /// 3x3 SVD (through `MᵀM`) lost up to 30%.
+    /// 3x3 SVD (through `MᵀM`) lost up to 30%; the factors rebuild it to a few ulp (Jacobi's
+    /// accumulated rotations, as Eigen's).
     #[test]
     fn small_singular_values_of_a_3x3_are_accurate() {
         let mut rnd = lcg(11);
@@ -351,8 +592,81 @@ mod tests {
             let m = a * Matrix3::from_diagonal(&Vector3::new(1.0, 1e-8, 0.0)) * b;
             assert!((singular_values3(&m)[1] / 1e-8 - 1.0).abs() < 1e-6);
             let (u, s, v_t) = svd3(&m).unwrap();
-            assert!((u * Matrix3::from_diagonal(&s) * v_t - m).amax() < 1e-15);
+            assert!((u * Matrix3::from_diagonal(&s) * v_t - m).amax() < 1e-14);
+            assert!((u.transpose() * u - Matrix3::identity()).amax() < 1e-14);
         }
+    }
+
+    /// The 3x3 SVD gives Eigen's factors bit for bit, on the golden fixture C++'s
+    /// `foundations_test_svd3` writes from `Eigen::JacobiSVD` and checks Eigen against
+    /// (random, graded, rank-deficient, repeated and near-repeated singular values, signs, a
+    /// permutation, extreme scales).
+    #[test]
+    fn svd3_gives_eigens_factors_bit_for_bit() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/foundations/svd3.json"
+        );
+        let text = std::fs::read_to_string(path).expect("the fixture is in the repository");
+        let fixture: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        let numbers = |value: &serde_json::Value| -> Vec<f64> {
+            value
+                .as_array()
+                .expect("a list")
+                .iter()
+                .map(|x| x.as_f64().expect("a number"))
+                .collect()
+        };
+        // Bits, not values: `==` equates 0.0 and -0.0, whose sign Eigen moves into U.
+        let bits = |values: &[f64]| values.iter().map(|x| x.to_bits()).collect::<Vec<u64>>();
+        let cases = fixture["cases"].as_array().expect("cases");
+        assert!(cases.len() >= 21);
+        for case in cases {
+            let name = case["name"].as_str().expect("a name");
+            let m = Matrix3::from_row_slice(&numbers(&case["matrix"]));
+            let (u, s, v_t) = svd3(&m).expect("a finite matrix");
+            let expected_u = Matrix3::from_row_slice(&numbers(&case["u"]));
+            assert_eq!(bits(u.as_slice()), bits(expected_u.as_slice()), "{name}: U");
+            let singular = numbers(&case["singular_values"]);
+            assert_eq!(bits(s.as_slice()), bits(&singular), "{name}: σ");
+            let alone = singular_values3(&m);
+            assert_eq!(bits(alone.as_slice()), bits(&singular), "{name}: σ alone");
+            let v = Matrix3::from_row_slice(&numbers(&case["v"]));
+            assert_eq!(
+                bits(v_t.as_slice()),
+                bits(v.transpose().as_slice()),
+                "{name}: V"
+            );
+        }
+    }
+
+    /// The 3x3 SVD is Eigen's `JacobiSVD`: values largest first and non-negative, a negative
+    /// diagonal's sign moved into `U`, equal values left in place, and no rotation at all for a
+    /// matrix already diagonal.
+    #[test]
+    fn svd3_orders_and_signs_as_eigen() {
+        let (u, s, v_t) = svd3(&Matrix3::from_diagonal(&Vector3::new(1.0, -3.0, 2.0))).unwrap();
+        assert_eq!(s, Vector3::new(3.0, 2.0, 1.0));
+        #[rustfmt::skip] // keep one matrix row per line
+        let expected_u = Matrix3::new(
+            0.0, 0.0, 1.0,
+            -1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+        );
+        assert_eq!(u, expected_u);
+        assert_eq!(v_t, expected_u.abs().transpose());
+        let (u, s, v_t) = svd3(&Matrix3::identity()).unwrap();
+        assert_eq!(
+            (u, s, v_t),
+            (
+                Matrix3::identity(),
+                Vector3::repeat(1.0),
+                Matrix3::identity()
+            )
+        );
+        let (_, s, _) = svd3(&Matrix3::zeros()).unwrap();
+        assert_eq!(s, Vector3::zeros());
+        assert!(svd3(&Matrix3::repeat(f64::NAN)).is_none());
     }
 
     /// A real eigenvector satisfies `A v = λ v`; a rotation block's pair is complex.

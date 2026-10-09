@@ -109,6 +109,9 @@ std::optional<double> number(std::string_view token) {
   token = trim(token);
   if (token.starts_with('+')) {
     token.remove_prefix(1);
+    if (token.starts_with('-')) {
+      return std::nullopt;  // one sign, as Rust's and Python's readers take
+    }
   }
   return parsed<double>(token);
 }

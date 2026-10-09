@@ -91,8 +91,8 @@ constexpr std::array<const char*, 5> kStereoOptionKeys = {"max_distance", "band"
                                                           "search", "outlier_factor"};
 
 /// @brief Match features along the rows of a rectified pair.
-/// @param left_image The rectified left image.
-/// @param right_image The rectified right image.
+/// @param left_levels The rectified left image's pyramid.
+/// @param right_levels The rectified right image's.
 /// @param left The left features, as a dict.
 /// @param right The right features, as a dict.
 /// @param focal The rectified focal length.
@@ -101,8 +101,9 @@ constexpr std::array<const char*, 5> kStereoOptionKeys = {"max_distance", "band"
 /// @return A dict of `StereoMatches`' fields.
 /// @throws CoreError for invalid input; std::invalid_argument for a malformed dict.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the Python signature's order
-nb::dict match(const ImageIn& left_image, const ImageIn& right_image, const nb::dict& left,
-               const nb::dict& right, double focal, double baseline, const nb::dict& options) {
+nb::dict match(const std::vector<ImageIn>& left_levels, const std::vector<ImageIn>& right_levels,
+               const nb::dict& left, const nb::dict& right, double focal, double baseline,
+               const nb::dict& options) {
   check_keys(options, kStereoOptionKeys, "stereo.Options");
   const foundations::stereo::MatchOptions settings{
       .max_distance = nb::cast<std::int64_t>(options["max_distance"]),
@@ -111,7 +112,7 @@ nb::dict match(const ImageIn& left_image, const ImageIn& right_image, const nb::
       .search = nb::cast<std::int64_t>(options["search"]),
       .outlier_factor = nb::cast<double>(options["outlier_factor"])};
   const std::vector<foundations::stereo::StereoMatch> matches = unwrap(
-      foundations::stereo::match(image_in(left_image), image_in(right_image), features_in(left),
+      foundations::stereo::match(levels_in(left_levels), levels_in(right_levels), features_in(left),
                                  features_in(right), focal, baseline, settings));
   const std::size_t k = matches.size();
   auto [left_index, left_data] = new_array<std::int64_t>({k});
@@ -148,7 +149,7 @@ void bind_stereo(nb::module_& m) {
         nb::arg("intrinsics").noconvert(), nb::arg("rotation").noconvert(),
         nb::arg("rectified").noconvert(), nb::arg("rows"), nb::arg("cols"),
         "Return the (rows, cols, 2) map from rectified pixels to the original image.");
-  m.def("match", &match, nb::arg("left_image").noconvert(), nb::arg("right_image").noconvert(),
+  m.def("match", &match, nb::arg("left_levels").noconvert(), nb::arg("right_levels").noconvert(),
         nb::arg("left"), nb::arg("right"), nb::arg("focal"), nb::arg("baseline"),
         nb::arg("options"), "Match features along rows; return a dict of StereoMatches' fields.");
 }

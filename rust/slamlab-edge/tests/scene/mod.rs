@@ -115,18 +115,13 @@ pub fn frame_at(t: &Matrix4<f64>, with_depth: bool, level: usize) -> Frame {
             f64::NAN
         });
     }
-    Frame {
-        timestamp: 0.0,
-        features: Features {
-            keypoints,
-            descriptors,
-            scale_factor: 1.2,
-            levels: 8,
-        },
-        bearings,
-        depth,
-        right,
-    }
+    let features = Features {
+        keypoints,
+        descriptors,
+        scale_factor: 1.2,
+        levels: 8,
+    };
+    Frame::new(0.0, features, bearings, depth, right).unwrap()
 }
 
 /// A keyframe's frame: its keypoints on level 0 (see [`frame_at`]).

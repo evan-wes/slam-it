@@ -302,8 +302,8 @@ struct AxisSample {
     first: usize,
     /// The second source index (the first's neighbour, clamped).
     second: usize,
-    /// The second index's weight, over `2^RESIZE_BITS`.
-    fraction: i64,
+    /// The second index's weight, over `2^RESIZE_BITS` (below it, so 11 bits).
+    fraction: i32,
 }
 
 /// Sample positions along one axis: destination `d` samples
@@ -341,6 +341,12 @@ fn axis_samples(n_in: usize, n_out: usize) -> Vec<AxisSample> {
                 whole = n_in - 1;
                 fraction = 0;
             }
+            debug_assert!((0..one).contains(&fraction));
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "a fraction below 2^RESIZE_BITS"
+            )]
+            let fraction = fraction as i32;
             AxisSample {
                 first: to_usize(whole),
                 second: to_usize((whole + 1).min(n_in - 1)),
@@ -362,22 +368,31 @@ fn axis_samples(n_in: usize, n_out: usize) -> Vec<AxisSample> {
 ///
 /// The resized image.
 fn resize_checked(image: &Image, rows: usize, cols: usize) -> Image {
-    let one = 1_i64 << RESIZE_BITS;
+    let one = 1_i32 << RESIZE_BITS;
     let xs = axis_samples(image.cols, cols);
     let ys = axis_samples(image.rows, rows);
-    let mut across = vec![0_i64; image.rows * cols];
-    for r in 0..image.rows {
-        for (c, x) in xs.iter().enumerate() {
-            across[r * cols + c] = i64::from(image.at(r, x.first)) * (one - x.fraction)
-                + i64::from(image.at(r, x.second)) * x.fraction;
+    // Every sum fits 32 bits: across a row at most 255 * 2^11, down a column 255 * 2^22.
+    let mut across = vec![0_i32; image.rows * cols];
+    for (row, sums) in image
+        .pixels
+        .chunks_exact(image.cols)
+        .zip(across.chunks_exact_mut(cols))
+    {
+        for (sum, x) in sums.iter_mut().zip(&xs) {
+            let fx = x.fraction;
+            *sum = i32::from(row[x.first]) * (one - fx) + i32::from(row[x.second]) * fx;
         }
     }
+    let shift = 2 * RESIZE_BITS;
+    let half = 1_i32 << (shift - 1);
     let mut out = Image::blank(rows, cols);
-    for (r, y) in ys.iter().enumerate() {
-        for c in 0..cols {
-            let total = across[y.first * cols + c] * (one - y.fraction)
-                + across[y.second * cols + c] * y.fraction;
-            out.pixels[r * cols + c] = round_shift(total, 2 * RESIZE_BITS);
+    for (line, y) in out.pixels.chunks_exact_mut(cols).zip(&ys) {
+        let fy = y.fraction;
+        let top = &across[y.first * cols..(y.first + 1) * cols];
+        let bottom = &across[y.second * cols..(y.second + 1) * cols];
+        for ((pixel, &a), &b) in line.iter_mut().zip(top).zip(bottom) {
+            let total = a * (one - fy) + b * fy;
+            *pixel = byte((total + half) >> shift);
         }
     }
     out
@@ -492,28 +507,102 @@ pub fn blur(image: &Image, kernel: &[u32]) -> Result<Image> {
     let row_index: Vec<usize> = (-radius..to_i64(rows) + radius)
         .map(|r| reflect101(r, rows))
         .collect();
-    let mut across = vec![0_i64; rows * cols];
-    for r in 0..rows {
-        for c in 0..cols {
-            across[r * cols + c] = kernel
+    // The horizontal sums reach 255 * 2^bits, bits at most MAX_KERNEL_BITS: 32 bits hold them.
+    // The interior reads its neighbours directly, a tap at a time, so the loops vectorize; the
+    // border reflects. Integer sums are exact in any order.
+    let mut across = vec![0_u32; rows * cols];
+    let reach = kernel.len() / 2;
+    let first = reach.min(cols);
+    let last = first.max(cols.saturating_sub(reach));
+    for (row, sums) in image
+        .pixels
+        .chunks_exact(cols)
+        .zip(across.chunks_exact_mut(cols))
+    {
+        if last > first {
+            for (k, &weight) in kernel.iter().enumerate() {
+                for (sum, &value) in sums[first..last].iter_mut().zip(&row[k..]) {
+                    *sum += weight * u32::from(value);
+                }
+            }
+        }
+        for c in (0..first).chain(last..cols) {
+            sums[c] = kernel
                 .iter()
                 .zip(&column_index[c..])
-                .map(|(&w, &source)| i64::from(w) * i64::from(image.at(r, source)))
+                .map(|(&weight, &source)| weight * u32::from(row[source]))
                 .sum();
         }
     }
+    // The vertical sums reach 255 * 2^(2 bits): 32 bits hold them up to 12-bit kernels
+    // (ORB's), which lets the loop vectorize; 64 bits above.
     let mut out = Image::blank(rows, cols);
-    for r in 0..rows {
-        for c in 0..cols {
-            let total: i64 = kernel
-                .iter()
-                .zip(&row_index[r..])
-                .map(|(&w, &source)| i64::from(w) * across[source * cols + c])
-                .sum();
-            out.pixels[r * cols + c] = round_shift(total, 2 * bits);
-        }
+    if 2 * bits + 8 <= 32 {
+        blur_columns::<u32>(&across, kernel, &row_index, bits, &mut out);
+    } else {
+        blur_columns::<u64>(&across, kernel, &row_index, bits, &mut out);
     }
     Ok(out)
+}
+
+/// A rounded weighted mean of intensities as one: at most 255 by construction (weights that
+/// sum to the scale divided out).
+///
+/// # Arguments
+///
+/// * `value` - The mean, from 0 to 255.
+///
+/// # Returns
+///
+/// The intensity.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a weighted mean of bytes is a byte"
+)]
+fn byte(value: impl Into<i128>) -> u8 {
+    let value = value.into();
+    debug_assert!((0..=255).contains(&value));
+    value as u8
+}
+
+/// A separable blur's vertical pass, rounded to intensities.
+///
+/// # Arguments
+///
+/// * `across` - The horizontal pass's sums, row-major, `out`'s shape.
+/// * `kernel` - The weights.
+/// * `row_index` - Each padded row's reflected row.
+/// * `bits` - The kernel's bits.
+/// * `out` - The blurred image, its pixels written.
+fn blur_columns<T>(across: &[u32], kernel: &[u32], row_index: &[usize], bits: u32, out: &mut Image)
+where
+    T: Copy
+        + From<u32>
+        + std::ops::Add<Output = T>
+        + std::ops::AddAssign
+        + std::ops::Mul<Output = T>
+        + std::ops::Shl<u32, Output = T>
+        + std::ops::Shr<u32, Output = T>
+        + Into<i128>,
+{
+    let cols = out.cols;
+    let zero = T::from(0);
+    let half = (T::from(1) << (2 * bits)) >> 1; // 0 for a 0-bit kernel, as round_shift's
+    let mut sums = vec![zero; cols];
+    for (r, row) in out.pixels.chunks_exact_mut(cols).enumerate() {
+        sums.fill(zero);
+        for (&weight, &source) in kernel.iter().zip(&row_index[r..]) {
+            let weight = T::from(weight);
+            let line = &across[source * cols..(source + 1) * cols];
+            for (sum, &value) in sums.iter_mut().zip(line) {
+                *sum += weight * T::from(value);
+            }
+        }
+        for (pixel, &sum) in row.iter_mut().zip(&sums) {
+            *pixel = byte((sum + half) >> (2 * bits));
+        }
+    }
 }
 
 /// Resizes bilinearly, pixel centres aligned, in 11-bit fixed point.
@@ -564,6 +653,51 @@ pub fn pyramid(image: &Image, levels: usize, scale_factor: f64) -> Result<Vec<Im
     }
     out.push(level);
     Ok(out)
+}
+
+/// Checks a pyramid already built (`slamlab.foundations.image.as_pyramid`): `count` images,
+/// each a valid image of the shape [`level_shapes`] gives from level 0's.
+///
+/// # Arguments
+///
+/// * `levels` - The levels, level 0 first.
+/// * `count` - The number of levels expected.
+/// * `scale_factor` - The pyramid's scale factor.
+/// * `name` - The argument's name, for the message.
+///
+/// # Errors
+///
+/// `InvalidInput` for another number of levels, a malformed level, one of another shape, or
+/// settings [`level_shapes`] refuses.
+pub fn check_pyramid(levels: &[Image], count: usize, scale_factor: f64, name: &str) -> Result<()> {
+    if levels.len() != count {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!("{name}: expected {count} levels, got {}", levels.len()),
+        );
+    }
+    for (k, level) in levels.iter().enumerate() {
+        check_image(level, &format!("{name}[{k}]"))?;
+    }
+    let Some(first) = levels.first() else {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!("{name}: expected at least one level"),
+        );
+    };
+    let shapes = level_shapes(first.rows, first.cols, count, scale_factor)?;
+    for (k, (level, &(rows, cols))) in levels.iter().zip(&shapes).enumerate() {
+        if (level.rows, level.cols) != (rows, cols) {
+            return fail(
+                ErrorKind::InvalidInput,
+                format!(
+                    "{name}: level {k} is {}x{}, expected {rows}x{cols}",
+                    level.rows, level.cols
+                ),
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Samples an image bilinearly at a map of coordinates, rounded to a 32nd of a pixel;

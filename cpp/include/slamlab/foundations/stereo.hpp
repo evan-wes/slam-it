@@ -8,6 +8,7 @@
 
 #include <Eigen/Core>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 #include "slamlab/foundations/camera.hpp"
@@ -107,19 +108,21 @@ struct StereoMatch {
 /// @brief Match ORB features along the rows of a rectified pair (ORB-SLAM's stereo matching,
 ///        with `slamlab.foundations.stereo`'s departures: zero-mean SAD, the V fit, exact
 ///        coordinates).
-/// @param left_image The rectified left image.
-/// @param right_image The rectified right image, of the same shape.
+/// @param left_levels The rectified left image's pyramid, the one its features were extracted
+///        on (`orb::extract_levels`).
+/// @param right_levels The right image's, of the same shapes.
 /// @param left The left features.
-/// @param right The right features, extracted on the same pyramid.
+/// @param right The right features, extracted on a pyramid of the same levels and scale.
 /// @param focal The rectified focal length, in pixels.
 /// @param baseline The distance between the camera centres.
 /// @param options The matching settings.
-/// @return The matches, by left index; `InvalidInput` for malformed images, features or
-///         settings, features from different pyramids or one too deep for the image, a
-///         keypoint outside its level or whose `xy` is not its level pixel's full-image
-///         coordinate, or a left keypoint closer than `options.window` to its level's border.
-[[nodiscard]] Result<std::vector<StereoMatch>> match(const image::Image& left_image,
-                                                     const image::Image& right_image,
+/// @return The matches, by left index; `InvalidInput` for malformed features or settings,
+///         features from different pyramids, a pyramid that is not theirs or two of different
+///         shapes, a keypoint outside its level or whose `xy` is not its level pixel's
+///         full-image coordinate, or a left keypoint closer than `options.window` to its
+///         level's border.
+[[nodiscard]] Result<std::vector<StereoMatch>> match(std::span<const image::Image> left_levels,
+                                                     std::span<const image::Image> right_levels,
                                                      const orb::Features& left,
                                                      const orb::Features& right, double focal,
                                                      double baseline, const MatchOptions& options);

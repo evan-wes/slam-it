@@ -1,20 +1,37 @@
 //! Bundle adjustment internals: the blocks, Jacobians, retraction and solve.
 
+use std::rc::Rc;
+
 use nalgebra::{
-    DMatrix, DVector, Dyn, Matrix2, Matrix3, Matrix4, OMatrix, U3, Vector2, Vector3, Vector6,
+    DMatrix, DVector, Dyn, Matrix2, Matrix3, Matrix4, OMatrix, SMatrix, SVector, U3, Vector1,
+    Vector2, Vector3, Vector6,
 };
 
 use super::gauge;
 use super::layout::Layout;
-use super::schur::{Blocks, Coupling, Reduction, SchurSystem, scatter_add, scatter_add_vector};
+use super::schur::{Blocks, Coupling, CouplingLayout, Reduction, SchurSystem};
 use super::{DenseCholesky, Gauge, Intrinsics, Options, POSE_DIM, Problem, Solution, Summary, at};
 use crate::camera::{self, Model};
 use crate::error::Result;
 use crate::nls;
 use crate::{se3, so3};
 
-/// A block's Jacobian with respect to a world point: one row per residual row.
-type PointJacobian = OMatrix<f64, Dyn, U3>;
+/// The most intrinsics a camera model has (radtan's nine, today).
+const MAX_INTRINSICS: usize = {
+    let mut most = 0;
+    let mut m = 0;
+    while m < Model::ALL.len() {
+        let size = Model::ALL[m].intrinsics_len();
+        if size > most {
+            most = size;
+        }
+        m += 1;
+    }
+    most
+};
+/// The most camera-side columns a residual block touches: its camera's pose and intrinsics, and
+/// an anchored point's host's.
+const MAX_COLUMNS: usize = 2 * (POSE_DIM + MAX_INTRINSICS);
 
 /// A camera's centre `-Rᵀ t`, from its world-to-camera pose.
 ///
@@ -58,20 +75,61 @@ pub struct BundleState {
     inverse_depth: Vec<f64>,
 }
 
-/// One residual block linearised at a state (rows already scaled by `sqrt(w)`).
+/// One residual block of `R` rows linearised at a state (rows already scaled by `sqrt(w)`):
+/// fixed-size by its kind (a reprojection's 2 rows, a depth prior's 1, a pose prior's 6), so it
+/// lives on the stack and its small products unroll. Its camera-side coordinates are fixed for
+/// the problem (`Bundle::block_columns`).
 #[derive(Debug, Clone)]
-struct LinearBlock {
+struct LinearBlock<const R: usize> {
     /// The weighted residual.
-    residual: DVector<f64>,
-    /// d residual / d(camera-side variables).
-    camera_side: DMatrix<f64>,
-    /// The camera-side columns in the full vector.
-    columns: Vec<usize>,
-    /// d residual / d(point variables): xyz, or (rho, 0, 0) for an anchored point (no rows
-    /// for blocks that touch no point).
-    point: PointJacobian,
+    residual: SVector<f64, R>,
+    /// d residual / d(camera-side variables), its first `width` columns in `block_columns`'
+    /// order.
+    camera_side: SMatrix<f64, R, MAX_COLUMNS>,
+    /// The number of camera-side columns.
+    width: usize,
+    /// d residual / d(point variables): xyz, or (rho, 0, 0) for an anchored point (zero for
+    /// a block that touches no point).
+    point: SMatrix<f64, R, 3>,
     /// The point's free slot.
     slot: Option<usize>,
+}
+
+impl<const R: usize> LinearBlock<R> {
+    /// A block observing a point: its camera's pose columns from the world-point Jacobian,
+    /// `(J, -J hat(X))`; the rest of its `width` columns are the caller's to fill.
+    ///
+    /// # Arguments
+    ///
+    /// * `residual` - The weighted residual.
+    /// * `j_world` - d residual / d world point.
+    /// * `point` - The world point.
+    /// * `width` - The number of camera-side columns.
+    /// * `slot` - The point's free slot.
+    ///
+    /// # Returns
+    ///
+    /// The block.
+    fn observing(
+        residual: SVector<f64, R>,
+        j_world: SMatrix<f64, R, 3>,
+        point: &Vector3<f64>,
+        width: usize,
+        slot: Option<usize>,
+    ) -> Self {
+        let mut camera_side = SMatrix::<f64, R, MAX_COLUMNS>::zeros();
+        camera_side.fixed_view_mut::<R, 3>(0, 0).copy_from(&j_world);
+        camera_side
+            .fixed_view_mut::<R, 3>(0, 3)
+            .copy_from(&(-j_world * so3::hat(point)));
+        Self {
+            residual,
+            camera_side,
+            width,
+            point: j_world,
+            slot,
+        }
+    }
 }
 
 /// An anchored point's world position and its Jacobians at a state.
@@ -107,10 +165,21 @@ struct Bundle<'a> {
     anchor_index: Vec<Option<usize>>,
     /// Each free point's number of variables.
     point_dims: Vec<usize>,
+    /// The number of kept camera-side coordinates (`lay_out_blocks`).
+    n_kept: usize,
+    /// The reduction over the kept coordinates, its basis left for each state's
+    /// ([`Reduction::rebased`]).
+    kept_reduction: Reduction,
+    /// Each block's columns as positions among the kept coordinates (`None` where dropped).
+    block_kept: Vec<Vec<Option<usize>>>,
+    /// Each block's columns' rows in its point's coupling.
+    block_rows: Vec<Vec<Option<usize>>>,
+    /// Each free point's coupling rows.
+    coupling_layout: Rc<CouplingLayout>,
 }
 
 impl<'a> Bundle<'a> {
-    /// Indexes every block's columns, the anchored points and the free coordinates.
+    /// Indexes the anchored points, the free coordinates and every block's columns.
     ///
     /// # Arguments
     ///
@@ -160,7 +229,7 @@ impl<'a> Bundle<'a> {
                 point_dims[slot] = 1;
             }
         }
-        Self {
+        let mut bundle = Self {
             problem,
             layout,
             intrinsics_offset,
@@ -171,7 +240,14 @@ impl<'a> Bundle<'a> {
             anchored_points,
             anchor_index,
             point_dims,
-        }
+            n_kept: 0,
+            kept_reduction: Reduction::new(Vec::new(), Vec::new(), DMatrix::zeros(0, 0), 0),
+            block_kept: Vec::new(),
+            block_rows: Vec::new(),
+            coupling_layout: Rc::default(),
+        };
+        bundle.lay_out_blocks();
+        bundle
     }
 
     /// Each block's loss: 0 reprojection, 1 depth prior, 2 pose prior.
@@ -267,6 +343,24 @@ impl<'a> Bundle<'a> {
     ///
     /// The reduction.
     fn reduction(&self, state: &BundleState) -> Reduction {
+        Reduction::new(
+            self.free.clone(),
+            self.confined_rows.clone(),
+            self.basis(state),
+            self.full_size,
+        )
+    }
+
+    /// The confined poses' basis at `state` ([`Reduction`]'s), block-diagonal.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - The state.
+    ///
+    /// # Returns
+    ///
+    /// The basis.
+    fn basis(&self, state: &BundleState) -> DMatrix<f64> {
         let centres: Vec<Vector3<f64>> = state.poses.iter().map(centre).collect();
         let pose_bases = gauge::confinement(
             &self.layout.gauge_anchors,
@@ -282,12 +376,7 @@ impl<'a> Bundle<'a> {
                 .copy_from(block);
             column += block.ncols();
         }
-        Reduction::new(
-            self.free.clone(),
-            self.confined_rows.clone(),
-            basis,
-            self.full_size,
-        )
+        basis
     }
 
     /// Every point in the world frame (`None` where an anchored point is invalid).
@@ -408,7 +497,7 @@ impl<'a> Bundle<'a> {
     }
 
     /// Chains a block's world-point Jacobian through an anchored point: the point's Jacobian
-    /// becomes `(d/d rho, 0, 0)` and the host's pose and intrinsics columns are appended.
+    /// becomes `(d/d rho, 0, 0)` and the host's pose and intrinsics columns follow the block's.
     ///
     /// # Arguments
     ///
@@ -419,38 +508,30 @@ impl<'a> Bundle<'a> {
     /// # Returns
     ///
     /// The block, or `None` if the anchored point is invalid.
-    fn couple(
+    fn couple<const R: usize>(
         &self,
-        mut block: LinearBlock,
+        mut block: LinearBlock<R>,
         p: usize,
         anchor_jacobians: &[Option<AnchorJacobian>],
-    ) -> Option<LinearBlock> {
+    ) -> Option<LinearBlock<R>> {
         let Some(a) = self.anchor_index[p] else {
             return Some(block);
         };
         let anchor = anchor_jacobians[a].as_ref()?;
-        let j_world = block.point.clone();
+        let j_world = block.point;
         let n_params = self.problem.intrinsics.params;
-        let width = block.camera_side.ncols();
-        let rows = j_world.nrows();
-        let mut camera_side = block
+        let width = block.width;
+        block
             .camera_side
-            .resize_horizontally(width + POSE_DIM + n_params, 0.0);
-        camera_side
-            .view_mut((0, width), (rows, POSE_DIM))
-            .copy_from(&(&j_world * anchor.pose));
-        camera_side
-            .view_mut((0, width + POSE_DIM), (rows, n_params))
-            .copy_from(&(&j_world * &anchor.intrinsics));
-        block.camera_side = camera_side;
-        let host = self.host_of(p);
-        block.columns.extend(POSE_DIM * host..POSE_DIM * (host + 1));
-        let group = at(self.problem.intrinsics_idx[host]);
-        let start = self.intrinsics_offset + n_params * group;
-        block.columns.extend(start..start + n_params);
-        let mut point = PointJacobian::zeros(rows);
-        point.set_column(0, &(&j_world * anchor.rho));
-        block.point = point;
+            .fixed_view_mut::<R, POSE_DIM>(0, width)
+            .copy_from(&(j_world * anchor.pose));
+        block
+            .camera_side
+            .view_mut((0, width + POSE_DIM), (R, n_params))
+            .copy_from(&(j_world * &anchor.intrinsics));
+        block.width = width + POSE_DIM + n_params;
+        block.point = SMatrix::zeros();
+        block.point.set_column(0, &(j_world * anchor.rho));
         Some(block)
     }
 
@@ -610,7 +691,7 @@ impl<'a> Bundle<'a> {
         world: &[Option<Vector3<f64>>],
         anchor_jacobians: &[Option<AnchorJacobian>],
         i: usize,
-    ) -> Option<LinearBlock> {
+    ) -> Option<LinearBlock<2>> {
         let m = self.layout.obs[self.layout.reprojection[i]];
         let c = at(self.problem.cam_idx[m]);
         let p = at(self.problem.pt_idx[m]);
@@ -625,24 +706,17 @@ impl<'a> Bundle<'a> {
                 .ok()?;
         let scale = self.problem.weights[m].sqrt();
         let j_world = jacobian.fixed_columns::<3>(0) * rotation * scale;
-        let mut camera_side = DMatrix::zeros(2, POSE_DIM + n_params);
-        camera_side.view_mut((0, 0), (2, 3)).copy_from(&j_world);
-        camera_side
-            .view_mut((0, 3), (2, 3))
-            .copy_from(&(-j_world * so3::hat(&point)));
-        camera_side
+        let mut block = LinearBlock::observing(
+            residual,
+            j_world,
+            &point,
+            POSE_DIM + n_params,
+            self.layout.point_slot[p],
+        );
+        block
+            .camera_side
             .view_mut((0, POSE_DIM), (2, n_params))
             .copy_from(&(jacobian.columns(3, n_params) * scale));
-        let mut columns: Vec<usize> = (POSE_DIM * c..POSE_DIM * (c + 1)).collect();
-        let start = self.intrinsics_offset + n_params * g;
-        columns.extend(start..start + n_params);
-        let block = LinearBlock {
-            residual: DVector::from_column_slice(residual.as_slice()),
-            camera_side,
-            columns,
-            point: PointJacobian::from_row_slice(j_world.transpose().as_slice()),
-            slot: self.layout.point_slot[p],
-        };
         self.couple(block, p, anchor_jacobians)
     }
 
@@ -664,7 +738,7 @@ impl<'a> Bundle<'a> {
         world: &[Option<Vector3<f64>>],
         anchor_jacobians: &[Option<AnchorJacobian>],
         d: usize,
-    ) -> Option<LinearBlock> {
+    ) -> Option<LinearBlock<1>> {
         let m = self.layout.obs[self.layout.depth[d]];
         let c = at(self.problem.cam_idx[m]);
         let p = at(self.problem.pt_idx[m]);
@@ -673,23 +747,15 @@ impl<'a> Bundle<'a> {
         let z = self.in_camera(state, &point, m).z;
         let scale = self.problem.depth_prior_weights[m].sqrt();
         let j_world = state.poses[c].fixed_view::<1, 3>(2, 0) * (-scale / (z * z));
-        let mut camera_side = DMatrix::zeros(1, POSE_DIM + 2);
-        camera_side.view_mut((0, 0), (1, 3)).copy_from(&j_world);
-        camera_side
-            .view_mut((0, 3), (1, 3))
-            .copy_from(&(-j_world * so3::hat(&point)));
-        camera_side[(0, POSE_DIM)] = -scale * self.problem.depth_prior[m];
-        camera_side[(0, POSE_DIM + 1)] = -scale;
-        let mut columns: Vec<usize> = (POSE_DIM * c..POSE_DIM * (c + 1)).collect();
-        let start = self.affine_offset + 2 * c;
-        columns.extend(start..start + 2);
-        let block = LinearBlock {
-            residual: DVector::from_element(1, residual),
-            camera_side,
-            columns,
-            point: PointJacobian::from_row_slice(j_world.as_slice()),
-            slot: self.layout.point_slot[p],
-        };
+        let mut block = LinearBlock::observing(
+            Vector1::new(residual),
+            j_world,
+            &point,
+            POSE_DIM + 2,
+            self.layout.point_slot[p],
+        );
+        block.camera_side[(0, POSE_DIM)] = -scale * self.problem.depth_prior[m];
+        block.camera_side[(0, POSE_DIM + 1)] = -scale;
         self.couple(block, p, anchor_jacobians)
     }
 
@@ -704,7 +770,7 @@ impl<'a> Bundle<'a> {
     /// # Returns
     ///
     /// The block (touching no point), or `None` if its error cannot be evaluated.
-    fn pose_prior_block(&self, state: &BundleState, k: usize) -> Option<LinearBlock> {
+    fn pose_prior_block(&self, state: &BundleState, k: usize) -> Option<LinearBlock<POSE_DIM>> {
         let error = self.pose_error(state, k)?;
         let inverse = so3::right_jacobian_inverse(&error.fixed_rows::<3>(3).into_owned()).ok()?;
         let c = self.layout.prior_cams[k];
@@ -720,51 +786,206 @@ impl<'a> Bundle<'a> {
             .fixed_view_mut::<3, 3>(3, 3)
             .copy_from(&(-inverse * se3::rotation(t_cam_world)));
         let weights = self.pose_sqrt_weights(k);
-        let weighted = nalgebra::Matrix6::from_diagonal(&weights) * jacobian;
+        let mut camera_side = SMatrix::<f64, POSE_DIM, MAX_COLUMNS>::zeros();
+        camera_side
+            .fixed_view_mut::<POSE_DIM, POSE_DIM>(0, 0)
+            .copy_from(&(nalgebra::Matrix6::from_diagonal(&weights) * jacobian));
         Some(LinearBlock {
-            residual: DVector::from_column_slice(weights.component_mul(&error).as_slice()),
-            camera_side: DMatrix::from_column_slice(6, 6, weighted.as_slice()),
-            columns: (POSE_DIM * c..POSE_DIM * (c + 1)).collect(),
-            point: PointJacobian::zeros(0),
+            residual: weights.component_mul(&error),
+            camera_side,
+            width: POSE_DIM,
+            point: SMatrix::zeros(),
             slot: None,
         })
     }
 
-    /// Adds one block's weighted contribution to the normal equations.
+    /// A block's observation.
     ///
     /// # Arguments
     ///
+    /// * `b` - The block, in `squared_norms` order.
+    ///
+    /// # Returns
+    ///
+    /// The observation, or `None` for a pose prior.
+    fn block_observation(&self, b: usize) -> Option<usize> {
+        let n_obs = self.layout.reprojection.len();
+        let entry = if b < n_obs {
+            self.layout.reprojection.get(b)
+        } else {
+            self.layout.depth.get(b - n_obs)
+        };
+        entry.map(|&o| self.layout.obs[o])
+    }
+
+    /// A block's camera-side coordinates in the full vector, in its Jacobian's column order:
+    /// its camera's pose, then its intrinsics (a reprojection) or depth affine (a depth prior),
+    /// then an anchored point's host's pose and intrinsics; a pose prior's camera's pose.
+    ///
+    /// # Arguments
+    ///
+    /// * `b` - The block, in `squared_norms` order.
+    ///
+    /// # Returns
+    ///
+    /// The coordinates (repeated where an anchored point's host is the observer).
+    fn block_columns(&self, b: usize) -> Vec<usize> {
+        let n_params = self.problem.intrinsics.params;
+        let intrinsics_of = |c: usize| {
+            let start = self.intrinsics_offset + n_params * at(self.problem.intrinsics_idx[c]);
+            start..start + n_params
+        };
+        let Some(m) = self.block_observation(b) else {
+            let n_observing = self.layout.reprojection.len() + self.layout.depth.len();
+            let c = self.layout.prior_cams[b - n_observing];
+            return (POSE_DIM * c..POSE_DIM * (c + 1)).collect();
+        };
+        let c = at(self.problem.cam_idx[m]);
+        let mut out: Vec<usize> = (POSE_DIM * c..POSE_DIM * (c + 1)).collect();
+        if b < self.layout.reprojection.len() {
+            out.extend(intrinsics_of(c));
+        } else {
+            out.extend(self.affine_offset + 2 * c..self.affine_offset + 2 * c + 2);
+        }
+        let p = at(self.problem.pt_idx[m]);
+        if self.anchor_index[p].is_some() {
+            let host = self.host_of(p);
+            out.extend(POSE_DIM * host..POSE_DIM * (host + 1));
+            out.extend(intrinsics_of(host));
+        }
+        out
+    }
+
+    /// A block's free point slot.
+    ///
+    /// # Arguments
+    ///
+    /// * `b` - The block, in `squared_norms` order.
+    ///
+    /// # Returns
+    ///
+    /// The slot, or `None` for a pose prior or a fixed point.
+    fn block_slot(&self, b: usize) -> Option<usize> {
+        let m = self.block_observation(b)?;
+        self.layout.point_slot[at(self.problem.pt_idx[m])]
+    }
+
+    /// Lays out what every linearisation of the problem shares: the kept camera-side
+    /// coordinates (the free and confined ones, the only ones the reduced system reads), each
+    /// block's columns among them, and each free point's coupling rows (its distinct kept
+    /// coordinates, ascending), with each block's row in its point's coupling.
+    fn lay_out_blocks(&mut self) {
+        let unbased = Reduction::new(
+            self.free.clone(),
+            self.confined_rows.clone(),
+            DMatrix::zeros(0, 0),
+            self.full_size,
+        );
+        let kept = unbased.kept();
+        self.kept_reduction = unbased.compacted();
+        self.n_kept = kept.len();
+        let mut kept_position = vec![None; self.full_size];
+        for (k, &c) in kept.iter().enumerate() {
+            kept_position[c] = Some(k);
+        }
+        let n_blocks =
+            self.layout.reprojection.len() + self.layout.depth.len() + self.layout.prior_cams.len();
+        self.block_kept = (0..n_blocks)
+            .map(|b| {
+                self.block_columns(b)
+                    .iter()
+                    .map(|&c| kept_position[c])
+                    .collect()
+            })
+            .collect();
+        let mut point_columns: Vec<Vec<usize>> = vec![Vec::new(); self.layout.free_points];
+        for (b, columns) in self.block_kept.iter().enumerate() {
+            let Some(s) = self.block_slot(b) else {
+                continue;
+            };
+            for &c in columns.iter().flatten() {
+                if !point_columns[s].contains(&c) {
+                    point_columns[s].push(c);
+                }
+            }
+        }
+        let mut coupling = CouplingLayout {
+            offset: vec![0],
+            column: Vec::new(),
+            max_rows: 0,
+        };
+        for coupled in &mut point_columns {
+            coupled.sort_unstable(); // ascending: the elimination walks memory in order
+            coupling.column.extend_from_slice(coupled);
+            coupling.offset.push(coupling.column.len());
+            coupling.max_rows = coupling.max_rows.max(coupled.len());
+        }
+        self.block_rows = self
+            .block_kept
+            .iter()
+            .enumerate()
+            .map(|(b, columns)| {
+                let slot = self.block_slot(b);
+                columns
+                    .iter()
+                    .map(|&c| {
+                        let (s, c) = (slot?, c?);
+                        Some(coupling.offset[s] + point_columns[s].partition_point(|&k| k < c))
+                    })
+                    .collect()
+            })
+            .collect();
+        self.coupling_layout = Rc::new(coupling);
+    }
+
+    /// Adds one block's weighted contribution to the normal equations: over its kept
+    /// camera-side columns only, and its coupling straight into its point's rows.
+    ///
+    /// # Arguments
+    ///
+    /// * `b` - The block, in `squared_norms` order.
     /// * `block` - The linearised block, or `None` (unreachable: accepted states keep every
     ///   point valid).
     /// * `w` - Its IRLS weight.
     /// * `blocks` - The normal equations' blocks.
-    fn accumulate(block: Option<LinearBlock>, w: f64, blocks: &mut Blocks) {
+    fn accumulate<const R: usize>(
+        &self,
+        b: usize,
+        block: Option<&LinearBlock<R>>,
+        w: f64,
+        blocks: &mut Blocks,
+    ) {
         let Some(block) = block else {
             return;
         };
-        let weighted = block.camera_side.transpose() * w;
-        scatter_add(
-            &mut blocks.hessian_cc,
-            &block.columns,
-            &block.columns,
-            &(&weighted * &block.camera_side),
-        );
-        scatter_add_vector(
-            &mut blocks.gradient_c,
-            &block.columns,
-            &(&weighted * &block.residual),
-        );
+        let jacobian = &block.camera_side;
+        let kept = &self.block_kept[b];
+        for (j, &cj) in kept.iter().enumerate() {
+            let Some(cj) = cj else {
+                continue;
+            };
+            blocks.gradient_c[cj] += w * jacobian.column(j).dot(&block.residual);
+            for (i, &ci) in kept.iter().enumerate() {
+                // The upper triangle only; `linearize` mirrors it.
+                if let Some(ci) = ci
+                    && ci <= cj
+                {
+                    blocks.hessian_cc[(ci, cj)] += w * jacobian.column(i).dot(&jacobian.column(j));
+                }
+            }
+        }
         let Some(slot) = block.slot else {
             return;
         };
-        let point_t = block.point.transpose() * w;
-        blocks.hessian_pp[slot] += &point_t * &block.point;
-        blocks.gradient_p[slot] += &point_t * &block.residual;
-        blocks
-            .coupling
-            .push(Coupling::from(&weighted * &block.point));
-        blocks.columns.push(block.columns);
-        blocks.slots.push(slot);
+        let point = &block.point;
+        blocks.hessian_pp[slot] += (point.transpose() * point) * w;
+        blocks.gradient_p[slot] += (point.transpose() * block.residual) * w;
+        for (j, &row) in self.block_rows[b].iter().enumerate() {
+            if let Some(r) = row {
+                let mut target = blocks.coupling.row_mut(r);
+                target += (jacobian.column(j).transpose() * point) * w;
+            }
+        }
     }
 }
 
@@ -793,32 +1014,33 @@ impl nls::Problem for Bundle<'_> {
     fn linearize(&self, state: &BundleState, weights: &DVector<f64>) -> Self::System {
         let n_free = self.layout.free_points;
         let mut blocks = Blocks {
-            hessian_cc: DMatrix::zeros(self.full_size, self.full_size),
-            gradient_c: DVector::zeros(self.full_size),
+            hessian_cc: DMatrix::zeros(self.n_kept, self.n_kept),
+            gradient_c: DVector::zeros(self.n_kept),
             hessian_pp: vec![Matrix3::zeros(); n_free],
             gradient_p: vec![Vector3::zeros(); n_free],
-            coupling: Vec::new(),
-            columns: Vec::new(),
-            slots: Vec::new(),
+            coupling: Coupling::zeros(self.coupling_layout.column.len()),
+            layout: Rc::clone(&self.coupling_layout),
             point_dims: self.point_dims.clone(),
         };
         let world = self.world_points(state);
         let anchor_jacobians = self.anchors(state, &world);
-        let mut row = 0;
+        let mut b = 0; // the block, in `squared_norms` order (its weight's row)
         for i in 0..self.layout.reprojection.len() {
             let block = self.reprojection_block(state, &world, &anchor_jacobians, i);
-            Self::accumulate(block, weights[row], &mut blocks);
-            row += 1;
+            self.accumulate(b, block.as_ref(), weights[b], &mut blocks);
+            b += 1;
         }
         for d in 0..self.layout.depth.len() {
             let block = self.depth_block(state, &world, &anchor_jacobians, d);
-            Self::accumulate(block, weights[row], &mut blocks);
-            row += 1;
+            self.accumulate(b, block.as_ref(), weights[b], &mut blocks);
+            b += 1;
         }
         for k in 0..self.layout.prior_cams.len() {
-            Self::accumulate(self.pose_prior_block(state, k), weights[row], &mut blocks);
-            row += 1;
+            let block = self.pose_prior_block(state, k);
+            self.accumulate(b, block.as_ref(), weights[b], &mut blocks);
+            b += 1;
         }
+        blocks.hessian_cc.fill_lower_triangle_with_upper_triangle();
         // An anchored point's two unused dimensions: inert, so their step is exactly zero.
         for (slot, &dims) in self.point_dims.iter().enumerate() {
             if dims == 1 {
@@ -826,7 +1048,11 @@ impl nls::Problem for Bundle<'_> {
                 blocks.hessian_pp[slot][(2, 2)] = 1.0;
             }
         }
-        SchurSystem::new(self.reduction(state), blocks, DenseCholesky)
+        SchurSystem::new(
+            self.kept_reduction.rebased(self.basis(state)),
+            blocks,
+            DenseCholesky,
+        )
     }
 
     fn retract(&self, state: &BundleState, delta: &DVector<f64>) -> BundleState {

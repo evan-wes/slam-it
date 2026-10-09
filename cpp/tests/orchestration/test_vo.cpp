@@ -78,9 +78,16 @@ void check_parse(int& failures) {
   expect(plain.has_value() && plain->first == 0 && !plain->count.has_value(),
          "first and count default to all frames", failures);
   const std::vector<std::vector<std::string>> refused{
-      {"--mode", "lidar"},       {"--first", "x"},           {"--count"},
-      {"--option", "windows=7"}, {"--option", "window=7.5"}, {"--option", "close_depth=inf"},
-      {"--option", "window"},    {"--dataset", "euroc"},     {"--verbose", "1"},
+      {"--mode", "lidar"},
+      {"--first", "x"},
+      {"--count"},
+      {"--option", "windows=7"},
+      {"--option", "window=7.5"},
+      {"--option", "close_depth=inf"},
+      {"--option", "window"},
+      {"--dataset", "euroc"},
+      {"--verbose", "1"},
+      {"--option", "close_depth=+-5"},
   };
   for (const auto& more : refused) {
     expect(is_invalid_input(vo::parse(command(more))), ("parse refuses " + more[0]).c_str(),
@@ -124,6 +131,11 @@ void check_runs(int& failures) {
              empty->backend == "cpp" &&
              empty->settings.size() == edge::kIntegerOptions.size() + edge::kRealOptions.size(),
          "a run of no frames records the sequence and every setting", failures);
+  expect(!fs::exists(out / "run.json"), "the run is the program's to write", failures);
+  if (empty.has_value()) {
+    const auto written = slamlab::eval::runs::write_run(request.out, *empty);
+    expect(written.has_value(), "the run writes", failures);
+  }
   std::ifstream file(out / "run.json");
   const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
   expect(text.contains("\"window\": 10") && fs::exists(out / "trajectory.txt"),

@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <optional>
 #include <utility>
@@ -18,8 +19,9 @@
 
 namespace slamlab::foundations::ba::detail {
 
-/// @brief Maps between the full camera-side vector (6 per pose, P per group) and the free
-///        coordinates: the free full entries, in order, then the scale pose's five.
+/// @brief Maps between the full camera-side vector (6 per pose, P per group, 2 per affine) and
+///        the free coordinates: the free full entries, in order, then each confined pose's
+///        basis coordinates.
 class Reduction {
  public:
   /// @brief Build the reduction.
@@ -32,6 +34,45 @@ class Reduction {
         rows_(std::move(rows)),
         basis_(std::move(basis)),
         full_size_(full_size) {}
+
+  /// @brief The full coordinates the reduced system reads, ascending: the free entries and
+  ///        the confined rows. The rest (fixed poses, intrinsics and affines) it never reads.
+  /// @return The coordinates.
+  [[nodiscard]] IndexList kept() const {
+    IndexList out = free_;
+    out.insert(out.end(), rows_.begin(), rows_.end());
+    std::ranges::sort(out);
+    out.erase(std::ranges::unique(out).begin(), out.end());
+    return out;
+  }
+
+  /// @brief This reduction with another basis for its confined rows (a state's).
+  /// @param basis The basis, block-diagonal, as the constructor takes it.
+  /// @return The reduction.
+  [[nodiscard]] Reduction rebased(Eigen::MatrixXd basis) const {
+    return {free_, rows_, std::move(basis), full_size_};
+  }
+
+  /// @brief This reduction over the positions of `kept()`: for a vector or matrix that holds
+  ///        only those coordinates, in their order.
+  /// @return The compacted reduction.
+  [[nodiscard]] Reduction compacted() const {
+    const IndexList coordinates = kept();
+    const auto position = [&coordinates](Index full) {
+      return static_cast<Index>(std::ranges::lower_bound(coordinates, full) - coordinates.begin());
+    };
+    IndexList free;
+    IndexList rows;
+    free.reserve(free_.size());
+    rows.reserve(rows_.size());
+    for (const Index c : free_) {
+      free.push_back(position(c));
+    }
+    for (const Index c : rows_) {
+      rows.push_back(position(c));
+    }
+    return {std::move(free), std::move(rows), basis_, static_cast<Index>(coordinates.size())};
+  }
 
   /// @brief The number of free coordinates.
   /// @return The size.
@@ -94,53 +135,52 @@ class Reduction {
   Index full_size_;
 };
 
-/// @brief Scatter-add a block into a matrix, accumulating repeated indices (a block's
-///        columns repeat when an anchored point's host is the observing camera).
-/// @param target The matrix.
-/// @param rows The block's rows in `target`.
-/// @param cols The block's columns in `target`.
-/// @param block The block.
-void scatter_add(Eigen::MatrixXd& target, const IndexList& rows, const IndexList& cols,
-                 const Eigen::MatrixXd& block);
+/// @brief Where each free point's coupling rows lie, fixed for a problem: each point's rows
+///        are its distinct kept camera-side coordinates, ascending (a point's blocks share,
+///        for one, their camera's intrinsics coordinates), so elimination does one product per
+///        point rather than one per pair of its blocks.
+struct CouplingLayout {
+  /// @brief Each free point's first coupling row, and one past the last point's last row.
+  IndexList offset;
+  /// @brief Each coupling row's camera-side coordinate, as a position among the kept ones.
+  IndexList column;
+  /// @brief The most rows any point has: what elimination's scratch must hold.
+  Index max_rows = 0;
+};
 
-/// @brief Scatter-add a vector, accumulating repeated indices.
-/// @param target The vector.
-/// @param rows The entries' positions in `target`.
-/// @param values The values.
-void scatter_add(Eigen::VectorXd& target, const IndexList& rows, const Eigen::VectorXd& values);
-
-/// @brief The normal equations with the points eliminated: an `nls::LinearSystem`.
+/// @brief The normal equations with the points eliminated: an `nls::LinearSystem`. Every
+///        camera-side quantity is over the kept coordinates (`Reduction::kept`) only: the fixed
+///        poses', intrinsics' and affines' entries the reduced system would drop are never
+///        formed.
 /// @tparam Solver The reduced system solver.
 template <ReducedSystemSolver Solver>
 class SchurSystem {
  public:
   /// @brief The blocks of the normal equations, formed once per linearisation.
   struct Blocks {
-    /// @brief The full camera-side Hessian.
+    /// @brief The camera-side Hessian over the kept coordinates, in their order.
     Eigen::MatrixXd hessian_cc;
-    /// @brief The full camera-side gradient.
+    /// @brief The camera-side gradient over the kept coordinates.
     Eigen::VectorXd gradient_c;
     /// @brief Each free point's 3x3 Hessian block (inert identity on unused dimensions).
     std::vector<Eigen::Matrix3d> hessian_pp;
     /// @brief Each free point's gradient.
     std::vector<Eigen::Vector3d> gradient_p;
-    /// @brief Each point-coupled block's coupling `J_c^T W J_p` (w x 3).
-    std::vector<Eigen::Matrix<double, Eigen::Dynamic, 3>> coupling;
-    /// @brief Those blocks' camera-side columns.
-    std::vector<IndexList> columns;
-    /// @brief Those blocks' free-point slots.
-    IndexList slots;
+    /// @brief Every free point's coupling `J_c^T W J_p`, its rows where `layout` puts them.
+    Eigen::Matrix<double, Eigen::Dynamic, 3> coupling;
+    /// @brief The coupling's rows, shared by every linearisation of the problem.
+    std::shared_ptr<const CouplingLayout> layout;
     /// @brief Each free point's number of variables: 3 (xyz), or 1 (an inverse depth).
     std::vector<Index> point_dims;
   };
 
   /// @brief Hold the blocks.
-  /// @param reduction The free camera-side coordinates.
+  /// @param reduction The free camera-side coordinates, over the kept ones
+  ///        (`Reduction::compacted`).
   /// @param blocks The normal equations' blocks.
   /// @param solver Factors the reduced camera system.
   SchurSystem(Reduction reduction, Blocks blocks, Solver solver)
       : reduction_(std::move(reduction)), blocks_(std::move(blocks)), solver_(std::move(solver)) {
-    merge_couplings();
     offsets_.push_back(0);
     for (const Index dims : blocks_.point_dims) {
       offsets_.push_back(offsets_.back() + dims);
@@ -186,16 +226,19 @@ class SchurSystem {
     if (!step_c) {
       return std::nullopt;
     }
-    const Eigen::VectorXd full_c = reduction_.expand(*step_c);
-    std::vector<Eigen::Vector3d> back = blocks_.gradient_p;
-    for (std::size_t p = 0; p < back.size(); ++p) {
-      back[p] += point_coupling_[p].transpose() * full_c(point_columns_[p]);
-    }
+    // Back-substitute: each point's step from the camera steps of its coupled coordinates.
+    const Eigen::VectorXd kept_step = reduction_.expand(*step_c);
+    const CouplingLayout& layout = *blocks_.layout;
     const Index n_cam = reduction_.size();
     Eigen::VectorXd step(n_cam + offsets_.back());
     step.head(n_cam) = *step_c;
     for (std::size_t p = 0; p < blocks_.hessian_pp.size(); ++p) {
-      const Eigen::Vector3d point_step = -eliminated->inverse_pp[p] * back[p];
+      Eigen::Vector3d back = blocks_.gradient_p[p];
+      for (Index r = layout.offset[p]; r < layout.offset[p + 1]; ++r) {
+        back += blocks_.coupling.row(r).transpose() *
+                kept_step(layout.column[static_cast<std::size_t>(r)]);
+      }
+      const Eigen::Vector3d point_step = -eliminated->inverse_pp[p] * back;
       step.segment(n_cam + offsets_[p], blocks_.point_dims[p]) =
           point_step.head(blocks_.point_dims[p]);
     }
@@ -249,13 +292,29 @@ class SchurSystem {
       }
       inverse_pp[p] = factor.solve(Eigen::Matrix3d::Identity());
     }
+    // S = H_cc - sum_p E_p H_p^-1 E_p^T and b = g_c - sum_p E_p H_p^-1 g_p, one product per
+    // point over its coupled coordinates; the upper triangle, then mirrored.
+    const CouplingLayout& layout = *blocks_.layout;
     Eigen::MatrixXd schur = blocks_.hessian_cc;
     Eigen::VectorXd rhs = blocks_.gradient_c;
+    Eigen::Matrix<double, Eigen::Dynamic, 3> weighted(layout.max_rows, 3);
     for (std::size_t p = 0; p < n_points; ++p) {
-      // One product per point: S -= E_p H_p^-1 E_p^T, b -= E_p H_p^-1 g_p.
-      const Eigen::Matrix<double, Eigen::Dynamic, 3> weighted = point_coupling_[p] * inverse_pp[p];
-      subtract_upper(schur, point_columns_[p], weighted * point_coupling_[p].transpose());
-      scatter_add(rhs, point_columns_[p], -weighted * blocks_.gradient_p[p]);
+      const Index first = layout.offset[p];
+      const Index count = layout.offset[p + 1] - first;
+      if (count == 0) {
+        continue;
+      }
+      const auto coupling = blocks_.coupling.middleRows(first, count);
+      auto rows = weighted.topRows(count);
+      rows.noalias() = coupling * inverse_pp[p];
+      for (Index j = 0; j < count; ++j) {
+        const Index cj = layout.column[static_cast<std::size_t>(first + j)];
+        for (Index i = 0; i <= j; ++i) {
+          schur(layout.column[static_cast<std::size_t>(first + i)], cj) -=
+              rows.row(i).dot(coupling.row(j));
+        }
+        rhs(cj) -= rows.row(j).dot(blocks_.gradient_p[p].transpose());
+      }
     }
     schur.triangularView<Eigen::StrictlyLower>() = schur.transpose();
     Eigen::MatrixXd reduced = reduction_.reduce_matrix(schur);
@@ -268,72 +327,6 @@ class SchurSystem {
   Reduction reduction_;
   Blocks blocks_;
   Solver solver_;
-  std::vector<IndexList> point_columns_;
-  std::vector<Eigen::Matrix<double, Eigen::Dynamic, 3>> point_coupling_;
-
-  /// @brief Subtract a symmetric block from the upper triangle of a column-major matrix.
-  /// @param target The matrix (only its upper triangle is updated).
-  /// @param columns The block's rows and columns in `target`, ascending and distinct.
-  /// @param block The symmetric block.
-  static void subtract_upper(Eigen::MatrixXd& target, const IndexList& columns,
-                             const Eigen::MatrixXd& block) {
-    for (std::size_t j = 0; j < columns.size(); ++j) {
-      for (std::size_t i = 0; i <= j; ++i) {
-        target(columns[i], columns[j]) -= block(static_cast<Index>(i), static_cast<Index>(j));
-      }
-    }
-  }
-
-  /// @brief Merge each point's blocks into one coupling matrix over its distinct camera-side
-  ///        columns (a point's blocks share, for one, their camera's intrinsics columns), so
-  ///        elimination does one product per point rather than one per pair of its blocks.
-  void merge_couplings() {
-    const std::size_t n_points = blocks_.hessian_pp.size();
-    std::vector<std::vector<std::size_t>> by_point(n_points);
-    for (std::size_t m = 0; m < blocks_.slots.size(); ++m) {
-      by_point[static_cast<std::size_t>(blocks_.slots[m])].push_back(m);
-    }
-    point_columns_.resize(n_points);
-    point_coupling_.resize(n_points);
-    IndexList position(static_cast<std::size_t>(blocks_.hessian_cc.rows()), -1);
-    for (std::size_t p = 0; p < n_points; ++p) {
-      IndexList& columns = point_columns_[p];
-      for (const std::size_t m : by_point[p]) {
-        for (const Index c : blocks_.columns[m]) {
-          if (position[static_cast<std::size_t>(c)] < 0) {
-            position[static_cast<std::size_t>(c)] = static_cast<Index>(columns.size());
-            columns.push_back(c);
-          }
-        }
-      }
-      Eigen::Matrix<double, Eigen::Dynamic, 3> coupling =
-          Eigen::Matrix<double, Eigen::Dynamic, 3>::Zero(static_cast<Index>(columns.size()), 3);
-      for (const std::size_t m : by_point[p]) {
-        for (std::size_t i = 0; i < blocks_.columns[m].size(); ++i) {
-          coupling.row(position[static_cast<std::size_t>(blocks_.columns[m][i])]) +=
-              blocks_.coupling[m].row(static_cast<Index>(i));
-        }
-      }
-      for (const Index c : columns) {
-        position[static_cast<std::size_t>(c)] = -1;
-      }
-      // Ascending columns: the elimination's scatter then walks memory in order.
-      std::vector<std::size_t> order(columns.size());
-      std::ranges::iota(order, std::size_t{0});
-      std::ranges::sort(order,
-                        [&](std::size_t a, std::size_t b) { return columns[a] < columns[b]; });
-      IndexList sorted_columns(columns.size());
-      Eigen::Matrix<double, Eigen::Dynamic, 3> sorted_coupling(coupling.rows(), 3);
-      for (std::size_t k = 0; k < order.size(); ++k) {
-        sorted_columns[k] = columns[order[k]];
-        sorted_coupling.row(static_cast<Index>(k)) = coupling.row(static_cast<Index>(order[k]));
-      }
-      columns = std::move(sorted_columns);
-      point_coupling_[p] = std::move(sorted_coupling);
-    }
-    blocks_.coupling = {};  // merged; the per-block copies are no longer needed
-    blocks_.columns = {};
-  }
   IndexList offsets_;
 };
 

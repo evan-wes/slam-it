@@ -2,18 +2,23 @@
 
 Writes the run's folder with :func:`slamlab.orchestration.vo.run` (or reads one already
 written, with ``--reuse``), then prints what it holds: frames tracked, keyframes, map points,
-the tracking time per frame. With the sequence's ground truth (TUM's ``groundtruth.txt``, EuRoC's
-``state_groundtruth_estimate0``) it prints the ATE (Sim(3)-aligned for monocular, SE(3)
-otherwise) and the RPE over one frame period (:func:`slamlab.eval.runs.evaluate`). With
-``--rerun FILE.rrd`` it saves a rerun recording of the trajectory, the keyframes and the map
-points (open it with ``rerun FILE.rrd``).
+its frames judged against their real-time deadline (:func:`slamlab.eval.budgets.judge`), and
+what its program recorded of its process (peak memory, CPUs, memory cap). ``--budget
+laptop-cpu`` runs the backend's program within that compute budget
+(:mod:`slamlab.eval.budgets`), pinned and its memory capped. With the
+sequence's ground truth (TUM's ``groundtruth.txt``, EuRoC's ``state_groundtruth_estimate0``) it
+prints the ATE (Sim(3)-aligned for monocular, SE(3) otherwise) and the RPE over one frame
+period (:func:`slamlab.eval.runs.evaluate`). With ``--rerun FILE.rrd`` it saves a rerun
+recording of the trajectory, the keyframes and the map points (open it with
+``rerun FILE.rrd``).
 
 Example, the C++ program on 300 frames of a TUM sequence::
 
     python scripts/run_vo.py --dataset tum --sequence PATH --mode rgbd --out RUN_DIR
         --backend cpp --count 300 --rerun RUN.rrd
 
-``--option KEY=VALUE`` sets a field of :class:`slamlab.edge.options.Options` (repeatable).
+``--option KEY=VALUE`` sets a field of :class:`slamlab.edge.options.Options` (repeatable),
+read as the programs read it (:func:`slamlab.orchestration.vo.parse_setting`).
 """
 
 from __future__ import annotations
@@ -28,7 +33,7 @@ from numpy.typing import NDArray
 
 from slamlab import backends
 from slamlab.edge.options import MODES, Options
-from slamlab.eval import euroc, runs, tum
+from slamlab.eval import budgets, euroc, runs, tum
 from slamlab.foundations.errors import InvalidInputError
 from slamlab.orchestration import vo
 
@@ -49,21 +54,15 @@ def parse_options(pairs: list[str]) -> Options:
     Raises
     ------
     SystemExit
-        For a pair without ``=``, an unknown field, or a value of the wrong type.
+        For a pair without ``=``, an unknown field, or a value not of its type
+        (:func:`slamlab.orchestration.vo.parse_setting`).
     """
-    defaults = Options()
-    known = {field.name for field in dataclasses.fields(Options)}
-    changes: dict[str, Any] = {}
-    for pair in pairs:
-        key, equals, value = pair.partition("=")
-        if not equals or key not in known:
-            raise SystemExit(f"--option {pair!r}: expected KEY=VALUE with KEY a field of Options")
-        kind = type(getattr(defaults, key))
-        try:
-            changes[key] = kind(value)
-        except ValueError:
-            raise SystemExit(f"--option {pair!r}: expected a {kind.__name__}") from None
-    return dataclasses.replace(defaults, **changes)
+    changes: dict[str, Any] = {}  # each of its field's type (parse_setting)
+    try:
+        changes.update(vo.parse_setting(pair) for pair in pairs)
+    except vo.UsageError as error:
+        raise SystemExit(f"--option: {error}") from None
+    return dataclasses.replace(Options(), **changes)
 
 
 Truth = tuple[NDArray[np.float64], NDArray[np.float64]]
@@ -133,14 +132,35 @@ def summarize(run: runs.Run, scored: runs.Evaluation | None) -> None:
     scored : slamlab.eval.runs.Evaluation or None
         Its errors.
     """
-    seconds = [float(d.get("seconds", 0.0)) for d in run.diagnostics]
-    per_frame = 1000.0 * float(np.mean(seconds)) if seconds else 0.0
     print(
         f"{run.sequence} ({run.dataset}, {run.mode}, {run.backend}): "
         f"{len(run.timestamps)} of {len(run.diagnostics)} frames tracked, "
-        f"{len(run.keyframe_timestamps)} keyframes, {len(run.points)} points, "
-        f"{per_frame:.1f} ms tracking per frame (frame building aside)"
+        f"{len(run.keyframe_timestamps)} keyframes, {len(run.points)} points"
     )
+    if len(run.diagnostics) >= 2:
+        judged = budgets.judge(run)
+
+        def ms(seconds: float) -> str:
+            return f"{1000 * seconds:.1f} ms"
+
+        latency = judged.latency
+        print(
+            f"building and tracking a frame: median {ms(latency.median)}, 95th percentile "
+            f"{ms(latency.p95)}, max {ms(latency.max)}; {judged.late} of {judged.count} frames "
+            f"past the {ms(judged.deadline)} deadline (reading the images aside: median "
+            f"{ms(judged.read.median)})"
+        )
+        if judged.mapping is not None:
+            print(
+                f"mapping {judged.mapped} keyframes: median {ms(judged.mapping.median)}, max "
+                f"{ms(judged.mapping.max)}; load {judged.mapping_load:.2f} over the run, "
+                f"{judged.mapping_peak_load:.2f} over its busiest {judged.window:.1f} s (below "
+                f"1, a mapping thread would keep up)"
+            )
+    peak = "not recorded" if run.peak_memory is None else f"{run.peak_memory / 2**20:.0f} MiB"
+    cpus = "not recorded" if run.cpus is None else ",".join(map(str, run.cpus))
+    cap = "none recorded" if run.memory_cap is None else f"{run.memory_cap / 2**30:.2f} GiB"
+    print(f"the program's peak memory: {peak}; CPUs: {cpus}; memory cap: {cap}")
     if scored is None:
         return
     absolute, relative = scored.absolute, scored.relative
@@ -208,8 +228,8 @@ def main() -> None:
     parser.add_argument("--sequence", type=Path, required=True, help="the sequence's folder")
     parser.add_argument("--mode", choices=MODES, required=True)
     parser.add_argument("--out", type=Path, required=True, help="the run's folder")
-    parser.add_argument("--backend", choices=backends.BACKENDS, default="cpp")
-    parser.add_argument("--first", type=int, default=0, help="the first frame run")
+    parser.add_argument("--backend", choices=backends.BACKENDS, help="default: cpp")
+    parser.add_argument("--first", type=int, help="the first frame run (default: 0)")
     parser.add_argument("--count", type=int, help="the frames run (default: all)")
     parser.add_argument(
         "--option", action="append", default=[], metavar="KEY=VALUE", help="a setting"
@@ -218,7 +238,22 @@ def main() -> None:
         "--reuse", action="store_true", help="read the run already in --out instead of running"
     )
     parser.add_argument("--rerun", type=Path, help="save a rerun recording to this .rrd file")
+    parser.add_argument(
+        "--budget", choices=budgets.BUDGETS, help="run the backend's program within this budget"
+    )
     args = parser.parse_args()
+    if args.reuse:
+        running = {
+            "--backend": args.backend,
+            "--first": args.first,
+            "--count": args.count,
+            "--option": args.option or None,
+            "--budget": args.budget,
+        }
+        given = [flag for flag, value in running.items() if value is not None]
+        if given:
+            parser.error(f"--reuse only reads the run in --out; {', '.join(given)} would not apply")
+    budget = None if args.budget is None else budgets.BUDGETS[args.budget]
 
     if args.reuse:
         run = runs.read_run(args.out)
@@ -228,11 +263,14 @@ def main() -> None:
             args.sequence,
             args.mode,
             args.out,
-            backend=args.backend,
+            backend=args.backend or "cpp",
             options=parse_options(args.option),
-            first=args.first,
+            first=args.first or 0,
             count=args.count,
+            budget=budget,
         )
+        if budget is not None:
+            print(f"within {budget.name} ({budget.stands_for})")
     truth = ground_truth(args.dataset, args.sequence)
     scored = score(run, truth)
     summarize(run, scored)

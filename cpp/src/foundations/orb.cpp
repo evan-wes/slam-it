@@ -8,6 +8,7 @@
 #include <iterator>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 
@@ -20,45 +21,120 @@ namespace {
 /// @return It as a `std::size_t`.
 std::size_t at(std::int64_t index) { return static_cast<std::size_t>(index); }
 
-/// @brief A pixel's FAST-9 score, when it reaches `floor`.
-/// @param image The image.
-/// @param row The pixel's row, at least 3 from the border.
-/// @param col The pixel's column, at least 3 from the border.
-/// @param floor The smallest score of interest, non-negative.
-/// @return The score if it is at least `floor`, else -1.
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (row, col), as the image's indices
-std::int64_t fast_score(const image::Image& image, std::int64_t row, std::int64_t col,
-                        std::int64_t floor) {
-  const std::int64_t centre = image::pixel(image, row, col);
+/// @brief The circle's pixels as offsets into a level's row-major pixels.
+using CircleOffsets = std::array<std::int64_t, kFastCircle.size()>;
+
+/// @brief The circle's offsets on a level.
+/// @param cols The level's columns.
+/// @return Each circle pixel's offset from the centre's index.
+CircleOffsets circle_offsets(std::int64_t cols) {
+  CircleOffsets out{};
+  for (std::size_t k = 0; k < out.size(); ++k) {
+    out[k] = (kFastCircle[k][1] * cols) + kFastCircle[k][0];
+  }
+  return out;
+}
+
+/// @brief A pixel's FAST-9 score: the largest threshold at which some arc of nine is all
+///        brighter, or all darker, than the centre by more.
+///
+/// Every arc's smallest and largest difference, all sixteen arcs at once, in branch-free
+/// 16-bit loops a compiler vectorizes (`pminsw`, `pmaxsw`); the arcs' starts are the lanes.
+/// @param pixels The level's pixels, row-major.
+/// @param index The pixel's index, at least 3 rows and columns from the border.
+/// @param circle The circle's offsets on the level.
+/// @return The score: one below the best arc's smallest margin (-1 when no arc has one).
+std::int64_t arc_score(std::span<const std::uint8_t> pixels, std::int64_t index,
+                       const CircleOffsets& circle) {
   constexpr std::size_t kCircle = kFastCircle.size();
-  // Each circle pixel minus the centre, then the first eight again so every arc is contiguous.
-  std::array<std::int64_t, kCircle + kFastArc - 1> d{};
+  const std::int16_t centre = pixels[at(index)];
+  // Each circle pixel minus the centre, twice round, so every arc is contiguous.
+  std::array<std::int16_t, 2 * kCircle> d{};
   for (std::size_t k = 0; k < kCircle; ++k) {
-    d.at(k) = image::pixel(image, row + kFastCircle.at(k)[1], col + kFastCircle.at(k)[0]) - centre;
+    d[k] = static_cast<std::int16_t>(pixels[at(index + circle[k])] - centre);
+    d[k + kCircle] = d[k];
   }
-  // Every arc of nine holds one pixel of each opposite pair, (0, 8) and (4, 12): if both of
-  // either pair are within `floor` of the centre, no arc clears it.
-  const auto clears = [floor](std::int64_t v) { return v > floor || v < -floor; };
-  if ((!clears(d[0]) && !clears(d[8])) || (!clears(d[4]) && !clears(d[12]))) {
-    return -1;
-  }
-  for (std::size_t k = 0; k + 1 < kFastArc; ++k) {
-    d.at(kCircle + k) = d.at(k);
-  }
-  std::int64_t best = std::numeric_limits<std::int64_t>::min();
+  std::array<std::int16_t, kCircle> low{};
+  std::array<std::int16_t, kCircle> high{};
   for (std::size_t start = 0; start < kCircle; ++start) {
-    std::int64_t low = d.at(start);
-    std::int64_t high = low;
-    for (std::size_t j = 1; j < kFastArc; ++j) {
-      low = std::min(low, d.at(start + j));
-      high = std::max(high, d.at(start + j));
+    low[start] = d[start];
+    high[start] = d[start];
+  }
+  for (std::size_t j = 1; j < kFastArc; ++j) {
+    for (std::size_t start = 0; start < kCircle; ++start) {
+      low[start] = std::min(low[start], d[start + j]);
+      high[start] = std::max(high[start], d[start + j]);
     }
-    best = std::max({best, low, -high});
+  }
+  std::int16_t best = std::numeric_limits<std::int16_t>::min();
+  for (std::size_t start = 0; start < kCircle; ++start) {
+    best = std::max({best, low[start], static_cast<std::int16_t>(-high[start])});
   }
   // A corner needs every margin strictly above the threshold: the largest it passes is one
   // below the best arc's smallest margin.
-  const std::int64_t score = best - 1;
-  return score >= floor ? score : -1;
+  return std::int64_t{best} - 1;
+}
+
+/// @brief Per-pixel runs along a row of pixels, reused across rows.
+struct RowRuns {
+  /// @brief The current run of circle pixels brighter than the centre by more than the floor.
+  std::vector<std::uint8_t> brighter;
+  /// @brief The current run of circle pixels darker than the centre by more than the floor.
+  std::vector<std::uint8_t> darker;
+  /// @brief The longest run of either.
+  std::vector<std::uint8_t> longest;
+};
+
+/// @brief FAST-9 scores of a run of pixels along a row, where they reach `floor`.
+///
+/// FAST's segment test first, for the whole run at once, as OpenCV's SSE2 FAST makes it: the
+/// circle walked once round plus an arc (so every run that wraps past its start is counted
+/// whole), a pixel at a time for every centre, counting each centre's
+/// current run of brighter and of darker circle pixels and keeping its longest, in byte-wide
+/// branch-free loops a compiler vectorizes. A pixel scores at least `floor` exactly when its
+/// longest run reaches `kFastArc`; only those are scored (`arc_score`).
+/// @param pixels The level's pixels, row-major.
+/// @param index The run's first pixel's index, at least 3 rows and columns from the border.
+/// @param circle The circle's offsets on the level.
+/// @param floor The smallest score of interest, from 0 to `kMaxFastThreshold`.
+/// @param scores Each pixel's score if it reaches `floor`, else -1 (the run's length).
+/// @param runs Scratch space.
+void score_run(std::span<const std::uint8_t> pixels, std::int64_t index,
+               const CircleOffsets& circle, std::int64_t floor, std::span<std::int16_t> scores,
+               RowRuns& runs) {
+  const std::size_t count = scores.size();
+  runs.brighter.assign(count, 0);
+  runs.darker.assign(count, 0);
+  runs.longest.assign(count, 0);
+  const std::span<const std::uint8_t> centres = pixels.subspan(at(index), count);
+  // Local views: a byte store may alias anything, a vector's own pointers included, so the
+  // loop reads them through these, which no store can change.
+  const std::span<std::uint8_t> brighter_run(runs.brighter);
+  const std::span<std::uint8_t> darker_run(runs.darker);
+  const std::span<std::uint8_t> longest(runs.longest);
+  const auto margin = static_cast<std::uint8_t>(floor);
+  for (std::size_t k = 0; k < circle.size() + kFastArc; ++k) {
+    const std::span<const std::uint8_t> ring =
+        pixels.subspan(at(index + circle[k % circle.size()]), count);
+    for (std::size_t c = 0; c < count; ++c) {
+      // Saturating differences and all-ones masks: no branch, so the loop vectorizes.
+      const std::uint8_t low = std::min(ring[c], centres[c]);
+      const auto up = static_cast<std::uint8_t>(ring[c] - low);
+      const auto down = static_cast<std::uint8_t>(centres[c] - low);
+      const auto keep_up = static_cast<std::uint8_t>(0U - static_cast<unsigned>(up > margin));
+      const auto keep_down = static_cast<std::uint8_t>(0U - static_cast<unsigned>(down > margin));
+      const auto brighter = static_cast<std::uint8_t>((brighter_run[c] + 1U) & keep_up);
+      const auto darker = static_cast<std::uint8_t>((darker_run[c] + 1U) & keep_down);
+      brighter_run[c] = brighter;
+      darker_run[c] = darker;
+      longest[c] = std::max({longest[c], brighter, darker});
+    }
+  }
+  for (std::size_t c = 0; c < count; ++c) {
+    scores[c] = longest[c] >= kFastArc ? static_cast<std::int16_t>(arc_score(
+                                             pixels, index + static_cast<std::int64_t>(c), circle))
+                                       : std::int16_t{-1};
+  }
 }
 
 /// @brief A quadtree node: a box `[x0, x1) x [y0, y1)` and the corners inside it.
@@ -277,10 +353,11 @@ class ScoreWindow {
         cols_(region.x_max - region.x_min + 2),
         scores_(at((region.y_max - region.y_min + 2) * cols_)) {
     const auto rows = static_cast<std::int64_t>(scores_.size()) / cols_;
+    const CircleOffsets circle = circle_offsets(image.cols);
+    RowRuns runs;
     for (std::int64_t r = 0; r < rows; ++r) {
-      for (std::int64_t c = 0; c < cols_; ++c) {
-        scores_[at((r * cols_) + c)] = fast_score(image, top_ + r, left_ + c, floor);
-      }
+      score_run(image.pixels, ((top_ + r) * image.cols) + left_, circle, floor,
+                std::span(scores_).subspan(at(r * cols_), at(cols_)), runs);
     }
   }
 
@@ -324,8 +401,8 @@ class ScoreWindow {
   std::int64_t left_;
   /// @brief The window's width.
   std::int64_t cols_;
-  /// @brief The scores, row-major.
-  std::vector<std::int64_t> scores_;
+  /// @brief The scores, row-major (from -1 to 254: 16 bits keep the window small).
+  std::vector<std::int16_t> scores_;
 };
 
 /// @brief The threshold each region pixel's cell uses: `fast_threshold` where the cell has a
@@ -413,8 +490,7 @@ Result<std::vector<image::Image>> checked_pyramid(const image::Image& image,
 /// @param levels The pyramid.
 /// @param options The settings, checked.
 /// @return The keypoints by level, then row, then column.
-std::vector<Keypoint> detect_levels(const std::vector<image::Image>& levels,
-                                    const Options& options) {
+std::vector<Keypoint> detect_levels(std::span<const image::Image> levels, const Options& options) {
   const std::vector<std::int64_t> budgets =
       level_budgets(options.n_features, options.levels, options.scale_factor);
   std::vector<Keypoint> out;
@@ -474,7 +550,7 @@ const RotatedPatterns& rotated_patterns() {
 /// @param levels The pyramid.
 /// @param keypoints The keypoints, each at least `kEdgeThreshold` inside its level.
 /// @return One descriptor per keypoint, or the blur's error (none for a checked level).
-Result<std::vector<Descriptor>> describe(const std::vector<image::Image>& levels,
+Result<std::vector<Descriptor>> describe(std::span<const image::Image> levels,
                                          const std::vector<Keypoint>& keypoints) {
   const RotatedPatterns& patterns = rotated_patterns();
   std::vector<Descriptor> out(keypoints.size());
@@ -503,6 +579,22 @@ Result<std::vector<Descriptor>> describe(const std::vector<image::Image>& levels
     }
   }
   return out;
+}
+
+/// @brief Detect keypoints on a checked pyramid and describe them.
+/// @param levels The pyramid.
+/// @param options The settings, checked.
+/// @return The features, or the blur's error (none for a checked level).
+Result<Features> extract_checked(std::span<const image::Image> levels, const Options& options) {
+  std::vector<Keypoint> keypoints = detect_levels(levels, options);
+  auto descriptors = describe(levels, keypoints);
+  if (!descriptors) {
+    return std::unexpected(descriptors.error());
+  }
+  return Features{.keypoints = std::move(keypoints),
+                  .descriptors = std::move(*descriptors),
+                  .scale_factor = options.scale_factor,
+                  .levels = options.levels};
 }
 
 }  // namespace
@@ -549,10 +641,17 @@ Result<std::vector<std::int64_t>> fast_scores(const image::Image& image) {
   }
   constexpr std::int64_t kRadius = 3;
   std::vector<std::int64_t> out(image.pixels.size(), -1);
+  if (image.rows <= 2 * kRadius || image.cols <= 2 * kRadius) {
+    return out;
+  }
+  const CircleOffsets circle = circle_offsets(image.cols);
+  const std::int64_t width = image.cols - (2 * kRadius);
+  std::vector<std::int16_t> row(at(width));
+  RowRuns runs;
   for (std::int64_t r = kRadius; r < image.rows - kRadius; ++r) {
-    for (std::int64_t c = kRadius; c < image.cols - kRadius; ++c) {
-      out[at((r * image.cols) + c)] = fast_score(image, r, c, 0);
-    }
+    const std::int64_t start = (r * image.cols) + kRadius;
+    score_run(image.pixels, start, circle, 0, row, runs);
+    std::ranges::copy(row, std::next(out.begin(), start));
   }
   return out;
 }
@@ -595,15 +694,17 @@ Result<Features> extract(const image::Image& image, const Options& options) {
   if (!levels) {
     return std::unexpected(levels.error());
   }
-  std::vector<Keypoint> keypoints = detect_levels(*levels, options);
-  auto descriptors = describe(*levels, keypoints);
-  if (!descriptors) {
-    return std::unexpected(descriptors.error());
+  return extract_checked(*levels, options);
+}
+
+Result<Features> extract_levels(std::span<const image::Image> levels, const Options& options) {
+  if (auto ok = check_options(options); !ok) {
+    return std::unexpected(std::move(ok.error()));
   }
-  return Features{.keypoints = std::move(keypoints),
-                  .descriptors = std::move(*descriptors),
-                  .scale_factor = options.scale_factor,
-                  .levels = options.levels};
+  if (auto ok = image::check_pyramid(levels, options.levels, options.scale_factor, "levels"); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  return extract_checked(levels, options);
 }
 
 }  // namespace slamlab::foundations::orb

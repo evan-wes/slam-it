@@ -14,7 +14,7 @@ use serde::Deserialize;
 use slamlab_foundations::camera::Model;
 use slamlab_foundations::stereo::{self as core, Camera};
 
-use super::image_crossing::image_in;
+use super::image_crossing::levels_in;
 use super::orb_crossing::features_in;
 
 use crate::common::{
@@ -171,8 +171,8 @@ struct MatchOptionsIn {
 ///
 /// # Arguments
 ///
-/// * `left_image` - The rectified left image.
-/// * `right_image` - The rectified right image.
+/// * `left_levels` - The rectified left image's pyramid.
+/// * `right_levels` - The rectified right image's.
 /// * `left` - The left features, as a dict.
 /// * `right` - The right features, as a dict.
 /// * `focal` - The rectified focal length.
@@ -190,12 +190,12 @@ struct MatchOptionsIn {
 #[pyo3(name = "match")]
 #[allow(
     clippy::too_many_arguments,
-    reason = "two images, their features, the camera, the settings"
+    reason = "two pyramids, their features, the camera, the settings"
 )]
 fn match_rows<'py>(
     py: Python<'py>,
-    left_image: PyReadonlyArray2<'py, u8>,
-    right_image: PyReadonlyArray2<'py, u8>,
+    left_levels: Vec<PyReadonlyArray2<'py, u8>>,
+    right_levels: Vec<PyReadonlyArray2<'py, u8>>,
     left: &Bound<'py, PyDict>,
     right: &Bound<'py, PyDict>,
     focal: f64,
@@ -214,7 +214,7 @@ fn match_rows<'py>(
     let matches = unwrap(
         py,
         core::match_rows(
-            (&image_in(&left_image)?, &image_in(&right_image)?),
+            (&levels_in(&left_levels)?, &levels_in(&right_levels)?),
             &features_in(left)?,
             &features_in(right)?,
             focal,

@@ -9,6 +9,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <string_view>
 #include <system_error>
@@ -156,6 +157,17 @@ Result<void> check(const Run& run) {
   if (!finite(run.settings)) {
     return fail(ErrorKind::kInvalidInput, "settings: not JSON (a number is not finite)");
   }
+  if (run.peak_memory.value_or(0) < 0) {
+    return fail(ErrorKind::kInvalidInput, "peak_memory: expected a whole number of bytes");
+  }
+  if (run.cpus &&
+      (run.cpus->empty() || run.cpus->front() < 0 ||
+       std::ranges::adjacent_find(*run.cpus, std::greater_equal<>()) != run.cpus->end())) {
+    return fail(ErrorKind::kInvalidInput, "cpus: expected CPU numbers, ascending");
+  }
+  if (run.memory_cap.value_or(1) < 1) {
+    return fail(ErrorKind::kInvalidInput, "memory_cap: expected a positive number of bytes");
+  }
   for (std::size_t k = 0; k < run.diagnostics.size(); ++k) {
     const auto& entry = run.diagnostics[k];
     const bool stamped =
@@ -283,7 +295,22 @@ Result<void> write_run(const std::string& folder, const Run& run) {
       {"sequence", run.sequence},       {"mode", run.mode},    {"backend", run.backend}};
   std::string info_text = json_object(info);
   info_text.pop_back();
-  info_text += ", \"settings\": " + json_object(run.settings) + "}\n";
+  info_text += ", \"settings\": " + json_object(run.settings);
+  const auto integer_or_null = [](const std::optional<std::int64_t>& value) {
+    return value ? std::to_string(*value) : std::string("null");
+  };
+  info_text += ", \"peak_memory\": " + integer_or_null(run.peak_memory);
+  info_text += ", \"cpus\": ";
+  if (run.cpus) {
+    info_text += '[';
+    for (std::size_t k = 0; k < run.cpus->size(); ++k) {
+      info_text += (k == 0 ? "" : ", ") + std::to_string((*run.cpus)[k]);
+    }
+    info_text += ']';
+  } else {
+    info_text += "null";
+  }
+  info_text += ", \"memory_cap\": " + integer_or_null(run.memory_cap) + "}\n";
   std::string diagnostics;
   for (const JsonObject& entry : run.diagnostics) {
     diagnostics += json_object(entry) + "\n";

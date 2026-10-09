@@ -80,13 +80,20 @@ void check_fixture(int& failures) {
            failures);
   }
   for (const auto& c : functions["extract"]["cases"]) {
-    const auto got = orb::extract(read_image(c["input"][0]), read_options(c["input"][1]));
+    const image::Image picture = read_image(c["input"][0]);
+    const orb::Options options = read_options(c["input"][1]);
+    const auto got = orb::extract(picture, options);
     expect(
         got.has_value() && same_keypoints(got->keypoints, c["expected"]) &&
             got->descriptors == c["expected"]["descriptors"].get<std::vector<orb::Descriptor>>() &&
             got->scale_factor == c["expected"]["scale_factor"].get<double>() &&
             got->levels == c["expected"]["levels"].get<std::int64_t>(),
         "extract matches the fixture", failures);
+    const auto levels = image::pyramid(picture, options.levels, options.scale_factor);
+    const auto from_levels = orb::extract_levels(*levels, options);
+    expect(from_levels.has_value() && same_keypoints(from_levels->keypoints, c["expected"]) &&
+               from_levels->descriptors == got->descriptors,
+           "extract_levels on the image's pyramid is extract", failures);
   }
 }
 
@@ -107,6 +114,14 @@ void check_rejections(int& failures) {
   const image::Image tiny{.rows = 10, .cols = 10, .pixels = std::vector<std::uint8_t>(100)};
   expect(is_invalid_input(orb::detect(tiny, {.levels = 8, .scale_factor = 2.0})),
          "detect rejects a pyramid with an empty level", failures);
+  const orb::Options two{.levels = 2, .scale_factor = 1.25};
+  const image::Image eight{.rows = 8, .cols = 8, .pixels = std::vector<std::uint8_t>(64)};
+  expect(is_invalid_input(orb::extract_levels(std::vector<image::Image>{tiny}, two)),
+         "extract_levels rejects a pyramid of other levels", failures);
+  expect(is_invalid_input(orb::extract_levels(std::vector<image::Image>{tiny, tiny}, two)),
+         "extract_levels rejects a level of another shape", failures);
+  expect(orb::extract_levels(std::vector<image::Image>{tiny, eight}, two).has_value(),
+         "extract_levels accepts the settings' pyramid", failures);
   const std::vector<std::array<std::int64_t, 2>> xy{{1, 2}, {3, 4}};
   const std::vector<std::int64_t> response{1, 2};
   const orb::Bounds box{.x_min = 0, .x_max = 5, .y_min = 0, .y_max = 5};

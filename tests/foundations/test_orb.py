@@ -13,7 +13,7 @@ import pytest
 from numpy.typing import NDArray
 
 from slamlab import backends
-from slamlab.foundations import orb
+from slamlab.foundations import image, orb
 from slamlab.foundations.errors import InvalidInputError
 from slamlab.foundations.image import full_image_coordinate, level_shapes
 from tests.conftest import (
@@ -88,9 +88,12 @@ def test_matches_fixture(backend: str, function: str, case: dict[str, Any]) -> N
         found = orb.detect(np.asarray(args[0], np.uint8), orb.Options(**args[1]), backend=chosen)
         _check_keypoints(found, case["expected"])
     else:
-        features = orb.extract(
-            np.asarray(args[0], np.uint8), orb.Options(**args[1]), backend=chosen
-        )
+        settings = orb.Options(**args[1])
+        if function == "extract_levels":
+            levels = [np.asarray(level, np.uint8) for level in args[0]]
+            features = orb.extract_levels(levels, settings, backend=chosen)
+        else:
+            features = orb.extract(np.asarray(args[0], np.uint8), settings, backend=chosen)
         _check_keypoints(features.keypoints, case["expected"])
         _check_descriptors(features.descriptors, case["expected"]["descriptors"])
         assert (features.scale_factor, features.levels) == (
@@ -127,6 +130,42 @@ def test_backends_agree_on_a_vga_frame(backend: str) -> None:
     features, reference = orb.extract(frame, backend=chosen), orb.extract(frame)
     _check_keypoints(features.keypoints, reference.keypoints)
     _check_descriptors(features.descriptors, reference.descriptors)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_extract_levels_is_extract_on_the_images_pyramid(backend: str) -> None:
+    """From the image's own pyramid, every backend extracts what extract does from the image."""
+    chosen = require_function(backend, orb.__name__, "extract_levels")
+    frame = _scene(480, 640, seed=3)
+    settings = orb.Options()
+    levels = image.pyramid(frame, settings.levels, settings.scale_factor)
+    features, reference = orb.extract_levels(levels, backend=chosen), orb.extract(frame)
+    _check_keypoints(features.keypoints, reference.keypoints)
+    _check_descriptors(features.descriptors, reference.descriptors)
+
+
+TWO = orb.Options(levels=2, scale_factor=1.25)
+"""Two levels: a 10x10 image's pyramid is it and an 8x8 level."""
+
+
+@pytest.mark.parametrize(
+    ("levels", "message"),
+    [
+        ([np.zeros((10, 10), np.uint8)], "levels: expected 2 levels, got 1"),
+        ([np.zeros((10, 10), np.uint8)] * 2, "levels: level 1 is 10x10, expected 8x8"),
+        ([np.zeros((10, 10), np.uint8), np.zeros((8, 8), np.int64)], r"levels\[1\]"),
+        (np.zeros((2, 10, 10), np.uint8), "levels: expected a sequence of images"),
+    ],
+)
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_extract_levels_refuses_another_pyramid(backend: str, levels: object, message: str) -> None:
+    """Levels of another count or shape than the settings' pyramid are refused, by all."""
+    chosen = require_function(backend, orb.__name__, "extract_levels")
+    given: Any = levels  # one case is not a sequence of levels, on purpose
+    with pytest.raises(InvalidInputError, match=message):
+        orb.extract_levels(given, TWO, backend=chosen)
+    good = [np.zeros((10, 10), np.uint8), np.zeros((8, 8), np.uint8)]
+    assert len(orb.extract_levels(good, TWO, backend=chosen).descriptors) == 0
 
 
 @pytest.mark.parametrize("threshold", [7, 20])

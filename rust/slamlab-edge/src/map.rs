@@ -1084,26 +1084,23 @@ mod tests {
             descriptors.push(d);
             bearings.push(Vector3::new((x - 160.0) / 250.0, 0.0, 1.0).normalize());
         }
-        Frame {
-            timestamp: 0.0,
-            features: Features {
-                keypoints,
-                descriptors,
-                scale_factor: 1.2,
-                levels: 8,
-            },
-            bearings,
-            depth: vec![if with_depth { 2.0 } else { f64::NAN }; n],
-            right: (0..n)
-                .map(|i| {
-                    if with_depth {
-                        95.0 + 10.0 * i as f64
-                    } else {
-                        f64::NAN
-                    }
-                })
-                .collect(),
-        }
+        let features = Features {
+            keypoints,
+            descriptors,
+            scale_factor: 1.2,
+            levels: 8,
+        };
+        let depth = vec![if with_depth { 2.0 } else { f64::NAN }; n];
+        let right = (0..n)
+            .map(|i| {
+                if with_depth {
+                    95.0 + 10.0 * i as f64
+                } else {
+                    f64::NAN
+                }
+            })
+            .collect();
+        Frame::new(0.0, features, bearings, depth, right).unwrap()
     }
 
     /// A map of two keyframes: the first with depth creating two points, the second seeing them.

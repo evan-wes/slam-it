@@ -29,6 +29,7 @@ from slamlab.foundations import camera as camera_model
 from slamlab.foundations import matching, orb, stereo
 from slamlab.foundations.arrays import MAX_IMAGE_SIDE, as_count, as_number, as_real
 from slamlab.foundations.errors import InvalidInputError
+from slamlab.foundations.image import pyramid
 
 Array = NDArray[np.float64]
 IntArray = NDArray[np.int64]
@@ -419,11 +420,14 @@ def stereo_pair(  # noqa: PLR0913 -- the pair, its time, the camera, both settin
         raise InvalidInputError(
             "camera: a stereo pair needs a rectified pinhole camera and baseline"
         )
-    features = orb.extract(left, options, backend=backend)
-    other = orb.extract(right, options, backend=backend)
+    # Each image's pyramid, built once: extraction and the row matching both read it.
+    left_levels = pyramid(left, options.levels, options.scale_factor, backend=backend)
+    right_levels = pyramid(right, options.levels, options.scale_factor, backend=backend)
+    features = orb.extract_levels(left_levels, options, backend=backend)
+    other = orb.extract_levels(right_levels, options, backend=backend)
     found = stereo.match(
-        left,
-        right,
+        left_levels,
+        right_levels,
         features,
         other,
         focal=camera.focal,

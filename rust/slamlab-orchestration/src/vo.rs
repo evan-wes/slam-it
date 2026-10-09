@@ -2,6 +2,7 @@
 //! (its docstring states the run), behind the native program `slamlab_vo` (`src/main.rs`).
 
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use nalgebra::Vector2;
 
@@ -9,7 +10,7 @@ use slamlab_edge::frames::{self, Camera, DepthMap, Frame};
 use slamlab_edge::map::Map;
 use slamlab_edge::options::{Mode, Options, Setting, check_options};
 use slamlab_edge::pipeline::{FrameResult, Pipeline, State};
-use slamlab_eval::runs::{self, JsonObject, JsonValue, Run};
+use slamlab_eval::runs::{JsonObject, JsonValue, Run};
 use slamlab_eval::{euroc, png, text, tum};
 use slamlab_foundations::camera::Model;
 use slamlab_foundations::error::{ErrorKind, Result, fail};
@@ -98,9 +99,26 @@ pub const fn exit_code(kind: ErrorKind) -> u8 {
         }
 }
 
-/// Builds the frame at an index with the extraction settings the pipeline asks for: `None`
-/// for a frame the run skips.
-type Builder = Box<dyn Fn(usize, &orb::Options) -> Result<Option<Frame>>>;
+/// A frame's images as a camera delivers them, decoded, and a stereo pair rectified.
+enum Images {
+    /// A monocular frame's image.
+    Monocular(Image),
+    /// A stereo pair: the left image, then the right.
+    Stereo(Image, Image),
+    /// An RGB-D frame's image and its depth map, in metres.
+    Rgbd(Image, DepthMap),
+}
+
+/// A frame's images and its time (`slamlab.orchestration.vo._Delivered`).
+struct Delivered {
+    /// The frame's time.
+    timestamp: f64,
+    /// Its images.
+    images: Images,
+}
+
+/// Delivers the images at an index: `None` for a frame the run skips.
+type Reader = Box<dyn Fn(usize) -> Result<Option<Delivered>>>;
 
 /// A sequence opened for a run.
 struct Source {
@@ -108,8 +126,40 @@ struct Source {
     camera: Camera,
     /// The sequence's frames.
     frames: usize,
-    /// Builds one.
-    frame: Builder,
+    /// Reads one.
+    read: Reader,
+}
+
+/// Builds a frame from its images, for the mode they were delivered for.
+///
+/// # Arguments
+///
+/// * `delivered` - The images.
+/// * `camera` - The camera.
+/// * `extraction` - The extraction settings the pipeline asks for.
+/// * `matching` - The stereo matcher's settings.
+///
+/// # Returns
+///
+/// The frame.
+///
+/// # Errors
+///
+/// The frame builder's.
+fn build(
+    delivered: &Delivered,
+    camera: &Camera,
+    extraction: &orb::Options,
+    matching: &stereo::MatchOptions,
+) -> Result<Frame> {
+    let timestamp = delivered.timestamp;
+    match &delivered.images {
+        Images::Monocular(image) => frames::monocular(image, timestamp, camera, extraction),
+        Images::Stereo(left, right) => {
+            frames::stereo_pair((left, right), timestamp, camera, extraction, matching)
+        }
+        Images::Rgbd(image, depth) => frames::rgbd(image, depth, timestamp, camera, extraction),
+    }
 }
 
 /// Opens a TUM-format folder: its camera, an RGB-D one with the virtual baseline.
@@ -151,12 +201,14 @@ fn tum_source(root: &Path, mode: Mode) -> Result<Source> {
         baseline,
     };
     let count = read.images.len();
-    let built = camera.clone();
-    let frame: Builder = Box::new(move |i, extraction| {
+    let deliver: Reader = Box::new(move |i| {
         let image = png::read_gray(&read.images[i])?;
         let timestamp = read.timestamps[i];
         if mode == Mode::Monocular {
-            return frames::monocular(&image, timestamp, &built, extraction).map(Some);
+            return Ok(Some(Delivered {
+                timestamp,
+                images: Images::Monocular(image),
+            }));
         }
         let Some(depth_file) = &read.depths[i] else {
             return Ok(None);
@@ -167,12 +219,15 @@ fn tum_source(root: &Path, mode: Mode) -> Result<Source> {
             cols: depth.cols,
             values: depth.values,
         };
-        frames::rgbd(&image, &depth_map, timestamp, &built, extraction).map(Some)
+        Ok(Some(Delivered {
+            timestamp,
+            images: Images::Rgbd(image, depth_map),
+        }))
     });
     Ok(Source {
         camera,
         frames: count,
-        frame,
+        read: deliver,
     })
 }
 
@@ -230,7 +285,7 @@ fn rectified(path: &Path, coordinates: &[Vector2<f64>], camera: &Camera) -> Resu
 /// # Errors
 ///
 /// The rectification's.
-fn stereo_source(read: euroc::Frames, matching: stereo::MatchOptions) -> Result<Source> {
+fn stereo_source(read: euroc::Frames) -> Result<Source> {
     let (left, right) = (&read.left_camera, &read.right_camera);
     let pose = euroc::right_from_left(left, right)?;
     let rectification = stereo::rectify(radtan(left), radtan(right), &pose, left.rows, left.cols)?;
@@ -257,23 +312,19 @@ fn stereo_source(read: euroc::Frames, matching: stereo::MatchOptions) -> Result<
         baseline: rectification.baseline,
     };
     let count = read.left.len();
-    let built = camera.clone();
-    let frame: Builder = Box::new(move |i, extraction| {
-        let image_left = rectified(&read.left[i], &maps[0], &built)?;
-        let image_right = rectified(&read.right[i], &maps[1], &built)?;
-        frames::stereo_pair(
-            (&image_left, &image_right),
-            read.timestamps[i],
-            &built,
-            extraction,
-            &matching,
-        )
-        .map(Some)
+    let rectifying = camera.clone();
+    let deliver: Reader = Box::new(move |i| {
+        let image_left = rectified(&read.left[i], &maps[0], &rectifying)?;
+        let image_right = rectified(&read.right[i], &maps[1], &rectifying)?;
+        Ok(Some(Delivered {
+            timestamp: read.timestamps[i],
+            images: Images::Stereo(image_left, image_right),
+        }))
     });
     Ok(Source {
         camera,
         frames: count,
-        frame,
+        read: deliver,
     })
 }
 
@@ -291,10 +342,10 @@ fn stereo_source(read: euroc::Frames, matching: stereo::MatchOptions) -> Result<
 /// # Errors
 ///
 /// The reader's.
-fn euroc_source(root: &Path, mode: Mode, matching: stereo::MatchOptions) -> Result<Source> {
+fn euroc_source(root: &Path, mode: Mode) -> Result<Source> {
     let read = euroc::read_frames(root)?;
     if mode == Mode::Stereo {
-        return stereo_source(read, matching);
+        return stereo_source(read);
     }
     let left = &read.left_camera;
     let camera = Camera {
@@ -305,15 +356,16 @@ fn euroc_source(root: &Path, mode: Mode, matching: stereo::MatchOptions) -> Resu
         baseline: 0.0,
     };
     let count = read.left.len();
-    let built = camera.clone();
-    let frame: Builder = Box::new(move |i, extraction| {
-        let image = png::read_gray(&read.left[i])?;
-        frames::monocular(&image, read.timestamps[i], &built, extraction).map(Some)
+    let deliver: Reader = Box::new(move |i| {
+        Ok(Some(Delivered {
+            timestamp: read.timestamps[i],
+            images: Images::Monocular(png::read_gray(&read.left[i])?),
+        }))
     });
     Ok(Source {
         camera,
         frames: count,
-        frame,
+        read: deliver,
     })
 }
 
@@ -362,11 +414,18 @@ fn sequence_name(sequence: &Path) -> String {
 ///
 /// * `out` - The run.
 /// * `result` - The result.
+/// * `read_seconds` - The time delivering its images took, in seconds.
+/// * `build_seconds` - The time building the frame took, in seconds.
 ///
 /// # Errors
 ///
 /// The pose's inversion's.
-fn record(out: &mut Run, result: &FrameResult) -> Result<()> {
+fn record(
+    out: &mut Run,
+    result: &FrameResult,
+    read_seconds: f64,
+    build_seconds: f64,
+) -> Result<()> {
     out.diagnostics.push(vec![
         ("timestamp".to_owned(), JsonValue::Number(result.timestamp)),
         (
@@ -378,7 +437,16 @@ fn record(out: &mut Run, result: &FrameResult) -> Result<()> {
             JsonValue::Integer(i64::try_from(result.tracked).unwrap_or(i64::MAX)),
         ),
         ("keyframe".to_owned(), JsonValue::Bool(result.keyframe)),
-        ("seconds".to_owned(), JsonValue::Number(result.seconds)),
+        ("read_seconds".to_owned(), JsonValue::Number(read_seconds)),
+        ("build_seconds".to_owned(), JsonValue::Number(build_seconds)),
+        (
+            "track_seconds".to_owned(),
+            JsonValue::Number(result.track_seconds),
+        ),
+        (
+            "map_seconds".to_owned(),
+            JsonValue::Number(result.map_seconds),
+        ),
     ]);
     if let Some(pose) = &result.pose {
         out.poses.push(se3::inverse(pose)?);
@@ -415,7 +483,7 @@ fn record_map(out: &mut Run, m: &Map) -> Result<()> {
 ///
 /// # Errors
 ///
-/// A builder's or the pipeline's.
+/// A reader's, a frame builder's or the pipeline's.
 fn track(source: &Source, pipeline: &mut Pipeline, request: &Request, out: &mut Run) -> Result<()> {
     let first = usize::try_from(request.first).unwrap_or(usize::MAX);
     let end = request.count.map_or(source.frames, |count| {
@@ -423,12 +491,23 @@ fn track(source: &Source, pipeline: &mut Pipeline, request: &Request, out: &mut 
             .frames
             .min(first.saturating_add(usize::try_from(count).unwrap_or(0)))
     });
+    let matching = request.options.stereo_matching();
     for i in first..end {
-        let Some(frame) = (source.frame)(i, &pipeline.extraction())? else {
+        let start = Instant::now();
+        let delivered = (source.read)(i)?;
+        let read = start.elapsed().as_secs_f64();
+        let Some(delivered) = delivered else {
             continue;
         };
+        let frame = build(
+            &delivered,
+            &source.camera,
+            &pipeline.extraction(),
+            &matching,
+        )?;
+        let built = start.elapsed().as_secs_f64();
         let result = pipeline.track(&frame)?;
-        record(out, &result)?;
+        record(out, &result, read, built - read)?;
         if result.state == State::Lost {
             break;
         }
@@ -619,8 +698,9 @@ pub fn check(request: &Request) -> Result<()> {
     check_options(&request.options)
 }
 
-/// Runs a sequence through the pipeline and writes its run folder
-/// (`slamlab.orchestration.vo.run`).
+/// Runs a sequence through the pipeline: the run, not yet written, as Python's program builds
+/// it before writing (`slamlab.orchestration.vo.main`). The program records its own process in
+/// it (`slamlab_eval::budgets`) and writes it to `request.out`.
 ///
 /// # Arguments
 ///
@@ -628,21 +708,17 @@ pub fn check(request: &Request) -> Result<()> {
 ///
 /// # Returns
 ///
-/// The run written.
+/// The run.
 ///
 /// # Errors
 ///
-/// The check's, a reader's, the pipeline's or the writer's.
+/// The check's, a reader's or the pipeline's.
 pub fn run(request: &Request) -> Result<Run> {
     check(request)?;
     let source = if request.dataset == "tum" {
         tum_source(&request.sequence, request.mode)?
     } else {
-        euroc_source(
-            &request.sequence,
-            request.mode,
-            request.options.stereo_matching(),
-        )?
+        euroc_source(&request.sequence, request.mode)?
     };
     let mut pipeline = Pipeline::new(request.mode, source.camera.clone(), request.options)?;
     let mut out = Run {
@@ -657,7 +733,6 @@ pub fn run(request: &Request) -> Result<Run> {
     if let Some(m) = pipeline.map() {
         record_map(&mut out, m)?;
     }
-    runs::write_run(&request.out, &out)?;
     Ok(out)
 }
 
@@ -757,6 +832,7 @@ mod tests {
             &["--option", "windows=7"],
             &["--option", "window=7.5"],
             &["--option", "close_depth=inf"],
+            &["--option", "close_depth=+-5"],
             &["--option", "window"],
             &["--dataset", "euroc"],
             &["--verbose", "1"],
@@ -820,6 +896,11 @@ mod tests {
         request.count = Some(0);
         let empty = run(&request).unwrap();
         assert!(empty.timestamps.is_empty());
+        assert!(
+            !out.join("run.json").exists(),
+            "the run is the program's to write"
+        );
+        slamlab_eval::runs::write_run(&out, &empty).unwrap();
         assert_eq!(
             (
                 empty.sequence.as_str(),

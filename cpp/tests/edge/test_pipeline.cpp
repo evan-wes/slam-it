@@ -116,9 +116,10 @@ void check_lost(int& failures) {
     expect(false, "the pipeline starts", failures);
     return;
   }
-  edge::Frame empty;
-  empty.features.levels = 8;
-  empty.features.scale_factor = 1.2;
+  const edge::Frame empty =
+      edge::make_frame(0.0, {.keypoints = {}, .descriptors = {}, .scale_factor = 1.2, .levels = 8},
+                       {}, {}, {})
+          .value();
   bool ok = true;
   for (std::int64_t i = 0; ok && i < edge::Options{}.lost_frames; ++i) {
     const auto result = pipeline->track(empty);

@@ -66,10 +66,11 @@ testpaths = ["tests", "src"]
 # Docstring Examples are run as tests so they cannot go stale.
 addopts = "--doctest-modules --strict-markers"
 # Resource markers. scripts/check.sh runs the default CPU subset (`-m "not gpu and not budget"`);
-# GPU and budget-capped runs get their own opt-in scripts when those rungs arrive.
+# the budget runs are opt-in (`python -m pytest -m budget`, since PR 9); GPU runs get their own
+# opt-in script with the first PyTorch rung.
 markers = [
   "gpu: needs a CUDA GPU (learned and dense rungs)",
-  "budget: runs under a simulated compute budget (edge rungs, milestone 7)",
+  "budget: runs under a simulated compute budget (slamlab.eval.budgets)",
   "slow: takes more than a few seconds",
 ]
 
@@ -201,13 +202,15 @@ source_modules = ["slamlab"]
 forbidden_modules = ["poselib", "mpmath", "manifpy", "scipy"]
 
 # The order of modules inside eval: the timestamp helpers and the image reader at the bottom,
-# the dataset readers and metrics on them, runs (and the COLMAP reference) on top. New modules
-# are optional layers, as in rung 0's contract.
+# the dataset readers and metrics on them, runs (and the COLMAP reference) on them, and the
+# compute budgets, which judge runs, on top. New modules are optional layers, as in rung 0's
+# contract.
 [[tool.importlinter.contracts]]
 name = "Eval's internal order"
 type = "layers"
 containers = ["slamlab.eval"]
 layers = [
+  "(budgets)",
   "(runs) | (colmap_reference)",
   "(metrics) | (tum) | (euroc) | (readers) | (reprojection)",
   "(timestamps) | (images)",

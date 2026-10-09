@@ -18,8 +18,18 @@ builds each frame for the mode (:mod:`slamlab.edge.frames`), tracks it
 - **The frames.** ``count`` of them from ``first`` (all by default), in the sequence's order.
   An RGB-D frame without a depth map within the reader's tolerance is skipped.
 - **Each frame** gives one diagnostics line (``timestamp``, ``state``, ``tracked``,
-  ``keyframe``, ``seconds``) and, if tracked, its ``T_world_cam``. The run ends at the frame
-  that loses the track.
+  ``keyframe``, and the time each step took, in seconds: the run format's
+  :data:`slamlab.eval.runs.STEPS`) and, if tracked, its ``T_world_cam``. The run ends at the
+  frame that loses the track. The steps, as a camera and ORB-SLAM's threads divide them:
+
+  - ``read_seconds``: delivering the frame's images, decoded (a depth map in metres), and a
+    stereo pair rectified, as ORB-SLAM2's examples do before they hand a frame over;
+  - ``build_seconds``: building the frame from them (:mod:`slamlab.edge.frames`: the pyramid,
+    the features, and the stereo matches or the depth at each keypoint);
+  - ``track_seconds`` and ``map_seconds``: tracking it, and mapping it if it became a
+    keyframe (:class:`slamlab.edge.pipeline.FrameResult`). Mapping here includes making the
+    keyframe and, with depth, its close points, which ORB-SLAM2's tracking thread does
+    (``Tracking::CreateNewKeyFrame``) before it hands the keyframe to local mapping.
 - **At the end,** the map's keyframes (their times and ``T_world_cam``) and points. The run's
   ``sequence`` is its folder's name (the path resolved), its ``settings`` the pipeline's
   options.
@@ -29,14 +39,25 @@ included. ``cpp`` and ``rust`` run their native program, :data:`PROGRAM`
 (:func:`slamlab.backends.program`), with the request on its command line
 (:meth:`Request.arguments`), then read the run back. The program's exit code names a failed
 run's error kind (:data:`EXIT_FAILED`), raised here as the same exception.
+
+**The programs.** Each backend has one (:func:`command`): the native ``slamlab_vo`` in C++ and
+Rust, and this module for Python (``python -m slamlab.orchestration.vo``, :func:`main`), with
+the same command line (:func:`parse`), exit codes and messages. A program records its own
+process in its run before writing it: its peak memory, the CPUs it could run on and its
+memory cap (:mod:`slamlab.eval.budgets`); Python's in-process run records none, since its
+process holds more than the run.
 """
 
 from __future__ import annotations
 
+import re
 import subprocess
-from collections.abc import Callable
-from dataclasses import dataclass, field, fields
+import sys
+import time
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -45,7 +66,7 @@ from slamlab import backends
 from slamlab.edge import frames
 from slamlab.edge.options import MODES, Options
 from slamlab.edge.pipeline import Pipeline, State
-from slamlab.eval import euroc, images, runs, tum
+from slamlab.eval import budgets, euroc, images, runs, tum
 from slamlab.foundations import image, orb, se3, stereo
 from slamlab.foundations.errors import (
     DegenerateError,
@@ -59,7 +80,16 @@ DATASETS = ("tum", "euroc")
 
 PROGRAM = "slamlab_vo"
 """The native programs' name, in C++ (``cpp/apps/orchestration/``) and Rust
-(``rust/slamlab-orchestration``)."""
+(``rust/slamlab-orchestration``), and the prefix of every program's messages."""
+
+MODULE = "slamlab.orchestration.vo"
+"""This module, which Python's program runs (``python -m``)."""
+
+USAGE = (
+    f"usage: python -m {MODULE} --dataset tum|euroc --sequence PATH --mode "
+    "monocular|stereo|rgbd --out RUN_DIR [--first I] [--count N] [--option KEY=VALUE ...]"
+)
+"""Python's program's command line: the native programs' (their ``kUsage``/``USAGE``)."""
 
 EXIT_USAGE = 2
 """The program's exit code for a command line it cannot read."""
@@ -72,6 +102,13 @@ EXIT_FAILED = 3
 
 _ERRORS: tuple[type[SlamlabError], ...] = (InvalidInputError, DegenerateError, NotConvergedError)
 """The exceptions a failed run's exit code names, from :data:`EXIT_FAILED` on."""
+
+_REQUIRED = ("--dataset", "--sequence", "--mode", "--out")
+"""The flags every command line gives."""
+
+
+class UsageError(InvalidInputError):
+    """A command line the program cannot read: :data:`EXIT_USAGE`, not a failed run."""
 
 
 @dataclass(frozen=True)
@@ -164,6 +201,135 @@ def check(request: Request) -> None:
         raise InvalidInputError("first, count: must be at least 0")
 
 
+def _integer(flag: str, text: str) -> int:
+    """Read a whole integer as the native programs do (``eval::text::integer``)."""
+    if not re.fullmatch(r"-?[0-9]+", text.strip()):
+        raise UsageError(f"{flag}: expected an integer, got '{text}'")
+    return int(text)
+
+
+_DECIMAL = re.compile(r"[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][-+]?[0-9]+)?")
+"""A decimal number, as the native programs read one (``eval::text::number``)."""
+
+
+def parse_setting(text: str) -> tuple[str, int | float]:
+    """Read one ``--option KEY=VALUE``, as the programs read it.
+
+    Parameters
+    ----------
+    text : str
+        ``KEY=VALUE``: a field of :class:`~slamlab.edge.options.Options` and its value.
+
+    Returns
+    -------
+    tuple of (str, int or float)
+        The setting's name and its value, of its type: a whole integer for an integer
+        setting, a finite decimal number otherwise.
+
+    Raises
+    ------
+    UsageError
+        For no ``=``, an unknown setting, or a value that is not a number of its type.
+    """
+    key, equals, value = text.partition("=")
+    if not equals:
+        raise UsageError(f"--option: expected KEY=VALUE, got '{text}'")
+    if key not in {setting.name for setting in fields(Options)}:
+        raise UsageError(f"--option: no setting '{key}'")
+    if isinstance(getattr(Options(), key), int):
+        return key, _integer(key, value)
+    real = float(value) if _DECIMAL.fullmatch(value.strip()) else float("nan")
+    if not np.isfinite(real):  # past float64's range, the native readers refuse it too
+        raise UsageError(f"{key}: expected a finite number, got '{value}'")
+    return key, real
+
+
+def parse(arguments: Sequence[str]) -> Request:
+    """Read a program's command line (:data:`USAGE`), as the native programs read theirs.
+
+    Flags come in any order, each with its value; ``--option KEY=VALUE`` is repeatable and
+    names a field of :class:`~slamlab.edge.options.Options`.
+
+    Parameters
+    ----------
+    arguments : sequence of str
+        The arguments after the program's name.
+
+    Returns
+    -------
+    Request
+        The request. Its settings checked themselves when they were made: a value out of
+        range raises :class:`~slamlab.foundations.errors.InvalidInputError`, which a program
+        reports as a failed run, as the natives' check does.
+
+    Raises
+    ------
+    UsageError
+        For an unknown, repeated or missing flag, a flag without its value, an unknown mode or
+        setting, or a value that is not a number.
+    """
+    values: dict[str, str] = {}
+    numbers: dict[str, int] = {}
+    changes: dict[str, Any] = {}  # each of its field's type (parse_setting)
+    for i in range(0, len(arguments), 2):
+        flag = arguments[i]
+        if i + 1 == len(arguments):
+            raise UsageError(f"{flag}: expected a value")
+        value = arguments[i + 1]
+        if flag == "--option":
+            key, setting = parse_setting(value)
+            changes[key] = setting
+            continue
+        if flag in values:
+            raise UsageError(f"{flag}: given twice")
+        if flag not in (*_REQUIRED, "--first", "--count"):
+            raise UsageError(f"unknown argument '{flag}'")
+        if flag == "--mode" and value not in MODES:
+            raise UsageError(f"--mode: expected monocular, stereo or rgbd, got '{value}'")
+        if flag in ("--first", "--count"):
+            numbers[flag] = _integer(flag, value)
+        values[flag] = value
+    for required in _REQUIRED:
+        if required not in values:
+            raise UsageError(f"{required}: missing")
+    return Request(
+        values["--dataset"],
+        Path(values["--sequence"]),
+        values["--mode"],
+        Path(values["--out"]),
+        first=numbers.get("--first", 0),
+        count=numbers.get("--count"),
+        options=replace(Options(), **changes),
+    )
+
+
+def command(backend: str) -> list[str]:
+    """Return the command that runs a backend's program, before its arguments.
+
+    Parameters
+    ----------
+    backend : {"python", "cpp", "rust"}
+        The backend.
+
+    Returns
+    -------
+    list of str
+        Python's: this module, run by the interpreter running this one. The others': their
+        native program (:func:`slamlab.backends.program`).
+
+    Raises
+    ------
+    ValueError
+        If `backend` is unknown.
+    slamlab.backends.BackendNotBuiltError
+        If a native program is not built.
+    """
+    backends.check_name(backend)
+    if backend == "python":
+        return [sys.executable, "-m", MODULE]
+    return [str(backends.program(backend, PROGRAM))]
+
+
 def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest keyword-only
     dataset: str,
     sequence: str | Path,
@@ -174,6 +340,7 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
     options: Options | None = None,
     first: int = 0,
     count: int | None = None,
+    budget: budgets.Budget | None = None,
 ) -> runs.Run:
     """Run a sequence through the edge pipeline and write its run folder.
 
@@ -195,6 +362,10 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
         The first frame run.
     count : int, optional
         The frames run from it (default: all).
+    budget : slamlab.eval.budgets.Budget, optional
+        A compute budget to run within: the backend's program (Python's too, rather than the
+        in-process run) pinned to the budget's cores and its memory capped
+        (:func:`slamlab.eval.budgets.command`).
 
     Returns
     -------
@@ -212,8 +383,11 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
         The request's check (:func:`check`), or a reader's, the pipeline's or the writer's
         error, of the same kind whichever backend ran.
     FileNotFoundError
-        From the Python backend, if a file of the sequence is missing (the native programs
-        raise :class:`~slamlab.foundations.errors.InvalidInputError`, their only kind for it).
+        From the Python backend in-process, if a file of the sequence is missing (the
+        programs raise :class:`~slamlab.foundations.errors.InvalidInputError`, their only
+        kind for it).
+    RuntimeError
+        If a program dies otherwise: killed, for one, past a budget's memory.
     """
     request = Request(
         dataset,
@@ -226,25 +400,57 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
     )
     backends.check_name(backend)
     check(request)
-    if backend == "python":
+    if backend == "python" and budget is None:
         runs.write_run(request.out, _run_here(request))
     else:
-        _run_program(backend, request)
+        _run_program(backend, request, budget)
     return runs.read_run(request.out)
 
 
-_Builder = Callable[[int, orb.Options], frames.Frame | None]
-"""Builds the frame at an index with the extraction settings the pipeline asks for: None for a
-frame the run skips."""
+@dataclass(frozen=True)
+class _Delivered:
+    """A frame's images as a camera delivers them: decoded, and a stereo pair rectified.
+
+    A monocular frame has its image only, a stereo frame the right image too, and an RGB-D
+    frame its depth map, in metres.
+    """
+
+    timestamp: float
+    image: NDArray[np.uint8]
+    right: NDArray[np.uint8] | None = None
+    depth: NDArray[np.float64] | None = None
+
+
+_Reader = Callable[[int], _Delivered | None]
+"""Delivers the images at an index: None for a frame the run skips."""
 
 
 @dataclass(frozen=True)
 class _Source:
-    """A sequence opened for a run: the camera, its frames, and how to build each."""
+    """A sequence opened for a run: the camera, its frames, and how to read each."""
 
     camera: frames.Camera
     count: int
-    frame: _Builder
+    read: _Reader
+
+
+def _build(
+    delivered: _Delivered,
+    camera: frames.Camera,
+    extraction: orb.Options,
+    matching: stereo.Options,
+) -> frames.Frame:
+    """Build a frame from its images, for the mode they were delivered for."""
+    if delivered.right is not None:
+        return frames.stereo_pair(
+            delivered.image, delivered.right, delivered.timestamp, camera, extraction,
+            stereo_options=matching,
+        )  # fmt: skip
+    if delivered.depth is not None:
+        return frames.rgbd(
+            delivered.image, delivered.depth, delivered.timestamp, camera, extraction
+        )
+    return frames.monocular(delivered.image, delivered.timestamp, camera, extraction)
 
 
 def _tum_source(root: Path, mode: str) -> _Source:
@@ -261,21 +467,20 @@ def _tum_source(root: Path, mode: str) -> _Source:
         baseline = sensor.bf / float(sensor.intrinsics[0])
     camera = frames.Camera(sensor.model, sensor.intrinsics, sensor.width, sensor.height, baseline)
 
-    def build(i: int, extraction: orb.Options) -> frames.Frame | None:
+    def deliver(i: int) -> _Delivered | None:
         gray = images.read_gray(read.images[i])
         timestamp = float(read.timestamps[i])
         if mode == "monocular":
-            return frames.monocular(gray, timestamp, camera, extraction)
+            return _Delivered(timestamp, gray)
         depth_file = read.depths[i]
         if depth_file is None:
             return None
-        depth = tum.read_depth(depth_file, sensor.depth_scale)
-        return frames.rgbd(gray, depth, timestamp, camera, extraction)
+        return _Delivered(timestamp, gray, depth=tum.read_depth(depth_file, sensor.depth_scale))
 
-    return _Source(camera, len(read.images), build)
+    return _Source(camera, len(read.images), deliver)
 
 
-def _stereo_source(read: euroc.Frames, matching: stereo.Options) -> _Source:
+def _stereo_source(read: euroc.Frames) -> _Source:
     """Open a EuRoC sequence's stereo pairs, rectified: the rectified left camera."""
     left, right = read.left_camera, read.right_camera
     rectification = stereo.rectify(
@@ -285,33 +490,29 @@ def _stereo_source(read: euroc.Frames, matching: stereo.Options) -> _Source:
     rows, cols = left.shape
     camera = frames.Camera("pinhole", rectification.intrinsics, cols, rows, rectification.baseline)
 
-    def build(i: int, extraction: orb.Options) -> frames.Frame:
+    def deliver(i: int) -> _Delivered:
         left_image, right_image = (
             image.remap(images.read_gray(path), coordinates)
             for path, coordinates in zip((read.left[i], read.right[i]), maps, strict=True)
         )
-        timestamp = float(read.timestamps[i])
-        return frames.stereo_pair(
-            left_image, right_image, timestamp, camera, extraction, stereo_options=matching
-        )
+        return _Delivered(float(read.timestamps[i]), left_image, right=right_image)
 
-    return _Source(camera, len(read.left), build)
+    return _Source(camera, len(read.left), deliver)
 
 
-def _euroc_source(root: Path, mode: str, matching: stereo.Options) -> _Source:
+def _euroc_source(root: Path, mode: str) -> _Source:
     """Open a EuRoC sequence: its left camera for monocular, the pairs rectified for stereo."""
     read = euroc.read_frames(root)
     if mode == "stereo":
-        return _stereo_source(read, matching)
+        return _stereo_source(read)
     left = read.left_camera
     rows, cols = left.shape
     camera = frames.Camera("radtan", left.intrinsics, cols, rows)
 
-    def build(i: int, extraction: orb.Options) -> frames.Frame:
-        gray = images.read_gray(read.left[i])
-        return frames.monocular(gray, float(read.timestamps[i]), camera, extraction)
+    def deliver(i: int) -> _Delivered:
+        return _Delivered(float(read.timestamps[i]), images.read_gray(read.left[i]))
 
-    return _Source(camera, len(read.left), build)
+    return _Source(camera, len(read.left), deliver)
 
 
 def _run_here(request: Request) -> runs.Run:
@@ -319,7 +520,8 @@ def _run_here(request: Request) -> runs.Run:
     if request.dataset == "tum":
         source = _tum_source(request.sequence, request.mode)
     else:
-        source = _euroc_source(request.sequence, request.mode, request.options.stereo_matching())
+        source = _euroc_source(request.sequence, request.mode)
+    matching = request.options.stereo_matching()
     tracker = Pipeline(request.mode, source.camera, request.options)
     end = source.count
     if request.count is not None:
@@ -328,9 +530,13 @@ def _run_here(request: Request) -> runs.Run:
     poses: list[NDArray[np.float64]] = []
     diagnostics: list[dict[str, object]] = []
     for i in range(request.first, end):
-        frame = source.frame(i, tracker.extraction())
-        if frame is None:
+        start = time.perf_counter()
+        delivered = source.read(i)
+        after_read = time.perf_counter()
+        if delivered is None:
             continue
+        frame = _build(delivered, source.camera, tracker.extraction(), matching)
+        after_build = time.perf_counter()
         result = tracker.track(frame)
         diagnostics.append(
             {
@@ -338,7 +544,10 @@ def _run_here(request: Request) -> runs.Run:
                 "state": result.state.value,
                 "tracked": result.tracked,
                 "keyframe": result.keyframe,
-                "seconds": result.seconds,
+                "read_seconds": after_read - start,
+                "build_seconds": after_build - after_read,
+                "track_seconds": result.track_seconds,
+                "map_seconds": result.map_seconds,
             }
         )
         if result.pose is not None:
@@ -362,14 +571,18 @@ def _run_here(request: Request) -> runs.Run:
     )
 
 
-def _run_program(backend: str, request: Request) -> None:
-    """Run the request with a compiled backend's native program."""
-    program = backends.program(backend, PROGRAM)
-    done = subprocess.run(
-        [str(program), *request.arguments()], capture_output=True, text=True, check=False
-    )
+def _run_program(backend: str, request: Request, budget: budgets.Budget | None) -> None:
+    """Run the request with a backend's program (:func:`command`), within a budget if given."""
+    program = command(backend)
+    argv = [*program, *request.arguments()]
+    if budget is not None:
+        argv = budgets.command(budget, budgets.cpus(budget), argv)
+    done = subprocess.run(argv, capture_output=True, text=True, check=False)
     if done.returncode == 0:
         return
+    if done.returncode < 0:
+        within = "" if budget is None else f", within {budget.name}'s {budget.memory} bytes"
+        raise RuntimeError(f"{' '.join(program)} was killed by signal {-done.returncode}{within}")
     lines = done.stderr.strip().splitlines()
     message = lines[0].removeprefix(f"{PROGRAM}: ") if lines else ""
     kind = done.returncode - EXIT_FAILED
@@ -377,4 +590,53 @@ def _run_program(backend: str, request: Request) -> None:
         raise InvalidInputError(message)
     if 0 <= kind < len(_ERRORS):
         raise _ERRORS[kind](message)
-    raise RuntimeError(f"{program} failed (exit code {done.returncode}): {done.stderr.strip()}")
+    raise RuntimeError(
+        f"{' '.join(program)} failed (exit code {done.returncode}): {done.stderr.strip()}"
+    )
+
+
+def main(arguments: Sequence[str]) -> int:
+    """Run Python's program: the native programs' command line, exit codes and messages.
+
+    Parameters
+    ----------
+    arguments : sequence of str
+        The arguments after the program's name (:data:`USAGE`).
+
+    Returns
+    -------
+    int
+        0 for a run written, with a one-line summary on stdout; :data:`EXIT_USAGE` for a
+        command line it cannot read, with the usage; :data:`EXIT_FAILED` plus the error's kind
+        for a failed run (a file it cannot read or write is ``InvalidInput``, the native
+        programs' kind for it). Messages go to stderr, each prefixed with :data:`PROGRAM`.
+    """
+    try:
+        request = parse(arguments)
+        check(request)
+        # What the program records of its own process, before it writes the run.
+        done = replace(
+            _run_here(request),
+            peak_memory=budgets.peak_memory(),
+            cpus=budgets.allowed_cpus(),
+            memory_cap=budgets.memory_cap(),
+        )
+        runs.write_run(request.out, done)
+    except UsageError as error:
+        print(f"{PROGRAM}: {error}\n{USAGE}", file=sys.stderr)
+        return EXIT_USAGE
+    except OSError as error:
+        print(f"{PROGRAM}: {error}", file=sys.stderr)
+        return EXIT_FAILED
+    except SlamlabError as error:
+        print(f"{PROGRAM}: {error}", file=sys.stderr)
+        return EXIT_FAILED + next(k for k, kind in enumerate(_ERRORS) if isinstance(error, kind))
+    print(
+        f"{PROGRAM}: {len(done.timestamps)} of {len(done.diagnostics)} frames tracked, "
+        f"{len(done.keyframe_timestamps)} keyframes, {len(done.points)} points -> {request.out}"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

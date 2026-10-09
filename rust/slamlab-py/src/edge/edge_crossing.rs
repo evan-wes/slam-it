@@ -396,7 +396,7 @@ pub fn map_dict<'py>(py: Python<'py>, m: &Map) -> PyResult<Bound<'py, PyDict>> {
 /// # Errors
 ///
 /// `ValueError` for a missing or unknown key, or arrays that are malformed or not one row per
-/// keypoint.
+/// keypoint; the core error for a keypoint position that is not finite.
 pub fn frame_in(values: &Bound<'_, PyDict>) -> PyResult<Frame> {
     let get = |key| item(values, &FRAME_KEYS, key);
     let xy = rows::<f64, 2>(&get("xy")?)?;
@@ -443,18 +443,17 @@ pub fn frame_in(values: &Bound<'_, PyDict>) -> PyResult<Frame> {
             })
         })
         .collect::<PyResult<Vec<Keypoint>>>()?;
-    Ok(Frame {
-        timestamp: get("timestamp")?.extract()?,
-        features: Features {
-            keypoints,
-            descriptors,
-            scale_factor: get("scale_factor")?.extract()?,
-            levels: get("levels")?.extract()?,
-        },
-        bearings,
-        depth,
-        right,
-    })
+    let features = Features {
+        keypoints,
+        descriptors,
+        scale_factor: get("scale_factor")?.extract()?,
+        levels: get("levels")?.extract()?,
+    };
+    let timestamp = get("timestamp")?.extract()?;
+    unwrap(
+        values.py(),
+        Frame::new(timestamp, features, bearings, depth, right),
+    )
 }
 
 /// The camera's fields, as the dict's keys.

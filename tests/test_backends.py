@@ -8,14 +8,18 @@ import inspect
 import os
 import pkgutil
 from collections.abc import Iterator
+from dataclasses import asdict
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import numpy as np
 import pytest
 
 import slamlab
 from slamlab import backends
+from slamlab.foundations import image, orb, stereo
+from slamlab.foundations.errors import InvalidInputError
 from tests.conftest import REQUIRED_BACKENDS, require_backend
 
 _EXTENSION_ROOTS = {"cpp": "slamlab._cpp", "rust": "slamlab_rs"}
@@ -365,6 +369,67 @@ def test_compiled_bindings_refuse_unconverted_input(name: str, bad: object) -> N
     impl = backends.implementation(require_backend(name), "slamlab.foundations.so3")
     with pytest.raises((TypeError, ValueError)):
         impl.hat(bad)
+
+
+def _pyramid_call(backend: str) -> tuple[Any, Any, list[Any], dict[str, Any], dict[str, Any]]:
+    """Return both raw bindings that take a pyramid, a good one, and their other arguments.
+
+    Every argument is valid, so the calls succeed with the good pyramid and a level can be the
+    only thing refused.
+    """
+    levels = list(image.pyramid(np.zeros((40, 40), dtype=np.uint8), 2, 1.25))
+    features = {
+        "xy": np.zeros((0, 2)),
+        "level": np.zeros(0, dtype=np.int64),
+        "level_xy": np.zeros((0, 2), dtype=np.int64),
+        "descriptors": np.zeros((0, 32), dtype=np.uint8),
+        "scale_factor": 1.25,
+        "levels": 2,
+    }
+    orb_options = asdict(orb.Options(levels=2, scale_factor=1.25))
+    stereo_options = asdict(stereo.Options())
+    orb_impl = backends.implementation(backend, "slamlab.foundations.orb")
+    stereo_impl = backends.implementation(backend, "slamlab.foundations.stereo")
+    assert isinstance(orb_impl.extract_levels(levels, orb_options), dict)
+    assert isinstance(stereo_impl.match(levels, levels, features, features, 1.0, 0.1,
+                                        stereo_options), dict)  # fmt: skip
+    return orb_impl, stereo_impl, levels, features, {"orb": orb_options, "stereo": stereo_options}
+
+
+@pytest.mark.parametrize("name", backends.COMPILED_BACKENDS)
+@pytest.mark.parametrize(
+    "bad",
+    [
+        np.full((40, 40), 300, dtype=np.int64),
+        np.zeros((40, 40), dtype=np.float64),
+        np.zeros((40, 80), dtype=np.uint8)[:, ::2],
+    ],
+    ids=["int64", "float64", "strided"],
+)
+def test_compiled_pyramid_bindings_refuse_unconverted_levels(name: str, bad: object) -> None:
+    """Both raw bindings refuse a pyramid level that is not a contiguous uint8 image.
+
+    As for a single image: a direct caller pays no hidden conversion, and gets no silent
+    truncation of 300 to a byte, in either language. The same calls with the good level
+    succeed, so the level is what is refused.
+    """
+    orb_impl, stereo_impl, levels, features, options = _pyramid_call(require_backend(name))
+    given = [bad, levels[1]]
+    with pytest.raises((TypeError, ValueError)):  # Rust refuses a strided array as a ValueError
+        orb_impl.extract_levels(given, options["orb"])
+    with pytest.raises((TypeError, ValueError)):
+        stereo_impl.match(given, levels, features, features, 1.0, 0.1, options["stereo"])
+
+
+@pytest.mark.parametrize("name", backends.COMPILED_BACKENDS)
+def test_compiled_pyramid_bindings_name_the_bad_level(name: str) -> None:
+    """A malformed level is refused by its index, as Python's as_pyramid names it."""
+    orb_impl, stereo_impl, levels, features, options = _pyramid_call(require_backend(name))
+    given = [levels[0], np.zeros((8, 0), dtype=np.uint8)]
+    with pytest.raises(InvalidInputError, match=r"levels\[1\]: sides"):
+        orb_impl.extract_levels(given, options["orb"])
+    with pytest.raises(InvalidInputError, match=r"left_levels\[1\]: sides"):
+        stereo_impl.match(given, levels, features, features, 1.0, 0.1, options["stereo"])
 
 
 def test_call_runs_the_reference_for_python() -> None:

@@ -14,28 +14,42 @@ namespace {
 /// @brief NaN, for an unknown depth, column or bearing.
 constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
 
-/// @brief Assemble a frame from its features: their bearings, and the depths and columns.
+/// @brief Assemble a frame from its features: their bearings and grid, and the depths and
+///        columns.
 /// @param timestamp The frame's time.
 /// @param features Its features.
 /// @param camera The camera.
 /// @param depth Each keypoint's depth (NaN for none).
 /// @param right Each keypoint's right column (NaN for none).
-/// @return The frame.
-Frame assemble(double timestamp, foundations::orb::Features features, const Camera& camera,
-               std::vector<double> depth, std::vector<double> right) {
+/// @return The frame; `InvalidInput` from the grid (unreachable for extracted features).
+foundations::Result<Frame> assemble(double timestamp, foundations::orb::Features features,
+                                    const Camera& camera, std::vector<double> depth,
+                                    std::vector<double> right) {
   std::vector<Eigen::Vector3d> bearings;
   bearings.reserve(features.keypoints.size());
   for (const foundations::orb::Keypoint& k : features.keypoints) {
     bearings.push_back(bearing(camera, {k.xy[0], k.xy[1]}));
   }
-  return {.timestamp = timestamp,
-          .features = std::move(features),
-          .bearings = std::move(bearings),
-          .depth = std::move(depth),
-          .right = std::move(right)};
+  return make_frame(timestamp, std::move(features), std::move(bearings), std::move(depth),
+                    std::move(right));
 }
 
 }  // namespace
+
+foundations::Result<Frame> make_frame(double timestamp, foundations::orb::Features features,
+                                      std::vector<Eigen::Vector3d> bearings,
+                                      std::vector<double> depth, std::vector<double> right) {
+  auto grid = foundations::matching::FeatureGrid::build(features.keypoints);
+  if (!grid) {
+    return std::unexpected(std::move(grid.error()));
+  }
+  return Frame{.timestamp = timestamp,
+               .features = std::move(features),
+               .bearings = std::move(bearings),
+               .depth = std::move(depth),
+               .right = std::move(right),
+               .grid = std::move(*grid)};
+}
 
 double focal(const Camera& camera) {
   return camera.intrinsics(foundations::camera::focal_indices(camera.model)[0]);
@@ -162,16 +176,23 @@ foundations::Result<Frame> stereo_pair(const foundations::image::Image& left,
     return foundations::fail(foundations::ErrorKind::kInvalidInput,
                              "camera: a stereo pair needs a rectified pinhole camera and baseline");
   }
-  auto features = foundations::orb::extract(left, options);
+  // Each image's pyramid, built once: extraction and the row matching both read it.
+  const auto left_levels = foundations::image::pyramid(left, options.levels, options.scale_factor);
+  const auto right_levels =
+      foundations::image::pyramid(right, options.levels, options.scale_factor);
+  if (!left_levels || !right_levels) {
+    return std::unexpected(left_levels ? right_levels.error() : left_levels.error());
+  }
+  auto features = foundations::orb::extract_levels(*left_levels, options);
   if (!features) {
     return std::unexpected(std::move(features.error()));
   }
-  const auto other = foundations::orb::extract(right, options);
+  const auto other = foundations::orb::extract_levels(*right_levels, options);
   if (!other) {
     return std::unexpected(other.error());
   }
-  const auto found = foundations::stereo::match(left, right, *features, *other, focal(camera),
-                                                camera.baseline, stereo_options);
+  const auto found = foundations::stereo::match(*left_levels, *right_levels, *features, *other,
+                                                focal(camera), camera.baseline, stereo_options);
   if (!found) {
     return std::unexpected(found.error());
   }
@@ -188,13 +209,9 @@ foundations::Result<Frame> stereo_pair(const foundations::image::Image& left,
 foundations::Result<std::vector<foundations::matching::Match>> search(
     const Frame& frame, std::span<const foundations::matching::Projection> projections,
     const foundations::matching::SearchOptions& options, std::span<const std::uint8_t> taken) {
-  auto grid = foundations::matching::FeatureGrid::build(frame.features.keypoints);
-  if (!grid) {
-    return std::unexpected(std::move(grid.error()));
-  }
   const std::vector<std::uint8_t> none(taken.empty() ? keypoint_count(frame) : 0, 0);
   return foundations::matching::search_by_projection(
-      projections, frame.features, *grid, frame.right,
+      projections, frame.features, frame.grid, frame.right,
       taken.empty() ? std::span<const std::uint8_t>(none) : taken, options);
 }
 

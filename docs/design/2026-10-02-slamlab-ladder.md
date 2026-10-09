@@ -1,6 +1,6 @@
 # slamlab: a learning ladder for visual SLAM
 
-Status, 2026-10-06: milestone 1 is complete, and milestone 2 is under way (see
+Status, 2026-10-08: milestone 1 is complete, and milestone 2 is under way (see
 [Milestones](#milestones)). The scaffold (package-per-rung layout in three
 languages, conda environment, CI, two-layer review process) is merged. PR 1, the BA spine,
 added rung 0's geometry and estimation in Python and C++: SO(3), SE(3), Umeyama alignment,
@@ -19,7 +19,9 @@ tests run on all three. Milestone 2's PR 7 adds the front end (fixed-point image
 ORB-SLAM extracts it, matching and rectified stereo) and the evaluation (dataset readers,
 metrics, the run format). PR 8 adds the edge VO pipeline, ORB-SLAM-lite in monocular, stereo
 and RGB-D, with native C++ and Rust programs that run a whole sequence and make the same
-decisions as the Python reference ([the edge VO note](../notes/edge-vo.md)).
+decisions as the Python reference ([the edge VO note](../notes/edge-vo.md)). PR 9 adds the
+budget harness and brings the C++ and Rust pipelines to real time within a laptop-CPU budget
+on every sequence of the edge note's set ([the real-time note](../notes/real-time.md)).
 
 ## Purpose
 
@@ -78,8 +80,8 @@ The ladder spans compute budgets. Every rung stands on rung 0.
 | Language | Role |
 |---|---|
 | **Python** | The readable reference implementation of every algorithm; orchestration, evaluation, and the learned rungs (PyTorch) |
-| **C++** | The performance core: rung 0, the edge rung, the edge budgets, and dense-BA kernels if profiling calls for them; outside the cores, `eval`'s native readers and run writer (`slamlab_eval`) and the native VO program (`slamlab_vo`, in orchestration); and the calibration side track (`slamlab_calib`), beside Python, without Rust. Showing C++ is a goal in its own right. |
-| **Rust** | Rung 0 and the edge rung, each in lock-step with Python and C++: every slice of those rungs lands in all three languages together; outside the cores, `eval`'s native readers and run writer (`slamlab-eval`) and the native VO program (`slamlab_vo`, crate `slamlab-orchestration`). The other rungs have no Rust. |
+| **C++** | The performance core: rung 0, the edge rung, the edge budgets, and dense-BA kernels if profiling calls for them; outside the cores, `eval`'s native readers, run writer and process readings for a budget (`slamlab_eval`) and the native VO program (`slamlab_vo`, in orchestration); and the calibration side track (`slamlab_calib`), beside Python, without Rust. Showing C++ is a goal in its own right. |
+| **Rust** | Rung 0 and the edge rung, each in lock-step with Python and C++: every slice of those rungs lands in all three languages together; outside the cores, `eval`'s native readers, run writer and process readings for a budget (`slamlab-eval`) and the native VO program (`slamlab_vo`, crate `slamlab-orchestration`). The other rungs have no Rust. |
 
 **Runtime dependencies.** Adding one, to the Python package or to a core, is a change to this
 document first.
@@ -89,9 +91,10 @@ document first.
   ROS 1 bags by hand, with no dependency (the calibration side track).
 - **C++:** Eigen. The `slamlab_eval` library reads PNGs with stb_image (vendored in
   `third_party/stb`, PNG support only; MIT or public domain), outside the algorithm cores.
-- **Rust:** nalgebra, the matrix type, and faer for every SVD and the general
+- **Rust:** nalgebra, the matrix type, and faer for the general SVDs and the general
   eigendecomposition, single-threaded, behind the crate-private `linalg` (nalgebra's SVDs are
-  not backward stable; see the Rust port's note). The `slamlab-eval` crate reads PNGs with
+  not backward stable; see the Rust port's note); the 3x3 SVDs, since PR 9, a port of Eigen's
+  `JacobiSVD` in the same module (the real-time note). The `slamlab-eval` crate reads PNGs with
   the pure-Rust `png` crate, outside the algorithm cores.
 - The three readers read a file the same way (gray from a gray file as stored, from a colour
   one through `image.to_gray`), held to shared PNG fixtures.
@@ -338,7 +341,7 @@ visible from its path and enforceable by contract.
 | `slamlab.calib` | library `slamlab_calib` | -- | Sensor calibration (the side track) |
 | `slamlab.dense` | -- | -- | Dense BA + depth prior |
 | `slamlab.learned` | -- | -- | DROID- and MegaSaM-style |
-| `slamlab.eval` | library `slamlab_eval`, `slamlab::eval` (native PNG and dataset readers, run writer) | crate `slamlab-eval` (native PNG and dataset readers, run writer) | Dataset readers, external references (COLMAP), metrics, benchmarks, budget harness |
+| `slamlab.eval` | library `slamlab_eval`, `slamlab::eval` (native PNG and dataset readers, run writer, a program's process for its run) | crate `slamlab-eval` (the same) | Dataset readers, external references (COLMAP), metrics, benchmarks, budget harness |
 | `slamlab.orchestration` | library `slamlab_orchestration` and program `slamlab_vo` (`cpp/apps/orchestration/`; from PR 8) | crate `slamlab-orchestration` and its program `slamlab_vo` (from PR 8) | End-to-end pipelines |
 
 Packages for rungs that have no code yet are stubs: a docstring stating the rung, its
@@ -401,8 +404,9 @@ ladder like the code they time, built and linted by layer 1, and never run by it
 benchmark that reads dataset files links the native readers (`slamlab_eval`,
 `slamlab-eval`), so it sits above them, in `cpp/bench/eval/` or the `slamlab-eval` crate's
 `benches/`; a rung-0 benchmark builds its input in code (as `orb_extract` does).
-`slamlab.eval` keeps the Python benchmarks and, from milestone 7, the budget harness, which
-will drive the native benchmarks on the edge targets.
+`slamlab.eval` keeps the Python benchmarks and the budget harness (`slamlab.eval.budgets`,
+PR 9), which runs a program pinned and capped and judges its frames against their deadline;
+from milestone 7 it will drive the native benchmarks on the edge targets.
 
 ## Milestones
 
@@ -430,7 +434,7 @@ state, evaluation and the budget harness. Every PR lands in Python, C++ and Rust
 |---|---|
 | 7 | **Front end and evaluation.** Images (Pillow in `slamlab.eval`; native PNG readers outside the cores, `slamlab_eval` and `slamlab-eval`), grayscale pyramids, blur and bilinear remapping. ORB, our own: multi-scale FAST spread over the image, intensity-centroid orientation, rBRIEF descriptors, Hamming matching with a ratio test. Stereo rectification from EuRoC's calibration, row-constrained matching with subpixel refinement, depth from disparity. The EuRoC reader; TUM's depth maps in the library; the demos on the shared front end. ATE (Sim(3) alignment for monocular, SE(3) for stereo and RGB-D) and RPE; the run format. |
 | 8 | **The pipeline.** Initialisation: two-view for monocular, retrying on later frames when the parallax is low; from depth for stereo and RGB-D, metric from the start. Tracking: a constant-velocity prediction, map points matched by projection, PnP RANSAC as the fallback, motion-only pose refinement. Keyframe selection; local mapping (triangulation, local BA over a keyframe window, culling of points and keyframes). Native programs (C++ and Rust) that run a whole sequence. Results on TUM (monocular, RGB-D) and EuRoC (monocular, stereo), with rerun recordings. Planned in [the edge VO design](2026-10-05-edge-vo.md); built as [the edge VO note](../notes/edge-vo.md) describes. |
-| 9 | **Budgets and real time.** The `laptop-cpu` harness (pinned cores, capped memory, a per-frame deadline); latency (p50, p95) and peak memory; profiling the C++ and Rust pipelines to real time; the three-language comparison. Python is measured but not held to real time. |
+| 9 | **Budgets and real time.** The `laptop-cpu` harness (pinned cores, capped memory, a per-frame deadline); latency (p50, p95) and peak memory; profiling the C++ and Rust pipelines to real time; the three-language comparison. Python is measured but not held to real time. Built as [the real-time note](../notes/real-time.md) describes. |
 | 10 | **The run viewer** (see [Public presentation](#public-presentation)), on the run format, used locally until the repo goes public. |
 
 The open items aimed at milestone 2 close in these PRs: the depth-map loader and the shared
@@ -569,6 +573,15 @@ machine, and are labelled that way.
 
 - The harness is the same everywhere. If real hardware ever turns up, it runs there unchanged, and
   the simulated numbers can be checked.
+- **As built (PR 9; [the real-time note](../notes/real-time.md)):** `slamlab.eval.budgets` holds
+  `laptop-cpu` (4 performance cores, 8 GiB). It pins with `taskset` (a user session here has no
+  cpuset controller) and caps memory with `systemd-run --scope`, `MemoryMax` and no swap, so a
+  program over the cap is killed. No `CPUQuota`: the laptop's cores are whole. The deadline is
+  judged, not enforced: a frame past it is reported late, none is dropped. It holds building and
+  tracking a frame, ORB-SLAM's tracking thread; mapping, in the same thread here so a run stays
+  deterministic, is judged by its load, over the run and over its busiest 10 seconds. Each
+  program records its own process in its run: its peak memory, the CPUs it could run on and its
+  memory cap.
 - **Where a rung declares its budget:**
   - its package docstring states the target budgets and what it may depend on;
   - the import-linter contracts enforce the part that is checkable, namely no PyTorch or GPU
@@ -576,9 +589,10 @@ machine, and are labelled that way.
   - tests that need a GPU or a budget-capped run are marked `@pytest.mark.gpu` or
     `@pytest.mark.budget`.
   
-  `scripts/check.sh` runs the CPU subset on every PR. GPU and budget runs get their own
-  opt-in scripts when those rungs arrive, along with a separate light environment for the
-  edge rungs, so that having no PyTorch is also proven by installation.
+  `scripts/check.sh` runs the CPU subset on every PR. The budget runs are opt-in
+  (`python -m pytest -m budget`, since PR 9); GPU runs get their own opt-in script when those
+  rungs arrive, along with a separate light environment for the edge rungs, so that having no
+  PyTorch is also proven by installation.
 
 ## Datasets
 
@@ -606,8 +620,9 @@ Disk space is checked before each download.
   stereo and RGB-D; the RPE's estimate scaled by the ATE's scale.
 - **The run format** (`slamlab.eval.runs`), written by every backend's pipeline and read by the
   evaluation and the run viewer: a folder of `run.json` (dataset, sequence, mode, backend,
-  settings), `trajectory.txt` in TUM's format (so other systems' trajectories score the same
-  way), the keyframes and map points as `.npy`, and `diagnostics.jsonl`, one object per frame.
+  settings, and what the program recorded of its process: peak memory, CPUs, memory cap),
+  `trajectory.txt` in TUM's format (so other systems' trajectories score the same way), the
+  keyframes and map points as `.npy`, and `diagnostics.jsonl`, one object per frame.
 - **Map:** depth error against GT depth where it exists; reconstruction accuracy and completeness
   on Replica-style data.
 - **Cost, per budget:** frames per second, per-frame latency (p50/p95), peak memory.
@@ -807,13 +822,19 @@ shared with the owner's other projects.
     (`UpdateLastFrame`) and saves each frame relative to its BA-refined reference keyframe.
     A run's frame poses are the tracking-time estimates; the edge note scores the final
     keyframes too, ORB-SLAM's protocol, for the like-for-like column.
-  - **The keyframe time's growth on long sequences (H19).** Keyframe time still grows along
-    EuRoC MH_01 (see the edge note), unprofiled. The candidates: `refresh`'s per-point
-    allocations and its O(n² log n) distinctive descriptor, and the feature grid rebuilt on
-    every search (A11). Python's per-point loops stay, as the plain statement of the rules.
-  - **The real-time items, with PR 9 (A11).** `edge::search` rebuilds its `FeatureGrid` on
-    every call, where the design says per frame; the prediction's SO(3) projection runs
-    through Rust's allocating `svd3` every frame (PR 6's A11, below).
+  - Closed by PR 9: **the keyframe time's growth on long sequences (H19).** Profiled, local BA
+    was four fifths of mapping, not the candidates named (`refresh`, the grid). Its problem
+    grows with the map: on MH_01 stereo the median local BA holds 6.8k observations in the
+    sequence's first quarter and 11k to 12k after, as more fixed keyframes see the window's
+    points. Rung 0's C++ and Rust BA now form only the coordinates they solve (the Python
+    reference is unchanged; [the real-time note](../notes/real-time.md)), which brought
+    mapping's busiest 10 seconds below a thread's budget (MH_01 stereo 1.15 to 0.52,
+    fr3/long_office monocular 2.28 to 0.92, in C++).
+    Keyframe time still grows along a run; ORB-SLAM's mapping thread bounds it by stopping a
+    BA when a keyframe arrives, which this rung's single thread cannot (below).
+  - Closed by PR 9: **the real-time items (A11).** Each C++ and Rust frame builds its
+    `FeatureGrid` once, when it is assembled, as ORB-SLAM's `Frame` does; Rust's 3x3 SVD runs
+    on the stack (PR 6's A11, below).
   - **Lifting the edge camera into rung 0, with milestone 4 (A8).** `edge.frames.Camera` (a
     model and intrinsics with an image size and a baseline) and the chi-square test by
     pyramid level in `edge.residuals` belong in `foundations` once the classic rung needs
@@ -864,13 +885,35 @@ shared with the owner's other projects.
     (`backends.StaleProgramError`). Offline CI builds from clean and is not affected.
   - **The C++ edge tests' layout (H18).** Options' checks live in `test_map.cpp` and the
     residuals' in `test_adjust.cpp`, not in tests mirroring their modules.
+- **Found while building PR 9:**
+  - **Mapping in a thread of its own, with milestone 7.** The edge rung maps after tracking in
+    one thread, so runs are deterministic and the languages compare frame by frame; PR 9
+    judges mapping by its load, as a thread of its own would run it. A real mapping thread, and
+    ORB-SLAM's interruption of a local BA when a keyframe arrives, belong with the edge
+    targets' budgets, where keyframe bursts would otherwise delay frames.
+- **Deferred from PR 9's review panel**
+  ([report](../reviews/2026-10-08-feature-real-time.md)):
+  - **A mapping thread's backlog, with milestone 7 (L8).** `judge` measures mapping by its load
+    over the run and over its busiest window; the lag a mapping thread of its own would build
+    up is the waiting time of a FIFO queue, Lindley's recursion (`W' = max(0, W + S - A)`,
+    keyframe arrivals A, mapping times S), an upper bound where ORB-SLAM also holds back
+    keyframes and stops its local BA. Add it with the thread.
+  - **Physical cores for a budget, with milestone 7 (L12).** A budget's cores are logical
+    CPUs: this machine has no SMT, but on one that has, the four highest-numbered CPUs can be
+    two physical cores. Read `topology/thread_siblings_list` when a budget runs threads.
+  - **The anchored point's own observation (L10).** A host's observation of its own anchored
+    point is analytically null (the point is on the host's ray whatever the host pose,
+    intrinsics or inverse depth), but the BA's pairwise products over its repeated columns leave
+    roundoff of about eps times |J|^2 where an exact zero belongs. Merging repeated columns at
+    layout time, summing the Jacobian's columns before the products, would cancel it and cost
+    fewer products. Harmless today (the real-time note's per-solve check).
 - **Deferred from PR 7's review panel**
   ([report](../reviews/2026-10-05-feature-front-end.md)):
-  - **Reusing the extraction's pyramid (A1), with PR 9's real time.** `stereo.match` rebuilds
-    both pyramids `orb.extract` already built (2.9 ms in C++, 1.2 ms in Rust per 752x480
-    pyramid through the binding). Give extraction a result that holds its pyramid, or split
-    the cores into `image::pyramid` and an `orb::extract_levels`, as ORB-SLAM's
-    `ComputeStereoMatches` reads the extractor's `mvImagePyramid`.
+  - Closed by PR 9: **reusing the extraction's pyramid (A1).** The stereo frame builder builds
+    each image's pyramid once (`image.pyramid`), extracts from it (`orb.extract_levels`) and
+    matches on it (`stereo.match` takes the two pyramids), as ORB-SLAM's
+    `ComputeStereoMatches` reads its extractor's `mvImagePyramid`. Features holding their
+    pyramid, the other way out, would have kept every keyframe's pyramid alive in the map.
   - Closed by PR 8: **the run format's golden folder and its native writers (A9).** C++ and
     Rust write runs held to a golden folder in `tests/fixtures/eval/run/` that `read_run`
     validates, with hand-written `.npy` and JSON writers; the native pipeline links both the
@@ -917,11 +960,10 @@ shared with the owner's other projects.
     kernel's eigenvectors. Every backend is accurate on such scenes to their conditioning; only
     the decisions differ. A tie margin on the approximations' errors would be the place to
     start if it matters.
-  - **A stack-only 3x3 SVD before the edge rung (A11, run 2).** Every 3x3 SVD in Rust now
-    allocates (a faer call through `linalg::svd3`), and the edge VO calls `project_to_so3` and
-    Umeyama per frame. Give `svd3` a fixed-size, backward-stable path (one-sided Jacobi, as
-    Eigen's `JacobiSVD` uses for fixed sizes) behind the same signature, with the edge
-    milestone. PR 8's panel (A11) moves it to PR 9, the rung's real-time PR.
+  - Closed by PR 9: **a stack-only 3x3 SVD (A11, run 2).** `linalg::svd3` and
+    `singular_values3` port Eigen's `JacobiSVD` for a square matrix (two-sided Jacobi, not
+    one-sided as this entry had it), fixed-size and without a workspace; they give Eigen's
+    factors to the bit, so Rust's 3x3 SVDs now match C++'s exactly.
 - **Deferred from PR 5's review panel**
   ([report](../reviews/2026-10-04-feature-rust-core.md)):
   - Closed by PR 6: **nested summaries and the Rust `Summary` trait (A5).** `ba::Summary`
@@ -973,7 +1015,8 @@ shared with the owner's other projects.
     (VGGSfM/CoTracker) via the dumped BA problem.
   - Which depth prior: VGGT's depth or a monocular model, metric or relative. This sets
     whether BA's per-frame scale/shift is free.
-- **GPU and budget test runs:** their opt-in scripts and the light edge environment arrive
-  with the first PyTorch rung (milestone 5) and the budget harness (milestone 7).
+- **GPU test runs:** their opt-in script and the light edge environment arrive with the first
+  PyTorch rung (milestone 5). The budget runs have theirs since PR 9
+  (`python -m pytest -m budget`).
 - **reifyscene's env** needs slamlab's build tools (cmake, compiler, Rust) when the adapter lands
   at milestone 3.

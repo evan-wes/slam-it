@@ -28,6 +28,7 @@
 #include "slamlab/edge/initialization.hpp"
 #include "slamlab/edge/map.hpp"
 #include "slamlab/edge/options.hpp"
+#include "slamlab/foundations/matching.hpp"
 
 namespace slamlab::bindings::edge_crossing {
 
@@ -296,7 +297,7 @@ inline constexpr std::array<const char*, 12> kFrameKeys = {
 /// @param values The dict.
 /// @return The frame.
 /// @throws std::invalid_argument for a missing or unknown key, or arrays that are malformed
-///         or not one row per keypoint.
+///         or not one row per keypoint; CoreError for a keypoint position that is not finite.
 inline edge::Frame frame_in(const nanobind::dict& values) {
   check_keys(values, kFrameKeys, "the frame");
   const auto xy = pixels_item(values, "xy");
@@ -304,29 +305,30 @@ inline edge::Frame frame_in(const nanobind::dict& values) {
   const auto level_xy = item<std::int64_t, nanobind::shape<-1, 2>>(values, "level_xy");
   const auto response = vector_item<std::int64_t>(values, "response");
   const auto angle = vector_item<std::int64_t>(values, "angle");
-  edge::Frame frame{.timestamp = nanobind::cast<double>(values["timestamp"]),
-                    .features = {.keypoints = {},
-                                 .descriptors = descriptors_item(values, "descriptors"),
-                                 .scale_factor = nanobind::cast<double>(values["scale_factor"]),
-                                 .levels = nanobind::cast<std::int64_t>(values["levels"])},
-                    .bearings = vectors_item(values, "bearings"),
-                    .depth = vector_item<double>(values, "depth"),
-                    .right = vector_item<double>(values, "right")};
+  foundations::orb::Features features{
+      .keypoints = {},
+      .descriptors = descriptors_item(values, "descriptors"),
+      .scale_factor = nanobind::cast<double>(values["scale_factor"]),
+      .levels = nanobind::cast<std::int64_t>(values["levels"])};
+  std::vector<Eigen::Vector3d> bearings = vectors_item(values, "bearings");
+  std::vector<double> depth = vector_item<double>(values, "depth");
+  std::vector<double> right = vector_item<double>(values, "right");
   const std::size_t n = xy.size();
   if (level.size() != n || level_xy.shape(0) != n || response.size() != n || angle.size() != n ||
-      frame.features.descriptors.size() != n || frame.bearings.size() != n ||
-      frame.depth.size() != n || frame.right.size() != n) {
+      features.descriptors.size() != n || bearings.size() != n || depth.size() != n ||
+      right.size() != n) {
     throw std::invalid_argument("frame: expected one row per keypoint in every array");
   }
-  frame.features.keypoints.resize(n);
+  features.keypoints.resize(n);
   for (std::size_t i = 0; i < n; ++i) {
-    frame.features.keypoints[i] = {.xy = xy[i],
-                                   .level = level[i],
-                                   .level_xy = {level_xy(i, 0), level_xy(i, 1)},
-                                   .response = response[i],
-                                   .angle = angle[i]};
+    features.keypoints[i] = {.xy = xy[i],
+                             .level = level[i],
+                             .level_xy = {level_xy(i, 0), level_xy(i, 1)},
+                             .response = response[i],
+                             .angle = angle[i]};
   }
-  return frame;
+  return unwrap(edge::make_frame(nanobind::cast<double>(values["timestamp"]), std::move(features),
+                                 std::move(bearings), std::move(depth), std::move(right)));
 }
 
 /// @brief Read the settings from a dict of scalars.

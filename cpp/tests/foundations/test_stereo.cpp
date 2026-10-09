@@ -147,10 +147,13 @@ void check_matches(int& failures) {
                                         .window = s["window"].get<std::int64_t>(),
                                         .search = s["search"].get<std::int64_t>(),
                                         .outlier_factor = s["outlier_factor"].get<double>()};
-    const auto got =
-        stereo::match(slamlab::testing::read_image(in[0]), slamlab::testing::read_image(in[1]),
-                      read_features(in[2]), read_features(in[3]), in[4].get<double>(),
-                      in[5].get<double>(), settings);
+    const slamlab::foundations::orb::Features left = read_features(in[2]);
+    const auto pyramid = [&left](const nlohmann::json& image) {
+      return *slamlab::foundations::image::pyramid(slamlab::testing::read_image(image), left.levels,
+                                                   left.scale_factor);
+    };
+    const auto got = stereo::match(pyramid(in[0]), pyramid(in[1]), left, read_features(in[3]),
+                                   in[4].get<double>(), in[5].get<double>(), settings);
     const auto& e = c["expected"];
     bool ok = got.has_value() && got->size() == e["left"].size();
     for (std::size_t k = 0; ok && k < got->size(); ++k) {
@@ -215,8 +218,9 @@ void check_match_rejections(int& failures) {
   const slamlab::foundations::image::Image frame{
       .rows = 60, .cols = 80, .pixels = std::vector<std::uint8_t>(std::size_t{60} * 80)};
   const stereo::MatchOptions settings{};
+  const std::vector<slamlab::foundations::image::Image> levels{frame};
   const auto refused = [&](const orb::Features& left, const orb::Features& right) {
-    const auto got = stereo::match(frame, frame, left, right, 100.0, 0.1, settings);
+    const auto got = stereo::match(levels, levels, left, right, 100.0, 0.1, settings);
     return !got && got.error().kind == ErrorKind::kInvalidInput;
   };
   expect(!refused(one_keypoint(30, 30), one_keypoint(25, 30)), "match accepts good features",
@@ -245,6 +249,19 @@ void check_match_rejections(int& failures) {
     expect(refused(off, one_keypoint(25, 30)), "match rejects a level outside the pyramid",
            failures);
   }
+  const auto refused_pyramids = [&](const std::vector<slamlab::foundations::image::Image>& left,
+                                    const std::vector<slamlab::foundations::image::Image>& right) {
+    const auto got = stereo::match(left, right, one_keypoint(30, 30), one_keypoint(25, 30), 100.0,
+                                   0.1, settings);
+    return !got && got.error().kind == ErrorKind::kInvalidInput;
+  };
+  const slamlab::foundations::image::Image narrower{
+      .rows = 60, .cols = 70, .pixels = std::vector<std::uint8_t>(std::size_t{60} * 70)};
+  expect(refused_pyramids(levels, {narrower}), "match rejects pyramids of different shapes",
+         failures);
+  expect(refused_pyramids({}, levels), "match rejects a pyramid without its levels", failures);
+  expect(refused_pyramids({frame, frame}, levels), "match rejects a pyramid of other levels",
+         failures);
 }
 
 /// @brief The test body.

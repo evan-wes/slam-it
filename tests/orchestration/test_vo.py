@@ -5,6 +5,8 @@ The room from its TUM and EuRoC folders, the native programs' command line, and 
 
 from __future__ import annotations
 
+import os
+import re
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -16,7 +18,7 @@ from slamlab import backends
 from slamlab.edge import frames, tracking
 from slamlab.edge.map import Map
 from slamlab.edge.options import Options
-from slamlab.eval import runs
+from slamlab.eval import budgets, runs
 from slamlab.foundations.errors import DegenerateError, InvalidInputError, NotConvergedError
 from slamlab.orchestration import vo
 from tests.conftest import FIXTURES, assert_matches_fixture, load_fixture
@@ -55,6 +57,25 @@ def test_every_backend_tracks_the_room(
     error = runs.evaluate(run, room_folders.timestamps, room_folders.poses)
     assert error.matched == len(run.timestamps)
     assert error.absolute.rmse < ATE_BOUND[mode]
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize(("dataset", "mode"), CASES)
+def test_every_frame_times_its_steps(
+    dataset: str, mode: str, backend: str, room_runs: RoomRun
+) -> None:
+    """Every frame times reading, building and tracking; only keyframes after the start map.
+
+    The frame that starts the map is initialisation, which tracking's time holds, as ORB-SLAM's
+    tracking thread initialises.
+    """
+    run = room_runs(dataset, mode, backend)
+    for d in run.diagnostics:
+        assert all(d[step] > 0.0 for step in runs.STEPS[:3])
+    start = next(i for i, d in enumerate(run.diagnostics) if d["keyframe"])
+    mapped = [d["map_seconds"] > 0.0 for d in run.diagnostics]
+    assert mapped == [d["keyframe"] and i > start for i, d in enumerate(run.diagnostics)]
+    assert all(d["map_seconds"] == 0.0 for d in run.diagnostics if not d["keyframe"])
 
 
 def _assert_same_run(native: runs.Run, reference: runs.Run) -> None:
@@ -187,9 +208,128 @@ def test_a_request_crosses_as_a_command_line() -> None:
     ]
 
 
+def test_parse_reads_a_command_line() -> None:
+    """Every flag is read, in any order; the settings named are set, the rest default."""
+    request = vo.parse(
+        [*("--mode", "rgbd", "--dataset", "tum", "--sequence", "seq", "--out", "out"),
+         *("--first", "3", "--count", "10", "--option", "window=7"),
+         *("--option", "close_depth=35.5")]
+    )  # fmt: skip
+    expected = Options(window=7, close_depth=35.5)
+    assert request == vo.Request("tum", Path("seq"), "rgbd", Path("out"), 3, 10, expected)
+    plain = vo.parse(["--dataset", "tum", "--sequence", "s", "--mode", "rgbd", "--out", "o"])
+    assert (plain.first, plain.count, plain.options) == (0, None, Options())
+
+
+@pytest.mark.parametrize(
+    ("more", "message"),
+    [
+        (["--mode", "lidar"], "--mode: given twice"),
+        (["--first", "x"], "--first: expected an integer, got 'x'"),
+        (["--first", "1_000"], "--first: expected an integer"),
+        (["--count"], "--count: expected a value"),
+        (["--option", "windows=7"], "--option: no setting 'windows'"),
+        (["--option", "window=7.5"], "window: expected an integer, got '7.5'"),
+        (["--option", "close_depth=inf"], "close_depth: expected a finite number, got 'inf'"),
+        (["--option", "close_depth=3_5"], "close_depth: expected a finite number"),
+        (["--option", "close_depth=+-5"], "close_depth: expected a finite number"),
+        (["--option", "window"], "--option: expected KEY=VALUE, got 'window'"),
+        (["--dataset", "euroc"], "--dataset: given twice"),
+        (["--verbose", "1"], "unknown argument '--verbose'"),
+    ],
+)
+def test_parse_refuses_what_the_native_programs_refuse(more: list[str], message: str) -> None:
+    """A bad flag, value or setting, a repeated flag, or a missing value: a usage error.
+
+    The cases and messages of the native programs' own tests.
+    """
+    base = ["--dataset", "tum", "--sequence", "seq", "--mode", "rgbd", "--out", "out"]
+    with pytest.raises(vo.UsageError, match=re.escape(message)):
+        vo.parse([*base, *more])
+
+
+@pytest.mark.parametrize(
+    ("text", "value"),
+    [
+        ("close_depth=35.5", 35.5),
+        ("close_depth=+0.5", 0.5),
+        ("close_depth=.5", 0.5),
+        ("close_depth=5.", 5.0),
+        ("close_depth=1e5", 1e5),
+        ("close_depth= 2.0 ", 2.0),
+        ("close_depth=-1", -1.0),  # a number; its range is the settings' to check
+        ("window=10", 10),
+    ],
+)
+def test_parse_setting_reads_what_the_programs_read(text: str, value: float) -> None:
+    """Decimals with a sign, a lone point or an exponent; integers whole."""
+    key, read = vo.parse_setting(text)
+    assert (key, read, type(read)) == (text.partition("=")[0], value, type(value))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "close_depth=inf",
+        "close_depth=nan",
+        "close_depth=1e999",
+        "close_depth=3_5",
+        "close_depth=1e",
+        "close_depth=+-5",
+        "close_depth=",
+        "close_depth=0x10",
+        "window=1.0",
+        "window=1_000",
+        "no_such_setting=1",
+        "close_depth",
+    ],
+)
+def test_parse_setting_refuses_what_the_programs_refuse(text: str) -> None:
+    """Not finite, past float64, underscores, two signs, hex, a fraction for an integer."""
+    with pytest.raises(vo.UsageError):
+        vo.parse_setting(text)
+
+
+def test_parse_refuses_an_unknown_mode_or_a_missing_flag() -> None:
+    """A mode by another name, or a required flag left out: a usage error."""
+    base = ["--dataset", "tum", "--sequence", "seq", "--out", "out"]
+    with pytest.raises(vo.UsageError, match="--mode: expected monocular, stereo or rgbd"):
+        vo.parse([*base, "--mode", "lidar"])
+    with pytest.raises(vo.UsageError, match="--mode: missing"):
+        vo.parse(base)
+
+
+def test_a_setting_out_of_range_is_a_failed_run_not_a_usage_error() -> None:
+    """As the natives' check refuses it after reading the command line, with exit code 3."""
+    base = ["--dataset", "tum", "--sequence", "seq", "--mode", "rgbd", "--out", "out"]
+    with pytest.raises(InvalidInputError, match="window") as raised:
+        vo.parse([*base, "--option", "window=0"])
+    assert not isinstance(raised.value, vo.UsageError)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_every_program_records_its_process(backend: str, tmp_path: Path) -> None:
+    """Each backend's program writes its run with its own peak memory and CPUs, and says so."""
+    request = vo.Request("tum", SEQUENCES / "tum_camera", "rgbd", tmp_path, count=0)
+    done = subprocess.run(
+        [*vo.command(require_program(backend)), *request.arguments()],
+        capture_output=True, text=True, check=False,
+    )  # fmt: skip
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.startswith("slamlab_vo: 0 of 0 frames tracked")
+    run = runs.read_run(tmp_path)
+    assert run.peak_memory is not None
+    assert run.peak_memory > 2**20
+    assert run.cpus == sorted(os.sched_getaffinity(0))
+
+
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_a_run_records_its_settings(backend: str, tmp_path: Path) -> None:
-    """A run of no frames records the settings asked for, every one, exactly."""
+    """A run of no frames records the settings asked for, every one, exactly.
+
+    Its peak memory is its program's; Python's in-process run, which shares its process with
+    whatever called it, records none.
+    """
     options = Options(n_features=700, close_depth=0.1 + 0.2, chi2_mono=5.0, seed=3)
     run = vo.run(
         "tum",
@@ -202,6 +342,7 @@ def test_a_run_records_its_settings(backend: str, tmp_path: Path) -> None:
     )
     assert run.settings == options.as_dict()
     assert len(run.timestamps) == len(run.diagnostics) == 0
+    assert (run.peak_memory is None) == (backend == "python")
 
 
 @pytest.mark.parametrize(
@@ -262,6 +403,31 @@ def test_refuses_negative_frames() -> None:
         vo.run("tum", SEQUENCES / "tum_camera", "rgbd", "unused", count=-1)
 
 
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_a_program_fails_a_file_it_cannot_read_or_write_alike(backend: str, tmp_path: Path) -> None:
+    """A file a program cannot read or write fails the run alike in every program.
+
+    A missing image, or a run folder it cannot write, is a failed run of kind InvalidInput, its
+    message prefixed and naming the file.
+    """
+    command = vo.command(require_program(backend))
+    missing = vo.Request("euroc", SEQUENCES / "euroc", "stereo", tmp_path, count=1)
+    done = subprocess.run(
+        [*command, *missing.arguments()], capture_output=True, text=True, check=False
+    )
+    assert done.returncode == vo.EXIT_FAILED
+    assert re.match(r"slamlab_vo: .*mav0/cam0/data/\d+\.png", done.stderr)
+    blocked = tmp_path / "a_file"
+    blocked.write_text("")
+    unwritable = vo.Request("tum", SEQUENCES / "tum_camera", "rgbd", blocked / "run", count=0)
+    done = subprocess.run(
+        [*command, *unwritable.arguments()], capture_output=True, text=True, check=False
+    )
+    assert done.returncode == vo.EXIT_FAILED, done.stderr
+    assert done.stderr.startswith("slamlab_vo: ")
+    assert "a_file" in done.stderr
+
+
 @pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
 def test_a_failed_program_raises_its_error(backend: str, tmp_path: Path) -> None:
     """A native run that fails raises the error of its kind, with the program's message."""
@@ -274,6 +440,45 @@ def test_a_failed_program_raises_its_error(backend: str, tmp_path: Path) -> None
             backend=require_program(backend),
             count=1,
         )
+
+
+def test_a_killed_program_says_so(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A program killed by a signal (a budget's memory cap kills with 9) raises, naming it."""
+    program = tmp_path / "slamlab_vo"
+    program.write_text("#!/bin/sh\nkill -9 $$\n")
+    program.chmod(0o755)
+    monkeypatch.setattr(backends, "program", lambda backend, name: program)
+    with pytest.raises(RuntimeError, match="killed by signal 9"):
+        vo.run("tum", SEQUENCES / "tum_camera", "rgbd", tmp_path / "run", backend="cpp", count=0)
+
+
+@pytest.mark.budget
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize(("dataset", "mode"), CASES)
+def test_every_backend_runs_the_room_within_the_laptop_budget(  # noqa: PLR0917 -- case, fixtures
+    dataset: str, mode: str, backend: str, room_folders: Room, room_runs: RoomRun, tmp_path: Path
+) -> None:
+    """Pinned and capped, each program takes the decisions it takes unbudgeted, within memory."""
+    budget = budgets.BUDGETS["laptop-cpu"]
+    folder = room_folders.tum if dataset == "tum" else room_folders.euroc
+    run = vo.run(
+        dataset, folder, mode, tmp_path, backend=require_program(backend), options=OPTIONS,
+        budget=budget,
+    )  # fmt: skip
+    _assert_same_run(run, room_runs(dataset, mode, "python"))
+    assert run.peak_memory is not None
+    assert 0 < run.peak_memory < budget.memory
+    assert run.cpus == budgets.cpus(budget)
+    assert run.memory_cap == budget.memory
+    assert budgets.judge(run).count == FRAMES
+
+
+@pytest.mark.budget
+def test_a_program_past_its_budgets_memory_is_killed(room_folders: Room, tmp_path: Path) -> None:
+    """Python's program within 16 MiB (its interpreter alone holds more) is killed, not swapped."""
+    tiny = budgets.Budget("tiny", cores=1, memory=16 * 2**20, stands_for="nothing real")
+    with pytest.raises(RuntimeError, match="killed by signal 9, within tiny's 16777216 bytes"):
+        vo.run("tum", room_folders.tum, "rgbd", tmp_path, backend="python", budget=tiny)
 
 
 @pytest.mark.parametrize(
@@ -293,13 +498,12 @@ def test_a_programs_exit_code_names_its_error(
         vo.run("tum", SEQUENCES / "tum_camera", "rgbd", tmp_path / "run", backend="cpp", count=0)
 
 
-@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_a_program_refuses_a_bad_command_line(backend: str) -> None:
     """A command line the program cannot read exits with the usage, and code EXIT_USAGE."""
-    program = backends.program(require_program(backend), vo.PROGRAM)
+    program = vo.command(require_program(backend))
     for arguments in (["--dataset", "tum"], ["--option", "windows=7"], ["--mode"]):
-        done = subprocess.run(
-            [str(program), *arguments], capture_output=True, text=True, check=False
-        )
+        done = subprocess.run([*program, *arguments], capture_output=True, text=True, check=False)
         assert done.returncode == vo.EXIT_USAGE
-        assert "usage: slamlab_vo" in done.stderr
+        assert done.stderr.startswith("slamlab_vo: ")
+        assert "\nusage: " in done.stderr

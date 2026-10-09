@@ -49,13 +49,19 @@ def values() -> dict[str, Any]:
         "keyframe_poses": poses[[0, 3]].tolist(),
         "points": rng.normal(0.0, 3.0, (4, 3)).tolist(),
         "settings": {"n_features": 1000, "scale_factor": 1.2, "window": 10, "chi2_mono": 5.991},
+        "peak_memory": 48_381_952,
+        "cpus": [4, 5, 6, 7],
+        "memory_cap": 8_589_934_592,
         "diagnostics": [
             {
                 "timestamp": float(t),
                 "state": "tracking",
                 "tracked": 300 + k,
                 "keyframe": k in (0, 3),
-                "seconds": 0.0125 * (k + 1),
+                "read_seconds": 0.0025 * (k + 1),
+                "build_seconds": 0.0125 * (k + 1),
+                "track_seconds": 0.005 * (k + 1),
+                "map_seconds": 0.0625 if k == 3 else 0.0,
             }
             for k, t in enumerate(times)
         ],
@@ -80,6 +86,9 @@ def main() -> None:
             points=np.array(run["points"]),
             settings=run["settings"],
             diagnostics=run["diagnostics"],
+            peak_memory=run["peak_memory"],
+            cpus=run["cpus"],
+            memory_cap=run["memory_cap"],
         ),
     )
 

@@ -447,12 +447,16 @@ def test_degenerate_data_is_dropped_and_counted() -> None:
     np.testing.assert_array_equal(result.poses[4], poses[4])
 
 
+@pytest.mark.parametrize("fixed_hosts", [False, True], ids=["free", "fixed hosts"])
 @pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
-def test_backend_parity(backend: str) -> None:
+def test_backend_parity(backend: str, fixed_hosts: bool) -> None:
     """A compiled backend matches the reference on every kind of block.
 
     Radtan, two intrinsics groups, a Cauchy loss, depth priors with free affines, and pose
-    priors.
+    priors. With fixed hosts, the first two cameras are fixed: the anchored points' host
+    (camera 0) is fixed while free cameras observe them, the host observes its own points, and
+    a pose prior sits on a fixed camera, so blocks reach coordinates the compiled cores'
+    reduced system never forms (their kept coordinates).
     """
     require_backend(backend)
     scene = _scene(
@@ -466,6 +470,10 @@ def test_backend_parity(backend: str) -> None:
         groups=np.stack([RADTAN, RADTAN * 1.001]),
     )
     problem = _every_kind(scene)
+    if fixed_hosts:
+        problem = replace(problem, fixed_poses=np.arange(5) < 2)
+        anchored = problem.point_anchor[problem.point_anchor >= 0]
+        assert np.all(problem.cam_idx[anchored] == 0)  # every host is a fixed camera
     options = ba.BAOptions(
         solver=replace(TIGHT, loss=nls.Loss("cauchy", 2.0)), depth_loss=nls.Loss("huber", 0.5)
     )

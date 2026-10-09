@@ -144,9 +144,51 @@ pub struct Frame {
     pub depth: Vec<f64>,
     /// Each keypoint's right-image column (NaN where its depth is unknown).
     pub right: Vec<f64>,
+    /// Its keypoints bucketed for search by projection, built with the frame as ORB-SLAM's
+    /// `Frame` assigns its features to a grid (the compiled cores' search structure; Python's
+    /// search needs none). [`Frame::new`] builds it; a frame's keypoints are not changed after.
+    pub grid: FeatureGrid,
 }
 
 impl Frame {
+    /// A frame from its parts, its feature grid built from its keypoints: how every frame is
+    /// made (the builders, the bindings, the tests), so none lacks its grid. It does not check
+    /// that the parts hold one entry per keypoint; a search's `check_frame` does.
+    ///
+    /// # Arguments
+    ///
+    /// * `timestamp` - Its time, in seconds.
+    /// * `features` - Its ORB features.
+    /// * `bearings` - Each keypoint's unit bearing.
+    /// * `depth` - Each keypoint's depth (NaN where unknown).
+    /// * `right` - Each keypoint's right-image column (NaN where unknown).
+    ///
+    /// # Returns
+    ///
+    /// The frame.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidInput` from the grid for a keypoint position that is not finite (never one
+    /// extracted).
+    pub fn new(
+        timestamp: f64,
+        features: Features,
+        bearings: Vec<Vector3<f64>>,
+        depth: Vec<f64>,
+        right: Vec<f64>,
+    ) -> Result<Self> {
+        let grid = FeatureGrid::build(&features.keypoints)?;
+        Ok(Self {
+            timestamp,
+            features,
+            bearings,
+            depth,
+            right,
+            grid,
+        })
+    }
+
     /// The number of keypoints.
     ///
     /// # Returns
@@ -237,7 +279,7 @@ pub fn depth_at(xy: &[[f64; 2]], depth_map: &DepthMap) -> Result<Vec<f64>> {
         .collect()
 }
 
-/// Assembles a frame from its features: their bearings, and the depths and columns.
+/// Assembles a frame from its features: their bearings and grid, and the depths and columns.
 ///
 /// # Arguments
 ///
@@ -250,25 +292,23 @@ pub fn depth_at(xy: &[[f64; 2]], depth_map: &DepthMap) -> Result<Vec<f64>> {
 /// # Returns
 ///
 /// The frame.
+///
+/// # Errors
+///
+/// `InvalidInput` from the grid (unreachable for extracted features).
 fn assemble(
     timestamp: f64,
     features: Features,
     camera: &Camera,
     depth: Vec<f64>,
     right: Vec<f64>,
-) -> Frame {
+) -> Result<Frame> {
     let bearings = features
         .keypoints
         .iter()
         .map(|k| camera.bearing(&Vector2::new(k.xy[0], k.xy[1])))
         .collect();
-    Frame {
-        timestamp,
-        features,
-        bearings,
-        depth,
-        right,
-    }
+    Frame::new(timestamp, features, bearings, depth, right)
 }
 
 /// Builds a monocular frame: features and bearings, no depth.
@@ -295,13 +335,13 @@ pub fn monocular(
 ) -> Result<Frame> {
     let features = orb::extract(image, options)?;
     let n = features.keypoints.len();
-    Ok(assemble(
+    assemble(
         timestamp,
         features,
         camera,
         vec![f64::NAN; n],
         vec![f64::NAN; n],
-    ))
+    )
 }
 
 /// Builds an RGB-D frame: each keypoint's depth and virtual right column.
@@ -345,7 +385,7 @@ pub fn rgbd(
     let depth = depth_at(&xy, depth_map)?;
     let bf = camera.focal() * camera.baseline;
     let right = xy.iter().zip(&depth).map(|(p, &z)| p[0] - bf / z).collect();
-    Ok(assemble(timestamp, features, camera, depth, right))
+    assemble(timestamp, features, camera, depth, right)
 }
 
 /// Builds a stereo frame from a rectified pair: left features, matched along rows.
@@ -379,10 +419,13 @@ pub fn stereo_pair(
             "camera: a stereo pair needs a rectified pinhole camera and baseline",
         );
     }
-    let features = orb::extract(images.0, options)?;
-    let other = orb::extract(images.1, options)?;
+    // Each image's pyramid, built once: extraction and the row matching both read it.
+    let left_levels = image::pyramid(images.0, options.levels, options.scale_factor)?;
+    let right_levels = image::pyramid(images.1, options.levels, options.scale_factor)?;
+    let features = orb::extract_levels(&left_levels, options)?;
+    let other = orb::extract_levels(&right_levels, options)?;
     let found = stereo::match_rows(
-        images,
+        (&left_levels, &right_levels),
         &features,
         &other,
         camera.focal(),
@@ -395,7 +438,7 @@ pub fn stereo_pair(
         depth[m.left] = m.depth;
         columns[m.left] = m.right_x;
     }
-    Ok(assemble(timestamp, features, camera, depth, columns))
+    assemble(timestamp, features, camera, depth, columns)
 }
 
 /// Matches projected map points to a frame's keypoints, its right columns checked
@@ -422,12 +465,11 @@ pub fn search(
     options: &SearchOptions,
     taken: &[bool],
 ) -> Result<Vec<Match>> {
-    let grid = FeatureGrid::build(&frame.features.keypoints)?;
     let none = vec![false; if taken.is_empty() { frame.size() } else { 0 }];
     matching::search_by_projection(
         projections,
         &frame.features,
-        &grid,
+        &frame.grid,
         &frame.right,
         if taken.is_empty() { &none } else { taken },
         options,
@@ -436,9 +478,50 @@ pub fn search(
 
 #[cfg(test)]
 mod tests {
-    //! Native tests of depth lookup and the camera check.
+    //! Native tests of depth lookup, the camera check and the one constructor.
 
     use super::*;
+    use slamlab_foundations::orb::Keypoint;
+
+    /// `Frame::new` builds the keypoints' grid, and refuses a position the grid cannot hold.
+    #[test]
+    #[allow(clippy::cast_precision_loss, reason = "small indices")]
+    fn new_builds_the_keypoints_grid() {
+        let mut keypoints: Vec<Keypoint> = (0..6)
+            .map(|i| Keypoint {
+                xy: [10.0 + 7.0 * i as f64, 20.0 + 3.0 * i as f64],
+                level: i % 2,
+                level_xy: [0, 0],
+                response: 0,
+                angle: 0,
+            })
+            .collect();
+        let parts = |keypoints: Vec<Keypoint>| {
+            let n = keypoints.len();
+            let features = Features {
+                keypoints,
+                descriptors: vec![[0; 32]; n],
+                scale_factor: 1.2,
+                levels: 8,
+            };
+            (
+                features,
+                vec![Vector3::zeros(); n],
+                vec![0.0; n],
+                vec![0.0; n],
+            )
+        };
+        let (features, bearings, depth, right) = parts(keypoints.clone());
+        let frame = Frame::new(2.0, features, bearings, depth, right).unwrap();
+        assert_eq!(frame.grid, FeatureGrid::build(&keypoints).unwrap());
+        keypoints[2].xy[0] = f64::NAN;
+        let (features, bearings, depth, right) = parts(keypoints);
+        let refused = Frame::new(2.0, features, bearings, depth, right);
+        assert_eq!(
+            refused.unwrap_err().kind,
+            slamlab_foundations::error::ErrorKind::InvalidInput
+        );
+    }
 
     /// Depth is read half up, clamped, and NaN where the map holds none.
     #[test]

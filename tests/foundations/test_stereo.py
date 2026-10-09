@@ -94,10 +94,13 @@ def test_matches_fixture(backend: str, function: str, case: dict[str, Any]) -> N
         assert_matches_fixture(right, case["expected"][1], tolerance)
     else:
         left_image, right_image, left_f, right_f, focal, baseline, options = case["input"]
+        features = _features(left_f)
         found = stereo.match(
-            np.asarray(left_image, np.uint8),
-            np.asarray(right_image, np.uint8),
-            _features(left_f),
+            image.pyramid(np.asarray(left_image, np.uint8), features.levels, features.scale_factor),
+            image.pyramid(
+                np.asarray(right_image, np.uint8), features.levels, features.scale_factor
+            ),
+            features,
             _features(right_f),
             focal=focal,
             baseline=baseline,
@@ -229,9 +232,8 @@ def test_match_recovers_a_known_disparity(backend: str, disparity: float) -> Non
     was off by a median 0.27 pixels at 9.6.)
     """
     chosen = require_function(backend, stereo.__name__, "match")
-    left, right = _area_sampled_pair(disparity, seed=3)
-    features = orb.extract(left), orb.extract(right)
-    found = stereo.match(left, right, *features, focal=500.0, baseline=0.1, backend=chosen)
+    levels, features = _extracted(*_area_sampled_pair(disparity, seed=3))
+    found = stereo.match(*levels, *features, focal=500.0, baseline=0.1, backend=chosen)
     error = found.disparity - disparity
     assert len(found.left) > 400
     assert np.all(np.diff(found.left) > 0)
@@ -246,11 +248,10 @@ def test_match_recovers_a_known_disparity(backend: str, disparity: float) -> Non
 def test_the_narrowest_search_still_refines(backend: str) -> None:
     """With a search of 1, the three offsets still give sub-pixel disparities, unbiased."""
     chosen = require_function(backend, stereo.__name__, "match")
-    left, right = _area_sampled_pair(9.6, seed=5)
-    features = orb.extract(left), orb.extract(right)
+    levels, features = _extracted(*_area_sampled_pair(9.6, seed=5))
     narrow = stereo.Options(search=1)
     found = stereo.match(
-        left, right, *features, focal=500.0, baseline=0.1, options=narrow, backend=chosen
+        *levels, *features, focal=500.0, baseline=0.1, options=narrow, backend=chosen
     )
     assert len(found.left) > 100
     assert abs(np.median(found.disparity - 9.6)) < 0.05
@@ -260,12 +261,26 @@ def test_the_narrowest_search_still_refines(backend: str) -> None:
 def test_match_agrees_across_backends(backend: str) -> None:
     """Every backend finds the reference's matches on a VGA pair, bit for bit."""
     chosen = require_function(backend, stereo.__name__, "match")
-    left, right = _shifted_pair(17.3, seed=4)
-    features = orb.extract(left), orb.extract(right)
-    reference = stereo.match(left, right, *features, focal=450.0, baseline=0.12)
-    got = stereo.match(left, right, *features, focal=450.0, baseline=0.12, backend=chosen)
+    levels, features = _extracted(*_shifted_pair(17.3, seed=4))
+    reference = stereo.match(*levels, *features, focal=450.0, baseline=0.12)
+    got = stereo.match(*levels, *features, focal=450.0, baseline=0.12, backend=chosen)
     for field in ("left", "right", "right_x", "disparity", "depth"):
         np.testing.assert_array_equal(getattr(got, field), getattr(reference, field))
+
+
+Pyramid = list[NDArray[np.uint8]]
+"""An image's pyramid, level 0 first."""
+
+
+def _extracted(
+    left: NDArray[np.uint8], right: NDArray[np.uint8]
+) -> tuple[tuple[Pyramid, Pyramid], tuple[orb.Features, orb.Features]]:
+    """Return a pair's pyramids and the features extracted on them (ORB-SLAM's settings)."""
+    settings = orb.Options()
+    first = image.pyramid(left, settings.levels, settings.scale_factor)
+    second = image.pyramid(right, settings.levels, settings.scale_factor)
+    features = orb.extract_levels(first, settings), orb.extract_levels(second, settings)
+    return (first, second), features
 
 
 def _tiny_features(level_xy: list[list[int]], xy: list[list[float]] | None = None) -> orb.Features:
@@ -294,13 +309,16 @@ ONE_AS_FLOAT: Any = 1.0  # a level count of the wrong type, on purpose
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        ({"right_image": np.zeros((60, 81), np.uint8)}, "right_image: expected the left image"),
+        ({"right_levels": [np.zeros((60, 81), np.uint8)]}, "right_levels: expected the left"),
+        ({"left_levels": [FRAME, FRAME]}, "left_levels: expected 1 levels, got 2"),
+        ({"right_levels": FRAME}, "right_levels: expected a sequence of images"),
+        ({"left": DEEP, "right": DEEP}, "left_levels: expected 5 levels, got 1"),
         ({"focal": 0.0}, "focal: must be positive and finite"),
         ({"baseline": float("inf")}, "baseline: must be positive and finite"),
         ({"focal": "100"}, "focal: must be a real number, got str"),
         ({"baseline": True}, "baseline: must be a real number, got bool"),
         ({"left": _tiny_features([[2, 30]])}, "left: keypoints must lie at least 5 pixels"),
-        ({"left": DEEP, "right": DEEP}, "would be empty"),
+        ({"left": DEEP, "right": DEEP, "left_levels": [FRAME] * 5}, "would be empty"),
         ({"right": replace(_tiny_features([[25, 30]]), scale_factor=1.3)}, "another pyramid"),
         ({"left": replace(_tiny_features([[30, 30]]), levels=ONE_AS_FLOAT)}, "left.levels"),
         ({"right": replace(_tiny_features([[25, 30]]), scale_factor=1.0)}, "right.scale_factor"),
@@ -313,11 +331,11 @@ ONE_AS_FLOAT: Any = 1.0  # a level count of the wrong type, on purpose
 )
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_match_rejects(backend: str, kwargs: dict[str, Any], message: str) -> None:
-    """Mismatched images, bad cameras and keypoints off their pyramid are refused, by all."""
+    """Mismatched pyramids, bad cameras and keypoints off their pyramid are refused, by all."""
     chosen = require_function(backend, stereo.__name__, "match")
     arguments: dict[str, Any] = {
-        "left_image": FRAME,
-        "right_image": FRAME,
+        "left_levels": [FRAME],
+        "right_levels": [FRAME],
         "left": _tiny_features([[30, 30]]),
         "right": _tiny_features([[25, 30]]),
         "focal": 100.0,

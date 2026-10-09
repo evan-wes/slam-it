@@ -528,9 +528,10 @@ fn nearest(
 ///
 /// # Arguments
 ///
-/// * `images` - The rectified left and right images, of one shape.
+/// * `levels` - The rectified left and right images' pyramids, the ones their features were
+///   extracted on ([`orb::extract_levels`]), of one shape.
 /// * `left` - The left features.
-/// * `right` - The right features, extracted on the same pyramid.
+/// * `right` - The right features, extracted on a pyramid of the same levels and scale.
 /// * `focal` - The rectified focal length, in pixels.
 /// * `baseline` - The distance between the camera centres.
 /// * `options` - The matching settings.
@@ -541,27 +542,31 @@ fn nearest(
 ///
 /// # Errors
 ///
-/// `InvalidInput` for malformed images, features or settings, features from different
-/// pyramids or one too deep for the image, a keypoint outside its level or whose `xy` is not
-/// its level pixel's full-image coordinate, or a left keypoint closer than `options.window` to
-/// its level's border.
+/// `InvalidInput` for malformed features or settings, features from different pyramids, a
+/// pyramid that is not theirs or two of different shapes, a keypoint outside its level or
+/// whose `xy` is not its level pixel's full-image coordinate, or a left keypoint closer than
+/// `options.window` to its level's border.
 #[allow(
     clippy::cast_precision_loss,
     reason = "columns are at most 2^20, exact in f64"
 )]
 pub fn match_rows(
-    images: (&Image, &Image),
+    levels: (&[Image], &[Image]),
     left: &Features,
     right: &Features,
     focal: f64,
     baseline: f64,
     options: &MatchOptions,
 ) -> Result<Vec<StereoMatch>> {
-    let (left_image, right_image) = images;
+    let (left_levels, right_levels) = levels;
+    check_pyramids(left, right)?;
+    image::check_pyramid(left_levels, left.levels, left.scale_factor, "left_levels")?;
+    image::check_pyramid(right_levels, left.levels, left.scale_factor, "right_levels")?;
+    let (left_image, right_image) = (&left_levels[0], &right_levels[0]);
     if (right_image.rows, right_image.cols) != (left_image.rows, left_image.cols) {
         return fail(
             ErrorKind::InvalidInput,
-            "right_image: expected the left image's shape",
+            "right_levels: expected the left pyramid's shapes",
         );
     }
     if !(focal.is_finite() && focal > 0.0) {
@@ -571,12 +576,9 @@ pub fn match_rows(
         return fail_setting("baseline", "must be positive and finite", baseline);
     }
     check_options(options)?;
-    check_pyramids(left, right)?;
-    let left_levels = image::pyramid(left_image, left.levels, left.scale_factor)?;
-    let right_levels = image::pyramid(right_image, left.levels, left.scale_factor)?;
-    check_side(left, &left_levels, "left")?;
-    check_side(right, &left_levels, "right")?;
-    check_inside(left, &left_levels, options.window)?;
+    check_side(left, left_levels, "left")?;
+    check_side(right, left_levels, "right")?;
+    check_inside(left, left_levels, options.window)?;
     let mut scales = vec![1.0];
     while scales.len() < left_levels.len() {
         scales.push(scales[scales.len() - 1] * left.scale_factor);
@@ -860,9 +862,12 @@ mod tests {
                 search: count(&s["search"]),
                 outlier_factor: s["outlier_factor"].as_f64().unwrap(),
             };
+            let left = features(&input[2]);
+            let pyramid =
+                |at: &Value| image::pyramid(&picture(at), left.levels, left.scale_factor).unwrap();
             let got = match_rows(
-                (&picture(&input[0]), &picture(&input[1])),
-                &features(&input[2]),
+                (&pyramid(&input[0]), &pyramid(&input[1])),
+                &left,
                 &features(&input[3]),
                 input[4].as_f64().unwrap(),
                 input[5].as_f64().unwrap(),
@@ -948,8 +953,9 @@ mod tests {
             pixels: vec![0; 60 * 80],
         };
         let settings = MatchOptions::default();
+        let levels = [frame.clone()];
         let refused = |left: &Features, right: &Features| {
-            match_rows((&frame, &frame), left, right, 100.0, 0.1, &settings)
+            match_rows((&levels, &levels), left, right, 100.0, 0.1, &settings)
                 .is_err_and(|e| e.kind == ErrorKind::InvalidInput)
         };
         assert!(!refused(&one_keypoint(30, 30), &one_keypoint(25, 30)));
@@ -978,5 +984,27 @@ mod tests {
         let mut off = one_keypoint(30, 30);
         off.keypoints[0].level = 1_000_000;
         assert!(refused(&off, &one_keypoint(25, 30)));
+        let refused_pyramids = |left: &[Image], right: &[Image]| {
+            let (a, b) = (one_keypoint(30, 30), one_keypoint(25, 30));
+            match_rows((left, right), &a, &b, 100.0, 0.1, &settings)
+                .is_err_and(|e| e.kind == ErrorKind::InvalidInput)
+        };
+        let narrower = Image {
+            rows: 60,
+            cols: 70,
+            pixels: vec![0; 60 * 70],
+        };
+        assert!(
+            refused_pyramids(&levels, &[narrower]),
+            "pyramids of different shapes"
+        );
+        assert!(
+            refused_pyramids(&[], &levels),
+            "a pyramid without its levels"
+        );
+        assert!(
+            refused_pyramids(&[frame.clone(), frame.clone()], &levels),
+            "a pyramid of other levels"
+        );
     }
 }

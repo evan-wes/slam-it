@@ -4,10 +4,12 @@
 ///        checked through the whole-run tests (tests/orchestration).
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include "../foundations/test_support.hpp"
 #include "slamlab/edge/frames.hpp"
+#include "slamlab/foundations/matching.hpp"
 
 namespace {
 
@@ -110,12 +112,39 @@ void check_refusals(int& failures) {
          "stereo_pair refuses a camera that is not pinhole", failures);
 }
 
+/// @brief Check the one constructor: it builds the keypoints' grid, and refuses a position the
+///        grid cannot hold.
+/// @param failures Running failure count.
+void check_make_frame(int& failures) {
+  foundations::orb::Features features{
+      .keypoints = {}, .descriptors = {}, .scale_factor = 1.2, .levels = 8};
+  for (int i = 0; i < 6; ++i) {
+    features.keypoints.push_back({.xy = {10.0 + (7.0 * i), 20.0 + (3.0 * i)}, .level = i % 2});
+    features.descriptors.push_back({});
+  }
+  const std::size_t n = features.keypoints.size();
+  const auto fresh = foundations::matching::FeatureGrid::build(features.keypoints);
+  const auto frame = edge::make_frame(2.0, features, std::vector<Eigen::Vector3d>(n),
+                                      std::vector<double>(n), std::vector<double>(n));
+  const auto near = [](const foundations::matching::FeatureGrid& grid) {
+    return grid.in_area({30.0, 28.0}, 15.0, 0, 7).value_or(std::vector<std::int64_t>{});
+  };
+  expect(frame.has_value() && fresh.has_value() && frame->timestamp == 2.0 &&
+             frame->grid.size() == n && !near(*fresh).empty() && near(frame->grid) == near(*fresh),
+         "make_frame builds the keypoints' grid", failures);
+  features.keypoints[2].xy[0] = std::numeric_limits<double>::quiet_NaN();
+  expect(is_invalid_input(edge::make_frame(2.0, features, std::vector<Eigen::Vector3d>(n),
+                                           std::vector<double>(n), std::vector<double>(n))),
+         "make_frame refuses a position that is not finite", failures);
+}
+
 /// @brief The test body.
 /// @return The exit code.
 int run() {
   int failures = 0;
   check_builds(failures);
   check_refusals(failures);
+  check_make_frame(failures);
   return slamlab::testing::finish("edge/frames", failures);
 }
 

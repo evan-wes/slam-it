@@ -69,8 +69,12 @@ class FrameResult:
         Its keypoints matched to map points.
     keyframe : bool
         Whether it became a keyframe (or started the map).
-    seconds : float
-        The time tracking (and mapping) it took.
+    track_seconds : float
+        The time tracking it took, initialisation included: what ORB-SLAM's tracking thread
+        does.
+    map_seconds : float
+        The time mapping it took as a keyframe (:func:`slamlab.edge.mapping.process`), 0 for
+        any other frame: what ORB-SLAM's local-mapping thread does.
     """
 
     timestamp: float
@@ -78,7 +82,8 @@ class FrameResult:
     pose: Array | None
     tracked: int
     keyframe: bool
-    seconds: float
+    track_seconds: float
+    map_seconds: float
 
 
 @dataclass
@@ -153,18 +158,20 @@ class Pipeline:
         start = time.perf_counter()
         keyframe = False
         tracked: Tracked | None = None
+        map_seconds = 0.0
         if self.state is State.NOT_INITIALIZED:
             tracked = self._initialize(frame)
             keyframe = tracked is not None
         elif self.state is State.TRACKING:
-            tracked, keyframe = self._track(frame)
+            tracked, keyframe, map_seconds = self._track(frame)
         return FrameResult(
             timestamp=frame.timestamp,
             state=self.state,
             pose=None if tracked is None else tracked.pose.copy(),
             tracked=0 if tracked is None else tracked.inliers,
             keyframe=keyframe,
-            seconds=time.perf_counter() - start,
+            track_seconds=time.perf_counter() - start - map_seconds,
+            map_seconds=map_seconds,
         )
 
     def _initialize(self, frame: Frame) -> Tracked | None:
@@ -235,8 +242,8 @@ class Pipeline:
             return tracked, False
         return tracking.relocalize_locally(m, self.camera, frame, options), True
 
-    def _track(self, frame: Frame) -> tuple[Tracked | None, bool]:
-        """Track a frame against the map; insert a keyframe if one is needed."""
+    def _track(self, frame: Frame) -> tuple[Tracked | None, bool, float]:
+        """Track a frame against the map; insert a keyframe if one is needed (and time it)."""
         assert self.map is not None
         m, options = self.map, self.options
         placed, recovered = self._place(m, frame)
@@ -260,14 +267,17 @@ class Pipeline:
         self.map = m
         if tracked is None:
             self._record_failure()
-            return None, False
+            return None, False, 0.0
         held = recent and m.keyframes > options.max_frames
         keyframe = not held and mapping.need_keyframe(
             m, self.camera, frame.depth, tracked, mode=self.mode, options=options
         )
+        map_seconds = 0.0
         if keyframe:
+            start = time.perf_counter()
             self.map = mapping.process(
                 m, self.camera, frame, tracked, mode=self.mode, options=options
             )
+            map_seconds = time.perf_counter() - start
         self._accept(frame, tracked)
-        return tracked, keyframe
+        return tracked, keyframe, map_seconds

@@ -7,6 +7,7 @@
 #include <bit>
 #include <cmath>
 #include <cstddef>
+#include <span>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -181,29 +182,70 @@ AxisSamples axis_samples(std::int64_t n_in, std::int64_t n_out) {
 /// @param cols The output's columns.
 /// @return The resized image.
 Image resize_checked(const Image& image, std::int64_t rows, std::int64_t cols) {
-  constexpr std::int64_t kOne = pow2(kResizeBits);
+  constexpr std::int32_t kOne = pow2(kResizeBits);
   const AxisSamples xs = axis_samples(image.cols, cols);
   const AxisSamples ys = axis_samples(image.rows, rows);
-  std::vector<std::int64_t> across(at(image.rows * cols));
+  // Every sum fits 32 bits: across a row at most 255 * 2^11, down a column 255 * 2^22.
+  std::vector<std::int32_t> across(at(image.rows * cols));
   for (std::int64_t r = 0; r < image.rows; ++r) {
+    const std::span<const std::uint8_t> row =
+        std::span(image.pixels).subspan(at(r * image.cols), at(image.cols));
+    const std::span<std::int32_t> sums = std::span(across).subspan(at(r * cols), at(cols));
     for (std::int64_t c = 0; c < cols; ++c) {
-      const std::int64_t fx = xs.fraction[at(c)];
-      across[at((r * cols) + c)] = (pixel(image, r, xs.first[at(c)]) * (kOne - fx)) +
-                                   (pixel(image, r, xs.second[at(c)]) * fx);
+      const auto fx = static_cast<std::int32_t>(xs.fraction[at(c)]);
+      sums[at(c)] = (row[at(xs.first[at(c)])] * (kOne - fx)) + (row[at(xs.second[at(c)])] * fx);
     }
   }
   Image out = blank(rows, cols);
+  constexpr unsigned kShift = 2 * kResizeBits;
+  constexpr std::uint32_t kHalf = pow2(kShift - 1);
   for (std::int64_t r = 0; r < rows; ++r) {
-    const std::int64_t fy = ys.fraction[at(r)];
-    const std::int64_t top = ys.first[at(r)] * cols;
-    const std::int64_t bottom = ys.second[at(r)] * cols;
+    const auto fy = static_cast<std::int32_t>(ys.fraction[at(r)]);
+    const std::span<const std::int32_t> top =
+        std::span(across).subspan(at(ys.first[at(r)] * cols), at(cols));
+    const std::span<const std::int32_t> bottom =
+        std::span(across).subspan(at(ys.second[at(r)] * cols), at(cols));
+    // A local view: a byte store may alias anything, the image's own pointer included.
+    const std::span<std::uint8_t> line = std::span(out.pixels).subspan(at(r * cols), at(cols));
     for (std::int64_t c = 0; c < cols; ++c) {
-      const std::int64_t total =
-          (across[at(top + c)] * (kOne - fy)) + (across[at(bottom + c)] * fy);
-      out.pixels[at((r * cols) + c)] = round_shift(total, 2 * kResizeBits);
+      const auto total =
+          static_cast<std::uint32_t>((top[at(c)] * (kOne - fy)) + (bottom[at(c)] * fy));
+      line[at(c)] = static_cast<std::uint8_t>((total + kHalf) >> kShift);
     }
   }
   return out;
+}
+
+/// @brief A separable blur's vertical pass, rounded to intensities.
+/// @tparam Sum An unsigned integer wide enough for `255 * 2^(2 bits)`.
+/// @param across The horizontal pass's sums, row-major, `out`'s shape.
+/// @param kernel The weights.
+/// @param row_index Each padded row's reflected row (`reflected`).
+/// @param bits The kernel's bits.
+/// @param out The blurred image, its pixels written.
+template <typename Sum>
+void blur_columns(std::span<const std::int32_t> across, std::span<const std::uint32_t> kernel,
+                  std::span<const std::int64_t> row_index, int bits, Image& out) {
+  const std::int64_t cols = out.cols;
+  std::vector<Sum> sums(at(cols));
+  for (std::int64_t r = 0; r < out.rows; ++r) {
+    std::ranges::fill(sums, Sum{0});
+    for (std::size_t k = 0; k < kernel.size(); ++k) {
+      const Sum weight = kernel[k];
+      const std::span<const std::int32_t> source =
+          across.subspan(at(row_index[at(r) + k] * cols), at(cols));
+      for (std::int64_t c = 0; c < cols; ++c) {
+        sums[at(c)] += weight * static_cast<Sum>(source[at(c)]);
+      }
+    }
+    // A local view: a byte store may alias anything, the image's own pointer included.
+    const std::span<std::uint8_t> row = std::span(out.pixels).subspan(at(r * cols), at(cols));
+    const auto shift = static_cast<unsigned>(2 * bits);
+    const Sum half = (Sum{1} << shift) >> 1U;  // 0 for a 0-bit kernel, as round_shift's
+    for (std::int64_t c = 0; c < cols; ++c) {
+      row[at(c)] = static_cast<std::uint8_t>((sums[at(c)] + half) >> shift);
+    }
+  }
 }
 
 }  // namespace
@@ -278,26 +320,50 @@ Result<Image> blur(const Image& image, std::span<const std::uint32_t> kernel) {
   if (!bits) {
     return std::unexpected(bits.error());
   }
-  const auto radius = static_cast<std::int64_t>(kernel.size() / 2);
+  const auto taps = static_cast<std::int64_t>(kernel.size());
+  const std::int64_t radius = taps / 2;
   const std::int64_t rows = image.rows;
   const std::int64_t cols = image.cols;
   const std::vector<std::int64_t> column_index = reflected(radius, cols);
   const std::vector<std::int64_t> row_index = reflected(radius, rows);
-  std::vector<std::int64_t> across(at(rows * cols));
+  // The horizontal sums reach 255 * 2^bits, bits at most kMaxKernelBits: 32 bits hold them.
+  // The interior reads its neighbours directly, a tap at a time, so the loops vectorize; the
+  // border reflects. Integer sums are exact in any order.
+  std::vector<std::int32_t> across(at(rows * cols), 0);
+  const std::int64_t first = std::min(radius, cols);
+  const std::int64_t last = std::max(first, cols - radius);
   for (std::int64_t r = 0; r < rows; ++r) {
-    for (std::int64_t c = 0; c < cols; ++c) {
-      across[at((r * cols) + c)] = weighted_sum(kernel, [&](std::size_t k) -> std::int64_t {
-        return pixel(image, r, column_index[at(c) + k]);
-      });
+    const std::span<const std::uint8_t> row =
+        std::span(image.pixels).subspan(at(r * cols), at(cols));
+    const std::span<std::int32_t> sums = std::span(across).subspan(at(r * cols), at(cols));
+    // A kernel wider than the row leaves no interior: every column reflects.
+    if (last > first) {
+      for (std::int64_t k = 0; k < taps; ++k) {
+        const auto weight = static_cast<std::int32_t>(kernel[at(k)]);
+        const std::span<const std::uint8_t> shifted = row.subspan(at(k), at(last - first));
+        for (std::int64_t c = 0; c < last - first; ++c) {
+          sums[at(first + c)] += weight * shifted[at(c)];
+        }
+      }
+    }
+    const auto reflecting = [&](std::int64_t c) {
+      sums[at(c)] = static_cast<std::int32_t>(weighted_sum(
+          kernel, [&](std::size_t k) -> std::int64_t { return row[at(column_index[at(c) + k])]; }));
+    };
+    for (std::int64_t c = 0; c < first; ++c) {
+      reflecting(c);
+    }
+    for (std::int64_t c = last; c < cols; ++c) {
+      reflecting(c);
     }
   }
+  // The vertical sums reach 255 * 2^(2 bits): 32 bits hold them up to 12-bit kernels
+  // (ORB's), which lets the loop vectorize; 64 bits above.
   Image out = blank(rows, cols);
-  for (std::int64_t r = 0; r < rows; ++r) {
-    for (std::int64_t c = 0; c < cols; ++c) {
-      const std::int64_t sum = weighted_sum(
-          kernel, [&](std::size_t k) { return across[at((row_index[at(r) + k] * cols) + c)]; });
-      out.pixels[at((r * cols) + c)] = round_shift(sum, 2 * *bits);
-    }
+  if ((2 * *bits) + 8 <= 32) {
+    blur_columns<std::uint32_t>(across, kernel, row_index, *bits, out);
+  } else {
+    blur_columns<std::uint64_t>(across, kernel, row_index, *bits, out);
   }
   return out;
 }
@@ -324,6 +390,38 @@ Result<std::vector<Image>> pyramid(const Image& image, std::int64_t levels, doub
     out.push_back(resize_checked(out.back(), rows, cols));
   }
   return out;
+}
+
+Result<void> check_pyramid(std::span<const Image> levels, std::int64_t count, double scale_factor,
+                           const char* name) {
+  if (std::cmp_not_equal(levels.size(), count)) {
+    return fail(ErrorKind::kInvalidInput, std::string(name) + ": expected " +
+                                              std::to_string(count) + " levels, got " +
+                                              std::to_string(levels.size()));
+  }
+  for (std::size_t k = 0; k < levels.size(); ++k) {
+    const std::string level_name = std::string(name) + "[" + std::to_string(k) + "]";
+    if (auto ok = check_image(levels[k], level_name.c_str()); !ok) {
+      return ok;
+    }
+  }
+  if (levels.empty()) {
+    return fail(ErrorKind::kInvalidInput, std::string(name) + ": expected at least one level");
+  }
+  const auto shapes = level_shapes(levels.front().rows, levels.front().cols, count, scale_factor);
+  if (!shapes) {
+    return std::unexpected(shapes.error());
+  }
+  for (std::size_t k = 0; k < levels.size(); ++k) {
+    const auto [rows, cols] = (*shapes)[k];
+    if (levels[k].rows != rows || levels[k].cols != cols) {
+      return fail(ErrorKind::kInvalidInput, std::string(name) + ": level " + std::to_string(k) +
+                                                " is " + std::to_string(levels[k].rows) + "x" +
+                                                std::to_string(levels[k].cols) + ", expected " +
+                                                std::to_string(rows) + "x" + std::to_string(cols));
+    }
+  }
+  return {};
 }
 
 Result<Image> remap(const Image& image, const Eigen::Ref<const Coordinates>& coordinates,

@@ -6,6 +6,7 @@
 
 #include <Eigen/Core>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <variant>
@@ -19,8 +20,8 @@ namespace slamlab::eval::runs {
 /// @brief `run.json`'s `format`.
 inline constexpr const char* kFormat = "slamlab-run";
 
-/// @brief `run.json`'s `version`.
-inline constexpr std::int64_t kVersion = 1;
+/// @brief `run.json`'s `version` (2 added `peak_memory`, `cpus` and `memory_cap`).
+inline constexpr std::int64_t kVersion = 2;
 
 /// @brief A JSON scalar: an integer, a finite number, a boolean or a string.
 using JsonValue = std::variant<std::int64_t, double, bool, std::string>;
@@ -50,8 +51,19 @@ struct Run {
   std::vector<Eigen::Vector3d> points;
   /// @brief The pipeline's options.
   JsonObject settings;
-  /// @brief One object per frame, each with a `timestamp`.
+  /// @brief One object per frame, each with a `timestamp`; the edge pipeline's also time
+  ///        its steps (`read_seconds`, `build_seconds`, `track_seconds`, `map_seconds`, as
+  ///        `slamlab.eval.runs.STEPS` defines them).
   std::vector<JsonObject> diagnostics;
+  /// @brief The largest resident set of the program that ran it, in bytes, if known
+  ///        (`slamlab::eval::budgets::peak_memory`); written as null otherwise.
+  std::optional<std::int64_t> peak_memory;
+  /// @brief The CPUs the program that ran it could run on, ascending, if known
+  ///        (`slamlab::eval::budgets::allowed_cpus`); written as null otherwise.
+  std::optional<std::vector<std::int64_t>> cpus;
+  /// @brief Its memory cap, in bytes, if it had one (`slamlab::eval::budgets::memory_cap`);
+  ///        written as null otherwise.
+  std::optional<std::int64_t> memory_cap;
 };
 
 /// @brief A finite number as JSON, shortest round-trip (`std::to_chars`), `.0` kept on a
@@ -74,7 +86,8 @@ struct Run {
 /// @param run The run.
 /// @return Nothing; `InvalidInput` for an unknown mode or backend, times that are not finite
 ///         and strictly ascending, poses that are not rigid or not one per time, a point that
-///         is not finite, a diagnostic without a `timestamp`, or a number JSON cannot hold
+///         is not finite, a diagnostic without a `timestamp`, a number JSON cannot hold, a
+///         negative peak memory, CPUs that are empty or not ascending, or a memory cap of 0
 ///         (nothing is written then); or a file that cannot be written.
 [[nodiscard]] foundations::Result<void> write_run(const std::string& folder, const Run& run);
 

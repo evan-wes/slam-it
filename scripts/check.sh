@@ -51,7 +51,8 @@ check() {
 # covered without editing this file.
 mapfile -t CPP_FILES < <(git ls-files --cached --others --exclude-standard 'cpp/*.hpp' 'cpp/*.cpp')
 mapfile -t CPP_TU < <(git ls-files --cached --others --exclude-standard 'cpp/src/*.cpp' 'cpp/tests/*.cpp' \
-  'cpp/bench/*.cpp' 'cpp/apps/*.cpp')
+  'cpp/apps/*.cpp')
+mapfile -t BENCH_TU < <(git ls-files --cached --others --exclude-standard 'cpp/bench/*.cpp')
 
 # Python
 check "ruff lint (numpy docstrings, type hints, style)" ruff check src tests scripts
@@ -62,15 +63,25 @@ check "C++/Rust layering (same contracts)" python scripts/check_layers.py
 
 # C++
 check "clang-format" clang-format --dry-run --Werror "${CPP_FILES[@]}"
+# The native tests run hardened: libstdc++'s assertions (bounds of spans and containers) catch
+# an out-of-range access that a release build would run silently (PR 9's panel, L1). The
+# benchmarks build apart, unhardened, in build/bench, the tree to time from, so a timing never
+# pays for the checks (PR 9's panel, A12).
 check "cmake configure (compile_commands.json)" \
-  cmake -S . -B build/native -G Ninja -DSLAMLAB_BUILD_TESTS=ON -DSLAMLAB_BUILD_BENCHMARKS=ON \
-  -DCMAKE_BUILD_TYPE=Release
+  cmake -S . -B build/native -G Ninja -DSLAMLAB_BUILD_TESTS=ON -DSLAMLAB_BUILD_BENCHMARKS=OFF \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=-D_GLIBCXX_ASSERTIONS
+check "cmake configure, benchmarks (unhardened)" \
+  cmake -S . -B build/bench -G Ninja -DSLAMLAB_BUILD_TESTS=OFF -DSLAMLAB_BUILD_BENCHMARKS=ON \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=
 check "C++ build" cmake --build build/native -j4
+check "C++ benchmarks build" cmake --build build/bench -j4
 # clang-tidy's clang does not know conda gcc's implicit include directory (<env>/include),
 # where the test-only headers live (nlohmann_json); pass it explicitly.
 ENV_INCLUDE="$("${RUN[@]}" python -c 'import os, sys; print(os.path.join(sys.prefix, "include"))')"
 check "clang-tidy" clang-tidy -p build/native --quiet --extra-arg=-isystem"${ENV_INCLUDE}" \
   "${CPP_TU[@]}"
+check "clang-tidy (benchmarks)" clang-tidy -p build/bench --quiet \
+  --extra-arg=-isystem"${ENV_INCLUDE}" "${BENCH_TU[@]}"
 check "doxygen (every declaration documented)" doxygen Doxyfile
 check "C++ tests (ctest)" ctest --test-dir build/native --output-on-failure
 

@@ -33,8 +33,8 @@ suggest starting a session inside slamlab. Consequences:
 | Language | Role |
 |---|---|
 | Python (`src/slamlab`) | Reference implementation of every algorithm; orchestration, evaluation, learned rungs |
-| C++ (`cpp/`, module `slamlab._cpp`) | Performance core: rung 0, edge rung, edge budgets; `eval`'s native readers and run writer (`slamlab_eval`); the native programs (`slamlab_orchestration`, `slamlab_vo`) |
-| Rust (`rust/`, module `slamlab_rs`) | Rung 0 and the edge VO only; `eval`'s native readers and run writer (`slamlab-eval`); the native programs (`slamlab-orchestration`, `slamlab_vo`) |
+| C++ (`cpp/`, module `slamlab._cpp`) | Performance core: rung 0, edge rung, edge budgets; `eval`'s native readers, run writer and process readings (`slamlab_eval`); the native programs (`slamlab_orchestration`, `slamlab_vo`) |
+| Rust (`rust/`, module `slamlab_rs`) | Rung 0 and the edge VO only; `eval`'s native readers, run writer and process readings (`slamlab-eval`); the native programs (`slamlab-orchestration`, `slamlab_vo`) |
 
 ## Conventions
 
@@ -80,13 +80,20 @@ code or a binding.
   build without Python.
 - Native benchmarks are developer tools outside the cores: `cpp/bench/<rung>/` (Google
   Benchmark, built with `-DSLAMLAB_BUILD_BENCHMARKS=ON`) and each crate's `benches/`
-  (criterion), held to the ladder by `check_layers.py`; layer 1 builds them, never runs them.
-  `slamlab.eval` keeps the Python benchmarks and, later, the budget harness.
+  (criterion), held to the ladder by `check_layers.py`; layer 1 builds them, never runs them,
+  the C++ ones in their own unhardened tree, `build/bench`, the one to time from (the tests'
+  `build/native` runs with libstdc++'s assertions, which would slow a timing).
+  `slamlab.eval` keeps the Python benchmarks and the budget harness (`slamlab.eval.budgets`):
+  a program pinned to a budget's cores and its memory capped, its frames judged against their
+  deadline. Its runs are the tests marked `budget`, outside layer 1:
+  `python -m pytest -m budget`.
 - Native programs run a whole pipeline without Python: `cpp/apps/<rung>/<program>.cpp`
   (linked to the rung's library, installed into `slamlab/bin/` by scikit-build) and a rung
   crate's binary (built by cargo into `rust/target/release/`, `--target-dir rust/target`),
   found by `slamlab.backends.program` and held to the ladder by `check_layers.py`. Layer 1
   builds them and the Python tests run them (`slamlab.orchestration.vo` runs `slamlab_vo`).
+  Python has its program too, with the same command line, `python -m slamlab.orchestration.vo`,
+  so a budget runs all three backends the same way.
   The Rust program is not rebuilt on import: after changing a Rust crate, rebuild it (layer 1
   does), or the tests fail it as older than its sources.
 - Tests mirror the packages (`tests/foundations/`, `cpp/tests/foundations/`). Mark tests

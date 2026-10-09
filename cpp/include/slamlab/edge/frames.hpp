@@ -83,7 +83,28 @@ struct Frame {
   std::vector<double> depth;
   /// @brief Each keypoint's right-image column (NaN where its depth is unknown).
   std::vector<double> right;
+  /// @brief Its keypoints bucketed for search by projection, built with the frame as ORB-SLAM's
+  ///        `Frame` assigns its features to a grid (the compiled cores' search structure; Python's
+  ///        search needs none). `make_frame` builds it; a frame's keypoints are not changed
+  ///        after.
+  foundations::matching::FeatureGrid grid;
 };
+
+/// @brief A frame from its parts, its feature grid built from its keypoints: how every frame is
+///        made (the builders, the bindings, the tests), so none lacks its grid. It does not
+///        check that the parts hold one entry per keypoint; a search's `check_frame` does.
+/// @param timestamp Its time, in seconds.
+/// @param features Its ORB features.
+/// @param bearings Each keypoint's unit bearing.
+/// @param depth Each keypoint's depth (NaN where unknown).
+/// @param right Each keypoint's right-image column (NaN where unknown).
+/// @return The frame; `InvalidInput` from the grid for a keypoint position that is not finite
+///         (never one extracted).
+[[nodiscard]] foundations::Result<Frame> make_frame(double timestamp,
+                                                    foundations::orb::Features features,
+                                                    std::vector<Eigen::Vector3d> bearings,
+                                                    std::vector<double> depth,
+                                                    std::vector<double> right);
 
 /// @brief A frame's number of keypoints.
 /// @param frame The frame.

@@ -46,7 +46,8 @@ memory in the same order as in C++.
 nalgebra's SVDs turned out not to be backward stable (PR 6's panel, L1 and L2), so every SVD in the
 crate, and the one general eigendecomposition, goes through `linalg`, which calls faer (a pure-Rust
 library benchmarked against LAPACK): its low-level routines, sequential, with thin factors and a
-workspace sized per call. faer works on a matrix as given, so `linalg` first scales one whose
+workspace sized per call. (Since PR 9, the 3x3 SVDs run a port of Eigen's `JacobiSVD` in `linalg`
+instead, on the stack and C++'s to the bit: [the real-time note](real-time.md).) faer works on a matrix as given, so `linalg` first scales one whose
 largest entry is outside [2^-400, 2^400] by a power of two, as LAPACK's `dlascl` does; without it,
 entries below about 1e-154 gave silently wrong factors (PR 6's panel, run 2, L8). nalgebra stays the
 matrix type; each call copies across. faer picks its SIMD kernels when it runs, so the same build
@@ -222,7 +223,7 @@ initialisation takes 4 ms in C++, 7 ms in Rust and 130-180 ms in the numpy refer
 Run them with:
 
 ```text
-SLAMLAB_BAL=<problem.txt> build/native/bench/foundations_bench_foundations
+SLAMLAB_BAL=<problem.txt> build/bench/bench/foundations_bench_foundations
 SLAMLAB_BAL=<problem.txt> cargo bench --manifest-path rust/Cargo.toml --bench foundations
 ```
 
@@ -284,7 +285,8 @@ here.)
   some graded matrices: the 8-point E and F differed from Python by up to 6e-3 on 0.1-0.2%
   of near-planar scenes. Every fixture and survey passed; PR 6's algorithm reviewer found it
   by probing with ill-conditioned inputs. Every SVD now goes through faer, verified against
-  LAPACK on those probes before the switch, and a fixture of such inputs guards it.
+  LAPACK on those probes before the switch, and a fixture of such inputs guards it (the 3x3s,
+  since PR 9, through a port of Eigen's `JacobiSVD`, held to Eigen's bits).
 - **A library's convenience call can cost more than its algorithm.** faer's `thin_svd` took
   18 times as long as its low-level routine on a tall 350x9 system, and asking for the full
   factors built a 350x350 U nobody used. Measured per call shape, inside a real RANSAC run,

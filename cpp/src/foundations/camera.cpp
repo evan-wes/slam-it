@@ -132,13 +132,7 @@ Result<void> check_intrinsics(Model model, const Eigen::Ref<const Eigen::VectorX
   if (model >= Model::kCount) {
     return fail(ErrorKind::kInvalidInput, "model: not a camera model (kCount)");
   }
-  Eigen::Index expected = 9;
-  if (model == Model::kPinhole) {
-    expected = 4;
-  } else if (model == Model::kRadial) {
-    expected = 5;
-  }
-  if (intrinsics.size() != expected) {
+  if (intrinsics.size() != intrinsics_size(model)) {
     return fail(ErrorKind::kInvalidInput, "intrinsics: wrong length for the camera model");
   }
   if (std::ranges::any_of(focal_indices(model),
