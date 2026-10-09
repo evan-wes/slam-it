@@ -1,5 +1,5 @@
 /// @file
-/// @brief Native tests for stereo rectification (slamlab/foundations/stereo.hpp), against the
+/// @brief Native tests for stereo rectification (slam_it_all/foundations/stereo.hpp), against the
 ///        parity fixture `tests/fixtures/foundations/stereo.json` that the Python and Rust tests
 ///        share, and the core's own input checks.
 #include <Eigen/Core>
@@ -13,17 +13,17 @@
 
 #include "fixture_support.hpp"
 #include "image_support.hpp"
-#include "slamlab/foundations/camera.hpp"
-#include "slamlab/foundations/orb.hpp"
-#include "slamlab/foundations/stereo.hpp"
+#include "slam_it_all/foundations/camera.hpp"
+#include "slam_it_all/foundations/orb.hpp"
+#include "slam_it_all/foundations/stereo.hpp"
 #include "test_support.hpp"
 
 namespace {
 
-namespace camera = slamlab::foundations::camera;
-namespace stereo = slamlab::foundations::stereo;
-using slamlab::foundations::ErrorKind;
-using slamlab::testing::expect;
+namespace camera = slam_it_all::foundations::camera;
+namespace stereo = slam_it_all::foundations::stereo;
+using slam_it_all::foundations::ErrorKind;
+using slam_it_all::testing::expect;
 
 /// @brief A model from its name in the fixture.
 /// @param name The name.
@@ -62,7 +62,7 @@ bool close(const Eigen::MatrixXd& a, const Eigen::MatrixXd& b, double tolerance)
 /// @param failures Running failure count.
 void check_fixture(int& failures) {
   const nlohmann::json functions =
-      slamlab::testing::load_fixture("foundations/stereo.json")["functions"];
+      slam_it_all::testing::load_fixture("foundations/stereo.json")["functions"];
   const double rectify_tolerance = functions["rectify"]["tolerance"]["atol"].get<double>();
   for (const auto& c : functions["rectify"]["cases"]) {
     const auto& in = c["input"];
@@ -101,7 +101,7 @@ void check_fixture(int& failures) {
           read_matrix(fields[side == 0 ? "rotation_left" : "rotation_right"]),
           Eigen::Map<const Eigen::Vector4d>(pinhole.data()), rows, cols);
       const auto expected =
-          slamlab::testing::flatten_rows<std::vector<double>>(c["expected"][side]);
+          slam_it_all::testing::flatten_rows<std::vector<double>>(c["expected"][side]);
       bool ok = got.has_value() && std::cmp_equal(got->rows(), expected.size());
       for (Eigen::Index i = 0; ok && i < got->rows(); ++i) {
         const auto& want = expected[static_cast<std::size_t>(i)];
@@ -117,8 +117,8 @@ void check_fixture(int& failures) {
 /// @param fields The dict of `xy`, `level`, `level_xy`, `descriptors`, `scale_factor` and
 ///        `levels`.
 /// @return The features.
-slamlab::foundations::orb::Features read_features(const nlohmann::json& fields) {
-  namespace orb = slamlab::foundations::orb;
+slam_it_all::foundations::orb::Features read_features(const nlohmann::json& fields) {
+  namespace orb = slam_it_all::foundations::orb;
   orb::Features out{.keypoints = {},
                     .descriptors = {},
                     .scale_factor = fields["scale_factor"].get<double>(),
@@ -138,7 +138,7 @@ slamlab::foundations::orb::Features read_features(const nlohmann::json& fields) 
 /// @param failures Running failure count.
 void check_matches(int& failures) {
   const nlohmann::json cases =
-      slamlab::testing::load_fixture("foundations/stereo.json")["functions"]["match"]["cases"];
+      slam_it_all::testing::load_fixture("foundations/stereo.json")["functions"]["match"]["cases"];
   for (const auto& c : cases) {
     const auto& in = c["input"];
     const auto& s = in[6];
@@ -147,10 +147,10 @@ void check_matches(int& failures) {
                                         .window = s["window"].get<std::int64_t>(),
                                         .search = s["search"].get<std::int64_t>(),
                                         .outlier_factor = s["outlier_factor"].get<double>()};
-    const slamlab::foundations::orb::Features left = read_features(in[2]);
+    const slam_it_all::foundations::orb::Features left = read_features(in[2]);
     const auto pyramid = [&left](const nlohmann::json& image) {
-      return *slamlab::foundations::image::pyramid(slamlab::testing::read_image(image), left.levels,
-                                                   left.scale_factor);
+      return *slam_it_all::foundations::image::pyramid(slam_it_all::testing::read_image(image),
+                                                       left.levels, left.scale_factor);
     };
     const auto got = stereo::match(pyramid(in[0]), pyramid(in[1]), left, read_features(in[3]),
                                    in[4].get<double>(), in[5].get<double>(), settings);
@@ -199,8 +199,8 @@ void check_rejections(int& failures) {
 /// @param x The column.
 /// @param y The row.
 /// @return The features.
-slamlab::foundations::orb::Features one_keypoint(std::int64_t x, std::int64_t y) {
-  namespace orb = slamlab::foundations::orb;
+slam_it_all::foundations::orb::Features one_keypoint(std::int64_t x, std::int64_t y) {
+  namespace orb = slam_it_all::foundations::orb;
   return {.keypoints = {{.xy = {static_cast<double>(x), static_cast<double>(y)},
                          .level = 0,
                          .level_xy = {x, y},
@@ -214,11 +214,11 @@ slamlab::foundations::orb::Features one_keypoint(std::int64_t x, std::int64_t y)
 /// @brief Check that features off their pyramid are refused, not read out of bounds.
 /// @param failures Running failure count.
 void check_match_rejections(int& failures) {
-  namespace orb = slamlab::foundations::orb;
-  const slamlab::foundations::image::Image frame{
+  namespace orb = slam_it_all::foundations::orb;
+  const slam_it_all::foundations::image::Image frame{
       .rows = 60, .cols = 80, .pixels = std::vector<std::uint8_t>(std::size_t{60} * 80)};
   const stereo::MatchOptions settings{};
-  const std::vector<slamlab::foundations::image::Image> levels{frame};
+  const std::vector<slam_it_all::foundations::image::Image> levels{frame};
   const auto refused = [&](const orb::Features& left, const orb::Features& right) {
     const auto got = stereo::match(levels, levels, left, right, 100.0, 0.1, settings);
     return !got && got.error().kind == ErrorKind::kInvalidInput;
@@ -249,13 +249,14 @@ void check_match_rejections(int& failures) {
     expect(refused(off, one_keypoint(25, 30)), "match rejects a level outside the pyramid",
            failures);
   }
-  const auto refused_pyramids = [&](const std::vector<slamlab::foundations::image::Image>& left,
-                                    const std::vector<slamlab::foundations::image::Image>& right) {
-    const auto got = stereo::match(left, right, one_keypoint(30, 30), one_keypoint(25, 30), 100.0,
-                                   0.1, settings);
-    return !got && got.error().kind == ErrorKind::kInvalidInput;
-  };
-  const slamlab::foundations::image::Image narrower{
+  const auto refused_pyramids =
+      [&](const std::vector<slam_it_all::foundations::image::Image>& left,
+          const std::vector<slam_it_all::foundations::image::Image>& right) {
+        const auto got = stereo::match(left, right, one_keypoint(30, 30), one_keypoint(25, 30),
+                                       100.0, 0.1, settings);
+        return !got && got.error().kind == ErrorKind::kInvalidInput;
+      };
+  const slam_it_all::foundations::image::Image narrower{
       .rows = 60, .cols = 70, .pixels = std::vector<std::uint8_t>(std::size_t{60} * 70)};
   expect(refused_pyramids(levels, {narrower}), "match rejects pyramids of different shapes",
          failures);
@@ -272,9 +273,9 @@ int run() {
   check_matches(failures);
   check_rejections(failures);
   check_match_rejections(failures);
-  return slamlab::testing::finish("foundations/stereo", failures);
+  return slam_it_all::testing::finish("foundations/stereo", failures);
 }
 
 }  // namespace
 
-int main() { return slamlab::testing::guarded("foundations/stereo", run); }
+int main() { return slam_it_all::testing::guarded("foundations/stereo", run); }

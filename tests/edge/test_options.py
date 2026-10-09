@@ -7,8 +7,8 @@ from dataclasses import asdict, fields
 
 import pytest
 
-from slamlab.edge.options import Options
-from slamlab.foundations.errors import InvalidInputError
+from slam_it_all.edge.options import Options
+from slam_it_all.foundations.errors import InvalidInputError
 
 
 def test_the_defaults_are_orb_slams() -> None:

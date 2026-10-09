@@ -1,6 +1,6 @@
 """High-precision (mpmath) helpers shared by the fixture generators.
 
-Nothing here imports slamlab: the fixtures' expected values must come from algorithms
+Nothing here imports slam_it_all: the fixtures' expected values must come from algorithms
 independent of the code they test. Matrices are lists of rows of mpmath numbers. The
 working precision is set by each generator (``with mp.workdps(PRECISION)``), not here, so
 importing this module has no side effects.

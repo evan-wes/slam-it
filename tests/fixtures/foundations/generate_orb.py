@@ -20,8 +20,8 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from slamlab.foundations import orb
-from slamlab.foundations.image import pyramid
+from slam_it_all.foundations import orb
+from slam_it_all.foundations.image import pyramid
 from tests.fixtures.foundations._layout import dumps
 
 OUT = Path(__file__).with_name("orb.json")

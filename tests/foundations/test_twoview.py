@@ -9,9 +9,9 @@ from typing import Any
 import numpy as np
 import pytest
 
-from slamlab import backends
-from slamlab.foundations import epipolar, homography, se3, so3, twoview
-from slamlab.foundations.errors import InvalidInputError
+from slam_it_all import backends
+from slam_it_all.foundations import epipolar, homography, se3, so3, twoview
+from slam_it_all.foundations.errors import InvalidInputError
 from tests.conftest import load_fixture, require_function
 from tests.foundations import scenes as sc
 
@@ -250,7 +250,7 @@ def test_duplicate_matches_cannot_make_a_singular_homography_win(backend: str) -
 
     On these real matches, 38 of 88 sharing one pixel, a rank-1 H mapping them there would
     explain the most; the initialiser once raised decomposing it. The DLT now refuses any H
-    that is numerically singular (:data:`slamlab.foundations.homography.CONDITION_TOLERANCE`),
+    that is numerically singular (:data:`slam_it_all.foundations.homography.CONDITION_TOLERANCE`),
     so the H it returns has rank 3, and E wins the model selection.
     """
     chosen = require_function(backend, twoview.__name__, "initialize")

@@ -1,7 +1,7 @@
 Third-party notices
 ===================
 
-slamlab is licensed under the PolyForm Noncommercial License 1.0.0 (LICENSE). It reproduces the third-party
+SLAM It All! is licensed under the PolyForm Noncommercial License 1.0.0 (LICENSE). It reproduces the third-party
 material below, each under its own licence. Algorithms reimplemented from their papers are
 cited where they are implemented and carry no notice here; this file lists material copied
 into the repository.
@@ -12,9 +12,9 @@ OpenCV: ORB's learned rBRIEF test pattern
 
 What:   the 256 test pairs `bit_pattern_31_`, from OpenCV's modules/features2d/src/orb.cpp
         (authors Ethan Rublee, Vincent Rabaud, Gary Bradski).
-Where:  PATTERN in src/slamlab/foundations/orb.py; kPattern in
-        cpp/include/slamlab/foundations/orb.hpp; PATTERN in
-        rust/slamlab-foundations/src/orb.rs. Each copy carries this notice beside it.
+Where:  PATTERN in src/slam_it_all/foundations/orb.py; kPattern in
+        cpp/include/slam_it_all/foundations/orb.hpp; PATTERN in
+        rust/slam-it-all-foundations/src/orb.rs. Each copy carries this notice beside it.
 Source: https://github.com/opencv/opencv/blob/4.x/modules/features2d/src/orb.cpp
 Licence:
 
@@ -58,7 +58,7 @@ What:   stb_image.h v2.30 by Sean Barrett, unmodified (commit
         2c980bb59875b0d32144a71867fbdebb2f77cd20).
 Where:  third_party/stb/stb_image.h, compiled by cpp/src/eval/png.cpp (PNG only).
 Source: https://github.com/nothings/stb
-Licence: MIT or public domain, at the user's choice; slamlab takes the MIT licence:
+Licence: MIT or public domain, at the user's choice; SLAM It All! takes the MIT licence:
 
     Copyright (c) 2017 Sean Barrett
 

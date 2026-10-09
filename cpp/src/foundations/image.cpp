@@ -1,7 +1,7 @@
 /// @file
 /// @brief Implementation of the fixed-point image operations declared in
-///        slamlab/foundations/image.hpp.
-#include "slamlab/foundations/image.hpp"
+///        slam_it_all/foundations/image.hpp.
+#include "slam_it_all/foundations/image.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -12,7 +12,7 @@
 #include <string>
 #include <utility>
 
-namespace slamlab::foundations::image {
+namespace slam_it_all::foundations::image {
 
 namespace {
 
@@ -468,4 +468,4 @@ Result<void> check_scale_factor(double scale_factor, const char* name) {
   return {};
 }
 
-}  // namespace slamlab::foundations::image
+}  // namespace slam_it_all::foundations::image

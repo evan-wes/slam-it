@@ -1,46 +1,46 @@
 cmake_minimum_required(VERSION 3.26)
-project(slamlab LANGUAGES CXX)
+project(slam_it_all LANGUAGES CXX)
 
-# C++23 for std::expected, the cores' error contract (slamlab/foundations/error.hpp).
+# C++23 for std::expected, the cores' error contract (slam_it_all/foundations/error.hpp).
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # The C++ cores build standalone (no Python) for the edge budgets and native tests;
 # the nanobind module is added only when built through scikit-build-core.
-option(SLAMLAB_BUILD_TESTS "Build the native C++ tests" OFF)
-option(SLAMLAB_BUILD_BENCHMARKS "Build the native C++ benchmarks (Google Benchmark)" OFF)
+option(SLAM_IT_ALL_BUILD_TESTS "Build the native C++ tests" OFF)
+option(SLAM_IT_ALL_BUILD_BENCHMARKS "Build the native C++ benchmarks (Google Benchmark)" OFF)
 
 # Eigen is the cores' linear algebra: fixed-size types may appear in core headers, so it is
-# a PUBLIC dependency of every rung library. Provided by the conda env (setup_slamlab.sh).
+# a PUBLIC dependency of every rung library. Provided by the conda env (setup_slam_it_all.sh).
 find_package(Eigen3 5.0 CONFIG REQUIRED)
 
-# One static library per rung, mirroring the Python packages: slamlab_<rung> from
+# One static library per rung, mirroring the Python packages: slam_it_all_<rung> from
 # cpp/src/<rung>/, linking only the rungs below it. DEPENDS must agree with the ladder's
 # layers in pyproject.toml; scripts/check_layers.py enforces that, and that every
-# #include "slamlab/<rung>/..." stays within a rung's allowed set.
-function(slamlab_add_rung rung)
+# #include "slam_it_all/<rung>/..." stays within a rung's allowed set.
+function(slam_it_all_add_rung rung)
   cmake_parse_arguments(ARG "" "" "DEPENDS" ${ARGN})
   file(GLOB_RECURSE sources CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/cpp/src/${rung}/*.cpp)
-  add_library(slamlab_${rung} STATIC ${sources})
-  target_include_directories(slamlab_${rung} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cpp/include)
-  target_link_libraries(slamlab_${rung} PUBLIC Eigen3::Eigen ${ARG_DEPENDS})
-  set_target_properties(slamlab_${rung} PROPERTIES POSITION_INDEPENDENT_CODE ON)
-  target_compile_options(slamlab_${rung} PRIVATE -Wall -Wextra -Wpedantic)
+  add_library(slam_it_all_${rung} STATIC ${sources})
+  target_include_directories(slam_it_all_${rung} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cpp/include)
+  target_link_libraries(slam_it_all_${rung} PUBLIC Eigen3::Eigen ${ARG_DEPENDS})
+  set_target_properties(slam_it_all_${rung} PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  target_compile_options(slam_it_all_${rung} PRIVATE -Wall -Wextra -Wpedantic)
   # Exact parity needs every float operation rounded on its own: no fused multiply-add,
   # which GCC and Clang would otherwise form on ARM. PUBLIC, so code inlining a core
   # header's arithmetic (tests, bindings) is compiled the same way.
-  target_compile_options(slamlab_${rung} PUBLIC -ffp-contract=off)
-  if(SLAMLAB_BUILD_TESTS)
+  target_compile_options(slam_it_all_${rung} PUBLIC -ffp-contract=off)
+  if(SLAM_IT_ALL_BUILD_TESTS)
     # One executable per test file: cpp/tests/<rung>/test_<name>.cpp -> <rung>_test_<name>.
     file(GLOB_RECURSE tests CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/cpp/tests/${rung}/*.cpp)
     foreach(test_source IN LISTS tests)
       get_filename_component(test_stem ${test_source} NAME_WE)
       set(test_name ${rung}_${test_stem})
       add_executable(${test_name} ${test_source})
-      target_link_libraries(${test_name} PRIVATE slamlab_${rung} nlohmann_json::nlohmann_json)
+      target_link_libraries(${test_name} PRIVATE slam_it_all_${rung} nlohmann_json::nlohmann_json)
       target_compile_definitions(${test_name}
-        PRIVATE SLAMLAB_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+        PRIVATE SLAM_IT_ALL_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
       # Tests may include a rung's internal headers (cpp/src/<rung>/...) to unit-test them.
       target_include_directories(${test_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cpp/src)
       target_compile_options(${test_name} PRIVATE -Wall -Wextra -Wpedantic)
@@ -48,18 +48,18 @@ function(slamlab_add_rung rung)
     endforeach()
   endif()
   # One program per app file: cpp/apps/<rung>/<name>.cpp -> <name>, installed with the
-  # package (slamlab/bin/) when built through scikit-build, where slamlab.backends finds it.
+  # package (slam_it_all/bin/) when built through scikit-build, where slam_it_all.backends finds it.
   file(GLOB apps CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/cpp/apps/${rung}/*.cpp)
   foreach(app_source IN LISTS apps)
     get_filename_component(app_name ${app_source} NAME_WE)
     add_executable(${app_name} ${app_source})
-    target_link_libraries(${app_name} PRIVATE slamlab_${rung})
+    target_link_libraries(${app_name} PRIVATE slam_it_all_${rung})
     target_compile_options(${app_name} PRIVATE -Wall -Wextra -Wpedantic)
     if(SKBUILD)
-      install(TARGETS ${app_name} RUNTIME DESTINATION slamlab/bin)
+      install(TARGETS ${app_name} RUNTIME DESTINATION slam_it_all/bin)
     endif()
   endforeach()
-  if(SLAMLAB_BUILD_BENCHMARKS)
+  if(SLAM_IT_ALL_BUILD_BENCHMARKS)
     # One executable per benchmark file: cpp/bench/<rung>/bench_<name>.cpp ->
     # <rung>_bench_<name>, in build/<dir>/bench/.
     file(GLOB benches CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/cpp/bench/${rung}/*.cpp)
@@ -67,41 +67,42 @@ function(slamlab_add_rung rung)
       get_filename_component(bench_stem ${bench_source} NAME_WE)
       set(bench_name ${rung}_${bench_stem})
       add_executable(${bench_name} ${bench_source})
-      target_link_libraries(${bench_name} PRIVATE slamlab_${rung} benchmark::benchmark)
+      target_link_libraries(${bench_name} PRIVATE slam_it_all_${rung} benchmark::benchmark)
       target_compile_options(${bench_name} PRIVATE -Wall -Wextra -Wpedantic)
       set_target_properties(${bench_name} PROPERTIES RUNTIME_OUTPUT_DIRECTORY bench)
     endforeach()
   endif()
 endfunction()
 
-if(SLAMLAB_BUILD_TESTS)
+if(SLAM_IT_ALL_BUILD_TESTS)
   enable_testing()
   # Native tests read the shared parity fixtures (tests/fixtures/) with nlohmann_json, a
   # test-only dependency from the conda env.
   find_package(nlohmann_json 3 CONFIG REQUIRED)
 endif()
-if(SLAMLAB_BUILD_BENCHMARKS)
+if(SLAM_IT_ALL_BUILD_BENCHMARKS)
   # Google Benchmark, a benchmark-only dependency from the conda env.
   find_package(benchmark CONFIG REQUIRED)
 endif()
 
-slamlab_add_rung(foundations)
-slamlab_add_rung(edge DEPENDS slamlab_foundations)
+slam_it_all_add_rung(foundations)
+slam_it_all_add_rung(edge DEPENDS slam_it_all_foundations)
 # Evaluation: dataset readers and the run writer, outside the algorithm cores. PNGs decode
 # with the vendored stb_image (third_party/stb), included as a system header so its own
 # warnings stay out. The Python extension never links it; the native programs do.
-slamlab_add_rung(eval DEPENDS slamlab_foundations)
-target_include_directories(slamlab_eval SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb)
+slam_it_all_add_rung(eval DEPENDS slam_it_all_foundations)
+target_include_directories(slam_it_all_eval SYSTEM PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb)
 # Orchestration: the native programs that run a whole sequence (cpp/apps/orchestration/).
-slamlab_add_rung(orchestration DEPENDS slamlab_edge slamlab_eval)
+slam_it_all_add_rung(orchestration DEPENDS slam_it_all_edge slam_it_all_eval)
 
 if(SKBUILD)
   find_package(Python 3.11 REQUIRED COMPONENTS Interpreter Development.Module)
   find_package(nanobind CONFIG REQUIRED)
   # Bindings mirror the rungs: cpp/bindings/<rung>/<module>.cpp, wired by module.cpp.
-  file(GLOB_RECURSE SLAMLAB_BINDING_SOURCES CONFIGURE_DEPENDS cpp/bindings/*.cpp)
-  nanobind_add_module(_cpp NB_STATIC ${SLAMLAB_BINDING_SOURCES})
+  file(GLOB_RECURSE SLAM_IT_ALL_BINDING_SOURCES CONFIGURE_DEPENDS cpp/bindings/*.cpp)
+  nanobind_add_module(_cpp NB_STATIC ${SLAM_IT_ALL_BINDING_SOURCES})
   target_include_directories(_cpp PRIVATE cpp/bindings)
-  target_link_libraries(_cpp PRIVATE slamlab_foundations slamlab_edge)
-  install(TARGETS _cpp LIBRARY DESTINATION slamlab)
+  target_link_libraries(_cpp PRIVATE slam_it_all_foundations slam_it_all_edge)
+  install(TARGETS _cpp LIBRARY DESTINATION slam_it_all)
 endif()

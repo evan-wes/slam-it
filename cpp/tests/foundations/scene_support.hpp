@@ -8,10 +8,10 @@
 #include <cmath>
 #include <utility>
 
-#include "slamlab/foundations/so3.hpp"
+#include "slam_it_all/foundations/so3.hpp"
 
-/// @brief Helpers for slamlab's native tests.
-namespace slamlab::testing {
+/// @brief Helpers for SLAM It All!'s native tests.
+namespace slam_it_all::testing {
 
 /// @brief A deterministic point 4-8 m ahead of camera 1, or on the plane z = 5.
 /// @param i The point's index.
@@ -67,4 +67,4 @@ inline double up_to_sign(const Eigen::Matrix3d& a, const Eigen::Matrix3d& b) {
   return std::min((a - b).cwiseAbs().maxCoeff(), (a + b).cwiseAbs().maxCoeff());
 }
 
-}  // namespace slamlab::testing
+}  // namespace slam_it_all::testing

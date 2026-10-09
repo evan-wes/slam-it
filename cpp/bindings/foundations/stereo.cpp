@@ -1,10 +1,10 @@
 /// @file
-/// @brief Bindings for `slamlab.foundations.stereo` (`slamlab._cpp.foundations.stereo`).
+/// @brief Bindings for `slam_it_all.foundations.stereo` (`slam_it_all._cpp.foundations.stereo`).
 ///
 /// Camera models cross as their integer codes; a rectification comes back as a dict of its
 /// rotations, rectified intrinsics and baseline. Features cross as dicts (orb_crossing.hpp);
 /// settings as dicts of their dataclasses' fields.
-#include "slamlab/foundations/stereo.hpp"
+#include "slam_it_all/foundations/stereo.hpp"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -22,7 +22,7 @@
 
 namespace nb = nanobind;
 
-namespace slamlab::bindings {
+namespace slam_it_all::bindings {
 
 namespace {
 
@@ -154,4 +154,4 @@ void bind_stereo(nb::module_& m) {
         nb::arg("options"), "Match features along rows; return a dict of StereoMatches' fields.");
 }
 
-}  // namespace slamlab::bindings
+}  // namespace slam_it_all::bindings

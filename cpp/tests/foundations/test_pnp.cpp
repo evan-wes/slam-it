@@ -1,20 +1,20 @@
 /// @file
-/// @brief Native tests for absolute pose (slamlab/foundations/pnp.hpp): EPnP exact on exact
+/// @brief Native tests for absolute pose (slam_it_all/foundations/pnp.hpp): EPnP exact on exact
 ///        data, the refinement converging, RANSAC through outliers, and bad input.
 #include <Eigen/Dense>
 #include <cmath>
 
 #include "scene_support.hpp"
-#include "slamlab/foundations/pnp.hpp"
-#include "slamlab/foundations/so3.hpp"
+#include "slam_it_all/foundations/pnp.hpp"
+#include "slam_it_all/foundations/so3.hpp"
 #include "test_support.hpp"
 
 namespace {
 
-namespace pnp = slamlab::foundations::pnp;
-using slamlab::foundations::ErrorKind;
-using slamlab::testing::expect;
-using slamlab::testing::Rows3;
+namespace pnp = slam_it_all::foundations::pnp;
+using slam_it_all::foundations::ErrorKind;
+using slam_it_all::testing::expect;
+using slam_it_all::testing::Rows3;
 
 /// @brief Correspondences and the pose that explains them.
 struct Scene {
@@ -33,14 +33,15 @@ struct Scene {
 /// @return The scene.
 Scene scene(int n, bool planar) {
   Scene out{.points = Rows3(n, 3), .bearings = Rows3(), .truth = Eigen::Matrix4d::Identity()};
-  out.truth.topLeftCorner<3, 3>() = slamlab::testing::scene_rotation();
-  out.truth.topRightCorner<3, 1>() = slamlab::testing::scene_translation();
+  out.truth.topLeftCorner<3, 3>() = slam_it_all::testing::scene_rotation();
+  out.truth.topRightCorner<3, 1>() = slam_it_all::testing::scene_translation();
   Rows3 unused;
-  slamlab::testing::scene_bearings(
-      n, planar, {slamlab::testing::scene_rotation(), slamlab::testing::scene_translation()},
-      unused, out.bearings);
+  slam_it_all::testing::scene_bearings(
+      n, planar,
+      {slam_it_all::testing::scene_rotation(), slam_it_all::testing::scene_translation()}, unused,
+      out.bearings);
   for (int i = 0; i < n; ++i) {
-    out.points.row(i) = slamlab::testing::scene_point(i, planar).transpose();
+    out.points.row(i) = slam_it_all::testing::scene_point(i, planar).transpose();
   }
   return out;
 }
@@ -63,7 +64,7 @@ int main() {
 
   Eigen::Matrix4d start = truth;
   start.topLeftCorner<3, 3>() =
-      slamlab::foundations::so3::exp(Eigen::Vector3d(0.01, -0.02, 0.015)) *
+      slam_it_all::foundations::so3::exp(Eigen::Vector3d(0.01, -0.02, 0.015)) *
       truth.topLeftCorner<3, 3>();
   start.topRightCorner<3, 1>() += Eigen::Vector3d(0.03, -0.02, 0.05);
   const Eigen::VectorXd ones = Eigen::VectorXd::Ones(points.rows());
@@ -82,10 +83,10 @@ int main() {
     dirty.row(i) =
         Eigen::RowVector3d(std::sin(1.7 * static_cast<double>(i)), 0.4, 1.0).normalized();
   }
-  for (const auto solver : {slamlab::foundations::p3p::Solver::kDing,
-                            slamlab::foundations::p3p::Solver::kLambdaTwist}) {
+  for (const auto solver : {slam_it_all::foundations::p3p::Solver::kDing,
+                            slam_it_all::foundations::p3p::Solver::kLambdaTwist}) {
     const auto run = pnp::pnp_ransac(
-        points, dirty, slamlab::foundations::ransac::Options{.threshold = 1e-6}, solver);
+        points, dirty, slam_it_all::foundations::ransac::Options{.threshold = 1e-6}, solver);
     bool clean = run.has_value();
     for (Eigen::Index i = 0; clean && i < dirty.rows(); ++i) {
       clean = run->state.inliers(i) == (i % 3 != 0);
@@ -115,5 +116,5 @@ int main() {
   const auto short_weights = pnp::refine_pose(truth, points, bearings, 1e-3, unit.head(3));
   expect(!short_weights.has_value() && short_weights.error().kind == ErrorKind::kInvalidInput,
          "the refinement rejects weights that are not one per correspondence", failures);
-  return slamlab::testing::finish("foundations/pnp", failures);
+  return slam_it_all::testing::finish("foundations/pnp", failures);
 }

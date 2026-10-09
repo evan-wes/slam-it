@@ -9,8 +9,8 @@ from typing import Any
 import numpy as np
 import pytest
 
-from slamlab.eval import images, tum
-from slamlab.foundations.errors import InvalidInputError
+from slam_it_all.eval import images, tum
+from slam_it_all.foundations.errors import InvalidInputError
 
 FOLDER = Path(__file__).parents[1] / "fixtures" / "eval"
 CASES: dict[str, dict[str, Any]] = json.loads((FOLDER / "png.json").read_text())["cases"]

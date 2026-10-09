@@ -4,21 +4,21 @@
 # GitHub workflow runs on demand and on pushes to main.
 #
 # CI's job is "layer 1 from a clean start": a fresh checkout (committed files only), the
-# conda env built from scripts/locks/slamlab.lock by scripts/setup_slamlab.sh, then
+# conda env built from scripts/locks/slam-it-all.lock by scripts/setup_slam_it_all.sh, then
 # scripts/check.sh. This does the same:
-#   1. A persistent checkout in ~/.cache/slamlab-offline-ci/slamlab, cloned from this repo
+#   1. A persistent checkout in ~/.cache/slam-it-all-offline-ci/slam-it-all, cloned from this repo
 #      (no network), moved to REF and cleaned with `git clean -ffdx`, so no untracked file,
 #      build tree or cache from earlier runs survives.
 #   2. If BASE is not an ancestor of REF, REF is merged with BASE first, as GitHub tests a
 #      PR's merge commit; a conflict fails the run.
-#   3. The env `slamlab-ci` (never your working `slamlab` env), recreated from scratch when
+#   3. The env `slam-it-all-ci` (never your working `slam-it-all` env), recreated from scratch when
 #      the lock or setup script changed since it was built (or with --fresh-env); otherwise
-#      setup_slamlab.sh updates it in place, as it would any existing env. Either way
-#      setup_slamlab.sh then reinstalls slamlab and the Rust extension from the checkout.
-#   4. scripts/check.sh --env slamlab-ci, exactly as CI runs it.
+#      setup_slam_it_all.sh updates it in place, as it would any existing env. Either way
+#      setup_slam_it_all.sh then reinstalls SLAM It All! and the Rust extension from the checkout.
+#   4. scripts/check.sh --env slam-it-all-ci, exactly as CI runs it.
 # Every step runs under an 8G memory cap with 4 build jobs. The log goes to
-# ~/.cache/slamlab-offline-ci/logs/; a one-line result per run is appended to
-# ~/.cache/slamlab-offline-ci/results.tsv (sha, ref, base merged?, result, log), to cite in
+# ~/.cache/slam-it-all-offline-ci/logs/; a one-line result per run is appended to
+# ~/.cache/slam-it-all-offline-ci/results.tsv (sha, ref, base merged?, result, log), to cite in
 # a PR.
 #
 # Usage: scripts/offline_ci.sh [REF] [--base BASE] [--fresh-env]
@@ -30,9 +30,9 @@
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CACHE="${HOME}/.cache/slamlab-offline-ci"
-CHECKOUT="${CACHE}/slamlab"
-ENV_NAME="slamlab-ci"
+CACHE="${HOME}/.cache/slam-it-all-offline-ci"
+CHECKOUT="${CACHE}/slam-it-all"
+ENV_NAME="slam-it-all-ci"
 CAP=(systemd-run --user --scope -q -p MemoryMax=8G -p MemorySwapMax=2G --)
 export CMAKE_BUILD_PARALLEL_LEVEL=4 CARGO_BUILD_JOBS=4
 
@@ -75,7 +75,7 @@ if ! git -C "${CHECKOUT}" merge-base --is-ancestor "${BASE_SHA}" "${SHA}"; then
 fi
 
 # --- 3. the env, from the lock --------------------------------------------------------
-LOCK_HASH="$(cat "${CHECKOUT}/scripts/locks/slamlab.lock" "${CHECKOUT}/scripts/setup_slamlab.sh" | sha256sum | cut -c1-16)"
+LOCK_HASH="$(cat "${CHECKOUT}/scripts/locks/slam-it-all.lock" "${CHECKOUT}/scripts/setup_slam_it_all.sh" | sha256sum | cut -c1-16)"
 STAMP_FILE="${CACHE}/env.hash"
 if "${CONDA_BIN}" env list | awk '{print $1}' | grep -qx "${ENV_NAME}"; then
   if [[ ${FRESH} -eq 1 || "$(cat "${STAMP_FILE}" 2>/dev/null)" != "${LOCK_HASH}" ]]; then
@@ -83,7 +83,7 @@ if "${CONDA_BIN}" env list | awk '{print $1}' | grep -qx "${ENV_NAME}"; then
     "${CONDA_BIN}" env remove -y -q -n "${ENV_NAME}" || exit 1
   fi
 fi
-(cd "${CHECKOUT}" && "${CAP[@]}" bash scripts/setup_slamlab.sh --env "${ENV_NAME}")
+(cd "${CHECKOUT}" && "${CAP[@]}" bash scripts/setup_slam_it_all.sh --env "${ENV_NAME}")
 setup=$?
 if [[ ${setup} -ne 0 ]]; then
   echo "SETUP FAILED (exit ${setup})"

@@ -1,0 +1,216 @@
+"""Bundle adjustment over the map's keyframes (ORB-SLAM's ``LocalBundleAdjustment``, lite).
+
+The free keyframes, the points they observe, and every keyframe observing those points go
+into one :class:`slam_it_all.foundations.ba.BAProblem`:
+
+- each observation weighted by its level's information ``1 / s^(2 l)``;
+- an observation with depth (stereo, RGB-D) also gives an inverse-depth prior ``1 / z`` with
+  information ``(f b)^2 / s^(2 l)``: the disparity's variance ``s^(2 l)``, as an inverse
+  depth (ORB-SLAM's stereo edge measures the right column instead);
+- the keyframes that are not free held fixed, as are the ones the caller fixes;
+- a Huber loss at ``sqrt(chi2_mono)`` on the weighted errors.
+
+It solves for ``ba_iterations``, drops the observations failing the chi-square test
+(:func:`slam_it_all.edge.residuals.chi2`) or behind their camera, solves again for
+``ba_refine_iterations`` (a point left with fewer than two inlier views is left out of that
+solve, back where it started: ORB-SLAM's second pass would re-solve it from its one stereo
+edge, so as not to keep where its outliers pulled it), forgets the observations still failing it
+(:func:`slam_it_all.edge.map.forget_observations`), and refreshes the surviving points
+(ORB-SLAM's ``UpdateNormalAndDepth``). Rung 0's BA leaves out a free point seen from fewer
+than two keyframes, so a point from one keyframe's depth stays where the depth put it until a
+second keyframe sees it.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import replace
+from typing import Any, Protocol
+
+import numpy as np
+from numpy.typing import ArrayLike, NDArray
+
+from slam_it_all import backends
+from slam_it_all.edge import map as maps
+from slam_it_all.edge import residuals
+from slam_it_all.edge.frames import Camera
+from slam_it_all.edge.map import Map
+from slam_it_all.edge.options import Options
+from slam_it_all.foundations import ba, nls, se3
+from slam_it_all.foundations.arrays import as_indices, as_mask
+
+Array = NDArray[np.float64]
+IntArray = NDArray[np.int64]
+Mask = NDArray[np.bool_]
+
+
+class Implementation(Protocol):
+    """The functions a compiled backend's ``edge.adjust`` submodule provides."""
+
+    def bundle_adjust(
+        self,
+        m: dict[str, Any],
+        camera: dict[str, Any],
+        keyframes: NDArray[np.int64],
+        fixed: NDArray[np.bool_],
+        options: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Bundle-adjust keyframes and their points; return the new map."""
+        ...
+
+
+def _problem(
+    m: Map, camera: Camera, keyframes: IntArray, points: IntArray, fixed: Mask
+) -> tuple[ba.BAProblem, IntArray, IntArray]:
+    """Build the BA problem; return it, its observations' keypoint rows and its cameras' rows."""
+    keyframe_of = m.keypoint_keyframe()
+    free = np.zeros(m.keyframes, dtype=bool)
+    free[keyframes] = True
+    free &= ~fixed
+    point_index = np.full(m.points, -1, dtype=np.int64)
+    point_index[points] = np.arange(len(points))
+    rows = np.flatnonzero(m.kp_point >= 0)
+    p_rows = m.point_rows(m.kp_point[rows])
+    rows = rows[point_index[p_rows] >= 0]
+    p_rows = m.point_rows(m.kp_point[rows])
+    observing = np.unique(keyframe_of[rows])
+    camera_index = np.full(m.keyframes, -1, dtype=np.int64)
+    camera_index[observing] = np.arange(len(observing))
+    variance = residuals.sigma2(m, m.kp_level[rows])
+    depth = m.kp_depth[rows]
+    has_depth = ~np.isnan(depth)
+    prior = np.where(has_depth, 1.0 / np.where(has_depth, depth, 1.0), np.nan)
+    information = (camera.focal * camera.baseline) ** 2 / variance
+    problem = ba.BAProblem.create(
+        camera.model,
+        camera.intrinsics,
+        se3.inverse(m.kf_pose[observing]),
+        m.pt_xyz[points],
+        m.kp_xy[rows],
+        camera_index[keyframe_of[rows]],
+        point_index[p_rows],
+        weights=1.0 / variance,
+        fixed_poses=~free[observing],
+        depth_prior=prior,
+        depth_prior_weights=np.where(has_depth, information, 0.0),
+    )
+    return problem, rows, observing
+
+
+def _bundle_adjust(
+    m: Map, camera: Camera, keyframes: IntArray, fixed: Mask, options: Options
+) -> Map:
+    """Bundle-adjust keyframes and the points they observe (reference)."""
+    points = m.observed_by(keyframes)
+    if len(points) == 0:
+        return m
+    problem, rows, observing = _problem(m, camera, keyframes, points, fixed)
+    loss = nls.Loss("huber", math.sqrt(options.chi2_mono))
+    first = ba.solve(problem, _options(loss, options.ba_iterations))
+    solved = replace(problem, poses=first.poses, points=first.points)
+    outlier = _outliers(m, camera, solved, rows, options)
+    # A point left with fewer than two inlier views is left out of the second solve: it goes
+    # back to where it was, not where its outliers pulled it.
+    alone = np.bincount(problem.pt_idx[~outlier], minlength=len(points)) < 2
+    second = ba.solve(
+        replace(
+            solved,
+            points=np.where(alone[:, None], problem.points, first.points),
+            weights=np.where(outlier, 0.0, problem.weights),
+            depth_prior_weights=np.where(outlier, 0.0, problem.depth_prior_weights),
+        ),
+        _options(loss, options.ba_refine_iterations),
+    )
+    final = replace(problem, poses=second.poses, points=second.points)
+    dropped = rows[_outliers(m, camera, final, rows, options)]
+    free = observing[~problem.fixed_poses]
+    poses = m.kf_pose.copy()
+    poses[free] = se3.inverse(second.poses[~problem.fixed_poses])
+    xyz = m.pt_xyz.copy()
+    xyz[points] = second.points
+    ids = m.pt_id[points]
+    adjusted = maps.forget_observations(replace(m, kf_pose=poses, pt_xyz=xyz), dropped)
+    kept = adjusted.point_rows(ids)
+    return maps.refresh_points(adjusted, kept[kept >= 0])
+
+
+def bundle_adjust(  # noqa: PLR0913 -- the map, its camera, what to adjust, the settings
+    m: Map,
+    camera: Camera,
+    keyframes: ArrayLike,
+    fixed: ArrayLike,
+    options: Options,
+    *,
+    backend: str = "python",
+) -> Map:
+    """Bundle-adjust keyframes and the points they observe (``LocalBundleAdjustment``).
+
+    Solves for ``ba_iterations``, drops the observations failing the chi-square test (or
+    behind their camera), solves again for ``ba_refine_iterations`` (a point left with fewer
+    than two inlier views restarting from its position before the adjustment), then forgets
+    the observations still failing it and refreshes the adjusted points' descriptors, normals and
+    distances. Only the free keyframes' poses are written back, so a fixed keyframe keeps its
+    pose exactly.
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    camera : slam_it_all.edge.frames.Camera
+        The camera.
+    keyframes : array_like of int
+        The rows of the keyframes to adjust; every other keyframe observing their points is
+        held fixed.
+    fixed : array_like of bool, shape (K,)
+        Keyframes held fixed even among `keyframes` (the map's first, for the gauge).
+    options : Options
+        The iterations and thresholds.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    Map
+        The map with adjusted poses and points, and the outlier observations forgotten.
+
+    Raises
+    ------
+    slam_it_all.foundations.errors.InvalidInputError
+        If a keyframe row is out of range, or `fixed` is not one flag per keyframe.
+    """
+    given = np.asarray(keyframes)
+    chosen = as_indices(given, given.size, m.keyframes, "keyframes")
+    held = as_mask(fixed, (m.keyframes,), "fixed")
+    return backends.call(
+        backend,
+        __name__,
+        "bundle_adjust",
+        reference=lambda: _bundle_adjust(m, camera, chosen, held, options),
+        arguments={
+            "m": m.as_dict(),
+            "camera": camera.as_dict(),
+            "keyframes": chosen,
+            "fixed": held,
+            "options": options.as_dict(),
+        },
+        decode=maps.decode,
+    )
+
+
+def _options(loss: nls.Loss, iterations: int) -> ba.BAOptions:
+    """Return the BA settings: Levenberg-Marquardt with a robust loss, capped iterations."""
+    return ba.BAOptions(solver=nls.Options(loss=loss, max_iterations=iterations))
+
+
+def _outliers(
+    m: Map, camera: Camera, problem: ba.BAProblem, rows: IntArray, options: Options
+) -> Mask:
+    """Which observations fail the chi-square test, or are behind their camera."""
+    t_cam_world = se3.inverse(problem.poses)[problem.cam_idx]
+    local = np.einsum("mij,mj->mi", t_cam_world[:, :3, :3], problem.points[problem.pt_idx])
+    local += t_cam_world[:, :3, 3]
+    right = m.kp_right[rows]
+    error = residuals.chi2(
+        camera, local, m.kp_xy[rows], right, residuals.sigma2(m, m.kp_level[rows])
+    )
+    return np.asarray(~(error < residuals.thresholds(right, options)))

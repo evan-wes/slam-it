@@ -1,6 +1,6 @@
 /// @file
-/// @brief Implementation of the local mapping declared in slamlab/edge/mapping.hpp.
-#include "slamlab/edge/mapping.hpp"
+/// @brief Implementation of the local mapping declared in slam_it_all/edge/mapping.hpp.
+#include "slam_it_all/edge/mapping.hpp"
 
 #include <Eigen/Core>
 #include <algorithm>
@@ -13,13 +13,13 @@
 #include <string>
 #include <utility>
 
-#include "slamlab/edge/adjust.hpp"
-#include "slamlab/edge/residuals.hpp"
-#include "slamlab/foundations/correspondences.hpp"
-#include "slamlab/foundations/matching.hpp"
-#include "slamlab/foundations/triangulation.hpp"
+#include "slam_it_all/edge/adjust.hpp"
+#include "slam_it_all/edge/residuals.hpp"
+#include "slam_it_all/foundations/correspondences.hpp"
+#include "slam_it_all/foundations/matching.hpp"
+#include "slam_it_all/foundations/triangulation.hpp"
 
-namespace slamlab::edge {
+namespace slam_it_all::edge {
 
 namespace {
 
@@ -327,7 +327,7 @@ bool scale_consistent(const Map& m, std::array<std::size_t, 2> ks,
 }
 
 /// @brief Triangulate matched pairs and keep those passing every check
-///        (`slamlab.edge.mapping._triangulate`).
+///        (`slam_it_all.edge.mapping._triangulate`).
 /// @param m The map.
 /// @param camera The camera.
 /// @param ks The two keyframes' rows.
@@ -411,7 +411,7 @@ std::optional<double> median_depth(const Map& m, std::size_t k) {
   return depths[(depths.size() - 1) / 2];
 }
 
-/// @brief Replace one point by another (`slamlab.edge.mapping._merge_points`,
+/// @brief Replace one point by another (`slam_it_all.edge.mapping._merge_points`,
 ///        `MapPoint::Replace`).
 /// @param m The map.
 /// @param lose The lost point's id.
@@ -459,7 +459,7 @@ std::vector<foundations::orb::Keypoint> keypoints_of(const Map& m, std::size_t k
 }
 
 /// @brief The keypoint row a point fuses into in a keyframe, if any
-///        (`slamlab.edge.mapping._fuse_target`, `Fuse`' search).
+///        (`slam_it_all.edge.mapping._fuse_target`, `Fuse`' search).
 /// @param m The map.
 /// @param camera The camera.
 /// @param k The keyframe's row.
@@ -515,7 +515,7 @@ Result<std::optional<std::int64_t>> fuse_target(const Map& m, const Camera& came
   return best_row;
 }
 
-/// @brief Fuse one point into a keyframe (`slamlab.edge.mapping._fuse_one`).
+/// @brief Fuse one point into a keyframe (`slam_it_all.edge.mapping._fuse_one`).
 /// @param m The map.
 /// @param camera The camera.
 /// @param k The keyframe's row.
@@ -584,7 +584,7 @@ std::vector<std::int64_t> observed_ids(const Map& m, std::span<const std::int64_
 }
 
 /// @brief Count a keyframe's points that enough other keyframes see at its level or finer
-///        (`slamlab.edge.mapping._redundant`).
+///        (`slam_it_all.edge.mapping._redundant`).
 /// @param m The map.
 /// @param k The keyframe's row.
 /// @param rows The keypoint rows counted.
@@ -892,4 +892,4 @@ Result<void> process(Map& m, const Camera& camera, const Frame& frame, const Tra
   return cull_keyframes(m, camera, mode, options);
 }
 
-}  // namespace slamlab::edge
+}  // namespace slam_it_all::edge

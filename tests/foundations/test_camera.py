@@ -8,9 +8,9 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from slamlab import backends
-from slamlab.foundations import camera
-from slamlab.foundations.errors import InvalidInputError, NotConvergedError
+from slam_it_all import backends
+from slam_it_all.foundations import camera
+from slam_it_all.foundations.errors import InvalidInputError, NotConvergedError
 from tests.conftest import (
     check_parity,
     load_fixture,

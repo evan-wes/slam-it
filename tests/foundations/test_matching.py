@@ -10,10 +10,10 @@ import numpy as np
 import pytest
 from numpy.typing import ArrayLike, NDArray
 
-from slamlab import backends
-from slamlab.foundations import matching, orb
-from slamlab.foundations.errors import InvalidInputError
-from slamlab.foundations.orb import DESCRIPTOR_BYTES
+from slam_it_all import backends
+from slam_it_all.foundations import matching, orb
+from slam_it_all.foundations.errors import InvalidInputError
+from slam_it_all.foundations.orb import DESCRIPTOR_BYTES
 from tests.conftest import (
     check_rejects,
     load_fixture,

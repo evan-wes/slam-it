@@ -1,5 +1,5 @@
 /// @file
-/// @brief Native tests for the edge rung's state (slamlab/edge/{options,frames,map}.hpp): a
+/// @brief Native tests for the edge rung's state (slam_it_all/edge/{options,frames,map}.hpp): a
 ///        small hand-built map's operations and observation index, the checks, depth lookup.
 ///        Parity with the Python reference is checked through the bindings by tests/edge.
 #include <cmath>
@@ -12,16 +12,16 @@
 
 #include "../foundations/fixture_support.hpp"
 #include "../foundations/test_support.hpp"
-#include "slamlab/edge/frames.hpp"
-#include "slamlab/edge/map.hpp"
-#include "slamlab/edge/options.hpp"
+#include "slam_it_all/edge/frames.hpp"
+#include "slam_it_all/edge/map.hpp"
+#include "slam_it_all/edge/options.hpp"
 
 namespace {
 
-namespace edge = slamlab::edge;
-namespace orb = slamlab::foundations::orb;
-using slamlab::testing::expect;
-using slamlab::testing::is_invalid_input;
+namespace edge = slam_it_all::edge;
+namespace orb = slam_it_all::foundations::orb;
+using slam_it_all::testing::expect;
+using slam_it_all::testing::is_invalid_input;
 
 /// @brief NaN, for an unknown depth or column.
 constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
@@ -178,7 +178,7 @@ void check_checks(int& failures) {
          "check_options rejects an empty window", failures);
   expect(is_invalid_input(edge::check_options(edge::Options{.ref_ratio = 1.5})),
          "check_options rejects a ratio above 1", failures);
-  const edge::Camera bad{.model = slamlab::foundations::camera::Model::kPinhole,
+  const edge::Camera bad{.model = slam_it_all::foundations::camera::Model::kPinhole,
                          .intrinsics = Eigen::Vector4d(250.0, 250.0, 160.0, 120.0),
                          .width = 320,
                          .height = 240,
@@ -231,9 +231,9 @@ int run() {
   check_index(failures);
   check_checks(failures);
   check_every_setting(failures);
-  return slamlab::testing::finish("edge/map", failures);
+  return slam_it_all::testing::finish("edge/map", failures);
 }
 
 }  // namespace
 
-int main() { return slamlab::testing::guarded("edge/map", run); }
+int main() { return slam_it_all::testing::guarded("edge/map", run); }

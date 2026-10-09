@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from slamlab.foundations import correspondences as co
-from slamlab.foundations.errors import DegenerateError
+from slam_it_all.foundations import correspondences as co
+from slam_it_all.foundations.errors import DegenerateError
 
 
 def test_homogeneous_and_normalised_plane() -> None:

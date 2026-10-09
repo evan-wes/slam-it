@@ -1,6 +1,7 @@
 /// @file
-/// @brief Bindings for `slamlab.foundations.epipolar` (`slamlab._cpp.foundations.epipolar`).
-#include "slamlab/foundations/epipolar.hpp"
+/// @brief Bindings for `slam_it_all.foundations.epipolar`
+/// (`slam_it_all._cpp.foundations.epipolar`).
+#include "slam_it_all/foundations/epipolar.hpp"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -12,7 +13,7 @@
 
 namespace nb = nanobind;
 
-namespace slamlab::bindings {
+namespace slam_it_all::bindings {
 
 namespace {
 
@@ -152,4 +153,4 @@ void bind_epipolar(nb::module_& m) {
         "Run LO-MSAC with the normalised 8-point F solver.");
 }
 
-}  // namespace slamlab::bindings
+}  // namespace slam_it_all::bindings

@@ -1,10 +1,10 @@
 /// @file
-/// @brief Bindings for `slamlab.edge.tracking` (`slamlab._cpp.edge.tracking`).
+/// @brief Bindings for `slam_it_all.edge.tracking` (`slam_it_all._cpp.edge.tracking`).
 ///
 /// A tracked frame crosses as a dict of `pose` and `points` (or None where the stage may
 /// fail); `InView` and `LocalTracking` as dicts of their fields, the latter's tracked frame
 /// flattened into `pose` and `points`. The mode crosses by name.
-#include "slamlab/edge/tracking.hpp"
+#include "slam_it_all/edge/tracking.hpp"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/string.h>
@@ -17,7 +17,7 @@
 
 namespace nb = nanobind;
 
-namespace slamlab::bindings {
+namespace slam_it_all::bindings {
 
 namespace {
 
@@ -139,4 +139,4 @@ void bind_tracking(nb::module_& m) {
         "Place a frame against the local map by descriptors and PnP RANSAC.");
 }
 
-}  // namespace slamlab::bindings
+}  // namespace slam_it_all::bindings

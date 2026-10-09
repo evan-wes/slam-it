@@ -1,6 +1,6 @@
 /// @file
-/// @brief Implementation of the PNG reading declared in slamlab/eval/png.hpp, on stb_image.
-#include "slamlab/eval/png.hpp"
+/// @brief Implementation of the PNG reading declared in slam_it_all/eval/png.hpp, on stb_image.
+#include "slam_it_all/eval/png.hpp"
 
 #include <cstddef>
 #include <fstream>
@@ -19,7 +19,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
-namespace slamlab::eval::png {
+namespace slam_it_all::eval::png {
 
 namespace {
 
@@ -207,4 +207,4 @@ Result<DepthImage> read_depth(const std::string& path) {
                     .values = std::vector<std::uint16_t>(decoded.begin(), decoded.end())};
 }
 
-}  // namespace slamlab::eval::png
+}  // namespace slam_it_all::eval::png

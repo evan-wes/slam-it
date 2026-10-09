@@ -1,15 +1,15 @@
 /// @file
-/// @brief Implementation of the settings declared in slamlab/edge/options.hpp.
-#include "slamlab/edge/options.hpp"
+/// @brief Implementation of the settings declared in slam_it_all/edge/options.hpp.
+#include "slam_it_all/edge/options.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <utility>
 
-#include "slamlab/foundations/matching.hpp"
+#include "slam_it_all/foundations/matching.hpp"
 
-namespace slamlab::edge {
+namespace slam_it_all::edge {
 
 namespace {
 
@@ -170,4 +170,4 @@ foundations::Result<void> check_options(const Options& options) {
   return {};
 }
 
-}  // namespace slamlab::edge
+}  // namespace slam_it_all::edge

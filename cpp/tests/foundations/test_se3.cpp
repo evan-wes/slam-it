@@ -1,21 +1,21 @@
 /// @file
-/// @brief Native tests for slamlab::foundations::se3 and ::alignment, runnable without Python.
+/// @brief Native tests for slam_it_all::foundations::se3 and ::alignment, runnable without Python.
 ///
 /// The parity fixtures are the main check of every value; these cover what the standalone
 /// core must get right alone: round trips, inverses, the Jacobian inverse, Umeyama recovery,
 /// and the error paths.
 #include <Eigen/Dense>
 
-#include "slamlab/foundations/alignment.hpp"
-#include "slamlab/foundations/se3.hpp"
+#include "slam_it_all/foundations/alignment.hpp"
+#include "slam_it_all/foundations/se3.hpp"
 #include "test_support.hpp"
 
 namespace {
 
-using slamlab::testing::expect;
-namespace se3 = slamlab::foundations::se3;
-namespace alignment = slamlab::foundations::alignment;
-using slamlab::foundations::ErrorKind;
+using slam_it_all::testing::expect;
+namespace se3 = slam_it_all::foundations::se3;
+namespace alignment = slam_it_all::foundations::alignment;
+using slam_it_all::foundations::ErrorKind;
 
 }  // namespace
 
@@ -67,5 +67,5 @@ int main() {
              ErrorKind::kDegenerate,
          "umeyama reports collinear points as degenerate", failures);
 
-  return slamlab::testing::finish("foundations/se3", failures);
+  return slam_it_all::testing::finish("foundations/se3", failures);
 }

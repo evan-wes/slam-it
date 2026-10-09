@@ -9,12 +9,12 @@ from typing import Any
 import numpy as np
 import pytest
 
-from slamlab import backends
-from slamlab.edge import map as maps
-from slamlab.edge.frames import Frame
-from slamlab.edge.map import Map
-from slamlab.foundations.errors import InvalidInputError
-from slamlab.foundations.orb import DESCRIPTOR_BYTES
+from slam_it_all import backends
+from slam_it_all.edge import map as maps
+from slam_it_all.edge.frames import Frame
+from slam_it_all.edge.map import Map
+from slam_it_all.foundations.errors import InvalidInputError
+from slam_it_all.foundations.orb import DESCRIPTOR_BYTES
 from tests.conftest import protocol_members, require_function
 from tests.edge.conftest import Truth, _observe
 from tests.edge.support import assert_maps_match

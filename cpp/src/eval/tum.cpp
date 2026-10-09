@@ -1,6 +1,6 @@
 /// @file
-/// @brief Implementation of the TUM-format reader declared in slamlab/eval/tum.hpp.
-#include "slamlab/eval/tum.hpp"
+/// @brief Implementation of the TUM-format reader declared in slam_it_all/eval/tum.hpp.
+#include "slam_it_all/eval/tum.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -9,11 +9,11 @@
 #include <map>
 #include <utility>
 
-#include "slamlab/eval/png.hpp"
-#include "slamlab/eval/text.hpp"
-#include "slamlab/foundations/image.hpp"
+#include "slam_it_all/eval/png.hpp"
+#include "slam_it_all/eval/text.hpp"
+#include "slam_it_all/foundations/image.hpp"
 
-namespace slamlab::eval::tum {
+namespace slam_it_all::eval::tum {
 
 namespace {
 
@@ -81,7 +81,7 @@ Result<Stamped> stamped(const std::string& path) {
 }
 
 /// @brief The index of the nearest of ascending times to a stamp (ties: the earlier),
-///        `slamlab.eval.timestamps.nearest`.
+///        `slam_it_all.eval.timestamps.nearest`.
 /// @param times The times, ascending, not empty.
 /// @param stamp The stamp.
 /// @return The index.
@@ -152,7 +152,7 @@ foundations::Error not_a_number(const std::string& path, const std::string& key,
                             .message = path + ": expected numbers (" + key + ": '" + value + "')"};
 }
 
-/// @brief Read a `camera.txt` (`slamlab.eval.tum._camera_file`).
+/// @brief Read a `camera.txt` (`slam_it_all.eval.tum._camera_file`).
 /// @param path The file.
 /// @return The camera; `InvalidInput` for a malformed one.
 Result<Camera> camera_file(const std::string& path) {
@@ -295,4 +295,4 @@ Result<Depth> read_depth(const std::string& path, double depth_scale) {
   return out;
 }
 
-}  // namespace slamlab::eval::tum
+}  // namespace slam_it_all::eval::tum

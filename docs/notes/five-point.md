@@ -1,9 +1,9 @@
 # The 5-point solver and the Sampson refinement
 
-Design note for `slamlab.foundations.fivepoint` and the E-RANSAC options and refinement in
-`slamlab.foundations.epipolar` (the Python references), and `slamlab/foundations/fivepoint.hpp`
-and `epipolar.hpp` (the C++ core). The two-view note covers the 8-point algorithm, E-RANSAC's
-loop and the initialiser that uses them.
+Design note for `slam_it_all.foundations.fivepoint` and the E-RANSAC options and refinement in
+`slam_it_all.foundations.epipolar` (the Python references), and
+`slam_it_all/foundations/fivepoint.hpp` and `epipolar.hpp` (the C++ core). The two-view note covers
+the 8-point algorithm, E-RANSAC's loop and the initialiser that uses them.
 
 ## The problem
 

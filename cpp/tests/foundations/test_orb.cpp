@@ -1,5 +1,5 @@
 /// @file
-/// @brief Native tests for the ORB extractor (slamlab/foundations/orb.hpp), against the parity
+/// @brief Native tests for the ORB extractor (slam_it_all/foundations/orb.hpp), against the parity
 ///        fixture `tests/fixtures/foundations/orb.json` that the Python and Rust tests share,
 ///        and the core's own input checks.
 #include <array>
@@ -9,17 +9,17 @@
 
 #include "fixture_support.hpp"
 #include "image_support.hpp"
-#include "slamlab/foundations/image.hpp"
-#include "slamlab/foundations/orb.hpp"
+#include "slam_it_all/foundations/image.hpp"
+#include "slam_it_all/foundations/orb.hpp"
 #include "test_support.hpp"
 
 namespace {
 
-namespace image = slamlab::foundations::image;
-namespace orb = slamlab::foundations::orb;
-using slamlab::testing::expect;
-using slamlab::testing::is_invalid_input;
-using slamlab::testing::read_image;
+namespace image = slam_it_all::foundations::image;
+namespace orb = slam_it_all::foundations::orb;
+using slam_it_all::testing::expect;
+using slam_it_all::testing::is_invalid_input;
+using slam_it_all::testing::read_image;
 
 /// @brief Whether detected keypoints equal the fixture's, field by field.
 /// @param got The keypoints.
@@ -57,9 +57,9 @@ orb::Options read_options(const nlohmann::json& settings) {
 /// @param failures Running failure count.
 void check_fixture(int& failures) {
   const nlohmann::json functions =
-      slamlab::testing::load_fixture("foundations/orb.json")["functions"];
+      slam_it_all::testing::load_fixture("foundations/orb.json")["functions"];
   for (const auto& c : functions["fast_scores"]["cases"]) {
-    const auto expected = slamlab::testing::flatten_rows<std::int64_t>(c["expected"]);
+    const auto expected = slam_it_all::testing::flatten_rows<std::int64_t>(c["expected"]);
     const auto got = orb::fast_scores(read_image(c["input"][0]));
     expect(got.has_value() && *got == expected, "fast_scores matches the fixture", failures);
   }
@@ -146,9 +146,9 @@ int run() {
   int failures = 0;
   check_fixture(failures);
   check_rejections(failures);
-  return slamlab::testing::finish("foundations/orb", failures);
+  return slam_it_all::testing::finish("foundations/orb", failures);
 }
 
 }  // namespace
 
-int main() { return slamlab::testing::guarded("foundations/orb", run); }
+int main() { return slam_it_all::testing::guarded("foundations/orb", run); }

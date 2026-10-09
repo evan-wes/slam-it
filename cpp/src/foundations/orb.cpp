@@ -1,6 +1,6 @@
 /// @file
-/// @brief Implementation of the ORB detector declared in slamlab/foundations/orb.hpp.
-#include "slamlab/foundations/orb.hpp"
+/// @brief Implementation of the ORB detector declared in slam_it_all/foundations/orb.hpp.
+#include "slam_it_all/foundations/orb.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -12,7 +12,7 @@
 #include <string>
 #include <utility>
 
-namespace slamlab::foundations::orb {
+namespace slam_it_all::foundations::orb {
 
 namespace {
 
@@ -707,4 +707,4 @@ Result<Features> extract_levels(std::span<const image::Image> levels, const Opti
   return extract_checked(levels, options);
 }
 
-}  // namespace slamlab::foundations::orb
+}  // namespace slam_it_all::foundations::orb

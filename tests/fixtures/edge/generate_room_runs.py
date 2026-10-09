@@ -25,8 +25,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from slamlab.eval import runs
-from slamlab.orchestration import vo
+from slam_it_all.eval import runs
+from slam_it_all.orchestration import vo
 from tests.edge import room
 from tests.edge.support import FRAMES, OPTIONS, SOLVER_TOLERANCE
 from tests.fixtures.foundations._layout import dumps
@@ -40,7 +40,7 @@ def record(run: runs.Run) -> dict[str, Any]:
 
     Parameters
     ----------
-    run : slamlab.eval.runs.Run
+    run : slam_it_all.eval.runs.Run
         The run.
 
     Returns

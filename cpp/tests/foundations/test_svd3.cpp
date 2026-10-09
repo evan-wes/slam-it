@@ -27,7 +27,7 @@
 
 namespace {
 
-using slamlab::testing::expect;
+using slam_it_all::testing::expect;
 
 /// @brief A deterministic generator for the matrices: an LCG, uniform in [-1, 1).
 class Draws {
@@ -185,7 +185,7 @@ int regenerate() {
 /// @return The exit code.
 int run() {
   int failures = 0;
-  const nlohmann::json fixture = slamlab::testing::load_fixture("foundations/svd3.json");
+  const nlohmann::json fixture = slam_it_all::testing::load_fixture("foundations/svd3.json");
   expect(fixture["cases"].size() == matrices().size(), "the fixture holds every case", failures);
   for (const auto& entry : fixture["cases"]) {
     const Eigen::Matrix3d m = from_rows(entry["matrix"].get<std::vector<double>>());
@@ -198,7 +198,7 @@ int run() {
         entry["name"].get<std::string>() + ": Eigen's factors are the fixture's";
     expect(same, message.c_str(), failures);
   }
-  return slamlab::testing::finish("foundations/svd3", failures);
+  return slam_it_all::testing::finish("foundations/svd3", failures);
 }
 
 }  // namespace
@@ -206,7 +206,7 @@ int run() {
 int main(int argc, char** argv) {
   const std::span<char*> arguments(argv, static_cast<std::size_t>(argc));
   if (arguments.size() == 2 && std::string_view(arguments[1]) == "--regenerate") {
-    return slamlab::testing::guarded("foundations/svd3 --regenerate", regenerate);
+    return slam_it_all::testing::guarded("foundations/svd3 --regenerate", regenerate);
   }
-  return slamlab::testing::guarded("foundations/svd3", run);
+  return slam_it_all::testing::guarded("foundations/svd3", run);
 }

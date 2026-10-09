@@ -4,7 +4,7 @@ Run from the repository root after changing the run (the fixtures are committed)
 
     python -m tests.fixtures.eval.generate_run
 
-Python's :func:`slamlab.eval.runs.write_run` writes the folder from the values in
+Python's :func:`slam_it_all.eval.runs.write_run` writes the folder from the values in
 ``run_values.json`` (``backend`` aside: each writer names its own). The C++ and Rust run
 writers write the same values and are held to the folder: the ``.npy`` files byte for byte,
 ``run.json``, ``trajectory.txt`` and ``diagnostics.jsonl`` value for value (their text may
@@ -19,8 +19,8 @@ from typing import Any
 
 import numpy as np
 
-from slamlab.eval import runs
-from slamlab.foundations import so3
+from slam_it_all.eval import runs
+from slam_it_all.foundations import so3
 
 HERE = Path(__file__).parent
 FOLDER = HERE / "run"

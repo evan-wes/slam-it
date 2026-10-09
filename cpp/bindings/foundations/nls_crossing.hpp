@@ -14,9 +14,9 @@
 #include <vector>
 
 #include "common.hpp"
-#include "slamlab/foundations/nls.hpp"
+#include "slam_it_all/foundations/nls.hpp"
 
-namespace slamlab::bindings {
+namespace slam_it_all::bindings {
 
 /// @brief The columns of a returned trace row.
 inline constexpr std::size_t kTraceColumns = 7;
@@ -73,4 +73,4 @@ inline nanobind::dict nls_summary(const foundations::nls::Summary& summary) {
   return out;
 }
 
-}  // namespace slamlab::bindings
+}  // namespace slam_it_all::bindings

@@ -1,5 +1,5 @@
 /// @file
-/// @brief Native tests for slamlab::foundations::ba, runnable without Python.
+/// @brief Native tests for slam_it_all::foundations::ba, runnable without Python.
 #include <Eigen/Dense>
 #include <cmath>
 #include <cstddef>
@@ -7,18 +7,18 @@
 #include <limits>
 #include <tuple>
 
-#include "slamlab/foundations/ba.hpp"
-#include "slamlab/foundations/camera.hpp"
-#include "slamlab/foundations/se3.hpp"
+#include "slam_it_all/foundations/ba.hpp"
+#include "slam_it_all/foundations/camera.hpp"
+#include "slam_it_all/foundations/se3.hpp"
 #include "test_support.hpp"
 
 namespace {
 
-namespace ba = slamlab::foundations::ba;
-namespace camera = slamlab::foundations::camera;
-namespace se3 = slamlab::foundations::se3;
-using slamlab::foundations::ErrorKind;
-using slamlab::testing::expect;
+namespace ba = slam_it_all::foundations::ba;
+namespace camera = slam_it_all::foundations::camera;
+namespace se3 = slam_it_all::foundations::se3;
+using slam_it_all::foundations::ErrorKind;
+using slam_it_all::testing::expect;
 
 constexpr int kCameras = 4;
 constexpr int kPoints = 30;
@@ -195,5 +195,5 @@ int main() {
   }
   expect(scaled_ok, "solve: deviations scale by the root of the variance factor", failures);
 
-  return slamlab::testing::finish("test_ba", failures);
+  return slam_it_all::testing::finish("test_ba", failures);
 }

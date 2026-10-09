@@ -9,9 +9,9 @@
 #include <numeric>
 #include <utility>
 
-#include "slamlab/foundations/so3.hpp"
+#include "slam_it_all/foundations/so3.hpp"
 
-namespace slamlab::foundations::ba::detail {
+namespace slam_it_all::foundations::ba::detail {
 
 namespace {
 
@@ -284,4 +284,4 @@ std::vector<Eigen::MatrixXd> confinement(const Anchors& anchors, const Positions
   return bases;
 }
 
-}  // namespace slamlab::foundations::ba::detail
+}  // namespace slam_it_all::foundations::ba::detail

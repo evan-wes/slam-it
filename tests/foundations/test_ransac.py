@@ -9,8 +9,8 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from slamlab.foundations import nls, ransac, solve
-from slamlab.foundations.errors import DegenerateError, InvalidInputError
+from slam_it_all.foundations import nls, ransac, solve
+from slam_it_all.foundations.errors import DegenerateError, InvalidInputError
 
 Line = NDArray[np.float64]
 """A line ``a x + b y + c = 0`` as ``(a, b, c)`` with ``a² + b² = 1``."""

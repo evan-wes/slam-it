@@ -1,11 +1,11 @@
 /// @file
 /// @brief Shared by the edge rung's bindings: the map and a frame cross as dicts of arrays.
 ///
-/// A map is a dict of `slamlab.edge.map.Map`'s fields; a frame is the dict
-/// `slamlab.edge.frames.Frame.as_dict` builds; the camera and the settings are the dicts of scalars
-/// `Camera.as_dict` and `Options.as_dict` give. Arrays are C-contiguous, of the dtype and shape the
-/// Python dataclasses hold; a malformed dict raises `std::invalid_argument` (a `ValueError`),
-/// and the map is then checked by the core (`check_map`, an `InvalidInputError`).
+/// A map is a dict of `slam_it_all.edge.map.Map`'s fields; a frame is the dict
+/// `slam_it_all.edge.frames.Frame.as_dict` builds; the camera and the settings are the dicts of
+/// scalars `Camera.as_dict` and `Options.as_dict` give. Arrays are C-contiguous, of the dtype and
+/// shape the Python dataclasses hold; a malformed dict raises `std::invalid_argument` (a
+/// `ValueError`), and the map is then checked by the core (`check_map`, an `InvalidInputError`).
 #pragma once
 
 #include <nanobind/nanobind.h>
@@ -24,13 +24,13 @@
 #include <vector>
 
 #include "common.hpp"
-#include "slamlab/edge/frames.hpp"
-#include "slamlab/edge/initialization.hpp"
-#include "slamlab/edge/map.hpp"
-#include "slamlab/edge/options.hpp"
-#include "slamlab/foundations/matching.hpp"
+#include "slam_it_all/edge/frames.hpp"
+#include "slam_it_all/edge/initialization.hpp"
+#include "slam_it_all/edge/map.hpp"
+#include "slam_it_all/edge/options.hpp"
+#include "slam_it_all/foundations/matching.hpp"
 
-namespace slamlab::bindings::edge_crossing {
+namespace slam_it_all::bindings::edge_crossing {
 
 /// @brief A read-only, contiguous array of the given element type and shape.
 /// @tparam T The element type.
@@ -412,7 +412,7 @@ inline nanobind::object maybe_tracked(const std::optional<edge::Tracked>& tracke
   return tracked ? nanobind::object(tracked_dict(*tracked)) : nanobind::none();
 }
 
-/// @brief Read a mode by its name (`slamlab.edge.options.MODES`).
+/// @brief Read a mode by its name (`slam_it_all.edge.options.MODES`).
 /// @param name The name.
 /// @return The mode.
 /// @throws std::invalid_argument for an unknown name.
@@ -432,4 +432,4 @@ inline nanobind::object started_dict(const std::optional<edge::Started>& started
   return out;
 }
 
-}  // namespace slamlab::bindings::edge_crossing
+}  // namespace slam_it_all::bindings::edge_crossing

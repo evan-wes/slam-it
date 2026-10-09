@@ -8,9 +8,9 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from slamlab.eval import euroc
-from slamlab.foundations import se3, so3
-from slamlab.foundations.errors import InvalidInputError
+from slam_it_all.eval import euroc
+from slam_it_all.foundations import se3, so3
+from slam_it_all.foundations.errors import InvalidInputError
 
 # EuRoC's cam0 and cam1 sensor.yaml, as published.
 CAM0 = """%YAML:1.0

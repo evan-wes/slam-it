@@ -17,13 +17,13 @@
 #include <string>
 #include <vector>
 
-namespace slamlab::testing {
+namespace slam_it_all::testing {
 
 /// @brief A path under `tests/fixtures/`.
 /// @param relative The path under it, e.g. `"eval/sequences/euroc"`.
 /// @return The full path.
 inline std::string fixture_path(const std::string& relative) {
-  return std::string(SLAMLAB_FIXTURES_DIR) + "/" + relative;
+  return std::string(SLAM_IT_ALL_FIXTURES_DIR) + "/" + relative;
 }
 
 /// @brief A scratch folder under the temp directory, named for this process so concurrent
@@ -94,4 +94,4 @@ int guarded(const char* name, Body&& body) noexcept {
   }
 }
 
-}  // namespace slamlab::testing
+}  // namespace slam_it_all::testing

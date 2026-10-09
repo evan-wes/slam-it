@@ -1,6 +1,6 @@
 /// @file
 /// @brief Shared by every binding that returns or takes ORB features (`orb`, `stereo`): they
-///        cross as a dict of `slamlab.foundations.orb.Keypoints`' fields, one array each, with
+///        cross as a dict of `slam_it_all.foundations.orb.Keypoints`' fields, one array each, with
 ///        `descriptors`, `scale_factor` and `levels` for features.
 #pragma once
 
@@ -15,9 +15,9 @@
 #include <vector>
 
 #include "common.hpp"
-#include "slamlab/foundations/orb.hpp"
+#include "slam_it_all/foundations/orb.hpp"
 
-namespace slamlab::bindings {
+namespace slam_it_all::bindings {
 
 /// @brief A read-only, contiguous array of the given element type and shape.
 /// @tparam T The element type.
@@ -112,4 +112,4 @@ inline foundations::orb::Features features_in(const nanobind::dict& features) {
   return out;
 }
 
-}  // namespace slamlab::bindings
+}  // namespace slam_it_all::bindings

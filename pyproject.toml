@@ -3,24 +3,24 @@ requires = ["scikit-build-core>=0.10", "nanobind>=2.0"]
 build-backend = "scikit_build_core.build"
 
 [project]
-name = "slamlab"
+name = "slam-it-all"
 # Canonical version lives in the VERSION file; scikit-build-core reads it at build time.
 dynamic = ["version"]
-description = "A learning ladder for visual SLAM, in Python, C++ and Rust (working name)."
+description = "A learning ladder for visual SLAM, in Python, C++ and Rust."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "PolyForm-Noncommercial-1.0.0"
 license-files = ["LICENSE"]
 authors = [{ name = "evan-wes" }]
-# Pillow reads image files, in slamlab.eval.images alone (a contract below keeps it there).
+# Pillow reads image files, in slam_it_all.eval.images alone (a contract below keeps it there).
 dependencies = ["numpy>=1.26", "pillow>=10.0"]
 
 [project.optional-dependencies]
-# COLMAP's Ceres bundle adjuster, for slamlab.eval.colmap_reference (the only importer).
-# The development setup installs it too (scripts/setup_slamlab.sh): it is the reference the
+# COLMAP's Ceres bundle adjuster, for slam_it_all.eval.colmap_reference (the only importer).
+# The development setup installs it too (scripts/setup_slam_it_all.sh): it is the reference the
 # BA tests and demos compare against.
 colmap = ["pycolmap>=4.2"]
-# The development and layer-1 toolchain's pip layer: the single list scripts/setup_slamlab.sh
+# The development and layer-1 toolchain's pip layer: the single list scripts/setup_slam_it_all.sh
 # installs from when not using the lockfile (the conda layer -- compilers, clang tools,
 # doxygen, Node.js/jscpd -- is in that script).
 dev = [
@@ -32,7 +32,7 @@ dev = [
   "mypy>=1.10",
   "import-linter>=2.0",
   # Test-only oracles: SciPy (rotations, least squares) and mpmath (high-precision values
-  # for the parity fixtures). manifpy comes from conda-forge (setup_slamlab.sh).
+  # for the parity fixtures). manifpy comes from conda-forge (setup_slam_it_all.sh).
   "scipy>=1.13",
   "mpmath>=1.3",
   # Test-only oracle for the 5-point solvers and the Sampson refinement (a contract forbids
@@ -41,18 +41,18 @@ dev = [
   # Visualisation for the demos (never imported by the library).
   "rerun-sdk>=0.38",
   # Test-only oracle for the front end's image operations, and the reference the demos
-  # compare against (never imported by the library; a contract forbids cv2 in slamlab).
+  # compare against (never imported by the library; a contract forbids cv2 in slam_it_all).
   "opencv-python-headless>=5.0",
 ]
 
 [tool.scikit-build]
 minimum-version = "build-system.requires"
 cmake.build-type = "Release"
-wheel.packages = ["src/slamlab"]
+wheel.packages = ["src/slam_it_all"]
 # Editable installs rebuild the C++ extension on import when its sources change
 # (needs `pip install --no-build-isolation -e .`).
 editable.rebuild = true
-# scripts/setup_slamlab.sh sets a per-env build dir (build/<env name>); this is the default
+# scripts/setup_slam_it_all.sh sets a per-env build dir (build/<env name>); this is the default
 # for other builds (CI, plain pip installs).
 build-dir = "build/{wheel_tag}"
 
@@ -70,7 +70,7 @@ addopts = "--doctest-modules --strict-markers"
 # opt-in script with the first PyTorch rung.
 markers = [
   "gpu: needs a CUDA GPU (learned and dense rungs)",
-  "budget: runs under a simulated compute budget (slamlab.eval.budgets)",
+  "budget: runs under a simulated compute budget (slam_it_all.eval.budgets)",
   "slow: takes more than a few seconds",
 ]
 
@@ -99,10 +99,10 @@ convention = "numpy"
 [tool.mypy]
 strict = true
 python_version = "3.11"
-files = ["src/slamlab", "tests", "scripts"]
-# The compiled extensions are never imported by name: slamlab.backends locates them
+files = ["src/slam_it_all", "tests", "scripts"]
+# The compiled extensions are never imported by name: slam_it_all.backends locates them
 # dynamically, and each algorithm types its backend through a Protocol (e.g.
-# slamlab.foundations.so3.Implementation) that tests check the extensions against.
+# slam_it_all.foundations.so3.Implementation) that tests check the extensions against.
 
 [[tool.mypy.overrides]]
 # Test-only oracles that ship without type information.
@@ -110,7 +110,7 @@ module = ["mpmath", "manifpy", "scipy.*"]
 ignore_missing_imports = true
 
 [tool.importlinter]
-root_packages = ["slamlab"]
+root_packages = ["slam_it_all"]
 include_external_packages = true
 
 # The ladder as dependency layers, top to bottom. Siblings joined by `|` are independent:
@@ -120,7 +120,7 @@ include_external_packages = true
 [[tool.importlinter.contracts]]
 name = "The ladder's layers (and independent sibling branches)"
 type = "layers"
-containers = ["slamlab"]
+containers = ["slam_it_all"]
 exhaustive = true
 layers = [
   "orchestration",
@@ -138,7 +138,7 @@ layers = [
 [[tool.importlinter.contracts]]
 name = "Rung 0's internal order"
 type = "layers"
-containers = ["slamlab.foundations"]
+containers = ["slam_it_all.foundations"]
 layers = [
   "(ba) | (twoview)",
   "(epipolar) | (homography) | (pnp) | (stereo)",
@@ -157,7 +157,7 @@ layers = [
 [[tool.importlinter.contracts]]
 name = "Bundle adjustment's internal order"
 type = "layers"
-containers = ["slamlab.foundations.ba"]
+containers = ["slam_it_all.foundations.ba"]
 layers = [
   "solve",
   "bundle",
@@ -172,7 +172,7 @@ layers = [
 [[tool.importlinter.contracts]]
 name = "The edge rung's internal order"
 type = "layers"
-containers = ["slamlab.edge"]
+containers = ["slam_it_all.edge"]
 layers = [
   "(pipeline)",
   "(initialization) | (tracking) | (mapping)",
@@ -183,22 +183,22 @@ layers = [
   "options",
 ]
 
-# OpenCV serves the demos as an external reference only: slamlab never wraps it (a stated
+# OpenCV serves the demos as an external reference only: slam_it_all never wraps it (a stated
 # non-goal), and the edge rungs need a light dependency set.
 [[tool.importlinter.contracts]]
-name = "slamlab never imports OpenCV"
+name = "slam_it_all never imports OpenCV"
 type = "forbidden"
-source_modules = ["slamlab"]
+source_modules = ["slam_it_all"]
 forbidden_modules = ["cv2"]
 
 # The library's runtime is numpy alone (the dependencies above), so none of these may enter
-# it; and they are the test oracles, which check slamlab against independent implementations,
+# it; and they are the test oracles, which check slam_it_all against independent implementations,
 # so the library using one would make that check circular (PoseLib implements the same
 # solvers). A rung that needs one of them at run time changes the dependencies first.
 [[tool.importlinter.contracts]]
-name = "slamlab never imports its test oracles"
+name = "slam_it_all never imports its test oracles"
 type = "forbidden"
-source_modules = ["slamlab"]
+source_modules = ["slam_it_all"]
 forbidden_modules = ["poselib", "mpmath", "manifpy", "scipy"]
 
 # The order of modules inside eval: the timestamp helpers and the image reader at the bottom,
@@ -208,7 +208,7 @@ forbidden_modules = ["poselib", "mpmath", "manifpy", "scipy"]
 [[tool.importlinter.contracts]]
 name = "Eval's internal order"
 type = "layers"
-containers = ["slamlab.eval"]
+containers = ["slam_it_all.eval"]
 layers = [
   "(budgets)",
   "(runs) | (colmap_reference)",
@@ -216,52 +216,54 @@ layers = [
   "(timestamps) | (images)",
 ]
 
-# Pillow reads image files in slamlab.eval.images alone: the cores decode PNGs natively, and
+# Pillow reads image files in slam_it_all.eval.images alone: the cores decode PNGs natively, and
 # the algorithms take arrays, never files.
 [[tool.importlinter.contracts]]
 name = "Only eval.images may import Pillow"
 type = "forbidden"
-# An allow-list, as for pycolmap below: all of slamlab is forbidden, the one reader excepted.
-source_modules = ["slamlab"]
+# An allow-list, as for pycolmap below: all of slam_it_all is forbidden, the one reader excepted.
+source_modules = ["slam_it_all"]
 forbidden_modules = ["PIL"]
-ignore_imports = ["slamlab.eval.images -> PIL"]
+ignore_imports = ["slam_it_all.eval.images -> PIL"]
 
-# pycolmap is an optional reference, imported by slamlab.eval alone.
+# pycolmap is an optional reference, imported by slam_it_all.eval alone.
 [[tool.importlinter.contracts]]
 name = "Only eval may import pycolmap"
 type = "forbidden"
-# An allow-list: all of slamlab is forbidden, the one reference module excepted, so a new
+# An allow-list: all of slam_it_all is forbidden, the one reference module excepted, so a new
 # package is covered without being listed.
-source_modules = ["slamlab"]
+source_modules = ["slam_it_all"]
 forbidden_modules = ["pycolmap"]
-ignore_imports = ["slamlab.eval.colmap_reference -> pycolmap"]
+ignore_imports = ["slam_it_all.eval.colmap_reference -> pycolmap"]
 
 # The ignored import above hides every chain through colmap_reference, so a pipeline that
 # imported it would pass. Pipelines must not depend on the optional reference.
 [[tool.importlinter.contracts]]
 name = "Pipelines never reach the COLMAP reference"
 type = "forbidden"
-source_modules = ["slamlab.orchestration"]
-forbidden_modules = ["slamlab.eval.colmap_reference"]
+source_modules = ["slam_it_all.orchestration"]
+forbidden_modules = ["slam_it_all.eval.colmap_reference"]
 
 [[tool.importlinter.contracts]]
 name = "Visual-inertial builds on the edge rung only, not dense or classic"
 type = "forbidden"
-source_modules = ["slamlab.vi"]
-forbidden_modules = ["slamlab.dense", "slamlab.classic"]
+source_modules = ["slam_it_all.vi"]
+forbidden_modules = ["slam_it_all.dense", "slam_it_all.classic"]
 
 [[tool.importlinter.contracts]]
 name = "Learned builds on dense only, not edge or classic"
 type = "forbidden"
-source_modules = ["slamlab.learned"]
-forbidden_modules = ["slamlab.edge", "slamlab.classic"]
+source_modules = ["slam_it_all.learned"]
+forbidden_modules = ["slam_it_all.edge", "slam_it_all.classic"]
 
 # import-linter sees external packages as leaves, so a library that imports torch internally
 # is banned by name. torch itself only ever goes in an optional extra, never `dependencies`.
 [[tool.importlinter.contracts]]
 name = "CPU rungs never import PyTorch or a GPU stack (edge compute budgets)"
 type = "forbidden"
-source_modules = ["slamlab.foundations", "slamlab.edge", "slamlab.vi", "slamlab.backends"]
+source_modules = [
+  "slam_it_all.foundations", "slam_it_all.edge", "slam_it_all.vi", "slam_it_all.backends",
+]
 forbidden_modules = [
   "torch", "torchvision", "cupy", "jax",
   "lietorch", "pypose", "kornia", "theseus",
@@ -271,13 +273,13 @@ forbidden_modules = [
 name = "Depth models are inputs through a provider interface, never imported by algorithms"
 type = "forbidden"
 source_modules = [
-  "slamlab.foundations", "slamlab.edge", "slamlab.vi", "slamlab.classic",
-  "slamlab.dense", "slamlab.learned",
+  "slam_it_all.foundations", "slam_it_all.edge", "slam_it_all.vi", "slam_it_all.classic",
+  "slam_it_all.dense", "slam_it_all.learned",
 ]
 forbidden_modules = ["unidepth", "moge", "vggt"]
 
 [[tool.importlinter.contracts]]
-name = "slamlab never imports reifyscene (the dependency runs one way)"
+name = "slam_it_all never imports reifyscene (the dependency runs one way)"
 type = "forbidden"
-source_modules = ["slamlab"]
+source_modules = ["slam_it_all"]
 forbidden_modules = ["reifyscene"]

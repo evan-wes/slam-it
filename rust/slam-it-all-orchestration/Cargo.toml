@@ -1,0 +1,22 @@
+[package]
+name = "slam-it-all-orchestration"
+version = "0.1.0"
+description = "SLAM It All!'s native programs in Rust: a whole sequence through a rung's pipeline."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nalgebra.workspace = true
+slam-it-all-edge = { path = "../slam-it-all-edge" }
+slam-it-all-eval = { path = "../slam-it-all-eval" }
+slam-it-all-foundations = { path = "../slam-it-all-foundations" }
+
+# The program slam_it_all.orchestration.vo runs for the rust backend, found by slam_it_all.backends
+# in rust/target/release/ (built by scripts/setup_slam_it_all.sh and scripts/check.sh).
+[[bin]]
+name = "slam_it_all_vo"
+path = "src/main.rs"
+
+[lints]
+workspace = true

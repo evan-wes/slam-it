@@ -1,6 +1,6 @@
 /// @file
-/// @brief Bindings for `slamlab.foundations.twoview` (`slamlab._cpp.foundations.twoview`).
-#include "slamlab/foundations/twoview.hpp"
+/// @brief Bindings for `slam_it_all.foundations.twoview` (`slam_it_all._cpp.foundations.twoview`).
+#include "slam_it_all/foundations/twoview.hpp"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -18,7 +18,7 @@
 
 namespace nb = nanobind;
 
-namespace slamlab::bindings {
+namespace slam_it_all::bindings {
 
 namespace {
 
@@ -129,4 +129,4 @@ void bind_twoview(nb::module_& m) {
         "Initialise two views from (N, 3) bearing pairs.");
 }
 
-}  // namespace slamlab::bindings
+}  // namespace slam_it_all::bindings

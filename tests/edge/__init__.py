@@ -1,1 +1,1 @@
-"""Tests of the edge rung (slamlab.edge)."""
+"""Tests of the edge rung (slam_it_all.edge)."""

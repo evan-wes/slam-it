@@ -1,7 +1,7 @@
 # Camera models
 
-Design note for `slamlab.foundations.camera` (Python reference) and
-`slamlab::foundations::camera` (C++ core).
+Design note for `slam_it_all.foundations.camera` (Python reference) and
+`slam_it_all::foundations::camera` (C++ core).
 
 ## The problem
 

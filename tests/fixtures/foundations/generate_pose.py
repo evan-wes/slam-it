@@ -4,7 +4,7 @@ Run from the repository root after changing the cases (the fixtures are committe
 
     python -m tests.fixtures.foundations.generate_pose
 
-Independent methods, nothing imported from slamlab: each case is an exact sample built in 50
+Independent methods, nothing imported from slam_it_all: each case is an exact sample built in 50
 digits (mpmath) from a chosen pose ``T_cam_world``. The world points are chosen in float64,
 mapped into the camera in 50 digits, and their bearings rounded once; the expected pose is the
 chosen one, which the solvers must return among their solutions:
@@ -33,7 +33,7 @@ from tests.fixtures.foundations import _mp_oracle as o
 HERE = Path(__file__).parent
 
 P3P_SOLVERS = ("ding", "lambda_twist")
-"""The P3P solvers the fixture covers (slamlab.foundations.p3p.SOLVERS)."""
+"""The P3P solvers the fixture covers (slam_it_all.foundations.p3p.SOLVERS)."""
 
 
 OUTSIDE_POINTS = [
@@ -90,7 +90,7 @@ def _weighted_minimum(
     """Return the pose and cost at the minimum of the weighted Cauchy reprojection cost.
 
     ``½ Σ ρ(wᵢ |rᵢ|²)``, ``ρ(s) = c² log(1 + s / c²)``, ``rᵢ`` the normalised-plane error, as
-    ``slamlab.foundations.pnp.refine_pose`` defines it; found by iteratively reweighted
+    ``slam_it_all.foundations.pnp.refine_pose`` defines it; found by iteratively reweighted
     Gauss-Newton on ``T exp(δ)`` in 50 digits until the step vanishes. The minimum does not
     depend on the retraction, so ``t`` moves by ``R ρ``.
     """

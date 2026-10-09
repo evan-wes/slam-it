@@ -1,13 +1,13 @@
 /// @file
-/// @brief Implementation of the frames declared in slamlab/edge/frames.hpp.
-#include "slamlab/edge/frames.hpp"
+/// @brief Implementation of the frames declared in slam_it_all/edge/frames.hpp.
+#include "slam_it_all/edge/frames.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <utility>
 
-namespace slamlab::edge {
+namespace slam_it_all::edge {
 
 namespace {
 
@@ -215,4 +215,4 @@ foundations::Result<std::vector<foundations::matching::Match>> search(
       taken.empty() ? std::span<const std::uint8_t>(none) : taken, options);
 }
 
-}  // namespace slamlab::edge
+}  // namespace slam_it_all::edge

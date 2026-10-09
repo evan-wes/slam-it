@@ -1,5 +1,5 @@
 /// @file
-/// @brief Native tests for the run writer (slamlab/eval/runs.hpp) against the golden folder
+/// @brief Native tests for the run writer (slam_it_all/eval/runs.hpp) against the golden folder
 ///        `tests/fixtures/eval/run/`, which Python wrote from `run_values.json`: the `.npy`
 ///        files byte for byte, the JSON and trajectory value for value; and its refusals.
 #include <cmath>
@@ -12,14 +12,14 @@
 
 #include "../foundations/fixture_support.hpp"
 #include "../foundations/test_support.hpp"
-#include "slamlab/eval/runs.hpp"
+#include "slam_it_all/eval/runs.hpp"
 
 namespace {
 
-namespace runs = slamlab::eval::runs;
+namespace runs = slam_it_all::eval::runs;
 namespace fs = std::filesystem;
-using slamlab::testing::expect;
-using slamlab::testing::is_invalid_input;
+using slam_it_all::testing::expect;
+using slam_it_all::testing::is_invalid_input;
 
 /// @brief A file's bytes.
 /// @param path The file.
@@ -68,7 +68,7 @@ runs::JsonObject flat(const nlohmann::json& object) {
 /// @brief The run Python wrote, as the C++ backend.
 /// @return The run.
 runs::Run golden_run() {
-  const nlohmann::json values = slamlab::testing::load_fixture("eval/run_values.json");
+  const nlohmann::json values = slam_it_all::testing::load_fixture("eval/run_values.json");
   runs::Run run{.dataset = values["dataset"],
                 .sequence = values["sequence"],
                 .mode = values["mode"],
@@ -142,8 +142,8 @@ bool same_trajectory(const std::vector<std::vector<double>>& got,
 /// @brief Check the writer against the golden folder.
 /// @param failures Running failure count.
 void check_golden(int& failures) {
-  const fs::path golden = fs::path(SLAMLAB_FIXTURES_DIR) / "eval" / "run";
-  const slamlab::testing::ScratchDir scratch("slamlab_test_runs");
+  const fs::path golden = fs::path(SLAM_IT_ALL_FIXTURES_DIR) / "eval" / "run";
+  const slam_it_all::testing::ScratchDir scratch("slam_it_all_test_runs");
   const fs::path& out = scratch.path();
   expect(runs::write_run(out.string(), golden_run()).has_value(), "the run is written", failures);
   for (const char* name : {"keyframes.npy", "keyframe_poses.npy", "points.npy"}) {
@@ -175,7 +175,7 @@ void check_golden(int& failures) {
 /// @brief Check the refusals: nothing is written.
 /// @param failures Running failure count.
 void check_refusals(int& failures) {
-  const slamlab::testing::ScratchDir scratch("slamlab_test_runs_refused");
+  const slam_it_all::testing::ScratchDir scratch("slam_it_all_test_runs_refused");
   const fs::path& out = scratch.path();
   runs::Run run = golden_run();
   run.mode = "lidar";
@@ -216,9 +216,9 @@ int run() {
   int failures = 0;
   check_golden(failures);
   check_refusals(failures);
-  return slamlab::testing::finish("eval/runs", failures);
+  return slam_it_all::testing::finish("eval/runs", failures);
 }
 
 }  // namespace
 
-int main() { return slamlab::testing::guarded("eval/runs", run); }
+int main() { return slam_it_all::testing::guarded("eval/runs", run); }

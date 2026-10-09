@@ -1254,25 +1254,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
-name = "slamlab-edge"
+name = "slam-it-all-edge"
 version = "0.1.0"
 dependencies = [
  "nalgebra",
- "slamlab-foundations",
+ "slam-it-all-foundations",
 ]
 
 [[package]]
-name = "slamlab-eval"
+name = "slam-it-all-eval"
 version = "0.1.0"
 dependencies = [
  "nalgebra",
  "png",
  "serde_json",
- "slamlab-foundations",
+ "slam-it-all-foundations",
 ]
 
 [[package]]
-name = "slamlab-foundations"
+name = "slam-it-all-foundations"
 version = "0.1.0"
 dependencies = [
  "criterion",
@@ -1282,17 +1282,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "slamlab-orchestration"
+name = "slam-it-all-orchestration"
 version = "0.1.0"
 dependencies = [
  "nalgebra",
- "slamlab-edge",
- "slamlab-eval",
- "slamlab-foundations",
+ "slam-it-all-edge",
+ "slam-it-all-eval",
+ "slam-it-all-foundations",
 ]
 
 [[package]]
-name = "slamlab-py"
+name = "slam-it-all-py"
 version = "0.1.0"
 dependencies = [
  "nalgebra",
@@ -1300,8 +1300,8 @@ dependencies = [
  "pyo3",
  "pythonize",
  "serde",
- "slamlab-edge",
- "slamlab-foundations",
+ "slam-it-all-edge",
+ "slam-it-all-foundations",
 ]
 
 [[package]]

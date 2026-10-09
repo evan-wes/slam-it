@@ -19,8 +19,8 @@ import numpy as np
 from numpy.typing import NDArray
 from PIL import Image
 
-from slamlab.edge.options import Options
-from slamlab.eval import tum
+from slam_it_all.edge.options import Options
+from slam_it_all.eval import tum
 from tests.edge import room
 from tests.edge.support import FRAMES, OPTIONS
 

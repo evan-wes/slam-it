@@ -14,13 +14,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from slamlab import backends
-from slamlab.edge import frames, tracking
-from slamlab.edge.map import Map
-from slamlab.edge.options import Options
-from slamlab.eval import budgets, runs
-from slamlab.foundations.errors import DegenerateError, InvalidInputError, NotConvergedError
-from slamlab.orchestration import vo
+from slam_it_all import backends
+from slam_it_all.edge import frames, tracking
+from slam_it_all.edge.map import Map
+from slam_it_all.edge.options import Options
+from slam_it_all.eval import budgets, runs
+from slam_it_all.foundations.errors import DegenerateError, InvalidInputError, NotConvergedError
+from slam_it_all.orchestration import vo
 from tests.conftest import FIXTURES, assert_matches_fixture, load_fixture
 from tests.edge.support import (
     ATE_BOUND,
@@ -316,7 +316,7 @@ def test_every_program_records_its_process(backend: str, tmp_path: Path) -> None
         capture_output=True, text=True, check=False,
     )  # fmt: skip
     assert done.returncode == 0, done.stderr
-    assert done.stdout.startswith("slamlab_vo: 0 of 0 frames tracked")
+    assert done.stdout.startswith("slam_it_all_vo: 0 of 0 frames tracked")
     run = runs.read_run(tmp_path)
     assert run.peak_memory is not None
     assert run.peak_memory > 2**20
@@ -416,7 +416,7 @@ def test_a_program_fails_a_file_it_cannot_read_or_write_alike(backend: str, tmp_
         [*command, *missing.arguments()], capture_output=True, text=True, check=False
     )
     assert done.returncode == vo.EXIT_FAILED
-    assert re.match(r"slamlab_vo: .*mav0/cam0/data/\d+\.png", done.stderr)
+    assert re.match(r"slam_it_all_vo: .*mav0/cam0/data/\d+\.png", done.stderr)
     blocked = tmp_path / "a_file"
     blocked.write_text("")
     unwritable = vo.Request("tum", SEQUENCES / "tum_camera", "rgbd", blocked / "run", count=0)
@@ -424,7 +424,7 @@ def test_a_program_fails_a_file_it_cannot_read_or_write_alike(backend: str, tmp_
         [*command, *unwritable.arguments()], capture_output=True, text=True, check=False
     )
     assert done.returncode == vo.EXIT_FAILED, done.stderr
-    assert done.stderr.startswith("slamlab_vo: ")
+    assert done.stderr.startswith("slam_it_all_vo: ")
     assert "a_file" in done.stderr
 
 
@@ -444,7 +444,7 @@ def test_a_failed_program_raises_its_error(backend: str, tmp_path: Path) -> None
 
 def test_a_killed_program_says_so(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A program killed by a signal (a budget's memory cap kills with 9) raises, naming it."""
-    program = tmp_path / "slamlab_vo"
+    program = tmp_path / "slam_it_all_vo"
     program.write_text("#!/bin/sh\nkill -9 $$\n")
     program.chmod(0o755)
     monkeypatch.setattr(backends, "program", lambda backend, name: program)
@@ -490,8 +490,8 @@ def test_a_programs_exit_code_names_its_error(
     code: int, error: type[Exception], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A failed program's exit code raises the error of its kind, with the program's message."""
-    program = tmp_path / "slamlab_vo"
-    program.write_text(f"#!/bin/sh\necho 'slamlab_vo: it failed' >&2\nexit {code}\n")
+    program = tmp_path / "slam_it_all_vo"
+    program.write_text(f"#!/bin/sh\necho 'slam_it_all_vo: it failed' >&2\nexit {code}\n")
     program.chmod(0o755)
     monkeypatch.setattr(backends, "program", lambda backend, name: program)
     with pytest.raises(error, match="it failed"):
@@ -505,5 +505,5 @@ def test_a_program_refuses_a_bad_command_line(backend: str) -> None:
     for arguments in (["--dataset", "tum"], ["--option", "windows=7"], ["--mode"]):
         done = subprocess.run([*program, *arguments], capture_output=True, text=True, check=False)
         assert done.returncode == vo.EXIT_USAGE
-        assert done.stderr.startswith("slamlab_vo: ")
+        assert done.stderr.startswith("slam_it_all_vo: ")
         assert "\nusage: " in done.stderr

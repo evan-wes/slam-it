@@ -1,5 +1,5 @@
 /// @file
-/// @brief Native tests for initialisation (slamlab/edge/initialization.hpp) on the exact
+/// @brief Native tests for initialisation (slam_it_all/edge/initialization.hpp) on the exact
 ///        scene: from depth, the initialisation matches, and a monocular start. Parity with the
 ///        Python reference is checked through the bindings by tests/edge.
 #include <algorithm>
@@ -12,14 +12,14 @@
 #include "../foundations/fixture_support.hpp"
 #include "../foundations/test_support.hpp"
 #include "scene.hpp"
-#include "slamlab/edge/initialization.hpp"
+#include "slam_it_all/edge/initialization.hpp"
 
 namespace {
 
-namespace edge = slamlab::edge;
-namespace scene = slamlab::testing::scene;
-using slamlab::testing::expect;
-using slamlab::testing::is_invalid_input;
+namespace edge = slam_it_all::edge;
+namespace scene = slam_it_all::testing::scene;
+using slam_it_all::testing::expect;
+using slam_it_all::testing::is_invalid_input;
 
 /// @brief Check starting from depth.
 /// @param failures Running failure count.
@@ -121,9 +121,9 @@ int run() {
   int failures = 0;
   check_from_depth(failures);
   check_monocular(failures);
-  return slamlab::testing::finish("edge/initialization", failures);
+  return slam_it_all::testing::finish("edge/initialization", failures);
 }
 
 }  // namespace
 
-int main() { return slamlab::testing::guarded("edge/initialization", run); }
+int main() { return slam_it_all::testing::guarded("edge/initialization", run); }

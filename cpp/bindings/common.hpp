@@ -5,7 +5,7 @@
 /// new arrays (design doc, "Conventions"); images cross as uint8 (`image_crossing.hpp`).
 /// Arguments are `noconvert`: anything else (another dtype, a strided view, a misaligned
 /// buffer) is refused rather than silently copied, the same as the Rust binding. A core
-/// `Error` crosses as the Python exception of its kind, from `slamlab.foundations.errors`.
+/// `Error` crosses as the Python exception of its kind, from `slam_it_all.foundations.errors`.
 #pragma once
 
 #include <nanobind/nanobind.h>
@@ -23,9 +23,9 @@
 #include <utility>
 #include <vector>
 
-#include "slamlab/foundations/error.hpp"
+#include "slam_it_all/foundations/error.hpp"
 
-namespace slamlab::bindings {
+namespace slam_it_all::bindings {
 
 /// @brief A read-only, contiguous float64 batch of items of shape `Dims...`.
 /// @tparam Dims The shape of one item; the leading dimension N is free.
@@ -69,7 +69,7 @@ T unwrap(foundations::Result<T> result) {
 }
 
 /// @brief Register the translator that raises a `CoreError` as the Python exception of its
-///        kind, from `slamlab.foundations.errors`.
+///        kind, from `slam_it_all.foundations.errors`.
 void register_error_translation();
 
 /// @brief Refuse a buffer that is not aligned for `double` (reading it would be undefined
@@ -416,4 +416,4 @@ inline void check_keys(const nanobind::dict& values, std::span<const char* const
   }
 }
 
-}  // namespace slamlab::bindings
+}  // namespace slam_it_all::bindings

@@ -1,6 +1,7 @@
 /// @file
-/// @brief Bindings for `slamlab.foundations.fivepoint` (`slamlab._cpp.foundations.fivepoint`).
-#include "slamlab/foundations/fivepoint.hpp"
+/// @brief Bindings for `slam_it_all.foundations.fivepoint`
+/// (`slam_it_all._cpp.foundations.fivepoint`).
+#include "slam_it_all/foundations/fivepoint.hpp"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -12,7 +13,7 @@
 
 namespace nb = nanobind;
 
-namespace slamlab::bindings {
+namespace slam_it_all::bindings {
 
 namespace {
 
@@ -60,4 +61,4 @@ void bind_fivepoint(nb::module_& m) {
         "Return every essential matrix five bearing pairs allow, shape (K, 3, 3).");
 }
 
-}  // namespace slamlab::bindings
+}  // namespace slam_it_all::bindings

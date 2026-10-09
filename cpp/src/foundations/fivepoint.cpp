@@ -1,6 +1,6 @@
 /// @file
-/// @brief Implementation of the 5-point solvers declared in slamlab/foundations/fivepoint.hpp.
-#include "slamlab/foundations/fivepoint.hpp"
+/// @brief Implementation of the 5-point solvers declared in slam_it_all/foundations/fivepoint.hpp.
+#include "slam_it_all/foundations/fivepoint.hpp"
 
 #include <Eigen/Dense>
 #include <Eigen/Eigenvalues>
@@ -17,7 +17,7 @@
 #include <utility>
 #include <vector>
 
-namespace slamlab::foundations::fivepoint {
+namespace slam_it_all::foundations::fivepoint {
 
 namespace {
 
@@ -590,7 +590,7 @@ std::array<double, 9> row_major(const Eigen::Matrix3d& m) {
   return out;
 }
 
-/// @brief Put the solutions in canonical order (`slamlab.foundations.fivepoint`'s "Canonical
+/// @brief Put the solutions in canonical order (`slam_it_all.foundations.fivepoint`'s "Canonical
 ///        order"): each signed so that its first entry, row by row, within `kSignTieRtol` of
 ///        the largest magnitude is positive, then all sorted lexicographically by their
 ///        row-major entries.
@@ -714,4 +714,4 @@ Result<std::vector<Eigen::Matrix3d>> essential_5pt(
   return solve(bearings1, bearings2, solver);
 }
 
-}  // namespace slamlab::foundations::fivepoint
+}  // namespace slam_it_all::foundations::fivepoint

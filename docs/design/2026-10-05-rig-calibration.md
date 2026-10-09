@@ -5,7 +5,7 @@ and a rangefinder, against each other, using the rig's own motion. A learning pr
 each sensor and each motion makes observable. Decided with evan-wes on 2026-10-05: Python
 and C++, no Rust; the bag reader hand-written, no new dependency; the data and its config
 outside the repo; run in its own worktree beside PR 8. The ladder's design doc
-([2026-10-02-slamlab-ladder.md](2026-10-02-slamlab-ladder.md)) records where it sits; this
+([2026-10-02-slam-it-all-ladder.md](2026-10-02-slam-it-all-ladder.md)) records where it sits; this
 note is the track's plan.
 
 **The data is private, and nothing in the repo describes it.** A recording and its config
@@ -41,7 +41,7 @@ lever arm along its beam (1; the beam taken along the motion's axis, or its dire
 
 ## 2. The pieces
 
-### Reading the rig (Python, `slamlab.eval`)
+### Reading the rig (Python, `slam_it_all.eval`)
 
 - **`eval.rosbag`**, ROS 1 bag format 2.0, hand-written: the index (connections and chunk
   info), chunks uncompressed or bz2 (lz4 refused, by name), and `sensor_msgs` decoded into
@@ -60,7 +60,7 @@ lever arm along its beam (1; the beam taken along the motion's axis, or its dire
   without it is refused (PR 8's panel, run 2, A17). It comes from the rig config, outside the
   repo, like every rig value; the repo's template holds a placeholder.
 
-### Calibrating (`slamlab.calib`; C++ library `slamlab_calib`)
+### Calibrating (`slam_it_all.calib`; C++ library `slam_it_all_calib`)
 
 - **scans:** beams to points in the sensor frame, motion-corrected by per-beam time against
   a trajectory;
@@ -82,8 +82,8 @@ sets, inliers) exact, estimates to a tolerance.
 ## 3. Running beside PR 8
 
 - **A second session** works the track in its own worktree,
-  `../slamlab-calib`, its branches off `develop`, with its own conda
-  env, `slamlab-calib`: an editable install points at one source tree, so two worktrees
+  `../slam-it-all-calib`, its branches off `develop`, with its own conda
+  env, `slam-it-all-calib`: an editable install points at one source tree, so two worktrees
   cannot share an env.
 - **Offline CI's checkout is shared:** C1 adds a lock so that two runs wait for each other;
   until then, one run at a time.
@@ -96,7 +96,7 @@ sets, inliers) exact, estimates to a tolerance.
 
 1. **C1, reading the rig** (Python): `eval.rosbag`, the rig config, the export; a synthetic
    bag fixture, written by a test generator; the offline-CI lock. PATCH.
-2. **C2, calibrating the rig** (Python and C++): `slamlab.calib`, `scripts/calibrate_rig.py`,
+2. **C2, calibrating the rig** (Python and C++): `slam_it_all.calib`, `scripts/calibrate_rig.py`,
    the note `docs/notes/rig-calibration.md` with the method and its results on synthetic
    rigs (results on a recording stay beside it, outside the repo). PATCH. If it grows too
    large, it splits into the geometry (C2) and the problems with the results (C3).

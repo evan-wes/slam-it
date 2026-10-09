@@ -10,9 +10,9 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from slamlab import backends
-from slamlab.foundations import image, orb, stereo
-from slamlab.foundations.errors import DegenerateError, InvalidInputError
+from slam_it_all import backends
+from slam_it_all.foundations import image, orb, stereo
+from slam_it_all.foundations.errors import DegenerateError, InvalidInputError
 from tests.conftest import (
     assert_matches_fixture,
     load_fixture,

@@ -11,13 +11,13 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from slamlab import backends
-from slamlab.edge import initialization
-from slamlab.edge.frames import Frame, Tracked
-from slamlab.edge.map import Map
-from slamlab.edge.options import Options
-from slamlab.foundations import matching, orb, triangulation, twoview
-from slamlab.foundations.errors import InvalidInputError
+from slam_it_all import backends
+from slam_it_all.edge import initialization
+from slam_it_all.edge.frames import Frame, Tracked
+from slam_it_all.edge.map import Map
+from slam_it_all.edge.options import Options
+from slam_it_all.foundations import matching, orb, triangulation, twoview
+from slam_it_all.foundations.errors import InvalidInputError
 from tests.conftest import require_function
 from tests.edge.conftest import Truth
 from tests.edge.support import (
