@@ -1,6 +1,6 @@
 /// @file
-/// @brief Implementation of the homographies declared in slamlab/foundations/homography.hpp.
-#include "slamlab/foundations/homography.hpp"
+/// @brief Implementation of the homographies declared in slam_it_all/foundations/homography.hpp.
+#include "slam_it_all/foundations/homography.hpp"
 
 #include <Eigen/Dense>
 #include <algorithm>
@@ -8,9 +8,9 @@
 #include <limits>
 #include <utility>
 
-#include "slamlab/foundations/so3.hpp"
+#include "slam_it_all/foundations/so3.hpp"
 
-namespace slamlab::foundations::homography {
+namespace slam_it_all::foundations::homography {
 
 std::optional<Eigen::Matrix3d> fit(const Eigen::Ref<const Rows2>& points1,
                                    const Eigen::Ref<const Rows2>& points2) {
@@ -259,4 +259,4 @@ Result<ransac::Solution<Eigen::Matrix3d>> homography_ransac(const Eigen::Ref<con
   return ransac::estimate(HomographyEstimator(points1, points2), options);
 }
 
-}  // namespace slamlab::foundations::homography
+}  // namespace slam_it_all::foundations::homography

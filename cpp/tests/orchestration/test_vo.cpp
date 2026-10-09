@@ -1,5 +1,5 @@
 /// @file
-/// @brief Native tests for the native program's run (slamlab/orchestration/vo.hpp): reading the
+/// @brief Native tests for the native program's run (slam_it_all/orchestration/vo.hpp): reading the
 ///        command line, the request's checks, and a run of no frames on a fixture folder (the
 ///        fixtures list images without holding them). The whole room is run, through every
 ///        backend, by tests/orchestration.
@@ -11,22 +11,22 @@
 
 #include "../foundations/fixture_support.hpp"
 #include "../foundations/test_support.hpp"
-#include "slamlab/edge/options.hpp"
-#include "slamlab/orchestration/vo.hpp"
+#include "slam_it_all/edge/options.hpp"
+#include "slam_it_all/orchestration/vo.hpp"
 
 namespace {
 
-namespace vo = slamlab::orchestration::vo;
-namespace edge = slamlab::edge;
+namespace vo = slam_it_all::orchestration::vo;
+namespace edge = slam_it_all::edge;
 namespace fs = std::filesystem;
-using slamlab::testing::expect;
-using slamlab::testing::is_invalid_input;
+using slam_it_all::testing::expect;
+using slam_it_all::testing::is_invalid_input;
 
 /// @brief A fixture sequence's folder: its files listed, its images absent.
 /// @param name Its name.
 /// @return The path.
 std::string sequence(const std::string& name) {
-  return slamlab::testing::fixture_path("eval/sequences/" + name);
+  return slam_it_all::testing::fixture_path("eval/sequences/" + name);
 }
 
 /// @brief A request, its other fields default.
@@ -56,7 +56,7 @@ std::vector<std::string> command(const std::vector<std::string>& more) {
 /// @brief Check the exit code each kind of failure gives (Python's `_ERRORS` order).
 /// @param failures Running failure count.
 void check_exit_codes(int& failures) {
-  using slamlab::foundations::ErrorKind;
+  using slam_it_all::foundations::ErrorKind;
   expect(vo::exit_code(ErrorKind::kInvalidInput) == 3 &&
              vo::exit_code(ErrorKind::kDegenerate) == 4 &&
              vo::exit_code(ErrorKind::kNotConverged) == 5,
@@ -121,7 +121,7 @@ void check_requests(int& failures) {
 /// @brief Check runs on the fixture folders: none of their images exist.
 /// @param failures Running failure count.
 void check_runs(int& failures) {
-  const slamlab::testing::ScratchDir scratch("slamlab_test_vo");
+  const slam_it_all::testing::ScratchDir scratch("slam_it_all_test_vo");
   const fs::path& out = scratch.path();
   vo::Request request = request_for("tum", edge::Mode::kRgbd, "tum_camera");
   request.out = out.string();
@@ -133,7 +133,7 @@ void check_runs(int& failures) {
          "a run of no frames records the sequence and every setting", failures);
   expect(!fs::exists(out / "run.json"), "the run is the program's to write", failures);
   if (empty.has_value()) {
-    const auto written = slamlab::eval::runs::write_run(request.out, *empty);
+    const auto written = slam_it_all::eval::runs::write_run(request.out, *empty);
     expect(written.has_value(), "the run writes", failures);
   }
   std::ifstream file(out / "run.json");
@@ -158,9 +158,9 @@ int run() {
   check_parse(failures);
   check_requests(failures);
   check_runs(failures);
-  return slamlab::testing::finish("orchestration/vo", failures);
+  return slam_it_all::testing::finish("orchestration/vo", failures);
 }
 
 }  // namespace
 
-int main() { return slamlab::testing::guarded("orchestration/vo", run); }
+int main() { return slam_it_all::testing::guarded("orchestration/vo", run); }

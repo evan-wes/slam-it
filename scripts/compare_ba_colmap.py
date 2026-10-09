@@ -1,15 +1,15 @@
-"""Compare slamlab's bundle adjustment with COLMAP's on COLMAP text models, one table.
+"""Compare SLAM It All!'s bundle adjustment with COLMAP's on COLMAP text models, one table.
 
 Each argument names a COLMAP text model (``cameras.txt``, ``images.txt``, ``points3D.txt``)
 as ``NAME=DIRECTORY`` or just ``DIRECTORY``. Each model is refined twice on the identical
-problem, by slamlab (C++) and by COLMAP's Ceres bundle adjuster, with the principal point
+problem, by SLAM It All! (C++) and by COLMAP's Ceres bundle adjuster, with the principal point
 fixed and the chosen intrinsics free, under the same loss. The table lists, per model: the
 RMS reprojection error at the start and after each solver, how many observations each solver
 pushed behind their camera, our iterations, termination and focal-length deviation, both
 focal lengths, and both run times. The focal columns are intrinsics group 0's (a model with
 several cameras shows its first). A directory without a model is listed, not skipped.
 
-Run from anywhere, in the slamlab environment::
+Run from anywhere, in the slam-it-all environment::
 
     python scripts/compare_ba_colmap.py lab-coat=/path/to/colmap_model other=/path/to/another
     python scripts/compare_ba_colmap.py --loss huber --loss-scale 2 --iterations 300 DIR...
@@ -27,9 +27,9 @@ from pathlib import Path
 
 import numpy as np
 
-from slamlab.eval import colmap_reference, readers
-from slamlab.eval.reprojection import in_front, rms
-from slamlab.foundations import ba, camera, nls
+from slam_it_all.eval import colmap_reference, readers
+from slam_it_all.eval.reprojection import in_front, rms
+from slam_it_all.foundations import ba, camera, nls
 
 REFINE = ("none", "focal", "focal+distortion")
 """What the comparison frees (the principal point always stays fixed)."""
@@ -56,7 +56,7 @@ COLUMNS = [
     ("b-our", 5, ""),
     ("b-col", 5, ""),
     ("start", 8, ".4f"),
-    ("slamlab", 8, ".4f"),
+    ("ours", 8, ".4f"),
     ("colmap", 8, ".4f"),
     ("diff", 9, "+.2e"),
     ("its", 4, ""),
@@ -93,7 +93,7 @@ class Comparison:
 def compare(directory: Path, refine: str, loss: nls.Loss, iterations: int) -> Comparison:
     """Refine one model with both solvers, under the same loss, cap and tolerance.
 
-    COLMAP's Ceres tolerances are set to slamlab's relative cost-decrease tolerance, so both
+    COLMAP's Ceres tolerances are set to SLAM It All!'s relative cost-decrease tolerance, so both
     stop on the same criterion (Ceres also applies it to the gradient and the step).
     """
     problem = freed(readers.read_colmap_text(directory), refine)

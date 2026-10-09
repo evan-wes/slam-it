@@ -1,9 +1,9 @@
 /// @file
-/// @brief Bindings for `slamlab.foundations.orb` (`slamlab._cpp.foundations.orb`).
+/// @brief Bindings for `slam_it_all.foundations.orb` (`slam_it_all._cpp.foundations.orb`).
 ///
-/// Options cross as one dict of `slamlab.foundations.orb.Options`' fields; keypoints and
+/// Options cross as one dict of `slam_it_all.foundations.orb.Options`' fields; keypoints and
 /// features come back as dicts (orb_crossing.hpp).
-#include "slamlab/foundations/orb.hpp"
+#include "slam_it_all/foundations/orb.hpp"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -22,7 +22,7 @@
 
 namespace nb = nanobind;
 
-namespace slamlab::bindings {
+namespace slam_it_all::bindings {
 
 namespace {
 
@@ -132,4 +132,4 @@ void bind_orb(nb::module_& m) {
         "Extract features from a pyramid already built: Keypoints' fields, and descriptors.");
 }
 
-}  // namespace slamlab::bindings
+}  // namespace slam_it_all::bindings

@@ -1,8 +1,8 @@
 /// @file
-/// @brief Bundle adjustment's solve (declared in slamlab/foundations/ba.hpp): the problem
+/// @brief Bundle adjustment's solve (declared in slam_it_all/foundations/ba.hpp): the problem
 ///        centred on its cameras, laid out, adjusted, and shifted back.
 ///
-/// Mirrors `slamlab.foundations.ba.solve`. It sits above every other module of the package,
+/// Mirrors `slam_it_all.foundations.ba.solve`. It sits above every other module of the package,
 /// which is why it is not in the facade's `ba.cpp`: the layer check holds this file to the
 /// `solve` layer.
 #include <Eigen/Core>
@@ -14,11 +14,11 @@
 
 #include "bundle.hpp"
 #include "layout.hpp"
-#include "slamlab/foundations/ba.hpp"
-#include "slamlab/foundations/error.hpp"
-#include "slamlab/foundations/nls.hpp"
+#include "slam_it_all/foundations/ba.hpp"
+#include "slam_it_all/foundations/error.hpp"
+#include "slam_it_all/foundations/nls.hpp"
 
-namespace slamlab::foundations::ba {
+namespace slam_it_all::foundations::ba {
 
 Eigen::Vector3d centring_origin(const Problem& problem) {
   // The cameras with a positive-weight observation: an unobserved placeholder (an
@@ -116,4 +116,4 @@ Result<Solution> solve(const Problem& problem, const Options& options) {
   return solution;
 }
 
-}  // namespace slamlab::foundations::ba
+}  // namespace slam_it_all::foundations::ba

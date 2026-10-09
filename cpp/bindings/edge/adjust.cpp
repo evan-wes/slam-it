@@ -1,6 +1,6 @@
 /// @file
-/// @brief Bindings for `slamlab.edge.adjust` (`slamlab._cpp.edge.adjust`).
-#include "slamlab/edge/adjust.hpp"
+/// @brief Bindings for `slam_it_all.edge.adjust` (`slam_it_all._cpp.edge.adjust`).
+#include "slam_it_all/edge/adjust.hpp"
 
 #include <nanobind/nanobind.h>
 
@@ -10,7 +10,7 @@
 
 namespace nb = nanobind;
 
-namespace slamlab::bindings {
+namespace slam_it_all::bindings {
 
 namespace {
 
@@ -40,4 +40,4 @@ void bind_adjust(nb::module_& m) {
         "Bundle-adjust keyframes and the points they observe.");
 }
 
-}  // namespace slamlab::bindings
+}  // namespace slam_it_all::bindings

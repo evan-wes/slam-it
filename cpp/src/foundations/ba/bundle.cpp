@@ -16,12 +16,12 @@
 
 #include "gauge.hpp"
 #include "schur.hpp"
-#include "slamlab/foundations/camera.hpp"
-#include "slamlab/foundations/nls.hpp"
-#include "slamlab/foundations/se3.hpp"
-#include "slamlab/foundations/so3.hpp"
+#include "slam_it_all/foundations/camera.hpp"
+#include "slam_it_all/foundations/nls.hpp"
+#include "slam_it_all/foundations/se3.hpp"
+#include "slam_it_all/foundations/so3.hpp"
 
-namespace slamlab::foundations::ba::detail {
+namespace slam_it_all::foundations::ba::detail {
 
 namespace {
 
@@ -993,4 +993,4 @@ Result<Solution> adjust(const Problem& problem, const Options& options, const La
                   .summary = std::move(summary)};
 }
 
-}  // namespace slamlab::foundations::ba::detail
+}  // namespace slam_it_all::foundations::ba::detail

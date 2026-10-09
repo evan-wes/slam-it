@@ -1,5 +1,5 @@
 /// @file
-/// @brief Native tests for the P3P solvers (slamlab/foundations/p3p.hpp): the true pose among
+/// @brief Native tests for the P3P solvers (slam_it_all/foundations/p3p.hpp): the true pose among
 ///        each solver's solutions, every solution a rigid motion, the cubic root, bad input.
 #include <Eigen/Dense>
 #include <cmath>
@@ -7,14 +7,14 @@
 #include <vector>
 
 #include "scene_support.hpp"
-#include "slamlab/foundations/p3p.hpp"
+#include "slam_it_all/foundations/p3p.hpp"
 #include "test_support.hpp"
 
 namespace {
 
-namespace p3p = slamlab::foundations::p3p;
-using slamlab::testing::expect;
-using slamlab::testing::Rows3;
+namespace p3p = slam_it_all::foundations::p3p;
+using slam_it_all::testing::expect;
+using slam_it_all::testing::Rows3;
 
 /// @brief Whether a solver finds the true pose among rigid solutions, on three points.
 /// @param points Three world points.
@@ -47,15 +47,16 @@ int main() {
   int failures = 0;
   // The deterministic scene's points, seen by the camera at T_cam_world = (R, t).
   Eigen::Matrix4d truth = Eigen::Matrix4d::Identity();
-  truth.topLeftCorner<3, 3>() = slamlab::testing::scene_rotation();
-  truth.topRightCorner<3, 1>() = slamlab::testing::scene_translation();
+  truth.topLeftCorner<3, 3>() = slam_it_all::testing::scene_rotation();
+  truth.topRightCorner<3, 1>() = slam_it_all::testing::scene_translation();
   Rows3 points;
   Rows3 bearings;
-  slamlab::testing::scene_bearings(
-      30, false, {slamlab::testing::scene_rotation(), slamlab::testing::scene_translation()},
-      points, bearings);
+  slam_it_all::testing::scene_bearings(
+      30, false,
+      {slam_it_all::testing::scene_rotation(), slam_it_all::testing::scene_translation()}, points,
+      bearings);
   for (Eigen::Index i = 0; i < points.rows(); ++i) {
-    points.row(i) = slamlab::testing::scene_point(static_cast<int>(i), false).transpose();
+    points.row(i) = slam_it_all::testing::scene_point(static_cast<int>(i), false).transpose();
   }
   for (const p3p::Solver solver : {p3p::Solver::kDing, p3p::Solver::kLambdaTwist}) {
     bool all = true;
@@ -84,12 +85,13 @@ int main() {
   }
 
   const auto four = p3p::p3p(points.topRows(4), bearings.topRows(4), p3p::Solver::kDing);
-  expect(!four.has_value() && four.error().kind == slamlab::foundations::ErrorKind::kInvalidInput,
-         "four correspondences are rejected", failures);
+  expect(
+      !four.has_value() && four.error().kind == slam_it_all::foundations::ErrorKind::kInvalidInput,
+      "four correspondences are rejected", failures);
   const auto unknown = p3p::p3p(points.topRows(3), bearings.topRows(3), p3p::Solver::kCount);
   expect(!unknown.has_value(), "an unknown solver is rejected", failures);
   const Rows3 long_rays = 2.0 * bearings.topRows(3);
   const auto not_unit = p3p::p3p(points.topRows(3), long_rays, p3p::Solver::kDing);
   expect(!not_unit.has_value(), "bearings that are not unit are rejected", failures);
-  return slamlab::testing::finish("foundations/p3p", failures);
+  return slam_it_all::testing::finish("foundations/p3p", failures);
 }

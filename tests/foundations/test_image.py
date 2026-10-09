@@ -11,10 +11,10 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from slamlab import backends
-from slamlab.foundations import image
-from slamlab.foundations.arrays import MAX_IMAGE_SIDE
-from slamlab.foundations.errors import InvalidInputError
+from slam_it_all import backends
+from slam_it_all.foundations import image
+from slam_it_all.foundations.arrays import MAX_IMAGE_SIDE
+from slam_it_all.foundations.errors import InvalidInputError
 from tests.conftest import (
     check_rejects,
     load_fixture,

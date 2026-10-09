@@ -1,6 +1,6 @@
 /// @file
-/// @brief Bindings for `slamlab.edge.residuals` (`slamlab._cpp.edge.residuals`).
-#include "slamlab/edge/residuals.hpp"
+/// @brief Bindings for `slam_it_all.edge.residuals` (`slam_it_all._cpp.edge.residuals`).
+#include "slam_it_all/edge/residuals.hpp"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -14,7 +14,7 @@
 
 namespace nb = nanobind;
 
-namespace slamlab::bindings {
+namespace slam_it_all::bindings {
 
 namespace {
 
@@ -50,4 +50,4 @@ void bind_residuals(nb::module_& m) {
         "Each observation's chi-square error (infinite behind the camera).");
 }
 
-}  // namespace slamlab::bindings
+}  // namespace slam_it_all::bindings

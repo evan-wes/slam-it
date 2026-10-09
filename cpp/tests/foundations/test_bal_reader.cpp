@@ -14,13 +14,13 @@
 
 #include "../../bench/foundations/bal_reader.hpp"
 #include "fixture_support.hpp"
-#include "slamlab/foundations/camera.hpp"
+#include "slam_it_all/foundations/camera.hpp"
 #include "test_support.hpp"
 
 namespace {
 
-using slamlab::testing::expect;
-namespace ba = slamlab::foundations::ba;
+using slam_it_all::testing::expect;
+namespace ba = slam_it_all::foundations::ba;
 
 /// @brief Flatten a nested JSON array, row-major (iteratively, depth first): numbers as they
 ///        are, booleans as 1/0, null as NaN.
@@ -110,16 +110,16 @@ std::vector<double> pose_values(const ba::Poses& poses) {
 /// @return The exit code.
 int run() {
   int failures = 0;
-  const nlohmann::json fixture = slamlab::testing::load_fixture("eval/bal.json");
+  const nlohmann::json fixture = slam_it_all::testing::load_fixture("eval/bal.json");
   const nlohmann::json& expected = fixture["expected"];
   const double atol = fixture["tolerance"]["atol"].get<double>();
-  const auto problem = slamlab::bench::read_bal(std::string(SLAMLAB_FIXTURES_DIR) + "/eval/" +
-                                                fixture["input"].get<std::string>());
+  const auto problem = slam_it_all::bench::read_bal(std::string(SLAM_IT_ALL_FIXTURES_DIR) +
+                                                    "/eval/" + fixture["input"].get<std::string>());
   expect(problem.has_value(), "read_bal reads the tiny BAL file", failures);
   if (!problem) {
-    return slamlab::testing::finish("foundations/bal_reader", failures);
+    return slam_it_all::testing::finish("foundations/bal_reader", failures);
   }
-  expect(std::string(slamlab::foundations::camera::name(problem->model)) ==
+  expect(std::string(slam_it_all::foundations::camera::name(problem->model)) ==
              expected["model"].get<std::string>(),
          "model matches the Python reader", failures);
   const std::vector<std::pair<std::string, std::vector<double>>> fields = {
@@ -147,9 +147,9 @@ int run() {
     expect(same(got, flatten(expected["arrays"][name]), atol),
            (name + " matches the Python reader").c_str(), failures);
   }
-  return slamlab::testing::finish("foundations/bal_reader", failures);
+  return slam_it_all::testing::finish("foundations/bal_reader", failures);
 }
 
 }  // namespace
 
-int main() { return slamlab::testing::guarded("foundations/bal_reader", run); }
+int main() { return slam_it_all::testing::guarded("foundations/bal_reader", run); }

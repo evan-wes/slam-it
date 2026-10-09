@@ -1,6 +1,6 @@
 /// @file
-/// @brief Implementation of the text helpers declared in slamlab/eval/text.hpp.
-#include "slamlab/eval/text.hpp"
+/// @brief Implementation of the text helpers declared in slam_it_all/eval/text.hpp.
+#include "slam_it_all/eval/text.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -9,7 +9,7 @@
 #include <memory>
 #include <system_error>
 
-namespace slamlab::eval::text {
+namespace slam_it_all::eval::text {
 
 namespace {
 
@@ -129,4 +129,4 @@ std::string where(const std::string& path, std::size_t number) {
   return path + ":" + std::to_string(number) + ": ";
 }
 
-}  // namespace slamlab::eval::text
+}  // namespace slam_it_all::eval::text

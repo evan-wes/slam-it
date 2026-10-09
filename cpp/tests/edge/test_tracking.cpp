@@ -1,5 +1,5 @@
 /// @file
-/// @brief Native tests for tracking (slamlab/edge/tracking.hpp) on the exact scene: refinement
+/// @brief Native tests for tracking (slam_it_all/edge/tracking.hpp) on the exact scene: refinement
 ///        and its outliers, the points in view, the motion model's level rule, the local map,
 ///        and the fallback. Parity with the Python reference is checked through the bindings by
 ///        tests/edge.
@@ -11,14 +11,14 @@
 #include "../foundations/fixture_support.hpp"
 #include "../foundations/test_support.hpp"
 #include "scene.hpp"
-#include "slamlab/edge/tracking.hpp"
+#include "slam_it_all/edge/tracking.hpp"
 
 namespace {
 
-namespace edge = slamlab::edge;
-namespace scene = slamlab::testing::scene;
-using slamlab::testing::expect;
-using slamlab::testing::is_invalid_input;
+namespace edge = slam_it_all::edge;
+namespace scene = slam_it_all::testing::scene;
+using slam_it_all::testing::expect;
+using slam_it_all::testing::is_invalid_input;
 
 /// @brief The scene's point ids, one per keypoint.
 /// @return 0 to 59.
@@ -141,9 +141,9 @@ int run() {
     check_local_map(*m, failures);
   }
   check_level_rule(failures);
-  return slamlab::testing::finish("edge/tracking", failures);
+  return slam_it_all::testing::finish("edge/tracking", failures);
 }
 
 }  // namespace
 
-int main() { return slamlab::testing::guarded("edge/tracking", run); }
+int main() { return slam_it_all::testing::guarded("edge/tracking", run); }

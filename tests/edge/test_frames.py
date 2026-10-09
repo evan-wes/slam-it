@@ -9,9 +9,9 @@ import numpy as np
 import pytest
 from numpy.typing import ArrayLike
 
-from slamlab import backends
-from slamlab.edge import frames
-from slamlab.foundations.errors import InvalidInputError
+from slam_it_all import backends
+from slam_it_all.edge import frames
+from slam_it_all.foundations.errors import InvalidInputError
 from tests.conftest import require_function
 from tests.edge import room
 from tests.edge.conftest import Truth

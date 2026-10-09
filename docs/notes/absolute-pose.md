@@ -1,7 +1,7 @@
 # Absolute pose: P3P, EPnP, the pose refinement and PnP RANSAC
 
-Design note for `slamlab.foundations.p3p` and `slamlab.foundations.pnp` (the Python
-references), and `slamlab/foundations/p3p.hpp` and `pnp.hpp` (the C++ core). The two-view and
+Design note for `slam_it_all.foundations.p3p` and `slam_it_all.foundations.pnp` (the Python
+references), and `slam_it_all/foundations/p3p.hpp` and `pnp.hpp` (the C++ core). The two-view and
 five-point notes cover relative pose; this is its counterpart, a frame placed against known
 3D points.
 
@@ -108,7 +108,7 @@ refinement's cost is infinite for a point behind the camera too, so LM never mov
 
 ## How it's checked
 
-- **Fixtures** (`generate_pose.py`, 50-digit mpmath, nothing imported from slamlab):
+- **Fixtures** (`generate_pose.py`, 50-digit mpmath, nothing imported from slam_it_all):
   - P3P: the true pose among the solutions, on generic samples, each of Ding's three
     orderings, 1e-2 and 1e-6 inside the danger cylinder, and 1e-8 outside it. The 1e-6 case
     catches a solver that merges a quadratic's close roots; the 1e-8 case one that skips
@@ -157,7 +157,7 @@ length. "Missing" means none within 1e-6, "gross" none within 1e-3.
 | 1e-8 outside | 126, 42 | 253, 120 | 552, 477 |
 
 That is why Ding's is the default. PoseLib's single-root shortcut costs it most just outside
-the cylinder; with the shortcut, slamlab's Ding grossly missed 485 of 2000 there (42 without).
+the cylinder; with the shortcut, SLAM It All!'s Ding grossly missed 485 of 2000 there (42 without).
 Far away (a 1 m
 triangle at 1000 m) every solver misses about 0.1%; precision is then limited by the
 conditioning (median relative error 5e-10).
@@ -196,7 +196,7 @@ initialises 24 of 38 pairs, at 0.51째 rotation and 2.11째 direction error (0.49�
 
 **TUM RGB-D** (`scripts/demo_absolute_pose.py --survey`). Reference frames are taken every 40
 frames, and each places the frames 15 and 30 later. The points come either from the reference
-frame's depth map (metric, independent of slamlab) or from two-view initialisation with the
+frame's depth map (metric, independent of SLAM It All!) or from two-view initialisation with the
 frame 30 later, scaled by the true baseline. A placement needs 20 inliers, as a tracker would
 require. Errors are medians against the motion capture, rotation then camera position.
 
@@ -209,7 +209,7 @@ require. Errors are medians against the motion capture, rotation then camera pos
 | fr3/long_office_household | depth | 117 / 3 | 0.31째, 0.61 cm | 0.35째, 0.78 cm | 0.32째, 0.65 cm |
 | fr3/long_office_household | two-view | 122 / 0 | 0.34째, 0.62 cm | 0.36째, 0.74 cm | 0.35째, 0.65 cm |
 
-- On real data slamlab and OpenCV agree to within the data's noise. The errors are the data's
+- On real data SLAM It All! and OpenCV agree to within the data's noise. The errors are the data's
   (rolling shutter, blur, depth noise, motion-capture sync), not the solvers'. Lambda Twist
   gives the same results as Ding's (the same consensus).
 - The refinement helps where the data are good (fr3) and is neutral on fr1, whose errors are

@@ -1,8 +1,8 @@
 /// @file
-/// @brief Bindings for `slamlab.edge.initialization` (`slamlab._cpp.edge.initialization`).
+/// @brief Bindings for `slam_it_all.edge.initialization` (`slam_it_all._cpp.edge.initialization`).
 ///
 /// A started map crosses back as a dict of `map`, `pose` and `points`, or None.
-#include "slamlab/edge/initialization.hpp"
+#include "slam_it_all/edge/initialization.hpp"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -18,7 +18,7 @@
 
 namespace nb = nanobind;
 
-namespace slamlab::bindings {
+namespace slam_it_all::bindings {
 
 namespace {
 
@@ -101,4 +101,4 @@ void bind_initialization(nb::module_& m) {
         "Start the map from two monocular frames and their matches.");
 }
 
-}  // namespace slamlab::bindings
+}  // namespace slam_it_all::bindings

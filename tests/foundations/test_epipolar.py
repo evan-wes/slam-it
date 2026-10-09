@@ -8,9 +8,9 @@ from typing import Any
 import numpy as np
 import pytest
 
-from slamlab import backends
-from slamlab.foundations import correspondences, epipolar, ransac, so3
-from slamlab.foundations.errors import DegenerateError, InvalidInputError
+from slam_it_all import backends
+from slam_it_all.foundations import correspondences, epipolar, ransac, so3
+from slam_it_all.foundations.errors import DegenerateError, InvalidInputError
 from tests.conftest import load_fixture, require_function
 from tests.foundations import scenes as sc
 

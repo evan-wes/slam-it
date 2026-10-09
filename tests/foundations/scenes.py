@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from slamlab.foundations import nls, ransac, se3
+from slam_it_all.foundations import nls, ransac, se3
 from tests.conftest import assert_matches_fixture
 
 POSE = se3.exp([0.5, -0.1, 0.05, 0.02, -0.1, 0.03])
@@ -109,7 +109,7 @@ def check_fixture(module: ModuleType, fixture: dict[str, Any], function: str, ba
     Parameters
     ----------
     module : module
-        The slamlab module under test.
+        The slam_it_all module under test.
     fixture : dict
         The loaded fixture.
     function : str

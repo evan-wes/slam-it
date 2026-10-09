@@ -3,16 +3,16 @@
 import-linter enforces the layering for Python. This script enforces the same rules for
 the other two languages, reading the same contracts, so the three can never disagree:
 
-- C++: every include in ``cpp/{include/slamlab,src,tests,bench,apps,bindings}/<rung>/``, resolved
-  as the compiler does (next to the including file, then the include directories CMake
+- C++: every include in ``cpp/{include/slam_it_all,src,tests,bench,apps,bindings}/<rung>/``,
+  resolved as the compiler does (next to the including file, then the include directories CMake
   gives that root), must reach the file's own rung or one it may depend on; a quoted include
   found nowhere is reported; no C++ source may sit outside a rung directory
   (except the bindings' root, which only wires the rungs); and every
-  ``slamlab_add_rung(<rung> DEPENDS ...)`` in ``CMakeLists.txt`` may only link the rungs it
+  ``slam_it_all_add_rung(<rung> DEPENDS ...)`` in ``CMakeLists.txt`` may only link the rungs it
   may depend on.
-- Rust: every crate under ``rust/`` except the ``slamlab-py`` bindings crate -- listed
+- Rust: every crate under ``rust/`` except the ``slam-it-all-py`` bindings crate -- listed
   workspace members and the implicit ones Cargo adds for path dependencies alike -- is a
-  rung crate named ``slamlab-<rung>``. It may only depend on the crates of the rungs it may
+  rung crate named ``slam-it-all-<rung>``. It may only depend on the crates of the rungs it may
   depend on: in any dependency table (including dev/build/target-specific ones), through
   renamed (``package = ...``) and ``workspace = true`` entries, and through path
   dependencies on non-rung helper crates, which are followed.
@@ -22,8 +22,8 @@ never on a rung a forbidden contract names. Directories and crates must belong t
 listed in the layers contract.
 
 - C++ inside a rung: the layers contracts over a rung or a package inside one (such as
-  "Rung 0's internal order" over ``slamlab.foundations``) apply to the C++ includes in
-  ``cpp/include/slamlab`` and ``cpp/src`` too. A file is the module its path names:
+  "Rung 0's internal order" over ``slam_it_all.foundations``) apply to the C++ includes in
+  ``cpp/include/slam_it_all`` and ``cpp/src`` too. A file is the module its path names:
   ``foundations/so3.hpp`` is ``so3`` in ``foundations``, ``foundations/ba/schur.cpp`` is
   ``ba`` in ``foundations`` and ``schur`` in ``foundations.ba``. Includes resolve the same
   way, relative ones (``..`` too) against the including file's directory. As in
@@ -32,7 +32,7 @@ listed in the layers contract.
   dependency. A package's facade (``foundations/ba.hpp``) stands for the Python modules
   ``_CPP_FACADES`` names.
 - Rust inside a rung: the same contracts apply to the modules of each rung crate,
-  ``rust/slamlab-<rung>/src``. A file is the module its path names (``ba/schur.rs`` is
+  ``rust/slam-it-all-<rung>/src``. A file is the module its path names (``ba/schur.rs`` is
   ``schur`` in ``foundations.ba``; ``ba/mod.rs`` is the package's facade, mapped like
   C++'s). Its edges are the ``crate::`` and ``super::`` paths in its code, outside comments,
   literals and the ``#[cfg(test)] mod tests`` at its end; a path through a package names the
@@ -66,9 +66,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-_INCLUDE = re.compile(r"^\s*#\s*include\s*[<\"]slamlab/([a-z_]+)/", re.MULTILINE)
+_INCLUDE = re.compile(r"^\s*#\s*include\s*[<\"]slam_it_all/([a-z_]+)/", re.MULTILINE)
 _ANY_INCLUDE = re.compile(r"^\s*#\s*include\s*([<\"])([^>\"]+)[>\"]", re.MULTILINE)
-_CPP_MODULE_ROOTS = ("cpp/include/slamlab", "cpp/src")
+_CPP_MODULE_ROOTS = ("cpp/include/slam_it_all", "cpp/src")
 """Where a C++ file's path names its module; tests and bindings are not modules."""
 _CPP_MODULE_ALIASES = {"error": "errors"}
 """C++ files whose Python module is named differently."""
@@ -79,9 +79,9 @@ _CPP_FACADES: dict[tuple[str, ...], tuple[str | None, str | None]] = {
 from inside the package, and what it implements when it includes the package's modules.
 ``ba.hpp`` and ``ba.cpp`` are the problem types and their checks (``problem``, the bottom
 layer); ``solve`` is ``ba/solve.cpp``, as in Python and Rust."""
-_ADD_RUNG = re.compile(r"slamlab_add_rung\(\s*([a-z_]+)([^)]*)\)")
+_ADD_RUNG = re.compile(r"slam_it_all_add_rung\(\s*([a-z_]+)([^)]*)\)")
 _CPP_RUNG_ROOTS = (
-    "cpp/include/slamlab",
+    "cpp/include/slam_it_all",
     "cpp/src",
     "cpp/tests",
     "cpp/bench",
@@ -92,8 +92,8 @@ _CPP_SUFFIXES = frozenset({".hpp", ".cpp", ".h", ".cc"})
 _CPP_ROOT_FILES_ALLOWED = frozenset({"cpp/bindings"})
 """Rung roots whose top level may hold files: the bindings' root only wires the rungs."""
 _DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
-_BINDINGS_CRATE = "slamlab-py"
-_PACKAGE = "slamlab"
+_BINDINGS_CRATE = "slam-it-all-py"
+_PACKAGE = "slam_it_all"
 _NON_RUNG_PACKAGES = frozenset({"backends"})
 """Layers that are Python plumbing, with no C++ or Rust counterpart."""
 
@@ -131,7 +131,7 @@ def allowed_dependencies(pyproject: dict[str, Any]) -> dict[str, frozenset[str]]
     Raises
     ------
     ValueError
-        If ``pyproject.toml`` has no exhaustive layers contract over the ``slamlab`` container.
+        If ``pyproject.toml`` has no exhaustive layers contract over the ``slam_it_all`` container.
     """
     contracts = pyproject["tool"]["importlinter"]["contracts"]
     layers_contract = next(
@@ -143,7 +143,7 @@ def allowed_dependencies(pyproject: dict[str, Any]) -> dict[str, frozenset[str]]
         None,
     )
     if layers_contract is None:
-        raise ValueError("pyproject.toml needs an exhaustive layers contract over 'slamlab'")
+        raise ValueError("pyproject.toml needs an exhaustive layers contract over 'slam_it_all'")
     layers = [
         [name.strip() for name in re.split(r"[|:]", layer)] for layer in layers_contract["layers"]
     ]
@@ -230,7 +230,7 @@ def _module_path(path: Path) -> tuple[str, ...]:
 
 
 def _include_graph(root: Path) -> dict[tuple[str, ...], list[tuple[tuple[str, ...], str]]]:
-    """Map each C++ module to the slamlab modules it includes, each with the include's location.
+    """Map each C++ module to the slam_it_all modules it includes, each with the include's location.
 
     A module's header and source (``schur.hpp``, ``schur.cpp``) are one module.
     """
@@ -436,12 +436,12 @@ def _rust_graph(
     graph: dict[Module, list[tuple[Module, str]]] = {}
     hazards: list[Violation] = []
     rust = root / "rust"
-    crates = sorted(rust.glob("slamlab-*/src")) if rust.is_dir() else []
+    crates = sorted(rust.glob("slam-it-all-*/src")) if rust.is_dir() else []
     for src in crates:
         crate = src.parent.name
         if crate == _BINDINGS_CRATE:
             continue
-        modules = _rust_modules(src, crate.removeprefix("slamlab-").replace("-", "_"))
+        modules = _rust_modules(src, crate.removeprefix("slam-it-all-").replace("-", "_"))
         known = set(modules.values())
         for source, here in modules.items():
             # super:: is the module's parent: a file's package, or a package's own parent.
@@ -627,7 +627,7 @@ def check_cpp(root: Path, allowed: dict[str, frozenset[str]]) -> Iterator[Violat
 
 
 def _check_cpp_includes(root: Path, allowed: dict[str, frozenset[str]]) -> Iterator[Violation]:
-    """Check every slamlab include under the per-rung C++ directories, and stray files."""
+    """Check every slam_it_all include under the per-rung C++ directories, and stray files."""
     for rung_root in _CPP_RUNG_ROOTS:
         base = root / rung_root
         if not base.is_dir():
@@ -659,7 +659,7 @@ def _check_cpp_includes(root: Path, allowed: dict[str, frozenset[str]]) -> Itera
 
 
 _CPP_SEARCH_DIRS: dict[str, tuple[str, ...]] = {
-    "cpp/include/slamlab": ("cpp/include",),
+    "cpp/include/slam_it_all": ("cpp/include",),
     "cpp/src": ("cpp/include",),
     "cpp/bench": ("cpp/include",),
     "cpp/apps": ("cpp/include",),
@@ -702,12 +702,12 @@ def _included_rung(
         return None, True
     named = _INCLUDE.match(f"#include {bracket}{name}")
     if named:
-        return named.group(1), True  # a slamlab header not yet written: its path names it
+        return named.group(1), True  # a slam_it_all header not yet written: its path names it
     return None, bracket != '"'
 
 
 def _check_cmake(root: Path, allowed: dict[str, frozenset[str]]) -> Iterator[Violation]:
-    """Check every ``slamlab_add_rung(<rung> DEPENDS ...)`` in ``CMakeLists.txt``."""
+    """Check every ``slam_it_all_add_rung(<rung> DEPENDS ...)`` in ``CMakeLists.txt``."""
     cmake = root / "CMakeLists.txt"
     if not cmake.is_file():
         return
@@ -717,9 +717,9 @@ def _check_cmake(root: Path, allowed: dict[str, frozenset[str]]) -> Iterator[Vio
         if bad_rung:
             yield bad_rung
             continue
-        for dep in re.findall(r"slamlab_([a-z_]+)", rest):
+        for dep in re.findall(r"slam_it_all_([a-z_]+)", rest):
             if dep not in allowed[rung]:
-                yield Violation("CMakeLists.txt", f"rung {rung!r} may not link slamlab_{dep}")
+                yield Violation("CMakeLists.txt", f"rung {rung!r} may not link slam_it_all_{dep}")
 
 
 def check_rust(root: Path, allowed: dict[str, frozenset[str]]) -> Iterator[Violation]:
@@ -736,7 +736,7 @@ def check_rust(root: Path, allowed: dict[str, frozenset[str]]) -> Iterator[Viola
     ------
     Violation
         Each forbidden crate dependency (direct, or relayed through a non-rung crate), and
-        each crate under ``rust/`` that is not named ``slamlab-<rung>``.
+        each crate under ``rust/`` that is not named ``slam-it-all-<rung>``.
     """
     rust = root / "rust"
     workspace_deps = _workspace_dependencies(rust)
@@ -746,16 +746,16 @@ def check_rust(root: Path, allowed: dict[str, frozenset[str]]) -> Iterator[Viola
         if crate == _BINDINGS_CRATE:  # the bindings crate may use every rung crate
             continue
         location = str(manifest_path.relative_to(root))
-        if not crate.startswith("slamlab-"):
-            yield Violation(location, f"crate {crate!r} is not named slamlab-<rung>")
+        if not crate.startswith("slam-it-all-"):
+            yield Violation(location, f"crate {crate!r} is not named slam-it-all-<rung>")
             continue
-        rung = crate.removeprefix("slamlab-").replace("-", "_")
+        rung = crate.removeprefix("slam-it-all-").replace("-", "_")
         bad_rung = _check_rung(rung, location, allowed)
         if bad_rung:
             yield bad_rung
             continue
         for dep in _reachable_rung_crates(manifest_path, workspace_deps):
-            target = dep.removeprefix("slamlab-").replace("-", "_")
+            target = dep.removeprefix("slam-it-all-").replace("-", "_")
             if dep != crate and target not in allowed[rung]:
                 yield Violation(location, f"rung {rung!r} may not depend on crate {dep!r}")
 
@@ -817,7 +817,7 @@ def _dependencies(
 def _reachable_rung_crates(
     manifest_path: Path, workspace_deps: dict[str, tuple[str, Path | None]]
 ) -> set[str]:
-    """Return the slamlab rung crates a crate depends on, directly or via non-rung crates.
+    """Return the SLAM It All! rung crates a crate depends on, directly or via non-rung crates.
 
     Rung crates are not followed further: each is checked on its own. Path dependencies on
     other crates are followed, so a helper crate cannot relay a forbidden rung.
@@ -828,7 +828,7 @@ def _reachable_rung_crates(
     while pending:
         current = pending.pop()
         for name, path in _dependencies(current, workspace_deps):
-            if name.startswith("slamlab-"):
+            if name.startswith("slam-it-all-"):
                 found.add(name)
             elif path is not None and (path / "Cargo.toml").is_file() and path not in seen:
                 seen.add(path)

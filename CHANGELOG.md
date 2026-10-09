@@ -4,6 +4,38 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.3.4.0] - 2026-10-08
+
+The project is renamed SLAM It All! (a pun on "damn it all!") before it goes public. The
+working name, slamlab, collided with SLAMLab, the University of Zaragoza group behind
+ORB-SLAM3, and with `slamlab` on PyPI. The rename is a clean break with no alias. Nothing
+behaves differently: every run checked takes the same decisions and writes the same results,
+to the byte, as before the rename.
+
+### Changed
+
+- **Code uses `slam_it_all`:**
+  - the Python package;
+  - the C++ namespace and include directory;
+  - the libraries and programs (`slam_it_all_foundations`, `slam_it_all_vo`);
+  - the extension modules `slam_it_all._cpp` and `slam_it_all_rs`.
+- **Everything else uses `slam-it-all`:**
+  - the distribution;
+  - the Rust crates (`slam-it-all-foundations` and the rest);
+  - the conda envs (`slam-it-all`, `slam-it-all-ci`) and their lock
+    (`scripts/locks/slam-it-all.lock`);
+  - the review panel (`/slam-it-all-review-panel`, `slam-it-all-*-reviewer`).
+- **Other forms:**
+  - `SLAM_IT_ALL_` prefixes the CMake options and environment variables
+    (`SLAM_IT_ALL_BUILD_TESTS`, `SLAM_IT_ALL_BAL`, `SLAM_IT_ALL_REQUIRE_BACKENDS`);
+  - `SlamItAllError` is the base exception.
+- **Renamed files:** `scripts/setup_slam_it_all.sh` builds the env, and the ladder is
+  `docs/design/2026-10-02-slam-it-all-ladder.md`.
+- **The run format is named `slam-it-all-run`.** A run written before the rename no longer
+  reads.
+- **History is kept as written.** Earlier entries here and the review reports in
+  `docs/reviews/` keep the old name.
+
 ## [0.3.3.0] - 2026-10-08
 
 Milestone 2's real time: a budget harness, and the C++ and Rust pipelines within a laptop-CPU

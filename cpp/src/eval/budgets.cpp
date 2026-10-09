@@ -1,6 +1,6 @@
 /// @file
-/// @brief Implementation of slamlab/eval/budgets.hpp.
-#include "slamlab/eval/budgets.hpp"
+/// @brief Implementation of slam_it_all/eval/budgets.hpp.
+#include "slam_it_all/eval/budgets.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -12,13 +12,13 @@
 #include <string_view>
 #include <vector>
 
-#include "slamlab/eval/text.hpp"
+#include "slam_it_all/eval/text.hpp"
 
-namespace slamlab::eval::budgets {
+namespace slam_it_all::eval::budgets {
 
 namespace {
 
-/// @brief The words after a key on a status file's line, as `slamlab.eval.budgets` splits it.
+/// @brief The words after a key on a status file's line, as `slam_it_all.eval.budgets` splits it.
 /// @param status The status file.
 /// @param key The line's first word, e.g. `VmHWM:`.
 /// @return The line's other words, or nothing if no line starts with the key (or no file).
@@ -107,4 +107,4 @@ std::optional<std::int64_t> memory_cap(const std::string& cgroup, const std::str
   return std::nullopt;
 }
 
-}  // namespace slamlab::eval::budgets
+}  // namespace slam_it_all::eval::budgets

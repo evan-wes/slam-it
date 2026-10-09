@@ -6,9 +6,9 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from slamlab.eval import metrics
-from slamlab.foundations import se3, so3
-from slamlab.foundations.errors import DegenerateError, InvalidInputError
+from slam_it_all.eval import metrics
+from slam_it_all.foundations import se3, so3
+from slam_it_all.foundations.errors import DegenerateError, InvalidInputError
 
 PERIOD = 0.1
 """The synthetic trajectories' frame period, in seconds."""

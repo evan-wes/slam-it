@@ -8,9 +8,9 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from slamlab.eval import tum
-from slamlab.foundations import so3
-from slamlab.foundations.errors import InvalidInputError
+from slam_it_all.eval import tum
+from slam_it_all.foundations import so3
+from slam_it_all.foundations.errors import InvalidInputError
 
 
 def _write(folder: Path) -> None:

@@ -1,7 +1,7 @@
 /// @file
 /// @brief Implementation of the correspondence helpers declared in
-///        slamlab/foundations/correspondences.hpp.
-#include "slamlab/foundations/correspondences.hpp"
+///        slam_it_all/foundations/correspondences.hpp.
+#include "slam_it_all/foundations/correspondences.hpp"
 
 #include <Eigen/Dense>
 #include <cmath>
@@ -9,7 +9,7 @@
 #include <string>
 #include <utility>
 
-namespace slamlab::foundations::correspondences {
+namespace slam_it_all::foundations::correspondences {
 
 Rows3 homogeneous(const Eigen::Ref<const Rows2>& points) {
   Rows3 out(points.rows(), 3);
@@ -133,4 +133,4 @@ Result<void> check_point_pairs(const Eigen::Ref<const Rows2>& points1,
   return {};
 }
 
-}  // namespace slamlab::foundations::correspondences
+}  // namespace slam_it_all::foundations::correspondences

@@ -1,1 +1,1 @@
-"""slamlab's Python test suite."""
+"""SLAM It All!'s Python test suite."""

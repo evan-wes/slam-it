@@ -1,6 +1,6 @@
 /// @file
-/// @brief Implementation of the epipolar geometry declared in slamlab/foundations/epipolar.hpp.
-#include "slamlab/foundations/epipolar.hpp"
+/// @brief Implementation of the epipolar geometry declared in slam_it_all/foundations/epipolar.hpp.
+#include "slam_it_all/foundations/epipolar.hpp"
 
 #include <Eigen/Dense>
 #include <algorithm>
@@ -11,9 +11,9 @@
 #include <string>
 #include <utility>
 
-#include "slamlab/foundations/so3.hpp"
+#include "slam_it_all/foundations/so3.hpp"
 
-namespace slamlab::foundations::epipolar {
+namespace slam_it_all::foundations::epipolar {
 
 using correspondences::check_bearing_pairs;
 using correspondences::check_point_pairs;
@@ -326,7 +326,7 @@ SampsonTerms sampson_terms(const Eigen::Matrix3d& e, const Eigen::Vector3d& x1,
 }
 
 /// @brief Least squares on the signed Sampson distance of E's inliers, over E's manifold
-///        (see `slamlab.foundations.epipolar.SampsonProblem`).
+///        (see `slam_it_all.foundations.epipolar.SampsonProblem`).
 class SampsonProblem {
  public:
   /// @brief The state: R and a unit t.
@@ -507,4 +507,4 @@ Result<ransac::Solution<Eigen::Matrix3d>> fundamental_ransac(const Eigen::Ref<co
   return ransac::estimate(FundamentalEstimator(pixels1, pixels2), options);
 }
 
-}  // namespace slamlab::foundations::epipolar
+}  // namespace slam_it_all::foundations::epipolar

@@ -1,5 +1,5 @@
 /// @file
-/// @brief Native tests for local mapping (slamlab/edge/mapping.hpp) on the exact scene: the
+/// @brief Native tests for local mapping (slam_it_all/edge/mapping.hpp) on the exact scene: the
 ///        keyframe decision, points from depth, culling points and keyframes, triangulation,
 ///        fusion, and a whole mapping step. Parity with the Python reference is checked through
 ///        the bindings by tests/edge.
@@ -12,13 +12,13 @@
 #include "../foundations/fixture_support.hpp"
 #include "../foundations/test_support.hpp"
 #include "scene.hpp"
-#include "slamlab/edge/mapping.hpp"
+#include "slam_it_all/edge/mapping.hpp"
 
 namespace {
 
-namespace edge = slamlab::edge;
-namespace scene = slamlab::testing::scene;
-using slamlab::testing::expect;
+namespace edge = slam_it_all::edge;
+namespace scene = slam_it_all::testing::scene;
+using slam_it_all::testing::expect;
 
 /// @brief Point ids `first` to `last - 1`, then -1 to the scene's size.
 /// @param first The first id.
@@ -181,9 +181,9 @@ int run() {
   check_triangulation(failures);
   check_fusion(failures);
   check_culling_and_process(failures);
-  return slamlab::testing::finish("edge/mapping", failures);
+  return slam_it_all::testing::finish("edge/mapping", failures);
 }
 
 }  // namespace
 
-int main() { return slamlab::testing::guarded("edge/mapping", run); }
+int main() { return slam_it_all::testing::guarded("edge/mapping", run); }

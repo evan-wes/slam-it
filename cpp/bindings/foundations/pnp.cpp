@@ -1,6 +1,6 @@
 /// @file
-/// @brief Bindings for `slamlab.foundations.pnp` (`slamlab._cpp.foundations.pnp`).
-#include "slamlab/foundations/pnp.hpp"
+/// @brief Bindings for `slam_it_all.foundations.pnp` (`slam_it_all._cpp.foundations.pnp`).
+#include "slam_it_all/foundations/pnp.hpp"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -12,7 +12,7 @@
 
 namespace nb = nanobind;
 
-namespace slamlab::bindings {
+namespace slam_it_all::bindings {
 
 namespace {
 
@@ -84,4 +84,4 @@ void bind_pnp(nb::module_& m) {
         "Run LO-MSAC with a P3P solver and EPnP refits, then the refinement.");
 }
 
-}  // namespace slamlab::bindings
+}  // namespace slam_it_all::bindings

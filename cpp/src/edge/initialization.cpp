@@ -1,17 +1,17 @@
 /// @file
-/// @brief Implementation of the initialisation declared in slamlab/edge/initialization.hpp.
-#include "slamlab/edge/initialization.hpp"
+/// @brief Implementation of the initialisation declared in slam_it_all/edge/initialization.hpp.
+#include "slam_it_all/edge/initialization.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <utility>
 
-#include "slamlab/edge/adjust.hpp"
-#include "slamlab/foundations/triangulation.hpp"
-#include "slamlab/foundations/twoview.hpp"
+#include "slam_it_all/edge/adjust.hpp"
+#include "slam_it_all/foundations/triangulation.hpp"
+#include "slam_it_all/foundations/twoview.hpp"
 
-namespace slamlab::edge {
+namespace slam_it_all::edge {
 
 namespace {
 
@@ -61,7 +61,7 @@ Result<void> insert_unobserving(Map& m, const Frame& frame, const Eigen::Matrix4
 }
 
 /// @brief Scale the map's translations and points, and refresh the points (a monocular map's
-///        gauge, `slamlab.edge.initialization._scaled`).
+///        gauge, `slam_it_all.edge.initialization._scaled`).
 /// @param m The map.
 /// @param factor The scale.
 /// @return Nothing, or the map's error.
@@ -95,7 +95,7 @@ double median(std::vector<double>& values) {
 }
 
 /// @brief The matches a monocular start keeps, and their points
-///        (`slamlab.edge.initialization._kept_points`, ORB-SLAM's `CheckRT`): the chosen
+///        (`slam_it_all.edge.initialization._kept_points`, ORB-SLAM's `CheckRT`): the chosen
 ///        motion's inliers in front of both views with rays whose cosine is below
 ///        `init_parallax_cos`.
 /// @param result The two-view initialisation.
@@ -309,4 +309,4 @@ Result<std::optional<Started>> initialize_monocular(
   return out;
 }
 
-}  // namespace slamlab::edge
+}  // namespace slam_it_all::edge

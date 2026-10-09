@@ -7,11 +7,11 @@
 #include <cstdint>
 #include <vector>
 
-#include "slamlab/foundations/ba.hpp"
-#include "slamlab/foundations/camera.hpp"
+#include "slam_it_all/foundations/ba.hpp"
+#include "slam_it_all/foundations/camera.hpp"
 
 /// @brief Bundle adjustment's internals (not part of the public API).
-namespace slamlab::foundations::ba::detail {
+namespace slam_it_all::foundations::ba::detail {
 
 using Eigen::Index;
 /// @brief A list of indices into a vector or matrix.
@@ -36,4 +36,4 @@ using BlockPoint = Eigen::Matrix<double, Eigen::Dynamic, 3, Eigen::ColMajor, kMa
 /// @return The same value.
 inline Index at(std::int64_t value) { return static_cast<Index>(value); }
 
-}  // namespace slamlab::foundations::ba::detail
+}  // namespace slam_it_all::foundations::ba::detail

@@ -1,7 +1,7 @@
 /// @file
-/// @brief Bindings for `slamlab.foundations.triangulation`
-///        (`slamlab._cpp.foundations.triangulation`).
-#include "slamlab/foundations/triangulation.hpp"
+/// @brief Bindings for `slam_it_all.foundations.triangulation`
+///        (`slam_it_all._cpp.foundations.triangulation`).
+#include "slam_it_all/foundations/triangulation.hpp"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -13,7 +13,7 @@
 
 namespace nb = nanobind;
 
-namespace slamlab::bindings {
+namespace slam_it_all::bindings {
 
 namespace {
 
@@ -84,4 +84,4 @@ void bind_triangulation(nb::module_& m) {
         "Triangulate (P, V, 3) bearings from (V, 4, 4) poses where observed; return (P, 5).");
 }
 
-}  // namespace slamlab::bindings
+}  // namespace slam_it_all::bindings

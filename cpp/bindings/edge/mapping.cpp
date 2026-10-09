@@ -1,9 +1,9 @@
 /// @file
-/// @brief Bindings for `slamlab.edge.mapping` (`slamlab._cpp.edge.mapping`).
+/// @brief Bindings for `slam_it_all.edge.mapping` (`slam_it_all._cpp.edge.mapping`).
 ///
 /// Each step copies the map in, changes the copy, and returns it as a dict; the mode crosses
 /// by name, a tracked frame as `pose` and `points`.
-#include "slamlab/edge/mapping.hpp"
+#include "slam_it_all/edge/mapping.hpp"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -19,7 +19,7 @@
 
 namespace nb = nanobind;
 
-namespace slamlab::bindings {
+namespace slam_it_all::bindings {
 
 namespace {
 
@@ -173,4 +173,4 @@ void bind_mapping(nb::module_& m) {
         nb::arg("mode"), nb::arg("options"), "Insert a keyframe and run local mapping on it.");
 }
 
-}  // namespace slamlab::bindings
+}  // namespace slam_it_all::bindings

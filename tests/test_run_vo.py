@@ -8,7 +8,7 @@ from types import ModuleType
 
 import pytest
 
-from slamlab.edge.options import Options
+from slam_it_all.edge.options import Options
 
 REPO = Path(__file__).resolve().parents[1]
 

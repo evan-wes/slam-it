@@ -8,9 +8,9 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from slamlab import backends
-from slamlab.foundations import se3, triangulation
-from slamlab.foundations.errors import InvalidInputError
+from slam_it_all import backends
+from slam_it_all.foundations import se3, triangulation
+from slam_it_all.foundations.errors import InvalidInputError
 from tests.conftest import assert_matches_fixture, load_fixture, require_function
 from tests.foundations.scenes import POSE
 from tests.foundations.scenes import bearings as _bearings

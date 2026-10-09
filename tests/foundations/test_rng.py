@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from slamlab.foundations.errors import InvalidInputError
-from slamlab.foundations.rng import Pcg32
+from slam_it_all.foundations.errors import InvalidInputError
+from slam_it_all.foundations.rng import Pcg32
 from tests.conftest import load_fixture
 
 RNG = load_fixture("foundations/rng.json")

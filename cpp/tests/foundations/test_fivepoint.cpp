@@ -1,5 +1,5 @@
 /// @file
-/// @brief Native tests for the 5-point solvers (slamlab/foundations/fivepoint.hpp): the true E
+/// @brief Native tests for the 5-point solvers (slam_it_all/foundations/fivepoint.hpp): the true E
 ///        among each solver's solutions, every solution essential, Sturm roots, bad input.
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
@@ -9,15 +9,15 @@
 #include <vector>
 
 #include "scene_support.hpp"
-#include "slamlab/foundations/fivepoint.hpp"
+#include "slam_it_all/foundations/fivepoint.hpp"
 #include "test_support.hpp"
 
 namespace {
 
-namespace fivepoint = slamlab::foundations::fivepoint;
-using slamlab::testing::expect;
-using slamlab::testing::Rows3;
-using slamlab::testing::up_to_sign;
+namespace fivepoint = slam_it_all::foundations::fivepoint;
+using slam_it_all::testing::expect;
+using slam_it_all::testing::Rows3;
+using slam_it_all::testing::up_to_sign;
 
 /// @brief Whether a solver finds the true E among essential solutions, on five pairs.
 /// @param b1 Five bearings in camera 1.
@@ -46,12 +46,12 @@ bool finds_truth(const Rows3& b1, const Rows3& b2, const Eigen::Matrix3d& truth,
 
 int main() {
   int failures = 0;
-  const Eigen::Matrix3d truth = slamlab::testing::scene_essential();
+  const Eigen::Matrix3d truth = slam_it_all::testing::scene_essential();
   Rows3 b1;
   Rows3 b2;
-  slamlab::testing::scene_bearings(
-      25, false, {slamlab::testing::scene_rotation(), slamlab::testing::scene_translation()}, b1,
-      b2);
+  slam_it_all::testing::scene_bearings(
+      25, false,
+      {slam_it_all::testing::scene_rotation(), slam_it_all::testing::scene_translation()}, b1, b2);
   for (const fivepoint::Solver solver :
        {fivepoint::Solver::kNister, fivepoint::Solver::kStewenius}) {
     bool all = true;
@@ -74,8 +74,9 @@ int main() {
 
   const auto four =
       fivepoint::essential_5pt(b1.topRows(4), b2.topRows(4), fivepoint::Solver::kNister);
-  expect(!four.has_value() && four.error().kind == slamlab::foundations::ErrorKind::kInvalidInput,
-         "four pairs are rejected", failures);
+  expect(
+      !four.has_value() && four.error().kind == slam_it_all::foundations::ErrorKind::kInvalidInput,
+      "four pairs are rejected", failures);
   const auto six =
       fivepoint::essential_5pt(b1.topRows(6), b2.topRows(6), fivepoint::Solver::kStewenius);
   expect(!six.has_value(), "six pairs are rejected", failures);
@@ -106,5 +107,5 @@ int main() {
     }
     expect(essential, "a pure rotation returns only essential matrices", failures);
   }
-  return slamlab::testing::finish("foundations/fivepoint", failures);
+  return slam_it_all::testing::finish("foundations/fivepoint", failures);
 }

@@ -2,7 +2,7 @@
 /// @brief Reading a Bundle Adjustment in the Large (BAL) problem into a `ba::Problem`,
 ///        natively, for the benchmarks.
 ///
-/// The same conversion as the Python reader (`slamlab.eval.readers.read_bal`) and the Rust
+/// The same conversion as the Python reader (`slam_it_all.eval.readers.read_bal`) and the Rust
 /// example's: BAL's camera frame flips `y` and `z` relative to this package's, its cameras are
 /// world-to-camera `(omega, t, f, k1, k2)`, and its observations are centred pixels with `y`
 /// up. One radial intrinsics group per camera, `f, k1, k2` free, the principal point fixed.
@@ -20,12 +20,12 @@
 #include <utility>
 #include <vector>
 
-#include "slamlab/foundations/ba.hpp"
-#include "slamlab/foundations/se3.hpp"
-#include "slamlab/foundations/so3.hpp"
+#include "slam_it_all/foundations/ba.hpp"
+#include "slam_it_all/foundations/se3.hpp"
+#include "slam_it_all/foundations/so3.hpp"
 
 /// @brief Benchmark support, outside the cores.
-namespace slamlab::bench {
+namespace slam_it_all::bench {
 
 /// @brief Read a BAL problem from a plain-text file.
 /// @param path The file.
@@ -90,4 +90,4 @@ inline std::optional<foundations::ba::Problem> read_bal(const std::string& path)
   return problem;
 }
 
-}  // namespace slamlab::bench
+}  // namespace slam_it_all::bench

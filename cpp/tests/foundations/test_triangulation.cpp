@@ -1,17 +1,17 @@
 /// @file
-/// @brief Native tests for triangulation (slamlab/foundations/triangulation.hpp): exact
+/// @brief Native tests for triangulation (slam_it_all/foundations/triangulation.hpp): exact
 ///        recovery in both methods, parallel rays at infinity, and input checks.
 #include <Eigen/Geometry>
 #include <cmath>
 #include <vector>
 
-#include "slamlab/foundations/triangulation.hpp"
+#include "slam_it_all/foundations/triangulation.hpp"
 #include "test_support.hpp"
 
 namespace {
 
-namespace triangulation = slamlab::foundations::triangulation;
-using slamlab::testing::expect;
+namespace triangulation = slam_it_all::foundations::triangulation;
+using slam_it_all::testing::expect;
 using Mask = Eigen::Array<bool, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
 
 /// @brief A pose `[R | t]` from an axis-angle rotation and a translation.
@@ -79,5 +79,5 @@ int main() {
          "a zero translation is rejected", failures);
   expect(!triangulation::n_view(poses, all, Mask::Constant(3, 3, false)).has_value(),
          "a point seen once is rejected", failures);
-  return slamlab::testing::finish("foundations/triangulation", failures);
+  return slam_it_all::testing::finish("foundations/triangulation", failures);
 }

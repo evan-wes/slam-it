@@ -1,6 +1,6 @@
 # Doxygen for the C++ core. Run by scripts/check.sh, which fails on any warning:
 # every public declaration must be documented, and @param/@return must match it.
-PROJECT_NAME           = slamlab
+PROJECT_NAME           = "SLAM It All!"
 INPUT                  = cpp/include cpp/src
 RECURSIVE              = YES
 OUTPUT_DIRECTORY       = build/doxygen

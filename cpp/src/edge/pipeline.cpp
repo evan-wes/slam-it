@@ -1,15 +1,15 @@
 /// @file
-/// @brief Implementation of the pipeline declared in slamlab/edge/pipeline.hpp.
-#include "slamlab/edge/pipeline.hpp"
+/// @brief Implementation of the pipeline declared in slam_it_all/edge/pipeline.hpp.
+#include "slam_it_all/edge/pipeline.hpp"
 
 #include <chrono>
 #include <vector>
 
-#include "slamlab/edge/mapping.hpp"
-#include "slamlab/edge/tracking.hpp"
-#include "slamlab/foundations/se3.hpp"
+#include "slam_it_all/edge/mapping.hpp"
+#include "slam_it_all/edge/tracking.hpp"
+#include "slam_it_all/foundations/se3.hpp"
 
-namespace slamlab::edge {
+namespace slam_it_all::edge {
 
 using foundations::ErrorKind;
 using foundations::fail;
@@ -245,4 +245,4 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
   return Step{.tracked = std::move(tracked), .keyframe = *need, .map_seconds = mapped.count()};
 }
 
-}  // namespace slamlab::edge
+}  // namespace slam_it_all::edge

@@ -9,7 +9,7 @@ on:
 permissions:
   contents: read
 
-# One job, the same checks as local: build the conda env with scripts/setup_slamlab.sh, then
+# One job, the same checks as local: build the conda env with scripts/setup_slam_it_all.sh, then
 # run every layer-1 check with scripts/check.sh. Running the setup script here also proves the
 # env, its lockfile and the three-language build reproduce from scratch.
 jobs:
@@ -32,7 +32,7 @@ jobs:
           echo "${MINIFORGE_SHA256}  ${installer}" | sha256sum --check
           bash "$installer" -b -p "$HOME/miniforge"
           echo "CONDA_EXE=$HOME/miniforge/bin/conda" >> "$GITHUB_ENV"
-      - name: Build the slamlab env (scripts/setup_slamlab.sh)
-        run: scripts/setup_slamlab.sh
+      - name: Build the slam-it-all env (scripts/setup_slam_it_all.sh)
+        run: scripts/setup_slam_it_all.sh
       - name: Layer-1 checks (scripts/check.sh)
-        run: scripts/check.sh --env slamlab
+        run: scripts/check.sh --env slam-it-all

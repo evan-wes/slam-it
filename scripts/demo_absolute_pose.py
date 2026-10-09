@@ -1,14 +1,14 @@
 """Absolute pose on a real sequence: PnP RANSAC against the ground truth and OpenCV.
 
 A reference frame A provides 3D points, in A's camera frame (the world here); a later frame C
-is matched to A with slamlab's ORB features (:mod:`slamlab.foundations.orb` and
-:mod:`slamlab.foundations.matching`, ORB-SLAM's extractor and filters), and
-:func:`slamlab.foundations.pnp.pnp_ransac` places C against the points: ``T_C_A``. The
+is matched to A with SLAM It All!'s ORB features (:mod:`slam_it_all.foundations.orb` and
+:mod:`slam_it_all.foundations.matching`, ORB-SLAM's extractor and filters), and
+:func:`slam_it_all.foundations.pnp.pnp_ransac` places C against the points: ``T_C_A``. The
 points come from one of two sources:
 
 - ``depth`` (default): A's keypoints back-projected through its registered depth map, metric
-  and independent of slamlab's two-view code;
-- ``twoview``: :func:`slamlab.foundations.twoview.initialize` on A and B = A + ``--init-gap``,
+  and independent of SLAM It All!'s two-view code;
+- ``twoview``: :func:`slam_it_all.foundations.twoview.initialize` on A and B = A + ``--init-gap``,
   its triangulated points scaled by the true baseline (two views fix no scale), so the errors
   are in metres here too. This is a tracker's first step: initialise, then place the next
   frame.
@@ -18,7 +18,7 @@ It prints the inliers, the rotation error (degrees) and the camera-position erro
 OpenCV's ``solvePnPRansac`` (AP3P) with ``solvePnPRefineLM`` on the inliers, on the same
 correspondences. ``--survey`` runs frames across the sequence and prints the medians.
 
-Run from the repository root, in the slamlab environment::
+Run from the repository root, in the slam-it-all environment::
 
     python scripts/demo_absolute_pose.py
     python scripts/demo_absolute_pose.py --source twoview --first 80 --offset 45
@@ -40,12 +40,12 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from slamlab import backends
-from slamlab.eval import images, tum
-from slamlab.foundations import camera, matching, orb, p3p, pnp, ransac, se3, so3, twoview
-from slamlab.foundations.correspondences import normalised_xy
-from slamlab.foundations.errors import DegenerateError
-from slamlab.foundations.solve import Solution
+from slam_it_all import backends
+from slam_it_all.eval import images, tum
+from slam_it_all.foundations import camera, matching, orb, p3p, pnp, ransac, se3, so3, twoview
+from slam_it_all.foundations.correspondences import normalised_xy
+from slam_it_all.foundations.errors import DegenerateError
+from slam_it_all.foundations.solve import Solution
 
 DEFAULT_SEQUENCE = Path("../datasets/tum/rgbd_dataset_freiburg1_xyz")
 FEATURES = orb.Options(n_features=2000)
@@ -63,9 +63,9 @@ SURVEY_STRIDE = 40
 SURVEY_OFFSETS = (15, 30)
 """Each survey reference places the frames this many frames later."""
 OPENCV_ITERATIONS = 10000
-"""OpenCV's RANSAC sample limit: slamlab's default ``max_iterations``."""
+"""OpenCV's RANSAC sample limit: SLAM It All!'s default ``max_iterations``."""
 OPENCV_CONFIDENCE = 0.999
-"""OpenCV's RANSAC confidence: slamlab's default."""
+"""OpenCV's RANSAC confidence: SLAM It All!'s default."""
 OPENCV_MIN_INLIERS = 4
 """Fewer OpenCV inliers than this and its pose is not refined (``solvePnPRefineLM`` needs
 four)."""
@@ -79,7 +79,7 @@ def _backend() -> str:
 
 
 def features(path: Path) -> orb.Features:
-    """Extract slamlab's ORB features from an image.
+    """Extract SLAM It All!'s ORB features from an image.
 
     Parameters
     ----------
@@ -88,7 +88,7 @@ def features(path: Path) -> orb.Features:
 
     Returns
     -------
-    slamlab.foundations.orb.Features
+    slam_it_all.foundations.orb.Features
         Its keypoints and descriptors.
     """
     return orb.extract(images.read_gray(path), FEATURES, backend=_backend())
@@ -99,7 +99,7 @@ def match(a: orb.Features, b: orb.Features) -> NDArray[np.int64]:
 
     Parameters
     ----------
-    a, b : slamlab.foundations.orb.Features
+    a, b : slam_it_all.foundations.orb.Features
         The two images' features.
 
     Returns
@@ -124,7 +124,7 @@ def depth_points(
         The sequence.
     frame : int
         The frame's index.
-    keypoints : slamlab.foundations.orb.Features
+    keypoints : slam_it_all.foundations.orb.Features
         Its keypoints.
 
     Returns
@@ -164,7 +164,7 @@ def twoview_points(
         The sequence.
     first, gap : int
         The reference frame, and the frames to the second view.
-    found : dict of int to slamlab.foundations.orb.Features
+    found : dict of int to slam_it_all.foundations.orb.Features
         Keypoints already detected, by frame (filled as needed).
 
     Returns
@@ -246,7 +246,7 @@ def opencv_reference(
     """Return OpenCV's ``T_C_A``: ``solvePnPRansac`` (AP3P), then ``solvePnPRefineLM``.
 
     It works on the bearings' normalised image points with an identity camera, and the same
-    threshold and confidence as slamlab's run.
+    threshold and confidence as SLAM It All!'s run.
 
     Parameters
     ----------

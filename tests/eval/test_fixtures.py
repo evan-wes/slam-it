@@ -13,7 +13,7 @@ from typing import Any
 
 import numpy as np
 
-from slamlab.eval import euroc, runs, tum
+from slam_it_all.eval import euroc, runs, tum
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "eval"
 

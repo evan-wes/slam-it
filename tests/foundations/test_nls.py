@@ -1,4 +1,4 @@
-"""Tests for slamlab.foundations.nls: the Python reference loop, against SciPy and on SO(3)."""
+"""Tests for slam_it_all.foundations.nls: the Python reference loop, against SciPy and on SO(3)."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ import pytest
 from numpy.typing import NDArray
 from scipy.optimize import least_squares
 
-from slamlab.foundations import nls, so3, solve
-from slamlab.foundations.errors import InvalidInputError, NotConvergedError
+from slam_it_all.foundations import nls, so3, solve
+from slam_it_all.foundations.errors import InvalidInputError, NotConvergedError
 
 TIGHT = nls.Options(
     max_iterations=200, function_tolerance=0.0, gradient_tolerance=1e-12, step_tolerance=1e-14

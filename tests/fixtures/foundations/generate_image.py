@@ -4,7 +4,7 @@ Run from the repository root after changing the cases (the fixture is committed)
 
     python -m tests.fixtures.foundations.generate_image
 
-Independent of the module under test, nothing imported from slamlab: each operation is
+Independent of the module under test, nothing imported from slam_it_all: each operation is
 written from its definition, one output pixel at a time, with exact rationals
 (:class:`fractions.Fraction`) where the module uses integer tricks. A blur is the direct 2D
 sum over the kernel's outer product, reflecting by stepping back inside the image; a resize

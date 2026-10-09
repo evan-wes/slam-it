@@ -1,7 +1,7 @@
 # Non-linear least squares on manifolds
 
-Design note for `slamlab.foundations.nls` (the Python reference) and
-`slamlab/foundations/nls.hpp` (the C++ core).
+Design note for `slam_it_all.foundations.nls` (the Python reference) and
+`slam_it_all/foundations/nls.hpp` (the C++ core).
 
 ## The problem
 

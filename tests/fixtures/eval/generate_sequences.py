@@ -8,7 +8,7 @@ Each folder holds a dataset's text files only (the readers list images, they do 
 them): a TUM folder named for each sensor (freiburg1, 2 and 3), one describing its camera in
 ``camera.txt``, one without depth maps, and a EuRoC folder whose right camera misses a frame.
 The expected values are what the Python readers' run inputs give
-(:func:`slamlab.eval.tum.read_frames`, :func:`slamlab.eval.euroc.read_frames`), paths
+(:func:`slam_it_all.eval.tum.read_frames`, :func:`slam_it_all.eval.euroc.read_frames`), paths
 relative to each folder; the C++ and Rust readers are held to them exactly.
 """
 
@@ -18,7 +18,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from slamlab.eval import euroc, tum
+from slam_it_all.eval import euroc, tum
 
 HERE = Path(__file__).parent
 FOLDER = HERE / "sequences"

@@ -5,9 +5,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from slamlab import backends
-from slamlab.foundations import fivepoint, so3
-from slamlab.foundations.errors import InvalidInputError
+from slam_it_all import backends
+from slam_it_all.foundations import fivepoint, so3
+from slam_it_all.foundations.errors import InvalidInputError
 from tests.conftest import load_fixture, require_function
 from tests.foundations import scenes as sc
 

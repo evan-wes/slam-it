@@ -10,10 +10,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from slamlab.eval import budgets, runs
-from slamlab.foundations.errors import InvalidInputError
+from slam_it_all.eval import budgets, runs
+from slam_it_all.foundations.errors import InvalidInputError
 
-STATUS = "Name:\tslamlab_vo\nVmPeak:\t  912340 kB\nVmHWM:\t   47248 kB\nVmRSS:\t   41000 kB\n"
+STATUS = "Name:\tslam_it_all_vo\nVmPeak:\t  912340 kB\nVmHWM:\t   47248 kB\nVmRSS:\t   41000 kB\n"
 """A ``/proc/<pid>/status`` excerpt: the peak resident set is ``VmHWM``, not ``VmPeak``."""
 
 
@@ -34,7 +34,7 @@ def test_peak_memory_is_none_where_the_system_does_not_say(tmp_path: Path, text:
 
 
 GROW = """
-from slamlab.eval import budgets
+from slam_it_all.eval import budgets
 before = budgets.peak_memory()
 held = bytearray(64 * 2**20)
 held[:: 2**12] = b"x" * len(held[:: 2**12])  # touch every page
@@ -57,7 +57,7 @@ def test_peak_memory_grows_with_what_the_process_holds() -> None:
 def test_allowed_cpus_reads_the_affinity_list(tmp_path: Path) -> None:
     """The CPUs taskset allows, as Linux lists them; None where there is no such list."""
     status = tmp_path / "status"
-    status.write_text("Name:\tslamlab_vo\nCpus_allowed:\tf0\nCpus_allowed_list:\t4-7\n")
+    status.write_text("Name:\tslam_it_all_vo\nCpus_allowed:\tf0\nCpus_allowed_list:\t4-7\n")
     assert budgets.allowed_cpus(status) == [4, 5, 6, 7]
     status.write_text("Cpus_allowed_list:\t0-3,8,10-11\n")
     assert budgets.allowed_cpus(status) == [0, 1, 2, 3, 8, 10, 11]
@@ -175,10 +175,10 @@ def test_cpus_refuses_a_budget_the_machine_cannot_hold(
 
 def test_command_caps_memory_without_swap_and_pins_the_cores() -> None:
     """The scope's memory cap kills rather than swaps; taskset pins; the program runs last."""
-    assert budgets.command(LAPTOP, [4, 5, 6, 7], ["slamlab_vo", "--mode", "rgbd"]) == [
+    assert budgets.command(LAPTOP, [4, 5, 6, 7], ["slam_it_all_vo", "--mode", "rgbd"]) == [
         *("systemd-run", "--user", "--scope", "--quiet"),
         *("-p", "MemoryMax=8589934592", "-p", "MemorySwapMax=0", "--"),
-        *("taskset", "--cpu-list", "4,5,6,7", "slamlab_vo", "--mode", "rgbd"),
+        *("taskset", "--cpu-list", "4,5,6,7", "slam_it_all_vo", "--mode", "rgbd"),
     ]
 
 

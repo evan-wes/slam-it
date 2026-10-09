@@ -7,9 +7,9 @@ from typing import Any
 import numpy as np
 import pytest
 
-from slamlab import backends
-from slamlab.foundations import alignment, se3
-from slamlab.foundations.errors import DegenerateError, InvalidInputError
+from slam_it_all import backends
+from slam_it_all.foundations import alignment, se3
+from slam_it_all.foundations.errors import DegenerateError, InvalidInputError
 from tests.conftest import assert_matches_fixture, load_fixture, require_function
 
 FIXTURE = load_fixture("foundations/alignment.json")

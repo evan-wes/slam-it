@@ -6,11 +6,11 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from slamlab.edge import frames, pipeline, tracking
-from slamlab.edge.options import Options
-from slamlab.eval.metrics import absolute_error
-from slamlab.foundations import orb
-from slamlab.foundations.errors import InvalidInputError
+from slam_it_all.edge import frames, pipeline, tracking
+from slam_it_all.edge.options import Options
+from slam_it_all.eval.metrics import absolute_error
+from slam_it_all.foundations import orb
+from slam_it_all.foundations.errors import InvalidInputError
 from tests.edge import room
 from tests.edge.conftest import Run
 from tests.edge.support import ATE_BOUND, CAMERA, MONOCULAR_START, OPTIONS

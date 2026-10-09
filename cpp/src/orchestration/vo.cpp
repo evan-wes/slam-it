@@ -1,6 +1,6 @@
 /// @file
-/// @brief A whole sequence through the edge pipeline (slamlab/orchestration/vo.hpp).
-#include "slamlab/orchestration/vo.hpp"
+/// @brief A whole sequence through the edge pipeline (slam_it_all/orchestration/vo.hpp).
+#include "slam_it_all/orchestration/vo.hpp"
 
 #include <Eigen/Core>
 #include <algorithm>
@@ -22,23 +22,23 @@
 #include <variant>
 #include <vector>
 
-#include "slamlab/edge/frames.hpp"
-#include "slamlab/edge/map.hpp"
-#include "slamlab/edge/options.hpp"
-#include "slamlab/edge/pipeline.hpp"
-#include "slamlab/eval/euroc.hpp"
-#include "slamlab/eval/png.hpp"
-#include "slamlab/eval/runs.hpp"
-#include "slamlab/eval/text.hpp"
-#include "slamlab/eval/tum.hpp"
-#include "slamlab/foundations/camera.hpp"
-#include "slamlab/foundations/error.hpp"
-#include "slamlab/foundations/image.hpp"
-#include "slamlab/foundations/orb.hpp"
-#include "slamlab/foundations/se3.hpp"
-#include "slamlab/foundations/stereo.hpp"
+#include "slam_it_all/edge/frames.hpp"
+#include "slam_it_all/edge/map.hpp"
+#include "slam_it_all/edge/options.hpp"
+#include "slam_it_all/edge/pipeline.hpp"
+#include "slam_it_all/eval/euroc.hpp"
+#include "slam_it_all/eval/png.hpp"
+#include "slam_it_all/eval/runs.hpp"
+#include "slam_it_all/eval/text.hpp"
+#include "slam_it_all/eval/tum.hpp"
+#include "slam_it_all/foundations/camera.hpp"
+#include "slam_it_all/foundations/error.hpp"
+#include "slam_it_all/foundations/image.hpp"
+#include "slam_it_all/foundations/orb.hpp"
+#include "slam_it_all/foundations/se3.hpp"
+#include "slam_it_all/foundations/stereo.hpp"
 
-namespace slamlab::orchestration::vo {
+namespace slam_it_all::orchestration::vo {
 
 namespace {
 
@@ -66,7 +66,7 @@ struct RgbdImages {
 };
 
 /// @brief A frame's images as a camera delivers them: decoded, and a stereo pair rectified
-///        (`slamlab.orchestration.vo._Delivered`).
+///        (`slam_it_all.orchestration.vo._Delivered`).
 struct Delivered {
   /// @brief The frame's time.
   double timestamp{0.0};
@@ -376,7 +376,7 @@ Result<void> track(const Source& source, edge::Pipeline& pipeline, const Request
 }
 
 /// @brief Read a mode's name.
-/// @param text The name, as `slamlab.edge.options.MODES` spells it.
+/// @param text The name, as `slam_it_all.edge.options.MODES` spells it.
 /// @return The mode, or `InvalidInput`.
 Result<edge::Mode> mode_named(std::string_view text) {
   for (std::uint8_t code = 0; code < static_cast<std::uint8_t>(edge::Mode::kCount); ++code) {
@@ -547,4 +547,4 @@ Result<eval::runs::Run> run(const Request& request) {
   return out;
 }
 
-}  // namespace slamlab::orchestration::vo
+}  // namespace slam_it_all::orchestration::vo

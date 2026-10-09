@@ -1,25 +1,25 @@
 /// @file
-/// @brief Native tests for homographies (slamlab/foundations/homography.hpp): the DLT on a
+/// @brief Native tests for homographies (slam_it_all/foundations/homography.hpp): the DLT on a
 ///        plane, the Sampson error, the decomposition, and collinear points.
 #include <Eigen/Core>
 #include <cstddef>
 
 #include "scene_support.hpp"
-#include "slamlab/foundations/homography.hpp"
+#include "slam_it_all/foundations/homography.hpp"
 #include "test_support.hpp"
 
 int main() {
-  namespace homography = slamlab::foundations::homography;
-  using slamlab::testing::expect;
-  using slamlab::testing::up_to_sign;
+  namespace homography = slam_it_all::foundations::homography;
+  using slam_it_all::testing::expect;
+  using slam_it_all::testing::up_to_sign;
   int failures = 0;
   // The plane z = 5 in camera 1, seen after the scenes' motion.
-  const Eigen::Vector3d t = slamlab::testing::scene_translation();
-  const Eigen::Matrix3d rotation = slamlab::testing::scene_rotation();
+  const Eigen::Vector3d t = slam_it_all::testing::scene_translation();
+  const Eigen::Matrix3d rotation = slam_it_all::testing::scene_rotation();
   homography::Rows2 x1(20, 2);
   homography::Rows2 x2(20, 2);
   for (int i = 0; i < 20; ++i) {
-    const Eigen::Vector3d x = slamlab::testing::scene_point(i, true);
+    const Eigen::Vector3d x = slam_it_all::testing::scene_point(i, true);
     const Eigen::Vector3d y = (rotation * x) + t;
     x1.row(i) = x.head<2>().transpose() / x(2);
     x2.row(i) = y.head<2>().transpose() / y(2);
@@ -50,5 +50,5 @@ int main() {
   line << 0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 0.0, 1.0;
   expect(!homography::homography_dlt(line, line).has_value(),
          "three collinear points do not determine H", failures);
-  return slamlab::testing::finish("foundations/homography", failures);
+  return slam_it_all::testing::finish("foundations/homography", failures);
 }

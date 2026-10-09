@@ -11,9 +11,9 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from slamlab.eval import runs
-from slamlab.foundations import so3
-from slamlab.foundations.errors import InvalidInputError
+from slam_it_all.eval import runs
+from slam_it_all.foundations import so3
+from slam_it_all.foundations.errors import InvalidInputError
 
 
 def _poses(n: int, seed: int = 0) -> NDArray[np.float64]:

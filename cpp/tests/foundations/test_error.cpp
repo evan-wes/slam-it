@@ -1,14 +1,14 @@
 /// @file
-/// @brief Native tests for the error contract in slamlab/foundations/error.hpp.
+/// @brief Native tests for the error contract in slam_it_all/foundations/error.hpp.
 #include <iostream>
 
-#include "slamlab/foundations/error.hpp"
+#include "slam_it_all/foundations/error.hpp"
 
 namespace {
 
-using slamlab::foundations::ErrorKind;
-using slamlab::foundations::fail;
-using slamlab::foundations::Result;
+using slam_it_all::foundations::ErrorKind;
+using slam_it_all::foundations::fail;
+using slam_it_all::foundations::Result;
 
 /// @brief A fallible function for the test: halves even numbers, rejects odd ones.
 /// @param n The number to halve.

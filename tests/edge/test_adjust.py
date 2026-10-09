@@ -11,10 +11,10 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from slamlab import backends
-from slamlab.edge import adjust
-from slamlab.edge.map import Map
-from slamlab.foundations.errors import InvalidInputError
+from slam_it_all import backends
+from slam_it_all.edge import adjust
+from slam_it_all.edge.map import Map
+from slam_it_all.foundations.errors import InvalidInputError
 from tests.conftest import require_function
 from tests.edge.conftest import Truth
 from tests.edge.support import CAMERA, OPTIONS, SOLVER_TOLERANCE, assert_maps_match

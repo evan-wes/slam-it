@@ -1,7 +1,7 @@
 # RANSAC
 
-Design note for `slamlab.foundations.ransac` and `slamlab.foundations.rng` (the Python
-references) and `slamlab/foundations/ransac.hpp` and `rng.hpp` (the C++ core).
+Design note for `slam_it_all.foundations.ransac` and `slam_it_all.foundations.rng` (the Python
+references) and `slam_it_all/foundations/ransac.hpp` and `rng.hpp` (the C++ core).
 
 ## The problem
 

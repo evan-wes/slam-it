@@ -1,9 +1,9 @@
 /// @file
-/// @brief Bindings for `slamlab.edge.map` (`slamlab._cpp.edge.map`).
+/// @brief Bindings for `slam_it_all.edge.map` (`slam_it_all._cpp.edge.map`).
 ///
 /// The map crosses as a dict of `Map`'s fields both ways (`edge_crossing.hpp`); an operation
 /// copies it in, changes the copy, and returns it.
-#include "slamlab/edge/map.hpp"
+#include "slam_it_all/edge/map.hpp"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -17,7 +17,7 @@
 
 namespace nb = nanobind;
 
-namespace slamlab::bindings {
+namespace slam_it_all::bindings {
 
 namespace {
 
@@ -187,4 +187,4 @@ void bind_map(nb::module_& m) {
         nb::arg("found").noconvert(), "Add to points' visible and found counts.");
 }
 
-}  // namespace slamlab::bindings
+}  // namespace slam_it_all::bindings

@@ -1,5 +1,5 @@
 {
- "format": "slamlab-run",
+ "format": "slam-it-all-run",
  "version": 2,
  "dataset": "tum",
  "sequence": "rgbd_dataset_freiburg1_fixture",

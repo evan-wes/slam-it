@@ -1,6 +1,6 @@
 /// @file
-/// @brief Implementation of the run writer declared in slamlab/eval/runs.hpp.
-#include "slamlab/eval/runs.hpp"
+/// @brief Implementation of the run writer declared in slam_it_all/eval/runs.hpp.
+#include "slam_it_all/eval/runs.hpp"
 
 #include <algorithm>
 #include <array>
@@ -14,10 +14,10 @@
 #include <string_view>
 #include <system_error>
 
-#include "slamlab/foundations/se3.hpp"
-#include "slamlab/foundations/so3.hpp"
+#include "slam_it_all/foundations/se3.hpp"
+#include "slam_it_all/foundations/so3.hpp"
 
-namespace slamlab::eval::runs {
+namespace slam_it_all::eval::runs {
 
 namespace {
 
@@ -342,4 +342,4 @@ Result<void> write_run(const std::string& folder, const Run& run) {
   return {};
 }
 
-}  // namespace slamlab::eval::runs
+}  // namespace slam_it_all::eval::runs
