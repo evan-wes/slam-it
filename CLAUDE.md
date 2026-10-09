@@ -8,7 +8,7 @@ structure.
 ## Where sessions run
 
 Work on SLAM It All! happens from sessions started in the **reifyscene** repository, so the two projects progress together. Never
-suggest starting a session inside SLAM It All! Consequences:
+suggest starting a session inside the SLAM It All! repository. Consequences:
 - This file does not load automatically: a reifyscene memory entry points here, and it must
   be read before SLAM It All! work.
 - Address SLAM It All! explicitly: `git -C $REPO ...`, and run
@@ -43,6 +43,11 @@ xyzw Hamilton quaternions, the array encoding of every geometric type, pixel cen
 pyramid coordinates (never `x s^l`), exact floats (scalar, unfused), Eigen storage and plain
 Cholesky are fixed in the design doc's "Conventions" section. Read it before writing geometry
 code or a binding.
+
+**The project's name** is SLAM It All! in prose. Code uses `slam_it_all` (the Python package,
+the C++ namespace, libraries and programs, the extension modules); everything else uses
+`slam-it-all` (the distribution, the Rust crates, the conda envs, the repository); macros and
+CMake options use `SLAM_IT_ALL_`, and types `SlamItAll`.
 
 ## Layout: one package per rung, mirrored in every language
 

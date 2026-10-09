@@ -108,7 +108,7 @@ refinement's cost is infinite for a point behind the camera too, so LM never mov
 
 ## How it's checked
 
-- **Fixtures** (`generate_pose.py`, 50-digit mpmath, nothing imported from slam_it_all):
+- **Fixtures** (`generate_pose.py`, 50-digit mpmath, nothing imported from `slam_it_all`):
   - P3P: the true pose among the solutions, on generic samples, each of Ding's three
     orderings, 1e-2 and 1e-6 inside the danger cylinder, and 1e-8 outside it. The 1e-6 case
     catches a solver that merges a quadratic's close roots; the 1e-8 case one that skips

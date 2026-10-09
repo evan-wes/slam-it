@@ -9,8 +9,9 @@ with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 The project is renamed SLAM It All! (a pun on "damn it all!") before it goes public. The
 working name, slamlab, collided with SLAMLab, the University of Zaragoza group behind
 ORB-SLAM3, and with `slamlab` on PyPI. The rename is a clean break with no alias. Nothing
-behaves differently: every run checked takes the same decisions and writes the same results,
-to the byte, as before the rename.
+behaves differently: every run checked takes the same decisions and writes the same
+trajectory, keyframes and map, to the byte, as before the rename; only `run.json`'s format
+name differs.
 
 ### Changed
 

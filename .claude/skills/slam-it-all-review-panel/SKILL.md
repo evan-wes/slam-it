@@ -1,6 +1,6 @@
 ---
 name: slam-it-all-review-panel
-description: Run SLAM It All!'s review panel on SLAM It All!'s current branch (from any session, normally reifyscene) -- layer-1 checks, then the hygiene, architecture and algorithm reviewers in parallel -- save the report to docs/reviews/, and present the findings so the user decides each action. Use once per PR, on the finished slice, before opening it -- never after every incremental change -- or with a reviewer name (hygiene | architecture | algorithm) to run one reviewer alone on a small PR.
+description: Run the review panel on the current branch of the SLAM It All! repository (from any session, normally reifyscene) -- layer-1 checks, then the hygiene, architecture and algorithm reviewers in parallel -- save the report to docs/reviews/, and present the findings so the user decides each action. Use once per PR, on the finished slice, before opening it -- never after every incremental change -- or with a reviewer name (hygiene | architecture | algorithm) to run one reviewer alone on a small PR.
 argument-hint: "[hygiene|architecture|algorithm] [--base <ref>]"
 ---
 

@@ -3,7 +3,7 @@ set -uo pipefail
 
 # Layer 1 of the review process: deterministic checks, run on every PR, locally and in CI
 # (scripts/offline_ci.sh runs it from a clean checkout, as .github/workflows/test.yml does).
-# The reviewer panel (/review-panel) is layer 2 and runs only on larger changes.
+# The review panel (/slam-it-all-review-panel) is layer 2 and runs only on larger changes.
 #
 # Runs every check even after a failure, then exits non-zero if any failed, so one run
 # reports everything. Expects the slam-it-all conda env (scripts/setup_slam_it_all.sh) to be active,

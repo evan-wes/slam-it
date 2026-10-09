@@ -6,7 +6,7 @@ build-backend = "scikit_build_core.build"
 name = "slam-it-all"
 # Canonical version lives in the VERSION file; scikit-build-core reads it at build time.
 dynamic = ["version"]
-description = "A learning ladder for visual SLAM, in Python, C++ and Rust (working name)."
+description = "A learning ladder for visual SLAM, in Python, C++ and Rust."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "PolyForm-Noncommercial-1.0.0"

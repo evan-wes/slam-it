@@ -475,8 +475,9 @@ def right_jacobian_inverse(xi: ArrayLike, *, backend: str = "python") -> NDArray
     ----------
     xi : array_like, shape (..., 6)
         Twists whose rotation angle is below
-    :data:`slam_it_all.foundations.so3.INVERSE_JACOBIAN_LIMIT`. backend : {"python", "cpp", "rust"},
-        optional Which implementation computes the result (default: the Python reference).
+        :data:`slam_it_all.foundations.so3.INVERSE_JACOBIAN_LIMIT`.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
 
     Returns
     -------
@@ -502,8 +503,9 @@ def left_jacobian_inverse(xi: ArrayLike, *, backend: str = "python") -> NDArray[
     ----------
     xi : array_like, shape (..., 6)
         Twists whose rotation angle is below
-    :data:`slam_it_all.foundations.so3.INVERSE_JACOBIAN_LIMIT`. backend : {"python", "cpp", "rust"},
-        optional Which implementation computes the result (default: the Python reference).
+        :data:`slam_it_all.foundations.so3.INVERSE_JACOBIAN_LIMIT`.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
 
     Returns
     -------

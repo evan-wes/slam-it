@@ -1,4 +1,4 @@
-# SLAM It All! A learning ladder for visual SLAM
+# SLAM It All! -- a learning ladder for visual SLAM
 
 Status, 2026-10-08: milestone 1 is complete, and milestone 2 is under way (see
 [Milestones](#milestones)). The scaffold (package-per-rung layout in three
@@ -368,7 +368,7 @@ thin roots that only wire them.
   compute.
 - Each algorithm module types its compiled backend with a Protocol named `Implementation`. One
   generic test walks every extension submodule and checks it against the `Implementation`
-  of the slam_it_all module at the same path: same functions, same parameter names. The parity
+  of the `slam_it_all` module at the same path: same functions, same parameter names. The parity
   tests check the values.
 
 **Dependency contracts** (import-linter, `pyproject.toml`):
@@ -519,24 +519,23 @@ first in NLS and BA. Milestone 6 builds the second and compares the two on the s
   # sketch -- settled during milestone 1/2
   @dataclass
   class SlamInput:
-      frames: Sequence[np.ndarray]  # (H, W, 3) uint8
-      timestamps: np.ndarray  # (N,) seconds
-      intrinsics: np.ndarray | None  # (3, 3) or (N, 3, 3); estimated if None
-      depth_priors: Sequence[np.ndarray] | None  # (H, W) metric or relative
-      motion_masks: Sequence[np.ndarray] | None  # (H, W) bool, True = moving
-      imu: ImuStream | None  # visual-inertial rungs only
-
+      frames: Sequence[np.ndarray]          # (H, W, 3) uint8
+      timestamps: np.ndarray                # (N,) seconds
+      intrinsics: np.ndarray | None         # (3, 3) or (N, 3, 3); estimated if None
+      depth_priors: Sequence[np.ndarray] | None   # (H, W) metric or relative
+      motion_masks: Sequence[np.ndarray] | None   # (H, W) bool, True = moving
+      imu: ImuStream | None                 # visual-inertial rungs only
 
   @dataclass
   class SlamResult:
-      T_world_cam: np.ndarray  # (N, 4, 4)
-      intrinsics: np.ndarray  # (N, 3, 3)
-      depth: np.ndarray | None  # (N, H, W) dense rungs
-      confidence: np.ndarray | None  # (N, H, W)
-      keyframes: np.ndarray  # (K,) frame indices
+      T_world_cam: np.ndarray               # (N, 4, 4)
+      intrinsics: np.ndarray                # (N, 3, 3)
+      depth: np.ndarray | None              # (N, H, W) dense rungs
+      confidence: np.ndarray | None         # (N, H, W)
+      keyframes: np.ndarray                 # (K,) frame indices
   ```
 
-- **Packaging.** During development, reifyscene installs slam-it-all editable from the sibling
+- **Packaging.** During development, reifyscene installs `slam-it-all` editable from the sibling
   folder. reifyscene's `pyproject.toml` has a `slam` extra pinned to a SLAM It All! git tag. The two
   change in lockstep: when SLAM It All!'s API changes, the adapter changes with it and the pin
   moves.
@@ -721,7 +720,7 @@ in two layers:
 
 Each env builds the C++ extension in its own `build/<env name>` folder. Envs with the same Python
 version otherwise share one CMake tree and silently reuse each other's cached compiler. This
-matters at milestone 3, when reifyscene's env also installs slam-it-all.
+matters at milestone 3, when reifyscene's env also installs `slam-it-all`.
 
 **CI runs offline.** `scripts/offline_ci.sh` does what `.github/workflows/test.yml` does, on
 the developer's machine: a clean checkout of the committed files (in

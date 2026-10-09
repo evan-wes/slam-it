@@ -1,4 +1,4 @@
-"""SLAM It All! A learning ladder for visual SLAM, in Python, C++ and Rust.
+"""SLAM It All! -- a learning ladder for visual SLAM, in Python, C++ and Rust.
 
 One package per rung of the ladder (see ``docs/design/``):
 

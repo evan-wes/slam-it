@@ -327,8 +327,8 @@ rotation, `u = f (X - t_x)/Z` is unchanged by `f → kf, Z → kZ`, so no amount
 
 ## Readers, and Ceres as the reference
 
-**BAL** (`slam_it_all.eval.readers.read_bal`). BAL's cameras look down `-z` with `y` up: `P = R X +
-t`, `p = -P/P_z`, `u = f (1 + k1|p|² + k2|p|⁴) p`.
+**BAL** (`slam_it_all.eval.readers.read_bal`). BAL's cameras look down `-z` with `y` up:
+`P = R X + t`, `p = -P/P_z`, `u = f (1 + k1|p|² + k2|p|⁴) p`.
 - **Frames.** Flipping the camera's `y` and `z` axes (`F = diag(1, -1, -1)`) gives
   `T_cam_world = [F R, F t]` and pixels `(x, -y)`.
 - **Camera model.** BAL's camera is exactly the `radial` model `[f, cx, cy, k1, k2]`, added
@@ -383,7 +383,7 @@ Ceres, on the identical problem:
 spin has no seed: its run takes another route through pose_refine. It is listed rather than
 skipped. Measured on 2026-10-02 at this commit:
 
-| Scene | Start | SLAM It All! | COLMAP | Pushed behind (ours / COLMAP) | σ̂₀ | σ_f (ours) | f ours / COLMAP |
+| Scene | Start | ours | COLMAP | Pushed behind (ours / COLMAP) | σ̂₀ | σ_f (ours) | f ours / COLMAP |
 |---|---|---|---|---|---|---|---|
 | lab-coat | 4.854 | 0.880 | 0.910 | 0 / 7 | 0.68 | **2.3** | 483 / 504 |
 | blackswan | 5.267 | 0.518 | 0.522 | 0 / 0 | 0.41 | 26 | 1191 / 1848 |

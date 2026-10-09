@@ -484,12 +484,13 @@ def refine_consensus(
     Each round refines the model on the current inliers, rescores it by MSAC over all the data,
     and keeps it only if the cost drops; the kept model's inliers are re-collected and the next
     round starts from them. It stops when a round does not lower the cost, the inliers stop
-    changing, after :data:`REFINE_ROUNDS` rounds, or when a refinement fails (raises a SLAM It All!
-    error, such as a start whose cost is not finite): that round counts, and its result is not
-    kept, as the compiled cores treat a refiner's error. The refinement minimises its own (robust,
-    geometric) cost, not MSAC's truncated one, so a refined model can score worse; it is then
-    discarded. Re-collecting matters where LO's least-squares refits cannot run (EPnP on planar
-    points): one refinement on the minimal sample's consensus leaves the inliers it missed.
+    changing, after :data:`REFINE_ROUNDS` rounds, or when a refinement fails (raises a
+    :class:`~slam_it_all.foundations.errors.SlamItAllError`, such as a start whose cost is not
+    finite): that round counts, and its result is not kept, as the compiled cores treat a
+    refiner's error. The refinement minimises its own (robust, geometric) cost, not MSAC's
+    truncated one, so a refined model can score worse; it is then discarded. Re-collecting
+    matters where LO's least-squares refits cannot run (EPnP on planar points): one refinement
+    on the minimal sample's consensus leaves the inliers it missed.
 
     Parameters
     ----------

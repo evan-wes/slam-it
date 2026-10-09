@@ -1,7 +1,6 @@
 # Review panel: `<branch>`
 
-<!-- Written by /slam-it-all-review-panel. One file per branch; later runs append a "Run N" section.
--->
+<!-- Written by /slam-it-all-review-panel. One file per branch; later runs append "Run N". -->
 
 ## Run 1 -- YYYY-MM-DD
 
