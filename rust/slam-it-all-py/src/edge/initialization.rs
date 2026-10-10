@@ -8,9 +8,12 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use slam_it_all_edge::initialization as core;
+use slam_it_all_foundations::nls;
 
-use super::edge_crossing::{camera_in, frame_in, options_in, rows, started_dict, vector_array};
-use crate::common::{add_functions, to_i64, unwrap};
+use super::edge_crossing::{
+    camera_in, frame_in, initialization_dict, options_in, rows, vector_array,
+};
+use crate::common::{add_functions, enum_codes, to_i64, unwrap};
 
 /// Starts the map from a stereo or RGB-D frame.
 ///
@@ -21,7 +24,7 @@ use crate::common::{add_functions, to_i64, unwrap};
 ///
 /// # Returns
 ///
-/// The started map as a dict, or None.
+/// The attempt, as a dict.
 ///
 /// # Errors
 ///
@@ -32,12 +35,12 @@ fn initialize_from_depth<'py>(
     py: Python<'py>,
     frame: &Bound<'py, PyDict>,
     options: &Bound<'py, PyDict>,
-) -> PyResult<Bound<'py, PyAny>> {
-    let started = unwrap(
+) -> PyResult<Bound<'py, PyDict>> {
+    let attempt = unwrap(
         py,
         core::initialize_from_depth(&frame_in(frame)?, &options_in(options)?),
     )?;
-    started_dict(py, started)
+    initialization_dict(py, attempt)
 }
 
 /// Matches a monocular reference frame to a later one.
@@ -99,7 +102,7 @@ fn match_for_initialization<'py>(
 ///
 /// # Returns
 ///
-/// The started map as a dict, or None.
+/// The attempt, as a dict.
 ///
 /// # Errors
 ///
@@ -114,7 +117,7 @@ fn initialize_monocular<'py>(
     frame: &Bound<'py, PyDict>,
     pairs: &Bound<'py, PyAny>,
     options: &Bound<'py, PyDict>,
-) -> PyResult<Bound<'py, PyAny>> {
+) -> PyResult<Bound<'py, PyDict>> {
     let matches = rows::<i64, 2>(pairs)?
         .into_iter()
         .map(|[a, b]| {
@@ -124,7 +127,7 @@ fn initialize_monocular<'py>(
             Ok([index(a)?, index(b)?])
         })
         .collect::<PyResult<Vec<[usize; 2]>>>()?;
-    let started = unwrap(
+    let attempt = unwrap(
         py,
         core::initialize_monocular(
             &camera_in(camera)?,
@@ -134,8 +137,10 @@ fn initialize_monocular<'py>(
             &options_in(options)?,
         ),
     )?;
-    started_dict(py, started)
+    initialization_dict(py, attempt)
 }
+
+enum_codes!("outcome" => core::Outcome, "nls_termination" => nls::Termination);
 
 /// Registers the module's functions.
 ///
@@ -144,6 +149,12 @@ fn initialize_monocular<'py>(
 /// Returns a Python error if a function cannot be added.
 #[pymodule]
 pub fn initialization(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    add_functions!(m; initialize_from_depth, match_for_initialization, initialize_monocular);
+    add_functions!(
+        m;
+        codes,
+        initialize_from_depth,
+        match_for_initialization,
+        initialize_monocular
+    );
     Ok(())
 }

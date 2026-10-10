@@ -26,7 +26,7 @@ fn recovers_the_scene_and_forgets_a_moved_observation() {
     let moved = m.kf_start[2];
     m.kp_xy[moved][0] += 30.0; // point 0's third view, pulling it off along the first's ray
     let start = m.pt_xyz[0];
-    bundle_adjust(
+    let adjustment = bundle_adjust(
         &mut m,
         &camera(),
         &[0, 1, 2],
@@ -34,6 +34,8 @@ fn recovers_the_scene_and_forgets_a_moved_observation() {
         &Options::default(),
     )
     .unwrap();
+    assert_eq!((adjustment.solves.len(), adjustment.outliers), (2, 1));
+    assert!(adjustment.solves[0].final_cost < adjustment.solves[0].initial_cost);
     assert_eq!(m.kf_pose[0], Matrix4::identity());
     let truth = points();
     let mut worst: f64 = 0.0;

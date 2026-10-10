@@ -9,11 +9,11 @@ use slam_it_all_foundations::error::{ErrorKind, Result, fail};
 use slam_it_all_foundations::{orb, se3};
 
 use crate::frames::{Camera, Frame, Tracked, check_setup};
-use crate::initialization::{self, Started};
+use crate::initialization::{self, InitSummary, Initialization, Outcome, Started};
 use crate::map::{self, Map};
-use crate::mapping;
+use crate::mapping::{self, MappingSummary};
 use crate::options::{Mode, Options};
-use crate::tracking;
+use crate::tracking::{self, LocalMapSummary, MotionSummary, PnpSummary};
 
 /// Where the pipeline is, with the codes it is written as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +45,52 @@ impl State {
     }
 }
 
+/// How a frame was placed, before the local map refined it, with the codes it is written as
+/// (`slam_it_all.edge.pipeline.Placement`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    /// It started the map.
+    Initialization = 0,
+    /// Tracking the last frame, from the constant-velocity prediction.
+    Motion = 1,
+    /// The fallback: PnP against the local map.
+    LocalPnp = 2,
+}
+
+impl Placement {
+    /// The placement's name, as `slam_it_all.edge.pipeline.Placement` spells it.
+    ///
+    /// # Returns
+    ///
+    /// A static string.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Initialization => "initialization",
+            Self::Motion => "motion",
+            Self::LocalPnp => "local_pnp",
+        }
+    }
+}
+
+/// How the stages went on one frame (`slam_it_all.edge.pipeline.FrameSummary`); each `None`
+/// where the stage did not run.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FrameSummary {
+    /// How the frame was placed, if it was; a frame placed may still fail the local map.
+    pub placed_by: Option<Placement>,
+    /// For a frame before the map existed.
+    pub init: Option<InitSummary>,
+    /// Tracking the last frame.
+    pub motion: Option<MotionSummary>,
+    /// The PnP fallback, run only when tracking the last frame failed.
+    pub pnp: Option<PnpSummary>,
+    /// Tracking the local map, run on a placed frame.
+    pub local_map: Option<LocalMapSummary>,
+    /// Local mapping, on a keyframe after the first.
+    pub mapping: Option<MappingSummary>,
+}
+
 /// What tracking one frame gave (`slam_it_all.edge.pipeline.FrameResult`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrameResult {
@@ -64,9 +110,11 @@ pub struct FrameResult {
     /// The time mapping it took as a keyframe (`mapping::process`), 0 for any other frame:
     /// what ORB-SLAM's local-mapping thread does.
     pub map_seconds: f64,
+    /// How its stages went.
+    pub summary: FrameSummary,
 }
 
-/// A frame tracked against the map, as `Pipeline::track_frame` gives it.
+/// A frame handled, as `Pipeline::initialize` and `Pipeline::track_frame` give it.
 #[derive(Debug, Default)]
 struct Step {
     /// The tracked frame, if it kept enough inliers.
@@ -75,6 +123,8 @@ struct Step {
     keyframe: bool,
     /// The time mapping it took, in seconds, if it did.
     map_seconds: f64,
+    /// How its stages went.
+    summary: FrameSummary,
 }
 
 /// The edge pipeline for one sequence (`slam_it_all.edge.pipeline.Pipeline`).
@@ -195,14 +245,7 @@ impl Pipeline {
     pub fn track(&mut self, frame: &Frame) -> Result<FrameResult> {
         let start = Instant::now();
         let step = match self.state {
-            State::NotInitialized => {
-                let tracked = self.initialize(frame)?;
-                Step {
-                    keyframe: tracked.is_some(),
-                    tracked,
-                    map_seconds: 0.0,
-                }
-            }
+            State::NotInitialized => self.initialize(frame)?,
             State::Tracking => self.track_frame(frame)?,
             State::Lost => Step::default(),
         };
@@ -215,6 +258,7 @@ impl Pipeline {
             keyframe: step.keyframe,
             track_seconds: start.elapsed().as_secs_f64() - step.map_seconds,
             map_seconds: step.map_seconds,
+            summary: step.summary,
         })
     }
 
@@ -226,24 +270,37 @@ impl Pipeline {
     ///
     /// # Returns
     ///
-    /// The frame tracked if it started the map.
+    /// The frame tracked if it started the map, and how the attempt went.
     ///
     /// # Errors
     ///
     /// A stage's error.
-    fn initialize(&mut self, frame: &Frame) -> Result<Option<Tracked>> {
-        let started = if self.mode == Mode::Monocular {
+    fn initialize(&mut self, frame: &Frame) -> Result<Step> {
+        let attempt = if self.mode == Mode::Monocular {
             self.initialize_monocular(frame)?
         } else {
             initialization::initialize_from_depth(frame, &self.options)?
         };
-        let Some(Started { map, tracked }) = started else {
-            return Ok(None);
+        let mut summary = FrameSummary {
+            init: Some(attempt.summary),
+            ..FrameSummary::default()
+        };
+        let Some(Started { map, tracked }) = attempt.started else {
+            return Ok(Step {
+                summary,
+                ..Step::default()
+            });
         };
         self.map = Some(map);
         self.state = State::Tracking;
         self.accept(frame, &tracked)?;
-        Ok(Some(tracked))
+        summary.placed_by = Some(Placement::Initialization);
+        Ok(Step {
+            tracked: Some(tracked),
+            keyframe: true,
+            map_seconds: 0.0,
+            summary,
+        })
     }
 
     /// Pairs a monocular frame with the reference, or makes it the reference.
@@ -254,19 +311,27 @@ impl Pipeline {
     ///
     /// # Returns
     ///
-    /// The started map, if any.
+    /// The started map, if any, and how the attempt went.
     ///
     /// # Errors
     ///
     /// A stage's error.
-    fn initialize_monocular(&mut self, frame: &Frame) -> Result<Option<Started>> {
+    fn initialize_monocular(&mut self, frame: &Frame) -> Result<Initialization> {
         if frame.size() <= self.options.min_init_features {
             self.reference = None; // too few features: ORB-SLAM drops its initializer
-            return Ok(None);
+            return Ok(Initialization::failed(
+                Outcome::TooFewFeatures,
+                None,
+                Vec::new(),
+            ));
         }
         let Some(reference) = &self.reference else {
             self.set_reference(frame);
-            return Ok(None);
+            return Ok(Initialization::failed(
+                Outcome::ReferenceSet,
+                None,
+                Vec::new(),
+            ));
         };
         let matched = initialization::match_for_initialization(
             reference,
@@ -275,8 +340,13 @@ impl Pipeline {
             &self.options,
         )?;
         if matched.len() < self.options.init_min_matches {
+            let replaced = Some(matched.len());
             self.set_reference(frame); // the views no longer overlap enough: start again
-            return Ok(None);
+            return Ok(Initialization::failed(
+                Outcome::ReferenceReplaced,
+                replaced,
+                Vec::new(),
+            ));
         }
         // The search follows each matched keypoint (SearchForInitialization's vbPrevMatched).
         for m in &matched {
@@ -337,12 +407,12 @@ impl Pipeline {
     ///
     /// # Returns
     ///
-    /// The placed frame, if any, and whether it recovered.
+    /// The placed frame, if any, and how it was placed.
     ///
     /// # Errors
     ///
     /// A stage's error.
-    fn place(&self, m: &Map, frame: &Frame) -> Result<(Option<Tracked>, bool)> {
+    fn place(&self, m: &Map, frame: &Frame) -> Result<(Option<Tracked>, FrameSummary)> {
         let (Some(last_frame), Some(last_tracked)) = (&self.last_frame, &self.last_tracked) else {
             return fail(
                 ErrorKind::InvalidInput,
@@ -352,7 +422,7 @@ impl Pipeline {
         // No velocity (just initialised, or after a failure): predict no motion. ORB-SLAM
         // tracks its reference keyframe by bag of words here; the lite pipeline has none.
         let predicted = tracking::predict(&last_tracked.pose, self.velocity.as_ref());
-        let tracked = tracking::track_last_frame(
+        let motion = tracking::track_last_frame(
             m,
             &self.camera,
             frame,
@@ -362,13 +432,20 @@ impl Pipeline {
             self.mode,
             &self.options,
         )?;
-        if tracked.is_some() {
-            return Ok((tracked, false));
+        let mut summary = FrameSummary {
+            motion: Some(motion.summary),
+            ..FrameSummary::default()
+        };
+        if motion.tracked.is_some() {
+            summary.placed_by = Some(Placement::Motion);
+            return Ok((motion.tracked, summary));
         }
-        Ok((
-            tracking::relocalize_locally(m, &self.camera, frame, &self.options)?,
-            true,
-        ))
+        let recovery = tracking::relocalize_locally(m, &self.camera, frame, &self.options)?;
+        summary.pnp = Some(recovery.summary);
+        if recovery.tracked.is_some() {
+            summary.placed_by = Some(Placement::LocalPnp);
+        }
+        Ok((recovery.tracked, summary))
     }
 
     /// Tracks a frame against the map; inserts a keyframe if one is needed (and times it).
@@ -379,7 +456,8 @@ impl Pipeline {
     ///
     /// # Returns
     ///
-    /// The tracked frame, if any, whether it became a keyframe, and the time mapping it took.
+    /// The tracked frame, if any, whether it became a keyframe, the time mapping it took, and
+    /// how its stages went.
     ///
     /// # Errors
     ///
@@ -390,7 +468,7 @@ impl Pipeline {
         };
         let placed = self.place(&m, frame);
         let outcome =
-            placed.and_then(|(placed, recovered)| self.refine(&mut m, frame, placed, recovered));
+            placed.and_then(|(placed, summary)| self.refine(&mut m, frame, placed, summary));
         self.map = Some(m);
         let step = outcome?;
         match &step.tracked {
@@ -408,11 +486,12 @@ impl Pipeline {
     /// * `m` - The map, changed in place.
     /// * `frame` - The frame.
     /// * `placed` - The placed frame, if any.
-    /// * `recovered` - Whether it was placed by the fallback.
+    /// * `summary` - How it was placed.
     ///
     /// # Returns
     ///
-    /// The tracked frame, if any, whether it became a keyframe, and the time mapping it took.
+    /// The tracked frame, if any, whether it became a keyframe, the time mapping it took, and
+    /// how its stages went.
     ///
     /// # Errors
     ///
@@ -422,10 +501,10 @@ impl Pipeline {
         m: &mut Map,
         frame: &Frame,
         placed: Option<Tracked>,
-        recovered: bool,
+        mut summary: FrameSummary,
     ) -> Result<Step> {
         let options = self.options;
-        if recovered && placed.is_some() {
+        if summary.placed_by == Some(Placement::LocalPnp) {
             self.since_recovery = Some(0);
         } else if let Some(since) = &mut self.since_recovery {
             *since += 1;
@@ -435,10 +514,14 @@ impl Pipeline {
             .since_recovery
             .is_some_and(|s| s < options.recovery_window_frames);
         let Some(placed) = placed else {
-            return Ok(Step::default());
+            return Ok(Step {
+                summary,
+                ..Step::default()
+            });
         };
         let local =
             tracking::track_local_map(m, &self.camera, frame, &placed, self.mode, &options, wide)?;
+        summary.local_map = Some(local.summary());
         map::count(
             m,
             &local.visible,
@@ -457,7 +540,10 @@ impl Pipeline {
             options.min_tracked
         };
         if local.tracked.inliers() < needed {
-            return Ok(Step::default());
+            return Ok(Step {
+                summary,
+                ..Step::default()
+            });
         }
         let tracked = local.tracked;
         let held = recent && m.keyframes() > options.max_frames;
@@ -473,13 +559,15 @@ impl Pipeline {
         let mut map_seconds = 0.0;
         if keyframe {
             let start = Instant::now();
-            mapping::process(m, &self.camera, frame, &tracked, self.mode, &options)?;
+            let mapped = mapping::process(m, &self.camera, frame, &tracked, self.mode, &options)?;
             map_seconds = start.elapsed().as_secs_f64();
+            summary.mapping = Some(mapped);
         }
         Ok(Step {
             tracked: Some(tracked),
             keyframe,
             map_seconds,
+            summary,
         })
     }
 }

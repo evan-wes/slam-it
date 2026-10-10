@@ -27,30 +27,37 @@ void check_from_depth(int& failures) {
   const edge::Frame frame = scene::frame(0, true);
   const edge::Options options{.min_init_features_depth = 10, .min_init_depth_points = 10};
   const auto started = edge::initialize_from_depth(frame, options);
-  expect(started.has_value() && started->has_value(), "a frame with depth starts the map",
-         failures);
-  if (started && *started) {
-    const edge::Map& m = (*started)->map;
+  expect(started.has_value() && started->started.has_value() &&
+             started->summary.outcome == edge::Outcome::kInitialized && !started->summary.matches &&
+             started->summary.solves.empty(),
+         "a frame with depth starts the map", failures);
+  if (started && started->started) {
+    const edge::Map& m = started->started->map;
     double worst = 0.0;
     const std::vector<Eigen::Vector3d> truth = scene::points();
     for (std::size_t p = 0; p < edge::point_count(m); ++p) {
       worst = std::max(worst, (m.pt_xyz[p] - truth[p]).norm());
     }
     expect(edge::keyframe_count(m) == 1 && edge::point_count(m) == scene::kPoints &&
-               worst < 1e-12 && edge::inliers((*started)->tracked) == 60,
+               worst < 1e-12 && edge::inliers(started->started->tracked) == 60,
            "it puts a point at every keypoint's depth", failures);
   }
   const auto few =
       edge::initialize_from_depth(frame, edge::Options{.min_init_features_depth = 100});
-  expect(few.has_value() && !few->has_value(), "too few keypoints start nothing", failures);
+  const auto not_started = [](const auto& attempt, edge::Outcome outcome) {
+    return attempt.has_value() && !attempt->started.has_value() &&
+           attempt->summary.outcome == outcome;
+  };
+  expect(not_started(few, edge::Outcome::kTooFewFeatures), "too few keypoints start nothing",
+         failures);
   const auto exactly = edge::initialize_from_depth(
       frame, edge::Options{.min_init_features_depth = 60, .min_init_depth_points = 10});
-  expect(exactly.has_value() && !exactly->has_value(),
+  expect(not_started(exactly, edge::Outcome::kTooFewFeatures),
          "the start needs more keypoints than the count, as ORB-SLAM's N > 500", failures);
   const auto shallow = edge::initialize_from_depth(
       frame, edge::Options{.min_init_features_depth = 10, .min_init_depth_points = 61});
-  expect(shallow.has_value() && !shallow->has_value(), "too few keypoints with depth start nothing",
-         failures);
+  expect(not_started(shallow, edge::Outcome::kTooLittleDepth),
+         "too few keypoints with depth start nothing", failures);
   expect(is_invalid_input(edge::initialize_from_depth(frame, edge::Options{.levels = 4})),
          "a frame of another pyramid is rejected", failures);
 }
@@ -86,21 +93,25 @@ void check_monocular(int& failures) {
       pairs.push_back({match.first, match.second});
     }
   }
+  const auto given = static_cast<std::int64_t>(pairs.size());
   const auto few = edge::initialize_monocular(scene::camera(), first, last, pairs, edge::Options{});
-  expect(few.has_value() && !few->has_value(), "fewer matches than init_min_matches start nothing",
-         failures);
+  expect(few.has_value() && !few->started.has_value() &&
+             few->summary.outcome == edge::Outcome::kTooFewMatches && few->summary.matches == given,
+         "fewer matches than init_min_matches start nothing", failures);
   const std::vector<std::array<std::int64_t, 2>> beyond{{0, scene::kPoints}};
   expect(is_invalid_input(
              edge::initialize_monocular(scene::camera(), first, last, beyond, edge::Options{})),
          "initialize_monocular rejects a pair beyond a frame's keypoints", failures);
   const auto started = edge::initialize_monocular(scene::camera(), first, last, pairs,
                                                   edge::Options{.init_min_matches = 20});
-  expect(started.has_value() && started->has_value(), "two views with parallax start the map",
-         failures);
-  if (!started || !*started) {
+  expect(started.has_value() && started->started.has_value() &&
+             started->summary.outcome == edge::Outcome::kInitialized &&
+             started->summary.matches == given && started->summary.solves.size() == 2,
+         "two views with parallax start the map, after the adjustment's two solves", failures);
+  if (!started || !started->started) {
     return;
   }
-  const edge::Map& m = (*started)->map;
+  const edge::Map& m = started->started->map;
   std::vector<double> depths;
   depths.reserve(m.pt_xyz.size());
   for (const Eigen::Vector3d& x : m.pt_xyz) {

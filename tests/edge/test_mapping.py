@@ -21,7 +21,13 @@ from slam_it_all.foundations import matching
 from slam_it_all.foundations.errors import InvalidInputError
 from tests.conftest import require_function
 from tests.edge.conftest import Truth
-from tests.edge.support import CAMERA, OPTIONS, SOLVER_TOLERANCE, assert_maps_match
+from tests.edge.support import (
+    CAMERA,
+    OPTIONS,
+    SOLVER_TOLERANCE,
+    assert_maps_match,
+    assert_records_match,
+)
 
 LAST, CURRENT = 36, 39
 """The room's last keyframe, and the frame tracked from it and inserted."""
@@ -49,7 +55,7 @@ def mapped(truth: Truth) -> Mapped:
     found = tracking.track_last_frame(
         m, CAMERA, frame, truth.frames[LAST], last,
         predicted=truth.poses[CURRENT], mode="rgbd", options=OPTIONS,
-    )  # fmt: skip
+    ).tracked  # fmt: skip
     assert found is not None
     tracked = tracking.track_local_map(
         m, CAMERA, frame, found, mode="rgbd", options=OPTIONS
@@ -65,6 +71,9 @@ def _same(backend: str, function: str, *args: object, **kwargs: object) -> None:
     got = getattr(mapping, function)(*args, **kwargs, backend=chosen)
     if isinstance(expected, Map):
         assert_maps_match(got, expected, SOLVER_TOLERANCE)
+    elif isinstance(expected, mapping.Mapped):
+        assert_maps_match(got.map, expected.map, SOLVER_TOLERANCE)
+        assert_records_match(got.summary.as_dict(), expected.summary.as_dict())
     else:
         np.testing.assert_array_equal(got, expected)
 
@@ -110,12 +119,15 @@ def test_local_ba_waits_for_enough_keyframes(backend: str, mapped: Mapped) -> No
     """Before the map holds ``ba_min_keyframes``, no local BA: the poses stay as tracked."""
     waiting = replace(OPTIONS, ba_min_keyframes=mapped.map.keyframes + 2)
     args = (mapped.map, CAMERA, mapped.frame, mapped.tracked)
-    held = mapping.process(*args, mode="rgbd", options=waiting)
+    waited = mapping.process(*args, mode="rgbd", options=waiting)
+    held = waited.map
     np.testing.assert_array_equal(held.kf_pose[-1], mapped.tracked.pose)
     rows = mapped.map.keyframe_rows(held.kf_id[:-1])
     np.testing.assert_array_equal(held.kf_pose[:-1], mapped.map.kf_pose[rows])
-    adjusted = mapping.process(*args, mode="rgbd", options=OPTIONS)
-    assert not np.array_equal(adjusted.kf_pose[-1], mapped.tracked.pose)
+    assert (waited.summary.solves, waited.summary.outliers) == ((), 0)
+    ran = mapping.process(*args, mode="rgbd", options=OPTIONS)
+    assert not np.array_equal(ran.map.kf_pose[-1], mapped.tracked.pose)
+    assert len(ran.summary.solves) == 2
     _same(backend, "process", *args, mode="rgbd", options=waiting)
 
 
@@ -223,10 +235,16 @@ def test_a_redundant_keyframe_is_culled(mapped: Mapped) -> None:
 def test_process_adds_a_keyframe(mode: str, mapped: Mapped) -> None:
     """Local mapping keeps the new keyframe newest, and adds points from it."""
     m = mapped.map
-    out = mapping.process(m, CAMERA, mapped.frame, mapped.tracked, mode=mode, options=OPTIONS)
+    result = mapping.process(m, CAMERA, mapped.frame, mapped.tracked, mode=mode, options=OPTIONS)
+    out = result.map
     assert out.kf_id[-1] == m.next_kf_id
     newest = out.kp_point[out.keypoint_rows(out.keyframes - 1)]
     assert np.count_nonzero(newest >= 0) >= mapped.tracked.inliers // 2
+    s = result.summary
+    made = s.from_depth + s.triangulated
+    assert out.points == m.points + made - s.culled_points - s.fused - s.weak_points
+    assert out.keyframes == m.keyframes + 1 - s.culled_keyframes
+    assert (s.from_depth == 0) == (mode == "monocular")
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)

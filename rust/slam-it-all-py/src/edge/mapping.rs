@@ -1,18 +1,20 @@
 //! Bindings for `slam_it_all.edge.mapping` (`slam_it_all_rs.edge.mapping`).
 //!
 //! Each step copies the map in, changes the copy, and returns it as a dict; the mode crosses
-//! by name, a tracked frame as `pose` and `points`.
+//! by name, a tracked frame as `pose` and `points`. `process` also returns how each step went.
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use slam_it_all_edge::mapping as core;
 
 use slam_it_all_edge::map::Map;
+use slam_it_all_foundations::nls;
 
 use super::edge_crossing::{
-    camera_in, frame_in, map_dict, map_in, mode_in, options_in, rows_array, tracked_in, vector,
+    camera_in, frame_in, map_dict, map_in, mode_in, options_in, rows_array, solves_list,
+    tracked_in, vector,
 };
-use crate::common::{add_functions, unwrap};
+use crate::common::{add_functions, enum_codes, to_i64, unwrap};
 
 /// Runs a step on a copy of the map.
 ///
@@ -276,7 +278,7 @@ fn match_for_triangulation<'py>(
 ///
 /// # Returns
 ///
-/// The new map, as a dict.
+/// The new map, as a dict, and how each step went: the summary's counts and `solves`.
 ///
 /// # Errors
 ///
@@ -294,10 +296,25 @@ fn process<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     let (camera, frame, tracked) = (camera_in(camera)?, frame_in(frame)?, tracked_in(tracked)?);
     let (mode, options) = (mode_in(mode)?, options_in(options)?);
-    changed(py, m, |out| {
-        core::process(out, &camera, &frame, &tracked, mode, &options)
-    })
+    let mut mapped = map_in(py, m)?;
+    let summary = unwrap(
+        py,
+        core::process(&mut mapped, &camera, &frame, &tracked, mode, &options),
+    )?;
+    let out = PyDict::new(py);
+    out.set_item("map", map_dict(py, &mapped)?)?;
+    out.set_item("from_depth", to_i64(summary.from_depth))?;
+    out.set_item("culled_points", to_i64(summary.culled_points))?;
+    out.set_item("triangulated", to_i64(summary.triangulated))?;
+    out.set_item("fused", to_i64(summary.fused))?;
+    out.set_item("solves", solves_list(py, &summary.solves)?)?;
+    out.set_item("outliers", to_i64(summary.outliers))?;
+    out.set_item("weak_points", to_i64(summary.weak_points))?;
+    out.set_item("culled_keyframes", to_i64(summary.culled_keyframes))?;
+    Ok(out)
 }
+
+enum_codes!("nls_termination" => nls::Termination);
 
 /// Registers the module's functions.
 ///
@@ -308,6 +325,7 @@ fn process<'py>(
 pub fn mapping(m: &Bound<'_, PyModule>) -> PyResult<()> {
     add_functions!(
         m;
+        codes,
         need_keyframe,
         create_points_from_depth,
         cull_points,

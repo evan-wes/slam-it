@@ -25,7 +25,7 @@ using foundations::fail;
 using foundations::Result;
 
 /// @brief The BA problem built from the map, and where its rows came from.
-struct Adjustment {
+struct Built {
   /// @brief The problem.
   ba::Problem problem;
   /// @brief Each observation's keypoint row, ascending.
@@ -41,10 +41,8 @@ struct Adjustment {
 /// @param fixed The keyframes held fixed.
 /// @param points The points the keyframes observe, by row, ascending.
 /// @return The problem; an error if a pose cannot be inverted.
-Result<Adjustment> build(const Map& m, const Camera& camera,
-                         std::span<const std::int64_t> keyframes,
-                         std::span<const std::uint8_t> fixed,
-                         const std::vector<std::int64_t>& points) {
+Result<Built> build(const Map& m, const Camera& camera, std::span<const std::int64_t> keyframes,
+                    std::span<const std::uint8_t> fixed, const std::vector<std::int64_t>& points) {
   std::vector<bool> free(keyframe_count(m), false);
   for (const std::int64_t k : keyframes) {
     free[static_cast<std::size_t>(k)] = fixed[static_cast<std::size_t>(k)] == 0;
@@ -57,7 +55,7 @@ Result<Adjustment> build(const Map& m, const Camera& camera,
     }
   }
   std::ranges::sort(seen);
-  Adjustment out;
+  Built out;
   std::vector<std::int64_t> point_of;
   std::vector<std::size_t> keyframe_rows;
   std::set<std::int64_t> observing;
@@ -227,7 +225,7 @@ ba::Problem refined_problem(const ba::Problem& problem, const ba::Points& start,
 /// @param solution The solution.
 /// @param points The points' rows.
 /// @return Nothing, or an error if a pose cannot be inverted.
-Result<void> write_back(Map& m, const Adjustment& built, const ba::Solution& solution,
+Result<void> write_back(Map& m, const Built& built, const ba::Solution& solution,
                         const std::vector<std::int64_t>& points) {
   for (std::size_t c = 0; c < built.observing.size(); ++c) {
     if (!built.problem.fixed_poses[c]) {
@@ -252,9 +250,9 @@ Result<void> write_back(Map& m, const Adjustment& built, const ba::Solution& sol
 /// @param still Each observation's flag.
 /// @param ids The adjusted points' ids.
 /// @return Nothing, or the map's error.
-Result<void> forget_and_refresh(Map& m, const std::vector<std::int64_t>& rows,
-                                const std::vector<bool>& still,
-                                const std::vector<std::int64_t>& ids) {
+Result<std::int64_t> forget_and_refresh(Map& m, const std::vector<std::int64_t>& rows,
+                                        const std::vector<bool>& still,
+                                        const std::vector<std::int64_t>& ids) {
   std::vector<std::int64_t> dropped;
   for (std::size_t i = 0; i < rows.size(); ++i) {
     if (still[i]) {
@@ -262,7 +260,7 @@ Result<void> forget_and_refresh(Map& m, const std::vector<std::int64_t>& rows,
     }
   }
   if (auto ok = forget_observations(m, dropped); !ok) {
-    return ok;
+    return std::unexpected(std::move(ok.error()));
   }
   std::vector<std::int64_t> kept;
   for (const std::int64_t id : ids) {
@@ -270,19 +268,30 @@ Result<void> forget_and_refresh(Map& m, const std::vector<std::int64_t>& rows,
       kept.push_back(p);
     }
   }
-  return refresh_points(m, kept);
+  if (auto ok = refresh_points(m, kept); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  return static_cast<std::int64_t>(dropped.size());
 }
 
 }  // namespace
 
-Result<void> bundle_adjust(Map& m, const Camera& camera, std::span<const std::int64_t> keyframes,
-                           std::span<const std::uint8_t> fixed, const Options& options) {
+Solve solve_of(const foundations::nls::Summary& summary) {
+  return {.initial_cost = summary.initial_cost,
+          .final_cost = summary.final_cost,
+          .iterations = summary.iterations,
+          .termination = summary.termination};
+}
+
+Result<Adjustment> bundle_adjust(Map& m, const Camera& camera,
+                                 std::span<const std::int64_t> keyframes,
+                                 std::span<const std::uint8_t> fixed, const Options& options) {
   if (auto ok = check(m, camera, keyframes, fixed, options); !ok) {
-    return ok;
+    return std::unexpected(std::move(ok.error()));
   }
   const std::vector<std::int64_t> points = observed_by(m, keyframes);
   if (points.empty()) {
-    return {};
+    return Adjustment{};
   }
   auto built = build(m, camera, keyframes, fixed, points);
   if (!built) {
@@ -312,14 +321,19 @@ Result<void> bundle_adjust(Map& m, const Camera& camera, std::span<const std::in
     return std::unexpected(std::move(still.error()));
   }
   if (auto ok = write_back(m, *built, *second, points); !ok) {
-    return ok;
+    return std::unexpected(std::move(ok.error()));
   }
   std::vector<std::int64_t> ids;
   ids.reserve(points.size());
   for (const std::int64_t p : points) {
     ids.push_back(m.pt_id[static_cast<std::size_t>(p)]);
   }
-  return forget_and_refresh(m, built->rows, *still, ids);
+  auto dropped = forget_and_refresh(m, built->rows, *still, ids);
+  if (!dropped) {
+    return std::unexpected(std::move(dropped.error()));
+  }
+  return Adjustment{.solves = {solve_of(first->summary.solve), solve_of(second->summary.solve)},
+                    .outliers = *dropped};
 }
 
 }  // namespace slam_it_all::edge

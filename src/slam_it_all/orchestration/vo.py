@@ -18,9 +18,11 @@ builds each frame for the mode (:mod:`slam_it_all.edge.frames`), tracks it
 - **The frames.** ``count`` of them from ``first`` (all by default), in the sequence's order.
   An RGB-D frame without a depth map within the reader's tolerance is skipped.
 - **Each frame** gives one diagnostics line (``timestamp``, ``state``, ``tracked``,
-  ``keyframe``, and the time each step took, in seconds: the run format's
-  :data:`slam_it_all.eval.runs.STEPS`) and, if tracked, its ``T_world_cam``. The run ends at the
-  frame that loses the track. The steps, as a camera and ORB-SLAM's threads divide them:
+  ``keyframe``, the time each step took, in seconds: the run format's
+  :data:`slam_it_all.eval.runs.STEPS`; then how its stages went:
+  :meth:`slam_it_all.edge.pipeline.FrameSummary.as_dict`'s keys) and, if tracked, its
+  ``T_world_cam``. The run ends at the frame that loses the track. The steps, as a camera and
+  ORB-SLAM's threads divide them:
 
   - ``read_seconds``: delivering the frame's images, decoded (a depth map in metres), and a
     stereo pair rectified, as ORB-SLAM2's examples do before they hand a frame over;
@@ -548,6 +550,7 @@ def _run_here(request: Request) -> runs.Run:
                 "build_seconds": after_build - after_read,
                 "track_seconds": result.track_seconds,
                 "map_seconds": result.map_seconds,
+                **result.summary.as_dict(),
             }
         )
         if result.pose is not None:

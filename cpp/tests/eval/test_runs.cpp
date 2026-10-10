@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -46,21 +47,36 @@ std::vector<Eigen::Matrix4d> poses(const nlohmann::json& values) {
   return out;
 }
 
-/// @brief A JSON object's scalars, in order.
+/// @brief A JSON value as the run writer takes it: a scalar, or nested JSON as text (the
+///        writer's own nesting is checked by `check_nested`).
+/// @param value The value.
+/// @return The writer's value.
+runs::JsonValue value_of(const nlohmann::json& value) {
+  if (value.is_null()) {
+    return nullptr;
+  }
+  if (value.is_boolean()) {
+    return value.get<bool>();
+  }
+  if (value.is_number_integer()) {
+    return value.get<std::int64_t>();
+  }
+  if (value.is_number()) {
+    return value.get<double>();
+  }
+  if (value.is_string()) {
+    return value.get<std::string>();
+  }
+  return runs::JsonText{.text = value.dump()};
+}
+
+/// @brief A JSON object as the run writer takes it, its keys in order.
 /// @param object The object.
-/// @return The flat object.
-runs::JsonObject flat(const nlohmann::json& object) {
+/// @return The object.
+runs::JsonObject object_of(const nlohmann::json& object) {
   runs::JsonObject out;
-  for (const auto& [key, value] : object.items()) {
-    if (value.is_boolean()) {
-      out.emplace_back(key, value.get<bool>());
-    } else if (value.is_number_integer()) {
-      out.emplace_back(key, value.get<std::int64_t>());
-    } else if (value.is_number()) {
-      out.emplace_back(key, value.get<double>());
-    } else {
-      out.emplace_back(key, value.get<std::string>());
-    }
+  for (const auto& [key, item] : object.items()) {
+    out.emplace_back(key, value_of(item));
   }
   return out;
 }
@@ -78,7 +94,7 @@ runs::Run golden_run() {
                 .keyframe_timestamps = values["keyframe_timestamps"].get<std::vector<double>>(),
                 .keyframe_poses = poses(values["keyframe_poses"]),
                 .points = {},
-                .settings = flat(values["settings"]),
+                .settings = object_of(values["settings"]),
                 .diagnostics = {},
                 .peak_memory = values["peak_memory"].get<std::int64_t>(),
                 .cpus = values["cpus"].get<std::vector<std::int64_t>>(),
@@ -87,7 +103,7 @@ runs::Run golden_run() {
     run.points.emplace_back(point[0].get<double>(), point[1].get<double>(), point[2].get<double>());
   }
   for (const auto& entry : values["diagnostics"]) {
-    run.diagnostics.push_back(flat(entry));
+    run.diagnostics.push_back(object_of(entry));
   }
   return run;
 }
@@ -210,12 +226,37 @@ void check_refusals(int& failures) {
          "numbers are written shortest, whole ones with .0", failures);
 }
 
+/// @brief Check nested JSON: written as Python's `json.dumps` writes it, its numbers finite.
+/// @param failures Running failure count.
+void check_nested(int& failures) {
+  const auto solve = runs::json_object({{"initial_cost", 12.5},
+                                        {"iterations", std::int64_t{5}},
+                                        {"termination", std::string("function")},
+                                        {"inliers", nullptr}});
+  expect(solve.has_value() &&
+             solve->text == R"({"initial_cost": 12.5, "iterations": 5, "termination": "function", )"
+                            R"("inliers": null})",
+         "an object nests as json.dumps writes it", failures);
+  if (solve) {
+    const std::vector<runs::JsonValue> items{*solve, true};
+    const auto array = runs::json_array(items);
+    expect(array.has_value() && array->text == "[" + solve->text + ", true]",
+           "an array nests its items, objects included", failures);
+  }
+  expect(is_invalid_input(runs::json_object({{"cost", std::nan("")}})),
+         "an object with a number that is not finite is refused", failures);
+  const std::vector<runs::JsonValue> infinite{std::numeric_limits<double>::infinity()};
+  expect(is_invalid_input(runs::json_array(infinite)),
+         "an array with a number that is not finite is refused", failures);
+}
+
 /// @brief The test body.
 /// @return The exit code.
 int run() {
   int failures = 0;
   check_golden(failures);
   check_refusals(failures);
+  check_nested(failures);
   return slam_it_all::testing::finish("eval/runs", failures);
 }
 

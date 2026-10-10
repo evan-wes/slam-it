@@ -1,7 +1,8 @@
 /// @file
 /// @brief Tracking, placing each frame against the map: the C++ core's mirror of
 ///        `slam_it_all.edge.tracking` (ORB-SLAM's `Tracking`, lite), whose docstring states the
-///        stages.
+///        stages. Each stage reports how it went beside its result, which a run records per
+///        frame.
 #pragma once
 
 #include <Eigen/Core>
@@ -15,6 +16,7 @@
 #include "slam_it_all/edge/map.hpp"
 #include "slam_it_all/edge/options.hpp"
 #include "slam_it_all/foundations/error.hpp"
+#include "slam_it_all/foundations/ransac.hpp"
 
 namespace slam_it_all::edge {
 
@@ -32,6 +34,16 @@ struct InView {
   std::vector<double> view_cos;
 };
 
+/// @brief How tracking the local map went (`slam_it_all.edge.tracking.LocalMapSummary`).
+struct LocalMapSummary {
+  /// @brief The points in view: those the frame had matched, and the local map's others in view.
+  std::int64_t in_view{0};
+  /// @brief The keypoints matched before the pose was refined.
+  std::int64_t matches{0};
+  /// @brief The matches the refinement kept.
+  std::int64_t inliers{0};
+};
+
 /// @brief A frame tracked against the local map, and the counts it adds to
 ///        (`slam_it_all.edge.tracking.LocalTracking`).
 struct LocalTracking {
@@ -41,6 +53,60 @@ struct LocalTracking {
   std::vector<std::int64_t> visible;
   /// @brief The ids of the inliers.
   std::vector<std::int64_t> found;
+  /// @brief The keypoints matched before the pose was refined.
+  std::int64_t matches{0};
+};
+
+/// @brief How tracking the local map went (`slam_it_all.edge.tracking.LocalTracking.summary`).
+/// @param local The frame tracked against the local map.
+/// @return The points in view, the matches and the inliers.
+[[nodiscard]] LocalMapSummary summary(const LocalTracking& local);
+
+/// @brief How tracking the last frame went (`slam_it_all.edge.tracking.MotionSummary`).
+struct MotionSummary {
+  /// @brief The keypoints matched in the last window searched.
+  std::int64_t matches{0};
+  /// @brief Whether the window was doubled because too few matched in the first.
+  bool widened{false};
+  /// @brief The matches the refinement kept, if too few did not match to refine.
+  std::optional<std::int64_t> inliers;
+};
+
+/// @brief Tracking the last frame: the frame, if it was tracked, and how it went
+///        (`slam_it_all.edge.tracking.Motion`).
+struct Motion {
+  /// @brief The tracked frame, if enough points matched and survived refinement.
+  std::optional<Tracked> tracked;
+  /// @brief How it went.
+  MotionSummary summary;
+};
+
+/// @brief How the PnP fallback went (`slam_it_all.edge.tracking.PnpSummary`); each count
+///        empty when the fallback stopped before reaching it.
+struct PnpSummary {
+  /// @brief The local map's points.
+  std::int64_t candidates{0};
+  /// @brief The keypoints matched to them by descriptor, with a bearing in front.
+  std::optional<std::int64_t> matches;
+  /// @brief RANSAC's samples, if it found a pose.
+  std::optional<std::int64_t> iterations;
+  /// @brief Why RANSAC stopped, if it found a pose.
+  std::optional<foundations::ransac::Termination> termination;
+  /// @brief Whether RANSAC found no pose.
+  bool degenerate{false};
+  /// @brief RANSAC's inliers.
+  std::optional<std::int64_t> inliers;
+  /// @brief The inliers the refinement kept.
+  std::optional<std::int64_t> refined;
+};
+
+/// @brief The PnP fallback: the frame, if it was placed, and how it went
+///        (`slam_it_all.edge.tracking.Relocalization`).
+struct Relocalization {
+  /// @brief The frame placed and refined, if it was.
+  std::optional<Tracked> tracked;
+  /// @brief How it went.
+  PnpSummary summary;
 };
 
 /// @brief Predict a frame's pose by the constant-velocity model
@@ -89,13 +155,14 @@ struct LocalTracking {
 /// @param predicted The predicted pose.
 /// @param mode The pipeline's mode.
 /// @param options The windows and minimums.
-/// @return The tracked frame, or nothing if too few points matched or survived refinement;
-///         `InvalidInput` for the last frame's matches not one per keypoint, or an invalid
-///         camera or settings.
-[[nodiscard]] foundations::Result<std::optional<Tracked>> track_last_frame(
-    const Map& m, const Camera& camera, const Frame& frame, const Frame& last,
-    const Tracked& last_tracked, const Eigen::Matrix4d& predicted, Mode mode,
-    const Options& options);
+/// @return The tracked frame, none if too few points matched or survived refinement, and how
+///         it went; `InvalidInput` for the last frame's matches not one per keypoint, or an
+///         invalid camera or settings.
+[[nodiscard]] foundations::Result<Motion> track_last_frame(const Map& m, const Camera& camera,
+                                                           const Frame& frame, const Frame& last,
+                                                           const Tracked& last_tracked,
+                                                           const Eigen::Matrix4d& predicted,
+                                                           Mode mode, const Options& options);
 
 /// @brief Match the local map's points in view and refine the pose
 ///        (`slam_it_all.edge.tracking.track_local_map`, ORB-SLAM's `TrackLocalMap`).
@@ -107,9 +174,9 @@ struct LocalTracking {
 /// @param options The window, thresholds and minimums.
 /// @param recovering Whether the frame is a recovery's or the next: the window is then
 ///        `recovery_local_window`.
-/// @return The refined frame and the ids of the points in view and of the inliers;
-///         `InvalidInput` for matches that are not one per keypoint, or an invalid camera or
-///         settings.
+/// @return The refined frame, the ids of the points in view and of the inliers, and the matches
+///         before refinement; `InvalidInput` for matches that are not one per keypoint, or an
+///         invalid camera or settings.
 [[nodiscard]] foundations::Result<LocalTracking> track_local_map(const Map& m, const Camera& camera,
                                                                  const Frame& frame,
                                                                  const Tracked& tracked, Mode mode,
@@ -122,9 +189,11 @@ struct LocalTracking {
 /// @param camera The camera.
 /// @param frame The frame.
 /// @param options The RANSAC threshold, minimum inliers and seed.
-/// @return The frame placed and refined, or nothing if too few inliers; `InvalidInput` for an
-///         invalid camera or settings.
-[[nodiscard]] foundations::Result<std::optional<Tracked>> relocalize_locally(
-    const Map& m, const Camera& camera, const Frame& frame, const Options& options);
+/// @return The frame placed and refined, none if too few inliers, and how far it got;
+///         `InvalidInput` for an invalid camera or settings.
+[[nodiscard]] foundations::Result<Relocalization> relocalize_locally(const Map& m,
+                                                                     const Camera& camera,
+                                                                     const Frame& frame,
+                                                                     const Options& options);
 
 }  // namespace slam_it_all::edge

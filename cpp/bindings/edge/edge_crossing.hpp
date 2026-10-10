@@ -6,6 +6,8 @@
 /// scalars `Camera.as_dict` and `Options.as_dict` give. Arrays are C-contiguous, of the dtype and
 /// shape the Python dataclasses hold; a malformed dict raises `std::invalid_argument` (a
 /// `ValueError`), and the map is then checked by the core (`check_map`, an `InvalidInputError`).
+/// A stage's summary crosses back as a dict of its fields, an empty count as None and an enum as
+/// its code in the module's `codes()`.
 #pragma once
 
 #include <nanobind/nanobind.h>
@@ -24,6 +26,8 @@
 #include <vector>
 
 #include "common.hpp"
+#include "foundations/nls_crossing.hpp"
+#include "slam_it_all/edge/adjust.hpp"
 #include "slam_it_all/edge/frames.hpp"
 #include "slam_it_all/edge/initialization.hpp"
 #include "slam_it_all/edge/map.hpp"
@@ -420,15 +424,54 @@ inline edge::Mode mode_in(const std::string& name) {
   return enum_by_name<edge::Mode>(name, [](edge::Mode m) { return edge::name(m); }, "mode");
 }
 
-/// @brief A started map as a dict, or None.
-/// @param started The map and its tracked frame, if any.
-/// @return `map` (as `map_dict`), `pose` (4, 4) and `points` (N,); or None.
-inline nanobind::object started_dict(const std::optional<edge::Started>& started) {
-  if (!started) {
-    return nanobind::none();
+/// @brief A count, or None.
+/// @param count The count, if any.
+/// @return It as an int, or None.
+inline nanobind::object count_or_none(const std::optional<std::int64_t>& count) {
+  return count ? nanobind::object(nanobind::int_(*count)) : nanobind::none();
+}
+
+/// @brief Bundle-adjustment solves as they cross (`slam_it_all.edge.adjust.decode_solves`).
+/// @param solves The solves.
+/// @return A list of dicts of `initial_cost`, `final_cost`, `iterations` and `termination`
+///         (its code in `nls_termination`).
+inline nanobind::list solves_list(const std::vector<edge::Solve>& solves) {
+  nanobind::list out;
+  for (const edge::Solve& solve : solves) {
+    nanobind::dict item;
+    item["initial_cost"] = solve.initial_cost;
+    item["final_cost"] = solve.final_cost;
+    item["iterations"] = solve.iterations;
+    item["termination"] = static_cast<int>(solve.termination);
+    out.append(item);
   }
-  nanobind::dict out = tracked_dict(started->tracked);
-  out["map"] = map_dict(started->map);
+  return out;
+}
+
+/// @brief `nls_termination`'s table, for a module whose results carry solves.
+/// @return `{"nls_termination": [names in code order]}`.
+inline nanobind::dict solve_codes() {
+  nanobind::dict out;
+  out["nls_termination"] = nls_terminations();
+  return out;
+}
+
+/// @brief An attempt to start the map as a dict.
+/// @param attempt The attempt.
+/// @return `started` (a dict of `map`, as `map_dict`, `pose` (4, 4) and `points` (N,); or
+///         None), `outcome` (its code), `matches` (or None) and `solves` (as `solves_list`).
+inline nanobind::dict initialization_dict(const edge::Initialization& attempt) {
+  nanobind::dict out;
+  if (attempt.started) {
+    nanobind::dict started = tracked_dict(attempt.started->tracked);
+    started["map"] = map_dict(attempt.started->map);
+    out["started"] = started;
+  } else {
+    out["started"] = nanobind::none();
+  }
+  out["outcome"] = static_cast<int>(attempt.summary.outcome);
+  out["matches"] = count_or_none(attempt.summary.matches);
+  out["solves"] = solves_list(attempt.summary.solves);
   return out;
 }
 

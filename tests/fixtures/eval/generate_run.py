@@ -8,7 +8,8 @@ Python's :func:`slam_it_all.eval.runs.write_run` writes the folder from the valu
 ``run_values.json`` (``backend`` aside: each writer names its own). The C++ and Rust run
 writers write the same values and are held to the folder: the ``.npy`` files byte for byte,
 ``run.json``, ``trajectory.txt`` and ``diagnostics.jsonl`` value for value (their text may
-differ).
+differ). The diagnostics nest as the edge pipeline's stage summaries do: objects, lists and
+nulls inside each line.
 """
 
 from __future__ import annotations
@@ -32,6 +33,46 @@ def _poses(rng: np.random.Generator, count: int) -> np.ndarray:
     out[:, :3, :3] = so3.exp(rng.normal(0.0, 1.0, (count, 3)))
     out[:, :3, 3] = rng.normal(0.0, 2.0, (count, 3))
     return out
+
+
+def _summary(k: int) -> dict[str, Any]:
+    """Return frame ``k``'s stage summaries, nested as the edge pipeline writes them."""
+    solve = {
+        "initial_cost": 12.5 / (k + 1),
+        "final_cost": 0.75 / (k + 1),
+        "iterations": 5 + k,
+        "termination": "function",
+    }
+    return {
+        "placed_by": "initialization" if k == 0 else ("motion" if k < 4 else None),
+        "init": {"matches": None, "outcome": "initialized", "ba": []} if k == 0 else None,
+        "motion": None if k == 0 else {"matches": 200 + k, "widened": k == 2, "inliers": 180 + k},
+        "pnp": {
+            "candidates": 500,
+            "matches": 120,
+            "iterations": None,
+            "termination": "degenerate",
+            "inliers": None,
+            "refined": None,
+        }
+        if k == 4
+        else None,
+        "local_map": {"in_view": 400 + k, "matches": 300 + k, "inliers": 290 + k}
+        if 0 < k < 4
+        else None,
+        "mapping": {
+            "from_depth": 40,
+            "culled_points": 3,
+            "triangulated": 12,
+            "fused": 2,
+            "ba": [solve, solve],
+            "outliers": 7,
+            "weak_points": 1,
+            "culled_keyframes": 0,
+        }
+        if k == 3
+        else None,
+    }
 
 
 def values() -> dict[str, Any]:
@@ -62,6 +103,7 @@ def values() -> dict[str, Any]:
                 "build_seconds": 0.0125 * (k + 1),
                 "track_seconds": 0.005 * (k + 1),
                 "map_seconds": 0.0625 if k == 3 else 0.0,
+                **_summary(k),
             }
             for k, t in enumerate(times)
         ],

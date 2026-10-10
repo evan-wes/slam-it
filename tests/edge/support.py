@@ -1,4 +1,4 @@
-"""The edge rung's test constants, and helpers comparing maps across backends.
+"""The edge rung's test constants, and helpers comparing maps and summaries across backends.
 
 Shared by the tests and by the tools that run the room outside pytest (the golden record's
 generator): the room's frame count, settings and camera.
@@ -7,6 +7,7 @@ generator): the room's frame count, settings and camera.
 from __future__ import annotations
 
 from dataclasses import fields
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -62,6 +63,42 @@ def assert_close(
     """
     chosen = TOLERANCE if tolerance is None else tolerance
     np.testing.assert_allclose(got, expected, rtol=chosen["rtol"], atol=chosen["atol"])
+
+
+def assert_records_match(
+    got: Any,  # noqa: ANN401 -- a summary's JSON values, at any depth
+    expected: Any,  # noqa: ANN401 -- a summary's JSON values, at any depth
+    tolerance: dict[str, float] | None = None,
+) -> None:
+    """Check two stage summaries' JSON values: floats to a tolerance, everything else exactly.
+
+    The floats are bundle adjustments' costs, which carry the solves' last-bit differences; the
+    counts, names and flags are decisions, and must match exactly, type included.
+
+    Parameters
+    ----------
+    got, expected : JSON values
+        Summaries' ``as_dict()``, or values inside them.
+    tolerance : dict, optional
+        ``rtol`` and ``atol`` (default: :data:`SOLVER_TOLERANCE`).
+    """
+    chosen = SOLVER_TOLERANCE if tolerance is None else tolerance
+    if isinstance(expected, dict):
+        assert isinstance(got, dict)
+        assert list(got) == list(expected)
+        for key, value in expected.items():
+            assert_records_match(got[key], value, chosen)
+    elif isinstance(expected, list):
+        assert isinstance(got, list)
+        assert len(got) == len(expected)
+        for a, b in zip(got, expected, strict=True):
+            assert_records_match(a, b, chosen)
+    elif isinstance(expected, float):
+        assert isinstance(got, float)
+        np.testing.assert_allclose(got, expected, rtol=chosen["rtol"], atol=chosen["atol"])
+    else:
+        assert type(got) is type(expected)
+        assert got == expected
 
 
 def assert_maps_match(got: Map, expected: Map, tolerance: dict[str, float] | None = None) -> None:

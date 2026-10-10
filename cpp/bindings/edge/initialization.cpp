@@ -1,7 +1,7 @@
 /// @file
 /// @brief Bindings for `slam_it_all.edge.initialization` (`slam_it_all._cpp.edge.initialization`).
 ///
-/// A started map crosses back as a dict of `map`, `pose` and `points`, or None.
+/// An attempt crosses back as `edge_crossing::initialization_dict` builds it.
 #include "slam_it_all/edge/initialization.hpp"
 
 #include <nanobind/nanobind.h>
@@ -23,8 +23,8 @@ namespace slam_it_all::bindings {
 namespace {
 
 using edge_crossing::frame_in;
+using edge_crossing::initialization_dict;
 using edge_crossing::options_in;
-using edge_crossing::started_dict;
 
 /// @brief Matches as they cross: (M, 2) int64 keypoint pairs.
 using Pairs = nb::ndarray<const std::int64_t, nb::shape<-1, 2>, nb::c_contig, nb::device::cpu>;
@@ -32,10 +32,11 @@ using Pairs = nb::ndarray<const std::int64_t, nb::shape<-1, 2>, nb::c_contig, nb
 /// @brief Start the map from a stereo or RGB-D frame.
 /// @param frame The frame, as a dict.
 /// @param options The settings, as a dict.
-/// @return The started map as a dict, or None.
+/// @return The attempt, as a dict.
 /// @throws CoreError for invalid input.
-nb::object initialize_from_depth(const nb::dict& frame, const nb::dict& options) {
-  return started_dict(unwrap(edge::initialize_from_depth(frame_in(frame), options_in(options))));
+nb::dict initialize_from_depth(const nb::dict& frame, const nb::dict& options) {
+  return initialization_dict(
+      unwrap(edge::initialize_from_depth(frame_in(frame), options_in(options))));
 }
 
 /// @brief Match a monocular reference frame to a later one.
@@ -74,23 +75,35 @@ nb::dict match_for_initialization(const nb::dict& reference, const nb::dict& fra
 /// @param frame The later frame, as a dict.
 /// @param pairs The matches (M, 2), int64.
 /// @param options The settings, as a dict.
-/// @return The started map as a dict, or None.
+/// @return The attempt, as a dict.
 /// @throws CoreError for invalid input.
-nb::object initialize_monocular(const nb::dict& camera, const nb::dict& reference,
-                                const nb::dict& frame, const Pairs& pairs,
-                                const nb::dict& options) {
+nb::dict initialize_monocular(const nb::dict& camera, const nb::dict& reference,
+                              const nb::dict& frame, const Pairs& pairs, const nb::dict& options) {
   std::vector<std::array<std::int64_t, 2>> matches(pairs.shape(0));
   for (std::size_t i = 0; i < matches.size(); ++i) {
     matches[i] = {pairs(i, 0), pairs(i, 1)};
   }
-  return started_dict(
+  return initialization_dict(
       unwrap(edge::initialize_monocular(edge_crossing::camera_in(camera), frame_in(reference),
                                         frame_in(frame), matches, options_in(options))));
+}
+
+/// @brief The enum tables: the outcomes and the solves' terminations, names in code order.
+/// @return `{"outcome": [...], "nls_termination": [...]}`.
+nb::dict codes() {
+  nb::dict out = edge_crossing::solve_codes();
+  nb::list outcomes;
+  for (int k = 0; k < static_cast<int>(edge::Outcome::kCount); ++k) {
+    outcomes.append(edge::name(static_cast<edge::Outcome>(k)));
+  }
+  out["outcome"] = outcomes;
+  return out;
 }
 
 }  // namespace
 
 void bind_initialization(nb::module_& m) {
+  m.def("codes", &codes, "Each enum's names in code order.");
   m.def("initialize_from_depth", &initialize_from_depth, nb::arg("frame"), nb::arg("options"),
         "Start the map from a stereo or RGB-D frame.");
   m.def("match_for_initialization", &match_for_initialization, nb::arg("reference"),

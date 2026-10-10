@@ -139,19 +139,31 @@ nb::dict cull_keyframes(const nb::dict& m, const nb::dict& camera, const std::st
 /// @param tracked Its pose and matches, as a dict.
 /// @param mode The mode's name.
 /// @param options The settings, as a dict.
-/// @return The new map, as a dict.
+/// @return The new map, as a dict, and how each step went: the summary's counts and `solves`.
 /// @throws CoreError for invalid input.
 nb::dict process(const nb::dict& m, const nb::dict& camera, const nb::dict& frame,
                  const nb::dict& tracked, const std::string& mode, const nb::dict& options) {
-  edge::Map out = map_in(m);
-  unwrap(edge::process(out, camera_in(camera), edge_crossing::frame_in(frame),
-                       edge_crossing::tracked_in(tracked), mode_in(mode), options_in(options)));
-  return map_dict(out);
+  edge::Map mapped = map_in(m);
+  const edge::MappingSummary summary =
+      unwrap(edge::process(mapped, camera_in(camera), edge_crossing::frame_in(frame),
+                           edge_crossing::tracked_in(tracked), mode_in(mode), options_in(options)));
+  nb::dict out;
+  out["map"] = map_dict(mapped);
+  out["from_depth"] = summary.from_depth;
+  out["culled_points"] = summary.culled_points;
+  out["triangulated"] = summary.triangulated;
+  out["fused"] = summary.fused;
+  out["solves"] = edge_crossing::solves_list(summary.solves);
+  out["outliers"] = summary.outliers;
+  out["weak_points"] = summary.weak_points;
+  out["culled_keyframes"] = summary.culled_keyframes;
+  return out;
 }
 
 }  // namespace
 
 void bind_mapping(nb::module_& m) {
+  m.def("codes", &edge_crossing::solve_codes, "Each enum's names in code order.");
   m.def("need_keyframe", &need_keyframe, nb::arg("m"), nb::arg("camera"),
         nb::arg("depth").noconvert(), nb::arg("tracked"), nb::arg("mode"), nb::arg("options"),
         "Decide whether a tracked frame becomes a keyframe.");

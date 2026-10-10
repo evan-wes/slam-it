@@ -6,7 +6,7 @@ mod scene;
 
 use nalgebra::Matrix4;
 use slam_it_all_edge::initialization::{
-    initialize_from_depth, initialize_monocular, match_for_initialization,
+    InitSummary, Outcome, initialize_from_depth, initialize_monocular, match_for_initialization,
 };
 use slam_it_all_edge::options::Options;
 use slam_it_all_foundations::error::ErrorKind;
@@ -21,7 +21,9 @@ fn from_depth_puts_a_point_at_every_keypoint() {
         min_init_depth_points: 10,
         ..Options::default()
     };
-    let started = initialize_from_depth(&f, &options).unwrap().unwrap();
+    let attempt = initialize_from_depth(&f, &options).unwrap();
+    assert_eq!(attempt.summary, InitSummary::of(Outcome::Initialized));
+    let started = attempt.started.unwrap();
     assert_eq!(started.map.keyframes(), 1);
     assert_eq!(started.map.points(), POINTS);
     assert_eq!(started.tracked.inliers(), POINTS);
@@ -32,17 +34,22 @@ fn from_depth_puts_a_point_at_every_keypoint() {
         min_init_features_depth: 100,
         ..Options::default()
     };
-    assert!(initialize_from_depth(&f, &strict).unwrap().is_none());
+    let outcome = |options: &Options| {
+        let attempt = initialize_from_depth(&f, options).unwrap();
+        assert!(attempt.started.is_none());
+        attempt.summary.outcome
+    };
+    assert_eq!(outcome(&strict), Outcome::TooFewFeatures);
     let exactly = Options {
         min_init_features_depth: POINTS,
         ..options
     };
-    assert!(initialize_from_depth(&f, &exactly).unwrap().is_none()); // more than, as N > 500
+    assert_eq!(outcome(&exactly), Outcome::TooFewFeatures); // more than, as N > 500
     let shallow = Options {
         min_init_depth_points: POINTS + 1,
         ..options
     };
-    assert!(initialize_from_depth(&f, &shallow).unwrap().is_none());
+    assert_eq!(outcome(&shallow), Outcome::TooLittleDepth);
     let other = Options {
         levels: 4,
         ..Options::default()
@@ -65,7 +72,9 @@ fn monocular_starts_a_unit_depth_map() {
     assert_eq!(short.unwrap_err().kind, ErrorKind::InvalidInput);
     let pairs: Vec<[usize; 2]> = found.iter().map(|m| [m.first, m.second]).collect();
     let few = initialize_monocular(&camera(), &first, &last, &pairs, &Options::default()).unwrap();
-    assert!(few.is_none());
+    assert!(few.started.is_none());
+    assert_eq!(few.summary.outcome, Outcome::TooFewMatches);
+    assert_eq!(few.summary.matches, Some(pairs.len()));
     let beyond = initialize_monocular(
         &camera(),
         &first,
@@ -78,9 +87,11 @@ fn monocular_starts_a_unit_depth_map() {
         init_min_matches: 20,
         ..Options::default()
     };
-    let started = initialize_monocular(&camera(), &first, &last, &pairs, &options)
-        .unwrap()
-        .unwrap();
+    let attempt = initialize_monocular(&camera(), &first, &last, &pairs, &options).unwrap();
+    assert_eq!(attempt.summary.outcome, Outcome::Initialized);
+    assert_eq!(attempt.summary.matches, Some(pairs.len()));
+    assert_eq!(attempt.summary.solves.len(), 2);
+    let started = attempt.started.unwrap();
     let m = &started.map;
     assert_eq!(m.keyframes(), 2);
     assert_eq!(m.kf_pose[0], Matrix4::identity());

@@ -1,5 +1,6 @@
 //! Initialisation, starting the map: the Rust core's mirror of `slam_it_all.edge.initialization`
-//! (ORB-SLAM's `StereoInitialization` and `MonocularInitialization`).
+//! (ORB-SLAM's `StereoInitialization` and `MonocularInitialization`). Each attempt also says how
+//! it went, which a run records for every frame before the map exists.
 
 use nalgebra::{Matrix4, Vector3};
 use slam_it_all_foundations::error::{ErrorKind, Result, fail};
@@ -7,7 +8,7 @@ use slam_it_all_foundations::matching::{Match, Projection, SearchOptions};
 use slam_it_all_foundations::triangulation;
 use slam_it_all_foundations::twoview::{self, Status};
 
-use crate::adjust::bundle_adjust;
+use crate::adjust::{Solve, bundle_adjust};
 use crate::frames::{Camera, Frame, Tracked, check_camera, search};
 use crate::map::{self, Map};
 use crate::options::{Options, check_options};
@@ -19,6 +20,161 @@ pub struct Started {
     pub map: Map,
     /// The frame (the map's last keyframe), tracked.
     pub tracked: Tracked,
+}
+
+/// How a frame went before the map existed, with the codes it crosses as
+/// (`slam_it_all.edge.initialization.Outcome`, whose members document each).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// It started the map.
+    Initialized = 0,
+    /// Too few keypoints.
+    TooFewFeatures = 1,
+    /// Too few keypoints with depth.
+    TooLittleDepth = 2,
+    /// It became the monocular reference: there was none.
+    ReferenceSet = 3,
+    /// Too few keypoints matched the reference, so it became the reference.
+    ReferenceReplaced = 4,
+    /// Too few of the matches had bearings in both views.
+    TooFewMatches = 5,
+    /// Two-view found no motion.
+    Degenerate = 6,
+    /// Two-view: the camera only rotated.
+    PureRotation = 7,
+    /// Two-view: two candidate motions fit about as well.
+    Ambiguous = 8,
+    /// Two-view: too few points had enough parallax.
+    LowParallax = 9,
+    /// Too few points survived the initial bundle adjustment.
+    TooFewPoints = 10,
+    /// The first keyframe's median depth was not positive.
+    BadScale = 11,
+}
+
+impl Outcome {
+    /// Every outcome, in code order.
+    pub const ALL: [Self; 12] = [
+        Self::Initialized,
+        Self::TooFewFeatures,
+        Self::TooLittleDepth,
+        Self::ReferenceSet,
+        Self::ReferenceReplaced,
+        Self::TooFewMatches,
+        Self::Degenerate,
+        Self::PureRotation,
+        Self::Ambiguous,
+        Self::LowParallax,
+        Self::TooFewPoints,
+        Self::BadScale,
+    ];
+
+    /// The outcome's name, as `slam_it_all.edge.initialization.Outcome` spells it.
+    ///
+    /// # Returns
+    ///
+    /// A static string.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Initialized => "initialized",
+            Self::TooFewFeatures => "too_few_features",
+            Self::TooLittleDepth => "too_little_depth",
+            Self::ReferenceSet => "reference_set",
+            Self::ReferenceReplaced => "reference_replaced",
+            Self::TooFewMatches => "too_few_matches",
+            Self::Degenerate => "degenerate",
+            Self::PureRotation => "pure_rotation",
+            Self::Ambiguous => "ambiguous",
+            Self::LowParallax => "low_parallax",
+            Self::TooFewPoints => "too_few_points",
+            Self::BadScale => "bad_scale",
+        }
+    }
+}
+
+/// How a frame went before the map existed
+/// (`slam_it_all.edge.initialization.InitSummary`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct InitSummary {
+    /// What happened.
+    pub outcome: Outcome,
+    /// A monocular frame's matches to the reference, once there is one.
+    pub matches: Option<usize>,
+    /// The initial bundle adjustment's solves, if it ran.
+    pub solves: Vec<Solve>,
+}
+
+impl InitSummary {
+    /// An attempt's summary with no matches and no solves.
+    ///
+    /// # Arguments
+    ///
+    /// * `outcome` - What happened.
+    ///
+    /// # Returns
+    ///
+    /// The summary.
+    #[must_use]
+    pub const fn of(outcome: Outcome) -> Self {
+        Self {
+            outcome,
+            matches: None,
+            solves: Vec::new(),
+        }
+    }
+}
+
+/// An attempt to start the map (`slam_it_all.edge.initialization.Initialization`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Initialization {
+    /// The started map and frame, if the map started.
+    pub started: Option<Started>,
+    /// How the attempt went.
+    pub summary: InitSummary,
+}
+
+impl Initialization {
+    /// An attempt that did not start the map.
+    ///
+    /// # Arguments
+    ///
+    /// * `outcome` - Why.
+    /// * `matches` - The pairs given, if any.
+    /// * `solves` - The adjustment's solves, if it ran.
+    ///
+    /// # Returns
+    ///
+    /// The attempt.
+    #[must_use]
+    pub const fn failed(outcome: Outcome, matches: Option<usize>, solves: Vec<Solve>) -> Self {
+        Self {
+            started: None,
+            summary: InitSummary {
+                outcome,
+                matches,
+                solves,
+            },
+        }
+    }
+}
+
+/// The outcome a two-view status that did not initialise stands for.
+///
+/// # Arguments
+///
+/// * `status` - The status.
+///
+/// # Returns
+///
+/// The outcome of the same name.
+const fn outcome_of(status: Status) -> Outcome {
+    match status {
+        Status::PureRotation => Outcome::PureRotation,
+        Status::Ambiguous => Outcome::Ambiguous,
+        Status::LowParallax => Outcome::LowParallax,
+        Status::Initialized => Outcome::Initialized,
+    }
 }
 
 /// Checks the settings and a frame's pyramid against them.
@@ -117,22 +273,30 @@ fn median(values: &mut [f64]) -> f64 {
 /// # Returns
 ///
 /// The map of one keyframe at the origin with a point at every keypoint with depth (and a
-/// bearing), or `None` unless it has more than `min_init_features_depth` keypoints and
-/// `min_init_depth_points` with depth.
+/// bearing), or none unless it has more than `min_init_features_depth` keypoints and
+/// `min_init_depth_points` with depth; and the outcome.
 ///
 /// # Errors
 ///
 /// `InvalidInput` for a frame whose pyramid is not the settings', or invalid settings.
-pub fn initialize_from_depth(frame: &Frame, options: &Options) -> Result<Option<Started>> {
+pub fn initialize_from_depth(frame: &Frame, options: &Options) -> Result<Initialization> {
     check_frame(frame, options, "frame")?;
     if frame.size() <= options.min_init_features_depth {
-        return Ok(None);
+        return Ok(Initialization::failed(
+            Outcome::TooFewFeatures,
+            None,
+            Vec::new(),
+        ));
     }
     let has_depth: Vec<usize> = (0..frame.size())
         .filter(|&i| !frame.depth[i].is_nan() && !frame.bearings[i].x.is_nan())
         .collect();
     if has_depth.len() < options.min_init_depth_points {
-        return Ok(None);
+        return Ok(Initialization::failed(
+            Outcome::TooLittleDepth,
+            None,
+            Vec::new(),
+        ));
     }
     let mut m = Map::empty(options.levels, options.scale_factor);
     insert_unobserving(&mut m, frame, &Matrix4::identity())?;
@@ -149,13 +313,16 @@ pub fn initialize_from_depth(frame: &Frame, options: &Options) -> Result<Option<
     for (j, &i) in has_depth.iter().enumerate() {
         points[i] = m.pt_id[j];
     }
-    Ok(Some(Started {
-        map: m,
-        tracked: Tracked {
-            pose: Matrix4::identity(),
-            points,
-        },
-    }))
+    Ok(Initialization {
+        started: Some(Started {
+            map: m,
+            tracked: Tracked {
+                pose: Matrix4::identity(),
+                points,
+            },
+        }),
+        summary: InitSummary::of(Outcome::Initialized),
+    })
 }
 
 /// Matches a monocular reference frame to a later one
@@ -283,8 +450,9 @@ fn kept_points(
 ///
 /// The map of two keyframes and their points (the chosen motion's inliers in front of both
 /// views with rays whose cosine is below `init_parallax_cos`, `CheckRT`), scaled so the
-/// first's median depth is 1, or `None` if too few keypoints match, the views do not
-/// initialise, or too few points survive the adjustment.
+/// first's median depth is 1, or none if too few keypoints match, the views do not
+/// initialise, or too few points survive the adjustment; with the pairs given, the outcome and
+/// the adjustment's solves.
 ///
 /// # Errors
 ///
@@ -296,7 +464,7 @@ pub fn initialize_monocular(
     frame: &Frame,
     matches: &[[usize; 2]],
     options: &Options,
-) -> Result<Option<Started>> {
+) -> Result<Initialization> {
     check_camera(camera)?;
     check_frame(reference, options, "reference")?;
     check_frame(frame, options, "frame")?;
@@ -314,8 +482,10 @@ pub fn initialize_monocular(
         .copied()
         .filter(|p| !reference.bearings[p[0]].x.is_nan() && !frame.bearings[p[1]].x.is_nan())
         .collect();
+    let given = Some(matches.len());
+    let failed = |outcome, solves| Ok(Initialization::failed(outcome, given, solves));
     if pairs.len() < options.init_min_matches {
-        return Ok(None);
+        return failed(Outcome::TooFewMatches, Vec::new());
     }
     let bearings1: Vec<Vector3<f64>> = pairs.iter().map(|p| reference.bearings[p[0]]).collect();
     let bearings2: Vec<Vector3<f64>> = pairs.iter().map(|p| frame.bearings[p[1]]).collect();
@@ -329,11 +499,13 @@ pub fn initialize_monocular(
         },
     ) {
         Ok(result) => result,
-        Err(e) if e.kind == ErrorKind::Degenerate => return Ok(None),
+        Err(e) if e.kind == ErrorKind::Degenerate => {
+            return failed(Outcome::Degenerate, Vec::new());
+        }
         Err(e) => return Err(e),
     };
     if result.status != Status::Initialized {
-        return Ok(None);
+        return failed(outcome_of(result.status), Vec::new());
     }
     let mut m = Map::empty(options.levels, options.scale_factor);
     insert_unobserving(&mut m, reference, &Matrix4::identity())?;
@@ -349,9 +521,10 @@ pub fn initialize_monocular(
         ba_iterations: options.init_ba_iterations,
         ..*options
     };
-    bundle_adjust(&mut m, camera, &[0, 1], &[true, false], &adjusted)?;
+    let adjustment = bundle_adjust(&mut m, camera, &[0, 1], &[true, false], &adjusted)?;
     if m.points() < options.init_min_matches {
-        return Ok(None); // ORB-SLAM resets with fewer than 100 tracked points
+        // ORB-SLAM resets with fewer than 100 tracked points
+        return failed(Outcome::TooFewPoints, adjustment.solves);
     }
     let first = m.kf_pose[0];
     let mut depths: Vec<f64> = m
@@ -361,12 +534,19 @@ pub fn initialize_monocular(
         .collect();
     let middle = median(&mut depths);
     if !(middle > 0.0) {
-        return Ok(None);
+        return failed(Outcome::BadScale, adjustment.solves);
     }
     scale(&mut m, 1.0 / middle)?;
     let tracked = Tracked {
         pose: m.kf_pose[1],
         points: m.kp_point[m.kf_start[1]..m.kf_start[2]].to_vec(),
     };
-    Ok(Some(Started { map: m, tracked }))
+    Ok(Initialization {
+        started: Some(Started { map: m, tracked }),
+        summary: InitSummary {
+            outcome: Outcome::Initialized,
+            matches: given,
+            solves: adjustment.solves,
+        },
+    })
 }

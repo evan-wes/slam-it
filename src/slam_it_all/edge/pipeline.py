@@ -21,6 +21,9 @@
    the map holds more than ``max_frames``) is inserted and mapped
    (:func:`slam_it_all.edge.mapping.process`).
 
+Each frame's result carries how its stages went (:class:`FrameSummary`), which a run records
+in its diagnostics.
+
 The C++ and Rust pipelines run in their native programs; this one runs in-process.
 """
 
@@ -28,7 +31,8 @@ from __future__ import annotations
 
 import enum
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from typing import Any, Protocol
 
 import numpy as np
 from numpy.typing import NDArray
@@ -36,8 +40,11 @@ from numpy.typing import NDArray
 from slam_it_all.edge import initialization, mapping, tracking
 from slam_it_all.edge import map as maps
 from slam_it_all.edge.frames import Camera, Frame, Tracked
+from slam_it_all.edge.initialization import Initialization, InitSummary, Outcome
 from slam_it_all.edge.map import Map
+from slam_it_all.edge.mapping import MappingSummary
 from slam_it_all.edge.options import MODES, Options
+from slam_it_all.edge.tracking import LocalMapSummary, MotionSummary, PnpSummary
 from slam_it_all.foundations import orb, se3
 from slam_it_all.foundations.errors import InvalidInputError
 
@@ -53,6 +60,77 @@ class State(enum.StrEnum):
     """Tracking frames against the map."""
     LOST = "lost"
     """The track was lost: the run ends."""
+
+
+class Placement(enum.StrEnum):
+    """How a frame was placed, before the local map refined it."""
+
+    INITIALIZATION = "initialization"
+    """It started the map."""
+    MOTION = "motion"
+    """Tracking the last frame, from the constant-velocity prediction."""
+    LOCAL_PNP = "local_pnp"
+    """The fallback: PnP against the local map."""
+
+
+class _Summary(Protocol):
+    """A stage's summary: it gives its JSON values."""
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the summary as JSON values."""
+        ...
+
+
+def _record(summary: _Summary | None) -> dict[str, Any] | None:
+    """Return a stage's summary as JSON values, or None if the stage did not run."""
+    return None if summary is None else summary.as_dict()
+
+
+@dataclass(frozen=True)
+class FrameSummary:
+    """How the stages went on one frame, as a run records it; None where a stage did not run.
+
+    Attributes
+    ----------
+    placed_by : Placement or None
+        How the frame was placed; None if it was not. A frame placed may still fail the local
+        map.
+    init : slam_it_all.edge.initialization.InitSummary or None
+        For a frame before the map existed.
+    motion : slam_it_all.edge.tracking.MotionSummary or None
+        Tracking the last frame.
+    pnp : slam_it_all.edge.tracking.PnpSummary or None
+        The PnP fallback, run only when tracking the last frame failed.
+    local_map : slam_it_all.edge.tracking.LocalMapSummary or None
+        Tracking the local map, run on a placed frame.
+    mapping : slam_it_all.edge.mapping.MappingSummary or None
+        Local mapping, on a keyframe after the first.
+    """
+
+    placed_by: Placement | None = None
+    init: InitSummary | None = None
+    motion: MotionSummary | None = None
+    pnp: PnpSummary | None = None
+    local_map: LocalMapSummary | None = None
+    mapping: MappingSummary | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the summary as JSON values, the keys a run's diagnostics add.
+
+        Returns
+        -------
+        dict
+            ``placed_by`` (by name), ``init``, ``motion``, ``pnp``, ``local_map`` and
+            ``mapping``, each an object or None.
+        """
+        return {
+            "placed_by": None if self.placed_by is None else self.placed_by.value,
+            "init": _record(self.init),
+            "motion": _record(self.motion),
+            "pnp": _record(self.pnp),
+            "local_map": _record(self.local_map),
+            "mapping": _record(self.mapping),
+        }
 
 
 @dataclass(frozen=True)
@@ -77,6 +155,8 @@ class FrameResult:
     map_seconds : float
         The time mapping it took as a keyframe (:func:`slam_it_all.edge.mapping.process`), 0 for
         any other frame: what ORB-SLAM's local-mapping thread does.
+    summary : FrameSummary
+        How its stages went.
     """
 
     timestamp: float
@@ -86,6 +166,17 @@ class FrameResult:
     keyframe: bool
     track_seconds: float
     map_seconds: float
+    summary: FrameSummary
+
+
+@dataclass(frozen=True)
+class _Step:
+    """A frame handled: the frame, if tracked, and what came of it."""
+
+    tracked: Tracked | None
+    keyframe: bool
+    map_seconds: float
+    summary: FrameSummary
 
 
 @dataclass
@@ -158,52 +249,54 @@ class Pipeline:
             Its pose, or why there is none.
         """
         start = time.perf_counter()
-        keyframe = False
-        tracked: Tracked | None = None
-        map_seconds = 0.0
+        step = _Step(tracked=None, keyframe=False, map_seconds=0.0, summary=FrameSummary())
         if self.state is State.NOT_INITIALIZED:
-            tracked = self._initialize(frame)
-            keyframe = tracked is not None
+            step = self._initialize(frame)
         elif self.state is State.TRACKING:
-            tracked, keyframe, map_seconds = self._track(frame)
+            step = self._track(frame)
+        tracked = step.tracked
         return FrameResult(
             timestamp=frame.timestamp,
             state=self.state,
             pose=None if tracked is None else tracked.pose.copy(),
             tracked=0 if tracked is None else tracked.inliers,
-            keyframe=keyframe,
-            track_seconds=time.perf_counter() - start - map_seconds,
-            map_seconds=map_seconds,
+            keyframe=step.keyframe,
+            track_seconds=time.perf_counter() - start - step.map_seconds,
+            map_seconds=step.map_seconds,
+            summary=step.summary,
         )
 
-    def _initialize(self, frame: Frame) -> Tracked | None:
+    def _initialize(self, frame: Frame) -> _Step:
         """Try to start the map with this frame."""
         if self.mode == "monocular":
-            started = self._initialize_monocular(frame)
+            attempt = self._initialize_monocular(frame)
         else:
-            started = initialization.initialize_from_depth(frame, self.options)
-        if started is None:
-            return None
-        self.map, tracked = started
+            attempt = initialization.initialize_from_depth(frame, self.options)
+        summary = FrameSummary(init=attempt.summary)
+        if attempt.started is None:
+            return _Step(tracked=None, keyframe=False, map_seconds=0.0, summary=summary)
+        self.map, tracked = attempt.started
         self.state = State.TRACKING
         self._accept(frame, tracked)
-        return tracked
+        summary = replace(summary, placed_by=Placement.INITIALIZATION)
+        return _Step(tracked=tracked, keyframe=True, map_seconds=0.0, summary=summary)
 
-    def _initialize_monocular(self, frame: Frame) -> tuple[Map, Tracked] | None:
+    def _initialize_monocular(self, frame: Frame) -> Initialization:
         """Pair a monocular frame with the reference, or make it the reference."""
         if frame.size <= self.options.min_init_features:
             self._reference = None  # too few features: ORB-SLAM drops its initializer
-            return None
+            return Initialization(started=None, summary=InitSummary(Outcome.TOO_FEW_FEATURES))
         if self._reference is None or self._previous is None:
             self._reference, self._previous = frame, frame.features.keypoints.xy.copy()
-            return None
+            return Initialization(started=None, summary=InitSummary(Outcome.REFERENCE_SET))
         matched = initialization.match_for_initialization(
             self._reference, frame, self._previous, self.options
         )
         if len(matched.pairs) < self.options.init_min_matches:
             # The views no longer overlap enough: start again from this frame.
             self._reference, self._previous = frame, frame.features.keypoints.xy.copy()
-            return None
+            replaced = InitSummary(Outcome.REFERENCE_REPLACED, matches=len(matched.pairs))
+            return Initialization(started=None, summary=replaced)
         # The search follows each matched keypoint (SearchForInitialization's vbPrevMatched).
         self._previous[matched.pairs[:, 0]] = frame.features.keypoints.xy[matched.pairs[:, 1]]
         # None keeps the reference: a later frame may have the parallax.
@@ -228,28 +321,33 @@ class Pipeline:
         if self._failures >= self.options.lost_frames:
             self.state = State.LOST
 
-    def _place(self, m: Map, frame: Frame) -> tuple[Tracked | None, bool]:
-        """Track the last frame, or recover by PnP; return the frame and whether it recovered."""
+    def _place(self, m: Map, frame: Frame) -> tuple[Tracked | None, FrameSummary]:
+        """Track the last frame, or recover by PnP; return the frame and how it was placed."""
         assert self._last_frame is not None
         assert self._last_tracked is not None
         options = self.options
         # No velocity (just initialised, or after a failure): predict no motion. ORB-SLAM
         # tracks its reference keyframe by bag of words here; the lite pipeline has none.
         predicted = tracking.predict(self._last_tracked.pose, self._velocity)
-        tracked = tracking.track_last_frame(
+        motion = tracking.track_last_frame(
             m, self.camera, frame, self._last_frame, self._last_tracked,
             predicted=predicted, mode=self.mode, options=options,
         )  # fmt: skip
-        if tracked is not None:
-            return tracked, False
-        return tracking.relocalize_locally(m, self.camera, frame, options), True
+        summary = FrameSummary(motion=motion.summary)
+        if motion.tracked is not None:
+            return motion.tracked, replace(summary, placed_by=Placement.MOTION)
+        recovery = tracking.relocalize_locally(m, self.camera, frame, options)
+        summary = replace(summary, pnp=recovery.summary)
+        if recovery.tracked is None:
+            return None, summary
+        return recovery.tracked, replace(summary, placed_by=Placement.LOCAL_PNP)
 
-    def _track(self, frame: Frame) -> tuple[Tracked | None, bool, float]:
+    def _track(self, frame: Frame) -> _Step:
         """Track a frame against the map; insert a keyframe if one is needed (and time it)."""
         assert self.map is not None
         m, options = self.map, self.options
-        placed, recovered = self._place(m, frame)
-        if recovered and placed is not None:
+        placed, summary = self._place(m, frame)
+        if summary.placed_by is Placement.LOCAL_PNP:
             self._since_recovery = 0
         elif self._since_recovery is not None:
             self._since_recovery += 1
@@ -262,6 +360,7 @@ class Pipeline:
                 m, self.camera, frame, placed, mode=self.mode, options=options,
                 recovering=wide,
             )  # fmt: skip
+            summary = replace(summary, local_map=local.summary())
             m = maps.count(m, local.visible, visible=np.ones(len(local.visible), dtype=np.int64))
             m = maps.count(m, local.found, found=np.ones(len(local.found), dtype=np.int64))
             needed = options.recovery_tracked if recent else options.min_tracked
@@ -269,7 +368,7 @@ class Pipeline:
         self.map = m
         if tracked is None:
             self._record_failure()
-            return None, False, 0.0
+            return _Step(tracked=None, keyframe=False, map_seconds=0.0, summary=summary)
         held = recent and m.keyframes > options.max_frames
         keyframe = not held and mapping.need_keyframe(
             m, self.camera, frame.depth, tracked, mode=self.mode, options=options
@@ -277,9 +376,11 @@ class Pipeline:
         map_seconds = 0.0
         if keyframe:
             start = time.perf_counter()
-            self.map = mapping.process(
+            mapped = mapping.process(
                 m, self.camera, frame, tracked, mode=self.mode, options=options
             )
+            self.map = mapped.map
             map_seconds = time.perf_counter() - start
+            summary = replace(summary, mapping=mapped.summary)
         self._accept(frame, tracked)
-        return tracked, keyframe, map_seconds
+        return _Step(tracked=tracked, keyframe=keyframe, map_seconds=map_seconds, summary=summary)

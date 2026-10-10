@@ -75,10 +75,13 @@ std::string json_string(const std::string& value) {
   return out + "\"";
 }
 
-/// @brief A JSON value's text.
+/// @brief A JSON value's text, as Python's `json.dumps` writes it; nested JSON as written.
 /// @param value The value.
 /// @return Its text.
 std::string json_value(const JsonValue& value) {
+  if (std::holds_alternative<std::nullptr_t>(value)) {
+    return "null";
+  }
   if (const auto* integer = std::get_if<std::int64_t>(&value)) {
     return std::to_string(*integer);
   }
@@ -88,13 +91,16 @@ std::string json_value(const JsonValue& value) {
   if (const auto* flag = std::get_if<bool>(&value)) {
     return *flag ? "true" : "false";
   }
-  return json_string(std::get<std::string>(value));
+  if (const auto* text = std::get_if<std::string>(&value)) {
+    return json_string(*text);
+  }
+  return std::get<JsonText>(value).text;
 }
 
-/// @brief A flat object as JSON.
+/// @brief An object's text (`", "` and `": "` between items, as `json.dumps`).
 /// @param object The object.
 /// @return Its text.
-std::string json_object(const JsonObject& object) {
+std::string object_text(const JsonObject& object) {
   std::string out = "{";
   for (std::size_t k = 0; k < object.size(); ++k) {
     out += (k > 0 ? ", " : "") + json_string(object[k].first) + ": " + json_value(object[k].second);
@@ -102,14 +108,20 @@ std::string json_object(const JsonObject& object) {
   return out + "}";
 }
 
+/// @brief Whether a value is not a number that is not finite (nested JSON was checked when it
+///        was written).
+/// @param value The value.
+/// @return Whether it is.
+bool finite(const JsonValue& value) {
+  const auto* number = std::get_if<double>(&value);
+  return number == nullptr || std::isfinite(*number);
+}
+
 /// @brief Whether an object's numbers are all finite.
 /// @param object The object.
 /// @return Whether they are.
 bool finite(const JsonObject& object) {
-  return std::ranges::all_of(object, [](const auto& item) {
-    const auto* number = std::get_if<double>(&item.second);
-    return number == nullptr || std::isfinite(*number);
-  });
+  return std::ranges::all_of(object, [](const auto& item) { return finite(item.second); });
 }
 
 /// @brief Check stamped poses: finite, strictly ascending times, one rigid transform each.
@@ -282,6 +294,24 @@ std::string npy(const std::vector<std::size_t>& shape, const std::vector<double>
   return out;
 }
 
+Result<JsonText> json_object(const JsonObject& object) {
+  if (!finite(object)) {
+    return fail(ErrorKind::kInvalidInput, "json_object: expected finite numbers");
+  }
+  return JsonText{.text = object_text(object)};
+}
+
+Result<JsonText> json_array(std::span<const JsonValue> values) {
+  if (!std::ranges::all_of(values, [](const JsonValue& value) { return finite(value); })) {
+    return fail(ErrorKind::kInvalidInput, "json_array: expected finite numbers");
+  }
+  std::string out = "[";
+  for (std::size_t k = 0; k < values.size(); ++k) {
+    out += (k > 0 ? ", " : "") + json_value(values[k]);
+  }
+  return JsonText{.text = out + "]"};
+}
+
 Result<void> write_run(const std::string& folder, const Run& run) {
   if (auto ok = check(run); !ok) {
     return ok;
@@ -293,9 +323,9 @@ Result<void> write_run(const std::string& folder, const Run& run) {
   const JsonObject info = {
       {"format", std::string(kFormat)}, {"version", kVersion}, {"dataset", run.dataset},
       {"sequence", run.sequence},       {"mode", run.mode},    {"backend", run.backend}};
-  std::string info_text = json_object(info);
+  std::string info_text = object_text(info);
   info_text.pop_back();
-  info_text += ", \"settings\": " + json_object(run.settings);
+  info_text += ", \"settings\": " + object_text(run.settings);
   const auto integer_or_null = [](const std::optional<std::int64_t>& value) {
     return value ? std::to_string(*value) : std::string("null");
   };
@@ -313,7 +343,7 @@ Result<void> write_run(const std::string& folder, const Run& run) {
   info_text += ", \"memory_cap\": " + integer_or_null(run.memory_cap) + "}\n";
   std::string diagnostics;
   for (const JsonObject& entry : run.diagnostics) {
-    diagnostics += json_object(entry) + "\n";
+    diagnostics += object_text(entry) + "\n";
   }
   std::vector<double> points;
   points.reserve(3 * run.points.size());

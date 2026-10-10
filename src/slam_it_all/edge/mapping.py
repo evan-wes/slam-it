@@ -14,6 +14,9 @@ runs ORB-SLAM's local mapping steps in order, single-threaded:
    keyframe fixed, once the map holds ``ba_min_keyframes`` (``KeyFramesInMap() > 2``).
 6. **Cull redundant keyframes** (:func:`cull_keyframes`, ``KeyFrameCulling``).
 
+:func:`process` returns the map with how each step went (:class:`MappingSummary`), which a
+run records per keyframe.
+
 Lite: the sliding window of the last ``window`` keyframes stands in for the covisibility
 graph wherever ORB-SLAM takes a keyframe's neighbours, and the newest keyframe for the
 reference keyframe. Matching for triangulation has no bag of words: every free keypoint pair
@@ -23,7 +26,7 @@ within the stricter distance and the epipolar band is a candidate
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 import numpy as np
@@ -48,13 +51,102 @@ Crossing = dict[str, Any]
 """A map, camera, tracked frame or the settings, as it crosses the bindings."""
 
 
+@dataclass(frozen=True)
+class MappingSummary:
+    """How local mapping went on a keyframe, as a run records it.
+
+    The point counts are the map's before and after each step.
+
+    Attributes
+    ----------
+    from_depth : int
+        Points made from the keyframe's close depth (0 in monocular).
+    culled_points : int
+        Recent points culled.
+    triangulated : int
+        Points triangulated with the window's keyframes.
+    fused : int
+        Points fused into another.
+    solves : tuple of slam_it_all.edge.adjust.Solve
+        The local bundle adjustment's solves; empty if it did not run.
+    outliers : int
+        The observations it dropped.
+    weak_points : int
+        Points erased because the observations dropped, by the adjustment or with a culled
+        keyframe, left them too weakly observed.
+    culled_keyframes : int
+        Redundant keyframes culled.
+    """
+
+    from_depth: int
+    culled_points: int
+    triangulated: int
+    fused: int
+    solves: tuple[adjust.Solve, ...]
+    outliers: int
+    weak_points: int
+    culled_keyframes: int
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the summary as JSON values.
+
+        Returns
+        -------
+        dict
+            The counts, with the solves as ``ba``, in the steps' order.
+        """
+        return {
+            "from_depth": self.from_depth,
+            "culled_points": self.culled_points,
+            "triangulated": self.triangulated,
+            "fused": self.fused,
+            "ba": [solve.as_dict() for solve in self.solves],
+            "outliers": self.outliers,
+            "weak_points": self.weak_points,
+            "culled_keyframes": self.culled_keyframes,
+        }
+
+
+@dataclass(frozen=True)
+class Mapped:
+    """A keyframe mapped: the map after local mapping, and how it went.
+
+    Attributes
+    ----------
+    map : Map
+        The map.
+    summary : MappingSummary
+        How each step went.
+    """
+
+    map: Map
+    summary: MappingSummary
+
+
+_COUNTS = (
+    "from_depth",
+    "culled_points",
+    "triangulated",
+    "fused",
+    "outliers",
+    "weak_points",
+    "culled_keyframes",
+)
+""":class:`MappingSummary`'s counts, as they cross the bindings."""
+
+
 class Implementation(Protocol):
     """The functions a compiled backend's ``edge.mapping`` submodule provides.
 
     The map crosses as :meth:`Map.as_dict`, a frame as
     :meth:`slam_it_all.edge.frames.Frame.as_dict`, a tracked frame as :meth:`Tracked.as_dict`, the
-    mode by name.
+    mode by name. A mapped keyframe crosses back as a dict of ``map``, the summary's counts and
+    ``solves`` (as :func:`slam_it_all.edge.adjust.decode_solves` reads them).
     """
+
+    def codes(self) -> dict[str, list[str]]:
+        """Return each enum's names in code order."""
+        ...
 
     def need_keyframe(  # noqa: PLR0913 -- the stage's state, as the reference takes it
         self,
@@ -121,6 +213,15 @@ def _arguments(m: Map, camera: Camera | None, options: Options, **items: object)
     if camera is not None:
         out["camera"] = camera.as_dict()
     return out
+
+
+def _decode_mapped(raw: Crossing, codes: backends.Codes) -> Mapped:
+    """Rebuild :class:`Mapped` from a compiled backend's dict."""
+    counts = {name: int(raw[name]) for name in _COUNTS}
+    return Mapped(
+        map=maps.decode(raw["map"], codes),
+        summary=MappingSummary(solves=adjust.decode_solves(raw["solves"], codes), **counts),
+    )
 
 
 def _check_newest(m: Map) -> None:
@@ -857,17 +958,37 @@ def cull_keyframes(
 
 def _process(  # noqa: PLR0913 -- the stage's state
     m: Map, camera: Camera, frame: Frame, tracked: Tracked, *, mode: str, options: Options
-) -> Map:
+) -> Mapped:
     """Insert a keyframe and run local mapping on it (reference)."""
     m = maps.insert_keyframe(m, frame, tracked.pose, tracked.points)
+    start = m.points
     if mode != "monocular":
         m = _create_points_from_depth(m, camera, options)
+    with_depth = m.points
     m = _cull_points(m, mode, options)
+    culled = m.points
     m = _triangulate_new_points(m, camera, mode, options)
+    triangulated = m.points
     m = _fuse_points(m, camera, options)
+    fused = m.points
+    solves: tuple[adjust.Solve, ...] = ()
+    outliers = 0
     if m.keyframes >= options.ba_min_keyframes:
-        m = adjust.bundle_adjust(m, camera, m.window(options.window), m.kf_id == 0, options)
-    return _cull_keyframes(m, camera, mode, options)
+        adjusted = adjust.bundle_adjust(m, camera, m.window(options.window), m.kf_id == 0, options)
+        m, solves, outliers = adjusted.map, adjusted.solves, adjusted.outliers
+    keyframes = m.keyframes
+    m = _cull_keyframes(m, camera, mode, options)
+    summary = MappingSummary(
+        from_depth=with_depth - start,
+        culled_points=with_depth - culled,
+        triangulated=triangulated - culled,
+        fused=triangulated - fused,
+        solves=solves,
+        outliers=outliers,
+        weak_points=fused - m.points,
+        culled_keyframes=keyframes - m.keyframes,
+    )
+    return Mapped(map=m, summary=summary)
 
 
 def process(  # noqa: PLR0913 -- the stage's state, and the backend
@@ -879,7 +1000,7 @@ def process(  # noqa: PLR0913 -- the stage's state, and the backend
     mode: str,
     options: Options,
     backend: str = "python",
-) -> Map:
+) -> Mapped:
     """Insert a keyframe and run local mapping on it (the module docstring's six steps).
 
     Parameters
@@ -901,8 +1022,8 @@ def process(  # noqa: PLR0913 -- the stage's state, and the backend
 
     Returns
     -------
-    Map
-        The map after local mapping.
+    Mapped
+        The map after local mapping, and how each step went.
 
     Raises
     ------
@@ -919,5 +1040,5 @@ def process(  # noqa: PLR0913 -- the stage's state, and the backend
         arguments=_arguments(
             m, camera, options, frame=frame.as_dict(), tracked=checked.as_dict(), mode=mode
         ),
-        decode=maps.decode,
+        decode=_decode_mapped,
     )

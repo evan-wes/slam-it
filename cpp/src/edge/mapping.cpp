@@ -861,35 +861,56 @@ Result<void> cull_keyframes(Map& m, const Camera& camera, Mode mode, const Optio
   return {};
 }
 
-Result<void> process(Map& m, const Camera& camera, const Frame& frame, const Tracked& tracked,
-                     Mode mode, const Options& options) {
+Result<MappingSummary> process(Map& m, const Camera& camera, const Frame& frame,
+                               const Tracked& tracked, Mode mode, const Options& options) {
   if (auto ok = insert_keyframe(m, frame, tracked.pose, tracked.points); !ok) {
-    return ok;
+    return std::unexpected(std::move(ok.error()));
   }
+  const auto points = [&m] { return static_cast<std::int64_t>(point_count(m)); };
+  const std::int64_t start = points();
   if (mode != Mode::kMonocular) {
     if (auto ok = create_points_from_depth(m, camera, options); !ok) {
-      return ok;
+      return std::unexpected(std::move(ok.error()));
     }
   }
+  const std::int64_t with_depth = points();
   if (auto ok = cull_points(m, mode, options); !ok) {
-    return ok;
+    return std::unexpected(std::move(ok.error()));
   }
+  const std::int64_t culled = points();
   if (auto ok = triangulate_new_points(m, camera, mode, options); !ok) {
-    return ok;
+    return std::unexpected(std::move(ok.error()));
   }
+  const std::int64_t triangulated = points();
   if (auto ok = fuse_points(m, camera, options); !ok) {
-    return ok;
+    return std::unexpected(std::move(ok.error()));
   }
+  const std::int64_t fused = points();
   std::vector<std::uint8_t> fixed(keyframe_count(m), 0);
   for (std::size_t k = 0; k < fixed.size(); ++k) {
     fixed[k] = m.kf_id[k] == 0 ? 1 : 0;
   }
+  Adjustment adjustment;
   if (std::cmp_greater_equal(keyframe_count(m), options.ba_min_keyframes)) {
-    if (auto ok = bundle_adjust(m, camera, window(m, options.window), fixed, options); !ok) {
-      return ok;
+    auto adjusted = bundle_adjust(m, camera, window(m, options.window), fixed, options);
+    if (!adjusted) {
+      return std::unexpected(std::move(adjusted.error()));
     }
+    adjustment = std::move(*adjusted);
   }
-  return cull_keyframes(m, camera, mode, options);
+  const auto keyframes = static_cast<std::int64_t>(keyframe_count(m));
+  if (auto ok = cull_keyframes(m, camera, mode, options); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  return MappingSummary{
+      .from_depth = with_depth - start,
+      .culled_points = with_depth - culled,
+      .triangulated = triangulated - culled,
+      .fused = triangulated - fused,
+      .solves = std::move(adjustment.solves),
+      .outliers = adjustment.outliers,
+      .weak_points = fused - points(),
+      .culled_keyframes = keyframes - static_cast<std::int64_t>(keyframe_count(m))};
 }
 
 }  // namespace slam_it_all::edge

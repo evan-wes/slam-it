@@ -314,11 +314,16 @@ Result<InView> in_view(const Map& m, const Camera& camera, const Eigen::Matrix4d
   return select_in_view(m, camera, pose, rows, options);
 }
 
-Result<std::optional<Tracked>> track_last_frame(const Map& m, const Camera& camera,
-                                                const Frame& frame, const Frame& last,
-                                                const Tracked& last_tracked,
-                                                const Eigen::Matrix4d& predicted, Mode mode,
-                                                const Options& options) {
+LocalMapSummary summary(const LocalTracking& local) {
+  return {.in_view = static_cast<std::int64_t>(local.visible.size()),
+          .matches = local.matches,
+          .inliers = inliers(local.tracked)};
+}
+
+Result<Motion> track_last_frame(const Map& m, const Camera& camera, const Frame& frame,
+                                const Frame& last, const Tracked& last_tracked,
+                                const Eigen::Matrix4d& predicted, Mode mode,
+                                const Options& options) {
   if (auto ok = check_tracking(camera, options, last_tracked.points, last, "last_tracked.points");
       !ok) {
     return std::unexpected(std::move(ok.error()));
@@ -355,7 +360,9 @@ Result<std::optional<Tracked>> track_last_frame(const Map& m, const Camera& came
                            .right = mode == Mode::kMonocular ? kNan : pixel.x() - (bf / at.z())});
   }
   std::vector<std::int64_t> points(keypoint_count(frame), -1);
+  bool widened = false;
   for (const double factor : {1.0, 2.0}) {
+    widened = factor > 1.0;
     for (std::size_t j = 0; j < projections.size(); ++j) {
       projections[j].radius =
           factor * window * std::pow(m.scale_factor, static_cast<double>(levels[j]));
@@ -370,17 +377,22 @@ Result<std::optional<Tracked>> track_last_frame(const Map& m, const Camera& came
       break;
     }
   }
-  if (count_matched(points) < options.min_motion_matches) {
-    return std::nullopt;
+  const std::int64_t matches = count_matched(points);
+  if (matches < options.min_motion_matches) {
+    return Motion{.tracked = std::nullopt,
+                  .summary = {.matches = matches, .widened = widened, .inliers = std::nullopt}};
   }
   auto tracked = refine(m, camera, frame, {.pose = predicted, .points = points}, options);
   if (!tracked) {
     return std::unexpected(std::move(tracked.error()));
   }
-  if (inliers(*tracked) < options.min_motion_inliers) {
-    return std::nullopt;
+  const std::int64_t kept = inliers(*tracked);
+  Motion out{.tracked = std::nullopt,
+             .summary = {.matches = matches, .widened = widened, .inliers = kept}};
+  if (kept >= options.min_motion_inliers) {
+    out.tracked = std::move(*tracked);
   }
-  return *tracked;
+  return out;
 }
 
 Result<LocalTracking> track_local_map(const Map& m, const Camera& camera, const Frame& frame,
@@ -441,11 +453,12 @@ Result<LocalTracking> track_local_map(const Map& m, const Camera& camera, const 
       points[i] = tracked.points[i];
     }
   }
+  const std::int64_t matches = count_matched(points);
   auto refined = refine(m, camera, frame, {.pose = tracked.pose, .points = points}, options);
   if (!refined) {
     return std::unexpected(std::move(refined.error()));
   }
-  LocalTracking out{.tracked = std::move(*refined), .visible = {}, .found = {}};
+  LocalTracking out{.tracked = std::move(*refined), .visible = {}, .found = {}, .matches = matches};
   for (const std::int64_t p : already) {
     out.visible.push_back(m.pt_id[static_cast<std::size_t>(p)]);
   }
@@ -457,14 +470,22 @@ Result<LocalTracking> track_local_map(const Map& m, const Camera& camera, const 
   return out;
 }
 
-Result<std::optional<Tracked>> relocalize_locally(const Map& m, const Camera& camera,
-                                                  const Frame& frame, const Options& options) {
+Result<Relocalization> relocalize_locally(const Map& m, const Camera& camera, const Frame& frame,
+                                          const Options& options) {
   if (auto ok = check_setup(camera, options); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   const std::vector<std::int64_t> local_points = observed_by(m, window(m, options.window));
+  Relocalization out{.tracked = std::nullopt,
+                     .summary = {.candidates = static_cast<std::int64_t>(local_points.size()),
+                                 .matches = std::nullopt,
+                                 .iterations = std::nullopt,
+                                 .termination = std::nullopt,
+                                 .degenerate = false,
+                                 .inliers = std::nullopt,
+                                 .refined = std::nullopt}};
   if (std::cmp_less(local_points.size(), options.pnp_min_inliers)) {
-    return std::nullopt;
+    return out;
   }
   std::vector<foundations::orb::Descriptor> descriptors;
   descriptors.reserve(local_points.size());
@@ -488,8 +509,9 @@ Result<std::optional<Tracked>> relocalize_locally(const Map& m, const Camera& ca
   std::ranges::copy_if(*found, std::back_inserter(pairs), [&frame](const matching::Match& match) {
     return frame.bearings[static_cast<std::size_t>(match.first)].z() > 0.0;
   });
+  out.summary.matches = static_cast<std::int64_t>(pairs.size());
   if (std::cmp_less(pairs.size(), options.pnp_min_inliers)) {
-    return std::nullopt;
+    return out;
   }
   Rows3 world(static_cast<Eigen::Index>(pairs.size()), 3);
   Rows3 rays(static_cast<Eigen::Index>(pairs.size()), 3);
@@ -505,13 +527,17 @@ Result<std::optional<Tracked>> relocalize_locally(const Map& m, const Camera& ca
                                               .seed = static_cast<std::uint64_t>(options.seed)});
   if (!solved) {
     if (solved.error().kind == ErrorKind::kDegenerate) {
-      return std::nullopt;
+      out.summary.degenerate = true;
+      return out;
     }
     return std::unexpected(std::move(solved.error()));
   }
   const auto& consensus = solved->state;
+  out.summary.iterations = solved->summary.run.iterations;
+  out.summary.termination = solved->summary.run.termination;
+  out.summary.inliers = static_cast<std::int64_t>(consensus.inliers.count());
   if (consensus.inliers.count() < options.pnp_min_inliers) {
-    return std::nullopt;
+    return out;
   }
   std::vector<std::int64_t> points(keypoint_count(frame), -1);
   for (std::size_t j = 0; j < pairs.size(); ++j) {
@@ -524,10 +550,11 @@ Result<std::optional<Tracked>> relocalize_locally(const Map& m, const Camera& ca
   if (!tracked) {
     return std::unexpected(std::move(tracked.error()));
   }
-  if (inliers(*tracked) < options.pnp_min_inliers) {
-    return std::nullopt;
+  out.summary.refined = inliers(*tracked);
+  if (*out.summary.refined >= options.pnp_min_inliers) {
+    out.tracked = std::move(*tracked);
   }
-  return *tracked;
+  return out;
 }
 
 }  // namespace slam_it_all::edge

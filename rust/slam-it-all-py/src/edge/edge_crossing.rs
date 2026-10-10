@@ -4,7 +4,9 @@
 //! `slam_it_all.edge.frames.Frame.as_dict` builds; the camera and the settings are the dicts of
 //! scalars `Camera.as_dict` and `Options.as_dict` give. Arrays are C-contiguous, of the dtype and
 //! shape the Python dataclasses hold; a malformed dict raises `ValueError`, and the map is then
-//! checked by the core (`check_map`, an `InvalidInputError`).
+//! checked by the core (`check_map`, an `InvalidInputError`). A stage's summary crosses back as
+//! a dict of its fields, an empty count as None and an enum as its code in the module's
+//! `codes()`.
 
 use nalgebra::{Matrix4, Vector3};
 use numpy::ndarray::{Array1, Array2, Array3};
@@ -14,15 +16,17 @@ use numpy::{
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyList};
+use slam_it_all_edge::adjust::Solve;
 use slam_it_all_edge::frames::{Camera, Frame, Tracked};
-use slam_it_all_edge::initialization::Started;
+use slam_it_all_edge::initialization::{Initialization, Outcome};
 use slam_it_all_edge::map::{Map, check_map, index_observations};
 use slam_it_all_edge::options::{Mode, Options, Setting};
 use slam_it_all_foundations::camera::Model;
+use slam_it_all_foundations::nls;
 use slam_it_all_foundations::orb::{DESCRIPTOR_BYTES, Descriptor, Features, Keypoint};
 
-use crate::common::{by_name, contiguous, item_array, to_i64, unwrap};
+use crate::common::{by_name, contiguous, encode, item_array, to_i64, unwrap};
 
 /// The map's fields, as the dict's keys.
 const MAP_KEYS: [&str; 26] = [
@@ -616,25 +620,85 @@ pub fn mode_in(name: &str) -> PyResult<Mode> {
     by_name(&Mode::ALL, Mode::name, name, "mode")
 }
 
-/// Builds a started map's dict, or None.
+/// A count, or None.
 ///
 /// # Arguments
 ///
 /// * `py` - The Python token.
-/// * `started` - The map and its tracked frame, if any.
+/// * `count` - The count, if any.
 ///
 /// # Returns
 ///
-/// `map` (as [`map_dict`]), `pose` (4, 4) and `points` (N,); or None.
+/// It as an int, or None.
+///
+/// # Errors
+///
+/// A Python error if the count does not fit an int.
+pub fn count_or_none(py: Python<'_>, count: Option<usize>) -> PyResult<Bound<'_, PyAny>> {
+    match count {
+        Some(count) => Ok(to_i64(count).into_pyobject(py)?.into_any()),
+        None => Ok(py.None().into_bound(py)),
+    }
+}
+
+/// Builds bundle-adjustment solves as they cross (`slam_it_all.edge.adjust.decode_solves`).
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `solves` - The solves.
+///
+/// # Returns
+///
+/// A list of dicts of `initial_cost`, `final_cost`, `iterations` and `termination` (its code
+/// in `nls_termination`).
+///
+/// # Errors
+///
+/// A Python error if the list cannot be built.
+pub fn solves_list<'py>(py: Python<'py>, solves: &[Solve]) -> PyResult<Bound<'py, PyList>> {
+    let out = PyList::empty(py);
+    for solve in solves {
+        let item = PyDict::new(py);
+        item.set_item("initial_cost", solve.initial_cost)?;
+        item.set_item("final_cost", solve.final_cost)?;
+        item.set_item("iterations", to_i64(solve.iterations))?;
+        item.set_item(
+            "termination",
+            encode(&nls::Termination::ALL, solve.termination)?,
+        )?;
+        out.append(item)?;
+    }
+    Ok(out)
+}
+
+/// Builds an attempt to start the map as a dict.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `attempt` - The attempt.
+///
+/// # Returns
+///
+/// `started` (a dict of `map`, as [`map_dict`], `pose` (4, 4) and `points` (N,); or None),
+/// `outcome` (its code), `matches` (or None) and `solves` (as [`solves_list`]).
 ///
 /// # Errors
 ///
 /// A Python error if the dict cannot be built.
-pub fn started_dict(py: Python<'_>, started: Option<Started>) -> PyResult<Bound<'_, PyAny>> {
-    let Some(started) = started else {
-        return Ok(py.None().into_bound(py));
-    };
-    let out = tracked_dict(py, &started.tracked)?;
-    out.set_item("map", map_dict(py, &started.map)?)?;
-    Ok(out.into_any())
+pub fn initialization_dict(py: Python<'_>, attempt: Initialization) -> PyResult<Bound<'_, PyDict>> {
+    let out = PyDict::new(py);
+    match attempt.started {
+        Some(started) => {
+            let dict = tracked_dict(py, &started.tracked)?;
+            dict.set_item("map", map_dict(py, &started.map)?)?;
+            out.set_item("started", dict)?;
+        }
+        None => out.set_item("started", py.None())?,
+    }
+    out.set_item("outcome", encode(&Outcome::ALL, attempt.summary.outcome)?)?;
+    out.set_item("matches", count_or_none(py, attempt.summary.matches)?)?;
+    out.set_item("solves", solves_list(py, &attempt.summary.solves)?)?;
+    Ok(out)
 }

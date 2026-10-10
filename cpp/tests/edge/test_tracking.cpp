@@ -95,12 +95,15 @@ void check_level_rule(int& failures) {
   const auto forward = track(edge::Mode::kRgbd, 0.3);
   const auto back = track(edge::Mode::kRgbd, -0.3);
   const auto monocular = track(edge::Mode::kMonocular, 0.3);
-  expect(forward.has_value() && !forward->has_value(),
-         "with depth, moving forward finds nothing on a finer level", failures);
-  expect(back.has_value() && back->has_value() && edge::inliers(**back) == 60 &&
-             gap((*back)->pose, scene::moved(-0.3)) < 1e-9,
-         "moving back finds every point", failures);
-  expect(monocular.has_value() && monocular->has_value() && edge::inliers(**monocular) == 60,
+  expect(forward.has_value() && !forward->tracked.has_value() && forward->summary.matches == 0 &&
+             forward->summary.widened && !forward->summary.inliers.has_value(),
+         "with depth, moving forward finds nothing on a finer level, even widened", failures);
+  expect(back.has_value() && back->tracked.has_value() && edge::inliers(*back->tracked) == 60 &&
+             gap(back->tracked->pose, scene::moved(-0.3)) < 1e-9 && back->summary.matches == 60 &&
+             !back->summary.widened && back->summary.inliers == 60,
+         "moving back finds every point in the first window", failures);
+  expect(monocular.has_value() && monocular->tracked.has_value() &&
+             edge::inliers(*monocular->tracked) == 60,
          "without depth, every point is found", failures);
 }
 
@@ -114,13 +117,30 @@ void check_local_map(const edge::Map& m, int& failures) {
   const auto local = edge::track_local_map(m, scene::camera(), scene::frame(2, true), none,
                                            edge::Mode::kRgbd, edge::Options{});
   expect(local.has_value() && edge::inliers(local->tracked) == 60 && local->visible.size() == 60 &&
-             local->found.size() == 60 && gap(local->tracked.pose, scene::pose(2)) < 1e-6,
+             local->found.size() == 60 && gap(local->tracked.pose, scene::pose(2)) < 1e-6 &&
+             local->matches == 60 && edge::summary(*local).in_view == 60 &&
+             edge::summary(*local).inliers == 60,
          "the local map matches every point and pins the pose", failures);
   const auto placed =
       edge::relocalize_locally(m, scene::camera(), scene::frame(2, true), edge::Options{});
-  expect(placed.has_value() && placed->has_value() && edge::inliers(**placed) == 60 &&
-             gap((*placed)->pose, scene::pose(2)) < 1e-6,
+  expect(placed.has_value() && placed->tracked.has_value() &&
+             edge::inliers(*placed->tracked) == 60 &&
+             gap(placed->tracked->pose, scene::pose(2)) < 1e-6,
          "the fallback places the frame from descriptors alone", failures);
+  if (placed) {
+    const edge::PnpSummary& s = placed->summary;
+    expect(s.candidates == 60 && s.matches == 60 && s.iterations.has_value() &&
+               s.termination == slam_it_all::foundations::ransac::Termination::kConfidence &&
+               !s.degenerate && s.inliers == 60 && s.refined == 60,
+           "the fallback's summary records each step it took", failures);
+  }
+  edge::Options strict;
+  strict.pnp_min_inliers = 61;
+  const auto short_map =
+      edge::relocalize_locally(m, scene::camera(), scene::frame(2, true), strict);
+  expect(short_map.has_value() && !short_map->tracked.has_value() &&
+             short_map->summary.candidates == 60 && !short_map->summary.matches.has_value(),
+         "a local map smaller than the minimum stops the fallback first", failures);
   const auto recovering = edge::track_local_map(m, scene::camera(), scene::frame(2, true), none,
                                                 edge::Mode::kRgbd, edge::Options{}, true);
   expect(recovering.has_value() && edge::inliers(recovering->tracked) == 60,

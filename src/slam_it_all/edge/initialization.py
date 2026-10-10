@@ -13,11 +13,15 @@ ORB-SLAM's ``StereoInitialization`` and ``MonocularInitialization``:
   depth is 1 (a monocular map's scale is its own). The pipeline extracts these frames with
   more features (:meth:`slam_it_all.edge.options.Options.extraction`), and keeps its reference
   until too few keypoints match it (:class:`slam_it_all.edge.pipeline.Pipeline`).
+
+Each attempt returns an :class:`Initialization`: the started map, if any, and how the attempt
+went (:class:`InitSummary`), which a run records for every frame before the map exists.
 """
 
 from __future__ import annotations
 
-from dataclasses import replace
+import enum
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 import numpy as np
@@ -37,16 +41,102 @@ Array = NDArray[np.float64]
 IntArray = NDArray[np.int64]
 
 
+class Outcome(enum.StrEnum):
+    """How a frame went before the map existed."""
+
+    INITIALIZED = "initialized"
+    """It started the map."""
+    TOO_FEW_FEATURES = "too_few_features"
+    """Too few keypoints: a monocular frame drops the reference (ORB-SLAM drops its
+    initializer); a stereo or RGB-D frame waits for the next."""
+    TOO_LITTLE_DEPTH = "too_little_depth"
+    """Too few keypoints with depth to start a stereo or RGB-D map."""
+    REFERENCE_SET = "reference_set"
+    """It became the monocular reference: there was none."""
+    REFERENCE_REPLACED = "reference_replaced"
+    """Too few keypoints matched the reference, so it became the reference."""
+    TOO_FEW_MATCHES = "too_few_matches"
+    """Too few of the matches had bearings in both views."""
+    DEGENERATE = "degenerate"
+    """Two-view found no motion from the matches."""
+    PURE_ROTATION = "pure_rotation"
+    """Two-view: the camera only rotated (:class:`slam_it_all.foundations.twoview.Status`)."""
+    AMBIGUOUS = "ambiguous"
+    """Two-view: two candidate motions fit about as well."""
+    LOW_PARALLAX = "low_parallax"
+    """Two-view: too few points had enough parallax."""
+    TOO_FEW_POINTS = "too_few_points"
+    """Too few points survived the initial bundle adjustment."""
+    BAD_SCALE = "bad_scale"
+    """The first keyframe's median depth was not positive, so the map could not be scaled."""
+
+
+@dataclass(frozen=True)
+class InitSummary:
+    """How a frame went before the map existed, as a run records it.
+
+    Attributes
+    ----------
+    outcome : Outcome
+        What happened.
+    matches : int or None
+        A monocular frame's matches to the reference; None before there is a reference, and
+        for stereo and RGB-D.
+    solves : tuple of slam_it_all.edge.adjust.Solve
+        The initial bundle adjustment's solves, if it ran.
+    """
+
+    outcome: Outcome
+    matches: int | None = None
+    solves: tuple[adjust.Solve, ...] = ()
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the summary as JSON values.
+
+        Returns
+        -------
+        dict
+            ``matches``, ``outcome`` (by name) and ``ba``, the solves.
+        """
+        return {
+            "matches": self.matches,
+            "outcome": self.outcome.value,
+            "ba": [solve.as_dict() for solve in self.solves],
+        }
+
+
+@dataclass(frozen=True)
+class Initialization:
+    """An attempt to start the map: the map and the frame tracked if it started, and how it went.
+
+    Attributes
+    ----------
+    started : tuple of (Map, Tracked) or None
+        The new map and the frame tracked in it; None if the map did not start.
+    summary : InitSummary
+        How the attempt went.
+    """
+
+    started: tuple[Map, Tracked] | None
+    summary: InitSummary
+
+
 class Implementation(Protocol):
     """The functions a compiled backend's ``edge.initialization`` submodule provides.
 
-    A started map crosses back as a dict of ``map`` (as :meth:`Map.as_dict`), ``pose`` and
-    ``points`` (the tracked frame), or None.
+    An attempt crosses back as a dict of ``started`` (a dict of ``map``, as
+    :meth:`Map.as_dict`, ``pose`` and ``points``, the tracked frame; or None), ``outcome`` (its
+    code in ``codes()``), ``matches`` (or None) and ``solves`` (as
+    :func:`slam_it_all.edge.adjust.decode_solves` reads them).
     """
+
+    def codes(self) -> dict[str, list[str]]:
+        """Return each enum's names in code order."""
+        ...
 
     def initialize_from_depth(
         self, frame: dict[str, Any], options: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         """Start the map from a stereo or RGB-D frame."""
         ...
 
@@ -67,7 +157,7 @@ class Implementation(Protocol):
         frame: dict[str, Any],
         pairs: NDArray[np.int64],
         options: dict[str, Any],
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         """Start the map from two monocular frames and their matches."""
         ...
 
@@ -80,24 +170,38 @@ def _check_pyramid(frame: Frame, options: Options, name: str) -> None:
         raise InvalidInputError(f"{name}: its pyramid must be the settings'")
 
 
-def _decode_started(
-    raw: dict[str, Any] | None, codes: backends.Codes
-) -> tuple[Map, Tracked] | None:
-    """Rebuild a started map and its tracked frame from a compiled backend's dict."""
-    if raw is None:
-        return None
-    pose = backends.checked_array(raw["pose"], np.float64, 2, "tracked pose")
-    points = backends.checked_array(raw["points"], np.int64, 1, "tracked points")
-    return maps.decode(raw["map"], codes), Tracked(pose=pose, points=points)
+def _decode_initialization(raw: dict[str, Any], codes: backends.Codes) -> Initialization:
+    """Rebuild :class:`Initialization` from a compiled backend's dict."""
+    started = raw["started"]
+    summary = InitSummary(
+        outcome=Outcome(backends.decode_name(codes, "outcome", raw["outcome"])),
+        matches=None if raw["matches"] is None else int(raw["matches"]),
+        solves=adjust.decode_solves(raw["solves"], codes),
+    )
+    if started is None:
+        return Initialization(started=None, summary=summary)
+    pose = backends.checked_array(started["pose"], np.float64, 2, "tracked pose")
+    points = backends.checked_array(started["points"], np.int64, 1, "tracked points")
+    tracked = Tracked(pose=pose, points=points)
+    return Initialization(started=(maps.decode(started["map"], codes), tracked), summary=summary)
 
 
-def _initialize_from_depth(frame: Frame, options: Options) -> tuple[Map, Tracked] | None:
+def _failed(
+    outcome: Outcome, matches: int | None = None, solves: tuple[adjust.Solve, ...] = ()
+) -> Initialization:
+    """Return an attempt that did not start the map."""
+    return Initialization(
+        started=None, summary=InitSummary(outcome=outcome, matches=matches, solves=solves)
+    )
+
+
+def _initialize_from_depth(frame: Frame, options: Options) -> Initialization:
     """Start the map from a stereo or RGB-D frame (reference)."""
     if frame.size <= options.min_init_features_depth:
-        return None
+        return _failed(Outcome.TOO_FEW_FEATURES)
     has_depth = np.flatnonzero(~np.isnan(frame.depth) & ~np.isnan(frame.bearings[:, 0]))
     if len(has_depth) < options.min_init_depth_points:
-        return None
+        return _failed(Outcome.TOO_LITTLE_DEPTH)
     pose = np.eye(4)
     m = maps.insert_keyframe(
         maps.empty(options.levels, options.scale_factor),
@@ -110,12 +214,15 @@ def _initialize_from_depth(frame: Frame, options: Options) -> tuple[Map, Tracked
     m = maps.add_points(m, xyz, has_depth[:, None].astype(np.int64))
     points = np.full(frame.size, -1, dtype=np.int64)
     points[has_depth] = m.pt_id
-    return m, Tracked(pose=pose, points=points)
+    return Initialization(
+        started=(m, Tracked(pose=pose, points=points)),
+        summary=InitSummary(outcome=Outcome.INITIALIZED),
+    )
 
 
 def initialize_from_depth(
     frame: Frame, options: Options, *, backend: str = "python"
-) -> tuple[Map, Tracked] | None:
+) -> Initialization:
     """Start the map from a stereo or RGB-D frame (``StereoInitialization``).
 
     Parameters
@@ -129,10 +236,11 @@ def initialize_from_depth(
 
     Returns
     -------
-    tuple of (Map, Tracked) or None
+    Initialization
         The map, its one keyframe at the origin with a point at every keypoint with depth
-        (and a bearing), and the frame tracked; None unless the frame has more than
-        ``min_init_features_depth`` keypoints and ``min_init_depth_points`` with depth.
+        (and a bearing), and the frame tracked; none unless the frame has more than
+        ``min_init_features_depth`` keypoints (:attr:`Outcome.TOO_FEW_FEATURES`) and
+        ``min_init_depth_points`` with depth (:attr:`Outcome.TOO_LITTLE_DEPTH`).
 
     Raises
     ------
@@ -146,7 +254,7 @@ def initialize_from_depth(
         "initialize_from_depth",
         reference=lambda: _initialize_from_depth(frame, options),
         arguments={"frame": frame.as_dict(), "options": options.as_dict()},
-        decode=_decode_started,
+        decode=_decode_initialization,
     )
 
 
@@ -256,14 +364,15 @@ def _kept_points(
 
 def _initialize_monocular(
     camera: Camera, reference: Frame, frame: Frame, matched: IntArray, options: Options
-) -> tuple[Map, Tracked] | None:
+) -> Initialization:
     """Start the map from two monocular frames (reference)."""
+    given = len(matched)
     valid = ~np.isnan(reference.bearings[matched[:, 0], 0]) & ~np.isnan(
         frame.bearings[matched[:, 1], 0]
     )
     pairs = matched[valid]
     if len(pairs) < options.init_min_matches:
-        return None
+        return _failed(Outcome.TOO_FEW_MATCHES, given)
     try:
         result = twoview.initialize(
             reference.bearings[pairs[:, 0]],
@@ -271,9 +380,9 @@ def _initialize_monocular(
             twoview.Options(focal=camera.focal, seed=options.seed),
         )
     except DegenerateError:
-        return None
+        return _failed(Outcome.DEGENERATE, given)
     if result.status is not twoview.Status.INITIALIZED:
-        return None
+        return _failed(Outcome(result.status.value), given)
     good, xyz = _kept_points(
         result, reference.bearings[pairs[:, 0]], frame.bearings[pairs[:, 1]], options
     )
@@ -289,21 +398,27 @@ def _initialize_monocular(
     second = int(m.kf_start[1])
     observers = np.column_stack([pairs[good, 0], second + pairs[good, 1]]).astype(np.int64)
     m = maps.add_points(m, xyz, observers)
-    m = adjust.bundle_adjust(
+    adjusted = adjust.bundle_adjust(
         m,
         camera,
         np.arange(2, dtype=np.int64),
         np.array([True, False]),
         replace(options, ba_iterations=options.init_ba_iterations),
     )
+    m, solves = adjusted.map, adjusted.solves
     if m.points < options.init_min_matches:
-        return None  # ORB-SLAM resets with fewer than 100 tracked points
+        # ORB-SLAM resets with fewer than 100 tracked points
+        return _failed(Outcome.TOO_FEW_POINTS, given, solves)
     first = m.kf_pose[0]
     median = float(np.median(m.pt_xyz @ first[2, :3] + first[2, 3]))
     if not median > 0.0:
-        return None
+        return _failed(Outcome.BAD_SCALE, given, solves)
     m = _scaled(m, 1.0 / median)
-    return m, Tracked(pose=m.kf_pose[1].copy(), points=m.kp_point[m.keypoint_rows(1)].copy())
+    tracked = Tracked(pose=m.kf_pose[1].copy(), points=m.kp_point[m.keypoint_rows(1)].copy())
+    return Initialization(
+        started=(m, tracked),
+        summary=InitSummary(outcome=Outcome.INITIALIZED, matches=given, solves=solves),
+    )
 
 
 def initialize_monocular(  # noqa: PLR0913 -- the two frames, their matches, the settings
@@ -314,7 +429,7 @@ def initialize_monocular(  # noqa: PLR0913 -- the two frames, their matches, the
     options: Options,
     *,
     backend: str = "python",
-) -> tuple[Map, Tracked] | None:
+) -> Initialization:
     """Start the map from two monocular frames and their matches (``MonocularInitialization``).
 
     The matches (:func:`match_for_initialization`) are initialised by
@@ -341,10 +456,12 @@ def initialize_monocular(  # noqa: PLR0913 -- the two frames, their matches, the
 
     Returns
     -------
-    tuple of (Map, Tracked) or None
+    Initialization
         The map of two keyframes and their triangulated points, and the later frame tracked;
-        None if fewer than ``init_min_matches`` keypoints match, the two views do not
-        initialise, or fewer than ``init_min_matches`` points survive the adjustment.
+        none if fewer than ``init_min_matches`` keypoints match, the two views do not
+        initialise, or fewer than ``init_min_matches`` points survive the adjustment. Its
+        summary holds the matches given, the outcome (:class:`Outcome`) and the adjustment's
+        solves.
 
     Raises
     ------
@@ -374,7 +491,7 @@ def initialize_monocular(  # noqa: PLR0913 -- the two frames, their matches, the
             "pairs": pairs,
             "options": options.as_dict(),
         },
-        decode=_decode_started,
+        decode=_decode_initialization,
     )
 
 

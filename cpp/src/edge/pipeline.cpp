@@ -29,6 +29,20 @@ const char* name(State state) {
   return "unknown";
 }
 
+const char* name(Placement placement) {
+  switch (placement) {
+    case Placement::kInitialization:
+      return "initialization";
+    case Placement::kMotion:
+      return "motion";
+    case Placement::kLocalPnp:
+      return "local_pnp";
+    case Placement::kCount:
+      break;
+  }
+  return "unknown";
+}
+
 Result<Pipeline> Pipeline::create(Mode mode, Camera camera, Options options) {
   if (auto ok = check_setup(camera, options); !ok) {
     return std::unexpected(std::move(ok.error()));
@@ -52,8 +66,7 @@ Result<FrameResult> Pipeline::track(const Frame& frame) {
     if (!started) {
       return std::unexpected(std::move(started.error()));
     }
-    step.tracked = std::move(*started);
-    step.keyframe = step.tracked.has_value();
+    step = std::move(*started);
   } else if (state_ == State::kTracking) {
     auto placed = track_frame(frame);
     if (!placed) {
@@ -69,35 +82,52 @@ Result<FrameResult> Pipeline::track(const Frame& frame) {
                      .tracked = tracked ? inliers(*tracked) : 0,
                      .keyframe = step.keyframe,
                      .track_seconds = took.count() - step.map_seconds,
-                     .map_seconds = step.map_seconds};
+                     .map_seconds = step.map_seconds,
+                     .summary = std::move(step.summary)};
 }
 
-Result<std::optional<Tracked>> Pipeline::initialize(const Frame& frame) {
-  auto started = mode_ == Mode::kMonocular ? initialize_monocular(frame)
+Result<Pipeline::Step> Pipeline::initialize(const Frame& frame) {
+  auto attempt = mode_ == Mode::kMonocular ? initialize_monocular(frame)
                                            : initialize_from_depth(frame, options_);
-  if (!started) {
-    return std::unexpected(std::move(started.error()));
+  if (!attempt) {
+    return std::unexpected(std::move(attempt.error()));
   }
-  if (!*started) {
-    return std::nullopt;
+  Step step{.tracked = std::nullopt,
+            .keyframe = false,
+            .map_seconds = 0.0,
+            .summary = {.placed_by = std::nullopt,
+                        .init = std::move(attempt->summary),
+                        .motion = std::nullopt,
+                        .pnp = std::nullopt,
+                        .local_map = std::nullopt,
+                        .mapping = std::nullopt}};
+  if (!attempt->started) {
+    return step;
   }
-  map_ = std::move((*started)->map);
+  map_ = std::move(attempt->started->map);
   state_ = State::kTracking;
-  Tracked tracked = (*started)->tracked;
+  Tracked tracked = attempt->started->tracked;
   if (auto ok = accept(frame, tracked); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
-  return tracked;
+  step.tracked = std::move(tracked);
+  step.keyframe = true;
+  step.summary.placed_by = Placement::kInitialization;
+  return step;
 }
 
-Result<std::optional<Started>> Pipeline::initialize_monocular(const Frame& frame) {
+Result<Initialization> Pipeline::initialize_monocular(const Frame& frame) {
+  const auto not_started = [](Outcome outcome, std::optional<std::int64_t> matches) {
+    return Initialization{.started = std::nullopt,
+                          .summary = {.outcome = outcome, .matches = matches, .solves = {}}};
+  };
   if (std::cmp_less_equal(keypoint_count(frame), options_.min_init_features)) {
     reference_.reset();  // too few features: ORB-SLAM drops its initializer
-    return std::nullopt;
+    return not_started(Outcome::kTooFewFeatures, std::nullopt);
   }
   if (!reference_) {
     set_reference(frame);
-    return std::nullopt;
+    return not_started(Outcome::kReferenceSet, std::nullopt);
   }
   auto matched = match_for_initialization(*reference_, frame, previous_, options_);
   if (!matched) {
@@ -105,7 +135,7 @@ Result<std::optional<Started>> Pipeline::initialize_monocular(const Frame& frame
   }
   if (std::cmp_less(matched->size(), options_.init_min_matches)) {
     set_reference(frame);  // the views no longer overlap enough: start again
-    return std::nullopt;
+    return not_started(Outcome::kReferenceReplaced, static_cast<std::int64_t>(matched->size()));
   }
   // The search follows each matched keypoint (SearchForInitialization's vbPrevMatched).
   std::vector<std::array<std::int64_t, 2>> pairs;
@@ -150,31 +180,38 @@ void Pipeline::record_failure() {
   }
 }
 
-Result<std::pair<std::optional<Tracked>, bool>> Pipeline::place(const Map& m,
-                                                                const Frame& frame) const {
+Result<std::pair<std::optional<Tracked>, FrameSummary>> Pipeline::place(const Map& m,
+                                                                        const Frame& frame) const {
   if (!last_frame_ || !last_tracked_) {
     return fail(ErrorKind::kInvalidInput, "track: no last frame to track from");
   }
   // No velocity (just initialised, or after a failure): predict no motion. ORB-SLAM tracks its
   // reference keyframe by bag of words here; the lite pipeline has none.
   const Eigen::Matrix4d predicted = predict(last_tracked_->pose, velocity_);
-  auto tracked =
+  auto motion =
       track_last_frame(m, camera_, frame, *last_frame_, *last_tracked_, predicted, mode_, options_);
-  if (!tracked) {
-    return std::unexpected(std::move(tracked.error()));
+  if (!motion) {
+    return std::unexpected(std::move(motion.error()));
   }
-  if (*tracked) {
-    return std::pair{std::move(*tracked), false};
+  FrameSummary summary;
+  summary.motion = motion->summary;
+  if (motion->tracked) {
+    summary.placed_by = Placement::kMotion;
+    return std::pair{std::move(motion->tracked), std::move(summary)};
   }
-  auto recovered = relocalize_locally(m, camera_, frame, options_);
-  if (!recovered) {
-    return std::unexpected(std::move(recovered.error()));
+  auto recovery = relocalize_locally(m, camera_, frame, options_);
+  if (!recovery) {
+    return std::unexpected(std::move(recovery.error()));
   }
-  return std::pair{std::move(*recovered), true};
+  summary.pnp = recovery->summary;
+  if (recovery->tracked) {
+    summary.placed_by = Placement::kLocalPnp;
+  }
+  return std::pair{std::move(recovery->tracked), std::move(summary)};
 }
 
-Result<std::optional<Tracked>> Pipeline::refine(Map& m, const Frame& frame, const Tracked& placed,
-                                                bool wide, bool recent) const {
+Result<std::pair<std::optional<Tracked>, LocalMapSummary>> Pipeline::refine(
+    Map& m, const Frame& frame, const Tracked& placed, bool wide, bool recent) const {
   auto local = track_local_map(m, camera_, frame, placed, mode_, options_, wide);
   if (!local) {
     return std::unexpected(std::move(local.error()));
@@ -189,11 +226,12 @@ Result<std::optional<Tracked>> Pipeline::refine(Map& m, const Frame& frame, cons
   if (auto ok = count(m, local->found, unfound, found); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
+  const LocalMapSummary summary = edge::summary(*local);
   const std::int64_t needed = recent ? options_.recovery_tracked : options_.min_tracked;
   if (inliers(local->tracked) < needed) {
-    return std::nullopt;
+    return std::pair{std::optional<Tracked>(), summary};
   }
-  return std::move(local->tracked);
+  return std::pair{std::optional<Tracked>(std::move(local->tracked)), summary};
 }
 
 Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
@@ -205,8 +243,8 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
   if (!placed) {
     return std::unexpected(std::move(placed.error()));
   }
-  auto& [where, recovered] = *placed;
-  if (recovered && where) {
+  auto& [where, summary] = *placed;
+  if (summary.placed_by == Placement::kLocalPnp) {
     since_recovery_ = 0;
   } else if (since_recovery_) {
     ++*since_recovery_;
@@ -219,11 +257,15 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
     if (!refined) {
       return std::unexpected(std::move(refined.error()));
     }
-    tracked = std::move(*refined);
+    tracked = std::move(refined->first);
+    summary.local_map = refined->second;
   }
   if (!tracked) {
     record_failure();
-    return Step{};
+    return Step{.tracked = std::nullopt,
+                .keyframe = false,
+                .map_seconds = 0.0,
+                .summary = std::move(summary)};
   }
   const bool held = recent && std::cmp_greater(keyframe_count(m), options_.max_frames);
   auto need = held ? Result<bool>(false)
@@ -234,15 +276,20 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
   std::chrono::duration<double> mapped{0.0};
   if (*need) {
     const auto start = std::chrono::steady_clock::now();
-    if (auto ok = process(m, camera_, frame, *tracked, mode_, options_); !ok) {
-      return std::unexpected(std::move(ok.error()));
+    auto mapping = process(m, camera_, frame, *tracked, mode_, options_);
+    if (!mapping) {
+      return std::unexpected(std::move(mapping.error()));
     }
     mapped = std::chrono::steady_clock::now() - start;
+    summary.mapping = std::move(*mapping);
   }
   if (auto ok = accept(frame, *tracked); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
-  return Step{.tracked = std::move(tracked), .keyframe = *need, .map_seconds = mapped.count()};
+  return Step{.tracked = std::move(tracked),
+              .keyframe = *need,
+              .map_seconds = mapped.count(),
+              .summary = std::move(summary)};
 }
 
 }  // namespace slam_it_all::edge

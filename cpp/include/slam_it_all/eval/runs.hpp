@@ -7,6 +7,7 @@
 #include <Eigen/Core>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <variant>
@@ -23,10 +24,20 @@ inline constexpr const char* kFormat = "slam-it-all-run";
 /// @brief `run.json`'s `version` (2 added `peak_memory`, `cpus` and `memory_cap`).
 inline constexpr std::int64_t kVersion = 2;
 
-/// @brief A JSON scalar: an integer, a finite number, a boolean or a string.
-using JsonValue = std::variant<std::int64_t, double, bool, std::string>;
+/// @brief JSON already written: an array or an object, as `json_array` and `json_object` write
+///        it, to nest in a value.
+struct JsonText {
+  /// @brief The text.
+  std::string text;
+};
 
-/// @brief A flat JSON object, its keys in order.
+/// @brief A JSON value: null, an integer, a finite number, a boolean, a string, or an array or
+///        object already written (`JsonText`). Nested JSON is kept as text, not as a tree, so
+///        that no type or function here recurses (clang-tidy's `misc-no-recursion`; a copyable
+///        tree recurses through its own copy).
+using JsonValue = std::variant<std::nullptr_t, std::int64_t, double, bool, std::string, JsonText>;
+
+/// @brief A JSON object, its keys in order.
 using JsonObject = std::vector<std::pair<std::string, JsonValue>>;
 
 /// @brief A pipeline's run (`slam_it_all.eval.runs.Run`).
@@ -53,7 +64,7 @@ struct Run {
   JsonObject settings;
   /// @brief One object per frame, each with a `timestamp`; the edge pipeline's also time
   ///        its steps (`read_seconds`, `build_seconds`, `track_seconds`, `map_seconds`, as
-  ///        `slam_it_all.eval.runs.STEPS` defines them).
+  ///        `slam_it_all.eval.runs.STEPS` defines them) and say how its stages went.
   std::vector<JsonObject> diagnostics;
   /// @brief The largest resident set of the program that ran it, in bytes, if known
   ///        (`slam_it_all::eval::budgets::peak_memory`); written as null otherwise.
@@ -65,6 +76,17 @@ struct Run {
   ///        written as null otherwise.
   std::optional<std::int64_t> memory_cap;
 };
+
+/// @brief An object as JSON text, to nest in a value: Python's `json.dumps` with its
+///        separators (`", "` and `": "`).
+/// @param object The object.
+/// @return The text; `InvalidInput` for a number that is not finite.
+[[nodiscard]] foundations::Result<JsonText> json_object(const JsonObject& object);
+
+/// @brief An array as JSON text, to nest in a value (`json.dumps`, as `json_object`).
+/// @param values The values.
+/// @return The text; `InvalidInput` for a number that is not finite.
+[[nodiscard]] foundations::Result<JsonText> json_array(std::span<const JsonValue> values);
 
 /// @brief A finite number as JSON, shortest round-trip (`std::to_chars`), `.0` kept on a
 ///        whole number as Python writes it.

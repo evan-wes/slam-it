@@ -19,12 +19,15 @@ edge, so as not to keep where its outliers pulled it), forgets the observations 
 (ORB-SLAM's ``UpdateNormalAndDepth``). Rung 0's BA leaves out a free point seen from fewer
 than two keyframes, so a point from one keyframe's depth stays where the depth put it until a
 second keyframe sees it.
+
+The result (:class:`Adjustment`) records how each solve went (:class:`Solve`) and how many
+observations were dropped, which a run records per keyframe.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 import numpy as np
@@ -44,8 +47,94 @@ IntArray = NDArray[np.int64]
 Mask = NDArray[np.bool_]
 
 
+@dataclass(frozen=True)
+class Solve:
+    """How one least-squares solve of a bundle adjustment went, as a run records it.
+
+    Attributes
+    ----------
+    initial_cost, final_cost : float
+        The robust cost at the start and at the returned state
+        (:class:`slam_it_all.foundations.nls.Summary`).
+    iterations : int
+        Steps tried, accepted or not.
+    termination : slam_it_all.foundations.nls.Termination
+        Why it stopped.
+    """
+
+    initial_cost: float
+    final_cost: float
+    iterations: int
+    termination: nls.Termination
+
+    @classmethod
+    def of(cls, summary: nls.Summary) -> Solve:
+        """Take a solve's record from its summary.
+
+        Parameters
+        ----------
+        summary : slam_it_all.foundations.nls.Summary
+            The solve's summary.
+
+        Returns
+        -------
+        Solve
+            Its costs, iterations and termination.
+        """
+        return cls(
+            initial_cost=float(summary.initial_cost),
+            final_cost=float(summary.final_cost),
+            iterations=int(summary.iterations),
+            termination=summary.termination,
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the solve as JSON values, the termination by name.
+
+        Returns
+        -------
+        dict
+            ``initial_cost``, ``final_cost``, ``iterations`` and ``termination``.
+        """
+        return {
+            "initial_cost": self.initial_cost,
+            "final_cost": self.final_cost,
+            "iterations": self.iterations,
+            "termination": self.termination.value,
+        }
+
+
+@dataclass(frozen=True)
+class Adjustment:
+    """A bundle adjustment's result: the map, and how the adjustment went.
+
+    Attributes
+    ----------
+    map : Map
+        The map with adjusted poses and points, and the outlier observations forgotten.
+    solves : tuple of Solve
+        The first solve and the refining one; empty when no point was observed, so nothing
+        was solved.
+    outliers : int
+        The observations forgotten as outliers after the refining solve.
+    """
+
+    map: Map
+    solves: tuple[Solve, ...]
+    outliers: int
+
+
 class Implementation(Protocol):
-    """The functions a compiled backend's ``edge.adjust`` submodule provides."""
+    """The functions a compiled backend's ``edge.adjust`` submodule provides.
+
+    An adjustment crosses back as a dict of ``map`` (as :meth:`Map.as_dict`), ``solves`` (a
+    list of dicts of :class:`Solve`'s fields, the termination as its code in ``codes()``) and
+    ``outliers``.
+    """
+
+    def codes(self) -> dict[str, list[str]]:
+        """Return each enum's names in code order."""
+        ...
 
     def bundle_adjust(
         self,
@@ -55,8 +144,45 @@ class Implementation(Protocol):
         fixed: NDArray[np.bool_],
         options: dict[str, Any],
     ) -> dict[str, Any]:
-        """Bundle-adjust keyframes and their points; return the new map."""
+        """Bundle-adjust keyframes and their points; return the new map and the solves."""
         ...
+
+
+def decode_solves(raw: list[dict[str, Any]], codes: backends.Codes) -> tuple[Solve, ...]:
+    """Rebuild a compiled backend's solves (a list of dicts, each termination a code).
+
+    Parameters
+    ----------
+    raw : list of dict
+        The solves, as the backend returned them.
+    codes : slam_it_all.backends.Codes
+        The module's ``codes()``, holding ``nls_termination``.
+
+    Returns
+    -------
+    tuple of Solve
+        The solves, in order.
+    """
+    return tuple(
+        Solve(
+            initial_cost=float(item["initial_cost"]),
+            final_cost=float(item["final_cost"]),
+            iterations=int(item["iterations"]),
+            termination=nls.Termination(
+                backends.decode_name(codes, "nls_termination", item["termination"])
+            ),
+        )
+        for item in raw
+    )
+
+
+def _decode_adjustment(raw: dict[str, Any], codes: backends.Codes) -> Adjustment:
+    """Rebuild :class:`Adjustment` from a compiled backend's dict."""
+    return Adjustment(
+        map=maps.decode(raw["map"], codes),
+        solves=decode_solves(raw["solves"], codes),
+        outliers=int(raw["outliers"]),
+    )
 
 
 def _problem(
@@ -99,11 +225,11 @@ def _problem(
 
 def _bundle_adjust(
     m: Map, camera: Camera, keyframes: IntArray, fixed: Mask, options: Options
-) -> Map:
+) -> Adjustment:
     """Bundle-adjust keyframes and the points they observe (reference)."""
     points = m.observed_by(keyframes)
     if len(points) == 0:
-        return m
+        return Adjustment(map=m, solves=(), outliers=0)
     problem, rows, observing = _problem(m, camera, keyframes, points, fixed)
     loss = nls.Loss("huber", math.sqrt(options.chi2_mono))
     first = ba.solve(problem, _options(loss, options.ba_iterations))
@@ -131,7 +257,11 @@ def _bundle_adjust(
     ids = m.pt_id[points]
     adjusted = maps.forget_observations(replace(m, kf_pose=poses, pt_xyz=xyz), dropped)
     kept = adjusted.point_rows(ids)
-    return maps.refresh_points(adjusted, kept[kept >= 0])
+    return Adjustment(
+        map=maps.refresh_points(adjusted, kept[kept >= 0]),
+        solves=(Solve.of(first.summary.solve), Solve.of(second.summary.solve)),
+        outliers=len(dropped),
+    )
 
 
 def bundle_adjust(  # noqa: PLR0913 -- the map, its camera, what to adjust, the settings
@@ -142,7 +272,7 @@ def bundle_adjust(  # noqa: PLR0913 -- the map, its camera, what to adjust, the 
     options: Options,
     *,
     backend: str = "python",
-) -> Map:
+) -> Adjustment:
     """Bundle-adjust keyframes and the points they observe (``LocalBundleAdjustment``).
 
     Solves for ``ba_iterations``, drops the observations failing the chi-square test (or
@@ -170,8 +300,9 @@ def bundle_adjust(  # noqa: PLR0913 -- the map, its camera, what to adjust, the 
 
     Returns
     -------
-    Map
-        The map with adjusted poses and points, and the outlier observations forgotten.
+    Adjustment
+        The map with adjusted poses and points and the outlier observations forgotten; the
+        two solves (none if no point was observed) and the outliers dropped.
 
     Raises
     ------
@@ -193,7 +324,7 @@ def bundle_adjust(  # noqa: PLR0913 -- the map, its camera, what to adjust, the 
             "fixed": held,
             "options": options.as_dict(),
         },
-        decode=maps.decode,
+        decode=_decode_adjustment,
     )
 
 

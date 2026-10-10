@@ -27,9 +27,12 @@ const GROWTH_DIGITS: usize = 21;
 /// numpy aligns the data to this many bytes.
 const ALIGN: usize = 64;
 
-/// A JSON scalar: an integer, a finite number, a boolean or a string.
+/// A JSON value: null, an integer, a finite number, a boolean, a string, an array or an
+/// object.
 #[derive(Debug, Clone, PartialEq)]
 pub enum JsonValue {
+    /// Null.
+    Null,
     /// An integer.
     Integer(i64),
     /// A finite number.
@@ -38,9 +41,13 @@ pub enum JsonValue {
     Bool(bool),
     /// A string.
     Text(String),
+    /// An array.
+    Array(Vec<JsonValue>),
+    /// An object, its keys in order.
+    Object(JsonObject),
 }
 
-/// A flat JSON object, its keys in order.
+/// A JSON object, its keys in order.
 pub type JsonObject = Vec<(String, JsonValue)>;
 
 /// A pipeline's run (`slam_it_all.eval.runs.Run`).
@@ -135,14 +142,20 @@ fn json_string(value: &str) -> String {
 /// Its text.
 fn json_value(value: &JsonValue) -> String {
     match value {
+        JsonValue::Null => "null".to_owned(),
         JsonValue::Integer(v) => v.to_string(),
         JsonValue::Number(v) => json_number(*v),
         JsonValue::Bool(v) => v.to_string(),
         JsonValue::Text(v) => json_string(v),
+        JsonValue::Array(items) => {
+            let items: Vec<String> = items.iter().map(json_value).collect();
+            format!("[{}]", items.join(", "))
+        }
+        JsonValue::Object(object) => json_object(object),
     }
 }
 
-/// A flat object as JSON.
+/// An object as JSON, as Python's `json.dumps` writes it (`", "` and `": "` between items).
 ///
 /// # Arguments
 ///
@@ -159,7 +172,7 @@ fn json_object(object: &[(String, JsonValue)]) -> String {
     format!("{{{}}}", items.join(", "))
 }
 
-/// Whether an object's numbers are all finite.
+/// Whether an object's numbers, nested ones included, are all finite.
 ///
 /// # Arguments
 ///
@@ -169,9 +182,25 @@ fn json_object(object: &[(String, JsonValue)]) -> String {
 ///
 /// Whether they are.
 fn finite(object: &[(String, JsonValue)]) -> bool {
-    object
-        .iter()
-        .all(|(_, v)| !matches!(v, JsonValue::Number(n) if !n.is_finite()))
+    object.iter().all(|(_, v)| finite_value(v))
+}
+
+/// Whether a value's numbers, nested ones included, are all finite.
+///
+/// # Arguments
+///
+/// * `value` - The value.
+///
+/// # Returns
+///
+/// Whether they are.
+fn finite_value(value: &JsonValue) -> bool {
+    match value {
+        JsonValue::Number(n) => n.is_finite(),
+        JsonValue::Array(items) => items.iter().all(finite_value),
+        JsonValue::Object(object) => finite(object),
+        JsonValue::Null | JsonValue::Integer(_) | JsonValue::Bool(_) | JsonValue::Text(_) => true,
+    }
 }
 
 /// A `.npy` file's bytes (version 1.0, little-endian float64, C order), as numpy writes it.
@@ -484,22 +513,27 @@ mod tests {
             .collect()
     }
 
-    /// A JSON object's scalars, in order.
+    /// A JSON object's members, as the writer takes them.
     fn flat(object: &Value) -> JsonObject {
         object
             .as_object()
             .unwrap()
             .iter()
-            .map(|(key, value)| {
-                let scalar = match value {
-                    Value::Bool(b) => JsonValue::Bool(*b),
-                    Value::Number(n) if n.is_i64() => JsonValue::Integer(n.as_i64().unwrap()),
-                    Value::Number(n) => JsonValue::Number(n.as_f64().unwrap()),
-                    other => JsonValue::Text(other.as_str().unwrap().to_owned()),
-                };
-                (key.clone(), scalar)
-            })
+            .map(|(key, value)| (key.clone(), value_of(value)))
             .collect()
+    }
+
+    /// A JSON value as the writer takes it, nested values included.
+    fn value_of(value: &Value) -> JsonValue {
+        match value {
+            Value::Null => JsonValue::Null,
+            Value::Bool(b) => JsonValue::Bool(*b),
+            Value::Number(n) if n.is_i64() => JsonValue::Integer(n.as_i64().unwrap()),
+            Value::Number(n) => JsonValue::Number(n.as_f64().unwrap()),
+            Value::String(s) => JsonValue::Text(s.clone()),
+            Value::Array(items) => JsonValue::Array(items.iter().map(value_of).collect()),
+            Value::Object(_) => JsonValue::Object(flat(value)),
+        }
     }
 
     /// The run Python wrote, as the Rust backend.

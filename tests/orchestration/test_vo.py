@@ -15,8 +15,6 @@ import numpy as np
 import pytest
 
 from slam_it_all import backends
-from slam_it_all.edge import frames, tracking
-from slam_it_all.edge.map import Map
 from slam_it_all.edge.options import Options
 from slam_it_all.eval import budgets, runs
 from slam_it_all.foundations.errors import DegenerateError, InvalidInputError, NotConvergedError
@@ -29,10 +27,11 @@ from tests.edge.support import (
     OPTIONS,
     SOLVER_TOLERANCE,
     assert_close,
+    assert_records_match,
 )
-from tests.fixtures.edge.generate_room_runs import record
+from tests.fixtures.edge.generate_room_runs import record, summaries
 from tests.orchestration.conftest import RoomRun, require_program
-from tests.orchestration.datasets import BLANK_AT, CASES, GAP_OPTIONS, Room, room_inputs
+from tests.orchestration.datasets import BLANK_AT, CASES, Room, room_inputs
 
 SEQUENCES = FIXTURES / "eval" / "sequences"
 """The readers' fixture folders: their files listed, their images absent."""
@@ -81,8 +80,9 @@ def test_every_frame_times_its_steps(
 def _assert_same_run(native: runs.Run, reference: runs.Run) -> None:
     """Check that a native run made the reference's decisions and placed what it placed.
 
-    The same frames tracked with the same matches, the same keyframes, and poses and points
-    within the solver tolerance.
+    The same frames tracked with the same matches, the same keyframes, poses and points within
+    the solver tolerance, and the same stage summaries (their bundle adjustments' costs within
+    it too).
     """
     np.testing.assert_array_equal(native.timestamps, reference.timestamps)
     np.testing.assert_array_equal(native.keyframe_timestamps, reference.keyframe_timestamps)
@@ -92,6 +92,7 @@ def _assert_same_run(native: runs.Run, reference: runs.Run) -> None:
     assert_close(native.points, reference.points, SOLVER_TOLERANCE)
     states = [(d["state"], d["tracked"], d["keyframe"]) for d in native.diagnostics]
     assert states == [(d["state"], d["tracked"], d["keyframe"]) for d in reference.diagnostics]
+    assert_records_match(summaries(native), summaries(reference))
 
 
 @pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
@@ -101,30 +102,22 @@ def test_the_backends_agree(dataset: str, mode: str, backend: str, room_runs: Ro
     _assert_same_run(room_runs(dataset, mode, backend), room_runs(dataset, mode, "python"))
 
 
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize(("dataset", "mode"), CASES)
 def test_the_gap_room_fails_once_and_recovers_twice(
-    dataset: str, mode: str, gap_folders: Room, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    dataset: str, mode: str, backend: str, gap_runs: RoomRun
 ) -> None:
     """The blank frame fails; across the gap PnP recovers twice; every other frame is tracked.
 
     The blank frame fails, the fallback too; across the gap the motion model fails and PnP
     recovers, twice (the recovery's velocity spans the gap); every other frame from the start
-    is tracked (review panel findings A3, A14).
+    is tracked (review panel findings A3, A14). The frames' stage summaries say which ran the
+    fallback and what placed them.
     """
-    recovered: list[bool] = []
-    relocalize = tracking.relocalize_locally
-
-    def counting(
-        m: Map, camera: frames.Camera, frame: frames.Frame, options: Options
-    ) -> frames.Tracked | None:
-        found = relocalize(m, camera, frame, options)
-        recovered.append(found is not None)
-        return found
-
-    monkeypatch.setattr(tracking, "relocalize_locally", counting)
-    folder = gap_folders.tum if dataset == "tum" else gap_folders.euroc
-    run = vo.run(dataset, folder, mode, tmp_path, options=GAP_OPTIONS)
-    assert recovered == [False, True, True]
+    run = gap_runs(dataset, mode, backend)
+    fallbacks = [d for d in run.diagnostics if d["pnp"] is not None]
+    assert [d["placed_by"] for d in fallbacks] == [None, "local_pnp", "local_pnp"]
+    assert run.diagnostics.index(fallbacks[0]) == BLANK_AT
     started = next(i for i, d in enumerate(run.diagnostics) if d["tracked"] > 0)
     untracked = [i for i, d in enumerate(run.diagnostics) if i >= started and d["tracked"] == 0]
     assert untracked == [BLANK_AT]
@@ -193,8 +186,10 @@ def test_every_backend_matches_the_golden_record(  # noqa: PLR0917 -- the case, 
     """
     run = (room_runs if name == "room" else gap_runs)(dataset, mode, backend)
     expected = GOLDEN["cases"][f"{name}/{dataset}/{mode}"]
-    assert record(run) | {"poses": None} == expected | {"poses": None}
+    floating = {"poses": None, "summaries": None}
+    assert record(run) | floating == expected | floating
     assert_matches_fixture(run.poses.reshape(-1, 16), expected["poses"], GOLDEN["tolerance"])
+    assert_records_match(summaries(run), expected["summaries"], SOLVER_TOLERANCE)
 
 
 def test_a_request_crosses_as_a_command_line() -> None:

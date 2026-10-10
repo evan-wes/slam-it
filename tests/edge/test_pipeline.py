@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 from numpy.typing import NDArray
 
 from slam_it_all.edge import frames, pipeline, tracking
+from slam_it_all.edge.initialization import Outcome
 from slam_it_all.edge.options import Options
+from slam_it_all.edge.pipeline import Placement
 from slam_it_all.eval.metrics import absolute_error
 from slam_it_all.foundations import orb
 from slam_it_all.foundations.errors import InvalidInputError
@@ -30,6 +34,42 @@ def test_the_room_is_tracked_to_the_end(mode: str, runs: dict[str, Run]) -> None
     assert error.rmse < ATE_BOUND[mode]
     assert run.pipeline.map is not None
     assert run.pipeline.map.keyframes >= 2
+
+
+@pytest.mark.parametrize("mode", ["monocular", "stereo", "rgbd"])
+def test_every_frame_says_how_its_stages_went(mode: str, runs: dict[str, Run]) -> None:
+    """A frame's summary holds the stages it ran, and only those.
+
+    Initialisation before the map; then tracking the last frame, the fallback only when that
+    failed, the local map on a placed frame, and mapping on each keyframe after the first.
+    """
+    results = runs[mode].results
+    start = next(i for i, r in enumerate(results) if r.keyframe)
+    for i, r in enumerate(results):
+        s = r.summary
+        json.dumps(s.as_dict(), allow_nan=False)  # what a run writes
+        if i < start:
+            assert s.init is not None
+            assert s.init.outcome is not Outcome.INITIALIZED
+            assert (s.placed_by, s.motion, s.local_map, s.mapping) == (None, None, None, None)
+        elif i == start:
+            assert s.init is not None
+            assert s.init.outcome is Outcome.INITIALIZED
+            assert s.placed_by is Placement.INITIALIZATION
+            assert (s.motion, s.mapping) == (None, None)
+        else:
+            assert s.init is None
+            assert s.motion is not None
+            assert (s.pnp is None) == (s.placed_by is Placement.MOTION)
+            if r.pose is not None:
+                assert s.local_map is not None
+                assert s.local_map.inliers == r.tracked
+            assert (s.mapping is not None) == r.keyframe
+    first = results[0].summary.init
+    assert first is not None
+    if mode == "monocular":
+        assert first.outcome is Outcome.REFERENCE_SET
+        assert first.matches is None
 
 
 def test_monocular_frames_start_with_more_features() -> None:

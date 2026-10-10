@@ -20,7 +20,9 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
 - ``diagnostics.jsonl``: one JSON object per line, per frame, each with its ``timestamp``;
   otherwise what the pipeline wants to report (tracked points, state). The edge pipeline's
   frames also time their steps, in seconds (:data:`STEPS`), which the budget harness judges
-  (:func:`slam_it_all.eval.budgets.judge`).
+  (:func:`slam_it_all.eval.budgets.judge`), and say how their stages went
+  (:meth:`slam_it_all.edge.pipeline.FrameSummary.as_dict`): an object per stage, null where it
+  did not run.
 
 :func:`write_run` checks everything before it writes, and replaces each file whole (written
 to a temporary sibling, then renamed); :func:`read_run` checks every file's shape;

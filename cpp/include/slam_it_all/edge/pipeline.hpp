@@ -12,7 +12,9 @@
 #include "slam_it_all/edge/frames.hpp"
 #include "slam_it_all/edge/initialization.hpp"
 #include "slam_it_all/edge/map.hpp"
+#include "slam_it_all/edge/mapping.hpp"
 #include "slam_it_all/edge/options.hpp"
+#include "slam_it_all/edge/tracking.hpp"
 #include "slam_it_all/foundations/error.hpp"
 #include "slam_it_all/foundations/orb.hpp"
 
@@ -35,6 +37,41 @@ enum class State : std::uint8_t {
 /// @return A static string.
 [[nodiscard]] const char* name(State state);
 
+/// @brief How a frame was placed, before the local map refined it, with the codes it is
+///        written as (`slam_it_all.edge.pipeline.Placement`).
+enum class Placement : std::uint8_t {
+  /// @brief It started the map.
+  kInitialization = 0,
+  /// @brief Tracking the last frame, from the constant-velocity prediction.
+  kMotion = 1,
+  /// @brief The fallback: PnP against the local map.
+  kLocalPnp = 2,
+  /// @brief The number of placements (a sentinel, not a placement).
+  kCount = 3,
+};
+
+/// @brief A placement's name, as `slam_it_all.edge.pipeline.Placement` spells it.
+/// @param placement The placement.
+/// @return A static string.
+[[nodiscard]] const char* name(Placement placement);
+
+/// @brief How the stages went on one frame (`slam_it_all.edge.pipeline.FrameSummary`); each
+///        empty where the stage did not run.
+struct FrameSummary {
+  /// @brief How the frame was placed, if it was; a frame placed may still fail the local map.
+  std::optional<Placement> placed_by;
+  /// @brief For a frame before the map existed.
+  std::optional<InitSummary> init;
+  /// @brief Tracking the last frame.
+  std::optional<MotionSummary> motion;
+  /// @brief The PnP fallback, run only when tracking the last frame failed.
+  std::optional<PnpSummary> pnp;
+  /// @brief Tracking the local map, run on a placed frame.
+  std::optional<LocalMapSummary> local_map;
+  /// @brief Local mapping, on a keyframe after the first.
+  std::optional<MappingSummary> mapping;
+};
+
 /// @brief What tracking one frame gave (`slam_it_all.edge.pipeline.FrameResult`).
 struct FrameResult {
   /// @brief The frame's time.
@@ -53,6 +90,8 @@ struct FrameResult {
   /// @brief The time mapping it took as a keyframe (`process`), 0 for any other frame: what
   ///        ORB-SLAM's local-mapping thread does.
   double map_seconds{0.0};
+  /// @brief How its stages went.
+  FrameSummary summary;
 };
 
 /// @brief The edge pipeline for one sequence (`slam_it_all.edge.pipeline.Pipeline`).
@@ -86,7 +125,7 @@ class Pipeline {
   [[nodiscard]] const std::optional<Map>& map() const { return map_; }
 
  private:
-  /// @brief A frame tracked against the map, as `track_frame` gives it.
+  /// @brief A frame handled, as `initialize` and `track_frame` give it.
   struct Step {
     /// @brief The tracked frame, if it kept enough inliers.
     std::optional<Tracked> tracked;
@@ -94,6 +133,8 @@ class Pipeline {
     bool keyframe{false};
     /// @brief The time mapping it took, in seconds, if it did.
     double map_seconds{0.0};
+    /// @brief How its stages went.
+    FrameSummary summary;
   };
 
   /// @brief A pipeline before its first frame.
@@ -105,13 +146,14 @@ class Pipeline {
 
   /// @brief Try to start the map with a frame.
   /// @param frame The frame.
-  /// @return The frame tracked if it started the map; a stage's error.
-  foundations::Result<std::optional<Tracked>> initialize(const Frame& frame);
+  /// @return The frame tracked if it started the map, and how the attempt went; a stage's
+  ///         error.
+  foundations::Result<Step> initialize(const Frame& frame);
 
   /// @brief Pair a monocular frame with the reference, or make it the reference.
   /// @param frame The frame.
-  /// @return The started map, if any; a stage's error.
-  foundations::Result<std::optional<Started>> initialize_monocular(const Frame& frame);
+  /// @return The started map, if any, and how the attempt went; a stage's error.
+  foundations::Result<Initialization> initialize_monocular(const Frame& frame);
 
   /// @brief Make a frame the monocular reference, each keypoint searched from its own position.
   /// @param frame The frame.
@@ -130,8 +172,8 @@ class Pipeline {
   /// @brief Track the last frame, or recover by PnP.
   /// @param m The map.
   /// @param frame The frame.
-  /// @return The placed frame, if any, and whether it recovered; a stage's error.
-  [[nodiscard]] foundations::Result<std::pair<std::optional<Tracked>, bool>> place(
+  /// @return The placed frame, if any, and how it was placed; a stage's error.
+  [[nodiscard]] foundations::Result<std::pair<std::optional<Tracked>, FrameSummary>> place(
       const Map& m, const Frame& frame) const;
 
   /// @brief Track the local map from a placed frame and count its points.
@@ -140,15 +182,15 @@ class Pipeline {
   /// @param placed The placed frame.
   /// @param wide Whether the frame is a recovery's or the next (the search widened).
   /// @param recent Whether a recovery was recent (more inliers needed).
-  /// @return The tracked frame, if it keeps enough inliers; a stage's error.
-  [[nodiscard]] foundations::Result<std::optional<Tracked>> refine(Map& m, const Frame& frame,
-                                                                   const Tracked& placed, bool wide,
-                                                                   bool recent) const;
+  /// @return The tracked frame, if it keeps enough inliers, and how the stage went; a stage's
+  ///         error.
+  [[nodiscard]] foundations::Result<std::pair<std::optional<Tracked>, LocalMapSummary>> refine(
+      Map& m, const Frame& frame, const Tracked& placed, bool wide, bool recent) const;
 
   /// @brief Track a frame against the map; insert a keyframe if one is needed (and time it).
   /// @param frame The frame.
-  /// @return The tracked frame, if any, whether it became a keyframe, and the time mapping it
-  ///         took; a stage's error.
+  /// @return The tracked frame, if any, whether it became a keyframe, the time mapping it
+  ///         took, and how its stages went; a stage's error.
   foundations::Result<Step> track_frame(const Frame& frame);
 
   /// @brief The sensor mode.

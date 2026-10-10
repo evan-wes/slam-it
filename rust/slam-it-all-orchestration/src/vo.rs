@@ -6,10 +6,11 @@ use std::time::Instant;
 
 use nalgebra::Vector2;
 
+use slam_it_all_edge::adjust::Solve;
 use slam_it_all_edge::frames::{self, Camera, DepthMap, Frame};
 use slam_it_all_edge::map::Map;
 use slam_it_all_edge::options::{Mode, Options, Setting, check_options};
-use slam_it_all_edge::pipeline::{FrameResult, Pipeline, State};
+use slam_it_all_edge::pipeline::{FrameResult, FrameSummary, Pipeline, State};
 use slam_it_all_eval::runs::{JsonObject, JsonValue, Run};
 use slam_it_all_eval::{euroc, png, text, tum};
 use slam_it_all_foundations::camera::Model;
@@ -408,6 +409,164 @@ fn sequence_name(sequence: &Path) -> String {
         .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
 }
 
+/// A count as JSON.
+///
+/// # Arguments
+///
+/// * `count` - The count.
+///
+/// # Returns
+///
+/// Its value.
+fn count(count: usize) -> JsonValue {
+    JsonValue::Integer(i64::try_from(count).unwrap_or(i64::MAX))
+}
+
+/// A count as JSON, or null if there is none.
+///
+/// # Arguments
+///
+/// * `value` - The count, if any.
+///
+/// # Returns
+///
+/// Its value.
+fn count_or_null(value: Option<usize>) -> JsonValue {
+    value.map_or(JsonValue::Null, count)
+}
+
+/// A name as JSON.
+///
+/// # Arguments
+///
+/// * `name` - The name.
+///
+/// # Returns
+///
+/// Its value.
+fn name_json(name: &str) -> JsonValue {
+    JsonValue::Text(name.to_owned())
+}
+
+/// An object as JSON, from its keys and values.
+///
+/// # Arguments
+///
+/// * `items` - The keys and values, in order.
+///
+/// # Returns
+///
+/// The object.
+fn object<const N: usize>(items: [(&str, JsonValue); N]) -> JsonValue {
+    JsonValue::Object(
+        items
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value))
+            .collect(),
+    )
+}
+
+/// Bundle-adjustment solves as JSON (`slam_it_all.edge.adjust.Solve.as_dict`, each).
+///
+/// # Arguments
+///
+/// * `solves` - The solves.
+///
+/// # Returns
+///
+/// One object per solve.
+fn solves_json(solves: &[Solve]) -> JsonValue {
+    JsonValue::Array(
+        solves
+            .iter()
+            .map(|solve| {
+                object([
+                    ("initial_cost", JsonValue::Number(solve.initial_cost)),
+                    ("final_cost", JsonValue::Number(solve.final_cost)),
+                    ("iterations", count(solve.iterations)),
+                    ("termination", name_json(solve.termination.name())),
+                ])
+            })
+            .collect(),
+    )
+}
+
+/// How a frame's stages went, as a run records it
+/// (`slam_it_all.edge.pipeline.FrameSummary.as_dict`): each stage an object, or null.
+///
+/// # Arguments
+///
+/// * `summary` - The summary.
+///
+/// # Returns
+///
+/// Its keys and values, in order.
+fn summary_json(summary: &FrameSummary) -> JsonObject {
+    let placed_by = summary
+        .placed_by
+        .map_or(JsonValue::Null, |placement| name_json(placement.name()));
+    let init = summary.init.as_ref().map_or(JsonValue::Null, |s| {
+        object([
+            ("matches", count_or_null(s.matches)),
+            ("outcome", name_json(s.outcome.name())),
+            ("ba", solves_json(&s.solves)),
+        ])
+    });
+    let motion = summary.motion.map_or(JsonValue::Null, |s| {
+        object([
+            ("matches", count(s.matches)),
+            ("widened", JsonValue::Bool(s.widened)),
+            ("inliers", count_or_null(s.inliers)),
+        ])
+    });
+    let pnp = summary.pnp.map_or(JsonValue::Null, |s| {
+        let termination = if s.degenerate {
+            name_json("degenerate")
+        } else {
+            s.termination
+                .map_or(JsonValue::Null, |termination| name_json(termination.name()))
+        };
+        object([
+            ("candidates", count(s.candidates)),
+            ("matches", count_or_null(s.matches)),
+            ("iterations", count_or_null(s.iterations)),
+            ("termination", termination),
+            ("inliers", count_or_null(s.inliers)),
+            ("refined", count_or_null(s.refined)),
+        ])
+    });
+    let local_map = summary.local_map.map_or(JsonValue::Null, |s| {
+        object([
+            ("in_view", count(s.in_view)),
+            ("matches", count(s.matches)),
+            ("inliers", count(s.inliers)),
+        ])
+    });
+    let mapping = summary.mapping.as_ref().map_or(JsonValue::Null, |s| {
+        object([
+            ("from_depth", count(s.from_depth)),
+            ("culled_points", count(s.culled_points)),
+            ("triangulated", count(s.triangulated)),
+            ("fused", count(s.fused)),
+            ("ba", solves_json(&s.solves)),
+            ("outliers", count(s.outliers)),
+            ("weak_points", count(s.weak_points)),
+            ("culled_keyframes", count(s.culled_keyframes)),
+        ])
+    });
+    [
+        ("placed_by", placed_by),
+        ("init", init),
+        ("motion", motion),
+        ("pnp", pnp),
+        ("local_map", local_map),
+        ("mapping", mapping),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_owned(), value))
+    .collect()
+}
+
 /// Records a frame's result: its diagnostics, and its pose if it was tracked.
 ///
 /// # Arguments
@@ -426,16 +585,10 @@ fn record(
     read_seconds: f64,
     build_seconds: f64,
 ) -> Result<()> {
-    out.diagnostics.push(vec![
+    let mut diagnostic = vec![
         ("timestamp".to_owned(), JsonValue::Number(result.timestamp)),
-        (
-            "state".to_owned(),
-            JsonValue::Text(result.state.name().to_owned()),
-        ),
-        (
-            "tracked".to_owned(),
-            JsonValue::Integer(i64::try_from(result.tracked).unwrap_or(i64::MAX)),
-        ),
+        ("state".to_owned(), name_json(result.state.name())),
+        ("tracked".to_owned(), count(result.tracked)),
         ("keyframe".to_owned(), JsonValue::Bool(result.keyframe)),
         ("read_seconds".to_owned(), JsonValue::Number(read_seconds)),
         ("build_seconds".to_owned(), JsonValue::Number(build_seconds)),
@@ -447,7 +600,9 @@ fn record(
             "map_seconds".to_owned(),
             JsonValue::Number(result.map_seconds),
         ),
-    ]);
+    ];
+    diagnostic.extend(summary_json(&result.summary));
+    out.diagnostics.push(diagnostic);
     if let Some(pose) = &result.pose {
         out.poses.push(se3::inverse(pose)?);
         out.timestamps.push(result.timestamp);

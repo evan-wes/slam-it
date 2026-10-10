@@ -1,6 +1,6 @@
 //! Local mapping, growing and cleaning the map around each new keyframe: the Rust core's
 //! mirror of `slam_it_all.edge.mapping` (ORB-SLAM's `LocalMapping`, lite), whose docstring states
-//! the steps.
+//! the steps. Mapping a keyframe also says how each step went, which a run records per keyframe.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -10,7 +10,7 @@ use slam_it_all_foundations::matching::{self, FeatureGrid};
 use slam_it_all_foundations::orb::Keypoint;
 use slam_it_all_foundations::triangulation;
 
-use crate::adjust::bundle_adjust;
+use crate::adjust::{Adjustment, Solve, bundle_adjust};
 use crate::frames::{Camera, Frame, Tracked, check_setup};
 use crate::map::{self, Map};
 use crate::options::{Mode, Options, check_options};
@@ -1083,6 +1083,29 @@ pub fn cull_keyframes(m: &mut Map, camera: &Camera, mode: Mode, options: &Option
     Ok(())
 }
 
+/// How local mapping went on a keyframe (`slam_it_all.edge.mapping.MappingSummary`): the
+/// point counts are the map's before and after each step.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MappingSummary {
+    /// Points made from the keyframe's close depth (0 in monocular).
+    pub from_depth: usize,
+    /// Recent points culled.
+    pub culled_points: usize,
+    /// Points triangulated with the window's keyframes.
+    pub triangulated: usize,
+    /// Points fused into another.
+    pub fused: usize,
+    /// The local bundle adjustment's solves; none if it did not run.
+    pub solves: Vec<Solve>,
+    /// The observations it dropped.
+    pub outliers: usize,
+    /// Points erased because the observations dropped, by the adjustment or with a culled
+    /// keyframe, left them too weakly observed.
+    pub weak_points: usize,
+    /// Redundant keyframes culled.
+    pub culled_keyframes: usize,
+}
+
 /// Inserts a keyframe and runs local mapping on it (`slam_it_all.edge.mapping.process`).
 ///
 /// # Arguments
@@ -1093,6 +1116,10 @@ pub fn cull_keyframes(m: &mut Map, camera: &Camera, mode: Mode, options: &Option
 /// * `tracked` - Its pose and matches.
 /// * `mode` - The pipeline's mode.
 /// * `options` - The settings.
+///
+/// # Returns
+///
+/// How each step went.
 ///
 /// # Errors
 ///
@@ -1105,18 +1132,35 @@ pub fn process(
     tracked: &Tracked,
     mode: Mode,
     options: &Options,
-) -> Result<()> {
+) -> Result<MappingSummary> {
     map::insert_keyframe(m, frame, &tracked.pose, &tracked.points)?;
+    let start = m.points();
     if mode != Mode::Monocular {
         create_points_from_depth(m, camera, options)?;
     }
+    let with_depth = m.points();
     cull_points(m, mode, options)?;
+    let culled = m.points();
     triangulate_new_points(m, camera, mode, options)?;
+    let triangulated = m.points();
     fuse_points(m, camera, options)?;
+    let fused = m.points();
+    let mut adjustment = Adjustment::default();
     if m.keyframes() >= options.ba_min_keyframes {
         let fixed: Vec<bool> = m.kf_id.iter().map(|&id| id == 0).collect();
         let window = m.window(options.window);
-        bundle_adjust(m, camera, &window, &fixed, options)?;
+        adjustment = bundle_adjust(m, camera, &window, &fixed, options)?;
     }
-    cull_keyframes(m, camera, mode, options)
+    let keyframes = m.keyframes();
+    cull_keyframes(m, camera, mode, options)?;
+    Ok(MappingSummary {
+        from_depth: with_depth - start,
+        culled_points: with_depth - culled,
+        triangulated: triangulated - culled,
+        fused: triangulated - fused,
+        solves: adjustment.solves,
+        outliers: adjustment.outliers,
+        weak_points: fused - m.points(),
+        culled_keyframes: keyframes - m.keyframes(),
+    })
 }

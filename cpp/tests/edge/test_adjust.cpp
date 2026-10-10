@@ -72,8 +72,13 @@ void check_recovery(int& failures) {
   const Eigen::Vector3d start = m.pt_xyz[0];
   const std::vector<std::int64_t> every{0, 1, 2};
   const std::vector<std::uint8_t> fixed{1, 0, 0};
-  expect(edge::bundle_adjust(m, scene::camera(), every, fixed, edge::Options{}).has_value(),
-         "the adjustment runs", failures);
+  const auto adjusted = edge::bundle_adjust(m, scene::camera(), every, fixed, edge::Options{});
+  expect(adjusted.has_value(), "the adjustment runs", failures);
+  if (adjusted) {
+    expect(adjusted->solves.size() == 2 && adjusted->outliers == 1 &&
+               adjusted->solves[0].final_cost < adjusted->solves[0].initial_cost,
+           "it records its two solves and the one observation it dropped", failures);
+  }
   expect(m.kf_pose[0] == Eigen::Matrix4d::Identity(), "the fixed keyframe keeps its pose exactly",
          failures);
   double worst = 0.0;
