@@ -416,7 +416,7 @@ reifyscene a measured payoff.
 | # | Milestone | Languages | Measured on |
 |---|---|---|---|
 | 1 | Rung 0: foundations | Py, C++, Rust | Synthetic scenes with exact answers |
-| 2 | Sparse VO under a laptop-CPU budget: monocular, stereo and RGB-D, and the run viewer | Py, C++, Rust | TUM RGB-D, EuRoC |
+| 2 | Sparse VO under a laptop-CPU budget: monocular, stereo and RGB-D; the run viewer, and your own phone video | Py, C++, Rust | TUM RGB-D, EuRoC |
 | 3 | **reifyscene payoff 1:** depth-aware, motion-masked BA refining VGGT's cameras | Py (+C++ solver) | reifyscene lab-coat masked PSNR; spin GT poses |
 | 4 | Classic heavy: incremental SfM, place recognition, loop closure | Py, C++ | KITTI odometry |
 | 5 | **reifyscene payoff 2:** DROID-style rung with DROID's published weights loaded, plus dense BA with a depth prior (the full Shape-of-Motion recipe) | Py (PyTorch) | Parity with the DROID reference; reifyscene lab-coat and spin |
@@ -435,7 +435,8 @@ state, evaluation and the budget harness. Every PR lands in Python, C++ and Rust
 | 7 | **Front end and evaluation.** Images (Pillow in `slam_it_all.eval`; native PNG readers outside the cores, `slam_it_all_eval` and `slam-it-all-eval`), grayscale pyramids, blur and bilinear remapping. ORB, our own: multi-scale FAST spread over the image, intensity-centroid orientation, rBRIEF descriptors, Hamming matching with a ratio test. Stereo rectification from EuRoC's calibration, row-constrained matching with subpixel refinement, depth from disparity. The EuRoC reader; TUM's depth maps in the library; the demos on the shared front end. ATE (Sim(3) alignment for monocular, SE(3) for stereo and RGB-D) and RPE; the run format. |
 | 8 | **The pipeline.** Initialisation: two-view for monocular, retrying on later frames when the parallax is low; from depth for stereo and RGB-D, metric from the start. Tracking: a constant-velocity prediction, map points matched by projection, PnP RANSAC as the fallback, motion-only pose refinement. Keyframe selection; local mapping (triangulation, local BA over a keyframe window, culling of points and keyframes). Native programs (C++ and Rust) that run a whole sequence. Results on TUM (monocular, RGB-D) and EuRoC (monocular, stereo), with rerun recordings. Planned in [the edge VO design](2026-10-05-edge-vo.md); built as [the edge VO note](../notes/edge-vo.md) describes. |
 | 9 | **Budgets and real time.** The `laptop-cpu` harness (pinned cores, capped memory, a per-frame deadline); latency (p50, p95) and peak memory; profiling the C++ and Rust pipelines to real time; the three-language comparison. Python is measured but not held to real time. Built as [the real-time note](../notes/real-time.md) describes. |
-| 10 | **The run viewer** (see [Public presentation](#public-presentation)), on the run format, used locally until the repo goes public. |
+| 10 | **The run viewer** (see [Public presentation](#public-presentation)). Run format v3: per-frame solver summaries, point and keyframe lifetimes, and opt-in feature records, in all three languages. The bake into bundles, and the page. Planned in [the run viewer design](2026-10-09-run-viewer.md). |
+| 11 | **Your own video.** Phone video import, with intrinsics from the best source (a Stray Scanner recording, a Gyroflow lens profile, the 35mm-equivalent focal length, a nominal field of view) and undistortion to pinhole. The upload server and its worker, packaged for Railway. Planned in [the run viewer design](2026-10-09-run-viewer.md). |
 
 The open items aimed at milestone 2 close in these PRs: the depth-map loader and the shared
 front end in PR 7; the low-parallax retry and the non-invertible homography in PR 8.
@@ -668,8 +669,10 @@ Code is reviewed in two layers. The full rules are in `CLAUDE.md`.
 ## Public presentation
 
 SLAM It All! is presented the way reifyscene is: a static showcase page and an interactive run
-viewer, in the same visual style (IBM Plex, panel layout, a frame scrubber), published with
-GitHub Pages. Nothing is published before the repo goes public (see
+viewer, in the same visual style (IBM Plex, panel layout, a frame scrubber). It is hosted on
+Railway, at `slam-it-all.timedilated.com`, because PR 11's uploads need a server and a worker.
+A staging deploy on Railway's own address, with every page behind an invite code, comes first.
+Nothing is published before the repo goes public (see
 [Licensing and publication](#licensing-and-publication)).
 
 - **The showcase page** walks through the SLAM process on one sequence, stage by stage, with
@@ -685,16 +688,20 @@ GitHub Pages. Nothing is published before the repo goes public (see
     their timings. This is where the "same algorithm, three languages" comparison becomes
     visible;
   - later, **rungs side by side:** one sequence run by different rungs of the ladder.
+- **Your own video:** anyone with an invite code uploads a phone video, or a Stray Scanner
+  recording for exact intrinsics and ARKit's trajectory as ground truth. It runs on Railway and
+  opens in the viewer. An upload is deleted when its import ends, and a result after 7 days.
 - **It grows with the ladder.** Milestone 1 has components but no pipeline: its demos record
   single steps (two-view initialisation, PnP, BA) with rerun, and the Rust note compares the
-  three languages in a table. The viewer is built in milestone 2 (its last PR), on the first
-  end-to-end runs, and used locally until the repo goes public; loop closure (milestone 4)
-  and the dense and learned rungs (milestones 5 and 9) add to it.
+  three languages in a table. The viewer is built in milestone 2 (PR 10), on the first
+  end-to-end runs, and your own video follows in its last PR (PR 11). Both are used locally, and
+  on the staging deploy, until the repo goes public. Loop closure (milestone 4) and the dense
+  and learned rungs (milestones 5 and 9) add to it.
 - **The run format is milestone 2's,** defined with its pipeline: trajectory, keyframes, map
   and per-frame diagnostics, written by the pipeline and read by both rerun and the viewer.
   It lives in `slam_it_all.eval`, so the algorithm rungs never depend on the viewer.
-- **Run outputs stay outside the repo** (`../runs/`). The page ships only the assets built
-  from them.
+- **Run outputs stay outside the repo** (`../runs/`), and so do the bundles baked from them
+  (`../bundles/`). The page ships only the assets built from them.
 
 ## Licensing and publication
 
