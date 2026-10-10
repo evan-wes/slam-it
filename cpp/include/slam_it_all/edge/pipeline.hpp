@@ -5,9 +5,11 @@
 #pragma once
 
 #include <Eigen/Core>
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <utility>
+#include <vector>
 
 #include "slam_it_all/edge/frames.hpp"
 #include "slam_it_all/edge/initialization.hpp"
@@ -94,6 +96,25 @@ struct FrameResult {
   FrameSummary summary;
 };
 
+/// @brief A life: the frame that made a point or keyframe, the frame that removed it or -1, and
+///        why (a `Removal` code) or -1.
+using Life = std::array<std::int64_t, 3>;
+
+/// @brief Every point and keyframe a run made, by id, where each last was, and its life
+///        (`slam_it_all.edge.pipeline.Lifetimes`).
+struct Lifetimes {
+  /// @brief Every point, its last position in the world frame.
+  std::vector<Eigen::Vector3d> points;
+  /// @brief Their lives.
+  std::vector<Life> point_lives;
+  /// @brief Every keyframe's time, ascending.
+  std::vector<double> keyframe_times;
+  /// @brief Its last `T_cam_world`.
+  std::vector<Eigen::Matrix4d> keyframe_poses;
+  /// @brief Their lives.
+  std::vector<Life> keyframe_lives;
+};
+
 /// @brief The edge pipeline for one sequence (`slam_it_all.edge.pipeline.Pipeline`).
 class Pipeline {
  public:
@@ -123,6 +144,12 @@ class Pipeline {
   /// @brief The map, once initialised.
   /// @return The map, if any.
   [[nodiscard]] const std::optional<Map>& map() const { return map_; }
+
+  /// @brief Every point and keyframe the run has made, with their lives
+  ///        (`slam_it_all.edge.pipeline.Pipeline.lifetimes`).
+  /// @return The points and keyframes by id: those in the map where the map has them, the
+  ///         removed ones where they last were.
+  [[nodiscard]] Lifetimes lifetimes() const;
 
  private:
   /// @brief A frame handled, as `initialize` and `track_frame` give it.
@@ -187,6 +214,9 @@ class Pipeline {
   [[nodiscard]] foundations::Result<std::pair<std::optional<Tracked>, LocalMapSummary>> refine(
       Map& m, const Frame& frame, const Tracked& placed, bool wide, bool recent) const;
 
+  /// @brief Date what this frame made and removed, and empty the map's archive of removals.
+  void date();
+
   /// @brief Track a frame against the map; insert a keyframe if one is needed (and time it).
   /// @param frame The frame.
   /// @return The tracked frame, if any, whether it became a keyframe, the time mapping it
@@ -217,6 +247,18 @@ class Pipeline {
   std::int64_t failures_{0};
   /// @brief Frames since the last recovery, if any.
   std::optional<std::int64_t> since_recovery_;
+  /// @brief Frames given so far.
+  std::int64_t frames_{0};
+  /// @brief Each point's life, by id.
+  std::vector<Life> point_lives_;
+  /// @brief Each keyframe's life, by id.
+  std::vector<Life> keyframe_lives_;
+  /// @brief Where each removed point last was, by id (unset for the others).
+  std::vector<Eigen::Vector3d> gone_points_;
+  /// @brief Each removed keyframe's time, by id (unset for the others).
+  std::vector<double> gone_times_;
+  /// @brief Each removed keyframe's last pose, by id (unset for the others).
+  std::vector<Eigen::Matrix4d> gone_poses_;
 };
 
 }  // namespace slam_it_all::edge

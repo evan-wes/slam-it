@@ -11,7 +11,7 @@
 use nalgebra::{Matrix4, Vector3};
 use numpy::ndarray::{Array1, Array2, Array3};
 use numpy::{
-    Element, IntoPyArray, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3,
+    Element, IntoPyArray, PyArray3, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3,
     PyUntypedArrayMethods,
 };
 use pyo3::exceptions::PyValueError;
@@ -29,7 +29,7 @@ use slam_it_all_foundations::orb::{DESCRIPTOR_BYTES, Descriptor, Features, Keypo
 use crate::common::{by_name, contiguous, encode, item_array, to_i64, unwrap};
 
 /// The map's fields, as the dict's keys.
-const MAP_KEYS: [&str; 26] = [
+const MAP_KEYS: [&str; 32] = [
     "levels",
     "scale_factor",
     "kf_id",
@@ -56,6 +56,12 @@ const MAP_KEYS: [&str; 26] = [
     "pt_reference_kf",
     "next_kf_id",
     "next_pt_id",
+    "gone_pt_id",
+    "gone_pt_xyz",
+    "gone_pt_how",
+    "gone_kf_id",
+    "gone_kf_time",
+    "gone_kf_pose",
 ];
 
 /// The frame's fields, as the dict's keys.
@@ -254,6 +260,12 @@ pub fn map_in(py: Python<'_>, values: &Bound<'_, PyDict>) -> PyResult<Map> {
         pt_reference_kf: vector(&get("pt_reference_kf")?)?,
         next_kf_id: get("next_kf_id")?.extract()?,
         next_pt_id: get("next_pt_id")?.extract()?,
+        gone_pt_id: vector(&get("gone_pt_id")?)?,
+        gone_pt_xyz: vectors(&get("gone_pt_xyz")?)?,
+        gone_pt_how: vector(&get("gone_pt_how")?)?,
+        gone_kf_id: vector(&get("gone_kf_id")?)?,
+        gone_kf_time: vector(&get("gone_kf_time")?)?,
+        gone_kf_pose: poses(&get("gone_kf_pose")?)?,
         pt_observations: Vec::new(),
     };
     index_observations(&mut m);
@@ -335,6 +347,33 @@ pub fn indices_array<'py>(py: Python<'py>, values: &[usize]) -> Bound<'py, PyAny
     vector_array(py, &converted)
 }
 
+/// Builds `(K, 4, 4)` poses as an array.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `poses` - The poses.
+///
+/// # Returns
+///
+/// The array, row-major.
+///
+/// # Errors
+///
+/// A Python error if the array cannot be shaped.
+fn poses_array<'py>(
+    py: Python<'py>,
+    poses: &[Matrix4<f64>],
+) -> PyResult<Bound<'py, PyArray3<f64>>> {
+    let values: Vec<f64> = poses
+        .iter()
+        .flat_map(|p| p.transpose().iter().copied().collect::<Vec<_>>())
+        .collect();
+    let array = Array3::from_shape_vec((poses.len(), 4, 4), values)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok(array.into_pyarray(py))
+}
+
 /// Builds the dict of a map's fields.
 ///
 /// # Arguments
@@ -355,14 +394,7 @@ pub fn map_dict<'py>(py: Python<'py>, m: &Map) -> PyResult<Bound<'py, PyDict>> {
     out.set_item("scale_factor", m.scale_factor)?;
     out.set_item("kf_id", vector_array(py, &m.kf_id))?;
     out.set_item("kf_time", vector_array(py, &m.kf_time))?;
-    let poses: Vec<f64> = m
-        .kf_pose
-        .iter()
-        .flat_map(|p| p.transpose().iter().copied().collect::<Vec<_>>())
-        .collect();
-    let poses = Array3::from_shape_vec((m.kf_pose.len(), 4, 4), poses)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    out.set_item("kf_pose", poses.into_pyarray(py))?;
+    out.set_item("kf_pose", poses_array(py, &m.kf_pose)?)?;
     out.set_item("kf_start", indices_array(py, &m.kf_start))?;
     out.set_item("kp_xy", rows_array(py, &m.kp_xy)?)?;
     out.set_item("kp_level", indices_array(py, &m.kp_level))?;
@@ -384,6 +416,12 @@ pub fn map_dict<'py>(py: Python<'py>, m: &Map) -> PyResult<Bound<'py, PyDict>> {
     out.set_item("pt_reference_kf", vector_array(py, &m.pt_reference_kf))?;
     out.set_item("next_kf_id", m.next_kf_id)?;
     out.set_item("next_pt_id", m.next_pt_id)?;
+    out.set_item("gone_pt_id", vector_array(py, &m.gone_pt_id))?;
+    out.set_item("gone_pt_xyz", vectors_array(py, &m.gone_pt_xyz)?)?;
+    out.set_item("gone_pt_how", vector_array(py, &m.gone_pt_how))?;
+    out.set_item("gone_kf_id", vector_array(py, &m.gone_kf_id))?;
+    out.set_item("gone_kf_time", vector_array(py, &m.gone_kf_time))?;
+    out.set_item("gone_kf_pose", poses_array(py, &m.gone_kf_pose)?)?;
     Ok(out)
 }
 

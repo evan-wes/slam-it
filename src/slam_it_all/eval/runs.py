@@ -2,7 +2,7 @@
 
 A run is a folder, written by any backend's pipeline (C++ and Rust write the same files):
 
-- ``run.json``: what ran: ``{"format": "slam-it-all-run", "version": 2, "dataset", "sequence",
+- ``run.json``: what ran: ``{"format": "slam-it-all-run", "version": 3, "dataset", "sequence",
   "mode", "backend", "settings", "peak_memory", "cpus", "memory_cap"}``, ``mode`` one of
   :data:`MODES` and ``backend`` one of ``python``, ``cpp`` and ``rust``; ``settings`` holds the
   pipeline's options as JSON. The last three describe the program that ran it, as it recorded
@@ -14,9 +14,15 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
   ``timestamp tx ty tz qx qy qz qw`` line per frame, ``#`` comments allowed: what ORB-SLAM and
   the TUM tools write, so other systems' trajectories evaluate the same way. Numbers are
   written to round-trip exactly.
-- ``keyframes.npy``: the keyframes' timestamps, ``(K,)`` float64; ``keyframe_poses.npy``: their
-  ``T_world_cam``, ``(K, 4, 4)``.
-- ``points.npy``: the map's points in the world frame, ``(M, 3)`` float64.
+- ``keyframes.npy``: the timestamps of every keyframe the run made, by id (the order it made
+  them in), ``(K,)`` float64; ``keyframe_poses.npy``: their ``T_world_cam``, ``(K, 4, 4)``, the
+  last each had; ``keyframe_lives.npy``: their lives, ``(K, 3)`` int64 (below).
+- ``points.npy``: every point the run made, by id, in the world frame, ``(M, 3)`` float64,
+  where each last was; ``point_lives.npy``: their lives, ``(M, 3)`` int64.
+- **A life** is three numbers: the frame that made it; the frame that removed it, or -1 if it
+  is in the final map; and why it was removed (its index in :data:`REMOVALS`), or -1. Frames
+  are counted by their line in ``diagnostics.jsonl``. The final map is the rows still alive
+  (:meth:`Run.final_points`, :meth:`Run.final_keyframes`).
 - ``diagnostics.jsonl``: one JSON object per line, per frame, each with its ``timestamp``;
   otherwise what the pipeline wants to report (tracked points, state). The edge pipeline's
   frames also time their steps, in seconds (:data:`STEPS`), which the budget harness judges
@@ -51,9 +57,14 @@ from slam_it_all.foundations.errors import InvalidInputError
 FORMAT = "slam-it-all-run"
 """``run.json``'s ``format``."""
 
-VERSION = 2
+VERSION = 3
 """``run.json``'s ``version``: this module's layout (2 added ``peak_memory``, ``cpus`` and
-``memory_cap``)."""
+``memory_cap``; 3 every point and keyframe the run made, with their lives)."""
+
+REMOVALS = ("culled", "fused", "weak")
+"""Why a point or keyframe was removed, a life's code being the index: culled (a recent point
+tracking rarely found, or a redundant keyframe), fused into another point, or erased with its
+views (left seen too little). :class:`slam_it_all.edge.map.Removal` has the same codes."""
 
 STEPS = ("read_seconds", "build_seconds", "track_seconds", "map_seconds")
 """The steps each frame of the edge pipeline times, as keys of its diagnostic, in seconds:
@@ -105,11 +116,11 @@ class Run:
     poses : ndarray of float64, shape (F, 4, 4)
         Each tracked frame's ``T_world_cam``.
     keyframe_timestamps : ndarray of float64, shape (K,)
-        The keyframes' timestamps.
+        The timestamps of every keyframe the run made, by id.
     keyframe_poses : ndarray of float64, shape (K, 4, 4)
-        The keyframes' ``T_world_cam``.
+        Their last ``T_world_cam``.
     points : ndarray of float64, shape (M, 3)
-        The map's points, in the world frame.
+        Every point the run made, by id, where it last was, in the world frame.
     settings : dict
         The pipeline's options, as JSON values.
     diagnostics : list of dict
@@ -120,6 +131,11 @@ class Run:
         The CPUs the program that ran it could run on, ascending; None if unknown.
     memory_cap : int or None
         Its memory cap, in bytes; None if it had none or it is unknown.
+    point_lives : ndarray of int64, shape (M, 3)
+        Each point's life: the frame that made it, the frame that removed it (-1 if none), and
+        why (its index in :data:`REMOVALS`; -1 if none).
+    keyframe_lives : ndarray of int64, shape (K, 3)
+        Each keyframe's life, the same way.
     """
 
     dataset: str
@@ -136,6 +152,33 @@ class Run:
     peak_memory: int | None = None
     cpus: list[int] | None = None
     memory_cap: int | None = None
+    point_lives: NDArray[np.int64] = field(default_factory=lambda: np.zeros((0, 3), dtype=np.int64))
+    keyframe_lives: NDArray[np.int64] = field(
+        default_factory=lambda: np.zeros((0, 3), dtype=np.int64)
+    )
+
+    def final_points(self) -> NDArray[np.float64]:
+        """Return the points still in the final map.
+
+        Returns
+        -------
+        ndarray of float64, shape (P, 3)
+            The rows of :attr:`points` whose life has no end, in id order.
+        """
+        return self.points[self.point_lives[:, 1] < 0]
+
+    def final_keyframes(self) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """Return the keyframes still in the final map.
+
+        Returns
+        -------
+        timestamps : ndarray of float64, shape (J,)
+            Their times, ascending.
+        poses : ndarray of float64, shape (J, 4, 4)
+            Their ``T_world_cam``.
+        """
+        alive = self.keyframe_lives[:, 1] < 0
+        return self.keyframe_timestamps[alive], self.keyframe_poses[alive]
 
 
 def _check_process(peak_memory: object, cpus: object, memory_cap: object, prefix: str) -> None:
@@ -215,11 +258,33 @@ def _replace(path: Path, data: bytes) -> None:
     temporary.replace(path)
 
 
-def _npy(array: NDArray[np.float64]) -> bytes:
+def _npy(array: NDArray[Any]) -> bytes:
     """Return an array as the bytes of a ``.npy`` file."""
     buffer = io.BytesIO()
     np.save(buffer, array, allow_pickle=False)
     return buffer.getvalue()
+
+
+def _check_lives(lives: ArrayLike, count: int, frames: int, name: str) -> NDArray[np.int64]:
+    """Check lives, one per row; return them.
+
+    Each must be made in one of the run's frames, removed in that frame or a later one or never,
+    and say why exactly when removed. `name` begins each message.
+    """
+    out = np.asarray(lives)
+    if out.dtype != np.int64 or out.shape != (count, 3):
+        raise InvalidInputError(
+            f"{name}: expected int64 ({count}, 3), one per row, got {out.dtype} {out.shape}"
+        )
+    made, removed, how = out.T
+    alive = removed == -1
+    if np.any((made < 0) | (made >= frames)):
+        raise InvalidInputError(f"{name}: a life must start in one of the run's {frames} frames")
+    if np.any(~alive & ((removed < made) | (removed >= frames))):
+        raise InvalidInputError(f"{name}: a life must end in its start's frame or later, or -1")
+    if np.any(alive != (how == -1)) or np.any(~alive & ((how < 0) | (how >= len(REMOVALS)))):
+        raise InvalidInputError(f"{name}: why a life ended must be a removal code, -1 if alive")
+    return out
 
 
 def _json(value: Any, name: str) -> str:  # noqa: ANN401 -- a run's free-form JSON values
@@ -331,13 +396,18 @@ def write_run(folder: str | Path, run: Run) -> None:
         if not isinstance(entry, dict) or "timestamp" not in entry:
             raise InvalidInputError(f"diagnostics[{k}]: expected an object with a timestamp")
         diagnostics.append(_json(entry, f"diagnostics[{k}]") + "\n")
+    frames = len(run.diagnostics)
+    point_lives = _check_lives(run.point_lives, len(points), frames, "point_lives")
+    keyframe_lives = _check_lives(run.keyframe_lives, len(keyframe_times), frames, "keyframe_lives")
     out = Path(folder)
     out.mkdir(parents=True, exist_ok=True)
     _replace(out / "run.json", (json.dumps(info, indent=1) + "\n").encode())
     _replace(out / "trajectory.txt", _trajectory_text(times, poses).encode())
     _replace(out / "keyframes.npy", _npy(keyframe_times))
     _replace(out / "keyframe_poses.npy", _npy(keyframe_poses))
+    _replace(out / "keyframe_lives.npy", _npy(keyframe_lives))
     _replace(out / "points.npy", _npy(points))
+    _replace(out / "point_lives.npy", _npy(point_lives))
     _replace(out / "diagnostics.jsonl", "".join(diagnostics).encode())
 
 
@@ -349,18 +419,18 @@ def _check_names(mode: str, backend: str) -> None:
         raise InvalidInputError(f"backend: expected one of {BACKENDS}, got {backend!r}")
 
 
-def _load(path: Path, shape: tuple[int, ...]) -> NDArray[np.float64]:
-    """Load a float64 .npy file whose trailing dimensions are `shape`."""
+def _load(path: Path, shape: tuple[int, ...], dtype: type[np.generic] = np.float64) -> NDArray[Any]:
+    """Load a .npy file of `dtype` whose trailing dimensions are `shape`."""
     if not path.is_file():
         raise FileNotFoundError(f"no {path.name} in {path.parent}")
     try:
-        data: NDArray[np.float64] = np.load(path, allow_pickle=False)
+        data: NDArray[Any] = np.load(path, allow_pickle=False)
     except (ValueError, EOFError) as error:  # not an .npy file, an empty one, or objects
         raise InvalidInputError(f"{path}: not a readable .npy array ({error})") from None
-    if not isinstance(data, np.ndarray) or data.dtype != np.float64 or data.shape[1:] != shape:
+    if not isinstance(data, np.ndarray) or data.dtype != dtype or data.shape[1:] != shape:
         expected = ", ".join(["N", *map(str, shape)])
         raise InvalidInputError(
-            f"{path}: expected float64 ({expected}), got {data.dtype} {data.shape}"
+            f"{path}: expected {np.dtype(dtype).name} ({expected}), got {data.dtype} {data.shape}"
         )
     return data
 
@@ -432,6 +502,14 @@ def read_run(folder: str | Path) -> Run:
     keyframe_times = _load(root / "keyframes.npy", ())
     keyframe_poses = _load(root / "keyframe_poses.npy", (4, 4))
     _as_stamped(keyframe_times, keyframe_poses, "keyframes")
+    points = _load(root / "points.npy", (3,))
+    diagnostics = _read_diagnostics(root / "diagnostics.jsonl")
+    lives = {
+        name: _check_lives(
+            _load(root / f"{name}.npy", (3,), np.int64), count, len(diagnostics), str(root / name)
+        )
+        for name, count in (("point_lives", len(points)), ("keyframe_lives", len(keyframe_times)))
+    }
     return Run(
         dataset=info["dataset"],
         sequence=info["sequence"],
@@ -441,12 +519,14 @@ def read_run(folder: str | Path) -> Run:
         poses=poses,
         keyframe_timestamps=keyframe_times,
         keyframe_poses=keyframe_poses,
-        points=_load(root / "points.npy", (3,)),
+        points=points,
         settings=info["settings"],
-        diagnostics=_read_diagnostics(root / "diagnostics.jsonl"),
+        diagnostics=diagnostics,
         peak_memory=info["peak_memory"],
         cpus=info["cpus"],
         memory_cap=info["memory_cap"],
+        point_lives=lives["point_lives"],
+        keyframe_lives=lives["keyframe_lives"],
     )
 
 

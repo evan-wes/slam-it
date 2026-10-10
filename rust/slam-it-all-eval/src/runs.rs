@@ -12,8 +12,16 @@ use slam_it_all_foundations::{se3, so3};
 /// `run.json`'s `format`.
 pub const FORMAT: &str = "slam-it-all-run";
 
-/// `run.json`'s `version` (2 added `peak_memory`, `cpus` and `memory_cap`).
-pub const VERSION: i64 = 2;
+/// `run.json`'s `version` (2 added `peak_memory`, `cpus` and `memory_cap`; 3 every point and
+/// keyframe the run made, with their lives).
+pub const VERSION: i64 = 3;
+
+/// The number of removal codes a life may hold (`slam_it_all.eval.runs.REMOVALS`).
+pub const REMOVALS: i64 = 3;
+
+/// A life: the frame that made a point or keyframe, the frame that removed it or -1, and why
+/// (its index in `slam_it_all.eval.runs.REMOVALS`) or -1.
+pub type Life = [i64; 3];
 
 /// The modes a run may have.
 pub const MODES: [&str; 3] = ["monocular", "stereo", "rgbd"];
@@ -65,11 +73,11 @@ pub struct Run {
     pub timestamps: Vec<f64>,
     /// Each tracked frame's `T_world_cam`.
     pub poses: Vec<Matrix4<f64>>,
-    /// The keyframes' timestamps.
+    /// The timestamps of every keyframe the run made, by id.
     pub keyframe_timestamps: Vec<f64>,
-    /// The keyframes' `T_world_cam`.
+    /// Their last `T_world_cam`.
     pub keyframe_poses: Vec<Matrix4<f64>>,
-    /// The map's points, in the world frame.
+    /// Every point the run made, by id, where it last was, in the world frame.
     pub points: Vec<Vector3<f64>>,
     /// The pipeline's options.
     pub settings: JsonObject,
@@ -86,6 +94,10 @@ pub struct Run {
     /// Its memory cap, in bytes, if it had one (`crate::budgets::memory_cap`); written as null
     /// otherwise.
     pub memory_cap: Option<u64>,
+    /// Each point's life, by id.
+    pub point_lives: Vec<Life>,
+    /// Each keyframe's life, by id.
+    pub keyframe_lives: Vec<Life>,
 }
 
 /// A finite number as JSON, shortest round-trip (`.0` kept on a whole number, as Python
@@ -215,12 +227,49 @@ fn finite_value(value: &JsonValue) -> bool {
 /// The bytes.
 #[must_use]
 pub fn npy(shape: &[usize], values: &[f64]) -> Vec<u8> {
+    let mut out = npy_header(shape, "<f8");
+    for value in values {
+        out.extend(value.to_le_bytes());
+    }
+    out
+}
+
+/// A `.npy` file's bytes (version 1.0, little-endian int64, C order), as numpy writes it.
+///
+/// # Arguments
+///
+/// * `shape` - The array's shape.
+/// * `values` - Its values, row-major.
+///
+/// # Returns
+///
+/// The bytes.
+#[must_use]
+pub fn npy_int64(shape: &[usize], values: &[i64]) -> Vec<u8> {
+    let mut out = npy_header(shape, "<i8");
+    for value in values {
+        out.extend(value.to_le_bytes());
+    }
+    out
+}
+
+/// A `.npy` file's header, as numpy writes it.
+///
+/// # Arguments
+///
+/// * `shape` - The array's shape.
+/// * `descr` - The dtype's descriptor (`<f8`, `<i8`).
+///
+/// # Returns
+///
+/// The magic, version, header length and header.
+fn npy_header(shape: &[usize], descr: &str) -> Vec<u8> {
     let dims: Vec<String> = shape.iter().map(ToString::to_string).collect();
     let mut dims = dims.join(", ");
     if shape.len() == 1 {
         dims.push(',');
     }
-    let mut header = format!("{{'descr': '<f8', 'fortran_order': False, 'shape': ({dims}), }}");
+    let mut header = format!("{{'descr': '{descr}', 'fortran_order': False, 'shape': ({dims}), }}");
     if let Some(first) = shape.first() {
         header.push_str(&" ".repeat(GROWTH_DIGITS - first.to_string().len()));
     }
@@ -234,10 +283,47 @@ pub fn npy(shape: &[usize], values: &[f64]) -> Vec<u8> {
             .to_le_bytes(),
     );
     out.extend(header.as_bytes());
-    for value in values {
-        out.extend(value.to_le_bytes());
-    }
     out
+}
+
+/// Checks lives: one per row; made in one of the run's frames, removed in that frame or a later
+/// one or never, and why exactly when removed.
+///
+/// # Arguments
+///
+/// * `lives` - The lives.
+/// * `rows` - The rows they are for.
+/// * `frames` - The run's frames.
+/// * `name` - Their name, for messages.
+///
+/// # Errors
+///
+/// `InvalidInput` otherwise.
+fn check_lives(lives: &[Life], rows: usize, frames: usize, name: &str) -> Result<()> {
+    if lives.len() != rows {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!("{name}: expected one life per row"),
+        );
+    }
+    let count = i64::try_from(frames).unwrap_or(i64::MAX);
+    let ok = lives.iter().all(|&[made, removed, how]| {
+        let alive = removed == -1;
+        (0..count).contains(&made)
+            && (alive || (made..count).contains(&removed))
+            && if alive {
+                how == -1
+            } else {
+                (0..REMOVALS).contains(&how)
+            }
+    });
+    if !ok {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!("{name}: expected lives of the run's frames, removal codes"),
+        );
+    }
+    Ok(())
 }
 
 /// Checks stamped poses: finite, strictly ascending times, one rigid transform each.
@@ -294,6 +380,14 @@ fn check(run: &Run) -> Result<()> {
     if !run.points.iter().all(|p| p.iter().all(|v| v.is_finite())) {
         return fail(ErrorKind::InvalidInput, "points: expected finite values");
     }
+    let frames = run.diagnostics.len();
+    check_lives(&run.point_lives, run.points.len(), frames, "point_lives")?;
+    check_lives(
+        &run.keyframe_lives,
+        run.keyframe_timestamps.len(),
+        frames,
+        "keyframe_lives",
+    )?;
     if !finite(&run.settings) {
         return fail(
             ErrorKind::InvalidInput,
@@ -449,7 +543,8 @@ pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
             format!("{}: {e}", folder.display()),
         )
     })?;
-    let files: [(&str, Vec<u8>); 6] = [
+    let lives = |lives: &[Life]| -> Vec<i64> { lives.iter().flatten().copied().collect() };
+    let files: [(&str, Vec<u8>); 8] = [
         ("run.json", info_text.into_bytes()),
         ("trajectory.txt", trajectory.into_bytes()),
         (
@@ -460,7 +555,15 @@ pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
             "keyframe_poses.npy",
             npy(&[run.keyframe_poses.len(), 4, 4], &poses),
         ),
+        (
+            "keyframe_lives.npy",
+            npy_int64(&[run.keyframe_lives.len(), 3], &lives(&run.keyframe_lives)),
+        ),
         ("points.npy", npy(&[run.points.len(), 3], &points)),
+        (
+            "point_lives.npy",
+            npy_int64(&[run.point_lives.len(), 3], &lives(&run.point_lives)),
+        ),
         ("diagnostics.jsonl", diagnostics.into_bytes()),
     ];
     for (name, data) in files {
@@ -575,7 +678,22 @@ mod tests {
                     .collect()
             }),
             memory_cap: values["memory_cap"].as_u64(),
+            point_lives: lives(&values["point_lives"]),
+            keyframe_lives: lives(&values["keyframe_lives"]),
         }
+    }
+
+    /// Lives from JSON rows of three integers.
+    fn lives(values: &Value) -> Vec<Life> {
+        values
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|life| {
+                let at = |k: usize| life[k].as_i64().unwrap();
+                [at(0), at(1), at(2)]
+            })
+            .collect()
     }
 
     /// A trajectory file's numbers.
@@ -625,7 +743,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&out);
         let _guard = Scratch(out.clone());
         write_run(&out, &golden_run()).unwrap();
-        for name in ["keyframes.npy", "keyframe_poses.npy", "points.npy"] {
+        for name in [
+            "keyframes.npy",
+            "keyframe_poses.npy",
+            "keyframe_lives.npy",
+            "points.npy",
+            "point_lives.npy",
+        ] {
             assert_eq!(
                 std::fs::read(out.join(name)).unwrap(),
                 std::fs::read(golden.join(name)).unwrap(),
@@ -712,6 +836,18 @@ mod tests {
             write_run(&out, &run).unwrap_err().kind,
             ErrorKind::InvalidInput
         );
+        let mut short = golden_run();
+        short.point_lives.pop();
+        let mut early = golden_run();
+        early.point_lives[1] = [3, 0, 1];
+        let mut alive = golden_run();
+        alive.keyframe_lives[0] = [0, -1, 2];
+        for run in [short, early, alive] {
+            assert_eq!(
+                write_run(&out, &run).unwrap_err().kind,
+                ErrorKind::InvalidInput
+            );
+        }
         assert!(!out.exists());
         assert_eq!(
             (json_number(1.0), json_number(0.1)),

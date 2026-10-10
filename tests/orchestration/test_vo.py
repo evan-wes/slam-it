@@ -51,8 +51,8 @@ def test_every_backend_tracks_the_room(
     assert all(d["state"] == "tracking" for d in run.diagnostics[MONOCULAR_START:])
     started = FRAMES - MONOCULAR_START if mode == "monocular" else FRAMES
     assert len(run.timestamps) >= started
-    assert len(run.keyframe_timestamps) >= 2
-    assert len(run.points) > 0
+    assert len(run.final_keyframes()[0]) >= 2
+    assert len(run.final_points()) > 0
     error = runs.evaluate(run, room_folders.timestamps, room_folders.poses)
     assert error.matched == len(run.timestamps)
     assert error.absolute.rmse < ATE_BOUND[mode]
@@ -81,11 +81,13 @@ def _assert_same_run(native: runs.Run, reference: runs.Run) -> None:
     """Check that a native run made the reference's decisions and placed what it placed.
 
     The same frames tracked with the same matches, the same keyframes, poses and points within
-    the solver tolerance, and the same stage summaries (their bundle adjustments' costs within
-    it too).
+    the solver tolerance, the same lives for every point and keyframe, and the same stage
+    summaries (their bundle adjustments' costs within it too).
     """
     np.testing.assert_array_equal(native.timestamps, reference.timestamps)
     np.testing.assert_array_equal(native.keyframe_timestamps, reference.keyframe_timestamps)
+    np.testing.assert_array_equal(native.point_lives, reference.point_lives)
+    np.testing.assert_array_equal(native.keyframe_lives, reference.keyframe_lives)
     assert native.points.shape == reference.points.shape
     assert_close(native.poses, reference.poses, SOLVER_TOLERANCE)
     assert_close(native.keyframe_poses, reference.keyframe_poses, SOLVER_TOLERANCE)

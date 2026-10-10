@@ -8,9 +8,8 @@ use nalgebra::Vector2;
 
 use slam_it_all_edge::adjust::Solve;
 use slam_it_all_edge::frames::{self, Camera, DepthMap, Frame};
-use slam_it_all_edge::map::Map;
 use slam_it_all_edge::options::{Mode, Options, Setting, check_options};
-use slam_it_all_edge::pipeline::{FrameResult, FrameSummary, Pipeline, State};
+use slam_it_all_edge::pipeline::{FrameResult, FrameSummary, Lifetimes, Pipeline, State};
 use slam_it_all_eval::runs::{JsonObject, JsonValue, Run};
 use slam_it_all_eval::{euroc, png, text, tum};
 use slam_it_all_foundations::camera::Model;
@@ -610,20 +609,26 @@ fn record(
     Ok(())
 }
 
-/// Records the map: its keyframes' times and poses, and its points.
+/// Records every keyframe and point the run made, with their lives.
 ///
 /// # Arguments
 ///
 /// * `out` - The run.
-/// * `m` - The map.
+/// * `lives` - The pipeline's lifetimes.
 ///
 /// # Errors
 ///
 /// A pose's inversion's.
-fn record_map(out: &mut Run, m: &Map) -> Result<()> {
-    out.keyframe_timestamps.clone_from(&m.kf_time);
-    out.keyframe_poses = m.kf_pose.iter().map(se3::inverse).collect::<Result<_>>()?;
-    out.points.clone_from(&m.pt_xyz);
+fn record_lives(out: &mut Run, lives: Lifetimes) -> Result<()> {
+    out.keyframe_poses = lives
+        .keyframe_poses
+        .iter()
+        .map(se3::inverse)
+        .collect::<Result<_>>()?;
+    out.keyframe_timestamps = lives.keyframe_times;
+    out.points = lives.points;
+    out.point_lives = lives.point_lives;
+    out.keyframe_lives = lives.keyframe_lives;
     Ok(())
 }
 
@@ -885,9 +890,7 @@ pub fn run(request: &Request) -> Result<Run> {
         ..Run::default()
     };
     track(&source, &mut pipeline, request, &mut out)?;
-    if let Some(m) = pipeline.map() {
-        record_map(&mut out, m)?;
-    }
+    record_lives(&mut out, pipeline.lifetimes())?;
     Ok(out)
 }
 

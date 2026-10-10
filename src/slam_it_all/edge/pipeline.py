@@ -22,7 +22,9 @@
    (:func:`slam_it_all.edge.mapping.process`).
 
 Each frame's result carries how its stages went (:class:`FrameSummary`), which a run records
-in its diagnostics.
+in its diagnostics. After each frame the pipeline dates what the frame made and removed: every
+point and keyframe has a life, from the frame that made it to the frame that removed it, if one
+did (:meth:`Pipeline.lifetimes`).
 
 The C++ and Rust pipelines run in their native programs; this one runs in-process.
 """
@@ -41,7 +43,7 @@ from slam_it_all.edge import initialization, mapping, tracking
 from slam_it_all.edge import map as maps
 from slam_it_all.edge.frames import Camera, Frame, Tracked
 from slam_it_all.edge.initialization import Initialization, InitSummary, Outcome
-from slam_it_all.edge.map import Map
+from slam_it_all.edge.map import Map, Removal
 from slam_it_all.edge.mapping import MappingSummary
 from slam_it_all.edge.options import MODES, Options
 from slam_it_all.edge.tracking import LocalMapSummary, MotionSummary, PnpSummary
@@ -170,6 +172,35 @@ class FrameResult:
 
 
 @dataclass(frozen=True)
+class Lifetimes:
+    """Every point and keyframe a run made, by id, where each last was, and its life.
+
+    A life is three numbers: the frame that made it (frames counted from 0, one per
+    :meth:`Pipeline.track`), the frame that removed it or -1, and why (a
+    :class:`slam_it_all.edge.map.Removal` code) or -1.
+
+    Attributes
+    ----------
+    points : ndarray of float64, shape (N, 3)
+        Every point, its last position in the world frame.
+    point_lives : ndarray of int64, shape (N, 3)
+        Their lives.
+    keyframe_times : ndarray of float64, shape (K,)
+        Every keyframe's time, ascending.
+    keyframe_poses : ndarray of float64, shape (K, 4, 4)
+        Its last ``T_cam_world``.
+    keyframe_lives : ndarray of int64, shape (K, 3)
+        Their lives.
+    """
+
+    points: Array
+    point_lives: NDArray[np.int64]
+    keyframe_times: Array
+    keyframe_poses: Array
+    keyframe_lives: NDArray[np.int64]
+
+
+@dataclass(frozen=True)
 class _Step:
     """A frame handled: the frame, if tracked, and what came of it."""
 
@@ -209,6 +240,13 @@ class Pipeline:
     _previous: Array | None = field(default=None, init=False, repr=False)
     _failures: int = field(default=0, init=False, repr=False)
     _since_recovery: int | None = field(default=None, init=False, repr=False)
+    _frames: int = field(default=0, init=False, repr=False)
+    _point_lives: list[list[int]] = field(default_factory=list, init=False, repr=False)
+    _keyframe_lives: list[list[int]] = field(default_factory=list, init=False, repr=False)
+    _gone_points: dict[int, Array] = field(default_factory=dict, init=False, repr=False)
+    _gone_keyframes: dict[int, tuple[float, Array]] = field(
+        default_factory=dict, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         """Check the mode.
@@ -254,6 +292,7 @@ class Pipeline:
             step = self._initialize(frame)
         elif self.state is State.TRACKING:
             step = self._track(frame)
+        self._date()
         tracked = step.tracked
         return FrameResult(
             timestamp=frame.timestamp,
@@ -265,6 +304,57 @@ class Pipeline:
             map_seconds=step.map_seconds,
             summary=step.summary,
         )
+
+    def lifetimes(self) -> Lifetimes:
+        """Return every point and keyframe the run has made, with their lives.
+
+        Returns
+        -------
+        Lifetimes
+            The points and keyframes by id: those in the map where the map has them, the
+            removed ones where they last were.
+        """
+        m = self.map
+        points = np.zeros((len(self._point_lives), 3))
+        times = np.zeros(len(self._keyframe_lives))
+        poses = np.tile(np.eye(4), (len(self._keyframe_lives), 1, 1))
+        if m is not None:
+            points[m.pt_id] = m.pt_xyz
+            times[m.kf_id] = m.kf_time
+            poses[m.kf_id] = m.kf_pose
+        for point_id, xyz in self._gone_points.items():
+            points[point_id] = xyz
+        for keyframe_id, (seconds, pose) in self._gone_keyframes.items():
+            times[keyframe_id], poses[keyframe_id] = seconds, pose
+        return Lifetimes(
+            points=points,
+            point_lives=np.array(self._point_lives, dtype=np.int64).reshape(-1, 3),
+            keyframe_times=times,
+            keyframe_poses=poses,
+            keyframe_lives=np.array(self._keyframe_lives, dtype=np.int64).reshape(-1, 3),
+        )
+
+    def _date(self) -> None:
+        """Date what this frame made and removed, and empty the map's archive of removals."""
+        frame = self._frames
+        self._frames += 1
+        m = self.map
+        if m is None:
+            return
+        made = m.next_pt_id - len(self._point_lives)
+        self._point_lives.extend([frame, -1, -1] for _ in range(made))
+        made = m.next_kf_id - len(self._keyframe_lives)
+        self._keyframe_lives.extend([frame, -1, -1] for _ in range(made))
+        for point_id, xyz, how in zip(m.gone_pt_id, m.gone_pt_xyz, m.gone_pt_how, strict=True):
+            self._point_lives[int(point_id)][1:] = [frame, int(how)]
+            self._gone_points[int(point_id)] = xyz
+        for keyframe_id, seconds, pose in zip(
+            m.gone_kf_id, m.gone_kf_time, m.gone_kf_pose, strict=True
+        ):
+            self._keyframe_lives[int(keyframe_id)][1:] = [frame, int(Removal.CULLED)]
+            self._gone_keyframes[int(keyframe_id)] = (float(seconds), pose)
+        if len(m.gone_pt_id) or len(m.gone_kf_id):
+            self.map = maps.clear_gone(m)
 
     def _initialize(self, frame: Frame) -> _Step:
         """Try to start the map with this frame."""

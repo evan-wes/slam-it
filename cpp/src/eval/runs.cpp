@@ -150,6 +150,33 @@ Result<void> check_stamped(const std::vector<double>& times,
 /// @brief Check a run before anything is written.
 /// @param run The run.
 /// @return Nothing, or `InvalidInput`.
+/// @brief Check lives: one per row; made in one of the run's frames, removed in that frame or a
+///        later one or never, and why exactly when removed.
+/// @param lives The lives.
+/// @param rows The rows they are for.
+/// @param frames The run's frames.
+/// @param name Their name, for messages.
+/// @return Nothing, or `InvalidInput`.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (rows, frames), as Python's (count, frames)
+Result<void> check_lives(const std::vector<Life>& lives, std::size_t rows, std::size_t frames,
+                         const char* name) {
+  if (lives.size() != rows) {
+    return fail(ErrorKind::kInvalidInput, std::string(name) + ": expected one life per row");
+  }
+  const auto count = static_cast<std::int64_t>(frames);
+  const bool ok = std::ranges::all_of(lives, [count](const Life& life) {
+    const auto [made, removed, how] = life;
+    const bool alive = removed == -1;
+    return made >= 0 && made < count && (alive || (removed >= made && removed < count)) &&
+           (alive ? how == -1 : (how >= 0 && how < kRemovals));
+  });
+  if (!ok) {
+    return fail(ErrorKind::kInvalidInput,
+                std::string(name) + ": expected lives of the run's frames, removal codes");
+  }
+  return {};
+}
+
 Result<void> check(const Run& run) {
   if (std::ranges::find(kModes, run.mode) == kModes.end()) {
     return fail(ErrorKind::kInvalidInput, "mode: unknown '" + run.mode + "'");
@@ -165,6 +192,15 @@ Result<void> check(const Run& run) {
   }
   if (!std::ranges::all_of(run.points, [](const Eigen::Vector3d& p) { return p.allFinite(); })) {
     return fail(ErrorKind::kInvalidInput, "points: expected finite values");
+  }
+  const std::size_t frames = run.diagnostics.size();
+  if (auto ok = check_lives(run.point_lives, run.points.size(), frames, "point_lives"); !ok) {
+    return ok;
+  }
+  if (auto ok =
+          check_lives(run.keyframe_lives, run.keyframe_timestamps.size(), frames, "keyframe_lives");
+      !ok) {
+    return ok;
   }
   if (!finite(run.settings)) {
     return fail(ErrorKind::kInvalidInput, "settings: not JSON (a number is not finite)");
@@ -252,19 +288,11 @@ Result<void> replace(const fs::path& path, const std::string& data) {
   return {};
 }
 
-}  // namespace
-
-std::string json_number(double value) {
-  std::array<char, 32> buffer{};
-  const auto [end, error] = std::to_chars(buffer.data(), std::to_address(buffer.end()), value);
-  std::string out(buffer.data(), end);
-  if (out.find_first_of(".en") == std::string::npos) {
-    out += ".0";
-  }
-  return out;
-}
-
-std::string npy(const std::vector<std::size_t>& shape, const std::vector<double>& values) {
+/// @brief A `.npy` file's header, as numpy writes it.
+/// @param shape The array's shape.
+/// @param descr The dtype's descriptor (`<f8`, `<i8`).
+/// @return The magic, version, header length and header.
+std::string npy_header(const std::vector<std::size_t>& shape, const char* descr) {
   std::string dims;
   for (std::size_t k = 0; k < shape.size(); ++k) {
     dims += (k > 0 ? ", " : "") + std::to_string(shape[k]);
@@ -272,7 +300,8 @@ std::string npy(const std::vector<std::size_t>& shape, const std::vector<double>
   if (shape.size() == 1) {
     dims += ',';
   }
-  std::string header = "{'descr': '<f8', 'fortran_order': False, 'shape': (" + dims + "), }";
+  std::string header =
+      std::string("{'descr': '") + descr + "', 'fortran_order': False, 'shape': (" + dims + "), }";
   if (!shape.empty()) {
     header.append(kGrowthDigits - std::to_string(shape[0]).size(), ' ');
   }
@@ -284,12 +313,56 @@ std::string npy(const std::vector<std::size_t>& shape, const std::vector<double>
   out += '\x00';
   out += static_cast<char>(header.size() & 0xFFU);
   out += static_cast<char>((header.size() >> 8U) & 0xFFU);
-  out += header;
+  return out + header;
+}
+
+/// @brief A `.npy` file's bytes: its header, then its values little-endian.
+/// @tparam T The values' type (8 bytes).
+/// @param shape The array's shape.
+/// @param descr The dtype's descriptor.
+/// @param values Its values, row-major.
+/// @return The bytes.
+template <typename T>
+std::string npy_bytes(const std::vector<std::size_t>& shape, const char* descr,
+                      const std::vector<T>& values) {
   static_assert(std::endian::native == std::endian::little, "npy is written little-endian");
-  out.reserve(out.size() + (values.size() * sizeof(double)));
-  for (const double value : values) {
-    const auto raw = std::bit_cast<std::array<char, sizeof(double)>>(value);
+  std::string out = npy_header(shape, descr);
+  out.reserve(out.size() + (values.size() * sizeof(T)));
+  for (const T value : values) {
+    const auto raw = std::bit_cast<std::array<char, sizeof(T)>>(value);
     out.append(raw.data(), raw.size());
+  }
+  return out;
+}
+
+/// @brief Lives, row-major.
+/// @param lives The lives.
+/// @return Their numbers.
+std::vector<std::int64_t> flatten(const std::vector<Life>& lives) {
+  std::vector<std::int64_t> out;
+  out.reserve(3 * lives.size());
+  for (const Life& life : lives) {
+    out.insert(out.end(), life.begin(), life.end());
+  }
+  return out;
+}
+
+}  // namespace
+
+std::string npy(const std::vector<std::size_t>& shape, const std::vector<double>& values) {
+  return npy_bytes(shape, "<f8", values);
+}
+
+std::string npy(const std::vector<std::size_t>& shape, const std::vector<std::int64_t>& values) {
+  return npy_bytes(shape, "<i8", values);
+}
+
+std::string json_number(double value) {
+  std::array<char, 32> buffer{};
+  const auto [end, error] = std::to_chars(buffer.data(), std::to_address(buffer.end()), value);
+  std::string out(buffer.data(), end);
+  if (out.find_first_of(".en") == std::string::npos) {
+    out += ".0";
   }
   return out;
 }
@@ -356,12 +429,14 @@ Result<void> write_run(const std::string& folder, const Run& run) {
   if (error) {
     return fail(ErrorKind::kInvalidInput, folder + ": " + error.message());
   }
-  const std::array<std::pair<const char*, std::string>, 6> files = {{
+  const std::array<std::pair<const char*, std::string>, 8> files = {{
       {"run.json", info_text},
       {"trajectory.txt", *trajectory},
       {"keyframes.npy", npy({run.keyframe_timestamps.size()}, run.keyframe_timestamps)},
       {"keyframe_poses.npy", npy({run.keyframe_poses.size(), 4, 4}, flatten(run.keyframe_poses))},
+      {"keyframe_lives.npy", npy({run.keyframe_lives.size(), 3}, flatten(run.keyframe_lives))},
       {"points.npy", npy({run.points.size(), 3}, points)},
+      {"point_lives.npy", npy({run.point_lives.size(), 3}, flatten(run.point_lives))},
       {"diagnostics.jsonl", diagnostics},
   }};
   for (const auto& [name, data] : files) {

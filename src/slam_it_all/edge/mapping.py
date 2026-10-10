@@ -36,7 +36,7 @@ from slam_it_all import backends
 from slam_it_all.edge import adjust, residuals
 from slam_it_all.edge import map as maps
 from slam_it_all.edge.frames import Camera, Frame, Tracked, as_pose, checked_tracked
-from slam_it_all.edge.map import Map
+from slam_it_all.edge.map import Map, Removal
 from slam_it_all.edge.options import Options, check_mode
 from slam_it_all.foundations import matching, triangulation
 from slam_it_all.foundations.arrays import as_real
@@ -433,7 +433,7 @@ def _cull_points(m: Map, mode: str, options: Options) -> Map:
     erase[recent] = (ratio < options.found_ratio) | (
         (age[recent] >= options.point_cull_age) & (weight <= minimum)
     )
-    return maps.erase_points(m, erase)
+    return maps.erase_points(m, erase, Removal.CULLED)
 
 
 def cull_points(m: Map, mode: str, options: Options, *, backend: str = "python") -> Map:
@@ -812,7 +812,7 @@ def _merge_points(m: Map, *, lose: int, keep: int) -> Map:
     merged = replace(m, kp_point=kp_point, pt_visible=visible, pt_found=found)
     erase = np.zeros(merged.points, dtype=bool)
     erase[p_lose] = True
-    merged = maps.erase_points(merged, erase)
+    merged = maps.erase_points(merged, erase, Removal.FUSED)
     return maps.refresh_points(merged, merged.point_rows(np.array([keep])))
 
 

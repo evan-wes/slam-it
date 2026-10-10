@@ -135,7 +135,8 @@ def summarize(run: runs.Run, scored: runs.Evaluation | None) -> None:
     print(
         f"{run.sequence} ({run.dataset}, {run.mode}, {run.backend}): "
         f"{len(run.timestamps)} of {len(run.diagnostics)} frames tracked, "
-        f"{len(run.keyframe_timestamps)} keyframes, {len(run.points)} points"
+        f"{len(run.final_keyframes()[0])} keyframes, {len(run.final_points())} points "
+        f"({len(run.keyframe_timestamps)} and {len(run.points)} made)"
     )
     if len(run.diagnostics) >= 2:
         judged = budgets.judge(run)
@@ -206,9 +207,9 @@ def record(path: Path, run: runs.Run, truth: Truth | None, scored: runs.Evaluati
     if truth is not None:
         centres = truth[1][:, :3, 3]
         rr.log("world/truth", rr.LineStrips3D([centres], colors=[[80, 200, 80]]), static=True)
-    rr.log("world/run/points", rr.Points3D(run.points, radii=0.005), static=True)
+    rr.log("world/run/points", rr.Points3D(run.final_points(), radii=0.005), static=True)
     rr.log("world/run/trajectory", rr.LineStrips3D([run.poses[:, :3, 3]]), static=True)
-    for k, pose in enumerate(run.keyframe_poses):
+    for k, pose in enumerate(run.final_keyframes()[1]):
         rr.log(
             f"world/run/keyframes/{k}",
             rr.Transform3D(translation=pose[:3, 3], mat3x3=pose[:3, :3]),

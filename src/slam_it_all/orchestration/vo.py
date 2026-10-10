@@ -32,7 +32,8 @@ builds each frame for the mode (:mod:`slam_it_all.edge.frames`), tracks it
     keyframe (:class:`slam_it_all.edge.pipeline.FrameResult`). Mapping here includes making the
     keyframe and, with depth, its close points, which ORB-SLAM2's tracking thread does
     (``Tracking::CreateNewKeyFrame``) before it hands the keyframe to local mapping.
-- **At the end,** the map's keyframes (their times and ``T_world_cam``) and points. The run's
+- **At the end,** every keyframe and point the run made (their times, last ``T_world_cam`` and
+  positions) and their lives (:meth:`slam_it_all.edge.pipeline.Pipeline.lifetimes`). The run's
   ``sequence`` is its folder's name (the path resolved), its ``settings`` the pipeline's
   options.
 
@@ -558,7 +559,8 @@ def _run_here(request: Request) -> runs.Run:
             times.append(result.timestamp)
         if result.state is State.LOST:
             break
-    m = tracker.map
+    lives = tracker.lifetimes()
+    keyframes = lives.keyframe_poses
     return runs.Run(
         dataset=request.dataset,
         sequence=request.sequence.resolve().name,
@@ -566,11 +568,13 @@ def _run_here(request: Request) -> runs.Run:
         backend="python",
         timestamps=np.array(times),
         poses=np.array(poses).reshape(-1, 4, 4),
-        keyframe_timestamps=np.zeros(0) if m is None else m.kf_time,
-        keyframe_poses=np.zeros((0, 4, 4)) if m is None else se3.inverse(m.kf_pose),
-        points=np.zeros((0, 3)) if m is None else m.pt_xyz,
+        keyframe_timestamps=lives.keyframe_times,
+        keyframe_poses=se3.inverse(keyframes) if len(keyframes) else np.zeros((0, 4, 4)),
+        points=lives.points,
         settings=request.options.as_dict(),
         diagnostics=diagnostics,
+        point_lives=lives.point_lives,
+        keyframe_lives=lives.keyframe_lives,
     )
 
 
@@ -636,7 +640,8 @@ def main(arguments: Sequence[str]) -> int:
         return EXIT_FAILED + next(k for k, kind in enumerate(_ERRORS) if isinstance(error, kind))
     print(
         f"{PROGRAM}: {len(done.timestamps)} of {len(done.diagnostics)} frames tracked, "
-        f"{len(done.keyframe_timestamps)} keyframes, {len(done.points)} points -> {request.out}"
+        f"{len(done.final_keyframes()[0])} keyframes, {len(done.final_points())} points "
+        f"-> {request.out}"
     )
     return 0
 

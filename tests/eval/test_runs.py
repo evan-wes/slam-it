@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
+from slam_it_all.edge.map import Removal
 from slam_it_all.eval import runs
 from slam_it_all.foundations import so3
 from slam_it_all.foundations.errors import InvalidInputError
@@ -25,9 +26,19 @@ def _poses(n: int, seed: int = 0) -> NDArray[np.float64]:
     return out
 
 
+def _lives(count: int, frames: int, removed: dict[int, tuple[int, Removal]]) -> NDArray[np.int64]:
+    """Return lives made one per frame in turn; those in `removed` end some frames later."""
+    out = np.full((count, 3), -1, dtype=np.int64)
+    out[:, 0] = np.arange(count) % frames
+    for row, (later, how) in removed.items():
+        out[row, 1:] = [min(out[row, 0] + later, frames - 1), int(how)]
+    return out
+
+
 def _run(n: int = 12) -> runs.Run:
-    """Build a small run with keyframes, points, settings and diagnostics."""
+    """Build a small run with keyframes, points and their lives, settings and diagnostics."""
     times = (1403715274.312143 + 0.05 * np.arange(n)).astype(np.float64)
+    gone = {1: (2, Removal.CULLED), 4: (0, Removal.FUSED), 9: (5, Removal.WEAK)}
     return runs.Run(
         dataset="euroc",
         sequence="V1_01_easy",
@@ -43,6 +54,8 @@ def _run(n: int = 12) -> runs.Run:
         peak_memory=123_456_789,
         cpus=[4, 5, 6, 7],
         memory_cap=8 * 2**30,
+        point_lives=_lives(30, n, gone),
+        keyframe_lives=np.array([[0, -1, -1], [4, 9, 0], [8, -1, -1]], dtype=np.int64),
     )
 
 
@@ -62,6 +75,8 @@ def test_round_trip(tmp_path: Path) -> None:
     np.testing.assert_allclose(back.poses, run.poses, rtol=0, atol=1e-15)
     np.testing.assert_array_equal(back.keyframe_poses, run.keyframe_poses)
     np.testing.assert_array_equal(back.points, run.points)
+    np.testing.assert_array_equal(back.point_lives, run.point_lives)
+    np.testing.assert_array_equal(back.keyframe_lives, run.keyframe_lives)
     assert back.settings == run.settings
     assert back.diagnostics == run.diagnostics
     assert (back.peak_memory, back.cpus, back.memory_cap) == (
@@ -69,6 +84,21 @@ def test_round_trip(tmp_path: Path) -> None:
         run.cpus,
         run.memory_cap,
     )
+
+
+def test_the_final_map_is_the_rows_still_alive() -> None:
+    """Points and keyframes whose lives did not end, in id order."""
+    run = _run()
+    np.testing.assert_array_equal(run.final_points(), np.delete(run.points, [1, 4, 9], axis=0))
+    times, poses = run.final_keyframes()
+    np.testing.assert_array_equal(times, run.keyframe_timestamps[[0, 2]])
+    np.testing.assert_array_equal(poses, run.keyframe_poses[[0, 2]])
+
+
+def test_the_removal_codes_are_the_maps() -> None:
+    """A life's removal code is the edge map's :class:`Removal`, by the same names."""
+    assert [r.name.lower() for r in Removal] == list(runs.REMOVALS)
+    assert [int(r) for r in Removal] == list(range(len(runs.REMOVALS)))
 
 
 def test_an_unknown_process_round_trips_as_none(tmp_path: Path) -> None:
@@ -144,6 +174,27 @@ def test_evaluate_rejects_a_run_whose_times_do_not_ascend() -> None:
         ({"cpus": (4, 5)}, "cpus: expected CPU numbers, ascending"),
         ({"memory_cap": 0}, "memory_cap: expected a positive number of bytes"),
         ({"memory_cap": 2.0**30}, "memory_cap: expected a positive number of bytes"),
+        (
+            {"point_lives": np.zeros((29, 3), dtype=np.int64)},
+            r"point_lives: expected int64 \(30, 3\)",
+        ),
+        ({"point_lives": np.zeros((30, 3))}, r"point_lives: expected int64 \(30, 3\)"),
+        (
+            {"keyframe_lives": np.array([[0, -1, -1], [4, 3, 0], [8, -1, -1]], dtype=np.int64)},
+            "keyframe_lives: a life must end in its start's frame or later",
+        ),
+        (
+            {"keyframe_lives": np.array([[0, -1, -1], [4, -1, 0], [8, -1, -1]], dtype=np.int64)},
+            "keyframe_lives: why a life ended must be a removal code",
+        ),
+        (
+            {"keyframe_lives": np.array([[0, -1, -1], [4, 9, 3], [8, -1, -1]], dtype=np.int64)},
+            "keyframe_lives: why a life ended must be a removal code",
+        ),
+        (
+            {"keyframe_lives": np.array([[0, -1, -1], [4, -1, -1], [12, -1, -1]], dtype=np.int64)},
+            "keyframe_lives: a life must start in one of the run's 12 frames",
+        ),
     ],
 )
 def test_write_run_checks_everything_before_writing(
@@ -162,8 +213,10 @@ def test_write_run_replaces_files_whole(tmp_path: Path) -> None:
     assert runs.read_run(tmp_path).sequence == "V1_02_medium"
     assert sorted(p.name for p in tmp_path.iterdir()) == [
         "diagnostics.jsonl",
+        "keyframe_lives.npy",
         "keyframe_poses.npy",
         "keyframes.npy",
+        "point_lives.npy",
         "points.npy",
         "run.json",
         "trajectory.txt",
@@ -173,7 +226,7 @@ def test_write_run_replaces_files_whole(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("edit", "message"),
     [
-        (lambda info: info.update(version=1), "version 2"),
+        (lambda info: info.update(version=2), "version 3"),
         (lambda info: info.update(format="other"), "format"),
         (lambda info: info.update(mode="lidar"), "mode"),
         (lambda info: info.update(backend="java"), "backend"),
@@ -228,6 +281,19 @@ def test_read_run_names_the_expected_shape(tmp_path: Path) -> None:
     runs.write_run(tmp_path, _run())
     np.save(tmp_path / "keyframe_poses.npy", np.zeros((3, 4)))
     with pytest.raises(InvalidInputError, match=r"expected float64 \(N, 4, 4\)"):
+        runs.read_run(tmp_path)
+
+
+def test_read_run_checks_the_lives(tmp_path: Path) -> None:
+    """Lives of another dtype, or one beyond the run's frames, are refused."""
+    runs.write_run(tmp_path, _run())
+    np.save(tmp_path / "point_lives.npy", np.zeros((30, 3)))
+    with pytest.raises(InvalidInputError, match=r"expected int64 \(N, 3\)"):
+        runs.read_run(tmp_path)
+    lives = _run().point_lives.copy()
+    lives[0, 0] = 99
+    np.save(tmp_path / "point_lives.npy", lives)
+    with pytest.raises(InvalidInputError, match="a life must start in one of the run's 12 frames"):
         runs.read_run(tmp_path)
 
 

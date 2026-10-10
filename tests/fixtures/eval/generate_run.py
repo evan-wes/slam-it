@@ -89,6 +89,8 @@ def values() -> dict[str, Any]:
         "keyframe_timestamps": times[[0, 3]].tolist(),
         "keyframe_poses": poses[[0, 3]].tolist(),
         "points": rng.normal(0.0, 3.0, (4, 3)).tolist(),
+        "point_lives": [[0, -1, -1], [0, 3, 1], [3, -1, -1], [3, 4, 2]],
+        "keyframe_lives": [[0, -1, -1], [3, -1, -1]],
         "settings": {"n_features": 1000, "scale_factor": 1.2, "window": 10, "chi2_mono": 5.991},
         "peak_memory": 48_381_952,
         "cpus": [4, 5, 6, 7],
@@ -131,6 +133,8 @@ def main() -> None:
             peak_memory=run["peak_memory"],
             cpus=run["cpus"],
             memory_cap=run["memory_cap"],
+            point_lives=np.array(run["point_lives"], dtype=np.int64),
+            keyframe_lives=np.array(run["keyframe_lives"], dtype=np.int64),
         ),
     )
 

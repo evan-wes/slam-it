@@ -74,6 +74,7 @@ Result<FrameResult> Pipeline::track(const Frame& frame) {
     }
     step = std::move(*placed);
   }
+  date();
   const std::chrono::duration<double> took = std::chrono::steady_clock::now() - start;
   const std::optional<Tracked>& tracked = step.tracked;
   return FrameResult{.timestamp = frame.timestamp,
@@ -84,6 +85,67 @@ Result<FrameResult> Pipeline::track(const Frame& frame) {
                      .track_seconds = took.count() - step.map_seconds,
                      .map_seconds = step.map_seconds,
                      .summary = std::move(step.summary)};
+}
+
+Lifetimes Pipeline::lifetimes() const {
+  Lifetimes out{
+      .points = std::vector<Eigen::Vector3d>(point_lives_.size(), Eigen::Vector3d::Zero()),
+      .point_lives = point_lives_,
+      .keyframe_times = std::vector<double>(keyframe_lives_.size(), 0.0),
+      .keyframe_poses =
+          std::vector<Eigen::Matrix4d>(keyframe_lives_.size(), Eigen::Matrix4d::Identity()),
+      .keyframe_lives = keyframe_lives_};
+  for (std::size_t id = 0; id < point_lives_.size(); ++id) {
+    if (point_lives_[id][1] >= 0) {
+      out.points[id] = gone_points_[id];
+    }
+  }
+  for (std::size_t id = 0; id < keyframe_lives_.size(); ++id) {
+    if (keyframe_lives_[id][1] >= 0) {
+      out.keyframe_times[id] = gone_times_[id];
+      out.keyframe_poses[id] = gone_poses_[id];
+    }
+  }
+  if (map_) {
+    for (std::size_t p = 0; p < point_count(*map_); ++p) {
+      out.points[static_cast<std::size_t>(map_->pt_id[p])] = map_->pt_xyz[p];
+    }
+    for (std::size_t k = 0; k < keyframe_count(*map_); ++k) {
+      const auto id = static_cast<std::size_t>(map_->kf_id[k]);
+      out.keyframe_times[id] = map_->kf_time[k];
+      out.keyframe_poses[id] = map_->kf_pose[k];
+    }
+  }
+  return out;
+}
+
+void Pipeline::date() {
+  const std::int64_t frame = frames_++;
+  if (!map_) {
+    return;
+  }
+  Map& m = *map_;
+  const auto points = static_cast<std::size_t>(m.next_pt_id);
+  point_lives_.resize(points, Life{frame, -1, -1});
+  gone_points_.resize(points, Eigen::Vector3d::Zero());
+  const auto keyframes = static_cast<std::size_t>(m.next_kf_id);
+  keyframe_lives_.resize(keyframes, Life{frame, -1, -1});
+  gone_times_.resize(keyframes, 0.0);
+  gone_poses_.resize(keyframes, Eigen::Matrix4d::Identity());
+  for (std::size_t g = 0; g < m.gone_pt_id.size(); ++g) {
+    const auto id = static_cast<std::size_t>(m.gone_pt_id[g]);
+    point_lives_[id][1] = frame;
+    point_lives_[id][2] = m.gone_pt_how[g];
+    gone_points_[id] = m.gone_pt_xyz[g];
+  }
+  for (std::size_t g = 0; g < m.gone_kf_id.size(); ++g) {
+    const auto id = static_cast<std::size_t>(m.gone_kf_id[g]);
+    keyframe_lives_[id][1] = frame;
+    keyframe_lives_[id][2] = static_cast<std::int64_t>(Removal::kCulled);
+    gone_times_[id] = m.gone_kf_time[g];
+    gone_poses_[id] = m.gone_kf_pose[g];
+  }
+  clear_gone(m);
 }
 
 Result<Pipeline::Step> Pipeline::initialize(const Frame& frame) {

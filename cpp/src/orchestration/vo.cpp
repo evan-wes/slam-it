@@ -459,20 +459,23 @@ Result<void> record(eval::runs::Run& out, const edge::FrameResult& result, doubl
   return {};
 }
 
-/// @brief Record the map: its keyframes' times and poses, and its points.
+/// @brief Record every keyframe and point the run made, with their lives.
 /// @param out The run.
-/// @param m The map.
+/// @param lives The pipeline's lifetimes.
 /// @return Nothing, or a pose's inversion's error.
-Result<void> record_map(eval::runs::Run& out, const edge::Map& m) {
-  out.keyframe_timestamps = m.kf_time;
-  for (const Eigen::Matrix4d& T_cam_world : m.kf_pose) {  // NOLINT(readability-identifier-naming)
+Result<void> record_lives(eval::runs::Run& out, const edge::Lifetimes& lives) {
+  out.keyframe_timestamps = lives.keyframe_times;
+  for (const Eigen::Matrix4d& T_cam_world :  // NOLINT(readability-identifier-naming)
+       lives.keyframe_poses) {
     const auto pose = foundations::se3::inverse(T_cam_world);
     if (!pose) {
       return std::unexpected(pose.error());
     }
     out.keyframe_poses.push_back(*pose);
   }
-  out.points = m.pt_xyz;
+  out.points = lives.points;
+  out.point_lives = lives.point_lives;
+  out.keyframe_lives = lives.keyframe_lives;
   return {};
 }
 
@@ -688,10 +691,8 @@ Result<eval::runs::Run> run(const Request& request) {
   if (const auto tracked = track(*source, *pipeline, request, out); !tracked) {
     return std::unexpected(tracked.error());
   }
-  if (const std::optional<edge::Map>& m = pipeline->map(); m.has_value()) {
-    if (const auto recorded = record_map(out, *m); !recorded) {
-      return std::unexpected(recorded.error());
-    }
+  if (const auto recorded = record_lives(out, pipeline->lifetimes()); !recorded) {
+    return std::unexpected(recorded.error());
   }
   return out;
 }

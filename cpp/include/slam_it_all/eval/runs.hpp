@@ -5,6 +5,7 @@
 #pragma once
 
 #include <Eigen/Core>
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -21,8 +22,16 @@ namespace slam_it_all::eval::runs {
 /// @brief `run.json`'s `format`.
 inline constexpr const char* kFormat = "slam-it-all-run";
 
-/// @brief `run.json`'s `version` (2 added `peak_memory`, `cpus` and `memory_cap`).
-inline constexpr std::int64_t kVersion = 2;
+/// @brief `run.json`'s `version` (2 added `peak_memory`, `cpus` and `memory_cap`; 3 every point
+///        and keyframe the run made, with their lives).
+inline constexpr std::int64_t kVersion = 3;
+
+/// @brief The number of removal codes a life may hold (`slam_it_all.eval.runs.REMOVALS`).
+inline constexpr std::int64_t kRemovals = 3;
+
+/// @brief A life: the frame that made a point or keyframe, the frame that removed it or -1, and
+///        why (its index in `slam_it_all.eval.runs.REMOVALS`) or -1.
+using Life = std::array<std::int64_t, 3>;
 
 /// @brief JSON already written: an array or an object, as `json_array` and `json_object` write
 ///        it, to nest in a value.
@@ -54,11 +63,11 @@ struct Run {
   std::vector<double> timestamps;
   /// @brief Each tracked frame's `T_world_cam`.
   std::vector<Eigen::Matrix4d> poses;
-  /// @brief The keyframes' timestamps.
+  /// @brief The timestamps of every keyframe the run made, by id.
   std::vector<double> keyframe_timestamps;
-  /// @brief The keyframes' `T_world_cam`.
+  /// @brief Their last `T_world_cam`.
   std::vector<Eigen::Matrix4d> keyframe_poses;
-  /// @brief The map's points, in the world frame.
+  /// @brief Every point the run made, by id, where it last was, in the world frame.
   std::vector<Eigen::Vector3d> points;
   /// @brief The pipeline's options.
   JsonObject settings;
@@ -75,6 +84,10 @@ struct Run {
   /// @brief Its memory cap, in bytes, if it had one (`slam_it_all::eval::budgets::memory_cap`);
   ///        written as null otherwise.
   std::optional<std::int64_t> memory_cap;
+  /// @brief Each point's life, by id.
+  std::vector<Life> point_lives;
+  /// @brief Each keyframe's life, by id.
+  std::vector<Life> keyframe_lives;
 };
 
 /// @brief An object as JSON text, to nest in a value: Python's `json.dumps` with its
@@ -94,6 +107,13 @@ struct Run {
 /// @return Its text.
 [[nodiscard]] std::string json_number(double value);
 
+/// @brief A `.npy` file's bytes (version 1.0, little-endian int64, C order), as numpy writes it.
+/// @param shape The array's shape.
+/// @param values Its values, row-major.
+/// @return The bytes.
+[[nodiscard]] std::string npy(const std::vector<std::size_t>& shape,
+                              const std::vector<std::int64_t>& values);
+
 /// @brief A `.npy` file's bytes (version 1.0, little-endian float64, C order), as numpy writes
 ///        it.
 /// @param shape The array's shape.
@@ -108,7 +128,8 @@ struct Run {
 /// @param run The run.
 /// @return Nothing; `InvalidInput` for an unknown mode or backend, times that are not finite
 ///         and strictly ascending, poses that are not rigid or not one per time, a point that
-///         is not finite, a diagnostic without a `timestamp`, a number JSON cannot hold, a
+///         is not finite, lives that are not one per point or keyframe or not lives of the
+///         run's frames, a diagnostic without a `timestamp`, a number JSON cannot hold, a
 ///         negative peak memory, CPUs that are empty or not ascending, or a memory cap of 0
 ///         (nothing is written then); or a file that cannot be written.
 [[nodiscard]] foundations::Result<void> write_run(const std::string& folder, const Run& run);

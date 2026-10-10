@@ -81,6 +81,18 @@ runs::JsonObject object_of(const nlohmann::json& object) {
   return out;
 }
 
+/// @brief Lives from JSON rows of three integers.
+/// @param values The rows.
+/// @return The lives.
+std::vector<runs::Life> lives(const nlohmann::json& values) {
+  std::vector<runs::Life> out;
+  for (const auto& life : values) {
+    out.push_back(
+        {life[0].get<std::int64_t>(), life[1].get<std::int64_t>(), life[2].get<std::int64_t>()});
+  }
+  return out;
+}
+
 /// @brief The run Python wrote, as the C++ backend.
 /// @return The run.
 runs::Run golden_run() {
@@ -98,7 +110,9 @@ runs::Run golden_run() {
                 .diagnostics = {},
                 .peak_memory = values["peak_memory"].get<std::int64_t>(),
                 .cpus = values["cpus"].get<std::vector<std::int64_t>>(),
-                .memory_cap = values["memory_cap"].get<std::int64_t>()};
+                .memory_cap = values["memory_cap"].get<std::int64_t>(),
+                .point_lives = lives(values["point_lives"]),
+                .keyframe_lives = lives(values["keyframe_lives"])};
   for (const auto& point : values["points"]) {
     run.points.emplace_back(point[0].get<double>(), point[1].get<double>(), point[2].get<double>());
   }
@@ -162,7 +176,8 @@ void check_golden(int& failures) {
   const slam_it_all::testing::ScratchDir scratch("slam_it_all_test_runs");
   const fs::path& out = scratch.path();
   expect(runs::write_run(out.string(), golden_run()).has_value(), "the run is written", failures);
-  for (const char* name : {"keyframes.npy", "keyframe_poses.npy", "points.npy"}) {
+  for (const char* name : {"keyframes.npy", "keyframe_poses.npy", "keyframe_lives.npy",
+                           "points.npy", "point_lives.npy"}) {
     expect(bytes(out / name) == bytes(golden / name),
            (std::string(name) + " matches numpy's byte for byte").c_str(), failures);
   }
@@ -220,6 +235,18 @@ void check_refusals(int& failures) {
   run.memory_cap = 0;
   expect(is_invalid_input(runs::write_run(out.string(), run)), "a memory cap of 0 is refused",
          failures);
+  run = golden_run();
+  run.point_lives.pop_back();
+  expect(is_invalid_input(runs::write_run(out.string(), run)),
+         "lives that are not one per point are refused", failures);
+  run = golden_run();
+  run.point_lives[1] = {3, 0, 1};
+  expect(is_invalid_input(runs::write_run(out.string(), run)),
+         "a life removed before it was made is refused", failures);
+  run = golden_run();
+  run.keyframe_lives[0] = {0, -1, 2};
+  expect(is_invalid_input(runs::write_run(out.string(), run)),
+         "a removal code on a life still alive is refused", failures);
   expect(!fs::exists(out), "nothing is written for a refused run", failures);
   expect(runs::json_number(1.0) == "1.0" && runs::json_number(0.1) == "0.1" &&
              runs::json_number(1e-05) == "1e-05",

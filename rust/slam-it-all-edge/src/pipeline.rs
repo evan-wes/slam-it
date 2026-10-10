@@ -4,13 +4,13 @@
 
 use std::time::Instant;
 
-use nalgebra::Matrix4;
+use nalgebra::{Matrix4, Vector3};
 use slam_it_all_foundations::error::{ErrorKind, Result, fail};
 use slam_it_all_foundations::{orb, se3};
 
 use crate::frames::{Camera, Frame, Tracked, check_setup};
 use crate::initialization::{self, InitSummary, Initialization, Outcome, Started};
-use crate::map::{self, Map};
+use crate::map::{self, Map, Removal};
 use crate::mapping::{self, MappingSummary};
 use crate::options::{Mode, Options};
 use crate::tracking::{self, LocalMapSummary, MotionSummary, PnpSummary};
@@ -127,6 +127,39 @@ struct Step {
     summary: FrameSummary,
 }
 
+/// An id as an index (a map's ids are given from 0: `check_map` holds them non-negative).
+///
+/// # Arguments
+///
+/// * `id` - The id.
+///
+/// # Returns
+///
+/// The index.
+fn to_index(id: i64) -> usize {
+    usize::try_from(id).expect("map ids are non-negative")
+}
+
+/// A life: the frame that made a point or keyframe, the frame that removed it or -1, and why
+/// (a [`Removal::code`]) or -1.
+pub type Life = [i64; 3];
+
+/// Every point and keyframe a run made, by id, where each last was, and its life
+/// (`slam_it_all.edge.pipeline.Lifetimes`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Lifetimes {
+    /// Every point, its last position in the world frame.
+    pub points: Vec<Vector3<f64>>,
+    /// Their lives.
+    pub point_lives: Vec<Life>,
+    /// Every keyframe's time, ascending.
+    pub keyframe_times: Vec<f64>,
+    /// Its last `T_cam_world`.
+    pub keyframe_poses: Vec<Matrix4<f64>>,
+    /// Their lives.
+    pub keyframe_lives: Vec<Life>,
+}
+
 /// The edge pipeline for one sequence (`slam_it_all.edge.pipeline.Pipeline`).
 #[derive(Debug, Clone)]
 pub struct Pipeline {
@@ -154,6 +187,11 @@ pub struct Pipeline {
     failures: usize,
     /// Frames since the last recovery, if any.
     since_recovery: Option<usize>,
+    /// Frames given so far.
+    frames: i64,
+    /// Every point and keyframe made so far: those removed where they last were (the others'
+    /// entries are placeholders, filled from the map by [`Pipeline::lifetimes`]).
+    lives: Lifetimes,
 }
 
 impl Pipeline {
@@ -194,6 +232,8 @@ impl Pipeline {
             previous: Vec::new(),
             failures: 0,
             since_recovery: None,
+            frames: 0,
+            lives: Lifetimes::default(),
         })
     }
 
@@ -249,6 +289,7 @@ impl Pipeline {
             State::Tracking => self.track_frame(frame)?,
             State::Lost => Step::default(),
         };
+        self.date();
         let tracked = step.tracked.as_ref();
         Ok(FrameResult {
             timestamp: frame.timestamp,
@@ -260,6 +301,62 @@ impl Pipeline {
             map_seconds: step.map_seconds,
             summary: step.summary,
         })
+    }
+
+    /// Every point and keyframe the run has made, with their lives
+    /// (`slam_it_all.edge.pipeline.Pipeline.lifetimes`).
+    ///
+    /// # Returns
+    ///
+    /// The points and keyframes by id: those in the map where the map has them, the removed
+    /// ones where they last were.
+    #[must_use]
+    pub fn lifetimes(&self) -> Lifetimes {
+        let mut out = self.lives.clone();
+        if let Some(m) = &self.map {
+            for (&id, xyz) in m.pt_id.iter().zip(&m.pt_xyz) {
+                out.points[to_index(id)] = *xyz;
+            }
+            for ((&id, &time), pose) in m.kf_id.iter().zip(&m.kf_time).zip(&m.kf_pose) {
+                out.keyframe_times[to_index(id)] = time;
+                out.keyframe_poses[to_index(id)] = *pose;
+            }
+        }
+        out
+    }
+
+    /// Dates what this frame made and removed, and empties the map's archive of removals.
+    fn date(&mut self) {
+        let frame = self.frames;
+        self.frames += 1;
+        let Some(m) = &mut self.map else {
+            return;
+        };
+        let lives = &mut self.lives;
+        let points = to_index(m.next_pt_id);
+        lives.point_lives.resize(points, [frame, -1, -1]);
+        lives.points.resize(points, Vector3::zeros());
+        let keyframes = to_index(m.next_kf_id);
+        lives.keyframe_lives.resize(keyframes, [frame, -1, -1]);
+        lives.keyframe_times.resize(keyframes, 0.0);
+        lives.keyframe_poses.resize(keyframes, Matrix4::identity());
+        for ((&id, xyz), &how) in m.gone_pt_id.iter().zip(&m.gone_pt_xyz).zip(&m.gone_pt_how) {
+            let id = to_index(id);
+            lives.point_lives[id] = [lives.point_lives[id][0], frame, how];
+            lives.points[id] = *xyz;
+        }
+        for ((&id, &time), pose) in m
+            .gone_kf_id
+            .iter()
+            .zip(&m.gone_kf_time)
+            .zip(&m.gone_kf_pose)
+        {
+            let id = to_index(id);
+            lives.keyframe_lives[id] = [lives.keyframe_lives[id][0], frame, Removal::Culled.code()];
+            lives.keyframe_times[id] = time;
+            lives.keyframe_poses[id] = *pose;
+        }
+        map::clear_gone(m);
     }
 
     /// Tries to start the map with a frame.

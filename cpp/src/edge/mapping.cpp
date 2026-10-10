@@ -434,7 +434,7 @@ Result<void> merge_points(Map& m, std::int64_t lose, std::int64_t keep) {
   m.pt_found[p_keep] += m.pt_found[p_lose];
   std::vector<std::uint8_t> erase(point_count(m), 0);
   erase[p_lose] = 1;
-  if (auto ok = erase_points(m, erase); !ok) {
+  if (auto ok = erase_points(m, erase, Removal::kFused); !ok) {
     return ok;
   }
   const std::vector<std::int64_t> kept{point_row(m, keep)};
@@ -732,7 +732,7 @@ Result<void> cull_points(Map& m, Mode mode, const Options& options) {
             ? 1
             : 0;
   }
-  return erase_points(m, erase);
+  return erase_points(m, erase, Removal::kCulled);
 }
 
 Result<std::vector<std::array<std::int64_t, 2>>> match_for_triangulation(

@@ -12,7 +12,7 @@ use slam_it_all_foundations::triangulation;
 
 use crate::adjust::{Adjustment, Solve, bundle_adjust};
 use crate::frames::{Camera, Frame, Tracked, check_setup};
-use crate::map::{self, Map};
+use crate::map::{self, Map, Removal};
 use crate::options::{Mode, Options, check_options};
 use crate::residuals::{chi2, sigma2, threshold};
 
@@ -261,7 +261,7 @@ pub fn cull_points(m: &mut Map, mode: Mode, options: &Options) -> Result<()> {
         let age = current - m.pt_first_kf[p];
         erase[p] = ratio < options.found_ratio || (age >= cull_age && weight <= minimum);
     }
-    map::erase_points(m, &erase)
+    map::erase_points(m, &erase, Removal::Culled)
 }
 
 /// A keyframe's keypoints observing no point, with a bearing in front.
@@ -797,7 +797,7 @@ fn merge_points(m: &mut Map, lose: i64, keep: i64) -> Result<()> {
     m.pt_found[p_keep] += m.pt_found[p_lose];
     let mut erase = vec![false; m.points()];
     erase[p_lose] = true;
-    map::erase_points(m, &erase)?;
+    map::erase_points(m, &erase, Removal::Fused)?;
     let kept: Vec<usize> = m.point_row(keep).into_iter().collect();
     map::refresh_points(m, &kept)
 }

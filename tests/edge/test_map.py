@@ -12,7 +12,7 @@ import pytest
 from slam_it_all import backends
 from slam_it_all.edge import map as maps
 from slam_it_all.edge.frames import Frame
-from slam_it_all.edge.map import Map
+from slam_it_all.edge.map import Map, Removal
 from slam_it_all.foundations.errors import InvalidInputError
 from slam_it_all.foundations.orb import DESCRIPTOR_BYTES
 from tests.conftest import protocol_members, require_function
@@ -20,6 +20,9 @@ from tests.edge.conftest import Truth, _observe
 from tests.edge.support import assert_maps_match
 
 FUNCTIONS = sorted(protocol_members(maps))
+
+_GONE = ("gone_pt_id", "gone_pt_xyz", "gone_pt_how", "gone_kf_id", "gone_kf_time", "gone_kf_pose")
+"""The map's archive of removed points and keyframes."""
 """Every compiled map operation."""
 
 
@@ -58,7 +61,11 @@ def _cases(truth: Truth) -> dict[str, list[tuple[tuple[object, ...], dict[str, o
             for n in (1, 2, 3, 4, 7)
         ],
         "refresh_points": [((m, rows), {}), ((m, rows[::7]), {})],
-        "erase_points": [((m, rng.random(p) < 0.3), {}), ((m, np.zeros(p, dtype=bool)), {})],
+        "erase_points": [
+            ((m, rng.random(p) < 0.3, Removal.CULLED), {}),
+            ((m, rng.random(p) < 0.1, Removal.FUSED), {}),
+            ((m, np.zeros(p, dtype=bool), Removal.WEAK), {}),
+        ],
         "observation_weight": [((m, rows), {})],
         "forget_observations": [
             ((m, rng.choice(len(m.kp_point), 300, replace=False)), {}),
@@ -129,6 +136,32 @@ def test_forgetting_erases_points_left_weakly_observed(truth: Truth) -> None:
     assert not np.any(gone.kp_point == m.pt_id[strong])
 
 
+def test_what_is_removed_is_kept_aside_until_cleared(truth: Truth) -> None:
+    """What is removed is kept aside, as it last was, until the archive is cleared.
+
+    Erased points keep their last positions and why they went; an erased keyframe its time and
+    pose; the points it leaves too weakly observed go too.
+    """
+    m = truth.map
+    erase = np.zeros(m.points, dtype=bool)
+    erase[[3, 7]] = True
+    fused = maps.erase_points(m, erase, Removal.FUSED)
+    np.testing.assert_array_equal(fused.gone_pt_id, m.pt_id[[3, 7]])
+    np.testing.assert_array_equal(fused.gone_pt_xyz, m.pt_xyz[[3, 7]])
+    np.testing.assert_array_equal(fused.gone_pt_how, [Removal.FUSED, Removal.FUSED])
+    culled = maps.erase_keyframe(fused, 1)
+    np.testing.assert_array_equal(culled.gone_kf_id, [m.kf_id[1]])
+    np.testing.assert_array_equal(culled.gone_kf_time, [m.kf_time[1]])
+    np.testing.assert_array_equal(culled.gone_kf_pose, m.kf_pose[[1]])
+    weak = culled.gone_pt_id[2:]
+    assert len(weak) == fused.points - culled.points
+    assert np.all(culled.gone_pt_how[2:] == Removal.WEAK)
+    assert not np.any(np.isin(weak, culled.pt_id))
+    cleared = maps.clear_gone(culled)
+    assert len(cleared.gone_pt_id) == len(cleared.gone_kf_id) == 0
+    assert_maps_match(replace(culled, **{f: getattr(cleared, f) for f in _GONE}), cleared)
+
+
 def test_erasing_a_keyframe_moves_the_others_keypoints_up(truth: Truth) -> None:
     """Erasing a keyframe removes exactly its keypoint rows; the others keep their contents."""
     m = truth.map
@@ -173,7 +206,10 @@ def test_rejects_malformed_arguments(backend: str, truth: Truth) -> None:
         lambda: maps.predict_level(m, [m.points], [1.0], backend=backend),
         lambda: maps.predict_level(m, [0], [0.0], backend=backend),
         lambda: maps.refresh_points(m, [-1], backend=backend),
-        lambda: maps.erase_points(m, np.zeros(m.points + 1, dtype=bool), backend=backend),
+        lambda: maps.erase_points(
+            m, np.zeros(m.points + 1, dtype=bool), Removal.CULLED, backend=backend
+        ),
+        lambda: maps.erase_points(m, np.zeros(m.points, bool), 1, backend=backend),  # type: ignore[arg-type]
         lambda: maps.forget_observations(m, [len(m.kp_point)], backend=backend),
         lambda: maps.erase_keyframe(m, m.keyframes, backend=backend),
         lambda: maps.count(m, [0], visible=[-1], backend=backend),
@@ -204,3 +240,13 @@ def test_a_map_checks_its_structure(truth: Truth) -> None:
     dangling[0] = m.next_pt_id + 3
     with pytest.raises(InvalidInputError, match="kp_point"):
         replace(m, kp_point=dangling)
+    with pytest.raises(InvalidInputError, match="gone"):  # erased, yet still in the map
+        replace(
+            m,
+            gone_pt_id=m.pt_id[:1].copy(),
+            gone_pt_xyz=m.pt_xyz[:1].copy(),
+            gone_pt_how=np.array([Removal.CULLED], dtype=np.int64),
+        )
+    gone = maps.erase_points(m, np.arange(m.points) == 0, Removal.CULLED)
+    with pytest.raises(InvalidInputError, match="gone_pt_how"):
+        replace(gone, gone_pt_how=np.array([7], dtype=np.int64))

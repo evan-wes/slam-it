@@ -211,13 +211,14 @@ inline nanobind::ndarray<nanobind::numpy, std::uint8_t> descriptors_array(
 }
 
 /// @brief The map's fields, as the dict's keys.
-inline constexpr std::array<const char*, 26> kMapKeys = {
-    "levels",     "scale_factor",  "kf_id",       "kf_time",         "kf_pose",
-    "kf_start",   "kp_xy",         "kp_level",    "kp_angle",        "kp_descriptor",
-    "kp_bearing", "kp_depth",      "kp_right",    "kp_point",        "pt_id",
-    "pt_xyz",     "pt_descriptor", "pt_normal",   "pt_min_distance", "pt_max_distance",
-    "pt_visible", "pt_found",      "pt_first_kf", "pt_reference_kf", "next_kf_id",
-    "next_pt_id"};
+inline constexpr std::array<const char*, 32> kMapKeys = {
+    "levels",       "scale_factor",  "kf_id",       "kf_time",         "kf_pose",
+    "kf_start",     "kp_xy",         "kp_level",    "kp_angle",        "kp_descriptor",
+    "kp_bearing",   "kp_depth",      "kp_right",    "kp_point",        "pt_id",
+    "pt_xyz",       "pt_descriptor", "pt_normal",   "pt_min_distance", "pt_max_distance",
+    "pt_visible",   "pt_found",      "pt_first_kf", "pt_reference_kf", "next_kf_id",
+    "next_pt_id",   "gone_pt_id",    "gone_pt_xyz", "gone_pt_how",     "gone_kf_id",
+    "gone_kf_time", "gone_kf_pose"};
 
 /// @brief Read a map from a dict of its fields, its observations indexed, checked.
 /// @param values The dict.
@@ -252,6 +253,12 @@ inline edge::Map map_in(const nanobind::dict& values) {
               .pt_reference_kf = vector_item<std::int64_t>(values, "pt_reference_kf"),
               .next_kf_id = nanobind::cast<std::int64_t>(values["next_kf_id"]),
               .next_pt_id = nanobind::cast<std::int64_t>(values["next_pt_id"]),
+              .gone_pt_id = vector_item<std::int64_t>(values, "gone_pt_id"),
+              .gone_pt_xyz = vectors_item(values, "gone_pt_xyz"),
+              .gone_pt_how = vector_item<std::int64_t>(values, "gone_pt_how"),
+              .gone_kf_id = vector_item<std::int64_t>(values, "gone_kf_id"),
+              .gone_kf_time = vector_item<double>(values, "gone_kf_time"),
+              .gone_kf_pose = poses_item(values, "gone_kf_pose"),
               .pt_observations = {}};
   edge::index_observations(m);
   unwrap(edge::check_map(m));
@@ -289,6 +296,12 @@ inline nanobind::dict map_dict(const edge::Map& m) {
   out["pt_reference_kf"] = vector_array(m.pt_reference_kf);
   out["next_kf_id"] = m.next_kf_id;
   out["next_pt_id"] = m.next_pt_id;
+  out["gone_pt_id"] = vector_array(m.gone_pt_id);
+  out["gone_pt_xyz"] = vectors_array(m.gone_pt_xyz);
+  out["gone_pt_how"] = vector_array(m.gone_pt_how);
+  out["gone_kf_id"] = vector_array(m.gone_kf_id);
+  out["gone_kf_time"] = vector_array(m.gone_kf_time);
+  out["gone_kf_pose"] = poses_array(m.gone_kf_pose);
   return out;
 }
 
