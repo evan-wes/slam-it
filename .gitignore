@@ -11,6 +11,9 @@ dist/
 target/
 *.so
 
+# The run viewer's development tools (npm ci --prefix viewer)
+viewer/node_modules/
+
 # Data lives outside the repo (../datasets, ../runs)
 datasets/
 runs/

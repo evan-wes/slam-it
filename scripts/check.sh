@@ -53,6 +53,7 @@ mapfile -t CPP_FILES < <(git ls-files --cached --others --exclude-standard 'cpp/
 mapfile -t CPP_TU < <(git ls-files --cached --others --exclude-standard 'cpp/src/*.cpp' 'cpp/tests/*.cpp' \
   'cpp/apps/*.cpp')
 mapfile -t BENCH_TU < <(git ls-files --cached --others --exclude-standard 'cpp/bench/*.cpp')
+mapfile -t JS_FILES < <(git ls-files --cached --others --exclude-standard 'viewer/*.js')
 
 # Python
 check "ruff lint (numpy docstrings, type hints, style)" ruff check src tests scripts
@@ -97,6 +98,13 @@ check "Rust tests" cargo test --manifest-path rust/Cargo.toml --workspace --excl
 check "Rust programs (release)" \
   cargo build --release --manifest-path rust/Cargo.toml --target-dir rust/target \
   -p slam-it-all-orchestration
+
+# JavaScript: the run viewer's page, its tools installed by `npm ci --prefix viewer`
+check "node --check (viewer)" bash -c 'for file; do node --check "$file" || exit 1; done' _ \
+  "${JS_FILES[@]}"
+# The test files by name: a folder is a module to some versions of Node, not a test directory.
+check "node --test (viewer)" node --test viewer/tests/*.test.js
+check "tsc --checkJs (viewer)" viewer/node_modules/.bin/tsc -p viewer
 
 # All languages
 check "jscpd (duplication)" jscpd --config .jscpd.json

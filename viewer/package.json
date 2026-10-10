@@ -1,0 +1,10 @@
+{
+  "name": "slam-it-all-viewer",
+  "private": true,
+  "description": "The run viewer's development tools: its type check. The page itself has no build step and loads three.js from a CDN.",
+  "type": "module",
+  "devDependencies": {
+    "@types/three": "0.186.0",
+    "typescript": "7.0.2"
+  }
+}
