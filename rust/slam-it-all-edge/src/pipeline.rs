@@ -73,6 +73,49 @@ impl Placement {
     }
 }
 
+/// What became of a keypoint on its frame, with the codes a run records
+/// (`slam_it_all.edge.pipeline.Fate`, whose docstring defines each): the first that applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fate {
+    /// No stage matched it, and no point was made of it.
+    Unmatched = 0,
+    /// The frame's last tracking stage matched it, and it was not tracked in the end.
+    Rejected = 1,
+    /// An inlier of the frame's final pose.
+    Tracked = 2,
+    /// A point was made of it on its frame.
+    Made = 3,
+}
+
+/// What became of each of a frame's keypoints, and the point concerned
+/// (`slam_it_all.edge.pipeline.Fates`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Fates {
+    /// Each keypoint's fate.
+    pub fate: Vec<Fate>,
+    /// The id of the point concerned: the one made of it, the one it was tracked to, or the one
+    /// it was matched to and rejected from; -1 if unmatched.
+    pub point: Vec<i64>,
+}
+
+impl Fates {
+    /// Gives a fate to the keypoints a stage gave a point, over any fate before it
+    /// (`slam_it_all.edge.pipeline._Step.fates`, applied rejected, tracked, then made).
+    ///
+    /// # Arguments
+    ///
+    /// * `fate` - The fate.
+    /// * `ids` - Each keypoint's point, -1 where none; empty if no stage gave them.
+    fn mark(&mut self, fate: Fate, ids: &[i64]) {
+        for ((slot, point), &id) in self.fate.iter_mut().zip(&mut self.point).zip(ids) {
+            if id >= 0 {
+                *slot = fate;
+                *point = id;
+            }
+        }
+    }
+}
+
 /// How the stages went on one frame (`slam_it_all.edge.pipeline.FrameSummary`); each `None`
 /// where the stage did not run.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -112,6 +155,8 @@ pub struct FrameResult {
     pub map_seconds: f64,
     /// How its stages went.
     pub summary: FrameSummary,
+    /// What became of each of its keypoints.
+    pub fates: Fates,
 }
 
 /// A frame handled, as `Pipeline::initialize` and `Pipeline::track_frame` give it.
@@ -125,6 +170,21 @@ struct Step {
     map_seconds: f64,
     /// How its stages went.
     summary: FrameSummary,
+    /// The last tracking stage's match for each keypoint before refinement; empty if no stage
+    /// gave them.
+    matched: Vec<i64>,
+    /// The point made of each keypoint, -1 where none; empty if none were made.
+    made: Vec<i64>,
+}
+
+/// A frame placed, as `Pipeline::place` gives it.
+struct Placed {
+    /// The placed frame, if any.
+    tracked: Option<Tracked>,
+    /// How it was placed.
+    summary: FrameSummary,
+    /// The last stage's match for each keypoint before refinement.
+    matched: Vec<i64>,
 }
 
 /// An id as an index (a map's ids are given from 0: `check_map` holds them non-negative).
@@ -290,16 +350,27 @@ impl Pipeline {
             State::Lost => Step::default(),
         };
         self.date();
+        let track_seconds = start.elapsed().as_secs_f64() - step.map_seconds;
         let tracked = step.tracked.as_ref();
+        let mut fates = Fates {
+            fate: vec![Fate::Unmatched; frame.size()],
+            point: vec![-1; frame.size()],
+        };
+        fates.mark(Fate::Rejected, &step.matched);
+        if let Some(t) = tracked {
+            fates.mark(Fate::Tracked, &t.points);
+        }
+        fates.mark(Fate::Made, &step.made);
         Ok(FrameResult {
             timestamp: frame.timestamp,
             state: self.state,
             pose: tracked.map(|t| t.pose),
             tracked: tracked.map_or(0, Tracked::inliers),
             keyframe: step.keyframe,
-            track_seconds: start.elapsed().as_secs_f64() - step.map_seconds,
+            track_seconds,
             map_seconds: step.map_seconds,
             summary: step.summary,
+            fates,
         })
     }
 
@@ -393,10 +464,12 @@ impl Pipeline {
         self.accept(frame, &tracked)?;
         summary.placed_by = Some(Placement::Initialization);
         Ok(Step {
+            made: tracked.points.clone(), // every point the frame observes was made of it
             tracked: Some(tracked),
             keyframe: true,
             map_seconds: 0.0,
             summary,
+            matched: Vec::new(),
         })
     }
 
@@ -504,12 +577,12 @@ impl Pipeline {
     ///
     /// # Returns
     ///
-    /// The placed frame, if any, and how it was placed.
+    /// The placed frame, if any, how it was placed, and the last stage's matches.
     ///
     /// # Errors
     ///
     /// A stage's error.
-    fn place(&self, m: &Map, frame: &Frame) -> Result<(Option<Tracked>, FrameSummary)> {
+    fn place(&self, m: &Map, frame: &Frame) -> Result<Placed> {
         let (Some(last_frame), Some(last_tracked)) = (&self.last_frame, &self.last_tracked) else {
             return fail(
                 ErrorKind::InvalidInput,
@@ -535,14 +608,22 @@ impl Pipeline {
         };
         if motion.tracked.is_some() {
             summary.placed_by = Some(Placement::Motion);
-            return Ok((motion.tracked, summary));
+            return Ok(Placed {
+                tracked: motion.tracked,
+                summary,
+                matched: motion.matched,
+            });
         }
         let recovery = tracking::relocalize_locally(m, &self.camera, frame, &self.options)?;
         summary.pnp = Some(recovery.summary);
         if recovery.tracked.is_some() {
             summary.placed_by = Some(Placement::LocalPnp);
         }
-        Ok((recovery.tracked, summary))
+        Ok(Placed {
+            tracked: recovery.tracked,
+            summary,
+            matched: recovery.matched,
+        })
     }
 
     /// Tracks a frame against the map; inserts a keyframe if one is needed (and times it).
@@ -564,8 +645,7 @@ impl Pipeline {
             return fail(ErrorKind::InvalidInput, "track: no map to track against");
         };
         let placed = self.place(&m, frame);
-        let outcome =
-            placed.and_then(|(placed, summary)| self.refine(&mut m, frame, placed, summary));
+        let outcome = placed.and_then(|placed| self.refine(&mut m, frame, placed));
         self.map = Some(m);
         let step = outcome?;
         match &step.tracked {
@@ -582,8 +662,7 @@ impl Pipeline {
     ///
     /// * `m` - The map, changed in place.
     /// * `frame` - The frame.
-    /// * `placed` - The placed frame, if any.
-    /// * `summary` - How it was placed.
+    /// * `placed` - The placed frame, if any, how it was placed, and the last stage's matches.
     ///
     /// # Returns
     ///
@@ -593,13 +672,12 @@ impl Pipeline {
     /// # Errors
     ///
     /// A stage's error.
-    fn refine(
-        &mut self,
-        m: &mut Map,
-        frame: &Frame,
-        placed: Option<Tracked>,
-        mut summary: FrameSummary,
-    ) -> Result<Step> {
+    fn refine(&mut self, m: &mut Map, frame: &Frame, placed: Placed) -> Result<Step> {
+        let Placed {
+            tracked: placed,
+            mut summary,
+            matched,
+        } = placed;
         let options = self.options;
         if summary.placed_by == Some(Placement::LocalPnp) {
             self.since_recovery = Some(0);
@@ -613,6 +691,7 @@ impl Pipeline {
         let Some(placed) = placed else {
             return Ok(Step {
                 summary,
+                matched,
                 ..Step::default()
             });
         };
@@ -639,6 +718,7 @@ impl Pipeline {
         if local.tracked.inliers() < needed {
             return Ok(Step {
                 summary,
+                matched: local.matched,
                 ..Step::default()
             });
         }
@@ -654,17 +734,21 @@ impl Pipeline {
                 &options,
             )?;
         let mut map_seconds = 0.0;
+        let mut made = Vec::new();
         if keyframe {
             let start = Instant::now();
             let mapped = mapping::process(m, &self.camera, frame, &tracked, self.mode, &options)?;
             map_seconds = start.elapsed().as_secs_f64();
-            summary.mapping = Some(mapped);
+            summary.mapping = Some(mapped.summary);
+            made = mapped.made;
         }
         Ok(Step {
             tracked: Some(tracked),
             keyframe,
             map_seconds,
             summary,
+            matched: local.matched,
+            made,
         })
     }
 }

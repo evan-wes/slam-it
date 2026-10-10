@@ -139,14 +139,16 @@ nb::dict cull_keyframes(const nb::dict& m, const nb::dict& camera, const std::st
 /// @param tracked Its pose and matches, as a dict.
 /// @param mode The mode's name.
 /// @param options The settings, as a dict.
-/// @return The new map, as a dict, and how each step went: the summary's counts and `solves`.
+/// @return The new map, as a dict, how each step went (the summary's counts and `solves`), and
+///         `made`.
 /// @throws CoreError for invalid input.
 nb::dict process(const nb::dict& m, const nb::dict& camera, const nb::dict& frame,
                  const nb::dict& tracked, const std::string& mode, const nb::dict& options) {
   edge::Map mapped = map_in(m);
-  const edge::MappingSummary summary =
+  const edge::Mapped done =
       unwrap(edge::process(mapped, camera_in(camera), edge_crossing::frame_in(frame),
                            edge_crossing::tracked_in(tracked), mode_in(mode), options_in(options)));
+  const edge::MappingSummary& summary = done.summary;
   nb::dict out;
   out["map"] = map_dict(mapped);
   out["from_depth"] = summary.from_depth;
@@ -157,6 +159,7 @@ nb::dict process(const nb::dict& m, const nb::dict& camera, const nb::dict& fram
   out["outliers"] = summary.outliers;
   out["weak_points"] = summary.weak_points;
   out["culled_keyframes"] = summary.culled_keyframes;
+  out["made"] = edge_crossing::vector_array(done.made);
   return out;
 }
 

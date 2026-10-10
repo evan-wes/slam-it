@@ -40,6 +40,17 @@ struct MappingSummary {
   std::int64_t culled_keyframes{0};
 };
 
+/// @brief A keyframe mapped (`slam_it_all.edge.mapping.Mapped`, the map aside: it changes in
+///        place): how it went, and the points made of its keypoints.
+struct Mapped {
+  /// @brief How each step went.
+  MappingSummary summary;
+  /// @brief The id of the point made for each of the keyframe's keypoints (from its depth, or
+  ///        triangulated), -1 where none: as made, though fusion or culling may since have
+  ///        removed it.
+  std::vector<std::int64_t> made;
+};
+
 /// @brief The depth below which a point is close (`slam_it_all.edge.mapping.close_depth`).
 /// @param camera The camera (its baseline).
 /// @param options The factor.
@@ -130,11 +141,11 @@ struct MappingSummary {
 /// @param tracked Its pose and matches.
 /// @param mode The pipeline's mode.
 /// @param options The settings.
-/// @return How each step went; `InvalidInput` for matches that are not one per keypoint, or an
-///         invalid camera or settings.
-[[nodiscard]] foundations::Result<MappingSummary> process(Map& m, const Camera& camera,
-                                                          const Frame& frame,
-                                                          const Tracked& tracked, Mode mode,
-                                                          const Options& options);
+/// @return How each step went, and the points made for the keyframe's keypoints;
+///         `InvalidInput` for matches that are not one per keypoint, or an invalid camera or
+///         settings.
+[[nodiscard]] foundations::Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame,
+                                                  const Tracked& tracked, Mode mode,
+                                                  const Options& options);
 
 }  // namespace slam_it_all::edge

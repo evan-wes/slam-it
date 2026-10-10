@@ -1,12 +1,12 @@
 """The room as dataset folders (:mod:`tests.orchestration.datasets`), and its runs.
 
 The room is rendered once per session and written whole and with its gap; :func:`room_runs`
-and :func:`gap_runs` run them through :func:`slam_it_all.orchestration.vo.run`, each case once.
+and :func:`gap_runs` run them through :func:`slam_it_all.orchestration.vo.run`, each case once,
+recording their features.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -75,39 +75,62 @@ def gap_folders(rendered_room: list[room.Frame], tmp_path_factory: pytest.TempPa
     return write_room(tmp_path_factory.mktemp("gap"), gap_frames(rendered_room))
 
 
-RoomRun = Callable[[str, str, str], runs.Run]
-"""Runs a room from a dataset's folder in a mode with a backend."""
+class RoomRun:
+    """Runs a room from a dataset's folder in a mode with a backend, each case once.
 
+    Each run records its features, which :meth:`features` reads.
 
-def _runs(folders: Room, options: Options, out: Path) -> RoomRun:
-    """Return a runner of the folders with the settings, each case once."""
-    done: dict[tuple[str, str, str], runs.Run] = {}
+    Parameters
+    ----------
+    folders : tests.orchestration.datasets.Room
+        The room's folders.
+    options : slam_it_all.edge.options.Options
+        The settings.
+    out : pathlib.Path
+        Where the runs' folders go.
+    """
 
-    def run(dataset: str, mode: str, backend: str) -> runs.Run:
+    def __init__(self, folders: Room, options: Options, out: Path) -> None:
+        """Hold the room and the settings; nothing runs yet."""
+        self._folders = folders
+        self._options = options
+        self._out = out
+        self._done: dict[tuple[str, str, str], runs.Run] = {}
+
+    def __call__(self, dataset: str, mode: str, backend: str) -> runs.Run:
+        """Return a case's run, run the first time it is asked for."""
         key = (dataset, mode, require_program(backend))
-        if key not in done:
-            folder = folders.tum if dataset == "tum" else folders.euroc
-            done[key] = vo.run(
-                dataset, folder, mode, out / "-".join(key), backend=backend, options=options
-            )
-        return done[key]
+        if key not in self._done:
+            folder = self._folders.tum if dataset == "tum" else self._folders.euroc
+            self._done[key] = vo.run(
+                dataset, folder, mode, self._folder(key), backend=backend, options=self._options,
+                record_features=True,
+            )  # fmt: skip
+        return self._done[key]
 
-    return run
+    def features(self, dataset: str, mode: str, backend: str) -> runs.Features:
+        """Return a case's feature records."""
+        run = self(dataset, mode, backend)
+        return runs.read_features(self._folder((dataset, mode, backend)), run)
+
+    def _folder(self, key: tuple[str, str, str]) -> Path:
+        """Return a case's run folder."""
+        return self._out / "-".join(key)
 
 
 @pytest.fixture(scope="session")
 def room_runs(room_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> RoomRun:
     """Run the room, each (dataset, mode, backend) once per session."""
-    return _runs(room_folders, OPTIONS, tmp_path_factory.mktemp("runs"))
+    return RoomRun(room_folders, OPTIONS, tmp_path_factory.mktemp("runs"))
 
 
 @pytest.fixture(scope="session")
 def gap_runs(gap_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> RoomRun:
     """Run the gap room with :data:`GAP_OPTIONS`, each case once per session."""
-    return _runs(gap_folders, GAP_OPTIONS, tmp_path_factory.mktemp("gap_runs"))
+    return RoomRun(gap_folders, GAP_OPTIONS, tmp_path_factory.mktemp("gap_runs"))
 
 
 @pytest.fixture(scope="session")
 def moved_runs(gap_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> RoomRun:
     """Run the gap room with :data:`MOVED_OPTIONS`, each case once per session."""
-    return _runs(gap_folders, MOVED_OPTIONS, tmp_path_factory.mktemp("moved_runs"))
+    return RoomRun(gap_folders, MOVED_OPTIONS, tmp_path_factory.mktemp("moved_runs"))

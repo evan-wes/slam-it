@@ -44,6 +44,23 @@ fn rows_of(m: &Map, k: usize) -> std::ops::Range<usize> {
     m.kf_start[k]..m.kf_start[k + 1]
 }
 
+/// The points from an id on that the newest keyframe observes, by keypoint.
+///
+/// # Arguments
+///
+/// * `m` - The map, with at least one keyframe.
+/// * `first` - The first id.
+///
+/// # Returns
+///
+/// Each keypoint's point, if its id is `first` or later; -1 elsewhere.
+fn made_since(m: &Map, first: i64) -> Vec<i64> {
+    rows_of(m, m.keyframes() - 1)
+        .map(|row| m.kp_point[row])
+        .map(|id| if id >= first { id } else { -1 })
+        .collect()
+}
+
 /// The world point a keypoint's depth gives (`UnprojectStereo`).
 ///
 /// # Arguments
@@ -1106,6 +1123,17 @@ pub struct MappingSummary {
     pub culled_keyframes: usize,
 }
 
+/// A keyframe mapped (`slam_it_all.edge.mapping.Mapped`, the map aside: it changes in place):
+/// how it went, and the points made of its keypoints.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Mapped {
+    /// How each step went.
+    pub summary: MappingSummary,
+    /// The id of the point made for each of the keyframe's keypoints (from its depth, or
+    /// triangulated), -1 where none: as made, though fusion or culling may since have removed it.
+    pub made: Vec<i64>,
+}
+
 /// Inserts a keyframe and runs local mapping on it (`slam_it_all.edge.mapping.process`).
 ///
 /// # Arguments
@@ -1119,7 +1147,7 @@ pub struct MappingSummary {
 ///
 /// # Returns
 ///
-/// How each step went.
+/// How each step went, and the points made for the keyframe's keypoints.
 ///
 /// # Errors
 ///
@@ -1132,17 +1160,25 @@ pub fn process(
     tracked: &Tracked,
     mode: Mode,
     options: &Options,
-) -> Result<MappingSummary> {
+) -> Result<Mapped> {
     map::insert_keyframe(m, frame, &tracked.pose, &tracked.points)?;
     let start = m.points();
+    let first = m.next_pt_id;
     if mode != Mode::Monocular {
         create_points_from_depth(m, camera, options)?;
     }
     let with_depth = m.points();
+    let mut new_ids = made_since(m, first);
     cull_points(m, mode, options)?;
     let culled = m.points();
     triangulate_new_points(m, camera, mode, options)?;
     let triangulated = m.points();
+    // Taken before fusion, which may replace a new point; a depth point culled since stays made.
+    for (id, triangulated) in new_ids.iter_mut().zip(made_since(m, first)) {
+        if *id < 0 {
+            *id = triangulated;
+        }
+    }
     fuse_points(m, camera, options)?;
     let fused = m.points();
     let mut adjustment = Adjustment::default();
@@ -1153,14 +1189,17 @@ pub fn process(
     }
     let keyframes = m.keyframes();
     cull_keyframes(m, camera, mode, options)?;
-    Ok(MappingSummary {
-        from_depth: with_depth - start,
-        culled_points: with_depth - culled,
-        triangulated: triangulated - culled,
-        fused: triangulated - fused,
-        solves: adjustment.solves,
-        outliers: adjustment.outliers,
-        weak_points: fused - m.points(),
-        culled_keyframes: keyframes - m.keyframes(),
+    Ok(Mapped {
+        summary: MappingSummary {
+            from_depth: with_depth - start,
+            culled_points: with_depth - culled,
+            triangulated: triangulated - culled,
+            fused: triangulated - fused,
+            solves: adjustment.solves,
+            outliers: adjustment.outliers,
+            weak_points: fused - m.points(),
+            culled_keyframes: keyframes - m.keyframes(),
+        },
+        made: new_ids,
     })
 }

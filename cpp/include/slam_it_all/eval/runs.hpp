@@ -7,6 +7,7 @@
 #include <Eigen/Core>
 #include <array>
 #include <cstdint>
+#include <fstream>
 #include <optional>
 #include <span>
 #include <string>
@@ -28,6 +29,16 @@ inline constexpr std::int64_t kVersion = 3;
 
 /// @brief The number of removal codes a life may hold (`slam_it_all.eval.runs.REMOVALS`).
 inline constexpr std::int64_t kRemovals = 3;
+
+/// @brief The number of fate codes a feature record may hold (`slam_it_all.eval.runs.FATES`);
+///        0 is unmatched.
+inline constexpr std::int64_t kFates = 4;
+
+/// @brief The file of a run's keypoints' pixels (`slam_it_all.eval.runs.PIXELS`).
+inline constexpr const char* kPixels = "feature_pixels.npy";
+
+/// @brief The file of a run's keypoints' records (`slam_it_all.eval.runs.RECORDS`).
+inline constexpr const char* kRecords = "feature_records.npy";
 
 /// @brief A life: the frame that made a point or keyframe, the frame that removed it or -1, and
 ///        why (its index in `slam_it_all.eval.runs.REMOVALS`) or -1.
@@ -88,6 +99,55 @@ struct Run {
   std::vector<Life> point_lives;
   /// @brief Each keyframe's life, by id.
   std::vector<Life> keyframe_lives;
+  /// @brief Whether the run recorded its features (`FeatureWriter` streams them).
+  bool record_features{false};
+};
+
+/// @brief Streams a run's feature records into its folder, a frame at a time
+///        (`slam_it_all.eval.runs.FeatureWriter`): `kPixels`, (N, 2) float32, and `kRecords`,
+///        (N, 4) int32 of frame, level, fate and point. After each frame the files' headers count
+///        the rows so far, so each reads whole up to the last frame written. Frames are counted
+///        from 0, one per `write`.
+class FeatureWriter {
+ public:
+  /// @brief Open the two files, each with no rows yet.
+  /// @param folder The run's folder, created if needed (the two files are replaced).
+  /// @return The writer; `InvalidInput` for a folder or file that cannot be written.
+  [[nodiscard]] static foundations::Result<FeatureWriter> open(const std::string& folder);
+
+  /// @brief Append one frame's keypoints.
+  /// @param xy Their pixels (written as float32).
+  /// @param level Their pyramid levels.
+  /// @param fate Their fates (indices in `slam_it_all.eval.runs.FATES`).
+  /// @param point The point each concerns, -1 exactly where unmatched.
+  /// @return Nothing; `InvalidInput` for columns that are not one row per keypoint, a pixel that
+  ///         is not finite, a negative level, an unknown fate, a point that is not an id or -1
+  ///         exactly where unmatched (nothing is written then), or a file that cannot be
+  ///         written.
+  [[nodiscard]] foundations::Result<void> write(std::span<const std::array<double, 2>> xy,
+                                                std::span<const std::int64_t> level,
+                                                std::span<const std::int64_t> fate,
+                                                std::span<const std::int64_t> point);
+
+ private:
+  /// @brief A writer of two open files.
+  /// @param pixels The pixels' file.
+  /// @param records The records' file.
+  FeatureWriter(std::ofstream pixels, std::ofstream records)
+      : pixels_(std::move(pixels)), records_(std::move(records)) {}
+
+  /// @brief Rewrite each header with the rows so far, and flush.
+  /// @return Nothing; `InvalidInput` if a file cannot be written.
+  foundations::Result<void> count();
+
+  /// @brief The pixels' file.
+  std::ofstream pixels_;
+  /// @brief The records' file.
+  std::ofstream records_;
+  /// @brief Frames written.
+  std::int64_t frames_{0};
+  /// @brief Rows written.
+  std::size_t rows_{0};
 };
 
 /// @brief An object as JSON text, to nest in a value: Python's `json.dumps` with its

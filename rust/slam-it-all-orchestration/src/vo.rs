@@ -9,8 +9,8 @@ use nalgebra::Vector2;
 use slam_it_all_edge::adjust::Solve;
 use slam_it_all_edge::frames::{self, Camera, DepthMap, Frame};
 use slam_it_all_edge::options::{Mode, Options, Setting, check_options};
-use slam_it_all_edge::pipeline::{FrameResult, FrameSummary, Lifetimes, Pipeline, State};
-use slam_it_all_eval::runs::{JsonObject, JsonValue, Run};
+use slam_it_all_edge::pipeline::{Fates, FrameResult, FrameSummary, Lifetimes, Pipeline, State};
+use slam_it_all_eval::runs::{FeatureWriter, JsonObject, JsonValue, Run};
 use slam_it_all_eval::{euroc, png, text, tum};
 use slam_it_all_foundations::camera::Model;
 use slam_it_all_foundations::error::{ErrorKind, Result, fail};
@@ -23,7 +23,10 @@ pub const DATASETS: [&str; 2] = ["tum", "euroc"];
 /// The program's command line.
 pub const USAGE: &str = "usage: slam_it_all_vo --dataset tum|euroc --sequence PATH --mode \
                          monocular|stereo|rgbd --out RUN_DIR [--first I] [--count N] \
-                         [--option KEY=VALUE ...]";
+                         [--record-features] [--option KEY=VALUE ...]";
+
+/// The one flag without a value: record each frame's keypoints, with their fates.
+const RECORD_FEATURES: &str = "--record-features";
 
 /// The program's exit code for a command line it cannot read.
 pub const EXIT_USAGE: u8 = 2;
@@ -48,11 +51,13 @@ pub struct Request {
     pub count: Option<i64>,
     /// The pipeline's settings.
     pub options: Options,
+    /// Whether the run records each frame's keypoints, with their fates.
+    pub record_features: bool,
 }
 
 impl Request {
     /// A request, its other fields default: from the first frame, every frame, the default
-    /// settings.
+    /// settings, no feature records.
     ///
     /// # Arguments
     ///
@@ -74,6 +79,7 @@ impl Request {
             first: 0,
             count: None,
             options: Options::default(),
+            record_features: false,
         }
     }
 }
@@ -640,11 +646,18 @@ fn record_lives(out: &mut Run, lives: Lifetimes) -> Result<()> {
 /// * `pipeline` - The pipeline.
 /// * `request` - The request (checked).
 /// * `out` - The run, each frame recorded.
+/// * `features` - The writer of each frame's keypoints, if the run records them.
 ///
 /// # Errors
 ///
-/// A reader's, a frame builder's or the pipeline's.
-fn track(source: &Source, pipeline: &mut Pipeline, request: &Request, out: &mut Run) -> Result<()> {
+/// A reader's, a frame builder's, the pipeline's or the feature writer's.
+fn track(
+    source: &Source,
+    pipeline: &mut Pipeline,
+    request: &Request,
+    out: &mut Run,
+    mut features: Option<&mut FeatureWriter>,
+) -> Result<()> {
     let first = usize::try_from(request.first).unwrap_or(usize::MAX);
     let end = request.count.map_or(source.frames, |count| {
         source
@@ -668,11 +681,36 @@ fn track(source: &Source, pipeline: &mut Pipeline, request: &Request, out: &mut 
         let built = start.elapsed().as_secs_f64();
         let result = pipeline.track(&frame)?;
         record(out, &result, read, built - read)?;
+        if let Some(writer) = features.as_deref_mut() {
+            write_features(writer, &frame, &result.fates)?;
+        }
         if result.state == State::Lost {
             break;
         }
     }
     Ok(())
+}
+
+/// Appends a frame's keypoints, with their fates, to the run's feature files.
+///
+/// # Arguments
+///
+/// * `features` - The writer.
+/// * `frame` - The frame.
+/// * `fates` - What became of each of its keypoints.
+///
+/// # Errors
+///
+/// The writer's.
+fn write_features(features: &mut FeatureWriter, frame: &Frame, fates: &Fates) -> Result<()> {
+    let keypoints = &frame.features.keypoints;
+    let xy: Vec<[f64; 2]> = keypoints.iter().map(|k| k.xy).collect();
+    let level: Vec<i64> = keypoints
+        .iter()
+        .map(|k| i64::try_from(k.level).unwrap_or(i64::MAX))
+        .collect();
+    let fate: Vec<i64> = fates.fate.iter().map(|&f| f as i64).collect();
+    features.write(&xy, &level, &fate, &fates.point)
 }
 
 /// Fails with `InvalidInput`.
@@ -792,8 +830,9 @@ fn read_flag(out: &mut Request, flag: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-/// Reads the command line: [`USAGE`], flags in any order, `--option` repeatable and naming a
-/// field of `slam_it_all.edge.options.Options`.
+/// Reads the command line: [`USAGE`], flags in any order, each with its value but
+/// `--record-features`, `--option` repeatable and naming a field of
+/// `slam_it_all.edge.options.Options`.
 ///
 /// # Arguments
 ///
@@ -810,16 +849,23 @@ fn read_flag(out: &mut Request, flag: &str, value: &str) -> Result<()> {
 pub fn parse(arguments: &[String]) -> Result<Request> {
     let mut out = Request::new("", Path::new(""), Mode::Monocular, Path::new(""));
     let mut seen: Vec<&str> = Vec::new();
-    for pair in arguments.chunks(2) {
-        let flag = pair[0].as_str();
-        let Some(value) = pair.get(1) else {
-            return invalid(format!("{flag}: expected a value"));
-        };
+    let mut rest = arguments;
+    while let Some((flag, after)) = rest.split_first() {
+        let flag = flag.as_str();
         if flag != "--option" && seen.contains(&flag) {
             return invalid(format!("{flag}: given twice"));
         }
         seen.push(flag);
+        if flag == RECORD_FEATURES {
+            out.record_features = true;
+            rest = after;
+            continue;
+        }
+        let Some((value, after)) = after.split_first() else {
+            return invalid(format!("{flag}: expected a value"));
+        };
         read_flag(&mut out, flag, value)?;
+        rest = after;
     }
     for required in ["--dataset", "--sequence", "--mode", "--out"] {
         if !seen.contains(&required) {
@@ -887,9 +933,15 @@ pub fn run(request: &Request) -> Result<Run> {
         mode: request.mode.name().to_owned(),
         backend: "rust".to_owned(),
         settings: settings(&request.options),
+        record_features: request.record_features,
         ..Run::default()
     };
-    track(&source, &mut pipeline, request, &mut out)?;
+    let mut features = if request.record_features {
+        Some(FeatureWriter::open(&request.out)?)
+    } else {
+        None
+    };
+    track(&source, &mut pipeline, request, &mut out, features.as_mut())?;
     record_lives(&mut out, pipeline.lifetimes())?;
     Ok(out)
 }
@@ -954,6 +1006,7 @@ mod tests {
         let request = parse(&command(&[
             "--first",
             "3",
+            "--record-features",
             "--count",
             "10",
             "--option",
@@ -976,8 +1029,12 @@ mod tests {
             (7, 1000)
         );
         assert!((request.options.close_depth - 35.5).abs() < f64::EPSILON);
+        assert!(request.record_features);
         let plain = parse(&command(&[])).unwrap();
-        assert_eq!((plain.first, plain.count), (0, None));
+        assert_eq!(
+            (plain.first, plain.count, plain.record_features),
+            (0, None, false)
+        );
     }
 
     /// A bad flag, value or setting, a repeated flag, or a missing one is refused.
@@ -994,6 +1051,7 @@ mod tests {
             &["--option", "window"],
             &["--dataset", "euroc"],
             &["--verbose", "1"],
+            &["--record-features", "--record-features"],
         ] {
             assert_eq!(
                 parse(&command(more)).unwrap_err().kind,

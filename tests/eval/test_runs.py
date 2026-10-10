@@ -1,8 +1,9 @@
-"""The run format: exact round trips, TUM's trajectory format, scoring, and failures."""
+"""The run format: round trips, TUM's trajectory format, scoring, feature records, failures."""
 
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ import pytest
 from numpy.typing import NDArray
 
 from slam_it_all.edge.map import Removal
+from slam_it_all.edge.pipeline import Fate
 from slam_it_all.eval import runs
 from slam_it_all.foundations import so3
 from slam_it_all.foundations.errors import InvalidInputError
@@ -101,6 +103,117 @@ def test_the_removal_codes_are_the_maps() -> None:
     assert [int(r) for r in Removal] == list(range(len(runs.REMOVALS)))
 
 
+def test_the_fate_codes_are_the_pipelines() -> None:
+    """A feature record's fate code is the pipeline's :class:`Fate`, by the same names."""
+    assert [f.name.lower() for f in Fate] == list(runs.FATES)
+    assert [int(f) for f in Fate] == list(range(len(runs.FATES)))
+
+
+def _record_features(folder: Path) -> None:
+    """Record three frames of keypoints: every fate, and a frame with none."""
+    none = np.zeros(0, dtype=np.int64)
+    with runs.FeatureWriter(folder) as writer:
+        writer.write([[1.5, 2.25], [3.0, 4.1]], [0, 2], [Fate.MADE, Fate.UNMATCHED], [4, -1])
+        writer.write(np.zeros((0, 2)), none, none, none)
+        writer.write([[5.0, 6.0], [7.0, 8.0]], [1, 1], [Fate.TRACKED, Fate.REJECTED], [4, 29])
+
+
+def test_feature_records_round_trip(tmp_path: Path) -> None:
+    """Each frame's keypoints come back in frame order: pixels as float32, records as int32."""
+    run = replace(_run(), record_features=True)
+    runs.write_run(tmp_path, run)
+    _record_features(tmp_path)
+    back = runs.read_run(tmp_path)
+    assert back.record_features
+    features = runs.read_features(tmp_path, back)
+    assert features.pixels.dtype == np.dtype(np.float32)
+    assert features.records.dtype == np.dtype(np.int32)
+    expected = [[1.5, 2.25], [3.0, 4.1], [5.0, 6.0], [7.0, 8.0]]
+    np.testing.assert_array_equal(features.pixels, np.array(expected, dtype=np.float32))
+    assert features.records.tolist() == [[0, 0, 3, 4], [0, 2, 0, -1], [2, 1, 2, 4], [2, 1, 1, 29]]
+
+
+def test_feature_files_count_their_rows_after_each_frame(tmp_path: Path) -> None:
+    """Mid-run, each file reads whole up to the last frame written."""
+    with runs.FeatureWriter(tmp_path) as writer:
+        assert np.load(tmp_path / runs.RECORDS).shape == (0, 4)
+        writer.write([[1.0, 2.0]], [0], [Fate.UNMATCHED], [-1])
+        assert np.load(tmp_path / runs.PIXELS).shape == (1, 2)
+        assert np.load(tmp_path / runs.RECORDS).tolist() == [[0, 0, 0, -1]]
+
+
+@pytest.mark.parametrize(
+    ("columns", "message"),
+    [
+        (([[1.0, 2.0, 3.0]], [0], [0], [-1]), "expected xy"),
+        (([[1.0, 2.0]], [0, 1], [0], [-1]), "expected xy"),
+        (([[1.0, 2.0]], [0.0], [0], [-1]), "must be integers"),
+        (([[np.nan, 2.0]], [0], [0], [-1]), "pixels must be finite"),
+        (([[1.0, 2.0]], [-1], [0], [-1]), "a level must be at least 0"),
+        (([[1.0, 2.0]], [0], [4], [3]), "a fate must be a code of FATES"),
+        (([[1.0, 2.0]], [0], [Fate.TRACKED], [-1]), "-1 exactly when unmatched"),
+        (([[1.0, 2.0]], [0], [Fate.UNMATCHED], [3]), "-1 exactly when unmatched"),
+        (([[1.0, 2.0]], [0], [Fate.MADE], [-2]), "-1 exactly when unmatched"),
+    ],
+)
+def test_the_feature_writer_refuses_malformed_records(
+    tmp_path: Path, columns: tuple[Any, ...], message: str
+) -> None:
+    """A malformed frame raises InvalidInputError and writes nothing."""
+    with runs.FeatureWriter(tmp_path) as writer:
+        writer.write([[1.0, 2.0]], [0], [Fate.UNMATCHED], [-1])
+        before = (tmp_path / runs.RECORDS).read_bytes()
+        with pytest.raises(InvalidInputError, match=f"features of frame 1: .*{message}"):
+            writer.write(*columns)
+        assert (tmp_path / runs.RECORDS).read_bytes() == before
+
+
+def _rewrite(folder: Path, records: list[list[int]]) -> None:
+    """Replace the feature records with these rows (their pixels to match)."""
+    np.save(folder / runs.RECORDS, np.array(records, dtype=np.int32).reshape(-1, 4))
+    np.save(folder / runs.PIXELS, np.zeros((len(records), 2), dtype=np.float32))
+
+
+@pytest.mark.parametrize(
+    ("damage", "error", "message"),
+    [
+        (lambda f: (f / runs.PIXELS).unlink(), FileNotFoundError, "feature_pixels.npy"),
+        (
+            lambda f: np.save(f / runs.PIXELS, np.zeros((3, 2), dtype=np.float32)),
+            InvalidInputError,
+            "4 records for 3 pixels",
+        ),
+        (
+            lambda f: np.save(f / runs.RECORDS, np.zeros((4, 4), dtype=np.int64)),
+            InvalidInputError,
+            r"expected int32 \(N, 4\)",
+        ),
+        (lambda f: _rewrite(f, [[2, 0, 0, -1], [1, 0, 0, -1]]), InvalidInputError, "ascend"),
+        (lambda f: _rewrite(f, [[12, 0, 0, -1]]), InvalidInputError, "ascend"),
+        (lambda f: _rewrite(f, [[0, 0, 2, 30]]), InvalidInputError, "one the run made"),
+        (lambda f: _rewrite(f, [[0, 0, 2, -1]]), InvalidInputError, "-1 exactly when unmatched"),
+    ],
+)
+def test_read_features_refuses_malformed_records(
+    tmp_path: Path, damage: Callable[[Path], object], error: type[Exception], message: str
+) -> None:
+    """Missing or disagreeing files, frames out of order or not the run's, unknown points."""
+    run = replace(_run(), record_features=True)
+    runs.write_run(tmp_path, run)
+    _record_features(tmp_path)
+    damage(tmp_path)
+    with pytest.raises(error, match=message):
+        runs.read_features(tmp_path, runs.read_run(tmp_path))
+
+
+def test_a_run_without_features_has_none_to_read(tmp_path: Path) -> None:
+    """Feature files left from another run are not this run's."""
+    _record_features(tmp_path)
+    runs.write_run(tmp_path, _run())
+    with pytest.raises(FileNotFoundError, match="the run recorded no features"):
+        runs.read_features(tmp_path, runs.read_run(tmp_path))
+
+
 def test_an_unknown_process_round_trips_as_none(tmp_path: Path) -> None:
     """A run that was not a program's own (an in-process run's) writes nulls and reads None."""
     runs.write_run(tmp_path, replace(_run(), peak_memory=None, cpus=None, memory_cap=None))
@@ -164,6 +277,7 @@ def test_evaluate_rejects_a_run_whose_times_do_not_ascend() -> None:
         ({"diagnostics": [{"tracked": 3}]}, r"diagnostics\[0\]: expected an object"),
         ({"diagnostics": [{"timestamp": float("nan")}]}, r"diagnostics\[0\]: not JSON"),
         ({"dataset": 3}, "dataset: expected a string"),
+        ({"record_features": 1}, "record_features: expected a bool"),
         ({"peak_memory": -1}, "peak_memory: expected a whole number of bytes"),
         ({"peak_memory": 1.5e9}, "peak_memory: expected a whole number of bytes"),
         ({"peak_memory": True}, "peak_memory: expected a whole number of bytes"),
@@ -233,6 +347,8 @@ def test_write_run_replaces_files_whole(tmp_path: Path) -> None:
         (lambda info: info.pop("mode"), "missing mode"),
         (lambda info: info.update(sequence=7), "sequence must be a string"),
         (lambda info: info.update(settings=[1]), "settings must be an object"),
+        (lambda info: info.pop("record_features"), "missing record_features"),
+        (lambda info: info.update(record_features=1), "record_features must be true or false"),
         (lambda info: info.pop("peak_memory"), "missing peak_memory"),
         (lambda info: info.update(peak_memory="1 GB"), "peak_memory: expected a whole number"),
         (lambda info: info.pop("cpus"), "missing cpus"),

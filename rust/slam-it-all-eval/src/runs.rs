@@ -3,6 +3,8 @@
 //! written are small and fixed, and nothing native reads them back.
 
 use std::fmt::Write as _;
+use std::fs::File;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 
 use nalgebra::{Matrix4, Vector3};
@@ -18,6 +20,16 @@ pub const VERSION: i64 = 3;
 
 /// The number of removal codes a life may hold (`slam_it_all.eval.runs.REMOVALS`).
 pub const REMOVALS: i64 = 3;
+
+/// The number of fate codes a feature record may hold (`slam_it_all.eval.runs.FATES`); 0 is
+/// unmatched.
+pub const FATES: i64 = 4;
+
+/// The file of a run's keypoints' pixels (`slam_it_all.eval.runs.PIXELS`).
+pub const PIXELS: &str = "feature_pixels.npy";
+
+/// The file of a run's keypoints' records (`slam_it_all.eval.runs.RECORDS`).
+pub const RECORDS: &str = "feature_records.npy";
 
 /// A life: the frame that made a point or keyframe, the frame that removed it or -1, and why
 /// (its index in `slam_it_all.eval.runs.REMOVALS`) or -1.
@@ -98,6 +110,8 @@ pub struct Run {
     pub point_lives: Vec<Life>,
     /// Each keyframe's life, by id.
     pub keyframe_lives: Vec<Life>,
+    /// Whether the run recorded its features (`FeatureWriter` streams them).
+    pub record_features: bool,
 }
 
 /// A finite number as JSON, shortest round-trip (`.0` kept on a whole number, as Python
@@ -511,6 +525,8 @@ pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
     info_text.pop();
     info_text.push_str(", \"settings\": ");
     info_text.push_str(&json_object(&run.settings));
+    info_text.push_str(", \"record_features\": ");
+    info_text.push_str(if run.record_features { "true" } else { "false" });
     let integer_or_null =
         |value: Option<u64>| value.map_or_else(|| "null".to_owned(), |v| v.to_string());
     info_text.push_str(", \"peak_memory\": ");
@@ -572,11 +588,174 @@ pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
     Ok(())
 }
 
+/// Fails for a folder or file that cannot be written.
+///
+/// # Arguments
+///
+/// * `what` - The folder or file.
+/// * `error` - Why.
+///
+/// # Errors
+///
+/// Always: `InvalidInput`.
+fn unwritable<T>(what: &str, error: &std::io::Error) -> Result<T> {
+    fail(
+        ErrorKind::InvalidInput,
+        format!("{what}: could not be written ({error})"),
+    )
+}
+
+/// Streams a run's feature records into its folder, a frame at a time
+/// (`slam_it_all.eval.runs.FeatureWriter`): `PIXELS`, (N, 2) float32, and `RECORDS`, (N, 4)
+/// int32 of frame, level, fate and point. After each frame the files' headers count the rows so
+/// far, so each reads whole up to the last frame written. Frames are counted from 0, one per
+/// `write`.
+#[derive(Debug)]
+pub struct FeatureWriter {
+    /// The pixels' file.
+    pixels: File,
+    /// The records' file.
+    records: File,
+    /// Frames written.
+    frames: i64,
+    /// Rows written.
+    rows: usize,
+}
+
+impl FeatureWriter {
+    /// Opens the two files, each with no rows yet.
+    ///
+    /// # Arguments
+    ///
+    /// * `folder` - The run's folder, created if needed (the two files are replaced).
+    ///
+    /// # Returns
+    ///
+    /// The writer.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidInput` for a folder or file that cannot be written.
+    pub fn open(folder: &Path) -> Result<Self> {
+        let named = folder.display().to_string();
+        std::fs::create_dir_all(folder).or_else(|e| unwritable(&named, &e))?;
+        let mut writer = Self {
+            pixels: File::create(folder.join(PIXELS)).or_else(|e| unwritable(&named, &e))?,
+            records: File::create(folder.join(RECORDS)).or_else(|e| unwritable(&named, &e))?,
+            frames: 0,
+            rows: 0,
+        };
+        writer.count()?;
+        Ok(writer)
+    }
+
+    /// Appends one frame's keypoints.
+    ///
+    /// # Arguments
+    ///
+    /// * `xy` - Their pixels (written as float32).
+    /// * `level` - Their pyramid levels.
+    /// * `fate` - Their fates (indices in `slam_it_all.eval.runs.FATES`).
+    /// * `point` - The point each concerns, -1 exactly where unmatched.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidInput` for columns that are not one row per keypoint, a pixel that is not
+    /// finite, a negative level, an unknown fate, a point that is not an id or -1 exactly where
+    /// unmatched (nothing is written then), or a file that cannot be written.
+    pub fn write(
+        &mut self,
+        xy: &[[f64; 2]],
+        level: &[i64],
+        fate: &[i64],
+        point: &[i64],
+    ) -> Result<()> {
+        let name = format!("features of frame {}", self.frames);
+        let n = xy.len();
+        if level.len() != n || fate.len() != n || point.len() != n {
+            return fail(
+                ErrorKind::InvalidInput,
+                format!("{name}: expected xy (N, 2) and level, fate, point (N,)"),
+            );
+        }
+        if !xy.iter().flatten().all(|v| v.is_finite()) {
+            return fail(
+                ErrorKind::InvalidInput,
+                format!("{name}: pixels must be finite"),
+            );
+        }
+        if level.iter().any(|&l| l < 0) {
+            return fail(
+                ErrorKind::InvalidInput,
+                format!("{name}: a level must be at least 0"),
+            );
+        }
+        if fate.iter().any(|&f| !(0..FATES).contains(&f)) {
+            return fail(
+                ErrorKind::InvalidInput,
+                format!("{name}: a fate must be a code of FATES"),
+            );
+        }
+        if point
+            .iter()
+            .zip(fate)
+            .any(|(&p, &f)| p < -1 || (p == -1) != (f == 0))
+        {
+            return fail(
+                ErrorKind::InvalidInput,
+                format!("{name}: a point must be an id, -1 exactly when unmatched"),
+            );
+        }
+        let mut pixels = Vec::with_capacity(n * 8);
+        let mut records = Vec::with_capacity(n * 16);
+        for j in 0..n {
+            for value in xy[j] {
+                #[allow(clippy::cast_possible_truncation)] // float32 is the format's
+                pixels.extend((value as f32).to_le_bytes());
+            }
+            for value in [self.frames, level[j], fate[j], point[j]] {
+                #[allow(clippy::cast_possible_truncation)] // int32 is the format's
+                records.extend((value as i32).to_le_bytes());
+            }
+        }
+        self.pixels
+            .write_all(&pixels)
+            .or_else(|e| unwritable(PIXELS, &e))?;
+        self.records
+            .write_all(&records)
+            .or_else(|e| unwritable(RECORDS, &e))?;
+        self.frames += 1;
+        self.rows += n;
+        self.count()
+    }
+
+    /// Rewrites each header with the rows so far, and flushes.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidInput` if a file cannot be written.
+    fn count(&mut self) -> Result<()> {
+        let rows = self.rows;
+        let files = [
+            (&mut self.pixels, PIXELS, 2, "<f4"),
+            (&mut self.records, RECORDS, 4, "<i4"),
+        ];
+        for (file, name, columns, descr) in files {
+            file.seek(SeekFrom::Start(0))
+                .and_then(|_| file.write_all(&npy_header(&[rows, columns], descr)))
+                .and_then(|()| file.seek(SeekFrom::End(0)))
+                .and_then(|_| file.flush())
+                .or_else(|e| unwritable(name, &e))?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Native tests against the golden folder `tests/fixtures/eval/run/`, which Python wrote
-    //! from `run_values.json` (the C++ tests read them too): the `.npy` files byte for byte,
-    //! the JSON and trajectory value for value.
+    //! from `run_values.json` (the C++ tests read them too): the `.npy` files byte for byte (the
+    //! streamed feature files too), the JSON and trajectory value for value.
 
     use super::*;
     use serde_json::Value;
@@ -680,6 +859,7 @@ mod tests {
             memory_cap: values["memory_cap"].as_u64(),
             point_lives: lives(&values["point_lives"]),
             keyframe_lives: lives(&values["keyframe_lives"]),
+            record_features: values["record_features"].as_bool().unwrap(),
         }
     }
 
@@ -788,6 +968,95 @@ mod tests {
         let info = &json(&out.join("run.json"), false)[0];
         for key in ["peak_memory", "cpus", "memory_cap"] {
             assert!(info[key].is_null(), "{key}");
+        }
+    }
+
+    /// One frame's keypoints, as `run_values.json` holds them: pixels, levels, fates, points.
+    type Keypoints = (Vec<[f64; 2]>, Vec<i64>, Vec<i64>, Vec<i64>);
+
+    /// Integers from JSON.
+    fn integers(values: &Value) -> Vec<i64> {
+        values
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_i64().unwrap())
+            .collect()
+    }
+
+    /// Writes one frame's keypoints.
+    fn write(writer: &mut FeatureWriter, frame: &Keypoints) -> Result<()> {
+        writer.write(&frame.0, &frame.1, &frame.2, &frame.3)
+    }
+
+    #[test]
+    fn the_golden_features_are_reproduced() {
+        let text = std::fs::read_to_string(fixtures().join("run_values.json")).unwrap();
+        let values: Value = serde_json::from_str(&text).unwrap();
+        let frames: Vec<Keypoints> = values["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|frame| {
+                let xy = frame["xy"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|p| [p[0].as_f64().unwrap(), p[1].as_f64().unwrap()])
+                    .collect();
+                let columns = ["level", "fate", "point"].map(|key| integers(&frame[key]));
+                let [level, fate, point] = columns;
+                (xy, level, fate, point)
+            })
+            .collect();
+        // Named for this process: concurrent test runs never share the folder.
+        let out = std::env::temp_dir().join(format!(
+            "slam_it_all_rust_test_features_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&out);
+        let _guard = Scratch(out.clone());
+        let mut writer = FeatureWriter::open(&out).unwrap();
+        write(&mut writer, &frames[0]).unwrap();
+        let after_one = std::fs::read(out.join(RECORDS)).unwrap();
+        assert_eq!(after_one.len(), 128 + 3 * 16);
+        assert!(String::from_utf8_lossy(&after_one[..128]).contains("'shape': (3, 4)"));
+        let mut tracked_without_point = frames[0].clone();
+        tracked_without_point.2[2] = 2;
+        let mut made_without_point = frames[0].clone();
+        made_without_point.3[0] = -1;
+        let mut unknown_fate = frames[0].clone();
+        unknown_fate.2[0] = FATES;
+        let mut negative_level = frames[0].clone();
+        negative_level.1[0] = -1;
+        let mut not_finite = frames[0].clone();
+        not_finite.0[1][0] = f64::NAN;
+        let mut short = frames[0].clone();
+        short.3.pop();
+        for bad in [
+            tracked_without_point,
+            made_without_point,
+            unknown_fate,
+            negative_level,
+            not_finite,
+            short,
+        ] {
+            assert_eq!(
+                write(&mut writer, &bad).unwrap_err().kind,
+                ErrorKind::InvalidInput
+            );
+        }
+        assert_eq!(std::fs::read(out.join(RECORDS)).unwrap(), after_one);
+        for frame in &frames[1..] {
+            write(&mut writer, frame).unwrap();
+        }
+        let golden = fixtures().join("run");
+        for name in [PIXELS, RECORDS] {
+            assert_eq!(
+                std::fs::read(out.join(name)).unwrap(),
+                std::fs::read(golden.join(name)).unwrap(),
+                "{name}"
+            );
         }
     }
 

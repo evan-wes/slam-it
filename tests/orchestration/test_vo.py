@@ -97,11 +97,61 @@ def _assert_same_run(native: runs.Run, reference: runs.Run) -> None:
     assert_records_match(summaries(native), summaries(reference))
 
 
+def _assert_same_features(runs_of: RoomRun, dataset: str, mode: str, backend: str) -> None:
+    """Check that a native run recorded Python's feature records, byte for byte."""
+    native, reference = (
+        runs_of.features(dataset, mode, backend),
+        runs_of.features(dataset, mode, "python"),
+    )
+    np.testing.assert_array_equal(native.records, reference.records)
+    np.testing.assert_array_equal(native.pixels, reference.pixels)
+
+
 @pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
 @pytest.mark.parametrize(("dataset", "mode"), CASES)
 def test_the_backends_agree(dataset: str, mode: str, backend: str, room_runs: RoomRun) -> None:
-    """A native program makes Python's decisions and places every pose and point as Python does."""
+    """A native program makes Python's decisions and places every pose and point as Python does.
+
+    It records every keypoint's pixel, level, fate and point exactly as Python does.
+    """
     _assert_same_run(room_runs(dataset, mode, backend), room_runs(dataset, mode, "python"))
+    _assert_same_features(room_runs, dataset, mode, backend)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize(("dataset", "mode"), CASES)
+def test_every_keypoints_fate_agrees_with_its_frame(
+    dataset: str, mode: str, backend: str, room_runs: RoomRun
+) -> None:
+    """Each frame's fates count what its diagnostics say, and name points of the right lives.
+
+    A frame that started the map made a point of each keypoint it observes; a mapped keyframe
+    made as many as its mapping made from depth and triangulated. A tracked frame's inliers are
+    its tracked keypoints, but on a keyframe also those tracked to a point its mapping culled
+    and then made into a new one. A point made is one the frame made; one tracked was made
+    before the frame and still in the map as it began.
+    """
+    run, features = room_runs(dataset, mode, backend), room_runs.features(dataset, mode, backend)
+    frame, fate, point = features.records[:, 0], features.records[:, 2], features.records[:, 3]
+    unmatched, _, tracked, made = range(len(runs.FATES))
+    assert np.array_equal(np.unique(frame), np.arange(len(run.diagnostics)))
+    assert np.all((point == -1) == (fate == unmatched))
+    for k, d in enumerate(run.diagnostics):
+        counts = np.bincount(fate[frame == k], minlength=len(runs.FATES))
+        if d["placed_by"] == "initialization":
+            assert (counts[made], counts[tracked]) == (d["tracked"], 0)
+        else:
+            mapped = d["mapping"]
+            assert counts[made] == (
+                0 if mapped is None else mapped["from_depth"] + mapped["triangulated"]
+            )
+            assert counts[tracked] <= d["tracked"] <= counts[tracked] + counts[made]
+            assert mapped is not None or counts[tracked] == d["tracked"]
+    lives = run.point_lives
+    assert np.all(lives[point[fate == made], 0] == frame[fate == made])
+    held = point[fate == tracked]
+    assert np.all(lives[held, 0] < frame[fate == tracked])
+    assert np.all((lives[held, 1] == -1) | (lives[held, 1] >= frame[fate == tracked]))
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -134,6 +184,7 @@ def test_the_backends_agree_across_the_gap(
 ) -> None:
     """Through a recovery, a native program makes Python's decisions as on the whole room."""
     _assert_same_run(gap_runs(dataset, mode, backend), gap_runs(dataset, mode, "python"))
+    _assert_same_features(gap_runs, dataset, mode, backend)
 
 
 @pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
@@ -146,6 +197,7 @@ def test_the_backends_agree_off_the_defaults(
     Review panel finding H21: at the defaults, a native that hard-coded a setting would agree.
     """
     _assert_same_run(moved_runs(dataset, mode, backend), moved_runs(dataset, mode, "python"))
+    _assert_same_features(moved_runs, dataset, mode, backend)
 
 
 @pytest.mark.parametrize(("dataset", "mode"), CASES)
@@ -156,8 +208,11 @@ def test_the_moved_settings_change_the_decisions(
 
     So the agreement off the defaults is evidence that the natives read them.
     """
-    moved, default = moved_runs(dataset, mode, "python"), gap_runs(dataset, mode, "python")
-    assert record(moved) != record(default)
+    moved = record(
+        moved_runs(dataset, mode, "python"), moved_runs.features(dataset, mode, "python")
+    )
+    default = record(gap_runs(dataset, mode, "python"), gap_runs.features(dataset, mode, "python"))
+    assert moved != default
 
 
 GOLDEN = load_fixture("edge/room_runs.json")
@@ -186,10 +241,11 @@ def test_every_backend_matches_the_golden_record(  # noqa: PLR0917 -- the case, 
     A decision changed in all three languages fails here until the record is regenerated
     (review panel finding A1).
     """
-    run = (room_runs if name == "room" else gap_runs)(dataset, mode, backend)
+    runs_of = room_runs if name == "room" else gap_runs
+    run = runs_of(dataset, mode, backend)
     expected = GOLDEN["cases"][f"{name}/{dataset}/{mode}"]
     floating = {"poses": None, "summaries": None}
-    assert record(run) | floating == expected | floating
+    assert record(run, runs_of.features(dataset, mode, backend)) | floating == expected | floating
     assert_matches_fixture(run.poses.reshape(-1, 16), expected["poses"], GOLDEN["tolerance"])
     assert_records_match(summaries(run), expected["summaries"], SOLVER_TOLERANCE)
 
@@ -197,25 +253,29 @@ def test_every_backend_matches_the_golden_record(  # noqa: PLR0917 -- the case, 
 def test_a_request_crosses_as_a_command_line() -> None:
     """Only settings off their defaults are passed, integers as integers, reals round-tripping."""
     options = Options(window=7, close_depth=0.1 + 0.2)
-    request = vo.Request("tum", Path("seq"), "rgbd", Path("out"), first=2, count=5, options=options)
+    request = vo.Request(
+        "tum", Path("seq"), "rgbd", Path("out"), 2, 5, options=options, record_features=True
+    )
     assert request.arguments() == [
         *("--dataset", "tum", "--sequence", "seq", "--mode", "rgbd", "--out", "out"),
-        *("--first", "2", "--count", "5"),
+        *("--first", "2", "--count", "5", "--record-features"),
         *("--option", "close_depth=0.30000000000000004", "--option", "window=7"),
     ]
+    assert "--record-features" not in replace(request, record_features=False).arguments()
 
 
 def test_parse_reads_a_command_line() -> None:
     """Every flag is read, in any order; the settings named are set, the rest default."""
     request = vo.parse(
         [*("--mode", "rgbd", "--dataset", "tum", "--sequence", "seq", "--out", "out"),
-         *("--first", "3", "--count", "10", "--option", "window=7"),
+         *("--first", "3", "--record-features", "--count", "10", "--option", "window=7"),
          *("--option", "close_depth=35.5")]
     )  # fmt: skip
     expected = Options(window=7, close_depth=35.5)
-    assert request == vo.Request("tum", Path("seq"), "rgbd", Path("out"), 3, 10, expected)
+    assert request == vo.Request("tum", Path("seq"), "rgbd", Path("out"), 3, 10, expected, True)
     plain = vo.parse(["--dataset", "tum", "--sequence", "s", "--mode", "rgbd", "--out", "o"])
     assert (plain.first, plain.count, plain.options) == (0, None, Options())
+    assert not plain.record_features
 
 
 @pytest.mark.parametrize(
@@ -233,6 +293,7 @@ def test_parse_reads_a_command_line() -> None:
         (["--option", "window"], "--option: expected KEY=VALUE, got 'window'"),
         (["--dataset", "euroc"], "--dataset: given twice"),
         (["--verbose", "1"], "unknown argument '--verbose'"),
+        (["--record-features", "--record-features"], "--record-features: given twice"),
     ],
 )
 def test_parse_refuses_what_the_native_programs_refuse(more: list[str], message: str) -> None:

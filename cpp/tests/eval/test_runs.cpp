@@ -1,8 +1,11 @@
 /// @file
 /// @brief Native tests for the run writer (slam_it_all/eval/runs.hpp) against the golden folder
 ///        `tests/fixtures/eval/run/`, which Python wrote from `run_values.json`: the `.npy`
-///        files byte for byte, the JSON and trajectory value for value; and its refusals.
+///        files byte for byte (the streamed feature files too), the JSON and trajectory value
+///        for value; and its refusals.
+#include <array>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -112,7 +115,8 @@ runs::Run golden_run() {
                 .cpus = values["cpus"].get<std::vector<std::int64_t>>(),
                 .memory_cap = values["memory_cap"].get<std::int64_t>(),
                 .point_lives = lives(values["point_lives"]),
-                .keyframe_lives = lives(values["keyframe_lives"])};
+                .keyframe_lives = lives(values["keyframe_lives"]),
+                .record_features = values["record_features"].get<bool>()};
   for (const auto& point : values["points"]) {
     run.points.emplace_back(point[0].get<double>(), point[1].get<double>(), point[2].get<double>());
   }
@@ -203,6 +207,78 @@ void check_golden(int& failures) {
          "an unknown process is written as nulls", failures);
 }
 
+/// @brief One frame's keypoints, as `run_values.json` holds them.
+struct Keypoints {
+  /// @brief Their pixels.
+  std::vector<std::array<double, 2>> xy;
+  /// @brief Their levels.
+  std::vector<std::int64_t> level;
+  /// @brief Their fates.
+  std::vector<std::int64_t> fate;
+  /// @brief Their points.
+  std::vector<std::int64_t> point;
+};
+
+/// @brief Write one frame's keypoints.
+/// @param writer The writer.
+/// @param frame The keypoints.
+/// @return Whether they were written.
+bool write(runs::FeatureWriter& writer, const Keypoints& frame) {
+  return writer.write(frame.xy, frame.level, frame.fate, frame.point).has_value();
+}
+
+/// @brief Check the feature writer against the golden folder's two files, and its refusals.
+/// @param failures Running failure count.
+void check_features(int& failures) {
+  const nlohmann::json values = slam_it_all::testing::load_fixture("eval/run_values.json");
+  std::vector<Keypoints> frames;
+  for (const auto& frame : values["features"]) {
+    frames.push_back({.xy = frame["xy"].get<std::vector<std::array<double, 2>>>(),
+                      .level = frame["level"].get<std::vector<std::int64_t>>(),
+                      .fate = frame["fate"].get<std::vector<std::int64_t>>(),
+                      .point = frame["point"].get<std::vector<std::int64_t>>()});
+  }
+  const fs::path golden = fs::path(SLAM_IT_ALL_FIXTURES_DIR) / "eval" / "run";
+  const slam_it_all::testing::ScratchDir scratch("slam_it_all_test_runs_features");
+  const fs::path& out = scratch.path();
+  auto writer = runs::FeatureWriter::open(out.string());
+  expect(writer.has_value(), "the feature files are opened", failures);
+  if (!writer) {
+    return;
+  }
+  bool written = write(*writer, frames[0]);
+  const std::string after_one = bytes(out / runs::kRecords);
+  expect(written && after_one.contains("'shape': (3, 4)") && after_one.size() == 128 + (3 * 16),
+         "after a frame, the header counts its rows", failures);
+  Keypoints bad = frames[0];
+  bad.fate[2] = 2;
+  expect(!write(*writer, bad), "a tracked keypoint without a point is refused", failures);
+  bad = frames[0];
+  bad.point[0] = -1;
+  expect(!write(*writer, bad), "a made keypoint without a point is refused", failures);
+  bad = frames[0];
+  bad.fate[0] = runs::kFates;
+  expect(!write(*writer, bad), "an unknown fate is refused", failures);
+  bad = frames[0];
+  bad.level[0] = -1;
+  expect(!write(*writer, bad), "a negative level is refused", failures);
+  bad = frames[0];
+  bad.xy[1][0] = std::nan("");
+  expect(!write(*writer, bad), "a pixel that is not finite is refused", failures);
+  bad = frames[0];
+  bad.point.pop_back();
+  expect(!write(*writer, bad), "columns that are not one row per keypoint are refused", failures);
+  expect(bytes(out / runs::kRecords) == after_one, "nothing is written for refused records",
+         failures);
+  for (std::size_t k = 1; k < frames.size(); ++k) {
+    written = write(*writer, frames[k]) && written;
+  }
+  for (const char* name : {runs::kPixels, runs::kRecords}) {
+    expect(written && bytes(out / name) == bytes(golden / name),
+           (std::string(name) + " matches Python's byte for byte").c_str(), failures);
+  }
+}
+
 /// @brief Check the refusals: nothing is written.
 /// @param failures Running failure count.
 void check_refusals(int& failures) {
@@ -282,6 +358,7 @@ void check_nested(int& failures) {
 int run() {
   int failures = 0;
   check_golden(failures);
+  check_features(failures);
   check_refusals(failures);
   check_nested(failures);
   return slam_it_all::testing::finish("eval/runs", failures);

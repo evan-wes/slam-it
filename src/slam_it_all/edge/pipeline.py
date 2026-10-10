@@ -22,9 +22,10 @@
    (:func:`slam_it_all.edge.mapping.process`).
 
 Each frame's result carries how its stages went (:class:`FrameSummary`), which a run records
-in its diagnostics. After each frame the pipeline dates what the frame made and removed: every
-point and keyframe has a life, from the frame that made it to the frame that removed it, if one
-did (:meth:`Pipeline.lifetimes`).
+in its diagnostics, and what became of each of its keypoints (:class:`Fates`), which a run
+records if asked (:mod:`slam_it_all.eval.runs`). After each frame the pipeline dates what the
+frame made and removed: every point and keyframe has a life, from the frame that made it to the
+frame that removed it, if one did (:meth:`Pipeline.lifetimes`).
 
 The C++ and Rust pipelines run in their native programs; this one runs in-process.
 """
@@ -51,6 +52,7 @@ from slam_it_all.foundations import orb, se3
 from slam_it_all.foundations.errors import InvalidInputError
 
 Array = NDArray[np.float64]
+IntArray = NDArray[np.int64]
 
 
 class State(enum.StrEnum):
@@ -73,6 +75,42 @@ class Placement(enum.StrEnum):
     """Tracking the last frame, from the constant-velocity prediction."""
     LOCAL_PNP = "local_pnp"
     """The fallback: PnP against the local map."""
+
+
+class Fate(enum.IntEnum):
+    """What became of a keypoint on its frame, with the codes a run records.
+
+    The first that applies, in the order made, tracked, rejected: a keypoint tracked to a point
+    that mapping then culls may have a new point made of it.
+    """
+
+    UNMATCHED = 0
+    """Nothing: no stage matched it, and no point was made of it."""
+    REJECTED = 1
+    """The frame's last tracking stage matched it to a point, and it was not tracked in the
+    end: refinement dropped it, or the frame was not tracked."""
+    TRACKED = 2
+    """An inlier of the frame's final pose."""
+    MADE = 3
+    """A point was made of it on its frame: by initialisation, or by mapping the frame as a
+    keyframe (from its depth, or triangulated)."""
+
+
+@dataclass(frozen=True)
+class Fates:
+    """What became of each of a frame's keypoints (:class:`Fate`), and the point concerned.
+
+    Attributes
+    ----------
+    fate : ndarray of int64, shape (N,)
+        Each keypoint's :class:`Fate` code.
+    point : ndarray of int64, shape (N,)
+        The id of the point concerned: the one made of it, the one it was tracked to, or the
+        one it was matched to and rejected from; -1 if unmatched.
+    """
+
+    fate: IntArray
+    point: IntArray
 
 
 class _Summary(Protocol):
@@ -159,6 +197,8 @@ class FrameResult:
         any other frame: what ORB-SLAM's local-mapping thread does.
     summary : FrameSummary
         How its stages went.
+    fates : Fates
+        What became of each of its keypoints.
     """
 
     timestamp: float
@@ -169,6 +209,7 @@ class FrameResult:
     track_seconds: float
     map_seconds: float
     summary: FrameSummary
+    fates: Fates
 
 
 @dataclass(frozen=True)
@@ -202,12 +243,33 @@ class Lifetimes:
 
 @dataclass(frozen=True)
 class _Step:
-    """A frame handled: the frame, if tracked, and what came of it."""
+    """A frame handled: the frame, if tracked, and what came of it.
+
+    ``matched`` holds the last tracking stage's matches before refinement and ``made`` the
+    points made of each keypoint, each None where no stage gave them.
+    """
 
     tracked: Tracked | None
     keyframe: bool
     map_seconds: float
     summary: FrameSummary
+    matched: IntArray | None = None
+    made: IntArray | None = None
+
+    def fates(self, size: int) -> Fates:
+        """Return what became of each of the frame's `size` keypoints (:class:`Fate`)."""
+        fate = np.full(size, int(Fate.UNMATCHED), dtype=np.int64)
+        point = np.full(size, -1, dtype=np.int64)
+        held = None if self.tracked is None else self.tracked.points
+        for kind, ids in (
+            (Fate.REJECTED, self.matched),
+            (Fate.TRACKED, held),
+            (Fate.MADE, self.made),
+        ):
+            if ids is not None:
+                fate[ids >= 0] = int(kind)
+                point[ids >= 0] = ids[ids >= 0]
+        return Fates(fate=fate, point=point)
 
 
 @dataclass
@@ -293,6 +355,7 @@ class Pipeline:
         elif self.state is State.TRACKING:
             step = self._track(frame)
         self._date()
+        track_seconds = time.perf_counter() - start - step.map_seconds
         tracked = step.tracked
         return FrameResult(
             timestamp=frame.timestamp,
@@ -300,9 +363,10 @@ class Pipeline:
             pose=None if tracked is None else tracked.pose.copy(),
             tracked=0 if tracked is None else tracked.inliers,
             keyframe=step.keyframe,
-            track_seconds=time.perf_counter() - start - step.map_seconds,
+            track_seconds=track_seconds,
             map_seconds=step.map_seconds,
             summary=step.summary,
+            fates=step.fates(frame.size),
         )
 
     def lifetimes(self) -> Lifetimes:
@@ -369,7 +433,8 @@ class Pipeline:
         self.state = State.TRACKING
         self._accept(frame, tracked)
         summary = replace(summary, placed_by=Placement.INITIALIZATION)
-        return _Step(tracked=tracked, keyframe=True, map_seconds=0.0, summary=summary)
+        # Every point the frame observes was made of it.
+        return _Step(tracked, keyframe=True, map_seconds=0.0, summary=summary, made=tracked.points)
 
     def _initialize_monocular(self, frame: Frame) -> Initialization:
         """Pair a monocular frame with the reference, or make it the reference."""
@@ -411,8 +476,11 @@ class Pipeline:
         if self._failures >= self.options.lost_frames:
             self.state = State.LOST
 
-    def _place(self, m: Map, frame: Frame) -> tuple[Tracked | None, FrameSummary]:
-        """Track the last frame, or recover by PnP; return the frame and how it was placed."""
+    def _place(self, m: Map, frame: Frame) -> tuple[Tracked | None, FrameSummary, IntArray]:
+        """Track the last frame, or recover by PnP.
+
+        Return the frame, how it was placed, and the last stage's matches before refinement.
+        """
         assert self._last_frame is not None
         assert self._last_tracked is not None
         options = self.options
@@ -425,18 +493,19 @@ class Pipeline:
         )  # fmt: skip
         summary = FrameSummary(motion=motion.summary)
         if motion.tracked is not None:
-            return motion.tracked, replace(summary, placed_by=Placement.MOTION)
+            return motion.tracked, replace(summary, placed_by=Placement.MOTION), motion.matched
         recovery = tracking.relocalize_locally(m, self.camera, frame, options)
         summary = replace(summary, pnp=recovery.summary)
         if recovery.tracked is None:
-            return None, summary
-        return recovery.tracked, replace(summary, placed_by=Placement.LOCAL_PNP)
+            return None, summary, recovery.matched
+        placed_by = Placement.LOCAL_PNP
+        return recovery.tracked, replace(summary, placed_by=placed_by), recovery.matched
 
     def _track(self, frame: Frame) -> _Step:
         """Track a frame against the map; insert a keyframe if one is needed (and time it)."""
         assert self.map is not None
         m, options = self.map, self.options
-        placed, summary = self._place(m, frame)
+        placed, summary, matched = self._place(m, frame)
         if summary.placed_by is Placement.LOCAL_PNP:
             self._since_recovery = 0
         elif self._since_recovery is not None:
@@ -451,6 +520,7 @@ class Pipeline:
                 recovering=wide,
             )  # fmt: skip
             summary = replace(summary, local_map=local.summary())
+            matched = local.matched
             m = maps.count(m, local.visible, visible=np.ones(len(local.visible), dtype=np.int64))
             m = maps.count(m, local.found, found=np.ones(len(local.found), dtype=np.int64))
             needed = options.recovery_tracked if recent else options.min_tracked
@@ -458,19 +528,20 @@ class Pipeline:
         self.map = m
         if tracked is None:
             self._record_failure()
-            return _Step(tracked=None, keyframe=False, map_seconds=0.0, summary=summary)
+            return _Step(None, keyframe=False, map_seconds=0.0, summary=summary, matched=matched)
         held = recent and m.keyframes > options.max_frames
         keyframe = not held and mapping.need_keyframe(
             m, self.camera, frame.depth, tracked, mode=self.mode, options=options
         )
         map_seconds = 0.0
+        made = None
         if keyframe:
             start = time.perf_counter()
             mapped = mapping.process(
                 m, self.camera, frame, tracked, mode=self.mode, options=options
             )
-            self.map = mapped.map
+            self.map, made = mapped.map, mapped.made
             map_seconds = time.perf_counter() - start
             summary = replace(summary, mapping=mapped.summary)
         self._accept(frame, tracked)
-        return _Step(tracked=tracked, keyframe=keyframe, map_seconds=map_seconds, summary=summary)
+        return _Step(tracked, keyframe, map_seconds, summary, matched=matched, made=made)

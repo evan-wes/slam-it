@@ -73,7 +73,8 @@ nb::dict in_view(const nb::dict& m, const nb::dict& camera, const Matrix4In& pos
 /// @param predicted The predicted pose.
 /// @param mode The mode's name.
 /// @param options The settings, as a dict.
-/// @return `tracked` (a dict, or None), `matches`, `widened` and `inliers` (or None).
+/// @return `tracked` (a dict, or None), `matches`, `widened`, `inliers` (or None) and
+///         `matched`.
 /// @throws CoreError for invalid input.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the reference's argument order
 nb::dict track_last_frame(const nb::dict& m, const nb::dict& camera, const nb::dict& frame,
@@ -89,6 +90,7 @@ nb::dict track_last_frame(const nb::dict& m, const nb::dict& camera, const nb::d
   out["matches"] = motion.summary.matches;
   out["widened"] = motion.summary.widened;
   out["inliers"] = edge_crossing::count_or_none(motion.summary.inliers);
+  out["matched"] = edge_crossing::vector_array(motion.matched);
   return out;
 }
 
@@ -100,7 +102,7 @@ nb::dict track_last_frame(const nb::dict& m, const nb::dict& camera, const nb::d
 /// @param mode The mode's name.
 /// @param options The settings, as a dict.
 /// @param recovering Whether the frame is a recovery's or the next.
-/// @return `pose`, `points`, `visible`, `found` and `matches`.
+/// @return `pose`, `points`, `visible`, `found` and `matched`.
 /// @throws CoreError for invalid input.
 nb::dict track_local_map(const nb::dict& m, const nb::dict& camera, const nb::dict& frame,
                          const nb::dict& tracked, const std::string& mode, const nb::dict& options,
@@ -111,7 +113,7 @@ nb::dict track_local_map(const nb::dict& m, const nb::dict& camera, const nb::di
   nb::dict out = edge_crossing::tracked_dict(local.tracked);
   out["visible"] = edge_crossing::vector_array(local.visible);
   out["found"] = edge_crossing::vector_array(local.found);
-  out["matches"] = local.matches;
+  out["matched"] = edge_crossing::vector_array(local.matched);
   return out;
 }
 
@@ -120,9 +122,10 @@ nb::dict track_local_map(const nb::dict& m, const nb::dict& camera, const nb::di
 /// @param camera The camera, as a dict.
 /// @param frame The frame, as a dict.
 /// @param options The settings, as a dict.
-/// @return `tracked` (a dict, or None) and the summary's fields: `candidates`, `matches`,
-///         `iterations`, `termination` (its code in `ransac_termination`), `degenerate`,
-///         `inliers` and `refined`, each count None where the fallback stopped before it.
+/// @return `tracked` (a dict, or None), `matched`, and the summary's fields: `candidates`,
+///         `matches`, `iterations`, `termination` (its code in `ransac_termination`),
+///         `degenerate`, `inliers` and `refined`, each count None where the fallback stopped
+///         before it.
 /// @throws CoreError for invalid input.
 nb::dict relocalize_locally(const nb::dict& m, const nb::dict& camera, const nb::dict& frame,
                             const nb::dict& options) {
@@ -140,6 +143,7 @@ nb::dict relocalize_locally(const nb::dict& m, const nb::dict& camera, const nb:
   out["degenerate"] = summary.degenerate;
   out["inliers"] = edge_crossing::count_or_none(summary.inliers);
   out["refined"] = edge_crossing::count_or_none(summary.refined);
+  out["matched"] = edge_crossing::vector_array(recovery.matched);
   return out;
 }
 

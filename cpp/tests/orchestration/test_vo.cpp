@@ -66,17 +66,19 @@ void check_exit_codes(int& failures) {
 /// @brief Check reading a command line, and its refusals.
 /// @param failures Running failure count.
 void check_parse(int& failures) {
-  const auto request = vo::parse(command(
-      {"--first", "3", "--count", "10", "--option", "window=7", "--option", "close_depth=35.5"}));
+  const auto request = vo::parse(command({"--first", "3", "--record-features", "--count", "10",
+                                          "--option", "window=7", "--option", "close_depth=35.5"}));
   expect(request.has_value() && request->dataset == "tum" && request->mode == edge::Mode::kRgbd &&
-             request->out == "run" && request->first == 3 && request->count == 10,
-         "parse reads every flag", failures);
+             request->out == "run" && request->first == 3 && request->count == 10 &&
+             request->record_features,
+         "parse reads every flag, --record-features without a value", failures);
   expect(request.has_value() && request->options.window == 7 &&
              request->options.close_depth == 35.5 && request->options.n_features == 1000,
          "parse sets the options named, the rest default", failures);
   const auto plain = vo::parse(command({}));
-  expect(plain.has_value() && plain->first == 0 && !plain->count.has_value(),
-         "first and count default to all frames", failures);
+  expect(plain.has_value() && plain->first == 0 && !plain->count.has_value() &&
+             !plain->record_features,
+         "first and count default to all frames, and no features are recorded", failures);
   const std::vector<std::vector<std::string>> refused{
       {"--mode", "lidar"},
       {"--first", "x"},
@@ -88,6 +90,7 @@ void check_parse(int& failures) {
       {"--dataset", "euroc"},
       {"--verbose", "1"},
       {"--option", "close_depth=+-5"},
+      {"--record-features", "--record-features"},
   };
   for (const auto& more : refused) {
     expect(is_invalid_input(vo::parse(command(more))), ("parse refuses " + more[0]).c_str(),

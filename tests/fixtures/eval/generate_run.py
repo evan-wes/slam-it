@@ -9,7 +9,9 @@ Python's :func:`slam_it_all.eval.runs.write_run` writes the folder from the valu
 writers write the same values and are held to the folder: the ``.npy`` files byte for byte,
 ``run.json``, ``trajectory.txt`` and ``diagnostics.jsonl`` value for value (their text may
 differ). The diagnostics nest as the edge pipeline's stage summaries do: objects, lists and
-nulls inside each line.
+nulls inside each line. The run records its features, every fate among them and a frame with
+no keypoints: :class:`slam_it_all.eval.runs.FeatureWriter` streams them frame by frame from
+``features``, and the native feature writers are held to its two files byte for byte.
 """
 
 from __future__ import annotations
@@ -75,6 +77,32 @@ def _summary(k: int) -> dict[str, Any]:
     }
 
 
+def _features(rng: np.random.Generator) -> list[dict[str, list[Any]]]:
+    """Return each frame's keypoints: pixels, levels, fates and points, as the frames go.
+
+    Frame 0 starts the map with points 0 and 1; frame 1 tracks one, rejects the other; frame 2
+    has no keypoints; frame 3, a keyframe, tracks point 0 and makes 2 and 3; the lost frame 4
+    matched point 2 and rejected it. Pixels have bits float32 rounds away.
+    """
+    unmatched, rejected, tracked, made = range(4)
+    frames = [
+        [(made, 0), (made, 1), (unmatched, -1)],
+        [(tracked, 0), (rejected, 1)],
+        [],
+        [(tracked, 0), (made, 2), (made, 3), (unmatched, -1)],
+        [(rejected, 2), (unmatched, -1)],
+    ]
+    return [
+        {
+            "xy": rng.uniform(0.0, 640.0, (len(keypoints), 2)).tolist(),
+            "level": [k % 8 for k in range(len(keypoints))],
+            "fate": [fate for fate, _ in keypoints],
+            "point": [point for _, point in keypoints],
+        }
+        for keypoints in frames
+    ]
+
+
 def values() -> dict[str, Any]:
     """Return the run's values, as JSON."""
     rng = np.random.default_rng(8)
@@ -95,6 +123,8 @@ def values() -> dict[str, Any]:
         "peak_memory": 48_381_952,
         "cpus": [4, 5, 6, 7],
         "memory_cap": 8_589_934_592,
+        "record_features": True,
+        "features": _features(rng),
         "diagnostics": [
             {
                 "timestamp": float(t),
@@ -135,8 +165,17 @@ def main() -> None:
             memory_cap=run["memory_cap"],
             point_lives=np.array(run["point_lives"], dtype=np.int64),
             keyframe_lives=np.array(run["keyframe_lives"], dtype=np.int64),
+            record_features=run["record_features"],
         ),
     )
+    with runs.FeatureWriter(FOLDER) as features:
+        for frame in run["features"]:
+            features.write(
+                np.array(frame["xy"]).reshape(-1, 2),
+                np.array(frame["level"], dtype=np.int64),
+                np.array(frame["fate"], dtype=np.int64),
+                np.array(frame["point"], dtype=np.int64),
+            )
 
 
 if __name__ == "__main__":

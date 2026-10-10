@@ -3,9 +3,10 @@
 A run is a folder, written by any backend's pipeline (C++ and Rust write the same files):
 
 - ``run.json``: what ran: ``{"format": "slam-it-all-run", "version": 3, "dataset", "sequence",
-  "mode", "backend", "settings", "peak_memory", "cpus", "memory_cap"}``, ``mode`` one of
-  :data:`MODES` and ``backend`` one of ``python``, ``cpp`` and ``rust``; ``settings`` holds the
-  pipeline's options as JSON. The last three describe the program that ran it, as it recorded
+  "mode", "backend", "settings", "record_features", "peak_memory", "cpus", "memory_cap"}``,
+  ``mode`` one of :data:`MODES` and ``backend`` one of ``python``, ``cpp`` and ``rust``;
+  ``settings`` holds the pipeline's options as JSON; ``record_features`` whether the run
+  recorded its features (below). The last three describe the program that ran it, as it recorded
   them before writing (:mod:`slam_it_all.eval.budgets`), and are null when the run was not a
   program's of its own (Python's in-process run) or the system does not say: ``peak_memory``,
   its largest resident set in bytes; ``cpus``, the CPUs it could run on, ascending (a budget
@@ -23,6 +24,12 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
   is in the final map; and why it was removed (its index in :data:`REMOVALS`), or -1. Frames
   are counted by their line in ``diagnostics.jsonl``. The final map is the rows still alive
   (:meth:`Run.final_points`, :meth:`Run.final_keyframes`).
+- ``feature_pixels.npy`` and ``feature_records.npy``, if the run recorded its features: every
+  frame's keypoints, in frame order. Their pixels, ``(N, 2)`` float32; and their records,
+  ``(N, 4)`` int32: the frame, the keypoint's pyramid level, its fate (its index in
+  :data:`FATES`) and the point concerned (an id in ``points.npy``, -1 if none), as
+  :class:`slam_it_all.edge.pipeline.Fates` gives them. Streamed as the run goes
+  (:class:`FeatureWriter`), and read mapped from disk (:func:`read_features`).
 - ``diagnostics.jsonl``: one JSON object per line, per frame, each with its ``timestamp``;
   otherwise what the pipeline wants to report (tracked points, state). The edge pipeline's
   frames also time their steps, in seconds (:data:`STEPS`), which the budget harness judges
@@ -66,6 +73,17 @@ REMOVALS = ("culled", "fused", "weak")
 tracking rarely found, or a redundant keyframe), fused into another point, or erased with its
 views (left seen too little). :class:`slam_it_all.edge.map.Removal` has the same codes."""
 
+FATES = ("unmatched", "rejected", "tracked", "made")
+"""What became of a keypoint on its frame, a feature record's code being the index: matched to
+no point; matched by the frame's last tracking stage, then not tracked; tracked; or made into a
+new point. :class:`slam_it_all.edge.pipeline.Fate` has the same codes."""
+
+PIXELS = "feature_pixels.npy"
+"""The file of a run's keypoints' pixels."""
+
+RECORDS = "feature_records.npy"
+"""The file of a run's keypoints' records: frame, level, fate and point."""
+
 STEPS = ("read_seconds", "build_seconds", "track_seconds", "map_seconds")
 """The steps each frame of the edge pipeline times, as keys of its diagnostic, in seconds:
 delivering its images decoded (and a stereo pair rectified), building the frame from them,
@@ -90,6 +108,7 @@ _INFO_KEYS = (
     "mode",
     "backend",
     "settings",
+    "record_features",
     "peak_memory",
     "cpus",
     "memory_cap",
@@ -136,6 +155,8 @@ class Run:
         why (its index in :data:`REMOVALS`; -1 if none).
     keyframe_lives : ndarray of int64, shape (K, 3)
         Each keyframe's life, the same way.
+    record_features : bool
+        Whether the run recorded its features (:func:`read_features` reads them).
     """
 
     dataset: str
@@ -156,6 +177,7 @@ class Run:
     keyframe_lives: NDArray[np.int64] = field(
         default_factory=lambda: np.zeros((0, 3), dtype=np.int64)
     )
+    record_features: bool = False
 
     def final_points(self) -> NDArray[np.float64]:
         """Return the points still in the final map.
@@ -361,8 +383,8 @@ def write_run(folder: str | Path, run: Run) -> None:
         If the dataset or sequence is not a string, the mode or backend is unknown, an array
         is malformed, the settings or a diagnostic are not JSON (a diagnostic must be an
         object with a ``timestamp``), or what it records of its program is malformed (a peak
-        memory or memory cap that is not a whole number of bytes, CPUs not ascending). Nothing
-        is written then.
+        memory or memory cap that is not a whole number of bytes, CPUs not ascending), or
+        ``record_features`` is not a bool. Nothing is written then.
     """
     for name in ("dataset", "sequence"):
         if not isinstance(getattr(run, name), str):
@@ -377,6 +399,8 @@ def write_run(folder: str | Path, run: Run) -> None:
         raise InvalidInputError(f"points: expected (M, 3), got {lead}")
     if not isinstance(run.settings, dict):
         raise InvalidInputError("settings: expected a dict")
+    if not isinstance(run.record_features, bool):
+        raise InvalidInputError("record_features: expected a bool")
     _check_process(run.peak_memory, run.cpus, run.memory_cap, "")
     info = {
         "format": FORMAT,
@@ -386,6 +410,7 @@ def write_run(folder: str | Path, run: Run) -> None:
         "mode": run.mode,
         "backend": run.backend,
         "settings": run.settings,
+        "record_features": run.record_features,
         "peak_memory": run.peak_memory,
         "cpus": run.cpus,
         "memory_cap": run.memory_cap,
@@ -419,12 +444,18 @@ def _check_names(mode: str, backend: str) -> None:
         raise InvalidInputError(f"backend: expected one of {BACKENDS}, got {backend!r}")
 
 
-def _load(path: Path, shape: tuple[int, ...], dtype: type[np.generic] = np.float64) -> NDArray[Any]:
-    """Load a .npy file of `dtype` whose trailing dimensions are `shape`."""
+def _load(
+    path: Path,
+    shape: tuple[int, ...],
+    dtype: type[np.generic] = np.float64,
+    *,
+    mapped: bool = False,
+) -> NDArray[Any]:
+    """Load a .npy file of `dtype` whose trailing dimensions are `shape`, or map it read-only."""
     if not path.is_file():
         raise FileNotFoundError(f"no {path.name} in {path.parent}")
     try:
-        data: NDArray[Any] = np.load(path, allow_pickle=False)
+        data: NDArray[Any] = np.load(path, mmap_mode="r" if mapped else None, allow_pickle=False)
     except (ValueError, EOFError) as error:  # not an .npy file, an empty one, or objects
         raise InvalidInputError(f"{path}: not a readable .npy array ({error})") from None
     if not isinstance(data, np.ndarray) or data.dtype != dtype or data.shape[1:] != shape:
@@ -456,6 +487,8 @@ def _read_info(path: Path) -> dict[str, Any]:
             raise InvalidInputError(f"{path}: {key} must be a string")
     if not isinstance(info["settings"], dict):
         raise InvalidInputError(f"{path}: settings must be an object")
+    if not isinstance(info["record_features"], bool):
+        raise InvalidInputError(f"{path}: record_features must be true or false")
     _check_process(info["peak_memory"], info["cpus"], info["memory_cap"], f"{path}: ")
     _check_names(info["mode"], info["backend"])
     return info
@@ -527,7 +560,176 @@ def read_run(folder: str | Path) -> Run:
         memory_cap=info["memory_cap"],
         point_lives=lives["point_lives"],
         keyframe_lives=lives["keyframe_lives"],
+        record_features=info["record_features"],
     )
+
+
+def _check_keypoints(
+    pixels: NDArray[Any], level: NDArray[Any], fate: NDArray[Any], point: NDArray[Any], name: str
+) -> None:
+    """Check feature records: finite pixels, levels, fate codes, a point exactly when matched."""
+    if not np.all(np.isfinite(pixels)):
+        raise InvalidInputError(f"{name}: pixels must be finite")
+    if np.any(level < 0):
+        raise InvalidInputError(f"{name}: a level must be at least 0")
+    if np.any((fate < 0) | (fate >= len(FATES))):
+        raise InvalidInputError(f"{name}: a fate must be a code of FATES")
+    if np.any(point < -1) or np.any((point == -1) != (fate == FATES.index("unmatched"))):
+        raise InvalidInputError(f"{name}: a point must be an id, -1 exactly when unmatched")
+
+
+def _npy_header(rows: int, columns: int, descr: str) -> bytes:
+    """Return a ``(rows, columns)`` .npy file's header, as numpy writes it.
+
+    It is the same length for any row count, so it can be rewritten in place as rows are added.
+    """
+    buffer = io.BytesIO()
+    np.lib.format.write_array_header_1_0(
+        buffer, {"descr": descr, "fortran_order": False, "shape": (rows, columns)}
+    )
+    return buffer.getvalue()
+
+
+class FeatureWriter:
+    """Stream a run's feature records into its folder, a frame at a time.
+
+    Writes :data:`PIXELS` and :data:`RECORDS` (the module docstring) as the run goes, so a long
+    run's records never wait in memory. After each frame the files' headers count the rows so
+    far, so each reads whole up to the last frame written. Frames are counted from 0, one per
+    :meth:`write`: one per line of the run's ``diagnostics.jsonl``. Use it as a context
+    manager, or call :meth:`close`.
+
+    Parameters
+    ----------
+    folder : str or pathlib.Path
+        The run's folder (created if needed; the two files are replaced).
+    """
+
+    def __init__(self, folder: str | Path) -> None:
+        """Open the two files, each with no rows yet."""
+        out = Path(folder)
+        out.mkdir(parents=True, exist_ok=True)
+        self._pixels = (out / PIXELS).open("wb")
+        self._records = (out / RECORDS).open("wb")
+        self._frames = 0
+        self._rows = 0
+        self._count()
+
+    def __enter__(self) -> FeatureWriter:
+        """Return the writer."""
+        return self
+
+    def __exit__(self, *exception: object) -> None:
+        """Close the files."""
+        self.close()
+
+    def write(self, xy: ArrayLike, level: ArrayLike, fate: ArrayLike, point: ArrayLike) -> None:
+        """Append one frame's keypoints.
+
+        Parameters
+        ----------
+        xy : array_like of float, shape (N, 2)
+            Their pixels (written as float32).
+        level : array_like of int, shape (N,)
+            Their pyramid levels.
+        fate : array_like of int, shape (N,)
+            Their fates (indices in :data:`FATES`).
+        point : array_like of int, shape (N,)
+            The point each concerns, -1 exactly where unmatched.
+
+        Raises
+        ------
+        slam_it_all.foundations.errors.InvalidInputError
+            If the columns are not one row per keypoint, or a record is malformed (as
+            :func:`read_features` checks it). Nothing is written then.
+        """
+        name = f"features of frame {self._frames}"
+        pixels = np.asarray(xy, dtype=np.float64)
+        n = len(pixels)
+        columns = [np.asarray(column) for column in (level, fate, point)]
+        if pixels.shape != (n, 2) or any(column.shape != (n,) for column in columns):
+            raise InvalidInputError(f"{name}: expected xy (N, 2) and level, fate, point (N,)")
+        if any(not np.issubdtype(column.dtype, np.integer) for column in columns):
+            raise InvalidInputError(f"{name}: level, fate and point must be integers")
+        _check_keypoints(pixels, columns[0], columns[1], columns[2], name)
+        records = np.stack([np.full(n, self._frames), *columns], axis=1)
+        self._pixels.write(pixels.astype("<f4").tobytes())
+        self._records.write(records.astype("<i4").tobytes())
+        self._frames += 1
+        self._rows += n
+        self._count()
+
+    def close(self) -> None:
+        """Close the files."""
+        self._pixels.close()
+        self._records.close()
+
+    def _count(self) -> None:
+        """Rewrite each header with the rows so far, and flush."""
+        for file, columns, descr in ((self._pixels, 2, "<f4"), (self._records, 4, "<i4")):
+            file.seek(0)
+            file.write(_npy_header(self._rows, columns, descr))
+            file.seek(0, io.SEEK_END)
+            file.flush()
+
+
+@dataclass(frozen=True)
+class Features:
+    """A run's feature records: every frame's keypoints, in frame order.
+
+    Attributes
+    ----------
+    pixels : ndarray of float32, shape (N, 2)
+        Each keypoint's pixel.
+    records : ndarray of int32, shape (N, 4)
+        Its frame (a line of ``diagnostics.jsonl``), its pyramid level, its fate (its index in
+        :data:`FATES`) and the point concerned (an id in the run's points, -1 if none).
+    """
+
+    pixels: NDArray[np.float32]
+    records: NDArray[np.int32]
+
+
+def read_features(folder: str | Path, run: Run) -> Features:
+    """Read a run's feature records, mapped from disk rather than loaded.
+
+    Parameters
+    ----------
+    folder : str or pathlib.Path
+        The run's folder.
+    run : Run
+        The run, as :func:`read_run` read it from the folder: the records are checked against
+        its frames and points.
+
+    Returns
+    -------
+    Features
+        The records.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the run recorded no features, or a file is missing.
+    slam_it_all.foundations.errors.InvalidInputError
+        If a file is malformed, the two disagree on the rows, the frames are not ascending
+        frames of the run, or a record is malformed (as :meth:`FeatureWriter.write` checks
+        it) or names a point the run did not make.
+    """
+    root = Path(folder)
+    if not run.record_features:
+        raise FileNotFoundError(f"{root}: the run recorded no features")
+    pixels = _load(root / PIXELS, (2,), np.float32, mapped=True)
+    records = _load(root / RECORDS, (4,), np.int32, mapped=True)
+    name = str(root / RECORDS)
+    if len(pixels) != len(records):
+        raise InvalidInputError(f"{name}: {len(records)} records for {len(pixels)} pixels")
+    frame, level, fate, point = records.T
+    if np.any(np.diff(frame) < 0) or np.any((frame < 0) | (frame >= len(run.diagnostics))):
+        raise InvalidInputError(f"{name}: frames must ascend, each one of the run's")
+    _check_keypoints(pixels, level, fate, point, name)
+    if np.any(point >= len(run.points)):
+        raise InvalidInputError(f"{name}: a point must be one the run made")
+    return Features(pixels=pixels, records=records)
 
 
 @dataclass(frozen=True)

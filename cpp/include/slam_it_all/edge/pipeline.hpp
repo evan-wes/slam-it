@@ -57,6 +57,30 @@ enum class Placement : std::uint8_t {
 /// @return A static string.
 [[nodiscard]] const char* name(Placement placement);
 
+/// @brief What became of a keypoint on its frame, with the codes a run records
+///        (`slam_it_all.edge.pipeline.Fate`, whose docstring defines each): the first that
+///        applies.
+enum class Fate : std::uint8_t {
+  /// @brief No stage matched it, and no point was made of it.
+  kUnmatched = 0,
+  /// @brief The frame's last tracking stage matched it, and it was not tracked in the end.
+  kRejected = 1,
+  /// @brief An inlier of the frame's final pose.
+  kTracked = 2,
+  /// @brief A point was made of it on its frame.
+  kMade = 3,
+};
+
+/// @brief What became of each of a frame's keypoints, and the point concerned
+///        (`slam_it_all.edge.pipeline.Fates`).
+struct Fates {
+  /// @brief Each keypoint's fate.
+  std::vector<Fate> fate;
+  /// @brief The id of the point concerned: the one made of it, the one it was tracked to, or the
+  ///        one it was matched to and rejected from; -1 if unmatched.
+  std::vector<std::int64_t> point;
+};
+
 /// @brief How the stages went on one frame (`slam_it_all.edge.pipeline.FrameSummary`); each
 ///        empty where the stage did not run.
 struct FrameSummary {
@@ -94,6 +118,8 @@ struct FrameResult {
   double map_seconds{0.0};
   /// @brief How its stages went.
   FrameSummary summary;
+  /// @brief What became of each of its keypoints.
+  Fates fates;
 };
 
 /// @brief A life: the frame that made a point or keyframe, the frame that removed it or -1, and
@@ -162,6 +188,31 @@ class Pipeline {
     double map_seconds{0.0};
     /// @brief How its stages went.
     FrameSummary summary;
+    /// @brief The last tracking stage's match for each keypoint before refinement; empty if no
+    ///        stage gave them.
+    std::vector<std::int64_t> matched;
+    /// @brief The point made of each keypoint, -1 where none; empty if none were made.
+    std::vector<std::int64_t> made;
+  };
+
+  /// @brief A frame placed, as `place` gives it.
+  struct Placed {
+    /// @brief The placed frame, if any.
+    std::optional<Tracked> tracked;
+    /// @brief How it was placed.
+    FrameSummary summary;
+    /// @brief The last stage's match for each keypoint before refinement.
+    std::vector<std::int64_t> matched;
+  };
+
+  /// @brief A placed frame tracked against the local map, as `refine` gives it.
+  struct Refined {
+    /// @brief The tracked frame, if it kept enough inliers.
+    std::optional<Tracked> tracked;
+    /// @brief How the stage went.
+    LocalMapSummary summary;
+    /// @brief Its match for each keypoint before refinement.
+    std::vector<std::int64_t> matched;
   };
 
   /// @brief A pipeline before its first frame.
@@ -199,9 +250,9 @@ class Pipeline {
   /// @brief Track the last frame, or recover by PnP.
   /// @param m The map.
   /// @param frame The frame.
-  /// @return The placed frame, if any, and how it was placed; a stage's error.
-  [[nodiscard]] foundations::Result<std::pair<std::optional<Tracked>, FrameSummary>> place(
-      const Map& m, const Frame& frame) const;
+  /// @return The placed frame, if any, how it was placed, and the last stage's matches; a
+  ///         stage's error.
+  [[nodiscard]] foundations::Result<Placed> place(const Map& m, const Frame& frame) const;
 
   /// @brief Track the local map from a placed frame and count its points.
   /// @param m The map, its counts changed.
@@ -209,10 +260,11 @@ class Pipeline {
   /// @param placed The placed frame.
   /// @param wide Whether the frame is a recovery's or the next (the search widened).
   /// @param recent Whether a recovery was recent (more inliers needed).
-  /// @return The tracked frame, if it keeps enough inliers, and how the stage went; a stage's
-  ///         error.
-  [[nodiscard]] foundations::Result<std::pair<std::optional<Tracked>, LocalMapSummary>> refine(
-      Map& m, const Frame& frame, const Tracked& placed, bool wide, bool recent) const;
+  /// @return The tracked frame, if it keeps enough inliers, how the stage went, and its
+  ///         matches; a stage's error.
+  [[nodiscard]] foundations::Result<Refined> refine(Map& m, const Frame& frame,
+                                                    const Tracked& placed, bool wide,
+                                                    bool recent) const;
 
   /// @brief Date what this frame made and removed, and empty the map's archive of removals.
   void date();

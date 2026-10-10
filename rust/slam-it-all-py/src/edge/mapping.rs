@@ -12,7 +12,7 @@ use slam_it_all_foundations::nls;
 
 use super::edge_crossing::{
     camera_in, frame_in, map_dict, map_in, mode_in, options_in, rows_array, solves_list,
-    tracked_in, vector,
+    tracked_in, vector, vector_array,
 };
 use crate::common::{add_functions, enum_codes, to_i64, unwrap};
 
@@ -278,7 +278,7 @@ fn match_for_triangulation<'py>(
 ///
 /// # Returns
 ///
-/// The new map, as a dict, and how each step went: the summary's counts and `solves`.
+/// The new map, as a dict, how each step went (the summary's counts and `solves`), and `made`.
 ///
 /// # Errors
 ///
@@ -297,10 +297,11 @@ fn process<'py>(
     let (camera, frame, tracked) = (camera_in(camera)?, frame_in(frame)?, tracked_in(tracked)?);
     let (mode, options) = (mode_in(mode)?, options_in(options)?);
     let mut mapped = map_in(py, m)?;
-    let summary = unwrap(
+    let done = unwrap(
         py,
         core::process(&mut mapped, &camera, &frame, &tracked, mode, &options),
     )?;
+    let summary = &done.summary;
     let out = PyDict::new(py);
     out.set_item("map", map_dict(py, &mapped)?)?;
     out.set_item("from_depth", to_i64(summary.from_depth))?;
@@ -311,6 +312,7 @@ fn process<'py>(
     out.set_item("outliers", to_i64(summary.outliers))?;
     out.set_item("weak_points", to_i64(summary.weak_points))?;
     out.set_item("culled_keyframes", to_i64(summary.culled_keyframes))?;
+    out.set_item("made", vector_array(py, &done.made))?;
     Ok(out)
 }
 

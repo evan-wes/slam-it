@@ -21,7 +21,9 @@ builds each frame for the mode (:mod:`slam_it_all.edge.frames`), tracks it
   ``keyframe``, the time each step took, in seconds: the run format's
   :data:`slam_it_all.eval.runs.STEPS`; then how its stages went:
   :meth:`slam_it_all.edge.pipeline.FrameSummary.as_dict`'s keys) and, if tracked, its
-  ``T_world_cam``. The run ends at the frame that loses the track. The steps, as a camera and
+  ``T_world_cam``; with ``record_features``, its keypoints' pixels, levels and fates, streamed
+  to the run's folder as it goes (:class:`slam_it_all.eval.runs.FeatureWriter`). The run ends at
+  the frame that loses the track. The steps, as a camera and
   ORB-SLAM's threads divide them:
 
   - ``read_seconds``: delivering the frame's images, decoded (a depth map in metres), and a
@@ -53,6 +55,7 @@ process holds more than the run.
 
 from __future__ import annotations
 
+import contextlib
 import re
 import subprocess
 import sys
@@ -90,7 +93,8 @@ MODULE = "slam_it_all.orchestration.vo"
 
 USAGE = (
     f"usage: python -m {MODULE} --dataset tum|euroc --sequence PATH --mode "
-    "monocular|stereo|rgbd --out RUN_DIR [--first I] [--count N] [--option KEY=VALUE ...]"
+    "monocular|stereo|rgbd --out RUN_DIR [--first I] [--count N] [--record-features] "
+    "[--option KEY=VALUE ...]"
 )
 """Python's program's command line: the native programs' (their ``kUsage``/``USAGE``)."""
 
@@ -108,6 +112,9 @@ _ERRORS: tuple[type[SlamItAllError], ...] = (InvalidInputError, DegenerateError,
 
 _REQUIRED = ("--dataset", "--sequence", "--mode", "--out")
 """The flags every command line gives."""
+
+_RECORD_FEATURES = "--record-features"
+"""The one flag without a value: record each frame's keypoints, with their fates."""
 
 
 class UsageError(InvalidInputError):
@@ -134,6 +141,8 @@ class Request:
         The frames run from it, or None for all.
     options : slam_it_all.edge.options.Options
         The pipeline's settings.
+    record_features : bool
+        Whether the run records each frame's keypoints, with their fates.
     """
 
     dataset: str
@@ -143,6 +152,7 @@ class Request:
     first: int = 0
     count: int | None = None
     options: Options = field(default_factory=Options)
+    record_features: bool = False
 
     def arguments(self) -> list[str]:
         """Return the native program's command line for the request.
@@ -150,9 +160,9 @@ class Request:
         Returns
         -------
         list of str
-            The arguments after the program's name: every flag, and ``--option KEY=VALUE``
-            for each setting that differs from its default (integers as integers, reals
-            round-tripping).
+            The arguments after the program's name: every flag (``--record-features`` if
+            asked), and ``--option KEY=VALUE`` for each setting that differs from its default
+            (integers as integers, reals round-tripping).
         """
         out = [
             "--dataset",
@@ -168,6 +178,8 @@ class Request:
         ]
         if self.count is not None:
             out += ["--count", str(self.count)]
+        if self.record_features:
+            out.append("--record-features")
         defaults = Options()
         for setting in fields(Options):
             value, default = getattr(self.options, setting.name), getattr(defaults, setting.name)
@@ -250,8 +262,8 @@ def parse_setting(text: str) -> tuple[str, int | float]:
 def parse(arguments: Sequence[str]) -> Request:
     """Read a program's command line (:data:`USAGE`), as the native programs read theirs.
 
-    Flags come in any order, each with its value; ``--option KEY=VALUE`` is repeatable and
-    names a field of :class:`~slam_it_all.edge.options.Options`.
+    Flags come in any order, each with its value but ``--record-features``; ``--option
+    KEY=VALUE`` is repeatable and names a field of :class:`~slam_it_all.edge.options.Options`.
 
     Parameters
     ----------
@@ -274,11 +286,19 @@ def parse(arguments: Sequence[str]) -> Request:
     values: dict[str, str] = {}
     numbers: dict[str, int] = {}
     changes: dict[str, Any] = {}  # each of its field's type (parse_setting)
-    for i in range(0, len(arguments), 2):
+    i = 0
+    while i < len(arguments):
         flag = arguments[i]
+        if flag == _RECORD_FEATURES:
+            if flag in values:
+                raise UsageError(f"{flag}: given twice")
+            values[flag] = ""
+            i += 1
+            continue
         if i + 1 == len(arguments):
             raise UsageError(f"{flag}: expected a value")
         value = arguments[i + 1]
+        i += 2
         if flag == "--option":
             key, setting = parse_setting(value)
             changes[key] = setting
@@ -303,6 +323,7 @@ def parse(arguments: Sequence[str]) -> Request:
         first=numbers.get("--first", 0),
         count=numbers.get("--count"),
         options=replace(Options(), **changes),
+        record_features=_RECORD_FEATURES in values,
     )
 
 
@@ -344,6 +365,7 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
     first: int = 0,
     count: int | None = None,
     budget: budgets.Budget | None = None,
+    record_features: bool = False,
 ) -> runs.Run:
     """Run a sequence through the edge pipeline and write its run folder.
 
@@ -369,6 +391,9 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
         A compute budget to run within: the backend's program (Python's too, rather than the
         in-process run) pinned to the budget's cores and its memory capped
         (:func:`slam_it_all.eval.budgets.command`).
+    record_features : bool, optional
+        Whether to record each frame's keypoints, with their fates
+        (:func:`slam_it_all.eval.runs.read_features` reads them; default: no).
 
     Returns
     -------
@@ -400,6 +425,7 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
         first=first,
         count=count,
         options=Options() if options is None else options,
+        record_features=record_features,
     )
     backends.check_name(backend)
     check(request)
@@ -532,33 +558,40 @@ def _run_here(request: Request) -> runs.Run:
     times: list[float] = []
     poses: list[NDArray[np.float64]] = []
     diagnostics: list[dict[str, object]] = []
-    for i in range(request.first, end):
-        start = time.perf_counter()
-        delivered = source.read(i)
-        after_read = time.perf_counter()
-        if delivered is None:
-            continue
-        frame = _build(delivered, source.camera, tracker.extraction(), matching)
-        after_build = time.perf_counter()
-        result = tracker.track(frame)
-        diagnostics.append(
-            {
-                "timestamp": result.timestamp,
-                "state": result.state.value,
-                "tracked": result.tracked,
-                "keyframe": result.keyframe,
-                "read_seconds": after_read - start,
-                "build_seconds": after_build - after_read,
-                "track_seconds": result.track_seconds,
-                "map_seconds": result.map_seconds,
-                **result.summary.as_dict(),
-            }
-        )
-        if result.pose is not None:
-            poses.append(se3.inverse(result.pose))
-            times.append(result.timestamp)
-        if result.state is State.LOST:
-            break
+    recording: contextlib.AbstractContextManager[runs.FeatureWriter | None] = (
+        runs.FeatureWriter(request.out) if request.record_features else contextlib.nullcontext()
+    )
+    with recording as features:
+        for i in range(request.first, end):
+            start = time.perf_counter()
+            delivered = source.read(i)
+            after_read = time.perf_counter()
+            if delivered is None:
+                continue
+            frame = _build(delivered, source.camera, tracker.extraction(), matching)
+            after_build = time.perf_counter()
+            result = tracker.track(frame)
+            diagnostics.append(
+                {
+                    "timestamp": result.timestamp,
+                    "state": result.state.value,
+                    "tracked": result.tracked,
+                    "keyframe": result.keyframe,
+                    "read_seconds": after_read - start,
+                    "build_seconds": after_build - after_read,
+                    "track_seconds": result.track_seconds,
+                    "map_seconds": result.map_seconds,
+                    **result.summary.as_dict(),
+                }
+            )
+            if features is not None:
+                keypoints = frame.features.keypoints
+                features.write(keypoints.xy, keypoints.level, result.fates.fate, result.fates.point)
+            if result.pose is not None:
+                poses.append(se3.inverse(result.pose))
+                times.append(result.timestamp)
+            if result.state is State.LOST:
+                break
     lives = tracker.lifetimes()
     keyframes = lives.keyframe_poses
     return runs.Run(
@@ -575,6 +608,7 @@ def _run_here(request: Request) -> runs.Run:
         diagnostics=diagnostics,
         point_lives=lives.point_lives,
         keyframe_lives=lives.keyframe_lives,
+        record_features=request.record_features,
     )
 
 

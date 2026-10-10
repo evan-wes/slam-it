@@ -13,6 +13,7 @@
 #include <memory>
 #include <string_view>
 #include <system_error>
+#include <tuple>
 
 #include "slam_it_all/foundations/se3.hpp"
 #include "slam_it_all/foundations/so3.hpp"
@@ -267,6 +268,18 @@ std::vector<double> flatten(const std::vector<Eigen::Matrix4d>& poses) {
   return out;
 }
 
+/// @brief Create a run's folder, if it is not there.
+/// @param folder The folder.
+/// @return Nothing, or `InvalidInput` naming the folder.
+Result<void> create_folder(const fs::path& folder) {
+  std::error_code error;
+  fs::create_directories(folder, error);
+  if (error) {
+    return fail(ErrorKind::kInvalidInput, folder.string() + ": " + error.message());
+  }
+  return {};
+}
+
 /// @brief Write a file whole: to a temporary sibling, then renamed over it.
 /// @param path The file.
 /// @param data Its bytes.
@@ -399,6 +412,7 @@ Result<void> write_run(const std::string& folder, const Run& run) {
   std::string info_text = object_text(info);
   info_text.pop_back();
   info_text += ", \"settings\": " + object_text(run.settings);
+  info_text += std::string(", \"record_features\": ") + (run.record_features ? "true" : "false");
   const auto integer_or_null = [](const std::optional<std::int64_t>& value) {
     return value ? std::to_string(*value) : std::string("null");
   };
@@ -424,10 +438,8 @@ Result<void> write_run(const std::string& folder, const Run& run) {
     points.insert(points.end(), {p.x(), p.y(), p.z()});
   }
   const fs::path out(folder);
-  std::error_code error;
-  fs::create_directories(out, error);
-  if (error) {
-    return fail(ErrorKind::kInvalidInput, folder + ": " + error.message());
+  if (auto ok = create_folder(out); !ok) {
+    return ok;
   }
   const std::array<std::pair<const char*, std::string>, 8> files = {{
       {"run.json", info_text},
@@ -442,6 +454,86 @@ Result<void> write_run(const std::string& folder, const Run& run) {
   for (const auto& [name, data] : files) {
     if (auto ok = replace(out / name, data); !ok) {
       return ok;
+    }
+  }
+  return {};
+}
+
+Result<FeatureWriter> FeatureWriter::open(const std::string& folder) {
+  const fs::path out(folder);
+  if (auto ok = create_folder(out); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  const auto mode = std::ios::binary | std::ios::trunc | std::ios::out;
+  FeatureWriter writer(std::ofstream(out / kPixels, mode), std::ofstream(out / kRecords, mode));
+  if (!writer.pixels_ || !writer.records_) {
+    return fail(ErrorKind::kInvalidInput, folder + ": its feature files could not be written");
+  }
+  if (auto ok = writer.count(); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  return writer;
+}
+
+Result<void> FeatureWriter::write(std::span<const std::array<double, 2>> xy,
+                                  std::span<const std::int64_t> level,
+                                  std::span<const std::int64_t> fate,
+                                  std::span<const std::int64_t> point) {
+  const std::string name = "features of frame " + std::to_string(frames_);
+  const std::size_t n = xy.size();
+  if (level.size() != n || fate.size() != n || point.size() != n) {
+    return fail(ErrorKind::kInvalidInput,
+                name + ": expected xy (N, 2) and level, fate, point (N,)");
+  }
+  if (!std::ranges::all_of(xy, [](const std::array<double, 2>& p) {
+        return std::isfinite(p[0]) && std::isfinite(p[1]);
+      })) {
+    return fail(ErrorKind::kInvalidInput, name + ": pixels must be finite");
+  }
+  if (std::ranges::any_of(level, [](std::int64_t l) { return l < 0; })) {
+    return fail(ErrorKind::kInvalidInput, name + ": a level must be at least 0");
+  }
+  if (std::ranges::any_of(fate, [](std::int64_t f) { return f < 0 || f >= kFates; })) {
+    return fail(ErrorKind::kInvalidInput, name + ": a fate must be a code of FATES");
+  }
+  for (std::size_t j = 0; j < n; ++j) {
+    if (point[j] < -1 || (point[j] == -1) != (fate[j] == 0)) {
+      return fail(ErrorKind::kInvalidInput,
+                  name + ": a point must be an id, -1 exactly when unmatched");
+    }
+  }
+  std::string pixels;
+  std::string records;
+  pixels.reserve(n * 2 * sizeof(float));
+  records.reserve(n * 4 * sizeof(std::int32_t));
+  const auto append = [](std::string& out, auto value) {
+    const auto raw = std::bit_cast<std::array<char, sizeof(value)>>(value);
+    out.append(raw.data(), raw.size());
+  };
+  for (std::size_t j = 0; j < n; ++j) {
+    append(pixels, static_cast<float>(xy[j][0]));
+    append(pixels, static_cast<float>(xy[j][1]));
+    for (const std::int64_t value : {frames_, level[j], fate[j], point[j]}) {
+      append(records, static_cast<std::int32_t>(value));
+    }
+  }
+  pixels_.write(pixels.data(), static_cast<std::streamsize>(pixels.size()));
+  records_.write(records.data(), static_cast<std::streamsize>(records.size()));
+  ++frames_;
+  rows_ += n;
+  return count();
+}
+
+Result<void> FeatureWriter::count() {
+  for (auto [file, columns, descr] : {std::tuple{&pixels_, std::size_t{2}, "<f4"},
+                                      std::tuple{&records_, std::size_t{4}, "<i4"}}) {
+    const std::string header = npy_header({rows_, columns}, descr);
+    file->seekp(0);
+    file->write(header.data(), static_cast<std::streamsize>(header.size()));
+    file->seekp(0, std::ios::end);
+    file->flush();
+    if (!*file) {
+      return fail(ErrorKind::kInvalidInput, std::string("a feature file could not be written"));
     }
   }
   return {};

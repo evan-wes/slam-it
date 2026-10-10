@@ -117,10 +117,15 @@ class Mapped:
         The map.
     summary : MappingSummary
         How each step went.
+    made : ndarray of int64, shape (N,)
+        The id of the point made for each of the keyframe's keypoints (from its depth, or
+        triangulated), -1 where none: as made, though fusion or culling may since have removed
+        it.
     """
 
     map: Map
     summary: MappingSummary
+    made: IntArray
 
 
 _COUNTS = (
@@ -140,8 +145,8 @@ class Implementation(Protocol):
 
     The map crosses as :meth:`Map.as_dict`, a frame as
     :meth:`slam_it_all.edge.frames.Frame.as_dict`, a tracked frame as :meth:`Tracked.as_dict`, the
-    mode by name. A mapped keyframe crosses back as a dict of ``map``, the summary's counts and
-    ``solves`` (as :func:`slam_it_all.edge.adjust.decode_solves` reads them).
+    mode by name. A mapped keyframe crosses back as a dict of ``map``, the summary's counts,
+    ``solves`` (as :func:`slam_it_all.edge.adjust.decode_solves` reads them) and ``made``.
     """
 
     def codes(self) -> dict[str, list[str]]:
@@ -221,6 +226,7 @@ def _decode_mapped(raw: Crossing, codes: backends.Codes) -> Mapped:
     return Mapped(
         map=maps.decode(raw["map"], codes),
         summary=MappingSummary(solves=adjust.decode_solves(raw["solves"], codes), **counts),
+        made=backends.checked_array(raw["made"], np.int64, 1, "made ids"),
     )
 
 
@@ -256,6 +262,12 @@ def _world(pose: Array, local: Array) -> Array:
 def _keypoint_indices(m: Map, k: int) -> IntArray:
     """Return a keyframe's keypoint rows."""
     return np.arange(m.kf_start[k], m.kf_start[k + 1], dtype=np.int64)
+
+
+def _made_since(m: Map, first: int) -> IntArray:
+    """Return the points from id `first` on that the newest keyframe observes, by keypoint."""
+    ids = m.kp_point[_keypoint_indices(m, m.keyframes - 1)]
+    return np.where(ids >= first, ids, -1)
 
 
 def _from_depth(m: Map, k: int, rows: IntArray) -> Array:
@@ -961,14 +973,16 @@ def _process(  # noqa: PLR0913 -- the stage's state
 ) -> Mapped:
     """Insert a keyframe and run local mapping on it (reference)."""
     m = maps.insert_keyframe(m, frame, tracked.pose, tracked.points)
-    start = m.points
+    start, first = m.points, m.next_pt_id
     if mode != "monocular":
         m = _create_points_from_depth(m, camera, options)
-    with_depth = m.points
+    with_depth, from_depth = m.points, _made_since(m, first)
     m = _cull_points(m, mode, options)
     culled = m.points
     m = _triangulate_new_points(m, camera, mode, options)
     triangulated = m.points
+    # Taken before fusion, which may replace a new point; a depth point culled since stays made.
+    made = np.where(from_depth >= 0, from_depth, _made_since(m, first))
     m = _fuse_points(m, camera, options)
     fused = m.points
     solves: tuple[adjust.Solve, ...] = ()
@@ -988,7 +1002,7 @@ def _process(  # noqa: PLR0913 -- the stage's state
         weak_points=fused - m.points,
         culled_keyframes=keyframes - m.keyframes,
     )
-    return Mapped(map=m, summary=summary)
+    return Mapped(map=m, summary=summary, made=made)
 
 
 def process(  # noqa: PLR0913 -- the stage's state, and the backend
@@ -1023,7 +1037,8 @@ def process(  # noqa: PLR0913 -- the stage's state, and the backend
     Returns
     -------
     Mapped
-        The map after local mapping, and how each step went.
+        The map after local mapping, how each step went, and the points made for the
+        keyframe's keypoints.
 
     Raises
     ------

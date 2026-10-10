@@ -14,9 +14,10 @@ decisions, and its diff shows them (review panel finding A1).
 
 Per room, dataset and mode: each frame's state, tracked inliers and keyframe flag; the tracked
 frames' times and ``T_world_cam``; the final map's keyframes' times and its number of points;
-every point's and keyframe's life (the run format's ``*_lives.npy``), as three columns each; and
-each frame's stage summaries (:class:`slam_it_all.edge.pipeline.FrameSummary`), one line per
-frame.
+every point's and keyframe's life (the run format's ``*_lives.npy``), as three columns each;
+each frame's count of keypoints of each fate (:data:`slam_it_all.eval.runs.FATES`), a column per
+fate; and each frame's stage summaries (:class:`slam_it_all.edge.pipeline.FrameSummary`), one
+line per frame.
 The record also holds its inputs (:func:`tests.orchestration.datasets.room_inputs`), which the
 tests check first. The two monocular cases decide alike, the room being the same in both
 datasets' folders; both are kept, since each holds a different reader.
@@ -28,6 +29,8 @@ import json
 import tempfile
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 from slam_it_all.edge.pipeline import FrameSummary
 from slam_it_all.eval import runs
@@ -59,13 +62,36 @@ def summaries(run: runs.Run) -> list[dict[str, Any]]:
     return [{key: d[key] for key in SUMMARY_KEYS} for d in run.diagnostics]
 
 
-def record(run: runs.Run) -> dict[str, Any]:
+def fate_counts(run: runs.Run, features: runs.Features) -> list[list[int]]:
+    """Return each frame's count of keypoints of each fate.
+
+    Parameters
+    ----------
+    run : slam_it_all.eval.runs.Run
+        The run.
+    features : slam_it_all.eval.runs.Features
+        Its feature records.
+
+    Returns
+    -------
+    list of list of int
+        One column per fate of :data:`slam_it_all.eval.runs.FATES`, one count per frame.
+    """
+    counts = np.zeros((len(runs.FATES), len(run.diagnostics)), dtype=np.int64)
+    frame, fate = features.records[:, 0], features.records[:, 2]
+    np.add.at(counts, (fate, frame), 1)
+    return counts.tolist()
+
+
+def record(run: runs.Run, features: runs.Features) -> dict[str, Any]:
     """Return what a run decided, as the record holds it.
 
     Parameters
     ----------
     run : slam_it_all.eval.runs.Run
         The run.
+    features : slam_it_all.eval.runs.Features
+        Its feature records.
 
     Returns
     -------
@@ -73,9 +99,9 @@ def record(run: runs.Run) -> dict[str, Any]:
         Each frame's state (one string), tracked inliers and keyframe flag (0 or 1); the
         tracked frames' times and ``T_world_cam``, a row of 16 each; the final map's keyframes'
         times and number of points; the lives of every point and keyframe, as columns (made,
-        removed, why); each frame's stage summaries. Columns of numbers, and one summary per
-        frame, so the record lays out one line per column or frame and a changed decision
-        shows as a changed line.
+        removed, why); each frame's count of keypoints of each fate, a column per fate; each
+        frame's stage summaries. Columns of numbers, and one summary per frame, so the record
+        lays out one line per column or frame and a changed decision shows as a changed line.
     """
     return {
         "states": " ".join(d["state"] for d in run.diagnostics),
@@ -87,6 +113,7 @@ def record(run: runs.Run) -> dict[str, Any]:
         "points": len(run.final_points()),
         "point_lives": run.point_lives.T.tolist(),
         "keyframe_lives": run.keyframe_lives.T.tolist(),
+        "fates": fate_counts(run, features),
         "summaries": summaries(run),
     }
 
@@ -120,9 +147,8 @@ def main() -> None:
             for dataset, mode in CASES:
                 folder = folders.tum if dataset == "tum" else folders.euroc
                 out = base / f"{name}-{dataset}-{mode}"
-                cases[f"{name}/{dataset}/{mode}"] = record(
-                    vo.run(dataset, folder, mode, out, options=options)
-                )
+                run = vo.run(dataset, folder, mode, out, options=options, record_features=True)
+                cases[f"{name}/{dataset}/{mode}"] = record(run, runs.read_features(out, run))
     doc = {
         "description": "The room's runs: a golden record (generate_room_runs.py).",
         "oracle": "the Python reference pipeline, as it decided when the record was made",

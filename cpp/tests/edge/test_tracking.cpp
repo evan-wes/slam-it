@@ -118,8 +118,8 @@ void check_local_map(const edge::Map& m, int& failures) {
                                            edge::Mode::kRgbd, edge::Options{});
   expect(local.has_value() && edge::inliers(local->tracked) == 60 && local->visible.size() == 60 &&
              local->found.size() == 60 && gap(local->tracked.pose, scene::pose(2)) < 1e-6 &&
-             local->matches == 60 && edge::summary(*local).in_view == 60 &&
-             edge::summary(*local).inliers == 60,
+             local->matched == local->tracked.points && edge::summary(*local).matches == 60 &&
+             edge::summary(*local).in_view == 60 && edge::summary(*local).inliers == 60,
          "the local map matches every point and pins the pose", failures);
   const auto placed =
       edge::relocalize_locally(m, scene::camera(), scene::frame(2, true), edge::Options{});

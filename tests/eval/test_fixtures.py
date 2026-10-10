@@ -74,3 +74,14 @@ def test_the_golden_run_reads_back() -> None:
     assert run.points.tolist() == values["points"]
     assert run.settings == values["settings"]
     assert run.diagnostics == values["diagnostics"]
+    assert run.record_features is values["record_features"]
+    features = runs.read_features(FIXTURES / "run", run)
+    frames = values["features"]
+    pixels = np.concatenate([np.reshape(frame["xy"], (-1, 2)) for frame in frames])
+    np.testing.assert_array_equal(features.pixels, pixels.astype(np.float32))
+    records = [
+        [k, *row]
+        for k, frame in enumerate(frames)
+        for row in zip(frame["level"], frame["fate"], frame["point"], strict=True)
+    ]
+    assert features.records.tolist() == records

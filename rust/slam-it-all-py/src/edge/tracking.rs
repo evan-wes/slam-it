@@ -119,7 +119,7 @@ fn in_view<'py>(
 ///
 /// # Returns
 ///
-/// `tracked` (a dict, or None), `matches`, `widened` and `inliers` (or None).
+/// `tracked` (a dict, or None), `matches`, `widened`, `inliers` (or None) and `matched`.
 ///
 /// # Errors
 ///
@@ -159,6 +159,7 @@ fn track_last_frame<'py>(
     out.set_item("matches", to_i64(motion.summary.matches))?;
     out.set_item("widened", motion.summary.widened)?;
     out.set_item("inliers", count_or_none(py, motion.summary.inliers)?)?;
+    out.set_item("matched", vector_array(py, &motion.matched))?;
     Ok(out)
 }
 
@@ -176,7 +177,7 @@ fn track_last_frame<'py>(
 ///
 /// # Returns
 ///
-/// `pose`, `points`, `visible`, `found` and `matches`.
+/// `pose`, `points`, `visible`, `found` and `matched`.
 ///
 /// # Errors
 ///
@@ -212,7 +213,7 @@ fn track_local_map<'py>(
     let out = tracked_dict(py, &local.tracked)?;
     out.set_item("visible", vector_array(py, &local.visible))?;
     out.set_item("found", vector_array(py, &local.found))?;
-    out.set_item("matches", to_i64(local.matches))?;
+    out.set_item("matched", vector_array(py, &local.matched))?;
     Ok(out)
 }
 
@@ -227,7 +228,7 @@ fn track_local_map<'py>(
 ///
 /// # Returns
 ///
-/// `tracked` (a dict, or None) and the summary's fields: `candidates`, `matches`,
+/// `tracked` (a dict, or None), `matched`, and the summary's fields: `candidates`, `matches`,
 /// `iterations`, `termination` (its code in `ransac_termination`), `degenerate`, `inliers` and
 /// `refined`, each count None where the fallback stopped before it.
 ///
@@ -270,6 +271,7 @@ fn relocalize_locally<'py>(
     out.set_item("degenerate", summary.degenerate)?;
     out.set_item("inliers", count_or_none(py, summary.inliers)?)?;
     out.set_item("refined", count_or_none(py, summary.refined)?)?;
+    out.set_item("matched", vector_array(py, &recovery.matched))?;
     Ok(out)
 }
 

@@ -2,7 +2,10 @@
 /// @brief Implementation of the pipeline declared in slam_it_all/edge/pipeline.hpp.
 #include "slam_it_all/edge/pipeline.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <cstdint>
+#include <utility>
 #include <vector>
 
 #include "slam_it_all/edge/mapping.hpp"
@@ -14,6 +17,24 @@ namespace slam_it_all::edge {
 using foundations::ErrorKind;
 using foundations::fail;
 using foundations::Result;
+
+namespace {
+
+/// @brief Give a fate to the keypoints a stage gave a point, over any fate before it
+///        (`slam_it_all.edge.pipeline._Step.fates`, applied rejected, tracked, then made).
+/// @param fates The frame's fates, changed.
+/// @param fate The fate.
+/// @param ids Each keypoint's point, -1 where none; empty if no stage gave them.
+void mark(Fates& fates, Fate fate, const std::vector<std::int64_t>& ids) {
+  for (std::size_t j = 0; j < std::min(ids.size(), fates.fate.size()); ++j) {
+    if (ids[j] >= 0) {
+      fates.fate[j] = fate;
+      fates.point[j] = ids[j];
+    }
+  }
+}
+
+}  // namespace
 
 const char* name(State state) {
   switch (state) {
@@ -77,6 +98,13 @@ Result<FrameResult> Pipeline::track(const Frame& frame) {
   date();
   const std::chrono::duration<double> took = std::chrono::steady_clock::now() - start;
   const std::optional<Tracked>& tracked = step.tracked;
+  Fates fates{.fate = std::vector<Fate>(keypoint_count(frame), Fate::kUnmatched),
+              .point = std::vector<std::int64_t>(keypoint_count(frame), -1)};
+  mark(fates, Fate::kRejected, step.matched);
+  if (tracked) {
+    mark(fates, Fate::kTracked, tracked->points);
+  }
+  mark(fates, Fate::kMade, step.made);
   return FrameResult{.timestamp = frame.timestamp,
                      .state = state_,
                      .pose = tracked ? std::optional<Eigen::Matrix4d>(tracked->pose) : std::nullopt,
@@ -84,7 +112,8 @@ Result<FrameResult> Pipeline::track(const Frame& frame) {
                      .keyframe = step.keyframe,
                      .track_seconds = took.count() - step.map_seconds,
                      .map_seconds = step.map_seconds,
-                     .summary = std::move(step.summary)};
+                     .summary = std::move(step.summary),
+                     .fates = std::move(fates)};
 }
 
 Lifetimes Pipeline::lifetimes() const {
@@ -162,7 +191,9 @@ Result<Pipeline::Step> Pipeline::initialize(const Frame& frame) {
                         .motion = std::nullopt,
                         .pnp = std::nullopt,
                         .local_map = std::nullopt,
-                        .mapping = std::nullopt}};
+                        .mapping = std::nullopt},
+            .matched = {},
+            .made = {}};
   if (!attempt->started) {
     return step;
   }
@@ -172,6 +203,7 @@ Result<Pipeline::Step> Pipeline::initialize(const Frame& frame) {
   if (auto ok = accept(frame, tracked); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
+  step.made = tracked.points;  // every point the frame observes was made of it
   step.tracked = std::move(tracked);
   step.keyframe = true;
   step.summary.placed_by = Placement::kInitialization;
@@ -242,8 +274,7 @@ void Pipeline::record_failure() {
   }
 }
 
-Result<std::pair<std::optional<Tracked>, FrameSummary>> Pipeline::place(const Map& m,
-                                                                        const Frame& frame) const {
+Result<Pipeline::Placed> Pipeline::place(const Map& m, const Frame& frame) const {
   if (!last_frame_ || !last_tracked_) {
     return fail(ErrorKind::kInvalidInput, "track: no last frame to track from");
   }
@@ -259,7 +290,9 @@ Result<std::pair<std::optional<Tracked>, FrameSummary>> Pipeline::place(const Ma
   summary.motion = motion->summary;
   if (motion->tracked) {
     summary.placed_by = Placement::kMotion;
-    return std::pair{std::move(motion->tracked), std::move(summary)};
+    return Placed{.tracked = std::move(motion->tracked),
+                  .summary = std::move(summary),
+                  .matched = std::move(motion->matched)};
   }
   auto recovery = relocalize_locally(m, camera_, frame, options_);
   if (!recovery) {
@@ -269,11 +302,13 @@ Result<std::pair<std::optional<Tracked>, FrameSummary>> Pipeline::place(const Ma
   if (recovery->tracked) {
     summary.placed_by = Placement::kLocalPnp;
   }
-  return std::pair{std::move(recovery->tracked), std::move(summary)};
+  return Placed{.tracked = std::move(recovery->tracked),
+                .summary = std::move(summary),
+                .matched = std::move(recovery->matched)};
 }
 
-Result<std::pair<std::optional<Tracked>, LocalMapSummary>> Pipeline::refine(
-    Map& m, const Frame& frame, const Tracked& placed, bool wide, bool recent) const {
+Result<Pipeline::Refined> Pipeline::refine(Map& m, const Frame& frame, const Tracked& placed,
+                                           bool wide, bool recent) const {
   auto local = track_local_map(m, camera_, frame, placed, mode_, options_, wide);
   if (!local) {
     return std::unexpected(std::move(local.error()));
@@ -288,12 +323,14 @@ Result<std::pair<std::optional<Tracked>, LocalMapSummary>> Pipeline::refine(
   if (auto ok = count(m, local->found, unfound, found); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
-  const LocalMapSummary summary = edge::summary(*local);
+  Refined out{.tracked = std::nullopt,
+              .summary = edge::summary(*local),
+              .matched = std::move(local->matched)};
   const std::int64_t needed = recent ? options_.recovery_tracked : options_.min_tracked;
-  if (inliers(local->tracked) < needed) {
-    return std::pair{std::optional<Tracked>(), summary};
+  if (inliers(local->tracked) >= needed) {
+    out.tracked = std::move(local->tracked);
   }
-  return std::pair{std::optional<Tracked>(std::move(local->tracked)), summary};
+  return out;
 }
 
 Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
@@ -305,7 +342,7 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
   if (!placed) {
     return std::unexpected(std::move(placed.error()));
   }
-  auto& [where, summary] = *placed;
+  auto& [where, summary, matched] = *placed;
   if (summary.placed_by == Placement::kLocalPnp) {
     since_recovery_ = 0;
   } else if (since_recovery_) {
@@ -319,15 +356,18 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
     if (!refined) {
       return std::unexpected(std::move(refined.error()));
     }
-    tracked = std::move(refined->first);
-    summary.local_map = refined->second;
+    tracked = std::move(refined->tracked);
+    summary.local_map = refined->summary;
+    matched = std::move(refined->matched);
   }
   if (!tracked) {
     record_failure();
     return Step{.tracked = std::nullopt,
                 .keyframe = false,
                 .map_seconds = 0.0,
-                .summary = std::move(summary)};
+                .summary = std::move(summary),
+                .matched = std::move(matched),
+                .made = {}};
   }
   const bool held = recent && std::cmp_greater(keyframe_count(m), options_.max_frames);
   auto need = held ? Result<bool>(false)
@@ -336,6 +376,7 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
     return std::unexpected(std::move(need.error()));
   }
   std::chrono::duration<double> mapped{0.0};
+  std::vector<std::int64_t> made;
   if (*need) {
     const auto start = std::chrono::steady_clock::now();
     auto mapping = process(m, camera_, frame, *tracked, mode_, options_);
@@ -343,7 +384,8 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
       return std::unexpected(std::move(mapping.error()));
     }
     mapped = std::chrono::steady_clock::now() - start;
-    summary.mapping = std::move(*mapping);
+    summary.mapping = std::move(mapping->summary);
+    made = std::move(mapping->made);
   }
   if (auto ok = accept(frame, *tracked); !ok) {
     return std::unexpected(std::move(ok.error()));
@@ -351,7 +393,9 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
   return Step{.tracked = std::move(tracked),
               .keyframe = *need,
               .map_seconds = mapped.count(),
-              .summary = std::move(summary)};
+              .summary = std::move(summary),
+              .matched = std::move(matched),
+              .made = std::move(made)};
 }
 
 }  // namespace slam_it_all::edge

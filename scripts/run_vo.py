@@ -5,7 +5,9 @@ written, with ``--reuse``), then prints what it holds: frames tracked, keyframes
 its frames judged against their real-time deadline (:func:`slam_it_all.eval.budgets.judge`), and
 what its program recorded of its process (peak memory, CPUs, memory cap). ``--budget
 laptop-cpu`` runs the backend's program within that compute budget
-(:mod:`slam_it_all.eval.budgets`), pinned and its memory capped. With the
+(:mod:`slam_it_all.eval.budgets`), pinned and its memory capped. ``--record-features`` records
+each frame's keypoints with their fates, for the run viewer
+(:func:`slam_it_all.eval.runs.read_features`). With the
 sequence's ground truth (TUM's ``groundtruth.txt``, EuRoC's ``state_groundtruth_estimate0``) it
 prints the ATE (Sim(3)-aligned for monocular, SE(3) otherwise) and the RPE over one frame
 period (:func:`slam_it_all.eval.runs.evaluate`). With ``--rerun FILE.rrd`` it saves a rerun
@@ -236,6 +238,9 @@ def main() -> None:
         "--option", action="append", default=[], metavar="KEY=VALUE", help="a setting"
     )
     parser.add_argument(
+        "--record-features", action="store_true", help="record each frame's keypoints and fates"
+    )
+    parser.add_argument(
         "--reuse", action="store_true", help="read the run already in --out instead of running"
     )
     parser.add_argument("--rerun", type=Path, help="save a rerun recording to this .rrd file")
@@ -250,6 +255,7 @@ def main() -> None:
             "--count": args.count,
             "--option": args.option or None,
             "--budget": args.budget,
+            "--record-features": args.record_features or None,
         }
         given = [flag for flag, value in running.items() if value is not None]
         if given:
@@ -269,6 +275,7 @@ def main() -> None:
             first=args.first or 0,
             count=args.count,
             budget=budget,
+            record_features=args.record_features,
         )
         if budget is not None:
             print(f"within {budget.name} ({budget.stands_for})")

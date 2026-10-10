@@ -12,6 +12,7 @@
 #include <expected>
 #include <filesystem>
 #include <functional>
+#include <iterator>
 #include <optional>
 #include <span>
 #include <string>
@@ -50,6 +51,9 @@ using foundations::Result;
 using foundations::camera::Model;
 
 using foundations::image::Image;
+
+/// @brief The one flag without a value: record each frame's keypoints, with their fates.
+constexpr std::string_view kRecordFeatures = "--record-features";
 
 /// @brief A stereo pair, rectified.
 struct StereoImages {
@@ -479,15 +483,35 @@ Result<void> record_lives(eval::runs::Run& out, const edge::Lifetimes& lives) {
   return {};
 }
 
+/// @brief Append a frame's keypoints, with their fates, to the run's feature files.
+/// @param features The writer.
+/// @param frame The frame.
+/// @param fates What became of each of its keypoints.
+/// @return Nothing; the writer's error.
+Result<void> write_features(eval::runs::FeatureWriter& features, const edge::Frame& frame,
+                            const edge::Fates& fates) {
+  std::vector<std::array<double, 2>> xy;
+  std::vector<std::int64_t> level;
+  for (const foundations::orb::Keypoint& keypoint : frame.features.keypoints) {
+    xy.push_back(keypoint.xy);
+    level.push_back(keypoint.level);
+  }
+  std::vector<std::int64_t> fate;
+  std::ranges::transform(fates.fate, std::back_inserter(fate),
+                         [](edge::Fate f) { return static_cast<std::int64_t>(f); });
+  return features.write(xy, level, fate, fates.point);
+}
+
 /// @brief Track a sequence's frames, from the first asked for, until the end or the track
 ///        is lost.
 /// @param source The sequence.
 /// @param pipeline The pipeline.
 /// @param request The request.
 /// @param out The run, each frame recorded.
-/// @return Nothing; a reader's, a frame builder's or the pipeline's error.
+/// @param features The writer of each frame's keypoints, if the run records them.
+/// @return Nothing; a reader's, a frame builder's, the pipeline's or the feature writer's error.
 Result<void> track(const Source& source, edge::Pipeline& pipeline, const Request& request,
-                   eval::runs::Run& out) {
+                   eval::runs::Run& out, eval::runs::FeatureWriter* features) {
   using Clock = std::chrono::steady_clock;
   using Seconds = std::chrono::duration<double>;
   const auto first = static_cast<std::size_t>(request.first);
@@ -519,6 +543,11 @@ Result<void> track(const Source& source, edge::Pipeline& pipeline, const Request
             record(out, *result, Seconds(read - start).count(), Seconds(built - read).count());
         !recorded) {
       return recorded;
+    }
+    if (features != nullptr) {
+      if (const auto written = write_features(*features, *frame, result->fates); !written) {
+        return written;
+      }
     }
     if (result->state == edge::State::kLost) {
       break;
@@ -631,18 +660,26 @@ Result<void> read_flag(Request& out, std::string_view flag, const std::string& v
 Result<Request> parse(std::span<const std::string> arguments) {
   Request out;
   std::vector<std::string_view> seen;
-  for (std::size_t i = 0; i < arguments.size(); i += 2) {
+  std::size_t i = 0;
+  while (i < arguments.size()) {
     const std::string& flag = arguments[i];
-    if (i + 1 == arguments.size()) {
-      return fail(ErrorKind::kInvalidInput, flag + ": expected a value");
-    }
     if (flag != "--option" && std::ranges::find(seen, flag) != seen.end()) {
       return fail(ErrorKind::kInvalidInput, flag + ": given twice");
+    }
+    if (flag == kRecordFeatures) {
+      seen.emplace_back(flag);
+      out.record_features = true;
+      ++i;
+      continue;
+    }
+    if (i + 1 == arguments.size()) {
+      return fail(ErrorKind::kInvalidInput, flag + ": expected a value");
     }
     seen.emplace_back(flag);
     if (const auto read = read_flag(out, flag, arguments[i + 1]); !read) {
       return std::unexpected(read.error());
     }
+    i += 2;
   }
   for (const std::string_view required : {"--dataset", "--sequence", "--mode", "--out"}) {
     if (std::ranges::find(seen, required) == seen.end()) {
@@ -688,7 +725,17 @@ Result<eval::runs::Run> run(const Request& request) {
   out.mode = edge::name(request.mode);
   out.backend = "cpp";
   out.settings = settings(request.options);
-  if (const auto tracked = track(*source, *pipeline, request, out); !tracked) {
+  out.record_features = request.record_features;
+  std::optional<eval::runs::FeatureWriter> features;
+  if (request.record_features) {
+    auto opened = eval::runs::FeatureWriter::open(request.out);
+    if (!opened) {
+      return std::unexpected(opened.error());
+    }
+    features = std::move(*opened);
+  }
+  if (const auto tracked = track(*source, *pipeline, request, out, features ? &*features : nullptr);
+      !tracked) {
     return std::unexpected(tracked.error());
   }
   if (const auto recorded = record_lives(out, pipeline->lifetimes()); !recorded) {
