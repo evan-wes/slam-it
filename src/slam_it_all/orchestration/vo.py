@@ -437,11 +437,22 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
 
 
 @dataclass(frozen=True)
-class _Delivered:
+class Delivered:
     """A frame's images as a camera delivers them: decoded, and a stereo pair rectified.
 
     A monocular frame has its image only, a stereo frame the right image too, and an RGB-D
     frame its depth map, in metres.
+
+    Attributes
+    ----------
+    timestamp : float
+        The frame's time, in seconds.
+    image : ndarray of uint8, shape (H, W)
+        Its gray image (the left one, rectified, for stereo).
+    right : ndarray of uint8, shape (H, W), or None
+        A stereo frame's right image, rectified.
+    depth : ndarray of float64, shape (H, W), or None
+        An RGB-D frame's depth map, in metres.
     """
 
     timestamp: float
@@ -450,21 +461,32 @@ class _Delivered:
     depth: NDArray[np.float64] | None = None
 
 
-_Reader = Callable[[int], _Delivered | None]
-"""Delivers the images at an index: None for a frame the run skips."""
-
-
 @dataclass(frozen=True)
-class _Source:
-    """A sequence opened for a run: the camera, its frames, and how to read each."""
+class Source:
+    """A sequence opened for a run (:func:`open_source`): its camera and frames.
+
+    Attributes
+    ----------
+    camera : slam_it_all.edge.frames.Camera
+        The camera the pipeline runs with: a stereo pair's rectified left camera.
+    times : ndarray of float64, shape (F,)
+        Each frame's time, in seconds, in the sequence's order.
+    read : callable
+        ``read(i)``: frame ``i``'s images as delivered (:class:`Delivered`); None for a frame
+        the run skips (an RGB-D frame without a depth map).
+    view : callable
+        ``view(i)``: frame ``i``'s image as the pipeline sees it (a stereo pair's left image
+        rectified), in colour where the sequence has colour: uint8, (H, W) or (H, W, 3).
+    """
 
     camera: frames.Camera
-    count: int
-    read: _Reader
+    times: NDArray[np.float64]
+    read: Callable[[int], Delivered | None]
+    view: Callable[[int], NDArray[np.uint8]]
 
 
 def _build(
-    delivered: _Delivered,
+    delivered: Delivered,
     camera: frames.Camera,
     extraction: orb.Options,
     matching: stereo.Options,
@@ -482,7 +504,7 @@ def _build(
     return frames.monocular(delivered.image, delivered.timestamp, camera, extraction)
 
 
-def _tum_source(root: Path, mode: str) -> _Source:
+def _tum_source(root: Path, mode: str) -> Source:
     """Open a TUM-format folder: its camera, an RGB-D one with the virtual baseline."""
     read = tum.read_frames(root)
     sensor = read.camera
@@ -496,20 +518,23 @@ def _tum_source(root: Path, mode: str) -> _Source:
         baseline = sensor.bf / float(sensor.intrinsics[0])
     camera = frames.Camera(sensor.model, sensor.intrinsics, sensor.width, sensor.height, baseline)
 
-    def deliver(i: int) -> _Delivered | None:
+    def deliver(i: int) -> Delivered | None:
         gray = images.read_gray(read.images[i])
         timestamp = float(read.timestamps[i])
         if mode == "monocular":
-            return _Delivered(timestamp, gray)
+            return Delivered(timestamp, gray)
         depth_file = read.depths[i]
         if depth_file is None:
             return None
-        return _Delivered(timestamp, gray, depth=tum.read_depth(depth_file, sensor.depth_scale))
+        return Delivered(timestamp, gray, depth=tum.read_depth(depth_file, sensor.depth_scale))
 
-    return _Source(camera, len(read.images), deliver)
+    def view(i: int) -> NDArray[np.uint8]:
+        return images.read_rgb(read.images[i])
+
+    return Source(camera, np.asarray(read.timestamps, dtype=np.float64), deliver, view)
 
 
-def _stereo_source(read: euroc.Frames) -> _Source:
+def _stereo_source(read: euroc.Frames) -> Source:
     """Open a EuRoC sequence's stereo pairs, rectified: the rectified left camera."""
     left, right = read.left_camera, read.right_camera
     rectification = stereo.rectify(
@@ -519,17 +544,20 @@ def _stereo_source(read: euroc.Frames) -> _Source:
     rows, cols = left.shape
     camera = frames.Camera("pinhole", rectification.intrinsics, cols, rows, rectification.baseline)
 
-    def deliver(i: int) -> _Delivered:
+    def deliver(i: int) -> Delivered:
         left_image, right_image = (
             image.remap(images.read_gray(path), coordinates)
             for path, coordinates in zip((read.left[i], read.right[i]), maps, strict=True)
         )
-        return _Delivered(float(read.timestamps[i]), left_image, right=right_image)
+        return Delivered(float(read.timestamps[i]), left_image, right=right_image)
 
-    return _Source(camera, len(read.left), deliver)
+    def view(i: int) -> NDArray[np.uint8]:
+        return image.remap(images.read_gray(read.left[i]), maps[0])
+
+    return Source(camera, np.asarray(read.timestamps, dtype=np.float64), deliver, view)
 
 
-def _euroc_source(root: Path, mode: str) -> _Source:
+def _euroc_source(root: Path, mode: str) -> Source:
     """Open a EuRoC sequence: its left camera for monocular, the pairs rectified for stereo."""
     read = euroc.read_frames(root)
     if mode == "stereo":
@@ -538,21 +566,49 @@ def _euroc_source(root: Path, mode: str) -> _Source:
     rows, cols = left.shape
     camera = frames.Camera("radtan", left.intrinsics, cols, rows)
 
-    def deliver(i: int) -> _Delivered:
-        return _Delivered(float(read.timestamps[i]), images.read_gray(read.left[i]))
+    def deliver(i: int) -> Delivered:
+        return Delivered(float(read.timestamps[i]), images.read_gray(read.left[i]))
 
-    return _Source(camera, len(read.left), deliver)
+    def view(i: int) -> NDArray[np.uint8]:
+        return images.read_gray(read.left[i])
+
+    return Source(camera, np.asarray(read.timestamps, dtype=np.float64), deliver, view)
+
+
+def open_source(dataset: str, sequence: str | Path, mode: str) -> Source:
+    """Open a dataset's sequence as a run reads it.
+
+    Parameters
+    ----------
+    dataset : {"tum", "euroc"}
+        The dataset.
+    sequence : str or pathlib.Path
+        The sequence's folder.
+    mode : {"monocular", "stereo", "rgbd"}
+        The sensor mode (checked with the dataset by :func:`check`).
+
+    Returns
+    -------
+    Source
+        The camera, the frames' times, and their readers.
+
+    Raises
+    ------
+    FileNotFoundError
+        If a file of the sequence is missing.
+    slam_it_all.foundations.errors.InvalidInputError
+        If a file is malformed, or an RGB-D sequence's camera gives no ``bf``.
+    """
+    root = Path(sequence)
+    return _tum_source(root, mode) if dataset == "tum" else _euroc_source(root, mode)
 
 
 def _run_here(request: Request) -> runs.Run:
     """Run the request with the Python pipeline, in-process."""
-    if request.dataset == "tum":
-        source = _tum_source(request.sequence, request.mode)
-    else:
-        source = _euroc_source(request.sequence, request.mode)
+    source = open_source(request.dataset, request.sequence, request.mode)
     matching = request.options.stereo_matching()
     tracker = Pipeline(request.mode, source.camera, request.options)
-    end = source.count
+    end = len(source.times)
     if request.count is not None:
         end = min(end, request.first + request.count)
     times: list[float] = []

@@ -110,8 +110,16 @@ class RoomRun:
 
     def features(self, dataset: str, mode: str, backend: str) -> runs.Features:
         """Return a case's feature records."""
-        run = self(dataset, mode, backend)
-        return runs.read_features(self._folder((dataset, mode, backend)), run)
+        return runs.read_features(self.folder(dataset, mode, backend), self(dataset, mode, backend))
+
+    def folder(self, dataset: str, mode: str, backend: str) -> Path:
+        """Return a case's run folder, run the first time it is asked for."""
+        self(dataset, mode, backend)
+        return self._folder((dataset, mode, backend))
+
+    def sequence(self, dataset: str) -> Path:
+        """Return the folder a dataset's runs read."""
+        return self._folders.tum if dataset == "tum" else self._folders.euroc
 
     def _folder(self, key: tuple[str, str, str]) -> Path:
         """Return a case's run folder."""

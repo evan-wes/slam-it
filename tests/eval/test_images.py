@@ -72,3 +72,32 @@ def test_rejects_a_decompression_bomb(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("PIL.Image.MAX_IMAGE_PIXELS", 1)
     with pytest.raises(InvalidInputError, match="not a readable image"):
         images.read_gray(FOLDER / "png" / "gray.png")
+
+
+@pytest.mark.parametrize("shape", [(24, 32), (24, 32, 3)])
+def test_encode_jpeg_round_trips_closely(shape: tuple[int, ...], tmp_path: Path) -> None:
+    """A gray or RGB image comes back as itself, within JPEG's loss on a smooth image."""
+    rows, cols = np.mgrid[0 : shape[0], 0 : shape[1]]
+    smooth = (4 * rows + 3 * cols).astype(np.uint8)
+    picture = smooth if len(shape) == 2 else np.stack([smooth, smooth // 2, 255 - smooth], -1)
+    path = tmp_path / "frame.jpg"
+    path.write_bytes(images.encode_jpeg(picture, 95))
+    back = images.read_gray(path) if len(shape) == 2 else images.read_rgb(path)
+    assert back.shape == picture.shape
+    assert np.abs(back.astype(int) - picture).mean() < 2.0
+
+
+@pytest.mark.parametrize(
+    ("picture", "quality", "message"),
+    [
+        (np.zeros((4, 4), dtype=np.uint16), 90, "expected a uint8 array"),
+        (np.zeros((4, 4, 4), dtype=np.uint8), 90, r"expected \(H, W\) or \(H, W, 3\)"),
+        (np.zeros(4, dtype=np.uint8), 90, r"expected \(H, W\) or \(H, W, 3\)"),
+        (np.zeros((4, 4), dtype=np.uint8), 0, "quality: expected 1 to 95"),
+        (np.zeros((4, 4), dtype=np.uint8), 96, "quality: expected 1 to 95"),
+    ],
+)
+def test_encode_jpeg_refuses(picture: np.ndarray, quality: int, message: str) -> None:
+    """Not 8-bit gray or RGB, or a quality outside Pillow's range."""
+    with pytest.raises(InvalidInputError, match=message):
+        images.encode_jpeg(picture, quality)

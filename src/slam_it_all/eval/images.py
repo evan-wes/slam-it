@@ -1,4 +1,4 @@
-"""Reading images from disk: the one module that imports Pillow.
+"""Reading images from disk, and encoding them as JPEG: the one module that imports Pillow.
 
 The C++ and Rust cores decode PNGs natively (stb_image in C++'s ``slam_it_all_eval``, the ``png``
 crate in Rust's ``slam-it-all-eval``); this is Python's side, and the three read a file the same
@@ -11,11 +11,15 @@ way:
 - **Colour:** RGB as stored; gray replicated into three channels; alpha dropped.
 - **Depth:** a 16-bit single-channel PNG's raw values; the dataset modules scale them.
 
+:func:`encode_jpeg` encodes a frame for the run viewer's bundles
+(:mod:`slam_it_all.orchestration.bundles`).
+
 An import-linter contract keeps Pillow here: no other slam_it_all module may import it.
 """
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import numpy as np
@@ -151,3 +155,34 @@ def read_depth(path: str | Path) -> NDArray[np.uint16]:
     if values.min(initial=0) < 0 or values.max(initial=0) > np.iinfo(np.uint16).max:
         raise InvalidInputError(f"{path}: values outside 16 bits")
     return np.ascontiguousarray(values, dtype=np.uint16)
+
+
+def encode_jpeg(picture: NDArray[np.uint8], quality: int) -> bytes:
+    """Encode an 8-bit image as a JPEG file's bytes (baseline, 4:2:0 for colour).
+
+    Parameters
+    ----------
+    picture : ndarray of uint8, shape (H, W) or (H, W, 3)
+        A gray or RGB image.
+    quality : int
+        The JPEG quality, from 1 to 95 (Pillow's useful range).
+
+    Returns
+    -------
+    bytes
+        The file's bytes.
+
+    Raises
+    ------
+    slam_it_all.foundations.errors.InvalidInputError
+        If the image is not 8-bit gray or RGB, or the quality is out of range.
+    """
+    if not isinstance(picture, np.ndarray) or picture.dtype != np.uint8:
+        raise InvalidInputError("picture: expected a uint8 array")
+    if picture.ndim != 2 and (picture.ndim != 3 or picture.shape[2] != 3):
+        raise InvalidInputError(f"picture: expected (H, W) or (H, W, 3), got {picture.shape}")
+    if not 1 <= quality <= 95:  # Pillow's documented range
+        raise InvalidInputError(f"quality: expected 1 to 95, got {quality}")
+    buffer = io.BytesIO()
+    Image.fromarray(np.ascontiguousarray(picture)).save(buffer, format="JPEG", quality=quality)
+    return buffer.getvalue()
