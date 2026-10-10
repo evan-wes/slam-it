@@ -40,9 +40,10 @@ suggest starting a session inside the SLAM It All! repository. Consequences:
 
 Frames (`T_a_b`; solvers use `T_cam_world`), right perturbations, `(ρ, θ)` tangent order,
 xyzw Hamilton quaternions, the array encoding of every geometric type, pixel centres, exact
-pyramid coordinates (never `x s^l`), exact floats (scalar, unfused), Eigen storage and plain
-Cholesky are fixed in the design doc's "Conventions" section. Read it before writing geometry
-code or a binding.
+pyramid coordinates (never `x s^l`), exact floats (scalar, unfused), Eigen's product blocking
+fixed (every C++ entry point calls `foundations::linalg::fix_product_blocking` first, so a run
+repeats on every core of a hybrid CPU), Eigen storage and plain Cholesky are fixed in the design
+doc's "Conventions" section. Read it before writing geometry code or a binding.
 
 **The project's name** is SLAM It All! in prose. Code uses `slam_it_all` (the Python package,
 the C++ namespace, libraries and programs, the extension modules); everything else uses

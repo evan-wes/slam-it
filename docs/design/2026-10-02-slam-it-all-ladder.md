@@ -279,6 +279,14 @@ on ARM whatever the flag says (Eigen enables FMA packets wherever the target has
 exactly compared path never goes through them; results that do, such as rectification, are
 compared to a tolerance.
 
+**A run rounds the same on every core** (from PR 10). Eigen blocks a large product by the
+cache sizes of the core that runs its first one, and the blocks set the order of its sums; on a
+hybrid CPU the core types report different caches, so the C++ program's runs differed in their
+last bits by where the process started. Every C++ entry point (the native program, the Python
+extension) first fixes the sizes to Eigen's own defaults
+(`foundations::linalg::fix_product_blocking`), so a run repeats bit for bit. Rust's products
+block by fixed sizes already.
+
 **Structured problems cross as structs of arrays.** A BA problem, for example, crosses as:
 - float64 values;
 - `int64` index arrays (`cam_idx`, `pt_idx`);

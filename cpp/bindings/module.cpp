@@ -10,9 +10,11 @@
 #include "common.hpp"
 #include "edge/edge.hpp"
 #include "foundations/foundations.hpp"
+#include "slam_it_all/foundations/linalg.hpp"
 
 NB_MODULE(_cpp, m) {
   m.doc() = "SLAM It All!'s C++ core. Submodules mirror the slam_it_all package tree.";
+  slam_it_all::foundations::linalg::fix_product_blocking();
   slam_it_all::bindings::register_error_translation();
   slam_it_all::bindings::bind_foundations(m);
   slam_it_all::bindings::bind_edge(m);

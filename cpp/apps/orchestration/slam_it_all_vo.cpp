@@ -17,6 +17,7 @@
 #include "slam_it_all/eval/budgets.hpp"
 #include "slam_it_all/eval/runs.hpp"
 #include "slam_it_all/foundations/error.hpp"
+#include "slam_it_all/foundations/linalg.hpp"
 #include "slam_it_all/orchestration/vo.hpp"
 
 namespace {
@@ -62,6 +63,7 @@ int run(std::span<const std::string> arguments) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  slam_it_all::foundations::linalg::fix_product_blocking();
   try {
     const std::span<char*> given(argv, static_cast<std::size_t>(argc));
     const std::span<char*> after = given.empty() ? given : given.subspan(1);
