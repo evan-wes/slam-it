@@ -6,7 +6,10 @@ run through the C++ pipeline and opened in the run viewer. The import
 (`slam_it_all.orchestration.worker`), the upload server (`server/`, `slam_it_all_server`) and its
 pages (`viewer/`). The plan was `docs/design/2026-10-09-run-viewer.md`, section 5; the choices
 made while building it are its section 9. This note is what was built, how it was checked, and
-what still waits for real phone clips.
+what still waits for real phone clips. The review panel and a security pass read it all
+([report](../reviews/2026-10-11-feature-your-own-video.md),
+[security](../reviews/2026-10-11-feature-your-own-video-security.md)); what they changed is
+described here as built.
 
 ## The problem
 
@@ -20,17 +23,26 @@ video.
 ## The import
 
 `slam_it_all.eval.video` turns a recording into a TUM-format folder without depth, which the
-readers in all three languages already take.
+readers in all three languages already take (written by `eval.tum`'s writers, beside its
+readers).
 
-- **A video** is decoded with PyAV (an import-linter contract keeps PyAV in this module), turned
-  upright by the rotation the file declares, timed by each frame's presentation time (a frame
-  closer than 1/40 s to the last kept is skipped, so 60 fps becomes 30), and scaled down, never
-  up, to a 480-pixel short side (16:9 becomes 854×480).
+- **A video** is opened with FFmpeg's mov/mp4 demuxer alone, as a file alone: any other
+  container is refused, so the playlist and reference formats that open other files never read
+  an upload. It is decoded with PyAV (an import-linter contract keeps PyAV in this module),
+  turned upright by the rotation the file declares, timed by each frame's presentation time (a
+  frame closer than 1/40 s to the last kept is skipped, so 60 fps becomes 30), and scaled down,
+  never up, to a 480-pixel short side (16:9 becomes 854×480).
 - **A Stray Scanner zip** is read in place: only `rgb.mp4`, `camera_matrix.csv` and
   `odometry.csv` are opened, each against its own cap; a name that is absolute, climbs out of its
-  folder or repeats refuses the zip. ARKit's poses become `groundtruth.txt`, in our camera axes.
-- **Caps:** 500 MB an upload and 60 s a video. The folder is written beside its own and moved
-  onto it once whole, so a refused import leaves nothing.
+  folder or repeats refuses the zip, and so does an entry it cannot give back whole. Stray
+  Scanner's conventions were read in its source: its `OdometryEncoder.swift` writes each pose's
+  rotation already in our camera's axes (ARKit's rotation times a half turn about x), so the
+  poses become `groundtruth.txt` as written; and its encoders stamp the first frame before the
+  video's session starts, which an MP4 hides behind an edit list, so `rgb.mp4` is decoded with
+  its edit list ignored.
+- **Caps:** 500 MB an upload and 60 s a video; a frame at most 7680 pixels long and 3 to 1, so
+  that a frame written is at most 1440 by 480; at most 14,400 frames. The folder is written
+  beside its own and moved onto it once whole, so a refused import leaves nothing.
 - **`source.json`** records the intrinsics and their source and at most four metadata fields
   (make, model, lens, 35mm-equivalent focal length). Location tags are never copied.
 
@@ -43,41 +55,63 @@ The best source wins, and the status page names it:
 4. a nominal field of view: 71.66 degrees across the diagonal, the median of the 766 usable
    main-camera profiles.
 
-The profiles are fetched at a pinned commit, never committed. A profile is usable if it is in
-OpenCV's fisheye model, unstretched, uncropped, calibrated within 2 px RMS, and its model holds
-out to its image's corners: 1,047 of the 1,164 phone profiles. A video matches a profile on its
-brand and model, whole; on its lens's kind (main, ultrawide, telephoto, front); and on its
-aspect and orientation. The nearest resolution, frame rate and calibration error then decide.
-A fisheye video is undistorted to pinhole at import, so the pipeline never sees a fisheye.
+The profiles are fetched at a pinned commit, never committed, and required: a missing database
+is an error, never a silent fall to the fallbacks. A profile is usable if it is in OpenCV's
+fisheye model, unstretched, uncropped, calibrated within 2 px RMS, and its model holds out to its
+image's corners: 1,047 of the 1,164 phone profiles. A video matches a profile on its brand and
+model, whole; on its lens's kind (main, ultrawide, telephoto, front), from Apple's lens name, or,
+where the name says none (the Camera app's "back triple camera"), from the 35mm-equivalent focal
+length, a name and a focal length that disagree trusting no profile; and on its aspect and
+orientation. The nearest resolution, frame rate and calibration error then decide. A fisheye
+video is undistorted to pinhole at import, so the pipeline never sees a fisheye; the model and
+its undistortion map agree with OpenCV's `cv2.fisheye`.
 
 ## The worker
 
 `slam_it_all.orchestration.worker` connects out to the server, holding only its token. For each
 job it claims, it downloads the upload, then in a child process under a memory limit (6 GiB of
-address space) and a 20-minute timeout imports it, runs the C++ pipeline, monocular, with
-features recorded, and bakes the bundle; it uploads the bundle's files to the links the server
-gives, and reports the job done or failed. It reports each stage as it starts, and again every
-30 s while the child works on it: the job's heartbeat. A reason fit to show is an import's or
-the pipeline's own message, the worker's paths taken out; anything else is "an internal error".
-An upload is imported into a folder named `your-video`, which is the name the viewer shows.
+address space), a file-size limit (2 GiB) and a 20-minute timeout imports it, runs the C++
+pipeline, monocular, with features recorded, and bakes the bundle; it uploads the bundle's files
+to the links the server gives, and reports the job done or failed. An upload is imported into a
+folder named `your-video`, which is the name the viewer shows.
+
+- **Its heartbeat:** each stage is reported as it starts and again every 30 s while it lasts,
+  the download and uploads included. A report that does not reach the server is logged and the
+  job goes on; only a 409 lets it go.
+- **Supervision:** the child starts a session of its own, so it and the C++ program it starts
+  are one process group, killed whole whenever the job ends; in its image, tini reaps whatever a
+  killed job leaves. The child inherits only the environment it needs, never the token.
+- **What is said:** a reason fit to show is an import's or the pipeline's own message, the
+  worker's paths taken out; anything else is "an internal error" to the owner, and logged with
+  the job's id and its traceback for the operator.
+- **Trust:** it refuses a server or link that is not `http` or `https`, and plain `http` to a
+  host that may be on the public internet.
 
 ## The server
 
 `slam_it_all_server` keeps the job list in SQLite and hands out storage links; it never imports
-`slam_it_all`, and a contract holds it to that.
+`slam_it_all` (nor a decoder, an image library or reifyscene), and a contract holds it to that.
 
-- **A job** waits for its upload (1 hour), is queued (1 day), goes through the worker's stages,
-  and ends done, failed or expired. It is deleted with its files 7 days after it ends. It has two
-  names: an id for workers and storage, and a 128-bit token for its owner's link.
+- **A job** waits for its upload (15 minutes, its upload link's life), is queued (1 day), goes
+  through the worker's stages, and ends done, failed or expired. It is deleted 7 days after it
+  ends, its files first: a deletion that fails is logged, and the job stays listed for the next
+  sweep to try again. It has two names: an id for workers, storage and the log, and a 128-bit
+  token for its owner's link.
 - **Storage** is a private S3 bucket, or a folder on this machine whose links the server signs
-  and serves. An upload link is a PUT signed for the size the owner declared, so storage refuses
-  any other; the server checks that size against the 500 MB cap first. A done job's files are
-  redirected to storage's own links, never proxied.
-- **The guards:** an invite code to upload; one job worked on at a time and 5 open at most; a job
-  not heard from for 2 minutes fails; the upload deleted when the import ends; at most 1,000
-  files and 1 GB a result; request bodies capped at 64 KiB outside storage; every answer marked
-  `noindex` and sending no `Referer`; on staging, every page behind a code. Invite codes need 12
-  characters, the worker token and the signing key 32.
+  and serves, every file as a download. An upload link is a PUT signed for the size the owner
+  declared, so storage refuses any other; the server checks that size against the 500 MB cap
+  first. A confirmed upload is moved where its owner's link cannot reach it, and whatever the
+  link writes later is deleted once it has expired. A done job's files, only a bundle's kinds of
+  file, are redirected to storage's own links, never proxied.
+- **The guards:** an invite code to upload, at most 2 jobs open per code and 5 in all; one job
+  worked on at a time; a job not heard from for 2 minutes fails; the upload deleted when the
+  import ends; at most 1,000 files and 1 GB a result; request bodies capped at 64 KiB outside
+  storage; every answer marked `noindex`, sending no `Referer`, under a Content Security Policy
+  (scripts from the site, three.js's CDN and the import map by its hash; connections to the
+  site and storage); on staging, every page behind a code. Invite codes need 12 characters,
+  made at random, the worker token and the signing key 32.
+- **The log** names jobs by their id, and a code by its keyed hash; uvicorn's access log, which
+  would hold tokens and signed links, is off.
 - **Settings** come from environment variables, listed with placeholders in
   `server/settings.template.env`. Nothing about a deployment is in the repository.
 - **`python -m slam_it_all_server`** listens on IPv6 and IPv4 at once when given `::`, as the
@@ -88,19 +122,22 @@ An upload is imported into a folder named `your-video`, which is the name the vi
 ## The pages
 
 The upload page (`/`) checks a file against the caps, sends it straight to storage with a
-progress bar, and says what to expect and what is kept. The status page (`/r/<token>`) follows
-the job's stages, then shows its summary with the intrinsics' source and the viewer's link, or
-why it failed. Both sit in `viewer/` beside the run viewer, under its checks, and share its
-style; their logic is `viewer/src/jobs.js`. The server serves only the viewer's pages, its
-stylesheet and its modules.
+progress bar, and says what to expect, what is kept, and who sees what: the service the server
+runs on logs requests, and the fonts' and three.js's CDNs see each visitor's address. The status
+page (`/r/<token>`) follows the job's stages, then shows its summary with the intrinsics' source
+and the viewer's link, or why it failed. Both sit in `viewer/` beside the run viewer, under its
+checks, and share its style; their logic is `viewer/src/jobs.js`. The viewer reads a bundle from
+its own site only, and loads three.js pinned by its hashes. The server serves only the viewer's
+pages, its stylesheet and its modules.
 
 ## Running it
 
 **On this machine:** `python scripts/serve_demo.py` runs the server, with a folder as storage,
 and one worker, and prints the page's address and a new invite code. With `--lan` it listens on
-the local network too, so a phone on the same Wi-Fi can upload. Everything goes in one folder
-(`--data`, by default a new temporary one). Ctrl-C, or a SIGTERM, stops the server and the
-worker together.
+the local network too, so a phone on the same Wi-Fi can upload, and every page then asks for the
+code (any name, the code as the password). Everything goes in one folder (`--data`, by default a
+new temporary one). Ctrl-C, or a SIGTERM, stops the server and the worker together, and the
+server stops if the worker does.
 
 **The images** build from the repository's root:
 
@@ -110,10 +147,11 @@ docker build -f docker/worker.Dockerfile -t slam-it-all-worker .
 ```
 
 - **The server's** holds `slam_it_all_server` and the pages, and no `slam_it_all`, compiler or
-  decoder.
+  decoder. Its entrypoint, run as root, gives the job list's folder to the server's own user and
+  drops to it.
 - **The worker's** is built in two stages: the first compiles the wheel, C++ extension and
   programs included, against Eigen 5.0.1 checked out at its tag's commit; the second installs it
-  with PyAV and fetches the lens profiles, so a job never reaches out for them.
+  with PyAV and tini and fetches the lens profiles, so a job never reaches out for them.
 - The env's lock (`scripts/locks/slam-it-all.lock`) pins every Python package both install,
   and the base image is pinned by digest.
 
@@ -122,23 +160,32 @@ docker build -f docker/worker.Dockerfile -t slam-it-all-worker .
 On Railway, in the `timedilated` project, after PR 11 merges. Each step is taken on its own, with
 its own Yes, and the domain waits for the go-live call.
 
-1. **The bucket**, private. Its CORS lets the server's address PUT (with `Content-Type`) and GET.
+1. **The bucket**, private. Its CORS lets exactly the server's address, never `*`, PUT (with
+   `Content-Type`) and GET. If Railway's buckets take a lifecycle rule, one deletes `uploads/`
+   and `imports/` after 2 days and `results/` after 8, behind the server's own deletions.
 2. **`slam-it-all`**, the server: `docker/server.Dockerfile`, a volume at `/data`,
-   `RAILWAY_RUN_UID=0` (Railway mounts volumes as root, and the image runs as its own user),
-   `PORT=8000`, and the variables of `server/settings.template.env`, with `SLAM_IT_ALL_STORAGE=s3`,
-   the bucket's credentials, `SLAM_IT_ALL_DATABASE=/data/jobs.sqlite3`, the Railway address as
-   `SLAM_IT_ALL_PUBLIC_URL`, and `SLAM_IT_ALL_STAGING=1`. The signing key is needed with S3 too.
+   `RAILWAY_RUN_UID=0` (Railway mounts volumes as root; the entrypoint gives the folder to the
+   server's user and drops to it at once), `PORT=8000`, and the variables of
+   `server/settings.template.env`, with `SLAM_IT_ALL_STORAGE=s3`, the bucket's credentials,
+   `SLAM_IT_ALL_DATABASE=/data/jobs.sqlite3`, the Railway address as `SLAM_IT_ALL_PUBLIC_URL`,
+   and `SLAM_IT_ALL_STAGING=1`. The signing key is needed with S3 too.
 3. **`slam-it-all-worker`**: `docker/worker.Dockerfile`, no domain,
    `SLAM_IT_ALL_WORKER_TOKEN` as the server's, and
    `SLAM_IT_ALL_SERVER=http://slam-it-all.railway.internal:8000`.
-4. **The check:** `/healthz`; a clip uploaded from a phone; the job done; the viewer opened from
-   its link.
+4. **The check:**
+   - `/healthz`, and `curl -I http://` to the Railway address redirecting to `https://`, so
+     that staging's Basic auth never crosses in clear;
+   - a PUT of the wrong size through a fresh upload link, refused by the bucket;
+   - a clip uploaded from a phone; the job done; the viewer opened from its link, with no
+     Content Security Policy error in the browser's console.
 
 ## The demo checklist
 
 Before showing it in person:
-- run `python scripts/serve_demo.py --lan` on the laptop, open the printed address on a phone
-  on the same Wi-Fi, and upload a short clip of the room through to the viewer;
+- run `python scripts/serve_demo.py --lan` on the laptop, on a network you trust (a phone's
+  hotspot rather than a café's Wi-Fi: the demo is plain HTTP), open the printed address on a
+  phone, give the code as the password, and upload a short clip of the room through to the
+  viewer;
 - keep a baked bundle at hand (`scripts/view_bundle.py`) in case the network fails;
 - give the invite code to whoever records.
 
@@ -151,22 +198,28 @@ and deleting it is the last step.
 ## Checks
 
 - **The import:** the room encoded with PyAV, losslessly, imported upright from its side, thinned
-  from 60 fps, scaled, and tracked within the room's monocular ATE bound (3 cm); a Stray Scanner
-  zip of the room imports with the room's poses as its ground truth (to 1e-9); hostile zips and
-  malformed CSVs refused, leaving nothing.
-- **The intrinsics:** profiles matched or not by phone, lens, orientation and aspect; the room
-  rendered through a fisheye undistorts to its pinhole view.
+  from 60 fps, scaled, and tracked within the room's monocular ATE bound (3 cm); blobs at known
+  rays through a phone's profile, stored with a rotation of 90, -90 or 180, land within 0.1 px of
+  where the written camera projects them; a Stray Scanner zip written as its encoders write one
+  imports with the room's poses as its ground truth (to 1e-9); other containers, oversized or
+  too many frames, hostile zips and malformed CSVs refused, leaving nothing.
+- **The intrinsics:** profiles matched or not by phone, lens, focal length, orientation and
+  aspect; the fisheye model's turning point, refusals and failure to hold; the projection and
+  the map against OpenCV; the room rendered through a fisheye undistorts to its pinhole view.
 - **The worker,** against a stand-in server on a local port: the room's zip run end to end, its
-  stages and heartbeat, refusals, a timeout, a server letting the job go, an oversized upload, a
-  child out of memory.
+  stages and heartbeat, transfers included, refusals, a timeout, a server letting the job go, a
+  report lost or a failure report refused, an oversized upload, a child out of memory; a job's
+  processes gone after a timeout, a 409 and an orphan; its environment and the URLs it trusts.
 - **The server,** with FastAPI's test client and folder storage: every route and guard, the job
-  list's life, queue and sweep, S3's links signed offline; the caps and names that the import,
-  worker, server and pages each hold, held equal; and an end-to-end run with the server under
-  uvicorn and the real worker on the room's zip.
+  list's life, caps and sweep, a deletion retried, a replayed upload link, the logs, the
+  Content Security Policy; S3's links signed, and its errors read, offline (botocore's
+  Stubber); the caps and names that the import, worker, server and pages each hold, held equal;
+  and an end-to-end run with the server under uvicorn and the real worker on the room's zip.
 - **The pages' logic** in Node, and the whole path by hand in a headless browser: upload, status,
   the worker, the viewer.
 - **The images,** by hand: one job through both containers on a private Docker network, from the
   room's Stray Scanner zip and from its video, read back through the result's link.
+- **Breaking each fix** the review panel asked for, one at a time, fails a test.
 
 ## What waits for the real clips
 
@@ -174,9 +227,14 @@ The tests run on the room's synthetic recordings. A short clip from each test ph
 Pro, Pixel 8, Galaxy A15) and a Stray Scanner recording, kept outside the repo, will check:
 - the rotation's direction on a real portrait video;
 - Stray Scanner's zip layout, the frame size `camera_matrix.csv` describes, `odometry.csv`'s
-  columns and ARKit's axes;
+  columns, and the conventions read in its source (its poses' axes, its first frame's stamp);
 - whether Android videos name their phone, and how lenses are named in real metadata;
-- whether the 35mm-equivalent focal length is taken across the diagonal;
+- whether the 35mm-equivalent focal length is taken across the diagonal, and whether the nominal
+  field of view should be one per aspect: the pooled median, 71.66 degrees, mixes 16:9 and 4:3
+  main-camera profiles, whose own medians differ by about 11 degrees;
+- whether a profile calibrated at a 16-row-padded size (3840x2176, the Pixel 8's main among them)
+  is cropped, not stretched, to a 16:9 video;
+- whether a phone ever writes a mirror in its display matrix, which reads as a half turn;
 - how far `odometry.csv`'s per-frame intrinsics stray from the camera matrix, which the import
   does not record yet.
 
@@ -186,3 +244,6 @@ Pro, Pixel 8, Galaxy A15) and a Stray Scanner recording, kept outside the repo, 
 - Comparing the intrinsics' sources in the web app: measured once, on Stray Scanner recordings,
   and written up outside the repo.
 - A GPU worker: the same protocol, run elsewhere, for reifyscene.
+- Before going public (the security pass, and the ladder's open items): the result's token out
+  of every path, so that no host's log holds it; the fonts self-hosted and HSTS on the domain; a
+  token per worker; the lock's hashes required in the images.

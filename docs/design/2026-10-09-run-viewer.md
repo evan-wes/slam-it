@@ -164,8 +164,10 @@ A bundle holds:
   - the sequence, mode and camera, and the frame count and times;
   - the backends, the frames each covers, and the alignment each was moved by;
   - whether there is ground truth;
-  - the run format's fates and step names, which the page checks against its own;
-  - for a phone video, the intrinsics' source.
+  - the run format's fates and step names, which the page checks against its own.
+
+  A phone video's intrinsics' source is named by its status page (PR 11), not yet by the
+  bundle.
 - **The images:** the frames as JPEG, written through `eval.images` (the one module allowed to
   use Pillow). They are stored in chunks of 100 frames with their byte offsets, so scrubbing
   fetches a few files rather than thousands. They are in colour where the source has it.
@@ -528,3 +530,10 @@ Made while building, within the design, and reported to evan-wes:
 - the server listens on IPv6 and IPv4 at once, for Railway's private network, and a stopping
   server waits at most 3 s for open requests, so that a worker's held claim does not hold up a
   redeploy.
+
+PR 11's review panel and its security pass, and how each of their findings was resolved, are in
+[the panel's report](../reviews/2026-10-11-feature-your-own-video.md) and
+[the security pass's](../reviews/2026-10-11-feature-your-own-video-security.md). Decided with
+evan-wes on 2026-10-11: every must-fix fixed; the should-fix findings and notes as recommended,
+a few parts deferred to before going public (the ladder's open items); and an invite code
+capped at two open jobs, a waiting job expiring with its 15-minute upload link.
