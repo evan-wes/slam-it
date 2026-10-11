@@ -339,12 +339,14 @@ source_modules = ["slam_it_all"]
 forbidden_modules = ["slam_it_all_server", "fastapi", "starlette", "uvicorn", "boto3", "botocore"]
 
 # The pipeline and its bake never need the optional `video` extra: eval.video alone imports
-# PyAV, and the Pillow-style allow-list above cannot see a chain through it.
+# PyAV, and the Pillow-style allow-list above cannot see a chain through it. Of orchestration,
+# only the worker, which imports an upload, may import it: any module added beside it may not.
 [[tool.importlinter.contracts]]
-name = "The pipeline and the bake never import the video import"
+name = "Of orchestration, only the worker imports the video import"
 type = "forbidden"
-source_modules = ["slam_it_all.orchestration.vo", "slam_it_all.orchestration.bundles"]
+source_modules = ["slam_it_all.orchestration"]
 forbidden_modules = ["slam_it_all.eval.video"]
+ignore_imports = ["slam_it_all.orchestration.worker -> slam_it_all.eval.video"]
 
 # The order of modules inside the upload server: its entry point, the routes, the job list and
 # storage beside each other, and the settings at the bottom.
