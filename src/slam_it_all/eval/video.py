@@ -26,7 +26,15 @@ nothing (one killed outright leaves that folder, which nothing reads: it is safe
   EuRoC's are (16:9 becomes 854 by 480), the intrinsics scaled with them.
 - Kept in colour, as PNG (:func:`slam_it_all.eval.images.write_png`).
 
-**Caps.** An upload over :data:`MAX_BYTES` or a video over :data:`MAX_SECONDS` is refused.
+**Caps.** An upload over :data:`MAX_BYTES` or a video over :data:`MAX_SECONDS` is refused, and
+so is a frame longer than :data:`MAX_LONG_SIDE` or narrower than :data:`MAX_ASPECT` to one, so
+that a frame written is at most 1440 by 480, and a video of more than :data:`MAX_DECODED`
+frames.
+
+**Containers.** An upload is opened with FFmpeg's mov/mp4 demuxer alone, which phones' videos
+and Stray Scanner's are in, and with files as its only protocol. Any other container is
+refused, so the playlist and reference formats that open other files (``hls``, ``concat``,
+``dash``) never read an upload.
 
 **Intrinsics** (:class:`slam_it_all.eval.lenses.Chosen`) describe the frames as the file
 stores them, before the declared rotation, at the file's size, as a camera matrix or a lens
@@ -37,8 +45,18 @@ bilinear :func:`slam_it_all.foundations.image.remap`, so the pipeline only sees 
 **Stray Scanner zips** are read in place, never unpacked under the names they contain. Only
 ``rgb.mp4``, ``camera_matrix.csv`` and ``odometry.csv`` are opened, each size checked against
 its own cap before and while it is read; anything else is ignored. A name that is absolute,
-climbs out of a folder or appears twice refuses the zip. The CSVs are parsed strictly: numbers
-only, and one ``odometry.csv`` row per video frame.
+climbs out of a folder or appears twice refuses the zip, and so does one the zip cannot give
+back whole. The CSVs are parsed strictly: numbers only, and one ``odometry.csv`` row per video
+frame.
+
+**Stray Scanner's own conventions**, read in its source
+(https://github.com/strayrobots/scanner, ``StrayScanner/Helpers/``):
+- ``OdometryEncoder.swift`` writes each pose's rotation already in our camera's axes (x right, y
+  down, z forwards): ARKit's camera rotation times a half turn about x
+  (``q_WA * q_AC``, ``q_AC = (1, 0, 0, 0)``). So the poses are used as written.
+- ``DatasetEncoder.swift`` and ``VideoEncoder.swift`` stamp the first frame at -1/60 s, before
+  the video's session starts, which an MP4 hides behind an edit list. So ``rgb.mp4`` is decoded
+  with its edit list ignored, and every frame has its ``odometry.csv`` row.
 
 **Metadata.** ``source.json`` records the intrinsics' source and the metadata fields the import
 read (:data:`METADATA_KEYS`). Location tags and every other field are never copied.
@@ -47,8 +65,8 @@ read (:data:`METADATA_KEYS`). Location tags and every other field are never copi
 PyAV's rotation is counter-clockwise on a real portrait clip, as it is on the files PyAV
 writes; that a Stray Scanner zip holds its three files at its root or in one folder; that
 ``camera_matrix.csv`` describes the video at its stored size; that ``odometry.csv`` has the
-columns ``timestamp, frame, x, y, z, qx, qy, qz, qw`` (others ignored); and that ARKit's
-camera has x right, y up and z backwards.
+columns ``timestamp, frame, x, y, z, qx, qy, qz, qw`` (others ignored); and that Stray
+Scanner's conventions, read in its source, hold on a real recording.
 
 Run as a program::
 
@@ -69,8 +87,9 @@ import shutil
 import sys
 import uuid
 import zipfile
+import zlib
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -92,6 +111,17 @@ MAX_SECONDS = 60.0
 SHORT_SIDE = 480
 """The short side frames are scaled down to, in pixels."""
 
+MAX_LONG_SIDE = 7680
+"""The longest frame side accepted, in pixels: a phone's 8K video."""
+
+MAX_ASPECT = 3.0
+"""The most a frame's long side may be its short side's multiple: with frames scaled to a
+:data:`SHORT_SIDE` short side, a frame written is at most 1440 by 480."""
+
+MAX_DECODED = round(MAX_SECONDS * 240)
+"""The most frames a video may have: :data:`MAX_SECONDS` at 240 fps, a phone's fastest slow
+motion. Frames out of time order are skipped, so this bounds the decoding, not the time."""
+
 MIN_SPACING = 1.0 / 40.0
 """The least time between two frames kept, in seconds: a 60 fps video keeps every other frame,
 and a 30 fps one, its frame times jittering by a few milliseconds, keeps every frame."""
@@ -106,11 +136,18 @@ STRAY_CAPS = {"rgb.mp4": MAX_BYTES, "camera_matrix.csv": 4096, "odometry.csv": 6
 ODOMETRY_COLUMNS = ("timestamp", "frame", "x", "y", "z", "qx", "qy", "qz", "qw")
 """The ``odometry.csv`` columns the import reads: ARKit's camera pose for each frame."""
 
-ARKIT_TO_CAMERA = np.diag([1.0, -1.0, -1.0, 1.0])
-"""ARKit's camera axes (x right, y up, z backwards) to ours (x right, y down, z forwards)."""
-
 _CHUNK = 1 << 20
 """The bytes copied at a time out of a zip."""
+
+_DEMUXER = "mov"
+"""The only demuxer an upload is opened with: FFmpeg's mov/mp4 family (the module docstring)."""
+
+_OPEN_OPTIONS = {"protocol_whitelist": "file", "enable_drefs": "0"}
+"""How an upload is opened: as a file alone, never following the references a MOV may hold."""
+
+_ZIP_ERRORS = (zipfile.BadZipFile, zlib.error, EOFError, RuntimeError, NotImplementedError)
+"""What reading a zip's entry raises when the zip is corrupt, encrypted or compressed in a way
+Python does not read."""
 
 _REMAP_ORDER = ("rust", "cpp", "python")
 """The backends that undistort a frame, fastest first (7, 10 and 34 ms a channel at 854x480);
@@ -146,7 +183,20 @@ class _Frames:
     count: int
     camera: lenses.Pinhole
     rotation: int
-    metadata: dict[str, str]
+
+
+@dataclass(frozen=True)
+class _Geometry:
+    """How each of a video's frames is resampled, and the camera of the frames written.
+
+    Its size, its undistortion map (None for a pinhole) and its counter-clockwise quarter
+    turns, then the upright frames' camera.
+    """
+
+    size: tuple[int, int]
+    mapping: NDArray[np.float64] | None
+    turns: int
+    camera: lenses.Pinhole
 
 
 @contextlib.contextmanager
@@ -184,18 +234,40 @@ def _quarter_turns(rotation: float) -> int:
     return turns % 4
 
 
-def _decode(path: Path) -> Iterator[tuple[float, av.VideoFrame]]:
-    """Yield each decoded frame with its time since the first, refusing a video too long."""
+def _open(path: Path, *, edits: bool = True) -> av.container.InputContainer:
+    """Open an upload with the mov/mp4 demuxer alone, as a file alone (the module docstring).
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        The video.
+    edits : bool, optional
+        Whether to honour the video's edit list; Stray Scanner's hides its first frame.
+
+    Raises
+    ------
+    slam_it_all.foundations.errors.InvalidInputError
+        If it is not a readable mov/mp4 video, or has no video stream.
+    """
+    options = dict(_OPEN_OPTIONS) if edits else {**_OPEN_OPTIONS, "ignore_editlist": "1"}
     try:
-        container = av.open(str(path))
+        container = av.open(str(path), format=_DEMUXER, options=options)
     except av.error.FFmpegError as error:
         raise InvalidInputError(f"{path.name}: not a readable video ({error})") from None
-    with container:
-        if not container.streams.video:
-            raise InvalidInputError(f"{path.name}: no video stream")
+    if not container.streams.video:
+        container.close()
+        raise InvalidInputError(f"{path.name}: no video stream")
+    return container
+
+
+def _decode(path: Path, *, edits: bool = True) -> Iterator[tuple[float, av.VideoFrame]]:
+    """Yield each decoded frame with its time since the first, refusing a video too long."""
+    with _open(path, edits=edits) as container:
         first = None
         try:
-            for frame in container.decode(video=0):
+            for index, frame in enumerate(container.decode(video=0)):
+                if index >= MAX_DECODED:
+                    raise InvalidInputError(f"{path.name}: more than {MAX_DECODED} frames")
                 if frame.time is None:
                     raise InvalidInputError(f"{path.name}: a frame without a presentation time")
                 first = frame.time if first is None else first
@@ -215,61 +287,90 @@ def _undistorted(picture: NDArray[np.uint8], mapping: NDArray[np.float64]) -> ND
     return np.ascontiguousarray(np.stack(channels, axis=-1))
 
 
-def _write_frames(video: Path, out: Path, lens: lenses.Pinhole | lenses.Fisheye) -> _Frames:
-    """Write a video's frames into a TUM-format folder's ``rgb/`` and ``rgb.txt``."""
-    stamps = ["# timestamp filename"]
+def _geometry(frame: av.VideoFrame, lens: lenses.Pinhole | lenses.Fisheye) -> _Geometry:
+    """Return how a video's frames are resampled, from its first frame and its intrinsics."""
+    stored = lens.camera if isinstance(lens, lenses.Fisheye) else lens
+    if (frame.width, frame.height) != (stored.width, stored.height):
+        raise InvalidInputError(
+            f"intrinsics: given for {stored.width}x{stored.height}, the video is "
+            f"{frame.width}x{frame.height}"
+        )
+    turns = _quarter_turns(frame.rotation)
+    size = output_size(frame.width, frame.height)
+    scaled = lens.scaled(*size)
+    mapping = None
+    if isinstance(scaled, lenses.Fisheye):
+        pinhole, mapping = lenses.undistortion(scaled)
+    else:
+        pinhole = scaled
+    return _Geometry(size, mapping, turns, pinhole.turned(turns))
+
+
+def _kept(elapsed: float, times: list[float]) -> bool:
+    """Whether a frame is kept: the first, then each :data:`MIN_SPACING` after the last kept.
+
+    A frame out of time order is never that far after, so it is skipped too.
+    """
+    return not times or elapsed - times[-1] >= MIN_SPACING
+
+
+def _picture(frame: av.VideoFrame, geometry: _Geometry) -> NDArray[np.uint8]:
+    """Return a frame resampled: scaled, undistorted if the lens is a fisheye, turned upright."""
+    width, height = geometry.size
+    rgb = frame.reformat(width=width, height=height, format="rgb24", interpolation="AREA")
+    picture: NDArray[np.uint8] = np.asarray(rgb.to_ndarray(), dtype=np.uint8)  # rgb24: 8-bit
+    if geometry.mapping is not None:
+        picture = _undistorted(picture, geometry.mapping)
+    return np.rot90(picture, geometry.turns)
+
+
+def _write_frames(
+    video: Path, out: Path, lens: lenses.Pinhole | lenses.Fisheye, *, edits: bool = True
+) -> _Frames:
+    """Write a video's frames into a TUM-format folder: ``rgb/``, ``rgb.txt``, ``camera.txt``."""
     times: list[float] = []
     decoded: list[int] = []
-    stored = lens.camera if isinstance(lens, lenses.Fisheye) else lens
-    upright: lenses.Pinhole | None = None
-    mapping: NDArray[np.float64] | None = None
-    size = (0, 0)
-    turns = 0
+    listed: list[tuple[str, str]] = []
+    geometry: _Geometry | None = None
     count = 0
-    for index, (elapsed, frame) in enumerate(_decode(video)):
+    for index, (elapsed, frame) in enumerate(_decode(video, edits=edits)):
         count = index + 1
-        if upright is None:
-            if (frame.width, frame.height) != (stored.width, stored.height):
-                raise InvalidInputError(
-                    f"intrinsics: given for {stored.width}x{stored.height}, the video is "
-                    f"{frame.width}x{frame.height}"
-                )
-            turns = _quarter_turns(frame.rotation)
-            size = output_size(frame.width, frame.height)
-            scaled = lens.scaled(*size)
-            if isinstance(scaled, lenses.Fisheye):
-                pinhole, mapping = lenses.undistortion(scaled)
-            else:
-                pinhole = scaled
-            upright = pinhole.turned(turns)
-        elif times and elapsed - times[-1] < MIN_SPACING:
+        geometry = geometry or _geometry(frame, lens)
+        if not _kept(elapsed, times):
             continue
-        if times and elapsed <= times[-1]:
-            continue
-        rgb = frame.reformat(width=size[0], height=size[1], format="rgb24", interpolation="AREA")
-        picture: NDArray[np.uint8] = np.asarray(rgb.to_ndarray(), dtype=np.uint8)  # rgb24: 8-bit
-        if mapping is not None:
-            picture = _undistorted(picture, mapping)
         stamp = f"{elapsed:.6f}"
-        images.write_png(out / "rgb" / f"{stamp}.png", np.rot90(picture, turns))
-        stamps.append(f"{stamp} rgb/{stamp}.png")
+        images.write_png(out / "rgb" / f"{stamp}.png", _picture(frame, geometry))
+        listed.append((stamp, f"rgb/{stamp}.png"))
         times.append(float(stamp))  # as rgb.txt has it, for the ground truth to match
         decoded.append(index)
-    if upright is None:
+    if geometry is None:
         raise InvalidInputError(f"{video.name}: no frames")
-    (out / "rgb.txt").write_text("\n".join(stamps) + "\n")
-    (out / tum.CAMERA_FILE).write_text(
-        "# imported by slam_it_all.eval.video (source.json says from what)\n"
-        "model pinhole\n"
-        f"intrinsics {upright.fx!r} {upright.fy!r} {upright.cx!r} {upright.cy!r}\n"
-        f"size {upright.width} {upright.height}\n"
-        "depth_scale 1000  # no depth maps\n"
+    camera = geometry.camera
+    tum.write_list(out / "rgb.txt", listed)
+    tum.write_camera(
+        out,
+        tum.Camera(
+            "pinhole",
+            np.array([camera.fx, camera.fy, camera.cx, camera.cy]),
+            camera.width,
+            camera.height,
+            1000.0,  # no depth maps: any scale reads the same
+            None,
+        ),
+        note="imported by slam_it_all.eval.video (source.json says from what)",
     )
-    return _Frames(times, decoded, count, upright, 90 * turns, probe(video).metadata)
+    return _Frames(times, decoded, count, camera, 90 * geometry.turns)
 
 
-def _write_source(out: Path, kind: str, source: str, profile: str | None, frames: _Frames) -> None:
+def _write_source(
+    out: Path,
+    kind: str,
+    chosen: tuple[str, str | None],
+    frames: _Frames,
+    metadata: dict[str, str],
+) -> None:
     """Write ``source.json``: the upload's kind, the intrinsics and their source, what was read."""
+    source, profile = chosen
     camera = frames.camera
     record: dict[str, Any] = {
         "kind": kind,
@@ -285,7 +386,7 @@ def _write_source(out: Path, kind: str, source: str, profile: str | None, frames
         },
         "rotation": frames.rotation,
         "frames": {"decoded": frames.count, "kept": len(frames.times)},
-        "metadata": frames.metadata,
+        "metadata": metadata,
     }
     (out / "source.json").write_text(json.dumps(record, indent=1) + "\n")
 
@@ -315,9 +416,10 @@ def import_video(video: str | Path, out: str | Path, chosen: lenses.Chosen) -> N
     if not path.is_file():
         raise FileNotFoundError(f"no video at {path}")
     _check_size(path, MAX_BYTES)
+    metadata = probe(path).metadata
     with _staged(Path(out)) as folder:
         frames = _write_frames(path, folder, chosen.lens)
-        _write_source(folder, "video", chosen.source, chosen.profile, frames)
+        _write_source(folder, "video", (chosen.source, chosen.profile), frames, metadata)
 
 
 def _stray_entries(archive: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
@@ -345,12 +447,16 @@ def _stray_entries(archive: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
 def _read_entry(archive: zipfile.ZipFile, info: zipfile.ZipInfo, cap: int) -> Iterator[bytes]:
     """Yield an entry's bytes in chunks, refusing one that runs past its cap."""
     read = 0
-    with archive.open(info) as entry:
-        while chunk := entry.read(_CHUNK):
-            read += len(chunk)
-            if read > cap:
-                raise InvalidInputError(f"zip: {info.filename} runs past its cap of {cap}")
-            yield chunk
+    try:
+        with archive.open(info) as entry:
+            while chunk := entry.read(_CHUNK):
+                read += len(chunk)
+                if read > cap:
+                    raise InvalidInputError(f"zip: {info.filename} runs past its cap of {cap}")
+                yield chunk
+    except _ZIP_ERRORS as error:
+        name = PurePosixPath(info.filename).name
+        raise InvalidInputError(f"zip: {name} cannot be read ({error})") from None
 
 
 def _text(data: bytes, name: str) -> str:
@@ -378,17 +484,17 @@ def probe(video: str | Path) -> lenses.Video:
     Raises
     ------
     slam_it_all.foundations.errors.InvalidInputError
-        If it is not a readable video, or has no video stream.
+        If it is not a readable mov/mp4 video, has no video stream, or its frames are over
+        :data:`MAX_LONG_SIDE` long or :data:`MAX_ASPECT` to one.
     """
     path = Path(video)
-    try:
-        container = av.open(str(path))
-    except av.error.FFmpegError as error:
-        raise InvalidInputError(f"{path.name}: not a readable video ({error})") from None
-    with container:
-        if not container.streams.video:
-            raise InvalidInputError(f"{path.name}: no video stream")
+    with _open(path) as container:
         stream = container.streams.video[0]
+        long, short = max(stream.width, stream.height), min(stream.width, stream.height)
+        if long > MAX_LONG_SIDE:
+            raise InvalidInputError(f"{path.name}: frames over {MAX_LONG_SIDE} pixels long")
+        if short <= 0 or long > MAX_ASPECT * short:
+            raise InvalidInputError(f"{path.name}: frames more than {MAX_ASPECT:g} to 1")
         found = dict(container.metadata)
         rate = stream.average_rate
         return lenses.Video(
@@ -397,6 +503,14 @@ def probe(video: str | Path) -> lenses.Video:
             stream.height,
             float(rate) if rate else None,
         )
+
+
+def _csv_rows(text: str, name: str) -> list[list[str]]:
+    """Return a CSV's rows, refusing one Python's reader cannot parse (as a field too long)."""
+    try:
+        return list(csv.reader(io.StringIO(text)))
+    except csv.Error as error:
+        raise InvalidInputError(f"{name}: not a CSV ({error})") from None
 
 
 def _numbers(row: Sequence[str], where: str) -> list[float]:
@@ -412,7 +526,7 @@ def _numbers(row: Sequence[str], where: str) -> list[float]:
 
 def _camera_matrix(text: str, width: int, height: int) -> lenses.Pinhole:
     """Read ``camera_matrix.csv``: a 3x3 matrix, without skew, its last row 0 0 1."""
-    rows = [row for row in csv.reader(io.StringIO(text)) if row]
+    rows = [row for row in _csv_rows(text, "camera_matrix.csv") if row]
     matrix = np.array([_numbers(row, f"camera_matrix.csv:{n}") for n, row in enumerate(rows, 1)])
     if matrix.shape != (3, 3):
         raise InvalidInputError(f"camera_matrix.csv: expected 3 rows of 3, got {matrix.shape}")
@@ -423,7 +537,7 @@ def _camera_matrix(text: str, width: int, height: int) -> lenses.Pinhole:
 
 def _odometry(text: str) -> NDArray[np.float64]:
     """Read ``odometry.csv``'s :data:`ODOMETRY_COLUMNS`, one row per frame, frames in order."""
-    reader = csv.reader(io.StringIO(text))
+    reader = iter(_csv_rows(text, "odometry.csv"))
     header = [cell.strip() for cell in next(reader, [])]
     missing = [column for column in ODOMETRY_COLUMNS if column not in header]
     if missing:
@@ -443,8 +557,12 @@ def _odometry(text: str) -> NDArray[np.float64]:
     return table
 
 
-def _arkit_poses(table: NDArray[np.float64]) -> NDArray[np.float64]:
-    """Return each odometry row's ``T_world_cam`` in our camera axes."""
+def _stray_poses(table: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Return each odometry row's ``T_world_cam``: Stray Scanner writes it in our camera's axes.
+
+    Its rotation is ARKit's camera rotation times a half turn about x (the module docstring),
+    so the quaternion is used as written.
+    """
     quaternions = table[:, 5:9]
     norms = np.linalg.norm(quaternions, axis=1, keepdims=True)
     if np.any(norms == 0.0):
@@ -452,8 +570,7 @@ def _arkit_poses(table: NDArray[np.float64]) -> NDArray[np.float64]:
     poses = np.repeat(np.eye(4)[None], len(table), axis=0)
     poses[:, :3, :3] = so3.from_quaternion(quaternions / norms)
     poses[:, :3, 3] = table[:, 2:5]
-    out: NDArray[np.float64] = poses @ ARKIT_TO_CAMERA
-    return out
+    return poses
 
 
 def import_stray(recording: str | Path, out: str | Path) -> None:
@@ -497,15 +614,15 @@ def import_stray(recording: str | Path, out: str | Path) -> None:
         stored = probe(video)
         camera = _camera_matrix(texts["camera_matrix.csv"], stored.width, stored.height)
         table = _odometry(texts["odometry.csv"])
-        frames = _write_frames(video, folder, camera)
+        frames = _write_frames(video, folder, camera, edits=False)
         video.unlink()
         if len(table) != frames.count:
             raise InvalidInputError(
                 f"odometry.csv: {len(table)} rows for the video's {frames.count} frames"
             )
-        poses = _arkit_poses(table)[frames.decoded]
+        poses = _stray_poses(table)[frames.decoded]
         runs.write_trajectory(folder / "groundtruth.txt", frames.times, poses)
-        _write_source(folder, "stray", "stray-scanner", None, replace(frames, metadata={}))
+        _write_source(folder, "stray", ("stray-scanner", None), frames, {})
 
 
 def main(arguments: Sequence[str]) -> int:

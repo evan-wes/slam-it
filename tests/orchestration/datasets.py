@@ -59,25 +59,28 @@ def png(path: Path, values: NDArray[np.uint8] | NDArray[np.uint16]) -> None:
 def write_tum(folder: Path, rendered: list[room.Frame]) -> None:
     """Write the room as a TUM-format folder that describes its own camera, with its truth."""
     camera = room.SMALL
-    rgb, depth = ["# timestamp filename"], ["# timestamp filename"]
+    rgb: list[tuple[str, str]] = []
+    depth: list[tuple[str, str]] = []
     for f in rendered:
         stamp = f"{f.timestamp:.6f}"
         png(folder / "rgb" / f"{stamp}.png", f.gray)
         scaled = np.clip(np.round(f.depth * tum.DEPTH_SCALE), 0, np.iinfo(np.uint16).max)
         png(folder / "depth" / f"{stamp}.png", scaled.astype(np.uint16))
-        rgb.append(f"{stamp} rgb/{stamp}.png")
-        depth.append(f"{stamp} depth/{stamp}.png")
-    (folder / "rgb.txt").write_text("\n".join(rgb) + "\n")
-    (folder / "depth.txt").write_text("\n".join(depth) + "\n")
+        rgb.append((stamp, f"rgb/{stamp}.png"))
+        depth.append((stamp, f"depth/{stamp}.png"))
+    tum.write_list(folder / "rgb.txt", rgb)
+    tum.write_list(folder / "depth.txt", depth)
     runs.write_trajectory(
         folder / "groundtruth.txt",
         [f.timestamp for f in rendered],
         np.array([f.T_world_cam for f in rendered]),
     )
-    (folder / "camera.txt").write_text(
-        f"model pinhole\nintrinsics {camera.fx} {camera.fy} {camera.cx} {camera.cy}\n"
-        f"size {camera.width} {camera.height}\ndepth_scale {tum.DEPTH_SCALE}\n"
-        f"bf {tum.SENSOR_BF}\n"
+    intrinsics = np.array([camera.fx, camera.fy, camera.cx, camera.cy])
+    tum.write_camera(
+        folder,
+        tum.Camera(
+            "pinhole", intrinsics, camera.width, camera.height, tum.DEPTH_SCALE, tum.SENSOR_BF
+        ),
     )
 
 

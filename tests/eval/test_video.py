@@ -11,6 +11,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+import av
 import numpy as np
 import pytest
 
@@ -152,13 +153,20 @@ def test_an_imported_video_tracks_the_room(rendered: list[room.Frame], tmp_path:
         ("turn", "multiple of 90"),
         ("used", "new or empty folder"),
         ("text", "not a readable video"),
+        ("matroska", "not a readable video"),
+        ("wide", "more than 3 to 1"),
+        ("huge", "over 200 pixels long"),
+        ("many", "more than 5 frames"),
     ],
 )
 def test_a_video_is_refused_and_leaves_nothing(
     change: str, message: str, rendered: list[room.Frame], tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:  # fmt: skip
-    """Over a cap, the wrong size, an odd rotation, a used folder, not a video: refused."""
+    """Over a cap, the wrong size, an odd rotation, a used folder, not an MP4: refused.
+
+    A Matroska video is a video, but not of the one container family an upload is opened as.
+    """
     pictures = [rgb(rendered[0].gray)] * 2
     path, camera, out = tmp_path / "in.mov", ROOM_CAMERA, tmp_path / "outs" / "out"
     if change == "long":
@@ -168,8 +176,19 @@ def test_a_video_is_refused_and_leaves_nothing(
         encode(path, pictures, rotation=45)
     elif change == "text":
         path.write_text("not a video")
+    elif change == "matroska":
+        _encode_matroska(path, pictures)
+    elif change == "wide":
+        encode(path, [np.zeros((32, 128, 3), np.uint8)] * 2)
+        camera = lenses.Pinhole(60.0, 60.0, 63.5, 15.5, 128, 32)
+    elif change == "many":
+        encode(path, pictures * 3)
     else:
         encode(path, pictures)
+    if change == "huge":
+        monkeypatch.setattr(video, "MAX_LONG_SIDE", 200)
+    if change == "many":
+        monkeypatch.setattr(video, "MAX_DECODED", 5)
     if change == "big":
         monkeypatch.setattr(video, "MAX_BYTES", 100)
     if change == "size":
@@ -183,13 +202,31 @@ def test_a_video_is_refused_and_leaves_nothing(
     assert left == (["out"] if change == "used" else [])
 
 
+def _encode_matroska(path: Path, pictures: list[np.ndarray]) -> None:
+    """Encode pictures as a lossless H.264 video in a Matroska container."""
+    with av.open(str(path), "w", format="matroska") as out:
+        stream = out.add_stream("libx264", rate=30, options={"qp": "0"})
+        stream.height, stream.width = pictures[0].shape[:2]
+        stream.pix_fmt = "yuv420p"
+        for picture in pictures:
+            for packet in stream.encode(av.VideoFrame.from_ndarray(picture, format="rgb24")):
+                out.mux(packet)
+        for packet in stream.encode():
+            out.mux(packet)
+
+
 def test_a_stray_scanner_recording_imports_with_its_truth(
     rendered: list[room.Frame], tmp_path: Path
 ) -> None:
-    """The camera matrix's intrinsics, and ARKit's poses in our axes as the ground truth."""
+    """The camera matrix's intrinsics, and its poses, as written, as the ground truth.
+
+    The zip is written as Stray Scanner's encoders write one: its rotations already in our
+    camera's axes, and its video's first frame behind an edit list, which the import decodes.
+    """
     recording = stray_zip(tmp_path / "room.zip", rendered[:8])
     video.import_stray(recording, tmp_path / "out")
     frames, source = _imported(tmp_path / "out")
+    assert source["frames"] == {"decoded": 8, "kept": 8}
     np.testing.assert_allclose(
         frames.camera.intrinsics, [ROOM_CAMERA.fx, ROOM_CAMERA.fy, ROOM_CAMERA.cx, ROOM_CAMERA.cy]
     )
@@ -217,6 +254,7 @@ def _matrix_with(cell: str) -> str:
         ({"camera_matrix.csv": "262.5,1.0,159.5\n0.0,262.5,119.5\n0.0,0.0,1.0\n"}, [], "fx 0 cx"),
         ({"odometry.csv": "timestamp, frame, x\n0.0, 0, 1.0\n"}, [], "no column y"),
         ({"odometry.csv": "timestamp, frame, x, y, z, qx, qy, qz, qw\n"}, [], "rows for the"),
+        ({"odometry.csv": '"' + "1" * 200_000 + '"\n'}, [], r"odometry\.csv: not a CSV"),
     ],
 )
 def test_a_hostile_or_malformed_zip_is_refused_and_leaves_nothing(
@@ -228,6 +266,21 @@ def test_a_hostile_or_malformed_zip_is_refused_and_leaves_nothing(
     with pytest.raises(InvalidInputError, match=message):
         video.import_stray(recording, tmp_path / "outs" / "out")
     assert list((tmp_path / "outs").iterdir()) == []
+
+
+def test_a_zip_that_cannot_give_an_entry_back_whole_is_refused(
+    rendered: list[room.Frame], tmp_path: Path
+) -> None:
+    """A byte changed inside a stored entry fails its CRC: refused with the import's message."""
+    recording = stray_zip(tmp_path / "room.zip", rendered[:3])
+    with zipfile.ZipFile(recording) as archive:
+        info = next(i for i in archive.infolist() if i.filename.endswith("camera_matrix.csv"))
+        start = info.header_offset + 30 + len(info.filename.encode()) + len(info.extra)
+    data = bytearray(recording.read_bytes())
+    data[start] ^= 0x01  # stored uncompressed: the entry's first byte
+    recording.write_bytes(bytes(data))
+    with pytest.raises(InvalidInputError, match=r"camera_matrix\.csv cannot be read"):
+        video.import_stray(recording, tmp_path / "out")
 
 
 def test_a_zip_missing_a_file_or_holding_one_twice_is_refused(
@@ -273,3 +326,55 @@ def test_main_imports_and_says_what(
         f"{tmp_path / 'a'}: 3 frames, 320x240, intrinsics from given",
         f"{tmp_path / 'b'}: 3 frames, 320x240, intrinsics from stray-scanner",
     ]
+
+
+RAYS = np.array([(0.0, 0.0), (-0.45, -0.22), (0.4, 0.2), (-0.3, 0.25), (0.47, -0.25), (0.15, -0.1)])
+"""Rays through the iPhone 14 Pro profile's view, as pinhole coordinates (x/z, y/z)."""
+
+
+def _turn_rays(rays: np.ndarray, turns: int) -> np.ndarray:
+    """Return rays in the camera of the image turned counter-clockwise by quarter turns.
+
+    Turning the image a quarter counter-clockwise turns the camera with it: a ray at (a, b)
+    is then at (b, -a).
+    """
+    a, b = rays[:, 0], rays[:, 1]
+    for _ in range(turns % 4):
+        a, b = b, -a
+    return np.stack([a, b], axis=-1)
+
+
+@pytest.mark.parametrize("rotation", [90, -90, 180])
+def test_imported_frames_show_each_ray_where_their_camera_projects_it(
+    rotation: int, tmp_path: Path
+) -> None:
+    """Scaled, undistorted and turned, a frame shows a ray where the written camera puts it.
+
+    Blobs are drawn at known rays through a fisheye profile at 1920x1080, stored with a
+    declared rotation (an iPhone's portrait clip declares -90), then imported; each blob's
+    centre must be where camera.txt projects its ray, turned as the frame was, within 0.1 px.
+    """
+    profile = lenses.read_profile(
+        PROFILES / "Apple_iPhone 14 Pro_24mm__1080p_16by9_1920x1080-25.00fps.json"
+    )
+    assert profile is not None
+    lens = profile.fisheye
+    sources = lens.source(RAYS[:, 0], RAYS[:, 1])
+    ys, xs = np.mgrid[0 : lens.camera.height, 0 : lens.camera.width].astype(np.float64)
+    drawn = np.full(xs.shape, 20.0)
+    for x0, y0 in sources:
+        drawn += 200.0 * np.exp(-((xs - x0) ** 2 + (ys - y0) ** 2) / (2 * 7.0**2))
+    picture = rgb(np.clip(np.round(drawn), 0, 255).astype(np.uint8))
+    path = encode(tmp_path / "rays.mov", [picture, picture], rotation=rotation)
+    video.import_video(path, tmp_path / "out", lenses.Chosen(lens, "profile", profile.name))
+    frames = tum.read_frames(tmp_path / "out")
+    fx, fy, cx, cy = frames.camera.intrinsics
+    shown = images.read_gray(frames.images[0]).astype(np.float64)
+    shown = np.clip(shown - np.median(shown), 0.0, None)
+    turned = _turn_rays(RAYS, rotation // 90)
+    expected = np.stack([fx * turned[:, 0] + cx, fy * turned[:, 1] + cy], axis=-1)
+    ys, xs = np.mgrid[0 : shown.shape[0], 0 : shown.shape[1]].astype(np.float64)
+    for x0, y0 in expected:
+        weights = shown * ((np.abs(xs - x0) < 12) & (np.abs(ys - y0) < 12))
+        centre = np.array([(weights * xs).sum(), (weights * ys).sum()]) / weights.sum()
+        assert np.hypot(*(centre - (x0, y0))) < 0.1

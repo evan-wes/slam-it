@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from slam_it_all.eval import tum
+from slam_it_all.eval import images, tum
 from slam_it_all.foundations import so3
 from slam_it_all.foundations.errors import InvalidInputError
 
@@ -215,3 +215,24 @@ def test_depth_scale_divides_the_stored_values(tmp_path: Path) -> None:
     np.testing.assert_allclose(depth[1], [2.5, 65.535])
     with pytest.raises(InvalidInputError, match="depth_scale"):
         tum.read_depth(path, 0.0)
+
+
+def test_what_the_writers_write_the_readers_read(tmp_path: Path) -> None:
+    """write_camera and write_list round-trip through read_camera and read_frames."""
+    camera = tum.Camera("pinhole", np.array([500.5, 501.25, 319.5, 239.75]), 640, 480, 5000.0, 40.0)
+    tum.write_camera(tmp_path, camera, note="written by the test")
+    assert (tmp_path / tum.CAMERA_FILE).read_text().startswith("# written by the test\n")
+    read = tum.read_camera(tmp_path)
+    np.testing.assert_array_equal(read.intrinsics, camera.intrinsics)
+    assert (read.model, read.width, read.height, read.depth_scale, read.bf) == (
+        "pinhole", 640, 480, 5000.0, 40.0,
+    )  # fmt: skip
+    gray = np.zeros((480, 640), np.uint8)
+    entries = [(f"{t:.6f}", f"rgb/{t:.6f}.png") for t in (0.0, 0.5)]
+    for _, name in entries:
+        images.write_png(tmp_path / name, np.repeat(gray[:, :, None], 3, axis=2))
+    tum.write_list(tmp_path / "rgb.txt", entries)
+    frames = tum.read_frames(tmp_path)
+    np.testing.assert_array_equal(frames.timestamps, [0.0, 0.5])
+    with pytest.raises(InvalidInputError):
+        tum.write_camera(tmp_path, tum.Camera("pinhole", np.array([1.0]), 640, 480, 1.0, None))

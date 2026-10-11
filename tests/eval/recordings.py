@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import zipfile
 from collections.abc import Mapping
+from fractions import Fraction
 from pathlib import Path
 
 import av
 import numpy as np
 from numpy.typing import NDArray
 
-from slam_it_all.eval import lenses, video
+from slam_it_all.eval import lenses
 from slam_it_all.foundations import so3
 from tests.edge import room
 
@@ -66,6 +67,53 @@ def encode(
     return path
 
 
+STRAY_TIMESCALE = 60
+"""Stray Scanner's video timescale: a frame is stamped at its ARKit frame number over 60."""
+
+ARKIT_FROM_OURS = np.diag([1.0, -1.0, -1.0])
+"""Our camera's axes (x right, y down, z forwards) to ARKit's (x right, y up, z backwards):
+a half turn about x, its own inverse."""
+
+Q_AC = np.array([1.0, 0.0, 0.0, 0.0])
+"""Stray Scanner's ``q_AC`` (``OdometryEncoder.swift``), xyzw: a half turn about x."""
+
+
+def encode_stray(path: Path, pictures: list[NDArray[np.uint8]]) -> Path:
+    """Encode pictures as Stray Scanner's ``rgb.mp4`` at 30 fps: stamped as its encoder stamps.
+
+    ``DatasetEncoder.swift`` keeps every other ARKit frame and passes the frame counter before
+    its increment, from -1, so frames are stamped -1, 1, 3, ... over :data:`STRAY_TIMESCALE`,
+    after a session started at 0: the first frame sits behind the MP4's edit list.
+    """
+    options = {"use_editlist": "1", "avoid_negative_ts": "disabled"}
+    with av.open(str(path), "w", format="mp4", options=options) as out:
+        rate = STRAY_TIMESCALE
+        stream = out.add_stream("libx264", rate=rate, options={"qp": "0", "bf": "0"})
+        stream.height, stream.width = pictures[0].shape[:2]
+        stream.pix_fmt = "yuv420p"
+        stream.time_base = Fraction(1, STRAY_TIMESCALE)
+        for i, picture in enumerate(pictures):
+            frame = av.VideoFrame.from_ndarray(picture, format="rgb24")
+            frame.pts, frame.time_base = 2 * i - 1, Fraction(1, STRAY_TIMESCALE)
+            for packet in stream.encode(frame):
+                out.mux(packet)
+        for packet in stream.encode():
+            out.mux(packet)
+    return path
+
+
+def stray_quaternion(pose: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Return the quaternion Stray Scanner writes for a pose: ARKit's rotation times ``q_AC``.
+
+    The pose is ``T_world_cam``; ARKit's camera rotation is its rotation in ARKit's axes, and
+    ``OdometryEncoder.swift`` writes ``q_WA * q_AC``.
+    """
+    world_arkit = pose[:3, :3] @ ARKIT_FROM_OURS
+    written = world_arkit @ so3.from_quaternion(Q_AC)
+    out: NDArray[np.float64] = so3.to_quaternion(written)
+    return out
+
+
 def stray_zip(
     path: Path,
     rendered: list[room.Frame],
@@ -74,18 +122,18 @@ def stray_zip(
     files: Mapping[str, bytes | str] | None = None,
     names: list[str] | None = None,
 ) -> Path:
-    """Write the room as a Stray Scanner zip: the video, the camera matrix, ARKit's poses.
+    """Write the room as a Stray Scanner zip, as its encoders write one: video, matrix, poses.
 
     `files` replaces or adds entries, by name in the folder; `names` adds entries named as
     given, with a small body.
     """
-    video_bytes = encode(path.with_suffix(".mp4"), [rgb(f.gray) for f in rendered]).read_bytes()
+    pictures = [rgb(f.gray) for f in rendered]
+    video_bytes = encode_stray(path.with_suffix(".mp4"), pictures).read_bytes()
     c = room.SMALL
     matrix = f"{c.fx},0.0,{c.cx}\n0.0,{c.fy},{c.cy}\n0.0,0.0,1.0\n"
     rows = ["timestamp, frame, x, y, z, qx, qy, qz, qw"]
     for i, f in enumerate(rendered):
-        arkit = f.T_world_cam @ video.ARKIT_TO_CAMERA  # the diagonal is its own inverse
-        values = [100.0 + f.timestamp, *arkit[:3, 3], *so3.to_quaternion(arkit[:3, :3])]
+        values = [100.0 + f.timestamp, *f.T_world_cam[:3, 3], *stray_quaternion(f.T_world_cam)]
         x, y, z, qx, qy, qz, qw = (repr(float(v)) for v in values[1:])
         rows.append(f"{float(values[0])!r}, {i}, {x}, {y}, {z}, {qx}, {qy}, {qz}, {qw}")
     entries: dict[str, bytes | str] = {
