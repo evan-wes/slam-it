@@ -17,14 +17,18 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from slam_it_all.eval import images, runs, tum, video
+from slam_it_all.eval import images, lenses, runs, tum, video
 from slam_it_all.foundations import so3
 from slam_it_all.foundations.errors import InvalidInputError
 from slam_it_all.orchestration import vo
+from tests.conftest import FIXTURES
 from tests.edge import room
 from tests.edge.support import ATE_BOUND, FRAMES, OPTIONS
 
-ROOM_CAMERA = video.Pinhole(
+PROFILES = FIXTURES / "eval" / "lens_profiles"
+"""The fixture lens profiles (their README names them)."""
+
+ROOM_CAMERA = lenses.Pinhole(
     room.SMALL.fx, room.SMALL.fy, room.SMALL.cx, room.SMALL.cy, room.SMALL.width,
     room.SMALL.height,
 )  # fmt: skip
@@ -88,7 +92,7 @@ def test_a_video_on_its_side_imports_upright_with_its_camera(
     """A video stored on its side, its rotation declared, imports upright, its camera turned."""
     stored = [np.rot90(_rgb(f.gray), -1) for f in rendered[:6]]  # turned clockwise
     path = _encode(tmp_path / "side.mov", stored, rotation=90)  # shown turned back
-    video.import_video(path, tmp_path / "out", ROOM_CAMERA.turned(-1))
+    video.import_video(path, tmp_path / "out", lenses.Chosen(ROOM_CAMERA.turned(-1), "given"))
     frames, source = _imported(tmp_path / "out")
     assert (frames.camera.model, frames.camera.width, frames.camera.height) == ("pinhole", 320, 240)
     np.testing.assert_allclose(
@@ -100,17 +104,9 @@ def test_a_video_on_its_side_imports_upright_with_its_camera(
         assert np.abs(gray - frame.gray).max() <= 2  # the colour conversion's rounding
     assert source["rotation"] == 90
     assert source["intrinsics"] == {
-        "source": "given", "fx": ROOM_CAMERA.fx, "fy": ROOM_CAMERA.fy, "cx": ROOM_CAMERA.cx,
-        "cy": ROOM_CAMERA.cy, "width": 320, "height": 240,
+        "source": "given", "profile": None, "fx": ROOM_CAMERA.fx, "fy": ROOM_CAMERA.fy,
+        "cx": ROOM_CAMERA.cx, "cy": ROOM_CAMERA.cy, "width": 320, "height": 240,
     }  # fmt: skip
-
-
-def test_every_quarter_turn_round_trips_the_camera() -> None:
-    """Four quarter turns give back the camera; one swaps the axes as numpy.rot90 does."""
-    camera = video.Pinhole(500.0, 510.0, 300.0, 200.0, 640, 480)
-    assert camera.turned(4) == camera
-    assert camera.turned(1) == video.Pinhole(510.0, 500.0, 200.0, 339.0, 480, 640)
-    assert camera.turned(1).turned(3) == camera
 
 
 def test_sixty_frames_a_second_keeps_every_other(
@@ -118,7 +114,7 @@ def test_sixty_frames_a_second_keeps_every_other(
 ) -> None:
     """A 60 fps video keeps the frames 1/30 s apart."""
     path = _encode(tmp_path / "sixty.mov", [_rgb(f.gray) for f in rendered[:12]], rate=60)
-    video.import_video(path, tmp_path / "out", ROOM_CAMERA)
+    video.import_video(path, tmp_path / "out", lenses.Chosen(ROOM_CAMERA, "given"))
     frames, source = _imported(tmp_path / "out")
     np.testing.assert_allclose(frames.timestamps, np.arange(6) / 30, atol=1e-6)
     assert source["frames"] == {"decoded": 12, "kept": 6}
@@ -128,8 +124,10 @@ def test_a_large_video_is_scaled_down_with_its_camera(tmp_path: Path) -> None:
     """A 1280x720 video becomes 854x480, its intrinsics scaled, pixel centres kept."""
     rng = np.random.default_rng(0)
     pictures = [rng.integers(0, 256, (720, 1280, 3), dtype=np.uint8) for _ in range(2)]
-    camera = video.Pinhole(1000.0, 1000.0, 639.5, 359.5, 1280, 720)
-    video.import_video(_encode(tmp_path / "big.mov", pictures), tmp_path / "out", camera)
+    camera = lenses.Pinhole(1000.0, 1000.0, 639.5, 359.5, 1280, 720)
+    video.import_video(
+        _encode(tmp_path / "big.mov", pictures), tmp_path / "out", lenses.Chosen(camera, "given")
+    )
     frames, _ = _imported(tmp_path / "out")
     assert (frames.camera.width, frames.camera.height) == (854, 480)
     assert images.read_rgb(frames.images[0]).shape == (480, 854, 3)
@@ -142,10 +140,40 @@ def test_a_large_video_is_scaled_down_with_its_camera(tmp_path: Path) -> None:
     assert video.output_size(1080, 1920) == (480, 854)
 
 
+def test_a_phone_video_is_matched_to_its_profile_and_undistorted(tmp_path: Path) -> None:
+    """An iPhone 14 Pro's 1080p video takes its main camera's profile, undistorted to pinhole."""
+    rng = np.random.default_rng(1)
+    pictures = [rng.integers(0, 256, (1080, 1920, 3), dtype=np.uint8) for _ in range(2)]
+    path = _encode(tmp_path / "phone.mov", pictures, metadata=APPLE)
+    chosen = lenses.choose(video.probe(path), lenses.load(PROFILES))
+    assert (chosen.source, chosen.profile) == (
+        "profile",
+        "Apple_iPhone 14 Pro_24mm__1080p_16by9_1920x1080-25.00fps",
+    )
+    assert isinstance(chosen.lens, lenses.Fisheye)
+    video.import_video(path, tmp_path / "out", chosen)
+    frames, source = _imported(tmp_path / "out")
+    pinhole, _ = lenses.undistortion(chosen.lens.scaled(854, 480))
+    assert (frames.camera.width, frames.camera.height) == (pinhole.width, pinhole.height)
+    assert pinhole.width < 854  # the lens's border cropped
+    assert pinhole.height < 480
+    np.testing.assert_allclose(
+        frames.camera.intrinsics, [pinhole.fx, pinhole.fy, pinhole.cx, pinhole.cy]
+    )
+    assert images.read_rgb(frames.images[0]).shape == (pinhole.height, pinhole.width, 3)
+    assert source["intrinsics"]["profile"] == chosen.profile
+    assert video.main([str(path), str(tmp_path / "cli"), "--profiles", str(PROFILES)]) == 0
+    assert video.main([str(path), str(tmp_path / "nominal"), "--source", "nominal"]) == 0
+    assert (
+        json.loads((tmp_path / "nominal" / "source.json").read_text())["intrinsics"]["source"]
+        == "nominal"
+    )
+
+
 def test_only_the_named_metadata_is_kept(rendered: list[room.Frame], tmp_path: Path) -> None:
     """source.json records the make, model and lens, never the location or anything else."""
     path = _encode(tmp_path / "tagged.mov", [_rgb(rendered[0].gray)] * 2, metadata=APPLE)
-    video.import_video(path, tmp_path / "out", ROOM_CAMERA)
+    video.import_video(path, tmp_path / "out", lenses.Chosen(ROOM_CAMERA, "given"))
     _, source = _imported(tmp_path / "out")
     assert source["metadata"] == {key: APPLE[key] for key in video.METADATA_KEYS if key in APPLE}
     assert "ISO6709" not in (tmp_path / "out" / "source.json").read_text()
@@ -154,7 +182,7 @@ def test_only_the_named_metadata_is_kept(rendered: list[room.Frame], tmp_path: P
 def test_an_imported_video_tracks_the_room(rendered: list[room.Frame], tmp_path: Path) -> None:
     """The room, imported from a video, tracks as close to the truth as the room's own run."""
     path = _encode(tmp_path / "room.mov", [_rgb(f.gray) for f in rendered])
-    video.import_video(path, tmp_path / "room_video", ROOM_CAMERA)
+    video.import_video(path, tmp_path / "room_video", lenses.Chosen(ROOM_CAMERA, "given"))
     run = vo.run("tum", tmp_path / "room_video", "monocular", tmp_path / "run", options=OPTIONS)
     truth = [f.timestamp for f in rendered], np.array([f.T_world_cam for f in rendered])
     assert runs.evaluate(run, *truth).absolute.rmse < ATE_BOUND["monocular"]
@@ -180,7 +208,7 @@ def test_a_video_is_refused_and_leaves_nothing(
     path, camera, out = tmp_path / "in.mov", ROOM_CAMERA, tmp_path / "outs" / "out"
     if change == "long":
         _encode(path, [np.zeros((32, 32, 3), np.uint8)] * 62, rate=1)
-        camera = video.Pinhole(30.0, 30.0, 15.5, 15.5, 32, 32)
+        camera = lenses.Pinhole(30.0, 30.0, 15.5, 15.5, 32, 32)
     elif change == "turn":
         _encode(path, pictures, rotation=45)
     elif change == "text":
@@ -195,7 +223,7 @@ def test_a_video_is_refused_and_leaves_nothing(
         out.mkdir(parents=True)
         (out / "kept.txt").write_text("not ours")
     with pytest.raises(InvalidInputError, match=message):
-        video.import_video(path, out, camera)
+        video.import_video(path, out, lenses.Chosen(camera, "given"))
     left = sorted(p.name for p in (tmp_path / "outs").iterdir()) if out.parent.exists() else []
     assert left == (["out"] if change == "used" else [])
 

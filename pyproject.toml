@@ -232,7 +232,7 @@ layers = [
   "(budgets) | (video)",
   "(runs) | (colmap_reference)",
   "(metrics) | (tum) | (euroc) | (readers) | (reprojection)",
-  "(timestamps) | (images)",
+  "(timestamps) | (images) | (lenses)",
 ]
 
 # Pillow reads image files in slam_it_all.eval.images alone: the cores decode PNGs natively, and

@@ -11,6 +11,9 @@
   ``slam-it-all-eval`` crate read PNGs natively and the same way).
 - :mod:`slam_it_all.eval.video`: importing a phone's recording, a video or a Stray Scanner zip,
   into a TUM-format folder (the one module that imports PyAV, an optional extra).
+- :mod:`slam_it_all.eval.lenses`: a phone video's intrinsics, from the best source that has
+  them (a Gyroflow lens profile, the 35mm-equivalent focal length, a nominal field of view),
+  and undistorting a fisheye lens to pinhole.
 - :mod:`slam_it_all.eval.metrics`: the absolute trajectory error (after SE(3) or Sim(3)
   alignment) and the relative pose error, as the TUM benchmark defines them, and associating
   timestamps.

@@ -108,6 +108,9 @@ run npm ci --prefix "${ROOT_DIR}/viewer" --no-audit --no-fund
 # CMake build tree and silently reuse each other's cached compiler and paths.
 run python -m pip install --no-build-isolation \
   -C build-dir="build/${ENV_NAME}" -e "${ROOT_DIR}"
+# Gyroflow's phone lens profiles (CC0), at the commit slam_it_all.eval.lenses pins, into the
+# user's cache: the source of a phone video's intrinsics. Skipped when already there.
+run python -m slam_it_all.eval.lenses fetch
 # The upload server, a package of its own (server/), with its test client.
 run python -m pip install -e "${ROOT_DIR}/server[test]"
 (cd "${ROOT_DIR}" && run maturin develop --release -m rust/slam-it-all-py/Cargo.toml)
