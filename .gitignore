@@ -25,3 +25,7 @@ runs/
 .claude/*
 !.claude/agents/
 !.claude/skills/
+
+# Filled-in server settings stay on their machine; the template is the repository's.
+*.env
+!server/settings.template.env

@@ -9,7 +9,7 @@ import re
 
 from slam_it_all.eval import lenses, video
 from slam_it_all.orchestration import worker
-from slam_it_all_server import config, jobs
+from slam_it_all_server import app, config, jobs
 from tests.server.conftest import VIEWER
 
 PAGE = (VIEWER / "src" / "jobs.js").read_text()
@@ -45,3 +45,18 @@ def test_the_names_are_the_workers() -> None:
 def test_the_heartbeat_is_well_inside_the_silence() -> None:
     """The server fails a job it has not heard from for SILENCE: at least three heartbeats."""
     assert config.SILENCE >= 3 * worker.HEARTBEAT
+
+
+def test_the_retention_the_pages_state_is_the_servers() -> None:
+    """The status page's constant, and the upload page's words, say the server's RETENTION."""
+    days = config.RETENTION / 86400
+    assert float(_constant("RETENTION_DAYS")) == days
+    upload = (VIEWER / "upload.html").read_text()
+    stated = re.search(r"kept\s+for\s+(\d+)\s+days", upload)
+    assert stated is not None
+    assert float(stated.group(1)) == days
+
+
+def test_the_workers_claim_is_within_the_servers_bound() -> None:
+    """The worker's claim waits no longer than the server holds one."""
+    assert worker.WAIT <= app.CLAIM_WAIT

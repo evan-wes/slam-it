@@ -22,5 +22,9 @@ COPY viewer/src /opt/viewer/src
 
 ENV SLAM_IT_ALL_VIEWER=/opt/viewer PYTHONUNBUFFERED=1
 RUN useradd --system --uid 10001 --no-create-home server
+# Run as root (Railway runs an image whose volume it mounts as root), the entrypoint gives the job
+# list's folder to the server's user and drops to it; run as that user, it just starts.
+COPY docker/server-entrypoint.sh /usr/local/bin/slam-it-all-server-entrypoint
 USER server
+ENTRYPOINT ["/usr/local/bin/slam-it-all-server-entrypoint"]
 CMD ["python", "-m", "slam_it_all_server", "--host", "::"]

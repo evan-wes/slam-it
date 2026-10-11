@@ -1,9 +1,9 @@
-// The run viewer's page: loads a bundle (the URL's `bundle`, else `bundle/` beside the page),
+// The run viewer's page: loads a bundle (the URL's `bundle` on this site, else `bundle/` beside it),
 // and shows one frame at a time in the image, map and solver panels, for the backend chosen,
 // beside the other backends' trajectories and step times, the frames where they decided
 // differently marked. This module only wires the views and controls to the page.
 
-import { BACKENDS, loadBackend, loadBundle, loadTrack } from "./bundle.js";
+import { BACKENDS, bundleAddress, loadBackend, loadBundle, loadTrack } from "./bundle.js";
 import { differences, ran, shownAt, spanText } from "./compare.js";
 import * as format from "./format.js";
 import { keypointsAt, recordIndex } from "./frames.js";
@@ -203,9 +203,8 @@ function bindPlayback(playhead, scrubber) {
  */
 async function main() {
   const message = element("message", HTMLParagraphElement);
-  const given = new URLSearchParams(location.search).get("bundle") ?? "bundle/";
-  const base = new URL(given, location.href);
-  const fetchFile = fetcher(base.href.endsWith("/") ? base.href : `${base.href}/`);
+  const given = new URLSearchParams(location.search).get("bundle");
+  const fetchFile = fetcher(bundleAddress(given, location.href));
   const bundle = await loadBundle(fetchFile);
   const info = bundle.info;
   element("sequence", HTMLElement).textContent =

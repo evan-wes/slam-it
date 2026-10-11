@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
 from collections.abc import Iterator
 from typing import Any
@@ -474,3 +475,22 @@ def test_a_job_the_sweep_ends_keeps_none_of_its_files(server: Server) -> None:
     assert (job.state, job.reason) == ("failed", "the worker stopped answering")
     assert list(server.store.root.glob("imports/*")) == []
     assert list(server.store.root.rglob("*.npy")) == []
+
+
+def test_the_pages_carry_a_content_policy_that_allows_their_own_scripts(server: Server) -> None:
+    """The pages' Content Security Policy allows their own scripts and connections alone.
+
+    Scripts from this site, three.js's CDN and the import map by its hash; connections to this
+    site and storage; nothing frames the pages.
+    """
+    index = (server.settings.viewer / "index.html").read_text()
+    script = index.split('<script type="importmap">', 1)[1].split("</script>", 1)[0]
+    digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
+    policy = server.client.get("/").headers["content-security-policy"]
+    directives = dict(part.strip().split(" ", 1) for part in policy.split(";"))
+    assert directives["script-src"] == f"'self' https://cdn.jsdelivr.net 'sha256-{digest}'"
+    assert directives["connect-src"] == "'self' http://testserver"
+    assert directives["media-src"] == "'self' blob:"  # the upload page reads a video's length
+    assert directives["default-src"] == "'self'"
+    assert directives["frame-ancestors"] == "'none'"
+    assert server.client.get("/api/jobs/x").headers["content-security-policy"] == policy

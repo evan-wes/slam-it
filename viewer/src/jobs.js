@@ -4,8 +4,11 @@
 /** The largest upload, in bytes (slam_it_all_server.config.MAX_BYTES). */
 export const MAX_BYTES = 500e6;
 
-/** The longest video, in seconds (slam_it_all_server.config.MAX_SECONDS). */
+/** The longest video, in seconds (slam_it_all.eval.video.MAX_SECONDS). */
 export const MAX_SECONDS = 60;
+
+/** How long a result is kept, in days (slam_it_all_server.config.RETENTION). */
+export const RETENTION_DAYS = 7;
 
 /** What may be uploaded, and the files each one is (an `accept` attribute's value). */
 export const UPLOADS = {

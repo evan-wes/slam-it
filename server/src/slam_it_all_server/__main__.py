@@ -3,11 +3,15 @@
 Its settings come from the environment (:mod:`slam_it_all_server.config`); the port defaults to
 ``PORT``, which Railway sets, else 8000. The host ``::`` listens on IPv6 and IPv4 both
 (:func:`listening`), as the image does.
+
+uvicorn's access log is off: a request's path holds a result's token or a signed link. The
+server logs its own lines instead, naming jobs by their id (:mod:`slam_it_all_server.app`).
 """
 
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import socket
 import sys
@@ -16,7 +20,7 @@ from collections.abc import Sequence
 import uvicorn
 
 from slam_it_all_server.app import make_app
-from slam_it_all_server.config import SettingsError, from_environment
+from slam_it_all_server.config import Settings, SettingsError, from_environment
 
 SHUTDOWN = 3
 """How long a stopping server waits for requests still open, in seconds: a worker's claim is
@@ -51,6 +55,27 @@ def listening(host: str, port: int) -> socket.socket:
     return bound
 
 
+def server_config(settings: Settings) -> uvicorn.Config:
+    """Return how uvicorn runs the app: no access log, no server header, a short shutdown.
+
+    Parameters
+    ----------
+    settings : Settings
+        The server's settings.
+
+    Returns
+    -------
+    uvicorn.Config
+        The configuration.
+    """
+    return uvicorn.Config(
+        make_app(settings),
+        server_header=False,
+        access_log=False,
+        timeout_graceful_shutdown=SHUTDOWN,
+    )
+
+
 def main(arguments: Sequence[str]) -> int:
     """Serve until stopped; 2 if a setting is missing or malformed.
 
@@ -73,10 +98,10 @@ def main(arguments: Sequence[str]) -> int:
     except SettingsError as error:
         print(f"slam_it_all_server: {error}", file=sys.stderr)
         return 2
-    config = uvicorn.Config(
-        make_app(settings), server_header=False, timeout_graceful_shutdown=SHUTDOWN
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s server %(levelname)s %(message)s", stream=sys.stderr
     )
-    uvicorn.Server(config).run(sockets=[listening(args.host, args.port)])
+    uvicorn.Server(server_config(settings)).run(sockets=[listening(args.host, args.port)])
     return 0
 
 

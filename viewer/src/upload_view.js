@@ -69,6 +69,10 @@ async function post(path, body) {
   return answer;
 }
 
+/**
+ * Wire the upload form: check the file, make the job with the invite code, send the file to
+ * the link the server signed, confirm it, and go to the job's status page.
+ */
 function main() {
   const form = element("form", HTMLFormElement);
   const file = element("file", HTMLInputElement);

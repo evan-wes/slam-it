@@ -15,8 +15,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from slam_it_all_server.__main__ import SHUTDOWN, listening
-from tests.server.conftest import CODE, TOKEN, VIEWER
+from slam_it_all_server.__main__ import SHUTDOWN, listening, server_config
+from tests.server.conftest import CODE, TOKEN, VIEWER, make_settings
 
 
 def test_missing_settings_end_it_with_code_2() -> None:
@@ -101,3 +101,15 @@ def test_the_host_colons_listens_on_ipv6_and_ipv4() -> None:
         assert alone.family == socket.AF_INET
     finally:
         alone.close()
+
+
+def test_uvicorn_keeps_no_access_log(tmp_path: Path) -> None:
+    """Uvicorn keeps no access log: a request's path holds a token or a signed link.
+
+    The server's own lines name jobs by their id instead.
+    """
+    settings = make_settings(tmp_path)
+    config = server_config(settings)
+    assert config.access_log is False
+    assert config.server_header is False
+    assert config.timeout_graceful_shutdown == SHUTDOWN

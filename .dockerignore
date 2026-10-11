@@ -13,3 +13,7 @@ viewer/node_modules
 .ruff_cache
 datasets
 runs
+
+# Filled-in server settings stay on their machine; the template is the repository's.
+*.env
+!server/settings.template.env

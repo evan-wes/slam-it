@@ -6,8 +6,10 @@ the system's temporary folder). The worker token and the signing key are made af
 run; the invite code is too, unless given, and is printed with the page's address.
 
 With ``--lan`` the server listens on every interface, and its links use this machine's address
-on the local network, so a phone on the same Wi-Fi can open the page and upload; the invite code
-still guards uploads. Ctrl-C, or a SIGTERM, stops the server and the worker together.
+on the local network, so a phone on the same Wi-Fi can open the page and upload. Every page then
+asks for the invite code (HTTP Basic auth: any name, the code as the password), as staging does.
+Ctrl-C, or a SIGTERM, stops the server and the worker together, and the server stops if the
+worker does. The worker inherits only what it needs of this shell's environment.
 
 Example::
 
@@ -30,6 +32,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from slam_it_all.orchestration import worker as worker_module
+
 REPO = Path(__file__).resolve().parent.parent
 """The repository, whose viewer folder holds the pages."""
 
@@ -47,7 +51,7 @@ def lan_address() -> str:
         return str(probe.getsockname()[0])
 
 
-def environment(data: Path, code: str, url: str) -> dict[str, str]:
+def environment(data: Path, code: str, url: str, *, staging: bool = False) -> dict[str, str]:
     """Return the server's settings for a demo keeping everything in `data`.
 
     Parameters
@@ -58,6 +62,8 @@ def environment(data: Path, code: str, url: str) -> dict[str, str]:
         The invite code.
     url : str
         The server's address, which folder storage's links point at.
+    staging : bool, optional
+        Whether every page asks for the invite code.
 
     Returns
     -------
@@ -72,7 +78,7 @@ def environment(data: Path, code: str, url: str) -> dict[str, str]:
         "SLAM_IT_ALL_PUBLIC_URL": url,
         "SLAM_IT_ALL_DATABASE": str(data / "jobs.sqlite3"),
         "SLAM_IT_ALL_VIEWER": str(REPO / "viewer"),
-        "SLAM_IT_ALL_STAGING": "0",
+        "SLAM_IT_ALL_STAGING": "1" if staging else "0",
     }
 
 
@@ -93,6 +99,17 @@ def _refuse_a_used_port(host: str, port: int) -> None:
             probe.bind((host, port))
         except OSError:
             raise SystemExit(f"serve_demo: port {port} is in use") from None
+
+
+def watch(server: subprocess.Popen[bytes], worker: subprocess.Popen[bytes]) -> int:
+    """Wait while both run; return the server's code if it stops, 1 if the worker does first."""
+    while True:
+        if server.poll() is not None:
+            return int(server.returncode)
+        if worker.poll() is not None:
+            print("serve_demo: the worker stopped, so the demo stops too", file=sys.stderr)
+            return 1
+        time.sleep(0.5)
 
 
 def _wait_until_up(url: str, child: subprocess.Popen[bytes], seconds: float = 30.0) -> None:
@@ -119,7 +136,7 @@ def main(arguments: list[str]) -> int:
     Returns
     -------
     int
-        0 once stopped, or the server's code if it stopped first.
+        0 once stopped; the server's code if it stopped first; 1 if the worker did.
     """
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--port", type=int, default=PORT)
@@ -132,7 +149,7 @@ def main(arguments: list[str]) -> int:
     code = args.code or secrets.token_urlsafe(9)
     address = lan_address() if args.lan else "127.0.0.1"
     url = f"http://{address}:{args.port}"
-    settings = environment(data, code, url)
+    settings = environment(data, code, url, staging=args.lan)
     host = "0.0.0.0" if args.lan else "127.0.0.1"
     _refuse_a_used_port(host, args.port)
     # Ctrl-C works even when started with SIGINT ignored (in the background of a script).
@@ -145,14 +162,15 @@ def main(arguments: list[str]) -> int:
     worker = None
     try:
         _wait_until_up(f"http://127.0.0.1:{args.port}", server)
-        token = {"SLAM_IT_ALL_WORKER_TOKEN": settings["SLAM_IT_ALL_WORKER_TOKEN"]}
+        inherited = {k: os.environ[k] for k in worker_module.CHILD_ENVIRONMENT if k in os.environ}
+        token = {worker_module.TOKEN_VARIABLE: settings["SLAM_IT_ALL_WORKER_TOKEN"]}
         command = [sys.executable, "-m", "slam_it_all.orchestration.worker", "serve"]
         worker = subprocess.Popen(
             [*command, "--server", f"http://127.0.0.1:{args.port}", "--work", str(data / "work")],
-            env={**os.environ, **token},
+            env={**inherited, **token},
         )
         print(f"\nOpen {url}/  invite code: {code}\nEverything is kept in {data}\n", flush=True)
-        return server.wait()
+        return watch(server, worker)
     except KeyboardInterrupt:
         return 0
     finally:

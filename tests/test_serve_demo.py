@@ -14,6 +14,8 @@ import urllib.request
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 from slam_it_all_server.config import from_environment
 
 REPO = Path(__file__).resolve().parents[1]
@@ -102,3 +104,31 @@ def test_the_demo_serves_until_interrupted(tmp_path: Path) -> None:
         probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         probe.bind(("127.0.0.1", port))
         probe.listen()
+
+
+class _Process:
+    """A stand-in for a running process: it ends after a number of polls."""
+
+    def __init__(self, polls: int, code: int) -> None:
+        self.polls, self.code = polls, code
+        self.returncode: int | None = None
+
+    def poll(self) -> int | None:
+        self.polls -= 1
+        if self.polls < 0:
+            self.returncode = self.code
+        return self.returncode
+
+
+def test_the_demo_stops_when_either_of_its_processes_does(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The server stopping gives its code; the worker stopping first gives 1."""
+    demo = _script()
+    monkeypatch.setattr(demo.time, "sleep", lambda _: None)
+    assert demo.watch(_Process(2, 3), _Process(10, 0)) == 3
+    assert demo.watch(_Process(10, 0), _Process(2, 0)) == 1
+
+
+def test_on_the_local_network_every_page_asks_for_the_code(tmp_path: Path) -> None:
+    """With --lan, the settings are staging's: every page behind the invite code."""
+    env = _script().environment(tmp_path, "a-demo-invite-code", "http://1.2.3.4:1", staging=True)
+    assert from_environment(env).staging

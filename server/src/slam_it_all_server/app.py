@@ -30,7 +30,9 @@ token checked on every request.
 - at most :data:`slam_it_all_server.jobs.CODE_JOBS` jobs open per invite code;
 - a result's files only of the names and kinds a bundle has (:data:`RESULT_PATH`);
 - results reachable only through their token, pages marked ``noindex``, and no ``Referer``
-  sent, so a token never leaves in one;
+  sent, so a token never leaves in one; the log names jobs by their id alone;
+- a Content Security Policy (:func:`content_policy`): scripts from this site, the import map
+  by its hash and three.js's CDN alone, connections to this site and storage alone;
 - request bodies capped at :data:`BODY_BYTES`, except folder storage's signed uploads.
 """
 
@@ -45,6 +47,7 @@ import hmac
 import json
 import logging
 import re
+import urllib.parse
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
@@ -89,6 +92,12 @@ SWEEP = 15.0
 
 CLAIM_POLL = 1.0
 """How often a worker's waiting claim looks for a job, in seconds."""
+
+CLAIM_WAIT = 60.0
+"""The longest a worker's claim is held, in seconds."""
+
+CDN = "https://cdn.jsdelivr.net"
+"""Where the run viewer loads three.js from (``viewer/index.html``'s import map)."""
 
 _HEADERS = {
     "X-Robots-Tag": "noindex, nofollow",
@@ -215,7 +224,7 @@ class Claim(BaseModel):
     """A worker's claim."""
 
     kinds: list[str] = Field(max_length=10)
-    wait: float = Field(ge=0, le=60)
+    wait: float = Field(ge=0, le=CLAIM_WAIT)
 
 
 class Progress(BaseModel):
@@ -269,6 +278,52 @@ def _staging_allows(request: Request, settings: Settings) -> bool:
     except (binascii.Error, UnicodeDecodeError):
         return False
     return _matches(credentials.partition(":")[2], settings.invite_codes)
+
+
+def content_policy(viewer: Path, store: Storage) -> str:
+    """Return the pages' Content Security Policy.
+
+    Scripts come from this site, the CDN three.js is on, and the inline import maps of the
+    viewer's ``index.html``, each allowed by its hash; styles from this site and Google Fonts;
+    media from this site and the visitor's own chosen file (``blob:``); connections go to this
+    site and to storage's own origin (the bucket, for the uploads and a bundle's redirected
+    files); nothing may frame the pages.
+
+    Parameters
+    ----------
+    viewer : pathlib.Path
+        The viewer's folder.
+    store : Storage
+        The storage, whose links' origin connections may reach.
+
+    Returns
+    -------
+    str
+        The policy.
+    """
+    index = viewer / "index.html"
+    text = index.read_text() if index.is_file() else ""
+    maps = re.findall(r'<script type="importmap">(.*?)</script>', text, re.DOTALL)
+    hashes = [
+        "'sha256-" + base64.b64encode(hashlib.sha256(m.encode()).digest()).decode() + "'"
+        for m in maps
+    ]
+    link = urllib.parse.urlsplit(store.download_link("content-policy/probe"))
+    return "; ".join(
+        [
+            "default-src 'self'",
+            " ".join(["script-src 'self'", CDN, *hashes]),
+            "style-src 'self' https://fonts.googleapis.com",
+            "font-src https://fonts.gstatic.com",
+            "img-src 'self' blob: data:",
+            "media-src 'self' blob:",  # the upload page reads a video's length from the file
+            f"connect-src 'self' {link.scheme}://{link.netloc}",
+            "object-src 'none'",
+            "base-uri 'self'",
+            "form-action 'self'",
+            "frame-ancestors 'none'",
+        ]
+    )
 
 
 def _body_refused(request: Request) -> Response | None:
@@ -354,6 +409,7 @@ def make_app(
         task.cancel()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    headers = {**_HEADERS, "Content-Security-Policy": content_policy(settings.viewer, server.store)}
 
     @app.middleware("http")
     async def guard(
@@ -366,7 +422,7 @@ def make_app(
             )
         else:
             answer = _body_refused(request) or await call_next(request)
-        answer.headers.update(_HEADERS)
+        answer.headers.update(headers)
         if request.url.path.startswith("/api/"):
             answer.headers["Cache-Control"] = "no-store"
         return answer

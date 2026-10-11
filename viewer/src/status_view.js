@@ -1,7 +1,7 @@
 // The status page, at /r/<token>: asks how the job is going every few seconds until it ends,
 // then shows its summary and the link to the run viewer, or why it did not finish.
 
-import { STAGES, describe, keptFor, summaryRows, viewerLink } from "./jobs.js";
+import { RETENTION_DAYS, STAGES, describe, keptFor, summaryRows, viewerLink } from "./jobs.js";
 import { element } from "./page_view.js";
 
 /** How often the page asks, in milliseconds. */
@@ -51,6 +51,10 @@ function show(status) {
   return said.ended;
 }
 
+/**
+ * Ask how the job its address names is going, every few seconds, until it has ended.
+ * @returns {Promise<void>} Once the job has ended, or is not there.
+ */
 async function main() {
   const token = location.pathname.split("/")[2] ?? "";
   for (;;) {
@@ -58,7 +62,7 @@ async function main() {
     if (response !== null && response.status === 404) {
       element("headline", HTMLElement).textContent = "no such run";
       element("detail", HTMLElement).textContent =
-        "its link is wrong, or the run has been deleted (results are kept 7 days)";
+        `its link is wrong, or the run has been deleted (results are kept ${RETENTION_DAYS} days)`;
       return;
     }
     if (response !== null && response.ok && show(await response.json())) {

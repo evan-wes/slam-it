@@ -124,6 +124,21 @@ export const VERSION = 1;
 export const BACKENDS = ["cpp", "rust", "python"];
 
 /**
+ * The bundle's address: the page's ``bundle`` parameter, else ``bundle/`` beside the page, on
+ * this site alone, so that no link can show another site's bundle as this site's.
+ * @param {string | null} given The page's ``bundle`` parameter, if it has one.
+ * @param {string} page The page's address.
+ * @returns {string} The bundle's address, ending in "/".
+ */
+export function bundleAddress(given, page) {
+  const base = new URL(given ?? "bundle/", page);
+  if (base.origin !== new URL(page).origin) {
+    throw new Error("the bundle must be on this site");
+  }
+  return base.href.endsWith("/") ? base.href : `${base.href}/`;
+}
+
+/**
  * Decode a fetched file as JSON.
  * @param {ArrayBuffer} buffer The file's bytes.
  * @returns {unknown} Its value.

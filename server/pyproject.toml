@@ -12,7 +12,7 @@ version = "0"
 description = "SLAM It All!'s upload server: the job list, the guards and the pages."
 requires-python = ">=3.11"
 license = "PolyForm-Noncommercial-1.0.0"
-dependencies = ["fastapi>=0.143", "uvicorn>=0.54", "boto3>=1.43"]
+dependencies = ["fastapi>=0.143", "pydantic>=2.14", "uvicorn>=0.54", "boto3>=1.43", "botocore>=1.43"]
 
 [project.optional-dependencies]
 # FastAPI's test client runs on httpx.
