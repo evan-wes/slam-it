@@ -419,8 +419,8 @@ thin roots that only wire them.
   `slam_it_all`, PyAV, Pillow, OpenCV or reifyscene, so the process holding the storage keys
   never parses a video; `slam_it_all` never imports the server or its web stack; the server's
   own modules keep an order (`__main__`, `app`, `jobs | storage`, `config`).
-- **The pipeline never needs the `video` extra:** `orchestration.vo` and `orchestration.bundles`
-  never import `eval.video`, which alone imports PyAV.
+- **The pipeline never needs the `video` extra:** of `orchestration`, only the worker imports
+  `eval.video`, which alone imports PyAV.
 
 **The same layering holds in C++ and Rust.** Each rung is its own C++ library and Rust
 crate, so a rung can only link what it declares. `scripts/check_layers.py` reads the

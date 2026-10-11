@@ -17,43 +17,45 @@ what they changed is in the entries below (`docs/reviews/2026-10-11-feature-your
 ### Added
 
 - **Video import**, `python -m slam_it_all.eval.video` (`import_video`; PyAV, in the optional
-  `video` extra and kept in this module by a contract): a video opened as MP4 or MOV alone,
-  turned upright by the rotation it declares, timed by presentation time (60 fps becomes 30),
-  scaled down to a 480-pixel short side, undistorted to pinhole if its lens is a fisheye, and
-  written as a TUM-format folder (`eval.tum.write_list`, `write_camera`) with `source.json`,
-  which keeps at most four metadata fields and never a location. Frames over 7680 pixels long
-  or 3 to 1, and videos over 14,400 frames, are refused.
+  `video` extra and kept in this module by a contract): a video opened as MP4 or MOV alone, turned
+  upright by the rotation it declares, timed by presentation time (60 fps becomes 30), scaled down
+  to a 480-pixel short side, undistorted to pinhole if its lens is a fisheye, and written as a
+  TUM-format folder (`eval.tum.write_list`, `write_camera`) with `source.json`, which keeps at most
+  four metadata fields and never a location. Frames over 7680 pixels long or 3 to 1, frames that
+  change size, and videos over 14,400 frames, are refused.
 - **Stray Scanner recordings** (`import_stray`): the zip read in place, three files opened, each
   capped, unsafe or unreadable entries refusing it; its poses, already in our camera's axes as
   its encoder writes them, become the ground truth, and its video's first frame, behind an edit
   list, is decoded.
-- **A video's intrinsics** (`slam_it_all.eval.lenses`): a Gyroflow lens profile (CC0, fetched at
-  a pinned commit by `python -m slam_it_all.eval.lenses fetch`, never committed; 1,047 of its
-  1,164 phone profiles usable, the database required) matched by phone, lens (by its name, else
-  its 35mm-equivalent focal length), aspect and orientation; else the 35mm-equivalent focal
-  length; else a nominal 71.66-degree diagonal field of view. Fisheye undistortion through
-  OpenCV's model, held to `cv2.fisheye`, resampled by rung 0's remap. `eval.images.write_png`.
-- **The worker** (`python -m slam_it_all.orchestration.worker serve`): claims the server's jobs
-  over HTTP with its token, and in a child process under memory and file-size limits and a
-  timeout imports, runs and bakes each; it uploads the bundle and reports the job done, or
-  failed with a reason fit to show. It repeats its stage every 30 s as the job's heartbeat,
-  transfers included, and carries on past a report that does not arrive. A job's processes are
-  one group, killed whole when it ends; the child inherits no token; only `http(s)` links to
-  safe hosts are followed; the unexpected is logged by job. An upload's run is named
-  `your-video`.
+- **A video's intrinsics** (`slam_it_all.eval.lenses`): a Gyroflow lens profile (CC0, fetched at a
+  pinned commit by `python -m slam_it_all.eval.lenses fetch`, never committed; 1,047 of its 1,164
+  phone profiles usable, the database required) matched by phone, lens (by its name, else its
+  35mm-equivalent focal length), the profile's own focal length against the video's, aspect and
+  orientation; else the 35mm-equivalent focal length; else a nominal 72.37-degree diagonal field of
+  view. Fisheye undistortion through OpenCV's model, held to `cv2.fisheye`, resampled by rung 0's
+  remap. `eval.images.write_png`.
+- **The worker** (`python -m slam_it_all.orchestration.worker serve`): claims the server's jobs over
+  HTTP with its token, and in a child process under memory and file-size limits and a timeout
+  imports, runs and bakes each; it uploads the bundle and reports the job done, or failed with a
+  reason fit to show. It repeats its stage every 30 s as the job's heartbeat, transfers included,
+  and carries on past a report that does not arrive. A job's processes are one group, killed whole
+  when it ends, however the worker is stopped; the child inherits no token; only `http(s)` links to
+  safe hosts are followed, and no redirect but a download's to one; the unexpected is logged by job.
+  An upload's run is named `your-video`.
 - **The upload server** (`server/`, `slam_it_all_server`, `python -m slam_it_all_server`): the job
-  list in SQLite; storage in an S3 bucket or a folder, through links signed for one key and, for
-  uploads, one size and 15 minutes; the guards (an invite code, at most 2 jobs open per code and
-  5 in all, the caps, one job worked on at a time, a confirmed upload moved out of its link's
-  reach and deleted after import, a result's files only a bundle's, results after 7 days, a
-  job's files deleted before it is and retried if that fails, tokens unguessable, pages
-  `noindex` under a Content Security Policy, staging behind a code). It logs jobs by id, never
-  by token. Its settings come from the environment, listed in `server/settings.template.env`.
-  Given `::`, as in its image, it listens on IPv6 and IPv4 at once; it stops within 3 s. It
-  never imports `slam_it_all`.
+  list in SQLite, which keeps its format and refuses another; storage in an S3 bucket or a folder,
+  through links signed for one key and, for uploads, one size and 15 minutes; the guards (an invite
+  code, at most 2 jobs open per code and 5 in all, the caps, one job worked on at a time, a
+  confirmed upload moved out of its link's reach and deleted after import, what the link writes
+  later deleted again after an hour, a result's files only a bundle's, results after 7 days, a job's
+  files deleted before it is and retried if that fails, tokens unguessable, pages `noindex` under a
+  Content Security Policy that allows three.js's own path alone of its CDN, staging behind a code,
+  never run as root). It logs jobs by id, never by token. Its settings come from the environment,
+  listed in `server/settings.template.env`. Given `::`, as in its image, it listens on IPv6 and IPv4
+  at once; it stops within 3 s. It never imports `slam_it_all`.
 - **The upload and status pages** (`viewer/upload.html`, `viewer/status.html`, their logic in
   `viewer/src/jobs.js`).
-- **The images** (`docker/server.Dockerfile`, which drops root at once, and
+- **The images** (`docker/server.Dockerfile`, which drops root at once for good, and
   `docker/worker.Dockerfile`, with tini) and **`scripts/serve_demo.py`**, which runs the server
   and a worker on this machine, on the local network with `--lan`, every page then behind the
   code.
@@ -65,9 +67,9 @@ what they changed is in the entries below (`docs/reviews/2026-10-11-feature-your
   tooltip; a backend's button is disabled on frames it did not run, and the page switches to
   one that did.
 - **`Pinhole` moves to `eval.lenses`.**
-- **Layer 1 covers the server:** ruff, mypy and jscpd check `server/`, prettier the new pages,
-  and import contracts keep the server and `slam_it_all` apart, keep a decoder and reifyscene
-  out of the server and `eval.video` out of the pipeline, and order the server's modules.
+- **Layer 1 covers the server:** ruff, mypy and jscpd check `server/`, prettier the new pages, and
+  import contracts keep the server and `slam_it_all` apart, keep a decoder and reifyscene out of the
+  server and `eval.video` out of orchestration but the worker, and order the server's modules.
 - **The run viewer** reads a bundle from its own site only, and loads three.js pinned by its
   hashes.
 - **The setup script** installs the `video` extra and the server, and fetches the lens profiles;
