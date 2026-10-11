@@ -27,9 +27,9 @@ nothing (one killed outright leaves that folder, which nothing reads: it is safe
 - Kept in colour, as PNG (:func:`slam_it_all.eval.images.write_png`).
 
 **Caps.** An upload over :data:`MAX_BYTES` or a video over :data:`MAX_SECONDS` is refused, and
-so is a frame longer than :data:`MAX_LONG_SIDE` or narrower than :data:`MAX_ASPECT` to one, so
-that a frame written is at most 1440 by 480, and a video of more than :data:`MAX_DECODED`
-frames.
+so is a video of more than :data:`MAX_DECODED` frames, or whose frames are longer than
+:data:`MAX_LONG_SIDE`, more than :data:`MAX_ASPECT` to 1, or not all of one size. A frame
+written is then at most :data:`MAX_ASPECT` times :data:`SHORT_SIDE` long.
 
 **Containers.** An upload is opened with FFmpeg's mov/mp4 demuxer alone, which phones' videos
 and Stray Scanner's are in, and with files as its only protocol. Any other container is
@@ -189,10 +189,11 @@ class _Frames:
 class _Geometry:
     """How each of a video's frames is resampled, and the camera of the frames written.
 
-    Its size, its undistortion map (None for a pinhole) and its counter-clockwise quarter
-    turns, then the upright frames' camera.
+    The frames' size as stored and as written, the undistortion map (None for a pinhole) and
+    the counter-clockwise quarter turns, then the upright frames' camera.
     """
 
+    stored: tuple[int, int]
     size: tuple[int, int]
     mapping: NDArray[np.float64] | None
     turns: int
@@ -303,7 +304,7 @@ def _geometry(frame: av.VideoFrame, lens: lenses.Pinhole | lenses.Fisheye) -> _G
         pinhole, mapping = lenses.undistortion(scaled)
     else:
         pinhole = scaled
-    return _Geometry(size, mapping, turns, pinhole.turned(turns))
+    return _Geometry((frame.width, frame.height), size, mapping, turns, pinhole.turned(turns))
 
 
 def _kept(elapsed: float, times: list[float]) -> bool:
@@ -336,6 +337,12 @@ def _write_frames(
     for index, (elapsed, frame) in enumerate(_decode(video, edits=edits)):
         count = index + 1
         geometry = geometry or _geometry(frame, lens)
+        if (frame.width, frame.height) != geometry.stored:
+            width, height = geometry.stored
+            raise InvalidInputError(
+                f"{video.name}: frame {index} is {frame.width}x{frame.height}, the first "
+                f"{width}x{height}: a video's frames must all be one size"
+            )
         if not _kept(elapsed, times):
             continue
         stamp = f"{elapsed:.6f}"
@@ -363,20 +370,15 @@ def _write_frames(
 
 
 def _write_source(
-    out: Path,
-    kind: str,
-    chosen: tuple[str, str | None],
-    frames: _Frames,
-    metadata: dict[str, str],
+    out: Path, kind: str, chosen: lenses.Chosen, frames: _Frames, metadata: dict[str, str]
 ) -> None:
     """Write ``source.json``: the upload's kind, the intrinsics and their source, what was read."""
-    source, profile = chosen
     camera = frames.camera
     record: dict[str, Any] = {
         "kind": kind,
         "intrinsics": {
-            "source": source,
-            "profile": profile,
+            "source": chosen.source,
+            "profile": chosen.profile,
             "fx": camera.fx,
             "fy": camera.fy,
             "cx": camera.cx,
@@ -419,7 +421,7 @@ def import_video(video: str | Path, out: str | Path, chosen: lenses.Chosen) -> N
     metadata = probe(path).metadata
     with _staged(Path(out)) as folder:
         frames = _write_frames(path, folder, chosen.lens)
-        _write_source(folder, "video", (chosen.source, chosen.profile), frames, metadata)
+        _write_source(folder, "video", chosen, frames, metadata)
 
 
 def _stray_entries(archive: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
@@ -622,7 +624,7 @@ def import_stray(recording: str | Path, out: str | Path) -> None:
             )
         poses = _stray_poses(table)[frames.decoded]
         runs.write_trajectory(folder / "groundtruth.txt", frames.times, poses)
-        _write_source(folder, "stray", ("stray-scanner", None), frames, {})
+        _write_source(folder, "stray", lenses.Chosen(camera, "stray-scanner"), frames, {})
 
 
 def main(arguments: Sequence[str]) -> int:

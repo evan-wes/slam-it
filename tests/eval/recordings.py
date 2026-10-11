@@ -1,8 +1,9 @@
 """Phone recordings of the room, made for the tests: videos, and Stray Scanner zips.
 
-The videos are encoded with PyAV, losslessly (x264 at qp 0), so an imported frame is the
-rendered one up to the colour conversion's rounding. Shared by the import's tests
-(``tests/eval/test_video.py``) and the worker's (``tests/orchestration/test_worker.py``).
+The videos are encoded with PyAV, losslessly (x264 at qp 0; Stray Scanner's, x265 lossless),
+so an imported frame is the rendered one up to the colour conversion's rounding. Shared by the
+import's tests (``tests/eval/test_video.py``) and the worker's
+(``tests/orchestration/test_worker.py``).
 """
 
 from __future__ import annotations
@@ -70,6 +71,10 @@ def encode(
 STRAY_TIMESCALE = 60
 """Stray Scanner's video timescale: a frame is stamped at its ARKit frame number over 60."""
 
+STRAY_DIVIDER = 1
+"""Stray Scanner's default frame-rate divider (``RecordSessionViewController.swift``'s
+``FpsDividers``, unset): every ARKit frame, 60 fps. 2 is its 30 fps setting."""
+
 ARKIT_FROM_OURS = np.diag([1.0, -1.0, -1.0])
 """Our camera's axes (x right, y down, z forwards) to ARKit's (x right, y up, z backwards):
 a half turn about x, its own inverse."""
@@ -78,23 +83,26 @@ Q_AC = np.array([1.0, 0.0, 0.0, 0.0])
 """Stray Scanner's ``q_AC`` (``OdometryEncoder.swift``), xyzw: a half turn about x."""
 
 
-def encode_stray(path: Path, pictures: list[NDArray[np.uint8]]) -> Path:
-    """Encode pictures as Stray Scanner's ``rgb.mp4`` at 30 fps: stamped as its encoder stamps.
+def encode_stray(
+    path: Path, pictures: list[NDArray[np.uint8]], *, divider: int = STRAY_DIVIDER
+) -> Path:
+    """Encode pictures as Stray Scanner's ``rgb.mp4``, in HEVC, stamped as its encoder stamps.
 
-    ``DatasetEncoder.swift`` keeps every other ARKit frame and passes the frame counter before
-    its increment, from -1, so frames are stamped -1, 1, 3, ... over :data:`STRAY_TIMESCALE`,
-    after a session started at 0: the first frame sits behind the MP4's edit list.
+    ``DatasetEncoder.swift`` keeps one ARKit frame in `divider` and passes the frame counter
+    before its increment, from -1, so frames are stamped -1, divider - 1, 2 divider - 1, ... over
+    :data:`STRAY_TIMESCALE`, after a session started at 0: the first frame sits behind the MP4's
+    edit list. ``VideoEncoder.swift`` encodes HEVC, whose B-frames are decoded out of order.
     """
     options = {"use_editlist": "1", "avoid_negative_ts": "disabled"}
     with av.open(str(path), "w", format="mp4", options=options) as out:
-        rate = STRAY_TIMESCALE
-        stream = out.add_stream("libx264", rate=rate, options={"qp": "0", "bf": "0"})
+        params = {"x265-params": "lossless=1:bframes=4:log-level=error"}
+        stream = out.add_stream("libx265", rate=STRAY_TIMESCALE, options=params)  # its time base
         stream.height, stream.width = pictures[0].shape[:2]
         stream.pix_fmt = "yuv420p"
         stream.time_base = Fraction(1, STRAY_TIMESCALE)
         for i, picture in enumerate(pictures):
             frame = av.VideoFrame.from_ndarray(picture, format="rgb24")
-            frame.pts, frame.time_base = 2 * i - 1, Fraction(1, STRAY_TIMESCALE)
+            frame.pts, frame.time_base = divider * i - 1, Fraction(1, STRAY_TIMESCALE)
             for packet in stream.encode(frame):
                 out.mux(packet)
         for packet in stream.encode():
@@ -121,14 +129,16 @@ def stray_zip(
     folder: str = "2026-10-10--12-00-00/",
     files: Mapping[str, bytes | str] | None = None,
     names: list[str] | None = None,
+    divider: int = STRAY_DIVIDER,
 ) -> Path:
     """Write the room as a Stray Scanner zip, as its encoders write one: video, matrix, poses.
 
-    `files` replaces or adds entries, by name in the folder; `names` adds entries named as
-    given, with a small body.
+    Each rendered frame is one the encoder kept (:func:`encode_stray`), with its pose. `files`
+    replaces or adds entries, by name in the folder; `names` adds entries named as given, with
+    a small body.
     """
     pictures = [rgb(f.gray) for f in rendered]
-    video_bytes = encode_stray(path.with_suffix(".mp4"), pictures).read_bytes()
+    video_bytes = encode_stray(path.with_suffix(".mp4"), pictures, divider=divider).read_bytes()
     c = room.SMALL
     matrix = f"{c.fx},0.0,{c.cx}\n0.0,{c.fy},{c.cy}\n0.0,0.0,1.0\n"
     rows = ["timestamp, frame, x, y, z, qx, qy, qz, qw"]

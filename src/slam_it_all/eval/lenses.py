@@ -28,6 +28,11 @@ video to the fallbacks.
   lens name says the kind, unless it names the camera system ("back triple camera"), when the
   35mm-equivalent focal length decides (:func:`focal_kind`); a name and a focal length that
   disagree trust no profile. Without either, the main camera;
+- its own 35mm-equivalent focal length (:attr:`Profile.focal_35mm`) must be within
+  :data:`TAG_BAND` of the video's, if it has one: some profiles calibrate another lens than
+  their names say, and Apple's 2x is the main camera's sensor cropped to twice its focal
+  length. Without one, a phone's main-camera profiles far from their median
+  (:data:`PHONE_BAND`) are dropped, if that median is itself a main camera's;
 - its frame must have the video's aspect within :data:`ASPECT_TOLERANCE`, in the same
   orientation;
 - the nearest resolution wins, then the nearest frame rate, then the smallest calibration
@@ -41,8 +46,9 @@ empty border.
 
 **Assumptions the test clips check:** that an Android video names its phone in
 ``com.android.manufacturer`` and ``com.android.model``; that the 35mm-equivalent focal length is
-taken across the frame's diagonal (the usual definition); and how the lenses are named, in
-Apple's metadata and in the profiles.
+taken across the frame's diagonal (the usual definition), and for a still photo rather than the
+video's own frame (one published iPhone clip suggests so), for each lens and the 2x crop; and how
+the lenses are named, in Apple's metadata and in the profiles.
 
 Run as a program::
 
@@ -103,9 +109,28 @@ TELEPHOTO_MM = 50
 FULL_FRAME_DIAGONAL = math.hypot(36.0, 24.0)
 """A 35 mm film frame's diagonal, in millimetres: what a 35mm-equivalent focal length is to."""
 
-NOMINAL_DIAGONAL_FOV = 71.66
+NOMINAL_DIAGONAL_FOV = 72.37
 """The median diagonal field of view of the database's usable main-camera profiles, in degrees:
-766 of them at :data:`PROFILES_COMMIT` (``python -m slam_it_all.eval.lenses nominal``)."""
+828 of them at :data:`PROFILES_COMMIT` (``python -m slam_it_all.eval.lenses nominal``)."""
+
+NOMINAL_FOCAL_35MM = FULL_FRAME_DIAGONAL / 2 / math.tan(math.radians(NOMINAL_DIAGONAL_FOV) / 2)
+""":data:`NOMINAL_DIAGONAL_FOV` as a 35mm-equivalent focal length, in millimetres (29.6)."""
+
+TAG_BAND = (0.8, 1.6)
+"""How far a profile's own 35mm-equivalent focal length may be from a video's, as their ratio.
+A video frame's own is 1.0 to 1.4 times the figure Apple's tag gives (the frame is cropped to
+16:9 and steadied); a profile of another lens than its name says, or the 2x crop against the
+main camera's profile, is about 0.6."""
+
+PHONE_BAND = 1.5
+"""How far, as a ratio either way, a profile's own focal length may be from the median of its
+phone's main-camera profiles, for a video without a 35mm-equivalent focal length. The median
+counts only if it is this near :data:`NOMINAL_FOCAL_35MM` itself, over :data:`PHONE_MEDIAN_OF`
+profiles or more: a phone most of whose profiles are of another lens is not judged."""
+
+PHONE_MEDIAN_OF = 3
+"""The fewest main-camera profiles of a phone whose median focal length is used
+(:data:`PHONE_BAND`)."""
 
 _ANGLES = 1 << 14
 """The angles a fisheye's bend is sampled at, over a quarter turn, to find where it stops
@@ -127,9 +152,10 @@ METADATA_KEYS = (APPLE_MAKE, APPLE_MODEL, APPLE_LENS, APPLE_FOCAL_35MM, ANDROID_
 _TELEPHOTO_ZOOM = re.compile(r"\b([2-9]|[1-9]\d)(?:[.,]\d+)?x\b")
 """A zoom of two or more, as "3x": a telephoto."""
 
-_WIDER = re.compile(r"(?<!\d)0?[.,][4-8](?!\d)|\buw\b")
-"""A zoom under one, as "0.5", "0,5" or ".6", or "UW": an ultrawide (never inside a number,
-as in "29.54fps" or "0,61")."""
+_WIDER = re.compile(r"(?<!\d)0?[.,][4-8](?!\d)|\buw\b|ultra[ _-]?wide")
+"""A zoom under one, as "0.5", "0,5" or ".6", or "UW" or "ultra wide": an ultrawide (never inside
+a number, as in "29.54fps" or "0,61"). "Ultra" alone is a phone's model ("Galaxy S23 Ultra"),
+never its lens."""
 
 _FOCAL_MM = re.compile(r"(?<![\d.,])(\d{1,3})\s*mm\b")
 """A whole number of millimetres, as "24mm" (never the end of a decimal, as in "6.86mm")."""
@@ -403,6 +429,12 @@ class Profile:
     rms: float
     fisheye: Fisheye
 
+    @property
+    def focal_35mm(self) -> float:
+        """Its own 35mm-equivalent focal length, in millimetres, taken across its diagonal."""
+        camera = self.fisheye.camera
+        return camera.fx * FULL_FRAME_DIAGONAL / math.hypot(camera.width, camera.height)
+
 
 def _normal(text: str) -> str:
     """Return a name without case or repeated spaces."""
@@ -430,13 +462,13 @@ def lens_kind(text: str, *, equivalent: bool = True) -> str:
     words = _normal(text)
     if "front" in words or "selfie" in words:
         return "front"
-    if "ultra" in words or _WIDER.search(words):
+    if _WIDER.search(words):
         return "ultrawide"
     if "tele" in words or _TELEPHOTO_ZOOM.search(words):
         return "telephoto"
     for focal in (int(m) for m in _FOCAL_MM.findall(words)) if equivalent else ():
-        if focal_kind(focal) != "main":
-            return focal_kind(focal)
+        if (kind := focal_kind(focal)) != "main":
+            return kind
     return "main"
 
 
@@ -601,6 +633,30 @@ def _aspect(width: int, height: int) -> float:
     return max(width, height) / min(width, height)
 
 
+def _near(profiles: list[Profile], focal_35mm: float) -> list[Profile]:
+    """Return the profiles whose own focal length is within :data:`TAG_BAND` of a video's."""
+    low, high = TAG_BAND
+    return [p for p in profiles if low <= p.focal_35mm / focal_35mm <= high]
+
+
+def _typical(profiles: list[Profile], lens: str) -> list[Profile]:
+    """Return a phone's profiles of one lens, its main camera's far from their median dropped.
+
+    The median counts only as :data:`PHONE_BAND` says; otherwise all of them are returned.
+    """
+    if lens != "main" or len(profiles) < PHONE_MEDIAN_OF:
+        return profiles
+    median = float(np.median([p.focal_35mm for p in profiles]))
+    if not _within(median / NOMINAL_FOCAL_35MM, PHONE_BAND):
+        return profiles
+    return [p for p in profiles if _within(p.focal_35mm / median, PHONE_BAND)]
+
+
+def _within(ratio: float, band: float) -> bool:
+    """Return whether a ratio is within a band either way: from 1 / band to band."""
+    return 1 / band <= ratio <= band
+
+
 def match(profiles: Sequence[Profile], video: Video) -> tuple[Profile, Fisheye] | None:
     """Return the profile that best fits a video (the module docstring), scaled to it.
 
@@ -624,12 +680,15 @@ def match(profiles: Sequence[Profile], video: Video) -> tuple[Profile, Fisheye] 
     lens = video_lens(metadata)
     if lens is None:
         return None
+    phone = [
+        p for p in profiles if (_normal(p.brand), _normal(p.model), p.lens) == (brand, model, lens)
+    ]
+    focal = _focal_35mm(metadata)
     landscape = width >= height
     candidates = [
         p
-        for p in profiles
-        if (_normal(p.brand), _normal(p.model), p.lens) == (brand, model, lens)
-        and (p.fisheye.camera.width >= p.fisheye.camera.height) == landscape
+        for p in (_near(phone, focal) if focal is not None else _typical(phone, lens))
+        if (p.fisheye.camera.width >= p.fisheye.camera.height) == landscape
         and abs(_aspect(p.fisheye.camera.width, p.fisheye.camera.height) - _aspect(width, height))
         <= ASPECT_TOLERANCE
     ]
@@ -694,7 +753,8 @@ class Chosen:
     lens : Pinhole or Fisheye
         The camera, for the frames as stored, at the video's size.
     source : str
-        One of :data:`SOURCES`, or ``"given"`` for intrinsics the caller gives.
+        One of :data:`SOURCES`, ``"given"`` for intrinsics the caller gives, or
+        ``"stray-scanner"`` for a Stray Scanner recording's camera matrix.
     profile : str or None
         The profile's name, if the source is a profile.
     """

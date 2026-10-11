@@ -6,8 +6,10 @@ rendered one up to the colour conversion's rounding.
 
 from __future__ import annotations
 
+import io
 import json
 import zipfile
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -215,24 +217,68 @@ def _encode_matroska(path: Path, pictures: list[np.ndarray]) -> None:
             out.mux(packet)
 
 
-def test_a_stray_scanner_recording_imports_with_its_truth(
-    rendered: list[room.Frame], tmp_path: Path
-) -> None:
-    """The camera matrix's intrinsics, and its poses, as written, as the ground truth.
+def _annex_b(size: tuple[int, int], count: int) -> bytes:
+    """Return a raw H.264 stream of gray frames at one size, its headers before each keyframe."""
+    width, height = size
+    buffer = io.BytesIO()
+    with av.open(buffer, "w", format="h264") as out:
+        options = {"qp": "0", "bf": "0", "x264-params": "repeat-headers=1"}
+        stream = out.add_stream("libx264", rate=30, options=options)
+        stream.width, stream.height, stream.pix_fmt = width, height, "yuv420p"
+        for _ in range(count):
+            picture = np.full((height, width, 3), 128, np.uint8)
+            for packet in stream.encode(av.VideoFrame.from_ndarray(picture, format="rgb24")):
+                out.mux(packet)
+        for packet in stream.encode():
+            out.mux(packet)
+    return buffer.getvalue()
 
-    The zip is written as Stray Scanner's encoders write one: its rotations already in our
-    camera's axes, and its video's first frame behind an edit list, which the import decodes.
+
+def _encode_two_sizes(path: Path, first: tuple[int, int], then: tuple[int, int]) -> None:
+    """Write an MP4 whose H.264 stream has two frames at one size, then two at another."""
+    raw = path.with_suffix(".h264")
+    raw.write_bytes(_annex_b(first, 2) + _annex_b(then, 2))
+    with av.open(str(raw), format="h264") as source, av.open(str(path), "w", format="mp4") as out:
+        stream = out.add_stream_from_template(source.streams.video[0])
+        packets = (p for p in source.demux(source.streams.video[0]) if p.size)
+        for index, packet in enumerate(packets):
+            packet.stream, packet.pts, packet.dts = stream, index, index
+            packet.time_base = Fraction(1, 30)
+            out.mux(packet)
+
+
+def test_a_video_whose_frames_change_size_is_refused(tmp_path: Path) -> None:
+    """Refused at the first frame of another size, which the header and the caps never see."""
+    path, out = tmp_path / "in.mp4", tmp_path / "outs" / "out"
+    _encode_two_sizes(path, (320, 240), (640, 240))
+    assert (video.probe(path).width, video.probe(path).height) == (320, 240)
+    with pytest.raises(InvalidInputError, match="frame 2 is 640x240, the first 320x240"):
+        video.import_video(path, out, lenses.Chosen(ROOM_CAMERA, "given"))
+    assert not out.parent.exists() or not any(out.parent.iterdir())
+
+
+@pytest.mark.parametrize(("divider", "kept"), [(1, [0, 2, 4, 6]), (2, list(range(8)))])
+def test_a_stray_scanner_recording_imports_with_its_truth(
+    divider: int, kept: list[int], rendered: list[room.Frame], tmp_path: Path
+) -> None:
+    """The camera matrix's intrinsics, and the kept frames' poses, as written, as the truth.
+
+    The zip is written as Stray Scanner's encoders write one: HEVC with B-frames, its rotations
+    already in our camera's axes, and its video's first frame behind an edit list, which the
+    import decodes. At its default 60 fps the import keeps every other frame, and each keeps
+    its own pose; at its 30 fps setting, every frame.
     """
-    recording = stray_zip(tmp_path / "room.zip", rendered[:8])
+    recording = stray_zip(tmp_path / "room.zip", rendered[:8], divider=divider)
     video.import_stray(recording, tmp_path / "out")
     frames, source = _imported(tmp_path / "out")
-    assert source["frames"] == {"decoded": 8, "kept": 8}
+    assert source["frames"] == {"decoded": 8, "kept": len(kept)}
     np.testing.assert_allclose(
         frames.camera.intrinsics, [ROOM_CAMERA.fx, ROOM_CAMERA.fy, ROOM_CAMERA.cx, ROOM_CAMERA.cy]
     )
     times, poses = runs.read_trajectory(tmp_path / "out" / "groundtruth.txt")
     np.testing.assert_array_equal(times, frames.timestamps)
-    np.testing.assert_allclose(poses, [f.T_world_cam for f in rendered[:8]], atol=1e-9)
+    np.testing.assert_allclose(times, np.array(kept) * divider / 60, atol=1e-6)
+    np.testing.assert_allclose(poses, [rendered[i].T_world_cam for i in kept], atol=1e-9)
     assert (source["kind"], source["intrinsics"]["source"]) == ("stray", "stray-scanner")
     assert sorted(p.name for p in (tmp_path / "out").iterdir()) == [
         "camera.txt", "groundtruth.txt", "rgb", "rgb.txt", "source.json",
@@ -324,7 +370,7 @@ def test_main_imports_and_says_what(
     assert video.main([str(recording), str(tmp_path / "b"), "--stray"]) == 0
     assert capsys.readouterr().out.splitlines() == [
         f"{tmp_path / 'a'}: 3 frames, 320x240, intrinsics from given",
-        f"{tmp_path / 'b'}: 3 frames, 320x240, intrinsics from stray-scanner",
+        f"{tmp_path / 'b'}: 2 frames, 320x240, intrinsics from stray-scanner",  # 60 fps: 1 in 2
     ]
 
 

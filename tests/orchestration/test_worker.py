@@ -149,9 +149,9 @@ def serving() -> Iterator[Server]:
 
 @pytest.fixture(scope="module")
 def recording(tmp_path_factory: pytest.TempPathFactory) -> bytes:
-    """Return the room as a Stray Scanner zip's bytes."""
+    """Return the room as a Stray Scanner zip's bytes, at its 30 fps setting: every frame kept."""
     folder = tmp_path_factory.mktemp("recording")
-    return stray_zip(folder / "room.zip", room.sequence(FRAMES)).read_bytes()
+    return stray_zip(folder / "room.zip", room.sequence(FRAMES), divider=2).read_bytes()
 
 
 def test_a_job_runs_end_to_end(serving: Server, recording: bytes, tmp_path: Path) -> None:

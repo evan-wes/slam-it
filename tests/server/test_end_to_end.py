@@ -65,7 +65,8 @@ def test_a_recording_uploaded_is_run_and_viewable(live: Settings, tmp_path: Path
     """Made, uploaded, confirmed; claimed and run by the worker; done, its bundle served."""
     require_program("cpp")
     url = live.public_url
-    recording = stray_zip(tmp_path / "room.zip", room.sequence(FRAMES)).read_bytes()
+    # Stray Scanner's 30 fps setting, so that the import keeps every frame
+    recording = stray_zip(tmp_path / "room.zip", room.sequence(FRAMES), divider=2).read_bytes()
     job = _call(f"{url}/api/jobs", {"code": CODE, "upload": "stray", "bytes": len(recording)})
     put = urllib.request.Request(job["upload_url"], recording, method="PUT")
     urllib.request.urlopen(put, timeout=30.0).close()

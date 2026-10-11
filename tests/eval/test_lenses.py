@@ -60,6 +60,9 @@ def profiles() -> list[lenses.Profile]:
         ("0,5 Wide", True, "ultrawide"),
         ("x0.6 film mode", True, "ultrawide"),
         ("UW", True, "ultrawide"),
+        ("Ultra-wide", True, "ultrawide"),
+        ("Galaxy S23 Ultra 23mm", True, "main"),  # "Ultra" is the phone's model
+        ("S25Ultra_117mm", True, "telephoto"),
         ("3x", True, "telephoto"),
         ("Telephoto (5x)_115mm", True, "telephoto"),
         ("Wide", True, "main"),
@@ -73,13 +76,13 @@ def test_a_lens_name_says_its_kind(text: str, equivalent: bool, kind: str) -> No
 
 
 def test_the_fixture_profiles_read_and_two_are_dropped(profiles: list[lenses.Profile]) -> None:
-    """Seven of the nine read; a rough calibration and a model that turns back are dropped.
+    """Nine of the eleven read; a rough calibration and a model that turns back are dropped.
 
     The Pixel 8's 1080p profile is over MAX_RMS (4 px); the iPhone 11 Pro Max's wide add-on
     lens is calibrated well, but its model turns back before its image's corners.
     """
     names = {p.name for p in profiles}
-    assert len(profiles) == 7
+    assert len(profiles) == 9
     assert "Google_Pixel 8___1080p_16by9_1920x1080-30.00fps" not in names
     turning = PROFILES / "Apple_iPhone 11 Pro Max_Wide Lens__4k_16by9_3840x2160-60.00fps.json"
     assert lenses.read_profile(turning) is None
@@ -206,6 +209,77 @@ def test_a_telephoto_clip_from_apples_camera_app_gets_the_telephoto_profile(
     assert found[0].name == "Apple_iPhone 14 Pro_3x__4k_16by9_3840x2160-29.98fps"
 
 
+def test_a_profile_named_for_another_lens_than_it_calibrates_is_not_matched(
+    profiles: list[lenses.Profile],
+) -> None:
+    """The iPhone 12 Pro's 30.00 fps profile, named for no lens, calibrates its ultrawide.
+
+    At 30 fps it is the nearest frame rate for a 4K main-camera clip, but its own focal length
+    is outside TAG_BAND of the clip's 26 mm, so the "Normal" profile wins.
+    """
+    name = "Apple_iPhone 12 Pro___4k_16by9_3840x2160-30.00fps"
+    mislabelled = next(p for p in profiles if p.name == name)
+    assert mislabelled.lens == "main"
+    assert mislabelled.focal_35mm == pytest.approx(14.0, abs=0.05)
+    metadata = {
+        lenses.APPLE_MAKE: "Apple",
+        lenses.APPLE_MODEL: "iPhone 12 Pro",
+        lenses.APPLE_LENS: "iPhone 12 Pro back camera 4.2mm f/1.6",
+        lenses.APPLE_FOCAL_35MM: "26",
+    }
+    found = lenses.match(profiles, lenses.Video(metadata, 3840, 2160, 30.0))
+    assert found is not None
+    assert found[0].name == "Apple_iPhone 12 Pro_Normal__4k_16by9_3840x2160-29.50fps"
+
+
+def test_the_2x_crop_gets_no_main_camera_profile(profiles: list[lenses.Profile]) -> None:
+    """Apple's 2x, the main sensor cropped to 48 mm: no profile, so the 35mm source.
+
+    It reads as the main camera (under TELEPHOTO_MM), but the 14 Pro's main-camera profiles
+    are about 30 mm, under TAG_BAND of 48 mm; one would give about half the crop's focal length.
+    """
+    metadata = {**IPHONE, lenses.APPLE_LENS: TRIPLE, lenses.APPLE_FOCAL_35MM: "48"}
+    video = lenses.Video(metadata, 3840, 2160, 30.0)
+    assert lenses.video_lens(metadata) == "main"
+    assert lenses.match(profiles, video) is None
+    assert lenses.choose(video, profiles).source == "35mm"
+
+
+def _phone_profile(focal_35mm: float, fps: float) -> lenses.Profile:
+    """Return a main-camera profile of a made-up phone at one own focal length, at 1080p."""
+    fx = focal_35mm * math.hypot(1920, 1080) / lenses.FULL_FRAME_DIAGONAL
+    camera = lenses.Pinhole(fx, fx, 959.5, 539.5, 1920, 1080)
+    fisheye = lenses.Fisheye(camera, (0.0, 0.0, 0.0, 0.0))
+    return lenses.Profile(f"{focal_35mm:g}mm", "Google", "Pixel 99", "main", fps, 0.5, fisheye)
+
+
+ANDROID = {lenses.ANDROID_MAKE: "Google", lenses.ANDROID_MODEL: "Pixel 99"}
+"""An Android phone's video: no lens, no 35mm-equivalent focal length."""
+
+
+@pytest.mark.parametrize(
+    ("focals", "chosen"),
+    [
+        ((28.0, 30.0, 14.0), "28mm"),  # the 14 mm one, nearest at 30 fps, is far from the median
+        ((14.0, 15.0, 28.0), "28mm"),  # most are another lens's: the median is not a main camera's
+        ((14.0, 30.0), "14mm"),  # too few to judge
+    ],
+)
+def test_without_a_focal_length_a_phones_odd_profile_out_is_dropped(
+    focals: tuple[float, ...], chosen: str
+) -> None:
+    """Without a tag, a main-camera profile far from its phone's median is not matched.
+
+    The first is at 24 fps, the second at 60 and the third at 30: the nearest frame rate wins
+    among those left. The median counts only over PHONE_MEDIAN_OF profiles or more, and only
+    if it is itself a main camera's (PHONE_BAND around NOMINAL_FOCAL_35MM).
+    """
+    phone = [_phone_profile(f, fps) for f, fps in zip(focals, (24.0, 60.0, 30.0), strict=False)]
+    found = lenses.match(phone, lenses.Video(ANDROID, 1920, 1080, 30.0))
+    assert found is not None
+    assert found[0].name == chosen
+
+
 @pytest.mark.parametrize(
     ("metadata", "size"),
     [
@@ -272,9 +346,9 @@ def test_the_fallbacks_give_their_field_of_view() -> None:
 
 
 def test_the_median_field_of_view_is_over_main_cameras(profiles: list[lenses.Profile]) -> None:
-    """Over the fixtures' four main-camera profiles, not their telephoto or ultrawide."""
+    """Over the fixtures' six main-camera profiles, not their telephoto or ultrawide."""
     fov, count = lenses.nominal_fov(profiles)
-    assert count == 4
+    assert count == 6
     assert 60.0 < fov < 90.0
 
 
@@ -497,7 +571,7 @@ def test_the_database_is_required_where_it_is_looked_for(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A missing or empty database is refused, so a video never silently falls to a fallback."""
-    assert len(lenses.database(PROFILES)) == 7
+    assert len(lenses.database(PROFILES)) == 9
     for folder in (tmp_path / "missing", tmp_path):
         with pytest.raises(InvalidInputError, match="no usable lens profile"):
             lenses.database(folder)
