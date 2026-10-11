@@ -20,6 +20,9 @@ dependencies = ["numpy>=1.26", "pillow>=10.0"]
 # The development setup installs it too (scripts/setup_slam_it_all.sh): it is the reference the
 # BA tests and demos compare against.
 colmap = ["pycolmap>=4.2"]
+# Video decoding (FFmpeg, through PyAV), for importing phone videos in slam_it_all.eval.video
+# alone. The worker's image and the development setup install it.
+video = ["av>=18.1"]
 # The development and layer-1 toolchain's pip layer: the single list scripts/setup_slam_it_all.sh
 # installs from when not using the lockfile (the conda layer -- compilers, clang tools,
 # doxygen, Node.js/jscpd -- is in that script).

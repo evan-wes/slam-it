@@ -86,12 +86,13 @@ if [[ ${UNLOCKED} -eq 0 && -f "${LOCK_FILE}" ]]; then
   run python -m pip install -r "${LOCK_FILE}"
 else
   # Resolve fresh from pyproject.toml: the runtime dependencies plus the `dev` extra (the
-  # toolchain's pip layer) and the `colmap` extra (the BA reference the tests compare to).
+  # toolchain's pip layer), the `colmap` extra (the BA reference the tests compare to) and
+  # the `video` extra (PyAV, for importing phone videos); then the server package's own.
   mapfile -t PIP_REQS < <(run python -c '
 import tomllib
 project = tomllib.load(open("'"${ROOT_DIR}"'/pyproject.toml", "rb"))["project"]
 extras = project["optional-dependencies"]
-print("\n".join(project["dependencies"] + extras["dev"] + extras["colmap"]))')
+print("\n".join(project["dependencies"] + extras["dev"] + extras["colmap"] + extras["video"]))')
   run python -m pip install "${PIP_REQS[@]}"
 fi
 # jscpd (duplication detection) installs into the env's own Node prefix.
@@ -107,6 +108,8 @@ run npm ci --prefix "${ROOT_DIR}/viewer" --no-audit --no-fund
 # CMake build tree and silently reuse each other's cached compiler and paths.
 run python -m pip install --no-build-isolation \
   -C build-dir="build/${ENV_NAME}" -e "${ROOT_DIR}"
+# The upload server, a package of its own (server/), with its test client.
+run python -m pip install -e "${ROOT_DIR}/server[test]"
 (cd "${ROOT_DIR}" && run maturin develop --release -m rust/slam-it-all-py/Cargo.toml)
 (cd "${ROOT_DIR}" && run cargo build --release --manifest-path rust/Cargo.toml \
   --target-dir rust/target -p slam-it-all-orchestration)

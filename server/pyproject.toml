@@ -1,0 +1,22 @@
+# SLAM It All!'s upload server (docs/design/2026-10-09-run-viewer.md, section 5.3): a package of
+# its own, which never imports slam_it_all, so the process holding the secrets never parses a
+# video. scripts/setup_slam_it_all.sh installs it, editable, into the development env.
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "slam-it-all-server"
+# Unversioned: it ships only inside this repository, whose VERSION file versions it.
+version = "0"
+description = "SLAM It All!'s upload server: the job list, the guards and the pages."
+requires-python = ">=3.11"
+license = "PolyForm-Noncommercial-1.0.0"
+dependencies = ["fastapi>=0.143", "uvicorn>=0.54", "boto3>=1.43"]
+
+[project.optional-dependencies]
+# FastAPI's test client runs on httpx.
+test = ["httpx>=0.28"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

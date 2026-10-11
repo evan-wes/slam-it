@@ -87,10 +87,15 @@ The ladder spans compute budgets. Every rung stands on rung 0.
 **Runtime dependencies.** Adding one, to the Python package or to a core, is a change to this
 document first.
 - **Python:** numpy. Pillow too, but in `slam_it_all.eval.images` alone, which reads image files
-  (milestone 2 reads PNG frames and depth maps) and encodes the run viewer's JPEGs (PR 10):
-  the algorithm rungs take arrays, never files,
-  and an import-linter contract keeps Pillow in that one module. `slam_it_all.eval.rosbag` reads
-  ROS 1 bags by hand, with no dependency (the calibration side track).
+  (milestone 2 reads PNG frames and depth maps) and encodes the run viewer's JPEGs (PR 10): the
+  algorithm rungs take arrays, never files, and an import-linter contract keeps Pillow in that
+  one module. PyAV, an optional extra (`video`, from PR 11), decodes phone videos in
+  `slam_it_all.eval.video` alone, kept there by a contract of its own. Its wheels bundle an
+  FFmpeg built with GPL encoders (x264, x265); the project installs it from PyPI and ships no
+  binaries. `slam_it_all.eval.rosbag` reads ROS 1 bags by hand, with no dependency (the
+  calibration side track).
+- **The upload server** (`server/`, the package `slam_it_all_server`, from PR 11): FastAPI,
+  uvicorn and boto3, with httpx for its tests. It never imports `slam_it_all`.
 - **C++:** Eigen. The `slam_it_all_eval` library reads PNGs with stb_image (vendored in
   `third_party/stb`, PNG support only; MIT or public domain), outside the algorithm cores.
 - **Rust:** nalgebra, the matrix type, and faer for the general SVDs and the general
