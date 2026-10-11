@@ -1,11 +1,15 @@
 //! Bindings for `slam_it_all.edge.adjust` (`slam_it_all_rs.edge.adjust`).
+//!
+//! An adjustment crosses back as a dict of `map`, `solves` and `outliers`.
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use slam_it_all_edge::adjust as core;
 
-use super::edge_crossing::{camera_in, indices, map_dict, map_in, options_in, vector};
-use crate::common::{add_functions, unwrap};
+use slam_it_all_foundations::nls;
+
+use super::edge_crossing::{camera_in, indices, map_dict, map_in, options_in, solves_list, vector};
+use crate::common::{add_functions, enum_codes, to_i64, unwrap};
 
 /// Bundle-adjusts keyframes and the points they observe.
 ///
@@ -19,7 +23,7 @@ use crate::common::{add_functions, unwrap};
 ///
 /// # Returns
 ///
-/// The new map, as a dict.
+/// The new map, as a dict, the solves and the outliers dropped.
 ///
 /// # Errors
 ///
@@ -34,19 +38,25 @@ fn bundle_adjust<'py>(
     fixed: Bound<'py, PyAny>,
     options: &Bound<'py, PyDict>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let mut out = map_in(py, m)?;
-    unwrap(
+    let mut adjusted = map_in(py, m)?;
+    let adjustment = unwrap(
         py,
         core::bundle_adjust(
-            &mut out,
+            &mut adjusted,
             &camera_in(camera)?,
             &indices(&keyframes)?,
             &vector::<bool>(&fixed)?,
             &options_in(options)?,
         ),
     )?;
-    map_dict(py, &out)
+    let out = PyDict::new(py);
+    out.set_item("map", map_dict(py, &adjusted)?)?;
+    out.set_item("solves", solves_list(py, &adjustment.solves)?)?;
+    out.set_item("outliers", to_i64(adjustment.outliers))?;
+    Ok(out)
 }
+
+enum_codes!("nls_termination" => nls::Termination);
 
 /// Registers the module's functions.
 ///
@@ -55,6 +65,6 @@ fn bundle_adjust<'py>(
 /// Returns a Python error if a function cannot be added.
 #[pymodule]
 pub fn adjust(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    add_functions!(m; bundle_adjust);
+    add_functions!(m; codes, bundle_adjust);
     Ok(())
 }

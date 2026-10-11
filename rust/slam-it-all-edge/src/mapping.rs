@@ -1,6 +1,6 @@
 //! Local mapping, growing and cleaning the map around each new keyframe: the Rust core's
 //! mirror of `slam_it_all.edge.mapping` (ORB-SLAM's `LocalMapping`, lite), whose docstring states
-//! the steps.
+//! the steps. Mapping a keyframe also says how each step went, which a run records per keyframe.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -10,9 +10,9 @@ use slam_it_all_foundations::matching::{self, FeatureGrid};
 use slam_it_all_foundations::orb::Keypoint;
 use slam_it_all_foundations::triangulation;
 
-use crate::adjust::bundle_adjust;
+use crate::adjust::{Adjustment, Solve, bundle_adjust};
 use crate::frames::{Camera, Frame, Tracked, check_setup};
-use crate::map::{self, Map};
+use crate::map::{self, Map, Removal};
 use crate::options::{Mode, Options, check_options};
 use crate::residuals::{chi2, sigma2, threshold};
 
@@ -42,6 +42,23 @@ fn to_world(pose: &Matrix4<f64>, x: &Vector3<f64>) -> Vector3<f64> {
 /// Its rows.
 fn rows_of(m: &Map, k: usize) -> std::ops::Range<usize> {
     m.kf_start[k]..m.kf_start[k + 1]
+}
+
+/// The points from an id on that the newest keyframe observes, by keypoint.
+///
+/// # Arguments
+///
+/// * `m` - The map, with at least one keyframe.
+/// * `first` - The first id.
+///
+/// # Returns
+///
+/// Each keypoint's point, if its id is `first` or later; -1 elsewhere.
+fn made_since(m: &Map, first: i64) -> Vec<i64> {
+    rows_of(m, m.keyframes() - 1)
+        .map(|row| m.kp_point[row])
+        .map(|id| if id >= first { id } else { -1 })
+        .collect()
 }
 
 /// The world point a keypoint's depth gives (`UnprojectStereo`).
@@ -261,7 +278,7 @@ pub fn cull_points(m: &mut Map, mode: Mode, options: &Options) -> Result<()> {
         let age = current - m.pt_first_kf[p];
         erase[p] = ratio < options.found_ratio || (age >= cull_age && weight <= minimum);
     }
-    map::erase_points(m, &erase)
+    map::erase_points(m, &erase, Removal::Culled)
 }
 
 /// A keyframe's keypoints observing no point, with a bearing in front.
@@ -797,7 +814,7 @@ fn merge_points(m: &mut Map, lose: i64, keep: i64) -> Result<()> {
     m.pt_found[p_keep] += m.pt_found[p_lose];
     let mut erase = vec![false; m.points()];
     erase[p_lose] = true;
-    map::erase_points(m, &erase)?;
+    map::erase_points(m, &erase, Removal::Fused)?;
     let kept: Vec<usize> = m.point_row(keep).into_iter().collect();
     map::refresh_points(m, &kept)
 }
@@ -1083,6 +1100,40 @@ pub fn cull_keyframes(m: &mut Map, camera: &Camera, mode: Mode, options: &Option
     Ok(())
 }
 
+/// How local mapping went on a keyframe (`slam_it_all.edge.mapping.MappingSummary`): the
+/// point counts are the map's before and after each step.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MappingSummary {
+    /// Points made from the keyframe's close depth (0 in monocular).
+    pub from_depth: usize,
+    /// Recent points culled.
+    pub culled_points: usize,
+    /// Points triangulated with the window's keyframes.
+    pub triangulated: usize,
+    /// Points fused into another.
+    pub fused: usize,
+    /// The local bundle adjustment's solves; none if it did not run.
+    pub solves: Vec<Solve>,
+    /// The observations it dropped.
+    pub outliers: usize,
+    /// Points erased because the observations dropped, by the adjustment or with a culled
+    /// keyframe, left them too weakly observed.
+    pub weak_points: usize,
+    /// Redundant keyframes culled.
+    pub culled_keyframes: usize,
+}
+
+/// A keyframe mapped (`slam_it_all.edge.mapping.Mapped`, the map aside: it changes in place):
+/// how it went, and the points made of its keypoints.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Mapped {
+    /// How each step went.
+    pub summary: MappingSummary,
+    /// The id of the point made for each of the keyframe's keypoints (from its depth, or
+    /// triangulated), -1 where none: as made, though fusion or culling may since have removed it.
+    pub made: Vec<i64>,
+}
+
 /// Inserts a keyframe and runs local mapping on it (`slam_it_all.edge.mapping.process`).
 ///
 /// # Arguments
@@ -1093,6 +1144,10 @@ pub fn cull_keyframes(m: &mut Map, camera: &Camera, mode: Mode, options: &Option
 /// * `tracked` - Its pose and matches.
 /// * `mode` - The pipeline's mode.
 /// * `options` - The settings.
+///
+/// # Returns
+///
+/// How each step went, and the points made for the keyframe's keypoints.
 ///
 /// # Errors
 ///
@@ -1105,18 +1160,46 @@ pub fn process(
     tracked: &Tracked,
     mode: Mode,
     options: &Options,
-) -> Result<()> {
+) -> Result<Mapped> {
     map::insert_keyframe(m, frame, &tracked.pose, &tracked.points)?;
+    let start = m.points();
+    let first = m.next_pt_id;
     if mode != Mode::Monocular {
         create_points_from_depth(m, camera, options)?;
     }
+    let with_depth = m.points();
+    let mut new_ids = made_since(m, first);
     cull_points(m, mode, options)?;
+    let culled = m.points();
     triangulate_new_points(m, camera, mode, options)?;
+    let triangulated = m.points();
+    // Taken before fusion, which may replace a new point; a depth point culled since stays made.
+    for (id, triangulated) in new_ids.iter_mut().zip(made_since(m, first)) {
+        if *id < 0 {
+            *id = triangulated;
+        }
+    }
     fuse_points(m, camera, options)?;
+    let fused = m.points();
+    let mut adjustment = Adjustment::default();
     if m.keyframes() >= options.ba_min_keyframes {
         let fixed: Vec<bool> = m.kf_id.iter().map(|&id| id == 0).collect();
         let window = m.window(options.window);
-        bundle_adjust(m, camera, &window, &fixed, options)?;
+        adjustment = bundle_adjust(m, camera, &window, &fixed, options)?;
     }
-    cull_keyframes(m, camera, mode, options)
+    let keyframes = m.keyframes();
+    cull_keyframes(m, camera, mode, options)?;
+    Ok(Mapped {
+        summary: MappingSummary {
+            from_depth: with_depth - start,
+            culled_points: with_depth - culled,
+            triangulated: triangulated - culled,
+            fused: triangulated - fused,
+            solves: adjustment.solves,
+            outliers: adjustment.outliers,
+            weak_points: fused - m.points(),
+            culled_keyframes: keyframes - m.keyframes(),
+        },
+        made: new_ids,
+    })
 }

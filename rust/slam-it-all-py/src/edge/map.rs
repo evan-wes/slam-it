@@ -175,12 +175,13 @@ fn refresh_points<'py>(
     map_dict(py, &out)
 }
 
-/// Removes points.
+/// Removes points, kept aside with why they went.
 ///
 /// # Arguments
 ///
 /// * `m` - The map, as a dict.
 /// * `erase` - One boolean per point.
+/// * `how` - Why they go: a `Removal` code.
 ///
 /// # Returns
 ///
@@ -188,15 +189,20 @@ fn refresh_points<'py>(
 ///
 /// # Errors
 ///
-/// `ValueError` for a malformed argument; `InvalidInputError` from the core.
+/// `ValueError` for a malformed argument or an unknown code; `InvalidInputError` from the core.
 #[pyfunction]
 fn erase_points<'py>(
     py: Python<'py>,
     m: &Bound<'py, PyDict>,
     erase: PyReadonlyArray1<'py, bool>,
+    how: i64,
 ) -> PyResult<Bound<'py, PyDict>> {
     let mut out = map_in(py, m)?;
-    unwrap(py, core::erase_points(&mut out, contiguous(&erase)?))?;
+    let how = core::Removal::ALL
+        .into_iter()
+        .find(|r| r.code() == how)
+        .ok_or_else(|| PyValueError::new_err("how: expected a Removal code"))?;
+    unwrap(py, core::erase_points(&mut out, contiguous(&erase)?, how))?;
     map_dict(py, &out)
 }
 

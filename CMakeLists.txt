@@ -31,6 +31,11 @@ function(slam_it_all_add_rung rung)
   # which GCC and Clang would otherwise form on ARM. PUBLIC, so code inlining a core
   # header's arithmetic (tests, bindings) is compiled the same way.
   target_compile_options(slam_it_all_${rung} PUBLIC -ffp-contract=off)
+  # A repeatable run needs every product summed in one order. Eigen blocks a large product by
+  # the cache sizes of the core that runs its first one, and a hybrid CPU's core types report
+  # different caches; without CPUID it uses its own defaults, the same on every core. PUBLIC,
+  # so every program, test, benchmark and the extension is compiled the same way.
+  target_compile_definitions(slam_it_all_${rung} PUBLIC EIGEN_NO_CPUID)
   if(SLAM_IT_ALL_BUILD_TESTS)
     # One executable per test file: cpp/tests/<rung>/test_<name>.cpp -> <rung>_test_<name>.
     file(GLOB_RECURSE tests CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/cpp/tests/${rung}/*.cpp)

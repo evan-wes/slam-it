@@ -1,5 +1,6 @@
 //! Tracking, placing each frame against the map: the Rust core's mirror of
 //! `slam_it_all.edge.tracking` (ORB-SLAM's `Tracking`, lite), whose docstring states the stages.
+//! Each stage reports how it went beside its result, which a run records per frame.
 
 use nalgebra::{Matrix4, Vector3};
 use slam_it_all_foundations::error::{ErrorKind, Result, fail};
@@ -29,6 +30,17 @@ pub struct InView {
     pub view_cos: Vec<f64>,
 }
 
+/// How tracking the local map went (`slam_it_all.edge.tracking.LocalMapSummary`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalMapSummary {
+    /// The points in view: those the frame had matched, and the local map's others in view.
+    pub in_view: usize,
+    /// The keypoints matched before the pose was refined.
+    pub matches: usize,
+    /// The matches the refinement kept.
+    pub inliers: usize,
+}
+
 /// A frame tracked against the local map, and the counts it adds to
 /// (`slam_it_all.edge.tracking.LocalTracking`).
 #[derive(Debug, Clone, PartialEq)]
@@ -39,6 +51,80 @@ pub struct LocalTracking {
     pub visible: Vec<i64>,
     /// The ids of the inliers.
     pub found: Vec<i64>,
+    /// The id of the map point each keypoint matched before the pose was refined, -1 where none.
+    pub matched: Vec<i64>,
+}
+
+impl LocalTracking {
+    /// How the stage went (`slam_it_all.edge.tracking.LocalTracking.summary`).
+    ///
+    /// # Returns
+    ///
+    /// The points in view, the matches and the inliers.
+    #[must_use]
+    pub fn summary(&self) -> LocalMapSummary {
+        LocalMapSummary {
+            in_view: self.visible.len(),
+            matches: count_matched(&self.matched),
+            inliers: self.tracked.inliers(),
+        }
+    }
+}
+
+/// How tracking the last frame went (`slam_it_all.edge.tracking.MotionSummary`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MotionSummary {
+    /// The keypoints matched in the last window searched.
+    pub matches: usize,
+    /// Whether the window was doubled because too few matched in the first.
+    pub widened: bool,
+    /// The matches the refinement kept, unless too few matched to refine.
+    pub inliers: Option<usize>,
+}
+
+/// Tracking the last frame: the frame, if it was tracked, and how it went
+/// (`slam_it_all.edge.tracking.Motion`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Motion {
+    /// The tracked frame, if enough points matched and survived refinement.
+    pub tracked: Option<Tracked>,
+    /// How it went.
+    pub summary: MotionSummary,
+    /// The id of the map point each keypoint matched before the pose was refined, -1 where none.
+    pub matched: Vec<i64>,
+}
+
+/// How the PnP fallback went (`slam_it_all.edge.tracking.PnpSummary`); each count `None` when
+/// the fallback stopped before reaching it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PnpSummary {
+    /// The local map's points.
+    pub candidates: usize,
+    /// The keypoints matched to them by descriptor, with a bearing in front.
+    pub matches: Option<usize>,
+    /// RANSAC's samples, if it found a pose.
+    pub iterations: Option<usize>,
+    /// Why RANSAC stopped, if it found a pose.
+    pub termination: Option<ransac::Termination>,
+    /// Whether RANSAC found no pose.
+    pub degenerate: bool,
+    /// RANSAC's inliers.
+    pub inliers: Option<usize>,
+    /// The inliers the refinement kept.
+    pub refined: Option<usize>,
+}
+
+/// The PnP fallback: the frame, if it was placed, and how it went
+/// (`slam_it_all.edge.tracking.Relocalization`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Relocalization {
+    /// The frame placed and refined, if it was.
+    pub tracked: Option<Tracked>,
+    /// How it went.
+    pub summary: PnpSummary,
+    /// The id of the map point each keypoint matched by descriptor (with a bearing in front), -1
+    /// where none: all -1 if the fallback stopped before matching.
+    pub matched: Vec<i64>,
 }
 
 /// Checks the camera, the settings, and a frame's matches: one point id (or -1) per keypoint.
@@ -392,7 +478,8 @@ fn level_range(
 ///
 /// # Returns
 ///
-/// The tracked frame, or `None` if too few points matched or survived refinement.
+/// The tracked frame, none if too few points matched or survived refinement, how it went, and
+/// each keypoint's match before refinement.
 ///
 /// # Errors
 ///
@@ -412,7 +499,7 @@ pub fn track_last_frame(
     predicted: &Matrix4<f64>,
     mode: Mode,
     options: &Options,
-) -> Result<Option<Tracked>> {
+) -> Result<Motion> {
     check_tracking(
         camera,
         options,
@@ -464,7 +551,9 @@ pub fn track_last_frame(
         check_orientation: true,
     };
     let mut points = vec![-1; frame.size()];
+    let mut widened = false;
     for factor in [1.0, 2.0] {
+        widened = factor > 1.0;
         for (projection, &level) in projections.iter_mut().zip(&levels) {
             projection.radius = factor * window * m.scale_factor.powf(level as f64);
         }
@@ -474,8 +563,17 @@ pub fn track_last_frame(
             break;
         }
     }
-    if count_matched(&points) < options.min_motion_matches {
-        return Ok(None);
+    let matches = count_matched(&points);
+    if matches < options.min_motion_matches {
+        return Ok(Motion {
+            tracked: None,
+            summary: MotionSummary {
+                matches,
+                widened,
+                inliers: None,
+            },
+            matched: points,
+        });
     }
     let tracked = refine(
         m,
@@ -483,11 +581,20 @@ pub fn track_last_frame(
         frame,
         &Tracked {
             pose: *predicted,
-            points,
+            points: points.clone(),
         },
         options,
     )?;
-    Ok((tracked.inliers() >= options.min_motion_inliers).then_some(tracked))
+    let kept = tracked.inliers();
+    Ok(Motion {
+        tracked: (kept >= options.min_motion_inliers).then_some(tracked),
+        summary: MotionSummary {
+            matches,
+            widened,
+            inliers: Some(kept),
+        },
+        matched: points,
+    })
 }
 
 /// Matches the local map's points in view and refines the pose
@@ -506,7 +613,8 @@ pub fn track_last_frame(
 ///
 /// # Returns
 ///
-/// The refined frame and the ids of the points in view and of the inliers.
+/// The refined frame, the ids of the points in view and of the inliers, and each keypoint's
+/// match before refinement.
 ///
 /// # Errors
 ///
@@ -589,7 +697,7 @@ pub fn track_local_map(
         frame,
         &Tracked {
             pose: tracked.pose,
-            points,
+            points: points.clone(),
         },
         options,
     )?;
@@ -608,6 +716,7 @@ pub fn track_local_map(
         tracked: refined,
         visible,
         found,
+        matched: points,
     })
 }
 
@@ -623,7 +732,8 @@ pub fn track_local_map(
 ///
 /// # Returns
 ///
-/// The frame placed and refined, or `None` if too few inliers.
+/// The frame placed and refined, none if too few inliers, how far it got, and each keypoint's
+/// match by descriptor.
 ///
 /// # Errors
 ///
@@ -633,11 +743,23 @@ pub fn relocalize_locally(
     camera: &Camera,
     frame: &Frame,
     options: &Options,
-) -> Result<Option<Tracked>> {
+) -> Result<Relocalization> {
     check_setup(camera, options)?;
+    let unplaced = |summary, matched| {
+        Ok(Relocalization {
+            tracked: None,
+            summary,
+            matched,
+        })
+    };
     let local_points = m.observed_by(&m.window(options.window));
+    let mut summary = PnpSummary {
+        candidates: local_points.len(),
+        ..PnpSummary::default()
+    };
+    let mut matched = vec![-1; frame.size()];
     if local_points.len() < options.pnp_min_inliers {
-        return Ok(None);
+        return unplaced(summary, matched);
     }
     let descriptors: Vec<_> = local_points.iter().map(|&p| m.pt_descriptor[p]).collect();
     let angles: Vec<usize> = frame.features.keypoints.iter().map(|k| k.angle).collect();
@@ -656,8 +778,12 @@ pub fn relocalize_locally(
         .into_iter()
         .filter(|pair| frame.bearings[pair.first].z > 0.0)
         .collect();
+    for pair in &pairs {
+        matched[pair.first] = m.pt_id[local_points[pair.second]];
+    }
+    summary.matches = Some(pairs.len());
     if pairs.len() < options.pnp_min_inliers {
-        return Ok(None);
+        return unplaced(summary, matched);
     }
     let world: Vec<Vector3<f64>> = pairs
         .iter()
@@ -674,12 +800,19 @@ pub fn relocalize_locally(
     };
     let solved = match pnp::pnp_ransac(&world, &rays, &settings, Solver::Ding, true) {
         Ok(solved) => solved,
-        Err(e) if e.kind == ErrorKind::Degenerate => return Ok(None),
+        Err(e) if e.kind == ErrorKind::Degenerate => {
+            summary.degenerate = true;
+            return unplaced(summary, matched);
+        }
         Err(e) => return Err(e),
     };
     let consensus = solved.state;
-    if consensus.inliers.iter().filter(|&&inlier| inlier).count() < options.pnp_min_inliers {
-        return Ok(None);
+    let sampled = consensus.inliers.iter().filter(|&&inlier| inlier).count();
+    summary.iterations = Some(solved.summary.run.iterations);
+    summary.termination = Some(solved.summary.run.termination);
+    summary.inliers = Some(sampled);
+    if sampled < options.pnp_min_inliers {
+        return unplaced(summary, matched);
     }
     let mut points = vec![-1; frame.size()];
     for (pair, &inlier) in pairs.iter().zip(&consensus.inliers) {
@@ -697,5 +830,11 @@ pub fn relocalize_locally(
         },
         options,
     )?;
-    Ok((tracked.inliers() >= options.pnp_min_inliers).then_some(tracked))
+    let kept = tracked.inliers();
+    summary.refined = Some(kept);
+    Ok(Relocalization {
+        tracked: (kept >= options.pnp_min_inliers).then_some(tracked),
+        summary,
+        matched,
+    })
 }

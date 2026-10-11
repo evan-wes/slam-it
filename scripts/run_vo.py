@@ -5,7 +5,9 @@ written, with ``--reuse``), then prints what it holds: frames tracked, keyframes
 its frames judged against their real-time deadline (:func:`slam_it_all.eval.budgets.judge`), and
 what its program recorded of its process (peak memory, CPUs, memory cap). ``--budget
 laptop-cpu`` runs the backend's program within that compute budget
-(:mod:`slam_it_all.eval.budgets`), pinned and its memory capped. With the
+(:mod:`slam_it_all.eval.budgets`), pinned and its memory capped. ``--record-features`` records
+each frame's keypoints with their fates, for the run viewer
+(:func:`slam_it_all.eval.runs.read_features`). With the
 sequence's ground truth (TUM's ``groundtruth.txt``, EuRoC's ``state_groundtruth_estimate0``) it
 prints the ATE (Sim(3)-aligned for monocular, SE(3) otherwise) and the RPE over one frame
 period (:func:`slam_it_all.eval.runs.evaluate`). With ``--rerun FILE.rrd`` it saves a rerun
@@ -29,12 +31,11 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from numpy.typing import NDArray
 
 from slam_it_all import backends
 from slam_it_all.edge.options import MODES, Options
-from slam_it_all.eval import budgets, euroc, runs, tum
-from slam_it_all.foundations.errors import InvalidInputError
+from slam_it_all.eval import budgets, runs
+from slam_it_all.foundations.errors import DegenerateError, InvalidInputError
 from slam_it_all.orchestration import vo
 
 
@@ -65,46 +66,14 @@ def parse_options(pairs: list[str]) -> Options:
     return dataclasses.replace(Options(), **changes)
 
 
-Truth = tuple[NDArray[np.float64], NDArray[np.float64]]
-"""A sequence's ground truth at its frames: their times and true ``T_world_cam``."""
-
-
-def ground_truth(dataset: str, sequence: Path) -> Truth | None:
-    """Return the sequence's ground truth at its frames, or None if it has none.
-
-    Parameters
-    ----------
-    dataset : {"tum", "euroc"}
-        The dataset.
-    sequence : pathlib.Path
-        The sequence's folder.
-
-    Returns
-    -------
-    Truth or None
-        The frames' times and their true ``T_world_cam``; None if the sequence has no
-        ground-truth file.
-
-    Raises
-    ------
-    slam_it_all.foundations.errors.InvalidInputError
-        If the ground truth is malformed.
-    """
-    try:
-        read = tum.read_sequence(sequence) if dataset == "tum" else euroc.read_sequence(sequence)
-    except FileNotFoundError:
-        return None
-    return read.timestamps, read.T_world_cam
-
-
-def score(run: runs.Run, truth: Truth | None) -> runs.Evaluation | None:
+def score(run: runs.Run, truth: runs.Truth | None) -> runs.Evaluation | None:
     """Score a run against the ground truth, if there is one and enough of the run matches it.
 
     Parameters
     ----------
     run : slam_it_all.eval.runs.Run
         The run.
-    truth : Truth or None
+    truth : slam_it_all.eval.runs.Truth or None
         The ground truth.
 
     Returns
@@ -117,7 +86,7 @@ def score(run: runs.Run, truth: Truth | None) -> runs.Evaluation | None:
         return None
     try:
         return runs.evaluate(run, *truth)
-    except InvalidInputError as error:
+    except (InvalidInputError, DegenerateError) as error:  # too few frames, or on a line
         print(f"not scored: {error}")
         return None
 
@@ -135,7 +104,8 @@ def summarize(run: runs.Run, scored: runs.Evaluation | None) -> None:
     print(
         f"{run.sequence} ({run.dataset}, {run.mode}, {run.backend}): "
         f"{len(run.timestamps)} of {len(run.diagnostics)} frames tracked, "
-        f"{len(run.keyframe_timestamps)} keyframes, {len(run.points)} points"
+        f"{len(run.final_keyframes()[0])} keyframes, {len(run.final_points())} points "
+        f"({len(run.keyframe_timestamps)} and {len(run.points)} made)"
     )
     if len(run.diagnostics) >= 2:
         judged = budgets.judge(run)
@@ -175,7 +145,9 @@ def summarize(run: runs.Run, scored: runs.Evaluation | None) -> None:
     )
 
 
-def record(path: Path, run: runs.Run, truth: Truth | None, scored: runs.Evaluation | None) -> None:
+def record(
+    path: Path, run: runs.Run, truth: runs.Truth | None, scored: runs.Evaluation | None
+) -> None:
     """Save a rerun recording of the run: its trajectory, keyframes and points.
 
     The run is drawn in the ground truth's frame when it was scored (its ATE alignment
@@ -187,7 +159,7 @@ def record(path: Path, run: runs.Run, truth: Truth | None, scored: runs.Evaluati
         The ``.rrd`` file to write.
     run : slam_it_all.eval.runs.Run
         The run.
-    truth : Truth or None
+    truth : slam_it_all.eval.runs.Truth or None
         The ground truth.
     scored : slam_it_all.eval.runs.Evaluation or None
         The run's errors, for the alignment.
@@ -206,9 +178,9 @@ def record(path: Path, run: runs.Run, truth: Truth | None, scored: runs.Evaluati
     if truth is not None:
         centres = truth[1][:, :3, 3]
         rr.log("world/truth", rr.LineStrips3D([centres], colors=[[80, 200, 80]]), static=True)
-    rr.log("world/run/points", rr.Points3D(run.points, radii=0.005), static=True)
+    rr.log("world/run/points", rr.Points3D(run.final_points(), radii=0.005), static=True)
     rr.log("world/run/trajectory", rr.LineStrips3D([run.poses[:, :3, 3]]), static=True)
-    for k, pose in enumerate(run.keyframe_poses):
+    for k, pose in enumerate(run.final_keyframes()[1]):
         rr.log(
             f"world/run/keyframes/{k}",
             rr.Transform3D(translation=pose[:3, 3], mat3x3=pose[:3, :3]),
@@ -224,7 +196,7 @@ def record(path: Path, run: runs.Run, truth: Truth | None, scored: runs.Evaluati
 def main() -> None:
     """Run the script."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--dataset", choices=vo.DATASETS, required=True)
+    parser.add_argument("--dataset", choices=runs.DATASETS, required=True)
     parser.add_argument("--sequence", type=Path, required=True, help="the sequence's folder")
     parser.add_argument("--mode", choices=MODES, required=True)
     parser.add_argument("--out", type=Path, required=True, help="the run's folder")
@@ -233,6 +205,9 @@ def main() -> None:
     parser.add_argument("--count", type=int, help="the frames run (default: all)")
     parser.add_argument(
         "--option", action="append", default=[], metavar="KEY=VALUE", help="a setting"
+    )
+    parser.add_argument(
+        "--record-features", action="store_true", help="record each frame's keypoints and fates"
     )
     parser.add_argument(
         "--reuse", action="store_true", help="read the run already in --out instead of running"
@@ -249,6 +224,7 @@ def main() -> None:
             "--count": args.count,
             "--option": args.option or None,
             "--budget": args.budget,
+            "--record-features": args.record_features or None,
         }
         given = [flag for flag, value in running.items() if value is not None]
         if given:
@@ -268,10 +244,11 @@ def main() -> None:
             first=args.first or 0,
             count=args.count,
             budget=budget,
+            record_features=args.record_features,
         )
         if budget is not None:
             print(f"within {budget.name} ({budget.stands_for})")
-    truth = ground_truth(args.dataset, args.sequence)
+    truth = runs.ground_truth(args.dataset, args.sequence)
     scored = score(run, truth)
     summarize(run, scored)
     if args.rerun:

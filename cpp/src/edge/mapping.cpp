@@ -50,6 +50,19 @@ std::vector<std::int64_t> rows_of(const Map& m, std::size_t k) {
   return out;
 }
 
+/// @brief The points from an id on that the newest keyframe observes, by keypoint.
+/// @param m The map, with at least one keyframe.
+/// @param first The first id.
+/// @return Each keypoint's point, if its id is `first` or later; -1 elsewhere.
+std::vector<std::int64_t> made_since(const Map& m, std::int64_t first) {
+  std::vector<std::int64_t> out;
+  for (const std::int64_t row : rows_of(m, keyframe_count(m) - 1)) {
+    const std::int64_t id = m.kp_point[static_cast<std::size_t>(row)];
+    out.push_back(id >= first ? id : -1);
+  }
+  return out;
+}
+
 /// @brief The world point a keypoint's depth gives (`UnprojectStereo`).
 /// @param m The map.
 /// @param pose Its keyframe's pose.
@@ -434,7 +447,7 @@ Result<void> merge_points(Map& m, std::int64_t lose, std::int64_t keep) {
   m.pt_found[p_keep] += m.pt_found[p_lose];
   std::vector<std::uint8_t> erase(point_count(m), 0);
   erase[p_lose] = 1;
-  if (auto ok = erase_points(m, erase); !ok) {
+  if (auto ok = erase_points(m, erase, Removal::kFused); !ok) {
     return ok;
   }
   const std::vector<std::int64_t> kept{point_row(m, keep)};
@@ -732,7 +745,7 @@ Result<void> cull_points(Map& m, Mode mode, const Options& options) {
             ? 1
             : 0;
   }
-  return erase_points(m, erase);
+  return erase_points(m, erase, Removal::kCulled);
 }
 
 Result<std::vector<std::array<std::int64_t, 2>>> match_for_triangulation(
@@ -861,35 +874,66 @@ Result<void> cull_keyframes(Map& m, const Camera& camera, Mode mode, const Optio
   return {};
 }
 
-Result<void> process(Map& m, const Camera& camera, const Frame& frame, const Tracked& tracked,
-                     Mode mode, const Options& options) {
+Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame, const Tracked& tracked,
+                       Mode mode, const Options& options) {
   if (auto ok = insert_keyframe(m, frame, tracked.pose, tracked.points); !ok) {
-    return ok;
+    return std::unexpected(std::move(ok.error()));
   }
+  const auto points = [&m] { return static_cast<std::int64_t>(point_count(m)); };
+  const std::int64_t start = points();
+  const std::int64_t first = m.next_pt_id;
   if (mode != Mode::kMonocular) {
     if (auto ok = create_points_from_depth(m, camera, options); !ok) {
-      return ok;
+      return std::unexpected(std::move(ok.error()));
     }
   }
+  const std::int64_t with_depth = points();
+  std::vector<std::int64_t> made = made_since(m, first);
   if (auto ok = cull_points(m, mode, options); !ok) {
-    return ok;
+    return std::unexpected(std::move(ok.error()));
   }
+  const std::int64_t culled = points();
   if (auto ok = triangulate_new_points(m, camera, mode, options); !ok) {
-    return ok;
+    return std::unexpected(std::move(ok.error()));
+  }
+  const std::int64_t triangulated = points();
+  // Taken before fusion, which may replace a new point; a depth point culled since stays made.
+  const std::vector<std::int64_t> triangulated_ids = made_since(m, first);
+  for (std::size_t j = 0; j < made.size(); ++j) {
+    if (made[j] < 0) {
+      made[j] = triangulated_ids[j];
+    }
   }
   if (auto ok = fuse_points(m, camera, options); !ok) {
-    return ok;
+    return std::unexpected(std::move(ok.error()));
   }
+  const std::int64_t fused = points();
   std::vector<std::uint8_t> fixed(keyframe_count(m), 0);
   for (std::size_t k = 0; k < fixed.size(); ++k) {
     fixed[k] = m.kf_id[k] == 0 ? 1 : 0;
   }
+  Adjustment adjustment;
   if (std::cmp_greater_equal(keyframe_count(m), options.ba_min_keyframes)) {
-    if (auto ok = bundle_adjust(m, camera, window(m, options.window), fixed, options); !ok) {
-      return ok;
+    auto adjusted = bundle_adjust(m, camera, window(m, options.window), fixed, options);
+    if (!adjusted) {
+      return std::unexpected(std::move(adjusted.error()));
     }
+    adjustment = std::move(*adjusted);
   }
-  return cull_keyframes(m, camera, mode, options);
+  const auto keyframes = static_cast<std::int64_t>(keyframe_count(m));
+  if (auto ok = cull_keyframes(m, camera, mode, options); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  return Mapped{
+      .summary = {.from_depth = with_depth - start,
+                  .culled_points = with_depth - culled,
+                  .triangulated = triangulated - culled,
+                  .fused = triangulated - fused,
+                  .solves = std::move(adjustment.solves),
+                  .outliers = adjustment.outliers,
+                  .weak_points = fused - points(),
+                  .culled_keyframes = keyframes - static_cast<std::int64_t>(keyframe_count(m))},
+      .made = std::move(made)};
 }
 
 }  // namespace slam_it_all::edge

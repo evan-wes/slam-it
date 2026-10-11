@@ -3,6 +3,7 @@
 ///        keyframe decision, points from depth, culling points and keyframes, triangulation,
 ///        fusion, and a whole mapping step. Parity with the Python reference is checked through
 ///        the bindings by tests/edge.
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <span>
@@ -165,12 +166,20 @@ void check_culling_and_process(int& failures) {
          "the first redundant keyframe goes, the first keyframe stays, the index kept", failures);
   Eigen::Matrix4d ahead = scene::pose(2);
   ahead(2, 3) -= 0.05;
-  const bool processed =
-      edge::process(m, scene::camera(), scene::frame_at(ahead, true),
-                    {.pose = ahead, .points = ids(0, 60)}, edge::Mode::kRgbd, edge::Options{})
-          .has_value();
+  const std::int64_t first = m.next_pt_id;
+  const edge::Frame frame = scene::frame_at(ahead, true);
+  // Half the keypoints tracked: depth makes points of the rest.
+  const auto mapped =
+      edge::process(m, scene::camera(), frame, {.pose = ahead, .points = ids(0, 30)},
+                    edge::Mode::kRgbd, edge::Options{});
+  const bool processed = mapped.has_value();
   expect(processed && m.kf_id.back() == 3 && edge::check_map(m).has_value(),
          "a whole mapping step keeps the new keyframe and a valid map", failures);
+  expect(processed && mapped->made.size() == edge::keypoint_count(frame) &&
+             std::ranges::any_of(mapped->made, [](std::int64_t id) { return id >= 0; }) &&
+             std::ranges::all_of(mapped->made,
+                                 [first](std::int64_t id) { return id == -1 || id >= first; }),
+         "it names the new points made of the keyframe's keypoints", failures);
 }
 
 /// @brief The test body.

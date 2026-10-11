@@ -7,18 +7,47 @@
 /// given an inverse-depth prior where they have depth. Two solves bracket an outlier pass (a
 /// point left with fewer than two inlier views restarts the second from where it began); the
 /// observations still failing the chi-square test are forgotten, and the surviving points
-/// refreshed.
+/// refreshed. The result records how each solve went, which a run records per keyframe.
 #pragma once
 
 #include <cstdint>
 #include <span>
+#include <vector>
 
 #include "slam_it_all/edge/frames.hpp"
 #include "slam_it_all/edge/map.hpp"
 #include "slam_it_all/edge/options.hpp"
 #include "slam_it_all/foundations/error.hpp"
+#include "slam_it_all/foundations/nls.hpp"
 
 namespace slam_it_all::edge {
+
+/// @brief How one least-squares solve of a bundle adjustment went
+///        (`slam_it_all.edge.adjust.Solve`).
+struct Solve {
+  /// @brief The robust cost at the start.
+  double initial_cost{0.0};
+  /// @brief The robust cost at the returned state.
+  double final_cost{0.0};
+  /// @brief Steps tried, accepted or not.
+  std::int64_t iterations{0};
+  /// @brief Why it stopped.
+  foundations::nls::Termination termination{foundations::nls::Termination::kMaxIterations};
+};
+
+/// @brief How a bundle adjustment went (`slam_it_all.edge.adjust.Adjustment`, whose map is
+///        changed in place here).
+struct Adjustment {
+  /// @brief The first solve and the refining one; none when no point was observed.
+  std::vector<Solve> solves;
+  /// @brief The observations forgotten as outliers after the refining solve.
+  std::int64_t outliers{0};
+};
+
+/// @brief A solve's record, from its summary (`slam_it_all.edge.adjust.Solve.of`).
+/// @param summary The solve's summary.
+/// @return Its costs, iterations and termination.
+[[nodiscard]] Solve solve_of(const foundations::nls::Summary& summary);
 
 /// @brief Bundle-adjust keyframes and the points they observe
 ///        (`slam_it_all.edge.adjust.bundle_adjust`, ORB-SLAM's `LocalBundleAdjustment`).
@@ -29,11 +58,12 @@ namespace slam_it_all::edge {
 ///        points is held fixed.
 /// @param fixed One flag per keyframe: nonzero to hold it fixed even among `keyframes`.
 /// @param options The iterations and thresholds.
-/// @return Nothing; `InvalidInput` for a keyframe row out of range, flags that are not one
-///         per keyframe, or an invalid camera or settings.
-[[nodiscard]] foundations::Result<void> bundle_adjust(Map& m, const Camera& camera,
-                                                      std::span<const std::int64_t> keyframes,
-                                                      std::span<const std::uint8_t> fixed,
-                                                      const Options& options);
+/// @return The two solves (none if no point was observed) and the outliers dropped;
+///         `InvalidInput` for a keyframe row out of range, flags that are not one per
+///         keyframe, or an invalid camera or settings.
+[[nodiscard]] foundations::Result<Adjustment> bundle_adjust(Map& m, const Camera& camera,
+                                                            std::span<const std::int64_t> keyframes,
+                                                            std::span<const std::uint8_t> fixed,
+                                                            const Options& options);
 
 }  // namespace slam_it_all::edge

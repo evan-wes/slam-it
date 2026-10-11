@@ -1,19 +1,22 @@
 //! Bindings for `slam_it_all.edge.tracking` (`slam_it_all_rs.edge.tracking`).
 //!
-//! A tracked frame crosses as a dict of `pose` and `points` (or None where the stage may
-//! fail); `InView` and `LocalTracking` as dicts of their fields, the latter's tracked frame
-//! flattened into `pose` and `points`. The mode crosses by name.
+//! A tracked frame crosses as a dict of `pose` and `points`; `InView` and `LocalTracking` as
+//! dicts of their fields, the latter's tracked frame flattened into `pose` and `points`;
+//! `Motion` and `Relocalization` as dicts of `tracked` (or None) and their summary's fields,
+//! RANSAC's termination as its code in `codes()` (or None). The mode crosses by name.
 
 use numpy::PyReadonlyArray2;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use slam_it_all_edge::tracking as core;
 
+use slam_it_all_foundations::ransac;
+
 use super::edge_crossing::{
-    camera_in, frame_in, indices, indices_array, map_in, maybe_tracked, mode_in, options_in,
-    pose_in, rows_array, tracked_dict, tracked_in, vector_array,
+    camera_in, count_or_none, frame_in, indices, indices_array, map_in, maybe_tracked, mode_in,
+    options_in, pose_in, rows_array, tracked_dict, tracked_in, vector_array,
 };
-use crate::common::{add_functions, unwrap};
+use crate::common::{add_functions, encode, enum_codes, to_i64, unwrap};
 
 /// Refines a frame's pose against its matched points.
 ///
@@ -116,7 +119,7 @@ fn in_view<'py>(
 ///
 /// # Returns
 ///
-/// The tracked frame as a dict, or None.
+/// `tracked` (a dict, or None), `matches`, `widened`, `inliers` (or None) and `matched`.
 ///
 /// # Errors
 ///
@@ -137,8 +140,8 @@ fn track_last_frame<'py>(
     predicted: PyReadonlyArray2<'py, f64>,
     mode: &str,
     options: &Bound<'py, PyDict>,
-) -> PyResult<Bound<'py, PyAny>> {
-    let tracked = unwrap(
+) -> PyResult<Bound<'py, PyDict>> {
+    let motion = unwrap(
         py,
         core::track_last_frame(
             &map_in(py, m)?,
@@ -151,7 +154,13 @@ fn track_last_frame<'py>(
             &options_in(options)?,
         ),
     )?;
-    maybe_tracked(py, tracked)
+    let out = PyDict::new(py);
+    out.set_item("tracked", maybe_tracked(py, motion.tracked)?)?;
+    out.set_item("matches", to_i64(motion.summary.matches))?;
+    out.set_item("widened", motion.summary.widened)?;
+    out.set_item("inliers", count_or_none(py, motion.summary.inliers)?)?;
+    out.set_item("matched", vector_array(py, &motion.matched))?;
+    Ok(out)
 }
 
 /// Matches the local map's points in view and refines the pose.
@@ -168,7 +177,7 @@ fn track_last_frame<'py>(
 ///
 /// # Returns
 ///
-/// `pose`, `points`, `visible` and `found`.
+/// `pose`, `points`, `visible`, `found` and `matched`.
 ///
 /// # Errors
 ///
@@ -204,6 +213,7 @@ fn track_local_map<'py>(
     let out = tracked_dict(py, &local.tracked)?;
     out.set_item("visible", vector_array(py, &local.visible))?;
     out.set_item("found", vector_array(py, &local.found))?;
+    out.set_item("matched", vector_array(py, &local.matched))?;
     Ok(out)
 }
 
@@ -218,7 +228,9 @@ fn track_local_map<'py>(
 ///
 /// # Returns
 ///
-/// The tracked frame as a dict, or None.
+/// `tracked` (a dict, or None), `matched`, and the summary's fields: `candidates`, `matches`,
+/// `iterations`, `termination` (its code in `ransac_termination`), `degenerate`, `inliers` and
+/// `refined`, each count None where the fallback stopped before it.
 ///
 /// # Errors
 ///
@@ -231,8 +243,8 @@ fn relocalize_locally<'py>(
     camera: &Bound<'py, PyDict>,
     frame: &Bound<'py, PyDict>,
     options: &Bound<'py, PyDict>,
-) -> PyResult<Bound<'py, PyAny>> {
-    let tracked = unwrap(
+) -> PyResult<Bound<'py, PyDict>> {
+    let recovery = unwrap(
         py,
         core::relocalize_locally(
             &map_in(py, m)?,
@@ -241,8 +253,29 @@ fn relocalize_locally<'py>(
             &options_in(options)?,
         ),
     )?;
-    maybe_tracked(py, tracked)
+    let summary = recovery.summary;
+    let out = PyDict::new(py);
+    out.set_item("tracked", maybe_tracked(py, recovery.tracked)?)?;
+    out.set_item("candidates", to_i64(summary.candidates))?;
+    out.set_item("matches", count_or_none(py, summary.matches)?)?;
+    out.set_item("iterations", count_or_none(py, summary.iterations)?)?;
+    match summary.termination {
+        Some(termination) => {
+            out.set_item(
+                "termination",
+                encode(&ransac::Termination::ALL, termination)?,
+            )?;
+        }
+        None => out.set_item("termination", py.None())?,
+    }
+    out.set_item("degenerate", summary.degenerate)?;
+    out.set_item("inliers", count_or_none(py, summary.inliers)?)?;
+    out.set_item("refined", count_or_none(py, summary.refined)?)?;
+    out.set_item("matched", vector_array(py, &recovery.matched))?;
+    Ok(out)
 }
+
+enum_codes!("ransac_termination" => ransac::Termination);
 
 /// Registers the module's functions.
 ///
@@ -251,6 +284,14 @@ fn relocalize_locally<'py>(
 /// Returns a Python error if a function cannot be added.
 #[pymodule]
 pub fn tracking(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    add_functions!(m; optimize_pose, in_view, track_last_frame, track_local_map, relocalize_locally);
+    add_functions!(
+        m;
+        codes,
+        optimize_pose,
+        in_view,
+        track_last_frame,
+        track_local_map,
+        relocalize_locally
+    );
     Ok(())
 }

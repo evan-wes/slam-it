@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>SLAM It All! run viewer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
+    />
+    <link rel="stylesheet" href="app.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.0/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <header class="bar">
+      <div class="brand">SLAM It All!</div>
+      <span class="meta" id="sequence">loading…</span>
+      <div class="seg" id="backends" role="group" aria-label="backend"></div>
+      <span class="meta agreement" id="agreement"></span>
+      <span class="spacer"></span>
+      <dl class="numbers" id="numbers" aria-label="the run's numbers"></dl>
+    </header>
+
+    <div class="transport">
+      <button type="button" class="ghost" id="play" aria-label="play">▶ play</button>
+      <button type="button" class="ghost" id="prev" aria-label="previous frame">◀</button>
+      <button type="button" class="ghost" id="next" aria-label="next frame">▶</button>
+      <input type="range" id="scrubber" min="0" max="0" value="0" aria-label="frame" />
+      <span class="meta" id="frame-label">–</span>
+      <label class="field"
+        >speed
+        <select id="speed" aria-label="playback speed">
+          <option value="0.25">¼×</option>
+          <option value="0.5">½×</option>
+          <option value="1" selected>1×</option>
+          <option value="2">2×</option>
+          <option value="4">4×</option>
+        </select>
+      </label>
+    </div>
+
+    <p class="message" id="message" hidden></p>
+
+    <main class="layout">
+      <section class="panel image-panel" aria-label="the frame as the pipeline saw it">
+        <div class="panel-head">
+          <h2>Frame</h2>
+          <span class="spacer"></span>
+          <div class="legend" id="legend" aria-label="keypoint fates"></div>
+        </div>
+        <div class="image-box">
+          <canvas id="image" role="img" aria-label="the frame and its keypoints"></canvas>
+          <span class="tag" id="image-tag"></span>
+        </div>
+      </section>
+
+      <section class="panel scene-panel" aria-label="the map in 3D">
+        <div class="panel-head">
+          <h2>Map</h2>
+          <span class="meta" id="map-counts"></span>
+          <span class="spacer"></span>
+          <button type="button" class="ghost toggle" id="follow" aria-pressed="true">
+            follow camera
+          </button>
+          <button type="button" class="ghost" id="fit">fit</button>
+        </div>
+        <div class="scene-box" id="scene"></div>
+        <div class="legend scene-legend" aria-label="what the map shows">
+          <span title="each in its backend's colour: the chosen one's solid, the others' faded"
+            ><i class="swatch backends"></i>trajectories</span
+          >
+          <span><i class="swatch truth"></i>ground truth</span>
+          <span><i class="swatch keyframe"></i>keyframes</span>
+          <span><i class="swatch point"></i>map points</span>
+          <span><i class="swatch camera"></i>camera</span>
+        </div>
+      </section>
+
+      <section class="panel solver-panel" aria-label="how the solvers went">
+        <div class="panel-head">
+          <h2>Solver</h2>
+          <span class="meta" id="placed-by"></span>
+        </div>
+        <figure class="plot">
+          <figcaption class="meta">tracked points · matched in the local map</figcaption>
+          <canvas id="plot-tracked" role="img" aria-label="tracked points per frame"></canvas>
+        </figure>
+        <figure class="plot">
+          <figcaption class="meta">latency (build + track) against the frame deadline</figcaption>
+          <canvas id="plot-latency" role="img" aria-label="latency per frame"></canvas>
+        </figure>
+        <div class="steps" id="steps" aria-label="each backend's step times at the frame"></div>
+        <div class="summary" id="summary"></div>
+      </section>
+    </main>
+
+    <script type="module" src="src/main.js"></script>
+  </body>
+</html>

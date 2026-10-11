@@ -9,9 +9,11 @@ use slam_it_all_edge::frames::Tracked;
 use slam_it_all_edge::map::{self, Map};
 use slam_it_all_edge::options::{Mode, Options};
 use slam_it_all_edge::tracking::{
-    in_view, optimize_pose, predict, relocalize_locally, track_last_frame, track_local_map,
+    LocalMapSummary, MotionSummary, in_view, optimize_pose, predict, relocalize_locally,
+    track_last_frame, track_local_map,
 };
 use slam_it_all_foundations::error::ErrorKind;
+use slam_it_all_foundations::ransac;
 
 use scene::{POINTS, camera, frame, frame_at, moved, points, pose, scene_map};
 
@@ -102,11 +104,32 @@ fn moving_forward_searches_no_finer_level() {
         )
         .unwrap()
     };
-    assert!(track(Mode::Rgbd, 0.3).is_none());
-    let back = track(Mode::Rgbd, -0.3).unwrap();
+    let forward = track(Mode::Rgbd, 0.3);
+    assert!(forward.tracked.is_none());
+    assert_eq!(
+        forward.summary,
+        MotionSummary {
+            matches: 0,
+            widened: true,
+            inliers: None
+        }
+    );
+    let back = track(Mode::Rgbd, -0.3);
+    assert_eq!(
+        back.summary,
+        MotionSummary {
+            matches: POINTS,
+            widened: false,
+            inliers: Some(POINTS)
+        }
+    );
+    let back = back.tracked.unwrap();
     assert_eq!(back.inliers(), POINTS);
     assert!(gap(&back.pose, &moved(-0.3)) < 1e-9);
-    assert_eq!(track(Mode::Monocular, 0.3).unwrap().inliers(), POINTS);
+    assert_eq!(
+        track(Mode::Monocular, 0.3).tracked.unwrap().inliers(),
+        POINTS
+    );
 }
 
 #[test]
@@ -133,9 +156,28 @@ fn the_local_map_and_the_fallback_place_the_frame() {
     assert_eq!(local.tracked.inliers(), POINTS);
     assert_eq!((local.visible.len(), local.found.len()), (POINTS, POINTS));
     assert!(gap(&local.tracked.pose, &pose(2)) < 1e-6);
-    let placed = relocalize_locally(&m, &camera(), &frame(2, true), &options)
-        .unwrap()
-        .unwrap();
+    assert_eq!(
+        local.summary(),
+        LocalMapSummary {
+            in_view: POINTS,
+            matches: POINTS,
+            inliers: POINTS
+        }
+    );
+    let recovery = relocalize_locally(&m, &camera(), &frame(2, true), &options).unwrap();
+    let summary = recovery.summary;
+    assert_eq!(
+        (
+            summary.candidates,
+            summary.matches,
+            summary.inliers,
+            summary.refined
+        ),
+        (POINTS, Some(POINTS), Some(POINTS), Some(POINTS))
+    );
+    assert_eq!(summary.termination, Some(ransac::Termination::Confidence));
+    assert!(summary.iterations.is_some() && !summary.degenerate);
+    let placed = recovery.tracked.unwrap();
     assert_eq!(placed.inliers(), POINTS);
     assert!(gap(&placed.pose, &pose(2)) < 1e-6);
     let recovering = track_local_map(

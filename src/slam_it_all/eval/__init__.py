@@ -6,13 +6,14 @@
   poses and calibrations.
 - :mod:`slam_it_all.eval.euroc`: the EuRoC MAV datasets' stereo frames, ground-truth poses and
   calibrations.
-- :mod:`slam_it_all.eval.images`: reading image files (the one module that imports Pillow; C++'s
-  ``slam_it_all_eval`` library and Rust's ``slam-it-all-eval`` crate read PNGs natively and the same
-  way).
+- :mod:`slam_it_all.eval.images`: reading image files, and encoding the run viewer's JPEGs (the
+  one module that imports Pillow; C++'s ``slam_it_all_eval`` library and Rust's
+  ``slam-it-all-eval`` crate read PNGs natively and the same way).
 - :mod:`slam_it_all.eval.metrics`: the absolute trajectory error (after SE(3) or Sim(3)
   alignment) and the relative pose error, as the TUM benchmark defines them, and associating
   timestamps.
-- :mod:`slam_it_all.eval.runs`: the run format every backend's pipeline writes, and scoring a run.
+- :mod:`slam_it_all.eval.runs`: the run format every backend's pipeline writes, a sequence's
+  ground truth, and scoring a run.
 - :mod:`slam_it_all.eval.timestamps`: checking timestamps and finding the nearest, for the readers
   and metrics.
 - :mod:`slam_it_all.eval.colmap_reference`: COLMAP's Ceres bundle adjuster, as the reference

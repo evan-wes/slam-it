@@ -15,6 +15,11 @@ increasing order, so the id columns stay sorted and :meth:`Map.point_rows` finds
 binary search. Erasing a point therefore only clears the keypoints that observed it; erasing
 a keyframe removes its rows. Every operation returns a new map and leaves its input as it was.
 
+**What was removed** is kept aside, in the ``gone_*`` arrays, until the pipeline takes it
+(:func:`clear_gone`): each erased point's id, last position and why it went (:class:`Removal`),
+and each erased keyframe's id, time and pose. A run records from them when each point and
+keyframe was removed (:mod:`slam_it_all.eval.runs`).
+
 **A point's descriptor, normal and distances** follow ORB-SLAM's ``MapPoint``:
 
 - the descriptor is the observation whose median Hamming distance to the others is least
@@ -29,6 +34,7 @@ a keyframe removes its rows. Every operation returns a new map and leaves its in
 
 from __future__ import annotations
 
+import enum
 import math
 from dataclasses import dataclass, fields, replace
 from typing import Any, Protocol
@@ -47,6 +53,19 @@ from slam_it_all.foundations.orb import DESCRIPTOR_BYTES
 Array = NDArray[np.float64]
 IntArray = NDArray[np.int64]
 Mask = NDArray[np.bool_]
+
+
+class Removal(enum.IntEnum):
+    """Why a point or keyframe left the map, with the codes a run records."""
+
+    CULLED = 0
+    """Culled: a recent point tracking rarely found (``MapPointCulling``), or a redundant
+    keyframe (``KeyFrameCulling``)."""
+    FUSED = 1
+    """Fused into another point (``SearchInNeighbors``)."""
+    WEAK = 2
+    """Erased with its views: the observations dropped (by a bundle adjustment, or with a culled
+    keyframe) left it seen too little (``EraseObservation``)."""
 
 
 @dataclass(frozen=True)
@@ -101,6 +120,18 @@ class Map:
         The id of its reference keyframe (where its distances are measured from).
     next_kf_id, next_pt_id : int
         The next ids to give.
+    gone_pt_id : ndarray of int64, shape (G,)
+        The ids of the points erased since the archive was last cleared, in erasing order.
+    gone_pt_xyz : ndarray of float64, shape (G, 3)
+        Their last positions.
+    gone_pt_how : ndarray of int64, shape (G,)
+        Why each went (:class:`Removal`).
+    gone_kf_id : ndarray of int64, shape (H,)
+        The ids of the keyframes erased since then (culled).
+    gone_kf_time : ndarray of float64, shape (H,)
+        Their times.
+    gone_kf_pose : ndarray of float64, shape (H, 4, 4)
+        Their last poses ``T_cam_world``.
     """
 
     levels: int
@@ -129,6 +160,12 @@ class Map:
     pt_reference_kf: IntArray
     next_kf_id: int
     next_pt_id: int
+    gone_pt_id: IntArray
+    gone_pt_xyz: Array
+    gone_pt_how: IntArray
+    gone_kf_id: IntArray
+    gone_kf_time: Array
+    gone_kf_pose: Array
 
     def __post_init__(self) -> None:
         """Check the tables' shapes, types and links (not copied: maps are built by this module).
@@ -138,7 +175,8 @@ class Map:
         slam_it_all.foundations.errors.InvalidInputError
             If an array has the wrong type or length, the keypoint offsets do not run from 0
             to the keypoint count, an id column is not strictly ascending or reaches its next
-            id, or a keypoint observes a point that is not in the map.
+            id, a keypoint observes a point that is not in the map, or the archive holds an id
+            the map still has, one it never gave, or an unknown removal.
         """
         _check(self)
 
@@ -320,7 +358,34 @@ def empty(levels: int, scale_factor: float) -> Map:
         pt_reference_kf=no_int,
         next_kf_id=0,
         next_pt_id=0,
+        gone_pt_id=no_int,
+        gone_pt_xyz=np.zeros((0, 3)),
+        gone_pt_how=no_int,
+        gone_kf_id=no_int,
+        gone_kf_time=no_real,
+        gone_kf_pose=np.zeros((0, 4, 4)),
     )
+
+
+def clear_gone(m: Map) -> Map:
+    """Return the map with its archive of removed points and keyframes emptied.
+
+    The pipeline takes the archive after every frame (:mod:`slam_it_all.edge.pipeline`), so
+    each removal is dated by the frame it happened in.
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+
+    Returns
+    -------
+    Map
+        The same map, its ``gone_*`` arrays empty.
+    """
+    blank = empty(m.levels, m.scale_factor)
+    gone = [item.name for item in fields(m) if item.name.startswith("gone_")]
+    return replace(m, **{name: getattr(blank, name) for name in gone})
 
 
 def _predict_level(m: Map, rows: IntArray, distance: Array) -> IntArray:
@@ -440,8 +505,8 @@ def _refresh_points(m: Map, rows: IntArray) -> Map:
     )
 
 
-def _erase_points(m: Map, erase: Mask) -> Map:
-    """Remove points (reference)."""
+def _erase_points(m: Map, erase: Mask, how: Removal) -> Map:
+    """Remove points, keeping them aside (reference)."""
     if not np.any(erase):
         return m
     keep = ~erase
@@ -449,6 +514,11 @@ def _erase_points(m: Map, erase: Mask) -> Map:
     return replace(
         m,
         kp_point=np.where(gone, -1, m.kp_point),
+        gone_pt_id=np.concatenate([m.gone_pt_id, m.pt_id[erase]]),
+        gone_pt_xyz=np.concatenate([m.gone_pt_xyz, m.pt_xyz[erase]]),
+        gone_pt_how=np.concatenate(
+            [m.gone_pt_how, np.full(np.count_nonzero(erase), int(how), dtype=np.int64)]
+        ),
         **{
             item.name: getattr(m, item.name)[keep]
             for item in fields(m)
@@ -480,7 +550,7 @@ def _forget_observations(m: Map, rows: IntArray) -> Map:
     weak = np.zeros(cleared.points, dtype=bool)
     weak[points] = _observation_weight(cleared, points) <= 2
     remaining = points[~weak[points]]
-    return _erase_points(_refresh_points(cleared, remaining), weak)
+    return _erase_points(_refresh_points(cleared, remaining), weak, Removal.WEAK)
 
 
 def _erase_keyframe(m: Map, k: int) -> Map:
@@ -495,6 +565,9 @@ def _erase_keyframe(m: Map, k: int) -> Map:
     keep_kf[k] = False
     return replace(
         forgotten,
+        gone_kf_id=np.append(forgotten.gone_kf_id, forgotten.kf_id[k]),
+        gone_kf_time=np.append(forgotten.gone_kf_time, forgotten.kf_time[k]),
+        gone_kf_pose=np.concatenate([forgotten.gone_kf_pose, forgotten.kf_pose[k][None]]),
         kf_id=forgotten.kf_id[keep_kf],
         kf_time=forgotten.kf_time[keep_kf],
         kf_pose=forgotten.kf_pose[keep_kf],
@@ -541,8 +614,15 @@ _SHAPES: dict[str, tuple[str, type[np.generic], tuple[int, ...]]] = {
     "pt_found": ("P", np.int64, ()),
     "pt_first_kf": ("P", np.int64, ()),
     "pt_reference_kf": ("P", np.int64, ()),
+    "gone_pt_id": ("G", np.int64, ()),
+    "gone_pt_xyz": ("G", np.float64, (3,)),
+    "gone_pt_how": ("G", np.int64, ()),
+    "gone_kf_id": ("H", np.int64, ()),
+    "gone_kf_time": ("H", np.float64, ()),
+    "gone_kf_pose": ("H", np.float64, (4, 4)),
 }
-"""Each table array's row count (keyframes, keypoints or points), dtype and item shape."""
+"""Each table array's row count (keyframes, keypoints, points, or erased points and keyframes),
+dtype and item shape."""
 
 
 def _check(m: Map) -> None:
@@ -555,7 +635,13 @@ def _check(m: Map) -> None:
         raise InvalidInputError("map.kf_start: expected int64 offsets starting at 0")
     if np.any(np.diff(starts) < 0):
         raise InvalidInputError("map.kf_start: offsets must not decrease")
-    counts = {"K": len(starts) - 1, "T": int(starts[-1]), "P": len(np.asarray(m.pt_id))}
+    counts = {
+        "K": len(starts) - 1,
+        "T": int(starts[-1]),
+        "P": len(np.asarray(m.pt_id)),
+        "G": len(np.asarray(m.gone_pt_id)),
+        "H": len(np.asarray(m.gone_kf_id)),
+    }
     for name, (rows, dtype, item) in _SHAPES.items():
         value = np.asarray(getattr(m, name))
         if value.dtype != dtype or value.shape != (counts[rows], *item):
@@ -571,6 +657,21 @@ def _check(m: Map) -> None:
     observed = observed[observed >= 0]
     if np.any(np.asarray(m.kp_point) < -1) or np.any(_rows(m.pt_id, observed) < 0):
         raise InvalidInputError("map.kp_point: every observed point must be in the map")
+    for gone, live, last in (
+        (m.gone_pt_id, m.pt_id, m.next_pt_id),
+        (m.gone_kf_id, m.kf_id, m.next_kf_id),
+    ):
+        ids = np.asarray(gone)
+        if (
+            len(np.unique(ids)) != len(ids)
+            or np.any((ids < 0) | (ids >= last))
+            or np.any(np.isin(ids, live))
+        ):
+            raise InvalidInputError(
+                "map.gone_*: an erased id must be one the map gave, once, and no longer holds"
+            )
+    if not np.all(np.isin(m.gone_pt_how, [int(r) for r in Removal])):
+        raise InvalidInputError("map.gone_pt_how: expected Removal codes")
 
 
 class Implementation(Protocol):
@@ -610,8 +711,8 @@ class Implementation(Protocol):
         """Recompute points' descriptors, normals and distances."""
         ...
 
-    def erase_points(self, m: dict[str, Any], erase: NDArray[np.bool_]) -> dict[str, Any]:
-        """Remove points."""
+    def erase_points(self, m: dict[str, Any], erase: NDArray[np.bool_], how: int) -> dict[str, Any]:
+        """Remove points, keeping them aside with why they went."""
         ...
 
     def observation_weight(self, m: dict[str, Any], rows: NDArray[np.int64]) -> NDArray[np.int64]:
@@ -1070,8 +1171,11 @@ def refresh_points(m: Map, rows: ArrayLike, *, backend: str = "python") -> Map:
     )
 
 
-def erase_points(m: Map, erase: ArrayLike, *, backend: str = "python") -> Map:
+def erase_points(m: Map, erase: ArrayLike, how: Removal, *, backend: str = "python") -> Map:
     """Remove points; the keypoints that observed them observe nothing.
+
+    The points are kept aside in the map's archive (``gone_*``), with their last positions and
+    why they went.
 
     Parameters
     ----------
@@ -1079,6 +1183,8 @@ def erase_points(m: Map, erase: ArrayLike, *, backend: str = "python") -> Map:
         The map.
     erase : array_like of bool, shape (P,)
         Which points to remove.
+    how : Removal
+        Why they go.
     backend : {"python", "cpp", "rust"}, optional
         Which implementation computes the result (default: the Python reference).
 
@@ -1090,15 +1196,17 @@ def erase_points(m: Map, erase: ArrayLike, *, backend: str = "python") -> Map:
     Raises
     ------
     slam_it_all.foundations.errors.InvalidInputError
-        If `erase` is not one boolean per point.
+        If `erase` is not one boolean per point, or `how` is not a :class:`Removal`.
     """
     mask = as_mask(erase, (m.points,), "erase")
+    if not isinstance(how, Removal):
+        raise InvalidInputError(f"how: expected a Removal, got {how!r}")
     return backends.call(
         backend,
         __name__,
         "erase_points",
-        reference=lambda: _erase_points(m, mask),
-        arguments={"m": m.as_dict(), "erase": mask},
+        reference=lambda: _erase_points(m, mask, how),
+        arguments={"m": m.as_dict(), "erase": mask, "how": int(how)},
         decode=decode,
     )
 

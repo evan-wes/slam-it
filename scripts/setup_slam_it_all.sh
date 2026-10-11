@@ -96,6 +96,9 @@ print("\n".join(project["dependencies"] + extras["dev"] + extras["colmap"]))')
 fi
 # jscpd (duplication detection) installs into the env's own Node prefix.
 run npm install -g --silent "jscpd@${JSCPD_VERSION}"
+# The run viewer's type check (TypeScript and three.js's types), pinned by its lockfile, into
+# viewer/node_modules: the page itself has no build step.
+run npm ci --prefix "${ROOT_DIR}/viewer" --no-audit --no-fund
 
 # --- slam-it-all ---------------------------------------------------------------
 # --no-build-isolation: the editable C++ build rebuilds on import, so its build

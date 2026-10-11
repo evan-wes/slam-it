@@ -13,8 +13,8 @@ from numpy.typing import NDArray
 
 from slam_it_all import backends
 from slam_it_all.edge import initialization
-from slam_it_all.edge.frames import Frame, Tracked
-from slam_it_all.edge.map import Map
+from slam_it_all.edge.frames import Frame
+from slam_it_all.edge.initialization import Initialization, Outcome
 from slam_it_all.edge.options import Options
 from slam_it_all.foundations import matching, orb, triangulation, twoview
 from slam_it_all.foundations.errors import InvalidInputError
@@ -27,23 +27,23 @@ from tests.edge.support import (
     TOLERANCE,
     assert_close,
     assert_maps_match,
+    assert_records_match,
 )
 
 Pair = tuple[Frame, Frame]
 
 
 def _assert_started_match(
-    got: tuple[Map, Tracked] | None,
-    expected: tuple[Map, Tracked] | None,
-    tolerance: dict[str, float],
+    got: Initialization, expected: Initialization, tolerance: dict[str, float]
 ) -> None:
-    """Check two starts: both None, or the same map and tracked frame."""
-    assert (got is None) == (expected is None)
-    if got is None or expected is None:
+    """Check two attempts: the same summary, and no map or the same map and tracked frame."""
+    assert_records_match(got.summary.as_dict(), expected.summary.as_dict(), tolerance)
+    assert (got.started is None) == (expected.started is None)
+    if got.started is None or expected.started is None:
         return
-    assert_maps_match(got[0], expected[0], tolerance)
-    assert_close(got[1].pose, expected[1].pose, tolerance)
-    np.testing.assert_array_equal(got[1].points, expected[1].points)
+    assert_maps_match(got.started[0], expected.started[0], tolerance)
+    assert_close(got.started[1].pose, expected.started[1].pose, tolerance)
+    np.testing.assert_array_equal(got.started[1].points, expected.started[1].points)
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -52,11 +52,14 @@ def test_from_depth_matches_the_reference(backend: str, truth: Truth) -> None:
     chosen = require_function(backend, initialization.__name__, "initialize_from_depth")
     frame = truth.frames[0]
     expected = initialization.initialize_from_depth(frame, OPTIONS)
-    assert expected is not None
+    assert expected.started is not None
+    assert expected.summary.outcome is Outcome.INITIALIZED
     got = initialization.initialize_from_depth(frame, OPTIONS, backend=chosen)
     _assert_started_match(got, expected, TOLERANCE)
     exactly = replace(OPTIONS, min_init_features_depth=frame.size)  # N > 500: more than
-    assert initialization.initialize_from_depth(frame, exactly, backend=chosen) is None
+    refused = initialization.initialize_from_depth(frame, exactly, backend=chosen)
+    assert refused.started is None
+    assert refused.summary.outcome is Outcome.TOO_FEW_FEATURES
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -76,17 +79,19 @@ def test_from_depth_counts_keypoints_then_depths(backend: str, truth: Truth) -> 
     depths = int(np.count_nonzero(~np.isnan(sparse.depth)))
     assert depths > 0
     options = replace(OPTIONS, min_init_features_depth=frame.size - 1, min_init_depth_points=depths)
-    started = initialization.initialize_from_depth(sparse, options, backend=chosen)
+    started = initialization.initialize_from_depth(sparse, options, backend=chosen).started
     assert started is not None
     assert started[0].points == depths
     deeper = replace(options, min_init_depth_points=depths + 1)
-    assert initialization.initialize_from_depth(sparse, deeper, backend=chosen) is None
+    refused = initialization.initialize_from_depth(sparse, deeper, backend=chosen)
+    assert refused.started is None
+    assert refused.summary.outcome is Outcome.TOO_LITTLE_DEPTH
 
 
 def test_from_depth_puts_a_point_at_every_keypoint_with_depth(truth: Truth) -> None:
     """One keyframe at the origin; each keypoint with depth sees a point at its depth."""
     frame = truth.frames[0]
-    started = initialization.initialize_from_depth(frame, OPTIONS)
+    started = initialization.initialize_from_depth(frame, OPTIONS).started
     assert started is not None
     m, tracked = started
     has_depth = ~np.isnan(frame.depth)
@@ -154,15 +159,22 @@ def test_monocular_matches_the_reference(backend: str, monocular_pair: Pair) -> 
     chosen = require_function(backend, initialization.__name__, "initialize_monocular")
     matches = _matched(monocular_pair)
     expected = initialization.initialize_monocular(CAMERA, *monocular_pair, matches, OPTIONS)
-    assert expected is not None
+    assert expected.started is not None
+    summary = expected.summary
+    assert (summary.outcome, summary.matches) == (Outcome.INITIALIZED, len(matches.pairs))
+    assert len(summary.solves) == 2  # the initial bundle adjustment's
     got = initialization.initialize_monocular(
         CAMERA, *monocular_pair, matches, OPTIONS, backend=chosen
     )
     _assert_started_match(got, expected, SOLVER_TOLERANCE)
     same = (monocular_pair[0], monocular_pair[0])  # no parallax at all
-    assert (
-        initialization.initialize_monocular(CAMERA, *same, _matched(same), OPTIONS, backend=chosen)
-        is None
+    flat = initialization.initialize_monocular(CAMERA, *same, _matched(same), OPTIONS)
+    assert flat.started is None
+    assert flat.summary.outcome not in {Outcome.INITIALIZED, Outcome.TOO_FEW_MATCHES}
+    _assert_started_match(
+        initialization.initialize_monocular(CAMERA, *same, _matched(same), OPTIONS, backend=chosen),
+        flat,
+        SOLVER_TOLERANCE,
     )
 
 
@@ -238,7 +250,7 @@ def test_monocular_keeps_the_far_points_two_view_does_not(
     assert result.status is twoview.Status.INITIALIZED
     started = initialization.initialize_monocular(
         CAMERA, reference, frame, matches, OPTIONS, backend=chosen
-    )
+    ).started
     assert started is not None
     assert started[0].points > np.count_nonzero(result.triangulated)
 
@@ -246,7 +258,7 @@ def test_monocular_keeps_the_far_points_two_view_does_not(
 def test_monocular_map_has_unit_median_depth(monocular_pair: Pair) -> None:
     """Two keyframes, the first at the origin and fixed; the points' median depth is 1."""
     matches = _matched(monocular_pair)
-    started = initialization.initialize_monocular(CAMERA, *monocular_pair, matches, OPTIONS)
+    started = initialization.initialize_monocular(CAMERA, *monocular_pair, matches, OPTIONS).started
     assert started is not None
     m, tracked = started
     assert m.keyframes == 2
@@ -261,7 +273,13 @@ def test_monocular_needs_enough_matches(monocular_pair: Pair) -> None:
     """With fewer matches than ``init_min_matches``, no map."""
     strict = replace(OPTIONS, init_min_matches=10_000)
     matches = _matched(monocular_pair)
-    assert initialization.initialize_monocular(CAMERA, *monocular_pair, matches, strict) is None
+    refused = initialization.initialize_monocular(CAMERA, *monocular_pair, matches, strict)
+    assert refused.started is None
+    assert refused.summary.as_dict() == {
+        "matches": len(matches.pairs),
+        "outcome": "too_few_matches",
+        "ba": [],
+    }
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)

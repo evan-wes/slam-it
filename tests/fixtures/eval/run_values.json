@@ -221,6 +221,40 @@
    -2.4503165208627204
   ]
  ],
+ "point_lives": [
+  [
+   0,
+   -1,
+   -1
+  ],
+  [
+   0,
+   3,
+   1
+  ],
+  [
+   3,
+   -1,
+   -1
+  ],
+  [
+   3,
+   4,
+   2
+  ]
+ ],
+ "keyframe_lives": [
+  [
+   0,
+   -1,
+   -1
+  ],
+  [
+   3,
+   -1,
+   -1
+  ]
+ ],
  "settings": {
   "n_features": 1000,
   "scale_factor": 1.2,
@@ -235,6 +269,132 @@
   7
  ],
  "memory_cap": 8589934592,
+ "record_features": true,
+ "features": [
+  {
+   "xy": [
+    [
+     632.8151031508187,
+     76.01734995090574
+    ],
+    [
+     240.0139236469117,
+     321.442567619252
+    ],
+    [
+     478.2230156918262,
+     199.05980788688737
+    ]
+   ],
+   "level": [
+    0,
+    1,
+    2
+   ],
+   "fate": [
+    3,
+    3,
+    0
+   ],
+   "point": [
+    0,
+    1,
+    -1
+   ]
+  },
+  {
+   "xy": [
+    [
+     287.9387366941433,
+     176.74198566441376
+    ],
+    [
+     287.46570412868687,
+     326.38336505687744
+    ]
+   ],
+   "level": [
+    0,
+    1
+   ],
+   "fate": [
+    2,
+    1
+   ],
+   "point": [
+    0,
+    1
+   ]
+  },
+  {
+   "xy": [],
+   "level": [],
+   "fate": [],
+   "point": []
+  },
+  {
+   "xy": [
+    [
+     361.6178814492957,
+     450.6820576589059
+    ],
+    [
+     154.76479141044024,
+     403.513908342676
+    ],
+    [
+     57.69355434324197,
+     391.066857236635
+    ],
+    [
+     293.7840604041146,
+     86.3067018074333
+    ]
+   ],
+   "level": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "fate": [
+    2,
+    3,
+    3,
+    0
+   ],
+   "point": [
+    0,
+    2,
+    3,
+    -1
+   ]
+  },
+  {
+   "xy": [
+    [
+     164.28464507740713,
+     41.51886104270076
+    ],
+    [
+     238.28605606902647,
+     258.418996378995
+    ]
+   ],
+   "level": [
+    0,
+    1
+   ],
+   "fate": [
+    1,
+    0
+   ],
+   "point": [
+    2,
+    -1
+   ]
+  }
+ ],
  "diagnostics": [
   {
    "timestamp": 1305031102.175304,
@@ -244,7 +404,17 @@
    "read_seconds": 0.0025,
    "build_seconds": 0.0125,
    "track_seconds": 0.005,
-   "map_seconds": 0.0
+   "map_seconds": 0.0,
+   "placed_by": "initialization",
+   "init": {
+    "matches": null,
+    "outcome": "initialized",
+    "ba": []
+   },
+   "motion": null,
+   "pnp": null,
+   "local_map": null,
+   "mapping": null
   },
   {
    "timestamp": 1305031102.2086039,
@@ -254,7 +424,21 @@
    "read_seconds": 0.005,
    "build_seconds": 0.025,
    "track_seconds": 0.01,
-   "map_seconds": 0.0
+   "map_seconds": 0.0,
+   "placed_by": "motion",
+   "init": null,
+   "motion": {
+    "matches": 201,
+    "widened": false,
+    "inliers": 181
+   },
+   "pnp": null,
+   "local_map": {
+    "in_view": 401,
+    "matches": 301,
+    "inliers": 291
+   },
+   "mapping": null
   },
   {
    "timestamp": 1305031102.241904,
@@ -264,7 +448,21 @@
    "read_seconds": 0.0075,
    "build_seconds": 0.037500000000000006,
    "track_seconds": 0.015,
-   "map_seconds": 0.0
+   "map_seconds": 0.0,
+   "placed_by": "motion",
+   "init": null,
+   "motion": {
+    "matches": 202,
+    "widened": true,
+    "inliers": 182
+   },
+   "pnp": null,
+   "local_map": {
+    "in_view": 402,
+    "matches": 302,
+    "inliers": 292
+   },
+   "mapping": null
   },
   {
    "timestamp": 1305031102.275204,
@@ -274,7 +472,43 @@
    "read_seconds": 0.01,
    "build_seconds": 0.05,
    "track_seconds": 0.02,
-   "map_seconds": 0.0625
+   "map_seconds": 0.0625,
+   "placed_by": "motion",
+   "init": null,
+   "motion": {
+    "matches": 203,
+    "widened": false,
+    "inliers": 183
+   },
+   "pnp": null,
+   "local_map": {
+    "in_view": 403,
+    "matches": 303,
+    "inliers": 293
+   },
+   "mapping": {
+    "from_depth": 40,
+    "culled_points": 3,
+    "triangulated": 12,
+    "fused": 2,
+    "ba": [
+     {
+      "initial_cost": 3.125,
+      "final_cost": 0.1875,
+      "iterations": 8,
+      "termination": "function"
+     },
+     {
+      "initial_cost": 3.125,
+      "final_cost": 0.1875,
+      "iterations": 8,
+      "termination": "function"
+     }
+    ],
+    "outliers": 7,
+    "weak_points": 1,
+    "culled_keyframes": 0
+   }
   },
   {
    "timestamp": 1305031102.3085039,
@@ -284,7 +518,24 @@
    "read_seconds": 0.0125,
    "build_seconds": 0.0625,
    "track_seconds": 0.025,
-   "map_seconds": 0.0
+   "map_seconds": 0.0,
+   "placed_by": null,
+   "init": null,
+   "motion": {
+    "matches": 204,
+    "widened": false,
+    "inliers": 184
+   },
+   "pnp": {
+    "candidates": 500,
+    "matches": 120,
+    "iterations": null,
+    "termination": "degenerate",
+    "inliers": null,
+    "refined": null
+   },
+   "local_map": null,
+   "mapping": null
   }
  ]
 }

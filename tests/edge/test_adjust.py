@@ -17,7 +17,13 @@ from slam_it_all.edge.map import Map
 from slam_it_all.foundations.errors import InvalidInputError
 from tests.conftest import require_function
 from tests.edge.conftest import Truth
-from tests.edge.support import CAMERA, OPTIONS, SOLVER_TOLERANCE, assert_maps_match
+from tests.edge.support import (
+    CAMERA,
+    OPTIONS,
+    SOLVER_TOLERANCE,
+    assert_maps_match,
+    assert_records_match,
+)
 
 
 def _perturbed(m: Map, seed: int = 1) -> Map:
@@ -44,7 +50,11 @@ def test_matches_the_reference(backend: str, window: int | None, truth: Truth) -
     keyframes = np.arange(m.keyframes)[-window:] if window else np.arange(m.keyframes)
     expected = adjust.bundle_adjust(m, CAMERA, keyframes, _first_fixed(m), OPTIONS)
     got = adjust.bundle_adjust(m, CAMERA, keyframes, _first_fixed(m), OPTIONS, backend=chosen)
-    assert_maps_match(got, expected, SOLVER_TOLERANCE)
+    assert_maps_match(got.map, expected.map, SOLVER_TOLERANCE)
+    assert got.outliers == expected.outliers
+    assert_records_match(
+        [solve.as_dict() for solve in got.solves], [solve.as_dict() for solve in expected.solves]
+    )
 
 
 def test_converges_from_noise_to_the_noiseless_solution(truth: Truth) -> None:
@@ -52,8 +62,8 @@ def test_converges_from_noise_to_the_noiseless_solution(truth: Truth) -> None:
     m = truth.map
     fixed = _first_fixed(m)
     every = np.arange(m.keyframes)
-    clean = adjust.bundle_adjust(m, CAMERA, every, fixed, OPTIONS)
-    noisy = adjust.bundle_adjust(_perturbed(m), CAMERA, every, fixed, OPTIONS)
+    clean = adjust.bundle_adjust(m, CAMERA, every, fixed, OPTIONS).map
+    noisy = adjust.bundle_adjust(_perturbed(m), CAMERA, every, fixed, OPTIONS).map
     np.testing.assert_allclose(noisy.kf_pose, clean.kf_pose, rtol=0, atol=1e-5)
     ids = np.intersect1d(noisy.pt_id, clean.pt_id)
     assert len(ids) > 0.99 * m.points
@@ -67,7 +77,7 @@ def test_converges_from_noise_to_the_noiseless_solution(truth: Truth) -> None:
 def test_holds_fixed_and_unchosen_keyframes_exactly(truth: Truth) -> None:
     """The fixed keyframe and those outside the chosen ones keep their poses bit for bit."""
     m = _perturbed(truth.map)
-    out = adjust.bundle_adjust(m, CAMERA, np.array([2, 3]), _first_fixed(m), OPTIONS)
+    out = adjust.bundle_adjust(m, CAMERA, np.array([2, 3]), _first_fixed(m), OPTIONS).map
     np.testing.assert_array_equal(out.kf_pose[:2], m.kf_pose[:2])
     assert not np.array_equal(out.kf_pose[2:], m.kf_pose[2:])
 
@@ -79,20 +89,37 @@ def test_forgets_an_observation_moved_off_its_point(truth: Truth) -> None:
     row = int(last[m.kp_point[last] >= 0][0])
     xy = m.kp_xy.copy()
     xy[row, 0] += 40.0
-    out = adjust.bundle_adjust(
+    adjusted = adjust.bundle_adjust(
         replace(m, kp_xy=xy), CAMERA, np.arange(m.keyframes), _first_fixed(m), OPTIONS
     )
+    out = adjusted.map
     assert out.kp_point[row] == -1
     assert np.count_nonzero(out.kp_point >= 0) > 0.95 * np.count_nonzero(m.kp_point >= 0)
+    assert adjusted.outliers == np.count_nonzero(m.kp_point >= 0) - np.count_nonzero(
+        out.kp_point >= 0
+    )
+
+
+def test_records_its_two_solves(truth: Truth) -> None:
+    """The adjustment reports both solves; from noise, each lowers the cost it started from."""
+    m = _perturbed(truth.map)
+    adjusted = adjust.bundle_adjust(m, CAMERA, np.arange(m.keyframes), _first_fixed(m), OPTIONS)
+    assert len(adjusted.solves) == 2
+    first, second = adjusted.solves
+    assert first.final_cost < first.initial_cost
+    assert second.final_cost <= second.initial_cost
+    assert 0 < first.iterations <= OPTIONS.ba_iterations
+    assert 0 < second.iterations <= OPTIONS.ba_refine_iterations
+    assert set(first.as_dict()) == {"initial_cost", "final_cost", "iterations", "termination"}
 
 
 def test_no_points_leave_the_map_unchanged(truth: Truth) -> None:
     """Keyframes observing nothing: nothing to adjust."""
     m = truth.map
     bare = replace(m, kp_point=np.full_like(m.kp_point, -1))
-    assert (
-        adjust.bundle_adjust(bare, CAMERA, np.arange(m.keyframes), _first_fixed(m), OPTIONS) is bare
-    )
+    adjusted = adjust.bundle_adjust(bare, CAMERA, np.arange(m.keyframes), _first_fixed(m), OPTIONS)
+    assert adjusted.map is bare
+    assert (adjusted.solves, adjusted.outliers) == ((), 0)
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)

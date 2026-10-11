@@ -6,11 +6,11 @@ use std::time::Instant;
 
 use nalgebra::Vector2;
 
+use slam_it_all_edge::adjust::Solve;
 use slam_it_all_edge::frames::{self, Camera, DepthMap, Frame};
-use slam_it_all_edge::map::Map;
 use slam_it_all_edge::options::{Mode, Options, Setting, check_options};
-use slam_it_all_edge::pipeline::{FrameResult, Pipeline, State};
-use slam_it_all_eval::runs::{JsonObject, JsonValue, Run};
+use slam_it_all_edge::pipeline::{Fates, FrameResult, FrameSummary, Lifetimes, Pipeline, State};
+use slam_it_all_eval::runs::{FeatureWriter, JsonObject, JsonValue, Run};
 use slam_it_all_eval::{euroc, png, text, tum};
 use slam_it_all_foundations::camera::Model;
 use slam_it_all_foundations::error::{ErrorKind, Result, fail};
@@ -23,7 +23,10 @@ pub const DATASETS: [&str; 2] = ["tum", "euroc"];
 /// The program's command line.
 pub const USAGE: &str = "usage: slam_it_all_vo --dataset tum|euroc --sequence PATH --mode \
                          monocular|stereo|rgbd --out RUN_DIR [--first I] [--count N] \
-                         [--option KEY=VALUE ...]";
+                         [--record-features] [--option KEY=VALUE ...]";
+
+/// The one flag without a value: record each frame's keypoints, with their fates.
+const RECORD_FEATURES: &str = "--record-features";
 
 /// The program's exit code for a command line it cannot read.
 pub const EXIT_USAGE: u8 = 2;
@@ -48,11 +51,13 @@ pub struct Request {
     pub count: Option<i64>,
     /// The pipeline's settings.
     pub options: Options,
+    /// Whether the run records each frame's keypoints, with their fates.
+    pub record_features: bool,
 }
 
 impl Request {
     /// A request, its other fields default: from the first frame, every frame, the default
-    /// settings.
+    /// settings, no feature records.
     ///
     /// # Arguments
     ///
@@ -74,6 +79,7 @@ impl Request {
             first: 0,
             count: None,
             options: Options::default(),
+            record_features: false,
         }
     }
 }
@@ -408,6 +414,164 @@ fn sequence_name(sequence: &Path) -> String {
         .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
 }
 
+/// A count as JSON.
+///
+/// # Arguments
+///
+/// * `count` - The count.
+///
+/// # Returns
+///
+/// Its value.
+fn count(count: usize) -> JsonValue {
+    JsonValue::Integer(i64::try_from(count).unwrap_or(i64::MAX))
+}
+
+/// A count as JSON, or null if there is none.
+///
+/// # Arguments
+///
+/// * `value` - The count, if any.
+///
+/// # Returns
+///
+/// Its value.
+fn count_or_null(value: Option<usize>) -> JsonValue {
+    value.map_or(JsonValue::Null, count)
+}
+
+/// A name as JSON.
+///
+/// # Arguments
+///
+/// * `name` - The name.
+///
+/// # Returns
+///
+/// Its value.
+fn name_json(name: &str) -> JsonValue {
+    JsonValue::Text(name.to_owned())
+}
+
+/// An object as JSON, from its keys and values.
+///
+/// # Arguments
+///
+/// * `items` - The keys and values, in order.
+///
+/// # Returns
+///
+/// The object.
+fn object<const N: usize>(items: [(&str, JsonValue); N]) -> JsonValue {
+    JsonValue::Object(
+        items
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value))
+            .collect(),
+    )
+}
+
+/// Bundle-adjustment solves as JSON (`slam_it_all.edge.adjust.Solve.as_dict`, each).
+///
+/// # Arguments
+///
+/// * `solves` - The solves.
+///
+/// # Returns
+///
+/// One object per solve.
+fn solves_json(solves: &[Solve]) -> JsonValue {
+    JsonValue::Array(
+        solves
+            .iter()
+            .map(|solve| {
+                object([
+                    ("initial_cost", JsonValue::Number(solve.initial_cost)),
+                    ("final_cost", JsonValue::Number(solve.final_cost)),
+                    ("iterations", count(solve.iterations)),
+                    ("termination", name_json(solve.termination.name())),
+                ])
+            })
+            .collect(),
+    )
+}
+
+/// How a frame's stages went, as a run records it
+/// (`slam_it_all.edge.pipeline.FrameSummary.as_dict`): each stage an object, or null.
+///
+/// # Arguments
+///
+/// * `summary` - The summary.
+///
+/// # Returns
+///
+/// Its keys and values, in order.
+fn summary_json(summary: &FrameSummary) -> JsonObject {
+    let placed_by = summary
+        .placed_by
+        .map_or(JsonValue::Null, |placement| name_json(placement.name()));
+    let init = summary.init.as_ref().map_or(JsonValue::Null, |s| {
+        object([
+            ("matches", count_or_null(s.matches)),
+            ("outcome", name_json(s.outcome.name())),
+            ("ba", solves_json(&s.solves)),
+        ])
+    });
+    let motion = summary.motion.map_or(JsonValue::Null, |s| {
+        object([
+            ("matches", count(s.matches)),
+            ("widened", JsonValue::Bool(s.widened)),
+            ("inliers", count_or_null(s.inliers)),
+        ])
+    });
+    let pnp = summary.pnp.map_or(JsonValue::Null, |s| {
+        let termination = if s.degenerate {
+            name_json("degenerate")
+        } else {
+            s.termination
+                .map_or(JsonValue::Null, |termination| name_json(termination.name()))
+        };
+        object([
+            ("candidates", count(s.candidates)),
+            ("matches", count_or_null(s.matches)),
+            ("iterations", count_or_null(s.iterations)),
+            ("termination", termination),
+            ("inliers", count_or_null(s.inliers)),
+            ("refined", count_or_null(s.refined)),
+        ])
+    });
+    let local_map = summary.local_map.map_or(JsonValue::Null, |s| {
+        object([
+            ("in_view", count(s.in_view)),
+            ("matches", count(s.matches)),
+            ("inliers", count(s.inliers)),
+        ])
+    });
+    let mapping = summary.mapping.as_ref().map_or(JsonValue::Null, |s| {
+        object([
+            ("from_depth", count(s.from_depth)),
+            ("culled_points", count(s.culled_points)),
+            ("triangulated", count(s.triangulated)),
+            ("fused", count(s.fused)),
+            ("ba", solves_json(&s.solves)),
+            ("outliers", count(s.outliers)),
+            ("weak_points", count(s.weak_points)),
+            ("culled_keyframes", count(s.culled_keyframes)),
+        ])
+    });
+    [
+        ("placed_by", placed_by),
+        ("init", init),
+        ("motion", motion),
+        ("pnp", pnp),
+        ("local_map", local_map),
+        ("mapping", mapping),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_owned(), value))
+    .collect()
+}
+
 /// Records a frame's result: its diagnostics, and its pose if it was tracked.
 ///
 /// # Arguments
@@ -426,16 +590,10 @@ fn record(
     read_seconds: f64,
     build_seconds: f64,
 ) -> Result<()> {
-    out.diagnostics.push(vec![
+    let mut diagnostic = vec![
         ("timestamp".to_owned(), JsonValue::Number(result.timestamp)),
-        (
-            "state".to_owned(),
-            JsonValue::Text(result.state.name().to_owned()),
-        ),
-        (
-            "tracked".to_owned(),
-            JsonValue::Integer(i64::try_from(result.tracked).unwrap_or(i64::MAX)),
-        ),
+        ("state".to_owned(), name_json(result.state.name())),
+        ("tracked".to_owned(), count(result.tracked)),
         ("keyframe".to_owned(), JsonValue::Bool(result.keyframe)),
         ("read_seconds".to_owned(), JsonValue::Number(read_seconds)),
         ("build_seconds".to_owned(), JsonValue::Number(build_seconds)),
@@ -447,7 +605,9 @@ fn record(
             "map_seconds".to_owned(),
             JsonValue::Number(result.map_seconds),
         ),
-    ]);
+    ];
+    diagnostic.extend(summary_json(&result.summary));
+    out.diagnostics.push(diagnostic);
     if let Some(pose) = &result.pose {
         out.poses.push(se3::inverse(pose)?);
         out.timestamps.push(result.timestamp);
@@ -455,20 +615,26 @@ fn record(
     Ok(())
 }
 
-/// Records the map: its keyframes' times and poses, and its points.
+/// Records every keyframe and point the run made, with their lives.
 ///
 /// # Arguments
 ///
 /// * `out` - The run.
-/// * `m` - The map.
+/// * `lives` - The pipeline's lifetimes.
 ///
 /// # Errors
 ///
 /// A pose's inversion's.
-fn record_map(out: &mut Run, m: &Map) -> Result<()> {
-    out.keyframe_timestamps.clone_from(&m.kf_time);
-    out.keyframe_poses = m.kf_pose.iter().map(se3::inverse).collect::<Result<_>>()?;
-    out.points.clone_from(&m.pt_xyz);
+fn record_lives(out: &mut Run, lives: Lifetimes) -> Result<()> {
+    out.keyframe_poses = lives
+        .keyframe_poses
+        .iter()
+        .map(se3::inverse)
+        .collect::<Result<_>>()?;
+    out.keyframe_timestamps = lives.keyframe_times;
+    out.points = lives.points;
+    out.point_lives = lives.point_lives;
+    out.keyframe_lives = lives.keyframe_lives;
     Ok(())
 }
 
@@ -480,11 +646,18 @@ fn record_map(out: &mut Run, m: &Map) -> Result<()> {
 /// * `pipeline` - The pipeline.
 /// * `request` - The request (checked).
 /// * `out` - The run, each frame recorded.
+/// * `features` - The writer of each frame's keypoints, if the run records them.
 ///
 /// # Errors
 ///
-/// A reader's, a frame builder's or the pipeline's.
-fn track(source: &Source, pipeline: &mut Pipeline, request: &Request, out: &mut Run) -> Result<()> {
+/// A reader's, a frame builder's, the pipeline's or the feature writer's.
+fn track(
+    source: &Source,
+    pipeline: &mut Pipeline,
+    request: &Request,
+    out: &mut Run,
+    mut features: Option<&mut FeatureWriter>,
+) -> Result<()> {
     let first = usize::try_from(request.first).unwrap_or(usize::MAX);
     let end = request.count.map_or(source.frames, |count| {
         source
@@ -508,11 +681,36 @@ fn track(source: &Source, pipeline: &mut Pipeline, request: &Request, out: &mut 
         let built = start.elapsed().as_secs_f64();
         let result = pipeline.track(&frame)?;
         record(out, &result, read, built - read)?;
+        if let Some(writer) = features.as_deref_mut() {
+            write_features(writer, &frame, &result.fates)?;
+        }
         if result.state == State::Lost {
             break;
         }
     }
     Ok(())
+}
+
+/// Appends a frame's keypoints, with their fates, to the run's feature files.
+///
+/// # Arguments
+///
+/// * `features` - The writer.
+/// * `frame` - The frame.
+/// * `fates` - What became of each of its keypoints.
+///
+/// # Errors
+///
+/// The writer's.
+fn write_features(features: &mut FeatureWriter, frame: &Frame, fates: &Fates) -> Result<()> {
+    let keypoints = &frame.features.keypoints;
+    let xy: Vec<[f64; 2]> = keypoints.iter().map(|k| k.xy).collect();
+    let level: Vec<i64> = keypoints
+        .iter()
+        .map(|k| i64::try_from(k.level).unwrap_or(i64::MAX))
+        .collect();
+    let fate: Vec<i64> = fates.fate.iter().map(|&f| f as i64).collect();
+    features.write(&xy, &level, &fate, &fates.point)
 }
 
 /// Fails with `InvalidInput`.
@@ -632,8 +830,9 @@ fn read_flag(out: &mut Request, flag: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-/// Reads the command line: [`USAGE`], flags in any order, `--option` repeatable and naming a
-/// field of `slam_it_all.edge.options.Options`.
+/// Reads the command line: [`USAGE`], flags in any order, each with its value but
+/// `--record-features`, `--option` repeatable and naming a field of
+/// `slam_it_all.edge.options.Options`.
 ///
 /// # Arguments
 ///
@@ -650,16 +849,23 @@ fn read_flag(out: &mut Request, flag: &str, value: &str) -> Result<()> {
 pub fn parse(arguments: &[String]) -> Result<Request> {
     let mut out = Request::new("", Path::new(""), Mode::Monocular, Path::new(""));
     let mut seen: Vec<&str> = Vec::new();
-    for pair in arguments.chunks(2) {
-        let flag = pair[0].as_str();
-        let Some(value) = pair.get(1) else {
-            return invalid(format!("{flag}: expected a value"));
-        };
+    let mut rest = arguments;
+    while let Some((flag, after)) = rest.split_first() {
+        let flag = flag.as_str();
         if flag != "--option" && seen.contains(&flag) {
             return invalid(format!("{flag}: given twice"));
         }
         seen.push(flag);
+        if flag == RECORD_FEATURES {
+            out.record_features = true;
+            rest = after;
+            continue;
+        }
+        let Some((value, after)) = after.split_first() else {
+            return invalid(format!("{flag}: expected a value"));
+        };
         read_flag(&mut out, flag, value)?;
+        rest = after;
     }
     for required in ["--dataset", "--sequence", "--mode", "--out"] {
         if !seen.contains(&required) {
@@ -727,12 +933,16 @@ pub fn run(request: &Request) -> Result<Run> {
         mode: request.mode.name().to_owned(),
         backend: "rust".to_owned(),
         settings: settings(&request.options),
+        record_features: request.record_features,
         ..Run::default()
     };
-    track(&source, &mut pipeline, request, &mut out)?;
-    if let Some(m) = pipeline.map() {
-        record_map(&mut out, m)?;
-    }
+    let mut features = if request.record_features {
+        Some(FeatureWriter::open(&request.out)?)
+    } else {
+        None
+    };
+    track(&source, &mut pipeline, request, &mut out, features.as_mut())?;
+    record_lives(&mut out, pipeline.lifetimes())?;
     Ok(out)
 }
 
@@ -796,6 +1006,7 @@ mod tests {
         let request = parse(&command(&[
             "--first",
             "3",
+            "--record-features",
             "--count",
             "10",
             "--option",
@@ -818,8 +1029,12 @@ mod tests {
             (7, 1000)
         );
         assert!((request.options.close_depth - 35.5).abs() < f64::EPSILON);
+        assert!(request.record_features);
         let plain = parse(&command(&[])).unwrap();
-        assert_eq!((plain.first, plain.count), (0, None));
+        assert_eq!(
+            (plain.first, plain.count, plain.record_features),
+            (0, None, false)
+        );
     }
 
     /// A bad flag, value or setting, a repeated flag, or a missing one is refused.
@@ -836,6 +1051,7 @@ mod tests {
             &["--option", "window"],
             &["--dataset", "euroc"],
             &["--verbose", "1"],
+            &["--record-features", "--record-features"],
         ] {
             assert_eq!(
                 parse(&command(more)).unwrap_err().kind,

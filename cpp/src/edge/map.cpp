@@ -130,10 +130,11 @@ void refresh(Map& m, std::span<const std::int64_t> rows) {
   }
 }
 
-/// @brief Remove the flagged points, unchecked.
+/// @brief Remove the flagged points, unchecked, keeping them aside in the archive.
 /// @param m The map.
 /// @param erase One flag per point.
-void erase(Map& m, const std::vector<bool>& erase) {
+/// @param how Why they go.
+void erase(Map& m, const std::vector<bool>& erase, Removal how) {
   if (std::ranges::none_of(erase, [](bool e) { return e; })) {
     return;
   }
@@ -144,6 +145,9 @@ void erase(Map& m, const std::vector<bool>& erase) {
       for (const std::int64_t r : m.pt_observations[p]) {
         m.kp_point[static_cast<std::size_t>(r)] = -1;
       }
+      m.gone_pt_id.push_back(m.pt_id[p]);
+      m.gone_pt_xyz.push_back(m.pt_xyz[p]);
+      m.gone_pt_how.push_back(static_cast<std::int64_t>(how));
     }
   }
   keep_where(m.pt_id, keep);
@@ -209,7 +213,7 @@ void forget(Map& m, std::span<const std::int64_t> rows) {
     }
   }
   refresh(m, remaining);
-  erase(m, weak);
+  erase(m, weak, Removal::kWeak);
 }
 
 /// @brief Find an id in an ascending id column.
@@ -231,14 +235,16 @@ Result<void> check_lengths(const Map& m) {
   const std::size_t k = m.kf_id.size();
   const std::size_t t = m.kp_point.size();
   const std::size_t p = m.pt_id.size();
-  const bool ok = m.kf_time.size() == k && m.kf_pose.size() == k && m.kf_start.size() == k + 1 &&
-                  m.kp_xy.size() == t && m.kp_level.size() == t && m.kp_angle.size() == t &&
-                  m.kp_descriptor.size() == t && m.kp_bearing.size() == t &&
-                  m.kp_depth.size() == t && m.kp_right.size() == t && m.pt_xyz.size() == p &&
-                  m.pt_descriptor.size() == p && m.pt_normal.size() == p &&
-                  m.pt_min_distance.size() == p && m.pt_max_distance.size() == p &&
-                  m.pt_visible.size() == p && m.pt_found.size() == p && m.pt_first_kf.size() == p &&
-                  m.pt_reference_kf.size() == p;
+  const bool ok =
+      m.kf_time.size() == k && m.kf_pose.size() == k && m.kf_start.size() == k + 1 &&
+      m.kp_xy.size() == t && m.kp_level.size() == t && m.kp_angle.size() == t &&
+      m.kp_descriptor.size() == t && m.kp_bearing.size() == t && m.kp_depth.size() == t &&
+      m.kp_right.size() == t && m.pt_xyz.size() == p && m.pt_descriptor.size() == p &&
+      m.pt_normal.size() == p && m.pt_min_distance.size() == p && m.pt_max_distance.size() == p &&
+      m.pt_visible.size() == p && m.pt_found.size() == p && m.pt_first_kf.size() == p &&
+      m.pt_reference_kf.size() == p && m.gone_pt_xyz.size() == m.gone_pt_id.size() &&
+      m.gone_pt_how.size() == m.gone_pt_id.size() && m.gone_kf_time.size() == m.gone_kf_id.size() &&
+      m.gone_kf_pose.size() == m.gone_kf_id.size();
   if (!ok) {
     return fail(ErrorKind::kInvalidInput, "map: every table's arrays must have its row count");
   }
@@ -255,6 +261,26 @@ Result<void> check_ids(const std::vector<std::int64_t>& ids, std::int64_t next, 
   if (!ascending || (!ids.empty() && (ids.front() < 0 || ids.back() >= next))) {
     return fail(ErrorKind::kInvalidInput,
                 std::string("map.") + name + ": ids must be ascending, from 0, below the next id");
+  }
+  return {};
+}
+
+/// @brief Check an archive of erased ids: each one the map gave, once, and no longer holds.
+/// @param gone The erased ids.
+/// @param live The map's ids, ascending.
+/// @param next The next id.
+/// @return Nothing, or `InvalidInput`.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (gone, live), the archive then the map
+Result<void> check_gone(std::vector<std::int64_t> gone, const std::vector<std::int64_t>& live,
+                        std::int64_t next) {
+  std::ranges::sort(gone);
+  const bool ok = std::ranges::adjacent_find(gone) == gone.end() &&
+                  std::ranges::all_of(gone, [&](std::int64_t id) {
+                    return id >= 0 && id < next && !std::ranges::binary_search(live, id);
+                  });
+  if (!ok) {
+    return fail(ErrorKind::kInvalidInput,
+                "map.gone_*: an erased id must be one the map gave, once, and no longer holds");
   }
   return {};
 }
@@ -302,7 +328,27 @@ Result<void> check_map(const Map& m) {
     return fail(ErrorKind::kInvalidInput,
                 "map.pt_observations: expected each point's observing keypoint rows, ascending");
   }
+  if (auto ok = check_gone(m.gone_pt_id, m.pt_id, m.next_pt_id); !ok) {
+    return ok;
+  }
+  if (auto ok = check_gone(m.gone_kf_id, m.kf_id, m.next_kf_id); !ok) {
+    return ok;
+  }
+  if (std::ranges::any_of(m.gone_pt_how, [](std::int64_t how) {
+        return how < 0 || how >= static_cast<std::int64_t>(Removal::kCount);
+      })) {
+    return fail(ErrorKind::kInvalidInput, "map.gone_pt_how: expected Removal codes");
+  }
   return {};
+}
+
+void clear_gone(Map& m) {
+  m.gone_pt_id.clear();
+  m.gone_pt_xyz.clear();
+  m.gone_pt_how.clear();
+  m.gone_kf_id.clear();
+  m.gone_kf_time.clear();
+  m.gone_kf_pose.clear();
 }
 
 void index_observations(Map& m) { m.pt_observations = indexed(m); }
@@ -520,13 +566,16 @@ Result<void> refresh_points(Map& m, std::span<const std::int64_t> rows) {
   return {};
 }
 
-Result<void> erase_points(Map& m, std::span<const std::uint8_t> erase_flags) {
+Result<void> erase_points(Map& m, std::span<const std::uint8_t> erase_flags, Removal how) {
   if (erase_flags.size() != point_count(m)) {
     return fail(ErrorKind::kInvalidInput, "erase: expected one flag per point");
   }
+  if (how >= Removal::kCount) {
+    return fail(ErrorKind::kInvalidInput, "how: expected a Removal");
+  }
   std::vector<bool> flags(erase_flags.size());
   std::ranges::transform(erase_flags, flags.begin(), [](std::uint8_t f) { return f != 0; });
-  erase(m, flags);
+  erase(m, flags, how);
   return {};
 }
 
@@ -573,6 +622,9 @@ Result<void> erase_keyframe(Map& m, std::int64_t k) {
   keep_where(m.kp_right, keep);
   keep_where(m.kp_point, keep);
   const auto at = static_cast<std::ptrdiff_t>(row);
+  m.gone_kf_id.push_back(m.kf_id[row]);
+  m.gone_kf_time.push_back(m.kf_time[row]);
+  m.gone_kf_pose.push_back(m.kf_pose[row]);
   m.kf_id.erase(m.kf_id.begin() + at);
   m.kf_time.erase(m.kf_time.begin() + at);
   m.kf_pose.erase(m.kf_pose.begin() + at);

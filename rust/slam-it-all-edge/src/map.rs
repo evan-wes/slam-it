@@ -9,6 +9,9 @@
 //! which the operations keep in step with `kp_point` (as ORB-SLAM's `MapPoint` keeps its
 //! observations). With it, an operation on a point costs what the point's observations cost,
 //! however many keyframes the map holds; Python's reference scans `kp_point` instead.
+//!
+//! What was removed is kept aside, in the `gone_*` columns, until the pipeline takes it
+//! ([`clear_gone`]), as in Python.
 
 use std::collections::BTreeSet;
 
@@ -19,6 +22,33 @@ use slam_it_all_foundations::orb::{Descriptor, MAX_LEVELS};
 
 use crate::frames::Frame;
 use crate::options::Options;
+
+/// Why a point or keyframe left the map, with the codes a run records
+/// (`slam_it_all.edge.map.Removal`, whose members document each).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Removal {
+    /// Culled: a recent point tracking rarely found, or a redundant keyframe.
+    Culled = 0,
+    /// Fused into another point.
+    Fused = 1,
+    /// Erased with its views: left seen too little.
+    Weak = 2,
+}
+
+impl Removal {
+    /// Every removal, in code order.
+    pub const ALL: [Self; 3] = [Self::Culled, Self::Fused, Self::Weak];
+
+    /// The removal's code, as a run records it.
+    ///
+    /// # Returns
+    ///
+    /// Its position in [`Removal::ALL`].
+    #[must_use]
+    pub const fn code(self) -> i64 {
+        self as i64
+    }
+}
 
 /// Keyframes, their keypoints and the map points (`slam_it_all.edge.map.Map`).
 #[derive(Debug, Clone, PartialEq)]
@@ -75,6 +105,18 @@ pub struct Map {
     pub next_kf_id: i64,
     /// The next point id to give.
     pub next_pt_id: i64,
+    /// The ids of the points erased since the archive was last cleared, in erasing order.
+    pub gone_pt_id: Vec<i64>,
+    /// Their last positions.
+    pub gone_pt_xyz: Vec<Vector3<f64>>,
+    /// Why each went ([`Removal::code`]).
+    pub gone_pt_how: Vec<i64>,
+    /// The ids of the keyframes erased since then (culled).
+    pub gone_kf_id: Vec<i64>,
+    /// Their times.
+    pub gone_kf_time: Vec<f64>,
+    /// Their last poses `T_cam_world`.
+    pub gone_kf_pose: Vec<Matrix4<f64>>,
     /// Each point's observing keypoint rows, ascending: the index of `kp_point` the operations
     /// here keep. It does not cross to Python; `index_observations` builds it for a map
     /// assembled column by column.
@@ -121,6 +163,12 @@ impl Map {
             pt_reference_kf: Vec::new(),
             next_kf_id: 0,
             next_pt_id: 0,
+            gone_pt_id: Vec::new(),
+            gone_pt_xyz: Vec::new(),
+            gone_pt_how: Vec::new(),
+            gone_kf_id: Vec::new(),
+            gone_kf_time: Vec::new(),
+            gone_kf_pose: Vec::new(),
             pt_observations: Vec::new(),
         }
     }
@@ -350,6 +398,10 @@ pub fn check_map(m: &Map) -> Result<()> {
         m.pt_found.len() == p,
         m.pt_first_kf.len() == p,
         m.pt_reference_kf.len() == p,
+        m.gone_pt_xyz.len() == m.gone_pt_id.len(),
+        m.gone_pt_how.len() == m.gone_pt_id.len(),
+        m.gone_kf_time.len() == m.gone_kf_id.len(),
+        m.gone_kf_pose.len() == m.gone_kf_id.len(),
     ];
     if lengths.contains(&false) {
         return fail(
@@ -387,7 +439,63 @@ pub fn check_map(m: &Map) -> Result<()> {
             "map.pt_observations: expected each point's observing keypoint rows, ascending",
         );
     }
+    check_gone(m)
+}
+
+/// Checks a map's archive of erased points and keyframes: each id one the map gave, once, and
+/// no longer holds; each point's removal a [`Removal`] code.
+///
+/// # Arguments
+///
+/// * `m` - The map.
+///
+/// # Errors
+///
+/// `InvalidInput` otherwise.
+fn check_gone(m: &Map) -> Result<()> {
+    for (gone, live, next) in [
+        (&m.gone_pt_id, &m.pt_id, m.next_pt_id),
+        (&m.gone_kf_id, &m.kf_id, m.next_kf_id),
+    ] {
+        let mut sorted = gone.clone();
+        sorted.sort_unstable();
+        let once = sorted.windows(2).all(|w| w[0] < w[1]);
+        if !once
+            || sorted
+                .iter()
+                .any(|&id| id < 0 || id >= next || live.binary_search(&id).is_ok())
+        {
+            return fail(
+                ErrorKind::InvalidInput,
+                "map.gone_*: an erased id must be one the map gave, once, and no longer holds",
+            );
+        }
+    }
+    if m.gone_pt_how
+        .iter()
+        .any(|&how| !Removal::ALL.iter().any(|r| r.code() == how))
+    {
+        return fail(
+            ErrorKind::InvalidInput,
+            "map.gone_pt_how: expected Removal codes",
+        );
+    }
     Ok(())
+}
+
+/// Empties the map's archive of removed points and keyframes (`slam_it_all.edge.map
+/// .clear_gone`); the pipeline does after dating each frame's removals.
+///
+/// # Arguments
+///
+/// * `m` - The map.
+pub fn clear_gone(m: &mut Map) {
+    m.gone_pt_id.clear();
+    m.gone_pt_xyz.clear();
+    m.gone_pt_how.clear();
+    m.gone_kf_id.clear();
+    m.gone_kf_time.clear();
+    m.gone_kf_pose.clear();
 }
 
 /// Builds `pt_observations` from `kp_point`, for a map assembled column by column.
@@ -638,13 +746,14 @@ fn refresh(m: &mut Map, rows: &[usize]) {
     }
 }
 
-/// Removes the flagged points, unchecked.
+/// Removes the flagged points, unchecked, keeping them aside in the archive.
 ///
 /// # Arguments
 ///
 /// * `m` - The map.
 /// * `erase` - One flag per point.
-fn erase(m: &mut Map, erase: &[bool]) {
+/// * `how` - Why they go.
+fn erase(m: &mut Map, erase: &[bool], how: Removal) {
     if !erase.contains(&true) {
         return;
     }
@@ -652,6 +761,9 @@ fn erase(m: &mut Map, erase: &[bool]) {
         for &r in &m.pt_observations[p] {
             m.kp_point[r] = -1;
         }
+        m.gone_pt_id.push(m.pt_id[p]);
+        m.gone_pt_xyz.push(m.pt_xyz[p]);
+        m.gone_pt_how.push(how.code());
     }
     let keep: Vec<bool> = erase.iter().map(|&e| !e).collect();
     keep_where(&mut m.pt_id, &keep);
@@ -721,7 +833,7 @@ fn forget(m: &mut Map, rows: &[usize]) {
         }
     }
     refresh(m, &remaining);
-    erase(m, &weak);
+    erase(m, &weak, Removal::Weak);
 }
 
 /// Adds a keyframe and refreshes the points its keypoints observe.
@@ -896,18 +1008,19 @@ pub fn refresh_points(m: &mut Map, rows: &[usize]) -> Result<()> {
 ///
 /// * `m` - The map.
 /// * `erase_flags` - One flag per point.
+/// * `how` - Why they go.
 ///
 /// # Errors
 ///
 /// `InvalidInput` for flags that are not one per point.
-pub fn erase_points(m: &mut Map, erase_flags: &[bool]) -> Result<()> {
+pub fn erase_points(m: &mut Map, erase_flags: &[bool], how: Removal) -> Result<()> {
     if erase_flags.len() != m.points() {
         return fail(
             ErrorKind::InvalidInput,
             "erase: expected one flag per point",
         );
     }
-    erase(m, erase_flags);
+    erase(m, erase_flags, how);
     Ok(())
 }
 
@@ -979,6 +1092,9 @@ pub fn erase_keyframe(m: &mut Map, k: usize) -> Result<()> {
     keep_where(&mut m.kp_depth, &keep);
     keep_where(&mut m.kp_right, &keep);
     keep_where(&mut m.kp_point, &keep);
+    m.gone_kf_id.push(m.kf_id[k]);
+    m.gone_kf_time.push(m.kf_time[k]);
+    m.gone_kf_pose.push(m.kf_pose[k]);
     m.kf_id.remove(k);
     m.kf_time.remove(k);
     m.kf_pose.remove(k);
@@ -1133,12 +1249,32 @@ mod tests {
     #[test]
     fn removing_drops_weak_points_and_rows() {
         let mut m = two_keyframes();
+        let first = m.pt_xyz[0];
         forget_observations(&mut m, &[4]).unwrap();
         assert_eq!(m.pt_id, vec![1]);
         assert_eq!(m.kp_point[0], -1);
+        // The erased point is kept aside, where it was, as too weakly seen.
+        assert_eq!(
+            (
+                m.gone_pt_id.clone(),
+                m.gone_pt_xyz.clone(),
+                m.gone_pt_how.clone()
+            ),
+            (vec![0], vec![first], vec![Removal::Weak.code()])
+        );
+        let time = m.kf_time[0];
         erase_keyframe(&mut m, 0).unwrap();
         assert_eq!(m.kf_start, vec![0, 4]);
         assert_eq!(m.points(), 0);
+        // The erased keyframe too, with the point it left too weakly seen.
+        assert_eq!(
+            (m.gone_kf_id.clone(), m.gone_kf_time.clone()),
+            (vec![0], vec![time])
+        );
+        assert_eq!(m.gone_pt_id, vec![0, 1]);
+        check_map(&m).unwrap();
+        clear_gone(&mut m);
+        assert!(m.gone_pt_id.is_empty() && m.gone_kf_id.is_empty() && m.gone_kf_pose.is_empty());
         assert_eq!(
             erase_keyframe(&mut m, 1).unwrap_err().kind,
             ErrorKind::InvalidInput
@@ -1168,7 +1304,7 @@ mod tests {
             );
         }
         let mut erased = m.clone();
-        erase_points(&mut erased, &[false, true]).unwrap();
+        erase_points(&mut erased, &[false, true], Removal::Fused).unwrap();
         assert_eq!(erased.pt_observations, vec![vec![0, 4]]);
         check_map(&erased).unwrap();
         let mut stale = m.clone();

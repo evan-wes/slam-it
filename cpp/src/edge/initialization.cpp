@@ -133,14 +133,75 @@ Result<std::pair<std::vector<Eigen::Index>, std::vector<Eigen::Vector3d>>> kept_
   return out;
 }
 
+/// @brief An attempt that did not start the map.
+/// @param outcome Why.
+/// @param matches The pairs given, if any.
+/// @param solves The adjustment's solves, if it ran.
+/// @return The attempt.
+Initialization failed(Outcome outcome, std::optional<std::int64_t> matches = std::nullopt,
+                      std::vector<Solve> solves = {}) {
+  return {.started = std::nullopt,
+          .summary = {.outcome = outcome, .matches = matches, .solves = std::move(solves)}};
+}
+
+/// @brief The outcome a two-view status that did not initialise stands for.
+/// @param status The status.
+/// @return The outcome of the same name.
+Outcome outcome_of(twoview::Status status) {
+  switch (status) {
+    case twoview::Status::kPureRotation:
+      return Outcome::kPureRotation;
+    case twoview::Status::kAmbiguous:
+      return Outcome::kAmbiguous;
+    case twoview::Status::kLowParallax:
+      return Outcome::kLowParallax;
+    case twoview::Status::kInitialized:
+    case twoview::Status::kCount:
+      break;
+  }
+  return Outcome::kInitialized;
+}
+
 }  // namespace
 
-Result<std::optional<Started>> initialize_from_depth(const Frame& frame, const Options& options) {
+const char* name(Outcome outcome) {
+  switch (outcome) {
+    case Outcome::kInitialized:
+      return "initialized";
+    case Outcome::kTooFewFeatures:
+      return "too_few_features";
+    case Outcome::kTooLittleDepth:
+      return "too_little_depth";
+    case Outcome::kReferenceSet:
+      return "reference_set";
+    case Outcome::kReferenceReplaced:
+      return "reference_replaced";
+    case Outcome::kTooFewMatches:
+      return "too_few_matches";
+    case Outcome::kDegenerate:
+      return "degenerate";
+    case Outcome::kPureRotation:
+      return "pure_rotation";
+    case Outcome::kAmbiguous:
+      return "ambiguous";
+    case Outcome::kLowParallax:
+      return "low_parallax";
+    case Outcome::kTooFewPoints:
+      return "too_few_points";
+    case Outcome::kBadScale:
+      return "bad_scale";
+    case Outcome::kCount:
+      break;
+  }
+  return "unknown";
+}
+
+Result<Initialization> initialize_from_depth(const Frame& frame, const Options& options) {
   if (auto ok = check_frame(frame, options, "frame"); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   if (std::cmp_less_equal(keypoint_count(frame), options.min_init_features_depth)) {
-    return std::nullopt;
+    return failed(Outcome::kTooFewFeatures);
   }
   std::vector<std::int64_t> has_depth;
   for (std::size_t i = 0; i < keypoint_count(frame); ++i) {
@@ -149,7 +210,7 @@ Result<std::optional<Started>> initialize_from_depth(const Frame& frame, const O
     }
   }
   if (std::cmp_less(has_depth.size(), options.min_init_depth_points)) {
-    return std::nullopt;
+    return failed(Outcome::kTooLittleDepth);
   }
   Started out{.map = empty_map(options.levels, options.scale_factor), .tracked = {}};
   if (auto ok = insert_unobserving(out.map, frame, Eigen::Matrix4d::Identity()); !ok) {
@@ -169,7 +230,9 @@ Result<std::optional<Started>> initialize_from_depth(const Frame& frame, const O
   for (std::size_t j = 0; j < has_depth.size(); ++j) {
     out.tracked.points[static_cast<std::size_t>(has_depth[j])] = out.map.pt_id[j];
   }
-  return out;
+  return Initialization{
+      .started = std::move(out),
+      .summary = {.outcome = Outcome::kInitialized, .matches = std::nullopt, .solves = {}}};
 }
 
 Result<std::vector<matching::Match>> match_for_initialization(
@@ -212,9 +275,10 @@ Result<std::vector<matching::Match>> match_for_initialization(
   return found;
 }
 
-Result<std::optional<Started>> initialize_monocular(
-    const Camera& camera, const Frame& reference, const Frame& frame,
-    std::span<const std::array<std::int64_t, 2>> pairs, const Options& options) {
+Result<Initialization> initialize_monocular(const Camera& camera, const Frame& reference,
+                                            const Frame& frame,
+                                            std::span<const std::array<std::int64_t, 2>> pairs,
+                                            const Options& options) {
   if (auto ok = check_camera(camera); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
@@ -229,6 +293,7 @@ Result<std::optional<Started>> initialize_monocular(
     return fail(ErrorKind::kInvalidInput,
                 "matches.pairs: each must be a keypoint of the reference and of the frame");
   }
+  const auto given = static_cast<std::int64_t>(pairs.size());
   std::vector<std::array<std::int64_t, 2>> usable;
   for (const std::array<std::int64_t, 2>& pair : pairs) {
     if (!std::isnan(reference.bearings[static_cast<std::size_t>(pair[0])].x()) &&
@@ -237,7 +302,7 @@ Result<std::optional<Started>> initialize_monocular(
     }
   }
   if (std::cmp_less(usable.size(), options.init_min_matches)) {
-    return std::nullopt;
+    return failed(Outcome::kTooFewMatches, given);
   }
   const auto n = static_cast<Eigen::Index>(usable.size());
   foundations::correspondences::Rows3 bearings1(n, 3);
@@ -252,12 +317,12 @@ Result<std::optional<Started>> initialize_monocular(
       {.focal = focal(camera), .seed = static_cast<std::uint64_t>(options.seed)});
   if (!result) {
     if (result.error().kind == ErrorKind::kDegenerate) {
-      return std::nullopt;
+      return failed(Outcome::kDegenerate, given);
     }
     return std::unexpected(std::move(result.error()));
   }
   if (result->status != twoview::Status::kInitialized) {
-    return std::nullopt;
+    return failed(outcome_of(result->status), given);
   }
   Started out{.map = empty_map(options.levels, options.scale_factor), .tracked = {}};
   Map& m = out.map;
@@ -285,11 +350,13 @@ Result<std::optional<Started>> initialize_monocular(
   adjusted.ba_iterations = options.init_ba_iterations;
   const std::vector<std::int64_t> both{0, 1};
   const std::vector<std::uint8_t> fixed{1, 0};
-  if (auto ok = bundle_adjust(m, camera, both, fixed, adjusted); !ok) {
-    return std::unexpected(std::move(ok.error()));
+  auto adjustment = bundle_adjust(m, camera, both, fixed, adjusted);
+  if (!adjustment) {
+    return std::unexpected(std::move(adjustment.error()));
   }
   if (std::cmp_less(point_count(m), options.init_min_matches)) {
-    return std::nullopt;  // ORB-SLAM resets with fewer than 100 tracked points
+    // ORB-SLAM resets with fewer than 100 tracked points
+    return failed(Outcome::kTooFewPoints, given, std::move(adjustment->solves));
   }
   const Eigen::Matrix4d& first = m.kf_pose[0];
   std::vector<double> depths;
@@ -299,14 +366,17 @@ Result<std::optional<Started>> initialize_monocular(
   }
   const double middle = median(depths);
   if (!(middle > 0.0)) {
-    return std::nullopt;
+    return failed(Outcome::kBadScale, given, std::move(adjustment->solves));
   }
   if (auto ok = scale(m, 1.0 / middle); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   out.tracked.pose = m.kf_pose[1];
   out.tracked.points.assign(m.kp_point.begin() + m.kf_start[1], m.kp_point.begin() + m.kf_start[2]);
-  return out;
+  return Initialization{.started = std::move(out),
+                        .summary = {.outcome = Outcome::kInitialized,
+                                    .matches = given,
+                                    .solves = std::move(adjustment->solves)}};
 }
 
 }  // namespace slam_it_all::edge

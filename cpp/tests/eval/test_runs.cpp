@@ -1,11 +1,15 @@
 /// @file
 /// @brief Native tests for the run writer (slam_it_all/eval/runs.hpp) against the golden folder
 ///        `tests/fixtures/eval/run/`, which Python wrote from `run_values.json`: the `.npy`
-///        files byte for byte, the JSON and trajectory value for value; and its refusals.
+///        files byte for byte (the streamed feature files too), the JSON and trajectory value
+///        for value; and its refusals.
+#include <array>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -46,21 +50,48 @@ std::vector<Eigen::Matrix4d> poses(const nlohmann::json& values) {
   return out;
 }
 
-/// @brief A JSON object's scalars, in order.
+/// @brief A JSON value as the run writer takes it: a scalar, or nested JSON as text (the
+///        writer's own nesting is checked by `check_nested`).
+/// @param value The value.
+/// @return The writer's value.
+runs::JsonValue value_of(const nlohmann::json& value) {
+  if (value.is_null()) {
+    return nullptr;
+  }
+  if (value.is_boolean()) {
+    return value.get<bool>();
+  }
+  if (value.is_number_integer()) {
+    return value.get<std::int64_t>();
+  }
+  if (value.is_number()) {
+    return value.get<double>();
+  }
+  if (value.is_string()) {
+    return value.get<std::string>();
+  }
+  return runs::JsonText{.text = value.dump()};
+}
+
+/// @brief A JSON object as the run writer takes it, its keys in order.
 /// @param object The object.
-/// @return The flat object.
-runs::JsonObject flat(const nlohmann::json& object) {
+/// @return The object.
+runs::JsonObject object_of(const nlohmann::json& object) {
   runs::JsonObject out;
-  for (const auto& [key, value] : object.items()) {
-    if (value.is_boolean()) {
-      out.emplace_back(key, value.get<bool>());
-    } else if (value.is_number_integer()) {
-      out.emplace_back(key, value.get<std::int64_t>());
-    } else if (value.is_number()) {
-      out.emplace_back(key, value.get<double>());
-    } else {
-      out.emplace_back(key, value.get<std::string>());
-    }
+  for (const auto& [key, item] : object.items()) {
+    out.emplace_back(key, value_of(item));
+  }
+  return out;
+}
+
+/// @brief Lives from JSON rows of three integers.
+/// @param values The rows.
+/// @return The lives.
+std::vector<runs::Life> lives(const nlohmann::json& values) {
+  std::vector<runs::Life> out;
+  for (const auto& life : values) {
+    out.push_back(
+        {life[0].get<std::int64_t>(), life[1].get<std::int64_t>(), life[2].get<std::int64_t>()});
   }
   return out;
 }
@@ -78,16 +109,19 @@ runs::Run golden_run() {
                 .keyframe_timestamps = values["keyframe_timestamps"].get<std::vector<double>>(),
                 .keyframe_poses = poses(values["keyframe_poses"]),
                 .points = {},
-                .settings = flat(values["settings"]),
+                .settings = object_of(values["settings"]),
                 .diagnostics = {},
                 .peak_memory = values["peak_memory"].get<std::int64_t>(),
                 .cpus = values["cpus"].get<std::vector<std::int64_t>>(),
-                .memory_cap = values["memory_cap"].get<std::int64_t>()};
+                .memory_cap = values["memory_cap"].get<std::int64_t>(),
+                .point_lives = lives(values["point_lives"]),
+                .keyframe_lives = lives(values["keyframe_lives"]),
+                .record_features = values["record_features"].get<bool>()};
   for (const auto& point : values["points"]) {
     run.points.emplace_back(point[0].get<double>(), point[1].get<double>(), point[2].get<double>());
   }
   for (const auto& entry : values["diagnostics"]) {
-    run.diagnostics.push_back(flat(entry));
+    run.diagnostics.push_back(object_of(entry));
   }
   return run;
 }
@@ -146,7 +180,8 @@ void check_golden(int& failures) {
   const slam_it_all::testing::ScratchDir scratch("slam_it_all_test_runs");
   const fs::path& out = scratch.path();
   expect(runs::write_run(out.string(), golden_run()).has_value(), "the run is written", failures);
-  for (const char* name : {"keyframes.npy", "keyframe_poses.npy", "points.npy"}) {
+  for (const char* name : {"keyframes.npy", "keyframe_poses.npy", "keyframe_lives.npy",
+                           "points.npy", "point_lives.npy"}) {
     expect(bytes(out / name) == bytes(golden / name),
            (std::string(name) + " matches numpy's byte for byte").c_str(), failures);
   }
@@ -170,6 +205,78 @@ void check_golden(int& failures) {
   expect(written_unknown && info["peak_memory"].is_null() && info["cpus"].is_null() &&
              info["memory_cap"].is_null(),
          "an unknown process is written as nulls", failures);
+}
+
+/// @brief One frame's keypoints, as `run_values.json` holds them.
+struct Keypoints {
+  /// @brief Their pixels.
+  std::vector<std::array<double, 2>> xy;
+  /// @brief Their levels.
+  std::vector<std::int64_t> level;
+  /// @brief Their fates.
+  std::vector<std::int64_t> fate;
+  /// @brief Their points.
+  std::vector<std::int64_t> point;
+};
+
+/// @brief Write one frame's keypoints.
+/// @param writer The writer.
+/// @param frame The keypoints.
+/// @return Whether they were written.
+bool write(runs::FeatureWriter& writer, const Keypoints& frame) {
+  return writer.write(frame.xy, frame.level, frame.fate, frame.point).has_value();
+}
+
+/// @brief Check the feature writer against the golden folder's two files, and its refusals.
+/// @param failures Running failure count.
+void check_features(int& failures) {
+  const nlohmann::json values = slam_it_all::testing::load_fixture("eval/run_values.json");
+  std::vector<Keypoints> frames;
+  for (const auto& frame : values["features"]) {
+    frames.push_back({.xy = frame["xy"].get<std::vector<std::array<double, 2>>>(),
+                      .level = frame["level"].get<std::vector<std::int64_t>>(),
+                      .fate = frame["fate"].get<std::vector<std::int64_t>>(),
+                      .point = frame["point"].get<std::vector<std::int64_t>>()});
+  }
+  const fs::path golden = fs::path(SLAM_IT_ALL_FIXTURES_DIR) / "eval" / "run";
+  const slam_it_all::testing::ScratchDir scratch("slam_it_all_test_runs_features");
+  const fs::path& out = scratch.path();
+  auto writer = runs::FeatureWriter::open(out.string());
+  expect(writer.has_value(), "the feature files are opened", failures);
+  if (!writer) {
+    return;
+  }
+  bool written = write(*writer, frames[0]);
+  const std::string after_one = bytes(out / runs::kRecords);
+  expect(written && after_one.contains("'shape': (3, 4)") && after_one.size() == 128 + (3 * 16),
+         "after a frame, the header counts its rows", failures);
+  Keypoints bad = frames[0];
+  bad.fate[2] = 2;
+  expect(!write(*writer, bad), "a tracked keypoint without a point is refused", failures);
+  bad = frames[0];
+  bad.point[0] = -1;
+  expect(!write(*writer, bad), "a made keypoint without a point is refused", failures);
+  bad = frames[0];
+  bad.fate[0] = runs::kFates;
+  expect(!write(*writer, bad), "an unknown fate is refused", failures);
+  bad = frames[0];
+  bad.level[0] = -1;
+  expect(!write(*writer, bad), "a negative level is refused", failures);
+  bad = frames[0];
+  bad.xy[1][0] = std::nan("");
+  expect(!write(*writer, bad), "a pixel that is not finite is refused", failures);
+  bad = frames[0];
+  bad.point.pop_back();
+  expect(!write(*writer, bad), "columns that are not one row per keypoint are refused", failures);
+  expect(bytes(out / runs::kRecords) == after_one, "nothing is written for refused records",
+         failures);
+  for (std::size_t k = 1; k < frames.size(); ++k) {
+    written = write(*writer, frames[k]) && written;
+  }
+  for (const char* name : {runs::kPixels, runs::kRecords}) {
+    expect(written && bytes(out / name) == bytes(golden / name),
+           (std::string(name) + " matches Python's byte for byte").c_str(), failures);
+  }
 }
 
 /// @brief Check the refusals: nothing is written.
@@ -204,10 +311,46 @@ void check_refusals(int& failures) {
   run.memory_cap = 0;
   expect(is_invalid_input(runs::write_run(out.string(), run)), "a memory cap of 0 is refused",
          failures);
+  run = golden_run();
+  run.point_lives.pop_back();
+  expect(is_invalid_input(runs::write_run(out.string(), run)),
+         "lives that are not one per point are refused", failures);
+  run = golden_run();
+  run.point_lives[1] = {3, 0, 1};
+  expect(is_invalid_input(runs::write_run(out.string(), run)),
+         "a life removed before it was made is refused", failures);
+  run = golden_run();
+  run.keyframe_lives[0] = {0, -1, 2};
+  expect(is_invalid_input(runs::write_run(out.string(), run)),
+         "a removal code on a life still alive is refused", failures);
   expect(!fs::exists(out), "nothing is written for a refused run", failures);
   expect(runs::json_number(1.0) == "1.0" && runs::json_number(0.1) == "0.1" &&
              runs::json_number(1e-05) == "1e-05",
          "numbers are written shortest, whole ones with .0", failures);
+}
+
+/// @brief Check nested JSON: written as Python's `json.dumps` writes it, its numbers finite.
+/// @param failures Running failure count.
+void check_nested(int& failures) {
+  const auto solve = runs::json_object({{"initial_cost", 12.5},
+                                        {"iterations", std::int64_t{5}},
+                                        {"termination", std::string("function")},
+                                        {"inliers", nullptr}});
+  expect(solve.has_value() &&
+             solve->text == R"({"initial_cost": 12.5, "iterations": 5, "termination": "function", )"
+                            R"("inliers": null})",
+         "an object nests as json.dumps writes it", failures);
+  if (solve) {
+    const std::vector<runs::JsonValue> items{*solve, true};
+    const auto array = runs::json_array(items);
+    expect(array.has_value() && array->text == "[" + solve->text + ", true]",
+           "an array nests its items, objects included", failures);
+  }
+  expect(is_invalid_input(runs::json_object({{"cost", std::nan("")}})),
+         "an object with a number that is not finite is refused", failures);
+  const std::vector<runs::JsonValue> infinite{std::numeric_limits<double>::infinity()};
+  expect(is_invalid_input(runs::json_array(infinite)),
+         "an array with a number that is not finite is refused", failures);
 }
 
 /// @brief The test body.
@@ -215,7 +358,9 @@ void check_refusals(int& failures) {
 int run() {
   int failures = 0;
   check_golden(failures);
+  check_features(failures);
   check_refusals(failures);
+  check_nested(failures);
   return slam_it_all::testing::finish("eval/runs", failures);
 }
 

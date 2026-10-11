@@ -1,6 +1,6 @@
 {
  "format": "slam-it-all-run",
- "version": 2,
+ "version": 3,
  "dataset": "tum",
  "sequence": "rgbd_dataset_freiburg1_fixture",
  "mode": "rgbd",
@@ -11,6 +11,7 @@
   "window": 10,
   "chi2_mono": 5.991
  },
+ "record_features": true,
  "peak_memory": 48381952,
  "cpus": [
   4,

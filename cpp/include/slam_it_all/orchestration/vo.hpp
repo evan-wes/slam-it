@@ -23,7 +23,7 @@ inline constexpr std::array<const char*, 2> kDatasets{"tum", "euroc"};
 /// @brief The program's command line.
 inline constexpr const char* kUsage =
     "usage: slam_it_all_vo --dataset tum|euroc --sequence PATH --mode monocular|stereo|rgbd "
-    "--out RUN_DIR [--first I] [--count N] [--option KEY=VALUE ...]";
+    "--out RUN_DIR [--first I] [--count N] [--record-features] [--option KEY=VALUE ...]";
 
 /// @brief The program's exit code for a command line it cannot read.
 inline constexpr int kExitUsage = 2;
@@ -63,10 +63,13 @@ struct Request {
   std::optional<std::int64_t> count;
   /// @brief The pipeline's settings.
   edge::Options options;
+  /// @brief Whether the run records each frame's keypoints, with their fates.
+  bool record_features{false};
 };
 
-/// @brief Read the command line: `kUsage`, flags in any order, `--option` repeatable and
-///        naming a field of `slam_it_all.edge.options.Options`.
+/// @brief Read the command line: `kUsage`, flags in any order, each with its value but
+///        `--record-features`, `--option` repeatable and naming a field of
+///        `slam_it_all.edge.options.Options`.
 /// @param arguments The arguments after the program's name.
 /// @return The request; `InvalidInput` for an unknown, repeated or missing flag, a flag
 ///         without its value, an unknown mode or setting, or a value that is not a number.

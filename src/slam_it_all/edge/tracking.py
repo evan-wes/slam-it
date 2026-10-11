@@ -13,6 +13,11 @@
   (:func:`slam_it_all.foundations.pnp.pnp_ransac`) places it. No bag of words: this recovers only
   near the local map; a lost track ends the run.
 
+Each stage reports how it went beside its result (:class:`MotionSummary`,
+:class:`PnpSummary`, :meth:`LocalTracking.summary`), which a run records per frame, and the map
+point it matched each keypoint to before refining the pose (``matched``), from which a run
+records each keypoint's fate (:class:`slam_it_all.edge.pipeline.Fate`).
+
 **Pose refinement** (:func:`optimize_pose`, ORB-SLAM's ``PoseOptimization``) runs rounds of
 :func:`slam_it_all.foundations.pnp.refine_pose` (Cauchy, on the round's inliers, each match
 weighted by its level's information ``1/s^(2l)``, ORB-SLAM's ``invSigma2``) and classifies
@@ -23,7 +28,7 @@ The solve itself uses the left image only (ORB-SLAM's stereo edges add the right
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 import numpy as np
@@ -70,6 +75,35 @@ class InView:
 
 
 @dataclass(frozen=True)
+class LocalMapSummary:
+    """How tracking the local map went, as a run records it.
+
+    Attributes
+    ----------
+    in_view : int
+        The points in view: those the frame had matched, and the local map's others in view.
+    matches : int
+        The keypoints matched before the pose was refined.
+    inliers : int
+        The matches the refinement kept.
+    """
+
+    in_view: int
+    matches: int
+    inliers: int
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the summary as JSON values.
+
+        Returns
+        -------
+        dict
+            ``in_view``, ``matches`` and ``inliers``.
+        """
+        return {"in_view": self.in_view, "matches": self.matches, "inliers": self.inliers}
+
+
+@dataclass(frozen=True)
 class LocalTracking:
     """A frame tracked against the local map, and the counts it adds to.
 
@@ -81,20 +115,165 @@ class LocalTracking:
         The ids of the points that were in view (their visible counts grow).
     found : ndarray of int64
         The ids of the inliers (their found counts grow).
+    matched : ndarray of int64, shape (N,)
+        The id of the map point each keypoint matched before the pose was refined, -1 where
+        none.
     """
 
     tracked: Tracked
     visible: IntArray
     found: IntArray
+    matched: IntArray
+
+    def summary(self) -> LocalMapSummary:
+        """Return how the stage went.
+
+        Returns
+        -------
+        LocalMapSummary
+            The points in view, the matches and the inliers.
+        """
+        return LocalMapSummary(
+            in_view=len(self.visible),
+            matches=int(np.count_nonzero(self.matched >= 0)),
+            inliers=self.tracked.inliers,
+        )
+
+
+@dataclass(frozen=True)
+class MotionSummary:
+    """How tracking the last frame went (``TrackWithMotionModel``), as a run records it.
+
+    Attributes
+    ----------
+    matches : int
+        The keypoints matched in the last window searched.
+    widened : bool
+        Whether the window was doubled because too few matched in the first.
+    inliers : int or None
+        The matches the refinement kept; None if too few matched to refine.
+    """
+
+    matches: int
+    widened: bool
+    inliers: int | None
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the summary as JSON values.
+
+        Returns
+        -------
+        dict
+            ``matches``, ``widened`` and ``inliers``.
+        """
+        return {"matches": self.matches, "widened": self.widened, "inliers": self.inliers}
+
+
+@dataclass(frozen=True)
+class Motion:
+    """Tracking the last frame: the frame, if it was tracked, and how it went.
+
+    Attributes
+    ----------
+    tracked : slam_it_all.edge.frames.Tracked or None
+        The tracked frame; None if too few points matched or survived refinement.
+    summary : MotionSummary
+        How it went.
+    matched : ndarray of int64, shape (N,)
+        The id of the map point each keypoint matched before the pose was refined, -1 where
+        none.
+    """
+
+    tracked: Tracked | None
+    summary: MotionSummary
+    matched: IntArray
+
+
+@dataclass(frozen=True)
+class PnpSummary:
+    """How the PnP fallback went, as a run records it.
+
+    Each count is None when the fallback stopped before reaching it.
+
+    Attributes
+    ----------
+    candidates : int
+        The local map's points.
+    matches : int or None
+        The keypoints matched to them by descriptor, with a bearing in front.
+    iterations : int or None
+        RANSAC's samples, if it found a pose.
+    termination : slam_it_all.foundations.ransac.Termination or None
+        Why RANSAC stopped, if it found a pose.
+    degenerate : bool
+        Whether RANSAC found no pose.
+    inliers : int or None
+        RANSAC's inliers.
+    refined : int or None
+        The inliers the refinement kept.
+    """
+
+    candidates: int
+    matches: int | None = None
+    iterations: int | None = None
+    termination: ransac.Termination | None = None
+    degenerate: bool = False
+    inliers: int | None = None
+    refined: int | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the summary as JSON values.
+
+        Returns
+        -------
+        dict
+            ``candidates``, ``matches``, ``iterations``, ``termination`` (by name;
+            ``"degenerate"`` when RANSAC found no pose), ``inliers`` and ``refined``.
+        """
+        termination = None if self.termination is None else self.termination.value
+        return {
+            "candidates": self.candidates,
+            "matches": self.matches,
+            "iterations": self.iterations,
+            "termination": "degenerate" if self.degenerate else termination,
+            "inliers": self.inliers,
+            "refined": self.refined,
+        }
+
+
+@dataclass(frozen=True)
+class Relocalization:
+    """The PnP fallback: the frame, if it was placed, and how it went.
+
+    Attributes
+    ----------
+    tracked : slam_it_all.edge.frames.Tracked or None
+        The frame placed and refined; None if it was not.
+    summary : PnpSummary
+        How it went.
+    matched : ndarray of int64, shape (N,)
+        The id of the map point each keypoint matched by descriptor (with a bearing in front),
+        -1 where none: all -1 if the fallback stopped before matching.
+    """
+
+    tracked: Tracked | None
+    summary: PnpSummary
+    matched: IntArray
 
 
 class Implementation(Protocol):
     """The functions a compiled backend's ``edge.tracking`` submodule provides.
 
-    A tracked frame crosses as a dict of ``pose`` and ``points`` (or None where the stage may
-    fail); :class:`InView` and :class:`LocalTracking` as dicts of their fields, the latter's
-    tracked frame flattened into ``pose`` and ``points``.
+    A tracked frame crosses as a dict of ``pose`` and ``points``; :class:`InView` and
+    :class:`LocalTracking` as dicts of their fields, the latter's tracked frame flattened into
+    ``pose`` and ``points``; :class:`Motion` and :class:`Relocalization` as dicts of
+    ``tracked`` (or None), ``matched`` and their summary's fields, RANSAC's termination as its
+    code in ``codes()`` (or None).
     """
+
+    def codes(self) -> dict[str, list[str]]:
+        """Return each enum's names in code order."""
+        ...
 
     def optimize_pose(
         self,
@@ -129,7 +308,7 @@ class Implementation(Protocol):
         predicted: NDArray[np.float64],
         mode: str,
         options: dict[str, Any],
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         """Track the last frame's points into this one."""
         ...
 
@@ -153,7 +332,7 @@ class Implementation(Protocol):
         camera: dict[str, Any],
         frame: dict[str, Any],
         options: dict[str, Any],
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         """Place a frame against the local map by descriptors and PnP RANSAC."""
         ...
 
@@ -183,6 +362,48 @@ def _decode_local(raw: dict[str, Any], codes: backends.Codes) -> LocalTracking:
         tracked=_decode_found(raw, codes),
         visible=backends.checked_array(raw["visible"], np.int64, 1, "visible ids"),
         found=backends.checked_array(raw["found"], np.int64, 1, "found ids"),
+        matched=backends.checked_array(raw["matched"], np.int64, 1, "matched ids"),
+    )
+
+
+def _optional_int(raw: Any) -> int | None:  # noqa: ANN401 -- a compiled backend's value
+    """Return a compiled backend's count, or None."""
+    return None if raw is None else int(raw)
+
+
+def _decode_motion(raw: dict[str, Any], codes: backends.Codes) -> Motion:
+    """Rebuild :class:`Motion` from a compiled backend's dict."""
+    return Motion(
+        tracked=frames.decode_tracked(raw["tracked"], codes),
+        summary=MotionSummary(
+            matches=int(raw["matches"]),
+            widened=bool(raw["widened"]),
+            inliers=_optional_int(raw["inliers"]),
+        ),
+        matched=backends.checked_array(raw["matched"], np.int64, 1, "matched ids"),
+    )
+
+
+def _decode_relocalization(raw: dict[str, Any], codes: backends.Codes) -> Relocalization:
+    """Rebuild :class:`Relocalization` from a compiled backend's dict."""
+    code = raw["termination"]
+    termination = (
+        None
+        if code is None
+        else ransac.Termination(backends.decode_name(codes, "ransac_termination", code))
+    )
+    return Relocalization(
+        tracked=frames.decode_tracked(raw["tracked"], codes),
+        summary=PnpSummary(
+            candidates=int(raw["candidates"]),
+            matches=_optional_int(raw["matches"]),
+            iterations=_optional_int(raw["iterations"]),
+            termination=termination,
+            degenerate=bool(raw["degenerate"]),
+            inliers=_optional_int(raw["inliers"]),
+            refined=_optional_int(raw["refined"]),
+        ),
+        matched=backends.checked_array(raw["matched"], np.int64, 1, "matched ids"),
     )
 
 
@@ -417,7 +638,7 @@ def _track_last_frame(  # noqa: PLR0913 -- the stage's state
     predicted: Array,
     mode: str,
     options: Options,
-) -> Tracked | None:
+) -> Motion:
     """Track the last frame's points into this one (reference)."""
     rows = m.point_rows(last_tracked.points)
     have = np.flatnonzero(rows >= 0)
@@ -446,7 +667,9 @@ def _track_last_frame(  # noqa: PLR0913 -- the stage's state
         max_distance=options.th_high, ratio=1.0, check_orientation=True
     )
     points = np.full(frame.size, -1, dtype=np.int64)
+    widened = False
     for factor in (1.0, 2.0):
+        widened = factor > 1.0
         projections = matching.Projections(
             xy=pixels,
             radius=np.asarray(factor * window * m.scale_factor**last_level, dtype=np.float64),
@@ -461,10 +684,13 @@ def _track_last_frame(  # noqa: PLR0913 -- the stage's state
         )
         if np.count_nonzero(points >= 0) >= options.min_motion_matches:
             break
-    if np.count_nonzero(points >= 0) < options.min_motion_matches:
-        return None
+    matches = int(np.count_nonzero(points >= 0))
+    if matches < options.min_motion_matches:
+        return Motion(tracked=None, summary=MotionSummary(matches, widened, None), matched=points)
     tracked = _optimize_pose(m, camera, frame, Tracked(pose=predicted, points=points), options)
-    return tracked if tracked.inliers >= options.min_motion_inliers else None
+    summary = MotionSummary(matches, widened, tracked.inliers)
+    kept = tracked if tracked.inliers >= options.min_motion_inliers else None
+    return Motion(kept, summary, matched=points)
 
 
 def track_last_frame(  # noqa: PLR0913 -- the stage's state, and the backend
@@ -478,7 +704,7 @@ def track_last_frame(  # noqa: PLR0913 -- the stage's state, and the backend
     mode: str,
     options: Options,
     backend: str = "python",
-) -> Tracked | None:
+) -> Motion:
     """Track the last frame's points into this one (``TrackWithMotionModel``).
 
     The last frame's inlier points are projected with the predicted pose and searched in a
@@ -510,9 +736,10 @@ def track_last_frame(  # noqa: PLR0913 -- the stage's state, and the backend
 
     Returns
     -------
-    slam_it_all.edge.frames.Tracked or None
-        The tracked frame, or None if fewer than ``min_motion_matches`` points matched or
-        fewer than ``min_motion_inliers`` survived refinement.
+    Motion
+        The tracked frame, none if fewer than ``min_motion_matches`` points matched or fewer
+        than ``min_motion_inliers`` survived refinement; the matches, whether the window was
+        widened, and the inliers; and each keypoint's match before refinement.
 
     Raises
     ------
@@ -540,7 +767,7 @@ def track_last_frame(  # noqa: PLR0913 -- the stage's state, and the backend
             "mode": mode,
             "options": options.as_dict(),
         },
-        decode=frames.decode_tracked,
+        decode=_decode_motion,
     )
 
 
@@ -587,6 +814,7 @@ def _track_local_map(  # noqa: PLR0913 -- the stage's state
         tracked=refined,
         visible=np.concatenate([m.pt_id[already], m.pt_id[view.rows]]),
         found=refined.points[refined.points >= 0],
+        matched=points,
     )
 
 
@@ -633,7 +861,8 @@ def track_local_map(  # noqa: PLR0913 -- the stage's state, the recovery flag, a
     Returns
     -------
     LocalTracking
-        The refined frame, and the ids of the points in view and of the inliers.
+        The refined frame, the ids of the points in view and of the inliers, and each
+        keypoint's match before refinement.
 
     Raises
     ------
@@ -664,11 +893,13 @@ def track_local_map(  # noqa: PLR0913 -- the stage's state, the recovery flag, a
     )
 
 
-def _relocalize_locally(m: Map, camera: Camera, frame: Frame, options: Options) -> Tracked | None:
+def _relocalize_locally(m: Map, camera: Camera, frame: Frame, options: Options) -> Relocalization:
     """Place a frame against the local map by descriptors and PnP RANSAC (reference)."""
     local = m.observed_by(m.window(options.window))
-    if len(local) < options.pnp_min_inliers:
-        return None
+    candidates = len(local)
+    points = np.full(frame.size, -1, dtype=np.int64)
+    if candidates < options.pnp_min_inliers:
+        return Relocalization(tracked=None, summary=PnpSummary(candidates), matched=points)
     found = matching.match(
         frame.features.descriptors,
         m.pt_descriptor[local],
@@ -679,27 +910,39 @@ def _relocalize_locally(m: Map, camera: Camera, frame: Frame, options: Options) 
         ),
     )
     pairs = found.pairs[frame.bearings[found.pairs[:, 0], 2] > 0.0]
+    points[pairs[:, 0]] = m.pt_id[local[pairs[:, 1]]]
+    matched = PnpSummary(candidates, matches=len(pairs))
     if len(pairs) < options.pnp_min_inliers:
-        return None
+        return Relocalization(tracked=None, summary=matched, matched=points)
     settings = ransac.Options(threshold=options.pnp_threshold / camera.focal, seed=options.seed)
     try:
         solved = pnp.pnp_ransac(m.pt_xyz[local[pairs[:, 1]]], frame.bearings[pairs[:, 0]], settings)
     except DegenerateError:
-        return None
+        failed = replace(matched, degenerate=True)
+        return Relocalization(tracked=None, summary=failed, matched=points)
     inliers = solved.state.inliers
-    if np.count_nonzero(inliers) < options.pnp_min_inliers:
-        return None
-    points = np.full(frame.size, -1, dtype=np.int64)
-    points[pairs[inliers, 0]] = m.pt_id[local[pairs[inliers, 1]]]
-    tracked = _optimize_pose(
-        m, camera, frame, Tracked(pose=solved.state.model, points=points), options
+    run = solved.summary.run
+    sampled = replace(
+        matched,
+        iterations=run.iterations,
+        termination=run.termination,
+        inliers=int(np.count_nonzero(inliers)),
     )
-    return tracked if tracked.inliers >= options.pnp_min_inliers else None
+    if np.count_nonzero(inliers) < options.pnp_min_inliers:
+        return Relocalization(tracked=None, summary=sampled, matched=points)
+    sample = np.full(frame.size, -1, dtype=np.int64)
+    sample[pairs[inliers, 0]] = m.pt_id[local[pairs[inliers, 1]]]
+    tracked = _optimize_pose(
+        m, camera, frame, Tracked(pose=solved.state.model, points=sample), options
+    )
+    summary = replace(sampled, refined=tracked.inliers)
+    kept = tracked if tracked.inliers >= options.pnp_min_inliers else None
+    return Relocalization(kept, summary, matched=points)
 
 
 def relocalize_locally(
     m: Map, camera: Camera, frame: Frame, options: Options, *, backend: str = "python"
-) -> Tracked | None:
+) -> Relocalization:
     """Place a frame against the local map by descriptors and PnP RANSAC (the fallback).
 
     The frame's descriptors are matched to the local map's points' (``th_high``, the
@@ -722,9 +965,10 @@ def relocalize_locally(
 
     Returns
     -------
-    slam_it_all.edge.frames.Tracked or None
-        The frame placed and refined, or None if fewer than ``pnp_min_inliers`` points match,
-        RANSAC finds no pose, or fewer inliers survive.
+    Relocalization
+        The frame placed and refined, none if fewer than ``pnp_min_inliers`` points match,
+        RANSAC finds no pose, or fewer inliers survive; how far it got
+        (:class:`PnpSummary`); and each keypoint's match by descriptor.
     """
     return backends.call(
         backend,
@@ -737,5 +981,5 @@ def relocalize_locally(
             "frame": frame.as_dict(),
             "options": options.as_dict(),
         },
-        decode=frames.decode_tracked,
+        decode=_decode_relocalization,
     )

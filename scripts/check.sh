@@ -53,6 +53,7 @@ mapfile -t CPP_FILES < <(git ls-files --cached --others --exclude-standard 'cpp/
 mapfile -t CPP_TU < <(git ls-files --cached --others --exclude-standard 'cpp/src/*.cpp' 'cpp/tests/*.cpp' \
   'cpp/apps/*.cpp')
 mapfile -t BENCH_TU < <(git ls-files --cached --others --exclude-standard 'cpp/bench/*.cpp')
+mapfile -t JS_FILES < <(git ls-files --cached --others --exclude-standard 'viewer/*.js')
 
 # Python
 check "ruff lint (numpy docstrings, type hints, style)" ruff check src tests scripts
@@ -97,6 +98,18 @@ check "Rust tests" cargo test --manifest-path rust/Cargo.toml --workspace --excl
 check "Rust programs (release)" \
   cargo build --release --manifest-path rust/Cargo.toml --target-dir rust/target \
   -p slam-it-all-orchestration
+
+# JavaScript: the run viewer's page, its tools installed by `npm ci --prefix viewer`
+check "node --check (viewer)" bash -c 'for file; do node --check "$file" || exit 1; done' _ \
+  "${JS_FILES[@]}"
+# The test files by name: a folder is a module to some versions of Node, not a test directory.
+check "node --test (viewer)" node --test viewer/tests/*.test.js
+check "tsc --checkJs (viewer)" viewer/node_modules/.bin/tsc -p viewer
+# The logic modules again, without the DOM: they never touch the page, so Node tests them.
+check "tsc --checkJs, logic without the DOM (viewer)" \
+  viewer/node_modules/.bin/tsc -p viewer/tsconfig.logic.json
+check "prettier (viewer)" viewer/node_modules/.bin/prettier --check \
+  viewer/src viewer/tests viewer/index.html viewer/app.css viewer/logic.d.ts
 
 # All languages
 check "jscpd (duplication)" jscpd --config .jscpd.json

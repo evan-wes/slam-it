@@ -3,18 +3,21 @@
     "python",
     "cpp",
     "c-header",
-    "rust"
+    "rust",
+    "javascript"
   ],
   "path": [
     "src",
     "tests",
     "cpp",
-    "rust"
+    "rust",
+    "viewer"
   ],
   "ignore": [
     "**/build/**",
     "**/target/**",
     "**/fixtures/**",
+    "**/node_modules/**",
     "**/__pycache__/**"
   ],
   "minTokens": 50,
@@ -26,6 +29,7 @@
   "ignorePattern": [
     "\"\"\"[\\s\\S]*?\"\"\"",
     "^\\s*///.*$",
-    "^\\s*//!.*$"
+    "^\\s*//!.*$",
+    "/\\*\\*[\\s\\S]*?\\*/"
   ]
 }

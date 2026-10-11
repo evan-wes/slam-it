@@ -12,6 +12,7 @@
 #include <expected>
 #include <filesystem>
 #include <functional>
+#include <iterator>
 #include <optional>
 #include <span>
 #include <string>
@@ -34,7 +35,9 @@
 #include "slam_it_all/foundations/camera.hpp"
 #include "slam_it_all/foundations/error.hpp"
 #include "slam_it_all/foundations/image.hpp"
+#include "slam_it_all/foundations/nls.hpp"
 #include "slam_it_all/foundations/orb.hpp"
+#include "slam_it_all/foundations/ransac.hpp"
 #include "slam_it_all/foundations/se3.hpp"
 #include "slam_it_all/foundations/stereo.hpp"
 
@@ -48,6 +51,9 @@ using foundations::Result;
 using foundations::camera::Model;
 
 using foundations::image::Image;
+
+/// @brief The one flag without a value: record each frame's keypoints, with their fates.
+constexpr std::string_view kRecordFeatures = "--record-features";
 
 /// @brief A stereo pair, rectified.
 struct StereoImages {
@@ -282,6 +288,146 @@ std::string sequence_name(const std::string& sequence) {
   return (error ? std::filesystem::path(sequence) : resolved).filename().string();
 }
 
+/// @brief A count as JSON, or null if there is none.
+/// @param count The count.
+/// @return Its value.
+eval::runs::JsonValue count_or_null(const std::optional<std::int64_t>& count) {
+  return count ? eval::runs::JsonValue(*count) : eval::runs::JsonValue(nullptr);
+}
+
+/// @brief A name as JSON.
+/// @param name The name, static.
+/// @return Its value.
+eval::runs::JsonValue name_json(const char* name) { return std::string(name); }
+
+/// @brief An object written as nested JSON.
+/// @param object The object.
+/// @return Its value; `InvalidInput` for a number that is not finite.
+Result<eval::runs::JsonValue> nested(const eval::runs::JsonObject& object) {
+  auto text = eval::runs::json_object(object);
+  if (!text) {
+    return std::unexpected(std::move(text.error()));
+  }
+  return eval::runs::JsonValue(std::move(*text));
+}
+
+/// @brief Bundle-adjustment solves as JSON (`slam_it_all.edge.adjust.Solve.as_dict`, each).
+/// @param solves The solves.
+/// @return An array of one object per solve; `InvalidInput` for a cost that is not finite.
+Result<eval::runs::JsonValue> solves_json(const std::vector<edge::Solve>& solves) {
+  std::vector<eval::runs::JsonValue> items;
+  for (const edge::Solve& solve : solves) {
+    auto item = nested({{"initial_cost", solve.initial_cost},
+                        {"final_cost", solve.final_cost},
+                        {"iterations", solve.iterations},
+                        {"termination", name_json(foundations::nls::name(solve.termination))}});
+    if (!item) {
+      return std::unexpected(std::move(item.error()));
+    }
+    items.push_back(std::move(*item));
+  }
+  auto text = eval::runs::json_array(items);
+  if (!text) {
+    return std::unexpected(std::move(text.error()));
+  }
+  return eval::runs::JsonValue(std::move(*text));
+}
+
+/// @brief How the frame's initialisation went, as JSON.
+/// @param s The summary.
+/// @return Its object; a cost's error.
+Result<eval::runs::JsonValue> init_json(const edge::InitSummary& s) {
+  auto ba = solves_json(s.solves);
+  if (!ba) {
+    return std::unexpected(std::move(ba.error()));
+  }
+  return nested({{"matches", count_or_null(s.matches)},
+                 {"outcome", name_json(edge::name(s.outcome))},
+                 {"ba", std::move(*ba)}});
+}
+
+/// @brief How the PnP fallback went, as JSON.
+/// @param s The summary.
+/// @return Its object.
+Result<eval::runs::JsonValue> pnp_json(const edge::PnpSummary& s) {
+  eval::runs::JsonValue termination = nullptr;
+  if (s.degenerate) {
+    termination = name_json("degenerate");
+  } else if (s.termination) {
+    termination = name_json(foundations::ransac::name(*s.termination));
+  }
+  return nested({{"candidates", s.candidates},
+                 {"matches", count_or_null(s.matches)},
+                 {"iterations", count_or_null(s.iterations)},
+                 {"termination", std::move(termination)},
+                 {"inliers", count_or_null(s.inliers)},
+                 {"refined", count_or_null(s.refined)}});
+}
+
+/// @brief How mapping the keyframe went, as JSON.
+/// @param s The summary.
+/// @return Its object; a cost's error.
+Result<eval::runs::JsonValue> mapping_json(const edge::MappingSummary& s) {
+  auto ba = solves_json(s.solves);
+  if (!ba) {
+    return std::unexpected(std::move(ba.error()));
+  }
+  return nested({{"from_depth", s.from_depth},
+                 {"culled_points", s.culled_points},
+                 {"triangulated", s.triangulated},
+                 {"fused", s.fused},
+                 {"ba", std::move(*ba)},
+                 {"outliers", s.outliers},
+                 {"weak_points", s.weak_points},
+                 {"culled_keyframes", s.culled_keyframes}});
+}
+
+/// @brief A stage's summary as JSON, or null if the stage did not run.
+/// @tparam Summary The stage's summary type.
+/// @tparam Write Its writer.
+/// @param summary The summary, if the stage ran.
+/// @param write The writer.
+/// @return The value; the writer's error.
+template <typename Summary, typename Write>
+Result<eval::runs::JsonValue> or_null(const std::optional<Summary>& summary, Write write) {
+  if (!summary) {
+    return eval::runs::JsonValue(nullptr);
+  }
+  return write(*summary);
+}
+
+/// @brief How a frame's stages went, as a run records it
+///        (`slam_it_all.edge.pipeline.FrameSummary.as_dict`): each stage an object, or null.
+/// @param summary The summary.
+/// @return Its keys and values, in order; `InvalidInput` for a cost that is not finite.
+Result<eval::runs::JsonObject> summary_json(const edge::FrameSummary& summary) {
+  using eval::runs::JsonValue;
+  const auto motion = [](const edge::MotionSummary& s) {
+    return nested(
+        {{"matches", s.matches}, {"widened", s.widened}, {"inliers", count_or_null(s.inliers)}});
+  };
+  const auto local_map = [](const edge::LocalMapSummary& s) {
+    return nested({{"in_view", s.in_view}, {"matches", s.matches}, {"inliers", s.inliers}});
+  };
+  const std::array<std::pair<const char*, Result<JsonValue>>, 5> stages = {{
+      {"init", or_null(summary.init, init_json)},
+      {"motion", or_null(summary.motion, motion)},
+      {"pnp", or_null(summary.pnp, pnp_json)},
+      {"local_map", or_null(summary.local_map, local_map)},
+      {"mapping", or_null(summary.mapping, mapping_json)},
+  }};
+  eval::runs::JsonObject out;
+  out.emplace_back("placed_by", summary.placed_by ? name_json(edge::name(*summary.placed_by))
+                                                  : JsonValue(nullptr));
+  for (const auto& [key, value] : stages) {
+    if (!value) {
+      return std::unexpected(value.error());
+    }
+    out.emplace_back(key, *value);
+  }
+  return out;
+}
+
 /// @brief Record a frame's result: its diagnostics, and its pose if it was tracked.
 /// @param out The run.
 /// @param result The result.
@@ -298,6 +444,13 @@ Result<void> record(eval::runs::Run& out, const edge::FrameResult& result, doubl
                              {"build_seconds", build_seconds},
                              {"track_seconds", result.track_seconds},
                              {"map_seconds", result.map_seconds}});
+  auto summary = summary_json(result.summary);
+  if (!summary) {
+    return std::unexpected(std::move(summary.error()));
+  }
+  for (auto& item : *summary) {
+    out.diagnostics.back().push_back(std::move(item));
+  }
   if (!result.pose.has_value()) {
     return {};
   }
@@ -310,21 +463,43 @@ Result<void> record(eval::runs::Run& out, const edge::FrameResult& result, doubl
   return {};
 }
 
-/// @brief Record the map: its keyframes' times and poses, and its points.
+/// @brief Record every keyframe and point the run made, with their lives.
 /// @param out The run.
-/// @param m The map.
+/// @param lives The pipeline's lifetimes.
 /// @return Nothing, or a pose's inversion's error.
-Result<void> record_map(eval::runs::Run& out, const edge::Map& m) {
-  out.keyframe_timestamps = m.kf_time;
-  for (const Eigen::Matrix4d& T_cam_world : m.kf_pose) {  // NOLINT(readability-identifier-naming)
+Result<void> record_lives(eval::runs::Run& out, const edge::Lifetimes& lives) {
+  out.keyframe_timestamps = lives.keyframe_times;
+  for (const Eigen::Matrix4d& T_cam_world :  // NOLINT(readability-identifier-naming)
+       lives.keyframe_poses) {
     const auto pose = foundations::se3::inverse(T_cam_world);
     if (!pose) {
       return std::unexpected(pose.error());
     }
     out.keyframe_poses.push_back(*pose);
   }
-  out.points = m.pt_xyz;
+  out.points = lives.points;
+  out.point_lives = lives.point_lives;
+  out.keyframe_lives = lives.keyframe_lives;
   return {};
+}
+
+/// @brief Append a frame's keypoints, with their fates, to the run's feature files.
+/// @param features The writer.
+/// @param frame The frame.
+/// @param fates What became of each of its keypoints.
+/// @return Nothing; the writer's error.
+Result<void> write_features(eval::runs::FeatureWriter& features, const edge::Frame& frame,
+                            const edge::Fates& fates) {
+  std::vector<std::array<double, 2>> xy;
+  std::vector<std::int64_t> level;
+  for (const foundations::orb::Keypoint& keypoint : frame.features.keypoints) {
+    xy.push_back(keypoint.xy);
+    level.push_back(keypoint.level);
+  }
+  std::vector<std::int64_t> fate;
+  std::ranges::transform(fates.fate, std::back_inserter(fate),
+                         [](edge::Fate f) { return static_cast<std::int64_t>(f); });
+  return features.write(xy, level, fate, fates.point);
 }
 
 /// @brief Track a sequence's frames, from the first asked for, until the end or the track
@@ -333,9 +508,10 @@ Result<void> record_map(eval::runs::Run& out, const edge::Map& m) {
 /// @param pipeline The pipeline.
 /// @param request The request.
 /// @param out The run, each frame recorded.
-/// @return Nothing; a reader's, a frame builder's or the pipeline's error.
+/// @param features The writer of each frame's keypoints, if the run records them.
+/// @return Nothing; a reader's, a frame builder's, the pipeline's or the feature writer's error.
 Result<void> track(const Source& source, edge::Pipeline& pipeline, const Request& request,
-                   eval::runs::Run& out) {
+                   eval::runs::Run& out, eval::runs::FeatureWriter* features) {
   using Clock = std::chrono::steady_clock;
   using Seconds = std::chrono::duration<double>;
   const auto first = static_cast<std::size_t>(request.first);
@@ -367,6 +543,11 @@ Result<void> track(const Source& source, edge::Pipeline& pipeline, const Request
             record(out, *result, Seconds(read - start).count(), Seconds(built - read).count());
         !recorded) {
       return recorded;
+    }
+    if (features != nullptr) {
+      if (const auto written = write_features(*features, *frame, result->fates); !written) {
+        return written;
+      }
     }
     if (result->state == edge::State::kLost) {
       break;
@@ -479,18 +660,26 @@ Result<void> read_flag(Request& out, std::string_view flag, const std::string& v
 Result<Request> parse(std::span<const std::string> arguments) {
   Request out;
   std::vector<std::string_view> seen;
-  for (std::size_t i = 0; i < arguments.size(); i += 2) {
+  std::size_t i = 0;
+  while (i < arguments.size()) {
     const std::string& flag = arguments[i];
-    if (i + 1 == arguments.size()) {
-      return fail(ErrorKind::kInvalidInput, flag + ": expected a value");
-    }
     if (flag != "--option" && std::ranges::find(seen, flag) != seen.end()) {
       return fail(ErrorKind::kInvalidInput, flag + ": given twice");
+    }
+    if (flag == kRecordFeatures) {
+      seen.emplace_back(flag);
+      out.record_features = true;
+      ++i;
+      continue;
+    }
+    if (i + 1 == arguments.size()) {
+      return fail(ErrorKind::kInvalidInput, flag + ": expected a value");
     }
     seen.emplace_back(flag);
     if (const auto read = read_flag(out, flag, arguments[i + 1]); !read) {
       return std::unexpected(read.error());
     }
+    i += 2;
   }
   for (const std::string_view required : {"--dataset", "--sequence", "--mode", "--out"}) {
     if (std::ranges::find(seen, required) == seen.end()) {
@@ -536,13 +725,21 @@ Result<eval::runs::Run> run(const Request& request) {
   out.mode = edge::name(request.mode);
   out.backend = "cpp";
   out.settings = settings(request.options);
-  if (const auto tracked = track(*source, *pipeline, request, out); !tracked) {
+  out.record_features = request.record_features;
+  std::optional<eval::runs::FeatureWriter> features;
+  if (request.record_features) {
+    auto opened = eval::runs::FeatureWriter::open(request.out);
+    if (!opened) {
+      return std::unexpected(opened.error());
+    }
+    features = std::move(*opened);
+  }
+  if (const auto tracked = track(*source, *pipeline, request, out, features ? &*features : nullptr);
+      !tracked) {
     return std::unexpected(tracked.error());
   }
-  if (const std::optional<edge::Map>& m = pipeline->map(); m.has_value()) {
-    if (const auto recorded = record_map(out, *m); !recorded) {
-      return std::unexpected(recorded.error());
-    }
+  if (const auto recorded = record_lives(out, pipeline->lifetimes()); !recorded) {
+    return std::unexpected(recorded.error());
   }
   return out;
 }

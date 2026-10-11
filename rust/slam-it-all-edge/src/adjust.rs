@@ -6,13 +6,14 @@
 //! inverse-depth prior where they have depth. Two solves bracket an outlier pass (a point left
 //! with fewer than two inlier views restarts the second from where it began); the
 //! observations still failing the chi-square test are forgotten, and the surviving points
-//! refreshed.
+//! refreshed. The result records how each solve went, which a run records per keyframe.
 
 use std::collections::BTreeSet;
 
 use nalgebra::{Matrix4, Vector2, Vector3};
 use slam_it_all_foundations::ba::{self, Intrinsics};
 use slam_it_all_foundations::error::{ErrorKind, Result, fail};
+use slam_it_all_foundations::solve::Summary as _;
 use slam_it_all_foundations::{nls, se3};
 
 use crate::frames::{Camera, check_setup};
@@ -20,8 +21,52 @@ use crate::map::{self, Map};
 use crate::options::Options;
 use crate::residuals::{chi2, sigma2, threshold};
 
+/// How one least-squares solve of a bundle adjustment went (`slam_it_all.edge.adjust.Solve`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Solve {
+    /// The robust cost at the start.
+    pub initial_cost: f64,
+    /// The robust cost at the returned state.
+    pub final_cost: f64,
+    /// Steps tried, accepted or not.
+    pub iterations: usize,
+    /// Why it stopped.
+    pub termination: nls::Termination,
+}
+
+impl Solve {
+    /// Takes a solve's record from its summary (`slam_it_all.edge.adjust.Solve.of`).
+    ///
+    /// # Arguments
+    ///
+    /// * `summary` - The solve's summary.
+    ///
+    /// # Returns
+    ///
+    /// Its costs, iterations and termination.
+    #[must_use]
+    pub fn of(summary: &nls::Summary) -> Self {
+        Self {
+            initial_cost: summary.initial_cost,
+            final_cost: summary.final_cost,
+            iterations: summary.iterations(),
+            termination: summary.termination,
+        }
+    }
+}
+
+/// How a bundle adjustment went (`slam_it_all.edge.adjust.Adjustment`, whose map is changed
+/// in place here).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Adjustment {
+    /// The first solve and the refining one; none when no point was observed.
+    pub solves: Vec<Solve>,
+    /// The observations forgotten as outliers after the refining solve.
+    pub outliers: usize,
+}
+
 /// The BA problem built from the map, and where its rows came from.
-struct Adjustment {
+struct Built {
     /// The problem.
     problem: ba::Problem,
     /// Each observation's keypoint row, ascending.
@@ -55,7 +100,7 @@ fn build(
     keyframes: &[usize],
     fixed: &[bool],
     points: &[usize],
-) -> Result<Adjustment> {
+) -> Result<Built> {
     let mut free = vec![false; m.keyframes()];
     for &k in keyframes {
         free[k] = !fixed[k];
@@ -108,7 +153,7 @@ fn build(
     for (c, &k) in observing.iter().enumerate() {
         problem.fixed_poses[c] = !free[k];
     }
-    Ok(Adjustment {
+    Ok(Built {
         problem,
         rows,
         observing,
@@ -224,6 +269,10 @@ fn outliers(
 /// * `fixed` - One flag per keyframe: true to hold it fixed even among `keyframes`.
 /// * `options` - The iterations and thresholds.
 ///
+/// # Returns
+///
+/// The two solves (none if no point was observed) and the outliers dropped.
+///
 /// # Errors
 ///
 /// `InvalidInput` for a keyframe row out of range, flags that are not one per keyframe, or an
@@ -234,7 +283,7 @@ pub fn bundle_adjust(
     keyframes: &[usize],
     fixed: &[bool],
     options: &Options,
-) -> Result<()> {
+) -> Result<Adjustment> {
     check_setup(camera, options)?;
     if keyframes.iter().any(|&k| k >= m.keyframes()) {
         return fail(
@@ -250,15 +299,16 @@ pub fn bundle_adjust(
     }
     let points = m.observed_by(keyframes);
     if points.is_empty() {
-        return Ok(());
+        return Ok(Adjustment::default());
     }
-    let Adjustment {
+    let Built {
         mut problem,
         rows,
         observing,
         point_of,
     } = build(m, camera, keyframes, fixed, &points)?;
     let first = ba::solve::solve(&problem, &solver_options(options, options.ba_iterations))?;
+    let first_summary = first.summary.solve;
     let start = std::mem::replace(&mut problem.points, first.points);
     problem.poses = first.poses;
     let outlier = outliers(m, camera, &problem, &rows, options)?;
@@ -302,5 +352,9 @@ pub fn bundle_adjust(
         .collect();
     map::forget_observations(m, &dropped)?;
     let kept: Vec<usize> = ids.iter().filter_map(|&id| m.point_row(id)).collect();
-    map::refresh_points(m, &kept)
+    map::refresh_points(m, &kept)?;
+    Ok(Adjustment {
+        solves: vec![Solve::of(&first_summary), Solve::of(&second.summary.solve)],
+        outliers: dropped.len(),
+    })
 }

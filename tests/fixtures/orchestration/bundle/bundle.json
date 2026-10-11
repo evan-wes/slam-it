@@ -1,0 +1,131 @@
+{
+ "format": "slam-it-all-bundle",
+ "version": 1,
+ "dataset": "tum",
+ "sequence": "room_tum",
+ "mode": "rgbd",
+ "camera": {
+  "model": "pinhole",
+  "width": 320,
+  "height": 240,
+  "intrinsics": [
+   262.5,
+   262.5,
+   159.5,
+   119.5
+  ],
+  "baseline": 0.1523809523809524
+ },
+ "frames": 6,
+ "first_time": 0.0,
+ "images": {
+  "chunk": 100,
+  "quality": 75,
+  "colour": true
+ },
+ "truth": true,
+ "fates": [
+  "unmatched",
+  "rejected",
+  "tracked",
+  "made"
+ ],
+ "steps": [
+  "read_seconds",
+  "build_seconds",
+  "track_seconds",
+  "map_seconds"
+ ],
+ "backends": {
+  "python": {
+   "frames": [
+    0,
+    4
+   ],
+   "tracked": 4,
+   "keyframes": 1,
+   "points": 605,
+   "made": {
+    "keyframes": 1,
+    "points": 605
+   },
+   "features": true,
+   "alignment": "se3",
+   "score": {
+    "matched": 4,
+    "ate_rmse": 0.002812644944019904,
+    "rpe_translation_rmse": 0.0042752099971519195,
+    "rpe_rotation_rmse": 0.0010314385742576059,
+    "scale": 1.0
+   },
+   "latency": {
+    "deadline": 0.033333,
+    "median": 0.04884556506294757,
+    "p95": 0.05168117335997522,
+    "max": 0.05211546295322478,
+    "late": 4
+   },
+   "peak_memory": null
+  },
+  "cpp": {
+   "frames": [
+    0,
+    6
+   ],
+   "tracked": 6,
+   "keyframes": 1,
+   "points": 605,
+   "made": {
+    "keyframes": 1,
+    "points": 605
+   },
+   "features": true,
+   "alignment": "se3",
+   "score": {
+    "matched": 6,
+    "ate_rmse": 0.003765688283722006,
+    "rpe_translation_rmse": 0.006140908080726204,
+    "rpe_rotation_rmse": 0.0011392240316590034,
+    "scale": 1.0
+   },
+   "latency": {
+    "deadline": 0.033333,
+    "median": 0.005490719,
+    "p95": 0.00592156625,
+    "max": 0.006008303,
+    "late": 0
+   },
+   "peak_memory": 8024064
+  },
+  "rust": {
+   "frames": [
+    0,
+    6
+   ],
+   "tracked": 6,
+   "keyframes": 1,
+   "points": 605,
+   "made": {
+    "keyframes": 1,
+    "points": 605
+   },
+   "features": true,
+   "alignment": "se3",
+   "score": {
+    "matched": 6,
+    "ate_rmse": 0.0037656882837219163,
+    "rpe_translation_rmse": 0.006140908080726421,
+    "rpe_rotation_rmse": 0.0011392240316589835,
+    "scale": 1.0
+   },
+   "latency": {
+    "deadline": 0.033333,
+    "median": 0.0050278025,
+    "p95": 0.005258171,
+    "max": 0.005278733,
+    "late": 0
+   },
+   "peak_memory": 7024640
+  }
+ }
+}

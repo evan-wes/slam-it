@@ -10,6 +10,9 @@
 /// which the operations keep in step with `kp_point` (as ORB-SLAM's `MapPoint` keeps its
 /// observations). With it, an operation on a point costs what the point's observations cost,
 /// however many keyframes the map holds; Python's reference scans `kp_point` instead.
+///
+/// What was removed is kept aside, in the `gone_*` columns, until the pipeline takes it
+/// (`clear_gone`), as in Python.
 #pragma once
 
 #include <Eigen/Core>
@@ -24,6 +27,19 @@
 #include "slam_it_all/foundations/orb.hpp"
 
 namespace slam_it_all::edge {
+
+/// @brief Why a point or keyframe left the map, with the codes a run records
+///        (`slam_it_all.edge.map.Removal`, whose members document each).
+enum class Removal : std::uint8_t {
+  /// @brief Culled: a recent point tracking rarely found, or a redundant keyframe.
+  kCulled = 0,
+  /// @brief Fused into another point.
+  kFused = 1,
+  /// @brief Erased with its views: left seen too little.
+  kWeak = 2,
+  /// @brief The number of removals (a sentinel, not a removal).
+  kCount = 3,
+};
 
 /// @brief Keyframes, their keypoints and the map points (`slam_it_all.edge.map.Map`).
 struct Map {
@@ -79,6 +95,18 @@ struct Map {
   std::int64_t next_kf_id{0};
   /// @brief The next point id to give.
   std::int64_t next_pt_id{0};
+  /// @brief The ids of the points erased since the archive was last cleared, in erasing order.
+  std::vector<std::int64_t> gone_pt_id;
+  /// @brief Their last positions.
+  std::vector<Eigen::Vector3d> gone_pt_xyz;
+  /// @brief Why each went (`Removal`'s code).
+  std::vector<std::int64_t> gone_pt_how;
+  /// @brief The ids of the keyframes erased since then (culled).
+  std::vector<std::int64_t> gone_kf_id;
+  /// @brief Their times.
+  std::vector<double> gone_kf_time;
+  /// @brief Their last poses `T_cam_world`.
+  std::vector<Eigen::Matrix4d> gone_kf_pose;
   /// @brief Each point's observing keypoint rows, ascending: the index of `kp_point` the
   ///        operations here keep. It does not cross to Python; `index_observations` builds it
   ///        for a map assembled column by column.
@@ -232,11 +260,19 @@ void index_observations(Map& m);
 /// @return Nothing, or `InvalidInput` for a row out of range or a point with no observation.
 [[nodiscard]] foundations::Result<void> refresh_points(Map& m, std::span<const std::int64_t> rows);
 
-/// @brief Remove points; the keypoints that observed them observe nothing.
+/// @brief Remove points, kept aside with why they went; the keypoints that observed them observe
+///        nothing.
 /// @param m The map.
 /// @param erase One flag per point, nonzero to remove it.
+/// @param how Why they go.
 /// @return Nothing, or `InvalidInput` for flags that are not one per point.
-[[nodiscard]] foundations::Result<void> erase_points(Map& m, std::span<const std::uint8_t> erase);
+[[nodiscard]] foundations::Result<void> erase_points(Map& m, std::span<const std::uint8_t> erase,
+                                                     Removal how);
+
+/// @brief Empty the map's archive of removed points and keyframes (`slam_it_all.edge.map
+///        .clear_gone`); the pipeline does after dating each frame's removals.
+/// @param m The map.
+void clear_gone(Map& m);
 
 /// @brief Each point's observation weight: 1 per keypoint, 2 for one with a right column.
 /// @param m The map.

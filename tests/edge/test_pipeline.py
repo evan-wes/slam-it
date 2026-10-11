@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 from numpy.typing import NDArray
 
 from slam_it_all.edge import frames, pipeline, tracking
+from slam_it_all.edge.initialization import Outcome
+from slam_it_all.edge.map import Removal
 from slam_it_all.edge.options import Options
+from slam_it_all.edge.pipeline import Placement
 from slam_it_all.eval.metrics import absolute_error
 from slam_it_all.foundations import orb
 from slam_it_all.foundations.errors import InvalidInputError
@@ -30,6 +35,82 @@ def test_the_room_is_tracked_to_the_end(mode: str, runs: dict[str, Run]) -> None
     assert error.rmse < ATE_BOUND[mode]
     assert run.pipeline.map is not None
     assert run.pipeline.map.keyframes >= 2
+
+
+@pytest.mark.parametrize("mode", ["monocular", "stereo", "rgbd"])
+def test_every_frame_says_how_its_stages_went(mode: str, runs: dict[str, Run]) -> None:
+    """A frame's summary holds the stages it ran, and only those.
+
+    Initialisation before the map; then tracking the last frame, the fallback only when that
+    failed, the local map on a placed frame, and mapping on each keyframe after the first.
+    """
+    results = runs[mode].results
+    start = next(i for i, r in enumerate(results) if r.keyframe)
+    for i, r in enumerate(results):
+        s = r.summary
+        json.dumps(s.as_dict(), allow_nan=False)  # what a run writes
+        if i < start:
+            assert s.init is not None
+            assert s.init.outcome is not Outcome.INITIALIZED
+            assert (s.placed_by, s.motion, s.local_map, s.mapping) == (None, None, None, None)
+        elif i == start:
+            assert s.init is not None
+            assert s.init.outcome is Outcome.INITIALIZED
+            assert s.placed_by is Placement.INITIALIZATION
+            assert (s.motion, s.mapping) == (None, None)
+        else:
+            assert s.init is None
+            assert s.motion is not None
+            assert (s.pnp is None) == (s.placed_by is Placement.MOTION)
+            if r.pose is not None:
+                assert s.local_map is not None
+                assert s.local_map.inliers == r.tracked
+            assert (s.mapping is not None) == r.keyframe
+    first = results[0].summary.init
+    assert first is not None
+    if mode == "monocular":
+        assert first.outcome is Outcome.REFERENCE_SET
+        assert first.matches is None
+
+
+@pytest.mark.parametrize("mode", ["monocular", "stereo", "rgbd"])
+def test_every_point_and_keyframe_has_a_life(mode: str, runs: dict[str, Run]) -> None:
+    """Every id the map gave has a life; the ones alive are the map's, where the map has them.
+
+    Lives start in the frame that made them, in id order, and end in that frame or later, with
+    why; a removed point's position is where it last was.
+    """
+    run = runs[mode]
+    m = run.pipeline.map
+    assert m is not None
+    lives = run.pipeline.lifetimes()
+    for life, made_ids, live_ids in (
+        (lives.point_lives, m.next_pt_id, m.pt_id),
+        (lives.keyframe_lives, m.next_kf_id, m.kf_id),
+    ):
+        assert life.shape == (made_ids, 3)
+        made, removed, how = life.T
+        assert np.all(np.diff(made) >= 0)  # ids are given in order
+        assert made.min() >= 0
+        assert made.max() < len(run.results)
+        alive = removed < 0
+        np.testing.assert_array_equal(np.flatnonzero(alive), live_ids)
+        assert np.all(how[alive] == -1)
+        assert np.all((removed[~alive] >= made[~alive]) & (removed[~alive] < len(run.results)))
+        assert np.all(np.isin(how[~alive], [int(r) for r in Removal]))
+    np.testing.assert_array_equal(lives.points[m.pt_id], m.pt_xyz)
+    np.testing.assert_array_equal(lives.keyframe_times[m.kf_id], m.kf_time)
+    np.testing.assert_array_equal(lives.keyframe_poses[m.kf_id], m.kf_pose)
+    assert np.all(np.diff(lives.keyframe_times) > 0)
+    assert np.all(lives.keyframe_lives[~(lives.keyframe_lives[:, 1] < 0), 2] == Removal.CULLED)
+    assert len(m.gone_pt_id) == len(m.gone_kf_id) == 0  # dated and cleared every frame
+    # Only mapping removes, on keyframes after the start: the lives agree with its summaries.
+    start = next(i for i, r in enumerate(run.results) if r.keyframe)
+    mapped = [r.summary.mapping for r in run.results if r.summary.mapping is not None]
+    removed_points = sum(s.culled_points + s.fused + s.weak_points for s in mapped)
+    assert int(np.count_nonzero(lives.point_lives[:, 1] > start)) == removed_points
+    culled_keyframes = sum(s.culled_keyframes for s in mapped)
+    assert int(np.count_nonzero(lives.keyframe_lives[:, 1] >= 0)) == culled_keyframes
 
 
 def test_monocular_frames_start_with_more_features() -> None:

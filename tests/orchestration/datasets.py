@@ -20,7 +20,7 @@ from numpy.typing import NDArray
 from PIL import Image
 
 from slam_it_all.edge.options import Options
-from slam_it_all.eval import tum
+from slam_it_all.eval import runs, tum
 from tests.edge import room
 from tests.edge.support import FRAMES, OPTIONS
 
@@ -57,7 +57,7 @@ def png(path: Path, values: NDArray[np.uint8] | NDArray[np.uint16]) -> None:
 
 
 def write_tum(folder: Path, rendered: list[room.Frame]) -> None:
-    """Write the room as a TUM-format folder that describes its own camera."""
+    """Write the room as a TUM-format folder that describes its own camera, with its truth."""
     camera = room.SMALL
     rgb, depth = ["# timestamp filename"], ["# timestamp filename"]
     for f in rendered:
@@ -69,6 +69,11 @@ def write_tum(folder: Path, rendered: list[room.Frame]) -> None:
         depth.append(f"{stamp} depth/{stamp}.png")
     (folder / "rgb.txt").write_text("\n".join(rgb) + "\n")
     (folder / "depth.txt").write_text("\n".join(depth) + "\n")
+    runs.write_trajectory(
+        folder / "groundtruth.txt",
+        [f.timestamp for f in rendered],
+        np.array([f.T_world_cam for f in rendered]),
+    )
     (folder / "camera.txt").write_text(
         f"model pinhole\nintrinsics {camera.fx} {camera.fy} {camera.cx} {camera.cy}\n"
         f"size {camera.width} {camera.height}\ndepth_scale {tum.DEPTH_SCALE}\n"

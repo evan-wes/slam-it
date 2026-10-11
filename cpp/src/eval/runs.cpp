@@ -13,6 +13,7 @@
 #include <memory>
 #include <string_view>
 #include <system_error>
+#include <tuple>
 
 #include "slam_it_all/foundations/se3.hpp"
 #include "slam_it_all/foundations/so3.hpp"
@@ -75,10 +76,13 @@ std::string json_string(const std::string& value) {
   return out + "\"";
 }
 
-/// @brief A JSON value's text.
+/// @brief A JSON value's text, as Python's `json.dumps` writes it; nested JSON as written.
 /// @param value The value.
 /// @return Its text.
 std::string json_value(const JsonValue& value) {
+  if (std::holds_alternative<std::nullptr_t>(value)) {
+    return "null";
+  }
   if (const auto* integer = std::get_if<std::int64_t>(&value)) {
     return std::to_string(*integer);
   }
@@ -88,13 +92,16 @@ std::string json_value(const JsonValue& value) {
   if (const auto* flag = std::get_if<bool>(&value)) {
     return *flag ? "true" : "false";
   }
-  return json_string(std::get<std::string>(value));
+  if (const auto* text = std::get_if<std::string>(&value)) {
+    return json_string(*text);
+  }
+  return std::get<JsonText>(value).text;
 }
 
-/// @brief A flat object as JSON.
+/// @brief An object's text (`", "` and `": "` between items, as `json.dumps`).
 /// @param object The object.
 /// @return Its text.
-std::string json_object(const JsonObject& object) {
+std::string object_text(const JsonObject& object) {
   std::string out = "{";
   for (std::size_t k = 0; k < object.size(); ++k) {
     out += (k > 0 ? ", " : "") + json_string(object[k].first) + ": " + json_value(object[k].second);
@@ -102,14 +109,20 @@ std::string json_object(const JsonObject& object) {
   return out + "}";
 }
 
+/// @brief Whether a value is not a number that is not finite (nested JSON was checked when it
+///        was written).
+/// @param value The value.
+/// @return Whether it is.
+bool finite(const JsonValue& value) {
+  const auto* number = std::get_if<double>(&value);
+  return number == nullptr || std::isfinite(*number);
+}
+
 /// @brief Whether an object's numbers are all finite.
 /// @param object The object.
 /// @return Whether they are.
 bool finite(const JsonObject& object) {
-  return std::ranges::all_of(object, [](const auto& item) {
-    const auto* number = std::get_if<double>(&item.second);
-    return number == nullptr || std::isfinite(*number);
-  });
+  return std::ranges::all_of(object, [](const auto& item) { return finite(item.second); });
 }
 
 /// @brief Check stamped poses: finite, strictly ascending times, one rigid transform each.
@@ -138,6 +151,33 @@ Result<void> check_stamped(const std::vector<double>& times,
 /// @brief Check a run before anything is written.
 /// @param run The run.
 /// @return Nothing, or `InvalidInput`.
+/// @brief Check lives: one per row; made in one of the run's frames, removed in that frame or a
+///        later one or never, and why exactly when removed.
+/// @param lives The lives.
+/// @param rows The rows they are for.
+/// @param frames The run's frames.
+/// @param name Their name, for messages.
+/// @return Nothing, or `InvalidInput`.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (rows, frames), as Python's (count, frames)
+Result<void> check_lives(const std::vector<Life>& lives, std::size_t rows, std::size_t frames,
+                         const char* name) {
+  if (lives.size() != rows) {
+    return fail(ErrorKind::kInvalidInput, std::string(name) + ": expected one life per row");
+  }
+  const auto count = static_cast<std::int64_t>(frames);
+  const bool ok = std::ranges::all_of(lives, [count](const Life& life) {
+    const auto [made, removed, how] = life;
+    const bool alive = removed == -1;
+    return made >= 0 && made < count && (alive || (removed >= made && removed < count)) &&
+           (alive ? how == -1 : (how >= 0 && how < kRemovals));
+  });
+  if (!ok) {
+    return fail(ErrorKind::kInvalidInput,
+                std::string(name) + ": expected lives of the run's frames, removal codes");
+  }
+  return {};
+}
+
 Result<void> check(const Run& run) {
   if (std::ranges::find(kModes, run.mode) == kModes.end()) {
     return fail(ErrorKind::kInvalidInput, "mode: unknown '" + run.mode + "'");
@@ -153,6 +193,15 @@ Result<void> check(const Run& run) {
   }
   if (!std::ranges::all_of(run.points, [](const Eigen::Vector3d& p) { return p.allFinite(); })) {
     return fail(ErrorKind::kInvalidInput, "points: expected finite values");
+  }
+  const std::size_t frames = run.diagnostics.size();
+  if (auto ok = check_lives(run.point_lives, run.points.size(), frames, "point_lives"); !ok) {
+    return ok;
+  }
+  if (auto ok =
+          check_lives(run.keyframe_lives, run.keyframe_timestamps.size(), frames, "keyframe_lives");
+      !ok) {
+    return ok;
   }
   if (!finite(run.settings)) {
     return fail(ErrorKind::kInvalidInput, "settings: not JSON (a number is not finite)");
@@ -219,6 +268,18 @@ std::vector<double> flatten(const std::vector<Eigen::Matrix4d>& poses) {
   return out;
 }
 
+/// @brief Create a run's folder, if it is not there.
+/// @param folder The folder.
+/// @return Nothing, or `InvalidInput` naming the folder.
+Result<void> create_folder(const fs::path& folder) {
+  std::error_code error;
+  fs::create_directories(folder, error);
+  if (error) {
+    return fail(ErrorKind::kInvalidInput, folder.string() + ": " + error.message());
+  }
+  return {};
+}
+
 /// @brief Write a file whole: to a temporary sibling, then renamed over it.
 /// @param path The file.
 /// @param data Its bytes.
@@ -240,19 +301,11 @@ Result<void> replace(const fs::path& path, const std::string& data) {
   return {};
 }
 
-}  // namespace
-
-std::string json_number(double value) {
-  std::array<char, 32> buffer{};
-  const auto [end, error] = std::to_chars(buffer.data(), std::to_address(buffer.end()), value);
-  std::string out(buffer.data(), end);
-  if (out.find_first_of(".en") == std::string::npos) {
-    out += ".0";
-  }
-  return out;
-}
-
-std::string npy(const std::vector<std::size_t>& shape, const std::vector<double>& values) {
+/// @brief A `.npy` file's header, as numpy writes it.
+/// @param shape The array's shape.
+/// @param descr The dtype's descriptor (`<f8`, `<i8`).
+/// @return The magic, version, header length and header.
+std::string npy_header(const std::vector<std::size_t>& shape, const char* descr) {
   std::string dims;
   for (std::size_t k = 0; k < shape.size(); ++k) {
     dims += (k > 0 ? ", " : "") + std::to_string(shape[k]);
@@ -260,7 +313,8 @@ std::string npy(const std::vector<std::size_t>& shape, const std::vector<double>
   if (shape.size() == 1) {
     dims += ',';
   }
-  std::string header = "{'descr': '<f8', 'fortran_order': False, 'shape': (" + dims + "), }";
+  std::string header =
+      std::string("{'descr': '") + descr + "', 'fortran_order': False, 'shape': (" + dims + "), }";
   if (!shape.empty()) {
     header.append(kGrowthDigits - std::to_string(shape[0]).size(), ' ');
   }
@@ -272,14 +326,76 @@ std::string npy(const std::vector<std::size_t>& shape, const std::vector<double>
   out += '\x00';
   out += static_cast<char>(header.size() & 0xFFU);
   out += static_cast<char>((header.size() >> 8U) & 0xFFU);
-  out += header;
+  return out + header;
+}
+
+/// @brief A `.npy` file's bytes: its header, then its values little-endian.
+/// @tparam T The values' type (8 bytes).
+/// @param shape The array's shape.
+/// @param descr The dtype's descriptor.
+/// @param values Its values, row-major.
+/// @return The bytes.
+template <typename T>
+std::string npy_bytes(const std::vector<std::size_t>& shape, const char* descr,
+                      const std::vector<T>& values) {
   static_assert(std::endian::native == std::endian::little, "npy is written little-endian");
-  out.reserve(out.size() + (values.size() * sizeof(double)));
-  for (const double value : values) {
-    const auto raw = std::bit_cast<std::array<char, sizeof(double)>>(value);
+  std::string out = npy_header(shape, descr);
+  out.reserve(out.size() + (values.size() * sizeof(T)));
+  for (const T value : values) {
+    const auto raw = std::bit_cast<std::array<char, sizeof(T)>>(value);
     out.append(raw.data(), raw.size());
   }
   return out;
+}
+
+/// @brief Lives, row-major.
+/// @param lives The lives.
+/// @return Their numbers.
+std::vector<std::int64_t> flatten(const std::vector<Life>& lives) {
+  std::vector<std::int64_t> out;
+  out.reserve(3 * lives.size());
+  for (const Life& life : lives) {
+    out.insert(out.end(), life.begin(), life.end());
+  }
+  return out;
+}
+
+}  // namespace
+
+std::string npy(const std::vector<std::size_t>& shape, const std::vector<double>& values) {
+  return npy_bytes(shape, "<f8", values);
+}
+
+std::string npy(const std::vector<std::size_t>& shape, const std::vector<std::int64_t>& values) {
+  return npy_bytes(shape, "<i8", values);
+}
+
+std::string json_number(double value) {
+  std::array<char, 32> buffer{};
+  const auto [end, error] = std::to_chars(buffer.data(), std::to_address(buffer.end()), value);
+  std::string out(buffer.data(), end);
+  if (out.find_first_of(".en") == std::string::npos) {
+    out += ".0";
+  }
+  return out;
+}
+
+Result<JsonText> json_object(const JsonObject& object) {
+  if (!finite(object)) {
+    return fail(ErrorKind::kInvalidInput, "json_object: expected finite numbers");
+  }
+  return JsonText{.text = object_text(object)};
+}
+
+Result<JsonText> json_array(std::span<const JsonValue> values) {
+  if (!std::ranges::all_of(values, [](const JsonValue& value) { return finite(value); })) {
+    return fail(ErrorKind::kInvalidInput, "json_array: expected finite numbers");
+  }
+  std::string out = "[";
+  for (std::size_t k = 0; k < values.size(); ++k) {
+    out += (k > 0 ? ", " : "") + json_value(values[k]);
+  }
+  return JsonText{.text = out + "]"};
 }
 
 Result<void> write_run(const std::string& folder, const Run& run) {
@@ -293,9 +409,10 @@ Result<void> write_run(const std::string& folder, const Run& run) {
   const JsonObject info = {
       {"format", std::string(kFormat)}, {"version", kVersion}, {"dataset", run.dataset},
       {"sequence", run.sequence},       {"mode", run.mode},    {"backend", run.backend}};
-  std::string info_text = json_object(info);
+  std::string info_text = object_text(info);
   info_text.pop_back();
-  info_text += ", \"settings\": " + json_object(run.settings);
+  info_text += ", \"settings\": " + object_text(run.settings);
+  info_text += std::string(", \"record_features\": ") + (run.record_features ? "true" : "false");
   const auto integer_or_null = [](const std::optional<std::int64_t>& value) {
     return value ? std::to_string(*value) : std::string("null");
   };
@@ -313,7 +430,7 @@ Result<void> write_run(const std::string& folder, const Run& run) {
   info_text += ", \"memory_cap\": " + integer_or_null(run.memory_cap) + "}\n";
   std::string diagnostics;
   for (const JsonObject& entry : run.diagnostics) {
-    diagnostics += json_object(entry) + "\n";
+    diagnostics += object_text(entry) + "\n";
   }
   std::vector<double> points;
   points.reserve(3 * run.points.size());
@@ -321,22 +438,102 @@ Result<void> write_run(const std::string& folder, const Run& run) {
     points.insert(points.end(), {p.x(), p.y(), p.z()});
   }
   const fs::path out(folder);
-  std::error_code error;
-  fs::create_directories(out, error);
-  if (error) {
-    return fail(ErrorKind::kInvalidInput, folder + ": " + error.message());
+  if (auto ok = create_folder(out); !ok) {
+    return ok;
   }
-  const std::array<std::pair<const char*, std::string>, 6> files = {{
+  const std::array<std::pair<const char*, std::string>, 8> files = {{
       {"run.json", info_text},
       {"trajectory.txt", *trajectory},
       {"keyframes.npy", npy({run.keyframe_timestamps.size()}, run.keyframe_timestamps)},
       {"keyframe_poses.npy", npy({run.keyframe_poses.size(), 4, 4}, flatten(run.keyframe_poses))},
+      {"keyframe_lives.npy", npy({run.keyframe_lives.size(), 3}, flatten(run.keyframe_lives))},
       {"points.npy", npy({run.points.size(), 3}, points)},
+      {"point_lives.npy", npy({run.point_lives.size(), 3}, flatten(run.point_lives))},
       {"diagnostics.jsonl", diagnostics},
   }};
   for (const auto& [name, data] : files) {
     if (auto ok = replace(out / name, data); !ok) {
       return ok;
+    }
+  }
+  return {};
+}
+
+Result<FeatureWriter> FeatureWriter::open(const std::string& folder) {
+  const fs::path out(folder);
+  if (auto ok = create_folder(out); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  const auto mode = std::ios::binary | std::ios::trunc | std::ios::out;
+  FeatureWriter writer(std::ofstream(out / kPixels, mode), std::ofstream(out / kRecords, mode));
+  if (!writer.pixels_ || !writer.records_) {
+    return fail(ErrorKind::kInvalidInput, folder + ": its feature files could not be written");
+  }
+  if (auto ok = writer.count(); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  return writer;
+}
+
+Result<void> FeatureWriter::write(std::span<const std::array<double, 2>> xy,
+                                  std::span<const std::int64_t> level,
+                                  std::span<const std::int64_t> fate,
+                                  std::span<const std::int64_t> point) {
+  const std::string name = "features of frame " + std::to_string(frames_);
+  const std::size_t n = xy.size();
+  if (level.size() != n || fate.size() != n || point.size() != n) {
+    return fail(ErrorKind::kInvalidInput,
+                name + ": expected xy (N, 2) and level, fate, point (N,)");
+  }
+  if (!std::ranges::all_of(xy, [](const std::array<double, 2>& p) {
+        return std::isfinite(p[0]) && std::isfinite(p[1]);
+      })) {
+    return fail(ErrorKind::kInvalidInput, name + ": pixels must be finite");
+  }
+  if (std::ranges::any_of(level, [](std::int64_t l) { return l < 0; })) {
+    return fail(ErrorKind::kInvalidInput, name + ": a level must be at least 0");
+  }
+  if (std::ranges::any_of(fate, [](std::int64_t f) { return f < 0 || f >= kFates; })) {
+    return fail(ErrorKind::kInvalidInput, name + ": a fate must be a code of FATES");
+  }
+  for (std::size_t j = 0; j < n; ++j) {
+    if (point[j] < -1 || (point[j] == -1) != (fate[j] == 0)) {
+      return fail(ErrorKind::kInvalidInput,
+                  name + ": a point must be an id, -1 exactly when unmatched");
+    }
+  }
+  std::string pixels;
+  std::string records;
+  pixels.reserve(n * 2 * sizeof(float));
+  records.reserve(n * 4 * sizeof(std::int32_t));
+  const auto append = [](std::string& out, auto value) {
+    const auto raw = std::bit_cast<std::array<char, sizeof(value)>>(value);
+    out.append(raw.data(), raw.size());
+  };
+  for (std::size_t j = 0; j < n; ++j) {
+    append(pixels, static_cast<float>(xy[j][0]));
+    append(pixels, static_cast<float>(xy[j][1]));
+    for (const std::int64_t value : {frames_, level[j], fate[j], point[j]}) {
+      append(records, static_cast<std::int32_t>(value));
+    }
+  }
+  pixels_.write(pixels.data(), static_cast<std::streamsize>(pixels.size()));
+  records_.write(records.data(), static_cast<std::streamsize>(records.size()));
+  ++frames_;
+  rows_ += n;
+  return count();
+}
+
+Result<void> FeatureWriter::count() {
+  for (auto [file, columns, descr] : {std::tuple{&pixels_, std::size_t{2}, "<f4"},
+                                      std::tuple{&records_, std::size_t{4}, "<i4"}}) {
+    const std::string header = npy_header({rows_, columns}, descr);
+    file->seekp(0);
+    file->write(header.data(), static_cast<std::streamsize>(header.size()));
+    file->seekp(0, std::ios::end);
+    file->flush();
+    if (!*file) {
+      return fail(ErrorKind::kInvalidInput, std::string("a feature file could not be written"));
     }
   }
   return {};

@@ -3,6 +3,8 @@
 //! written are small and fixed, and nothing native reads them back.
 
 use std::fmt::Write as _;
+use std::fs::File;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 
 use nalgebra::{Matrix4, Vector3};
@@ -12,8 +14,26 @@ use slam_it_all_foundations::{se3, so3};
 /// `run.json`'s `format`.
 pub const FORMAT: &str = "slam-it-all-run";
 
-/// `run.json`'s `version` (2 added `peak_memory`, `cpus` and `memory_cap`).
-pub const VERSION: i64 = 2;
+/// `run.json`'s `version` (2 added `peak_memory`, `cpus` and `memory_cap`; 3 every point and
+/// keyframe the run made, with their lives).
+pub const VERSION: i64 = 3;
+
+/// The number of removal codes a life may hold (`slam_it_all.eval.runs.REMOVALS`).
+pub const REMOVALS: i64 = 3;
+
+/// The number of fate codes a feature record may hold (`slam_it_all.eval.runs.FATES`); 0 is
+/// unmatched.
+pub const FATES: i64 = 4;
+
+/// The file of a run's keypoints' pixels (`slam_it_all.eval.runs.PIXELS`).
+pub const PIXELS: &str = "feature_pixels.npy";
+
+/// The file of a run's keypoints' records (`slam_it_all.eval.runs.RECORDS`).
+pub const RECORDS: &str = "feature_records.npy";
+
+/// A life: the frame that made a point or keyframe, the frame that removed it or -1, and why
+/// (its index in `slam_it_all.eval.runs.REMOVALS`) or -1.
+pub type Life = [i64; 3];
 
 /// The modes a run may have.
 pub const MODES: [&str; 3] = ["monocular", "stereo", "rgbd"];
@@ -27,9 +47,12 @@ const GROWTH_DIGITS: usize = 21;
 /// numpy aligns the data to this many bytes.
 const ALIGN: usize = 64;
 
-/// A JSON scalar: an integer, a finite number, a boolean or a string.
+/// A JSON value: null, an integer, a finite number, a boolean, a string, an array or an
+/// object.
 #[derive(Debug, Clone, PartialEq)]
 pub enum JsonValue {
+    /// Null.
+    Null,
     /// An integer.
     Integer(i64),
     /// A finite number.
@@ -38,9 +61,13 @@ pub enum JsonValue {
     Bool(bool),
     /// A string.
     Text(String),
+    /// An array.
+    Array(Vec<JsonValue>),
+    /// An object, its keys in order.
+    Object(JsonObject),
 }
 
-/// A flat JSON object, its keys in order.
+/// A JSON object, its keys in order.
 pub type JsonObject = Vec<(String, JsonValue)>;
 
 /// A pipeline's run (`slam_it_all.eval.runs.Run`).
@@ -58,11 +85,11 @@ pub struct Run {
     pub timestamps: Vec<f64>,
     /// Each tracked frame's `T_world_cam`.
     pub poses: Vec<Matrix4<f64>>,
-    /// The keyframes' timestamps.
+    /// The timestamps of every keyframe the run made, by id.
     pub keyframe_timestamps: Vec<f64>,
-    /// The keyframes' `T_world_cam`.
+    /// Their last `T_world_cam`.
     pub keyframe_poses: Vec<Matrix4<f64>>,
-    /// The map's points, in the world frame.
+    /// Every point the run made, by id, where it last was, in the world frame.
     pub points: Vec<Vector3<f64>>,
     /// The pipeline's options.
     pub settings: JsonObject,
@@ -79,6 +106,12 @@ pub struct Run {
     /// Its memory cap, in bytes, if it had one (`crate::budgets::memory_cap`); written as null
     /// otherwise.
     pub memory_cap: Option<u64>,
+    /// Each point's life, by id.
+    pub point_lives: Vec<Life>,
+    /// Each keyframe's life, by id.
+    pub keyframe_lives: Vec<Life>,
+    /// Whether the run recorded its features (`FeatureWriter` streams them).
+    pub record_features: bool,
 }
 
 /// A finite number as JSON, shortest round-trip (`.0` kept on a whole number, as Python
@@ -135,14 +168,20 @@ fn json_string(value: &str) -> String {
 /// Its text.
 fn json_value(value: &JsonValue) -> String {
     match value {
+        JsonValue::Null => "null".to_owned(),
         JsonValue::Integer(v) => v.to_string(),
         JsonValue::Number(v) => json_number(*v),
         JsonValue::Bool(v) => v.to_string(),
         JsonValue::Text(v) => json_string(v),
+        JsonValue::Array(items) => {
+            let items: Vec<String> = items.iter().map(json_value).collect();
+            format!("[{}]", items.join(", "))
+        }
+        JsonValue::Object(object) => json_object(object),
     }
 }
 
-/// A flat object as JSON.
+/// An object as JSON, as Python's `json.dumps` writes it (`", "` and `": "` between items).
 ///
 /// # Arguments
 ///
@@ -159,7 +198,7 @@ fn json_object(object: &[(String, JsonValue)]) -> String {
     format!("{{{}}}", items.join(", "))
 }
 
-/// Whether an object's numbers are all finite.
+/// Whether an object's numbers, nested ones included, are all finite.
 ///
 /// # Arguments
 ///
@@ -169,9 +208,25 @@ fn json_object(object: &[(String, JsonValue)]) -> String {
 ///
 /// Whether they are.
 fn finite(object: &[(String, JsonValue)]) -> bool {
-    object
-        .iter()
-        .all(|(_, v)| !matches!(v, JsonValue::Number(n) if !n.is_finite()))
+    object.iter().all(|(_, v)| finite_value(v))
+}
+
+/// Whether a value's numbers, nested ones included, are all finite.
+///
+/// # Arguments
+///
+/// * `value` - The value.
+///
+/// # Returns
+///
+/// Whether they are.
+fn finite_value(value: &JsonValue) -> bool {
+    match value {
+        JsonValue::Number(n) => n.is_finite(),
+        JsonValue::Array(items) => items.iter().all(finite_value),
+        JsonValue::Object(object) => finite(object),
+        JsonValue::Null | JsonValue::Integer(_) | JsonValue::Bool(_) | JsonValue::Text(_) => true,
+    }
 }
 
 /// A `.npy` file's bytes (version 1.0, little-endian float64, C order), as numpy writes it.
@@ -186,12 +241,49 @@ fn finite(object: &[(String, JsonValue)]) -> bool {
 /// The bytes.
 #[must_use]
 pub fn npy(shape: &[usize], values: &[f64]) -> Vec<u8> {
+    let mut out = npy_header(shape, "<f8");
+    for value in values {
+        out.extend(value.to_le_bytes());
+    }
+    out
+}
+
+/// A `.npy` file's bytes (version 1.0, little-endian int64, C order), as numpy writes it.
+///
+/// # Arguments
+///
+/// * `shape` - The array's shape.
+/// * `values` - Its values, row-major.
+///
+/// # Returns
+///
+/// The bytes.
+#[must_use]
+pub fn npy_int64(shape: &[usize], values: &[i64]) -> Vec<u8> {
+    let mut out = npy_header(shape, "<i8");
+    for value in values {
+        out.extend(value.to_le_bytes());
+    }
+    out
+}
+
+/// A `.npy` file's header, as numpy writes it.
+///
+/// # Arguments
+///
+/// * `shape` - The array's shape.
+/// * `descr` - The dtype's descriptor (`<f8`, `<i8`).
+///
+/// # Returns
+///
+/// The magic, version, header length and header.
+fn npy_header(shape: &[usize], descr: &str) -> Vec<u8> {
     let dims: Vec<String> = shape.iter().map(ToString::to_string).collect();
     let mut dims = dims.join(", ");
     if shape.len() == 1 {
         dims.push(',');
     }
-    let mut header = format!("{{'descr': '<f8', 'fortran_order': False, 'shape': ({dims}), }}");
+    let mut header = format!("{{'descr': '{descr}', 'fortran_order': False, 'shape': ({dims}), }}");
     if let Some(first) = shape.first() {
         header.push_str(&" ".repeat(GROWTH_DIGITS - first.to_string().len()));
     }
@@ -205,10 +297,47 @@ pub fn npy(shape: &[usize], values: &[f64]) -> Vec<u8> {
             .to_le_bytes(),
     );
     out.extend(header.as_bytes());
-    for value in values {
-        out.extend(value.to_le_bytes());
-    }
     out
+}
+
+/// Checks lives: one per row; made in one of the run's frames, removed in that frame or a later
+/// one or never, and why exactly when removed.
+///
+/// # Arguments
+///
+/// * `lives` - The lives.
+/// * `rows` - The rows they are for.
+/// * `frames` - The run's frames.
+/// * `name` - Their name, for messages.
+///
+/// # Errors
+///
+/// `InvalidInput` otherwise.
+fn check_lives(lives: &[Life], rows: usize, frames: usize, name: &str) -> Result<()> {
+    if lives.len() != rows {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!("{name}: expected one life per row"),
+        );
+    }
+    let count = i64::try_from(frames).unwrap_or(i64::MAX);
+    let ok = lives.iter().all(|&[made, removed, how]| {
+        let alive = removed == -1;
+        (0..count).contains(&made)
+            && (alive || (made..count).contains(&removed))
+            && if alive {
+                how == -1
+            } else {
+                (0..REMOVALS).contains(&how)
+            }
+    });
+    if !ok {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!("{name}: expected lives of the run's frames, removal codes"),
+        );
+    }
+    Ok(())
 }
 
 /// Checks stamped poses: finite, strictly ascending times, one rigid transform each.
@@ -265,6 +394,14 @@ fn check(run: &Run) -> Result<()> {
     if !run.points.iter().all(|p| p.iter().all(|v| v.is_finite())) {
         return fail(ErrorKind::InvalidInput, "points: expected finite values");
     }
+    let frames = run.diagnostics.len();
+    check_lives(&run.point_lives, run.points.len(), frames, "point_lives")?;
+    check_lives(
+        &run.keyframe_lives,
+        run.keyframe_timestamps.len(),
+        frames,
+        "keyframe_lives",
+    )?;
     if !finite(&run.settings) {
         return fail(
             ErrorKind::InvalidInput,
@@ -388,6 +525,8 @@ pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
     info_text.pop();
     info_text.push_str(", \"settings\": ");
     info_text.push_str(&json_object(&run.settings));
+    info_text.push_str(", \"record_features\": ");
+    info_text.push_str(if run.record_features { "true" } else { "false" });
     let integer_or_null =
         |value: Option<u64>| value.map_or_else(|| "null".to_owned(), |v| v.to_string());
     info_text.push_str(", \"peak_memory\": ");
@@ -420,7 +559,8 @@ pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
             format!("{}: {e}", folder.display()),
         )
     })?;
-    let files: [(&str, Vec<u8>); 6] = [
+    let lives = |lives: &[Life]| -> Vec<i64> { lives.iter().flatten().copied().collect() };
+    let files: [(&str, Vec<u8>); 8] = [
         ("run.json", info_text.into_bytes()),
         ("trajectory.txt", trajectory.into_bytes()),
         (
@@ -431,7 +571,15 @@ pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
             "keyframe_poses.npy",
             npy(&[run.keyframe_poses.len(), 4, 4], &poses),
         ),
+        (
+            "keyframe_lives.npy",
+            npy_int64(&[run.keyframe_lives.len(), 3], &lives(&run.keyframe_lives)),
+        ),
         ("points.npy", npy(&[run.points.len(), 3], &points)),
+        (
+            "point_lives.npy",
+            npy_int64(&[run.point_lives.len(), 3], &lives(&run.point_lives)),
+        ),
         ("diagnostics.jsonl", diagnostics.into_bytes()),
     ];
     for (name, data) in files {
@@ -440,11 +588,174 @@ pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
     Ok(())
 }
 
+/// Fails for a folder or file that cannot be written.
+///
+/// # Arguments
+///
+/// * `what` - The folder or file.
+/// * `error` - Why.
+///
+/// # Errors
+///
+/// Always: `InvalidInput`.
+fn unwritable<T>(what: &str, error: &std::io::Error) -> Result<T> {
+    fail(
+        ErrorKind::InvalidInput,
+        format!("{what}: could not be written ({error})"),
+    )
+}
+
+/// Streams a run's feature records into its folder, a frame at a time
+/// (`slam_it_all.eval.runs.FeatureWriter`): `PIXELS`, (N, 2) float32, and `RECORDS`, (N, 4)
+/// int32 of frame, level, fate and point. After each frame the files' headers count the rows so
+/// far, so each reads whole up to the last frame written. Frames are counted from 0, one per
+/// `write`.
+#[derive(Debug)]
+pub struct FeatureWriter {
+    /// The pixels' file.
+    pixels: File,
+    /// The records' file.
+    records: File,
+    /// Frames written.
+    frames: i64,
+    /// Rows written.
+    rows: usize,
+}
+
+impl FeatureWriter {
+    /// Opens the two files, each with no rows yet.
+    ///
+    /// # Arguments
+    ///
+    /// * `folder` - The run's folder, created if needed (the two files are replaced).
+    ///
+    /// # Returns
+    ///
+    /// The writer.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidInput` for a folder or file that cannot be written.
+    pub fn open(folder: &Path) -> Result<Self> {
+        let named = folder.display().to_string();
+        std::fs::create_dir_all(folder).or_else(|e| unwritable(&named, &e))?;
+        let mut writer = Self {
+            pixels: File::create(folder.join(PIXELS)).or_else(|e| unwritable(&named, &e))?,
+            records: File::create(folder.join(RECORDS)).or_else(|e| unwritable(&named, &e))?,
+            frames: 0,
+            rows: 0,
+        };
+        writer.count()?;
+        Ok(writer)
+    }
+
+    /// Appends one frame's keypoints.
+    ///
+    /// # Arguments
+    ///
+    /// * `xy` - Their pixels (written as float32).
+    /// * `level` - Their pyramid levels.
+    /// * `fate` - Their fates (indices in `slam_it_all.eval.runs.FATES`).
+    /// * `point` - The point each concerns, -1 exactly where unmatched.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidInput` for columns that are not one row per keypoint, a pixel that is not
+    /// finite, a negative level, an unknown fate, a point that is not an id or -1 exactly where
+    /// unmatched (nothing is written then), or a file that cannot be written.
+    pub fn write(
+        &mut self,
+        xy: &[[f64; 2]],
+        level: &[i64],
+        fate: &[i64],
+        point: &[i64],
+    ) -> Result<()> {
+        let name = format!("features of frame {}", self.frames);
+        let n = xy.len();
+        if level.len() != n || fate.len() != n || point.len() != n {
+            return fail(
+                ErrorKind::InvalidInput,
+                format!("{name}: expected xy (N, 2) and level, fate, point (N,)"),
+            );
+        }
+        if !xy.iter().flatten().all(|v| v.is_finite()) {
+            return fail(
+                ErrorKind::InvalidInput,
+                format!("{name}: pixels must be finite"),
+            );
+        }
+        if level.iter().any(|&l| l < 0) {
+            return fail(
+                ErrorKind::InvalidInput,
+                format!("{name}: a level must be at least 0"),
+            );
+        }
+        if fate.iter().any(|&f| !(0..FATES).contains(&f)) {
+            return fail(
+                ErrorKind::InvalidInput,
+                format!("{name}: a fate must be a code of FATES"),
+            );
+        }
+        if point
+            .iter()
+            .zip(fate)
+            .any(|(&p, &f)| p < -1 || (p == -1) != (f == 0))
+        {
+            return fail(
+                ErrorKind::InvalidInput,
+                format!("{name}: a point must be an id, -1 exactly when unmatched"),
+            );
+        }
+        let mut pixels = Vec::with_capacity(n * 8);
+        let mut records = Vec::with_capacity(n * 16);
+        for j in 0..n {
+            for value in xy[j] {
+                #[allow(clippy::cast_possible_truncation)] // float32 is the format's
+                pixels.extend((value as f32).to_le_bytes());
+            }
+            for value in [self.frames, level[j], fate[j], point[j]] {
+                #[allow(clippy::cast_possible_truncation)] // int32 is the format's
+                records.extend((value as i32).to_le_bytes());
+            }
+        }
+        self.pixels
+            .write_all(&pixels)
+            .or_else(|e| unwritable(PIXELS, &e))?;
+        self.records
+            .write_all(&records)
+            .or_else(|e| unwritable(RECORDS, &e))?;
+        self.frames += 1;
+        self.rows += n;
+        self.count()
+    }
+
+    /// Rewrites each header with the rows so far, and flushes.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidInput` if a file cannot be written.
+    fn count(&mut self) -> Result<()> {
+        let rows = self.rows;
+        let files = [
+            (&mut self.pixels, PIXELS, 2, "<f4"),
+            (&mut self.records, RECORDS, 4, "<i4"),
+        ];
+        for (file, name, columns, descr) in files {
+            file.seek(SeekFrom::Start(0))
+                .and_then(|_| file.write_all(&npy_header(&[rows, columns], descr)))
+                .and_then(|()| file.seek(SeekFrom::End(0)))
+                .and_then(|_| file.flush())
+                .or_else(|e| unwritable(name, &e))?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Native tests against the golden folder `tests/fixtures/eval/run/`, which Python wrote
-    //! from `run_values.json` (the C++ tests read them too): the `.npy` files byte for byte,
-    //! the JSON and trajectory value for value.
+    //! from `run_values.json` (the C++ tests read them too): the `.npy` files byte for byte (the
+    //! streamed feature files too), the JSON and trajectory value for value.
 
     use super::*;
     use serde_json::Value;
@@ -484,22 +795,27 @@ mod tests {
             .collect()
     }
 
-    /// A JSON object's scalars, in order.
+    /// A JSON object's members, as the writer takes them.
     fn flat(object: &Value) -> JsonObject {
         object
             .as_object()
             .unwrap()
             .iter()
-            .map(|(key, value)| {
-                let scalar = match value {
-                    Value::Bool(b) => JsonValue::Bool(*b),
-                    Value::Number(n) if n.is_i64() => JsonValue::Integer(n.as_i64().unwrap()),
-                    Value::Number(n) => JsonValue::Number(n.as_f64().unwrap()),
-                    other => JsonValue::Text(other.as_str().unwrap().to_owned()),
-                };
-                (key.clone(), scalar)
-            })
+            .map(|(key, value)| (key.clone(), value_of(value)))
             .collect()
+    }
+
+    /// A JSON value as the writer takes it, nested values included.
+    fn value_of(value: &Value) -> JsonValue {
+        match value {
+            Value::Null => JsonValue::Null,
+            Value::Bool(b) => JsonValue::Bool(*b),
+            Value::Number(n) if n.is_i64() => JsonValue::Integer(n.as_i64().unwrap()),
+            Value::Number(n) => JsonValue::Number(n.as_f64().unwrap()),
+            Value::String(s) => JsonValue::Text(s.clone()),
+            Value::Array(items) => JsonValue::Array(items.iter().map(value_of).collect()),
+            Value::Object(_) => JsonValue::Object(flat(value)),
+        }
     }
 
     /// The run Python wrote, as the Rust backend.
@@ -541,7 +857,23 @@ mod tests {
                     .collect()
             }),
             memory_cap: values["memory_cap"].as_u64(),
+            point_lives: lives(&values["point_lives"]),
+            keyframe_lives: lives(&values["keyframe_lives"]),
+            record_features: values["record_features"].as_bool().unwrap(),
         }
+    }
+
+    /// Lives from JSON rows of three integers.
+    fn lives(values: &Value) -> Vec<Life> {
+        values
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|life| {
+                let at = |k: usize| life[k].as_i64().unwrap();
+                [at(0), at(1), at(2)]
+            })
+            .collect()
     }
 
     /// A trajectory file's numbers.
@@ -591,7 +923,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&out);
         let _guard = Scratch(out.clone());
         write_run(&out, &golden_run()).unwrap();
-        for name in ["keyframes.npy", "keyframe_poses.npy", "points.npy"] {
+        for name in [
+            "keyframes.npy",
+            "keyframe_poses.npy",
+            "keyframe_lives.npy",
+            "points.npy",
+            "point_lives.npy",
+        ] {
             assert_eq!(
                 std::fs::read(out.join(name)).unwrap(),
                 std::fs::read(golden.join(name)).unwrap(),
@@ -630,6 +968,95 @@ mod tests {
         let info = &json(&out.join("run.json"), false)[0];
         for key in ["peak_memory", "cpus", "memory_cap"] {
             assert!(info[key].is_null(), "{key}");
+        }
+    }
+
+    /// One frame's keypoints, as `run_values.json` holds them: pixels, levels, fates, points.
+    type Keypoints = (Vec<[f64; 2]>, Vec<i64>, Vec<i64>, Vec<i64>);
+
+    /// Integers from JSON.
+    fn integers(values: &Value) -> Vec<i64> {
+        values
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_i64().unwrap())
+            .collect()
+    }
+
+    /// Writes one frame's keypoints.
+    fn write(writer: &mut FeatureWriter, frame: &Keypoints) -> Result<()> {
+        writer.write(&frame.0, &frame.1, &frame.2, &frame.3)
+    }
+
+    #[test]
+    fn the_golden_features_are_reproduced() {
+        let text = std::fs::read_to_string(fixtures().join("run_values.json")).unwrap();
+        let values: Value = serde_json::from_str(&text).unwrap();
+        let frames: Vec<Keypoints> = values["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|frame| {
+                let xy = frame["xy"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|p| [p[0].as_f64().unwrap(), p[1].as_f64().unwrap()])
+                    .collect();
+                let columns = ["level", "fate", "point"].map(|key| integers(&frame[key]));
+                let [level, fate, point] = columns;
+                (xy, level, fate, point)
+            })
+            .collect();
+        // Named for this process: concurrent test runs never share the folder.
+        let out = std::env::temp_dir().join(format!(
+            "slam_it_all_rust_test_features_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&out);
+        let _guard = Scratch(out.clone());
+        let mut writer = FeatureWriter::open(&out).unwrap();
+        write(&mut writer, &frames[0]).unwrap();
+        let after_one = std::fs::read(out.join(RECORDS)).unwrap();
+        assert_eq!(after_one.len(), 128 + 3 * 16);
+        assert!(String::from_utf8_lossy(&after_one[..128]).contains("'shape': (3, 4)"));
+        let mut tracked_without_point = frames[0].clone();
+        tracked_without_point.2[2] = 2;
+        let mut made_without_point = frames[0].clone();
+        made_without_point.3[0] = -1;
+        let mut unknown_fate = frames[0].clone();
+        unknown_fate.2[0] = FATES;
+        let mut negative_level = frames[0].clone();
+        negative_level.1[0] = -1;
+        let mut not_finite = frames[0].clone();
+        not_finite.0[1][0] = f64::NAN;
+        let mut short = frames[0].clone();
+        short.3.pop();
+        for bad in [
+            tracked_without_point,
+            made_without_point,
+            unknown_fate,
+            negative_level,
+            not_finite,
+            short,
+        ] {
+            assert_eq!(
+                write(&mut writer, &bad).unwrap_err().kind,
+                ErrorKind::InvalidInput
+            );
+        }
+        assert_eq!(std::fs::read(out.join(RECORDS)).unwrap(), after_one);
+        for frame in &frames[1..] {
+            write(&mut writer, frame).unwrap();
+        }
+        let golden = fixtures().join("run");
+        for name in [PIXELS, RECORDS] {
+            assert_eq!(
+                std::fs::read(out.join(name)).unwrap(),
+                std::fs::read(golden.join(name)).unwrap(),
+                "{name}"
+            );
         }
     }
 
@@ -678,6 +1105,18 @@ mod tests {
             write_run(&out, &run).unwrap_err().kind,
             ErrorKind::InvalidInput
         );
+        let mut short = golden_run();
+        short.point_lives.pop();
+        let mut early = golden_run();
+        early.point_lives[1] = [3, 0, 1];
+        let mut alive = golden_run();
+        alive.keyframe_lives[0] = [0, -1, 2];
+        for run in [short, early, alive] {
+            assert_eq!(
+                write_run(&out, &run).unwrap_err().kind,
+                ErrorKind::InvalidInput
+            );
+        }
         assert!(!out.exists());
         assert_eq!(
             (json_number(1.0), json_number(0.1)),

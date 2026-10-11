@@ -18,9 +18,13 @@ builds each frame for the mode (:mod:`slam_it_all.edge.frames`), tracks it
 - **The frames.** ``count`` of them from ``first`` (all by default), in the sequence's order.
   An RGB-D frame without a depth map within the reader's tolerance is skipped.
 - **Each frame** gives one diagnostics line (``timestamp``, ``state``, ``tracked``,
-  ``keyframe``, and the time each step took, in seconds: the run format's
-  :data:`slam_it_all.eval.runs.STEPS`) and, if tracked, its ``T_world_cam``. The run ends at the
-  frame that loses the track. The steps, as a camera and ORB-SLAM's threads divide them:
+  ``keyframe``, the time each step took, in seconds: the run format's
+  :data:`slam_it_all.eval.runs.STEPS`; then how its stages went:
+  :meth:`slam_it_all.edge.pipeline.FrameSummary.as_dict`'s keys) and, if tracked, its
+  ``T_world_cam``; with ``record_features``, its keypoints' pixels, levels and fates, streamed
+  to the run's folder as it goes (:class:`slam_it_all.eval.runs.FeatureWriter`). The run ends at
+  the frame that loses the track. The steps, as a camera and
+  ORB-SLAM's threads divide them:
 
   - ``read_seconds``: delivering the frame's images, decoded (a depth map in metres), and a
     stereo pair rectified, as ORB-SLAM2's examples do before they hand a frame over;
@@ -30,7 +34,8 @@ builds each frame for the mode (:mod:`slam_it_all.edge.frames`), tracks it
     keyframe (:class:`slam_it_all.edge.pipeline.FrameResult`). Mapping here includes making the
     keyframe and, with depth, its close points, which ORB-SLAM2's tracking thread does
     (``Tracking::CreateNewKeyFrame``) before it hands the keyframe to local mapping.
-- **At the end,** the map's keyframes (their times and ``T_world_cam``) and points. The run's
+- **At the end,** every keyframe and point the run made (their times, last ``T_world_cam`` and
+  positions) and their lives (:meth:`slam_it_all.edge.pipeline.Pipeline.lifetimes`). The run's
   ``sequence`` is its folder's name (the path resolved), its ``settings`` the pipeline's
   options.
 
@@ -50,6 +55,7 @@ process holds more than the run.
 
 from __future__ import annotations
 
+import contextlib
 import re
 import subprocess
 import sys
@@ -75,9 +81,6 @@ from slam_it_all.foundations.errors import (
     SlamItAllError,
 )
 
-DATASETS = ("tum", "euroc")
-"""The datasets a sequence can come from."""
-
 PROGRAM = "slam_it_all_vo"
 """The native programs' name, in C++ (``cpp/apps/orchestration/``) and Rust
 (``rust/slam-it-all-orchestration``), and the prefix of every program's messages."""
@@ -87,7 +90,8 @@ MODULE = "slam_it_all.orchestration.vo"
 
 USAGE = (
     f"usage: python -m {MODULE} --dataset tum|euroc --sequence PATH --mode "
-    "monocular|stereo|rgbd --out RUN_DIR [--first I] [--count N] [--option KEY=VALUE ...]"
+    "monocular|stereo|rgbd --out RUN_DIR [--first I] [--count N] [--record-features] "
+    "[--option KEY=VALUE ...]"
 )
 """Python's program's command line: the native programs' (their ``kUsage``/``USAGE``)."""
 
@@ -106,6 +110,9 @@ _ERRORS: tuple[type[SlamItAllError], ...] = (InvalidInputError, DegenerateError,
 _REQUIRED = ("--dataset", "--sequence", "--mode", "--out")
 """The flags every command line gives."""
 
+_RECORD_FEATURES = "--record-features"
+"""The one flag without a value: record each frame's keypoints, with their fates."""
+
 
 class UsageError(InvalidInputError):
     """A command line the program cannot read: :data:`EXIT_USAGE`, not a failed run."""
@@ -118,7 +125,7 @@ class Request:
     Attributes
     ----------
     dataset : str
-        One of :data:`DATASETS`.
+        One of :data:`slam_it_all.eval.runs.DATASETS`.
     sequence : pathlib.Path
         The sequence's folder.
     mode : str
@@ -131,6 +138,8 @@ class Request:
         The frames run from it, or None for all.
     options : slam_it_all.edge.options.Options
         The pipeline's settings.
+    record_features : bool
+        Whether the run records each frame's keypoints, with their fates.
     """
 
     dataset: str
@@ -140,6 +149,7 @@ class Request:
     first: int = 0
     count: int | None = None
     options: Options = field(default_factory=Options)
+    record_features: bool = False
 
     def arguments(self) -> list[str]:
         """Return the native program's command line for the request.
@@ -147,9 +157,9 @@ class Request:
         Returns
         -------
         list of str
-            The arguments after the program's name: every flag, and ``--option KEY=VALUE``
-            for each setting that differs from its default (integers as integers, reals
-            round-tripping).
+            The arguments after the program's name: every flag (``--record-features`` if
+            asked), and ``--option KEY=VALUE`` for each setting that differs from its default
+            (integers as integers, reals round-tripping).
         """
         out = [
             "--dataset",
@@ -165,6 +175,8 @@ class Request:
         ]
         if self.count is not None:
             out += ["--count", str(self.count)]
+        if self.record_features:
+            out.append("--record-features")
         defaults = Options()
         for setting in fields(Options):
             value, default = getattr(self.options, setting.name), getattr(defaults, setting.name)
@@ -189,8 +201,9 @@ def check(request: Request) -> None:
         pairs, EuRoC no depth maps), or a negative `first` or `count`. (The options checked
         themselves when they were made.)
     """
-    if request.dataset not in DATASETS:
-        raise InvalidInputError(f"dataset: expected tum or euroc, got {request.dataset!r}")
+    if request.dataset not in runs.DATASETS:
+        wanted = " or ".join(runs.DATASETS)
+        raise InvalidInputError(f"dataset: expected {wanted}, got {request.dataset!r}")
     if request.mode not in MODES:
         raise InvalidInputError(f"--mode: expected monocular, stereo or rgbd, got {request.mode!r}")
     if request.dataset == "tum" and request.mode == "stereo":
@@ -247,8 +260,8 @@ def parse_setting(text: str) -> tuple[str, int | float]:
 def parse(arguments: Sequence[str]) -> Request:
     """Read a program's command line (:data:`USAGE`), as the native programs read theirs.
 
-    Flags come in any order, each with its value; ``--option KEY=VALUE`` is repeatable and
-    names a field of :class:`~slam_it_all.edge.options.Options`.
+    Flags come in any order, each with its value but ``--record-features``; ``--option
+    KEY=VALUE`` is repeatable and names a field of :class:`~slam_it_all.edge.options.Options`.
 
     Parameters
     ----------
@@ -271,11 +284,19 @@ def parse(arguments: Sequence[str]) -> Request:
     values: dict[str, str] = {}
     numbers: dict[str, int] = {}
     changes: dict[str, Any] = {}  # each of its field's type (parse_setting)
-    for i in range(0, len(arguments), 2):
+    i = 0
+    while i < len(arguments):
         flag = arguments[i]
+        if flag == _RECORD_FEATURES:
+            if flag in values:
+                raise UsageError(f"{flag}: given twice")
+            values[flag] = ""
+            i += 1
+            continue
         if i + 1 == len(arguments):
             raise UsageError(f"{flag}: expected a value")
         value = arguments[i + 1]
+        i += 2
         if flag == "--option":
             key, setting = parse_setting(value)
             changes[key] = setting
@@ -300,6 +321,7 @@ def parse(arguments: Sequence[str]) -> Request:
         first=numbers.get("--first", 0),
         count=numbers.get("--count"),
         options=replace(Options(), **changes),
+        record_features=_RECORD_FEATURES in values,
     )
 
 
@@ -341,6 +363,7 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
     first: int = 0,
     count: int | None = None,
     budget: budgets.Budget | None = None,
+    record_features: bool = False,
 ) -> runs.Run:
     """Run a sequence through the edge pipeline and write its run folder.
 
@@ -366,6 +389,9 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
         A compute budget to run within: the backend's program (Python's too, rather than the
         in-process run) pinned to the budget's cores and its memory capped
         (:func:`slam_it_all.eval.budgets.command`).
+    record_features : bool, optional
+        Whether to record each frame's keypoints, with their fates
+        (:func:`slam_it_all.eval.runs.read_features` reads them; default: no).
 
     Returns
     -------
@@ -397,6 +423,7 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
         first=first,
         count=count,
         options=Options() if options is None else options,
+        record_features=record_features,
     )
     backends.check_name(backend)
     check(request)
@@ -408,11 +435,22 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
 
 
 @dataclass(frozen=True)
-class _Delivered:
+class Delivered:
     """A frame's images as a camera delivers them: decoded, and a stereo pair rectified.
 
     A monocular frame has its image only, a stereo frame the right image too, and an RGB-D
     frame its depth map, in metres.
+
+    Attributes
+    ----------
+    timestamp : float
+        The frame's time, in seconds.
+    image : ndarray of uint8, shape (H, W)
+        Its gray image (the left one, rectified, for stereo).
+    right : ndarray of uint8, shape (H, W), or None
+        A stereo frame's right image, rectified.
+    depth : ndarray of float64, shape (H, W), or None
+        An RGB-D frame's depth map, in metres.
     """
 
     timestamp: float
@@ -421,21 +459,32 @@ class _Delivered:
     depth: NDArray[np.float64] | None = None
 
 
-_Reader = Callable[[int], _Delivered | None]
-"""Delivers the images at an index: None for a frame the run skips."""
-
-
 @dataclass(frozen=True)
-class _Source:
-    """A sequence opened for a run: the camera, its frames, and how to read each."""
+class Source:
+    """A sequence opened for a run (:func:`open_source`): its camera and frames.
+
+    Attributes
+    ----------
+    camera : slam_it_all.edge.frames.Camera
+        The camera the pipeline runs with: a stereo pair's rectified left camera.
+    times : ndarray of float64, shape (F,)
+        Each frame's time, in seconds, in the sequence's order.
+    read : callable
+        ``read(i)``: frame ``i``'s images as delivered (:class:`Delivered`); None for a frame
+        the run skips (an RGB-D frame without a depth map).
+    view : callable
+        ``view(i)``: frame ``i``'s image as the pipeline sees it (a stereo pair's left image
+        rectified), in colour where the sequence has colour: uint8, (H, W) or (H, W, 3).
+    """
 
     camera: frames.Camera
-    count: int
-    read: _Reader
+    times: NDArray[np.float64]
+    read: Callable[[int], Delivered | None]
+    view: Callable[[int], NDArray[np.uint8]]
 
 
 def _build(
-    delivered: _Delivered,
+    delivered: Delivered,
     camera: frames.Camera,
     extraction: orb.Options,
     matching: stereo.Options,
@@ -453,7 +502,7 @@ def _build(
     return frames.monocular(delivered.image, delivered.timestamp, camera, extraction)
 
 
-def _tum_source(root: Path, mode: str) -> _Source:
+def _tum_source(root: Path, mode: str) -> Source:
     """Open a TUM-format folder: its camera, an RGB-D one with the virtual baseline."""
     read = tum.read_frames(root)
     sensor = read.camera
@@ -467,20 +516,23 @@ def _tum_source(root: Path, mode: str) -> _Source:
         baseline = sensor.bf / float(sensor.intrinsics[0])
     camera = frames.Camera(sensor.model, sensor.intrinsics, sensor.width, sensor.height, baseline)
 
-    def deliver(i: int) -> _Delivered | None:
+    def deliver(i: int) -> Delivered | None:
         gray = images.read_gray(read.images[i])
         timestamp = float(read.timestamps[i])
         if mode == "monocular":
-            return _Delivered(timestamp, gray)
+            return Delivered(timestamp, gray)
         depth_file = read.depths[i]
         if depth_file is None:
             return None
-        return _Delivered(timestamp, gray, depth=tum.read_depth(depth_file, sensor.depth_scale))
+        return Delivered(timestamp, gray, depth=tum.read_depth(depth_file, sensor.depth_scale))
 
-    return _Source(camera, len(read.images), deliver)
+    def view(i: int) -> NDArray[np.uint8]:
+        return images.read_rgb(read.images[i])
+
+    return Source(camera, np.asarray(read.timestamps, dtype=np.float64), deliver, view)
 
 
-def _stereo_source(read: euroc.Frames) -> _Source:
+def _stereo_source(read: euroc.Frames) -> Source:
     """Open a EuRoC sequence's stereo pairs, rectified: the rectified left camera."""
     left, right = read.left_camera, read.right_camera
     rectification = stereo.rectify(
@@ -490,17 +542,20 @@ def _stereo_source(read: euroc.Frames) -> _Source:
     rows, cols = left.shape
     camera = frames.Camera("pinhole", rectification.intrinsics, cols, rows, rectification.baseline)
 
-    def deliver(i: int) -> _Delivered:
+    def deliver(i: int) -> Delivered:
         left_image, right_image = (
             image.remap(images.read_gray(path), coordinates)
             for path, coordinates in zip((read.left[i], read.right[i]), maps, strict=True)
         )
-        return _Delivered(float(read.timestamps[i]), left_image, right=right_image)
+        return Delivered(float(read.timestamps[i]), left_image, right=right_image)
 
-    return _Source(camera, len(read.left), deliver)
+    def view(i: int) -> NDArray[np.uint8]:
+        return image.remap(images.read_gray(read.left[i]), maps[0])
+
+    return Source(camera, np.asarray(read.timestamps, dtype=np.float64), deliver, view)
 
 
-def _euroc_source(root: Path, mode: str) -> _Source:
+def _euroc_source(root: Path, mode: str) -> Source:
     """Open a EuRoC sequence: its left camera for monocular, the pairs rectified for stereo."""
     read = euroc.read_frames(root)
     if mode == "stereo":
@@ -509,53 +564,95 @@ def _euroc_source(root: Path, mode: str) -> _Source:
     rows, cols = left.shape
     camera = frames.Camera("radtan", left.intrinsics, cols, rows)
 
-    def deliver(i: int) -> _Delivered:
-        return _Delivered(float(read.timestamps[i]), images.read_gray(read.left[i]))
+    def deliver(i: int) -> Delivered:
+        return Delivered(float(read.timestamps[i]), images.read_gray(read.left[i]))
 
-    return _Source(camera, len(read.left), deliver)
+    def view(i: int) -> NDArray[np.uint8]:
+        return images.read_gray(read.left[i])
+
+    return Source(camera, np.asarray(read.timestamps, dtype=np.float64), deliver, view)
+
+
+def open_source(dataset: str, sequence: str | Path, mode: str) -> Source:
+    """Open a dataset's sequence as a run reads it.
+
+    Parameters
+    ----------
+    dataset : str
+        The dataset, one of :data:`slam_it_all.eval.runs.DATASETS`.
+    sequence : str or pathlib.Path
+        The sequence's folder.
+    mode : {"monocular", "stereo", "rgbd"}
+        The sensor mode (checked with the dataset by :func:`check`).
+
+    Returns
+    -------
+    Source
+        The camera, the frames' times, and their readers.
+
+    Raises
+    ------
+    FileNotFoundError
+        If a file of the sequence is missing.
+    slam_it_all.foundations.errors.InvalidInputError
+        If the dataset is not one of :data:`slam_it_all.eval.runs.DATASETS`, a file is
+        malformed, or an RGB-D sequence's camera gives no ``bf``.
+    """
+    root = Path(sequence)
+    if dataset == "tum":
+        return _tum_source(root, mode)
+    if dataset == "euroc":
+        return _euroc_source(root, mode)
+    raise InvalidInputError(f"dataset: expected one of {runs.DATASETS}, got {dataset!r}")
 
 
 def _run_here(request: Request) -> runs.Run:
     """Run the request with the Python pipeline, in-process."""
-    if request.dataset == "tum":
-        source = _tum_source(request.sequence, request.mode)
-    else:
-        source = _euroc_source(request.sequence, request.mode)
+    source = open_source(request.dataset, request.sequence, request.mode)
     matching = request.options.stereo_matching()
     tracker = Pipeline(request.mode, source.camera, request.options)
-    end = source.count
+    end = len(source.times)
     if request.count is not None:
         end = min(end, request.first + request.count)
     times: list[float] = []
     poses: list[NDArray[np.float64]] = []
     diagnostics: list[dict[str, object]] = []
-    for i in range(request.first, end):
-        start = time.perf_counter()
-        delivered = source.read(i)
-        after_read = time.perf_counter()
-        if delivered is None:
-            continue
-        frame = _build(delivered, source.camera, tracker.extraction(), matching)
-        after_build = time.perf_counter()
-        result = tracker.track(frame)
-        diagnostics.append(
-            {
-                "timestamp": result.timestamp,
-                "state": result.state.value,
-                "tracked": result.tracked,
-                "keyframe": result.keyframe,
-                "read_seconds": after_read - start,
-                "build_seconds": after_build - after_read,
-                "track_seconds": result.track_seconds,
-                "map_seconds": result.map_seconds,
-            }
-        )
-        if result.pose is not None:
-            poses.append(se3.inverse(result.pose))
-            times.append(result.timestamp)
-        if result.state is State.LOST:
-            break
-    m = tracker.map
+    recording: contextlib.AbstractContextManager[runs.FeatureWriter | None] = (
+        runs.FeatureWriter(request.out) if request.record_features else contextlib.nullcontext()
+    )
+    with recording as features:
+        for i in range(request.first, end):
+            start = time.perf_counter()
+            delivered = source.read(i)
+            after_read = time.perf_counter()
+            if delivered is None:
+                continue
+            frame = _build(delivered, source.camera, tracker.extraction(), matching)
+            after_build = time.perf_counter()
+            result = tracker.track(frame)
+            diagnostics.append(
+                {
+                    "timestamp": result.timestamp,
+                    "state": result.state.value,
+                    "tracked": result.tracked,
+                    "keyframe": result.keyframe,
+                    "read_seconds": after_read - start,
+                    "build_seconds": after_build - after_read,
+                    "track_seconds": result.track_seconds,
+                    "map_seconds": result.map_seconds,
+                    **result.summary.as_dict(),
+                }
+            )
+            if features is not None:
+                keypoints = frame.features.keypoints
+                features.write(keypoints.xy, keypoints.level, result.fates.fate, result.fates.point)
+            if result.pose is not None:
+                poses.append(se3.inverse(result.pose))
+                times.append(result.timestamp)
+            if result.state is State.LOST:
+                break
+    lives = tracker.lifetimes()
+    keyframes = lives.keyframe_poses
     return runs.Run(
         dataset=request.dataset,
         sequence=request.sequence.resolve().name,
@@ -563,11 +660,14 @@ def _run_here(request: Request) -> runs.Run:
         backend="python",
         timestamps=np.array(times),
         poses=np.array(poses).reshape(-1, 4, 4),
-        keyframe_timestamps=np.zeros(0) if m is None else m.kf_time,
-        keyframe_poses=np.zeros((0, 4, 4)) if m is None else se3.inverse(m.kf_pose),
-        points=np.zeros((0, 3)) if m is None else m.pt_xyz,
+        keyframe_timestamps=lives.keyframe_times,
+        keyframe_poses=se3.inverse(keyframes) if len(keyframes) else np.zeros((0, 4, 4)),
+        points=lives.points,
         settings=request.options.as_dict(),
         diagnostics=diagnostics,
+        point_lives=lives.point_lives,
+        keyframe_lives=lives.keyframe_lives,
+        record_features=request.record_features,
     )
 
 
@@ -633,7 +733,8 @@ def main(arguments: Sequence[str]) -> int:
         return EXIT_FAILED + next(k for k, kind in enumerate(_ERRORS) if isinstance(error, kind))
     print(
         f"{PROGRAM}: {len(done.timestamps)} of {len(done.diagnostics)} frames tracked, "
-        f"{len(done.keyframe_timestamps)} keyframes, {len(done.points)} points -> {request.out}"
+        f"{len(done.final_keyframes()[0])} keyframes, {len(done.final_points())} points "
+        f"-> {request.out}"
     )
     return 0
 

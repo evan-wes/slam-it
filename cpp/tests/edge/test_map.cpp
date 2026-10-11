@@ -109,16 +109,31 @@ void check_building(int& failures) {
 /// @param failures Running failure count.
 void check_removing(int& failures) {
   edge::Map m = two_keyframes(failures);
+  const Eigen::Vector3d first = m.pt_xyz[0];
   expect(edge::forget_observations(m, std::vector<std::int64_t>{4}).has_value() &&
              edge::point_count(m) == 1 && m.pt_id[0] == 1 && m.kp_point[0] == -1,
          "a point left seen once with depth (weight 2) is erased", failures);
+  const auto weak = static_cast<std::int64_t>(edge::Removal::kWeak);
+  expect(m.gone_pt_id == std::vector<std::int64_t>{0} && m.gone_pt_xyz.size() == 1 &&
+             m.gone_pt_xyz[0] == first && m.gone_pt_how == std::vector<std::int64_t>{weak},
+         "the erased point is kept aside, where it was, as too weakly seen", failures);
+  const double time = m.kf_time[0];
   expect(edge::erase_keyframe(m, 0).has_value() && edge::keyframe_count(m) == 1 &&
              m.kf_start == std::vector<std::int64_t>{0, 4} && edge::point_count(m) == 0,
          "erasing a keyframe moves the next one up and drops its weak points", failures);
+  expect(m.gone_kf_id == std::vector<std::int64_t>{0} && m.gone_kf_time == std::vector{time} &&
+             m.gone_kf_pose.size() == 1 && m.gone_pt_id == std::vector<std::int64_t>{0, 1} &&
+             edge::check_map(m).has_value(),
+         "the erased keyframe is kept aside with the point it left too weakly seen", failures);
+  edge::clear_gone(m);
+  expect(m.gone_pt_id.empty() && m.gone_pt_xyz.empty() && m.gone_pt_how.empty() &&
+             m.gone_kf_id.empty() && m.gone_kf_time.empty() && m.gone_kf_pose.empty(),
+         "clearing empties the archive", failures);
   expect(is_invalid_input(edge::erase_keyframe(m, 1)), "erase_keyframe rejects a row past the end",
          failures);
-  expect(is_invalid_input(edge::erase_points(m, std::vector<std::uint8_t>{1})),
-         "erase_points rejects flags that are not one per point", failures);
+  expect(
+      is_invalid_input(edge::erase_points(m, std::vector<std::uint8_t>{1}, edge::Removal::kCulled)),
+      "erase_points rejects flags that are not one per point", failures);
 }
 
 /// @brief Check the observation index: kept by the operations, refused by `check_map` stale.
@@ -147,7 +162,8 @@ void check_index(int& failures) {
   expect(is_invalid_input(edge::observe(m, 8, 0)) && is_invalid_input(edge::observe(m, 2, 7)),
          "observe rejects a row out of range and a point not in the map", failures);
   edge::Map erased = m;
-  expect(edge::erase_points(erased, std::vector<std::uint8_t>{0, 1}).has_value() &&
+  expect(edge::erase_points(erased, std::vector<std::uint8_t>{0, 1}, edge::Removal::kFused)
+                 .has_value() &&
              erased.pt_observations == Lists{{0, 4}} && edge::check_map(erased).has_value(),
          "erasing a point keeps the lists of the points before it", failures);
   edge::Map stale = m;

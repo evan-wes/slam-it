@@ -4,28 +4,32 @@
 //! `slam_it_all.edge.frames.Frame.as_dict` builds; the camera and the settings are the dicts of
 //! scalars `Camera.as_dict` and `Options.as_dict` give. Arrays are C-contiguous, of the dtype and
 //! shape the Python dataclasses hold; a malformed dict raises `ValueError`, and the map is then
-//! checked by the core (`check_map`, an `InvalidInputError`).
+//! checked by the core (`check_map`, an `InvalidInputError`). A stage's summary crosses back as
+//! a dict of its fields, an empty count as None and an enum as its code in the module's
+//! `codes()`.
 
 use nalgebra::{Matrix4, Vector3};
 use numpy::ndarray::{Array1, Array2, Array3};
 use numpy::{
-    Element, IntoPyArray, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3,
+    Element, IntoPyArray, PyArray3, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3,
     PyUntypedArrayMethods,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyList};
+use slam_it_all_edge::adjust::Solve;
 use slam_it_all_edge::frames::{Camera, Frame, Tracked};
-use slam_it_all_edge::initialization::Started;
+use slam_it_all_edge::initialization::{Initialization, Outcome};
 use slam_it_all_edge::map::{Map, check_map, index_observations};
 use slam_it_all_edge::options::{Mode, Options, Setting};
 use slam_it_all_foundations::camera::Model;
+use slam_it_all_foundations::nls;
 use slam_it_all_foundations::orb::{DESCRIPTOR_BYTES, Descriptor, Features, Keypoint};
 
-use crate::common::{by_name, contiguous, item_array, to_i64, unwrap};
+use crate::common::{by_name, contiguous, encode, item_array, to_i64, unwrap};
 
 /// The map's fields, as the dict's keys.
-const MAP_KEYS: [&str; 26] = [
+const MAP_KEYS: [&str; 32] = [
     "levels",
     "scale_factor",
     "kf_id",
@@ -52,6 +56,12 @@ const MAP_KEYS: [&str; 26] = [
     "pt_reference_kf",
     "next_kf_id",
     "next_pt_id",
+    "gone_pt_id",
+    "gone_pt_xyz",
+    "gone_pt_how",
+    "gone_kf_id",
+    "gone_kf_time",
+    "gone_kf_pose",
 ];
 
 /// The frame's fields, as the dict's keys.
@@ -250,6 +260,12 @@ pub fn map_in(py: Python<'_>, values: &Bound<'_, PyDict>) -> PyResult<Map> {
         pt_reference_kf: vector(&get("pt_reference_kf")?)?,
         next_kf_id: get("next_kf_id")?.extract()?,
         next_pt_id: get("next_pt_id")?.extract()?,
+        gone_pt_id: vector(&get("gone_pt_id")?)?,
+        gone_pt_xyz: vectors(&get("gone_pt_xyz")?)?,
+        gone_pt_how: vector(&get("gone_pt_how")?)?,
+        gone_kf_id: vector(&get("gone_kf_id")?)?,
+        gone_kf_time: vector(&get("gone_kf_time")?)?,
+        gone_kf_pose: poses(&get("gone_kf_pose")?)?,
         pt_observations: Vec::new(),
     };
     index_observations(&mut m);
@@ -331,6 +347,33 @@ pub fn indices_array<'py>(py: Python<'py>, values: &[usize]) -> Bound<'py, PyAny
     vector_array(py, &converted)
 }
 
+/// Builds `(K, 4, 4)` poses as an array.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `poses` - The poses.
+///
+/// # Returns
+///
+/// The array, row-major.
+///
+/// # Errors
+///
+/// A Python error if the array cannot be shaped.
+fn poses_array<'py>(
+    py: Python<'py>,
+    poses: &[Matrix4<f64>],
+) -> PyResult<Bound<'py, PyArray3<f64>>> {
+    let values: Vec<f64> = poses
+        .iter()
+        .flat_map(|p| p.transpose().iter().copied().collect::<Vec<_>>())
+        .collect();
+    let array = Array3::from_shape_vec((poses.len(), 4, 4), values)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok(array.into_pyarray(py))
+}
+
 /// Builds the dict of a map's fields.
 ///
 /// # Arguments
@@ -351,14 +394,7 @@ pub fn map_dict<'py>(py: Python<'py>, m: &Map) -> PyResult<Bound<'py, PyDict>> {
     out.set_item("scale_factor", m.scale_factor)?;
     out.set_item("kf_id", vector_array(py, &m.kf_id))?;
     out.set_item("kf_time", vector_array(py, &m.kf_time))?;
-    let poses: Vec<f64> = m
-        .kf_pose
-        .iter()
-        .flat_map(|p| p.transpose().iter().copied().collect::<Vec<_>>())
-        .collect();
-    let poses = Array3::from_shape_vec((m.kf_pose.len(), 4, 4), poses)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    out.set_item("kf_pose", poses.into_pyarray(py))?;
+    out.set_item("kf_pose", poses_array(py, &m.kf_pose)?)?;
     out.set_item("kf_start", indices_array(py, &m.kf_start))?;
     out.set_item("kp_xy", rows_array(py, &m.kp_xy)?)?;
     out.set_item("kp_level", indices_array(py, &m.kp_level))?;
@@ -380,6 +416,12 @@ pub fn map_dict<'py>(py: Python<'py>, m: &Map) -> PyResult<Bound<'py, PyDict>> {
     out.set_item("pt_reference_kf", vector_array(py, &m.pt_reference_kf))?;
     out.set_item("next_kf_id", m.next_kf_id)?;
     out.set_item("next_pt_id", m.next_pt_id)?;
+    out.set_item("gone_pt_id", vector_array(py, &m.gone_pt_id))?;
+    out.set_item("gone_pt_xyz", vectors_array(py, &m.gone_pt_xyz)?)?;
+    out.set_item("gone_pt_how", vector_array(py, &m.gone_pt_how))?;
+    out.set_item("gone_kf_id", vector_array(py, &m.gone_kf_id))?;
+    out.set_item("gone_kf_time", vector_array(py, &m.gone_kf_time))?;
+    out.set_item("gone_kf_pose", poses_array(py, &m.gone_kf_pose)?)?;
     Ok(out)
 }
 
@@ -616,25 +658,85 @@ pub fn mode_in(name: &str) -> PyResult<Mode> {
     by_name(&Mode::ALL, Mode::name, name, "mode")
 }
 
-/// Builds a started map's dict, or None.
+/// A count, or None.
 ///
 /// # Arguments
 ///
 /// * `py` - The Python token.
-/// * `started` - The map and its tracked frame, if any.
+/// * `count` - The count, if any.
 ///
 /// # Returns
 ///
-/// `map` (as [`map_dict`]), `pose` (4, 4) and `points` (N,); or None.
+/// It as an int, or None.
+///
+/// # Errors
+///
+/// A Python error if the count does not fit an int.
+pub fn count_or_none(py: Python<'_>, count: Option<usize>) -> PyResult<Bound<'_, PyAny>> {
+    match count {
+        Some(count) => Ok(to_i64(count).into_pyobject(py)?.into_any()),
+        None => Ok(py.None().into_bound(py)),
+    }
+}
+
+/// Builds bundle-adjustment solves as they cross (`slam_it_all.edge.adjust.decode_solves`).
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `solves` - The solves.
+///
+/// # Returns
+///
+/// A list of dicts of `initial_cost`, `final_cost`, `iterations` and `termination` (its code
+/// in `nls_termination`).
+///
+/// # Errors
+///
+/// A Python error if the list cannot be built.
+pub fn solves_list<'py>(py: Python<'py>, solves: &[Solve]) -> PyResult<Bound<'py, PyList>> {
+    let out = PyList::empty(py);
+    for solve in solves {
+        let item = PyDict::new(py);
+        item.set_item("initial_cost", solve.initial_cost)?;
+        item.set_item("final_cost", solve.final_cost)?;
+        item.set_item("iterations", to_i64(solve.iterations))?;
+        item.set_item(
+            "termination",
+            encode(&nls::Termination::ALL, solve.termination)?,
+        )?;
+        out.append(item)?;
+    }
+    Ok(out)
+}
+
+/// Builds an attempt to start the map as a dict.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `attempt` - The attempt.
+///
+/// # Returns
+///
+/// `started` (a dict of `map`, as [`map_dict`], `pose` (4, 4) and `points` (N,); or None),
+/// `outcome` (its code), `matches` (or None) and `solves` (as [`solves_list`]).
 ///
 /// # Errors
 ///
 /// A Python error if the dict cannot be built.
-pub fn started_dict(py: Python<'_>, started: Option<Started>) -> PyResult<Bound<'_, PyAny>> {
-    let Some(started) = started else {
-        return Ok(py.None().into_bound(py));
-    };
-    let out = tracked_dict(py, &started.tracked)?;
-    out.set_item("map", map_dict(py, &started.map)?)?;
-    Ok(out.into_any())
+pub fn initialization_dict(py: Python<'_>, attempt: Initialization) -> PyResult<Bound<'_, PyDict>> {
+    let out = PyDict::new(py);
+    match attempt.started {
+        Some(started) => {
+            let dict = tracked_dict(py, &started.tracked)?;
+            dict.set_item("map", map_dict(py, &started.map)?)?;
+            out.set_item("started", dict)?;
+        }
+        None => out.set_item("started", py.None())?,
+    }
+    out.set_item("outcome", encode(&Outcome::ALL, attempt.summary.outcome)?)?;
+    out.set_item("matches", count_or_none(py, attempt.summary.matches)?)?;
+    out.set_item("solves", solves_list(py, &attempt.summary.solves)?)?;
+    Ok(out)
 }

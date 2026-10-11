@@ -20,7 +20,7 @@ from slam_it_all.foundations import orb
 from slam_it_all.foundations.errors import InvalidInputError
 from tests.conftest import require_function
 from tests.edge.conftest import Truth
-from tests.edge.support import CAMERA, OPTIONS, SOLVER_TOLERANCE, assert_close
+from tests.edge.support import CAMERA, OPTIONS, SOLVER_TOLERANCE, assert_close, assert_records_match
 
 LAST, CURRENT = 36, 37
 """The room's frames tracked: the last keyframe, and the frame after it."""
@@ -70,12 +70,14 @@ def test_tracking_matches_the_reference(backend: str, mode: str, room_state: Roo
         require_function(backend, tracking.__name__, function)
     r = room_state
     args = (r.map, CAMERA, r.frame, r.last, r.last_tracked)
-    expected = tracking.track_last_frame(*args, predicted=r.predicted, mode=mode, options=OPTIONS)
+    motion = tracking.track_last_frame(*args, predicted=r.predicted, mode=mode, options=OPTIONS)
+    expected = motion.tracked
     assert expected is not None
     got_last = tracking.track_last_frame(
         *args, predicted=r.predicted, mode=mode, options=OPTIONS, backend=backend
     )
-    _close(got_last, expected)
+    _close(got_last.tracked, expected)
+    assert got_last.summary == motion.summary
     for recovering in (False, True):
         local = tracking.track_local_map(
             r.map, CAMERA, r.frame, expected, mode=mode, options=OPTIONS, recovering=recovering
@@ -87,6 +89,7 @@ def test_tracking_matches_the_reference(backend: str, mode: str, room_state: Roo
         _close(got.tracked, local.tracked)
         np.testing.assert_array_equal(got.visible, local.visible)
         np.testing.assert_array_equal(got.found, local.found)
+        assert got.summary() == local.summary()
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -107,23 +110,30 @@ def test_stages_match_the_reference(backend: str, room_state: Room) -> None:
         tracking.optimize_pose(r.map, CAMERA, r.last, start, OPTIONS, backend=backend),
         tracking.optimize_pose(r.map, CAMERA, r.last, start, OPTIONS),
     )
-    _close(
-        tracking.relocalize_locally(r.map, CAMERA, r.frame, OPTIONS, backend=backend),
-        tracking.relocalize_locally(r.map, CAMERA, r.frame, OPTIONS),
-    )
+    relocalized = tracking.relocalize_locally(r.map, CAMERA, r.frame, OPTIONS, backend=backend)
+    recovery = tracking.relocalize_locally(r.map, CAMERA, r.frame, OPTIONS)
+    _close(relocalized.tracked, recovery.tracked)
+    assert_records_match(relocalized.summary.as_dict(), recovery.summary.as_dict())
     strict = replace(OPTIONS, pnp_min_inliers=r.map.points + 1)
-    assert tracking.relocalize_locally(r.map, CAMERA, r.frame, strict, backend=backend) is None
+    refused = tracking.relocalize_locally(r.map, CAMERA, r.frame, strict, backend=backend)
+    assert refused.tracked is None
+    assert refused.summary == tracking.PnpSummary(candidates=refused.summary.candidates)
 
 
 def test_tracking_finds_the_pose(room_state: Room) -> None:
     """From a prediction off by a centimetre and a half, the local map pins the pose."""
     r = room_state
-    last = tracking.track_last_frame(
+    motion = tracking.track_last_frame(
         r.map, CAMERA, r.frame, r.last, r.last_tracked,
         predicted=r.predicted, mode="rgbd", options=OPTIONS,
     )  # fmt: skip
+    last = motion.tracked
     assert last is not None
+    assert motion.summary.inliers == last.inliers <= motion.summary.matches
     local = tracking.track_local_map(r.map, CAMERA, r.frame, last, mode="rgbd", options=OPTIONS)
+    summary = local.summary()
+    assert summary.in_view == len(local.visible)
+    assert summary.inliers == local.tracked.inliers <= summary.matches
     assert local.tracked.inliers > last.inliers >= OPTIONS.min_tracked
     assert np.abs(local.tracked.pose[:3, 3] - r.truth[:3, 3]).max() < 0.01
     np.testing.assert_array_equal(local.found, local.tracked.points[local.tracked.points >= 0])
@@ -133,10 +143,19 @@ def test_tracking_finds_the_pose(room_state: Room) -> None:
 def test_relocalizing_places_the_frame(room_state: Room) -> None:
     """Without a prediction, descriptors and PnP place the frame near the local map."""
     r = room_state
-    placed = tracking.relocalize_locally(r.map, CAMERA, r.frame, OPTIONS)
+    recovery = tracking.relocalize_locally(r.map, CAMERA, r.frame, OPTIONS)
+    placed = recovery.tracked
     assert placed is not None
     assert placed.inliers >= OPTIONS.pnp_min_inliers
     assert np.abs(placed.pose[:3, 3] - r.truth[:3, 3]).max() < 0.01
+    s = recovery.summary
+    assert s.matches is not None
+    assert s.inliers is not None
+    assert s.candidates >= s.matches >= s.inliers
+    assert s.refined == placed.inliers
+    assert s.iterations is not None
+    assert s.termination is not None
+    assert not s.degenerate
 
 
 def test_a_point_behind_or_turned_away_is_not_in_view(room_state: Room) -> None:
@@ -235,14 +254,18 @@ def test_moving_forward_searches_no_finer_level(
     chosen = require_function(backend, tracking.__name__, "track_last_frame")
     m, last, last_tracked = scene
     frame = _scene_frame(_moved(dz), level=1)
-    tracked = tracking.track_last_frame(
+    motion = tracking.track_last_frame(
         m, SCENE_CAMERA, frame, last, last_tracked,
         predicted=_moved(dz), mode=mode, options=OPTIONS, backend=chosen,
     )  # fmt: skip
+    tracked = motion.tracked
     assert (tracked is not None) == found
     if tracked is not None:
         assert tracked.inliers == frame.size
         np.testing.assert_allclose(tracked.pose, _moved(dz), atol=1e-9)
+        assert motion.summary == tracking.MotionSummary(frame.size, False, frame.size)
+    else:
+        assert motion.summary == tracking.MotionSummary(0, True, None)
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)

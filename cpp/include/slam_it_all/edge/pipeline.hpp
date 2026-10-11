@@ -5,14 +5,18 @@
 #pragma once
 
 #include <Eigen/Core>
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <utility>
+#include <vector>
 
 #include "slam_it_all/edge/frames.hpp"
 #include "slam_it_all/edge/initialization.hpp"
 #include "slam_it_all/edge/map.hpp"
+#include "slam_it_all/edge/mapping.hpp"
 #include "slam_it_all/edge/options.hpp"
+#include "slam_it_all/edge/tracking.hpp"
 #include "slam_it_all/foundations/error.hpp"
 #include "slam_it_all/foundations/orb.hpp"
 
@@ -35,6 +39,65 @@ enum class State : std::uint8_t {
 /// @return A static string.
 [[nodiscard]] const char* name(State state);
 
+/// @brief How a frame was placed, before the local map refined it, with the codes it is
+///        written as (`slam_it_all.edge.pipeline.Placement`).
+enum class Placement : std::uint8_t {
+  /// @brief It started the map.
+  kInitialization = 0,
+  /// @brief Tracking the last frame, from the constant-velocity prediction.
+  kMotion = 1,
+  /// @brief The fallback: PnP against the local map.
+  kLocalPnp = 2,
+  /// @brief The number of placements (a sentinel, not a placement).
+  kCount = 3,
+};
+
+/// @brief A placement's name, as `slam_it_all.edge.pipeline.Placement` spells it.
+/// @param placement The placement.
+/// @return A static string.
+[[nodiscard]] const char* name(Placement placement);
+
+/// @brief What became of a keypoint on its frame, with the codes a run records
+///        (`slam_it_all.edge.pipeline.Fate`, whose docstring defines each): the first that
+///        applies.
+enum class Fate : std::uint8_t {
+  /// @brief The frame's last tracking stage did not match it, and no point was made of it.
+  kUnmatched = 0,
+  /// @brief The frame's last tracking stage matched it, and it was not tracked in the end.
+  kRejected = 1,
+  /// @brief An inlier of the frame's final pose.
+  kTracked = 2,
+  /// @brief A point was made of it on its frame.
+  kMade = 3,
+};
+
+/// @brief What became of each of a frame's keypoints, and the point concerned
+///        (`slam_it_all.edge.pipeline.Fates`).
+struct Fates {
+  /// @brief Each keypoint's fate.
+  std::vector<Fate> fate;
+  /// @brief The id of the point concerned: the one made of it, the one it was tracked to, or the
+  ///        one it was matched to and rejected from; -1 if unmatched.
+  std::vector<std::int64_t> point;
+};
+
+/// @brief How the stages went on one frame (`slam_it_all.edge.pipeline.FrameSummary`); each
+///        empty where the stage did not run.
+struct FrameSummary {
+  /// @brief How the frame was placed, if it was; a frame placed may still fail the local map.
+  std::optional<Placement> placed_by;
+  /// @brief For a frame before the map existed.
+  std::optional<InitSummary> init;
+  /// @brief Tracking the last frame.
+  std::optional<MotionSummary> motion;
+  /// @brief The PnP fallback, run only when tracking the last frame failed.
+  std::optional<PnpSummary> pnp;
+  /// @brief Tracking the local map, run on a placed frame.
+  std::optional<LocalMapSummary> local_map;
+  /// @brief Local mapping, on a keyframe after the first.
+  std::optional<MappingSummary> mapping;
+};
+
 /// @brief What tracking one frame gave (`slam_it_all.edge.pipeline.FrameResult`).
 struct FrameResult {
   /// @brief The frame's time.
@@ -53,6 +116,29 @@ struct FrameResult {
   /// @brief The time mapping it took as a keyframe (`process`), 0 for any other frame: what
   ///        ORB-SLAM's local-mapping thread does.
   double map_seconds{0.0};
+  /// @brief How its stages went.
+  FrameSummary summary;
+  /// @brief What became of each of its keypoints.
+  Fates fates;
+};
+
+/// @brief A life: the frame that made a point or keyframe, the frame that removed it or -1, and
+///        why (a `Removal` code) or -1.
+using Life = std::array<std::int64_t, 3>;
+
+/// @brief Every point and keyframe a run made, by id, where each last was, and its life
+///        (`slam_it_all.edge.pipeline.Lifetimes`).
+struct Lifetimes {
+  /// @brief Every point, its last position in the world frame.
+  std::vector<Eigen::Vector3d> points;
+  /// @brief Their lives.
+  std::vector<Life> point_lives;
+  /// @brief Every keyframe's time, ascending.
+  std::vector<double> keyframe_times;
+  /// @brief Its last `T_cam_world`.
+  std::vector<Eigen::Matrix4d> keyframe_poses;
+  /// @brief Their lives.
+  std::vector<Life> keyframe_lives;
 };
 
 /// @brief The edge pipeline for one sequence (`slam_it_all.edge.pipeline.Pipeline`).
@@ -85,8 +171,14 @@ class Pipeline {
   /// @return The map, if any.
   [[nodiscard]] const std::optional<Map>& map() const { return map_; }
 
+  /// @brief Every point and keyframe the run has made, with their lives
+  ///        (`slam_it_all.edge.pipeline.Pipeline.lifetimes`).
+  /// @return The points and keyframes by id: those in the map where the map has them, the
+  ///         removed ones where they last were.
+  [[nodiscard]] Lifetimes lifetimes() const;
+
  private:
-  /// @brief A frame tracked against the map, as `track_frame` gives it.
+  /// @brief A frame handled, as `initialize` and `track_frame` give it.
   struct Step {
     /// @brief The tracked frame, if it kept enough inliers.
     std::optional<Tracked> tracked;
@@ -94,6 +186,33 @@ class Pipeline {
     bool keyframe{false};
     /// @brief The time mapping it took, in seconds, if it did.
     double map_seconds{0.0};
+    /// @brief How its stages went.
+    FrameSummary summary;
+    /// @brief The last tracking stage's match for each keypoint before refinement; empty if no
+    ///        stage gave them.
+    std::vector<std::int64_t> matched;
+    /// @brief The point made of each keypoint, -1 where none; empty if none were made.
+    std::vector<std::int64_t> made;
+  };
+
+  /// @brief A frame placed, as `place` gives it.
+  struct Placed {
+    /// @brief The placed frame, if any.
+    std::optional<Tracked> tracked;
+    /// @brief How it was placed.
+    FrameSummary summary;
+    /// @brief The last stage's match for each keypoint before refinement.
+    std::vector<std::int64_t> matched;
+  };
+
+  /// @brief A placed frame tracked against the local map, as `refine` gives it.
+  struct Refined {
+    /// @brief The tracked frame, if it kept enough inliers.
+    std::optional<Tracked> tracked;
+    /// @brief How the stage went.
+    LocalMapSummary summary;
+    /// @brief Its match for each keypoint before refinement.
+    std::vector<std::int64_t> matched;
   };
 
   /// @brief A pipeline before its first frame.
@@ -105,13 +224,14 @@ class Pipeline {
 
   /// @brief Try to start the map with a frame.
   /// @param frame The frame.
-  /// @return The frame tracked if it started the map; a stage's error.
-  foundations::Result<std::optional<Tracked>> initialize(const Frame& frame);
+  /// @return The frame tracked if it started the map, and how the attempt went; a stage's
+  ///         error.
+  foundations::Result<Step> initialize(const Frame& frame);
 
   /// @brief Pair a monocular frame with the reference, or make it the reference.
   /// @param frame The frame.
-  /// @return The started map, if any; a stage's error.
-  foundations::Result<std::optional<Started>> initialize_monocular(const Frame& frame);
+  /// @return The started map, if any, and how the attempt went; a stage's error.
+  foundations::Result<Initialization> initialize_monocular(const Frame& frame);
 
   /// @brief Make a frame the monocular reference, each keypoint searched from its own position.
   /// @param frame The frame.
@@ -130,9 +250,9 @@ class Pipeline {
   /// @brief Track the last frame, or recover by PnP.
   /// @param m The map.
   /// @param frame The frame.
-  /// @return The placed frame, if any, and whether it recovered; a stage's error.
-  [[nodiscard]] foundations::Result<std::pair<std::optional<Tracked>, bool>> place(
-      const Map& m, const Frame& frame) const;
+  /// @return The placed frame, if any, how it was placed, and the last stage's matches; a
+  ///         stage's error.
+  [[nodiscard]] foundations::Result<Placed> place(const Map& m, const Frame& frame) const;
 
   /// @brief Track the local map from a placed frame and count its points.
   /// @param m The map, its counts changed.
@@ -140,15 +260,19 @@ class Pipeline {
   /// @param placed The placed frame.
   /// @param wide Whether the frame is a recovery's or the next (the search widened).
   /// @param recent Whether a recovery was recent (more inliers needed).
-  /// @return The tracked frame, if it keeps enough inliers; a stage's error.
-  [[nodiscard]] foundations::Result<std::optional<Tracked>> refine(Map& m, const Frame& frame,
-                                                                   const Tracked& placed, bool wide,
-                                                                   bool recent) const;
+  /// @return The tracked frame, if it keeps enough inliers, how the stage went, and its
+  ///         matches; a stage's error.
+  [[nodiscard]] foundations::Result<Refined> refine(Map& m, const Frame& frame,
+                                                    const Tracked& placed, bool wide,
+                                                    bool recent) const;
+
+  /// @brief Date what this frame made and removed, and empty the map's archive of removals.
+  void date();
 
   /// @brief Track a frame against the map; insert a keyframe if one is needed (and time it).
   /// @param frame The frame.
-  /// @return The tracked frame, if any, whether it became a keyframe, and the time mapping it
-  ///         took; a stage's error.
+  /// @return The tracked frame, if any, whether it became a keyframe, the time mapping it
+  ///         took, and how its stages went; a stage's error.
   foundations::Result<Step> track_frame(const Frame& frame);
 
   /// @brief The sensor mode.
@@ -175,6 +299,18 @@ class Pipeline {
   std::int64_t failures_{0};
   /// @brief Frames since the last recovery, if any.
   std::optional<std::int64_t> since_recovery_;
+  /// @brief Frames given so far.
+  std::int64_t frames_{0};
+  /// @brief Each point's life, by id.
+  std::vector<Life> point_lives_;
+  /// @brief Each keyframe's life, by id.
+  std::vector<Life> keyframe_lives_;
+  /// @brief Where each removed point last was, by id (unset for the others).
+  std::vector<Eigen::Vector3d> gone_points_;
+  /// @brief Each removed keyframe's time, by id (unset for the others).
+  std::vector<double> gone_times_;
+  /// @brief Each removed keyframe's last pose, by id (unset for the others).
+  std::vector<Eigen::Matrix4d> gone_poses_;
 };
 
 }  // namespace slam_it_all::edge

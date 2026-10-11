@@ -1,7 +1,8 @@
 /// @file
 /// @brief Local mapping, growing and cleaning the map around each new keyframe: the C++ core's
 ///        mirror of `slam_it_all.edge.mapping` (ORB-SLAM's `LocalMapping`, lite), whose docstring
-///        states the steps.
+///        states the steps. Mapping a keyframe also says how each step went, which a run
+///        records per keyframe.
 #pragma once
 
 #include <array>
@@ -9,12 +10,46 @@
 #include <span>
 #include <vector>
 
+#include "slam_it_all/edge/adjust.hpp"
 #include "slam_it_all/edge/frames.hpp"
 #include "slam_it_all/edge/map.hpp"
 #include "slam_it_all/edge/options.hpp"
 #include "slam_it_all/foundations/error.hpp"
 
 namespace slam_it_all::edge {
+
+/// @brief How local mapping went on a keyframe (`slam_it_all.edge.mapping.MappingSummary`):
+///        the point counts are the map's before and after each step.
+struct MappingSummary {
+  /// @brief Points made from the keyframe's close depth (0 in monocular).
+  std::int64_t from_depth{0};
+  /// @brief Recent points culled.
+  std::int64_t culled_points{0};
+  /// @brief Points triangulated with the window's keyframes.
+  std::int64_t triangulated{0};
+  /// @brief Points fused into another.
+  std::int64_t fused{0};
+  /// @brief The local bundle adjustment's solves; none if it did not run.
+  std::vector<Solve> solves;
+  /// @brief The observations it dropped.
+  std::int64_t outliers{0};
+  /// @brief Points erased because the observations dropped, by the adjustment or with a culled
+  ///        keyframe, left them too weakly observed.
+  std::int64_t weak_points{0};
+  /// @brief Redundant keyframes culled.
+  std::int64_t culled_keyframes{0};
+};
+
+/// @brief A keyframe mapped (`slam_it_all.edge.mapping.Mapped`, the map aside: it changes in
+///        place): how it went, and the points made of its keypoints.
+struct Mapped {
+  /// @brief How each step went.
+  MappingSummary summary;
+  /// @brief The id of the point made for each of the keyframe's keypoints (from its depth, or
+  ///        triangulated), -1 where none: as made, though fusion or culling may since have
+  ///        removed it.
+  std::vector<std::int64_t> made;
+};
 
 /// @brief The depth below which a point is close (`slam_it_all.edge.mapping.close_depth`).
 /// @param camera The camera (its baseline).
@@ -106,10 +141,11 @@ namespace slam_it_all::edge {
 /// @param tracked Its pose and matches.
 /// @param mode The pipeline's mode.
 /// @param options The settings.
-/// @return Nothing; `InvalidInput` for matches that are not one per keypoint, or an invalid
-///         camera or settings.
-[[nodiscard]] foundations::Result<void> process(Map& m, const Camera& camera, const Frame& frame,
-                                                const Tracked& tracked, Mode mode,
-                                                const Options& options);
+/// @return How each step went, and the points made for the keyframe's keypoints;
+///         `InvalidInput` for matches that are not one per keypoint, or an invalid camera or
+///         settings.
+[[nodiscard]] foundations::Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame,
+                                                  const Tracked& tracked, Mode mode,
+                                                  const Options& options);
 
 }  // namespace slam_it_all::edge

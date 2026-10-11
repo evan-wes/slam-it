@@ -107,14 +107,18 @@ nb::dict refresh_points(const nb::dict& m, const Int64In& rows) {
   return map_dict(out);
 }
 
-/// @brief Remove points.
+/// @brief Remove points, kept aside with why they went.
 /// @param m The map, as a dict.
 /// @param erase One boolean per point.
+/// @param how Why they go: a `Removal` code.
 /// @return The new map, as a dict.
 /// @throws CoreError for invalid input.
-nb::dict erase_points(const nb::dict& m, const VectorIn<bool>& erase) {
+nb::dict erase_points(const nb::dict& m, const VectorIn<bool>& erase, int how) {
   edge::Map out = map_in(m);
-  unwrap(edge::erase_points(out, edge_crossing::flags_in(erase)));
+  if (how < 0 || how >= static_cast<int>(edge::Removal::kCount)) {
+    throw std::invalid_argument("how: expected a Removal code");
+  }
+  unwrap(edge::erase_points(out, edge_crossing::flags_in(erase), static_cast<edge::Removal>(how)));
   return map_dict(out);
 }
 
@@ -176,8 +180,8 @@ void bind_map(nb::module_& m) {
         "Pick the most central descriptor.");
   m.def("refresh_points", &refresh_points, nb::arg("m"), nb::arg("rows").noconvert(),
         "Recompute points' descriptors, normals and distances.");
-  m.def("erase_points", &erase_points, nb::arg("m"), nb::arg("erase").noconvert(),
-        "Remove points.");
+  m.def("erase_points", &erase_points, nb::arg("m"), nb::arg("erase").noconvert(), nb::arg("how"),
+        "Remove points, keeping them aside with why they went.");
   m.def("observation_weight", &observation_weight, nb::arg("m"), nb::arg("rows").noconvert(),
         "Weigh points' observations.");
   m.def("forget_observations", &forget_observations, nb::arg("m"), nb::arg("rows").noconvert(),

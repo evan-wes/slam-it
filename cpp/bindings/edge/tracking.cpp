@@ -14,6 +14,7 @@
 #include "common.hpp"
 #include "edge/edge.hpp"
 #include "edge/edge_crossing.hpp"
+#include "foundations/ransac_crossing.hpp"
 
 namespace nb = nanobind;
 
@@ -72,17 +73,25 @@ nb::dict in_view(const nb::dict& m, const nb::dict& camera, const Matrix4In& pos
 /// @param predicted The predicted pose.
 /// @param mode The mode's name.
 /// @param options The settings, as a dict.
-/// @return The tracked frame as a dict, or None.
+/// @return `tracked` (a dict, or None), `matches`, `widened`, `inliers` (or None) and
+///         `matched`.
 /// @throws CoreError for invalid input.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the reference's argument order
-nb::object track_last_frame(const nb::dict& m, const nb::dict& camera, const nb::dict& frame,
-                            const nb::dict& last, const nb::dict& last_tracked,
-                            const Matrix4In& predicted, const std::string& mode,
-                            const nb::dict& options) {
-  return edge_crossing::maybe_tracked(
+nb::dict track_last_frame(const nb::dict& m, const nb::dict& camera, const nb::dict& frame,
+                          const nb::dict& last, const nb::dict& last_tracked,
+                          const Matrix4In& predicted, const std::string& mode,
+                          const nb::dict& options) {
+  const edge::Motion motion =
       unwrap(edge::track_last_frame(map_in(m), camera_in(camera), frame_in(frame), frame_in(last),
                                     edge_crossing::tracked_in(last_tracked), matrix4(predicted),
-                                    edge_crossing::mode_in(mode), options_in(options))));
+                                    edge_crossing::mode_in(mode), options_in(options)));
+  nb::dict out;
+  out["tracked"] = edge_crossing::maybe_tracked(motion.tracked);
+  out["matches"] = motion.summary.matches;
+  out["widened"] = motion.summary.widened;
+  out["inliers"] = edge_crossing::count_or_none(motion.summary.inliers);
+  out["matched"] = edge_crossing::vector_array(motion.matched);
+  return out;
 }
 
 /// @brief Match the local map's points in view and refine the pose.
@@ -93,7 +102,7 @@ nb::object track_last_frame(const nb::dict& m, const nb::dict& camera, const nb:
 /// @param mode The mode's name.
 /// @param options The settings, as a dict.
 /// @param recovering Whether the frame is a recovery's or the next.
-/// @return `pose`, `points`, `visible` and `found`.
+/// @return `pose`, `points`, `visible`, `found` and `matched`.
 /// @throws CoreError for invalid input.
 nb::dict track_local_map(const nb::dict& m, const nb::dict& camera, const nb::dict& frame,
                          const nb::dict& tracked, const std::string& mode, const nb::dict& options,
@@ -104,6 +113,7 @@ nb::dict track_local_map(const nb::dict& m, const nb::dict& camera, const nb::di
   nb::dict out = edge_crossing::tracked_dict(local.tracked);
   out["visible"] = edge_crossing::vector_array(local.visible);
   out["found"] = edge_crossing::vector_array(local.found);
+  out["matched"] = edge_crossing::vector_array(local.matched);
   return out;
 }
 
@@ -112,17 +122,35 @@ nb::dict track_local_map(const nb::dict& m, const nb::dict& camera, const nb::di
 /// @param camera The camera, as a dict.
 /// @param frame The frame, as a dict.
 /// @param options The settings, as a dict.
-/// @return The tracked frame as a dict, or None.
+/// @return `tracked` (a dict, or None), `matched`, and the summary's fields: `candidates`,
+///         `matches`, `iterations`, `termination` (its code in `ransac_termination`),
+///         `degenerate`, `inliers` and `refined`, each count None where the fallback stopped
+///         before it.
 /// @throws CoreError for invalid input.
-nb::object relocalize_locally(const nb::dict& m, const nb::dict& camera, const nb::dict& frame,
-                              const nb::dict& options) {
-  return edge_crossing::maybe_tracked(unwrap(edge::relocalize_locally(
-      map_in(m), camera_in(camera), frame_in(frame), options_in(options))));
+nb::dict relocalize_locally(const nb::dict& m, const nb::dict& camera, const nb::dict& frame,
+                            const nb::dict& options) {
+  const edge::Relocalization recovery = unwrap(
+      edge::relocalize_locally(map_in(m), camera_in(camera), frame_in(frame), options_in(options)));
+  const edge::PnpSummary& summary = recovery.summary;
+  nb::dict out;
+  out["tracked"] = edge_crossing::maybe_tracked(recovery.tracked);
+  out["candidates"] = summary.candidates;
+  out["matches"] = edge_crossing::count_or_none(summary.matches);
+  out["iterations"] = edge_crossing::count_or_none(summary.iterations);
+  out["termination"] = summary.termination
+                           ? nb::object(nb::int_(static_cast<int>(*summary.termination)))
+                           : nb::none();
+  out["degenerate"] = summary.degenerate;
+  out["inliers"] = edge_crossing::count_or_none(summary.inliers);
+  out["refined"] = edge_crossing::count_or_none(summary.refined);
+  out["matched"] = edge_crossing::vector_array(recovery.matched);
+  return out;
 }
 
 }  // namespace
 
 void bind_tracking(nb::module_& m) {
+  m.def("codes", &ransac_codes, "Each enum's names in code order.");
   m.def("optimize_pose", &optimize_pose, nb::arg("m"), nb::arg("camera"), nb::arg("frame"),
         nb::arg("tracked"), nb::arg("options"),
         "Refine a frame's pose against its matched points.");
