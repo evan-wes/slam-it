@@ -703,3 +703,20 @@ What is left: one should-fix (the collinear-centres branch the fix claims to han
 - **L5 / A11:** "read once per run for the whole machine" matches both gemm crates' sysfs walk. `docs/notes/viewer.md:180` ("C++'s ... block by fixed sizes") is still true.
 - **`Playhead`:** it advances to the last frame whose time is at or before the clock, and stops at the end. Float32 times are adequate for any sequence length the datasets have.
 - **`runs.ground_truth`:** it returns the same arrays the old `run_vo.ground_truth` did, as tested against `tum.read_sequence`.
+
+## Commit messages corrected -- 2026-10-10
+
+After run 2, four of the branch's commit messages were found to hold six wrong or misleading
+statements. They were reworded, the files unchanged, which gave every commit on the branch a
+new SHA; this report's SHAs were updated to match. The corrections:
+
+- `cb88de2` (`fix(cpp)`): Rust's runs repeat because faer reads its cache sizes once per run
+  for the whole machine, not because its products block by fixed sizes (A11 / L5; the
+  algorithm review of run 1 quotes the old wording).
+- `78910fc` (feature records): the 89 MB was the comparison set's MH_01 stereo run, at 1,000
+  features; at EuRoC stereo's 1,200, as the edge note runs it, 107 MB.
+- `94054ab` (the bake): MH_01 stereo's frames at quality 75 come to 163 MB, and 269 MB at
+  quality 90 (157 MB and 259 MB were an estimate from 50 frames, in MiB); its three runs bake
+  in 49 s into a 396 MB bundle (98 s and 450 MB were measured at quality 90); the golden bundle
+  is 417 KB (516 KB was its disk usage).
+- `c78601a` (run 1's report): 11 should-fix and 11 notes, not 12 and 9.
