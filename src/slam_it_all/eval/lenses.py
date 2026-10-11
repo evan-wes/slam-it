@@ -31,8 +31,8 @@ video to the fallbacks.
 - its own 35mm-equivalent focal length (:attr:`Profile.focal_35mm`) must be within
   :data:`TAG_BAND` of the video's, if it has one: some profiles calibrate another lens than
   their names say, and Apple's 2x is the main camera's sensor cropped to twice its focal
-  length. Without one, a phone's main-camera profiles far from their median
-  (:data:`PHONE_BAND`) are dropped, if that median is itself a main camera's;
+  length. Without one, a main-camera profile must be within :data:`NOMINAL_BAND` of
+  :data:`NOMINAL_FOCAL_35MM`;
 - its frame must have the video's aspect within :data:`ASPECT_TOLERANCE`, in the same
   orientation;
 - the nearest resolution wins, then the nearest frame rate, then the smallest calibration
@@ -118,19 +118,15 @@ NOMINAL_FOCAL_35MM = FULL_FRAME_DIAGONAL / 2 / math.tan(math.radians(NOMINAL_DIA
 
 TAG_BAND = (0.8, 1.6)
 """How far a profile's own 35mm-equivalent focal length may be from a video's, as their ratio.
-A video frame's own is 1.0 to 1.4 times the figure Apple's tag gives (the frame is cropped to
-16:9 and steadied); a profile of another lens than its name says, or the 2x crop against the
-main camera's profile, is about 0.6."""
+At 16:9 and steadied, a profile's own is 1.0 to 1.4 times Apple's published figure for its lens
+(main cameras' median 1.21), which the tag is taken to give; a profile of another lens than its
+name says, or the 2x crop against the main camera's profile, is about 0.6."""
 
-PHONE_BAND = 1.5
-"""How far, as a ratio either way, a profile's own focal length may be from the median of its
-phone's main-camera profiles, for a video without a 35mm-equivalent focal length. The median
-counts only if it is this near :data:`NOMINAL_FOCAL_35MM` itself, over :data:`PHONE_MEDIAN_OF`
-profiles or more: a phone most of whose profiles are of another lens is not judged."""
-
-PHONE_MEDIAN_OF = 3
-"""The fewest main-camera profiles of a phone whose median focal length is used
-(:data:`PHONE_BAND`)."""
+NOMINAL_BAND = 1.5
+"""How far, as a ratio either way, a main-camera profile's own focal length may be from
+:data:`NOMINAL_FOCAL_35MM` for a video without a 35mm-equivalent focal length: one beyond it
+calibrates another lens than its name says. On Apple's main-camera profiles of a known lens it
+keeps and drops the very ones :data:`TAG_BAND` does around Apple's figure."""
 
 _ANGLES = 1 << 14
 """The angles a fisheye's bend is sampled at, over a quarter turn, to find where it stops
@@ -639,17 +635,11 @@ def _near(profiles: list[Profile], focal_35mm: float) -> list[Profile]:
     return [p for p in profiles if low <= p.focal_35mm / focal_35mm <= high]
 
 
-def _typical(profiles: list[Profile], lens: str) -> list[Profile]:
-    """Return a phone's profiles of one lens, its main camera's far from their median dropped.
-
-    The median counts only as :data:`PHONE_BAND` says; otherwise all of them are returned.
-    """
-    if lens != "main" or len(profiles) < PHONE_MEDIAN_OF:
+def _main_like(profiles: list[Profile], lens: str) -> list[Profile]:
+    """Return a phone's profiles of one lens; of a main camera, those within NOMINAL_BAND."""
+    if lens != "main":
         return profiles
-    median = float(np.median([p.focal_35mm for p in profiles]))
-    if not _within(median / NOMINAL_FOCAL_35MM, PHONE_BAND):
-        return profiles
-    return [p for p in profiles if _within(p.focal_35mm / median, PHONE_BAND)]
+    return [p for p in profiles if _within(p.focal_35mm / NOMINAL_FOCAL_35MM, NOMINAL_BAND)]
 
 
 def _within(ratio: float, band: float) -> bool:
@@ -687,7 +677,7 @@ def match(profiles: Sequence[Profile], video: Video) -> tuple[Profile, Fisheye] 
     landscape = width >= height
     candidates = [
         p
-        for p in (_near(phone, focal) if focal is not None else _typical(phone, lens))
+        for p in (_near(phone, focal) if focal is not None else _main_like(phone, lens))
         if (p.fisheye.camera.width >= p.fisheye.camera.height) == landscape
         and abs(_aspect(p.fisheye.camera.width, p.fisheye.camera.height) - _aspect(width, height))
         <= ASPECT_TOLERANCE

@@ -260,24 +260,23 @@ ANDROID = {lenses.ANDROID_MAKE: "Google", lenses.ANDROID_MODEL: "Pixel 99"}
 @pytest.mark.parametrize(
     ("focals", "chosen"),
     [
-        ((28.0, 30.0, 14.0), "28mm"),  # the 14 mm one, nearest at 30 fps, is far from the median
-        ((14.0, 15.0, 28.0), "28mm"),  # most are another lens's: the median is not a main camera's
-        ((14.0, 30.0), "14mm"),  # too few to judge
+        ((28.0, 30.0, 14.0), "28mm"),  # the 14 mm one, nearest at 30 fps, is another lens's
+        ((14.0, 15.0, 28.0), "28mm"),  # most of the phone's are another lens's: still dropped
+        ((14.0, 30.0), "30mm"),  # however few
+        ((14.0,), None),  # none left: no profile
     ],
 )
-def test_without_a_focal_length_a_phones_odd_profile_out_is_dropped(
-    focals: tuple[float, ...], chosen: str
+def test_without_a_focal_length_a_profile_of_another_lens_is_dropped(
+    focals: tuple[float, ...], chosen: str | None
 ) -> None:
-    """Without a tag, a main-camera profile far from its phone's median is not matched.
+    """Without a tag, a main-camera profile far from the nominal main camera is not matched.
 
     The first is at 24 fps, the second at 60 and the third at 30: the nearest frame rate wins
-    among those left. The median counts only over PHONE_MEDIAN_OF profiles or more, and only
-    if it is itself a main camera's (PHONE_BAND around NOMINAL_FOCAL_35MM).
+    among those within NOMINAL_BAND of NOMINAL_FOCAL_35MM.
     """
     phone = [_phone_profile(f, fps) for f, fps in zip(focals, (24.0, 60.0, 30.0), strict=False)]
     found = lenses.match(phone, lenses.Video(ANDROID, 1920, 1080, 30.0))
-    assert found is not None
-    assert found[0].name == chosen
+    assert (found[0].name if found else None) == chosen
 
 
 @pytest.mark.parametrize(
