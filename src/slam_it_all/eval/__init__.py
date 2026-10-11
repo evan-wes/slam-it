@@ -6,9 +6,11 @@
   poses and calibrations.
 - :mod:`slam_it_all.eval.euroc`: the EuRoC MAV datasets' stereo frames, ground-truth poses and
   calibrations.
-- :mod:`slam_it_all.eval.images`: reading image files, and encoding the run viewer's JPEGs (the
-  one module that imports Pillow; C++'s ``slam_it_all_eval`` library and Rust's
+- :mod:`slam_it_all.eval.images`: reading and writing image files, and encoding the run viewer's
+  JPEGs (the one module that imports Pillow; C++'s ``slam_it_all_eval`` library and Rust's
   ``slam-it-all-eval`` crate read PNGs natively and the same way).
+- :mod:`slam_it_all.eval.video`: importing a phone's recording, a video or a Stray Scanner zip,
+  into a TUM-format folder (the one module that imports PyAV, an optional extra).
 - :mod:`slam_it_all.eval.metrics`: the absolute trajectory error (after SE(3) or Sim(3)
   alignment) and the relative pose error, as the TUM benchmark defines them, and associating
   timestamps.

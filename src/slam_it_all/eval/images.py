@@ -1,4 +1,4 @@
-"""Reading images from disk, and encoding them as JPEG: the one module that imports Pillow.
+"""Reading and writing images, and encoding them as JPEG: the one module that imports Pillow.
 
 The C++ and Rust cores decode PNGs natively (stb_image in C++'s ``slam_it_all_eval``, the ``png``
 crate in Rust's ``slam-it-all-eval``); this is Python's side, and the three read a file the same
@@ -12,7 +12,8 @@ way:
 - **Depth:** a 16-bit single-channel PNG's raw values; the dataset modules scale them.
 
 :func:`encode_jpeg` encodes a frame for the run viewer's bundles
-(:mod:`slam_it_all.orchestration.bundles`).
+(:mod:`slam_it_all.orchestration.bundles`); :func:`write_png` writes the frames a phone's video
+is imported as (:mod:`slam_it_all.eval.video`).
 
 An import-linter contract keeps Pillow here: no other slam_it_all module may import it.
 """
@@ -157,6 +158,36 @@ def read_depth(path: str | Path) -> NDArray[np.uint16]:
     return np.ascontiguousarray(values, dtype=np.uint16)
 
 
+def _check_picture(picture: object) -> NDArray[np.uint8]:
+    """Return an 8-bit gray or RGB image, refusing anything else."""
+    if not isinstance(picture, np.ndarray) or picture.dtype != np.uint8:
+        raise InvalidInputError("picture: expected a uint8 array")
+    if picture.ndim != 2 and (picture.ndim != 3 or picture.shape[2] != 3):
+        raise InvalidInputError(f"picture: expected (H, W) or (H, W, 3), got {picture.shape}")
+    return picture
+
+
+def write_png(path: str | Path, picture: NDArray[np.uint8]) -> None:
+    """Write an 8-bit gray or RGB image as a PNG file, its folder created.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        The file to write.
+    picture : ndarray of uint8, shape (H, W) or (H, W, 3)
+        A gray or RGB image; :func:`read_gray` and :func:`read_rgb` read it back as given.
+
+    Raises
+    ------
+    slam_it_all.foundations.errors.InvalidInputError
+        If the image is not 8-bit gray or RGB.
+    """
+    checked = _check_picture(picture)
+    file = Path(path)
+    file.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(np.ascontiguousarray(checked)).save(file, format="PNG")
+
+
 def encode_jpeg(picture: NDArray[np.uint8], quality: int) -> bytes:
     """Encode an 8-bit image as a JPEG file's bytes (baseline, 4:2:0 for colour).
 
@@ -177,12 +208,9 @@ def encode_jpeg(picture: NDArray[np.uint8], quality: int) -> bytes:
     slam_it_all.foundations.errors.InvalidInputError
         If the image is not 8-bit gray or RGB, or the quality is out of range.
     """
-    if not isinstance(picture, np.ndarray) or picture.dtype != np.uint8:
-        raise InvalidInputError("picture: expected a uint8 array")
-    if picture.ndim != 2 and (picture.ndim != 3 or picture.shape[2] != 3):
-        raise InvalidInputError(f"picture: expected (H, W) or (H, W, 3), got {picture.shape}")
+    checked = _check_picture(picture)
     if not 1 <= quality <= 95:  # Pillow's documented range
         raise InvalidInputError(f"quality: expected 1 to 95, got {quality}")
     buffer = io.BytesIO()
-    Image.fromarray(np.ascontiguousarray(picture)).save(buffer, format="JPEG", quality=quality)
+    Image.fromarray(np.ascontiguousarray(checked)).save(buffer, format="JPEG", quality=quality)
     return buffer.getvalue()

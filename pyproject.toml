@@ -229,7 +229,7 @@ type = "layers"
 exhaustive = true
 containers = ["slam_it_all.eval"]
 layers = [
-  "(budgets)",
+  "(budgets) | (video)",
   "(runs) | (colmap_reference)",
   "(metrics) | (tum) | (euroc) | (readers) | (reprojection)",
   "(timestamps) | (images)",
@@ -244,6 +244,15 @@ type = "forbidden"
 source_modules = ["slam_it_all"]
 forbidden_modules = ["PIL"]
 ignore_imports = ["slam_it_all.eval.images -> PIL"]
+
+# PyAV decodes phone videos in slam_it_all.eval.video alone (the optional `video` extra): the
+# pipeline reads frames from a folder, never a video.
+[[tool.importlinter.contracts]]
+name = "Only eval.video may import PyAV"
+type = "forbidden"
+source_modules = ["slam_it_all"]
+forbidden_modules = ["av"]
+ignore_imports = ["slam_it_all.eval.video -> av"]
 
 # pycolmap is an optional reference, imported by slam_it_all.eval alone.
 [[tool.importlinter.contracts]]

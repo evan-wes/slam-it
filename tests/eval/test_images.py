@@ -101,3 +101,22 @@ def test_encode_jpeg_refuses(picture: np.ndarray, quality: int, message: str) ->
     """Not 8-bit gray or RGB, or a quality outside Pillow's range."""
     with pytest.raises(InvalidInputError, match=message):
         images.encode_jpeg(picture, quality)
+
+
+@pytest.mark.parametrize("shape", [(24, 32), (24, 32, 3)])
+def test_write_png_round_trips_exactly(shape: tuple[int, ...], tmp_path: Path) -> None:
+    """A gray or RGB image written as PNG reads back as itself, its folder made."""
+    picture = np.random.default_rng(0).integers(0, 256, shape, dtype=np.uint8)
+    path = tmp_path / "new" / "frame.png"
+    images.write_png(path, picture)
+    back = images.read_gray(path) if len(shape) == 2 else images.read_rgb(path)
+    np.testing.assert_array_equal(back, picture)
+
+
+def test_write_png_refuses_what_is_not_8_bit_gray_or_rgb(tmp_path: Path) -> None:
+    """A 16-bit or four-channel array is refused, and nothing is written."""
+    wrong: list[np.ndarray] = [np.zeros((4, 4), np.uint16), np.zeros((4, 4, 4), np.uint8)]
+    for picture in wrong:
+        with pytest.raises(InvalidInputError, match="picture: expected"):
+            images.write_png(tmp_path / "frame.png", picture)
+    assert not (tmp_path / "frame.png").exists()
