@@ -322,12 +322,13 @@ forbidden_modules = ["reifyscene"]
 
 # The upload server (server/, docs/design/2026-10-09-run-viewer.md, section 5.3) holds the
 # bucket's keys and the worker token, so it never parses a video: it never imports slam_it_all,
-# whose worker does that work in a process of its own.
+# whose worker does that work in a process of its own, nor a decoder or an image library
+# directly, nor reifyscene (whose GPU worker may one day speak its protocol, from outside).
 [[tool.importlinter.contracts]]
-name = "The upload server never imports slam_it_all"
+name = "The upload server never imports slam_it_all, a decoder, or reifyscene"
 type = "forbidden"
 source_modules = ["slam_it_all_server"]
-forbidden_modules = ["slam_it_all"]
+forbidden_modules = ["slam_it_all", "av", "PIL", "cv2", "reifyscene"]
 
 # The other way, the library never carries the server or its web stack: the worker talks to the
 # server over HTTP with the standard library.
@@ -336,6 +337,14 @@ name = "slam_it_all never imports the upload server or its web stack"
 type = "forbidden"
 source_modules = ["slam_it_all"]
 forbidden_modules = ["slam_it_all_server", "fastapi", "starlette", "uvicorn", "boto3", "botocore"]
+
+# The pipeline and its bake never need the optional `video` extra: eval.video alone imports
+# PyAV, and the Pillow-style allow-list above cannot see a chain through it.
+[[tool.importlinter.contracts]]
+name = "The pipeline and the bake never import the video import"
+type = "forbidden"
+source_modules = ["slam_it_all.orchestration.vo", "slam_it_all.orchestration.bundles"]
+forbidden_modules = ["slam_it_all.eval.video"]
 
 # The order of modules inside the upload server: its entry point, the routes, the job list and
 # storage beside each other, and the settings at the bottom.
