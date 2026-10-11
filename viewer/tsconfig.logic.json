@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["es2022"]
+  },
+  "include": [
+    "logic.d.ts",
+    "src/bundle.js",
+    "src/compare.js",
+    "src/format.js",
+    "src/frames.js",
+    "src/geometry.js",
+    "src/images.js",
+    "src/npy.js",
+    "src/playback.js",
+    "src/solver.js"
+  ]
+}

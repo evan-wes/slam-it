@@ -5,6 +5,8 @@
 // The loader is given how to fetch a file, so the page fetches over HTTP and the tests read the
 // golden bundle from disk.
 
+import { STEPS } from "./compare.js";
+import { FATES } from "./frames.js";
 import { readFloat32, readInt32 } from "./npy.js";
 
 /**
@@ -48,7 +50,10 @@ import { readFloat32, readInt32 } from "./npy.js";
  * @property {number} points The final map's points.
  * @property {{keyframes: number, points: number}} made How many it made.
  * @property {boolean} features Whether it recorded its features.
- * @property {Score | null} score Its score, without ground truth null.
+ * @property {string | null} alignment The alignment it was moved onto the ground truth by
+ *     ("sim3" or "se3"); null if it stays in its own frame: without ground truth, or a run its
+ *     ATE alignment cannot place.
+ * @property {Score | null} score Its score; null unless aligned.
  * @property {Latency | null} latency Its latency, for fewer than two frames null.
  * @property {number | null} peak_memory Its program's peak memory, in bytes, if known.
  */
@@ -65,7 +70,9 @@ import { readFloat32, readInt32 } from "./npy.js";
  * @property {number} frames The bundle's frames.
  * @property {number} first_time The first frame's time, in seconds.
  * @property {{chunk: number, quality: number, colour: boolean}} images How the frames are stored.
- * @property {{alignment: string} | null} truth The alignment to the truth, or null.
+ * @property {boolean} truth Whether the sequence has ground truth (`truth.npy`).
+ * @property {string[]} fates The fates' names, by code (slam_it_all.eval.runs.FATES).
+ * @property {string[]} steps The steps each frame times (slam_it_all.eval.runs.STEPS).
  * @property {Record<string, BackendInfo>} backends Each backend's header.
  */
 
@@ -113,6 +120,9 @@ import { readFloat32, readInt32 } from "./npy.js";
 export const FORMAT = "slam-it-all-bundle";
 export const VERSION = 1;
 
+/** The backends a bundle may hold, in the order the page offers them. */
+export const BACKENDS = ["cpp", "rust", "python"];
+
 /**
  * Decode a fetched file as JSON.
  * @param {ArrayBuffer} buffer The file's bytes.
@@ -145,19 +155,35 @@ function expectShape(name, shape, trailing, rows) {
  * Load a bundle's description and frames.
  * @param {Fetch} fetch How to fetch one of its files.
  * @returns {Promise<Bundle>} The bundle.
- * @throws {Error} If bundle.json is of another format or version, or an array is mis-shaped.
+ * @throws {Error} If bundle.json is of another format or version, names fates, steps or
+ *     backends the page does not know, or an array is mis-shaped.
  */
 export async function loadBundle(fetch) {
   const info = /** @type {BundleInfo} */ (json(await fetch("bundle.json")));
   if (info.format !== FORMAT || info.version !== VERSION) {
     throw new Error(`bundle.json: expected ${FORMAT} version ${VERSION}`);
   }
+  // The page's copies of the run format's tables must be the ones the bundle was baked with.
+  /** @type {[string, readonly string[], readonly string[]][]} */
+  const tables = [
+    ["fates", info.fates, FATES],
+    ["steps", info.steps, STEPS],
+  ];
+  for (const [name, theirs, ours] of tables) {
+    if (JSON.stringify(theirs) !== JSON.stringify(ours)) {
+      throw new Error(`bundle.json: its ${name} are not the page's (${ours.join(", ")})`);
+    }
+  }
+  const unknown = Object.keys(info.backends).filter((name) => !BACKENDS.includes(name));
+  if (unknown.length > 0) {
+    throw new Error(`bundle.json: the page does not know the backend ${unknown.join(", ")}`);
+  }
   const times = readFloat32(await fetch("times.npy"));
   expectShape("times.npy", times.shape, [], info.frames);
   const spans = readInt32(await fetch("images/spans.npy"));
   expectShape("images/spans.npy", spans.shape, [2], info.frames);
   let truth = null;
-  if (info.truth !== null) {
+  if (info.truth) {
     const read = readFloat32(await fetch("truth.npy"));
     expectShape("truth.npy", read.shape, [3], info.frames);
     truth = read.data;
@@ -203,7 +229,13 @@ export async function loadTrack(fetch, bundle, name) {
   const { float32, int32 } = readers(fetch, name);
   const records = /** @type {Records} */ (json(await fetch(`${name}/records.json`)));
   const poseFrames = await int32("pose_frames.npy", []);
-  return { name, info, records, poses: await float32("poses.npy", [3, 4], poseFrames.length), poseFrames };
+  return {
+    name,
+    info,
+    records,
+    poses: await float32("poses.npy", [3, 4], poseFrames.length),
+    poseFrames,
+  };
 }
 
 /**

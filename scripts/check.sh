@@ -105,6 +105,11 @@ check "node --check (viewer)" bash -c 'for file; do node --check "$file" || exit
 # The test files by name: a folder is a module to some versions of Node, not a test directory.
 check "node --test (viewer)" node --test viewer/tests/*.test.js
 check "tsc --checkJs (viewer)" viewer/node_modules/.bin/tsc -p viewer
+# The logic modules again, without the DOM: they never touch the page, so Node tests them.
+check "tsc --checkJs, logic without the DOM (viewer)" \
+  viewer/node_modules/.bin/tsc -p viewer/tsconfig.logic.json
+check "prettier (viewer)" viewer/node_modules/.bin/prettier --check \
+  viewer/src viewer/tests viewer/index.html viewer/app.css viewer/logic.d.ts
 
 # All languages
 check "jscpd (duplication)" jscpd --config .jscpd.json

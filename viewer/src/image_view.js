@@ -2,7 +2,7 @@
 // their fate. Frames are decoded once and kept while near the playhead.
 
 import { FATES, FATE_HINTS } from "./frames.js";
-import { ChunkCache, chunkOf, chunksAround, frameBytes } from "./images.js";
+import { ChunkCache, chunkOf, chunksAround, frameBytes, onCanvas } from "./images.js";
 
 /** Decoded frames kept: a few seconds either side of the playhead. */
 const DECODED = 120;
@@ -19,6 +19,8 @@ function token(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
+/** The frame as the pipeline saw it, its keypoints in their fates' colours, and the fates'
+ *  counts in the legend. */
 export class ImageView {
   /**
    * @param {HTMLCanvasElement} canvas Where the frame is drawn.
@@ -61,7 +63,11 @@ export class ImageView {
       const chunk = chunkOf(frame, this.bundle.info.images.chunk);
       held = this.chunks
         .get(chunk)
-        .then((buffer) => createImageBitmap(new Blob([frameBytes(buffer, this.bundle.spans, frame)], { type: "image/jpeg" })));
+        .then((buffer) =>
+          createImageBitmap(
+            new Blob([frameBytes(buffer, this.bundle.spans, frame)], { type: "image/jpeg" }),
+          ),
+        );
       held.catch(() => this.decoded.delete(frame));
       this.decoded.set(frame, held);
       for (const [old] of this.decoded) {
@@ -87,7 +93,11 @@ export class ImageView {
    */
   async show(frame, keypoints, note) {
     this.shown = frame;
-    for (const chunk of chunksAround(frame, this.bundle.info.frames, this.bundle.info.images.chunk)) {
+    for (const chunk of chunksAround(
+      frame,
+      this.bundle.info.frames,
+      this.bundle.info.images.chunk,
+    )) {
       this.chunks.get(chunk).catch(() => {}); // fetched ahead; a failure shows when drawn
     }
     const bitmap = await this.image(frame);
@@ -107,7 +117,8 @@ export class ImageView {
     const radius = Math.max(1.5, this.canvas.width / 320);
     for (let i = 0; i < keypoints.fate.length; i++) {
       context.beginPath();
-      context.arc(keypoints.xy[i * 2], keypoints.xy[i * 2 + 1], radius, 0, 2 * Math.PI);
+      const [x, y] = [onCanvas(keypoints.xy[i * 2]), onCanvas(keypoints.xy[i * 2 + 1])];
+      context.arc(x, y, radius, 0, 2 * Math.PI);
       context.fillStyle = colours[keypoints.fate[i]];
       context.fill();
     }

@@ -1,18 +1,16 @@
 // The run viewer's page: loads a bundle (the URL's `bundle`, else `bundle/` beside the page),
 // and shows one frame at a time in the image, map and solver panels, for the backend chosen,
 // beside the other backends' trajectories and step times, the frames where they decided
-// differently marked.
+// differently marked. This module only wires the views and controls to the page.
 
-import { loadBackend, loadBundle, loadTrack } from "./bundle.js";
+import { BACKENDS, loadBackend, loadBundle, loadTrack } from "./bundle.js";
 import { differences } from "./compare.js";
 import * as format from "./format.js";
 import { keypointsAt, recordIndex } from "./frames.js";
 import { ImageView } from "./image_view.js";
+import { Playhead } from "./playback.js";
 import { SceneView } from "./scene_view.js";
 import { SolverView } from "./solver_view.js";
-
-/** The order backends are offered in, and the first one present is shown. */
-const BACKENDS = ["cpp", "rust", "python"];
 
 /**
  * An element of the page, by id.
@@ -48,28 +46,46 @@ function fetcher(base) {
  * Fill the header's numbers for a run.
  * @param {HTMLElement} numbers The header's list.
  * @param {import("./bundle.js").BackendInfo} info The run's header.
+ * @param {boolean} truth Whether the bundle has ground truth.
  */
-function showNumbers(numbers, info) {
+function showNumbers(numbers, info, truth) {
   /** @type {[string, string, string][]} */
   const items = [];
   if (info.score !== null) {
-    items.push(["ATE", format.length(info.score.ate_rmse), "absolute trajectory error, RMS, after alignment"]);
+    items.push([
+      "ATE",
+      format.length(info.score.ate_rmse),
+      "absolute trajectory error, RMS, after alignment",
+    ]);
     items.push([
       "RPE",
-      `${format.length(info.score.rpe_translation_rmse)} · ${format.angle(info.score.rpe_rotation_rmse)}`,
+      `${format.length(info.score.rpe_translation_rmse)} · ` +
+        format.angle(info.score.rpe_rotation_rmse),
       "relative pose error over one frame period, RMS: translation and rotation",
+    ]);
+  } else if (truth) {
+    items.push([
+      "ATE",
+      "not aligned",
+      "the run could not be aligned to the ground truth (too few frames tracked, or their " +
+        "centres on a line), so it is shown in its own frame and not scored",
     ]);
   }
   const ran = info.frames[1] - info.frames[0];
   items.push(["tracked", `${info.tracked} / ${ran}`, "frames tracked, of the frames run"]);
-  items.push(["keyframes", String(info.keyframes), `in the final map (${info.made.keyframes} made)`]);
+  items.push([
+    "keyframes",
+    String(info.keyframes),
+    `in the final map (${info.made.keyframes} made)`,
+  ]);
   items.push(["points", String(info.points), `in the final map (${info.made.points} made)`]);
   if (info.latency !== null) {
     const { median, p95, deadline, late } = info.latency;
     items.push([
       "latency",
       `${format.duration(median)} · p95 ${format.duration(p95)} / ${format.duration(deadline)}`,
-      `building and tracking a frame, median and 95th percentile, against the frame period; ${late} late`,
+      "building and tracking a frame, median and 95th percentile, against the frame period; " +
+        `${late} late`,
     ]);
   }
   items.push(["memory", format.size(info.peak_memory), "the program's peak resident memory"]);
@@ -87,18 +103,112 @@ function showNumbers(numbers, info) {
   );
 }
 
+/**
+ * Say whether the backends decided alike.
+ * @param {HTMLElement} agreement The header's note.
+ * @param {number} backends How many backends the bundle holds.
+ * @param {number[]} differ The frames where they decided differently.
+ */
+function showAgreement(agreement, backends, differ) {
+  if (backends < 2) {
+    return;
+  }
+  agreement.textContent =
+    differ.length === 0 ? "decisions agree" : `decisions differ at ${differ.length} frames`;
+  agreement.title =
+    differ.length === 0
+      ? "every frame two backends ran, they decided alike: state, tracked points, keyframe, " +
+        "placement"
+      : `first at frame ${differ[0]}; each is ticked on the tracked-points plot`;
+  agreement.classList.toggle("differ", differ.length > 0);
+}
+
+/**
+ * Bind the playback controls and keys to the playhead.
+ * @param {Playhead} playhead The playhead.
+ * @param {HTMLInputElement} scrubber The frame slider.
+ */
+function bindPlayback(playhead, scrubber) {
+  const play = element("play", HTMLButtonElement);
+  const speed = element("speed", HTMLSelectElement);
+  let pending = false; // an animation frame is requested
+  /** @param {boolean} on Whether the button shows playing. */
+  function showPlaying(on) {
+    play.textContent = on ? "❚❚ pause" : "▶ play";
+    play.setAttribute("aria-label", on ? "pause" : "play");
+  }
+  /** @param {number} now The animation frame's time, in milliseconds. */
+  function tick(now) {
+    pending = false;
+    if (playhead.advance(now, Number(speed.value))) {
+      schedule();
+    } else {
+      showPlaying(false);
+    }
+  }
+  /** Request the next animation frame, unless one is already requested. */
+  function schedule() {
+    if (!pending) {
+      pending = true;
+      requestAnimationFrame(tick);
+    }
+  }
+  /** @param {boolean} on Whether to play. */
+  function setPlaying(on) {
+    if (on) {
+      playhead.start(performance.now());
+      schedule();
+    } else {
+      playhead.stop();
+    }
+    showPlaying(on);
+  }
+  play.addEventListener("click", () => setPlaying(!playhead.playing));
+  element("prev", HTMLButtonElement).addEventListener("click", () => {
+    playhead.seek(playhead.frame - 1);
+  });
+  element("next", HTMLButtonElement).addEventListener("click", () => {
+    playhead.seek(playhead.frame + 1);
+  });
+  scrubber.addEventListener("input", () => playhead.seek(Number(scrubber.value)));
+  document.addEventListener("keydown", (event) => {
+    if (event.target instanceof HTMLInputElement && event.target !== scrubber) {
+      return;
+    }
+    if (event.key === " ") {
+      event.preventDefault();
+      setPlaying(!playhead.playing);
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      playhead.seek(playhead.frame + (event.key === "ArrowLeft" ? -1 : 1));
+    }
+  });
+}
+
+/**
+ * Load the bundle and run the page: its views, the backends' buttons and playback.
+ * @returns {Promise<void>} Once the first backend is shown.
+ */
 async function main() {
   const message = element("message", HTMLParagraphElement);
-  const base = new URL(new URLSearchParams(location.search).get("bundle") ?? "bundle/", location.href);
+  const given = new URLSearchParams(location.search).get("bundle") ?? "bundle/";
+  const base = new URL(given, location.href);
   const fetchFile = fetcher(base.href.endsWith("/") ? base.href : `${base.href}/`);
   const bundle = await loadBundle(fetchFile);
   const info = bundle.info;
-  element("sequence", HTMLElement).textContent = `${info.sequence} · ${info.dataset} · ${info.mode}`;
+  element("sequence", HTMLElement).textContent =
+    `${info.sequence} · ${info.dataset} · ${info.mode}`;
   const scrubber = element("scrubber", HTMLInputElement);
   scrubber.max = String(info.frames - 1);
   const frameLabel = element("frame-label", HTMLElement);
   const numbers = element("numbers", HTMLElement);
-  const image = new ImageView(element("image", HTMLCanvasElement), element("legend", HTMLElement), element("image-tag", HTMLElement), bundle, fetchFile);
+  const image = new ImageView(
+    element("image", HTMLCanvasElement),
+    element("legend", HTMLElement),
+    element("image-tag", HTMLElement),
+    bundle,
+    fetchFile,
+  );
   const scene = new SceneView(element("scene", HTMLElement), bundle);
   const solver = new SolverView(
     element("summary", HTMLElement),
@@ -112,24 +222,17 @@ async function main() {
   const present = BACKENDS.filter((name) => name in info.backends);
   const tracks = await Promise.all(present.map((name) => loadTrack(fetchFile, bundle, name)));
   const differ = differences(tracks, info.frames);
-  const agreement = element("agreement", HTMLElement);
-  if (tracks.length > 1) {
-    agreement.textContent =
-      differ.length === 0 ? "decisions agree" : `decisions differ at ${differ.length} frames`;
-    agreement.title =
-      differ.length === 0
-        ? "every frame two backends ran, they decided alike: state, tracked points, keyframe, placement"
-        : `first at frame ${differ[0]}; each is ticked on the tracked-points plot`;
-    agreement.classList.toggle("differ", differ.length > 0);
-  }
+  showAgreement(element("agreement", HTMLElement), tracks.length, differ);
   /** @type {Map<string, Promise<import("./bundle.js").Backend>>} */
   const loaded = new Map();
   /** @type {import("./bundle.js").Backend | null} */
   let run = null;
-  let frame = 0;
+  let chosen = ""; // the backend last asked for, which a slower earlier load must not replace
+  const playhead = new Playhead(bundle.times, show);
 
-  /** Show the frame, for the run chosen. */
+  /** Show the playhead's frame, for the run chosen. */
   function show() {
+    const frame = playhead.frame;
     scrubber.value = String(frame);
     frameLabel.textContent = `frame ${frame} · ${bundle.times[frame].toFixed(2)} s`;
     if (run === null) {
@@ -155,19 +258,28 @@ async function main() {
    * @param {string} name The backend.
    */
   async function choose(name) {
+    chosen = name;
     let held = loaded.get(name);
     const track = tracks[present.indexOf(name)];
     if (held === undefined) {
       held = loadBackend(fetchFile, track);
       loaded.set(name, held);
     }
-    run = await held;
+    const ready = await held;
+    if (chosen !== name) {
+      return;
+    }
+    run = ready;
     for (const button of backends.querySelectorAll("button")) {
       button.setAttribute("aria-pressed", String(button.dataset.backend === name));
     }
-    showNumbers(numbers, run.info);
+    showNumbers(numbers, run.info, info.truth);
     scene.setRun(run);
-    scene.setOthers(tracks.filter((other) => other.name !== name));
+    // Only runs in the same frame as this one: aligned to the truth, or each in its own.
+    const aligned = run.info.alignment !== null;
+    scene.setOthers(
+      tracks.filter((o) => o.name !== name && (o.info.alignment !== null) === aligned),
+    );
     solver.setRun(run, tracks, info.frames, differ);
     show();
   }
@@ -182,70 +294,7 @@ async function main() {
     button.addEventListener("click", () => choose(name).catch((error) => fail(error)));
     backends.append(button);
   }
-
-  // Playback follows the frames' own times, scaled by the speed chosen.
-  const play = element("play", HTMLButtonElement);
-  const speed = element("speed", HTMLSelectElement);
-  let playing = false;
-  let clock = 0; // the sequence's time the playhead is at, in seconds since the first frame
-  let last = 0;
-  /** @param {number} now The animation frame's time, in milliseconds. */
-  function tick(now) {
-    if (!playing) {
-      return;
-    }
-    clock += ((now - last) / 1000) * Number(speed.value);
-    last = now;
-    let next = frame;
-    while (next + 1 < info.frames && bundle.times[next + 1] <= clock) {
-      next += 1;
-    }
-    if (next !== frame) {
-      frame = next;
-      show();
-    }
-    if (frame + 1 >= info.frames) {
-      setPlaying(false);
-      return;
-    }
-    requestAnimationFrame(tick);
-  }
-  /** @param {boolean} on Whether to play. */
-  function setPlaying(on) {
-    playing = on;
-    play.textContent = on ? "❚❚ pause" : "▶ play";
-    play.setAttribute("aria-label", on ? "pause" : "play");
-    if (on) {
-      if (frame + 1 >= info.frames) {
-        frame = 0;
-      }
-      clock = bundle.times[frame];
-      last = performance.now();
-      requestAnimationFrame(tick);
-    }
-  }
-  /** @param {number} to The frame to show. */
-  function seek(to) {
-    frame = Math.min(Math.max(to, 0), info.frames - 1);
-    clock = bundle.times[frame];
-    show();
-  }
-  play.addEventListener("click", () => setPlaying(!playing));
-  element("prev", HTMLButtonElement).addEventListener("click", () => seek(frame - 1));
-  element("next", HTMLButtonElement).addEventListener("click", () => seek(frame + 1));
-  scrubber.addEventListener("input", () => seek(Number(scrubber.value)));
-  document.addEventListener("keydown", (event) => {
-    if (event.target instanceof HTMLInputElement && event.target !== scrubber) {
-      return;
-    }
-    if (event.key === " ") {
-      event.preventDefault();
-      setPlaying(!playing);
-    } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-      event.preventDefault();
-      seek(frame + (event.key === "ArrowLeft" ? -1 : 1));
-    }
-  });
+  bindPlayback(playhead, scrubber);
   const follow = element("follow", HTMLButtonElement);
   follow.addEventListener("click", () => {
     scene.follow = !scene.follow;
@@ -274,6 +323,7 @@ main().catch((error) => {
   const message = document.getElementById("message");
   if (message !== null) {
     message.hidden = false;
-    message.textContent = `could not load the bundle: ${error instanceof Error ? error.message : String(error)}`;
+    const what = error instanceof Error ? error.message : String(error);
+    message.textContent = `could not load the bundle: ${what}`;
   }
 });

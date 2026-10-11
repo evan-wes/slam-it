@@ -68,6 +68,8 @@ function livingGeometry(positions, lives, vertices) {
   return geometry;
 }
 
+/** The map after the frame shown: the trajectory so far, the other backends' and the truth's,
+ *  the keyframes and points alive, and the camera, followed or orbited. */
 export class SceneView {
   /**
    * @param {HTMLElement} box The element the view fills.
@@ -84,7 +86,7 @@ export class SceneView {
     this.scene.background = colour("--scene");
     this.camera = new THREE.PerspectiveCamera(50, 1, 0.01, 1000);
     // A truth's world is gravity-aligned, z up; without one, a run's world is its first camera's.
-    if (bundle.info.truth === null) {
+    if (!bundle.info.truth) {
       this.camera.up.set(0, -1, 0);
     } else {
       this.camera.up.set(0, 0, 1);
@@ -98,10 +100,15 @@ export class SceneView {
     if (bundle.truth !== null) {
       const truth = new THREE.BufferGeometry();
       truth.setAttribute("position", new THREE.BufferAttribute(truthSegments(bundle.truth), 3));
-      this.scene.add(new THREE.LineSegments(truth, new THREE.LineBasicMaterial({ color: colour("--truth") })));
+      this.scene.add(
+        new THREE.LineSegments(truth, new THREE.LineBasicMaterial({ color: colour("--truth") })),
+      );
     }
     this.trajectory = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial());
-    this.current = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: colour("--camera") }));
+    this.current = new THREE.LineSegments(
+      new THREE.BufferGeometry(),
+      new THREE.LineBasicMaterial({ color: colour("--camera") }),
+    );
     // Their positions change after three.js has bounded them: never cull them by stale bounds.
     this.trajectory.frustumCulled = false;
     this.current.frustumCulled = false;
@@ -123,7 +130,9 @@ export class SceneView {
       this.scene.remove(object);
     }
     this.run = run;
-    /** @type {THREE.LineBasicMaterial} */ (this.trajectory.material).color = colour(`--backend-${run.name}`);
+    /** @type {THREE.LineBasicMaterial} */ (this.trajectory.material).color = colour(
+      `--backend-${run.name}`,
+    );
     const path = centres(run.poses);
     this.trajectory.geometry.setAttribute("position", new THREE.BufferAttribute(path, 3));
     const box = new THREE.Box3().setFromArray(path.length > 0 ? path : new Float32Array(3));
@@ -134,7 +143,11 @@ export class SceneView {
     this.living = [keyframes, points];
     this.runObjects = [
       new THREE.LineSegments(
-        livingGeometry(frustums(run.keyframePoses, camera, this.depth), run.keyframeLives, FRUSTUM_SEGMENTS * 2),
+        livingGeometry(
+          frustums(run.keyframePoses, camera, this.depth),
+          run.keyframeLives,
+          FRUSTUM_SEGMENTS * 2,
+        ),
         keyframes,
       ),
       new THREE.Points(livingGeometry(run.points, run.pointLives, 1), points),
@@ -154,7 +167,11 @@ export class SceneView {
     this.others = tracks.map((track) => {
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.BufferAttribute(centres(track.poses), 3));
-      const material = new THREE.LineBasicMaterial({ color: colour(`--backend-${track.name}`), transparent: true, opacity: 0.6 });
+      const material = new THREE.LineBasicMaterial({
+        color: colour(`--backend-${track.name}`),
+        transparent: true,
+        opacity: 0.6,
+      });
       const line = new THREE.Line(geometry, material);
       line.frustumCulled = false; // its draw range changes with the frame
       this.scene.add(line);
@@ -176,7 +193,10 @@ export class SceneView {
     const centre = bounds.getCenter(new THREE.Vector3());
     const reach = Math.max(bounds.getSize(new THREE.Vector3()).length(), 0.5);
     this.controls.target.copy(centre);
-    this.camera.position.copy(centre).add(this.camera.up.clone().multiplyScalar(reach * 0.6)).add(new THREE.Vector3(reach * 0.6, reach * 0.3, 0));
+    this.camera.position
+      .copy(centre)
+      .add(this.camera.up.clone().multiplyScalar(reach * 0.6))
+      .add(new THREE.Vector3(reach * 0.6, reach * 0.3, 0));
     this.camera.near = reach / 1000;
     this.camera.far = reach * 100;
     this.camera.updateProjectionMatrix();

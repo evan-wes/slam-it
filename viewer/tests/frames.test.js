@@ -5,7 +5,16 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { loadBackend, loadBundle, loadTrack } from "../src/bundle.js";
-import { FATES, alive, cameraAt, countAlive, keypointRows, keypointsAt, posesUpTo, recordIndex } from "../src/frames.js";
+import {
+  FATES,
+  alive,
+  cameraAt,
+  countAlive,
+  keypointRows,
+  keypointsAt,
+  posesUpTo,
+  recordIndex,
+} from "../src/frames.js";
 import { fetchGolden } from "./golden.js";
 
 const [UNMATCHED, , TRACKED, MADE] = [0, 1, 2, 3];
@@ -13,7 +22,10 @@ const [UNMATCHED, , TRACKED, MADE] = [0, 1, 2, 3];
 /** @param {string} name A backend. */
 async function golden(name) {
   const bundle = await loadBundle(fetchGolden);
-  return { bundle, run: await loadBackend(fetchGolden, await loadTrack(fetchGolden, bundle, name)) };
+  return {
+    bundle,
+    run: await loadBackend(fetchGolden, await loadTrack(fetchGolden, bundle, name)),
+  };
 }
 
 test("a life spans the frames from the one that made it to before the one that removed it", () => {
@@ -34,7 +46,7 @@ test("after a run's last frame, its lives leave its final map", async () => {
   }
 });
 
-test("each frame's keypoints are its rows, and their fates count what its record says", async () => {
+test("each frame's keypoints are its rows; their fates count what its record says", async () => {
   const { run } = await golden("cpp");
   assert.ok(run.features !== null);
   const tracked = /** @type {number[]} */ (run.records.tracked);
@@ -47,7 +59,10 @@ test("each frame's keypoints are its rows, and their fates count what its record
     const { xy, fate, counts } = keypointsAt(run.features, frame);
     assert.equal(xy.length, (end - start) * 2);
     assert.equal(fate.length, end - start);
-    assert.equal(counts.reduce((a, b) => a + b), end - start);
+    assert.equal(
+      counts.reduce((a, b) => a + b),
+      end - start,
+    );
     const k = recordIndex(run.records, frame);
     if (placed[k] === "initialization") {
       assert.equal(counts[MADE], tracked[k]);
@@ -61,7 +76,10 @@ test("each frame's keypoints are its rows, and their fates count what its record
 
 test("a frame outside a run's span has no record", async () => {
   const { bundle, run } = await golden("python");
-  assert.equal(recordIndex(run.records, run.info.frames[1] - 1), run.info.frames[1] - 1 - run.info.frames[0]);
+  assert.equal(
+    recordIndex(run.records, run.info.frames[1] - 1),
+    run.info.frames[1] - 1 - run.info.frames[0],
+  );
   assert.equal(recordIndex(run.records, run.info.frames[1]), -1);
   assert.ok(run.info.frames[1] < bundle.info.frames);
 });

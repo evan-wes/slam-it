@@ -34,10 +34,22 @@ test("a .npy file's data is viewed in place after its header", () => {
 });
 
 test("a .npy file of another dtype, order or format is refused", () => {
-  assert.throws(() => readFloat32(npy("<f8", "1,", new Float64Array([1]))), /expected <f4, got <f8/);
-  assert.throws(() => readInt32(npy("<i8", "1,", new BigInt64Array([1n]))), /expected <i4, got <i8/);
-  assert.throws(() => readFloat32(npy("<f4", "1, 1", new Float32Array([1]), "True")), /Fortran-order/);
-  assert.throws(() => readHeader(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]).buffer), /not a .npy file/);
+  assert.throws(
+    () => readFloat32(npy("<f8", "1,", new Float64Array([1]))),
+    /expected <f4, got <f8/,
+  );
+  assert.throws(
+    () => readInt32(npy("<i8", "1,", new BigInt64Array([1n]))),
+    /expected <i4, got <i8/,
+  );
+  assert.throws(
+    () => readFloat32(npy("<f4", "1, 1", new Float32Array([1]), "True")),
+    /Fortran-order/,
+  );
+  assert.throws(
+    () => readHeader(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]).buffer),
+    /not a .npy file/,
+  );
 });
 
 test("the golden bundle's frames, images and truth agree in count", async () => {
@@ -57,19 +69,52 @@ test("each golden backend's arrays agree with its header", async () => {
     assert.equal(run.poseFrames.length, info.tracked, name);
     assert.equal(run.keyframeLives.length / 3, info.made.keyframes, name);
     assert.equal(run.pointLives.length / 3, info.made.points, name);
-    assert.deepEqual(run.records.frame, Array.from({ length: info.frames[1] - info.frames[0] }, (_, i) => info.frames[0] + i));
+    assert.deepEqual(
+      run.records.frame,
+      Array.from({ length: info.frames[1] - info.frames[0] }, (_, i) => info.frames[0] + i),
+    );
     assert.equal(run.features !== null, info.features, name);
   }
 });
 
 test("the loader refuses another format, a mis-shaped array, and an unknown backend", async () => {
-  /** @param {Record<string, ArrayBuffer>} files @returns {(path: string) => Promise<ArrayBuffer>} */
+  /**
+   * @param {Record<string, ArrayBuffer>} files Files that replace the golden bundle's.
+   * @returns {(path: string) => Promise<ArrayBuffer>} The fetcher.
+   */
   const over = (files) => async (path) => files[path] ?? (await fetchGolden(path));
   const info = JSON.parse(new TextDecoder().decode(await fetchGolden("bundle.json")));
   const older = new TextEncoder().encode(JSON.stringify({ ...info, version: 0 })).buffer;
-  await assert.rejects(loadBundle(over({ "bundle.json": older })), /expected slam-it-all-bundle version 1/);
+  await assert.rejects(
+    loadBundle(over({ "bundle.json": older })),
+    /expected slam-it-all-bundle version 1/,
+  );
   const short = npy("<f4", "2,", new Float32Array([0, 1]));
-  await assert.rejects(loadBundle(over({ "times.npy": short })), /times.npy: expected \(6\), got \(2\)/);
+  await assert.rejects(
+    loadBundle(over({ "times.npy": short })),
+    /times.npy: expected \(6\), got \(2\)/,
+  );
   const bundle = await loadBundle(fetchGolden);
   await assert.rejects(loadTrack(fetchGolden, bundle, "java"), /the bundle has no java run/);
+});
+
+test("the loader refuses other tables, or a backend the page does not know", async () => {
+  /** @param {object} changed @returns {(path: string) => Promise<ArrayBuffer>} */
+  const baked = (changed) => async (path) => {
+    if (path !== "bundle.json") {
+      return fetchGolden(path);
+    }
+    const info = JSON.parse(new TextDecoder().decode(await fetchGolden(path)));
+    return new TextEncoder().encode(JSON.stringify({ ...info, ...changed })).buffer;
+  };
+  const info = (await loadBundle(fetchGolden)).info;
+  assert.deepEqual(info.fates, ["unmatched", "rejected", "tracked", "made"]);
+  const reordered = [...info.fates].reverse();
+  await assert.rejects(loadBundle(baked({ fates: reordered })), /its fates are not the page's/);
+  await assert.rejects(
+    loadBundle(baked({ steps: ["read_seconds"] })),
+    /its steps are not the page's/,
+  );
+  const java = { ...info.backends, java: info.backends.cpp };
+  await assert.rejects(loadBundle(baked({ backends: java })), /does not know the backend java/);
 });

@@ -7,7 +7,7 @@ export const FATES = /** @type {const} */ (["unmatched", "rejected", "tracked", 
 
 /** What each fate means, in a line (the legend's hover text). */
 export const FATE_HINTS = {
-  unmatched: "matched to no point, and no point made of it",
+  unmatched: "not matched by the frame's last tracking stage, and no point made of it",
   rejected: "matched by the frame's last tracking stage, then not tracked",
   tracked: "an inlier of the frame's final pose",
   made: "a new map point was made of it on this frame",

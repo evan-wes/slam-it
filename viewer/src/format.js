@@ -6,7 +6,9 @@
  * @returns {string} In centimetres below a metre, else metres; three significant digits.
  */
 export function length(metres) {
-  return Math.abs(metres) < 1 ? `${(metres * 100).toPrecision(3)} cm` : `${metres.toPrecision(3)} m`;
+  return Math.abs(metres) < 1
+    ? `${(metres * 100).toPrecision(3)} cm`
+    : `${metres.toPrecision(3)} m`;
 }
 
 /**

@@ -3,6 +3,17 @@
 // decoding: the image view decodes the bytes these return.
 
 /**
+ * Where a pixel coordinate falls on a canvas the image is drawn on at its own size. The
+ * project's pixel coordinates put the top-left pixel's centre at 0 (OpenCV's); a canvas puts
+ * it at 0.5.
+ * @param {number} coordinate A pixel coordinate, x or y.
+ * @returns {number} The canvas coordinate.
+ */
+export function onCanvas(coordinate) {
+  return coordinate + 0.5;
+}
+
+/**
  * A chunk file's path in the bundle.
  * @param {number} index The chunk.
  * @returns {string} `images/chunk_NNNN.bin`.

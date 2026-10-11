@@ -19,7 +19,9 @@ export const STAGES = [
     hints: {
       matches: "keypoints matched to the monocular reference frame",
       outcome: "how the attempt to start the map ended",
-      ba: "the initial bundle adjustment's solves: cost before → after, iterations, why it stopped",
+      ba:
+        "the initial bundle adjustment's solves: cost before → after, iterations, why it " +
+        "stopped",
     },
   },
   {
@@ -60,7 +62,9 @@ export const STAGES = [
       culled_points: "recent points culled: tracking found them too rarely",
       triangulated: "points triangulated with the window's keyframes",
       fused: "points fused into another",
-      ba: "the local bundle adjustment's solves: cost before → after, iterations, why it stopped",
+      ba:
+        "the local bundle adjustment's solves: cost before → after, iterations, why it " +
+        "stopped; the second solve is over the first's inliers, so it starts lower",
       outliers: "observations the adjustment dropped",
       weak_points: "points erased, left seen too little by the observations dropped",
       culled_keyframes: "redundant keyframes culled",
@@ -79,9 +83,11 @@ export const PLACED_HINT =
  * @returns {string} The text.
  */
 function solveText(solve) {
-  const s = /** @type {{initial_cost: number, final_cost: number, iterations: number,
-   *   termination: string}} */ (solve);
-  return `${s.initial_cost.toPrecision(4)} → ${s.final_cost.toPrecision(4)} in ${s.iterations} (${s.termination})`;
+  const s =
+    /** @type {{initial_cost: number, final_cost: number, iterations: number,
+     *   termination: string}} */ (solve);
+  const costs = `${s.initial_cost.toPrecision(4)} → ${s.final_cost.toPrecision(4)}`;
+  return `${costs} in ${s.iterations} (${s.termination})`;
 }
 
 /**
@@ -139,7 +145,8 @@ export function series(records, path) {
   const [column, field] = path.split(".");
   const values = records[column] ?? [];
   return Float64Array.from(values, (value) => {
-    const picked = field === undefined ? value : /** @type {Record<string, unknown> | null} */ (value)?.[field];
+    const picked =
+      field === undefined ? value : /** @type {Record<string, unknown> | null} */ (value)?.[field];
     return typeof picked === "number" ? picked : typeof picked === "boolean" ? Number(picked) : NaN;
   });
 }

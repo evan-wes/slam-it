@@ -15,6 +15,22 @@ function token(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
+/**
+ * The largest of some values, ignoring those not finite.
+ * @param {Iterable<number>} values The values.
+ * @param {number} floor The least it returns.
+ * @returns {number} The largest finite value, or `floor` if larger.
+ */
+function largest(values, floor) {
+  let top = floor;
+  for (const value of values) {
+    if (Number.isFinite(value) && value > top) {
+      top = value;
+    }
+  }
+  return top;
+}
+
 /** A plot of series over the bundle's frames, with the frame shown marked. */
 class Plot {
   /**
@@ -43,8 +59,7 @@ class Plot {
     this.frames = Math.max(frames, 2);
     this.lines = lines;
     this.marks = marks;
-    const finite = lines.flatMap((line) => Array.from(line.values).filter(Number.isFinite));
-    this.top = (top ?? Math.max(...finite, 1e-9)) * 1.1;
+    this.top = (top ?? lines.reduce((most, line) => largest(line.values, most), 1e-9)) * 1.1;
   }
 
   /**
@@ -102,6 +117,8 @@ class Plot {
   }
 }
 
+/** How the solvers went: the tracked points' and latency's plots over the run, every backend's
+ *  step times at the frame, and the frame's stage summaries. */
 export class SolverView {
   /**
    * @param {HTMLElement} summary Where the frame's summary goes.
@@ -140,14 +157,19 @@ export class SolverView {
       frames,
       [
         { values: series(run.records, "tracked"), first, colour: token("--fate-tracked") },
-        { values: series(run.records, "local_map.matches"), first, colour: token("--muted"), dashed: true },
+        {
+          values: series(run.records, "local_map.matches"),
+          first,
+          colour: token("--muted"),
+          dashed: true,
+        },
       ],
       differ,
     );
     const deadline = run.info.latency?.deadline ?? NaN;
-    const own = Array.from(latency(run.records)).filter(Number.isFinite);
     // Scaled to the chosen run and the deadline: a slower backend runs off the top.
-    const top = Math.max(...own, Number.isFinite(deadline) ? deadline * 1.5 : 0, 1e-9);
+    const floor = Math.max(Number.isFinite(deadline) ? deadline * 1.5 : 0, 1e-9);
+    const top = largest(latency(run.records), floor);
     this.timing.set(
       frames,
       [
@@ -156,7 +178,12 @@ export class SolverView {
           first: track.info.frames[0],
           colour: token(`--backend-${track.name}`),
         })),
-        { values: new Float64Array(frames).fill(deadline), first: 0, colour: token("--fate-rejected"), dashed: true },
+        {
+          values: new Float64Array(frames).fill(deadline),
+          first: 0,
+          colour: token("--fate-rejected"),
+          dashed: true,
+        },
       ],
       [],
       top,

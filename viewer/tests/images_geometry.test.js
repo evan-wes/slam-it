@@ -5,15 +5,33 @@ import { test } from "node:test";
 
 import { loadBundle } from "../src/bundle.js";
 import * as format from "../src/format.js";
-import { FRUSTUM_SEGMENTS, NEVER, centres, frustums, lifeAttributes, truthSegments } from "../src/geometry.js";
-import { ChunkCache, chunkOf, chunkPath, chunksAround, frameBytes } from "../src/images.js";
+import {
+  FRUSTUM_SEGMENTS,
+  NEVER,
+  centres,
+  frustums,
+  lifeAttributes,
+  truthSegments,
+} from "../src/geometry.js";
+import {
+  ChunkCache,
+  chunkOf,
+  chunkPath,
+  chunksAround,
+  frameBytes,
+  onCanvas,
+} from "../src/images.js";
 import { fetchGolden } from "./golden.js";
 
 test("each golden frame's bytes are a whole JPEG cut from its chunk", async () => {
   const bundle = await loadBundle(fetchGolden);
   const chunk = bundle.info.images.chunk;
   for (let frame = 0; frame < bundle.info.frames; frame++) {
-    const bytes = frameBytes(await fetchGolden(chunkPath(chunkOf(frame, chunk))), bundle.spans, frame);
+    const bytes = frameBytes(
+      await fetchGolden(chunkPath(chunkOf(frame, chunk))),
+      bundle.spans,
+      frame,
+    );
     assert.deepEqual(Array.from(bytes.subarray(0, 2)), [0xff, 0xd8], `frame ${frame} starts`);
     assert.deepEqual(Array.from(bytes.subarray(-2)), [0xff, 0xd9], `frame ${frame} ends`);
   }
@@ -33,8 +51,20 @@ test("the cache fetches each chunk once and drops the least recently used", asyn
     fetched.push(path);
     return new ArrayBuffer(1);
   }, 2);
-  await Promise.all([cache.get(0), cache.get(1), cache.get(0), cache.get(2), cache.get(0), cache.get(1)]);
+  await Promise.all([
+    cache.get(0),
+    cache.get(1),
+    cache.get(0),
+    cache.get(2),
+    cache.get(0),
+    cache.get(1),
+  ]);
   assert.deepEqual(fetched, [chunkPath(0), chunkPath(1), chunkPath(2), chunkPath(1)]);
+});
+
+test("a keypoint is drawn at its pixel's centre, which a canvas puts half a pixel in", () => {
+  assert.equal(onCanvas(0), 0.5);
+  assert.equal(onCanvas(639), 639.5);
 });
 
 test("a frustum reaches from the centre to the image's corners at its depth", () => {
@@ -42,7 +72,12 @@ test("a frustum reaches from the centre to the image's corners at its depth", ()
   const camera = { width: 640, height: 480, intrinsics: [500, 500, 320, 240] };
   const lines = frustums(identity, camera, 2);
   assert.equal(lines.length, FRUSTUM_SEGMENTS * 2 * 3);
-  assert.deepEqual(Array.from(lines.subarray(0, 6)), Array.from(new Float32Array([5, 6, 7, 5 - 1.28, 6 - 0.96, 9])));
+  // The top-left corner: the image's edge, half a pixel beyond the first pixel's centre.
+  const corner = [5 + ((-0.5 - 320) / 500) * 2, 6 + ((-0.5 - 240) / 500) * 2, 9];
+  assert.deepEqual(
+    Array.from(lines.subarray(0, 6)),
+    Array.from(new Float32Array([5, 6, 7, ...corner])),
+  );
   assert.deepEqual(Array.from(centres(identity)), [5, 6, 7]);
 });
 

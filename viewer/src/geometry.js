@@ -18,18 +18,23 @@ export const NEVER = 2 ** 30;
  */
 export function frustums(poses, camera, depth) {
   const [fx, fy, cx, cy] = camera.intrinsics;
+  // The image's edges: half a pixel beyond the outer pixels' centres (at 0 and width - 1).
+  const [left, top, right, bottom] = [-0.5, -0.5, camera.width - 0.5, camera.height - 0.5];
   const corners = [
-    [0, 0],
-    [camera.width, 0],
-    [camera.width, camera.height],
-    [0, camera.height],
+    [left, top],
+    [right, top],
+    [right, bottom],
+    [left, bottom],
   ].map(([u, v]) => [((u - cx) / fx) * depth, ((v - cy) / fy) * depth, depth]);
   const count = poses.length / 12;
   const out = new Float32Array(count * FRUSTUM_SEGMENTS * 2 * 3);
   for (let k = 0; k < count; k++) {
     const p = poses.subarray(k * 12, k * 12 + 12);
     /** @param {number[]} x A point in the camera @returns {number[]} It in the world */
-    const world = (x) => [0, 1, 2].map((r) => p[r * 4] * x[0] + p[r * 4 + 1] * x[1] + p[r * 4 + 2] * x[2] + p[r * 4 + 3]);
+    const world = (x) =>
+      [0, 1, 2].map(
+        (r) => p[r * 4] * x[0] + p[r * 4 + 1] * x[1] + p[r * 4 + 2] * x[2] + p[r * 4 + 3],
+      );
     const centre = [p[3], p[7], p[11]];
     const ends = corners.map(world);
     const segments = [
