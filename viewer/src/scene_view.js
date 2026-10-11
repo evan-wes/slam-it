@@ -68,6 +68,12 @@ function livingGeometry(positions, lives, vertices) {
   return geometry;
 }
 
+/** The way up in a truth's world, gravity-aligned. */
+const TRUTH_UP = new THREE.Vector3(0, 0, 1);
+
+/** The way up in a run's own world, its first camera's (y down). */
+const CAMERA_UP = new THREE.Vector3(0, -1, 0);
+
 /** The map after the frame shown: the trajectory so far, the other backends' and the truth's,
  *  the keyframes and points alive, and the camera, followed or orbited. */
 export class SceneView {
@@ -85,24 +91,20 @@ export class SceneView {
     this.scene = new THREE.Scene();
     this.scene.background = colour("--scene");
     this.camera = new THREE.PerspectiveCamera(50, 1, 0.01, 1000);
-    // A truth's world is gravity-aligned, z up; without one, a run's world is its first camera's.
-    if (!bundle.info.truth) {
-      this.camera.up.set(0, -1, 0);
-    } else {
-      this.camera.up.set(0, 0, 1);
-    }
-    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-    this.controls.addEventListener("change", () => this.render());
+    this.camera.up.copy(bundle.info.truth ? TRUTH_UP : CAMERA_UP);
+    this.controls = this.orbit();
     /** @type {THREE.Object3D[]} */
     this.runObjects = [];
     /** @type {THREE.ShaderMaterial[]} */
     this.living = [];
+    /** @type {THREE.LineSegments | null} */
+    this.truth = null;
     if (bundle.truth !== null) {
       const truth = new THREE.BufferGeometry();
       truth.setAttribute("position", new THREE.BufferAttribute(truthSegments(bundle.truth), 3));
-      this.scene.add(
-        new THREE.LineSegments(truth, new THREE.LineBasicMaterial({ color: colour("--truth") })),
-      );
+      const material = new THREE.LineBasicMaterial({ color: colour("--truth") });
+      this.truth = new THREE.LineSegments(truth, material);
+      this.scene.add(this.truth);
     }
     this.trajectory = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial());
     this.current = new THREE.LineSegments(
@@ -130,6 +132,18 @@ export class SceneView {
       this.scene.remove(object);
     }
     this.run = run;
+    // A run left in its own frame is in its first camera's world, not the truth's: while it is
+    // shown, the truth is hidden and the view is the camera's way up.
+    const aligned = run.info.alignment !== null;
+    if (this.truth !== null) {
+      this.truth.visible = aligned;
+    }
+    const up = aligned ? TRUTH_UP : CAMERA_UP;
+    if (!this.camera.up.equals(up)) {
+      this.camera.up.copy(up);
+      this.controls.dispose();
+      this.controls = this.orbit(); // the controls take the camera's up when made
+    }
     /** @type {THREE.LineBasicMaterial} */ (this.trajectory.material).color = colour(
       `--backend-${run.name}`,
     );
@@ -179,11 +193,22 @@ export class SceneView {
     });
   }
 
-  /** Frame the trajectory and the truth. */
+  /**
+   * Orbit controls for the camera, as it is pointed up now.
+   * @returns {OrbitControls} The controls.
+   */
+  orbit() {
+    const controls = new OrbitControls(this.camera, this.renderer.domElement);
+    controls.addEventListener("change", () => this.render());
+    return controls;
+  }
+
+  /** Frame the trajectory and the truth, if shown. */
   fit() {
     const bounds = new THREE.Box3();
     for (const object of [this.trajectory, ...this.scene.children]) {
-      if (object instanceof THREE.Line && object.geometry.getAttribute("position")) {
+      const line = object instanceof THREE.Line && object.geometry.getAttribute("position");
+      if (line && object.visible) {
         bounds.expandByObject(object);
       }
     }
