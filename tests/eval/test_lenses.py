@@ -54,6 +54,7 @@ def profiles() -> list[lenses.Profile]:
         ("iPhone 14 Pro back ultra wide camera 2.22mm f/2.2", False, "ultrawide"),
         ("iPhone 14 Pro back telephoto camera 9mm f/2.8", False, "telephoto"),
         ("iPhone 14 Pro front camera 2.69mm f/1.9", False, "front"),
+        ("iPhone 11 Pro back triple camera 1.54mm f/2.4", False, "main"),  # no kind said
         ("24mm", True, "main"),
         ("13mm", True, "ultrawide"),
         ("0,5 Wide", True, "ultrawide"),
@@ -71,13 +72,22 @@ def test_a_lens_name_says_its_kind(text: str, equivalent: bool, kind: str) -> No
     assert lenses.lens_kind(text, equivalent=equivalent) == kind
 
 
-def test_the_fixture_profiles_read_and_the_rough_one_is_dropped(
-    profiles: list[lenses.Profile],
-) -> None:
-    """Seven of the eight read; the Pixel 8's 1080p one (4 px RMS) is over MAX_RMS."""
+def test_the_fixture_profiles_read_and_two_are_dropped(profiles: list[lenses.Profile]) -> None:
+    """Seven of the nine read; a rough calibration and a model that turns back are dropped.
+
+    The Pixel 8's 1080p profile is over MAX_RMS (4 px); the iPhone 11 Pro Max's wide add-on
+    lens is calibrated well, but its model turns back before its image's corners.
+    """
     names = {p.name for p in profiles}
     assert len(profiles) == 7
     assert "Google_Pixel 8___1080p_16by9_1920x1080-30.00fps" not in names
+    turning = PROFILES / "Apple_iPhone 11 Pro Max_Wide Lens__4k_16by9_3840x2160-60.00fps.json"
+    assert lenses.read_profile(turning) is None
+    data = json.loads(turning.read_text())
+    matrix, k = data["fisheye_params"]["camera_matrix"], data["fisheye_params"]["distortion_coeffs"]
+    camera = lenses.Pinhole(matrix[0][0], matrix[1][1], matrix[0][2], matrix[1][2], 3840, 2160)
+    assert data["fisheye_params"]["RMS_error"] <= lenses.MAX_RMS  # dropped for holds() alone
+    assert not lenses.Fisheye(camera, tuple(k)).holds()
     kinds = {p.name: p.lens for p in profiles}
     assert kinds["Apple_iPhone 14 Pro_3x__4k_16by9_3840x2160-29.98fps"] == "telephoto"
     assert kinds["Apple_iPhone 14 Pro Max__0,5 Wide_1080p_16by9_1920x1080-29.99fps"] == "ultrawide"
@@ -109,7 +119,11 @@ def test_a_profile_not_usable_is_skipped(change: dict[str, object], tmp_path: Pa
         (IPHONE, (1920, 1080), "Apple_iPhone 14 Pro_24mm__1080p_16by9_1920x1080-25.00fps"),
         (IPHONE, (3840, 2160), "apple_iphone 14 Pro_24mm__4k_16by9_3840x2160-59.92fps"),
         (
-            {**IPHONE, lenses.APPLE_LENS: "iPhone 14 Pro back telephoto camera 9mm f/2.8"},
+            {
+                **IPHONE,
+                lenses.APPLE_LENS: "iPhone 14 Pro back telephoto camera 9mm f/2.8",
+                lenses.APPLE_FOCAL_35MM: "77",
+            },
             (1920, 1080),
             "Apple_iPhone 14 Pro_3x__4k_16by9_3840x2160-29.98fps",
         ),
@@ -118,6 +132,7 @@ def test_a_profile_not_usable_is_skipped(change: dict[str, object], tmp_path: Pa
                 **IPHONE,
                 lenses.APPLE_MODEL: "iPhone 14 Pro Max",
                 lenses.APPLE_LENS: "back ultra wide",
+                lenses.APPLE_FOCAL_35MM: "13",
             },
             (1920, 1080),
             "Apple_iPhone 14 Pro Max__0,5 Wide_1080p_16by9_1920x1080-29.99fps",
@@ -139,8 +154,69 @@ def test_a_video_matches_its_phone_and_lens(
 
 
 @pytest.mark.parametrize(
+    ("focal", "kind"),
+    [(13.0, "ultrawide"), (16.0, "ultrawide"), (16.5, "main"), (49.9, "main"), (50.0, "telephoto")],
+)
+def test_a_35mm_focal_length_says_its_kind(focal: float, kind: str) -> None:
+    """At or under ULTRAWIDE_MM an ultrawide, at or over TELEPHOTO_MM a telephoto."""
+    assert lenses.focal_kind(focal) == kind
+
+
+TRIPLE = "iPhone 14 Pro back triple camera 6.86mm f/1.78"
+"""Apple's own Camera app's name for every rear lens: the camera system, not the lens."""
+
+
+@pytest.mark.parametrize(
+    ("lens", "focal", "kind"),
+    [
+        (TRIPLE, "13", "ultrawide"),
+        (TRIPLE, "77", "telephoto"),
+        (TRIPLE, "24", "main"),
+        (TRIPLE, None, "main"),
+        ("iPhone 14 Pro back camera 6.86mm f/1.78", "13", "ultrawide"),
+        ("iPhone 14 Pro back ultra wide camera 2.22mm f/2.2", "13", "ultrawide"),
+        ("iPhone 14 Pro back ultra wide camera 2.22mm f/2.2", None, "ultrawide"),
+        ("iPhone 14 Pro back ultra wide camera 2.22mm f/2.2", "77", None),  # they disagree
+        ("iPhone 14 Pro back telephoto camera 9mm f/2.8", "77", "telephoto"),
+        ("iPhone 14 Pro front camera 2.69mm f/1.9", "30", "front"),
+        (TRIPLE, "not a number", "main"),
+    ],
+)
+def test_a_videos_lens_is_its_name_else_its_35mm_focal_length(
+    lens: str, focal: str | None, kind: str | None
+) -> None:
+    """A name that says a kind must agree with the focal length; one that says none defers."""
+    metadata = {lenses.APPLE_LENS: lens}
+    if focal is not None:
+        metadata[lenses.APPLE_FOCAL_35MM] = focal
+    assert lenses.video_lens(metadata) == kind
+
+
+def test_a_telephoto_clip_from_apples_camera_app_gets_the_telephoto_profile(
+    profiles: list[lenses.Profile],
+) -> None:
+    """Named "back triple camera", at 77 mm: the 3x profile, not the main camera's."""
+    metadata = {
+        **IPHONE,
+        lenses.APPLE_LENS: "iPhone 14 Pro back triple camera 9mm f/2.8",
+        lenses.APPLE_FOCAL_35MM: "77",
+    }
+    found = lenses.match(profiles, lenses.Video(metadata, 3840, 2160, 30.0))
+    assert found is not None
+    assert found[0].name == "Apple_iPhone 14 Pro_3x__4k_16by9_3840x2160-29.98fps"
+
+
+@pytest.mark.parametrize(
     ("metadata", "size"),
     [
+        (
+            {
+                **IPHONE,
+                lenses.APPLE_LENS: "iPhone 14 Pro back ultra wide camera",
+                lenses.APPLE_FOCAL_35MM: "13",
+            },
+            (1920, 1080),
+        ),
         ({**IPHONE, lenses.APPLE_LENS: "iPhone 14 Pro back ultra wide camera"}, (1920, 1080)),
         ({**IPHONE, lenses.APPLE_MODEL: "iPhone 14"}, (1920, 1080)),
         (IPHONE, (1080, 1920)),  # stored portrait: no profile in that orientation
@@ -151,7 +227,11 @@ def test_a_video_matches_its_phone_and_lens(
 def test_no_profile_matches_another_phone_lens_orientation_or_aspect(
     metadata: dict[str, str], size: tuple[int, int], profiles: list[lenses.Profile]
 ) -> None:
-    """No 14 Pro ultrawide, no iPhone 14, no portrait or 4:3 profile, no phone: no match."""
+    """No profile of another lens, phone, orientation or aspect matches, nor without a phone.
+
+    No 14 Pro ultrawide profile; a lens name and focal length that disagree; no iPhone 14; no
+    portrait or 4:3 profile; no phone named.
+    """
     assert lenses.match(profiles, lenses.Video(metadata, *size, 30.0)) is None
 
 
@@ -208,6 +288,81 @@ def test_the_fisheye_model_inverts() -> None:
     np.testing.assert_allclose(
         ROOM_FISHEYE.pinhole(pixels[:, 0], pixels[:, 1]), np.stack([a, b], -1), atol=1e-9
     )
+
+
+def test_the_bend_rises_up_to_its_turning_point() -> None:
+    """The bend rises up to where its slope first falls to zero.
+
+    With k1 alone, below zero, that is at theta^2 = -1 / (3 k1); without distortion, never
+    (the grid's last angle); at once, when the slope is not positive from the start.
+    """
+    k1 = -0.2
+    lens = lenses.Fisheye(ROOM_FISHEYE.camera, (k1, 0.0, 0.0, 0.0))
+    step = (math.pi / 2) / (1 << 14)  # the grid lenses.Fisheye.rising samples the bend on
+    turn = math.sqrt(-1.0 / (3.0 * k1))
+    assert turn - step <= lens.rising() <= turn
+    straight = lenses.Fisheye(ROOM_FISHEYE.camera, (0.0, 0.0, 0.0, 0.0))
+    assert straight.rising() == pytest.approx(math.pi / 2, abs=2 * step)
+    falling = lenses.Fisheye(ROOM_FISHEYE.camera, (-1e9, 0.0, 0.0, 0.0))
+    assert falling.rising() == 0.0
+    assert not falling.holds()
+
+
+def test_the_model_is_refused_where_it_does_not_hold() -> None:
+    """A lens whose bend turns back before its image's corners is refused where it fails.
+
+    Unbending refuses a negative angle and one past the bend's top; holds() says no; and
+    undistortion refuses the lens.
+    """
+    turning = lenses.Fisheye(
+        lenses.Pinhole(150.0, 150.0, 159.5, 119.5, 320, 240), (-0.2,) + (0.0,) * 3
+    )
+    top = float(turning.bend(np.array(turning.rising())))
+    np.testing.assert_allclose(
+        turning.unbend(np.array([0.0, top])), [0.0, turning.rising()], atol=1e-12
+    )
+    for theta_d in (-1e-6, top * 1.001):
+        with pytest.raises(InvalidInputError, match="does not hold out"):
+            turning.unbend(np.array([theta_d]))
+    assert ROOM_FISHEYE.holds()
+    assert not turning.holds()
+    with pytest.raises(InvalidInputError, match="does not hold out"):
+        lenses.undistortion(turning)
+
+
+def test_undistortion_refuses_an_image_that_leaves_no_rectangle() -> None:
+    """A single pixel's image has no rectangle between its outermost pixel centres."""
+    lens = lenses.Fisheye(lenses.Pinhole(100.0, 100.0, 0.0, 0.0, 1, 1), ROOM_FISHEYE.k)
+    with pytest.raises(InvalidInputError, match="no rectangle"):
+        lenses.undistortion(lens)
+
+
+def test_the_model_and_its_map_are_opencvs() -> None:
+    """The projection and the undistortion map agree with OpenCV's own fisheye functions.
+
+    OpenCV is an independent oracle: the projection agrees to its rounding, and the map to
+    float32's, in which OpenCV stores it.
+    """
+    cv2 = pytest.importorskip("cv2")
+    c = ROOM_FISHEYE.camera
+    matrix = np.array([[c.fx, 0.0, c.cx], [0.0, c.fy, c.cy], [0.0, 0.0, 1.0]])
+    k = np.array(ROOM_FISHEYE.k)
+    rng = np.random.default_rng(2)
+    rays = rng.uniform(-0.9, 0.9, (300, 2))
+    theirs = cv2.fisheye.distortPoints(rays.reshape(-1, 1, 2), matrix, k).reshape(-1, 2)
+    np.testing.assert_allclose(
+        ROOM_FISHEYE.source(rays[:, 0], rays[:, 1]), theirs, rtol=0, atol=1e-9
+    )
+    out, mapping = lenses.undistortion(ROOM_FISHEYE)
+    new = np.array([[out.fx, 0.0, out.cx], [0.0, out.fy, out.cy], [0.0, 0.0, 1.0]])
+    map_x, map_y = cv2.fisheye.initUndistortRectifyMap(
+        matrix, k, np.eye(3), new, (out.width, out.height), cv2.CV_32FC1
+    )
+    # float32's spacing at 320 px is 3.1e-5; ours is float64 and clipped to the outermost
+    # centres, which OpenCV's is not, so compare inside a pixel of the edges.
+    inner = (slice(1, -1), slice(1, -1))
+    np.testing.assert_allclose(mapping[..., 0][inner], map_x[inner], rtol=0, atol=1e-4)
+    np.testing.assert_allclose(mapping[..., 1][inner], map_y[inner], rtol=0, atol=1e-4)
 
 
 def test_a_point_lands_where_the_fisheye_formula_puts_it() -> None:
@@ -336,3 +491,16 @@ def test_main_says_the_nominal_field_of_view(capsys: pytest.CaptureFixture[str])
     """The program's nominal command, over the fixtures."""
     assert lenses.main(["nominal", "--profiles", str(PROFILES)]) == 0
     assert capsys.readouterr().out.startswith("median diagonal field of view: ")
+
+
+def test_the_database_is_required_where_it_is_looked_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing or empty database is refused, so a video never silently falls to a fallback."""
+    assert len(lenses.database(PROFILES)) == 7
+    for folder in (tmp_path / "missing", tmp_path):
+        with pytest.raises(InvalidInputError, match="no usable lens profile"):
+            lenses.database(folder)
+    monkeypatch.setenv("SLAM_IT_ALL_LENS_PROFILES", str(tmp_path))
+    with pytest.raises(InvalidInputError, match="no usable lens profile"):
+        lenses.database()

@@ -544,8 +544,9 @@ def main(arguments: Sequence[str]) -> int:
         pinhole = lenses.Pinhole(fx, fy, cx, cy, video.width, video.height)
         import_video(args.upload, args.out, lenses.Chosen(pinhole, "given"))
     else:
-        folder = args.profiles or lenses.default_folder()
-        profiles = lenses.load(folder) if folder.is_dir() else []
+        # The database is needed, and so required, only when a profile may be chosen.
+        wanted = args.source in ("auto", "profile")
+        profiles = lenses.database(args.profiles) if wanted else []
         chosen = lenses.choose(probe(args.upload), profiles, args.source)
         import_video(args.upload, args.out, chosen)
     record = json.loads((args.out / "source.json").read_text())

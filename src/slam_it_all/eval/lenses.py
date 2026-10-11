@@ -14,7 +14,9 @@ recording's exact camera matrix aside (:mod:`slam_it_all.eval.video` reads it):
 CC0), its phones' profiles only, fetched at :data:`PROFILES_COMMIT` by :func:`fetch` (the setup
 script and the worker's image run ``python -m slam_it_all.eval.lenses fetch``) into
 :func:`default_folder`, never committed. Each profile is a camera matrix and four fisheye
-coefficients for one phone, lens and video mode, with its calibration error.
+coefficients for one phone, lens and video mode, with its calibration error. :func:`database`
+refuses a database that is not there, so that a missing one never silently degrades every
+video to the fallbacks.
 
 **Matching** (:func:`match`). The profiles are contributed by hand, so their names are free text:
 - a profile is usable if it is OpenCV's fisheye model, unstretched and uncropped, calibrated
@@ -22,8 +24,10 @@ coefficients for one phone, lens and video mode, with its calibration error.
   1,164 phone profiles at :data:`PROFILES_COMMIT`);
 - its brand and model must equal the video's, compared without case or repeated spaces, but
   whole: an "iPhone 14 Pro Max" never stands in for an "iPhone 14 Pro";
-- its lens must be the video's (:func:`lens_kind`: main, ultrawide, telephoto or front), the
-  main camera when the video does not say;
+- its lens must be the video's (:func:`video_lens`: main, ultrawide, telephoto or front). Apple's
+  lens name says the kind, unless it names the camera system ("back triple camera"), when the
+  35mm-equivalent focal length decides (:func:`focal_kind`); a name and a focal length that
+  disagree trust no profile. Without either, the main camera;
 - its frame must have the video's aspect within :data:`ASPECT_TOLERANCE`, in the same
   orientation;
 - the nearest resolution wins, then the nearest frame rate, then the smallest calibration
@@ -59,7 +63,7 @@ import sys
 import tarfile
 import urllib.request
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -89,6 +93,12 @@ MAX_RMS = 2.0
 
 ASPECT_TOLERANCE = 0.02
 """How far a profile's aspect (long side over short) may be from the video's."""
+
+ULTRAWIDE_MM = 16
+"""The 35mm-equivalent focal length, in millimetres, at or under which a lens is an ultrawide."""
+
+TELEPHOTO_MM = 50
+"""The 35mm-equivalent focal length, in millimetres, at or over which a lens is a telephoto."""
 
 FULL_FRAME_DIAGONAL = math.hypot(36.0, 24.0)
 """A 35 mm film frame's diagonal, in millimetres: what a 35mm-equivalent focal length is to."""
@@ -249,7 +259,9 @@ class Fisheye:
         t2 = theta * theta
         slope = 1.0 + t2 * (3 * k1 + t2 * (5 * k2 + t2 * (7 * k3 + t2 * 9 * k4)))
         falling = np.flatnonzero(slope <= 0.0)
-        return float(theta[falling[0] - 1]) if falling.size else float(theta[-1])
+        if not falling.size:
+            return float(theta[-1])
+        return float(theta[falling[0] - 1]) if falling[0] > 0 else 0.0
 
     def unbend(self, theta_d: NDArray[np.float64]) -> NDArray[np.float64]:
         """Return each ray's angle from the axis for its distorted angle, by bisection.
@@ -407,8 +419,8 @@ def lens_kind(text: str, *, equivalent: bool = True) -> str:
         ("iPhone 14 Pro back ultra wide camera 2.22mm f/2.2").
     equivalent : bool, optional
         Whether a number of millimetres in it is a 35mm-equivalent focal length, as a
-        profile's are (16 mm and under an ultrawide, 50 mm and over a telephoto). Apple's
-        lens model gives the physical focal length, so it is read by its words alone.
+        profile's are (:func:`focal_kind`). Apple's lens model gives the physical focal
+        length, so it is read by its words alone.
 
     Returns
     -------
@@ -423,11 +435,65 @@ def lens_kind(text: str, *, equivalent: bool = True) -> str:
     if "tele" in words or _TELEPHOTO_ZOOM.search(words):
         return "telephoto"
     for focal in (int(m) for m in _FOCAL_MM.findall(words)) if equivalent else ():
-        if focal <= 16:
-            return "ultrawide"
-        if focal >= 50:
-            return "telephoto"
+        if focal_kind(focal) != "main":
+            return focal_kind(focal)
     return "main"
+
+
+def focal_kind(focal_35mm: float) -> str:
+    """Return the kind of rear lens a 35mm-equivalent focal length says.
+
+    Parameters
+    ----------
+    focal_35mm : float
+        The focal length, in millimetres of a 36 by 24 mm frame.
+
+    Returns
+    -------
+    str
+        ``"ultrawide"`` at or under :data:`ULTRAWIDE_MM`, ``"telephoto"`` at or over
+        :data:`TELEPHOTO_MM`, else ``"main"``.
+    """
+    if focal_35mm <= ULTRAWIDE_MM:
+        return "ultrawide"
+    return "telephoto" if focal_35mm >= TELEPHOTO_MM else "main"
+
+
+def video_lens(metadata: Mapping[str, str]) -> str | None:
+    """Return the kind of lens a video was recorded with, from its lens name and focal length.
+
+    Apple's own Camera app names every rear lens after the phone's camera system ("back
+    triple camera 1.54mm f/2.4"), which says no kind, so a name that says none defers to the
+    35mm-equivalent focal length. A name that says one must agree with it.
+
+    Parameters
+    ----------
+    metadata : mapping of str to str
+        The video's metadata fields of :data:`METADATA_KEYS`.
+
+    Returns
+    -------
+    str or None
+        The kind (:func:`lens_kind`), or None if the name and the focal length disagree, so
+        that no profile is trusted.
+    """
+    named = lens_kind(metadata.get(APPLE_LENS, ""), equivalent=False)
+    focal = _focal_35mm(metadata)
+    if named == "front" or focal is None:
+        return named
+    measured = focal_kind(focal)
+    if named == "main":
+        return measured
+    return named if measured == named else None
+
+
+def _focal_35mm(metadata: Mapping[str, str]) -> float | None:
+    """Return a video's 35mm-equivalent focal length, or None if it has no usable one."""
+    try:
+        focal = float(metadata.get(APPLE_FOCAL_35MM, "nan"))
+    except ValueError:
+        return None
+    return focal if math.isfinite(focal) and focal > 0.0 else None
 
 
 def _number(value: Any, name: str) -> float:  # noqa: ANN401 -- a JSON value
@@ -555,7 +621,9 @@ def match(profiles: Sequence[Profile], video: Video) -> tuple[Profile, Fisheye] 
     model = _normal(metadata.get(APPLE_MODEL) or metadata.get(ANDROID_MODEL) or "")
     if not (brand and model):
         return None
-    lens = lens_kind(metadata.get(APPLE_LENS, ""), equivalent=False)
+    lens = video_lens(metadata)
+    if lens is None:
+        return None
     landscape = width >= height
     candidates = [
         p
@@ -592,8 +660,7 @@ def from_35mm(focal_35mm: float, width: int, height: int) -> Pinhole:
     Pinhole
         Its focal length scaled from the frame's diagonal, its centre in the middle.
     """
-    focal = focal_35mm * math.hypot(width, height) / FULL_FRAME_DIAGONAL
-    return Pinhole(focal, focal, (width - 1) / 2, (height - 1) / 2, width, height)
+    return _centred(focal_35mm * math.hypot(width, height) / FULL_FRAME_DIAGONAL, width, height)
 
 
 def nominal(width: int, height: int) -> Pinhole:
@@ -610,7 +677,11 @@ def nominal(width: int, height: int) -> Pinhole:
         The camera.
     """
     half = math.radians(NOMINAL_DIAGONAL_FOV) / 2
-    focal = math.hypot(width, height) / 2 / math.tan(half)
+    return _centred(math.hypot(width, height) / 2 / math.tan(half), width, height)
+
+
+def _centred(focal: float, width: int, height: int) -> Pinhole:
+    """Return a pinhole of one focal length, its centre in the middle of the image."""
     return Pinhole(focal, focal, (width - 1) / 2, (height - 1) / 2, width, height)
 
 
@@ -664,11 +735,8 @@ def choose(video: Video, profiles: Sequence[Profile], source: str = "auto") -> C
         if source == "profile":
             raise InvalidInputError("source: no lens profile matches the video")
     if source in ("auto", "35mm"):
-        try:
-            focal = float(video.metadata.get(APPLE_FOCAL_35MM, "nan"))
-        except ValueError:
-            focal = math.nan
-        if math.isfinite(focal) and focal > 0.0:
+        focal = _focal_35mm(video.metadata)
+        if focal is not None:
             return Chosen(from_35mm(focal, video.width, video.height), "35mm")
         if source == "35mm":
             raise InvalidInputError("source: the video has no 35mm-equivalent focal length")
@@ -703,6 +771,37 @@ def nominal_fov(profiles: Sequence[Profile]) -> tuple[float, int]:
     if not angles:
         raise InvalidInputError("profiles: none of a main camera")
     return float(np.median(angles)), len(angles)
+
+
+def database(folder: str | Path | None = None) -> list[Profile]:
+    """Return the usable profiles of the database, refusing a database that is not there.
+
+    Without it every video would fall to the fallbacks without a word, so a missing or
+    empty database is an error, not an empty list.
+
+    Parameters
+    ----------
+    folder : str or pathlib.Path, optional
+        The database (default :func:`default_folder`).
+
+    Returns
+    -------
+    list of Profile
+        The usable profiles.
+
+    Raises
+    ------
+    slam_it_all.foundations.errors.InvalidInputError
+        If the folder holds no usable profile.
+    """
+    where = Path(folder) if folder is not None else default_folder()
+    profiles = load(where) if where.is_dir() else []
+    if not profiles:
+        raise InvalidInputError(
+            f"profiles: no usable lens profile in {where}; fetch them with"
+            " `python -m slam_it_all.eval.lenses fetch`"
+        )
+    return profiles
 
 
 def default_folder() -> Path:

@@ -115,6 +115,10 @@ def test_a_phone_video_is_matched_to_its_profile_and_undistorted(tmp_path: Path)
     assert source["intrinsics"]["profile"] == chosen.profile
     assert video.main([str(path), str(tmp_path / "cli"), "--profiles", str(PROFILES)]) == 0
     assert video.main([str(path), str(tmp_path / "nominal"), "--source", "nominal"]) == 0
+    empty = tmp_path / "no-profiles"
+    empty.mkdir()
+    with pytest.raises(InvalidInputError, match="no usable lens profile"):
+        video.main([str(path), str(tmp_path / "auto"), "--profiles", str(empty)])
     assert (
         json.loads((tmp_path / "nominal" / "source.json").read_text())["intrinsics"]["source"]
         == "nominal"
