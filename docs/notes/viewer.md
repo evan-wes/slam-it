@@ -187,6 +187,7 @@ from 133 to 159 MiB. Recording features moves it by under 6 MiB either way.
 
 ## What it does not do yet
 
-- A phone video (PR 11): the upload, the import and the intrinsics' source in the header.
+- The intrinsics' source in the header: for an uploaded video, the status page names it
+  ([your own video](your-own-video.md)).
 - Map snapshots after each bundle adjustment: a point sits where adjustment finally put it.
 - A live camera.

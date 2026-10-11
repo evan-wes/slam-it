@@ -1,7 +1,6 @@
 # SLAM It All! -- a learning ladder for visual SLAM
 
-Status, 2026-10-08: milestone 1 is complete, and milestone 2 is under way (see
-[Milestones](#milestones)). The scaffold (package-per-rung layout in three
+Status, 2026-10-11: milestones 1 and 2 are complete (see [Milestones](#milestones)). The scaffold (package-per-rung layout in three
 languages, conda environment, CI, two-layer review process) is merged. PR 1, the BA spine,
 added rung 0's geometry and estimation in Python and C++: SO(3), SE(3), Umeyama alignment,
 camera models, nonlinear least squares and bundle adjustment. PR 2 adds two-view geometry: triangulation, LO-MSAC RANSAC, the 8-point essential and
@@ -22,6 +21,10 @@ and RGB-D, with native C++ and Rust programs that run a whole sequence and make 
 decisions as the Python reference ([the edge VO note](../notes/edge-vo.md)). PR 9 adds the
 budget harness and brings the C++ and Rust pipelines to real time within a laptop-CPU budget
 on every sequence of the edge note's set ([the real-time note](../notes/real-time.md)).
+PR 10 adds the run viewer, which replays a run frame by frame for each backend side by side
+([the viewer note](../notes/viewer.md)), and PR 11 closes milestone 2 with your own video: a
+phone video or a Stray Scanner recording uploaded through a page, run by a worker and opened in
+the viewer ([its note](../notes/your-own-video.md)).
 
 ## Purpose
 
@@ -82,7 +85,7 @@ The ladder spans compute budgets. Every rung stands on rung 0.
 | **Python** | The readable reference implementation of every algorithm; orchestration, evaluation, and the learned rungs (PyTorch) |
 | **C++** | The performance core: rung 0, the edge rung, the edge budgets, and dense-BA kernels if profiling calls for them; outside the cores, `eval`'s native readers, run writer and process readings for a budget (`slam_it_all_eval`) and the native VO program (`slam_it_all_vo`, in orchestration); and the calibration side track (`slam_it_all_calib`), beside Python, without Rust. Showing C++ is a goal in its own right. |
 | **Rust** | Rung 0 and the edge rung, each in lock-step with Python and C++: every slice of those rungs lands in all three languages together; outside the cores, `eval`'s native readers, run writer and process readings for a budget (`slam-it-all-eval`) and the native VO program (`slam_it_all_vo`, crate `slam-it-all-orchestration`). The other rungs have no Rust. |
-| **JavaScript** | The run viewer's page only (`viewer/`, from PR 10): plain modules with no build step, three.js from a CDN, reading only bundles. No algorithm runs in it: its logic modules work out what a frame shows and never touch the page, so Node tests them; `tsc --checkJs` checks their JSDoc types. Its development tools (TypeScript, three.js's types, prettier) are pinned in `viewer/package-lock.json`. |
+| **JavaScript** | The run viewer's page (`viewer/`, from PR 10), and the upload and status pages beside it (PR 11): plain modules with no build step, three.js from a CDN, reading only bundles. No algorithm runs in it: its logic modules work out what a frame shows and never touch the page, so Node tests them; `tsc --checkJs` checks their JSDoc types. Its development tools (TypeScript, three.js's types, prettier) are pinned in `viewer/package-lock.json`. |
 
 **Runtime dependencies.** Adding one, to the Python package or to a core, is a change to this
 document first.
