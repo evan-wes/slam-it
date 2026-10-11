@@ -33,7 +33,10 @@
       <button type="button" class="ghost" id="play" aria-label="play">▶ play</button>
       <button type="button" class="ghost" id="prev" aria-label="previous frame">◀</button>
       <button type="button" class="ghost" id="next" aria-label="next frame">▶</button>
-      <input type="range" id="scrubber" min="0" max="0" value="0" aria-label="frame" />
+      <div class="scrub">
+        <input type="range" id="scrubber" min="0" max="0" value="0" aria-label="frame" />
+        <div class="spans" id="spans" title="the frames each backend ran"></div>
+      </div>
       <span class="meta" id="frame-label">–</span>
       <label class="field"
         >speed

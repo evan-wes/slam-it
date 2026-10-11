@@ -4,13 +4,16 @@
 // differently marked. This module only wires the views and controls to the page.
 
 import { BACKENDS, loadBackend, loadBundle, loadTrack } from "./bundle.js";
-import { differences } from "./compare.js";
+import { differences, ran, shownAt, spanText } from "./compare.js";
 import * as format from "./format.js";
 import { keypointsAt, recordIndex } from "./frames.js";
 import { ImageView } from "./image_view.js";
 import { Playhead } from "./playback.js";
 import { SceneView } from "./scene_view.js";
 import { SolverView } from "./solver_view.js";
+
+/** The height of each backend's row under the frame slider, in pixels. */
+const SPAN_ROW = 4;
 
 /**
  * An element of the page, by id.
@@ -124,6 +127,29 @@ function showAgreement(agreement, backends, differ) {
 }
 
 /**
+ * Draw each backend's span under the frame slider: a bar in its colour over the frames it ran.
+ * @param {HTMLElement} box The spans' box.
+ * @param {import("./bundle.js").Track[]} tracks The backends' tracks.
+ * @param {number} frames The bundle's frames.
+ */
+function showSpans(box, tracks, frames) {
+  box.replaceChildren(
+    ...tracks.map((track, row) => {
+      const [first, end] = track.info.frames;
+      const bar = document.createElement("div");
+      bar.className = "span";
+      bar.title = spanText(track);
+      bar.style.left = `${(100 * first) / frames}%`;
+      bar.style.width = `${(100 * (end - first)) / frames}%`;
+      bar.style.top = `${row * SPAN_ROW}px`;
+      bar.style.background = `var(--backend-${track.name})`;
+      return bar;
+    }),
+  );
+  box.style.height = `${tracks.length * SPAN_ROW}px`;
+}
+
+/**
  * Bind the playback controls and keys to the playhead.
  * @param {Playhead} playhead The playhead.
  * @param {HTMLInputElement} scrubber The frame slider.
@@ -223,6 +249,12 @@ async function main() {
   const tracks = await Promise.all(present.map((name) => loadTrack(fetchFile, bundle, name)));
   const differ = differences(tracks, info.frames);
   showAgreement(element("agreement", HTMLElement), tracks.length, differ);
+  showSpans(element("spans", HTMLElement), tracks, info.frames);
+  /**
+   * @param {string | undefined} name A backend.
+   * @returns {import("./bundle.js").Track} Its track.
+   */
+  const trackOf = (name) => tracks[present.indexOf(name ?? "")];
   /** @type {Map<string, Promise<import("./bundle.js").Backend>>} */
   const loaded = new Map();
   /** @type {import("./bundle.js").Backend | null} */
@@ -235,7 +267,18 @@ async function main() {
     const frame = playhead.frame;
     scrubber.value = String(frame);
     frameLabel.textContent = `frame ${frame} · ${bundle.times[frame].toFixed(2)} s`;
+    for (const button of backends.querySelectorAll("button")) {
+      button.disabled = !ran(trackOf(button.dataset.backend), frame);
+    }
     if (run === null) {
+      return;
+    }
+    // A backend that did not run this frame gives way to the first that did, once loaded.
+    const shown = shownAt(tracks, run.name, frame);
+    if (shown !== run.name) {
+      if (chosen !== shown) {
+        choose(shown).catch((error) => fail(error));
+      }
       return;
     }
     const k = recordIndex(run.records, frame);
@@ -291,6 +334,7 @@ async function main() {
     button.textContent = name;
     button.style.setProperty("--swatch", `var(--backend-${name})`);
     button.dataset.backend = name;
+    button.title = spanText(trackOf(name));
     button.addEventListener("click", () => choose(name).catch((error) => fail(error)));
     backends.append(button);
   }

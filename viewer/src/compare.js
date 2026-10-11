@@ -55,3 +55,40 @@ export function stepsAt(track, frame) {
     return typeof value === "number" ? value : NaN;
   });
 }
+
+/**
+ * Whether a backend ran a frame.
+ * @param {{info: {frames: [number, number]}}} track Its track.
+ * @param {number} frame The bundle's frame.
+ * @returns {boolean} Whether the frame is in its span, `[first, end)`.
+ */
+export function ran(track, frame) {
+  const [first, end] = track.info.frames;
+  return first <= frame && frame < end;
+}
+
+/**
+ * The backend to show at a frame: the one chosen if it ran the frame, else the first that did.
+ * @param {{name: string, info: {frames: [number, number]}}[]} tracks The backends' tracks, in the
+ *     page's order.
+ * @param {string} chosen The backend chosen.
+ * @param {number} frame The bundle's frame.
+ * @returns {string} The backend to show: the chosen one if no backend ran the frame.
+ */
+export function shownAt(tracks, chosen, frame) {
+  const current = tracks.find((track) => track.name === chosen);
+  if (current !== undefined && ran(current, frame)) {
+    return chosen;
+  }
+  return tracks.find((track) => ran(track, frame))?.name ?? chosen;
+}
+
+/**
+ * A backend's span, as the page states it.
+ * @param {{name: string, info: {frames: [number, number]}}} track Its track.
+ * @returns {string} "python: frames 0–299", say, or that it ran none.
+ */
+export function spanText(track) {
+  const [first, end] = track.info.frames;
+  return end > first ? `${track.name}: frames ${first}–${end - 1}` : `${track.name}: no frames`;
+}

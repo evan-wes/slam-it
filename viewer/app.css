@@ -139,10 +139,27 @@ input:focus-visible {
   border-bottom: 1px solid var(--line);
   background: var(--surface);
 }
-.transport input[type="range"] {
+.scrub {
   flex: 1;
   min-width: 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.transport input[type="range"] {
+  width: 100%;
+  margin: 0;
   accent-color: var(--accent);
+}
+/* Each backend's frames, a row each, inset to the slider's track (its thumb's half-width). */
+.spans {
+  position: relative;
+  margin: 0 7px;
+}
+.span {
+  position: absolute;
+  height: 3px;
+  border-radius: 2px;
 }
 .field {
   display: inline-flex;
@@ -352,6 +369,10 @@ select {
 }
 .seg button:last-child {
   border-right: none;
+}
+.seg button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 .seg button[aria-pressed="true"] {
   background: var(--accent);
