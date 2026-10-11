@@ -21,7 +21,8 @@ Railway beside the server, or later on a machine with a GPU. A job's kind says w
 4. report it done, or failed with a reason fit to show: an import's or the pipeline's own
    message, the worker's paths taken out; anything unexpected only as an internal error.
 
-Each stage is reported as it starts, which is also the job's heartbeat.
+Each stage is reported as it starts, and again every :data:`HEARTBEAT` seconds while the child
+works on it: the job's heartbeat.
 
 **The protocol**, JSON over HTTPS, every request carrying ``Authorization: Bearer <token>``:
 
@@ -84,6 +85,10 @@ WAIT = 25.0
 
 RETRY = 5.0
 """How long the worker waits after the server could not be reached, in seconds."""
+
+HEARTBEAT = 30.0
+"""How often a job's current stage is reported again while its child works, in seconds: the
+server fails a job it has not heard from for a few of these."""
 
 TOKEN_VARIABLE = "SLAM_IT_ALL_WORKER_TOKEN"
 """The environment variable that holds the worker's token."""
@@ -301,7 +306,8 @@ def _run_child(
     """Run :func:`process` in a child process within the limits; return its summary.
 
     The child's output is waited on with a deadline, so a child that stops talking is still
-    stopped in time; lines that are not its JSON messages are ignored.
+    stopped in time; lines that are not its JSON messages are ignored. Its current stage is
+    reported again after every :data:`HEARTBEAT` seconds without one.
     """
     command = [sys.executable, "-m", "slam_it_all.orchestration.worker", "process"]
     child = subprocess.Popen(
@@ -315,20 +321,25 @@ def _run_child(
         raise RuntimeError("the job's process has no output")
     deadline = time.monotonic() + timeout
     result: dict[str, Any] = {}
+    current = "downloading"  # the stage reported last, before the child's first
     with selectors.DefaultSelector() as waiting:
         waiting.register(child.stdout, selectors.EVENT_READ)
         while True:
             remaining = deadline - time.monotonic()
-            if remaining <= 0 or not waiting.select(remaining):
+            if remaining <= 0:
                 child.kill()
                 child.wait()
                 raise RefusedError(f"took longer than {timeout / 60:g} minutes")
+            if not waiting.select(min(remaining, HEARTBEAT)):
+                report(current)  # still at it
+                continue
             line = child.stdout.readline()
             if not line:
                 break  # the child closed its output: it has ended
             message = _message(line)
             if "stage" in message:
-                report(str(message["stage"]))
+                current = str(message["stage"])
+                report(current)
             elif message:
                 result = message
     child.wait()

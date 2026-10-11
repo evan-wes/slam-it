@@ -133,7 +133,7 @@ def test_a_job_runs_end_to_end(serving: Server, recording: bytes, tmp_path: Path
     serving.upload = recording
     worker.serve(worker.Client(serving.url, TOKEN), tmp_path / "work", once=True)
     assert serving.reason is None
-    assert serving.stages == list(worker.STAGES)
+    assert _distinct(serving.stages) == list(worker.STAGES)
     assert serving.summary is not None
     assert serving.summary["frames"] == FRAMES
     assert serving.summary["intrinsics"] == "stray-scanner"
@@ -142,6 +142,24 @@ def test_a_job_runs_end_to_end(serving: Server, recording: bytes, tmp_path: Path
     assert (info["truth"], info["backends"]["cpp"]["alignment"]) == (True, "sim3")
     assert {"times.npy", "cpp/records.json", "cpp/feature_records.npy"} <= set(serving.files)
     assert list((tmp_path / "work").iterdir()) == []  # the job's folder removed
+
+
+def _distinct(stages: list[str]) -> list[str]:
+    """Return the stages reported, each run of repeats (heartbeats) as one."""
+    return [s for i, s in enumerate(stages) if i == 0 or s != stages[i - 1]]
+
+
+def test_a_long_stage_is_reported_again_as_the_jobs_heartbeat(
+    serving: Server, recording: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With a short heartbeat, a stage the child takes a while over is reported more than once."""
+    require_program("cpp")
+    serving.upload = recording
+    monkeypatch.setattr(worker, "HEARTBEAT", 0.05)
+    worker.serve(worker.Client(serving.url, TOKEN), tmp_path / "work", once=True)
+    assert serving.summary is not None
+    assert _distinct(serving.stages) == list(worker.STAGES)
+    assert len(serving.stages) > len(worker.STAGES)
 
 
 def test_an_upload_refused_fails_with_its_reason_and_no_path(
@@ -155,7 +173,7 @@ def test_an_upload_refused_fails_with_its_reason_and_no_path(
     assert serving.reason is not None
     assert "not a readable video" in serving.reason
     assert str(work) not in serving.reason
-    assert serving.stages == ["downloading", "importing"]
+    assert _distinct(serving.stages) == ["downloading", "importing"]
 
 
 def test_a_job_past_its_time_fails(serving: Server, recording: bytes, tmp_path: Path) -> None:
@@ -222,4 +240,4 @@ def test_a_child_out_of_memory_fails_as_an_internal_error(
     monkeypatch.setattr(worker, "MEMORY_LIMIT", 50 * 2**20)
     worker.serve(worker.Client(serving.url, TOKEN), tmp_path / "work", once=True)
     assert serving.reason == "an internal error"
-    assert serving.stages == ["downloading"]
+    assert _distinct(serving.stages) == ["downloading"]
