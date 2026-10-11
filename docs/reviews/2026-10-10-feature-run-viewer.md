@@ -434,3 +434,272 @@ Sources:
 - [ORB-SLAM2 Tracking.cc](https://github.com/raulmur/ORB_SLAM2/blob/master/src/Tracking.cc)
 - [evo: Python package for the evaluation of odometry and SLAM](https://github.com/MichaelGrupp/evo)
 - [evo on PyPI](https://pypi.org/project/evo)
+
+## Run 2 -- 2026-10-10
+
+The fixes of Run 1's findings, reviewed by all three: each changed its area substantially.
+
+| | |
+|---|---|
+| **Branch** | `feature/run-viewer` |
+| **Range** | `b93d66d...c78601a` (Run 1's head to the fixes and Run 1's report) |
+| **Reviewers** | hygiene (sonnet), architecture (opus), algorithm (opus) |
+| **How they ran** | registered slam-it-all-* agents |
+| **Layer 1** | all checks passed (`scripts/check.sh`, exit 0; pytest 3263 passed, node --test 32 passed), on the tree committed as `2174b0e`; the C++ comparison runs byte-identical to before on both core types |
+
+Every Run 1 fix was found to do what its finding asked. A16 was checked before it was
+recommended: with `exhaustive = true`, all five internal-order contracts are kept.
+
+### Findings and resolutions
+
+| ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|---|
+| L9 | should-fix | algorithm | `bundles.py:121-124`; `test_bundles.py`; `scripts/run_vo.py:87-91` | the collinear-centres branch of L1's fix has no test, and `run_vo.py`'s `score` still raises on that case | fix | fixed (9d02e02): a run on a line tested through the bake and `run_vo.py`, which now reports it unscored -- decided by evan-wes, 2026-10-10 |
+| A12 | should-fix | architecture | `eval/runs.py:760`; `orchestration/vo.py:84` | the list of datasets is in both eval and orchestration | fix | fixed (9d02e02): `runs.DATASETS`, `vo.DATASETS` removed, `open_source` refuses an unknown dataset -- decided by evan-wes, 2026-10-10 |
+| A13 | should-fix | architecture | `tests/orchestration/test_bundles.py:26-30, 90` | nothing holds the golden bundle's fates and steps to `runs.FATES` and `runs.STEPS` | fix | fixed (9d02e02) -- decided by evan-wes, 2026-10-10 |
+| A14 / H11 | should-fix | architecture, hygiene | `viewer/tsconfig.logic.json` | the no-DOM check covers only the modules it lists | fix | fixed (da7cea1): every module but `main.js` and `*_view.js` -- decided by evan-wes, 2026-10-10 |
+| A15 / L10 | note | architecture, algorithm | `viewer/src/scene_view.js:88-105`; `main.js:278-282` | a run left in its own frame is drawn over the truth, with the truth's up axis | fix | fixed (da7cea1): the truth hidden and the camera's up for an unaligned run; checked in a browser -- decided by evan-wes, 2026-10-10 |
+| A16 | note | architecture | `pyproject.toml`, the internal-order contracts | they could be exhaustive, so that a new module needs a layer | fix | fixed (9d02e02) -- decided by evan-wes, 2026-10-10 |
+| L11 | note | algorithm | ladder :289-291; `docs/notes/viewer.md:68-71` | across machines faer may also vectorise differently (pulp's run-time dispatch), not only block | fix (the words) | fixed (f75c5d9) -- decided by evan-wes, 2026-10-10 |
+| H10 | note | hygiene | `bundles.py`, `bake` | a bake killed hard leaves a hidden `.baking` folder beside the bundle's | fix (say so) | fixed (9d02e02) -- decided by evan-wes, 2026-10-10 |
+
+### Hygiene review
+
+## Hygiene review
+
+**Scope:** Run 2 of PR 10, `b93d66d...c78601a`, my lane only. I read these in full: `orchestration/bundles.py`, `viewer/src/playback.js`, `viewer/src/main.js` and `viewer/tsconfig.logic.json`. I read these diffs: `eval/runs.py`, `eval/metrics.py`, `scripts/run_vo.py`, `pyproject.toml`, `scripts/check.sh`, `bundle.js`, `images.js`, `solver_view.js`, the C++ removal of `linalg.hpp`, and the new tests for the bake, `ground_truth`, `Playhead` and product blocking.
+
+**Summary:** Each fix in my lane (H1, H2, H4, H5, H6, H7, H9, and H3 from the bake side) does what its finding asked. The fixes introduced no defects. I have two small notes and no must-fix or should-fix findings.
+
+### Findings
+
+#### [note] A bake killed hard leaves a hidden staging folder
+- **Where:** `src/slam_it_all/orchestration/bundles.py`, the `staging` block at the end of `bake`.
+- **Issue:** `except BaseException: shutil.rmtree(staging)` covers errors and Ctrl-C. A SIGKILL or power loss leaves `.<name>.<uuid>.baking` beside `out`. Nothing reads or sweeps it.
+- **Why it matters:** It is harmless and hidden, and the next bake uses a new uuid. Disk is only wasted until someone deletes the folder.
+- **Evidence:** `staging = target.with_name(f".{target.name}.{uuid.uuid4().hex}.baking")`
+- **Suggested fix:** None needed. Optionally mention the `.baking` suffix in the `bake` docstring so a user knows it is safe to delete.
+
+#### [note] The logic tsconfig's file list is hand-maintained
+- **Where:** `viewer/tsconfig.logic.json`, the `include` list.
+- **Issue:** A new DOM-free module has to be added by hand, or it silently stays outside the no-DOM check.
+- **Why it matters:** The A4 guarantee, that logic modules never touch the DOM, erodes quietly.
+- **Suggested fix:** None needed now. If it bites, add a node test that every `viewer/src` module not named `*_view`, `main` or `scene_view` appears in the list.
+
+### Checked and fine
+- **H3 / L1 (bake):**
+  - `_score` catches only `InvalidInputError` and `DegenerateError`, and its docstring says why those are the only refusals left.
+  - The unplaced run is baked in its own frame with `alignment` and `score` null.
+  - Staging is created beside `out` and moved on with `staging.replace`, and the temp folder is removed on any exit.
+  - Tests cover a never-initialised run beside an aligned one, and a failed bake that leaves nothing behind and can be re-run.
+- **H4 / A5:**
+  - `bake` is now small. `_bundle_frames`, `_write_truth`, `_write` and `_score` each do one thing.
+  - `runs.ground_truth` validates the dataset and has a test, including the bad-dataset message. `run_vo.py` uses it, and the duplicate `Truth` and `ground_truth` are gone.
+  - `AbsoluteError.similarity` replaces the boolean-index derivation, and the docstrings are updated.
+  - `_ALIGNMENTS` is deleted, and the stale `_truth` is gone with no leftover references.
+- **A3:** The import-linter contract for orchestration is in place with a stated reason.
+- **L4:** The new `_bearings` check pins points and keyframes under both SE(3) and Sim(3).
+- **H1:**
+  - `Playhead` is DOM-free and JSDoc'd, and it takes its clock from the caller.
+  - `bindPlayback` guards against double scheduling with `pending`.
+  - The 4 tests cover clamping, speed, stopping at the end, restarting from the first frame, and a stopped playhead.
+- **H2:** `choose` records `chosen` before the await and discards a stale result afterwards. The loads are cached per backend as promises, so a switch is cheap.
+- **H6 / A7:**
+  - `loadBundle` compares `fates` and `steps` against the page's tables and names the table that differs.
+  - It rejects backends the page does not know. The bundle docstring and the JSDoc typedef match.
+- **H5:** Prettier is pinned at 3.9.10 with a 100-column config, it runs in `check.sh`, and the formatted files pass.
+- **H7:** `largest()` iterates instead of spreading, skips non-finite values, and takes a floor. Both call sites are converted.
+- **H9:** `SolverView` now has class-level JSDoc, and `scene_view.js` is in the diff.
+- **L3:** `images.onCanvas` carries the pixel-centre convention in its docstring.
+- **C++ (A1 / L6):**
+  - `linalg.hpp`, its test and every call site are removed, and no references remain outside the review report.
+  - `test_product_blocking.cpp` fails the build if `EIGEN_NO_CPUID` is missing.
+  - The `Fate` doc comment now says what the code does.
+- **Stale material:** no debug prints, commented-out code, TODOs or hard-coded paths in the changed files.
+
+### Architecture review
+
+## Architecture review
+
+**Scope:** Run 2 of PR 10 (`feature/run-viewer`). I reviewed only the fixes made after Run 1: `b93d66d...c78601a` (07a505f, 038aaf3, adbced9, 2174b0e; I read c78601a's report table for the decisions). For each fix in my lane (A1, A2, A3, A4, A5, A7, A8, A11), I checked whether it does what its finding asked and whether it introduced anything new. I did not re-raise the deferred or waived findings (A6, A9, A10, L7, H8). I read the changed files and the neighbouring code each fix relies on (`orchestration/vo.py`, `eval/runs.py`, `viewer/src/scene_view.js`, `viewer/src/main.js`, the golden-bundle tests). Probes ran outside the repo: scratch tsconfigs and an import-linter config in the session scratchpad, plus a compile-commands scan. I also ran the already-built `foundations_test_product_blocking`. The repository was not modified and HEAD did not move.
+
+**Summary:** Every fix in my lane does what its finding asked, and I found no must-fix.
+- **A1:** the compile-time define reaches every translation unit that uses Eigen.
+- **A2, A11:** the ladder doc now places the fourth language and the bake, and the wording is corrected.
+- **A3:** the new orchestration contract holds.
+- **A5:** the bake reads its alignment from the evaluation.
+
+Three small should-fixes are left, where a fix only half-closes what it set out to:
+- the dataset list now lives in two layers;
+- nothing in layer 1 holds the bundle's fates and steps against the Python ones;
+- the logic-module type check covers only the files it lists.
+
+### Findings
+
+#### [should-fix] The dataset list now exists in both orchestration and eval
+- **Where:** `src/slam_it_all/eval/runs.py:760-761` (the literal `("tum", "euroc")` in `ground_truth`), and `src/slam_it_all/orchestration/vo.py:84` (`DATASETS = ("tum", "euroc")`). Each layer also branches on the names: `vo.py:207-208` (the check and its message), `vo.py:603` (`open_source`: anything that is not `"tum"` is treated as EuRoC) and `scripts/run_vo.py:199`.
+- **Issue:** A5 moved "how to read a sequence's ground truth" into eval, the layer that owns the readers. But the list of datasets that have readers stayed in orchestration, and `runs.ground_truth` now keeps its own copy. eval cannot import orchestration, so nothing keeps the two copies in step.
+- **Why it matters:** PR 11 adds a third dataset (Stray Scanner recordings). If it is added to `vo.DATASETS` and `open_source` but not to `runs.ground_truth`, the bake raises `InvalidInputError` on every phone bundle. `bake` calls `runs.ground_truth` outside `_score`, so this is a whole-bake failure, not "unscored". This is the same kind of problem A5 was about: a lower layer's rule restated in two places.
+- **Evidence:** `git grep -n '"tum", "euroc"' -- src scripts` finds `runs.py:760` and `vo.py:84`. No test compares them; `tests/eval/test_runs.py:454` only checks that `"kitti"` is refused.
+- **Suggested fix:**
+  - Give eval the list: `runs.DATASETS`, beside `ground_truth`, the lowest module that dispatches on it.
+  - Have `vo.check`, `run_vo.py`'s `choices` and the error messages use it, and drop `vo.DATASETS` (a clean break).
+  - Optionally, have `open_source` refuse an unknown dataset instead of falling through to EuRoC. That branch predates this PR.
+
+#### [should-fix] The bundle's fates and steps are checked only when a bundle is loaded; layer 1 does not tie them to the Python tables
+- **Where:**
+  - `tests/orchestration/test_bundles.py:26-30` (`_keys`: a list becomes the string `"list"`) and `:90` (the golden test compares the layout only);
+  - `tests/fixtures/orchestration/bundle/bundle.json:27-38`;
+  - `viewer/tests/bundle.test.js:111`.
+- **Issue:** A7 asked for the page's copies of `FATES` and `STEPS` to be held to `eval.runs`.
+  - The fix has the bake write both tables into `bundle.json`, and `loadBundle` refuses a bundle whose tables differ from the page's. That catches drift, but only when a bundle is opened.
+  - In layer 1, the JS tests hold the page to the golden `bundle.json`. No Python test holds the golden `bundle.json`'s values to `runs.FATES` / `runs.STEPS`, because the layout test compares only JSON keys and value types.
+- **Why it matters:** Suppose a fate or step is added consistently in Python, C++ and Rust (`test_runs.py:108` keeps `Fate` and `FATES` together). Then:
+  - the Python layout test still passes, since the keys are unchanged;
+  - the JS tests still pass against the stale golden;
+  - the first real bundle baked afterwards is refused by the page.
+
+  Layer 1 stays green while the page and the bake disagree.
+- **Evidence:** `_keys(value)` returns `type(value).__name__` for anything that is not a dict, so `_layout` sees `"fates": "list"`. `git grep -n "FATES\|STEPS" -- tests/orchestration/test_bundles.py` finds nothing.
+- **Suggested fix:** one assertion in `test_the_bake_keeps_the_golden_bundles_layout`, or a test of its own: the golden `bundle.json`'s `fates` and `steps` equal `list(runs.FATES)` and `list(runs.STEPS)`. Then a change in Python fails until the golden is regenerated, and the JS tests fail until the page is updated, which closes the chain.
+
+#### [should-fix] The no-DOM type check covers only the files it lists, so a new logic module is unchecked by default
+- **Where:** `viewer/tsconfig.logic.json:5-16` (an explicit `include` of nine files); `scripts/check.sh:110`. The rule is stated as checked at `CLAUDE.md:39` ("Logic modules never touch the page (checked: `tsc` without the DOM)").
+- **Issue:** A4 is fixed for today's modules. I confirmed in a scratch config that a listed module which imports `three` or touches `document` fails, as it should. But the list opts modules in. A new `viewer/src/*.js` that is not added to the list is type-checked only with the DOM, so it can touch the page and still be counted as logic. The ladder contract in `pyproject.toml:118-124` uses `exhaustive = true` for exactly this reason.
+- **Why it matters:** PR 11 adds page code. The split that keeps the logic under `node --test` would then depend on remembering to edit a list, which is the convention-only state A4 was raised against. The views already follow a naming convention (`main.js`, `*_view.js`), so it can serve as the boundary.
+- **Evidence:** I ran a scratch tsconfig in the session scratchpad that extends `viewer/tsconfig.json`, with `"lib": ["es2022"]`, `"include": ["logic.d.ts", "src/*.js"]` and `"exclude": ["src/main.js", "src/*_view.js"]`. `--listFilesOnly` selects the same nine logic modules as `tsconfig.logic.json`, and `tsc -p` exits 0.
+- **Suggested fix:** switch `tsconfig.logic.json` to that opt-out form, so every module is logic unless named as a view. Add a sentence to `CLAUDE.md` or the viewer note saying the view files are `main.js` and `*_view.js`.
+
+#### [note] The 3D view picks its world (truth drawn, z up) once per bundle; alignment is now per run
+- **Where:** `viewer/src/scene_view.js:88-105` (the up axis and the truth line, set once in the constructor from `bundle.info.truth`); `viewer/src/main.js:278-282` (only the other runs' lines are filtered by alignment).
+- **What happens:** After A5 and L1, `bundle.json` records each run's alignment separately (`"sim3"`, `"se3"` or null), and the header says when a run is "not aligned". But `SceneView` still draws the truth and uses the truth's z-up whenever the bundle has ground truth. An unaligned run, which is in its own first-camera frame, is therefore drawn over the truth, and `fit` frames both. For the tested case (a monocular run that never initialised) nothing shows, since there are no poses. A run rejected for collinear centres would be drawn in the wrong frame next to the truth.
+- **Option:** in `setRun`, hide the truth line and use the run's own up axis (-y) when `run.info.alignment === null`. The algorithm reviewer may want to confirm the frame semantics.
+
+#### [note] The internal-order contracts could be exhaustive, as the ladder's is
+- **Where:** `pyproject.toml:189` (orchestration), and likewise `:139`, `:173` and `:220`.
+- **What exists:** the A3 contract (`(bundles)` above `vo`) is in place and kept. Like the eval and edge contracts, it constrains only the modules it lists. PR 11's `worker` will be unconstrained until someone adds it, so `vo` could import it without anything failing.
+- **Evidence:** a scratch import-linter config with `exhaustive = true` on the orchestration and eval contracts, run at HEAD: `Orchestration's internal order (exhaustive, scratch) KEPT`, `Eval's internal order (exhaustive, scratch) KEPT`, `2 kept, 0 broken`.
+- **Option:** add `exhaustive = true` to the internal-order contracts. Then a new module fails until it is given a layer, which is the ladder contract's stated rule. The backlog is a fine place for this.
+
+### Checked and fine
+- **A1, how the define reaches the code:**
+  - `EIGEN_NO_CPUID` is a PUBLIC definition in `slam_it_all_add_rung` (`CMakeLists.txt:38`). Every program, test, benchmark and the extension links a rung, so all of them get it.
+  - Compile commands: `build/native` 76/76 and `build/bench` 41/41 translation units have it. The extension has 67/78; the 11 without it are nanobind's own sources, which do not include Eigen. So Eigen's inline cache query is compiled one way everywhere it is used.
+  - `foundations_test_product_blocking` prints `ok`.
+  - `fix_product_blocking` and `linalg.hpp` are gone from the code and docs (`git grep` finds only the review report).
+- **A1, behaviour and docs:**
+  - The new test checks both the define and the defaults that result from it.
+  - CLAUDE.md, the ladder (`:284-293`), the viewer note and the CHANGELOG describe the compile-time fix.
+  - On ARM the sizes are now Eigen's ARM defaults (16 KiB / 512 KiB / 512 KiB), not the x86 sizes the removed code forced on every architecture. Repeatability on one machine still holds, and the ladder already rules out cross-architecture identity (FMA packets, `:279-282`). If equal blocking across architectures is ever wanted, `EIGEN_DEFAULT_L{1,2,3}_CACHE_SIZE` pins it.
+- **A2:**
+  - the ladder has a JavaScript row in Languages (`:85`), Pillow's JPEG encoding (`:90-91`), the widened orchestration row with `bundles` above `vo`, and `viewer/` placed outside the package (`:358-361`);
+  - "every language" now appears in Review process;
+  - `orchestration/__init__.py` and `eval/__init__.py` list the bake, the JPEG encoding and `ground_truth`.
+- **A3:** the contract exists. `vo` imports nothing from `bundles`, and `bundles` imports only eval, `foundations.errors` and `vo`.
+- **A5:**
+  - `runs.ground_truth` replaces both copies, and the `run_vo.py` copy is deleted. `runs` importing `tum` and `euroc` is allowed by eval's internal order. `vo` already imported both, so the budgeted program loads nothing new.
+  - The alignment label is read from `AbsoluteError.similarity`, which is Python-only, so there is no native counterpart to keep in step.
+  - `bake` is now split into small helpers, and every check runs before the first write.
+- **A7:** `loadBundle` refuses other fates, other steps and an unknown backend, and `bundle.test.js` tests all three. The page needs no `removals` table, since it never uses removal codes.
+- **A8:** `viewer/tests/page.test.js` holds the import map's three.js version to `@types/three`.
+- **A11:** the docs now say that faer reads its cache sizes once per run for the whole machine.
+- **Writing a bundle (H3, architectural angle):**
+  - the bundle is staged in a uuid-named sibling on the same filesystem, so `Path.replace` onto the new or empty `out` is a single atomic rename;
+  - on any failure, the staging folder is removed;
+  - there are no globals and no import-time side effects.
+- **Deferrals:** A6, A9 and A10 are recorded accurately in the ladder's backlog (`:920-940`), with the report linked.
+- **Layering in the page:** `bundle.js` now imports `compare.js` and `frames.js` for their tables. There is no runtime import cycle (`compare.js` imports only `frames.js`), and no logic module imports a view or `three`.
+
+Paths: `src/slam_it_all/eval/runs.py`, `src/slam_it_all/orchestration/vo.py`, `tests/orchestration/test_bundles.py`, `viewer/tsconfig.logic.json`, `viewer/src/scene_view.js`, `pyproject.toml`, `CMakeLists.txt`.
+
+### Algorithm review
+
+## Algorithm review
+
+**Scope:** Run 2 of the panel on PR 10, covering only the fixes made after Run 1: `b93d66d...c78601a` on `feature/run-viewer`, commits 07a505f, 038aaf3, adbced9 and 2174b0e (c78601a is the report). I read the following in full:
+- `src/slam_it_all/orchestration/bundles.py` at HEAD;
+- the `eval/runs.py`, `eval/metrics.py` and `scripts/run_vo.py` diffs, plus `runs.evaluate`, `metrics.absolute_error`/`relative_error`, `foundations/alignment.py` and the truth readers they rely on;
+- `CMakeLists.txt` and `cpp/tests/foundations/test_product_blocking.cpp`, checked against Eigen 5.0.1-dev's headers in the env;
+- in the viewer: `images.js`, `geometry.js`, `image_view.js`, `playback.js`, `solver.js` and `bundle.js`, the alignment handling in `main.js` and `scene_view.js`, and their tests;
+- the doc changes in 2174b0e, with gemm-common 0.19.0 / private-gemm-x86 0.1.20 / pulp 0.22.3 sources checked for the Rust wording.
+
+The repository is untouched: the tree is clean and HEAD is still c78601a. Probes ran from the session scratchpad. Two are saved in a private scripts folder: `viewer_bake_invariant_mutants_probe.py` and `viewer_score_collinear_probe.py`.
+
+**Summary:** Every fix in my lane does what its finding asked, and none of them introduces a numerical fault:
+- **L1:** an unalignable run now bakes unscored in its own frame, and a failed bake leaves nothing behind.
+- **L2:** the fate wording is accurate in all three languages, the page and the docs.
+- **L3:** keypoints and frustum corners now follow the pixel-centre convention.
+- **L4:** the new invariant test catches real mistakes.
+- **L5:** the Rust wording matches the crates.
+- **L6:** `EIGEN_NO_CPUID` matches the old runtime fix exactly, and reaches every translation unit that includes Eigen.
+- **L8:** the hint matches the solves.
+
+What is left: one should-fix (the collinear-centres branch the fix claims to handle has no test, and `run_vo.py` still crashes on that case) and two notes.
+
+### Findings
+
+#### [should-fix] The collinear-centres branch of the L1 fix has no test, and `run_vo.py` still crashes on that case
+- **Where:**
+  - `src/slam_it_all/orchestration/bundles.py:121-124` (`_score` catches `(InvalidInputError, DegenerateError)`);
+  - `tests/orchestration/test_bundles.py` (`test_a_run_its_alignment_cannot_place_stays_in_its_own_frame`, which covers only the too-few-matches path);
+  - `scripts/run_vo.py:87-91` (`score` catches `InvalidInputError` only).
+- **Issue:** The module docstring, `_score`'s docstring, the page's "not aligned" hint and `docs/notes/viewer.md` all say a run whose centres lie on a line stays unaligned. No test exercises that case: narrowing `_score`'s `except` to `InvalidInputError`, as `run_vo.score` does, would still pass every test. The fix also routed the bake and `run_vo.py` through the shared `runs.ground_truth`, but the two consumers now treat the same refusal differently. The bake places the run unscored; the script raises `DegenerateError` after the run has been written.
+- **Why it matters:** The branch is rare on real data, since a noisy track is almost never collinear to `DEGENERACY_RATIO = 1e-10`. But it is a documented behaviour with no test holding it, and the two scorers have already drifted apart.
+- **Evidence:** `viewer_score_collinear_probe.py` scores a room RGB-D run (12 frames) with its centres forced onto a line:
+  ```
+  bake _score: None
+  run_vo score raised: DegenerateError umeyama: points are collinear or coincident
+  ```
+- **Suggested fix:**
+  - Add a unit test: `_score(replace(run, poses=<collinear centres>), truth) is None`. It takes a few lines and no extra pipeline run.
+  - Catch `DegenerateError` in `run_vo.score` as well, printing the reason as it does for the other refusal.
+
+#### [note] A run left in its own frame is drawn with the truth's line and the truth's up axis
+- **Where:**
+  - `viewer/src/scene_view.js:88-105`: the truth's `LineSegments` and `camera.up = (0, 0, 1)` are set once per bundle from `bundle.info.truth`;
+  - `viewer/src/main.js:278-282`: only the *other backends'* tracks are filtered by alignment.
+- **Issue:** In a bundle with ground truth, choosing a run whose `alignment` is null shows its trajectory, keyframes and points in its first camera's frame (y down). They appear on top of the truth's centres, which are in the truth's world (z up), and `fit()` frames both together. The header's hint correctly says the run is "shown in its own frame and not scored". The 3D panel still overlays two unrelated frames.
+- **Why it matters:** The effect is small today, because an unalignable run has at most a couple of tracked frames, often none. But it is a frame mix, and the comment at `scene_view.js:88` ("without one, a run's world is its first camera's") no longer covers every case.
+- **Suggestion:** When the chosen run's `alignment` is null, hide the truth line and use `up = (0, -1, 0)`, as for a bundle without truth.
+
+#### [note] Across machines, faer's results can also differ by SIMD dispatch, not only by blocking
+- **Where:**
+  - `docs/design/2026-10-02-slam-it-all-ladder.md:289-291` ("Rust's products (faer's) block by cache sizes read once per run for the whole machine ... though another machine may block them differently");
+  - `docs/notes/viewer.md:68-71`.
+- **Issue:** The sentence is now correct. `gemm-common-0.19.0/src/cache.rs:73-215` walks every `/sys/devices/system/cpu/cpu*/cache/index*` with a last-one-wins merge, behind a `OnceCell` (`:475`). `private-gemm-x86-0.1.20/src/cache.rs:8-150, 356` does the same behind a `OnceLock`. So the result is the same on every core of one machine. But faer also picks its kernels at run time through pulp (`pulp-0.22.3/src/core_arch/x86/mod.rs`, `is_x86_feature_detected!`): x86-64-v3 (AVX2 + FMA) here, and v4 (AVX-512) on many cloud hosts. So a Rust run on another machine can round differently even where no product is large enough to block. The C++ cores, compiled for SSE2 with `EIGEN_NO_CPUID`, have no runtime dispatch of their own.
+- **Why it may matter:** This is context for PR 11's Railway worker. A Rust bundle baked there may not match a desktop run bit for bit, while C++ should. No code change is needed. If the sentence is touched again, "block or vectorise them differently" covers both causes.
+
+### Checked and fine
+- **L6 / A1, `EIGEN_NO_CPUID`:**
+  - In Eigen 5.0.1-dev, `queryCacheSizes` (`Memory.h:1279-1311`) sets -1 without `EIGEN_CPUID`, and `CacheSizes` (`GeneralBlockPanelKernel.h:74-77`) then falls back to 32 KiB / 256 KiB / 2 MiB on x86. Those are the sizes `fix_product_blocking` set, so the change is result-preserving.
+  - `queryCacheSizes` has no other caller in Eigen.
+  - Every translation unit that includes Eigen gets the define: `build/native` 76 of 76, `build/bench` 41 of 41, `build/slam-it-all` 67 of 78. The 11 without it are nanobind's own sources, which have no Eigen include path, so there is no ODR split.
+  - The golden bundle's arrays did not change. Its `records.json` files differ only in `read_seconds`, `build_seconds` and `track_seconds`.
+  - The native test catches both a missing define and a non-default size.
+- **The AVX caution (ladder :293-295):** it is accurate. With SSE2, a reduction's scalar head depends on an address mod 16, and glibc and Eigen allocations are 16-byte aligned, so the head is fixed by the code. AVX's 32-byte packets would make it depend on where the heap happens to place an allocation.
+- **L1:**
+  - `_score` runs before anything is written.
+  - The "only refusals left" claim holds: `read_trajectory` and the truth readers already run `_as_stamped` / `check_transform`, so `evaluate` can only refuse for fewer than 3 matches, no RPE pair, or a degenerate alignment. Sim(3)'s scale is positive whenever `align` returns.
+  - Probe at HEAD: a 5-frame monocular run bakes with `truth: true, alignment: null, score: null`, and nothing is left beside the bundle.
+  - Staging plus `Path.replace` onto a new or empty folder is atomic on Linux, and the failure test covers it.
+- **L4:** the bearing test in `test_each_backend_is_moved_onto_the_truth` discriminates. `viewer_bake_invariant_mutants_probe.py` gives:
+
+  | Case | Max bearing error |
+  |---|---|
+  | Correct bake, RGB-D (SE(3)) | 4.5e-8 |
+  | Correct bake, monocular (Sim(3), scale 9.70) | 4.0e-8 |
+  | Points not scaled, monocular | 1.18 |
+  | Points not moved | 0.21 / 0.63 |
+  | Inverse similarity | 0.31 / 0.75 |
+
+  So every mistake fails the test's `atol=1e-5`, against a correct bake's ~4e-8.
+- **`AbsoluteError.similarity`:** it is `with_scale` itself, so the bundle's `"sim3"` / `"se3"` comes from the fit that was run, and it is tested.
+- **L2:** the new wording is right in Python, C++, Rust, `eval.runs.FATES`, `frames.js` and the viewer note. UNMATCHED means not made and not matched by the last stage, since tracked is a subset of the last stage's matches. The note's "rejected only if the local map's search matches it again" is accurate. The L7 deferral text matches ORB-SLAM2's `mnLastFrameSeen` skip in `Tracking.cc` and Run 1's numbers.
+- **L3:**
+  - `images.onCanvas` adds 0.5 on a canvas sized to `camera.width × camera.height` (`image_view.js:40-41`) with the bitmap drawn at that size.
+  - Frustum corners at (-0.5, -0.5) and (w-0.5, h-0.5) are the image's edges under the OpenCV centre convention.
+  - Both are tested with exact values.
+- **L8:** the hint "the second solve is over the first's inliers, so it starts lower" holds on the saved real-data bundles. Of 1,566 two-solve local BAs (MH01-stereo and desk-rgbd, all backends), the second started lower in 1,466 and equal in 100 (no outliers dropped), never higher. The room fixture's 23 are all equal, since it has no outliers. The first solve's final cost and the second's initial cost use the same Huber loss, so the comparison is like for like.
+- **L5 / A11:** "read once per run for the whole machine" matches both gemm crates' sysfs walk. `docs/notes/viewer.md:180` ("C++'s ... block by fixed sizes") is still true.
+- **`Playhead`:** it advances to the last frame whose time is at or before the clock, and stops at the end. Float32 times are adequate for any sequence length the datasets have.
+- **`runs.ground_truth`:** it returns the same arrays the old `run_vo.ground_truth` did, as tested against `tum.read_sequence`.
