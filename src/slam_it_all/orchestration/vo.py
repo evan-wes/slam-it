@@ -81,9 +81,6 @@ from slam_it_all.foundations.errors import (
     SlamItAllError,
 )
 
-DATASETS = ("tum", "euroc")
-"""The datasets a sequence can come from."""
-
 PROGRAM = "slam_it_all_vo"
 """The native programs' name, in C++ (``cpp/apps/orchestration/``) and Rust
 (``rust/slam-it-all-orchestration``), and the prefix of every program's messages."""
@@ -128,7 +125,7 @@ class Request:
     Attributes
     ----------
     dataset : str
-        One of :data:`DATASETS`.
+        One of :data:`slam_it_all.eval.runs.DATASETS`.
     sequence : pathlib.Path
         The sequence's folder.
     mode : str
@@ -204,8 +201,9 @@ def check(request: Request) -> None:
         pairs, EuRoC no depth maps), or a negative `first` or `count`. (The options checked
         themselves when they were made.)
     """
-    if request.dataset not in DATASETS:
-        raise InvalidInputError(f"dataset: expected tum or euroc, got {request.dataset!r}")
+    if request.dataset not in runs.DATASETS:
+        wanted = " or ".join(runs.DATASETS)
+        raise InvalidInputError(f"dataset: expected {wanted}, got {request.dataset!r}")
     if request.mode not in MODES:
         raise InvalidInputError(f"--mode: expected monocular, stereo or rgbd, got {request.mode!r}")
     if request.dataset == "tum" and request.mode == "stereo":
@@ -580,8 +578,8 @@ def open_source(dataset: str, sequence: str | Path, mode: str) -> Source:
 
     Parameters
     ----------
-    dataset : {"tum", "euroc"}
-        The dataset.
+    dataset : str
+        The dataset, one of :data:`slam_it_all.eval.runs.DATASETS`.
     sequence : str or pathlib.Path
         The sequence's folder.
     mode : {"monocular", "stereo", "rgbd"}
@@ -597,10 +595,15 @@ def open_source(dataset: str, sequence: str | Path, mode: str) -> Source:
     FileNotFoundError
         If a file of the sequence is missing.
     slam_it_all.foundations.errors.InvalidInputError
-        If a file is malformed, or an RGB-D sequence's camera gives no ``bf``.
+        If the dataset is not one of :data:`slam_it_all.eval.runs.DATASETS`, a file is
+        malformed, or an RGB-D sequence's camera gives no ``bf``.
     """
     root = Path(sequence)
-    return _tum_source(root, mode) if dataset == "tum" else _euroc_source(root, mode)
+    if dataset == "tum":
+        return _tum_source(root, mode)
+    if dataset == "euroc":
+        return _euroc_source(root, mode)
+    raise InvalidInputError(f"dataset: expected one of {runs.DATASETS}, got {dataset!r}")
 
 
 def _run_here(request: Request) -> runs.Run:

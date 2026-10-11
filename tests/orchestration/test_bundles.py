@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +89,9 @@ def test_the_bake_keeps_the_golden_bundles_layout(
     """
     bundles.bake(golden_runs, room_folders.tum, tmp_path / "bundle")
     assert _layout(tmp_path / "bundle") == _layout(GOLDEN)
+    # The tables the page checks a bundle against: the golden's are the run format's.
+    golden = json.loads((GOLDEN / "bundle.json").read_text())
+    assert (golden["fates"], golden["steps"]) == (list(runs.FATES), list(runs.STEPS))
 
 
 @pytest.mark.parametrize(("mode", "alignment"), [("rgbd", "se3"), ("monocular", "sim3")])
@@ -205,6 +209,18 @@ def test_a_run_its_alignment_cannot_place_stays_in_its_own_frame(
     assert placed["score"] is not None
     points = np.load(tmp_path / "bundle" / "python" / "points.npy")
     np.testing.assert_array_equal(points, run.points.astype(np.float32))
+
+
+def test_a_run_on_a_line_stays_in_its_own_frame(room_runs: RoomRun, tmp_path: Path) -> None:
+    """Centres on a line leave the alignment's rotation free: that run, too, is unscored."""
+    run = room_runs("tum", "rgbd", "python")
+    poses = run.poses.copy()
+    poses[:, :3, 3] = np.arange(len(poses))[:, None] * [0.1, 0.0, 0.0]
+    folder = tmp_path / "line"
+    runs.write_run(folder, replace(run, poses=poses, record_features=False))
+    bundles.bake([folder], room_runs.sequence("tum"), tmp_path / "bundle")
+    entry = json.loads((tmp_path / "bundle" / "bundle.json").read_text())["backends"]["python"]
+    assert (entry["alignment"], entry["score"]) == (None, None)
 
 
 def test_a_bake_that_fails_leaves_nothing_behind(

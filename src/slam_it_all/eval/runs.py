@@ -48,6 +48,7 @@ import io
 import itertools
 import json
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -89,6 +90,9 @@ STEPS = ("read_seconds", "build_seconds", "track_seconds", "map_seconds")
 delivering its images decoded (and a stereo pair rectified), building the frame from them,
 tracking it (initialisation included), and mapping it, 0 exactly when it is not a keyframe
 mapped. C++ and Rust write the same keys (:mod:`slam_it_all.orchestration.vo`)."""
+
+DATASETS = ("tum", "euroc")
+"""The datasets a sequence can come from: those this package reads (:func:`ground_truth`)."""
 
 MODES = ("monocular", "stereo", "rgbd")
 """A run's sensor modes."""
@@ -742,8 +746,8 @@ def ground_truth(dataset: str, sequence: str | Path) -> Truth | None:
 
     Parameters
     ----------
-    dataset : {"tum", "euroc"}
-        The dataset.
+    dataset : str
+        The dataset, one of :data:`DATASETS`.
     sequence : str or pathlib.Path
         The sequence's folder.
 
@@ -755,12 +759,16 @@ def ground_truth(dataset: str, sequence: str | Path) -> Truth | None:
     Raises
     ------
     slam_it_all.foundations.errors.InvalidInputError
-        If the dataset is neither, or the ground truth is malformed.
+        If the dataset is not one of :data:`DATASETS`, or the ground truth is malformed.
     """
-    if dataset not in ("tum", "euroc"):
-        raise InvalidInputError(f"dataset: expected 'tum' or 'euroc', got {dataset!r}")
+    if dataset not in DATASETS:
+        raise InvalidInputError(f"dataset: expected one of {DATASETS}, got {dataset!r}")
+    readers: dict[str, Callable[[str | Path], tum.Sequence | euroc.Sequence]] = {
+        "tum": tum.read_sequence,
+        "euroc": euroc.read_sequence,
+    }
     try:
-        read = tum.read_sequence(sequence) if dataset == "tum" else euroc.read_sequence(sequence)
+        read = readers[dataset](sequence)
     except FileNotFoundError:
         return None
     return np.asarray(read.timestamps), np.asarray(read.T_world_cam)

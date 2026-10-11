@@ -450,5 +450,5 @@ def test_ground_truth_is_the_readers_and_none_without_one(tmp_path: Path) -> Non
     np.testing.assert_array_equal(truth[0], read.timestamps)
     np.testing.assert_array_equal(truth[1], read.T_world_cam)
     assert runs.ground_truth("tum", bare) is None
-    with pytest.raises(InvalidInputError, match="expected 'tum' or 'euroc'"):
+    with pytest.raises(InvalidInputError, match="expected one of"):
         runs.ground_truth("kitti", folder)

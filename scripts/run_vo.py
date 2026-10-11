@@ -35,7 +35,7 @@ import numpy as np
 from slam_it_all import backends
 from slam_it_all.edge.options import MODES, Options
 from slam_it_all.eval import budgets, runs
-from slam_it_all.foundations.errors import InvalidInputError
+from slam_it_all.foundations.errors import DegenerateError, InvalidInputError
 from slam_it_all.orchestration import vo
 
 
@@ -86,7 +86,7 @@ def score(run: runs.Run, truth: runs.Truth | None) -> runs.Evaluation | None:
         return None
     try:
         return runs.evaluate(run, *truth)
-    except InvalidInputError as error:
+    except (InvalidInputError, DegenerateError) as error:  # too few frames, or on a line
         print(f"not scored: {error}")
         return None
 
@@ -196,7 +196,7 @@ def record(
 def main() -> None:
     """Run the script."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--dataset", choices=vo.DATASETS, required=True)
+    parser.add_argument("--dataset", choices=runs.DATASETS, required=True)
     parser.add_argument("--sequence", type=Path, required=True, help="the sequence's folder")
     parser.add_argument("--mode", choices=MODES, required=True)
     parser.add_argument("--out", type=Path, required=True, help="the run's folder")

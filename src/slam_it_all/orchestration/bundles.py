@@ -338,7 +338,9 @@ def bake(run_folders: Sequence[str | Path], sequence: str | Path, out: str | Pat
         The sequence's folder, as the runs read it.
     out : str or pathlib.Path
         The bundle's folder: created; refused if it exists and is not empty. The bundle is
-        written beside it and moved onto it whole, so a bake that fails leaves nothing.
+        written beside it, in a hidden ``.<name>.<id>.baking`` folder, and moved onto it whole,
+        so a bake that fails leaves nothing. (A bake killed outright leaves that folder, which
+        nothing reads: it is safe to delete.)
 
     Raises
     ------
