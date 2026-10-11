@@ -319,3 +319,200 @@ The one must-fix is in the worker: the 20-minute timeout, and any failed heartbe
 - **Retention:** the upload is deleted when the import ends, fails or expires, and results after 7 days, apart from the cases above.
 
 Scratch files from the probes are in `/tmp/scratch/review-security/` (`orphan_probe.py`, `timeout_probe.py`, `server.log`). The probe server on 127.0.0.1:8790 is stopped, and no process from the probes was left running. The repository was not modified.
+
+## Run 2 -- 2026-10-11
+
+| | |
+|---|---|
+| **Branch** | `feature/your-own-video` |
+| **Range** | `cbf7b3d...1359afb`, run 1's fixes, read against the whole PR `63b61da...1359afb` |
+| **Reviewer** | security (opus), a general-purpose agent with its own brief, as in run 1 |
+| **Probes** | the server on 127.0.0.1 with folder storage and staging on, its upload wait cut to 30 s and its sweep to 2 s; a real `worker serve` and three `serve_demo.py` runs on local ports; the locally built images with no network; in-process probes of `check_url`, the demuxer and the key rules; no image built, no external service contacted |
+| **Panel** | [the panel's report](2026-10-11-feature-your-own-video.md), run 2, whose IDs (H*, A*, L*) are named where a finding overlaps one of its own |
+
+### Findings and resolutions
+
+| ID | Severity | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|
+| S22 (A13) | should-fix | `orchestration/worker.py:462-474, 652-655`; `scripts/serve_demo.py:176-180` | a SIGTERM to the worker, or the demo's Ctrl-C, can leave a job running with no deadline and its folder on disk; on Railway, tini and the container's teardown cover it | fix (the panel's row, a must-fix there) | fixed (4ee7c67, as the panel's row) -- decided by evan-wes, 2026-10-11 |
+| S21 (A15) | should-fix | `server/.../jobs.py:425-428`; `app.py:184-187, 608-630`; `storage.py:179-191` | an upload still arriving when its link expires lands after the link's only clean-up and stays 7 days, whether an honest slow upload or one sent late on purpose | fix (the panel's row) | fixed (d66da0f, as the panel's row) -- decided by evan-wes, 2026-10-11 |
+| S23 | should-fix | `server/.../app.py:99-100, 315` | the content policy allows any script on jsDelivr, not only three.js | fix (`script-src` narrowed to `https://cdn.jsdelivr.net/npm/three@0.186.0/`; a test) | fixed (d66da0f) -- decided by evan-wes, 2026-10-11 |
+| S24 | note | `orchestration/worker.py:205-211, 243, 321` | `check_url` passes numeric one-label hosts (`http://134744072/` is 8.8.8.8) and never checks a redirect, which urllib follows with the worker's token | fix (a host the C library reads as a number refused; redirects refused on the API calls and checked on downloads; tests) | fixed (4ee7c67: a one-label name still accepted, a container's) -- decided by evan-wes, 2026-10-11 |
+| S25 | note | `docker/server-entrypoint.sh:7-10`; `server/.../__main__.py` | the entrypoint's `chown -R` follows the database setting, `/` included; `setpriv` leaves `no_new_privs` off; a bypassed entrypoint would run the server as root unnoticed | fix (a root or relative database folder refused; `--no-new-privs`; the server refusing uid 0; the staging check names uid 10001) | fixed (d66da0f; the staging check in 8f53353) -- decided by evan-wes, 2026-10-11 |
+| S26 | note | `orchestration/worker.py:412-413` | any FileNotFoundError in a job reaches the owner verbatim, worker paths included | fix (caught only around the upload's own check; any other one "an internal error", logged) | fixed (4ee7c67) -- decided by evan-wes, 2026-10-11 |
+
+### Security review
+
+## Security review
+
+**Run 1's findings:**
+- **S1:** resolved. I reran both probes. A 409 raised at "running", and a deadline reached while the C++ program was held stopped, each left no process of the job 1 s later. tini is PID 1 in the worker image. One gap remains: the fix's guarantee fails on SIGTERM (new should-fix below).
+- **S2:** resolved. The probe server's log holds no token, signature or query string, only job ids and an 8-hex prefix of the owner hash. The token out of the path is deferred as decided.
+- **S3:** resolved. Matroska, AVI, ffconcat and m3u8 files are refused; MP4 opens. The open options are `protocol_whitelist=file` and `enable_drefs=0`.
+- **S4:** resolved. The child gets only `CHILD_ENVIRONMENT`; the demo's worker gets the same plus its token. Run 1's caveat stands as recorded: the same uid can still read `/proc/<ppid>/environ`.
+- **S5:** resolved for replays. A replayed PUT after confirmation returned 200 and wrote `uploads/<id>`, but `imports/<id>` was unchanged. `uploads/<id>` was deleted at the link's expiry, and a PUT after that got 403. **Still wrong for a PUT already in flight at the expiry** (should-fix 1).
+- **S6:** resolved. The third job on one code got 429. A waiting job expired at `UPLOAD_WAIT`, which freed its place. The code itself is not stored, only its HMAC.
+- **S7, S8:** resolved. Files are deleted before rows, a failed deletion is logged and retried, the database is in WAL mode with lock-free reads, and claims and writes run in threads.
+- **S9:** resolved. Limits: long side 7680, aspect 3:1, 14,400 decoded frames, `RLIMIT_FSIZE` 2 GiB.
+- **S10:** resolved. I ran the locally built `slam-it-all-server:pr11` with `--user 0`: `uid=10001(server)`, and CapPrm, CapEff and CapAmb are all 0.
+- **S11:** resolved. The policy carries the import map's hash, and my own recomputation matches the header. three.js's three files have integrity values, and `bundleAddress` keeps bundles same-origin. Fonts and HSTS are deferred as decided. One part is still too wide: the policy allows all of jsDelivr (should-fix 3).
+- **S12, S13, S14, S17, S18, S19:** resolved.
+- **S15:** resolved. Every bad result path I tried was refused, and folder files are served as `application/octet-stream` attachments. A token per worker is deferred as decided.
+- **S16:** resolved for schemes and named public hosts. The one-label rule still lets numeric hosts through to public addresses (note).
+- **S20:** deferred as decided.
+
+**Scope:** the fixes `cbf7b3d...1359afb` (0a26105, 68aaf3c, f616342, a5b122c, cd1a668, 1504bd5). That covers `server/src/slam_it_all_server/*`, `src/slam_it_all/orchestration/worker.py`, `src/slam_it_all/eval/video.py` and `lenses.py`, `docker/*`, `scripts/serve_demo.py`, `viewer/index.html` and `src/bundle.js`, read against the whole PR `63b61da...1359afb`.
+
+**How I checked:**
+- Reran run 1's orphan and timeout probes, rewritten for the new `_run_child`.
+- Ran the server on 127.0.0.1:8790 with folder storage and staging on, through `launch_server.py`, which shortens `UPLOAD_WAIT` to 30 s and the sweep to 2 s.
+- Ran a real `worker serve` and three `serve_demo.py` instances on ports 8771-8773.
+- Ran the locally built `pr11` images with `--rm --pull never --network none`.
+- Ran in-process probes of `check_url`, the demuxer and the key rules.
+- Ran `tests/server`, `tests/orchestration/test_worker.py` and `tests/test_serve_demo.py`: 145 passed.
+- Built no image and contacted no external service. The repository is unchanged.
+
+**Summary:** The fixes hold. Every run-1 finding is resolved or deferred as decided, and there is no must-fix. The fixes leave or introduce three should-fixes:
+1. An upload still arriving when its link expires escapes the link's clean-up and stays 7 days.
+2. Moving the job into its own session took it out of Ctrl-C's reach, while SIGTERM still skips the worker's clean-up.
+3. The new Content Security Policy allows any script on jsDelivr.
+
+### Findings
+
+#### [should-fix] An upload still arriving when its link expires lands after the sweep has closed the link, and stays 7 days
+- **Where:**
+  - `server/src/slam_it_all_server/jobs.py:425-428` (`links_to_close`: `created <= now - UPLOAD_WAIT`)
+  - `app.py:184-187` (`_close_link`)
+  - `app.py:608-630` (`put_file` checks the link once, before reading the body)
+  - `storage.py:179-191`
+- **Issue:** The sweep deletes `uploads/<id>` once, at the link's expiry, and sets `link_open = 0`. But a link is checked when a PUT starts, not when it ends:
+  - folder storage verifies the link before streaming the body;
+  - S3 checks a presigned URL's expiry when the request arrives (whether Railway's bucket does the same is untested here).
+
+  So a PUT that starts before the expiry and finishes after the sweep writes `uploads/<id>` after its only deletion. Nothing deletes it again until `_delete`, 7 days after the job ended.
+- **Why it matters:**
+  - **Honest owners.** A 500 MB upload needs about 4.4 Mbit/s sustained to finish within 15 minutes (estimate: 500e6 × 8 / 900 s). A slower phone upload runs past the window. The job expires ("the upload did not arrive in time"), and then the video lands and stays in the bucket for 7 days, against the page's promise.
+  - **Abuse.** A code holder can do the same on purpose, 500 MB per job. Expired jobs no longer count toward the per-code cap, so that is 2 such jobs every 15 minutes per code.
+  - **Bound.** The 7-day deletion limits it, as does the bucket's lifecycle rule if Railway's buckets support one. It is a broken retention promise, not an exposure: no one else can read the file.
+- **Evidence:** `flow_probe.py` against `launch_server.py` (`UPLOAD_WAIT` 30 s, sweep 2 s, folder storage), with the PUT trickled at 1 byte/s:
+  ```
+  [27.1s] job 4: trickled PUT started; link expires at +30 s after creation
+  [42.1s] job 4: trickled PUT (started before expiry) finished -> 200 {}
+  [45.1s] job 4 (trickled): expired link_open 0 ; uploads/ there after the link was closed: True
+  [50.1s] job 4 after more sweeps: uploads/ there: True size 15
+  ```
+- **Suggested fix:**
+  - Close the link only after a grace period past its expiry that covers the longest PUT storage lets run (for example `created + UPLOAD_WAIT + 1 h`). The waiting job's own 15-minute expiry stays as it is.
+  - In folder storage, check the link's expiry again before `staged.replace(target)`.
+  - Add a test: a PUT that finishes after the link's expiry leaves nothing behind once the sweep has run.
+
+#### [should-fix] Stopping the worker with SIGTERM, or the demo with Ctrl-C, can leave a job running unsupervised
+- **Where:**
+  - `src/slam_it_all/orchestration/worker.py:462-474` (`start_new_session=True`)
+  - `worker.py:652-655` (only `KeyboardInterrupt` is handled; there is no SIGTERM handler)
+  - `scripts/serve_demo.py:176-180` (`child.terminate()` right after its own Ctrl-C)
+- **Issue:** S1's fix gives the job its own session, which is what makes the group kill work. It also takes the job out of the terminal's process group, so Ctrl-C no longer reaches it. The job's only clean-up is now the worker's `finally` blocks: `killpg`, then `rmtree`.
+  - The worker turns SIGINT into `KeyboardInterrupt`, but SIGTERM's default action kills it without running any `finally`.
+  - `serve_demo.py` sends SIGTERM to the worker as soon as its own Ctrl-C arrives, which races the worker's own unwinding.
+- **Why it matters:**
+  - Any SIGTERM to the worker orphans its job: serve_demo's `terminate()`, `kill`, a systemd stop, or the later GPU worker outside a container.
+  - The import and the C++ program then run on with no deadline; only the inherited rlimits still apply.
+  - The job's folder, with the upload in it, stays on disk.
+  - Before the fix, Ctrl-C reached the job's processes directly, so the demo's Ctrl-C path is a regression.
+  - On Railway this is covered: tini forwards SIGTERM, and once the worker exits, the container's teardown kills the rest.
+- **Evidence:**
+  - **SIGTERM to `worker serve` while the C++ program ran** (`sigterm_probe.sh`): the worker died. 1 s later the child (reparented to pid 2731) and `slam_it_all_vo` were still running, and `work/job-ed051681-98a7pihb/{upload.zip,run,your-video}` remained.
+  - **Ctrl-C to serve_demo's process group** (`/bin/kill -INT -- -PGID`) as the C++ program started, three runs (`ctrlc_probe.sh`):
+    - In run 3, the child (ppid 2731) and `slam_it_all_vo` were still alive 1 s later. The orphaned child later died on `BrokenPipeError` when it printed "baking".
+    - All three runs left the job's folder, with `upload.zip`, in `data/work`.
+- **Suggested fix:**
+  - In the worker's `main`, make SIGTERM unwind the same way as Ctrl-C: a handler that raises `KeyboardInterrupt` or `SystemExit`, as `serve_demo._stop` does. Then `_run_child`'s `killpg` and `handle`'s `rmtree` run however the worker is stopped.
+  - In `serve_demo.py`, give the worker a few seconds to exit on its own SIGINT before terminating it.
+  - Add a test: SIGTERM to `serve` during a job leaves no process of the job and no job folder.
+
+#### [should-fix] The Content Security Policy allows any script on jsDelivr
+- **Where:** `server/src/slam_it_all_server/app.py:99-100` (`CDN = "https://cdn.jsdelivr.net"`) and `:315`
+- **Issue:**
+  - `script-src` names the whole jsDelivr host, which serves every npm package and GitHub repository. The import map pins three.js's path and its sha384 values, but the policy itself would let any `https://cdn.jsdelivr.net/npm/<anything>` run on the origin where invite codes are typed.
+  - The import map's `integrity` is honoured only by browsers that implement import-map integrity; other browsers load the modules unchecked.
+- **Why it matters:**
+  - The policy is the second line of defence against script injection. No injection is known: every server string is set as text. But if one appeared, this policy would not stop it from loading an attacker's package from the allowed CDN.
+  - This is hardening before going public.
+- **Evidence:** The header the probe server sent: `script-src 'self' https://cdn.jsdelivr.net 'sha256-xRXsj6h8WM4LThHv+2yd/VWRcHXQNR5O0ot1D7veDuM='`.
+- **Suggested fix:**
+  - Narrow the source to `https://cdn.jsdelivr.net/npm/three@0.186.0/` (a source path ending in `/` matches as a prefix).
+  - Or vendor three.js under `src/`, which also ends the third-party request the page has to disclose.
+  - Add a test that the policy names no wider script source.
+
+#### [note] `check_url`'s one-label rule lets numeric hosts through to public addresses, and redirects are never checked
+- **Where:** `worker.py:205-211` (`"." not in host`), `:243` and `:321` (`urllib.request.urlopen`)
+- **Issue:**
+  - `ipaddress.ip_address` refuses `134744072` and `0x8080808`, so they pass as one-label names. The C library then reads them as IPv4 addresses, so both resolve to 8.8.8.8. `http://0/` passes too.
+  - The resolver's search domains can also turn a one-label name into a public name.
+  - `check_url` checks only the first URL. urllib follows redirects to http, https or ftp and keeps every header except the content ones. A 301, 302 or 303 on a worker's POST would therefore carry `Authorization: Bearer <token>` wherever it points, plain http included.
+- **Why it matters:** Exploiting either needs a server, or something in front of it, that gives out or redirects to such a URL. So the worker's "plain http only to a host that cannot be on the public internet" does not hold as written. It matters for the later GPU worker, which will connect over the internet.
+- **Evidence:**
+  - `url_probe.py` on the env's Python 3.11.17: `http://134744072/ ACCEPTED 8.8.8.8`, `http://0x8080808/ ACCEPTED 8.8.8.8`, `http://0/ ACCEPTED 0.0.0.0`.
+  - Named and IP-literal public hosts are refused.
+  - The redirect behaviour is in `urllib/request.py:680-681` (only content headers dropped) and `:707` (http, https, ftp allowed).
+- **Suggested fix:**
+  - Allow plain http only to loopback or private IP literals, `localhost` and `*.railway.internal`, and drop the bare one-label rule.
+  - Give the worker an opener that refuses redirects on its API calls and re-runs `check_url` on a download's redirect.
+
+#### [note] The server entrypoint's root step could be hardened
+- **Where:** `docker/server-entrypoint.sh:7-10`; `server/src/slam_it_all_server/__main__.py`
+- **Issue:**
+  - **`chown -R` follows a setting.** Its target is the folder of `SLAM_IT_ALL_DATABASE`. A database at `/`, or a relative path (the working directory is `/`), makes it run `chown -R server:server /` until `set -e` stops it at `/sys`. A path under `/opt` would give the server's user the pages it serves. The operator sets this value, so it is a configuration hazard, not an attack.
+  - **`setpriv` leaves room.** It leaves `no_new_privs` off and the bounding set full, and the image has 11 setuid or setgid programs (`su`, `mount`, `passwd`, ...).
+  - **Nothing would notice a bypassed entrypoint.** For example, a start command set in Railway's service settings might replace it; how such a command interacts with `ENTRYPOINT` is not checked here. The server would then run as root (`RAILWAY_RUN_UID=0`) without a word.
+- **Evidence:** In `slam-it-all-server:pr11`:
+  - Run with `--user 0`: `uid=10001(server) gid=999(server)`, `CapPrm/CapEff/CapAmb 0`, `NoNewPrivs: 0`, `CapBnd 00000000a80425fb`.
+  - With `SLAM_IT_ALL_DATABASE=/jobs.sqlite3`, the entrypoint ran `chown -R` over `/` and stopped at `chown: changing ownership of '/sys': Read-only file system`.
+- **Suggested fix:**
+  - Refuse a database folder that is `/` or relative.
+  - Add `--no-new-privs` to `setpriv`.
+  - Make the server refuse to start as uid 0.
+  - Add "the server runs as uid 10001" to the staging check.
+
+#### [note] A FileNotFoundError's message reaches the owner verbatim
+- **Where:** `worker.py:412-413` (`except (SlamItAllError, FileNotFoundError)`); `_safe` strips only the job's folder and the upload's path.
+- **Issue:** This catch is meant for a missing upload. But any FileNotFoundError in the job, such as a missing program of the worker's own, becomes the owner's reason, worker paths included. It is mainly the hygiene reviewer's area.
+- **Evidence:** I first ran the worker without its env on `PATH`. That job ended `"reason":"[Errno 2] No such file or directory: 'cmake'"`, from the editable install's rebuild.
+- **Suggested fix:** Catch FileNotFoundError only around the import's own check. Map any other one to "an internal error" and log it.
+
+### Checked and fine
+- **S1 supervision:** after a 409 at "running", and after a deadline with `slam_it_all_vo` held stopped, the whole group (child and C++ program, one pgid) was gone 1 s later. The worker image runs `/usr/bin/tini --` as PID 1, as uid 10001.
+- **Confirmation's move:**
+  - The size is checked before the move.
+  - A failed S3 copy or delete leaves the job waiting and retriable, and its expiry deletes both keys.
+  - A second `uploaded` gets 409.
+  - Concurrent confirmations can only move the owner's own bytes, of the signed size.
+  - `uploads/` and `imports/` share one filesystem, so `os.replace` holds.
+- **Owner hash:** HMAC-SHA256 with the signing key, over a code that has already matched. The API never returns it, and the log shows 8 hex characters. Its message never overlaps folder storage's signatures in a way that exposes either.
+- **Sweep flags:** `link_open` and `files_open` each change in their own transaction. A failure is logged and retried. The cap counts only jobs that have not ended, inside the creating transaction.
+- **Logs:** with the access log off, the server writes only "job <id>: ..." lines and uvicorn's lifecycle lines.
+- **Content Security Policy:**
+  - It is on every response, and its import-map hash matches my recomputation.
+  - `connect-src` covers storage's origin, including the 307 redirects for bundles, and `media-src blob:` covers the upload page's length check.
+  - The pages have no inline script, style or event handlers.
+  - The three integrity values are well-formed sha384 hashes. I could not compare them with the CDN's files offline.
+- **`bundleAddress`:** cross-origin, protocol-relative, `javascript:` and `data:` addresses are refused (their origin is "null"). Same-origin paths lead only to routes guarded by a token or a signature.
+- **Import bounds:**
+  - A mid-stream change of frame size is decoded within `RLIMIT_AS` and the deadline, then rescaled to the first frame's output size.
+  - At most 2,401 frames are kept (60 s at 1/40 s), each at most 1440×480. In the worst case that is about 5 GB of PNGs (estimate, for incompressible frames), plus C++ files under 2 GiB each. Worth comparing with the worker's disk on Railway.
+- **Transient reports:** an HTTP error (401 and 5xx included) or a network error is logged and the job runs on to its deadline, and a 409 ends it. A 401 never loops hot: claims retry every 5 s, and failed `done`/`failed` reports are logged.
+- **Key and path rules:**
+  - Keys use `fullmatch` and refuse `.`, `..` and a trailing newline.
+  - `RESULT_PATH` refused `index.html`, `cpp/x.html`, `a/b/c.json`, `../x.json`, `X.json`, `cpp/./x.json` and `info.json\n`.
+  - Folder downloads are sent as octet-stream attachments.
+  - Staging auth and path tricks behave as in run 1.
+- **`serve_demo --lan`:** staging is on, and the worker inherits only `CHILD_ENVIRONMENT` and its token.
+- **Settings files:** `*.env` is ignored by both git and Docker, except the template.
+- **Tests:** 145 passed. The repository is unchanged.
+
+Scratch files are in `/tmp/scratch/review2-security/`:
+- probes: `orphan_probe.py`, `timeout_probe.py`, `flow_probe.py`, `url_probe.py`, `container_probe.py`, `sigterm_probe.sh`, `ctrlc_probe.sh`;
+- the server: `launch_server.py`, `server.env`, `server.log`;
+- the demo runs: `demo-877*/`, `demo-877*.log`, `work/`.
+
+The probe server on 8790 and the three demos on 8771-8773 are stopped, no process of any job is left, and no container is running. The probes would be worth keeping in a private scripts folder if wanted; I left them in the scratch folder, as my brief said.
