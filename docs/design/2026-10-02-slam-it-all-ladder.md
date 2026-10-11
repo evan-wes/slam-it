@@ -288,7 +288,8 @@ last bits by where the process started. Every rung compiles with `EIGEN_NO_CPUID
 `CMakeLists.txt`), so Eigen blocks by its own default sizes on every core, in every program,
 test and the extension, and a run repeats bit for bit; a native test fails without it. Rust's
 products (faer's) block by cache sizes read once per run for the whole machine, so its runs
-repeat on every core of one machine, though another machine may block them differently. The
+repeat on every core of one machine, though another machine may block or vectorise them
+differently (faer picks its SIMD kernels when it runs). The
 cores build for SSE2: enabling AVX would add a second threat, Eigen's vectorised reductions
 choosing their scalar head by an operand's address at run time.
 
@@ -392,6 +393,9 @@ thin roots that only wire them.
   `dense | edge | classic | calib`, `foundations`, `backends`. Siblings joined by `|` are independent
   of each other. The contract is exhaustive: a new top-level package fails until it is
   placed.
+- **Inside packages,** the order of rung 0's, bundle adjustment's, the edge rung's, eval's and
+  orchestration's modules (orchestration's run program below its bake). These are exhaustive
+  too, from PR 10: a new module fails until it is given a layer.
 - **Visual-inertial** builds on `edge` only; **learned** builds on `dense` only.
 - **CPU rungs** (`foundations`, `edge`, `vi`, `backends`) never import PyTorch or a GPU
   stack, including torch-based geometry libraries (lietorch, pypose, kornia, theseus), which

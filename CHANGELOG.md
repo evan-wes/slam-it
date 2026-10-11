@@ -54,6 +54,10 @@ everything new. With features recorded, every run stays real time; the lifetimes
 - **`mapping.process` returns a `Mapped`** in C++ and Rust too (the summary and the points
   made); each tracking stage returns its matches before refinement (`matched`).
 - **The programs read `--record-features`**, a flag without a value, in all three languages.
+- **`runs.DATASETS` replaces `vo.DATASETS`:** eval, which reads the datasets, holds their list;
+  `vo.open_source` refuses a dataset it does not know.
+- **The import contracts inside packages are exhaustive** (rung 0's, bundle adjustment's, the
+  edge rung's, eval's and orchestration's orders): a new module fails until it is given a layer.
 - **The room's TUM folder holds its ground truth** (`groundtruth.txt`).
 
 ### Fixed

@@ -68,7 +68,7 @@ ones, so a run's last bits depended on where it started. Every rung now compiles
 `EIGEN_NO_CPUID`, so Eigen blocks by its own defaults on every core, and runs repeat bit for bit
 on either core type (fixed first, inside PR 10, decided 2026-10-10; at compile time since the
 review panel). Rust's runs repeat too: its products block by cache sizes read once per run for
-the whole machine.
+the whole machine (another machine may block or vectorise them differently).
 
 ## The bake
 
@@ -116,7 +116,8 @@ on this machine.
   backends' step times at the frame side by side; and the frame's stage summaries, each field
   explained on hover.
 
-The modules that read a bundle and work out what a frame shows never touch the page, so
+The modules that read a bundle and work out what a frame shows never touch the page (every
+module but `main.js` and the `*_view.js` views is checked without the DOM), so
 `node --test` checks them, on the golden bundle (`tests/fixtures/orchestration/bundle/`, the
 room's first frames from all three backends), against what its files say of each other rather
 than fixed numbers; playback is a module of its own (`playback.js`) for the same reason. Layer

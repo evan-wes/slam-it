@@ -35,7 +35,7 @@ suggest starting a session inside the SLAM It All! repository. Consequences:
 | Python (`src/slam_it_all`) | Reference implementation of every algorithm; orchestration, evaluation, learned rungs |
 | C++ (`cpp/`, module `slam_it_all._cpp`) | Performance core: rung 0, edge rung, edge budgets; `eval`'s native readers, run writer and process readings (`slam_it_all_eval`); the native programs (`slam_it_all_orchestration`, `slam_it_all_vo`) |
 | Rust (`rust/`, module `slam_it_all_rs`) | Rung 0 and the edge VO only; `eval`'s native readers, run writer and process readings (`slam-it-all-eval`); the native programs (`slam-it-all-orchestration`, `slam_it_all_vo`) |
-| JavaScript (`viewer/`) | The run viewer's page: plain modules, no build step, three.js from a CDN; reads only a bundle (`slam_it_all.orchestration.bundles`). Logic modules never touch the page (checked: `tsc` without the DOM), so Node tests them; JSDoc types, checked by `tsc --checkJs`; formatted by prettier |
+| JavaScript (`viewer/`) | The run viewer's page: plain modules, no build step, three.js from a CDN; reads only a bundle (`slam_it_all.orchestration.bundles`). Logic modules (all but `main.js` and `*_view.js`) never touch the page (checked: `tsc` without the DOM), so Node tests them; JSDoc types, checked by `tsc --checkJs`; formatted by prettier |
 
 ## Conventions
 
