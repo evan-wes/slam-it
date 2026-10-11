@@ -31,6 +31,10 @@ ENV PIP_CONSTRAINT=/src/scripts/locks/slam-it-all.lock CMAKE_BUILD_PARALLEL_LEVE
 RUN python -m pip wheel --no-cache-dir --no-deps --wheel-dir /wheels /src
 
 FROM ${PYTHON}
+# tini as PID 1 reaps any process a killed job leaves behind, which Python as PID 1 would not.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tini \
+    && rm -rf /var/lib/apt/lists/*
 COPY scripts/locks/slam-it-all.lock /tmp/slam-it-all.lock
 COPY --from=build /wheels /tmp/wheels
 RUN wheel="$(ls /tmp/wheels/slam_it_all-*.whl)" \
@@ -42,4 +46,5 @@ ENV SLAM_IT_ALL_LENS_PROFILES=/opt/lens_profiles PYTHONUNBUFFERED=1
 RUN python -m slam_it_all.eval.lenses fetch --into /opt/lens_profiles
 RUN useradd --system --uid 10001 --create-home worker
 USER worker
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["sh", "-c", "exec python -m slam_it_all.orchestration.worker serve --server \"$SLAM_IT_ALL_SERVER\""]

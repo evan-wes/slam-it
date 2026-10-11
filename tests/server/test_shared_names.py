@@ -40,3 +40,8 @@ def test_the_names_are_the_workers() -> None:
     assert tuple(re.findall(keys, _constant("UPLOADS"), re.MULTILINE)) == worker.UPLOADS
     sources = tuple(re.findall(keys, _constant("INTRINSICS"), re.MULTILINE))
     assert sources == ("stray-scanner", *lenses.SOURCES)  # the worker names a zip's source
+
+
+def test_the_heartbeat_is_well_inside_the_silence() -> None:
+    """The server fails a job it has not heard from for SILENCE: at least three heartbeats."""
+    assert config.SILENCE >= 3 * worker.HEARTBEAT

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import signal
 import socket
 import subprocess
@@ -70,11 +71,13 @@ def test_the_demo_serves_until_interrupted(tmp_path: Path) -> None:
     """
     port = _free_port()
     command = [sys.executable, str(REPO / "scripts/serve_demo.py"), "--port", str(port)]
+    profiles = REPO / "tests" / "fixtures" / "eval" / "lens_profiles"
     demo = subprocess.Popen(
         [*command, "--data", str(tmp_path), "--code", "a-demo-invite-code"],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         text=True,
+        env={**os.environ, "SLAM_IT_ALL_LENS_PROFILES": str(profiles)},
     )
     try:
         deadline = time.monotonic() + 30.0

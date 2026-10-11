@@ -7,7 +7,11 @@ report. The job runs the real import, C++ pipeline and bake, on the room.
 from __future__ import annotations
 
 import json
+import logging
+import os
+import sys
 import threading
+import time
 import urllib.parse
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -20,12 +24,19 @@ import pytest
 from slam_it_all.eval import video
 from slam_it_all.foundations.errors import InvalidInputError
 from slam_it_all.orchestration import worker
+from tests.conftest import FIXTURES
 from tests.edge import room
 from tests.edge.support import FRAMES
 from tests.eval.recordings import stray_zip
 from tests.orchestration.conftest import require_program
 
 TOKEN = "a-worker-token"
+
+
+@pytest.fixture(autouse=True)
+def profiles(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the worker, and the children it starts, at the fixture lens profiles."""
+    monkeypatch.setenv("SLAM_IT_ALL_LENS_PROFILES", str(FIXTURES / "eval" / "lens_profiles"))
 
 
 @dataclass
@@ -35,6 +46,11 @@ class Server:
     upload: bytes
     kind: str = "stray"
     cancel_at: str | None = None
+    fail_at: str | None = None
+    refuse_failed: bool = False
+    slow: bool = False
+    put_delay: float = 0.0
+    download: str | None = None
     jobs: list[str] = field(default_factory=lambda: ["job-1"])
     stages: list[str] = field(default_factory=list)
     files: dict[str, bytes] = field(default_factory=dict)
@@ -61,16 +77,21 @@ def _handler(state: Server) -> type[BaseHTTPRequestHandler]:
             return self.rfile.read(int(self.headers.get("Content-Length", "0")))
 
         def do_GET(self) -> None:
-            """Serve the upload."""
+            """Serve the upload, slowly if asked."""
             self.send_response(200)
             self.send_header("Content-Length", str(len(state.upload)))
             self.end_headers()
-            self.wfile.write(state.upload)
+            step = 1 << 16 if state.slow else len(state.upload) or 1
+            for start in range(0, len(state.upload), step):
+                self.wfile.write(state.upload[start : start + step])
+                if state.slow:
+                    time.sleep(0.01)
 
         def do_PUT(self) -> None:
-            """Take one of the bundle's files."""
+            """Take one of the bundle's files, after a delay if asked."""
             path = urllib.parse.unquote(self.path.removeprefix("/put/"))
             state.files[path] = self._body()
+            time.sleep(state.put_delay)
             self._answer(200)
 
         def do_POST(self) -> None:
@@ -85,11 +106,15 @@ def _handler(state: Server) -> type[BaseHTTPRequestHandler]:
                     return
                 job = state.jobs.pop()
                 upload = {"job": job, "kind": "vo", "upload": state.kind}
-                self._answer(200, {**upload, "download": f"{state.url}/upload"})
+                link = state.download or f"{state.url}/upload"
+                self._answer(200, {**upload, "download": link})
                 return
             action = self.path.rsplit("/", 1)[-1]
             if action == "progress":
                 state.stages.append(body["stage"])
+                if body["stage"] == state.fail_at:
+                    self._answer(500, {})
+                    return
                 self._answer(409 if body["stage"] == state.cancel_at else 200, {})
             elif action == "files":
                 urls = {
@@ -100,6 +125,8 @@ def _handler(state: Server) -> type[BaseHTTPRequestHandler]:
             elif action == "done":
                 state.summary = body["summary"]
                 self._answer(200, {})
+            elif state.refuse_failed:
+                self._answer(409, {})
             else:
                 state.reason = body["reason"]
                 self._answer(200, {})
@@ -217,7 +244,8 @@ def test_the_client_refuses_what_it_cannot_run(
         worker.Client(serving.url, TOKEN).claim()
     assert worker.Client(serving.url, TOKEN).claim() is None  # no job left: 204
     client = worker.Client(serving.url, TOKEN)
-    monkeypatch.setattr(client, "_post", lambda *_, **__: (200, {"urls": {"a": "x"}}))
+    links = {"urls": {"a": "http://127.0.0.1:9/a"}}
+    monkeypatch.setattr(client, "_post", lambda *_, **__: (200, links))
     with pytest.raises(InvalidInputError, match="not for the files asked"):
         client.links(worker.Job("job-2", "vo", "video", ""), {"a": 1, "b": 2})
 
@@ -242,3 +270,192 @@ def test_a_child_out_of_memory_fails_as_an_internal_error(
     worker.serve(worker.Client(serving.url, TOKEN), tmp_path / "work", once=True)
     assert serving.reason == "an internal error"
     assert _distinct(serving.stages) == ["downloading"]
+
+
+def test_a_report_that_does_not_reach_the_server_lets_the_job_go_on(
+    serving: Server, recording: bytes, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A 500 on the "running" report is logged, and the job still ends done."""
+    require_program("cpp")
+    serving.upload, serving.fail_at = recording, "running"
+    with caplog.at_level(logging.WARNING, logger=worker.__name__):
+        worker.serve(worker.Client(serving.url, TOKEN), tmp_path / "work", once=True)
+    assert serving.summary is not None
+    assert serving.reason is None
+    assert "the running report did not reach the server" in caplog.text
+
+
+def test_a_failure_report_the_server_refuses_does_not_stop_the_worker(
+    serving: Server, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A 409 on the failure report (the job let go meanwhile) is logged; serve returns."""
+    serving.upload, serving.kind, serving.refuse_failed = b"not a video", "video", True
+    with caplog.at_level(logging.WARNING, logger=worker.__name__):
+        worker.serve(worker.Client(serving.url, TOKEN), tmp_path / "work", once=True)
+    assert serving.reason is None
+    assert "the failure was not reported" in caplog.text
+
+
+def test_an_internal_error_is_logged_for_the_operator(
+    serving: Server, recording: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:  # fmt: skip
+    """The owner is told "an internal error"; the log has the job's id and the traceback."""
+    require_program("cpp")
+    serving.upload = recording
+
+    def broken(*_: object) -> None:
+        raise RuntimeError("the upload broke")
+
+    monkeypatch.setattr(worker, "upload", broken)
+    with caplog.at_level(logging.ERROR, logger=worker.__name__):
+        worker.serve(worker.Client(serving.url, TOKEN), tmp_path / "work", once=True)
+    assert serving.reason == "an internal error"
+    assert "job job-1: an internal error" in caplog.text
+    assert "RuntimeError: the upload broke" in caplog.text
+
+
+def test_transfers_beat_as_the_jobs_heartbeat(
+    serving: Server, recording: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A slow download and slow uploads report their stage again, as the child's stages do."""
+    require_program("cpp")
+    serving.upload, serving.slow, serving.put_delay = recording, True, 0.06
+    monkeypatch.setattr(worker, "HEARTBEAT", 0.05)
+    monkeypatch.setattr(worker, "_CHUNK", 1 << 14)
+    worker.serve(worker.Client(serving.url, TOKEN), tmp_path / "work", once=True)
+    assert serving.summary is not None
+    assert serving.stages.count("downloading") > 1
+    assert serving.stages.count("uploading") > 1
+
+
+STAND_IN = """
+import json, subprocess, sys, time
+pidfile, mode = sys.argv[1], sys.argv[2]
+print(json.dumps({"stage": "running"}), flush=True)
+sleeper = subprocess.Popen(["sleep", "30"])
+with open(pidfile, "w") as file:
+    file.write(str(sleeper.pid))
+if mode == "orphan":
+    print(json.dumps({"summary": {"frames": 1}}), flush=True)
+    sys.exit(0)
+time.sleep(30)
+"""
+"""A stand-in for a job's child: reports a stage, starts a grandchild, then waits or ends."""
+
+
+def _alive(pid: int) -> bool:
+    """Whether a process runs (a zombie has ended)."""
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except (FileNotFoundError, ProcessLookupError):  # gone, or going as it is read
+        return False
+    return state != "Z"
+
+
+def _gone(pid: int, seconds: float = 5.0) -> bool:
+    """Whether a process ends within a few seconds."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if not _alive(pid):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+@pytest.mark.parametrize("ending", ["timeout", "abandoned", "orphan"])
+def test_a_job_leaves_no_process_behind(ending: str, tmp_path: Path) -> None:
+    """Past its deadline, let go by a 409, or ending with an orphan: its whole group is killed.
+
+    The stand-in child starts a grandchild, as vo.run starts the C++ program.
+    """
+    script, pidfile = tmp_path / "child.py", tmp_path / "grandchild.pid"
+    script.write_text(STAND_IN)
+    argv = [sys.executable, str(script), str(pidfile), "orphan" if ending == "orphan" else "wait"]
+
+    def report(stage: str) -> None:
+        if ending == "abandoned" and stage == "running":
+            deadline = time.monotonic() + 5.0
+            while not pidfile.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)  # the grandchild has started
+            raise worker.AbandonedError(stage)
+
+    if ending == "timeout":
+        with pytest.raises(worker.RefusedError, match="took longer"):
+            worker._run_child(argv, report, 2.0)
+    elif ending == "abandoned":
+        with pytest.raises(worker.AbandonedError):
+            worker._run_child(argv, report, 30.0)
+    else:
+        assert worker._run_child(argv, report, 30.0) == {"frames": 1}
+    assert _gone(int(pidfile.read_text()))
+
+
+def test_the_child_inherits_no_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only CHILD_ENVIRONMENT's variables pass: never the worker's token, nor anything else."""
+    monkeypatch.setenv(worker.TOKEN_VARIABLE, TOKEN)
+    monkeypatch.setenv("SOME_CLOUD_SECRET", "s3cr3t")
+    env = worker.child_environment()
+    assert worker.TOKEN_VARIABLE not in env
+    assert "SOME_CLOUD_SECRET" not in env
+    assert env["PATH"] == os.environ["PATH"]
+    assert env["SLAM_IT_ALL_LENS_PROFILES"] == str(FIXTURES / "eval" / "lens_profiles")
+
+
+@pytest.mark.parametrize(
+    ("url", "good"),
+    [
+        ("https://slam.example.org", True),
+        ("http://127.0.0.1:8000", True),
+        ("http://[::1]:8000", True),
+        ("http://localhost:8000", True),
+        ("http://192.168.1.20:8770", True),
+        ("http://slam-it-all.railway.internal:8000", True),
+        ("http://sia-e2e-server:8000", True),
+        ("http://slam.example.org", False),
+        ("http://8.8.8.8", False),
+        ("file:///etc/passwd", False),
+        ("ftp://127.0.0.1/x", False),
+        ("", False),
+    ],
+)
+def test_only_safe_urls_are_followed(url: str, good: bool) -> None:
+    """An https URL goes anywhere; plain http only to a host off the public internet."""
+    if good:
+        assert worker.check_url(url, "server") == url
+    else:
+        with pytest.raises(InvalidInputError):
+            worker.check_url(url, "server")
+
+
+def test_a_download_link_to_a_local_file_is_refused(serving: Server) -> None:
+    """A claim whose upload link is ``file://`` is refused before anything is read."""
+    serving.download = "file:///etc/passwd"
+    with pytest.raises(InvalidInputError, match="download link"):
+        worker.Client(serving.url, TOKEN).claim()
+
+
+class _Claimed(BaseException):
+    """A claim the test did not expect: the worker went past the checks it makes first."""
+
+
+def _claim_unexpected(*_: object, **__: object) -> None:
+    raise _Claimed
+
+
+def test_the_worker_refuses_to_start_wrong(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No server address, a public plain-http one, or no lens profiles: code 2, and why.
+
+    Each is refused before any claim: one would raise here at once, never wait on a server.
+    """
+    monkeypatch.setattr(worker.Client, "claim", _claim_unexpected)
+    monkeypatch.setenv(worker.TOKEN_VARIABLE, TOKEN)
+    assert worker.main(["serve", "--server", "", "--work", str(tmp_path)]) == 2
+    assert "expected an http or https URL" in capsys.readouterr().err
+    assert worker.main(["serve", "--server", "http://slam.example.org"]) == 2
+    assert "plain http only to a private host" in capsys.readouterr().err
+    monkeypatch.setenv("SLAM_IT_ALL_LENS_PROFILES", str(tmp_path))
+    assert worker.main(["serve", "--server", "http://127.0.0.1:9", "--work", str(tmp_path)]) == 2
+    assert "no usable lens profile" in capsys.readouterr().err

@@ -21,8 +21,19 @@ Railway beside the server, or later on a machine with a GPU. A job's kind says w
 4. report it done, or failed with a reason fit to show: an import's or the pipeline's own
    message, the worker's paths taken out; anything unexpected only as an internal error.
 
-Each stage is reported as it starts, and again every :data:`HEARTBEAT` seconds while the child
-works on it: the job's heartbeat.
+Each stage is reported as it starts, and again every :data:`HEARTBEAT` seconds while it lasts,
+the downloads and uploads included: the job's heartbeat. A report that does not reach the server
+is logged and the job carries on; a 409 lets it go.
+
+**Supervision.** The child starts a session of its own, so it and every process it starts (the
+C++ program among them) are one process group. Whenever a job ends other than cleanly (its
+timeout, a 409, an error), the whole group is killed, so a job never outlives its turn. The
+child inherits only the environment it needs (:data:`CHILD_ENVIRONMENT`), never the worker's
+token. Its stderr is the worker's, and anything unexpected is logged with the job's id, for the
+operator; the owner sees only the reason fit to show.
+
+**Trust.** The worker refuses a server or a link that is not ``http`` or ``https``, and plain
+``http`` to a host that may be on the public internet (:func:`check_url`).
 
 **The protocol**, JSON over HTTPS, every request carrying ``Authorization: Bearer <token>``:
 
@@ -34,7 +45,7 @@ works on it: the job's heartbeat.
   link (PUT) for each of the bundle's files, ``{"urls": {path: url}}``;
 - ``POST /api/worker/jobs/<job>/done`` ``{"summary"}``, or ``.../failed`` ``{"reason"}``.
 
-Run as a program::
+Run as a program (the lens profiles are required, :func:`slam_it_all.eval.lenses.database`)::
 
     SLAM_IT_ALL_WORKER_TOKEN=... python -m slam_it_all.orchestration.worker serve --server URL
         [--work DIR] [--once]
@@ -45,21 +56,25 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import ipaddress
 import json
+import logging
 import os
 import resource
 import selectors
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 from slam_it_all.eval import lenses, video
 from slam_it_all.foundations.errors import InvalidInputError, SlamItAllError
@@ -76,6 +91,10 @@ STAGES = ("downloading", "importing", "running", "baking", "uploading")
 
 MEMORY_LIMIT = 6 * 2**30
 """The address space a job's child process may use, in bytes (``RLIMIT_AS``)."""
+
+FILE_LIMIT = 2 * 2**30
+"""The largest file a job's child process may write, in bytes (``RLIMIT_FSIZE``): a frame's
+PNG is at most a few MB and a run's feature records a few hundred."""
 
 TIMEOUT = 20 * 60.0
 """The longest a job's child process may take, in seconds."""
@@ -97,8 +116,27 @@ shows that name."""
 TOKEN_VARIABLE = "SLAM_IT_ALL_WORKER_TOKEN"
 """The environment variable that holds the worker's token."""
 
+CHILD_ENVIRONMENT = (
+    "PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "PYTHONPATH", "LD_LIBRARY_PATH", "CONDA_PREFIX",
+    "SLAM_IT_ALL_LENS_PROFILES", "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+)  # fmt: skip
+"""The environment variables a job's child inherits: what Python, the lens profiles and the C++
+program need. The worker's token and anything else are left out."""
+
+REQUEST_TIMEOUT = 60.0
+"""How long a request to the server, or a download, may stall, in seconds."""
+
+UPLOAD_TIMEOUT = 300.0
+"""How long one of a bundle's uploads may stall, in seconds."""
+
+CLAIM_MARGIN = 30.0
+"""How much longer than its wait a claim's request may take, in seconds."""
+
 _CHUNK = 1 << 20
 """The bytes moved at a time in a download or an upload."""
+
+_LOG = logging.getLogger(__name__)
+"""The worker's log, for its operator (the module docstring)."""
 
 
 class AbandonedError(Exception):
@@ -131,6 +169,48 @@ class Job:
     download: str
 
 
+def check_url(url: str, what: str) -> str:
+    """Return a URL the worker may use, refusing one that is not ``http(s)`` to a safe host.
+
+    ``https`` goes anywhere; plain ``http`` only to a host that cannot be on the public
+    internet: a loopback or private address, ``localhost``, a one-label name (a container
+    network's), or Railway's private network (``*.railway.internal``).
+
+    Parameters
+    ----------
+    url : str
+        The URL.
+    what : str
+        What it is, for the error.
+
+    Returns
+    -------
+    str
+        The URL.
+
+    Raises
+    ------
+    slam_it_all.foundations.errors.InvalidInputError
+        If it is not such a URL.
+    """
+    parts = urllib.parse.urlsplit(url)
+    host = parts.hostname or ""
+    if parts.scheme not in ("http", "https") or not host:
+        raise InvalidInputError(f"{what}: expected an http or https URL with a host, got {url!r}")
+    if parts.scheme == "http" and not _private_host(host):
+        raise InvalidInputError(f"{what}: plain http only to a private host, got {host!r}")
+    return url
+
+
+def _private_host(host: str) -> bool:
+    """Whether a host cannot be on the public internet (:func:`check_url`)."""
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return host == "localhost" or "." not in host or host.endswith(".railway.internal")
+    return address.is_loopback or address.is_private
+
+
 class Client:
     """Talks to the upload server, as a worker, over HTTP(S) with the standard library.
 
@@ -146,10 +226,12 @@ class Client:
         """Hold the server's address and the token."""
         if not token:
             raise InvalidInputError("token: expected the worker's token")
-        self.server = server.rstrip("/")
+        self.server = check_url(server, "server").rstrip("/")
         self.token = token
 
-    def _post(self, path: str, body: dict[str, Any], timeout: float = 60.0) -> tuple[int, Any]:
+    def _post(
+        self, path: str, body: dict[str, Any], timeout: float = REQUEST_TIMEOUT
+    ) -> tuple[int, Any]:
         """POST JSON; return the status and the JSON answer (None for no body)."""
         request = urllib.request.Request(
             self.server + path,
@@ -169,7 +251,7 @@ class Client:
     def claim(self, kinds: Sequence[str] = KINDS, wait: float = WAIT) -> Job | None:
         """Wait for a job of one of the kinds; None if none came within the wait."""
         status, answer = self._post(
-            "/api/worker/claim", {"kinds": list(kinds), "wait": wait}, wait + 30.0
+            "/api/worker/claim", {"kinds": list(kinds), "wait": wait}, wait + CLAIM_MARGIN
         )
         if status == 204 or answer is None:
             return None
@@ -180,6 +262,7 @@ class Client:
             raise InvalidInputError(
                 f"claim: a job this worker cannot run ({job.kind}, {job.upload})"
             )
+        check_url(job.download, "claim's download link")
         return job
 
     def progress(self, job: Job, stage: str) -> None:
@@ -190,7 +273,7 @@ class Client:
         """Ask for an upload link for each file, given by its path and size."""
         listed = [{"path": path, "bytes": size} for path, size in files.items()]
         _, answer = self._post(f"/api/worker/jobs/{job.id}/files", {"files": listed})
-        urls = {str(k): str(v) for k, v in answer["urls"].items()}
+        urls = {str(k): check_url(str(v), "upload link") for k, v in answer["urls"].items()}
         if set(urls) != set(files):
             raise InvalidInputError("files: the server's links are not for the files asked")
         return urls
@@ -204,30 +287,70 @@ class Client:
         self._post(f"/api/worker/jobs/{job.id}/failed", {"reason": reason})
 
 
-def download(url: str, path: Path, cap: int) -> None:
-    """Download a link to a file, refusing more than `cap` bytes."""
+class _Beat:
+    """Calls a report every :data:`HEARTBEAT` seconds, when asked whether it is due."""
+
+    def __init__(self, report: Callable[[], None]) -> None:
+        """Start the clock."""
+        self.report, self.last = report, time.monotonic()
+
+    def __call__(self) -> None:
+        """Report if a heartbeat has passed since the last."""
+        if time.monotonic() - self.last >= HEARTBEAT:
+            self.report()
+            self.last = time.monotonic()
+
+
+class _Reading:
+    """A file read for an upload, calling `beat` per block (http.client reads it in blocks)."""
+
+    def __init__(self, file: IO[bytes], beat: Callable[[], None]) -> None:
+        """Hold the file and the beat."""
+        self.file, self.beat = file, beat
+
+    def read(self, size: int = -1) -> bytes:
+        """Read a block, and beat if one is due."""
+        self.beat()
+        return self.file.read(size)
+
+
+def download(url: str, path: Path, cap: int, beat: Callable[[], None] = lambda: None) -> None:
+    """Download a link to a file, refusing more than `cap` bytes; `beat` is called per chunk."""
     read = 0
-    with urllib.request.urlopen(url, timeout=60.0) as response, path.open("wb") as file:
+    with (
+        urllib.request.urlopen(url, timeout=REQUEST_TIMEOUT) as response,
+        path.open("wb") as file,
+    ):
         while chunk := response.read(_CHUNK):
+            beat()
             read += len(chunk)
             if read > cap:
                 raise RefusedError(f"the upload is over {cap / 10**6:g} MB")
             file.write(chunk)
 
 
-def upload(url: str, path: Path) -> None:
-    """Upload a file to a link with PUT."""
+def upload(url: str, path: Path, beat: Callable[[], None] = lambda: None) -> None:
+    """Upload a file to a link with PUT; `beat` is called per block read."""
     with path.open("rb") as file:
         request = urllib.request.Request(
-            url, data=file, method="PUT", headers={"Content-Length": str(path.stat().st_size)}
+            url,
+            data=_Reading(file, beat),
+            method="PUT",
+            headers={"Content-Length": str(path.stat().st_size)},
         )
-        with urllib.request.urlopen(request, timeout=300.0):
+        with urllib.request.urlopen(request, timeout=UPLOAD_TIMEOUT):
             pass
 
 
-def _limit_memory() -> None:
-    """Cap the child's address space (inherited by every process it starts)."""
+def _limit_resources() -> None:
+    """Cap the child's address space and file sizes (inherited by every process it starts)."""
     resource.setrlimit(resource.RLIMIT_AS, (MEMORY_LIMIT, MEMORY_LIMIT))
+    resource.setrlimit(resource.RLIMIT_FSIZE, (FILE_LIMIT, FILE_LIMIT))
+
+
+def child_environment() -> dict[str, str]:
+    """Return the environment a job's child inherits: :data:`CHILD_ENVIRONMENT`, as set."""
+    return {name: os.environ[name] for name in CHILD_ENVIRONMENT if name in os.environ}
 
 
 def _work(upload_path: Path, kind: str, out: Path, report: Callable[[str], None]) -> dict[str, Any]:
@@ -238,9 +361,7 @@ def _work(upload_path: Path, kind: str, out: Path, report: Callable[[str], None]
         video.import_stray(upload_path, sequence)
         source = "stray-scanner"
     else:
-        folder = lenses.default_folder()
-        profiles = lenses.load(folder) if folder.is_dir() else []
-        chosen = lenses.choose(video.probe(upload_path), profiles)
+        chosen = lenses.choose(video.probe(upload_path), lenses.database())
         video.import_video(upload_path, sequence, chosen)
         source = chosen.source
     report("running")
@@ -305,23 +426,67 @@ def _message(line: str) -> dict[str, Any]:
 
 
 def _run_child(
-    upload_path: Path, kind: str, out: Path, report: Callable[[str], None], timeout: float
+    argv: Sequence[str], report: Callable[[str], None], timeout: float
 ) -> dict[str, Any]:
-    """Run :func:`process` in a child process within the limits; return its summary.
+    """Run a job's child (:func:`process`) within the limits; return its summary.
 
-    The child's output is waited on with a deadline, so a child that stops talking is still
-    stopped in time; lines that are not its JSON messages are ignored. Its current stage is
-    reported again after every :data:`HEARTBEAT` seconds without one.
+    The child starts a session of its own, so it and every process it starts are one group,
+    killed whole when it ends, however it ends: past its deadline, when a report raises (a
+    409), or with an orphan left. Its output is waited on with a deadline, so a child that
+    stops talking is still stopped in time; lines that are not its JSON messages are ignored.
+    Its current stage is reported again after every :data:`HEARTBEAT` seconds without one.
+
+    Parameters
+    ----------
+    argv : sequence of str
+        The child's command line.
+    report : callable
+        Reports a stage; :class:`AbandonedError` ends the job.
+    timeout : float
+        The longest the child may take, in seconds.
+
+    Returns
+    -------
+    dict
+        The child's summary.
+
+    Raises
+    ------
+    RefusedError
+        If the child took too long, or refused the upload with a reason.
+    AbandonedError
+        If a report found the job let go.
+    RuntimeError
+        If the child ended without a result (out of memory, a crash).
     """
-    command = [sys.executable, "-m", "slam_it_all.orchestration.worker", "process"]
-    child = subprocess.Popen(
-        [*command, str(upload_path), kind, str(out)],
+    with subprocess.Popen(
+        argv,
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
         text=True,
-        preexec_fn=_limit_memory,  # noqa: PLW1509 -- the worker runs no threads
-    )
-    if child.stdout is None:  # piped above
+        env=child_environment(),
+        preexec_fn=_limit_resources,  # noqa: PLW1509 -- the worker runs no threads
+        start_new_session=True,
+    ) as child:
+        try:
+            result = _supervise(child, report, timeout)
+        finally:
+            with contextlib.suppress(ProcessLookupError):  # its group, whatever is left of it
+                os.killpg(child.pid, signal.SIGKILL)
+    if "summary" in result:
+        return dict(result["summary"])
+    if "reason" in result:
+        raise RefusedError(str(result["reason"]))
+    raise RuntimeError(f"the job's process ended with {child.returncode} and no result")
+
+
+def _supervise(
+    child: subprocess.Popen[str], report: Callable[[str], None], timeout: float
+) -> dict[str, Any]:
+    """Follow a child's output until its result and its end, or its deadline; return the result.
+
+    The result is its ``summary`` or ``reason`` line; ending without one gives an empty dict.
+    """
+    if child.stdout is None:  # piped by the caller
         raise RuntimeError("the job's process has no output")
     deadline = time.monotonic() + timeout
     result: dict[str, Any] = {}
@@ -331,31 +496,40 @@ def _run_child(
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                child.kill()
-                child.wait()
                 raise RefusedError(f"took longer than {timeout / 60:g} minutes")
             if not waiting.select(min(remaining, HEARTBEAT)):
                 report(current)  # still at it
                 continue
             line = child.stdout.readline()
             if not line:
-                break  # the child closed its output: it has ended
+                child.wait()
+                return result  # the child closed its output: it has ended
             message = _message(line)
             if "stage" in message:
                 current = str(message["stage"])
                 report(current)
-            elif message:
-                result = message
-    child.wait()
-    if "summary" in result:
-        return dict(result["summary"])
-    if "reason" in result:
-        raise RefusedError(str(result["reason"]))
-    raise RuntimeError(f"the job's process ended with {child.returncode} and no result")
+            elif "summary" in message or "reason" in message:
+                # Its last word: wait for it to end, not for its output to close, which a
+                # process it left behind may hold open.
+                try:
+                    child.wait(timeout=max(deadline - time.monotonic(), 0.0))
+                except subprocess.TimeoutExpired:
+                    raise RefusedError(f"took longer than {timeout / 60:g} minutes") from None
+                return message
+
+
+def _report_failure(client: Client, job: Job, reason: str) -> None:
+    """Report a job failed; a report that cannot be made is logged, never raised."""
+    try:
+        client.failed(job, reason)
+    except Exception as error:  # the job is over either way: the worker carries on
+        _LOG.warning("job %s: the failure was not reported (%s)", job.id, error)
 
 
 def handle(client: Client, job: Job, work: Path, timeout: float = TIMEOUT) -> None:
     """Run one job end to end (the module docstring), and report how it ended.
+
+    It never raises: a job's failure, however it comes, never stops the worker.
 
     Parameters
     ----------
@@ -369,31 +543,41 @@ def handle(client: Client, job: Job, work: Path, timeout: float = TIMEOUT) -> No
         The longest its child process may take, in seconds.
     """
     folder = Path(tempfile.mkdtemp(prefix=f"job-{job.id[:8]}-", dir=work))
+
+    def report(stage: str) -> None:
+        """Report a stage; one that does not reach the server is logged, and the job goes on."""
+        try:
+            client.progress(job, stage)
+        except (urllib.error.URLError, OSError) as error:  # a 409 is AbandonedError, raised
+            _LOG.warning(
+                "job %s: the %s report did not reach the server (%s)", job.id, stage, error
+            )
+
     try:
-        client.progress(job, "downloading")
+        report("downloading")
         suffix = ".zip" if job.upload == "stray" else ".video"
         upload_path = folder / f"upload{suffix}"
-        download(job.download, upload_path, video.MAX_BYTES)
-        summary = _run_child(
-            upload_path, job.upload, folder, lambda stage: client.progress(job, stage), timeout
-        )
-        client.progress(job, "uploading")
+        download(job.download, upload_path, video.MAX_BYTES, _Beat(lambda: report("downloading")))
+        argv = [sys.executable, "-m", "slam_it_all.orchestration.worker", "process"]
+        summary = _run_child([*argv, str(upload_path), job.upload, str(folder)], report, timeout)
+        report("uploading")
         bundle = folder / "bundle"
         files = {
             p.relative_to(bundle).as_posix(): p.stat().st_size
             for p in sorted(bundle.rglob("*"))
             if p.is_file()
         }
+        beat = _Beat(lambda: report("uploading"))
         for path, url in client.links(job, files).items():
-            upload(url, bundle / path)
+            upload(url, bundle / path, beat)
         client.done(job, summary)
     except AbandonedError:
-        pass  # the server has let the job go: nothing to report
+        _LOG.info("job %s: let go by the server", job.id)
     except RefusedError as refusal:
-        client.failed(job, str(refusal))
+        _report_failure(client, job, str(refusal))
     except Exception:  # a job's failure must never stop the worker
-        with contextlib.suppress(Exception):
-            client.failed(job, "an internal error")
+        _LOG.exception("job %s: an internal error", job.id)
+        _report_failure(client, job, "an internal error")
     finally:
         shutil.rmtree(folder, ignore_errors=True)  # the job's own folder, made above
 
@@ -411,13 +595,19 @@ def serve(client: Client, work: Path, *, once: bool = False, timeout: float = TI
         Stop after the first job.
     timeout : float, optional
         The longest a job's child process may take, in seconds.
+
+    Raises
+    ------
+    slam_it_all.foundations.errors.InvalidInputError
+        If the lens profiles are not there (:func:`slam_it_all.eval.lenses.database`).
     """
+    lenses.database()  # required, so that no video silently falls to a fallback
     work.mkdir(parents=True, exist_ok=True)
     while True:
         try:
             job = client.claim()
         except (urllib.error.URLError, OSError, ValueError) as error:
-            print(f"worker: no job ({error}); trying again in {RETRY:g} s", file=sys.stderr)
+            _LOG.warning("no job (%s); trying again in %g s", error, RETRY)
             time.sleep(RETRY)  # the server is away, or answered nonsense
             continue
         if job is None:
@@ -438,7 +628,8 @@ def main(arguments: Sequence[str]) -> int:
     Returns
     -------
     int
-        0, or :func:`process`'s code.
+        0; 2 if the server's address, the token or the lens profiles are wrong; or
+        :func:`process`'s code.
     """
     parser = argparse.ArgumentParser(prog="python -m slam_it_all.orchestration.worker")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -455,8 +646,16 @@ def main(arguments: Sequence[str]) -> int:
     args = parser.parse_args(arguments)
     if args.command == "process":
         return process(args.upload, args.kind, args.out)
-    with contextlib.suppress(KeyboardInterrupt):  # Ctrl-C ends the worker, quietly
-        serve(Client(args.server, os.environ.get(TOKEN_VARIABLE, "")), args.work, once=args.once)
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s worker %(levelname)s %(message)s", stream=sys.stderr
+    )
+    try:
+        client = Client(args.server, os.environ.get(TOKEN_VARIABLE, ""))
+        with contextlib.suppress(KeyboardInterrupt):  # Ctrl-C ends the worker, quietly
+            serve(client, args.work, once=args.once)
+    except InvalidInputError as error:
+        print(f"worker: {error}", file=sys.stderr)
+        return 2
     return 0
 
 
