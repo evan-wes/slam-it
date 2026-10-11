@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import logging
+import urllib.parse
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -13,9 +16,16 @@ from fastapi.testclient import TestClient
 
 from slam_it_all_server import app as server_app
 from slam_it_all_server import jobs
-from slam_it_all_server.config import MAX_BYTES, QUEUE, RETENTION, SILENCE, UPLOAD_WAIT
+from slam_it_all_server.config import (
+    MAX_BYTES,
+    QUEUE,
+    RETENTION,
+    SILENCE,
+    UPLOAD_GRACE,
+    UPLOAD_WAIT,
+)
 from slam_it_all_server.storage import FolderStorage
-from tests.server.conftest import CODE, CODES, TOKEN, WORKER, Server
+from tests.server.conftest import CODE, CODES, TOKEN, VIEWER, WORKER, Clock, Server
 
 UPLOAD = b"not really a video, but storage never looks"
 """An upload's bytes."""
@@ -298,6 +308,85 @@ def test_the_sweep_deletes_what_has_expired(server: Server) -> None:
     assert server.client.get(f"/r/{done['token']}/bundle/bundle.json").status_code == 404
 
 
+def _job_id(job: dict[str, str]) -> str:
+    """Return a job's id, from its upload link (``/storage/uploads/<id>?...``)."""
+    return job["upload_url"].split("/storage/uploads/", 1)[1].split("?", 1)[0]
+
+
+def test_an_upload_that_lands_after_its_link_expired_is_deleted(server: Server) -> None:
+    """An upload begun in time but arriving after its link expired is deleted, its grace over.
+
+    S3 checks a link when a request starts, so such a file can land after its job has ended
+    and its files were cleared: the sweep deletes it once UPLOAD_GRACE is over.
+    """
+    job = _make(server)
+    server.clock.now += UPLOAD_WAIT
+    assert server_app.sweep(server.jobs, server.store) == 0
+    assert _status(server, job["token"])["state"] == "expired"
+    late = server.store.path(f"uploads/{_job_id(job)}")
+    late.parent.mkdir(parents=True, exist_ok=True)
+    late.write_bytes(UPLOAD)  # as a PUT the bucket let start in time would, now
+    server.clock.now += UPLOAD_GRACE - 1
+    assert server_app.sweep(server.jobs, server.store) == 0
+    assert late.is_file()
+    server.clock.now += 1
+    assert server_app.sweep(server.jobs, server.store) == 0
+    assert not late.exists()
+
+
+class _Ticking(Clock):
+    """A clock that moves on by `step` each time it is read."""
+
+    step: float = 0.0
+
+    def __call__(self) -> float:
+        """Return the time, then move on."""
+        now = self.now
+        self.now += self.step
+        return now
+
+
+def test_folder_storage_keeps_no_upload_whole_only_after_its_link_expired(server: Server) -> None:
+    """A PUT whose link held when it started but had expired by its end: refused, none kept."""
+    clock = _Ticking()
+    store = FolderStorage(server.store.root, server.store.public_url, server.store.key, clock)
+    client = TestClient(server_app.make_app(server.settings, store, server.jobs))
+    link = store.upload_link("uploads/late", len(UPLOAD), 10)
+    clock.step = 11.0  # read when the link is checked, then again when the upload has arrived
+    answer = client.put(link, content=UPLOAD)
+    assert (answer.status_code, answer.json()["detail"]) == (
+        403,
+        "the link expired before the upload arrived whole",
+    )
+    assert list(store.root.rglob("*late*")) == []
+
+
+@pytest.mark.parametrize(
+    ("error", "status"), [(FileNotFoundError("gone"), 409), (OSError("storage is away"), 503)]
+)
+def test_a_confirmation_whose_move_fails_says_so(
+    error: Exception, status: int, server: Server,
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:  # fmt: skip
+    """Moved a moment before, 409; storage failing, 503 and a line by the job's id.
+
+    Either way the job is still waiting.
+    """
+    job = _make(server)
+    assert server.client.put(job["upload_url"], content=UPLOAD).status_code == 200
+
+    def fail(key: str, to: str) -> None:
+        raise error
+
+    monkeypatch.setattr(server.store, "move", fail)
+    with caplog.at_level(logging.ERROR, logger="slam_it_all_server"):
+        answer = server.client.post(f"/api/jobs/{job['token']}/uploaded")
+    assert answer.status_code == status
+    logged = f"job {_job_id(job)}: the upload could not be moved" in caplog.text
+    assert logged == (status == 503)
+    assert _status(server, job["token"])["state"] == "waiting"
+
+
 class _Flaky(FolderStorage):
     """Folder storage whose next result deletion fails."""
 
@@ -332,7 +421,7 @@ def test_a_replayed_upload_link_never_reaches_the_worker_and_is_deleted(server: 
     """A second PUT through the owner's link is never what the worker reads, and is deleted.
 
     Confirmed, the upload is moved out of the link's reach; what the link writes after is
-    deleted once the link has expired.
+    deleted when the job ends (here, its worker gone silent).
     """
     job = _queued(server)
     assert server.client.put(job["upload_url"], content=b"x" * len(UPLOAD)).status_code == 200
@@ -488,9 +577,37 @@ def test_the_pages_carry_a_content_policy_that_allows_their_own_scripts(server: 
     digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
     policy = server.client.get("/").headers["content-security-policy"]
     directives = dict(part.strip().split(" ", 1) for part in policy.split(";"))
-    assert directives["script-src"] == f"'self' https://cdn.jsdelivr.net 'sha256-{digest}'"
+    assert directives["script-src"] == f"'self' {server_app.CDN} 'sha256-{digest}'"
     assert directives["connect-src"] == "'self' http://testserver"
     assert directives["media-src"] == "'self' blob:"  # the upload page reads a video's length
     assert directives["default-src"] == "'self'"
     assert directives["frame-ancestors"] == "'none'"
     assert server.client.get("/api/jobs/x").headers["content-security-policy"] == policy
+
+
+def test_the_policy_allows_three_js_alone_of_its_cdn() -> None:
+    """Scripts from one path of the CDN alone: three.js's, at its version.
+
+    Every module the import map names is under it, and nothing else the CDN serves.
+    """
+    assert server_app.CDN.endswith("/")
+    assert urllib.parse.urlsplit(server_app.CDN).path.startswith("/npm/three@")
+    index = (VIEWER / "index.html").read_text()
+    script = index.split('<script type="importmap">', 1)[1].split("</script>", 1)[0]
+    modules = json.loads(script)
+    named = [*modules["imports"].values(), *modules["integrity"]]
+    assert named
+    assert all(url.startswith(server_app.CDN) for url in named)
+
+
+def test_a_viewer_whose_import_map_cannot_be_read_stops_the_server(tmp_path: Path) -> None:
+    """No page, or an import map written otherwise: refused when the app is made.
+
+    Not found later by a browser that cannot load the viewer.
+    """
+    store = FolderStorage(tmp_path / "files", "http://testserver", b"k" * 32)
+    with pytest.raises(FileNotFoundError, match=r"index\.html"):
+        server_app.content_policy(tmp_path, store)
+    (tmp_path / "index.html").write_text('<script type="importmap" nonce="x">{}</script>')
+    with pytest.raises(ValueError, match="an import map not written as"):
+        server_app.content_policy(tmp_path, store)

@@ -34,6 +34,11 @@ UPLOAD_WAIT = 15 * 60.0
 """How long a job waits for its upload, in seconds, before it expires: its upload link's life
 too, so that a link outlives no job waiting for it."""
 
+UPLOAD_GRACE = 3600.0
+"""How long after its link expires an upload begun in time may still be arriving, in seconds. A
+link is checked when an upload starts, not when it ends, so what it wrote is cleared again only
+after this: 500 MB in 75 minutes in all is about 0.9 Mbit/s (an estimate)."""
+
 SILENCE = 120.0
 """How long a running job may go unheard from, in seconds (four of the worker's heartbeats),
 before it fails."""

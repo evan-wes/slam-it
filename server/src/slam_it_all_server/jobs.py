@@ -17,11 +17,13 @@ docs/design/2026-10-09-run-viewer.md, section 5.3. A job's life::
   link says how it ended, then deleted with its files.
 
 **A job's files go before it does** (the server's sweep, :func:`slam_it_all_server.app.sweep`).
-Two flags say what is still to be cleared: ``link_open``, until whatever its owner's upload link
-may have written is deleted, once that link has expired and the job is past waiting; and
-``files_open``, until its upload's copy, and a result that will never be done, are deleted once
-it has ended. A job is deleted only after the rest of its files, so a deletion that fails leaves
-the job listed for the next sweep to try again.
+Two flags say what is still to be cleared: ``files_open``, until its upload, the upload's
+copy, and a result that will never be done, are deleted once it has ended; and ``link_open``,
+until whatever its owner's upload link may have written is deleted once more, once the job is
+past waiting and an upload begun before the link expired has had
+:data:`~slam_it_all_server.config.UPLOAD_GRACE` to arrive (a link is checked when an
+upload starts, not when it ends). A job is deleted only after the rest of its files, so a
+deletion that fails leaves the job listed for the next sweep to try again.
 
 **An invite code** opens at most :data:`CODE_JOBS` jobs at a time. A job keeps the code's keyed
 hash, its ``owner``, never the code.
@@ -30,6 +32,9 @@ A job has two names, neither made from the other: its ``id``, which workers and 
 use, and its ``token``, the owner's 128-bit link. A worker never learns a job's token.
 
 **Reads take no lock:** the file is in WAL mode, so a status read never waits on a change.
+
+**The file keeps its format** (:data:`SCHEMA_VERSION`, SQLite's ``user_version``): a file of
+another is refused when the list is opened, never migrated.
 """
 
 from __future__ import annotations
@@ -44,7 +49,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from slam_it_all_server.config import QUEUE, RETENTION, SILENCE, UPLOAD_WAIT
+from slam_it_all_server.config import QUEUE, RETENTION, SILENCE, UPLOAD_GRACE, UPLOAD_WAIT
 
 STAGES = ("downloading", "importing", "running", "baking", "uploading")
 """The worker's stages, in order (``slam_it_all.orchestration.worker.STAGES``; a test keeps the
@@ -65,8 +70,11 @@ QUEUE_WAIT = 24 * 3600.0
 CODE_JOBS = 2
 """The most jobs one invite code may have open at once."""
 
+SCHEMA_VERSION = 1
+"""The job list's format, kept in its file: a file of another is refused, never migrated."""
+
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS jobs (
+CREATE TABLE jobs (
     id TEXT PRIMARY KEY,
     token TEXT NOT NULL UNIQUE,
     owner TEXT NOT NULL,
@@ -98,6 +106,10 @@ class FullError(Exception):
 
 class OwnerFullError(FullError):
     """The invite code has :data:`CODE_JOBS` jobs open already."""
+
+
+class SchemaError(Exception):
+    """The job list's file is of another format than this server's (:data:`SCHEMA_VERSION`)."""
 
 
 class StateError(Exception):
@@ -190,13 +202,22 @@ class Jobs:
     """
 
     def __init__(self, path: Path, clock: Callable[[], float] = time.time) -> None:
-        """Open the list, making its table if need be, in WAL mode."""
+        """Open the list in WAL mode, making it if it is new, refusing one of another format."""
         self.path, self.clock = path, clock
         path.parent.mkdir(parents=True, exist_ok=True)
         with self._connected() as db:
             db.execute("PRAGMA journal_mode=WAL")
         with self._changing() as db:
-            db.execute(_SCHEMA)
+            made = db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'jobs'")
+            version = int(db.execute("PRAGMA user_version").fetchone()[0])
+            if made.fetchone() is None:
+                db.execute(_SCHEMA)
+                db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            elif version != SCHEMA_VERSION:
+                raise SchemaError(
+                    f"{path}: a job list of format {version}, this server's is {SCHEMA_VERSION}; "
+                    "it is not migrated: delete it to start a new one"
+                )
 
     @contextmanager
     def _connected(self) -> Iterator[sqlite3.Connection]:
@@ -423,8 +444,12 @@ class Jobs:
         return ended
 
     def links_to_close(self) -> list[Job]:
-        """Return the jobs past waiting whose upload link has expired, its writes not cleared."""
-        cutoff = self.clock() - UPLOAD_WAIT
+        """Return the jobs past waiting whose link's writes are to clear a last time.
+
+        Their link has expired, and an upload begun before then has had
+        :data:`~slam_it_all_server.config.UPLOAD_GRACE` to arrive.
+        """
+        cutoff = self.clock() - UPLOAD_WAIT - UPLOAD_GRACE
         return self._all("link_open = 1 AND state != 'waiting' AND created <= ?", cutoff)
 
     def close_link(self, job_id: str) -> None:

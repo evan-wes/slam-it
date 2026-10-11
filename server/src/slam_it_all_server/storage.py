@@ -42,8 +42,19 @@ def check_key(key: str) -> str:
     return key
 
 
+def _origin(url: str) -> str:
+    """Return a URL's scheme and host, as ``https://host:port``."""
+    parts = urllib.parse.urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}"
+
+
 class Storage(Protocol):
     """What the server needs of a store."""
+
+    @property
+    def origin(self) -> str:
+        """Return the scheme and host its links point to, for the pages' connections."""
+        ...
 
     def upload_link(self, key: str, size: int, seconds: int) -> str:
         """Return a PUT link for a key, signed for exactly `size` bytes, for `seconds`."""
@@ -84,6 +95,12 @@ class S3Storage:
     def __init__(self, client: Any, bucket: str) -> None:  # noqa: ANN401 -- boto3 has no types here
         """Hold the client and the bucket."""
         self.client, self.bucket = client, bucket
+
+    @property
+    def origin(self) -> str:
+        """Return the scheme and host its links point to: boto3 decides, by its addressing style."""
+        params = {"Bucket": self.bucket, "Key": "origin"}
+        return _origin(self.client.generate_presigned_url("get_object", Params=params, ExpiresIn=1))
 
     def upload_link(self, key: str, size: int, seconds: int) -> str:
         """Return a PUT link, its Content-Length signed so the bucket refuses another size."""
@@ -150,6 +167,11 @@ class FolderStorage:
         """Hold the folder, the address and the signing key."""
         self.root, self.public_url, self.key, self.clock = root, public_url.rstrip("/"), key, clock
         root.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def origin(self) -> str:
+        """Return the scheme and host its links point to: this server's public address's."""
+        return _origin(self.public_url)
 
     def _signature(self, method: str, key: str, expires: int, size: int) -> str:
         """Return the HMAC of a link's method, key, expiry and size."""

@@ -24,7 +24,8 @@ token checked on every request.
 - the size cap, checked against the declared size and signed into the upload link;
 - one job worked on at a time, and :data:`~slam_it_all_server.config.QUEUE` open at most;
 - an upload moved, once confirmed, where its owner's link cannot reach it, and deleted once
-  its import ends; whatever the link may write later is deleted once it has expired;
+  its import ends; whatever the link may write later is deleted when the job ends, and again
+  once an upload begun in time could have arrived (:data:`~slam_it_all_server.config.UPLOAD_GRACE`);
 - every job deleted :data:`~slam_it_all_server.config.RETENTION` after it ends, its files
   first, so that a deletion that fails is tried again (:func:`sweep`);
 - at most :data:`slam_it_all_server.jobs.CODE_JOBS` jobs open per invite code;
@@ -47,7 +48,6 @@ import hmac
 import json
 import logging
 import re
-import urllib.parse
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
@@ -96,8 +96,9 @@ CLAIM_POLL = 1.0
 CLAIM_WAIT = 60.0
 """The longest a worker's claim is held, in seconds."""
 
-CDN = "https://cdn.jsdelivr.net"
-"""Where the run viewer loads three.js from (``viewer/index.html``'s import map)."""
+CDN = "https://cdn.jsdelivr.net/npm/three@0.186.0/"
+"""Where the run viewer loads three.js from (``viewer/index.html``'s import map): the content
+policy allows scripts from this path, not the rest of the CDN."""
 
 _HEADERS = {
     "X-Robots-Tag": "noindex, nofollow",
@@ -182,13 +183,14 @@ def sweep(job_list: Jobs, store: Storage) -> int:
 
 
 def _close_link(job_list: Jobs, store: Storage, job: Job) -> None:
-    """Delete whatever a job's expired upload link wrote, then record it."""
+    """Delete whatever a job's upload link wrote, its grace over, then record it."""
     store.delete(upload_key(job.id))
     job_list.close_link(job.id)
 
 
 def _clear_files(job_list: Jobs, store: Storage, job: Job) -> None:
-    """Delete an ended job's upload copy, and its result unless it is done; then record it."""
+    """Delete an ended job's upload, its copy, and its result unless it is done; then record it."""
+    store.delete(upload_key(job.id))
     store.delete(import_key(job.id))
     if job.state != "done":
         store.delete_prefix(result_prefix(job.id))
@@ -302,13 +304,16 @@ def content_policy(viewer: Path, store: Storage) -> str:
         The policy.
     """
     index = viewer / "index.html"
-    text = index.read_text() if index.is_file() else ""
+    if not index.is_file():  # the policy would allow no import map, and the viewer would break
+        raise FileNotFoundError(f"{index}: the run viewer's page, whose import map it allows")
+    text = index.read_text()
     maps = re.findall(r'<script type="importmap">(.*?)</script>', text, re.DOTALL)
+    if "importmap" in text and not maps:
+        raise ValueError(f'{index}: an import map not written as <script type="importmap">')
     hashes = [
         "'sha256-" + base64.b64encode(hashlib.sha256(m.encode()).digest()).decode() + "'"
         for m in maps
     ]
-    link = urllib.parse.urlsplit(store.download_link("content-policy/probe"))
     return "; ".join(
         [
             "default-src 'self'",
@@ -317,7 +322,7 @@ def content_policy(viewer: Path, store: Storage) -> str:
             "font-src https://fonts.gstatic.com",
             "img-src 'self' blob: data:",
             "media-src 'self' blob:",  # the upload page reads a video's length from the file
-            f"connect-src 'self' {link.scheme}://{link.netloc}",
+            f"connect-src 'self' {store.origin}",
             "object-src 'none'",
             "base-uri 'self'",
             "form-action 'self'",
@@ -468,7 +473,13 @@ def _owner_api(app: FastAPI, server: _Server) -> None:
             raise HTTPException(409, f"the job is {job.state}, not waiting for its upload")
         if server.store.size(upload_key(job.id)) != job.size:
             raise HTTPException(400, "the upload has not arrived whole")
-        server.store.move(upload_key(job.id), import_key(job.id))  # out of the link's reach
+        try:
+            server.store.move(upload_key(job.id), import_key(job.id))  # out of the link's reach
+        except FileNotFoundError:  # moved by a confirmation a moment before
+            raise HTTPException(409, "the upload was confirmed already") from None
+        except Exception:  # storage's own error (S3's among them): the job stays waiting
+            _LOG.exception("job %s: the upload could not be moved", job.id)
+            raise HTTPException(503, "storage did not answer: please confirm again") from None
         try:
             job = server.jobs.queue(token)
         except jobs.StateError:
@@ -595,20 +606,20 @@ def _worker_api(app: FastAPI, server: _Server) -> None:
 def _folder_storage(app: FastAPI, folder: FolderStorage) -> None:
     """Add folder storage's routes: a signed link's PUT and GET, served by the server itself."""
 
-    def checked(request: Request, method: str, key: str) -> int:
-        """Check a link's signature; return the size it was signed for."""
+    def checked(request: Request, method: str, key: str) -> tuple[int, int]:
+        """Check a link's signature; return the size it was signed for, and its expiry."""
         query = request.query_params
         try:
             expires, size = int(query.get("expires", "")), int(query.get("size", ""))
             folder.verify(method, key, expires, size, query.get("signature", ""))
         except (ValueError, StorageError):
             raise HTTPException(403, "the link is not valid") from None
-        return size
+        return size, expires
 
     @app.put("/storage/{key:path}")
     async def put_file(key: str, request: Request) -> dict[str, str]:
-        """Take a file of exactly the size its link was signed for."""
-        size = checked(request, "PUT", key)
+        """Take a file of exactly the size its link was signed for, whole before it expires."""
+        size, expires = checked(request, "PUT", key)
         if request.headers.get("content-length") != str(size):
             raise HTTPException(400, "the upload is not the size its link was signed for")
         target = folder.path(key)
@@ -624,6 +635,8 @@ def _folder_storage(app: FastAPI, folder: FolderStorage) -> None:
                     await asyncio.to_thread(file.write, chunk)
             if written != size:
                 raise HTTPException(400, "the upload ended short")
+            if expires < folder.clock():  # begun in time, it arrived after: nothing kept
+                raise HTTPException(403, "the link expired before the upload arrived whole")
             staged.replace(target)
         finally:
             staged.unlink(missing_ok=True)

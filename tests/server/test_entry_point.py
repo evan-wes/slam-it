@@ -7,14 +7,19 @@ import json
 import os
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
 import urllib.error
 import urllib.request
+from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
+from slam_it_all_server import __main__ as entry
 from slam_it_all_server.__main__ import SHUTDOWN, listening, server_config
 from tests.server.conftest import CODE, TOKEN, VIEWER, make_settings
 
@@ -31,6 +36,30 @@ def test_missing_settings_end_it_with_code_2() -> None:
     )
     assert done.returncode == 2
     assert "SLAM_IT_ALL_INVITE_CODES is not set" in done.stderr
+
+
+def test_it_refuses_to_run_as_root(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """As root it says so and exits with 2, before reading a setting."""
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    assert entry.main([]) == 2
+    assert capsys.readouterr().err == "slam_it_all_server: refusing to run as root\n"
+
+
+def test_a_job_list_of_another_format_ends_it_with_code_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An earlier server's job list: named, and exit 2, not a traceback."""
+    database = tmp_path / "jobs.sqlite3"
+    made = sqlite3.connect(database)
+    made.execute("CREATE TABLE jobs (id TEXT PRIMARY KEY)")
+    made.commit()
+    made.close()
+    settings = make_settings(tmp_path)
+    monkeypatch.setattr(entry, "from_environment", lambda: replace(settings, database=database))
+    assert entry.main([]) == 2
+    assert f"{database}: a job list of format 0" in capsys.readouterr().err
 
 
 def _claim(url: str) -> None:

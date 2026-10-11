@@ -63,6 +63,14 @@ def test_the_retention_the_pages_state_is_the_servers() -> None:
     assert float(stated.group(1)) == days
 
 
+def test_the_upload_window_the_page_states_is_the_servers() -> None:
+    """The upload page says how long an upload has: its link's life, UPLOAD_WAIT."""
+    upload = (VIEWER / "upload.html").read_text()
+    stated = re.search(r"uploaded\s+within\s+(\d+)\s+minutes", upload)
+    assert stated is not None
+    assert float(stated.group(1)) == config.UPLOAD_WAIT / 60
+
+
 def test_the_workers_claim_is_within_the_servers_bound() -> None:
     """The worker's claim waits no longer than the server holds one."""
     assert worker.WAIT <= app.CLAIM_WAIT

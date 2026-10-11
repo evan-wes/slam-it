@@ -6,6 +6,9 @@ Its settings come from the environment (:mod:`slam_it_all_server.config`); the p
 
 uvicorn's access log is off: a request's path holds a result's token or a signed link. The
 server logs its own lines instead, naming jobs by their id (:mod:`slam_it_all_server.app`).
+
+It refuses to run as root: the image's entrypoint (``docker/server-entrypoint.sh``) gives the
+job list's folder to the server's own user, then runs it as that user.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import uvicorn
 
 from slam_it_all_server.app import make_app
 from slam_it_all_server.config import Settings, SettingsError, from_environment
+from slam_it_all_server.jobs import SchemaError
 
 SHUTDOWN = 3
 """How long a stopping server waits for requests still open, in seconds: a worker's claim is
@@ -77,7 +81,7 @@ def server_config(settings: Settings) -> uvicorn.Config:
 
 
 def main(arguments: Sequence[str]) -> int:
-    """Serve until stopped; 2 if a setting is missing or malformed.
+    """Serve until stopped; 2 if run as root, or a setting or the job list is wrong.
 
     Parameters
     ----------
@@ -93,15 +97,18 @@ def main(arguments: Sequence[str]) -> int:
     parser.add_argument("--host", default="127.0.0.1", help="the address to listen on")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
     args = parser.parse_args(arguments)
+    if os.geteuid() == 0:
+        print("slam_it_all_server: refusing to run as root", file=sys.stderr)
+        return 2
     try:
-        settings = from_environment()
-    except SettingsError as error:
+        configured = server_config(from_environment())
+    except (SettingsError, SchemaError) as error:
         print(f"slam_it_all_server: {error}", file=sys.stderr)
         return 2
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s server %(levelname)s %(message)s", stream=sys.stderr
     )
-    uvicorn.Server(server_config(settings)).run(sockets=[listening(args.host, args.port)])
+    uvicorn.Server(configured).run(sockets=[listening(args.host, args.port)])
     return 0
 
 

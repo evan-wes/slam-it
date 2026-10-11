@@ -105,6 +105,17 @@ def _s3() -> S3Storage:
     return S3Storage(client, BUCKET)
 
 
+def test_each_store_says_where_its_links_point(tmp_path: Path) -> None:
+    """Its links' scheme and host, for the content policy's connections."""
+    folder = FolderStorage(tmp_path, "http://192.168.1.20:8770/demo/", b"k" * 32)
+    assert folder.origin == "http://192.168.1.20:8770"
+    s3 = _s3()
+    link = urllib.parse.urlsplit(s3.download_link("results/job/bundle.json"))
+    assert s3.origin == f"{link.scheme}://{link.netloc}"
+    assert s3.origin.startswith("https://")
+    assert s3.origin.endswith("example.invalid")
+
+
 def test_an_s3_upload_link_signs_its_size() -> None:
     """The PUT link signs Content-Length, so the bucket refuses another size, for its life."""
     path, query = _query(_s3().upload_link("uploads/job", 123_456, 900))

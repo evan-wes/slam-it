@@ -9,8 +9,8 @@ import pytest
 
 from slam_it_all.orchestration import worker
 from slam_it_all_server import jobs
-from slam_it_all_server.config import QUEUE, RETENTION, SILENCE, UPLOAD_WAIT
-from slam_it_all_server.jobs import CODE_JOBS, QUEUE_WAIT, Jobs
+from slam_it_all_server.config import QUEUE, RETENTION, SILENCE, UPLOAD_GRACE, UPLOAD_WAIT
+from slam_it_all_server.jobs import CODE_JOBS, QUEUE_WAIT, SCHEMA_VERSION, Jobs, SchemaError
 from tests.server.conftest import Clock
 
 
@@ -176,16 +176,42 @@ def test_a_queued_job_waits_a_day_for_a_worker(listed: Jobs, clock: Clock) -> No
     ]
 
 
-def test_an_upload_link_is_closed_once_it_has_expired(listed: Jobs, clock: Clock) -> None:
-    """A job past waiting has its link's writes to clear once the link has expired, once."""
+def test_an_upload_link_is_closed_once_its_grace_is_over(listed: Jobs, clock: Clock) -> None:
+    """A job past waiting has its link's writes to clear a last time, once, its grace over.
+
+    That is UPLOAD_GRACE after the link expired: an upload begun in time may still be arriving
+    until then.
+    """
     waiting = listed.create("video", 1, "owner-a")
     queued = _queued(listed, "owner-b")
-    assert listed.links_to_close() == []
     clock.now += UPLOAD_WAIT
     listed.end_overdue()  # the waiting one expires with its link
+    clock.now += UPLOAD_GRACE - 1
+    assert listed.links_to_close() == []
+    clock.now += 1
     assert {j.id for j in listed.links_to_close()} == {waiting.id, queued.id}
     listed.close_link(queued.id)
     assert [j.id for j in listed.links_to_close()] == [waiting.id]
+
+
+def test_a_job_list_of_another_format_is_refused(tmp_path: Path) -> None:
+    """A list made by this server opens again; one of another format is refused, not migrated.
+
+    The format is SQLite's user_version: 0 for a file an earlier server made, which never set
+    one.
+    """
+    Jobs(tmp_path / "ours.sqlite3")
+    Jobs(tmp_path / "ours.sqlite3")
+    old = tmp_path / "old.sqlite3"
+    for version in (0, SCHEMA_VERSION + 1):
+        made = sqlite3.connect(old)
+        made.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY)")
+        made.execute(f"PRAGMA user_version = {version}")
+        made.commit()
+        made.close()
+        message = f"format {version}, this server's is {SCHEMA_VERSION}"
+        with pytest.raises(SchemaError, match=message):
+            Jobs(old)
 
 
 def test_an_ended_jobs_files_are_cleared_then_it_is_deleted(listed: Jobs, clock: Clock) -> None:
