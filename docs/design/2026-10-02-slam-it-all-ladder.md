@@ -82,11 +82,13 @@ The ladder spans compute budgets. Every rung stands on rung 0.
 | **Python** | The readable reference implementation of every algorithm; orchestration, evaluation, and the learned rungs (PyTorch) |
 | **C++** | The performance core: rung 0, the edge rung, the edge budgets, and dense-BA kernels if profiling calls for them; outside the cores, `eval`'s native readers, run writer and process readings for a budget (`slam_it_all_eval`) and the native VO program (`slam_it_all_vo`, in orchestration); and the calibration side track (`slam_it_all_calib`), beside Python, without Rust. Showing C++ is a goal in its own right. |
 | **Rust** | Rung 0 and the edge rung, each in lock-step with Python and C++: every slice of those rungs lands in all three languages together; outside the cores, `eval`'s native readers, run writer and process readings for a budget (`slam-it-all-eval`) and the native VO program (`slam_it_all_vo`, crate `slam-it-all-orchestration`). The other rungs have no Rust. |
+| **JavaScript** | The run viewer's page only (`viewer/`, from PR 10): plain modules with no build step, three.js from a CDN, reading only bundles. No algorithm runs in it: its logic modules work out what a frame shows and never touch the page, so Node tests them; `tsc --checkJs` checks their JSDoc types. Its development tools (TypeScript, three.js's types, prettier) are pinned in `viewer/package-lock.json`. |
 
 **Runtime dependencies.** Adding one, to the Python package or to a core, is a change to this
 document first.
 - **Python:** numpy. Pillow too, but in `slam_it_all.eval.images` alone, which reads image files
-  (milestone 2 reads PNG frames and depth maps): the algorithm rungs take arrays, never files,
+  (milestone 2 reads PNG frames and depth maps) and encodes the run viewer's JPEGs (PR 10):
+  the algorithm rungs take arrays, never files,
   and an import-linter contract keeps Pillow in that one module. `slam_it_all.eval.rosbag` reads
   ROS 1 bags by hand, with no dependency (the calibration side track).
 - **C++:** Eigen. The `slam_it_all_eval` library reads PNGs with stb_image (vendored in
@@ -282,10 +284,13 @@ compared to a tolerance.
 **A run rounds the same on every core** (from PR 10). Eigen blocks a large product by the
 cache sizes of the core that runs its first one, and the blocks set the order of its sums; on a
 hybrid CPU the core types report different caches, so the C++ program's runs differed in their
-last bits by where the process started. Every C++ entry point (the native program, the Python
-extension) first fixes the sizes to Eigen's own defaults
-(`foundations::linalg::fix_product_blocking`), so a run repeats bit for bit. Rust's products
-block by fixed sizes already.
+last bits by where the process started. Every rung compiles with `EIGEN_NO_CPUID` (PUBLIC, in
+`CMakeLists.txt`), so Eigen blocks by its own default sizes on every core, in every program,
+test and the extension, and a run repeats bit for bit; a native test fails without it. Rust's
+products (faer's) block by cache sizes read once per run for the whole machine, so its runs
+repeat on every core of one machine, though another machine may block them differently. The
+cores build for SSE2: enabling AVX would add a second threat, Eigen's vectorised reductions
+choosing their scalar head by an operand's address at run time.
 
 **Structured problems cross as structs of arrays.** A BA problem, for example, crosses as:
 - float64 values;
@@ -350,7 +355,10 @@ visible from its path and enforceable by contract.
 | `slam_it_all.dense` | -- | -- | Dense BA + depth prior |
 | `slam_it_all.learned` | -- | -- | DROID- and MegaSaM-style |
 | `slam_it_all.eval` | library `slam_it_all_eval`, `slam_it_all::eval` (native PNG and dataset readers, run writer, a program's process for its run) | crate `slam-it-all-eval` (the same) | Dataset readers, external references (COLMAP), metrics, benchmarks, budget harness |
-| `slam_it_all.orchestration` | library `slam_it_all_orchestration` and program `slam_it_all_vo` (`cpp/apps/orchestration/`; from PR 8) | crate `slam-it-all-orchestration` and its program `slam_it_all_vo` (from PR 8) | End-to-end pipelines |
+| `slam_it_all.orchestration` | library `slam_it_all_orchestration` and program `slam_it_all_vo` (`cpp/apps/orchestration/`; from PR 8) | crate `slam-it-all-orchestration` and its program `slam_it_all_vo` (from PR 8) | End-to-end pipelines, and the bake of their runs for the run viewer (`bundles`, Python only, above `vo`) |
+
+The run viewer's page, `viewer/` (from PR 10), sits outside the package: it reads only the
+bundles the bake writes, and nothing imports it.
 
 Packages for rungs that have no code yet are stubs: a docstring stating the rung, its
 milestone and its compute budget. C++ libraries and Rust crates appear as each rung gets
@@ -648,7 +656,7 @@ was learned. The notes double as showcase content when the repo goes public.
 
 Code is reviewed in two layers. The full rules are in `CLAUDE.md`.
 
-- **Layer 1, every PR:** `scripts/check.sh` runs deterministic checks in all three languages,
+- **Layer 1, every PR:** `scripts/check.sh` runs deterministic checks in every language,
   locally and in CI (offline for every PR, `scripts/offline_ci.sh`; on GitHub on demand and
   for releases):
   - documentation present and well-formed: numpy-style in Python, Doxygen in C++, rustdoc in
@@ -909,6 +917,27 @@ shared with the owner's other projects.
     judges mapping by its load, as a thread of its own would run it. A real mapping thread, and
     ORB-SLAM's interruption of a local BA when a keyframe arrives, belong with the edge
     targets' budgets, where keyframe bursts would otherwise delay frames.
+- **Deferred from PR 10's review panel**
+  ([report](../reviews/2026-10-10-feature-run-viewer.md)):
+  - **Removals out of the core (A6).** The pipeline keeps every point and keyframe a run
+    removes until the run ends, for their lives: up to 26 MiB more peak memory on the edge
+    note's runs (ORB-SLAM2, too, keeps culled points, flagged bad). Each frame's result could
+    carry its removals (ids, last positions or poses, why) and its new ids, for orchestration's
+    recorder to keep or stream as it does poses and diagnostics, so that the core's state is
+    bounded by its map: before a live camera or any long run.
+  - **The pipeline in the run and bundle formats (A9).** `run.json` and `bundle.json` name the
+    backend, not the pipeline or rung, and `FATES`, `REMOVALS`, `record_features` and the
+    page's stages are the edge rung's. Rungs side by side need a pipeline field and entries by
+    rung and backend: a version bump when it comes.
+  - **The BA solve record in rung 0 (A10).** `edge.adjust.Solve` and its ports project rung
+    0's `nls.Summary` for a run's records; when a second rung records its solves (the classic
+    rung's global BA), the projection moves to `foundations.nls`.
+  - **Motion-model outliers searched again (L7).** The local map's search projects and matches
+    the points the motion model's refinement just rejected, skipping only its inliers, and
+    counts them visible; ORB-SLAM2 marks each such outlier (`mnLastFrameSeen`) so that
+    `SearchLocalPoints` skips it. On the room, 193 of 363 RGB-D motion outliers were matched
+    again and 1 became an inlier. It inflates `local_map.matches` and lowers the found ratio
+    `MapPointCulling` reads; the fix moves decisions, so it is a PR of its own.
 - **Deferred from PR 9's review panel**
   ([report](../reviews/2026-10-08-feature-real-time.md)):
   - **A mapping thread's backlog, with milestone 7 (L8).** `judge` measures mapping by its load

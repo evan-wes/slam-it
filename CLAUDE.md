@@ -35,16 +35,16 @@ suggest starting a session inside the SLAM It All! repository. Consequences:
 | Python (`src/slam_it_all`) | Reference implementation of every algorithm; orchestration, evaluation, learned rungs |
 | C++ (`cpp/`, module `slam_it_all._cpp`) | Performance core: rung 0, edge rung, edge budgets; `eval`'s native readers, run writer and process readings (`slam_it_all_eval`); the native programs (`slam_it_all_orchestration`, `slam_it_all_vo`) |
 | Rust (`rust/`, module `slam_it_all_rs`) | Rung 0 and the edge VO only; `eval`'s native readers, run writer and process readings (`slam-it-all-eval`); the native programs (`slam-it-all-orchestration`, `slam_it_all_vo`) |
-| JavaScript (`viewer/`) | The run viewer's page: plain modules, no build step, three.js from a CDN; reads only a bundle (`slam_it_all.orchestration.bundles`). Logic modules never touch the page, so Node tests them; JSDoc types, checked by `tsc --checkJs` |
+| JavaScript (`viewer/`) | The run viewer's page: plain modules, no build step, three.js from a CDN; reads only a bundle (`slam_it_all.orchestration.bundles`). Logic modules never touch the page (checked: `tsc` without the DOM), so Node tests them; JSDoc types, checked by `tsc --checkJs`; formatted by prettier |
 
 ## Conventions
 
 Frames (`T_a_b`; solvers use `T_cam_world`), right perturbations, `(ρ, θ)` tangent order,
 xyzw Hamilton quaternions, the array encoding of every geometric type, pixel centres, exact
 pyramid coordinates (never `x s^l`), exact floats (scalar, unfused), Eigen's product blocking
-fixed (every C++ entry point calls `foundations::linalg::fix_product_blocking` first, so a run
-repeats on every core of a hybrid CPU), Eigen storage and plain Cholesky are fixed in the design
-doc's "Conventions" section. Read it before writing geometry code or a binding.
+fixed (every rung compiles with `EIGEN_NO_CPUID`, so a run repeats on every core of a hybrid
+CPU), Eigen storage and plain Cholesky are fixed in the design doc's "Conventions" section.
+Read it before writing geometry code or a binding.
 
 **The project's name** is SLAM It All! in prose. Code uses `slam_it_all` (the Python package,
 the C++ namespace, libraries and programs, the extension modules); everything else uses
@@ -124,8 +124,9 @@ CMake options use `SLAM_IT_ALL_`, and types `SlamItAll`.
 **Layer 1, every PR:** `scripts/check.sh` must pass. It runs ruff (numpy docstrings, type
 hints), mypy --strict, import-linter, clang-format, clang-tidy, doxygen (every declaration
 documented), rustfmt, clippy (pedantic, missing docs), the run viewer's `node --check`,
-`node --test` and `tsc --checkJs` (its TypeScript and three.js types pinned in
-`viewer/package-lock.json`, installed by `npm ci --prefix viewer`), jscpd (duplication), and
+`node --test`, `tsc --checkJs` (twice: the page, and its logic modules without the DOM) and
+prettier (its TypeScript, three.js types and prettier pinned in `viewer/package-lock.json`,
+installed by `npm ci --prefix viewer`), jscpd (duplication), and
 the C++, Rust and Python test suites. CI runs the same script, offline: `scripts/offline_ci.sh`
 repeats `.github/workflows/test.yml` on a clean checkout with its own env built from the
 lock, gates every PR, and its result goes in the PR template. The GitHub workflow runs on

@@ -162,8 +162,9 @@ A bundle holds:
 - **`bundle.json`:**
   - the format and its version (`slam-it-all-bundle`, version 1);
   - the sequence, mode and camera, and the frame count and times;
-  - the backends, and the frames each covers;
-  - whether there is ground truth, and the alignment used;
+  - the backends, the frames each covers, and the alignment each was moved by;
+  - whether there is ground truth;
+  - the run format's fates and step names, which the page checks against its own;
   - for a phone video, the intrinsics' source.
 - **The images:** the frames as JPEG, written through `eval.images` (the one module allowed to
   use Pillow). They are stored in chunks of 100 frames with their byte offsets, so scrubbing

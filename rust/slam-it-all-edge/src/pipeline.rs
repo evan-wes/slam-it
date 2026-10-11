@@ -77,7 +77,7 @@ impl Placement {
 /// (`slam_it_all.edge.pipeline.Fate`, whose docstring defines each): the first that applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fate {
-    /// No stage matched it, and no point was made of it.
+    /// The frame's last tracking stage did not match it, and no point was made of it.
     Unmatched = 0,
     /// The frame's last tracking stage matched it, and it was not tracked in the end.
     Rejected = 1,

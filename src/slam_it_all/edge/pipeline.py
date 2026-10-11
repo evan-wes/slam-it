@@ -85,7 +85,8 @@ class Fate(enum.IntEnum):
     """
 
     UNMATCHED = 0
-    """Nothing: no stage matched it, and no point was made of it."""
+    """Neither: the frame's last tracking stage did not match it, and no point was made of it.
+    An earlier stage may have matched it (the motion model, before the local map's search)."""
     REJECTED = 1
     """The frame's last tracking stage matched it to a point, and it was not tracked in the
     end: refinement dropped it, or the frame was not tracked."""

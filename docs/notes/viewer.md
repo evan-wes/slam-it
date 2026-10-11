@@ -52,7 +52,9 @@ A keypoint's **fate** is the first that applies, in the order made, tracked, rej
 - **rejected**: the frame's last tracking stage matched it (the local map's search, or, on a
   frame never placed, the motion model's or the PnP fallback's), and it is not tracked in the
   end: refinement dropped it, or the frame was not tracked.
-- **unmatched**: none of these.
+- **unmatched**: none of these. An earlier stage may have matched it: a keypoint the motion
+  model matched and its refinement dropped is rejected only if the local map's search matches
+  it again (a search ORB-SLAM2 would skip; deferred, the review panel's L7).
 
 The point is the one the fate concerns: the new one, the tracked one, or the one it was matched
 to and rejected from. A keypoint tracked to a point that mapping then culls can have a new point
@@ -62,9 +64,11 @@ inliers; in the two rooms' eight runs, eight keyframes are.
 **Repeatable in C++.** Checking that nothing moved found that C++ runs were not repeatable on
 this desktop: Eigen blocks a large product by the CPU's cache sizes, read from the core that
 runs the first one, and the Core Ultra 9 285's performance and efficiency cores report different
-ones, so a run's last bits depended on where it started. Every C++ entry point now fixes the
-sizes first (`foundations::linalg::fix_product_blocking`), and runs repeat bit for bit on either
-core type, as Rust's always did (fixed first, inside PR 10, decided 2026-10-10).
+ones, so a run's last bits depended on where it started. Every rung now compiles with
+`EIGEN_NO_CPUID`, so Eigen blocks by its own defaults on every core, and runs repeat bit for bit
+on either core type (fixed first, inside PR 10, decided 2026-10-10; at compile time since the
+review panel). Rust's runs repeat too: its products block by cache sizes read once per run for
+the whole machine.
 
 ## The bake
 
@@ -78,7 +82,14 @@ pipeline saw (a stereo pair's left image rectified) and the keypoints sit where 
   feature record and pose is renumbered to them, so Python's 300 frames and the natives' whole
   run line up.
 - **Alignment.** With ground truth, each run is moved onto it by its own ATE alignment (Sim(3)
-  for monocular, SE(3) otherwise), points and keyframes with it, so the backends overlay.
+  for monocular, SE(3) otherwise), points and keyframes with it, so the backends overlay; its
+  header names the alignment. A run the alignment cannot place (fewer than three frames
+  tracked, as a monocular run that never initialised, or its centres on a line) stays in its
+  own frame, unscored, rather than failing the bundle, and the page says so.
+- **Tables.** `bundle.json` carries the run format's fates and step names it was baked with,
+  and the page refuses a bundle whose tables are not its own, so the two cannot drift apart.
+- **Writing.** The bundle is written into a hidden folder beside its own and moved onto it
+  once whole: a bake that fails leaves nothing, and baking again needs no clearing up.
 - **Arrays** are `.npy` files, little-endian float32 and int32 (decided 2026-10-10): the page
   reads each straight into a typed array after its 128-byte header, and numpy reads a bundle
   directly. Each backend's records are JSON columns.
@@ -108,9 +119,11 @@ on this machine.
 The modules that read a bundle and work out what a frame shows never touch the page, so
 `node --test` checks them, on the golden bundle (`tests/fixtures/orchestration/bundle/`, the
 room's first frames from all three backends), against what its files say of each other rather
-than fixed numbers. Layer 1 also runs `node --check` and `tsc --checkJs` over the JSDoc types;
-TypeScript and three.js's types are pinned in `viewer/package-lock.json` and installed by
-`npm ci --prefix viewer` (decided 2026-10-10).
+than fixed numbers; playback is a module of its own (`playback.js`) for the same reason. Layer
+1 also runs `node --check`, `tsc --checkJs` over the JSDoc types twice (the page, and the logic
+modules without the DOM, so the split holds), and prettier; TypeScript, three.js's types and
+prettier are pinned in `viewer/package-lock.json` and installed by `npm ci --prefix viewer`
+(decided 2026-10-10).
 
 ## Checks
 

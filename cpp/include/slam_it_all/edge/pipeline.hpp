@@ -61,7 +61,7 @@ enum class Placement : std::uint8_t {
 ///        (`slam_it_all.edge.pipeline.Fate`, whose docstring defines each): the first that
 ///        applies.
 enum class Fate : std::uint8_t {
-  /// @brief No stage matched it, and no point was made of it.
+  /// @brief The frame's last tracking stage did not match it, and no point was made of it.
   kUnmatched = 0,
   /// @brief The frame's last tracking stage matched it, and it was not tracked in the end.
   kRejected = 1,

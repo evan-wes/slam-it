@@ -32,13 +32,18 @@ everything new. With features recorded, every run stays real time; the lifetimes
   `feature_pixels.npy` and `feature_records.npy`; `runs.read_features` maps them.
 - **The bake**, `python -m slam_it_all.orchestration.bundles`: runs of a sequence, one per
   backend, with their frames as JPEG (`images.encode_jpeg`) into a bundle, each run aligned to
-  the ground truth; `vo.open_source` opens a sequence as a run reads it.
+  the ground truth, or left in its own frame if its alignment cannot place it; written beside
+  the bundle's folder and moved onto it whole. `vo.open_source` opens a sequence as a run reads
+  it; `runs.ground_truth` reads a sequence's ground truth (for the bake and `run_vo.py`), and
+  `AbsoluteError.similarity` says which alignment was fitted.
 - **The run viewer** (`viewer/`): the frame with its keypoints' fates, the map as it was after
   the frame with every backend's trajectory and the truth, the solvers' summaries, plots and
   step times, the frames where the backends decided differently marked;
   `scripts/view_bundle.py` serves it with a bundle locally.
-- **Layer 1's JavaScript checks:** `node --check`, `node --test` and `tsc --checkJs`, with
-  TypeScript and three.js's types pinned in `viewer/package-lock.json`; jscpd covers the page.
+- **Layer 1's JavaScript checks:** `node --check`, `node --test`, `tsc --checkJs` (the page,
+  and its logic modules again without the DOM) and prettier, with TypeScript, three.js's types
+  and prettier pinned in `viewer/package-lock.json`; jscpd covers the page. An import-linter
+  contract keeps `orchestration.vo` below the bake.
 - **A design note**, `docs/notes/viewer.md`.
 
 ### Changed
@@ -55,8 +60,8 @@ everything new. With features recorded, every run stays real time; the lifetimes
 
 - **C++ runs repeat on every core.** Eigen blocked a large product by the cache sizes of the
   core that ran the first one, which differ between a hybrid CPU's core types, so a run's last
-  bits depended on where it started; every C++ entry point now fixes them first
-  (`foundations::linalg::fix_product_blocking`).
+  bits depended on where it started; every rung now compiles with `EIGEN_NO_CPUID`, so Eigen
+  blocks by its own defaults on every core, in every program, test and the extension.
 
 ## [0.3.4.0] - 2026-10-08
 
