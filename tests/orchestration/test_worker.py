@@ -139,6 +139,7 @@ def test_a_job_runs_end_to_end(serving: Server, recording: bytes, tmp_path: Path
     assert serving.summary["intrinsics"] == "stray-scanner"
     info = json.loads(serving.files["bundle.json"])
     assert list(info["backends"]) == ["cpp"]
+    assert info["sequence"] == worker.SEQUENCE == "your-video"  # the viewer's name for it
     assert (info["truth"], info["backends"]["cpp"]["alignment"]) == (True, "sim3")
     assert {"times.npy", "cpp/records.json", "cpp/feature_records.npy"} <= set(serving.files)
     assert list((tmp_path / "work").iterdir()) == []  # the job's folder removed

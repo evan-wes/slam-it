@@ -90,6 +90,10 @@ HEARTBEAT = 30.0
 """How often a job's current stage is reported again while its child works, in seconds: the
 server fails a job it has not heard from for a few of these."""
 
+SEQUENCE = "your-video"
+"""The folder an upload is imported into: a run names its sequence after it, and the viewer
+shows that name."""
+
 TOKEN_VARIABLE = "SLAM_IT_ALL_WORKER_TOKEN"
 """The environment variable that holds the worker's token."""
 
@@ -228,7 +232,7 @@ def _limit_memory() -> None:
 
 def _work(upload_path: Path, kind: str, out: Path, report: Callable[[str], None]) -> dict[str, Any]:
     """Import an upload, run it and bake its bundle into ``out/bundle``; return a summary."""
-    sequence = out / "sequence"
+    sequence = out / SEQUENCE
     report("importing")
     if kind == "stray":
         video.import_stray(upload_path, sequence)
