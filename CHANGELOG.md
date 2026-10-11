@@ -4,6 +4,60 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.3.5.0] - 2026-10-10
+
+The run viewer: a run records how every solver went, when each point and keyframe was made
+and removed, and, if asked, what became of every keypoint; the bake packages runs of a
+sequence with its images; and a page shows them frame by frame, for each backend side by
+side. Nothing a run decides moves: Rust's and Python's runs match the release before byte for
+byte in every file they had, and C++'s differ only in their last bits, since C++ runs now
+repeat bit for bit on either core type of a hybrid CPU; the three languages agree exactly on
+everything new. With features recorded, every run stays real time; the lifetimes cost up to
+26 MiB of peak memory.
+
+### Added
+
+- **Per-frame solver summaries** in every backend's diagnostics (`FrameSummary`): how the
+  frame was placed, and initialisation, tracking the last frame, the PnP fallback, tracking
+  the local map and local mapping, each an object or null, bundle adjustments with each solve's
+  costs, iterations and termination. Each stage returns its summary with its result
+  (`Motion`, `Relocalization`, `LocalTracking`, `Initialization`, `Mapped`, `Adjustment`).
+- **Lifetimes**, run format version 3: the map keeps what it removes aside (`gone_*`, with
+  `Removal`: culled, fused, weak), the pipeline dates each removal (`Pipeline.lifetimes`), and
+  a run holds every point and keyframe it made with its life (`point_lives.npy`,
+  `keyframe_lives.npy`); `Run.final_points()` and `final_keyframes()` give the final map.
+- **Feature records**, opt-in (`--record-features`, `vo.run(..., record_features=True)`):
+  each frame's keypoints, their pixel, level, fate (`Fate`: unmatched, rejected, tracked,
+  made) and point, streamed by `runs.FeatureWriter` in all three languages to
+  `feature_pixels.npy` and `feature_records.npy`; `runs.read_features` maps them.
+- **The bake**, `python -m slam_it_all.orchestration.bundles`: runs of a sequence, one per
+  backend, with their frames as JPEG (`images.encode_jpeg`) into a bundle, each run aligned to
+  the ground truth; `vo.open_source` opens a sequence as a run reads it.
+- **The run viewer** (`viewer/`): the frame with its keypoints' fates, the map as it was after
+  the frame with every backend's trajectory and the truth, the solvers' summaries, plots and
+  step times, the frames where the backends decided differently marked;
+  `scripts/view_bundle.py` serves it with a bundle locally.
+- **Layer 1's JavaScript checks:** `node --check`, `node --test` and `tsc --checkJs`, with
+  TypeScript and three.js's types pinned in `viewer/package-lock.json`; jscpd covers the page.
+- **A design note**, `docs/notes/viewer.md`.
+
+### Changed
+
+- **Run format version 3:** `points.npy`, `keyframes.npy` and `keyframe_poses.npy` hold every
+  point and keyframe the run made, by id; `run.json` gains `record_features`. Version 2 runs no
+  longer read.
+- **`mapping.process` returns a `Mapped`** in C++ and Rust too (the summary and the points
+  made); each tracking stage returns its matches before refinement (`matched`).
+- **The programs read `--record-features`**, a flag without a value, in all three languages.
+- **The room's TUM folder holds its ground truth** (`groundtruth.txt`).
+
+### Fixed
+
+- **C++ runs repeat on every core.** Eigen blocked a large product by the cache sizes of the
+  core that ran the first one, which differ between a hybrid CPU's core types, so a run's last
+  bits depended on where it started; every C++ entry point now fixes them first
+  (`foundations::linalg::fix_product_blocking`).
+
 ## [0.3.4.0] - 2026-10-08
 
 The project is renamed SLAM It All! (a pun on "damn it all!") before it goes public. The

@@ -77,12 +77,14 @@ comparison. It has five parts:
     - null, when the frame was not placed.
   - `motion`: the matches, whether the search window was widened, and the inliers after
     refinement.
-  - `pnp`, for the fallback only: the candidates, RANSAC's iterations, the inliers and why it
-    stopped.
+  - `pnp`, for the fallback only: the candidates, the matches by descriptor, RANSAC's
+    iterations, why it stopped and its inliers, and the inliers refinement kept.
   - `local_map`: the points in view, the matches and the inliers.
-  - `init`, for monocular frames before the map exists: the matches to the reference frame, and
-    two-view's outcome. The outcome is `ok`, `low_parallax`, `ambiguous`, or "reference
-    replaced".
+  - `init`, for frames before the map exists: the matches to the reference frame, the
+    initial BA's solves, and the outcome (`initialization.Outcome`, as built): `initialized`;
+    `too_few_features`, `too_little_depth`; for monocular, `reference_set` and
+    `reference_replaced`, or two-view's `too_few_matches`, `degenerate`, `pure_rotation`,
+    `ambiguous`, `low_parallax`, `too_few_points` and `bad_scale`.
   - `mapping`, for keyframes only:
     - the points made from depth, triangulated, fused and culled, and the keyframes culled;
     - each local BA solve's initial and final cost, its iterations and why it stopped. Rung 0
@@ -108,10 +110,20 @@ comparison. It has five parts:
   The final map is the rows still alive. `Run.final_points()` and `Run.final_keyframes()`
   return them, and the evaluation and the rerun recording read those.
 
-**Opt-in** (`--record-features`, setting `record_features`): each frame's keypoints, with
-their pixel, level, fate and map point (-1 for none). MH_01 stereo's 3,682 frames come to about
-60 MB. The records are streamed to disk as the run goes, so memory use stays flat. Budget runs
-leave them off.
+**Opt-in** (`--record-features`; `vo.run(..., record_features=True)`): each frame's keypoints,
+with their pixel, level, fate and map point (-1 for none). The records are streamed to disk as
+the run goes, so memory use stays flat. Budget runs leave them off. As built (decided
+2026-10-10):
+- **Two plain arrays:** `feature_pixels.npy` (N, 2) float32 and `feature_records.npy` (N, 4)
+  int32 of frame, level, fate and point, their headers rewritten after every frame. MH_01
+  stereo's 3,682 frames, at 1,200 features, come to 107 MB. `run.json`'s `record_features`
+  says whether a run recorded them. The flag travels with the request, as `--first` does: it
+  changes no decision, so it is not one of the pipeline's settings.
+- **The fates** are the first that applies of made (a point made of it on the frame), tracked
+  (an inlier of the final pose) and rejected (matched by the frame's last tracking stage, then
+  not tracked); else unmatched. The point is the one the fate concerns: the new one, the
+  tracked one, or the one it was matched to and rejected from. `docs/notes/viewer.md` has the
+  details.
 
 **Why lifetimes, not snapshots** (decided): showing BA's later corrections would mean saving the
 window after every local BA. That costs tens of MB more per run, and more code in three
@@ -120,7 +132,7 @@ map.
 
 **Format v3.** `runs.VERSION` becomes 3. Under the no-shims rule, v2 runs no longer load; PR 9's
 results stay on disk as files. The native writers gain int64 `.npy` arrays and the streamed
-feature file.
+feature files.
 
 **Checks:**
 - **No decision moves.** Runs from before and after this change are compared on the rename's
@@ -137,7 +149,10 @@ feature file.
 - **Still real time.** The budget runs (`pytest -m budget`) pass with summaries and lifetimes
   on and features off.
 
-## 3. The bake (PR 10, Python, `slam_it_all.eval.bundles`)
+## 3. The bake (PR 10, Python, `slam_it_all.orchestration.bundles`)
+
+Built in orchestration, not eval (decided 2026-10-10): it takes each frame's image from the
+run's own source, so a stereo frame's image is the rectified one its keypoints were found in.
 
 The bake turns one sequence's runs, one per backend with the same sequence and mode, into a
 **bundle** together with the dataset. A bundle is a folder that any plain file server can
@@ -156,7 +171,8 @@ A bundle holds:
 - **Per backend:**
   - the per-frame records, as columns, in JSON;
   - the trajectory, keyframes, points, lifetimes and features, as little-endian float32 and
-    int32 arrays that the page reads straight into typed arrays.
+    int32 arrays that the page reads straight into typed arrays: `.npy` files, each read after
+    its 128-byte header (decided 2026-10-10).
 
 **Alignment:**
 - **With ground truth,** each run is moved into the ground truth's frame by its ATE alignment
@@ -167,11 +183,12 @@ A bundle holds:
   says the scale is unknown. A Stray Scanner recording has ARKit's trajectory as its ground
   truth (section 5), so it is aligned and scored like a dataset run.
 
-**Command:** `python -m slam_it_all.eval.bundles RUN_DIR... --sequence PATH --out BUNDLE`. The
-exact form is settled in the PR.
+**Command:** `python -m slam_it_all.orchestration.bundles RUN_DIR... --sequence PATH --out
+BUNDLE`. The bake refuses a folder already in use: it never deletes.
 
-**Sizes:** MH_01's 3,682 frames come to about 150 MB of JPEG, and a 30-second phone clip to
-about 30 MB.
+**Sizes:** the JPEGs are at quality 75: MH_01 stereo's 3,682 rectified frames come to 163 MB,
+and a 30-second phone clip to about 30 MB. A whole run's feature records take about as much
+again (`docs/notes/viewer.md`).
 
 ## 4. The page (PR 10, `viewer/`)
 
@@ -187,10 +204,13 @@ about 30 MB.
   and opens the browser. Deployed, the server of section 5 serves both.
 - **Layer 1** gains JavaScript checks. Node 26 is already in the env, for jscpd.
   - `node --check` on every module;
-  - `node --test` on `viewer/tests/`. The tests include reading a small golden bundle that the
-    Python tests write (`tests/fixtures/eval/bundle/`), so the format is held from both sides;
+  - `node --test` on the tests in `viewer/tests/`. They include reading a small golden bundle
+    that the Python tests write (`tests/fixtures/orchestration/bundle/`), so the format is held
+    from both sides;
   - `tsc --checkJs` on the modules' JSDoc types: the JavaScript counterpart of `mypy --strict`.
-    TypeScript is pinned and installed the way jscpd is.
+    TypeScript and three.js's types are pinned in `viewer/package-lock.json` and installed into
+    `viewer/node_modules` by `npm ci` (decided 2026-10-10), so the 3D module is checked against
+    three.js's own API.
 
 ## 5. Your own video (PR 11)
 
@@ -384,7 +404,7 @@ Commits:
 2. `feat(edge)`: point and keyframe lifetimes; run format v3, with its readers and writers in
    all three languages.
 3. `feat(edge)`: per-frame feature records, opt-in; the languages agree exactly.
-4. `feat(eval)`: the bake, and the golden bundle.
+4. `feat(orchestration)`: the bake, and the golden bundle.
 5. `feat(viewer)`: the page, and layer 1's JavaScript checks.
 6. `docs`:
    - the viewer note (`docs/notes/viewer.md`);
@@ -465,3 +485,15 @@ Decided with evan-wes:
    page behind the invite code. The domain waits for the go-live call (section 5.6).
 8. **The ladder:** PR 11 is milestone 2's last PR, and hosting moves from GitHub Pages to
    Railway. The ladder is updated in the same docs commit as this doc.
+
+## 8. Decisions of 2026-10-10
+
+Decided with evan-wes, while building PR 10:
+1. **Solver summaries** are returned by each stage with its result, and nest in each
+   diagnostics line as JSON objects.
+2. **C++ runs repeat on every core:** the nondeterminism the byte comparison found (Eigen's
+   product blocking, read from a hybrid CPU's core) is fixed first, inside PR 10.
+3. **Feature records** are two plain arrays, float32 pixels and int32 records.
+4. **A keypoint's point** is the one its fate concerns (made, tracked, or rejected from).
+5. **The bake** lives in orchestration, and a bundle's arrays are `.npy` files.
+6. **The page's type check** uses a pinned `viewer/package.json`, with three.js's own types.
