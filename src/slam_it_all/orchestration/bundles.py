@@ -4,13 +4,15 @@ A bundle is a folder any plain file server can serve; the page (``viewer/``) rea
 It holds one sequence's runs in one mode, at most one per backend, and the frames they ran:
 
 - ``bundle.json``: ``{"format": "slam-it-all-bundle", "version": 1, "dataset", "sequence",
-  "mode", "camera", "frames", "first_time", "images", "truth", "backends"}``. ``camera`` is the
-  pipeline's (a stereo pair's rectified left camera): ``model``, ``width``, ``height``,
-  ``intrinsics`` and ``baseline``. ``frames`` counts the bundle's frames and ``first_time`` is
-  the first one's time, in seconds. ``images`` says how they were encoded (``chunk``,
-  ``quality``, and ``colour``). ``truth`` is null without ground truth, else the alignment the
-  runs were moved by (``"sim3"`` or ``"se3"``). ``backends`` maps each backend to what the
-  page's header shows (:func:`_backend_info`).
+  "mode", "camera", "frames", "first_time", "images", "truth", "fates", "steps",
+  "backends"}``. ``camera`` is the pipeline's (a stereo pair's rectified left camera):
+  ``model``, ``width``, ``height``, ``intrinsics`` and ``baseline``. ``frames`` counts the
+  bundle's frames and ``first_time`` is the first one's time, in seconds. ``images`` says how
+  they were encoded (``chunk``, ``quality``, and ``colour``). ``truth`` says whether the
+  sequence has ground truth. ``fates`` and ``steps`` are the run format's tables the bundle was
+  baked with (:data:`slam_it_all.eval.runs.FATES` and :data:`~slam_it_all.eval.runs.STEPS`),
+  which the page checks against its own. ``backends`` maps each backend to what the page's
+  header shows (:func:`_backend_info`).
 - ``times.npy``: each frame's time since the first, ``(F,)`` float32.
 - ``truth.npy``, with ground truth: the true camera centre at each frame (the truth nearest in
   time, within :data:`slam_it_all.eval.runs.MAX_DIFFERENCE`), ``(F, 3)`` float32, NaN where
@@ -37,11 +39,16 @@ It holds one sequence's runs in one mode, at most one per backend, and the frame
 order; each backend covers a contiguous range of them. **Alignment.** With ground truth, each
 run's trajectory, keyframes and points are moved into the truth's frame by the run's ATE
 alignment (:func:`slam_it_all.eval.runs.evaluate`: Sim(3) for monocular, SE(3) otherwise), so
-the backends overlay; without, each stays in its own frame. **Images** are the frames as the
-pipeline saw them (:attr:`slam_it_all.orchestration.vo.Source.view`: a stereo pair's left image
+the backends overlay, and its header names the alignment (``"sim3"`` or ``"se3"``). A run that
+alignment cannot place (fewer than three frames matched to the truth, as a monocular run that
+never initialised, or its centres on a line) stays in its own frame, unscored, its alignment
+null, as every run does without ground truth. **Images** are the frames as the pipeline saw
+them (:attr:`slam_it_all.orchestration.vo.Source.view`: a stereo pair's left image
 rectified), in colour where the sequence has colour, as JPEG
 (:func:`slam_it_all.eval.images.encode_jpeg`). Every array is little-endian, so the page reads
-each ``.npy`` file's data straight into a typed array after its header.
+each ``.npy`` file's data straight into a typed array after its header. **Writing.** The bundle
+is written into a hidden folder beside ``out`` and moved onto it once whole, so a bake that
+fails leaves nothing behind.
 
 Run as a program::
 
@@ -53,17 +60,19 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import shutil
 import sys
+import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from slam_it_all.eval import budgets, euroc, images, metrics, runs, tum
-from slam_it_all.foundations.errors import InvalidInputError
+from slam_it_all.eval import budgets, images, metrics, runs
+from slam_it_all.foundations.errors import DegenerateError, InvalidInputError
 from slam_it_all.orchestration import vo
 
 FORMAT = "slam-it-all-bundle"
@@ -76,20 +85,43 @@ CHUNK = 100
 """The frames whose JPEGs share a chunk file."""
 
 QUALITY = 75
-"""The JPEG quality the frames are encoded with: about 44 KB a frame of EuRoC's (MH_01's 3,682
-frames in 157 MB) and 36 KB of TUM's colour ones, where 90 would take 60% more."""
-
-_ALIGNMENTS = ("se3", "sim3")
-"""The alignment a run is moved by, by whether it is monocular (scale unknown)."""
+"""The JPEG quality the frames are encoded with: 34 to 51 KB a frame of EuRoC's (MH_01 stereo's
+3,682 rectified frames in 163 MB) and 35 to 37 KB of TUM's colour ones; 90 would take 65 to 77%
+more."""
 
 
 @dataclass(frozen=True)
 class _Baked:
-    """A run as it enters the bundle: its folder and what was read from it."""
+    """A run as it enters the bundle: its folder, what was read from it, and its score."""
 
     folder: Path
     run: runs.Run
     features: runs.Features | None
+    scored: runs.Evaluation | None = None
+
+
+@dataclass(frozen=True)
+class _Frames:
+    """The bundle's frames: their times, and each one's index in the sequence."""
+
+    times: NDArray[np.float64]
+    at: NDArray[np.int32]
+
+
+def _score(run: runs.Run, truth: runs.Truth | None) -> runs.Evaluation | None:
+    """Score a run against the ground truth; None without one, or if it cannot be placed.
+
+    A run :func:`slam_it_all.eval.runs.evaluate` cannot score, with fewer than three frames
+    matched to the truth, its centres on a line, or no frame pair a frame period apart, stays in
+    its own frame rather than failing the bundle. The run and the truth were checked when read,
+    so these are the only refusals left.
+    """
+    if truth is None:
+        return None
+    try:
+        return runs.evaluate(run, *truth)
+    except (InvalidInputError, DegenerateError):
+        return None
 
 
 def _read(folders: Sequence[str | Path]) -> list[_Baked]:
@@ -118,15 +150,6 @@ def _read(folders: Sequence[str | Path]) -> list[_Baked]:
     return baked
 
 
-def _truth(dataset: str, sequence: Path) -> tuple[NDArray[np.float64], NDArray[np.float64]] | None:
-    """Return the sequence's ground truth (times and ``T_world_cam``), or None if it has none."""
-    try:
-        read = tum.read_sequence(sequence) if dataset == "tum" else euroc.read_sequence(sequence)
-    except FileNotFoundError:
-        return None
-    return np.asarray(read.timestamps), np.asarray(read.T_world_cam)
-
-
 def _frames_of(times: NDArray[np.float64], run_times: ArrayLike, name: str) -> NDArray[np.int32]:
     """Return the bundle's frame at each of a run's times, refusing one the bundle lacks."""
     wanted = np.asarray(run_times, dtype=np.float64)
@@ -134,6 +157,16 @@ def _frames_of(times: NDArray[np.float64], run_times: ArrayLike, name: str) -> N
     if len(wanted) and (len(times) == 0 or np.any(times[at] != wanted)):
         raise InvalidInputError(f"{name}: a frame's time is not one of the sequence's frames")
     return at.astype(np.int32)
+
+
+def _bundle_frames(baked: Sequence[_Baked], source: vo.Source, name: str) -> _Frames:
+    """Return the bundle's frames: every frame a run ran, each run's a range of them."""
+    ran = np.unique(np.concatenate([[d["timestamp"] for d in b.run.diagnostics] for b in baked]))
+    for b in baked:
+        frame = _frames_of(ran, [d["timestamp"] for d in b.run.diagnostics], str(b.folder))
+        if len(frame) and frame[-1] - frame[0] + 1 != len(frame):
+            raise InvalidInputError(f"{b.folder}: its frames are not a range of the bundle's")
+    return _Frames(ran, _frames_of(source.times, ran, name))
 
 
 def _aligned(poses: NDArray[np.float64], alignment: NDArray[np.float64]) -> NDArray[np.float32]:
@@ -163,18 +196,17 @@ def _npy(path: Path, array: NDArray[Any]) -> None:
     path.write_bytes(buffer.getvalue())
 
 
-def _backend_info(
-    baked: _Baked, frames: NDArray[np.int32], scored: runs.Evaluation | None
-) -> dict[str, Any]:
+def _backend_info(baked: _Baked, frames: NDArray[np.int32]) -> dict[str, Any]:
     """Return what the page's header shows of a run.
 
     The frames it covers (``[first, end)``), the frames it tracked, the final map's keyframes
-    and points and how many it made, whether it recorded features, its score (``matched``,
-    ``ate_rmse``, ``rpe_translation_rmse``, ``rpe_rotation_rmse``, ``scale``; null without
-    ground truth), its latency against the frames' deadline (``deadline``, ``median``,
-    ``p95``, ``max``, ``late``; null for a run of fewer than two frames) and its peak memory.
+    and points and how many it made, whether it recorded features, the alignment it was moved
+    by (``"sim3"``, ``"se3"``, or null if it stays in its own frame), its score (``matched``,
+    ``ate_rmse``, ``rpe_translation_rmse``, ``rpe_rotation_rmse``, ``scale``; null unless
+    aligned), its latency against the frames' deadline (``deadline``, ``median``, ``p95``,
+    ``max``, ``late``; null for a run of fewer than two frames) and its peak memory.
     """
-    run = baked.run
+    run, scored = baked.run, baked.scored
     latency = None
     if len(run.diagnostics) >= 2:  # a deadline needs a frame spacing
         judged = budgets.judge(run)
@@ -185,8 +217,9 @@ def _backend_info(
             "max": judged.latency.max,
             "late": judged.late,
         }
-    score = None
+    alignment = score = None
     if scored is not None:
+        alignment = "sim3" if scored.absolute.similarity else "se3"
         score = {
             "matched": scored.matched,
             "ate_rmse": scored.absolute.rmse,
@@ -201,24 +234,19 @@ def _backend_info(
         "points": len(run.final_points()),
         "made": {"keyframes": len(run.keyframe_timestamps), "points": len(run.points)},
         "features": baked.features is not None,
+        "alignment": alignment,
         "score": score,
         "latency": latency,
         "peak_memory": run.peak_memory,
     }
 
 
-def _write_backend(
-    out: Path,
-    baked: _Baked,
-    times: NDArray[np.float64],
-    truth: tuple[NDArray[np.float64], NDArray[np.float64]] | None,
-) -> dict[str, Any]:
+def _write_backend(out: Path, baked: _Baked, times: NDArray[np.float64]) -> dict[str, Any]:
     """Write a run's folder in the bundle, whose frames are at `times`; return its entry."""
     run = baked.run
     folder = out / run.backend
     frame = _frames_of(times, [d["timestamp"] for d in run.diagnostics], str(baked.folder))
-    scored = None if truth is None else runs.evaluate(run, *truth)
-    alignment = np.eye(4) if scored is None else scored.absolute.alignment
+    alignment = np.eye(4) if baked.scored is None else baked.scored.absolute.alignment
     columns: dict[str, list[Any]] = {"frame": frame.tolist()}
     for key in dict.fromkeys(k for d in run.diagnostics for k in d):
         columns[key] = [d.get(key) for d in run.diagnostics]
@@ -236,7 +264,7 @@ def _write_backend(
         records[:, 0] = frame[records[:, 0]]
         _npy(folder / runs.PIXELS, np.asarray(baked.features.pixels))
         _npy(folder / runs.RECORDS, records)
-    return _backend_info(baked, frame, scored)
+    return _backend_info(baked, frame)
 
 
 def _write_images(out: Path, source: vo.Source, at: NDArray[np.int32]) -> bool:
@@ -257,51 +285,23 @@ def _write_images(out: Path, source: vo.Source, at: NDArray[np.int32]) -> bool:
     return colour
 
 
-def bake(run_folders: Sequence[str | Path], sequence: str | Path, out: str | Path) -> None:
-    """Bake runs of one sequence, one per backend, into a bundle (the module docstring).
+def _write_truth(out: Path, times: NDArray[np.float64], truth: runs.Truth) -> None:
+    """Write the true camera centre at each of the bundle's frames, NaN where there is none."""
+    centres = np.full((len(times), 3), np.nan, dtype=np.float32)
+    ours, theirs = metrics.associate(times, truth[0], runs.MAX_DIFFERENCE)
+    centres[ours] = truth[1][theirs, :3, 3]
+    _npy(out / "truth.npy", centres)
 
-    Parameters
-    ----------
-    run_folders : sequence of str or pathlib.Path
-        The runs' folders.
-    sequence : str or pathlib.Path
-        The sequence's folder, as the runs read it.
-    out : str or pathlib.Path
-        The bundle's folder: created; refused if it exists and is not empty.
 
-    Raises
-    ------
-    FileNotFoundError
-        If a run's or the sequence's file is missing.
-    slam_it_all.foundations.errors.InvalidInputError
-        If there are no runs, they are not of one sequence and mode, two are of one backend,
-        the sequence's folder is not theirs, a run's frame is not one of the sequence's, or
-        `out` is not empty; or a reader's error.
-    """
-    baked = _read(run_folders)
-    first = baked[0].run
-    root, target = Path(sequence), Path(out)
-    if root.resolve().name != first.sequence:
-        raise InvalidInputError(f"sequence: the runs are of {first.sequence}, not {root.name}")
-    if target.exists() and any(target.iterdir()):
-        raise InvalidInputError(f"{target}: expected a new or empty folder for the bundle")
-    source = vo.open_source(first.dataset, root, first.mode)
-    ran = np.unique(np.concatenate([[d["timestamp"] for d in b.run.diagnostics] for b in baked]))
-    at = _frames_of(source.times, ran, str(root))
-    for b in baked:
-        frame = _frames_of(ran, [d["timestamp"] for d in b.run.diagnostics], str(b.folder))
-        if len(frame) and frame[-1] - frame[0] + 1 != len(frame):
-            raise InvalidInputError(f"{b.folder}: its frames are not a range of the bundle's")
-    target.mkdir(parents=True, exist_ok=True)
-    colour = _write_images(target, source, at)
-    times = ran - ran[0] if len(ran) else ran
-    _npy(target / "times.npy", times.astype(np.float32))
-    truth = _truth(first.dataset, root)
+def _write(
+    out: Path, baked: Sequence[_Baked], source: vo.Source, frames: _Frames, truth: runs.Truth | None
+) -> None:
+    """Write a bundle's files into a new folder `out`."""
+    first, ran = baked[0].run, frames.times
+    colour = _write_images(out, source, frames.at)
+    _npy(out / "times.npy", (ran - ran[0] if len(ran) else ran).astype(np.float32))
     if truth is not None:
-        centres = np.full((len(ran), 3), np.nan, dtype=np.float32)
-        ours, theirs = metrics.associate(ran, truth[0], runs.MAX_DIFFERENCE)
-        centres[ours] = truth[1][theirs, :3, 3]
-        _npy(target / "truth.npy", centres)
+        _write_truth(out, ran, truth)
     camera = source.camera
     info: dict[str, Any] = {
         "format": FORMAT,
@@ -319,10 +319,57 @@ def bake(run_folders: Sequence[str | Path], sequence: str | Path, out: str | Pat
         "frames": len(ran),
         "first_time": float(ran[0]) if len(ran) else 0.0,
         "images": {"chunk": CHUNK, "quality": QUALITY, "colour": colour},
-        "truth": None if truth is None else {"alignment": _ALIGNMENTS[first.mode == "monocular"]},
-        "backends": {b.run.backend: _write_backend(target, b, ran, truth) for b in baked},
+        "truth": truth is not None,
+        "fates": list(runs.FATES),
+        "steps": list(runs.STEPS),
+        "backends": {b.run.backend: _write_backend(out, b, ran) for b in baked},
     }
-    (target / "bundle.json").write_text(json.dumps(info, indent=1) + "\n")
+    (out / "bundle.json").write_text(json.dumps(info, indent=1) + "\n")
+
+
+def bake(run_folders: Sequence[str | Path], sequence: str | Path, out: str | Path) -> None:
+    """Bake runs of one sequence, one per backend, into a bundle (the module docstring).
+
+    Parameters
+    ----------
+    run_folders : sequence of str or pathlib.Path
+        The runs' folders.
+    sequence : str or pathlib.Path
+        The sequence's folder, as the runs read it.
+    out : str or pathlib.Path
+        The bundle's folder: created; refused if it exists and is not empty. The bundle is
+        written beside it and moved onto it whole, so a bake that fails leaves nothing.
+
+    Raises
+    ------
+    FileNotFoundError
+        If a run's or the sequence's file is missing.
+    slam_it_all.foundations.errors.InvalidInputError
+        If there are no runs, they are not of one sequence and mode, two are of one backend,
+        the sequence's folder is not theirs, a run's frame is not one of the sequence's, or
+        `out` is not empty; or a reader's error. A run its ATE alignment cannot place is not
+        an error: it stays in its own frame.
+    """
+    baked = _read(run_folders)
+    first = baked[0].run
+    root, target = Path(sequence), Path(out)
+    if root.resolve().name != first.sequence:
+        raise InvalidInputError(f"sequence: the runs are of {first.sequence}, not {root.name}")
+    if target.exists() and any(target.iterdir()):
+        raise InvalidInputError(f"{target}: expected a new or empty folder for the bundle")
+    source = vo.open_source(first.dataset, root, first.mode)
+    frames = _bundle_frames(baked, source, str(root))
+    truth = runs.ground_truth(first.dataset, root)
+    baked = [replace(b, scored=_score(b.run, truth)) for b in baked]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = target.with_name(f".{target.name}.{uuid.uuid4().hex}.baking")
+    staging.mkdir()
+    try:
+        _write(staging, baked, source, frames, truth)
+        staging.replace(target)  # onto a new or empty folder
+    except BaseException:
+        shutil.rmtree(staging)  # the bake's own, made above
+        raise
 
 
 def main(arguments: Sequence[str]) -> int:

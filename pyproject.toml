@@ -183,6 +183,17 @@ layers = [
   "options",
 ]
 
+# The order of modules inside orchestration: the run program at the bottom, so the program the
+# budget runs time never carries the bake for the viewer. New modules are optional layers.
+[[tool.importlinter.contracts]]
+name = "Orchestration's internal order"
+type = "layers"
+containers = ["slam_it_all.orchestration"]
+layers = [
+  "(bundles)",
+  "vo",
+]
+
 # OpenCV serves the demos as an external reference only: slam_it_all never wraps it (a stated
 # non-goal), and the edge rungs need a light dependency set.
 [[tool.importlinter.contracts]]

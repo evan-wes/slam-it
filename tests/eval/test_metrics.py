@@ -64,6 +64,7 @@ def test_ate_removes_a_similarity(scale: float) -> None:
     ate = metrics.absolute_error(estimate, truth, with_scale=scale != 1.0)
     assert ate.rmse < 1e-9
     np.testing.assert_allclose(ate.scale, 1.0 / scale, rtol=1e-12)
+    assert ate.similarity is (scale != 1.0)
 
 
 def test_rigid_ate_does_not_hide_a_scale_error() -> None:

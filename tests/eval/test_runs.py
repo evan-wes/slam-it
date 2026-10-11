@@ -14,7 +14,7 @@ from numpy.typing import NDArray
 
 from slam_it_all.edge.map import Removal
 from slam_it_all.edge.pipeline import Fate
-from slam_it_all.eval import runs
+from slam_it_all.eval import runs, tum
 from slam_it_all.foundations import so3
 from slam_it_all.foundations.errors import InvalidInputError
 
@@ -435,3 +435,20 @@ def test_read_trajectory_rejects(tmp_path: Path, text: str, message: str) -> Non
     (tmp_path / "t.txt").write_text(text)
     with pytest.raises(InvalidInputError, match=message):
         runs.read_trajectory(tmp_path / "t.txt")
+
+
+def test_ground_truth_is_the_readers_and_none_without_one(tmp_path: Path) -> None:
+    """A sequence's ground truth is what its dataset's reader gives; one without has none."""
+    folder, bare = tmp_path / "rgbd_dataset_freiburg1_xyz", tmp_path / "rgbd_dataset_freiburg1_360"
+    for sequence in (folder, bare):
+        sequence.mkdir()
+        (sequence / "rgb.txt").write_text("100.000 rgb/100.000.png\n100.500 rgb/100.500.png\n")
+    (folder / "groundtruth.txt").write_text("100.000 1 2 3 0 0 0 1\n100.500 1.5 2 3 0 0 0 1\n")
+    truth = runs.ground_truth("tum", folder)
+    assert truth is not None
+    read = tum.read_sequence(folder)
+    np.testing.assert_array_equal(truth[0], read.timestamps)
+    np.testing.assert_array_equal(truth[1], read.T_world_cam)
+    assert runs.ground_truth("tum", bare) is None
+    with pytest.raises(InvalidInputError, match="expected 'tum' or 'euroc'"):
+        runs.ground_truth("kitti", folder)

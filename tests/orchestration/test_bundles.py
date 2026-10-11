@@ -53,6 +53,17 @@ def _bake(runs_of: RoomRun, dataset: str, mode: str, out: Path) -> dict[str, Any
     return info
 
 
+def _bearings(poses: np.ndarray, points: np.ndarray) -> np.ndarray:
+    """Return each point's unit direction in each camera, ``(K, N, 3)``, from ``T_world_cam``.
+
+    A similarity moving cameras and points together leaves them as they were.
+    """
+    rotations, centres = poses[:, :3, :3], poses[:, :3, 3]
+    seen = np.einsum("kji,knj->kni", rotations, points[None] - centres[:, None])
+    out: np.ndarray = seen / np.linalg.norm(seen, axis=2, keepdims=True)
+    return out
+
+
 def _frame_jpeg(bundle: Path, k: int) -> bytes:
     """Return frame ``k``'s JPEG, cut from its chunk."""
     start, end = np.load(bundle / "images" / "spans.npy")[k]
@@ -83,9 +94,12 @@ def test_the_bake_keeps_the_golden_bundles_layout(
 def test_each_backend_is_moved_onto_the_truth(
     mode: str, alignment: str, room_runs: RoomRun, tmp_path: Path
 ) -> None:
-    """With ground truth, each run's centres sit on it by its own ATE; its poses stay rigid."""
+    """With ground truth, each run's centres sit on it by its own ATE; its poses stay rigid.
+
+    Its keyframes and points move with it: each point is seen from each keyframe as in the run.
+    """
     info = _bake(room_runs, "tum", mode, tmp_path)
-    assert info["truth"] == {"alignment": alignment}
+    assert info["truth"] is True
     truth = np.load(tmp_path / "truth.npy")
     assert truth.shape == (FRAMES, 3)
     assert not np.any(np.isnan(truth))
@@ -94,9 +108,16 @@ def test_each_backend_is_moved_onto_the_truth(
         at = np.load(tmp_path / backend / "pose_frames.npy")
         gap = np.linalg.norm(poses[:, :, 3] - truth[at], axis=1)
         assert np.sqrt(np.mean(gap**2)) == pytest.approx(entry["score"]["ate_rmse"], rel=1e-4)
-        rotations = np.load(tmp_path / backend / "keyframe_poses.npy")[:, :, :3].astype(np.float64)
+        assert entry["alignment"] == alignment
+        keyframes = np.load(tmp_path / backend / "keyframe_poses.npy").astype(np.float64)
+        rotations = keyframes[:, :, :3]
         identities = np.broadcast_to(np.eye(3), rotations.shape)
         np.testing.assert_allclose(rotations @ rotations.transpose(0, 2, 1), identities, atol=1e-5)
+        run = room_runs("tum", mode, backend)
+        points = np.load(tmp_path / backend / "points.npy").astype(np.float64)
+        np.testing.assert_allclose(
+            _bearings(keyframes, points), _bearings(run.keyframe_poses, run.points), atol=1e-5
+        )
         assert entry["frames"] == [0, FRAMES]
 
 
@@ -151,13 +172,60 @@ def test_the_images_are_what_the_pipeline_saw(
 def test_without_truth_each_run_stays_in_its_own_frame(room_runs: RoomRun, tmp_path: Path) -> None:
     """No ground truth: no alignment, no score, no truth file; the poses are the run's own."""
     info = _bake(room_runs, "euroc", "stereo", tmp_path)
-    assert info["truth"] is None
+    assert info["truth"] is False
     assert not (tmp_path / "truth.npy").exists()
     for backend, entry in info["backends"].items():
-        assert entry["score"] is None
+        assert (entry["alignment"], entry["score"]) == (None, None)
         run = room_runs("euroc", "stereo", backend)
         poses = np.load(tmp_path / backend / "poses.npy")
         np.testing.assert_array_equal(poses, run.poses[:, :3].astype(np.float32))
+
+
+def test_a_run_its_alignment_cannot_place_stays_in_its_own_frame(
+    room_runs: RoomRun, tmp_path: Path
+) -> None:
+    """A monocular run that never initialised has no frame to align by.
+
+    It is baked unscored in its own frame, beside a run that was aligned, rather than failing
+    the bundle.
+    """
+    early = tmp_path / "early"
+    run = vo.run(
+        "tum", room_runs.sequence("tum"), "monocular", early, options=OPTIONS, count=5,
+        record_features=True,
+    )  # fmt: skip
+    assert len(run.timestamps) == 0
+    whole = room_runs.folder("tum", "monocular", require_program("cpp"))
+    bundles.bake([whole, early], room_runs.sequence("tum"), tmp_path / "bundle")
+    info = json.loads((tmp_path / "bundle" / "bundle.json").read_text())
+    assert info["truth"] is True
+    unplaced, placed = info["backends"]["python"], info["backends"]["cpp"]
+    assert (unplaced["alignment"], unplaced["score"]) == (None, None)
+    assert placed["alignment"] == "sim3"
+    assert placed["score"] is not None
+    points = np.load(tmp_path / "bundle" / "python" / "points.npy")
+    np.testing.assert_array_equal(points, run.points.astype(np.float32))
+
+
+def test_a_bake_that_fails_leaves_nothing_behind(
+    room_runs: RoomRun, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bake that fails once writing has begun leaves no folder; baking again succeeds."""
+    folder, sequence = room_runs.folder("tum", "rgbd", "python"), room_runs.sequence("tum")
+    out = tmp_path / "bundles" / "room"
+
+    def full(*_: object) -> None:
+        raise OSError("no space left")
+
+    monkeypatch.setattr(bundles, "_write_backend", full)
+    with pytest.raises(OSError, match="no space left"):
+        bundles.bake([folder], sequence, out)
+    assert list((tmp_path / "bundles").iterdir()) == []
+    monkeypatch.undo()
+    out.mkdir()  # a new, empty folder is taken as the bundle's
+    bundles.bake([folder], sequence, out)
+    assert (out / "bundle.json").exists()
+    assert [p.name for p in (tmp_path / "bundles").iterdir()] == ["room"]
 
 
 def test_the_records_and_header_are_the_runs(room_runs: RoomRun, tmp_path: Path) -> None:

@@ -31,11 +31,10 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from numpy.typing import NDArray
 
 from slam_it_all import backends
 from slam_it_all.edge.options import MODES, Options
-from slam_it_all.eval import budgets, euroc, runs, tum
+from slam_it_all.eval import budgets, runs
 from slam_it_all.foundations.errors import InvalidInputError
 from slam_it_all.orchestration import vo
 
@@ -67,46 +66,14 @@ def parse_options(pairs: list[str]) -> Options:
     return dataclasses.replace(Options(), **changes)
 
 
-Truth = tuple[NDArray[np.float64], NDArray[np.float64]]
-"""A sequence's ground truth at its frames: their times and true ``T_world_cam``."""
-
-
-def ground_truth(dataset: str, sequence: Path) -> Truth | None:
-    """Return the sequence's ground truth at its frames, or None if it has none.
-
-    Parameters
-    ----------
-    dataset : {"tum", "euroc"}
-        The dataset.
-    sequence : pathlib.Path
-        The sequence's folder.
-
-    Returns
-    -------
-    Truth or None
-        The frames' times and their true ``T_world_cam``; None if the sequence has no
-        ground-truth file.
-
-    Raises
-    ------
-    slam_it_all.foundations.errors.InvalidInputError
-        If the ground truth is malformed.
-    """
-    try:
-        read = tum.read_sequence(sequence) if dataset == "tum" else euroc.read_sequence(sequence)
-    except FileNotFoundError:
-        return None
-    return read.timestamps, read.T_world_cam
-
-
-def score(run: runs.Run, truth: Truth | None) -> runs.Evaluation | None:
+def score(run: runs.Run, truth: runs.Truth | None) -> runs.Evaluation | None:
     """Score a run against the ground truth, if there is one and enough of the run matches it.
 
     Parameters
     ----------
     run : slam_it_all.eval.runs.Run
         The run.
-    truth : Truth or None
+    truth : slam_it_all.eval.runs.Truth or None
         The ground truth.
 
     Returns
@@ -178,7 +145,9 @@ def summarize(run: runs.Run, scored: runs.Evaluation | None) -> None:
     )
 
 
-def record(path: Path, run: runs.Run, truth: Truth | None, scored: runs.Evaluation | None) -> None:
+def record(
+    path: Path, run: runs.Run, truth: runs.Truth | None, scored: runs.Evaluation | None
+) -> None:
     """Save a rerun recording of the run: its trajectory, keyframes and points.
 
     The run is drawn in the ground truth's frame when it was scored (its ATE alignment
@@ -190,7 +159,7 @@ def record(path: Path, run: runs.Run, truth: Truth | None, scored: runs.Evaluati
         The ``.rrd`` file to write.
     run : slam_it_all.eval.runs.Run
         The run.
-    truth : Truth or None
+    truth : slam_it_all.eval.runs.Truth or None
         The ground truth.
     scored : slam_it_all.eval.runs.Evaluation or None
         The run's errors, for the alignment.
@@ -279,7 +248,7 @@ def main() -> None:
         )
         if budget is not None:
             print(f"within {budget.name} ({budget.stands_for})")
-    truth = ground_truth(args.dataset, args.sequence)
+    truth = runs.ground_truth(args.dataset, args.sequence)
     scored = score(run, truth)
     summarize(run, scored)
     if args.rerun:

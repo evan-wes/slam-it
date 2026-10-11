@@ -55,7 +55,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from slam_it_all.eval import metrics
+from slam_it_all.eval import euroc, metrics, tum
 from slam_it_all.eval.timestamps import as_times
 from slam_it_all.foundations import se3, so3
 from slam_it_all.foundations.arrays import as_batch
@@ -74,8 +74,8 @@ tracking rarely found, or a redundant keyframe), fused into another point, or er
 views (left seen too little). :class:`slam_it_all.edge.map.Removal` has the same codes."""
 
 FATES = ("unmatched", "rejected", "tracked", "made")
-"""What became of a keypoint on its frame, a feature record's code being the index: matched to
-no point; matched by the frame's last tracking stage, then not tracked; tracked; or made into a
+"""What became of a keypoint on its frame, a feature record's code being the index: not matched
+by the frame's last tracking stage; matched by it, then not tracked; tracked; or made into a
 new point. :class:`slam_it_all.edge.pipeline.Fate` has the same codes."""
 
 PIXELS = "feature_pixels.npy"
@@ -730,6 +730,40 @@ def read_features(folder: str | Path, run: Run) -> Features:
     if np.any(point >= len(run.points)):
         raise InvalidInputError(f"{name}: a point must be one the run made")
     return Features(pixels=pixels, records=records)
+
+
+Truth = tuple[NDArray[np.float64], NDArray[np.float64]]
+"""A sequence's ground truth: its times, shape ``(G,)``, and true ``T_world_cam``, ``(G, 4,
+4)``."""
+
+
+def ground_truth(dataset: str, sequence: str | Path) -> Truth | None:
+    """Return a sequence's ground truth, or None if it has none.
+
+    Parameters
+    ----------
+    dataset : {"tum", "euroc"}
+        The dataset.
+    sequence : str or pathlib.Path
+        The sequence's folder.
+
+    Returns
+    -------
+    Truth or None
+        Its times and true ``T_world_cam``; None if the sequence has no ground-truth file.
+
+    Raises
+    ------
+    slam_it_all.foundations.errors.InvalidInputError
+        If the dataset is neither, or the ground truth is malformed.
+    """
+    if dataset not in ("tum", "euroc"):
+        raise InvalidInputError(f"dataset: expected 'tum' or 'euroc', got {dataset!r}")
+    try:
+        read = tum.read_sequence(sequence) if dataset == "tum" else euroc.read_sequence(sequence)
+    except FileNotFoundError:
+        return None
+    return np.asarray(read.timestamps), np.asarray(read.T_world_cam)
 
 
 @dataclass(frozen=True)

@@ -51,6 +51,8 @@ class AbsoluteError:
         The transform applied to the estimate's centres: ``[[s R, t], [0, 1]]``.
     scale : float
         Its scale ``s`` (1 for an SE(3) alignment).
+    similarity : bool
+        Whether it is a similarity, its scale estimated (Sim(3)), rather than rigid (SE(3)).
     """
 
     errors: NDArray[np.float64]
@@ -60,6 +62,7 @@ class AbsoluteError:
     max: float
     alignment: NDArray[np.float64]
     scale: float
+    similarity: bool
 
 
 @dataclass(frozen=True)
@@ -150,6 +153,7 @@ def absolute_error(
         max=float(np.max(errors)),
         alignment=transform,
         scale=fit.scale,
+        similarity=with_scale,
     )
 
 
