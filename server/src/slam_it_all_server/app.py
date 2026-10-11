@@ -23,8 +23,12 @@ token checked on every request.
   code);
 - the size cap, checked against the declared size and signed into the upload link;
 - one job worked on at a time, and :data:`~slam_it_all_server.config.QUEUE` open at most;
-- an upload deleted once its import ends, and every job deleted with its files
-  :data:`~slam_it_all_server.config.RETENTION` after it ends;
+- an upload moved, once confirmed, where its owner's link cannot reach it, and deleted once
+  its import ends; whatever the link may write later is deleted once it has expired;
+- every job deleted :data:`~slam_it_all_server.config.RETENTION` after it ends, its files
+  first, so that a deletion that fails is tried again (:func:`sweep`);
+- at most :data:`slam_it_all_server.jobs.CODE_JOBS` jobs open per invite code;
+- a result's files only of the names and kinds a bundle has (:data:`RESULT_PATH`);
 - results reachable only through their token, pages marked ``noindex``, and no ``Referer``
   sent, so a token never leaves in one;
 - request bodies capped at :data:`BODY_BYTES`, except folder storage's signed uploads.
@@ -36,8 +40,10 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import hashlib
 import hmac
 import json
+import logging
 import re
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -54,7 +60,7 @@ from pydantic import BaseModel, Field, StrictInt
 from slam_it_all_server import config, jobs
 from slam_it_all_server.config import Settings
 from slam_it_all_server.jobs import Job, Jobs
-from slam_it_all_server.storage import FolderStorage, S3Storage, Storage, StorageError, check_key
+from slam_it_all_server.storage import FolderStorage, S3Storage, Storage, StorageError
 
 PAGES = re.compile(r"^(index\.html|upload\.html|status\.html|app\.css|src/[a-z_]+\.js)$")
 """The viewer folder's files that are served: its pages, their style and their modules."""
@@ -64,6 +70,10 @@ RESULT_FILES = 1000
 
 RESULT_BYTES = 10**9
 """The most bytes a result may hold: a bound on a worker gone wrong, well above a bundle's size."""
+
+RESULT_PATH = re.compile(r"([a-z]+/)?[a-z0-9_]+\.(json|npy|bin)")
+"""A result's file, matched whole: a bundle's files are JSON, numpy arrays and image chunks, at
+most one folder deep (``slam_it_all.orchestration.bundles``)."""
 
 SUMMARY_BYTES = 4096
 """The largest summary of a job done, as JSON."""
@@ -91,10 +101,18 @@ _HEADERS = {
 _OPEN = ("/api/worker/", "/storage/", "/healthz")
 """Paths staging's Basic auth leaves open: they carry their own token or signature."""
 
+_LOG = logging.getLogger("slam_it_all_server")
+"""The server's log: jobs by their id, never by their token, nor a link."""
+
 
 def upload_key(job_id: str) -> str:
-    """Return the storage key of a job's upload."""
+    """Return the storage key of a job's upload, which its owner's upload link writes."""
     return f"uploads/{job_id}"
+
+
+def import_key(job_id: str) -> str:
+    """Return the storage key a confirmed upload is moved to, out of its owner's link's reach."""
+    return f"imports/{job_id}"
 
 
 def result_prefix(job_id: str) -> str:
@@ -118,20 +136,71 @@ def make_storage(settings: Settings) -> Storage:
     return FolderStorage(root, settings.public_url, settings.signing_key)
 
 
-def sweep(job_list: Jobs, store: Storage) -> jobs.Swept:
-    """Sweep the job list, deleting the files of the jobs it ended or deleted.
+def sweep(job_list: Jobs, store: Storage) -> int:
+    """Sweep the job list: end the jobs whose time is up, then clear and delete their files.
 
-    An ended job's upload goes, and a failed or deleted job's result (:meth:`Jobs.sweep`).
+    A job's files are deleted before it is (:mod:`slam_it_all_server.jobs`): a deletion that
+    fails is logged, and the job stays listed for the next sweep to try again.
+
+    Parameters
+    ----------
+    job_list : Jobs
+        The job list.
+    store : Storage
+        The storage.
+
+    Returns
+    -------
+    int
+        How many deletions failed, each logged.
     """
-    swept = job_list.sweep()
-    for job in swept.ended:
-        store.delete(upload_key(job.id))
-        if job.state == "failed":
-            store.delete_prefix(result_prefix(job.id))
-    for job in swept.deleted:
-        store.delete(upload_key(job.id))
+    for job in job_list.end_overdue():
+        _LOG.info("job %s: %s (%s)", job.id, job.state, job.reason)
+    steps: list[tuple[list[Job], Callable[[Job], None]]] = [
+        (job_list.links_to_close(), lambda job: _close_link(job_list, store, job)),
+        (job_list.files_to_clear(), lambda job: _clear_files(job_list, store, job)),
+        (job_list.to_delete(), lambda job: _delete(job_list, store, job)),
+    ]
+    failed = 0
+    for found, step in steps:
+        for job in found:
+            try:
+                step(job)
+            except Exception:  # a storage or database failure: the next sweep tries again
+                failed += 1
+                _LOG.exception("job %s: a sweep's deletion failed", job.id)
+    return failed
+
+
+def _close_link(job_list: Jobs, store: Storage, job: Job) -> None:
+    """Delete whatever a job's expired upload link wrote, then record it."""
+    store.delete(upload_key(job.id))
+    job_list.close_link(job.id)
+
+
+def _clear_files(job_list: Jobs, store: Storage, job: Job) -> None:
+    """Delete an ended job's upload copy, and its result unless it is done; then record it."""
+    store.delete(import_key(job.id))
+    if job.state != "done":
         store.delete_prefix(result_prefix(job.id))
-    return swept
+    job_list.clear_files(job.id)
+
+
+def _delete(job_list: Jobs, store: Storage, job: Job) -> None:
+    """Delete every file of a job kept its time, then the job."""
+    store.delete(upload_key(job.id))
+    store.delete(import_key(job.id))
+    store.delete_prefix(result_prefix(job.id))
+    job_list.delete(job.id)
+    _LOG.info("job %s: deleted", job.id)
+
+
+def _best_effort(what: str, job: Job, call: Callable[[], None]) -> None:
+    """Delete something now, leaving it to the sweep if it fails (logged)."""
+    try:
+        call()
+    except Exception:  # the sweep deletes it later
+        _LOG.exception("job %s: %s failed; the sweep will try again", job.id, what)
 
 
 class NewJob(BaseModel):
@@ -274,8 +343,10 @@ def make_app(
 
         async def sweeping() -> None:
             while True:
-                with contextlib.suppress(Exception):  # a sweep that fails is tried again
+                try:
                     await asyncio.to_thread(sweep, server.jobs, server.store)
+                except Exception:  # the list itself failed: logged, and tried again
+                    _LOG.exception("a sweep failed")
                 await asyncio.sleep(SWEEP)
 
         task = asyncio.create_task(sweeping())
@@ -318,15 +389,20 @@ def _owner_api(app: FastAPI, server: _Server) -> None:
             raise HTTPException(403, "that invite code is not one we know")
         if request.size > config.MAX_BYTES:
             raise HTTPException(413, f"the file is over {config.MAX_BYTES / 10**6:g} MB")
+        owner = hmac.new(
+            server.settings.signing_key, request.code.encode(), hashlib.sha256
+        ).hexdigest()
         try:
-            job = server.jobs.create(request.upload, request.size)
+            job = server.jobs.create(request.upload, request.size, owner)
+        except jobs.OwnerFullError:
+            raise HTTPException(
+                429, f"this invite code has {jobs.CODE_JOBS} jobs open: wait for one to end"
+            ) from None
         except jobs.FullError:
             raise HTTPException(503, "the queue is full: please try again later") from None
-        return {
-            "token": job.token,
-            "upload_url": server.store.upload_link(upload_key(job.id), job.size),
-            "link": f"/r/{job.token}",
-        }
+        _LOG.info("job %s: made for %s of %d bytes, by %s", job.id, job.upload, job.size, owner[:8])
+        link = server.store.upload_link(upload_key(job.id), job.size, int(config.UPLOAD_WAIT))
+        return {"token": job.token, "upload_url": link, "link": f"/r/{job.token}"}
 
     @app.post("/api/jobs/{token}/uploaded")
     def uploaded(token: str) -> dict[str, str]:
@@ -336,10 +412,12 @@ def _owner_api(app: FastAPI, server: _Server) -> None:
             raise HTTPException(409, f"the job is {job.state}, not waiting for its upload")
         if server.store.size(upload_key(job.id)) != job.size:
             raise HTTPException(400, "the upload has not arrived whole")
+        server.store.move(upload_key(job.id), import_key(job.id))  # out of the link's reach
         try:
             job = server.jobs.queue(token)
         except jobs.StateError:
             raise HTTPException(409, "the job is no longer waiting for its upload") from None
+        _LOG.info("job %s: queued", job.id)
         return {"state": job.state}
 
     @app.get("/api/jobs/{token}")
@@ -369,12 +447,25 @@ def _result_files(request: Files) -> dict[str, int]:
         raise HTTPException(400, "files: a path is listed twice")
     if sum(listed.values()) > RESULT_BYTES:
         raise HTTPException(413, f"files: over {RESULT_BYTES / 10**6:g} MB in all")
-    try:
-        for path in listed:
-            check_key(path)
-    except StorageError as error:
-        raise HTTPException(400, str(error)) from None
+    for path in listed:
+        if not RESULT_PATH.fullmatch(path):
+            raise HTTPException(400, f"files: not a bundle's file: {path!r}")
     return listed
+
+
+def _result_links(store: Storage, job_id: str, listed: dict[str, int]) -> dict[str, str]:
+    """Return an upload link for each of a result's files, for its size, for an hour."""
+    prefix, seconds = result_prefix(job_id), config.LINK_SECONDS
+    return {
+        path: store.upload_link(f"{prefix}/{path}", size, seconds) for path, size in listed.items()
+    }
+
+
+def _check_arrived(store: Storage, job: Job) -> None:
+    """Refuse a job done before every file of its result is in storage, whole."""
+    for path, size in job.files.items():
+        if store.size(f"{result_prefix(job.id)}/{path}") != size:
+            raise HTTPException(400, f"files: {path} has not arrived whole")
 
 
 def _worker_api(app: FastAPI, server: _Server) -> None:
@@ -393,11 +484,12 @@ def _worker_api(app: FastAPI, server: _Server) -> None:
         """Give the worker a job, waiting for one up to the claim's wait."""
         loop = asyncio.get_running_loop()
         deadline = loop.time() + request.wait
-        while (job := server.jobs.claim(request.kinds)) is None:
+        while (job := await asyncio.to_thread(server.jobs.claim, request.kinds)) is None:
             if loop.time() >= deadline:
                 return Response(status_code=204)
             await asyncio.sleep(CLAIM_POLL)
-        link = server.store.download_link(upload_key(job.id))
+        _LOG.info("job %s: claimed", job.id)
+        link = server.store.download_link(import_key(job.id))
         return {"job": job.id, "kind": job.kind, "upload": job.upload, "download": link}
 
     @app.post("/api/worker/jobs/{job_id}/progress", dependencies=guarded)
@@ -410,7 +502,8 @@ def _worker_api(app: FastAPI, server: _Server) -> None:
         except ValueError as error:
             raise HTTPException(400, str(error)) from None
         if before == "importing" and job.state != "importing":
-            server.store.delete(upload_key(job.id))
+            key = import_key(job.id)
+            _best_effort("deleting the upload", job, lambda: server.store.delete(key))
         return {}
 
     @app.post("/api/worker/jobs/{job_id}/files", dependencies=guarded)
@@ -418,30 +511,28 @@ def _worker_api(app: FastAPI, server: _Server) -> None:
         """Record a result's files, and give an upload link for each."""
         listed = _result_files(request)
         _working(lambda: server.jobs.record_files(job_id, listed))
-        keys = {path: f"{result_prefix(job_id)}/{path}" for path in listed}
-        return {
-            "urls": {path: server.store.upload_link(keys[path], listed[path]) for path in listed}
-        }
+        return {"urls": _result_links(server.store, job_id, listed)}
 
     @app.post("/api/worker/jobs/{job_id}/done", dependencies=guarded)
     def done(job_id: str, request: Done) -> dict[str, str]:
         """End a job done, once every file of its result is in storage."""
         if len(json.dumps(request.summary)) > SUMMARY_BYTES:
             raise HTTPException(413, "summary: too large")
-        job = _working(lambda: server.jobs.working(job_id))
-        for path, size in job.files.items():
-            if server.store.size(f"{result_prefix(job.id)}/{path}") != size:
-                raise HTTPException(400, f"files: {path} has not arrived whole")
+        _check_arrived(server.store, _working(lambda: server.jobs.held(job_id)))
         job = _working(lambda: server.jobs.done(job_id, request.summary))
-        server.store.delete(upload_key(job.id))
+        _LOG.info("job %s: done", job.id)
+        key = import_key(job.id)
+        _best_effort("deleting the upload", job, lambda: server.store.delete(key))
         return {}
 
     @app.post("/api/worker/jobs/{job_id}/failed", dependencies=guarded)
     def failed(job_id: str, request: Failed) -> dict[str, str]:
         """End a job failed, deleting its upload and whatever of its result arrived."""
         job = _working(lambda: server.jobs.fail(job_id, request.reason[:REASON_LENGTH]))
-        server.store.delete(upload_key(job.id))
-        server.store.delete_prefix(result_prefix(job.id))
+        _LOG.info("job %s: failed (%s)", job.id, job.reason)
+        key, prefix = import_key(job.id), result_prefix(job.id)
+        _best_effort("deleting the upload", job, lambda: server.store.delete(key))
+        _best_effort("deleting the result", job, lambda: server.store.delete_prefix(prefix))
         return {}
 
 
@@ -474,7 +565,7 @@ def _folder_storage(app: FastAPI, folder: FolderStorage) -> None:
                     written += len(chunk)
                     if written > size:
                         raise HTTPException(400, "the upload is larger than its link allows")
-                    file.write(chunk)
+                    await asyncio.to_thread(file.write, chunk)
             if written != size:
                 raise HTTPException(400, "the upload ended short")
             staged.replace(target)
@@ -489,7 +580,12 @@ def _folder_storage(app: FastAPI, folder: FolderStorage) -> None:
         path = folder.path(key)
         if not path.is_file():
             raise HTTPException(404)
-        return FileResponse(path)
+        # Never as a page of this site: whatever a file holds, it is a download.
+        return FileResponse(
+            path,
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": "attachment"},
+        )
 
 
 def _pages(app: FastAPI, server: _Server) -> None:

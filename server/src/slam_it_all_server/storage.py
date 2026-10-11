@@ -3,14 +3,15 @@
 Either hands out links, so that files go straight between a browser or a worker and the store,
 never through the server's own process:
 
-- an **upload link** (PUT) signed for one key and an exact size, so the store refuses anything
-  else: the size cap is checked when the job is made, against the size the browser declares;
-- a **download link** (GET) for one key.
+- an **upload link** (PUT) signed for one key, an exact size and a life of its own, so the store
+  refuses anything else: the size cap is checked when the job is made, against the size the
+  browser declares;
+- a **download link** (GET) for one key, for :data:`slam_it_all_server.config.LINK_SECONDS`.
 
-Links last :data:`slam_it_all_server.config.LINK_SECONDS`. :class:`S3Storage` signs them with
-the bucket's keys (boto3); :class:`FolderStorage` with an HMAC of its own key, the server
-serving them (``/storage/<key>``). A key is a relative path of letters, digits, ``.``, ``_``,
-``-`` and ``/``, without ``..``: the server makes every key itself.
+:class:`S3Storage` signs them with the bucket's keys (boto3); :class:`FolderStorage` with an HMAC
+of its own key, the server serving them (``/storage/<key>``), every file as a download. A key is
+a relative path of names of letters, digits, ``.``, ``_`` and ``-``, never ``.`` or ``..``: the
+server makes every key itself. A failure is raised, never read as "not there" or as done.
 """
 
 from __future__ import annotations
@@ -26,8 +27,8 @@ from typing import Any, Protocol
 
 from slam_it_all_server.config import LINK_SECONDS
 
-_KEY = re.compile(r"^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$")
-"""A key the server makes: relative, its parts plain names."""
+_KEY = re.compile(r"[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*")
+"""A key the server makes, matched whole: relative, its parts plain names."""
 
 
 class StorageError(Exception):
@@ -36,7 +37,7 @@ class StorageError(Exception):
 
 def check_key(key: str) -> str:
     """Return a key, refusing one that is not a plain relative path (the module docstring)."""
-    if not _KEY.match(key) or ".." in key.split("/"):
+    if not _KEY.fullmatch(key) or {".", ".."} & set(key.split("/")):
         raise StorageError(f"key: not a plain relative path: {key!r}")
     return key
 
@@ -44,8 +45,8 @@ def check_key(key: str) -> str:
 class Storage(Protocol):
     """What the server needs of a store."""
 
-    def upload_link(self, key: str, size: int) -> str:
-        """Return a PUT link for a key, signed for exactly `size` bytes."""
+    def upload_link(self, key: str, size: int, seconds: int) -> str:
+        """Return a PUT link for a key, signed for exactly `size` bytes, for `seconds`."""
         ...
 
     def download_link(self, key: str) -> str:
@@ -54,6 +55,10 @@ class Storage(Protocol):
 
     def size(self, key: str) -> int | None:
         """Return a key's size in bytes, or None if it is not there."""
+        ...
+
+    def move(self, key: str, to: str) -> None:
+        """Move a key's file to another key."""
         ...
 
     def delete(self, key: str) -> None:
@@ -80,11 +85,11 @@ class S3Storage:
         """Hold the client and the bucket."""
         self.client, self.bucket = client, bucket
 
-    def upload_link(self, key: str, size: int) -> str:
+    def upload_link(self, key: str, size: int, seconds: int) -> str:
         """Return a PUT link, its Content-Length signed so the bucket refuses another size."""
         params = {"Bucket": self.bucket, "Key": check_key(key), "ContentLength": size}
         return str(
-            self.client.generate_presigned_url("put_object", Params=params, ExpiresIn=LINK_SECONDS)
+            self.client.generate_presigned_url("put_object", Params=params, ExpiresIn=seconds)
         )
 
     def download_link(self, key: str) -> str:
@@ -98,9 +103,17 @@ class S3Storage:
         """Return the object's size, or None if it is not there."""
         try:
             head = self.client.head_object(Bucket=self.bucket, Key=check_key(key))
-        except self.client.exceptions.ClientError:
-            return None
+        except self.client.exceptions.ClientError as error:
+            if error.response.get("Error", {}).get("Code") in ("404", "NoSuchKey"):
+                return None
+            raise  # not "absent": the bucket refused or failed
         return int(head["ContentLength"])
+
+    def move(self, key: str, to: str) -> None:
+        """Copy the object to the other key, then delete it (S3 has no rename)."""
+        source = {"Bucket": self.bucket, "Key": check_key(key)}
+        self.client.copy_object(CopySource=source, Bucket=self.bucket, Key=check_key(to))
+        self.delete(key)
 
     def delete(self, key: str) -> None:
         """Delete the object (S3 deletes quietly what is not there)."""
@@ -112,7 +125,10 @@ class S3Storage:
         for page in pages.paginate(Bucket=self.bucket, Prefix=check_key(prefix) + "/"):
             objects = [{"Key": item["Key"]} for item in page.get("Contents", [])]
             if objects:
-                self.client.delete_objects(Bucket=self.bucket, Delete={"Objects": objects})
+                done = self.client.delete_objects(Bucket=self.bucket, Delete={"Objects": objects})
+                if done.get("Errors"):
+                    failed = ", ".join(error["Key"] for error in done["Errors"])
+                    raise StorageError(f"delete: the bucket kept {failed}")
 
 
 class FolderStorage:
@@ -140,9 +156,9 @@ class FolderStorage:
         message = f"{method}\n{key}\n{expires}\n{size}".encode()
         return hmac.new(self.key, message, hashlib.sha256).hexdigest()
 
-    def _link(self, method: str, key: str, size: int) -> str:
-        """Return a signed link to this server's storage route."""
-        expires = int(self.clock()) + LINK_SECONDS
+    def _link(self, method: str, key: str, size: int, seconds: int) -> str:
+        """Return a signed link to this server's storage route, for `seconds`."""
+        expires = int(self.clock()) + seconds
         query = urllib.parse.urlencode(
             {
                 "expires": expires,
@@ -152,13 +168,13 @@ class FolderStorage:
         )
         return f"{self.public_url}/storage/{urllib.parse.quote(check_key(key))}?{query}"
 
-    def upload_link(self, key: str, size: int) -> str:
-        """Return a signed PUT link for exactly `size` bytes."""
-        return self._link("PUT", key, size)
+    def upload_link(self, key: str, size: int, seconds: int) -> str:
+        """Return a signed PUT link for exactly `size` bytes, for `seconds`."""
+        return self._link("PUT", key, size, seconds)
 
     def download_link(self, key: str) -> str:
         """Return a signed GET link."""
-        return self._link("GET", key, -1)
+        return self._link("GET", key, -1, LINK_SECONDS)
 
     def verify(self, method: str, key: str, expires: int, size: int, signature: str) -> None:
         """Check a link the server is asked to serve.
@@ -183,10 +199,18 @@ class FolderStorage:
         file = self.path(key)
         return file.stat().st_size if file.is_file() else None
 
+    def move(self, key: str, to: str) -> None:
+        """Move the file to the other key."""
+        target = self.path(to)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        self.path(key).replace(target)
+
     def delete(self, key: str) -> None:
         """Delete the file, if it is there."""
         self.path(key).unlink(missing_ok=True)
 
     def delete_prefix(self, prefix: str) -> None:
         """Delete the folder of files under the prefix (the server's own key, checked)."""
-        shutil.rmtree(self.path(prefix), ignore_errors=True)
+        folder = self.path(prefix)
+        if folder.exists():
+            shutil.rmtree(folder)  # a failure raises, for the sweep to try again

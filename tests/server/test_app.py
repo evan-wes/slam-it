@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 from collections.abc import Iterator
 from typing import Any
 
@@ -10,16 +11,20 @@ import pytest
 from fastapi.testclient import TestClient
 
 from slam_it_all_server import app as server_app
-from slam_it_all_server.config import MAX_BYTES, QUEUE, RETENTION, UPLOAD_WAIT
-from tests.server.conftest import CODE, TOKEN, WORKER, Server
+from slam_it_all_server import jobs
+from slam_it_all_server.config import MAX_BYTES, QUEUE, RETENTION, SILENCE, UPLOAD_WAIT
+from slam_it_all_server.storage import FolderStorage
+from tests.server.conftest import CODE, CODES, TOKEN, WORKER, Server
 
 UPLOAD = b"not really a video, but storage never looks"
 """An upload's bytes."""
 
 
-def _make(server: Server, upload: str = "video", size: int = len(UPLOAD)) -> dict[str, str]:
+def _make(
+    server: Server, upload: str = "video", size: int = len(UPLOAD), code: str = CODE
+) -> dict[str, str]:
     """Make a job; return the server's answer."""
-    answer = server.client.post("/api/jobs", json={"code": CODE, "upload": upload, "bytes": size})
+    answer = server.client.post("/api/jobs", json={"code": code, "upload": upload, "bytes": size})
     assert answer.status_code == 201, answer.text
     return dict(answer.json())
 
@@ -78,7 +83,8 @@ def test_an_owner_makes_a_job_and_uploads_it(server: Server) -> None:
     assert server.client.post(f"/api/jobs/{job['token']}/uploaded").json() == {"state": "queued"}
     status = _status(server, job["token"])
     assert (status["state"], status["ahead"], status["upload"]) == ("queued", 0, "video")
-    (stored,) = server.store.root.glob("uploads/*")
+    assert list(server.store.root.glob("uploads/*")) == []  # moved out of the link's reach
+    (stored,) = server.store.root.glob("imports/*")
     assert stored.read_bytes() == UPLOAD
 
 
@@ -139,9 +145,9 @@ def test_a_worker_runs_a_job_through_the_api(server: Server) -> None:
     assert server.client.get(claimed["download"]).content == UPLOAD
     assert _status(server, job["token"])["state"] == "downloading"
     _report(server, claimed["job"], "progress", {"stage": "importing"})
-    assert len(list(server.store.root.glob("uploads/*"))) == 1  # still importing
+    assert len(list(server.store.root.glob("imports/*"))) == 1  # still importing
     _report(server, claimed["job"], "progress", {"stage": "running"})
-    assert list(server.store.root.glob("uploads/*")) == []  # the import has ended
+    assert list(server.store.root.glob("imports/*")) == []  # the import has ended
     files = {"bundle.json": b"{}", "cpp/poses.npy": b"\x93NUMPY"}
     listed = [{"path": path, "bytes": len(data)} for path, data in files.items()]
     urls = _report(server, claimed["job"], "files", {"files": listed}).json()["urls"]
@@ -156,7 +162,10 @@ def test_a_worker_runs_a_job_through_the_api(server: Server) -> None:
     assert status["deleted"] == pytest.approx(server.clock.now + RETENTION)
     redirect = server.client.get(f"{status['bundle']}cpp/poses.npy", follow_redirects=False)
     assert redirect.status_code == 307
-    assert server.client.get(redirect.headers["location"]).content == b"\x93NUMPY"
+    stored = server.client.get(redirect.headers["location"])
+    assert stored.content == b"\x93NUMPY"
+    assert stored.headers["content-type"] == "application/octet-stream"
+    assert stored.headers["content-disposition"] == "attachment"
     assert server.client.get(f"{status['bundle']}cpp/other.npy").status_code == 404
     assert server.client.get(f"/r/{claimed['job']}/bundle/bundle.json").status_code == 404
 
@@ -187,7 +196,7 @@ def test_a_failed_job_keeps_nothing_but_its_reason(server: Server) -> None:
     reason = "x" * 600
     assert _report(server, claimed["job"], "failed", {"reason": reason}).status_code == 200
     assert list(server.store.root.rglob("*.npy")) == []
-    assert list(server.store.root.glob("uploads/*")) == []
+    assert list(server.store.root.glob("imports/*")) == []
     status = _status(server, job["token"])
     assert (status["state"], status["reason"]) == ("failed", reason[:500])
 
@@ -237,12 +246,15 @@ def test_a_job_no_longer_the_workers_answers_409(server: Server) -> None:
         ([{"path": "a", "bytes": server_app.RESULT_BYTES + 1}], 413),
         ([{"path": f"f{k}", "bytes": 1} for k in range(server_app.RESULT_FILES + 1)], 422),
         ([{"path": "a", "bytes": -1}], 422),
+        ([{"path": "index.html", "bytes": 1}], 400),
+        ([{"path": "cpp/deep/x.npy", "bytes": 1}], 400),
+        ([{"path": "a.npy\n", "bytes": 1}], 400),
     ],
 )
 def test_a_results_files_are_checked(
     server: Server, files: list[dict[str, Any]], code: int
 ) -> None:
-    """A path that climbs or is absolute, a path twice, too many bytes or files: refused."""
+    """Not a bundle's file (climbing, absolute, a page, too deep), twice, too many: refused."""
     _queued(server)
     claimed = _claim(server)
     assert _report(server, claimed["job"], "files", {"files": files}).status_code == code
@@ -259,8 +271,8 @@ def test_a_stage_out_of_order_is_refused(server: Server) -> None:
 
 def test_the_queue_is_capped(server: Server) -> None:
     """Past QUEUE open jobs, the owner is asked to try later."""
-    for _ in range(QUEUE):
-        _make(server)
+    for n in range(QUEUE):
+        _make(server, code=CODES[n % len(CODES)])
     answer = server.client.post("/api/jobs", json={"code": CODE, "upload": "video", "bytes": 1})
     assert (answer.status_code, answer.json()["detail"]) == (
         503,
@@ -269,22 +281,90 @@ def test_the_queue_is_capped(server: Server) -> None:
 
 
 def test_the_sweep_deletes_what_has_expired(server: Server) -> None:
-    """An upload never confirmed is deleted at UPLOAD_WAIT; a result, RETENTION after it ended."""
+    """An upload never confirmed goes at UPLOAD_WAIT; a result, then its job, RETENTION after."""
     waiting = _make(server)
     server.client.put(waiting["upload_url"], content=UPLOAD)
     done, claimed = _run(server, {"bundle.json": b"{}"})
     server.clock.now += UPLOAD_WAIT
-    swept = server_app.sweep(server.jobs, server.store)
-    assert [job.state for job in swept.ended] == ["expired"]
-    assert list(server.store.root.glob("uploads/*")) == []
+    assert server_app.sweep(server.jobs, server.store) == 0
     assert _status(server, waiting["token"])["reason"] == "the upload did not arrive in time"
+    assert list(server.store.root.glob("uploads/*")) == []
     assert (server.store.root / "results" / claimed["job"] / "bundle.json").is_file()
     server.clock.now += RETENTION
-    swept = server_app.sweep(server.jobs, server.store)
-    assert len(swept.deleted) == 2
+    assert server_app.sweep(server.jobs, server.store) == 0
     assert list(server.store.root.rglob("*.json")) == []
     assert server.client.get(f"/api/jobs/{done['token']}").status_code == 404
     assert server.client.get(f"/r/{done['token']}/bundle/bundle.json").status_code == 404
+
+
+class _Flaky(FolderStorage):
+    """Folder storage whose next result deletion fails."""
+
+    failing = True
+
+    def delete_prefix(self, prefix: str) -> None:
+        """Fail once, then delete."""
+        if self.failing:
+            self.failing = False
+            raise OSError("storage is away")
+        super().delete_prefix(prefix)
+
+
+def test_a_deletion_that_fails_is_tried_again(
+    server: Server, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The job stays listed until its files are gone: the next sweep deletes both; logged."""
+    flaky = _Flaky(server.store.root, server.store.public_url, server.store.key)
+    done, claimed = _run(server, {"bundle.json": b"{}"})
+    server.clock.now += RETENTION
+    with caplog.at_level(logging.ERROR, logger="slam_it_all_server"):
+        assert server_app.sweep(server.jobs, flaky) == 1
+    assert f"job {claimed['job']}: a sweep's deletion failed" in caplog.text
+    assert (server.store.root / "results" / claimed["job"] / "bundle.json").is_file()
+    assert server.client.get(f"/api/jobs/{done['token']}").status_code == 200  # still listed
+    assert server_app.sweep(server.jobs, flaky) == 0
+    assert list(server.store.root.rglob("*.json")) == []
+    assert server.client.get(f"/api/jobs/{done['token']}").status_code == 404
+
+
+def test_a_replayed_upload_link_never_reaches_the_worker_and_is_deleted(server: Server) -> None:
+    """A second PUT through the owner's link is never what the worker reads, and is deleted.
+
+    Confirmed, the upload is moved out of the link's reach; what the link writes after is
+    deleted once the link has expired.
+    """
+    job = _queued(server)
+    assert server.client.put(job["upload_url"], content=b"x" * len(UPLOAD)).status_code == 200
+    claimed = _claim(server)
+    assert server.client.get(claimed["download"]).content == UPLOAD
+    assert len(list(server.store.root.glob("uploads/*"))) == 1  # the replay, for now
+    server.clock.now += UPLOAD_WAIT
+    assert server_app.sweep(server.jobs, server.store) == 0
+    assert list(server.store.root.glob("uploads/*")) == []
+
+
+def test_one_code_opens_at_most_two_jobs(server: Server) -> None:
+    """A third job by the same code waits for one to end; another code's goes ahead."""
+    for _ in range(jobs.CODE_JOBS):
+        _make(server)
+    answer = server.client.post("/api/jobs", json={"code": CODE, "upload": "video", "bytes": 1})
+    assert answer.status_code == 429
+    assert "has 2 jobs open" in answer.json()["detail"]
+    _make(server, code=CODES[1])
+
+
+def test_the_log_names_jobs_by_id_never_by_token(
+    server: Server, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Made and queued: logged with the job's id and its code's hash, never its token."""
+    with caplog.at_level(logging.INFO, logger="slam_it_all_server"):
+        job = _queued(server)
+    made = server.jobs.by_token(job["token"])
+    assert made is not None
+    assert f"job {made.id}: made for video" in caplog.text
+    assert f"job {made.id}: queued" in caplog.text
+    assert job["token"] not in caplog.text
+    assert CODE not in caplog.text
 
 
 @pytest.mark.parametrize("path", ["/", "/r/a-token", "/api/jobs/x", "/robots.txt", "/nothing"])
@@ -377,3 +457,20 @@ def test_staging_puts_every_page_behind_a_code(server: Server, staging: TestClie
     assert staging.get("/healthz").json() == {"ok": True}
     job = _make(server)
     assert staging.put(job["upload_url"], content=UPLOAD).status_code == 200
+
+
+def test_a_job_the_sweep_ends_keeps_none_of_its_files(server: Server) -> None:
+    """A worker gone silent: the sweep fails its job, then deletes its upload and result."""
+    _queued(server)
+    claimed = _claim(server)
+    listed = [{"path": "a.npy", "bytes": 1}]
+    urls = _report(server, claimed["job"], "files", {"files": listed}).json()["urls"]
+    server.client.put(urls["a.npy"], content=b"a")
+    assert len(list(server.store.root.glob("imports/*"))) == 1
+    server.clock.now += SILENCE
+    assert server_app.sweep(server.jobs, server.store) == 0
+    job = server.jobs.by_id(claimed["job"])
+    assert job is not None
+    assert (job.state, job.reason) == ("failed", "the worker stopped answering")
+    assert list(server.store.root.glob("imports/*")) == []
+    assert list(server.store.root.rglob("*.npy")) == []

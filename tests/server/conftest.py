@@ -23,6 +23,9 @@ VIEWER = Path(__file__).resolve().parents[2] / "viewer"
 CODE = "an-invite-code"
 """The invite code the tests' settings accept."""
 
+CODES = (CODE, "another-invite-code", "a-third-invite-code")
+"""Every invite code the tests' settings accept: enough to fill the queue, two jobs a code."""
+
 TOKEN = "a-worker-token-of-at-least-32-characters"
 """The worker token the tests' settings accept."""
 
@@ -43,7 +46,7 @@ def make_settings(
 ) -> Settings:
     """Return settings that keep files and the job list in a folder."""
     return Settings(
-        invite_codes=(CODE, "another-invite-code"),
+        invite_codes=CODES,
         worker_token=TOKEN,
         signing_key=b"a-signing-key-of-at-least-32-characters",
         storage=f"folder:{folder / 'files'}",

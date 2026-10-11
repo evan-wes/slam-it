@@ -30,8 +30,9 @@ QUEUE = 5
 RETENTION = 7 * 24 * 3600.0
 """How long a finished job's result is kept, in seconds."""
 
-UPLOAD_WAIT = 3600.0
-"""How long a job waits for its upload, in seconds, before it expires."""
+UPLOAD_WAIT = 15 * 60.0
+"""How long a job waits for its upload, in seconds, before it expires: its upload link's life
+too, so that a link outlives no job waiting for it."""
 
 SILENCE = 120.0
 """How long a running job may go unheard from, in seconds (four of the worker's heartbeats),
