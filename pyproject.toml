@@ -197,6 +197,7 @@ type = "layers"
 exhaustive = true
 containers = ["slam_it_all.orchestration"]
 layers = [
+  "(worker)",
   "(bundles)",
   "vo",
 ]
