@@ -56,8 +56,8 @@ mapfile -t BENCH_TU < <(git ls-files --cached --others --exclude-standard 'cpp/b
 mapfile -t JS_FILES < <(git ls-files --cached --others --exclude-standard 'viewer/*.js')
 
 # Python
-check "ruff lint (numpy docstrings, type hints, style)" ruff check src tests scripts
-check "ruff format" ruff format --check src tests scripts
+check "ruff lint (numpy docstrings, type hints, style)" ruff check src server tests scripts
+check "ruff format" ruff format --check src server tests scripts
 check "mypy --strict" mypy
 check "import-linter (dependency rules)" lint-imports
 check "C++/Rust layering (same contracts)" python scripts/check_layers.py
@@ -109,7 +109,8 @@ check "tsc --checkJs (viewer)" viewer/node_modules/.bin/tsc -p viewer
 check "tsc --checkJs, logic without the DOM (viewer)" \
   viewer/node_modules/.bin/tsc -p viewer/tsconfig.logic.json
 check "prettier (viewer)" viewer/node_modules/.bin/prettier --check \
-  viewer/src viewer/tests viewer/index.html viewer/app.css viewer/logic.d.ts
+  viewer/src viewer/tests viewer/index.html viewer/upload.html viewer/status.html viewer/app.css \
+  viewer/logic.d.ts
 
 # All languages
 check "jscpd (duplication)" jscpd --config .jscpd.json

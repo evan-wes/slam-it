@@ -11,7 +11,8 @@
     "tests",
     "cpp",
     "rust",
-    "viewer"
+    "viewer",
+    "server"
   ],
   "ignore": [
     "**/build/**",

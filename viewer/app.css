@@ -442,3 +442,117 @@ select {
   border: 1px solid var(--line);
   background: var(--ground);
 }
+
+/* The upload and status pages: one column of panels, on the viewer's tokens. */
+body.sheet {
+  display: block;
+  height: auto;
+}
+.column {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.card {
+  padding: 16px 18px;
+}
+.card h1 {
+  font-size: 1.3rem;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+.card p,
+.card ul {
+  margin: 0;
+}
+.card ul {
+  padding-left: 1.2em;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.choices {
+  border: 1px solid var(--line);
+  padding: 8px 12px 10px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.choices legend {
+  font-weight: 600;
+  padding: 0 4px;
+}
+.choices label {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.field-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-weight: 600;
+}
+.field-row input[type="password"] {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  padding: 5px 8px;
+  min-width: 0;
+  flex: 1;
+}
+.field-row input[type="file"] {
+  min-width: 0;
+  max-width: 100%;
+}
+.primary {
+  align-self: flex-start;
+  display: inline-block;
+  background: var(--accent);
+  color: var(--on-accent);
+  border: none;
+  padding: 8px 16px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+.primary:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+.form progress {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.form .message {
+  margin: 0;
+}
+.stages {
+  margin: 0;
+  padding-left: 1.4em;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.stages .past {
+  color: var(--ink);
+}
+.stages .now {
+  color: var(--accent);
+  font-weight: 600;
+}
+.summary {
+  padding: 8px 0;
+}
+.fail-text {
+  color: var(--fail);
+}

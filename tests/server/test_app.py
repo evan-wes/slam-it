@@ -1,0 +1,379 @@
+"""The server's routes, through FastAPI's test client: a job's life, the guards, and expiry."""
+
+from __future__ import annotations
+
+import base64
+from collections.abc import Iterator
+from typing import Any
+
+import pytest
+from fastapi.testclient import TestClient
+
+from slam_it_all_server import app as server_app
+from slam_it_all_server.config import MAX_BYTES, QUEUE, RETENTION, UPLOAD_WAIT
+from tests.server.conftest import CODE, TOKEN, WORKER, Server
+
+UPLOAD = b"not really a video, but storage never looks"
+"""An upload's bytes."""
+
+
+def _make(server: Server, upload: str = "video", size: int = len(UPLOAD)) -> dict[str, str]:
+    """Make a job; return the server's answer."""
+    answer = server.client.post("/api/jobs", json={"code": CODE, "upload": upload, "bytes": size})
+    assert answer.status_code == 201, answer.text
+    return dict(answer.json())
+
+
+def _queued(server: Server) -> dict[str, str]:
+    """Make a job, upload it and confirm it; return the server's answer to its making."""
+    job = _make(server)
+    assert server.client.put(job["upload_url"], content=UPLOAD).status_code == 200
+    answer = server.client.post(f"/api/jobs/{job['token']}/uploaded")
+    assert answer.json() == {"state": "queued"}
+    return job
+
+
+def _claim(server: Server) -> dict[str, str]:
+    """Claim a job as the worker, without waiting."""
+    answer = server.client.post(
+        "/api/worker/claim", json={"kinds": ["vo"], "wait": 0}, headers=WORKER
+    )
+    assert answer.status_code == 200, answer.text
+    return dict(answer.json())
+
+
+def _report(server: Server, job: str, action: str, body: dict[str, Any]) -> Any:  # noqa: ANN401
+    """POST a worker's report; return the response."""
+    return server.client.post(f"/api/worker/jobs/{job}/{action}", json=body, headers=WORKER)
+
+
+def _status(server: Server, token: str) -> dict[str, Any]:
+    """Return a job's status."""
+    answer = server.client.get(f"/api/jobs/{token}")
+    assert answer.status_code == 200, answer.text
+    return dict(answer.json())
+
+
+def _run(server: Server, files: dict[str, bytes]) -> tuple[dict[str, str], dict[str, str]]:
+    """Queue, claim and finish a job, its result the files; return the owner's and worker's."""
+    job = _queued(server)
+    claimed = _claim(server)
+    for stage in ("importing", "running", "baking", "uploading"):
+        assert _report(server, claimed["job"], "progress", {"stage": stage}).status_code == 200
+    listed = [{"path": path, "bytes": len(data)} for path, data in files.items()]
+    urls = _report(server, claimed["job"], "files", {"files": listed}).json()["urls"]
+    for path, data in files.items():
+        assert server.client.put(urls[path], content=data).status_code == 200
+    answer = _report(server, claimed["job"], "done", {"summary": {"frames": 2}})
+    assert answer.status_code == 200, answer.text
+    return job, claimed
+
+
+def test_an_owner_makes_a_job_and_uploads_it(server: Server) -> None:
+    """Made waiting, its upload sent to the signed link, then confirmed: queued, none ahead."""
+    job = _make(server)
+    assert job["link"] == f"/r/{job['token']}"
+    assert _status(server, job["token"])["state"] == "waiting"
+    assert server.client.put(job["upload_url"], content=UPLOAD).status_code == 200
+    assert server.client.post(f"/api/jobs/{job['token']}/uploaded").json() == {"state": "queued"}
+    status = _status(server, job["token"])
+    assert (status["state"], status["ahead"], status["upload"]) == ("queued", 0, "video")
+    (stored,) = server.store.root.glob("uploads/*")
+    assert stored.read_bytes() == UPLOAD
+
+
+@pytest.mark.parametrize(
+    ("body", "code"),
+    [
+        ({"code": "not-a-code-we-know", "upload": "video", "bytes": 10}, 403),
+        ({"code": CODE, "upload": "video", "bytes": MAX_BYTES + 1}, 413),
+        ({"code": CODE, "upload": "tarball", "bytes": 10}, 422),
+        ({"code": CODE, "upload": "video", "bytes": 0}, 422),
+        ({"code": CODE, "upload": "video", "bytes": True}, 422),
+        ({"code": CODE, "upload": "video", "bytes": "10"}, 422),
+        ({"code": CODE, "upload": "video"}, 422),
+    ],
+)
+def test_a_job_needs_a_code_we_know_and_a_size_within_the_cap(
+    server: Server, body: dict[str, Any], code: int
+) -> None:
+    """An unknown code, a size over the cap, an unknown upload or a size not a count: refused."""
+    assert server.client.post("/api/jobs", json=body).status_code == code
+    assert server.jobs.by_token("x") is None
+
+
+def test_an_upload_link_takes_its_size_only(server: Server) -> None:
+    """Fewer or more bytes, a changed signature, or the link used to GET: all refused."""
+    job = _make(server)
+    link = job["upload_url"]
+    assert server.client.put(link, content=UPLOAD[:-1]).status_code == 400
+    assert server.client.put(link, content=UPLOAD + b"!").status_code == 400
+    assert (
+        server.client.put(link.replace("signature=", "signature=0"), content=UPLOAD).status_code
+        == 403
+    )
+    assert server.client.put(link.replace("size=", "size=1"), content=UPLOAD).status_code == 403
+    assert server.client.get(link).status_code == 403
+    assert list(server.store.root.glob("uploads/*")) == []  # nothing kept, not even a part
+    assert server.client.post(f"/api/jobs/{job['token']}/uploaded").status_code == 400
+    assert server.client.put(link, content=UPLOAD).status_code == 200
+
+
+def test_a_job_is_queued_once_and_only_whole(server: Server) -> None:
+    """Confirmed before its upload arrives: refused; once queued, a second confirmation too."""
+    job = _make(server)
+    token = job["token"]
+    assert server.client.post(f"/api/jobs/{token}/uploaded").status_code == 400
+    server.client.put(job["upload_url"], content=UPLOAD)
+    assert server.client.post(f"/api/jobs/{token}/uploaded").status_code == 200
+    assert server.client.post(f"/api/jobs/{token}/uploaded").status_code == 409
+    assert server.client.post("/api/jobs/no-such-token/uploaded").status_code == 404
+    assert server.client.get("/api/jobs/no-such-token").status_code == 404
+
+
+def test_a_worker_runs_a_job_through_the_api(server: Server) -> None:
+    """Claimed, downloaded, reported stage by stage, its result uploaded, done; then viewable."""
+    job = _queued(server)
+    claimed = _claim(server)
+    assert (claimed["kind"], claimed["upload"]) == ("vo", "video")
+    assert server.client.get(claimed["download"]).content == UPLOAD
+    assert _status(server, job["token"])["state"] == "downloading"
+    _report(server, claimed["job"], "progress", {"stage": "importing"})
+    assert len(list(server.store.root.glob("uploads/*"))) == 1  # still importing
+    _report(server, claimed["job"], "progress", {"stage": "running"})
+    assert list(server.store.root.glob("uploads/*")) == []  # the import has ended
+    files = {"bundle.json": b"{}", "cpp/poses.npy": b"\x93NUMPY"}
+    listed = [{"path": path, "bytes": len(data)} for path, data in files.items()]
+    urls = _report(server, claimed["job"], "files", {"files": listed}).json()["urls"]
+    for path, data in files.items():
+        server.client.put(urls[path], content=data)
+    bundle = f"/r/{job['token']}/bundle/"
+    assert server.client.get(f"{bundle}bundle.json").status_code == 404  # not until done
+    assert _report(server, claimed["job"], "done", {"summary": {"frames": 2}}).status_code == 200
+    status = _status(server, job["token"])
+    assert (status["state"], status["summary"]) == ("done", {"frames": 2})
+    assert status["bundle"] == bundle
+    assert status["deleted"] == pytest.approx(server.clock.now + RETENTION)
+    redirect = server.client.get(f"{status['bundle']}cpp/poses.npy", follow_redirects=False)
+    assert redirect.status_code == 307
+    assert server.client.get(redirect.headers["location"]).content == b"\x93NUMPY"
+    assert server.client.get(f"{status['bundle']}cpp/other.npy").status_code == 404
+    assert server.client.get(f"/r/{claimed['job']}/bundle/bundle.json").status_code == 404
+
+
+def test_a_job_is_done_only_when_its_result_has_arrived_whole(server: Server) -> None:
+    """A listed file missing, or short: done refused, the job still the worker's."""
+    _queued(server)
+    claimed = _claim(server)
+    listed = [{"path": "a.npy", "bytes": 3}, {"path": "b.npy", "bytes": 3}]
+    urls = _report(server, claimed["job"], "files", {"files": listed}).json()["urls"]
+    server.client.put(urls["a.npy"], content=b"abc")
+    answer = _report(server, claimed["job"], "done", {"summary": {}})
+    assert (answer.status_code, answer.json()["detail"]) == (
+        400,
+        "files: b.npy has not arrived whole",
+    )
+    assert _report(server, claimed["job"], "progress", {"stage": "uploading"}).status_code == 200
+
+
+def test_a_failed_job_keeps_nothing_but_its_reason(server: Server) -> None:
+    """Failed: its upload and its partial result deleted, the reason shown to its owner."""
+    job = _queued(server)
+    claimed = _claim(server)
+    urls = _report(
+        server, claimed["job"], "files", {"files": [{"path": "a.npy", "bytes": 1}]}
+    ).json()["urls"]
+    server.client.put(urls["a.npy"], content=b"a")
+    reason = "x" * 600
+    assert _report(server, claimed["job"], "failed", {"reason": reason}).status_code == 200
+    assert list(server.store.root.rglob("*.npy")) == []
+    assert list(server.store.root.glob("uploads/*")) == []
+    status = _status(server, job["token"])
+    assert (status["state"], status["reason"]) == ("failed", reason[:500])
+
+
+def test_the_workers_api_needs_its_token(server: Server) -> None:
+    """No token, a wrong one, or another scheme: 401; with it and no job, 204."""
+    claim = {"kinds": ["vo"], "wait": 0}
+    for headers in ({}, {"Authorization": "Bearer wrong"}, {"Authorization": f"Basic {TOKEN}"}):
+        assert (
+            server.client.post("/api/worker/claim", json=claim, headers=headers).status_code == 401
+        )
+    assert server.client.post("/api/worker/claim", json=claim, headers=WORKER).status_code == 204
+    assert _report(server, "x", "progress", {"stage": "running"}).status_code == 409
+
+
+def test_a_claim_waits_for_a_job_up_to_its_wait(
+    server: Server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With nothing queued, the claim is held and answered 204 at its wait."""
+    monkeypatch.setattr(server_app, "CLAIM_POLL", 0.01)
+    claim = {"kinds": ["vo"], "wait": 0.05}
+    assert server.client.post("/api/worker/claim", json=claim, headers=WORKER).status_code == 204
+    claim["wait"] = 61
+    assert server.client.post("/api/worker/claim", json=claim, headers=WORKER).status_code == 422
+
+
+def test_a_job_no_longer_the_workers_answers_409(server: Server) -> None:
+    """Reports on a job waiting, or already ended, are refused with 409, which ends it there."""
+    job = _make(server)
+    waiting = server.jobs.by_token(job["token"])
+    assert waiting is not None
+    assert _report(server, waiting.id, "progress", {"stage": "importing"}).status_code == 409
+    assert _report(server, waiting.id, "done", {"summary": {}}).status_code == 409
+    _queued(server)
+    claimed = _claim(server)
+    _report(server, claimed["job"], "failed", {"reason": "no"})
+    assert _report(server, claimed["job"], "failed", {"reason": "no"}).status_code == 409
+    assert _report(server, claimed["job"], "files", {"files": []}).status_code == 409
+
+
+@pytest.mark.parametrize(
+    ("files", "code"),
+    [
+        ([{"path": "../uploads/x", "bytes": 1}], 400),
+        ([{"path": "/etc/x", "bytes": 1}], 400),
+        ([{"path": "a", "bytes": 1}, {"path": "a", "bytes": 2}], 400),
+        ([{"path": "a", "bytes": server_app.RESULT_BYTES + 1}], 413),
+        ([{"path": f"f{k}", "bytes": 1} for k in range(server_app.RESULT_FILES + 1)], 422),
+        ([{"path": "a", "bytes": -1}], 422),
+    ],
+)
+def test_a_results_files_are_checked(
+    server: Server, files: list[dict[str, Any]], code: int
+) -> None:
+    """A path that climbs or is absolute, a path twice, too many bytes or files: refused."""
+    _queued(server)
+    claimed = _claim(server)
+    assert _report(server, claimed["job"], "files", {"files": files}).status_code == code
+
+
+def test_a_stage_out_of_order_is_refused(server: Server) -> None:
+    """A stage before the job's, or one not known: 400."""
+    _queued(server)
+    claimed = _claim(server)
+    _report(server, claimed["job"], "progress", {"stage": "running"})
+    assert _report(server, claimed["job"], "progress", {"stage": "importing"}).status_code == 400
+    assert _report(server, claimed["job"], "progress", {"stage": "resting"}).status_code == 400
+
+
+def test_the_queue_is_capped(server: Server) -> None:
+    """Past QUEUE open jobs, the owner is asked to try later."""
+    for _ in range(QUEUE):
+        _make(server)
+    answer = server.client.post("/api/jobs", json={"code": CODE, "upload": "video", "bytes": 1})
+    assert (answer.status_code, answer.json()["detail"]) == (
+        503,
+        "the queue is full: please try again later",
+    )
+
+
+def test_the_sweep_deletes_what_has_expired(server: Server) -> None:
+    """An upload never confirmed is deleted at UPLOAD_WAIT; a result, RETENTION after it ended."""
+    waiting = _make(server)
+    server.client.put(waiting["upload_url"], content=UPLOAD)
+    done, claimed = _run(server, {"bundle.json": b"{}"})
+    server.clock.now += UPLOAD_WAIT
+    swept = server_app.sweep(server.jobs, server.store)
+    assert [job.state for job in swept.ended] == ["expired"]
+    assert list(server.store.root.glob("uploads/*")) == []
+    assert _status(server, waiting["token"])["reason"] == "the upload did not arrive in time"
+    assert (server.store.root / "results" / claimed["job"] / "bundle.json").is_file()
+    server.clock.now += RETENTION
+    swept = server_app.sweep(server.jobs, server.store)
+    assert len(swept.deleted) == 2
+    assert list(server.store.root.rglob("*.json")) == []
+    assert server.client.get(f"/api/jobs/{done['token']}").status_code == 404
+    assert server.client.get(f"/r/{done['token']}/bundle/bundle.json").status_code == 404
+
+
+@pytest.mark.parametrize("path", ["/", "/r/a-token", "/api/jobs/x", "/robots.txt", "/nothing"])
+def test_every_answer_is_kept_from_search_and_sends_no_referrer(server: Server, path: str) -> None:
+    """Pages, the API, robots.txt and a 404 alike."""
+    answer = server.client.get(path)
+    assert answer.headers["x-robots-tag"] == "noindex, nofollow"
+    assert answer.headers["referrer-policy"] == "no-referrer"
+    assert answer.headers["x-content-type-options"] == "nosniff"
+    if path.startswith("/api/"):
+        assert answer.headers["cache-control"] == "no-store"
+
+
+def test_robots_are_asked_to_stay_away(server: Server) -> None:
+    """robots.txt disallows everything."""
+    assert server.client.get("/robots.txt").text == "User-agent: *\nDisallow: /\n"
+
+
+@pytest.mark.parametrize(
+    ("path", "kind"),
+    [
+        ("/", "SLAM It All! on your own video"),
+        ("/r/some-token", "SLAM It All! run"),
+        ("/index.html", "SLAM It All! run viewer"),
+        ("/upload.html", "SLAM It All! on your own video"),
+        ("/app.css", "--accent"),
+        ("/src/jobs.js", "export function describe"),
+        ("/src/main.js", "loadBundle"),
+    ],
+)
+def test_the_pages_are_served(server: Server, path: str, kind: str) -> None:
+    """The upload page at the root, the status page at a job's link, the viewer and its files."""
+    answer = server.client.get(path)
+    assert answer.status_code == 200
+    assert kind in answer.text
+    if path.endswith(".js"):
+        assert answer.headers["content-type"].startswith("text/javascript")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/package.json",
+        "/tsconfig.json",
+        "/logic.d.ts",
+        "/tests/jobs.test.js",
+        "/node_modules/three/package.json",
+        "/src/../package.json",
+        "/src/%2e%2e/package.json",
+        "/src/nothing.js",
+        "/src/sub/x.js",
+        "/storage/uploads/x",
+    ],
+)
+def test_nothing_else_of_the_viewers_folder_is_served(server: Server, path: str) -> None:
+    """Its tools, tests and modules folder, and any path out of it: not found, or refused."""
+    assert server.client.get(path).status_code in (403, 404)
+
+
+def test_a_body_too_large_or_of_no_stated_length_is_refused(server: Server) -> None:
+    """Over the body cap: 413; sent in chunks with no length: 411."""
+    padding = "x" * server_app.BODY_BYTES
+    body = {"code": padding, "upload": "video", "bytes": 1}
+    assert server.client.post("/api/jobs", json=body).status_code == 413
+
+    def chunks() -> Iterator[bytes]:
+        yield b'{"code": "'
+        yield b'x", "upload": "video", "bytes": 1}'
+
+    assert server.client.post("/api/jobs", content=chunks()).status_code == 411
+
+
+def _basic(password: str) -> dict[str, str]:
+    """Return a Basic auth header."""
+    return {"Authorization": "Basic " + base64.b64encode(f"anyone:{password}".encode()).decode()}
+
+
+def test_staging_puts_every_page_behind_a_code(server: Server, staging: TestClient) -> None:
+    """Pages and the owner's API need a code; the worker's API, storage and health do not."""
+    answer = staging.get("/")
+    assert answer.status_code == 401
+    assert answer.headers["www-authenticate"] == 'Basic realm="SLAM It All!"'
+    assert answer.headers["x-robots-tag"] == "noindex, nofollow"
+    assert staging.get("/", headers=_basic("wrong-code-here")).status_code == 401
+    assert staging.get("/", headers={"Authorization": "Basic %%%"}).status_code == 401
+    assert staging.get("/", headers=_basic(CODE)).status_code == 200
+    assert staging.get("/api/jobs/x", headers=_basic("another-invite-code")).status_code == 404
+    claim = {"kinds": ["vo"], "wait": 0}
+    assert staging.post("/api/worker/claim", json=claim, headers=WORKER).status_code == 204
+    assert staging.get("/healthz").json() == {"ok": True}
+    job = _make(server)
+    assert staging.put(job["upload_url"], content=UPLOAD).status_code == 200

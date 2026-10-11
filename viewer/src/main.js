@@ -8,27 +8,13 @@ import { differences, ran, shownAt, spanText } from "./compare.js";
 import * as format from "./format.js";
 import { keypointsAt, recordIndex } from "./frames.js";
 import { ImageView } from "./image_view.js";
+import { element } from "./page_view.js";
 import { Playhead } from "./playback.js";
 import { SceneView } from "./scene_view.js";
 import { SolverView } from "./solver_view.js";
 
 /** The height of each backend's row under the frame slider, in pixels. */
 const SPAN_ROW = 4;
-
-/**
- * An element of the page, by id.
- * @template {HTMLElement} T
- * @param {string} id Its id.
- * @param {new () => T} type Its type.
- * @returns {T} The element.
- */
-function element(id, type) {
-  const found = document.getElementById(id);
-  if (!(found instanceof type)) {
-    throw new Error(`the page has no ${id}`);
-  }
-  return found;
-}
 
 /**
  * How to fetch a bundle's files, from where it is served.

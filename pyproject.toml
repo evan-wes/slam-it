@@ -80,6 +80,8 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# Where first-party code lives: the library, and the upload server (server/).
+src = [".", "src", "server/src"]
 
 [tool.ruff.lint]
 # D: docstrings (numpy convention) on every module, class and function.
@@ -102,7 +104,7 @@ convention = "numpy"
 [tool.mypy]
 strict = true
 python_version = "3.11"
-files = ["src/slam_it_all", "tests", "scripts"]
+files = ["src/slam_it_all", "server/src/slam_it_all_server", "tests", "scripts"]
 # The compiled extensions are never imported by name: slam_it_all.backends locates them
 # dynamically, and each algorithm types its backend through a Protocol (e.g.
 # slam_it_all.foundations.so3.Implementation) that tests check the extensions against.
@@ -112,8 +114,13 @@ files = ["src/slam_it_all", "tests", "scripts"]
 module = ["mpmath", "manifpy", "scipy.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# The upload server's S3 client, which ships without type information.
+module = ["boto3", "botocore.*"]
+ignore_missing_imports = true
+
 [tool.importlinter]
-root_packages = ["slam_it_all"]
+root_packages = ["slam_it_all", "slam_it_all_server"]
 include_external_packages = true
 
 # The ladder as dependency layers, top to bottom. Siblings joined by `|` are independent:
@@ -312,3 +319,34 @@ name = "slam_it_all never imports reifyscene (the dependency runs one way)"
 type = "forbidden"
 source_modules = ["slam_it_all"]
 forbidden_modules = ["reifyscene"]
+
+# The upload server (server/, docs/design/2026-10-09-run-viewer.md, section 5.3) holds the
+# bucket's keys and the worker token, so it never parses a video: it never imports slam_it_all,
+# whose worker does that work in a process of its own.
+[[tool.importlinter.contracts]]
+name = "The upload server never imports slam_it_all"
+type = "forbidden"
+source_modules = ["slam_it_all_server"]
+forbidden_modules = ["slam_it_all"]
+
+# The other way, the library never carries the server or its web stack: the worker talks to the
+# server over HTTP with the standard library.
+[[tool.importlinter.contracts]]
+name = "slam_it_all never imports the upload server or its web stack"
+type = "forbidden"
+source_modules = ["slam_it_all"]
+forbidden_modules = ["slam_it_all_server", "fastapi", "starlette", "uvicorn", "boto3", "botocore"]
+
+# The order of modules inside the upload server: its entry point, the routes, the job list and
+# storage beside each other, and the settings at the bottom.
+[[tool.importlinter.contracts]]
+name = "The upload server's internal order"
+type = "layers"
+exhaustive = true
+containers = ["slam_it_all_server"]
+layers = [
+  "__main__",
+  "app",
+  "jobs | storage",
+  "config",
+]
