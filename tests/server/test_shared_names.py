@@ -47,6 +47,12 @@ def test_the_heartbeat_is_well_inside_the_silence() -> None:
     assert config.SILENCE >= 3 * worker.HEARTBEAT
 
 
+def test_a_stalled_transfer_ends_before_the_server_gives_up() -> None:
+    """A stalled upload or download sends no heartbeat: it fails within SILENCE less one."""
+    assert worker.UPLOAD_TIMEOUT + worker.HEARTBEAT <= config.SILENCE
+    assert worker.REQUEST_TIMEOUT + worker.HEARTBEAT <= config.SILENCE
+
+
 def test_the_retention_the_pages_state_is_the_servers() -> None:
     """The status page's constant, and the upload page's words, say the server's RETENTION."""
     days = config.RETENTION / 86400

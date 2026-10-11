@@ -27,13 +27,16 @@ is logged and the job carries on; a 409 lets it go.
 
 **Supervision.** The child starts a session of its own, so it and every process it starts (the
 C++ program among them) are one process group. Whenever a job ends other than cleanly (its
-timeout, a 409, an error), the whole group is killed, so a job never outlives its turn. The
+timeout, a 409, an error, the worker stopped), the whole group is killed, so a job never
+outlives its turn. A SIGTERM stops the worker as a Ctrl-C does, and a second signal is ignored
+while it unwinds, so the group is killed and the job's folder removed however it is stopped. The
 child inherits only the environment it needs (:data:`CHILD_ENVIRONMENT`), never the worker's
 token. Its stderr is the worker's, and anything unexpected is logged with the job's id, for the
 operator; the owner sees only the reason fit to show.
 
 **Trust.** The worker refuses a server or a link that is not ``http`` or ``https``, and plain
-``http`` to a host that may be on the public internet (:func:`check_url`).
+``http`` to a host that may be on the public internet (:func:`check_url`). It follows no
+redirect from the server or an upload link, and a download's only to a URL it would accept.
 
 **The protocol**, JSON over HTTPS, every request carrying ``Authorization: Bearer <token>``:
 
@@ -64,6 +67,7 @@ import resource
 import selectors
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -73,6 +77,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from http.client import HTTPMessage
 from pathlib import Path
 from typing import IO, Any
 
@@ -126,8 +131,10 @@ program need. The worker's token and anything else are left out."""
 REQUEST_TIMEOUT = 60.0
 """How long a request to the server, or a download, may stall, in seconds."""
 
-UPLOAD_TIMEOUT = 300.0
-"""How long one of a bundle's uploads may stall, in seconds."""
+UPLOAD_TIMEOUT = 90.0
+"""How long one of a bundle's uploads may stall, in seconds. A stalled upload sends no heartbeat,
+so this is within the server's silence limit less a heartbeat (``SILENCE`` in
+``slam_it_all_server.config``): the worker gives up before the server does."""
 
 CLAIM_MARGIN = 30.0
 """How much longer than its wait a claim's request may take, in seconds."""
@@ -203,12 +210,54 @@ def check_url(url: str, what: str) -> str:
 
 
 def _private_host(host: str) -> bool:
-    """Whether a host cannot be on the public internet (:func:`check_url`)."""
+    """Whether a host cannot be on the public internet (:func:`check_url`).
+
+    A host the C library reads as an address, in any of its forms ("127.0.0.1", "2130706433",
+    "0x7f000001"), is judged by that address; a name by its form: ``localhost``, one label (a
+    container's name), or ``*.railway.internal``.
+    """
     try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
+        found = socket.getaddrinfo(host, None, flags=socket.AI_NUMERICHOST)
+    except socket.gaierror:  # a name, not an address: nothing is looked up
         return host == "localhost" or "." not in host or host.endswith(".railway.internal")
+    address = ipaddress.ip_address(found[0][4][0])
     return address.is_loopback or address.is_private
+
+
+class _Redirects(urllib.request.HTTPRedirectHandler):
+    """Follows a redirect only where one may lead.
+
+    Nowhere from the server's API or an upload link, which never redirect, and whose redirect
+    would carry the request's headers, the worker's token among them; from a download link, only
+    to a URL :func:`check_url` allows.
+    """
+
+    def __init__(self, *, follow: bool) -> None:
+        """Hold whether a redirect is followed at all."""
+        super().__init__()
+        self.follow = follow
+
+    def redirect_request(  # noqa: PLR0913, PLR0917 -- urllib's signature
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: HTTPMessage,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        """Follow none (the 3xx is raised as an HTTPError), or one to a URL check_url allows."""
+        if not self.follow:
+            return None
+        check_url(newurl, "download's redirect")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_API = urllib.request.build_opener(_Redirects(follow=False))
+"""Opens the server's API and the upload links, following no redirect."""
+
+_DOWNLOADS = urllib.request.build_opener(_Redirects(follow=True))
+"""Opens a download link, following a redirect only to a URL :func:`check_url` allows."""
 
 
 class Client:
@@ -240,7 +289,7 @@ class Client:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with _API.open(request, timeout=timeout) as response:
                 data = response.read()
                 return response.status, json.loads(data) if data else None
         except urllib.error.HTTPError as error:
@@ -318,7 +367,7 @@ def download(url: str, path: Path, cap: int, beat: Callable[[], None] = lambda: 
     """Download a link to a file, refusing more than `cap` bytes; `beat` is called per chunk."""
     read = 0
     with (
-        urllib.request.urlopen(url, timeout=REQUEST_TIMEOUT) as response,
+        _DOWNLOADS.open(url, timeout=REQUEST_TIMEOUT) as response,
         path.open("wb") as file,
     ):
         while chunk := response.read(_CHUNK):
@@ -338,7 +387,7 @@ def upload(url: str, path: Path, beat: Callable[[], None] = lambda: None) -> Non
             method="PUT",
             headers={"Content-Length": str(path.stat().st_size)},
         )
-        with urllib.request.urlopen(request, timeout=UPLOAD_TIMEOUT):
+        with _API.open(request, timeout=UPLOAD_TIMEOUT):
             pass
 
 
@@ -402,15 +451,17 @@ def process(upload_path: str | Path, kind: str, out: str | Path) -> int:
         0, having printed ``{"stage"}`` lines and a last ``{"summary"}`` line; 1, having printed
         ``{"reason"}``, if the import or the pipeline refused it.
     """
-    folder = Path(out)
+    folder, upload = Path(out), Path(upload_path)
 
     def report(stage: str) -> None:
         print(json.dumps({"stage": stage}), flush=True)
 
     try:
-        summary = _work(Path(upload_path), kind, folder, report)
-    except (SlamItAllError, FileNotFoundError) as error:
-        print(json.dumps({"reason": _safe(str(error), folder, Path(upload_path))}), flush=True)
+        if not upload.is_file():
+            raise InvalidInputError("the upload is missing")
+        summary = _work(upload, kind, folder, report)
+    except SlamItAllError as error:  # anything else is the worker's own: no reason, logged
+        print(json.dumps({"reason": _safe(str(error), folder, upload)}), flush=True)
         return 1
     print(json.dumps({"summary": summary}), flush=True)
     return 0
@@ -479,6 +530,11 @@ def _run_child(
     raise RuntimeError(f"the job's process ended with {child.returncode} and no result")
 
 
+def _too_long(timeout: float) -> RefusedError:
+    """Return the refusal of a job past its deadline of `timeout` seconds."""
+    return RefusedError(f"took longer than {timeout / 60:g} minutes")
+
+
 def _supervise(
     child: subprocess.Popen[str], report: Callable[[str], None], timeout: float
 ) -> dict[str, Any]:
@@ -496,7 +552,7 @@ def _supervise(
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise RefusedError(f"took longer than {timeout / 60:g} minutes")
+                raise _too_long(timeout)
             if not waiting.select(min(remaining, HEARTBEAT)):
                 report(current)  # still at it
                 continue
@@ -514,7 +570,7 @@ def _supervise(
                 try:
                     child.wait(timeout=max(deadline - time.monotonic(), 0.0))
                 except subprocess.TimeoutExpired:
-                    raise RefusedError(f"took longer than {timeout / 60:g} minutes") from None
+                    raise _too_long(timeout) from None
                 return message
 
 
@@ -548,7 +604,7 @@ def handle(client: Client, job: Job, work: Path, timeout: float = TIMEOUT) -> No
         """Report a stage; one that does not reach the server is logged, and the job goes on."""
         try:
             client.progress(job, stage)
-        except (urllib.error.URLError, OSError) as error:  # a 409 is AbandonedError, raised
+        except OSError as error:  # a URLError among them; a 409 is AbandonedError, raised
             _LOG.warning(
                 "job %s: the %s report did not reach the server (%s)", job.id, stage, error
             )
@@ -606,7 +662,7 @@ def serve(client: Client, work: Path, *, once: bool = False, timeout: float = TI
     while True:
         try:
             job = client.claim()
-        except (urllib.error.URLError, OSError, ValueError) as error:
+        except (OSError, ValueError) as error:  # a URLError is an OSError
             _LOG.warning("no job (%s); trying again in %g s", error, RETRY)
             time.sleep(RETRY)  # the server is away, or answered nonsense
             continue
@@ -615,6 +671,24 @@ def serve(client: Client, work: Path, *, once: bool = False, timeout: float = TI
         handle(client, job, work, timeout)
         if once:
             return
+
+
+def _stop(signum: int, frame: object) -> None:
+    """Stop the worker, once: further SIGINTs and SIGTERMs are ignored while it unwinds.
+
+    It raises :class:`KeyboardInterrupt`, so that a job's processes are killed and its folder
+    removed on the way out (:func:`_run_child`, :func:`handle`), and no second signal (the
+    demo's ``terminate()`` after a Ctrl-C that reached both) can cut that short.
+    """
+    for each in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(each, signal.SIG_IGN)
+    raise KeyboardInterrupt
+
+
+def _stop_on_signals() -> None:
+    """Make a SIGINT or a SIGTERM stop the worker (:func:`_stop`)."""
+    for each in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(each, _stop)
 
 
 def main(arguments: Sequence[str]) -> int:
@@ -649,9 +723,10 @@ def main(arguments: Sequence[str]) -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s worker %(levelname)s %(message)s", stream=sys.stderr
     )
+    _stop_on_signals()
     try:
         client = Client(args.server, os.environ.get(TOKEN_VARIABLE, ""))
-        with contextlib.suppress(KeyboardInterrupt):  # Ctrl-C ends the worker, quietly
+        with contextlib.suppress(KeyboardInterrupt):  # Ctrl-C or SIGTERM: ends, quietly
             serve(client, args.work, once=args.once)
     except InvalidInputError as error:
         print(f"worker: {error}", file=sys.stderr)

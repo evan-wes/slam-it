@@ -9,9 +9,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import signal
+import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -51,6 +54,7 @@ class Server:
     slow: bool = False
     put_delay: float = 0.0
     download: str | None = None
+    redirect: str | None = None
     jobs: list[str] = field(default_factory=lambda: ["job-1"])
     stages: list[str] = field(default_factory=list)
     files: dict[str, bytes] = field(default_factory=dict)
@@ -76,8 +80,17 @@ def _handler(state: Server) -> type[BaseHTTPRequestHandler]:
         def _body(self) -> bytes:
             return self.rfile.read(int(self.headers.get("Content-Length", "0")))
 
+        def _redirect(self) -> None:
+            self.send_response(302)
+            self.send_header("Location", str(state.redirect))
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
         def do_GET(self) -> None:
-            """Serve the upload, slowly if asked."""
+            """Serve the upload, slowly if asked; at ``/moved``, a redirect."""
+            if self.path == "/moved":
+                self._redirect()
+                return
             self.send_response(200)
             self.send_header("Content-Length", str(len(state.upload)))
             self.end_headers()
@@ -100,6 +113,9 @@ def _handler(state: Server) -> type[BaseHTTPRequestHandler]:
                 self._answer(401)
                 return
             body = json.loads(self._body() or b"{}")
+            if state.redirect:
+                self._redirect()
+                return
             if self.path == "/api/worker/claim":
                 if not state.jobs:
                     self._answer(204)
@@ -261,6 +277,24 @@ def test_process_prints_its_stages_and_its_reason(
     assert "not a readable video" in lines[-1]["reason"]
 
 
+def test_only_the_jobs_own_refusals_are_its_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A missing upload is a reason; a file missing from the worker's own setup is not."""
+    assert worker.process(tmp_path / "none.zip", "stray", tmp_path / "job") == 1
+    last = capsys.readouterr().out.splitlines()[-1]
+    assert json.loads(last) == {"reason": "the upload is missing"}
+    (tmp_path / "upload.zip").write_bytes(b"x")
+
+    def missing(*_: object) -> dict[str, Any]:
+        raise FileNotFoundError(2, "No such file or directory", "/opt/worker/bin/cmake")
+
+    monkeypatch.setattr(worker, "_work", missing)
+    with pytest.raises(FileNotFoundError):  # the worker's: an internal error, logged
+        worker.process(tmp_path / "upload.zip", "stray", tmp_path / "job")
+    assert "reason" not in capsys.readouterr().out
+
+
 def test_a_child_out_of_memory_fails_as_an_internal_error(
     serving: Server, recording: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -391,6 +425,60 @@ def test_a_job_leaves_no_process_behind(ending: str, tmp_path: Path) -> None:
     assert _gone(int(pidfile.read_text()))
 
 
+STOPPED = """
+import contextlib, sys
+from pathlib import Path
+from slam_it_all.orchestration import worker
+
+class Client:
+    def progress(self, job, stage):
+        pass
+
+    def failed(self, job, reason):
+        pass
+
+stand_in, pidfile, work = sys.argv[1:4]
+run_child = worker._run_child
+worker.download = lambda url, path, cap, beat: path.write_bytes(b"upload")
+worker._run_child = lambda argv, report, timeout: run_child(
+    [sys.executable, stand_in, pidfile, "wait"], report, timeout
+)
+worker._stop_on_signals()
+with contextlib.suppress(KeyboardInterrupt):
+    worker.handle(Client(), worker.Job("job-1", "vo", "stray", ""), Path(work))
+print("stopped", flush=True)
+"""
+"""A worker, its signals set as ``serve`` sets them, running one job whose child is the
+stand-in."""
+
+
+@pytest.mark.parametrize("signals", [("SIGTERM",), ("SIGINT", "SIGTERM")])
+def test_a_stopped_worker_leaves_no_process_or_folder_behind(
+    signals: tuple[str, ...], tmp_path: Path
+) -> None:
+    """Stopped by a SIGTERM, or by a Ctrl-C and at once the demo's SIGTERM: the job goes too.
+
+    The job runs in a session of its own, which no signal to the worker reaches, so only the
+    worker's clean-up ends it; the second signal must not cut that short.
+    """
+    script, stand_in, pidfile = tmp_path / "worker.py", tmp_path / "child.py", tmp_path / "pid"
+    work = tmp_path / "work"
+    script.write_text(STOPPED)
+    stand_in.write_text(STAND_IN)
+    work.mkdir()
+    argv = [sys.executable, str(script), str(stand_in), str(pidfile), str(work)]
+    with subprocess.Popen(argv, stdout=subprocess.PIPE, text=True) as running:
+        deadline = time.monotonic() + 20.0
+        while not pidfile.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)  # the job's grandchild has started
+        for name in signals:
+            running.send_signal(getattr(signal, name))
+        out, _ = running.communicate(timeout=20.0)
+    assert out.strip() == "stopped"
+    assert _gone(int(pidfile.read_text()))
+    assert list(work.iterdir()) == []
+
+
 def test_the_child_inherits_no_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     """Only CHILD_ENVIRONMENT's variables pass: never the worker's token, nor anything else."""
     monkeypatch.setenv(worker.TOKEN_VARIABLE, TOKEN)
@@ -412,6 +500,9 @@ def test_the_child_inherits_no_secret(monkeypatch: pytest.MonkeyPatch) -> None:
         ("http://192.168.1.20:8770", True),
         ("http://slam-it-all.railway.internal:8000", True),
         ("http://sia-e2e-server:8000", True),
+        ("http://2130706433:8000", True),  # 127.0.0.1, written as a number
+        ("http://134744072/", False),  # 8.8.8.8, written as a number
+        ("http://0x8080808/", False),  # and in hexadecimal
         ("http://slam.example.org", False),
         ("http://8.8.8.8", False),
         ("file:///etc/passwd", False),
@@ -426,6 +517,31 @@ def test_only_safe_urls_are_followed(url: str, good: bool) -> None:
     else:
         with pytest.raises(InvalidInputError):
             worker.check_url(url, "server")
+
+
+def test_the_server_is_never_followed_through_a_redirect(serving: Server) -> None:
+    """A 3xx from the server's API is an error, never followed: the token would go along."""
+    serving.redirect = f"{serving.url}/elsewhere"
+    with pytest.raises(urllib.error.HTTPError, match="302"):
+        worker.Client(serving.url, TOKEN).claim()
+
+
+@pytest.mark.parametrize(
+    ("target", "good"),
+    [("{url}/upload", True), ("http://8.8.8.8/x", False), ("ftp://127.0.0.1:9/x", False)],
+)
+def test_a_downloads_redirect_goes_only_where_a_link_may(
+    target: str, good: bool, serving: Server, tmp_path: Path
+) -> None:
+    """A download follows a redirect only to a URL check_url accepts."""
+    serving.upload, serving.redirect = b"bytes", target.format(url=serving.url)
+    path = tmp_path / "upload.zip"
+    if good:
+        worker.download(f"{serving.url}/moved", path, 100)
+        assert path.read_bytes() == b"bytes"
+    else:
+        with pytest.raises(InvalidInputError, match="download's redirect"):
+            worker.download(f"{serving.url}/moved", path, 100)
 
 
 def test_a_download_link_to_a_local_file_is_refused(serving: Server) -> None:

@@ -128,6 +128,27 @@ def test_the_demo_stops_when_either_of_its_processes_does(monkeypatch: pytest.Mo
     assert demo.watch(_Process(10, 0), _Process(2, 0)) == 1
 
 
+STUBBORN = (
+    "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+    "print('ready', flush=True); time.sleep(60)"
+)
+"""A process that ignores a SIGTERM."""
+
+
+def test_each_process_is_given_its_time_then_killed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A SIGTERM, then STOP_WAIT seconds to finish; a process still there is then killed."""
+    demo = _script()
+    monkeypatch.setattr(demo, "STOP_WAIT", 0.5)
+    with subprocess.Popen([sys.executable, "-c", STUBBORN], stdout=subprocess.PIPE) as stubborn:
+        assert stubborn.stdout is not None
+        assert stubborn.stdout.readline() == b"ready\n"
+        demo._end(stubborn)
+    assert stubborn.returncode == -signal.SIGKILL
+    with subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"]) as willing:
+        demo._end(willing)
+    assert willing.returncode == -signal.SIGTERM
+
+
 def test_on_the_local_network_every_page_asks_for_the_code(tmp_path: Path) -> None:
     """With --lan, the settings are staging's: every page behind the invite code."""
     env = _script().environment(tmp_path, "a-demo-invite-code", "http://1.2.3.4:1", staging=True)

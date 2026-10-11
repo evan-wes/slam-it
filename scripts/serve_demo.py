@@ -37,6 +37,9 @@ from slam_it_all.orchestration import worker as worker_module
 REPO = Path(__file__).resolve().parent.parent
 """The repository, whose viewer folder holds the pages."""
 
+STOP_WAIT = 10.0
+"""How long the server and the worker are each given to stop, in seconds, before being killed."""
+
 PORT = 8770
 """The port the server listens on, by default."""
 
@@ -86,6 +89,21 @@ def _stop(signum: int, frame: object) -> None:
     """End the script on a SIGTERM as on Ctrl-C, so that it stops its server and worker."""
     del signum, frame
     raise KeyboardInterrupt
+
+
+def _end(child: subprocess.Popen[bytes]) -> None:
+    """Stop a child: a SIGTERM, then :data:`STOP_WAIT` seconds to finish, then a SIGKILL.
+
+    The worker stops on a SIGTERM as on a Ctrl-C, and ignores whichever comes second, so a
+    Ctrl-C that reached it too cannot be cut short by this one.
+    """
+    if child.poll() is None:
+        child.terminate()
+    try:
+        child.wait(STOP_WAIT)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        child.wait()
 
 
 def _refuse_a_used_port(host: str, port: int) -> None:
@@ -175,9 +193,8 @@ def main(arguments: list[str]) -> int:
         return 0
     finally:
         for child in (worker, server):
-            if child is not None and child.poll() is None:
-                child.terminate()
-                child.wait(10)
+            if child is not None:
+                _end(child)
 
 
 if __name__ == "__main__":
