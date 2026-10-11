@@ -1,0 +1,15 @@
+# What the images' builds never need (docker/*.Dockerfile, built from the repository's root):
+# git, build trees, caches, the viewer's development tools, and data.
+.git
+build
+rust/target
+viewer/node_modules
+**/__pycache__
+**/*.pyc
+**/*.so
+**/*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+datasets
+runs
