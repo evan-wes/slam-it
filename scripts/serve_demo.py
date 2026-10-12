@@ -3,7 +3,8 @@
 docs/design/2026-10-09-run-viewer.md, section 5.3: the demo, before anything is deployed. The
 job list, the uploads and the results all go in one folder (``--data``, by default a new one in
 the system's temporary folder). The worker token and the signing key are made afresh for each
-run; the invite code is too, unless given, and is printed with the page's address.
+run; the invite code is too, unless given (:func:`invite_code`: three words, easy to type on a
+phone), and is printed with the page's address.
 
 With ``--lan`` the server listens on every interface, and its links use this machine's address
 on the local network, so a phone on the same Wi-Fi can open the page and upload. Every page then
@@ -47,6 +48,34 @@ PORT = 8770
 """The port the server listens on, by default."""
 
 
+WORDS = (
+    "bear", "boar", "buck", "bull", "calf", "clam", "colt", "crab", "crow", "deer", "dove",
+    "duck", "fawn", "fish", "foal", "frog", "goat", "gull", "hare", "hawk", "kiwi", "lamb",
+    "lark", "lion", "lynx", "mink", "mole", "moth", "mule", "newt", "orca", "puma", "seal",
+    "swan", "toad", "tuna", "wasp", "wolf", "worm", "wren", "bark", "bush", "cave", "clay",
+    "coal", "cove", "dale", "dawn", "dune", "dusk", "fern", "foam", "glen", "gust", "hail",
+    "haze", "hill", "isle", "kelp", "lake", "lava", "leaf", "mesa", "mist", "moon", "moss",
+    "peak", "pond", "pool", "rain", "reed", "reef", "rock", "root", "sand", "seed", "snow",
+    "soil", "star", "stem", "tide", "vale", "vine", "wave", "wind", "wood", "cone", "pine",
+    "palm", "rose", "lily", "iris", "sage", "mint", "herb", "kale", "leek", "lime", "pear",
+    "plum", "date", "corn", "bean", "rice", "yolk", "salt", "malt", "milk", "loaf", "cake",
+    "soup", "stew", "tart", "taco", "tofu", "bell", "boat", "bolt", "book", "boot", "bowl",
+    "cart", "cask", "coat", "coin", "comb", "cord", "cork", "desk", "dial", "disc", "dish",
+    "door", "drum", "fork", "gate", "gear", "gift", "harp", "hook", "horn", "kite", "knot",
+    "lamp", "lens", "lock", "loom", "mast", "mesh", "mill", "nail", "oven", "pail", "pipe",
+    "plow", "raft", "rail", "rake", "ring", "robe", "rope", "sail", "shed", "ship", "silk",
+    "sled", "sock", "sofa", "spur", "tent", "tile", "tray", "tube", "tusk", "vase", "veil",
+    "wand", "well", "wick", "wing", "wire", "yarn", "zinc", "iron", "gold", "jade", "opal",
+    "ruby", "road", "path", "lane", "pier", "dock", "barn", "fort", "hall", "park", "roof",
+    "wall", "yard", "club", "card", "chip", "clip", "flag", "film", "fuse", "glue", "note",
+    "page", "sack", "soap", "sign", "slab", "step", "tack", "tape", "tool", "trap", "vest",
+    "cape", "belt", "cuff", "hood", "shoe", "lace", "bead", "dome", "arch", "axle", "bike",
+    "jeep", "tram", "echo", "glow", "song", "tune", "beat", "lute", "tuba", "poem", "tale",
+    "myth", "word", "game", "quiz", "dice", "ball", "golf", "polo", "yoga", "surf", "dive",
+    "jump", "nest", "hive",
+)  # fmt: skip
+"""The words an invite code is made of: 256, of four letters each."""
+
 QR_BORDER = 4
 """The light margin around the QR code, in modules: the four the standard asks for."""
 
@@ -57,6 +86,15 @@ _HALF_BLOCKS = {
     (True, True): "\u2588",
 }
 """A character for two modules, the upper and the lower, each dark (True) or light."""
+
+
+def invite_code() -> str:
+    """Return a new invite code: three of :data:`WORDS`, joined by hyphens, as ``moss-lamp-tide``.
+
+    One of 256**3, about 16.8 million. The server does not slow down wrong guesses, so on a
+    network shared with strangers, give a longer one with ``--code``.
+    """
+    return "-".join(secrets.choice(WORDS) for _ in range(3))
 
 
 def qr_code(url: str) -> str:
@@ -202,12 +240,12 @@ def main(arguments: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--lan", action="store_true", help="listen on the local network too")
-    parser.add_argument("--code", help="the invite code (default: a new one)")
+    parser.add_argument("--code", help="the invite code (default: three new words)")
     parser.add_argument("--data", type=Path, help="the folder to keep everything in")
     args = parser.parse_args(arguments)
     data = args.data or Path(tempfile.mkdtemp(prefix="slam-it-all-demo-"))
     data.mkdir(parents=True, exist_ok=True)
-    code = args.code or secrets.token_urlsafe(9)
+    code = args.code or invite_code()
     address = lan_address() if args.lan else "127.0.0.1"
     url = f"http://{address}:{args.port}"
     settings = environment(data, code, url, staging=args.lan)

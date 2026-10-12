@@ -47,6 +47,19 @@ def test_the_demos_settings_are_the_servers(tmp_path: Path) -> None:
     assert again["SLAM_IT_ALL_WORKER_TOKEN"] != env["SLAM_IT_ALL_WORKER_TOKEN"]
 
 
+def test_the_demos_own_invite_code_is_three_words_the_server_takes(tmp_path: Path) -> None:
+    """Three of 256 words, of four letters each: short to type, long enough for the server."""
+    demo = _script()
+    assert len(set(demo.WORDS)) == len(demo.WORDS) == 256
+    assert all(re.fullmatch("[a-z]{4}", word) for word in demo.WORDS)
+    codes = {demo.invite_code() for _ in range(20)}
+    assert len(codes) > 1  # new each time
+    for code in codes:
+        assert re.fullmatch("[a-z]{4}-[a-z]{4}-[a-z]{4}", code)
+        env = demo.environment(tmp_path, code, "http://127.0.0.1:1")
+        assert from_environment(env).invite_codes == (code,)
+
+
 def _free_port() -> int:
     """Return a port nothing listens on now."""
     with socket.socket() as probe:
