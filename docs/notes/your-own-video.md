@@ -113,18 +113,20 @@ folder named `your-video`, which is the name the viewer shows.
 - **Storage** is a private S3 bucket, or a folder on this machine whose links the server signs and
   serves, every file as a download. An upload link is a PUT signed for the size the owner declared,
   so storage refuses any other; the server checks that size against the 500 MB cap first. A
-  confirmed upload is moved where its owner's link cannot reach it. A link is checked when an upload
-  starts, so whatever a job's links write later is deleted when it ends, and again once every link
-  it signed has expired (an hour after it ended) and an hour more has passed; folder storage keeps
-  nothing that arrives whole only after its link expired. A done job's files, only a bundle's kinds
-  of file, are redirected to storage's own links, never proxied.
+  confirmed upload is moved where its owner's link cannot reach it. A job's files, its upload, the
+  upload's copy and its result, are in one folder of storage (`jobs/<id>/`), deleted whole with the
+  job. A link is checked when an upload starts, so whatever a job's links write later is deleted
+  when it ends, and again once every link it signed has expired (an hour after it ended) and an hour
+  more has passed; folder storage keeps nothing that arrives whole only after its link expired. A
+  done job's files, only a bundle's kinds of file, are redirected to storage's own links, never
+  proxied.
 - **The guards:** an invite code to upload, at most 2 jobs open per code and 5 in all; one job
   worked on at a time; a job not heard from for 2 minutes fails; the upload deleted when the import
-  ends; at most 1,000 files and 1 GB a result; request bodies capped at 64 KiB outside storage;
-  every answer marked `noindex`, sending no `Referer`, under a Content Security Policy (scripts from
-  the site, three.js's own path on its CDN and the import map by its hash; connections to the site
-  and storage); on staging, every page behind a code. Invite codes need 12 characters, made at
-  random, the worker token and the signing key 32.
+  ends (the demo keeps it, below); at most 1,000 files and 1 GB a result; request bodies capped at
+  64 KiB outside storage; every answer marked `noindex`, sending no `Referer`, under a Content
+  Security Policy (scripts from the site, three.js's own path on its CDN and the import map by its
+  hash; connections to the site and storage); on staging, every page behind a code. Invite codes
+  need 12 characters, made at random, the worker token and the signing key 32.
 - **The log** names jobs by their id, and a code by its keyed hash; uvicorn's access log, which
   would hold tokens and signed links, is off.
 - **Settings** come from environment variables, listed with placeholders in
@@ -173,8 +175,13 @@ one worker, and prints the page's address and a new invite code, three short wor
 phone on the same Wi-Fi can upload, and every page then asks for the code (any name, the code as the
 password); the page's address is printed as a QR code too, for the phone's camera, black on white
 whatever the terminal's colours. Everything goes in one folder (`--data`, by default a new temporary
-one). Ctrl-C, or a SIGTERM, stops the server and the worker together, and the server stops if the
-worker does.
+one). The demo keeps each upload with its result, in the job's folder of storage
+(`files/jobs/<id>/`), so that a recording can be run again (`python -m slam_it_all.eval.video`,
+`scripts/run_vo.py`, the bake, `scripts/view_bundle.py`): `SLAM_IT_ALL_KEEP_UPLOADS`, which the
+server takes with folder storage alone, and which the upload page says. Both go when the job is
+deleted, 7 days after it ends, and only while a demo runs on that folder: give `--data` a lasting
+folder to keep the job list across runs, and copy out a recording to keep it longer. Ctrl-C, or a
+SIGTERM, stops the server and the worker together, and the server stops if the worker does.
 
 **The images** build from the repository's root:
 
@@ -199,8 +206,9 @@ On Railway, in the `timedilated` project, after PR 11 merges. Each step is taken
 its own Yes, and the domain waits for the go-live call.
 
 1. **The bucket**, private. Its CORS lets exactly the server's address, never `*`, PUT (with
-   `Content-Type`) and GET. If Railway's buckets take a lifecycle rule, one deletes `uploads/`
-   and `imports/` after 2 days and `results/` after 8, behind the server's own deletions.
+   `Content-Type`) and GET. If Railway's buckets take a lifecycle rule, one deletes `jobs/` after
+   8 days, behind the server's own deletions: a job's files share its folder, so the rule cannot
+   delete an upload any sooner than its result, should the server's deletion at import fail.
 2. **`slam-it-all`**, the server: `docker/server.Dockerfile`, a volume at `/data`,
    `RAILWAY_RUN_UID=0` (Railway mounts volumes as root; the entrypoint gives the folder to the
    server's user and drops to it at once), `PORT=8000`, and the variables of
