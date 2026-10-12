@@ -174,14 +174,18 @@ one worker, and prints the page's address and a new invite code, three short wor
 `moss-lamp-tide` (`--code` gives another). With `--lan` it listens on the local network too, so a
 phone on the same Wi-Fi can upload, and every page then asks for the code (any name, the code as the
 password); the page's address is printed as a QR code too, for the phone's camera, black on white
-whatever the terminal's colours. Everything goes in one folder (`--data`, by default a new temporary
-one). The demo keeps each upload with its result, in the job's folder of storage
-(`files/jobs/<id>/`), so that a recording can be run again (`python -m slam_it_all.eval.video`,
-`scripts/run_vo.py`, the bake, `scripts/view_bundle.py`): `SLAM_IT_ALL_KEEP_UPLOADS`, which the
-server takes with folder storage alone, and which the upload page says. Both go when the job is
-deleted, 7 days after it ends, and only while a demo runs on that folder: give `--data` a lasting
-folder to keep the job list across runs, and copy out a recording to keep it longer. Ctrl-C, or a
-SIGTERM, stops the server and the worker together, and the server stops if the worker does.
+whatever the terminal's colours. Everything goes in one folder, readable by its owner alone
+(`--data`, by default `~/.local/share/slam-it-all/demo`, the same every run). The demo keeps each
+upload with its result, in the job's folder of storage (`files/jobs/<id>/`), so that a recording can
+be run again (`python -m slam_it_all.eval.video`, `scripts/run_vo.py`, the bake,
+`scripts/view_bundle.py`): `SLAM_IT_ALL_KEEP_UPLOADS`, which the server takes with folder storage
+alone. The server deletes both once 7 days old, while it runs; since the folder is the same every
+run, each start deletes what passed its time while no demo ran. The upload page says so, once the
+server has said it keeps uploads. With uploads kept, a new job is refused while the disk under the
+folder has less than 5 GB free, ten uploads' worth. Copy out a recording to keep it longer. A job
+list of an earlier format, the folders' layout before one folder a job among them, is refused,
+naming its file. Ctrl-C, or a SIGTERM, stops the server and the worker together, and the server
+stops if the worker does.
 
 **The images** build from the repository's root:
 

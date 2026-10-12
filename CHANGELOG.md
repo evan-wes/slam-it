@@ -47,23 +47,25 @@ what they changed is in the entries below (`docs/reviews/2026-10-11-feature-your
   through links signed for one key and, for uploads, one size and 15 minutes; the guards (an invite
   code, at most 2 jobs open per code and 5 in all, the caps, one job worked on at a time, a
   confirmed upload moved out of its link's reach and deleted after import (kept with its result in
-  the demo, `SLAM_IT_ALL_KEEP_UPLOADS`, which only folder storage takes), a job's files in one
-  folder of storage, deleted whole with the job, what a job's links write later deleted again once
-  they have all expired and an hour more has passed, a result's files only a bundle's, results after
-  7 days, a job's files deleted before it is and retried if that fails, tokens unguessable, pages
-  `noindex` under a Content Security Policy that allows three.js's own path alone of its CDN,
-  staging behind a code, never run as root). It logs jobs by id, never by token. Its settings come
-  from the environment, listed in `server/settings.template.env`. Given `::`, as in its image, it
-  listens on IPv6 and IPv4 at once; it stops within 3 s. It never imports `slam_it_all`.
+  the demo, `SLAM_IT_ALL_KEEP_UPLOADS`, which only folder storage takes, a new job then refused
+  under 5 GB free), a job's files in one folder of storage, deleted whole with the job, what a job's
+  links write later deleted again once they have all expired and an hour more has passed, a result's
+  files only a bundle's, results after 7 days, a job's files deleted before it is and retried if
+  that fails, tokens unguessable, pages `noindex` under a Content Security Policy that allows
+  three.js's own path alone of its CDN, staging behind a code, never run as root). It logs jobs by
+  id, never by token. Its settings come from the environment, listed in
+  `server/settings.template.env`. Given `::`, as in its image, it listens on IPv6 and IPv4 at once;
+  it stops within 3 s. It never imports `slam_it_all`.
 - **The upload and status pages** (`viewer/upload.html`, `viewer/status.html`, their logic in
   `viewer/src/jobs.js`). The status page says what of the clip was tracked and where the run
   ended, by losing the track or not, from the worker's summary (`worker.summarize`), so that a
   result shorter than the video is not taken for a cropped one.
 - **The images** (`docker/server.Dockerfile`, which drops root at once for good, and
-  `docker/worker.Dockerfile`, with tini) and **`scripts/serve_demo.py`**, which runs the server
-  and a worker on this machine, on the local network with `--lan`, every page then behind the
-  code and the page's address printed as a QR code for a phone's camera (segno, in the `dev`
-  extra and the lock). Its invite code is three short words unless given.
+  `docker/worker.Dockerfile`, with tini) and **`scripts/serve_demo.py`**, which runs the server and
+  a worker on this machine, on the local network with `--lan`, every page then behind the code and
+  the page's address printed as a QR code for a phone's camera (segno, in the `dev` extra and the
+  lock). Its invite code is three short words unless given; its folder is the same every run,
+  `~/.local/share/slam-it-all/demo` unless given, readable by its owner alone.
 - **A design note**, `docs/notes/your-own-video.md`, with the staging and demo checklists.
 
 ### Changed

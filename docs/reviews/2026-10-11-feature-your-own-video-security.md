@@ -696,3 +696,164 @@ Every commit message on the branch was audited after run 3, and 21 were reworded
 unchanged: every SHA in this report, the review's included, names the reworded commit. The
 corrections are listed in [the panel's report](2026-10-11-feature-your-own-video.md); here, run 3's
 S27 now says which scoped hosts the other rules refuse.
+
+## Run 4 -- 2026-10-12
+
+| | |
+|---|---|
+| **Branch** | `feature/your-own-video` |
+| **Range** | `f51e1f6...88c4151`: a job's files in one folder of storage, and the demo's kept uploads (`4799172`, its docs `88c4151`), made after run 3 at the owner's request; read against the whole server |
+| **Reviewer** | security (opus), a general-purpose agent with its own brief, as in runs 1 to 3; a focused check of this change alone, decided with the owner |
+| **Probes** | in-process, with the test client, folder storage and one fake clock; a model of S3's copy-then-delete; a live server on 127.0.0.1:8790 with folder storage, stopped by its PID; no image built, no external service contacted. The probes are kept outside the repo |
+
+### Findings and resolutions
+
+| ID | Severity | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|
+| S31 | must-fix | `viewer/src/jobs.js` (`uploadFate`); `scripts/serve_demo.py` (a new temporary folder each run, the terminal line); `app.py` (the sweep, in the server's lifespan alone) | the page promises the demo deletes an upload and its result after 7 days, but only a demo still running on that folder deletes anything, and each run makes a new folder | fix (a lasting default folder, so a demo's every start sweeps what is past 7 days; the page and the terminal say deletion happens while the demo runs) | fixed (99cf1d6: the demo's folder the same every run, `serve_demo.default_data`; the page and the terminal say deletion happens while the demo runs) -- decided by evan-wes, 2026-10-12 |
+| S32 | should-fix | `app.py` (`_clear_files`, the worker's reports, `create`) | kept uploads have no bound on disk: anyone with the code can fill the disk under the demo's folder, 500 MB an upload, for 7 days | fix (with uploads kept, a new job refused, 503, when the storage's free space is under 10 x `MAX_BYTES`) | fixed (99cf1d6: `KEEP_FREE`, 5 GB) -- decided by evan-wes, 2026-10-12 |
+| S33 | should-fix | `viewer/upload.html`, `viewer/src/upload_view.js` (`showFate`) | the deployment's sentence shows until `/api/kept` answers, and stays if it fails: on the demo, the stronger promise, and false | fix (the item hidden until the server answers; on a failure, the demo's sentence, which says more is kept) | fixed (99cf1d6) -- decided by evan-wes, 2026-10-12 |
+| S34 | note | `app.py` (the claim's download link) | with uploads kept, the worker's download link still fetches the upload after its job ended, for the rest of its hour | waive (the demo's: the link goes over loopback, the access log is off, the worker logs no link, and it expires within the hour) | waived: the demo's alone; its link goes over loopback, the access log is off, the worker logs no link, and it expires within the hour -- decided by evan-wes, 2026-10-12 |
+| S35 | note | `jobs.py` (`SCHEMA_VERSION` unchanged) | a job list of the old layout is adopted silently, and its files, under `uploads/`, `imports/` and `results/`, are never deleted | fix (`SCHEMA_VERSION` 2: an old list refused, "delete it to start a new one") | fixed (99cf1d6: `SCHEMA_VERSION` 2) -- decided by evan-wes, 2026-10-12 |
+| S36 | note | `config.py`; `make_app` | the gate stands folder storage for the demo: a folder-storage deployment could keep uploads, and settings made in code are not checked | waive (no folder-storage deployment is planned, the template says `s3` and `0`, the page would say uploads are kept, and a mistyped value reads as off) | waived: no folder-storage deployment is planned, the template says `s3` and `0`, the page would say uploads are kept, and a mistyped value reads as off -- decided by evan-wes, 2026-10-12 |
+| S37 | note | `scripts/serve_demo.py` | a `--data` folder takes the umask: kept uploads readable by other local accounts | fix (the demo's folder made 0700) | fixed (99cf1d6) -- decided by evan-wes, 2026-10-12 |
+| S38 | note | `app.py` (`uploaded`), `storage.py` (S3's copy then delete) | pre-existing: on S3, a confirmation racing the waiting job's expiry leaves an upload never imported until the job's deletion | fix (on the job's refusal after the move, the copy deleted, best effort, unless uploads are kept) | fixed (99cf1d6: `_confirm`) -- decided by evan-wes, 2026-10-12 |
+
+### Security review
+
+## Security review
+
+**Scope:** `f51e1f6...88c4151` (4799172: each job's files in `jobs/<id>/`, `SLAM_IT_ALL_KEEP_UPLOADS`, `GET /api/kept`; 88c4151: its docs). I read it against `server/src/slam_it_all_server/{app,config,jobs,storage,__main__}.py`, `viewer/upload.html`, `viewer/src/{upload_view,jobs}.js`, `scripts/serve_demo.py` and the worker's link and log handling.
+
+Evidence comes from three sources:
+- **In-process probes:** test client, folder storage, and one fake clock shared by the job list and the store.
+- **A model of S3's move order.**
+- **A live server on 127.0.0.1:8790:** folder storage in scratch, then stopped by its PID; the port is confirmed free.
+
+The probe scripts are saved in a private scripts folder: `pr11_kept_uploads_probes.py` and `pr11_s3_confirm_race_model.py`. The repository is untouched (`git status` is clean).
+
+**Summary:** The storage mechanics are sound:
+- No link, bundle path or result path reaches `jobs/<id>/import`, except the worker's own download link.
+- Deleting a job removes its folder whole and nothing beside it, on folder storage and on S3.
+- The S3 refusal works at startup.
+
+The weak point is what the page promises. The demo deletes a kept upload only if a demo is still running on that folder 7 days later. By default each run makes a new temporary folder, so the demo's sentence "then deletes both" is false for any demo that stops sooner. Kept uploads also remove the old bound on disk use: before, at most 5 uploads were on disk at once.
+
+### Findings
+
+#### [must-fix] The demo's page promises deletion after 7 days, but only a demo still running on that folder deletes anything
+- **Where:** `viewer/src/jobs.js:21-26` (`uploadFate`); `scripts/serve_demo.py:253` (a new `mkdtemp` folder each run), `:280-284` (the terminal line); `server/src/slam_it_all_server/app.py:463-479` (the sweep runs only in the server's lifespan).
+- **Issue:** The page tells the uploader: "This demo keeps your upload with its result for 7 days, then deletes both."
+  - Deletion is done only by `sweep`, inside the running server.
+  - `serve_demo.py` uses a new temporary folder per run unless `--data` is given, so once a demo stops, nothing ever sweeps that folder again.
+  - The note admits this ("only while a demo runs on that folder", `docs/notes/your-own-video.md:182`), and so does the module docstring. The page does not, and neither does the line printed to the operator ("Each job's upload and result are kept for 7 days in …").
+- **Why it matters:**
+  - In the default use (start the demo, upload, Ctrl-C the same day), the raw recording stays on disk until the machine reboots or `systemd-tmpfiles` ages it out. This machine's `/usr/lib/tmpfiles.d/tmp.conf` has `D /tmp 1777 root root 30d`, so that is up to 30 days.
+  - With `--data`, it stays forever unless a demo is run on that folder again.
+  - With `--lan`, the person reading the promise may be a guest whose recording it is.
+  - The result's sentence ("kept for 7 days, then deleted") already had this gap. This change extends it to the raw upload, which is the more sensitive file.
+- **Evidence:** `serve_demo.py:253`: `data = args.data or Path(tempfile.mkdtemp(prefix="slam-it-all-demo-"))`. `app.py:467-475`: the only caller of `sweep` is the `sweeping()` task of the app's lifespan. Probe 2 shows that deletion happens only when `sweep` runs after RETENTION.
+- **Suggested fix (owner's choice):**
+  - (a) Make the page and the terminal line say the condition. For example: "This demo keeps your upload with its result on the computer running it, so that it can be run again. It deletes both 7 days after the run ends, if it is still running then."
+  - (b) And/or remove the default temporary folder when the demo exits, so a default run never strands anything; `--data` stays the way to keep things.
+
+#### [should-fix] Kept uploads have no bound on disk: a code holder's upload bandwidth becomes a week of disk on the owner's machine
+- **Where:** `app.py:209-216` (`_clear_files` keeps the import), `:641`, `:661`, `:672` (no deletion when uploads are kept); `app.py:516-536` (`create`: no check of kept bytes or free space).
+- **Issue:**
+  - Before: every confirmed upload was deleted when its import ended, so the demo held at most `QUEUE` = 5 uploads (2.5 GB) at a time.
+  - Now: every confirmed upload stays for 7 days after its job ends, whether the job is done, failed, failed for silence, or expired while queued (probe 2). Nothing caps the total.
+  - A non-video file passes the size check, is confirmed, and fails at the import, so each one keeps up to 500 MB. The limit is the uploader's bandwidth, plus the worker's download and the import's refusal (an estimate; not timed).
+- **Why it matters:**
+  - Anyone with the code can fill the disk that holds the demo's folder. By default that is `/` on this machine (192 GB free, so about 384 uploads of 500 MB), which affects every other session and GPU run on it.
+  - On `--lan`, "anyone with the code" includes a guesser. On the live server, 300 wrong codes took one sequential connection at 3,568 per second over loopback. That is about 78 minutes for all 256³ codes, given the owner's decision not to rate-limit.
+  - Kept uploads are not readable over the network (see below). The exposure is disk exhaustion.
+- **Evidence:** Probe 2, with uploads kept, after clearing and link closing:
+  ```
+  failed           state=failed   after clear+close: ['jobs/0683…/import']
+  silent           state=failed   after clear+close: ['jobs/45b1…/import']
+  expired queued   state=expired  after clear+close: ['jobs/fe11…/import']
+  ```
+  `grep -rn "disk_usage\|free" server/src/slam_it_all_server/` finds nothing.
+- **Suggested fix:** When uploads are kept, refuse a new job (503) in either case:
+  - free space under the storage root (`shutil.disk_usage`) is below a margin, for example 10 × `MAX_BYTES`;
+  - or the sizes of jobs still holding a kept upload (the job list has `size`) pass a budget.
+
+  Alternatively, keep only the N most recent uploads. Whichever is chosen, the page's sentence must say "up to".
+
+#### [should-fix] If `/api/kept` fails, the demo's page keeps the deployment's sentence, which is the stronger promise and false there
+- **Where:** `viewer/upload.html:87-89` (the static text); `viewer/src/upload_view.js:76-82` (`showFate` changes the text only on success).
+- **Issue:** The text before the fetch, and after a failed one, is "Your upload is deleted as soon as its frames have been imported." On the demo that is false. Failure is unlikely: the call is same-origin to the server that just served the page, and the route only reads a boolean. But the default is the more private claim, and it also shows until the fetch resolves.
+- **Why it matters:** A promise about deletion should fail toward saying more is kept, not less.
+- **Evidence:** `if (response !== null && response.ok) { … textContent = uploadFate(…) }`; there is no `else`.
+- **Suggested fix:** Ship a neutral or conservative default (or hide the item until the answer arrives), and set the deployment's sentence only on `{"uploads": false}`.
+
+#### [note] With uploads kept, the worker's download link still fetches the upload after its job ended, until an hour after the claim
+- **Where:** `app.py:629` (the only GET ever signed for `jobs/<id>/import`, for `LINK_SECONDS`); `storage.py:197-199`.
+- **Issue:** Before, the import was deleted when the import ended, so a leaked worker link returned 404 from then on. With uploads kept, the same link returns the recording for the rest of its hour (probe 3):
+  ```
+  keep=False: job failed, 30 min after claim: GET -> 404
+  keep=True:  job failed, 30 min after claim: GET -> 200, body=b"the recording's bytes"
+  keep=True:  60 min after claim: GET -> 403
+  ```
+  The live server gave the same result: a 200 after the job was reported failed.
+- **Why it matters:** The risk is small. The access log is off, the worker logs no URLs, and on the demo the claim and download both go over loopback.
+- **Suggested fix (optional):** When the import ends and uploads are kept, move the copy to a key no link was ever signed for (for example `jobs/<id>/kept`).
+
+#### [note] Old-layout demo folders: the old job list is adopted silently, and its files are never deleted
+- **Where:** `jobs.py:82` (`SCHEMA_VERSION = 1`, unchanged); `app.py:219-223` (`_delete` removes only `jobs/<id>`).
+- **Issue:** The owner decided against migration, and this note does not reopen that. The problem is that the old list is not refused either:
+  - A pre-change `jobs.sqlite3` in a lasting `--data` folder opens without complaint.
+  - Its rows are swept on schedule, but `files/results/<id>/`, `files/imports/<id>` and `files/uploads/<id>` are left with no row pointing at them, permanently.
+  - Meanwhile, old done jobs' bundle links return 404.
+- **Evidence:** Probe 7: `SCHEMA_VERSION: 1 … sweep failures: 0 | row gone: True | left on disk: ['imports/de12…', 'results/de12…/bundle.json']`.
+- **Why it matters:** It affects only the owner's own lasting demo folders. Results hold the recordings' frames, and those frames would outlive the 7 days the page promised.
+- **Suggested fix:** Bump `SCHEMA_VERSION`, since the storage layout is part of what a row means. Then the old list is refused ("delete it to start a new one"), matching the module's own rule. This is a refusal, not a shim.
+
+#### [note] The keep gate is a proxy: "folder storage" stands for "the demo"
+- **Where:** `config.py:127-132`; `make_app` does not check.
+- **Issue:**
+  - A folder-storage deployment, such as one on a Railway volume, would accept `KEEP_UPLOADS=1`.
+  - A `Settings` built in code with `storage="s3", keep_uploads=True` is accepted, because only `from_environment` refuses it (probe 1).
+  - Parsing is exact `== "1"`, so `"true"`, `"yes"` and `" 1"` all read as off (probe 1). Typos fail safe.
+- **Why it matters:** Little in practice. The template sets `STORAGE=s3` and `KEEP_UPLOADS=0`, the planned deployment is S3, and the page would still say uploads are kept.
+- **Suggested fix (optional):** Also require that `public_url`'s host is loopback or private (the demo's `127.0.0.1` or LAN address), or repeat the check in `make_app`.
+
+#### [note] Kept uploads in a `--data` folder are readable by other local accounts
+- **Where:** `scripts/serve_demo.py:254` (`data.mkdir(...)` with the umask); `storage.py` writes with default modes.
+- **Issue:** On the live run (umask 002), `files/jobs/<id>/import` was `-rw-rw-r--` and its folders `drwxrwxr-x`. The default `mkdtemp` folder is 0700, so it is safe. A `--data` folder is not.
+- **Why it matters:** The same was already true of results. Raw recordings now sit there for 7 days.
+- **Suggested fix (optional):** `chmod 0700` the data folder in `serve_demo.py`.
+
+#### [note] Pre-existing, not this change: on S3, a confirmation racing the expiry keeps an upload that was never imported for 7 days
+- **Where:** `app.py:547` (`move`), `:553-556` (`queue` raises StateError, and the server answers 409); `storage.py:129-133` (copy, then delete).
+- **Issue:** Suppose the sweep expires a waiting job (at 15 minutes) while S3's `copy_object` is in flight:
+  - `_clear_files` finds no import yet;
+  - the copy then lands;
+  - `uploaded` answers 409;
+  - `_close_link` never deletes `import`.
+
+  The upload stays until RETENTION, or until the 8-day lifecycle rule. That breaks the deployment's "deleted as soon as its frames have been imported" for a slow upload confirmed right at the deadline. Folder storage's atomic rename closes this window: probe 6 gives a 409 and no import left.
+- **Evidence:** The model: `confirm -> 409 … state: expired` / `after clear and close (2 h): import there: True` / `after RETENTION: import there: False`.
+- **Suggested fix:** On the StateError after the move, delete the import (best effort), or have `_close_link` delete `import_key` when uploads are not kept.
+
+### Checked and fine
+- **S3 refusal at startup** (live): `STORAGE=s3` with `KEEP_UPLOADS=1` exits with code 2 and one line, and no job list is made.
+- **Result paths cannot reach the import:** `import`, `../import`, `x/../../import`, `.upload.x.part`, `a/b/c.json` and four other variants all get 400. `sub/x.bin` signs `jobs/<id>/result/sub/x.bin`. `RESULT_PATH` cannot name `import` or leave `result/`.
+- **Bundle paths:** `../import`, `..%2fimport`, `%2e%2e/import` and `bundle.json/../../import` all get 404, because a path must be in `job.files` and pass `RESULT_PATH`.
+- **Signatures are bound to their key and method:** the upload link's signature fails as a PUT on `…/import` (403) and as a GET (403).
+- **`delete_prefix`:**
+  - Folder: removes `jobs/<A>` only; B's import and `jobs/` itself remain.
+  - S3: lists `Prefix='jobs/<id>/'` with the trailing slash, so no sibling is touched.
+  - Ids are `token_hex(16)`.
+- **Every ending with uploads kept:**
+  - done: import and result kept;
+  - failed, or failed for silence: import kept, result deleted;
+  - expired while queued: import kept;
+  - expired while waiting: nothing kept.
+
+  At RETENTION every folder is gone, `jobs/` is empty, and the sweep reports 0 failures.
+- **`_close_link` and `_clear_files`, setting on and off:** no link ever writes `import` (only the server's `move` does), so `_close_link` correctly leaves it alone. With the setting off, the import is deleted at the import's end, at done, at failure and when files are cleared (probe 3, `keep=False`: 404). The sweep's lists are taken at its start; a failed deletion keeps the row, and the next sweep retries it.
+- **Folder storage's `.part` staging:** the temporary file sits in the job's own folder and is unlinked in `finally`. One left by a crash now goes with the folder at RETENTION; before this change it stayed in `uploads/` forever.
+- **`/api/kept`:** on staging and `--lan`, it is behind Basic auth (401 without; 200 `{"uploads":true}` with the code, live) and marked `no-store`. It reveals one boolean.
+- **`--lan`:** no route serves a kept upload without a signed link, and only the worker gets one, over loopback. The demo's printed line names the folder, not tokens or links. The access log stays off.
+- **The worker:** it removes its own job folder in `finally` (`worker.py:720`), so the demo holds no second copy of an upload.
