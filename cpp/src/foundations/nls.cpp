@@ -1,6 +1,6 @@
 /// @file
 /// @brief Non-linear least squares: the losses, the option checks and the dense system.
-#include "slam_it_all/foundations/nls.hpp"
+#include "slam_it/foundations/nls.hpp"
 
 #include <Eigen/Cholesky>
 #include <array>
@@ -10,7 +10,7 @@
 #include <string>
 #include <utility>
 
-namespace slam_it_all::foundations::nls {
+namespace slam_it::foundations::nls {
 
 namespace {
 
@@ -205,4 +205,4 @@ Evaluation evaluate_blocks(const Options& options, Eigen::VectorXd squared_norms
 
 }  // namespace detail
 
-}  // namespace slam_it_all::foundations::nls
+}  // namespace slam_it::foundations::nls

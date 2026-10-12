@@ -26,7 +26,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from slam_it_all.foundations import ba, camera, nls, se3
+from slam_it.foundations import ba, camera, nls, se3
 from tests.fixtures.foundations._layout import dumps
 
 OUT = Path(__file__).with_name("ba.json")

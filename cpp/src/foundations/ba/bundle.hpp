@@ -4,10 +4,10 @@
 #pragma once
 
 #include "layout.hpp"
-#include "slam_it_all/foundations/ba.hpp"
-#include "slam_it_all/foundations/error.hpp"
+#include "slam_it/foundations/ba.hpp"
+#include "slam_it/foundations/error.hpp"
 
-namespace slam_it_all::foundations::ba::detail {
+namespace slam_it::foundations::ba::detail {
 
 /// @brief Solve a checked problem over its layout.
 /// @param problem The problem (already checked).
@@ -17,4 +17,4 @@ namespace slam_it_all::foundations::ba::detail {
 [[nodiscard]] Result<Solution> adjust(const Problem& problem, const Options& options,
                                       const Layout& layout);
 
-}  // namespace slam_it_all::foundations::ba::detail
+}  // namespace slam_it::foundations::ba::detail

@@ -23,11 +23,11 @@ The same algorithms, three times, need to take the same decisions and fail the s
 ## The interface
 
 Nothing new on the Python side: every module the Rust core implements is reached through the
-same `backend=` argument (`backend="rust"`), and `slam_it_all_rs.foundations.<module>` mirrors the
-Python module, as `slam_it_all._cpp` does. The Protocol test checks the binding's function and
+same `backend=` argument (`backend="rust"`), and `slam_it_rs.foundations.<module>` mirrors the
+Python module, as `slam_it._cpp` does. The Protocol test checks the binding's function and
 parameter names against each module's `Implementation`.
 
-Outside Python, `rust/slam-it-all-foundations` is an ordinary crate with no Python dependency:
+Outside Python, `rust/slam-it-foundations` is an ordinary crate with no Python dependency:
 
 ```text
 cargo run --release --example bal -- ~/datasets/bal/ladybug/problem-49-7776-pre.txt
@@ -183,7 +183,7 @@ Jacobian evaluation, and its iteration count (the call used here does not report
 ranges are separate runs on a shared machine.
 
 The native benchmarks (Google Benchmark in `cpp/bench/`, criterion in
-`rust/slam-it-all-foundations/benches/`), on the same machine, one core:
+`rust/slam-it-foundations/benches/`), on the same machine, one core:
 
 | Benchmark | C++ | Rust |
 |---|---|---|
@@ -223,8 +223,8 @@ initialisation takes 4 ms in C++, 7 ms in Rust and 130-180 ms in the numpy refer
 Run them with:
 
 ```text
-SLAM_IT_ALL_BAL=<problem.txt> build/bench/bench/foundations_bench_foundations
-SLAM_IT_ALL_BAL=<problem.txt> cargo bench --manifest-path rust/Cargo.toml --bench foundations
+SLAM_IT_BAL=<problem.txt> build/bench/bench/foundations_bench_foundations
+SLAM_IT_BAL=<problem.txt> cargo bench --manifest-path rust/Cargo.toml --bench foundations
 ```
 
 Code lines, counted without blank lines, comments, docstrings or tests (a line with any code

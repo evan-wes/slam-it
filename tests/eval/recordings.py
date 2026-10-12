@@ -17,8 +17,8 @@ import av
 import numpy as np
 from numpy.typing import NDArray
 
-from slam_it_all.eval import lenses
-from slam_it_all.foundations import so3
+from slam_it.eval import lenses
+from slam_it.foundations import so3
 from tests.edge import room
 
 ROOM_CAMERA = lenses.Pinhole(

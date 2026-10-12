@@ -1,8 +1,8 @@
 /// @file
 /// @brief Shared by the edge rung's bindings: the map and a frame cross as dicts of arrays.
 ///
-/// A map is a dict of `slam_it_all.edge.map.Map`'s fields; a frame is the dict
-/// `slam_it_all.edge.frames.Frame.as_dict` builds; the camera and the settings are the dicts of
+/// A map is a dict of `slam_it.edge.map.Map`'s fields; a frame is the dict
+/// `slam_it.edge.frames.Frame.as_dict` builds; the camera and the settings are the dicts of
 /// scalars `Camera.as_dict` and `Options.as_dict` give. Arrays are C-contiguous, of the dtype and
 /// shape the Python dataclasses hold; a malformed dict raises `std::invalid_argument` (a
 /// `ValueError`), and the map is then checked by the core (`check_map`, an `InvalidInputError`).
@@ -27,14 +27,14 @@
 
 #include "common.hpp"
 #include "foundations/nls_crossing.hpp"
-#include "slam_it_all/edge/adjust.hpp"
-#include "slam_it_all/edge/frames.hpp"
-#include "slam_it_all/edge/initialization.hpp"
-#include "slam_it_all/edge/map.hpp"
-#include "slam_it_all/edge/options.hpp"
-#include "slam_it_all/foundations/matching.hpp"
+#include "slam_it/edge/adjust.hpp"
+#include "slam_it/edge/frames.hpp"
+#include "slam_it/edge/initialization.hpp"
+#include "slam_it/edge/map.hpp"
+#include "slam_it/edge/options.hpp"
+#include "slam_it/foundations/matching.hpp"
 
-namespace slam_it_all::bindings::edge_crossing {
+namespace slam_it::bindings::edge_crossing {
 
 /// @brief A read-only, contiguous array of the given element type and shape.
 /// @tparam T The element type.
@@ -429,7 +429,7 @@ inline nanobind::object maybe_tracked(const std::optional<edge::Tracked>& tracke
   return tracked ? nanobind::object(tracked_dict(*tracked)) : nanobind::none();
 }
 
-/// @brief Read a mode by its name (`slam_it_all.edge.options.MODES`).
+/// @brief Read a mode by its name (`slam_it.edge.options.MODES`).
 /// @param name The name.
 /// @return The mode.
 /// @throws std::invalid_argument for an unknown name.
@@ -444,7 +444,7 @@ inline nanobind::object count_or_none(const std::optional<std::int64_t>& count) 
   return count ? nanobind::object(nanobind::int_(*count)) : nanobind::none();
 }
 
-/// @brief Bundle-adjustment solves as they cross (`slam_it_all.edge.adjust.decode_solves`).
+/// @brief Bundle-adjustment solves as they cross (`slam_it.edge.adjust.decode_solves`).
 /// @param solves The solves.
 /// @return A list of dicts of `initial_cost`, `final_cost`, `iterations` and `termination`
 ///         (its code in `nls_termination`).
@@ -488,4 +488,4 @@ inline nanobind::dict initialization_dict(const edge::Initialization& attempt) {
   return out;
 }
 
-}  // namespace slam_it_all::bindings::edge_crossing
+}  // namespace slam_it::bindings::edge_crossing

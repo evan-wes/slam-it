@@ -1,8 +1,8 @@
 # The run viewer: what a run records, the bake, and the page
 
-Design note for PR 10: the run format's version 3 (`slam_it_all.eval.runs`), the per-frame
+Design note for PR 10: the run format's version 3 (`slam_it.eval.runs`), the per-frame
 solver summaries, point and keyframe lifetimes and feature records, in all three languages; the
-bake (`slam_it_all.orchestration.bundles`); and the page (`viewer/`). The plan was
+bake (`slam_it.orchestration.bundles`); and the page (`viewer/`). The plan was
 `docs/design/2026-10-09-run-viewer.md`, sections 1 to 4; the forks it left open were decided
 with the owner on 2026-10-10. This note is what was built and how it was checked.
 
@@ -20,7 +20,7 @@ the page.
 
 **How each stage went** (always). Each frame's `diagnostics.jsonl` line gains `placed_by`,
 `init`, `motion`, `pnp`, `local_map` and `mapping`, each an object or null where the stage did
-not run (`slam_it_all.edge.pipeline.FrameSummary`). A bundle adjustment records each solve's
+not run (`slam_it.edge.pipeline.FrameSummary`). A bundle adjustment records each solve's
 initial and final cost, iterations and why it stopped, in rung 0's names. Each stage returns its
 summary with its result (decided 2026-10-10), so the pipeline only gathers them; the C++ and
 Rust writers write nested JSON, C++ keeping it as text checked when written, since a copyable
@@ -72,7 +72,7 @@ the whole machine (another machine may block or vectorise them differently).
 
 ## The bake
 
-`python -m slam_it_all.orchestration.bundles RUN_DIR... --sequence PATH --out BUNDLE` bakes one
+`python -m slam_it.orchestration.bundles RUN_DIR... --sequence PATH --out BUNDLE` bakes one
 sequence's runs in one mode, one per backend, into a bundle, a folder any plain file server can
 serve (its layout is the module's docstring). It lives in orchestration, not eval (decided
 2026-10-10): it takes each frame's image from the run's own source, so the image is the one the

@@ -17,9 +17,9 @@ import av
 import numpy as np
 import pytest
 
-from slam_it_all.eval import images, lenses, runs, tum, video
-from slam_it_all.foundations.errors import InvalidInputError
-from slam_it_all.orchestration import vo
+from slam_it.eval import images, lenses, runs, tum, video
+from slam_it.foundations.errors import InvalidInputError
+from slam_it.orchestration import vo
 from tests.conftest import FIXTURES
 from tests.edge import room
 from tests.edge.support import ATE_BOUND, FRAMES, OPTIONS

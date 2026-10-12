@@ -6,9 +6,9 @@
 
 #include "common.hpp"
 #include "gauge.hpp"
-#include "slam_it_all/foundations/ba.hpp"
+#include "slam_it/foundations/ba.hpp"
 
-namespace slam_it_all::foundations::ba::detail {
+namespace slam_it::foundations::ba::detail {
 
 /// @brief Which observations count and which variables move, decided once from the start.
 struct Layout {
@@ -49,4 +49,4 @@ struct Layout {
 /// @return The layout, or `InvalidInput` for a gauge the problem cannot support.
 [[nodiscard]] Result<Layout> make_layout(const Problem& problem, const Options& options);
 
-}  // namespace slam_it_all::foundations::ba::detail
+}  // namespace slam_it::foundations::ba::detail

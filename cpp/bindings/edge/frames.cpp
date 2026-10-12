@@ -1,8 +1,8 @@
 /// @file
-/// @brief Bindings for `slam_it_all.edge.frames` (`slam_it_all._cpp.edge.frames`).
+/// @brief Bindings for `slam_it.edge.frames` (`slam_it._cpp.edge.frames`).
 ///
 /// Keypoints cross as an (N, 2) float64 array and the depth map as an (H, W) float64 one.
-#include "slam_it_all/edge/frames.hpp"
+#include "slam_it/edge/frames.hpp"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -15,7 +15,7 @@
 
 namespace nb = nanobind;
 
-namespace slam_it_all::bindings {
+namespace slam_it::bindings {
 
 namespace {
 
@@ -46,4 +46,4 @@ void bind_frames(nb::module_& m) {
         "Read a depth map at each keypoint's nearest pixel; NaN where it holds none.");
 }
 
-}  // namespace slam_it_all::bindings
+}  // namespace slam_it::bindings

@@ -153,7 +153,7 @@ export function series(records, path) {
 
 /**
  * Each frame's latency: building it and tracking it, what the deadline holds
- * (slam_it_all.eval.budgets).
+ * (slam_it.eval.budgets).
  * @param {Record<string, unknown[]>} records A backend's records.
  * @returns {Float64Array} Seconds, one per record.
  */

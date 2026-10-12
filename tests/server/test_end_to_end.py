@@ -1,7 +1,7 @@
 """The server and the real worker together: a recording uploaded, run, and its result viewed.
 
 The server runs under uvicorn on a free local port, with folder storage whose links point at it;
-the worker (:mod:`slam_it_all.orchestration.worker`) claims the job over HTTP as any worker
+the worker (:mod:`slam_it.orchestration.worker`) claims the job over HTTP as any worker
 would, and runs the import, the C++ pipeline and the bake on the room's Stray Scanner zip.
 """
 
@@ -19,9 +19,9 @@ from typing import Any
 import pytest
 import uvicorn
 
-from slam_it_all.orchestration import worker
-from slam_it_all_server.app import make_app
-from slam_it_all_server.config import Settings
+from slam_it.orchestration import worker
+from slam_it_server.app import make_app
+from slam_it_server.config import Settings
 from tests.conftest import FIXTURES
 from tests.edge import room
 from tests.edge.support import FRAMES
@@ -36,7 +36,7 @@ def live(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Settings]:
 
     The worker the test runs reads the fixture lens profiles.
     """
-    monkeypatch.setenv("SLAM_IT_ALL_LENS_PROFILES", str(FIXTURES / "eval" / "lens_profiles"))
+    monkeypatch.setenv("SLAM_IT_LENS_PROFILES", str(FIXTURES / "eval" / "lens_profiles"))
     listening = socket.socket()
     listening.bind(("127.0.0.1", 0))
     settings = make_settings(tmp_path, f"http://127.0.0.1:{listening.getsockname()[1]}")

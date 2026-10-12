@@ -11,13 +11,13 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from slam_it_all import backends
-from slam_it_all.edge import initialization
-from slam_it_all.edge.frames import Frame
-from slam_it_all.edge.initialization import Initialization, Outcome
-from slam_it_all.edge.options import Options
-from slam_it_all.foundations import matching, orb, triangulation, twoview
-from slam_it_all.foundations.errors import InvalidInputError
+from slam_it import backends
+from slam_it.edge import initialization
+from slam_it.edge.frames import Frame
+from slam_it.edge.initialization import Initialization, Outcome
+from slam_it.edge.options import Options
+from slam_it.foundations import matching, orb, triangulation, twoview
+from slam_it.foundations.errors import InvalidInputError
 from tests.conftest import require_function
 from tests.edge.conftest import Truth
 from tests.edge.support import (

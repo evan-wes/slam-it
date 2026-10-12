@@ -1,6 +1,6 @@
 /// @file
-/// @brief A whole sequence through the edge pipeline (slam_it_all/orchestration/vo.hpp).
-#include "slam_it_all/orchestration/vo.hpp"
+/// @brief A whole sequence through the edge pipeline (slam_it/orchestration/vo.hpp).
+#include "slam_it/orchestration/vo.hpp"
 
 #include <Eigen/Core>
 #include <algorithm>
@@ -23,25 +23,25 @@
 #include <variant>
 #include <vector>
 
-#include "slam_it_all/edge/frames.hpp"
-#include "slam_it_all/edge/map.hpp"
-#include "slam_it_all/edge/options.hpp"
-#include "slam_it_all/edge/pipeline.hpp"
-#include "slam_it_all/eval/euroc.hpp"
-#include "slam_it_all/eval/png.hpp"
-#include "slam_it_all/eval/runs.hpp"
-#include "slam_it_all/eval/text.hpp"
-#include "slam_it_all/eval/tum.hpp"
-#include "slam_it_all/foundations/camera.hpp"
-#include "slam_it_all/foundations/error.hpp"
-#include "slam_it_all/foundations/image.hpp"
-#include "slam_it_all/foundations/nls.hpp"
-#include "slam_it_all/foundations/orb.hpp"
-#include "slam_it_all/foundations/ransac.hpp"
-#include "slam_it_all/foundations/se3.hpp"
-#include "slam_it_all/foundations/stereo.hpp"
+#include "slam_it/edge/frames.hpp"
+#include "slam_it/edge/map.hpp"
+#include "slam_it/edge/options.hpp"
+#include "slam_it/edge/pipeline.hpp"
+#include "slam_it/eval/euroc.hpp"
+#include "slam_it/eval/png.hpp"
+#include "slam_it/eval/runs.hpp"
+#include "slam_it/eval/text.hpp"
+#include "slam_it/eval/tum.hpp"
+#include "slam_it/foundations/camera.hpp"
+#include "slam_it/foundations/error.hpp"
+#include "slam_it/foundations/image.hpp"
+#include "slam_it/foundations/nls.hpp"
+#include "slam_it/foundations/orb.hpp"
+#include "slam_it/foundations/ransac.hpp"
+#include "slam_it/foundations/se3.hpp"
+#include "slam_it/foundations/stereo.hpp"
 
-namespace slam_it_all::orchestration::vo {
+namespace slam_it::orchestration::vo {
 
 namespace {
 
@@ -72,7 +72,7 @@ struct RgbdImages {
 };
 
 /// @brief A frame's images as a camera delivers them: decoded, and a stereo pair rectified
-///        (`slam_it_all.orchestration.vo._Delivered`).
+///        (`slam_it.orchestration.vo._Delivered`).
 struct Delivered {
   /// @brief The frame's time.
   double timestamp{0.0};
@@ -311,7 +311,7 @@ Result<eval::runs::JsonValue> nested(const eval::runs::JsonObject& object) {
   return eval::runs::JsonValue(std::move(*text));
 }
 
-/// @brief Bundle-adjustment solves as JSON (`slam_it_all.edge.adjust.Solve.as_dict`, each).
+/// @brief Bundle-adjustment solves as JSON (`slam_it.edge.adjust.Solve.as_dict`, each).
 /// @param solves The solves.
 /// @return An array of one object per solve; `InvalidInput` for a cost that is not finite.
 Result<eval::runs::JsonValue> solves_json(const std::vector<edge::Solve>& solves) {
@@ -397,7 +397,7 @@ Result<eval::runs::JsonValue> or_null(const std::optional<Summary>& summary, Wri
 }
 
 /// @brief How a frame's stages went, as a run records it
-///        (`slam_it_all.edge.pipeline.FrameSummary.as_dict`): each stage an object, or null.
+///        (`slam_it.edge.pipeline.FrameSummary.as_dict`): each stage an object, or null.
 /// @param summary The summary.
 /// @return Its keys and values, in order; `InvalidInput` for a cost that is not finite.
 Result<eval::runs::JsonObject> summary_json(const edge::FrameSummary& summary) {
@@ -557,7 +557,7 @@ Result<void> track(const Source& source, edge::Pipeline& pipeline, const Request
 }
 
 /// @brief Read a mode's name.
-/// @param text The name, as `slam_it_all.edge.options.MODES` spells it.
+/// @param text The name, as `slam_it.edge.options.MODES` spells it.
 /// @return The mode, or `InvalidInput`.
 Result<edge::Mode> mode_named(std::string_view text) {
   for (std::uint8_t code = 0; code < static_cast<std::uint8_t>(edge::Mode::kCount); ++code) {
@@ -744,4 +744,4 @@ Result<eval::runs::Run> run(const Request& request) {
   return out;
 }
 
-}  // namespace slam_it_all::orchestration::vo
+}  // namespace slam_it::orchestration::vo

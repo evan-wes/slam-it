@@ -8,14 +8,14 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from slam_it_all.edge import frames, pipeline, tracking
-from slam_it_all.edge.initialization import Outcome
-from slam_it_all.edge.map import Removal
-from slam_it_all.edge.options import Options
-from slam_it_all.edge.pipeline import Placement
-from slam_it_all.eval.metrics import absolute_error
-from slam_it_all.foundations import orb
-from slam_it_all.foundations.errors import InvalidInputError
+from slam_it.edge import frames, pipeline, tracking
+from slam_it.edge.initialization import Outcome
+from slam_it.edge.map import Removal
+from slam_it.edge.options import Options
+from slam_it.edge.pipeline import Placement
+from slam_it.eval.metrics import absolute_error
+from slam_it.foundations import orb
+from slam_it.foundations.errors import InvalidInputError
 from tests.edge import room
 from tests.edge.conftest import Run
 from tests.edge.support import ATE_BOUND, CAMERA, MONOCULAR_START, OPTIONS

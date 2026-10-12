@@ -1,7 +1,7 @@
 /// @file
-/// @brief Bindings for `slam_it_all.foundations.homography`
-///        (`slam_it_all._cpp.foundations.homography`).
-#include "slam_it_all/foundations/homography.hpp"
+/// @brief Bindings for `slam_it.foundations.homography`
+///        (`slam_it._cpp.foundations.homography`).
+#include "slam_it/foundations/homography.hpp"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -14,7 +14,7 @@
 
 namespace nb = nanobind;
 
-namespace slam_it_all::bindings {
+namespace slam_it::bindings {
 
 namespace {
 
@@ -85,4 +85,4 @@ void bind_homography(nb::module_& m) {
         nb::arg("points2").noconvert(), nb::arg("options"), "Run LO-MSAC with the normalised DLT.");
 }
 
-}  // namespace slam_it_all::bindings
+}  // namespace slam_it::bindings

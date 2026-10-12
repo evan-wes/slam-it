@@ -4,7 +4,7 @@ Run from the repository root after changing the cases (the fixture is committed)
 
     python -m tests.fixtures.foundations.generate_camera
 
-Independent methods, nothing imported from slam_it_all: projection by its defining formula in
+Independent methods, nothing imported from slam_it: projection by its defining formula in
 high precision; Jacobians by mpmath's numerical differentiation of that formula (not the
 analytic derivatives under test); unprojection by mpmath's root finder on the distortion
 equations, then normalised.

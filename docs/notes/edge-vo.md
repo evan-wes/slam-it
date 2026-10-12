@@ -1,8 +1,8 @@
 # The edge VO pipeline: ORB-SLAM-lite in three languages
 
-Design note for `slam_it_all.edge` (`frames`, `map`, `residuals`, `adjust`, `initialization`,
-`tracking`, `mapping`, `pipeline`), `slam_it_all.orchestration.vo` and the native programs
-`slam_it_all_vo`. The plan is [the edge VO design](../design/2026-10-05-edge-vo.md); this note is
+Design note for `slam_it.edge` (`frames`, `map`, `residuals`, `adjust`, `initialization`,
+`tracking`, `mapping`, `pipeline`), `slam_it.orchestration.vo` and the native programs
+`slam_it_vo`. The plan is [the edge VO design](../design/2026-10-05-edge-vo.md); this note is
 what was built, the decisions taken on the way, and how it does on TUM and EuRoC.
 
 ## The problem
@@ -179,7 +179,7 @@ the keyframe decision exactly; positions and poses to 1e-12, or 1e-9 through a b
 adjustment.
 
 The whole run is held the same way. The room, written as a TUM-format folder and as a EuRoC
-sequence, goes through `slam_it_all.orchestration.vo.run` with every backend in every mode the
+sequence, goes through `slam_it.orchestration.vo.run` with every backend in every mode the
 dataset records: Python in-process, C++ and Rust as their native programs, which read the
 folder with their own readers and write the run folder with their own writers. The native
 runs track the same frames with the same matches and make the same keyframes as Python's,

@@ -1,10 +1,10 @@
-"""Two-view initialisation on a real image pair: SLAM It All! against the ground truth and OpenCV.
+"""Two-view initialisation on a real image pair: SLAM It! against the ground truth and OpenCV.
 
 Takes two colour frames of a TUM RGB-D sequence (default: ``freiburg1_xyz``), matches
-SLAM It All!'s ORB features between them (:mod:`slam_it_all.foundations.orb` and
-:mod:`slam_it_all.foundations.matching`, ORB-SLAM's extractor and filters), unprojects the matches
+SLAM It!'s ORB features between them (:mod:`slam_it.foundations.orb` and
+:mod:`slam_it.foundations.matching`, ORB-SLAM's extractor and filters), unprojects the matches
 through the sensor's calibrated radial-tangential model, and runs
-:func:`slam_it_all.foundations.twoview.initialize` with each backend. It prints the status, the
+:func:`slam_it.foundations.twoview.initialize` with each backend. It prints the status, the
 chosen model, the inliers and triangulated points, and the motion's error against the
 motion-capture ground truth: the rotation's angle and the translation direction's angle (two
 views cannot fix the scale).
@@ -14,7 +14,7 @@ matches as an end-to-end reference.
 With ``--rerun FILE.rrd`` it also saves a rerun recording of both cameras and the
 triangulated points (open it with ``rerun FILE.rrd``).
 
-Run from the repository root, in the slam-it-all environment::
+Run from the repository root, in the slam-it environment::
 
     python scripts/demo_two_view.py
     python scripts/demo_two_view.py --first 100 --gap 20 --rerun /tmp/two_view.rrd
@@ -35,9 +35,9 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from slam_it_all import backends
-from slam_it_all.eval import images, tum
-from slam_it_all.foundations import camera, epipolar, matching, orb, se3, so3, twoview
+from slam_it import backends
+from slam_it.eval import images, tum
+from slam_it.foundations import camera, epipolar, matching, orb, se3, so3, twoview
 
 DEFAULT_SEQUENCE = Path("../datasets/tum/rgbd_dataset_freiburg1_xyz")
 FEATURES = orb.Options(n_features=2000)
@@ -45,7 +45,7 @@ FEATURES = orb.Options(n_features=2000)
 
 
 def matches(first: Path, second: Path) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Match SLAM It All!'s ORB features between two images.
+    """Match SLAM It!'s ORB features between two images.
 
     Every backend extracts and matches the same features, bit for bit, so the fastest built
     one does it.
@@ -142,7 +142,7 @@ def opencv_reference(
 ) -> NDArray[np.float64] | None:
     """Return OpenCV's relative pose: the 5-point E by RANSAC, then ``recoverPose``.
 
-    It uses the same threshold and confidence as SLAM It All!'s run, so the two stay comparable.
+    It uses the same threshold and confidence as SLAM It!'s run, so the two stay comparable.
 
     Parameters
     ----------
@@ -151,7 +151,7 @@ def opencv_reference(
     intrinsics : ndarray of float64, shape (9,)
         The ``radtan`` intrinsics.
     options : twoview.Options
-        SLAM It All!'s settings, whose threshold and confidence OpenCV uses.
+        SLAM It!'s settings, whose threshold and confidence OpenCV uses.
 
     Returns
     -------
@@ -193,7 +193,7 @@ def record(path: Path, result: twoview.Initialization, truth: NDArray[np.float64
     """
     import rerun as rr  # noqa: PLC0415 -- optional, only for --rerun
 
-    rr.init("SLAM It All! two-view initialisation")
+    rr.init("SLAM It! two-view initialisation")
     rr.save(str(path))
     rr.log("world/points", rr.Points3D(result.points[result.triangulated], radii=0.005))
     for name, pose in (

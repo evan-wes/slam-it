@@ -1,5 +1,5 @@
 {
-  "description": "bal_tiny.txt as slam_it_all.eval.readers.read_bal converts it (generate_bal.py): the model, and every array field (NaN as null, booleans as true/false). The native BAL readers must give the same problem.",
+  "description": "bal_tiny.txt as slam_it.eval.readers.read_bal converts it (generate_bal.py): the model, and every array field (NaN as null, booleans as true/false). The native BAL readers must give the same problem.",
   "tolerance": {
     "comparison": "close",
     "rtol": 0.0,

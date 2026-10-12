@@ -4,10 +4,10 @@
 
 #include <iostream>
 
-#include "slam_it_all/foundations/error.hpp"
+#include "slam_it/foundations/error.hpp"
 
-/// @brief Helpers for SLAM It All!'s native tests.
-namespace slam_it_all::testing {
+/// @brief Helpers for SLAM It!'s native tests.
+namespace slam_it::testing {
 
 /// @brief Count and report a failed check.
 /// @param ok Whether the check passed.
@@ -40,4 +40,4 @@ bool is_invalid_input(const foundations::Result<T>& result) {
   return !result.has_value() && result.error().kind == foundations::ErrorKind::kInvalidInput;
 }
 
-}  // namespace slam_it_all::testing
+}  // namespace slam_it::testing

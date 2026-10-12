@@ -11,13 +11,13 @@ from dataclasses import dataclass, replace
 import numpy as np
 import pytest
 
-from slam_it_all import backends
-from slam_it_all.edge import map as maps
-from slam_it_all.edge import tracking
-from slam_it_all.edge.frames import Camera, Frame, Tracked
-from slam_it_all.edge.map import Map
-from slam_it_all.foundations import orb
-from slam_it_all.foundations.errors import InvalidInputError
+from slam_it import backends
+from slam_it.edge import map as maps
+from slam_it.edge import tracking
+from slam_it.edge.frames import Camera, Frame, Tracked
+from slam_it.edge.map import Map
+from slam_it.foundations import orb
+from slam_it.foundations.errors import InvalidInputError
 from tests.conftest import require_function
 from tests.edge.conftest import Truth
 from tests.edge.support import CAMERA, OPTIONS, SOLVER_TOLERANCE, assert_close, assert_records_match

@@ -1,7 +1,7 @@
 /// @file
-/// @brief Bindings for `slam_it_all.foundations.alignment`
-/// (`slam_it_all._cpp.foundations.alignment`).
-#include "slam_it_all/foundations/alignment.hpp"
+/// @brief Bindings for `slam_it.foundations.alignment`
+/// (`slam_it._cpp.foundations.alignment`).
+#include "slam_it/foundations/alignment.hpp"
 
 #include <nanobind/nanobind.h>
 
@@ -12,7 +12,7 @@
 
 namespace nb = nanobind;
 
-namespace slam_it_all::bindings {
+namespace slam_it::bindings {
 
 namespace {
 
@@ -54,4 +54,4 @@ void bind_alignment(nb::module_& m) {
         "Align (N, 3) point sets; return the (4, 4) matrix [[s R, t], [0, 1]].");
 }
 
-}  // namespace slam_it_all::bindings
+}  // namespace slam_it::bindings

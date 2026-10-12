@@ -3,19 +3,19 @@
 
 import { seconds } from "./format.js";
 
-/** The largest upload, in bytes (slam_it_all_server.config.MAX_BYTES). */
+/** The largest upload, in bytes (slam_it_server.config.MAX_BYTES). */
 export const MAX_BYTES = 500e6;
 
-/** The longest video, in seconds (slam_it_all.eval.video.MAX_SECONDS). */
+/** The longest video, in seconds (slam_it.eval.video.MAX_SECONDS). */
 export const MAX_SECONDS = 60;
 
-/** How long a result is kept, in days (slam_it_all_server.config.RETENTION). */
+/** How long a result is kept, in days (slam_it_server.config.RETENTION). */
 export const RETENTION_DAYS = 7;
 
 /**
  * What the upload page says becomes of an upload.
  * @param {boolean} kept Whether the server keeps uploads with their results (the demo's,
- *     slam_it_all_server.config.Settings.keep_uploads).
+ *     slam_it_server.config.Settings.keep_uploads).
  * @returns {string} The words.
  */
 export function uploadFate(kept) {
@@ -32,7 +32,7 @@ export const UPLOADS = {
   stray: ".zip,application/zip",
 };
 
-/** The worker's stages, in order (slam_it_all_server.jobs.STAGES), each as the page says it. */
+/** The worker's stages, in order (slam_it_server.jobs.STAGES), each as the page says it. */
 export const STAGES = [
   ["downloading", "fetching the upload"],
   ["importing", "importing the frames"],
@@ -41,7 +41,7 @@ export const STAGES = [
   ["uploading", "saving the result"],
 ];
 
-/** Where a run's intrinsics came from (slam_it_all.orchestration.worker), as the page says it. */
+/** Where a run's intrinsics came from (slam_it.orchestration.worker), as the page says it. */
 export const INTRINSICS = {
   "stray-scanner": "Stray Scanner's camera matrix: exact",
   profile: "a Gyroflow lens profile of this phone",
@@ -167,7 +167,7 @@ export function keptFor(deleted, now) {
  * its first map, and ends at the frame it loses the track at, so a result can be shorter than
  * the video: this says why, so that it is not taken for a cropped one.
  * @param {Record<string, unknown>} summary The worker's summary
- *     (slam_it_all.orchestration.worker.summarize).
+ *     (slam_it.orchestration.worker.summarize).
  * @returns {string} The words.
  */
 export function trackingText(summary) {

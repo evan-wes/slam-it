@@ -6,7 +6,7 @@ https://github.com/gyroflow/lens_profiles, at commit
 The database is released under CC0 1.0 (public domain), by Gyroflow's contributors; the
 `calibrated_by` field of each file names its calibrator.
 
-`slam_it_all.eval.lenses` matches a video to one of them in the tests: the iPhone 14 Pro's and
+`slam_it.eval.lenses` matches a video to one of them in the tests: the iPhone 14 Pro's and
 the Pixel 8's main cameras, with a telephoto, an ultrawide, a lowercase brand, an "iPhone 14
 Pro Max" that must not match an "iPhone 14 Pro", a calibration too rough to use (the Pixel 8's
 1080p profile, 4 pixels RMS), a model that turns back before its image's corners (the

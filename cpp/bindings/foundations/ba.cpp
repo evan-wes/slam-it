@@ -1,5 +1,5 @@
 /// @file
-/// @brief Bindings for `slam_it_all.foundations.ba` (`slam_it_all._cpp.foundations.ba`).
+/// @brief Bindings for `slam_it.foundations.ba` (`slam_it._cpp.foundations.ba`).
 ///
 /// Everything crosses by name: the problem's arrays are keyword arguments, and the options
 /// one dict of `BAOptions`' fields, nested where `BAOptions` nests (`solver`, the losses),
@@ -7,7 +7,7 @@
 /// so do the enums in the result. Every enum's names come from its core's `name()` (exported
 /// by `codes()`, so the Python side's tables are tested against them), and the result is a
 /// dict of named arrays and scalars.
-#include "slam_it_all/foundations/ba.hpp"
+#include "slam_it/foundations/ba.hpp"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -24,12 +24,12 @@
 #include "common.hpp"
 #include "foundations/foundations.hpp"
 #include "foundations/nls_crossing.hpp"
-#include "slam_it_all/foundations/camera.hpp"
-#include "slam_it_all/foundations/nls.hpp"
+#include "slam_it/foundations/camera.hpp"
+#include "slam_it/foundations/nls.hpp"
 
 namespace nb = nanobind;
 
-namespace slam_it_all::bindings {
+namespace slam_it::bindings {
 
 namespace {
 
@@ -206,4 +206,4 @@ void bind_ba(nb::module_& m) {
         "Run bundle adjustment; every argument by keyword; returns a dict of named results.");
 }
 
-}  // namespace slam_it_all::bindings
+}  // namespace slam_it::bindings

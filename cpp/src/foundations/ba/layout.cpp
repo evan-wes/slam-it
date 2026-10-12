@@ -11,9 +11,9 @@
 #include <utility>
 #include <vector>
 
-#include "slam_it_all/foundations/camera.hpp"
+#include "slam_it/foundations/camera.hpp"
 
-namespace slam_it_all::foundations::ba::detail {
+namespace slam_it::foundations::ba::detail {
 
 namespace {
 
@@ -414,4 +414,4 @@ Result<Layout> make_layout(const Problem& problem, const Options& options) {
   return layout;
 }
 
-}  // namespace slam_it_all::foundations::ba::detail
+}  // namespace slam_it::foundations::ba::detail

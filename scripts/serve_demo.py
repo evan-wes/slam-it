@@ -39,9 +39,9 @@ from pathlib import Path
 
 import segno
 
-from slam_it_all.orchestration import worker as worker_module
-from slam_it_all_server import app as server_app
-from slam_it_all_server import config as server_config
+from slam_it.orchestration import worker as worker_module
+from slam_it_server import app as server_app
+from slam_it_server import config as server_config
 
 REPO = Path(__file__).resolve().parent.parent
 """The repository, whose viewer folder holds the pages."""
@@ -143,10 +143,10 @@ def lan_address() -> str:
 def default_data() -> Path:
     """Return the demo's folder when none is given: the same every run, so each sweeps the last's.
 
-    ``slam-it-all/demo`` under ``$XDG_DATA_HOME``, by default ``~/.local/share``.
+    ``slam-it/demo`` under ``$XDG_DATA_HOME``, by default ``~/.local/share``.
     """
     base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
-    return Path(base) / "slam-it-all" / "demo"
+    return Path(base) / "slam-it" / "demo"
 
 
 def environment(data: Path, code: str, url: str, *, staging: bool = False) -> dict[str, str]:
@@ -166,19 +166,19 @@ def environment(data: Path, code: str, url: str, *, staging: bool = False) -> di
     Returns
     -------
     dict of str to str
-        The ``SLAM_IT_ALL_*`` variables (:mod:`slam_it_all_server.config`), its secrets new,
+        The ``SLAM_IT_*`` variables (:mod:`slam_it_server.config`), its secrets new,
         uploads kept with their results.
     """
     return {
-        "SLAM_IT_ALL_INVITE_CODES": code,
-        "SLAM_IT_ALL_WORKER_TOKEN": secrets.token_urlsafe(32),
-        "SLAM_IT_ALL_SIGNING_KEY": secrets.token_urlsafe(32),
-        "SLAM_IT_ALL_STORAGE": f"folder:{data / 'files'}",
-        "SLAM_IT_ALL_PUBLIC_URL": url,
-        "SLAM_IT_ALL_DATABASE": str(data / "jobs.sqlite3"),
-        "SLAM_IT_ALL_VIEWER": str(REPO / "viewer"),
-        "SLAM_IT_ALL_STAGING": "1" if staging else "0",
-        "SLAM_IT_ALL_KEEP_UPLOADS": "1",
+        "SLAM_IT_INVITE_CODES": code,
+        "SLAM_IT_WORKER_TOKEN": secrets.token_urlsafe(32),
+        "SLAM_IT_SIGNING_KEY": secrets.token_urlsafe(32),
+        "SLAM_IT_STORAGE": f"folder:{data / 'files'}",
+        "SLAM_IT_PUBLIC_URL": url,
+        "SLAM_IT_DATABASE": str(data / "jobs.sqlite3"),
+        "SLAM_IT_VIEWER": str(REPO / "viewer"),
+        "SLAM_IT_STAGING": "1" if staging else "0",
+        "SLAM_IT_KEEP_UPLOADS": "1",
     }
 
 
@@ -274,15 +274,15 @@ def main(arguments: list[str]) -> int:
     signal.signal(signal.SIGINT, signal.default_int_handler)
     signal.signal(signal.SIGTERM, _stop)
     server = subprocess.Popen(
-        [sys.executable, "-m", "slam_it_all_server", "--host", host, "--port", str(args.port)],
+        [sys.executable, "-m", "slam_it_server", "--host", host, "--port", str(args.port)],
         env={**os.environ, **settings},
     )
     worker = None
     try:
         _wait_until_up(f"http://127.0.0.1:{args.port}", server)
         inherited = {k: os.environ[k] for k in worker_module.CHILD_ENVIRONMENT if k in os.environ}
-        token = {worker_module.TOKEN_VARIABLE: settings["SLAM_IT_ALL_WORKER_TOKEN"]}
-        command = [sys.executable, "-m", "slam_it_all.orchestration.worker", "serve"]
+        token = {worker_module.TOKEN_VARIABLE: settings["SLAM_IT_WORKER_TOKEN"]}
+        command = [sys.executable, "-m", "slam_it.orchestration.worker", "serve"]
         worker = subprocess.Popen(
             [*command, "--server", f"http://127.0.0.1:{args.port}", "--work", str(data / "work")],
             env={**inherited, **token},

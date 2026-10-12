@@ -3,10 +3,10 @@
 
 import { seconds } from "./format.js";
 
-/** The state that ends a run (slam_it_all.edge.pipeline.State.LOST). */
+/** The state that ends a run (slam_it.edge.pipeline.State.LOST). */
 export const LOST = "lost";
 
-/** The state before the first map (slam_it_all.edge.pipeline.State.NOT_INITIALIZED). */
+/** The state before the first map (slam_it.edge.pipeline.State.NOT_INITIALIZED). */
 export const NOT_INITIALIZED = "not_initialized";
 
 /** What a state is called on the page; a state not named here is shown as tracking. */

@@ -1,8 +1,8 @@
 /// @file
-/// @brief Bindings for `slam_it_all.edge.adjust` (`slam_it_all._cpp.edge.adjust`).
+/// @brief Bindings for `slam_it.edge.adjust` (`slam_it._cpp.edge.adjust`).
 ///
 /// An adjustment crosses back as a dict of `map`, `solves` and `outliers`.
-#include "slam_it_all/edge/adjust.hpp"
+#include "slam_it/edge/adjust.hpp"
 
 #include <nanobind/nanobind.h>
 
@@ -12,7 +12,7 @@
 
 namespace nb = nanobind;
 
-namespace slam_it_all::bindings {
+namespace slam_it::bindings {
 
 namespace {
 
@@ -47,4 +47,4 @@ void bind_adjust(nb::module_& m) {
         "Bundle-adjust keyframes and the points they observe.");
 }
 
-}  // namespace slam_it_all::bindings
+}  // namespace slam_it::bindings

@@ -12,9 +12,9 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from slam_it_all.edge import frames
-from slam_it_all.edge.map import Map
-from slam_it_all.edge.options import Options
+from slam_it.edge import frames
+from slam_it.edge.map import Map
+from slam_it.edge.options import Options
 from tests.edge import room
 
 FRAMES = 40
@@ -43,7 +43,7 @@ ids and the map's structure exactly. NaN equals NaN."""
 
 SOLVER_TOLERANCE = {"rtol": 1e-9, "atol": 1e-9}
 """The same for a stage that runs a bundle adjustment, whose iterations carry last-bit
-differences forward (``slam_it_all.foundations.ba``'s own parity is held to this too); the
+differences forward (``slam_it.foundations.ba``'s own parity is held to this too); the
 structure is still exact."""
 
 

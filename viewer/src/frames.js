@@ -2,7 +2,7 @@
 // alive, its keypoints and their fates, its record and pose. No drawing: the views draw what
 // these return, and Node tests them.
 
-/** The fates a keypoint can have, by code (slam_it_all.eval.runs.FATES). */
+/** The fates a keypoint can have, by code (slam_it.eval.runs.FATES). */
 export const FATES = /** @type {const} */ (["unmatched", "rejected", "tracked", "made"]);
 
 /** What each fate means, in a line (the legend's hover text). */

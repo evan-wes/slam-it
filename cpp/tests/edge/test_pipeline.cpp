@@ -1,5 +1,5 @@
 /// @file
-/// @brief Native tests for the pipeline (slam_it_all/edge/pipeline.hpp) on the exact scene seen
+/// @brief Native tests for the pipeline (slam_it/edge/pipeline.hpp) on the exact scene seen
 ///        along a sideways path: RGB-D and stereo track every frame exactly, monocular starts
 ///        its map and keeps the path's direction, and empty frames lose the track.
 #include <cmath>
@@ -9,14 +9,14 @@
 #include "../foundations/fixture_support.hpp"
 #include "../foundations/test_support.hpp"
 #include "scene.hpp"
-#include "slam_it_all/edge/pipeline.hpp"
+#include "slam_it/edge/pipeline.hpp"
 
 namespace {
 
-namespace edge = slam_it_all::edge;
-namespace scene = slam_it_all::testing::scene;
-using slam_it_all::testing::expect;
-using slam_it_all::testing::is_invalid_input;
+namespace edge = slam_it::edge;
+namespace scene = slam_it::testing::scene;
+using slam_it::testing::expect;
+using slam_it::testing::is_invalid_input;
 
 /// @brief The path's frames.
 constexpr std::int64_t kFrames = 16;
@@ -43,8 +43,8 @@ edge::Options small_scene() {
 /// @param mode The mode.
 /// @param results Where each frame's result goes.
 /// @return The pipeline, or an error.
-slam_it_all::foundations::Result<edge::Pipeline> run(edge::Mode mode,
-                                                     std::vector<edge::FrameResult>& results) {
+slam_it::foundations::Result<edge::Pipeline> run(edge::Mode mode,
+                                                 std::vector<edge::FrameResult>& results) {
   auto pipeline = edge::Pipeline::create(mode, scene::camera(), small_scene());
   if (!pipeline) {
     return pipeline;
@@ -140,9 +140,9 @@ int run_tests() {
   check_depth_modes(failures);
   check_monocular(failures);
   check_lost(failures);
-  return slam_it_all::testing::finish("edge/pipeline", failures);
+  return slam_it::testing::finish("edge/pipeline", failures);
 }
 
 }  // namespace
 
-int main() { return slam_it_all::testing::guarded("edge/pipeline", run_tests); }
+int main() { return slam_it::testing::guarded("edge/pipeline", run_tests); }

@@ -14,9 +14,9 @@
 #include <vector>
 
 #include "common.hpp"
-#include "slam_it_all/foundations/image.hpp"
+#include "slam_it/foundations/image.hpp"
 
-namespace slam_it_all::bindings {
+namespace slam_it::bindings {
 
 /// @brief A read-only, contiguous (H, W) uint8 image.
 using ImageIn = nanobind::ndarray<const std::uint8_t, nanobind::shape<-1, -1>, nanobind::c_contig,
@@ -59,4 +59,4 @@ inline ImageOut image_array(const foundations::image::Image& image) {
   return out;
 }
 
-}  // namespace slam_it_all::bindings
+}  // namespace slam_it::bindings

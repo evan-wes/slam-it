@@ -16,10 +16,10 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-from slam_it_all.edge import frames, pipeline
-from slam_it_all.edge import map as maps
-from slam_it_all.edge.map import Map
-from slam_it_all.foundations import matching
+from slam_it.edge import frames, pipeline
+from slam_it.edge import map as maps
+from slam_it.edge.map import Map
+from slam_it.foundations import matching
 from tests.conftest import require_backend
 from tests.edge import room
 from tests.edge.support import CAMERA, FRAMES, OPTIONS
@@ -87,7 +87,7 @@ def truth_map(built: list[frames.Frame], poses: list[np.ndarray]) -> Map:
 
     Parameters
     ----------
-    built : list of slam_it_all.edge.frames.Frame
+    built : list of slam_it.edge.frames.Frame
         The frames, in RGB-D.
     poses : list of ndarray, shape (4, 4)
         Their true ``T_cam_world``.

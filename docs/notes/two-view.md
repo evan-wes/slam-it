@@ -1,7 +1,7 @@
 # Two-view geometry and initialisation
 
-Design note for `slam_it_all.foundations.epipolar`, `.homography`, `.twoview` and
-`.correspondences` (the Python references) and their headers in `slam_it_all/foundations/` (the C++
+Design note for `slam_it.foundations.epipolar`, `.homography`, `.twoview` and
+`.correspondences` (the Python references) and their headers in `slam_it/foundations/` (the C++
 core). Triangulation, RANSAC, and the 5-point solver with the Sampson refinement have their
 own notes.
 
@@ -146,7 +146,7 @@ of both cameras is best. Then:
    act on (wait for more motion), and because it usually makes the candidates hard to tell
    apart too; a noisy pure rotation usually ends here, its H not quite a rotation;
 3. a runner-up with more than `ambiguity_ratio` (0.75) of the best's support is `ambiguous`,
-   the ratio ORB-SLAM uses for H (it uses 0.7 for F; SLAM It All! uses one ratio for both).
+   the ratio ORB-SLAM uses for H (it uses 0.7 for F; SLAM It! uses one ratio for both).
    Support here is every inlier triangulated in front of both
    cameras, whatever its parallax; ORB-SLAM's `CheckRT` also counts low-parallax points
    behind a camera as good, which makes its candidates harder to tell apart.

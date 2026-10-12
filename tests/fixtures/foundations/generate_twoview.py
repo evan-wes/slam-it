@@ -4,7 +4,7 @@ Run from the repository root after changing the cases (the fixtures are committe
 
     python -m tests.fixtures.foundations.generate_twoview
 
-Independent methods, nothing imported from slam_it_all:
+Independent methods, nothing imported from slam_it:
 
 - noise-free cases expect the true matrix, built in 50 digits from the pose (and plane):
   ``E = [t̂]ₓ R``, ``F = K⁻ᵀ E K⁻¹``, ``H = R + t nᵀ / d``, each scaled as the solvers scale

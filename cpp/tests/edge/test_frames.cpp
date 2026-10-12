@@ -1,5 +1,5 @@
 /// @file
-/// @brief Native tests for building frames (slam_it_all/edge/frames.hpp): one frame per mode on a
+/// @brief Native tests for building frames (slam_it/edge/frames.hpp): one frame per mode on a
 ///        textured image, and the builders' refusals. Parity with the Python reference is
 ///        checked through the whole-run tests (tests/orchestration).
 #include <cmath>
@@ -8,15 +8,15 @@
 #include <vector>
 
 #include "../foundations/test_support.hpp"
-#include "slam_it_all/edge/frames.hpp"
-#include "slam_it_all/foundations/matching.hpp"
+#include "slam_it/edge/frames.hpp"
+#include "slam_it/foundations/matching.hpp"
 
 namespace {
 
-namespace edge = slam_it_all::edge;
-namespace foundations = slam_it_all::foundations;
-using slam_it_all::testing::expect;
-using slam_it_all::testing::is_invalid_input;
+namespace edge = slam_it::edge;
+namespace foundations = slam_it::foundations;
+using slam_it::testing::expect;
+using slam_it::testing::is_invalid_input;
 
 /// @brief The image's width.
 constexpr std::int64_t kCols = 320;
@@ -145,7 +145,7 @@ int run() {
   check_builds(failures);
   check_refusals(failures);
   check_make_frame(failures);
-  return slam_it_all::testing::finish("edge/frames", failures);
+  return slam_it::testing::finish("edge/frames", failures);
 }
 
 }  // namespace

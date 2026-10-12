@@ -1,4 +1,4 @@
-// Loading a bundle (slam_it_all.orchestration.bundles, whose docstring states its files): its
+// Loading a bundle (slam_it.orchestration.bundles, whose docstring states its files): its
 // description and frames first; every backend's track (its records and poses), to compare them;
 // and a backend's map and features when the page first shows it.
 //
@@ -69,7 +69,7 @@ import { readFloat32, readInt32 } from "./npy.js";
 /**
  * bundle.json.
  * @typedef {object} BundleInfo
- * @property {string} format "slam-it-all-bundle".
+ * @property {string} format "slam-it-bundle".
  * @property {number} version 1.
  * @property {string} dataset The dataset.
  * @property {string} sequence The sequence.
@@ -80,8 +80,8 @@ import { readFloat32, readInt32 } from "./npy.js";
  * @property {Extent} extent The whole sequence, of which the bundle's frames are the part run.
  * @property {{chunk: number, quality: number, colour: boolean}} images How the frames are stored.
  * @property {boolean} truth Whether the sequence has ground truth (`truth.npy`).
- * @property {string[]} fates The fates' names, by code (slam_it_all.eval.runs.FATES).
- * @property {string[]} steps The steps each frame times (slam_it_all.eval.runs.STEPS).
+ * @property {string[]} fates The fates' names, by code (slam_it.eval.runs.FATES).
+ * @property {string[]} steps The steps each frame times (slam_it.eval.runs.STEPS).
  * @property {Record<string, BackendInfo>} backends Each backend's header.
  */
 
@@ -126,7 +126,7 @@ import { readFloat32, readInt32 } from "./npy.js";
  * @property {Int32Array} spans Each frame's JPEG's byte range in its chunk, (F, 2).
  */
 
-export const FORMAT = "slam-it-all-bundle";
+export const FORMAT = "slam-it-bundle";
 export const VERSION = 1;
 
 /** The backends a bundle may hold, in the order the page offers them. */

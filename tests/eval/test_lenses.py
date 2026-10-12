@@ -15,9 +15,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from slam_it_all.eval import lenses
-from slam_it_all.foundations import image
-from slam_it_all.foundations.errors import InvalidInputError
+from slam_it.eval import lenses
+from slam_it.foundations import image
+from slam_it.foundations.errors import InvalidInputError
 from tests.conftest import FIXTURES
 from tests.edge import room
 
@@ -574,6 +574,6 @@ def test_the_database_is_required_where_it_is_looked_for(
     for folder in (tmp_path / "missing", tmp_path):
         with pytest.raises(InvalidInputError, match="no usable lens profile"):
             lenses.database(folder)
-    monkeypatch.setenv("SLAM_IT_ALL_LENS_PROFILES", str(tmp_path))
+    monkeypatch.setenv("SLAM_IT_LENS_PROFILES", str(tmp_path))
     with pytest.raises(InvalidInputError, match="no usable lens profile"):
         lenses.database()

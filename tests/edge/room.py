@@ -27,7 +27,7 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter
 
-from slam_it_all.foundations import se3, so3
+from slam_it.foundations import se3, so3
 
 Array = NDArray[np.float64]
 

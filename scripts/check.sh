@@ -3,13 +3,13 @@ set -uo pipefail
 
 # Layer 1 of the review process: deterministic checks, run on every PR, locally and in CI
 # (scripts/offline_ci.sh runs it from a clean checkout, as .github/workflows/test.yml does).
-# The review panel (/slam-it-all-review-panel) is layer 2 and runs only on larger changes.
+# The review panel (/slam-it-review-panel) is layer 2 and runs only on larger changes.
 #
 # Runs every check even after a failure, then exits non-zero if any failed, so one run
-# reports everything. Expects the slam-it-all conda env (scripts/setup_slam_it_all.sh) to be active,
+# reports everything. Expects the slam-it conda env (scripts/setup_slam_it.sh) to be active,
 # or pass --env NAME to run each tool through `conda run`.
 #
-# Every backend is required: SLAM_IT_ALL_REQUIRE_BACKENDS makes a C++ or Rust extension that is
+# Every backend is required: SLAM_IT_REQUIRE_BACKENDS makes a C++ or Rust extension that is
 # missing or fails to load a test failure, not a skipped parity test.
 #
 # Usage:
@@ -33,7 +33,7 @@ if [[ -n "${ENV_NAME}" ]]; then
   CONDA_BIN="${CONDA_EXE:-$(command -v conda || echo "${HOME}/miniconda3/condabin/conda")}"
   RUN=("${CONDA_BIN}" run --no-capture-output -n "${ENV_NAME}")
 fi
-export SLAM_IT_ALL_REQUIRE_BACKENDS="python,cpp,rust"
+export SLAM_IT_REQUIRE_BACKENDS="python,cpp,rust"
 
 failed=()
 check() {
@@ -69,12 +69,12 @@ check "clang-format" clang-format --dry-run --Werror "${CPP_FILES[@]}"
 # benchmarks build apart, unhardened, in build/bench, the tree to time from, so a timing never
 # pays for the checks (PR 9's panel, A12).
 check "cmake configure (compile_commands.json)" \
-  cmake -S . -B build/native -G Ninja -DSLAM_IT_ALL_BUILD_TESTS=ON \
-  -DSLAM_IT_ALL_BUILD_BENCHMARKS=OFF -DCMAKE_BUILD_TYPE=Release \
+  cmake -S . -B build/native -G Ninja -DSLAM_IT_BUILD_TESTS=ON \
+  -DSLAM_IT_BUILD_BENCHMARKS=OFF -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_CXX_FLAGS=-D_GLIBCXX_ASSERTIONS
 check "cmake configure, benchmarks (unhardened)" \
-  cmake -S . -B build/bench -G Ninja -DSLAM_IT_ALL_BUILD_TESTS=OFF \
-  -DSLAM_IT_ALL_BUILD_BENCHMARKS=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=
+  cmake -S . -B build/bench -G Ninja -DSLAM_IT_BUILD_TESTS=OFF \
+  -DSLAM_IT_BUILD_BENCHMARKS=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=
 check "C++ build" cmake --build build/native -j4
 check "C++ benchmarks build" cmake --build build/bench -j4
 # clang-tidy's clang does not know conda gcc's implicit include directory (<env>/include),
@@ -92,12 +92,12 @@ check "rustfmt" cargo fmt --manifest-path rust/Cargo.toml --all --check
 check "clippy (pedantic, missing docs)" \
   cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets
 # Every rung crate; the cdylib bindings crate cannot be tested standalone.
-check "Rust tests" cargo test --manifest-path rust/Cargo.toml --workspace --exclude slam-it-all-py
-# The native program the rust backend runs (slam_it_all.backends.program), rebuilt for pytest,
-# always into rust/target (whatever CARGO_TARGET_DIR says), where slam_it_all.backends looks.
+check "Rust tests" cargo test --manifest-path rust/Cargo.toml --workspace --exclude slam-it-py
+# The native program the rust backend runs (slam_it.backends.program), rebuilt for pytest,
+# always into rust/target (whatever CARGO_TARGET_DIR says), where slam_it.backends looks.
 check "Rust programs (release)" \
   cargo build --release --manifest-path rust/Cargo.toml --target-dir rust/target \
-  -p slam-it-all-orchestration
+  -p slam-it-orchestration
 
 # JavaScript: the run viewer's page, its tools installed by `npm ci --prefix viewer`
 check "node --check (viewer)" bash -c 'for file; do node --check "$file" || exit 1; done' _ \

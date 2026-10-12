@@ -1,17 +1,17 @@
 /// @file
-/// @brief Implementation of the SO(3) functions declared in slam_it_all/foundations/so3.hpp.
+/// @brief Implementation of the SO(3) functions declared in slam_it/foundations/so3.hpp.
 ///
-/// Each formula mirrors the Python reference (`slam_it_all.foundations.so3`) term for term, so
+/// Each formula mirrors the Python reference (`slam_it.foundations.so3`) term for term, so
 /// the two agree to rounding: cancellation-free forms where they exist, Taylor series below
 /// the named thresholds, `atan2` for the angle in `log`, and the symmetric-part axis near π.
-#include "slam_it_all/foundations/so3.hpp"
+#include "slam_it/foundations/so3.hpp"
 
 #include <Eigen/Dense>
 #include <algorithm>
 #include <cmath>
 #include <string>
 
-namespace slam_it_all::foundations::so3 {
+namespace slam_it::foundations::so3 {
 
 namespace {
 
@@ -241,4 +241,4 @@ Eigen::Matrix3d project_to_so3(const Eigen::Matrix3d& matrix) {
   return u * v.transpose();
 }
 
-}  // namespace slam_it_all::foundations::so3
+}  // namespace slam_it::foundations::so3

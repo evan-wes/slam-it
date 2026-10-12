@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Snapshots the pip layer of the slam-it-all conda env into scripts/locks/slam-it-all.lock.
+# Snapshots the pip layer of the slam-it conda env into scripts/locks/slam-it.lock.
 #
-# The lock freezes the whole resolved pip tree, so setup_slam_it_all.sh replays a known-good
-# set instead of resolving whatever is newest. Excluded: the editable installs (slam-it-all,
-# slam-it-all-rs) and the conda layer (Python, cmake, compilers, Rust), which pip cannot see.
+# The lock freezes the whole resolved pip tree, so setup_slam_it.sh replays a known-good
+# set instead of resolving whatever is newest. Excluded: the editable installs (slam-it,
+# slam-it-rs) and the conda layer (Python, cmake, compilers, Rust), which pip cannot see.
 # Linux x86_64 and Python-version specific. Regenerate after a deliberate upgrade:
 #   scripts/gen_env_lock.sh [--env NAME]
 
-ENV_NAME="slam-it-all"
+ENV_NAME="slam-it"
 [[ "${1:-}" == "--env" ]] && ENV_NAME="$2"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOCK_FILE="${ROOT_DIR}/scripts/locks/slam-it-all.lock"
+LOCK_FILE="${ROOT_DIR}/scripts/locks/slam-it.lock"
 CONDA_BIN="${CONDA_EXE:-$(command -v conda || echo "${HOME}/miniconda3/condabin/conda")}"
 
 mkdir -p "$(dirname "${LOCK_FILE}")"

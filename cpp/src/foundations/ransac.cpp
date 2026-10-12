@@ -1,6 +1,6 @@
 /// @file
-/// @brief The non-template parts of RANSAC declared in slam_it_all/foundations/ransac.hpp.
-#include "slam_it_all/foundations/ransac.hpp"
+/// @brief The non-template parts of RANSAC declared in slam_it/foundations/ransac.hpp.
+#include "slam_it/foundations/ransac.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -8,7 +8,7 @@
 #include <limits>
 #include <utility>
 
-namespace slam_it_all::foundations::ransac {
+namespace slam_it::foundations::ransac {
 
 const char* name(Termination termination) {
   switch (termination) {
@@ -76,4 +76,4 @@ Indices below(const Eigen::VectorXd& residuals, double threshold2) {
 
 }  // namespace detail
 
-}  // namespace slam_it_all::foundations::ransac
+}  // namespace slam_it::foundations::ransac

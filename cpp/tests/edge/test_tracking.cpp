@@ -1,5 +1,5 @@
 /// @file
-/// @brief Native tests for tracking (slam_it_all/edge/tracking.hpp) on the exact scene: refinement
+/// @brief Native tests for tracking (slam_it/edge/tracking.hpp) on the exact scene: refinement
 ///        and its outliers, the points in view, the motion model's level rule, the local map,
 ///        and the fallback. Parity with the Python reference is checked through the bindings by
 ///        tests/edge.
@@ -11,14 +11,14 @@
 #include "../foundations/fixture_support.hpp"
 #include "../foundations/test_support.hpp"
 #include "scene.hpp"
-#include "slam_it_all/edge/tracking.hpp"
+#include "slam_it/edge/tracking.hpp"
 
 namespace {
 
-namespace edge = slam_it_all::edge;
-namespace scene = slam_it_all::testing::scene;
-using slam_it_all::testing::expect;
-using slam_it_all::testing::is_invalid_input;
+namespace edge = slam_it::edge;
+namespace scene = slam_it::testing::scene;
+using slam_it::testing::expect;
+using slam_it::testing::is_invalid_input;
 
 /// @brief The scene's point ids, one per keypoint.
 /// @return 0 to 59.
@@ -130,7 +130,7 @@ void check_local_map(const edge::Map& m, int& failures) {
   if (placed) {
     const edge::PnpSummary& s = placed->summary;
     expect(s.candidates == 60 && s.matches == 60 && s.iterations.has_value() &&
-               s.termination == slam_it_all::foundations::ransac::Termination::kConfidence &&
+               s.termination == slam_it::foundations::ransac::Termination::kConfidence &&
                !s.degenerate && s.inliers == 60 && s.refined == 60,
            "the fallback's summary records each step it took", failures);
   }
@@ -161,9 +161,9 @@ int run() {
     check_local_map(*m, failures);
   }
   check_level_rule(failures);
-  return slam_it_all::testing::finish("edge/tracking", failures);
+  return slam_it::testing::finish("edge/tracking", failures);
 }
 
 }  // namespace
 
-int main() { return slam_it_all::testing::guarded("edge/tracking", run); }
+int main() { return slam_it::testing::guarded("edge/tracking", run); }

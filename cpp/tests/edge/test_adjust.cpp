@@ -1,6 +1,6 @@
 /// @file
 /// @brief Native tests for the observation errors and the bundle adjustment
-///        (slam_it_all/edge/{residuals,adjust}.hpp): the chi-square terms, and an adjustment of the
+///        (slam_it/edge/{residuals,adjust}.hpp): the chi-square terms, and an adjustment of the
 ///        exact scene that recovers it and forgets an observation moved off its point. Parity
 ///        with the Python reference is checked through the bindings by tests/edge.
 #include <cmath>
@@ -11,15 +11,15 @@
 #include "../foundations/fixture_support.hpp"
 #include "../foundations/test_support.hpp"
 #include "scene.hpp"
-#include "slam_it_all/edge/adjust.hpp"
-#include "slam_it_all/edge/residuals.hpp"
+#include "slam_it/edge/adjust.hpp"
+#include "slam_it/edge/residuals.hpp"
 
 namespace {
 
-namespace edge = slam_it_all::edge;
-namespace scene = slam_it_all::testing::scene;
-using slam_it_all::testing::expect;
-using slam_it_all::testing::is_invalid_input;
+namespace edge = slam_it::edge;
+namespace scene = slam_it::testing::scene;
+using slam_it::testing::expect;
+using slam_it::testing::is_invalid_input;
 
 /// @brief NaN, for a missing right column.
 constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
@@ -121,9 +121,9 @@ int run() {
   check_chi2(failures);
   check_recovery(failures);
   check_arguments(failures);
-  return slam_it_all::testing::finish("edge/adjust", failures);
+  return slam_it::testing::finish("edge/adjust", failures);
 }
 
 }  // namespace
 
-int main() { return slam_it_all::testing::guarded("edge/adjust", run); }
+int main() { return slam_it::testing::guarded("edge/adjust", run); }

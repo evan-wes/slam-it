@@ -1,7 +1,7 @@
 /// @file
 /// @brief Implementation of the descriptor matching declared in
-/// slam_it_all/foundations/matching.hpp.
-#include "slam_it_all/foundations/matching.hpp"
+/// slam_it/foundations/matching.hpp.
+#include "slam_it/foundations/matching.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -13,7 +13,7 @@
 #include <string>
 #include <utility>
 
-namespace slam_it_all::foundations::matching {
+namespace slam_it::foundations::matching {
 
 namespace {
 
@@ -523,4 +523,4 @@ Result<std::vector<Match>> search_by_projection(std::span<const Projection> proj
   return out;
 }
 
-}  // namespace slam_it_all::foundations::matching
+}  // namespace slam_it::foundations::matching

@@ -1,14 +1,14 @@
 /// @file
-/// @brief Bindings for `slam_it_all.foundations.matching`
-/// (`slam_it_all._cpp.foundations.matching`).
+/// @brief Bindings for `slam_it.foundations.matching`
+/// (`slam_it._cpp.foundations.matching`).
 ///
 /// Descriptor sets cross as C-contiguous (N, 32) uint8 arrays, orientation bins as int64
-/// arrays, and the filters as one dict of `slam_it_all.foundations.matching.Options`' (or
+/// arrays, and the filters as one dict of `slam_it.foundations.matching.Options`' (or
 /// `SearchOptions`') fields; matches come back as a dict of `Matches`' fields. A search by
 /// projection takes its projections as a dict of `Projections`' fields and the frame's
-/// keypoints as a dict of arrays (see `slam_it_all.foundations.matching.Implementation`); the grid
+/// keypoints as a dict of arrays (see `slam_it.foundations.matching.Implementation`); the grid
 /// is built per call.
-#include "slam_it_all/foundations/matching.hpp"
+#include "slam_it/foundations/matching.hpp"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -27,7 +27,7 @@
 
 namespace nb = nanobind;
 
-namespace slam_it_all::bindings {
+namespace slam_it::bindings {
 
 namespace {
 
@@ -281,4 +281,4 @@ void bind_matching(nb::module_& m) {
         "Match projected map points to a frame's keypoints; a dict of Matches' fields.");
 }
 
-}  // namespace slam_it_all::bindings
+}  // namespace slam_it::bindings

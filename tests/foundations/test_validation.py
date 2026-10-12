@@ -10,9 +10,9 @@ from types import ModuleType
 import numpy as np
 import pytest
 
-from slam_it_all import backends
-from slam_it_all.foundations import arrays, camera, se3, so3
-from slam_it_all.foundations.errors import InvalidInputError
+from slam_it import backends
+from slam_it.foundations import arrays, camera, se3, so3
+from slam_it.foundations.errors import InvalidInputError
 from tests.conftest import check_rejects
 
 PINHOLE = [500.0, 500.0, 320.0, 240.0]

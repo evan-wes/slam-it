@@ -1,5 +1,5 @@
 /// @file
-/// @brief Native tests for what a program reads of its own process (slam_it_all/eval/budgets.hpp),
+/// @brief Native tests for what a program reads of its own process (slam_it/eval/budgets.hpp),
 ///        as Python's `tests/eval/test_budgets.py` reads it.
 #include <cstdint>
 #include <filesystem>
@@ -9,13 +9,13 @@
 
 #include "../foundations/fixture_support.hpp"
 #include "../foundations/test_support.hpp"
-#include "slam_it_all/eval/budgets.hpp"
+#include "slam_it/eval/budgets.hpp"
 
 namespace {
 
-namespace budgets = slam_it_all::eval::budgets;
+namespace budgets = slam_it::eval::budgets;
 namespace fs = std::filesystem;
-using slam_it_all::testing::expect;
+using slam_it::testing::expect;
 
 /// @brief Write a status file.
 /// @param path The file.
@@ -29,11 +29,11 @@ void write(const fs::path& path, const std::string& text) {
 /// @return The exit code.
 int run() {
   int failures = 0;
-  const slam_it_all::testing::ScratchDir scratch("slam_it_all_test_budgets");
+  const slam_it::testing::ScratchDir scratch("slam_it_test_budgets");
   fs::create_directories(scratch.path());
   const fs::path status = scratch.path() / "status";
   write(status,
-        "Name:\tslam_it_all_vo\nVmPeak:\t  912340 kB\nVmHWM:\t   47248 kB\nVmRSS:\t   41000 kB\n");
+        "Name:\tslam_it_vo\nVmPeak:\t  912340 kB\nVmHWM:\t   47248 kB\nVmRSS:\t   41000 kB\n");
   expect(budgets::peak_memory(status.string()) == 47248 * 1024,
          "the resident set's high-water mark is read, kilobytes to bytes", failures);
   for (const char* text : {"Name:\tx\nVmRSS:\t 41000 kB\n", "VmHWM:\t 47248 MB\n", ""}) {
@@ -43,7 +43,7 @@ int run() {
   }
   expect(!budgets::peak_memory((scratch.path() / "no_such_file").string()).has_value(),
          "no status file: nothing", failures);
-  write(status, "Name:\tslam_it_all_vo\nCpus_allowed:\tf0\nCpus_allowed_list:\t4-7\n");
+  write(status, "Name:\tslam_it_vo\nCpus_allowed:\tf0\nCpus_allowed_list:\t4-7\n");
   expect(budgets::allowed_cpus(status.string()) == std::vector<std::int64_t>{4, 5, 6, 7},
          "the CPUs allowed are read", failures);
   write(status, "Cpus_allowed_list:\t0-3,8,10-11\n");
@@ -75,9 +75,9 @@ int run() {
   const auto cpus = budgets::allowed_cpus();
   expect(cpus.has_value() && !cpus->empty(), "this process's own CPUs are read", failures);
 #endif
-  return slam_it_all::testing::finish("eval/budgets", failures);
+  return slam_it::testing::finish("eval/budgets", failures);
 }
 
 }  // namespace
 
-int main() { return slam_it_all::testing::guarded("eval/budgets", run); }
+int main() { return slam_it::testing::guarded("eval/budgets", run); }

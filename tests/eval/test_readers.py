@@ -18,10 +18,10 @@ import pytest
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation
 
-from slam_it_all import backends
-from slam_it_all.eval import colmap_reference, readers
-from slam_it_all.foundations import ba, camera, nls, se3
-from slam_it_all.foundations.errors import InvalidInputError
+from slam_it import backends
+from slam_it.eval import colmap_reference, readers
+from slam_it.foundations import ba, camera, nls, se3
+from slam_it.foundations.errors import InvalidInputError
 from tests.conftest import FIXTURES, load_fixture, require_backend
 
 Array = NDArray[np.float64]

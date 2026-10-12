@@ -7,7 +7,7 @@ Run from the repository root after changing the bundle's layout (the fixture is 
 The room (:mod:`tests.orchestration.datasets`) as a TUM RGB-D folder, run for its first
 :data:`NATIVE_FRAMES` frames by the C++ and Rust programs and its first :data:`PYTHON_FRAMES`
 by Python, each recording its features, then baked
-(:func:`slam_it_all.orchestration.bundles.bake`): Python covers fewer frames, so the bundle
+(:func:`slam_it.orchestration.bundles.bake`): Python covers fewer frames, so the bundle
 holds backends of different spans. The Python tests hold the bake to its layout
 (``tests/orchestration/test_bundles.py``); the page's tests read its values
 (``viewer/tests/``). Its timings and peak memories are those of the runs that made it.
@@ -23,8 +23,8 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from slam_it_all import backends
-from slam_it_all.orchestration import bundles, vo
+from slam_it import backends
+from slam_it.orchestration import bundles, vo
 from tests.edge import room
 from tests.edge.support import FRAMES, OPTIONS
 from tests.orchestration.datasets import write_room

@@ -1,5 +1,5 @@
 /// @file
-/// @brief Native tests for the run writer (slam_it_all/eval/runs.hpp) against the golden folder
+/// @brief Native tests for the run writer (slam_it/eval/runs.hpp) against the golden folder
 ///        `tests/fixtures/eval/run/`, which Python wrote from `run_values.json`: the `.npy`
 ///        files byte for byte (the streamed feature files too), the JSON and trajectory value
 ///        for value; and its refusals.
@@ -16,14 +16,14 @@
 
 #include "../foundations/fixture_support.hpp"
 #include "../foundations/test_support.hpp"
-#include "slam_it_all/eval/runs.hpp"
+#include "slam_it/eval/runs.hpp"
 
 namespace {
 
-namespace runs = slam_it_all::eval::runs;
+namespace runs = slam_it::eval::runs;
 namespace fs = std::filesystem;
-using slam_it_all::testing::expect;
-using slam_it_all::testing::is_invalid_input;
+using slam_it::testing::expect;
+using slam_it::testing::is_invalid_input;
 
 /// @brief A file's bytes.
 /// @param path The file.
@@ -99,7 +99,7 @@ std::vector<runs::Life> lives(const nlohmann::json& values) {
 /// @brief The run Python wrote, as the C++ backend.
 /// @return The run.
 runs::Run golden_run() {
-  const nlohmann::json values = slam_it_all::testing::load_fixture("eval/run_values.json");
+  const nlohmann::json values = slam_it::testing::load_fixture("eval/run_values.json");
   runs::Run run{.dataset = values["dataset"],
                 .sequence = values["sequence"],
                 .mode = values["mode"],
@@ -176,8 +176,8 @@ bool same_trajectory(const std::vector<std::vector<double>>& got,
 /// @brief Check the writer against the golden folder.
 /// @param failures Running failure count.
 void check_golden(int& failures) {
-  const fs::path golden = fs::path(SLAM_IT_ALL_FIXTURES_DIR) / "eval" / "run";
-  const slam_it_all::testing::ScratchDir scratch("slam_it_all_test_runs");
+  const fs::path golden = fs::path(SLAM_IT_FIXTURES_DIR) / "eval" / "run";
+  const slam_it::testing::ScratchDir scratch("slam_it_test_runs");
   const fs::path& out = scratch.path();
   expect(runs::write_run(out.string(), golden_run()).has_value(), "the run is written", failures);
   for (const char* name : {"keyframes.npy", "keyframe_poses.npy", "keyframe_lives.npy",
@@ -230,7 +230,7 @@ bool write(runs::FeatureWriter& writer, const Keypoints& frame) {
 /// @brief Check the feature writer against the golden folder's two files, and its refusals.
 /// @param failures Running failure count.
 void check_features(int& failures) {
-  const nlohmann::json values = slam_it_all::testing::load_fixture("eval/run_values.json");
+  const nlohmann::json values = slam_it::testing::load_fixture("eval/run_values.json");
   std::vector<Keypoints> frames;
   for (const auto& frame : values["features"]) {
     frames.push_back({.xy = frame["xy"].get<std::vector<std::array<double, 2>>>(),
@@ -238,8 +238,8 @@ void check_features(int& failures) {
                       .fate = frame["fate"].get<std::vector<std::int64_t>>(),
                       .point = frame["point"].get<std::vector<std::int64_t>>()});
   }
-  const fs::path golden = fs::path(SLAM_IT_ALL_FIXTURES_DIR) / "eval" / "run";
-  const slam_it_all::testing::ScratchDir scratch("slam_it_all_test_runs_features");
+  const fs::path golden = fs::path(SLAM_IT_FIXTURES_DIR) / "eval" / "run";
+  const slam_it::testing::ScratchDir scratch("slam_it_test_runs_features");
   const fs::path& out = scratch.path();
   auto writer = runs::FeatureWriter::open(out.string());
   expect(writer.has_value(), "the feature files are opened", failures);
@@ -282,7 +282,7 @@ void check_features(int& failures) {
 /// @brief Check the refusals: nothing is written.
 /// @param failures Running failure count.
 void check_refusals(int& failures) {
-  const slam_it_all::testing::ScratchDir scratch("slam_it_all_test_runs_refused");
+  const slam_it::testing::ScratchDir scratch("slam_it_test_runs_refused");
   const fs::path& out = scratch.path();
   runs::Run run = golden_run();
   run.mode = "lidar";
@@ -361,9 +361,9 @@ int run() {
   check_features(failures);
   check_refusals(failures);
   check_nested(failures);
-  return slam_it_all::testing::finish("eval/runs", failures);
+  return slam_it::testing::finish("eval/runs", failures);
 }
 
 }  // namespace
 
-int main() { return slam_it_all::testing::guarded("eval/runs", run); }
+int main() { return slam_it::testing::guarded("eval/runs", run); }

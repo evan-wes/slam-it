@@ -4,7 +4,7 @@ Run from the repository root after changing the cases (the fixtures are committe
 
     python -m tests.fixtures.foundations.generate_se3
 
-Independent methods, nothing imported from slam_it_all:
+Independent methods, nothing imported from slam_it:
 
 - ``exp``: mpmath's matrix exponential of the 4x4 twist matrix;
 - ``log``: the rotation vector by the quaternion route, then ``ρ = Jl(θ)⁻¹ t`` by matrix

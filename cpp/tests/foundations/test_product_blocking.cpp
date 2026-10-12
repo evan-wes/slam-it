@@ -8,7 +8,7 @@
 
 namespace {
 
-using slam_it_all::testing::expect;
+using slam_it::testing::expect;
 
 /// @brief The test body.
 /// @return The exit code.
@@ -21,7 +21,7 @@ int run() {
              Eigen::l2CacheSize() == Eigen::internal::defaultL2CacheSize &&
              Eigen::l3CacheSize() == Eigen::internal::defaultL3CacheSize,
          "products are blocked by Eigen's default cache sizes", failures);
-  return slam_it_all::testing::finish("foundations/product_blocking", failures);
+  return slam_it::testing::finish("foundations/product_blocking", failures);
 }
 
 }  // namespace

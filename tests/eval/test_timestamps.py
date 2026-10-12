@@ -7,8 +7,8 @@ from typing import Any
 import numpy as np
 import pytest
 
-from slam_it_all.eval import timestamps
-from slam_it_all.foundations.errors import InvalidInputError
+from slam_it.eval import timestamps
+from slam_it.foundations.errors import InvalidInputError
 
 
 def test_as_times_accepts_ascending_times() -> None:

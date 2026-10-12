@@ -87,7 +87,7 @@ test("the loader refuses another format, a mis-shaped array, and an unknown back
   const older = new TextEncoder().encode(JSON.stringify({ ...info, version: 0 })).buffer;
   await assert.rejects(
     loadBundle(over({ "bundle.json": older })),
-    /expected slam-it-all-bundle version 1/,
+    /expected slam-it-bundle version 1/,
   );
   const short = npy("<f4", "2,", new Float32Array([0, 1]));
   await assert.rejects(

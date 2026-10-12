@@ -6,7 +6,7 @@ import { recordIndex } from "./frames.js";
 /** The columns that say what a frame decided: compared across backends exactly. */
 export const DECISIONS = ["state", "tracked", "keyframe", "placed_by"];
 
-/** The steps each frame times, in seconds (slam_it_all.eval.runs.STEPS). */
+/** The steps each frame times, in seconds (slam_it.eval.runs.STEPS). */
 export const STEPS = ["read_seconds", "build_seconds", "track_seconds", "map_seconds"];
 
 /**

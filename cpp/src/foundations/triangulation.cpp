@@ -1,7 +1,7 @@
 /// @file
 /// @brief Implementation of the triangulation declared in
-/// slam_it_all/foundations/triangulation.hpp.
-#include "slam_it_all/foundations/triangulation.hpp"
+/// slam_it/foundations/triangulation.hpp.
+#include "slam_it/foundations/triangulation.hpp"
 
 #include <Eigen/Dense>
 #include <algorithm>
@@ -12,10 +12,10 @@
 #include <string>
 #include <utility>
 
-#include "slam_it_all/foundations/se3.hpp"
-#include "slam_it_all/foundations/so3.hpp"
+#include "slam_it/foundations/se3.hpp"
+#include "slam_it/foundations/so3.hpp"
 
-namespace slam_it_all::foundations::triangulation {
+namespace slam_it::foundations::triangulation {
 
 namespace {
 
@@ -250,4 +250,4 @@ Result<Triangulation> n_view(const std::vector<Eigen::Matrix4d>& poses,
   return out;
 }
 
-}  // namespace slam_it_all::foundations::triangulation
+}  // namespace slam_it::foundations::triangulation

@@ -13,15 +13,15 @@ import numpy as np
 import pytest
 from numpy.typing import ArrayLike, NDArray
 
-from slam_it_all import backends
-from slam_it_all.foundations.errors import InvalidInputError
+from slam_it import backends
+from slam_it.foundations.errors import InvalidInputError
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 REQUIRED_BACKENDS: frozenset[str] = frozenset(
-    name for name in os.environ.get("SLAM_IT_ALL_REQUIRE_BACKENDS", "").split(",") if name
+    name for name in os.environ.get("SLAM_IT_REQUIRE_BACKENDS", "").split(",") if name
 )
-"""Backends that must be present, from ``SLAM_IT_ALL_REQUIRE_BACKENDS`` (comma-separated).
+"""Backends that must be present, from ``SLAM_IT_REQUIRE_BACKENDS`` (comma-separated).
 
 ``scripts/check.sh`` (and so CI) sets it to every backend. Then a backend that is not
 built, or fails to load, fails the run instead of skipping its parity tests.
@@ -47,7 +47,7 @@ def require_backend(name: str) -> str:
     if name not in backends.available():
         message = f"{name} backend not built"
         if name in REQUIRED_BACKENDS:
-            pytest.fail(f"{message}, but SLAM_IT_ALL_REQUIRE_BACKENDS requires it")
+            pytest.fail(f"{message}, but SLAM_IT_REQUIRE_BACKENDS requires it")
         pytest.skip(message)
     return name
 
@@ -63,7 +63,7 @@ def require_function(name: str, module_name: str, function: str) -> str:
     name : str
         The backend the test needs.
     module_name : str
-        The slam_it_all module, as its ``__name__``.
+        The slam_it module, as its ``__name__``.
     function : str
         The function the test calls.
 
@@ -177,7 +177,7 @@ def protocol_members(module: ModuleType) -> set[str]:
     Parameters
     ----------
     module : module
-        A SLAM It All! algorithm module.
+        A SLAM It! algorithm module.
 
     Returns
     -------
@@ -195,7 +195,7 @@ def check_rejects(
     Parameters
     ----------
     module : module
-        The slam_it_all module under test.
+        The slam_it module under test.
     function : str
         The function's name.
     args : tuple
@@ -261,7 +261,7 @@ def check_parity(
     Parameters
     ----------
     module : module
-        The slam_it_all module under test.
+        The slam_it module under test.
     fixture : dict
         The loaded fixture.
     function : str

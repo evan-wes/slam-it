@@ -12,10 +12,10 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from slam_it_all import backends
-from slam_it_all.foundations import image, orb
-from slam_it_all.foundations.errors import InvalidInputError
-from slam_it_all.foundations.image import full_image_coordinate, level_shapes
+from slam_it import backends
+from slam_it.foundations import image, orb
+from slam_it.foundations.errors import InvalidInputError
+from slam_it.foundations.image import full_image_coordinate, level_shapes
 from tests.conftest import (
     check_rejects,
     load_fixture,

@@ -1,4 +1,4 @@
-"""Tests for slam_it_all.foundations.ba: the Schur system, optimum, gauge, degeneracy, parity."""
+"""Tests for slam_it.foundations.ba: the Schur system, optimum, gauge, degeneracy, parity."""
 
 from __future__ import annotations
 
@@ -11,13 +11,13 @@ import pytest
 from numpy.typing import NDArray
 from scipy.optimize import least_squares
 
-from slam_it_all import backends
-from slam_it_all.foundations import ba, camera, nls, se3
-from slam_it_all.foundations.ba.bundle import Bundle, Kind, State
-from slam_it_all.foundations.ba.layout import make_layout
-from slam_it_all.foundations.ba.schur import Reduction
-from slam_it_all.foundations.ba.solve import ENUM_TABLES, MODULE, backend_arguments
-from slam_it_all.foundations.errors import InvalidInputError, NotConvergedError
+from slam_it import backends
+from slam_it.foundations import ba, camera, nls, se3
+from slam_it.foundations.ba.bundle import Bundle, Kind, State
+from slam_it.foundations.ba.layout import make_layout
+from slam_it.foundations.ba.schur import Reduction
+from slam_it.foundations.ba.solve import ENUM_TABLES, MODULE, backend_arguments
+from slam_it.foundations.errors import InvalidInputError, NotConvergedError
 from tests.conftest import assert_matches_fixture, load_fixture, require_backend, require_function
 from tests.fixtures.foundations.generate_ba import options_from, problem_from
 
@@ -548,7 +548,7 @@ def test_core_checks_indices_too(backend: str) -> None:
         np.arange(arguments["pt_idx"].size) == 0, 99, arguments["pt_idx"]
     )
     with pytest.raises(InvalidInputError, match="pt_idx"):
-        backends.function(backend, "slam_it_all.foundations.ba", "solve")(**arguments)
+        backends.function(backend, "slam_it.foundations.ba", "solve")(**arguments)
 
 
 @pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
@@ -575,7 +575,7 @@ def test_the_options_dict_is_read_strictly(
     arguments = backend_arguments(_scene(cameras=3, points=5).problem, ba.BAOptions())
     change(arguments["options"])
     with pytest.raises(ValueError, match=message):
-        backends.function(backend, "slam_it_all.foundations.ba", "solve")(**arguments)
+        backends.function(backend, "slam_it.foundations.ba", "solve")(**arguments)
 
 
 def test_construction_validates_however_built() -> None:
@@ -608,7 +608,7 @@ def test_a_checked_problem_cannot_change() -> None:
 def test_enum_tables_match_the_compiled_side(backend: str) -> None:
     """Every enum crossing the boundary has the same names in the same code order."""
     require_backend(backend)
-    compiled = backends.implementation(backend, "slam_it_all.foundations.ba").codes()
+    compiled = backends.implementation(backend, "slam_it.foundations.ba").codes()
     assert {k: tuple(v) for k, v in compiled.items()} == ENUM_TABLES
 
 

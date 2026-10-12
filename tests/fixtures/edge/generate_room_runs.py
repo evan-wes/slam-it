@@ -15,8 +15,8 @@ decisions, and its diff shows them (review panel finding A1).
 Per room, dataset and mode: each frame's state, tracked inliers and keyframe flag; the tracked
 frames' times and ``T_world_cam``; the final map's keyframes' times and its number of points;
 every point's and keyframe's life (the run format's ``*_lives.npy``), as three columns each;
-each frame's count of keypoints of each fate (:data:`slam_it_all.eval.runs.FATES`), a column per
-fate; and each frame's stage summaries (:class:`slam_it_all.edge.pipeline.FrameSummary`), one
+each frame's count of keypoints of each fate (:data:`slam_it.eval.runs.FATES`), a column per
+fate; and each frame's stage summaries (:class:`slam_it.edge.pipeline.FrameSummary`), one
 line per frame.
 The record also holds its inputs (:func:`tests.orchestration.datasets.room_inputs`), which the
 tests check first. The two monocular cases decide alike, the room being the same in both
@@ -32,9 +32,9 @@ from typing import Any
 
 import numpy as np
 
-from slam_it_all.edge.pipeline import FrameSummary
-from slam_it_all.eval import runs
-from slam_it_all.orchestration import vo
+from slam_it.edge.pipeline import FrameSummary
+from slam_it.eval import runs
+from slam_it.orchestration import vo
 from tests.edge import room
 from tests.edge.support import FRAMES, OPTIONS, SOLVER_TOLERANCE
 from tests.fixtures.foundations._layout import dumps
@@ -51,7 +51,7 @@ def summaries(run: runs.Run) -> list[dict[str, Any]]:
 
     Parameters
     ----------
-    run : slam_it_all.eval.runs.Run
+    run : slam_it.eval.runs.Run
         The run.
 
     Returns
@@ -67,15 +67,15 @@ def fate_counts(run: runs.Run, features: runs.Features) -> list[list[int]]:
 
     Parameters
     ----------
-    run : slam_it_all.eval.runs.Run
+    run : slam_it.eval.runs.Run
         The run.
-    features : slam_it_all.eval.runs.Features
+    features : slam_it.eval.runs.Features
         Its feature records.
 
     Returns
     -------
     list of list of int
-        One column per fate of :data:`slam_it_all.eval.runs.FATES`, one count per frame.
+        One column per fate of :data:`slam_it.eval.runs.FATES`, one count per frame.
     """
     counts = np.zeros((len(runs.FATES), len(run.diagnostics)), dtype=np.int64)
     frame, fate = features.records[:, 0], features.records[:, 2]
@@ -88,9 +88,9 @@ def record(run: runs.Run, features: runs.Features) -> dict[str, Any]:
 
     Parameters
     ----------
-    run : slam_it_all.eval.runs.Run
+    run : slam_it.eval.runs.Run
         The run.
-    features : slam_it_all.eval.runs.Features
+    features : slam_it.eval.runs.Features
         Its feature records.
 
     Returns
