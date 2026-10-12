@@ -67,7 +67,7 @@ fn monocular_starts_a_unit_depth_map() {
     assert!(found.iter().all(|m| m.first == m.second));
     let away: Vec<[f64; 2]> = own.iter().map(|xy| [xy[0] + 1000.0, xy[1]]).collect();
     let none = match_for_initialization(&first, &last, &away, &Options::default()).unwrap();
-    assert!(none.is_empty());
+    assert_eq!(none, Vec::new());
     let short = match_for_initialization(&first, &last, &own[1..], &Options::default());
     assert_eq!(short.unwrap_err().kind, ErrorKind::InvalidInput);
     let pairs: Vec<[usize; 2]> = found.iter().map(|m| [m.first, m.second]).collect();

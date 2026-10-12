@@ -100,8 +100,9 @@ pipeline saw (a stereo pair's left image rectified) and the keypoints sit where 
 ## The page
 
 Plain JavaScript modules with no build step, three.js 0.186.0 from jsDelivr through an import
-map, reifyscene's tokens and panels. `scripts/view_bundle.py BUNDLE` serves it with a bundle
-on this machine.
+map that pins each file by its hash, reifyscene's tokens and panels. `scripts/view_bundle.py
+BUNDLE` serves it with a bundle on this machine. The page reads a bundle from its own site only
+(`bundle.bundleAddress`), so a link cannot show another site's bundle as this site's.
 
 - **The header**: the sequence and mode, the backend toggle, and the run's numbers (ATE, RPE,
   frames tracked, keyframes and points, latency's median and 95th percentile against the
@@ -187,6 +188,7 @@ from 133 to 159 MiB. Recording features moves it by under 6 MiB either way.
 
 ## What it does not do yet
 
-- A phone video (PR 11): the upload, the import and the intrinsics' source in the header.
+- The intrinsics' source in the header: for an uploaded video, the status page names it
+  ([your own video](your-own-video.md)).
 - Map snapshots after each bundle adjustment: a point sits where adjustment finally put it.
 - A live camera.

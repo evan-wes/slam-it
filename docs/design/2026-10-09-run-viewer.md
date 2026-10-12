@@ -164,8 +164,10 @@ A bundle holds:
   - the sequence, mode and camera, and the frame count and times;
   - the backends, the frames each covers, and the alignment each was moved by;
   - whether there is ground truth;
-  - the run format's fates and step names, which the page checks against its own;
-  - for a phone video, the intrinsics' source.
+  - the run format's fates and step names, which the page checks against its own.
+
+  A phone video's intrinsics' source is named by its status page (PR 11), not yet by the
+  bundle.
 - **The images:** the frames as JPEG, written through `eval.images` (the one module allowed to
   use Pillow). They are stored in chunks of 100 frames with their byte offsets, so scrubbing
   fetches a few files rather than thousands. They are in colour where the source has it.
@@ -328,11 +330,12 @@ an on-demand cloud GPU.
   holding the secrets never parses a video. It:
   - serves the viewer and the upload page;
   - keeps the job list in SQLite on a Railway volume. A job has a state (waiting for upload,
-    queued, importing, running, baking, done, failed, expired), what was uploaded (a video or a
-    Stray Scanner zip), its progress, its error, its link token and its expiry;
+    queued, the worker's stages from downloading to uploading, done, failed, expired), what was
+    uploaded (a video or a Stray Scanner zip), its error, its link token and its expiry;
   - hands out presigned links:
-    - an upload link (POST, with the size cap in its policy), so the browser sends the video
-      straight to the bucket;
+    - an upload link, a PUT signed for the size the browser declares, which the server first
+      checks against the cap, so the browser sends the video straight to the bucket (decided
+      2026-10-11; a POST policy was planned);
     - links to each file, for workers.
 
   Buckets are private, and Railway charges nothing for bucket downloads. So the server
@@ -356,11 +359,12 @@ an on-demand cloud GPU.
 
 - An invite code is needed to upload. Viewing a result needs only its link. On the staging
   deploy (section 5.6), every page needs the code.
-- Size and length are capped. The caps are checked in the browser, in the upload policy, and
-  again on import.
+- Size and length are capped. The size is checked in the browser, when the job is made and by
+  its signed upload link, and again on import; the length in the browser, where it can read
+  it, and on import.
 - One job runs at a time. Beyond a short queue (5 jobs), the page asks people to try later.
-- The upload, video or zip, is deleted when its import ends. A result is deleted after 7 days,
-  unless the owner keeps it.
+- The upload, video or zip, is deleted when its import ends. A result is deleted after 7 days
+  (decision 6 of section 7).
 - A result is reachable only through an unguessable link (a 128-bit token). There is no gallery
   or listing, and pages are marked `noindex`.
 - Uploads are never served back; only the frames the bake makes are.
@@ -498,3 +502,38 @@ Decided with evan-wes, while building PR 10:
 4. **A keypoint's point** is the one its fate concerns (made, tracked, or rejected from).
 5. **The bake** lives in orchestration, and a bundle's arrays are `.npy` files.
 6. **The page's type check** uses a pinned `viewer/package.json`, with three.js's own types.
+
+## 9. Decisions of 2026-10-11
+
+Decided with evan-wes, while building PR 11:
+1. **Synthetic recordings first:** the import, the intrinsics, the worker and the server are
+   built and tested on the room's synthetic videos and Stray Scanner zips while the real clips
+   are gathered. What the clips will check is listed in
+   [the note](../notes/your-own-video.md#what-waits-for-the-real-clips).
+2. **Uploads are a signed PUT** of the size the browser declares, which the server checks
+   against the cap first, rather than a POST policy (section 5.3). It is as strict, needs no
+   multipart parsing, and works the same for the bucket and for folder storage.
+3. **The worker's heartbeat:** it repeats its stage every 30 s, and the server fails a job not
+   heard from for 2 minutes.
+4. **The upload and status pages live in `viewer/`,** under the viewer's checks. A result's link
+   is `/r/<token>`.
+5. **Settings come from environment variables,** listed with placeholders in
+   `server/settings.template.env`.
+6. **An upload's run is named `your-video`** in the viewer's header.
+
+Made while building, within the design, and reported to evan-wes:
+- a queued job expires after a day if no worker takes it, so an upload never waits in storage
+  for ever;
+- a failed or expired job is kept 7 days, as a done one is, so that its link says how it ended;
+- invite codes need 12 characters, the worker token and the signing key 32;
+- a result holds at most 1,000 files and 1 GB;
+- the server listens on IPv6 and IPv4 at once, for Railway's private network, and a stopping
+  server waits at most 3 s for open requests, so that a worker's held claim does not hold up a
+  redeploy.
+
+PR 11's review panel and its security pass, and how each of their findings was resolved, are in
+[the panel's report](../reviews/2026-10-11-feature-your-own-video.md) and
+[the security pass's](../reviews/2026-10-11-feature-your-own-video-security.md). Decided with
+evan-wes on 2026-10-11: every must-fix fixed; the should-fix findings and notes as recommended,
+a few parts deferred to before going public (the ladder's open items); and an invite code
+capped at two open jobs, a waiting job expiring with its 15-minute upload link.

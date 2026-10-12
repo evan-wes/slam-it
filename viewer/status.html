@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <!-- Served at /r/<token>: its files are the server's root's. -->
+    <base href="/" />
+    <title>SLAM It All! run</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
+    />
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body class="sheet">
+    <header class="bar">
+      <div class="brand">SLAM It All!</div>
+      <span class="meta">your run</span>
+    </header>
+
+    <main class="column">
+      <section class="panel card" aria-labelledby="headline">
+        <h1 id="headline">loading…</h1>
+        <p class="meta" id="detail" aria-live="polite"></p>
+        <ol class="stages" id="stages" aria-label="the job's stages"></ol>
+        <p id="tracking" hidden></p>
+        <dl class="numbers summary" id="summary" hidden></dl>
+        <p id="open" hidden><a class="primary" id="viewer">Open the run viewer</a></p>
+        <p class="meta" id="kept"></p>
+      </section>
+      <p class="meta">
+        Keep this page's address: it is the only way back to your result. Anyone you give it to can
+        see the result too.
+      </p>
+    </main>
+
+    <script type="module" src="src/status_view.js"></script>
+  </body>
+</html>

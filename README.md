@@ -5,9 +5,11 @@ implemented in Python, C++ and Rust and measured across compute budgets.
 
 *A pun on "damn it all!": `slam_it_all` in code, `slam-it-all` for the repository.*
 
-Status: milestone 1 (rung 0, the foundations) is complete. Python, C++ and Rust each have
-the geometry, bundle adjustment, two-view geometry and absolute pose, and every module's tests
-run on all three.
+Status: milestones 1 and 2 are complete. Rung 0, the foundations, has the geometry, bundle
+adjustment, two-view geometry and absolute pose in Python, C++ and Rust. On it, the edge rung's
+visual odometry runs monocular, stereo and RGB-D in all three, in real time in C++ and Rust; the
+run viewer replays a run frame by frame; and your own phone video can be uploaded, run and
+viewed.
 
 The design, the ladder and the milestones are in
 [`docs/design/2026-10-02-slam-it-all-ladder.md`](docs/design/2026-10-02-slam-it-all-ladder.md), and
@@ -22,6 +24,9 @@ each component's note in [`docs/notes/`](docs/notes/).
 | `rust/` | Cargo workspace: one crate per rung (`slam-it-all-foundations`, standalone) and `slam-it-all-py` (the `slam_it_all_rs` module) |
 | `tests/` | Python tests, including parity tests against `tests/fixtures/` |
 | `scripts/` | Environment setup and lockfile, `check.sh` (layer 1), `check_layers.py` (C++/Rust layering) |
+| `viewer/` | The run viewer's page, and the upload and status pages (JavaScript, no build step) |
+| `server/` | The upload server, `slam_it_all_server`: the job list, storage and guards |
+| `docker/` | The server's and the worker's images |
 
 ## Setup
 
@@ -54,4 +59,15 @@ cmake --build build/bench -j4
 SLAM_IT_ALL_BAL=<problem.txt> build/bench/bench/foundations_bench_foundations
 SLAM_IT_ALL_BAL=<problem.txt> cargo bench --manifest-path rust/Cargo.toml --bench foundations
 cargo run --release --manifest-path rust/Cargo.toml --example bal -- <problem.txt>
+```
+
+## The viewer and your own video
+
+A bundle of runs (`python -m slam_it_all.orchestration.bundles`) opens in the run viewer, and
+the upload demo runs on this machine, on the local network with `--lan`
+(see [`docs/notes/your-own-video.md`](docs/notes/your-own-video.md)):
+
+```bash
+python scripts/view_bundle.py <bundle>
+python scripts/serve_demo.py --lan
 ```

@@ -4,10 +4,13 @@ A bundle is a folder any plain file server can serve; the page (``viewer/``) rea
 It holds one sequence's runs in one mode, at most one per backend, and the frames they ran:
 
 - ``bundle.json``: ``{"format": "slam-it-all-bundle", "version": 1, "dataset", "sequence",
-  "mode", "camera", "frames", "first_time", "images", "truth", "fates", "steps",
+  "mode", "camera", "frames", "first_time", "extent", "images", "truth", "fates", "steps",
   "backends"}``. ``camera`` is the pipeline's (a stereo pair's rectified left camera):
   ``model``, ``width``, ``height``, ``intrinsics`` and ``baseline``. ``frames`` counts the
-  bundle's frames and ``first_time`` is the first one's time, in seconds. ``images`` says how
+  bundle's frames and ``first_time`` is the first one's time, in seconds. ``extent`` is the
+  whole sequence's, of which the bundle's frames are the part its runs ran: its ``frames``, and
+  its first and last frames' times since the bundle's first, ``start`` and ``end``, in seconds,
+  so the page can show what no run reached (:func:`_extent`). ``images`` says how
   they were encoded (``chunk``, ``quality``, and ``colour``). ``truth`` says whether the
   sequence has ground truth. ``fates`` and ``steps`` are the run format's tables the bundle was
   baked with (:data:`slam_it_all.eval.runs.FATES` and :data:`~slam_it_all.eval.runs.STEPS`),
@@ -293,11 +296,27 @@ def _write_truth(out: Path, times: NDArray[np.float64], truth: runs.Truth) -> No
     _npy(out / "truth.npy", centres)
 
 
+def _extent(times: NDArray[np.float64], first_time: float) -> dict[str, Any]:
+    """Return the whole sequence's extent: its frames, its first and last times since `first_time`.
+
+    A run ends at its first lost frame, and may be given a part of the sequence, so the bundle's
+    frames can be a part of the sequence's: the page shows the rest as not run.
+    """
+    if len(times) == 0:
+        return {"frames": 0, "start": 0.0, "end": 0.0}
+    return {
+        "frames": len(times),
+        "start": float(times[0] - first_time),
+        "end": float(times[-1] - first_time),
+    }
+
+
 def _write(
     out: Path, baked: Sequence[_Baked], source: vo.Source, frames: _Frames, truth: runs.Truth | None
 ) -> None:
     """Write a bundle's files into a new folder `out`."""
     first, ran = baked[0].run, frames.times
+    first_time = float(ran[0]) if len(ran) else 0.0
     colour = _write_images(out, source, frames.at)
     _npy(out / "times.npy", (ran - ran[0] if len(ran) else ran).astype(np.float32))
     if truth is not None:
@@ -317,7 +336,8 @@ def _write(
             "baseline": camera.baseline,
         },
         "frames": len(ran),
-        "first_time": float(ran[0]) if len(ran) else 0.0,
+        "first_time": first_time,
+        "extent": _extent(source.times, first_time),
         "images": {"chunk": CHUNK, "quality": QUALITY, "colour": colour},
         "truth": truth is not None,
         "fates": list(runs.FATES),

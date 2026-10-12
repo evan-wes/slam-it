@@ -139,10 +139,90 @@ input:focus-visible {
   border-bottom: 1px solid var(--line);
   background: var(--surface);
 }
-.transport input[type="range"] {
+.scrub {
   flex: 1;
   min-width: 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.transport input[type="range"] {
+  width: 100%;
+  margin: 0;
   accent-color: var(--accent);
+}
+/* The whole sequence: the part its runs ran, with the slider, between the parts none reached,
+   each part as wide as its time. */
+.timeline {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+}
+.ran {
+  flex: 1 1 0;
+  min-width: 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.not-run {
+  flex: 1 1 0;
+  min-width: 0;
+  align-content: center;
+  padding: 0 6px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  color: var(--muted);
+  border: 1px dashed var(--line);
+  background: repeating-linear-gradient(-45deg, var(--raised) 0 4px, var(--surface) 4px 8px);
+}
+.not-run[hidden] {
+  display: none;
+}
+/* Each backend's frames, a row each, inset to the slider's track (its thumb's half-width):
+   tracking in its colour, faded before its first map, the frame it lost the track in red. */
+.spans {
+  position: relative;
+  margin: 0 7px;
+}
+.span {
+  position: absolute;
+  height: 3px;
+  border-radius: 2px;
+}
+.span.starting {
+  opacity: 0.35;
+}
+.span.lost {
+  min-width: 3px;
+  background: var(--fail);
+}
+.legend.states span {
+  padding: 0 5px;
+  font-size: 0.64rem;
+}
+.legend.states i {
+  width: 12px;
+  height: 4px;
+  border-radius: 2px;
+}
+.swatch.tracking {
+  background: var(--muted);
+}
+.swatch.starting {
+  background: var(--muted);
+  opacity: 0.35;
+}
+.swatch.lost {
+  background: var(--fail);
+}
+.legend.states .swatch.not-run {
+  height: 8px;
+  border: 1px dashed var(--line);
+  background: var(--raised);
 }
 .field {
   display: inline-flex;
@@ -217,7 +297,7 @@ select {
     padding-left: 10px;
     padding-right: 10px;
   }
-  .transport input[type="range"] {
+  .transport .scrub {
     order: 1;
     flex-basis: 100%;
   }
@@ -353,6 +433,10 @@ select {
 .seg button:last-child {
   border-right: none;
 }
+.seg button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
 .seg button[aria-pressed="true"] {
   background: var(--accent);
   color: var(--on-accent);
@@ -420,4 +504,118 @@ select {
   height: 90px;
   border: 1px solid var(--line);
   background: var(--ground);
+}
+
+/* The upload and status pages: one column of panels, on the viewer's tokens. */
+body.sheet {
+  display: block;
+  height: auto;
+}
+.column {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.card {
+  padding: 16px 18px;
+}
+.card h1 {
+  font-size: 1.3rem;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+.card p,
+.card ul {
+  margin: 0;
+}
+.card ul {
+  padding-left: 1.2em;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.choices {
+  border: 1px solid var(--line);
+  padding: 8px 12px 10px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.choices legend {
+  font-weight: 600;
+  padding: 0 4px;
+}
+.choices label {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.field-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-weight: 600;
+}
+.field-row input[type="password"] {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  padding: 5px 8px;
+  min-width: 0;
+  flex: 1;
+}
+.field-row input[type="file"] {
+  min-width: 0;
+  max-width: 100%;
+}
+.primary {
+  align-self: flex-start;
+  display: inline-block;
+  background: var(--accent);
+  color: var(--on-accent);
+  border: none;
+  padding: 8px 16px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+.primary:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+.form progress {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.form .message {
+  margin: 0;
+}
+.stages {
+  margin: 0;
+  padding-left: 1.4em;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.stages .past {
+  color: var(--ink);
+}
+.stages .now {
+  color: var(--accent);
+  font-weight: 600;
+}
+.summary {
+  padding: 8px 0;
+}
+.fail-text {
+  color: var(--fail);
 }

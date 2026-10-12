@@ -4,6 +4,93 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.3.6.0] - 2026-10-11
+
+Your own video: a phone video, or a Stray Scanner recording, uploaded through a page, imported
+with the best intrinsics to be had, run through the C++ pipeline by a worker, and opened in the
+run viewer. The server that holds the storage keys never parses a video; an upload is kept until
+its import ends, and a result for 7 days. Milestone 2 closes with it. The import and the
+intrinsics are tested on synthetic recordings of the room; real phone clips will check what
+`docs/notes/your-own-video.md` lists. The review panel and a security pass read it all, and
+what they changed is in the entries below (`docs/reviews/2026-10-11-feature-your-own-video*.md`).
+
+### Added
+
+- **Video import**, `python -m slam_it_all.eval.video` (`import_video`; PyAV, in the optional
+  `video` extra and kept in this module by a contract): a video opened as MP4 or MOV alone, turned
+  upright by the rotation it declares, timed by presentation time (60 fps becomes 30), scaled down
+  to a 480-pixel short side, undistorted to pinhole if its lens is a fisheye, and written as a
+  TUM-format folder (`eval.tum.write_list`, `write_camera`) with `source.json`, which keeps at most
+  four metadata fields and never a location. Frames over 7680 pixels long or 3 to 1, frames that
+  change size, and videos over 14,400 frames, are refused.
+- **Stray Scanner recordings** (`import_stray`): the zip read in place, three files opened, each
+  capped, unsafe or unreadable entries refusing it; its poses, already in our camera's axes as
+  its encoder writes them, become the ground truth, and its video's first frame, behind an edit
+  list, is decoded.
+- **A video's intrinsics** (`slam_it_all.eval.lenses`): a Gyroflow lens profile (CC0, fetched at a
+  pinned commit by `python -m slam_it_all.eval.lenses fetch`, never committed; 1,047 of its 1,164
+  phone profiles usable, the database required) matched by phone, lens (by its name, else its
+  35mm-equivalent focal length), the profile's own focal length against the video's, aspect and
+  orientation; else the 35mm-equivalent focal length; else a nominal 72.37-degree diagonal field of
+  view. Fisheye undistortion through OpenCV's model, held to `cv2.fisheye`, resampled by rung 0's
+  remap. `eval.images.write_png`.
+- **The worker** (`python -m slam_it_all.orchestration.worker serve`): claims the server's jobs over
+  HTTP with its token, and in a child process under memory and file-size limits and a timeout
+  imports, runs and bakes each; it uploads the bundle and reports the job done, or failed with a
+  reason fit to show. It repeats its stage every 30 s as the job's heartbeat, transfers included,
+  and carries on past a report that does not arrive. A job's processes are one group, killed whole
+  when it ends, however the worker is stopped; the child inherits no token; only `http(s)` links to
+  safe hosts are followed (the host judged as urllib connects to it), and no redirect but a
+  download's to one; the unexpected is logged by job. An upload's run is named `your-video`.
+- **The upload server** (`server/`, `slam_it_all_server`, `python -m slam_it_all_server`): the job
+  list in SQLite, which keeps its format and refuses another; storage in an S3 bucket or a folder,
+  through links signed for one key and, for uploads, one size and 15 minutes; the guards (an invite
+  code, at most 2 jobs open per code and 5 in all, the caps, one job worked on at a time, a
+  confirmed upload moved out of its link's reach and deleted after import (kept with its result in
+  the demo, `SLAM_IT_ALL_KEEP_UPLOADS`, which only folder storage takes, a new job then refused
+  under 5 GB free), a job's files in one folder of storage, deleted whole with the job, what a job's
+  links write later deleted again once they have all expired and an hour more has passed, a result's
+  files only a bundle's, results after 7 days, a job's files deleted before it is and retried if
+  that fails, tokens unguessable, pages `noindex` under a Content Security Policy that allows
+  three.js's own path alone of its CDN, staging behind a code, never run as root). It logs jobs by
+  id, never by token. Its settings come from the environment, listed in
+  `server/settings.template.env`. Given `::`, as in its image, it listens on IPv6 and IPv4 at once;
+  it stops within 3 s. It never imports `slam_it_all`.
+- **The upload and status pages** (`viewer/upload.html`, `viewer/status.html`, their logic in
+  `viewer/src/jobs.js`). The status page says what of the clip was tracked and where the run
+  ended, by losing the track or not, from the worker's summary (`worker.summarize`), so that a
+  result shorter than the video is not taken for a cropped one.
+- **The images** (`docker/server.Dockerfile`, which drops root at once for good, and
+  `docker/worker.Dockerfile`, with tini) and **`scripts/serve_demo.py`**, which runs the server and
+  a worker on this machine, on the local network with `--lan`, every page then behind the code and
+  the page's address printed as a QR code for a phone's camera (segno, in the `dev` extra and the
+  lock). Its invite code is three short words unless given; its folder is the same every run,
+  `~/.local/share/slam-it-all/demo` unless given, readable by its owner alone.
+- **A design note**, `docs/notes/your-own-video.md`, with the staging and demo checklists.
+
+### Changed
+
+- **The viewer shows each backend's frames and the whole sequence:** under the frame slider, a
+  row per backend over the frames it ran, coloured by state (no map yet, tracking, lost), with a
+  legend; beside the slider, the parts of the sequence no run reached, as wide as their time,
+  "not processed: tracking was lost" where the runs ended by losing the track. A backend's
+  button is disabled on frames it did not run, and the page switches to one that did.
+- **A bundle records its sequence's extent** (`bundle.json`'s `extent`: its frames, and its
+  first and last frames' times since the bundle's first), which the page requires; the format
+  stays version 1, and a bundle baked before is refused until baked again.
+- **`Pinhole` moves to `eval.lenses`.**
+- **Layer 1 covers the server:** ruff, mypy and jscpd check `server/`, prettier the new pages, and
+  import contracts keep the server and `slam_it_all` apart, keep a decoder and reifyscene out of the
+  server and `eval.video` out of orchestration but the worker, and order the server's modules.
+- **The run viewer** reads a bundle from its own site only, and loads three.js pinned by its
+  hashes.
+- **The setup script** installs the `video` extra and the server, and fetches the lens profiles;
+  the env's lock adds PyAV, FastAPI, uvicorn, boto3 and httpx. It pins Rust to 1.99.0, as it
+  pins clang: an unpinned release added a clippy lint that failed a fresh env, and three
+  asserts now meet it.
+- **The README and the ladder's status** describe milestone 2 whole; the README lists
+  `viewer/`, `server/` and `docker/`.
+
 ## [0.3.5.0] - 2026-10-10
 
 The run viewer: a run records how every solver went, when each point and keyframe was made

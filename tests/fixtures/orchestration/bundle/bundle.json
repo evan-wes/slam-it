@@ -18,6 +18,11 @@
  },
  "frames": 6,
  "first_time": 0.0,
+ "extent": {
+  "frames": 40,
+  "start": 0.0,
+  "end": 1.3
+ },
  "images": {
   "chunk": 100,
   "quality": 75,

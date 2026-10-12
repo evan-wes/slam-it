@@ -35,7 +35,8 @@ suggest starting a session inside the SLAM It All! repository. Consequences:
 | Python (`src/slam_it_all`) | Reference implementation of every algorithm; orchestration, evaluation, learned rungs |
 | C++ (`cpp/`, module `slam_it_all._cpp`) | Performance core: rung 0, edge rung, edge budgets; `eval`'s native readers, run writer and process readings (`slam_it_all_eval`); the native programs (`slam_it_all_orchestration`, `slam_it_all_vo`) |
 | Rust (`rust/`, module `slam_it_all_rs`) | Rung 0 and the edge VO only; `eval`'s native readers, run writer and process readings (`slam-it-all-eval`); the native programs (`slam-it-all-orchestration`, `slam_it_all_vo`) |
-| JavaScript (`viewer/`) | The run viewer's page: plain modules, no build step, three.js from a CDN; reads only a bundle (`slam_it_all.orchestration.bundles`). Logic modules (all but `main.js` and `*_view.js`) never touch the page (checked: `tsc` without the DOM), so Node tests them; JSDoc types, checked by `tsc --checkJs`; formatted by prettier |
+| JavaScript (`viewer/`) | The run viewer's page, and the upload and status pages beside it: plain modules, no build step, three.js from a CDN, pinned by its hashes. The viewer reads only a bundle (`slam_it_all.orchestration.bundles`), on its own site; the upload and status pages talk to the upload server's API. Logic modules (all but `main.js` and `*_view.js`) never touch the page (checked: `tsc` without the DOM), so Node tests them; JSDoc types, checked by `tsc --checkJs`; formatted by prettier |
+| Python (`server/`, `slam_it_all_server`) | The upload server (FastAPI, uvicorn, boto3): the job list, storage's links and the guards, for the run viewer's "your own video". A package of its own that never imports `slam_it_all`, tested in `tests/server/` |
 
 ## Conventions
 
@@ -57,6 +58,12 @@ CMake options use `SLAM_IT_ALL_`, and types `SlamItAll`.
   `.eval`, `.orchestration`. Each package docstring states its rung, milestone and compute
   budget. The import-linter contracts in `pyproject.toml` enforce the ladder's layers,
   sibling independence, no PyTorch on CPU rungs, and no depth-model imports.
+- The upload server, `slam_it_all_server` (`server/src/`), is import-linter's second root
+  package: it never imports `slam_it_all` (nor PyAV, Pillow, OpenCV or reifyscene: the process
+  holding the storage keys never parses a video), `slam_it_all` never imports it or its web
+  stack, and its own modules keep an order (`__main__`, `app`, `jobs | storage`, `config`).
+  The worker (`slam_it_all.orchestration.worker`) talks to it over HTTP only; the constants
+  both sides hold are held equal by `tests/server/test_shared_names.py`.
 - C++ mirrors it with one library per rung (`slam_it_all_foundations`, from `cpp/src/foundations/`,
   namespace `slam_it_all::foundations`); Rust with one crate per rung (`slam-it-all-foundations`).
   `scripts/check_layers.py` holds C++ includes and Rust `crate::`/`super::` paths (chains
@@ -122,15 +129,16 @@ CMake options use `SLAM_IT_ALL_`, and types `SlamItAll`.
 ## Review process
 
 **Layer 1, every PR:** `scripts/check.sh` must pass. It runs ruff (numpy docstrings, type
-hints), mypy --strict, import-linter, clang-format, clang-tidy, doxygen (every declaration
-documented), rustfmt, clippy (pedantic, missing docs), the run viewer's `node --check`,
-`node --test`, `tsc --checkJs` (twice: the page, and its logic modules without the DOM) and
-prettier (its TypeScript, three.js types and prettier pinned in `viewer/package-lock.json`,
-installed by `npm ci --prefix viewer`), jscpd (duplication), and
-the C++, Rust and Python test suites. CI runs the same script, offline: `scripts/offline_ci.sh`
-repeats `.github/workflows/test.yml` on a clean checkout with its own env built from the
-lock, gates every PR, and its result goes in the PR template. The GitHub workflow runs on
-demand and on pushes to `main` (the Actions minutes are shared with other projects).
+hints) and mypy --strict over `src/`, `server/`, `tests/` and `scripts/`, import-linter,
+clang-format, clang-tidy, doxygen (every declaration documented), rustfmt, clippy (pedantic,
+missing docs), the run viewer's `node --check`, `node --test`, `tsc --checkJs` (twice: the
+page, and its logic modules without the DOM) and prettier (its TypeScript, three.js types and
+prettier pinned in `viewer/package-lock.json`, installed by `npm ci --prefix viewer`), jscpd
+(duplication), and the C++, Rust and Python test suites. CI runs the same script, offline:
+`scripts/offline_ci.sh` repeats `.github/workflows/test.yml` on a clean checkout with its own
+env built from the lock, gates every PR, and its result goes in the PR template. The GitHub
+workflow runs on demand and on pushes to `main` (the Actions minutes are shared with other
+projects).
 
 **PRs are slices, not steps.** A PR makes meaningful progress toward a stated goal: a slice
 of a milestone (e.g. milestone 1's "BA spine"). The individual steps are semantic commits

@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { loadBackend, loadBundle, loadTrack } from "../src/bundle.js";
+import { bundleAddress, loadBackend, loadBundle, loadTrack } from "../src/bundle.js";
 import { readFloat32, readHeader, readInt32 } from "../src/npy.js";
 import { fetchGolden } from "./golden.js";
 
@@ -98,15 +98,22 @@ test("the loader refuses another format, a mis-shaped array, and an unknown back
   await assert.rejects(loadTrack(fetchGolden, bundle, "java"), /the bundle has no java run/);
 });
 
-test("the loader refuses other tables, or a backend the page does not know", async () => {
-  /** @param {object} changed @returns {(path: string) => Promise<ArrayBuffer>} */
-  const baked = (changed) => async (path) => {
+/**
+ * The golden bundle with fields of its bundle.json changed.
+ * @param {object} changed The fields.
+ * @returns {(path: string) => Promise<ArrayBuffer>} The fetcher.
+ */
+function baked(changed) {
+  return async (path) => {
     if (path !== "bundle.json") {
       return fetchGolden(path);
     }
     const info = JSON.parse(new TextDecoder().decode(await fetchGolden(path)));
     return new TextEncoder().encode(JSON.stringify({ ...info, ...changed })).buffer;
   };
+}
+
+test("the loader refuses other tables, or a backend the page does not know", async () => {
   const info = (await loadBundle(fetchGolden)).info;
   assert.deepEqual(info.fates, ["unmatched", "rejected", "tracked", "made"]);
   const reordered = [...info.fates].reverse();
@@ -117,4 +124,21 @@ test("the loader refuses other tables, or a backend the page does not know", asy
   );
   const java = { ...info.backends, java: info.backends.cpp };
   await assert.rejects(loadBundle(baked({ backends: java })), /does not know the backend java/);
+});
+
+test("the loader refuses a bundle without the sequence's extent, or one fewer than its frames", async () => {
+  const refused = /expected the sequence's extent, \{frames, start, end\}/;
+  await assert.rejects(loadBundle(baked({ extent: undefined })), refused);
+  await assert.rejects(loadBundle(baked({ extent: { frames: 5, start: 0, end: 1 } })), refused);
+  await assert.rejects(loadBundle(baked({ extent: { frames: 40, start: 1, end: 0 } })), refused);
+  await assert.rejects(loadBundle(baked({ extent: { frames: 40, start: "0", end: 1 } })), refused);
+});
+
+test("a bundle's address is on the page's own site, or refused", () => {
+  const page = "https://slam.example/index.html?bundle=x";
+  assert.equal(bundleAddress(null, page), "https://slam.example/bundle/");
+  assert.equal(bundleAddress("/r/tok/bundle", page), "https://slam.example/r/tok/bundle/");
+  assert.equal(bundleAddress("runs/a/", page), "https://slam.example/runs/a/");
+  assert.throws(() => bundleAddress("https://elsewhere.example/b/", page), /on this site/);
+  assert.throws(() => bundleAddress("//elsewhere.example/b/", page), /on this site/);
 });

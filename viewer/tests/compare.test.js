@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { loadBundle, loadTrack } from "../src/bundle.js";
-import { DECISIONS, STEPS, differences, stepsAt } from "../src/compare.js";
+import { DECISIONS, STEPS, differences, ran, shownAt, spanText, stepsAt } from "../src/compare.js";
 import { fetchGolden } from "./golden.js";
 
 async function tracks() {
@@ -50,4 +50,27 @@ test("a backend's step times at a frame are its record's, none where it did not 
     assert.equal(stepsAt(track, track.info.frames[1]), null);
     assert.ok(track.info.frames[1] <= bundle.info.frames);
   }
+});
+
+test("a backend shows the frames it ran; elsewhere the first that ran them is shown", async () => {
+  const { tracks: all } = await tracks();
+  const order = ["cpp", "rust", "python"].map((name) => all.find((track) => track.name === name));
+  const shown = /** @type {import("../src/bundle.js").Track[]} */ (order);
+  const python = shown[2];
+  const [first, end] = python.info.frames;
+  assert.ok(end < shown[0].info.frames[1], "the golden python run is the shorter");
+  assert.equal(ran(python, first), true);
+  assert.equal(ran(python, end - 1), true);
+  assert.equal(ran(python, end), false);
+  assert.equal(shownAt(shown, "python", end - 1), "python");
+  assert.equal(shownAt(shown, "python", end), "cpp");
+  assert.equal(shownAt(shown, "rust", end), "rust");
+  assert.equal(spanText(python), `python: frames ${first}–${end - 1}`);
+});
+
+test("with no backend running a frame, the chosen one stays; a run of no frames says so", () => {
+  const none = { name: "python", info: { frames: /** @type {[number, number]} */ ([0, 0]) } };
+  const short = { name: "cpp", info: { frames: /** @type {[number, number]} */ ([0, 3]) } };
+  assert.equal(shownAt([short, none], "python", 5), "python");
+  assert.equal(spanText(none), "python: no frames");
 });

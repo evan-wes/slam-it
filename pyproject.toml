@@ -20,6 +20,9 @@ dependencies = ["numpy>=1.26", "pillow>=10.0"]
 # The development setup installs it too (scripts/setup_slam_it_all.sh): it is the reference the
 # BA tests and demos compare against.
 colmap = ["pycolmap>=4.2"]
+# Video decoding (FFmpeg, through PyAV), for importing phone videos in slam_it_all.eval.video
+# alone. The worker's image and the development setup install it.
+video = ["av>=18.1"]
 # The development and layer-1 toolchain's pip layer: the single list scripts/setup_slam_it_all.sh
 # installs from when not using the lockfile (the conda layer -- compilers, clang tools,
 # doxygen, Node.js/jscpd -- is in that script).
@@ -40,6 +43,9 @@ dev = [
   "poselib>=2.0.5",
   # Visualisation for the demos (never imported by the library).
   "rerun-sdk>=0.38",
+  # The upload demo's QR code of its page's address (scripts/serve_demo.py; never imported by
+  # the library).
+  "segno>=1.6",
   # Test-only oracle for the front end's image operations, and the reference the demos
   # compare against (never imported by the library; a contract forbids cv2 in slam_it_all).
   "opencv-python-headless>=5.0",
@@ -77,6 +83,8 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# Where first-party code lives: the library, and the upload server (server/).
+src = [".", "src", "server/src"]
 
 [tool.ruff.lint]
 # D: docstrings (numpy convention) on every module, class and function.
@@ -99,7 +107,7 @@ convention = "numpy"
 [tool.mypy]
 strict = true
 python_version = "3.11"
-files = ["src/slam_it_all", "tests", "scripts"]
+files = ["src/slam_it_all", "server/src/slam_it_all_server", "tests", "scripts"]
 # The compiled extensions are never imported by name: slam_it_all.backends locates them
 # dynamically, and each algorithm types its backend through a Protocol (e.g.
 # slam_it_all.foundations.so3.Implementation) that tests check the extensions against.
@@ -109,8 +117,13 @@ files = ["src/slam_it_all", "tests", "scripts"]
 module = ["mpmath", "manifpy", "scipy.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# The upload server's S3 client, which ships without type information.
+module = ["boto3", "botocore.*"]
+ignore_missing_imports = true
+
 [tool.importlinter]
-root_packages = ["slam_it_all"]
+root_packages = ["slam_it_all", "slam_it_all_server"]
 include_external_packages = true
 
 # The ladder as dependency layers, top to bottom. Siblings joined by `|` are independent:
@@ -194,6 +207,7 @@ type = "layers"
 exhaustive = true
 containers = ["slam_it_all.orchestration"]
 layers = [
+  "(worker)",
   "(bundles)",
   "vo",
 ]
@@ -226,10 +240,10 @@ type = "layers"
 exhaustive = true
 containers = ["slam_it_all.eval"]
 layers = [
-  "(budgets)",
+  "(budgets) | (video)",
   "(runs) | (colmap_reference)",
   "(metrics) | (tum) | (euroc) | (readers) | (reprojection)",
-  "(timestamps) | (images)",
+  "(timestamps) | (images) | (lenses)",
 ]
 
 # Pillow reads image files in slam_it_all.eval.images alone: the cores decode PNGs natively, and
@@ -241,6 +255,15 @@ type = "forbidden"
 source_modules = ["slam_it_all"]
 forbidden_modules = ["PIL"]
 ignore_imports = ["slam_it_all.eval.images -> PIL"]
+
+# PyAV decodes phone videos in slam_it_all.eval.video alone (the optional `video` extra): the
+# pipeline reads frames from a folder, never a video.
+[[tool.importlinter.contracts]]
+name = "Only eval.video may import PyAV"
+type = "forbidden"
+source_modules = ["slam_it_all"]
+forbidden_modules = ["av"]
+ignore_imports = ["slam_it_all.eval.video -> av"]
 
 # pycolmap is an optional reference, imported by slam_it_all.eval alone.
 [[tool.importlinter.contracts]]
@@ -299,3 +322,45 @@ name = "slam_it_all never imports reifyscene (the dependency runs one way)"
 type = "forbidden"
 source_modules = ["slam_it_all"]
 forbidden_modules = ["reifyscene"]
+
+# The upload server (server/, docs/design/2026-10-09-run-viewer.md, section 5.3) holds the
+# bucket's keys and the worker token, so it never parses a video: it never imports slam_it_all,
+# whose worker does that work in a process of its own, nor a decoder or an image library
+# directly, nor reifyscene (whose GPU worker may one day speak its protocol, from outside).
+[[tool.importlinter.contracts]]
+name = "The upload server never imports slam_it_all, a decoder, or reifyscene"
+type = "forbidden"
+source_modules = ["slam_it_all_server"]
+forbidden_modules = ["slam_it_all", "av", "PIL", "cv2", "reifyscene"]
+
+# The other way, the library never carries the server or its web stack: the worker talks to the
+# server over HTTP with the standard library.
+[[tool.importlinter.contracts]]
+name = "slam_it_all never imports the upload server or its web stack"
+type = "forbidden"
+source_modules = ["slam_it_all"]
+forbidden_modules = ["slam_it_all_server", "fastapi", "starlette", "uvicorn", "boto3", "botocore"]
+
+# The pipeline and its bake never need the optional `video` extra: eval.video alone imports
+# PyAV, and the Pillow-style allow-list above cannot see a chain through it. Of orchestration,
+# only the worker, which imports an upload, may import it: any module added beside it may not.
+[[tool.importlinter.contracts]]
+name = "Of orchestration, only the worker imports the video import"
+type = "forbidden"
+source_modules = ["slam_it_all.orchestration"]
+forbidden_modules = ["slam_it_all.eval.video"]
+ignore_imports = ["slam_it_all.orchestration.worker -> slam_it_all.eval.video"]
+
+# The order of modules inside the upload server: its entry point, the routes, the job list and
+# storage beside each other, and the settings at the bottom.
+[[tool.importlinter.contracts]]
+name = "The upload server's internal order"
+type = "layers"
+exhaustive = true
+containers = ["slam_it_all_server"]
+layers = [
+  "__main__",
+  "app",
+  "jobs | storage",
+  "config",
+]

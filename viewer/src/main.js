@@ -1,31 +1,21 @@
-// The run viewer's page: loads a bundle (the URL's `bundle`, else `bundle/` beside the page),
+// The run viewer's page: loads a bundle (the URL's `bundle` on this site, else `bundle/` beside it),
 // and shows one frame at a time in the image, map and solver panels, for the backend chosen,
 // beside the other backends' trajectories and step times, the frames where they decided
 // differently marked. This module only wires the views and controls to the page.
 
-import { BACKENDS, loadBackend, loadBundle, loadTrack } from "./bundle.js";
-import { differences } from "./compare.js";
+import { BACKENDS, bundleAddress, loadBackend, loadBundle, loadTrack } from "./bundle.js";
+import { differences, ran, shownAt, spanText } from "./compare.js";
 import * as format from "./format.js";
 import { keypointsAt, recordIndex } from "./frames.js";
 import { ImageView } from "./image_view.js";
+import { element } from "./page_view.js";
 import { Playhead } from "./playback.js";
 import { SceneView } from "./scene_view.js";
 import { SolverView } from "./solver_view.js";
+import { LOST, NOT_INITIALIZED, notRunText, placement, spanHint, stateSpans } from "./timeline.js";
 
-/**
- * An element of the page, by id.
- * @template {HTMLElement} T
- * @param {string} id Its id.
- * @param {new () => T} type Its type.
- * @returns {T} The element.
- */
-function element(id, type) {
-  const found = document.getElementById(id);
-  if (!(found instanceof type)) {
-    throw new Error(`the page has no ${id}`);
-  }
-  return found;
-}
+/** The height of each backend's row under the frame slider, in pixels. */
+const SPAN_ROW = 4;
 
 /**
  * How to fetch a bundle's files, from where it is served.
@@ -124,6 +114,53 @@ function showAgreement(agreement, backends, differ) {
 }
 
 /**
+ * Draw the timeline: under the frame slider, each backend's frames, a row each, coloured by
+ * state; beside it, the parts of the sequence no run reached, each part as wide as its time.
+ * @param {import("./bundle.js").Bundle} bundle The bundle.
+ * @param {import("./bundle.js").Track[]} tracks The backends' tracks.
+ */
+function showTimeline(bundle, tracks) {
+  const frames = bundle.info.frames;
+  const box = element("spans", HTMLElement);
+  box.replaceChildren(
+    ...tracks.flatMap((track, row) =>
+      stateSpans(track.records).map((span) => {
+        const bar = document.createElement("div");
+        bar.className = "span";
+        bar.classList.toggle("lost", span.state === LOST);
+        bar.classList.toggle("starting", span.state === NOT_INITIALIZED);
+        bar.title = spanHint(track.name, span);
+        bar.style.left = `${(100 * span.first) / frames}%`;
+        bar.style.width = `${(100 * (span.end - span.first)) / frames}%`;
+        bar.style.top = `${row * SPAN_ROW}px`;
+        if (span.state !== LOST) {
+          bar.style.background = `var(--backend-${track.name})`;
+        }
+        return bar;
+      }),
+    ),
+  );
+  box.style.height = `${tracks.length * SPAN_ROW}px`;
+  const placed = placement(bundle.info.extent, bundle.times, tracks);
+  const said = notRunText(placed);
+  const whole = placed.before + placed.ran + placed.after;
+  // Each part grows by its share of the whole, the shares summing to 1 so they fill the row.
+  element("ran", HTMLElement).style.flexGrow = String(whole > 0 ? placed.ran / whole : 1);
+  /** @type {[string, number, [string, string]][]} */
+  const parts = [
+    ["not-run-before", placed.before, said.before],
+    ["not-run-after", placed.after, said.after],
+  ];
+  for (const [id, seconds, [label, hint]] of parts) {
+    const part = element(id, HTMLElement);
+    part.hidden = seconds === 0;
+    part.style.flexGrow = String(whole > 0 ? seconds / whole : 0);
+    part.textContent = label;
+    part.title = hint;
+  }
+}
+
+/**
  * Bind the playback controls and keys to the playhead.
  * @param {Playhead} playhead The playhead.
  * @param {HTMLInputElement} scrubber The frame slider.
@@ -191,9 +228,8 @@ function bindPlayback(playhead, scrubber) {
  */
 async function main() {
   const message = element("message", HTMLParagraphElement);
-  const given = new URLSearchParams(location.search).get("bundle") ?? "bundle/";
-  const base = new URL(given, location.href);
-  const fetchFile = fetcher(base.href.endsWith("/") ? base.href : `${base.href}/`);
+  const given = new URLSearchParams(location.search).get("bundle");
+  const fetchFile = fetcher(bundleAddress(given, location.href));
   const bundle = await loadBundle(fetchFile);
   const info = bundle.info;
   element("sequence", HTMLElement).textContent =
@@ -223,6 +259,12 @@ async function main() {
   const tracks = await Promise.all(present.map((name) => loadTrack(fetchFile, bundle, name)));
   const differ = differences(tracks, info.frames);
   showAgreement(element("agreement", HTMLElement), tracks.length, differ);
+  showTimeline(bundle, tracks);
+  /**
+   * @param {string | undefined} name A backend.
+   * @returns {import("./bundle.js").Track} Its track.
+   */
+  const trackOf = (name) => tracks[present.indexOf(name ?? "")];
   /** @type {Map<string, Promise<import("./bundle.js").Backend>>} */
   const loaded = new Map();
   /** @type {import("./bundle.js").Backend | null} */
@@ -235,7 +277,18 @@ async function main() {
     const frame = playhead.frame;
     scrubber.value = String(frame);
     frameLabel.textContent = `frame ${frame} · ${bundle.times[frame].toFixed(2)} s`;
+    for (const button of backends.querySelectorAll("button")) {
+      button.disabled = !ran(trackOf(button.dataset.backend), frame);
+    }
     if (run === null) {
+      return;
+    }
+    // A backend that did not run this frame gives way to the first that did, once loaded.
+    const shown = shownAt(tracks, run.name, frame);
+    if (shown !== run.name) {
+      if (chosen !== shown) {
+        choose(shown).catch((error) => fail(error));
+      }
       return;
     }
     const k = recordIndex(run.records, frame);
@@ -291,6 +344,7 @@ async function main() {
     button.textContent = name;
     button.style.setProperty("--swatch", `var(--backend-${name})`);
     button.dataset.backend = name;
+    button.title = spanText(trackOf(name));
     button.addEventListener("click", () => choose(name).catch((error) => fail(error)));
     backends.append(button);
   }

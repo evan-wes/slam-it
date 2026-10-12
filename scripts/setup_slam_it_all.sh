@@ -27,6 +27,7 @@ ENV_NAME="slam-it-all"
 PYTHON_VERSION="3.11"   # matches reifyscene's env, which also imports slam_it_all
 UNLOCKED=0
 CLANG_VERSION="23.1.2"
+RUST_VERSION="1.99.0"   # pinned: a new release adds clippy lints, and CI builds its env afresh
 JSCPD_VERSION="5.4.0"
 EIGEN_VERSION="5.0.1"
 
@@ -54,7 +55,7 @@ fi
 # manifpy is a test-only Lie-group oracle, packaged for conda-forge only.
 # nlohmann_json lets the native C++ tests read the shared parity fixtures (test-only);
 # benchmark is Google Benchmark, for the native C++ benchmarks (cpp/bench/).
-CONDA_PACKAGES=(cmake ninja cxx-compiler rust "clang-tools=${CLANG_VERSION}" "clang=${CLANG_VERSION}"
+CONDA_PACKAGES=(cmake ninja cxx-compiler "rust=${RUST_VERSION}" "clang-tools=${CLANG_VERSION}" "clang=${CLANG_VERSION}"
   "eigen=${EIGEN_VERSION}" doxygen nodejs manifpy nlohmann_json benchmark)
 
 # --- conda layer ---------------------------------------------------------------
@@ -86,12 +87,13 @@ if [[ ${UNLOCKED} -eq 0 && -f "${LOCK_FILE}" ]]; then
   run python -m pip install -r "${LOCK_FILE}"
 else
   # Resolve fresh from pyproject.toml: the runtime dependencies plus the `dev` extra (the
-  # toolchain's pip layer) and the `colmap` extra (the BA reference the tests compare to).
+  # toolchain's pip layer), the `colmap` extra (the BA reference the tests compare to) and
+  # the `video` extra (PyAV, for importing phone videos); then the server package's own.
   mapfile -t PIP_REQS < <(run python -c '
 import tomllib
 project = tomllib.load(open("'"${ROOT_DIR}"'/pyproject.toml", "rb"))["project"]
 extras = project["optional-dependencies"]
-print("\n".join(project["dependencies"] + extras["dev"] + extras["colmap"]))')
+print("\n".join(project["dependencies"] + extras["dev"] + extras["colmap"] + extras["video"]))')
   run python -m pip install "${PIP_REQS[@]}"
 fi
 # jscpd (duplication detection) installs into the env's own Node prefix.
@@ -107,6 +109,11 @@ run npm ci --prefix "${ROOT_DIR}/viewer" --no-audit --no-fund
 # CMake build tree and silently reuse each other's cached compiler and paths.
 run python -m pip install --no-build-isolation \
   -C build-dir="build/${ENV_NAME}" -e "${ROOT_DIR}"
+# Gyroflow's phone lens profiles (CC0), at the commit slam_it_all.eval.lenses pins, into the
+# user's cache: the source of a phone video's intrinsics. Skipped when already there.
+run python -m slam_it_all.eval.lenses fetch
+# The upload server, a package of its own (server/), with its test client.
+run python -m pip install -e "${ROOT_DIR}/server[test]"
 (cd "${ROOT_DIR}" && run maturin develop --release -m rust/slam-it-all-py/Cargo.toml)
 (cd "${ROOT_DIR}" && run cargo build --release --manifest-path rust/Cargo.toml \
   --target-dir rust/target -p slam-it-all-orchestration)

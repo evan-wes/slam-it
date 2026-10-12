@@ -1,7 +1,6 @@
 # SLAM It All! -- a learning ladder for visual SLAM
 
-Status, 2026-10-08: milestone 1 is complete, and milestone 2 is under way (see
-[Milestones](#milestones)). The scaffold (package-per-rung layout in three
+Status, 2026-10-11: milestones 1 and 2 are complete (see [Milestones](#milestones)). The scaffold (package-per-rung layout in three
 languages, conda environment, CI, two-layer review process) is merged. PR 1, the BA spine,
 added rung 0's geometry and estimation in Python and C++: SO(3), SE(3), Umeyama alignment,
 camera models, nonlinear least squares and bundle adjustment. PR 2 adds two-view geometry: triangulation, LO-MSAC RANSAC, the 8-point essential and
@@ -22,6 +21,10 @@ and RGB-D, with native C++ and Rust programs that run a whole sequence and make 
 decisions as the Python reference ([the edge VO note](../notes/edge-vo.md)). PR 9 adds the
 budget harness and brings the C++ and Rust pipelines to real time within a laptop-CPU budget
 on every sequence of the edge note's set ([the real-time note](../notes/real-time.md)).
+PR 10 adds the run viewer, which replays a run frame by frame for each backend side by side
+([the viewer note](../notes/viewer.md)), and PR 11 closes milestone 2 with your own video: a
+phone video or a Stray Scanner recording uploaded through a page, run by a worker and opened in
+the viewer ([its note](../notes/your-own-video.md)).
 
 ## Purpose
 
@@ -82,15 +85,21 @@ The ladder spans compute budgets. Every rung stands on rung 0.
 | **Python** | The readable reference implementation of every algorithm; orchestration, evaluation, and the learned rungs (PyTorch) |
 | **C++** | The performance core: rung 0, the edge rung, the edge budgets, and dense-BA kernels if profiling calls for them; outside the cores, `eval`'s native readers, run writer and process readings for a budget (`slam_it_all_eval`) and the native VO program (`slam_it_all_vo`, in orchestration); and the calibration side track (`slam_it_all_calib`), beside Python, without Rust. Showing C++ is a goal in its own right. |
 | **Rust** | Rung 0 and the edge rung, each in lock-step with Python and C++: every slice of those rungs lands in all three languages together; outside the cores, `eval`'s native readers, run writer and process readings for a budget (`slam-it-all-eval`) and the native VO program (`slam_it_all_vo`, crate `slam-it-all-orchestration`). The other rungs have no Rust. |
-| **JavaScript** | The run viewer's page only (`viewer/`, from PR 10): plain modules with no build step, three.js from a CDN, reading only bundles. No algorithm runs in it: its logic modules work out what a frame shows and never touch the page, so Node tests them; `tsc --checkJs` checks their JSDoc types. Its development tools (TypeScript, three.js's types, prettier) are pinned in `viewer/package-lock.json`. |
+| **JavaScript** | The run viewer's page (`viewer/`, from PR 10), and the upload and status pages beside it (PR 11): plain modules with no build step, three.js from a CDN pinned by its hashes. The viewer reads only bundles, on its own site; the upload and status pages, the upload server's API. No algorithm runs in it: its logic modules work out what a frame shows and never touch the page, so Node tests them; `tsc --checkJs` checks their JSDoc types. Its development tools (TypeScript, three.js's types, prettier) are pinned in `viewer/package-lock.json`. |
 
 **Runtime dependencies.** Adding one, to the Python package or to a core, is a change to this
 document first.
 - **Python:** numpy. Pillow too, but in `slam_it_all.eval.images` alone, which reads image files
-  (milestone 2 reads PNG frames and depth maps) and encodes the run viewer's JPEGs (PR 10):
-  the algorithm rungs take arrays, never files,
-  and an import-linter contract keeps Pillow in that one module. `slam_it_all.eval.rosbag` reads
-  ROS 1 bags by hand, with no dependency (the calibration side track).
+  (milestone 2 reads PNG frames and depth maps) and encodes the run viewer's JPEGs (PR 10): the
+  algorithm rungs take arrays, never files, and an import-linter contract keeps Pillow in that
+  one module. PyAV, an optional extra (`video`, from PR 11), decodes phone videos in
+  `slam_it_all.eval.video` alone, kept there by a contract of its own. Its wheels bundle an
+  FFmpeg built with GPL encoders (x264, x265); the project installs it from PyPI and ships no
+  binaries. `slam_it_all.eval.rosbag` reads ROS 1 bags by hand, with no dependency (the
+  calibration side track).
+- **The upload server** (`server/`, the package `slam_it_all_server`, from PR 11): FastAPI
+  with pydantic, which its requests are read with, uvicorn, and boto3 with botocore, with httpx
+  for its tests. It never imports `slam_it_all`.
 - **C++:** Eigen. The `slam_it_all_eval` library reads PNGs with stb_image (vendored in
   `third_party/stb`, PNG support only; MIT or public domain), outside the algorithm cores.
 - **Rust:** nalgebra, the matrix type, and faer for the general SVDs and the general
@@ -355,11 +364,13 @@ visible from its path and enforceable by contract.
 | `slam_it_all.calib` | library `slam_it_all_calib` | -- | Sensor calibration (the side track) |
 | `slam_it_all.dense` | -- | -- | Dense BA + depth prior |
 | `slam_it_all.learned` | -- | -- | DROID- and MegaSaM-style |
-| `slam_it_all.eval` | library `slam_it_all_eval`, `slam_it_all::eval` (native PNG and dataset readers, run writer, a program's process for its run) | crate `slam-it-all-eval` (the same) | Dataset readers, external references (COLMAP), metrics, benchmarks, budget harness |
-| `slam_it_all.orchestration` | library `slam_it_all_orchestration` and program `slam_it_all_vo` (`cpp/apps/orchestration/`; from PR 8) | crate `slam-it-all-orchestration` and its program `slam_it_all_vo` (from PR 8) | End-to-end pipelines, and the bake of their runs for the run viewer (`bundles`, Python only, above `vo`) |
+| `slam_it_all.eval` | library `slam_it_all_eval`, `slam_it_all::eval` (native PNG and dataset readers, run writer, a program's process for its run) | crate `slam-it-all-eval` (the same) | Dataset readers, external references (COLMAP), metrics, benchmarks, budget harness; a phone video's import and intrinsics (`video`, `lenses`, Python only, from PR 11) |
+| `slam_it_all.orchestration` | library `slam_it_all_orchestration` and program `slam_it_all_vo` (`cpp/apps/orchestration/`; from PR 8) | crate `slam-it-all-orchestration` and its program `slam_it_all_vo` (from PR 8) | End-to-end pipelines, the bake of their runs for the run viewer (`bundles`, Python only, above `vo`), and the worker that runs the upload server's jobs (`worker`, Python only, above `bundles`, from PR 11) |
+| `slam_it_all_server` (`server/`, its own package) | -- | -- | The upload server (from PR 11): the job list, storage's links, the guards; never imports `slam_it_all` |
 
-The run viewer's page, `viewer/` (from PR 10), sits outside the package: it reads only the
-bundles the bake writes, and nothing imports it.
+The pages, `viewer/` (from PR 10), sit outside the packages: the run viewer reads only the
+bundles the bake writes, on its own site; the upload and status pages (from PR 11) talk to the
+upload server's API. Nothing imports them.
 
 Packages for rungs that have no code yet are stubs: a docstring stating the rung, its
 milestone and its compute budget. C++ libraries and Rust crates appear as each rung gets
@@ -404,6 +415,12 @@ thin roots that only wire them.
 - **No algorithm package imports a depth model.** Depth models are inputs through a
   provider interface.
 - **SLAM It All! never imports reifyscene.**
+- **The upload server and `slam_it_all` stay apart** (from PR 11): the server never imports
+  `slam_it_all`, PyAV, Pillow, OpenCV or reifyscene, so the process holding the storage keys
+  never parses a video; `slam_it_all` never imports the server or its web stack; the server's
+  own modules keep an order (`__main__`, `app`, `jobs | storage`, `config`).
+- **The pipeline never needs the `video` extra:** of `orchestration`, only the worker imports
+  `eval.video`, which alone imports PyAV.
 
 **The same layering holds in C++ and Rust.** Each rung is its own C++ library and Rust
 crate, so a rung can only link what it declares. `scripts/check_layers.py` reads the
@@ -921,6 +938,26 @@ shared with the owner's other projects.
     judges mapping by its load, as a thread of its own would run it. A real mapping thread, and
     ORB-SLAM's interruption of a local BA when a keyframe arrives, belong with the edge
     targets' budgets, where keyframe bursts would otherwise delay frames.
+- **Deferred from PR 11's review panel**
+  ([report](../reviews/2026-10-11-feature-your-own-video.md),
+  [security pass](../reviews/2026-10-11-feature-your-own-video-security.md)):
+  - **The worker's protocol owned by the server (A8).** The server points at the worker's
+    docstring for its API, keys its states to the `vo` worker's stages, and has no protocol
+    version. When a second kind of job is planned (reifyscene's GPU worker), the protocol
+    moves into the run-viewer design's section 5.3 with the server as its owner, with stages
+    by kind, or "upload consumed" as a message of its own.
+  - **A Kannala-Brandt camera in rung 0, with TUM-VI (A9).** `eval.lenses.Fisheye` is a full
+    fisheye model outside rung 0, and `Pinhole` a fourth camera with a size. TUM-VI
+    (milestone 6) is calibrated in Kalibr's equidistant (Kannala-Brandt) model: it joins
+    `foundations.camera` in all three languages then, and `lenses` uses it; `Pinhole` folds
+    into the camera lift (PR 8's A8).
+  - **Before going public** (the security pass): the result's token out of every path
+    (`/r#<token>`, the status page sending it in a header), so that no host's log holds it
+    (S2); the fonts self-hosted and HSTS on the domain (S11); a token per worker (S15); the
+    lock's hashes required in the images, and PyAV bumped for FFmpeg's fixes (S20).
+  - **To the real clips** (with the note's list): profiles calibrated at a 16-row-padded size
+    stretched rather than cropped (L6); a mirror in the display matrix read as a half turn
+    (L7); the nominal field of view by aspect (L8).
 - **Deferred from PR 10's review panel**
   ([report](../reviews/2026-10-10-feature-run-viewer.md)):
   - **Removals out of the core (A6).** The pipeline keeps every point and keyframe a run
@@ -985,7 +1022,8 @@ shared with the owner's other projects.
     the shared fixtures with their own copies of `count`, `list` and `picture`; a
     `#[cfg(test)]` fixture module would hold them once.
   - **One "fastest built backend" choice (H18/A13).** The demos each pick a backend with
-    their own code; `slam_it_all.backends` could offer it once.
+    their own code; `slam_it_all.backends` could offer it once. A third copy, the first in the
+    library, is `eval.video`'s for undistortion, in another order (PR 11's panel, A10).
   - **C++'s `at()` index helper (H19)** is copied into three anonymous namespaces
     (`image.cpp`, `orb.cpp`, `stereo.cpp`); an internal header would hold it once.
   - **`matching`'s popcount temporary (H19).** `_POPCOUNT[block]` makes a (256, M, 32) int64

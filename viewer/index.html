@@ -15,6 +15,11 @@
         "imports": {
           "three": "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js",
           "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.0/examples/jsm/"
+        },
+        "integrity": {
+          "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js": "sha384-m8JoFX52V6NGv2usipnlLJKnJfL7IE8dbniPDDCSGSQv3Hm4n6PjfV6syVwfuoRc",
+          "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.core.js": "sha384-mdKeCwPEcbDvzaxwhm+MVuLoMou+E7jQqrs4tmu/n8HBYPGI1kZt0MkJxlMR4zFM",
+          "https://cdn.jsdelivr.net/npm/three@0.186.0/examples/jsm/controls/OrbitControls.js": "sha384-LSqANrugPGTgf0eYsQTloqKWy926dOOXo2iZ9y6wLMIDEQoU9AaCLJF1Vcc7oJXr"
         }
       }
     </script>
@@ -33,7 +38,28 @@
       <button type="button" class="ghost" id="play" aria-label="play">▶ play</button>
       <button type="button" class="ghost" id="prev" aria-label="previous frame">◀</button>
       <button type="button" class="ghost" id="next" aria-label="next frame">▶</button>
-      <input type="range" id="scrubber" min="0" max="0" value="0" aria-label="frame" />
+      <div class="scrub">
+        <div class="timeline">
+          <div class="not-run" id="not-run-before" hidden></div>
+          <div class="ran" id="ran">
+            <input type="range" id="scrubber" min="0" max="0" value="0" aria-label="frame" />
+            <div class="spans" id="spans"></div>
+          </div>
+          <div class="not-run" id="not-run-after" hidden></div>
+        </div>
+        <div class="legend states" aria-label="what the frame slider shows">
+          <span title="a backend's frames in its colour, where it was tracking"
+            ><i class="swatch tracking"></i>tracking</span
+          >
+          <span title="faded: before its first map"><i class="swatch starting"></i>no map yet</span>
+          <span title="the frame it lost the track, which ends a run"
+            ><i class="swatch lost"></i>lost</span
+          >
+          <span title="the part of the sequence no run reached"
+            ><i class="swatch not-run"></i>not run</span
+          >
+        </div>
+      </div>
       <span class="meta" id="frame-label">–</span>
       <label class="field"
         >speed

@@ -41,6 +41,9 @@ ORB-SLAM's ``Camera.bf``), ``#`` comments allowed::
     depth_scale 1000
     bf 40
 
+**Writing one** (a recording imported, the tests' room): :func:`write_list` writes ``rgb.txt``
+or ``depth.txt``, and :func:`write_camera` a ``camera.txt``, beside the readers that read them.
+
 **Frames and ground truth.** :func:`read_frames` reads what a run consumes: every colour
 frame, each with its nearest depth map, and the camera; it never reads the ground truth, so
 a folder without one runs the same, and the native readers mirror it. :func:`read_sequence`
@@ -49,6 +52,7 @@ reads what an evaluation scores: the frames that have a ground-truth pose.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -293,6 +297,54 @@ def _camera_file(path: Path) -> Camera:
     if bf is not None and not (np.isfinite(bf) and bf > 0.0):
         raise InvalidInputError(f"{path}: bf must be finite and positive")
     return Camera(model, intrinsics, width, height, depth_scale, bf)
+
+
+def write_list(path: str | Path, entries: Iterable[tuple[str, str]]) -> None:
+    """Write an image list, ``rgb.txt`` or ``depth.txt``: each image's timestamp and file.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        The list's file.
+    entries : iterable of (str, str)
+        Each image's timestamp, as it is to be written, and its file, relative to the folder.
+    """
+    lines = ["# timestamp filename", *(f"{stamp} {name}" for stamp, name in entries)]
+    Path(path).write_text("\n".join(lines) + "\n")
+
+
+def write_camera(
+    folder: str | Path,
+    camera: Camera,
+    note: str | None = None,
+) -> None:
+    """Write a folder's ``camera.txt``, which :func:`read_camera` reads back (the module docstring).
+
+    Parameters
+    ----------
+    folder : str or pathlib.Path
+        The folder.
+    camera : Camera
+        The camera: its model, intrinsics, size, depth scale and, for RGB-D, ``bf``.
+    note : str, optional
+        A comment written first, as ``# note``.
+
+    Raises
+    ------
+    slam_it_all.foundations.errors.InvalidInputError
+        If the intrinsics are not the model's.
+    """
+    camera_model.check_intrinsics(camera.model, camera.intrinsics)
+    lines = [f"# {note}"] if note else []
+    lines += [
+        f"model {camera.model}",
+        "intrinsics " + " ".join(repr(float(v)) for v in camera.intrinsics),
+        f"size {camera.width} {camera.height}",
+        f"depth_scale {float(camera.depth_scale)!r}",
+    ]
+    if camera.bf is not None:
+        lines.append(f"bf {float(camera.bf)!r}")
+    (Path(folder) / CAMERA_FILE).write_text("\n".join(lines) + "\n")
 
 
 def read_camera(root: str | Path) -> Camera:
