@@ -149,9 +149,10 @@ _ZIP_ERRORS = (zipfile.BadZipFile, zlib.error, EOFError, RuntimeError, NotImplem
 """What reading a zip's entry raises when the zip is corrupt, encrypted or compressed in a way
 Python does not read."""
 
-_REMAP_ORDER = ("rust", "cpp", "python")
-"""The backends that undistort a frame, fastest first (7, 10 and 34 ms a channel at 854x480);
-all three give the same bytes, as rung 0's parity tests hold."""
+_REMAP_ORDER = ("cpp", "rust", "python")
+"""The backends that undistort a frame, fastest first: one 854x480 channel takes 2.8 ms in C++,
+4.4 ms in Rust and 30 ms in Python (median of 30 calls, measured 2026-10-11 on the desktop this
+was built on). All three give the same bytes, as rung 0's parity tests hold."""
 
 
 def output_size(width: int, height: int) -> tuple[int, int]:
