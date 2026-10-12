@@ -74,7 +74,9 @@ what they changed is in the entries below (`docs/reviews/2026-10-11-feature-your
 - **The run viewer** reads a bundle from its own site only, and loads three.js pinned by its
   hashes.
 - **The setup script** installs the `video` extra and the server, and fetches the lens profiles;
-  the env's lock adds PyAV, FastAPI, uvicorn, boto3 and httpx.
+  the env's lock adds PyAV, FastAPI, uvicorn, boto3 and httpx. It pins Rust to 1.99.0, as it
+  pins clang: an unpinned release added a clippy lint that failed a fresh env, and three
+  asserts now meet it.
 - **The README and the ladder's status** describe milestone 2 whole; the README lists
   `viewer/`, `server/` and `docker/`.
 

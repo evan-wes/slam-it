@@ -27,6 +27,7 @@ ENV_NAME="slam-it-all"
 PYTHON_VERSION="3.11"   # matches reifyscene's env, which also imports slam_it_all
 UNLOCKED=0
 CLANG_VERSION="23.1.2"
+RUST_VERSION="1.99.0"   # pinned: a new release adds clippy lints, and CI builds its env afresh
 JSCPD_VERSION="5.4.0"
 EIGEN_VERSION="5.0.1"
 
@@ -54,7 +55,7 @@ fi
 # manifpy is a test-only Lie-group oracle, packaged for conda-forge only.
 # nlohmann_json lets the native C++ tests read the shared parity fixtures (test-only);
 # benchmark is Google Benchmark, for the native C++ benchmarks (cpp/bench/).
-CONDA_PACKAGES=(cmake ninja cxx-compiler rust "clang-tools=${CLANG_VERSION}" "clang=${CLANG_VERSION}"
+CONDA_PACKAGES=(cmake ninja cxx-compiler "rust=${RUST_VERSION}" "clang-tools=${CLANG_VERSION}" "clang=${CLANG_VERSION}"
   "eigen=${EIGEN_VERSION}" doxygen nodejs manifpy nlohmann_json benchmark)
 
 # --- conda layer ---------------------------------------------------------------

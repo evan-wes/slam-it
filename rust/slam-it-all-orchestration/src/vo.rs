@@ -1112,7 +1112,7 @@ mod tests {
         let mut request = Request::new("tum", &folder("tum_camera"), Mode::Rgbd, &out);
         request.count = Some(0);
         let empty = run(&request).unwrap();
-        assert!(empty.timestamps.is_empty());
+        assert_eq!(empty.timestamps, Vec::<f64>::new());
         assert!(
             !out.join("run.json").exists(),
             "the run is the program's to write"

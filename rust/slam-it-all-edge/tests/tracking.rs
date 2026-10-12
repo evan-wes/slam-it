@@ -68,7 +68,7 @@ fn every_point_is_in_view_and_none_from_behind() {
         .fixed_view_mut::<3, 3>(0, 0)
         .copy_from(&Matrix3::from_diagonal(&Vector3::new(-1.0, 1.0, -1.0)));
     let behind = in_view(&m, &camera(), &turned, &rows, &Options::default()).unwrap();
-    assert!(behind.rows.is_empty());
+    assert_eq!(behind.rows, Vec::<usize>::new());
     let err = in_view(&m, &camera(), &pose(2), &[POINTS], &Options::default()).unwrap_err();
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
