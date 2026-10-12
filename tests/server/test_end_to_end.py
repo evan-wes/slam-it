@@ -81,4 +81,4 @@ def test_a_recording_uploaded_is_run_and_viewable(live: Settings, tmp_path: Path
     info = _call(f"{url}{status['bundle']}bundle.json")  # redirected to storage's link
     assert (info["truth"], info["backends"]["cpp"]["alignment"]) == (True, "sim3")
     files = Path(live.storage.removeprefix("folder:"))
-    assert list((files / "uploads").iterdir()) == []  # deleted once imported
+    assert list(files.glob("jobs/*/upload")) + list(files.glob("jobs/*/import")) == []  # imported

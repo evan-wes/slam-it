@@ -12,6 +12,19 @@ export const MAX_SECONDS = 60;
 /** How long a result is kept, in days (slam_it_all_server.config.RETENTION). */
 export const RETENTION_DAYS = 7;
 
+/**
+ * What the upload page says becomes of an upload.
+ * @param {boolean} kept Whether the server keeps uploads with their results (the demo's,
+ *     slam_it_all_server.config.Settings.keep_uploads).
+ * @returns {string} The words.
+ */
+export function uploadFate(kept) {
+  return kept
+    ? `This demo keeps your upload with its result for ${RETENTION_DAYS} days, then deletes ` +
+        "both. It is never shown."
+    : "Your upload is deleted as soon as its frames have been imported. It is never shown.";
+}
+
 /** What may be uploaded, and the files each one is (an `accept` attribute's value). */
 export const UPLOADS = {
   video: "video/*",

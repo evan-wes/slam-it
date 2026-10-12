@@ -43,6 +43,7 @@ def test_the_demos_settings_are_the_servers(tmp_path: Path) -> None:
     assert settings.database.parent == tmp_path
     assert (settings.viewer / "upload.html").is_file()
     assert not settings.staging
+    assert settings.keep_uploads  # so that a recording can be run again
     again = demo.environment(tmp_path, "a-demo-invite-code", "http://127.0.0.1:1")
     assert again["SLAM_IT_ALL_WORKER_TOKEN"] != env["SLAM_IT_ALL_WORKER_TOKEN"]
 

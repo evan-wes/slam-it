@@ -4,7 +4,10 @@ docs/design/2026-10-09-run-viewer.md, section 5.3: the demo, before anything is 
 job list, the uploads and the results all go in one folder (``--data``, by default a new one in
 the system's temporary folder). The worker token and the signing key are made afresh for each
 run; the invite code is too, unless given (:func:`invite_code`: three words, easy to type on a
-phone), and is printed with the page's address.
+phone), and is printed with the page's address. The demo keeps each upload with its result, in
+the job's own folder (``files/jobs/<job>/``), so that a recording can be run again; both go when
+the job is deleted, 7 days after it ends, while the demo runs on that folder. Give ``--data`` a
+lasting folder to keep them across runs.
 
 With ``--lan`` the server listens on every interface, and its links use this machine's address
 on the local network, so a phone on the same Wi-Fi can open the page and upload. Every page then
@@ -37,6 +40,8 @@ from pathlib import Path
 import segno
 
 from slam_it_all.orchestration import worker as worker_module
+from slam_it_all_server import app as server_app
+from slam_it_all_server import config as server_config
 
 REPO = Path(__file__).resolve().parent.parent
 """The repository, whose viewer folder holds the pages."""
@@ -152,7 +157,8 @@ def environment(data: Path, code: str, url: str, *, staging: bool = False) -> di
     Returns
     -------
     dict of str to str
-        The ``SLAM_IT_ALL_*`` variables (:mod:`slam_it_all_server.config`), its secrets new.
+        The ``SLAM_IT_ALL_*`` variables (:mod:`slam_it_all_server.config`), its secrets new,
+        uploads kept with their results.
     """
     return {
         "SLAM_IT_ALL_INVITE_CODES": code,
@@ -163,6 +169,7 @@ def environment(data: Path, code: str, url: str, *, staging: bool = False) -> di
         "SLAM_IT_ALL_DATABASE": str(data / "jobs.sqlite3"),
         "SLAM_IT_ALL_VIEWER": str(REPO / "viewer"),
         "SLAM_IT_ALL_STAGING": "1" if staging else "0",
+        "SLAM_IT_ALL_KEEP_UPLOADS": "1",
     }
 
 
@@ -268,7 +275,13 @@ def main(arguments: list[str]) -> int:
             [*command, "--server", f"http://127.0.0.1:{args.port}", "--work", str(data / "work")],
             env={**inherited, **token},
         )
-        print(f"\nOpen {url}/  invite code: {code}\nEverything is kept in {data}\n", flush=True)
+        kept = data / "files" / server_app.job_prefix("<job>")
+        days = server_config.RETENTION / 86400
+        print(
+            f"\nOpen {url}/  invite code: {code}\nEach job's upload and result are kept for "
+            f"{days:g} days in {kept}/ (the server's log names each job)\n",
+            flush=True,
+        )
         if args.lan:  # a phone on the same network can open the page from its camera
             print(f"{qr_code(f'{url}/')}\n", flush=True)
         return watch(server, worker)

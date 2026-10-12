@@ -12,6 +12,10 @@
 - ``SLAM_IT_ALL_DATABASE``: the job list's SQLite file.
 - ``SLAM_IT_ALL_VIEWER``: the run viewer's folder (``viewer/``), which the server serves.
 - ``SLAM_IT_ALL_STAGING``: ``1`` puts every page behind an invite code (HTTP Basic auth).
+- ``SLAM_IT_ALL_KEEP_UPLOADS``: ``1`` keeps each upload with its result until the job is
+  deleted, :data:`RETENTION` after it ends, rather than deleting it once imported: the demo's
+  (``scripts/serve_demo.py``), so that its recordings can be run again. With folder storage
+  only, so that a deployment, on S3, never keeps one.
 """
 
 from __future__ import annotations
@@ -71,6 +75,7 @@ class Settings:
     viewer: Path
     staging: bool
     s3: Mapping[str, str]
+    keep_uploads: bool = False
 
 
 def _required(env: Mapping[str, str], name: str) -> str:
@@ -119,6 +124,12 @@ def from_environment(env: Mapping[str, str] | None = None) -> Settings:
     if storage == "s3":
         for key in ("ENDPOINT", "BUCKET", "KEY_ID", "SECRET", "REGION"):
             s3[key.lower()] = _required(env, f"SLAM_IT_ALL_S3_{key}")
+    keep_uploads = env.get("SLAM_IT_ALL_KEEP_UPLOADS", "0") == "1"
+    if keep_uploads and storage == "s3":
+        raise SettingsError(
+            "SLAM_IT_ALL_KEEP_UPLOADS: only with folder storage (the demo's); a deployment "
+            "deletes each upload once imported"
+        )
     return Settings(
         invite_codes=codes,
         worker_token=secrets["SLAM_IT_ALL_WORKER_TOKEN"],
@@ -129,4 +140,5 @@ def from_environment(env: Mapping[str, str] | None = None) -> Settings:
         viewer=Path(_required(env, "SLAM_IT_ALL_VIEWER")),
         staging=env.get("SLAM_IT_ALL_STAGING", "0") == "1",
         s3=s3,
+        keep_uploads=keep_uploads,
     )

@@ -9,6 +9,8 @@ storage's own links, never proxied.
 
 **The owner's API:**
 
+- ``GET /api/kept``: ``{"uploads": bool}``, whether uploads are kept with their results (the
+  demo's :attr:`~slam_it_all_server.config.Settings.keep_uploads`), which the upload page says;
 - ``POST /api/jobs`` ``{"code", "upload": "video" | "stray", "bytes"}``: a job, and the link to
   upload to, signed for exactly that size;
 - ``POST /api/jobs/<token>/uploaded``: queues the job, once storage holds the whole upload;
@@ -24,11 +26,13 @@ token checked on every request.
 - the size cap, checked against the declared size and signed into the upload link;
 - one job worked on at a time, and :data:`~slam_it_all_server.config.QUEUE` open at most;
 - an upload moved, once confirmed, where its owner's link cannot reach it, and deleted once
-  its import ends; whatever a job's links may write later is deleted when it ends, and again
+  its import ends (where the demo keeps uploads, once the job is deleted); whatever a job's
+  links may write later is deleted when it ends, and again
   once every link it signed has expired and an upload begun in time could have arrived
   (:data:`~slam_it_all_server.config.UPLOAD_GRACE`);
 - every job deleted :data:`~slam_it_all_server.config.RETENTION` after it ends, its files
-  first, so that a deletion that fails is tried again (:func:`sweep`);
+  first, all in its own folder of storage (:func:`job_prefix`), so that a deletion that fails
+  is tried again (:func:`sweep`);
 - at most :data:`slam_it_all_server.jobs.CODE_JOBS` jobs open per invite code;
 - a result's files only of the names and kinds a bundle has (:data:`RESULT_PATH`);
 - results reachable only through their token, pages marked ``noindex``, and no ``Referer``
@@ -116,19 +120,27 @@ _LOG = logging.getLogger("slam_it_all_server")
 """The server's log: jobs by their id, never by their token, nor a link."""
 
 
+def job_prefix(job_id: str) -> str:
+    """Return the storage prefix of a job's files: its upload, the upload's copy and its result.
+
+    One folder a job, so that deleting it deletes them all.
+    """
+    return f"jobs/{job_id}"
+
+
 def upload_key(job_id: str) -> str:
     """Return the storage key of a job's upload, which its owner's upload link writes."""
-    return f"uploads/{job_id}"
+    return f"{job_prefix(job_id)}/upload"
 
 
 def import_key(job_id: str) -> str:
     """Return the storage key a confirmed upload is moved to, out of its owner's link's reach."""
-    return f"imports/{job_id}"
+    return f"{job_prefix(job_id)}/import"
 
 
 def result_prefix(job_id: str) -> str:
     """Return the storage prefix of a job's result."""
-    return f"results/{job_id}"
+    return f"{job_prefix(job_id)}/result"
 
 
 def make_storage(settings: Settings) -> Storage:
@@ -147,7 +159,7 @@ def make_storage(settings: Settings) -> Storage:
     return FolderStorage(root, settings.public_url, settings.signing_key)
 
 
-def sweep(job_list: Jobs, store: Storage) -> int:
+def sweep(job_list: Jobs, store: Storage, *, keep_uploads: bool = False) -> int:
     """Sweep the job list: end the jobs whose time is up, then clear and delete their files.
 
     A job's files are deleted before it is (:mod:`slam_it_all_server.jobs`): a deletion that
@@ -159,6 +171,9 @@ def sweep(job_list: Jobs, store: Storage) -> int:
         The job list.
     store : Storage
         The storage.
+    keep_uploads : bool, optional
+        Whether an ended job's upload copy stays until the job is deleted (the demo's,
+        :attr:`~slam_it_all_server.config.Settings.keep_uploads`).
 
     Returns
     -------
@@ -169,7 +184,7 @@ def sweep(job_list: Jobs, store: Storage) -> int:
         _LOG.info("job %s: %s (%s)", job.id, job.state, job.reason)
     steps: list[tuple[list[Job], Callable[[Job], None]]] = [
         (job_list.links_to_close(), lambda job: _close_link(job_list, store, job)),
-        (job_list.files_to_clear(), lambda job: _clear_files(job_list, store, job)),
+        (job_list.files_to_clear(), lambda job: _clear_files(job_list, store, job, keep_uploads)),
         (job_list.to_delete(), lambda job: _delete(job_list, store, job)),
     ]
     failed = 0
@@ -191,20 +206,19 @@ def _close_link(job_list: Jobs, store: Storage, job: Job) -> None:
     job_list.close_link(job.id)
 
 
-def _clear_files(job_list: Jobs, store: Storage, job: Job) -> None:
-    """Delete an ended job's upload, its copy, and its result unless it is done; then record it."""
+def _clear_files(job_list: Jobs, store: Storage, job: Job, keep_uploads: bool) -> None:
+    """Delete an ended job's upload, its copy unless kept, its result unless done; record it."""
     store.delete(upload_key(job.id))
-    store.delete(import_key(job.id))
+    if not keep_uploads:
+        store.delete(import_key(job.id))
     if job.state != "done":
         store.delete_prefix(result_prefix(job.id))
     job_list.clear_files(job.id)
 
 
 def _delete(job_list: Jobs, store: Storage, job: Job) -> None:
-    """Delete every file of a job kept its time, then the job."""
-    store.delete(upload_key(job.id))
-    store.delete(import_key(job.id))
-    store.delete_prefix(result_prefix(job.id))
+    """Delete every file of a job kept its time, its folder whole, then the job."""
+    store.delete_prefix(job_prefix(job.id))
     job_list.delete(job.id)
     _LOG.info("job %s: deleted", job.id)
 
@@ -453,7 +467,9 @@ def make_app(
         async def sweeping() -> None:
             while True:
                 try:
-                    await asyncio.to_thread(sweep, server.jobs, server.store)
+                    await asyncio.to_thread(
+                        sweep, server.jobs, server.store, keep_uploads=server.settings.keep_uploads
+                    )
                 except Exception:  # the list itself failed: logged, and tried again
                     _LOG.exception("a sweep failed")
                 await asyncio.sleep(SWEEP)
@@ -491,6 +507,11 @@ def make_app(
 
 def _owner_api(app: FastAPI, server: _Server) -> None:
     """Add the owner's API: make a job, confirm its upload, ask how it is going."""
+
+    @app.get("/api/kept")
+    def kept() -> dict[str, bool]:
+        """Say whether uploads are kept with their results, for the upload page to say."""
+        return {"uploads": server.settings.keep_uploads}
 
     @app.post("/api/jobs", status_code=201)
     def create(request: NewJob) -> dict[str, str]:
@@ -610,14 +631,14 @@ def _worker_api(app: FastAPI, server: _Server) -> None:
 
     @app.post("/api/worker/jobs/{job_id}/progress", dependencies=guarded)
     def progress(job_id: str, request: Progress) -> dict[str, str]:
-        """Record a stage; once the import has ended, delete the upload."""
+        """Record a stage; once the import has ended, delete the upload unless uploads are kept."""
         try:
             before, job = server.jobs.progress(job_id, request.stage)
         except jobs.StateError:
             raise HTTPException(409, "the job is no longer yours") from None
         except ValueError as error:
             raise HTTPException(400, str(error)) from None
-        if before == "importing" and job.state != "importing":
+        if before == "importing" and job.state != "importing" and not server.settings.keep_uploads:
             key = import_key(job.id)
             _best_effort("deleting the upload", job, lambda: server.store.delete(key))
         return {}
@@ -637,17 +658,19 @@ def _worker_api(app: FastAPI, server: _Server) -> None:
         _check_arrived(server.store, _working(lambda: server.jobs.held(job_id)))
         job = _working(lambda: server.jobs.done(job_id, request.summary))
         _LOG.info("job %s: done", job.id)
-        key = import_key(job.id)
-        _best_effort("deleting the upload", job, lambda: server.store.delete(key))
+        if not server.settings.keep_uploads:
+            key = import_key(job.id)
+            _best_effort("deleting the upload", job, lambda: server.store.delete(key))
         return {}
 
     @app.post("/api/worker/jobs/{job_id}/failed", dependencies=guarded)
     def failed(job_id: str, request: Failed) -> dict[str, str]:
-        """End a job failed, deleting its upload and whatever of its result arrived."""
+        """End a job failed, deleting what of its result arrived, and its upload unless kept."""
         job = _working(lambda: server.jobs.fail(job_id, request.reason[:REASON_LENGTH]))
         _LOG.info("job %s: failed (%s)", job.id, job.reason)
         key, prefix = import_key(job.id), result_prefix(job.id)
-        _best_effort("deleting the upload", job, lambda: server.store.delete(key))
+        if not server.settings.keep_uploads:
+            _best_effort("deleting the upload", job, lambda: server.store.delete(key))
         _best_effort("deleting the result", job, lambda: server.store.delete_prefix(prefix))
         return {}
 

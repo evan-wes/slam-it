@@ -1,12 +1,14 @@
 // The upload and status pages' logic: a file's checks, and how a job is described.
 
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
 import {
   INTRINSICS,
   MAX_BYTES,
   MAX_SECONDS,
+  RETENTION_DAYS,
   STAGES,
   UPLOADS,
   describe,
@@ -14,6 +16,7 @@ import {
   refusal,
   summaryRows,
   trackingText,
+  uploadFate,
   viewerLink,
 } from "../src/jobs.js";
 
@@ -138,5 +141,19 @@ test("what of the clip was tracked is said, and why a result can be shorter than
     trackingText(never),
     "No first map was made in your 8.0 s clip, so nothing was tracked. Moving sideways at the " +
       "start, with something textured in view, helps make one.",
+  );
+});
+
+test("the upload page says what becomes of an upload: a deployment's words, or the demo's", async () => {
+  const page = await readFile(new URL("../upload.html", import.meta.url), "utf8");
+  const said = page
+    .match(/<li id="upload-fate">([^<]*)<\/li>/)?.[1]
+    .replace(/\s+/g, " ")
+    .trim();
+  assert.equal(said, uploadFate(false));
+  assert.equal(
+    uploadFate(true),
+    `This demo keeps your upload with its result for ${RETENTION_DAYS} days, then deletes both. ` +
+      "It is never shown.",
   );
 });

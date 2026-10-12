@@ -31,10 +31,12 @@ def test_the_template_lists_every_setting_and_reads() -> None:
 
 
 def test_folder_storage_needs_no_bucket() -> None:
-    """With ``folder:<path>``, the bucket's variables may be left out."""
+    """With ``folder:<path>``, the bucket's variables may be left out, and uploads kept."""
     env = {k: v for k, v in _template().items() if not k.startswith("SLAM_IT_ALL_S3_")}
     env["SLAM_IT_ALL_STORAGE"] = "folder:/somewhere"
     assert from_environment(env).s3 == {}
+    assert not from_environment(env).keep_uploads
+    assert from_environment({**env, "SLAM_IT_ALL_KEEP_UPLOADS": "1"}).keep_uploads
 
 
 @pytest.mark.parametrize(
@@ -45,10 +47,14 @@ def test_folder_storage_needs_no_bucket() -> None:
         ("SLAM_IT_ALL_SIGNING_KEY", "too-short", "needs 32 characters"),
         ("SLAM_IT_ALL_STORAGE", "disk", "expected s3 or folder"),
         ("SLAM_IT_ALL_S3_BUCKET", " ", "SLAM_IT_ALL_S3_BUCKET is not set"),
+        ("SLAM_IT_ALL_KEEP_UPLOADS", "1", "only with folder storage"),
     ],
 )
 def test_a_missing_or_weak_setting_is_refused(name: str, value: str, message: str) -> None:
-    """A variable unset, a code or secret too short, an unknown storage: refused by name."""
+    """A variable unset, a code or secret too short, an unknown storage: refused by name.
+
+    So are uploads kept on S3, which only the demo's folder storage may keep.
+    """
     env = {**_template(), name: value}
     with pytest.raises(SettingsError, match=message):
         from_environment(env)

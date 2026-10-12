@@ -18,7 +18,8 @@ docs/design/2026-10-09-run-viewer.md, section 5.3. A job's life::
 
 **A job's files go before it does** (the server's sweep, :func:`slam_it_all_server.app.sweep`).
 Two flags say what is still to be cleared: ``files_open``, until its upload, the upload's
-copy, and a result that will never be done, are deleted once it has ended; and ``link_open``,
+copy (unless the demo keeps uploads, until the job is deleted), and a result that will never be
+done, are deleted once it has ended; and ``link_open``,
 until whatever any of its links may have written is deleted once more: when every link it
 signed has expired (by :data:`~slam_it_all_server.config.LINK_SECONDS` after it ended) and an
 upload begun before then has had :data:`~slam_it_all_server.config.UPLOAD_GRACE` to arrive,

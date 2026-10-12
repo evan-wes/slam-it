@@ -1,7 +1,7 @@
 // The upload page: checks the file, makes a job with the invite code, sends the file straight
 // to storage on the link the server signed, confirms it, and goes to the job's status page.
 
-import { UPLOADS, refusal } from "./jobs.js";
+import { UPLOADS, refusal, uploadFate } from "./jobs.js";
 import { element } from "./page_view.js";
 
 /**
@@ -70,6 +70,18 @@ async function post(path, body) {
 }
 
 /**
+ * Say what becomes of an upload, as the server keeps it: the page's words are a deployment's,
+ * and the demo keeps uploads with their results.
+ */
+async function showFate() {
+  const response = await fetch("/api/kept").catch(() => null);
+  if (response !== null && response.ok) {
+    const kept = await response.json();
+    element("upload-fate", HTMLElement).textContent = uploadFate(kept.uploads === true);
+  }
+}
+
+/**
  * Wire the upload form: check the file, make the job with the invite code, send the file to
  * the link the server signed, confirm it, and go to the job's status page.
  */
@@ -133,3 +145,4 @@ function main() {
 }
 
 main();
+void showFate();
