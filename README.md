@@ -3,7 +3,7 @@
 A learning ladder for visual SLAM, from first-principles geometry to learned dense SLAM,
 implemented in Python, C++ and Rust and measured across compute budgets.
 
-*A pun on "damn it all!": `slam_it` in code, `slam-it` for the repository.*
+*A codebase for a SLAM pipeline in three languages.*
 
 Status: milestones 1 and 2 are complete. Rung 0, the foundations, has the geometry, bundle
 adjustment, two-view geometry and absolute pose in Python, C++ and Rust. On it, the edge rung's

@@ -6,10 +6,15 @@ with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
 ## [0.3.7.0] - 2026-10-12
 
-The project is renamed SLAM It!, from SLAM It All!: shorter, easier to remember, and what the
-demo does to a video. The rename is a clean break with no alias. Nothing behaves differently:
-the room's runs in all three languages still match their golden record, which the rename did
-not touch; only the formats' names differ.
+The project is renamed from SLAM It All! to SLAM It!, which is shorter, easier to remember, and what
+the demo does to a video. The rename is a clean break with no alias. Nothing computes differently:
+the room's runs in all three languages still match their golden record, which the rename did not
+touch, and runs before and after on TUM fr1/desk (RGB-D, 133 frames, and monocular, 150) and EuRoC
+MH_01 (stereo, 200) in all three languages are identical file for file, features and lifetimes
+included, but for the measured timings and peak memory and `run.json`'s format name. Every name
+differs, though: the formats', the environment variables' (a deployment sets the new `SLAM_IT_*`
+ones), the modules' and crates', the images', and the demo's default folder's (one of the old name
+is not read).
 
 ### Changed
 

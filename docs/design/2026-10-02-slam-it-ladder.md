@@ -574,9 +574,10 @@ first in NLS and BA. Milestone 6 builds the second and compares the two on the s
   ```
 
 - **Packaging.** During development, reifyscene installs `slam-it` editable from the sibling
-  folder. reifyscene's `pyproject.toml` has a `slam` extra pinned to a SLAM It! git tag. The two
-  change in lockstep: when SLAM It!'s API changes, the adapter changes with it and the pin
-  moves.
+  folder. reifyscene's `pyproject.toml` has a `slam` extra pinned to a SLAM It! git tag, by a
+  direct git reference, so that no package of the same name on PyPI can stand in for it; the
+  earliest tag it can name is v0.3.7.0, the first that ships `slam_it`. The two change in
+  lockstep: when SLAM It!'s API changes, the adapter changes with it and the pin moves.
 - **Yardsticks are split.** SLAM It! benchmarks on standard SLAM datasets. reifyscene-specific
   yardsticks stay in reifyscene: spin GT poses, `probe_depth_consistency.py` (dataset geometry
   95/84/74%, single-pass VGGT 50/30/17%), and lab-coat and spin masked PSNR.
@@ -751,7 +752,9 @@ Nothing is published before the repo goes public (see
   with SLAMLab, the University of Zaragoza group behind ORB-SLAM3, and with `slamlab` on PyPI,
   and became SLAM It All! (a pun on "damn it all!") in 0.3.4.0. In 0.3.7.0 it was shortened to
   SLAM It!, easier to remember, and what the demo does to a video: `slam_it` in code, `slam-it`
-  for the repository, the distributions, the crates and the conda env.
+  for the repository, the distributions, the crates and the conda env. `slam-it`, `slam_it` and
+  `slamit` were free on PyPI and crates.io, and `evan-wes/slam-it` on GitHub, when checked on
+  2026-10-12.
 
 ## Environment
 
@@ -939,6 +942,16 @@ shared with the owner's other projects.
     judges mapping by its load, as a thread of its own would run it. A real mapping thread, and
     ORB-SLAM's interruption of a local BA when a keyframe arrives, belong with the edge
     targets' budgets, where keyframe bursts would otherwise delay frames.
+- **Deferred from the SLAM It! rename's review panel**
+  ([report](../reviews/2026-10-12-chore-rename-slam-it.md)):
+  - **The images' names held by a test (A3).** No test reads `docker/`: a setting a Dockerfile or
+    the entrypoint names, or a module it runs, could drift from the code's unseen until a
+    deploy, and nothing holds the worker's token variable to the server's. A test that checks
+    each `SLAM_IT_*` name in `docker/` against one the code reads, imports each `python -m`
+    module, and holds `worker.TOKEN_VARIABLE` to the server's settings.
+  - **The programs' summary lines alike (L2).** Python's prints the final map's keyframes and
+    points, C++'s and Rust's every one the run made, so the backends seem to disagree where
+    their runs agree: all three print the same, or both.
 - **Deferred from PR 11's review panel**
   ([report](../reviews/2026-10-11-feature-your-own-video.md),
   [security pass](../reviews/2026-10-11-feature-your-own-video-security.md)):

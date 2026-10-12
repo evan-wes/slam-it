@@ -49,8 +49,8 @@ Read it before writing geometry code or a binding.
 
 **The project's name** is SLAM It! in prose. Code uses `slam_it` (the Python package,
 the C++ namespace, libraries and programs, the extension modules); everything else uses
-`slam-it` (the distribution, the Rust crates, the conda envs, the repository); macros and
-CMake options use `SLAM_IT_`, and types `SlamIt`.
+`slam-it` (the distribution, the Rust crates, the conda envs, the repository); macros, CMake
+options and environment variables use `SLAM_IT_`, and types `SlamIt`.
 
 ## Layout: one package per rung, mirrored in every language
 
