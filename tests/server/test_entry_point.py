@@ -62,6 +62,17 @@ def test_a_job_list_of_another_format_ends_it_with_code_2(
     assert f"{database}: a job list of format 0" in capsys.readouterr().err
 
 
+def test_a_viewer_without_its_page_ends_it_with_code_2_before_the_job_list_is_made(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A wrong SLAM_IT_ALL_VIEWER: named, exit 2, and no job list made."""
+    settings = replace(make_settings(tmp_path), viewer=tmp_path / "no-viewer")
+    monkeypatch.setattr(entry, "from_environment", lambda: settings)
+    assert entry.main([]) == 2
+    assert "SLAM_IT_ALL_VIEWER" in capsys.readouterr().err
+    assert not settings.database.exists()
+
+
 def _claim(url: str) -> None:
     """Hold a worker's claim open for up to 30 s."""
     request = urllib.request.Request(

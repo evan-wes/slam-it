@@ -24,8 +24,9 @@ token checked on every request.
 - the size cap, checked against the declared size and signed into the upload link;
 - one job worked on at a time, and :data:`~slam_it_all_server.config.QUEUE` open at most;
 - an upload moved, once confirmed, where its owner's link cannot reach it, and deleted once
-  its import ends; whatever the link may write later is deleted when the job ends, and again
-  once an upload begun in time could have arrived (:data:`~slam_it_all_server.config.UPLOAD_GRACE`);
+  its import ends; whatever a job's links may write later is deleted when it ends, and again
+  once every link it signed has expired and an upload begun in time could have arrived
+  (:data:`~slam_it_all_server.config.UPLOAD_GRACE`);
 - every job deleted :data:`~slam_it_all_server.config.RETENTION` after it ends, its files
   first, so that a deletion that fails is tried again (:func:`sweep`);
 - at most :data:`slam_it_all_server.jobs.CODE_JOBS` jobs open per invite code;
@@ -183,8 +184,10 @@ def sweep(job_list: Jobs, store: Storage) -> int:
 
 
 def _close_link(job_list: Jobs, store: Storage, job: Job) -> None:
-    """Delete whatever a job's upload link wrote, its grace over, then record it."""
+    """Delete whatever an ended job's links wrote, their grace over, then record it."""
     store.delete(upload_key(job.id))
+    if job.state != "done":  # a result link of a job that failed may have written since
+        store.delete_prefix(result_prefix(job.id))
     job_list.close_link(job.id)
 
 
@@ -285,11 +288,11 @@ def _staging_allows(request: Request, settings: Settings) -> bool:
 def content_policy(viewer: Path, store: Storage) -> str:
     """Return the pages' Content Security Policy.
 
-    Scripts come from this site, the CDN three.js is on, and the inline import maps of the
-    viewer's ``index.html``, each allowed by its hash; styles from this site and Google Fonts;
-    media from this site and the visitor's own chosen file (``blob:``); connections go to this
-    site and to storage's own origin (the bucket, for the uploads and a bundle's redirected
-    files); nothing may frame the pages.
+    Scripts come from this site, three.js's path on its CDN (:data:`CDN`), and the inline import
+    maps of the viewer's ``index.html``, each allowed by its hash; styles from this site and
+    Google Fonts; media from this site and the visitor's own chosen file (``blob:``);
+    connections go to this site and to storage's own origin (the bucket, for the uploads and a
+    bundle's redirected files); nothing may frame the pages.
 
     Parameters
     ----------
@@ -302,22 +305,60 @@ def content_policy(viewer: Path, store: Storage) -> str:
     -------
     str
         The policy.
+
+    Raises
+    ------
+    slam_it_all_server.config.SettingsError
+        If the viewer has no ``index.html``, or an import map the policy cannot read
+        (:func:`import_maps`).
+    """
+    return _policy(import_maps(viewer), store)
+
+
+def import_maps(viewer: Path) -> list[str]:
+    """Return the CSP sources of the viewer page's inline import maps, by their hashes.
+
+    Parameters
+    ----------
+    viewer : pathlib.Path
+        The viewer's folder (``SLAM_IT_ALL_VIEWER``).
+
+    Returns
+    -------
+    list of str
+        Each map's ``'sha256-...'`` source.
+
+    Raises
+    ------
+    slam_it_all_server.config.SettingsError
+        If the folder has no ``index.html``, or an import map not written as
+        ``<script type="importmap">``: the policy would allow none, and the viewer would break
+        in the browser alone.
     """
     index = viewer / "index.html"
-    if not index.is_file():  # the policy would allow no import map, and the viewer would break
-        raise FileNotFoundError(f"{index}: the run viewer's page, whose import map it allows")
+    if not index.is_file():
+        raise config.SettingsError(
+            f"SLAM_IT_ALL_VIEWER: {index} is not there, the run viewer's page"
+        )
     text = index.read_text()
     maps = re.findall(r'<script type="importmap">(.*?)</script>', text, re.DOTALL)
     if "importmap" in text and not maps:
-        raise ValueError(f'{index}: an import map not written as <script type="importmap">')
-    hashes = [
+        written = '<script type="importmap">'
+        raise config.SettingsError(
+            f"SLAM_IT_ALL_VIEWER: {index} has an import map not written as {written}"
+        )
+    return [
         "'sha256-" + base64.b64encode(hashlib.sha256(m.encode()).digest()).decode() + "'"
         for m in maps
     ]
+
+
+def _policy(maps: list[str], store: Storage) -> str:
+    """Return the Content Security Policy for the import maps' sources and a store."""
     return "; ".join(
         [
             "default-src 'self'",
-            " ".join(["script-src 'self'", CDN, *hashes]),
+            " ".join(["script-src 'self'", CDN, *maps]),
             "style-src 'self' https://fonts.googleapis.com",
             "font-src https://fonts.gstatic.com",
             "img-src 'self' blob: data:",
@@ -390,7 +431,15 @@ def make_app(
     -------
     fastapi.FastAPI
         The app.
+
+    Raises
+    ------
+    slam_it_all_server.config.SettingsError
+        If the viewer cannot be served (:func:`import_maps`), before anything is made.
+    slam_it_all_server.jobs.SchemaError
+        If the job list is of another format.
     """
+    maps = import_maps(settings.viewer)  # a viewer without its page is refused first
     server = _Server(
         settings,
         make_storage(settings) if store is None else store,
@@ -414,7 +463,7 @@ def make_app(
         task.cancel()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
-    headers = {**_HEADERS, "Content-Security-Policy": content_policy(settings.viewer, server.store)}
+    headers = {**_HEADERS, "Content-Security-Policy": _policy(maps, server.store)}
 
     @app.middleware("http")
     async def guard(

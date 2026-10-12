@@ -9,7 +9,14 @@ import pytest
 
 from slam_it_all.orchestration import worker
 from slam_it_all_server import jobs
-from slam_it_all_server.config import QUEUE, RETENTION, SILENCE, UPLOAD_GRACE, UPLOAD_WAIT
+from slam_it_all_server.config import (
+    LINK_SECONDS,
+    QUEUE,
+    RETENTION,
+    SILENCE,
+    UPLOAD_GRACE,
+    UPLOAD_WAIT,
+)
 from slam_it_all_server.jobs import CODE_JOBS, QUEUE_WAIT, SCHEMA_VERSION, Jobs, SchemaError
 from tests.server.conftest import Clock
 
@@ -176,22 +183,24 @@ def test_a_queued_job_waits_a_day_for_a_worker(listed: Jobs, clock: Clock) -> No
     ]
 
 
-def test_an_upload_link_is_closed_once_its_grace_is_over(listed: Jobs, clock: Clock) -> None:
-    """A job past waiting has its link's writes to clear a last time, once, its grace over.
+def test_a_jobs_links_are_closed_once_every_one_has_expired(listed: Jobs, clock: Clock) -> None:
+    """An ended job's links' writes are to clear a last time, once.
 
-    That is UPLOAD_GRACE after the link expired: an upload begun in time may still be arriving
-    until then.
+    That is LINK_SECONDS after it ended, when every link it signed has expired, and
+    UPLOAD_GRACE more, for an upload begun before then to arrive. A job not ended never is.
     """
+    assert LINK_SECONDS >= UPLOAD_WAIT  # the owner's link expires first
     waiting = listed.create("video", 1, "owner-a")
     queued = _queued(listed, "owner-b")
     clock.now += UPLOAD_WAIT
     listed.end_overdue()  # the waiting one expires with its link
-    clock.now += UPLOAD_GRACE - 1
+    clock.now += LINK_SECONDS + UPLOAD_GRACE - 1
     assert listed.links_to_close() == []
     clock.now += 1
-    assert {j.id for j in listed.links_to_close()} == {waiting.id, queued.id}
-    listed.close_link(queued.id)
-    assert [j.id for j in listed.links_to_close()] == [waiting.id]
+    assert [j.id for j in listed.links_to_close()] == [waiting.id]  # the queued one runs on
+    listed.close_link(waiting.id)
+    assert listed.links_to_close() == []
+    assert listed.by_id(queued.id) is not None
 
 
 def test_a_job_list_of_another_format_is_refused(tmp_path: Path) -> None:
@@ -212,6 +221,54 @@ def test_a_job_list_of_another_format_is_refused(tmp_path: Path) -> None:
         message = f"format {version}, this server's is {SCHEMA_VERSION}"
         with pytest.raises(SchemaError, match=message):
             Jobs(old)
+
+
+def test_another_programs_file_is_refused_and_left_as_it_is(tmp_path: Path) -> None:
+    """A SQLite file with tables but no job list: refused, never adopted (no table, no WAL)."""
+    other = tmp_path / "notes.sqlite3"
+    made = sqlite3.connect(other)
+    made.execute("CREATE TABLE notes (text TEXT)")
+    made.commit()
+    made.close()
+    with pytest.raises(SchemaError, match="not a job list"):
+        Jobs(other)
+    found = sqlite3.connect(other)
+    tables = [
+        row[0] for row in found.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    ]
+    mode = found.execute("PRAGMA journal_mode").fetchone()[0]
+    found.close()
+    assert (tables, mode) == (["notes"], "delete")
+
+
+FORMAT_1 = [
+    ("id", "TEXT", 0, None, 1),
+    ("token", "TEXT", 1, None, 0),
+    ("owner", "TEXT", 1, None, 0),
+    ("kind", "TEXT", 1, None, 0),
+    ("upload", "TEXT", 1, None, 0),
+    ("size", "INTEGER", 1, None, 0),
+    ("state", "TEXT", 1, None, 0),
+    ("created", "REAL", 1, None, 0),
+    ("heard", "REAL", 1, None, 0),
+    ("expires", "REAL", 1, None, 0),
+    ("reason", "TEXT", 0, None, 0),
+    ("summary", "TEXT", 0, None, 0),
+    ("files", "TEXT", 1, "'{}'", 0),
+    ("link_open", "INTEGER", 1, "1", 0),
+    ("files_open", "INTEGER", 1, "1", 0),
+]
+"""Format 1's columns, as SQLite's ``table_info`` lists them: name, type, not null, default,
+primary key."""
+
+
+def test_the_job_lists_columns_are_its_formats(tmp_path: Path) -> None:
+    """A change to the table must come with a new SCHEMA_VERSION, and its columns here."""
+    Jobs(tmp_path / "jobs.sqlite3")
+    made = sqlite3.connect(tmp_path / "jobs.sqlite3")
+    columns = [tuple(row[1:]) for row in made.execute("PRAGMA table_info(jobs)")]
+    made.close()
+    assert (SCHEMA_VERSION, columns) == (1, FORMAT_1)
 
 
 def test_an_ended_jobs_files_are_cleared_then_it_is_deleted(listed: Jobs, clock: Clock) -> None:

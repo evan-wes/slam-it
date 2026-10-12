@@ -19,11 +19,12 @@ docs/design/2026-10-09-run-viewer.md, section 5.3. A job's life::
 **A job's files go before it does** (the server's sweep, :func:`slam_it_all_server.app.sweep`).
 Two flags say what is still to be cleared: ``files_open``, until its upload, the upload's
 copy, and a result that will never be done, are deleted once it has ended; and ``link_open``,
-until whatever its owner's upload link may have written is deleted once more, once the job is
-past waiting and an upload begun before the link expired has had
-:data:`~slam_it_all_server.config.UPLOAD_GRACE` to arrive (a link is checked when an
-upload starts, not when it ends). A job is deleted only after the rest of its files, so a
-deletion that fails leaves the job listed for the next sweep to try again.
+until whatever any of its links may have written is deleted once more: when every link it
+signed has expired (by :data:`~slam_it_all_server.config.LINK_SECONDS` after it ended) and an
+upload begun before then has had :data:`~slam_it_all_server.config.UPLOAD_GRACE` to arrive,
+since a link is checked when an upload starts, not when it ends. A job is deleted only after
+the rest of its files, so a deletion that fails leaves the job listed for the next sweep to try
+again.
 
 **An invite code** opens at most :data:`CODE_JOBS` jobs at a time. A job keeps the code's keyed
 hash, its ``owner``, never the code.
@@ -34,7 +35,7 @@ use, and its ``token``, the owner's 128-bit link. A worker never learns a job's 
 **Reads take no lock:** the file is in WAL mode, so a status read never waits on a change.
 
 **The file keeps its format** (:data:`SCHEMA_VERSION`, SQLite's ``user_version``): a file of
-another is refused when the list is opened, never migrated.
+another, or another program's, is refused when the list is opened, never migrated or adopted.
 """
 
 from __future__ import annotations
@@ -49,7 +50,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from slam_it_all_server.config import QUEUE, RETENTION, SILENCE, UPLOAD_GRACE, UPLOAD_WAIT
+from slam_it_all_server.config import (
+    LINK_SECONDS,
+    QUEUE,
+    RETENTION,
+    SILENCE,
+    UPLOAD_GRACE,
+    UPLOAD_WAIT,
+)
 
 STAGES = ("downloading", "importing", "running", "baking", "uploading")
 """The worker's stages, in order (``slam_it_all.orchestration.worker.STAGES``; a test keeps the
@@ -205,6 +213,12 @@ class Jobs:
         """Open the list in WAL mode, making it if it is new, refusing one of another format."""
         self.path, self.clock = path, clock
         path.parent.mkdir(parents=True, exist_ok=True)
+        with self._connected() as db:
+            tables = {
+                row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+        if tables and "jobs" not in tables:  # another program's file: left as it is
+            raise SchemaError(f"{path}: not a job list (it holds other tables): name another file")
         with self._connected() as db:
             db.execute("PRAGMA journal_mode=WAL")
         with self._changing() as db:
@@ -444,21 +458,23 @@ class Jobs:
         return ended
 
     def links_to_close(self) -> list[Job]:
-        """Return the jobs past waiting whose link's writes are to clear a last time.
+        """Return the ended jobs whose links' writes are to clear a last time.
 
-        Their link has expired, and an upload begun before then has had
+        Every link they signed has expired (their owner's, UPLOAD_WAIT after it was made; the
+        worker's, :data:`~slam_it_all_server.config.LINK_SECONDS` after they were signed,
+        before it ended), and an upload begun before then has had
         :data:`~slam_it_all_server.config.UPLOAD_GRACE` to arrive.
         """
-        cutoff = self.clock() - UPLOAD_WAIT - UPLOAD_GRACE
-        return self._all("link_open = 1 AND state != 'waiting' AND created <= ?", cutoff)
+        cutoff = self.clock() - LINK_SECONDS - UPLOAD_GRACE
+        return self._all(f"link_open = 1 AND state IN ({_ENDED}) AND heard <= ?", cutoff)
 
     def close_link(self, job_id: str) -> None:
-        """Record that whatever a job's upload link wrote is deleted."""
+        """Record that whatever a job's links wrote is deleted a last time."""
         with self._changing() as db:
             db.execute("UPDATE jobs SET link_open = 0 WHERE id = ?", (job_id,))
 
     def files_to_clear(self) -> list[Job]:
-        """Return the ended jobs whose upload's copy, or unfinished result, is not cleared."""
+        """Return the ended jobs whose upload, its copy, or unfinished result is not cleared."""
         return self._all(f"files_open = 1 AND state IN ({_ENDED})")
 
     def clear_files(self, job_id: str) -> None:

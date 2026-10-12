@@ -17,12 +17,14 @@ from fastapi.testclient import TestClient
 from slam_it_all_server import app as server_app
 from slam_it_all_server import jobs
 from slam_it_all_server.config import (
+    LINK_SECONDS,
     MAX_BYTES,
     QUEUE,
     RETENTION,
     SILENCE,
     UPLOAD_GRACE,
     UPLOAD_WAIT,
+    SettingsError,
 )
 from slam_it_all_server.storage import FolderStorage
 from tests.server.conftest import CODE, CODES, TOKEN, VIEWER, WORKER, Clock, Server
@@ -317,7 +319,8 @@ def test_an_upload_that_lands_after_its_link_expired_is_deleted(server: Server) 
     """An upload begun in time but arriving after its link expired is deleted, its grace over.
 
     S3 checks a link when a request starts, so such a file can land after its job has ended
-    and its files were cleared: the sweep deletes it once UPLOAD_GRACE is over.
+    and its files were cleared: the sweep deletes it once every link the job signed has
+    expired (LINK_SECONDS after it ended) and UPLOAD_GRACE has passed.
     """
     job = _make(server)
     server.clock.now += UPLOAD_WAIT
@@ -326,7 +329,7 @@ def test_an_upload_that_lands_after_its_link_expired_is_deleted(server: Server) 
     late = server.store.path(f"uploads/{_job_id(job)}")
     late.parent.mkdir(parents=True, exist_ok=True)
     late.write_bytes(UPLOAD)  # as a PUT the bucket let start in time would, now
-    server.clock.now += UPLOAD_GRACE - 1
+    server.clock.now += LINK_SECONDS + UPLOAD_GRACE - 1
     assert server_app.sweep(server.jobs, server.store) == 0
     assert late.is_file()
     server.clock.now += 1
@@ -334,26 +337,53 @@ def test_an_upload_that_lands_after_its_link_expired_is_deleted(server: Server) 
     assert not late.exists()
 
 
-class _Ticking(Clock):
-    """A clock that moves on by `step` each time it is read."""
-
-    step: float = 0.0
-
-    def __call__(self) -> float:
-        """Return the time, then move on."""
-        now = self.now
-        self.now += self.step
-        return now
+def _uploading(server: Server) -> tuple[dict[str, str], dict[str, str]]:
+    """Queue and claim a job, and get a link for one result file; return the claim and links."""
+    _queued(server)
+    claimed = _claim(server)
+    listed = [{"path": "a.npy", "bytes": 1}]
+    urls = _report(server, claimed["job"], "files", {"files": listed}).json()["urls"]
+    return claimed, dict(urls)
 
 
-def test_folder_storage_keeps_no_upload_whole_only_after_its_link_expired(server: Server) -> None:
-    """A PUT whose link held when it started but had expired by its end: refused, none kept."""
-    clock = _Ticking()
+def test_a_result_written_after_its_job_failed_is_deleted(server: Server) -> None:
+    """A result link still writing after its job failed: deleted again, its grace over.
+
+    The worker's links last LINK_SECONDS; a job failed for silence while its worker uploads
+    has its result cleared, and what the links write after is cleared again later. A done
+    job's result is kept.
+    """
+    _, urls = _uploading(server)
+    server.clock.now += SILENCE
+    assert server_app.sweep(server.jobs, server.store) == 0  # failed, its result cleared
+    assert server.client.put(urls["a.npy"], content=b"a").status_code == 200  # the link holds
+    assert len(list(server.store.root.rglob("*.npy"))) == 1
+    server.clock.now += LINK_SECONDS + UPLOAD_GRACE
+    assert server_app.sweep(server.jobs, server.store) == 0
+    assert list(server.store.root.rglob("*.npy")) == []
+    _, kept = _run(server, {"bundle.json": b"{}"})
+    server.clock.now += LINK_SECONDS + UPLOAD_GRACE
+    assert server_app.sweep(server.jobs, server.store) == 0
+    assert (server.store.root / "results" / kept["job"] / "bundle.json").is_file()
+
+
+def test_a_put_that_outlives_its_link_is_refused_and_not_kept(server: Server) -> None:
+    """A PUT whose link held when it started but had expired by its end: refused, none kept.
+
+    The clock moves past the link's expiry while the body is read, between its two halves.
+    """
+    clock = Clock()
     store = FolderStorage(server.store.root, server.store.public_url, server.store.key, clock)
     client = TestClient(server_app.make_app(server.settings, store, server.jobs))
     link = store.upload_link("uploads/late", len(UPLOAD), 10)
-    clock.step = 11.0  # read when the link is checked, then again when the upload has arrived
-    answer = client.put(link, content=UPLOAD)
+    half = len(UPLOAD) // 2
+
+    def body() -> Iterator[bytes]:
+        yield UPLOAD[:half]
+        clock.now += 11.0  # the link has expired; the rest arrives after
+        yield UPLOAD[half:]
+
+    answer = client.put(link, content=body(), headers={"Content-Length": str(len(UPLOAD))})
     assert (answer.status_code, answer.json()["detail"]) == (
         403,
         "the link expired before the upload arrived whole",
@@ -551,10 +581,7 @@ def test_staging_puts_every_page_behind_a_code(server: Server, staging: TestClie
 
 def test_a_job_the_sweep_ends_keeps_none_of_its_files(server: Server) -> None:
     """A worker gone silent: the sweep fails its job, then deletes its upload and result."""
-    _queued(server)
-    claimed = _claim(server)
-    listed = [{"path": "a.npy", "bytes": 1}]
-    urls = _report(server, claimed["job"], "files", {"files": listed}).json()["urls"]
+    claimed, urls = _uploading(server)
     server.client.put(urls["a.npy"], content=b"a")
     assert len(list(server.store.root.glob("imports/*"))) == 1
     server.clock.now += SILENCE
@@ -606,8 +633,8 @@ def test_a_viewer_whose_import_map_cannot_be_read_stops_the_server(tmp_path: Pat
     Not found later by a browser that cannot load the viewer.
     """
     store = FolderStorage(tmp_path / "files", "http://testserver", b"k" * 32)
-    with pytest.raises(FileNotFoundError, match=r"index\.html"):
+    with pytest.raises(SettingsError, match=r"SLAM_IT_ALL_VIEWER: .*index\.html is not there"):
         server_app.content_policy(tmp_path, store)
     (tmp_path / "index.html").write_text('<script type="importmap" nonce="x">{}</script>')
-    with pytest.raises(ValueError, match="an import map not written as"):
+    with pytest.raises(SettingsError, match="an import map not written as"):
         server_app.content_policy(tmp_path, store)

@@ -71,6 +71,13 @@ def server_config(settings: Settings) -> uvicorn.Config:
     -------
     uvicorn.Config
         The configuration.
+
+    Raises
+    ------
+    slam_it_all_server.config.SettingsError
+        If the viewer cannot be served.
+    slam_it_all_server.jobs.SchemaError
+        If the job list is not this server's.
     """
     return uvicorn.Config(
         make_app(settings),

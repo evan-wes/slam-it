@@ -48,7 +48,7 @@ def test_the_heartbeat_is_well_inside_the_silence() -> None:
 
 
 def test_a_stalled_transfer_ends_before_the_server_gives_up() -> None:
-    """A stalled upload or download sends no heartbeat: it fails within SILENCE less one."""
+    """A stalled upload or download sends no heartbeat: it fails in SILENCE less a heartbeat."""
     assert worker.UPLOAD_TIMEOUT + worker.HEARTBEAT <= config.SILENCE
     assert worker.REQUEST_TIMEOUT + worker.HEARTBEAT <= config.SILENCE
 
