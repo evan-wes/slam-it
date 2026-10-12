@@ -43,6 +43,9 @@ dev = [
   "poselib>=2.0.5",
   # Visualisation for the demos (never imported by the library).
   "rerun-sdk>=0.38",
+  # The upload demo's QR code of its page's address (scripts/serve_demo.py; never imported by
+  # the library).
+  "segno>=1.6",
   # Test-only oracle for the front end's image operations, and the reference the demos
   # compare against (never imported by the library; a contract forbids cv2 in slam_it_all).
   "opencv-python-headless>=5.0",

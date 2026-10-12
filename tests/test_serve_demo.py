@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -14,6 +15,8 @@ import urllib.request
 from pathlib import Path
 from types import ModuleType
 
+import cv2
+import numpy as np
 import pytest
 
 from slam_it_all_server.config import from_environment
@@ -99,11 +102,39 @@ def test_the_demo_serves_until_interrupted(tmp_path: Path) -> None:
             demo.kill()
     assert demo.returncode == 0
     assert f"Open http://127.0.0.1:{port}/  invite code: a-demo-invite-code" in out
+    assert "\x1b[30;47m" not in out  # no QR code: a phone cannot reach 127.0.0.1
     assert (tmp_path / "jobs.sqlite3").is_file()
     with socket.socket() as probe:  # nothing listens on it any more
         probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         probe.bind(("127.0.0.1", port))
         probe.listen()
+
+
+_MODULES = {
+    " ": (False, False),
+    "\u2580": (True, False),
+    "\u2584": (False, True),
+    "\u2588": (True, True),
+}
+"""Each character the QR code is drawn with, as its upper and lower module, dark or light."""
+
+
+def test_the_qr_code_scans_as_the_pages_address() -> None:
+    """Drawn back from its characters, the code the demo prints reads, to OpenCV, as the address.
+
+    Each line is black on white, so the code reads the same on a dark terminal and a light one.
+    """
+    url = "http://192.168.1.20:8770/"
+    lines = _script().qr_code(url).splitlines()
+    assert all(line.startswith("\x1b[30;47m") and line.endswith("\x1b[0m") for line in lines)
+    cells = [re.sub(r"\x1b\[[0-9;]*m", "", line) for line in lines]
+    rows = [[_MODULES[c][half] for c in line] for line in cells for half in (0, 1)]
+    image = np.where(np.kron(np.array(rows), np.ones((8, 8), dtype=bool)), 0, 255).astype(np.uint8)
+    # OpenCV's detector finds no code at an image's edge, whatever its quiet zone: a camera sees
+    # the terminal around it, so a white margin stands in for that.
+    framed = cv2.copyMakeBorder(image, 40, 40, 40, 40, cv2.BORDER_CONSTANT, value=255)
+    found, _, _ = cv2.QRCodeDetector().detectAndDecode(framed)
+    assert found == url
 
 
 class _Process:

@@ -151,12 +151,13 @@ pages, its stylesheet and its modules.
 
 ## Running it
 
-**On this machine:** `python scripts/serve_demo.py` runs the server, with a folder as storage,
-and one worker, and prints the page's address and a new invite code. With `--lan` it listens on
-the local network too, so a phone on the same Wi-Fi can upload, and every page then asks for the
-code (any name, the code as the password). Everything goes in one folder (`--data`, by default a
-new temporary one). Ctrl-C, or a SIGTERM, stops the server and the worker together, and the
-server stops if the worker does.
+**On this machine:** `python scripts/serve_demo.py` runs the server, with a folder as storage, and
+one worker, and prints the page's address and a new invite code. With `--lan` it listens on the
+local network too, so a phone on the same Wi-Fi can upload, and every page then asks for the code
+(any name, the code as the password); the page's address is printed as a QR code too, for the
+phone's camera, black on white whatever the terminal's colours. Everything goes in one folder
+(`--data`, by default a new temporary one). Ctrl-C, or a SIGTERM, stops the server and the worker
+together, and the server stops if the worker does.
 
 **The images** build from the repository's root:
 
@@ -209,9 +210,9 @@ its own Yes, and the domain waits for the go-live call.
 
 Before showing it in person:
 - run `python scripts/serve_demo.py --lan` on the laptop, on a network you trust (a phone's
-  hotspot rather than a café's Wi-Fi: the demo is plain HTTP), open the printed address on a
-  phone, give the code as the password, and upload a short clip of the room through to the
-  viewer;
+  hotspot rather than a café's Wi-Fi: the demo is plain HTTP), scan the printed QR code (or open
+  the printed address) on a phone, give the code as the password, and upload a short clip of the
+  room through to the viewer;
 - keep a baked bundle at hand (`scripts/view_bundle.py`) in case the network fails;
 - give the invite code to whoever records.
 

@@ -59,7 +59,8 @@ what they changed is in the entries below (`docs/reviews/2026-10-11-feature-your
 - **The images** (`docker/server.Dockerfile`, which drops root at once for good, and
   `docker/worker.Dockerfile`, with tini) and **`scripts/serve_demo.py`**, which runs the server
   and a worker on this machine, on the local network with `--lan`, every page then behind the
-  code.
+  code and the page's address printed as a QR code for a phone's camera (segno, in the `dev`
+  extra and the lock).
 - **A design note**, `docs/notes/your-own-video.md`, with the staging and demo checklists.
 
 ### Changed

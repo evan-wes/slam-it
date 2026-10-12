@@ -7,9 +7,10 @@ run; the invite code is too, unless given, and is printed with the page's addres
 
 With ``--lan`` the server listens on every interface, and its links use this machine's address
 on the local network, so a phone on the same Wi-Fi can open the page and upload. Every page then
-asks for the invite code (HTTP Basic auth: any name, the code as the password), as staging does.
-Ctrl-C, or a SIGTERM, stops the server and the worker together, and the server stops if the
-worker does. The worker inherits only what it needs of this shell's environment.
+asks for the invite code (HTTP Basic auth: any name, the code as the password), as staging does,
+and the page's address is printed as a QR code too, for a phone's camera. Ctrl-C, or a SIGTERM,
+stops the server and the worker together, and the server stops if the worker does. The worker
+inherits only what it needs of this shell's environment.
 
 Example::
 
@@ -32,6 +33,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import segno
+
 from slam_it_all.orchestration import worker as worker_module
 
 REPO = Path(__file__).resolve().parent.parent
@@ -42,6 +45,46 @@ STOP_WAIT = 10.0
 
 PORT = 8770
 """The port the server listens on, by default."""
+
+
+QR_BORDER = 4
+"""The light margin around the QR code, in modules: the four the standard asks for."""
+
+_HALF_BLOCKS = {
+    (False, False): " ",
+    (True, False): "\u2580",
+    (False, True): "\u2584",
+    (True, True): "\u2588",
+}
+"""A character for two modules, the upper and the lower, each dark (True) or light."""
+
+
+def qr_code(url: str) -> str:
+    """Return a QR code of a URL, drawn for a terminal: two rows of modules a line.
+
+    Black on white by ANSI colours, whatever the terminal's own, since a code drawn in its
+    foreground colour reads inverted on a dark theme, which not every phone's camera scans.
+
+    Parameters
+    ----------
+    url : str
+        What the code holds.
+
+    Returns
+    -------
+    str
+        The lines, each in black on white and reset at its end.
+    """
+    rows = [
+        [bool(module) for module in row] for row in segno.make(url).matrix_iter(border=QR_BORDER)
+    ]
+    if len(rows) % 2:
+        rows.append([False] * len(rows[0]))
+    lines = []
+    for upper, lower in zip(rows[::2], rows[1::2], strict=True):
+        cells = "".join(_HALF_BLOCKS[pair] for pair in zip(upper, lower, strict=True))
+        lines.append(f"\x1b[30;47m{cells}\x1b[0m")
+    return "\n".join(lines)
 
 
 def lan_address() -> str:
@@ -188,6 +231,8 @@ def main(arguments: list[str]) -> int:
             env={**inherited, **token},
         )
         print(f"\nOpen {url}/  invite code: {code}\nEverything is kept in {data}\n", flush=True)
+        if args.lan:  # a phone on the same network can open the page from its camera
+            print(f"{qr_code(f'{url}/')}\n", flush=True)
         return watch(server, worker)
     except KeyboardInterrupt:
         return 0
