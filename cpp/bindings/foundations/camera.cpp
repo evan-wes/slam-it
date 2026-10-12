@@ -1,6 +1,6 @@
 /// @file
-/// @brief Bindings for `slam_it_all.foundations.camera` (`slam_it_all._cpp.foundations.camera`).
-#include "slam_it_all/foundations/camera.hpp"
+/// @brief Bindings for `slam_it.foundations.camera` (`slam_it._cpp.foundations.camera`).
+#include "slam_it/foundations/camera.hpp"
 
 #include <nanobind/nanobind.h>
 
@@ -12,7 +12,7 @@
 
 namespace nb = nanobind;
 
-namespace slam_it_all::bindings {
+namespace slam_it::bindings {
 
 namespace {
 
@@ -105,4 +105,4 @@ void bind_camera(nb::module_& m) {
         nb::arg("pixels").noconvert(), "Map (N, 2) pixels to (N, 3) unit bearing vectors.");
 }
 
-}  // namespace slam_it_all::bindings
+}  // namespace slam_it::bindings

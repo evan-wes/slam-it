@@ -1,8 +1,8 @@
 /// @file
-/// @brief The `slam_it_all._cpp.edge` submodule: wires the edge rung's bound modules.
+/// @brief The `slam_it._cpp.edge` submodule: wires the edge rung's bound modules.
 #include "edge/edge.hpp"
 
-namespace slam_it_all::bindings {
+namespace slam_it::bindings {
 
 void bind_edge(nanobind::module_& parent) {
   nanobind::module_ edge = parent.def_submodule("edge", "The edge rung: sparse VO.");
@@ -23,4 +23,4 @@ void bind_edge(nanobind::module_& parent) {
   bind_mapping(mapping);
 }
 
-}  // namespace slam_it_all::bindings
+}  // namespace slam_it::bindings

@@ -1,7 +1,7 @@
 # Real time on a laptop-class CPU: the budget harness, and where the time went
 
-Design note for `slam_it_all.eval.budgets`, the per-step times in the run format, Python's
-program (`python -m slam_it_all.orchestration.vo`), and the speed-ups in rung 0
+Design note for `slam_it.eval.budgets`, the per-step times in the run format, Python's
+program (`python -m slam_it.orchestration.vo`), and the speed-ups in rung 0
 (`foundations.image`, `foundations.orb`, `foundations.stereo`, `foundations.ba`, Rust's 3x3 SVD) and
 the edge rung's frames. The plan was the ladder's PR 9 row; its three rules were decided with the
 owner on 2026-10-07. This note is what was built, where the time went, and how the C++ and Rust
@@ -44,13 +44,13 @@ follow (decided 2026-10-07):
 
 ## The harness
 
-Each frame's diagnostics now time its four steps (`slam_it_all.orchestration.vo`):
+Each frame's diagnostics now time its four steps (`slam_it.orchestration.vo`):
 `read_seconds` (delivering the images), `build_seconds` (the pyramid, the features, the stereo
 matches or the depths), `track_seconds` (initialisation included) and `map_seconds` (0 but on
 keyframes). The sources deliver decoded images and one builder makes the frame, so each step is
 timed in one place per language.
 
-`slam_it_all.eval.budgets` simulates a budget on this machine, as the ladder's "Compute budgets"
+`slam_it.eval.budgets` simulates a budget on this machine, as the ladder's "Compute budgets"
 plans: there is no edge hardware.
 
 - **`laptop-cpu`**: 4 cores and 8 GiB. The cores are performance cores: this machine's CPU
@@ -68,7 +68,7 @@ plans: there is no edge hardware.
   was budgeted. Measuring from outside does not work: `getrusage`'s `ru_maxrss` folds the parent's
   peak into the child at `exec`, so `true`, spawned from a bare Python, reads 12 MB, and from a
   test process a hundred megabytes or more. `VmHWM` starts again at `exec`.
-- **Python's program**: `python -m slam_it_all.orchestration.vo`, with the native programs'
+- **Python's program**: `python -m slam_it.orchestration.vo`, with the native programs'
   command line, exit codes and messages, so a budget runs all three backends the same way.
   Python's in-process run records no peak memory: its process holds more than the run.
 - **The judgement** (`budgets.judge`): the deadline (the median spacing of the frames' times),

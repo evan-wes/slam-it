@@ -1,10 +1,10 @@
 /// @file
-/// @brief Bindings for `slam_it_all.foundations.so3` (`slam_it_all._cpp.foundations.so3`).
+/// @brief Bindings for `slam_it.foundations.so3` (`slam_it._cpp.foundations.so3`).
 ///
 /// Every function is batched: float64 arrays of shape (N, ...) in, new arrays out, each item
-/// computed by the core in `slam_it_all/foundations/so3.hpp`. Core errors become the matching
-/// `slam_it_all.foundations.errors` exception.
-#include "slam_it_all/foundations/so3.hpp"
+/// computed by the core in `slam_it/foundations/so3.hpp`. Core errors become the matching
+/// `slam_it.foundations.errors` exception.
+#include "slam_it/foundations/so3.hpp"
 
 #include <nanobind/nanobind.h>
 
@@ -13,7 +13,7 @@
 
 namespace nb = nanobind;
 
-namespace slam_it_all::bindings {
+namespace slam_it::bindings {
 
 namespace {
 
@@ -99,4 +99,4 @@ void bind_so3(nb::module_& m) {
       nb::arg("matrix").noconvert(), "Map (N, 3, 3) matrices to their nearest rotations.");
 }
 
-}  // namespace slam_it_all::bindings
+}  // namespace slam_it::bindings

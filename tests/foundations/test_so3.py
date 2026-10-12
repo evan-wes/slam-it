@@ -9,9 +9,9 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from slam_it_all import backends
-from slam_it_all.foundations import so3
-from slam_it_all.foundations.errors import InvalidInputError
+from slam_it import backends
+from slam_it.foundations import so3
+from slam_it.foundations.errors import InvalidInputError
 from tests.conftest import (
     check_parity,
     load_fixture,
@@ -131,8 +131,8 @@ def test_quaternion_double_cover() -> None:
 
 
 @pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
-def test_core_errors_reach_python_as_slam_it_all_errors(backend: str) -> None:
-    """A core error crosses the binding as the SLAM It All! exception of its kind."""
+def test_core_errors_reach_python_as_slam_it_errors(backend: str) -> None:
+    """A core error crosses the binding as the SLAM It! exception of its kind."""
     compiled = backends.function(
         require_function(backend, so3.__name__, "log"), so3.__name__, "log"
     )

@@ -1,15 +1,15 @@
 /// @file
-/// @brief Native tests for slam_it_all::foundations::camera, runnable without Python.
+/// @brief Native tests for slam_it::foundations::camera, runnable without Python.
 #include <Eigen/Dense>
 
-#include "slam_it_all/foundations/camera.hpp"
+#include "slam_it/foundations/camera.hpp"
 #include "test_support.hpp"
 
 namespace {
 
-namespace camera = slam_it_all::foundations::camera;
-using slam_it_all::foundations::ErrorKind;
-using slam_it_all::testing::expect;
+namespace camera = slam_it::foundations::camera;
+using slam_it::foundations::ErrorKind;
+using slam_it::testing::expect;
 
 }  // namespace
 
@@ -52,5 +52,5 @@ int main() {
           ErrorKind::kNotConverged,
       "unproject reports an uninvertible pixel as NotConverged", failures);
 
-  return slam_it_all::testing::finish("foundations/camera", failures);
+  return slam_it::testing::finish("foundations/camera", failures);
 }

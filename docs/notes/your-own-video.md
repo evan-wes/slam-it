@@ -2,8 +2,8 @@
 
 Design note for PR 11: a phone video, or a Stray Scanner recording, uploaded through a page,
 run through the C++ pipeline and opened in the run viewer. The import
-(`slam_it_all.eval.video`), the intrinsics (`slam_it_all.eval.lenses`), the worker
-(`slam_it_all.orchestration.worker`), the upload server (`server/`, `slam_it_all_server`) and its
+(`slam_it.eval.video`), the intrinsics (`slam_it.eval.lenses`), the worker
+(`slam_it.orchestration.worker`), the upload server (`server/`, `slam_it_server`) and its
 pages (`viewer/`). The plan was `docs/design/2026-10-09-run-viewer.md`, section 5; the choices
 made while building it are its section 9. This note is what was built, how it was checked, and
 what still waits for real phone clips. The review panel and a security pass read it all
@@ -22,7 +22,7 @@ video.
 
 ## The import
 
-`slam_it_all.eval.video` turns a recording into a TUM-format folder without depth, which the
+`slam_it.eval.video` turns a recording into a TUM-format folder without depth, which the
 readers in all three languages already take (written by `eval.tum`'s writers, beside its
 readers).
 
@@ -74,7 +74,7 @@ with OpenCV's `cv2.fisheye`.
 
 ## The worker
 
-`slam_it_all.orchestration.worker` connects out to the server, holding only its token. For each
+`slam_it.orchestration.worker` connects out to the server, holding only its token. For each
 job it claims, it downloads the upload, then in a child process under a memory limit (6 GiB of
 address space), a file-size limit (2 GiB) and a 20-minute timeout imports it, runs the C++
 pipeline, monocular, with features recorded, and bakes the bundle; it uploads the bundle's files
@@ -101,8 +101,8 @@ folder named `your-video`, which is the name the viewer shows.
 
 ## The server
 
-`slam_it_all_server` keeps the job list in SQLite and hands out storage links; it never imports
-`slam_it_all` (nor a decoder, an image library or reifyscene), and a contract holds it to that.
+`slam_it_server` keeps the job list in SQLite and hands out storage links; it never imports
+`slam_it` (nor a decoder, an image library or reifyscene), and a contract holds it to that.
 
 - **A job** waits for its upload (15 minutes, its upload link's life, which the upload page
   states: 500 MB needs about 4.5 Mbit/s), is queued (1 day), goes
@@ -134,7 +134,7 @@ folder named `your-video`, which is the name the viewer shows.
 - **The job list keeps its format** in its file, and a server refuses one of another, or another
   program's file, at startup, naming it, rather than migrating or adopting it: deleting it starts
   a new one. A test holds the table's columns to the format's number.
-- **`python -m slam_it_all_server`** refuses to run as root. It listens on IPv6 and IPv4 at once
+- **`python -m slam_it_server`** refuses to run as root. It listens on IPv6 and IPv4 at once
   when given `::`, as the image is: IPv4, as before, and IPv6, since Railway's private network is
   IPv6 alone in an environment made before 16 October 2025 (Railway's docs, "How private networking
   works"). Stopping, it waits at most 3 s for open requests: a worker's claim is held open for up to
@@ -175,10 +175,10 @@ one worker, and prints the page's address and a new invite code, three short wor
 phone on the same Wi-Fi can upload, and every page then asks for the code (any name, the code as the
 password); the page's address is printed as a QR code too, for the phone's camera, black on white
 whatever the terminal's colours. Everything goes in one folder, readable by its owner alone
-(`--data`, by default `~/.local/share/slam-it-all/demo`, the same every run). The demo keeps each
+(`--data`, by default `~/.local/share/slam-it/demo`, the same every run). The demo keeps each
 upload with its result, in the job's folder of storage (`files/jobs/<id>/`), so that a recording can
-be run again (`python -m slam_it_all.eval.video`, `scripts/run_vo.py`, the bake,
-`scripts/view_bundle.py`): `SLAM_IT_ALL_KEEP_UPLOADS`, which the server takes with folder storage
+be run again (`python -m slam_it.eval.video`, `scripts/run_vo.py`, the bake,
+`scripts/view_bundle.py`): `SLAM_IT_KEEP_UPLOADS`, which the server takes with folder storage
 alone. The server deletes both once 7 days old, while it runs; since the folder is the same every
 run, each start deletes what passed its time while no demo ran. The upload page says so, once the
 server has said it keeps uploads. With uploads kept, a new job is refused while the disk under the
@@ -190,18 +190,18 @@ stops if the worker does.
 **The images** build from the repository's root:
 
 ```bash
-docker build -f docker/server.Dockerfile -t slam-it-all-server .
-docker build -f docker/worker.Dockerfile -t slam-it-all-worker .
+docker build -f docker/server.Dockerfile -t slam-it-server .
+docker build -f docker/worker.Dockerfile -t slam-it-worker .
 ```
 
-- **The server's** holds `slam_it_all_server` and the pages, and no `slam_it_all`, compiler or
+- **The server's** holds `slam_it_server` and the pages, and no `slam_it`, compiler or
   decoder. Its entrypoint, run as root, gives the job list's folder to the server's own user and
   drops to it, unable to gain privileges again; it refuses a database path that is relative or
   whose folder is `/`, which it would otherwise give away.
 - **The worker's** is built in two stages: the first compiles the wheel, C++ extension and
   programs included, against Eigen 5.0.1 checked out at its tag's commit; the second installs it
   with PyAV and tini and fetches the lens profiles, so a job never reaches out for them.
-- The env's lock (`scripts/locks/slam-it-all.lock`) pins every Python package both install,
+- The env's lock (`scripts/locks/slam-it.lock`) pins every Python package both install,
   and the base image is pinned by digest.
 
 ## Deploying to staging
@@ -213,15 +213,15 @@ its own Yes, and the domain waits for the go-live call.
    `Content-Type`) and GET. If Railway's buckets take a lifecycle rule, one deletes `jobs/` after
    8 days, behind the server's own deletions: a job's files share its folder, so the rule cannot
    delete an upload any sooner than its result, should the server's deletion at import fail.
-2. **`slam-it-all`**, the server: `docker/server.Dockerfile`, a volume at `/data`,
+2. **`slam-it`**, the server: `docker/server.Dockerfile`, a volume at `/data`,
    `RAILWAY_RUN_UID=0` (Railway mounts volumes as root; the entrypoint gives the folder to the
    server's user and drops to it at once), `PORT=8000`, and the variables of
-   `server/settings.template.env`, with `SLAM_IT_ALL_STORAGE=s3`, the bucket's credentials,
-   `SLAM_IT_ALL_DATABASE=/data/jobs.sqlite3`, the Railway address as `SLAM_IT_ALL_PUBLIC_URL`,
-   and `SLAM_IT_ALL_STAGING=1`. The signing key is needed with S3 too.
-3. **`slam-it-all-worker`**: `docker/worker.Dockerfile`, no domain,
-   `SLAM_IT_ALL_WORKER_TOKEN` as the server's, and
-   `SLAM_IT_ALL_SERVER=http://slam-it-all.railway.internal:8000`.
+   `server/settings.template.env`, with `SLAM_IT_STORAGE=s3`, the bucket's credentials,
+   `SLAM_IT_DATABASE=/data/jobs.sqlite3`, the Railway address as `SLAM_IT_PUBLIC_URL`,
+   and `SLAM_IT_STAGING=1`. The signing key is needed with S3 too.
+3. **`slam-it-worker`**: `docker/worker.Dockerfile`, no domain,
+   `SLAM_IT_WORKER_TOKEN` as the server's, and
+   `SLAM_IT_SERVER=http://slam-it.railway.internal:8000`.
 4. **The check:**
    - `/healthz`, and `curl -I http://` to the Railway address redirecting to `https://`, so
      that staging's Basic auth never crosses in clear;

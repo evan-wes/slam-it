@@ -1,13 +1,13 @@
 /// @file
-/// @brief Implementation of the SE(3) functions declared in slam_it_all/foundations/se3.hpp.
-#include "slam_it_all/foundations/se3.hpp"
+/// @brief Implementation of the SE(3) functions declared in slam_it/foundations/se3.hpp.
+#include "slam_it/foundations/se3.hpp"
 
 #include <array>
 #include <cmath>
 
-#include "slam_it_all/foundations/so3.hpp"
+#include "slam_it/foundations/so3.hpp"
 
-namespace slam_it_all::foundations::se3 {
+namespace slam_it::foundations::se3 {
 
 namespace {
 
@@ -165,4 +165,4 @@ Result<Matrix6d> left_jacobian_inverse(const Vector6d& xi) {
 
 Result<Matrix6d> right_jacobian_inverse(const Vector6d& xi) { return left_jacobian_inverse(-xi); }
 
-}  // namespace slam_it_all::foundations::se3
+}  // namespace slam_it::foundations::se3

@@ -1,7 +1,7 @@
 /// @file
 /// @brief Absolute pose: EPnP, the pose refinement and PnP RANSAC (see
-///        `slam_it_all/foundations/pnp.hpp`).
-#include "slam_it_all/foundations/pnp.hpp"
+///        `slam_it/foundations/pnp.hpp`).
+#include "slam_it/foundations/pnp.hpp"
 
 #include <Eigen/Dense>
 #include <array>
@@ -13,11 +13,11 @@
 #include <utility>
 #include <vector>
 
-#include "slam_it_all/foundations/alignment.hpp"
-#include "slam_it_all/foundations/se3.hpp"
-#include "slam_it_all/foundations/so3.hpp"
+#include "slam_it/foundations/alignment.hpp"
+#include "slam_it/foundations/se3.hpp"
+#include "slam_it/foundations/so3.hpp"
 
-namespace slam_it_all::foundations::pnp {
+namespace slam_it::foundations::pnp {
 
 namespace {
 
@@ -194,7 +194,7 @@ Eigen::Vector4d polish_betas(Eigen::Vector4d betas, const DistanceSystem& distan
 }
 
 /// @brief Least squares on the reprojection errors of correspondences, over SE(3) (see
-///        `slam_it_all.foundations.pnp.ReprojectionProblem`).
+///        `slam_it.foundations.pnp.ReprojectionProblem`).
 class ReprojectionProblem {
  public:
   /// @brief The state: `T_cam_world`.
@@ -451,4 +451,4 @@ Result<ransac::RefinedSolution<Eigen::Matrix4d>> pnp_ransac(const Eigen::Ref<con
       p3p::kSampleSize);
 }
 
-}  // namespace slam_it_all::foundations::pnp
+}  // namespace slam_it::foundations::pnp

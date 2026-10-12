@@ -16,13 +16,13 @@ from typing import Any
 import numpy as np
 import pytest
 
-import slam_it_all
-from slam_it_all import backends
-from slam_it_all.foundations import image, orb, stereo
-from slam_it_all.foundations.errors import InvalidInputError
+import slam_it
+from slam_it import backends
+from slam_it.foundations import image, orb, stereo
+from slam_it.foundations.errors import InvalidInputError
 from tests.conftest import REQUIRED_BACKENDS, require_backend
 
-_EXTENSION_ROOTS = {"cpp": "slam_it_all._cpp", "rust": "slam_it_all_rs"}
+_EXTENSION_ROOTS = {"cpp": "slam_it._cpp", "rust": "slam_it_rs"}
 
 
 def test_python_reference_always_available() -> None:
@@ -31,12 +31,12 @@ def test_python_reference_always_available() -> None:
 
 
 def test_required_backends_are_known() -> None:
-    """SLAM_IT_ALL_REQUIRE_BACKENDS names only real backends (a typo must not pass silently)."""
+    """SLAM_IT_REQUIRE_BACKENDS names only real backends (a typo must not pass silently)."""
     assert set(REQUIRED_BACKENDS) <= set(backends.BACKENDS)
 
 
 def test_required_backends_are_available() -> None:
-    """Every backend in SLAM_IT_ALL_REQUIRE_BACKENDS is built and loads (the CI guarantee)."""
+    """Every backend in SLAM_IT_REQUIRE_BACKENDS is built and loads (the CI guarantee)."""
     missing = REQUIRED_BACKENDS - set(backends.available())
     assert not missing, f"required backends not available: {sorted(missing)}"
 
@@ -50,15 +50,15 @@ def test_unknown_backend_is_an_error() -> None:
 def test_python_has_no_compiled_implementation() -> None:
     """Asking the locator for the python backend is an error: it lives in each module."""
     with pytest.raises(ValueError, match="python reference"):
-        backends.implementation("python", "slam_it_all.foundations.so3")
+        backends.implementation("python", "slam_it.foundations.so3")
 
 
 def test_program_is_only_for_compiled_backends() -> None:
     """Python's pipelines run in-process; an unknown backend is an error."""
     with pytest.raises(ValueError, match="in-process"):
-        backends.program("python", "slam_it_all_vo")
+        backends.program("python", "slam_it_vo")
     with pytest.raises(ValueError, match="unknown backend"):
-        backends.program("fortran", "slam_it_all_vo")
+        backends.program("fortran", "slam_it_vo")
 
 
 def test_missing_program_is_reported() -> None:
@@ -116,16 +116,16 @@ def test_a_rust_program_older_than_its_inputs_is_stale(
     assert isinstance(backends.StaleProgramError("x"), backends.BackendNotBuiltError)
 
 
-def test_module_outside_slam_it_all_is_an_error() -> None:
-    """The locator only resolves slam_it_all modules."""
-    with pytest.raises(ValueError, match="not a slam_it_all module"):
+def test_module_outside_slam_it_is_an_error() -> None:
+    """The locator only resolves slam_it modules."""
+    with pytest.raises(ValueError, match="not a slam_it module"):
         backends.implementation("cpp", "numpy.linalg")
 
 
 @pytest.mark.parametrize("name", backends.COMPILED_BACKENDS)
 @pytest.mark.parametrize(
     "module_name",
-    ["slam_it_all.foundations.no_such_module", "slam_it_all.foundations.so3.hat"],
+    ["slam_it.foundations.no_such_module", "slam_it.foundations.so3.hat"],
     ids=["missing", "not-a-module"],
 )
 def test_missing_implementation_is_reported(name: str, module_name: str) -> None:
@@ -143,13 +143,13 @@ def test_absent_extension_counts_as_not_built(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(importlib, "import_module", absent)
     assert backends.available() == ["python"]
     with pytest.raises(backends.BackendNotBuiltError, match="not built"):
-        backends.implementation("cpp", "slam_it_all.foundations.so3")
+        backends.implementation("cpp", "slam_it.foundations.so3")
 
 
 @pytest.mark.parametrize(
     "failure",
     [
-        ImportError("undefined symbol: _ZN11slam_it_all3hatE"),
+        ImportError("undefined symbol: _ZN11slam_it3hatE"),
         ModuleNotFoundError("No module named 'numpy.core'", name="numpy.core"),
     ],
     ids=["broken-extension", "missing-dependency"],
@@ -259,7 +259,7 @@ def _protocol_modules(rungs: tuple[str, ...]) -> set[str]:
     """
     found = set()
     for rung in rungs:
-        package = importlib.import_module(f"slam_it_all.{rung}")
+        package = importlib.import_module(f"slam_it.{rung}")
         found |= _protocols_below(package)
     return found
 
@@ -277,9 +277,9 @@ def _protocols_below(package: ModuleType) -> set[str]:
 
 
 def test_compiled_rungs_name_every_compiled_backend_and_real_rungs() -> None:
-    """``COMPILED_RUNGS`` covers exactly the compiled backends, with SLAM It All!'s own rungs."""
+    """``COMPILED_RUNGS`` covers exactly the compiled backends, with SLAM It!'s own rungs."""
     assert set(backends.COMPILED_RUNGS) == set(backends.COMPILED_BACKENDS)
-    rungs = {m.name for m in pkgutil.iter_modules(slam_it_all.__path__) if m.ispkg}
+    rungs = {m.name for m in pkgutil.iter_modules(slam_it.__path__) if m.ispkg}
     for name, covered in backends.COMPILED_RUNGS.items():
         assert set(covered) <= rungs, f"{name}: {sorted(set(covered) - rungs)}"
 
@@ -291,13 +291,13 @@ def test_every_compiled_backend_has_every_module(name: str) -> None:
     Every backend is lock-step within its rungs (``backends.COMPILED_RUNGS``), so this is one
     assertion rather than a property spread over each module's tests (panel A1 on PR 6). A
     compiled submodule stands for the module that defines its Protocol (``foundations.ba``
-    for ``slam_it_all.foundations.ba.solve``'s).
+    for ``slam_it.foundations.ba.solve``'s).
     """
     root_name = _EXTENSION_ROOTS[require_backend(name)]
     extension = importlib.import_module(root_name)
-    rungs = [m.name for m in pkgutil.iter_modules(slam_it_all.__path__) if m.ispkg]
+    rungs = [m.name for m in pkgutil.iter_modules(slam_it.__path__) if m.ispkg]
     provided = {
-        importlib.import_module(f"slam_it_all.{path}").Implementation.__module__
+        importlib.import_module(f"slam_it.{path}").Implementation.__module__
         for rung in rungs
         if isinstance(getattr(extension, rung, None), ModuleType)
         for path, _ in _implementation_modules(getattr(extension, rung), rung)
@@ -308,9 +308,9 @@ def test_every_compiled_backend_has_every_module(name: str) -> None:
 
 @pytest.mark.parametrize("name", backends.COMPILED_BACKENDS)
 def test_every_compiled_module_matches_its_protocol(name: str) -> None:
-    """Every compiled submodule mirrors a slam_it_all module and matches its Implementation.
+    """Every compiled submodule mirrors a slam_it module and matches its Implementation.
 
-    For each submodule of the extension that holds functions, the slam_it_all module at the same
+    For each submodule of the extension that holds functions, the slam_it module at the same
     path must exist and define an ``Implementation`` Protocol; every compiled function must
     be a Protocol member with the Protocol's parameter names, and every member of the Protocol
     must be there: a backend implements each module it has in full. This keeps bindings and
@@ -319,13 +319,13 @@ def test_every_compiled_module_matches_its_protocol(name: str) -> None:
     """
     root_name = _EXTENSION_ROOTS[require_backend(name)]
     extension = importlib.import_module(root_name)
-    # Walk from slam_it_all's rung packages, the tree the extension submodules mirror. Every
+    # Walk from slam_it's rung packages, the tree the extension submodules mirror. Every
     # top-level submodule must be one of them (a misnamed one would otherwise go unchecked);
     # maturin's package re-exports the native module under the extension's own name.
-    rungs = [m.name for m in pkgutil.iter_modules(slam_it_all.__path__) if m.ispkg]
+    rungs = [m.name for m in pkgutil.iter_modules(slam_it.__path__) if m.ispkg]
     top_level = {k for k, v in vars(extension).items() if isinstance(v, ModuleType)}
     stray = top_level - set(rungs) - {root_name.rsplit(".", 1)[-1]}
-    assert not stray, f"{name} extension submodules match no SLAM It All! rung: {sorted(stray)}"
+    assert not stray, f"{name} extension submodules match no SLAM It! rung: {sorted(stray)}"
     found = [
         item
         for rung in rungs
@@ -334,9 +334,9 @@ def test_every_compiled_module_matches_its_protocol(name: str) -> None:
     ]
     assert found, f"{name} extension exposes no implementation modules"
     for path, compiled in found:
-        python_module = importlib.import_module(f"slam_it_all.{path}")
+        python_module = importlib.import_module(f"slam_it.{path}")
         protocol = getattr(python_module, "Implementation", None)
-        assert protocol is not None, f"slam_it_all.{path} has no Implementation Protocol"
+        assert protocol is not None, f"slam_it.{path} has no Implementation Protocol"
         members = {m for m in vars(protocol) if not m.startswith("_")}
         provided = _public_callables(compiled)
         assert provided <= members, f"{name}:{path} has functions outside the Protocol"
@@ -366,7 +366,7 @@ def test_compiled_bindings_refuse_unconverted_input(name: str, bad: object) -> N
     So a direct caller, or a benchmark, pays no hidden conversion in either language; the
     Python entry points validate and convert before calling.
     """
-    impl = backends.implementation(require_backend(name), "slam_it_all.foundations.so3")
+    impl = backends.implementation(require_backend(name), "slam_it.foundations.so3")
     with pytest.raises((TypeError, ValueError)):
         impl.hat(bad)
 
@@ -388,8 +388,8 @@ def _pyramid_call(backend: str) -> tuple[Any, Any, list[Any], dict[str, Any], di
     }
     orb_options = asdict(orb.Options(levels=2, scale_factor=1.25))
     stereo_options = asdict(stereo.Options())
-    orb_impl = backends.implementation(backend, "slam_it_all.foundations.orb")
-    stereo_impl = backends.implementation(backend, "slam_it_all.foundations.stereo")
+    orb_impl = backends.implementation(backend, "slam_it.foundations.orb")
+    stereo_impl = backends.implementation(backend, "slam_it.foundations.stereo")
     assert isinstance(orb_impl.extract_levels(levels, orb_options), dict)
     assert isinstance(stereo_impl.match(levels, levels, features, features, 1.0, 0.1,
                                         stereo_options), dict)  # fmt: skip
@@ -436,7 +436,7 @@ def test_call_runs_the_reference_for_python() -> None:
     """With the Python backend, ``call`` runs the reference and never touches an extension."""
     result = backends.call(
         "python",
-        "slam_it_all.foundations.nowhere",
+        "slam_it.foundations.nowhere",
         "nothing",
         reference=lambda: 42,
         arguments={},
@@ -456,7 +456,7 @@ def test_call_decodes_a_compiled_result_with_the_module_codes() -> None:
 
     result = backends.call(
         "cpp",
-        "slam_it_all.foundations.fivepoint",
+        "slam_it.foundations.fivepoint",
         "codes",
         reference=lambda: 0,
         arguments={},
@@ -471,7 +471,7 @@ def test_call_rejects_an_unknown_backend() -> None:
     with pytest.raises(ValueError, match="unknown backend"):
         backends.call(
             "julia",
-            "slam_it_all.foundations.so3",
+            "slam_it.foundations.so3",
             "exp",
             reference=lambda: 0,
             arguments={},

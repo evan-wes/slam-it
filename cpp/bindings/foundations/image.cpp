@@ -1,6 +1,6 @@
 /// @file
-/// @brief Bindings for `slam_it_all.foundations.image` (`slam_it_all._cpp.foundations.image`).
-#include "slam_it_all/foundations/image.hpp"
+/// @brief Bindings for `slam_it.foundations.image` (`slam_it._cpp.foundations.image`).
+#include "slam_it/foundations/image.hpp"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -16,7 +16,7 @@
 
 namespace nb = nanobind;
 
-namespace slam_it_all::bindings {
+namespace slam_it::bindings {
 
 namespace {
 
@@ -100,4 +100,4 @@ void bind_image(nb::module_& m) {
         "Sample the image at an (H', W', 2) map of (x, y) coordinates.");
 }
 
-}  // namespace slam_it_all::bindings
+}  // namespace slam_it::bindings

@@ -17,9 +17,9 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from slam_it_all_server import app as server_app
-from slam_it_all_server import jobs
-from slam_it_all_server.config import (
+from slam_it_server import app as server_app
+from slam_it_server import jobs
+from slam_it_server.config import (
     KEEP_FREE,
     LINK_SECONDS,
     MAX_BYTES,
@@ -30,7 +30,7 @@ from slam_it_all_server.config import (
     UPLOAD_WAIT,
     SettingsError,
 )
-from slam_it_all_server.storage import FolderStorage
+from slam_it_server.storage import FolderStorage
 from tests.server.conftest import CODE, CODES, TOKEN, VIEWER, WORKER, Clock, Server
 
 UPLOAD = b"not really a video, but storage never looks"
@@ -492,7 +492,7 @@ def test_a_confirmation_whose_move_fails_says_so(
         raise error
 
     monkeypatch.setattr(server.store, "move", fail)
-    with caplog.at_level(logging.ERROR, logger="slam_it_all_server"):
+    with caplog.at_level(logging.ERROR, logger="slam_it_server"):
         answer = server.client.post(f"/api/jobs/{job['token']}/uploaded")
     assert answer.status_code == status
     logged = f"job {_job_id(job)}: the upload could not be moved" in caplog.text
@@ -520,7 +520,7 @@ def test_a_deletion_that_fails_is_tried_again(
     flaky = _Flaky(server.store.root, server.store.public_url, server.store.key)
     done, claimed = _run(server, {"bundle.json": b"{}"})
     server.clock.now += RETENTION
-    with caplog.at_level(logging.ERROR, logger="slam_it_all_server"):
+    with caplog.at_level(logging.ERROR, logger="slam_it_server"):
         assert server_app.sweep(server.jobs, flaky) == 1
     assert f"job {claimed['job']}: a sweep's deletion failed" in caplog.text
     assert server.store.path(f"{server_app.result_prefix(claimed['job'])}/bundle.json").is_file()
@@ -560,7 +560,7 @@ def test_the_log_names_jobs_by_id_never_by_token(
     server: Server, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Made and queued: logged with the job's id and its code's hash, never its token."""
-    with caplog.at_level(logging.INFO, logger="slam_it_all_server"):
+    with caplog.at_level(logging.INFO, logger="slam_it_server"):
         job = _queued(server)
     made = server.jobs.by_token(job["token"])
     assert made is not None
@@ -589,10 +589,10 @@ def test_robots_are_asked_to_stay_away(server: Server) -> None:
 @pytest.mark.parametrize(
     ("path", "kind"),
     [
-        ("/", "SLAM It All! on your own video"),
-        ("/r/some-token", "SLAM It All! run"),
-        ("/index.html", "SLAM It All! run viewer"),
-        ("/upload.html", "SLAM It All! on your own video"),
+        ("/", "SLAM It! on your own video"),
+        ("/r/some-token", "SLAM It! run"),
+        ("/index.html", "SLAM It! run viewer"),
+        ("/upload.html", "SLAM It! on your own video"),
         ("/app.css", "--accent"),
         ("/src/jobs.js", "export function describe"),
         ("/src/main.js", "loadBundle"),
@@ -649,7 +649,7 @@ def test_staging_puts_every_page_behind_a_code(server: Server, staging: TestClie
     """Pages and the owner's API need a code; the worker's API, storage and health do not."""
     answer = staging.get("/")
     assert answer.status_code == 401
-    assert answer.headers["www-authenticate"] == 'Basic realm="SLAM It All!"'
+    assert answer.headers["www-authenticate"] == 'Basic realm="SLAM It!"'
     assert answer.headers["x-robots-tag"] == "noindex, nofollow"
     assert staging.get("/", headers=_basic("wrong-code-here")).status_code == 401
     assert staging.get("/", headers={"Authorization": "Basic %%%"}).status_code == 401
@@ -716,7 +716,7 @@ def test_a_viewer_whose_import_map_cannot_be_read_stops_the_server(tmp_path: Pat
     Not found later by a browser that cannot load the viewer.
     """
     store = FolderStorage(tmp_path / "files", "http://testserver", b"k" * 32)
-    with pytest.raises(SettingsError, match=r"SLAM_IT_ALL_VIEWER: .*index\.html is not there"):
+    with pytest.raises(SettingsError, match=r"SLAM_IT_VIEWER: .*index\.html is not there"):
         server_app.content_policy(tmp_path, store)
     (tmp_path / "index.html").write_text('<script type="importmap" nonce="x">{}</script>')
     with pytest.raises(SettingsError, match="an import map not written as"):

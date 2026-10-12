@@ -1,6 +1,6 @@
 /// @file
 /// @brief Native benchmarks of rung 0's C++ core, the counterparts of the Rust core's
-///        `rust/slam-it-all-foundations/benches/foundations.rs`.
+///        `rust/slam-it-foundations/benches/foundations.rs`.
 ///
 /// Small operations (SO(3), SE(3), a radtan projection) time the per-item cost the binding
 /// batches over. Two robust estimators run on one fixed synthetic scene, built from the same
@@ -9,8 +9,8 @@
 /// The front end extracts ORB features (ORB-SLAM's settings) from a 640x480 synthetic frame
 /// built from one integer expression, the Rust benches' too.
 /// The headline is a whole bundle adjustment on a BAL problem, with the BAL demo's settings,
-/// registered only when `SLAM_IT_ALL_BAL` names a decompressed problem file:
-/// `SLAM_IT_ALL_BAL=<problem.txt> build/native/bench/foundations_bench_foundations`.
+/// registered only when `SLAM_IT_BAL` names a decompressed problem file:
+/// `SLAM_IT_BAL=<problem.txt> build/native/bench/foundations_bench_foundations`.
 #include <benchmark/benchmark.h>
 
 #include <Eigen/Core>
@@ -22,21 +22,21 @@
 #include <string>
 
 #include "bal_reader.hpp"
-#include "slam_it_all/foundations/ba.hpp"
-#include "slam_it_all/foundations/camera.hpp"
-#include "slam_it_all/foundations/correspondences.hpp"
-#include "slam_it_all/foundations/epipolar.hpp"
-#include "slam_it_all/foundations/image.hpp"
-#include "slam_it_all/foundations/orb.hpp"
-#include "slam_it_all/foundations/p3p.hpp"
-#include "slam_it_all/foundations/pnp.hpp"
-#include "slam_it_all/foundations/ransac.hpp"
-#include "slam_it_all/foundations/se3.hpp"
-#include "slam_it_all/foundations/so3.hpp"
+#include "slam_it/foundations/ba.hpp"
+#include "slam_it/foundations/camera.hpp"
+#include "slam_it/foundations/correspondences.hpp"
+#include "slam_it/foundations/epipolar.hpp"
+#include "slam_it/foundations/image.hpp"
+#include "slam_it/foundations/orb.hpp"
+#include "slam_it/foundations/p3p.hpp"
+#include "slam_it/foundations/pnp.hpp"
+#include "slam_it/foundations/ransac.hpp"
+#include "slam_it/foundations/se3.hpp"
+#include "slam_it/foundations/so3.hpp"
 
 namespace {
 
-namespace foundations = slam_it_all::foundations;
+namespace foundations = slam_it::foundations;
 
 /// @brief SO(3)'s exponential.
 /// @param state The benchmark state.
@@ -89,11 +89,11 @@ constexpr double kFocal = 500.0;
 ///        noise on the rest. The same expressions as `ransac_scene` in the Rust benches.
 struct RansacScene {
   /// @brief The world points.
-  slam_it_all::foundations::correspondences::Rows3 points;
+  slam_it::foundations::correspondences::Rows3 points;
   /// @brief Their bearings in camera 1.
-  slam_it_all::foundations::correspondences::Rows3 bearings1;
+  slam_it::foundations::correspondences::Rows3 bearings1;
   /// @brief Their bearings in camera 2, outliers included.
-  slam_it_all::foundations::correspondences::Rows3 bearings2;
+  slam_it::foundations::correspondences::Rows3 bearings2;
 };
 
 /// @brief Build the RANSAC scene.
@@ -122,8 +122,8 @@ RansacScene ransac_scene() {
 
 /// @brief The RANSAC benchmarks' settings: a one-pixel threshold, a fixed seed.
 /// @return The options.
-slam_it_all::foundations::ransac::Options ransac_options() {
-  slam_it_all::foundations::ransac::Options options;
+slam_it::foundations::ransac::Options ransac_options() {
+  slam_it::foundations::ransac::Options options;
   options.threshold = 1.0 / kFocal;
   options.seed = 7;
   return options;
@@ -211,13 +211,13 @@ int main(int argc, char** argv) {
   benchmark::Initialize(&argc, argv);
   report_ransac_decisions();
   // NOLINTNEXTLINE(concurrency-mt-unsafe): read once, before any benchmark thread exists
-  const char* bal = std::getenv("SLAM_IT_ALL_BAL");
+  const char* bal = std::getenv("SLAM_IT_BAL");
   if (bal == nullptr) {
-    std::cerr << "SLAM_IT_ALL_BAL not set: skipping the BAL benchmark\n";
+    std::cerr << "SLAM_IT_BAL not set: skipping the BAL benchmark\n";
   } else {
-    const auto problem = slam_it_all::bench::read_bal(bal);
+    const auto problem = slam_it::bench::read_bal(bal);
     if (!problem) {
-      std::cerr << "SLAM_IT_ALL_BAL: " << bal << " is not a BAL problem\n";
+      std::cerr << "SLAM_IT_BAL: " << bal << " is not a BAL problem\n";
       return 1;
     }
     foundations::ba::Options options;

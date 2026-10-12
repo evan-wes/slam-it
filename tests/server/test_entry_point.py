@@ -1,4 +1,4 @@
-"""``python -m slam_it_all_server``: it refuses missing settings, and stops promptly when asked."""
+"""``python -m slam_it_server``: it refuses missing settings, and stops promptly when asked."""
 
 from __future__ import annotations
 
@@ -19,23 +19,23 @@ from pathlib import Path
 
 import pytest
 
-from slam_it_all_server import __main__ as entry
-from slam_it_all_server.__main__ import SHUTDOWN, listening, server_config
+from slam_it_server import __main__ as entry
+from slam_it_server.__main__ import SHUTDOWN, listening, server_config
 from tests.server.conftest import CODE, TOKEN, VIEWER, make_settings
 
 
 def test_missing_settings_end_it_with_code_2() -> None:
     """With no settings in the environment, it says which is missing and exits with 2."""
-    env = {k: v for k, v in os.environ.items() if not k.startswith("SLAM_IT_ALL_")}
+    env = {k: v for k, v in os.environ.items() if not k.startswith("SLAM_IT_")}
     done = subprocess.run(
-        [sys.executable, "-m", "slam_it_all_server"],
+        [sys.executable, "-m", "slam_it_server"],
         env=env,
         capture_output=True,
         text=True,
         check=False,
     )
     assert done.returncode == 2
-    assert "SLAM_IT_ALL_INVITE_CODES is not set" in done.stderr
+    assert "SLAM_IT_INVITE_CODES is not set" in done.stderr
 
 
 def test_it_refuses_to_run_as_root(
@@ -44,7 +44,7 @@ def test_it_refuses_to_run_as_root(
     """As root it says so and exits with 2, before reading a setting."""
     monkeypatch.setattr(os, "geteuid", lambda: 0)
     assert entry.main([]) == 2
-    assert capsys.readouterr().err == "slam_it_all_server: refusing to run as root\n"
+    assert capsys.readouterr().err == "slam_it_server: refusing to run as root\n"
 
 
 def test_a_job_list_of_another_format_ends_it_with_code_2(
@@ -65,11 +65,11 @@ def test_a_job_list_of_another_format_ends_it_with_code_2(
 def test_a_viewer_without_its_page_ends_it_with_code_2_before_the_job_list_is_made(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A wrong SLAM_IT_ALL_VIEWER: named, exit 2, and no job list made."""
+    """A wrong SLAM_IT_VIEWER: named, exit 2, and no job list made."""
     settings = replace(make_settings(tmp_path), viewer=tmp_path / "no-viewer")
     monkeypatch.setattr(entry, "from_environment", lambda: settings)
     assert entry.main([]) == 2
-    assert "SLAM_IT_ALL_VIEWER" in capsys.readouterr().err
+    assert "SLAM_IT_VIEWER" in capsys.readouterr().err
     assert not settings.database.exists()
 
 
@@ -92,16 +92,16 @@ def test_a_held_claim_does_not_hold_up_stopping(tmp_path: Path) -> None:
     url = f"http://127.0.0.1:{port}"
     env = {
         **os.environ,
-        "SLAM_IT_ALL_INVITE_CODES": CODE,
-        "SLAM_IT_ALL_WORKER_TOKEN": TOKEN,
-        "SLAM_IT_ALL_SIGNING_KEY": "a-signing-key-of-at-least-32-characters",
-        "SLAM_IT_ALL_STORAGE": f"folder:{tmp_path / 'files'}",
-        "SLAM_IT_ALL_PUBLIC_URL": url,
-        "SLAM_IT_ALL_DATABASE": str(tmp_path / "jobs.sqlite3"),
-        "SLAM_IT_ALL_VIEWER": str(VIEWER),
+        "SLAM_IT_INVITE_CODES": CODE,
+        "SLAM_IT_WORKER_TOKEN": TOKEN,
+        "SLAM_IT_SIGNING_KEY": "a-signing-key-of-at-least-32-characters",
+        "SLAM_IT_STORAGE": f"folder:{tmp_path / 'files'}",
+        "SLAM_IT_PUBLIC_URL": url,
+        "SLAM_IT_DATABASE": str(tmp_path / "jobs.sqlite3"),
+        "SLAM_IT_VIEWER": str(VIEWER),
     }
     server = subprocess.Popen(
-        [sys.executable, "-m", "slam_it_all_server", "--port", str(port)],
+        [sys.executable, "-m", "slam_it_server", "--port", str(port)],
         env=env,
         stderr=subprocess.DEVNULL,
     )

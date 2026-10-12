@@ -20,7 +20,7 @@ import cv2
 import numpy as np
 import pytest
 
-from slam_it_all_server.config import from_environment
+from slam_it_server.config import from_environment
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -46,7 +46,7 @@ def test_the_demos_settings_are_the_servers(tmp_path: Path) -> None:
     assert not settings.staging
     assert settings.keep_uploads  # so that a recording can be run again
     again = demo.environment(tmp_path, "a-demo-invite-code", "http://127.0.0.1:1")
-    assert again["SLAM_IT_ALL_WORKER_TOKEN"] != env["SLAM_IT_ALL_WORKER_TOKEN"]
+    assert again["SLAM_IT_WORKER_TOKEN"] != env["SLAM_IT_WORKER_TOKEN"]
 
 
 def test_the_demos_own_invite_code_is_three_words_the_server_takes(tmp_path: Path) -> None:
@@ -75,9 +75,9 @@ def test_the_demos_folder_is_the_same_every_run(
     """Without --data, the same folder each run, so a run deletes what an earlier one kept."""
     demo = _script()
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    assert demo.default_data() == tmp_path / "slam-it-all" / "demo"
+    assert demo.default_data() == tmp_path / "slam-it" / "demo"
     monkeypatch.delenv("XDG_DATA_HOME")
-    assert demo.default_data() == Path.home() / ".local" / "share" / "slam-it-all" / "demo"
+    assert demo.default_data() == Path.home() / ".local" / "share" / "slam-it" / "demo"
 
 
 def test_a_port_in_use_is_refused(tmp_path: Path) -> None:
@@ -110,7 +110,7 @@ def test_the_demo_serves_until_interrupted(tmp_path: Path) -> None:
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         text=True,
-        env={**os.environ, "SLAM_IT_ALL_LENS_PROFILES": str(profiles)},
+        env={**os.environ, "SLAM_IT_LENS_PROFILES": str(profiles)},
     )
     try:
         deadline = time.monotonic() + 30.0
@@ -121,7 +121,7 @@ def test_the_demo_serves_until_interrupted(tmp_path: Path) -> None:
                     page = answer.read().decode()
             except (urllib.error.URLError, OSError):
                 time.sleep(0.2)
-        assert "SLAM It All! on your own video" in page
+        assert "SLAM It! on your own video" in page
         time.sleep(1.0)  # the worker starts once the server answers
         demo.send_signal(signal.SIGINT)
         out, _ = demo.communicate(timeout=30.0)

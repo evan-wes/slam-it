@@ -1,15 +1,15 @@
 """The caps and names that the import, the worker, the server and the pages each hold, held equal.
 
-The server never imports slam_it_all, and the pages are JavaScript, so each keeps its own copy.
+The server never imports slam_it, and the pages are JavaScript, so each keeps its own copy.
 """
 
 from __future__ import annotations
 
 import re
 
-from slam_it_all.eval import lenses, video
-from slam_it_all.orchestration import worker
-from slam_it_all_server import app, config, jobs
+from slam_it.eval import lenses, video
+from slam_it.orchestration import worker
+from slam_it_server import app, config, jobs
 from tests.server.conftest import VIEWER
 
 PAGE = (VIEWER / "src" / "jobs.js").read_text()

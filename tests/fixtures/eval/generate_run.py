@@ -4,13 +4,13 @@ Run from the repository root after changing the run (the fixtures are committed)
 
     python -m tests.fixtures.eval.generate_run
 
-Python's :func:`slam_it_all.eval.runs.write_run` writes the folder from the values in
+Python's :func:`slam_it.eval.runs.write_run` writes the folder from the values in
 ``run_values.json`` (``backend`` aside: each writer names its own). The C++ and Rust run
 writers write the same values and are held to the folder: the ``.npy`` files byte for byte,
 ``run.json``, ``trajectory.txt`` and ``diagnostics.jsonl`` value for value (their text may
 differ). The diagnostics nest as the edge pipeline's stage summaries do: objects, lists and
 nulls inside each line. The run records its features, every fate among them and a frame with
-no keypoints: :class:`slam_it_all.eval.runs.FeatureWriter` streams them frame by frame from
+no keypoints: :class:`slam_it.eval.runs.FeatureWriter` streams them frame by frame from
 ``features``, and the native feature writers are held to its two files byte for byte.
 """
 
@@ -22,8 +22,8 @@ from typing import Any
 
 import numpy as np
 
-from slam_it_all.eval import runs
-from slam_it_all.foundations import so3
+from slam_it.eval import runs
+from slam_it.foundations import so3
 
 HERE = Path(__file__).parent
 FOLDER = HERE / "run"

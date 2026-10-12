@@ -5,14 +5,14 @@
 #include <vector>
 
 #include "foundations/ba/gauge.hpp"
-#include "slam_it_all/foundations/ba.hpp"
+#include "slam_it/foundations/ba.hpp"
 #include "test_support.hpp"
 
 namespace {
 
-namespace ba = slam_it_all::foundations::ba;
-namespace detail = slam_it_all::foundations::ba::detail;
-using slam_it_all::testing::expect;
+namespace ba = slam_it::foundations::ba;
+namespace detail = slam_it::foundations::ba::detail;
+using slam_it::testing::expect;
 
 /// @brief Five camera centres along a gentle arc.
 /// @param offset Added to every centre.
@@ -110,5 +110,5 @@ int main() {
   }
   expect(orthonormal, "confinement: one orthonormal 6 x 5 basis for the scale pose", failures);
 
-  return slam_it_all::testing::finish("test_gauge", failures);
+  return slam_it::testing::finish("test_gauge", failures);
 }

@@ -1,5 +1,5 @@
 /// @file
-/// @brief Native tests for the sequence readers (slam_it_all/eval/{tum,euroc}.hpp) against the
+/// @brief Native tests for the sequence readers (slam_it/eval/{tum,euroc}.hpp) against the
 ///        shared fixtures `tests/fixtures/eval/sequences/` and the Python readers' frames,
 ///        `sequences.json`; and their refusals.
 #include <cmath>
@@ -12,22 +12,22 @@
 
 #include "../foundations/fixture_support.hpp"
 #include "../foundations/test_support.hpp"
-#include "slam_it_all/eval/euroc.hpp"
-#include "slam_it_all/eval/tum.hpp"
+#include "slam_it/eval/euroc.hpp"
+#include "slam_it/eval/tum.hpp"
 
 namespace {
 
-namespace euroc = slam_it_all::eval::euroc;
-namespace tum = slam_it_all::eval::tum;
+namespace euroc = slam_it::eval::euroc;
+namespace tum = slam_it::eval::tum;
 namespace fs = std::filesystem;
-using slam_it_all::testing::expect;
-using slam_it_all::testing::is_invalid_input;
+using slam_it::testing::expect;
+using slam_it::testing::is_invalid_input;
 
 /// @brief A fixture sequence's folder.
 /// @param name Its name.
 /// @return The path.
 std::string folder(const std::string& name) {
-  return slam_it_all::testing::fixture_path("eval/sequences/" + name);
+  return slam_it::testing::fixture_path("eval/sequences/" + name);
 }
 
 /// @brief A path relative to a folder, as the fixtures list them.
@@ -82,7 +82,7 @@ void check_tum(const nlohmann::json& cases, int& failures) {
     }
     const auto& camera = expected["camera"];
     ok = ok &&
-         slam_it_all::foundations::camera::name(frames->camera.model) ==
+         slam_it::foundations::camera::name(frames->camera.model) ==
              camera["model"].get<std::string>() &&
          same(frames->camera.intrinsics, camera["intrinsics"]) &&
          frames->camera.width == camera["width"].get<std::int64_t>() &&
@@ -129,7 +129,7 @@ void check_euroc(const nlohmann::json& expected, int& failures) {
 /// @brief Check the refusals: a malformed camera.txt, a nameless folder, a bad stamp.
 /// @param failures Running failure count.
 void check_refusals(int& failures) {
-  const slam_it_all::testing::ScratchDir folder("slam_it_all_test_sequences");
+  const slam_it::testing::ScratchDir folder("slam_it_test_sequences");
   const fs::path& scratch = folder.path();
   fs::create_directories(scratch / "recording");
   std::ofstream(scratch / "recording" / "rgb.txt") << "1.0 a.png\nx b.png\n";
@@ -157,13 +157,13 @@ void check_refusals(int& failures) {
 /// @return The exit code.
 int run() {
   int failures = 0;
-  const nlohmann::json cases = slam_it_all::testing::load_fixture("eval/sequences.json")["cases"];
+  const nlohmann::json cases = slam_it::testing::load_fixture("eval/sequences.json")["cases"];
   check_tum(cases["tum"], failures);
   check_euroc(cases["euroc"]["euroc"], failures);
   check_refusals(failures);
-  return slam_it_all::testing::finish("eval/sequences", failures);
+  return slam_it::testing::finish("eval/sequences", failures);
 }
 
 }  // namespace
 
-int main() { return slam_it_all::testing::guarded("eval/sequences", run); }
+int main() { return slam_it::testing::guarded("eval/sequences", run); }

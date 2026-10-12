@@ -1,5 +1,5 @@
 /// @file
-/// @brief Native tests for the RANSAC core (slam_it_all/foundations/ransac.hpp), through a
+/// @brief Native tests for the RANSAC core (slam_it/foundations/ransac.hpp), through a
 ///        line-fitting estimator: the same run as tests/foundations/test_ransac.py, so the
 ///        two backends draw the same samples and stop on the same iteration.
 #include <Eigen/Dense>
@@ -8,16 +8,16 @@
 #include <span>
 #include <vector>
 
-#include "slam_it_all/foundations/error.hpp"
-#include "slam_it_all/foundations/nls.hpp"
-#include "slam_it_all/foundations/ransac.hpp"
-#include "slam_it_all/foundations/solve.hpp"
+#include "slam_it/foundations/error.hpp"
+#include "slam_it/foundations/nls.hpp"
+#include "slam_it/foundations/ransac.hpp"
+#include "slam_it/foundations/solve.hpp"
 #include "test_support.hpp"
 
 namespace {
 
-namespace ransac = slam_it_all::foundations::ransac;
-using slam_it_all::testing::expect;
+namespace ransac = slam_it::foundations::ransac;
+using slam_it::testing::expect;
 
 /// @brief Fit 2D lines `a x + b y + c = 0` (with `a^2 + b^2 = 1`): two points minimally,
 ///        total least squares otherwise. Mirrors `LineEstimator` in test_ransac.py.
@@ -132,7 +132,7 @@ int main() {
 
   const LineEstimator coincident(Eigen::MatrixX2d::Zero(10, 2));
   const auto none = ransac::estimate(coincident, options);
-  expect(!none.has_value() && none.error().kind == slam_it_all::foundations::ErrorKind::kDegenerate,
+  expect(!none.has_value() && none.error().kind == slam_it::foundations::ErrorKind::kDegenerate,
          "no model from any sample is Degenerate", failures);
   expect(!ransac::estimate(estimator, ransac::Options{.threshold = 0.0}).has_value(),
          "a zero threshold is rejected", failures);
@@ -141,10 +141,10 @@ int main() {
     const auto failed = ransac::refine_consensus(
         estimator, *result,
         [](const LineEstimator::Model& /*model*/, const ransac::Indices& /*inliers*/)
-            -> slam_it_all::foundations::Result<slam_it_all::foundations::solve::Solution<
-                LineEstimator::Model, slam_it_all::foundations::nls::Summary>> {
-          return slam_it_all::foundations::fail(slam_it_all::foundations::ErrorKind::kInvalidInput,
-                                                "solve: the initial cost is not finite");
+            -> slam_it::foundations::Result<slam_it::foundations::solve::Solution<
+                LineEstimator::Model, slam_it::foundations::nls::Summary>> {
+          return slam_it::foundations::fail(slam_it::foundations::ErrorKind::kInvalidInput,
+                                            "solve: the initial cost is not finite");
         },
         options.threshold, 2);
     expect(failed.summary.rounds == 1 && !failed.summary.refined &&
@@ -154,5 +154,5 @@ int main() {
   expect(ransac::required_iterations(1.0, 4, 0.99) == 0.0 &&
              std::isinf(ransac::required_iterations(0.0, 4, 0.99)),
          "the bound's edges", failures);
-  return slam_it_all::testing::finish("foundations/ransac", failures);
+  return slam_it::testing::finish("foundations/ransac", failures);
 }

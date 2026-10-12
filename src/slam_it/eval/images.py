@@ -1,0 +1,216 @@
+"""Reading and writing images, and encoding them as JPEG: the one module that imports Pillow.
+
+The C++ and Rust cores decode PNGs natively (stb_image in C++'s ``slam_it_eval``, the ``png``
+crate in Rust's ``slam-it-eval``); this is Python's side, and the three read a file the same
+way:
+
+- **Gray:** an 8-bit gray PNG as stored (a gray-and-alpha one without its alpha; a 1-bit one
+  as 0 and 255); an 8-bit colour one (RGB, RGBA, or a palette expanded to RGB) through
+  :func:`slam_it.foundations.image.to_gray`, which is OpenCV's conversion bit for bit (not
+  Pillow's ``convert("L")``, which rounds differently).
+- **Colour:** RGB as stored; gray replicated into three channels; alpha dropped.
+- **Depth:** a 16-bit single-channel PNG's raw values; the dataset modules scale them.
+
+:func:`encode_jpeg` encodes a frame for the run viewer's bundles
+(:mod:`slam_it.orchestration.bundles`); :func:`write_png` writes the frames a phone's video
+is imported as (:mod:`slam_it.eval.video`).
+
+An import-linter contract keeps Pillow here: no other slam_it module may import it.
+"""
+
+from __future__ import annotations
+
+import io
+from pathlib import Path
+
+import numpy as np
+from numpy.typing import NDArray
+from PIL import Image
+
+from slam_it.foundations import image
+from slam_it.foundations.errors import InvalidInputError
+
+_GRAY_MODES = ("L", "LA")
+"""Pillow's 8-bit gray modes (with and without alpha)."""
+
+_COLOUR_MODES = ("RGB", "RGBA", "P", "PA")
+"""Pillow's 8-bit colour modes (a palette is expanded to RGB)."""
+
+_DEPTH_MODES = ("I;16", "I;16B", "I;16L", "I")
+"""Pillow's modes for a 16-bit single-channel PNG (``I`` holds it as 32-bit integers)."""
+
+
+def _open(path: str | Path) -> Image.Image:
+    """Open and decode an image file fully.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the file does not exist.
+    slam_it.foundations.errors.InvalidInputError
+        If it is not an image Pillow can read.
+    """
+    file = Path(path)
+    if not file.is_file():
+        raise FileNotFoundError(f"no image at {file}")
+    try:
+        with Image.open(file) as opened:
+            opened.load()
+            return opened.copy()
+    except (OSError, Image.DecompressionBombError) as error:  # a bomb: far above any dataset's
+        raise InvalidInputError(f"{file}: not a readable image ({error})") from None
+
+
+def _open8(path: str | Path) -> Image.Image:
+    """Open an 8-bit image, a 1-bit one widened to 0 and 255 as the native decoders do."""
+    picture = _open(path)
+    return picture.convert("L") if picture.mode == "1" else picture
+
+
+def _rgb(picture: Image.Image, path: str | Path) -> NDArray[np.uint8]:
+    """Return an 8-bit picture's colour channels, (H, W, 3)."""
+    if picture.mode in _GRAY_MODES:
+        gray = np.asarray(picture.getchannel(0), dtype=np.uint8)
+        return np.ascontiguousarray(np.repeat(gray[:, :, None], 3, axis=2))
+    if picture.mode in _COLOUR_MODES:
+        return np.ascontiguousarray(np.asarray(picture.convert("RGB"), dtype=np.uint8))
+    raise InvalidInputError(f"{path}: expected an 8-bit image, got Pillow mode {picture.mode}")
+
+
+def read_gray(path: str | Path) -> NDArray[np.uint8]:
+    """Read an 8-bit image as gray.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        The file.
+
+    Returns
+    -------
+    ndarray of uint8, shape (H, W)
+        A gray file's values as stored; a colour file's through
+        :func:`slam_it.foundations.image.to_gray`.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the file does not exist.
+    slam_it.foundations.errors.InvalidInputError
+        If it is not an 8-bit image.
+    """
+    picture = _open8(path)
+    if picture.mode in _GRAY_MODES:
+        return np.ascontiguousarray(np.asarray(picture.getchannel(0), dtype=np.uint8))
+    return image.to_gray(_rgb(picture, path))
+
+
+def read_rgb(path: str | Path) -> NDArray[np.uint8]:
+    """Read an 8-bit image as RGB.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        The file.
+
+    Returns
+    -------
+    ndarray of uint8, shape (H, W, 3)
+        Red, green and blue; a gray file's value in all three.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the file does not exist.
+    slam_it.foundations.errors.InvalidInputError
+        If it is not an 8-bit image.
+    """
+    return _rgb(_open8(path), path)
+
+
+def read_depth(path: str | Path) -> NDArray[np.uint16]:
+    """Read a 16-bit single-channel image's raw values.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        The file.
+
+    Returns
+    -------
+    ndarray of uint16, shape (H, W)
+        The values as stored (a dataset module gives them units).
+
+    Raises
+    ------
+    FileNotFoundError
+        If the file does not exist.
+    slam_it.foundations.errors.InvalidInputError
+        If it is not a 16-bit single-channel image.
+    """
+    picture = _open(path)
+    if picture.mode not in _DEPTH_MODES:
+        raise InvalidInputError(
+            f"{path}: expected a 16-bit single-channel image, got Pillow mode {picture.mode}"
+        )
+    values = np.asarray(picture)
+    if values.min(initial=0) < 0 or values.max(initial=0) > np.iinfo(np.uint16).max:
+        raise InvalidInputError(f"{path}: values outside 16 bits")
+    return np.ascontiguousarray(values, dtype=np.uint16)
+
+
+def _check_picture(picture: object) -> NDArray[np.uint8]:
+    """Return an 8-bit gray or RGB image, refusing anything else."""
+    if not isinstance(picture, np.ndarray) or picture.dtype != np.uint8:
+        raise InvalidInputError("picture: expected a uint8 array")
+    if picture.ndim != 2 and (picture.ndim != 3 or picture.shape[2] != 3):
+        raise InvalidInputError(f"picture: expected (H, W) or (H, W, 3), got {picture.shape}")
+    return picture
+
+
+def write_png(path: str | Path, picture: NDArray[np.uint8]) -> None:
+    """Write an 8-bit gray or RGB image as a PNG file, its folder created.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        The file to write.
+    picture : ndarray of uint8, shape (H, W) or (H, W, 3)
+        A gray or RGB image; :func:`read_gray` and :func:`read_rgb` read it back as given.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the image is not 8-bit gray or RGB.
+    """
+    checked = _check_picture(picture)
+    file = Path(path)
+    file.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(np.ascontiguousarray(checked)).save(file, format="PNG")
+
+
+def encode_jpeg(picture: NDArray[np.uint8], quality: int) -> bytes:
+    """Encode an 8-bit image as a JPEG file's bytes (baseline, 4:2:0 for colour).
+
+    Parameters
+    ----------
+    picture : ndarray of uint8, shape (H, W) or (H, W, 3)
+        A gray or RGB image.
+    quality : int
+        The JPEG quality, from 1 to 95 (Pillow's useful range).
+
+    Returns
+    -------
+    bytes
+        The file's bytes.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the image is not 8-bit gray or RGB, or the quality is out of range.
+    """
+    checked = _check_picture(picture)
+    if not 1 <= quality <= 95:  # Pillow's documented range
+        raise InvalidInputError(f"quality: expected 1 to 95, got {quality}")
+    buffer = io.BytesIO()
+    Image.fromarray(np.ascontiguousarray(checked)).save(buffer, format="JPEG", quality=quality)
+    return buffer.getvalue()

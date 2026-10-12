@@ -1,6 +1,6 @@
 /// @file
-/// @brief Implementation of the run writer declared in slam_it_all/eval/runs.hpp.
-#include "slam_it_all/eval/runs.hpp"
+/// @brief Implementation of the run writer declared in slam_it/eval/runs.hpp.
+#include "slam_it/eval/runs.hpp"
 
 #include <algorithm>
 #include <array>
@@ -15,10 +15,10 @@
 #include <system_error>
 #include <tuple>
 
-#include "slam_it_all/foundations/se3.hpp"
-#include "slam_it_all/foundations/so3.hpp"
+#include "slam_it/foundations/se3.hpp"
+#include "slam_it/foundations/so3.hpp"
 
-namespace slam_it_all::eval::runs {
+namespace slam_it::eval::runs {
 
 namespace {
 
@@ -539,4 +539,4 @@ Result<void> FeatureWriter::count() {
   return {};
 }
 
-}  // namespace slam_it_all::eval::runs
+}  // namespace slam_it::eval::runs

@@ -4,6 +4,44 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.3.7.0] - 2026-10-12
+
+The project is renamed from SLAM It All! to SLAM It!, which is shorter, easier to remember, and what
+the demo does to a video. The rename is a clean break with no alias. Nothing computes differently:
+the room's runs in all three languages still match their golden record, which the rename did not
+touch, and runs before and after on TUM fr1/desk (RGB-D, 133 frames, and monocular, 150) and EuRoC
+MH_01 (stereo, 200) in all three languages are identical file for file, features and lifetimes
+included, but for the measured timings and peak memory and `run.json`'s format name. Every name
+differs, though: the formats', the environment variables' (a deployment sets the new `SLAM_IT_*`
+ones), the modules' and crates', the images', and the demo's default folder's (one of the old name
+is not read).
+
+### Changed
+
+- **Code uses `slam_it`:**
+  - the Python package, and the server's, `slam_it_server`;
+  - the C++ namespace and include directory;
+  - the libraries and programs (`slam_it_foundations`, `slam_it_vo`);
+  - the extension modules `slam_it._cpp` and `slam_it_rs`.
+- **Everything else uses `slam-it`:**
+  - the distribution;
+  - the Rust crates (`slam-it-foundations` and the rest);
+  - the conda envs (`slam-it`, `slam-it-ci`) and their lock (`scripts/locks/slam-it.lock`);
+  - the review panel (`/slam-it-review-panel`, `slam-it-*-reviewer`);
+  - the Docker images (`slam-it-server`, `slam-it-worker`), the viewer's package, the demo's
+    folder (`~/.local/share/slam-it/demo`) and the planned subdomain
+    (`slam-it.timedilated.com`).
+- **Other forms:**
+  - `SLAM_IT_` prefixes the CMake options and environment variables, the server's and the
+    worker's settings among them (`SLAM_IT_INVITE_CODES`, `SLAM_IT_WORKER_TOKEN`);
+  - `SlamItError` is the base exception.
+- **Renamed files:** `scripts/setup_slam_it.sh` builds the env, and the ladder is
+  `docs/design/2026-10-02-slam-it-ladder.md`.
+- **The formats are named `slam-it-run` and `slam-it-bundle`.** A run or bundle written before
+  the rename no longer reads.
+- **History is kept as written.** Earlier entries here and the review reports in
+  `docs/reviews/` keep the old names.
+
 ## [0.3.6.0] - 2026-10-11
 
 Your own video: a phone video, or a Stray Scanner recording, uploaded through a page, imported

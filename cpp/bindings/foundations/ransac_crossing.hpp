@@ -1,7 +1,7 @@
 /// @file
 /// @brief Shared by every binding that runs RANSAC: its options in, its solution out.
 ///
-/// The options cross as one dict of scalars keyed by `slam_it_all.foundations.ransac.Options`'
+/// The options cross as one dict of scalars keyed by `slam_it.foundations.ransac.Options`'
 /// field names; a missing or unknown key is an error, so the two sides cannot drift apart.
 /// A solution crosses as a dict: `model`, `inliers` (bool) and `summary`, a dict of the
 /// summary's fields with `termination` as its index in `codes()["ransac_termination"]`.
@@ -23,9 +23,9 @@
 
 #include "common.hpp"
 #include "foundations/nls_crossing.hpp"
-#include "slam_it_all/foundations/ransac.hpp"
+#include "slam_it/foundations/ransac.hpp"
 
-namespace slam_it_all::bindings {
+namespace slam_it::bindings {
 
 /// @brief `ransac::Options`' fields, as the dict's keys.
 inline constexpr std::array<const char*, 10> kRansacOptionKeys = {"threshold",
@@ -148,4 +148,4 @@ inline nanobind::dict refined_codes() {
   return out;
 }
 
-}  // namespace slam_it_all::bindings
+}  // namespace slam_it::bindings

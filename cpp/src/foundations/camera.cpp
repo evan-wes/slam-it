@@ -1,13 +1,13 @@
 /// @file
-/// @brief Implementation of the camera models declared in slam_it_all/foundations/camera.hpp.
-#include "slam_it_all/foundations/camera.hpp"
+/// @brief Implementation of the camera models declared in slam_it/foundations/camera.hpp.
+#include "slam_it/foundations/camera.hpp"
 
 #include <Eigen/Dense>
 #include <algorithm>
 #include <array>
 #include <cmath>
 
-namespace slam_it_all::foundations::camera {
+namespace slam_it::foundations::camera {
 
 namespace {
 
@@ -290,4 +290,4 @@ Result<Eigen::Vector3d> unproject(Model model, const Eigen::Ref<const Eigen::Vec
   });
 }
 
-}  // namespace slam_it_all::foundations::camera
+}  // namespace slam_it::foundations::camera

@@ -1,16 +1,16 @@
 [workspace]
 resolver = "2"
 members = [
-  "slam-it-all-edge",
-  "slam-it-all-eval",
-  "slam-it-all-foundations",
-  "slam-it-all-orchestration",
-  "slam-it-all-py",
+  "slam-it-edge",
+  "slam-it-eval",
+  "slam-it-foundations",
+  "slam-it-orchestration",
+  "slam-it-py",
 ]
 
 [workspace.dependencies]
 nalgebra = "0.35.0"
-# Every SVD in the crate (slam-it-all-foundations' linalg): backward stable, where nalgebra 0.35's
+# Every SVD in the crate (slam-it-foundations' linalg): backward stable, where nalgebra 0.35's
 # are not (PR 6 panel, L1 and L2). Single-threaded: no rayon, like the cores.
 faer = { version = "0.24.4", default-features = false, features = ["std"] }
 

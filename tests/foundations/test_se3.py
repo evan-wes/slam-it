@@ -8,9 +8,9 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from slam_it_all import backends
-from slam_it_all.foundations import se3
-from slam_it_all.foundations.errors import InvalidInputError
+from slam_it import backends
+from slam_it.foundations import se3
+from slam_it.foundations.errors import InvalidInputError
 from tests.conftest import (
     check_parity,
     load_fixture,

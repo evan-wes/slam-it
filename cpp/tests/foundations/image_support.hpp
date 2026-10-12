@@ -5,10 +5,10 @@
 #include <cstdint>
 #include <nlohmann/json.hpp>
 
-#include "slam_it_all/foundations/image.hpp"
+#include "slam_it/foundations/image.hpp"
 
-/// @brief Helpers for SLAM It All!'s native tests.
-namespace slam_it_all::testing {
+/// @brief Helpers for SLAM It!'s native tests.
+namespace slam_it::testing {
 
 /// @brief Read a fixture's nested list of intensities as an image.
 /// @param rows The list of rows, each a list of intensities.
@@ -25,4 +25,4 @@ inline foundations::image::Image read_image(const nlohmann::json& rows) {
   return out;
 }
 
-}  // namespace slam_it_all::testing
+}  // namespace slam_it::testing

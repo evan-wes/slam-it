@@ -11,10 +11,10 @@
 #include <utility>
 #include <vector>
 
-#include "slam_it_all/edge/frames.hpp"
-#include "slam_it_all/edge/map.hpp"
+#include "slam_it/edge/frames.hpp"
+#include "slam_it/edge/map.hpp"
 
-namespace slam_it_all::testing::scene {
+namespace slam_it::testing::scene {
 
 /// @brief The scene's points.
 inline constexpr std::size_t kPoints = 60;
@@ -139,4 +139,4 @@ inline foundations::Result<edge::Map> map() {
   return m;
 }
 
-}  // namespace slam_it_all::testing::scene
+}  // namespace slam_it::testing::scene

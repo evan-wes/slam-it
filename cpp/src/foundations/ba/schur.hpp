@@ -15,9 +15,9 @@
 #include <vector>
 
 #include "common.hpp"
-#include "slam_it_all/foundations/ba.hpp"
+#include "slam_it/foundations/ba.hpp"
 
-namespace slam_it_all::foundations::ba::detail {
+namespace slam_it::foundations::ba::detail {
 
 /// @brief Maps between the full camera-side vector (6 per pose, P per group, 2 per affine) and
 ///        the free coordinates: the free full entries, in order, then each confined pose's
@@ -330,4 +330,4 @@ class SchurSystem {
   IndexList offsets_;
 };
 
-}  // namespace slam_it_all::foundations::ba::detail
+}  // namespace slam_it::foundations::ba::detail

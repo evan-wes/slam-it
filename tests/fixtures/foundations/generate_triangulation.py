@@ -4,7 +4,7 @@ Run from the repository root after changing the cases (the fixtures are committe
 
     python -m tests.fixtures.foundations.generate_triangulation
 
-Independent methods, nothing imported from slam_it_all:
+Independent methods, nothing imported from slam_it:
 
 - ``two_view``: noise-free cases expect the true points. Noisy cases expect the minimiser of
   the squared reprojection error in both normalised image planes (the quantity Lindstrom's

@@ -10,8 +10,8 @@ from types import ModuleType
 import numpy as np
 import pytest
 
-from slam_it_all.edge.options import Options
-from slam_it_all.eval import runs
+from slam_it.edge.options import Options
+from slam_it.eval import runs
 from tests.conftest import FIXTURES
 
 REPO = Path(__file__).resolve().parents[1]

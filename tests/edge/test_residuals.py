@@ -6,9 +6,9 @@ import numpy as np
 import pytest
 from numpy.typing import ArrayLike
 
-from slam_it_all import backends
-from slam_it_all.edge import residuals
-from slam_it_all.foundations.errors import InvalidInputError
+from slam_it import backends
+from slam_it.edge import residuals
+from slam_it.foundations.errors import InvalidInputError
 from tests.conftest import require_function
 from tests.edge.conftest import Truth
 from tests.edge.support import CAMERA, OPTIONS, assert_close

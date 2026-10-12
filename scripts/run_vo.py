@@ -1,16 +1,16 @@
 """Run a sequence through the edge pipeline with any backend, score the run, and record it.
 
-Writes the run's folder with :func:`slam_it_all.orchestration.vo.run` (or reads one already
+Writes the run's folder with :func:`slam_it.orchestration.vo.run` (or reads one already
 written, with ``--reuse``), then prints what it holds: frames tracked, keyframes, map points,
-its frames judged against their real-time deadline (:func:`slam_it_all.eval.budgets.judge`), and
+its frames judged against their real-time deadline (:func:`slam_it.eval.budgets.judge`), and
 what its program recorded of its process (peak memory, CPUs, memory cap). ``--budget
 laptop-cpu`` runs the backend's program within that compute budget
-(:mod:`slam_it_all.eval.budgets`), pinned and its memory capped. ``--record-features`` records
+(:mod:`slam_it.eval.budgets`), pinned and its memory capped. ``--record-features`` records
 each frame's keypoints with their fates, for the run viewer
-(:func:`slam_it_all.eval.runs.read_features`). With the
+(:func:`slam_it.eval.runs.read_features`). With the
 sequence's ground truth (TUM's ``groundtruth.txt``, EuRoC's ``state_groundtruth_estimate0``) it
 prints the ATE (Sim(3)-aligned for monocular, SE(3) otherwise) and the RPE over one frame
-period (:func:`slam_it_all.eval.runs.evaluate`). With ``--rerun FILE.rrd`` it saves a rerun
+period (:func:`slam_it.eval.runs.evaluate`). With ``--rerun FILE.rrd`` it saves a rerun
 recording of the trajectory, the keyframes and the map points (open it with
 ``rerun FILE.rrd``).
 
@@ -19,8 +19,8 @@ Example, the C++ program on 300 frames of a TUM sequence::
     python scripts/run_vo.py --dataset tum --sequence PATH --mode rgbd --out RUN_DIR
         --backend cpp --count 300 --rerun RUN.rrd
 
-``--option KEY=VALUE`` sets a field of :class:`slam_it_all.edge.options.Options` (repeatable),
-read as the programs read it (:func:`slam_it_all.orchestration.vo.parse_setting`).
+``--option KEY=VALUE`` sets a field of :class:`slam_it.edge.options.Options` (repeatable),
+read as the programs read it (:func:`slam_it.orchestration.vo.parse_setting`).
 """
 
 from __future__ import annotations
@@ -32,11 +32,11 @@ from typing import Any
 
 import numpy as np
 
-from slam_it_all import backends
-from slam_it_all.edge.options import MODES, Options
-from slam_it_all.eval import budgets, runs
-from slam_it_all.foundations.errors import DegenerateError, InvalidInputError
-from slam_it_all.orchestration import vo
+from slam_it import backends
+from slam_it.edge.options import MODES, Options
+from slam_it.eval import budgets, runs
+from slam_it.foundations.errors import DegenerateError, InvalidInputError
+from slam_it.orchestration import vo
 
 
 def parse_options(pairs: list[str]) -> Options:
@@ -49,14 +49,14 @@ def parse_options(pairs: list[str]) -> Options:
 
     Returns
     -------
-    slam_it_all.edge.options.Options
+    slam_it.edge.options.Options
         The defaults, with the pairs' fields set.
 
     Raises
     ------
     SystemExit
         For a pair without ``=``, an unknown field, or a value not of its type
-        (:func:`slam_it_all.orchestration.vo.parse_setting`).
+        (:func:`slam_it.orchestration.vo.parse_setting`).
     """
     changes: dict[str, Any] = {}  # each of its field's type (parse_setting)
     try:
@@ -71,14 +71,14 @@ def score(run: runs.Run, truth: runs.Truth | None) -> runs.Evaluation | None:
 
     Parameters
     ----------
-    run : slam_it_all.eval.runs.Run
+    run : slam_it.eval.runs.Run
         The run.
-    truth : slam_it_all.eval.runs.Truth or None
+    truth : slam_it.eval.runs.Truth or None
         The ground truth.
 
     Returns
     -------
-    slam_it_all.eval.runs.Evaluation or None
+    slam_it.eval.runs.Evaluation or None
         The ATE and RPE, or None (the reason printed).
     """
     if truth is None:
@@ -96,9 +96,9 @@ def summarize(run: runs.Run, scored: runs.Evaluation | None) -> None:
 
     Parameters
     ----------
-    run : slam_it_all.eval.runs.Run
+    run : slam_it.eval.runs.Run
         The run.
-    scored : slam_it_all.eval.runs.Evaluation or None
+    scored : slam_it.eval.runs.Evaluation or None
         Its errors.
     """
     print(
@@ -157,16 +157,16 @@ def record(
     ----------
     path : pathlib.Path
         The ``.rrd`` file to write.
-    run : slam_it_all.eval.runs.Run
+    run : slam_it.eval.runs.Run
         The run.
-    truth : slam_it_all.eval.runs.Truth or None
+    truth : slam_it.eval.runs.Truth or None
         The ground truth.
-    scored : slam_it_all.eval.runs.Evaluation or None
+    scored : slam_it.eval.runs.Evaluation or None
         The run's errors, for the alignment.
     """
     import rerun as rr  # noqa: PLC0415 -- optional, only for --rerun
 
-    rr.init("slam_it_all_vo")
+    rr.init("slam_it_vo")
     rr.save(str(path))
     if scored is not None:
         alignment = scored.absolute.alignment

@@ -1,6 +1,6 @@
 /// @file
-/// @brief Bindings for `slam_it_all.foundations.p3p` (`slam_it_all._cpp.foundations.p3p`).
-#include "slam_it_all/foundations/p3p.hpp"
+/// @brief Bindings for `slam_it.foundations.p3p` (`slam_it._cpp.foundations.p3p`).
+#include "slam_it/foundations/p3p.hpp"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -12,7 +12,7 @@
 
 namespace nb = nanobind;
 
-namespace slam_it_all::bindings {
+namespace slam_it::bindings {
 
 namespace {
 
@@ -45,4 +45,4 @@ void bind_p3p(nb::module_& m) {
         nb::arg("solver"), "Return every pose T_cam_world three correspondences allow, (K, 4, 4).");
 }
 
-}  // namespace slam_it_all::bindings
+}  // namespace slam_it::bindings

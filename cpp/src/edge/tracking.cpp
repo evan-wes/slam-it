@@ -1,6 +1,6 @@
 /// @file
-/// @brief Implementation of the tracking declared in slam_it_all/edge/tracking.hpp.
-#include "slam_it_all/edge/tracking.hpp"
+/// @brief Implementation of the tracking declared in slam_it/edge/tracking.hpp.
+#include "slam_it/edge/tracking.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -8,15 +8,15 @@
 #include <string>
 #include <utility>
 
-#include "slam_it_all/edge/residuals.hpp"
-#include "slam_it_all/foundations/correspondences.hpp"
-#include "slam_it_all/foundations/matching.hpp"
-#include "slam_it_all/foundations/p3p.hpp"
-#include "slam_it_all/foundations/pnp.hpp"
-#include "slam_it_all/foundations/ransac.hpp"
-#include "slam_it_all/foundations/so3.hpp"
+#include "slam_it/edge/residuals.hpp"
+#include "slam_it/foundations/correspondences.hpp"
+#include "slam_it/foundations/matching.hpp"
+#include "slam_it/foundations/p3p.hpp"
+#include "slam_it/foundations/pnp.hpp"
+#include "slam_it/foundations/ransac.hpp"
+#include "slam_it/foundations/so3.hpp"
 
-namespace slam_it_all::edge {
+namespace slam_it::edge {
 
 namespace {
 
@@ -161,7 +161,7 @@ Result<std::vector<bool>> classify(const Camera& camera, const Observations& obs
   return out;
 }
 
-/// @brief Refine a pose (`slam_it_all.edge.tracking._optimize_pose`), unchecked.
+/// @brief Refine a pose (`slam_it.edge.tracking._optimize_pose`), unchecked.
 /// @param m The map.
 /// @param camera The camera.
 /// @param frame The frame.
@@ -209,7 +209,7 @@ Result<Tracked> refine(const Map& m, const Camera& camera, const Frame& frame,
   return out;
 }
 
-/// @brief Select the points in view (`slam_it_all.edge.tracking._in_view`), unchecked.
+/// @brief Select the points in view (`slam_it.edge.tracking._in_view`), unchecked.
 /// @param m The map.
 /// @param camera The camera.
 /// @param pose The camera's pose.
@@ -564,4 +564,4 @@ Result<Relocalization> relocalize_locally(const Map& m, const Camera& camera, co
   return out;
 }
 
-}  // namespace slam_it_all::edge
+}  // namespace slam_it::edge

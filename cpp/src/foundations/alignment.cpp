@@ -1,11 +1,11 @@
 /// @file
 /// @brief Implementation of the Umeyama alignment declared in
-/// slam_it_all/foundations/alignment.hpp.
-#include "slam_it_all/foundations/alignment.hpp"
+/// slam_it/foundations/alignment.hpp.
+#include "slam_it/foundations/alignment.hpp"
 
 #include <Eigen/Dense>
 
-namespace slam_it_all::foundations::alignment {
+namespace slam_it::foundations::alignment {
 
 Result<Eigen::Matrix4d> umeyama(
     const Eigen::Ref<const Eigen::Matrix<double, Eigen::Dynamic, 3, Eigen::RowMajor>>& source,
@@ -47,4 +47,4 @@ Result<Eigen::Matrix4d> umeyama(
   return out;
 }
 
-}  // namespace slam_it_all::foundations::alignment
+}  // namespace slam_it::foundations::alignment

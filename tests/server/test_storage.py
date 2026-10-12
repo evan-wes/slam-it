@@ -11,8 +11,8 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 from botocore.stub import Stubber
 
-from slam_it_all_server.config import LINK_SECONDS
-from slam_it_all_server.storage import FolderStorage, S3Storage, StorageError, check_key
+from slam_it_server.config import LINK_SECONDS
+from slam_it_server.storage import FolderStorage, S3Storage, StorageError, check_key
 from tests.server.conftest import Clock
 
 

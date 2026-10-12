@@ -10,10 +10,10 @@ from typing import Any
 import numpy as np
 import pytest
 
-from slam_it_all import backends
-from slam_it_all.eval import images, runs
-from slam_it_all.foundations.errors import InvalidInputError
-from slam_it_all.orchestration import bundles, vo
+from slam_it import backends
+from slam_it.eval import images, runs
+from slam_it.foundations.errors import InvalidInputError
+from slam_it.orchestration import bundles, vo
 from tests.conftest import FIXTURES
 from tests.edge.support import FRAMES, OPTIONS
 from tests.fixtures.orchestration.generate_bundle import short_runs

@@ -1,6 +1,6 @@
 /// @file
-/// @brief P3P: Lambda Twist and Ding et al.'s solver (see `slam_it_all/foundations/p3p.hpp`).
-#include "slam_it_all/foundations/p3p.hpp"
+/// @brief P3P: Lambda Twist and Ding et al.'s solver (see `slam_it/foundations/p3p.hpp`).
+#include "slam_it/foundations/p3p.hpp"
 
 #include <Eigen/Dense>
 #include <algorithm>
@@ -12,10 +12,10 @@
 #include <utility>
 #include <vector>
 
-#include "slam_it_all/foundations/alignment.hpp"
-#include "slam_it_all/foundations/so3.hpp"
+#include "slam_it/foundations/alignment.hpp"
+#include "slam_it/foundations/so3.hpp"
 
-namespace slam_it_all::foundations::p3p {
+namespace slam_it::foundations::p3p {
 
 using correspondences::Rows3;
 
@@ -566,4 +566,4 @@ Result<std::vector<Eigen::Matrix4d>> p3p(const Eigen::Ref<const correspondences:
   return solve(points, bearings, solver);
 }
 
-}  // namespace slam_it_all::foundations::p3p
+}  // namespace slam_it::foundations::p3p

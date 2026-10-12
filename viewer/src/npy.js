@@ -1,6 +1,6 @@
 // Reading a bundle's .npy files: the header numpy writes, then the data as a typed array.
 //
-// A bundle's arrays are little-endian float32 and int32 in C order (slam_it_all.orchestration
+// A bundle's arrays are little-endian float32 and int32 in C order (slam_it.orchestration
 // .bundles); numpy pads the header so the data starts on a 64-byte boundary, so the data is
 // viewed in place, not copied.
 

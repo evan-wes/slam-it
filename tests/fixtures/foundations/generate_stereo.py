@@ -10,7 +10,7 @@ from their definitions; each map pixel is computed from the pinhole inverse and 
 Brown-Conrady formula written out here. Rotations agree to rounding (``1e-12``), maps to the
 distortion polynomial's rounding (``1e-9`` pixels).
 
-The matching cases' inputs are prepared with SLAM It All!'s image and ORB modules (a synthetic pair
+The matching cases' inputs are prepared with SLAM It!'s image and ORB modules (a synthetic pair
 and its features: the matcher's input, not its oracle); their expected matches come from a
 plain-Python brute force over the definition, written here: zero-mean SAD, the V fit, and the
 exact maps between levels and the full image. Those are exact.
@@ -25,7 +25,7 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from slam_it_all.foundations import image, orb
+from slam_it.foundations import image, orb
 from tests.fixtures.foundations._layout import dumps
 
 OUT = Path(__file__).with_name("stereo.json")

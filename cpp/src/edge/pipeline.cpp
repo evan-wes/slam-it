@@ -1,6 +1,6 @@
 /// @file
-/// @brief Implementation of the pipeline declared in slam_it_all/edge/pipeline.hpp.
-#include "slam_it_all/edge/pipeline.hpp"
+/// @brief Implementation of the pipeline declared in slam_it/edge/pipeline.hpp.
+#include "slam_it/edge/pipeline.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -8,11 +8,11 @@
 #include <utility>
 #include <vector>
 
-#include "slam_it_all/edge/mapping.hpp"
-#include "slam_it_all/edge/tracking.hpp"
-#include "slam_it_all/foundations/se3.hpp"
+#include "slam_it/edge/mapping.hpp"
+#include "slam_it/edge/tracking.hpp"
+#include "slam_it/foundations/se3.hpp"
 
-namespace slam_it_all::edge {
+namespace slam_it::edge {
 
 using foundations::ErrorKind;
 using foundations::fail;
@@ -21,7 +21,7 @@ using foundations::Result;
 namespace {
 
 /// @brief Give a fate to the keypoints a stage gave a point, over any fate before it
-///        (`slam_it_all.edge.pipeline._Step.fates`, applied rejected, tracked, then made).
+///        (`slam_it.edge.pipeline._Step.fates`, applied rejected, tracked, then made).
 /// @param fates The frame's fates, changed.
 /// @param fate The fate.
 /// @param ids Each keypoint's point, -1 where none; empty if no stage gave them.
@@ -398,4 +398,4 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
               .made = std::move(made)};
 }
 
-}  // namespace slam_it_all::edge
+}  // namespace slam_it::edge

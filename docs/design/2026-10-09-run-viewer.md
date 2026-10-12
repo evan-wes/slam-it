@@ -2,11 +2,11 @@
 
 Milestone 2's last two slices:
 - **PR 10** builds the run viewer that the ladder's
-  [Public presentation](2026-10-02-slam-it-all-ladder.md#public-presentation) section promises.
+  [Public presentation](2026-10-02-slam-it-ladder.md#public-presentation) section promises.
   It is a page that replays a recorded run frame by frame, in each of the three languages.
 - **PR 11** lets anyone with an invite code upload a phone video, or a Stray Scanner recording.
   It is run through the pipeline and the result opens in the same viewer. It is packaged to run
-  locally, then on Railway: first at a staging address, and at `slam-it-all.timedilated.com`
+  locally, then on Railway: first at a staging address, and at `slam-it.timedilated.com`
   once the owner calls go-live.
 
 Decided with evan-wes on 2026-10-08:
@@ -149,7 +149,7 @@ feature files.
 - **Still real time.** The budget runs (`pytest -m budget`) pass with summaries and lifetimes
   on and features off.
 
-## 3. The bake (PR 10, Python, `slam_it_all.orchestration.bundles`)
+## 3. The bake (PR 10, Python, `slam_it.orchestration.bundles`)
 
 Built in orchestration, not eval (decided 2026-10-10): it takes each frame's image from the
 run's own source, so a stereo frame's image is the rectified one its keypoints were found in.
@@ -160,7 +160,7 @@ serve. Like runs, bundles live outside the repo (`../bundles/`). The page reads 
 
 A bundle holds:
 - **`bundle.json`:**
-  - the format and its version (`slam-it-all-bundle`, version 1);
+  - the format and its version (`slam-it-bundle`, version 1);
   - the sequence, mode and camera, and the frame count and times;
   - the backends, the frames each covers, and the alignment each was moved by;
   - whether there is ground truth;
@@ -186,7 +186,7 @@ A bundle holds:
   says the scale is unknown. A Stray Scanner recording has ARKit's trajectory as its ground
   truth (section 5), so it is aligned and scored like a dataset run.
 
-**Command:** `python -m slam_it_all.orchestration.bundles RUN_DIR... --sequence PATH --out
+**Command:** `python -m slam_it.orchestration.bundles RUN_DIR... --sequence PATH --out
 BUNDLE`. The bake refuses a folder already in use: it never deletes.
 
 **Sizes:** the JPEGs are at quality 75: MH_01 stereo's 3,682 rectified frames come to 163 MB,
@@ -250,7 +250,7 @@ kept outside the repo:
 If Android videos don't name their phone, the fallback is a "which phone is this?" menu on the
 upload page, decided once the clips have been read.
 
-### 5.1 Import (`slam_it_all.eval.video`)
+### 5.1 Import (`slam_it.eval.video`)
 
 The import turns an upload into a TUM-format folder (`rgb/`, `rgb.txt` and `camera.txt`, plus
 `groundtruth.txt` for a Stray Scanner recording). The readers in all three languages already
@@ -277,11 +277,11 @@ accept such a folder without depth, so the pipeline doesn't change. Steps and li
     `camera_matrix.csv` and records how far the per-frame values stray from it.
 - **`source.json`**, beside the frames, records the intrinsics' source and the metadata fields
   used. Location tags and other metadata are never copied.
-- **The same import runs as a command** (`python -m slam_it_all.eval.video`), and the command can
+- **The same import runs as a command** (`python -m slam_it.eval.video`), and the command can
   be told which intrinsics source to use. That is how the tests drive it, and how the fallbacks
   are measured (section 5.2).
 
-### 5.2 Intrinsics: the best source wins (`slam_it_all.eval.lenses`)
+### 5.2 Intrinsics: the best source wins (`slam_it.eval.lenses`)
 
 The sources are tried in order, and the results page names the one used:
 1. **A Stray Scanner recording's camera matrix:** exact. Its ARKit trajectory becomes the
@@ -307,7 +307,7 @@ k4 θ⁸)) maps each pinhole output pixel directly to its source pixel, so no in
 Rung 0's bilinear `image.remap` then resamples.
 - Our camera module (`pinhole`, `radtan`, `radial`) needs no fisheye model, because the pipeline
   only ever sees pinhole frames.
-- OpenCV stays out of `slam_it_all`. The demos use it only as a reference.
+- OpenCV stays out of `slam_it`. The demos use it only as a reference.
 
 **Measured, not assumed:**
 - whether the 35mm equivalent is taken across the frame's diagonal or its width;
@@ -325,8 +325,8 @@ site and the job list run on Railway, and workers connect out to them. PR 11's w
 on Railway. A GPU worker for reifyscene can later run the same protocol on the workstation or on
 an on-demand cloud GPU.
 
-- **The server** (`server/`) is its own small package, `slam_it_all_server`, built on FastAPI and
-  the S3 client. It never imports `slam_it_all`, and a contract enforces that, so the process
+- **The server** (`server/`) is its own small package, `slam_it_server`, built on FastAPI and
+  the S3 client. It never imports `slam_it`, and a contract enforces that, so the process
   holding the secrets never parses a video. It:
   - serves the viewer and the upload page;
   - keeps the job list in SQLite on a Railway volume. A job has a state (waiting for upload,
@@ -340,7 +340,7 @@ an on-demand cloud GPU.
 
   Buckets are private, and Railway charges nothing for bucket downloads. So the server
   redirects requests for bundle files to presigned links rather than proxying them.
-- **The worker** (`slam_it_all.orchestration.worker`):
+- **The worker** (`slam_it.orchestration.worker`):
   1. claims a job over HTTPS with a worker token (long polling);
   2. downloads the upload;
   3. imports it (section 5.1);
@@ -389,14 +389,14 @@ an on-demand cloud GPU.
 
   `docker build` works locally (Docker is installed).
 - **On Railway,** in the `timedilated` project, after PR 11 merges:
-  - a `slam-it-all` service: the server and its volume;
-  - a `slam-it-all-worker` service: no domain, on the private network;
+  - a `slam-it` service: the server and its volume;
+  - a `slam-it-worker` service: no domain, on the private network;
   - a bucket, with CORS set for the service's address.
 - **Staging, then go-live:**
   - **Staging** comes first, on Railway's own `*.up.railway.app` address, with every page behind
     the invite code. Each Railway step (a service, the volume, the bucket, a setting) is taken
     one at a time, each with its own Yes.
-  - **The domain,** `slam-it-all.timedilated.com`, is attached only on the owner's go-live call.
+  - **The domain,** `slam-it.timedilated.com`, is attached only on the owner's go-live call.
 - **Cost:** Railway bills per minute of use, and storage costs $0.015 per GB-month. A polling
   worker never sleeps, so it is billed while it waits.
 

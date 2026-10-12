@@ -1,7 +1,7 @@
 # Bundle adjustment
 
-Design note for `slam_it_all.foundations.ba` (the Python reference) and
-`slam_it_all/foundations/ba.hpp` (the C++ core, bound as `slam_it_all._cpp.foundations.ba`).
+Design note for `slam_it.foundations.ba` (the Python reference) and
+`slam_it/foundations/ba.hpp` (the C++ core, bound as `slam_it._cpp.foundations.ba`).
 
 ## The problem
 
@@ -327,7 +327,7 @@ rotation, `u = f (X - t_x)/Z` is unchanged by `f → kf, Z → kZ`, so no amount
 
 ## Readers, and Ceres as the reference
 
-**BAL** (`slam_it_all.eval.readers.read_bal`). BAL's cameras look down `-z` with `y` up:
+**BAL** (`slam_it.eval.readers.read_bal`). BAL's cameras look down `-z` with `y` up:
 `P = R X + t`, `p = -P/P_z`, `u = f (1 + k1|p|² + k2|p|⁴) p`.
 - **Frames.** Flipping the camera's `y` and `z` axes (`F = diag(1, -1, -1)`) gives
   `T_cam_world = [F R, F t]` and pixels `(x, -y)`.
@@ -337,7 +337,7 @@ rotation, `u = f (X - t_x)/Z` is unchanged by `f → kf, Z → kZ`, so no amount
 - **What is refined.** BAL and Ceres refine `f, k1, k2` but not the principal point, which
   needed per-parameter intrinsics masks: `fixed_intrinsics` is `(K, P)`.
 
-**COLMAP text** (`slam_it_all.eval.readers.read_colmap_text`). Malformed lines and dangling ids
+**COLMAP text** (`slam_it.eval.readers.read_colmap_text`). Malformed lines and dangling ids
 raise `InvalidInputError` naming the file and line.
 - **Pixels.** COLMAP puts pixel centres at `(0.5, 0.5)`, so the reader shifts pixels and
   principal points by -0.5.
@@ -345,7 +345,7 @@ raise `InvalidInputError` naming the file and line.
   `pinhole`; PINHOLE and OPENCV onto `radtan`. Absent terms are zero, and `refinable` marks
   the ones the source model has.
 
-**The reference.** `slam_it_all.eval.colmap_reference` builds a pycolmap reconstruction from a
+**The reference.** `slam_it.eval.colmap_reference` builds a pycolmap reconstruction from a
 problem and runs COLMAP's bundle adjuster, which is Ceres underneath. pyceres was the plan,
 but its reprojection factors are gone from current releases. COLMAP's adjuster is the same
 Ceres, on the same RADIAL model, and is also what reifyscene's reconstructions come from.
@@ -361,8 +361,8 @@ entries. So the comparison is always on the identical problem.
 | Solver | RMS reprojection error | Time |
 |---|---|---|
 | start | 7.314 px | |
-| SLAM It All!, Python | 0.915 px | ~60 s |
-| SLAM It All!, C++ (dense reduced solve) | 0.9147 px | ~2 s |
+| SLAM It!, Python | 0.915 px | ~60 s |
+| SLAM It!, C++ (dense reduced solve) | 0.9147 px | ~2 s |
 | COLMAP's Ceres | 0.9147 px | 0.4 s |
 
 The dense reduced solve is the gap. Milestone 4 brings the sparse one, and the
@@ -374,7 +374,7 @@ and, with `--rerun`, saves a recording of the cameras and points before and afte
 The investigation slice is ten DAVIS scenes plus spin (`runs/slice_*`, rebuilt
 2026-09-30). For each DAVIS scene, `scripts/compare_ba_colmap.py` reads the seed reconstruction
 reifyscene's `pose_refine` stage exports: VGGSfM tracks and VGGT cameras, one shared PINHOLE
-camera, before reifyscene's own BA. It refines the seed with SLAM It All! and with COLMAP's
+camera, before reifyscene's own BA. It refines the seed with SLAM It! and with COLMAP's
 Ceres, on the identical problem:
 - focal lengths free, principal point fixed;
 - trivial loss;

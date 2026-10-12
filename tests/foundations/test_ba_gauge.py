@@ -1,13 +1,13 @@
-"""Unit tests for slam_it_all.foundations.ba.gauge: the remaining gauge, its name, its removal."""
+"""Unit tests for slam_it.foundations.ba.gauge: the remaining gauge, its name, its removal."""
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from slam_it_all.foundations.ba import gauge
-from slam_it_all.foundations.ba.gauge import Anchors, Frame
-from slam_it_all.foundations.errors import DegenerateError
+from slam_it.foundations.ba import gauge
+from slam_it.foundations.ba.gauge import Anchors, Frame
+from slam_it.foundations.errors import DegenerateError
 
 CENTRES = np.array(
     [[0.0, 0.0, 0.0], [0.4, 0.1, 0.0], [0.8, -0.1, 0.05], [1.2, 0.2, -0.05], [1.6, 0.0, 0.1]]

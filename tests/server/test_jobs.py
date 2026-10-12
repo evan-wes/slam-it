@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from slam_it_all.orchestration import worker
-from slam_it_all_server import jobs
-from slam_it_all_server.config import (
+from slam_it.orchestration import worker
+from slam_it_server import jobs
+from slam_it_server.config import (
     LINK_SECONDS,
     QUEUE,
     RETENTION,
@@ -17,7 +17,7 @@ from slam_it_all_server.config import (
     UPLOAD_GRACE,
     UPLOAD_WAIT,
 )
-from slam_it_all_server.jobs import CODE_JOBS, QUEUE_WAIT, SCHEMA_VERSION, Jobs, SchemaError
+from slam_it_server.jobs import CODE_JOBS, QUEUE_WAIT, SCHEMA_VERSION, Jobs, SchemaError
 from tests.server.conftest import Clock
 
 

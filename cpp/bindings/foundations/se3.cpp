@@ -1,6 +1,6 @@
 /// @file
-/// @brief Bindings for `slam_it_all.foundations.se3` (`slam_it_all._cpp.foundations.se3`).
-#include "slam_it_all/foundations/se3.hpp"
+/// @brief Bindings for `slam_it.foundations.se3` (`slam_it._cpp.foundations.se3`).
+#include "slam_it/foundations/se3.hpp"
 
 #include <nanobind/nanobind.h>
 
@@ -9,7 +9,7 @@
 
 namespace nb = nanobind;
 
-namespace slam_it_all::bindings {
+namespace slam_it::bindings {
 
 namespace {
 
@@ -92,4 +92,4 @@ void bind_se3(nb::module_& m) {
       nb::arg("xi").noconvert(), "Map (N, 6) twists to their inverse left Jacobians.");
 }
 
-}  // namespace slam_it_all::bindings
+}  // namespace slam_it::bindings

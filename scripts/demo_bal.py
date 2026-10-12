@@ -1,12 +1,12 @@
-"""Bundle adjustment on a real BAL problem: SLAM It All!'s BA against COLMAP's Ceres BA.
+"""Bundle adjustment on a real BAL problem: SLAM It!'s BA against COLMAP's Ceres BA.
 
 Downloads a problem from the Bundle Adjustment in the Large site (once, into ``--data``),
-solves it with SLAM It All! (every backend, or one) and with COLMAP's bundle adjuster, and prints
+solves it with SLAM It! (every backend, or one) and with COLMAP's bundle adjuster, and prints
 the RMS reprojection error, the iterations and the time of each. With ``--rerun FILE.rrd`` it
 also saves a rerun recording of the cameras and points before and after (open it with
 ``rerun FILE.rrd``).
 
-Run from the repository root, in the slam-it-all environment::
+Run from the repository root, in the slam-it environment::
 
     python scripts/demo_bal.py --problem ladybug/problem-49-7776-pre
     python scripts/demo_bal.py --backend all
@@ -26,10 +26,10 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
-from slam_it_all.backends import BACKENDS
-from slam_it_all.eval import colmap_reference, readers
-from slam_it_all.eval.reprojection import in_front, rms
-from slam_it_all.foundations import ba, nls
+from slam_it.backends import BACKENDS
+from slam_it.eval import colmap_reference, readers
+from slam_it.eval.reprojection import in_front, rms
+from slam_it.foundations import ba, nls
 
 BAL_URL = "https://grail.cs.washington.edu/projects/bal/data/{problem}.txt.bz2"
 """Where BAL problems are published."""
@@ -56,7 +56,7 @@ def record(path: Path, stages: dict[str, tuple[NDArray[np.float64], NDArray[np.f
     """Save a rerun recording of each stage's camera centres and points."""
     import rerun as rr  # noqa: PLC0415 -- optional, only for --rerun
 
-    rr.init("SLAM It All! BAL demo")
+    rr.init("SLAM It! BAL demo")
     for name, (poses, points) in stages.items():
         rr.log(f"{name}/points", rr.Points3D(points, radii=0.01))
         rr.log(f"{name}/cameras", rr.Points3D(poses[:, :3, 3], radii=0.05, colors=[255, 120, 0]))
@@ -91,10 +91,10 @@ def main() -> None:
         )
         summary = result.summary.solve
         print(
-            f"SLAM It All! {backend:>6}: RMS {rms(solved, used):.4f} px, "
+            f"SLAM It! {backend:>6}: RMS {rms(solved, used):.4f} px, "
             f"{summary.iterations} iterations ({summary.termination}), {seconds:.2f} s"
         )
-        stages[f"slam_it_all_{backend}"] = (result.poses, result.points)
+        stages[f"slam_it_{backend}"] = (result.poses, result.points)
     reference = colmap_reference.solve(
         problem, colmap_reference.ColmapOptions(tolerance=1e-6, max_iterations=100)
     )

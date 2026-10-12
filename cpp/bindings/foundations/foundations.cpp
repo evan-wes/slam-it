@@ -1,8 +1,8 @@
 /// @file
-/// @brief The `slam_it_all._cpp.foundations` submodule: wires rung 0's bound modules.
+/// @brief The `slam_it._cpp.foundations` submodule: wires rung 0's bound modules.
 #include "foundations/foundations.hpp"
 
-namespace slam_it_all::bindings {
+namespace slam_it::bindings {
 
 void bind_foundations(nanobind::module_& parent) {
   nanobind::module_ foundations = parent.def_submodule("foundations", "Rung 0, foundations.");
@@ -45,4 +45,4 @@ void bind_foundations(nanobind::module_& parent) {
   bind_ba(ba);
 }
 
-}  // namespace slam_it_all::bindings
+}  // namespace slam_it::bindings

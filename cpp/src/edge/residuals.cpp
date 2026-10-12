@@ -1,11 +1,11 @@
 /// @file
-/// @brief Implementation of the observation errors declared in slam_it_all/edge/residuals.hpp.
-#include "slam_it_all/edge/residuals.hpp"
+/// @brief Implementation of the observation errors declared in slam_it/edge/residuals.hpp.
+#include "slam_it/edge/residuals.hpp"
 
 #include <cmath>
 #include <limits>
 
-namespace slam_it_all::edge {
+namespace slam_it::edge {
 
 double sigma2(const Map& m, std::int64_t level) {
   return std::pow(m.scale_factor, 2.0 * static_cast<double>(level));
@@ -54,4 +54,4 @@ foundations::Result<std::vector<double>> chi2(const Camera& camera,
   return out;
 }
 
-}  // namespace slam_it_all::edge
+}  // namespace slam_it::edge

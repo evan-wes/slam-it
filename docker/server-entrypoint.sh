@@ -6,13 +6,13 @@
 # chowned.
 set -eu
 if [ "$(id -u)" = 0 ]; then
-    database="${SLAM_IT_ALL_DATABASE:?SLAM_IT_ALL_DATABASE is not set}"
+    database="${SLAM_IT_DATABASE:?SLAM_IT_DATABASE is not set}"
     case "$database" in
         /*) folder="$(realpath -m "$(dirname "$database")")" ;;
         *) folder=/ ;; # a relative path is refused with the root
     esac
     if [ "$folder" = / ]; then
-        echo "server-entrypoint: SLAM_IT_ALL_DATABASE must be absolute, below /: $database" >&2
+        echo "server-entrypoint: SLAM_IT_DATABASE must be absolute, below /: $database" >&2
         exit 2
     fi
     mkdir -p "$folder"

@@ -4,7 +4,7 @@ Run from the repository root after changing the cases (the fixture is committed)
 
     python -m tests.fixtures.foundations.generate_matching
 
-Independent of the module under test, nothing imported from slam_it_all: distances are Python
+Independent of the module under test, nothing imported from slam_it: distances are Python
 integers' bit counts, and matching is a brute force over sorted neighbour lists, with the
 rotation histogram's maxima taken from a sort. A search by projection is a brute force too:
 every keypoint tested against every window, its candidates sorted by (distance, index). Every

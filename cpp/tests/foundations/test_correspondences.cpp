@@ -1,18 +1,18 @@
 /// @file
 /// @brief Native tests for the correspondence building blocks
-///        (slam_it_all/foundations/correspondences.hpp).
+///        (slam_it/foundations/correspondences.hpp).
 #include <Eigen/Dense>
 #include <cmath>
 #include <cstdint>
 #include <numbers>
 #include <vector>
 
-#include "slam_it_all/foundations/correspondences.hpp"
+#include "slam_it/foundations/correspondences.hpp"
 #include "test_support.hpp"
 
 int main() {
-  namespace co = slam_it_all::foundations::correspondences;
-  using slam_it_all::testing::expect;
+  namespace co = slam_it::foundations::correspondences;
+  using slam_it::testing::expect;
   int failures = 0;
 
   co::Rows2 points(4, 2);
@@ -49,5 +49,5 @@ int main() {
   expect(
       gathered.rows() == 2 && gathered.row(0) == points.row(3) && gathered.row(1) == points.row(0),
       "gather takes the listed rows in order", failures);
-  return slam_it_all::testing::finish("foundations/correspondences", failures);
+  return slam_it::testing::finish("foundations/correspondences", failures);
 }

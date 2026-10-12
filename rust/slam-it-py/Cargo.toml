@@ -1,0 +1,23 @@
+[package]
+name = "slam-it-py"
+version = "0.1.0"
+description = "Python bindings for SLAM It!'s Rust core (the slam_it_rs module)."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "slam_it_rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+nalgebra.workspace = true
+numpy = "0.29.0"
+pyo3 = "0.29.3"
+pythonize = "0.29.0"
+serde = { version = "1.0.229", features = ["derive"] }
+slam-it-edge = { path = "../slam-it-edge" }
+slam-it-foundations = { path = "../slam-it-foundations" }
+
+[lints]
+workspace = true

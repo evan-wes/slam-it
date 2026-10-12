@@ -1,6 +1,6 @@
 /// @file
 /// @brief Bundle adjustment: the public checks and entry point.
-#include "slam_it_all/foundations/ba.hpp"
+#include "slam_it/foundations/ba.hpp"
 
 #include <Eigen/Cholesky>
 #include <algorithm>
@@ -14,10 +14,10 @@
 #include <vector>
 
 #include "ba/common.hpp"
-#include "slam_it_all/foundations/camera.hpp"
-#include "slam_it_all/foundations/se3.hpp"
+#include "slam_it/foundations/camera.hpp"
+#include "slam_it/foundations/se3.hpp"
 
-namespace slam_it_all::foundations::ba {
+namespace slam_it::foundations::ba {
 
 namespace {
 
@@ -211,4 +211,4 @@ Result<void> check_problem(const Problem& problem) {
   return check_anchors(problem);
 }
 
-}  // namespace slam_it_all::foundations::ba
+}  // namespace slam_it::foundations::ba

@@ -1,6 +1,6 @@
 /// @file
-/// @brief Implementation of the bundle adjustment declared in slam_it_all/edge/adjust.hpp.
-#include "slam_it_all/edge/adjust.hpp"
+/// @brief Implementation of the bundle adjustment declared in slam_it/edge/adjust.hpp.
+#include "slam_it/edge/adjust.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -9,12 +9,12 @@
 #include <utility>
 #include <vector>
 
-#include "slam_it_all/edge/residuals.hpp"
-#include "slam_it_all/foundations/ba.hpp"
-#include "slam_it_all/foundations/nls.hpp"
-#include "slam_it_all/foundations/se3.hpp"
+#include "slam_it/edge/residuals.hpp"
+#include "slam_it/foundations/ba.hpp"
+#include "slam_it/foundations/nls.hpp"
+#include "slam_it/foundations/se3.hpp"
 
-namespace slam_it_all::edge {
+namespace slam_it::edge {
 
 namespace {
 
@@ -34,7 +34,7 @@ struct Built {
   std::vector<std::int64_t> observing;
 };
 
-/// @brief Build the BA problem (`slam_it_all.edge.adjust._problem`).
+/// @brief Build the BA problem (`slam_it.edge.adjust._problem`).
 /// @param m The map.
 /// @param camera The camera.
 /// @param keyframes The keyframes to adjust.
@@ -125,7 +125,7 @@ ba::Options solver_options(const Options& options, std::int64_t iterations) {
 }
 
 /// @brief Which observations fail the chi-square test, or are behind their camera
-///        (`slam_it_all.edge.adjust._outliers`).
+///        (`slam_it.edge.adjust._outliers`).
 /// @param m The map (the keypoints).
 /// @param camera The camera.
 /// @param problem The problem, at the estimate to test.
@@ -336,4 +336,4 @@ Result<Adjustment> bundle_adjust(Map& m, const Camera& camera,
                     .outliers = *dropped};
 }
 
-}  // namespace slam_it_all::edge
+}  // namespace slam_it::edge

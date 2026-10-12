@@ -1,7 +1,7 @@
 # Lie groups: SO(3) and SE(3), and point-set alignment
 
-Design note for `slam_it_all.foundations.so3`, `.se3` and `.alignment` (the Python reference),
-their C++ counterparts in `slam_it_all::foundations`, and the Rust subset.
+Design note for `slam_it.foundations.so3`, `.se3` and `.alignment` (the Python reference),
+their C++ counterparts in `slam_it::foundations`, and the Rust subset.
 
 ## The problem
 

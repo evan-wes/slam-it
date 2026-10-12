@@ -1,4 +1,4 @@
-"""Tests for slam_it_all.eval.reprojection: in-front masks and RMS error, by hand."""
+"""Tests for slam_it.eval.reprojection: in-front masks and RMS error, by hand."""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from slam_it_all.eval.reprojection import in_front, rms
-from slam_it_all.foundations import ba
-from slam_it_all.foundations.errors import InvalidInputError
+from slam_it.eval.reprojection import in_front, rms
+from slam_it.foundations import ba
+from slam_it.foundations.errors import InvalidInputError
 
 
 def _problem() -> ba.BAProblem:

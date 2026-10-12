@@ -12,10 +12,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from slam_it_all_server.app import make_app
-from slam_it_all_server.config import Settings
-from slam_it_all_server.jobs import Jobs
-from slam_it_all_server.storage import FolderStorage
+from slam_it_server.app import make_app
+from slam_it_server.config import Settings
+from slam_it_server.jobs import Jobs
+from slam_it_server.storage import FolderStorage
 
 VIEWER = Path(__file__).resolve().parents[2] / "viewer"
 """The repository's viewer folder, which holds the pages."""

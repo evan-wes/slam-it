@@ -1,6 +1,6 @@
 /// @file
-/// @brief Implementation of the map declared in slam_it_all/edge/map.hpp.
-#include "slam_it_all/edge/map.hpp"
+/// @brief Implementation of the map declared in slam_it/edge/map.hpp.
+#include "slam_it/edge/map.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -8,9 +8,9 @@
 #include <string>
 #include <utility>
 
-#include "slam_it_all/foundations/matching.hpp"
+#include "slam_it/foundations/matching.hpp"
 
-namespace slam_it_all::edge {
+namespace slam_it::edge {
 
 namespace {
 
@@ -675,4 +675,4 @@ Result<void> count(Map& m, std::span<const std::int64_t> ids, std::span<const st
   return {};
 }
 
-}  // namespace slam_it_all::edge
+}  // namespace slam_it::edge

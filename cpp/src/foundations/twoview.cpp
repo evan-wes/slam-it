@@ -1,7 +1,7 @@
 /// @file
 /// @brief Implementation of the two-view initialisation declared in
-///        slam_it_all/foundations/twoview.hpp.
-#include "slam_it_all/foundations/twoview.hpp"
+///        slam_it/foundations/twoview.hpp.
+#include "slam_it/foundations/twoview.hpp"
 
 #include <Eigen/Dense>
 #include <algorithm>
@@ -11,10 +11,10 @@
 #include <numbers>
 #include <utility>
 
-#include "slam_it_all/foundations/homography.hpp"
-#include "slam_it_all/foundations/triangulation.hpp"
+#include "slam_it/foundations/homography.hpp"
+#include "slam_it/foundations/triangulation.hpp"
 
-namespace slam_it_all::foundations::twoview {
+namespace slam_it::foundations::twoview {
 
 namespace {
 
@@ -384,4 +384,4 @@ Result<Initialization> initialize(const Eigen::Ref<const correspondences::Rows3>
   return out;
 }
 
-}  // namespace slam_it_all::foundations::twoview
+}  // namespace slam_it::foundations::twoview

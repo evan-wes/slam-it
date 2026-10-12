@@ -1,5 +1,5 @@
 /// @file
-/// @brief Native tests for slam_it_all::foundations::nls, runnable without Python.
+/// @brief Native tests for slam_it::foundations::nls, runnable without Python.
 #include <Eigen/Dense>
 #include <cmath>
 #include <limits>
@@ -7,16 +7,16 @@
 #include <utility>
 #include <vector>
 
-#include "slam_it_all/foundations/nls.hpp"
-#include "slam_it_all/foundations/so3.hpp"
+#include "slam_it/foundations/nls.hpp"
+#include "slam_it/foundations/so3.hpp"
 #include "test_support.hpp"
 
 namespace {
 
-namespace nls = slam_it_all::foundations::nls;
-namespace so3 = slam_it_all::foundations::so3;
-using slam_it_all::foundations::ErrorKind;
-using slam_it_all::testing::expect;
+namespace nls = slam_it::foundations::nls;
+namespace so3 = slam_it::foundations::so3;
+using slam_it::foundations::ErrorKind;
+using slam_it::testing::expect;
 
 /// @brief Rosenbrock's function as two residual blocks, plus `unused` parameters it ignores.
 class Rosenbrock {
@@ -366,5 +366,5 @@ int main() {
   expect(!outside.has_value() && outside.error().kind == ErrorKind::kInvalidInput,
          "solve: a block-loss index outside the losses is rejected", failures);
 
-  return slam_it_all::testing::finish("test_nls", failures);
+  return slam_it::testing::finish("test_nls", failures);
 }

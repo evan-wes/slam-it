@@ -1,5 +1,5 @@
 /// @file
-/// @brief Native tests for epipolar geometry (slam_it_all/foundations/epipolar.hpp): exact E,
+/// @brief Native tests for epipolar geometry (slam_it/foundations/epipolar.hpp): exact E,
 ///        RANSAC with outliers, a planar scene's degeneracy, and the decomposition.
 #include <Eigen/Core>
 #include <cmath>
@@ -7,27 +7,27 @@
 #include <vector>
 
 #include "scene_support.hpp"
-#include "slam_it_all/foundations/epipolar.hpp"
-#include "slam_it_all/foundations/so3.hpp"
+#include "slam_it/foundations/epipolar.hpp"
+#include "slam_it/foundations/so3.hpp"
 #include "test_support.hpp"
 
 namespace {
 
-namespace epipolar = slam_it_all::foundations::epipolar;
-namespace ransac = slam_it_all::foundations::ransac;
-using slam_it_all::testing::expect;
-using slam_it_all::testing::up_to_sign;
+namespace epipolar = slam_it::foundations::epipolar;
+namespace ransac = slam_it::foundations::ransac;
+using slam_it::testing::expect;
+using slam_it::testing::up_to_sign;
 
 }  // namespace
 
 int main() {
   int failures = 0;
-  const Eigen::Matrix3d rotation = slam_it_all::testing::scene_rotation();
-  const Eigen::Vector3d t = slam_it_all::testing::scene_translation();
-  const Eigen::Matrix3d truth = slam_it_all::testing::scene_essential();
+  const Eigen::Matrix3d rotation = slam_it::testing::scene_rotation();
+  const Eigen::Vector3d t = slam_it::testing::scene_translation();
+  const Eigen::Matrix3d truth = slam_it::testing::scene_essential();
   epipolar::Rows3 b1;
   epipolar::Rows3 b2;
-  slam_it_all::testing::scene_bearings(40, false, {rotation, t}, b1, b2);
+  slam_it::testing::scene_bearings(40, false, {rotation, t}, b1, b2);
   const auto e = epipolar::essential_8pt(b1, b2);
   expect(e.has_value() && up_to_sign(*e, truth) < 1e-12, "E is [t]x R up to sign", failures);
 
@@ -45,10 +45,9 @@ int main() {
 
   epipolar::Rows3 p1;
   epipolar::Rows3 p2;
-  slam_it_all::testing::scene_bearings(20, true, {rotation, t}, p1, p2);
+  slam_it::testing::scene_bearings(20, true, {rotation, t}, p1, p2);
   const auto planar = epipolar::essential_8pt(p1, p2);
-  expect(!planar.has_value() &&
-             planar.error().kind == slam_it_all::foundations::ErrorKind::kDegenerate,
+  expect(!planar.has_value() && planar.error().kind == slam_it::foundations::ErrorKind::kDegenerate,
          "a planar scene does not determine E", failures);
 
   const auto poses = epipolar::decompose_essential(truth);
@@ -84,14 +83,14 @@ int main() {
   // On exact data the Sampson cost's minimum is the true E: refining reaches it from a
   // perturbed start.
   const Eigen::Matrix3d start =
-      slam_it_all::foundations::so3::hat(
-          slam_it_all::foundations::so3::exp(Eigen::Vector3d(0.0, 0.02, 0.0)) * t.normalized()) *
-      slam_it_all::foundations::so3::exp(Eigen::Vector3d(0.01, 0.0, 0.0)) * rotation;
+      slam_it::foundations::so3::hat(
+          slam_it::foundations::so3::exp(Eigen::Vector3d(0.0, 0.02, 0.0)) * t.normalized()) *
+      slam_it::foundations::so3::exp(Eigen::Vector3d(0.01, 0.0, 0.0)) * rotation;
   const auto refined = epipolar::refine_essential(start, b1, b2, 1e-3);
   expect(
       refined.has_value() && refined->summary.converged && up_to_sign(refined->state, truth) < 1e-9,
       "refining recovers the true E", failures);
   const auto bad_scale = epipolar::refine_essential(start, b1, b2, 0.0);
   expect(!bad_scale.has_value(), "a non-positive scale is rejected", failures);
-  return slam_it_all::testing::finish("foundations/epipolar", failures);
+  return slam_it::testing::finish("foundations/epipolar", failures);
 }

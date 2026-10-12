@@ -12,11 +12,11 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from slam_it_all.edge.map import Removal
-from slam_it_all.edge.pipeline import Fate
-from slam_it_all.eval import runs, tum
-from slam_it_all.foundations import so3
-from slam_it_all.foundations.errors import InvalidInputError
+from slam_it.edge.map import Removal
+from slam_it.edge.pipeline import Fate
+from slam_it.eval import runs, tum
+from slam_it.foundations import so3
+from slam_it.foundations.errors import InvalidInputError
 
 
 def _poses(n: int, seed: int = 0) -> NDArray[np.float64]:

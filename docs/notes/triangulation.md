@@ -1,7 +1,7 @@
 # Triangulation
 
-Design note for `slam_it_all.foundations.triangulation` (the Python reference) and
-`slam_it_all/foundations/triangulation.hpp` (the C++ core).
+Design note for `slam_it.foundations.triangulation` (the Python reference) and
+`slam_it/foundations/triangulation.hpp` (the C++ core).
 
 ## The problem
 

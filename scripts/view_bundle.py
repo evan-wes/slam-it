@@ -1,7 +1,7 @@
 """Serve the run viewer and a bundle together, on this machine, and open the page.
 
 The page (``viewer/``) is served at ``/`` and the bundle (written by
-:mod:`slam_it_all.orchestration.bundles`) at ``/bundle/``, which is where the page looks by
+:mod:`slam_it.orchestration.bundles`) at ``/bundle/``, which is where the page looks by
 default. Only this machine can reach it (``127.0.0.1``). Stop it with Ctrl-C.
 
 Example::

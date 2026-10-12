@@ -1,7 +1,7 @@
 """The room as dataset folders (:mod:`tests.orchestration.datasets`), and its runs.
 
 The room is rendered once per session and written whole and with its gap; :func:`room_runs`
-and :func:`gap_runs` run them through :func:`slam_it_all.orchestration.vo.run`, each case once,
+and :func:`gap_runs` run them through :func:`slam_it.orchestration.vo.run`, each case once,
 recording their features.
 """
 
@@ -11,10 +11,10 @@ from pathlib import Path
 
 import pytest
 
-from slam_it_all import backends
-from slam_it_all.edge.options import Options
-from slam_it_all.eval import runs
-from slam_it_all.orchestration import vo
+from slam_it import backends
+from slam_it.edge.options import Options
+from slam_it.eval import runs
+from slam_it.orchestration import vo
 from tests.conftest import REQUIRED_BACKENDS, require_backend
 from tests.edge import room
 from tests.edge.support import FRAMES, OPTIONS
@@ -31,7 +31,7 @@ def require_program(name: str) -> str:
     """Return backend `name` if its native program is built; otherwise skip, or fail.
 
     The Rust program is not rebuilt on import (the C++ one is): one older than a file it is
-    built from (:class:`slam_it_all.backends.StaleProgramError`) fails, since its runs would not be
+    built from (:class:`slam_it.backends.StaleProgramError`) fails, since its runs would not be
     of the code under test.
 
     Parameters
@@ -52,7 +52,7 @@ def require_program(name: str) -> str:
             pytest.fail(str(error))
         except backends.BackendNotBuiltError as error:
             if name in REQUIRED_BACKENDS:
-                pytest.fail(f"{error}, but SLAM_IT_ALL_REQUIRE_BACKENDS requires it")
+                pytest.fail(f"{error}, but SLAM_IT_REQUIRE_BACKENDS requires it")
             pytest.skip(str(error))
     return name
 
@@ -84,7 +84,7 @@ class RoomRun:
     ----------
     folders : tests.orchestration.datasets.Room
         The room's folders.
-    options : slam_it_all.edge.options.Options
+    options : slam_it.edge.options.Options
         The settings.
     out : pathlib.Path
         Where the runs' folders go.

@@ -1,7 +1,7 @@
 /// @file
 /// @brief Implementation of the stereo rectification declared in
-/// slam_it_all/foundations/stereo.hpp.
-#include "slam_it_all/foundations/stereo.hpp"
+/// slam_it/foundations/stereo.hpp.
+#include "slam_it/foundations/stereo.hpp"
 
 #include <Eigen/Geometry>
 #include <algorithm>
@@ -15,11 +15,11 @@
 #include <utility>
 #include <vector>
 
-#include "slam_it_all/foundations/matching.hpp"
-#include "slam_it_all/foundations/se3.hpp"
-#include "slam_it_all/foundations/so3.hpp"
+#include "slam_it/foundations/matching.hpp"
+#include "slam_it/foundations/se3.hpp"
+#include "slam_it/foundations/so3.hpp"
 
-namespace slam_it_all::foundations::stereo {
+namespace slam_it::foundations::stereo {
 
 namespace {
 
@@ -467,4 +467,4 @@ Result<std::vector<StereoMatch>> match(std::span<const image::Image> left_levels
   return drop_outliers(found, options.outlier_factor);
 }
 
-}  // namespace slam_it_all::foundations::stereo
+}  // namespace slam_it::foundations::stereo

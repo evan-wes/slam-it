@@ -15,9 +15,9 @@
 #include <vector>
 
 #include "common.hpp"
-#include "slam_it_all/foundations/ba.hpp"
+#include "slam_it/foundations/ba.hpp"
 
-namespace slam_it_all::foundations::ba::detail {
+namespace slam_it::foundations::ba::detail {
 
 /// @brief The similarity's directions: translation (3), rotation (3), scale (1).
 inline constexpr int kGenerators = 7;
@@ -118,4 +118,4 @@ struct Plan {
                                                        const Positions& centres,
                                                        const Plan& chosen);
 
-}  // namespace slam_it_all::foundations::ba::detail
+}  // namespace slam_it::foundations::ba::detail

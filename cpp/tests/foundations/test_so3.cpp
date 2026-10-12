@@ -1,5 +1,5 @@
 /// @file
-/// @brief Native tests for slam_it_all::foundations::so3, runnable without Python.
+/// @brief Native tests for slam_it::foundations::so3, runnable without Python.
 ///
 /// The parity fixtures (tests/fixtures/foundations/) are the main check of every value;
 /// these tests cover what the standalone C++ core must get right on its own: exact `hat`
@@ -8,14 +8,14 @@
 #include <limits>
 #include <numbers>
 
-#include "slam_it_all/foundations/so3.hpp"
+#include "slam_it/foundations/so3.hpp"
 #include "test_support.hpp"
 
 namespace {
 
-using slam_it_all::testing::expect;
-namespace so3 = slam_it_all::foundations::so3;
-using slam_it_all::foundations::ErrorKind;
+using slam_it::testing::expect;
+namespace so3 = slam_it::foundations::so3;
+using slam_it::foundations::ErrorKind;
 
 }  // namespace
 
@@ -72,5 +72,5 @@ int main() {
   expect(so3::vee(nan).error().kind == ErrorKind::kInvalidInput, "vee rejects a NaN entry",
          failures);
 
-  return slam_it_all::testing::finish("foundations/so3", failures);
+  return slam_it::testing::finish("foundations/so3", failures);
 }

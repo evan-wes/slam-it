@@ -5,9 +5,9 @@ Run from the repository root after changing the cases (the fixture is committed)
     python -m tests.fixtures.foundations.generate_so3
 
 Every expected value is computed in 50-digit arithmetic, with algorithms independent of
-``slam_it_all.foundations.so3``: Rodrigues' formula for ``exp``; a quaternion route for ``log``
+``slam_it.foundations.so3``: Rodrigues' formula for ``exp``; a quaternion route for ``log``
 (``2 atan2(|q_v|, q_w)``); the closed-form Jacobians evaluated in high precision (no series
-needed); mpmath's own SVD for ``project_to_so3``. Nothing here imports slam_it_all. manif and
+needed); mpmath's own SVD for ``project_to_so3``. Nothing here imports slam_it. manif and
 SciPy are deliberately not the oracle: manif's Jacobians lose about 1e-11 near θ = 1e-6.
 
 The inputs are float64. Each case's expected value is the exact (to 50 digits) result for

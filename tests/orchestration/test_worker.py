@@ -24,9 +24,9 @@ from typing import Any
 
 import pytest
 
-from slam_it_all.eval import video
-from slam_it_all.foundations.errors import InvalidInputError
-from slam_it_all.orchestration import vo, worker
+from slam_it.eval import video
+from slam_it.foundations.errors import InvalidInputError
+from slam_it.orchestration import vo, worker
 from tests.conftest import FIXTURES
 from tests.edge import room
 from tests.edge.support import FRAMES, OPTIONS
@@ -40,7 +40,7 @@ TOKEN = "a-worker-token"
 @pytest.fixture(autouse=True)
 def profiles(monkeypatch: pytest.MonkeyPatch) -> None:
     """Point the worker, and the children it starts, at the fixture lens profiles."""
-    monkeypatch.setenv("SLAM_IT_ALL_LENS_PROFILES", str(FIXTURES / "eval" / "lens_profiles"))
+    monkeypatch.setenv("SLAM_IT_LENS_PROFILES", str(FIXTURES / "eval" / "lens_profiles"))
 
 
 @dataclass
@@ -470,7 +470,7 @@ def test_a_job_leaves_no_process_behind(ending: str, tmp_path: Path) -> None:
 STOPPED = """
 import contextlib, sys
 from pathlib import Path
-from slam_it_all.orchestration import worker
+from slam_it.orchestration import worker
 
 class Client:
     def progress(self, job, stage):
@@ -543,7 +543,7 @@ def test_the_child_inherits_no_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     assert worker.TOKEN_VARIABLE not in env
     assert "SOME_CLOUD_SECRET" not in env
     assert env["PATH"] == os.environ["PATH"]
-    assert env["SLAM_IT_ALL_LENS_PROFILES"] == str(FIXTURES / "eval" / "lens_profiles")
+    assert env["SLAM_IT_LENS_PROFILES"] == str(FIXTURES / "eval" / "lens_profiles")
 
 
 @pytest.mark.parametrize(
@@ -554,7 +554,7 @@ def test_the_child_inherits_no_secret(monkeypatch: pytest.MonkeyPatch) -> None:
         ("http://[::1]:8000", True),
         ("http://localhost:8000", True),
         ("http://192.168.1.20:8770", True),
-        ("http://slam-it-all.railway.internal:8000", True),
+        ("http://slam-it.railway.internal:8000", True),
         ("http://sia-e2e-server:8000", True),
         ("http://2130706433:8000", True),  # 127.0.0.1, written as a number
         ("http://134744072/", False),  # 8.8.8.8, written as a number
@@ -604,7 +604,7 @@ def test_a_job_whose_folder_cannot_be_made_fails_and_the_worker_goes_on(
     work = tmp_path / "work"
     work.write_text("a file, not a folder")
     job = worker.Job("job-1", "vo", "stray", f"{serving.url}/upload")
-    with caplog.at_level(logging.ERROR, logger="slam_it_all.orchestration.worker"):
+    with caplog.at_level(logging.ERROR, logger="slam_it.orchestration.worker"):
         worker.handle(worker.Client(serving.url, TOKEN), job, work)
     assert serving.reason == "an internal error"
     assert "job job-1: an internal error" in caplog.text
@@ -668,6 +668,6 @@ def test_the_worker_refuses_to_start_wrong(
     assert "expected an http or https URL" in capsys.readouterr().err
     assert worker.main(["serve", "--server", "http://slam.example.org"]) == 2
     assert "plain http only to a private host" in capsys.readouterr().err
-    monkeypatch.setenv("SLAM_IT_ALL_LENS_PROFILES", str(tmp_path))
+    monkeypatch.setenv("SLAM_IT_LENS_PROFILES", str(tmp_path))
     assert worker.main(["serve", "--server", "http://127.0.0.1:9", "--work", str(tmp_path)]) == 2
     assert "no usable lens profile" in capsys.readouterr().err

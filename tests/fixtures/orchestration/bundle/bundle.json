@@ -1,5 +1,5 @@
 {
- "format": "slam-it-all-bundle",
+ "format": "slam-it-bundle",
  "version": 1,
  "dataset": "tum",
  "sequence": "room_tum",

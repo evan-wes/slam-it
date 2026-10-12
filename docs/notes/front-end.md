@@ -1,7 +1,7 @@
 # The front end: images, ORB, matching and stereo
 
-Design note for `slam_it_all.foundations.image`, `orb`, `matching` and `stereo` (the Python
-references, mirrored in the C++ and Rust cores), and `slam_it_all.eval.images`, `tum`, `euroc`,
+Design note for `slam_it.foundations.image`, `orb`, `matching` and `stereo` (the Python
+references, mirrored in the C++ and Rust cores), and `slam_it.eval.images`, `tum`, `euroc`,
 `metrics` and `runs`. Milestone 1 built the geometry; this is what turns pixels into the
 correspondences it consumes, and what scores the trajectories milestone 2's pipeline will
 produce.
@@ -103,7 +103,7 @@ docstring lists them all):
   steepest point of its patch, so subtracting it shifts the whole patch by an amount that
   changes with the sub-pixel shift. On pairs whose two views are both area-sampled from one
   texture, that over-estimated disparity by a median 0.07 to 0.27 pixels (2.7% of depth at 10
-  pixels), a systematic bias. ORB-SLAM3 drops the subtraction. SLAM It All! sums `|n (L - R) - (sum L - sum R)|`, zero-mean SAD in integers (still
+  pixels), a systematic bias. ORB-SLAM3 drops the subtraction. SLAM It! sums `|n (L - R) - (sum L - sum R)|`, zero-mean SAD in integers (still
   invariant to a brightness offset between the cameras), and fits a V (equiangular; Shimizu
   and Okutomi, IJCV 2005), which suits absolute differences better than a parabola: the
   median error is under 0.002 pixels, and under 0.06 on every level.
@@ -121,9 +121,9 @@ docstring lists them all):
 
 ## Reading datasets
 
-Images reach the algorithms as arrays; files are read in `slam_it_all.eval.images` (Pillow, the
-one module allowed to import it), C++'s `slam_it_all_eval` (the vendored stb_image, its symbols
-private to the library) and Rust's `slam-it-all-eval` (the `png` crate), each as `read_gray`,
+Images reach the algorithms as arrays; files are read in `slam_it.eval.images` (Pillow, the
+one module allowed to import it), C++'s `slam_it_eval` (the vendored stb_image, its symbols
+private to the library) and Rust's `slam-it-eval` (the `png` crate), each as `read_gray`,
 `read_rgb` and `read_depth`, held to seven shared PNG fixtures. They refuse the same files,
 in different kinds: the native readers report every failure, a missing file included, as
 `InvalidInput` naming the file (the cores have no I/O kind), where Python raises
@@ -139,7 +139,7 @@ repeated timestamps. Both readers pair a frame with its nearest ground-truth sam
 `metrics.absolute_error` is the ATE after a Sim(3) (monocular) or SE(3) (stereo, RGB-D)
 alignment, `metrics.relative_error` the RPE; both follow the TUM benchmark. The RPE pairs
 poses by time, as TUM's `evaluate_rpe.py` does with a fixed delta: each pose with the one
-nearest `delta` seconds later. A tolerance, SLAM It All!'s own, skips a pose with no pose that
+nearest `delta` seconds later. A tolerance, SLAM It!'s own, skips a pose with no pose that
 close to `delta` later, so a tracking gap is not counted as one step (paired by index, a
 60-frame gap read as 60 frames' drift in one; TUM's script pairs across it too). The error is
 Sturm et al.'s `(Q_i^-1 Q_j)^-1 (P_i^-1 P_j)`, as evo computes it; TUM's script composes

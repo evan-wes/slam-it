@@ -1,5 +1,5 @@
 /// @file
-/// @brief Native tests for the fixed-point image operations (slam_it_all/foundations/image.hpp),
+/// @brief Native tests for the fixed-point image operations (slam_it/foundations/image.hpp),
 ///        against the parity fixture `tests/fixtures/foundations/image.json` that the Python
 ///        and Rust tests share, and the core's own input checks.
 #include <Eigen/Core>
@@ -12,21 +12,21 @@
 
 #include "fixture_support.hpp"
 #include "image_support.hpp"
-#include "slam_it_all/foundations/image.hpp"
+#include "slam_it/foundations/image.hpp"
 #include "test_support.hpp"
 
 namespace {
 
-namespace image = slam_it_all::foundations::image;
-using slam_it_all::testing::expect;
-using slam_it_all::testing::is_invalid_input;
-using slam_it_all::testing::read_image;
+namespace image = slam_it::foundations::image;
+using slam_it::testing::expect;
+using slam_it::testing::is_invalid_input;
+using slam_it::testing::read_image;
 
 /// @brief Whether a result holds exactly the expected image.
 /// @param got The result.
 /// @param expected The image.
 /// @return True if they are equal, shape and pixels.
-bool same(const slam_it_all::foundations::Result<image::Image>& got, const image::Image& expected) {
+bool same(const slam_it::foundations::Result<image::Image>& got, const image::Image& expected) {
   return got.has_value() && got->rows == expected.rows && got->cols == expected.cols &&
          got->pixels == expected.pixels;
 }
@@ -35,7 +35,7 @@ bool same(const slam_it_all::foundations::Result<image::Image>& got, const image
 /// @param failures Running failure count.
 void check_fixture(int& failures) {
   const nlohmann::json functions =
-      slam_it_all::testing::load_fixture("foundations/image.json")["functions"];
+      slam_it::testing::load_fixture("foundations/image.json")["functions"];
   for (const auto& c : functions["to_gray"]["cases"]) {
     const auto& rows = c["input"][0];
     std::vector<std::uint8_t> rgb;
@@ -125,7 +125,7 @@ void check_rejections(int& failures) {
 ///        composition the level-to-level map stereo matching uses.
 /// @param failures Running failure count.
 void check_coordinate_maps(int& failures) {
-  namespace image = slam_it_all::foundations::image;
+  namespace image = slam_it::foundations::image;
   constexpr std::array<std::int64_t, 8> kLevels{640, 533, 444, 370, 309, 257, 214, 179};
   expect(image::level_coordinate(7.0, 640, 640) == 7.0 &&
              image::level_coordinate(2.5, 640, 640) == 2.5,
@@ -152,9 +152,9 @@ int run() {
   check_fixture(failures);
   check_rejections(failures);
   check_coordinate_maps(failures);
-  return slam_it_all::testing::finish("foundations/image", failures);
+  return slam_it::testing::finish("foundations/image", failures);
 }
 
 }  // namespace
 
-int main() { return slam_it_all::testing::guarded("foundations/image", run); }
+int main() { return slam_it::testing::guarded("foundations/image", run); }

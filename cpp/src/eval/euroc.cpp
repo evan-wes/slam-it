@@ -1,11 +1,11 @@
 /// @file
-/// @brief Implementation of the EuRoC reader declared in slam_it_all/eval/euroc.hpp.
+/// @brief Implementation of the EuRoC reader declared in slam_it/eval/euroc.hpp.
 ///
 /// `sensor.yaml` is read as the Python reader's regular expressions read it, by hand: comments
 /// (`#` to the line's end) dropped, a setting as the first token after `key:` at a line's
 /// start, a list as the comma-separated numbers between `key: [` and the next `]`, and
 /// `T_BS` as the `data:` list of the text from `T_BS:` to its first `]`.
-#include "slam_it_all/eval/euroc.hpp"
+#include "slam_it/eval/euroc.hpp"
 
 #include <cmath>
 #include <filesystem>
@@ -17,11 +17,11 @@
 #include <string_view>
 #include <utility>
 
-#include "slam_it_all/eval/text.hpp"
-#include "slam_it_all/foundations/image.hpp"
-#include "slam_it_all/foundations/se3.hpp"
+#include "slam_it/eval/text.hpp"
+#include "slam_it/foundations/image.hpp"
+#include "slam_it/foundations/se3.hpp"
 
-namespace slam_it_all::eval::euroc {
+namespace slam_it::eval::euroc {
 
 namespace {
 
@@ -255,4 +255,4 @@ Result<Eigen::Matrix4d> right_from_left(const Camera& left, const Camera& right)
   return Eigen::Matrix4d(*inverse * left.T_body_cam);
 }
 
-}  // namespace slam_it_all::eval::euroc
+}  // namespace slam_it::eval::euroc
