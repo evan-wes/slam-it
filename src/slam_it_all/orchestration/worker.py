@@ -111,6 +111,10 @@ WAIT = 25.0
 RETRY = 5.0
 """How long the worker waits after the server could not be reached, in seconds."""
 
+TOKEN_REFUSED = (401, 403)
+"""The answers to a claim that say the worker's token is wrong, which no retry mends: they
+end the worker (:func:`serve`)."""
+
 HEARTBEAT = 30.0
 """How often a job's current stage is reported again while its child works, in seconds: the
 server fails a job it has not heard from for a few of these."""
@@ -613,7 +617,8 @@ def _report_failure(client: Client, job: Job, reason: str) -> None:
 def handle(client: Client, job: Job, work: Path, timeout: float = TIMEOUT) -> None:
     """Run one job end to end (the module docstring), and report how it ended.
 
-    It never raises: a job's failure, however it comes, never stops the worker.
+    It never raises: a job's failure, however it comes, its folder's making included, never
+    stops the worker.
 
     Parameters
     ----------
@@ -626,7 +631,7 @@ def handle(client: Client, job: Job, work: Path, timeout: float = TIMEOUT) -> No
     timeout : float, optional
         The longest its child process may take, in seconds.
     """
-    folder = Path(tempfile.mkdtemp(prefix=f"job-{job.id[:8]}-", dir=work))
+    folder: Path | None = None
 
     def report(stage: str) -> None:
         """Report a stage; one that does not reach the server is logged, and the job goes on."""
@@ -638,6 +643,7 @@ def handle(client: Client, job: Job, work: Path, timeout: float = TIMEOUT) -> No
             )
 
     try:
+        folder = Path(tempfile.mkdtemp(prefix=f"job-{job.id[:8]}-", dir=work))
         report("downloading")
         suffix = ".zip" if job.upload == "stray" else ".video"
         upload_path = folder / f"upload{suffix}"
@@ -663,7 +669,8 @@ def handle(client: Client, job: Job, work: Path, timeout: float = TIMEOUT) -> No
         _LOG.exception("job %s: an internal error", job.id)
         _report_failure(client, job, "an internal error")
     finally:
-        shutil.rmtree(folder, ignore_errors=True)  # the job's own folder, made above
+        if folder is not None:
+            shutil.rmtree(folder, ignore_errors=True)  # the job's own folder, made above
 
 
 def serve(client: Client, work: Path, *, once: bool = False, timeout: float = TIMEOUT) -> None:
@@ -683,7 +690,8 @@ def serve(client: Client, work: Path, *, once: bool = False, timeout: float = TI
     Raises
     ------
     slam_it_all.foundations.errors.InvalidInputError
-        If the lens profiles are not there (:func:`slam_it_all.eval.lenses.database`).
+        If the lens profiles are not there (:func:`slam_it_all.eval.lenses.database`), or the
+        server refuses the worker's token (:data:`TOKEN_REFUSED`).
     """
     lenses.database()  # required, so that no video silently falls to a fallback
     work.mkdir(parents=True, exist_ok=True)
@@ -691,6 +699,10 @@ def serve(client: Client, work: Path, *, once: bool = False, timeout: float = TI
         try:
             job = client.claim()
         except (OSError, ValueError) as error:  # a URLError is an OSError
+            if isinstance(error, urllib.error.HTTPError) and error.code in TOKEN_REFUSED:
+                raise InvalidInputError(
+                    f"token: the server refused it (HTTP {error.code})"
+                ) from None
             _LOG.warning("no job (%s); trying again in %g s", error, RETRY)
             time.sleep(RETRY)  # the server is away, or answered nonsense
             continue

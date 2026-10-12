@@ -543,6 +543,31 @@ def test_only_safe_urls_are_followed(url: str, good: bool) -> None:
             worker.check_url(url, "server")
 
 
+def test_a_token_the_server_refuses_ends_the_worker(
+    serving: Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 401 on a claim is a wrong token, which no retry mends: serve stops, main exits 2."""
+    wrong = "a-wrong-token-of-at-least-32-characters"
+    with pytest.raises(InvalidInputError, match="token: the server refused it"):
+        worker.serve(worker.Client(serving.url, wrong), tmp_path / "work", once=True)
+    monkeypatch.setenv(worker.TOKEN_VARIABLE, wrong)
+    assert worker.main(["serve", "--server", serving.url, "--work", str(tmp_path / "w")]) == 2
+    assert serving.jobs == ["job-1"]  # nothing was claimed
+
+
+def test_a_job_whose_folder_cannot_be_made_fails_and_the_worker_goes_on(
+    serving: Server, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A full or unwritable work folder fails the job as an internal error, logged; no raise."""
+    work = tmp_path / "work"
+    work.write_text("a file, not a folder")
+    job = worker.Job("job-1", "vo", "stray", f"{serving.url}/upload")
+    with caplog.at_level(logging.ERROR, logger="slam_it_all.orchestration.worker"):
+        worker.handle(worker.Client(serving.url, TOKEN), job, work)
+    assert serving.reason == "an internal error"
+    assert "job job-1: an internal error" in caplog.text
+
+
 def test_the_server_is_never_followed_through_a_redirect(serving: Server) -> None:
     """A 3xx from the server's API is an error, never followed: the token would go along."""
     serving.redirect = f"{serving.url}/elsewhere"
