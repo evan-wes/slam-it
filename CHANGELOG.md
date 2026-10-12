@@ -55,19 +55,26 @@ what they changed is in the entries below (`docs/reviews/2026-10-11-feature-your
   `::`, as in its image, it listens on IPv6 and IPv4 at once; it stops within 3 s. It never imports
   `slam_it_all`.
 - **The upload and status pages** (`viewer/upload.html`, `viewer/status.html`, their logic in
-  `viewer/src/jobs.js`).
+  `viewer/src/jobs.js`). The status page says what of the clip was tracked and where the run
+  ended, by losing the track or not, from the worker's summary (`worker.summarize`), so that a
+  result shorter than the video is not taken for a cropped one.
 - **The images** (`docker/server.Dockerfile`, which drops root at once for good, and
   `docker/worker.Dockerfile`, with tini) and **`scripts/serve_demo.py`**, which runs the server
   and a worker on this machine, on the local network with `--lan`, every page then behind the
   code and the page's address printed as a QR code for a phone's camera (segno, in the `dev`
-  extra and the lock).
+  extra and the lock). Its invite code is three short words unless given.
 - **A design note**, `docs/notes/your-own-video.md`, with the staging and demo checklists.
 
 ### Changed
 
-- **The viewer shows each backend's frames:** a bar under the frame slider and the button's
-  tooltip; a backend's button is disabled on frames it did not run, and the page switches to
-  one that did.
+- **The viewer shows each backend's frames and the whole sequence:** under the frame slider, a
+  row per backend over the frames it ran, coloured by state (no map yet, tracking, lost), with a
+  legend; beside the slider, the parts of the sequence no run reached, as wide as their time,
+  "not processed: tracking was lost" where the runs ended by losing the track. A backend's
+  button is disabled on frames it did not run, and the page switches to one that did.
+- **A bundle records its sequence's extent** (`bundle.json`'s `extent`: its frames, and its
+  first and last frames' times since the bundle's first), which the page requires; the format
+  stays version 1, and a bundle baked before is refused until baked again.
 - **`Pinhole` moves to `eval.lenses`.**
 - **Layer 1 covers the server:** ruff, mypy and jscpd check `server/`, prettier the new pages, and
   import contracts keep the server and `slam_it_all` apart, keep a decoder and reifyscene out of the

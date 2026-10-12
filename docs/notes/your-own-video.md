@@ -149,15 +149,32 @@ checks, and share its style; their logic is `viewer/src/jobs.js`. The viewer rea
 its own site only, and loads three.js pinned by its hashes. The server serves only the viewer's
 pages, its stylesheet and its modules.
 
+**A result shorter than the clip.** A run ends at the frame it loses the track at, with no
+relocalisation after, and a monocular run tracks nothing until its first map, so a result can
+cover a part of the video, which would otherwise look cropped. Both pages say so:
+- the status page in words, from the worker's summary (`worker.summarize`: the clip's length,
+  the first and last tracked frames' times, where the run ended, and whether by losing the
+  track): "Tracked from 2.5 s to 4.9 s of your 12.0 s clip. Tracking was lost at 5.0 s, which
+  ends a run, so the rest was not processed. The first 2.5 s went to finding a first map; moving
+  sideways at the start shortens it.";
+- the viewer on its timeline: the frame slider spans the part the runs ran, beside the parts
+  of the sequence none reached, each as wide as its time, the part after labelled "not
+  processed: tracking was lost" where every run that reached the last frame lost the track there,
+  else "not run"; under the slider, each backend's frames are coloured by state (faded before
+  its first map, its colour while tracking, red where it lost the track), with a legend. The
+  bundle records the whole sequence for this (`bundle.json`'s `extent`: its frames, and its
+  first and last frames' times), which the page requires.
+
 ## Running it
 
 **On this machine:** `python scripts/serve_demo.py` runs the server, with a folder as storage, and
-one worker, and prints the page's address and a new invite code. With `--lan` it listens on the
-local network too, so a phone on the same Wi-Fi can upload, and every page then asks for the code
-(any name, the code as the password); the page's address is printed as a QR code too, for the
-phone's camera, black on white whatever the terminal's colours. Everything goes in one folder
-(`--data`, by default a new temporary one). Ctrl-C, or a SIGTERM, stops the server and the worker
-together, and the server stops if the worker does.
+one worker, and prints the page's address and a new invite code, three short words such as
+`moss-lamp-tide` (`--code` gives another). With `--lan` it listens on the local network too, so a
+phone on the same Wi-Fi can upload, and every page then asks for the code (any name, the code as the
+password); the page's address is printed as a QR code too, for the phone's camera, black on white
+whatever the terminal's colours. Everything goes in one folder (`--data`, by default a new temporary
+one). Ctrl-C, or a SIGTERM, stops the server and the worker together, and the server stops if the
+worker does.
 
 **The images** build from the repository's root:
 
@@ -277,6 +294,7 @@ Pro, Pixel 8, Galaxy A15) and a Stray Scanner recording, kept outside the repo, 
 
 ## What it does not do yet
 
+- Relocalising after a lost track: the run ends there, and the pages say so.
 - Recording in the page, with a live camera view, or streaming a live camera.
 - Comparing the intrinsics' sources in the web app: measured once, on Stray Scanner recordings,
   and written up outside the repo.
