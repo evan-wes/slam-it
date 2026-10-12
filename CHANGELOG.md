@@ -40,19 +40,20 @@ what they changed is in the entries below (`docs/reviews/2026-10-11-feature-your
   reason fit to show. It repeats its stage every 30 s as the job's heartbeat, transfers included,
   and carries on past a report that does not arrive. A job's processes are one group, killed whole
   when it ends, however the worker is stopped; the child inherits no token; only `http(s)` links to
-  safe hosts are followed, and no redirect but a download's to one; the unexpected is logged by job.
-  An upload's run is named `your-video`.
+  safe hosts are followed (the host judged as urllib connects to it), and no redirect but a
+  download's to one; the unexpected is logged by job. An upload's run is named `your-video`.
 - **The upload server** (`server/`, `slam_it_all_server`, `python -m slam_it_all_server`): the job
   list in SQLite, which keeps its format and refuses another; storage in an S3 bucket or a folder,
   through links signed for one key and, for uploads, one size and 15 minutes; the guards (an invite
   code, at most 2 jobs open per code and 5 in all, the caps, one job worked on at a time, a
-  confirmed upload moved out of its link's reach and deleted after import, what the link writes
-  later deleted again after an hour, a result's files only a bundle's, results after 7 days, a job's
-  files deleted before it is and retried if that fails, tokens unguessable, pages `noindex` under a
-  Content Security Policy that allows three.js's own path alone of its CDN, staging behind a code,
-  never run as root). It logs jobs by id, never by token. Its settings come from the environment,
-  listed in `server/settings.template.env`. Given `::`, as in its image, it listens on IPv6 and IPv4
-  at once; it stops within 3 s. It never imports `slam_it_all`.
+  confirmed upload moved out of its link's reach and deleted after import, what a job's links write
+  later deleted again once they have all expired and an hour more has passed, a result's files only
+  a bundle's, results after 7 days, a job's files deleted before it is and retried if that fails,
+  tokens unguessable, pages `noindex` under a Content Security Policy that allows three.js's own
+  path alone of its CDN, staging behind a code, never run as root). It logs jobs by id, never by
+  token. Its settings come from the environment, listed in `server/settings.template.env`. Given
+  `::`, as in its image, it listens on IPv6 and IPv4 at once; it stops within 3 s. It never imports
+  `slam_it_all`.
 - **The upload and status pages** (`viewer/upload.html`, `viewer/status.html`, their logic in
   `viewer/src/jobs.js`).
 - **The images** (`docker/server.Dockerfile`, which drops root at once for good, and

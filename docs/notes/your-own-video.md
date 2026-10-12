@@ -66,11 +66,11 @@ where the name says none (the Camera app's "back triple camera"), from the 35mm-
 length, a name and a focal length that disagree trusting no profile; on the profile's own
 35mm-equivalent focal length, within 0.8 to 1.6 times the video's, since some profiles calibrate
 another lens than their names say and Apple's 2x is the main sensor cropped (without one, a
-phone's main-camera profiles far from their median are dropped); and on its aspect and
-orientation. The nearest resolution, frame rate and calibration error then decide. "Ultra" alone
-is a phone's name ("Galaxy S23 Ultra"), never a lens's. A fisheye
-video is undistorted to pinhole at import, so the pipeline never sees a fisheye; the model and
-its undistortion map agree with OpenCV's `cv2.fisheye`.
+main-camera profile within 1.5 times, either way, of the nominal field of view's 29.6 mm); and on
+its aspect and orientation. The nearest resolution, frame rate and calibration error then decide.
+"Ultra" alone is a phone's name ("Galaxy S23 Ultra"), never a lens's. A fisheye video is undistorted
+to pinhole at import, so the pipeline never sees a fisheye; the model and its undistortion map agree
+with OpenCV's `cv2.fisheye`.
 
 ## The worker
 
@@ -93,9 +93,11 @@ folder named `your-video`, which is the name the viewer shows.
   worker's paths taken out; anything else is "an internal error" to the owner, and logged with
   the job's id and its traceback for the operator.
 - **Trust:** it refuses a server or link that is not `http` or `https`, and plain `http` to a
-  host that may be on the public internet, an address written as a number judged as the address
-  it is. It follows no redirect from the server or an upload link, and a download's only to a
-  link it would accept.
+  host that may be on the public internet: only to loopback and private addresses (not
+  link-local, where a cloud keeps its metadata service), `localhost`, a container's one-label
+  name or `*.railway.internal`. The host is judged as urllib connects to it, its escapes undone,
+  and an address written as a number as the address it is. It follows no redirect from the
+  server or an upload link, and a download's only to a link it would accept.
 
 ## The server
 
@@ -108,14 +110,14 @@ folder named `your-video`, which is the name the viewer shows.
   ends, its files first: a deletion that fails is logged, and the job stays listed for the next
   sweep to try again. It has two names: an id for workers, storage and the log, and a 128-bit
   token for its owner's link.
-- **Storage** is a private S3 bucket, or a folder on this machine whose links the server signs
-  and serves, every file as a download. An upload link is a PUT signed for the size the owner
-  declared, so storage refuses any other; the server checks that size against the 500 MB cap
-  first. A confirmed upload is moved where its owner's link cannot reach it. A link is checked
-  when an upload starts, so whatever it writes later is deleted when the job ends and again an
-  hour after it expired; folder storage keeps nothing that arrives whole only after its link
-  expired. A done job's files, only a bundle's kinds of file, are redirected to storage's own
-  links, never proxied.
+- **Storage** is a private S3 bucket, or a folder on this machine whose links the server signs and
+  serves, every file as a download. An upload link is a PUT signed for the size the owner declared,
+  so storage refuses any other; the server checks that size against the 500 MB cap first. A
+  confirmed upload is moved where its owner's link cannot reach it. A link is checked when an upload
+  starts, so whatever a job's links write later is deleted when it ends, and again once every link
+  it signed has expired (an hour after it ended) and an hour more has passed; folder storage keeps
+  nothing that arrives whole only after its link expired. A done job's files, only a bundle's kinds
+  of file, are redirected to storage's own links, never proxied.
 - **The guards:** an invite code to upload, at most 2 jobs open per code and 5 in all; one job
   worked on at a time; a job not heard from for 2 minutes fails; the upload deleted when the import
   ends; at most 1,000 files and 1 GB a result; request bodies capped at 64 KiB outside storage;
@@ -127,8 +129,9 @@ folder named `your-video`, which is the name the viewer shows.
   would hold tokens and signed links, is off.
 - **Settings** come from environment variables, listed with placeholders in
   `server/settings.template.env`. Nothing about a deployment is in the repository.
-- **The job list keeps its format** in its file, and a server refuses one of another at
-  startup, naming it, rather than migrating it: deleting it starts a new one.
+- **The job list keeps its format** in its file, and a server refuses one of another, or another
+  program's file, at startup, naming it, rather than migrating or adopting it: deleting it starts
+  a new one. A test holds the table's columns to the format's number.
 - **`python -m slam_it_all_server`** refuses to run as root. It listens on IPv6 and IPv4 at once
   when given `::`, as the
   image is, since Railway's public port is reached on IPv4 and an older project's private
@@ -195,6 +198,10 @@ its own Yes, and the domain waits for the go-live call.
    - the server running: it refuses to run as root, so running, it is the entrypoint's user
      (uid 10001);
    - a PUT of the wrong size through a fresh upload link, refused by the bucket;
+   - a PUT through a fresh upload link, begun before the link expires and finished after: if the
+     bucket keeps it, an upload slower than about 0.5 Mbit/s (500 MB over the 135 minutes before
+     its job's last clearing) stays until the job's 7 days, or the bucket's lifecycle rule, and
+     the note should say so;
    - a clip uploaded from a phone; the job done; the viewer opened from its link, with no
      Content Security Policy error in the browser's console.
 
@@ -257,7 +264,10 @@ Pro, Pixel 8, Galaxy A15) and a Stray Scanner recording, kept outside the repo, 
 - what Apple's 35mm-equivalent tag gives for each lens and for the 2x crop: the still photo's
   figure, as one published iPhone clip suggests, or the video frame's own (the focal-length
   thresholds sit between the still photo's figures; the band a profile is held to holds under
-  either);
+  either). Against Apple's published figures, at 16:9, a profile's own focal length is 1.21
+  times its lens's figure for main cameras (median of 134), 1.23 for telephotos and 1.28 for
+  ultrawides, and 1.02 to 1.05 at 4:3: the 16:9 crop explains 1.09 of it, stabilisation the
+  rest. If the tag is the still photo's figure, the 35mm source is about 17% low on 16:9 video;
 - whether a profile calibrated at a 16-row-padded size (3840x2176, the Pixel 8's main among them)
   is cropped, not stretched, to a 16:9 video;
 - whether a phone ever writes a mirror in its display matrix, which reads as a half turn;
