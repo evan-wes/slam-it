@@ -856,3 +856,316 @@ Also new: the job list has no schema version, which f616342's schema change make
 - **TUM writers:** `tum.write_camera` writes floats with `repr`, so they read back exactly.
 - **Profile database:** `database()` refuses a missing or empty folder, and the worker requires it.
 - **A broken Pixel 6 profile** (1771 mm equivalent, fx/fy 1.44) passes the RMS and `holds()` filters but loses on calibration error at every Pixel 6 size, so it is harmless today.
+
+## Run 3 -- 2026-10-11
+
+| | |
+|---|---|
+| **Branch** | `feature/your-own-video` |
+| **Range** | `1359afb...2f1ce87`, run 2's fixes, read against the whole PR `63b61da...2f1ce87` |
+| **Reviewers** | hygiene (sonnet), architecture (opus), algorithm (opus); the security pass (opus) beside them again, in [its own report](2026-10-11-feature-your-own-video-security.md), run 3 |
+| **How they ran** | as in runs 1 and 2 |
+| **Layer 1** | all checks passed (`scripts/check.sh`, exit 0; 21 contracts kept; pytest 3543 passed) on the tree of `8f53353`; `2f1ce87` adds only the reports |
+| **The images** | rebuilt from `2f1ce87` (`slam-it-all-server:run3`, `slam-it-all-worker:run3`) through a memory-capped builder, removed after: a Stray Scanner zip as Stray writes its default (HEVC, 60 fps, 80 frames: 40 kept, 34 tracked) and the room's video each ran end to end through both containers, no upload left; run as root, the server's entrypoint dropped to uid 10001 with `NoNewPrivs: 1`, and the server started as root refused (exit 2) |
+
+IDs go on from run 2's, and findings raised by more than one reviewer share a row at the highest
+severity given. Each review opens with run 2's findings as it found them: each is resolved,
+except S24, whose escaped and scoped hosts S27 raises. There is no must-fix. Before this
+report, two should-fixes were reproduced: S27's hosts are accepted by `check_url` in-process
+(`http://8%2e8%2e8%2e8/`, which urllib connects to as 8.8.8.8, and a scoped IPv6 literal;
+nothing contacted), and L15's probes give the same results (the band around the nominal focal
+length agrees with the tag band on 153 of Apple's 153 main-camera profiles; without a tag, HEAD's
+rule picks profiles outside the main camera's range on 23 phones, from 9.5 mm, the Pixel 4's, to
+105 mm). L15 also answers
+the main session's run-2 measurement, which counted the phones that band leaves without a
+profile as a cost: the profiles it drops are another lens's.
+
+### Findings and resolutions
+
+| ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|---|
+| H19 / A19 | should-fix | hygiene, architecture | `server/.../app.py:307-312, 394-417`; `__main__.py:84, 103-107` | a viewer folder without its page, or with an import map the policy cannot read, ends the server with a traceback (exit 1), after the job list was made: `main` catches only settings and format errors | fix (refused as a setting, naming `SLAM_IT_ALL_VIEWER`, before the job list is opened; a test through `main`) | fixed (fcd9817: a SettingsError naming SLAM_IT_ALL_VIEWER, checked before anything is made) -- decided by evan-wes, 2026-10-11 |
+| L15 | should-fix | algorithm | `eval/lenses.py:125-133, 642-652`; `tests/eval/test_lenses.py:265` | without a tag, a profile whose own focal length is another lens's still wins on 23 phones: those with fewer than 3 main-camera profiles, and those whose median the guard rejects | fix (a band of PHONE_BAND around NOMINAL_FOCAL_35MM in place of the median, its guard and PHONE_MEDIAN_OF; the pinned test changed) | fixed (2405092: the band around NOMINAL_FOCAL_35MM replaces the median, its guard and PHONE_MEDIAN_OF) -- decided by evan-wes, 2026-10-11 |
+| H20 | should-fix | hygiene | `tests/server/test_app.py:343-367` | the late-PUT test passes only because the link is checked with exactly one read of the clock | fix (a clock moved once the body has arrived; renamed) | fixed (fcd9817) -- decided by evan-wes, 2026-10-11 |
+| A20 | note | architecture | `orchestration/worker.py:688-691, 726` | the worker's `main` leaves its signal handlers on whatever process calls it, even when it returns 2 | fix (installed around `serve` alone, the previous ones restored) | fixed (1ea2746) -- decided by evan-wes, 2026-10-11 |
+| A21 | note | architecture | `server/.../jobs.py:73-94, 204-220` | the format check adopts another program's SQLite file that has no `jobs` table, and nothing ties `_SCHEMA` to `SCHEMA_VERSION` | fix (a file with tables but no job list refused; the schema held to its version by a test) | fixed (fcd9817) -- decided by evan-wes, 2026-10-11 |
+| A22 | note | architecture | `server/.../app.py:191-197, 524-528`; `jobs.py:460-467` | a failed job's result links can still write after its files are cleared, kept until RETENTION; two docstrings miss the upload `_clear_files` now deletes | fix (the last clearing waits until every link the job signed has expired and had its grace, and clears a result never done again; the docstrings) | fixed (fcd9817: the last clearing LINK_SECONDS and UPLOAD_GRACE after the job ends, a result never done included) -- decided by evan-wes, 2026-10-11 |
+| H21 | note | hygiene | `tests/server/test_shared_names.py:50` | "SILENCE less one" should say "less one heartbeat" | fix | fixed (fcd9817) -- decided by evan-wes, 2026-10-11 |
+| L16 | note | algorithm | `eval/lenses.py:155, 580-585` | a model's "Ultra" runs into a lens's "Wide" across the file name's underscore: two main-camera profiles read as ultrawide | no action (each alternative loses a profile the other way; no wrong intrinsics) | no action: each alternative loses a profile the other way, and no clip gets wrong intrinsics -- decided by evan-wes, 2026-10-11 |
+| L17 | note | algorithm | `eval/lenses.py` (`TAG_BAND`) | evidence for the deferred 35mm convention: a 16:9 main-camera profile's own focal length is 1.21 times Apple's published figure (median); TAG_BAND's docstring says "the tag" where it was measured against the published figures | fix (the docstring; the ratios added to the note's list for the real clips) | fixed (2405092: TAG_BAND's docstring; 67fc822: the ratios in the note) -- decided by evan-wes, 2026-10-11 |
+
+### Hygiene review
+
+## Hygiene review
+
+**Scope:** Run 2's fixes, `1359afb...2f1ce87` (53ed1f4, 4ee7c67, d66da0f, e944d8e, 8f53353, 2f1ce87). I read the full diff of src, server, scripts, docker, viewer and the tests. I did not re-run the test suite, since layer 1 passed.
+
+### Run 2's findings
+- **H12:** resolved. `content_policy` raises `FileNotFoundError` for a missing `index.html` and `ValueError` for an import map not written as `<script type="importmap">`. `test_a_viewer_whose_import_map_cannot_be_read_stops_the_server` covers both. The CDN is narrowed to the three.js path, and `test_the_policy_allows_three_js_alone_of_its_cdn` checks that every module in the import map lies under it. One gap remains: see the first should-fix below.
+- **H13:** resolved. The move failure is caught: 409 for `FileNotFoundError`, 503 plus a log line by job id for other errors. The parametrized test also asserts the job is still waiting.
+- **H14:** resolved. `focal_kind` is bound once with a walrus.
+- **H15:** resolved. `lenses.Chosen` is passed whole to `_write_source`, and the Caps paragraph is reworded.
+- **H16:** resolved. `OSError` alone is caught in `report` and `serve`, and `_too_long` is one source for the deadline message.
+- **H17, H18:** no action, as recorded.
+
+### Findings
+
+#### [should-fix] A viewer the policy refuses ends the server with a traceback, not exit 2
+- **Where:** `server/src/slam_it_all_server/__main__.py:107-109`, `server/src/slam_it_all_server/__main__.py:70` (`server_config`), `server/src/slam_it_all_server/app.py:285-306`
+- **Issue:** The H12 fix raises `FileNotFoundError` or `ValueError` from `make_app`, which `server_config` calls. `main` now wraps `server_config` and catches `(SettingsError, SchemaError)` only, giving a one-line message and exit 2. The new viewer errors escape as a raw traceback. `content_policy` and `server_config` also have no `Raises` section, although they now raise three kinds of error.
+- **Why it matters:** A missing or edited `viewer/index.html` is the exact misconfiguration H12 added the check for. It should be reported like the other two startup failures. Nothing tests the path through `main`.
+- **Evidence:** `except (SettingsError, SchemaError) as error:` wraps `configured = server_config(from_environment())`. The new raises are at `app.py:306` and `app.py:309` in the diff.
+- **Suggested fix:** Give the viewer failure its own exception, or catch `(FileNotFoundError, ValueError)` around `make_app`. Document `Raises` on `content_policy` and `server_config`. Add a `main` test like `test_a_job_list_of_another_format_ends_it_with_code_2`.
+
+#### [should-fix] The expiry-at-end test depends on how many times the clock is read
+- **Where:** `tests/server/test_app.py:343-367` (`_Ticking` and `test_folder_storage_keeps_no_upload_whole_only_after_its_link_expired`)
+- **Issue:** `_Ticking` advances the clock on every read, with `step=11` against a link of 10 seconds. The test passes only because `verify` reads the clock exactly once before the end-of-upload check. If `checked` or `verify` reads it a second time, the PUT is refused at the start (403 with another message) and the test passes or fails for the wrong reason. The test name ("keeps_no_upload_whole_only_after_its_link_expired") is also hard to read.
+- **Why it matters:** The test claims to check that a link valid at the start but expired at the end is refused. It does not pin the read it relies on.
+- **Evidence:** `clock.step = 11.0  # read when the link is checked, then again when the upload has arrived`
+- **Suggested fix:** Use a clock that returns a start value for the first read and a later one afterwards, or sets `now` from inside the request body iteration. Rename to something like `test_a_put_that_outlives_its_link_is_refused_and_not_kept`.
+
+#### [note] A small wording slip in a test docstring
+- **Where:** `tests/server/test_shared_names.py:50`
+- **Issue:** "it fails within SILENCE less one" should read "less one heartbeat". The assertions are right: `UPLOAD_TIMEOUT` 90 + `HEARTBEAT` 30 ≤ `SILENCE` 120, and the same for `REQUEST_TIMEOUT`.
+
+### Checked and fine
+- **Derived numbers:** `NOMINAL_FOCAL_35MM`'s "(29.6)" matches 72.37° (I computed 29.57). The "500 MB needs about 4.5 Mbit/s" figure on the upload page and the "0.9 Mbit/s" in `UPLOAD_GRACE` are arithmetically right. `test_the_upload_window_the_page_states_is_the_servers` keeps the 15 minutes tied to `UPLOAD_WAIT`.
+- **`lenses.py` helpers:** `_near`, `_typical`, `_within` and `Profile.focal_35mm` are small, single-purpose and documented. The constants have stated reasons. The `_WIDER` change keeps "Ultra" out of lens names, with a comment saying why.
+- **`worker.py` redirects:** the `_Redirects` handler with the two openers is direct, and its `noqa` is justified (urllib's signature). The redirect tests cover the server, an upload link, and a download to an allowed and a refused URL.
+- **`worker.py` host check:** `_private_host` uses `AI_NUMERICHOST` and is tested with decimal and hex forms.
+- **Signals and demo shutdown:** `_stop` and `_stop_on_signals` are documented, and the subprocess test covers SIGTERM and a double signal. `serve_demo._end` and `STOP_WAIT` replace the old inline code, and `test_each_process_is_given_its_time_then_killed` checks the exit status values.
+- **`process()` and `_too_long`:** `process()` narrows its catch to `SlamItAllError`, and the missing-upload case is tested both ways. `_too_long` removes the duplicated deadline message.
+- **Job list and entrypoint:** `SCHEMA_VERSION` with a `SchemaError` raised from `Jobs.__init__` is tested for versions 0 and N+1. `docker/server-entrypoint.sh` validates the path before `chown -R`. `os.geteuid() == 0` is refused with a test.
+- **Storage origin and late uploads:** `Storage.origin` is implemented once for each store (shared `_origin` helper) and tested. `UPLOAD_GRACE` has a named value, a stated reason, and sweep and jobs tests on the boundary (grace minus 1, then plus 1). The folder `put_file` check for expiry at the end is documented.
+- **`video.py`:** the frame-size check adds `_Geometry.stored`, and the Caps docstring is clearer. `recordings.py` documents `divider` and HEVC.
+
+### Architecture review
+
+## Architecture review
+
+**Scope:** Run 3 of PR 11, `feature/your-own-video`: run 2's fix commits `1359afb...2f1ce87` (6 commits, 31 files), read against the whole PR `63b61da...2f1ce87` and the design. Paths are relative to the repository root.
+- **Read in full:** `orchestration/worker.py` at HEAD, `scripts/serve_demo.py`, the server's `__main__.py`, `config.py`, the changed parts of `app.py`, `jobs.py` and `storage.py` with the code around them, `docker/server-entrypoint.sh`, the contracts in `pyproject.toml`, and the `eval.lenses` and `eval.video` diffs.
+- **Also read:** the test diffs, and the docs diffs (ladder, note, CHANGELOG). I checked `CLAUDE.md` and run-viewer design sections 5.3, 5.4 and 9 against the code.
+- **Probes,** each run under the memory cap:
+  - Run 2's probes, run again: `pr11_worker_server_probes.py --trials 8`.
+  - New probes for startup, the job list's format and the worker's signal handlers, saved for later runs: `pr11_server_startup_probes.py`.
+  - Scratch files are in `/tmp/scratch/review3-architecture/`.
+- **Tests and contracts:** `lint-imports` gives 21 kept, 0 broken. `tests/server`, `tests/test_serve_demo.py` and `tests/orchestration/test_worker.py` give 168 passed. No server was started on a fixed port, no process was left running, and no Docker was used.
+
+**Summary:** All six architecture findings of run 2 are resolved as the report says, and my probes now show the fixed behaviour. The worker's stop goes through the clean-up it already had, the job list carries a format version, and the sweep clears the owner's link twice. The new contract states its rule for every module to come, and the docs match what was built. One small should-fix is new: H12's refusal of a viewer folder without its page escapes the entry point as a traceback, where `main` promises exit 2. Three notes follow.
+
+### Run 2's findings
+- **A13:** resolved.
+  - Probe 5 prints "none" and probe 6 "0 of 8".
+  - `test_a_stopped_worker_leaves_no_process_or_folder_behind` covers a SIGTERM, and a Ctrl-C followed by the demo's SIGTERM.
+  - The demo stops the worker before the server, giving each 10 s before a SIGKILL.
+  - What remains: a SIGKILL (including the demo's after 10 s) still leaves the job's folder under `--work`, and nothing clears it at startup. No action asked.
+- **A14:** resolved. Job lists made by cbf7b3d's and 1359afb's servers are refused when opened, naming the file. Through `main`, the refusal is one line and exit 2. Both levels are tested.
+- **A15:** resolved.
+  - The owner's link writes are cleared when the job ends, and again `UPLOAD_GRACE` after the link expires.
+  - Folder storage refuses an upload that arrives whole only after its link expired.
+  - The page states the 15 minutes, and a test holds that number to `UPLOAD_WAIT`.
+  - A related gap on the worker's result links is in note 3.
+- **A16:** resolved. `UPLOAD_TIMEOUT` is now 90 s. `test_shared_names` holds `UPLOAD_TIMEOUT + HEARTBEAT <= SILENCE` (90 + 30 <= 120), and the same for `REQUEST_TIMEOUT`.
+- **A17:** resolved. `Storage.origin` is part of the protocol and both stores test it. S3 still finds its origin from a presigned URL, but inside the store and from boto3's own addressing style, which is the right place for it.
+- **A18:** resolved. The source is now `slam_it_all.orchestration`, with the worker's import ignored. The exhaustive order contract puts the worker at the top, so no module can reach `eval.video` through it. import-linter reports the one ignored import.
+
+### Findings
+
+#### [should-fix] A viewer folder without its page ends the server with a traceback, after the job list has been made
+- **Where:**
+  - `server/src/slam_it_all_server/app.py:307-312`: `content_policy` raises `FileNotFoundError` or `ValueError`.
+  - `app.py:394-417`: `make_app` builds storage, then opens the job list, then builds the policy.
+  - `server/src/slam_it_all_server/__main__.py:84, 103-107`: `main` says it returns "2 if ... a setting ... is wrong", but catches only `SettingsError` and `SchemaError`.
+- **Issue:**
+  - H12's fix refuses a viewer folder without `index.html`, or an import map it cannot read, when the app is made. That part is right.
+  - But `SLAM_IT_ALL_VIEWER` is a setting, and its refusal is not one of the errors `main` catches. A wrong value ends the server with a Python traceback and exit code 1.
+  - By then the job list file and the storage folder have already been made.
+  - The test named `test_a_viewer_whose_import_map_cannot_be_read_stops_the_server` (`tests/server/test_app.py:603`) calls `content_policy` directly, so it never sees what `main` does.
+- **Why it matters:** run 2 fixed every other startup refusal (root, settings, the job list's format) to one line naming the problem and exit 2. This one breaks that rule, and `main`'s docstring is wrong for it. The cost is small: an operator reads a traceback on Railway. The fix is a line or two.
+- **Evidence:** probe 4 of `pr11_server_startup_probes.py`, on 2f1ce87:
+  ```
+  4. no viewer page: main -> raised FileNotFoundError | job list made first: True
+  ```
+- **Suggested fix:**
+  - Have `content_policy` raise `SettingsError` naming `SLAM_IT_ALL_VIEWER`. `app` may import `config` under the server's order contract.
+  - Build the policy before `make_app` opens the job list.
+  - Add a test through `main`, like `test_a_job_list_of_another_format_ends_it_with_code_2`.
+
+#### [note] The worker's `main` leaves its signal handlers on any process that calls it
+- **Where:**
+  - `src/slam_it_all/orchestration/worker.py:688-691` and `:726`: the handlers are installed before `Client(...)` and `serve`'s refusals, and never restored.
+  - `tests/orchestration/test_worker.py:571-576`: `worker.main(["serve", ...])` is called in-process three times.
+- **Issue:**
+  - `_stop_on_signals()` replaces SIGINT and SIGTERM for the whole process and never puts them back, even when `main` returns 2.
+  - After `test_the_worker_refuses_to_start_wrong`, the rest of the pytest session runs with the worker's `_stop`.
+  - A SIGTERM to pytest then becomes a KeyboardInterrupt. After one signal, both signals stay ignored for the rest of the process, so a second Ctrl-C can no longer force a stuck session to stop.
+- **Why it matters:** in production `main` is the whole program, so nothing breaks there. But `main` is also called as a function, and process-wide state then leaks to its caller. No test fails today.
+- **Evidence:** probe 5:
+  ```
+  5. main -> 2 | SIGINT, SIGTERM before: (default_int_handler, SIG_DFL) | after: (_stop, _stop)
+  5. after one SIGTERM: 1 1 (1 is SIG_IGN)
+  ```
+- **Suggested fix:** install the handlers only around `serve(...)`, in a context manager that saves the previous handlers (`signal.signal` returns them) and restores them in a `finally`.
+
+#### [note] The format check knows a job list only by its table's name and a version number
+- **Where:** `server/src/slam_it_all_server/jobs.py:204-220` (`Jobs.__init__`) and `:73-94` (`SCHEMA_VERSION`, `_SCHEMA`).
+- **Issue:**
+  1. **Any file without a `jobs` table counts as new.** If `SLAM_IT_ALL_DATABASE` names another program's SQLite file by mistake, the server adopts it: it adds the table, overwrites the file's `user_version` and switches it to WAL mode (line 209, before the check).
+  2. **Nothing ties `_SCHEMA` to `SCHEMA_VERSION`.** If a column changes and the version is not bumped, an old file still opens and fails at its first use. That is A14's failure again. The next schema change is expected: A8's stages by kind.
+- **Evidence:** probes 2 and 3:
+  ```
+  2. a foreign file: adopted; tables now ['notes', 'jobs'] | user_version now 1
+  3. this version, other columns: opened; the first job: OperationalError no such column: state
+  ```
+- **Suggested fix:**
+  - Treat a file as new only if it has no tables. Refuse a file that has tables but no `jobs` table, as "not a job list".
+  - Pin the schema to its version in a test, for example a new list's `PRAGMA table_info(jobs)` recorded beside `SCHEMA_VERSION`. A schema change then fails until the version is bumped, as the edge rung's and the bundle's golden records already work.
+
+#### [note] The second clearing covers the owner's upload link, not the worker's result links
+- **Where:**
+  - `server/src/slam_it_all_server/app.py:191-197` (`_clear_files`) and `:524-528` (`_result_links`, which sign for `LINK_SECONDS`, 1 h).
+  - `src/slam_it_all/orchestration/worker.py:603-610`: a report that fails with `OSError` is logged and the job carries on.
+- **Issue:**
+  - d66da0f's argument is that a link can still write after its job's files are cleared. That holds for the result links too.
+  - Example: the server is away for more than `SILENCE` while storage is up, as in a server redeploy during the uploading stage.
+    1. The restarted server's first sweep fails the job and deletes `results/<id>/`, because the job is not done.
+    2. The worker keeps uploading through its still-valid links until its next heartbeat gets a 409, up to 30 s later.
+    3. The files it uploads in that time stay until `_delete`, 7 days later. Nothing serves them, because the job failed.
+  - This is the same class as A15's late arrival, within the 7-day promise. Since the bundle holds the video's frames, it is still data kept longer than the clean-up intends.
+- **Suggested fix:** either let the `link_open` step also clear `results/<id>/` again for jobs not done, once `LINK_SECONDS` have passed since the job ended, or state in `jobs.py`'s docstring that `RETENTION` bounds these files. Also, two docstrings were missed by d66da0f: `files_to_clear` and `clear_files` (`jobs.py:460-467`) still name only the copy and the result, not the upload that `_clear_files` now deletes too.
+
+### Checked and fine
+- **Dependency direction:**
+  - 21 contracts are kept.
+  - No C++ or Rust changed, and nothing in `foundations`, `edge` or `backends` gains a dependency.
+  - `eval.video` passes a `lenses.Chosen` (video already imports lenses), and the lens checks stay in `lenses`.
+  - `__main__` imports `SchemaError` from `jobs`, which keeps the server's module order.
+  - `scripts/serve_demo.py` imports the worker, which is fine for a script.
+- **Server/worker split and protocol:**
+  - The protocol is unchanged.
+  - The worker follows no redirect from the server's API or an upload link. urllib would otherwise have carried the token on a POST it re-sent. A download follows a redirect only to a URL `check_url` accepts, and both cases are tested.
+  - The process holding the storage keys still parses nothing.
+- **Stop design:**
+  - A SIGTERM reuses the existing clean-up (`_run_child`'s and `handle`'s `finally`), not a second path.
+  - Only `serve` gets the handlers; the job's child keeps the default ones.
+  - Ignoring a second signal protects that clean-up.
+  - The only unguarded window is between the fork and `_run_child`'s `try`, a few milliseconds.
+- **The sweep:**
+  - The order is: links to close, then files to clear, then jobs to delete. The flags are independent, and each failure is retried.
+  - The owner's link writes are cleared at the job's end and again after `UPLOAD_GRACE`. `links_to_close` keys on `created`, matching the link signed for `UPLOAD_WAIT` at `create`.
+  - A failed move in `uploaded` answers 409 or 503 and leaves the job waiting.
+- **The format check's place:** it sits in `Jobs.__init__` inside one `BEGIN IMMEDIATE`, so creating the table and setting the version happen together and every opener gets the check. It runs before serving, and `main` turns it into one line and exit 2.
+- **Content policy:** scripts are limited to three.js's own path on its CDN. A test holds every URL in the import map under `CDN`, so a version bump in `index.html` cannot drift from the policy unseen. Storage's origin is found through the `Storage` protocol.
+- **Timing relations:** `test_shared_names` holds the stall timeouts within `SILENCE`, and the page's 15 minutes to `UPLOAD_WAIT`.
+- **Entry point and image:** the root refusal comes before any setting is read. The entrypoint refuses a relative or root-folder database path and adds `--no-new-privs` (security's S25).
+- **Docs against code:**
+  - The ladder's contract list and the note (supervision, trust, the server's clearing and format, the images, the staging check, the test list) match the code.
+  - CHANGELOG's entries (the worker, the server, the contract) match the code. VERSION stays 0.3.6.0 within the PR.
+  - `CLAUDE.md` and run-viewer design sections 5.3, 5.4 and 9 stay true and need no change for these fixes.
+  - The deferred items (A8, A9, A10, S2/S11/S15/S20, L6-L8) are recorded in the ladder's open items, and I have not raised them again.
+
+### Algorithm review
+
+## Algorithm review
+
+**Run 2's findings**
+- **L10:** resolved for clips with a tag, which covers Apple's clips. I re-ran `apple_mismatch2.py` on 2f1ce87. Of Apple's main-camera clips at 30 fps, 80 match a profile, and **none** of them matches one whose own focal length belongs to another lens (3 did before the fix). Of the 2x-crop clips, the only matches are the iPhone 15 Pro Max's "Auto" profile, at 60 mm, which is 1.25 times the tag. That fits a 2x crop at 16:9 with stabilisation, so the match is right. The band, the median and the guard each have a test that fails when that piece is removed (I checked this with two pytest plugins that break them). The rule for clips without a tag still leaves wrong matches; see the should-fix below.
+- **L11:** resolved. The fixture is HEVC with B-frames: packets arrive out of presentation order, and the picture types are I B B B B P B B B B P B. The edit list hides frame 0: 11 of 12 frames decode with it honoured, 12 with it ignored. The stamps are `divider*i - 1`, which matches Stray's source (`DatasetEncoder.swift`: `totalFrames` is the counter before its increment, then `currentFrame % frameInterval`). My run-2 mutant, which pairs every frame with the wrong ground-truth row, now fails `test_a_stray_scanner_recording_imports_with_its_truth[1-kept0]`.
+- **L12:** resolved. Both `size_change.py` probes are now refused: "frame 3 is 1280x240 / 8192x64, the first 320x240", and nothing is left on disk. `_geometry` already holds the first frame to the header's size, so the header caps now hold for every frame.
+- **L13:** resolved. I reproduced the figures: 82 profiles change kind, and the nominal field of view is 72.37 degrees over 828 profiles. A small leftover is in the note below.
+- **L14:** resolved. Both the module docstring and the note's "What waits for the real clips" list it.
+
+**Scope:** the run-2 fixes in `1359afb...2f1ce87`, mainly 53ed1f4 (`src/slam_it_all/eval/lenses.py`, `eval/video.py`, `tests/eval/{recordings,test_lenses,test_video}.py`, the two new fixture profiles) and the L14 text in 8f53353. I did not review the worker and server commits; they are outside my lane. I checked against:
+- the Gyroflow database at `886fc61`;
+- Apple's published 35mm figures for each model and lens;
+- Stray Scanner's current `DatasetEncoder.swift`.
+
+Results:
+- `tests/eval/test_lenses.py`, `test_video.py` and `test_tum.py` pass (134 tests).
+- The probes are in `/tmp/scratch/review3-algorithm/`. The reusable ones are also saved in `lens_matching_probes/`.
+- I made no changes; the tree is clean at 2f1ce87.
+
+**Summary:**
+- The fixes are correct, and their tests fail when each fix is removed.
+- TAG_BAND's edges are well placed on the database. Right lens-and-figure pairs measure 0.99 to 1.40; wrong ones measure 0.54 to 0.71, or 1.76 and above.
+- NOMINAL_FOCAL_35MM is a sound centre for a profile's `fx`.
+- One should-fix: for a clip without a tag, the median-plus-guard rule still lets a profile whose own focal length is an ultrawide's (or a telephoto's) win:
+  - on phones with fewer than 3 main-camera profiles;
+  - on phones whose median the guard rejects.
+
+  A band around NOMINAL_FOCAL_35MM, the very value the guard already checks against, fixes all of these. Checked against Apple's labelled profiles, it gives the same answer as the tag band on every one.
+
+### Findings
+
+#### [should-fix] Without a tag, a profile whose own focal length is not a main camera's still wins on 23 phones; a band around NOMINAL_FOCAL_35MM would drop them
+- **Where:**
+  - `src/slam_it_all/eval/lenses.py:642-652` (`_typical`): it returns every profile unjudged when there are fewer than `PHONE_MEDIAN_OF` of them, or when the guard rejects the phone's median.
+  - `:125-133` (`PHONE_BAND`, `PHONE_MEDIAN_OF`).
+  - `tests/eval/test_lenses.py:265`: the case `((14.0, 30.0), "14mm")  # too few to judge` pins the 14 mm choice.
+- **Issue:**
+  - The guard is meant for phones where most profiles are of another lens. In that case it judges nothing, so the wrong majority stays in, and it often wins on resolution or frame rate.
+  - Phones with one or two main-camera profiles are never judged at all.
+  - In both cases L10's failure comes back: about half the true `fx`, plus another lens's distortion model, all labelled "profile".
+- **Why it matters:**
+  - This is the Android path, and Apple clips that lack the tag.
+  - Pixels do write `com.android.manufacturer` and `com.android.model`; [Wikimedia T411005](https://phabricator.wikimedia.org/T411005) shows a Pixel 7 clip. Whether Android names phones in general is still a check that waits for the real clips, which is why I rate this should-fix and not must-fix. It is the same kind of fault as L10.
+  - The main session counted "27 phones left without a profile" as a cost of the band around the nominal value. On the evidence below, every profile that band drops is the wrong one for a stock main-camera clip. Those clips fall to "nominal" instead: its 29.6 mm is about 8% from the S23+'s real main camera, against 44% short for the profile matched today.
+- **Evidence:**
+  - `untagged_examples.py`, at HEAD:
+    ```
+    iphone 14 pro max (3840, 2160) [no tag]: ...iPhone 14 Pro Max___4k_16by9_3840x2160-30.00fps own 16.8 mm; fx 1707.2; phone's main profiles [14.3, 14.3, 14.5, 16.5, 16.8, 29.2, 30.9, 31.1, 31.1]
+    s23+ (1920, 1080): Samsung__Samsung_S23+___1080p_16by9_1920x1080-30.00fps own 15.3 mm; fx 778.6; phone's main profiles [14.9, 15.3, 27.3]
+    ```
+    1080p30 is Samsung's default mode.
+  - `untagged_phones.py`, phones only (the database also files cameras and action cameras among the phones; those are left out): 403 phones, 1,336 picks without a tag. **79 picks on 23 phones** have an own focal length outside 19.7 to 44.4 mm. Examples:
+    - Pixel 4: 9.5 mm.
+    - Samsung A13: 15.7 mm.
+    - S21 FE ("angular"): 14.8 mm.
+    - Huawei Mate 60 Pro: 17.2 mm.
+    - Galaxy S23 Ultra at 4K: 17.9 mm, which the median keeps at 0.77.
+    - Huawei P60 Pro: 103.9 mm. Its "75mm4K" defeats `_FOCAL_MM`'s `\b`, so it reads as a main camera.
+  - Independent check (`nominal_vs_tag.py`). On Apple's 153 main-camera profiles whose lens is known, a band of PHONE_BAND around NOMINAL_FOCAL_35MM keeps and drops exactly the profiles that TAG_BAND around Apple's own figure keeps and drops: **153 of 153 agree**. HEAD's `_typical`, run as if those clips had no tag, keeps 5 ultrawide calibrations of the 14 Pro Max (14.3 to 16.8 mm). Their median of 16.8 trips the guard.
+  - `median_extra.py`: over all 828 main-camera profiles, the phone's median drops only one profile that the nominal band keeps (a Redmi Note 13 slow-motion 720p120 profile at 43.2 mm).
+  - Over all phone-and-mode picks (`untagged_picks.py`, including cameras): HEAD has 119 outside the range in 1,400. The nominal band, alone or together with the median, has 0, with 1,300 picks and 376 clips falling to "nominal".
+- **Suggested fix:**
+  - For a main-camera clip without a tag, keep the profiles within PHONE_BAND of NOMINAL_FOCAL_35MM, either instead of the phone's median or as well as it. This removes the guard and `PHONE_MEDIAN_OF`.
+  - At minimum, use that band wherever the median cannot be used.
+  - Change the pinned test case so that the 14 mm profile is dropped and the clip gets the 30 mm one (or "nominal").
+
+#### [note] L13 leftover: a model's "Ultra" still runs into a lens's "Wide" across the file name's underscore
+- **Where:** `src/slam_it_all/eval/lenses.py:155` (`ultra[ _-]?wide`), applied at `:580-585` to text that includes the file stem.
+- **Issue:** Gyroflow joins brand, model and lens with `_`. So `S24 Ultra_Wide_24mm` (own focal 25.0 mm) and the S21 Ultra's `ultra_wide_24mm` (24.6 mm), both main cameras, still read as ultrawide (`ultra_join.py`).
+- **Why it matters:** no wrong intrinsics, because an Android clip always reads as a main camera. Two main-camera profiles are lost, from matching and from the nominal median.
+- **Suggested fix:** none needed now. If wanted, use `ultra[ -]?wide`, or remove the model from the text before `lens_kind`. Each costs a profile or two the other way (`ZTE_AXON40ULTRA_Wideangle`, 17.7 mm), so it is not clearly better.
+
+#### [note] Evidence for the deferred 35mm-convention check (L8, L14): not a new finding
+- **Issue:** On Apple profiles kept by TAG_BAND (`own_over_figure.py`), the profile's own focal length over Apple's published figure is:
+
+  | Lens | Aspect | n | Median ratio | 10th to 90th percentile |
+  |---|---|---|---|---|
+  | main | 16:9 | 134 | 1.21 | 1.07 to 1.30 |
+  | telephoto | 16:9 | 7 | 1.23 | |
+  | ultrawide | 16:9 | 20 | 1.28 | |
+  | all | 4:3 | | 1.02 to 1.05 | |
+
+  The 16:9 crop explains a factor of 1.09; stabilisation explains the rest.
+- **Why it matters:** if the real clips show that the tag is the still photo's figure, the "35mm" source (`from_35mm`, which treats the tag as the frame's own diagonal equivalent) gives `fx` about 17% low on 16:9 video. That source now also takes every 2x clip. Also, TAG_BAND's docstring calls "1.0 to 1.4 times the figure Apple's tag gives" a measured fact, but it was measured against Apple's published figures, not against tags.
+- **Suggested fix:** none now. Read the real clips against these numbers, and say "Apple's published figure" in the TAG_BAND docstring.
+
+### Checked and fine
+- **TAG_BAND (0.8 to 1.6)** on correct (model, lens) pairs only (`tag_correct_pairs.py`):
+  - **Ranges:** ultrawides 1.05 to 1.36, main cameras 1.00 to 1.40, telephotos 0.99 to 1.36.
+  - **Rejects:** every main-labelled profile outside the band is mislabelled (0.54 to 0.71) or a crop (1.76, 2.5).
+  - **Margins:** at least 0.09 to the nearest wrong pair and 0.2 to the nearest right one.
+  - **Under either convention:** the band holds whether the tag is the still photo's figure or the frame's own.
+  - **The low edge:** the low edge would admit the 1x profile for a 28 or 35 mm crop (tag 35: 0.80 to 1.10). Apple offers those crops for photos only ([PetaPixel, "Apple Explains What the iPhone 15 Camera Can and Can't Do", 2023-09-18](https://petapixel.com/2023/09/18/apple-explains-what-the-iphone-can-and-cant-do-and-why/)).
+- **NOMINAL_FOCAL_35MM as the centre for `fx`** (`centre.py`):
+  - Over the 828 main-camera profiles, the focal length derived from the field of view over the one derived from `fx` has a median of 1.009 (5th to 95th percentile 0.958 to 1.073).
+  - The median `focal_35mm` is 29.06 mm against 29.57. For lenses that are nearly rectilinear, KB's unit slope at zero makes `fx` the paraxial focal length, so the two quantities agree.
+- **`Profile.focal_35mm`:** `fx · 43.27 / hypot(w, h)` at the calibration size; a 16-row-padded size changes it by 0.7%.
+- **The 2x crop:** a tag of 48 reads as a main camera and gets no 1x profile. On the iPhone 15 and 16, a tag of 52 reads as telephoto, so the clip falls to "35mm" unless there is a profile named "2x". A "2x" profile cannot win a 3x clip (58/77 = 0.75, outside the band).
+- **The commit's figures, reproduced:** 80/0 and 82/3; the 2x clips' 12/2; 14 of 662 dropped, with no phone left empty; 82 changes of kind (62 and 20); 72.37 degrees over 828; NOMINAL_FOCAL_35MM 29.57.
+- **The Stray fixture and pairing:** checked against `DatasetEncoder.swift`. The 60 fps keep pattern (0, 2, 4, 6) is deterministic: frames are spaced exactly 1/60 s, against MIN_SPACING of 1/40. The import's subtraction of the first time covers the B-frame offset that FFmpeg adds once the edit list is ignored.
+- **The size check:** it runs on every decoded frame, including skipped ones, before any resampling, and for Stray's import too.
+- **The new tests fail when the code they cover is removed:** an open band fails the 12 Pro pair test and the 2x test, and removing `_typical` fails the median test.

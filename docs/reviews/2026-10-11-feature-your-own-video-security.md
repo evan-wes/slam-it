@@ -516,3 +516,176 @@ Scratch files are in `/tmp/scratch/review2-security/`:
 - the demo runs: `demo-877*/`, `demo-877*.log`, `work/`.
 
 The probe server on 8790 and the three demos on 8771-8773 are stopped, no process of any job is left, and no container is running. The probes would be worth keeping in a private scripts folder if wanted; I left them in the scratch folder, as my brief said.
+
+## Run 3 -- 2026-10-11
+
+| | |
+|---|---|
+| **Branch** | `feature/your-own-video` |
+| **Range** | `1359afb...2f1ce87`, run 2's fixes, read against the whole PR `63b61da...2f1ce87` |
+| **Reviewer** | security (opus), a general-purpose agent with its own brief, as in runs 1 and 2 |
+| **Probes** | the server on 127.0.0.1 with folder storage and staging on, its upload wait cut to 30 s, its grace to 20 s and its sweep to 2 s; a real `worker serve` and two `serve_demo.py` runs on local ports, stopped by signals; the URL rule in the env and in `slam-it-all-worker:run3`, every connection intercepted; the entrypoint in `slam-it-all-server:run3` with `chown` stood in for; no image built, no external service contacted |
+| **Panel** | [the panel's report](2026-10-11-feature-your-own-video.md), run 3, whose IDs (H*, A*, L*) are named where a finding overlaps one of its own |
+
+### Findings and resolutions
+
+| ID | Severity | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|
+| S27 | should-fix | `orchestration/worker.py:203-224, 252` | `check_url` judges the host before urllib unescapes it: `http://8%2e8%2e8%2e8/` and a scoped IPv6 literal pass and connect to public addresses over plain http, a download's redirect included | fix (the host judged as urllib will use it; a one-label name only as a DNS label; scope ids refused; tests) | fixed (1ea2746: the host as urllib connects to it; names as DNS labels; a separate scope-id rule dropped, the others refusing every scoped host) -- decided by evan-wes, 2026-10-11 |
+| S28 | note | `orchestration/worker.py:220, 224` | `is_private` admits link-local (169.254.169.254), 6to4 and NAT64 ranges; a host IDNA cannot encode raises UnicodeError, not a refusal | fix (an allow-list: loopback, RFC 1918, `fc00::/7`; any parse error a refusal) | fixed (1ea2746: PRIVATE_NETWORKS) -- decided by evan-wes, 2026-10-11 |
+| S29 | note | `docker/server-entrypoint.sh:12-19` | a `:` in the database path gets past the joined pattern: `/x:/../jobs.sqlite3` would chown `/` | fix (the path and its folder tested apart) | fixed (fcd9817) -- decided by evan-wes, 2026-10-11 |
+| S30 | note | `server/.../config.py:37-40`; the note's staging check | on S3 the grace assumes the bucket ends a PUT begun in time within the hour; untested | fix (a step in the staging check; the residual recorded in the note) | fixed (67fc822: the staging check's step and what follows) -- decided by evan-wes, 2026-10-11 |
+
+### Security review
+
+## Security review
+
+**Run 2's findings:**
+- **S21:** resolved for folder storage. A PUT trickled from 27 s to 42 s after its job was made (the link expires at 30 s) got `403 "the link expired before the upload arrived whole"`. Nothing was kept and no staged part was left. A replayed write was deleted when its job ended. A replay sent after the job ended was deleted again at created + wait + grace, with `link_open` going to 0. On S3, an upload trickled on purpose for longer than the grace still lands (note 3).
+- **S22:** resolved. I sent SIGTERM, SIGTERM twice, and SIGINT then SIGTERM to `worker serve` while `slam_it_all_vo` ran:
+  - the worker exited 0 within 0.03–0.05 s;
+  - 1 s later no process of the job and no job folder was left.
+
+  Two Ctrl-Cs to serve_demo's process group (ports 8771 and 8772) left no job process, no folder and no demo process. Nothing in the worker's own process catches the `KeyboardInterrupt`, so it cannot be left running with both signals ignored.
+- **S23:** resolved. The header is `script-src 'self' https://cdn.jsdelivr.net/npm/three@0.186.0/ 'sha256-xRXsj6h8WM4LThHv+2yd/VWRcHXQNR5O0ot1D7veDuM='`, and every script URL in `viewer/` is under that prefix.
+- **S24:** **not resolved.** The parts that hold:
+  - the API and upload requests follow no redirect;
+  - a download's redirect is checked;
+  - decimal, hex and IPv4-mapped forms are judged by their address.
+
+  The gap: `check_url` judges the host as written, percent-escapes included, while urllib unescapes it before connecting. So `http://8%2e8%2e8%2e8/` and `http://[2001:4860:4860::8888%25lo]/` pass and connect to public addresses over plain http (should-fix below).
+- **S25:** resolved for the cases it names, in `slam-it-all-server:run3`. Refused: `jobs.sqlite3`, `/jobs.sqlite3`, `//jobs.sqlite3`, and a symlink to `/`. The server ran as uid 10001 with `NoNewPrivs: 1`. `python -m slam_it_all_server` run as root prints `refusing to run as root`. A `:` in the setting slips past the check (note 2).
+- **S26:** resolved. A missing upload gives the reason `{"reason": "the upload is missing"}`. A `FileNotFoundError` raised inside the job (`/opt/worker/secret/cmake`) propagates and is never printed as a reason; the worker reports it as "an internal error".
+
+**Scope:** run 2's fixes `1359afb...2f1ce87`:
+- 4ee7c67: `orchestration/worker.py`;
+- d66da0f: `server/src/slam_it_all_server/{app,jobs,storage,config,__main__}.py`, `docker/server-entrypoint.sh`, `viewer/upload.html`;
+- the parts of 53ed1f4 that touch security: `eval/video.py`'s frame-size check;
+- `scripts/serve_demo.py`; 8f53353's notes.
+
+I read these against the whole PR `63b61da...2f1ce87`.
+
+**How I checked:**
+- **Probe server:** on 127.0.0.1:8790, with folder storage and staging on, `UPLOAD_WAIT` 30 s, `UPLOAD_GRACE` 20 s and the sweep every 2 s (`launch_server.py`).
+- **Probes run against it:**
+  - `flow_probe3.py` (S21);
+  - `sigterm_probe3.sh` (three modes) and `ctrlc_probe.sh` (two runs) with a real `worker serve` and `serve_demo.py` on the room's Stray zip;
+  - `s26_probe.py` in-process.
+- **URLs and redirects:** run 2's `url_probe.py`, and the new `url_probe3.py`, both in the conda env and in `slam-it-all-worker:run3` (`--network none`). `socket.create_connection` was intercepted, so nothing left the machine and no name was looked up.
+- **Server image:** `entrypoint_probe.sh` in `slam-it-all-server:run3` (`--network none --rm`), with `chown` replaced by a stand-in that only prints.
+- **Format check:** the server started against run 2's job list and against a misshapen one.
+- **Tests:** `tests/server`, `tests/orchestration/test_worker.py`, `tests/test_serve_demo.py`: 168 passed.
+- I built no image and contacted no external service. The repository is unchanged (`git status` is empty).
+
+**Summary:** The run-2 fixes hold, except the numeric-host rule, and there is no must-fix:
+- signals now take the job with them;
+- a late upload is refused or cleared;
+- the policy is narrowed;
+- the entrypoint drops privileges for good, and the server refuses root;
+- reasons are only the pipeline's own.
+
+The one should-fix is that `check_url` checks the host before urllib unescapes it. Escaped dots and IPv6 scope ids defeat the "plain http only off the public internet" rule, including on a download's redirect, the gate S24's fix added. Three notes follow: smaller edges of `check_url`, a `:` that gets past the entrypoint's check, and the S3 side of the late-upload grace.
+
+### Findings
+
+#### [should-fix] `check_url` judges the host before urllib unescapes it: escaped and scoped hosts reach public addresses over plain http
+- **Where:** `src/slam_it_all/orchestration/worker.py:203-209` (`check_url`: `urllib.parse.urlsplit(url).hostname`), `:212-224` (`_private_host`: `"." not in host` for anything the numeric parse rejects), `:252` (the download redirect's only gate); CPython `Lib/urllib/request.py:380` (`self.host = unquote(self.host)`).
+- **Issue:** `urlsplit` keeps percent-escapes in `hostname`; `urllib.request.Request` unescapes the host before connecting. Two cases follow:
+  - **Escaped dots:** a host whose dots are written `%2e` has no `.` as checked, so the one-label rule accepts it. urllib then connects to the dotted name or address.
+  - **IPv6 scope ids:** an IPv6 literal has no dots either. When its scope id is written `%25<name>`, the numeric parse sees the scope `25lo`, rejects it, and the one-label rule accepts the host. urllib connects to `…%lo`. Linux uses a scope id only for link-local and multicast destinations (`tcp_v6_connect`, `__ipv6_addr_needs_scope_id`), so a global address is reached as usual.
+- **Why it matters:**
+  - The property the fix states does not hold: the module docstring says "plain `http` to a host that may be on the public internet" is refused, and the notes add "an address written as a number judged as the address it is".
+  - The download redirect handler relies on `check_url` alone, so the hole carries over to redirects.
+  - Exploiting it needs a server, or a download host, that hands out or redirects to such a URL, as with S24. The token is not exposed: the API never follows a redirect, and downloads and uploads carry no `Authorization`. What is exposed is the transfer itself, in clear text over the internet. That matters for the later GPU worker.
+- **Evidence:** `url_probe3.py`, the same output in the conda env (Python 3.11.17) and in `slam-it-all-worker:run3`:
+  ```
+  'http://8%2e8%2e8%2e8/'               ACCEPTED   '8.8.8.8'          -> the worker's opener tried to connect to ('8.8.8.8', 80)
+  'http://example%2ecom/'               ACCEPTED   'example.com'      -> ... ('example.com', 80)
+  'http://[2001:4860:4860::8888%25lo]/' ACCEPTED   '[2001:4860:4860::8888%lo]' -> ... ('2001:4860:4860::8888%lo', 80)
+  'http://134744072/'                   refused    (8.8.8.8: the run-2 form, now fixed)
+  download /r-encoded (302 -> http://8%2e8%2e8%2e8/x) -> tried ('8.8.8.8', 80)
+  download /r-scope   (302 -> http://[2001:4860:4860::8888%25lo]/x) -> tried ('2001:4860:4860::8888%lo', 80)
+  download /r-public-http (302 -> http://example.com/x) -> refused by check_url
+  ```
+- **Suggested fix:**
+  - Judge the host urllib will use (`urllib.request.Request(url).host`, or `urllib.parse.unquote(hostname)`), or refuse any `%` in a host outright.
+  - Accept a one-label name only if it is a DNS label (`re.fullmatch(r"[a-z0-9-]{1,63}", host)`). That keeps `sia-e2e-server` and drops `%`, `:` and non-ASCII.
+  - Judge an IPv6 literal without its scope id, or refuse scope ids.
+  - Add `http://8%2e8%2e8%2e8/` and `http://[2001:4860:4860::8888%25lo]/` to `test_only_safe_urls_are_followed`, and an escaped redirect to `test_a_downloads_redirect_goes_only_where_a_link_may`.
+
+#### [note] `check_url`: smaller edges
+- **Where:** `worker.py:224` (`address.is_loopback or address.is_private`), `:220` (`except socket.gaierror` only).
+- **Issue:**
+  - **`is_private` is wider than "cannot be on the public internet".** On 3.11.17 it accepts:
+    - `http://169.254.169.254/`: link-local, where clouds put their metadata service;
+    - `http://[2002:808:808::1]/`: 6to4 for 8.8.8.8;
+    - `http://[64:ff9b:1::808:808]/`: local-use NAT64.
+
+    The last two reach public IPv4 only through a 6to4 relay or a local NAT64 translator, which is rare. The first URL has been accepted this way since run 1. Redirects went anywhere before, so this is not worse.
+  - **A non-`gaierror` escapes.** A host IDNA cannot encode raises `UnicodeError`, not `InvalidInputError`: `http://\u00ad/` gives `UnicodeError: ... label empty or too long`.
+    - In `claim` it is caught as a `ValueError`. The job just claimed then waits out `SILENCE` (2 min) and fails with "the worker stopped answering".
+    - In `--server` it is a traceback rather than `worker: ...` and exit 2.
+- **Why it matters:** each needs a hostile server or a mistyped setting. They are listed so the fix above can close them in the same pass.
+- **Suggested fix:**
+  - Consider `not address.is_global`, or an explicit allow-list (loopback, RFC 1918, `fc00::/7`), in place of `is_private`.
+  - Catch `(socket.gaierror, UnicodeError, ValueError)` and refuse.
+
+#### [note] A `:` in the database path gets past the entrypoint's check
+- **Where:** `docker/server-entrypoint.sh:12-19` (`case "$database:$folder" in /*:/?*) ;;`)
+- **Issue:** The two values are joined with `:` and matched by one pattern. `*` also matches `:`, so any database path containing `:/` and then a character matches, whatever the folder is. For example, `/x:/../jobs.sqlite3` resolves (`realpath -m`) to the folder `/` and still passes.
+- **Why it matters:**
+  - The setting is the operator's, so as in run 2 this is a configuration hazard, not an attack, and no one would type it by accident.
+  - Still, the documented rule ("absolute, below /") does not hold as written, and what it guards is `chown -R` as root.
+- **Evidence:** in `slam-it-all-server:run3`, with `chown` replaced by a stand-in that prints:
+  ```
+  SLAM_IT_ALL_DATABASE=/x:/../jobs.sqlite3     ->  WOULD RUN: chown -R server:server /   ; ran as uid 10001, NoNewPrivs: 1
+  SLAM_IT_ALL_DATABASE=/a:/../../jobs.sqlite3  ->  WOULD RUN: chown -R server:server /
+  SLAM_IT_ALL_DATABASE=/tmp/rootlink/jobs.sqlite3 (symlink to /) -> refused
+  ```
+- **Suggested fix:** Test the two separately: `case "$database" in /*) ;; *) refuse ;; esac` and `[ "$folder" != / ] || refuse`.
+
+#### [note] On S3, the late-upload grace is an assumption about the bucket
+- **Where:** `server/src/slam_it_all_server/config.py:37-40` (`UPLOAD_GRACE`); `jobs.py:446-453`; `docs/notes/your-own-video.md`, "The check".
+- **Issue:** Folder storage now refuses a PUT that completes after its link expired. S3 checks a presigned link when the request arrives (run 2's reading), so the server's only remedy there is clearing `uploads/<id>` again at created + 15 min + 1 h.
+  - A PUT trickled past that point lands after the last clearing: 500 MB over more than 75 minutes.
+  - It then stays until `_delete`, 7 days after the job ended, or until the bucket's lifecycle rule removes it, if Railway supports one.
+  - Whether Railway's bucket lets a PUT run that long, or checks expiry at completion, is untested.
+- **Why it matters:** Honest uploads at about 0.9 Mbit/s or faster are covered. The abuse half of S21 is closed for folder storage, but on S3 it is bounded only by the bucket's own limits and the 7-day deletion.
+- **Suggested fix:**
+  - Add to the staging check: a PUT through a fresh link, begun before its expiry and finished after it, with a look at whether the bucket kept it.
+  - If it does, record the residual and its 7-day or lifecycle bound in the notes.
+
+### Checked and fine
+- **Redirects:**
+  - The API's POSTs (302 and 307) and the upload PUT (302) are not followed. The 3xx is raised, and the probe's server saw exactly one request, with the token only on it. `build_opener` replaces urllib's default redirect handler with the subclass.
+  - Download redirects:
+    - plain http to a public name is refused by `check_url`;
+    - `file:` is refused by urllib;
+    - a same-origin redirect is followed;
+    - downloads carry no `Authorization`, and GET stays GET on 301-308.
+- **Numeric hosts, the forms fixed:** `134744072`, `0x8080808`, `[::ffff:8.8.8.8]`, `[64:ff9b::808:808]` and fullwidth `８．８．８．８` are judged by their address and refused. `0177.0.0.1` and `127.1` are read as loopback. `AI_NUMERICHOST` never looks anything up.
+- **Signals:**
+  - **How a stop unwinds:** `_stop` raises in the main thread, and every blocking call the worker makes is interrupted (select, readline, waitpid, sleep, socket I/O). The only two `except BaseException` handlers on the in-process path (`video._staged`, the `lenses` fetch) re-raise, so a stopped worker cannot go on serving with signals ignored.
+  - **Inheritance:** no child can start after `_stop` sets `SIG_IGN`, since the handler raises at once. The job's child (`process`) never installs the handler.
+  - **A signal during the fork:** the parent closes the child's output pipe. The child dies at its first stage line, before writing anything, and the job's folder is still removed.
+  - **Timing:** `serve_demo._end` gives each child 10 s, then SIGKILL; the worker's measured unwinding took 0.03-0.05 s.
+- **S26's reasons:** the pipeline's own messages are unchanged. PyAV 18's FFmpeg logging is off (`av.logging.get_level()` is `None`), so the child's stderr, now the worker's log, carries no decoder text from a hostile file.
+- **Late-upload clearing:**
+  - No job can be deleted before its grace ends: jobs go only 7 days after ending, and there is no owner deletion route. `_delete` removes `uploads/<id>` too.
+  - A job still queued or running at created + 75 min has only its owner's replays cleared, never `imports/<id>`.
+  - Folder storage checks the expiry again after the whole body and before the atomic replace. A refusal leaves no staged part.
+- **Job list format:** run 2's job list (`user_version` 0) is refused at startup with exit 2, naming the file. The version pragma is set from an int constant, inside the transaction that creates the table.
+- **Content Security Policy:**
+  - `connect-src` comes from `Storage.origin`: for folder storage, the public URL's origin; for S3, the origin of the same client's presigned links.
+  - Residual: CSP ignores a source's path after a redirect (CSP3, "Does url match expression in origin with redirect count?"). The narrowing therefore assumes nothing under the three.js prefix redirects elsewhere on jsDelivr; I could not check that offline. Vendoring three.js would end it.
+- **`uploaded`'s new error paths:** a racing confirmation gets 409. A storage error gets 503 and leaves the job waiting; storage's message is logged, never returned.
+- **Import:** every decoded frame, kept or skipped, is held to the first frame's size, so the first frame's long-side and aspect caps hold for all.
+- **Logs:** the probe server's 23 lines hold no token, invite code, signature, expiry or token path; jobs appear by id only.
+- **Tests:** 168 passed. The repository is unchanged.
+
+Scratch files are in `/tmp/scratch/review3-security/`:
+- `probes/`: `url_probe3.py`, `flow_probe3.py`, `sigterm_probe3.sh`, `entrypoint_probe.sh`, `s26_probe.py`, `launch_server.py` (now with the grace), and run 2's probes retargeted;
+- the server's `server.env` and `server.log`;
+- the worker logs, `demo-877{1,2}*`, `data/`, `schema/`.
+
+The probe server on 8790 is stopped, and both format-check servers on 8791 exited. No job process, demo or container is left, and the repository is unchanged. The probes would be worth keeping in a private scripts folder if wanted; I left them in the scratch folder, as the brief said.
