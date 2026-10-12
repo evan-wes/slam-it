@@ -8,7 +8,7 @@ decision 5), saved beside the panel's report. Later runs append a "Run N" sectio
 | | |
 |---|---|
 | **Branch** | `feature/your-own-video` |
-| **Range** | `63b61da...cbf7b3d` (base: `origin/develop`) |
+| **Range** | `63b61da...e909a76` (base: `origin/develop`) |
 | **Reviewer** | security (opus), a general-purpose agent with its own brief: the server, the worker, hostile uploads, the pages, the images and the demo, against attackers without a code, with one, with a result link, and with the worker token |
 | **Probes** | the server on 127.0.0.1 with folder storage and staging on, probed with curl; an S3 link signed offline; two process probes on the room's Stray Scanner zip; no images built, no external service contacted |
 | **Panel** | [the panel's report](2026-10-11-feature-your-own-video.md), whose IDs (H*, A*, L*) are named where a finding overlaps one of its own |
@@ -17,32 +17,32 @@ decision 5), saved beside the panel's report. Later runs append a "Run N" sectio
 
 | ID | Severity | Where | Finding | Recommended | Resolution |
 |---|---|---|---|---|---|
-| S1 (H1 / A1) | must-fix | `orchestration/worker.py:317-354, 390-398`; `vo.py:680` | the timeout and a failed heartbeat leave the job's processes running, the C++ program always; the worker is PID 1 in its image, so orphans are never reaped | fix (the panel's row, plus an init in the worker image) | fixed (68aaf3c, tini in the worker's image included) -- decided by evan-wes, 2026-10-11 |
-| S2 | should-fix | `server/.../__main__.py`; every route with a token | uvicorn's access log records result tokens and folder storage's signed links, and client addresses | fix (the access log off, the server's own lines keyed by job id; the page says what the host logs); defer the token out of the path (`/r#<token>`) to before going public | fixed (a5b122c: the access log off, the server's own lines by id, the page says what the host logs); deferred (the ladder's open items, PR 11's, before going public): the token out of the path -- decided by evan-wes, 2026-10-11 |
-| S3 | should-fix | `eval/video.py:190, 385` | uploads are opened with every FFmpeg input format, reference formats (`hls`, `concat`, `dash`) among them | fix (an allow-list of the mov/mp4 family, anything else refused, tested) | fixed (0a26105) -- decided by evan-wes, 2026-10-11 |
-| S4 | should-fix | `worker.py:317-323`; `scripts/serve_demo.py:150-153` | the decoding child inherits the worker token, and on the demo the owner's whole environment | fix (a minimal environment for the child and the demo's worker) | fixed (68aaf3c; the demo's worker in a5b122c) -- decided by evan-wes, 2026-10-11 |
-| S5 | should-fix | `app.py:325-343, 403-414`; `storage.py:155-161` | the owner's upload link can be replayed for its hour: after the upload is confirmed, and after the import deleted it | fix (on confirmation, the upload moved to a key the owner holds no link for) | fixed (f616342) -- decided by evan-wes, 2026-10-11 |
-| S6 (H9) | should-fix | `jobs.py:212-232`; `app.py:314-329` | one code holder can fill the queue for an hour with five tiny requests, and a job does not record its code | fix (scope to decide: waiting jobs expire with their link, open jobs per code capped, the code's hash stored) | fixed (f616342: a waiting job expires with its 15-minute link; at most 2 jobs open per code, its keyed hash kept) -- decided by evan-wes, 2026-10-11 |
-| S7 (A2) | should-fix | `app.py:121-134, 275-279` | a failed deletion is lost, and the files outlive the 7 days | fix (the panel's A2, plus a bucket lifecycle rule in the staging checklist if Railway supports one) | fixed (f616342; the lifecycle rule in the staging checklist, 1504bd5) -- decided by evan-wes, 2026-10-11 |
-| S8 (H6) | should-fix | `app.py:391-401, 461-483`; `jobs.py:175-189` | synchronous SQLite work blocks the event loop, and every read takes the write lock | fix (the panel's H6) | fixed (f616342) -- decided by evan-wes, 2026-10-11 |
-| S9 | should-fix | `eval/video.py:120-257`; `worker.py:228-230` | the import bounds memory and time, but not the frame's long side, the frames decoded, or the disk written | fix (the long side and aspect refused past a limit, decoded frames capped, `RLIMIT_FSIZE`) | fixed (0a26105; the file-size limit in 68aaf3c) -- decided by evan-wes, 2026-10-11 |
-| S10 | should-fix | `docs/notes/your-own-video.md:127`; `docker/server.Dockerfile` | `RAILWAY_RUN_UID=0` runs the internet-facing server as root on Railway | fix (an entrypoint that gives `/data` to the server's user, then drops to it) | fixed (a5b122c) -- decided by evan-wes, 2026-10-11 |
-| S11 | should-fix | `app.py:83-88`; `viewer/*.html`; `viewer/src/main.js:206` | no Content Security Policy; three.js from a CDN without `integrity`; Google Fonts; `?bundle=` takes any URL; no HSTS | fix now: a CSP, `integrity` on three.js, `?bundle=` same-origin only; defer self-hosted fonts and HSTS to going public | fixed (a5b122c: the policy, three.js pinned, the bundle on its own site); deferred (the ladder's open items, PR 11's, before going public): fonts self-hosted, HSTS -- decided by evan-wes, 2026-10-11 |
-| S12 | note | `docs/notes/your-own-video.md:125-135` | the staging check should test the bucket's own guards: a wrong-size PUT refused, an exact CORS origin, HTTPS only | fix (the checklist) | fixed (1504bd5) -- decided by evan-wes, 2026-10-11 |
-| S13 | note | `config.py:96-100`; `server/settings.template.env` | invite codes are checked for length only; the template does not say to make them at random | fix (the template) | fixed (a5b122c) -- decided by evan-wes, 2026-10-11 |
-| S14 | note | `storage.py:29-41, 190-192` | storage keys accept `.` parts and a trailing newline; a result path `.` escapes deletion | fix (`fullmatch`, `.` refused) | fixed (f616342) -- decided by evan-wes, 2026-10-11 |
-| S15 | note | `app.py:383-445, 485-492` | the worker token is one all-powerful credential; folder storage serves a result's `*.html` from the server's origin | fix: result paths limited to the bake's names, folder files served as attachments; defer a token per worker | fixed (f616342: a result's files a bundle's alone, served as downloads); deferred (the ladder's open items, PR 11's, before going public): a token per worker -- decided by evan-wes, 2026-10-11 |
-| S16 (H7) | note | `worker.py:145-150, 207-225` | the worker follows any URL the server gives, `file://` and plain HTTP included | fix (the panel's H7) | fixed (68aaf3c) -- decided by evan-wes, 2026-10-11 |
-| S17 | note | `.gitignore`, `.dockerignore` | a filled-in `server/settings.env` would be committed and copied into the image | fix (`*.env` ignored, the template excepted) | fixed (a5b122c) -- decided by evan-wes, 2026-10-11 |
-| S18 | note | `eval/video.py:345-353, 485-496`; `worker.py:291` | a hostile zip's CRC, encryption or CSV-field errors reach the owner as "an internal error" | fix (refused with the import's own message) | fixed (0a26105) -- decided by evan-wes, 2026-10-11 |
-| S19 | note | `scripts/serve_demo.py` | with `--lan`, every page is open on plain HTTP to the whole network | fix (`--lan` puts every page behind the code; the checklist advises a trusted network) | fixed (a5b122c; the demo checklist in 1504bd5) -- decided by evan-wes, 2026-10-11 |
+| S1 (H1 / A1) | must-fix | `orchestration/worker.py:317-354, 390-398`; `vo.py:680` | the timeout and a failed heartbeat leave the job's processes running, the C++ program always; the worker is PID 1 in its image, so orphans are never reaped | fix (the panel's row, plus an init in the worker image) | fixed (8bf170f, tini in the worker's image included) -- decided by evan-wes, 2026-10-11 |
+| S2 | should-fix | `server/.../__main__.py`; every route with a token | uvicorn's access log records result tokens and folder storage's signed links, and client addresses | fix (the access log off, the server's own lines keyed by job id; the page says what the host logs); defer the token out of the path (`/r#<token>`) to before going public | fixed (3a6fbdd: the access log off, the server's own lines by id, the page says what the host logs); deferred (the ladder's open items, PR 11's, before going public): the token out of the path -- decided by evan-wes, 2026-10-11 |
+| S3 | should-fix | `eval/video.py:190, 385` | uploads are opened with every FFmpeg input format, reference formats (`hls`, `concat`, `dash`) among them | fix (an allow-list of the mov/mp4 family, anything else refused, tested) | fixed (88190df) -- decided by evan-wes, 2026-10-11 |
+| S4 | should-fix | `worker.py:317-323`; `scripts/serve_demo.py:150-153` | the decoding child inherits the worker token, and on the demo the owner's whole environment | fix (a minimal environment for the child and the demo's worker) | fixed (8bf170f; the demo's worker in 3a6fbdd) -- decided by evan-wes, 2026-10-11 |
+| S5 | should-fix | `app.py:325-343, 403-414`; `storage.py:155-161` | the owner's upload link can be replayed for its hour: after the upload is confirmed, and after the import deleted it | fix (on confirmation, the upload moved to a key the owner holds no link for) | fixed (98ae08a) -- decided by evan-wes, 2026-10-11 |
+| S6 (H9) | should-fix | `jobs.py:212-232`; `app.py:314-329` | one code holder can fill the queue for an hour with five tiny requests, and a job does not record its code | fix (scope to decide: waiting jobs expire with their link, open jobs per code capped, the code's hash stored) | fixed (98ae08a: a waiting job expires with its 15-minute link; at most 2 jobs open per code, its keyed hash kept) -- decided by evan-wes, 2026-10-11 |
+| S7 (A2) | should-fix | `app.py:121-134, 275-279` | a failed deletion is lost, and the files outlive the 7 days | fix (the panel's A2, plus a bucket lifecycle rule in the staging checklist if Railway supports one) | fixed (98ae08a; the lifecycle rule in the staging checklist, 490b242) -- decided by evan-wes, 2026-10-11 |
+| S8 (H6) | should-fix | `app.py:391-401, 461-483`; `jobs.py:175-189` | synchronous SQLite work blocks the event loop, and every read takes the write lock | fix (the panel's H6) | fixed (98ae08a) -- decided by evan-wes, 2026-10-11 |
+| S9 | should-fix | `eval/video.py:120-257`; `worker.py:228-230` | the import bounds memory and time, but not the frame's long side, the frames decoded, or the disk written | fix (the long side and aspect refused past a limit, decoded frames capped, `RLIMIT_FSIZE`) | fixed (88190df; the file-size limit in 8bf170f) -- decided by evan-wes, 2026-10-11 |
+| S10 | should-fix | `docs/notes/your-own-video.md:127`; `docker/server.Dockerfile` | `RAILWAY_RUN_UID=0` runs the internet-facing server as root on Railway | fix (an entrypoint that gives `/data` to the server's user, then drops to it) | fixed (3a6fbdd) -- decided by evan-wes, 2026-10-11 |
+| S11 | should-fix | `app.py:83-88`; `viewer/*.html`; `viewer/src/main.js:206` | no Content Security Policy; three.js from a CDN without `integrity`; Google Fonts; `?bundle=` takes any URL; no HSTS | fix now: a CSP, `integrity` on three.js, `?bundle=` same-origin only; defer self-hosted fonts and HSTS to going public | fixed (3a6fbdd: the policy, three.js pinned, the bundle on its own site); deferred (the ladder's open items, PR 11's, before going public): fonts self-hosted, HSTS -- decided by evan-wes, 2026-10-11 |
+| S12 | note | `docs/notes/your-own-video.md:125-135` | the staging check should test the bucket's own guards: a wrong-size PUT refused, an exact CORS origin, HTTPS only | fix (the checklist) | fixed (490b242) -- decided by evan-wes, 2026-10-11 |
+| S13 | note | `config.py:96-100`; `server/settings.template.env` | invite codes are checked for length only; the template does not say to make them at random | fix (the template) | fixed (3a6fbdd) -- decided by evan-wes, 2026-10-11 |
+| S14 | note | `storage.py:29-41, 190-192` | storage keys accept `.` parts and a trailing newline; a result path `.` escapes deletion | fix (`fullmatch`, `.` refused) | fixed (98ae08a) -- decided by evan-wes, 2026-10-11 |
+| S15 | note | `app.py:383-445, 485-492` | the worker token is one all-powerful credential; folder storage serves a result's `*.html` from the server's origin | fix: result paths limited to the bake's names, folder files served as attachments; defer a token per worker | fixed (98ae08a: a result's files a bundle's alone, served as downloads); deferred (the ladder's open items, PR 11's, before going public): a token per worker -- decided by evan-wes, 2026-10-11 |
+| S16 (H7) | note | `worker.py:145-150, 207-225` | the worker follows any URL the server gives, `file://` and plain HTTP included | fix (the panel's H7) | fixed (8bf170f) -- decided by evan-wes, 2026-10-11 |
+| S17 | note | `.gitignore`, `.dockerignore` | a filled-in `server/settings.env` would be committed and copied into the image | fix (`*.env` ignored, the template excepted) | fixed (3a6fbdd) -- decided by evan-wes, 2026-10-11 |
+| S18 | note | `eval/video.py:345-353, 485-496`; `worker.py:291` | a hostile zip's CRC, encryption or CSV-field errors reach the owner as "an internal error" | fix (refused with the import's own message) | fixed (88190df) -- decided by evan-wes, 2026-10-11 |
+| S19 | note | `scripts/serve_demo.py` | with `--lan`, every page is open on plain HTTP to the whole network | fix (`--lan` puts every page behind the code; the checklist advises a trusted network) | fixed (3a6fbdd; the demo checklist in 490b242) -- decided by evan-wes, 2026-10-11 |
 | S20 | note | `scripts/locks/slam-it-all.lock` | the lock pins versions without hashes, and only a PyAV bump updates its FFmpeg | defer (to going public) | deferred (the ladder's open items, PR 11's, before going public) -- decided by evan-wes, 2026-10-11 |
 
 ### Security review
 
 ## Security review
 
-**Scope:** The upload path of PR 11 at `cbf7b3d` against `63b61da` (origin/develop):
+**Scope:** The upload path of PR 11 at `e909a76` against `63b61da` (origin/develop):
 - `server/src/slam_it_all_server/` (all modules) and `server/settings.template.env`
 - `src/slam_it_all/orchestration/worker.py`
 - `src/slam_it_all/eval/video.py` and `lenses.py` (the lens fetch and metadata parts)
@@ -325,7 +325,7 @@ Scratch files from the probes are in `/tmp/scratch/review-security/` (`orphan_pr
 | | |
 |---|---|
 | **Branch** | `feature/your-own-video` |
-| **Range** | `cbf7b3d...1359afb`, run 1's fixes, read against the whole PR `63b61da...1359afb` |
+| **Range** | `e909a76...d056110`, run 1's fixes, read against the whole PR `63b61da...d056110` |
 | **Reviewer** | security (opus), a general-purpose agent with its own brief, as in run 1 |
 | **Probes** | the server on 127.0.0.1 with folder storage and staging on, its upload wait cut to 30 s and its sweep to 2 s; a real `worker serve` and three `serve_demo.py` runs on local ports; the locally built images with no network; in-process probes of `check_url`, the demuxer and the key rules; no image built, no external service contacted |
 | **Panel** | [the panel's report](2026-10-11-feature-your-own-video.md), run 2, whose IDs (H*, A*, L*) are named where a finding overlaps one of its own |
@@ -334,12 +334,12 @@ Scratch files from the probes are in `/tmp/scratch/review-security/` (`orphan_pr
 
 | ID | Severity | Where | Finding | Recommended | Resolution |
 |---|---|---|---|---|---|
-| S22 (A13) | should-fix | `orchestration/worker.py:462-474, 652-655`; `scripts/serve_demo.py:176-180` | a SIGTERM to the worker, or the demo's Ctrl-C, can leave a job running with no deadline and its folder on disk; on Railway, tini and the container's teardown cover it | fix (the panel's row, a must-fix there) | fixed (4ee7c67, as the panel's row) -- decided by evan-wes, 2026-10-11 |
-| S21 (A15) | should-fix | `server/.../jobs.py:425-428`; `app.py:184-187, 608-630`; `storage.py:179-191` | an upload still arriving when its link expires lands after the link's only clean-up and stays 7 days, whether an honest slow upload or one sent late on purpose | fix (the panel's row) | fixed (d66da0f, as the panel's row) -- decided by evan-wes, 2026-10-11 |
-| S23 | should-fix | `server/.../app.py:99-100, 315` | the content policy allows any script on jsDelivr, not only three.js | fix (`script-src` narrowed to `https://cdn.jsdelivr.net/npm/three@0.186.0/`; a test) | fixed (d66da0f) -- decided by evan-wes, 2026-10-11 |
-| S24 | note | `orchestration/worker.py:205-211, 243, 321` | `check_url` passes numeric one-label hosts (`http://134744072/` is 8.8.8.8) and never checks a redirect, which urllib follows with the worker's token | fix (a host the C library reads as a number refused; redirects refused on the API calls and checked on downloads; tests) | fixed (4ee7c67: a one-label name still accepted, a container's) -- decided by evan-wes, 2026-10-11 |
-| S25 | note | `docker/server-entrypoint.sh:7-10`; `server/.../__main__.py` | the entrypoint's `chown -R` follows the database setting, `/` included; `setpriv` leaves `no_new_privs` off; a bypassed entrypoint would run the server as root unnoticed | fix (a root or relative database folder refused; `--no-new-privs`; the server refusing uid 0; the staging check names uid 10001) | fixed (d66da0f; the staging check in 8f53353) -- decided by evan-wes, 2026-10-11 |
-| S26 | note | `orchestration/worker.py:412-413` | any FileNotFoundError in a job reaches the owner verbatim, worker paths included | fix (caught only around the upload's own check; any other one "an internal error", logged) | fixed (4ee7c67) -- decided by evan-wes, 2026-10-11 |
+| S22 (A13) | should-fix | `orchestration/worker.py:462-474, 652-655`; `scripts/serve_demo.py:176-180` | a SIGTERM to the worker, or the demo's Ctrl-C, can leave a job running with no deadline and its folder on disk; on Railway, tini and the container's teardown cover it | fix (the panel's row, a must-fix there) | fixed (92699e7, as the panel's row) -- decided by evan-wes, 2026-10-11 |
+| S21 (A15) | should-fix | `server/.../jobs.py:425-428`; `app.py:184-187, 608-630`; `storage.py:179-191` | an upload still arriving when its link expires lands after the link's only clean-up and stays 7 days, whether an honest slow upload or one sent late on purpose | fix (the panel's row) | fixed (1f976e0, as the panel's row) -- decided by evan-wes, 2026-10-11 |
+| S23 | should-fix | `server/.../app.py:99-100, 315` | the content policy allows any script on jsDelivr, not only three.js | fix (`script-src` narrowed to `https://cdn.jsdelivr.net/npm/three@0.186.0/`; a test) | fixed (1f976e0) -- decided by evan-wes, 2026-10-11 |
+| S24 | note | `orchestration/worker.py:205-211, 243, 321` | `check_url` passes numeric one-label hosts (`http://134744072/` is 8.8.8.8) and never checks a redirect, which urllib follows with the worker's token | fix (a host the C library reads as a number refused; redirects refused on the API calls and checked on downloads; tests) | fixed (92699e7: a one-label name still accepted, a container's) -- decided by evan-wes, 2026-10-11 |
+| S25 | note | `docker/server-entrypoint.sh:7-10`; `server/.../__main__.py` | the entrypoint's `chown -R` follows the database setting, `/` included; `setpriv` leaves `no_new_privs` off; a bypassed entrypoint would run the server as root unnoticed | fix (a root or relative database folder refused; `--no-new-privs`; the server refusing uid 0; the staging check names uid 10001) | fixed (1f976e0; the staging check in 985781b) -- decided by evan-wes, 2026-10-11 |
+| S26 | note | `orchestration/worker.py:412-413` | any FileNotFoundError in a job reaches the owner verbatim, worker paths included | fix (caught only around the upload's own check; any other one "an internal error", logged) | fixed (92699e7) -- decided by evan-wes, 2026-10-11 |
 
 ### Security review
 
@@ -361,7 +361,7 @@ Scratch files from the probes are in `/tmp/scratch/review-security/` (`orphan_pr
 - **S16:** resolved for schemes and named public hosts. The one-label rule still lets numeric hosts through to public addresses (note).
 - **S20:** deferred as decided.
 
-**Scope:** the fixes `cbf7b3d...1359afb` (0a26105, 68aaf3c, f616342, a5b122c, cd1a668, 1504bd5). That covers `server/src/slam_it_all_server/*`, `src/slam_it_all/orchestration/worker.py`, `src/slam_it_all/eval/video.py` and `lenses.py`, `docker/*`, `scripts/serve_demo.py`, `viewer/index.html` and `src/bundle.js`, read against the whole PR `63b61da...1359afb`.
+**Scope:** the fixes `e909a76...d056110` (88190df, 8bf170f, 98ae08a, 3a6fbdd, c4911aa, 490b242). That covers `server/src/slam_it_all_server/*`, `src/slam_it_all/orchestration/worker.py`, `src/slam_it_all/eval/video.py` and `lenses.py`, `docker/*`, `scripts/serve_demo.py`, `viewer/index.html` and `src/bundle.js`, read against the whole PR `63b61da...d056110`.
 
 **How I checked:**
 - Reran run 1's orphan and timeout probes, rewritten for the new `_run_child`.
@@ -522,7 +522,7 @@ The probe server on 8790 and the three demos on 8771-8773 are stopped, no proces
 | | |
 |---|---|
 | **Branch** | `feature/your-own-video` |
-| **Range** | `1359afb...2f1ce87`, run 2's fixes, read against the whole PR `63b61da...2f1ce87` |
+| **Range** | `d056110...0966cd8`, run 2's fixes, read against the whole PR `63b61da...0966cd8` |
 | **Reviewer** | security (opus), a general-purpose agent with its own brief, as in runs 1 and 2 |
 | **Probes** | the server on 127.0.0.1 with folder storage and staging on, its upload wait cut to 30 s, its grace to 20 s and its sweep to 2 s; a real `worker serve` and two `serve_demo.py` runs on local ports, stopped by signals; the URL rule in the env and in `slam-it-all-worker:run3`, every connection intercepted; the entrypoint in `slam-it-all-server:run3` with `chown` stood in for; no image built, no external service contacted |
 | **Panel** | [the panel's report](2026-10-11-feature-your-own-video.md), run 3, whose IDs (H*, A*, L*) are named where a finding overlaps one of its own |
@@ -531,10 +531,10 @@ The probe server on 8790 and the three demos on 8771-8773 are stopped, no proces
 
 | ID | Severity | Where | Finding | Recommended | Resolution |
 |---|---|---|---|---|---|
-| S27 | should-fix | `orchestration/worker.py:203-224, 252` | `check_url` judges the host before urllib unescapes it: `http://8%2e8%2e8%2e8/` and a scoped IPv6 literal pass and connect to public addresses over plain http, a download's redirect included | fix (the host judged as urllib will use it; a one-label name only as a DNS label; scope ids refused; tests) | fixed (1ea2746: the host as urllib connects to it; names as DNS labels; a separate scope-id rule dropped, the others refusing every scoped host) -- decided by evan-wes, 2026-10-11 |
-| S28 | note | `orchestration/worker.py:220, 224` | `is_private` admits link-local (169.254.169.254), 6to4 and NAT64 ranges; a host IDNA cannot encode raises UnicodeError, not a refusal | fix (an allow-list: loopback, RFC 1918, `fc00::/7`; any parse error a refusal) | fixed (1ea2746: PRIVATE_NETWORKS) -- decided by evan-wes, 2026-10-11 |
-| S29 | note | `docker/server-entrypoint.sh:12-19` | a `:` in the database path gets past the joined pattern: `/x:/../jobs.sqlite3` would chown `/` | fix (the path and its folder tested apart) | fixed (fcd9817) -- decided by evan-wes, 2026-10-11 |
-| S30 | note | `server/.../config.py:37-40`; the note's staging check | on S3 the grace assumes the bucket ends a PUT begun in time within the hour; untested | fix (a step in the staging check; the residual recorded in the note) | fixed (67fc822: the staging check's step and what follows) -- decided by evan-wes, 2026-10-11 |
+| S27 | should-fix | `orchestration/worker.py:203-224, 252` | `check_url` judges the host before urllib unescapes it: `http://8%2e8%2e8%2e8/` and a scoped IPv6 literal pass and connect to public addresses over plain http, a download's redirect included | fix (the host judged as urllib will use it; a one-label name only as a DNS label; scope ids refused; tests) | fixed (e5a3cca: the host as urllib connects to it; names as DNS labels; a separate scope-id rule dropped, the others refusing every scoped public or link-local host; a private address with a numeric scope id is accepted, as the private address it is) -- decided by evan-wes, 2026-10-11 |
+| S28 | note | `orchestration/worker.py:220, 224` | `is_private` admits link-local (169.254.169.254), 6to4 and NAT64 ranges; a host IDNA cannot encode raises UnicodeError, not a refusal | fix (an allow-list: loopback, RFC 1918, `fc00::/7`; any parse error a refusal) | fixed (e5a3cca: PRIVATE_NETWORKS) -- decided by evan-wes, 2026-10-11 |
+| S29 | note | `docker/server-entrypoint.sh:12-19` | a `:` in the database path gets past the joined pattern: `/x:/../jobs.sqlite3` would chown `/` | fix (the path and its folder tested apart) | fixed (eb57a26) -- decided by evan-wes, 2026-10-11 |
+| S30 | note | `server/.../config.py:37-40`; the note's staging check | on S3 the grace assumes the bucket ends a PUT begun in time within the hour; untested | fix (a step in the staging check; the residual recorded in the note) | fixed (fae65c1: the staging check's step and what follows) -- decided by evan-wes, 2026-10-11 |
 
 ### Security review
 
@@ -557,13 +557,13 @@ The probe server on 8790 and the three demos on 8771-8773 are stopped, no proces
 - **S25:** resolved for the cases it names, in `slam-it-all-server:run3`. Refused: `jobs.sqlite3`, `/jobs.sqlite3`, `//jobs.sqlite3`, and a symlink to `/`. The server ran as uid 10001 with `NoNewPrivs: 1`. `python -m slam_it_all_server` run as root prints `refusing to run as root`. A `:` in the setting slips past the check (note 2).
 - **S26:** resolved. A missing upload gives the reason `{"reason": "the upload is missing"}`. A `FileNotFoundError` raised inside the job (`/opt/worker/secret/cmake`) propagates and is never printed as a reason; the worker reports it as "an internal error".
 
-**Scope:** run 2's fixes `1359afb...2f1ce87`:
-- 4ee7c67: `orchestration/worker.py`;
-- d66da0f: `server/src/slam_it_all_server/{app,jobs,storage,config,__main__}.py`, `docker/server-entrypoint.sh`, `viewer/upload.html`;
-- the parts of 53ed1f4 that touch security: `eval/video.py`'s frame-size check;
-- `scripts/serve_demo.py`; 8f53353's notes.
+**Scope:** run 2's fixes `d056110...0966cd8`:
+- 92699e7: `orchestration/worker.py`;
+- 1f976e0: `server/src/slam_it_all_server/{app,jobs,storage,config,__main__}.py`, `docker/server-entrypoint.sh`, `viewer/upload.html`;
+- the parts of 13aa4dd that touch security: `eval/video.py`'s frame-size check;
+- `scripts/serve_demo.py`; 985781b's notes.
 
-I read these against the whole PR `63b61da...2f1ce87`.
+I read these against the whole PR `63b61da...0966cd8`.
 
 **How I checked:**
 - **Probe server:** on 127.0.0.1:8790, with folder storage and staging on, `UPLOAD_WAIT` 30 s, `UPLOAD_GRACE` 20 s and the sweep every 2 s (`launch_server.py`).
@@ -689,3 +689,10 @@ Scratch files are in `/tmp/scratch/review3-security/`:
 - the worker logs, `demo-877{1,2}*`, `data/`, `schema/`.
 
 The probe server on 8790 is stopped, and both format-check servers on 8791 exited. No job process, demo or container is left, and the repository is unchanged. The probes would be worth keeping in a private scripts folder if wanted; I left them in the scratch folder, as the brief said.
+
+## Commit messages corrected -- 2026-10-11
+
+Every commit message on the branch was audited after run 3, and 21 were reworded, the files
+unchanged: every SHA in this report, the review's included, names the reworded commit. The
+corrections are listed in [the panel's report](2026-10-11-feature-your-own-video.md); here, run 3's
+S27 now says which scoped hosts the other rules refuse.

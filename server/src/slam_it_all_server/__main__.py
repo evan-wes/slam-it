@@ -34,9 +34,9 @@ held for up to its wait, and a redeploy should not wait for it."""
 def listening(host: str, port: int) -> socket.socket:
     """Return a socket bound to a host and port; ``::`` takes IPv6 and IPv4 both.
 
-    uvicorn binds ``::`` to IPv6 alone. Railway reaches a service's public port on IPv4, and its
-    private network, which the worker uses, is IPv6 alone in a project made before 16 October
-    2025, so the image's server listens on both.
+    uvicorn binds ``::`` to IPv6 alone. The image's server takes IPv4, as before, and IPv6 too:
+    Railway's private network, which the worker uses, is IPv6 alone in an environment made
+    before 16 October 2025 (Railway's docs, "How private networking works").
 
     Parameters
     ----------

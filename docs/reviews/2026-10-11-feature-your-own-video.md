@@ -7,10 +7,10 @@
 | | |
 |---|---|
 | **Branch** | `feature/your-own-video` |
-| **Range** | `63b61da...cbf7b3d` (base: `origin/develop`) |
+| **Range** | `63b61da...e909a76` (base: `origin/develop`) |
 | **Reviewers** | hygiene (sonnet), architecture (opus), algorithm (opus); a security pass (opus) beside them, in [its own report](2026-10-11-feature-your-own-video-security.md) |
 | **How they ran** | registered slam-it-all-* agents; the security pass as a general-purpose agent with its own brief (the panel has no security reviewer) |
-| **Layer 1** | all checks passed (`scripts/check.sh`, exit 0; pytest 3431 passed), on the tree committed as `cbf7b3d` |
+| **Layer 1** | all checks passed (`scripts/check.sh`, exit 0; pytest 3431 passed), on the tree committed as `e909a76` |
 
 Findings that more than one reviewer raised share a row, with all their IDs, at the highest
 severity given; the security report's IDs (S*) are named where a row overlaps one of its
@@ -24,31 +24,31 @@ frame counter before its increment, from -1, to a video encoder that stamps fram
 
 | ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
 |---|---|---|---|---|---|---|
-| H1 / A1 (S1) | must-fix | hygiene, architecture, security | `orchestration/worker.py:317-354, 390-398, 425` | the timeout kills only the Python child, never the C++ program it started; any exception from a heartbeat (a 409, the server away) leaves both running; a failed `failed()` report escapes `handle` and stops the worker | fix | fixed (68aaf3c) -- decided by evan-wes, 2026-10-11 |
-| A2 (S7) | must-fix | architecture, security | `server/.../app.py:121-134, 275-279`; `jobs.py:347-353` | a sweep deletes the job rows before their files, so a storage failure loses those files for good, past the 7 days, silently | fix | fixed (f616342) -- decided by evan-wes, 2026-10-11 |
-| H2 / A7 | must-fix | hygiene, architecture | `app.py:275-279`; `worker.py:320, 394-396` | the sweeper, the worker's "an internal error" and the child's stderr swallow exceptions without a log | fix | fixed (68aaf3c: the worker; f616342: the sweep) -- decided by evan-wes, 2026-10-11 |
-| L1 | must-fix | algorithm | `eval/video.py:109, 446-456`; `tests/eval/recordings.py:87` | Stray Scanner's rotations are already in OpenCV's camera axes; the import turns them a second time, so a Stray recording's ground truth is a half turn about x from its frames (RPE wrong, ATE not) | fix | fixed (0a26105) -- decided by evan-wes, 2026-10-11 |
-| L2 | must-fix | algorithm | `eval/lenses.py:242-290, 355-356, 480` | the fisheye model's failure paths (`rising`, `unbend`'s refusals, `holds`, no rectangle) are untested, though `holds()` drops 84 real profiles; `rising()` returns about pi/2 when the bend falls from the start | fix | fixed (d8556cc) -- decided by evan-wes, 2026-10-11 |
-| H3 | should-fix | hygiene | `eval/video.py` `_write_frames` | one function sets up, filters, resamples and writes, with eight mutable locals; `probe` is read twice | fix | fixed (0a26105) -- decided by evan-wes, 2026-10-11 |
-| H4 | should-fix | hygiene | `server/.../storage.py` | `S3Storage.size` reads any client error as "absent"; delete errors are ignored, in S3 and in the folder | fix | fixed (f616342) -- decided by evan-wes, 2026-10-11 |
-| H5 | should-fix | hygiene | `lenses.py`, `worker.py`, `upload_view.js`, `status_view.js` | magic numbers: lens-kind focal thresholds, timeouts, the page's 5 s and "7 days" | fix | fixed (d8556cc, 68aaf3c, a5b122c) -- decided by evan-wes, 2026-10-11 |
-| H6 (S8) | should-fix | hygiene, security | `jobs.py:175-260`; `app.py:391-401, 461-483` | every read takes SQLite's write lock; the claim's SQLite work and folder storage's writes run on the event loop; `create` raises `StateError` for bad input | fix | fixed (f616342) -- decided by evan-wes, 2026-10-11 |
-| H7 (S16) | should-fix | hygiene, security | `worker.py:Client`; `docker/worker.Dockerfile` | the worker accepts any server URL: an unset one retries forever, and `file://` or plain HTTP links are followed | fix | fixed (68aaf3c) -- decided by evan-wes, 2026-10-11 |
-| H8 | should-fix | hygiene | `lenses.py`, `jobs.py`, `viewer/src/*_view.js` | the centred pinhole built twice; `Job.working` and `Jobs.working` mean different things; the pages' `main()` undocumented | fix | fixed (d8556cc, f616342, a5b122c) -- decided by evan-wes, 2026-10-11 |
-| A3 | should-fix | architecture | `CLAUDE.md:39, 57-60`; ladder :88, :357-414; run-viewer design :168; `viewer/src/jobs.js:7` | the docs have not caught up: no server in CLAUDE.md or the ladder's tables and contracts, pages said to read only bundles, `bundle.json`'s intrinsics source promised, a wrong constant cited | fix | fixed (1504bd5) -- decided by evan-wes, 2026-10-11 |
-| A4 | should-fix | architecture | `pyproject.toml` | three contracts missing: the server may import `av`, `PIL`, `cv2` or reifyscene; nothing keeps `eval.video` (the optional extra) out of `orchestration.vo` and `.bundles` | fix | fixed (cd1a668) -- decided by evan-wes, 2026-10-11 |
-| A5 | should-fix | architecture | `worker.py:373-388`; `config.py`; `app.py:149` | the worker's own stages (downloading, uploading) send no heartbeat, so a transfer over 2 minutes fails the job; the timing constants' relation is untested | fix | fixed (68aaf3c) -- decided by evan-wes, 2026-10-11 |
-| A6 / H10 | should-fix | architecture, hygiene | `worker.py:241-242`; `eval/video.py:547-548`; `lenses.py:708-719` | a missing lens database silently degrades every video to the fallbacks; the lookup is written twice | fix | fixed (d8556cc, 68aaf3c) -- decided by evan-wes, 2026-10-11 |
-| L3 | should-fix | algorithm | `eval/video.py:187-207, 497-505`; `tests/eval/recordings.py:69-103` | a Stray recording's first frame is stamped at -1/60 s behind an edit list, so FFmpeg drops it and the import would refuse every real recording | fix | fixed (0a26105) -- decided by evan-wes, 2026-10-11 |
-| L4 | should-fix | algorithm | `lenses.py:400-430, 558` | Apple's own Camera app names every rear lens "back triple camera", which reads as the main camera, so an ultrawide or telephoto clip gets the main lens's profile | fix | fixed (d8556cc) -- decided by evan-wes, 2026-10-11 |
-| L5 | should-fix | algorithm | `tests/eval/test_video.py:40-121`; `tests/eval/test_lenses.py:201-286` | scaling, undistortion and turning are tested by arithmetic, not on image content; only +90 is turned; no OpenCV parity | fix | fixed (d8556cc: OpenCV parity; 0a26105: rays through the import) -- decided by evan-wes, 2026-10-11 |
-| H9 (S6) | note | hygiene, security | `config.py`; `jobs.py:212-232` | an upload that never arrives holds one of the 5 places for an hour | see S6 | fixed (f616342, as S6) -- decided by evan-wes, 2026-10-11 |
-| H11 | note | hygiene | `scripts/serve_demo.py` | the demo does not notice its worker dying | fix | fixed (a5b122c) -- decided by evan-wes, 2026-10-11 |
+| H1 / A1 (S1) | must-fix | hygiene, architecture, security | `orchestration/worker.py:317-354, 390-398, 425` | the timeout kills only the Python child, never the C++ program it started; any exception from a heartbeat (a 409, the server away) leaves both running; a failed `failed()` report escapes `handle` and stops the worker | fix | fixed (8bf170f) -- decided by evan-wes, 2026-10-11 |
+| A2 (S7) | must-fix | architecture, security | `server/.../app.py:121-134, 275-279`; `jobs.py:347-353` | a sweep deletes the job rows before their files, so a storage failure loses those files for good, past the 7 days, silently | fix | fixed (98ae08a) -- decided by evan-wes, 2026-10-11 |
+| H2 / A7 | must-fix | hygiene, architecture | `app.py:275-279`; `worker.py:320, 394-396` | the sweeper, the worker's "an internal error" and the child's stderr swallow exceptions without a log | fix | fixed (8bf170f: the worker; 98ae08a: the sweep) -- decided by evan-wes, 2026-10-11 |
+| L1 | must-fix | algorithm | `eval/video.py:109, 446-456`; `tests/eval/recordings.py:87` | Stray Scanner's rotations are already in OpenCV's camera axes; the import turns them a second time, so a Stray recording's ground truth is a half turn about x from its frames (RPE wrong, ATE not) | fix | fixed (88190df) -- decided by evan-wes, 2026-10-11 |
+| L2 | must-fix | algorithm | `eval/lenses.py:242-290, 355-356, 480` | the fisheye model's failure paths (`rising`, `unbend`'s refusals, `holds`, no rectangle) are untested, though `holds()` drops 84 real profiles; `rising()` returns about pi/2 when the bend falls from the start | fix | fixed (c08684d) -- decided by evan-wes, 2026-10-11 |
+| H3 | should-fix | hygiene | `eval/video.py` `_write_frames` | one function sets up, filters, resamples and writes, with eight mutable locals; `probe` is read twice | fix | fixed (88190df) -- decided by evan-wes, 2026-10-11 |
+| H4 | should-fix | hygiene | `server/.../storage.py` | `S3Storage.size` reads any client error as "absent"; delete errors are ignored, in S3 and in the folder | fix | fixed (98ae08a) -- decided by evan-wes, 2026-10-11 |
+| H5 | should-fix | hygiene | `lenses.py`, `worker.py`, `upload_view.js`, `status_view.js` | magic numbers: lens-kind focal thresholds, timeouts, the page's 5 s and "7 days" | fix | fixed in part (c08684d, 8bf170f, 3a6fbdd; the upload page's 5 s wait in upload_view.js left as it was) -- decided by evan-wes, 2026-10-11 |
+| H6 (S8) | should-fix | hygiene, security | `jobs.py:175-260`; `app.py:391-401, 461-483` | every read takes SQLite's write lock; the claim's SQLite work and folder storage's writes run on the event loop; `create` raises `StateError` for bad input | fix | fixed (98ae08a) -- decided by evan-wes, 2026-10-11 |
+| H7 (S16) | should-fix | hygiene, security | `worker.py:Client`; `docker/worker.Dockerfile` | the worker accepts any server URL: an unset one retries forever, and `file://` or plain HTTP links are followed | fix | fixed (8bf170f) -- decided by evan-wes, 2026-10-11 |
+| H8 | should-fix | hygiene | `lenses.py`, `jobs.py`, `viewer/src/*_view.js` | the centred pinhole built twice; `Job.working` and `Jobs.working` mean different things; the pages' `main()` undocumented | fix | fixed (c08684d, 98ae08a, 3a6fbdd) -- decided by evan-wes, 2026-10-11 |
+| A3 | should-fix | architecture | `CLAUDE.md:39, 57-60`; ladder :88, :357-414; run-viewer design :168; `viewer/src/jobs.js:7` | the docs have not caught up: no server in CLAUDE.md or the ladder's tables and contracts, pages said to read only bundles, `bundle.json`'s intrinsics source promised, a wrong constant cited | fix | fixed (3a6fbdd: jobs.js; 490b242: the docs) -- decided by evan-wes, 2026-10-11 |
+| A4 | should-fix | architecture | `pyproject.toml` | three contracts missing: the server may import `av`, `PIL`, `cv2` or reifyscene; nothing keeps `eval.video` (the optional extra) out of `orchestration.vo` and `.bundles` | fix | fixed (c4911aa) -- decided by evan-wes, 2026-10-11 |
+| A5 | should-fix | architecture | `worker.py:373-388`; `config.py`; `app.py:149` | the worker's own stages (downloading, uploading) send no heartbeat, so a transfer over 2 minutes fails the job; the timing constants' relation is untested | fix | fixed (8bf170f) -- decided by evan-wes, 2026-10-11 |
+| A6 / H10 | should-fix | architecture, hygiene | `worker.py:241-242`; `eval/video.py:547-548`; `lenses.py:708-719` | a missing lens database silently degrades every video to the fallbacks; the lookup is written twice | fix | fixed (c08684d, 8bf170f) -- decided by evan-wes, 2026-10-11 |
+| L3 | should-fix | algorithm | `eval/video.py:187-207, 497-505`; `tests/eval/recordings.py:69-103` | a Stray recording's first frame is stamped at -1/60 s behind an edit list, so FFmpeg drops it and the import would refuse every real recording | fix | fixed (88190df) -- decided by evan-wes, 2026-10-11 |
+| L4 | should-fix | algorithm | `lenses.py:400-430, 558` | Apple's own Camera app names every rear lens "back triple camera", which reads as the main camera, so an ultrawide or telephoto clip gets the main lens's profile | fix | fixed (c08684d) -- decided by evan-wes, 2026-10-11 |
+| L5 | should-fix | algorithm | `tests/eval/test_video.py:40-121`; `tests/eval/test_lenses.py:201-286` | scaling, undistortion and turning are tested by arithmetic, not on image content; only +90 is turned; no OpenCV parity | fix | fixed (c08684d: OpenCV parity; 88190df: rays through the import) -- decided by evan-wes, 2026-10-11 |
+| H9 (S6) | note | hygiene, security | `config.py`; `jobs.py:212-232` | an upload that never arrives holds one of the 5 places for an hour | see S6 | fixed (98ae08a, as S6) -- decided by evan-wes, 2026-10-11 |
+| H11 | note | hygiene | `scripts/serve_demo.py` | the demo does not notice its worker dying | fix | fixed (3a6fbdd) -- decided by evan-wes, 2026-10-11 |
 | A8 | note | architecture | `app.py:17-18`; `jobs.py:37`; `app.py:412-413` | the protocol is specified by its client, and the server's states are the `vo` worker's stages | defer (until a second kind is planned) | deferred (the ladder's open items, PR 11's: until a second kind of job is planned) -- decided by evan-wes, 2026-10-11 |
 | A9 | note | architecture | `eval/lenses.py:128-318` | a Kannala-Brandt camera now lives outside rung 0; TUM-VI (milestone 6) will need it there | defer (ladder open item) | deferred (the ladder's open items, PR 11's: with TUM-VI, milestone 6) -- decided by evan-wes, 2026-10-11 |
 | A10 | note | architecture | `eval/video.py:115-117, 210-215` | a third copy of "the fastest built backend", in another order | defer (PR 7's H18/A13, this copy recorded) | deferred (the ladder's open items, PR 7's H18/A13, this copy recorded) -- decided by evan-wes, 2026-10-11 |
-| A11 | note | architecture | `eval/video.py:254-267`; `eval/tum.py` | the TUM folder is written by hand in `eval.video` but read in `eval.tum` | fix | fixed (0a26105) -- decided by evan-wes, 2026-10-11 |
-| A12 | note | architecture | `server/pyproject.toml:15`; `app.py:49, 52` | `pydantic` and `botocore` are imported but not declared | fix | fixed (a5b122c; the ladder in 1504bd5) -- decided by evan-wes, 2026-10-11 |
+| A11 | note | architecture | `eval/video.py:254-267`; `eval/tum.py` | the TUM folder is written by hand in `eval.video` but read in `eval.tum` | fix | fixed (88190df) -- decided by evan-wes, 2026-10-11 |
+| A12 | note | architecture | `server/pyproject.toml:15`; `app.py:49, 52` | `pydantic` and `botocore` are imported but not declared | fix | fixed (3a6fbdd; the ladder in 490b242) -- decided by evan-wes, 2026-10-11 |
 | L6 | note | algorithm | `lenses.py:90, 577` | profiles at 16-row-padded sizes (88, the Pixel 8's main among them) are stretched to 16:9, not cropped | defer (to the real clips; listed in the note) | deferred (to the real clips: the note's list, and the ladder's open items, PR 11's) -- decided by evan-wes, 2026-10-11 |
 | L7 | note | algorithm | `eval/video.py:179-184, 237` | a mirror in the display matrix reads as a half turn | defer (to the real clips; listed in the note) | deferred (to the real clips: the note's list, and the ladder's open items, PR 11's) -- decided by evan-wes, 2026-10-11 |
 | L8 | note | algorithm | `lenses.py:96, 678-705` | the nominal field of view pools aspects (70.16 degrees for 16:9 alone), and the database cannot settle the 35mm convention | defer (to the real clips) | deferred (to the real clips: the note's list, and the ladder's open items, PR 11's) -- decided by evan-wes, 2026-10-11 |
@@ -58,7 +58,7 @@ frame counter before its increment, from -1, to a video encoder that stamps fram
 
 ## Hygiene review
 
-**Scope:** PR 11 (`feature/your-own-video`), 63b61da...cbf7b3d. I read in full: `server/src/slam_it_all_server/{app,jobs,storage,config,__main__}.py`, `src/slam_it_all/orchestration/worker.py`, `src/slam_it_all/eval/{video,lenses}.py`, `scripts/serve_demo.py`, `viewer/src/{jobs,upload_view,status_view,page_view}.js`, both Dockerfiles, `.dockerignore`, `server/settings.template.env`, `tests/server/test_shared_names.py`. For the test files I read only the test names, not the bodies. I did not run anything.
+**Scope:** PR 11 (`feature/your-own-video`), 63b61da...e909a76. I read in full: `server/src/slam_it_all_server/{app,jobs,storage,config,__main__}.py`, `src/slam_it_all/orchestration/worker.py`, `src/slam_it_all/eval/{video,lenses}.py`, `scripts/serve_demo.py`, `viewer/src/{jobs,upload_view,status_view,page_view}.js`, both Dockerfiles, `.dockerignore`, `server/settings.template.env`, `tests/server/test_shared_names.py`. For the test files I read only the test names, not the bodies. I did not run anything.
 
 **Summary:** The code is very well documented and carefully validated at its boundaries: size caps, zip hygiene, strict CSV parsing, constant-time secret comparison, atomic staged writes. I found two real failure-handling bugs in the worker and one swallowed exception in the server's sweep. Everything else is small.
 
@@ -169,7 +169,7 @@ Out-of-lane notes:
 
 ## Architecture review
 
-**Scope:** PR 11 "your own video", `63b61da..cbf7b3d` on `feature/your-own-video` (11 commits, 66 files). I read every changed module in full: `eval.video`, `eval.lenses`, `eval.images`, `orchestration.worker`, the `slam_it_all_server` package, the pages and modules in `viewer/`, `docker/`, `scripts/serve_demo.py`, and the import-linter contracts in `pyproject.toml`. I also read the docs (ladder, run-viewer design sections 3, 5 and 9, the your-own-video note, `CLAUDE.md`, README) and enough of the neighbouring code to check the fit (`orchestration.vo`/`bundles`, `eval.tum`, `foundations.camera`/`image`, `backends`). Small probes were run in the `slam-it-all` env under a memory cap. They are saved outside the repo at `pr11_worker_server_probes.py`.
+**Scope:** PR 11 "your own video", `63b61da..e909a76` on `feature/your-own-video` (11 commits, 66 files). I read every changed module in full: `eval.video`, `eval.lenses`, `eval.images`, `orchestration.worker`, the `slam_it_all_server` package, the pages and modules in `viewer/`, `docker/`, `scripts/serve_demo.py`, and the import-linter contracts in `pyproject.toml`. I also read the docs (ladder, run-viewer design sections 3, 5 and 9, the your-own-video note, `CLAUDE.md`, README) and enough of the neighbouring code to check the fit (`orchestration.vo`/`bundles`, `eval.tum`, `foundations.camera`/`image`, `backends`). Small probes were run in the `slam-it-all` env under a memory cap. They are saved outside the repo at `pr11_worker_server_probes.py`.
 
 **Summary:** The package split is right, and the two-way contracts hold it. The server never imports `slam_it_all`, `slam_it_all` never imports the server or its web stack, and the constants that must agree across that line are held equal by a test rather than imported. Each new piece sits on a sensible rung, and fisheye undistortion reuses rung 0's `remap` instead of adding a kernel. Two things are not production quality: the worker's supervision of a job's processes, and the server's sweep, which can silently break the 7-day retention promise. Both are reproduced below. The docs (`CLAUDE.md`, the ladder, run-viewer section 3) have not caught up with what was built, and three contracts that the PR's own reasoning relies on are not declared.
 
@@ -303,7 +303,7 @@ Out-of-lane notes:
 
 ## Algorithm review
 
-**Scope:** PR 11 "your own video", `63b61da...cbf7b3d` (HEAD `cbf7b3d0`). I read `src/slam_it_all/eval/video.py`, `src/slam_it_all/eval/lenses.py` and `eval/images.py`, their tests (`tests/eval/test_video.py`, `tests/eval/test_lenses.py`, `tests/eval/recordings.py`) and the fixture profiles. I also read how the worker calls the import (`orchestration/worker.py:238-244`). I checked them against:
+**Scope:** PR 11 "your own video", `63b61da...e909a76` (HEAD `cbf7b3d0`). I read `src/slam_it_all/eval/video.py`, `src/slam_it_all/eval/lenses.py` and `eval/images.py`, their tests (`tests/eval/test_video.py`, `tests/eval/test_lenses.py`, `tests/eval/recordings.py`) and the fixture profiles. I also read how the worker calls the import (`orchestration/worker.py:238-244`). I checked them against:
 - OpenCV's fisheye model (Kannala & Brandt, TPAMI 2006) and OpenCV 5.0's `cv2.fisheye` itself;
 - FFmpeg's display-matrix semantics;
 - Apple's ARKit and AVFoundation documentation;
@@ -486,15 +486,15 @@ One must-fix is a convention error that is checkable now against Stray Scanner's
 | | |
 |---|---|
 | **Branch** | `feature/your-own-video` |
-| **Range** | `cbf7b3d...1359afb`, run 1's fixes, read against the whole PR `63b61da...1359afb` |
+| **Range** | `e909a76...d056110`, run 1's fixes, read against the whole PR `63b61da...d056110` |
 | **Reviewers** | hygiene (sonnet), architecture (opus), algorithm (opus); the security pass (opus) beside them again, in [its own report](2026-10-11-feature-your-own-video-security.md), run 2 |
 | **How they ran** | as in run 1: the registered slam-it-all-* agents, the security pass as a general-purpose agent with its own brief |
-| **Layer 1** | all checks passed (`scripts/check.sh`, exit 0; pytest 3510 passed), on `1359afb` |
+| **Layer 1** | all checks passed (`scripts/check.sh`, exit 0; pytest 3510 passed), on `d056110` |
 
 IDs go on from run 1's, and findings raised by more than one reviewer share a row at the highest
 severity given. Each review opens with run 1's findings as it found them after the fixes: each
 is resolved, or deferred as decided. Both must-fixes were reproduced before this report, with the
-reviewers' own probes run again on `1359afb`:
+reviewers' own probes run again on `d056110`:
 - A13: after a SIGTERM to the worker, the job's grandchild was still alive; after a Ctrl-C to a
   demo-style parent, the job survived in 6 of 6 trials.
 - L10: of 82 main-camera clips at 30 fps (Apple's phones in the database, at 4K and 1080p), 3
@@ -505,22 +505,22 @@ reviewers' own probes run again on `1359afb`:
 
 | ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
 |---|---|---|---|---|---|---|
-| A13 (S22) | must-fix | architecture, security | `orchestration/worker.py:468-474, 620-656`; `scripts/serve_demo.py:177-180` | since run 1's fix the job runs in a session of its own and is killed only when Python unwinds through `_run_child`; a SIGTERM to the worker skips that, and the demo's Ctrl-C mostly does too, so the job runs on unsupervised and its folder stays | fix (a SIGTERM unwinds the worker as a Ctrl-C does; the demo lets the worker stop on its own before terminating it; a test) | fixed (4ee7c67: a SIGTERM stops the worker as a Ctrl-C does, a second signal ignored while it unwinds; the demo gives each process 10 s, then kills it) -- decided by evan-wes, 2026-10-11 |
-| L10 | must-fix | algorithm | `eval/lenses.py:462-487, 548-553, 628-645` | matching never compares a profile's own focal length with the clip's: mislabelled ultrawide calibrations win 30 fps main clips on the iPhone 12 Pro, 14 and 15 Pro, and a 2x-crop clip gets the 1x profile, each with fx about half the truth | fix (a candidate's own 35mm-equivalent kept within a band around the clip's tag; without a tag, outliers from the same phone's median dropped; tests on the database's own pairs and a 2x clip) | fixed (53ed1f4: the band around the tag; without one, the phone's median, used only where the median is itself a main camera's) -- decided by evan-wes, 2026-10-11 |
-| A14 | should-fix | architecture | `server/.../jobs.py:69-85, 192-200` | the job list carries no schema version: a file from an earlier server opens, then fails every request and every sweep | fix (`PRAGMA user_version` set; another version refused at startup, naming the file; a test) | fixed (d66da0f) -- decided by evan-wes, 2026-10-11 |
-| A15 (S21) | should-fix | architecture, security | `server/.../jobs.py:425-428`; `app.py:184-187, 603-630`; `storage.py:179-191` | an upload still arriving when its link expires lands after the link's only clean-up and stays 7 days; the 15-minute window also caps an upload's speed (about 4.4 Mbit/s for 500 MB, an estimate), which the page does not say | fix (the link cleared again an hour past its expiry; folder storage checking the expiry again before keeping a file; the window stated on the page and in the note; a test) | fixed (d66da0f: cleared when the job ends and again after an hour; folder storage keeps no late upload; the page states the window) -- decided by evan-wes, 2026-10-11 |
-| H12 | should-fix | hygiene | `server/.../app.py:305-306` | the content policy silently loses the import map's hash if `index.html` is missing or its tag changes, and the viewer then breaks in the browser alone | fix (refused when the app is made; a test) | fixed (d66da0f) -- decided by evan-wes, 2026-10-11 |
-| H13 | should-fix | hygiene | `server/.../app.py:471` | a failed move in `uploaded` answers a bare 500 with no line by job | fix (caught, logged by job id, answered 409 if the file has gone and 503 on a storage error; a test) | fixed (d66da0f) -- decided by evan-wes, 2026-10-11 |
-| L11 | should-fix | algorithm | `tests/eval/recordings.py:81-101`; `eval/video.py:623` | the Stray fixture emulates its 30 fps setting in H.264; Stray's default is 60 fps in HEVC, so which truth rows go with the kept frames is untested (a mutant pairing them wrongly passes 32 tests) | fix (`encode_stray` with Stray's divider, 1 by default, in HEVC with B-frames; the kept frames' poses asserted; its docstring corrected) | fixed (53ed1f4) -- decided by evan-wes, 2026-10-11 |
-| L12 | should-fix | algorithm | `eval/video.py:290-324, 494-497` | only the first frame's size is checked: frames of another size later in the stream are squeezed into it and given its camera, and the caps see the header alone | fix (a frame of another size refused; a test with two joined streams) | fixed (53ed1f4) -- decided by evan-wes, 2026-10-11 |
-| H14 | should-fix | hygiene | `eval/lenses.py:438-439` | `lens_kind` calls `focal_kind` twice | fix (bound once) | fixed (53ed1f4) -- decided by evan-wes, 2026-10-11 |
-| H15 | should-fix | hygiene | `eval/video.py:29-32, 365-373` | `_write_source` takes an anonymous `(source, profile)` tuple named like `lenses.Chosen`; the Caps paragraph is unclear and repeats derived numbers | fix (two parameters; the paragraph reworded) | fixed (53ed1f4: lenses.Chosen passed whole) -- decided by evan-wes, 2026-10-11 |
-| H16 | should-fix | hygiene | `orchestration/worker.py:499, 517, 551` | `report` catches `(URLError, OSError)`, one a subclass of the other; the deadline's message is written twice | fix (`OSError` alone; the message from one place) | fixed (4ee7c67) -- decided by evan-wes, 2026-10-11 |
-| A16 | note | architecture | `orchestration/worker.py:129, 304-314`; `server/.../config.py:37` | a stalled upload sends no heartbeat, and `UPLOAD_TIMEOUT` (300 s) runs past `SILENCE` (120 s) | fix (`UPLOAD_TIMEOUT <= SILENCE - HEARTBEAT`, held by `test_shared_names`) | fixed (4ee7c67) -- decided by evan-wes, 2026-10-11 |
-| A17 | note | architecture | `server/.../app.py:311` | the content policy finds storage's origin by signing a link for a made-up key | fix (an `origin` on `Storage`, tested for both stores) | fixed (d66da0f) -- decided by evan-wes, 2026-10-11 |
-| A18 | note | architecture | `pyproject.toml:344-347` | the contract keeping `eval.video` out of the pipeline names two modules, where its rule is "only the worker" | fix (`slam_it_all.orchestration` as its source, the worker's import ignored) | fixed (e944d8e) -- decided by evan-wes, 2026-10-11 |
-| L13 | note | algorithm | `eval/lenses.py:433` | "Ultra" in a phone's model name reads all its profiles as ultrawide (119 usable profiles) | fix (only "ultra wide", "ultrawide" or "ultra-wide" read as ultrawide; checked against the database) | fixed (53ed1f4) -- decided by evan-wes, 2026-10-11 |
-| L14 | note | algorithm | `eval/lenses.py` (`focal_kind`); `docs/notes/your-own-video.md` | the thresholds depend on whether Apple's video tag quotes the still photo's focal length or the video frame's | fix (added to the note's "What waits for the real clips"; L10's band holds under either) | fixed (53ed1f4: the module docstring; 8f53353: the note) -- decided by evan-wes, 2026-10-11 |
+| A13 (S22) | must-fix | architecture, security | `orchestration/worker.py:468-474, 620-656`; `scripts/serve_demo.py:177-180` | since run 1's fix the job runs in a session of its own and is killed only when Python unwinds through `_run_child`; a SIGTERM to the worker skips that, and the demo's Ctrl-C mostly does too, so the job runs on unsupervised and its folder stays | fix (a SIGTERM unwinds the worker as a Ctrl-C does; the demo lets the worker stop on its own before terminating it; a test) | fixed (92699e7: a SIGTERM stops the worker as a Ctrl-C does, a second signal ignored while it unwinds; the demo gives each process 10 s, then kills it) -- decided by evan-wes, 2026-10-11 |
+| L10 | must-fix | algorithm | `eval/lenses.py:462-487, 548-553, 628-645` | matching never compares a profile's own focal length with the clip's: mislabelled ultrawide calibrations win 30 fps main clips on the iPhone 12 Pro, 14 and 15 Pro, and a 2x-crop clip gets the 1x profile, each with fx about half the truth | fix (a candidate's own 35mm-equivalent kept within a band around the clip's tag; without a tag, outliers from the same phone's median dropped; tests on the database's own pairs and a 2x clip) | fixed (13aa4dd: the band around the tag; without one, the phone's median, used only where the median is itself a main camera's) -- decided by evan-wes, 2026-10-11 |
+| A14 | should-fix | architecture | `server/.../jobs.py:69-85, 192-200` | the job list carries no schema version: a file from an earlier server opens, then fails every request and every sweep | fix (`PRAGMA user_version` set; another version refused at startup, naming the file; a test) | fixed (1f976e0) -- decided by evan-wes, 2026-10-11 |
+| A15 (S21) | should-fix | architecture, security | `server/.../jobs.py:425-428`; `app.py:184-187, 603-630`; `storage.py:179-191` | an upload still arriving when its link expires lands after the link's only clean-up and stays 7 days; the 15-minute window also caps an upload's speed (about 4.4 Mbit/s for 500 MB, an estimate), which the page does not say | fix (the link cleared again an hour past its expiry; folder storage checking the expiry again before keeping a file; the window stated on the page and in the note; a test) | fixed (1f976e0: cleared when the job ends and again after an hour; folder storage keeps no late upload; the page states the window) -- decided by evan-wes, 2026-10-11 |
+| H12 | should-fix | hygiene | `server/.../app.py:305-306` | the content policy silently loses the import map's hash if `index.html` is missing or its tag changes, and the viewer then breaks in the browser alone | fix (refused when the app is made; a test) | fixed (1f976e0) -- decided by evan-wes, 2026-10-11 |
+| H13 | should-fix | hygiene | `server/.../app.py:471` | a failed move in `uploaded` answers a bare 500 with no line by job | fix (caught, logged by job id, answered 409 if the file has gone and 503 on a storage error; a test) | fixed (1f976e0) -- decided by evan-wes, 2026-10-11 |
+| L11 | should-fix | algorithm | `tests/eval/recordings.py:81-101`; `eval/video.py:623` | the Stray fixture emulates its 30 fps setting in H.264; Stray's default is 60 fps in HEVC, so which truth rows go with the kept frames is untested (a mutant pairing them wrongly passes 32 tests) | fix (`encode_stray` with Stray's divider, 1 by default, in HEVC with B-frames; the kept frames' poses asserted; its docstring corrected) | fixed (13aa4dd) -- decided by evan-wes, 2026-10-11 |
+| L12 | should-fix | algorithm | `eval/video.py:290-324, 494-497` | only the first frame's size is checked: frames of another size later in the stream are squeezed into it and given its camera, and the caps see the header alone | fix (a frame of another size refused; a test with two joined streams) | fixed (13aa4dd) -- decided by evan-wes, 2026-10-11 |
+| H14 | should-fix | hygiene | `eval/lenses.py:438-439` | `lens_kind` calls `focal_kind` twice | fix (bound once) | fixed (13aa4dd) -- decided by evan-wes, 2026-10-11 |
+| H15 | should-fix | hygiene | `eval/video.py:29-32, 365-373` | `_write_source` takes an anonymous `(source, profile)` tuple named like `lenses.Chosen`; the Caps paragraph is unclear and repeats derived numbers | fix (two parameters; the paragraph reworded) | fixed (13aa4dd: lenses.Chosen passed whole) -- decided by evan-wes, 2026-10-11 |
+| H16 | should-fix | hygiene | `orchestration/worker.py:499, 517, 551` | `report` catches `(URLError, OSError)`, one a subclass of the other; the deadline's message is written twice | fix (`OSError` alone; the message from one place) | fixed (92699e7) -- decided by evan-wes, 2026-10-11 |
+| A16 | note | architecture | `orchestration/worker.py:129, 304-314`; `server/.../config.py:37` | a stalled upload sends no heartbeat, and `UPLOAD_TIMEOUT` (300 s) runs past `SILENCE` (120 s) | fix (`UPLOAD_TIMEOUT <= SILENCE - HEARTBEAT`, held by `test_shared_names`) | fixed (92699e7) -- decided by evan-wes, 2026-10-11 |
+| A17 | note | architecture | `server/.../app.py:311` | the content policy finds storage's origin by signing a link for a made-up key | fix (an `origin` on `Storage`, tested for both stores) | fixed (1f976e0) -- decided by evan-wes, 2026-10-11 |
+| A18 | note | architecture | `pyproject.toml:344-347` | the contract keeping `eval.video` out of the pipeline names two modules, where its rule is "only the worker" | fix (`slam_it_all.orchestration` as its source, the worker's import ignored) | fixed (5bd9935) -- decided by evan-wes, 2026-10-11 |
+| L13 | note | algorithm | `eval/lenses.py:433` | "Ultra" in a phone's model name reads all its profiles as ultrawide (119 usable profiles) | fix (only "ultra wide", "ultrawide" or "ultra-wide" read as ultrawide; checked against the database) | fixed (13aa4dd) -- decided by evan-wes, 2026-10-11 |
+| L14 | note | algorithm | `eval/lenses.py` (`focal_kind`); `docs/notes/your-own-video.md` | the thresholds depend on whether Apple's video tag quotes the still photo's focal length or the video frame's | fix (added to the note's "What waits for the real clips"; L10's band holds under either) | fixed (13aa4dd: the module docstring; 985781b: the note) -- decided by evan-wes, 2026-10-11 |
 | H17 | note | hygiene | `orchestration/worker.py:474` | `killpg` runs after `_supervise` has reaped the child; a group id recycled in those milliseconds is theoretical | no action (the reviewer asks none) | no action: the reviewer asks none -- decided by evan-wes, 2026-10-11 |
 | H18 | note | hygiene | `tests/test_serve_demo.py` | test stand-ins without docstrings | no action (test helpers) | no action: test helpers -- decided by evan-wes, 2026-10-11 |
 
@@ -528,7 +528,7 @@ reviewers' own probes run again on `1359afb`:
 
 ## Hygiene review
 
-**Scope:** Run 2 of PR 11, the fixes `cbf7b3d...1359afb`. I read the full source diff (`src/`, `server/src/`, `scripts/`, `viewer/src/`) and the tests that cover it. I compared each run 1 hygiene finding with what the code now does. I did not re-run Layer 1, which passed on HEAD's tree.
+**Scope:** Run 2 of PR 11, the fixes `e909a76...d056110`. I read the full source diff (`src/`, `server/src/`, `scripts/`, `viewer/src/`) and the tests that cover it. I compared each run 1 hygiene finding with what the code now does. I did not re-run Layer 1, which passed on HEAD's tree.
 
 **Summary:** All eleven hygiene findings (H1-H11) are resolved in production quality. The fixes are tight: errors are logged and re-raised in the right places, the constants are named and pinned by tests, and the tests assert on values. I found no must-fix issues. The new should-fix items are small and mostly about unchecked startup assumptions and readability.
 
@@ -599,26 +599,26 @@ reviewers' own probes run again on `1359afb`:
 
 ## Architecture review
 
-**Scope:** Run 2 of PR 11, `feature/your-own-video`. I reviewed the fix commits `cbf7b3d...1359afb` (8 commits, 51 files) against run 1's findings and the design.
+**Scope:** Run 2 of PR 11, `feature/your-own-video`. I reviewed the fix commits `e909a76...d056110` (8 commits, 51 files) against run 1's findings and the design.
 - **Read in full:** `orchestration/worker.py`; the server's `app.py`, `jobs.py`, `storage.py`, `config.py` and `__main__.py`; the `eval.video`, `eval.lenses` and `eval.tum` diffs; the contracts in `pyproject.toml`; both Dockerfiles and `docker/server-entrypoint.sh`; `scripts/serve_demo.py`; the viewer diffs; the docs diffs (`CLAUDE.md`, the ladder, run-viewer design, both notes, CHANGELOG).
 - **Tests:** names, plus the bodies of the new worker, shared-names and demo tests.
 - **Probes:** run in the env under the memory cap. `lint-imports` gives 21 kept, 0 broken. No server was started.
-  - My run-1 probes are updated for the new signatures, with two signal cases added. They are saved at `pr11_worker_server_probes.py`, which replaces the cbf7b3d-only version.
+  - My run-1 probes are updated for the new signatures, with two signal cases added. They are saved at `pr11_worker_server_probes.py`, which replaces the e909a76-only version.
   - Scratch files are in `/tmp/scratch/review2-architecture/`.
   - No probe process was left running.
 
 **Summary:** Every architecture finding of run 1 is resolved or recorded as deferred. My run-1 probes now show the fixed behaviour. The sweep's redesign (files before rows, two "still to clear" flags, every early deletion best-effort and backed by a later sweep) is sound, and the docs match what was built. One gap in A1's fix is new:
 - The job's processes are killed only when Python unwinds through `_run_child`.
-- A SIGTERM to the worker skips that, and since 68aaf3c the job runs in a session of its own that no other signal reaches.
+- A SIGTERM to the worker skips that, and since 8bf170f the job runs in a session of its own that no other signal reaches.
 - So stopping the demo usually leaves the pipeline running.
 
-Also new: the job list has no schema version, which f616342's schema change makes visible. Four notes follow.
+Also new: the job list has no schema version, which 98ae08a's schema change makes visible. Four notes follow.
 
 ### Run 1's findings
 - **A1:** resolved for the three paths it named: the timeout, a 409 on a heartbeat, and a failure report that is refused or never arrives. Probes 1-3 now print "none" and "handle returned". A path it did not name is still open; see the new must-fix below.
 - **A2:** resolved. Probe 4: after a failing sweep the row is kept (3 failures logged); the next sweep deletes the row and the result file.
-- **A3:** resolved (1504bd5). `CLAUDE.md`'s Languages and Layout sections, the ladder's package table and contract list, run-viewer section 3 and `jobs.js:7` now match what was built.
-- **A4:** resolved (cd1a668). All three contracts are declared and kept. The new one's reach is in note 4.
+- **A3:** resolved (490b242). `CLAUDE.md`'s Languages and Layout sections, the ladder's package table and contract list, run-viewer section 3 and `jobs.js:7` now match what was built.
+- **A4:** resolved (c4911aa). All three contracts are declared and kept. The new one's reach is in note 4.
 - **A5:** resolved. Downloads and uploads beat; `SILENCE >= 3 * HEARTBEAT` and `WAIT <= CLAIM_WAIT` are tested. A stalled upload still sends no beat (note 2).
 - **A6:** resolved.
   - `lenses.database()` is the one lookup and raises when the database is missing or empty.
@@ -642,7 +642,7 @@ Also new: the job list has no schema version, which f616342's schema change make
   - The claims: `worker.py:28-31` ("a job never outlives its turn"), `serve_demo.py:11` and `docs/notes/your-own-video.md:139` ("Ctrl-C, or a SIGTERM, stops the server and the worker together").
 - **Issue:**
   1. The group kill only runs if Python unwinds through `_run_child`. A SIGTERM keeps Python's default action, which ends the process without running any `finally`.
-  2. Since 68aaf3c the job is in a session of its own, so no signal sent to the worker or to its terminal reaches the job any more.
+  2. Since 8bf170f the job is in a session of its own, so no signal sent to the worker or to its terminal reaches the job any more.
   3. Before that, a Ctrl-C reached the child and the C++ program directly, because they shared the terminal's process group.
   4. On a Ctrl-C, the demo and its worker both get the SIGINT. The demo's `finally` then sends the worker a SIGTERM. If that lands before the worker has reached its own `finally`, the worker dies and the job runs on.
 - **Why it matters:** The guarantee fails on the worker's ordinary stop paths outside a container: `serve_demo.py`'s SIGTERM, its Ctrl-C in most trials, systemd, or `kill`.
@@ -652,7 +652,7 @@ Also new: the job list has no schema version, which f616342's schema change make
   - The server only finds out after `SILENCE`.
   - Railway's image is safe: when tini exits, the kernel kills the rest of the container's PID namespace.
   - The demo is the path the in-person showing depends on, and its docs promise the opposite.
-- **Evidence:** the saved probe, run on 1359afb. Probe 5 sends a SIGTERM to a worker mid-job. Probe 6 stands in for `serve_demo.py`: a Ctrl-C to its process group, then `terminate()` of the worker in its `finally`.
+- **Evidence:** the saved probe, run on d056110. Probe 5 sends a SIGTERM to a worker mid-job. Probe 6 stands in for `serve_demo.py`: a Ctrl-C to its process group, then `terminate()` of the worker in its `finally`.
   ```
   5. after a SIGTERM to the worker, the job's grandchild alive: True
   6. after Ctrl-C to a demo-style parent, the job survived in 6 of 8
@@ -665,13 +665,13 @@ Also new: the job list has no schema version, which f616342's schema change make
 
 #### [should-fix] The job list has no schema version: a file made by an earlier server opens, then fails every request and every sweep
 - **Where:** `server/src/slam_it_all_server/jobs.py:69-85` (`CREATE TABLE IF NOT EXISTS`) and `:193-200` (`Jobs.__init__`).
-- **Issue:** f616342 adds the `owner`, `link_open` and `files_open` columns. On an existing file, `CREATE TABLE IF NOT EXISTS` does nothing and nothing compares the schema, so an old file is accepted at startup and then breaks at its first use.
+- **Issue:** 98ae08a adds the `owner`, `link_open` and `files_open` columns. On an existing file, `CREATE TABLE IF NOT EXISTS` does nothing and nothing compares the schema, so an old file is accepted at startup and then breaks at its first use.
 - **Why it matters:** The job list is the one piece of state kept across deploys: a Railway volume (staging comes straight after the merge) and the demo's `--data` folder.
   - The next column added once staging is live would show up as 500s on making and reading jobs.
   - The sweep would log an error every 15 s and delete nothing, so the 7-day promise would stop holding.
   - Every other format the project keeps carries a version: the run format, and `bundle.json`'s `format` and `version`.
   - Clean breaks are the policy, but a clean break should be refused at startup with a message, not found one request at a time.
-- **Evidence:** a file made with cbf7b3d's `_SCHEMA`, opened by 1359afb's `Jobs` (`schema_probe.py` in scratch):
+- **Evidence:** a file made with e909a76's `_SCHEMA`, opened by d056110's `Jobs` (`schema_probe.py` in scratch):
   ```
   opened: no error at startup
   first job: OperationalError no such column: owner
@@ -745,12 +745,12 @@ Also new: the job list has no schema version, which f616342's schema change make
 
 ## Algorithm review
 
-**Scope:** the fixes in `cbf7b3d...1359afb`, mainly d8556cc (`src/slam_it_all/eval/lenses.py`, `tests/eval/test_lenses.py`) and 0a26105 (`src/slam_it_all/eval/video.py`, `tum.py`, `tests/eval/recordings.py`, `tests/eval/test_video.py`). I checked them against:
+**Scope:** the fixes in `e909a76...d056110`, mainly c08684d (`src/slam_it_all/eval/lenses.py`, `tests/eval/test_lenses.py`) and 88190df (`src/slam_it_all/eval/video.py`, `tum.py`, `tests/eval/recordings.py`, `tests/eval/test_video.py`). I checked them against:
 - Stray Scanner's current source: `DatasetEncoder`, `VideoEncoder`, `OdometryEncoder` and `RecordSessionViewController.swift`;
 - the Gyroflow database at `886fc61` (`~/.cache/slam-it-all/lens_profiles/`);
 - Apple's published lens specs, and one published iPhone video's metadata.
 
-`tests/eval/test_lenses.py`, `test_video.py` and `test_tum.py` pass (124 tests). The review was read-only and the tree is still clean at 1359afb. The probes are in `/tmp/scratch/review2-algorithm/`.
+`tests/eval/test_lenses.py`, `test_video.py` and `test_tum.py` pass (124 tests). The review was read-only and the tree is still clean at d056110. The probes are in `/tmp/scratch/review2-algorithm/`.
 
 **Summary:** L1 to L5 are fixed correctly. I re-ran each probe and widened the Stray ones to the codec and frame rate Stray really uses. One must-fix is new, and I should have caught it in run 1: profile matching never compares a profile's own focal length with the clip's. On real database entries, a 30 fps main-camera clip from three common iPhones is matched to an ultrawide calibration, and a 2x clip gets the 1x profile. Both put fx at roughly half the truth, labelled "profile". There are two should-fixes:
 - the Stray fixture does not exercise Stray's default 60 fps, so how ground truth is picked when frames are dropped is untested;
@@ -862,11 +862,11 @@ Also new: the job list has no schema version, which f616342's schema change make
 | | |
 |---|---|
 | **Branch** | `feature/your-own-video` |
-| **Range** | `1359afb...2f1ce87`, run 2's fixes, read against the whole PR `63b61da...2f1ce87` |
+| **Range** | `d056110...0966cd8`, run 2's fixes, read against the whole PR `63b61da...0966cd8` |
 | **Reviewers** | hygiene (sonnet), architecture (opus), algorithm (opus); the security pass (opus) beside them again, in [its own report](2026-10-11-feature-your-own-video-security.md), run 3 |
 | **How they ran** | as in runs 1 and 2 |
-| **Layer 1** | all checks passed (`scripts/check.sh`, exit 0; 21 contracts kept; pytest 3543 passed) on the tree of `8f53353`; `2f1ce87` adds only the reports |
-| **The images** | rebuilt from `2f1ce87` (`slam-it-all-server:run3`, `slam-it-all-worker:run3`) through a memory-capped builder, removed after: a Stray Scanner zip as Stray writes its default (HEVC, 60 fps, 80 frames: 40 kept, 34 tracked) and the room's video each ran end to end through both containers, no upload left; run as root, the server's entrypoint dropped to uid 10001 with `NoNewPrivs: 1`, and the server started as root refused (exit 2) |
+| **Layer 1** | all checks passed (`scripts/check.sh`, exit 0; 21 contracts kept; pytest 3543 passed) on the tree of `985781b`; `0966cd8` adds only the reports |
+| **The images** | rebuilt from `0966cd8` (`slam-it-all-server:run3`, `slam-it-all-worker:run3`) through a memory-capped builder, removed after: a Stray Scanner zip as Stray writes its default (HEVC, 60 fps, 80 frames: 40 kept, 34 tracked) and the room's video each ran end to end through both containers, no upload left; run as root, the server's entrypoint dropped to uid 10001 with `NoNewPrivs: 1`, and the server started as root refused (exit 2) |
 
 IDs go on from run 2's, and findings raised by more than one reviewer share a row at the highest
 severity given. Each review opens with run 2's findings as it found them: each is resolved,
@@ -884,21 +884,21 @@ profile as a cost: the profiles it drops are another lens's.
 
 | ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
 |---|---|---|---|---|---|---|
-| H19 / A19 | should-fix | hygiene, architecture | `server/.../app.py:307-312, 394-417`; `__main__.py:84, 103-107` | a viewer folder without its page, or with an import map the policy cannot read, ends the server with a traceback (exit 1), after the job list was made: `main` catches only settings and format errors | fix (refused as a setting, naming `SLAM_IT_ALL_VIEWER`, before the job list is opened; a test through `main`) | fixed (fcd9817: a SettingsError naming SLAM_IT_ALL_VIEWER, checked before anything is made) -- decided by evan-wes, 2026-10-11 |
-| L15 | should-fix | algorithm | `eval/lenses.py:125-133, 642-652`; `tests/eval/test_lenses.py:265` | without a tag, a profile whose own focal length is another lens's still wins on 23 phones: those with fewer than 3 main-camera profiles, and those whose median the guard rejects | fix (a band of PHONE_BAND around NOMINAL_FOCAL_35MM in place of the median, its guard and PHONE_MEDIAN_OF; the pinned test changed) | fixed (2405092: the band around NOMINAL_FOCAL_35MM replaces the median, its guard and PHONE_MEDIAN_OF) -- decided by evan-wes, 2026-10-11 |
-| H20 | should-fix | hygiene | `tests/server/test_app.py:343-367` | the late-PUT test passes only because the link is checked with exactly one read of the clock | fix (a clock moved once the body has arrived; renamed) | fixed (fcd9817) -- decided by evan-wes, 2026-10-11 |
-| A20 | note | architecture | `orchestration/worker.py:688-691, 726` | the worker's `main` leaves its signal handlers on whatever process calls it, even when it returns 2 | fix (installed around `serve` alone, the previous ones restored) | fixed (1ea2746) -- decided by evan-wes, 2026-10-11 |
-| A21 | note | architecture | `server/.../jobs.py:73-94, 204-220` | the format check adopts another program's SQLite file that has no `jobs` table, and nothing ties `_SCHEMA` to `SCHEMA_VERSION` | fix (a file with tables but no job list refused; the schema held to its version by a test) | fixed (fcd9817) -- decided by evan-wes, 2026-10-11 |
-| A22 | note | architecture | `server/.../app.py:191-197, 524-528`; `jobs.py:460-467` | a failed job's result links can still write after its files are cleared, kept until RETENTION; two docstrings miss the upload `_clear_files` now deletes | fix (the last clearing waits until every link the job signed has expired and had its grace, and clears a result never done again; the docstrings) | fixed (fcd9817: the last clearing LINK_SECONDS and UPLOAD_GRACE after the job ends, a result never done included) -- decided by evan-wes, 2026-10-11 |
-| H21 | note | hygiene | `tests/server/test_shared_names.py:50` | "SILENCE less one" should say "less one heartbeat" | fix | fixed (fcd9817) -- decided by evan-wes, 2026-10-11 |
+| H19 / A19 | should-fix | hygiene, architecture | `server/.../app.py:307-312, 394-417`; `__main__.py:84, 103-107` | a viewer folder without its page, or with an import map the policy cannot read, ends the server with a traceback (exit 1), after the job list was made: `main` catches only settings and format errors | fix (refused as a setting, naming `SLAM_IT_ALL_VIEWER`, before the job list is opened; a test through `main`) | fixed (eb57a26: a SettingsError naming SLAM_IT_ALL_VIEWER, checked before anything is made) -- decided by evan-wes, 2026-10-11 |
+| L15 | should-fix | algorithm | `eval/lenses.py:125-133, 642-652`; `tests/eval/test_lenses.py:265` | without a tag, a profile whose own focal length is another lens's still wins on 23 phones: those with fewer than 3 main-camera profiles, and those whose median the guard rejects | fix (a band of PHONE_BAND around NOMINAL_FOCAL_35MM in place of the median, its guard and PHONE_MEDIAN_OF; the pinned test changed) | fixed (e1ed117: the band around NOMINAL_FOCAL_35MM replaces the median, its guard and PHONE_MEDIAN_OF) -- decided by evan-wes, 2026-10-11 |
+| H20 | should-fix | hygiene | `tests/server/test_app.py:343-367` | the late-PUT test passes only because the link is checked with exactly one read of the clock | fix (a clock moved once the body has arrived; renamed) | fixed (eb57a26) -- decided by evan-wes, 2026-10-11 |
+| A20 | note | architecture | `orchestration/worker.py:688-691, 726` | the worker's `main` leaves its signal handlers on whatever process calls it, even when it returns 2 | fix (installed around `serve` alone, the previous ones restored) | fixed (e5a3cca) -- decided by evan-wes, 2026-10-11 |
+| A21 | note | architecture | `server/.../jobs.py:73-94, 204-220` | the format check adopts another program's SQLite file that has no `jobs` table, and nothing ties `_SCHEMA` to `SCHEMA_VERSION` | fix (a file with tables but no job list refused; the schema held to its version by a test) | fixed (eb57a26) -- decided by evan-wes, 2026-10-11 |
+| A22 | note | architecture | `server/.../app.py:191-197, 524-528`; `jobs.py:460-467` | a failed job's result links can still write after its files are cleared, kept until RETENTION; two docstrings miss the upload `_clear_files` now deletes | fix (the last clearing waits until every link the job signed has expired and had its grace, and clears a result never done again; the docstrings) | fixed (eb57a26: the last clearing LINK_SECONDS and UPLOAD_GRACE after the job ends, a result never done included) -- decided by evan-wes, 2026-10-11 |
+| H21 | note | hygiene | `tests/server/test_shared_names.py:50` | "SILENCE less one" should say "less one heartbeat" | fix | fixed (eb57a26) -- decided by evan-wes, 2026-10-11 |
 | L16 | note | algorithm | `eval/lenses.py:155, 580-585` | a model's "Ultra" runs into a lens's "Wide" across the file name's underscore: two main-camera profiles read as ultrawide | no action (each alternative loses a profile the other way; no wrong intrinsics) | no action: each alternative loses a profile the other way, and no clip gets wrong intrinsics -- decided by evan-wes, 2026-10-11 |
-| L17 | note | algorithm | `eval/lenses.py` (`TAG_BAND`) | evidence for the deferred 35mm convention: a 16:9 main-camera profile's own focal length is 1.21 times Apple's published figure (median); TAG_BAND's docstring says "the tag" where it was measured against the published figures | fix (the docstring; the ratios added to the note's list for the real clips) | fixed (2405092: TAG_BAND's docstring; 67fc822: the ratios in the note) -- decided by evan-wes, 2026-10-11 |
+| L17 | note | algorithm | `eval/lenses.py` (`TAG_BAND`) | evidence for the deferred 35mm convention: a 16:9 main-camera profile's own focal length is 1.21 times Apple's published figure (median); TAG_BAND's docstring says "the tag" where it was measured against the published figures | fix (the docstring; the ratios added to the note's list for the real clips) | fixed (e1ed117: TAG_BAND's docstring; fae65c1: the ratios in the note) -- decided by evan-wes, 2026-10-11 |
 
 ### Hygiene review
 
 ## Hygiene review
 
-**Scope:** Run 2's fixes, `1359afb...2f1ce87` (53ed1f4, 4ee7c67, d66da0f, e944d8e, 8f53353, 2f1ce87). I read the full diff of src, server, scripts, docker, viewer and the tests. I did not re-run the test suite, since layer 1 passed.
+**Scope:** Run 2's fixes, `d056110...0966cd8` (13aa4dd, 92699e7, 1f976e0, 5bd9935, 985781b, 0966cd8). I read the full diff of src, server, scripts, docker, viewer and the tests. I did not re-run the test suite, since layer 1 passed.
 
 ### Run 2's findings
 - **H12:** resolved. `content_policy` raises `FileNotFoundError` for a missing `index.html` and `ValueError` for an import map not written as `<script type="importmap">`. `test_a_viewer_whose_import_map_cannot_be_read_stops_the_server` covers both. The CDN is narrowed to the three.js path, and `test_the_policy_allows_three_js_alone_of_its_cdn` checks that every module in the import map lies under it. One gap remains: see the first should-fix below.
@@ -943,7 +943,7 @@ profile as a cost: the profiles it drops are another lens's.
 
 ## Architecture review
 
-**Scope:** Run 3 of PR 11, `feature/your-own-video`: run 2's fix commits `1359afb...2f1ce87` (6 commits, 31 files), read against the whole PR `63b61da...2f1ce87` and the design. Paths are relative to the repository root.
+**Scope:** Run 3 of PR 11, `feature/your-own-video`: run 2's fix commits `d056110...0966cd8` (6 commits, 31 files), read against the whole PR `63b61da...0966cd8` and the design. Paths are relative to the repository root.
 - **Read in full:** `orchestration/worker.py` at HEAD, `scripts/serve_demo.py`, the server's `__main__.py`, `config.py`, the changed parts of `app.py`, `jobs.py` and `storage.py` with the code around them, `docker/server-entrypoint.sh`, the contracts in `pyproject.toml`, and the `eval.lenses` and `eval.video` diffs.
 - **Also read:** the test diffs, and the docs diffs (ladder, note, CHANGELOG). I checked `CLAUDE.md` and run-viewer design sections 5.3, 5.4 and 9 against the code.
 - **Probes,** each run under the memory cap:
@@ -960,7 +960,7 @@ profile as a cost: the profiles it drops are another lens's.
   - `test_a_stopped_worker_leaves_no_process_or_folder_behind` covers a SIGTERM, and a Ctrl-C followed by the demo's SIGTERM.
   - The demo stops the worker before the server, giving each 10 s before a SIGKILL.
   - What remains: a SIGKILL (including the demo's after 10 s) still leaves the job's folder under `--work`, and nothing clears it at startup. No action asked.
-- **A14:** resolved. Job lists made by cbf7b3d's and 1359afb's servers are refused when opened, naming the file. Through `main`, the refusal is one line and exit 2. Both levels are tested.
+- **A14:** resolved. Job lists made by e909a76's and d056110's servers are refused when opened, naming the file. Through `main`, the refusal is one line and exit 2. Both levels are tested.
 - **A15:** resolved.
   - The owner's link writes are cleared when the job ends, and again `UPLOAD_GRACE` after the link expires.
   - Folder storage refuses an upload that arrives whole only after its link expired.
@@ -983,7 +983,7 @@ profile as a cost: the profiles it drops are another lens's.
   - By then the job list file and the storage folder have already been made.
   - The test named `test_a_viewer_whose_import_map_cannot_be_read_stops_the_server` (`tests/server/test_app.py:603`) calls `content_policy` directly, so it never sees what `main` does.
 - **Why it matters:** run 2 fixed every other startup refusal (root, settings, the job list's format) to one line naming the problem and exit 2. This one breaks that rule, and `main`'s docstring is wrong for it. The cost is small: an operator reads a traceback on Railway. The fix is a line or two.
-- **Evidence:** probe 4 of `pr11_server_startup_probes.py`, on 2f1ce87:
+- **Evidence:** probe 4 of `pr11_server_startup_probes.py`, on 0966cd8:
   ```
   4. no viewer page: main -> raised FileNotFoundError | job list made first: True
   ```
@@ -1027,13 +1027,13 @@ profile as a cost: the profiles it drops are another lens's.
   - `server/src/slam_it_all_server/app.py:191-197` (`_clear_files`) and `:524-528` (`_result_links`, which sign for `LINK_SECONDS`, 1 h).
   - `src/slam_it_all/orchestration/worker.py:603-610`: a report that fails with `OSError` is logged and the job carries on.
 - **Issue:**
-  - d66da0f's argument is that a link can still write after its job's files are cleared. That holds for the result links too.
+  - 1f976e0's argument is that a link can still write after its job's files are cleared. That holds for the result links too.
   - Example: the server is away for more than `SILENCE` while storage is up, as in a server redeploy during the uploading stage.
     1. The restarted server's first sweep fails the job and deletes `results/<id>/`, because the job is not done.
     2. The worker keeps uploading through its still-valid links until its next heartbeat gets a 409, up to 30 s later.
     3. The files it uploads in that time stay until `_delete`, 7 days later. Nothing serves them, because the job failed.
   - This is the same class as A15's late arrival, within the 7-day promise. Since the bundle holds the video's frames, it is still data kept longer than the clean-up intends.
-- **Suggested fix:** either let the `link_open` step also clear `results/<id>/` again for jobs not done, once `LINK_SECONDS` have passed since the job ended, or state in `jobs.py`'s docstring that `RETENTION` bounds these files. Also, two docstrings were missed by d66da0f: `files_to_clear` and `clear_files` (`jobs.py:460-467`) still name only the copy and the result, not the upload that `_clear_files` now deletes too.
+- **Suggested fix:** either let the `link_open` step also clear `results/<id>/` again for jobs not done, once `LINK_SECONDS` have passed since the job ended, or state in `jobs.py`'s docstring that `RETENTION` bounds these files. Also, two docstrings were missed by 1f976e0: `files_to_clear` and `clear_files` (`jobs.py:460-467`) still name only the copy and the result, not the upload that `_clear_files` now deletes too.
 
 ### Checked and fine
 - **Dependency direction:**
@@ -1070,13 +1070,13 @@ profile as a cost: the profiles it drops are another lens's.
 ## Algorithm review
 
 **Run 2's findings**
-- **L10:** resolved for clips with a tag, which covers Apple's clips. I re-ran `apple_mismatch2.py` on 2f1ce87. Of Apple's main-camera clips at 30 fps, 80 match a profile, and **none** of them matches one whose own focal length belongs to another lens (3 did before the fix). Of the 2x-crop clips, the only matches are the iPhone 15 Pro Max's "Auto" profile, at 60 mm, which is 1.25 times the tag. That fits a 2x crop at 16:9 with stabilisation, so the match is right. The band, the median and the guard each have a test that fails when that piece is removed (I checked this with two pytest plugins that break them). The rule for clips without a tag still leaves wrong matches; see the should-fix below.
+- **L10:** resolved for clips with a tag, which covers Apple's clips. I re-ran `apple_mismatch2.py` on 0966cd8. Of Apple's main-camera clips at 30 fps, 80 match a profile, and **none** of them matches one whose own focal length belongs to another lens (3 did before the fix). Of the 2x-crop clips, the only matches are the iPhone 15 Pro Max's "Auto" profile, at 60 mm, which is 1.25 times the tag. That fits a 2x crop at 16:9 with stabilisation, so the match is right. The band, the median and the guard each have a test that fails when that piece is removed (I checked this with two pytest plugins that break them). The rule for clips without a tag still leaves wrong matches; see the should-fix below.
 - **L11:** resolved. The fixture is HEVC with B-frames: packets arrive out of presentation order, and the picture types are I B B B B P B B B B P B. The edit list hides frame 0: 11 of 12 frames decode with it honoured, 12 with it ignored. The stamps are `divider*i - 1`, which matches Stray's source (`DatasetEncoder.swift`: `totalFrames` is the counter before its increment, then `currentFrame % frameInterval`). My run-2 mutant, which pairs every frame with the wrong ground-truth row, now fails `test_a_stray_scanner_recording_imports_with_its_truth[1-kept0]`.
 - **L12:** resolved. Both `size_change.py` probes are now refused: "frame 3 is 1280x240 / 8192x64, the first 320x240", and nothing is left on disk. `_geometry` already holds the first frame to the header's size, so the header caps now hold for every frame.
 - **L13:** resolved. I reproduced the figures: 82 profiles change kind, and the nominal field of view is 72.37 degrees over 828 profiles. A small leftover is in the note below.
 - **L14:** resolved. Both the module docstring and the note's "What waits for the real clips" list it.
 
-**Scope:** the run-2 fixes in `1359afb...2f1ce87`, mainly 53ed1f4 (`src/slam_it_all/eval/lenses.py`, `eval/video.py`, `tests/eval/{recordings,test_lenses,test_video}.py`, the two new fixture profiles) and the L14 text in 8f53353. I did not review the worker and server commits; they are outside my lane. I checked against:
+**Scope:** the run-2 fixes in `d056110...0966cd8`, mainly 13aa4dd (`src/slam_it_all/eval/lenses.py`, `eval/video.py`, `tests/eval/{recordings,test_lenses,test_video}.py`, the two new fixture profiles) and the L14 text in 985781b. I did not review the worker and server commits; they are outside my lane. I checked against:
 - the Gyroflow database at `886fc61`;
 - Apple's published 35mm figures for each model and lens;
 - Stray Scanner's current `DatasetEncoder.swift`.
@@ -1084,7 +1084,7 @@ profile as a cost: the profiles it drops are another lens's.
 Results:
 - `tests/eval/test_lenses.py`, `test_video.py` and `test_tum.py` pass (134 tests).
 - The probes are in `/tmp/scratch/review3-algorithm/`. The reusable ones are also saved in `lens_matching_probes/`.
-- I made no changes; the tree is clean at 2f1ce87.
+- I made no changes; the tree is clean at 0966cd8.
 
 **Summary:**
 - The fixes are correct, and their tests fail when each fix is removed.
@@ -1169,3 +1169,70 @@ Results:
 - **The Stray fixture and pairing:** checked against `DatasetEncoder.swift`. The 60 fps keep pattern (0, 2, 4, 6) is deterministic: frames are spaced exactly 1/60 s, against MIN_SPACING of 1/40. The import's subtraction of the first time covers the B-frame offset that FFmpeg adds once the edit list is ignored.
 - **The size check:** it runs on every decoded frame, including skipped ones, before any resampling, and for Stray's import too.
 - **The new tests fail when the code they cover is removed:** an open band fails the 12 Pro pair test and the 2x test, and removing `_typical` fails the median test.
+
+## Commit messages corrected -- 2026-10-11
+
+After run 3, every commit message on the branch was audited: four agents (opus), each message
+against its own commit's diff and code, the layer-1 logs and the measurements kept, a finding
+checked again by the main session where it was material. In 21 messages they found 6 wrong
+statements, 6 they could not support and 19 imprecise; statements on 14 more commits were true
+when written and changed by later commits, which say so, and stand. Two of the 6 unsupported,
+hand checks, are in the session's record, and the messages now say so. The 21 were reworded,
+the files unchanged, which gave every commit from `d5ba41c` on a new SHA; every SHA in
+this report, the reviews' included, names the reworded commit (the rewording renamed commits,
+changing no file). Three statements were still true of the code at the audit and were fixed
+after it, with tests: a token the server refuses now ends the worker with code 2, and a job's
+folder is made inside its own failure handling (`9a8da4b`); the remap tries the fastest
+backend first (`d14ffe5`). The corrections:
+
+- `d5ba41c` (the import): a zip is refused when one of the three files it reads repeats;
+  the room is encoded at x264 qp 0, its frames within 2 gray levels; a missing or repeated file
+  and not a zip are refused, their tests not looking for what is left.
+- `903bfbc` (the intrinsics): the remap's order was not by speed: one 854x480 channel
+  takes 4.4 ms in Rust, 2.8 ms in C++ and 30 ms in Python (the 7, 10 and 34 ms given had no
+  record).
+- `a6fc40f` (the worker): HTTP(S), not HTTPS.
+- `0ad92c9` (the server): one job at a time and silence are tested on the job list, not
+  over HTTP.
+- `ed8f8e7` (the entry point): it cuts open requests after 3 s (the stop took 3.2 s);
+  Railway's IPv6-only private network is an environment's made before 16 October 2025, now
+  cited.
+- `a478ec3` (the images): the sizes, the server's 286 MB and the worker's 496 MB, were
+  of images built from the working tree just before the commit, in the session's record.
+- `c08684d` (run 1, the lenses): Apple's camera-system names come from photos' EXIF,
+  videos' an open item; the profile is "Wide Lens", not an add-on; the map within 1e-4 px
+  inside the image's outermost pixels.
+- `88190df` (run 1, the import): S9 checked the header alone (the frames after it from
+  run 2's L12); a Stray Scanner zip is probed once, a video still twice; the edit list FFmpeg
+  honours was emulated; the fixture is Stray's 30 fps setting.
+- `8bf170f` (run 1, the worker): check_url refused public hosts named or written as
+  literals, not numeric or escaped ones; a refused token was retried, not ended with code 2;
+  handle() raised if it could not make the job's folder; seven fixes were undone, not ten.
+- `98ae08a` (run 1, the server's state): an upload still arriving when its link expired
+  was kept until the job's deletion.
+- `3a6fbdd` (run 1, the server's surface): the status page takes RETENTION_DAYS, a test
+  holds the upload page's words, its 5 s wait unchanged; the hand checks are in the session's
+  record, not kept as files.
+- `490b242` (run 1's docs): FFmpeg's mov/mp4 family.
+- `92699e7` (run 2, the worker): an upload link never carried the token; public IPv4
+  addresses were refused in any form, 6to4, link-local and escaped hosts only from run 3.
+- `1f976e0` (run 2, the server): a ':' in the database path got a folder of / past the
+  entrypoint until run 3's S29.
+- `985781b` (run 2's docs): about 13.5 degrees apart, not 13 (the note said 13 too, and
+  says 13.5 now).
+- `0966cd8` (run 2's report): H15 and S24 differ from what was recommended too.
+- `e1ed117` (run 3, the lenses): the 79 picks are those outside 19.7 to 44.4 mm, over 403
+  phones at 4K and 1080p, 30 and 60 fps.
+- `e5a3cca` (run 3, the worker): urllib would connect, nothing was reached; local-use
+  NAT64 alone; a private address with a numeric scope id is accepted, so the scope-id rule was
+  not redundant.
+- `eb57a26` (run 3, the server): the format test forces an edit to itself, not a version
+  raise.
+- `fae65c1` (run 3's docs): the ratios' samples (7, 20 and 6), 17% for a main camera;
+  the docs were held out of the tree checked.
+- `a344a76` (run 3's report): the band set aside was first recorded in run 3; the
+  scope-id rule's reason.
+
+In this report, run 1's H5 is fixed in part (the upload page's 5 s wait was left), A3's
+resolution names `3a6fbdd` for jobs.js, and run 3's S27 says which scoped hosts the other
+rules refuse.

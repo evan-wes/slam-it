@@ -133,10 +133,10 @@ folder named `your-video`, which is the name the viewer shows.
   program's file, at startup, naming it, rather than migrating or adopting it: deleting it starts
   a new one. A test holds the table's columns to the format's number.
 - **`python -m slam_it_all_server`** refuses to run as root. It listens on IPv6 and IPv4 at once
-  when given `::`, as the
-  image is, since Railway's public port is reached on IPv4 and an older project's private
-  network on IPv6 alone. Stopping, it waits at most 3 s for open requests: a worker's claim is
-  held open for up to 25 s, and a redeploy should not wait for it.
+  when given `::`, as the image is: IPv4, as before, and IPv6, since Railway's private network is
+  IPv6 alone in an environment made before 16 October 2025 (Railway's docs, "How private networking
+  works"). Stopping, it waits at most 3 s for open requests: a worker's claim is held open for up to
+  25 s, and a redeploy should not wait for it.
 
 ## The pages
 
@@ -260,7 +260,7 @@ Pro, Pixel 8, Galaxy A15) and a Stray Scanner recording, kept outside the repo, 
 - whether Android videos name their phone, and how lenses are named in real metadata;
 - whether the 35mm-equivalent focal length is taken across the diagonal, and whether the nominal
   field of view should be one per aspect: the pooled median, 72.37 degrees, mixes 16:9 and 4:3
-  main-camera profiles, whose own medians differ by about 13 degrees;
+  main-camera profiles, whose own medians differ by about 13.5 degrees;
 - what Apple's 35mm-equivalent tag gives for each lens and for the 2x crop: the still photo's
   figure, as one published iPhone clip suggests, or the video frame's own (the focal-length
   thresholds sit between the still photo's figures; the band a profile is held to holds under
