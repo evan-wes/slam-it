@@ -46,7 +46,8 @@ redirect from the server or an upload link, and a download's only to a URL it wo
   worker's (cancelled or expired), which ends it;
 - ``POST /api/worker/jobs/<job>/files`` ``{"files": [{"path", "bytes"}, ...]}``: an upload
   link (PUT) for each of the bundle's files, ``{"urls": {path: url}}``;
-- ``POST /api/worker/jobs/<job>/done`` ``{"summary"}``, or ``.../failed`` ``{"reason"}``.
+- ``POST /api/worker/jobs/<job>/done`` ``{"summary"}`` (:func:`summarize`), or ``.../failed``
+  ``{"reason"}``.
 
 Run as a program (the lens profiles are required, :func:`slam_it_all.eval.lenses.database`)::
 
@@ -82,7 +83,11 @@ from http.client import HTTPMessage
 from pathlib import Path
 from typing import IO, Any
 
-from slam_it_all.eval import lenses, video
+import numpy as np
+from numpy.typing import NDArray
+
+from slam_it_all.edge.pipeline import State
+from slam_it_all.eval import lenses, runs, video
 from slam_it_all.foundations.errors import InvalidInputError, SlamItAllError
 from slam_it_all.orchestration import bundles, vo
 
@@ -449,12 +454,54 @@ def _work(upload_path: Path, kind: str, out: Path, report: Callable[[str], None]
     run = vo.run("tum", sequence, "monocular", out / "run", backend="cpp", record_features=True)
     report("baking")
     bundles.bake([out / "run"], sequence, out / "bundle")
+    return summarize(run, vo.open_source("tum", sequence, "monocular").times, source)
+
+
+def summarize(run: runs.Run, times: NDArray[np.float64], intrinsics: str) -> dict[str, Any]:
+    """Return a job's summary: what its run made, and what of the clip it ran and tracked.
+
+    A run ends at the first frame it loses the track at, so the rest of a clip is then not run;
+    and a monocular run tracks nothing until it has made its first map. The status page says
+    both (``viewer/src/jobs.js``), so that a short result is not taken for a cropped video.
+
+    Parameters
+    ----------
+    run : slam_it_all.eval.runs.Run
+        The job's run.
+    times : ndarray of float64, shape (F,)
+        The imported clip's frames' times, in seconds
+        (:attr:`slam_it_all.orchestration.vo.Source.times`).
+    intrinsics : str
+        Where its intrinsics came from: ``"stray-scanner"``, or a
+        :attr:`slam_it_all.eval.lenses.Chosen.source`.
+
+    Returns
+    -------
+    dict
+        ``frames`` run, ``tracked``, the final map's ``keyframes`` and ``points``,
+        ``intrinsics``; ``clip_seconds``, the clip's last frame's time; ``tracked_from`` and
+        ``tracked_to``, the first and last tracked frames' times (null if none was tracked);
+        ``ran_to``, the last frame run's time; every time since the clip's first frame, to the
+        millisecond; and ``lost``, whether the run ended by losing the track.
+    """
+    start = float(times[0]) if len(times) else 0.0
+
+    def since(time: float) -> float:
+        return round(float(time) - start, 3)
+
+    ran = [d["timestamp"] for d in run.diagnostics]
+    tracked = run.timestamps
     return {
         "frames": len(run.diagnostics),
-        "tracked": len(run.timestamps),
+        "tracked": len(tracked),
         "keyframes": len(run.final_keyframes()[0]),
         "points": len(run.final_points()),
-        "intrinsics": source,
+        "intrinsics": intrinsics,
+        "clip_seconds": since(times[-1]) if len(times) else 0.0,
+        "tracked_from": since(tracked[0]) if len(tracked) else None,
+        "tracked_to": since(tracked[-1]) if len(tracked) else None,
+        "ran_to": since(ran[-1]) if ran else 0.0,
+        "lost": bool(ran) and run.diagnostics[-1]["state"] == State.LOST,
     }
 
 

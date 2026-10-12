@@ -26,12 +26,13 @@ import pytest
 
 from slam_it_all.eval import video
 from slam_it_all.foundations.errors import InvalidInputError
-from slam_it_all.orchestration import worker
+from slam_it_all.orchestration import vo, worker
 from tests.conftest import FIXTURES
 from tests.edge import room
-from tests.edge.support import FRAMES
+from tests.edge.support import FRAMES, OPTIONS
 from tests.eval.recordings import stray_zip
-from tests.orchestration.conftest import require_program
+from tests.orchestration.conftest import RoomRun, require_program
+from tests.orchestration.datasets import Room, blank, write_room
 
 TOKEN = "a-worker-token"
 
@@ -180,12 +181,53 @@ def test_a_job_runs_end_to_end(serving: Server, recording: bytes, tmp_path: Path
     assert serving.summary is not None
     assert serving.summary["frames"] == FRAMES
     assert serving.summary["intrinsics"] == "stray-scanner"
+    assert serving.summary["lost"] is False
+    assert serving.summary["ran_to"] == serving.summary["clip_seconds"]
     info = json.loads(serving.files["bundle.json"])
     assert list(info["backends"]) == ["cpp"]
     assert info["sequence"] == worker.SEQUENCE == "your-video"  # the viewer's name for it
     assert (info["truth"], info["backends"]["cpp"]["alignment"]) == (True, "sim3")
     assert {"times.npy", "cpp/records.json", "cpp/feature_records.npy"} <= set(serving.files)
     assert list((tmp_path / "work").iterdir()) == []  # the job's folder removed
+
+
+def test_the_summary_says_where_a_run_lost_the_track(
+    rendered_room: list[room.Frame], tmp_path: Path
+) -> None:
+    """Blank frames lose the track, which ends the run: the rest of the clip is not run.
+
+    The summary says so, and when tracking started and stopped, in the clip's own time.
+    """
+    blanks = OPTIONS.lost_frames
+    clip = [
+        *rendered_room[:10],
+        *map(blank, rendered_room[10 : 10 + blanks]),
+        *rendered_room[10 + blanks :],
+    ]
+    folders = write_room(tmp_path / "clip", clip)
+    run = vo.run("tum", folders.tum, "rgbd", tmp_path / "run", options=OPTIONS)
+    times = folders.timestamps - folders.timestamps[0]
+    summary = worker.summarize(run, folders.timestamps, "nominal")
+    assert summary["frames"] == 10 + blanks < FRAMES
+    assert summary["lost"] is True
+    assert (summary["tracked_from"], summary["tracked_to"]) == (0.0, round(times[9], 3))
+    assert (summary["ran_to"], summary["clip_seconds"]) == (
+        round(times[9 + blanks], 3),
+        round(times[-1], 3),
+    )
+
+
+def test_the_summary_of_a_whole_run_says_when_tracking_began(
+    room_runs: RoomRun, room_folders: Room
+) -> None:
+    """A monocular run tracks from its first map on, and to the clip's end if not lost."""
+    run = room_runs("tum", "monocular", "python")
+    times = room_folders.timestamps
+    summary = worker.summarize(run, times, "nominal")
+    assert (summary["frames"], summary["lost"]) == (FRAMES, False)
+    assert summary["ran_to"] == summary["clip_seconds"] == round(times[-1] - times[0], 3)
+    assert 0 < summary["tracked_from"] < summary["tracked_to"] <= summary["ran_to"]
+    assert summary["tracked"] == len(run.timestamps)
 
 
 def _distinct(stages: list[str]) -> list[str]:

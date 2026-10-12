@@ -13,6 +13,7 @@ import {
   keptFor,
   refusal,
   summaryRows,
+  trackingText,
   viewerLink,
 } from "../src/jobs.js";
 
@@ -101,4 +102,41 @@ test("a summary is listed, its intrinsics source named", () => {
     ["frames", "0"],
     ["tracked", "0"],
   ]);
+});
+
+test("what of the clip was tracked is said, and why a result can be shorter than the clip", () => {
+  /** @param {Record<string, unknown>} fields @returns {Record<string, unknown>} */
+  const summary = (fields) => ({ frames: 120, tracked: 54, lost: false, ...fields });
+  const lost = summary({
+    clip_seconds: 12.0,
+    tracked_from: 2.5,
+    tracked_to: 4.9,
+    ran_to: 4.965,
+    lost: true,
+  });
+  assert.equal(
+    trackingText(lost),
+    "Tracked from 2.5 s to 4.9 s of your 12.0 s clip. Tracking was lost at 5.0 s, which ends a " +
+      "run, so the rest was not processed. The first 2.5 s went to finding a first map; moving " +
+      "sideways at the start shortens it.",
+  );
+  const whole = summary({ clip_seconds: 10, tracked_from: 0, tracked_to: 10, ran_to: 10 });
+  assert.equal(trackingText(whole), "Tracked from 0.0 s to 10.0 s of your 10.0 s clip.");
+  const last = summary({
+    clip_seconds: 6,
+    tracked_from: 0,
+    tracked_to: 5.9,
+    ran_to: 6,
+    lost: true,
+  });
+  assert.equal(
+    trackingText(last),
+    "Tracked from 0.0 s to 5.9 s of your 6.0 s clip. Tracking was lost at 6.0 s, its last frame.",
+  );
+  const never = summary({ clip_seconds: 8, tracked_from: null, tracked_to: null, ran_to: 8 });
+  assert.equal(
+    trackingText(never),
+    "No first map was made in your 8.0 s clip, so nothing was tracked. Moving sideways at the " +
+      "start, with something textured in view, helps make one.",
+  );
 });

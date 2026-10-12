@@ -1,7 +1,16 @@
 // The status page, at /r/<token>: asks how the job is going every few seconds until it ends,
-// then shows its summary and the link to the run viewer, or why it did not finish.
+// then shows its summary, what of the clip was tracked, and the link to the run viewer, or why it
+// did not finish.
 
-import { RETENTION_DAYS, STAGES, describe, keptFor, summaryRows, viewerLink } from "./jobs.js";
+import {
+  RETENTION_DAYS,
+  STAGES,
+  describe,
+  keptFor,
+  summaryRows,
+  trackingText,
+  viewerLink,
+} from "./jobs.js";
 import { element } from "./page_view.js";
 
 /** How often the page asks, in milliseconds. */
@@ -42,6 +51,9 @@ function show(status) {
       }),
     );
     summary.hidden = false;
+    const tracking = element("tracking", HTMLElement);
+    tracking.textContent = trackingText(status.summary);
+    tracking.hidden = false;
     element("viewer", HTMLAnchorElement).href = viewerLink(status.bundle);
     element("open", HTMLElement).hidden = false;
   }

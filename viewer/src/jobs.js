@@ -1,6 +1,8 @@
 // The upload and status pages' logic: checking a file before it is sent, and saying how a job
 // is going. No page, no network: upload_view.js and status_view.js do those.
 
+import { seconds } from "./format.js";
+
 /** The largest upload, in bytes (slam_it_all_server.config.MAX_BYTES). */
 export const MAX_BYTES = 500e6;
 
@@ -144,6 +146,48 @@ export function keptFor(deleted, now) {
     return `kept for about ${hours} more ${hours === 1 ? "hour" : "hours"}`;
   }
   return "deleted soon";
+}
+
+/**
+ * What of the clip a done job ran and tracked, in words. A run tracks nothing until it has made
+ * its first map, and ends at the frame it loses the track at, so a result can be shorter than
+ * the video: this says why, so that it is not taken for a cropped one.
+ * @param {Record<string, unknown>} summary The worker's summary
+ *     (slam_it_all.orchestration.worker.summarize).
+ * @returns {string} The words.
+ */
+export function trackingText(summary) {
+  const clip = Number(summary.clip_seconds);
+  const ranTo = Number(summary.ran_to);
+  /** @type {string[]} */
+  const said = [];
+  if (summary.tracked_from === null) {
+    said.push(
+      `No first map was made in your ${seconds(clip)} clip, so nothing was tracked. Moving ` +
+        "sideways at the start, with something textured in view, helps make one.",
+    );
+    return said.join(" ");
+  }
+  const from = Number(summary.tracked_from);
+  said.push(
+    `Tracked from ${seconds(from)} to ${seconds(Number(summary.tracked_to))} of your ` +
+      `${seconds(clip)} clip.`,
+  );
+  if (summary.lost === true) {
+    // Less than half of the tenth the page shows left: lost at the clip's last frame.
+    said.push(
+      clip - ranTo >= 0.05
+        ? `Tracking was lost at ${seconds(ranTo)}, which ends a run, so the rest was not processed.`
+        : `Tracking was lost at ${seconds(ranTo)}, its last frame.`,
+    );
+  }
+  if (from >= 0.05) {
+    said.push(
+      `The first ${seconds(from)} went to finding a first map; moving sideways at the start ` +
+        "shortens it.",
+    );
+  }
+  return said.join(" ");
 }
 
 /**

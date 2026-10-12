@@ -184,14 +184,18 @@ def gap_frames(rendered: list[room.Frame]) -> list[room.Frame]:
     """
     kept = rendered[: GAP[0]] + rendered[GAP[1] :]
     before, after = kept[BLANK_AT - 1], kept[BLANK_AT]
-    blank = replace(
-        after,
-        gray=np.zeros_like(after.gray),
-        right=None if after.right is None else np.zeros_like(after.right),
-        depth=np.zeros_like(after.depth),
-        timestamp=(before.timestamp + after.timestamp) / 2,
+    between = replace(blank(after), timestamp=(before.timestamp + after.timestamp) / 2)
+    return [*kept[:BLANK_AT], between, *kept[BLANK_AT:]]
+
+
+def blank(frame: room.Frame) -> room.Frame:
+    """Return a frame blanked: its images and depth zero, nothing in them to track."""
+    return replace(
+        frame,
+        gray=np.zeros_like(frame.gray),
+        right=None if frame.right is None else np.zeros_like(frame.right),
+        depth=np.zeros_like(frame.depth),
     )
-    return [*kept[:BLANK_AT], blank, *kept[BLANK_AT:]]
 
 
 def write_room(base: Path, rendered: list[room.Frame]) -> Room:
