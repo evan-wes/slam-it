@@ -59,6 +59,14 @@ import { readFloat32, readInt32 } from "./npy.js";
  */
 
 /**
+ * The whole sequence (bundle.json's `extent`): the bundle's frames are the part its runs ran.
+ * @typedef {object} Extent
+ * @property {number} frames The sequence's frames.
+ * @property {number} start Its first frame's time since the bundle's first, in seconds.
+ * @property {number} end Its last frame's time since the bundle's first, in seconds.
+ */
+
+/**
  * bundle.json.
  * @typedef {object} BundleInfo
  * @property {string} format "slam-it-all-bundle".
@@ -69,6 +77,7 @@ import { readFloat32, readInt32 } from "./npy.js";
  * @property {Camera} camera The pipeline's camera.
  * @property {number} frames The bundle's frames.
  * @property {number} first_time The first frame's time, in seconds.
+ * @property {Extent} extent The whole sequence, of which the bundle's frames are the part run.
  * @property {{chunk: number, quality: number, colour: boolean}} images How the frames are stored.
  * @property {boolean} truth Whether the sequence has ground truth (`truth.npy`).
  * @property {string[]} fates The fates' names, by code (slam_it_all.eval.runs.FATES).
@@ -167,16 +176,40 @@ function expectShape(name, shape, trailing, rows) {
 }
 
 /**
+ * Whether bundle.json's `extent` is one: the sequence's frames, at least the bundle's, and its
+ * first and last frames' times, in order.
+ * @param {unknown} extent The value.
+ * @param {number} frames The bundle's frames.
+ * @returns {extent is Extent} Whether it is.
+ */
+function isExtent(extent, frames) {
+  if (typeof extent !== "object" || extent === null) {
+    return false;
+  }
+  const { frames: whole, start, end } = /** @type {Record<string, unknown>} */ (extent);
+  return (
+    Number.isInteger(whole) &&
+    Number(whole) >= frames &&
+    Number.isFinite(start) &&
+    Number.isFinite(end) &&
+    Number(start) <= Number(end)
+  );
+}
+
+/**
  * Load a bundle's description and frames.
  * @param {Fetch} fetch How to fetch one of its files.
  * @returns {Promise<Bundle>} The bundle.
- * @throws {Error} If bundle.json is of another format or version, names fates, steps or
- *     backends the page does not know, or an array is mis-shaped.
+ * @throws {Error} If bundle.json is of another format or version, lacks the sequence's extent,
+ *     names fates, steps or backends the page does not know, or an array is mis-shaped.
  */
 export async function loadBundle(fetch) {
   const info = /** @type {BundleInfo} */ (json(await fetch("bundle.json")));
   if (info.format !== FORMAT || info.version !== VERSION) {
     throw new Error(`bundle.json: expected ${FORMAT} version ${VERSION}`);
+  }
+  if (!isExtent(info.extent, info.frames)) {
+    throw new Error("bundle.json: expected the sequence's extent, {frames, start, end}");
   }
   // The page's copies of the run format's tables must be the ones the bundle was baked with.
   /** @type {[string, readonly string[], readonly string[]][]} */

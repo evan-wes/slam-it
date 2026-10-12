@@ -156,6 +156,25 @@ def test_a_later_run_is_renumbered_to_the_bundles_frames(
     np.testing.assert_array_equal(np.load(folder / "pose_frames.npy"), tracked)
 
 
+def test_the_extent_is_the_whole_sequences(room_runs: RoomRun, tmp_path: Path) -> None:
+    """A run of a part of the sequence: the extent is the whole's, timed from the bundle's first.
+
+    So the page can show what no run reached, before the run's first frame and after its last.
+    """
+    sequence = room_runs.sequence("tum")
+    part = tmp_path / "part"
+    vo.run("tum", sequence, "rgbd", part, options=OPTIONS, first=5, count=10)
+    bundles.bake([part], sequence, tmp_path / "bundle")
+    info = json.loads((tmp_path / "bundle" / "bundle.json").read_text())
+    times = vo.open_source("tum", sequence, "rgbd").times
+    assert (info["frames"], info["first_time"]) == (10, times[5])
+    assert info["extent"] == {
+        "frames": FRAMES,
+        "start": times[0] - times[5],
+        "end": times[FRAMES - 1] - times[5],
+    }
+
+
 @pytest.mark.parametrize(
     ("dataset", "mode", "colour"), [("tum", "rgbd", True), ("euroc", "stereo", False)]
 )
