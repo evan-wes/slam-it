@@ -1,4 +1,4 @@
-// The header's numbers, as text: lengths, durations, sizes and angles. No drawing.
+// The numbers the pages show, as text: lengths, durations, times, sizes and angles. No drawing.
 
 /**
  * A length.
@@ -18,6 +18,15 @@ export function length(metres) {
  */
 export function duration(seconds) {
   return `${(seconds * 1000).toFixed(1)} ms`;
+}
+
+/**
+ * A time in a clip or sequence.
+ * @param {number} seconds The time, in seconds.
+ * @returns {string} In seconds, to a tenth.
+ */
+export function seconds(seconds) {
+  return `${seconds.toFixed(1)} s`;
 }
 
 /**

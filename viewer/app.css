@@ -151,7 +151,39 @@ input:focus-visible {
   margin: 0;
   accent-color: var(--accent);
 }
-/* Each backend's frames, a row each, inset to the slider's track (its thumb's half-width). */
+/* The whole sequence: the part its runs ran, with the slider, between the parts none reached,
+   each part as wide as its time. */
+.timeline {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+}
+.ran {
+  flex: 1 1 0;
+  min-width: 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.not-run {
+  flex: 1 1 0;
+  min-width: 0;
+  align-content: center;
+  padding: 0 6px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  color: var(--muted);
+  border: 1px dashed var(--line);
+  background: repeating-linear-gradient(-45deg, var(--raised) 0 4px, var(--surface) 4px 8px);
+}
+.not-run[hidden] {
+  display: none;
+}
+/* Each backend's frames, a row each, inset to the slider's track (its thumb's half-width):
+   tracking in its colour, faded before its first map, the frame it lost the track in red. */
 .spans {
   position: relative;
   margin: 0 7px;
@@ -160,6 +192,37 @@ input:focus-visible {
   position: absolute;
   height: 3px;
   border-radius: 2px;
+}
+.span.starting {
+  opacity: 0.35;
+}
+.span.lost {
+  min-width: 3px;
+  background: var(--fail);
+}
+.legend.states span {
+  padding: 0 5px;
+  font-size: 0.64rem;
+}
+.legend.states i {
+  width: 12px;
+  height: 4px;
+  border-radius: 2px;
+}
+.swatch.tracking {
+  background: var(--muted);
+}
+.swatch.starting {
+  background: var(--muted);
+  opacity: 0.35;
+}
+.swatch.lost {
+  background: var(--fail);
+}
+.legend.states .swatch.not-run {
+  height: 8px;
+  border: 1px dashed var(--line);
+  background: var(--raised);
 }
 .field {
   display: inline-flex;
@@ -234,7 +297,7 @@ select {
     padding-left: 10px;
     padding-right: 10px;
   }
-  .transport input[type="range"] {
+  .transport .scrub {
     order: 1;
     flex-basis: 100%;
   }

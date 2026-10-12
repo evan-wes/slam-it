@@ -12,6 +12,7 @@ import { element } from "./page_view.js";
 import { Playhead } from "./playback.js";
 import { SceneView } from "./scene_view.js";
 import { SolverView } from "./solver_view.js";
+import { LOST, NOT_INITIALIZED, notRunText, placement, spanHint, stateSpans } from "./timeline.js";
 
 /** The height of each backend's row under the frame slider, in pixels. */
 const SPAN_ROW = 4;
@@ -113,26 +114,50 @@ function showAgreement(agreement, backends, differ) {
 }
 
 /**
- * Draw each backend's span under the frame slider: a bar in its colour over the frames it ran.
- * @param {HTMLElement} box The spans' box.
+ * Draw the timeline: under the frame slider, each backend's frames, a row each, coloured by
+ * state; beside it, the parts of the sequence no run reached, each part as wide as its time.
+ * @param {import("./bundle.js").Bundle} bundle The bundle.
  * @param {import("./bundle.js").Track[]} tracks The backends' tracks.
- * @param {number} frames The bundle's frames.
  */
-function showSpans(box, tracks, frames) {
+function showTimeline(bundle, tracks) {
+  const frames = bundle.info.frames;
+  const box = element("spans", HTMLElement);
   box.replaceChildren(
-    ...tracks.map((track, row) => {
-      const [first, end] = track.info.frames;
-      const bar = document.createElement("div");
-      bar.className = "span";
-      bar.title = spanText(track);
-      bar.style.left = `${(100 * first) / frames}%`;
-      bar.style.width = `${(100 * (end - first)) / frames}%`;
-      bar.style.top = `${row * SPAN_ROW}px`;
-      bar.style.background = `var(--backend-${track.name})`;
-      return bar;
-    }),
+    ...tracks.flatMap((track, row) =>
+      stateSpans(track.records).map((span) => {
+        const bar = document.createElement("div");
+        bar.className = "span";
+        bar.classList.toggle("lost", span.state === LOST);
+        bar.classList.toggle("starting", span.state === NOT_INITIALIZED);
+        bar.title = spanHint(track.name, span);
+        bar.style.left = `${(100 * span.first) / frames}%`;
+        bar.style.width = `${(100 * (span.end - span.first)) / frames}%`;
+        bar.style.top = `${row * SPAN_ROW}px`;
+        if (span.state !== LOST) {
+          bar.style.background = `var(--backend-${track.name})`;
+        }
+        return bar;
+      }),
+    ),
   );
   box.style.height = `${tracks.length * SPAN_ROW}px`;
+  const placed = placement(bundle.info.extent, bundle.times, tracks);
+  const said = notRunText(placed);
+  const whole = placed.before + placed.ran + placed.after;
+  // Each part grows by its share of the whole, the shares summing to 1 so they fill the row.
+  element("ran", HTMLElement).style.flexGrow = String(whole > 0 ? placed.ran / whole : 1);
+  /** @type {[string, number, [string, string]][]} */
+  const parts = [
+    ["not-run-before", placed.before, said.before],
+    ["not-run-after", placed.after, said.after],
+  ];
+  for (const [id, seconds, [label, hint]] of parts) {
+    const part = element(id, HTMLElement);
+    part.hidden = seconds === 0;
+    part.style.flexGrow = String(whole > 0 ? seconds / whole : 0);
+    part.textContent = label;
+    part.title = hint;
+  }
 }
 
 /**
@@ -234,7 +259,7 @@ async function main() {
   const tracks = await Promise.all(present.map((name) => loadTrack(fetchFile, bundle, name)));
   const differ = differences(tracks, info.frames);
   showAgreement(element("agreement", HTMLElement), tracks.length, differ);
-  showSpans(element("spans", HTMLElement), tracks, info.frames);
+  showTimeline(bundle, tracks);
   /**
    * @param {string | undefined} name A backend.
    * @returns {import("./bundle.js").Track} Its track.
