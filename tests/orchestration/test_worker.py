@@ -443,8 +443,7 @@ worker.download = lambda url, path, cap, beat: path.write_bytes(b"upload")
 worker._run_child = lambda argv, report, timeout: run_child(
     [sys.executable, stand_in, pidfile, "wait"], report, timeout
 )
-worker._stop_on_signals()
-with contextlib.suppress(KeyboardInterrupt):
+with contextlib.suppress(KeyboardInterrupt), worker._stopping_on_signals():
     worker.handle(Client(), worker.Job("job-1", "vo", "stray", ""), Path(work))
 print("stopped", flush=True)
 """
@@ -479,6 +478,21 @@ def test_a_stopped_worker_leaves_no_process_or_folder_behind(
     assert list(work.iterdir()) == []
 
 
+def test_the_worker_sets_its_signal_handlers_only_while_it_serves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Its own while serve runs; the caller's again once main returns."""
+    before = (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM))
+    seen: list[object] = []
+    monkeypatch.setattr(
+        worker, "serve", lambda *_, **__: seen.append(signal.getsignal(signal.SIGTERM))
+    )
+    monkeypatch.setenv(worker.TOKEN_VARIABLE, TOKEN)
+    assert worker.main(["serve", "--server", "http://127.0.0.1:9"]) == 0
+    assert seen == [worker._stop]
+    assert (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM)) == before
+
+
 def test_the_child_inherits_no_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     """Only CHILD_ENVIRONMENT's variables pass: never the worker's token, nor anything else."""
     monkeypatch.setenv(worker.TOKEN_VARIABLE, TOKEN)
@@ -503,6 +517,16 @@ def test_the_child_inherits_no_secret(monkeypatch: pytest.MonkeyPatch) -> None:
         ("http://2130706433:8000", True),  # 127.0.0.1, written as a number
         ("http://134744072/", False),  # 8.8.8.8, written as a number
         ("http://0x8080808/", False),  # and in hexadecimal
+        ("http://8%2e8%2e8%2e8/", False),  # 8.8.8.8, its dots escaped: urllib unescapes them
+        ("http://127%2e0%2e0%2e1:8000", True),  # judged as urllib connects: 127.0.0.1
+        ("http://example%2ecom/", False),
+        ("http://[2001:4860:4860::8888%25lo]/", False),  # a public address with a scope id
+        ("http://[fe80::1%25eth0]:8000", False),  # any scope id
+        ("http://169.254.169.254/", False),  # link-local: a cloud's metadata service
+        ("http://[2002:808:808::1]/", False),  # 6to4, for 8.8.8.8
+        ("http://[fd12:3456::1]:8000", True),  # IPv6 unique-local, as a private network gives
+        ("http://\u00ad/", False),  # a host IDNA cannot encode
+        ("http://[::1/", False),  # brackets that hold no address
         ("http://slam.example.org", False),
         ("http://8.8.8.8", False),
         ("file:///etc/passwd", False),
@@ -528,7 +552,12 @@ def test_the_server_is_never_followed_through_a_redirect(serving: Server) -> Non
 
 @pytest.mark.parametrize(
     ("target", "good"),
-    [("{url}/upload", True), ("http://8.8.8.8/x", False), ("ftp://127.0.0.1:9/x", False)],
+    [
+        ("{url}/upload", True),
+        ("http://8.8.8.8/x", False),
+        ("http://8%2e8%2e8%2e8/x", False),
+        ("ftp://127.0.0.1:9/x", False),
+    ],
 )
 def test_a_downloads_redirect_goes_only_where_a_link_may(
     target: str, good: bool, serving: Server, tmp_path: Path

@@ -63,6 +63,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import resource
 import selectors
 import shutil
@@ -75,7 +76,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from http.client import HTTPMessage
 from pathlib import Path
@@ -139,6 +140,23 @@ so this is within the server's silence limit less a heartbeat (``SILENCE`` in
 CLAIM_MARGIN = 30.0
 """How much longer than its wait a claim's request may take, in seconds."""
 
+PRIVATE_NETWORKS = tuple(
+    ipaddress.ip_network(network)
+    for network in (
+        "127.0.0.0/8",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "::1/128",
+        "fc00::/7",
+    )
+)
+"""The addresses plain ``http`` may reach (:func:`check_url`): loopback, and the private ranges
+(RFC 1918, IPv6's unique-local). Not link-local (a cloud's metadata service), 6to4 or NAT64."""
+
+_LABEL = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
+"""One DNS label, as a host name's lowercase part between dots."""
+
 _CHUNK = 1 << 20
 """The bytes moved at a time in a download or an upload."""
 
@@ -180,8 +198,9 @@ def check_url(url: str, what: str) -> str:
     """Return a URL the worker may use, refusing one that is not ``http(s)`` to a safe host.
 
     ``https`` goes anywhere; plain ``http`` only to a host that cannot be on the public
-    internet: a loopback or private address, ``localhost``, a one-label name (a container
-    network's), or Railway's private network (``*.railway.internal``).
+    internet: an address in :data:`PRIVATE_NETWORKS`, ``localhost``, a one-label name (a
+    container network's), or Railway's private network (``*.railway.internal``). The host is
+    judged as urllib connects to it, its escapes undone.
 
     Parameters
     ----------
@@ -200,28 +219,37 @@ def check_url(url: str, what: str) -> str:
     slam_it_all.foundations.errors.InvalidInputError
         If it is not such a URL.
     """
-    parts = urllib.parse.urlsplit(url)
-    host = parts.hostname or ""
+    expected = f"{what}: expected an http or https URL with a host, got {url!r}"
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = urllib.parse.unquote(parts.hostname or "")  # urllib unescapes it to connect
+    except ValueError:  # brackets that hold no address
+        raise InvalidInputError(expected) from None
     if parts.scheme not in ("http", "https") or not host:
-        raise InvalidInputError(f"{what}: expected an http or https URL with a host, got {url!r}")
+        raise InvalidInputError(expected)
     if parts.scheme == "http" and not _private_host(host):
         raise InvalidInputError(f"{what}: plain http only to a private host, got {host!r}")
     return url
 
 
 def _private_host(host: str) -> bool:
-    """Whether a host cannot be on the public internet (:func:`check_url`).
+    """Whether a host, as urllib connects to it, cannot be on the public internet.
 
-    A host the C library reads as an address, in any of its forms ("127.0.0.1", "2130706433",
-    "0x7f000001"), is judged by that address; a name by its form: ``localhost``, one label (a
-    container's name), or ``*.railway.internal``.
+    :func:`check_url`'s rule. A host the C library reads as an address, in any of its forms
+    ("127.0.0.1", "2130706433", "0x7f000001"), must be in :data:`PRIVATE_NETWORKS`; one with a
+    scope id is judged without it, so "fe80::1%eth0" is link-local and refused. A name must be
+    DNS labels, which no escape or scope id is: ``localhost``, one label (a container's name),
+    or under ``railway.internal``.
     """
     try:
         found = socket.getaddrinfo(host, None, flags=socket.AI_NUMERICHOST)
-    except socket.gaierror:  # a name, not an address: nothing is looked up
-        return host == "localhost" or "." not in host or host.endswith(".railway.internal")
+    except (socket.gaierror, UnicodeError, ValueError):  # a name, not an address: none looked up
+        labels = host.split(".")
+        if not all(_LABEL.fullmatch(label) for label in labels):
+            return False
+        return host == "localhost" or len(labels) == 1 or host.endswith(".railway.internal")
     address = ipaddress.ip_address(found[0][4][0])
-    return address.is_loopback or address.is_private
+    return any(address in network for network in PRIVATE_NETWORKS)
 
 
 class _Redirects(urllib.request.HTTPRedirectHandler):
@@ -685,10 +713,19 @@ def _stop(signum: int, frame: object) -> None:
     raise KeyboardInterrupt
 
 
-def _stop_on_signals() -> None:
-    """Make a SIGINT or a SIGTERM stop the worker (:func:`_stop`)."""
-    for each in (signal.SIGINT, signal.SIGTERM):
-        signal.signal(each, _stop)
+@contextlib.contextmanager
+def _stopping_on_signals() -> Iterator[None]:
+    """Make a SIGINT or a SIGTERM stop the worker (:func:`_stop`) within the block alone.
+
+    The handlers it found are put back when the block ends, so a caller of :func:`main` keeps
+    its own.
+    """
+    previous = {each: signal.signal(each, _stop) for each in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        yield
+    finally:
+        for each, handler in previous.items():
+            signal.signal(each, handler)
 
 
 def main(arguments: Sequence[str]) -> int:
@@ -723,10 +760,10 @@ def main(arguments: Sequence[str]) -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s worker %(levelname)s %(message)s", stream=sys.stderr
     )
-    _stop_on_signals()
     try:
         client = Client(args.server, os.environ.get(TOKEN_VARIABLE, ""))
-        with contextlib.suppress(KeyboardInterrupt):  # Ctrl-C or SIGTERM: ends, quietly
+        # Ctrl-C or a SIGTERM ends it, quietly, once the job's clean-up has run
+        with contextlib.suppress(KeyboardInterrupt), _stopping_on_signals():
             serve(client, args.work, once=args.once)
     except InvalidInputError as error:
         print(f"worker: {error}", file=sys.stderr)
