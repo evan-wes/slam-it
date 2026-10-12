@@ -1,13 +1,14 @@
 """Run "your own video" on this machine: the upload server, with a folder as storage, and a worker.
 
 docs/design/2026-10-09-run-viewer.md, section 5.3: the demo, before anything is deployed. The
-job list, the uploads and the results all go in one folder (``--data``, by default a new one in
-the system's temporary folder). The worker token and the signing key are made afresh for each
-run; the invite code is too, unless given (:func:`invite_code`: three words, easy to type on a
-phone), and is printed with the page's address. The demo keeps each upload with its result, in
-the job's own folder (``files/jobs/<job>/``), so that a recording can be run again; both go when
-the job is deleted, 7 days after it ends, while the demo runs on that folder. Give ``--data`` a
-lasting folder to keep them across runs.
+job list, the uploads and the results all go in one folder (``--data``, by default
+:func:`default_data`, the same every run), readable by its owner alone. The worker token and the
+signing key are made afresh for each run; the invite code is too, unless given
+(:func:`invite_code`: three words, easy to type on a phone), and is printed with the page's
+address. The demo keeps each upload with its result, in the job's own folder
+(``files/jobs/<job>/``), so that a recording can be run again. The server deletes both once
+they are 7 days old, while it runs: since the folder is the same every run, each start deletes
+what has passed its time while no demo ran.
 
 With ``--lan`` the server listens on every interface, and its links use this machine's address
 on the local network, so a phone on the same Wi-Fi can open the page and upload. Every page then
@@ -31,7 +32,6 @@ import signal
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -138,6 +138,15 @@ def lan_address() -> str:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
         probe.connect(("192.168.0.1", 9))
         return str(probe.getsockname()[0])
+
+
+def default_data() -> Path:
+    """Return the demo's folder when none is given: the same every run, so each sweeps the last's.
+
+    ``slam-it-all/demo`` under ``$XDG_DATA_HOME``, by default ``~/.local/share``.
+    """
+    base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    return Path(base) / "slam-it-all" / "demo"
 
 
 def environment(data: Path, code: str, url: str, *, staging: bool = False) -> dict[str, str]:
@@ -248,10 +257,13 @@ def main(arguments: list[str]) -> int:
     parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--lan", action="store_true", help="listen on the local network too")
     parser.add_argument("--code", help="the invite code (default: three new words)")
-    parser.add_argument("--data", type=Path, help="the folder to keep everything in")
+    parser.add_argument(
+        "--data", type=Path, help="the folder to keep everything in (default: the same every run)"
+    )
     args = parser.parse_args(arguments)
-    data = args.data or Path(tempfile.mkdtemp(prefix="slam-it-all-demo-"))
+    data = args.data or default_data()
     data.mkdir(parents=True, exist_ok=True)
+    data.chmod(0o700)  # kept recordings, readable by their owner alone
     code = args.code or invite_code()
     address = lan_address() if args.lan else "127.0.0.1"
     url = f"http://{address}:{args.port}"
@@ -278,8 +290,9 @@ def main(arguments: list[str]) -> int:
         kept = data / "files" / server_app.job_prefix("<job>")
         days = server_config.RETENTION / 86400
         print(
-            f"\nOpen {url}/  invite code: {code}\nEach job's upload and result are kept for "
-            f"{days:g} days in {kept}/ (the server's log names each job)\n",
+            f"\nOpen {url}/  invite code: {code}\nEach job's upload and result are kept in "
+            f"{kept}/ (the server's log names each job), and deleted once {days:g} days old, "
+            "while the demo runs\n",
             flush=True,
         )
         if args.lan:  # a phone on the same network can open the page from its camera

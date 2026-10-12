@@ -70,15 +70,16 @@ async function post(path, body) {
 }
 
 /**
- * Say what becomes of an upload, as the server keeps it: the page's words are a deployment's,
- * and the demo keeps uploads with their results.
+ * Say what becomes of an upload, once the server has said whether it keeps uploads: a
+ * deployment does not, the demo does. Without an answer, the page says they are kept, the
+ * weaker promise.
  */
 async function showFate() {
   const response = await fetch("/api/kept").catch(() => null);
-  if (response !== null && response.ok) {
-    const kept = await response.json();
-    element("upload-fate", HTMLElement).textContent = uploadFate(kept.uploads === true);
-  }
+  const answer = response !== null && response.ok ? await response.json().catch(() => null) : null;
+  const fate = element("upload-fate", HTMLElement);
+  fate.textContent = uploadFate(answer?.uploads !== false);
+  fate.hidden = false;
 }
 
 /**

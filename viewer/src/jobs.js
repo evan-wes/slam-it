@@ -20,8 +20,9 @@ export const RETENTION_DAYS = 7;
  */
 export function uploadFate(kept) {
   return kept
-    ? `This demo keeps your upload with its result for ${RETENTION_DAYS} days, then deletes ` +
-        "both. It is never shown."
+    ? "This demo keeps your upload with its result on the computer it runs on, so that it can " +
+        `be run again; it is never shown. Both are deleted once ${RETENTION_DAYS} days old, ` +
+        "while the demo is running."
     : "Your upload is deleted as soon as its frames have been imported. It is never shown.";
 }
 

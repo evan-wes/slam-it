@@ -144,16 +144,17 @@ test("what of the clip was tracked is said, and why a result can be shorter than
   );
 });
 
-test("the upload page says what becomes of an upload: a deployment's words, or the demo's", async () => {
+test("the upload page says what becomes of an upload once the server says, the demo's or not", async () => {
   const page = await readFile(new URL("../upload.html", import.meta.url), "utf8");
-  const said = page
-    .match(/<li id="upload-fate">([^<]*)<\/li>/)?.[1]
-    .replace(/\s+/g, " ")
-    .trim();
-  assert.equal(said, uploadFate(false));
+  assert.match(page, /<li id="upload-fate" hidden><\/li>/); // no promise before the answer
+  assert.equal(
+    uploadFate(false),
+    "Your upload is deleted as soon as its frames have been imported. It is never shown.",
+  );
   assert.equal(
     uploadFate(true),
-    `This demo keeps your upload with its result for ${RETENTION_DAYS} days, then deletes both. ` +
-      "It is never shown.",
+    "This demo keeps your upload with its result on the computer it runs on, so that it can be " +
+      `run again; it is never shown. Both are deleted once ${RETENTION_DAYS} days old, while the ` +
+      "demo is running.",
   );
 });

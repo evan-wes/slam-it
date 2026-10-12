@@ -33,7 +33,9 @@ token checked on every request.
 - every job deleted :data:`~slam_it_all_server.config.RETENTION` after it ends, its files
   first, all in its own folder of storage (:func:`job_prefix`), so that a deletion that fails
   is tried again (:func:`sweep`);
-- at most :data:`slam_it_all_server.jobs.CODE_JOBS` jobs open per invite code;
+- at most :data:`slam_it_all_server.jobs.CODE_JOBS` jobs open per invite code; where uploads
+  are kept, no new job while folder storage has less than
+  :data:`~slam_it_all_server.config.KEEP_FREE` free;
 - a result's files only of the names and kinds a bundle has (:data:`RESULT_PATH`);
 - results reachable only through their token, pages marked ``noindex``, and no ``Referer``
   sent, so a token never leaves in one; the log names jobs by their id alone;
@@ -53,6 +55,7 @@ import hmac
 import json
 import logging
 import re
+import shutil
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
@@ -505,6 +508,35 @@ def make_app(
     return app
 
 
+def _disk_full(server: _Server) -> bool:
+    """Return whether uploads are kept and folder storage's disk is short of space for more."""
+    if not server.settings.keep_uploads or not isinstance(server.store, FolderStorage):
+        return False
+    return shutil.disk_usage(server.store.root).free < config.KEEP_FREE
+
+
+def _confirm(server: _Server, job: Job) -> Job:
+    """Move a waiting job's whole upload out of its link's reach, and queue the job.
+
+    S3 moves by copying, then deleting, so the job can expire in between: the copy, which
+    nothing will import, is then deleted at once, unless uploads are kept.
+    """
+    try:
+        server.store.move(upload_key(job.id), import_key(job.id))
+    except FileNotFoundError:  # moved by a confirmation a moment before
+        raise HTTPException(409, "the upload was confirmed already") from None
+    except Exception:  # storage's own error (S3's among them): the job stays waiting
+        _LOG.exception("job %s: the upload could not be moved", job.id)
+        raise HTTPException(503, "storage did not answer: please confirm again") from None
+    try:
+        return server.jobs.queue(job.token)
+    except jobs.StateError:
+        if not server.settings.keep_uploads:
+            key = import_key(job.id)
+            _best_effort("deleting the upload", job, lambda: server.store.delete(key))
+        raise HTTPException(409, "the job is no longer waiting for its upload") from None
+
+
 def _owner_api(app: FastAPI, server: _Server) -> None:
     """Add the owner's API: make a job, confirm its upload, ask how it is going."""
 
@@ -520,6 +552,8 @@ def _owner_api(app: FastAPI, server: _Server) -> None:
             raise HTTPException(403, "that invite code is not one we know")
         if request.size > config.MAX_BYTES:
             raise HTTPException(413, f"the file is over {config.MAX_BYTES / 10**6:g} MB")
+        if _disk_full(server):
+            raise HTTPException(503, "the demo's disk is nearly full: wait for older runs to go")
         owner = hmac.new(
             server.settings.signing_key, request.code.encode(), hashlib.sha256
         ).hexdigest()
@@ -543,17 +577,7 @@ def _owner_api(app: FastAPI, server: _Server) -> None:
             raise HTTPException(409, f"the job is {job.state}, not waiting for its upload")
         if server.store.size(upload_key(job.id)) != job.size:
             raise HTTPException(400, "the upload has not arrived whole")
-        try:
-            server.store.move(upload_key(job.id), import_key(job.id))  # out of the link's reach
-        except FileNotFoundError:  # moved by a confirmation a moment before
-            raise HTTPException(409, "the upload was confirmed already") from None
-        except Exception:  # storage's own error (S3's among them): the job stays waiting
-            _LOG.exception("job %s: the upload could not be moved", job.id)
-            raise HTTPException(503, "storage did not answer: please confirm again") from None
-        try:
-            job = server.jobs.queue(token)
-        except jobs.StateError:
-            raise HTTPException(409, "the job is no longer waiting for its upload") from None
+        job = _confirm(server, job)
         _LOG.info("job %s: queued", job.id)
         return {"state": job.state}
 

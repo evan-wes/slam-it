@@ -212,7 +212,7 @@ def test_a_job_list_of_another_format_is_refused(tmp_path: Path) -> None:
     Jobs(tmp_path / "ours.sqlite3")
     Jobs(tmp_path / "ours.sqlite3")
     old = tmp_path / "old.sqlite3"
-    for version in (0, SCHEMA_VERSION + 1):
+    for version in (0, SCHEMA_VERSION - 1, SCHEMA_VERSION + 1):
         made = sqlite3.connect(old)
         made.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY)")
         made.execute(f"PRAGMA user_version = {version}")
@@ -241,7 +241,7 @@ def test_another_programs_file_is_refused_and_left_as_it_is(tmp_path: Path) -> N
     assert (tables, mode) == (["notes"], "delete")
 
 
-FORMAT_1 = [
+FORMAT = [
     ("id", "TEXT", 0, None, 1),
     ("token", "TEXT", 1, None, 0),
     ("owner", "TEXT", 1, None, 0),
@@ -258,8 +258,8 @@ FORMAT_1 = [
     ("link_open", "INTEGER", 1, "1", 0),
     ("files_open", "INTEGER", 1, "1", 0),
 ]
-"""Format 1's columns, as SQLite's ``table_info`` lists them: name, type, not null, default,
-primary key."""
+"""The format's columns, as SQLite's ``table_info`` lists them: name, type, not null, default,
+primary key. Format 2's are format 1's: 2 moved a job's files, not the table."""
 
 
 def test_the_job_lists_columns_are_its_formats(tmp_path: Path) -> None:
@@ -268,7 +268,7 @@ def test_the_job_lists_columns_are_its_formats(tmp_path: Path) -> None:
     made = sqlite3.connect(tmp_path / "jobs.sqlite3")
     columns = [tuple(row[1:]) for row in made.execute("PRAGMA table_info(jobs)")]
     made.close()
-    assert (SCHEMA_VERSION, columns) == (1, FORMAT_1)
+    assert (SCHEMA_VERSION, columns) == (2, FORMAT)
 
 
 def test_an_ended_jobs_files_are_cleared_then_it_is_deleted(listed: Jobs, clock: Clock) -> None:

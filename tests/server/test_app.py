@@ -6,10 +6,12 @@ import base64
 import hashlib
 import json
 import logging
+import shutil
 import urllib.parse
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -18,6 +20,7 @@ from fastapi.testclient import TestClient
 from slam_it_all_server import app as server_app
 from slam_it_all_server import jobs
 from slam_it_all_server.config import (
+    KEEP_FREE,
     LINK_SECONDS,
     MAX_BYTES,
     QUEUE,
@@ -149,6 +152,55 @@ def test_a_job_is_queued_once_and_only_whole(server: Server) -> None:
     assert server.client.post(f"/api/jobs/{token}/uploaded").status_code == 409
     assert server.client.post("/api/jobs/no-such-token/uploaded").status_code == 404
     assert server.client.get("/api/jobs/no-such-token").status_code == 404
+
+
+def test_an_upload_confirmed_as_its_job_expires_is_deleted(
+    server: Server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S3 moves an upload by copying it, then deleting it: the job can expire in between.
+
+    The sweep that ends it finds no copy yet, and clears nothing again. The confirmation is
+    refused, and the copy, which nothing would import, is deleted at once.
+    """
+    job = _make(server)
+    server.client.put(job["upload_url"], content=UPLOAD)
+
+    def slow(key: str, to: str) -> None:
+        held = server.store.path(key).read_bytes()  # S3's copy begins
+        server.clock.now += UPLOAD_WAIT  # the job expires; a sweep clears its files, no copy yet
+        assert server_app.sweep(server.jobs, server.store) == 0
+        server.store.path(to).write_bytes(held)  # the copy lands
+        server.store.delete(key)
+
+    monkeypatch.setattr(server.store, "move", slow)
+    answer = server.client.post(f"/api/jobs/{job['token']}/uploaded")
+    assert answer.status_code == 409
+    assert _status(server, job["token"])["state"] == "expired"
+    assert list(server.store.root.glob("jobs/*/import")) == []
+
+
+def _keeping(server: Server) -> Server:
+    """Return the same server, its list and storage, keeping uploads as the demo does."""
+    settings = replace(server.settings, keep_uploads=True)
+    app = server_app.make_app(settings, server.store, server.jobs)
+    return replace(server, client=TestClient(app), settings=settings)
+
+
+def test_the_demo_refuses_a_job_when_its_disk_is_nearly_full(
+    server: Server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With uploads kept, a new job needs KEEP_FREE free under folder storage; else, none."""
+    keeping = _keeping(server)
+    disk = SimpleNamespace(free=KEEP_FREE - 1)
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: disk)
+    answer = keeping.client.post("/api/jobs", json={"code": CODE, "upload": "video", "bytes": 1})
+    assert (answer.status_code, answer.json()["detail"]) == (
+        503,
+        "the demo's disk is nearly full: wait for older runs to go",
+    )
+    _make(server)  # a deployment keeps no upload: its disk is not its to watch
+    disk.free = KEEP_FREE
+    _make(keeping)
 
 
 def test_a_worker_runs_a_job_through_the_api(server: Server) -> None:
@@ -318,9 +370,7 @@ def test_the_demo_keeps_an_upload_until_its_job_is_deleted(server: Server) -> No
     and goes with the job's folder, whole, RETENTION after the job ended. The upload page asks
     which: a deployment's server says uploads are not kept.
     """
-    settings = replace(server.settings, keep_uploads=True)
-    app = server_app.make_app(settings, server.store, server.jobs)
-    keeping = replace(server, client=TestClient(app), settings=settings)
+    keeping = _keeping(server)
     assert keeping.client.get("/api/kept").json() == {"uploads": True}
     assert server.client.get("/api/kept").json() == {"uploads": False}
     _, done = _run(keeping, {"bundle.json": b"{}"})

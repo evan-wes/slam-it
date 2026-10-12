@@ -7,6 +7,7 @@ import os
 import re
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -68,6 +69,17 @@ def _free_port() -> int:
         return int(probe.getsockname()[1])
 
 
+def test_the_demos_folder_is_the_same_every_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without --data, the same folder each run, so a run deletes what an earlier one kept."""
+    demo = _script()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    assert demo.default_data() == tmp_path / "slam-it-all" / "demo"
+    monkeypatch.delenv("XDG_DATA_HOME")
+    assert demo.default_data() == Path.home() / ".local" / "share" / "slam-it-all" / "demo"
+
+
 def test_a_port_in_use_is_refused(tmp_path: Path) -> None:
     """Something listening on the port already: refused, before anything starts."""
     with socket.socket() as other:
@@ -75,12 +87,14 @@ def test_a_port_in_use_is_refused(tmp_path: Path) -> None:
         other.listen()
         port = other.getsockname()[1]
         command = [sys.executable, str(REPO / "scripts/serve_demo.py"), "--port", str(port)]
+        tmp_path.chmod(0o755)  # as a folder a user gives may be
         done = subprocess.run(
             [*command, "--data", str(tmp_path)], capture_output=True, text=True, check=False
         )
     assert done.returncode == 1
     assert f"serve_demo: port {port} is in use" in done.stderr
     assert list(tmp_path.iterdir()) == []
+    assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o700  # its owner's alone
 
 
 def test_the_demo_serves_until_interrupted(tmp_path: Path) -> None:

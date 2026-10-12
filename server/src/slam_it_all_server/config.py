@@ -48,6 +48,11 @@ SILENCE = 120.0
 """How long a running job may go unheard from, in seconds (four of the worker's heartbeats),
 before it fails."""
 
+KEEP_FREE = 10 * MAX_BYTES
+"""With uploads kept (the demo's), the least free space under folder storage for a new job, in
+bytes: ten uploads' worth, so that kept uploads, each up to :data:`MAX_BYTES` for
+:data:`RETENTION`, never fill the disk."""
+
 LINK_SECONDS = 3600
 """How long a signed link lasts, in seconds."""
 

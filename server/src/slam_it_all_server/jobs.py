@@ -79,8 +79,10 @@ QUEUE_WAIT = 24 * 3600.0
 CODE_JOBS = 2
 """The most jobs one invite code may have open at once."""
 
-SCHEMA_VERSION = 1
-"""The job list's format, kept in its file: a file of another is refused, never migrated."""
+SCHEMA_VERSION = 2
+"""The job list's format, kept in its file: a file of another is refused, never migrated. 2: a
+job's files in one folder of storage (``slam_it_all_server.app.job_prefix``), its table as 1's,
+so that a list whose files are where 1 put them is refused rather than swept without them."""
 
 _SCHEMA = """
 CREATE TABLE jobs (
