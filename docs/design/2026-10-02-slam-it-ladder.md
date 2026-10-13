@@ -455,7 +455,7 @@ then milestone 3 (decided 2026-10-12, below).
 |---|---|---|---|
 | 1 | Rung 0: foundations | Py, C++, Rust | Synthetic scenes with exact answers |
 | 2 | Sparse VO under a laptop-CPU budget: monocular, stereo and RGB-D; the run viewer, and your own phone video | Py, C++, Rust | TUM RGB-D, EuRoC |
-| 2A | VO that survives a phone: phone clips measured, settings by frame size, Stray Scanner's depth as RGB-D, a new map after a lost track | Py, C++, Rust | Phone clips (private), TUM RGB-D, EuRoC |
+| 2A | VO that survives a phone: a hard test set measured, settings by frame size, Stray Scanner's depth as RGB-D, a new map after a lost track | Py, C++, Rust | TUM RGB-D (its hard sequences), ZJU-SenseTime, ADVIO, ARKitScenes |
 | 2B | Online SLAM: place recognition, relocalisation, the covisibility graph, loop closure, merging maps | Py, C++, Rust (Rust reviewed after its first PR) | TUM RGB-D, EuRoC, 7-Scenes |
 | 3 | **reifyscene payoff 1:** depth-aware, motion-masked BA refining VGGT's cameras | Py (+C++ solver) | reifyscene lab-coat masked PSNR; spin GT poses |
 | 4 | Classic heavy: incremental SfM and global BA, offline (place recognition and loop closure from 2B) | Py, C++ | KITTI odometry |
@@ -527,8 +527,10 @@ doc of its own; Rust's cost is measured after 2B's first PR, and Rust kept or dr
 there.
 
 - **2A: VO that survives a phone.**
-  - A test set of phone clips, private and kept outside the repo as the rig's data is, measured
-    by the share of each clip tracked, beside TUM and EuRoC.
+  - A public test set with ground truth, measured by the share of each sequence tracked: TUM
+    RGB-D's hard sequences (turning, a kidnap, fast sweeps, low texture), ZJU-SenseTime's phone
+    sequences, ADVIO's iPhone video, and ARKitScenes for LiDAR depth
+    ([the 2A design](2026-10-12-phone-robust-vo.md)).
   - The feature settings scaled to the frame size: ORB-SLAM's 1,000 features are for 640x480.
   - What a guessed lens costs, measured on Stray Scanner recordings against their exact
     intrinsics.
@@ -703,7 +705,7 @@ The data lives outside the repo, in `../datasets/` (that is,
 |---|---|---|
 | TUM RGB-D | Handheld indoor, RGB-D, GT poses, a dynamic subset | Milestone 1 (reader, two-view demo); milestone 2 (monocular and RGB-D) |
 | EuRoC MAV | Drone, stereo + IMU, mocap GT | Milestone 2 (monocular and stereo), 6 (IMU) |
-| Own recordings (private) | Described only in their configs, outside the repo | The calibration side track; phone clips from milestone 2A; never in the repo |
+| Own recordings (private) | Described only in their configs, outside the repo | The calibration side track; never in the repo |
 | TUM monoVO | Photometrically calibrated monocular | Milestone 2, optional |
 | KITTI odometry | Driving, long trajectories, loops | Milestone 4 |
 | TUM-VI | Visual-inertial, handheld | Milestone 6 |
@@ -711,6 +713,9 @@ The data lives outside the repo, in `../datasets/` (that is,
 | TartanAir (subset) | Synthetic, hard motion; DROID's training data | Milestone 8 |
 | Sintel, Bonn RGB-D Dynamic | Dynamic scenes | Milestone 9 |
 | Replica / ScanNet | Dense map quality | Optional |
+| ZJU-SenseTime VISLAM | Handheld phones (Xiaomi Mi 8, iPhone X): rapid rotation, shaking, occlusion; VICON GT | Milestone 2A |
+| ADVIO | A real iPhone's video, walking indoors and out; GT from IMU and fixation points | Milestone 2A |
+| ARKitScenes | iPad LiDAR depth with ARKit's poses (a reference) | Milestone 2A (a subset) |
 | 7-Scenes | Relocalization | Milestone 2B |
 
 ## Metrics
