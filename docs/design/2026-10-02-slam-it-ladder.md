@@ -59,8 +59,8 @@ The ladder spans compute budgets. Every rung stands on rung 0.
                         │
         ┌───────────────┼──────────────────────┐
         ▼               ▼                      ▼
-   edge: sparse VO   classic heavy        dense BA + depth prior
-        │           (SfM + loop closure)       │
+   edge: sparse SLAM classic heavy        dense BA + depth prior
+        │           (offline SfM)              │
         ▼                                      ▼
    visual-inertial                     learned dense (DROID-style)
                                                │
@@ -70,10 +70,10 @@ The ladder spans compute budgets. Every rung stands on rung 0.
 
 | Rung | What it is | Compute target |
 |---|---|---|
-| **0: Foundations** | Camera models, SE(3)/Sim(3), 8/5-point, RANSAC, triangulation, PnP, Gauss-Newton/LM bundle adjustment with a Schur complement; state estimation, batch (Gauss-Newton/LM) and recursive (error-state filter); the front end: fixed-point images, ORB features, Hamming matching, rectified stereo | CPU |
-| **Edge: sparse VO** | Tracking on rung 0's ORB front end, keyframes, local BA (ORB-SLAM-lite); monocular, stereo and RGB-D modes (RGB-D from a sensor now, predicted depth later) | Real-time under an edge budget |
+| **0: Foundations** | Camera models, SE(3)/Sim(3), 8/5-point, RANSAC, triangulation, PnP, Gauss-Newton/LM bundle adjustment with a Schur complement; state estimation, batch (Gauss-Newton/LM) and recursive (error-state filter); the front end: fixed-point images, ORB features, Hamming matching, rectified stereo; place recognition (milestone 2B) | CPU |
+| **Edge: sparse VO, then SLAM** | Tracking on rung 0's ORB front end, keyframes, local BA (ORB-SLAM-lite, milestone 2); then relocalisation, a covisibility graph, loop closure and an atlas of maps (ORB-SLAM3's, milestones 2A and 2B); monocular, stereo and RGB-D modes (RGB-D from a sensor now, predicted depth later) | Real-time under an edge budget |
 | **Visual-inertial** | IMU preintegration shared by two estimators, a filter (MSCKF) and a smoother (sliding-window optimisation), on top of the edge VO | Edge budget |
-| **Classic heavy** | Incremental SfM, global BA, place recognition, loop closure | Offline, minutes per clip |
+| **Classic heavy** | Incremental SfM and global BA over a whole clip, its loops found by rung 0's place recognition | Offline, minutes per clip |
 | **Dense BA + depth prior** | Dense bundle adjustment over per-pixel depth, with a monocular depth prior and motion masks | GPU |
 | **Learned dense** | DROID-style: correlation volumes, recurrent flow update, dense-BA layer | GPU, around real time |
 | **Heaviest** | MegaSaM-style: uncertainty-weighted dense BA, focal-length optimisation, robust to dynamic scenes | Large GPU, offline |
@@ -448,14 +448,17 @@ from milestone 7 it will drive the native benchmarks on the edge targets.
 ## Milestones
 
 Learning comes first: the left branch in order. Two early stops on the right branch give
-reifyscene a measured payoff.
+reifyscene a measured payoff. After milestone 2 come 2A and 2B, a complete SLAM system,
+then milestone 3 (decided 2026-10-12, below).
 
 | # | Milestone | Languages | Measured on |
 |---|---|---|---|
 | 1 | Rung 0: foundations | Py, C++, Rust | Synthetic scenes with exact answers |
 | 2 | Sparse VO under a laptop-CPU budget: monocular, stereo and RGB-D; the run viewer, and your own phone video | Py, C++, Rust | TUM RGB-D, EuRoC |
+| 2A | VO that survives a phone: phone clips measured, settings by frame size, Stray Scanner's depth as RGB-D, a new map after a lost track | Py, C++, Rust | Phone clips (private), TUM RGB-D, EuRoC |
+| 2B | Online SLAM: place recognition, relocalisation, the covisibility graph, loop closure, merging maps | Py, C++, Rust (Rust reviewed after its first PR) | TUM RGB-D, EuRoC, 7-Scenes |
 | 3 | **reifyscene payoff 1:** depth-aware, motion-masked BA refining VGGT's cameras | Py (+C++ solver) | reifyscene lab-coat masked PSNR; spin GT poses |
-| 4 | Classic heavy: incremental SfM, place recognition, loop closure | Py, C++ | KITTI odometry |
+| 4 | Classic heavy: incremental SfM and global BA, offline (place recognition and loop closure from 2B) | Py, C++ | KITTI odometry |
 | 5 | **reifyscene payoff 2:** DROID-style rung with DROID's published weights loaded, plus dense BA with a depth prior (the full Shape-of-Motion recipe) | Py (PyTorch) | Parity with the DROID reference; reifyscene lab-coat and spin |
 | 6 | Visual-inertial, branching off milestone 2: filtering versus smoothing on the same IMU front end | Py, C++ | EuRoC, TUM-VI |
 | 7 | Edge budgets: Pi-class and Jetson-class runs, ARM build check | C++ (Rust) | Same benchmarks, budget-capped |
@@ -486,9 +489,10 @@ edge rung holds what is its own, tracking, keyframes and local mapping.
 **The edge rung is ORB-SLAM-lite** (decided for PR 8; the plan is
 [the edge VO design](2026-10-05-edge-vo.md)):
 - **What it leaves out of ORB-SLAM:** a sliding window of the last 10 keyframes stands in for
-  the covisibility graph; no bag of words, so no relocalisation or loop closure (the classic
-  rung's); one thread, mapping after tracking, so a run is deterministic; no map reuse.
-- **A lost track ends the run,** recorded in its diagnostics.
+  the covisibility graph; no bag of words, so no relocalisation or loop closure (milestone
+  2B's); one thread, mapping after tracking, so a run is deterministic; no map reuse.
+- **A lost track ends the run,** recorded in its diagnostics, until milestone 2A starts a
+  new map there.
 - **Its state is a struct of arrays** in all three languages, so each stage function
   (initialise, track, map) crosses the bindings as dicts of arrays, as rung 0's do. Python
   runs the whole pipeline in-process; C++ and Rust run it in the native programs, not across
@@ -509,12 +513,68 @@ independent of it: an RGB-D camera, a 2D lidar and a rangefinder calibrated agai
 from the rig's own motion, as a study in observability. Two PRs, C1 (reading ROS 1 bags,
 Python) and C2 (`slam_it.calib`, Python and C++), in their own worktree.
 
+**Milestones 2A and 2B: from odometry to a SLAM system** (decided 2026-10-12, before
+milestone 3). The first real phone clips lost the track early: one recorded in the browser,
+360x480 with its lens guessed, after 2 s of tracking; a Stray Scanner recording after 13 s,
+while it panned and its map, which a single camera grows only from sideways motion, ran out of
+points. Milestone 2's pipeline is odometry by design: a lost track ends the run, and nothing
+relocalises. Before reifyscene's payoffs, the owner chose a complete SLAM system, ORB-SLAM3's:
+tracking, local mapping and loop closing share a covisibility graph; place recognition
+relocalises a lost track and closes loops; and an atlas of maps lets a run go on after a loss
+and joins its maps when a place is seen again (Mur-Artal and Tardós 2017; Campos et al. 2021).
+Both milestones are the real-time pipeline's, in Python, C++ and Rust, each planned in a design
+doc of its own; Rust's cost is measured after 2B's first PR, and Rust kept or dropped from
+there.
+
+- **2A: VO that survives a phone.**
+  - A test set of phone clips, private and kept outside the repo as the rig's data is, measured
+    by the share of each clip tracked, beside TUM and EuRoC.
+  - The feature settings scaled to the frame size: ORB-SLAM's 1,000 features are for 640x480.
+  - What a guessed lens costs, measured on Stray Scanner recordings against their exact
+    intrinsics.
+  - Stray Scanner's LiDAR depth, with its confidence, as RGB-D, so that a turning camera's
+    keyframes still make points.
+  - A new map after a lost track, as ORB-SLAM3 starts one, so that the rest of a clip is
+    processed, in segments the viewer shows; ORB-SLAM's reset of a map lost early with it
+    (open item L13).
+  - A warning on the upload and status pages, never a refusal, for a video recorded in the
+    browser (on an iPhone, 360x480 and no lens metadata) or frames under 480 pixels on their
+    short side.
+- **2B: online SLAM**, ORB-SLAM's own parts:
+  - place recognition in rung 0, for the edge rung now and the classic rung later: a
+    vocabulary of our own ORB descriptors' binary words (DBoW2's hierarchical k-means,
+    Gálvez-López and Tardós 2012), trained by a Python tool on public sequences no evaluation
+    uses, read by all three languages; and the keyframe database, an inverted index;
+  - relocalisation against the active map before a new one is started (ORB-SLAM's
+    `Tracking::Relocalization`: candidates from the database, matches by word, PnP RANSAC, a
+    guided search);
+  - the covisibility graph and the essential graph, in place of the window of 10 keyframes;
+  - loop closure: candidates checked for consistency, the loop's Sim(3) solved by RANSAC over
+    Horn's closed form, points fused, the essential graph optimised in Sim(3) on rung 0's
+    NLS, then a global BA;
+  - maps joined where a recognised place links them (ORB-SLAM3's merging);
+  - measured on TUM and EuRoC, whose sequences close loops, and on 7-Scenes for relocalisation.
+- **2B's forks, for its design** (ORB-SLAM's answer first):
+  - the vocabulary: ORB-SLAM's is trained on Bovisa from its own descriptors; ours are not
+    bit for bit theirs, so we train our own;
+  - threads: ORB-SLAM closes loops, and runs its global BA, in threads of their own; the edge
+    rung's one thread keeps a run deterministic and the three languages in parity, so loop
+    closing runs inline first, the latency of the frame it closes on measured against the
+    deadline, and a thread follows only if that frame misses it;
+  - ties: candidate keyframes ranked by score with an explicit order among equals (their
+    ids), so that the three languages pick the same.
+- **Milestone 4 splits:** place recognition and loop closure move to 2B; milestone 4 keeps the
+  offline rung, incremental SfM and global BA over a whole clip (KITTI), its loops found by 2B's
+  place recognition.
+- **After 2B, milestone 3.** Still open: whether the learned rungs (milestones 5, 8 and 9) come
+  before reifyscene's payoffs or after.
+
 **Why milestone 3 sits where it does.** reifyscene's old `pose_refine` was a depth-blind BA with no
 motion masks. Swapping its new poses in while keeping the old depth produced the "shadow" behind
 moving people. Milestone 3 is the corrected version of that same idea: rung 0's solver, with a
 depth prior and motion masks. It reuses what milestones 1 and 2 teach and needs only a small
 adapter. Its target is the gap between plain VGGT and the old bundle-adjusted cameras on lab-coat
-(27.42 vs 29.04 dB masked PSNR).
+(27.42 vs 29.04 dB masked PSNR). It follows milestones 2A and 2B, a complete SLAM system first.
 
 **Milestone 6: filtering versus smoothing.** SLAM is a state estimation problem, and its
 estimators come in two families: batch (smoothing) and recursive (filtering). Rung 0 has the
@@ -643,7 +703,7 @@ The data lives outside the repo, in `../datasets/` (that is,
 |---|---|---|
 | TUM RGB-D | Handheld indoor, RGB-D, GT poses, a dynamic subset | Milestone 1 (reader, two-view demo); milestone 2 (monocular and RGB-D) |
 | EuRoC MAV | Drone, stereo + IMU, mocap GT | Milestone 2 (monocular and stereo), 6 (IMU) |
-| Own recordings (private) | Described only in their configs, outside the repo | The calibration side track; never in the repo |
+| Own recordings (private) | Described only in their configs, outside the repo | The calibration side track; phone clips from milestone 2A; never in the repo |
 | TUM monoVO | Photometrically calibrated monocular | Milestone 2, optional |
 | KITTI odometry | Driving, long trajectories, loops | Milestone 4 |
 | TUM-VI | Visual-inertial, handheld | Milestone 6 |
@@ -651,7 +711,7 @@ The data lives outside the repo, in `../datasets/` (that is,
 | TartanAir (subset) | Synthetic, hard motion; DROID's training data | Milestone 8 |
 | Sintel, Bonn RGB-D Dynamic | Dynamic scenes | Milestone 9 |
 | Replica / ScanNet | Dense map quality | Optional |
-| 7-Scenes | Relocalization | If relocalization is added |
+| 7-Scenes | Relocalization | Milestone 2B |
 
 ## Metrics
 
@@ -733,7 +793,7 @@ Nothing is published before the repo goes public (see
   single steps (two-view initialisation, PnP, BA) with rerun, and the Rust note compares the
   three languages in a table. The viewer is built in milestone 2 (PR 10), on the first
   end-to-end runs, and your own video follows in its last PR (PR 11). Both are used locally, and
-  on the staging deploy, until the repo goes public. Loop closure (milestone 4) and the dense
+  on the staging deploy, until the repo goes public. Loop closure (milestone 2B) and the dense
   and learned rungs (milestones 5 and 9) add to it.
 - **The run format is milestone 2's,** defined with its pipeline: trajectory, keyframes, map
   and per-frame diagnostics, written by the pipeline and read by both rerun and the viewer.
@@ -916,14 +976,14 @@ shared with the owner's other projects.
     would make long-sequence drift (fr3/long_office) investigable.
   - **Where the two-view fixture's duplicate matches come from (L11).** 38 of its 88
     matches share one pixel; the homography's rank rule handles the symptom.
-  - **ORB-SLAM's reset of a map lost early, with milestone 4 (run 2, L13).** ORB-SLAM2
+  - **ORB-SLAM's reset of a map lost early, with milestone 2A (run 2, L13).** ORB-SLAM2
     resets the system when the track is lost with five keyframes or fewer (ORB-SLAM3 the
     active map, under ten), which is what lets it start a depth map from any 500 keypoints and
     a monocular map from low parallax. The lite pipeline ends the run instead, so a depth start
     also needs `min_init_depth_points` (100) keypoints with depth, a stand-in. The reset drops
-    the frames before it from the trajectory, as ORB-SLAM's does: it belongs with the classic
-    rung's relocalisation and maps.
-  - **Relocalising monocular runs that lose the track, with milestone 4 (run 2, L15).**
+    the frames before it from the trajectory, as ORB-SLAM's does: it comes with milestone
+    2A's new map after a lost track.
+  - **Relocalising monocular runs that lose the track, with milestone 2B (run 2, L15).**
     Started one to four frames after the frame the first run initialises from, 6 of 20
     monocular runs on TUM and EuRoC lose the track (3 of 5 on fr1/desk), each deep into the
     run (44 to 128 keyframes), when its inliers fall below ORB-SLAM's 30. ORB-SLAM relocalises
@@ -1100,7 +1160,7 @@ shared with the owner's other projects.
     `bundle` or `layout` could call `solve` unchecked; and an unmapped facade is still exempt.
     The fix is a public `slam_it/foundations/ba/solve.hpp` mapped to the `solve` layer.
   - **The gauge in rung 0's own right (A26, run 3).** `ba/gauge` depends only on poses and
-    points. When pose-graph optimisation (the classic rung's loop closure) needs the same
+    points. When pose-graph optimisation (milestone 2B's loop closure) needs the same
     null-space removal, lift it to `foundations.gauge` rather than importing it from `ba`.
   - Closed by PR 5: **one mechanism for enum names (A27, run 3).** Every enum that crosses a
     binding has its names in its core: `name()` in C++ (camera models, NLS methods and losses,
