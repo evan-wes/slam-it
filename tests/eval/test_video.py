@@ -10,6 +10,7 @@ import io
 import json
 import zipfile
 import zlib
+from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,7 @@ def test_a_video_on_its_side_imports_upright_with_its_camera(
     assert source["intrinsics"] == {
         "source": "given", "profile": None, "fx": ROOM_CAMERA.fx, "fy": ROOM_CAMERA.fy,
         "cx": ROOM_CAMERA.cx, "cy": ROOM_CAMERA.cy, "width": 320, "height": 240,
+        "distortion": None,
     }  # fmt: skip
 
 
@@ -190,8 +192,7 @@ def test_a_video_is_refused_and_leaves_nothing(
         encode(path, pictures)
     if change == "huge":
         monkeypatch.setattr(video, "MAX_LONG_SIDE", 200)
-    if change == "many":
-        monkeypatch.setattr(video, "MAX_DECODED", 5)
+    limits = replace(video.UPLOAD, max_frames=5) if change == "many" else video.UPLOAD
     if change == "big":
         monkeypatch.setattr(video, "MAX_BYTES", 100)
     if change == "size":
@@ -200,7 +201,7 @@ def test_a_video_is_refused_and_leaves_nothing(
         out.mkdir(parents=True)
         (out / "kept.txt").write_text("not ours")
     with pytest.raises(InvalidInputError, match=message):
-        video.import_video(path, out, lenses.Chosen(camera, "given"))
+        video.import_video(path, out, lenses.Chosen(camera, "given"), limits=limits)
     left = sorted(p.name for p in (tmp_path / "outs").iterdir()) if out.parent.exists() else []
     assert left == (["out"] if change == "used" else [])
 
@@ -256,6 +257,59 @@ def test_a_video_whose_frames_change_size_is_refused(tmp_path: Path) -> None:
     with pytest.raises(InvalidInputError, match="frame 2 is 640x240, the first 320x240"):
         video.import_video(path, out, lenses.Chosen(ROOM_CAMERA, "given"))
     assert not out.parent.exists() or not any(out.parent.iterdir())
+
+
+DISTORTED = lenses.RadTan(ROOM_CAMERA, (0.05, 0.03, -0.001, 0.002))
+"""The room's camera with a radial-tangential lens, as a dataset's calibration gives one."""
+
+
+def test_a_dataset_video_keeps_its_lens_and_takes_its_clock(
+    rendered: list[room.Frame], tmp_path: Path
+) -> None:
+    """Frames written as recorded, ``camera.txt`` radtan; each frame timed by the dataset's clock.
+
+    At 60 fps every other frame is kept, stamped with the clock's time; with a smaller short
+    side the lens is scaled, its distortion kept.
+    """
+    path = encode(tmp_path / "room.mov", [rgb(f.gray) for f in rendered[:6]], rate=60)
+    clock = [100.0 + i / 60 for i in range(6)]
+    chosen = lenses.Chosen(DISTORTED, "given")
+    video.import_video(path, tmp_path / "out", chosen, clock=clock)
+    frames, source = _imported(tmp_path / "out")
+    np.testing.assert_allclose(frames.timestamps, clock[::2], atol=1e-6)
+    assert (frames.camera.model, frames.camera.width, frames.camera.height) == ("radtan", 320, 240)
+    np.testing.assert_allclose(frames.camera.intrinsics, DISTORTED.intrinsics())
+    for file, frame in zip(frames.images, rendered[::2], strict=False):
+        gray = images.read_gray(file).astype(int)
+        assert np.abs(gray - frame.gray).max() <= 2  # as recorded: not undistorted
+    assert source["intrinsics"]["distortion"] == list(DISTORTED.distortion)
+    small = video.Limits(max_seconds=600.0, max_frames=10, short_side=120)
+    video.import_video(path, tmp_path / "small", chosen, limits=small, clock=clock)
+    camera = tum.read_camera(tmp_path / "small")
+    assert (camera.model, camera.width, camera.height) == ("radtan", 160, 120)
+    np.testing.assert_allclose(camera.intrinsics, DISTORTED.scaled(160, 120).intrinsics())
+
+
+@pytest.mark.parametrize(
+    ("count", "message"), [(5, "more frames than the 5 timed"), (7, "6 frames, 7 timed")]
+)
+def test_a_clock_that_does_not_time_each_frame_once_is_refused(
+    count: int, message: str, rendered: list[room.Frame], tmp_path: Path
+) -> None:
+    """Fewer times than frames, or more."""
+    path = encode(tmp_path / "room.mov", [rgb(f.gray) for f in rendered[:6]])
+    clock = [float(i) for i in range(count)]
+    with pytest.raises(InvalidInputError, match=message):
+        video.import_video(path, tmp_path / "out", lenses.Chosen(DISTORTED, "given"), clock=clock)
+
+
+@pytest.mark.parametrize(
+    "changes", [{"max_seconds": 0.0}, {"max_frames": 0}, {"short_side": 0}, {"max_seconds": -1.0}]
+)
+def test_limits_that_would_take_nothing_are_refused(changes: dict[str, Any]) -> None:
+    """A video of no length, no frames, or frames of no size."""
+    with pytest.raises(InvalidInputError, match="expected each positive"):
+        replace(video.UPLOAD, **changes)
 
 
 @pytest.mark.parametrize(("divider", "kept"), [(1, [0, 2, 4, 6]), (2, list(range(8)))])
