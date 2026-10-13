@@ -83,9 +83,10 @@ def test_encode_jpeg_round_trips_closely(shape: tuple[int, ...], tmp_path: Path)
     rows, cols = np.mgrid[0 : shape[0], 0 : shape[1]]
     smooth = (4 * rows + 3 * cols).astype(np.uint8)
     picture = smooth if len(shape) == 2 else np.stack([smooth, smooth // 2, 255 - smooth], -1)
-    path = tmp_path / "frame.jpg"
-    path.write_bytes(images.encode_jpeg(picture, 95))
-    back = images.read_gray(path) if len(shape) == 2 else images.read_rgb(path)
+    data = images.encode_jpeg(picture, 95)
+    with Image.open(io.BytesIO(data)) as decoded:  # the readers open PNG alone
+        assert decoded.format == "JPEG"
+        back = np.asarray(decoded.convert("L" if len(shape) == 2 else "RGB"))
     assert back.shape == picture.shape
     assert np.abs(back.astype(int) - picture).mean() < 2.0
 
@@ -175,3 +176,30 @@ def test_a_decompression_bombs_warning_is_an_error(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 20)  # 24 pixels: a warning, not Pillow's error
     with pytest.raises(InvalidInputError, match="not a readable image"):
         images.read_gray(_gray_png(6, 4))
+
+
+def _eps(width: int, height: int) -> bytes:
+    """Return a small EPS file: PostScript, which Pillow would hand to Ghostscript to draw."""
+    return (
+        f"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 {width} {height}\n"
+        "newpath 0 0 moveto 10 10 lineto stroke showpage\n%%EOF\n"
+    ).encode()
+
+
+def _tiff(width: int, height: int) -> bytes:
+    """Return a 16-bit gray TIFF's bytes."""
+    buffer = io.BytesIO()
+    Image.fromarray(np.zeros((height, width), np.uint16)).save(buffer, format="TIFF")
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize(
+    "data",
+    [_eps(64, 48), _tiff(64, 48), images.encode_jpeg(np.zeros((48, 64), np.uint8), 90)],
+    ids=["eps", "tiff", "jpeg"],
+)
+def test_only_png_is_opened_whatever_the_content_says(data: bytes) -> None:
+    """PostScript, TIFF and JPEG are refused before they are decoded: PNG alone is opened."""
+    for reader in (images.read_gray, images.read_rgb, images.read_depth):
+        with pytest.raises(InvalidInputError, match=r"not a readable image \(not a PNG\)"):
+            reader(data)

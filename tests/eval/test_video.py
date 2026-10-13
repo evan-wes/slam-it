@@ -512,10 +512,15 @@ def _png(*sizes: tuple[int, int]) -> bytes:
         (
             {"depth/000000.png": b"not a png"},
             [],
-            r"depth/000000\.png: image: not a readable image \(no image",
+            r"depth/000000\.png: image: not a readable image \(not a PNG",
         ),
         ({"depth/000000.png": _png((2000, 1500))}, [], "2000x1500, over 1024 pixels"),
         ({"depth/000000.png": _png((256, 192), (2000, 1500))}, [], "2000x1500, over 1024 pixels"),
+        (
+            {"confidence/000000.png": b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 256 192\n"},
+            [],
+            r"confidence/000000\.png: image: not a readable image \(not a PNG\)",
+        ),
         ({"depth/000000.png": b"\0" * (2**20 + 1)}, [], "over its cap"),
         ({}, ["depth/000002.png"], r"depth/000002\.png appears twice"),
         (

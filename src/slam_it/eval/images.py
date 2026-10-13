@@ -13,9 +13,12 @@ way:
 
 Each reader takes a file, or a file's bytes (an upload's entry, never written to disk), and
 optionally the longest side it accepts: checked against the size Pillow will decode, every
-header chunk parsed, before any pixel is (a PNG may declare one size and decode at another). A
-file Pillow cannot parse, and one past its decompression-bomb threshold, are refused as invalid
-input, never raised as Pillow's own errors or warnings. :func:`size` reads the size alone.
+header chunk parsed, before any pixel is (a PNG may declare one size and decode at another).
+Only PNG is opened, as the native decoders open only PNG: Pillow names a format by a file's
+content, not its name, and its other formats include ones it decodes by running another program
+(EPS, through Ghostscript). A file that is not a PNG, one Pillow cannot parse, and one past its
+decompression-bomb threshold are refused as invalid input, never raised as Pillow's own errors
+or warnings. :func:`size` reads the size alone.
 
 :func:`encode_jpeg` encodes a frame for the run viewer's bundles
 (:mod:`slam_it.orchestration.bundles`); :func:`write_png` writes the frames a phone's video
@@ -49,8 +52,11 @@ _DEPTH_MODES = ("I;16", "I;16B", "I;16L", "I")
 """Pillow's modes for a 16-bit single-channel PNG (``I`` holds it as 32-bit integers)."""
 
 
-Source = str | Path | bytes
+_Source = str | Path | bytes
 """An image file's path, or its bytes."""
+
+_FORMATS = ("PNG",)
+"""The formats Pillow may open: PNG alone, whatever a file's content says it is."""
 
 _PILLOW_ERRORS = (
     OSError, ValueError, SyntaxError, Image.DecompressionBombError,
@@ -60,13 +66,13 @@ _PILLOW_ERRORS = (
 ``ValueError`` or ``SyntaxError``, not only ``OSError``; a bomb's warning is made an error."""
 
 
-def _name(source: Source) -> str:
+def _name(source: _Source) -> str:
     """Return how messages name an image: its path, or ``image`` for bytes."""
     return "image" if isinstance(source, bytes) else str(source)
 
 
 @contextlib.contextmanager
-def _opened(source: Source, max_side: int | None) -> Iterator[Image.Image]:
+def _opened(source: _Source, max_side: int | None) -> Iterator[Image.Image]:
     """Open an image, its size checked against `max_side`; Pillow's errors made ours.
 
     Raises
@@ -82,7 +88,7 @@ def _opened(source: Source, max_side: int | None) -> Iterator[Image.Image]:
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(stream) as opened:  # every header chunk parsed: its size is final
+            with Image.open(stream, formats=_FORMATS) as opened:  # its headers parsed: size final
                 width, height = opened.size
                 if max_side is not None and max(width, height) > max_side:
                     raise InvalidInputError(
@@ -92,21 +98,19 @@ def _opened(source: Source, max_side: int | None) -> Iterator[Image.Image]:
     except InvalidInputError:
         raise
     except UnidentifiedImageError:  # its message names the stream, not the image
-        raise InvalidInputError(
-            f"{_name(source)}: not a readable image (no image format)"
-        ) from None
+        raise InvalidInputError(f"{_name(source)}: not a readable image (not a PNG)") from None
     except _PILLOW_ERRORS as error:  # a bomb: far above any dataset's
         raise InvalidInputError(f"{_name(source)}: not a readable image ({error})") from None
 
 
-def _open(source: Source, max_side: int | None = None) -> Image.Image:
+def _open(source: _Source, max_side: int | None = None) -> Image.Image:
     """Open and decode an image fully, its size checked first (:func:`_opened`)."""
     with _opened(source, max_side) as opened:
         opened.load()
         return opened.copy()
 
 
-def size(source: Source) -> tuple[int, int]:
+def size(source: _Source) -> tuple[int, int]:
     """Read an image's width and height, as Pillow would decode it, without decoding it.
 
     Parameters
@@ -131,13 +135,13 @@ def size(source: Source) -> tuple[int, int]:
     return int(width), int(height)
 
 
-def _open8(source: Source, max_side: int | None = None) -> Image.Image:
+def _open8(source: _Source, max_side: int | None = None) -> Image.Image:
     """Open an 8-bit image, a 1-bit one widened to 0 and 255 as the native decoders do."""
     picture = _open(source, max_side)
     return picture.convert("L") if picture.mode == "1" else picture
 
 
-def _rgb(picture: Image.Image, path: Source) -> NDArray[np.uint8]:
+def _rgb(picture: Image.Image, path: _Source) -> NDArray[np.uint8]:
     """Return an 8-bit picture's colour channels, (H, W, 3)."""
     if picture.mode in _GRAY_MODES:
         gray = np.asarray(picture.getchannel(0), dtype=np.uint8)
@@ -149,7 +153,7 @@ def _rgb(picture: Image.Image, path: Source) -> NDArray[np.uint8]:
     )
 
 
-def read_gray(path: Source, max_side: int | None = None) -> NDArray[np.uint8]:
+def read_gray(path: _Source, max_side: int | None = None) -> NDArray[np.uint8]:
     """Read an 8-bit image as gray.
 
     Parameters
@@ -178,13 +182,15 @@ def read_gray(path: Source, max_side: int | None = None) -> NDArray[np.uint8]:
     return image.to_gray(_rgb(picture, path))
 
 
-def read_rgb(path: str | Path) -> NDArray[np.uint8]:
+def read_rgb(path: _Source, max_side: int | None = None) -> NDArray[np.uint8]:
     """Read an 8-bit image as RGB.
 
     Parameters
     ----------
-    path : str or pathlib.Path
-        The file.
+    path : str, pathlib.Path or bytes
+        The file, or its bytes.
+    max_side : int, optional
+        The longest side accepted (default: any Pillow decodes).
 
     Returns
     -------
@@ -196,12 +202,12 @@ def read_rgb(path: str | Path) -> NDArray[np.uint8]:
     FileNotFoundError
         If the file does not exist.
     slam_it.foundations.errors.InvalidInputError
-        If it is not an 8-bit image.
+        If it is not an 8-bit image, or a side is over `max_side`.
     """
-    return _rgb(_open8(path), path)
+    return _rgb(_open8(path, max_side), path)
 
 
-def read_depth(path: Source, max_side: int | None = None) -> NDArray[np.uint16]:
+def read_depth(path: _Source, max_side: int | None = None) -> NDArray[np.uint16]:
     """Read a 16-bit single-channel image's raw values.
 
     Parameters
