@@ -49,6 +49,9 @@ export const INTRINSICS = {
   nominal: "a typical phone's field of view: a guess",
 };
 
+/** The short side frames are imported at, in pixels (slam_it.eval.video.SHORT_SIDE). */
+export const SHORT_SIDE = 480;
+
 /** How a run used the recording (slam_it.orchestration.worker), as the page says it. */
 export const MODES = {
   monocular: "monocular: the video alone",
@@ -216,6 +219,30 @@ export function trackingText(summary) {
     );
   }
   return said.join(" ");
+}
+
+/**
+ * A warning when a done job's frames arrived under the import's short side, or null. A browser
+ * that records a video for a page may send a smaller one than the phone's camera records; the
+ * import never scales frames up, so they reach the pipeline that small.
+ * @param {Record<string, unknown>} summary The worker's summary.
+ * @returns {string | null} The warning, fit to show.
+ */
+export function sizeWarning(summary) {
+  const size = summary.size;
+  if (!Array.isArray(size) || size.length !== 2) {
+    return null;
+  }
+  const [width, height] = size.map(Number);
+  if (Math.min(width, height) >= SHORT_SIDE) {
+    return null;
+  }
+  return (
+    `Your video arrived at ${width}x${height}, under the ${SHORT_SIDE} pixels on its short ` +
+    "side the pipeline is set for: smaller frames give it less detail to track. A browser " +
+    "recording for a page can send a smaller video than the camera records; recording with " +
+    "the Camera app, then choosing the file here, keeps its full size."
+  );
 }
 
 /**

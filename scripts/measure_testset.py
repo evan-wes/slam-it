@@ -142,7 +142,8 @@ def measure(
     )
     run = vo.run("tum", folder, entry.mode, out / "run", backend=backend, options=options)
     times = vo.open_source("tum", folder, entry.mode).times
-    summary = worker.summarize(run, times, "nominal" if nominal else "exact")
+    size = (camera.width, camera.height)
+    summary = worker.summarize(run, times, "nominal" if nominal else "exact", size)
     result: dict[str, Any] = {
         "name": entry.name,
         "mode": entry.mode,

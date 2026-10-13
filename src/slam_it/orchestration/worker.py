@@ -459,7 +459,9 @@ def _work(upload_path: Path, kind: str, out: Path, report: Callable[[str], None]
     )
     report("baking")
     bundles.bake([out / "run"], sequence, out / "bundle")
-    return summarize(run, vo.open_source("tum", sequence, mode).times, source)
+    camera = tum.read_camera(sequence)
+    times = vo.open_source("tum", sequence, mode).times
+    return summarize(run, times, source, (camera.width, camera.height))
 
 
 def options_for(sequence: Path) -> Options:
@@ -482,13 +484,16 @@ def options_for(sequence: Path) -> Options:
     return Options(n_features=features_for(camera.width, camera.height))
 
 
-def summarize(run: runs.Run, times: NDArray[np.float64], intrinsics: str) -> dict[str, Any]:
+def summarize(
+    run: runs.Run, times: NDArray[np.float64], intrinsics: str, size: tuple[int, int]
+) -> dict[str, Any]:
     """Return a job's summary: what its run made, and what of the clip it ran and tracked.
 
     A run ends at the first frame it loses the track at, so the rest of a clip is then not run;
     and a run tracks nothing until it has made its first map, a monocular one from two views,
     an RGB-D one from a frame with enough keypoints with depth. The status page says
-    both (``viewer/src/jobs.js``), so that a short result is not taken for a cropped video.
+    both (``viewer/src/jobs.js``), so that a short result is not taken for a cropped video, and
+    warns when the frames arrived smaller than the import's short side.
 
     Parameters
     ----------
@@ -500,12 +505,14 @@ def summarize(run: runs.Run, times: NDArray[np.float64], intrinsics: str) -> dic
     intrinsics : str
         Where its intrinsics came from: ``"stray-scanner"``, or a
         :attr:`slam_it.eval.lenses.Chosen.source`.
+    size : tuple of int
+        The imported frames' width and height, upright.
 
     Returns
     -------
     dict
         ``frames`` run, ``tracked``, the final map's ``keyframes`` and ``points``, the run's
-        ``mode`` (``"rgbd"`` for a recording with LiDAR depth), ``intrinsics``;
+        ``mode`` (``"rgbd"`` for a recording with LiDAR depth), ``intrinsics``, ``size``;
         ``clip_seconds``, the clip's last frame's time; ``tracked_from`` and ``tracked_to``, the
         first and last tracked frames' times (null if none was tracked); ``ran_to``, the last
         frame run's time; every time since the clip's first frame, to the millisecond; and
@@ -525,6 +532,7 @@ def summarize(run: runs.Run, times: NDArray[np.float64], intrinsics: str) -> dic
         "points": len(run.final_points()),
         "mode": run.mode,
         "intrinsics": intrinsics,
+        "size": [int(size[0]), int(size[1])],
         "clip_seconds": since(times[-1]) if len(times) else 0.0,
         "tracked_from": since(tracked[0]) if len(tracked) else None,
         "tracked_to": since(tracked[-1]) if len(tracked) else None,

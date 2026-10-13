@@ -183,7 +183,7 @@ def test_a_job_runs_end_to_end(serving: Server, recording: bytes, tmp_path: Path
     assert serving.summary is not None
     assert serving.summary["frames"] == FRAMES
     assert serving.summary["intrinsics"] == "stray-scanner"
-    assert serving.summary["mode"] == "monocular"
+    assert (serving.summary["mode"], serving.summary["size"]) == ("monocular", [320, 240])
     assert serving.summary["lost"] is False
     assert serving.summary["ran_to"] == serving.summary["clip_seconds"]
     info = json.loads(serving.files["bundle.json"])
@@ -224,7 +224,7 @@ def test_the_summary_says_where_a_run_lost_the_track(
     folders = write_room(tmp_path / "clip", clip)
     run = vo.run("tum", folders.tum, "rgbd", tmp_path / "run", options=OPTIONS)
     times = folders.timestamps - folders.timestamps[0]
-    summary = worker.summarize(run, folders.timestamps, "nominal")
+    summary = worker.summarize(run, folders.timestamps, "nominal", (320, 240))
     assert summary["frames"] == 10 + blanks < FRAMES
     assert summary["lost"] is True
     assert (summary["tracked_from"], summary["tracked_to"]) == (0.0, round(times[9], 3))
@@ -240,7 +240,7 @@ def test_the_summary_of_a_whole_run_says_when_tracking_began(
     """A monocular run tracks from its first map on, and to the clip's end if not lost."""
     run = room_runs("tum", "monocular", "python")
     times = room_folders.timestamps
-    summary = worker.summarize(run, times, "nominal")
+    summary = worker.summarize(run, times, "nominal", (320, 240))
     assert (summary["frames"], summary["lost"]) == (FRAMES, False)
     assert summary["ran_to"] == summary["clip_seconds"] == round(times[-1] - times[0], 3)
     assert 0 < summary["tracked_from"] < summary["tracked_to"] <= summary["ran_to"]

@@ -10,11 +10,13 @@ import {
   MAX_SECONDS,
   MODES,
   RETENTION_DAYS,
+  SHORT_SIDE,
   STAGES,
   UPLOADS,
   describe,
   keptFor,
   refusal,
+  sizeWarning,
   summaryRows,
   trackingText,
   uploadFate,
@@ -178,4 +180,13 @@ test("the upload page says what becomes of an upload once the server says, the d
       `run again; it is never shown. Both are deleted once ${RETENTION_DAYS} days old, while the ` +
       "demo is running.",
   );
+});
+
+test("frames that arrived under the import's short side are warned of, never refused", () => {
+  const warning = sizeWarning({ size: [360, 480] });
+  assert.ok(warning?.startsWith("Your video arrived at 360x480, under the 480 pixels"));
+  assert.ok(warning?.includes("Camera app"));
+  assert.equal(sizeWarning({ size: [480, 854] }), null);
+  assert.equal(sizeWarning({ size: [640, SHORT_SIDE] }), null);
+  assert.equal(sizeWarning({}), null);
 });
