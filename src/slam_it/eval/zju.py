@@ -20,8 +20,9 @@ ground truth share a clock.
 reads (:mod:`slam_it.eval.tum`), so no backend needs a reader of its own: ``rgb/``, each frame a
 relative symbolic link to the sequence's image (nothing copied, so the folder keeps its place
 beside the sequence's); ``rgb.txt``, stamped to the microsecond; ``camera.txt``, a pinhole, or
-``radtan`` if the distortion is not zero; and ``groundtruth.txt``, the camera's pose,
-``T_world_cam = T_world_gt T_gt_body T_body_cam``.
+``radtan`` if the distortion is not zero; ``groundtruth.txt``, the camera's pose,
+``T_world_cam = T_world_gt T_gt_body T_body_cam``; and ``source.json``, the sequence imported.
+The folder is written whole or not at all (:func:`slam_it.eval.tum.staged`).
 
 Run as a program::
 
@@ -100,7 +101,7 @@ def read_camera(sequence: Path) -> tuple[tum.Camera, NDArray[np.float64]]:
     else:
         model, values = "pinhole", np.array(pinhole)
     width, height = _image_size(sequence)
-    return tum.Camera(model, values, width, height, 1000.0, None), _pose(text, path)
+    return tum.Camera(model, values, width, height, tum.UNUSED_DEPTH_SCALE, None), _pose(text, path)
 
 
 def _images(sequence: Path) -> Path:
@@ -198,9 +199,7 @@ def import_sequence(sequence: str | Path, out: str | Path) -> None:
         If `out` is not new or empty, or the camera, its frames or the ground truth are
         malformed: a frame's image missing, its times not increasing.
     """
-    source, target = Path(sequence), Path(out)
-    if target.exists() and any(target.iterdir()):
-        raise InvalidInputError(f"{target}: expected a new or empty folder for the import")
+    source = Path(sequence)
     camera, body_cam = read_camera(source)
     folder = _images(source)
     frames = []
@@ -217,16 +216,18 @@ def import_sequence(sequence: str | Path, out: str | Path) -> None:
     if any(b[0] <= a[0] for a, b in itertools.pairwise(frames)):
         raise InvalidInputError(f"{source / 'camera' / 'data.csv'}: the times do not increase")
     times, world_body = read_ground_truth(source)
-    (target / "rgb").mkdir(parents=True, exist_ok=True)
-    listed = []
-    for time, image in frames:
-        stamp = f"{time:.6f}"
-        link = target / "rgb" / f"{stamp}.png"
-        link.symlink_to(os.path.relpath(image, link.parent))
-        listed.append((stamp, f"rgb/{stamp}.png"))
-    tum.write_list(target / "rgb.txt", listed)
-    tum.write_camera(target, camera, note=f"imported by slam_it.eval.zju from {source.name}")
-    runs.write_trajectory(target / "groundtruth.txt", times, world_body @ body_cam)
+    with tum.staged(out) as target:
+        (target / "rgb").mkdir()
+        listed = []
+        for time, image in frames:
+            stamp = f"{time:.6f}"
+            link = target / "rgb" / f"{stamp}.png"
+            link.symlink_to(os.path.relpath(image, link.parent))
+            listed.append((stamp, f"rgb/{stamp}.png"))
+        tum.write_list(target / "rgb.txt", listed)
+        tum.write_camera(target, camera, note=f"imported by slam_it.eval.zju from {source.name}")
+        runs.write_trajectory(target / "groundtruth.txt", times, world_body @ body_cam)
+        tum.write_source(target, {"kind": "zju", "sequence": source.name, "depth": None})
 
 
 def main(arguments: Sequence[str]) -> int:

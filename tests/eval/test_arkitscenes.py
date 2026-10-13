@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -163,3 +164,27 @@ def test_a_malformed_capture_is_refused(tmp_path: Path, change: object, message:
     change(tmp_path / VIDEO)  # type: ignore[operator]
     with pytest.raises(InvalidInputError, match=message):
         arkitscenes.import_capture(tmp_path / VIDEO, tmp_path / "tum")
+
+
+@pytest.mark.parametrize("threshold", [lidar.HIGH, lidar.MEDIUM])
+def test_the_import_records_its_capture_and_threshold(threshold: int, tmp_path: Path) -> None:
+    """``source.json`` says what made the folder: ARKitScenes, the capture, the confidence."""
+    _write(tmp_path / VIDEO)
+    arkitscenes.import_capture(tmp_path / VIDEO, tmp_path / "tum", threshold)
+    record = json.loads((tmp_path / "tum" / "source.json").read_text())
+    assert record == {
+        "kind": "arkitscenes",
+        "capture": VIDEO,
+        "depth": {"min_confidence": threshold},
+    }
+
+
+def test_an_import_that_fails_halfway_leaves_nothing(tmp_path: Path) -> None:
+    """The last frame's depth map is of another aspect: refused by name, nothing written."""
+    _write(tmp_path / VIDEO)
+    name = f"{VIDEO}_{DEPTHS[-1]:.3f}.png"
+    images.write_depth(tmp_path / VIDEO / "lowres_depth" / name, np.zeros((20, 32), np.uint16))
+    images.write_png(tmp_path / VIDEO / "confidence" / name, np.zeros((20, 32), np.uint8))
+    with pytest.raises(InvalidInputError, match=f"{name}: .*aspect"):
+        arkitscenes.import_capture(tmp_path / VIDEO, tmp_path / "outs" / "tum")
+    assert list((tmp_path / "outs").iterdir()) == []

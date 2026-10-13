@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from slam_it.eval import images, runs, tum, zju
-from slam_it.foundations import so3
+from slam_it.foundations import se3, so3
 from slam_it.foundations.errors import InvalidInputError
 
 # B0's camera and ground-truth sensor.yaml, as published (an iPhone X).
@@ -139,11 +140,15 @@ def test_a_distorted_camera_imports_as_radtan(tmp_path: Path) -> None:
     ],
 )
 def test_a_malformed_sequence_is_refused(tmp_path: Path, change: object, message: str) -> None:
-    """A missing image, another distortion model, a zero quaternion: refused by name."""
+    """A missing image, another distortion model, a zero quaternion: refused by name.
+
+    Nothing is left where the import would have written.
+    """
     _write(tmp_path / "B0")
     change(tmp_path / "B0")  # type: ignore[operator]
     with pytest.raises(InvalidInputError, match=message):
-        zju.import_sequence(tmp_path / "B0", tmp_path / "tum")
+        zju.import_sequence(tmp_path / "B0", tmp_path / "outs" / "tum")
+    assert not (tmp_path / "outs").exists() or list((tmp_path / "outs").iterdir()) == []
 
 
 @pytest.mark.parametrize("name", ["../../secret.png", "/etc/hostname", "sub/0.png", ".."])
@@ -169,3 +174,31 @@ def test_a_folder_already_holding_files_is_refused(tmp_path: Path) -> None:
     (tmp_path / "tum" / "rgb.txt").write_text("# someone's\n")
     with pytest.raises(InvalidInputError, match="new or empty"):
         zju.import_sequence(tmp_path / "B0", tmp_path / "tum")
+
+
+def test_the_ground_truths_own_extrinsic_is_undone_before_the_cameras(tmp_path: Path) -> None:
+    """``T_world_cam = T_world_gt T_body_gt^-1 T_body_cam``; and the import says what it read.
+
+    The ground truth's sensor is turned and offset in the body, as no published sequence's is.
+    """
+    _write(tmp_path / "B0")
+    turned = GROUND_TRUTH.replace("q: [0, 0, 0, 1]", "q: [0.6, 0, 0, 0.8]").replace(
+        "p: [0, 0, 0]", "p: [0.1, -0.05, 0.02]"
+    )
+    (tmp_path / "B0" / "groundtruth" / "sensor.yaml").write_text(turned)
+    zju.import_sequence(tmp_path / "B0", tmp_path / "tum")
+    _, poses = runs.read_trajectory(tmp_path / "tum" / "groundtruth.txt")
+    world_gt = np.eye(4)
+    world_gt[:3, :3] = so3.from_quaternion(np.array([0.0, 0.0, np.sin(0.1), np.cos(0.1)]))
+    world_gt[:3, 3] = [0.2, 0.2, 1.3]
+    body_gt = np.eye(4)
+    body_gt[:3, :3] = so3.from_quaternion(np.array([0.6, 0.0, 0.0, 0.8]))
+    body_gt[:3, 3] = [0.1, -0.05, 0.02]
+    body_cam = np.eye(4)
+    body_cam[:3, :3] = so3.from_quaternion(
+        np.array([0.707107, -0.707107, 0.0, 0.0]) / np.sqrt(2 * 0.707107**2)
+    )
+    body_cam[:3, 3] = [0.026, 0.017, 0.0]
+    np.testing.assert_allclose(poses[2], world_gt @ se3.inverse(body_gt) @ body_cam, atol=1e-12)
+    record = json.loads((tmp_path / "tum" / "source.json").read_text())
+    assert record == {"kind": "zju", "sequence": "B0", "depth": None}

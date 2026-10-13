@@ -236,3 +236,25 @@ def test_what_the_writers_write_the_readers_read(tmp_path: Path) -> None:
     np.testing.assert_array_equal(frames.timestamps, [0.0, 0.5])
     with pytest.raises(InvalidInputError):
         tum.write_camera(tmp_path, tum.Camera("pinhole", np.array([1.0]), 640, 480, 1.0, None))
+
+
+def _fail_halfway(out: Path) -> None:
+    """Write half an import, then fail."""
+    with tum.staged(out) as folder:
+        (folder / "rgb.txt").write_text("# half\n")
+        raise RuntimeError("halfway")
+
+
+def test_an_import_is_staged_beside_its_folder_and_moved_whole(tmp_path: Path) -> None:
+    """Written in a hidden sibling, moved onto the folder once whole; a failure leaves nothing."""
+    with tum.staged(tmp_path / "out") as folder:
+        assert folder.parent == tmp_path
+        assert folder.name.startswith(".out.")
+        tum.write_source(folder, {"kind": "test"})
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["out"]
+    assert (tmp_path / "out" / "source.json").read_text() == '{\n "kind": "test"\n}\n'
+    with pytest.raises(RuntimeError, match="halfway"):
+        _fail_halfway(tmp_path / "failed")
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["out"]
+    with pytest.raises(InvalidInputError, match="new or empty"), tum.staged(tmp_path / "out"):
+        pass

@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass, fields
 from typing import Any
 
 from slam_it.foundations import matching, orb, stereo
-from slam_it.foundations.arrays import as_count, as_number
+from slam_it.foundations.arrays import MAX_IMAGE_SIDE, as_count, as_number
 from slam_it.foundations.errors import InvalidInputError
 
 MODES = ("monocular", "stereo", "rgbd")
@@ -447,7 +447,9 @@ def features_for(width: int, height: int) -> int:
     slam_it.foundations.errors.InvalidInputError
         If a side is not a positive integer.
     """
-    area = as_count(width, "width", 1, 1 << 30) * as_count(height, "height", 1, 1 << 30)
+    area = as_count(width, "width", 1, MAX_IMAGE_SIDE) * as_count(
+        height, "height", 1, MAX_IMAGE_SIDE
+    )
     low, high = FEATURES_BOUNDS
     return min(max(round(Options.n_features * area / FEATURES_AREA), low), high)
 

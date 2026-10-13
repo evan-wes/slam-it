@@ -14,8 +14,8 @@ languages already take: ``rgb/`` and ``rgb.txt``, ``camera.txt`` (a pinhole), fo
 Scanner recording ``groundtruth.txt`` and, with depth, ``depth/`` and ``depth.txt``, and
 ``source.json``, what the import used. The folder must be new or empty; it is written beside,
 in a hidden ``.<name>.<id>.importing`` folder, and moved onto it once whole, so an import that
-fails leaves nothing (one killed outright leaves that folder, which nothing reads: it is safe
-to delete).
+fails leaves nothing (:func:`slam_it.eval.tum.staged`, which every import to TUM format
+shares).
 
 **Frames.**
 
@@ -97,14 +97,11 @@ Run as a program::
 from __future__ import annotations
 
 import argparse
-import contextlib
 import csv
 import io
 import json
 import re
-import shutil
 import sys
-import uuid
 import zipfile
 import zlib
 from collections.abc import Iterator, Sequence
@@ -258,26 +255,6 @@ class _Geometry:
     mapping: NDArray[np.float64] | None
     turns: int
     camera: lenses.Pinhole | lenses.RadTan
-
-
-@contextlib.contextmanager
-def _staged(out: Path) -> Iterator[Path]:
-    """Yield a new hidden folder beside `out`, moved onto it if the block completes.
-
-    Refuses an `out` that exists and is not empty; removes the hidden folder if the block
-    fails.
-    """
-    if out.exists() and any(out.iterdir()):
-        raise InvalidInputError(f"{out}: expected a new or empty folder for the import")
-    out.parent.mkdir(parents=True, exist_ok=True)
-    staging = out.with_name(f".{out.name}.{uuid.uuid4().hex}.importing")
-    staging.mkdir()
-    try:
-        yield staging
-        staging.replace(out)  # onto a new or empty folder
-    except BaseException:
-        shutil.rmtree(staging)  # the import's own, made above
-        raise
 
 
 def _check_size(path: Path, cap: int) -> None:
@@ -448,7 +425,7 @@ def _write_frames(  # noqa: PLR0913 -- the video, the folder, the lens; how, key
             else np.array([matrix.fx, matrix.fy, matrix.cx, matrix.cy]),
             matrix.width,
             matrix.height,
-            1000.0,  # no depth maps: any scale reads the same
+            tum.UNUSED_DEPTH_SCALE,  # no depth maps
             None,
         ),
         note="imported by slam_it.eval.video (source.json says from what)",
@@ -483,16 +460,18 @@ def _write_source(
         "frames": {"decoded": frames.count, "kept": len(frames.times)},
         **read,
     }
-    (out / "source.json").write_text(json.dumps(record, indent=1) + "\n")
+    tum.write_source(out, record)
 
 
-def import_video(
+def import_video(  # noqa: PLR0913 -- the video, the folder, the lens; a dataset's, keyword-only
     video: str | Path,
     out: str | Path,
     chosen: lenses.Chosen,
     *,
     limits: Limits = UPLOAD,
     clock: Sequence[float] | None = None,
+    truth: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None,
+    kind: str = "video",
 ) -> None:
     """Import a video into a TUM-format folder (the module docstring).
 
@@ -510,6 +489,11 @@ def import_video(
     clock : sequence of float, optional
         Each decoded frame's time, in seconds, on a dataset's clock, in place of the video's
         own times since its first frame.
+    truth : tuple of ndarray, optional
+        A dataset's ground truth, its times on the clock and ``T_world_cam``, written as
+        ``groundtruth.txt`` with the frames, so the folder appears whole or not at all.
+    kind : str, optional
+        What imported it, as ``source.json`` names it (default ``"video"``, an upload).
 
     Raises
     ------
@@ -526,9 +510,11 @@ def import_video(
         raise FileNotFoundError(f"no video at {path}")
     _check_size(path, MAX_BYTES)
     metadata = probe(path).metadata
-    with _staged(Path(out)) as folder:
+    with tum.staged(out) as folder:
         frames = _write_frames(path, folder, chosen.lens, limits=limits, clock=clock)
-        _write_source(folder, "video", chosen, frames, {"metadata": metadata, "depth": None})
+        if truth is not None:
+            runs.write_trajectory(folder / "groundtruth.txt", *truth)
+        _write_source(folder, kind, chosen, frames, {"metadata": metadata, "depth": None})
 
 
 @dataclass(frozen=True)
@@ -837,7 +823,7 @@ def import_stray(recording: str | Path, out: str | Path, min_confidence: int = l
     if not path.is_file():
         raise FileNotFoundError(f"no recording at {path}")
     _check_size(path, MAX_BYTES)
-    with _staged(Path(out)) as folder:
+    with tum.staged(out) as folder:
         video = folder / ".upload.mp4"  # our own name, never the zip's
         try:
             archive = zipfile.ZipFile(path)

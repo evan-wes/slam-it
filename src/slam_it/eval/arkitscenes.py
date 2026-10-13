@@ -17,10 +17,16 @@ the assets milestone 2A reads, holds, each file named ``<video_id>_<seconds>.<ex
 each frame a relative symbolic link to the capture's; ``depth/``, each frame's nearest depth map
 within :data:`slam_it.eval.tum.MAX_DIFFERENCE`, kept by confidence and brought to 640x480
 (:func:`slam_it.eval.lidar.registered_depth`); ``rgb.txt`` and ``depth.txt``; ``camera.txt``, a
-pinhole of the frames' median intrinsics (ARKit reports a frame's own, which vary slightly),
-its ``depth_scale`` and ``bf`` LiDAR's; and ``groundtruth.txt``, ARKit's poses inverted. ARKit's
-poses are its own visual-inertial estimate, not independent truth: an evaluation names them a
-reference.
+pinhole of the frames' median intrinsics, its ``depth_scale`` and ``bf`` LiDAR's;
+``groundtruth.txt``, ARKit's poses inverted; and ``source.json``, the capture and the least
+confidence kept. The folder is written whole or not at all (:func:`slam_it.eval.tum.staged`).
+ARKit's poses are its own visual-inertial estimate, not independent truth: an evaluation names
+them a reference.
+
+ARKit reports each frame's own intrinsics, which follow the lens's focus. On captures 42444946
+and 42446016, ``fx`` spans 522.2 to 545.0 and 522.7 to 545.6, against medians of 532.3 and
+534.7, and 95.7% and 98.1% of frames are within 1% of the median. The fixed camera of their
+median reads the rest as a small zoom.
 
 Run as a program::
 
@@ -147,39 +153,49 @@ def import_capture(capture: str | Path, out: str | Path, min_confidence: int = l
     slam_it.foundations.errors.InvalidInputError
         If `out` is not new or empty, or an asset is malformed.
     """
-    source, target = Path(capture), Path(out)
-    if target.exists() and any(target.iterdir()):
-        raise InvalidInputError(f"{target}: expected a new or empty folder for the import")
+    source = Path(capture)
     camera = read_intrinsics(source)
     times, poses = read_trajectory(source)
     frames = _stamped(source / "vga_wide", ".png")
     depths = _stamped(source / "lowres_depth", ".png")
     confidences = _stamped(source / "confidence", ".png")
     depth_times = np.array(sorted(depths))
-    rgb, listed_depth = [], []
-    for time in sorted(frames):
-        stamp = f"{time:.6f}"
-        link = target / "rgb" / f"{stamp}.png"
-        link.parent.mkdir(parents=True, exist_ok=True)
-        link.symlink_to(os.path.relpath(frames[time], link.parent))
-        rgb.append((stamp, f"rgb/{stamp}.png"))
-        nearest = float(depth_times[timestamps.nearest(depth_times, np.array([time]))[0]])
-        if abs(nearest - time) > tum.MAX_DIFFERENCE or nearest not in confidences:
-            continue
-        depth = lidar.registered_depth(
-            images.read_depth(depths[nearest]),
-            images.read_gray(confidences[nearest]),
-            (camera.width, camera.height),
-            min_confidence,
+    with tum.staged(out) as target:
+        rgb, listed_depth = [], []
+        for time in sorted(frames):
+            stamp = f"{time:.6f}"
+            link = target / "rgb" / f"{stamp}.png"
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.symlink_to(os.path.relpath(frames[time], link.parent))
+            rgb.append((stamp, f"rgb/{stamp}.png"))
+            nearest = float(depth_times[timestamps.nearest(depth_times, np.array([time]))[0]])
+            if abs(nearest - time) > tum.MAX_DIFFERENCE or nearest not in confidences:
+                continue
+            try:
+                depth = lidar.registered_depth(
+                    images.read_depth(depths[nearest]),
+                    images.read_gray(confidences[nearest]),
+                    (camera.width, camera.height),
+                    min_confidence,
+                )
+            except InvalidInputError as error:
+                raise InvalidInputError(f"{depths[nearest]}: {error}") from None
+            images.write_depth(target / "depth" / f"{stamp}.png", depth)
+            listed_depth.append((stamp, f"depth/{stamp}.png"))
+        tum.write_list(target / "rgb.txt", rgb)
+        tum.write_list(target / "depth.txt", listed_depth)
+        tum.write_camera(
+            target, camera, note=f"imported by slam_it.eval.arkitscenes from {source.name}"
         )
-        images.write_depth(target / "depth" / f"{stamp}.png", depth)
-        listed_depth.append((stamp, f"depth/{stamp}.png"))
-    tum.write_list(target / "rgb.txt", rgb)
-    tum.write_list(target / "depth.txt", listed_depth)
-    tum.write_camera(
-        target, camera, note=f"imported by slam_it.eval.arkitscenes from {source.name}"
-    )
-    runs.write_trajectory(target / "groundtruth.txt", times, poses)
+        runs.write_trajectory(target / "groundtruth.txt", times, poses)
+        tum.write_source(
+            target,
+            {
+                "kind": "arkitscenes",
+                "capture": source.name,
+                "depth": {"min_confidence": min_confidence},
+            },
+        )
 
 
 def main(arguments: Sequence[str]) -> int:

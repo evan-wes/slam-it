@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -117,6 +118,9 @@ def test_a_sequence_imports_upright_timed_by_its_clock_with_the_cameras_truth(
     times, poses = runs.read_trajectory(tmp_path / "tum" / "groundtruth.txt")
     np.testing.assert_allclose(times, [0.3 + i / 60 for i in range(FRAMES)], atol=1e-6)
     np.testing.assert_allclose(poses, [f.T_world_cam for f in rendered], atol=1e-9)
+    source = json.loads((tmp_path / "tum" / "source.json").read_text())
+    assert (source["kind"], source["intrinsics"]["source"]) == ("advio", "given")
+    assert source["intrinsics"]["distortion"] == list(DISTORTION)
 
 
 def test_a_smaller_short_side_scales_the_lens(rendered: list[room.Frame], tmp_path: Path) -> None:
@@ -194,7 +198,8 @@ def test_a_malformed_sequence_or_calibration_is_refused(
     _write(tmp_path, rendered, -90)
     change(tmp_path)
     with pytest.raises(InvalidInputError, match=message):
-        advio.import_sequence(tmp_path / "advio-01", tmp_path / "calibration", tmp_path / "tum")
+        advio.import_sequence(tmp_path / "advio-01", tmp_path / "calibration", tmp_path / "o" / "t")
+    assert not (tmp_path / "o").exists() or list((tmp_path / "o").iterdir()) == []
 
 
 def test_main_imports_and_says_what(

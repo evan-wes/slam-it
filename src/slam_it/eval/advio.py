@@ -20,14 +20,18 @@ body poses are moved (:mod:`slam_it.eval.zju`).
 **The calibration** is not in a sequence's archive. ADVIO's repository publishes one per
 capture batch, in Kalibr's format (``calibration/iphone-0N.yaml``): the upright frame's pinhole
 and radial-tangential distortion (k1, k2, p1, p2), and ``T_cam_imu``. :data:`CALIBRATIONS` says
-which file a sequence takes, as ADVIO's calibration README does. For sequences 18 and 19 the
-file's ``cy`` (619.31) differs from that README's table (639.31); the file is read as published.
+which file a sequence takes, as ADVIO's calibration README does. Sequences 18 and 19's
+(``iphone-01.yaml``) is suspect: its ``cy`` (619.31) differs from that README's table (639.31),
+and its tangential ``p2`` (0.0473, in the table too) moves a full frame's edge by about 50
+pixels, where the other batches' tangential terms move it by one to three. The file is read as
+published; a result on those two sequences says which calibration it used.
 
 **The import** (:func:`import_sequence`) runs the video through
 :func:`slam_it.eval.video.import_video` with ADVIO's limits (:data:`MAX_SECONDS`): its frames
 timed by ``frames.csv``, kept distorted with a radial-tangential camera, scaled to a short side
-of 480 (or as asked) and thinned from 60 to 30 fps. It then writes ``groundtruth.txt``, the
-poses moved to the camera, on the frames' clock.
+of 480 (or as asked) and thinned from 60 to 30 fps, with ``groundtruth.txt``, the poses moved
+to the camera, on the frames' clock. The folder is written whole or not at all, and
+``source.json`` names it ADVIO's.
 
 Run as a program::
 
@@ -49,7 +53,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
-from slam_it.eval import lenses, runs, sensor_yaml, tum, video
+from slam_it.eval import lenses, sensor_yaml, tum, video
 from slam_it.foundations import se3, so3
 from slam_it.foundations.errors import InvalidInputError
 
@@ -62,8 +66,12 @@ CALIBRATIONS = (
 """Each capture batch's sequences and its calibration file."""
 
 MAX_SECONDS = 600.0
-"""The longest video an ADVIO import takes, in seconds: ten minutes, over twice the longest of
-sequences 01 to 15 (advio-06, 275.9 s by its ``frames.csv``)."""
+"""The longest video an ADVIO import takes, in seconds: ten minutes, over one and a half times
+the longest sequence's (advio-22, 385.9 s by its ``frames.csv``)."""
+
+_RIGID_TOLERANCE = 1e-4
+"""How far a calibration's rotation may be from orthonormal: Kalibr prints sixteen digits, and
+ADVIO's are orthonormal to 1e-15, so this refuses only a matrix that is not a rotation."""
 
 RATE = 60
 """ADVIO's iPhone frame rate, in frames a second."""
@@ -125,10 +133,11 @@ def read_calibration(path: Path) -> tuple[lenses.RadTan, NDArray[np.float64]]:
     if matrix.shape != (4, 4) or not np.all(np.isfinite(matrix)):
         raise InvalidInputError(f"{path}: expected `T_cam_imu` as four rows of four numbers")
     rotation = matrix[:3, :3]
-    rigid = np.allclose(rotation @ rotation.T, np.eye(3), atol=1e-4) and np.linalg.det(rotation) > 0
+    orthonormal = np.allclose(rotation @ rotation.T, np.eye(3), atol=_RIGID_TOLERANCE)
+    rigid = orthonormal and np.linalg.det(rotation) > 0
     if not rigid or not np.array_equal(matrix[3], [0.0, 0.0, 0.0, 1.0]):
         raise InvalidInputError(f"{path}: `T_cam_imu` is not a rigid transform")
-    matrix[:3, :3] = so3.project_to_so3(rotation)  # Kalibr's, to 1e-6: made exact
+    matrix[:3, :3] = so3.project_to_so3(rotation)  # printed digits' rounding, made exact
     fx, fy, cx, cy = intrinsics
     k1, k2, p1, p2 = coefficients
     lens = lenses.RadTan(lenses.Pinhole(fx, fy, cx, cy, width, height), (k1, k2, p1, p2))
@@ -241,8 +250,10 @@ def import_sequence(
     recording = folder / "iphone" / "frames.mov"
     stored = upright.turned(-video.quarter_turns(recording))
     limits = video.Limits(MAX_SECONDS, round(MAX_SECONDS * RATE), short_side)
-    video.import_video(recording, out, lenses.Chosen(stored, "given"), limits=limits, clock=clock)
-    runs.write_trajectory(Path(out) / "groundtruth.txt", times, poses)
+    chosen = lenses.Chosen(stored, "given")
+    video.import_video(
+        recording, out, chosen, limits=limits, clock=clock, truth=(times, poses), kind="advio"
+    )
 
 
 def main(arguments: Sequence[str]) -> int:
