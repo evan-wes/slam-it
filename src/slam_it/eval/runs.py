@@ -40,9 +40,8 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
 :func:`write_run` checks everything before it writes, and replaces each file whole (written
 to a temporary sibling, then renamed); :func:`read_run` checks every file's shape;
 :func:`evaluate` scores a run against the ground truth, and :func:`evaluate_absolute` its ATE
-alone, against a reference too sparse for the RPE's pairs a frame period apart (ARKitScenes'
-10 Hz poses beside 30 Hz frames). :func:`tracking` says what of a sequence a run ran and
-tracked.
+alone, which needs no pair of frames a period apart, as the RPE does. :func:`tracking` says
+what of a sequence a run ran and tracked.
 """
 
 from __future__ import annotations
@@ -905,8 +904,9 @@ def evaluate_absolute(
 ) -> Absolute:
     """Score a run's ATE against the ground truth, without the RPE.
 
-    For a reference too sparse for :func:`evaluate`'s RPE, whose pairs are a frame period
-    apart: ARKitScenes' 10 Hz poses beside 30 Hz frames match every third frame, and no two
+    The test set's measure reports the ATE alone, and scores with this; it also scores a
+    reference too sparse for :func:`evaluate`'s RPE, whose pairs are a frame period apart. One
+    at a third of the frame rate, on the frames' times, matches every third frame, and no two
     matched frames are a period apart.
 
     Parameters

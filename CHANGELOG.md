@@ -28,7 +28,8 @@ frame size. Nothing changes for a dataset run at the default settings.
     calibration of their capture batch. The poses, in the phone's IMU axes, are moved by
     `T_cam_imu`;
   - `slam_it.eval.arkitscenes`: ARKitScenes' raw captures as RGB-D. ARKit's poses are
-    inverted and named a reference, not truth.
+    inverted, interpolated at each frame's time, and named a reference, not truth. Its 10 Hz
+    poses fall between the 30 Hz frames, and paired by time each would serve two frames.
 - **LiDAR depth as RGB-D** (`slam_it.eval.lidar`): depth kept where ARKit's confidence is high
   (medium on request), brought to the colour frame by nearest neighbour, with a virtual baseline
   of 0.08 m (ORB-SLAM's for TUM's Kinect).
@@ -46,8 +47,8 @@ frame size. Nothing changes for a dataset run at the default settings.
   `tum.write_source`): written beside its folder and moved whole, so a failed import leaves
   nothing, with a `source.json` naming what made it (and, with LiDAR depth, the least
   confidence kept).
-- **Scoring:** `slam_it.eval.runs.evaluate_absolute`, the ATE alone, for a reference too sparse
-  for a relative error (ARKitScenes' 10 Hz poses); `runs.tracking`, what of a sequence a run
+- **Scoring:** `slam_it.eval.runs.evaluate_absolute`, the ATE alone, which the measure reports
+  and which needs no pair of frames a period apart; `runs.tracking`, what of a sequence a run
   ran and tracked, which the demo's summary and the measure share.
 - **Images from bytes** (`slam_it.eval.images`): the readers take a file's bytes and a longest
   side, checked once Pillow has parsed every header; `images.size` reads the size alone.

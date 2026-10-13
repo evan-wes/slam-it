@@ -24,8 +24,8 @@ worker sets a run up (:func:`slam_it.orchestration.vo.options_for`), then is mea
 - ``ate``: the RMSE in metres over the tracked frames matched to the reference, aligned Sim(3)
   for monocular and SE(3) otherwise, with ``matched`` and the ``reference`` named; null, with
   ``unscored`` saying why, if it cannot be scored. It is scored alone
-  (:func:`slam_it.eval.runs.evaluate_absolute`), so a reference too sparse for a relative
-  error, ARKitScenes' 10 Hz poses, still scores it;
+  (:func:`slam_it.eval.runs.evaluate_absolute`): the measure reports no relative error, and a
+  reference too sparse for one still scores;
 - ``p95``: the 95th percentile of a frame's latency, building and tracking it, in seconds,
   read against the frame period ``deadline``, with the frames ``late`` past it
   (:func:`slam_it.eval.budgets.judge`); null, with ``unjudged`` saying why, if the run is too

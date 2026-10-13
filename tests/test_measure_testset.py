@@ -167,7 +167,7 @@ def test_main_refuses_an_unknown_name_or_a_used_folder(
 def test_a_reference_too_sparse_for_a_relative_error_still_scores_the_ate(
     sequence: Path, tmp_path: Path
 ) -> None:
-    """A reference at a third of the frame rate, as ARKitScenes' is: every third frame scored."""
+    """A reference at a third of the frame rate, on the frames' times: every third frame scored."""
     folder = tmp_path / "sparse"
     folder.mkdir()
     for name in ("rgb", "rgb.txt", "depth", "depth.txt", "camera.txt"):

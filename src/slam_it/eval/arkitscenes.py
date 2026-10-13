@@ -18,10 +18,20 @@ each frame a relative symbolic link to the capture's; ``depth/``, each frame's n
 within :data:`slam_it.eval.tum.MAX_DIFFERENCE`, kept by confidence and brought to 640x480
 (:func:`slam_it.eval.lidar.registered_depth`); ``rgb.txt`` and ``depth.txt``; ``camera.txt``, a
 pinhole of the frames' median intrinsics, its ``depth_scale`` and ``bf`` LiDAR's;
-``groundtruth.txt``, ARKit's poses inverted; and ``source.json``, the capture and the least
-confidence kept. The folder is written whole or not at all (:func:`slam_it.eval.tum.staged`).
-ARKit's poses are its own visual-inertial estimate, not independent truth: an evaluation names
-them a reference.
+``groundtruth.txt``, ARKit's poses inverted and interpolated at each frame's time
+(:func:`at_frames`); and ``source.json``, the capture and the least confidence kept. The folder
+is written whole or not at all (:func:`slam_it.eval.tum.staged`). ARKit's poses are its own
+visual-inertial estimate, not independent truth: an evaluation names them a reference.
+
+**The reference at the frames' times.** ARKit's poses come at 10 Hz, half a frame between the
+30 Hz frames. Paired by time, as the scoring pairs a run with its reference
+(:func:`slam_it.eval.tum.read_sequence`), each pose would go to the two frames either side of
+it, half a frame off: the relative error would then compare frames holding one pose, and so
+measure the camera's own motion. Interpolated at each frame's time instead, every frame has its
+own reference pose. Leaving each of the ten captures' poses out in turn and interpolating it
+from its neighbours 0.2 s apart misses it by a median of 1.6 mm and 0.28 degrees (95th
+percentile 4.4 mm and 0.81 degrees); a frame's span is half that, and such errors grow with the
+span's square.
 
 ARKit reports each frame's own intrinsics, which follow the lens's focus. On captures 42444946
 and 42446016, ``fx`` spans 522.2 to 545.0 and 522.7 to 545.6, against medians of 532.3 and
@@ -52,6 +62,10 @@ from slam_it.foundations.errors import InvalidInputError
 
 TRAJECTORY = "lowres_wide.traj"
 """The capture's file of ARKit's poses."""
+
+MAX_GAP = 0.15
+"""The longest span between two of ARKit's poses, in seconds, that a frame's reference pose is
+interpolated over: one and a half times their 0.1 s spacing. A frame in a longer gap has none."""
 
 
 def _stamped(folder: Path, suffix: str) -> dict[float, Path]:
@@ -134,6 +148,47 @@ def read_trajectory(capture: Path) -> tuple[NDArray[np.float64], NDArray[np.floa
     return table[:, 0], se3.inverse(cam_world)
 
 
+def at_frames(
+    times: NDArray[np.float64], poses: NDArray[np.float64], frame_times: NDArray[np.float64]
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Interpolate the reference at each frame's time, between poses at most :data:`MAX_GAP` apart.
+
+    The position along a straight line, the rotation along the shortest arc between the two
+    poses either side (``R0 exp(s log(R0^T R1))``), at the frame's share ``s`` of the span. A
+    frame before the first pose, after the last, or in a longer gap has none.
+
+    Parameters
+    ----------
+    times : ndarray of float64, shape (G,)
+        The reference's times, ascending.
+    poses : ndarray of float64, shape (G, 4, 4)
+        Its ``T_world_cam``.
+    frame_times : ndarray of float64, shape (F,)
+        The frames' times.
+
+    Returns
+    -------
+    tuple of ndarray
+        The frames' times that have a reference pose, and the pose at each.
+    """
+    frames = np.asarray(frame_times, dtype=np.float64)
+    inside = (frames >= times[0]) & (frames <= times[-1])
+    before = np.clip(np.searchsorted(times, frames, side="right") - 1, 0, max(len(times) - 2, 0))
+    after = np.minimum(before + 1, len(times) - 1)
+    span = times[after] - times[before]
+    kept = inside & (span <= MAX_GAP)
+    first, second, at = before[kept], after[kept], frames[kept]
+    share = np.divide(at - times[first], span[kept], out=np.zeros(len(at)), where=span[kept] > 0.0)
+    start, end = poses[first, :3, :3], poses[second, :3, :3]
+    turn = so3.log(np.transpose(start, (0, 2, 1)) @ end)
+    out = np.tile(np.eye(4), (len(at), 1, 1))
+    out[:, :3, :3] = start @ so3.exp(share[:, None] * turn)
+    out[:, :3, 3] = (1.0 - share[:, None]) * poses[first, :3, 3] + share[:, None] * poses[
+        second, :3, 3
+    ]
+    return at, out
+
+
 def import_capture(capture: str | Path, out: str | Path, min_confidence: int = lidar.HIGH) -> None:
     """Import an ARKitScenes raw capture into a TUM-format RGB-D folder (the module docstring).
 
@@ -187,7 +242,8 @@ def import_capture(capture: str | Path, out: str | Path, min_confidence: int = l
         tum.write_camera(
             target, camera, note=f"imported by slam_it.eval.arkitscenes from {source.name}"
         )
-        runs.write_trajectory(target / "groundtruth.txt", times, poses)
+        stamped = np.array([float(stamp) for stamp, _ in rgb])  # as rgb.txt has them
+        runs.write_trajectory(target / "groundtruth.txt", *at_frames(times, poses, stamped))
         tum.write_source(
             target,
             {

@@ -89,7 +89,8 @@ def _write(capture: Path) -> None:
 def test_a_capture_imports_to_an_rgbd_folder_the_pipeline_reads(tmp_path: Path) -> None:
     """Frames linked; each with its nearest depth, kept and upsampled; ARKit's poses inverted.
 
-    The camera is the frames' median intrinsics, with LiDAR's depth scale and ``bf``.
+    The camera is the frames' median intrinsics, with LiDAR's depth scale and ``bf``; the
+    reference is at the frames' times, here the second frame's on one of ARKit's own.
     """
     _write(tmp_path / VIDEO)
     arkitscenes.import_capture(tmp_path / VIDEO, tmp_path / "tum")
@@ -115,8 +116,8 @@ def test_a_capture_imports_to_an_rgbd_folder_the_pipeline_reads(tmp_path: Path) 
     cam_world = np.eye(4)
     cam_world[:3, :3] = so3.exp(np.array([0.0, 0.1, 0.0]))
     cam_world[:3, 3] = [0.02, 0.0, -1.5]
-    np.testing.assert_allclose(stamps[2], 3112.92)
-    np.testing.assert_allclose(poses[2], se3.inverse(cam_world), atol=1e-12)
+    np.testing.assert_allclose(stamps, FRAMES, atol=1e-6)
+    np.testing.assert_allclose(poses[1], se3.inverse(cam_world), atol=1e-12)
 
 
 def test_a_frame_without_depth_near_it_has_none(tmp_path: Path) -> None:
@@ -188,3 +189,38 @@ def test_an_import_that_fails_halfway_leaves_nothing(tmp_path: Path) -> None:
     with pytest.raises(InvalidInputError, match=f"{name}: .*aspect"):
         arkitscenes.import_capture(tmp_path / VIDEO, tmp_path / "outs" / "tum")
     assert list((tmp_path / "outs").iterdir()) == []
+
+
+def test_the_reference_is_interpolated_at_each_frames_time() -> None:
+    """Between two poses: the position on the line, the rotation on the arc, at the frame's share.
+
+    ARKit's 10 Hz poses fall between 30 Hz frames; a frame a third of the way gets a third of
+    the turn and of the move. A frame outside the poses, or in a gap over MAX_GAP, gets none.
+    """
+    times = np.array([10.0, 10.1, 10.2, 10.6])  # 10.2 to 10.6: a gap
+    poses = np.tile(np.eye(4), (4, 1, 1))
+    poses[:, :3, :3] = so3.exp(
+        np.array([[0.0, 0.0, 0.0], [0.0, 0.3, 0.0], [0.0, 0.6, 0.1], [0.0, 0.0, 0.0]])
+    )
+    poses[:, :3, 3] = [[0.0, 0.0, 0.0], [0.3, 0.0, 0.0], [0.3, 0.6, 0.0], [1.0, 1.0, 1.0]]
+    frames = np.array([9.99, 10.0, 10.1 / 3 + 20.0 / 3, 10.1, 10.4, 10.7])
+    at, out = arkitscenes.at_frames(times, poses, frames)
+    np.testing.assert_allclose(at, frames[1:4])
+    np.testing.assert_allclose(out[0], poses[0], atol=1e-12)
+    np.testing.assert_allclose(out[1, :3, 3], [0.1, 0.0, 0.0], atol=1e-12)
+    np.testing.assert_allclose(out[1, :3, :3], so3.exp(np.array([0.0, 0.1, 0.0])), atol=1e-12)
+    np.testing.assert_allclose(out[2], poses[1], atol=1e-12)
+
+
+def test_a_capture_s_reference_is_at_its_frames_times(tmp_path: Path) -> None:
+    """A 10 Hz trajectory, its poses between the frames: one reference pose a frame, none shared."""
+    _write(tmp_path / VIDEO)
+    lines = [
+        f"{t} 0.0 {0.1 * k} 0.0 {0.03 * k} 0.0 -1.5"
+        for k, t in enumerate((3112.85, 3112.95, 3113.05))
+    ]
+    (tmp_path / VIDEO / arkitscenes.TRAJECTORY).write_text("\n".join(lines) + "\n")
+    arkitscenes.import_capture(tmp_path / VIDEO, tmp_path / "tum")
+    stamps, poses = runs.read_trajectory(tmp_path / "tum" / "groundtruth.txt")
+    np.testing.assert_allclose(stamps, FRAMES, atol=1e-6)
+    assert len({tuple(p.ravel()) for p in poses}) == len(FRAMES)
