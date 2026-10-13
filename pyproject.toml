@@ -230,20 +230,21 @@ type = "forbidden"
 source_modules = ["slam_it"]
 forbidden_modules = ["poselib", "mpmath", "manifpy", "scipy"]
 
-# The order of modules inside eval: the timestamp helpers and the image reader at the bottom,
-# the dataset readers and metrics on them, runs (and the COLMAP reference) on them, and the
-# compute budgets, which judge runs, on top. New modules are optional layers, as in rung 0's
-# contract.
+# The order of modules inside eval: the timestamp helpers, the image reader, the sensor.yaml
+# helpers and the LiDAR depth at the bottom, the dataset readers and metrics on them, runs (and
+# the COLMAP reference) on them, and on top what writes a dataset's TUM-format folder with its
+# ground truth (the video import, ZJU-SenseTime's, ARKitScenes') and the compute budgets, which
+# judge runs. New modules are optional layers, as in rung 0's contract.
 [[tool.importlinter.contracts]]
 name = "Eval's internal order"
 type = "layers"
 exhaustive = true
 containers = ["slam_it.eval"]
 layers = [
-  "(budgets) | (video)",
+  "(budgets) | (video) | (zju) | (arkitscenes)",
   "(runs) | (colmap_reference)",
   "(metrics) | (tum) | (euroc) | (readers) | (reprojection)",
-  "(timestamps) | (images) | (lenses)",
+  "(timestamps) | (images) | (lenses) | (lidar) | (sensor_yaml)",
 ]
 
 # Pillow reads image files in slam_it.eval.images alone: the cores decode PNGs natively, and

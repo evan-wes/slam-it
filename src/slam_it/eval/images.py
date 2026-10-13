@@ -188,6 +188,28 @@ def write_png(path: str | Path, picture: NDArray[np.uint8]) -> None:
     Image.fromarray(np.ascontiguousarray(checked)).save(file, format="PNG")
 
 
+def write_depth(path: str | Path, depth: NDArray[np.uint16]) -> None:
+    """Write a 16-bit single-channel image (a depth map's raw values) as a PNG, its folder made.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        The file to write.
+    depth : ndarray of uint16, shape (H, W)
+        The values; :func:`read_depth` reads them back as given.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the array is not 2-D uint16.
+    """
+    if not isinstance(depth, np.ndarray) or depth.dtype != np.uint16 or depth.ndim != 2:
+        raise InvalidInputError("depth: expected a 2-D uint16 array")
+    file = Path(path)
+    file.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(np.ascontiguousarray(depth)).save(file, format="PNG")
+
+
 def encode_jpeg(picture: NDArray[np.uint8], quality: int) -> bytes:
     """Encode an 8-bit image as a JPEG file's bytes (baseline, 4:2:0 for colour).
 
