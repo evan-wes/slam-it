@@ -258,3 +258,5 @@ def test_an_import_is_staged_beside_its_folder_and_moved_whole(tmp_path: Path) -
     assert sorted(p.name for p in tmp_path.iterdir()) == ["out"]
     with pytest.raises(InvalidInputError, match="new or empty"), tum.staged(tmp_path / "out"):
         pass
+    with pytest.raises(InvalidInputError, match="names its kind"):
+        tum.write_source(tmp_path, {"sequence": "s"})

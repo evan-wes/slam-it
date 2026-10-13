@@ -104,7 +104,7 @@ import re
 import sys
 import zipfile
 import zlib
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -471,7 +471,7 @@ def import_video(  # noqa: PLR0913 -- the video, the folder, the lens; a dataset
     limits: Limits = UPLOAD,
     clock: Sequence[float] | None = None,
     truth: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None,
-    kind: str = "video",
+    source: Mapping[str, Any] | None = None,
 ) -> None:
     """Import a video into a TUM-format folder (the module docstring).
 
@@ -492,8 +492,10 @@ def import_video(  # noqa: PLR0913 -- the video, the folder, the lens; a dataset
     truth : tuple of ndarray, optional
         A dataset's ground truth, its times on the clock and ``T_world_cam``, written as
         ``groundtruth.txt`` with the frames, so the folder appears whole or not at all.
-    kind : str, optional
-        What imported it, as ``source.json`` names it (default ``"video"``, an upload).
+    source : mapping, optional
+        What a dataset's import names it by in ``source.json``: its ``kind`` and the fields
+        that identify it, as the sequence and its calibration (default ``{"kind": "video"}``,
+        an upload).
 
     Raises
     ------
@@ -514,7 +516,10 @@ def import_video(  # noqa: PLR0913 -- the video, the folder, the lens; a dataset
         frames = _write_frames(path, folder, chosen.lens, limits=limits, clock=clock)
         if truth is not None:
             runs.write_trajectory(folder / "groundtruth.txt", *truth)
-        _write_source(folder, kind, chosen, frames, {"metadata": metadata, "depth": None})
+        named = dict(source or {"kind": "video"})
+        kind = str(named.pop("kind", "video"))
+        read = {**named, "metadata": metadata, "depth": None}
+        _write_source(folder, kind, chosen, frames, read)
 
 
 @dataclass(frozen=True)

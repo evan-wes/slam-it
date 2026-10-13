@@ -3,7 +3,8 @@
 - :mod:`slam_it.eval.readers`: dataset and reconstruction formats (BAL, COLMAP text), read
   into this package's conventions.
 - :mod:`slam_it.eval.tum`: the TUM RGB-D benchmark's colour frames, depth maps, ground-truth
-  poses and calibrations.
+  poses and calibrations; and writing a TUM-format folder, which every import does, staged
+  whole and with a ``source.json`` of what made it.
 - :mod:`slam_it.eval.euroc`: the EuRoC MAV datasets' stereo frames, ground-truth poses and
   calibrations.
 - :mod:`slam_it.eval.images`: reading and writing image files, and encoding the run viewer's

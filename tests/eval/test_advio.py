@@ -120,6 +120,7 @@ def test_a_sequence_imports_upright_timed_by_its_clock_with_the_cameras_truth(
     np.testing.assert_allclose(poses, [f.T_world_cam for f in rendered], atol=1e-9)
     source = json.loads((tmp_path / "tum" / "source.json").read_text())
     assert (source["kind"], source["intrinsics"]["source"]) == ("advio", "given")
+    assert (source["sequence"], source["calibration"]) == ("advio-01", "iphone-02.yaml")
     assert source["intrinsics"]["distortion"] == list(DISTORTION)
 
 

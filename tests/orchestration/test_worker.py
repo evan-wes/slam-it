@@ -182,6 +182,7 @@ def test_a_job_runs_end_to_end(serving: Server, recording: bytes, tmp_path: Path
     assert serving.summary["frames"] == FRAMES
     assert serving.summary["intrinsics"] == "stray-scanner"
     assert (serving.summary["mode"], serving.summary["size"]) == ("monocular", [320, 240])
+    assert serving.summary["mode"] in worker.RUN_MODES
     assert serving.summary["lost"] is False
     assert serving.summary["ran_to"] == serving.summary["clip_seconds"]
     info = json.loads(serving.files["bundle.json"])
@@ -201,6 +202,7 @@ def test_a_recording_with_depth_runs_rgbd(serving: Server, tmp_path: Path) -> No
     assert serving.reason is None
     assert serving.summary is not None
     assert serving.summary["mode"] == "rgbd"
+    assert serving.summary["mode"] in worker.RUN_MODES
     assert (serving.summary["tracked"], serving.summary["tracked_from"]) == (FRAMES, 0.0)
     info = json.loads(serving.files["bundle.json"])
     assert (info["mode"], info["backends"]["cpp"]["alignment"]) == ("rgbd", "se3")

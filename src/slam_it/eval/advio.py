@@ -31,7 +31,7 @@ published; a result on those two sequences says which calibration it used.
 timed by ``frames.csv``, kept distorted with a radial-tangential camera, scaled to a short side
 of 480 (or as asked) and thinned from 60 to 30 fps, with ``groundtruth.txt``, the poses moved
 to the camera, on the frames' clock. The folder is written whole or not at all, and
-``source.json`` names it ADVIO's.
+``source.json`` names it ADVIO's, with the sequence and the calibration file it used.
 
 Run as a program::
 
@@ -251,8 +251,9 @@ def import_sequence(
     stored = upright.turned(-video.quarter_turns(recording))
     limits = video.Limits(MAX_SECONDS, round(MAX_SECONDS * RATE), short_side)
     chosen = lenses.Chosen(stored, "given")
+    named = {"kind": "advio", "sequence": folder.name, "calibration": calibration_name(folder)}
     video.import_video(
-        recording, out, chosen, limits=limits, clock=clock, truth=(times, poses), kind="advio"
+        recording, out, chosen, limits=limits, clock=clock, truth=(times, poses), source=named
     )
 
 

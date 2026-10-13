@@ -844,7 +844,7 @@ def tracking(run: Run, times: ArrayLike) -> Tracking:
         tracked_from=since(tracked[0]) if len(tracked) else None,
         tracked_to=since(tracked[-1]) if len(tracked) else None,
         ran_to=since(ran[-1]) if ran else 0.0,
-        lost=bool(ran) and run.diagnostics[-1]["state"] == LOST,
+        lost=bool(ran) and run.diagnostics[-1].get("state") == LOST,  # optional in the format
     )
 
 

@@ -43,6 +43,8 @@ ORB-SLAM's ``Camera.bf``), ``#`` comments allowed::
 
 **Writing one** (a recording imported, the tests' room): :func:`write_list` writes ``rgb.txt``
 or ``depth.txt``, and :func:`write_camera` a ``camera.txt``, beside the readers that read them.
+Every import writes through :func:`staged`, so a folder appears whole or not at all, and
+records what made it in ``source.json`` (:func:`write_source`).
 
 **Frames and ground truth.** :func:`read_frames` reads what a run consumes: every colour
 frame, each with its nearest depth map, and the camera; it never reads the ground truth, so
@@ -348,15 +350,27 @@ def staged(out: str | Path) -> Iterator[Path]:
 
 
 def write_source(folder: str | Path, record: dict[str, Any]) -> None:
-    """Write a folder's ``source.json``: what its import read and how, ``kind`` first.
+    """Write a folder's ``source.json``: what its import read and how.
+
+    Every import's record has ``kind``, the importer (``video``, ``stray``, ``zju``, ``advio``,
+    ``arkitscenes``); a dataset's names what it imported (``sequence``, or ARKitScenes'
+    ``capture``, and ADVIO's ``calibration``); and ``depth`` is the LiDAR depth imported, null
+    without it. The rest is the importer's own (a video's intrinsics and metadata).
 
     Parameters
     ----------
     folder : str or pathlib.Path
         The folder.
     record : dict
-        The record, JSON-ready: at least ``kind``, the importer.
+        The record, JSON-ready.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the record has no ``kind``.
     """
+    if not isinstance(record.get("kind"), str):
+        raise InvalidInputError("source.json: a record names its kind, the importer")
     Path(folder, "source.json").write_text(json.dumps(record, indent=1) + "\n")
 
 

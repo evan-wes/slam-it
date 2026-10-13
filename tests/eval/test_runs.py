@@ -127,6 +127,8 @@ def test_tracking_says_what_of_a_sequence_a_run_ran_and_tracked() -> None:
     assert (span.tracked_from, span.tracked_to, span.ran_to, span.seconds) == (0.1, 0.2, 0.3, 0.5)
     never = runs.tracking(replace(run, timestamps=times[:0], poses=_poses(0)), times)
     assert (never.tracked, never.tracked_from, never.tracked_to) == (0, None, None)
+    unstated = [{"timestamp": float(t)} for t in times[:4]]  # the format makes state optional
+    assert runs.tracking(replace(run, diagnostics=unstated), times).lost is False
 
 
 def _record_features(folder: Path) -> None:

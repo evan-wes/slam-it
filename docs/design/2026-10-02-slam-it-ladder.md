@@ -1025,6 +1025,19 @@ shared with the owner's other projects.
   - **ScanNet++ for the LiDAR path (L8).** ARKitScenes' poses are ARKit's own estimate.
     ScanNet++ (Yeshwanth et al., ICCV 2023) gives an iPhone's RGB and LiDAR with poses
     registered to a laser scan: an independent reference, for a later revision of the test set.
+  - **A reference paired one to one (round two's L9, route (a)).** `tum.read_sequence` gives
+    each frame its nearest pose, so a reference sparser than the frames hands one pose to
+    several, and the RPE then compares frames holding one pose. ARKitScenes' import
+    interpolates its reference at the frames' times instead (route (b)); TUM's own
+    `associate.py`, and evo, pair one to one. If another sparse reference joins, pair one to one
+    at the root (`metrics.associate`), with the RPE at the reference's own spacing.
+  - **The bake's alignment tied to the RPE, with A2 (round two's A10).** `bundles._score` aligns
+    a run through `runs.evaluate`, so a run whose reference has no pair a frame period apart
+    stays in its own frame. A2 reworks the bake's scoring by map: align with the ATE alone
+    (`runs.evaluate_absolute`), and give the RPE where pairs exist.
+  - **One staging helper (round two's A14).** `tum.staged` serves every import; the bake
+    (`.baking`) and the lens profiles' fetch (`.fetching`, in `lenses`, below `tum`) each write
+    the same mechanism out again. One neutral helper at eval's bottom layer, named by suffix.
 - **Deferred from the SLAM It! rename's review panel**
   ([report](../reviews/2026-10-12-chore-rename-slam-it.md)):
   - **The images' names held by a test (A3).** No test reads `docker/`: a setting a Dockerfile or
