@@ -426,8 +426,10 @@ def features_for(width: int, height: int) -> int:
     ORB-SLAM's settings ask for more features on a larger frame (1,200 for EuRoC's 752x480,
     2,000 for KITTI's 1241x376); this scales the default ``n_features``, its 1,000, by the
     frame's area over :data:`FEATURES_AREA`, rounded, within :data:`FEATURES_BOUNDS`. A run is
-    given it where it is set up, as its ``n_features``; the default stays 1,000, so a dataset's
-    results do not move.
+    given it where it is set up, as its ``n_features``
+    (:func:`slam_it.orchestration.vo.options_for`); the default stays 1,000, so a dataset's
+    results do not move. It is Python's alone, by design: the cores take the count as the
+    setting they already have, and never compute it.
 
     Parameters
     ----------

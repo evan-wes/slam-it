@@ -13,23 +13,29 @@ is its format::
     reference = "ADVIO: IMU and fixed points"
 
 Each sequence runs on one backend (:func:`slam_it.orchestration.vo.run`) with ORB-SLAM's
-settings and, unless ``--features default``, the features for its frame size
-(:func:`slam_it.edge.options.features_for`), then is measured:
+settings and, unless ``--features default``, the features for its frame size, as the demo's
+worker sets a run up (:func:`slam_it.orchestration.vo.options_for`), then is measured:
 
 - ``frames``: the sequence's frames for its mode; ``run``: those run, since a run ends at the
   frame it loses the track at;
 - ``tracked`` and ``share``: the frames tracked, and their share of the sequence's;
-- ``tracked_from``, ``tracked_to`` and ``ran_to``: times since the sequence's first frame
-  (:func:`slam_it.orchestration.worker.summarize`), and ``lost``;
+- ``tracked_from``, ``tracked_to`` and ``ran_to``: times since the sequence's first frame, and
+  ``lost`` (:func:`slam_it.eval.runs.tracking`);
 - ``ate``: the RMSE in metres over the tracked frames matched to the reference, aligned Sim(3)
-  for monocular and SE(3) otherwise (:func:`slam_it.eval.runs.evaluate`), with ``matched`` and
-  the ``reference`` named; null, with ``unscored`` saying why, if it cannot be scored;
-- ``p95``: the 95th percentile of a frame's latency, building and tracking it, in seconds
-  (:func:`slam_it.eval.budgets.judge`).
+  for monocular and SE(3) otherwise, with ``matched`` and the ``reference`` named; null, with
+  ``unscored`` saying why, if it cannot be scored. It is scored alone
+  (:func:`slam_it.eval.runs.evaluate_absolute`), so a reference too sparse for a relative
+  error, ARKitScenes' 10 Hz poses, still scores it;
+- ``p95``: the 95th percentile of a frame's latency, building and tracking it, in seconds,
+  read against the frame period ``deadline``, with the frames ``late`` past it
+  (:func:`slam_it.eval.budgets.judge`); null, with ``unjudged`` saying why, if the run is too
+  short to judge.
 
 ``--camera nominal`` runs each sequence with a guess for its camera in place of its own: a
 typical phone's field of view (:func:`slam_it.eval.lenses.nominal`), without distortion, on a
-folder of links to its frames written beside the run. It measures what a guessed lens costs.
+folder of links to its frames written beside the run. Its depth's virtual baseline is kept, so
+an RGB-D run's split of near and far points does not move with the guess. It measures what a
+guessed lens costs.
 
 The results are one JSON line per sequence in ``OUT/results.jsonl``, and a table on stdout::
 
@@ -40,7 +46,6 @@ The results are one JSON line per sequence in ``OUT/results.jsonl``, and a table
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 import os
 import sys
@@ -50,10 +55,10 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
-from slam_it.edge.options import MODES, Options, features_for
+from slam_it.edge.options import MODES, Options
 from slam_it.eval import budgets, lenses, runs, tum
 from slam_it.foundations.errors import InvalidInputError, SlamItError
-from slam_it.orchestration import vo, worker
+from slam_it.orchestration import vo
 
 KEYS = ("name", "folder", "mode", "reference")
 """Each sequence's keys in the config, every one a string."""
@@ -107,8 +112,9 @@ def read_config(path: Path) -> list[Entry]:
 def nominal_folder(sequence: Path, out: Path) -> Path:
     """Write a folder of links to a sequence's frames, its camera a nominal guess; return it.
 
-    The guess is :func:`slam_it.eval.lenses.nominal` at the frames' size, a pinhole; the depth
-    scale and ``bf`` stay the sequence's, so an RGB-D run still reads its depth.
+    The guess is :func:`slam_it.eval.lenses.nominal` at the frames' size, a pinhole. The depth
+    scale stays the sequence's, so an RGB-D run still reads its depth, and ``bf`` is scaled with
+    the guessed focal length, so its virtual baseline, ``bf`` over the focal length, is kept.
     """
     camera = tum.read_camera(sequence)
     out.mkdir(parents=True)
@@ -124,7 +130,7 @@ def nominal_folder(sequence: Path, out: Path) -> Path:
             camera.width,
             camera.height,
             camera.depth_scale,
-            camera.bf,
+            None if camera.bf is None else camera.bf * guess.fx / float(camera.intrinsics[0]),
         ),
         note=f"a nominal guess for {sequence.name}'s camera (scripts/measure_testset.py)",
     )
@@ -137,13 +143,10 @@ def measure(
     """Run a sequence and measure it (the module docstring); return its result."""
     folder = nominal_folder(entry.folder, out / "sequence") if nominal else entry.folder
     camera = tum.read_camera(folder)
-    options = (
-        Options(n_features=features_for(camera.width, camera.height)) if by_size else Options()
-    )
+    options = vo.options_for(camera.width, camera.height) if by_size else Options()
     run = vo.run("tum", folder, entry.mode, out / "run", backend=backend, options=options)
     times = vo.open_source("tum", folder, entry.mode).times
-    size = (camera.width, camera.height)
-    summary = worker.summarize(run, times, "nominal" if nominal else "exact", size)
+    span = runs.tracking(run, times)
     result: dict[str, Any] = {
         "name": entry.name,
         "mode": entry.mode,
@@ -152,26 +155,35 @@ def measure(
         "size": [camera.width, camera.height],
         "features": options.n_features,
         "frames": len(times),
-        "run": summary["frames"],
-        "tracked": summary["tracked"],
-        "share": summary["tracked"] / len(times) if len(times) else 0.0,
-        **{key: summary[key] for key in ("tracked_from", "tracked_to", "ran_to", "lost")},
+        "run": span.frames,
+        "tracked": span.tracked,
+        "share": span.tracked / len(times) if len(times) else 0.0,
+        "tracked_from": span.tracked_from,
+        "tracked_to": span.tracked_to,
+        "ran_to": span.ran_to,
+        "lost": span.lost,
         "reference": entry.reference,
         "ate": None,
         "matched": 0,
         "unscored": None,
         "p95": None,
+        "deadline": None,
+        "late": None,
+        "unjudged": None,
     }
     truth = runs.ground_truth("tum", folder)
     try:
         if truth is None:
             raise InvalidInputError("no ground truth")
-        scored = runs.evaluate(run, *truth)
+        scored = runs.evaluate_absolute(run, *truth)
         result.update(ate=scored.absolute.rmse, matched=scored.matched)
     except InvalidInputError as error:
         result["unscored"] = str(error)
-    with contextlib.suppress(InvalidInputError):  # fewer than two frames run: no period
-        result["p95"] = budgets.judge(run).latency.p95
+    try:
+        judged = budgets.judge(run)
+        result.update(p95=judged.latency.p95, deadline=judged.deadline, late=judged.late)
+    except InvalidInputError as error:  # a run too short to judge: said, never hidden
+        result["unjudged"] = str(error)
     return result
 
 
@@ -184,7 +196,11 @@ def row(result: dict[str, Any]) -> str:
         else f"{result['tracked_from']:.1f}-{result['tracked_to']:.1f} s"
     )
     ate = "-" if result["ate"] is None else f"{100 * result['ate']:.1f} cm ({result['matched']})"
-    p95 = "-" if result["p95"] is None else f"{1000 * result['p95']:.0f} ms"
+    p95 = (
+        "-"
+        if result["p95"] is None
+        else f"{1000 * result['p95']:.0f} of {1000 * result['deadline']:.0f} ms"
+    )
     return (
         f"| {result['name']} | {result['mode']} | {width}x{height} | {result['features']} | "
         f"{result['tracked']}/{result['frames']} ({100 * result['share']:.0f}%) | {span} | "
@@ -194,7 +210,7 @@ def row(result: dict[str, Any]) -> str:
 
 HEADER = (
     "| sequence | mode | size | features | tracked | tracked from-to | lost | ATE (matched) | "
-    "p95 latency |\n|---|---|---|---|---|---|---|---|---|"
+    "p95 latency of the frame period |\n|---|---|---|---|---|---|---|---|---|"
 )
 """The table's header."""
 

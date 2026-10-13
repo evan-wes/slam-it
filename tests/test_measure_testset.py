@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
+import sys
 from pathlib import Path
 from types import ModuleType
 
 import numpy as np
 import pytest
 
-from slam_it.eval import lenses, tum
+from slam_it.eval import lenses, runs, tum
 from slam_it.foundations.errors import InvalidInputError
 from tests.edge import room
 from tests.edge.support import ATE_BOUND, FRAMES
@@ -73,6 +75,9 @@ def test_a_sequence_is_run_measured_and_tabled(
     assert result["ate"] < ATE_BOUND["rgbd"]
     assert (result["matched"], result["reference"]) == (FRAMES, "the room's own poses")
     assert result["p95"] > 0.0
+    assert result["deadline"] == pytest.approx(1 / 30, abs=1e-6)  # rgb.txt's microseconds
+    assert result["late"] >= 0
+    assert result["unjudged"] is None
     table = capsys.readouterr().out.splitlines()
     assert table[0].startswith("| sequence | mode |")
     assert table[2].startswith(f"| room | rgbd | 320x240 | 1000 | {FRAMES}/{FRAMES} (100%) |")
@@ -89,7 +94,10 @@ def test_a_nominal_camera_is_guessed_on_links_to_the_frames(sequence: Path, tmp_
     camera, own = tum.read_camera(folder), tum.read_camera(sequence)
     guess = lenses.nominal(320, 240)
     np.testing.assert_allclose(camera.intrinsics, [guess.fx, guess.fy, guess.cx, guess.cy])
-    assert (camera.depth_scale, camera.bf) == (own.depth_scale, own.bf)
+    assert camera.depth_scale == own.depth_scale
+    assert camera.bf is not None
+    assert own.bf is not None
+    assert camera.bf / guess.fx == pytest.approx(own.bf / own.intrinsics[0])  # the baseline kept
     result = json.loads((tmp_path / "out" / "results.jsonl").read_text())
     assert result["camera"] == "nominal"
 
@@ -153,3 +161,48 @@ def test_main_refuses_an_unknown_name_or_a_used_folder(
     with pytest.raises(SystemExit):
         _script().main([str(config), str(out), *extra])
     assert message in capsys.readouterr().err
+
+
+@pytest.mark.usefixtures("cpp")
+def test_a_reference_too_sparse_for_a_relative_error_still_scores_the_ate(
+    sequence: Path, tmp_path: Path
+) -> None:
+    """A reference at a third of the frame rate, as ARKitScenes' is: every third frame scored."""
+    folder = tmp_path / "sparse"
+    folder.mkdir()
+    for name in ("rgb", "rgb.txt", "depth", "depth.txt", "camera.txt"):
+        (folder / name).symlink_to(sequence / name)
+    times, poses = runs.read_trajectory(sequence / "groundtruth.txt")
+    runs.write_trajectory(folder / "groundtruth.txt", times[::3], poses[::3])
+    config = _config(tmp_path / "testset.toml", folder)
+    assert _script().main([str(config), str(tmp_path / "out")]) == 0
+    result = json.loads((tmp_path / "out" / "results.jsonl").read_text())
+    assert (result["matched"], result["unscored"]) == (len(times[::3]), None)
+    assert result["ate"] < ATE_BOUND["rgbd"]
+
+
+@pytest.mark.usefixtures("cpp")
+def test_a_run_too_short_to_judge_says_why(tmp_path: Path) -> None:
+    """One frame has no period to judge its latency against: said, not hidden."""
+    write_tum(tmp_path / "one", room.sequence(1))
+    config = _config(tmp_path / "testset.toml", tmp_path / "one")
+    assert _script().main([str(config), str(tmp_path / "out")]) == 0
+    result = json.loads((tmp_path / "out" / "results.jsonl").read_text())
+    assert result["p95"] is None
+    assert "two frames" in result["unjudged"]
+
+
+def test_the_measure_never_needs_the_video_import() -> None:
+    """Measuring TUM-format folders needs neither PyAV nor the demo's worker."""
+    script = str(REPO / "scripts/measure_testset.py")
+    probe = (
+        "import importlib.util, sys\n"
+        f"spec = importlib.util.spec_from_file_location('m', {script!r})\n"
+        "spec.loader.exec_module(importlib.util.module_from_spec(spec))\n"
+        "print(sorted(m for m in ('av', 'slam_it.eval.video', 'slam_it.orchestration.worker')"
+        " if m in sys.modules))\n"
+    )
+    found = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+    assert found.stdout.strip() == "[]"

@@ -86,8 +86,6 @@ from typing import IO, Any
 import numpy as np
 from numpy.typing import NDArray
 
-from slam_it.edge.options import Options, features_for
-from slam_it.edge.pipeline import State
 from slam_it.eval import lenses, runs, tum, video
 from slam_it.foundations.errors import InvalidInputError, SlamItError
 from slam_it.orchestration import bundles, vo
@@ -458,35 +456,15 @@ def _work(upload_path: Path, kind: str, out: Path, report: Callable[[str], None]
         source = chosen.source
     report("running")
     mode = "rgbd" if (sequence / "depth.txt").is_file() else "monocular"  # LiDAR depth imported
-    options = options_for(sequence)
+    camera = tum.read_camera(sequence)
+    options = vo.options_for(camera.width, camera.height)
     run = vo.run(
         "tum", sequence, mode, out / "run", backend="cpp", options=options, record_features=True
     )
     report("baking")
     bundles.bake([out / "run"], sequence, out / "bundle")
-    camera = tum.read_camera(sequence)
     times = vo.open_source("tum", sequence, mode).times
     return summarize(run, times, source, (camera.width, camera.height))
-
-
-def options_for(sequence: Path) -> Options:
-    """Return a job's run settings: ORB-SLAM's, with features for its frames' size.
-
-    The features are :func:`slam_it.edge.options.features_for` the imported frames' size, so
-    a 16:9 video's frames get more than a 4:3 one's.
-
-    Parameters
-    ----------
-    sequence : pathlib.Path
-        The imported TUM-format folder.
-
-    Returns
-    -------
-    slam_it.edge.options.Options
-        The settings.
-    """
-    camera = tum.read_camera(sequence)
-    return Options(n_features=features_for(camera.width, camera.height))
 
 
 def summarize(
@@ -494,11 +472,10 @@ def summarize(
 ) -> dict[str, Any]:
     """Return a job's summary: what its run made, and what of the clip it ran and tracked.
 
-    A run ends at the first frame it loses the track at, so the rest of a clip is then not run;
-    and a run tracks nothing until it has made its first map, a monocular one from two views,
-    an RGB-D one from a frame with enough keypoints with depth. The status page says
-    both (``viewer/src/jobs.js``), so that a short result is not taken for a cropped video, and
-    warns when the frames arrived smaller than the import's short side.
+    What of the clip it ran and tracked is :func:`slam_it.eval.runs.tracking`'s. The status
+    page says both why a run can end early and why it can start late (``viewer/src/jobs.js``),
+    so that a short result is not taken for a cropped video, and warns when the frames arrived
+    smaller than the import's short side.
 
     Parameters
     ----------
@@ -523,26 +500,20 @@ def summarize(
         frame run's time; every time since the clip's first frame, to the millisecond; and
         ``lost``, whether the run ended by losing the track.
     """
-    start = float(times[0]) if len(times) else 0.0
-
-    def since(time: float) -> float:
-        return round(float(time) - start, 3)
-
-    ran = [d["timestamp"] for d in run.diagnostics]
-    tracked = run.timestamps
+    span = runs.tracking(run, times)
     return {
-        "frames": len(run.diagnostics),
-        "tracked": len(tracked),
+        "frames": span.frames,
+        "tracked": span.tracked,
         "keyframes": len(run.final_keyframes()[0]),
         "points": len(run.final_points()),
         "mode": run.mode,
         "intrinsics": intrinsics,
         "size": [int(size[0]), int(size[1])],
-        "clip_seconds": since(times[-1]) if len(times) else 0.0,
-        "tracked_from": since(tracked[0]) if len(tracked) else None,
-        "tracked_to": since(tracked[-1]) if len(tracked) else None,
-        "ran_to": since(ran[-1]) if ran else 0.0,
-        "lost": bool(ran) and run.diagnostics[-1]["state"] == State.LOST,
+        "clip_seconds": span.seconds,
+        "tracked_from": span.tracked_from,
+        "tracked_to": span.tracked_to,
+        "ran_to": span.ran_to,
+        "lost": span.lost,
     }
 
 
