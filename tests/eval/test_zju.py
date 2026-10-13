@@ -146,6 +146,15 @@ def test_a_malformed_sequence_is_refused(tmp_path: Path, change: object, message
         zju.import_sequence(tmp_path / "B0", tmp_path / "tum")
 
 
+@pytest.mark.parametrize("name", ["../../secret.png", "/etc/hostname", "sub/0.png", ".."])
+def test_a_frame_named_outside_the_images_folder_is_refused(tmp_path: Path, name: str) -> None:
+    """``data.csv`` names a file in the images folder, never a path out of it or into another."""
+    _write(tmp_path / "B0")
+    (tmp_path / "B0" / "camera" / "data.csv").write_text(f"#t,name\n{TIMES[0]},{name}\n")
+    with pytest.raises(InvalidInputError, match="is not a file in images/"):
+        zju.import_sequence(tmp_path / "B0", tmp_path / "tum")
+
+
 def test_frames_out_of_order_are_refused(tmp_path: Path) -> None:
     """Times that do not increase, in the frames or the ground truth."""
     _write(tmp_path / "B0", times=(TIMES[0], TIMES[2], TIMES[1]))

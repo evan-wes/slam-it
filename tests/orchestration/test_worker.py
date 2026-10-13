@@ -695,3 +695,10 @@ def test_a_job_runs_with_features_for_its_frames_size(tmp_path: Path) -> None:
     intrinsics = np.array([600.0, 600.0, 426.5, 239.5])
     tum.write_camera(tmp_path, tum.Camera("pinhole", intrinsics, 854, 480, 1000.0, None))
     assert worker.options_for(tmp_path) == replace(Options(), n_features=1334)
+
+
+def test_a_failures_reason_is_cut_to_what_the_server_keeps(serving: Server) -> None:
+    """However long an upload makes a refusal, the report carries the first 500 characters."""
+    job = worker.Job("a-job", "vo", "stray", f"{serving.url}/upload")
+    worker.Client(serving.url, TOKEN).failed(job, "x" * 2 * worker.REASON_LENGTH)
+    assert serving.reason == "x" * worker.REASON_LENGTH

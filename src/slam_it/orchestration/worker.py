@@ -129,6 +129,11 @@ SEQUENCE = "your-video"
 """The folder an upload is imported into: a run names its sequence after it, and the viewer
 shows that name."""
 
+REASON_LENGTH = 500
+"""The most of a failure's reason a report carries: what the server keeps
+(``slam_it_server.app.REASON_LENGTH``), so that no reason, however an upload makes it, is long
+enough for the server to refuse the report."""
+
 TOKEN_VARIABLE = "SLAM_IT_WORKER_TOKEN"
 """The environment variable that holds the worker's token."""
 
@@ -370,8 +375,8 @@ class Client:
         self._post(f"/api/worker/jobs/{job.id}/done", {"summary": summary})
 
     def failed(self, job: Job, reason: str) -> None:
-        """Report a job failed, with a reason fit to show its owner."""
-        self._post(f"/api/worker/jobs/{job.id}/failed", {"reason": reason})
+        """Report a job failed, its reason fit to show its owner, cut to :data:`REASON_LENGTH`."""
+        self._post(f"/api/worker/jobs/{job.id}/failed", {"reason": reason[:REASON_LENGTH]})
 
 
 class _Beat:

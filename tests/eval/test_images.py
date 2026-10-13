@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import io
 import json
+import zlib
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
+from PIL import Image
 
 from slam_it.eval import images, tum
 from slam_it.foundations.errors import InvalidInputError
@@ -120,3 +123,55 @@ def test_write_png_refuses_what_is_not_8_bit_gray_or_rgb(tmp_path: Path) -> None
         with pytest.raises(InvalidInputError, match="picture: expected"):
             images.write_png(tmp_path / "frame.png", picture)
     assert not (tmp_path / "frame.png").exists()
+
+
+def _chunk(kind: bytes, body: bytes) -> bytes:
+    """Return a PNG chunk: its length, kind, body and CRC."""
+    return len(body).to_bytes(4, "big") + kind + body + zlib.crc32(kind + body).to_bytes(4, "big")
+
+
+def _gray_png(width: int, height: int) -> bytes:
+    """Return a valid 8-bit gray PNG's bytes."""
+    buffer = io.BytesIO()
+    Image.fromarray(np.zeros((height, width), np.uint8)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+SIGNATURE = b"\x89PNG\r\n\x1a\n"
+"""A PNG file's first eight bytes."""
+
+IHDR = _chunk(b"IHDR", (4).to_bytes(4, "big") * 2 + bytes([8, 0, 0, 0, 0]))
+"""A 4x4 8-bit gray image's header chunk."""
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        SIGNATURE + IHDR[:12],  # a header cut short
+        SIGNATURE
+        + IHDR
+        + _chunk(b"iCCP", b"p\0\0" + b"x" * (1 << 20 | 1)),  # past Pillow's text cap
+        _gray_png(4, 4)[:-12] + _chunk(b"IHDR", b"bad") + _chunk(b"IEND", b""),  # read at the end
+    ],
+    ids=["truncated-header", "huge-profile", "bad-chunk-after-the-data"],
+)
+def test_pillows_other_parse_errors_are_invalid_input(data: bytes) -> None:
+    """A malformed chunk raises ValueError or SyntaxError in Pillow, not OSError: ours too."""
+    with pytest.raises(InvalidInputError, match="image: not a readable image"):
+        images.read_gray(data)
+
+
+def test_bytes_read_as_the_file_does_and_a_side_over_the_bound_is_refused() -> None:
+    """From bytes, as from a file; the size bound is checked before the pixels are decoded."""
+    data = _gray_png(6, 4)
+    assert images.size(data) == (6, 4)
+    np.testing.assert_array_equal(images.read_gray(data, max_side=6), np.zeros((4, 6), np.uint8))
+    with pytest.raises(InvalidInputError, match=r"image: 6x4, over 5 pixels a side"):
+        images.read_gray(data, max_side=5)
+
+
+def test_a_decompression_bombs_warning_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Past Pillow's warning threshold, not only its error one, an image is refused."""
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 20)  # 24 pixels: a warning, not Pillow's error
+    with pytest.raises(InvalidInputError, match="not a readable image"):
+        images.read_gray(_gray_png(6, 4))

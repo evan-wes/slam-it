@@ -55,10 +55,10 @@ keypoint.
 ``rgb.mp4``, ``camera_matrix.csv`` and ``odometry.csv`` are opened, and, for each frame the
 import keeps, its LiDAR maps, ``depth/NNNNNN.png`` and ``confidence/NNNNNN.png`` (the frame's
 index, six digits), each size checked against its own cap before and while it is read, and a
-map's declared size, in its PNG header, against :data:`STRAY_MAP_SIDE` before it is decoded;
-anything else is ignored. A name that is absolute, climbs out of a folder or appears twice
-refuses the zip, and so does one the zip cannot give back whole. The CSVs are parsed strictly:
-numbers only, and one ``odometry.csv`` row per video frame.
+map's size, as it will decode, against :data:`STRAY_MAP_SIDE` before it is decoded, from its
+bytes in memory; anything else is ignored. A name that is absolute, climbs out of a folder or
+appears twice refuses the zip, and so does one the zip cannot give back whole. The CSVs are
+parsed strictly: numbers only, and one ``odometry.csv`` row per video frame.
 
 **Stray Scanner's depth.** A zip with depth maps imports as RGB-D: every frame kept needs its
 depth and confidence maps, or the zip is refused; each pair is turned upright with its frame,
@@ -101,6 +101,7 @@ import contextlib
 import csv
 import io
 import json
+import re
 import shutil
 import sys
 import uuid
@@ -184,7 +185,10 @@ STRAY_MAPS = {"depth": 2**20, "confidence": 2**20}
 one: ARKit's are 256x192, 96 KiB as raw 16-bit depth, and a PNG adds little to its raw size."""
 
 STRAY_MAP_SIDE = 1024
-"""The largest side a LiDAR map may declare in its PNG header, checked before it is decoded."""
+"""The largest side a LiDAR map may have, checked before it is decoded."""
+
+_FRAME_NUMBER = re.compile(r"[0-9]{6}")
+"""A LiDAR map's frame number: six ASCII digits (``str.isdigit`` takes others, as ``²``)."""
 
 ODOMETRY_COLUMNS = ("timestamp", "frame", "x", "y", "z", "qx", "qy", "qz", "qw")
 """The ``odometry.csv`` columns the import reads: ARKit's camera pose for each frame."""
@@ -542,7 +546,7 @@ def _stray_map(name: PurePosixPath) -> tuple[str, int] | None:
     """Return a LiDAR map's kind and frame from its name, ``[folder/]<kind>/NNNNNN.png``."""
     if len(name.parts) not in (2, 3) or name.parent.name not in STRAY_MAPS:
         return None
-    if name.suffix != ".png" or len(name.stem) != 6 or not name.stem.isdigit():
+    if name.suffix != ".png" or not _FRAME_NUMBER.fullmatch(name.stem):
         return None
     return name.parent.name, int(name.stem)
 
@@ -560,9 +564,11 @@ def _stray_entries(archive: zipfile.ZipFile) -> _StrayEntries:
             kind, frame = lidar_map
             if lidar_map in maps:
                 raise InvalidInputError(f"zip: {kind}/{frame:06d}.png appears twice")
-            if info.file_size > STRAY_MAPS[kind]:
+            if (
+                info.file_size > STRAY_MAPS[kind]
+            ):  # named as we name it: the zip's name is free text
                 raise InvalidInputError(
-                    f"zip: {info.filename} is over its cap of {STRAY_MAPS[kind]}"
+                    f"zip: {kind}/{frame:06d}.png is over its cap of {STRAY_MAPS[kind]}"
                 )
             maps[lidar_map] = info
             continue
@@ -597,31 +603,23 @@ def _read_entry(archive: zipfile.ZipFile, info: zipfile.ZipInfo, cap: int) -> It
 
 
 def _read_map(
-    archive: zipfile.ZipFile, entries: _StrayEntries, kind: str, frame: int, scratch: Path
+    archive: zipfile.ZipFile, entries: _StrayEntries, kind: str, frame: int
 ) -> NDArray[np.uint16] | NDArray[np.uint8]:
-    """Return a frame's LiDAR map, its declared size checked before it is decoded.
+    """Return a frame's LiDAR map, decoded from its bytes, its size checked first.
 
-    The bytes are decoded from a file of the import's own name in its folder, ``scratch``.
+    The size checked is the one Pillow will decode, every header chunk parsed
+    (:mod:`slam_it.eval.images`), against :data:`STRAY_MAP_SIDE`.
     """
     info = entries.maps.get((kind, frame))
     if info is None:
         raise InvalidInputError(f"zip: no {kind}/{frame:06d}.png for frame {frame}")
     data = b"".join(_read_entry(archive, info, STRAY_MAPS[kind]))
-    if data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
-        raise InvalidInputError(f"zip: {kind}/{frame:06d}.png is not a PNG")
-    width, height = int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
-    if not (1 <= width <= STRAY_MAP_SIDE and 1 <= height <= STRAY_MAP_SIDE):
-        raise InvalidInputError(
-            f"zip: {kind}/{frame:06d}.png is {width}x{height}, outside 1 to {STRAY_MAP_SIDE}"
-        )
-    scratch.write_bytes(data)
     try:
-        return images.read_depth(scratch) if kind == "depth" else images.read_gray(scratch)
-    except InvalidInputError:  # its message names the scratch file, not the zip's entry
-        expected = "a 16-bit depth map" if kind == "depth" else "an 8-bit confidence map"
-        raise InvalidInputError(f"zip: {kind}/{frame:06d}.png is not {expected}") from None
-    finally:
-        scratch.unlink()
+        if kind == "depth":
+            return images.read_depth(data, STRAY_MAP_SIDE)
+        return images.read_gray(data, STRAY_MAP_SIDE)
+    except InvalidInputError as error:
+        raise InvalidInputError(f"zip: {kind}/{frame:06d}.png: {error}") from None
 
 
 def _write_depth(
@@ -638,12 +636,11 @@ def _write_depth(
     """
     camera = _matrix(frames.camera)
     turns = frames.rotation // 90
-    scratch = out / ".map.png"
     listed = []
     for time, frame in zip(frames.times, frames.decoded, strict=True):
         stamp = f"{time:.6f}"
-        depth = np.rot90(_read_map(archive, entries, "depth", frame, scratch), turns)
-        confidence = np.rot90(_read_map(archive, entries, "confidence", frame, scratch), turns)
+        depth = np.rot90(_read_map(archive, entries, "depth", frame), turns)
+        confidence = np.rot90(_read_map(archive, entries, "confidence", frame), turns)
         try:
             registered = lidar.registered_depth(
                 np.ascontiguousarray(depth, dtype=np.uint16),

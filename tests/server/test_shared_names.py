@@ -42,6 +42,11 @@ def test_the_names_are_the_workers() -> None:
     assert sources == ("stray-scanner", *lenses.SOURCES)  # the worker names a zip's source
 
 
+def test_a_failures_reason_is_cut_where_the_server_cuts_it() -> None:
+    """The worker never posts a reason longer than the server keeps, so it is never refused."""
+    assert worker.REASON_LENGTH == app.REASON_LENGTH
+
+
 def test_the_heartbeat_is_well_inside_the_silence() -> None:
     """The server fails a job it has not heard from for SILENCE: at least three heartbeats."""
     assert config.SILENCE >= 3 * worker.HEARTBEAT

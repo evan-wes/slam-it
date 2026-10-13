@@ -481,14 +481,27 @@ def test_stray_depth_turns_upright_with_its_frame(
     assert np.all(upright[:MEDIUM_ROWS, :MEDIUM_COLUMNS] == 0)
 
 
-def _png_header(width: int, height: int) -> bytes:
-    """Return a PNG's signature and header chunk alone, declaring a 16-bit gray image's size."""
-    chunk = b"IHDR" + width.to_bytes(4, "big") + height.to_bytes(4, "big") + bytes([16, 0, 0, 0, 0])
+def _png(*sizes: tuple[int, int]) -> bytes:
+    """Return a 16-bit gray PNG with a header chunk for each size, then a few pixels' data.
+
+    Pillow takes the last header's size, so a map may declare one size first and decode at
+    another; the data is never reached, as the size is refused once the headers are parsed.
+    """
+
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return (
+            len(body).to_bytes(4, "big") + kind + body + zlib.crc32(kind + body).to_bytes(4, "big")
+        )
+
+    headers = b"".join(
+        chunk(b"IHDR", w.to_bytes(4, "big") + h.to_bytes(4, "big") + bytes([16, 0, 0, 0, 0]))
+        for w, h in sizes
+    )
     return (
         b"\x89PNG\r\n\x1a\n"
-        + (13).to_bytes(4, "big")
-        + chunk
-        + zlib.crc32(chunk).to_bytes(4, "big")
+        + headers
+        + chunk(b"IDAT", zlib.compress(bytes(16)))
+        + chunk(b"IEND", b"")
     )
 
 
@@ -496,19 +509,24 @@ def _png_header(width: int, height: int) -> bytes:
     ("files", "names", "message"),
     [
         ({"confidence/000002.png": None}, [], r"no confidence/000002\.png for frame 2"),
-        ({"depth/000000.png": b"not a png"}, [], r"depth/000000\.png is not a PNG"),
-        ({"depth/000000.png": _png_header(2000, 1500)}, [], "is 2000x1500, outside 1 to 1024"),
+        (
+            {"depth/000000.png": b"not a png"},
+            [],
+            r"depth/000000\.png: image: not a readable image \(no image",
+        ),
+        ({"depth/000000.png": _png((2000, 1500))}, [], "2000x1500, over 1024 pixels"),
+        ({"depth/000000.png": _png((256, 192), (2000, 1500))}, [], "2000x1500, over 1024 pixels"),
         ({"depth/000000.png": b"\0" * (2**20 + 1)}, [], "over its cap"),
         ({}, ["depth/000002.png"], r"depth/000002\.png appears twice"),
         (
             {"depth/000000.png": png(np.zeros((192, 256), np.uint8))},
             [],
-            r"depth/000000\.png is not a 16-bit depth map",
+            r"depth/000000\.png: image: expected a 16-bit",
         ),
         (
             {"confidence/000000.png": png(np.zeros((192, 256), np.uint16))},
             [],
-            r"confidence/000000\.png is not an 8-bit confidence map",
+            r"confidence/000000\.png: image: expected an 8-bit",
         ),
         (
             {
@@ -531,6 +549,32 @@ def test_lidar_maps_missing_or_malformed_refuse_the_zip_and_leave_nothing(
     """
     recording = stray_zip(tmp_path / "bad.zip", rendered[:4], depth=True, files=files, names=names)
     _refused(recording, tmp_path / "outs" / "out", message)
+
+
+@pytest.mark.parametrize("stem", ["00000\u00b2", "\u0660\u0660\u0660\u0660\u0660\u0661"])
+def test_a_map_named_with_other_than_six_ascii_digits_is_not_a_map(
+    stem: str, rendered: list[room.Frame], tmp_path: Path
+) -> None:
+    """A superscript two, or Arabic-Indic digits, never name a frame: the entry is ignored."""
+    folder = "2026-10-10--12-00-00/"
+    recording = stray_zip(tmp_path / "room.zip", rendered[:3], names=[f"{folder}depth/{stem}.png"])
+    video.import_stray(recording, tmp_path / "out")
+    _, source = _imported(tmp_path / "out")
+    assert source["depth"] is None
+
+
+def test_an_oversized_map_is_named_as_we_name_it_not_as_the_zip_does(
+    rendered: list[room.Frame], tmp_path: Path
+) -> None:
+    """A map's folder is free text: a newline in it never reaches the refusal."""
+    recording = stray_zip(tmp_path / "room.zip", rendered[:3], depth=True)
+    with zipfile.ZipFile(recording, "a") as archive:
+        archive.writestr("forged\nline/depth/000004.png", b"\0" * (2**20 + 1))
+    with pytest.raises(
+        InvalidInputError, match=r"zip: depth/000004\.png is over its cap"
+    ) as raised:
+        video.import_stray(recording, tmp_path / "out")
+    assert "\n" not in str(raised.value)
 
 
 def test_main_imports_and_says_what(

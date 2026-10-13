@@ -11,6 +11,12 @@ way:
 - **Colour:** RGB as stored; gray replicated into three channels; alpha dropped.
 - **Depth:** a 16-bit single-channel PNG's raw values; the dataset modules scale them.
 
+Each reader takes a file, or a file's bytes (an upload's entry, never written to disk), and
+optionally the longest side it accepts: checked against the size Pillow will decode, every
+header chunk parsed, before any pixel is (a PNG may declare one size and decode at another). A
+file Pillow cannot parse, and one past its decompression-bomb threshold, are refused as invalid
+input, never raised as Pillow's own errors or warnings. :func:`size` reads the size alone.
+
 :func:`encode_jpeg` encodes a frame for the run viewer's bundles
 (:mod:`slam_it.orchestration.bundles`); :func:`write_png` writes the frames a phone's video
 is imported as (:mod:`slam_it.eval.video`).
@@ -20,12 +26,15 @@ An import-linter contract keeps Pillow here: no other slam_it module may import 
 
 from __future__ import annotations
 
+import contextlib
 import io
+import warnings
+from collections.abc import Iterator
 from pathlib import Path
 
 import numpy as np
 from numpy.typing import NDArray
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 from slam_it.foundations import image
 from slam_it.foundations.errors import InvalidInputError
@@ -40,50 +49,115 @@ _DEPTH_MODES = ("I;16", "I;16B", "I;16L", "I")
 """Pillow's modes for a 16-bit single-channel PNG (``I`` holds it as 32-bit integers)."""
 
 
-def _open(path: str | Path) -> Image.Image:
-    """Open and decode an image file fully.
+Source = str | Path | bytes
+"""An image file's path, or its bytes."""
+
+_PILLOW_ERRORS = (
+    OSError, ValueError, SyntaxError, Image.DecompressionBombError,
+    Image.DecompressionBombWarning,
+)  # fmt: skip
+"""What Pillow raises for a file it cannot parse: a truncated or malformed chunk raises
+``ValueError`` or ``SyntaxError``, not only ``OSError``; a bomb's warning is made an error."""
+
+
+def _name(source: Source) -> str:
+    """Return how messages name an image: its path, or ``image`` for bytes."""
+    return "image" if isinstance(source, bytes) else str(source)
+
+
+@contextlib.contextmanager
+def _opened(source: Source, max_side: int | None) -> Iterator[Image.Image]:
+    """Open an image, its size checked against `max_side`; Pillow's errors made ours.
 
     Raises
     ------
     FileNotFoundError
-        If the file does not exist.
+        If a path is not a file.
+    slam_it.foundations.errors.InvalidInputError
+        If it is not an image Pillow can read, or a side is over `max_side`.
+    """
+    if not isinstance(source, bytes) and not Path(source).is_file():
+        raise FileNotFoundError(f"no image at {source}")
+    stream = io.BytesIO(source) if isinstance(source, bytes) else Path(source)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(stream) as opened:  # every header chunk parsed: its size is final
+                width, height = opened.size
+                if max_side is not None and max(width, height) > max_side:
+                    raise InvalidInputError(
+                        f"{_name(source)}: {width}x{height}, over {max_side} pixels a side"
+                    )
+                yield opened
+    except InvalidInputError:
+        raise
+    except UnidentifiedImageError:  # its message names the stream, not the image
+        raise InvalidInputError(
+            f"{_name(source)}: not a readable image (no image format)"
+        ) from None
+    except _PILLOW_ERRORS as error:  # a bomb: far above any dataset's
+        raise InvalidInputError(f"{_name(source)}: not a readable image ({error})") from None
+
+
+def _open(source: Source, max_side: int | None = None) -> Image.Image:
+    """Open and decode an image fully, its size checked first (:func:`_opened`)."""
+    with _opened(source, max_side) as opened:
+        opened.load()
+        return opened.copy()
+
+
+def size(source: Source) -> tuple[int, int]:
+    """Read an image's width and height, as Pillow would decode it, without decoding it.
+
+    Parameters
+    ----------
+    source : str, pathlib.Path or bytes
+        The file, or its bytes.
+
+    Returns
+    -------
+    tuple of int
+        The width and height.
+
+    Raises
+    ------
+    FileNotFoundError
+        If a path is not a file.
     slam_it.foundations.errors.InvalidInputError
         If it is not an image Pillow can read.
     """
-    file = Path(path)
-    if not file.is_file():
-        raise FileNotFoundError(f"no image at {file}")
-    try:
-        with Image.open(file) as opened:
-            opened.load()
-            return opened.copy()
-    except (OSError, Image.DecompressionBombError) as error:  # a bomb: far above any dataset's
-        raise InvalidInputError(f"{file}: not a readable image ({error})") from None
+    with _opened(source, None) as opened:
+        width, height = opened.size
+    return int(width), int(height)
 
 
-def _open8(path: str | Path) -> Image.Image:
+def _open8(source: Source, max_side: int | None = None) -> Image.Image:
     """Open an 8-bit image, a 1-bit one widened to 0 and 255 as the native decoders do."""
-    picture = _open(path)
+    picture = _open(source, max_side)
     return picture.convert("L") if picture.mode == "1" else picture
 
 
-def _rgb(picture: Image.Image, path: str | Path) -> NDArray[np.uint8]:
+def _rgb(picture: Image.Image, path: Source) -> NDArray[np.uint8]:
     """Return an 8-bit picture's colour channels, (H, W, 3)."""
     if picture.mode in _GRAY_MODES:
         gray = np.asarray(picture.getchannel(0), dtype=np.uint8)
         return np.ascontiguousarray(np.repeat(gray[:, :, None], 3, axis=2))
     if picture.mode in _COLOUR_MODES:
         return np.ascontiguousarray(np.asarray(picture.convert("RGB"), dtype=np.uint8))
-    raise InvalidInputError(f"{path}: expected an 8-bit image, got Pillow mode {picture.mode}")
+    raise InvalidInputError(
+        f"{_name(path)}: expected an 8-bit image, got Pillow mode {picture.mode}"
+    )
 
 
-def read_gray(path: str | Path) -> NDArray[np.uint8]:
+def read_gray(path: Source, max_side: int | None = None) -> NDArray[np.uint8]:
     """Read an 8-bit image as gray.
 
     Parameters
     ----------
-    path : str or pathlib.Path
-        The file.
+    path : str, pathlib.Path or bytes
+        The file, or its bytes.
+    max_side : int, optional
+        The longest side accepted (default: any Pillow decodes).
 
     Returns
     -------
@@ -96,9 +170,9 @@ def read_gray(path: str | Path) -> NDArray[np.uint8]:
     FileNotFoundError
         If the file does not exist.
     slam_it.foundations.errors.InvalidInputError
-        If it is not an 8-bit image.
+        If it is not an 8-bit image, or a side is over `max_side`.
     """
-    picture = _open8(path)
+    picture = _open8(path, max_side)
     if picture.mode in _GRAY_MODES:
         return np.ascontiguousarray(np.asarray(picture.getchannel(0), dtype=np.uint8))
     return image.to_gray(_rgb(picture, path))
@@ -127,13 +201,15 @@ def read_rgb(path: str | Path) -> NDArray[np.uint8]:
     return _rgb(_open8(path), path)
 
 
-def read_depth(path: str | Path) -> NDArray[np.uint16]:
+def read_depth(path: Source, max_side: int | None = None) -> NDArray[np.uint16]:
     """Read a 16-bit single-channel image's raw values.
 
     Parameters
     ----------
-    path : str or pathlib.Path
-        The file.
+    path : str, pathlib.Path or bytes
+        The file, or its bytes.
+    max_side : int, optional
+        The longest side accepted (default: any Pillow decodes).
 
     Returns
     -------
@@ -145,16 +221,16 @@ def read_depth(path: str | Path) -> NDArray[np.uint16]:
     FileNotFoundError
         If the file does not exist.
     slam_it.foundations.errors.InvalidInputError
-        If it is not a 16-bit single-channel image.
+        If it is not a 16-bit single-channel image, or a side is over `max_side`.
     """
-    picture = _open(path)
+    picture = _open(path, max_side)
     if picture.mode not in _DEPTH_MODES:
         raise InvalidInputError(
-            f"{path}: expected a 16-bit single-channel image, got Pillow mode {picture.mode}"
+            f"{_name(path)}: expected a 16-bit single-channel image, got Pillow mode {picture.mode}"
         )
     values = np.asarray(picture)
     if values.min(initial=0) < 0 or values.max(initial=0) > np.iinfo(np.uint16).max:
-        raise InvalidInputError(f"{path}: values outside 16 bits")
+        raise InvalidInputError(f"{_name(path)}: values outside 16 bits")
     return np.ascontiguousarray(values, dtype=np.uint16)
 
 

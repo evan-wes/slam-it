@@ -37,12 +37,12 @@ import math
 import os
 import sys
 from collections.abc import Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import numpy as np
 from numpy.typing import NDArray
 
-from slam_it.eval import runs, sensor_yaml, tum
+from slam_it.eval import images, runs, sensor_yaml, tum
 from slam_it.foundations import se3, so3
 from slam_it.foundations.arrays import MAX_IMAGE_SIDE
 from slam_it.foundations.errors import InvalidInputError
@@ -113,15 +113,11 @@ def _images(sequence: Path) -> Path:
 
 
 def _image_size(sequence: Path) -> tuple[int, int]:
-    """Return the size of the sequence's first image, read from its PNG header."""
+    """Return the size of the sequence's first image, as it decodes, without decoding it."""
     first = min(_images(sequence).glob("*.png"), default=None)
     if first is None:
         raise InvalidInputError(f"{_images(sequence)}: no PNG images")
-    with first.open("rb") as file:
-        header = file.read(24)
-    if header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
-        raise InvalidInputError(f"{first}: not a PNG")
-    width, height = int.from_bytes(header[16:20], "big"), int.from_bytes(header[20:24], "big")
+    width, height = images.size(first)
     if not (1 <= width <= MAX_IMAGE_SIDE and 1 <= height <= MAX_IMAGE_SIDE):
         raise InvalidInputError(f"{first}: {width}x{height}, outside 1 to {MAX_IMAGE_SIDE}")
     return width, height
@@ -206,10 +202,15 @@ def import_sequence(sequence: str | Path, out: str | Path) -> None:
     if target.exists() and any(target.iterdir()):
         raise InvalidInputError(f"{target}: expected a new or empty folder for the import")
     camera, body_cam = read_camera(source)
-    images = _images(source)
+    folder = _images(source)
     frames = []
     for row in _rows(source / "camera" / "data.csv", 2):
-        time, image = _time(row[0], str(source / "camera" / "data.csv")), images / row[1]
+        name = PurePosixPath(row[1])
+        if name.is_absolute() or len(name.parts) != 1 or name.name in ("", ".", ".."):
+            raise InvalidInputError(
+                f"{source / 'camera' / 'data.csv'}: {row[1]!r} is not a file in {folder.name}/"
+            )
+        time, image = _time(row[0], str(source / "camera" / "data.csv")), folder / name.name
         if not image.is_file():
             raise InvalidInputError(f"{image}: the frame's image is missing")
         frames.append((time, image))
