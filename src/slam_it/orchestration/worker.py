@@ -14,7 +14,9 @@ Railway beside the server, or later on a machine with a GPU. A job's kind says w
 
    - import it (:mod:`slam_it.eval.video`), its intrinsics chosen from the lens profiles
      (:func:`slam_it.eval.lenses.choose`);
-   - run the C++ pipeline on it, monocular, recording features;
+   - run the C++ pipeline on it, recording features: RGB-D if the import wrote LiDAR depth,
+     monocular otherwise (:data:`RUN_MODES`), with the features for its frames' size
+     (:func:`slam_it.orchestration.vo.options_for`);
    - bake the bundle (:func:`slam_it.orchestration.bundles.bake`);
 
 3. upload the bundle's files to the links the server gives for them;
@@ -122,6 +124,10 @@ end the worker (:func:`serve`)."""
 HEARTBEAT = 30.0
 """How often a job's current stage is reported again while its child works, in seconds: the
 server fails a job it has not heard from for a few of these."""
+
+RUN_MODES = ("monocular", "rgbd")
+"""The modes a job runs in: RGB-D when the import wrote LiDAR depth, monocular otherwise. The
+status page names each (``viewer/src/jobs.js`` ``MODES``)."""
 
 SEQUENCE = "your-video"
 """The folder an upload is imported into: a run names its sequence after it, and the viewer

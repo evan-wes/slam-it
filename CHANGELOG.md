@@ -33,19 +33,30 @@ frame size. Nothing changes for a dataset run at the default settings.
   (medium on request), brought to the colour frame by nearest neighbour, with a virtual baseline
   of 0.08 m (ORB-SLAM's for TUM's Kinect).
 - **A Stray Scanner zip's depth:** its `depth/` and `confidence/` maps are read for each frame
-  kept, each checked before it is decoded. Every kept frame needs both. The import writes an
-  RGB-D folder, and the demo's worker runs it RGB-D.
+  kept, decoded from memory, each map's size checked as Pillow will decode it before any pixel
+  is. Every kept frame needs both. The import writes an RGB-D folder, and the demo's worker runs
+  it RGB-D.
 - **Features by frame size** (`slam_it.edge.options.features_for`): ORB-SLAM's 1,000 at 640x480,
-  scaled with the frame's area within 1,000 to 2,000. The demo's runs use it; the default is
-  unchanged.
+  scaled with the frame's area within 1,000 to 2,000. The demo's worker and the measure both set
+  a run up with it (`slam_it.orchestration.vo.options_for`); the default is unchanged.
 - **The video import for datasets:** `Limits` (the longest video, its most frames, the short
-  side), a dataset's clock for each frame's time, and `lenses.RadTan`, a radial-tangential
-  lens kept and turned with its frames.
+  side), a dataset's clock for each frame's time, its ground truth written with the frames, and
+  `lenses.RadTan`, a radial-tangential lens kept and turned with its frames.
+- **Every import to TUM format staged and recorded** (`slam_it.eval.tum.staged`,
+  `tum.write_source`): written beside its folder and moved whole, so a failed import leaves
+  nothing, with a `source.json` naming what made it (and, with LiDAR depth, the least
+  confidence kept).
+- **Scoring:** `slam_it.eval.runs.evaluate_absolute`, the ATE alone, for a reference too sparse
+  for a relative error (ARKitScenes' 10 Hz poses); `runs.tracking`, what of a sequence a run
+  ran and tracked, which the demo's summary and the measure share.
+- **Images from bytes** (`slam_it.eval.images`): the readers take a file's bytes and a longest
+  side, checked once Pillow has parsed every header; `images.size` reads the size alone.
+  Pillow's every parse error, and its decompression-bomb warning, are invalid input.
 - **`scripts/measure_testset.py`:** each sequence of a config run and measured:
   - the share tracked;
   - when tracking started and stopped, and whether it was lost;
   - the ATE, naming its reference;
-  - the 95th-percentile latency.
+  - the 95th-percentile latency, against the frame period.
 
   `--camera nominal` measures what a guessed lens costs. The config, holding a machine's paths,
   stays outside the repository; `scripts/testset.template.toml` is its format.
@@ -58,6 +69,8 @@ frame size. Nothing changes for a dataset run at the default settings.
 - **The upload page** says a video runs monocular and a Stray Scanner recording RGB-D at true
   scale, and advises recording with the Camera app rather than through the browser.
 - **`source.json`** records the depth imported and a kept lens's distortion.
+- **The worker cuts a failure's reason** to the 500 characters the server keeps, so no upload
+  can make the server refuse the report.
 - **EuRoC's `sensor.yaml` helpers** are lifted into `slam_it.eval.sensor_yaml`, for ZJU-SenseTime
   and ADVIO too.
 

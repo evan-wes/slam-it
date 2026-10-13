@@ -364,7 +364,7 @@ visible from its path and enforceable by contract.
 | `slam_it.calib` | library `slam_it_calib` | -- | Sensor calibration (the side track) |
 | `slam_it.dense` | -- | -- | Dense BA + depth prior |
 | `slam_it.learned` | -- | -- | DROID- and MegaSaM-style |
-| `slam_it.eval` | library `slam_it_eval`, `slam_it::eval` (native PNG and dataset readers, run writer, a program's process for its run) | crate `slam-it-eval` (the same) | Dataset readers, external references (COLMAP), metrics, benchmarks, budget harness; a phone video's import and intrinsics (`video`, `lenses`, Python only, from PR 11) |
+| `slam_it.eval` | library `slam_it_eval`, `slam_it::eval` (native PNG and dataset readers, run writer, a program's process for its run) | crate `slam-it-eval` (the same) | Dataset readers, external references (COLMAP), metrics, benchmarks, budget harness; a phone video's import and intrinsics (`video`, `lenses`, Python only, from PR 11); dataset imports to TUM format (`zju`, `advio`, `arkitscenes`, with `lidar` and `sensor_yaml`), Python only, from milestone 2A's A1 |
 | `slam_it.orchestration` | library `slam_it_orchestration` and program `slam_it_vo` (`cpp/apps/orchestration/`; from PR 8) | crate `slam-it-orchestration` and its program `slam_it_vo` (from PR 8) | End-to-end pipelines, the bake of their runs for the run viewer (`bundles`, Python only, above `vo`), and the worker that runs the upload server's jobs (`worker`, Python only, above `bundles`, from PR 11) |
 | `slam_it_server` (`server/`, its own package) | -- | -- | The upload server (from PR 11): the job list, storage's links, the guards; never imports `slam_it` |
 
@@ -1007,6 +1007,24 @@ shared with the owner's other projects.
     judges mapping by its load, as a thread of its own would run it. A real mapping thread, and
     ORB-SLAM's interruption of a local BA when a keyframe arrives, belong with the edge
     targets' budgets, where keyframe bursts would otherwise delay frames.
+- **Deferred from milestone 2A's A1 review panel**
+  ([report](../reviews/2026-10-13-feature-2a-a1-measure-and-import.md),
+  [security pass](../reviews/2026-10-13-feature-2a-a1-measure-and-import-security.md)):
+  - **Stray Scanner's reader out of the decoder (H6, A7).** `eval.video` holds the decoder and
+    Stray Scanner's zip format, its entries, LiDAR maps and CSVs, in one module of over 900
+    lines. The zip's reading moves to `eval.stray`, above `video` beside `advio`, when it next
+    grows.
+  - **Stray Scanner's per-frame intrinsics (L4).** Newer Stray Scanner versions write each
+    frame's `fx, fy, cx, cy` in `odometry.csv`, and `camera_matrix.csv` is the last frame's;
+    the import reads the camera matrix alone. Focus moves the focal length (ARKitScenes' spans
+    about 4% over a capture): take the frames' median, as ARKitScenes' import does.
+  - **ADVIO's gyroscope lag, with milestone 6 (L7).** ADVIO's ground truth turns with
+    `arkit.csv`, on the frames' clock, at no lag, but with `gyro.csv` only 0.28-0.31 s later on
+    the sequences checked, though ADVIO says its clocks are synchronised. Measure and correct
+    the lag before ADVIO's IMU is used.
+  - **ScanNet++ for the LiDAR path (L8).** ARKitScenes' poses are ARKit's own estimate.
+    ScanNet++ (Yeshwanth et al., ICCV 2023) gives an iPhone's RGB and LiDAR with poses
+    registered to a laser scan: an independent reference, for a later revision of the test set.
 - **Deferred from the SLAM It! rename's review panel**
   ([report](../reviews/2026-10-12-chore-rename-slam-it.md)):
   - **The images' names held by a test (A3).** No test reads `docker/`: a setting a Dockerfile or
