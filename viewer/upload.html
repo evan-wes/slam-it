@@ -63,8 +63,12 @@
             Up to 60 seconds and 500 MB, uploaded within 15 minutes: 500 MB needs about 4.5 Mbit/s.
           </li>
           <li>
-            <strong>Monocular:</strong> one camera cannot tell size, so the scale is unknown. There
-            is no ground truth to compare with, unless you upload a Stray Scanner recording.
+            <strong>A video runs monocular:</strong> one camera cannot tell size, so the scale is
+            unknown, and there is no ground truth to compare with.
+          </li>
+          <li>
+            <strong>A Stray Scanner recording runs RGB-D</strong> with its LiDAR depth, at true
+            scale, and is compared with ARKit's poses.
           </li>
           <li>
             <strong>Stabilisation</strong> crops and warps every frame, so the camera stops behaving

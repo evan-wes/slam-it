@@ -5,15 +5,17 @@ Two kinds of upload (docs/design/2026-10-09-run-viewer.md, section 5):
 - **A video** (:func:`import_video`), from any phone, its intrinsics chosen from its metadata
   (:func:`slam_it.eval.lenses.choose`) or given.
 - **A Stray Scanner recording** (:func:`import_stray`): the zip Stray Scanner's Share button
-  makes on an iPhone or iPad with LiDAR. Its video, its camera matrix (exact intrinsics) and
-  ARKit's pose for each frame, which becomes the run's ground truth.
+  makes on an iPhone or iPad with LiDAR. Its video, its camera matrix (exact intrinsics),
+  ARKit's pose for each frame, which becomes the run's ground truth, and, if it holds them, its
+  LiDAR depth maps, which make it an RGB-D recording.
 
-Either becomes a TUM-format folder (:mod:`slam_it.eval.tum`) without depth, which the
-readers in all three languages already take: ``rgb/`` and ``rgb.txt``, ``camera.txt`` (a
-pinhole), ``groundtruth.txt`` for a Stray Scanner recording, and ``source.json``, what the
-import used. The folder must be new or empty; it is written beside, in a hidden
-``.<name>.<id>.importing`` folder, and moved onto it once whole, so an import that fails leaves
-nothing (one killed outright leaves that folder, which nothing reads: it is safe to delete).
+Either becomes a TUM-format folder (:mod:`slam_it.eval.tum`), which the readers in all three
+languages already take: ``rgb/`` and ``rgb.txt``, ``camera.txt`` (a pinhole), for a Stray
+Scanner recording ``groundtruth.txt`` and, with depth, ``depth/`` and ``depth.txt``, and
+``source.json``, what the import used. The folder must be new or empty; it is written beside,
+in a hidden ``.<name>.<id>.importing`` folder, and moved onto it once whole, so an import that
+fails leaves nothing (one killed outright leaves that folder, which nothing reads: it is safe
+to delete).
 
 **Frames.**
 
@@ -43,11 +45,20 @@ profile describes the sensor. A fisheye lens is undistorted to pinhole at the ou
 bilinear :func:`slam_it.foundations.image.remap`, so the pipeline only sees pinhole frames.
 
 **Stray Scanner zips** are read in place, never unpacked under the names they contain. Only
-``rgb.mp4``, ``camera_matrix.csv`` and ``odometry.csv`` are opened, each size checked against
-its own cap before and while it is read; anything else is ignored. A name that is absolute,
-climbs out of a folder or appears twice refuses the zip, and so does one the zip cannot give
-back whole. The CSVs are parsed strictly: numbers only, and one ``odometry.csv`` row per video
-frame.
+``rgb.mp4``, ``camera_matrix.csv`` and ``odometry.csv`` are opened, and, for each frame the
+import keeps, its LiDAR maps, ``depth/NNNNNN.png`` and ``confidence/NNNNNN.png`` (the frame's
+index, six digits), each size checked against its own cap before and while it is read, and a
+map's declared size, in its PNG header, against :data:`STRAY_MAP_SIDE` before it is decoded;
+anything else is ignored. A name that is absolute, climbs out of a folder or appears twice
+refuses the zip, and so does one the zip cannot give back whole. The CSVs are parsed strictly:
+numbers only, and one ``odometry.csv`` row per video frame.
+
+**Stray Scanner's depth.** A zip with depth maps imports as RGB-D: every frame kept needs its
+depth and confidence maps, or the zip is refused; each pair is turned upright with its frame,
+kept where ARKit's confidence is at least the import's threshold (high by default) and brought
+to the frame's size (:func:`slam_it.eval.lidar.registered_depth`), and ``camera.txt`` takes
+LiDAR's depth scale and ``bf``. A zip without depth maps imports as before, for a monocular
+run.
 
 **Stray Scanner's own conventions**, read in its source
 (https://github.com/strayrobots/scanner, ``StrayScanner/Helpers/``):
@@ -73,7 +84,7 @@ Run as a program::
     python -m slam_it.eval.video VIDEO OUT [--source auto|profile|35mm|nominal]
         [--profiles DIR]
     python -m slam_it.eval.video VIDEO OUT --intrinsics FX FY CX CY
-    python -m slam_it.eval.video RECORDING.zip OUT --stray
+    python -m slam_it.eval.video RECORDING.zip OUT --stray [--min-confidence {0,1,2}]
 """
 
 from __future__ import annotations
@@ -98,7 +109,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from slam_it import backends
-from slam_it.eval import images, lenses, runs, tum
+from slam_it.eval import images, lenses, lidar, runs, tum
 from slam_it.foundations import image, so3
 from slam_it.foundations.errors import InvalidInputError
 
@@ -132,6 +143,13 @@ ones it ever copies."""
 
 STRAY_CAPS = {"rgb.mp4": MAX_BYTES, "camera_matrix.csv": 4096, "odometry.csv": 64 * 2**20}
 """The Stray Scanner files the import opens, each with the most bytes it reads of it."""
+
+STRAY_MAPS = {"depth": 2**20, "confidence": 2**20}
+"""Stray Scanner's per-frame LiDAR maps, ``<kind>/NNNNNN.png``, each with the most bytes read of
+one: ARKit's are 256x192, 96 KiB as raw 16-bit depth, and a PNG adds little to its raw size."""
+
+STRAY_MAP_SIDE = 1024
+"""The largest side a LiDAR map may declare in its PNG header, checked before it is decoded."""
 
 ODOMETRY_COLUMNS = ("timestamp", "frame", "x", "y", "z", "qx", "qy", "qz", "qw")
 """The ``odometry.csv`` columns the import reads: ARKit's camera pose for each frame."""
@@ -371,9 +389,13 @@ def _write_frames(
 
 
 def _write_source(
-    out: Path, kind: str, chosen: lenses.Chosen, frames: _Frames, metadata: dict[str, str]
+    out: Path, kind: str, chosen: lenses.Chosen, frames: _Frames, read: dict[str, Any]
 ) -> None:
-    """Write ``source.json``: the upload's kind, the intrinsics and their source, what was read."""
+    """Write ``source.json``: the upload's kind, the intrinsics and their source, what was read.
+
+    `read` is what the upload gave beside its frames: its ``metadata``, the fields read, and
+    its ``depth``, the least LiDAR confidence kept (null without depth).
+    """
     camera = frames.camera
     record: dict[str, Any] = {
         "kind": kind,
@@ -389,7 +411,7 @@ def _write_source(
         },
         "rotation": frames.rotation,
         "frames": {"decoded": frames.count, "kept": len(frames.times)},
-        "metadata": metadata,
+        **read,
     }
     (out / "source.json").write_text(json.dumps(record, indent=1) + "\n")
 
@@ -422,16 +444,48 @@ def import_video(video: str | Path, out: str | Path, chosen: lenses.Chosen) -> N
     metadata = probe(path).metadata
     with _staged(Path(out)) as folder:
         frames = _write_frames(path, folder, chosen.lens)
-        _write_source(folder, "video", chosen, frames, metadata)
+        _write_source(folder, "video", chosen, frames, {"metadata": metadata, "depth": None})
 
 
-def _stray_entries(archive: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
+@dataclass(frozen=True)
+class _StrayEntries:
+    """A Stray Scanner zip's entries the import may open.
+
+    Its files by name, and its LiDAR maps by kind and frame.
+    """
+
+    files: dict[str, zipfile.ZipInfo]
+    maps: dict[tuple[str, int], zipfile.ZipInfo]
+
+
+def _stray_map(name: PurePosixPath) -> tuple[str, int] | None:
+    """Return a LiDAR map's kind and frame from its name, ``[folder/]<kind>/NNNNNN.png``."""
+    if len(name.parts) not in (2, 3) or name.parent.name not in STRAY_MAPS:
+        return None
+    if name.suffix != ".png" or len(name.stem) != 6 or not name.stem.isdigit():
+        return None
+    return name.parent.name, int(name.stem)
+
+
+def _stray_entries(archive: zipfile.ZipFile) -> _StrayEntries:
     """Return a Stray Scanner zip's entries the import opens, refusing a zip that is unsafe."""
     found: dict[str, zipfile.ZipInfo] = {}
+    maps: dict[tuple[str, int], zipfile.ZipInfo] = {}
     for info in archive.infolist():
         name = PurePosixPath(info.filename)
         if name.is_absolute() or ".." in name.parts or "\\" in info.filename:
             raise InvalidInputError(f"zip: an entry's name leaves its folder ({info.filename!r})")
+        lidar_map = None if info.is_dir() else _stray_map(name)
+        if lidar_map is not None:
+            kind, frame = lidar_map
+            if lidar_map in maps:
+                raise InvalidInputError(f"zip: {kind}/{frame:06d}.png appears twice")
+            if info.file_size > STRAY_MAPS[kind]:
+                raise InvalidInputError(
+                    f"zip: {info.filename} is over its cap of {STRAY_MAPS[kind]}"
+                )
+            maps[lidar_map] = info
+            continue
         if info.is_dir() or name.name not in STRAY_CAPS:
             continue
         if len(name.parts) > 2:
@@ -444,7 +498,7 @@ def _stray_entries(archive: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
     missing = [name for name in STRAY_CAPS if name not in found]
     if missing:
         raise InvalidInputError(f"zip: no {', '.join(missing)}")
-    return found
+    return _StrayEntries(found, maps)
 
 
 def _read_entry(archive: zipfile.ZipFile, info: zipfile.ZipInfo, cap: int) -> Iterator[bytes]:
@@ -460,6 +514,80 @@ def _read_entry(archive: zipfile.ZipFile, info: zipfile.ZipInfo, cap: int) -> It
     except _ZIP_ERRORS as error:
         name = PurePosixPath(info.filename).name
         raise InvalidInputError(f"zip: {name} cannot be read ({error})") from None
+
+
+def _read_map(
+    archive: zipfile.ZipFile, entries: _StrayEntries, kind: str, frame: int, scratch: Path
+) -> NDArray[np.uint16] | NDArray[np.uint8]:
+    """Return a frame's LiDAR map, its declared size checked before it is decoded.
+
+    The bytes are decoded from a file of the import's own name in its folder, ``scratch``.
+    """
+    info = entries.maps.get((kind, frame))
+    if info is None:
+        raise InvalidInputError(f"zip: no {kind}/{frame:06d}.png for frame {frame}")
+    data = b"".join(_read_entry(archive, info, STRAY_MAPS[kind]))
+    if data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
+        raise InvalidInputError(f"zip: {kind}/{frame:06d}.png is not a PNG")
+    width, height = int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+    if not (1 <= width <= STRAY_MAP_SIDE and 1 <= height <= STRAY_MAP_SIDE):
+        raise InvalidInputError(
+            f"zip: {kind}/{frame:06d}.png is {width}x{height}, outside 1 to {STRAY_MAP_SIDE}"
+        )
+    scratch.write_bytes(data)
+    try:
+        return images.read_depth(scratch) if kind == "depth" else images.read_gray(scratch)
+    except InvalidInputError:  # its message names the scratch file, not the zip's entry
+        expected = "a 16-bit depth map" if kind == "depth" else "an 8-bit confidence map"
+        raise InvalidInputError(f"zip: {kind}/{frame:06d}.png is not {expected}") from None
+    finally:
+        scratch.unlink()
+
+
+def _write_depth(
+    archive: zipfile.ZipFile,
+    entries: _StrayEntries,
+    out: Path,
+    frames: _Frames,
+    min_confidence: int,
+) -> None:
+    """Write each kept frame's LiDAR depth, registered to it, and the camera for an RGB-D run.
+
+    The depth maps go in ``depth/``, listed in ``depth.txt``; ``camera.txt`` is rewritten with
+    LiDAR's depth scale and ``bf``.
+    """
+    camera = frames.camera
+    turns = frames.rotation // 90
+    scratch = out / ".map.png"
+    listed = []
+    for time, frame in zip(frames.times, frames.decoded, strict=True):
+        stamp = f"{time:.6f}"
+        depth = np.rot90(_read_map(archive, entries, "depth", frame, scratch), turns)
+        confidence = np.rot90(_read_map(archive, entries, "confidence", frame, scratch), turns)
+        try:
+            registered = lidar.registered_depth(
+                np.ascontiguousarray(depth, dtype=np.uint16),
+                np.ascontiguousarray(confidence, dtype=np.uint8),
+                (camera.width, camera.height),
+                min_confidence,
+            )
+        except InvalidInputError as error:
+            raise InvalidInputError(f"zip: frame {frame}'s LiDAR maps: {error}") from None
+        images.write_depth(out / "depth" / f"{stamp}.png", registered)
+        listed.append((stamp, f"depth/{stamp}.png"))
+    tum.write_list(out / "depth.txt", listed)
+    tum.write_camera(
+        out,
+        tum.Camera(
+            "pinhole",
+            np.array([camera.fx, camera.fy, camera.cx, camera.cy]),
+            camera.width,
+            camera.height,
+            lidar.DEPTH_SCALE,
+            lidar.bf(camera.fx),
+        ),
+        note="imported by slam_it.eval.video with LiDAR depth (source.json says from what)",
+    )
 
 
 def _text(data: bytes, name: str) -> str:
@@ -576,8 +704,10 @@ def _stray_poses(table: NDArray[np.float64]) -> NDArray[np.float64]:
     return poses
 
 
-def import_stray(recording: str | Path, out: str | Path) -> None:
+def import_stray(recording: str | Path, out: str | Path, min_confidence: int = lidar.HIGH) -> None:
     """Import a Stray Scanner recording's zip into a TUM-format folder, with ground truth.
+
+    Its LiDAR depth, if it holds any, is imported too, for an RGB-D run (the module docstring).
 
     Parameters
     ----------
@@ -585,6 +715,8 @@ def import_stray(recording: str | Path, out: str | Path) -> None:
         The zip Stray Scanner's Share button makes.
     out : str or pathlib.Path
         The folder written: new or empty.
+    min_confidence : int, optional
+        The least LiDAR confidence kept (:data:`slam_it.eval.lidar.HIGH` by default).
 
     Raises
     ------
@@ -592,7 +724,8 @@ def import_stray(recording: str | Path, out: str | Path) -> None:
         If the zip does not exist.
     slam_it.foundations.errors.InvalidInputError
         If the folder is not new or empty, the zip is over its cap, unsafe, not a zip, lacks a
-        file, holds malformed CSVs or one odometry row per frame, or its video is refused as
+        file, holds malformed CSVs or one odometry row per frame, has LiDAR maps but not a
+        readable depth and confidence map for every frame kept, or its video is refused as
         :func:`import_video` refuses one.
     """
     path = Path(recording)
@@ -607,25 +740,30 @@ def import_stray(recording: str | Path, out: str | Path) -> None:
             raise InvalidInputError(f"{path.name}: not a zip") from None
         with archive:
             entries = _stray_entries(archive)
+            files = entries.files
             with video.open("wb") as file:
-                for chunk in _read_entry(archive, entries["rgb.mp4"], STRAY_CAPS["rgb.mp4"]):
+                for chunk in _read_entry(archive, files["rgb.mp4"], STRAY_CAPS["rgb.mp4"]):
                     file.write(chunk)
             texts = {
-                name: _text(b"".join(_read_entry(archive, entries[name], STRAY_CAPS[name])), name)
+                name: _text(b"".join(_read_entry(archive, files[name], STRAY_CAPS[name])), name)
                 for name in ("camera_matrix.csv", "odometry.csv")
             }
-        stored = probe(video)
-        camera = _camera_matrix(texts["camera_matrix.csv"], stored.width, stored.height)
-        table = _odometry(texts["odometry.csv"])
-        frames = _write_frames(video, folder, camera, edits=False)
-        video.unlink()
-        if len(table) != frames.count:
-            raise InvalidInputError(
-                f"odometry.csv: {len(table)} rows for the video's {frames.count} frames"
-            )
+            stored = probe(video)
+            camera = _camera_matrix(texts["camera_matrix.csv"], stored.width, stored.height)
+            table = _odometry(texts["odometry.csv"])
+            frames = _write_frames(video, folder, camera, edits=False)
+            video.unlink()
+            if len(table) != frames.count:
+                raise InvalidInputError(
+                    f"odometry.csv: {len(table)} rows for the video's {frames.count} frames"
+                )
+            depth = min_confidence if entries.maps else None
+            if depth is not None:
+                _write_depth(archive, entries, folder, frames, depth)
         poses = _stray_poses(table)[frames.decoded]
         runs.write_trajectory(folder / "groundtruth.txt", frames.times, poses)
-        _write_source(folder, "stray", lenses.Chosen(camera, "stray-scanner"), frames, {})
+        read = {"metadata": {}, "depth": None if depth is None else {"min_confidence": depth}}
+        _write_source(folder, "stray", lenses.Chosen(camera, "stray-scanner"), frames, read)
 
 
 def main(arguments: Sequence[str]) -> int:
@@ -655,9 +793,16 @@ def main(arguments: Sequence[str]) -> int:
         help="the intrinsics' source (default: the best that has them)",
     )  # fmt: skip
     parser.add_argument("--profiles", type=Path, help="the lens profiles (default: fetched)")
+    parser.add_argument(
+        "--min-confidence", type=int, choices=(0, lidar.MEDIUM, lidar.HIGH),
+        help="with --stray, the least LiDAR confidence kept (default: high)",
+    )  # fmt: skip
     args = parser.parse_args(arguments)
+    if args.min_confidence is not None and not args.stray:
+        parser.error("--min-confidence: only with --stray")
     if args.stray:
-        import_stray(args.upload, args.out)
+        threshold = lidar.HIGH if args.min_confidence is None else args.min_confidence
+        import_stray(args.upload, args.out, threshold)
     elif args.intrinsics:
         fx, fy, cx, cy = args.intrinsics
         video = probe(args.upload)
@@ -670,10 +815,12 @@ def main(arguments: Sequence[str]) -> int:
         chosen = lenses.choose(probe(args.upload), profiles, args.source)
         import_video(args.upload, args.out, chosen)
     record = json.loads((args.out / "source.json").read_text())
+    depth = record["depth"]
     print(
         f"{args.out}: {record['frames']['kept']} frames, "
         f"{record['intrinsics']['width']}x{record['intrinsics']['height']}, "
         f"intrinsics from {record['intrinsics']['source']}"
+        + ("" if depth is None else f", LiDAR depth of confidence {depth['min_confidence']} up")
     )
     return 0
 

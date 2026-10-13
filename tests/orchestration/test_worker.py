@@ -181,6 +181,7 @@ def test_a_job_runs_end_to_end(serving: Server, recording: bytes, tmp_path: Path
     assert serving.summary is not None
     assert serving.summary["frames"] == FRAMES
     assert serving.summary["intrinsics"] == "stray-scanner"
+    assert serving.summary["mode"] == "monocular"
     assert serving.summary["lost"] is False
     assert serving.summary["ran_to"] == serving.summary["clip_seconds"]
     info = json.loads(serving.files["bundle.json"])
@@ -189,6 +190,20 @@ def test_a_job_runs_end_to_end(serving: Server, recording: bytes, tmp_path: Path
     assert (info["truth"], info["backends"]["cpp"]["alignment"]) == (True, "sim3")
     assert {"times.npy", "cpp/records.json", "cpp/feature_records.npy"} <= set(serving.files)
     assert list((tmp_path / "work").iterdir()) == []  # the job's folder removed
+
+
+def test_a_recording_with_depth_runs_rgbd(serving: Server, tmp_path: Path) -> None:
+    """A Stray Scanner zip with LiDAR depth runs RGB-D: tracked from its first frame, metric."""
+    require_program("cpp")
+    zipped = stray_zip(tmp_path / "room.zip", room.sequence(FRAMES), divider=2, depth=True)
+    serving.upload = zipped.read_bytes()
+    worker.serve(worker.Client(serving.url, TOKEN), tmp_path / "work", once=True)
+    assert serving.reason is None
+    assert serving.summary is not None
+    assert serving.summary["mode"] == "rgbd"
+    assert (serving.summary["tracked"], serving.summary["tracked_from"]) == (FRAMES, 0.0)
+    info = json.loads(serving.files["bundle.json"])
+    assert (info["mode"], info["backends"]["cpp"]["alignment"]) == ("rgbd", "se3")
 
 
 def test_the_summary_says_where_a_run_lost_the_track(

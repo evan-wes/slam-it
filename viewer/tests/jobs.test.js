@@ -8,6 +8,7 @@ import {
   INTRINSICS,
   MAX_BYTES,
   MAX_SECONDS,
+  MODES,
   RETENTION_DAYS,
   STAGES,
   UPLOADS,
@@ -85,12 +86,13 @@ test("how long a result is kept is said to the nearest day, then hour", () => {
   assert.equal(keptFor(now - 10, now), "deleted soon");
 });
 
-test("a summary is listed, its intrinsics source named", () => {
+test("a summary is listed, its mode and intrinsics source named", () => {
   const rows = summaryRows({
     frames: 200,
     tracked: 150,
     keyframes: 12,
     points: 900,
+    mode: "rgbd",
     intrinsics: "profile",
   });
   assert.deepEqual(rows, [
@@ -98,6 +100,7 @@ test("a summary is listed, its intrinsics source named", () => {
     ["tracked", "150 (75%)"],
     ["keyframes", "12"],
     ["map points", "900"],
+    ["mode", MODES.rgbd],
     ["intrinsics", INTRINSICS.profile],
   ]);
   assert.deepEqual(summaryRows({ intrinsics: "elsewhere" }).at(-1), ["intrinsics", "elsewhere"]);
@@ -141,6 +144,24 @@ test("what of the clip was tracked is said, and why a result can be shorter than
     trackingText(never),
     "No first map was made in your 8.0 s clip, so nothing was tracked. Moving sideways at the " +
       "start, with something textured in view, helps make one.",
+  );
+});
+
+test("an RGB-D run's first map is explained by its depth, not by moving sideways", () => {
+  /** @param {Record<string, unknown>} fields @returns {Record<string, unknown>} */
+  const summary = (fields) => ({ frames: 120, tracked: 54, lost: false, mode: "rgbd", ...fields });
+  const late = summary({ clip_seconds: 10, tracked_from: 1.2, tracked_to: 10, ran_to: 10 });
+  assert.equal(
+    trackingText(late),
+    "Tracked from 1.2 s to 10.0 s of your 10.0 s clip. The first 1.2 s went to finding a first " +
+      "map; starting within a few metres of something textured shortens it.",
+  );
+  const never = summary({ clip_seconds: 8, tracked_from: null, tracked_to: null, ran_to: 8 });
+  assert.equal(
+    trackingText(never),
+    "No first map was made in your 8.0 s clip, so nothing was tracked: no frame had enough " +
+      "textured points with LiDAR depth. Starting within a few metres of something textured " +
+      "helps make one.",
   );
 });
 

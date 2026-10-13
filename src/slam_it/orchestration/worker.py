@@ -451,17 +451,19 @@ def _work(upload_path: Path, kind: str, out: Path, report: Callable[[str], None]
         video.import_video(upload_path, sequence, chosen)
         source = chosen.source
     report("running")
-    run = vo.run("tum", sequence, "monocular", out / "run", backend="cpp", record_features=True)
+    mode = "rgbd" if (sequence / "depth.txt").is_file() else "monocular"  # LiDAR depth imported
+    run = vo.run("tum", sequence, mode, out / "run", backend="cpp", record_features=True)
     report("baking")
     bundles.bake([out / "run"], sequence, out / "bundle")
-    return summarize(run, vo.open_source("tum", sequence, "monocular").times, source)
+    return summarize(run, vo.open_source("tum", sequence, mode).times, source)
 
 
 def summarize(run: runs.Run, times: NDArray[np.float64], intrinsics: str) -> dict[str, Any]:
     """Return a job's summary: what its run made, and what of the clip it ran and tracked.
 
     A run ends at the first frame it loses the track at, so the rest of a clip is then not run;
-    and a monocular run tracks nothing until it has made its first map. The status page says
+    and a run tracks nothing until it has made its first map, a monocular one from two views,
+    an RGB-D one from a frame with enough keypoints with depth. The status page says
     both (``viewer/src/jobs.js``), so that a short result is not taken for a cropped video.
 
     Parameters
@@ -478,11 +480,12 @@ def summarize(run: runs.Run, times: NDArray[np.float64], intrinsics: str) -> dic
     Returns
     -------
     dict
-        ``frames`` run, ``tracked``, the final map's ``keyframes`` and ``points``,
-        ``intrinsics``; ``clip_seconds``, the clip's last frame's time; ``tracked_from`` and
-        ``tracked_to``, the first and last tracked frames' times (null if none was tracked);
-        ``ran_to``, the last frame run's time; every time since the clip's first frame, to the
-        millisecond; and ``lost``, whether the run ended by losing the track.
+        ``frames`` run, ``tracked``, the final map's ``keyframes`` and ``points``, the run's
+        ``mode`` (``"rgbd"`` for a recording with LiDAR depth), ``intrinsics``;
+        ``clip_seconds``, the clip's last frame's time; ``tracked_from`` and ``tracked_to``, the
+        first and last tracked frames' times (null if none was tracked); ``ran_to``, the last
+        frame run's time; every time since the clip's first frame, to the millisecond; and
+        ``lost``, whether the run ended by losing the track.
     """
     start = float(times[0]) if len(times) else 0.0
 
@@ -496,6 +499,7 @@ def summarize(run: runs.Run, times: NDArray[np.float64], intrinsics: str) -> dic
         "tracked": len(tracked),
         "keyframes": len(run.final_keyframes()[0]),
         "points": len(run.final_points()),
+        "mode": run.mode,
         "intrinsics": intrinsics,
         "clip_seconds": since(times[-1]) if len(times) else 0.0,
         "tracked_from": since(tracked[0]) if len(tracked) else None,
