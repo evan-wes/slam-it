@@ -86,8 +86,9 @@ from typing import IO, Any
 import numpy as np
 from numpy.typing import NDArray
 
+from slam_it.edge.options import Options, features_for
 from slam_it.edge.pipeline import State
-from slam_it.eval import lenses, runs, video
+from slam_it.eval import lenses, runs, tum, video
 from slam_it.foundations.errors import InvalidInputError, SlamItError
 from slam_it.orchestration import bundles, vo
 
@@ -452,10 +453,33 @@ def _work(upload_path: Path, kind: str, out: Path, report: Callable[[str], None]
         source = chosen.source
     report("running")
     mode = "rgbd" if (sequence / "depth.txt").is_file() else "monocular"  # LiDAR depth imported
-    run = vo.run("tum", sequence, mode, out / "run", backend="cpp", record_features=True)
+    options = options_for(sequence)
+    run = vo.run(
+        "tum", sequence, mode, out / "run", backend="cpp", options=options, record_features=True
+    )
     report("baking")
     bundles.bake([out / "run"], sequence, out / "bundle")
     return summarize(run, vo.open_source("tum", sequence, mode).times, source)
+
+
+def options_for(sequence: Path) -> Options:
+    """Return a job's run settings: ORB-SLAM's, with features for its frames' size.
+
+    The features are :func:`slam_it.edge.options.features_for` the imported frames' size, so
+    a 16:9 video's frames get more than a 4:3 one's.
+
+    Parameters
+    ----------
+    sequence : pathlib.Path
+        The imported TUM-format folder.
+
+    Returns
+    -------
+    slam_it.edge.options.Options
+        The settings.
+    """
+    camera = tum.read_camera(sequence)
+    return Options(n_features=features_for(camera.width, camera.height))
 
 
 def summarize(run: runs.Run, times: NDArray[np.float64], intrinsics: str) -> dict[str, Any]:

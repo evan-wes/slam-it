@@ -17,14 +17,16 @@ import time
 import urllib.error
 import urllib.parse
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 
-from slam_it.eval import video
+from slam_it.edge.options import Options
+from slam_it.eval import tum, video
 from slam_it.foundations.errors import InvalidInputError
 from slam_it.orchestration import vo, worker
 from tests.conftest import FIXTURES
@@ -686,3 +688,10 @@ def test_the_worker_refuses_to_start_wrong(
     monkeypatch.setenv("SLAM_IT_LENS_PROFILES", str(tmp_path))
     assert worker.main(["serve", "--server", "http://127.0.0.1:9", "--work", str(tmp_path)]) == 2
     assert "no usable lens profile" in capsys.readouterr().err
+
+
+def test_a_job_runs_with_features_for_its_frames_size(tmp_path: Path) -> None:
+    """A 16:9 clip imported at 854x480 runs with 1,334 features; its other settings, ORB-SLAM's."""
+    intrinsics = np.array([600.0, 600.0, 426.5, 239.5])
+    tum.write_camera(tmp_path, tum.Camera("pinhole", intrinsics, 854, 480, 1000.0, None))
+    assert worker.options_for(tmp_path) == replace(Options(), n_features=1334)
