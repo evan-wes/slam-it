@@ -7,8 +7,9 @@ Run from the repository root after a change meant to alter what the pipeline dec
 The edge rung's stage parity compares every backend live with the Python reference, on states
 built from the synthetic room (stored, they would run to megabytes), at the tolerances of
 ``tests/edge/support.py``. A change made in all three languages at once passes those
-comparisons. This record of what the Python pipeline decided on the room, whole and with its
-gap (:mod:`tests.orchestration.datasets`), catches it: every backend's runs are held to it
+comparisons. This record of what the Python pipeline decided on the room, whole, with its gap,
+and lost, its first map reset or kept (:mod:`tests.orchestration.datasets`), catches it: every
+backend's runs are held to it
 (``tests/orchestration/test_vo.py``), so regenerating it is the deliberate act that accepts new
 decisions, and its diff shows them (review panel finding A1).
 
@@ -39,7 +40,15 @@ from slam_it.orchestration import vo
 from tests.edge import room
 from tests.edge.support import FRAMES, OPTIONS, SOLVER_TOLERANCE
 from tests.fixtures.foundations._layout import dumps
-from tests.orchestration.datasets import CASES, GAP_OPTIONS, gap_frames, room_inputs, write_room
+from tests.orchestration.datasets import (
+    CASES,
+    GAP_OPTIONS,
+    KEPT_OPTIONS,
+    gap_frames,
+    lost_frames,
+    room_inputs,
+    write_room,
+)
 
 HERE = Path(__file__).resolve().parent
 
@@ -139,11 +148,14 @@ def _laid_out(doc: dict[str, Any]) -> str:
 
 
 def main() -> None:
-    """Run the room and the gap room in every case with the Python reference; write the record."""
+    """Run each room in every case with the Python reference; write the record."""
     rendered = room.sequence(FRAMES, stereo=True)
+    lost = lost_frames(rendered)
     rooms = (
         ("room", rendered, OPTIONS),
         ("gap", gap_frames(rendered), GAP_OPTIONS),
+        ("lost", lost, OPTIONS),
+        ("kept", lost, KEPT_OPTIONS),
     )
     cases: dict[str, dict[str, Any]] = {}
     with tempfile.TemporaryDirectory() as scratch:

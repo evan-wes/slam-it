@@ -517,8 +517,8 @@ Result<void> write_features(eval::runs::FeatureWriter& features, const edge::Fra
   return features.write(xy, level, fate, fates.point);
 }
 
-/// @brief Track a sequence's frames, from the first asked for, until the end or the track
-///        is lost.
+/// @brief Track a sequence's frames, from the first asked for, to the end: a lost track
+///        closes its map, and the next frame starts a new one.
 /// @param source The sequence.
 /// @param pipeline The pipeline.
 /// @param request The request.
@@ -563,9 +563,6 @@ Result<void> track(const Source& source, edge::Pipeline& pipeline, const Request
       if (const auto written = write_features(*features, *frame, result->fates); !written) {
         return written;
       }
-    }
-    if (result->state == edge::State::kLost) {
-      break;
     }
   }
   return {};

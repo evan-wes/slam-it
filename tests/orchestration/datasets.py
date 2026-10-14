@@ -169,6 +169,32 @@ MOVED_OPTIONS = replace(
 Python here, where at the defaults it could not."""
 
 
+LOST_AT = 12
+"""Where the lost room's blank frames begin: ``lost_frames`` of the room's frames from here are
+blanked, so the track is lost on the last of them and the frames after start a new map."""
+
+KEPT_OPTIONS = replace(OPTIONS, reset_keyframes=0)
+"""The room's settings with every lost map kept: the lost room's first map, of a few keyframes,
+is otherwise reset (ORB-SLAM3's reset of a map lost with 10 keyframes or fewer)."""
+
+
+def lost_frames(rendered: list[room.Frame]) -> list[room.Frame]:
+    """Return the lost room: the room with ``lost_frames`` frames from :data:`LOST_AT` blanked.
+
+    Parameters
+    ----------
+    rendered : list of tests.edge.room.Frame
+        The room's frames.
+
+    Returns
+    -------
+    list of tests.edge.room.Frame
+        The lost room's frames, as many as the room's, at the same times.
+    """
+    end = LOST_AT + OPTIONS.lost_frames
+    return [*rendered[:LOST_AT], *map(blank, rendered[LOST_AT:end]), *rendered[end:]]
+
+
 def gap_frames(rendered: list[room.Frame]) -> list[room.Frame]:
     """Return the gap room: the room without :data:`GAP`'s frames, and a blank frame.
 
@@ -221,9 +247,10 @@ def room_inputs() -> dict[str, Any]:
     Returns
     -------
     dict
-        The frames rendered, the gap, the blank frame, and each room's settings off their
-        defaults: recorded with the runs and checked first, so a change to the rooms reads as
-        one, not as a change to what the pipeline decides.
+        The frames rendered, the gap, the blank frame, where the lost room's blank frames begin
+        and how many, and each room's settings off their defaults: recorded with the runs and
+        checked first, so a change to the rooms reads as one, not as a change to what the
+        pipeline decides.
     """
     defaults = Options().as_dict()
 
@@ -234,6 +261,9 @@ def room_inputs() -> dict[str, Any]:
         "frames": FRAMES,
         "gap": list(GAP),
         "blank_at": BLANK_AT,
+        "lost_at": LOST_AT,
+        "lost_frames": OPTIONS.lost_frames,
         "room": moved(OPTIONS),
         "gap_room": moved(GAP_OPTIONS),
+        "kept_room": moved(KEPT_OPTIONS),
     }

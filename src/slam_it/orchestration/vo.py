@@ -23,9 +23,10 @@ builds each frame for the mode (:mod:`slam_it.edge.frames`), tracks it
   :meth:`slam_it.edge.pipeline.FrameSummary.as_dict`'s keys) and, if tracked, its
   ``T_world_cam`` and its map; with ``record_features``, its keypoints' pixels, levels and
   fates, streamed to the run's folder as it goes (:class:`slam_it.eval.runs.FeatureWriter`).
-  The run ends at the frame that loses the track; if that map is reset, its frames' poses are
-  dropped from the trajectory, as ORB-SLAM3 drops a reset map's. The steps, as a camera and
-  ORB-SLAM's threads divide them:
+  A lost track closes its map and the run goes on, the next frame starting a new one
+  (:class:`slam_it.edge.pipeline.Pipeline`); a map reset has its frames' poses dropped from
+  the trajectory, as ORB-SLAM3 drops a reset map's. The steps, as a camera and ORB-SLAM's
+  threads divide them:
 
   - ``read_seconds``: delivering the frame's images, decoded (a depth map in metres), and a
     stereo pair rectified, as ORB-SLAM2's examples do before they hand a frame over;
@@ -72,7 +73,7 @@ from numpy.typing import NDArray
 from slam_it import backends
 from slam_it.edge import frames
 from slam_it.edge.options import MODES, Options, features_for
-from slam_it.edge.pipeline import Pipeline, State
+from slam_it.edge.pipeline import Pipeline
 from slam_it.eval import budgets, euroc, images, runs, tum
 from slam_it.foundations import image, orb, se3, stereo
 from slam_it.foundations.errors import (
@@ -682,8 +683,6 @@ def _run_here(request: Request) -> runs.Run:
             if lost is not None and lost.reset:  # its frames' poses go with it
                 while pose_maps and pose_maps[-1] == result.map:
                     del poses[-1], times[-1], pose_maps[-1]
-            if result.state is State.LOST:
-                break
     lives = tracker.lifetimes()
     keyframes = lives.keyframe_poses
     return runs.Run(

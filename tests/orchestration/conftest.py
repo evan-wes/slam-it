@@ -1,7 +1,8 @@
 """The room as dataset folders (:mod:`tests.orchestration.datasets`), and its runs.
 
-The room is rendered once per session and written whole and with its gap; :func:`room_runs`
-and :func:`gap_runs` run them through :func:`slam_it.orchestration.vo.run`, each case once,
+The room is rendered once per session and written whole, with its gap, and lost (frames
+blanked to lose the track); :func:`room_runs`, :func:`gap_runs`, :func:`lost_runs` and
+:func:`kept_runs` run them through :func:`slam_it.orchestration.vo.run`, each case once,
 recording their features.
 """
 
@@ -20,9 +21,11 @@ from tests.edge import room
 from tests.edge.support import FRAMES, OPTIONS
 from tests.orchestration.datasets import (
     GAP_OPTIONS,
+    KEPT_OPTIONS,
     MOVED_OPTIONS,
     Room,
     gap_frames,
+    lost_frames,
     write_room,
 )
 
@@ -73,6 +76,12 @@ def room_folders(rendered_room: list[room.Frame], tmp_path_factory: pytest.TempP
 def gap_folders(rendered_room: list[room.Frame], tmp_path_factory: pytest.TempPathFactory) -> Room:
     """Write the gap room (:func:`gap_frames`) as both datasets' folders."""
     return write_room(tmp_path_factory.mktemp("gap"), gap_frames(rendered_room))
+
+
+@pytest.fixture(scope="session")
+def lost_folders(rendered_room: list[room.Frame], tmp_path_factory: pytest.TempPathFactory) -> Room:
+    """Write the lost room (:func:`lost_frames`) as both datasets' folders."""
+    return write_room(tmp_path_factory.mktemp("lost"), lost_frames(rendered_room))
 
 
 class RoomRun:
@@ -142,3 +151,15 @@ def gap_runs(gap_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> Roo
 def moved_runs(gap_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> RoomRun:
     """Run the gap room with :data:`MOVED_OPTIONS`, each case once per session."""
     return RoomRun(gap_folders, MOVED_OPTIONS, tmp_path_factory.mktemp("moved_runs"))
+
+
+@pytest.fixture(scope="session")
+def lost_runs(lost_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> RoomRun:
+    """Run the lost room at the room's settings: its first map is reset."""
+    return RoomRun(lost_folders, OPTIONS, tmp_path_factory.mktemp("lost_runs"))
+
+
+@pytest.fixture(scope="session")
+def kept_runs(lost_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> RoomRun:
+    """Run the lost room with :data:`KEPT_OPTIONS`: its first map is kept."""
+    return RoomRun(lost_folders, KEPT_OPTIONS, tmp_path_factory.mktemp("kept_runs"))

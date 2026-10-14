@@ -156,7 +156,7 @@ function showTimeline(bundle, tracks) {
     ),
   );
   box.style.height = `${tracks.length * SPAN_ROW}px`;
-  const placed = placement(bundle.info.extent, bundle.times, tracks);
+  const placed = placement(bundle.info.extent, bundle.times);
   const said = notRunText(placed);
   const whole = placed.before + placed.ran + placed.after;
   // Each part grows by its share of the whole, the shares summing to 1 so they fill the row.

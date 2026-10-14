@@ -172,42 +172,83 @@ export function keptFor(deleted, now) {
 }
 
 /**
+ * The stretches a run tracked, in words: one span, a few listed, or how many there were.
+ * @param {Record<string, unknown>} summary The worker's summary.
+ * @returns {string} "from 2.5 s to 4.9 s", "2.9–15.9 s and 17.0–27.1 s", or "in 7 stretches,
+ *     from 1.0 s to 59.2 s", say.
+ */
+function stretches(summary) {
+  const listed = /** @type {[number, number][]} */ (
+    Array.isArray(summary.segments) ? summary.segments : []
+  );
+  const count = Number(summary.segment_count ?? listed.length);
+  const from = Number(summary.tracked_from);
+  const to = Number(summary.tracked_to);
+  if (count <= 1) {
+    return `from ${seconds(from)} to ${seconds(to)}`;
+  }
+  if (count > 3 || listed.length < count) {
+    return `in ${count} stretches, from ${seconds(from)} to ${seconds(to)}`;
+  }
+  const spans = listed.map(([a, b]) => `${Number(a).toFixed(1)}–${seconds(Number(b))}`);
+  return `${spans.slice(0, -1).join(", ")} and ${spans.at(-1)}`;
+}
+
+/**
+ * How many times, in words.
+ * @param {number} count The count.
+ * @returns {string} "once", "twice", or "3 times".
+ */
+function times(count) {
+  return count === 1 ? "once" : count === 2 ? "twice" : `${count} times`;
+}
+
+/**
  * What of the clip a done job ran and tracked, in words. A run tracks nothing until it has made
- * its first map, and ends at the frame it loses the track at, so a result can be shorter than
- * the video: this says why, so that it is not taken for a cropped one.
+ * its first map, and a lost track closes its map, the next frame starting a new one, so the
+ * clip can be tracked in stretches: this says why, so that a result is not taken for a cropped
+ * video.
  * @param {Record<string, unknown>} summary The worker's summary
  *     (slam_it.orchestration.worker.summarize).
  * @returns {string} The words.
  */
 export function trackingText(summary) {
   const clip = Number(summary.clip_seconds);
-  const ranTo = Number(summary.ran_to);
+  const losses = Number(summary.losses ?? 0);
+  const resets = Number(summary.resets ?? 0);
   /** @type {string[]} */
   const said = [];
   // An RGB-D run makes its first map from one frame's depth; a monocular one, from two views.
   const rgbd = summary.mode === "rgbd";
   if (summary.tracked_from === null) {
-    said.push(
-      rgbd
-        ? `No first map was made in your ${seconds(clip)} clip, so nothing was tracked: no ` +
-            "frame had enough textured points with LiDAR depth. Starting within a few metres " +
-            "of something textured helps make one."
-        : `No first map was made in your ${seconds(clip)} clip, so nothing was tracked. Moving ` +
-            "sideways at the start, with something textured in view, helps make one.",
-    );
+    if (resets > 0) {
+      said.push(
+        `Maps were started in your ${seconds(clip)} clip, but each lost the track too soon to ` +
+          "keep, so nothing was tracked. Moving more slowly, with something textured in view, " +
+          "helps a map last.",
+      );
+    } else {
+      said.push(
+        rgbd
+          ? `No first map was made in your ${seconds(clip)} clip, so nothing was tracked: no ` +
+              "frame had enough textured points with LiDAR depth. Starting within a few " +
+              "metres of something textured helps make one."
+          : `No first map was made in your ${seconds(clip)} clip, so nothing was tracked. ` +
+              "Moving sideways at the start, with something textured in view, helps make one.",
+      );
+    }
     return said.join(" ");
   }
   const from = Number(summary.tracked_from);
-  said.push(
-    `Tracked from ${seconds(from)} to ${seconds(Number(summary.tracked_to))} of your ` +
-      `${seconds(clip)} clip.`,
-  );
-  if (summary.lost === true) {
-    // Less than half of the tenth the page shows left: lost at the clip's last frame.
+  said.push(`Tracked ${stretches(summary)} of your ${seconds(clip)} clip.`);
+  if (losses > 0) {
+    const dropped =
+      resets === 0
+        ? ""
+        : `; ${resets === 1 ? "one map was" : `${resets} maps were`} lost too soon to keep`;
     said.push(
-      clip - ranTo >= 0.05
-        ? `Tracking was lost at ${seconds(ranTo)}, which ends a run, so the rest was not processed.`
-        : `Tracking was lost at ${seconds(ranTo)}, its last frame.`,
+      `The track was lost ${times(losses)}, and each time a new map was started, so the rest ` +
+        `of the clip was still processed${dropped}.`,
     );
   }
   if (from >= 0.05) {
@@ -260,6 +301,11 @@ export function summaryRows(summary) {
     "tracked",
     frames > 0 ? `${tracked} (${Math.round((100 * tracked) / frames)}%)` : "0",
   ]);
+  const maps = Number(summary.segment_count ?? 0);
+  const resets = Number(summary.resets ?? 0);
+  if (maps > 1 || resets > 0) {
+    rows.push(["maps", resets > 0 ? `${maps} kept, ${resets} reset` : String(maps)]);
+  }
   rows.push(["keyframes", String(summary.keyframes ?? 0)]);
   rows.push(["map points", String(summary.points ?? 0)]);
   const mode = String(summary.mode ?? "");

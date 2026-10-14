@@ -120,20 +120,34 @@ def test_the_lost_state_is_the_pipelines() -> None:
 
 
 def test_tracking_says_what_of_a_sequence_a_run_ran_and_tracked() -> None:
-    """Times since the sequence's first frame: tracked from the second, lost at the fourth."""
-    times = np.asarray(100.0 + 0.1 * np.arange(6), dtype=np.float64)
-    states = ["not_initialized", "tracking", "tracking", "lost"]
-    diagnostics = [{"timestamp": float(t), "state": s} for t, s in zip(times, states, strict=False)]
+    """Times since the sequence's first frame, a segment per map with a tracked frame.
+
+    Map 0 tracks from the second frame and is lost at the fourth, kept; map 1 starts at the
+    fifth, is lost at the sixth and reset, its frames' poses dropped; map 2 tracks the last two.
+    """
+    times = np.asarray(100.0 + 0.1 * np.arange(9), dtype=np.float64)
+    states = ["not_initialized", "tracking", "tracking", "lost", "not_initialized"]
+    states += ["tracking", "lost", "tracking", "tracking"]
+    diagnostics = [{"timestamp": float(t), "state": s} for t, s in zip(times, states, strict=True)]
+    tracked = [1, 2, 7, 8]
     run = runs.Run(
-        "tum", "s", "monocular", "python", times[1:3], _poses(2), diagnostics=diagnostics
-    )
+        "tum", "s", "monocular", "python", times[tracked], _poses(4), diagnostics=diagnostics,
+        keyframe_lives=np.array([[1, -1, -1], [5, 6, 3], [7, -1, -1]], dtype=np.int64),
+        pose_maps=np.array([0, 0, 2, 2], dtype=np.int64),
+        keyframe_maps=np.array([0, 1, 2], dtype=np.int64),
+    )  # fmt: skip
     span = runs.tracking(run, times)
-    assert (span.frames, span.tracked, span.lost) == (4, 2, True)
-    assert (span.tracked_from, span.tracked_to, span.ran_to, span.seconds) == (0.1, 0.2, 0.3, 0.5)
-    never = runs.tracking(replace(run, timestamps=times[:0], poses=_poses(0)), times)
-    assert (never.tracked, never.tracked_from, never.tracked_to) == (0, None, None)
-    unstated = [{"timestamp": float(t)} for t in times[:4]]  # the format makes state optional
-    assert runs.tracking(replace(run, diagnostics=unstated), times).lost is False
+    assert (span.frames, span.tracked, span.losses, span.resets) == (9, 4, 2, 1)
+    assert span.segments == (runs.Segment(0, 2, 0.1, 0.2), runs.Segment(2, 2, 0.7, 0.8))
+    assert (span.tracked_from, span.tracked_to, span.ran_to, span.seconds) == (0.1, 0.8, 0.8, 0.8)
+    never = runs.tracking(
+        replace(run, timestamps=times[:0], poses=_poses(0), pose_maps=np.zeros(0, np.int64)), times
+    )
+    assert (never.tracked, never.segments, never.tracked_from, never.tracked_to) == (
+        0, (), None, None,
+    )  # fmt: skip
+    unstated = [{"timestamp": float(t)} for t in times]  # the format makes state optional
+    assert runs.tracking(replace(run, diagnostics=unstated), times).losses == 0
 
 
 def _record_features(folder: Path) -> None:

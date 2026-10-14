@@ -361,8 +361,8 @@ def _write_truth(out: Path, times: NDArray[np.float64], truth: runs.Truth) -> No
 def _extent(times: NDArray[np.float64], first_time: float) -> dict[str, Any]:
     """Return the whole sequence's extent: its frames, its first and last times since `first_time`.
 
-    A run ends at its first lost frame, and may be given a part of the sequence, so the bundle's
-    frames can be a part of the sequence's: the page shows the rest as not run.
+    A run goes on past a lost track, in a new map, but may be given a part of the sequence, so
+    the bundle's frames can be a part of the sequence's: the page shows the rest as not run.
     """
     if len(times) == 0:
         return {"frames": 0, "start": 0.0, "end": 0.0}

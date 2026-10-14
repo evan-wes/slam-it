@@ -9,7 +9,7 @@ use nalgebra::Vector2;
 use slam_it_edge::adjust::Solve;
 use slam_it_edge::frames::{self, Camera, DepthMap, Frame};
 use slam_it_edge::options::{Mode, Options, Setting, check_options};
-use slam_it_edge::pipeline::{Fates, FrameResult, FrameSummary, Lifetimes, Pipeline, State};
+use slam_it_edge::pipeline::{Fates, FrameResult, FrameSummary, Lifetimes, Pipeline};
 use slam_it_eval::runs::{FeatureWriter, JsonObject, JsonValue, Run};
 use slam_it_eval::{euroc, png, text, tum};
 use slam_it_foundations::camera::Model;
@@ -664,7 +664,8 @@ fn record_lives(out: &mut Run, lives: Lifetimes) -> Result<()> {
     Ok(())
 }
 
-/// Tracks a sequence's frames, from the first asked for, until the end or the track is lost.
+/// Tracks a sequence's frames, from the first asked for, to the end: a lost track closes its
+/// map, and the next frame starts a new one.
 ///
 /// # Arguments
 ///
@@ -709,9 +710,6 @@ fn track(
         record(out, &result, read, built - read)?;
         if let Some(writer) = features.as_deref_mut() {
             write_features(writer, &frame, &result.fates)?;
-        }
-        if result.state == State::Lost {
-            break;
         }
     }
     Ok(())

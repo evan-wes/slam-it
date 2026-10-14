@@ -31,7 +31,7 @@ from tests.edge.support import (
 )
 from tests.fixtures.edge.generate_room_runs import record, summaries
 from tests.orchestration.conftest import RoomRun, require_program
-from tests.orchestration.datasets import BLANK_AT, CASES, Room, room_inputs
+from tests.orchestration.datasets import BLANK_AT, CASES, LOST_AT, Room, room_inputs
 
 SEQUENCES = FIXTURES / "eval" / "sequences"
 """The readers' fixture folders: their files listed, their images absent."""
@@ -215,6 +215,9 @@ def test_the_moved_settings_change_the_decisions(
     assert moved != default
 
 
+ROOMS = ("room", "gap", "lost", "kept")
+"""The rooms the golden record holds, each run by its fixture ``<room>_runs``."""
+
 GOLDEN = load_fixture("edge/room_runs.json")
 """What the pipeline decided on the room and the gap room (``generate_room_runs.py``)."""
 
@@ -226,28 +229,64 @@ def test_the_golden_record_is_of_these_rooms() -> None:
     named as one (review panel finding A20).
     """
     assert GOLDEN["inputs"] == room_inputs()
-    names = {f"{name}/{dataset}/{mode}" for name in ("room", "gap") for dataset, mode in CASES}
+    names = {f"{name}/{dataset}/{mode}" for name in ROOMS for dataset, mode in CASES}
     assert set(GOLDEN["cases"]) == names
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
-@pytest.mark.parametrize("name", ["room", "gap"])
+@pytest.mark.parametrize("name", ROOMS)
 @pytest.mark.parametrize(("dataset", "mode"), CASES)
-def test_every_backend_matches_the_golden_record(  # noqa: PLR0917 -- the case, both rooms
-    dataset: str, mode: str, name: str, backend: str, room_runs: RoomRun, gap_runs: RoomRun
+def test_every_backend_matches_the_golden_record(
+    dataset: str, mode: str, name: str, backend: str, request: pytest.FixtureRequest
 ) -> None:
     """Every backend's run is the recorded one.
 
     A decision changed in all three languages fails here until the record is regenerated
     (review panel finding A1).
     """
-    runs_of = room_runs if name == "room" else gap_runs
+    runs_of: RoomRun = request.getfixturevalue(f"{name}_runs")
     run = runs_of(dataset, mode, backend)
     expected = GOLDEN["cases"][f"{name}/{dataset}/{mode}"]
     floating = {"poses": None, "summaries": None}
     assert record(run, runs_of.features(dataset, mode, backend)) | floating == expected | floating
     assert_matches_fixture(run.poses.reshape(-1, 16), expected["poses"], GOLDEN["tolerance"])
     assert_records_match(summaries(run), expected["summaries"], SOLVER_TOLERANCE)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize(("dataset", "mode"), CASES)
+def test_a_lost_track_starts_a_new_map_and_the_run_goes_on(
+    dataset: str, mode: str, backend: str, lost_runs: RoomRun, kept_runs: RoomRun
+) -> None:
+    """The blank frames lose the track; the next frames start map 1, tracked to the room's end.
+
+    At the room's settings, map 0, of a few keyframes, is reset: its keyframes and points end on
+    the lost frame, and its frames' poses are dropped. With every lost map kept, its poses and
+    keyframes stay, and the run tracks in two segments.
+    """
+    lost_at = LOST_AT + OPTIONS.lost_frames - 1
+    reset_code = runs.REMOVALS.index("reset")
+    for runs_of, reset in ((lost_runs, True), (kept_runs, False)):
+        run = runs_of(dataset, mode, backend)
+        assert len(run.diagnostics) == FRAMES  # the run goes on to the room's end
+        lost = run.diagnostics[lost_at]
+        assert (lost["state"], lost["map"], lost["lost"]["reset"]) == ("lost", 0, reset)
+        assert [d["state"] for d in run.diagnostics].count("lost") == 1
+        after = [d["map"] for d in run.diagnostics[lost_at + 1 :]]
+        assert set(after) <= {None, 1}
+        assert after[-1] == 1
+        assert run.diagnostics[-1]["tracked"] > 0
+        made_in_first = run.keyframe_maps == 0
+        removed = run.keyframe_lives[made_in_first]
+        if reset:
+            assert np.all(removed[:, 1:] == [lost_at, reset_code])
+            assert np.all(run.pose_maps == 1)
+        else:
+            assert np.all(removed[:, 1] == -1)
+            assert sorted(set(run.pose_maps.tolist())) == [0, 1]
+        span = runs.tracking(run, vo.open_source(dataset, runs_of.sequence(dataset), mode).times)
+        assert [s.map for s in span.segments] == ([1] if reset else [0, 1])
+        assert (span.losses, span.resets) == (1, int(reset))
 
 
 def test_a_request_crosses_as_a_command_line() -> None:

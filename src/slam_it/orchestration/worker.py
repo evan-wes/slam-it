@@ -129,6 +129,11 @@ RUN_MODES = ("monocular", "rgbd")
 """The modes a job runs in: RGB-D when the import wrote LiDAR depth, monocular otherwise. The
 status page names each (``viewer/src/jobs.js`` ``MODES``)."""
 
+SEGMENTS = 20
+"""The most segments a summary lists, the first ones: a clip that loses the track often has many,
+and the summary must fit what the server keeps (``slam_it_server.app.SUMMARY_BYTES``, 4,096;
+20 pairs of times take about 400 of them). ``segment_count`` gives them all."""
+
 SEQUENCE = "your-video"
 """The folder an upload is imported into: a run names its sequence after it, and the viewer
 shows that name."""
@@ -478,10 +483,10 @@ def summarize(
 ) -> dict[str, Any]:
     """Return a job's summary: what its run made, and what of the clip it ran and tracked.
 
-    What of the clip it ran and tracked is :func:`slam_it.eval.runs.tracking`'s. The status
-    page says both why a run can end early and why it can start late (``viewer/src/jobs.js``),
-    so that a short result is not taken for a cropped video, and warns when the frames arrived
-    smaller than the import's short side.
+    What of the clip it ran and tracked is :func:`slam_it.eval.runs.tracking`'s: a segment per
+    map, a lost track starting the next. The status page says why the tracked parts can be fewer
+    than the clip's (``viewer/src/jobs.js``), so that a short result is not taken for a cropped
+    video, and warns when the frames arrived smaller than the import's short side.
 
     Parameters
     ----------
@@ -499,14 +504,17 @@ def summarize(
     Returns
     -------
     dict
-        ``frames`` run, ``tracked``, the final map's ``keyframes`` and ``points``, the run's
+        ``frames`` run, ``tracked``, the final maps' ``keyframes`` and ``points``, the run's
         ``mode`` (``"rgbd"`` for a recording with LiDAR depth), ``intrinsics``, ``size``;
         ``clip_seconds``, the clip's last frame's time; ``tracked_from`` and ``tracked_to``, the
-        first and last tracked frames' times (null if none was tracked); ``ran_to``, the last
-        frame run's time; every time since the clip's first frame, to the millisecond; and
-        ``lost``, whether the run ended by losing the track.
+        first and last tracked frames' times (null if none was tracked); ``segments``, each
+        map's first and last tracked frames' times, the first :data:`SEGMENTS` of them, and
+        ``segment_count``, all of them; ``ran_to``, the last frame run's time; every time since
+        the clip's first frame, to the millisecond; ``losses``, the frames the track was lost
+        on; and ``resets``, the maps lost too soon to keep.
     """
     span = runs.tracking(run, times)
+    segments = [[s.tracked_from, s.tracked_to] for s in span.segments[:SEGMENTS]]
     return {
         "frames": span.frames,
         "tracked": span.tracked,
@@ -518,8 +526,11 @@ def summarize(
         "clip_seconds": span.seconds,
         "tracked_from": span.tracked_from,
         "tracked_to": span.tracked_to,
+        "segments": segments,
+        "segment_count": len(span.segments),
         "ran_to": span.ran_to,
-        "lost": span.lost,
+        "losses": span.losses,
+        "resets": span.resets,
     }
 
 

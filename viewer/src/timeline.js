@@ -3,10 +3,12 @@
 
 import { seconds } from "./format.js";
 
-/** The state that ends a run (slam_it.edge.pipeline.State.LOST). */
+/** The state of the frame a run lost the track on: its map closed there, and the next frame
+ *  starts a new one (slam_it.edge.pipeline.State.LOST). */
 export const LOST = "lost";
 
-/** The state before the first map (slam_it.edge.pipeline.State.NOT_INITIALIZED). */
+/** The state before a map, the first or the next after a lost one
+ *  (slam_it.edge.pipeline.State.NOT_INITIALIZED). */
 export const NOT_INITIALIZED = "not_initialized";
 
 /** What a state is called on the page; a state not named here is shown as tracking. */
@@ -34,8 +36,6 @@ export const STATE_WORDS = {
  * @property {number} ran From the bundle's first frame to its last.
  * @property {number} after The sequence's time after the bundle's last frame; 0 if under half a
  *     frame.
- * @property {boolean} lost Whether every run that reached the bundle's last frame lost the track
- *     there, which ends a run.
  */
 
 /**
@@ -79,23 +79,20 @@ export function spanHint(name, { state, map, reset, first, end }) {
 }
 
 /**
- * Where the bundle's frames sit in the whole sequence.
+ * Where the bundle's frames sit in the whole sequence: a run goes on past a lost track, so the
+ * parts no run reached are the parts no run was given.
  * @param {import("./bundle.js").Extent} extent The whole sequence.
  * @param {ArrayLike<number>} times The bundle's frames' times since its first, in seconds.
- * @param {{info: {frames: [number, number]}, records: Record<string, unknown[]>}[]} tracks The
- *     backends' tracks.
  * @returns {Placement} The parts before, of and after the bundle's frames.
  */
-export function placement(extent, times, tracks) {
+export function placement(extent, times) {
   const last = times.length > 0 ? times[times.length - 1] : 0;
   // Below half a frame period, a part is the times' rounding, not a frame no run reached.
   const half = (extent.end - extent.start) / Math.max(extent.frames - 1, 1) / 2;
-  const reaching = tracks.filter((track) => track.info.frames[1] === times.length);
   return {
     before: -extent.start > half ? -extent.start : 0,
     ran: last,
     after: extent.end - last > half ? extent.end - last : 0,
-    lost: reaching.length > 0 && reaching.every((track) => track.records.state?.at(-1) === LOST),
   };
 }
 
@@ -111,12 +108,6 @@ export function notRunText(placed) {
   const whole = last + placed.after;
   return {
     before: ["not run", `the sequence's first ${seconds(first)}: no run started there`],
-    after: placed.lost
-      ? [
-          "not processed: tracking was lost",
-          `tracking was lost at ${seconds(last)} of ${seconds(whole)}, which ends a run, so the ` +
-            "rest was not processed",
-        ]
-      : ["not run", `${seconds(last)} to ${seconds(whole)}: no run went further`],
+    after: ["not run", `${seconds(last)} to ${seconds(whole)}: no run went further`],
   };
 }

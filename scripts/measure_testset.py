@@ -16,11 +16,16 @@ Each sequence runs on one backend (:func:`slam_it.orchestration.vo.run`) with OR
 settings and, unless ``--features default``, the features for its frame size, as the demo's
 worker sets a run up (:func:`slam_it.orchestration.vo.options_for`), then is measured:
 
-- ``frames``: the sequence's frames for its mode; ``run``: those run, since a run ends at the
-  frame it loses the track at;
-- ``tracked`` and ``share``: the frames tracked, and their share of the sequence's;
-- ``tracked_from``, ``tracked_to`` and ``ran_to``: times since the sequence's first frame, and
-  ``lost`` (:func:`slam_it.eval.runs.tracking`);
+- ``frames``: the sequence's frames for its mode; ``run``: those run (an RGB-D frame without a
+  depth map is skipped); a lost track closes its map and the next frame starts a new one, so a
+  run goes on to the sequence's end;
+- ``tracked`` and ``share``: the frames tracked, in every map, and their share of the
+  sequence's;
+- ``segments``: each map's stretch, ``map``, ``tracked`` and its first and last tracked frames'
+  times, ``tracked_from`` and ``tracked_to``; ``losses``, the frames the track was lost on, and
+  ``resets``, the maps lost too soon to keep; and ``tracked_from``, ``tracked_to`` and
+  ``ran_to`` for the whole run: every time since the sequence's first frame
+  (:func:`slam_it.eval.runs.tracking`);
 - ``ate``: the RMSE in metres over the tracked frames matched to the reference, each map aligned
   on its own, Sim(3) for monocular and SE(3) otherwise, with ``matched`` and the ``reference``
   named; each map's own in ``map_ate`` (``map``, ``matched``, ``ate``), and in
@@ -160,10 +165,20 @@ def measure(
         "run": span.frames,
         "tracked": span.tracked,
         "share": span.tracked / len(times) if len(times) else 0.0,
+        "segments": [
+            {
+                "map": s.map,
+                "tracked": s.tracked,
+                "tracked_from": s.tracked_from,
+                "tracked_to": s.tracked_to,
+            }
+            for s in span.segments
+        ],
+        "losses": span.losses,
+        "resets": span.resets,
         "tracked_from": span.tracked_from,
         "tracked_to": span.tracked_to,
         "ran_to": span.ran_to,
-        "lost": span.lost,
         "reference": entry.reference,
         "ate": None,
         "matched": 0,
@@ -212,16 +227,17 @@ def row(result: dict[str, Any]) -> str:
         if result["p95"] is None
         else f"{1000 * result['p95']:.0f} of {1000 * result['deadline']:.0f} ms"
     )
+    maps = f"{len(result['segments'])} ({result['resets']} reset)"
     return (
         f"| {result['name']} | {result['mode']} | {width}x{height} | {result['features']} | "
         f"{result['tracked']}/{result['frames']} ({100 * result['share']:.0f}%) | {span} | "
-        f"{'yes' if result['lost'] else 'no'} | {ate} | {p95} |"
+        f"{maps} | {result['losses']} | {ate} | {p95} |"
     )
 
 
 HEADER = (
-    "| sequence | mode | size | features | tracked | tracked from-to | lost | ATE (matched) | "
-    "p95 latency of the frame period |\n|---|---|---|---|---|---|---|---|---|"
+    "| sequence | mode | size | features | tracked | tracked from-to | maps tracked | losses | "
+    "ATE (matched) | p95 latency of the frame period |\n|---|---|---|---|---|---|---|---|---|---|"
 )
 """The table's header."""
 

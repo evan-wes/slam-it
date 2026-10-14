@@ -111,8 +111,9 @@ BACKENDS = ("python", "cpp", "rust")
 """The backends a run may come from."""
 
 LOST = "lost"
-"""A diagnostic's ``state`` when the edge pipeline lost the track, which ends its run:
-:class:`slam_it.edge.pipeline.State`'s ``LOST``."""
+"""A diagnostic's ``state`` on the frame the edge pipeline lost the track on: its map closed there,
+kept or reset, and the next frame starts a new one (:class:`slam_it.edge.pipeline.State`'s
+``LOST``)."""
 
 MAX_DIFFERENCE = 0.02
 """The largest time difference, in seconds, between a run's frame and its ground-truth pose:
@@ -835,36 +836,70 @@ def ground_truth(dataset: str, sequence: str | Path) -> Truth | None:
 
 
 @dataclass(frozen=True)
+class Segment:
+    """A map's stretch of a sequence: from its first tracked frame to its last.
+
+    Attributes
+    ----------
+    map : int
+        The map.
+    tracked : int
+        Its frames tracked.
+    tracked_from, tracked_to : float
+        Its first and last tracked frames' times since the sequence's first, in seconds.
+    """
+
+    map: int
+    tracked: int
+    tracked_from: float
+    tracked_to: float
+
+
+@dataclass(frozen=True)
 class Tracking:
     """What of a sequence a run ran and tracked; every time since the sequence's first frame.
 
-    A run ends at the first frame it loses the track at, so the rest of a sequence is then not
-    run; and a run tracks nothing until it has made its first map, a monocular one from two
-    views, an RGB-D one from a frame with enough keypoints with depth.
+    A lost track closes its map and the next frame starts a new one, so a run goes on to the
+    sequence's end (or the end of the frames it was given), tracking in segments, one per map
+    with a tracked frame; a map reset has none, its frames' poses dropped. A run tracks nothing
+    until it has made its first map, a monocular one from two views, an RGB-D one from a frame
+    with enough keypoints.
 
     Attributes
     ----------
     frames : int
         The frames run.
     tracked : int
-        The frames tracked.
+        The frames tracked, in every segment.
     seconds : float
         The sequence's last frame's time.
-    tracked_from, tracked_to : float or None
-        The first and last tracked frames' times; None if none was tracked.
+    segments : tuple of Segment
+        Each map's stretch, in order.
     ran_to : float
         The last frame run's time.
-    lost : bool
-        Whether the run ended by losing the track.
+    losses : int
+        The frames the track was lost on.
+    resets : int
+        The maps reset.
     """
 
     frames: int
     tracked: int
     seconds: float
-    tracked_from: float | None
-    tracked_to: float | None
+    segments: tuple[Segment, ...]
     ran_to: float
-    lost: bool
+    losses: int
+    resets: int
+
+    @property
+    def tracked_from(self) -> float | None:
+        """The first tracked frame's time; None if none was tracked."""
+        return self.segments[0].tracked_from if self.segments else None
+
+    @property
+    def tracked_to(self) -> float | None:
+        """The last tracked frame's time; None if none was tracked."""
+        return self.segments[-1].tracked_to if self.segments else None
 
 
 def tracking(run: Run, times: ArrayLike) -> Tracking:
@@ -881,7 +916,7 @@ def tracking(run: Run, times: ArrayLike) -> Tracking:
     Returns
     -------
     Tracking
-        The span.
+        The segments, and what the run lost and reset.
     """
     stamps = np.asarray(times, dtype=np.float64)
     start = float(stamps[0]) if len(stamps) else 0.0
@@ -890,15 +925,20 @@ def tracking(run: Run, times: ArrayLike) -> Tracking:
         return round(float(time) - start, 3)
 
     ran = [entry["timestamp"] for entry in run.diagnostics]
-    tracked = run.timestamps
+    maps = _check_maps(run.pose_maps, len(run.timestamps), "pose_maps")
+    segments = []
+    for map_id in (int(m) for m in np.unique(maps)):
+        times_of = run.timestamps[maps == map_id]
+        segments.append(Segment(map_id, len(times_of), since(times_of[0]), since(times_of[-1])))
+    reset = run.keyframe_lives[:, 2] == REMOVALS.index("reset")
     return Tracking(
         frames=len(run.diagnostics),
-        tracked=len(tracked),
+        tracked=len(run.timestamps),
         seconds=since(stamps[-1]) if len(stamps) else 0.0,
-        tracked_from=since(tracked[0]) if len(tracked) else None,
-        tracked_to=since(tracked[-1]) if len(tracked) else None,
+        segments=tuple(segments),
         ran_to=since(ran[-1]) if ran else 0.0,
-        lost=bool(ran) and run.diagnostics[-1].get("state") == LOST,  # optional in the format
+        losses=sum(entry.get("state") == LOST for entry in run.diagnostics),  # optional
+        resets=len(np.unique(run.keyframe_maps[reset])),
     )
 
 
