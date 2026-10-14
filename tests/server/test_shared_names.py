@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 
+from slam_it.edge import options
 from slam_it.eval import lenses, video
 from slam_it.orchestration import worker
 from slam_it_server import app, config, jobs
@@ -24,10 +25,14 @@ def _constant(name: str) -> str:
 
 
 def test_the_caps_are_the_imports() -> None:
-    """The server's and the page's size cap, and the page's length cap, are the import's."""
+    """The size, length and short-side caps the server and the page hold are the import's.
+
+    The page warns under the short side: a video that arrived smaller than the import makes.
+    """
     assert config.MAX_BYTES == video.MAX_BYTES
     assert float(_constant("MAX_BYTES")) == video.MAX_BYTES
     assert float(_constant("MAX_SECONDS")) == video.MAX_SECONDS
+    assert float(_constant("SHORT_SIDE")) == video.SHORT_SIDE
 
 
 def test_the_names_are_the_workers() -> None:
@@ -40,6 +45,13 @@ def test_the_names_are_the_workers() -> None:
     assert tuple(re.findall(keys, _constant("UPLOADS"), re.MULTILINE)) == worker.UPLOADS
     sources = tuple(re.findall(keys, _constant("INTRINSICS"), re.MULTILINE))
     assert sources == ("stray-scanner", *lenses.SOURCES)  # the worker names a zip's source
+    assert tuple(re.findall(keys, _constant("MODES"), re.MULTILINE)) == worker.RUN_MODES
+    assert set(worker.RUN_MODES) <= set(options.MODES)
+
+
+def test_a_failures_reason_is_cut_where_the_server_cuts_it() -> None:
+    """The worker never posts a reason longer than the server keeps, so it is never refused."""
+    assert worker.REASON_LENGTH == app.REASON_LENGTH
 
 
 def test_the_heartbeat_is_well_inside_the_silence() -> None:

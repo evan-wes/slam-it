@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 
 from slam_it.eval import lenses
-from slam_it.foundations import image
+from slam_it.foundations import camera, image
 from slam_it.foundations.errors import InvalidInputError
 from tests.conftest import FIXTURES
 from tests.edge import room
@@ -577,3 +577,45 @@ def test_the_database_is_required_where_it_is_looked_for(
     monkeypatch.setenv("SLAM_IT_LENS_PROFILES", str(tmp_path))
     with pytest.raises(InvalidInputError, match="no usable lens profile"):
         lenses.database()
+
+
+ADVIO_LENS = lenses.RadTan(
+    lenses.Pinhole(1077.2, 1079.3, 362.145, 636.3873, 720, 1280), (0.0478, 0.0339, -0.0033, -0.0091)
+)
+"""ADVIO's iPhone calibration (``iphone-02.yaml``), its tangential terms ten times larger."""
+
+
+def test_a_radial_tangential_lens_turns_with_its_image() -> None:
+    """Turned a quarter at a time, it projects each point where the turned image shows it.
+
+    ``numpy.rot90`` takes pixel (u, v) of a W-wide image to (v, W - 1 - u), and the camera's
+    axes with it: a point (x, y, z) to (y, -x, z).
+    """
+    rng = np.random.default_rng(0)
+    points = rng.uniform([-0.3, -0.5, 1.0], [0.3, 0.5, 3.0], (50, 3))
+    pixels = camera.project("radtan", ADVIO_LENS.intrinsics(), points)
+    width = ADVIO_LENS.camera.width
+    for turns in range(1, 5):
+        pixels = np.stack([pixels[:, 1], width - 1 - pixels[:, 0]], axis=-1)
+        points = np.stack([points[:, 1], -points[:, 0], points[:, 2]], axis=-1)
+        turned = ADVIO_LENS.turned(turns)
+        np.testing.assert_allclose(
+            camera.project("radtan", turned.intrinsics(), points), pixels, atol=1e-9
+        )
+        width = turned.camera.width
+    assert ADVIO_LENS.turned(4) == ADVIO_LENS
+    assert ADVIO_LENS.turned(-1) == ADVIO_LENS.turned(3)
+
+
+def test_a_radial_tangential_lens_scales_with_its_image() -> None:
+    """Its distortion is kept; each point lands where the scaled image shows it."""
+    rng = np.random.default_rng(1)
+    points = rng.uniform([-0.3, -0.5, 1.0], [0.3, 0.5, 3.0], (50, 3))
+    scaled = ADVIO_LENS.scaled(480, 854)
+    assert scaled.distortion == ADVIO_LENS.distortion
+    sx, sy = 480 / 720, 854 / 1280
+    pixels = camera.project("radtan", ADVIO_LENS.intrinsics(), points)
+    expected = np.stack([(pixels[:, 0] + 0.5) * sx - 0.5, (pixels[:, 1] + 0.5) * sy - 0.5], -1)
+    np.testing.assert_allclose(camera.project("radtan", scaled.intrinsics(), points), expected)
+    with pytest.raises(InvalidInputError, match="4 finite values"):
+        lenses.RadTan(ADVIO_LENS.camera, (0.1, float("nan"), 0.0, 0.0))

@@ -13,7 +13,7 @@ import pytest
 from numpy.typing import NDArray
 
 from slam_it.edge.map import Removal
-from slam_it.edge.pipeline import Fate
+from slam_it.edge.pipeline import Fate, State
 from slam_it.eval import runs, tum
 from slam_it.foundations import so3
 from slam_it.foundations.errors import InvalidInputError
@@ -107,6 +107,28 @@ def test_the_fate_codes_are_the_pipelines() -> None:
     """A feature record's fate code is the pipeline's :class:`Fate`, by the same names."""
     assert [f.name.lower() for f in Fate] == list(runs.FATES)
     assert [int(f) for f in Fate] == list(range(len(runs.FATES)))
+
+
+def test_the_lost_state_is_the_pipelines() -> None:
+    """A run's lost state, which :func:`runs.tracking` reads, is the pipeline's."""
+    assert runs.LOST == State.LOST
+
+
+def test_tracking_says_what_of_a_sequence_a_run_ran_and_tracked() -> None:
+    """Times since the sequence's first frame: tracked from the second, lost at the fourth."""
+    times = np.asarray(100.0 + 0.1 * np.arange(6), dtype=np.float64)
+    states = ["not_initialized", "tracking", "tracking", "lost"]
+    diagnostics = [{"timestamp": float(t), "state": s} for t, s in zip(times, states, strict=False)]
+    run = runs.Run(
+        "tum", "s", "monocular", "python", times[1:3], _poses(2), diagnostics=diagnostics
+    )
+    span = runs.tracking(run, times)
+    assert (span.frames, span.tracked, span.lost) == (4, 2, True)
+    assert (span.tracked_from, span.tracked_to, span.ran_to, span.seconds) == (0.1, 0.2, 0.3, 0.5)
+    never = runs.tracking(replace(run, timestamps=times[:0], poses=_poses(0)), times)
+    assert (never.tracked, never.tracked_from, never.tracked_to) == (0, None, None)
+    unstated = [{"timestamp": float(t)} for t in times[:4]]  # the format makes state optional
+    assert runs.tracking(replace(run, diagnostics=unstated), times).lost is False
 
 
 def _record_features(folder: Path) -> None:
@@ -258,6 +280,26 @@ def test_evaluate_scores_a_noisy_run() -> None:
     assert scored.absolute.scale == 1.0
     assert scored.relative.delta == pytest.approx(0.05)  # the run's frame period
     assert len(scored.relative.pairs) == len(frames) - 1
+
+
+def test_the_ate_alone_scores_against_a_reference_too_sparse_for_the_rpe() -> None:
+    """The ATE alone scores where the RPE has no pair a frame period apart.
+
+    A 10 Hz reference beside 30 Hz frames matches every third frame, none a period apart, so
+    :func:`runs.evaluate` refuses.
+    """
+    frame_times = np.arange(0.0, 6.0, 1 / 30)
+    reference_times = frame_times[::3]
+    angles = np.column_stack([0.1 * frame_times, 0.3 * frame_times, np.zeros_like(frame_times)])
+    poses = np.tile(np.eye(4), (len(frame_times), 1, 1))
+    poses[:, :3, :3] = so3.exp(angles)
+    poses[:, :3, 3] = np.column_stack([np.cos(frame_times), np.sin(frame_times), frame_times])
+    run = runs.Run("tum", "sparse", "rgbd", "python", frame_times, poses)
+    with pytest.raises(InvalidInputError, match="later"):
+        runs.evaluate(run, reference_times, poses[::3])
+    scored = runs.evaluate_absolute(run, reference_times, poses[::3])
+    assert scored.matched == len(reference_times)
+    assert scored.absolute.rmse == pytest.approx(0.0, abs=1e-9)
 
 
 def test_evaluate_rejects_a_run_whose_times_do_not_ascend() -> None:

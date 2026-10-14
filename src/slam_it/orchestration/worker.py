@@ -14,7 +14,9 @@ Railway beside the server, or later on a machine with a GPU. A job's kind says w
 
    - import it (:mod:`slam_it.eval.video`), its intrinsics chosen from the lens profiles
      (:func:`slam_it.eval.lenses.choose`);
-   - run the C++ pipeline on it, monocular, recording features;
+   - run the C++ pipeline on it, recording features: RGB-D if the import wrote LiDAR depth,
+     monocular otherwise (:data:`RUN_MODES`), with the features for its frames' size
+     (:func:`slam_it.orchestration.vo.options_for`);
    - bake the bundle (:func:`slam_it.orchestration.bundles.bake`);
 
 3. upload the bundle's files to the links the server gives for them;
@@ -86,8 +88,7 @@ from typing import IO, Any
 import numpy as np
 from numpy.typing import NDArray
 
-from slam_it.edge.pipeline import State
-from slam_it.eval import lenses, runs, video
+from slam_it.eval import lenses, runs, tum, video
 from slam_it.foundations.errors import InvalidInputError, SlamItError
 from slam_it.orchestration import bundles, vo
 
@@ -124,9 +125,18 @@ HEARTBEAT = 30.0
 """How often a job's current stage is reported again while its child works, in seconds: the
 server fails a job it has not heard from for a few of these."""
 
+RUN_MODES = ("monocular", "rgbd")
+"""The modes a job runs in: RGB-D when the import wrote LiDAR depth, monocular otherwise. The
+status page names each (``viewer/src/jobs.js`` ``MODES``)."""
+
 SEQUENCE = "your-video"
 """The folder an upload is imported into: a run names its sequence after it, and the viewer
 shows that name."""
+
+REASON_LENGTH = 500
+"""The most of a failure's reason a report carries: what the server keeps
+(``slam_it_server.app.REASON_LENGTH``), so that no reason, however an upload makes it, is long
+enough for the server to refuse the report."""
 
 TOKEN_VARIABLE = "SLAM_IT_WORKER_TOKEN"
 """The environment variable that holds the worker's token."""
@@ -369,8 +379,8 @@ class Client:
         self._post(f"/api/worker/jobs/{job.id}/done", {"summary": summary})
 
     def failed(self, job: Job, reason: str) -> None:
-        """Report a job failed, with a reason fit to show its owner."""
-        self._post(f"/api/worker/jobs/{job.id}/failed", {"reason": reason})
+        """Report a job failed, its reason fit to show its owner, cut to :data:`REASON_LENGTH`."""
+        self._post(f"/api/worker/jobs/{job.id}/failed", {"reason": reason[:REASON_LENGTH]})
 
 
 class _Beat:
@@ -451,18 +461,27 @@ def _work(upload_path: Path, kind: str, out: Path, report: Callable[[str], None]
         video.import_video(upload_path, sequence, chosen)
         source = chosen.source
     report("running")
-    run = vo.run("tum", sequence, "monocular", out / "run", backend="cpp", record_features=True)
+    mode = "rgbd" if (sequence / "depth.txt").is_file() else "monocular"  # LiDAR depth imported
+    camera = tum.read_camera(sequence)
+    options = vo.options_for(camera.width, camera.height)
+    run = vo.run(
+        "tum", sequence, mode, out / "run", backend="cpp", options=options, record_features=True
+    )
     report("baking")
     bundles.bake([out / "run"], sequence, out / "bundle")
-    return summarize(run, vo.open_source("tum", sequence, "monocular").times, source)
+    times = vo.open_source("tum", sequence, mode).times
+    return summarize(run, times, source, (camera.width, camera.height))
 
 
-def summarize(run: runs.Run, times: NDArray[np.float64], intrinsics: str) -> dict[str, Any]:
+def summarize(
+    run: runs.Run, times: NDArray[np.float64], intrinsics: str, size: tuple[int, int]
+) -> dict[str, Any]:
     """Return a job's summary: what its run made, and what of the clip it ran and tracked.
 
-    A run ends at the first frame it loses the track at, so the rest of a clip is then not run;
-    and a monocular run tracks nothing until it has made its first map. The status page says
-    both (``viewer/src/jobs.js``), so that a short result is not taken for a cropped video.
+    What of the clip it ran and tracked is :func:`slam_it.eval.runs.tracking`'s. The status
+    page says both why a run can end early and why it can start late (``viewer/src/jobs.js``),
+    so that a short result is not taken for a cropped video, and warns when the frames arrived
+    smaller than the import's short side.
 
     Parameters
     ----------
@@ -474,34 +493,33 @@ def summarize(run: runs.Run, times: NDArray[np.float64], intrinsics: str) -> dic
     intrinsics : str
         Where its intrinsics came from: ``"stray-scanner"``, or a
         :attr:`slam_it.eval.lenses.Chosen.source`.
+    size : tuple of int
+        The imported frames' width and height, upright.
 
     Returns
     -------
     dict
-        ``frames`` run, ``tracked``, the final map's ``keyframes`` and ``points``,
-        ``intrinsics``; ``clip_seconds``, the clip's last frame's time; ``tracked_from`` and
-        ``tracked_to``, the first and last tracked frames' times (null if none was tracked);
-        ``ran_to``, the last frame run's time; every time since the clip's first frame, to the
-        millisecond; and ``lost``, whether the run ended by losing the track.
+        ``frames`` run, ``tracked``, the final map's ``keyframes`` and ``points``, the run's
+        ``mode`` (``"rgbd"`` for a recording with LiDAR depth), ``intrinsics``, ``size``;
+        ``clip_seconds``, the clip's last frame's time; ``tracked_from`` and ``tracked_to``, the
+        first and last tracked frames' times (null if none was tracked); ``ran_to``, the last
+        frame run's time; every time since the clip's first frame, to the millisecond; and
+        ``lost``, whether the run ended by losing the track.
     """
-    start = float(times[0]) if len(times) else 0.0
-
-    def since(time: float) -> float:
-        return round(float(time) - start, 3)
-
-    ran = [d["timestamp"] for d in run.diagnostics]
-    tracked = run.timestamps
+    span = runs.tracking(run, times)
     return {
-        "frames": len(run.diagnostics),
-        "tracked": len(tracked),
+        "frames": span.frames,
+        "tracked": span.tracked,
         "keyframes": len(run.final_keyframes()[0]),
         "points": len(run.final_points()),
+        "mode": run.mode,
         "intrinsics": intrinsics,
-        "clip_seconds": since(times[-1]) if len(times) else 0.0,
-        "tracked_from": since(tracked[0]) if len(tracked) else None,
-        "tracked_to": since(tracked[-1]) if len(tracked) else None,
-        "ran_to": since(ran[-1]) if ran else 0.0,
-        "lost": bool(ran) and run.diagnostics[-1]["state"] == State.LOST,
+        "size": [int(size[0]), int(size[1])],
+        "clip_seconds": span.seconds,
+        "tracked_from": span.tracked_from,
+        "tracked_to": span.tracked_to,
+        "ran_to": span.ran_to,
+        "lost": span.lost,
     }
 
 

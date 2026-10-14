@@ -8,6 +8,7 @@ import's tests (``tests/eval/test_video.py``) and the worker's
 
 from __future__ import annotations
 
+import io
 import zipfile
 from collections.abc import Mapping
 from fractions import Fraction
@@ -16,8 +17,9 @@ from pathlib import Path
 import av
 import numpy as np
 from numpy.typing import NDArray
+from PIL import Image
 
-from slam_it.eval import lenses
+from slam_it.eval import lenses, lidar
 from slam_it.foundations import so3
 from tests.edge import room
 
@@ -84,7 +86,11 @@ Q_AC = np.array([1.0, 0.0, 0.0, 0.0])
 
 
 def encode_stray(
-    path: Path, pictures: list[NDArray[np.uint8]], *, divider: int = STRAY_DIVIDER
+    path: Path,
+    pictures: list[NDArray[np.uint8]],
+    *,
+    divider: int = STRAY_DIVIDER,
+    rotation: int = 0,
 ) -> Path:
     """Encode pictures as Stray Scanner's ``rgb.mp4``, in HEVC, stamped as its encoder stamps.
 
@@ -92,6 +98,7 @@ def encode_stray(
     before its increment, from -1, so frames are stamped -1, divider - 1, 2 divider - 1, ... over
     :data:`STRAY_TIMESCALE`, after a session started at 0: the first frame sits behind the MP4's
     edit list. ``VideoEncoder.swift`` encodes HEVC, whose B-frames are decoded out of order.
+    The video declares `rotation`, in degrees.
     """
     options = {"use_editlist": "1", "avoid_negative_ts": "disabled"}
     with av.open(str(path), "w", format="mp4", options=options) as out:
@@ -100,6 +107,8 @@ def encode_stray(
         stream.height, stream.width = pictures[0].shape[:2]
         stream.pix_fmt = "yuv420p"
         stream.time_base = Fraction(1, STRAY_TIMESCALE)
+        if rotation:
+            stream.set_display_rotation(rotation)
         for i, picture in enumerate(pictures):
             frame = av.VideoFrame.from_ndarray(picture, format="rgb24")
             frame.pts, frame.time_base = divider * i - 1, Fraction(1, STRAY_TIMESCALE)
@@ -122,23 +131,57 @@ def stray_quaternion(pose: NDArray[np.float64]) -> NDArray[np.float64]:
     return out
 
 
+STRAY_MAP_SIZE = (256, 192)
+"""ARKit's LiDAR maps' width and height, as Stray Scanner writes them."""
+
+MEDIUM_BLOCK = (slice(0, 48), slice(0, 64))
+"""The block of each synthetic confidence map given medium confidence; the rest is high."""
+
+
+def stray_maps(frame: room.Frame) -> tuple[NDArray[np.uint16], NDArray[np.uint8]]:
+    """Return a frame's LiDAR maps as Stray Scanner writes them, at :data:`STRAY_MAP_SIZE`.
+
+    The depth, in millimetres, is the room's at each map pixel's centre; the confidence is
+    high but in :data:`MEDIUM_BLOCK`.
+    """
+    width, height = STRAY_MAP_SIZE
+    rows = ((np.arange(height) + 0.5) * frame.depth.shape[0] / height).astype(np.int64)
+    columns = ((np.arange(width) + 0.5) * frame.depth.shape[1] / width).astype(np.int64)
+    depth = np.round(frame.depth[np.ix_(rows, columns)] * lidar.DEPTH_SCALE).astype(np.uint16)
+    confidence = np.full((height, width), lidar.HIGH, np.uint8)
+    confidence[MEDIUM_BLOCK] = lidar.MEDIUM
+    return depth, confidence
+
+
+def png(picture: NDArray[np.uint8] | NDArray[np.uint16]) -> bytes:
+    """Return a gray picture, 8- or 16-bit, as a PNG file's bytes."""
+    buffer = io.BytesIO()
+    Image.fromarray(np.ascontiguousarray(picture)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 def stray_zip(
     path: Path,
     rendered: list[room.Frame],
     *,
     folder: str = "2026-10-10--12-00-00/",
-    files: Mapping[str, bytes | str] | None = None,
+    files: Mapping[str, bytes | str | None] | None = None,
     names: list[str] | None = None,
     divider: int = STRAY_DIVIDER,
+    depth: bool = False,
+    rotation: int = 0,
 ) -> Path:
     """Write the room as a Stray Scanner zip, as its encoders write one: video, matrix, poses.
 
-    Each rendered frame is one the encoder kept (:func:`encode_stray`), with its pose. `files`
-    replaces or adds entries, by name in the folder; `names` adds entries named as given, with
+    Each rendered frame is one the encoder kept (:func:`encode_stray`), with its pose and, with
+    `depth`, its LiDAR maps (:func:`stray_maps`), named by its index. `files` replaces, adds or,
+    given None, drops entries, by name in the folder; `names` adds entries named as given, with
     a small body.
+    The video declares `rotation`, in degrees.
     """
     pictures = [rgb(f.gray) for f in rendered]
-    video_bytes = encode_stray(path.with_suffix(".mp4"), pictures, divider=divider).read_bytes()
+    encoded = encode_stray(path.with_suffix(".mp4"), pictures, divider=divider, rotation=rotation)
+    video_bytes = encoded.read_bytes()
     c = room.SMALL
     matrix = f"{c.fx},0.0,{c.cx}\n0.0,{c.fy},{c.cy}\n0.0,0.0,1.0\n"
     rows = ["timestamp, frame, x, y, z, qx, qy, qz, qw"]
@@ -150,9 +193,17 @@ def stray_zip(
         "rgb.mp4": video_bytes,
         "camera_matrix.csv": matrix,
         "odometry.csv": "\n".join(rows) + "\n",
-        "depth/000000.png": b"not read",
+        "imu.csv": b"not read",
     }
-    entries.update(files or {})
+    for i, f in enumerate(rendered if depth else []):
+        depth_map, confidence = stray_maps(f)
+        entries[f"depth/{i:06d}.png"] = png(depth_map)
+        entries[f"confidence/{i:06d}.png"] = png(confidence)
+    for name, body in (files or {}).items():
+        if body is None:
+            del entries[name]
+        else:
+            entries[name] = body
     with zipfile.ZipFile(path, "w") as archive:
         for name, body in entries.items():
             archive.writestr(folder + name, body)

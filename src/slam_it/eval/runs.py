@@ -39,7 +39,9 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
 
 :func:`write_run` checks everything before it writes, and replaces each file whole (written
 to a temporary sibling, then renamed); :func:`read_run` checks every file's shape;
-:func:`evaluate` scores a run against the ground truth.
+:func:`evaluate` scores a run against the ground truth, and :func:`evaluate_absolute` its ATE
+alone, which needs no pair of frames a period apart, as the RPE does. :func:`tracking` says
+what of a sequence a run ran and tracked.
 """
 
 from __future__ import annotations
@@ -99,6 +101,10 @@ MODES = ("monocular", "stereo", "rgbd")
 
 BACKENDS = ("python", "cpp", "rust")
 """The backends a run may come from."""
+
+LOST = "lost"
+"""A diagnostic's ``state`` when the edge pipeline lost the track, which ends its run:
+:class:`slam_it.edge.pipeline.State`'s ``LOST``."""
 
 MAX_DIFFERENCE = 0.02
 """The largest time difference, in seconds, between a run's frame and its ground-truth pose:
@@ -775,6 +781,90 @@ def ground_truth(dataset: str, sequence: str | Path) -> Truth | None:
 
 
 @dataclass(frozen=True)
+class Tracking:
+    """What of a sequence a run ran and tracked; every time since the sequence's first frame.
+
+    A run ends at the first frame it loses the track at, so the rest of a sequence is then not
+    run; and a run tracks nothing until it has made its first map, a monocular one from two
+    views, an RGB-D one from a frame with enough keypoints with depth.
+
+    Attributes
+    ----------
+    frames : int
+        The frames run.
+    tracked : int
+        The frames tracked.
+    seconds : float
+        The sequence's last frame's time.
+    tracked_from, tracked_to : float or None
+        The first and last tracked frames' times; None if none was tracked.
+    ran_to : float
+        The last frame run's time.
+    lost : bool
+        Whether the run ended by losing the track.
+    """
+
+    frames: int
+    tracked: int
+    seconds: float
+    tracked_from: float | None
+    tracked_to: float | None
+    ran_to: float
+    lost: bool
+
+
+def tracking(run: Run, times: ArrayLike) -> Tracking:
+    """Return what of a sequence a run ran and tracked, its times to the millisecond.
+
+    Parameters
+    ----------
+    run : Run
+        The run.
+    times : array_like, shape (F,)
+        The sequence's frames' times, in seconds, as the run's source gives them
+        (:attr:`slam_it.orchestration.vo.Source.times`).
+
+    Returns
+    -------
+    Tracking
+        The span.
+    """
+    stamps = np.asarray(times, dtype=np.float64)
+    start = float(stamps[0]) if len(stamps) else 0.0
+
+    def since(time: float) -> float:
+        return round(float(time) - start, 3)
+
+    ran = [entry["timestamp"] for entry in run.diagnostics]
+    tracked = run.timestamps
+    return Tracking(
+        frames=len(run.diagnostics),
+        tracked=len(tracked),
+        seconds=since(stamps[-1]) if len(stamps) else 0.0,
+        tracked_from=since(tracked[0]) if len(tracked) else None,
+        tracked_to=since(tracked[-1]) if len(tracked) else None,
+        ran_to=since(ran[-1]) if ran else 0.0,
+        lost=bool(ran) and run.diagnostics[-1].get("state") == LOST,  # optional in the format
+    )
+
+
+@dataclass(frozen=True)
+class Absolute:
+    """A run's ATE against the ground truth, without the RPE.
+
+    Attributes
+    ----------
+    matched : int
+        The run's frames that had a ground-truth pose within the tolerance.
+    absolute : slam_it.eval.metrics.AbsoluteError
+        The ATE: Sim(3)-aligned for a monocular run, SE(3) otherwise.
+    """
+
+    matched: int
+    absolute: metrics.AbsoluteError
+
+
+@dataclass(frozen=True)
 class Evaluation:
     """A run scored against the ground truth.
 
@@ -792,6 +882,57 @@ class Evaluation:
     matched: int
     absolute: metrics.AbsoluteError
     relative: metrics.RelativeError
+
+
+def _matched(
+    run: Run, timestamps: ArrayLike, poses: ArrayLike, max_difference: float
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64], metrics.AbsoluteError]:
+    """Return the matched run frames' times and poses, their ground truth, and the ATE."""
+    truth_times, truth_poses = _as_stamped(timestamps, poses, "ground truth")
+    run_times, run_poses = _as_stamped(run.timestamps, run.poses, "run")
+    ours, theirs = metrics.associate(run_times, truth_times, max_difference)
+    if len(ours) < 3:  # the alignment's minimum
+        raise InvalidInputError(f"only {len(ours)} frames have a ground-truth pose; need 3")
+    absolute = metrics.absolute_error(
+        run_poses[ours], truth_poses[theirs], with_scale=run.mode == "monocular"
+    )
+    return run_times[ours], run_poses[ours], truth_poses[theirs], absolute
+
+
+def evaluate_absolute(
+    run: Run, timestamps: ArrayLike, poses: ArrayLike, *, max_difference: float = MAX_DIFFERENCE
+) -> Absolute:
+    """Score a run's ATE against the ground truth, without the RPE.
+
+    The test set's measure reports the ATE alone, and scores with this; it also scores a
+    reference too sparse for :func:`evaluate`'s RPE, whose pairs are a frame period apart. One
+    at a third of the frame rate, on the frames' times, matches every third frame, and no two
+    matched frames are a period apart.
+
+    Parameters
+    ----------
+    run : Run
+        The run.
+    timestamps : array_like, shape (G,)
+        The ground truth's times, ascending.
+    poses : array_like, shape (G, 4, 4)
+        Its ``T_world_cam``.
+    max_difference : float, optional
+        The largest time difference, in seconds, between a run frame and its ground truth
+        (default :data:`MAX_DIFFERENCE`).
+
+    Returns
+    -------
+    Absolute
+        The ATE over the matched frames.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If an array is malformed or its times do not ascend, or fewer than three frames match.
+    """
+    times, _, _, absolute = _matched(run, timestamps, poses, max_difference)
+    return Absolute(matched=len(times), absolute=absolute)
 
 
 def evaluate(
@@ -830,21 +971,15 @@ def evaluate(
         If an array is malformed or its times do not ascend, fewer than three frames match,
         or no matched frame has another `rpe_delta` seconds later.
     """
-    truth_times, truth_poses = _as_stamped(timestamps, poses, "ground truth")
-    run_times, run_poses = _as_stamped(run.timestamps, run.poses, "run")
-    ours, theirs = metrics.associate(run_times, truth_times, max_difference)
-    if len(ours) < 3:  # the alignment's minimum
-        raise InvalidInputError(f"only {len(ours)} frames have a ground-truth pose; need 3")
+    times, mine, theirs, absolute = _matched(run, timestamps, poses, max_difference)
+    run_times = np.asarray(run.timestamps, dtype=np.float64)
     period = float(np.median(np.diff(run_times)))
-    absolute = metrics.absolute_error(
-        run_poses[ours], truth_poses[theirs], with_scale=run.mode == "monocular"
-    )
     relative = metrics.relative_error(
-        run_poses[ours],
-        truth_poses[theirs],
-        run_times[ours],
+        mine,
+        theirs,
+        times,
         delta=period if rpe_delta is None else rpe_delta,
         tolerance=0.5 * period,
         scale=absolute.scale,
     )
-    return Evaluation(matched=len(ours), absolute=absolute, relative=relative)
+    return Evaluation(matched=len(times), absolute=absolute, relative=relative)

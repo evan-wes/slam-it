@@ -13,8 +13,10 @@ Decided with evan-wes on 2026-10-12:
 - **The test set is public,** with ground truth or a reference; the owner's recordings are a
   demo's check, not the yardstick.
 - **Depth:** ARKit's high-confidence depth by default; medium measured beside it.
-- **Features:** scaled with the image's area against ORB-SLAM's 1,000 at 640x480, within 500 to
-  2,000, the bounds set by A1's measurements.
+- **Features:** scaled with the image's area against ORB-SLAM's 1,000 at 640x480, within 1,000
+  to 2,000 (decided 2026-10-13): ORB-SLAM's settings never ask for fewer than 1,000, and a
+  stereo or RGB-D frame needs more than 500 keypoints to start the map, which a floor of 500
+  would never give.
 - **The worker** runs a Stray Scanner zip that has depth as RGB-D, and monocular otherwise.
 - **Upload warnings** never refuse an upload.
 
@@ -91,7 +93,7 @@ same way, its results kept outside the repo. Results on the public set go in a n
 6. **Warnings, never refusals:** the upload page advises recording with the Camera app rather
    than in the browser; the status page warns when the frames arrived under 480 pixels on their
    short side, and why that may be.
-7. **The test set's results,** in a note.
+7. **The test set's results,** in a note (`docs/notes/test-set.md`).
 
 ## 5. A2: a new map after a lost track (all three languages; 0.3.8.0 -> 0.3.9.0)
 

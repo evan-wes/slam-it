@@ -352,6 +352,56 @@ class Fisheye:
         return np.stack([a_d * scale, b_d * scale], axis=-1)
 
 
+@dataclass(frozen=True)
+class RadTan:
+    """A pinhole camera with radial-tangential distortion, which an import keeps.
+
+    Its frames are written as recorded, and their ``camera.txt`` says ``radtan``: the pipeline
+    undistorts keypoints, not images (:mod:`slam_it.foundations.camera`), as for TUM's and
+    EuRoC's cameras.
+
+    Attributes
+    ----------
+    camera : Pinhole
+        Its camera matrix and image size.
+    distortion : tuple of float
+        k1, k2, p1, p2, in OpenCV's and Kalibr's order (``k3`` is 0).
+    """
+
+    camera: Pinhole
+    distortion: tuple[float, float, float, float]
+
+    def __post_init__(self) -> None:
+        """Hold four plain floats; refuse any not finite."""
+        values = tuple(float(v) for v in self.distortion)
+        if len(values) != 4 or not all(np.isfinite(values)):
+            raise InvalidInputError(f"distortion: expected 4 finite values, got {self.distortion}")
+        object.__setattr__(self, "distortion", values)
+
+    def scaled(self, width: int, height: int) -> RadTan:
+        """Return the model of the image resampled to another size (distortion unchanged).
+
+        The distortion acts on normalised coordinates, which a resampling keeps.
+        """
+        return RadTan(self.camera.scaled(width, height), self.distortion)
+
+    def turned(self, quarter_turns: int) -> RadTan:
+        """Return the model of the image turned counter-clockwise by quarter turns.
+
+        A quarter turn takes normalised coordinates (x, y) to (y, -x): the radial terms are
+        unchanged, and the tangential ones become (-p2, p1).
+        """
+        k1, k2, p1, p2 = self.distortion
+        for _ in range(quarter_turns % 4):
+            p1, p2 = -p2, p1
+        return RadTan(self.camera.turned(quarter_turns), (k1, k2, p1, p2))
+
+    def intrinsics(self) -> NDArray[np.float64]:
+        """Return the model's intrinsics as ``camera.txt``'s ``radtan`` takes them, k3 0."""
+        c = self.camera
+        return np.array([c.fx, c.fy, c.cx, c.cy, *self.distortion, 0.0])
+
+
 def undistortion(lens: Fisheye) -> tuple[Pinhole, NDArray[np.float64]]:
     """Return the pinhole a fisheye image undistorts to, and each output pixel's source pixel.
 
@@ -740,7 +790,7 @@ class Chosen:
 
     Attributes
     ----------
-    lens : Pinhole or Fisheye
+    lens : Pinhole, Fisheye or RadTan
         The camera, for the frames as stored, at the video's size.
     source : str
         One of :data:`SOURCES`, ``"given"`` for intrinsics the caller gives, or
@@ -749,7 +799,7 @@ class Chosen:
         The profile's name, if the source is a profile.
     """
 
-    lens: Pinhole | Fisheye
+    lens: Pinhole | Fisheye | RadTan
     source: str
     profile: str | None = None
 

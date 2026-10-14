@@ -1,0 +1,31 @@
+# The test set's sequences, for scripts/measure_testset.py. Copy this file outside the
+# repository and fill in where each imported sequence is on this machine.
+#
+# Each sequence is a TUM-format folder: one of TUM's own, or one imported by slam_it.eval.zju,
+# slam_it.eval.advio or slam_it.eval.arkitscenes. Its `name` is unique; `mode` is monocular,
+# stereo or rgbd; `reference` names what its ground truth is, so that a result says what it was
+# scored against. Every key is required.
+
+[[sequence]]
+name = "tum-fr1-360"
+folder = "/path/to/tum/rgbd_dataset_freiburg1_360"
+mode = "monocular"
+reference = "TUM RGB-D: motion capture"
+
+[[sequence]]
+name = "zju-B0"
+folder = "/path/to/imported/zju-B0"
+mode = "monocular"
+reference = "ZJU-SenseTime: VICON"
+
+[[sequence]]
+name = "advio-01"
+folder = "/path/to/imported/advio-01"
+mode = "monocular"
+reference = "ADVIO: IMU and fixed points"
+
+[[sequence]]
+name = "arkitscenes-VIDEO_ID"
+folder = "/path/to/imported/arkitscenes-VIDEO_ID"
+mode = "rgbd"
+reference = "ARKitScenes: ARKit's poses, a reference"

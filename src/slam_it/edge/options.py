@@ -12,11 +12,19 @@ from dataclasses import asdict, dataclass, fields
 from typing import Any
 
 from slam_it.foundations import matching, orb, stereo
-from slam_it.foundations.arrays import as_count, as_number
+from slam_it.foundations.arrays import MAX_IMAGE_SIDE, as_count, as_number
 from slam_it.foundations.errors import InvalidInputError
 
 MODES = ("monocular", "stereo", "rgbd")
 """The pipeline's modes."""
+
+FEATURES_AREA = 640 * 480
+"""The frame area the default ``n_features``, ORB-SLAM's 1,000, is set for: its TUM settings'."""
+
+FEATURES_BOUNDS = (1000, 2000)
+"""The fewest and most features :func:`features_for` gives. ORB-SLAM's own settings span 1,000
+(TUM, 640x480) to 2,000 (KITTI, 1241x376). The fewest also keep a stereo or RGB-D frame able
+to start the map, which needs more than ``min_init_features_depth`` (500) keypoints."""
 
 
 @dataclass(frozen=True)
@@ -410,6 +418,40 @@ _FRACTIONS = frozenset(
     }
 )
 """The real settings in (0, 1]."""
+
+
+def features_for(width: int, height: int) -> int:
+    """Return the ORB features for a frame's size, ORB-SLAM's 1,000 at 640x480 scaled with area.
+
+    ORB-SLAM's settings ask for more features on a larger frame (1,200 for EuRoC's 752x480,
+    2,000 for KITTI's 1241x376); this scales the default ``n_features``, its 1,000, by the
+    frame's area over :data:`FEATURES_AREA`, rounded, within :data:`FEATURES_BOUNDS`. A run is
+    given it where it is set up, as its ``n_features``
+    (:func:`slam_it.orchestration.vo.options_for`); the default stays 1,000, so a dataset's
+    results do not move. It is Python's alone, by design: the cores take the count as the
+    setting they already have, and never compute it.
+
+    Parameters
+    ----------
+    width, height : int
+        The frame's size, in pixels.
+
+    Returns
+    -------
+    int
+        The features: 1,000 at 640x480 and below, 1,334 at 854x480, and 2,000 from twice
+        640x480's area up (a 720p frame).
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If a side is not a positive integer.
+    """
+    area = as_count(width, "width", 1, MAX_IMAGE_SIDE) * as_count(
+        height, "height", 1, MAX_IMAGE_SIDE
+    )
+    low, high = FEATURES_BOUNDS
+    return min(max(round(Options.n_features * area / FEATURES_AREA), low), high)
 
 
 def check_mode(mode: str) -> None:

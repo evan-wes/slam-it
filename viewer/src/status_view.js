@@ -7,6 +7,7 @@ import {
   STAGES,
   describe,
   keptFor,
+  sizeWarning,
   summaryRows,
   trackingText,
   viewerLink,
@@ -54,6 +55,10 @@ function show(status) {
     const tracking = element("tracking", HTMLElement);
     tracking.textContent = trackingText(status.summary);
     tracking.hidden = false;
+    const warning = sizeWarning(status.summary);
+    const small = element("small", HTMLElement);
+    small.textContent = warning ?? "";
+    small.hidden = warning === null;
     element("viewer", HTMLAnchorElement).href = viewerLink(status.bundle);
     element("open", HTMLElement).hidden = false;
   }

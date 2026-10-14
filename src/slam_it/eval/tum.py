@@ -43,6 +43,8 @@ ORB-SLAM's ``Camera.bf``), ``#`` comments allowed::
 
 **Writing one** (a recording imported, the tests' room): :func:`write_list` writes ``rgb.txt``
 or ``depth.txt``, and :func:`write_camera` a ``camera.txt``, beside the readers that read them.
+Every import writes through :func:`staged`, so a folder appears whole or not at all, and
+records what made it in ``source.json`` (:func:`write_source`).
 
 **Frames and ground truth.** :func:`read_frames` reads what a run consumes: every colour
 frame, each with its nearest depth map, and the camera; it never reads the ground truth, so
@@ -52,9 +54,14 @@ reads what an evaluation scores: the frames that have a ground-truth pose.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import contextlib
+import json
+import shutil
+import uuid
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -297,6 +304,74 @@ def _camera_file(path: Path) -> Camera:
     if bf is not None and not (np.isfinite(bf) and bf > 0.0):
         raise InvalidInputError(f"{path}: bf must be finite and positive")
     return Camera(model, intrinsics, width, height, depth_scale, bf)
+
+
+UNUSED_DEPTH_SCALE = 1000.0
+"""The ``depth_scale`` a ``camera.txt`` without depth maps carries: any value reads the same,
+since nothing is scaled by it."""
+
+
+@contextlib.contextmanager
+def staged(out: str | Path) -> Iterator[Path]:
+    """Yield a new hidden folder beside `out` to import into, moved onto `out` once whole.
+
+    Every import to TUM format writes through this, so a failed import leaves nothing: the
+    folder is ``.<name>.<id>.importing`` beside `out`, removed if the block fails (one killed
+    outright leaves it, which nothing reads: it is safe to delete). Being beside `out`, a
+    relative link written in it stays right once moved.
+
+    Parameters
+    ----------
+    out : str or pathlib.Path
+        The folder the import makes: new or empty.
+
+    Yields
+    ------
+    pathlib.Path
+        The hidden folder.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If `out` exists and is not empty.
+    """
+    target = Path(out)
+    if target.exists() and any(target.iterdir()):
+        raise InvalidInputError(f"{target}: expected a new or empty folder for the import")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = target.with_name(f".{target.name}.{uuid.uuid4().hex}.importing")
+    staging.mkdir()
+    try:
+        yield staging
+        staging.replace(target)  # onto a new or empty folder
+    except BaseException:
+        shutil.rmtree(staging)  # the import's own, made above
+        raise
+
+
+def write_source(folder: str | Path, record: dict[str, Any]) -> None:
+    """Write a folder's ``source.json``: what its import read and how.
+
+    Every import's record has ``kind``, the importer (``video``, ``stray``, ``zju``, ``advio``,
+    ``arkitscenes``); a dataset's names what it imported (``sequence``, or ARKitScenes'
+    ``capture``, and ADVIO's ``calibration``); and ``depth`` is the LiDAR depth imported, null
+    without it. The rest is the importer's own (a video's intrinsics and metadata).
+
+    Parameters
+    ----------
+    folder : str or pathlib.Path
+        The folder.
+    record : dict
+        The record, JSON-ready.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the record has no ``kind``.
+    """
+    if not isinstance(record.get("kind"), str):
+        raise InvalidInputError("source.json: a record names its kind, the importer")
+    Path(folder, "source.json").write_text(json.dumps(record, indent=1) + "\n")
 
 
 def write_list(path: str | Path, entries: Iterable[tuple[str, str]]) -> None:

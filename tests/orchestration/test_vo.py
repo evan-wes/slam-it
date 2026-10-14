@@ -565,3 +565,9 @@ def test_a_program_refuses_a_bad_command_line(backend: str) -> None:
         assert done.returncode == vo.EXIT_USAGE
         assert done.stderr.startswith("slam_it_vo: ")
         assert "\nusage: " in done.stderr
+
+
+def test_a_run_set_up_for_its_frames_size_gets_their_features() -> None:
+    """A 16:9 clip imported at 854x480 runs with 1,334 features; its other settings, ORB-SLAM's."""
+    assert vo.options_for(854, 480) == replace(Options(), n_features=1334)
+    assert vo.options_for(320, 240) == Options()

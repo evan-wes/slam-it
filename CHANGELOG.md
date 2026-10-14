@@ -4,6 +4,88 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.3.8.0] - 2026-10-13
+
+Milestone 2A's first part, A1: a test set to measure phone-robust VO against, and phone video
+imported better (`docs/design/2026-10-12-phone-robust-vo.md`, section 4). The test set is public
+datasets with ground truth or a reference, so the owner's own recordings stay a check on the
+demo rather than the yardstick:
+- TUM RGB-D's hard sequences;
+- ZJU-SenseTime's phones;
+- ADVIO's iPhone;
+- ARKitScenes' iPad with LiDAR.
+
+A Stray Scanner recording with LiDAR depth now runs RGB-D in the demo, and features follow the
+frame size. Nothing changes for a dataset run at the default settings. The test set's results
+are in `docs/notes/test-set.md`. The review panel and a security pass read it all
+(`docs/reviews/2026-10-13-feature-2a-a1-measure-and-import*.md`).
+
+### Added
+
+- **Dataset imports to TUM format**, each with its ground truth moved to the camera:
+  - `slam_it.eval.zju`: ZJU-SenseTime's sequences, frames linked, the camera radtan when it is
+    distorted;
+  - `slam_it.eval.advio`: ADVIO's iPhone video, through the video import with a dataset's
+    limits. Frames are timed by `frames.csv` and kept distorted with the published Kalibr
+    calibration of their capture batch. The poses, in the phone's IMU axes, are moved by
+    `T_cam_imu`;
+  - `slam_it.eval.arkitscenes`: ARKitScenes' raw captures as RGB-D. ARKit's poses are
+    inverted, interpolated at each frame's time, and named a reference, not truth. Its 10 Hz
+    poses fall between the 30 Hz frames, and paired by time each would serve two frames.
+- **LiDAR depth as RGB-D** (`slam_it.eval.lidar`): depth kept where ARKit's confidence is high
+  (medium on request), brought to the colour frame by nearest neighbour, with a virtual baseline
+  of 0.08 m (ORB-SLAM's for TUM's Kinect).
+- **A Stray Scanner zip's depth:** its `depth/` and `confidence/` maps are read for each frame
+  kept, decoded from memory, each map's size checked as Pillow will decode it before any pixel
+  is. Every kept frame needs both. The import writes an RGB-D folder, and the demo's worker runs
+  it RGB-D.
+- **Features by frame size** (`slam_it.edge.options.features_for`): ORB-SLAM's 1,000 at 640x480,
+  scaled with the frame's area within 1,000 to 2,000. The demo's worker and the measure both set
+  a run up with it (`slam_it.orchestration.vo.options_for`); the default is unchanged.
+- **The video import for datasets:** `Limits` (the longest video, its most frames, the short
+  side), a dataset's clock for each frame's time, its ground truth written with the frames, and
+  `lenses.RadTan`, a radial-tangential lens kept and turned with its frames.
+- **Every import to TUM format staged and recorded** (`slam_it.eval.tum.staged`,
+  `tum.write_source`): written beside its folder and moved whole, so a failed import leaves
+  nothing, with a `source.json` naming what made it (and, with LiDAR depth, the least
+  confidence kept).
+- **Scoring:** `slam_it.eval.runs.evaluate_absolute`, the ATE alone, which the measure reports
+  and which needs no pair of frames a period apart; `runs.tracking`, what of a sequence a run
+  ran and tracked, which the demo's summary and the measure share.
+- **Images from bytes** (`slam_it.eval.images`): the readers take a file's bytes and a longest
+  side, checked once Pillow has parsed every header; `images.size` reads the size alone.
+  Pillow's every parse error, and its decompression-bomb warning, are invalid input.
+- **`scripts/measure_testset.py`:** each sequence of a config run and measured:
+  - the share tracked;
+  - when tracking started and stopped, and whether it was lost;
+  - the ATE, naming its reference;
+  - the 95th-percentile latency, against the frame period.
+
+  `--camera nominal` measures what a guessed lens costs. The config, holding a machine's paths,
+  stays outside the repository; `scripts/testset.template.toml` is its format.
+- **The test set's results**, `docs/notes/test-set.md`, from the public datasets alone, each
+  change read against three RANSAC seeds:
+  - 61 of the 77 runs lose the track, and 65% of the set's frames come after a loss, never run:
+    A2's case;
+  - a guessed lens costs accuracy in step with its error, most in RGB-D, but not the track;
+  - ADVIO at a 720-pixel short side tracks no longer and nearly doubles a frame's latency, so
+    480 stays;
+  - LiDAR depth of medium confidence changes neither the track nor the error, so high stays the
+    default.
+
+### Changed
+
+- **The demo's summary** names the run's mode and the frames' size. The status page shows a mode
+  row, explains an RGB-D run's first map by its depth, and warns, never refuses, when a video
+  arrived under 480 pixels on its short side.
+- **The upload page** says a video runs monocular and a Stray Scanner recording RGB-D at true
+  scale, and advises recording with the Camera app rather than through the browser.
+- **`source.json`** records the depth imported and a kept lens's distortion.
+- **The worker cuts a failure's reason** to the 500 characters the server keeps, so no upload
+  can make the server refuse the report.
+- **EuRoC's `sensor.yaml` helpers** are lifted into `slam_it.eval.sensor_yaml`, for ZJU-SenseTime
+  and ADVIO too.
+
 ## [0.3.7.0] - 2026-10-12
 
 The project is renamed from SLAM It All! to SLAM It!, which is shorter, easier to remember, and what

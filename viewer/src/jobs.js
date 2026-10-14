@@ -49,6 +49,15 @@ export const INTRINSICS = {
   nominal: "a typical phone's field of view: a guess",
 };
 
+/** The short side frames are imported at, in pixels (slam_it.eval.video.SHORT_SIDE). */
+export const SHORT_SIDE = 480;
+
+/** How a run used the recording (slam_it.orchestration.worker), as the page says it. */
+export const MODES = {
+  monocular: "monocular: the video alone",
+  rgbd: "RGB-D: the video with its LiDAR depth",
+};
+
 /**
  * Why a file cannot be uploaded, or null if it can.
  * @param {string} upload What it is: "video" or "stray".
@@ -175,10 +184,16 @@ export function trackingText(summary) {
   const ranTo = Number(summary.ran_to);
   /** @type {string[]} */
   const said = [];
+  // An RGB-D run makes its first map from one frame's depth; a monocular one, from two views.
+  const rgbd = summary.mode === "rgbd";
   if (summary.tracked_from === null) {
     said.push(
-      `No first map was made in your ${seconds(clip)} clip, so nothing was tracked. Moving ` +
-        "sideways at the start, with something textured in view, helps make one.",
+      rgbd
+        ? `No first map was made in your ${seconds(clip)} clip, so nothing was tracked: no ` +
+            "frame had enough textured points with LiDAR depth. Starting within a few metres " +
+            "of something textured helps make one."
+        : `No first map was made in your ${seconds(clip)} clip, so nothing was tracked. Moving ` +
+            "sideways at the start, with something textured in view, helps make one.",
     );
     return said.join(" ");
   }
@@ -197,11 +212,37 @@ export function trackingText(summary) {
   }
   if (from >= 0.05) {
     said.push(
-      `The first ${seconds(from)} went to finding a first map; moving sideways at the start ` +
-        "shortens it.",
+      `The first ${seconds(from)} went to finding a first map; ` +
+        (rgbd
+          ? "starting within a few metres of something textured shortens it."
+          : "moving sideways at the start shortens it."),
     );
   }
   return said.join(" ");
+}
+
+/**
+ * A warning when a done job's frames arrived under the import's short side, or null. A browser
+ * that records a video for a page may send a smaller one than the phone's camera records; the
+ * import never scales frames up, so they reach the pipeline that small.
+ * @param {Record<string, unknown>} summary The worker's summary.
+ * @returns {string | null} The warning, fit to show.
+ */
+export function sizeWarning(summary) {
+  const size = summary.size;
+  if (!Array.isArray(size) || size.length !== 2) {
+    return null;
+  }
+  const [width, height] = size.map(Number);
+  if (Math.min(width, height) >= SHORT_SIDE) {
+    return null;
+  }
+  return (
+    `Your video arrived at ${width}x${height}, under the ${SHORT_SIDE} pixels on its short ` +
+    "side the pipeline is set for: smaller frames give it less detail to track. A browser " +
+    "recording for a page can send a smaller video than the camera records; recording with " +
+    "the Camera app, then choosing the file here, keeps its full size."
+  );
 }
 
 /**
@@ -221,6 +262,8 @@ export function summaryRows(summary) {
   ]);
   rows.push(["keyframes", String(summary.keyframes ?? 0)]);
   rows.push(["map points", String(summary.points ?? 0)]);
+  const mode = String(summary.mode ?? "");
+  rows.push(["mode", MODES[/** @type {keyof typeof MODES} */ (mode)] ?? mode]);
   const source = String(summary.intrinsics ?? "");
   rows.push(["intrinsics", INTRINSICS[/** @type {keyof typeof INTRINSICS} */ (source)] ?? source]);
   return rows;

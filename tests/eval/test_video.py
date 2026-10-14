@@ -9,6 +9,8 @@ from __future__ import annotations
 import io
 import json
 import zipfile
+import zlib
+from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -17,13 +19,13 @@ import av
 import numpy as np
 import pytest
 
-from slam_it.eval import images, lenses, runs, tum, video
+from slam_it.eval import images, lenses, lidar, runs, tum, video
 from slam_it.foundations.errors import InvalidInputError
 from slam_it.orchestration import vo
 from tests.conftest import FIXTURES
 from tests.edge import room
 from tests.edge.support import ATE_BOUND, FRAMES, OPTIONS
-from tests.eval.recordings import APPLE, ROOM_CAMERA, encode, rgb, stray_zip
+from tests.eval.recordings import APPLE, ROOM_CAMERA, encode, png, rgb, stray_maps, stray_zip
 
 PROFILES = FIXTURES / "eval" / "lens_profiles"
 """The fixture lens profiles (their README names them)."""
@@ -60,6 +62,7 @@ def test_a_video_on_its_side_imports_upright_with_its_camera(
     assert source["intrinsics"] == {
         "source": "given", "profile": None, "fx": ROOM_CAMERA.fx, "fy": ROOM_CAMERA.fy,
         "cx": ROOM_CAMERA.cx, "cy": ROOM_CAMERA.cy, "width": 320, "height": 240,
+        "distortion": None,
     }  # fmt: skip
 
 
@@ -189,8 +192,7 @@ def test_a_video_is_refused_and_leaves_nothing(
         encode(path, pictures)
     if change == "huge":
         monkeypatch.setattr(video, "MAX_LONG_SIDE", 200)
-    if change == "many":
-        monkeypatch.setattr(video, "MAX_DECODED", 5)
+    limits = replace(video.UPLOAD, max_frames=5) if change == "many" else video.UPLOAD
     if change == "big":
         monkeypatch.setattr(video, "MAX_BYTES", 100)
     if change == "size":
@@ -199,7 +201,7 @@ def test_a_video_is_refused_and_leaves_nothing(
         out.mkdir(parents=True)
         (out / "kept.txt").write_text("not ours")
     with pytest.raises(InvalidInputError, match=message):
-        video.import_video(path, out, lenses.Chosen(camera, "given"))
+        video.import_video(path, out, lenses.Chosen(camera, "given"), limits=limits)
     left = sorted(p.name for p in (tmp_path / "outs").iterdir()) if out.parent.exists() else []
     assert left == (["out"] if change == "used" else [])
 
@@ -257,6 +259,59 @@ def test_a_video_whose_frames_change_size_is_refused(tmp_path: Path) -> None:
     assert not out.parent.exists() or not any(out.parent.iterdir())
 
 
+DISTORTED = lenses.RadTan(ROOM_CAMERA, (0.05, 0.03, -0.001, 0.002))
+"""The room's camera with a radial-tangential lens, as a dataset's calibration gives one."""
+
+
+def test_a_dataset_video_keeps_its_lens_and_takes_its_clock(
+    rendered: list[room.Frame], tmp_path: Path
+) -> None:
+    """Frames written as recorded, ``camera.txt`` radtan; each frame timed by the dataset's clock.
+
+    At 60 fps every other frame is kept, stamped with the clock's time; with a smaller short
+    side the lens is scaled, its distortion kept.
+    """
+    path = encode(tmp_path / "room.mov", [rgb(f.gray) for f in rendered[:6]], rate=60)
+    clock = [100.0 + i / 60 for i in range(6)]
+    chosen = lenses.Chosen(DISTORTED, "given")
+    video.import_video(path, tmp_path / "out", chosen, clock=clock)
+    frames, source = _imported(tmp_path / "out")
+    np.testing.assert_allclose(frames.timestamps, clock[::2], atol=1e-6)
+    assert (frames.camera.model, frames.camera.width, frames.camera.height) == ("radtan", 320, 240)
+    np.testing.assert_allclose(frames.camera.intrinsics, DISTORTED.intrinsics())
+    for file, frame in zip(frames.images, rendered[::2], strict=False):
+        gray = images.read_gray(file).astype(int)
+        assert np.abs(gray - frame.gray).max() <= 2  # as recorded: not undistorted
+    assert source["intrinsics"]["distortion"] == list(DISTORTED.distortion)
+    small = video.Limits(max_seconds=600.0, max_frames=10, short_side=120)
+    video.import_video(path, tmp_path / "small", chosen, limits=small, clock=clock)
+    camera = tum.read_camera(tmp_path / "small")
+    assert (camera.model, camera.width, camera.height) == ("radtan", 160, 120)
+    np.testing.assert_allclose(camera.intrinsics, DISTORTED.scaled(160, 120).intrinsics())
+
+
+@pytest.mark.parametrize(
+    ("count", "message"), [(5, "more frames than the 5 timed"), (7, "6 frames, 7 timed")]
+)
+def test_a_clock_that_does_not_time_each_frame_once_is_refused(
+    count: int, message: str, rendered: list[room.Frame], tmp_path: Path
+) -> None:
+    """Fewer times than frames, or more."""
+    path = encode(tmp_path / "room.mov", [rgb(f.gray) for f in rendered[:6]])
+    clock = [float(i) for i in range(count)]
+    with pytest.raises(InvalidInputError, match=message):
+        video.import_video(path, tmp_path / "out", lenses.Chosen(DISTORTED, "given"), clock=clock)
+
+
+@pytest.mark.parametrize(
+    "changes", [{"max_seconds": 0.0}, {"max_frames": 0}, {"short_side": 0}, {"max_seconds": -1.0}]
+)
+def test_limits_that_would_take_nothing_are_refused(changes: dict[str, Any]) -> None:
+    """A video of no length, no frames, or frames of no size."""
+    with pytest.raises(InvalidInputError, match="expected each positive"):
+        replace(video.UPLOAD, **changes)
+
+
 @pytest.mark.parametrize(("divider", "kept"), [(1, [0, 2, 4, 6]), (2, list(range(8)))])
 def test_a_stray_scanner_recording_imports_with_its_truth(
     divider: int, kept: list[int], rendered: list[room.Frame], tmp_path: Path
@@ -285,6 +340,13 @@ def test_a_stray_scanner_recording_imports_with_its_truth(
     ]  # fmt: skip
 
 
+def _refused(recording: Path, out: Path, message: str) -> None:
+    """Import a zip that must be refused, and check the refusal left nothing beside `out`."""
+    with pytest.raises(InvalidInputError, match=message):
+        video.import_stray(recording, out)
+    assert list(out.parent.iterdir()) == []
+
+
 def _matrix_with(cell: str) -> str:
     """Return a camera matrix with its top-left cell replaced."""
     return f"{cell},0.0,159.5\n0.0,262.5,119.5\n0.0,0.0,1.0\n"
@@ -309,9 +371,7 @@ def test_a_hostile_or_malformed_zip_is_refused_and_leaves_nothing(
 ) -> None:  # fmt: skip
     """Names leaving the folder, oversized entries, malformed CSVs, rows not per frame."""
     recording = stray_zip(tmp_path / "bad.zip", rendered[:4], files=files, names=names)
-    with pytest.raises(InvalidInputError, match=message):
-        video.import_stray(recording, tmp_path / "outs" / "out")
-    assert list((tmp_path / "outs").iterdir()) == []
+    _refused(recording, tmp_path / "outs" / "out", message)
 
 
 def test_a_zip_that_cannot_give_an_entry_back_whole_is_refused(
@@ -358,6 +418,170 @@ def test_a_zip_missing_a_file_or_holding_one_twice_is_refused(
         video.import_stray(not_zip, tmp_path / "c")
 
 
+MEDIUM_ROWS, MEDIUM_COLUMNS = 60, 80
+"""The frame's pixels whose LiDAR pixel is in :data:`tests.eval.recordings.MEDIUM_BLOCK`: its
+48x64 block of a 256x192 map, at 320x240."""
+
+
+def _depth_error(imported: np.ndarray, metres: np.ndarray) -> float:
+    """Return an imported depth map's median distance from the room's where confidence is high.
+
+    In metres.
+    """
+    high = np.ones(metres.shape, bool)
+    high[:MEDIUM_ROWS, :MEDIUM_COLUMNS] = False
+    return float(np.median(np.abs(imported[high] / lidar.DEPTH_SCALE - metres[high])))
+
+
+@pytest.mark.parametrize("threshold", [lidar.HIGH, lidar.MEDIUM])
+def test_a_stray_scanner_recording_with_depth_imports_as_rgbd(
+    threshold: int, rendered: list[room.Frame], tmp_path: Path
+) -> None:
+    """Each kept frame's LiDAR maps, kept by confidence and brought to its size: an RGB-D folder.
+
+    The depth is the room's, in millimetres, to the maps' resolution; the camera takes LiDAR's
+    depth scale and ``bf``. Only the kept frames' maps are read, so the others may be missing.
+    """
+    skipped = {f"{kind}/{i:06d}.png": None for kind in ("depth", "confidence") for i in (1, 3)}
+    recording = stray_zip(tmp_path / "room.zip", rendered[:4], depth=True, files=skipped)
+    video.import_stray(recording, tmp_path / "out", threshold)
+    frames, source = _imported(tmp_path / "out")
+    assert source["depth"] == {"min_confidence": threshold}
+    assert frames.camera.depth_scale == lidar.DEPTH_SCALE
+    assert frames.camera.bf == pytest.approx(lidar.bf(ROOM_CAMERA.fx))
+    for path, kept in zip(frames.depths, (0, 2), strict=True):  # 60 fps: 1 in 2
+        assert path is not None
+        imported = images.read_depth(path)
+        expected = lidar.registered_depth(*stray_maps(rendered[kept]), (320, 240), threshold)
+        np.testing.assert_array_equal(imported, expected)
+        assert _depth_error(imported, rendered[kept].depth) < 0.01
+        medium = imported[:MEDIUM_ROWS, :MEDIUM_COLUMNS]
+        assert np.all(medium > 0) if threshold == lidar.MEDIUM else np.all(medium == 0)
+
+
+def test_stray_depth_turns_upright_with_its_frame(
+    rendered: list[room.Frame], tmp_path: Path
+) -> None:
+    """A video declaring a rotation is turned upright, and its LiDAR maps are turned with it.
+
+    Whichever quarter turn brings the room's image to the imported frame brings the room's
+    depth, and the maps' block of medium confidence, to the imported depth.
+    """
+    recording = stray_zip(tmp_path / "room.zip", rendered[:1], depth=True, rotation=90)
+    video.import_stray(recording, tmp_path / "out")
+    frames, _ = _imported(tmp_path / "out")
+    gray = images.read_gray(frames.images[0])
+    assert gray.shape == (320, 240)
+    turns = min(
+        (1, 3), key=lambda k: np.abs(gray - np.rot90(rendered[0].gray, k).astype(float)).mean()
+    )
+    assert frames.depths[0] is not None
+    upright = np.rot90(images.read_depth(frames.depths[0]), -turns)  # back as stored
+    assert _depth_error(upright, rendered[0].depth) < 0.01
+    assert np.all(upright[:MEDIUM_ROWS, :MEDIUM_COLUMNS] == 0)
+
+
+def _png(*sizes: tuple[int, int]) -> bytes:
+    """Return a 16-bit gray PNG with a header chunk for each size, then a few pixels' data.
+
+    Pillow takes the last header's size, so a map may declare one size first and decode at
+    another; the data is never reached, as the size is refused once the headers are parsed.
+    """
+
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return (
+            len(body).to_bytes(4, "big") + kind + body + zlib.crc32(kind + body).to_bytes(4, "big")
+        )
+
+    headers = b"".join(
+        chunk(b"IHDR", w.to_bytes(4, "big") + h.to_bytes(4, "big") + bytes([16, 0, 0, 0, 0]))
+        for w, h in sizes
+    )
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + headers
+        + chunk(b"IDAT", zlib.compress(bytes(16)))
+        + chunk(b"IEND", b"")
+    )
+
+
+@pytest.mark.parametrize(
+    ("files", "names", "message"),
+    [
+        ({"confidence/000002.png": None}, [], r"no confidence/000002\.png for frame 2"),
+        (
+            {"depth/000000.png": b"not a png"},
+            [],
+            r"depth/000000\.png: image: not a readable image \(not a PNG",
+        ),
+        ({"depth/000000.png": _png((2000, 1500))}, [], "2000x1500, over 1024 pixels"),
+        ({"depth/000000.png": _png((256, 192), (2000, 1500))}, [], "2000x1500, over 1024 pixels"),
+        (
+            {"confidence/000000.png": b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 256 192\n"},
+            [],
+            r"confidence/000000\.png: image: not a readable image \(not a PNG\)",
+        ),
+        ({"depth/000000.png": b"\0" * (2**20 + 1)}, [], "over its cap"),
+        ({}, ["depth/000002.png"], r"depth/000002\.png appears twice"),
+        (
+            {"depth/000000.png": png(np.zeros((192, 256), np.uint8))},
+            [],
+            r"depth/000000\.png: image: expected a 16-bit",
+        ),
+        (
+            {"confidence/000000.png": png(np.zeros((192, 256), np.uint16))},
+            [],
+            r"confidence/000000\.png: image: expected an 8-bit",
+        ),
+        (
+            {
+                "depth/000002.png": png(np.zeros((100, 100), np.uint16)),
+                "confidence/000002.png": png(np.zeros((100, 100), np.uint8)),
+            },
+            [],
+            "frame 2's LiDAR maps: .* aspect",
+        ),
+    ],
+)
+def test_lidar_maps_missing_or_malformed_refuse_the_zip_and_leave_nothing(
+    files: dict[str, bytes | None], names: list[str], message: str, rendered: list[room.Frame],
+    tmp_path: Path,
+) -> None:  # fmt: skip
+    """Each refusal of a zip's LiDAR maps, with the import leaving nothing.
+
+    A kept frame without a map; a map not a PNG, too large, over its cap, there twice, of the
+    wrong bit depth, or not its frame's aspect.
+    """
+    recording = stray_zip(tmp_path / "bad.zip", rendered[:4], depth=True, files=files, names=names)
+    _refused(recording, tmp_path / "outs" / "out", message)
+
+
+@pytest.mark.parametrize("stem", ["00000\u00b2", "\u0660\u0660\u0660\u0660\u0660\u0661"])
+def test_a_map_named_with_other_than_six_ascii_digits_is_not_a_map(
+    stem: str, rendered: list[room.Frame], tmp_path: Path
+) -> None:
+    """A superscript two, or Arabic-Indic digits, never name a frame: the entry is ignored."""
+    folder = "2026-10-10--12-00-00/"
+    recording = stray_zip(tmp_path / "room.zip", rendered[:3], names=[f"{folder}depth/{stem}.png"])
+    video.import_stray(recording, tmp_path / "out")
+    _, source = _imported(tmp_path / "out")
+    assert source["depth"] is None
+
+
+def test_an_oversized_map_is_named_as_we_name_it_not_as_the_zip_does(
+    rendered: list[room.Frame], tmp_path: Path
+) -> None:
+    """A map's folder is free text: a newline in it never reaches the refusal."""
+    recording = stray_zip(tmp_path / "room.zip", rendered[:3], depth=True)
+    with zipfile.ZipFile(recording, "a") as archive:
+        archive.writestr("forged\nline/depth/000004.png", b"\0" * (2**20 + 1))
+    with pytest.raises(
+        InvalidInputError, match=r"zip: depth/000004\.png is over its cap"
+    ) as raised:
+        video.import_stray(recording, tmp_path / "out")
+    assert "\n" not in str(raised.value)
+
+
 def test_main_imports_and_says_what(
     rendered: list[room.Frame], tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -368,10 +592,17 @@ def test_main_imports_and_says_what(
     assert video.main([str(path), str(tmp_path / "a"), "--intrinsics", *given]) == 0
     recording = stray_zip(tmp_path / "room.zip", rendered[:3])
     assert video.main([str(recording), str(tmp_path / "b"), "--stray"]) == 0
+    with_depth = stray_zip(tmp_path / "depth.zip", rendered[:3], depth=True)
+    command = [str(with_depth), str(tmp_path / "c"), "--stray", "--min-confidence", "1"]
+    assert video.main(command) == 0
     assert capsys.readouterr().out.splitlines() == [
         f"{tmp_path / 'a'}: 3 frames, 320x240, intrinsics from given",
         f"{tmp_path / 'b'}: 2 frames, 320x240, intrinsics from stray-scanner",  # 60 fps: 1 in 2
+        f"{tmp_path / 'c'}: 2 frames, 320x240, intrinsics from stray-scanner, "
+        "LiDAR depth of confidence 1 up",
     ]
+    with pytest.raises(SystemExit):
+        video.main([str(path), str(tmp_path / "d"), "--min-confidence", "1"])
 
 
 RAYS = np.array([(0.0, 0.0), (-0.45, -0.22), (0.4, 0.2), (-0.3, 0.25), (0.47, -0.25), (0.15, -0.1)])

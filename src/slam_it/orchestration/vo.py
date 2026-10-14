@@ -70,7 +70,7 @@ from numpy.typing import NDArray
 
 from slam_it import backends
 from slam_it.edge import frames
-from slam_it.edge.options import MODES, Options
+from slam_it.edge.options import MODES, Options, features_for
 from slam_it.edge.pipeline import Pipeline, State
 from slam_it.eval import budgets, euroc, images, runs, tum
 from slam_it.foundations import image, orb, se3, stereo
@@ -350,6 +350,31 @@ def command(backend: str) -> list[str]:
     if backend == "python":
         return [sys.executable, "-m", MODULE]
     return [str(backends.program(backend, PROGRAM))]
+
+
+def options_for(width: int, height: int) -> Options:
+    """Return ORB-SLAM's settings with the features for a frame's size, as a run is set up.
+
+    :func:`slam_it.edge.options.features_for` scales the feature count with the frame's area;
+    the demo's worker and the test set's measure both set a run up with this, so they apply one
+    rule. ``run``'s own default stays ORB-SLAM's, so a dataset's results do not move.
+
+    Parameters
+    ----------
+    width, height : int
+        The frames' size, in pixels.
+
+    Returns
+    -------
+    slam_it.edge.options.Options
+        The settings.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If a side is not a positive integer.
+    """
+    return Options(n_features=features_for(width, height))
 
 
 def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest keyword-only

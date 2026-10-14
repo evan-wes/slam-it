@@ -181,6 +181,8 @@ def test_a_job_runs_end_to_end(serving: Server, recording: bytes, tmp_path: Path
     assert serving.summary is not None
     assert serving.summary["frames"] == FRAMES
     assert serving.summary["intrinsics"] == "stray-scanner"
+    assert (serving.summary["mode"], serving.summary["size"]) == ("monocular", [320, 240])
+    assert serving.summary["mode"] in worker.RUN_MODES
     assert serving.summary["lost"] is False
     assert serving.summary["ran_to"] == serving.summary["clip_seconds"]
     info = json.loads(serving.files["bundle.json"])
@@ -189,6 +191,21 @@ def test_a_job_runs_end_to_end(serving: Server, recording: bytes, tmp_path: Path
     assert (info["truth"], info["backends"]["cpp"]["alignment"]) == (True, "sim3")
     assert {"times.npy", "cpp/records.json", "cpp/feature_records.npy"} <= set(serving.files)
     assert list((tmp_path / "work").iterdir()) == []  # the job's folder removed
+
+
+def test_a_recording_with_depth_runs_rgbd(serving: Server, tmp_path: Path) -> None:
+    """A Stray Scanner zip with LiDAR depth runs RGB-D: tracked from its first frame, metric."""
+    require_program("cpp")
+    zipped = stray_zip(tmp_path / "room.zip", room.sequence(FRAMES), divider=2, depth=True)
+    serving.upload = zipped.read_bytes()
+    worker.serve(worker.Client(serving.url, TOKEN), tmp_path / "work", once=True)
+    assert serving.reason is None
+    assert serving.summary is not None
+    assert serving.summary["mode"] == "rgbd"
+    assert serving.summary["mode"] in worker.RUN_MODES
+    assert (serving.summary["tracked"], serving.summary["tracked_from"]) == (FRAMES, 0.0)
+    info = json.loads(serving.files["bundle.json"])
+    assert (info["mode"], info["backends"]["cpp"]["alignment"]) == ("rgbd", "se3")
 
 
 def test_the_summary_says_where_a_run_lost_the_track(
@@ -207,7 +224,7 @@ def test_the_summary_says_where_a_run_lost_the_track(
     folders = write_room(tmp_path / "clip", clip)
     run = vo.run("tum", folders.tum, "rgbd", tmp_path / "run", options=OPTIONS)
     times = folders.timestamps - folders.timestamps[0]
-    summary = worker.summarize(run, folders.timestamps, "nominal")
+    summary = worker.summarize(run, folders.timestamps, "nominal", (320, 240))
     assert summary["frames"] == 10 + blanks < FRAMES
     assert summary["lost"] is True
     assert (summary["tracked_from"], summary["tracked_to"]) == (0.0, round(times[9], 3))
@@ -223,7 +240,7 @@ def test_the_summary_of_a_whole_run_says_when_tracking_began(
     """A monocular run tracks from its first map on, and to the clip's end if not lost."""
     run = room_runs("tum", "monocular", "python")
     times = room_folders.timestamps
-    summary = worker.summarize(run, times, "nominal")
+    summary = worker.summarize(run, times, "nominal", (320, 240))
     assert (summary["frames"], summary["lost"]) == (FRAMES, False)
     assert summary["ran_to"] == summary["clip_seconds"] == round(times[-1] - times[0], 3)
     assert 0 < summary["tracked_from"] < summary["tracked_to"] <= summary["ran_to"]
@@ -671,3 +688,10 @@ def test_the_worker_refuses_to_start_wrong(
     monkeypatch.setenv("SLAM_IT_LENS_PROFILES", str(tmp_path))
     assert worker.main(["serve", "--server", "http://127.0.0.1:9", "--work", str(tmp_path)]) == 2
     assert "no usable lens profile" in capsys.readouterr().err
+
+
+def test_a_failures_reason_is_cut_to_what_the_server_keeps(serving: Server) -> None:
+    """However long an upload makes a refusal, the report carries the first 500 characters."""
+    job = worker.Job("a-job", "vo", "stray", f"{serving.url}/upload")
+    worker.Client(serving.url, TOKEN).failed(job, "x" * 2 * worker.REASON_LENGTH)
+    assert serving.reason == "x" * worker.REASON_LENGTH

@@ -364,7 +364,7 @@ visible from its path and enforceable by contract.
 | `slam_it.calib` | library `slam_it_calib` | -- | Sensor calibration (the side track) |
 | `slam_it.dense` | -- | -- | Dense BA + depth prior |
 | `slam_it.learned` | -- | -- | DROID- and MegaSaM-style |
-| `slam_it.eval` | library `slam_it_eval`, `slam_it::eval` (native PNG and dataset readers, run writer, a program's process for its run) | crate `slam-it-eval` (the same) | Dataset readers, external references (COLMAP), metrics, benchmarks, budget harness; a phone video's import and intrinsics (`video`, `lenses`, Python only, from PR 11) |
+| `slam_it.eval` | library `slam_it_eval`, `slam_it::eval` (native PNG and dataset readers, run writer, a program's process for its run) | crate `slam-it-eval` (the same) | Dataset readers, external references (COLMAP), metrics, benchmarks, budget harness; a phone video's import and intrinsics (`video`, `lenses`, Python only, from PR 11); dataset imports to TUM format (`zju`, `advio`, `arkitscenes`, with `lidar` and `sensor_yaml`), Python only, from milestone 2A's A1 |
 | `slam_it.orchestration` | library `slam_it_orchestration` and program `slam_it_vo` (`cpp/apps/orchestration/`; from PR 8) | crate `slam-it-orchestration` and its program `slam_it_vo` (from PR 8) | End-to-end pipelines, the bake of their runs for the run viewer (`bundles`, Python only, above `vo`), and the worker that runs the upload server's jobs (`worker`, Python only, above `bundles`, from PR 11) |
 | `slam_it_server` (`server/`, its own package) | -- | -- | The upload server (from PR 11): the job list, storage's links, the guards; never imports `slam_it` |
 
@@ -1007,6 +1007,37 @@ shared with the owner's other projects.
     judges mapping by its load, as a thread of its own would run it. A real mapping thread, and
     ORB-SLAM's interruption of a local BA when a keyframe arrives, belong with the edge
     targets' budgets, where keyframe bursts would otherwise delay frames.
+- **Deferred from milestone 2A's A1 review panel**
+  ([report](../reviews/2026-10-13-feature-2a-a1-measure-and-import.md),
+  [security pass](../reviews/2026-10-13-feature-2a-a1-measure-and-import-security.md)):
+  - **Stray Scanner's reader out of the decoder (H6, A7).** `eval.video` holds the decoder and
+    Stray Scanner's zip format, its entries, LiDAR maps and CSVs, in one module of over 900
+    lines. The zip's reading moves to `eval.stray`, above `video` beside `advio`, when it next
+    grows.
+  - **Stray Scanner's per-frame intrinsics (L4).** Newer Stray Scanner versions write each
+    frame's `fx, fy, cx, cy` in `odometry.csv`, and `camera_matrix.csv` is the last frame's;
+    the import reads the camera matrix alone. Focus moves the focal length (ARKitScenes' spans
+    about 4% over a capture): take the frames' median, as ARKitScenes' import does.
+  - **ADVIO's gyroscope lag, with milestone 6 (L7).** ADVIO's ground truth turns with
+    `arkit.csv`, on the frames' clock, at no lag, but with `gyro.csv` only 0.28-0.31 s later on
+    the sequences checked, though ADVIO says its clocks are synchronised. Measure and correct
+    the lag before ADVIO's IMU is used.
+  - **ScanNet++ for the LiDAR path (L8).** ARKitScenes' poses are ARKit's own estimate.
+    ScanNet++ (Yeshwanth et al., ICCV 2023) gives an iPhone's RGB and LiDAR with poses
+    registered to a laser scan: an independent reference, for a later revision of the test set.
+  - **A reference paired one to one (round two's L9, route (a)).** `tum.read_sequence` gives
+    each frame its nearest pose, so a reference sparser than the frames hands one pose to
+    several, and the RPE then compares frames holding one pose. ARKitScenes' import
+    interpolates its reference at the frames' times instead (route (b)); TUM's own
+    `associate.py`, and evo, pair one to one. If another sparse reference joins, pair one to one
+    at the root (`metrics.associate`), with the RPE at the reference's own spacing.
+  - **The bake's alignment tied to the RPE, with A2 (round two's A10).** `bundles._score` aligns
+    a run through `runs.evaluate`, so a run whose reference has no pair a frame period apart
+    stays in its own frame. A2 reworks the bake's scoring by map: align with the ATE alone
+    (`runs.evaluate_absolute`), and give the RPE where pairs exist.
+  - **One staging helper (round two's A14).** `tum.staged` serves every import; the bake
+    (`.baking`) and the lens profiles' fetch (`.fetching`, in `lenses`, below `tum`) each write
+    the same mechanism out again. One neutral helper at eval's bottom layer, named by suffix.
 - **Deferred from the SLAM It! rename's review panel**
   ([report](../reviews/2026-10-12-chore-rename-slam-it.md)):
   - **The images' names held by a test (A3).** No test reads `docker/`: a setting a Dockerfile or

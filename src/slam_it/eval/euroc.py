@@ -35,7 +35,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
-from slam_it.eval import timestamps
+from slam_it.eval import sensor_yaml, timestamps
 from slam_it.foundations import se3, so3
 from slam_it.foundations.arrays import MAX_IMAGE_SIDE
 from slam_it.foundations.errors import InvalidInputError
@@ -144,37 +144,6 @@ class Sequence:
         return right_from_left(self.left_camera, self.right_camera)
 
 
-def _numbers(text: str, key: str, path: Path) -> list[float]:
-    """Return the numbers of a ``key: [a, b, ...]`` list in a sensor.yaml.
-
-    Raises
-    ------
-    slam_it.foundations.errors.InvalidInputError
-        If the key is missing or a value is not a number.
-    """
-    found = re.search(rf"^\s*{key}:\s*\[([^\]]*)\]", text, flags=re.MULTILINE)
-    if found is None:
-        raise InvalidInputError(f"{path}: no `{key}: [...]` list")
-    try:
-        return [float(v) for v in found.group(1).replace("\n", " ").split(",") if v.strip()]
-    except ValueError as error:
-        raise InvalidInputError(f"{path}: `{key}` holds a non-number ({error})") from None
-
-
-def _setting(text: str, key: str, path: Path) -> str:
-    """Return a ``key: value`` setting's value in a sensor.yaml.
-
-    Raises
-    ------
-    slam_it.foundations.errors.InvalidInputError
-        If the key is missing.
-    """
-    found = re.search(rf"^\s*{key}:\s*(\S+)", text, flags=re.MULTILINE)
-    if found is None:
-        raise InvalidInputError(f"{path}: no `{key}` setting")
-    return found.group(1)
-
-
 def read_camera(path: str | Path) -> Camera:
     """Read a camera's ``sensor.yaml``.
 
@@ -197,17 +166,16 @@ def read_camera(path: str | Path) -> Camera:
         ``T_BS`` is not a rigid transform.
     """
     file = Path(path)
-    # Comments run from '#' to the end of a line; no value holds one.
-    text = re.sub(r"#[^\n]*", "", file.read_text())
-    if _setting(text, "camera_model", file) != "pinhole":
+    text = sensor_yaml.read_text(file)
+    if sensor_yaml.setting(text, "camera_model", file) != "pinhole":
         raise InvalidInputError(f"{file}: expected camera_model: pinhole")
-    if _setting(text, "distortion_model", file) != "radial-tangential":
+    if sensor_yaml.setting(text, "distortion_model", file) != "radial-tangential":
         raise InvalidInputError(f"{file}: expected distortion_model: radial-tangential")
-    pinhole = _numbers(text, "intrinsics", file)
-    distortion = _numbers(text, "distortion_coefficients", file)
-    resolution = _numbers(text, "resolution", file)
+    pinhole = sensor_yaml.numbers(text, "intrinsics", file)
+    distortion = sensor_yaml.numbers(text, "distortion_coefficients", file)
+    resolution = sensor_yaml.numbers(text, "resolution", file)
     block = re.search(r"T_BS:(.*?\])", text, flags=re.DOTALL)
-    pose = _numbers(block.group(1), "data", file) if block else []
+    pose = sensor_yaml.numbers(block.group(1), "data", file) if block else []
     if (
         len(pinhole) != 4 or len(distortion) != 4 or len(resolution) != 2 or len(pose) != 16
     ):  # the format's fixed lengths
