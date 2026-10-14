@@ -958,7 +958,7 @@ class MapError:
     relative : slam_it.eval.metrics.RelativeError or None
         Its RPE over one frame period (or the interval asked for), the estimate scaled by its
         ATE's scale; None from :func:`evaluate_absolute`, and for a map none of whose matched
-        frames has another the interval later.
+        frames has another the interval later (a reference sparser than the frames).
     """
 
     map: int
@@ -1084,10 +1084,7 @@ def evaluate_absolute(
 ) -> Evaluation:
     """Score a run's ATE against the ground truth, without the RPE: each map on its own.
 
-    The test set's measure reports the ATE alone, and scores with this; it also scores a
-    reference too sparse for :func:`evaluate`'s RPE, whose pairs are a frame period apart. One
-    at a third of the frame rate, on the frames' times, matches every third frame, and no two
-    matched frames are a period apart.
+    The test set's measure reports the ATE alone, and scores with this.
 
     Parameters
     ----------
@@ -1123,7 +1120,12 @@ def evaluate(
     max_difference: float = MAX_DIFFERENCE,
     rpe_delta: float | None = None,
 ) -> Evaluation:
-    """Score a run against the ground truth: each map's ATE and RPE, on its own alignment.
+    """Score a run against the ground truth: each map's ATE, and its RPE where it has pairs.
+
+    Each map is aligned by its ATE alone, so a reference too sparse for the RPE, whose pairs
+    are a frame period apart, still places it: one at a third of the frame rate, on the frames'
+    times, matches every third frame, and no two matched frames are a period apart. Such a map
+    has no RPE, and the run's pooled RPE is None if no map has one.
 
     Parameters
     ----------
@@ -1143,18 +1145,12 @@ def evaluate(
     Returns
     -------
     Evaluation
-        Each map's ATE and RPE over its matched frames.
+        Each map's ATE over its matched frames, and its RPE where it has pairs.
 
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If an array is malformed or its times do not ascend, no map can be aligned (fewer than
-        three of its frames matched, or their centres on a line), or no map's matched frame
-        has another `rpe_delta` seconds later.
+        If an array is malformed or its times do not ascend, or no map can be aligned (fewer
+        than three of its frames matched, or their centres on a line).
     """
-    scored = _scored(run, timestamps, poses, max_difference, rpe_delta, relative=True)
-    if scored.rpe_translation_rmse is None:
-        raise InvalidInputError(
-            "no matched frame of a map has another a frame period later, for the RPE"
-        )
-    return scored
+    return _scored(run, timestamps, poses, max_difference, rpe_delta, relative=True)

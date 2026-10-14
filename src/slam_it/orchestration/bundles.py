@@ -77,7 +77,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slam_it.eval import budgets, images, metrics, runs
-from slam_it.foundations.errors import DegenerateError, InvalidInputError
+from slam_it.foundations.errors import InvalidInputError
 from slam_it.orchestration import vo
 
 FORMAT = "slam-it-bundle"
@@ -116,16 +116,17 @@ class _Frames:
 def _score(run: runs.Run, truth: runs.Truth | None) -> runs.Evaluation | None:
     """Score a run against the ground truth; None without one, or if it cannot be placed.
 
-    A run :func:`slam_it.eval.runs.evaluate` cannot score, with fewer than three frames
-    matched to the truth, its centres on a line, or no frame pair a frame period apart, stays in
-    its own frame rather than failing the bundle. The run and the truth were checked when read,
-    so these are the only refusals left.
+    Each map is placed by its ATE alone, and given an RPE where it has a pair of frames a period
+    apart (:func:`slam_it.eval.runs.evaluate`). A run none of whose maps can be placed, each
+    with fewer than three frames matched to the truth or its centres on a line, stays in its
+    own frame rather than failing the bundle. The run and the truth were checked when read, so
+    that is the only refusal left.
     """
     if truth is None:
         return None
     try:
         return runs.evaluate(run, *truth)
-    except (InvalidInputError, DegenerateError):
+    except InvalidInputError:
         return None
 
 

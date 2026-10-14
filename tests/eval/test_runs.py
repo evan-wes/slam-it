@@ -385,11 +385,11 @@ def test_a_map_too_short_or_straight_to_align_is_unscored() -> None:
         runs.evaluate_absolute(lone, times, truth)
 
 
-def test_the_ate_alone_scores_against_a_reference_too_sparse_for_the_rpe() -> None:
-    """The ATE alone scores where the RPE has no pair a frame period apart.
+def test_a_reference_too_sparse_for_the_rpe_still_places_the_run() -> None:
+    """The ATE alone places a run where the RPE has no pair a frame period apart.
 
-    A 10 Hz reference beside 30 Hz frames matches every third frame, none a period apart, so
-    :func:`runs.evaluate` refuses.
+    A 10 Hz reference beside 30 Hz frames matches every third frame, none a period apart: the
+    run is scored by its ATE, its RPE None (review panel finding A10, round two).
     """
     frame_times = np.arange(0.0, 6.0, 1 / 30)
     reference_times = frame_times[::3]
@@ -401,12 +401,14 @@ def test_the_ate_alone_scores_against_a_reference_too_sparse_for_the_rpe() -> No
         "tum", "sparse", "rgbd", "python", frame_times, poses,
         pose_maps=np.zeros(len(frame_times), dtype=np.int64),
     )  # fmt: skip
-    with pytest.raises(InvalidInputError, match="later"):
-        runs.evaluate(run, reference_times, poses[::3])
-    scored = runs.evaluate_absolute(run, reference_times, poses[::3])
-    assert scored.matched == len(reference_times)
-    assert scored.ate_rmse == pytest.approx(0.0, abs=1e-9)
-    assert scored.rpe_translation_rmse is None
+    for scored in (
+        runs.evaluate(run, reference_times, poses[::3]),
+        runs.evaluate_absolute(run, reference_times, poses[::3]),
+    ):
+        assert scored.matched == len(reference_times)
+        assert scored.ate_rmse == pytest.approx(0.0, abs=1e-9)
+        assert scored.maps[0].relative is None
+        assert (scored.rpe_translation_rmse, scored.rpe_rotation_rmse) == (None, None)
 
 
 def test_evaluate_rejects_a_run_whose_times_do_not_ascend() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -299,6 +300,32 @@ def test_a_run_its_alignment_cannot_place_stays_in_its_own_frame(
     assert placed["score"] is not None
     points = np.load(tmp_path / "bundle" / "python" / "points.npy")
     np.testing.assert_array_equal(points, run.points.astype(np.float32))
+
+
+def test_a_reference_too_sparse_for_the_rpe_still_places_the_run(
+    room_runs: RoomRun, tmp_path: Path
+) -> None:
+    """With a pose for every third frame, no two matched frames are a period apart.
+
+    The run is placed by its ATE alone, its RPE null, rather than left in its own frame (review
+    panel finding A10, round two).
+    """
+    sequence = tmp_path / "sparse" / room_runs.sequence("tum").name
+    shutil.copytree(room_runs.sequence("tum"), sequence)
+    lines = (sequence / "groundtruth.txt").read_text().splitlines()
+    kept = [line for line in lines if line.startswith("#")]
+    kept += [line for line in lines if not line.startswith("#")][::3]
+    (sequence / "groundtruth.txt").write_text("\n".join(kept) + "\n")
+    folder = room_runs.folder("tum", "rgbd", "python")
+    bundles.bake([folder], sequence, tmp_path / "bundle")
+    entry = json.loads((tmp_path / "bundle" / "bundle.json").read_text())["backends"]["python"]
+    assert entry["alignment"] == "se3"
+    assert entry["score"]["matched"] == (FRAMES + 2) // 3
+    assert (entry["score"]["rpe_translation_rmse"], entry["score"]["rpe_rotation_rmse"]) == (
+        None,
+        None,
+    )
+    assert entry["maps"][0]["score"]["ate_rmse"] == entry["score"]["ate_rmse"]
 
 
 def test_a_run_on_a_line_stays_in_its_own_frame(room_runs: RoomRun, tmp_path: Path) -> None:

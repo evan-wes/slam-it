@@ -35,7 +35,7 @@ import numpy as np
 from slam_it import backends
 from slam_it.edge.options import MODES, Options
 from slam_it.eval import budgets, runs
-from slam_it.foundations.errors import DegenerateError, InvalidInputError
+from slam_it.foundations.errors import InvalidInputError
 from slam_it.orchestration import vo
 
 
@@ -86,7 +86,7 @@ def score(run: runs.Run, truth: runs.Truth | None) -> runs.Evaluation | None:
         return None
     try:
         return runs.evaluate(run, *truth)
-    except (InvalidInputError, DegenerateError) as error:  # too few frames, or on a line
+    except InvalidInputError as error:  # no map with three frames matched, off a line
         print(f"not scored: {error}")
         return None
 
