@@ -66,10 +66,8 @@ struct Options {
   std::int64_t init_feature_factor{2};
   /// @brief A monocular frame takes part in initialisation with more than this many keypoints.
   std::int64_t min_init_features{100};
-  /// @brief A stereo or RGB-D frame starts the map with more than this many keypoints...
+  /// @brief A stereo or RGB-D frame starts the map with more than this many keypoints.
   std::int64_t min_init_features_depth{500};
-  /// @brief ...and at least this many with depth (lite: ORB-SLAM resets a map lost early).
-  std::int64_t min_init_depth_points{100};
   /// @brief The monocular initialisation's search window, in pixels.
   double init_window{100.0};
   /// @brief Its ratio test.
@@ -188,6 +186,8 @@ struct Options {
   double relocalize_ratio{0.75};
   /// @brief Failed frames in a row before the track is lost.
   std::int64_t lost_frames{5};
+  /// @brief A map lost with this many keyframes or fewer is reset rather than kept.
+  std::int64_t reset_keyframes{10};
   /// @brief Every RANSAC's seed.
   std::int64_t seed{0};
 };
@@ -212,7 +212,6 @@ inline constexpr std::array<IntegerOption, 42> kIntegerOptions{{
     {"init_feature_factor", &Options::init_feature_factor},
     {"min_init_features", &Options::min_init_features},
     {"min_init_features_depth", &Options::min_init_features_depth},
-    {"min_init_depth_points", &Options::min_init_depth_points},
     {"init_min_matches", &Options::init_min_matches},
     {"min_motion_matches", &Options::min_motion_matches},
     {"min_tracked", &Options::min_tracked},
@@ -231,6 +230,7 @@ inline constexpr std::array<IntegerOption, 42> kIntegerOptions{{
     {"redundant_observers", &Options::redundant_observers},
     {"pnp_min_inliers", &Options::pnp_min_inliers},
     {"lost_frames", &Options::lost_frames},
+    {"reset_keyframes", &Options::reset_keyframes},
     {"seed", &Options::seed},
     {"min_motion_inliers", &Options::min_motion_inliers},
     {"recovery_window_frames", &Options::recovery_window_frames},

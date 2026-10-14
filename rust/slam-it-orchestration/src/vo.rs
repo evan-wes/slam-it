@@ -9,7 +9,7 @@ use nalgebra::Vector2;
 use slam_it_edge::adjust::Solve;
 use slam_it_edge::frames::{self, Camera, DepthMap, Frame};
 use slam_it_edge::options::{Mode, Options, Setting, check_options};
-use slam_it_edge::pipeline::{Fates, FrameResult, FrameSummary, Lifetimes, Pipeline, State};
+use slam_it_edge::pipeline::{Fates, FrameResult, FrameSummary, Lifetimes, Pipeline};
 use slam_it_eval::runs::{FeatureWriter, JsonObject, JsonValue, Run};
 use slam_it_eval::{euroc, png, text, tum};
 use slam_it_foundations::camera::Model;
@@ -559,6 +559,13 @@ fn summary_json(summary: &FrameSummary) -> JsonObject {
             ("culled_keyframes", count(s.culled_keyframes)),
         ])
     });
+    let lost = summary.lost.map_or(JsonValue::Null, |s| {
+        object([
+            ("keyframes", count(s.keyframes)),
+            ("points", count(s.points)),
+            ("reset", JsonValue::Bool(s.reset)),
+        ])
+    });
     [
         ("placed_by", placed_by),
         ("init", init),
@@ -566,13 +573,15 @@ fn summary_json(summary: &FrameSummary) -> JsonObject {
         ("pnp", pnp),
         ("local_map", local_map),
         ("mapping", mapping),
+        ("lost", lost),
     ]
     .into_iter()
     .map(|(key, value)| (key.to_owned(), value))
     .collect()
 }
 
-/// Records a frame's result: its diagnostics, and its pose if it was tracked.
+/// Records a frame's result: its diagnostics, and its pose and map if it was tracked; a reset
+/// map's poses are dropped, as ORB-SLAM3 drops them.
 ///
 /// # Arguments
 ///
@@ -593,6 +602,10 @@ fn record(
     let mut diagnostic = vec![
         ("timestamp".to_owned(), JsonValue::Number(result.timestamp)),
         ("state".to_owned(), name_json(result.state.name())),
+        (
+            "map".to_owned(),
+            result.map.map_or(JsonValue::Null, JsonValue::Integer),
+        ),
         ("tracked".to_owned(), count(result.tracked)),
         ("keyframe".to_owned(), JsonValue::Bool(result.keyframe)),
         ("read_seconds".to_owned(), JsonValue::Number(read_seconds)),
@@ -608,14 +621,25 @@ fn record(
     ];
     diagnostic.extend(summary_json(&result.summary));
     out.diagnostics.push(diagnostic);
-    if let Some(pose) = &result.pose {
+    if let (Some(pose), Some(map)) = (&result.pose, result.map) {
         out.poses.push(se3::inverse(pose)?);
         out.timestamps.push(result.timestamp);
+        out.pose_maps.push(map);
+    }
+    if result.summary.lost.is_some_and(|lost| lost.reset)
+        && let Some(map) = result.map
+    {
+        // Its frames' poses go with it.
+        while out.pose_maps.last() == Some(&map) {
+            out.poses.pop();
+            out.timestamps.pop();
+            out.pose_maps.pop();
+        }
     }
     Ok(())
 }
 
-/// Records every keyframe and point the run made, with their lives.
+/// Records every keyframe and point the run made, with their lives and maps.
 ///
 /// # Arguments
 ///
@@ -635,10 +659,13 @@ fn record_lives(out: &mut Run, lives: Lifetimes) -> Result<()> {
     out.points = lives.points;
     out.point_lives = lives.point_lives;
     out.keyframe_lives = lives.keyframe_lives;
+    out.point_maps = lives.point_maps;
+    out.keyframe_maps = lives.keyframe_maps;
     Ok(())
 }
 
-/// Tracks a sequence's frames, from the first asked for, until the end or the track is lost.
+/// Tracks a sequence's frames, from the first asked for, to the end: a lost track closes its
+/// map, and the next frame starts a new one.
 ///
 /// # Arguments
 ///
@@ -683,9 +710,6 @@ fn track(
         record(out, &result, read, built - read)?;
         if let Some(writer) = features.as_deref_mut() {
             write_features(writer, &frame, &result.fates)?;
-        }
-        if result.state == State::Lost {
-            break;
         }
     }
     Ok(())

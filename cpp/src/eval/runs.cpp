@@ -148,6 +148,28 @@ Result<void> check_stamped(const std::vector<double>& times,
   return {};
 }
 
+/// @brief Check maps: one per row, numbers from 0, never descending.
+/// @param maps The maps.
+/// @param rows The rows they are for.
+/// @param name Their name, for messages.
+/// @return Nothing, or `InvalidInput`.
+Result<void> check_maps(const std::vector<std::int64_t>& maps, std::size_t rows, const char* name) {
+  if (maps.size() != rows) {
+    return fail(ErrorKind::kInvalidInput, std::string(name) + ": expected one map per row, " +
+                                              std::to_string(rows) + ", got " +
+                                              std::to_string(maps.size()));
+  }
+  for (std::size_t row = 0; row < maps.size(); ++row) {
+    if (maps[row] < 0 || (row > 0 && maps[row] < maps[row - 1])) {
+      return fail(ErrorKind::kInvalidInput,
+                  std::string(name) + ": maps must be numbers from 0, never descending; row " +
+                      std::to_string(row) + " is " + std::to_string(maps[row]) +
+                      (row > 0 ? ", after " + std::to_string(maps[row - 1]) : ""));
+    }
+  }
+  return {};
+}
+
 /// @brief Check a run before anything is written.
 /// @param run The run.
 /// @return Nothing, or `InvalidInput`.
@@ -178,6 +200,41 @@ Result<void> check_lives(const std::vector<Life>& lives, std::size_t rows, std::
   return {};
 }
 
+/// @brief Check the diagnostics' `map` keys against the run's maps (those of its keyframes): each
+///        null or a map number, never descending, and every map named on a frame, so that its
+///        frames can be found (Python's `_check_frame_maps`).
+/// @param run The run.
+/// @return Nothing, or `InvalidInput`.
+Result<void> check_frame_maps(const Run& run) {
+  std::vector<std::int64_t> named;
+  for (std::size_t k = 0; k < run.diagnostics.size(); ++k) {
+    const auto& entry = run.diagnostics[k];
+    const auto found =
+        std::ranges::find_if(entry, [](const auto& item) { return item.first == "map"; });
+    if (found == entry.end() || std::holds_alternative<std::nullptr_t>(found->second)) {
+      continue;
+    }
+    const std::string where = "diagnostics[" + std::to_string(k) + "]";
+    const auto* value = std::get_if<std::int64_t>(&found->second);
+    if (value == nullptr || *value < 0) {
+      return fail(ErrorKind::kInvalidInput, where + ": map: expected a map number or null");
+    }
+    if (!named.empty() && *value < named.back()) {
+      return fail(ErrorKind::kInvalidInput, where + ": map " + std::to_string(*value) +
+                                                " after map " + std::to_string(named.back()) +
+                                                ": maps never descend");
+    }
+    named.push_back(*value);
+  }
+  for (const std::int64_t map : run.keyframe_maps) {  // ascending, as checked
+    if (!std::ranges::binary_search(named, map)) {
+      return fail(ErrorKind::kInvalidInput, "diagnostics: no frame names map " +
+                                                std::to_string(map) + ", which has keyframes");
+    }
+  }
+  return {};
+}
+
 Result<void> check(const Run& run) {
   if (std::ranges::find(kModes, run.mode) == kModes.end()) {
     return fail(ErrorKind::kInvalidInput, "mode: unknown '" + run.mode + "'");
@@ -203,6 +260,14 @@ Result<void> check(const Run& run) {
       !ok) {
     return ok;
   }
+  for (const auto& [maps, rows, name] :
+       {std::tuple{&run.pose_maps, run.timestamps.size(), "pose_maps"},
+        std::tuple{&run.keyframe_maps, run.keyframe_timestamps.size(), "keyframe_maps"},
+        std::tuple{&run.point_maps, run.points.size(), "point_maps"}}) {
+    if (auto ok = check_maps(*maps, rows, name); !ok) {
+      return ok;
+    }
+  }
   if (!finite(run.settings)) {
     return fail(ErrorKind::kInvalidInput, "settings: not JSON (a number is not finite)");
   }
@@ -227,17 +292,23 @@ Result<void> check(const Run& run) {
                                                 "numbers finite");
     }
   }
-  return {};
+  return check_frame_maps(run);
 }
 
-/// @brief Stamped poses as TUM-format lines, each number round-tripping.
+/// @brief Stamped poses as TUM-format lines, each number round-tripping, a `# map <n>` line
+///        before each map's first pose.
 /// @param times The times.
 /// @param poses The poses.
+/// @param maps Their maps.
 /// @return The text, or the quaternion conversion's error.
 Result<std::string> trajectory_text(const std::vector<double>& times,
-                                    const std::vector<Eigen::Matrix4d>& poses) {
+                                    const std::vector<Eigen::Matrix4d>& poses,
+                                    const std::vector<std::int64_t>& maps) {
   std::string out = "# timestamp tx ty tz qx qy qz qw\n";
   for (std::size_t k = 0; k < times.size(); ++k) {
+    if (k == 0 || maps[k] != maps[k - 1]) {
+      out += "# map " + std::to_string(maps[k]) + "\n";
+    }
     auto q = foundations::so3::to_quaternion(poses[k].topLeftCorner<3, 3>());
     if (!q) {
       return std::unexpected(std::move(q.error()));
@@ -402,7 +473,7 @@ Result<void> write_run(const std::string& folder, const Run& run) {
   if (auto ok = check(run); !ok) {
     return ok;
   }
-  auto trajectory = trajectory_text(run.timestamps, run.poses);
+  auto trajectory = trajectory_text(run.timestamps, run.poses, run.pose_maps);
   if (!trajectory) {
     return std::unexpected(std::move(trajectory.error()));
   }
@@ -441,7 +512,7 @@ Result<void> write_run(const std::string& folder, const Run& run) {
   if (auto ok = create_folder(out); !ok) {
     return ok;
   }
-  const std::array<std::pair<const char*, std::string>, 8> files = {{
+  const std::array<std::pair<const char*, std::string>, 11> files = {{
       {"run.json", info_text},
       {"trajectory.txt", *trajectory},
       {"keyframes.npy", npy({run.keyframe_timestamps.size()}, run.keyframe_timestamps)},
@@ -449,6 +520,9 @@ Result<void> write_run(const std::string& folder, const Run& run) {
       {"keyframe_lives.npy", npy({run.keyframe_lives.size(), 3}, flatten(run.keyframe_lives))},
       {"points.npy", npy({run.points.size(), 3}, points)},
       {"point_lives.npy", npy({run.point_lives.size(), 3}, flatten(run.point_lives))},
+      {"pose_maps.npy", npy({run.pose_maps.size()}, run.pose_maps)},
+      {"keyframe_maps.npy", npy({run.keyframe_maps.size()}, run.keyframe_maps)},
+      {"point_maps.npy", npy({run.point_maps.size()}, run.point_maps)},
       {"diagnostics.jsonl", diagnostics},
   }};
   for (const auto& [name, data] : files) {

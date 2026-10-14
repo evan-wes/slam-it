@@ -33,12 +33,29 @@ import { readFloat32, readInt32 } from "./npy.js";
  */
 
 /**
+ * A run's score over every map placed on the truth, each aligned on its own.
  * @typedef {object} Score
  * @property {number} matched The frames scored against the truth.
  * @property {number} ate_rmse The ATE, in metres.
- * @property {number} rpe_translation_rmse The RPE's translation, in metres.
- * @property {number} rpe_rotation_rmse The RPE's rotation, in radians.
- * @property {number} scale The alignment's scale.
+ * @property {number | null} rpe_translation_rmse The RPE's translation, in metres; null if no
+ *     map has a pair of frames a period apart.
+ * @property {number | null} rpe_rotation_rmse The RPE's rotation, in radians, the same way.
+ */
+
+/**
+ * A map's own score.
+ * @typedef {Score & {scale: number}} MapScore
+ */
+
+/**
+ * One of a run's maps (bundle.json's `maps`, each backend's): a lost track starts the next.
+ * @typedef {object} MapInfo
+ * @property {number} id The map's number, from 0 in the order the maps started.
+ * @property {[number, number]} frames The bundle's frames whose records name it, `[first, end)`.
+ * @property {number} tracked Its frames tracked: none for a map reset.
+ * @property {boolean} reset Whether it was reset, lost while too small to keep: its keyframes
+ *     and points removed when the track was lost, its frames' poses dropped.
+ * @property {MapScore | null} score Its score; null unless placed on the truth.
  */
 
 /**
@@ -46,14 +63,15 @@ import { readFloat32, readInt32 } from "./npy.js";
  * @typedef {object} BackendInfo
  * @property {[number, number]} frames The bundle's frames it ran, `[first, end)`.
  * @property {number} tracked The frames it tracked.
- * @property {number} keyframes The final map's keyframes.
- * @property {number} points The final map's points.
+ * @property {number} keyframes The final maps' keyframes.
+ * @property {number} points The final maps' points.
  * @property {{keyframes: number, points: number}} made How many it made.
  * @property {boolean} features Whether it recorded its features.
- * @property {string | null} alignment The alignment it was moved onto the ground truth by
- *     ("sim3" or "se3"); null if it stays in its own frame: without ground truth, or a run its
- *     ATE alignment cannot place.
- * @property {Score | null} score Its score; null unless aligned.
+ * @property {string | null} alignment The alignment its maps were moved onto the ground truth
+ *     by, each its own ("sim3" or "se3"); null if none was: without ground truth, or a run no
+ *     map of which its ATE alignment can place.
+ * @property {Score | null} score Its score over every map placed; null unless one was.
+ * @property {MapInfo[]} maps Its maps, in order.
  * @property {Latency | null} latency Its latency, for fewer than two frames null.
  * @property {number | null} peak_memory Its program's peak memory, in bytes, if known.
  */
@@ -70,7 +88,7 @@ import { readFloat32, readInt32 } from "./npy.js";
  * bundle.json.
  * @typedef {object} BundleInfo
  * @property {string} format "slam-it-bundle".
- * @property {number} version 1.
+ * @property {number} version 2.
  * @property {string} dataset The dataset.
  * @property {string} sequence The sequence.
  * @property {string} mode "monocular", "stereo" or "rgbd".
@@ -98,20 +116,24 @@ import { readFloat32, readInt32 } from "./npy.js";
  * @property {Records} records Its per-frame records.
  * @property {Float32Array} poses Each tracked frame's `T_world_cam`, its top three rows, (T, 3, 4).
  * @property {Int32Array} poseFrames Their frames, (T,).
+ * @property {Int32Array} poseMaps Their maps, (T,), never descending.
  */
 
 /**
- * A backend's whole run, as the bundle holds it: its track, map and features.
+ * A backend's whole run, as the bundle holds it: its track, maps and features.
  * @typedef {object} Backend
  * @property {string} name The backend.
  * @property {BackendInfo} info Its header.
  * @property {Records} records Its per-frame records.
  * @property {Float32Array} poses Each tracked frame's `T_world_cam`, its top three rows, (T, 3, 4).
  * @property {Int32Array} poseFrames Their frames, (T,).
+ * @property {Int32Array} poseMaps Their maps, (T,), never descending.
  * @property {Float32Array} keyframePoses Every keyframe's last pose, (K, 3, 4).
  * @property {Int32Array} keyframeLives Their lives, (K, 3): made, removed (-1 if never), why.
+ * @property {Int32Array} keyframeMaps Their maps, (K,).
  * @property {Float32Array} points Every point's last position, (N, 3).
  * @property {Int32Array} pointLives Their lives, (N, 3).
+ * @property {Int32Array} pointMaps Their maps, (N,).
  * @property {{pixels: Float32Array, records: Int32Array} | null} features Each frame's
  *     keypoints (pixels (M, 2); frame, level, fate and point (M, 4)), if recorded.
  */
@@ -127,7 +149,7 @@ import { readFloat32, readInt32 } from "./npy.js";
  */
 
 export const FORMAT = "slam-it-bundle";
-export const VERSION = 1;
+export const VERSION = 2;
 
 /** The backends a bundle may hold, in the order the page offers them. */
 export const BACKENDS = ["cpp", "rust", "python"];
@@ -283,6 +305,7 @@ export async function loadTrack(fetch, bundle, name) {
     records,
     poses: await float32("poses.npy", [3, 4], poseFrames.length),
     poseFrames,
+    poseMaps: await int32("pose_maps.npy", [], poseFrames.length),
   };
 }
 
@@ -306,8 +329,10 @@ export async function loadBackend(fetch, track) {
     ...track,
     keyframePoses: await float32("keyframe_poses.npy", [3, 4], keyframeLives.length / 3),
     keyframeLives,
+    keyframeMaps: await int32("keyframe_maps.npy", [], keyframeLives.length / 3),
     points: await float32("points.npy", [3], pointLives.length / 3),
     pointLives,
+    pointMaps: await int32("point_maps.npy", [], pointLives.length / 3),
     features,
   };
 }

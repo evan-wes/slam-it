@@ -8,9 +8,13 @@ import * as format from "../src/format.js";
 import {
   FRUSTUM_SEGMENTS,
   NEVER,
+  MIN_DEPTH,
   centres,
   frustums,
   lifeAttributes,
+  mapAttribute,
+  mapDepths,
+  mapFrustums,
   truthSegments,
 } from "../src/geometry.js";
 import {
@@ -90,6 +94,32 @@ test("each vertex carries its item's life, a life without an end ending never", 
   const { made, removed } = lifeAttributes(new Int32Array([2, -1, -1, 0, 4, 1]), 2);
   assert.deepEqual(Array.from(made), [2, 2, 0, 0]);
   assert.deepEqual(Array.from(removed), [NEVER, NEVER, 4, 4]);
+});
+
+test("each vertex carries its item's map", () => {
+  assert.deepEqual(Array.from(mapAttribute(new Int32Array([0, 2]), 3)), [0, 0, 0, 2, 2, 2]);
+});
+
+test("each map's frustums are as deep as a share of its own trajectory's extent", () => {
+  // Map 0 spans 4 m along x, map 1 a millimetre: its frustums are the shallowest.
+  const path = new Float32Array([0, 0, 0, 4, 0, 0, 0, 0, 0, 0.001, 0, 0]);
+  const depths = mapDepths(path, new Int32Array([0, 0, 1, 1]));
+  assert.deepEqual(
+    [...depths],
+    [
+      [0, 4 / 40],
+      [1, MIN_DEPTH],
+    ],
+  );
+  const camera = { width: 2, height: 2, intrinsics: [1, 1, 0.5, 0.5] };
+  const pose = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0];
+  const poses = new Float32Array([...pose, ...pose, ...pose]);
+  const lines = mapFrustums(poses, new Int32Array([0, 1, 5]), camera, depths, 0.3);
+  const each = FRUSTUM_SEGMENTS * 2 * 3;
+  for (const [k, depth] of [0.1, MIN_DEPTH, 0.3].entries()) {
+    const alone = frustums(poses.subarray(k * 12, k * 12 + 12), camera, depth);
+    assert.deepEqual(Array.from(lines.subarray(k * each, (k + 1) * each)), Array.from(alone));
+  }
 });
 
 test("the header's numbers read in their units", () => {

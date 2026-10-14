@@ -17,7 +17,7 @@ the two arrays hold ``T_world_cam`` at the same instants (associate them by time
   monocular run), as evo computes it; TUM's script composes ``P_rel Q_rel^-1`` instead, the
   same rotation but a translation that differs at long intervals. Its translation's norm and
   rotation's angle are reported, with their RMSE. No alignment is needed: relative motion
-  does not depend on the world frame.
+  does not depend on the world frame. :func:`interval_pairs` gives the pairs alone.
 
 :func:`associate` pairs an estimate's timestamps with the ground truth's first, as TUM's
 ``associate.py`` does.
@@ -34,7 +34,7 @@ from numpy.typing import ArrayLike, NDArray
 from slam_it.eval import timestamps
 from slam_it.foundations import alignment, se3, so3
 from slam_it.foundations.arrays import as_batch, as_number
-from slam_it.foundations.errors import InvalidInputError
+from slam_it.foundations.errors import DegenerateError, InvalidInputError
 
 
 @dataclass(frozen=True)
@@ -157,6 +157,61 @@ def absolute_error(
     )
 
 
+def interval_pairs(
+    times: ArrayLike, *, delta: float, tolerance: float | None = None
+) -> NDArray[np.int64]:
+    """Return the pairs of poses `delta` seconds apart, which the relative pose error compares.
+
+    Pose ``i`` pairs with the pose nearest ``times[i] + delta``, if that one is later and lies
+    within `tolerance` of it, so no pair spans a gap in the poses.
+
+    Parameters
+    ----------
+    times : array_like, shape (N,)
+        The poses' instants, in seconds, strictly ascending, N >= 2.
+    delta : float
+        The interval, in seconds.
+    tolerance : float, optional
+        How far, in seconds, a pose may lie from ``times[i] + delta`` and still pair with
+        pose ``i`` (default: half the median spacing of `times`).
+
+    Returns
+    -------
+    ndarray of int64, shape (P, 2)
+        Each pair's two indices into `times`, the first ascending; none if no pose has another
+        `delta` seconds later.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If `times` has fewer than two instants or does not ascend strictly, or `delta` or
+        `tolerance` is out of range.
+    """
+    return _pairing(times, delta, tolerance)[0]
+
+
+def _pairing(
+    times: ArrayLike, delta: float, tolerance: float | None
+) -> tuple[NDArray[np.int64], float, float]:
+    """Return :func:`interval_pairs`' pairs, with the interval and the tolerance it used."""
+    stamps = timestamps.as_times(times, "times")
+    if len(stamps) < 2:  # an interval needs two poses
+        raise InvalidInputError(f"times: expected at least 2, got {len(stamps)}")
+    interval = as_number(delta, "delta")
+    if not (math.isfinite(interval) and interval > 0.0):
+        raise InvalidInputError(f"delta: must be positive and finite, got {interval}")
+    window = 0.5 * float(np.median(np.diff(stamps))) if tolerance is None else tolerance
+    window = as_number(window, "tolerance")
+    if not (math.isfinite(window) and window >= 0.0):
+        raise InvalidInputError(f"tolerance: must be non-negative and finite, got {window}")
+    targets = stamps + interval
+    later = timestamps.nearest(stamps, targets)
+    first = np.flatnonzero(
+        (np.abs(stamps[later] - targets) <= window) & (later > np.arange(len(stamps)))
+    )
+    return np.column_stack([first, later[first]]).astype(np.int64), interval, window
+
+
 def relative_error(  # noqa: PLR0913 -- two trajectories, their times, the interval
     estimate: ArrayLike,
     truth: ArrayLike,
@@ -178,7 +233,7 @@ def relative_error(  # noqa: PLR0913 -- two trajectories, their times, the inter
         The interval, in seconds: one frame period gives the frame-to-frame drift.
     tolerance : float, optional
         How far, in seconds, a pose may lie from ``times[i] + delta`` and still pair with
-        pose ``i`` (default: half the median spacing of `times`).
+        pose ``i`` (default: half the median spacing of `times`); see :func:`interval_pairs`.
     scale : float, optional
         Multiplies the estimate's relative translations: the ATE's Sim(3) scale for a
         monocular estimate (default 1).
@@ -192,8 +247,10 @@ def relative_error(  # noqa: PLR0913 -- two trajectories, their times, the inter
     ------
     slam_it.foundations.errors.InvalidInputError
         If the trajectories are not equal-length batches of rigid transforms, `times` does
-        not ascend strictly or differs in length, `delta`, `tolerance` or `scale` is out of
-        range, or no pose has another `delta` seconds later.
+        not ascend strictly or differs in length, or `delta`, `tolerance` or `scale` is out of
+        range.
+    slam_it.foundations.errors.DegenerateError
+        If no pose has another `delta` seconds later (:func:`interval_pairs` finds none).
     """
     est, tru = _as_trajectories(estimate, truth)
     stamps = timestamps.as_times(times, "times")
@@ -201,24 +258,13 @@ def relative_error(  # noqa: PLR0913 -- two trajectories, their times, the inter
         raise InvalidInputError(
             f"times: expected one per pose and at least 2, got {len(stamps)} for {len(est)}"
         )
-    interval = as_number(delta, "delta")
-    if not (math.isfinite(interval) and interval > 0.0):
-        raise InvalidInputError(f"delta: must be positive and finite, got {interval}")
-    window = 0.5 * float(np.median(np.diff(stamps))) if tolerance is None else tolerance
-    window = as_number(window, "tolerance")
-    if not (math.isfinite(window) and window >= 0.0):
-        raise InvalidInputError(f"tolerance: must be non-negative and finite, got {window}")
+    pairs, interval, window = _pairing(stamps, delta, tolerance)
     factor = as_number(scale, "scale")
     if not (math.isfinite(factor) and factor > 0.0):
         raise InvalidInputError(f"scale: must be positive and finite, got {factor}")
-    targets = stamps + interval
-    later = timestamps.nearest(stamps, targets)
-    first = np.flatnonzero(
-        (np.abs(stamps[later] - targets) <= window) & (later > np.arange(len(stamps)))
-    )
-    if len(first) == 0:
-        raise InvalidInputError(f"no pose has another {interval} s (+-{window} s) later")
-    second = later[first]
+    if len(pairs) == 0:  # too few poses for the interval: the data's, not the call's
+        raise DegenerateError(f"no pose has another {interval} s (+-{window} s) later")
+    first, second = pairs[:, 0], pairs[:, 1]
     moved = se3.compose(se3.inverse(est[first]), est[second])
     moved[:, :3, 3] *= factor
     true_moved = se3.compose(se3.inverse(tru[first]), tru[second])
@@ -226,7 +272,7 @@ def relative_error(  # noqa: PLR0913 -- two trajectories, their times, the inter
     translation = np.linalg.norm(error[:, :3, 3], axis=1)
     rotation = np.linalg.norm(so3.log(error[:, :3, :3]), axis=1)
     return RelativeError(
-        pairs=np.column_stack([first, second]).astype(np.int64),
+        pairs=pairs,
         translation=translation,
         rotation=rotation,
         translation_rmse=_rms(translation),

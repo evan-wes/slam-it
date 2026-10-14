@@ -2,7 +2,7 @@
 
 A run is a folder, written by any backend's pipeline (C++ and Rust write the same files):
 
-- ``run.json``: what ran: ``{"format": "slam-it-run", "version": 3, "dataset", "sequence",
+- ``run.json``: what ran: ``{"format": "slam-it-run", "version": 4, "dataset", "sequence",
   "mode", "backend", "settings", "record_features", "peak_memory", "cpus", "memory_cap"}``,
   ``mode`` one of :data:`MODES` and ``backend`` one of ``python``, ``cpp`` and ``rust``;
   ``settings`` holds the pipeline's options as JSON; ``record_features`` whether the run
@@ -14,16 +14,24 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
 - ``trajectory.txt``: each tracked frame's ``T_world_cam`` in TUM's format, one
   ``timestamp tx ty tz qx qy qz qw`` line per frame, ``#`` comments allowed: what ORB-SLAM and
   the TUM tools write, so other systems' trajectories evaluate the same way. Numbers are
-  written to round-trip exactly.
+  written to round-trip exactly. A run of several maps (below) holds each map's poses in
+  turn, each in its own frame, a ``# map <n>`` line before each map's first: an outside tool
+  must align one map at a time, splitting the file there or by ``pose_maps.npy``.
 - ``keyframes.npy``: the timestamps of every keyframe the run made, by id (the order it made
   them in), ``(K,)`` float64; ``keyframe_poses.npy``: their ``T_world_cam``, ``(K, 4, 4)``, the
   last each had; ``keyframe_lives.npy``: their lives, ``(K, 3)`` int64 (below).
-- ``points.npy``: every point the run made, by id, in the world frame, ``(M, 3)`` float64,
-  where each last was; ``point_lives.npy``: their lives, ``(M, 3)`` int64.
+- ``points.npy``: every point the run made, by id, in its map's world frame, ``(M, 3)``
+  float64, where each last was; ``point_lives.npy``: their lives, ``(M, 3)`` int64.
 - **A life** is three numbers: the frame that made it; the frame that removed it, or -1 if it
   is in the final map; and why it was removed (its index in :data:`REMOVALS`), or -1. Frames
-  are counted by their line in ``diagnostics.jsonl``. The final map is the rows still alive
-  (:meth:`Run.final_points`, :meth:`Run.final_keyframes`).
+  are counted by their line in ``diagnostics.jsonl``. The rows still alive are what the run
+  kept, every kept map's (:meth:`Run.final_points`, :meth:`Run.final_keyframes`).
+- **Maps:** ``pose_maps.npy``, ``keyframe_maps.npy`` and ``point_maps.npy`` give the map each
+  tracked frame's pose, each keyframe and each point is in, ``(F,)``, ``(K,)`` and ``(M,)``
+  int64, never descending. A run's maps are numbered from 0 in the order they started; each has
+  its own world frame (and a monocular one its own scale), the frame of its first keyframe. A
+  map the edge pipeline lost while it was too small to keep was reset: its keyframes and points
+  were removed as ``reset``, and its frames' poses are not in the trajectory.
 - ``feature_pixels.npy`` and ``feature_records.npy``, if the run recorded its features: every
   frame's keypoints, in frame order. Their pixels, ``(N, 2)`` float32; and their records,
   ``(N, 4)`` int32: the frame, the keypoint's pyramid level, its fate (its index in
@@ -31,17 +39,20 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
   :class:`slam_it.edge.pipeline.Fates` gives them. Streamed as the run goes
   (:class:`FeatureWriter`), and read mapped from disk (:func:`read_features`).
 - ``diagnostics.jsonl``: one JSON object per line, per frame, each with its ``timestamp``;
-  otherwise what the pipeline wants to report (tracked points, state). The edge pipeline's
-  frames also time their steps, in seconds (:data:`STEPS`), which the budget harness judges
-  (:func:`slam_it.eval.budgets.judge`), and say how their stages went
-  (:meth:`slam_it.edge.pipeline.FrameSummary.as_dict`): an object per stage, null where it
-  did not run.
+  otherwise what the pipeline wants to report (tracked points, state). Three keys are read
+  across a run's maps: ``map``, the frame's map or null if it was in none (a run with maps
+  names each of them on a frame, and its maps never descend); ``state``, ``"lost"`` on a frame
+  that lost the track (:func:`tracking` counts them); and ``lost``, that frame's account of the
+  map it closed. The edge pipeline's frames also time their steps, in seconds
+  (:data:`STEPS`), which the budget harness judges (:func:`slam_it.eval.budgets.judge`), and
+  say how their stages went (:meth:`slam_it.edge.pipeline.FrameSummary.as_dict`): an object
+  per stage, null where it did not run.
 
 :func:`write_run` checks everything before it writes, and replaces each file whole (written
 to a temporary sibling, then renamed); :func:`read_run` checks every file's shape;
-:func:`evaluate` scores a run against the ground truth, and :func:`evaluate_absolute` its ATE
-alone, which needs no pair of frames a period apart, as the RPE does. :func:`tracking` says
-what of a sequence a run ran and tracked.
+:func:`evaluate` scores a run against the ground truth, each map on its own alignment, and
+:func:`evaluate_absolute` its ATE alone, which needs no pair of frames a period apart, as the
+RPE does. :func:`tracking` says what of a sequence a run ran and tracked.
 """
 
 from __future__ import annotations
@@ -61,20 +72,22 @@ from numpy.typing import ArrayLike, NDArray
 from slam_it.eval import euroc, metrics, tum
 from slam_it.eval.timestamps import as_times
 from slam_it.foundations import se3, so3
-from slam_it.foundations.arrays import as_batch
-from slam_it.foundations.errors import InvalidInputError
+from slam_it.foundations.arrays import as_batch, as_number
+from slam_it.foundations.errors import DegenerateError, InvalidInputError
 
 FORMAT = "slam-it-run"
 """``run.json``'s ``format``."""
 
-VERSION = 3
+VERSION = 4
 """``run.json``'s ``version``: this module's layout (2 added ``peak_memory``, ``cpus`` and
-``memory_cap``; 3 every point and keyframe the run made, with their lives)."""
+``memory_cap``; 3 every point and keyframe the run made, with their lives; 4 the maps, and the
+removal ``reset``)."""
 
-REMOVALS = ("culled", "fused", "weak")
+REMOVALS = ("culled", "fused", "weak", "reset")
 """Why a point or keyframe was removed, a life's code being the index: culled (a recent point
-tracking rarely found, or a redundant keyframe), fused into another point, or erased with its
-views (left seen too little). :class:`slam_it.edge.map.Removal` has the same codes."""
+tracking rarely found, or a redundant keyframe), fused into another point, erased with its
+views (left seen too little), or reset with its map (lost while too small to keep).
+:class:`slam_it.edge.map.Removal` has the same codes."""
 
 FATES = ("unmatched", "rejected", "tracked", "made")
 """What became of a keypoint on its frame, a feature record's code being the index: not matched
@@ -103,8 +116,9 @@ BACKENDS = ("python", "cpp", "rust")
 """The backends a run may come from."""
 
 LOST = "lost"
-"""A diagnostic's ``state`` when the edge pipeline lost the track, which ends its run:
-:class:`slam_it.edge.pipeline.State`'s ``LOST``."""
+"""A diagnostic's ``state`` on the frame the edge pipeline lost the track on: its map closed there,
+kept or reset, and the next frame starts a new one (:class:`slam_it.edge.pipeline.State`'s
+``LOST``)."""
 
 MAX_DIFFERENCE = 0.02
 """The largest time difference, in seconds, between a run's frame and its ground-truth pose:
@@ -149,11 +163,12 @@ class Run:
     keyframe_poses : ndarray of float64, shape (K, 4, 4)
         Their last ``T_world_cam``.
     points : ndarray of float64, shape (M, 3)
-        Every point the run made, by id, where it last was, in the world frame.
+        Every point the run made, by id, where it last was, in its map's world frame.
     settings : dict
         The pipeline's options, as JSON values.
     diagnostics : list of dict
-        One JSON object per frame, each with a ``timestamp``.
+        One JSON object per frame, each with a ``timestamp``, and its ``map`` in a run with maps
+        (the module docstring has the keys read across a run's maps).
     peak_memory : int or None
         The largest resident set of the program that ran it, in bytes; None if unknown.
     cpus : list of int or None
@@ -167,6 +182,12 @@ class Run:
         Each keyframe's life, the same way.
     record_features : bool
         Whether the run recorded its features (:func:`read_features` reads them).
+    pose_maps : ndarray of int64, shape (F,)
+        The map each tracked frame's pose is in.
+    keyframe_maps : ndarray of int64, shape (K,)
+        The map each keyframe is in.
+    point_maps : ndarray of int64, shape (M,)
+        The map each point is in.
     """
 
     dataset: str
@@ -188,19 +209,23 @@ class Run:
         default_factory=lambda: np.zeros((0, 3), dtype=np.int64)
     )
     record_features: bool = False
+    pose_maps: NDArray[np.int64] = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    keyframe_maps: NDArray[np.int64] = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    point_maps: NDArray[np.int64] = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
 
     def final_points(self) -> NDArray[np.float64]:
-        """Return the points still in the final map.
+        """Return the points the run kept: every kept map's, each in its map's frame.
 
         Returns
         -------
         ndarray of float64, shape (P, 3)
-            The rows of :attr:`points` whose life has no end, in id order.
+            The rows of :attr:`points` whose life has no end, in id order; :attr:`point_maps`
+            says whose.
         """
         return self.points[self.point_lives[:, 1] < 0]
 
     def final_keyframes(self) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-        """Return the keyframes still in the final map.
+        """Return the keyframes the run kept: every kept map's, each in its map's frame.
 
         Returns
         -------
@@ -211,6 +236,27 @@ class Run:
         """
         alive = self.keyframe_lives[:, 1] < 0
         return self.keyframe_timestamps[alive], self.keyframe_poses[alive]
+
+    def maps(self) -> NDArray[np.int64]:
+        """Return every map the run started, kept or reset, ascending.
+
+        Returns
+        -------
+        ndarray of int64, shape (N,)
+            The map numbers: every map has a keyframe, its first.
+        """
+        return np.unique(self.keyframe_maps)
+
+    def reset_maps(self) -> NDArray[np.int64]:
+        """Return the maps the run reset, ascending: their keyframes were removed as ``reset``.
+
+        Returns
+        -------
+        ndarray of int64, shape (R,)
+            The map numbers.
+        """
+        reset = self.keyframe_lives[:, 2] == REMOVALS.index("reset")
+        return np.unique(self.keyframe_maps[reset])
 
 
 def _check_process(peak_memory: object, cpus: object, memory_cap: object, prefix: str) -> None:
@@ -265,11 +311,20 @@ def write_trajectory(path: str | Path, timestamps: ArrayLike, poses: ArrayLike) 
     _replace(Path(path), _trajectory_text(times, flat).encode())
 
 
-def _trajectory_text(times: NDArray[np.float64], poses: NDArray[np.float64]) -> str:
-    """Return checked stamped poses as TUM-format lines, each number round-tripping."""
+def _trajectory_text(
+    times: NDArray[np.float64],
+    poses: NDArray[np.float64],
+    maps: NDArray[np.int64] | None = None,
+) -> str:
+    """Return checked stamped poses as TUM-format lines, each number round-tripping.
+
+    With `maps`, the poses' maps, a ``# map <n>`` line comes before each map's first pose.
+    """
     quaternions = so3.to_quaternion(poses[:, :3, :3]) if len(poses) else np.zeros((0, 4))
     lines = ["# timestamp tx ty tz qx qy qz qw"]
-    for t, pose, q in zip(times, poses, quaternions, strict=True):
+    for k, (t, pose, q) in enumerate(zip(times, poses, quaternions, strict=True)):
+        if maps is not None and (k == 0 or maps[k] != maps[k - 1]):
+            lines.append(f"# map {maps[k]}")
         values = [t, *pose[:3, 3], *q]
         lines.append(" ".join(repr(float(v)) for v in values))
     return "\n".join(lines) + "\n"
@@ -317,6 +372,53 @@ def _check_lives(lives: ArrayLike, count: int, frames: int, name: str) -> NDArra
     if np.any(alive != (how == -1)) or np.any(~alive & ((how < 0) | (how >= len(REMOVALS)))):
         raise InvalidInputError(f"{name}: why a life ended must be a removal code, -1 if alive")
     return out
+
+
+def _check_maps(maps: ArrayLike, count: int, name: str) -> NDArray[np.int64]:
+    """Check maps, one per row: map numbers, never descending; return them.
+
+    `name` begins each message.
+    """
+    out = np.asarray(maps)
+    if out.dtype != np.int64 or out.shape != (count,):
+        raise InvalidInputError(
+            f"{name}: expected int64 ({count},), one per row, got {out.dtype} {out.shape}"
+        )
+    bad = np.flatnonzero((out < 0) | (np.diff(out, prepend=0) < 0))
+    if len(bad):
+        row = int(bad[0])
+        after = f", after {out[row - 1]}" if row else ""
+        raise InvalidInputError(
+            f"{name}: maps must be numbers from 0, never descending; row {row} is {out[row]}{after}"
+        )
+    return out
+
+
+def _check_frame_maps(
+    diagnostics: list[dict[str, Any]], maps: NDArray[np.int64], name: str
+) -> None:
+    """Check the diagnostics' ``map`` keys against the run's maps (those of its keyframes).
+
+    Each is null or a map number, they never descend, and every map is named on a frame, so its
+    frames can be found. `name` begins each message.
+    """
+    named: list[int] = []
+    for k, entry in enumerate(diagnostics):
+        value = entry.get("map")
+        if value is None:
+            continue
+        if type(value) is not int or value < 0:
+            raise InvalidInputError(
+                f"{name}[{k}]: map: expected a map number or null, got {value!r}"
+            )
+        if named and value < named[-1]:
+            raise InvalidInputError(
+                f"{name}[{k}]: map {value} after map {named[-1]}: maps never descend"
+            )
+        named.append(value)
+    missing = sorted(set(maps.tolist()) - set(named))
+    if missing:
+        raise InvalidInputError(f"{name}: no frame names map {missing[0]}, which has keyframes")
 
 
 def _json(value: Any, name: str) -> str:  # noqa: ANN401 -- a run's free-form JSON values
@@ -391,10 +493,11 @@ def write_run(folder: str | Path, run: Run) -> None:
     ------
     slam_it.foundations.errors.InvalidInputError
         If the dataset or sequence is not a string, the mode or backend is unknown, an array
-        is malformed, the settings or a diagnostic are not JSON (a diagnostic must be an
-        object with a ``timestamp``), or what it records of its program is malformed (a peak
-        memory or memory cap that is not a whole number of bytes, CPUs not ascending), or
-        ``record_features`` is not a bool. Nothing is written then.
+        is malformed (lives and maps one per row, as the module docstring has them), the
+        settings or a diagnostic are not JSON (a diagnostic must be an object with a
+        ``timestamp``, its ``map`` as the module docstring has it), or what it records of its
+        program is malformed (a peak memory or memory cap that is not a whole number of bytes,
+        CPUs not ascending), or ``record_features`` is not a bool. Nothing is written then.
     """
     for name in ("dataset", "sequence"):
         if not isinstance(getattr(run, name), str):
@@ -434,15 +537,26 @@ def write_run(folder: str | Path, run: Run) -> None:
     frames = len(run.diagnostics)
     point_lives = _check_lives(run.point_lives, len(points), frames, "point_lives")
     keyframe_lives = _check_lives(run.keyframe_lives, len(keyframe_times), frames, "keyframe_lives")
+    maps = {
+        name: _check_maps(getattr(run, name), count, name)
+        for name, count in (
+            ("pose_maps", len(times)),
+            ("keyframe_maps", len(keyframe_times)),
+            ("point_maps", len(points)),
+        )
+    }
+    _check_frame_maps(run.diagnostics, maps["keyframe_maps"], "diagnostics")
     out = Path(folder)
     out.mkdir(parents=True, exist_ok=True)
     _replace(out / "run.json", (json.dumps(info, indent=1) + "\n").encode())
-    _replace(out / "trajectory.txt", _trajectory_text(times, poses).encode())
+    _replace(out / "trajectory.txt", _trajectory_text(times, poses, maps["pose_maps"]).encode())
     _replace(out / "keyframes.npy", _npy(keyframe_times))
     _replace(out / "keyframe_poses.npy", _npy(keyframe_poses))
     _replace(out / "keyframe_lives.npy", _npy(keyframe_lives))
     _replace(out / "points.npy", _npy(points))
     _replace(out / "point_lives.npy", _npy(point_lives))
+    for name, values in maps.items():
+        _replace(out / f"{name}.npy", _npy(values))
     _replace(out / "diagnostics.jsonl", "".join(diagnostics).encode())
 
 
@@ -553,6 +667,15 @@ def read_run(folder: str | Path) -> Run:
         )
         for name, count in (("point_lives", len(points)), ("keyframe_lives", len(keyframe_times)))
     }
+    maps = {
+        name: _check_maps(_load(root / f"{name}.npy", (), np.int64), count, str(root / name))
+        for name, count in (
+            ("pose_maps", len(times)),
+            ("keyframe_maps", len(keyframe_times)),
+            ("point_maps", len(points)),
+        )
+    }
+    _check_frame_maps(diagnostics, maps["keyframe_maps"], str(root / "diagnostics.jsonl"))
     return Run(
         dataset=info["dataset"],
         sequence=info["sequence"],
@@ -571,6 +694,9 @@ def read_run(folder: str | Path) -> Run:
         point_lives=lives["point_lives"],
         keyframe_lives=lives["keyframe_lives"],
         record_features=info["record_features"],
+        pose_maps=maps["pose_maps"],
+        keyframe_maps=maps["keyframe_maps"],
+        point_maps=maps["point_maps"],
     )
 
 
@@ -781,36 +907,70 @@ def ground_truth(dataset: str, sequence: str | Path) -> Truth | None:
 
 
 @dataclass(frozen=True)
+class Segment:
+    """A map's stretch of a sequence: from its first tracked frame to its last.
+
+    Attributes
+    ----------
+    map : int
+        The map.
+    tracked : int
+        Its frames tracked.
+    tracked_from, tracked_to : float
+        Its first and last tracked frames' times since the sequence's first, in seconds.
+    """
+
+    map: int
+    tracked: int
+    tracked_from: float
+    tracked_to: float
+
+
+@dataclass(frozen=True)
 class Tracking:
     """What of a sequence a run ran and tracked; every time since the sequence's first frame.
 
-    A run ends at the first frame it loses the track at, so the rest of a sequence is then not
-    run; and a run tracks nothing until it has made its first map, a monocular one from two
-    views, an RGB-D one from a frame with enough keypoints with depth.
+    A lost track closes its map and the next frame starts a new one, so a run goes on to the
+    sequence's end (or the end of the frames it was given), tracking in segments, one per map
+    with a tracked frame; a map reset has none, its frames' poses dropped. A run tracks nothing
+    until it has made its first map, a monocular one from two views, an RGB-D one from a frame
+    with enough keypoints.
 
     Attributes
     ----------
     frames : int
         The frames run.
     tracked : int
-        The frames tracked.
+        The frames tracked, in every segment.
     seconds : float
         The sequence's last frame's time.
-    tracked_from, tracked_to : float or None
-        The first and last tracked frames' times; None if none was tracked.
+    segments : tuple of Segment
+        Each map's stretch, in order.
     ran_to : float
         The last frame run's time.
-    lost : bool
-        Whether the run ended by losing the track.
+    losses : int
+        The frames the track was lost on.
+    resets : int
+        The maps reset.
     """
 
     frames: int
     tracked: int
     seconds: float
-    tracked_from: float | None
-    tracked_to: float | None
+    segments: tuple[Segment, ...]
     ran_to: float
-    lost: bool
+    losses: int
+    resets: int
+
+    @property
+    def tracked_from(self) -> float | None:
+        """The first tracked frame's time; None if none was tracked."""
+        return self.segments[0].tracked_from if self.segments else None
+
+    @property
+    def tracked_to(self) -> float | None:
+        """The last tracked frame's time; None if none was tracked."""
+        return self.segments[-1].tracked_to if self.segments else None
 
 
 def tracking(run: Run, times: ArrayLike) -> Tracking:
@@ -827,7 +987,7 @@ def tracking(run: Run, times: ArrayLike) -> Tracking:
     Returns
     -------
     Tracking
-        The span.
+        The segments, and what the run lost and reset.
     """
     stamps = np.asarray(times, dtype=np.float64)
     start = float(stamps[0]) if len(stamps) else 0.0
@@ -836,78 +996,192 @@ def tracking(run: Run, times: ArrayLike) -> Tracking:
         return round(float(time) - start, 3)
 
     ran = [entry["timestamp"] for entry in run.diagnostics]
-    tracked = run.timestamps
+    maps = _check_maps(run.pose_maps, len(run.timestamps), "pose_maps")
+    segments = []
+    for map_id in (int(m) for m in np.unique(maps)):
+        times_of = run.timestamps[maps == map_id]
+        segments.append(Segment(map_id, len(times_of), since(times_of[0]), since(times_of[-1])))
     return Tracking(
         frames=len(run.diagnostics),
-        tracked=len(tracked),
+        tracked=len(run.timestamps),
         seconds=since(stamps[-1]) if len(stamps) else 0.0,
-        tracked_from=since(tracked[0]) if len(tracked) else None,
-        tracked_to=since(tracked[-1]) if len(tracked) else None,
+        segments=tuple(segments),
         ran_to=since(ran[-1]) if ran else 0.0,
-        lost=bool(ran) and run.diagnostics[-1].get("state") == LOST,  # optional in the format
+        losses=sum(entry.get("state") == LOST for entry in run.diagnostics),  # optional
+        resets=len(run.reset_maps()),
     )
 
 
 @dataclass(frozen=True)
-class Absolute:
-    """A run's ATE against the ground truth, without the RPE.
+class MapError:
+    """One map's error against the ground truth, the map aligned on its own.
 
     Attributes
     ----------
+    map : int
+        The map.
     matched : int
-        The run's frames that had a ground-truth pose within the tolerance.
+        Its frames that had a ground-truth pose within the tolerance.
     absolute : slam_it.eval.metrics.AbsoluteError
-        The ATE: Sim(3)-aligned for a monocular run, SE(3) otherwise.
+        Its ATE: Sim(3)-aligned for a monocular run, each map with its own scale; SE(3)
+        otherwise.
+    relative : slam_it.eval.metrics.RelativeError or None
+        Its RPE over one frame period (or the interval asked for), the estimate scaled by its
+        ATE's scale; None from :func:`evaluate_absolute`, and for a map none of whose matched
+        frames has another the interval later (a reference sparser than the frames).
     """
 
+    map: int
     matched: int
     absolute: metrics.AbsoluteError
+    relative: metrics.RelativeError | None
+
+
+def _rms(values: list[NDArray[np.float64]]) -> float | None:
+    """Return the root mean square of arrays pooled, or None for none."""
+    pooled = np.concatenate(values) if values else np.zeros(0)
+    return math.sqrt(float(np.mean(pooled * pooled))) if len(pooled) else None
 
 
 @dataclass(frozen=True)
 class Evaluation:
-    """A run scored against the ground truth.
+    """A run scored against the ground truth, each of its maps aligned on its own.
+
+    A map's poses are in its own world frame (and, monocular, its own scale), so each map is
+    aligned to the truth by itself, as each segment of a run that lost the track must be; the
+    pooled errors are the root mean square over every scored map's frames (or pairs).
 
     Attributes
     ----------
-    matched : int
-        The run's frames that had a ground-truth pose within the tolerance.
-    absolute : slam_it.eval.metrics.AbsoluteError
-        The ATE: Sim(3)-aligned for a monocular run, SE(3) otherwise.
-    relative : slam_it.eval.metrics.RelativeError
-        The RPE over one frame period (or the interval asked for), the estimate scaled by the
-        ATE's scale.
+    maps : tuple of MapError
+        The maps scored, in order.
+    unscored : tuple of int
+        The maps with poses that could not be aligned: fewer than three of their frames
+        matched, or their centres on a line.
     """
 
-    matched: int
-    absolute: metrics.AbsoluteError
-    relative: metrics.RelativeError
+    maps: tuple[MapError, ...]
+    unscored: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        """Check a map was scored.
+
+        Raises
+        ------
+        slam_it.foundations.errors.InvalidInputError
+            If none was.
+        """
+        if not self.maps:
+            raise InvalidInputError("maps: an evaluation scores at least one map")
+
+    @property
+    def matched(self) -> int:
+        """The scored maps' frames that had a ground-truth pose, in all."""
+        return sum(m.matched for m in self.maps)
+
+    @property
+    def ate_rmse(self) -> float:
+        """The ATE's root mean square over every scored map's matched frames."""
+        errors = np.concatenate([m.absolute.errors for m in self.maps])  # a map, at least
+        return math.sqrt(float(np.mean(errors * errors)))
+
+    @property
+    def rpe_translation_rmse(self) -> float | None:
+        """The RPE's translation, root mean square over every map's pairs; None without one."""
+        return _rms([m.relative.translation for m in self.maps if m.relative is not None])
+
+    @property
+    def rpe_rotation_rmse(self) -> float | None:
+        """The RPE's rotation in radians, the same way; None without one."""
+        return _rms([m.relative.rotation for m in self.maps if m.relative is not None])
 
 
-def _matched(
-    run: Run, timestamps: ArrayLike, poses: ArrayLike, max_difference: float
-) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64], metrics.AbsoluteError]:
-    """Return the matched run frames' times and poses, their ground truth, and the ATE."""
+def _score_map(  # noqa: PLR0913 -- a map's poses and truth, its times, how to score it
+    map_id: int,
+    mine: NDArray[np.float64],
+    true: NDArray[np.float64],
+    times: NDArray[np.float64],
+    *,
+    monocular: bool,
+    delta: float | None,
+    tolerance: float,
+) -> MapError:
+    """Score one map's matched poses on its own alignment, and its RPE if `delta` is given.
+
+    Raises
+    ------
+    slam_it.foundations.errors.DegenerateError
+        If the map cannot be aligned: fewer than three frames matched, or their centres on a
+        line. The message names the map.
+    """
+    if len(mine) < 3:  # the alignment's minimum
+        raise DegenerateError(f"map {map_id}: {len(mine)} frames matched, 3 needed")
+    try:
+        absolute = metrics.absolute_error(mine, true, with_scale=monocular)
+    except DegenerateError as error:
+        raise DegenerateError(
+            f"map {map_id}: its centres, or the truth's, are on a line ({error})"
+        ) from error
+    drift = None
+    if delta is not None and len(metrics.interval_pairs(times, delta=delta, tolerance=tolerance)):
+        drift = metrics.relative_error(
+            mine, true, times, delta=delta, tolerance=tolerance, scale=absolute.scale
+        )
+    return MapError(map_id, len(mine), absolute, drift)
+
+
+def _scored(  # noqa: PLR0913 -- the run, its truth, the tolerance and interval; which errors
+    run: Run,
+    timestamps: ArrayLike,
+    poses: ArrayLike,
+    max_difference: float,
+    rpe_delta: float | None,
+    *,
+    relative: bool,
+) -> Evaluation:
+    """Score each of a run's maps on its own alignment; the RPE too if `relative`."""
     truth_times, truth_poses = _as_stamped(timestamps, poses, "ground truth")
     run_times, run_poses = _as_stamped(run.timestamps, run.poses, "run")
-    ours, theirs = metrics.associate(run_times, truth_times, max_difference)
-    if len(ours) < 3:  # the alignment's minimum
-        raise InvalidInputError(f"only {len(ours)} frames have a ground-truth pose; need 3")
-    absolute = metrics.absolute_error(
-        run_poses[ours], truth_poses[theirs], with_scale=run.mode == "monocular"
-    )
-    return run_times[ours], run_poses[ours], truth_poses[theirs], absolute
+    maps = _check_maps(run.pose_maps, len(run_times), "pose_maps")
+    period = float(np.median(np.diff(run_times))) if len(run_times) >= 2 else 0.0
+    delta = period if relative else None  # a map of three frames or more has a period
+    if relative and rpe_delta is not None:
+        delta = as_number(rpe_delta, "rpe_delta")
+        if not (math.isfinite(delta) and delta > 0.0):
+            raise InvalidInputError(f"rpe_delta: must be positive and finite, got {delta}")
+    scored: list[MapError] = []
+    unscored: list[int] = []
+    reasons: list[str] = []
+    for map_id in (int(m) for m in np.unique(maps)):
+        rows = np.flatnonzero(maps == map_id)
+        ours, theirs = metrics.associate(run_times[rows], truth_times, max_difference)
+        try:
+            scored.append(
+                _score_map(
+                    map_id,
+                    run_poses[rows][ours],
+                    truth_poses[theirs],
+                    run_times[rows][ours],
+                    monocular=run.mode == "monocular",
+                    delta=delta,
+                    tolerance=0.5 * period,
+                )
+            )
+        except DegenerateError as error:
+            unscored.append(map_id)
+            reasons.append(str(error))
+    if not scored:
+        why = "; ".join(reasons) or "the run has no poses"
+        raise DegenerateError(f"no map can be aligned: {why}")
+    return Evaluation(maps=tuple(scored), unscored=tuple(unscored))
 
 
 def evaluate_absolute(
     run: Run, timestamps: ArrayLike, poses: ArrayLike, *, max_difference: float = MAX_DIFFERENCE
-) -> Absolute:
-    """Score a run's ATE against the ground truth, without the RPE.
+) -> Evaluation:
+    """Score a run's ATE against the ground truth, without the RPE: each map on its own.
 
-    The test set's measure reports the ATE alone, and scores with this; it also scores a
-    reference too sparse for :func:`evaluate`'s RPE, whose pairs are a frame period apart. One
-    at a third of the frame rate, on the frames' times, matches every third frame, and no two
-    matched frames are a period apart.
+    The test set's measure reports the ATE alone, and scores with this.
 
     Parameters
     ----------
@@ -923,16 +1197,18 @@ def evaluate_absolute(
 
     Returns
     -------
-    Absolute
-        The ATE over the matched frames.
+    Evaluation
+        Each map's ATE over its matched frames, no RPE.
 
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If an array is malformed or its times do not ascend, or fewer than three frames match.
+        If an array is malformed or its times do not ascend.
+    slam_it.foundations.errors.DegenerateError
+        If no map can be aligned: each with fewer than three frames matched, or their centres
+        on a line. The message names each map's cause.
     """
-    times, _, _, absolute = _matched(run, timestamps, poses, max_difference)
-    return Absolute(matched=len(times), absolute=absolute)
+    return _scored(run, timestamps, poses, max_difference, None, relative=False)
 
 
 def evaluate(
@@ -943,7 +1219,12 @@ def evaluate(
     max_difference: float = MAX_DIFFERENCE,
     rpe_delta: float | None = None,
 ) -> Evaluation:
-    """Score a run against the ground truth.
+    """Score a run against the ground truth: each map's ATE, and its RPE where it has pairs.
+
+    Each map is aligned by its ATE alone, so a reference too sparse for the RPE, whose pairs
+    are a frame period apart, still places it: one at a third of the frame rate, on the frames'
+    times, matches every third frame, and no two matched frames are a period apart. Such a map
+    has no RPE, and the run's pooled RPE is None if no map has one.
 
     Parameters
     ----------
@@ -958,28 +1239,20 @@ def evaluate(
         (default :data:`MAX_DIFFERENCE`).
     rpe_delta : float, optional
         The RPE's interval, in seconds (default: the run's frame period, the median spacing
-        of its timestamps). Pairs are sought within half a frame period.
+        of its timestamps). Pairs are sought within half a frame period, within a map.
 
     Returns
     -------
     Evaluation
-        The ATE and the RPE over the matched frames.
+        Each map's ATE over its matched frames, and its RPE where it has pairs.
 
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If an array is malformed or its times do not ascend, fewer than three frames match,
-        or no matched frame has another `rpe_delta` seconds later.
+        If an array is malformed or its times do not ascend, or `rpe_delta` is not positive
+        and finite.
+    slam_it.foundations.errors.DegenerateError
+        If no map can be aligned: each with fewer than three frames matched, or their centres
+        on a line. The message names each map's cause.
     """
-    times, mine, theirs, absolute = _matched(run, timestamps, poses, max_difference)
-    run_times = np.asarray(run.timestamps, dtype=np.float64)
-    period = float(np.median(np.diff(run_times)))
-    relative = metrics.relative_error(
-        mine,
-        theirs,
-        times,
-        delta=period if rpe_delta is None else rpe_delta,
-        tolerance=0.5 * period,
-        scale=absolute.scale,
-    )
-    return Evaluation(matched=len(times), absolute=absolute, relative=relative)
+    return _scored(run, timestamps, poses, max_difference, rpe_delta, relative=True)

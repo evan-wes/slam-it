@@ -66,6 +66,9 @@ class Removal(enum.IntEnum):
     WEAK = 2
     """Erased with its views: the observations dropped (by a bundle adjustment, or with a culled
     keyframe) left it seen too little (``EraseObservation``)."""
+    RESET = 3
+    """Its map was reset: the track was lost while the map was too small to keep (ORB-SLAM3's
+    ``ResetActiveMap``; :class:`slam_it.edge.pipeline.Pipeline`)."""
 
 
 @dataclass(frozen=True)

@@ -17,14 +17,16 @@ builds each frame for the mode (:mod:`slam_it.edge.frames`), tracks it
   pairs and EuRoC no depth maps (:func:`check`).
 - **The frames.** ``count`` of them from ``first`` (all by default), in the sequence's order.
   An RGB-D frame without a depth map within the reader's tolerance is skipped.
-- **Each frame** gives one diagnostics line (``timestamp``, ``state``, ``tracked``,
+- **Each frame** gives one diagnostics line (``timestamp``, ``state``, ``map``, ``tracked``,
   ``keyframe``, the time each step took, in seconds: the run format's
   :data:`slam_it.eval.runs.STEPS`; then how its stages went:
   :meth:`slam_it.edge.pipeline.FrameSummary.as_dict`'s keys) and, if tracked, its
-  ``T_world_cam``; with ``record_features``, its keypoints' pixels, levels and fates, streamed
-  to the run's folder as it goes (:class:`slam_it.eval.runs.FeatureWriter`). The run ends at
-  the frame that loses the track. The steps, as a camera and
-  ORB-SLAM's threads divide them:
+  ``T_world_cam`` and its map; with ``record_features``, its keypoints' pixels, levels and
+  fates, streamed to the run's folder as it goes (:class:`slam_it.eval.runs.FeatureWriter`).
+  A lost track closes its map and the run goes on, the next frame starting a new one
+  (:class:`slam_it.edge.pipeline.Pipeline`); a map reset has its frames' poses dropped from
+  the trajectory, as ORB-SLAM3 drops a reset map's. The steps, as a camera and ORB-SLAM's
+  threads divide them:
 
   - ``read_seconds``: delivering the frame's images, decoded (a depth map in metres), and a
     stereo pair rectified, as ORB-SLAM2's examples do before they hand a frame over;
@@ -35,9 +37,9 @@ builds each frame for the mode (:mod:`slam_it.edge.frames`), tracks it
     keyframe and, with depth, its close points, which ORB-SLAM2's tracking thread does
     (``Tracking::CreateNewKeyFrame``) before it hands the keyframe to local mapping.
 - **At the end,** every keyframe and point the run made (their times, last ``T_world_cam`` and
-  positions) and their lives (:meth:`slam_it.edge.pipeline.Pipeline.lifetimes`). The run's
-  ``sequence`` is its folder's name (the path resolved), its ``settings`` the pipeline's
-  options.
+  positions), their lives and their maps (:meth:`slam_it.edge.pipeline.Pipeline.lifetimes`).
+  The run's ``sequence`` is its folder's name (the path resolved), its ``settings`` the
+  pipeline's options.
 
 Backends: ``python`` runs the reference in-process, every stage in Python, frame building
 included. ``cpp`` and ``rust`` run their native program, :data:`PROGRAM`
@@ -71,7 +73,7 @@ from numpy.typing import NDArray
 from slam_it import backends
 from slam_it.edge import frames
 from slam_it.edge.options import MODES, Options, features_for
-from slam_it.edge.pipeline import Pipeline, State
+from slam_it.edge.pipeline import Pipeline
 from slam_it.eval import budgets, euroc, images, runs, tum
 from slam_it.foundations import image, orb, se3, stereo
 from slam_it.foundations.errors import (
@@ -641,6 +643,7 @@ def _run_here(request: Request) -> runs.Run:
         end = min(end, request.first + request.count)
     times: list[float] = []
     poses: list[NDArray[np.float64]] = []
+    pose_maps: list[int] = []
     diagnostics: list[dict[str, object]] = []
     recording: contextlib.AbstractContextManager[runs.FeatureWriter | None] = (
         runs.FeatureWriter(request.out) if request.record_features else contextlib.nullcontext()
@@ -659,6 +662,7 @@ def _run_here(request: Request) -> runs.Run:
                 {
                     "timestamp": result.timestamp,
                     "state": result.state.value,
+                    "map": result.map,
                     "tracked": result.tracked,
                     "keyframe": result.keyframe,
                     "read_seconds": after_read - start,
@@ -671,11 +675,14 @@ def _run_here(request: Request) -> runs.Run:
             if features is not None:
                 keypoints = frame.features.keypoints
                 features.write(keypoints.xy, keypoints.level, result.fates.fate, result.fates.point)
-            if result.pose is not None:
+            if result.pose is not None and result.map is not None:
                 poses.append(se3.inverse(result.pose))
                 times.append(result.timestamp)
-            if result.state is State.LOST:
-                break
+                pose_maps.append(result.map)
+            lost = result.summary.lost
+            if lost is not None and lost.reset:  # its frames' poses go with it
+                while pose_maps and pose_maps[-1] == result.map:
+                    del poses[-1], times[-1], pose_maps[-1]
     lives = tracker.lifetimes()
     keyframes = lives.keyframe_poses
     return runs.Run(
@@ -693,6 +700,9 @@ def _run_here(request: Request) -> runs.Run:
         point_lives=lives.point_lives,
         keyframe_lives=lives.keyframe_lives,
         record_features=request.record_features,
+        pose_maps=np.array(pose_maps, dtype=np.int64),
+        keyframe_maps=lives.keyframe_maps,
+        point_maps=lives.point_maps,
     )
 
 

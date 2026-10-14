@@ -116,7 +116,10 @@ runs::Run golden_run() {
                 .memory_cap = values["memory_cap"].get<std::int64_t>(),
                 .point_lives = lives(values["point_lives"]),
                 .keyframe_lives = lives(values["keyframe_lives"]),
-                .record_features = values["record_features"].get<bool>()};
+                .record_features = values["record_features"].get<bool>(),
+                .pose_maps = values["pose_maps"].get<std::vector<std::int64_t>>(),
+                .keyframe_maps = values["keyframe_maps"].get<std::vector<std::int64_t>>(),
+                .point_maps = values["point_maps"].get<std::vector<std::int64_t>>()};
   for (const auto& point : values["points"]) {
     run.points.emplace_back(point[0].get<double>(), point[1].get<double>(), point[2].get<double>());
   }
@@ -139,6 +142,24 @@ std::vector<std::vector<double>> trajectory(const fs::path& path) {
     }
     std::istringstream row(line);
     out.emplace_back(std::istream_iterator<double>(row), std::istream_iterator<double>());
+  }
+  return out;
+}
+
+/// @brief A trajectory file's comment lines, each with the number of poses before it.
+/// @param path The file.
+/// @return Each comment, as "<poses before>: <line>".
+std::vector<std::string> comments(const fs::path& path) {
+  std::ifstream file(path);
+  std::vector<std::string> out;
+  std::string line;
+  std::size_t poses = 0;
+  while (std::getline(file, line)) {
+    if (!line.empty() && line[0] == '#') {
+      out.push_back(std::to_string(poses) + ": " + line);
+    } else if (!line.empty()) {
+      ++poses;
+    }
   }
   return out;
 }
@@ -180,8 +201,9 @@ void check_golden(int& failures) {
   const slam_it::testing::ScratchDir scratch("slam_it_test_runs");
   const fs::path& out = scratch.path();
   expect(runs::write_run(out.string(), golden_run()).has_value(), "the run is written", failures);
-  for (const char* name : {"keyframes.npy", "keyframe_poses.npy", "keyframe_lives.npy",
-                           "points.npy", "point_lives.npy"}) {
+  for (const char* name :
+       {"keyframes.npy", "keyframe_poses.npy", "keyframe_lives.npy", "points.npy",
+        "point_lives.npy", "pose_maps.npy", "keyframe_maps.npy", "point_maps.npy"}) {
     expect(bytes(out / name) == bytes(golden / name),
            (std::string(name) + " matches numpy's byte for byte").c_str(), failures);
   }
@@ -193,6 +215,8 @@ void check_golden(int& failures) {
   expect(written == expected, "run.json holds Python's values", failures);
   expect(same_trajectory(trajectory(out / "trajectory.txt"), trajectory(golden / "trajectory.txt")),
          "trajectory.txt holds Python's values", failures);
+  expect(comments(out / "trajectory.txt") == comments(golden / "trajectory.txt"),
+         "trajectory.txt marks each map where Python's does", failures);
   expect(json_lines(out / "diagnostics.jsonl") == json_lines(golden / "diagnostics.jsonl"),
          "diagnostics.jsonl holds Python's values", failures);
   expect(!fs::exists(out / ".run.json.tmp"), "no temporary file is left", failures);
@@ -279,6 +303,20 @@ void check_features(int& failures) {
   }
 }
 
+/// @brief A run with one frame's `map` set.
+/// @param run The run.
+/// @param frame The frame.
+/// @param map Its map.
+/// @return The run.
+runs::Run with_map(runs::Run run, std::size_t frame, const runs::JsonValue& map) {
+  for (auto& [key, value] : run.diagnostics[frame]) {
+    if (key == "map") {
+      value = map;
+    }
+  }
+  return run;
+}
+
 /// @brief Check the refusals: nothing is written.
 /// @param failures Running failure count.
 void check_refusals(int& failures) {
@@ -323,6 +361,37 @@ void check_refusals(int& failures) {
   run.keyframe_lives[0] = {0, -1, 2};
   expect(is_invalid_input(runs::write_run(out.string(), run)),
          "a removal code on a life still alive is refused", failures);
+  run = golden_run();
+  run.keyframe_lives[0] = {0, 2, 4};
+  expect(is_invalid_input(runs::write_run(out.string(), run)),
+         "a removal code past reset is refused", failures);
+  run = golden_run();
+  run.pose_maps.pop_back();
+  expect(is_invalid_input(runs::write_run(out.string(), run)),
+         "maps that are not one per pose are refused", failures);
+  run = golden_run();
+  run.point_maps = {0, 1, 0, 1, 1};
+  expect(is_invalid_input(runs::write_run(out.string(), run)), "maps that descend are refused",
+         failures);
+  run = golden_run();
+  run.keyframe_maps[0] = -1;
+  expect(is_invalid_input(runs::write_run(out.string(), run)), "a negative map is refused",
+         failures);
+  // The diagnostics' maps, golden 0, 0, 0, 1, 1, 1 (map 1 has keyframes).
+  expect(
+      is_invalid_input(runs::write_run(out.string(), with_map(golden_run(), 3, std::int64_t{-1}))),
+      "a frame's negative map is refused", failures);
+  expect(is_invalid_input(runs::write_run(out.string(), with_map(golden_run(), 3, true))),
+         "a frame's map that is not a number is refused", failures);
+  expect(
+      is_invalid_input(runs::write_run(out.string(), with_map(golden_run(), 4, std::int64_t{0}))),
+      "frames' maps that descend are refused", failures);
+  run = golden_run();
+  for (const std::size_t frame : {3, 4, 5}) {
+    run = with_map(std::move(run), frame, nullptr);
+  }
+  expect(is_invalid_input(runs::write_run(out.string(), run)),
+         "a map with keyframes that no frame names is refused", failures);
   expect(!fs::exists(out), "nothing is written for a refused run", failures);
   expect(runs::json_number(1.0) == "1.0" && runs::json_number(0.1) == "0.1" &&
              runs::json_number(1e-05) == "1e-05",

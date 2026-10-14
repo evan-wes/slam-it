@@ -112,16 +112,88 @@ export function posesUpTo(poseFrames, frame) {
 }
 
 /**
- * The camera's pose to show at a frame: the frame's own if tracked, else the last before it.
+ * The map a backend shows at each of its frames: the frame's own, else the last before it, so
+ * that between a lost map and the next the lost one stays in view.
+ * @param {{frame: number[], map?: unknown[]}} records Its records.
+ * @returns {Int32Array} One map per record, -1 before its first.
+ */
+export function mapsShown(records) {
+  const out = new Int32Array(records.frame.length).fill(-1);
+  const maps = records.map ?? [];
+  let last = -1;
+  for (let k = 0; k < out.length; k++) {
+    const map = maps[k];
+    last = typeof map === "number" ? map : last;
+    out[k] = last;
+  }
+  return out;
+}
+
+/**
+ * The map a backend shows at a frame, from `mapsShown`: after its last frame, its last map.
+ * @param {Int32Array} shown Its maps shown, one per record.
+ * @param {{frame: number[]}} records Its records.
+ * @param {number} frame The bundle's frame.
+ * @returns {number | null} The map; null before its first map, or its first frame.
+ */
+export function mapAt(shown, records, frame) {
+  if (shown.length === 0 || frame < records.frame[0]) {
+    return null;
+  }
+  const map = shown[Math.min(frame - records.frame[0], shown.length - 1)];
+  return map < 0 ? null : map;
+}
+
+/**
+ * The rows of a map's poses: a map's are consecutive, the maps never descending.
+ * @param {Int32Array} poseMaps Each pose's map.
+ * @param {number} map The map.
+ * @returns {[number, number]} The rows `[start, end)`; empty if it has none.
+ */
+export function mapRows(poseMaps, map) {
+  return [lowerBound(poseMaps, 1, map), lowerBound(poseMaps, 1, map + 1)];
+}
+
+/**
+ * Whether one of a backend's maps was placed on the truth.
+ * @param {{maps: {id: number, score: object | null}[]}} info The backend's header.
+ * @param {number | null} map The map.
+ * @returns {boolean} Whether it was: it has a score.
+ */
+export function placed(info, map) {
+  return map !== null && (info.maps.find((m) => m.id === map)?.score ?? null) !== null;
+}
+
+/**
+ * Whether another backend's map is drawn beside the map shown: both are placed on the truth,
+ * or both are in their own frames and the same map (the backends decide alike).
+ * @param {number | null} mine The map shown, null if none.
+ * @param {number | null} theirs The other backend's map at the frame, null if none.
+ * @param {boolean} theirsPlaced Whether theirs was placed on the truth (`placed`).
+ * @param {boolean} aligned Whether the map shown was, so the scene is the truth's.
+ * @returns {boolean} Whether the two share a frame.
+ */
+export function sharesFrame(mine, theirs, theirsPlaced, aligned) {
+  if (mine === null || theirs === null || theirsPlaced !== aligned) {
+    return false;
+  }
+  return aligned || theirs === mine;
+}
+
+/**
+ * The camera's pose to show at a frame: the frame's own if tracked, else the last before it,
+ * of a map's poses if given.
  * @param {Float32Array} poses Each tracked frame's pose, (T, 3, 4).
  * @param {Int32Array} poseFrames Their frames.
  * @param {number} frame The frame.
+ * @param {[number, number]} [rows] The rows of the map's poses (`mapRows`); every pose's if
+ *     not given.
  * @returns {{pose: Float32Array, tracked: boolean} | null} The pose and whether it is the
- *     frame's own; null before the first tracked frame.
+ *     frame's own; null before the first tracked frame (of the map).
  */
-export function cameraAt(poses, poseFrames, frame) {
-  const k = posesUpTo(poseFrames, frame) - 1;
-  if (k < 0) {
+export function cameraAt(poses, poseFrames, frame, rows = [0, poseFrames.length]) {
+  const k = Math.min(posesUpTo(poseFrames, frame), rows[1]) - 1;
+  if (k < rows[0]) {
     return null;
   }
   return { pose: poses.subarray(k * 12, k * 12 + 12), tracked: poseFrames[k] === frame };

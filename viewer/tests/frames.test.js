@@ -12,8 +12,13 @@ import {
   countAlive,
   keypointRows,
   keypointsAt,
+  mapAt,
+  mapRows,
+  mapsShown,
+  placed,
   posesUpTo,
   recordIndex,
+  sharesFrame,
 } from "../src/frames.js";
 import { fetchGolden } from "./golden.js";
 
@@ -93,4 +98,51 @@ test("the camera shown is the frame's own pose, or the last before it", async ()
   const gaps = new Int32Array([0, 2]);
   const held = cameraAt(new Float32Array(24).fill(1, 12), gaps, 1);
   assert.ok(held !== null && !held.tracked && held.pose[0] === 0);
+  // Within a map's poses: none of map 1's before its first.
+  assert.equal(cameraAt(new Float32Array(24), gaps, 1, [1, 2]), null);
+  assert.ok(cameraAt(new Float32Array(24), gaps, 5, [0, 1])?.tracked === false);
+});
+
+test("the map shown at a frame is the frame's own, else the last before it", () => {
+  const records = { frame: [10, 11, 12, 13, 14, 15], map: [null, 0, 0, null, null, 1] };
+  const shown = mapsShown(records);
+  assert.deepEqual(Array.from(shown), [-1, 0, 0, 0, 0, 1]);
+  assert.equal(mapAt(shown, records, 9), null); // before the run's first frame
+  assert.equal(mapAt(shown, records, 10), null); // before its first map
+  assert.equal(mapAt(shown, records, 13), 0); // the lost map, until the next starts
+  assert.equal(mapAt(shown, records, 15), 1);
+  assert.equal(mapAt(shown, records, 40), 1); // after its last frame, its last map
+  assert.deepEqual(Array.from(mapsShown({ frame: [0, 1] })), [-1, -1]);
+});
+
+test("another backend's map is drawn where it shares the shown map's frame", () => {
+  const info = {
+    maps: [
+      { id: 0, score: null },
+      { id: 1, score: { ate_rmse: 0.1 } },
+    ],
+  };
+  assert.deepEqual(
+    [placed(info, 0), placed(info, 1), placed(info, 2), placed(info, null)],
+    [false, true, false, false],
+  );
+  // Both placed on the truth: drawn whatever their numbers.
+  assert.equal(sharesFrame(1, 3, true, true), true);
+  // Both in their own frames: only the same map shares one.
+  assert.equal(sharesFrame(0, 0, false, false), true);
+  assert.equal(sharesFrame(0, 1, false, false), false);
+  // One placed and one not: never.
+  assert.equal(sharesFrame(1, 1, false, true), false);
+  assert.equal(sharesFrame(0, 0, true, false), false);
+  // No map on either side: never.
+  assert.equal(sharesFrame(null, 0, false, false), false);
+  assert.equal(sharesFrame(0, null, false, false), false);
+});
+
+test("a map's poses are consecutive rows", () => {
+  const poseMaps = new Int32Array([0, 0, 0, 2, 2, 3]);
+  assert.deepEqual(mapRows(poseMaps, 0), [0, 3]);
+  assert.deepEqual(mapRows(poseMaps, 1), [3, 3]); // reset: no poses
+  assert.deepEqual(mapRows(poseMaps, 2), [3, 5]);
+  assert.deepEqual(mapRows(poseMaps, 3), [5, 6]);
 });

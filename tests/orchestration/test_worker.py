@@ -17,11 +17,12 @@ import time
 import urllib.error
 import urllib.parse
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 
 from slam_it.eval import video
@@ -183,7 +184,7 @@ def test_a_job_runs_end_to_end(serving: Server, recording: bytes, tmp_path: Path
     assert serving.summary["intrinsics"] == "stray-scanner"
     assert (serving.summary["mode"], serving.summary["size"]) == ("monocular", [320, 240])
     assert serving.summary["mode"] in worker.RUN_MODES
-    assert serving.summary["lost"] is False
+    assert (serving.summary["losses"], serving.summary["segment_count"]) == (0, 1)
     assert serving.summary["ran_to"] == serving.summary["clip_seconds"]
     info = json.loads(serving.files["bundle.json"])
     assert list(info["backends"]) == ["cpp"]
@@ -208,12 +209,14 @@ def test_a_recording_with_depth_runs_rgbd(serving: Server, tmp_path: Path) -> No
     assert (info["mode"], info["backends"]["cpp"]["alignment"]) == ("rgbd", "se3")
 
 
-def test_the_summary_says_where_a_run_lost_the_track(
+def test_the_summary_says_where_a_run_lost_the_track_and_went_on(
     rendered_room: list[room.Frame], tmp_path: Path
 ) -> None:
-    """Blank frames lose the track, which ends the run: the rest of the clip is not run.
+    """Blank frames lose the track; the next frame starts a new map, and the run goes on.
 
-    The summary says so, and when tracking started and stopped, in the clip's own time.
+    The summary gives each map's stretch of the clip, in its own time, and the loss. The room's
+    first ten frames make too few keyframes to keep at the defaults: that map is reset, and only
+    the next is tracked; with every lost map kept (``reset_keyframes`` 0), both are.
     """
     blanks = OPTIONS.lost_frames
     clip = [
@@ -222,26 +225,44 @@ def test_the_summary_says_where_a_run_lost_the_track(
         *rendered_room[10 + blanks :],
     ]
     folders = write_room(tmp_path / "clip", clip)
-    run = vo.run("tum", folders.tum, "rgbd", tmp_path / "run", options=OPTIONS)
-    times = folders.timestamps - folders.timestamps[0]
-    summary = worker.summarize(run, folders.timestamps, "nominal", (320, 240))
-    assert summary["frames"] == 10 + blanks < FRAMES
-    assert summary["lost"] is True
-    assert (summary["tracked_from"], summary["tracked_to"]) == (0.0, round(times[9], 3))
-    assert (summary["ran_to"], summary["clip_seconds"]) == (
-        round(times[9 + blanks], 3),
-        round(times[-1], 3),
+    times = [round(t, 3) for t in folders.timestamps - folders.timestamps[0]]
+    after = [times[10 + blanks], times[-1]]
+    for name, options, segments in (
+        ("reset", OPTIONS, [after]),
+        ("kept", replace(OPTIONS, reset_keyframes=0), [[0.0, times[9]], after]),
+    ):
+        run = vo.run("tum", folders.tum, "rgbd", tmp_path / name, options=options)
+        summary = worker.summarize(run, folders.timestamps, "nominal", (320, 240))
+        assert summary["frames"] == FRAMES, name  # the whole clip is run
+        assert (summary["segments"], summary["segment_count"]) == (segments, len(segments))
+        assert (summary["losses"], summary["resets"]) == (1, int(name == "reset"))
+        assert (summary["tracked_from"], summary["tracked_to"]) == (segments[0][0], times[-1])
+        assert summary["ran_to"] == summary["clip_seconds"] == times[-1]
+
+
+def test_a_summary_lists_the_first_segments(
+    monkeypatch: pytest.MonkeyPatch, room_runs: RoomRun, room_folders: Room
+) -> None:
+    """A clip lost many times lists its first SEGMENTS segments, and counts them all."""
+    run = room_runs("tum", "rgbd", "python")
+    maps = np.arange(len(run.timestamps), dtype=np.int64)  # a map per frame, as if lost each
+    monkeypatch.setattr(worker, "SEGMENTS", 3)
+    summary = worker.summarize(
+        replace(run, pose_maps=maps), room_folders.timestamps, "nominal", (320, 240)
     )
+    assert len(summary["segments"]) == 3
+    assert summary["segment_count"] == len(run.timestamps)
 
 
 def test_the_summary_of_a_whole_run_says_when_tracking_began(
     room_runs: RoomRun, room_folders: Room
 ) -> None:
-    """A monocular run tracks from its first map on, and to the clip's end if not lost."""
+    """A monocular run tracks from its first map on, to the clip's end in one segment."""
     run = room_runs("tum", "monocular", "python")
     times = room_folders.timestamps
     summary = worker.summarize(run, times, "nominal", (320, 240))
-    assert (summary["frames"], summary["lost"]) == (FRAMES, False)
+    assert (summary["frames"], summary["losses"], summary["resets"]) == (FRAMES, 0, 0)
+    assert summary["segments"] == [[summary["tracked_from"], summary["tracked_to"]]]
     assert summary["ran_to"] == summary["clip_seconds"] == round(times[-1] - times[0], 3)
     assert 0 < summary["tracked_from"] < summary["tracked_to"] <= summary["ran_to"]
     assert summary["tracked"] == len(run.timestamps)

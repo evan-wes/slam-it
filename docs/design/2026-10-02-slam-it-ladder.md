@@ -491,8 +491,9 @@ edge rung holds what is its own, tracking, keyframes and local mapping.
 - **What it leaves out of ORB-SLAM:** a sliding window of the last 10 keyframes stands in for
   the covisibility graph; no bag of words, so no relocalisation or loop closure (milestone
   2B's); one thread, mapping after tracking, so a run is deterministic; no map reuse.
-- **A lost track ends the run,** recorded in its diagnostics, until milestone 2A starts a
-  new map there.
+- **A lost track closes its map** (kept, or reset if it has 10 keyframes or fewer) and the
+  next frame starts a new one, as ORB-SLAM3's atlas does (milestone 2A's A2); relocalising
+  against the lost map, and joining maps, are milestone 2B's.
 - **Its state is a struct of arrays** in all three languages, so each stage function
   (initialise, track, map) crosses the bindings as dicts of arrays, as rung 0's do. Python
   runs the whole pipeline in-process; C++ and Rust run it in the native programs, not across
@@ -727,7 +728,10 @@ The data lives outside the repo, in `../datasets/` (that is,
   evaluation and the run viewer: a folder of `run.json` (dataset, sequence, mode, backend,
   settings, and what the program recorded of its process: peak memory, CPUs, memory cap),
   `trajectory.txt` in TUM's format (so other systems' trajectories score the same way), the
-  keyframes and map points as `.npy`, and `diagnostics.jsonl`, one object per frame.
+  keyframes and map points as `.npy`, and `diagnostics.jsonl`, one object per frame. Since
+  milestone 2A's A2 a run may hold several maps, each in its own frame: `pose_maps.npy` and
+  its keyframe and point twins say whose each row is, and `trajectory.txt` marks each map's
+  first pose with a `# map <n>` line, so an outside tool aligns one map at a time.
 - **Map:** depth error against GT depth where it exists; reconstruction accuracy and completeness
   on Replica-style data.
 - **Cost, per budget:** frames per second, per-frame latency (p50/p95), peak memory.
@@ -981,13 +985,10 @@ shared with the owner's other projects.
     would make long-sequence drift (fr3/long_office) investigable.
   - **Where the two-view fixture's duplicate matches come from (L11).** 38 of its 88
     matches share one pixel; the homography's rank rule handles the symptom.
-  - **ORB-SLAM's reset of a map lost early, with milestone 2A (run 2, L13).** ORB-SLAM2
-    resets the system when the track is lost with five keyframes or fewer (ORB-SLAM3 the
-    active map, under ten), which is what lets it start a depth map from any 500 keypoints and
-    a monocular map from low parallax. The lite pipeline ends the run instead, so a depth start
-    also needs `min_init_depth_points` (100) keypoints with depth, a stand-in. The reset drops
-    the frames before it from the trajectory, as ORB-SLAM's does: it comes with milestone
-    2A's new map after a lost track.
+  - Closed by milestone 2A's A2: **ORB-SLAM's reset of a map lost early (run 2, L13).** A map
+    lost with `reset_keyframes` (10) keyframes or fewer is reset, as ORB-SLAM3 resets its active
+    map, its frames' poses dropped from the trajectory; `min_init_depth_points`, the stand-in,
+    is gone, so a depth map starts from any frame of more than 500 keypoints.
   - **Relocalising monocular runs that lose the track, with milestone 2B (run 2, L15).**
     Started one to four frames after the frame the first run initialises from, 6 of 20
     monocular runs on TUM and EuRoC lose the track (3 of 5 on fr1/desk), each deep into the
@@ -1007,6 +1008,34 @@ shared with the owner's other projects.
     judges mapping by its load, as a thread of its own would run it. A real mapping thread, and
     ORB-SLAM's interruption of a local BA when a keyframe arrives, belong with the edge
     targets' budgets, where keyframe bursts would otherwise delay frames.
+- **Deferred from milestone 2A's A2 review panel**
+  ([report](../reviews/2026-10-14-feature-2a-a2-new-map.md)):
+  - **An atlas, with milestone 2B (A4, A9, H7, the rest of A8).** Map numbering, the id bases,
+    the lifetimes ledger and the closed maps are the seed of ORB-SLAM3's `Atlas`, grown inside
+    `Pipeline` in all three languages. A kept map's descriptors and observations are dropped,
+    which 2B's relocalisation against lost maps and their merging need whole. A reset map's
+    keyframes and points are reset by the pipeline but its poses dropped by each run program, so
+    one rule lives in six places: the pipeline should own the trajectory record, as ORB-SLAM3's
+    tracker does, and drop a reset map's entries itself. `State.LOST` is both a frame's outcome
+    and, for an instant, the pipeline's state: flag the loss on the step and keep the
+    pipeline's two-valued. `_date` and `_close` walk a map's arrays with the same arithmetic.
+    An `edge.atlas` module, in the edge rung's import order, holds them.
+  - **A run of several maps across the reifyscene boundary, before milestone 3 (A10).** The
+    `SlamResult` sketch has every pose in one world; say whether the adapter takes the largest
+    map, every map with its id, or waits for 2B to join them.
+  - **The scoring out of `runs` (A11).** `eval.runs` holds the format's reading and writing and
+    the scoring, over 1,200 lines: `eval.scoring`, above it, for `Segment`, `Tracking`,
+    `MapError`, `Evaluation` and `evaluate*`.
+  - **The test set's seeds and loss table from the repository (A13).** The note's seeds 1 and 2
+    were set by a local wrapper, and its losses sorted by a local script: a `--seed` option and
+    the losses' check in `measure_testset.py` would let the note be regenerated from the repo.
+  - **The map arrays held against one another (L7).** Each is checked alone: that every map of
+    `pose_maps` has a keyframe, and that a reset map has no poses, are what `tracking`, the bake
+    and `Run.reset_maps` rely on.
+  - **A monocular start in real time (from A2's measurement).** On ADVIO, a failed two-view
+    start takes up to 0.43 s, and every late frame of the test set is one. The two-view RANSAC
+    draws up to 10,000 samples per model (`twoview.Options.max_iterations`), where ORB-SLAM's
+    `TwoViewReconstruction` draws 200: measure whether 200 bounds it at no cost to the starts.
 - **Deferred from milestone 2A's A1 review panel**
   ([report](../reviews/2026-10-13-feature-2a-a1-measure-and-import.md),
   [security pass](../reviews/2026-10-13-feature-2a-a1-measure-and-import-security.md)):
@@ -1031,10 +1060,9 @@ shared with the owner's other projects.
     interpolates its reference at the frames' times instead (route (b)); TUM's own
     `associate.py`, and evo, pair one to one. If another sparse reference joins, pair one to one
     at the root (`metrics.associate`), with the RPE at the reference's own spacing.
-  - **The bake's alignment tied to the RPE, with A2 (round two's A10).** `bundles._score` aligns
-    a run through `runs.evaluate`, so a run whose reference has no pair a frame period apart
-    stays in its own frame. A2 reworks the bake's scoring by map: align with the ATE alone
-    (`runs.evaluate_absolute`), and give the RPE where pairs exist.
+  - Closed by milestone 2A's A2: **the bake's alignment tied to the RPE (round two's A10).**
+    `runs.evaluate` aligns each map by its ATE alone and gives its RPE where it has pairs, so a
+    run whose reference has no pair a frame period apart is placed, its RPE null.
   - **One staging helper (round two's A14).** `tum.staged` serves every import; the bake
     (`.baking`) and the lens profiles' fetch (`.fetching`, in `lenses`, below `tum`) each write
     the same mechanism out again. One neutral helper at eval's bottom layer, named by suffix.

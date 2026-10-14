@@ -41,24 +41,38 @@ function fetcher(base) {
 function showNumbers(numbers, info, truth) {
   /** @type {[string, string, string][]} */
   const items = [];
+  const several = info.maps.length > 1 ? ", each map aligned on its own" : "";
   if (info.score !== null) {
     items.push([
       "ATE",
       format.length(info.score.ate_rmse),
-      "absolute trajectory error, RMS, after alignment",
+      `absolute trajectory error, RMS, after alignment${several}`,
     ]);
-    items.push([
-      "RPE",
-      `${format.length(info.score.rpe_translation_rmse)} · ` +
-        format.angle(info.score.rpe_rotation_rmse),
-      "relative pose error over one frame period, RMS: translation and rotation",
-    ]);
+    const { rpe_translation_rmse: drift, rpe_rotation_rmse: turn } = info.score;
+    items.push(
+      drift === null || turn === null
+        ? ["RPE", "–", "no two matched frames a frame period apart, to measure it over"]
+        : [
+            "RPE",
+            `${format.length(drift)} · ${format.angle(turn)}`,
+            "relative pose error over one frame period, RMS: translation and rotation",
+          ],
+    );
   } else if (truth) {
     items.push([
       "ATE",
       "not aligned",
-      "the run could not be aligned to the ground truth (too few frames tracked, or their " +
-        "centres on a line), so it is shown in its own frame and not scored",
+      "no map of the run could be aligned to the ground truth (too few frames tracked, or " +
+        "their centres on a line), so each is shown in its own frame and not scored",
+    ]);
+  }
+  const reset = info.maps.filter((map) => map.reset).length;
+  if (info.maps.length > 1 || reset > 0) {
+    items.push([
+      "maps",
+      reset > 0 ? `${info.maps.length} · ${reset} reset` : String(info.maps.length),
+      "a lost track closes its map, and the next frame starts a new one; a map lost with few " +
+        "keyframes is reset: its keyframes and points removed, its frames' poses dropped",
     ]);
   }
   const ran = info.frames[1] - info.frames[0];
@@ -66,9 +80,9 @@ function showNumbers(numbers, info, truth) {
   items.push([
     "keyframes",
     String(info.keyframes),
-    `in the final map (${info.made.keyframes} made)`,
+    `in the final maps (${info.made.keyframes} made)`,
   ]);
-  items.push(["points", String(info.points), `in the final map (${info.made.points} made)`]);
+  items.push(["points", String(info.points), `in the final maps (${info.made.points} made)`]);
   if (info.latency !== null) {
     const { median, p95, deadline, late } = info.latency;
     items.push([
@@ -107,8 +121,8 @@ function showAgreement(agreement, backends, differ) {
     differ.length === 0 ? "decisions agree" : `decisions differ at ${differ.length} frames`;
   agreement.title =
     differ.length === 0
-      ? "every frame two backends ran, they decided alike: state, tracked points, keyframe, " +
-        "placement"
+      ? "every frame two backends ran, they decided alike: state, map, tracked points, " +
+        "keyframe, placement"
       : `first at frame ${differ[0]}; each is ticked on the tracked-points plot`;
   agreement.classList.toggle("differ", differ.length > 0);
 }
@@ -124,11 +138,12 @@ function showTimeline(bundle, tracks) {
   const box = element("spans", HTMLElement);
   box.replaceChildren(
     ...tracks.flatMap((track, row) =>
-      stateSpans(track.records).map((span) => {
+      stateSpans(track.records, track.info.maps).map((span) => {
         const bar = document.createElement("div");
         bar.className = "span";
         bar.classList.toggle("lost", span.state === LOST);
         bar.classList.toggle("starting", span.state === NOT_INITIALIZED);
+        bar.classList.toggle("reset", span.reset && span.state !== LOST);
         bar.title = spanHint(track.name, span);
         bar.style.left = `${(100 * span.first) / frames}%`;
         bar.style.width = `${(100 * (span.end - span.first)) / frames}%`;
@@ -141,7 +156,7 @@ function showTimeline(bundle, tracks) {
     ),
   );
   box.style.height = `${tracks.length * SPAN_ROW}px`;
-  const placed = placement(bundle.info.extent, bundle.times, tracks);
+  const placed = placement(bundle.info.extent, bundle.times);
   const said = notRunText(placed);
   const whole = placed.before + placed.ran + placed.after;
   // Each part grows by its share of the whole, the shares summing to 1 so they fill the row.
@@ -300,10 +315,10 @@ async function main() {
       note = "no feature records";
     }
     image.show(frame, keypoints, note).catch((error) => fail(error));
-    scene.show(frame);
+    const map = scene.show(frame);
     solver.show(frame, k);
     const state = k < 0 ? "" : ` · ${String(run.records.state[k])}`;
-    mapCounts.textContent = `${run.name}${state}`;
+    mapCounts.textContent = `${run.name}${state}${map === null ? "" : ` · map ${map}`}`;
   }
 
   /**
@@ -328,11 +343,8 @@ async function main() {
     }
     showNumbers(numbers, run.info, info.truth);
     scene.setRun(run);
-    // Only runs in the same frame as this one: aligned to the truth, or each in its own.
-    const aligned = run.info.alignment !== null;
-    scene.setOthers(
-      tracks.filter((o) => o.name !== name && (o.info.alignment !== null) === aligned),
-    );
+    // Each shown beside the run's map where its map shares that map's frame (SceneView.show).
+    scene.setOthers(tracks.filter((o) => o.name !== name));
     solver.setRun(run, tracks, info.frames, differ);
     show();
   }

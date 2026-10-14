@@ -5,9 +5,9 @@
  "timestamps": [
   1305031102.175304,
   1305031102.2086039,
-  1305031102.241904,
   1305031102.275204,
-  1305031102.3085039
+  1305031102.3085039,
+  1305031102.341804
  ],
  "poses": [
   [
@@ -141,9 +141,17 @@
    ]
   ]
  ],
+ "pose_maps": [
+  0,
+  0,
+  1,
+  1,
+  1
+ ],
  "keyframe_timestamps": [
   1305031102.175304,
-  1305031102.275204
+  1305031102.275204,
+  1305031102.3085039
  ],
  "keyframe_poses": [
   [
@@ -164,6 +172,32 @@
     0.1462576498483507,
     -0.3331814463295968,
     2.880033450830479
+   ],
+   [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ]
+  ],
+  [
+   [
+    0.31510164326751955,
+    -0.9309942333804482,
+    0.18428426905859424,
+    0.5162205340419951
+   ],
+   [
+    0.24742145676031524,
+    0.2680453897339522,
+    0.9310930628981063,
+    -3.2788959248952962
+   ],
+   [
+    -0.9162388210203234,
+    -0.24779307184569388,
+    0.31480949223389454,
+    0.720310464474772
    ],
    [
     0.0,
@@ -199,6 +233,11 @@
    ]
   ]
  ],
+ "keyframe_maps": [
+  0,
+  1,
+  1
+ ],
  "points": [
   [
    -2.584325019865705,
@@ -219,7 +258,19 @@
    -3.7055482704235465,
    3.5622966676629435,
    -2.4503165208627204
+  ],
+  [
+   -4.532032470751622,
+   -4.013084022161841,
+   0.0005404326608855641
   ]
+ ],
+ "point_maps": [
+  0,
+  0,
+  1,
+  1,
+  1
  ],
  "point_lives": [
   [
@@ -229,8 +280,8 @@
   ],
   [
    0,
-   3,
-   1
+   -1,
+   -1
   ],
   [
    3,
@@ -240,7 +291,12 @@
   [
    3,
    4,
-   2
+   1
+  ],
+  [
+   4,
+   -1,
+   -1
   ]
  ],
  "keyframe_lives": [
@@ -251,6 +307,11 @@
   ],
   [
    3,
+   -1,
+   -1
+  ],
+  [
+   4,
    -1,
    -1
   ]
@@ -274,16 +335,16 @@
   {
    "xy": [
     [
-     632.8151031508187,
-     76.01734995090574
+     321.442567619252,
+     478.2230156918262
     ],
     [
-     240.0139236469117,
-     321.442567619252
+     199.05980788688737,
+     287.9387366941433
     ],
     [
-     478.2230156918262,
-     199.05980788688737
+     176.74198566441376,
+     287.46570412868687
     ]
    ],
    "level": [
@@ -305,12 +366,12 @@
   {
    "xy": [
     [
-     287.9387366941433,
-     176.74198566441376
+     326.38336505687744,
+     361.6178814492957
     ],
     [
-     287.46570412868687,
-     326.38336505687744
+     450.6820576589059,
+     154.76479141044024
     ]
    ],
    "level": [
@@ -327,28 +388,77 @@
    ]
   },
   {
-   "xy": [],
-   "level": [],
-   "fate": [],
-   "point": []
+   "xy": [
+    [
+     403.513908342676,
+     57.69355434324197
+    ],
+    [
+     391.066857236635,
+     293.7840604041146
+    ]
+   ],
+   "level": [
+    0,
+    1
+   ],
+   "fate": [
+    1,
+    0
+   ],
+   "point": [
+    0,
+    -1
+   ]
   },
   {
    "xy": [
     [
-     361.6178814492957,
-     450.6820576589059
+     86.3067018074333,
+     164.28464507740713
     ],
     [
-     154.76479141044024,
-     403.513908342676
+     41.51886104270076,
+     238.28605606902647
     ],
     [
-     57.69355434324197,
-     391.066857236635
+     258.418996378995,
+     312.820735046642
+    ]
+   ],
+   "level": [
+    0,
+    1,
+    2
+   ],
+   "fate": [
+    3,
+    3,
+    0
+   ],
+   "point": [
+    2,
+    3,
+    -1
+   ]
+  },
+  {
+   "xy": [
+    [
+     44.70873381156167,
+     458.0371007112296
     ],
     [
-     293.7840604041146,
-     86.3067018074333
+     204.11750856262657,
+     180.35431844700227
+    ],
+    [
+     570.4738690448917,
+     384.7118935552718
+    ],
+    [
+     421.5509463392782,
+     340.1103625527731
     ]
    ],
    "level": [
@@ -360,45 +470,28 @@
    "fate": [
     2,
     3,
-    3,
-    0
-   ],
-   "point": [
-    0,
-    2,
-    3,
-    -1
-   ]
-  },
-  {
-   "xy": [
-    [
-     164.28464507740713,
-     41.51886104270076
-    ],
-    [
-     238.28605606902647,
-     258.418996378995
-    ]
-   ],
-   "level": [
-    0,
-    1
-   ],
-   "fate": [
     1,
     0
    ],
    "point": [
     2,
+    4,
+    3,
     -1
    ]
+  },
+  {
+   "xy": [],
+   "level": [],
+   "fate": [],
+   "point": []
   }
  ],
  "diagnostics": [
   {
    "timestamp": 1305031102.175304,
    "state": "tracking",
+   "map": 0,
    "tracked": 300,
    "keyframe": true,
    "read_seconds": 0.0025,
@@ -414,11 +507,13 @@
    "motion": null,
    "pnp": null,
    "local_map": null,
-   "mapping": null
+   "mapping": null,
+   "lost": null
   },
   {
    "timestamp": 1305031102.2086039,
    "state": "tracking",
+   "map": 0,
    "tracked": 301,
    "keyframe": false,
    "read_seconds": 0.005,
@@ -438,93 +533,25 @@
     "matches": 301,
     "inliers": 291
    },
-   "mapping": null
+   "mapping": null,
+   "lost": null
   },
   {
    "timestamp": 1305031102.241904,
-   "state": "tracking",
-   "tracked": 302,
+   "state": "lost",
+   "map": 0,
+   "tracked": 0,
    "keyframe": false,
    "read_seconds": 0.0075,
    "build_seconds": 0.037500000000000006,
    "track_seconds": 0.015,
    "map_seconds": 0.0,
-   "placed_by": "motion",
+   "placed_by": null,
    "init": null,
    "motion": {
     "matches": 202,
     "widened": true,
     "inliers": 182
-   },
-   "pnp": null,
-   "local_map": {
-    "in_view": 402,
-    "matches": 302,
-    "inliers": 292
-   },
-   "mapping": null
-  },
-  {
-   "timestamp": 1305031102.275204,
-   "state": "tracking",
-   "tracked": 303,
-   "keyframe": true,
-   "read_seconds": 0.01,
-   "build_seconds": 0.05,
-   "track_seconds": 0.02,
-   "map_seconds": 0.0625,
-   "placed_by": "motion",
-   "init": null,
-   "motion": {
-    "matches": 203,
-    "widened": false,
-    "inliers": 183
-   },
-   "pnp": null,
-   "local_map": {
-    "in_view": 403,
-    "matches": 303,
-    "inliers": 293
-   },
-   "mapping": {
-    "from_depth": 40,
-    "culled_points": 3,
-    "triangulated": 12,
-    "fused": 2,
-    "ba": [
-     {
-      "initial_cost": 3.125,
-      "final_cost": 0.1875,
-      "iterations": 8,
-      "termination": "function"
-     },
-     {
-      "initial_cost": 3.125,
-      "final_cost": 0.1875,
-      "iterations": 8,
-      "termination": "function"
-     }
-    ],
-    "outliers": 7,
-    "weak_points": 1,
-    "culled_keyframes": 0
-   }
-  },
-  {
-   "timestamp": 1305031102.3085039,
-   "state": "tracking",
-   "tracked": 304,
-   "keyframe": false,
-   "read_seconds": 0.0125,
-   "build_seconds": 0.0625,
-   "track_seconds": 0.025,
-   "map_seconds": 0.0,
-   "placed_by": null,
-   "init": null,
-   "motion": {
-    "matches": 204,
-    "widened": false,
-    "inliers": 184
    },
    "pnp": {
     "candidates": 500,
@@ -535,7 +562,108 @@
     "refined": null
    },
    "local_map": null,
-   "mapping": null
+   "mapping": null,
+   "lost": {
+    "keyframes": 1,
+    "points": 2,
+    "reset": false
+   }
+  },
+  {
+   "timestamp": 1305031102.275204,
+   "state": "tracking",
+   "map": 1,
+   "tracked": 303,
+   "keyframe": true,
+   "read_seconds": 0.01,
+   "build_seconds": 0.05,
+   "track_seconds": 0.02,
+   "map_seconds": 0.0,
+   "placed_by": "initialization",
+   "init": {
+    "matches": null,
+    "outcome": "initialized",
+    "ba": []
+   },
+   "motion": null,
+   "pnp": null,
+   "local_map": null,
+   "mapping": null,
+   "lost": null
+  },
+  {
+   "timestamp": 1305031102.3085039,
+   "state": "tracking",
+   "map": 1,
+   "tracked": 304,
+   "keyframe": true,
+   "read_seconds": 0.0125,
+   "build_seconds": 0.0625,
+   "track_seconds": 0.025,
+   "map_seconds": 0.0625,
+   "placed_by": "motion",
+   "init": null,
+   "motion": {
+    "matches": 204,
+    "widened": false,
+    "inliers": 184
+   },
+   "pnp": null,
+   "local_map": {
+    "in_view": 404,
+    "matches": 304,
+    "inliers": 294
+   },
+   "mapping": {
+    "from_depth": 40,
+    "culled_points": 3,
+    "triangulated": 12,
+    "fused": 2,
+    "ba": [
+     {
+      "initial_cost": 2.5,
+      "final_cost": 0.15,
+      "iterations": 9,
+      "termination": "function"
+     },
+     {
+      "initial_cost": 2.5,
+      "final_cost": 0.15,
+      "iterations": 9,
+      "termination": "function"
+     }
+    ],
+    "outliers": 7,
+    "weak_points": 1,
+    "culled_keyframes": 0
+   },
+   "lost": null
+  },
+  {
+   "timestamp": 1305031102.341804,
+   "state": "tracking",
+   "map": 1,
+   "tracked": 305,
+   "keyframe": false,
+   "read_seconds": 0.015,
+   "build_seconds": 0.07500000000000001,
+   "track_seconds": 0.03,
+   "map_seconds": 0.0,
+   "placed_by": "motion",
+   "init": null,
+   "motion": {
+    "matches": 205,
+    "widened": false,
+    "inliers": 185
+   },
+   "pnp": null,
+   "local_map": {
+    "in_view": 405,
+    "matches": 305,
+    "inliers": 295
+   },
+   "mapping": null,
+   "lost": null
   }
  ]
 }

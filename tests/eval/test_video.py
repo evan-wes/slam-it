@@ -146,7 +146,7 @@ def test_an_imported_video_tracks_the_room(rendered: list[room.Frame], tmp_path:
     video.import_video(path, tmp_path / "room_video", lenses.Chosen(ROOM_CAMERA, "given"))
     run = vo.run("tum", tmp_path / "room_video", "monocular", tmp_path / "run", options=OPTIONS)
     truth = [f.timestamp for f in rendered], np.array([f.T_world_cam for f in rendered])
-    assert runs.evaluate(run, *truth).absolute.rmse < ATE_BOUND["monocular"]
+    assert runs.evaluate(run, *truth).ate_rmse < ATE_BOUND["monocular"]
 
 
 @pytest.mark.parametrize(

@@ -110,48 +110,76 @@ test("a summary is listed, its mode and intrinsics source named", () => {
     ["frames", "0"],
     ["tracked", "0"],
   ]);
+  // The maps, where a lost track started more than one, or one was reset.
+  assert.deepEqual(summaryRows({ segment_count: 3, resets: 0 })[2], ["maps", "3"]);
+  assert.deepEqual(summaryRows({ segment_count: 1, resets: 2 })[2], ["maps", "1 kept, 2 reset"]);
 });
 
-test("what of the clip was tracked is said, and why a result can be shorter than the clip", () => {
+test("what of the clip was tracked is said, in stretches, and why there are several", () => {
   /** @param {Record<string, unknown>} fields @returns {Record<string, unknown>} */
-  const summary = (fields) => ({ frames: 120, tracked: 54, lost: false, ...fields });
-  const lost = summary({
-    clip_seconds: 12.0,
-    tracked_from: 2.5,
-    tracked_to: 4.9,
-    ran_to: 4.965,
-    lost: true,
-  });
+  const summary = (fields) => ({ frames: 120, tracked: 54, losses: 0, resets: 0, ...fields });
+  const one = [[2.5, 4.9]];
+  const late = summary({ clip_seconds: 12, tracked_from: 2.5, tracked_to: 4.9, segments: one });
   assert.equal(
-    trackingText(lost),
-    "Tracked from 2.5 s to 4.9 s of your 12.0 s clip. Tracking was lost at 5.0 s, which ends a " +
-      "run, so the rest was not processed. The first 2.5 s went to finding a first map; moving " +
-      "sideways at the start shortens it.",
+    trackingText({ ...late, segment_count: 1 }),
+    "Tracked from 2.5 s to 4.9 s of your 12.0 s clip. The first 2.5 s went to finding a first " +
+      "map; moving sideways at the start shortens it.",
   );
-  const whole = summary({ clip_seconds: 10, tracked_from: 0, tracked_to: 10, ran_to: 10 });
-  assert.equal(trackingText(whole), "Tracked from 0.0 s to 10.0 s of your 10.0 s clip.");
-  const last = summary({
-    clip_seconds: 6,
+  const two = summary({
+    clip_seconds: 27.1,
     tracked_from: 0,
-    tracked_to: 5.9,
-    ran_to: 6,
-    lost: true,
+    tracked_to: 27.1,
+    segments: [
+      [0, 15.9],
+      [17.0, 27.1],
+    ],
+    segment_count: 2,
+    losses: 2,
+    resets: 1,
   });
   assert.equal(
-    trackingText(last),
-    "Tracked from 0.0 s to 5.9 s of your 6.0 s clip. Tracking was lost at 6.0 s, its last frame.",
+    trackingText(two),
+    "Tracked 0.0–15.9 s and 17.0–27.1 s of your 27.1 s clip. The track was lost twice, and " +
+      "each time a new map was started, so the rest of the clip was still processed; one map " +
+      "was lost too soon to keep.",
   );
-  const never = summary({ clip_seconds: 8, tracked_from: null, tracked_to: null, ran_to: 8 });
+  const three = {
+    ...two,
+    segments: [
+      [0, 5],
+      [6, 9],
+      [12, 27.1],
+    ],
+    segment_count: 3,
+    resets: 0,
+  };
+  assert.ok(trackingText(three).startsWith("Tracked 0.0–5.0 s, 6.0–9.0 s and 12.0–27.1 s of"));
+  // More than a few, or more than the summary lists: how many, and from when to when.
+  const many = { ...two, segments: [[0, 1]], segment_count: 7, losses: 6, resets: 0 };
+  assert.equal(
+    trackingText(many),
+    "Tracked in 7 stretches, from 0.0 s to 27.1 s of your 27.1 s clip. The track was lost 6 " +
+      "times, and each time a new map was started, so the rest of the clip was still processed.",
+  );
+  const whole = summary({ clip_seconds: 10, tracked_from: 0, tracked_to: 10, segment_count: 1 });
+  assert.equal(trackingText(whole), "Tracked from 0.0 s to 10.0 s of your 10.0 s clip.");
+  const never = summary({ clip_seconds: 8, tracked_from: null, tracked_to: null });
   assert.equal(
     trackingText(never),
     "No first map was made in your 8.0 s clip, so nothing was tracked. Moving sideways at the " +
       "start, with something textured in view, helps make one.",
   );
+  const dropped = summary({ clip_seconds: 8, tracked_from: null, losses: 3, resets: 3 });
+  assert.equal(
+    trackingText(dropped),
+    "Maps were started in your 8.0 s clip, but each lost the track too soon to keep, so " +
+      "nothing was tracked. Moving more slowly, with something textured in view, helps a map last.",
+  );
 });
 
 test("an RGB-D run's first map is explained by its depth, not by moving sideways", () => {
   /** @param {Record<string, unknown>} fields @returns {Record<string, unknown>} */
-  const summary = (fields) => ({ frames: 120, tracked: 54, lost: false, mode: "rgbd", ...fields });
+  const summary = (fields) => ({ frames: 120, tracked: 54, losses: 0, mode: "rgbd", ...fields });
   const late = summary({ clip_seconds: 10, tracked_from: 1.2, tracked_to: 10, ran_to: 10 });
   assert.equal(
     trackingText(late),

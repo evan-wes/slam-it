@@ -24,11 +24,11 @@ namespace slam_it::eval::runs {
 inline constexpr const char* kFormat = "slam-it-run";
 
 /// @brief `run.json`'s `version` (2 added `peak_memory`, `cpus` and `memory_cap`; 3 every point
-///        and keyframe the run made, with their lives).
-inline constexpr std::int64_t kVersion = 3;
+///        and keyframe the run made, with their lives; 4 the maps, and the removal `reset`).
+inline constexpr std::int64_t kVersion = 4;
 
 /// @brief The number of removal codes a life may hold (`slam_it.eval.runs.REMOVALS`).
-inline constexpr std::int64_t kRemovals = 3;
+inline constexpr std::int64_t kRemovals = 4;
 
 /// @brief The number of fate codes a feature record may hold (`slam_it.eval.runs.FATES`);
 ///        0 is unmatched.
@@ -101,6 +101,12 @@ struct Run {
   std::vector<Life> keyframe_lives;
   /// @brief Whether the run recorded its features (`FeatureWriter` streams them).
   bool record_features{false};
+  /// @brief The map each tracked frame's pose is in, never descending.
+  std::vector<std::int64_t> pose_maps;
+  /// @brief The map each keyframe is in, by id, never descending.
+  std::vector<std::int64_t> keyframe_maps;
+  /// @brief The map each point is in, by id, never descending.
+  std::vector<std::int64_t> point_maps;
 };
 
 /// @brief Streams a run's feature records into its folder, a frame at a time
@@ -189,9 +195,11 @@ class FeatureWriter {
 /// @return Nothing; `InvalidInput` for an unknown mode or backend, times that are not finite
 ///         and strictly ascending, poses that are not rigid or not one per time, a point that
 ///         is not finite, lives that are not one per point or keyframe or not lives of the
-///         run's frames, a diagnostic without a `timestamp`, a number JSON cannot hold, a
-///         negative peak memory, CPUs that are empty or not ascending, or a memory cap of 0
-///         (nothing is written then); or a file that cannot be written.
+///         run's frames, maps that are not one per pose, keyframe or point, or not numbers from
+///         0 never descending, a diagnostic without a `timestamp`, diagnostics whose `map`s are
+///         not null or map numbers never descending, or name no frame of a map with keyframes,
+///         a number JSON cannot hold, a negative peak memory, CPUs that are empty or not ascending,
+///         or a memory cap of 0 (nothing is written then); or a file that cannot be written.
 [[nodiscard]] foundations::Result<void> write_run(const std::string& folder, const Run& run);
 
 }  // namespace slam_it::eval::runs

@@ -33,11 +33,13 @@ pub enum Removal {
     Fused = 1,
     /// Erased with its views: left seen too little.
     Weak = 2,
+    /// Its map was reset: the track was lost while the map was too small to keep.
+    Reset = 3,
 }
 
 impl Removal {
     /// Every removal, in code order.
-    pub const ALL: [Self; 3] = [Self::Culled, Self::Fused, Self::Weak];
+    pub const ALL: [Self; 4] = [Self::Culled, Self::Fused, Self::Weak, Self::Reset];
 
     /// The removal's code, as a run records it.
     ///

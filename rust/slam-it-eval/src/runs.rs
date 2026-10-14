@@ -15,11 +15,11 @@ use slam_it_foundations::{se3, so3};
 pub const FORMAT: &str = "slam-it-run";
 
 /// `run.json`'s `version` (2 added `peak_memory`, `cpus` and `memory_cap`; 3 every point and
-/// keyframe the run made, with their lives).
-pub const VERSION: i64 = 3;
+/// keyframe the run made, with their lives; 4 the maps, and the removal `reset`).
+pub const VERSION: i64 = 4;
 
 /// The number of removal codes a life may hold (`slam_it.eval.runs.REMOVALS`).
-pub const REMOVALS: i64 = 3;
+pub const REMOVALS: i64 = 4;
 
 /// The number of fate codes a feature record may hold (`slam_it.eval.runs.FATES`); 0 is
 /// unmatched.
@@ -112,6 +112,12 @@ pub struct Run {
     pub keyframe_lives: Vec<Life>,
     /// Whether the run recorded its features (`FeatureWriter` streams them).
     pub record_features: bool,
+    /// The map each tracked frame's pose is in, never descending.
+    pub pose_maps: Vec<i64>,
+    /// The map each keyframe is in, by id, never descending.
+    pub keyframe_maps: Vec<i64>,
+    /// The map each point is in, by id, never descending.
+    pub point_maps: Vec<i64>,
 }
 
 /// A finite number as JSON, shortest round-trip (`.0` kept on a whole number, as Python
@@ -340,6 +346,45 @@ fn check_lives(lives: &[Life], rows: usize, frames: usize, name: &str) -> Result
     Ok(())
 }
 
+/// Checks maps: one per row, numbers from 0, never descending.
+///
+/// # Arguments
+///
+/// * `maps` - The maps.
+/// * `rows` - The rows they are for.
+/// * `name` - Their name, for messages.
+///
+/// # Errors
+///
+/// `InvalidInput` otherwise.
+fn check_maps(maps: &[i64], rows: usize, name: &str) -> Result<()> {
+    if maps.len() != rows {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!(
+                "{name}: expected one map per row, {rows}, got {}",
+                maps.len()
+            ),
+        );
+    }
+    let bad = (0..maps.len()).find(|&row| maps[row] < 0 || (row > 0 && maps[row] < maps[row - 1]));
+    if let Some(row) = bad {
+        let after = if row > 0 {
+            format!(", after {}", maps[row - 1])
+        } else {
+            String::new()
+        };
+        return fail(
+            ErrorKind::InvalidInput,
+            format!(
+                "{name}: maps must be numbers from 0, never descending; row {row} is {}{after}",
+                maps[row]
+            ),
+        );
+    }
+    Ok(())
+}
+
 /// Checks stamped poses: finite, strictly ascending times, one rigid transform each.
 ///
 /// # Arguments
@@ -402,6 +447,13 @@ fn check(run: &Run) -> Result<()> {
         frames,
         "keyframe_lives",
     )?;
+    check_maps(&run.pose_maps, run.timestamps.len(), "pose_maps")?;
+    check_maps(
+        &run.keyframe_maps,
+        run.keyframe_timestamps.len(),
+        "keyframe_maps",
+    )?;
+    check_maps(&run.point_maps, run.points.len(), "point_maps")?;
     if !finite(&run.settings) {
         return fail(
             ErrorKind::InvalidInput,
@@ -432,6 +484,54 @@ fn check(run: &Run) -> Result<()> {
             );
         }
     }
+    check_frame_maps(run)
+}
+
+/// Check the diagnostics' `map` keys against the run's maps (those of its keyframes): each null
+/// or a map number, never descending, and every map named on a frame, so that its frames can be
+/// found (Python's `_check_frame_maps`).
+///
+/// # Arguments
+///
+/// * `run` - The run.
+///
+/// # Errors
+///
+/// `InvalidInput` otherwise.
+fn check_frame_maps(run: &Run) -> Result<()> {
+    let mut named: Vec<i64> = Vec::new();
+    for (k, entry) in run.diagnostics.iter().enumerate() {
+        let value = match entry.iter().find(|(key, _)| key == "map") {
+            None | Some((_, JsonValue::Null)) => continue,
+            Some((_, JsonValue::Integer(map))) if *map >= 0 => *map,
+            Some(_) => {
+                return fail(
+                    ErrorKind::InvalidInput,
+                    format!("diagnostics[{k}]: map: expected a map number or null"),
+                );
+            }
+        };
+        if let Some(&last) = named.last()
+            && value < last
+        {
+            return fail(
+                ErrorKind::InvalidInput,
+                format!("diagnostics[{k}]: map {value} after map {last}: maps never descend"),
+            );
+        }
+        named.push(value);
+    }
+    // The keyframes' maps ascend, as checked.
+    if let Some(map) = run
+        .keyframe_maps
+        .iter()
+        .find(|map| named.binary_search(map).is_err())
+    {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!("diagnostics: no frame names map {map}, which has keyframes"),
+        );
+    }
     Ok(())
 }
 
@@ -441,6 +541,7 @@ fn check(run: &Run) -> Result<()> {
 ///
 /// * `times` - The times.
 /// * `poses` - The poses.
+/// * `maps` - Their maps: a `# map <n>` line comes before each map's first pose.
 ///
 /// # Returns
 ///
@@ -449,9 +550,14 @@ fn check(run: &Run) -> Result<()> {
 /// # Errors
 ///
 /// The quaternion conversion's error.
-fn trajectory_text(times: &[f64], poses: &[Matrix4<f64>]) -> Result<String> {
+fn trajectory_text(times: &[f64], poses: &[Matrix4<f64>], maps: &[i64]) -> Result<String> {
     let mut out = String::from("# timestamp tx ty tz qx qy qz qw\n");
-    for (t, pose) in times.iter().zip(poses) {
+    for (k, (t, pose)) in times.iter().zip(poses).enumerate() {
+        if k == 0 || maps[k] != maps[k - 1] {
+            out.push_str("# map ");
+            out.push_str(&maps[k].to_string());
+            out.push('\n');
+        }
         let q = so3::to_quaternion(&pose.fixed_view::<3, 3>(0, 0).into_owned())?;
         let values = [
             *t,
@@ -507,12 +613,15 @@ fn replace(path: &Path, data: &[u8]) -> Result<()> {
 /// # Errors
 ///
 /// `InvalidInput` for an unknown mode or backend, times that are not finite and strictly
-/// ascending, poses that are not rigid or not one per time, a point that is not finite, a
-/// diagnostic without a `timestamp`, a number JSON cannot hold, CPUs that are empty or not
-/// ascending, or a memory cap of 0 (nothing is written then); or a file that cannot be written.
+/// ascending, poses that are not rigid or not one per time, a point that is not finite, lives
+/// or maps that are not one per row or not valid (as `check_lives` and `check_maps` hold
+/// them), a diagnostic without a `timestamp`, diagnostics whose `map`s are not null or map
+/// numbers never descending, or name no frame of a map with keyframes, a number JSON cannot
+/// hold, CPUs that are empty or not ascending, or a memory cap of 0 (nothing is written then); or a file that cannot be
+/// written.
 pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
     check(run)?;
-    let trajectory = trajectory_text(&run.timestamps, &run.poses)?;
+    let trajectory = trajectory_text(&run.timestamps, &run.poses, &run.pose_maps)?;
     let info: JsonObject = vec![
         ("format".into(), JsonValue::Text(FORMAT.into())),
         ("version".into(), JsonValue::Integer(VERSION)),
@@ -560,7 +669,7 @@ pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
         )
     })?;
     let lives = |lives: &[Life]| -> Vec<i64> { lives.iter().flatten().copied().collect() };
-    let files: [(&str, Vec<u8>); 8] = [
+    let files: [(&str, Vec<u8>); 11] = [
         ("run.json", info_text.into_bytes()),
         ("trajectory.txt", trajectory.into_bytes()),
         (
@@ -579,6 +688,18 @@ pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
         (
             "point_lives.npy",
             npy_int64(&[run.point_lives.len(), 3], &lives(&run.point_lives)),
+        ),
+        (
+            "pose_maps.npy",
+            npy_int64(&[run.pose_maps.len()], &run.pose_maps),
+        ),
+        (
+            "keyframe_maps.npy",
+            npy_int64(&[run.keyframe_maps.len()], &run.keyframe_maps),
+        ),
+        (
+            "point_maps.npy",
+            npy_int64(&[run.point_maps.len()], &run.point_maps),
         ),
         ("diagnostics.jsonl", diagnostics.into_bytes()),
     ];
@@ -860,6 +981,9 @@ mod tests {
             point_lives: lives(&values["point_lives"]),
             keyframe_lives: lives(&values["keyframe_lives"]),
             record_features: values["record_features"].as_bool().unwrap(),
+            pose_maps: integers(&values["pose_maps"]),
+            keyframe_maps: integers(&values["keyframe_maps"]),
+            point_maps: integers(&values["point_maps"]),
         }
     }
 
@@ -874,6 +998,20 @@ mod tests {
                 [at(0), at(1), at(2)]
             })
             .collect()
+    }
+
+    /// A trajectory file's comment lines, each with the number of poses before it.
+    fn comments(path: &Path) -> Vec<String> {
+        let mut poses = 0;
+        let mut out = Vec::new();
+        for line in std::fs::read_to_string(path).unwrap().lines() {
+            if line.starts_with('#') {
+                out.push(format!("{poses}: {line}"));
+            } else if !line.is_empty() {
+                poses += 1;
+            }
+        }
+        out
     }
 
     /// A trajectory file's numbers.
@@ -929,6 +1067,9 @@ mod tests {
             "keyframe_lives.npy",
             "points.npy",
             "point_lives.npy",
+            "pose_maps.npy",
+            "keyframe_maps.npy",
+            "point_maps.npy",
         ] {
             assert_eq!(
                 std::fs::read(out.join(name)).unwrap(),
@@ -945,6 +1086,11 @@ mod tests {
         let (got, wanted) = (
             trajectory(&out.join("trajectory.txt")),
             trajectory(&golden.join("trajectory.txt")),
+        );
+        assert_eq!(
+            comments(&out.join("trajectory.txt")),
+            comments(&golden.join("trajectory.txt")),
+            "trajectory.txt marks each map where Python's does"
         );
         assert_eq!(got.len(), wanted.len());
         for (a, b) in got.iter().zip(&wanted) {
@@ -1109,7 +1255,43 @@ mod tests {
         early.point_lives[1] = [3, 0, 1];
         let mut alive = golden_run();
         alive.keyframe_lives[0] = [0, -1, 2];
-        for run in [short, early, alive] {
+        let mut unknown = golden_run();
+        unknown.keyframe_lives[0] = [0, 2, 4];
+        let mut fewer = golden_run();
+        fewer.pose_maps.pop();
+        let mut descending = golden_run();
+        descending.point_maps = vec![0, 1, 0, 1, 1];
+        let mut negative = golden_run();
+        negative.keyframe_maps[0] = -1;
+        // The diagnostics' maps, golden 0, 0, 0, 1, 1, 1 (map 1 has keyframes).
+        let with_map = |frames: &[usize], map: &JsonValue| {
+            let mut run = golden_run();
+            for &frame in frames {
+                for (key, value) in &mut run.diagnostics[frame] {
+                    if key == "map" {
+                        *value = map.clone();
+                    }
+                }
+            }
+            run
+        };
+        let frame_negative = with_map(&[3], &JsonValue::Integer(-1));
+        let frame_bool = with_map(&[3], &JsonValue::Bool(true));
+        let frame_descending = with_map(&[4], &JsonValue::Integer(0));
+        let unnamed = with_map(&[3, 4, 5], &JsonValue::Null);
+        for run in [
+            short,
+            early,
+            alive,
+            unknown,
+            fewer,
+            descending,
+            negative,
+            frame_negative,
+            frame_bool,
+            frame_descending,
+            unnamed,
+        ] {
             assert_eq!(
                 write_run(&out, &run).unwrap_err().kind,
                 ErrorKind::InvalidInput

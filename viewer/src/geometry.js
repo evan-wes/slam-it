@@ -47,6 +47,75 @@ export function frustums(poses, camera, depth) {
 }
 
 /**
+ * The vertices of frustums, each pose's as deep as its map's (`frustums`, map by map).
+ * @param {Float32Array} poses `T_world_cam` top rows, (K, 3, 4).
+ * @param {Int32Array} maps Each pose's map, (K,): a map's poses are consecutive.
+ * @param {{width: number, height: number, intrinsics: number[]}} camera The camera.
+ * @param {Map<number, number>} depths Each map's frustum depth (`mapDepths`).
+ * @param {number} fallback The depth of a map without one.
+ * @returns {Float32Array} (K * 16, 3): each frustum's 8 segments.
+ */
+export function mapFrustums(poses, maps, camera, depths, fallback) {
+  const count = poses.length / 12;
+  const out = new Float32Array(count * FRUSTUM_SEGMENTS * 2 * 3);
+  for (const [start, end] of mapRuns(maps)) {
+    const depth = depths.get(maps[start]) ?? fallback;
+    const lines = frustums(poses.subarray(start * 12, end * 12), camera, depth);
+    out.set(lines, start * FRUSTUM_SEGMENTS * 2 * 3);
+  }
+  return out;
+}
+
+/** A frustum's depth, as a share of its map's trajectory's extent. */
+export const DEPTH_SHARE = 1 / 40;
+
+/** The shallowest frustum, in the trajectory's units. */
+export const MIN_DEPTH = 0.02;
+
+/**
+ * The runs of consecutive equal maps.
+ * @param {ArrayLike<number>} maps Each item's map.
+ * @returns {[number, number][]} Each run's rows `[start, end)`, in order.
+ */
+function mapRuns(maps) {
+  /** @type {[number, number][]} */
+  const out = [];
+  for (let start = 0; start < maps.length;) {
+    let end = start + 1;
+    while (end < maps.length && maps[end] === maps[start]) {
+      end += 1;
+    }
+    out.push([start, end]);
+    start = end;
+  }
+  return out;
+}
+
+/**
+ * Each map's frustum depth: a share of the extent of its trajectory, whose scale is its own.
+ * @param {Float32Array} path The tracked frames' centres, (T, 3).
+ * @param {Int32Array} maps Their maps, (T,): a map's are consecutive.
+ * @returns {Map<number, number>} Each map's depth, at least `MIN_DEPTH`.
+ */
+export function mapDepths(path, maps) {
+  /** @type {Map<number, number>} */
+  const out = new Map();
+  for (const [start, end] of mapRuns(maps)) {
+    const low = [Infinity, Infinity, Infinity];
+    const high = [-Infinity, -Infinity, -Infinity];
+    for (let i = start; i < end; i++) {
+      for (let axis = 0; axis < 3; axis++) {
+        low[axis] = Math.min(low[axis], path[i * 3 + axis]);
+        high[axis] = Math.max(high[axis], path[i * 3 + axis]);
+      }
+    }
+    const extent = Math.hypot(...high.map((h, axis) => h - low[axis]));
+    out.set(maps[start], Math.max(extent * DEPTH_SHARE, MIN_DEPTH));
+  }
+  return out;
+}
+
+/**
  * The centres of poses.
  * @param {Float32Array} poses `T_world_cam` top rows, (T, 3, 4).
  * @returns {Float32Array} (T, 3).
@@ -75,6 +144,18 @@ export function truthSegments(truth) {
     }
   }
   return Float32Array.from(out);
+}
+
+/**
+ * Each vertex's map, for a view that shows one map at a time.
+ * @param {Int32Array} maps Each item's map, (N,).
+ * @param {number} vertices The vertices each item has.
+ * @returns {Float32Array} Per vertex: its item's map.
+ */
+export function mapAttribute(maps, vertices) {
+  const out = new Float32Array(maps.length * vertices);
+  maps.forEach((map, i) => out.fill(map, i * vertices, (i + 1) * vertices));
+  return out;
 }
 
 /**

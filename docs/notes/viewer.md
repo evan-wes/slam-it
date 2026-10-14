@@ -4,7 +4,10 @@ Design note for PR 10: the run format's version 3 (`slam_it.eval.runs`), the per
 solver summaries, point and keyframe lifetimes and feature records, in all three languages; the
 bake (`slam_it.orchestration.bundles`); and the page (`viewer/`). The plan was
 `docs/design/2026-10-09-run-viewer.md`, sections 1 to 4; the forks it left open were decided
-with the owner on 2026-10-10. This note is what was built and how it was checked.
+with the owner on 2026-10-10. This note is what was built and how it was checked. Milestone
+2A's A2 later added a run's maps: the run format's version 4 and the bundle's version 2 give
+each pose, keyframe and point its map, and the page shows one map at a time
+(`docs/design/2026-10-12-phone-robust-vo.md`, section 5).
 
 ## The problem
 

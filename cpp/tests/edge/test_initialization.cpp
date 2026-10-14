@@ -25,7 +25,7 @@ using slam_it::testing::is_invalid_input;
 /// @param failures Running failure count.
 void check_from_depth(int& failures) {
   const edge::Frame frame = scene::frame(0, true);
-  const edge::Options options{.min_init_features_depth = 10, .min_init_depth_points = 10};
+  const edge::Options options{.min_init_features_depth = 10};
   const auto started = edge::initialize_from_depth(frame, options);
   expect(started.has_value() && started->started.has_value() &&
              started->summary.outcome == edge::Outcome::kInitialized && !started->summary.matches &&
@@ -50,14 +50,18 @@ void check_from_depth(int& failures) {
   };
   expect(not_started(few, edge::Outcome::kTooFewFeatures), "too few keypoints start nothing",
          failures);
-  const auto exactly = edge::initialize_from_depth(
-      frame, edge::Options{.min_init_features_depth = 60, .min_init_depth_points = 10});
+  const auto exactly =
+      edge::initialize_from_depth(frame, edge::Options{.min_init_features_depth = 60});
   expect(not_started(exactly, edge::Outcome::kTooFewFeatures),
          "the start needs more keypoints than the count, as ORB-SLAM's N > 500", failures);
-  const auto shallow = edge::initialize_from_depth(
-      frame, edge::Options{.min_init_features_depth = 10, .min_init_depth_points = 61});
-  expect(not_started(shallow, edge::Outcome::kTooLittleDepth),
-         "too few keypoints with depth start nothing", failures);
+  edge::Frame shallow = frame;
+  for (std::size_t i = 5; i < shallow.depth.size(); ++i) {
+    shallow.depth[i] = std::nan("");
+  }
+  const auto thin = edge::initialize_from_depth(shallow, options);
+  expect(
+      thin.has_value() && thin->started.has_value() && edge::point_count(thin->started->map) == 5,
+      "a frame with little depth starts a map of the points it has", failures);
   expect(is_invalid_input(edge::initialize_from_depth(frame, edge::Options{.levels = 4})),
          "a frame of another pyramid is rejected", failures);
 }

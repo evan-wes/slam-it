@@ -11,7 +11,8 @@
 - **The fallback** (:func:`relocalize_locally`): when the prediction fails, the frame's
   descriptors are matched to the local map's and PnP RANSAC
   (:func:`slam_it.foundations.pnp.pnp_ransac`) places it. No bag of words: this recovers only
-  near the local map; a lost track ends the run.
+  near the local map; a lost track closes the map, and the pipeline starts a new one
+  (:class:`slam_it.edge.pipeline.Pipeline`).
 
 Each stage reports how it went beside its result (:class:`MotionSummary`,
 :class:`PnpSummary`, :meth:`LocalTracking.summary`), which a run records per frame, and the map

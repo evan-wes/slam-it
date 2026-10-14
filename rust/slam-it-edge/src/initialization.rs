@@ -30,34 +30,31 @@ pub enum Outcome {
     Initialized = 0,
     /// Too few keypoints.
     TooFewFeatures = 1,
-    /// Too few keypoints with depth.
-    TooLittleDepth = 2,
     /// It became the monocular reference: there was none.
-    ReferenceSet = 3,
+    ReferenceSet = 2,
     /// Too few keypoints matched the reference, so it became the reference.
-    ReferenceReplaced = 4,
+    ReferenceReplaced = 3,
     /// Too few of the matches had bearings in both views.
-    TooFewMatches = 5,
+    TooFewMatches = 4,
     /// Two-view found no motion.
-    Degenerate = 6,
+    Degenerate = 5,
     /// Two-view: the camera only rotated.
-    PureRotation = 7,
+    PureRotation = 6,
     /// Two-view: two candidate motions fit about as well.
-    Ambiguous = 8,
+    Ambiguous = 7,
     /// Two-view: too few points had enough parallax.
-    LowParallax = 9,
+    LowParallax = 8,
     /// Too few points survived the initial bundle adjustment.
-    TooFewPoints = 10,
+    TooFewPoints = 9,
     /// The first keyframe's median depth was not positive.
-    BadScale = 11,
+    BadScale = 10,
 }
 
 impl Outcome {
     /// Every outcome, in code order.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 11] = [
         Self::Initialized,
         Self::TooFewFeatures,
-        Self::TooLittleDepth,
         Self::ReferenceSet,
         Self::ReferenceReplaced,
         Self::TooFewMatches,
@@ -79,7 +76,6 @@ impl Outcome {
         match self {
             Self::Initialized => "initialized",
             Self::TooFewFeatures => "too_few_features",
-            Self::TooLittleDepth => "too_little_depth",
             Self::ReferenceSet => "reference_set",
             Self::ReferenceReplaced => "reference_replaced",
             Self::TooFewMatches => "too_few_matches",
@@ -273,8 +269,8 @@ fn median(values: &mut [f64]) -> f64 {
 /// # Returns
 ///
 /// The map of one keyframe at the origin with a point at every keypoint with depth (and a
-/// bearing), or none unless it has more than `min_init_features_depth` keypoints and
-/// `min_init_depth_points` with depth; and the outcome.
+/// bearing), or none unless it has more than `min_init_features_depth` keypoints; and the
+/// outcome.
 ///
 /// # Errors
 ///
@@ -291,13 +287,6 @@ pub fn initialize_from_depth(frame: &Frame, options: &Options) -> Result<Initial
     let has_depth: Vec<usize> = (0..frame.size())
         .filter(|&i| !frame.depth[i].is_nan() && !frame.bearings[i].x.is_nan())
         .collect();
-    if has_depth.len() < options.min_init_depth_points {
-        return Ok(Initialization::failed(
-            Outcome::TooLittleDepth,
-            None,
-            Vec::new(),
-        ));
-    }
     let mut m = Map::empty(options.levels, options.scale_factor);
     insert_unobserving(&mut m, frame, &Matrix4::identity())?;
     let xyz: Vec<Vector3<f64>> = has_depth

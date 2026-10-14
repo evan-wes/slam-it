@@ -51,8 +51,15 @@
           <span title="a backend's frames in its colour, where it was tracking"
             ><i class="swatch tracking"></i>tracking</span
           >
-          <span title="faded: before its first map"><i class="swatch starting"></i>no map yet</span>
-          <span title="the frame it lost the track, which ends a run"
+          <span title="faded: before its first map, or between a lost one and the next"
+            ><i class="swatch starting"></i>no map yet</span
+          >
+          <span
+            title="broken: a map lost with too few keyframes to keep, reset: its frames' poses dropped"
+            ><i class="swatch reset"></i>reset</span
+          >
+          <span
+            title="the frame it lost the track: its map closed, and the next frame starts a new one"
             ><i class="swatch lost"></i>lost</span
           >
           <span title="the part of the sequence no run reached"

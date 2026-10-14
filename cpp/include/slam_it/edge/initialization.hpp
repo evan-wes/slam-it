@@ -35,28 +35,26 @@ enum class Outcome : std::uint8_t {
   kInitialized = 0,
   /// @brief Too few keypoints.
   kTooFewFeatures = 1,
-  /// @brief Too few keypoints with depth.
-  kTooLittleDepth = 2,
   /// @brief It became the monocular reference: there was none.
-  kReferenceSet = 3,
+  kReferenceSet = 2,
   /// @brief Too few keypoints matched the reference, so it became the reference.
-  kReferenceReplaced = 4,
+  kReferenceReplaced = 3,
   /// @brief Too few of the matches had bearings in both views.
-  kTooFewMatches = 5,
+  kTooFewMatches = 4,
   /// @brief Two-view found no motion.
-  kDegenerate = 6,
+  kDegenerate = 5,
   /// @brief Two-view: the camera only rotated.
-  kPureRotation = 7,
+  kPureRotation = 6,
   /// @brief Two-view: two candidate motions fit about as well.
-  kAmbiguous = 8,
+  kAmbiguous = 7,
   /// @brief Two-view: too few points had enough parallax.
-  kLowParallax = 9,
+  kLowParallax = 8,
   /// @brief Too few points survived the initial bundle adjustment.
-  kTooFewPoints = 10,
+  kTooFewPoints = 9,
   /// @brief The first keyframe's median depth was not positive.
-  kBadScale = 11,
+  kBadScale = 10,
   /// @brief The number of outcomes (a sentinel, not an outcome).
-  kCount = 12,
+  kCount = 11,
 };
 
 /// @brief An outcome's name, as `slam_it.edge.initialization.Outcome` spells it.
@@ -88,8 +86,8 @@ struct Initialization {
 /// @param options The minimum keypoints, and the pyramid.
 /// @return The map of one keyframe at the origin with a point at every keypoint with depth
 ///         (and a bearing), or none unless it has more than `min_init_features_depth`
-///         keypoints and `min_init_depth_points` with depth, and the outcome;
-///         `InvalidInput` for a frame whose pyramid is not the settings', or invalid settings.
+///         keypoints, and the outcome; `InvalidInput` for a frame whose pyramid is not the
+///         settings', or invalid settings.
 [[nodiscard]] foundations::Result<Initialization> initialize_from_depth(const Frame& frame,
                                                                         const Options& options);
 

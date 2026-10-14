@@ -5,10 +5,13 @@ The server never imports slam_it, and the pages are JavaScript, so each keeps it
 
 from __future__ import annotations
 
+import json
 import re
 
+import numpy as np
+
 from slam_it.edge import options
-from slam_it.eval import lenses, video
+from slam_it.eval import lenses, runs, video
 from slam_it.orchestration import worker
 from slam_it_server import app, config, jobs
 from tests.server.conftest import VIEWER
@@ -47,6 +50,27 @@ def test_the_names_are_the_workers() -> None:
     assert sources == ("stray-scanner", *lenses.SOURCES)  # the worker names a zip's source
     assert tuple(re.findall(keys, _constant("MODES"), re.MULTILINE)) == worker.RUN_MODES
     assert set(worker.RUN_MODES) <= set(options.MODES)
+
+
+def test_the_longest_summary_fits_what_the_server_keeps() -> None:
+    """A clip of the longest length, lost every other frame, still has a summary the server keeps.
+
+    The worker lists the first SEGMENTS segments, so its summary stays under SUMMARY_BYTES however
+    often the track is lost (review panel finding A7). The frames are at 60 Hz, the times far
+    from round, and the mode and intrinsics' source the longest names.
+    """
+    times = 1_000_000.123456 + np.arange(int(video.MAX_SECONDS * 60)) / 60
+    maps = np.arange(len(times), dtype=np.int64) // 2
+    run = runs.Run(
+        "video", "clip", max(worker.RUN_MODES, key=len), "python", times,
+        np.tile(np.eye(4), (len(times), 1, 1)),
+        diagnostics=[{"timestamp": float(t), "state": "lost"} for t in times],
+        pose_maps=maps,
+    )  # fmt: skip
+    intrinsics = max(("stray-scanner", *lenses.SOURCES), key=len)
+    summary = worker.summarize(run, times, intrinsics, (video.MAX_LONG_SIDE, video.MAX_LONG_SIDE))
+    assert summary["segment_count"] == len(times) // 2 > worker.SEGMENTS
+    assert len(json.dumps(summary)) <= app.SUMMARY_BYTES
 
 
 def test_a_failures_reason_is_cut_where_the_server_cuts_it() -> None:

@@ -31,7 +31,7 @@ from tests.edge.support import (
 )
 from tests.fixtures.edge.generate_room_runs import record, summaries
 from tests.orchestration.conftest import RoomRun, require_program
-from tests.orchestration.datasets import BLANK_AT, CASES, Room, room_inputs
+from tests.orchestration.datasets import BLANK_AT, CASES, LOST_AT, Room, room_inputs
 
 SEQUENCES = FIXTURES / "eval" / "sequences"
 """The readers' fixture folders: their files listed, their images absent."""
@@ -55,7 +55,7 @@ def test_every_backend_tracks_the_room(
     assert len(run.final_points()) > 0
     error = runs.evaluate(run, room_folders.timestamps, room_folders.poses)
     assert error.matched == len(run.timestamps)
-    assert error.absolute.rmse < ATE_BOUND[mode]
+    assert error.ate_rmse < ATE_BOUND[mode]
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -215,6 +215,9 @@ def test_the_moved_settings_change_the_decisions(
     assert moved != default
 
 
+ROOMS = ("room", "gap", "lost", "kept")
+"""The rooms the golden record holds, each run by its fixture ``<room>_runs``."""
+
 GOLDEN = load_fixture("edge/room_runs.json")
 """What the pipeline decided on the room and the gap room (``generate_room_runs.py``)."""
 
@@ -226,28 +229,68 @@ def test_the_golden_record_is_of_these_rooms() -> None:
     named as one (review panel finding A20).
     """
     assert GOLDEN["inputs"] == room_inputs()
-    names = {f"{name}/{dataset}/{mode}" for name in ("room", "gap") for dataset, mode in CASES}
+    names = {f"{name}/{dataset}/{mode}" for name in ROOMS for dataset, mode in CASES}
     assert set(GOLDEN["cases"]) == names
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
-@pytest.mark.parametrize("name", ["room", "gap"])
+@pytest.mark.parametrize("name", ROOMS)
 @pytest.mark.parametrize(("dataset", "mode"), CASES)
-def test_every_backend_matches_the_golden_record(  # noqa: PLR0917 -- the case, both rooms
-    dataset: str, mode: str, name: str, backend: str, room_runs: RoomRun, gap_runs: RoomRun
+def test_every_backend_matches_the_golden_record(
+    dataset: str, mode: str, name: str, backend: str, request: pytest.FixtureRequest
 ) -> None:
     """Every backend's run is the recorded one.
 
     A decision changed in all three languages fails here until the record is regenerated
     (review panel finding A1).
     """
-    runs_of = room_runs if name == "room" else gap_runs
+    runs_of: RoomRun = request.getfixturevalue(f"{name}_runs")
     run = runs_of(dataset, mode, backend)
     expected = GOLDEN["cases"][f"{name}/{dataset}/{mode}"]
     floating = {"poses": None, "summaries": None}
     assert record(run, runs_of.features(dataset, mode, backend)) | floating == expected | floating
-    assert_matches_fixture(run.poses.reshape(-1, 16), expected["poses"], GOLDEN["tolerance"])
+    golden = np.reshape(expected["poses"], (-1, 16))  # a run whose every map was reset has none
+    assert_matches_fixture(run.poses.reshape(-1, 16), golden, GOLDEN["tolerance"])
     assert_records_match(summaries(run), expected["summaries"], SOLVER_TOLERANCE)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize(("dataset", "mode"), CASES)
+def test_a_lost_track_starts_a_new_map_and_the_run_goes_on(
+    dataset: str, mode: str, backend: str, lost_runs: RoomRun, kept_runs: RoomRun
+) -> None:
+    """Each blank stretch loses the track; the frames after start the next map.
+
+    At the room's settings each lost map, of a few keyframes, is reset: its keyframes and points
+    end on its lost frame, and its frames' poses are dropped. With every lost map kept, its
+    poses and keyframes stay, and the run tracks in a segment per map. A stereo or RGB-D run
+    starts map 2 after the second loss and tracks it to the room's end; a monocular one has
+    too few frames left to start it.
+    """
+    losses = [at + OPTIONS.lost_frames - 1 for at in LOST_AT]
+    reset_code = runs.REMOVALS.index("reset")
+    last = [0, 1] if mode == "monocular" else [0, 1, 2]
+    for runs_of, reset in ((lost_runs, True), (kept_runs, False)):
+        run = runs_of(dataset, mode, backend)
+        assert len(run.diagnostics) == FRAMES  # the run goes on to the room's end
+        states = [d["state"] for d in run.diagnostics]
+        assert [k for k, state in enumerate(states) if state == "lost"] == losses
+        for map_id, at in enumerate(losses):
+            lost = run.diagnostics[at]
+            assert (lost["map"], lost["lost"]["reset"]) == (map_id, reset)
+            removed = run.keyframe_lives[run.keyframe_maps == map_id]
+            if reset:
+                assert np.all(removed[:, 1:] == [at, reset_code])
+            else:
+                assert np.all(removed[:, 1] == -1)
+        after = {d["map"] for d in run.diagnostics[losses[-1] + 1 :]}
+        assert after == ({None} if mode == "monocular" else {2})
+        assert run.maps().tolist() == last
+        kept = [m for m in last if not (reset and m < len(losses))]
+        assert sorted(set(run.pose_maps.tolist())) == kept
+        span = runs.tracking(run, vo.open_source(dataset, runs_of.sequence(dataset), mode).times)
+        assert [s.map for s in span.segments] == kept
+        assert (span.losses, span.resets) == (2, 2 * int(reset))
 
 
 def test_a_request_crosses_as_a_command_line() -> None:
@@ -438,21 +481,26 @@ def test_a_stereo_run_matches_with_its_settings(
 ) -> None:
     """The stereo matcher's settings reach every backend's frames (review panel finding A15).
 
-    Below a Hamming distance of 1 hardly a pair matches, so no frame has the depths to start
-    the map; the run records the setting.
+    Below a Hamming distance of 1 hardly a pair matches, so the first frame starts its map with
+    a handful of points, where the default's makes hundreds; the run records the setting.
     """
-    strict = replace(OPTIONS, stereo_max_distance=1)
-    run = vo.run(
-        "euroc",
-        room_folders.euroc,
-        "stereo",
-        tmp_path,
-        backend=require_program(backend),
-        options=strict,
-        count=3,
-    )
-    assert len(run.timestamps) == 0
-    assert run.settings["stereo_max_distance"] == 1
+    made = {}
+    for name, options in (
+        ("default", OPTIONS),
+        ("strict", replace(OPTIONS, stereo_max_distance=1)),
+    ):
+        run = vo.run(
+            "euroc",
+            room_folders.euroc,
+            "stereo",
+            tmp_path / name,
+            backend=require_program(backend),
+            options=options,
+            count=1,
+        )
+        made[name] = len(run.points)
+        assert run.settings["stereo_max_distance"] == options.stereo_max_distance
+    assert 0 < 10 * made["strict"] < made["default"]
 
 
 def test_refuses_negative_frames() -> None:

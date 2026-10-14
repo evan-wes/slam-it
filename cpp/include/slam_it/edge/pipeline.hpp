@@ -24,11 +24,12 @@ namespace slam_it::edge {
 
 /// @brief Where the pipeline is, with the codes it is written as.
 enum class State : std::uint8_t {
-  /// @brief No map yet.
+  /// @brief No map: before the first, or after a lost one, until a new one starts.
   kNotInitialized = 0,
   /// @brief Tracking frames against the map.
   kTracking = 1,
-  /// @brief The track was lost: the run ends.
+  /// @brief The track was lost on this frame: its map was kept or reset, and the next frame
+  ///        starts a new one. Only a frame's result has it.
   kLost = 2,
   /// @brief The number of states (a sentinel, not a state).
   kCount = 3,
@@ -81,6 +82,17 @@ struct Fates {
   std::vector<std::int64_t> point;
 };
 
+/// @brief The map a lost track closed, as a run records it on the frame it was lost on
+///        (`slam_it.edge.pipeline.LostSummary`).
+struct LostSummary {
+  /// @brief The map's keyframes then.
+  std::int64_t keyframes{0};
+  /// @brief Its points.
+  std::int64_t points{0};
+  /// @brief Whether it was reset, having `reset_keyframes` keyframes or fewer, rather than kept.
+  bool reset{false};
+};
+
 /// @brief How the stages went on one frame (`slam_it.edge.pipeline.FrameSummary`); each
 ///        empty where the stage did not run.
 struct FrameSummary {
@@ -96,14 +108,18 @@ struct FrameSummary {
   std::optional<LocalMapSummary> local_map;
   /// @brief Local mapping, on a keyframe after the first.
   std::optional<MappingSummary> mapping;
+  /// @brief The map closed, on the frame the track was lost on.
+  std::optional<LostSummary> lost;
 };
 
 /// @brief What tracking one frame gave (`slam_it.edge.pipeline.FrameResult`).
 struct FrameResult {
   /// @brief The frame's time.
   double timestamp{0.0};
-  /// @brief The pipeline's state after the frame.
+  /// @brief The frame's: the pipeline's after it, or `kLost` on the frame the track was lost on.
   State state{State::kNotInitialized};
+  /// @brief The map it was tracked in, or lost from; empty when there was none.
+  std::optional<std::int64_t> map;
   /// @brief The frame's `T_cam_world`, if it was tracked.
   std::optional<Eigen::Matrix4d> pose;
   /// @brief Its keypoints matched to map points.
@@ -126,8 +142,8 @@ struct FrameResult {
 ///        why (a `Removal` code) or -1.
 using Life = std::array<std::int64_t, 3>;
 
-/// @brief Every point and keyframe a run made, by id, where each last was, and its life
-///        (`slam_it.edge.pipeline.Lifetimes`).
+/// @brief Every point and keyframe a run made, by the run's id (continuing across maps), where
+///        each last was, its life and its map (`slam_it.edge.pipeline.Lifetimes`).
 struct Lifetimes {
   /// @brief Every point, its last position in the world frame.
   std::vector<Eigen::Vector3d> points;
@@ -139,6 +155,10 @@ struct Lifetimes {
   std::vector<Eigen::Matrix4d> keyframe_poses;
   /// @brief Their lives.
   std::vector<Life> keyframe_lives;
+  /// @brief The map each point was made in.
+  std::vector<std::int64_t> point_maps;
+  /// @brief The map each keyframe was made in.
+  std::vector<std::int64_t> keyframe_maps;
 };
 
 /// @brief The edge pipeline for one sequence (`slam_it.edge.pipeline.Pipeline`).
@@ -163,18 +183,18 @@ class Pipeline {
   /// @return Its pose, or why there is none; a stage's error.
   [[nodiscard]] foundations::Result<FrameResult> track(const Frame& frame);
 
-  /// @brief Where the pipeline is.
+  /// @brief Where the pipeline is: never `kLost`, which a lost frame's result has.
   /// @return The state.
   [[nodiscard]] State state() const { return state_; }
 
-  /// @brief The map, once initialised.
+  /// @brief The current map: none until one starts, and from a lost one to the next.
   /// @return The map, if any.
   [[nodiscard]] const std::optional<Map>& map() const { return map_; }
 
-  /// @brief Every point and keyframe the run has made, with their lives
+  /// @brief Every point and keyframe the run has made, with their lives and maps
   ///        (`slam_it.edge.pipeline.Pipeline.lifetimes`).
-  /// @return The points and keyframes by id: those in the map where the map has them, the
-  ///         removed ones where they last were.
+  /// @return The points and keyframes by the run's id: those in the current map where it has
+  ///         them, the others where they last were.
   [[nodiscard]] Lifetimes lifetimes() const;
 
  private:
@@ -269,6 +289,13 @@ class Pipeline {
   /// @brief Date what this frame made and removed, and empty the map's archive of removals.
   void date();
 
+  /// @brief Close the map the track was lost in, on this frame: keep it, or reset it if it
+  ///        has `reset_keyframes` keyframes or fewer (its lives end, as `Removal::kReset`). The
+  ///        tracking state goes with it, so the next frame starts a new map.
+  /// @param m The map, taken out of the pipeline.
+  /// @return The closed map's summary.
+  LostSummary close(const Map& m);
+
   /// @brief Track a frame against the map; insert a keyframe if one is needed (and time it).
   /// @param frame The frame.
   /// @return The tracked frame, if any, whether it became a keyframe, the time mapping it
@@ -301,16 +328,29 @@ class Pipeline {
   std::optional<std::int64_t> since_recovery_;
   /// @brief Frames given so far.
   std::int64_t frames_{0};
-  /// @brief Each point's life, by id.
+  /// @brief The current map's id, if there is one.
+  std::optional<std::int64_t> map_id_;
+  /// @brief The maps started so far: the next one's id.
+  std::int64_t maps_{0};
+  /// @brief The run's id of the current map's keyframe 0.
+  std::int64_t kf_base_{0};
+  /// @brief The run's id of the current map's point 0.
+  std::int64_t pt_base_{0};
+  /// @brief Each point's life, by the run's id.
   std::vector<Life> point_lives_;
-  /// @brief Each keyframe's life, by id.
+  /// @brief Each keyframe's life, by the run's id.
   std::vector<Life> keyframe_lives_;
-  /// @brief Where each removed point last was, by id (unset for the others).
-  std::vector<Eigen::Vector3d> gone_points_;
-  /// @brief Each removed keyframe's time, by id (unset for the others).
-  std::vector<double> gone_times_;
-  /// @brief Each removed keyframe's last pose, by id (unset for the others).
-  std::vector<Eigen::Matrix4d> gone_poses_;
+  /// @brief The map each point was made in, by the run's id.
+  std::vector<std::int64_t> point_maps_;
+  /// @brief The map each keyframe was made in, by the run's id.
+  std::vector<std::int64_t> keyframe_maps_;
+  /// @brief Where each point no longer in the current map last was, by the run's id: removed,
+  ///        or in a closed map (unset for the others).
+  std::vector<Eigen::Vector3d> past_points_;
+  /// @brief The same keyframes' times (unset for the others).
+  std::vector<double> past_times_;
+  /// @brief Their last poses (unset for the others).
+  std::vector<Eigen::Matrix4d> past_poses_;
 };
 
 }  // namespace slam_it::edge

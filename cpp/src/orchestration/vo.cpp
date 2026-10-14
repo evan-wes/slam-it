@@ -409,12 +409,16 @@ Result<eval::runs::JsonObject> summary_json(const edge::FrameSummary& summary) {
   const auto local_map = [](const edge::LocalMapSummary& s) {
     return nested({{"in_view", s.in_view}, {"matches", s.matches}, {"inliers", s.inliers}});
   };
-  const std::array<std::pair<const char*, Result<JsonValue>>, 5> stages = {{
+  const auto lost = [](const edge::LostSummary& s) {
+    return nested({{"keyframes", s.keyframes}, {"points", s.points}, {"reset", s.reset}});
+  };
+  const std::array<std::pair<const char*, Result<JsonValue>>, 6> stages = {{
       {"init", or_null(summary.init, init_json)},
       {"motion", or_null(summary.motion, motion)},
       {"pnp", or_null(summary.pnp, pnp_json)},
       {"local_map", or_null(summary.local_map, local_map)},
       {"mapping", or_null(summary.mapping, mapping_json)},
+      {"lost", or_null(summary.lost, lost)},
   }};
   eval::runs::JsonObject out;
   out.emplace_back("placed_by", summary.placed_by ? name_json(edge::name(*summary.placed_by))
@@ -428,7 +432,8 @@ Result<eval::runs::JsonObject> summary_json(const edge::FrameSummary& summary) {
   return out;
 }
 
-/// @brief Record a frame's result: its diagnostics, and its pose if it was tracked.
+/// @brief Record a frame's result: its diagnostics, and its pose and map if it was tracked; a
+///        reset map's poses are dropped, as ORB-SLAM3 drops them.
 /// @param out The run.
 /// @param result The result.
 /// @param read_seconds The time delivering its images took, in seconds.
@@ -438,6 +443,7 @@ Result<void> record(eval::runs::Run& out, const edge::FrameResult& result, doubl
                     double build_seconds) {
   out.diagnostics.push_back({{"timestamp", result.timestamp},
                              {"state", std::string(edge::name(result.state))},
+                             {"map", count_or_null(result.map)},
                              {"tracked", result.tracked},
                              {"keyframe", result.keyframe},
                              {"read_seconds", read_seconds},
@@ -451,19 +457,26 @@ Result<void> record(eval::runs::Run& out, const edge::FrameResult& result, doubl
   for (auto& item : *summary) {
     out.diagnostics.back().push_back(std::move(item));
   }
-  if (!result.pose.has_value()) {
-    return {};
+  if (result.pose.has_value() && result.map.has_value()) {
+    const auto pose = foundations::se3::inverse(*result.pose);
+    if (!pose) {
+      return std::unexpected(pose.error());
+    }
+    out.timestamps.push_back(result.timestamp);
+    out.poses.push_back(*pose);
+    out.pose_maps.push_back(*result.map);
   }
-  const auto pose = foundations::se3::inverse(*result.pose);
-  if (!pose) {
-    return std::unexpected(pose.error());
+  if (result.summary.lost && result.summary.lost->reset) {  // its frames' poses go with it
+    while (!out.pose_maps.empty() && out.pose_maps.back() == result.map) {
+      out.timestamps.pop_back();
+      out.poses.pop_back();
+      out.pose_maps.pop_back();
+    }
   }
-  out.timestamps.push_back(result.timestamp);
-  out.poses.push_back(*pose);
   return {};
 }
 
-/// @brief Record every keyframe and point the run made, with their lives.
+/// @brief Record every keyframe and point the run made, with their lives and maps.
 /// @param out The run.
 /// @param lives The pipeline's lifetimes.
 /// @return Nothing, or a pose's inversion's error.
@@ -480,6 +493,8 @@ Result<void> record_lives(eval::runs::Run& out, const edge::Lifetimes& lives) {
   out.points = lives.points;
   out.point_lives = lives.point_lives;
   out.keyframe_lives = lives.keyframe_lives;
+  out.point_maps = lives.point_maps;
+  out.keyframe_maps = lives.keyframe_maps;
   return {};
 }
 
@@ -502,8 +517,8 @@ Result<void> write_features(eval::runs::FeatureWriter& features, const edge::Fra
   return features.write(xy, level, fate, fates.point);
 }
 
-/// @brief Track a sequence's frames, from the first asked for, until the end or the track
-///        is lost.
+/// @brief Track a sequence's frames, from the first asked for, to the end: a lost track
+///        closes its map, and the next frame starts a new one.
 /// @param source The sequence.
 /// @param pipeline The pipeline.
 /// @param request The request.
@@ -548,9 +563,6 @@ Result<void> track(const Source& source, edge::Pipeline& pipeline, const Request
       if (const auto written = write_features(*features, *frame, result->fates); !written) {
         return written;
       }
-    }
-    if (result->state == edge::State::kLost) {
-      break;
     }
   }
   return {};

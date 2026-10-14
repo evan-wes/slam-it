@@ -18,7 +18,6 @@ fn from_depth_puts_a_point_at_every_keypoint() {
     let f = frame(0, true);
     let options = Options {
         min_init_features_depth: 10,
-        min_init_depth_points: 10,
         ..Options::default()
     };
     let attempt = initialize_from_depth(&f, &options).unwrap();
@@ -45,11 +44,12 @@ fn from_depth_puts_a_point_at_every_keypoint() {
         ..options
     };
     assert_eq!(outcome(&exactly), Outcome::TooFewFeatures); // more than, as N > 500
-    let shallow = Options {
-        min_init_depth_points: POINTS + 1,
-        ..options
-    };
-    assert_eq!(outcome(&shallow), Outcome::TooLittleDepth);
+    let mut shallow = f.clone();
+    for depth in shallow.depth.iter_mut().skip(5) {
+        *depth = f64::NAN;
+    }
+    let thin = initialize_from_depth(&shallow, &options).unwrap();
+    assert_eq!(thin.started.unwrap().map.points(), 5); // a map of the points it has
     let other = Options {
         levels: 4,
         ..Options::default()

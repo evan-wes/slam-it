@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -16,7 +16,7 @@ from slam_it.edge.map import Removal
 from slam_it.edge.pipeline import Fate, State
 from slam_it.eval import runs, tum
 from slam_it.foundations import so3
-from slam_it.foundations.errors import InvalidInputError
+from slam_it.foundations.errors import DegenerateError, InvalidInputError
 
 
 def _poses(n: int, seed: int = 0) -> NDArray[np.float64]:
@@ -52,13 +52,24 @@ def _run(n: int = 12) -> runs.Run:
         keyframe_poses=_poses(n)[::4],
         points=np.random.default_rng(1).normal(size=(30, 3)),
         settings={"orb": {"n_features": 1000}, "window": 7},
-        diagnostics=[{"timestamp": float(t), "tracked": 120 + k} for k, t in enumerate(times)],
+        diagnostics=[
+            {"timestamp": float(t), "map": int(k >= n // 2), "tracked": 120 + k}
+            for k, t in enumerate(times)
+        ],
         peak_memory=123_456_789,
         cpus=[4, 5, 6, 7],
         memory_cap=8 * 2**30,
         point_lives=_lives(30, n, gone),
         keyframe_lives=np.array([[0, -1, -1], [4, 9, 0], [8, -1, -1]], dtype=np.int64),
+        pose_maps=np.repeat([0, 1], [n // 2, n - n // 2]).astype(np.int64),
+        keyframe_maps=np.array([0, 0, 1], dtype=np.int64),
+        point_maps=np.repeat([0, 1], 15).astype(np.int64),
     )
+
+
+def _named(maps: Sequence[object]) -> list[dict[str, Any]]:
+    """Diagnostics naming each frame's map."""
+    return [{"timestamp": 0.05 * k, "map": m} for k, m in enumerate(maps)]
 
 
 def test_round_trip(tmp_path: Path) -> None:
@@ -79,6 +90,8 @@ def test_round_trip(tmp_path: Path) -> None:
     np.testing.assert_array_equal(back.points, run.points)
     np.testing.assert_array_equal(back.point_lives, run.point_lives)
     np.testing.assert_array_equal(back.keyframe_lives, run.keyframe_lives)
+    for name in ("pose_maps", "keyframe_maps", "point_maps"):
+        np.testing.assert_array_equal(getattr(back, name), getattr(run, name))
     assert back.settings == run.settings
     assert back.diagnostics == run.diagnostics
     assert (back.peak_memory, back.cpus, back.memory_cap) == (
@@ -115,20 +128,34 @@ def test_the_lost_state_is_the_pipelines() -> None:
 
 
 def test_tracking_says_what_of_a_sequence_a_run_ran_and_tracked() -> None:
-    """Times since the sequence's first frame: tracked from the second, lost at the fourth."""
-    times = np.asarray(100.0 + 0.1 * np.arange(6), dtype=np.float64)
-    states = ["not_initialized", "tracking", "tracking", "lost"]
-    diagnostics = [{"timestamp": float(t), "state": s} for t, s in zip(times, states, strict=False)]
+    """Times since the sequence's first frame, a segment per map with a tracked frame.
+
+    Map 0 tracks from the second frame and is lost at the fourth, kept; map 1 starts at the
+    fifth, is lost at the sixth and reset, its frames' poses dropped; map 2 tracks the last two.
+    """
+    times = np.asarray(100.0 + 0.1 * np.arange(9), dtype=np.float64)
+    states = ["not_initialized", "tracking", "tracking", "lost", "not_initialized"]
+    states += ["tracking", "lost", "tracking", "tracking"]
+    diagnostics = [{"timestamp": float(t), "state": s} for t, s in zip(times, states, strict=True)]
+    tracked = [1, 2, 7, 8]
     run = runs.Run(
-        "tum", "s", "monocular", "python", times[1:3], _poses(2), diagnostics=diagnostics
-    )
+        "tum", "s", "monocular", "python", times[tracked], _poses(4), diagnostics=diagnostics,
+        keyframe_lives=np.array([[1, -1, -1], [5, 6, 3], [7, -1, -1]], dtype=np.int64),
+        pose_maps=np.array([0, 0, 2, 2], dtype=np.int64),
+        keyframe_maps=np.array([0, 1, 2], dtype=np.int64),
+    )  # fmt: skip
     span = runs.tracking(run, times)
-    assert (span.frames, span.tracked, span.lost) == (4, 2, True)
-    assert (span.tracked_from, span.tracked_to, span.ran_to, span.seconds) == (0.1, 0.2, 0.3, 0.5)
-    never = runs.tracking(replace(run, timestamps=times[:0], poses=_poses(0)), times)
-    assert (never.tracked, never.tracked_from, never.tracked_to) == (0, None, None)
-    unstated = [{"timestamp": float(t)} for t in times[:4]]  # the format makes state optional
-    assert runs.tracking(replace(run, diagnostics=unstated), times).lost is False
+    assert (span.frames, span.tracked, span.losses, span.resets) == (9, 4, 2, 1)
+    assert span.segments == (runs.Segment(0, 2, 0.1, 0.2), runs.Segment(2, 2, 0.7, 0.8))
+    assert (span.tracked_from, span.tracked_to, span.ran_to, span.seconds) == (0.1, 0.8, 0.8, 0.8)
+    never = runs.tracking(
+        replace(run, timestamps=times[:0], poses=_poses(0), pose_maps=np.zeros(0, np.int64)), times
+    )
+    assert (never.tracked, never.segments, never.tracked_from, never.tracked_to) == (
+        0, (), None, None,
+    )  # fmt: skip
+    unstated = [{"timestamp": float(t)} for t in times]  # the format makes state optional
+    assert runs.tracking(replace(run, diagnostics=unstated), times).losses == 0
 
 
 def _record_features(folder: Path) -> None:
@@ -273,20 +300,121 @@ def test_evaluate_scores_a_noisy_run() -> None:
     frames = np.arange(0, len(truth_times), 10)
     estimate = truth[frames].copy()
     estimate[:, :3, 3] += 0.01 * np.random.default_rng(2).normal(size=(len(frames), 3))
-    run = runs.Run("synthetic", "circle", "rgbd", "python", truth_times[frames] + 0.001, estimate)
+    run = runs.Run(
+        "synthetic", "circle", "rgbd", "python", truth_times[frames] + 0.001, estimate,
+        pose_maps=np.zeros(len(frames), dtype=np.int64),
+    )  # fmt: skip
     scored = runs.evaluate(run, truth_times, truth)
     assert scored.matched == len(frames)
-    assert 0.01 < scored.absolute.rmse < 0.025
-    assert scored.absolute.scale == 1.0
-    assert scored.relative.delta == pytest.approx(0.05)  # the run's frame period
-    assert len(scored.relative.pairs) == len(frames) - 1
+    assert 0.01 < scored.ate_rmse < 0.025
+    (only,) = scored.maps
+    assert (only.map, only.absolute.scale, only.absolute.rmse) == (0, 1.0, scored.ate_rmse)
+    assert only.relative is not None
+    assert only.relative.delta == pytest.approx(0.05)  # the run's frame period
+    assert len(only.relative.pairs) == len(frames) - 1
+    assert scored.rpe_translation_rmse == only.relative.translation_rmse
 
 
-def test_the_ate_alone_scores_against_a_reference_too_sparse_for_the_rpe() -> None:
-    """The ATE alone scores where the RPE has no pair a frame period apart.
+def _circle(times: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Return true poses on a rising circle, turning, at `times`."""
+    out = np.tile(np.eye(4), (len(times), 1, 1))
+    out[:, :3, :3] = so3.exp(np.column_stack([0.1 * times, 0.3 * times, np.zeros_like(times)]))
+    out[:, :3, 3] = np.column_stack([np.cos(times), np.sin(times), 0.1 * times])
+    return out
 
-    A 10 Hz reference beside 30 Hz frames matches every third frame, none a period apart, so
-    :func:`runs.evaluate` refuses.
+
+def test_each_map_is_aligned_on_its_own() -> None:
+    """Two maps, each in its own frame and scale, score as each alone; the pooled RMSE pools.
+
+    A monocular run's second map is the truth moved by a similarity of its own: aligned with
+    the first's, it would be far off; on its own, it is as exact as the first.
+    """
+    times = np.arange(0.0, 8.0, 0.05)
+    truth = _circle(times)
+    estimate = truth.copy()
+    rng = np.random.default_rng(4)
+    estimate[:, :3, 3] += 0.01 * rng.normal(size=(len(times), 3))
+    second = times >= 4.0
+    moved = np.eye(4)
+    moved[:3, :3] = so3.exp(np.array([0.4, -1.1, 2.0]))
+    moved[:3, 3] = [3.0, -2.0, 0.5]
+    estimate[second] = moved @ estimate[second]
+    estimate[second, :3, 3] *= 2.5  # its own scale, centres and all
+    run = runs.Run(
+        "synthetic", "two", "monocular", "python", times, estimate,
+        pose_maps=second.astype(np.int64),
+    )  # fmt: skip
+    scored = runs.evaluate(run, times, truth)
+    assert [m.map for m in scored.maps] == [0, 1]
+    assert scored.unscored == ()
+    alone = [
+        runs.evaluate(
+            replace(
+                run,
+                timestamps=times[part],
+                poses=estimate[part],
+                pose_maps=np.zeros(np.count_nonzero(part), dtype=np.int64),
+            ),
+            times,
+            truth,
+        )
+        for part in (~second, second)
+    ]
+    for each, single in zip(scored.maps, alone, strict=True):
+        assert each.absolute.rmse == single.ate_rmse < 0.02
+    assert scored.maps[1].absolute.scale == pytest.approx(1 / 2.5, rel=0.01)
+    errors = np.concatenate([m.absolute.errors for m in scored.maps])
+    assert scored.ate_rmse == pytest.approx(np.sqrt(np.mean(errors**2)))
+    assert scored.matched == len(times)
+    whole = runs.evaluate(
+        replace(run, pose_maps=np.zeros(len(times), dtype=np.int64)), times, truth
+    )
+    assert whole.ate_rmse > 10 * scored.ate_rmse  # one alignment for both is far off
+
+
+def test_a_map_too_short_or_straight_to_align_is_unscored() -> None:
+    """A map of two matched frames, or one whose centres lie on a line, is left unscored.
+
+    With no map left, the run cannot be scored.
+    """
+    times = np.arange(0.0, 3.0, 0.05)
+    truth = _circle(times)
+    straight = truth.copy()
+    straight[40:, :3, 3] = np.outer(times[40:], [1.0, 0.0, 0.0])  # map 2: a line
+    maps = np.zeros(len(times), dtype=np.int64)
+    maps[20:22], maps[22:40], maps[40:] = 1, 2, 3
+    run = runs.Run("synthetic", "parts", "rgbd", "python", times, straight, pose_maps=maps)
+    scored = runs.evaluate_absolute(run, times, truth)
+    assert [m.map for m in scored.maps] == [0, 2]
+    assert scored.unscored == (1, 3)
+    assert all(m.relative is None for m in scored.maps)  # the ATE alone
+    lone = replace(run, timestamps=times[20:22], poses=straight[20:22], pose_maps=maps[20:22])
+    with pytest.raises(DegenerateError, match="no map can be aligned: map 1: 2 frames matched"):
+        runs.evaluate_absolute(lone, times, truth)
+    line = replace(run, timestamps=times[40:], poses=straight[40:], pose_maps=maps[40:])
+    with pytest.raises(DegenerateError, match="map 3: its centres, or the truth's, are on a line"):
+        runs.evaluate(line, times, truth)
+
+
+@pytest.mark.parametrize("delta", [-1.0, 0.0, np.nan, np.inf])
+def test_evaluate_refuses_an_rpe_interval_out_of_range(delta: float) -> None:
+    """A bad `rpe_delta` is refused, never read as a reference too sparse for the RPE."""
+    times = np.arange(0.0, 3.0, 0.05)
+    truth = _circle(times)
+    run = runs.Run(
+        "synthetic", "circle", "rgbd", "python", times, truth,
+        pose_maps=np.zeros(len(times), dtype=np.int64),
+    )  # fmt: skip
+    assert runs.evaluate(run, times, truth, rpe_delta=0.1).rpe_translation_rmse is not None
+    with pytest.raises(InvalidInputError, match="rpe_delta: must be positive and finite"):
+        runs.evaluate(run, times, truth, rpe_delta=delta)
+
+
+def test_a_reference_too_sparse_for_the_rpe_still_places_the_run() -> None:
+    """The ATE alone places a run where the RPE has no pair a frame period apart.
+
+    A 10 Hz reference beside 30 Hz frames matches every third frame, none a period apart: the
+    run is scored by its ATE, its RPE None (review panel finding A10, round two).
     """
     frame_times = np.arange(0.0, 6.0, 1 / 30)
     reference_times = frame_times[::3]
@@ -294,19 +422,28 @@ def test_the_ate_alone_scores_against_a_reference_too_sparse_for_the_rpe() -> No
     poses = np.tile(np.eye(4), (len(frame_times), 1, 1))
     poses[:, :3, :3] = so3.exp(angles)
     poses[:, :3, 3] = np.column_stack([np.cos(frame_times), np.sin(frame_times), frame_times])
-    run = runs.Run("tum", "sparse", "rgbd", "python", frame_times, poses)
-    with pytest.raises(InvalidInputError, match="later"):
-        runs.evaluate(run, reference_times, poses[::3])
-    scored = runs.evaluate_absolute(run, reference_times, poses[::3])
-    assert scored.matched == len(reference_times)
-    assert scored.absolute.rmse == pytest.approx(0.0, abs=1e-9)
+    run = runs.Run(
+        "tum", "sparse", "rgbd", "python", frame_times, poses,
+        pose_maps=np.zeros(len(frame_times), dtype=np.int64),
+    )  # fmt: skip
+    for scored in (
+        runs.evaluate(run, reference_times, poses[::3]),
+        runs.evaluate_absolute(run, reference_times, poses[::3]),
+    ):
+        assert scored.matched == len(reference_times)
+        assert scored.ate_rmse == pytest.approx(0.0, abs=1e-9)
+        assert scored.maps[0].relative is None
+        assert (scored.rpe_translation_rmse, scored.rpe_rotation_rmse) == (None, None)
 
 
 def test_evaluate_rejects_a_run_whose_times_do_not_ascend() -> None:
     """The run's times are checked before they are paired with the ground truth."""
     times = np.arange(0.0, 1.0, 0.05)
     poses = np.tile(np.eye(4), (len(times), 1, 1))
-    run = runs.Run("synthetic", "still", "rgbd", "python", times[::-1], poses)
+    run = runs.Run(
+        "synthetic", "still", "rgbd", "python", times[::-1], poses,
+        pose_maps=np.zeros(len(times), dtype=np.int64),
+    )  # fmt: skip
     with pytest.raises(InvalidInputError, match="run timestamps: must ascend"):
         runs.evaluate(run, times, poses)
 
@@ -344,13 +481,30 @@ def test_evaluate_rejects_a_run_whose_times_do_not_ascend() -> None:
             "keyframe_lives: why a life ended must be a removal code",
         ),
         (
-            {"keyframe_lives": np.array([[0, -1, -1], [4, 9, 3], [8, -1, -1]], dtype=np.int64)},
+            {"keyframe_lives": np.array([[0, -1, -1], [4, 9, 4], [8, -1, -1]], dtype=np.int64)},
             "keyframe_lives: why a life ended must be a removal code",
+        ),
+        ({"pose_maps": np.zeros(11, dtype=np.int64)}, r"pose_maps: expected int64 \(12,\)"),
+        ({"pose_maps": np.zeros(12)}, r"pose_maps: expected int64 \(12,\)"),
+        (
+            {"keyframe_maps": np.array([0, 1, 0], dtype=np.int64)},
+            "keyframe_maps: maps must be numbers from 0, never descending; row 2 is 0, after 1",
+        ),
+        (
+            {"point_maps": np.full(30, -1, dtype=np.int64)},
+            "point_maps: maps must be numbers from 0, never descending",
         ),
         (
             {"keyframe_lives": np.array([[0, -1, -1], [4, -1, -1], [12, -1, -1]], dtype=np.int64)},
             "keyframe_lives: a life must start in one of the run's 12 frames",
         ),
+        (
+            {"diagnostics": _named([0] * 6 + [-1] + [1] * 5)},
+            r"diagnostics\[6\]: map: expected a map number or null, got -1",
+        ),
+        ({"diagnostics": _named([0] * 6 + [True] * 6)}, "expected a map number or null"),
+        ({"diagnostics": _named([0] * 6 + [1, 0] + [1] * 4)}, "map 0 after map 1"),
+        ({"diagnostics": _named([0] * 6 + [None] * 6)}, "no frame names map 1"),
     ],
 )
 def test_write_run_checks_everything_before_writing(
@@ -362,6 +516,27 @@ def test_write_run_checks_everything_before_writing(
     assert not (tmp_path / "run").exists()
 
 
+def test_a_run_s_trajectory_marks_where_each_map_begins(tmp_path: Path) -> None:
+    """A ``# map <n>`` line comes before each map's first pose; readers skip it as a comment."""
+    run = _run()
+    runs.write_run(tmp_path, run)
+    lines = (tmp_path / "trajectory.txt").read_text().splitlines()
+    assert [k for k, line in enumerate(lines) if line.startswith("# map")] == [1, 8]
+    assert (lines[1], lines[8]) == ("# map 0", "# map 1")
+    times, _ = runs.read_trajectory(tmp_path / "trajectory.txt")
+    np.testing.assert_array_equal(times, run.timestamps)
+
+
+def test_a_run_names_its_maps_and_those_reset() -> None:
+    """``maps`` gives every map started, kept or reset; ``reset_maps`` those reset."""
+    run = _run()
+    assert run.maps().tolist() == [0, 1]
+    assert run.reset_maps().tolist() == []
+    lives = run.keyframe_lives.copy()
+    lives[2] = [8, 11, Removal.RESET]
+    assert replace(run, keyframe_lives=lives).reset_maps().tolist() == [1]
+
+
 def test_write_run_replaces_files_whole(tmp_path: Path) -> None:
     """Writing again replaces every file and leaves no temporary file."""
     runs.write_run(tmp_path, _run())
@@ -370,10 +545,13 @@ def test_write_run_replaces_files_whole(tmp_path: Path) -> None:
     assert sorted(p.name for p in tmp_path.iterdir()) == [
         "diagnostics.jsonl",
         "keyframe_lives.npy",
+        "keyframe_maps.npy",
         "keyframe_poses.npy",
         "keyframes.npy",
         "point_lives.npy",
+        "point_maps.npy",
         "points.npy",
+        "pose_maps.npy",
         "run.json",
         "trajectory.txt",
     ]
@@ -382,7 +560,7 @@ def test_write_run_replaces_files_whole(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("edit", "message"),
     [
-        (lambda info: info.update(version=2), "version 3"),
+        (lambda info: info.update(version=3), "version 4"),
         (lambda info: info.update(format="other"), "format"),
         (lambda info: info.update(mode="lidar"), "mode"),
         (lambda info: info.update(backend="java"), "backend"),
@@ -417,6 +595,11 @@ def test_read_run_rejects_unknown_info(tmp_path: Path, edit: object, message: st
         ("run.json", "[]", "expected a JSON object"),
         ("diagnostics.jsonl", '{"timestamp": 1}\n{oops\n', "diagnostics.jsonl:2: not JSON"),
         ("diagnostics.jsonl", "[1]\n", "expected an object with a timestamp"),
+        (
+            "diagnostics.jsonl",
+            "".join(f'{{"timestamp": {k}, "map": 0}}\n' for k in range(12)),
+            "diagnostics.jsonl: no frame names map 1, which has keyframes",
+        ),
         ("points.npy", "not an array", "points.npy: not a readable .npy array"),
         ("points.npy", "", "points.npy: not a readable .npy array"),
         ("run.json", "\udcff", "run.json: not UTF-8 text"),
@@ -452,6 +635,17 @@ def test_read_run_checks_the_lives(tmp_path: Path) -> None:
     lives[0, 0] = 99
     np.save(tmp_path / "point_lives.npy", lives)
     with pytest.raises(InvalidInputError, match="a life must start in one of the run's 12 frames"):
+        runs.read_run(tmp_path)
+
+
+def test_read_run_checks_the_maps(tmp_path: Path) -> None:
+    """Maps of another dtype, or descending, are refused."""
+    runs.write_run(tmp_path, _run())
+    np.save(tmp_path / "pose_maps.npy", np.zeros(12))
+    with pytest.raises(InvalidInputError, match=r"expected int64 \(N\)"):
+        runs.read_run(tmp_path)
+    np.save(tmp_path / "pose_maps.npy", np.arange(12, dtype=np.int64)[::-1].copy())
+    with pytest.raises(InvalidInputError, match="maps must be numbers from 0, never descending"):
         runs.read_run(tmp_path)
 
 

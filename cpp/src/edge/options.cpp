@@ -75,7 +75,7 @@ foundations::Result<void> check_options(const Options& options) {
       {{"seed", options.seed},
        {"min_init_features", options.min_init_features},
        {"min_init_features_depth", options.min_init_features_depth},
-       {"min_init_depth_points", options.min_init_depth_points}}};
+       {"reset_keyframes", options.reset_keyframes}}};
   for (const auto& [setting, value] : may_be_zero) {
     if (auto ok = foundations::check_range(setting, value, 0, kMaxSetting); !ok) {
       return ok;

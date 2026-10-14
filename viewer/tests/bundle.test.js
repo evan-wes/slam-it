@@ -67,8 +67,15 @@ test("each golden backend's arrays agree with its header", async () => {
   for (const [name, info] of Object.entries(bundle.info.backends)) {
     const run = await loadBackend(fetchGolden, await loadTrack(fetchGolden, bundle, name));
     assert.equal(run.poseFrames.length, info.tracked, name);
+    assert.equal(run.poseMaps.length, info.tracked, name);
     assert.equal(run.keyframeLives.length / 3, info.made.keyframes, name);
+    assert.equal(run.keyframeMaps.length, info.made.keyframes, name);
     assert.equal(run.pointLives.length / 3, info.made.points, name);
+    assert.equal(run.pointMaps.length, info.made.points, name);
+    // Each map's tracked frames are its poses'.
+    for (const map of info.maps) {
+      assert.equal(run.poseMaps.filter((m) => m === map.id).length, map.tracked, name);
+    }
     assert.deepEqual(
       run.records.frame,
       Array.from({ length: info.frames[1] - info.frames[0] }, (_, i) => info.frames[0] + i),
@@ -87,7 +94,7 @@ test("the loader refuses another format, a mis-shaped array, and an unknown back
   const older = new TextEncoder().encode(JSON.stringify({ ...info, version: 0 })).buffer;
   await assert.rejects(
     loadBundle(over({ "bundle.json": older })),
-    /expected slam-it-bundle version 1/,
+    /expected slam-it-bundle version 2/,
   );
   const short = npy("<f4", "2,", new Float32Array([0, 1]));
   await assert.rejects(

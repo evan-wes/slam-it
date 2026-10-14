@@ -26,7 +26,9 @@ that loop over a whole sequence without Python.
   keyframe;
 - **no bag of words**: no relocalisation against the whole map, no loop closure (the classic
   rung's, milestone 4). When the motion model fails, PnP against the local map recovers the
-  frame if it can; after `lost_frames` failures in a row the track is lost and the run ends;
+  frame if it can; after `lost_frames` failures in a row the track is lost and the run ends
+  (since milestone 2A's A2, the map closes instead and the next frame starts a new one:
+  `docs/notes/test-set.md`);
 - **one thread**: mapping runs after tracking on each keyframe, so a run is deterministic and
   every backend can be compared with every other frame by frame.
 
@@ -54,6 +56,7 @@ has a compiled twin that the tests call on the same state.
    500 keypoints, at least 100 of them with depth, is the first keyframe, a point at each
    keypoint with depth, metric from the start. Lite: ORB-SLAM needs no depths, since it
    resets a map lost within its first five keyframes; a lite run would end there instead.
+   (Since milestone 2A's A2 the lite pipeline resets such a map too, and needs no depths.)
    Monocular: a reference frame and a later one are matched, each reference keypoint
    searched where it last matched (ORB-SLAM's `vbPrevMatched`), and initialised by rung 0's
    two-view (`twoview.initialize`: E or H by GRIC). The chosen motion's inliers in front of

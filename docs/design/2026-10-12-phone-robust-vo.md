@@ -20,6 +20,18 @@ Decided with evan-wes on 2026-10-12:
 - **The worker** runs a Stray Scanner zip that has depth as RGB-D, and monocular otherwise.
 - **Upload warnings** never refuse an upload.
 
+Decided with evan-wes on 2026-10-13, for A2:
+- **A lost map** is kept, or reset if it has 10 keyframes or fewer, as ORB-SLAM3 resets its
+  active map: its keyframes and points removed, its frames' poses dropped. The 10 is a setting,
+  `reset_keyframes`.
+- **The depth start** is ORB-SLAM's alone: a frame with more than 500 keypoints starts a map,
+  however few have depth. `min_init_depth_points`, which stood in for the reset, goes (open
+  item L13).
+- **Scoring:** each kept map is aligned on its own; the measure reports each map's ATE and one
+  over all their frames, beside the share of the sequence tracked across all maps.
+- **The losses:** the note records which check failed at each loss, from the diagnostics the
+  runs already write.
+
 ## 1. The problem, as measured
 
 The first two phone clips through the demo, both from an iPhone 14 Pro, lost the track early:
@@ -47,7 +59,7 @@ it accurate. These are one recording's results, which A1's test set replaces.
   map.
 - **A lost track:** ORB-SLAM2 relocalises against its map with the bag of words, and resets a
   map lost within its first 5 keyframes; ORB-SLAM3 stores the lost map in its atlas and starts a
-  new one (resetting one of fewer than 10 keyframes), joining the two later if a place is
+  new one (resetting one of 10 keyframes or fewer), joining the two later if a place is
   recognised. Relocalisation and joining are milestone 2B's; the new map is A2's.
 - **Measuring robustness:** ZJU-SenseTime's benchmark (Li et al., 2019) scores tracking
   robustness and relocalisation time beside accuracy; ORB-SLAM3's paper reports the sequences a
@@ -97,17 +109,38 @@ same way, its results kept outside the repo. Results on the public set go in a n
 
 ## 5. A2: a new map after a lost track (all three languages; 0.3.8.0 -> 0.3.9.0)
 
-1. **The pipeline:** a lost track starts a new map, as ORB-SLAM3 does, and a map lost before it
-   has 10 keyframes is reset instead (open item L13). Each map has an id; every frame, keyframe
-   and point records its map's. The run ends only at the sequence's end.
-2. **The run format, version 4:** the map id per frame, keyframe and point; scores per map (each
-   map its own alignment) and the share of the sequence tracked across all.
-3. **The bake and the viewer:** a backend's frames shown as segments, one per map, on the
-   timeline; the scene shows the map of the frame shown.
-4. **The worker's summary and the status page:** the segments tracked, for example "tracked
-   2.9-15.9 s and 17.0-27.1 s of your 27.1 s clip".
-5. **Parity:** the gap room, with blank frames that lose the track, holds the three languages
-   to one another across a new map.
+1. **The pipeline:** a lost track closes its map, kept or reset (above), and the next frame
+   starts a new one, as ORB-SLAM3's `CreateMapInAtlas` does. Maps are numbered from 0 in the
+   order they start. Each map numbers its own keyframes and points from 0, so its first
+   keyframe, which local BA holds fixed and culling keeps, is always keyframe 0; the run's ids
+   continue across maps, each map's offset by those before it, as ORB-SLAM3's one counter gives
+   them. The map, mapping and BA code is unchanged. The run ends only at the sequence's end.
+   One difference from ORB-SLAM3 stays: it loses a map of 10 keyframes or fewer at once when
+   its frame-to-frame tracking fails, and gives any other failure up to 3 s of bag-of-words
+   relocalisation (visual-only) before LOST (`Tracking.cc`); the lite pipeline, without the bag
+   of words, gives every map `lost_frames` (5) failed frames, of either kind, of PnP against its
+   local map.
+2. **The run format, version 4:** each frame's diagnostic names its map; `pose_maps.npy`,
+   `keyframe_maps.npy` and `point_maps.npy` give each pose's, keyframe's and point's map; a
+   reset map's keyframes and points are removed as `reset`. `trajectory.txt` marks each map's
+   first pose with a `# map <n>` line, and the frames' `map` keys are checked when a run is
+   written or read, in all three languages. Scores per map (each map its own alignment) and the
+   share of the sequence tracked across all: `runs.evaluate` aligns each map by its ATE alone
+   and gives its RPE where it has pairs (closing A1's deferred A10), raising `Degenerate` when
+   no map can be aligned, and `runs.tracking` gives a segment per map with the losses and the
+   resets.
+3. **The bake and the viewer,** the bundle's version 2: each map moved onto the truth by its own
+   alignment; a backend's frames split by map on the timeline, a reset map's drawn broken; the
+   scene shows the map of the frame shown, or the last before it, the truth only while that
+   map is placed on it.
+4. **The worker's summary and the status page:** the segments tracked, the first 20 of them
+   so that a summary fits the server's 4,096 bytes, for example "Tracked 2.9–15.9 s and
+   17.0–27.1 s of your 27.1 s clip.", the losses and the maps reset.
+5. **Parity:** the lost room, the room with `lost_frames` frames blanked from frames 12 and 31,
+   run with its lost maps reset and with them kept, holds the three languages to one another
+   and to the golden record across new maps; a stereo or RGB-D run reaches a third map. (The
+   gap room, as built, never loses the track.)
+6. **The results** of the test set rerun at seeds 0, 1 and 2, in `docs/notes/test-set.md`.
 
 ## 6. Plan
 

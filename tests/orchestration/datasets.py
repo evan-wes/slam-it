@@ -162,11 +162,42 @@ MOVED_OPTIONS = replace(
     recovery_tracked=40,
     recovery_local_window=4.0,
     ba_min_keyframes=4,
-    min_init_depth_points=150,
+    reset_keyframes=9,
 )
 """The gap room's settings with every one the review panel's fixes added moved off its default
 (finding H21): a native that read one at its default, or hard-coded it, would decide unlike
 Python here, where at the defaults it could not."""
+
+
+LOST_AT = (12, 31)
+"""Where the lost room's two blank stretches begin: ``lost_frames`` of the room's frames from
+each are blanked, so the track is lost on the last of each and the frames after start a new
+map. A stereo or RGB-D run reaches a third map, whose ids follow the first two maps' (review
+panel finding L4); a monocular one starts no map in the frames left after the second. The
+second stretch cuts a monocular run's map 1, started on frame 28, to 3 tracked frames, where
+it tracked 12 to the room's end with one stretch (finding L10): the room's 40 frames leave no
+later place for it."""
+
+KEPT_OPTIONS = replace(OPTIONS, reset_keyframes=0)
+"""The room's settings with every lost map kept: the lost room's lost maps, of a few keyframes
+each, are otherwise reset (ORB-SLAM3's reset of a map lost with 10 keyframes or fewer)."""
+
+
+def lost_frames(rendered: list[room.Frame]) -> list[room.Frame]:
+    """Return the lost room: the room with ``lost_frames`` frames from each :data:`LOST_AT` blanked.
+
+    Parameters
+    ----------
+    rendered : list of tests.edge.room.Frame
+        The room's frames.
+
+    Returns
+    -------
+    list of tests.edge.room.Frame
+        The lost room's frames, as many as the room's, at the same times.
+    """
+    blanked = {at + k for at in LOST_AT for k in range(OPTIONS.lost_frames)}
+    return [blank(f) if k in blanked else f for k, f in enumerate(rendered)]
 
 
 def gap_frames(rendered: list[room.Frame]) -> list[room.Frame]:
@@ -221,9 +252,10 @@ def room_inputs() -> dict[str, Any]:
     Returns
     -------
     dict
-        The frames rendered, the gap, the blank frame, and each room's settings off their
-        defaults: recorded with the runs and checked first, so a change to the rooms reads as
-        one, not as a change to what the pipeline decides.
+        The frames rendered, the gap, the blank frame, where the lost room's blank frames begin
+        and how many, and each room's settings off their defaults: recorded with the runs and
+        checked first, so a change to the rooms reads as one, not as a change to what the
+        pipeline decides.
     """
     defaults = Options().as_dict()
 
@@ -234,6 +266,9 @@ def room_inputs() -> dict[str, Any]:
         "frames": FRAMES,
         "gap": list(GAP),
         "blank_at": BLANK_AT,
+        "lost_at": list(LOST_AT),
+        "lost_frames": OPTIONS.lost_frames,
         "room": moved(OPTIONS),
         "gap_room": moved(GAP_OPTIONS),
+        "kept_room": moved(KEPT_OPTIONS),
     }
