@@ -82,20 +82,12 @@ foundations::orb::Options Pipeline::extraction() const {
 
 Result<FrameResult> Pipeline::track(const Frame& frame) {
   const auto start = std::chrono::steady_clock::now();
-  Step step;
-  if (state_ == State::kNotInitialized) {
-    auto started = initialize(frame);
-    if (!started) {
-      return std::unexpected(std::move(started.error()));
-    }
-    step = std::move(*started);
-  } else if (state_ == State::kTracking) {
-    auto placed = track_frame(frame);
-    if (!placed) {
-      return std::unexpected(std::move(placed.error()));
-    }
-    step = std::move(*placed);
+  // Between frames the state is never kLost: a lost track closes its map on its frame.
+  auto stepped = state_ == State::kTracking ? track_frame(frame) : initialize(frame);
+  if (!stepped) {
+    return std::unexpected(std::move(stepped.error()));
   }
+  Step step = std::move(*stepped);
   date();
   const State state = state_;
   const std::optional<std::int64_t> map_id = map_id_;

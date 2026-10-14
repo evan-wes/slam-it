@@ -249,7 +249,8 @@ def test_every_backend_matches_the_golden_record(
     expected = GOLDEN["cases"][f"{name}/{dataset}/{mode}"]
     floating = {"poses": None, "summaries": None}
     assert record(run, runs_of.features(dataset, mode, backend)) | floating == expected | floating
-    assert_matches_fixture(run.poses.reshape(-1, 16), expected["poses"], GOLDEN["tolerance"])
+    golden = np.reshape(expected["poses"], (-1, 16))  # a run whose every map was reset has none
+    assert_matches_fixture(run.poses.reshape(-1, 16), golden, GOLDEN["tolerance"])
     assert_records_match(summaries(run), expected["summaries"], SOLVER_TOLERANCE)
 
 
@@ -258,35 +259,38 @@ def test_every_backend_matches_the_golden_record(
 def test_a_lost_track_starts_a_new_map_and_the_run_goes_on(
     dataset: str, mode: str, backend: str, lost_runs: RoomRun, kept_runs: RoomRun
 ) -> None:
-    """The blank frames lose the track; the next frames start map 1, tracked to the room's end.
+    """Each blank stretch loses the track; the frames after start the next map.
 
-    At the room's settings, map 0, of a few keyframes, is reset: its keyframes and points end on
-    the lost frame, and its frames' poses are dropped. With every lost map kept, its poses and
-    keyframes stay, and the run tracks in two segments.
+    At the room's settings each lost map, of a few keyframes, is reset: its keyframes and points
+    end on its lost frame, and its frames' poses are dropped. With every lost map kept, its
+    poses and keyframes stay, and the run tracks in a segment per map. A stereo or RGB-D run
+    starts map 2 after the second loss and tracks it to the room's end; a monocular one has
+    too few frames left to start it.
     """
-    lost_at = LOST_AT + OPTIONS.lost_frames - 1
+    losses = [at + OPTIONS.lost_frames - 1 for at in LOST_AT]
     reset_code = runs.REMOVALS.index("reset")
+    last = [0, 1] if mode == "monocular" else [0, 1, 2]
     for runs_of, reset in ((lost_runs, True), (kept_runs, False)):
         run = runs_of(dataset, mode, backend)
         assert len(run.diagnostics) == FRAMES  # the run goes on to the room's end
-        lost = run.diagnostics[lost_at]
-        assert (lost["state"], lost["map"], lost["lost"]["reset"]) == ("lost", 0, reset)
-        assert [d["state"] for d in run.diagnostics].count("lost") == 1
-        after = [d["map"] for d in run.diagnostics[lost_at + 1 :]]
-        assert set(after) <= {None, 1}
-        assert after[-1] == 1
-        assert run.diagnostics[-1]["tracked"] > 0
-        made_in_first = run.keyframe_maps == 0
-        removed = run.keyframe_lives[made_in_first]
-        if reset:
-            assert np.all(removed[:, 1:] == [lost_at, reset_code])
-            assert np.all(run.pose_maps == 1)
-        else:
-            assert np.all(removed[:, 1] == -1)
-            assert sorted(set(run.pose_maps.tolist())) == [0, 1]
+        states = [d["state"] for d in run.diagnostics]
+        assert [k for k, state in enumerate(states) if state == "lost"] == losses
+        for map_id, at in enumerate(losses):
+            lost = run.diagnostics[at]
+            assert (lost["map"], lost["lost"]["reset"]) == (map_id, reset)
+            removed = run.keyframe_lives[run.keyframe_maps == map_id]
+            if reset:
+                assert np.all(removed[:, 1:] == [at, reset_code])
+            else:
+                assert np.all(removed[:, 1] == -1)
+        after = {d["map"] for d in run.diagnostics[losses[-1] + 1 :]}
+        assert after == ({None} if mode == "monocular" else {2})
+        assert run.maps().tolist() == last
+        kept = [m for m in last if not (reset and m < len(losses))]
+        assert sorted(set(run.pose_maps.tolist())) == kept
         span = runs.tracking(run, vo.open_source(dataset, runs_of.sequence(dataset), mode).times)
-        assert [s.map for s in span.segments] == ([1] if reset else [0, 1])
-        assert (span.losses, span.resets) == (1, int(reset))
+        assert [s.map for s in span.segments] == kept
+        assert (span.losses, span.resets) == (2, 2 * int(reset))
 
 
 def test_a_request_crosses_as_a_command_line() -> None:

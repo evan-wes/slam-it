@@ -417,16 +417,13 @@ class Pipeline:
             Its pose, or why there is none.
         """
         start = time.perf_counter()
-        step = _Step(tracked=None, keyframe=False, map_seconds=0.0, summary=FrameSummary())
-        if self.state is State.NOT_INITIALIZED:
-            step = self._initialize(frame)
-        elif self.state is State.TRACKING:
-            step = self._track(frame)
+        # Between frames the state is never LOST: a lost track closes its map on its frame.
+        step = self._track(frame) if self.state is State.TRACKING else self._initialize(frame)
         self._date()
         state, map_id, summary = self.state, self._map_id, step.summary
         fates = step.fates(frame.size, self._pt_base)
-        if state is State.LOST:
-            summary = replace(summary, lost=self._close())
+        if state is State.LOST and self.map is not None:  # a lost frame was tracking a map
+            summary = replace(summary, lost=self._close(self.map))
         track_seconds = time.perf_counter() - start - step.map_seconds
         tracked = step.tracked
         return FrameResult(
@@ -499,15 +496,13 @@ class Pipeline:
         if len(m.gone_pt_id) or len(m.gone_kf_id):
             self.map = maps.clear_gone(m)
 
-    def _close(self) -> LostSummary:
-        """Close the map the track was lost in, on this frame: keep it, or reset it if small.
+    def _close(self, m: Map) -> LostSummary:
+        """Close `m`, the map the track was lost in, on this frame: keep it, or reset it if small.
 
         Its points and keyframes go where they last were; a reset map's lives end on this
         frame (:attr:`slam_it.edge.map.Removal.RESET`). The tracking state goes with the map, so
         the next frame starts a new one.
         """
-        m = self.map
-        assert m is not None
         frame = self._frames - 1  # dated already
         reset = m.keyframes <= self.options.reset_keyframes
         for point_id, xyz in zip(m.pt_id, m.pt_xyz, strict=True):

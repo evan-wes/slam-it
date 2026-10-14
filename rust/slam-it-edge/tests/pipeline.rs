@@ -83,7 +83,8 @@ fn monocular_tracks_the_path_direction() {
 
 #[test]
 fn empty_frames_lose_the_track_and_the_next_frame_starts_a_new_map() {
-    for reset_keyframes in [10, 0] {
+    // The map has one keyframe: 1, the rule's boundary, resets it; 0 keeps it.
+    for reset_keyframes in [1, 0] {
         let options = Options {
             reset_keyframes,
             ..small_scene()

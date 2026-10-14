@@ -31,8 +31,9 @@ before.
 - **Scoring by map:** `runs.evaluate` and `evaluate_absolute` align each map on its own and pool
   the ATE (and the RPE, where a map has pairs) over them; `runs.tracking` gives a segment per
   map, the losses and the resets.
-- **The lost room:** the room with frames blanked to lose the track, its first map reset and
-  kept, in the golden record that holds the three languages to one another.
+- **The lost room:** the room with two stretches of frames blanked to lose the track twice, its
+  lost maps reset and kept, in the golden record that holds the three languages to one another;
+  a stereo or RGB-D run reaches a third map.
 - **The test set's A2 results**, in `docs/notes/test-set.md`, at seeds 0, 1 and 2:
   - a run's median share tracked from 20% to 90%, and the seed's sway on it from 76 points at
     most to 13;

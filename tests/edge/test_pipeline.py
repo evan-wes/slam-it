@@ -159,10 +159,11 @@ def test_a_lost_track_resets_a_small_map_and_starts_a_new_one(
 ) -> None:
     """lost_frames frames in a row untracked lose the track; the next frame starts map 1.
 
-    The lost map has one keyframe, under reset_keyframes, so it is reset: its keyframe and
-    points end on the frame the track was lost on (ORB-SLAM3's ResetActiveMap).
+    The lost map has one keyframe, and reset_keyframes is 1, the rule's boundary: "1 or fewer"
+    resets it (review panel finding L3), its keyframe and points ending on the frame the track
+    was lost on (ORB-SLAM3's ResetActiveMap).
     """
-    run, results = _lose_and_restart(rendered, OPTIONS)
+    run, results = _lose_and_restart(rendered, replace(OPTIONS, reset_keyframes=1))
     started, *failed, lost, restarted = results
     assert (started.state, started.map) == (pipeline.State.TRACKING, 0)
     assert all(r.pose is None and r.state is pipeline.State.TRACKING for r in failed)
@@ -190,7 +191,7 @@ def test_a_lost_track_resets_a_small_map_and_starts_a_new_one(
 
 
 def test_a_lost_map_above_reset_keyframes_is_kept(rendered: list[room.Frame]) -> None:
-    """With reset_keyframes 0, the lost map is kept.
+    """With reset_keyframes 0, one under the lost map's one keyframe, the lost map is kept.
 
     Its keyframe and points stay alive, where they were when it closed, and the tracking state
     starts again with the next map.
@@ -249,6 +250,44 @@ def test_a_frame_with_little_depth_starts_the_map(rendered: list[room.Frame]) ->
     assert started.state is pipeline.State.TRACKING
     assert run.map is not None
     assert 0 < run.map.points == np.count_nonzero(~np.isnan(built.depth)) < 100
+
+
+def test_a_map_without_points_is_lost_and_the_third_map_follows_the_first_two(
+    rendered: list[room.Frame],
+) -> None:
+    """A frame without depth starts a map of no points; tracked frames lose it; maps go on.
+
+    Map 0 has no points, so no frame after it is placed: lost_frames frames lose it, and it is
+    reset. Map 1 starts on the next frame and is lost on empty frames; map 2 starts after it,
+    its keyframe and points numbered after both maps' (review panel finding L4).
+    """
+    run = pipeline.Pipeline("rgbd", CAMERA, OPTIONS)
+    first = rendered[0]
+    no_depth = frames.rgbd(first.gray, np.zeros_like(first.depth), 0.0, CAMERA, run.extraction())
+    results = [run.track(no_depth)]
+    assert (results[0].map, results[0].tracked) == (0, 0)
+    for k, f in enumerate(rendered[1 : 1 + OPTIONS.lost_frames], start=1):
+        results.append(run.track(frames.rgbd(f.gray, f.depth, k, CAMERA, run.extraction())))
+    assert all(r.pose is None for r in results[1:])
+    assert results[-1].summary.lost == pipeline.LostSummary(keyframes=1, points=0, reset=True)
+    second = rendered[1 + OPTIONS.lost_frames]
+    restarted = run.track(frames.rgbd(second.gray, second.depth, 10.0, CAMERA, run.extraction()))
+    assert restarted.map == 1
+    for _ in range(OPTIONS.lost_frames):
+        lost = run.track(_empty())
+    assert (lost.map, lost.summary.lost) == (1, pipeline.LostSummary(1, restarted.tracked, True))
+    third = rendered[2 + OPTIONS.lost_frames]
+    again = run.track(frames.rgbd(third.gray, third.depth, 20.0, CAMERA, run.extraction()))
+    assert (again.map, again.keyframe) == (2, True)
+    lives = run.lifetimes()
+    np.testing.assert_array_equal(lives.keyframe_maps, [0, 1, 2])
+    np.testing.assert_array_equal(lives.keyframe_poses[2], np.eye(4))  # map 2's own origin
+    before = restarted.tracked  # map 0 made none
+    made = again.fates.point[again.fates.fate == pipeline.Fate.MADE]
+    assert sorted(made) == list(range(before, before + again.tracked))
+    assert run.map is not None
+    np.testing.assert_array_equal(lives.points[before + run.map.pt_id], run.map.pt_xyz)
+    np.testing.assert_array_equal(lives.point_maps, np.repeat([1, 2], [before, again.tracked]))
 
 
 def test_a_monocular_reference_needs_enough_features(rendered: list[room.Frame]) -> None:

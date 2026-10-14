@@ -128,9 +128,10 @@ same way, its results kept outside the repo. Results on the public set go in a n
 4. **The worker's summary and the status page:** the segments tracked, the first 20 of them
    so that a summary fits the server's 4,096 bytes, for example "Tracked 2.9–15.9 s and
    17.0–27.1 s of your 27.1 s clip.", the losses and the maps reset.
-5. **Parity:** the lost room, the room with `lost_frames` frames blanked from frame 12, run with
-   its first map reset and with it kept, holds the three languages to one another and to the
-   golden record across a new map. (The gap room, as built, never loses the track.)
+5. **Parity:** the lost room, the room with `lost_frames` frames blanked from frames 12 and 31,
+   run with its lost maps reset and with them kept, holds the three languages to one another
+   and to the golden record across new maps; a stereo or RGB-D run reaches a third map. (The
+   gap room, as built, never loses the track.)
 6. **The results** of the test set rerun at seeds 0, 1 and 2, in `docs/notes/test-set.md`.
 
 ## 6. Plan

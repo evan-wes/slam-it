@@ -393,10 +393,11 @@ impl Pipeline {
     /// A stage's error.
     pub fn track(&mut self, frame: &Frame) -> Result<FrameResult> {
         let start = Instant::now();
-        let step = match self.state {
-            State::NotInitialized => self.initialize(frame)?,
-            State::Tracking => self.track_frame(frame)?,
-            State::Lost => Step::default(),
+        // Between frames the state is never `Lost`: a lost track closes its map on its frame.
+        let step = if self.state == State::Tracking {
+            self.track_frame(frame)?
+        } else {
+            self.initialize(frame)?
         };
         self.date();
         let (state, map_id) = (self.state, self.map_id);

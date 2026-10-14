@@ -140,11 +140,12 @@ bool lived(const edge::Lifetimes& lives, std::int64_t first, bool reset, std::in
   return true;
 }
 
-/// @brief Check losing the track: the small map is reset, or kept with `reset_keyframes` 0, and
-///        the next frame starts map 1, its ids following map 0's.
+/// @brief Check losing the track: the map of one keyframe is reset with `reset_keyframes` 1, the
+///        rule's boundary, or kept with 0, and the next frame starts map 1, its ids following
+///        map 0's.
 /// @param failures Running failure count.
 void check_lost(int& failures) {
-  for (const std::int64_t reset_keyframes : {std::int64_t{10}, std::int64_t{0}}) {
+  for (const std::int64_t reset_keyframes : {std::int64_t{1}, std::int64_t{0}}) {
     edge::Options options = small_scene();
     options.reset_keyframes = reset_keyframes;
     auto pipeline = edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), options);

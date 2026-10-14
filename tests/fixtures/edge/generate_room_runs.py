@@ -8,10 +8,10 @@ The edge rung's stage parity compares every backend live with the Python referen
 built from the synthetic room (stored, they would run to megabytes), at the tolerances of
 ``tests/edge/support.py``. A change made in all three languages at once passes those
 comparisons. This record of what the Python pipeline decided on the room, whole, with its gap,
-and lost, its first map reset or kept (:mod:`tests.orchestration.datasets`), catches it: every
-backend's runs are held to it
-(``tests/orchestration/test_vo.py``), so regenerating it is the deliberate act that accepts new
-decisions, and its diff shows them (review panel finding A1).
+and lost twice, its lost maps reset or kept (:mod:`tests.orchestration.datasets`), catches it:
+every backend's runs are held to it (``tests/orchestration/test_vo.py``), so regenerating it is
+the deliberate act that accepts new decisions, and its diff shows them (review panel finding
+A1).
 
 Per room, dataset and mode: each frame's state, map, tracked inliers and keyframe flag; the
 tracked frames' times, ``T_world_cam`` and maps; the final map's keyframes' times and its number
