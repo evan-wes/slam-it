@@ -127,6 +127,16 @@ def test_rpe_does_not_count_a_tracking_gap_as_one_step() -> None:
     np.testing.assert_allclose(rpe.translation, 0.002, rtol=1e-9)
 
 
+def test_interval_pairs_skip_a_gap_and_may_find_none() -> None:
+    """The pairs a period apart skip a gap; a period longer than the poses' span finds none."""
+    times = _times(40)[np.r_[0:10, 20:40]]
+    pairs = metrics.interval_pairs(times, delta=PERIOD)
+    assert len(pairs) == 30 - 2  # none from either side's last pose
+    np.testing.assert_array_equal(pairs[:, 1] - pairs[:, 0], 1)  # never across the gap
+    assert 9 not in pairs[:, 0]
+    assert metrics.interval_pairs(times[::3], delta=PERIOD).shape == (0, 2)
+
+
 def test_rpe_scale_undoes_a_monocular_scale() -> None:
     """A trajectory at half scale has no drift once scaled back."""
     truth = _trajectory()
@@ -190,6 +200,8 @@ def test_associate_is_tums_greedy_pairing() -> None:
             InvalidInputError,
             "tolerance",
         ),
+        (lambda t: metrics.interval_pairs(_times(1), delta=PERIOD), InvalidInputError, "2"),
+        (lambda t: metrics.interval_pairs(_times(5), delta=np.nan), InvalidInputError, "delta"),
         (lambda t: metrics.associate([0.0], [0.0], -1.0), InvalidInputError, "max_difference"),
         (
             lambda t: metrics.associate([1.0, 2.0, 3.0], [3.0, 1.0, 2.0], 0.1),

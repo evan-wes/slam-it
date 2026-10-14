@@ -16,7 +16,7 @@ from slam_it.edge.map import Removal
 from slam_it.edge.pipeline import Fate, State
 from slam_it.eval import runs, tum
 from slam_it.foundations import so3
-from slam_it.foundations.errors import InvalidInputError
+from slam_it.foundations.errors import DegenerateError, InvalidInputError
 
 
 def _poses(n: int, seed: int = 0) -> NDArray[np.float64]:
@@ -381,8 +381,25 @@ def test_a_map_too_short_or_straight_to_align_is_unscored() -> None:
     assert scored.unscored == (1, 3)
     assert all(m.relative is None for m in scored.maps)  # the ATE alone
     lone = replace(run, timestamps=times[20:22], poses=straight[20:22], pose_maps=maps[20:22])
-    with pytest.raises(InvalidInputError, match="no map can be aligned: at most 2"):
+    with pytest.raises(DegenerateError, match="no map can be aligned: map 1: 2 frames matched"):
         runs.evaluate_absolute(lone, times, truth)
+    line = replace(run, timestamps=times[40:], poses=straight[40:], pose_maps=maps[40:])
+    with pytest.raises(DegenerateError, match="map 3: its centres are on a line"):
+        runs.evaluate(line, times, truth)
+
+
+@pytest.mark.parametrize("delta", [-1.0, 0.0, np.nan, np.inf])
+def test_evaluate_refuses_an_rpe_interval_out_of_range(delta: float) -> None:
+    """A bad `rpe_delta` is refused, never read as a reference too sparse for the RPE."""
+    times = np.arange(0.0, 3.0, 0.05)
+    truth = _circle(times)
+    run = runs.Run(
+        "synthetic", "circle", "rgbd", "python", times, truth,
+        pose_maps=np.zeros(len(times), dtype=np.int64),
+    )  # fmt: skip
+    assert runs.evaluate(run, times, truth, rpe_delta=0.1).rpe_translation_rmse is not None
+    with pytest.raises(InvalidInputError, match="rpe_delta: must be positive and finite"):
+        runs.evaluate(run, times, truth, rpe_delta=delta)
 
 
 def test_a_reference_too_sparse_for_the_rpe_still_places_the_run() -> None:

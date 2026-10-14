@@ -64,7 +64,7 @@ import numpy as np
 
 from slam_it.edge.options import MODES, Options
 from slam_it.eval import budgets, lenses, runs, tum
-from slam_it.foundations.errors import InvalidInputError, SlamItError
+from slam_it.foundations.errors import DegenerateError, InvalidInputError, SlamItError
 from slam_it.orchestration import vo
 
 KEYS = ("name", "folder", "mode", "reference")
@@ -191,20 +191,22 @@ def measure(
         "unjudged": None,
     }
     truth = runs.ground_truth("tum", folder)
-    try:
-        if truth is None:
-            raise InvalidInputError("no ground truth")
-        scored = runs.evaluate_absolute(run, *truth)
-        result.update(
-            ate=scored.ate_rmse,
-            matched=scored.matched,
-            map_ate=[
-                {"map": e.map, "matched": e.matched, "ate": e.absolute.rmse} for e in scored.maps
-            ],
-            unscored_maps=list(scored.unscored),
-        )
-    except InvalidInputError as error:
-        result["unscored"] = str(error)
+    if truth is None:
+        result["unscored"] = "no ground truth"
+    else:
+        try:
+            scored = runs.evaluate_absolute(run, *truth)
+            result.update(
+                ate=scored.ate_rmse,
+                matched=scored.matched,
+                map_ate=[
+                    {"map": e.map, "matched": e.matched, "ate": e.absolute.rmse}
+                    for e in scored.maps
+                ],
+                unscored_maps=list(scored.unscored),
+            )
+        except DegenerateError as error:  # no map can be aligned: said, never hidden
+            result["unscored"] = str(error)
     try:
         judged = budgets.judge(run)
         result.update(p95=judged.latency.p95, deadline=judged.deadline, late=judged.late)

@@ -67,7 +67,7 @@ from numpy.typing import ArrayLike, NDArray
 from slam_it.eval import euroc, metrics, tum
 from slam_it.eval.timestamps import as_times
 from slam_it.foundations import se3, so3
-from slam_it.foundations.arrays import as_batch
+from slam_it.foundations.arrays import as_batch, as_number
 from slam_it.foundations.errors import DegenerateError, InvalidInputError
 
 FORMAT = "slam-it-run"
@@ -1012,9 +1012,8 @@ class Evaluation:
     @property
     def ate_rmse(self) -> float:
         """The ATE's root mean square over every scored map's matched frames."""
-        pooled = _rms([m.absolute.errors for m in self.maps])
-        assert pooled is not None  # an Evaluation has a map scored
-        return pooled
+        errors = np.concatenate([m.absolute.errors for m in self.maps])  # a map, at least
+        return math.sqrt(float(np.mean(errors * errors)))
 
     @property
     def rpe_translation_rmse(self) -> float | None:
@@ -1025,6 +1024,38 @@ class Evaluation:
     def rpe_rotation_rmse(self) -> float | None:
         """The RPE's rotation in radians, the same way; None without one."""
         return _rms([m.relative.rotation for m in self.maps if m.relative is not None])
+
+
+def _score_map(  # noqa: PLR0913 -- a map's poses and truth, its times, how to score it
+    map_id: int,
+    mine: NDArray[np.float64],
+    true: NDArray[np.float64],
+    times: NDArray[np.float64],
+    *,
+    monocular: bool,
+    delta: float | None,
+    tolerance: float,
+) -> MapError:
+    """Score one map's matched poses on its own alignment, and its RPE if `delta` is given.
+
+    Raises
+    ------
+    slam_it.foundations.errors.DegenerateError
+        If the map cannot be aligned: fewer than three frames matched, or their centres on a
+        line. The message names the map.
+    """
+    if len(mine) < 3:  # the alignment's minimum
+        raise DegenerateError(f"map {map_id}: {len(mine)} frames matched, 3 needed")
+    try:
+        absolute = metrics.absolute_error(mine, true, with_scale=monocular)
+    except DegenerateError as error:
+        raise DegenerateError(f"map {map_id}: its centres are on a line ({error})") from error
+    drift = None
+    if delta is not None and len(metrics.interval_pairs(times, delta=delta, tolerance=tolerance)):
+        drift = metrics.relative_error(
+            mine, true, times, delta=delta, tolerance=tolerance, scale=absolute.scale
+        )
+    return MapError(map_id, len(mine), absolute, drift)
 
 
 def _scored(  # noqa: PLR0913 -- the run, its truth, the tolerance and interval; which errors
@@ -1041,41 +1072,35 @@ def _scored(  # noqa: PLR0913 -- the run, its truth, the tolerance and interval;
     run_times, run_poses = _as_stamped(run.timestamps, run.poses, "run")
     maps = _check_maps(run.pose_maps, len(run_times), "pose_maps")
     period = float(np.median(np.diff(run_times))) if len(run_times) >= 2 else 0.0
+    delta = period if relative else None  # a map of three frames or more has a period
+    if relative and rpe_delta is not None:
+        delta = as_number(rpe_delta, "rpe_delta")
+        if not (math.isfinite(delta) and delta > 0.0):
+            raise InvalidInputError(f"rpe_delta: must be positive and finite, got {delta}")
     scored: list[MapError] = []
     unscored: list[int] = []
-    most = 0
+    reasons: list[str] = []
     for map_id in (int(m) for m in np.unique(maps)):
         rows = np.flatnonzero(maps == map_id)
         ours, theirs = metrics.associate(run_times[rows], truth_times, max_difference)
-        most = max(most, len(ours))
-        if len(ours) < 3:  # the alignment's minimum
-            unscored.append(map_id)
-            continue
-        mine, true = run_poses[rows][ours], truth_poses[theirs]
         try:
-            absolute = metrics.absolute_error(mine, true, with_scale=run.mode == "monocular")
-        except DegenerateError:  # the map's centres are on a line
-            unscored.append(map_id)
-            continue
-        drift = None
-        if relative:
-            try:
-                drift = metrics.relative_error(
-                    mine,
-                    true,
+            scored.append(
+                _score_map(
+                    map_id,
+                    run_poses[rows][ours],
+                    truth_poses[theirs],
                     run_times[rows][ours],
-                    delta=period if rpe_delta is None else rpe_delta,
+                    monocular=run.mode == "monocular",
+                    delta=delta,
                     tolerance=0.5 * period,
-                    scale=absolute.scale,
                 )
-            except InvalidInputError:  # no matched frame of the map has a pair
-                drift = None
-        scored.append(MapError(map_id, len(ours), absolute, drift))
+            )
+        except DegenerateError as error:
+            unscored.append(map_id)
+            reasons.append(str(error))
     if not scored:
-        raise InvalidInputError(
-            f"no map can be aligned: at most {most} of a map's frames have a ground-truth pose "
-            "(3 needed, their centres not on a line)"
-        )
+        why = "; ".join(reasons) or "the run has no poses"
+        raise DegenerateError(f"no map can be aligned: {why}")
     return Evaluation(maps=tuple(scored), unscored=tuple(unscored))
 
 
@@ -1106,8 +1131,10 @@ def evaluate_absolute(
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If an array is malformed or its times do not ascend, or no map can be aligned (fewer
-        than three of its frames matched, or their centres on a line).
+        If an array is malformed or its times do not ascend.
+    slam_it.foundations.errors.DegenerateError
+        If no map can be aligned: each with fewer than three frames matched, or their centres
+        on a line. The message names each map's cause.
     """
     return _scored(run, timestamps, poses, max_difference, None, relative=False)
 
@@ -1150,7 +1177,10 @@ def evaluate(
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If an array is malformed or its times do not ascend, or no map can be aligned (fewer
-        than three of its frames matched, or their centres on a line).
+        If an array is malformed or its times do not ascend, or `rpe_delta` is not positive
+        and finite.
+    slam_it.foundations.errors.DegenerateError
+        If no map can be aligned: each with fewer than three frames matched, or their centres
+        on a line. The message names each map's cause.
     """
     return _scored(run, timestamps, poses, max_difference, rpe_delta, relative=True)
