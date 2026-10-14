@@ -115,16 +115,20 @@ same way, its results kept outside the repo. Results on the public set go in a n
    keyframe, which local BA holds fixed and culling keeps, is always keyframe 0; the run's ids
    continue across maps, each map's offset by those before it, as ORB-SLAM3's one counter gives
    them. The map, mapping and BA code is unchanged. The run ends only at the sequence's end.
-   One difference from ORB-SLAM3 stays: it sends a map of 10 keyframes or fewer straight to
-   LOST on its first failed frame, and gives a larger one up to 3 s of relocalisation by bag
-   of words (`Tracking.cc`); the lite pipeline, without the bag of words, gives every map
-   `lost_frames` (5) failed frames of PnP against its local map.
+   One difference from ORB-SLAM3 stays: it loses a map of 10 keyframes or fewer at once when
+   its frame-to-frame tracking fails, and gives any other failure up to 3 s of bag-of-words
+   relocalisation (visual-only) before LOST (`Tracking.cc`); the lite pipeline, without the bag
+   of words, gives every map `lost_frames` (5) failed frames, of either kind, of PnP against its
+   local map.
 2. **The run format, version 4:** each frame's diagnostic names its map; `pose_maps.npy`,
    `keyframe_maps.npy` and `point_maps.npy` give each pose's, keyframe's and point's map; a
-   reset map's keyframes and points are removed as `reset`. Scores per map (each map its own
-   alignment) and the share of the sequence tracked across all: `runs.evaluate` aligns each map
-   by its ATE alone and gives its RPE where it has pairs (closing A1's deferred A10), and
-   `runs.tracking` gives a segment per map with the losses and the resets.
+   reset map's keyframes and points are removed as `reset`. `trajectory.txt` marks each map's
+   first pose with a `# map <n>` line, and the frames' `map` keys are checked when a run is
+   written or read, in all three languages. Scores per map (each map its own alignment) and the
+   share of the sequence tracked across all: `runs.evaluate` aligns each map by its ATE alone
+   and gives its RPE where it has pairs (closing A1's deferred A10), raising `Degenerate` when
+   no map can be aligned, and `runs.tracking` gives a segment per map with the losses and the
+   resets.
 3. **The bake and the viewer,** the bundle's version 2: each map moved onto the truth by its own
    alignment; a backend's frames split by map on the timeline, a reset map's drawn broken; the
    scene shows the map of the frame shown, or the last before it, the truth only while that

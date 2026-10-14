@@ -27,10 +27,13 @@ before.
     was reset.
 - **Run format version 4:** each frame's diagnostic names its map, and `pose_maps.npy`,
   `keyframe_maps.npy` and `point_maps.npy` give each pose's, keyframe's and point's; a removal
-  `reset`.
+  `reset`. `trajectory.txt` puts a `# map <n>` line before each map's first pose, so an outside
+  tool aligns one map at a time, and the writers in all three languages, and `read_run`, refuse
+  frames' maps that are not null or map numbers, descend, or leave a map with keyframes unnamed.
+  `Run.maps()` and `Run.reset_maps()` name a run's maps and those reset.
 - **Scoring by map:** `runs.evaluate` and `evaluate_absolute` align each map on its own and pool
   the ATE (and the RPE, where a map has pairs) over them; `runs.tracking` gives a segment per
-  map, the losses and the resets.
+  map, the losses and the resets. `metrics.interval_pairs` gives the RPE's pairs alone.
 - **The lost room:** the room with two stretches of frames blanked to lose the track twice, its
   lost maps reset and kept, in the golden record that holds the three languages to one another;
   a stereo or RGB-D run reaches a third map.
@@ -59,6 +62,10 @@ before.
   L13).
 - **The bake places a run by its ATE alone**, its RPE null where its reference has no pair a
   frame period apart (A1's deferred A10).
+- **A run that cannot be placed is `Degenerate`:** `evaluate` and `evaluate_absolute` raise
+  `DegenerateError`, not `InvalidInputError`, when no map can be aligned, naming each map's
+  cause, and `metrics.relative_error` when no pose has another the interval later; an
+  `rpe_delta` that is not positive and finite is refused before any map is scored.
 
 ## [0.3.8.0] - 2026-10-13
 
