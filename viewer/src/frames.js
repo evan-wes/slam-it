@@ -155,6 +155,32 @@ export function mapRows(poseMaps, map) {
 }
 
 /**
+ * Whether one of a backend's maps was placed on the truth.
+ * @param {{maps: {id: number, score: object | null}[]}} info The backend's header.
+ * @param {number | null} map The map.
+ * @returns {boolean} Whether it was: it has a score.
+ */
+export function placed(info, map) {
+  return map !== null && (info.maps.find((m) => m.id === map)?.score ?? null) !== null;
+}
+
+/**
+ * Whether another backend's map is drawn beside the map shown: both are placed on the truth,
+ * or both are in their own frames and the same map (the backends decide alike).
+ * @param {number | null} mine The map shown, null if none.
+ * @param {number | null} theirs The other backend's map at the frame, null if none.
+ * @param {boolean} theirsPlaced Whether theirs was placed on the truth (`placed`).
+ * @param {boolean} aligned Whether the map shown was, so the scene is the truth's.
+ * @returns {boolean} Whether the two share a frame.
+ */
+export function sharesFrame(mine, theirs, theirsPlaced, aligned) {
+  if (mine === null || theirs === null || theirsPlaced !== aligned) {
+    return false;
+  }
+  return aligned || theirs === mine;
+}
+
+/**
  * The camera's pose to show at a frame: the frame's own if tracked, else the last before it,
  * of a map's poses if given.
  * @param {Float32Array} poses Each tracked frame's pose, (T, 3, 4).

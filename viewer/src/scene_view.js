@@ -7,7 +7,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
-import { cameraAt, mapAt, mapRows, mapsShown, posesUpTo } from "./frames.js";
+import { cameraAt, mapAt, mapRows, mapsShown, placed, posesUpTo, sharesFrame } from "./frames.js";
 import {
   FRUSTUM_SEGMENTS,
   centres,
@@ -89,16 +89,6 @@ function livingGeometry(positions, lives, maps, vertices) {
 
 /** A frustum's depth before any map is shown, in the trajectory's units. */
 const DEFAULT_DEPTH = 0.1;
-
-/**
- * Whether one of a backend's maps was placed on the truth.
- * @param {import("./bundle.js").BackendInfo} info The backend's header.
- * @param {number | null} map The map.
- * @returns {boolean} Whether it was: it has a score.
- */
-function placed(info, map) {
-  return map !== null && (info.maps.find((m) => m.id === map)?.score ?? null) !== null;
-}
 
 /** The way up in a truth's world, gravity-aligned. */
 const TRUTH_UP = new THREE.Vector3(0, 0, 1);
@@ -336,9 +326,7 @@ export class SceneView {
     const mine = this.shownMap ?? null;
     for (const { track, line, shown } of this.others) {
       const theirs = mapAt(shown, track.records, frame);
-      const together =
-        theirs !== null && mine !== null && placed(track.info, theirs) === this.aligned;
-      line.visible = together && (this.aligned || theirs === mine);
+      line.visible = sharesFrame(mine, theirs, placed(track.info, theirs), this.aligned);
       if (line.visible && theirs !== null) {
         const [start, end] = mapRows(track.poseMaps, theirs);
         const upTo = Math.min(posesUpTo(track.poseFrames, frame), end);

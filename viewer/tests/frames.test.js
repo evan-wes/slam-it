@@ -15,8 +15,10 @@ import {
   mapAt,
   mapRows,
   mapsShown,
+  placed,
   posesUpTo,
   recordIndex,
+  sharesFrame,
 } from "../src/frames.js";
 import { fetchGolden } from "./golden.js";
 
@@ -111,6 +113,30 @@ test("the map shown at a frame is the frame's own, else the last before it", () 
   assert.equal(mapAt(shown, records, 15), 1);
   assert.equal(mapAt(shown, records, 40), 1); // after its last frame, its last map
   assert.deepEqual(Array.from(mapsShown({ frame: [0, 1] })), [-1, -1]);
+});
+
+test("another backend's map is drawn where it shares the shown map's frame", () => {
+  const info = {
+    maps: [
+      { id: 0, score: null },
+      { id: 1, score: { ate_rmse: 0.1 } },
+    ],
+  };
+  assert.deepEqual(
+    [placed(info, 0), placed(info, 1), placed(info, 2), placed(info, null)],
+    [false, true, false, false],
+  );
+  // Both placed on the truth: drawn whatever their numbers.
+  assert.equal(sharesFrame(1, 3, true, true), true);
+  // Both in their own frames: only the same map shares one.
+  assert.equal(sharesFrame(0, 0, false, false), true);
+  assert.equal(sharesFrame(0, 1, false, false), false);
+  // One placed and one not: never.
+  assert.equal(sharesFrame(1, 1, false, true), false);
+  assert.equal(sharesFrame(0, 0, true, false), false);
+  // No map on either side: never.
+  assert.equal(sharesFrame(null, 0, false, false), false);
+  assert.equal(sharesFrame(0, null, false, false), false);
 });
 
 test("a map's poses are consecutive rows", () => {
