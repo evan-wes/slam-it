@@ -72,10 +72,8 @@ pub struct Options {
     pub init_feature_factor: usize,
     /// A monocular frame takes part in initialisation with more than this many keypoints.
     pub min_init_features: usize,
-    /// A stereo or RGB-D frame starts the map with more than this many keypoints...
+    /// A stereo or RGB-D frame starts the map with more than this many keypoints.
     pub min_init_features_depth: usize,
-    /// ...and at least this many with depth (lite: ORB-SLAM resets a map lost early).
-    pub min_init_depth_points: usize,
     /// The monocular initialisation's search window, in pixels.
     pub init_window: f64,
     /// Its ratio test.
@@ -193,6 +191,8 @@ pub struct Options {
     pub relocalize_ratio: f64,
     /// Failed frames in a row before the track is lost.
     pub lost_frames: usize,
+    /// A map lost with this many keyframes or fewer is reset rather than kept.
+    pub reset_keyframes: usize,
     /// Every RANSAC's seed.
     pub seed: u64,
 }
@@ -217,7 +217,6 @@ impl Default for Options {
             init_feature_factor: 2,
             min_init_features: 100,
             min_init_features_depth: 500,
-            min_init_depth_points: 100,
             init_window: 100.0,
             init_ratio: 0.9,
             init_min_matches: 100,
@@ -276,6 +275,7 @@ impl Default for Options {
             pnp_min_inliers: 30,
             relocalize_ratio: 0.75,
             lost_frames: 5,
+            reset_keyframes: 10,
             seed: 0,
         }
     }
@@ -405,8 +405,7 @@ named_settings!(
     stereo_max_distance: Integer, stereo_band: Real, stereo_window: Integer,
     stereo_search: Integer, stereo_outlier_factor: Real, close_depth: Real,
     init_feature_factor: Integer,
-    min_init_features: Integer, min_init_features_depth: Integer,
-    min_init_depth_points: Integer, init_window: Real,
+    min_init_features: Integer, min_init_features_depth: Integer, init_window: Real,
     init_ratio: Real, init_min_matches: Integer, init_parallax_cos: Real, motion_window: Real,
     stereo_motion_window: Real, min_motion_matches: Integer, local_window: Real,
     rgbd_local_window: Real, recovery_local_window: Real, min_tracked: Integer, chi2_mono: Real, chi2_stereo: Real,
@@ -438,7 +437,7 @@ named_settings!(
     point_cull_age: Integer,
     init_ba_iterations: Integer,
     relocalize_ratio: Real,
-    pnp_min_inliers: Integer, lost_frames: Integer, seed: Integer,
+    pnp_min_inliers: Integer, lost_frames: Integer, reset_keyframes: Integer, seed: Integer,
 );
 
 /// Checks the descriptor distances and the stereo matching's settings, named as `Options`' fields.
@@ -471,7 +470,7 @@ pub fn check_options(options: &Options) -> Result<()> {
     for (name, value) in [
         ("min_init_features", options.min_init_features),
         ("min_init_features_depth", options.min_init_features_depth),
-        ("min_init_depth_points", options.min_init_depth_points),
+        ("reset_keyframes", options.reset_keyframes),
     ] {
         check_range(name, value, 0, MAX_SETTING)?;
     }

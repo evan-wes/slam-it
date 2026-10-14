@@ -116,7 +116,10 @@ runs::Run golden_run() {
                 .memory_cap = values["memory_cap"].get<std::int64_t>(),
                 .point_lives = lives(values["point_lives"]),
                 .keyframe_lives = lives(values["keyframe_lives"]),
-                .record_features = values["record_features"].get<bool>()};
+                .record_features = values["record_features"].get<bool>(),
+                .pose_maps = values["pose_maps"].get<std::vector<std::int64_t>>(),
+                .keyframe_maps = values["keyframe_maps"].get<std::vector<std::int64_t>>(),
+                .point_maps = values["point_maps"].get<std::vector<std::int64_t>>()};
   for (const auto& point : values["points"]) {
     run.points.emplace_back(point[0].get<double>(), point[1].get<double>(), point[2].get<double>());
   }
@@ -180,8 +183,9 @@ void check_golden(int& failures) {
   const slam_it::testing::ScratchDir scratch("slam_it_test_runs");
   const fs::path& out = scratch.path();
   expect(runs::write_run(out.string(), golden_run()).has_value(), "the run is written", failures);
-  for (const char* name : {"keyframes.npy", "keyframe_poses.npy", "keyframe_lives.npy",
-                           "points.npy", "point_lives.npy"}) {
+  for (const char* name :
+       {"keyframes.npy", "keyframe_poses.npy", "keyframe_lives.npy", "points.npy",
+        "point_lives.npy", "pose_maps.npy", "keyframe_maps.npy", "point_maps.npy"}) {
     expect(bytes(out / name) == bytes(golden / name),
            (std::string(name) + " matches numpy's byte for byte").c_str(), failures);
   }
@@ -323,6 +327,22 @@ void check_refusals(int& failures) {
   run.keyframe_lives[0] = {0, -1, 2};
   expect(is_invalid_input(runs::write_run(out.string(), run)),
          "a removal code on a life still alive is refused", failures);
+  run = golden_run();
+  run.keyframe_lives[0] = {0, 2, 4};
+  expect(is_invalid_input(runs::write_run(out.string(), run)),
+         "a removal code past reset is refused", failures);
+  run = golden_run();
+  run.pose_maps.pop_back();
+  expect(is_invalid_input(runs::write_run(out.string(), run)),
+         "maps that are not one per pose are refused", failures);
+  run = golden_run();
+  run.point_maps = {0, 1, 0, 1, 1};
+  expect(is_invalid_input(runs::write_run(out.string(), run)), "maps that descend are refused",
+         failures);
+  run = golden_run();
+  run.keyframe_maps[0] = -1;
+  expect(is_invalid_input(runs::write_run(out.string(), run)), "a negative map is refused",
+         failures);
   expect(!fs::exists(out), "nothing is written for a refused run", failures);
   expect(runs::json_number(1.0) == "1.0" && runs::json_number(0.1) == "0.1" &&
              runs::json_number(1e-05) == "1e-05",

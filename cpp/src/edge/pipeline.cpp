@@ -24,12 +24,13 @@ namespace {
 ///        (`slam_it.edge.pipeline._Step.fates`, applied rejected, tracked, then made).
 /// @param fates The frame's fates, changed.
 /// @param fate The fate.
-/// @param ids Each keypoint's point, -1 where none; empty if no stage gave them.
-void mark(Fates& fates, Fate fate, const std::vector<std::int64_t>& ids) {
+/// @param ids Each keypoint's point in the map, -1 where none; empty if no stage gave them.
+/// @param base The run's id of the map's point 0.
+void mark(Fates& fates, Fate fate, const std::vector<std::int64_t>& ids, std::int64_t base) {
   for (std::size_t j = 0; j < std::min(ids.size(), fates.fate.size()); ++j) {
     if (ids[j] >= 0) {
       fates.fate[j] = fate;
-      fates.point[j] = ids[j];
+      fates.point[j] = base + ids[j];
     }
   }
 }
@@ -96,17 +97,24 @@ Result<FrameResult> Pipeline::track(const Frame& frame) {
     step = std::move(*placed);
   }
   date();
-  const std::chrono::duration<double> took = std::chrono::steady_clock::now() - start;
+  const State state = state_;
+  const std::optional<std::int64_t> map_id = map_id_;
   const std::optional<Tracked>& tracked = step.tracked;
   Fates fates{.fate = std::vector<Fate>(keypoint_count(frame), Fate::kUnmatched),
               .point = std::vector<std::int64_t>(keypoint_count(frame), -1)};
-  mark(fates, Fate::kRejected, step.matched);
+  mark(fates, Fate::kRejected, step.matched, pt_base_);
   if (tracked) {
-    mark(fates, Fate::kTracked, tracked->points);
+    mark(fates, Fate::kTracked, tracked->points, pt_base_);
   }
-  mark(fates, Fate::kMade, step.made);
+  mark(fates, Fate::kMade, step.made, pt_base_);
+  if (state == State::kLost && map_) {  // a lost frame was tracking, so there is a map
+    const Map lost = std::move(*map_);
+    step.summary.lost = close(lost);
+  }
+  const std::chrono::duration<double> took = std::chrono::steady_clock::now() - start;
   return FrameResult{.timestamp = frame.timestamp,
-                     .state = state_,
+                     .state = state,
+                     .map = map_id,
                      .pose = tracked ? std::optional<Eigen::Matrix4d>(tracked->pose) : std::nullopt,
                      .tracked = tracked ? inliers(*tracked) : 0,
                      .keyframe = step.keyframe,
@@ -117,30 +125,19 @@ Result<FrameResult> Pipeline::track(const Frame& frame) {
 }
 
 Lifetimes Pipeline::lifetimes() const {
-  Lifetimes out{
-      .points = std::vector<Eigen::Vector3d>(point_lives_.size(), Eigen::Vector3d::Zero()),
-      .point_lives = point_lives_,
-      .keyframe_times = std::vector<double>(keyframe_lives_.size(), 0.0),
-      .keyframe_poses =
-          std::vector<Eigen::Matrix4d>(keyframe_lives_.size(), Eigen::Matrix4d::Identity()),
-      .keyframe_lives = keyframe_lives_};
-  for (std::size_t id = 0; id < point_lives_.size(); ++id) {
-    if (point_lives_[id][1] >= 0) {
-      out.points[id] = gone_points_[id];
-    }
-  }
-  for (std::size_t id = 0; id < keyframe_lives_.size(); ++id) {
-    if (keyframe_lives_[id][1] >= 0) {
-      out.keyframe_times[id] = gone_times_[id];
-      out.keyframe_poses[id] = gone_poses_[id];
-    }
-  }
+  Lifetimes out{.points = past_points_,
+                .point_lives = point_lives_,
+                .keyframe_times = past_times_,
+                .keyframe_poses = past_poses_,
+                .keyframe_lives = keyframe_lives_,
+                .point_maps = point_maps_,
+                .keyframe_maps = keyframe_maps_};
   if (map_) {
     for (std::size_t p = 0; p < point_count(*map_); ++p) {
-      out.points[static_cast<std::size_t>(map_->pt_id[p])] = map_->pt_xyz[p];
+      out.points[static_cast<std::size_t>(pt_base_ + map_->pt_id[p])] = map_->pt_xyz[p];
     }
     for (std::size_t k = 0; k < keyframe_count(*map_); ++k) {
-      const auto id = static_cast<std::size_t>(map_->kf_id[k]);
+      const auto id = static_cast<std::size_t>(kf_base_ + map_->kf_id[k]);
       out.keyframe_times[id] = map_->kf_time[k];
       out.keyframe_poses[id] = map_->kf_pose[k];
     }
@@ -150,31 +147,70 @@ Lifetimes Pipeline::lifetimes() const {
 
 void Pipeline::date() {
   const std::int64_t frame = frames_++;
-  if (!map_) {
+  if (!map_ || !map_id_) {
     return;
   }
   Map& m = *map_;
-  const auto points = static_cast<std::size_t>(m.next_pt_id);
+  const auto points = static_cast<std::size_t>(pt_base_ + m.next_pt_id);
   point_lives_.resize(points, Life{frame, -1, -1});
-  gone_points_.resize(points, Eigen::Vector3d::Zero());
-  const auto keyframes = static_cast<std::size_t>(m.next_kf_id);
+  point_maps_.resize(points, *map_id_);
+  past_points_.resize(points, Eigen::Vector3d::Zero());
+  const auto keyframes = static_cast<std::size_t>(kf_base_ + m.next_kf_id);
   keyframe_lives_.resize(keyframes, Life{frame, -1, -1});
-  gone_times_.resize(keyframes, 0.0);
-  gone_poses_.resize(keyframes, Eigen::Matrix4d::Identity());
+  keyframe_maps_.resize(keyframes, *map_id_);
+  past_times_.resize(keyframes, 0.0);
+  past_poses_.resize(keyframes, Eigen::Matrix4d::Identity());
   for (std::size_t g = 0; g < m.gone_pt_id.size(); ++g) {
-    const auto id = static_cast<std::size_t>(m.gone_pt_id[g]);
+    const auto id = static_cast<std::size_t>(pt_base_ + m.gone_pt_id[g]);
     point_lives_[id][1] = frame;
     point_lives_[id][2] = m.gone_pt_how[g];
-    gone_points_[id] = m.gone_pt_xyz[g];
+    past_points_[id] = m.gone_pt_xyz[g];
   }
   for (std::size_t g = 0; g < m.gone_kf_id.size(); ++g) {
-    const auto id = static_cast<std::size_t>(m.gone_kf_id[g]);
+    const auto id = static_cast<std::size_t>(kf_base_ + m.gone_kf_id[g]);
     keyframe_lives_[id][1] = frame;
     keyframe_lives_[id][2] = static_cast<std::int64_t>(Removal::kCulled);
-    gone_times_[id] = m.gone_kf_time[g];
-    gone_poses_[id] = m.gone_kf_pose[g];
+    past_times_[id] = m.gone_kf_time[g];
+    past_poses_[id] = m.gone_kf_pose[g];
   }
   clear_gone(m);
+}
+
+LostSummary Pipeline::close(const Map& m) {
+  const std::int64_t frame = frames_ - 1;  // dated already
+  const bool reset = std::cmp_less_equal(keyframe_count(m), options_.reset_keyframes);
+  const auto code = static_cast<std::int64_t>(Removal::kReset);
+  for (std::size_t p = 0; p < point_count(m); ++p) {
+    const auto id = static_cast<std::size_t>(pt_base_ + m.pt_id[p]);
+    past_points_[id] = m.pt_xyz[p];
+    if (reset) {
+      point_lives_[id][1] = frame;
+      point_lives_[id][2] = code;
+    }
+  }
+  for (std::size_t k = 0; k < keyframe_count(m); ++k) {
+    const auto id = static_cast<std::size_t>(kf_base_ + m.kf_id[k]);
+    past_times_[id] = m.kf_time[k];
+    past_poses_[id] = m.kf_pose[k];
+    if (reset) {
+      keyframe_lives_[id][1] = frame;
+      keyframe_lives_[id][2] = code;
+    }
+  }
+  const LostSummary lost{.keyframes = static_cast<std::int64_t>(keyframe_count(m)),
+                         .points = static_cast<std::int64_t>(point_count(m)),
+                         .reset = reset};
+  map_.reset();
+  map_id_.reset();
+  state_ = State::kNotInitialized;
+  last_frame_.reset();
+  last_tracked_.reset();
+  velocity_.reset();
+  reference_.reset();
+  previous_.clear();
+  failures_ = 0;
+  since_recovery_.reset();
+  return lost;
 }
 
 Result<Pipeline::Step> Pipeline::initialize(const Frame& frame) {
@@ -191,13 +227,17 @@ Result<Pipeline::Step> Pipeline::initialize(const Frame& frame) {
                         .motion = std::nullopt,
                         .pnp = std::nullopt,
                         .local_map = std::nullopt,
-                        .mapping = std::nullopt},
+                        .mapping = std::nullopt,
+                        .lost = std::nullopt},
             .matched = {},
             .made = {}};
   if (!attempt->started) {
     return step;
   }
   map_ = std::move(attempt->started->map);
+  map_id_ = maps_++;
+  kf_base_ = static_cast<std::int64_t>(keyframe_lives_.size());
+  pt_base_ = static_cast<std::int64_t>(point_lives_.size());
   state_ = State::kTracking;
   Tracked tracked = attempt->started->tracked;
   if (auto ok = accept(frame, tracked); !ok) {

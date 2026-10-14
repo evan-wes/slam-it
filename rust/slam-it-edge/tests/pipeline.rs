@@ -1,13 +1,15 @@
 //! Integration tests of the pipeline (`slam_it_edge::pipeline`) on the exact scene seen along
 //! a sideways path: RGB-D and stereo track every frame exactly, monocular starts its map and
-//! keeps the path's direction, and empty frames lose the track.
+//! keeps the path's direction, and empty frames lose the track, the next frame starting a new
+//! map.
 
 mod scene;
 
 use nalgebra::{Matrix4, Vector3};
 use slam_it_edge::frames::Frame;
+use slam_it_edge::map::Removal;
 use slam_it_edge::options::{Mode, Options};
-use slam_it_edge::pipeline::{FrameResult, Pipeline, State};
+use slam_it_edge::pipeline::{Fate, FrameResult, LostSummary, Pipeline, State};
 use slam_it_foundations::error::ErrorKind;
 use slam_it_foundations::orb::Features;
 
@@ -29,7 +31,6 @@ fn small_scene() -> Options {
     Options {
         min_init_features: 20,
         min_init_features_depth: 20,
-        min_init_depth_points: 20,
         init_min_matches: 20,
         ..Options::default()
     }
@@ -81,20 +82,62 @@ fn monocular_tracks_the_path_direction() {
 }
 
 #[test]
-fn empty_frames_lose_the_track() {
-    let mut pipeline = Pipeline::new(Mode::Rgbd, camera(), small_scene()).unwrap();
-    pipeline.track(&frame_at(&along(0), true, 0)).unwrap();
-    let features = Features {
-        keypoints: Vec::new(),
-        descriptors: Vec::new(),
-        scale_factor: 1.2,
-        levels: 8,
-    };
-    let empty = Frame::new(1.0, features, Vec::new(), Vec::new(), Vec::new()).unwrap();
-    for _ in 0..Options::default().lost_frames {
-        assert!(pipeline.track(&empty).unwrap().pose.is_none());
+fn empty_frames_lose_the_track_and_the_next_frame_starts_a_new_map() {
+    for reset_keyframes in [10, 0] {
+        let options = Options {
+            reset_keyframes,
+            ..small_scene()
+        };
+        let mut pipeline = Pipeline::new(Mode::Rgbd, camera(), options).unwrap();
+        let started = pipeline.track(&frame_at(&along(0), true, 0)).unwrap();
+        assert_eq!(started.map, Some(0));
+        let features = Features {
+            keypoints: Vec::new(),
+            descriptors: Vec::new(),
+            scale_factor: 1.2,
+            levels: 8,
+        };
+        let empty = Frame::new(1.0, features, Vec::new(), Vec::new(), Vec::new()).unwrap();
+        let results: Vec<FrameResult> = (0..options.lost_frames)
+            .map(|_| pipeline.track(&empty).unwrap())
+            .collect();
+        assert!(results.iter().all(|r| r.pose.is_none() && r.map == Some(0)));
+        let lost = results.last().unwrap();
+        let reset = reset_keyframes > 0;
+        assert_eq!(lost.state, State::Lost);
+        assert_eq!(
+            lost.summary.lost,
+            Some(LostSummary {
+                keyframes: 1,
+                points: started.tracked,
+                reset
+            })
+        );
+        assert_eq!(pipeline.state(), State::NotInitialized);
+        assert!(pipeline.map().is_none());
+        let restarted = pipeline.track(&frame_at(&along(1), true, 0)).unwrap();
+        assert_eq!((restarted.map, restarted.keyframe), (Some(1), true));
+        let lives = pipeline.lifetimes();
+        assert_eq!(lives.keyframe_maps, vec![0, 1]);
+        let first = started.tracked;
+        let (lost_at, code) = if reset {
+            (
+                i64::try_from(options.lost_frames).unwrap(),
+                Removal::Reset.code(),
+            )
+        } else {
+            (-1, -1)
+        };
+        assert_eq!(lives.keyframe_lives[0], [0, lost_at, code]);
+        for (id, (&map, life)) in lives.point_maps.iter().zip(&lives.point_lives).enumerate() {
+            assert_eq!(map, i64::from(id >= first));
+            assert_eq!(life[2], if id < first { code } else { -1 });
+        }
+        let first = i64::try_from(first).unwrap();
+        for (fate, &point) in restarted.fates.fate.iter().zip(&restarted.fates.point) {
+            assert!(*fate != Fate::Made || point >= first); // the run's ids follow map 0's
+        }
     }
-    assert_eq!(pipeline.state(), State::Lost);
     let mut monocular = camera();
     monocular.baseline = 0.0;
     let err = Pipeline::new(Mode::Rgbd, monocular, Options::default()).unwrap_err();

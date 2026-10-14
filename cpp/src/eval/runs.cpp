@@ -148,6 +148,23 @@ Result<void> check_stamped(const std::vector<double>& times,
   return {};
 }
 
+/// @brief Check maps: one per row, numbers from 0, never descending.
+/// @param maps The maps.
+/// @param rows The rows they are for.
+/// @param name Their name, for messages.
+/// @return Nothing, or `InvalidInput`.
+Result<void> check_maps(const std::vector<std::int64_t>& maps, std::size_t rows, const char* name) {
+  if (maps.size() != rows) {
+    return fail(ErrorKind::kInvalidInput, std::string(name) + ": expected one map per row");
+  }
+  if ((!maps.empty() && maps.front() < 0) ||
+      std::ranges::adjacent_find(maps, std::greater<>()) != maps.end()) {
+    return fail(ErrorKind::kInvalidInput,
+                std::string(name) + ": maps must be numbers from 0, never descending");
+  }
+  return {};
+}
+
 /// @brief Check a run before anything is written.
 /// @param run The run.
 /// @return Nothing, or `InvalidInput`.
@@ -202,6 +219,14 @@ Result<void> check(const Run& run) {
           check_lives(run.keyframe_lives, run.keyframe_timestamps.size(), frames, "keyframe_lives");
       !ok) {
     return ok;
+  }
+  for (const auto& [maps, rows, name] :
+       {std::tuple{&run.pose_maps, run.timestamps.size(), "pose_maps"},
+        std::tuple{&run.keyframe_maps, run.keyframe_timestamps.size(), "keyframe_maps"},
+        std::tuple{&run.point_maps, run.points.size(), "point_maps"}}) {
+    if (auto ok = check_maps(*maps, rows, name); !ok) {
+      return ok;
+    }
   }
   if (!finite(run.settings)) {
     return fail(ErrorKind::kInvalidInput, "settings: not JSON (a number is not finite)");
@@ -441,7 +466,7 @@ Result<void> write_run(const std::string& folder, const Run& run) {
   if (auto ok = create_folder(out); !ok) {
     return ok;
   }
-  const std::array<std::pair<const char*, std::string>, 8> files = {{
+  const std::array<std::pair<const char*, std::string>, 11> files = {{
       {"run.json", info_text},
       {"trajectory.txt", *trajectory},
       {"keyframes.npy", npy({run.keyframe_timestamps.size()}, run.keyframe_timestamps)},
@@ -449,6 +474,9 @@ Result<void> write_run(const std::string& folder, const Run& run) {
       {"keyframe_lives.npy", npy({run.keyframe_lives.size(), 3}, flatten(run.keyframe_lives))},
       {"points.npy", npy({run.points.size(), 3}, points)},
       {"point_lives.npy", npy({run.point_lives.size(), 3}, flatten(run.point_lives))},
+      {"pose_maps.npy", npy({run.pose_maps.size()}, run.pose_maps)},
+      {"keyframe_maps.npy", npy({run.keyframe_maps.size()}, run.keyframe_maps)},
+      {"point_maps.npy", npy({run.point_maps.size()}, run.point_maps)},
       {"diagnostics.jsonl", diagnostics},
   }};
   for (const auto& [name, data] : files) {

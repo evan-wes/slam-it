@@ -14,12 +14,21 @@
    (:func:`slam_it.edge.tracking.relocalize_locally`); then track the local map, its window
    widened just after a recovery (``recovery_local_window``). Fewer than ``min_tracked``
    inliers (``recovery_tracked`` within ``max_frames`` of a recovery) counts as a
-   failure; after ``lost_frames`` failures in a row the track is lost, and the run ends
-   there.
+   failure; after ``lost_frames`` failures in a row the track is lost. The map is then kept,
+   or reset if it has ``reset_keyframes`` keyframes or fewer (its keyframes and points
+   removed), and the next frame starts a new map (step 1), as ORB-SLAM3's atlas does
+   (``Tracking::Track``'s ``CreateMapInAtlas`` and ``ResetActiveMap``). Relocalising
+   against the lost map is milestone 2B's.
 3. **Mapping:** a tracked frame that needs a keyframe
    (:func:`slam_it.edge.mapping.need_keyframe`; none within ``max_frames`` of a recovery once
    the map holds more than ``max_frames``) is inserted and mapped
    (:func:`slam_it.edge.mapping.process`).
+
+**Maps** are numbered from 0 in the order they start; a reset map's number is not given
+again. A map numbers its own keyframes and points from 0, so its first keyframe, which local
+BA holds fixed and culling keeps, is always keyframe 0. The run's ids continue across maps:
+each map's are offset by the points and keyframes the maps before it made, as ORB-SLAM3's one
+counter for every map gives them (:meth:`Pipeline.lifetimes`, :attr:`Fates.point`).
 
 Each frame's result carries how its stages went (:class:`FrameSummary`), which a run records
 in its diagnostics, and what became of each of its keypoints (:class:`Fates`), which a run
@@ -59,11 +68,12 @@ class State(enum.StrEnum):
     """Where the pipeline is."""
 
     NOT_INITIALIZED = "not_initialized"
-    """No map yet."""
+    """No map: before the first, or after a lost one, until a new one starts."""
     TRACKING = "tracking"
     """Tracking frames against the map."""
     LOST = "lost"
-    """The track was lost: the run ends."""
+    """The track was lost on this frame: its map was kept or reset, and the next frame starts a
+    new one. Only a frame's result has it; the pipeline is then not initialised."""
 
 
 class Placement(enum.StrEnum):
@@ -106,8 +116,9 @@ class Fates:
     fate : ndarray of int64, shape (N,)
         Each keypoint's :class:`Fate` code.
     point : ndarray of int64, shape (N,)
-        The id of the point concerned: the one made of it, the one it was tracked to, or the
-        one it was matched to and rejected from; -1 if unmatched.
+        The run's id of the point concerned (:meth:`Pipeline.lifetimes`' ids): the one made of
+        it, the one it was tracked to, or the one it was matched to and rejected from; -1 if
+        unmatched.
     """
 
     fate: IntArray
@@ -125,6 +136,35 @@ class _Summary(Protocol):
 def _record(summary: _Summary | None) -> dict[str, Any] | None:
     """Return a stage's summary as JSON values, or None if the stage did not run."""
     return None if summary is None else summary.as_dict()
+
+
+@dataclass(frozen=True)
+class LostSummary:
+    """The map a lost track closed, as a run records it on the frame it was lost on.
+
+    Attributes
+    ----------
+    keyframes : int
+        The map's keyframes then.
+    points : int
+        Its points.
+    reset : bool
+        Whether it was reset, having ``reset_keyframes`` keyframes or fewer, rather than kept.
+    """
+
+    keyframes: int
+    points: int
+    reset: bool
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the summary as JSON values.
+
+        Returns
+        -------
+        dict
+            ``keyframes``, ``points`` and ``reset``.
+        """
+        return {"keyframes": self.keyframes, "points": self.points, "reset": self.reset}
 
 
 @dataclass(frozen=True)
@@ -146,6 +186,8 @@ class FrameSummary:
         Tracking the local map, run on a placed frame.
     mapping : slam_it.edge.mapping.MappingSummary or None
         Local mapping, on a keyframe after the first.
+    lost : LostSummary or None
+        The map closed, on the frame the track was lost on.
     """
 
     placed_by: Placement | None = None
@@ -154,6 +196,7 @@ class FrameSummary:
     pnp: PnpSummary | None = None
     local_map: LocalMapSummary | None = None
     mapping: MappingSummary | None = None
+    lost: LostSummary | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """Return the summary as JSON values, the keys a run's diagnostics add.
@@ -161,8 +204,8 @@ class FrameSummary:
         Returns
         -------
         dict
-            ``placed_by`` (by name), ``init``, ``motion``, ``pnp``, ``local_map`` and
-            ``mapping``, each an object or None.
+            ``placed_by`` (by name), ``init``, ``motion``, ``pnp``, ``local_map``, ``mapping``
+            and ``lost``, each an object or None.
         """
         return {
             "placed_by": None if self.placed_by is None else self.placed_by.value,
@@ -171,6 +214,7 @@ class FrameSummary:
             "pnp": _record(self.pnp),
             "local_map": _record(self.local_map),
             "mapping": _record(self.mapping),
+            "lost": _record(self.lost),
         }
 
 
@@ -183,7 +227,10 @@ class FrameResult:
     timestamp : float
         The frame's time.
     state : State
-        The pipeline's state after the frame.
+        The frame's: the pipeline's after it, or :attr:`State.LOST` on the frame the track was
+        lost on.
+    map : int or None
+        The map it was tracked in, or lost from; None when there was none.
     pose : ndarray of float64, shape (4, 4) or None
         The frame's ``T_cam_world``, None if it was not tracked.
     tracked : int
@@ -204,6 +251,7 @@ class FrameResult:
 
     timestamp: float
     state: State
+    map: int | None
     pose: Array | None
     tracked: int
     keyframe: bool
@@ -215,11 +263,13 @@ class FrameResult:
 
 @dataclass(frozen=True)
 class Lifetimes:
-    """Every point and keyframe a run made, by id, where each last was, and its life.
+    """Every point and keyframe a run made, by id, where each last was, its life and its map.
 
-    A life is three numbers: the frame that made it (frames counted from 0, one per
-    :meth:`Pipeline.track`), the frame that removed it or -1, and why (a
-    :class:`slam_it.edge.map.Removal` code) or -1.
+    The ids are the run's, continuing across maps. A life is three numbers: the frame that made
+    it (frames counted from 0, one per :meth:`Pipeline.track`), the frame that removed it or
+    -1, and why (a :class:`slam_it.edge.map.Removal` code) or -1. A kept map's points and
+    keyframes stay alive after it closes; a reset map's end there, as
+    :attr:`slam_it.edge.map.Removal.RESET`.
 
     Attributes
     ----------
@@ -233,6 +283,10 @@ class Lifetimes:
         Its last ``T_cam_world``.
     keyframe_lives : ndarray of int64, shape (K, 3)
         Their lives.
+    point_maps : ndarray of int64, shape (N,)
+        The map each point was made in.
+    keyframe_maps : ndarray of int64, shape (K,)
+        The map each keyframe was made in.
     """
 
     points: Array
@@ -240,6 +294,8 @@ class Lifetimes:
     keyframe_times: Array
     keyframe_poses: Array
     keyframe_lives: NDArray[np.int64]
+    point_maps: NDArray[np.int64]
+    keyframe_maps: NDArray[np.int64]
 
 
 @dataclass(frozen=True)
@@ -257,8 +313,11 @@ class _Step:
     matched: IntArray | None = None
     made: IntArray | None = None
 
-    def fates(self, size: int) -> Fates:
-        """Return what became of each of the frame's `size` keypoints (:class:`Fate`)."""
+    def fates(self, size: int, base: int) -> Fates:
+        """Return what became of each of the frame's `size` keypoints (:class:`Fate`).
+
+        `base` is the run's id of the map's point 0.
+        """
         fate = np.full(size, int(Fate.UNMATCHED), dtype=np.int64)
         point = np.full(size, -1, dtype=np.int64)
         held = None if self.tracked is None else self.tracked.points
@@ -269,7 +328,7 @@ class _Step:
         ):
             if ids is not None:
                 fate[ids >= 0] = int(kind)
-                point[ids >= 0] = ids[ids >= 0]
+                point[ids >= 0] = base + ids[ids >= 0]
         return Fates(fate=fate, point=point)
 
 
@@ -286,9 +345,9 @@ class Pipeline:
     options : Options
         The settings.
     state : State
-        Where the pipeline is.
+        Where the pipeline is: never :attr:`State.LOST`, which a lost frame's result has.
     map : Map or None
-        The map, once initialised.
+        The current map; None until one starts, and from a lost one to the next.
     """
 
     mode: str
@@ -304,10 +363,18 @@ class Pipeline:
     _failures: int = field(default=0, init=False, repr=False)
     _since_recovery: int | None = field(default=None, init=False, repr=False)
     _frames: int = field(default=0, init=False, repr=False)
+    _map_id: int | None = field(default=None, init=False, repr=False)
+    _maps: int = field(default=0, init=False, repr=False)
+    _kf_base: int = field(default=0, init=False, repr=False)
+    _pt_base: int = field(default=0, init=False, repr=False)
     _point_lives: list[list[int]] = field(default_factory=list, init=False, repr=False)
     _keyframe_lives: list[list[int]] = field(default_factory=list, init=False, repr=False)
-    _gone_points: dict[int, Array] = field(default_factory=dict, init=False, repr=False)
-    _gone_keyframes: dict[int, tuple[float, Array]] = field(
+    _point_maps: list[int] = field(default_factory=list, init=False, repr=False)
+    _keyframe_maps: list[int] = field(default_factory=list, init=False, repr=False)
+    # Where each point and keyframe no longer in the current map last was, by the run's id:
+    # removed, or in a closed map.
+    _past_points: dict[int, Array] = field(default_factory=dict, init=False, repr=False)
+    _past_keyframes: dict[int, tuple[float, Array]] = field(
         default_factory=dict, init=False, repr=False
     )
 
@@ -356,18 +423,23 @@ class Pipeline:
         elif self.state is State.TRACKING:
             step = self._track(frame)
         self._date()
+        state, map_id, summary = self.state, self._map_id, step.summary
+        fates = step.fates(frame.size, self._pt_base)
+        if state is State.LOST:
+            summary = replace(summary, lost=self._close())
         track_seconds = time.perf_counter() - start - step.map_seconds
         tracked = step.tracked
         return FrameResult(
             timestamp=frame.timestamp,
-            state=self.state,
+            state=state,
+            map=map_id,
             pose=None if tracked is None else tracked.pose.copy(),
             tracked=0 if tracked is None else tracked.inliers,
             keyframe=step.keyframe,
             track_seconds=track_seconds,
             map_seconds=step.map_seconds,
-            summary=step.summary,
-            fates=step.fates(frame.size),
+            summary=summary,
+            fates=fates,
         )
 
     def lifetimes(self) -> Lifetimes:
@@ -376,50 +448,85 @@ class Pipeline:
         Returns
         -------
         Lifetimes
-            The points and keyframes by id: those in the map where the map has them, the
-            removed ones where they last were.
+            The points and keyframes by the run's id: those in the current map where it has
+            them, the others where they last were.
         """
-        m = self.map
         points = np.zeros((len(self._point_lives), 3))
         times = np.zeros(len(self._keyframe_lives))
         poses = np.tile(np.eye(4), (len(self._keyframe_lives), 1, 1))
-        if m is not None:
-            points[m.pt_id] = m.pt_xyz
-            times[m.kf_id] = m.kf_time
-            poses[m.kf_id] = m.kf_pose
-        for point_id, xyz in self._gone_points.items():
+        for point_id, xyz in self._past_points.items():
             points[point_id] = xyz
-        for keyframe_id, (seconds, pose) in self._gone_keyframes.items():
+        for keyframe_id, (seconds, pose) in self._past_keyframes.items():
             times[keyframe_id], poses[keyframe_id] = seconds, pose
+        m = self.map
+        if m is not None:
+            points[self._pt_base + m.pt_id] = m.pt_xyz
+            times[self._kf_base + m.kf_id] = m.kf_time
+            poses[self._kf_base + m.kf_id] = m.kf_pose
         return Lifetimes(
             points=points,
             point_lives=np.array(self._point_lives, dtype=np.int64).reshape(-1, 3),
             keyframe_times=times,
             keyframe_poses=poses,
             keyframe_lives=np.array(self._keyframe_lives, dtype=np.int64).reshape(-1, 3),
+            point_maps=np.array(self._point_maps, dtype=np.int64),
+            keyframe_maps=np.array(self._keyframe_maps, dtype=np.int64),
         )
 
     def _date(self) -> None:
         """Date what this frame made and removed, and empty the map's archive of removals."""
         frame = self._frames
         self._frames += 1
-        m = self.map
-        if m is None:
+        m, map_id = self.map, self._map_id
+        if m is None or map_id is None:
             return
-        made = m.next_pt_id - len(self._point_lives)
+        made = self._pt_base + m.next_pt_id - len(self._point_lives)
         self._point_lives.extend([frame, -1, -1] for _ in range(made))
-        made = m.next_kf_id - len(self._keyframe_lives)
+        self._point_maps.extend([map_id] * made)
+        made = self._kf_base + m.next_kf_id - len(self._keyframe_lives)
         self._keyframe_lives.extend([frame, -1, -1] for _ in range(made))
+        self._keyframe_maps.extend([map_id] * made)
         for point_id, xyz, how in zip(m.gone_pt_id, m.gone_pt_xyz, m.gone_pt_how, strict=True):
-            self._point_lives[int(point_id)][1:] = [frame, int(how)]
-            self._gone_points[int(point_id)] = xyz
+            run_id = self._pt_base + int(point_id)
+            self._point_lives[run_id][1:] = [frame, int(how)]
+            self._past_points[run_id] = xyz
         for keyframe_id, seconds, pose in zip(
             m.gone_kf_id, m.gone_kf_time, m.gone_kf_pose, strict=True
         ):
-            self._keyframe_lives[int(keyframe_id)][1:] = [frame, int(Removal.CULLED)]
-            self._gone_keyframes[int(keyframe_id)] = (float(seconds), pose)
+            run_id = self._kf_base + int(keyframe_id)
+            self._keyframe_lives[run_id][1:] = [frame, int(Removal.CULLED)]
+            self._past_keyframes[run_id] = (float(seconds), pose)
         if len(m.gone_pt_id) or len(m.gone_kf_id):
             self.map = maps.clear_gone(m)
+
+    def _close(self) -> LostSummary:
+        """Close the map the track was lost in, on this frame: keep it, or reset it if small.
+
+        Its points and keyframes go where they last were; a reset map's lives end on this
+        frame (:attr:`slam_it.edge.map.Removal.RESET`). The tracking state goes with the map, so
+        the next frame starts a new one.
+        """
+        m = self.map
+        assert m is not None
+        frame = self._frames - 1  # dated already
+        reset = m.keyframes <= self.options.reset_keyframes
+        for point_id, xyz in zip(m.pt_id, m.pt_xyz, strict=True):
+            run_id = self._pt_base + int(point_id)
+            self._past_points[run_id] = xyz
+            if reset:
+                self._point_lives[run_id][1:] = [frame, int(Removal.RESET)]
+        for keyframe_id, seconds, pose in zip(m.kf_id, m.kf_time, m.kf_pose, strict=True):
+            run_id = self._kf_base + int(keyframe_id)
+            self._past_keyframes[run_id] = (float(seconds), pose)
+            if reset:
+                self._keyframe_lives[run_id][1:] = [frame, int(Removal.RESET)]
+        lost = LostSummary(keyframes=m.keyframes, points=m.points, reset=reset)
+        self.map, self._map_id = None, None
+        self.state = State.NOT_INITIALIZED
+        self._last_frame, self._last_tracked, self._velocity = None, None, None
+        self._reference, self._previous = None, None
+        self._failures, self._since_recovery = 0, None
+        return lost
 
     def _initialize(self, frame: Frame) -> _Step:
         """Try to start the map with this frame."""
@@ -431,6 +538,8 @@ class Pipeline:
         if attempt.started is None:
             return _Step(tracked=None, keyframe=False, map_seconds=0.0, summary=summary)
         self.map, tracked = attempt.started
+        self._map_id, self._maps = self._maps, self._maps + 1
+        self._kf_base, self._pt_base = len(self._keyframe_lives), len(self._point_lives)
         self.state = State.TRACKING
         self._accept(frame, tracked)
         summary = replace(summary, placed_by=Placement.INITIALIZATION)
@@ -471,7 +580,10 @@ class Pipeline:
         self._failures = 0
 
     def _record_failure(self) -> None:
-        """Count an untracked frame: it ends the velocity, and enough in a row lose the track."""
+        """Count an untracked frame: it ends the velocity, and enough in a row lose the track.
+
+        :meth:`track` then closes the map.
+        """
         self._failures += 1
         self._velocity = None
         if self._failures >= self.options.lost_frames:

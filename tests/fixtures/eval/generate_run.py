@@ -38,17 +38,22 @@ def _poses(rng: np.random.Generator, count: int) -> np.ndarray:
 
 
 def _summary(k: int) -> dict[str, Any]:
-    """Return frame ``k``'s stage summaries, nested as the edge pipeline writes them."""
+    """Return frame ``k``'s stage summaries, nested as the edge pipeline writes them.
+
+    Frame 0 starts map 0; frame 2 loses it, kept; frame 3 starts map 1, and frame 4 is its
+    second keyframe.
+    """
     solve = {
         "initial_cost": 12.5 / (k + 1),
         "final_cost": 0.75 / (k + 1),
         "iterations": 5 + k,
         "termination": "function",
     }
+    starts = k in (0, 3)
     return {
-        "placed_by": "initialization" if k == 0 else ("motion" if k < 4 else None),
-        "init": {"matches": None, "outcome": "initialized", "ba": []} if k == 0 else None,
-        "motion": None if k == 0 else {"matches": 200 + k, "widened": k == 2, "inliers": 180 + k},
+        "placed_by": "initialization" if starts else (None if k == 2 else "motion"),
+        "init": {"matches": None, "outcome": "initialized", "ba": []} if starts else None,
+        "motion": None if starts else {"matches": 200 + k, "widened": k == 2, "inliers": 180 + k},
         "pnp": {
             "candidates": 500,
             "matches": 120,
@@ -57,10 +62,10 @@ def _summary(k: int) -> dict[str, Any]:
             "inliers": None,
             "refined": None,
         }
-        if k == 4
+        if k == 2
         else None,
         "local_map": {"in_view": 400 + k, "matches": 300 + k, "inliers": 290 + k}
-        if 0 < k < 4
+        if k in (1, 4, 5)
         else None,
         "mapping": {
             "from_depth": 40,
@@ -72,25 +77,28 @@ def _summary(k: int) -> dict[str, Any]:
             "weak_points": 1,
             "culled_keyframes": 0,
         }
-        if k == 3
+        if k == 4
         else None,
+        "lost": {"keyframes": 1, "points": 2, "reset": False} if k == 2 else None,
     }
 
 
 def _features(rng: np.random.Generator) -> list[dict[str, list[Any]]]:
     """Return each frame's keypoints: pixels, levels, fates and points, as the frames go.
 
-    Frame 0 starts the map with points 0 and 1; frame 1 tracks one, rejects the other; frame 2
-    has no keypoints; frame 3, a keyframe, tracks point 0 and makes 2 and 3; the lost frame 4
-    matched point 2 and rejected it. Pixels have bits float32 rounds away.
+    Frame 0 starts map 0 with points 0 and 1; frame 1 tracks one, rejects the other; the lost
+    frame 2 matched point 0 and rejected it; frame 3 starts map 1 with points 2 and 3; frame 4,
+    a keyframe, tracks point 2, rejects 3 and makes 4; frame 5 has no keypoints. Pixels have
+    bits float32 rounds away.
     """
     unmatched, rejected, tracked, made = range(4)
     frames = [
         [(made, 0), (made, 1), (unmatched, -1)],
         [(tracked, 0), (rejected, 1)],
+        [(rejected, 0), (unmatched, -1)],
+        [(made, 2), (made, 3), (unmatched, -1)],
+        [(tracked, 2), (made, 4), (rejected, 3), (unmatched, -1)],
         [],
-        [(tracked, 0), (made, 2), (made, 3), (unmatched, -1)],
-        [(rejected, 2), (unmatched, -1)],
     ]
     return [
         {
@@ -104,21 +112,26 @@ def _features(rng: np.random.Generator) -> list[dict[str, list[Any]]]:
 
 
 def values() -> dict[str, Any]:
-    """Return the run's values, as JSON."""
+    """Return the run's values, as JSON: two maps, the first lost on frame 2 and kept."""
     rng = np.random.default_rng(8)
-    times = 1305031102.175304 + 0.0333 * np.arange(5)
-    poses = _poses(rng, 5)
+    times = 1305031102.175304 + 0.0333 * np.arange(6)
+    tracked = [0, 1, 3, 4, 5]
+    poses = _poses(rng, len(tracked))
+    keyframes = [0, 3, 4]
     return {
         "dataset": "tum",
         "sequence": "rgbd_dataset_freiburg1_fixture",
         "mode": "rgbd",
-        "timestamps": times.tolist(),
+        "timestamps": times[tracked].tolist(),
         "poses": poses.tolist(),
-        "keyframe_timestamps": times[[0, 3]].tolist(),
-        "keyframe_poses": poses[[0, 3]].tolist(),
-        "points": rng.normal(0.0, 3.0, (4, 3)).tolist(),
-        "point_lives": [[0, -1, -1], [0, 3, 1], [3, -1, -1], [3, 4, 2]],
-        "keyframe_lives": [[0, -1, -1], [3, -1, -1]],
+        "pose_maps": [0, 0, 1, 1, 1],
+        "keyframe_timestamps": times[keyframes].tolist(),
+        "keyframe_poses": poses[[0, 2, 3]].tolist(),
+        "keyframe_maps": [0, 1, 1],
+        "points": rng.normal(0.0, 3.0, (5, 3)).tolist(),
+        "point_maps": [0, 0, 1, 1, 1],
+        "point_lives": [[0, -1, -1], [0, -1, -1], [3, -1, -1], [3, 4, 1], [4, -1, -1]],
+        "keyframe_lives": [[0, -1, -1], [3, -1, -1], [4, -1, -1]],
         "settings": {"n_features": 1000, "scale_factor": 1.2, "window": 10, "chi2_mono": 5.991},
         "peak_memory": 48_381_952,
         "cpus": [4, 5, 6, 7],
@@ -128,13 +141,14 @@ def values() -> dict[str, Any]:
         "diagnostics": [
             {
                 "timestamp": float(t),
-                "state": "tracking",
-                "tracked": 300 + k,
-                "keyframe": k in (0, 3),
+                "state": "lost" if k == 2 else "tracking",
+                "map": 0 if k < 3 else 1,
+                "tracked": 0 if k == 2 else 300 + k,
+                "keyframe": k in keyframes,
                 "read_seconds": 0.0025 * (k + 1),
                 "build_seconds": 0.0125 * (k + 1),
                 "track_seconds": 0.005 * (k + 1),
-                "map_seconds": 0.0625 if k == 3 else 0.0,
+                "map_seconds": 0.0625 if k == 4 else 0.0,
                 **_summary(k),
             }
             for k, t in enumerate(times)
@@ -166,6 +180,9 @@ def main() -> None:
             point_lives=np.array(run["point_lives"], dtype=np.int64),
             keyframe_lives=np.array(run["keyframe_lives"], dtype=np.int64),
             record_features=run["record_features"],
+            pose_maps=np.array(run["pose_maps"], dtype=np.int64),
+            keyframe_maps=np.array(run["keyframe_maps"], dtype=np.int64),
+            point_maps=np.array(run["point_maps"], dtype=np.int64),
         ),
     )
     with runs.FeatureWriter(FOLDER) as features:

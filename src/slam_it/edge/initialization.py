@@ -3,9 +3,9 @@
 ORB-SLAM's ``StereoInitialization`` and ``MonocularInitialization``:
 
 - **Stereo and RGB-D** (:func:`initialize_from_depth`): the first frame with more than
-  ``min_init_features_depth`` keypoints, ``min_init_depth_points`` of them with depth, is the
-  first keyframe, at the origin, with a point at every keypoint with depth, so the map is
-  metric from the start.
+  ``min_init_features_depth`` keypoints is the first keyframe, at the origin, with a point at
+  every keypoint with depth, so the map is metric from the start. A map started from too
+  little depth to track is lost and reset (:class:`slam_it.edge.pipeline.Pipeline`).
 - **Monocular** (:func:`initialize_monocular`): a reference frame and a later one are matched
   within a window (:func:`match_for_initialization`, ``SearchForInitialization``) and
   initialised by :func:`slam_it.foundations.twoview.initialize`; the two become keyframes, a
@@ -49,8 +49,6 @@ class Outcome(enum.StrEnum):
     TOO_FEW_FEATURES = "too_few_features"
     """Too few keypoints: a monocular frame drops the reference (ORB-SLAM drops its
     initializer); a stereo or RGB-D frame waits for the next."""
-    TOO_LITTLE_DEPTH = "too_little_depth"
-    """Too few keypoints with depth to start a stereo or RGB-D map."""
     REFERENCE_SET = "reference_set"
     """It became the monocular reference: there was none."""
     REFERENCE_REPLACED = "reference_replaced"
@@ -200,8 +198,6 @@ def _initialize_from_depth(frame: Frame, options: Options) -> Initialization:
     if frame.size <= options.min_init_features_depth:
         return _failed(Outcome.TOO_FEW_FEATURES)
     has_depth = np.flatnonzero(~np.isnan(frame.depth) & ~np.isnan(frame.bearings[:, 0]))
-    if len(has_depth) < options.min_init_depth_points:
-        return _failed(Outcome.TOO_LITTLE_DEPTH)
     pose = np.eye(4)
     m = maps.insert_keyframe(
         maps.empty(options.levels, options.scale_factor),
@@ -239,8 +235,7 @@ def initialize_from_depth(
     Initialization
         The map, its one keyframe at the origin with a point at every keypoint with depth
         (and a bearing), and the frame tracked; none unless the frame has more than
-        ``min_init_features_depth`` keypoints (:attr:`Outcome.TOO_FEW_FEATURES`) and
-        ``min_init_depth_points`` with depth (:attr:`Outcome.TOO_LITTLE_DEPTH`).
+        ``min_init_features_depth`` keypoints (:attr:`Outcome.TOO_FEW_FEATURES`).
 
     Raises
     ------

@@ -12,9 +12,10 @@ gap (:mod:`tests.orchestration.datasets`), catches it: every backend's runs are 
 (``tests/orchestration/test_vo.py``), so regenerating it is the deliberate act that accepts new
 decisions, and its diff shows them (review panel finding A1).
 
-Per room, dataset and mode: each frame's state, tracked inliers and keyframe flag; the tracked
-frames' times and ``T_world_cam``; the final map's keyframes' times and its number of points;
-every point's and keyframe's life (the run format's ``*_lives.npy``), as three columns each;
+Per room, dataset and mode: each frame's state, map, tracked inliers and keyframe flag; the
+tracked frames' times, ``T_world_cam`` and maps; the final map's keyframes' times and its number
+of points; every point's and keyframe's life (the run format's ``*_lives.npy``), as three
+columns each, and map;
 each frame's count of keypoints of each fate (:data:`slam_it.eval.runs.FATES`), a column per
 fate; and each frame's stage summaries (:class:`slam_it.edge.pipeline.FrameSummary`), one
 line per frame.
@@ -96,23 +97,28 @@ def record(run: runs.Run, features: runs.Features) -> dict[str, Any]:
     Returns
     -------
     dict
-        Each frame's state (one string), tracked inliers and keyframe flag (0 or 1); the
-        tracked frames' times and ``T_world_cam``, a row of 16 each; the final map's keyframes'
-        times and number of points; the lives of every point and keyframe, as columns (made,
-        removed, why); each frame's count of keypoints of each fate, a column per fate; each
-        frame's stage summaries. Columns of numbers, and one summary per frame, so the record
-        lays out one line per column or frame and a changed decision shows as a changed line.
+        Each frame's state (one string), map (null before one), tracked inliers and keyframe
+        flag (0 or 1); the tracked frames' times, ``T_world_cam`` (a row of 16 each) and maps;
+        the final map's keyframes' times and number of points; the lives of every point and
+        keyframe, as columns (made, removed, why), and their maps; each frame's count of
+        keypoints of each fate, a column per fate; each frame's stage summaries. Columns of
+        numbers, and one summary per frame, so the record lays out one line per column or
+        frame and a changed decision shows as a changed line.
     """
     return {
         "states": " ".join(d["state"] for d in run.diagnostics),
+        "maps": [d["map"] for d in run.diagnostics],
         "tracked": [d["tracked"] for d in run.diagnostics],
         "keyframes": [int(d["keyframe"]) for d in run.diagnostics],
         "timestamps": run.timestamps.tolist(),
         "poses": run.poses.reshape(-1, 16).tolist(),
+        "pose_maps": run.pose_maps.tolist(),
         "keyframe_timestamps": run.final_keyframes()[0].tolist(),
         "points": len(run.final_points()),
         "point_lives": run.point_lives.T.tolist(),
         "keyframe_lives": run.keyframe_lives.T.tolist(),
+        "point_maps": run.point_maps.tolist(),
+        "keyframe_maps": run.keyframe_maps.tolist(),
         "fates": fate_counts(run, features),
         "summaries": summaries(run),
     }

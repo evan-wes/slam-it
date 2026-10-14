@@ -37,8 +37,10 @@ enum class Removal : std::uint8_t {
   kFused = 1,
   /// @brief Erased with its views: left seen too little.
   kWeak = 2,
+  /// @brief Its map was reset: the track was lost while the map was too small to keep.
+  kReset = 3,
   /// @brief The number of removals (a sentinel, not a removal).
-  kCount = 3,
+  kCount = 4,
 };
 
 /// @brief Keyframes, their keypoints and the map points (`slam_it.edge.map.Map`).

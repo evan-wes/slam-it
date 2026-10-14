@@ -1,9 +1,12 @@
 /// @file
 /// @brief Native tests for the pipeline (slam_it/edge/pipeline.hpp) on the exact scene seen
 ///        along a sideways path: RGB-D and stereo track every frame exactly, monocular starts
-///        its map and keeps the path's direction, and empty frames lose the track.
+///        its map and keeps the path's direction, and empty frames lose the track, the next
+///        frame starting a new map.
 #include <cmath>
 #include <cstdint>
+#include <optional>
+#include <utility>
 #include <vector>
 
 #include "../foundations/fixture_support.hpp"
@@ -33,10 +36,7 @@ Eigen::Matrix4d along(std::int64_t i) {
 /// @brief The settings for a 60-point scene: the counts ORB-SLAM sizes for hundreds lowered.
 /// @return The settings.
 edge::Options small_scene() {
-  return {.min_init_features = 20,
-          .min_init_features_depth = 20,
-          .min_init_depth_points = 20,
-          .init_min_matches = 20};
+  return {.min_init_features = 20, .min_init_features_depth = 20, .init_min_matches = 20};
 }
 
 /// @brief Run the path through a pipeline.
@@ -108,25 +108,73 @@ void check_monocular(int& failures) {
   expect(along_path, "monocular starts its map and tracks the path's direction", failures);
 }
 
-/// @brief Check losing the track, and the checks.
+/// @brief A frame with no keypoints.
+/// @return The frame.
+edge::Frame empty_frame() {
+  return edge::make_frame(0.0,
+                          {.keypoints = {}, .descriptors = {}, .scale_factor = 1.2, .levels = 8},
+                          {}, {}, {})
+      .value();
+}
+
+/// @brief Whether the lives after a loss and a new map are right: map 0's keyframe and points
+///        made on frame 0, ended as reset on the lost frame if `reset`, map 1's alive.
+/// @param lives The pipeline's lifetimes.
+/// @param first The points map 0 made.
+/// @param reset Whether map 0 was reset.
+/// @param lost_at The frame the track was lost on.
+/// @return Whether they are.
+bool lived(const edge::Lifetimes& lives, std::int64_t first, bool reset, std::int64_t lost_at) {
+  const std::int64_t code = reset ? static_cast<std::int64_t>(edge::Removal::kReset) : -1;
+  if (lives.keyframe_maps != std::vector<std::int64_t>{0, 1} ||
+      lives.keyframe_lives[0] != edge::Life{0, reset ? lost_at : -1, code}) {
+    return false;
+  }
+  for (std::size_t id = 0; id < lives.point_maps.size(); ++id) {
+    const bool in_first = std::cmp_less(id, first);
+    if (lives.point_maps[id] != (in_first ? 0 : 1) ||
+        lives.point_lives[id][2] != (in_first ? code : -1)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// @brief Check losing the track: the small map is reset, or kept with `reset_keyframes` 0, and
+///        the next frame starts map 1, its ids following map 0's.
 /// @param failures Running failure count.
 void check_lost(int& failures) {
-  auto pipeline = edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), small_scene());
-  if (!pipeline || !pipeline->track(scene::frame_at(along(0), true))) {
-    expect(false, "the pipeline starts", failures);
-    return;
+  for (const std::int64_t reset_keyframes : {std::int64_t{10}, std::int64_t{0}}) {
+    edge::Options options = small_scene();
+    options.reset_keyframes = reset_keyframes;
+    auto pipeline = edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), options);
+    const auto started =
+        pipeline
+            ? pipeline->track(scene::frame_at(along(0), true))
+            : slam_it::foundations::Result<edge::FrameResult>(std::unexpected(pipeline.error()));
+    if (!started || started->map != 0) {
+      expect(false, "the pipeline starts map 0", failures);
+      return;
+    }
+    std::optional<edge::FrameResult> lost;
+    for (std::int64_t i = 0; i < options.lost_frames; ++i) {
+      lost = pipeline->track(empty_frame()).value();
+    }
+    const bool reset = reset_keyframes > 0;
+    expect(lost && lost->state == edge::State::kLost && !lost->pose && lost->map == 0 &&
+               lost->summary.lost && lost->summary.lost->reset == reset &&
+               lost->summary.lost->keyframes == 1 &&
+               pipeline->state() == edge::State::kNotInitialized && !pipeline->map(),
+           "lost_frames frames in a row untracked lose the track and close the map", failures);
+    const auto restarted = pipeline->track(scene::frame_at(along(1), true));
+    bool made_after = restarted.has_value() && restarted->map == 1 && restarted->keyframe;
+    for (std::size_t j = 0; made_after && j < restarted->fates.point.size(); ++j) {
+      made_after = restarted->fates.fate[j] != edge::Fate::kMade ||
+                   restarted->fates.point[j] >= started->tracked;
+    }
+    expect(made_after && lived(pipeline->lifetimes(), started->tracked, reset, options.lost_frames),
+           "the next frame starts map 1, the run's ids following map 0's", failures);
   }
-  const edge::Frame empty =
-      edge::make_frame(0.0, {.keypoints = {}, .descriptors = {}, .scale_factor = 1.2, .levels = 8},
-                       {}, {}, {})
-          .value();
-  bool ok = true;
-  for (std::int64_t i = 0; ok && i < edge::Options{}.lost_frames; ++i) {
-    const auto result = pipeline->track(empty);
-    ok = result.has_value() && !result->pose;
-  }
-  expect(ok && pipeline->state() == edge::State::kLost,
-         "lost_frames frames in a row untracked lose the track", failures);
   edge::Camera monocular = scene::camera();
   monocular.baseline = 0.0;
   expect(is_invalid_input(edge::Pipeline::create(edge::Mode::kRgbd, monocular, edge::Options{})),

@@ -170,8 +170,6 @@ const char* name(Outcome outcome) {
       return "initialized";
     case Outcome::kTooFewFeatures:
       return "too_few_features";
-    case Outcome::kTooLittleDepth:
-      return "too_little_depth";
     case Outcome::kReferenceSet:
       return "reference_set";
     case Outcome::kReferenceReplaced:
@@ -208,9 +206,6 @@ Result<Initialization> initialize_from_depth(const Frame& frame, const Options& 
     if (!std::isnan(frame.depth[i]) && !std::isnan(frame.bearings[i].x())) {
       has_depth.push_back(static_cast<std::int64_t>(i));
     }
-  }
-  if (std::cmp_less(has_depth.size(), options.min_init_depth_points)) {
-    return failed(Outcome::kTooLittleDepth);
   }
   Started out{.map = empty_map(options.levels, options.scale_factor), .tracked = {}};
   if (auto ok = insert_unobserving(out.map, frame, Eigen::Matrix4d::Identity()); !ok) {

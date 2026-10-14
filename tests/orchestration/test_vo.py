@@ -438,21 +438,26 @@ def test_a_stereo_run_matches_with_its_settings(
 ) -> None:
     """The stereo matcher's settings reach every backend's frames (review panel finding A15).
 
-    Below a Hamming distance of 1 hardly a pair matches, so no frame has the depths to start
-    the map; the run records the setting.
+    Below a Hamming distance of 1 hardly a pair matches, so the first frame starts its map with
+    a handful of points, where the default's makes hundreds; the run records the setting.
     """
-    strict = replace(OPTIONS, stereo_max_distance=1)
-    run = vo.run(
-        "euroc",
-        room_folders.euroc,
-        "stereo",
-        tmp_path,
-        backend=require_program(backend),
-        options=strict,
-        count=3,
-    )
-    assert len(run.timestamps) == 0
-    assert run.settings["stereo_max_distance"] == 1
+    made = {}
+    for name, options in (
+        ("default", OPTIONS),
+        ("strict", replace(OPTIONS, stereo_max_distance=1)),
+    ):
+        run = vo.run(
+            "euroc",
+            room_folders.euroc,
+            "stereo",
+            tmp_path / name,
+            backend=require_program(backend),
+            options=options,
+            count=1,
+        )
+        made[name] = len(run.points)
+        assert run.settings["stereo_max_distance"] == options.stereo_max_distance
+    assert 0 < 10 * made["strict"] < made["default"]
 
 
 def test_refuses_negative_frames() -> None:

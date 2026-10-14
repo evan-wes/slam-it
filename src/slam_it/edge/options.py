@@ -64,11 +64,8 @@ class Options:
     min_init_features_depth : int
         A stereo or RGB-D frame starts the map with more than this many keypoints, a point
         made at each one with depth (``StereoInitialization``'s ``N > 500`` counts every
-        keypoint)...
-    min_init_depth_points : int
-        ...and at least this many of them with depth (100). Lite: ORB-SLAM starts from any
-        500 keypoints because it resets a map lost within its first five keyframes; without
-        that reset, a start from a frame with almost no depth would end the run.
+        keypoint, with depth or not). A map started from too little depth to track loses the
+        track and is reset (``reset_keyframes``), as ORB-SLAM's is.
     init_window : float
         The window, in pixels, in which a monocular initialisation matches a keypoint of the
         reference frame (``SearchForInitialization``'s 100).
@@ -224,7 +221,13 @@ class Options:
     relocalize_ratio : float
         The fallback's descriptor ratio test (``Relocalization``'s ``ORBmatcher(0.75, true)``).
     lost_frames : int
-        Frames the fallback may fail on in a row before the track is lost and the run ends.
+        Frames the fallback may fail on in a row before the track is lost: the map is kept,
+        or reset (``reset_keyframes``), and the next frame starts a new one (ORB-SLAM3's
+        atlas).
+    reset_keyframes : int
+        A map lost with this many keyframes or fewer is reset rather than kept: its keyframes
+        and points removed, its frames' poses dropped (ORB-SLAM3's ``ResetActiveMap``, for a
+        map of up to 10 keyframes). 0 keeps every map.
     seed : int
         Every RANSAC's seed, so a run is deterministic.
     """
@@ -245,7 +248,6 @@ class Options:
     init_feature_factor: int = 2
     min_init_features: int = 100
     min_init_features_depth: int = 500
-    min_init_depth_points: int = 100
     init_window: float = 100.0
     init_ratio: float = 0.9
     init_min_matches: int = 100
@@ -304,6 +306,7 @@ class Options:
     pnp_min_inliers: int = 30
     relocalize_ratio: float = 0.75
     lost_frames: int = 5
+    reset_keyframes: int = 10
     seed: int = 0
 
     def __post_init__(self) -> None:
@@ -395,7 +398,7 @@ class Options:
 
 
 _MAY_BE_ZERO = frozenset(
-    {"seed", "min_init_features", "min_init_features_depth", "min_init_depth_points"}
+    {"seed", "min_init_features", "min_init_features_depth", "reset_keyframes"}
 )
 """The integer settings that may be 0."""
 

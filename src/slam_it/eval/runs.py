@@ -2,7 +2,7 @@
 
 A run is a folder, written by any backend's pipeline (C++ and Rust write the same files):
 
-- ``run.json``: what ran: ``{"format": "slam-it-run", "version": 3, "dataset", "sequence",
+- ``run.json``: what ran: ``{"format": "slam-it-run", "version": 4, "dataset", "sequence",
   "mode", "backend", "settings", "record_features", "peak_memory", "cpus", "memory_cap"}``,
   ``mode`` one of :data:`MODES` and ``backend`` one of ``python``, ``cpp`` and ``rust``;
   ``settings`` holds the pipeline's options as JSON; ``record_features`` whether the run
@@ -24,6 +24,12 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
   is in the final map; and why it was removed (its index in :data:`REMOVALS`), or -1. Frames
   are counted by their line in ``diagnostics.jsonl``. The final map is the rows still alive
   (:meth:`Run.final_points`, :meth:`Run.final_keyframes`).
+- **Maps:** ``pose_maps.npy``, ``keyframe_maps.npy`` and ``point_maps.npy`` give the map each
+  tracked frame's pose, each keyframe and each point is in, ``(F,)``, ``(K,)`` and ``(M,)``
+  int64, never descending. A run's maps are numbered from 0 in the order they started; each has
+  its own world frame (and a monocular one its own scale), the frame of its first keyframe. A
+  map the edge pipeline lost while it was too small to keep was reset: its keyframes and points
+  were removed as ``reset``, and its frames' poses are not in the trajectory.
 - ``feature_pixels.npy`` and ``feature_records.npy``, if the run recorded its features: every
   frame's keypoints, in frame order. Their pixels, ``(N, 2)`` float32; and their records,
   ``(N, 4)`` int32: the frame, the keypoint's pyramid level, its fate (its index in
@@ -67,14 +73,16 @@ from slam_it.foundations.errors import InvalidInputError
 FORMAT = "slam-it-run"
 """``run.json``'s ``format``."""
 
-VERSION = 3
+VERSION = 4
 """``run.json``'s ``version``: this module's layout (2 added ``peak_memory``, ``cpus`` and
-``memory_cap``; 3 every point and keyframe the run made, with their lives)."""
+``memory_cap``; 3 every point and keyframe the run made, with their lives; 4 the maps, and the
+removal ``reset``)."""
 
-REMOVALS = ("culled", "fused", "weak")
+REMOVALS = ("culled", "fused", "weak", "reset")
 """Why a point or keyframe was removed, a life's code being the index: culled (a recent point
-tracking rarely found, or a redundant keyframe), fused into another point, or erased with its
-views (left seen too little). :class:`slam_it.edge.map.Removal` has the same codes."""
+tracking rarely found, or a redundant keyframe), fused into another point, erased with its
+views (left seen too little), or reset with its map (lost while too small to keep).
+:class:`slam_it.edge.map.Removal` has the same codes."""
 
 FATES = ("unmatched", "rejected", "tracked", "made")
 """What became of a keypoint on its frame, a feature record's code being the index: not matched
@@ -167,6 +175,12 @@ class Run:
         Each keyframe's life, the same way.
     record_features : bool
         Whether the run recorded its features (:func:`read_features` reads them).
+    pose_maps : ndarray of int64, shape (F,)
+        The map each tracked frame's pose is in.
+    keyframe_maps : ndarray of int64, shape (K,)
+        The map each keyframe is in.
+    point_maps : ndarray of int64, shape (M,)
+        The map each point is in.
     """
 
     dataset: str
@@ -188,6 +202,9 @@ class Run:
         default_factory=lambda: np.zeros((0, 3), dtype=np.int64)
     )
     record_features: bool = False
+    pose_maps: NDArray[np.int64] = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    keyframe_maps: NDArray[np.int64] = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    point_maps: NDArray[np.int64] = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
 
     def final_points(self) -> NDArray[np.float64]:
         """Return the points still in the final map.
@@ -319,6 +336,21 @@ def _check_lives(lives: ArrayLike, count: int, frames: int, name: str) -> NDArra
     return out
 
 
+def _check_maps(maps: ArrayLike, count: int, name: str) -> NDArray[np.int64]:
+    """Check maps, one per row: map numbers, never descending; return them.
+
+    `name` begins each message.
+    """
+    out = np.asarray(maps)
+    if out.dtype != np.int64 or out.shape != (count,):
+        raise InvalidInputError(
+            f"{name}: expected int64 ({count},), one per row, got {out.dtype} {out.shape}"
+        )
+    if np.any(out < 0) or np.any(np.diff(out) < 0):
+        raise InvalidInputError(f"{name}: maps must be numbers from 0, never descending")
+    return out
+
+
 def _json(value: Any, name: str) -> str:  # noqa: ANN401 -- a run's free-form JSON values
     """Return a value as JSON text, refusing what JSON cannot hold."""
     try:
@@ -391,9 +423,10 @@ def write_run(folder: str | Path, run: Run) -> None:
     ------
     slam_it.foundations.errors.InvalidInputError
         If the dataset or sequence is not a string, the mode or backend is unknown, an array
-        is malformed, the settings or a diagnostic are not JSON (a diagnostic must be an
-        object with a ``timestamp``), or what it records of its program is malformed (a peak
-        memory or memory cap that is not a whole number of bytes, CPUs not ascending), or
+        is malformed (lives and maps one per row, as the module docstring has them), the
+        settings or a diagnostic are not JSON (a diagnostic must be an object with a
+        ``timestamp``), or what it records of its program is malformed (a peak memory or
+        memory cap that is not a whole number of bytes, CPUs not ascending), or
         ``record_features`` is not a bool. Nothing is written then.
     """
     for name in ("dataset", "sequence"):
@@ -434,6 +467,14 @@ def write_run(folder: str | Path, run: Run) -> None:
     frames = len(run.diagnostics)
     point_lives = _check_lives(run.point_lives, len(points), frames, "point_lives")
     keyframe_lives = _check_lives(run.keyframe_lives, len(keyframe_times), frames, "keyframe_lives")
+    maps = {
+        name: _check_maps(getattr(run, name), count, name)
+        for name, count in (
+            ("pose_maps", len(times)),
+            ("keyframe_maps", len(keyframe_times)),
+            ("point_maps", len(points)),
+        )
+    }
     out = Path(folder)
     out.mkdir(parents=True, exist_ok=True)
     _replace(out / "run.json", (json.dumps(info, indent=1) + "\n").encode())
@@ -443,6 +484,8 @@ def write_run(folder: str | Path, run: Run) -> None:
     _replace(out / "keyframe_lives.npy", _npy(keyframe_lives))
     _replace(out / "points.npy", _npy(points))
     _replace(out / "point_lives.npy", _npy(point_lives))
+    for name, values in maps.items():
+        _replace(out / f"{name}.npy", _npy(values))
     _replace(out / "diagnostics.jsonl", "".join(diagnostics).encode())
 
 
@@ -553,6 +596,14 @@ def read_run(folder: str | Path) -> Run:
         )
         for name, count in (("point_lives", len(points)), ("keyframe_lives", len(keyframe_times)))
     }
+    maps = {
+        name: _check_maps(_load(root / f"{name}.npy", (), np.int64), count, str(root / name))
+        for name, count in (
+            ("pose_maps", len(times)),
+            ("keyframe_maps", len(keyframe_times)),
+            ("point_maps", len(points)),
+        )
+    }
     return Run(
         dataset=info["dataset"],
         sequence=info["sequence"],
@@ -571,6 +622,9 @@ def read_run(folder: str | Path) -> Run:
         point_lives=lives["point_lives"],
         keyframe_lives=lives["keyframe_lives"],
         record_features=info["record_features"],
+        pose_maps=maps["pose_maps"],
+        keyframe_maps=maps["keyframe_maps"],
+        point_maps=maps["point_maps"],
     )
 
 

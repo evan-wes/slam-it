@@ -162,7 +162,7 @@ MOVED_OPTIONS = replace(
     recovery_tracked=40,
     recovery_local_window=4.0,
     ba_min_keyframes=4,
-    min_init_depth_points=150,
+    reset_keyframes=9,
 )
 """The gap room's settings with every one the review panel's fixes added moved off its default
 (finding H21): a native that read one at its default, or hard-coded it, would decide unlike

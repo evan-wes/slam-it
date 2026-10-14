@@ -63,29 +63,26 @@ def test_from_depth_matches_the_reference(backend: str, truth: Truth) -> None:
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
-def test_from_depth_counts_keypoints_then_depths(backend: str, truth: Truth) -> None:
-    """The start counts every keypoint, as ORB-SLAM's, then needs a floor of them with depth.
+def test_from_depth_counts_keypoints_not_depths(backend: str, truth: Truth) -> None:
+    """The start counts every keypoint, as ORB-SLAM's, not the keypoints with depth.
 
-    Points are made only where there is depth; the floor stands in for ORB-SLAM's reset of a
-    map lost soon after it started (review panel finding L13).
+    Points are made only where there is depth, however few: a map too thin to track is lost and
+    reset (review panel finding L13).
     """
     chosen = require_function(backend, initialization.__name__, "initialize_from_depth")
     frame = truth.frames[0]
-    sparse = replace(
-        frame,
-        depth=np.where(np.arange(frame.size) < 5, frame.depth, np.nan),
-        right=np.where(np.arange(frame.size) < 5, frame.right, np.nan),
-    )
-    depths = int(np.count_nonzero(~np.isnan(sparse.depth)))
-    assert depths > 0
-    options = replace(OPTIONS, min_init_features_depth=frame.size - 1, min_init_depth_points=depths)
-    started = initialization.initialize_from_depth(sparse, options, backend=chosen).started
-    assert started is not None
-    assert started[0].points == depths
-    deeper = replace(options, min_init_depth_points=depths + 1)
-    refused = initialization.initialize_from_depth(sparse, deeper, backend=chosen)
-    assert refused.started is None
-    assert refused.summary.outcome is Outcome.TOO_LITTLE_DEPTH
+    options = replace(OPTIONS, min_init_features_depth=frame.size - 1)
+    for kept in (5, 0):
+        sparse = replace(
+            frame,
+            depth=np.where(np.arange(frame.size) < kept, frame.depth, np.nan),
+            right=np.where(np.arange(frame.size) < kept, frame.right, np.nan),
+        )
+        depths = int(np.count_nonzero(~np.isnan(sparse.depth)))
+        started = initialization.initialize_from_depth(sparse, options, backend=chosen).started
+        assert started is not None
+        assert started[0].points == depths == min(kept, depths)
+        assert started[0].keyframes == 1
 
 
 def test_from_depth_puts_a_point_at_every_keypoint_with_depth(truth: Truth) -> None:

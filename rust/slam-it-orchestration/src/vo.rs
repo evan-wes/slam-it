@@ -559,6 +559,13 @@ fn summary_json(summary: &FrameSummary) -> JsonObject {
             ("culled_keyframes", count(s.culled_keyframes)),
         ])
     });
+    let lost = summary.lost.map_or(JsonValue::Null, |s| {
+        object([
+            ("keyframes", count(s.keyframes)),
+            ("points", count(s.points)),
+            ("reset", JsonValue::Bool(s.reset)),
+        ])
+    });
     [
         ("placed_by", placed_by),
         ("init", init),
@@ -566,13 +573,15 @@ fn summary_json(summary: &FrameSummary) -> JsonObject {
         ("pnp", pnp),
         ("local_map", local_map),
         ("mapping", mapping),
+        ("lost", lost),
     ]
     .into_iter()
     .map(|(key, value)| (key.to_owned(), value))
     .collect()
 }
 
-/// Records a frame's result: its diagnostics, and its pose if it was tracked.
+/// Records a frame's result: its diagnostics, and its pose and map if it was tracked; a reset
+/// map's poses are dropped, as ORB-SLAM3 drops them.
 ///
 /// # Arguments
 ///
@@ -593,6 +602,10 @@ fn record(
     let mut diagnostic = vec![
         ("timestamp".to_owned(), JsonValue::Number(result.timestamp)),
         ("state".to_owned(), name_json(result.state.name())),
+        (
+            "map".to_owned(),
+            result.map.map_or(JsonValue::Null, JsonValue::Integer),
+        ),
         ("tracked".to_owned(), count(result.tracked)),
         ("keyframe".to_owned(), JsonValue::Bool(result.keyframe)),
         ("read_seconds".to_owned(), JsonValue::Number(read_seconds)),
@@ -608,14 +621,25 @@ fn record(
     ];
     diagnostic.extend(summary_json(&result.summary));
     out.diagnostics.push(diagnostic);
-    if let Some(pose) = &result.pose {
+    if let (Some(pose), Some(map)) = (&result.pose, result.map) {
         out.poses.push(se3::inverse(pose)?);
         out.timestamps.push(result.timestamp);
+        out.pose_maps.push(map);
+    }
+    if result.summary.lost.is_some_and(|lost| lost.reset)
+        && let Some(map) = result.map
+    {
+        // Its frames' poses go with it.
+        while out.pose_maps.last() == Some(&map) {
+            out.poses.pop();
+            out.timestamps.pop();
+            out.pose_maps.pop();
+        }
     }
     Ok(())
 }
 
-/// Records every keyframe and point the run made, with their lives.
+/// Records every keyframe and point the run made, with their lives and maps.
 ///
 /// # Arguments
 ///
@@ -635,6 +659,8 @@ fn record_lives(out: &mut Run, lives: Lifetimes) -> Result<()> {
     out.points = lives.points;
     out.point_lives = lives.point_lives;
     out.keyframe_lives = lives.keyframe_lives;
+    out.point_maps = lives.point_maps;
+    out.keyframe_maps = lives.keyframe_maps;
     Ok(())
 }
 

@@ -18,11 +18,12 @@ use crate::tracking::{self, LocalMapSummary, MotionSummary, PnpSummary};
 /// Where the pipeline is, with the codes it is written as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
-    /// No map yet.
+    /// No map: before the first, or after a lost one, until a new one starts.
     NotInitialized = 0,
     /// Tracking frames against the map.
     Tracking = 1,
-    /// The track was lost: the run ends.
+    /// The track was lost on this frame: its map was kept or reset, and the next frame starts
+    /// a new one. Only a frame's result has it.
     Lost = 2,
 }
 
@@ -93,8 +94,8 @@ pub enum Fate {
 pub struct Fates {
     /// Each keypoint's fate.
     pub fate: Vec<Fate>,
-    /// The id of the point concerned: the one made of it, the one it was tracked to, or the one
-    /// it was matched to and rejected from; -1 if unmatched.
+    /// The run's id of the point concerned (`Lifetimes`' ids): the one made of it, the one it
+    /// was tracked to, or the one it was matched to and rejected from; -1 if unmatched.
     pub point: Vec<i64>,
 }
 
@@ -105,15 +106,28 @@ impl Fates {
     /// # Arguments
     ///
     /// * `fate` - The fate.
-    /// * `ids` - Each keypoint's point, -1 where none; empty if no stage gave them.
-    fn mark(&mut self, fate: Fate, ids: &[i64]) {
+    /// * `ids` - Each keypoint's point in the map, -1 where none; empty if no stage gave them.
+    /// * `base` - The run's id of the map's point 0.
+    fn mark(&mut self, fate: Fate, ids: &[i64], base: i64) {
         for ((slot, point), &id) in self.fate.iter_mut().zip(&mut self.point).zip(ids) {
             if id >= 0 {
                 *slot = fate;
-                *point = id;
+                *point = base + id;
             }
         }
     }
+}
+
+/// The map a lost track closed, as a run records it on the frame it was lost on
+/// (`slam_it.edge.pipeline.LostSummary`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LostSummary {
+    /// The map's keyframes then.
+    pub keyframes: usize,
+    /// Its points.
+    pub points: usize,
+    /// Whether it was reset, having `reset_keyframes` keyframes or fewer, rather than kept.
+    pub reset: bool,
 }
 
 /// How the stages went on one frame (`slam_it.edge.pipeline.FrameSummary`); each `None`
@@ -132,6 +146,8 @@ pub struct FrameSummary {
     pub local_map: Option<LocalMapSummary>,
     /// Local mapping, on a keyframe after the first.
     pub mapping: Option<MappingSummary>,
+    /// The map closed, on the frame the track was lost on.
+    pub lost: Option<LostSummary>,
 }
 
 /// What tracking one frame gave (`slam_it.edge.pipeline.FrameResult`).
@@ -139,8 +155,11 @@ pub struct FrameSummary {
 pub struct FrameResult {
     /// The frame's time.
     pub timestamp: f64,
-    /// The pipeline's state after the frame.
+    /// The frame's: the pipeline's after it, or [`State::Lost`] on the frame the track was lost
+    /// on.
     pub state: State,
+    /// The map it was tracked in, or lost from; `None` when there was none.
+    pub map: Option<i64>,
     /// The frame's `T_cam_world`, if it was tracked.
     pub pose: Option<Matrix4<f64>>,
     /// Its keypoints matched to map points.
@@ -200,12 +219,25 @@ fn to_index(id: i64) -> usize {
     usize::try_from(id).expect("map ids are non-negative")
 }
 
+/// A count as the run's next id.
+///
+/// # Arguments
+///
+/// * `count` - The points or keyframes made so far.
+///
+/// # Returns
+///
+/// The id.
+fn to_id(count: usize) -> i64 {
+    i64::try_from(count).expect("a run's ids fit in i64")
+}
+
 /// A life: the frame that made a point or keyframe, the frame that removed it or -1, and why
 /// (a [`Removal::code`]) or -1.
 pub type Life = [i64; 3];
 
-/// Every point and keyframe a run made, by id, where each last was, and its life
-/// (`slam_it.edge.pipeline.Lifetimes`).
+/// Every point and keyframe a run made, by the run's id (continuing across maps), where each
+/// last was, its life and its map (`slam_it.edge.pipeline.Lifetimes`).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Lifetimes {
     /// Every point, its last position in the world frame.
@@ -218,6 +250,10 @@ pub struct Lifetimes {
     pub keyframe_poses: Vec<Matrix4<f64>>,
     /// Their lives.
     pub keyframe_lives: Vec<Life>,
+    /// The map each point was made in.
+    pub point_maps: Vec<i64>,
+    /// The map each keyframe was made in.
+    pub keyframe_maps: Vec<i64>,
 }
 
 /// The edge pipeline for one sequence (`slam_it.edge.pipeline.Pipeline`).
@@ -249,8 +285,17 @@ pub struct Pipeline {
     since_recovery: Option<usize>,
     /// Frames given so far.
     frames: i64,
-    /// Every point and keyframe made so far: those removed where they last were (the others'
-    /// entries are placeholders, filled from the map by [`Pipeline::lifetimes`]).
+    /// The current map's id, if there is one.
+    map_id: Option<i64>,
+    /// The maps started so far: the next one's id.
+    maps: i64,
+    /// The run's id of the current map's keyframe 0.
+    kf_base: i64,
+    /// The run's id of the current map's point 0.
+    pt_base: i64,
+    /// Every point and keyframe made so far, by the run's id: those no longer in the current
+    /// map (removed, or in a closed map) where they last were; the others' entries are
+    /// placeholders, filled from the map by [`Pipeline::lifetimes`].
     lives: Lifetimes,
 }
 
@@ -293,6 +338,10 @@ impl Pipeline {
             failures: 0,
             since_recovery: None,
             frames: 0,
+            map_id: None,
+            maps: 0,
+            kf_base: 0,
+            pt_base: 0,
             lives: Lifetimes::default(),
         })
     }
@@ -309,7 +358,7 @@ impl Pipeline {
             .extraction(self.mode == Mode::Monocular && self.state == State::NotInitialized)
     }
 
-    /// Where the pipeline is.
+    /// Where the pipeline is: never [`State::Lost`], which a lost frame's result has.
     ///
     /// # Returns
     ///
@@ -319,7 +368,7 @@ impl Pipeline {
         self.state
     }
 
-    /// The map, once initialised.
+    /// The current map: none until one starts, and from a lost one to the next.
     ///
     /// # Returns
     ///
@@ -350,26 +399,34 @@ impl Pipeline {
             State::Lost => Step::default(),
         };
         self.date();
-        let track_seconds = start.elapsed().as_secs_f64() - step.map_seconds;
-        let tracked = step.tracked.as_ref();
+        let (state, map_id) = (self.state, self.map_id);
         let mut fates = Fates {
             fate: vec![Fate::Unmatched; frame.size()],
             point: vec![-1; frame.size()],
         };
-        fates.mark(Fate::Rejected, &step.matched);
-        if let Some(t) = tracked {
-            fates.mark(Fate::Tracked, &t.points);
+        fates.mark(Fate::Rejected, &step.matched, self.pt_base);
+        if let Some(t) = &step.tracked {
+            fates.mark(Fate::Tracked, &t.points, self.pt_base);
         }
-        fates.mark(Fate::Made, &step.made);
+        fates.mark(Fate::Made, &step.made, self.pt_base);
+        let mut summary = step.summary;
+        if state == State::Lost
+            && let Some(lost) = self.map.take()
+        {
+            summary.lost = Some(self.close(&lost));
+        }
+        let track_seconds = start.elapsed().as_secs_f64() - step.map_seconds;
+        let tracked = step.tracked.as_ref();
         Ok(FrameResult {
             timestamp: frame.timestamp,
-            state: self.state,
+            state,
+            map: map_id,
             pose: tracked.map(|t| t.pose),
             tracked: tracked.map_or(0, Tracked::inliers),
             keyframe: step.keyframe,
             track_seconds,
             map_seconds: step.map_seconds,
-            summary: step.summary,
+            summary,
             fates,
         })
     }
@@ -379,18 +436,18 @@ impl Pipeline {
     ///
     /// # Returns
     ///
-    /// The points and keyframes by id: those in the map where the map has them, the removed
-    /// ones where they last were.
+    /// The points and keyframes by the run's id: those in the current map where it has them,
+    /// the others where they last were.
     #[must_use]
     pub fn lifetimes(&self) -> Lifetimes {
         let mut out = self.lives.clone();
         if let Some(m) = &self.map {
             for (&id, xyz) in m.pt_id.iter().zip(&m.pt_xyz) {
-                out.points[to_index(id)] = *xyz;
+                out.points[to_index(self.pt_base + id)] = *xyz;
             }
             for ((&id, &time), pose) in m.kf_id.iter().zip(&m.kf_time).zip(&m.kf_pose) {
-                out.keyframe_times[to_index(id)] = time;
-                out.keyframe_poses[to_index(id)] = *pose;
+                out.keyframe_times[to_index(self.kf_base + id)] = time;
+                out.keyframe_poses[to_index(self.kf_base + id)] = *pose;
             }
         }
         out
@@ -400,19 +457,21 @@ impl Pipeline {
     fn date(&mut self) {
         let frame = self.frames;
         self.frames += 1;
-        let Some(m) = &mut self.map else {
+        let (Some(m), Some(map_id)) = (&mut self.map, self.map_id) else {
             return;
         };
         let lives = &mut self.lives;
-        let points = to_index(m.next_pt_id);
+        let points = to_index(self.pt_base + m.next_pt_id);
         lives.point_lives.resize(points, [frame, -1, -1]);
+        lives.point_maps.resize(points, map_id);
         lives.points.resize(points, Vector3::zeros());
-        let keyframes = to_index(m.next_kf_id);
+        let keyframes = to_index(self.kf_base + m.next_kf_id);
         lives.keyframe_lives.resize(keyframes, [frame, -1, -1]);
+        lives.keyframe_maps.resize(keyframes, map_id);
         lives.keyframe_times.resize(keyframes, 0.0);
         lives.keyframe_poses.resize(keyframes, Matrix4::identity());
         for ((&id, xyz), &how) in m.gone_pt_id.iter().zip(&m.gone_pt_xyz).zip(&m.gone_pt_how) {
-            let id = to_index(id);
+            let id = to_index(self.pt_base + id);
             lives.point_lives[id] = [lives.point_lives[id][0], frame, how];
             lives.points[id] = *xyz;
         }
@@ -422,12 +481,59 @@ impl Pipeline {
             .zip(&m.gone_kf_time)
             .zip(&m.gone_kf_pose)
         {
-            let id = to_index(id);
+            let id = to_index(self.kf_base + id);
             lives.keyframe_lives[id] = [lives.keyframe_lives[id][0], frame, Removal::Culled.code()];
             lives.keyframe_times[id] = time;
             lives.keyframe_poses[id] = *pose;
         }
         map::clear_gone(m);
+    }
+
+    /// Closes the map the track was lost in, on this frame: keeps it, or resets it if it has
+    /// `reset_keyframes` keyframes or fewer (its lives end, as [`Removal::Reset`]). The
+    /// tracking state goes with it, so the next frame starts a new map.
+    ///
+    /// # Arguments
+    ///
+    /// * `m` - The map, taken out of the pipeline.
+    ///
+    /// # Returns
+    ///
+    /// The closed map's summary.
+    fn close(&mut self, m: &Map) -> LostSummary {
+        let frame = self.frames - 1; // dated already
+        let reset = m.kf_id.len() <= self.options.reset_keyframes;
+        let code = Removal::Reset.code();
+        let lives = &mut self.lives;
+        for (&id, xyz) in m.pt_id.iter().zip(&m.pt_xyz) {
+            let id = to_index(self.pt_base + id);
+            lives.points[id] = *xyz;
+            if reset {
+                lives.point_lives[id] = [lives.point_lives[id][0], frame, code];
+            }
+        }
+        for ((&id, &time), pose) in m.kf_id.iter().zip(&m.kf_time).zip(&m.kf_pose) {
+            let id = to_index(self.kf_base + id);
+            lives.keyframe_times[id] = time;
+            lives.keyframe_poses[id] = *pose;
+            if reset {
+                lives.keyframe_lives[id] = [lives.keyframe_lives[id][0], frame, code];
+            }
+        }
+        self.map_id = None;
+        self.state = State::NotInitialized;
+        self.last_frame = None;
+        self.last_tracked = None;
+        self.velocity = None;
+        self.reference = None;
+        self.previous.clear();
+        self.failures = 0;
+        self.since_recovery = None;
+        LostSummary {
+            keyframes: m.kf_id.len(),
+            points: m.pt_id.len(),
+            reset,
+        }
     }
 
     /// Tries to start the map with a frame.
@@ -460,6 +566,10 @@ impl Pipeline {
             });
         };
         self.map = Some(map);
+        self.map_id = Some(self.maps);
+        self.maps += 1;
+        self.kf_base = to_id(self.lives.keyframe_lives.len());
+        self.pt_base = to_id(self.lives.point_lives.len());
         self.state = State::Tracking;
         self.accept(frame, &tracked)?;
         summary.placed_by = Some(Placement::Initialization);

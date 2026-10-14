@@ -17,7 +17,7 @@ import time
 import urllib.error
 import urllib.parse
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -213,7 +213,9 @@ def test_the_summary_says_where_a_run_lost_the_track(
 ) -> None:
     """Blank frames lose the track, which ends the run: the rest of the clip is not run.
 
-    The summary says so, and when tracking started and stopped, in the clip's own time.
+    The summary says so, and when tracking started and stopped, in the clip's own time. The
+    lost map is kept (``reset_keyframes`` 0): the room's first ten frames make too few
+    keyframes to keep otherwise.
     """
     blanks = OPTIONS.lost_frames
     clip = [
@@ -222,7 +224,8 @@ def test_the_summary_says_where_a_run_lost_the_track(
         *rendered_room[10 + blanks :],
     ]
     folders = write_room(tmp_path / "clip", clip)
-    run = vo.run("tum", folders.tum, "rgbd", tmp_path / "run", options=OPTIONS)
+    kept = replace(OPTIONS, reset_keyframes=0)
+    run = vo.run("tum", folders.tum, "rgbd", tmp_path / "run", options=kept)
     times = folders.timestamps - folders.timestamps[0]
     summary = worker.summarize(run, folders.timestamps, "nominal", (320, 240))
     assert summary["frames"] == 10 + blanks < FRAMES

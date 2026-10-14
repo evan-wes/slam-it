@@ -15,11 +15,11 @@ use slam_it_foundations::{se3, so3};
 pub const FORMAT: &str = "slam-it-run";
 
 /// `run.json`'s `version` (2 added `peak_memory`, `cpus` and `memory_cap`; 3 every point and
-/// keyframe the run made, with their lives).
-pub const VERSION: i64 = 3;
+/// keyframe the run made, with their lives; 4 the maps, and the removal `reset`).
+pub const VERSION: i64 = 4;
 
 /// The number of removal codes a life may hold (`slam_it.eval.runs.REMOVALS`).
-pub const REMOVALS: i64 = 3;
+pub const REMOVALS: i64 = 4;
 
 /// The number of fate codes a feature record may hold (`slam_it.eval.runs.FATES`); 0 is
 /// unmatched.
@@ -112,6 +112,12 @@ pub struct Run {
     pub keyframe_lives: Vec<Life>,
     /// Whether the run recorded its features (`FeatureWriter` streams them).
     pub record_features: bool,
+    /// The map each tracked frame's pose is in, never descending.
+    pub pose_maps: Vec<i64>,
+    /// The map each keyframe is in, by id, never descending.
+    pub keyframe_maps: Vec<i64>,
+    /// The map each point is in, by id, never descending.
+    pub point_maps: Vec<i64>,
 }
 
 /// A finite number as JSON, shortest round-trip (`.0` kept on a whole number, as Python
@@ -340,6 +346,33 @@ fn check_lives(lives: &[Life], rows: usize, frames: usize, name: &str) -> Result
     Ok(())
 }
 
+/// Checks maps: one per row, numbers from 0, never descending.
+///
+/// # Arguments
+///
+/// * `maps` - The maps.
+/// * `rows` - The rows they are for.
+/// * `name` - Their name, for messages.
+///
+/// # Errors
+///
+/// `InvalidInput` otherwise.
+fn check_maps(maps: &[i64], rows: usize, name: &str) -> Result<()> {
+    if maps.len() != rows {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!("{name}: expected one map per row"),
+        );
+    }
+    if maps.first().is_some_and(|&first| first < 0) || maps.windows(2).any(|w| w[1] < w[0]) {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!("{name}: maps must be numbers from 0, never descending"),
+        );
+    }
+    Ok(())
+}
+
 /// Checks stamped poses: finite, strictly ascending times, one rigid transform each.
 ///
 /// # Arguments
@@ -402,6 +435,13 @@ fn check(run: &Run) -> Result<()> {
         frames,
         "keyframe_lives",
     )?;
+    check_maps(&run.pose_maps, run.timestamps.len(), "pose_maps")?;
+    check_maps(
+        &run.keyframe_maps,
+        run.keyframe_timestamps.len(),
+        "keyframe_maps",
+    )?;
+    check_maps(&run.point_maps, run.points.len(), "point_maps")?;
     if !finite(&run.settings) {
         return fail(
             ErrorKind::InvalidInput,
@@ -507,9 +547,11 @@ fn replace(path: &Path, data: &[u8]) -> Result<()> {
 /// # Errors
 ///
 /// `InvalidInput` for an unknown mode or backend, times that are not finite and strictly
-/// ascending, poses that are not rigid or not one per time, a point that is not finite, a
-/// diagnostic without a `timestamp`, a number JSON cannot hold, CPUs that are empty or not
-/// ascending, or a memory cap of 0 (nothing is written then); or a file that cannot be written.
+/// ascending, poses that are not rigid or not one per time, a point that is not finite, lives
+/// or maps that are not one per row or not valid (as `check_lives` and `check_maps` hold
+/// them), a diagnostic without a `timestamp`, a number JSON cannot hold, CPUs that are empty or
+/// not ascending, or a memory cap of 0 (nothing is written then); or a file that cannot be
+/// written.
 pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
     check(run)?;
     let trajectory = trajectory_text(&run.timestamps, &run.poses)?;
@@ -560,7 +602,7 @@ pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
         )
     })?;
     let lives = |lives: &[Life]| -> Vec<i64> { lives.iter().flatten().copied().collect() };
-    let files: [(&str, Vec<u8>); 8] = [
+    let files: [(&str, Vec<u8>); 11] = [
         ("run.json", info_text.into_bytes()),
         ("trajectory.txt", trajectory.into_bytes()),
         (
@@ -579,6 +621,18 @@ pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
         (
             "point_lives.npy",
             npy_int64(&[run.point_lives.len(), 3], &lives(&run.point_lives)),
+        ),
+        (
+            "pose_maps.npy",
+            npy_int64(&[run.pose_maps.len()], &run.pose_maps),
+        ),
+        (
+            "keyframe_maps.npy",
+            npy_int64(&[run.keyframe_maps.len()], &run.keyframe_maps),
+        ),
+        (
+            "point_maps.npy",
+            npy_int64(&[run.point_maps.len()], &run.point_maps),
         ),
         ("diagnostics.jsonl", diagnostics.into_bytes()),
     ];
@@ -860,6 +914,9 @@ mod tests {
             point_lives: lives(&values["point_lives"]),
             keyframe_lives: lives(&values["keyframe_lives"]),
             record_features: values["record_features"].as_bool().unwrap(),
+            pose_maps: integers(&values["pose_maps"]),
+            keyframe_maps: integers(&values["keyframe_maps"]),
+            point_maps: integers(&values["point_maps"]),
         }
     }
 
@@ -929,6 +986,9 @@ mod tests {
             "keyframe_lives.npy",
             "points.npy",
             "point_lives.npy",
+            "pose_maps.npy",
+            "keyframe_maps.npy",
+            "point_maps.npy",
         ] {
             assert_eq!(
                 std::fs::read(out.join(name)).unwrap(),
@@ -1109,7 +1169,15 @@ mod tests {
         early.point_lives[1] = [3, 0, 1];
         let mut alive = golden_run();
         alive.keyframe_lives[0] = [0, -1, 2];
-        for run in [short, early, alive] {
+        let mut unknown = golden_run();
+        unknown.keyframe_lives[0] = [0, 2, 4];
+        let mut fewer = golden_run();
+        fewer.pose_maps.pop();
+        let mut descending = golden_run();
+        descending.point_maps = vec![0, 1, 0, 1, 1];
+        let mut negative = golden_run();
+        negative.keyframe_maps[0] = -1;
+        for run in [short, early, alive, unknown, fewer, descending, negative] {
             assert_eq!(
                 write_run(&out, &run).unwrap_err().kind,
                 ErrorKind::InvalidInput

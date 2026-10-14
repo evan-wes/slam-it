@@ -58,6 +58,9 @@ def _run(n: int = 12) -> runs.Run:
         memory_cap=8 * 2**30,
         point_lives=_lives(30, n, gone),
         keyframe_lives=np.array([[0, -1, -1], [4, 9, 0], [8, -1, -1]], dtype=np.int64),
+        pose_maps=np.repeat([0, 1], [n // 2, n - n // 2]).astype(np.int64),
+        keyframe_maps=np.array([0, 0, 1], dtype=np.int64),
+        point_maps=np.repeat([0, 1], 15).astype(np.int64),
     )
 
 
@@ -79,6 +82,8 @@ def test_round_trip(tmp_path: Path) -> None:
     np.testing.assert_array_equal(back.points, run.points)
     np.testing.assert_array_equal(back.point_lives, run.point_lives)
     np.testing.assert_array_equal(back.keyframe_lives, run.keyframe_lives)
+    for name in ("pose_maps", "keyframe_maps", "point_maps"):
+        np.testing.assert_array_equal(getattr(back, name), getattr(run, name))
     assert back.settings == run.settings
     assert back.diagnostics == run.diagnostics
     assert (back.peak_memory, back.cpus, back.memory_cap) == (
@@ -344,8 +349,18 @@ def test_evaluate_rejects_a_run_whose_times_do_not_ascend() -> None:
             "keyframe_lives: why a life ended must be a removal code",
         ),
         (
-            {"keyframe_lives": np.array([[0, -1, -1], [4, 9, 3], [8, -1, -1]], dtype=np.int64)},
+            {"keyframe_lives": np.array([[0, -1, -1], [4, 9, 4], [8, -1, -1]], dtype=np.int64)},
             "keyframe_lives: why a life ended must be a removal code",
+        ),
+        ({"pose_maps": np.zeros(11, dtype=np.int64)}, r"pose_maps: expected int64 \(12,\)"),
+        ({"pose_maps": np.zeros(12)}, r"pose_maps: expected int64 \(12,\)"),
+        (
+            {"keyframe_maps": np.array([0, 1, 0], dtype=np.int64)},
+            "keyframe_maps: maps must be numbers from 0, never descending",
+        ),
+        (
+            {"point_maps": np.full(30, -1, dtype=np.int64)},
+            "point_maps: maps must be numbers from 0, never descending",
         ),
         (
             {"keyframe_lives": np.array([[0, -1, -1], [4, -1, -1], [12, -1, -1]], dtype=np.int64)},
@@ -370,10 +385,13 @@ def test_write_run_replaces_files_whole(tmp_path: Path) -> None:
     assert sorted(p.name for p in tmp_path.iterdir()) == [
         "diagnostics.jsonl",
         "keyframe_lives.npy",
+        "keyframe_maps.npy",
         "keyframe_poses.npy",
         "keyframes.npy",
         "point_lives.npy",
+        "point_maps.npy",
         "points.npy",
+        "pose_maps.npy",
         "run.json",
         "trajectory.txt",
     ]
@@ -382,7 +400,7 @@ def test_write_run_replaces_files_whole(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("edit", "message"),
     [
-        (lambda info: info.update(version=2), "version 3"),
+        (lambda info: info.update(version=3), "version 4"),
         (lambda info: info.update(format="other"), "format"),
         (lambda info: info.update(mode="lidar"), "mode"),
         (lambda info: info.update(backend="java"), "backend"),
@@ -452,6 +470,17 @@ def test_read_run_checks_the_lives(tmp_path: Path) -> None:
     lives[0, 0] = 99
     np.save(tmp_path / "point_lives.npy", lives)
     with pytest.raises(InvalidInputError, match="a life must start in one of the run's 12 frames"):
+        runs.read_run(tmp_path)
+
+
+def test_read_run_checks_the_maps(tmp_path: Path) -> None:
+    """Maps of another dtype, or descending, are refused."""
+    runs.write_run(tmp_path, _run())
+    np.save(tmp_path / "pose_maps.npy", np.zeros(12))
+    with pytest.raises(InvalidInputError, match=r"expected int64 \(N\)"):
+        runs.read_run(tmp_path)
+    np.save(tmp_path / "pose_maps.npy", np.arange(12, dtype=np.int64)[::-1].copy())
+    with pytest.raises(InvalidInputError, match="maps must be numbers from 0, never descending"):
         runs.read_run(tmp_path)
 
 
