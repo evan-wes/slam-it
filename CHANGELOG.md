@@ -16,7 +16,9 @@ demo rather than the yardstick:
 - ARKitScenes' iPad with LiDAR.
 
 A Stray Scanner recording with LiDAR depth now runs RGB-D in the demo, and features follow the
-frame size. Nothing changes for a dataset run at the default settings.
+frame size. Nothing changes for a dataset run at the default settings. The test set's results
+are in `docs/notes/test-set.md`. The review panel and a security pass read it all
+(`docs/reviews/2026-10-13-feature-2a-a1-measure-and-import*.md`).
 
 ### Added
 
@@ -61,6 +63,15 @@ frame size. Nothing changes for a dataset run at the default settings.
 
   `--camera nominal` measures what a guessed lens costs. The config, holding a machine's paths,
   stays outside the repository; `scripts/testset.template.toml` is its format.
+- **The test set's results**, `docs/notes/test-set.md`, from the public datasets alone, each
+  change read against three RANSAC seeds:
+  - 61 of the 77 runs lose the track, and 65% of the set's frames come after a loss, never run:
+    A2's case;
+  - a guessed lens costs accuracy in step with its error, most in RGB-D, but not the track;
+  - ADVIO at a 720-pixel short side tracks no longer and nearly doubles a frame's latency, so
+    480 stays;
+  - LiDAR depth of medium confidence changes neither the track nor the error, so high stays the
+    default.
 
 ### Changed
 

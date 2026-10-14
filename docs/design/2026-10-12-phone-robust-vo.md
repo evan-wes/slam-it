@@ -93,7 +93,7 @@ same way, its results kept outside the repo. Results on the public set go in a n
 6. **Warnings, never refusals:** the upload page advises recording with the Camera app rather
    than in the browser; the status page warns when the frames arrived under 480 pixels on their
    short side, and why that may be.
-7. **The test set's results,** in a note.
+7. **The test set's results,** in a note (`docs/notes/test-set.md`).
 
 ## 5. A2: a new map after a lost track (all three languages; 0.3.8.0 -> 0.3.9.0)
 
