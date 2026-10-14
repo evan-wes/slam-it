@@ -164,7 +164,10 @@ runs' p95 latency, and the frames past the period.
   monocular (12.8 against 6.4 cm) and ADVIO (208 against 79 cm). On the runs with two maps or
   more kept, the later maps' pooled error is higher than the first kept map's, by median, on four
   of the six groups. The frames A1 tracked score as before: a run's first map is A1's run, but
-  for the three reset.
+  for the three reset. A short map's own fit flatters it, too: a Sim(3) of seven degrees of
+  freedom fitted to a few frames leaves little error by construction, so a run in many short
+  maps can score lower than one long map would. Relative error over set path lengths compares
+  them (Zhang and Scaramuzza, IROS 2018).
 - **Real time holds except while a monocular map starts.** The 105 late frames are all ADVIO's,
   on 7 runs, and every one is a two-view start that failed: 95 for too little parallax, 10 for
   too few points, the slowest 0.43 s. A1 started one map a run; A2 starts one after each loss,

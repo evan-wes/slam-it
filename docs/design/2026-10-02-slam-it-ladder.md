@@ -1008,6 +1008,34 @@ shared with the owner's other projects.
     judges mapping by its load, as a thread of its own would run it. A real mapping thread, and
     ORB-SLAM's interruption of a local BA when a keyframe arrives, belong with the edge
     targets' budgets, where keyframe bursts would otherwise delay frames.
+- **Deferred from milestone 2A's A2 review panel**
+  ([report](../reviews/2026-10-14-feature-2a-a2-new-map.md)):
+  - **An atlas, with milestone 2B (A4, A9, H7, the rest of A8).** Map numbering, the id bases,
+    the lifetimes ledger and the closed maps are the seed of ORB-SLAM3's `Atlas`, grown inside
+    `Pipeline` in all three languages. A kept map's descriptors and observations are dropped,
+    which 2B's relocalisation against lost maps and their merging need whole. A reset map's
+    keyframes and points are reset by the pipeline but its poses dropped by each run program, so
+    one rule lives in six places: the pipeline should own the trajectory record, as ORB-SLAM3's
+    tracker does, and drop a reset map's entries itself. `State.LOST` is both a frame's outcome
+    and, for an instant, the pipeline's state: flag the loss on the step and keep the
+    pipeline's two-valued. `_date` and `_close` walk a map's arrays with the same arithmetic.
+    An `edge.atlas` module, in the edge rung's import order, holds them.
+  - **A run of several maps across the reifyscene boundary, before milestone 3 (A10).** The
+    `SlamResult` sketch has every pose in one world; say whether the adapter takes the largest
+    map, every map with its id, or waits for 2B to join them.
+  - **The scoring out of `runs` (A11).** `eval.runs` holds the format's reading and writing and
+    the scoring, over 1,200 lines: `eval.scoring`, above it, for `Segment`, `Tracking`,
+    `MapError`, `Evaluation` and `evaluate*`.
+  - **The test set's seeds and loss table from the repository (A13).** The note's seeds 1 and 2
+    were set by a local wrapper, and its losses sorted by a local script: a `--seed` option and
+    the losses' check in `measure_testset.py` would let the note be regenerated from the repo.
+  - **The map arrays held against one another (L7).** Each is checked alone: that every map of
+    `pose_maps` has a keyframe, and that a reset map has no poses, are what `tracking`, the bake
+    and `Run.reset_maps` rely on.
+  - **A monocular start in real time (from A2's measurement).** On ADVIO, a failed two-view
+    start takes up to 0.43 s, and every late frame of the test set is one. The two-view RANSAC
+    draws up to 10,000 samples per model (`twoview.Options.max_iterations`), where ORB-SLAM's
+    `TwoViewReconstruction` draws 200: measure whether 200 bounds it at no cost to the starts.
 - **Deferred from milestone 2A's A1 review panel**
   ([report](../reviews/2026-10-13-feature-2a-a1-measure-and-import.md),
   [security pass](../reviews/2026-10-13-feature-2a-a1-measure-and-import-security.md)):

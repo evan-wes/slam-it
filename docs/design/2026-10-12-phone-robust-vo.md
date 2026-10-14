@@ -59,7 +59,7 @@ it accurate. These are one recording's results, which A1's test set replaces.
   map.
 - **A lost track:** ORB-SLAM2 relocalises against its map with the bag of words, and resets a
   map lost within its first 5 keyframes; ORB-SLAM3 stores the lost map in its atlas and starts a
-  new one (resetting one of fewer than 10 keyframes), joining the two later if a place is
+  new one (resetting one of 10 keyframes or fewer), joining the two later if a place is
   recognised. Relocalisation and joining are milestone 2B's; the new map is A2's.
 - **Measuring robustness:** ZJU-SenseTime's benchmark (Li et al., 2019) scores tracking
   robustness and relocalisation time beside accuracy; ORB-SLAM3's paper reports the sequences a
@@ -115,6 +115,10 @@ same way, its results kept outside the repo. Results on the public set go in a n
    keyframe, which local BA holds fixed and culling keeps, is always keyframe 0; the run's ids
    continue across maps, each map's offset by those before it, as ORB-SLAM3's one counter gives
    them. The map, mapping and BA code is unchanged. The run ends only at the sequence's end.
+   One difference from ORB-SLAM3 stays: it sends a map of 10 keyframes or fewer straight to
+   LOST on its first failed frame, and gives a larger one up to 3 s of relocalisation by bag
+   of words (`Tracking.cc`); the lite pipeline, without the bag of words, gives every map
+   `lost_frames` (5) failed frames of PnP against its local map.
 2. **The run format, version 4:** each frame's diagnostic names its map; `pose_maps.npy`,
    `keyframe_maps.npy` and `point_maps.npy` give each pose's, keyframe's and point's map; a
    reset map's keyframes and points are removed as `reset`. Scores per map (each map its own
