@@ -4,6 +4,61 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.3.9.0] - 2026-10-14
+
+Milestone 2A's second part, A2: a lost track no longer ends a run. Its map closes, kept or, if it
+has 10 keyframes or fewer, reset as ORB-SLAM3 resets its active map, and the next frame starts a
+new one, so a run goes on to the sequence's end and tracks it in segments, one per map
+(`docs/design/2026-10-12-phone-robust-vo.md`, section 5). All three languages decide alike across
+a new map. Relocalising against a lost map, and joining maps, are milestone 2B's. A run or bundle
+written before this version no longer reads. On the test set, 87% of the frames are tracked,
+against 31% when a run ended at its first loss, and every frame run before is decided as
+before.
+
+### Added
+
+- **A new map after a lost track** (`slam_it.edge.pipeline`, and the C++ and Rust pipelines):
+  - after `lost_frames` failures in a row the map closes; one of `reset_keyframes` (10)
+    keyframes or fewer is reset, its keyframes and points removed and its frames' poses
+    dropped; a larger one is kept;
+  - the next frame starts a new map, numbered after the last; each map numbers its own
+    keyframes and points from 0, and the run's ids continue across maps;
+  - the lost frame's diagnostics say how many keyframes and points the map had, and whether it
+    was reset.
+- **Run format version 4:** each frame's diagnostic names its map, and `pose_maps.npy`,
+  `keyframe_maps.npy` and `point_maps.npy` give each pose's, keyframe's and point's; a removal
+  `reset`.
+- **Scoring by map:** `runs.evaluate` and `evaluate_absolute` align each map on its own and pool
+  the ATE (and the RPE, where a map has pairs) over them; `runs.tracking` gives a segment per
+  map, the losses and the resets.
+- **The lost room:** the room with frames blanked to lose the track, its first map reset and
+  kept, in the golden record that holds the three languages to one another.
+- **The test set's A2 results**, in `docs/notes/test-set.md`, at seeds 0, 1 and 2:
+  - a run's median share tracked from 20% to 90%, and the seed's sway on it from 76 points at
+    most to 13;
+  - 348 losses over 61 runs at seed 0, 55 maps reset; a kept map spans a median of 4.5 to
+    24.6 s by dataset and mode, each in its own frame;
+  - the check that failed at each loss: over half are placed frames whose local map kept too
+    few inliers;
+  - real time breaks only while a monocular map starts again on ADVIO: 105 frames of failed
+    two-view starts, up to 0.43 s.
+
+### Changed
+
+- **The bundle, version 2:** each map moved onto the truth by its own alignment, the maps'
+  arrays, and a list of each backend's maps with their scores. The viewer shows the map of the
+  frame shown, splits the timeline by map, draws a reset map's frames broken, and shows the
+  maps in the header.
+- **The demo's summary and status page** give the stretches tracked ("Tracked 2.9–15.9 s and
+  17.0–27.1 s of your 27.1 s clip."), the losses and the maps reset.
+- **`scripts/measure_testset.py`** reports each run's segments, losses and resets, and each
+  map's ATE beside the pooled one.
+- **A depth start is ORB-SLAM's:** a frame of more than 500 keypoints starts a map however few
+  have depth; `min_init_depth_points` and the outcome `too_little_depth` are gone (open item
+  L13).
+- **The bake places a run by its ATE alone**, its RPE null where its reference has no pair a
+  frame period apart (A1's deferred A10).
+
 ## [0.3.8.0] - 2026-10-13
 
 Milestone 2A's first part, A1: a test set to measure phone-robust VO against, and phone video
