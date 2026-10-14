@@ -12,6 +12,9 @@ import {
   countAlive,
   keypointRows,
   keypointsAt,
+  mapAt,
+  mapRows,
+  mapsShown,
   posesUpTo,
   recordIndex,
 } from "../src/frames.js";
@@ -93,4 +96,27 @@ test("the camera shown is the frame's own pose, or the last before it", async ()
   const gaps = new Int32Array([0, 2]);
   const held = cameraAt(new Float32Array(24).fill(1, 12), gaps, 1);
   assert.ok(held !== null && !held.tracked && held.pose[0] === 0);
+  // Within a map's poses: none of map 1's before its first.
+  assert.equal(cameraAt(new Float32Array(24), gaps, 1, [1, 2]), null);
+  assert.ok(cameraAt(new Float32Array(24), gaps, 5, [0, 1])?.tracked === false);
+});
+
+test("the map shown at a frame is the frame's own, else the last before it", () => {
+  const records = { frame: [10, 11, 12, 13, 14, 15], map: [null, 0, 0, null, null, 1] };
+  const shown = mapsShown(records);
+  assert.deepEqual(Array.from(shown), [-1, 0, 0, 0, 0, 1]);
+  assert.equal(mapAt(shown, records, 9), null); // before the run's first frame
+  assert.equal(mapAt(shown, records, 10), null); // before its first map
+  assert.equal(mapAt(shown, records, 13), 0); // the lost map, until the next starts
+  assert.equal(mapAt(shown, records, 15), 1);
+  assert.equal(mapAt(shown, records, 40), 1); // after its last frame, its last map
+  assert.deepEqual(Array.from(mapsShown({ frame: [0, 1] })), [-1, -1]);
+});
+
+test("a map's poses are consecutive rows", () => {
+  const poseMaps = new Int32Array([0, 0, 0, 2, 2, 3]);
+  assert.deepEqual(mapRows(poseMaps, 0), [0, 3]);
+  assert.deepEqual(mapRows(poseMaps, 1), [3, 3]); // reset: no poses
+  assert.deepEqual(mapRows(poseMaps, 2), [3, 5]);
+  assert.deepEqual(mapRows(poseMaps, 3), [5, 6]);
 });

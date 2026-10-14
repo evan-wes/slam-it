@@ -1,6 +1,6 @@
 {
  "format": "slam-it-bundle",
- "version": 1,
+ "version": 2,
  "dataset": "tum",
  "sequence": "room_tum",
  "mode": "rgbd",
@@ -60,14 +60,31 @@
     "matched": 4,
     "ate_rmse": 0.002812644944019904,
     "rpe_translation_rmse": 0.0042752099971519195,
-    "rpe_rotation_rmse": 0.0010314385742576059,
-    "scale": 1.0
+    "rpe_rotation_rmse": 0.0010314385742576059
    },
+   "maps": [
+    {
+     "id": 0,
+     "frames": [
+      0,
+      4
+     ],
+     "tracked": 4,
+     "reset": false,
+     "score": {
+      "matched": 4,
+      "ate_rmse": 0.002812644944019904,
+      "rpe_translation_rmse": 0.0042752099971519195,
+      "rpe_rotation_rmse": 0.0010314385742576059,
+      "scale": 1.0
+     }
+    }
+   ],
    "latency": {
     "deadline": 0.033333,
-    "median": 0.047747159958817065,
-    "p95": 0.05429011508822441,
-    "max": 0.05541445896960795,
+    "median": 0.048109984141774476,
+    "p95": 0.05492176106199622,
+    "max": 0.05608464381657541,
     "late": 4
    },
    "peak_memory": null
@@ -90,17 +107,34 @@
     "matched": 6,
     "ate_rmse": 0.003765688283722006,
     "rpe_translation_rmse": 0.006140908080726204,
-    "rpe_rotation_rmse": 0.0011392240316590034,
-    "scale": 1.0
+    "rpe_rotation_rmse": 0.0011392240316590034
    },
+   "maps": [
+    {
+     "id": 0,
+     "frames": [
+      0,
+      6
+     ],
+     "tracked": 6,
+     "reset": false,
+     "score": {
+      "matched": 6,
+      "ate_rmse": 0.003765688283722006,
+      "rpe_translation_rmse": 0.006140908080726204,
+      "rpe_rotation_rmse": 0.0011392240316590034,
+      "scale": 1.0
+     }
+    }
+   ],
    "latency": {
     "deadline": 0.033333,
-    "median": 0.00568939,
-    "p95": 0.006076759249999999,
-    "max": 0.006093029999999999,
+    "median": 0.005630157,
+    "p95": 0.009638096,
+    "max": 0.010862442,
     "late": 0
    },
-   "peak_memory": 8122368
+   "peak_memory": 7999488
   },
   "rust": {
    "frames": [
@@ -120,17 +154,34 @@
     "matched": 6,
     "ate_rmse": 0.0037656882837219163,
     "rpe_translation_rmse": 0.006140908080726421,
-    "rpe_rotation_rmse": 0.0011392240316589835,
-    "scale": 1.0
+    "rpe_rotation_rmse": 0.0011392240316589835
    },
+   "maps": [
+    {
+     "id": 0,
+     "frames": [
+      0,
+      6
+     ],
+     "tracked": 6,
+     "reset": false,
+     "score": {
+      "matched": 6,
+      "ate_rmse": 0.0037656882837219163,
+      "rpe_translation_rmse": 0.006140908080726421,
+      "rpe_rotation_rmse": 0.0011392240316589835,
+      "scale": 1.0
+     }
+    }
+   ],
    "latency": {
     "deadline": 0.033333,
-    "median": 0.004859458,
-    "p95": 0.0058842799999999995,
-    "max": 0.0061466459999999995,
+    "median": 0.004833508,
+    "p95": 0.0050504140000000005,
+    "max": 0.0051095770000000006,
     "late": 0
    },
-   "peak_memory": 6979584
+   "peak_memory": 6946816
   }
  }
 }

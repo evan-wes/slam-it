@@ -1,22 +1,34 @@
-// The 3D panel: the trajectory as tracked, the other backends' beside it, the truth, the
-// keyframes and points alive at the frame shown, and the camera. Every point and keyframe sits in
-// one buffer with the frames of its life; a shader hides each outside it, so scrubbing changes
-// one number and rebuilds nothing.
+// The 3D panel: one map of the run at a time, the map of the frame shown: its trajectory as
+// tracked, the other backends' beside it, the truth if the map is placed on it, its keyframes
+// and points alive at the frame, and the camera. Every point and keyframe sits in one buffer
+// with the frames of its life and its map; a shader hides each outside them, so scrubbing
+// changes two numbers and rebuilds nothing.
 
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
-import { cameraAt, posesUpTo } from "./frames.js";
-import { FRUSTUM_SEGMENTS, centres, frustums, lifeAttributes, truthSegments } from "./geometry.js";
+import { cameraAt, mapAt, mapRows, mapsShown, posesUpTo } from "./frames.js";
+import {
+  FRUSTUM_SEGMENTS,
+  centres,
+  frustums,
+  lifeAttributes,
+  mapAttribute,
+  mapDepths,
+  mapFrustums,
+  truthSegments,
+} from "./geometry.js";
 
 const VERTEX = `
 attribute float made;
 attribute float removed;
+attribute float map;
 uniform float frame;
+uniform float shownMap;
 uniform float size;
 varying float shown;
 void main() {
-  shown = made <= frame && removed > frame ? 1.0 : 0.0;
+  shown = made <= frame && removed > frame && abs(map - shownMap) < 0.5 ? 1.0 : 0.0;
   gl_PointSize = size;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }`;
@@ -39,33 +51,53 @@ function colour(name) {
 }
 
 /**
- * A material that draws only what is alive at its `frame` uniform.
+ * A material that draws only what is alive at its `frame` uniform, of its `shownMap`.
  * @param {string} token The colour's CSS property.
  * @param {number} size A point's size, in pixels.
  * @returns {THREE.ShaderMaterial} The material.
  */
 function livingMaterial(token, size) {
   return new THREE.ShaderMaterial({
-    uniforms: { frame: { value: 0 }, size: { value: size }, colour: { value: colour(token) } },
+    uniforms: {
+      frame: { value: 0 },
+      shownMap: { value: -1 },
+      size: { value: size },
+      colour: { value: colour(token) },
+    },
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
   });
 }
 
 /**
- * A geometry of positions, each with its life.
+ * A geometry of positions, each with its life and map.
  * @param {Float32Array} positions (V, 3).
  * @param {Int32Array} lives The items' lives, (N, 3).
+ * @param {Int32Array} maps The items' maps, (N,).
  * @param {number} vertices Each item's vertices.
  * @returns {THREE.BufferGeometry} The geometry.
  */
-function livingGeometry(positions, lives, vertices) {
+function livingGeometry(positions, lives, maps, vertices) {
   const { made, removed } = lifeAttributes(lives, vertices);
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
   geometry.setAttribute("made", new THREE.BufferAttribute(made, 1));
   geometry.setAttribute("removed", new THREE.BufferAttribute(removed, 1));
+  geometry.setAttribute("map", new THREE.BufferAttribute(mapAttribute(maps, vertices), 1));
   return geometry;
+}
+
+/** A frustum's depth before any map is shown, in the trajectory's units. */
+const DEFAULT_DEPTH = 0.1;
+
+/**
+ * Whether one of a backend's maps was placed on the truth.
+ * @param {import("./bundle.js").BackendInfo} info The backend's header.
+ * @param {number | null} map The map.
+ * @returns {boolean} Whether it was: it has a score.
+ */
+function placed(info, map) {
+  return map !== null && (info.maps.find((m) => m.id === map)?.score ?? null) !== null;
 }
 
 /** The way up in a truth's world, gravity-aligned. */
@@ -74,8 +106,8 @@ const TRUTH_UP = new THREE.Vector3(0, 0, 1);
 /** The way up in a run's own world, its first camera's (y down). */
 const CAMERA_UP = new THREE.Vector3(0, -1, 0);
 
-/** The map after the frame shown: the trajectory so far, the other backends' and the truth's,
- *  the keyframes and points alive, and the camera, followed or orbited. */
+/** The map shown after the frame shown: its trajectory so far, the other backends' and the
+ *  truth's, its keyframes and points alive, and the camera, followed or orbited. */
 export class SceneView {
   /**
    * @param {HTMLElement} box The element the view fills.
@@ -117,14 +149,27 @@ export class SceneView {
     this.scene.add(this.trajectory, this.current);
     /** @type {import("./bundle.js").Backend | null} */
     this.run = null;
-    /** @type {{track: import("./bundle.js").Track, line: THREE.Line}[]} */
+    /** @type {{track: import("./bundle.js").Track, line: THREE.Line, shown: Int32Array}[]} */
     this.others = [];
-    this.depth = 0.1;
+    this.depth = DEFAULT_DEPTH;
+    /** @type {Int32Array} The run's map shown at each of its records (`mapsShown`). */
+    this.shown = new Int32Array(0);
+    /** @type {number | null | undefined} The map shown; undefined until the first is set. */
+    this.shownMap = undefined;
+    /** @type {[number, number]} The rows of the map's poses. */
+    this.rows = [0, 0];
+    /** Whether the map shown is placed on the truth. */
+    this.aligned = false;
+    /** @type {Float32Array} The run's tracked frames' centres, (T, 3). */
+    this.path = new Float32Array(0);
+    /** @type {Map<number, number>} Each map's frustum depth. */
+    this.depths = new Map();
     new ResizeObserver(() => this.resize()).observe(box);
   }
 
   /**
-   * Show a backend's run: its trajectory, keyframes and points, built once.
+   * Show a backend's run: its trajectory, keyframes and points, built once; the map shown is
+   * chosen at the next frame shown.
    * @param {import("./bundle.js").Backend} run The run.
    */
   setRun(run) {
@@ -132,41 +177,59 @@ export class SceneView {
       this.scene.remove(object);
     }
     this.run = run;
-    // A run left in its own frame is in its first camera's world, not the truth's: while it is
-    // shown, the truth is hidden and the view is the camera's way up.
-    const aligned = run.info.alignment !== null;
-    if (this.truth !== null) {
-      this.truth.visible = aligned;
+    this.shown = mapsShown(run.records);
+    this.shownMap = undefined;
+    /** @type {THREE.LineBasicMaterial} */ (this.trajectory.material).color = colour(
+      `--backend-${run.name}`,
+    );
+    this.path = centres(run.poses);
+    this.trajectory.geometry.setAttribute("position", new THREE.BufferAttribute(this.path, 3));
+    this.depths = mapDepths(this.path, run.poseMaps);
+    const camera = this.bundle.info.camera;
+    const keyframes = livingMaterial("--keyframe", 1);
+    const points = livingMaterial("--point", 2);
+    this.living = [keyframes, points];
+    const frames = mapFrustums(
+      run.keyframePoses,
+      run.keyframeMaps,
+      camera,
+      this.depths,
+      DEFAULT_DEPTH,
+    );
+    this.runObjects = [
+      new THREE.LineSegments(
+        livingGeometry(frames, run.keyframeLives, run.keyframeMaps, FRUSTUM_SEGMENTS * 2),
+        keyframes,
+      ),
+      new THREE.Points(livingGeometry(run.points, run.pointLives, run.pointMaps, 1), points),
+    ];
+    this.scene.add(...this.runObjects);
+  }
+
+  /**
+   * Show one of the run's maps: its keyframes, points and trajectory, the truth only if the map
+   * is placed on it. A map left in its own frame is in its first camera's world, not the
+   * truth's: while it is shown, the truth is hidden and the view is the camera's way up.
+   * @param {import("./bundle.js").Backend} run The run.
+   * @param {number | null} map The map; null for none.
+   */
+  showMap(run, map) {
+    this.shownMap = map;
+    for (const material of this.living) {
+      material.uniforms.shownMap.value = map ?? -1;
     }
-    const up = aligned ? TRUTH_UP : CAMERA_UP;
+    this.rows = map === null ? [0, 0] : mapRows(run.poseMaps, map);
+    this.aligned = placed(run.info, map);
+    if (this.truth !== null) {
+      this.truth.visible = this.aligned;
+    }
+    const up = this.aligned ? TRUTH_UP : CAMERA_UP;
     if (!this.camera.up.equals(up)) {
       this.camera.up.copy(up);
       this.controls.dispose();
       this.controls = this.orbit(); // the controls take the camera's up when made
     }
-    /** @type {THREE.LineBasicMaterial} */ (this.trajectory.material).color = colour(
-      `--backend-${run.name}`,
-    );
-    const path = centres(run.poses);
-    this.trajectory.geometry.setAttribute("position", new THREE.BufferAttribute(path, 3));
-    const box = new THREE.Box3().setFromArray(path.length > 0 ? path : new Float32Array(3));
-    this.depth = Math.max(box.getSize(new THREE.Vector3()).length() / 40, 0.02);
-    const camera = this.bundle.info.camera;
-    const keyframes = livingMaterial("--keyframe", 1);
-    const points = livingMaterial("--point", 2);
-    this.living = [keyframes, points];
-    this.runObjects = [
-      new THREE.LineSegments(
-        livingGeometry(
-          frustums(run.keyframePoses, camera, this.depth),
-          run.keyframeLives,
-          FRUSTUM_SEGMENTS * 2,
-        ),
-        keyframes,
-      ),
-      new THREE.Points(livingGeometry(run.points, run.pointLives, 1), points),
-    ];
-    this.scene.add(...this.runObjects);
+    this.depth = map === null ? DEFAULT_DEPTH : (this.depths.get(map) ?? DEFAULT_DEPTH);
     this.fit();
   }
 
@@ -189,7 +252,7 @@ export class SceneView {
       const line = new THREE.Line(geometry, material);
       line.frustumCulled = false; // its draw range changes with the frame
       this.scene.add(line);
-      return { track, line };
+      return { track, line, shown: mapsShown(track.records) };
     });
   }
 
@@ -203,14 +266,15 @@ export class SceneView {
     return controls;
   }
 
-  /** Frame the trajectory and the truth, if shown. */
+  /** Frame the map's trajectory and the truth, if shown. */
   fit() {
+    const [start, end] = this.rows;
     const bounds = new THREE.Box3();
-    for (const object of [this.trajectory, ...this.scene.children]) {
-      const line = object instanceof THREE.Line && object.geometry.getAttribute("position");
-      if (line && object.visible) {
-        bounds.expandByObject(object);
-      }
+    if (end > start) {
+      bounds.setFromArray(this.path.subarray(start * 3, end * 3));
+    }
+    if (this.truth !== null && this.truth.visible) {
+      bounds.expandByObject(this.truth);
     }
     if (bounds.isEmpty()) {
       bounds.set(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(1, 1, 1));
@@ -229,19 +293,23 @@ export class SceneView {
   }
 
   /**
-   * Show the map as it was after a frame.
+   * Show the map of a frame as it was after the frame: the frame's map, else the last before it.
    * @param {number} frame The frame.
+   * @returns {number | null} The map shown; null before the run's first.
    */
   show(frame) {
     for (const material of this.living) {
       material.uniforms.frame.value = frame;
     }
-    for (const { track, line } of this.others) {
-      line.geometry.setDrawRange(0, posesUpTo(track.poseFrames, frame));
-    }
     if (this.run !== null) {
-      this.trajectory.geometry.setDrawRange(0, posesUpTo(this.run.poseFrames, frame));
-      const at = cameraAt(this.run.poses, this.run.poseFrames, frame);
+      const map = mapAt(this.shown, this.run.records, frame);
+      if (map !== this.shownMap) {
+        this.showMap(this.run, map);
+      }
+      const [start, end] = this.rows;
+      const upTo = Math.min(posesUpTo(this.run.poseFrames, frame), end);
+      this.trajectory.geometry.setDrawRange(start, Math.max(upTo - start, 0));
+      const at = cameraAt(this.run.poses, this.run.poseFrames, frame, this.rows);
       this.current.visible = at !== null;
       if (at !== null) {
         const lines = frustums(at.pose, this.bundle.info.camera, this.depth * 1.5);
@@ -254,7 +322,29 @@ export class SceneView {
         }
       }
     }
+    this.showOthers(frame);
     this.render();
+    return this.shownMap ?? null;
+  }
+
+  /**
+   * Show each other backend's map of a frame where it shares the shown map's frame: both placed
+   * on the truth, or both in their own frames and the same map (the backends decide alike).
+   * @param {number} frame The frame.
+   */
+  showOthers(frame) {
+    const mine = this.shownMap ?? null;
+    for (const { track, line, shown } of this.others) {
+      const theirs = mapAt(shown, track.records, frame);
+      const together =
+        theirs !== null && mine !== null && placed(track.info, theirs) === this.aligned;
+      line.visible = together && (this.aligned || theirs === mine);
+      if (line.visible && theirs !== null) {
+        const [start, end] = mapRows(track.poseMaps, theirs);
+        const upTo = Math.min(posesUpTo(track.poseFrames, frame), end);
+        line.geometry.setDrawRange(start, Math.max(upTo - start, 0));
+      }
+    }
   }
 
   /** Fit the drawing to the panel's size. */

@@ -125,6 +125,76 @@ def test_each_backend_is_moved_onto_the_truth(
         assert entry["frames"] == [0, FRAMES]
 
 
+def _split(run: runs.Run, at: int, moved: np.ndarray) -> runs.Run:
+    """Return the run as two maps, the second from frame `at` on, moved by a rigid `moved`.
+
+    Its poses, keyframes and points made from frame `at` are map 1's, in a frame of its own, as
+    the next map after a lost track is.
+    """
+    pose_frames = np.searchsorted([d["timestamp"] for d in run.diagnostics], run.timestamps)
+    pose_maps = (pose_frames >= at).astype(np.int64)
+    keyframe_maps = (run.keyframe_lives[:, 0] >= at).astype(np.int64)
+    point_maps = (run.point_lives[:, 0] >= at).astype(np.int64)
+    poses, keyframes, points = run.poses.copy(), run.keyframe_poses.copy(), run.points.copy()
+    poses[pose_maps == 1] = moved @ poses[pose_maps == 1]
+    keyframes[keyframe_maps == 1] = moved @ keyframes[keyframe_maps == 1]
+    points[point_maps == 1] = points[point_maps == 1] @ moved[:3, :3].T + moved[:3, 3]
+    diagnostics = [{**d, "map": int(k >= at)} for k, d in enumerate(run.diagnostics)]
+    return replace(
+        run, poses=poses, keyframe_poses=keyframes, points=points, diagnostics=diagnostics,
+        pose_maps=pose_maps, keyframe_maps=keyframe_maps, point_maps=point_maps,
+        record_features=False,
+    )  # fmt: skip
+
+
+def test_each_map_is_moved_onto_the_truth_by_its_own_alignment(
+    room_runs: RoomRun, tmp_path: Path
+) -> None:
+    """A run of two maps, the second in a frame of its own: each map sits on the truth.
+
+    Each is moved by its own alignment, its keyframes and points with it (so each point is seen
+    from each keyframe of its map as in the run; across maps, two alignments of the centres
+    alone need not agree on a short map's turn about its path); the header lists both maps,
+    with their frames, tracked frames and scores, and pools the ATE over them.
+    """
+    run = room_runs("tum", "rgbd", "python")
+    moved = np.eye(4)
+    moved[:3, :3] = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    moved[:3, 3] = [5.0, -3.0, 1.0]
+    folder = tmp_path / "two"
+    runs.write_run(folder, _split(run, FRAMES // 2, moved))
+    bundles.bake([folder], room_runs.sequence("tum"), tmp_path / "bundle")
+    info = json.loads((tmp_path / "bundle" / "bundle.json").read_text())["backends"]["python"]
+    truth = np.load(tmp_path / "bundle" / "truth.npy")
+    poses = np.load(tmp_path / "bundle" / "python" / "poses.npy")
+    at = np.load(tmp_path / "bundle" / "python" / "pose_frames.npy")
+    maps = np.load(tmp_path / "bundle" / "python" / "pose_maps.npy")
+    assert maps.dtype == np.int32
+    gap = np.linalg.norm(poses[:, :, 3] - truth[at], axis=1)
+    assert gap.max() < 0.05  # both maps on the truth: one alignment for both would be metres off
+    assert [m["id"] for m in info["maps"]] == [0, 1]
+    first, second = info["maps"]
+    assert (first["frames"], second["frames"]) == ([0, FRAMES // 2], [FRAMES // 2, FRAMES])
+    assert first["tracked"] + second["tracked"] == len(run.timestamps) == info["tracked"]
+    assert not first["reset"]
+    assert not second["reset"]
+    for entry, part in ((first, maps == 0), (second, maps == 1)):
+        assert entry["score"]["ate_rmse"] == pytest.approx(
+            np.sqrt(np.mean(gap[part] ** 2)), rel=1e-4
+        )
+    assert info["score"]["ate_rmse"] == pytest.approx(np.sqrt(np.mean(gap**2)), rel=1e-4)
+    keyframes = np.load(tmp_path / "bundle" / "python" / "keyframe_poses.npy").astype(np.float64)
+    points = np.load(tmp_path / "bundle" / "python" / "points.npy").astype(np.float64)
+    split = _split(run, FRAMES // 2, moved)
+    for map_id in (0, 1):
+        k, p = split.keyframe_maps == map_id, split.point_maps == map_id
+        np.testing.assert_allclose(
+            _bearings(keyframes[k], points[p]),
+            _bearings(run.keyframe_poses[k], run.points[p]),
+            atol=1e-5,
+        )
+
+
 def test_a_later_run_is_renumbered_to_the_bundles_frames(
     room_runs: RoomRun, tmp_path: Path
 ) -> None:
@@ -199,6 +269,7 @@ def test_without_truth_each_run_stays_in_its_own_frame(room_runs: RoomRun, tmp_p
     assert not (tmp_path / "truth.npy").exists()
     for backend, entry in info["backends"].items():
         assert (entry["alignment"], entry["score"]) == (None, None)
+        assert [m["score"] for m in entry["maps"]] == [None]
         run = room_runs("euroc", "stereo", backend)
         poses = np.load(tmp_path / backend / "poses.npy")
         np.testing.assert_array_equal(poses, run.poses[:, :3].astype(np.float32))

@@ -278,13 +278,97 @@ def test_evaluate_scores_a_noisy_run() -> None:
     frames = np.arange(0, len(truth_times), 10)
     estimate = truth[frames].copy()
     estimate[:, :3, 3] += 0.01 * np.random.default_rng(2).normal(size=(len(frames), 3))
-    run = runs.Run("synthetic", "circle", "rgbd", "python", truth_times[frames] + 0.001, estimate)
+    run = runs.Run(
+        "synthetic", "circle", "rgbd", "python", truth_times[frames] + 0.001, estimate,
+        pose_maps=np.zeros(len(frames), dtype=np.int64),
+    )  # fmt: skip
     scored = runs.evaluate(run, truth_times, truth)
     assert scored.matched == len(frames)
-    assert 0.01 < scored.absolute.rmse < 0.025
-    assert scored.absolute.scale == 1.0
-    assert scored.relative.delta == pytest.approx(0.05)  # the run's frame period
-    assert len(scored.relative.pairs) == len(frames) - 1
+    assert 0.01 < scored.ate_rmse < 0.025
+    (only,) = scored.maps
+    assert (only.map, only.absolute.scale, only.absolute.rmse) == (0, 1.0, scored.ate_rmse)
+    assert only.relative is not None
+    assert only.relative.delta == pytest.approx(0.05)  # the run's frame period
+    assert len(only.relative.pairs) == len(frames) - 1
+    assert scored.rpe_translation_rmse == only.relative.translation_rmse
+
+
+def _circle(times: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Return true poses on a rising circle, turning, at `times`."""
+    out = np.tile(np.eye(4), (len(times), 1, 1))
+    out[:, :3, :3] = so3.exp(np.column_stack([0.1 * times, 0.3 * times, np.zeros_like(times)]))
+    out[:, :3, 3] = np.column_stack([np.cos(times), np.sin(times), 0.1 * times])
+    return out
+
+
+def test_each_map_is_aligned_on_its_own() -> None:
+    """Two maps, each in its own frame and scale, score as each alone; the pooled RMSE pools.
+
+    A monocular run's second map is the truth moved by a similarity of its own: aligned with
+    the first's, it would be far off; on its own, it is as exact as the first.
+    """
+    times = np.arange(0.0, 8.0, 0.05)
+    truth = _circle(times)
+    estimate = truth.copy()
+    rng = np.random.default_rng(4)
+    estimate[:, :3, 3] += 0.01 * rng.normal(size=(len(times), 3))
+    second = times >= 4.0
+    moved = np.eye(4)
+    moved[:3, :3] = so3.exp(np.array([0.4, -1.1, 2.0]))
+    moved[:3, 3] = [3.0, -2.0, 0.5]
+    estimate[second] = moved @ estimate[second]
+    estimate[second, :3, 3] *= 2.5  # its own scale, centres and all
+    run = runs.Run(
+        "synthetic", "two", "monocular", "python", times, estimate,
+        pose_maps=second.astype(np.int64),
+    )  # fmt: skip
+    scored = runs.evaluate(run, times, truth)
+    assert [m.map for m in scored.maps] == [0, 1]
+    assert scored.unscored == ()
+    alone = [
+        runs.evaluate(
+            replace(
+                run,
+                timestamps=times[part],
+                poses=estimate[part],
+                pose_maps=np.zeros(np.count_nonzero(part), dtype=np.int64),
+            ),
+            times,
+            truth,
+        )
+        for part in (~second, second)
+    ]
+    for each, single in zip(scored.maps, alone, strict=True):
+        assert each.absolute.rmse == single.ate_rmse < 0.02
+    assert scored.maps[1].absolute.scale == pytest.approx(1 / 2.5, rel=0.01)
+    errors = np.concatenate([m.absolute.errors for m in scored.maps])
+    assert scored.ate_rmse == pytest.approx(np.sqrt(np.mean(errors**2)))
+    assert scored.matched == len(times)
+    whole = runs.evaluate(
+        replace(run, pose_maps=np.zeros(len(times), dtype=np.int64)), times, truth
+    )
+    assert whole.ate_rmse > 10 * scored.ate_rmse  # one alignment for both is far off
+
+
+def test_a_map_too_short_or_straight_to_align_is_unscored() -> None:
+    """A map of two matched frames, or one whose centres lie on a line, is left unscored.
+
+    With no map left, the run cannot be scored.
+    """
+    times = np.arange(0.0, 3.0, 0.05)
+    truth = _circle(times)
+    straight = truth.copy()
+    straight[40:, :3, 3] = np.outer(times[40:], [1.0, 0.0, 0.0])  # map 2: a line
+    maps = np.zeros(len(times), dtype=np.int64)
+    maps[20:22], maps[22:40], maps[40:] = 1, 2, 3
+    run = runs.Run("synthetic", "parts", "rgbd", "python", times, straight, pose_maps=maps)
+    scored = runs.evaluate_absolute(run, times, truth)
+    assert [m.map for m in scored.maps] == [0, 2]
+    assert scored.unscored == (1, 3)
+    assert all(m.relative is None for m in scored.maps)  # the ATE alone
+    lone = replace(run, timestamps=times[20:22], poses=straight[20:22], pose_maps=maps[20:22])
+    with pytest.raises(InvalidInputError, match="no map can be aligned: at most 2"):
+        runs.evaluate_absolute(lone, times, truth)
 
 
 def test_the_ate_alone_scores_against_a_reference_too_sparse_for_the_rpe() -> None:
@@ -299,19 +383,26 @@ def test_the_ate_alone_scores_against_a_reference_too_sparse_for_the_rpe() -> No
     poses = np.tile(np.eye(4), (len(frame_times), 1, 1))
     poses[:, :3, :3] = so3.exp(angles)
     poses[:, :3, 3] = np.column_stack([np.cos(frame_times), np.sin(frame_times), frame_times])
-    run = runs.Run("tum", "sparse", "rgbd", "python", frame_times, poses)
+    run = runs.Run(
+        "tum", "sparse", "rgbd", "python", frame_times, poses,
+        pose_maps=np.zeros(len(frame_times), dtype=np.int64),
+    )  # fmt: skip
     with pytest.raises(InvalidInputError, match="later"):
         runs.evaluate(run, reference_times, poses[::3])
     scored = runs.evaluate_absolute(run, reference_times, poses[::3])
     assert scored.matched == len(reference_times)
-    assert scored.absolute.rmse == pytest.approx(0.0, abs=1e-9)
+    assert scored.ate_rmse == pytest.approx(0.0, abs=1e-9)
+    assert scored.rpe_translation_rmse is None
 
 
 def test_evaluate_rejects_a_run_whose_times_do_not_ascend() -> None:
     """The run's times are checked before they are paired with the ground truth."""
     times = np.arange(0.0, 1.0, 0.05)
     poses = np.tile(np.eye(4), (len(times), 1, 1))
-    run = runs.Run("synthetic", "still", "rgbd", "python", times[::-1], poses)
+    run = runs.Run(
+        "synthetic", "still", "rgbd", "python", times[::-1], poses,
+        pose_maps=np.zeros(len(times), dtype=np.int64),
+    )  # fmt: skip
     with pytest.raises(InvalidInputError, match="run timestamps: must ascend"):
         runs.evaluate(run, times, poses)
 

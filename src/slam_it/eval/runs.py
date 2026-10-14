@@ -45,9 +45,9 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
 
 :func:`write_run` checks everything before it writes, and replaces each file whole (written
 to a temporary sibling, then renamed); :func:`read_run` checks every file's shape;
-:func:`evaluate` scores a run against the ground truth, and :func:`evaluate_absolute` its ATE
-alone, which needs no pair of frames a period apart, as the RPE does. :func:`tracking` says
-what of a sequence a run ran and tracked.
+:func:`evaluate` scores a run against the ground truth, each map on its own alignment, and
+:func:`evaluate_absolute` its ATE alone, which needs no pair of frames a period apart, as the
+RPE does. :func:`tracking` says what of a sequence a run ran and tracked.
 """
 
 from __future__ import annotations
@@ -68,7 +68,7 @@ from slam_it.eval import euroc, metrics, tum
 from slam_it.eval.timestamps import as_times
 from slam_it.foundations import se3, so3
 from slam_it.foundations.arrays import as_batch
-from slam_it.foundations.errors import InvalidInputError
+from slam_it.foundations.errors import DegenerateError, InvalidInputError
 
 FORMAT = "slam-it-run"
 """``run.json``'s ``format``."""
@@ -903,60 +903,146 @@ def tracking(run: Run, times: ArrayLike) -> Tracking:
 
 
 @dataclass(frozen=True)
-class Absolute:
-    """A run's ATE against the ground truth, without the RPE.
+class MapError:
+    """One map's error against the ground truth, the map aligned on its own.
 
     Attributes
     ----------
+    map : int
+        The map.
     matched : int
-        The run's frames that had a ground-truth pose within the tolerance.
+        Its frames that had a ground-truth pose within the tolerance.
     absolute : slam_it.eval.metrics.AbsoluteError
-        The ATE: Sim(3)-aligned for a monocular run, SE(3) otherwise.
+        Its ATE: Sim(3)-aligned for a monocular run, each map with its own scale; SE(3)
+        otherwise.
+    relative : slam_it.eval.metrics.RelativeError or None
+        Its RPE over one frame period (or the interval asked for), the estimate scaled by its
+        ATE's scale; None from :func:`evaluate_absolute`, and for a map none of whose matched
+        frames has another the interval later.
     """
 
+    map: int
     matched: int
     absolute: metrics.AbsoluteError
+    relative: metrics.RelativeError | None
+
+
+def _rms(values: list[NDArray[np.float64]]) -> float | None:
+    """Return the root mean square of arrays pooled, or None for none."""
+    pooled = np.concatenate(values) if values else np.zeros(0)
+    return math.sqrt(float(np.mean(pooled * pooled))) if len(pooled) else None
 
 
 @dataclass(frozen=True)
 class Evaluation:
-    """A run scored against the ground truth.
+    """A run scored against the ground truth, each of its maps aligned on its own.
+
+    A map's poses are in its own world frame (and, monocular, its own scale), so each map is
+    aligned to the truth by itself, as each segment of a run that lost the track must be; the
+    pooled errors are the root mean square over every scored map's frames (or pairs).
 
     Attributes
     ----------
-    matched : int
-        The run's frames that had a ground-truth pose within the tolerance.
-    absolute : slam_it.eval.metrics.AbsoluteError
-        The ATE: Sim(3)-aligned for a monocular run, SE(3) otherwise.
-    relative : slam_it.eval.metrics.RelativeError
-        The RPE over one frame period (or the interval asked for), the estimate scaled by the
-        ATE's scale.
+    maps : tuple of MapError
+        The maps scored, in order.
+    unscored : tuple of int
+        The maps with poses that could not be aligned: fewer than three of their frames
+        matched, or their centres on a line.
     """
 
-    matched: int
-    absolute: metrics.AbsoluteError
-    relative: metrics.RelativeError
+    maps: tuple[MapError, ...]
+    unscored: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        """Check a map was scored.
+
+        Raises
+        ------
+        slam_it.foundations.errors.InvalidInputError
+            If none was.
+        """
+        if not self.maps:
+            raise InvalidInputError("maps: an evaluation scores at least one map")
+
+    @property
+    def matched(self) -> int:
+        """The scored maps' frames that had a ground-truth pose, in all."""
+        return sum(m.matched for m in self.maps)
+
+    @property
+    def ate_rmse(self) -> float:
+        """The ATE's root mean square over every scored map's matched frames."""
+        pooled = _rms([m.absolute.errors for m in self.maps])
+        assert pooled is not None  # an Evaluation has a map scored
+        return pooled
+
+    @property
+    def rpe_translation_rmse(self) -> float | None:
+        """The RPE's translation, root mean square over every map's pairs; None without one."""
+        return _rms([m.relative.translation for m in self.maps if m.relative is not None])
+
+    @property
+    def rpe_rotation_rmse(self) -> float | None:
+        """The RPE's rotation in radians, the same way; None without one."""
+        return _rms([m.relative.rotation for m in self.maps if m.relative is not None])
 
 
-def _matched(
-    run: Run, timestamps: ArrayLike, poses: ArrayLike, max_difference: float
-) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64], metrics.AbsoluteError]:
-    """Return the matched run frames' times and poses, their ground truth, and the ATE."""
+def _scored(  # noqa: PLR0913 -- the run, its truth, the tolerance and interval; which errors
+    run: Run,
+    timestamps: ArrayLike,
+    poses: ArrayLike,
+    max_difference: float,
+    rpe_delta: float | None,
+    *,
+    relative: bool,
+) -> Evaluation:
+    """Score each of a run's maps on its own alignment; the RPE too if `relative`."""
     truth_times, truth_poses = _as_stamped(timestamps, poses, "ground truth")
     run_times, run_poses = _as_stamped(run.timestamps, run.poses, "run")
-    ours, theirs = metrics.associate(run_times, truth_times, max_difference)
-    if len(ours) < 3:  # the alignment's minimum
-        raise InvalidInputError(f"only {len(ours)} frames have a ground-truth pose; need 3")
-    absolute = metrics.absolute_error(
-        run_poses[ours], truth_poses[theirs], with_scale=run.mode == "monocular"
-    )
-    return run_times[ours], run_poses[ours], truth_poses[theirs], absolute
+    maps = _check_maps(run.pose_maps, len(run_times), "pose_maps")
+    period = float(np.median(np.diff(run_times))) if len(run_times) >= 2 else 0.0
+    scored: list[MapError] = []
+    unscored: list[int] = []
+    most = 0
+    for map_id in (int(m) for m in np.unique(maps)):
+        rows = np.flatnonzero(maps == map_id)
+        ours, theirs = metrics.associate(run_times[rows], truth_times, max_difference)
+        most = max(most, len(ours))
+        if len(ours) < 3:  # the alignment's minimum
+            unscored.append(map_id)
+            continue
+        mine, true = run_poses[rows][ours], truth_poses[theirs]
+        try:
+            absolute = metrics.absolute_error(mine, true, with_scale=run.mode == "monocular")
+        except DegenerateError:  # the map's centres are on a line
+            unscored.append(map_id)
+            continue
+        drift = None
+        if relative:
+            try:
+                drift = metrics.relative_error(
+                    mine,
+                    true,
+                    run_times[rows][ours],
+                    delta=period if rpe_delta is None else rpe_delta,
+                    tolerance=0.5 * period,
+                    scale=absolute.scale,
+                )
+            except InvalidInputError:  # no matched frame of the map has a pair
+                drift = None
+        scored.append(MapError(map_id, len(ours), absolute, drift))
+    if not scored:
+        raise InvalidInputError(
+            f"no map can be aligned: at most {most} of a map's frames have a ground-truth pose "
+            "(3 needed, their centres not on a line)"
+        )
+    return Evaluation(maps=tuple(scored), unscored=tuple(unscored))
 
 
 def evaluate_absolute(
     run: Run, timestamps: ArrayLike, poses: ArrayLike, *, max_difference: float = MAX_DIFFERENCE
-) -> Absolute:
-    """Score a run's ATE against the ground truth, without the RPE.
+) -> Evaluation:
+    """Score a run's ATE against the ground truth, without the RPE: each map on its own.
 
     The test set's measure reports the ATE alone, and scores with this; it also scores a
     reference too sparse for :func:`evaluate`'s RPE, whose pairs are a frame period apart. One
@@ -977,16 +1063,16 @@ def evaluate_absolute(
 
     Returns
     -------
-    Absolute
-        The ATE over the matched frames.
+    Evaluation
+        Each map's ATE over its matched frames, no RPE.
 
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If an array is malformed or its times do not ascend, or fewer than three frames match.
+        If an array is malformed or its times do not ascend, or no map can be aligned (fewer
+        than three of its frames matched, or their centres on a line).
     """
-    times, _, _, absolute = _matched(run, timestamps, poses, max_difference)
-    return Absolute(matched=len(times), absolute=absolute)
+    return _scored(run, timestamps, poses, max_difference, None, relative=False)
 
 
 def evaluate(
@@ -997,7 +1083,7 @@ def evaluate(
     max_difference: float = MAX_DIFFERENCE,
     rpe_delta: float | None = None,
 ) -> Evaluation:
-    """Score a run against the ground truth.
+    """Score a run against the ground truth: each map's ATE and RPE, on its own alignment.
 
     Parameters
     ----------
@@ -1012,28 +1098,23 @@ def evaluate(
         (default :data:`MAX_DIFFERENCE`).
     rpe_delta : float, optional
         The RPE's interval, in seconds (default: the run's frame period, the median spacing
-        of its timestamps). Pairs are sought within half a frame period.
+        of its timestamps). Pairs are sought within half a frame period, within a map.
 
     Returns
     -------
     Evaluation
-        The ATE and the RPE over the matched frames.
+        Each map's ATE and RPE over its matched frames.
 
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If an array is malformed or its times do not ascend, fewer than three frames match,
-        or no matched frame has another `rpe_delta` seconds later.
+        If an array is malformed or its times do not ascend, no map can be aligned (fewer than
+        three of its frames matched, or their centres on a line), or no map's matched frame
+        has another `rpe_delta` seconds later.
     """
-    times, mine, theirs, absolute = _matched(run, timestamps, poses, max_difference)
-    run_times = np.asarray(run.timestamps, dtype=np.float64)
-    period = float(np.median(np.diff(run_times)))
-    relative = metrics.relative_error(
-        mine,
-        theirs,
-        times,
-        delta=period if rpe_delta is None else rpe_delta,
-        tolerance=0.5 * period,
-        scale=absolute.scale,
-    )
-    return Evaluation(matched=len(times), absolute=absolute, relative=relative)
+    scored = _scored(run, timestamps, poses, max_difference, rpe_delta, relative=True)
+    if scored.rpe_translation_rmse is None:
+        raise InvalidInputError(
+            "no matched frame of a map has another a frame period later, for the RPE"
+        )
+    return scored

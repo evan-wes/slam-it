@@ -21,9 +21,11 @@ worker sets a run up (:func:`slam_it.orchestration.vo.options_for`), then is mea
 - ``tracked`` and ``share``: the frames tracked, and their share of the sequence's;
 - ``tracked_from``, ``tracked_to`` and ``ran_to``: times since the sequence's first frame, and
   ``lost`` (:func:`slam_it.eval.runs.tracking`);
-- ``ate``: the RMSE in metres over the tracked frames matched to the reference, aligned Sim(3)
-  for monocular and SE(3) otherwise, with ``matched`` and the ``reference`` named; null, with
-  ``unscored`` saying why, if it cannot be scored. It is scored alone
+- ``ate``: the RMSE in metres over the tracked frames matched to the reference, each map aligned
+  on its own, Sim(3) for monocular and SE(3) otherwise, with ``matched`` and the ``reference``
+  named; each map's own in ``map_ate`` (``map``, ``matched``, ``ate``), and in
+  ``unscored_maps`` the maps too short or straight to align; ``ate`` null, with ``unscored``
+  saying why, if no map can be scored. It is scored alone
   (:func:`slam_it.eval.runs.evaluate_absolute`): the measure reports no relative error, and a
   reference too sparse for one still scores;
 - ``p95``: the 95th percentile of a frame's latency, building and tracking it, in seconds,
@@ -165,6 +167,8 @@ def measure(
         "reference": entry.reference,
         "ate": None,
         "matched": 0,
+        "map_ate": [],
+        "unscored_maps": [],
         "unscored": None,
         "p95": None,
         "deadline": None,
@@ -176,7 +180,14 @@ def measure(
         if truth is None:
             raise InvalidInputError("no ground truth")
         scored = runs.evaluate_absolute(run, *truth)
-        result.update(ate=scored.absolute.rmse, matched=scored.matched)
+        result.update(
+            ate=scored.ate_rmse,
+            matched=scored.matched,
+            map_ate=[
+                {"map": e.map, "matched": e.matched, "ate": e.absolute.rmse} for e in scored.maps
+            ],
+            unscored_maps=list(scored.unscored),
+        )
     except InvalidInputError as error:
         result["unscored"] = str(error)
     try:

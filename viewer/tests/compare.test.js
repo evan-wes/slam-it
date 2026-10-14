@@ -36,7 +36,7 @@ test("a frame where one backend decided otherwise is found, only where both ran 
     [2],
   );
   assert.deepEqual(differences([changed], bundle.info.frames), []);
-  assert.deepEqual(DECISIONS, ["state", "tracked", "keyframe", "placed_by"]);
+  assert.deepEqual(DECISIONS, ["state", "map", "tracked", "keyframe", "placed_by"]);
 });
 
 test("a backend's step times at a frame are its record's, none where it did not run", async () => {

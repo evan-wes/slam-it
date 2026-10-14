@@ -55,7 +55,7 @@ def test_every_backend_tracks_the_room(
     assert len(run.final_points()) > 0
     error = runs.evaluate(run, room_folders.timestamps, room_folders.poses)
     assert error.matched == len(run.timestamps)
-    assert error.absolute.rmse < ATE_BOUND[mode]
+    assert error.ate_rmse < ATE_BOUND[mode]
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
