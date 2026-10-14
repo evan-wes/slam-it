@@ -491,8 +491,9 @@ edge rung holds what is its own, tracking, keyframes and local mapping.
 - **What it leaves out of ORB-SLAM:** a sliding window of the last 10 keyframes stands in for
   the covisibility graph; no bag of words, so no relocalisation or loop closure (milestone
   2B's); one thread, mapping after tracking, so a run is deterministic; no map reuse.
-- **A lost track ends the run,** recorded in its diagnostics, until milestone 2A starts a
-  new map there.
+- **A lost track closes its map** (kept, or reset if it has 10 keyframes or fewer) and the
+  next frame starts a new one, as ORB-SLAM3's atlas does (milestone 2A's A2); relocalising
+  against the lost map, and joining maps, are milestone 2B's.
 - **Its state is a struct of arrays** in all three languages, so each stage function
   (initialise, track, map) crosses the bindings as dicts of arrays, as rung 0's do. Python
   runs the whole pipeline in-process; C++ and Rust run it in the native programs, not across
@@ -981,13 +982,10 @@ shared with the owner's other projects.
     would make long-sequence drift (fr3/long_office) investigable.
   - **Where the two-view fixture's duplicate matches come from (L11).** 38 of its 88
     matches share one pixel; the homography's rank rule handles the symptom.
-  - **ORB-SLAM's reset of a map lost early, with milestone 2A (run 2, L13).** ORB-SLAM2
-    resets the system when the track is lost with five keyframes or fewer (ORB-SLAM3 the
-    active map, under ten), which is what lets it start a depth map from any 500 keypoints and
-    a monocular map from low parallax. The lite pipeline ends the run instead, so a depth start
-    also needs `min_init_depth_points` (100) keypoints with depth, a stand-in. The reset drops
-    the frames before it from the trajectory, as ORB-SLAM's does: it comes with milestone
-    2A's new map after a lost track.
+  - Closed by milestone 2A's A2: **ORB-SLAM's reset of a map lost early (run 2, L13).** A map
+    lost with `reset_keyframes` (10) keyframes or fewer is reset, as ORB-SLAM3 resets its active
+    map, its frames' poses dropped from the trajectory; `min_init_depth_points`, the stand-in,
+    is gone, so a depth map starts from any frame of more than 500 keypoints.
   - **Relocalising monocular runs that lose the track, with milestone 2B (run 2, L15).**
     Started one to four frames after the frame the first run initialises from, 6 of 20
     monocular runs on TUM and EuRoC lose the track (3 of 5 on fr1/desk), each deep into the
@@ -1031,10 +1029,9 @@ shared with the owner's other projects.
     interpolates its reference at the frames' times instead (route (b)); TUM's own
     `associate.py`, and evo, pair one to one. If another sparse reference joins, pair one to one
     at the root (`metrics.associate`), with the RPE at the reference's own spacing.
-  - **The bake's alignment tied to the RPE, with A2 (round two's A10).** `bundles._score` aligns
-    a run through `runs.evaluate`, so a run whose reference has no pair a frame period apart
-    stays in its own frame. A2 reworks the bake's scoring by map: align with the ATE alone
-    (`runs.evaluate_absolute`), and give the RPE where pairs exist.
+  - Closed by milestone 2A's A2: **the bake's alignment tied to the RPE (round two's A10).**
+    `runs.evaluate` aligns each map by its ATE alone and gives its RPE where it has pairs, so a
+    run whose reference has no pair a frame period apart is placed, its RPE null.
   - **One staging helper (round two's A14).** `tum.staged` serves every import; the bake
     (`.baking`) and the lens profiles' fetch (`.fetching`, in `lenses`, below `tum`) each write
     the same mechanism out again. One neutral helper at eval's bottom layer, named by suffix.

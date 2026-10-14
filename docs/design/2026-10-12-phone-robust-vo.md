@@ -118,13 +118,20 @@ same way, its results kept outside the repo. Results on the public set go in a n
 2. **The run format, version 4:** each frame's diagnostic names its map; `pose_maps.npy`,
    `keyframe_maps.npy` and `point_maps.npy` give each pose's, keyframe's and point's map; a
    reset map's keyframes and points are removed as `reset`. Scores per map (each map its own
-   alignment) and the share of the sequence tracked across all.
-3. **The bake and the viewer:** a backend's frames shown as segments, one per map, on the
-   timeline; the scene shows the map of the frame shown.
-4. **The worker's summary and the status page:** the segments tracked, for example "tracked
-   2.9-15.9 s and 17.0-27.1 s of your 27.1 s clip".
-5. **Parity:** the gap room, with blank frames that lose the track, holds the three languages
-   to one another across a new map.
+   alignment) and the share of the sequence tracked across all: `runs.evaluate` aligns each map
+   by its ATE alone and gives its RPE where it has pairs (closing A1's deferred A10), and
+   `runs.tracking` gives a segment per map with the losses and the resets.
+3. **The bake and the viewer,** the bundle's version 2: each map moved onto the truth by its own
+   alignment; a backend's frames split by map on the timeline, a reset map's drawn broken; the
+   scene shows the map of the frame shown, or the last before it, the truth only while that
+   map is placed on it.
+4. **The worker's summary and the status page:** the segments tracked, the first 20 of them
+   so that a summary fits the server's 4,096 bytes, for example "Tracked 2.9–15.9 s and
+   17.0–27.1 s of your 27.1 s clip.", the losses and the maps reset.
+5. **Parity:** the lost room, the room with `lost_frames` frames blanked from frame 12, run with
+   its first map reset and with it kept, holds the three languages to one another and to the
+   golden record across a new map. (The gap room, as built, never loses the track.)
+6. **The results** of the test set rerun at seeds 0, 1 and 2, in `docs/notes/test-set.md`.
 
 ## 6. Plan
 
