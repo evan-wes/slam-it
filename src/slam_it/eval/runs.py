@@ -14,16 +14,18 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
 - ``trajectory.txt``: each tracked frame's ``T_world_cam`` in TUM's format, one
   ``timestamp tx ty tz qx qy qz qw`` line per frame, ``#`` comments allowed: what ORB-SLAM and
   the TUM tools write, so other systems' trajectories evaluate the same way. Numbers are
-  written to round-trip exactly.
+  written to round-trip exactly. A run of several maps (below) holds each map's poses in
+  turn, each in its own frame, a ``# map <n>`` line before each map's first: an outside tool
+  must align one map at a time, splitting the file there or by ``pose_maps.npy``.
 - ``keyframes.npy``: the timestamps of every keyframe the run made, by id (the order it made
   them in), ``(K,)`` float64; ``keyframe_poses.npy``: their ``T_world_cam``, ``(K, 4, 4)``, the
   last each had; ``keyframe_lives.npy``: their lives, ``(K, 3)`` int64 (below).
-- ``points.npy``: every point the run made, by id, in the world frame, ``(M, 3)`` float64,
-  where each last was; ``point_lives.npy``: their lives, ``(M, 3)`` int64.
+- ``points.npy``: every point the run made, by id, in its map's world frame, ``(M, 3)``
+  float64, where each last was; ``point_lives.npy``: their lives, ``(M, 3)`` int64.
 - **A life** is three numbers: the frame that made it; the frame that removed it, or -1 if it
   is in the final map; and why it was removed (its index in :data:`REMOVALS`), or -1. Frames
-  are counted by their line in ``diagnostics.jsonl``. The final map is the rows still alive
-  (:meth:`Run.final_points`, :meth:`Run.final_keyframes`).
+  are counted by their line in ``diagnostics.jsonl``. The rows still alive are what the run
+  kept, every kept map's (:meth:`Run.final_points`, :meth:`Run.final_keyframes`).
 - **Maps:** ``pose_maps.npy``, ``keyframe_maps.npy`` and ``point_maps.npy`` give the map each
   tracked frame's pose, each keyframe and each point is in, ``(F,)``, ``(K,)`` and ``(M,)``
   int64, never descending. A run's maps are numbered from 0 in the order they started; each has
@@ -37,11 +39,14 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
   :class:`slam_it.edge.pipeline.Fates` gives them. Streamed as the run goes
   (:class:`FeatureWriter`), and read mapped from disk (:func:`read_features`).
 - ``diagnostics.jsonl``: one JSON object per line, per frame, each with its ``timestamp``;
-  otherwise what the pipeline wants to report (tracked points, state). The edge pipeline's
-  frames also time their steps, in seconds (:data:`STEPS`), which the budget harness judges
-  (:func:`slam_it.eval.budgets.judge`), and say how their stages went
-  (:meth:`slam_it.edge.pipeline.FrameSummary.as_dict`): an object per stage, null where it
-  did not run.
+  otherwise what the pipeline wants to report (tracked points, state). Three keys are read
+  across a run's maps: ``map``, the frame's map or null if it was in none (a run with maps
+  names each of them on a frame, and its maps never descend); ``state``, ``"lost"`` on a frame
+  that lost the track (:func:`tracking` counts them); and ``lost``, that frame's account of the
+  map it closed. The edge pipeline's frames also time their steps, in seconds
+  (:data:`STEPS`), which the budget harness judges (:func:`slam_it.eval.budgets.judge`), and
+  say how their stages went (:meth:`slam_it.edge.pipeline.FrameSummary.as_dict`): an object
+  per stage, null where it did not run.
 
 :func:`write_run` checks everything before it writes, and replaces each file whole (written
 to a temporary sibling, then renamed); :func:`read_run` checks every file's shape;
@@ -158,7 +163,7 @@ class Run:
     keyframe_poses : ndarray of float64, shape (K, 4, 4)
         Their last ``T_world_cam``.
     points : ndarray of float64, shape (M, 3)
-        Every point the run made, by id, where it last was, in the world frame.
+        Every point the run made, by id, where it last was, in its map's world frame.
     settings : dict
         The pipeline's options, as JSON values.
     diagnostics : list of dict
@@ -208,17 +213,18 @@ class Run:
     point_maps: NDArray[np.int64] = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
 
     def final_points(self) -> NDArray[np.float64]:
-        """Return the points still in the final map.
+        """Return the points the run kept: every kept map's, each in its map's frame.
 
         Returns
         -------
         ndarray of float64, shape (P, 3)
-            The rows of :attr:`points` whose life has no end, in id order.
+            The rows of :attr:`points` whose life has no end, in id order; :attr:`point_maps`
+            says whose.
         """
         return self.points[self.point_lives[:, 1] < 0]
 
     def final_keyframes(self) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-        """Return the keyframes still in the final map.
+        """Return the keyframes the run kept: every kept map's, each in its map's frame.
 
         Returns
         -------
@@ -229,6 +235,27 @@ class Run:
         """
         alive = self.keyframe_lives[:, 1] < 0
         return self.keyframe_timestamps[alive], self.keyframe_poses[alive]
+
+    def maps(self) -> NDArray[np.int64]:
+        """Return every map the run started, kept or reset, ascending.
+
+        Returns
+        -------
+        ndarray of int64, shape (N,)
+            The map numbers: every map has a keyframe, its first.
+        """
+        return np.unique(self.keyframe_maps)
+
+    def reset_maps(self) -> NDArray[np.int64]:
+        """Return the maps the run reset, ascending: their keyframes were removed as ``reset``.
+
+        Returns
+        -------
+        ndarray of int64, shape (R,)
+            The map numbers.
+        """
+        reset = self.keyframe_lives[:, 2] == REMOVALS.index("reset")
+        return np.unique(self.keyframe_maps[reset])
 
 
 def _check_process(peak_memory: object, cpus: object, memory_cap: object, prefix: str) -> None:
@@ -283,11 +310,20 @@ def write_trajectory(path: str | Path, timestamps: ArrayLike, poses: ArrayLike) 
     _replace(Path(path), _trajectory_text(times, flat).encode())
 
 
-def _trajectory_text(times: NDArray[np.float64], poses: NDArray[np.float64]) -> str:
-    """Return checked stamped poses as TUM-format lines, each number round-tripping."""
+def _trajectory_text(
+    times: NDArray[np.float64],
+    poses: NDArray[np.float64],
+    maps: NDArray[np.int64] | None = None,
+) -> str:
+    """Return checked stamped poses as TUM-format lines, each number round-tripping.
+
+    With `maps`, the poses' maps, a ``# map <n>`` line comes before each map's first pose.
+    """
     quaternions = so3.to_quaternion(poses[:, :3, :3]) if len(poses) else np.zeros((0, 4))
     lines = ["# timestamp tx ty tz qx qy qz qw"]
-    for t, pose, q in zip(times, poses, quaternions, strict=True):
+    for k, (t, pose, q) in enumerate(zip(times, poses, quaternions, strict=True)):
+        if maps is not None and (k == 0 or maps[k] != maps[k - 1]):
+            lines.append(f"# map {maps[k]}")
         values = [t, *pose[:3, 3], *q]
         lines.append(" ".join(repr(float(v)) for v in values))
     return "\n".join(lines) + "\n"
@@ -347,9 +383,41 @@ def _check_maps(maps: ArrayLike, count: int, name: str) -> NDArray[np.int64]:
         raise InvalidInputError(
             f"{name}: expected int64 ({count},), one per row, got {out.dtype} {out.shape}"
         )
-    if np.any(out < 0) or np.any(np.diff(out) < 0):
-        raise InvalidInputError(f"{name}: maps must be numbers from 0, never descending")
+    bad = np.flatnonzero((out < 0) | (np.diff(out, prepend=0) < 0))
+    if len(bad):
+        row = int(bad[0])
+        after = f", after {out[row - 1]}" if row else ""
+        raise InvalidInputError(
+            f"{name}: maps must be numbers from 0, never descending; row {row} is {out[row]}{after}"
+        )
     return out
+
+
+def _check_frame_maps(
+    diagnostics: list[dict[str, Any]], maps: NDArray[np.int64], name: str
+) -> None:
+    """Check the diagnostics' ``map`` keys against the run's maps (those of its keyframes).
+
+    Each is null or a map number, they never descend, and every map is named on a frame, so its
+    frames can be found. `name` begins each message.
+    """
+    named: list[int] = []
+    for k, entry in enumerate(diagnostics):
+        value = entry.get("map")
+        if value is None:
+            continue
+        if type(value) is not int or value < 0:
+            raise InvalidInputError(
+                f"{name}[{k}]: map: expected a map number or null, got {value!r}"
+            )
+        if named and value < named[-1]:
+            raise InvalidInputError(
+                f"{name}[{k}]: map {value} after map {named[-1]}: maps never descend"
+            )
+        named.append(value)
+    missing = sorted(set(maps.tolist()) - set(named))
+    if missing:
+        raise InvalidInputError(f"{name}: no frame names map {missing[0]}, which has keyframes")
 
 
 def _json(value: Any, name: str) -> str:  # noqa: ANN401 -- a run's free-form JSON values
@@ -426,9 +494,9 @@ def write_run(folder: str | Path, run: Run) -> None:
         If the dataset or sequence is not a string, the mode or backend is unknown, an array
         is malformed (lives and maps one per row, as the module docstring has them), the
         settings or a diagnostic are not JSON (a diagnostic must be an object with a
-        ``timestamp``), or what it records of its program is malformed (a peak memory or
-        memory cap that is not a whole number of bytes, CPUs not ascending), or
-        ``record_features`` is not a bool. Nothing is written then.
+        ``timestamp``, its ``map`` as the module docstring has it), or what it records of its
+        program is malformed (a peak memory or memory cap that is not a whole number of bytes,
+        CPUs not ascending), or ``record_features`` is not a bool. Nothing is written then.
     """
     for name in ("dataset", "sequence"):
         if not isinstance(getattr(run, name), str):
@@ -476,10 +544,11 @@ def write_run(folder: str | Path, run: Run) -> None:
             ("point_maps", len(points)),
         )
     }
+    _check_frame_maps(run.diagnostics, maps["keyframe_maps"], "diagnostics")
     out = Path(folder)
     out.mkdir(parents=True, exist_ok=True)
     _replace(out / "run.json", (json.dumps(info, indent=1) + "\n").encode())
-    _replace(out / "trajectory.txt", _trajectory_text(times, poses).encode())
+    _replace(out / "trajectory.txt", _trajectory_text(times, poses, maps["pose_maps"]).encode())
     _replace(out / "keyframes.npy", _npy(keyframe_times))
     _replace(out / "keyframe_poses.npy", _npy(keyframe_poses))
     _replace(out / "keyframe_lives.npy", _npy(keyframe_lives))
@@ -605,6 +674,7 @@ def read_run(folder: str | Path) -> Run:
             ("point_maps", len(points)),
         )
     }
+    _check_frame_maps(diagnostics, maps["keyframe_maps"], str(root / "diagnostics.jsonl"))
     return Run(
         dataset=info["dataset"],
         sequence=info["sequence"],
@@ -930,7 +1000,6 @@ def tracking(run: Run, times: ArrayLike) -> Tracking:
     for map_id in (int(m) for m in np.unique(maps)):
         times_of = run.timestamps[maps == map_id]
         segments.append(Segment(map_id, len(times_of), since(times_of[0]), since(times_of[-1])))
-    reset = run.keyframe_lives[:, 2] == REMOVALS.index("reset")
     return Tracking(
         frames=len(run.diagnostics),
         tracked=len(run.timestamps),
@@ -938,7 +1007,7 @@ def tracking(run: Run, times: ArrayLike) -> Tracking:
         segments=tuple(segments),
         ran_to=since(ran[-1]) if ran else 0.0,
         losses=sum(entry.get("state") == LOST for entry in run.diagnostics),  # optional
-        resets=len(np.unique(run.keyframe_maps[reset])),
+        resets=len(run.reset_maps()),
     )
 
 

@@ -146,6 +146,24 @@ std::vector<std::vector<double>> trajectory(const fs::path& path) {
   return out;
 }
 
+/// @brief A trajectory file's comment lines, each with the number of poses before it.
+/// @param path The file.
+/// @return Each comment, as "<poses before>: <line>".
+std::vector<std::string> comments(const fs::path& path) {
+  std::ifstream file(path);
+  std::vector<std::string> out;
+  std::string line;
+  std::size_t poses = 0;
+  while (std::getline(file, line)) {
+    if (!line.empty() && line[0] == '#') {
+      out.push_back(std::to_string(poses) + ": " + line);
+    } else if (!line.empty()) {
+      ++poses;
+    }
+  }
+  return out;
+}
+
 /// @brief A JSON-lines file's objects.
 /// @param path The file.
 /// @return The objects.
@@ -197,6 +215,8 @@ void check_golden(int& failures) {
   expect(written == expected, "run.json holds Python's values", failures);
   expect(same_trajectory(trajectory(out / "trajectory.txt"), trajectory(golden / "trajectory.txt")),
          "trajectory.txt holds Python's values", failures);
+  expect(comments(out / "trajectory.txt") == comments(golden / "trajectory.txt"),
+         "trajectory.txt marks each map where Python's does", failures);
   expect(json_lines(out / "diagnostics.jsonl") == json_lines(golden / "diagnostics.jsonl"),
          "diagnostics.jsonl holds Python's values", failures);
   expect(!fs::exists(out / ".run.json.tmp"), "no temporary file is left", failures);

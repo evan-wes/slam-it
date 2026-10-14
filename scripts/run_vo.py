@@ -192,7 +192,7 @@ def record(
     aligned = {} if scored is None else {e.map: e.absolute.alignment for e in scored.maps}
     point_alive = run.point_lives[:, 1] < 0
     keyframe_alive = run.keyframe_lives[:, 1] < 0
-    for map_id in sorted({int(m) for m in run.keyframe_maps}):
+    for map_id in (int(m) for m in run.maps()):
         entity = f"world/run/map_{map_id}"
         if map_id in aligned:
             alignment = aligned[map_id]

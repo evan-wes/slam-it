@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -52,7 +52,10 @@ def _run(n: int = 12) -> runs.Run:
         keyframe_poses=_poses(n)[::4],
         points=np.random.default_rng(1).normal(size=(30, 3)),
         settings={"orb": {"n_features": 1000}, "window": 7},
-        diagnostics=[{"timestamp": float(t), "tracked": 120 + k} for k, t in enumerate(times)],
+        diagnostics=[
+            {"timestamp": float(t), "map": int(k >= n // 2), "tracked": 120 + k}
+            for k, t in enumerate(times)
+        ],
         peak_memory=123_456_789,
         cpus=[4, 5, 6, 7],
         memory_cap=8 * 2**30,
@@ -62,6 +65,11 @@ def _run(n: int = 12) -> runs.Run:
         keyframe_maps=np.array([0, 0, 1], dtype=np.int64),
         point_maps=np.repeat([0, 1], 15).astype(np.int64),
     )
+
+
+def _named(maps: Sequence[object]) -> list[dict[str, Any]]:
+    """Diagnostics naming each frame's map."""
+    return [{"timestamp": 0.05 * k, "map": m} for k, m in enumerate(maps)]
 
 
 def test_round_trip(tmp_path: Path) -> None:
@@ -480,7 +488,7 @@ def test_evaluate_rejects_a_run_whose_times_do_not_ascend() -> None:
         ({"pose_maps": np.zeros(12)}, r"pose_maps: expected int64 \(12,\)"),
         (
             {"keyframe_maps": np.array([0, 1, 0], dtype=np.int64)},
-            "keyframe_maps: maps must be numbers from 0, never descending",
+            "keyframe_maps: maps must be numbers from 0, never descending; row 2 is 0, after 1",
         ),
         (
             {"point_maps": np.full(30, -1, dtype=np.int64)},
@@ -490,6 +498,13 @@ def test_evaluate_rejects_a_run_whose_times_do_not_ascend() -> None:
             {"keyframe_lives": np.array([[0, -1, -1], [4, -1, -1], [12, -1, -1]], dtype=np.int64)},
             "keyframe_lives: a life must start in one of the run's 12 frames",
         ),
+        (
+            {"diagnostics": _named([0] * 6 + [-1] + [1] * 5)},
+            r"diagnostics\[6\]: map: expected a map number or null, got -1",
+        ),
+        ({"diagnostics": _named([0] * 6 + [True] * 6)}, "expected a map number or null"),
+        ({"diagnostics": _named([0] * 6 + [1, 0] + [1] * 4)}, "map 0 after map 1"),
+        ({"diagnostics": _named([0] * 6 + [None] * 6)}, "no frame names map 1"),
     ],
 )
 def test_write_run_checks_everything_before_writing(
@@ -499,6 +514,27 @@ def test_write_run_checks_everything_before_writing(
     with pytest.raises(InvalidInputError, match=message):
         runs.write_run(tmp_path / "run", replace(_run(), **change))
     assert not (tmp_path / "run").exists()
+
+
+def test_a_run_s_trajectory_marks_where_each_map_begins(tmp_path: Path) -> None:
+    """A ``# map <n>`` line comes before each map's first pose; readers skip it as a comment."""
+    run = _run()
+    runs.write_run(tmp_path, run)
+    lines = (tmp_path / "trajectory.txt").read_text().splitlines()
+    assert [k for k, line in enumerate(lines) if line.startswith("# map")] == [1, 8]
+    assert (lines[1], lines[8]) == ("# map 0", "# map 1")
+    times, _ = runs.read_trajectory(tmp_path / "trajectory.txt")
+    np.testing.assert_array_equal(times, run.timestamps)
+
+
+def test_a_run_names_its_maps_and_those_reset() -> None:
+    """``maps`` gives every map started, kept or reset; ``reset_maps`` those reset."""
+    run = _run()
+    assert run.maps().tolist() == [0, 1]
+    assert run.reset_maps().tolist() == []
+    lives = run.keyframe_lives.copy()
+    lives[2] = [8, 11, Removal.RESET]
+    assert replace(run, keyframe_lives=lives).reset_maps().tolist() == [1]
 
 
 def test_write_run_replaces_files_whole(tmp_path: Path) -> None:
@@ -559,6 +595,11 @@ def test_read_run_rejects_unknown_info(tmp_path: Path, edit: object, message: st
         ("run.json", "[]", "expected a JSON object"),
         ("diagnostics.jsonl", '{"timestamp": 1}\n{oops\n', "diagnostics.jsonl:2: not JSON"),
         ("diagnostics.jsonl", "[1]\n", "expected an object with a timestamp"),
+        (
+            "diagnostics.jsonl",
+            "".join(f'{{"timestamp": {k}, "map": 0}}\n' for k in range(12)),
+            "diagnostics.jsonl: no frame names map 1, which has keyframes",
+        ),
         ("points.npy", "not an array", "points.npy: not a readable .npy array"),
         ("points.npy", "", "points.npy: not a readable .npy array"),
         ("run.json", "\udcff", "run.json: not UTF-8 text"),

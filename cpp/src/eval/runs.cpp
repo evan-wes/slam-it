@@ -155,12 +155,17 @@ Result<void> check_stamped(const std::vector<double>& times,
 /// @return Nothing, or `InvalidInput`.
 Result<void> check_maps(const std::vector<std::int64_t>& maps, std::size_t rows, const char* name) {
   if (maps.size() != rows) {
-    return fail(ErrorKind::kInvalidInput, std::string(name) + ": expected one map per row");
+    return fail(ErrorKind::kInvalidInput, std::string(name) + ": expected one map per row, " +
+                                              std::to_string(rows) + ", got " +
+                                              std::to_string(maps.size()));
   }
-  if ((!maps.empty() && maps.front() < 0) ||
-      std::ranges::adjacent_find(maps, std::greater<>()) != maps.end()) {
-    return fail(ErrorKind::kInvalidInput,
-                std::string(name) + ": maps must be numbers from 0, never descending");
+  for (std::size_t row = 0; row < maps.size(); ++row) {
+    if (maps[row] < 0 || (row > 0 && maps[row] < maps[row - 1])) {
+      return fail(ErrorKind::kInvalidInput,
+                  std::string(name) + ": maps must be numbers from 0, never descending; row " +
+                      std::to_string(row) + " is " + std::to_string(maps[row]) +
+                      (row > 0 ? ", after " + std::to_string(maps[row - 1]) : ""));
+    }
   }
   return {};
 }
@@ -255,14 +260,20 @@ Result<void> check(const Run& run) {
   return {};
 }
 
-/// @brief Stamped poses as TUM-format lines, each number round-tripping.
+/// @brief Stamped poses as TUM-format lines, each number round-tripping, a `# map <n>` line
+///        before each map's first pose.
 /// @param times The times.
 /// @param poses The poses.
+/// @param maps Their maps.
 /// @return The text, or the quaternion conversion's error.
 Result<std::string> trajectory_text(const std::vector<double>& times,
-                                    const std::vector<Eigen::Matrix4d>& poses) {
+                                    const std::vector<Eigen::Matrix4d>& poses,
+                                    const std::vector<std::int64_t>& maps) {
   std::string out = "# timestamp tx ty tz qx qy qz qw\n";
   for (std::size_t k = 0; k < times.size(); ++k) {
+    if (k == 0 || maps[k] != maps[k - 1]) {
+      out += "# map " + std::to_string(maps[k]) + "\n";
+    }
     auto q = foundations::so3::to_quaternion(poses[k].topLeftCorner<3, 3>());
     if (!q) {
       return std::unexpected(std::move(q.error()));
@@ -427,7 +438,7 @@ Result<void> write_run(const std::string& folder, const Run& run) {
   if (auto ok = check(run); !ok) {
     return ok;
   }
-  auto trajectory = trajectory_text(run.timestamps, run.poses);
+  auto trajectory = trajectory_text(run.timestamps, run.poses, run.pose_maps);
   if (!trajectory) {
     return std::unexpected(std::move(trajectory.error()));
   }

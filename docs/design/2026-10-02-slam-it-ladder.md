@@ -728,7 +728,10 @@ The data lives outside the repo, in `../datasets/` (that is,
   evaluation and the run viewer: a folder of `run.json` (dataset, sequence, mode, backend,
   settings, and what the program recorded of its process: peak memory, CPUs, memory cap),
   `trajectory.txt` in TUM's format (so other systems' trajectories score the same way), the
-  keyframes and map points as `.npy`, and `diagnostics.jsonl`, one object per frame.
+  keyframes and map points as `.npy`, and `diagnostics.jsonl`, one object per frame. Since
+  milestone 2A's A2 a run may hold several maps, each in its own frame: `pose_maps.npy` and
+  its keyframe and point twins say whose each row is, and `trajectory.txt` marks each map's
+  first pose with a `# map <n>` line, so an outside tool aligns one map at a time.
 - **Map:** depth error against GT depth where it exists; reconstruction accuracy and completeness
   on Replica-style data.
 - **Cost, per budget:** frames per second, per-frame latency (p50/p95), peak memory.

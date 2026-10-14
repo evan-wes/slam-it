@@ -26,7 +26,8 @@ It holds one sequence's runs in one mode, at most one per backend, and the frame
 - A folder per backend, named for it:
 
   - ``records.json``: the run's diagnostics as columns, one value per frame it ran, with
-    ``frame``, the bundle's frame of each;
+    ``frame``, the bundle's frame of each; its ``map`` column, each frame's map or null, is
+    what the page shows a map by;
   - ``poses.npy``: each tracked frame's ``T_world_cam``, its top three rows, ``(T, 3, 4)``
     float32; ``pose_frames.npy``: their frames, and ``pose_maps.npy``: their maps, each
     ``(T,)`` int32;
@@ -239,17 +240,17 @@ def _maps_info(baked: _Baked, frames: NDArray[np.int32]) -> list[dict[str, Any]]
     run, scored = baked.run, baked.scored
     errors = {} if scored is None else {e.map: e for e in scored.maps}
     named = np.array([-1 if d.get("map") is None else d["map"] for d in run.diagnostics])
-    reset = runs.REMOVALS.index("reset")
+    reset = set(run.reset_maps().tolist())
     out = []
-    for map_id in sorted({int(m) for m in run.keyframe_maps}):  # every map has a keyframe
-        at = frames[named == map_id]
+    for map_id in (int(m) for m in run.maps()):
+        at = frames[named == map_id]  # read_run holds every map named on a frame
         error = errors.get(map_id)
         out.append(
             {
                 "id": map_id,
                 "frames": [int(at[0]), int(at[-1]) + 1] if len(at) else [0, 0],
                 "tracked": int(np.count_nonzero(run.pose_maps == map_id)),
-                "reset": bool(np.any(run.keyframe_lives[run.keyframe_maps == map_id, 2] == reset)),
+                "reset": map_id in reset,
                 "score": None if error is None else _score_info(error),
             }
         )

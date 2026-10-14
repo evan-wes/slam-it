@@ -361,13 +361,25 @@ fn check_maps(maps: &[i64], rows: usize, name: &str) -> Result<()> {
     if maps.len() != rows {
         return fail(
             ErrorKind::InvalidInput,
-            format!("{name}: expected one map per row"),
+            format!(
+                "{name}: expected one map per row, {rows}, got {}",
+                maps.len()
+            ),
         );
     }
-    if maps.first().is_some_and(|&first| first < 0) || maps.windows(2).any(|w| w[1] < w[0]) {
+    let bad = (0..maps.len()).find(|&row| maps[row] < 0 || (row > 0 && maps[row] < maps[row - 1]));
+    if let Some(row) = bad {
+        let after = if row > 0 {
+            format!(", after {}", maps[row - 1])
+        } else {
+            String::new()
+        };
         return fail(
             ErrorKind::InvalidInput,
-            format!("{name}: maps must be numbers from 0, never descending"),
+            format!(
+                "{name}: maps must be numbers from 0, never descending; row {row} is {}{after}",
+                maps[row]
+            ),
         );
     }
     Ok(())
@@ -481,6 +493,7 @@ fn check(run: &Run) -> Result<()> {
 ///
 /// * `times` - The times.
 /// * `poses` - The poses.
+/// * `maps` - Their maps: a `# map <n>` line comes before each map's first pose.
 ///
 /// # Returns
 ///
@@ -489,9 +502,14 @@ fn check(run: &Run) -> Result<()> {
 /// # Errors
 ///
 /// The quaternion conversion's error.
-fn trajectory_text(times: &[f64], poses: &[Matrix4<f64>]) -> Result<String> {
+fn trajectory_text(times: &[f64], poses: &[Matrix4<f64>], maps: &[i64]) -> Result<String> {
     let mut out = String::from("# timestamp tx ty tz qx qy qz qw\n");
-    for (t, pose) in times.iter().zip(poses) {
+    for (k, (t, pose)) in times.iter().zip(poses).enumerate() {
+        if k == 0 || maps[k] != maps[k - 1] {
+            out.push_str("# map ");
+            out.push_str(&maps[k].to_string());
+            out.push('\n');
+        }
         let q = so3::to_quaternion(&pose.fixed_view::<3, 3>(0, 0).into_owned())?;
         let values = [
             *t,
@@ -554,7 +572,7 @@ fn replace(path: &Path, data: &[u8]) -> Result<()> {
 /// written.
 pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
     check(run)?;
-    let trajectory = trajectory_text(&run.timestamps, &run.poses)?;
+    let trajectory = trajectory_text(&run.timestamps, &run.poses, &run.pose_maps)?;
     let info: JsonObject = vec![
         ("format".into(), JsonValue::Text(FORMAT.into())),
         ("version".into(), JsonValue::Integer(VERSION)),
@@ -933,6 +951,20 @@ mod tests {
             .collect()
     }
 
+    /// A trajectory file's comment lines, each with the number of poses before it.
+    fn comments(path: &Path) -> Vec<String> {
+        let mut poses = 0;
+        let mut out = Vec::new();
+        for line in std::fs::read_to_string(path).unwrap().lines() {
+            if line.starts_with('#') {
+                out.push(format!("{poses}: {line}"));
+            } else if !line.is_empty() {
+                poses += 1;
+            }
+        }
+        out
+    }
+
     /// A trajectory file's numbers.
     fn trajectory(path: &Path) -> Vec<Vec<f64>> {
         std::fs::read_to_string(path)
@@ -1005,6 +1037,11 @@ mod tests {
         let (got, wanted) = (
             trajectory(&out.join("trajectory.txt")),
             trajectory(&golden.join("trajectory.txt")),
+        );
+        assert_eq!(
+            comments(&out.join("trajectory.txt")),
+            comments(&golden.join("trajectory.txt")),
+            "trajectory.txt marks each map where Python's does"
         );
         assert_eq!(got.len(), wanted.len());
         for (a, b) in got.iter().zip(&wanted) {
