@@ -200,6 +200,41 @@ Result<void> check_lives(const std::vector<Life>& lives, std::size_t rows, std::
   return {};
 }
 
+/// @brief Check the diagnostics' `map` keys against the run's maps (those of its keyframes): each
+///        null or a map number, never descending, and every map named on a frame, so that its
+///        frames can be found (Python's `_check_frame_maps`).
+/// @param run The run.
+/// @return Nothing, or `InvalidInput`.
+Result<void> check_frame_maps(const Run& run) {
+  std::vector<std::int64_t> named;
+  for (std::size_t k = 0; k < run.diagnostics.size(); ++k) {
+    const auto& entry = run.diagnostics[k];
+    const auto found =
+        std::ranges::find_if(entry, [](const auto& item) { return item.first == "map"; });
+    if (found == entry.end() || std::holds_alternative<std::nullptr_t>(found->second)) {
+      continue;
+    }
+    const std::string where = "diagnostics[" + std::to_string(k) + "]";
+    const auto* value = std::get_if<std::int64_t>(&found->second);
+    if (value == nullptr || *value < 0) {
+      return fail(ErrorKind::kInvalidInput, where + ": map: expected a map number or null");
+    }
+    if (!named.empty() && *value < named.back()) {
+      return fail(ErrorKind::kInvalidInput, where + ": map " + std::to_string(*value) +
+                                                " after map " + std::to_string(named.back()) +
+                                                ": maps never descend");
+    }
+    named.push_back(*value);
+  }
+  for (const std::int64_t map : run.keyframe_maps) {  // ascending, as checked
+    if (!std::ranges::binary_search(named, map)) {
+      return fail(ErrorKind::kInvalidInput, "diagnostics: no frame names map " +
+                                                std::to_string(map) + ", which has keyframes");
+    }
+  }
+  return {};
+}
+
 Result<void> check(const Run& run) {
   if (std::ranges::find(kModes, run.mode) == kModes.end()) {
     return fail(ErrorKind::kInvalidInput, "mode: unknown '" + run.mode + "'");
@@ -257,7 +292,7 @@ Result<void> check(const Run& run) {
                                                 "numbers finite");
     }
   }
-  return {};
+  return check_frame_maps(run);
 }
 
 /// @brief Stamped poses as TUM-format lines, each number round-tripping, a `# map <n>` line

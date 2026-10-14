@@ -303,6 +303,20 @@ void check_features(int& failures) {
   }
 }
 
+/// @brief A run with one frame's `map` set.
+/// @param run The run.
+/// @param frame The frame.
+/// @param map Its map.
+/// @return The run.
+runs::Run with_map(runs::Run run, std::size_t frame, const runs::JsonValue& map) {
+  for (auto& [key, value] : run.diagnostics[frame]) {
+    if (key == "map") {
+      value = map;
+    }
+  }
+  return run;
+}
+
 /// @brief Check the refusals: nothing is written.
 /// @param failures Running failure count.
 void check_refusals(int& failures) {
@@ -363,6 +377,21 @@ void check_refusals(int& failures) {
   run.keyframe_maps[0] = -1;
   expect(is_invalid_input(runs::write_run(out.string(), run)), "a negative map is refused",
          failures);
+  // The diagnostics' maps, golden 0, 0, 0, 1, 1, 1 (map 1 has keyframes).
+  expect(
+      is_invalid_input(runs::write_run(out.string(), with_map(golden_run(), 3, std::int64_t{-1}))),
+      "a frame's negative map is refused", failures);
+  expect(is_invalid_input(runs::write_run(out.string(), with_map(golden_run(), 3, true))),
+         "a frame's map that is not a number is refused", failures);
+  expect(
+      is_invalid_input(runs::write_run(out.string(), with_map(golden_run(), 4, std::int64_t{0}))),
+      "frames' maps that descend are refused", failures);
+  run = golden_run();
+  for (const std::size_t frame : {3, 4, 5}) {
+    run = with_map(std::move(run), frame, nullptr);
+  }
+  expect(is_invalid_input(runs::write_run(out.string(), run)),
+         "a map with keyframes that no frame names is refused", failures);
   expect(!fs::exists(out), "nothing is written for a refused run", failures);
   expect(runs::json_number(1.0) == "1.0" && runs::json_number(0.1) == "0.1" &&
              runs::json_number(1e-05) == "1e-05",

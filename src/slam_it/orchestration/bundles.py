@@ -248,7 +248,7 @@ def _maps_info(baked: _Baked, frames: NDArray[np.int32]) -> list[dict[str, Any]]
         out.append(
             {
                 "id": map_id,
-                "frames": [int(at[0]), int(at[-1]) + 1] if len(at) else [0, 0],
+                "frames": [int(at[0]), int(at[-1]) + 1],
                 "tracked": int(np.count_nonzero(run.pose_maps == map_id)),
                 "reset": map_id in reset,
                 "score": None if error is None else _score_info(error),

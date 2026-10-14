@@ -173,7 +173,10 @@ LOST_AT = (12, 31)
 """Where the lost room's two blank stretches begin: ``lost_frames`` of the room's frames from
 each are blanked, so the track is lost on the last of each and the frames after start a new
 map. A stereo or RGB-D run reaches a third map, whose ids follow the first two maps' (review
-panel finding L4); a monocular one starts no map in the frames left after the second."""
+panel finding L4); a monocular one starts no map in the frames left after the second. The
+second stretch cuts a monocular run's map 1, started on frame 28, to 3 tracked frames, where
+it tracked 12 to the room's end with one stretch (finding L10): the room's 40 frames leave no
+later place for it."""
 
 KEPT_OPTIONS = replace(OPTIONS, reset_keyframes=0)
 """The room's settings with every lost map kept: the lost room's lost maps, of a few keyframes

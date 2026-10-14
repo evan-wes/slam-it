@@ -196,9 +196,10 @@ class FeatureWriter {
 ///         and strictly ascending, poses that are not rigid or not one per time, a point that
 ///         is not finite, lives that are not one per point or keyframe or not lives of the
 ///         run's frames, maps that are not one per pose, keyframe or point, or not numbers from
-///         0 never descending, a diagnostic without a `timestamp`, a number JSON cannot hold, a
-///         negative peak memory, CPUs that are empty or not ascending, or a memory cap of 0
-///         (nothing is written then); or a file that cannot be written.
+///         0 never descending, a diagnostic without a `timestamp`, diagnostics whose `map`s are
+///         not null or map numbers never descending, or name no frame of a map with keyframes,
+///         a number JSON cannot hold, a negative peak memory, CPUs that are empty or not ascending,
+///         or a memory cap of 0 (nothing is written then); or a file that cannot be written.
 [[nodiscard]] foundations::Result<void> write_run(const std::string& folder, const Run& run);
 
 }  // namespace slam_it::eval::runs

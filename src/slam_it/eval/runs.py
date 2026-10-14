@@ -167,7 +167,8 @@ class Run:
     settings : dict
         The pipeline's options, as JSON values.
     diagnostics : list of dict
-        One JSON object per frame, each with a ``timestamp``.
+        One JSON object per frame, each with a ``timestamp``, and its ``map`` in a run with maps
+        (the module docstring has the keys read across a run's maps).
     peak_memory : int or None
         The largest resident set of the program that ran it, in bytes; None if unknown.
     cpus : list of int or None
@@ -1118,7 +1119,9 @@ def _score_map(  # noqa: PLR0913 -- a map's poses and truth, its times, how to s
     try:
         absolute = metrics.absolute_error(mine, true, with_scale=monocular)
     except DegenerateError as error:
-        raise DegenerateError(f"map {map_id}: its centres are on a line ({error})") from error
+        raise DegenerateError(
+            f"map {map_id}: its centres, or the truth's, are on a line ({error})"
+        ) from error
     drift = None
     if delta is not None and len(metrics.interval_pairs(times, delta=delta, tolerance=tolerance)):
         drift = metrics.relative_error(

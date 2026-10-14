@@ -484,6 +484,54 @@ fn check(run: &Run) -> Result<()> {
             );
         }
     }
+    check_frame_maps(run)
+}
+
+/// Check the diagnostics' `map` keys against the run's maps (those of its keyframes): each null
+/// or a map number, never descending, and every map named on a frame, so that its frames can be
+/// found (Python's `_check_frame_maps`).
+///
+/// # Arguments
+///
+/// * `run` - The run.
+///
+/// # Errors
+///
+/// `InvalidInput` otherwise.
+fn check_frame_maps(run: &Run) -> Result<()> {
+    let mut named: Vec<i64> = Vec::new();
+    for (k, entry) in run.diagnostics.iter().enumerate() {
+        let value = match entry.iter().find(|(key, _)| key == "map") {
+            None | Some((_, JsonValue::Null)) => continue,
+            Some((_, JsonValue::Integer(map))) if *map >= 0 => *map,
+            Some(_) => {
+                return fail(
+                    ErrorKind::InvalidInput,
+                    format!("diagnostics[{k}]: map: expected a map number or null"),
+                );
+            }
+        };
+        if let Some(&last) = named.last()
+            && value < last
+        {
+            return fail(
+                ErrorKind::InvalidInput,
+                format!("diagnostics[{k}]: map {value} after map {last}: maps never descend"),
+            );
+        }
+        named.push(value);
+    }
+    // The keyframes' maps ascend, as checked.
+    if let Some(map) = run
+        .keyframe_maps
+        .iter()
+        .find(|map| named.binary_search(map).is_err())
+    {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!("diagnostics: no frame names map {map}, which has keyframes"),
+        );
+    }
     Ok(())
 }
 
@@ -567,8 +615,9 @@ fn replace(path: &Path, data: &[u8]) -> Result<()> {
 /// `InvalidInput` for an unknown mode or backend, times that are not finite and strictly
 /// ascending, poses that are not rigid or not one per time, a point that is not finite, lives
 /// or maps that are not one per row or not valid (as `check_lives` and `check_maps` hold
-/// them), a diagnostic without a `timestamp`, a number JSON cannot hold, CPUs that are empty or
-/// not ascending, or a memory cap of 0 (nothing is written then); or a file that cannot be
+/// them), a diagnostic without a `timestamp`, diagnostics whose `map`s are not null or map
+/// numbers never descending, or name no frame of a map with keyframes, a number JSON cannot
+/// hold, CPUs that are empty or not ascending, or a memory cap of 0 (nothing is written then); or a file that cannot be
 /// written.
 pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
     check(run)?;
@@ -1214,7 +1263,35 @@ mod tests {
         descending.point_maps = vec![0, 1, 0, 1, 1];
         let mut negative = golden_run();
         negative.keyframe_maps[0] = -1;
-        for run in [short, early, alive, unknown, fewer, descending, negative] {
+        // The diagnostics' maps, golden 0, 0, 0, 1, 1, 1 (map 1 has keyframes).
+        let with_map = |frames: &[usize], map: &JsonValue| {
+            let mut run = golden_run();
+            for &frame in frames {
+                for (key, value) in &mut run.diagnostics[frame] {
+                    if key == "map" {
+                        *value = map.clone();
+                    }
+                }
+            }
+            run
+        };
+        let frame_negative = with_map(&[3], &JsonValue::Integer(-1));
+        let frame_bool = with_map(&[3], &JsonValue::Bool(true));
+        let frame_descending = with_map(&[4], &JsonValue::Integer(0));
+        let unnamed = with_map(&[3, 4, 5], &JsonValue::Null);
+        for run in [
+            short,
+            early,
+            alive,
+            unknown,
+            fewer,
+            descending,
+            negative,
+            frame_negative,
+            frame_bool,
+            frame_descending,
+            unnamed,
+        ] {
             assert_eq!(
                 write_run(&out, &run).unwrap_err().kind,
                 ErrorKind::InvalidInput

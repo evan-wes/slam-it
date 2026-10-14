@@ -177,8 +177,8 @@ def test_associate_is_tums_greedy_pairing() -> None:
         (lambda t: metrics.relative_error(t, t, _times(10), delta=0.0), InvalidInputError, "delta"),
         (
             lambda t: metrics.relative_error(t, t, _times(10), delta=PERIOD * len(t)),
-            InvalidInputError,
-            "no pose has another",
+            DegenerateError,
+            r"no pose has another 1\.0 s \(\+-0\.0[45]\d* s\) later",  # the tolerance named
         ),
         (
             lambda t: metrics.relative_error(t, t, _times(10), delta=PERIOD, scale=0.0),

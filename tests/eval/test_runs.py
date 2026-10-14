@@ -392,7 +392,7 @@ def test_a_map_too_short_or_straight_to_align_is_unscored() -> None:
     with pytest.raises(DegenerateError, match="no map can be aligned: map 1: 2 frames matched"):
         runs.evaluate_absolute(lone, times, truth)
     line = replace(run, timestamps=times[40:], poses=straight[40:], pose_maps=maps[40:])
-    with pytest.raises(DegenerateError, match="map 3: its centres are on a line"):
+    with pytest.raises(DegenerateError, match="map 3: its centres, or the truth's, are on a line"):
         runs.evaluate(line, times, truth)
 
 

@@ -34,7 +34,7 @@ from numpy.typing import ArrayLike, NDArray
 from slam_it.eval import timestamps
 from slam_it.foundations import alignment, se3, so3
 from slam_it.foundations.arrays import as_batch, as_number
-from slam_it.foundations.errors import InvalidInputError
+from slam_it.foundations.errors import DegenerateError, InvalidInputError
 
 
 @dataclass(frozen=True)
@@ -187,6 +187,13 @@ def interval_pairs(
         If `times` has fewer than two instants or does not ascend strictly, or `delta` or
         `tolerance` is out of range.
     """
+    return _pairing(times, delta, tolerance)[0]
+
+
+def _pairing(
+    times: ArrayLike, delta: float, tolerance: float | None
+) -> tuple[NDArray[np.int64], float, float]:
+    """Return :func:`interval_pairs`' pairs, with the interval and the tolerance it used."""
     stamps = timestamps.as_times(times, "times")
     if len(stamps) < 2:  # an interval needs two poses
         raise InvalidInputError(f"times: expected at least 2, got {len(stamps)}")
@@ -202,7 +209,7 @@ def interval_pairs(
     first = np.flatnonzero(
         (np.abs(stamps[later] - targets) <= window) & (later > np.arange(len(stamps)))
     )
-    return np.column_stack([first, later[first]]).astype(np.int64)
+    return np.column_stack([first, later[first]]).astype(np.int64), interval, window
 
 
 def relative_error(  # noqa: PLR0913 -- two trajectories, their times, the interval
@@ -240,9 +247,10 @@ def relative_error(  # noqa: PLR0913 -- two trajectories, their times, the inter
     ------
     slam_it.foundations.errors.InvalidInputError
         If the trajectories are not equal-length batches of rigid transforms, `times` does
-        not ascend strictly or differs in length, `delta`, `tolerance` or `scale` is out of
-        range, or no pose has another `delta` seconds later (:func:`interval_pairs` finds
-        none).
+        not ascend strictly or differs in length, or `delta`, `tolerance` or `scale` is out of
+        range.
+    slam_it.foundations.errors.DegenerateError
+        If no pose has another `delta` seconds later (:func:`interval_pairs` finds none).
     """
     est, tru = _as_trajectories(estimate, truth)
     stamps = timestamps.as_times(times, "times")
@@ -250,12 +258,12 @@ def relative_error(  # noqa: PLR0913 -- two trajectories, their times, the inter
         raise InvalidInputError(
             f"times: expected one per pose and at least 2, got {len(stamps)} for {len(est)}"
         )
-    pairs = interval_pairs(stamps, delta=delta, tolerance=tolerance)
+    pairs, interval, window = _pairing(stamps, delta, tolerance)
     factor = as_number(scale, "scale")
     if not (math.isfinite(factor) and factor > 0.0):
         raise InvalidInputError(f"scale: must be positive and finite, got {factor}")
-    if len(pairs) == 0:
-        raise InvalidInputError(f"no pose has another {delta} s later, within the tolerance")
+    if len(pairs) == 0:  # too few poses for the interval: the data's, not the call's
+        raise DegenerateError(f"no pose has another {interval} s (+-{window} s) later")
     first, second = pairs[:, 0], pairs[:, 1]
     moved = se3.compose(se3.inverse(est[first]), est[second])
     moved[:, :3, 3] *= factor
@@ -269,7 +277,7 @@ def relative_error(  # noqa: PLR0913 -- two trajectories, their times, the inter
         rotation=rotation,
         translation_rmse=_rms(translation),
         rotation_rmse=_rms(rotation),
-        delta=float(delta),
+        delta=interval,
     )
 
 
