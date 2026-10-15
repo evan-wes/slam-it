@@ -484,6 +484,7 @@ pub fn initialize_monocular(
         &twoview::Options {
             focal: camera.focal(),
             seed: options.seed,
+            max_iterations: i64::try_from(options.init_ransac_iterations).unwrap_or(i64::MAX),
             ..twoview::Options::default()
         },
     ) {

@@ -164,6 +164,8 @@ struct Options {
   std::int64_t ba_min_keyframes{3};
   /// @brief The monocular map's first bundle adjustment's iterations.
   std::int64_t init_ba_iterations{20};
+  /// @brief The most samples a monocular start's two-view RANSAC draws, per model.
+  std::int64_t init_ransac_iterations{200};
   /// @brief A new point found in less than this fraction of its views is culled.
   double found_ratio{0.25};
   /// @brief A point is culled on evidence until this many keyframes after its creation.
@@ -199,7 +201,7 @@ using IntegerOption = std::pair<const char*, std::int64_t Options::*>;
 using RealOption = std::pair<const char*, double Options::*>;
 
 /// @brief `Options`' integer fields, by their Python names.
-inline constexpr std::array<IntegerOption, 42> kIntegerOptions{{
+inline constexpr std::array<IntegerOption, 43> kIntegerOptions{{
     {"n_features", &Options::n_features},
     {"levels", &Options::levels},
     {"fast_threshold", &Options::fast_threshold},
@@ -242,6 +244,7 @@ inline constexpr std::array<IntegerOption, 42> kIntegerOptions{{
     {"recent_point_keyframes", &Options::recent_point_keyframes},
     {"point_cull_age", &Options::point_cull_age},
     {"init_ba_iterations", &Options::init_ba_iterations},
+    {"init_ransac_iterations", &Options::init_ransac_iterations},
 }};
 
 /// @brief `Options`' real fields, by their Python names.

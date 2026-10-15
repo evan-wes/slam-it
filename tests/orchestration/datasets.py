@@ -156,6 +156,7 @@ MOVED_OPTIONS = replace(
     recent_point_keyframes=4,
     point_cull_age=3,
     init_ba_iterations=15,
+    init_ransac_iterations=150,
     init_parallax_cos=0.99995,
     relocalize_ratio=0.8,
     recovery_window_frames=3,

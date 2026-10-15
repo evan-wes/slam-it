@@ -169,6 +169,8 @@ pub struct Options {
     pub ba_min_keyframes: usize,
     /// The monocular map's first bundle adjustment's iterations.
     pub init_ba_iterations: usize,
+    /// The most samples a monocular start's two-view RANSAC draws, per model.
+    pub init_ransac_iterations: usize,
     /// A new point found in less than this fraction of its views is culled.
     pub found_ratio: f64,
     /// A point is culled on evidence until this many keyframes after its creation.
@@ -264,6 +266,7 @@ impl Default for Options {
             ba_refine_iterations: 10,
             ba_min_keyframes: 3,
             init_ba_iterations: 20,
+            init_ransac_iterations: 200,
             found_ratio: 0.25,
             recent_point_keyframes: 3,
             point_cull_age: 2,
@@ -436,6 +439,7 @@ named_settings!(
     recent_point_keyframes: Integer,
     point_cull_age: Integer,
     init_ba_iterations: Integer,
+    init_ransac_iterations: Integer,
     relocalize_ratio: Real,
     pnp_min_inliers: Integer, lost_frames: Integer, reset_keyframes: Integer, seed: Integer,
 );
@@ -516,6 +520,7 @@ pub fn check_options(options: &Options) -> Result<()> {
         ("recent_point_keyframes", options.recent_point_keyframes),
         ("point_cull_age", options.point_cull_age),
         ("init_ba_iterations", options.init_ba_iterations),
+        ("init_ransac_iterations", options.init_ransac_iterations),
     ] {
         check_range(name, value, 1, MAX_SETTING)?;
     }
@@ -578,7 +583,7 @@ mod tests {
     fn settings_by_name() {
         let mut options = Options::default();
         let settings = options.settings();
-        assert_eq!(settings.len(), 76);
+        assert_eq!(settings.len(), 77);
         assert_eq!(settings[0], ("n_features", Setting::Integer(1000)));
         assert_eq!(settings[2], ("scale_factor", Setting::Real(1.2)));
         options.set("window", Setting::Integer(7)).unwrap();

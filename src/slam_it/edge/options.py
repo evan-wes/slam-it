@@ -194,6 +194,10 @@ class Options:
     init_ba_iterations : int
         The monocular map's first bundle adjustment's iterations (``GlobalBundleAdjustemnt(map,
         20)``).
+    init_ransac_iterations : int
+        The most samples a monocular start's two-view RANSAC draws, per model (ORB-SLAM's
+        ``TwoViewReconstruction``, 200): the start stops sooner once confident, and a pair that
+        is not one costs at most this many.
     found_ratio : float
         A new point is culled when found in less than this fraction of the frames that should
         have seen it (0.25).
@@ -295,6 +299,7 @@ class Options:
     ba_refine_iterations: int = 10
     ba_min_keyframes: int = 3
     init_ba_iterations: int = 20
+    init_ransac_iterations: int = 200
     found_ratio: float = 0.25
     recent_point_keyframes: int = 3
     point_cull_age: int = 2
