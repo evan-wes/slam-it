@@ -133,6 +133,12 @@ BLUR_KERNEL = (287, 537, 781, 886, 781, 537, 287)
 DESCRIPTOR_BYTES = 32
 """A descriptor's length: 256 bits."""
 
+DESCRIPTOR_VERSION = 1
+"""This ORB descriptor's version, raised whenever what a descriptor holds changes: its patch,
+smoothing, test pattern or rotation. A vocabulary records the version it was trained on, and one
+trained on another is refused (:mod:`slam_it.foundations.vocabulary`), its words meaning nothing
+for these descriptors. A test pins the constants it stands for."""
+
 # rBRIEF's learned test pairs (x1, y1, x2, y2): OpenCV's bit_pattern_31_
 # (modules/features2d/src/orb.cpp), learned by Ethan Rublee, Vincent Rabaud and Gary Bradski
 # for the ORB paper. Reproduced under OpenCV's licence for that file:

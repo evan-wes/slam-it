@@ -1,0 +1,162 @@
+{
+ "_about": "Vocabularies kept outside the repository (too large for it), each rebuilt exactly by scripts/train_vocabulary.py with the command given: the rebuild's arrays must have these SHA-256. docs/design/2026-10-14-online-slam.md, section 3.",
+ "vocabularies": {
+  "arkitscenes-6": {
+   "k": 10,
+   "levels": 6,
+   "words": 966141,
+   "info": {
+    "images": 9969,
+    "descriptors": 9160968,
+    "seed": 0,
+    "name": "arkitscenes-training",
+    "sources": [
+     "zips:arkitscenes-train"
+    ],
+    "drawn_from": 45079
+   },
+   "sha256": {
+    "descriptors": "43a68a1b7d3837454a28c26c5caf2df68810d582675ae7dd67e7a0581496735e",
+    "parents": "c2d86ce371455dfa18ea75bcfaf54477e9f5eb84f630ef8e7a1f867100cd84dc",
+    "children": "d07f4813a3cbd48e03ff17363a93dd14af607649df322aa41790db3d07aefd06",
+    "words": "18a794f640038934ebd61a4b883b973afdf8c0db944995f08a0a1b7962b06acb",
+    "weights": "d8d03ce888d71c7cfe62b2542862acdc78a3ba9da2ec0fadc3b8ac4d64b54200"
+   },
+   "rebuild": "python scripts/train_vocabulary.py OUT --name arkitscenes-training --source zips:ARKITSCENES_TRAIN --levels 6"
+  },
+  "bovisa-6": {
+   "k": 10,
+   "levels": 6,
+   "words": 970275,
+   "info": {
+    "images": 10000,
+    "descriptors": 9280146,
+    "seed": 0,
+    "name": "bovisa-2008-09-01",
+    "sources": [
+     "tar:Bovisa_2008-09-01-FRONTAL.tar"
+    ],
+    "drawn_from": 65047
+   },
+   "sha256": {
+    "descriptors": "83724f3c6d1ad1af158504f0e7984ae4002c6885864be2479e48169d644e44dd",
+    "parents": "923fff08c7439bf063463ca000fd21ec31d9c437a04716c433d99b69b4947718",
+    "children": "472405fb4e4c47cc760cc34225a63f55d92333839e9a1102ad6e18ffccd7840f",
+    "words": "770a58df4efa6e3e8407874280ab529e7bb70db3f8ca80d175e93eef2e39e082",
+    "weights": "0dcf27b2d1b090114dc98ad25050075b04e15938eb2440e61d4877145e494820"
+   },
+   "rebuild": "python scripts/train_vocabulary.py OUT --name bovisa-2008-09-01 --source tar:BOVISA/Bovisa_2008-09-01-FRONTAL.tar --levels 6"
+  }
+ },
+ "training_sets": {
+  "arkitscenes-training": {
+   "rule": "ARKitScenes' raw_train_val_splits.csv: the Training fold's visits whose captures are all in it (one visit has captures in both folds; 8 captures have no visit), shuffled with random.Random(0); of the first 20, each visit's lowest video id; each capture's vga_wide.zip from docs-assets.developer.apple.com/ml-research/datasets/arkitscenes/v1/raw/Training/<video_id>/.",
+   "captures": [
+    {
+     "visit": "471656",
+     "video": "47204585",
+     "vga_wide_bytes": 648449703
+    },
+    {
+     "visit": "434902",
+     "video": "42899260",
+     "vga_wide_bytes": 643563260
+    },
+    {
+     "visit": "470348",
+     "video": "47331133",
+     "vga_wide_bytes": 695456795
+    },
+    {
+     "visit": "482850",
+     "video": "48018013",
+     "vga_wide_bytes": 295699429
+    },
+    {
+     "visit": "466964",
+     "video": "45261241",
+     "vga_wide_bytes": 461153454
+    },
+    {
+     "visit": "423325",
+     "video": "42897720",
+     "vga_wide_bytes": 973788695
+    },
+    {
+     "visit": "470497",
+     "video": "47331396",
+     "vga_wide_bytes": 337690390
+    },
+    {
+     "visit": "467115",
+     "video": "47333308",
+     "vga_wide_bytes": 1653096347
+    },
+    {
+     "visit": "471649",
+     "video": "47332241",
+     "vga_wide_bytes": 775810906
+    },
+    {
+     "visit": "483091",
+     "video": "48018121",
+     "vga_wide_bytes": 133876747
+    },
+    {
+     "visit": "382298",
+     "video": "41125867",
+     "vga_wide_bytes": 556339912
+    },
+    {
+     "visit": "471404",
+     "video": "47331201",
+     "vga_wide_bytes": 655456930
+    },
+    {
+     "visit": "469835",
+     "video": "47334130",
+     "vga_wide_bytes": 541051039
+    },
+    {
+     "visit": "470053",
+     "video": "47115276",
+     "vga_wide_bytes": 915277256
+    },
+    {
+     "visit": "464242",
+     "video": "44358561",
+     "vga_wide_bytes": 763777547
+    },
+    {
+     "visit": "466869",
+     "video": "45261378",
+     "vga_wide_bytes": 2187534907
+    },
+    {
+     "visit": "437692",
+     "video": "43828476",
+     "vga_wide_bytes": 1603529383
+    },
+    {
+     "visit": "382434",
+     "video": "41159664",
+     "vga_wide_bytes": 1154228184
+    },
+    {
+     "visit": "437740",
+     "video": "43895863",
+     "vga_wide_bytes": 2012981827
+    },
+    {
+     "visit": "472591",
+     "video": "47332618",
+     "vga_wide_bytes": 585555277
+    }
+   ]
+  },
+  "bovisa-2008-09-01": {
+   "rule": "Rawseeds' Bovisa_2008-09-01-FRONTAL.tar (AIRLab's Dropbox; its torrent's SHA-1 piece hashes match), 65,047 PNG frames of 320x240.",
+   "bytes": 9338634240
+  }
+ }
+}

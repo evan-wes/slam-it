@@ -1,0 +1,583 @@
+"""Place recognition's vocabulary: a tree of binary words over ORB descriptors (DBoW2's).
+
+A vocabulary quantises a descriptor to a word, so that two images compare as two histograms of
+words rather than descriptor by descriptor (Gálvez-López and Tardós, "Bags of Binary Words for
+Fast Place Recognition in Image Sequences", T-RO 2012; ORB-SLAM's place recognition):
+
+- **The tree** is built by hierarchical k-means on descriptors from training images
+  (:func:`train`): the root's descriptors split into ``k`` clusters, each cluster's into ``k``
+  again, ``levels`` deep. Distances are Hamming distances; a cluster's centre is the bitwise
+  majority of its descriptors (a tie sets the bit, as DBoW2's ``FORB::meanValue``); clusters are
+  seeded by k-means++ from a fixed seed, and refined until no descriptor changes cluster (or
+  :data:`MAX_KMEANS_ROUNDS`). A node with ``k`` descriptors or fewer has one child per
+  descriptor. The leaves are the words.
+- **A descriptor's word:** from the root, to the nearest child at each level (the lowest index
+  among equals), to a leaf (:func:`quantize`). Its node at :data:`DIRECT_LEVEL` groups it with
+  the features :func:`slam_it.edge` matches against it (DBoW2's direct index; ORB-SLAM keeps the
+  node 4 levels above the leaves of its 6, so level 2).
+- **Weights:** a word's inverse document frequency, ``log(N / N_i)``, ``N`` the training images
+  and ``N_i`` those with the word. An image's vector is each word's count times its weight,
+  normalised to unit L1 norm (:func:`bow`); two vectors score ``1 - |v - w|_1 / 2`` (DBoW2's L1
+  score, :func:`score`): 1 for the same image, 0 for no word in common.
+
+**The files,** a folder (:func:`read`, :func:`write`), read by Python, C++ and Rust:
+``descriptors.npy`` (N, 32) uint8, each node's centre (the root's zeros); ``parents.npy`` (N,)
+int32, -1 for the root; ``children.npy`` (N, 2) int32, each node's first child and child count
+(a node's children are consecutive; a leaf has none); ``words.npy`` (N,) int32, a leaf's word
+(words numbered in node order), -1 for an inner node; ``weights.npy`` (W,) float64, each word's
+weight; and ``vocabulary.json``: the format and its version, k, levels, the descriptor it was
+trained on (:data:`slam_it.foundations.orb.DESCRIPTOR_VERSION`), the training set's name, images
+and descriptors, the seed, and each array's SHA-256. :func:`read` checks every one: a vocabulary
+trained on another descriptor, or whose arrays changed, is refused.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import io
+import json
+from collections import deque
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+from numpy.typing import ArrayLike, NDArray
+
+from slam_it.foundations.arrays import as_count
+from slam_it.foundations.errors import InvalidInputError
+from slam_it.foundations.orb import DESCRIPTOR_BYTES, DESCRIPTOR_VERSION
+
+FORMAT = "slam-it-vocabulary"
+"""``vocabulary.json``'s ``format``."""
+
+VERSION = 1
+"""``vocabulary.json``'s ``version``; a vocabulary of another is refused."""
+
+ARRAYS = ("descriptors", "parents", "children", "words", "weights")
+"""A vocabulary's arrays, each in ``<name>.npy``."""
+
+DIRECT_LEVEL = 2
+"""The tree level whose nodes group a frame's features for matching (DBoW2's direct index)."""
+
+MAX_K = 64
+"""The most children a node may have."""
+
+MAX_LEVELS = 8
+"""The deepest a tree may be."""
+
+MAX_KMEANS_ROUNDS = 100
+"""The most assignment rounds one node's k-means runs (DBoW2 runs until none changes)."""
+
+CHUNK = 1 << 18
+"""Descriptors compared with a node's centres at once, bounding the memory a step takes."""
+
+DEFAULT = Path(__file__).parent / "vocabularies" / "default"
+"""The committed vocabulary, every run's unless it names another: 5 levels of k = 10, trained by
+``scripts/train_vocabulary.py`` on 10,000 frames of 20 ARKitScenes captures from its training
+fold, none from a visit the test set films (``docs/design/2026-10-14-online-slam.md``)."""
+
+
+@dataclass(frozen=True)
+class Vocabulary:
+    """A tree of binary words (the module docstring).
+
+    Attributes
+    ----------
+    k : int
+        The most children a node has.
+    levels : int
+        The deepest a leaf lies (the root is level 0).
+    descriptors : ndarray of uint8, shape (N, DESCRIPTOR_BYTES)
+        Each node's centre.
+    parents : ndarray of int32, shape (N,)
+        Each node's parent; -1 for the root, node 0.
+    children : ndarray of int32, shape (N, 2)
+        Each node's first child and its count; a leaf's count is 0.
+    words : ndarray of int32, shape (N,)
+        Each leaf's word, numbered in node order; -1 for an inner node.
+    weights : ndarray of float64, shape (W,)
+        Each word's weight, its inverse document frequency (0 for a word no training image
+        reached).
+    info : dict
+        What ``vocabulary.json`` records of its making: the training set, its images and
+        descriptors, the seed.
+    """
+
+    k: int
+    levels: int
+    descriptors: NDArray[np.uint8]
+    parents: NDArray[np.int32]
+    children: NDArray[np.int32]
+    words: NDArray[np.int32]
+    weights: NDArray[np.float64]
+    info: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Check the tree's shape.
+
+        Raises
+        ------
+        slam_it.foundations.errors.InvalidInputError
+            If an array has the wrong dtype or shape, the root is not node 0, a child does not
+            name its parent, the children of a node are not consecutive, a node has more than
+            ``k`` children, a leaf lies deeper than ``levels``, or the words are not the leaves
+            numbered in node order with one weight each.
+        """
+        as_count(self.k, "k", 2, MAX_K)
+        as_count(self.levels, "levels", 1, MAX_LEVELS)
+        n = len(self.parents)
+        expected = {
+            "descriptors": (np.uint8, (n, DESCRIPTOR_BYTES)),
+            "parents": (np.int32, (n,)),
+            "children": (np.int32, (n, 2)),
+            "words": (np.int32, (n,)),
+        }
+        for name, (dtype, shape) in expected.items():
+            array = getattr(self, name)
+            if not isinstance(array, np.ndarray) or array.dtype != dtype or array.shape != shape:
+                raise InvalidInputError(f"{name}: expected {np.dtype(dtype)} {shape}")
+        if self.weights.dtype != np.float64 or self.weights.ndim != 1:
+            raise InvalidInputError("weights: expected float64 (W,)")
+        if n == 0 or self.parents[0] != -1:
+            raise InvalidInputError("parents: the root must be node 0, its parent -1")
+        if np.any(self.parents[1:] < 0) or np.any(self.parents[1:] >= np.arange(1, n)):
+            raise InvalidInputError("parents: each node's parent must come before it")
+        first, count = self.children[:, 0].astype(np.int64), self.children[:, 1].astype(np.int64)
+        if np.any(count < 0) or np.any(count > self.k):
+            raise InvalidInputError(f"children: a node has from 0 to k ({self.k}) children")
+        inner = np.flatnonzero(count > 0)
+        if (
+            count.sum() != n - 1
+            or np.any(first[inner] < 1)
+            or np.any(first[inner] + count[inner] > n)
+        ):
+            raise InvalidInputError("children: expected every node but the root once, in range")
+        starts = np.cumsum(count[inner]) - count[inner]
+        slots = np.repeat(first[inner], count[inner]) + (
+            np.arange(n - 1) - np.repeat(starts, count[inner])
+        )
+        owners = np.repeat(inner, count[inner])
+        if not (
+            np.array_equal(np.sort(slots), np.arange(1, n))
+            and np.array_equal(self.parents[slots], owners)
+        ):
+            raise InvalidInputError("children: a node's children must be consecutive and name it")
+        if np.any(_depths(self.parents)[count == 0] > self.levels):
+            raise InvalidInputError(f"levels: a leaf lies deeper than {self.levels}")
+        leaves = np.flatnonzero(count == 0)
+        if not (
+            np.array_equal(self.words[leaves], np.arange(len(leaves)))
+            and np.all(self.words[inner] == -1)
+            and len(self.weights) == len(leaves)
+        ):
+            raise InvalidInputError(
+                "words: expected the leaves numbered in node order, one weight each"
+            )
+        if not np.all(np.isfinite(self.weights) & (self.weights >= 0.0)):
+            raise InvalidInputError("weights: expected non-negative finite numbers")
+
+    @property
+    def size(self) -> int:
+        """The number of words."""
+        return len(self.weights)
+
+
+def _depths(parents: NDArray[np.int32]) -> NDArray[np.int64]:
+    """Each node's level, the root's 0 (each parent before its children)."""
+    depth = np.zeros(len(parents), dtype=np.int64)
+    for _ in range(MAX_LEVELS + 1):  # a level a pass
+        depth[1:] = depth[parents[1:]] + 1
+    return depth
+
+
+def _hamming(descriptors: NDArray[np.uint8], centres: NDArray[np.uint8]) -> NDArray[np.int64]:
+    """Each descriptor's Hamming distance to each centre: (n, m)."""
+    xor = np.bitwise_xor(descriptors[:, None, :], centres[None, :, :])
+    out: NDArray[np.int64] = np.bitwise_count(xor).sum(axis=2, dtype=np.int64)
+    return out
+
+
+def _as_descriptors(descriptors: ArrayLike, name: str = "descriptors") -> NDArray[np.uint8]:
+    """Check descriptors: uint8 rows of DESCRIPTOR_BYTES."""
+    out = np.asarray(descriptors)
+    if out.dtype != np.uint8 or out.ndim != 2 or out.shape[1] != DESCRIPTOR_BYTES:
+        raise InvalidInputError(f"{name}: expected uint8 (n, {DESCRIPTOR_BYTES})")
+    return out
+
+
+def quantize(
+    vocabulary: Vocabulary, descriptors: ArrayLike
+) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
+    """Return each descriptor's word, and its node at :data:`DIRECT_LEVEL`.
+
+    Parameters
+    ----------
+    vocabulary : Vocabulary
+        The vocabulary.
+    descriptors : array_like of uint8, shape (n, DESCRIPTOR_BYTES)
+        The descriptors.
+
+    Returns
+    -------
+    words : ndarray of int64, shape (n,)
+        Each one's word: the leaf reached from the root, at each level to the nearest child by
+        Hamming distance (the lowest index among equals).
+    nodes : ndarray of int64, shape (n,)
+        Its node at :data:`DIRECT_LEVEL`, or its leaf if that lies higher.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the descriptors are not uint8 rows of DESCRIPTOR_BYTES.
+    """
+    desc = _as_descriptors(descriptors)
+    first = vocabulary.children[:, 0].astype(np.int64)
+    count = vocabulary.children[:, 1].astype(np.int64)
+    current = np.zeros(len(desc), dtype=np.int64)
+    direct = current.copy()
+    offsets = np.arange(vocabulary.k)
+    for level in range(1, vocabulary.levels + 1):
+        for lo in range(0, len(desc), CHUNK):
+            at = current[lo : lo + CHUNK]
+            moving = count[at] > 0
+            if not np.any(moving):
+                continue
+            nodes = at[moving]
+            candidates = first[nodes, None] + offsets[None, :]
+            valid = offsets[None, :] < count[nodes, None]
+            centres = vocabulary.descriptors[np.where(valid, candidates, 0)]
+            xor = np.bitwise_xor(desc[lo : lo + CHUNK][moving][:, None, :], centres)
+            distance = np.bitwise_count(xor).sum(axis=2, dtype=np.int64)
+            distance[~valid] = np.iinfo(np.int64).max
+            chosen = candidates[np.arange(len(nodes)), np.argmin(distance, axis=1)]
+            at[moving] = chosen
+        if level == DIRECT_LEVEL:  # a leaf reached higher stays where it is
+            direct = current.copy()
+    if vocabulary.levels < DIRECT_LEVEL:
+        direct = current.copy()
+    return vocabulary.words[current].astype(np.int64), direct
+
+
+def bow(vocabulary: Vocabulary, words: ArrayLike) -> tuple[NDArray[np.int64], NDArray[np.float64]]:
+    """Return an image's word vector: each word's count times its weight, L1-normalised.
+
+    Parameters
+    ----------
+    vocabulary : Vocabulary
+        The vocabulary.
+    words : array_like of int, shape (n,)
+        The image's features' words (:func:`quantize`).
+
+    Returns
+    -------
+    ids : ndarray of int64, shape (m,)
+        The words with a weight above 0, ascending.
+    values : ndarray of float64, shape (m,)
+        Their values, summing to 1 (none if no word has a weight: an empty vector).
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If a word is not one of the vocabulary's.
+    """
+    found = np.asarray(words)
+    if found.ndim != 1 or (found.size and not np.issubdtype(found.dtype, np.integer)):
+        raise InvalidInputError("words: expected integers (n,)")
+    if found.size and (found.min() < 0 or found.max() >= vocabulary.size):
+        raise InvalidInputError(
+            f"words: expected words of the vocabulary, 0 to {vocabulary.size - 1}"
+        )
+    ids, counts = np.unique(found.astype(np.int64), return_counts=True)
+    values = counts * vocabulary.weights[ids]
+    kept = values > 0.0
+    ids, values = ids[kept], values[kept]
+    total = 0.0
+    for value in values.tolist():  # in word order, as the compiled backends add them
+        total += value
+    return ids, values / total if total > 0.0 else values
+
+
+def score(first: tuple[ArrayLike, ArrayLike], second: tuple[ArrayLike, ArrayLike]) -> float:
+    """Return two word vectors' L1 score, ``1 - |v - w|_1 / 2`` (DBoW2's ``L1Scoring``).
+
+    Computed over the words the two share, ascending, as ``(|v| + |w| - |v - w|) / 2`` summed,
+    so that the three languages add the same terms in the same order.
+
+    Parameters
+    ----------
+    first, second : tuple of array_like
+        Two vectors from :func:`bow`: their words (ascending) and values.
+
+    Returns
+    -------
+    float
+        From 0 (no word shared) to 1 (the same vector).
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If a vector's words and values differ in length, or its words do not ascend.
+    """
+    (a_ids, a_values), (b_ids, b_values) = (_as_vector(*first), _as_vector(*second))
+    _, ia, ib = np.intersect1d(a_ids, b_ids, assume_unique=True, return_indices=True)
+    total = 0.0
+    for v, w in zip(a_values[ia].tolist(), b_values[ib].tolist(), strict=True):
+        total += abs(v) + abs(w) - abs(v - w)
+    return total / 2.0
+
+
+def _as_vector(ids: ArrayLike, values: ArrayLike) -> tuple[NDArray[np.int64], NDArray[np.float64]]:
+    """Check a word vector: ascending words, one finite value each."""
+    i, v = np.asarray(ids), np.asarray(values, dtype=np.float64)
+    if i.ndim != 1 or v.shape != i.shape or (i.size and not np.issubdtype(i.dtype, np.integer)):
+        raise InvalidInputError("vector: expected (m,) words and (m,) values")
+    if np.any(np.diff(i) <= 0) or not np.all(np.isfinite(v)):
+        raise InvalidInputError("vector: expected ascending words and finite values")
+    return i.astype(np.int64), v
+
+
+def _majority(descriptors: NDArray[np.uint8]) -> NDArray[np.uint8]:
+    """Return the bitwise majority of descriptors, a tie setting the bit (DBoW2's ``meanValue``)."""
+    ones = np.zeros(8 * DESCRIPTOR_BYTES, dtype=np.int64)
+    for lo in range(0, len(descriptors), CHUNK):
+        ones += np.unpackbits(descriptors[lo : lo + CHUNK], axis=1).sum(axis=0, dtype=np.int64)
+    return np.packbits(2 * ones >= len(descriptors))
+
+
+def _assign(descriptors: NDArray[np.uint8], centres: NDArray[np.uint8]) -> NDArray[np.int64]:
+    """Each descriptor's nearest centre (the lowest index among equals)."""
+    out = np.empty(len(descriptors), dtype=np.int64)
+    for lo in range(0, len(descriptors), CHUNK):
+        out[lo : lo + CHUNK] = np.argmin(_hamming(descriptors[lo : lo + CHUNK], centres), axis=1)
+    return out
+
+
+def _seeds(descriptors: NDArray[np.uint8], k: int, rng: np.random.Generator) -> NDArray[np.uint8]:
+    """k-means++ centres as DBoW2 picks them: each next with probability its distance."""
+    centres = [descriptors[rng.integers(len(descriptors))]]
+    nearest = _assign_distance(descriptors, centres[0])
+    while len(centres) < k:
+        total = float(nearest.sum())
+        if total <= 0.0:  # every descriptor is a centre already
+            break
+        cut = 0.0
+        while cut == 0.0:  # DBoW2 draws again on a zero cut
+            cut = rng.uniform(0.0, total)
+        index = min(int(np.searchsorted(np.cumsum(nearest), cut, side="left")), len(nearest) - 1)
+        centres.append(descriptors[index])
+        nearest = np.minimum(nearest, _assign_distance(descriptors, centres[-1]))
+    return np.stack(centres)
+
+
+def _assign_distance(
+    descriptors: NDArray[np.uint8], centre: NDArray[np.uint8]
+) -> NDArray[np.int64]:
+    """Each descriptor's Hamming distance to one centre."""
+    out: NDArray[np.int64] = np.bitwise_count(np.bitwise_xor(descriptors, centre)).sum(
+        axis=1, dtype=np.int64
+    )
+    return out
+
+
+def _kmeans(
+    descriptors: NDArray[np.uint8], k: int, rng: np.random.Generator
+) -> tuple[NDArray[np.uint8], NDArray[np.int64]]:
+    """Cluster descriptors: centres, and each descriptor's cluster (empty clusters dropped)."""
+    centres = _seeds(descriptors, k, rng)
+    labels = _assign(descriptors, centres)
+    for _ in range(MAX_KMEANS_ROUNDS):
+        for c in range(len(centres)):  # an emptied cluster keeps its centre
+            members = labels == c
+            if np.any(members):
+                centres[c] = _majority(descriptors[members])
+        again = _assign(descriptors, centres)
+        if np.array_equal(again, labels):
+            break
+        labels = again
+    used = np.unique(labels)
+    remap = np.full(len(centres), -1, dtype=np.int64)
+    remap[used] = np.arange(len(used))
+    return centres[used], remap[labels]
+
+
+def train(  # noqa: PLR0913 -- the descriptors, their images, the tree's shape, the seed, a record
+    descriptors: ArrayLike,
+    images: ArrayLike,
+    *,
+    k: int = 10,
+    levels: int = 6,
+    seed: int = 0,
+    info: dict[str, Any] | None = None,
+) -> Vocabulary:
+    """Build a vocabulary by hierarchical k-means (the module docstring).
+
+    Parameters
+    ----------
+    descriptors : array_like of uint8, shape (n, DESCRIPTOR_BYTES)
+        The training images' descriptors.
+    images : array_like of int, shape (n,)
+        The image each came from, for the words' document frequencies.
+    k : int, optional
+        A node's most children (10, DBoW2's and ORB-SLAM's).
+    levels : int, optional
+        The tree's depth (6, ORB-SLAM's; 5 gives a tenth of the words).
+    seed : int, optional
+        The k-means++ seeding's seed: each node draws from its own stream, ``(seed, node)``.
+    info : dict, optional
+        What to record of the training set in ``vocabulary.json``.
+
+    Returns
+    -------
+    Vocabulary
+        The tree, its nodes in breadth-first order, each node's children consecutive.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the descriptors are malformed or empty, `images` is not one non-negative integer per
+        descriptor, or `k` or `levels` is out of range.
+    """
+    desc = _as_descriptors(descriptors)
+    owner = np.asarray(images)
+    if (
+        owner.shape != (len(desc),)
+        or not np.issubdtype(owner.dtype, np.integer)
+        or np.any(owner < 0)
+    ):
+        raise InvalidInputError("images: expected one non-negative integer per descriptor")
+    if len(desc) == 0:
+        raise InvalidInputError("descriptors: expected at least one")
+    k, levels = as_count(k, "k", 2, MAX_K), as_count(levels, "levels", 1, MAX_LEVELS)
+    centres = [np.zeros(DESCRIPTOR_BYTES, dtype=np.uint8)]
+    parents, children = [-1], [[0, 0]]
+    queue = deque([(0, np.arange(len(desc)), 0)])  # (node, its descriptors, its level)
+    while queue:  # breadth first: a node's children are made together, consecutive
+        node, members, level = queue.popleft()
+        if len(members) <= k:  # a child per descriptor (DBoW2)
+            groups = [members[[i]] for i in range(len(members))]
+            child_centres = desc[members]
+        else:
+            rng = np.random.default_rng([seed, node])
+            child_centres, labels = _kmeans(desc[members], k, rng)
+            groups = [members[labels == c] for c in range(len(child_centres))]
+        children[node] = [len(parents), len(groups)]
+        for centre, group in zip(child_centres, groups, strict=True):
+            child = len(parents)
+            centres.append(centre)
+            parents.append(node)
+            children.append([0, 0])
+            if level + 1 < levels and len(group) > 1:
+                queue.append((child, group, level + 1))
+    count = np.array([c[1] for c in children])
+    words = np.full(len(parents), -1, dtype=np.int32)
+    leaves = np.flatnonzero(count == 0)
+    words[leaves] = np.arange(len(leaves), dtype=np.int32)
+    tree = Vocabulary(
+        k, levels, np.stack(centres), np.array(parents, dtype=np.int32),
+        np.array(children, dtype=np.int32), words, np.zeros(len(leaves)),
+    )  # fmt: skip
+    found, _ = quantize(tree, desc)
+    pairs = np.unique(np.column_stack([owner.astype(np.int64), found]), axis=0)
+    seen = np.bincount(pairs[:, 1], minlength=len(leaves))
+    n_images = len(np.unique(owner))
+    weights = np.zeros(len(leaves))
+    weights[seen > 0] = np.log(n_images / seen[seen > 0])
+    record = {"images": n_images, "descriptors": len(desc), "seed": seed, **(info or {})}
+    return Vocabulary(
+        k, levels, tree.descriptors, tree.parents, tree.children, words, weights, record
+    )
+
+
+def _npy(array: NDArray[Any]) -> bytes:
+    """Return an array as the bytes of a ``.npy`` file."""
+    buffer = io.BytesIO()
+    np.save(buffer, array, allow_pickle=False)
+    return buffer.getvalue()
+
+
+def write(folder: str | Path, vocabulary: Vocabulary) -> None:
+    """Write a vocabulary's folder (the module docstring), each file whole.
+
+    Parameters
+    ----------
+    folder : str or pathlib.Path
+        The folder: created if needed; its files are replaced.
+    vocabulary : Vocabulary
+        The vocabulary.
+    """
+    out = Path(folder)
+    out.mkdir(parents=True, exist_ok=True)
+    sums = {}
+    for name in ARRAYS:
+        data = _npy(getattr(vocabulary, name))
+        sums[name] = hashlib.sha256(data).hexdigest()
+        _replace(out / f"{name}.npy", data)
+    info = {
+        "format": FORMAT,
+        "version": VERSION,
+        "descriptor_version": DESCRIPTOR_VERSION,
+        "k": vocabulary.k,
+        "levels": vocabulary.levels,
+        "words": vocabulary.size,
+        "info": vocabulary.info,
+        "sha256": sums,
+    }
+    _replace(out / "vocabulary.json", (json.dumps(info, indent=1) + "\n").encode())
+
+
+def _replace(path: Path, data: bytes) -> None:
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_bytes(data)
+    temporary.replace(path)
+
+
+def read(folder: str | Path) -> Vocabulary:
+    """Read a vocabulary's folder, every array checked against its recorded SHA-256.
+
+    Parameters
+    ----------
+    folder : str or pathlib.Path
+        The folder :func:`write` wrote.
+
+    Returns
+    -------
+    Vocabulary
+        The vocabulary.
+
+    Raises
+    ------
+    FileNotFoundError
+        If a file is missing.
+    slam_it.foundations.errors.InvalidInputError
+        If ``vocabulary.json`` is not this format's version, the vocabulary was trained on
+        another descriptor (:data:`slam_it.foundations.orb.DESCRIPTOR_VERSION`), an array's
+        SHA-256 differs from the recorded one, or the tree is malformed.
+    """
+    root = Path(folder)
+    try:
+        info = json.loads((root / "vocabulary.json").read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise InvalidInputError(f"{root / 'vocabulary.json'}: not JSON ({error})") from None
+    if not isinstance(info, dict) or (info.get("format"), info.get("version")) != (FORMAT, VERSION):
+        raise InvalidInputError(f"{root}: expected a {FORMAT} of version {VERSION}")
+    if info.get("descriptor_version") != DESCRIPTOR_VERSION:
+        raise InvalidInputError(
+            f"{root}: trained on descriptor version {info.get('descriptor_version')!r}, "
+            f"this ORB's is {DESCRIPTOR_VERSION}: its words mean nothing here"
+        )
+    arrays = {}
+    for name in ARRAYS:
+        data = (root / f"{name}.npy").read_bytes()
+        if hashlib.sha256(data).hexdigest() != info.get("sha256", {}).get(name):
+            raise InvalidInputError(f"{root / name}.npy: its SHA-256 is not the recorded one")
+        try:
+            arrays[name] = np.load(io.BytesIO(data), allow_pickle=False)
+        except ValueError as error:
+            raise InvalidInputError(
+                f"{root / name}.npy: not a readable .npy array ({error})"
+            ) from None
+    return Vocabulary(
+        info["k"], info["levels"], arrays["descriptors"], arrays["parents"], arrays["children"],
+        arrays["words"], arrays["weights"], info.get("info", {}),
+    )  # fmt: skip

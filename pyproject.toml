@@ -156,7 +156,7 @@ containers = ["slam_it.foundations"]
 layers = [
   "(ba) | (twoview)",
   "(epipolar) | (homography) | (pnp) | (stereo)",
-  "(camera) | (fivepoint) | (matching) | (p3p) | (ransac) | (triangulation)",
+  "(camera) | (fivepoint) | (matching) | (p3p) | (ransac) | (triangulation) | (vocabulary)",
   "(nls) | (orb)",
   "(correspondences) | (image)",
   "(alignment)",
