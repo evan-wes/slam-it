@@ -11,8 +11,10 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
+from slam_it import backends
 from slam_it.foundations import orb, vocabulary
 from slam_it.foundations.errors import InvalidInputError
+from tests.conftest import require_function
 
 DESCRIPTOR_SHA256 = "9d83b625eaed2a0f0a5690805875536339cf2e5e5ec6167325c1e41382a4ae4b"
 """The SHA-256 of the constants that define an ORB descriptor, as of DESCRIPTOR_VERSION 1."""
@@ -225,3 +227,74 @@ def test_the_default_vocabulary_reads_and_is_the_documented_one() -> None:
     assert (vocab.k, vocab.levels) == (10, 5)
     assert 90_000 < vocab.size <= 100_000
     assert vocab.info["name"] == "arkitscenes-training"
+
+
+@pytest.fixture(scope="module")
+def default() -> vocabulary.Vocabulary:
+    """Read the committed vocabulary."""
+    return vocabulary.read(vocabulary.DEFAULT)
+
+
+def _room_descriptors() -> NDArray[np.uint8]:
+    """Two frames' ORB descriptors from the synthetic room."""
+    from tests.edge import room  # noqa: PLC0415 -- the room renders only for these tests
+    from tests.edge.support import FRAMES, OPTIONS  # noqa: PLC0415
+
+    rendered = room.sequence(FRAMES)
+    return np.concatenate(
+        [orb.extract(rendered[i].gray, OPTIONS.extraction()).descriptors for i in (0, 20)]
+    )
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_every_backend_reads_the_default_as_python_does(
+    backend: str, default: vocabulary.Vocabulary
+) -> None:
+    """The compiled readers read the same five arrays, and find k and the levels in the tree."""
+    if backend == "python":
+        return
+    reader = backends.implementation(
+        require_function(backend, vocabulary.__name__, "read"), vocabulary.__name__
+    )
+    got = reader.read(str(vocabulary.DEFAULT))
+    assert (got["k"], got["levels"]) == (default.k, default.levels)
+    for name in vocabulary.ARRAYS:
+        np.testing.assert_array_equal(got[name], getattr(default, name))
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_every_backend_quantizes_weighs_and_scores_as_python_does(
+    backend: str, default: vocabulary.Vocabulary
+) -> None:
+    """Words, nodes, vectors and scores agree exactly: the same terms in the same order."""
+    chosen = require_function(backend, vocabulary.__name__, "quantize")
+    descriptors = _room_descriptors()
+    words, nodes = vocabulary.quantize(default, descriptors)
+    got_words, got_nodes = vocabulary.quantize(default, descriptors, backend=chosen)
+    np.testing.assert_array_equal(got_words, words)
+    np.testing.assert_array_equal(got_nodes, nodes)
+    half = len(descriptors) // 2
+    first = vocabulary.bow(default, words[:half])
+    second = vocabulary.bow(default, words[half:])
+    for expected, got in zip(
+        (first, second),
+        (vocabulary.bow(default, words[:half], backend=chosen),
+         vocabulary.bow(default, words[half:], backend=chosen)),
+        strict=True,
+    ):  # fmt: skip
+        np.testing.assert_array_equal(got[0], expected[0])
+        np.testing.assert_array_equal(got[1], expected[1])
+    expected_score = vocabulary.score(first, second)
+    assert 0.0 < expected_score < 1.0
+    assert vocabulary.score(first, second, backend=chosen) == expected_score
+    assert vocabulary.score(first, first, backend=chosen) == vocabulary.score(first, first)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_every_backend_refuses_a_word_outside_the_vocabulary(
+    backend: str, default: vocabulary.Vocabulary
+) -> None:
+    """A word past the last: InvalidInputError."""
+    chosen = require_function(backend, vocabulary.__name__, "bow")
+    with pytest.raises(InvalidInputError, match="words of the vocabulary"):
+        vocabulary.bow(default, [default.size], backend=chosen)

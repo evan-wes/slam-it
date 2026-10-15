@@ -9,13 +9,14 @@
 use nalgebra::{DVector, SMatrix};
 use numpy::ndarray::{ArrayD, Dimension, IxDyn};
 use numpy::{
-    Element, IntoPyArray, PyArray1, PyArrayDyn, PyReadonlyArray, PyReadonlyArrayDyn,
-    PyUntypedArrayMethods,
+    Element, IntoPyArray, PyArray1, PyArrayDyn, PyReadonlyArray, PyReadonlyArray2,
+    PyReadonlyArrayDyn, PyUntypedArrayMethods,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyType};
 use slam_it_foundations::error::{Error, ErrorKind};
+use slam_it_foundations::orb::{DESCRIPTOR_BYTES, Descriptor};
 
 /// A float64 numpy array returned to Python.
 pub type ArrayOut<'py> = Bound<'py, PyArrayDyn<f64>>;
@@ -578,3 +579,29 @@ macro_rules! enum_codes {
 }
 
 pub(crate) use {add_functions, batched, enum_codes};
+
+/// Copies a descriptor set in.
+///
+/// # Arguments
+///
+/// * `descriptors` - An (N, 32) uint8 array.
+///
+/// # Returns
+///
+/// The descriptors.
+///
+/// # Errors
+///
+/// `ValueError` for another shape or a non-contiguous array.
+pub fn descriptors_in(descriptors: &PyReadonlyArray2<'_, u8>) -> PyResult<Vec<Descriptor>> {
+    if descriptors.shape()[1] != DESCRIPTOR_BYTES {
+        return Err(PyValueError::new_err(format!(
+            "expected shape (N, {DESCRIPTOR_BYTES}), got {:?}",
+            descriptors.shape()
+        )));
+    }
+    Ok(contiguous(descriptors)?
+        .as_chunks::<DESCRIPTOR_BYTES>()
+        .0
+        .to_vec())
+}

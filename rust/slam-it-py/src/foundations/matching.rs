@@ -16,9 +16,9 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use serde::Deserialize;
 use slam_it_foundations::matching as core;
-use slam_it_foundations::orb::{DESCRIPTOR_BYTES, Descriptor, Features, Keypoint};
+use slam_it_foundations::orb::{Features, Keypoint};
 
-use crate::common::{add_functions, contiguous, int64_array, to_i64, unwrap};
+use crate::common::{add_functions, contiguous, descriptors_in, int64_array, to_i64, unwrap};
 
 /// `matching.Options`' fields, as they cross.
 #[derive(Debug, Deserialize)]
@@ -53,32 +53,6 @@ const FRAME_KEYS: [&str; 7] = [
     "taken",
     "levels",
 ];
-
-/// Copies a descriptor set in.
-///
-/// # Arguments
-///
-/// * `descriptors` - An (N, 32) uint8 array.
-///
-/// # Returns
-///
-/// The descriptors.
-///
-/// # Errors
-///
-/// `ValueError` for another shape or a non-contiguous array.
-fn descriptors_in(descriptors: &PyReadonlyArray2<'_, u8>) -> PyResult<Vec<Descriptor>> {
-    if descriptors.shape()[1] != DESCRIPTOR_BYTES {
-        return Err(PyValueError::new_err(format!(
-            "expected shape (N, {DESCRIPTOR_BYTES}), got {:?}",
-            descriptors.shape()
-        )));
-    }
-    Ok(contiguous(descriptors)?
-        .as_chunks::<DESCRIPTOR_BYTES>()
-        .0
-        .to_vec())
-}
 
 /// Copies orientation bins in.
 ///

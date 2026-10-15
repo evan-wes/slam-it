@@ -39,11 +39,12 @@ import json
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
+from slam_it import backends
 from slam_it.foundations.arrays import as_count
 from slam_it.foundations.errors import InvalidInputError
 from slam_it.foundations.orb import DESCRIPTOR_BYTES, DESCRIPTOR_VERSION
@@ -183,6 +184,55 @@ class Vocabulary:
         return len(self.weights)
 
 
+class Implementation(Protocol):
+    """The functions a compiled backend's ``foundations.vocabulary`` submodule provides.
+
+    A vocabulary crosses as a dict of :class:`Vocabulary`'s fields (:func:`fields`).
+    """
+
+    def read(self, folder: str) -> dict[str, Any]:
+        """Read a folder's five arrays; ``k`` and ``levels`` from the tree itself."""
+        ...
+
+    def quantize(
+        self, vocabulary: dict[str, Any], descriptors: NDArray[np.uint8]
+    ) -> dict[str, Any]:
+        """Return ``words`` and ``nodes`` (int64)."""
+        ...
+
+    def bow(self, vocabulary: dict[str, Any], words: NDArray[np.int64]) -> dict[str, Any]:
+        """Return ``ids`` (int64) and ``values`` (float64)."""
+        ...
+
+    def score(
+        self,
+        ids1: NDArray[np.int64],
+        values1: NDArray[np.float64],
+        ids2: NDArray[np.int64],
+        values2: NDArray[np.float64],
+    ) -> float:
+        """Return the L1 score."""
+        ...
+
+
+def fields(vocabulary: Vocabulary) -> dict[str, Any]:
+    """Return a vocabulary as it crosses to a compiled backend: ``k``, ``levels``, its arrays.
+
+    Parameters
+    ----------
+    vocabulary : Vocabulary
+        The vocabulary.
+
+    Returns
+    -------
+    dict
+        Its fields, the arrays shared, not copied.
+    """
+    return {"k": vocabulary.k, "levels": vocabulary.levels} | {
+        name: getattr(vocabulary, name) for name in ARRAYS
+    }
+
+
 def _depths(parents: NDArray[np.int32]) -> NDArray[np.int64]:
     """Each node's level, the root's 0 (each parent before its children)."""
     depth = np.zeros(len(parents), dtype=np.int64)
@@ -207,7 +257,7 @@ def _as_descriptors(descriptors: ArrayLike, name: str = "descriptors") -> NDArra
 
 
 def quantize(
-    vocabulary: Vocabulary, descriptors: ArrayLike
+    vocabulary: Vocabulary, descriptors: ArrayLike, *, backend: str = "python"
 ) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
     """Return each descriptor's word, and its node at :data:`DIRECT_LEVEL`.
 
@@ -217,6 +267,8 @@ def quantize(
         The vocabulary.
     descriptors : array_like of uint8, shape (n, DESCRIPTOR_BYTES)
         The descriptors.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
 
     Returns
     -------
@@ -232,6 +284,23 @@ def quantize(
         If the descriptors are not uint8 rows of DESCRIPTOR_BYTES.
     """
     desc = _as_descriptors(descriptors)
+    return backends.call(
+        backend,
+        __name__,
+        "quantize",
+        reference=lambda: _quantize(vocabulary, desc),
+        arguments={"vocabulary": fields(vocabulary), "descriptors": np.ascontiguousarray(desc)},
+        decode=lambda raw, _: (
+            backends.checked_array(raw["words"], np.int64, 1, "quantize words"),
+            backends.checked_array(raw["nodes"], np.int64, 1, "quantize nodes"),
+        ),
+    )
+
+
+def _quantize(
+    vocabulary: Vocabulary, desc: NDArray[np.uint8]
+) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
+    """:func:`quantize`'s reference, on checked descriptors."""
     first = vocabulary.children[:, 0].astype(np.int64)
     count = vocabulary.children[:, 1].astype(np.int64)
     current = np.zeros(len(desc), dtype=np.int64)
@@ -259,7 +328,9 @@ def quantize(
     return vocabulary.words[current].astype(np.int64), direct
 
 
-def bow(vocabulary: Vocabulary, words: ArrayLike) -> tuple[NDArray[np.int64], NDArray[np.float64]]:
+def bow(
+    vocabulary: Vocabulary, words: ArrayLike, *, backend: str = "python"
+) -> tuple[NDArray[np.int64], NDArray[np.float64]]:
     """Return an image's word vector: each word's count times its weight, L1-normalised.
 
     Parameters
@@ -268,6 +339,8 @@ def bow(vocabulary: Vocabulary, words: ArrayLike) -> tuple[NDArray[np.int64], ND
         The vocabulary.
     words : array_like of int, shape (n,)
         The image's features' words (:func:`quantize`).
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
 
     Returns
     -------
@@ -288,7 +361,25 @@ def bow(vocabulary: Vocabulary, words: ArrayLike) -> tuple[NDArray[np.int64], ND
         raise InvalidInputError(
             f"words: expected words of the vocabulary, 0 to {vocabulary.size - 1}"
         )
-    ids, counts = np.unique(found.astype(np.int64), return_counts=True)
+    checked = np.ascontiguousarray(found, dtype=np.int64)
+    return backends.call(
+        backend,
+        __name__,
+        "bow",
+        reference=lambda: _bow(vocabulary, checked),
+        arguments={"vocabulary": fields(vocabulary), "words": checked},
+        decode=lambda raw, _: (
+            backends.checked_array(raw["ids"], np.int64, 1, "bow ids"),
+            backends.checked_array(raw["values"], np.float64, 1, "bow values"),
+        ),
+    )
+
+
+def _bow(
+    vocabulary: Vocabulary, words: NDArray[np.int64]
+) -> tuple[NDArray[np.int64], NDArray[np.float64]]:
+    """:func:`bow`'s reference, on checked words."""
+    ids, counts = np.unique(words, return_counts=True)
     values = counts * vocabulary.weights[ids]
     kept = values > 0.0
     ids, values = ids[kept], values[kept]
@@ -298,7 +389,12 @@ def bow(vocabulary: Vocabulary, words: ArrayLike) -> tuple[NDArray[np.int64], ND
     return ids, values / total if total > 0.0 else values
 
 
-def score(first: tuple[ArrayLike, ArrayLike], second: tuple[ArrayLike, ArrayLike]) -> float:
+def score(
+    first: tuple[ArrayLike, ArrayLike],
+    second: tuple[ArrayLike, ArrayLike],
+    *,
+    backend: str = "python",
+) -> float:
     """Return two word vectors' L1 score, ``1 - |v - w|_1 / 2`` (DBoW2's ``L1Scoring``).
 
     Computed over the words the two share, ascending, as ``(|v| + |w| - |v - w|) / 2`` summed,
@@ -308,6 +404,8 @@ def score(first: tuple[ArrayLike, ArrayLike], second: tuple[ArrayLike, ArrayLike
     ----------
     first, second : tuple of array_like
         Two vectors from :func:`bow`: their words (ascending) and values.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
 
     Returns
     -------
@@ -320,6 +418,23 @@ def score(first: tuple[ArrayLike, ArrayLike], second: tuple[ArrayLike, ArrayLike
         If a vector's words and values differ in length, or its words do not ascend.
     """
     (a_ids, a_values), (b_ids, b_values) = (_as_vector(*first), _as_vector(*second))
+    return backends.call(
+        backend,
+        __name__,
+        "score",
+        reference=lambda: _score(a_ids, a_values, b_ids, b_values),
+        arguments={"ids1": a_ids, "values1": a_values, "ids2": b_ids, "values2": b_values},
+        decode=lambda raw, _: float(raw),
+    )
+
+
+def _score(
+    a_ids: NDArray[np.int64],
+    a_values: NDArray[np.float64],
+    b_ids: NDArray[np.int64],
+    b_values: NDArray[np.float64],
+) -> float:
+    """:func:`score`'s reference, on checked vectors."""
     _, ia, ib = np.intersect1d(a_ids, b_ids, assume_unique=True, return_indices=True)
     total = 0.0
     for v, w in zip(a_values[ia].tolist(), b_values[ib].tolist(), strict=True):
@@ -334,7 +449,7 @@ def _as_vector(ids: ArrayLike, values: ArrayLike) -> tuple[NDArray[np.int64], ND
         raise InvalidInputError("vector: expected (m,) words and (m,) values")
     if np.any(np.diff(i) <= 0) or not np.all(np.isfinite(v)):
         raise InvalidInputError("vector: expected ascending words and finite values")
-    return i.astype(np.int64), v
+    return np.ascontiguousarray(i, dtype=np.int64), np.ascontiguousarray(v)
 
 
 def _majority(descriptors: NDArray[np.uint8]) -> NDArray[np.uint8]:

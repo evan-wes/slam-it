@@ -72,6 +72,9 @@ inline constexpr std::int64_t kMaxFastThreshold = 254;
 inline constexpr std::array<std::uint32_t, 7> kBlurKernel{287, 537, 781, 886, 781, 537, 287};
 /// @brief A descriptor's length: 256 bits.
 inline constexpr std::size_t kDescriptorBytes = 32;
+/// @brief This descriptor's version (`slam_it.foundations.orb.DESCRIPTOR_VERSION`), raised when
+///        what a descriptor holds changes; a vocabulary records the one it was trained on.
+inline constexpr std::int64_t kDescriptorVersion = 1;
 
 // rBRIEF's learned test pairs (x1, y1, x2, y2): OpenCV's bit_pattern_31_
 // (modules/features2d/src/orb.cpp), learned by Ethan Rublee, Vincent Rabaud and Gary Bradski

@@ -19,6 +19,9 @@ void bind_foundations(nanobind::module_& parent) {
   nanobind::module_ matching =
       foundations.def_submodule("matching", "Matching binary descriptors.");
   bind_matching(matching);
+  nanobind::module_ vocabulary =
+      foundations.def_submodule("vocabulary", "Place recognition's vocabulary.");
+  bind_vocabulary(vocabulary);
   nanobind::module_ alignment =
       foundations.def_submodule("alignment", "Point-set alignment (Umeyama).");
   bind_alignment(alignment);

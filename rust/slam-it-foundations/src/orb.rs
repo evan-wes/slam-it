@@ -89,6 +89,9 @@ pub const MAX_FAST_THRESHOLD: i64 = 254;
 pub const BLUR_KERNEL: [u32; 7] = [287, 537, 781, 886, 781, 537, 287];
 /// A descriptor's length: 256 bits.
 pub const DESCRIPTOR_BYTES: usize = 32;
+/// This descriptor's version (`slam_it.foundations.orb.DESCRIPTOR_VERSION`), raised when what a
+/// descriptor holds changes; a vocabulary records the one it was trained on.
+pub const DESCRIPTOR_VERSION: i64 = 1;
 
 // rBRIEF's learned test pairs (x1, y1, x2, y2): OpenCV's bit_pattern_31_
 // (modules/features2d/src/orb.cpp), learned by Ethan Rublee, Vincent Rabaud and Gary Bradski
