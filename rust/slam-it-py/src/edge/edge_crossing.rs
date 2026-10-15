@@ -549,6 +549,7 @@ pub fn options_in(values: &Bound<'_, PyDict>) -> PyResult<Options> {
     for (name, kind) in settings {
         let value = item(values, &keys, name)?;
         let setting = match kind {
+            Setting::Flag(_) => Setting::Flag(value.extract()?),
             Setting::Integer(_) => Setting::Integer(value.extract()?),
             Setting::Real(_) => Setting::Real(value.extract()?),
         };

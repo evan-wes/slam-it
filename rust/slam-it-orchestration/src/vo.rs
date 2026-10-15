@@ -15,7 +15,7 @@ use slam_it_eval::{euroc, png, text, tum};
 use slam_it_foundations::camera::Model;
 use slam_it_foundations::error::{ErrorKind, Result, fail};
 use slam_it_foundations::image::{self, Image};
-use slam_it_foundations::{orb, se3, stereo};
+use slam_it_foundations::{orb, ransac, se3, stereo, vocabulary};
 
 /// The datasets a sequence can come from (`slam_it.orchestration.vo.DATASETS`).
 pub const DATASETS: [&str; 2] = ["tum", "euroc"];
@@ -23,7 +23,7 @@ pub const DATASETS: [&str; 2] = ["tum", "euroc"];
 /// The program's command line.
 pub const USAGE: &str = "usage: slam_it_vo --dataset tum|euroc --sequence PATH --mode \
                          monocular|stereo|rgbd --out RUN_DIR [--first I] [--count N] \
-                         [--record-features] [--option KEY=VALUE ...]";
+                         [--vocabulary FOLDER] [--record-features] [--option KEY=VALUE ...]";
 
 /// The one flag without a value: record each frame's keypoints, with their fates.
 const RECORD_FEATURES: &str = "--record-features";
@@ -53,6 +53,8 @@ pub struct Request {
     pub options: Options,
     /// Whether the run records each frame's keypoints, with their fates.
     pub record_features: bool,
+    /// The vocabulary's folder: required with `relocalize` on, refused with it off.
+    pub vocabulary: Option<PathBuf>,
 }
 
 impl Request {
@@ -80,6 +82,7 @@ impl Request {
             count: None,
             options: Options::default(),
             record_features: false,
+            vocabulary: None,
         }
     }
 }
@@ -390,6 +393,7 @@ fn settings(options: &Options) -> JsonObject {
         .into_iter()
         .map(|(name, value)| {
             let value = match value {
+                Setting::Flag(flag) => JsonValue::Bool(flag),
                 Setting::Integer(integer) => JsonValue::Integer(integer),
                 Setting::Real(real) => JsonValue::Number(real),
             };
@@ -496,6 +500,24 @@ fn solves_json(solves: &[Solve]) -> JsonValue {
     )
 }
 
+/// A RANSAC run's termination as a stage records it: its name, `degenerate` when it found no
+/// pose, or null when it did not run.
+///
+/// # Arguments
+///
+/// * `degenerate` - Whether it found no pose.
+/// * `termination` - Why it stopped, if it found one.
+///
+/// # Returns
+///
+/// The value.
+fn termination_json(degenerate: bool, termination: Option<ransac::Termination>) -> JsonValue {
+    if degenerate {
+        return name_json("degenerate");
+    }
+    termination.map_or(JsonValue::Null, |termination| name_json(termination.name()))
+}
+
 /// How a frame's stages went, as a run records it
 /// (`slam_it.edge.pipeline.FrameSummary.as_dict`): each stage an object, or null.
 ///
@@ -525,21 +547,43 @@ fn summary_json(summary: &FrameSummary) -> JsonObject {
         ])
     });
     let pnp = summary.pnp.map_or(JsonValue::Null, |s| {
-        let termination = if s.degenerate {
-            name_json("degenerate")
-        } else {
-            s.termination
-                .map_or(JsonValue::Null, |termination| name_json(termination.name()))
-        };
         object([
             ("candidates", count(s.candidates)),
             ("matches", count_or_null(s.matches)),
             ("iterations", count_or_null(s.iterations)),
-            ("termination", termination),
+            ("termination", termination_json(s.degenerate, s.termination)),
             ("inliers", count_or_null(s.inliers)),
             ("refined", count_or_null(s.refined)),
         ])
     });
+    let relocalization = summary
+        .relocalization
+        .as_ref()
+        .map_or(JsonValue::Null, |s| {
+            let tried = s
+                .candidates
+                .iter()
+                .map(|c| {
+                    object([
+                        ("keyframe", JsonValue::Integer(c.keyframe)),
+                        ("score", JsonValue::Number(c.score)),
+                        ("matches", count(c.matches)),
+                        ("iterations", count_or_null(c.iterations)),
+                        ("termination", termination_json(c.degenerate, c.termination)),
+                        ("inliers", count_or_null(c.inliers)),
+                        ("refined", count_or_null(c.refined)),
+                        ("found", count_or_null(c.found)),
+                    ])
+                })
+                .collect();
+            object([
+                ("words", count(s.words)),
+                ("sharing", count(s.sharing)),
+                ("scored", count(s.scored)),
+                ("candidates", JsonValue::Array(tried)),
+                ("placed", JsonValue::Bool(s.placed)),
+            ])
+        });
     let local_map = summary.local_map.map_or(JsonValue::Null, |s| {
         object([
             ("in_view", count(s.in_view)),
@@ -571,6 +615,7 @@ fn summary_json(summary: &FrameSummary) -> JsonObject {
         ("init", init),
         ("motion", motion),
         ("pnp", pnp),
+        ("relocalization", relocalization),
         ("local_map", local_map),
         ("mapping", mapping),
         ("lost", lost),
@@ -820,6 +865,11 @@ fn read_option(text: &str, options: &mut Options) -> Result<()> {
         return invalid(format!("--option: no setting '{key}'"));
     };
     let setting = match kind {
+        Setting::Flag(_) => match value.trim() {
+            "true" => Setting::Flag(true),
+            "false" => Setting::Flag(false),
+            _ => return invalid(format!("{key}: expected true or false, got '{value}'")),
+        },
         Setting::Integer(_) => Setting::Integer(integer_of(key, value)?),
         Setting::Real(_) => match text::number(value) {
             Some(number) if number.is_finite() => Setting::Real(number),
@@ -848,6 +898,7 @@ fn read_flag(out: &mut Request, flag: &str, value: &str) -> Result<()> {
         "--mode" => out.mode = mode_named(value)?,
         "--first" => out.first = integer_of(flag, value)?,
         "--count" => out.count = Some(integer_of(flag, value)?),
+        "--vocabulary" => out.vocabulary = Some(PathBuf::from(value)),
         "--option" => read_option(value, &mut out.options)?,
         _ => return invalid(format!("unknown argument '{flag}'")),
     }
@@ -925,6 +976,12 @@ pub fn check(request: &Request) -> Result<()> {
     if request.first < 0 || request.count.unwrap_or(0) < 0 {
         return invalid("first, count: must be at least 0".to_owned());
     }
+    if request.options.relocalize && request.vocabulary.is_none() {
+        return invalid("--vocabulary: relocalize needs one".to_owned());
+    }
+    if !request.options.relocalize && request.vocabulary.is_some() {
+        return invalid("--vocabulary: given, but relocalize is off".to_owned());
+    }
     check_options(&request.options)
 }
 
@@ -950,13 +1007,24 @@ pub fn run(request: &Request) -> Result<Run> {
     } else {
         euroc_source(&request.sequence, request.mode)?
     };
-    let mut pipeline = Pipeline::new(request.mode, source.camera.clone(), request.options)?;
+    let (words, record) = match &request.vocabulary {
+        Some(folder) => {
+            let read = vocabulary::read(folder)?;
+            let path = folder.join("vocabulary.json");
+            let text = std::fs::read_to_string(&path)
+                .or_else(|e| invalid(format!("{}: cannot be read ({e})", path.display())))?;
+            (Some(read), Some(text))
+        }
+        None => (None, None),
+    };
+    let mut pipeline = Pipeline::new(request.mode, source.camera.clone(), request.options, words)?;
     let mut out = Run {
         dataset: request.dataset.clone(),
         sequence: sequence_name(&request.sequence),
         mode: request.mode.name().to_owned(),
         backend: "rust".to_owned(),
         settings: settings(&request.options),
+        vocabulary: record,
         record_features: request.record_features,
         ..Run::default()
     };
@@ -1091,12 +1159,13 @@ mod tests {
     /// range are refused.
     #[test]
     fn checks_requests() {
-        let good = Request::new(
+        let mut good = Request::new(
             "tum",
             &folder("tum_camera"),
             Mode::Monocular,
             Path::new("run"),
         );
+        good.options.relocalize = false; // no vocabulary: these check the request alone
         check(&good).unwrap();
         let mut bads = vec![
             Request {
@@ -1116,7 +1185,7 @@ mod tests {
         bads.push(Request {
             options: Options {
                 window: 0,
-                ..Options::default()
+                ..good.options
             },
             ..good
         });
@@ -1133,6 +1202,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&out);
         let _guard = Scratch(out.clone());
         let mut request = Request::new("tum", &folder("tum_camera"), Mode::Rgbd, &out);
+        request.options.relocalize = false;
         request.count = Some(0);
         let empty = run(&request).unwrap();
         assert_eq!(empty.timestamps, Vec::<f64>::new());
@@ -1154,6 +1224,7 @@ mod tests {
         request.count = Some(1);
         assert_eq!(run(&request).unwrap_err().kind, ErrorKind::InvalidInput);
         let mut stereo = Request::new("euroc", &folder("euroc"), Mode::Stereo, &out);
+        stereo.options.relocalize = false;
         stereo.count = Some(1);
         assert_eq!(run(&stereo).unwrap_err().kind, ErrorKind::InvalidInput);
         stereo.sequence = folder("no_such_sequence");

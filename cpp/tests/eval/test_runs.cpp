@@ -110,6 +110,7 @@ runs::Run golden_run() {
                 .keyframe_poses = poses(values["keyframe_poses"]),
                 .points = {},
                 .settings = object_of(values["settings"]),
+                .vocabulary = std::nullopt,
                 .diagnostics = {},
                 .peak_memory = values["peak_memory"].get<std::int64_t>(),
                 .cpus = values["cpus"].get<std::vector<std::int64_t>>(),

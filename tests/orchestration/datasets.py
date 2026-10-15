@@ -179,9 +179,53 @@ second stretch cuts a monocular run's map 1, started on frame 28, to 3 tracked f
 it tracked 12 to the room's end with one stretch (finding L10): the room's 40 frames leave no
 later place for it."""
 
-KEPT_OPTIONS = replace(OPTIONS, reset_keyframes=0)
+KEPT_OPTIONS = replace(OPTIONS, reset_keyframes=0, relocalize=False)
 """The room's settings with every lost map kept: the lost room's lost maps, of a few keyframes
-each, are otherwise reset (ORB-SLAM3's reset of a map lost with 10 keyframes or fewer)."""
+each, are otherwise reset (ORB-SLAM3's reset of a map lost with 10 keyframes or fewer). Without
+relocalisation, so that a kept map is lost after ``lost_frames`` failures, as before milestone
+2B: relocalising, a map above ``reset_keyframes`` is lost only after ``relocalize_seconds``,
+longer than the room."""
+
+
+FOUND_AT = 31
+"""Where the found room's blank frames begin: the camera, blinded for :data:`FOUND_BLANKS`
+frames, comes back where it began, at frame :data:`FOUND_BACK`, and goes on from there."""
+
+FOUND_BLANKS = 3
+"""The found room's blank frames: fewer than ``lost_frames``, so the track is not lost."""
+
+FOUND_BACK = 2
+"""The rendered frame the found room's camera comes back to after its blank frames."""
+
+FOUND_OPTIONS = replace(OPTIONS, pnp_min_inliers=1 << 20)
+"""The found room's settings: the local fallback out of reach, so that only relocalisation,
+through the keyframe database, can find the frame the camera comes back on (the room's map is
+small enough for the fallback's local map to hold all of it)."""
+
+
+def found_frames(rendered: list[room.Frame]) -> list[room.Frame]:
+    """Return the found room: blank frames from :data:`FOUND_AT`, then the start seen again.
+
+    Parameters
+    ----------
+    rendered : list of tests.edge.room.Frame
+        The room's frames.
+
+    Returns
+    -------
+    list of tests.edge.room.Frame
+        As many frames, at the room's times: frames 0 to ``FOUND_AT - 1``, :data:`FOUND_BLANKS`
+        blank ones, then the frames from :data:`FOUND_BACK` on, each at the time of its place.
+    """
+    after = len(rendered) - FOUND_AT - FOUND_BLANKS
+    order = [*range(FOUND_AT), *([None] * FOUND_BLANKS), *range(FOUND_BACK, FOUND_BACK + after)]
+    return [
+        replace(
+            blank(rendered[FOUND_AT - 1]) if source is None else rendered[source],
+            timestamp=at.timestamp,
+        )
+        for source, at in zip(order, rendered, strict=True)
+    ]
 
 
 def lost_frames(rendered: list[room.Frame]) -> list[room.Frame]:
@@ -272,4 +316,6 @@ def room_inputs() -> dict[str, Any]:
         "room": moved(OPTIONS),
         "gap_room": moved(GAP_OPTIONS),
         "kept_room": moved(KEPT_OPTIONS),
+        "found": [FOUND_AT, FOUND_BLANKS, FOUND_BACK],
+        "found_room": moved(FOUND_OPTIONS),
     }

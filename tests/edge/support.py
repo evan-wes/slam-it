@@ -15,6 +15,7 @@ from numpy.typing import NDArray
 from slam_it.edge import frames
 from slam_it.edge.map import Map
 from slam_it.edge.options import Options
+from slam_it.foundations import vocabulary
 from tests.edge import room
 
 FRAMES = 40
@@ -45,6 +46,22 @@ SOLVER_TOLERANCE = {"rtol": 1e-9, "atol": 1e-9}
 """The same for a stage that runs a bundle adjustment, whose iterations carry last-bit
 differences forward (``slam_it.foundations.ba``'s own parity is held to this too); the
 structure is still exact."""
+
+
+def words_for(options: Options) -> vocabulary.Vocabulary | None:
+    """Return the vocabulary a pipeline with these settings needs: the committed one, or none.
+
+    Parameters
+    ----------
+    options : slam_it.edge.options.Options
+        The settings.
+
+    Returns
+    -------
+    slam_it.foundations.vocabulary.Vocabulary or None
+        The committed vocabulary with ``relocalize`` on, None with it off.
+    """
+    return vocabulary.default() if options.relocalize else None
 
 
 def assert_close(

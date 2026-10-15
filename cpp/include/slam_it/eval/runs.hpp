@@ -82,6 +82,9 @@ struct Run {
   std::vector<Eigen::Vector3d> points;
   /// @brief The pipeline's options.
   JsonObject settings;
+  /// @brief The vocabulary a relocalising run used: its `vocabulary.json`'s text, a JSON
+  ///        object; written as null for a run that did not relocalise.
+  std::optional<std::string> vocabulary;
   /// @brief One object per frame, each with a `timestamp`; the edge pipeline's also time
   ///        its steps (`read_seconds`, `build_seconds`, `track_seconds`, `map_seconds`, as
   ///        `slam_it.eval.runs.STEPS` defines them) and say how its stages went.

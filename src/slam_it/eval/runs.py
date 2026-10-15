@@ -3,14 +3,18 @@
 A run is a folder, written by any backend's pipeline (C++ and Rust write the same files):
 
 - ``run.json``: what ran: ``{"format": "slam-it-run", "version": 4, "dataset", "sequence",
-  "mode", "backend", "settings", "record_features", "peak_memory", "cpus", "memory_cap"}``,
-  ``mode`` one of :data:`MODES` and ``backend`` one of ``python``, ``cpp`` and ``rust``;
-  ``settings`` holds the pipeline's options as JSON; ``record_features`` whether the run
-  recorded its features (below). The last three describe the program that ran it, as it recorded
-  them before writing (:mod:`slam_it.eval.budgets`), and are null when the run was not a
-  program's of its own (Python's in-process run) or the system does not say: ``peak_memory``,
-  its largest resident set in bytes; ``cpus``, the CPUs it could run on, ascending (a budget
-  pins them); ``memory_cap``, its control group's memory cap in bytes (null without one).
+  "mode", "backend", "settings", "vocabulary", "record_features", "peak_memory", "cpus",
+  "memory_cap"}``, ``mode`` one of :data:`MODES` and ``backend`` one of ``python``, ``cpp`` and
+  ``rust``; ``settings`` holds the pipeline's options as JSON; ``vocabulary`` the vocabulary a
+  relocalising run used, its ``vocabulary.json`` (:mod:`slam_it.foundations.vocabulary`: its
+  name, shape, training set and arrays' SHA-256), null for a run that did not relocalise
+  (``relocalize`` off, or a run from before milestone 2B, which has no such key);
+  ``record_features`` whether the run recorded its features (below). The last three describe the
+  program that ran it, as it recorded them before writing (:mod:`slam_it.eval.budgets`), and are
+  null when the run was not a program's of its own (Python's in-process run) or the system does
+  not say: ``peak_memory``, its largest resident set in bytes; ``cpus``, the CPUs it could run
+  on, ascending (a budget pins them); ``memory_cap``, its control group's memory cap in bytes
+  (null without one).
 - ``trajectory.txt``: each tracked frame's ``T_world_cam`` in TUM's format, one
   ``timestamp tx ty tz qx qy qz qw`` line per frame, ``#`` comments allowed: what ORB-SLAM and
   the TUM tools write, so other systems' trajectories evaluate the same way. Numbers are
@@ -166,6 +170,9 @@ class Run:
         Every point the run made, by id, where it last was, in its map's world frame.
     settings : dict
         The pipeline's options, as JSON values.
+    vocabulary : dict or None
+        The vocabulary a relocalising run used (its ``vocabulary.json``); None if it did not
+        relocalise.
     diagnostics : list of dict
         One JSON object per frame, each with a ``timestamp``, and its ``map`` in a run with maps
         (the module docstring has the keys read across a run's maps).
@@ -200,6 +207,7 @@ class Run:
     keyframe_poses: NDArray[np.float64] = field(default_factory=lambda: np.zeros((0, 4, 4)))
     points: NDArray[np.float64] = field(default_factory=lambda: np.zeros((0, 3)))
     settings: dict[str, Any] = field(default_factory=dict)
+    vocabulary: dict[str, Any] | None = None
     diagnostics: list[dict[str, Any]] = field(default_factory=list)
     peak_memory: int | None = None
     cpus: list[int] | None = None
@@ -512,6 +520,8 @@ def write_run(folder: str | Path, run: Run) -> None:
         raise InvalidInputError(f"points: expected (M, 3), got {lead}")
     if not isinstance(run.settings, dict):
         raise InvalidInputError("settings: expected a dict")
+    if run.vocabulary is not None and not isinstance(run.vocabulary, dict):
+        raise InvalidInputError("vocabulary: expected a dict or None")
     if not isinstance(run.record_features, bool):
         raise InvalidInputError("record_features: expected a bool")
     _check_process(run.peak_memory, run.cpus, run.memory_cap, "")
@@ -523,6 +533,7 @@ def write_run(folder: str | Path, run: Run) -> None:
         "mode": run.mode,
         "backend": run.backend,
         "settings": run.settings,
+        "vocabulary": run.vocabulary,
         "record_features": run.record_features,
         "peak_memory": run.peak_memory,
         "cpus": run.cpus,
@@ -611,6 +622,9 @@ def _read_info(path: Path) -> dict[str, Any]:
             raise InvalidInputError(f"{path}: {key} must be a string")
     if not isinstance(info["settings"], dict):
         raise InvalidInputError(f"{path}: settings must be an object")
+    info.setdefault("vocabulary", None)  # a run from before relocalisation has none
+    if info["vocabulary"] is not None and not isinstance(info["vocabulary"], dict):
+        raise InvalidInputError(f"{path}: vocabulary must be an object or null")
     if not isinstance(info["record_features"], bool):
         raise InvalidInputError(f"{path}: record_features must be true or false")
     _check_process(info["peak_memory"], info["cpus"], info["memory_cap"], f"{path}: ")
@@ -687,6 +701,7 @@ def read_run(folder: str | Path) -> Run:
         keyframe_poses=keyframe_poses,
         points=points,
         settings=info["settings"],
+        vocabulary=info["vocabulary"],
         diagnostics=diagnostics,
         peak_memory=info["peak_memory"],
         cpus=info["cpus"],

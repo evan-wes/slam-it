@@ -483,6 +483,7 @@ Result<void> write_run(const std::string& folder, const Run& run) {
   std::string info_text = object_text(info);
   info_text.pop_back();
   info_text += ", \"settings\": " + object_text(run.settings);
+  info_text += ", \"vocabulary\": " + run.vocabulary.value_or("null");
   info_text += std::string(", \"record_features\": ") + (run.record_features ? "true" : "false");
   const auto integer_or_null = [](const std::optional<std::int64_t>& value) {
     return value ? std::to_string(*value) : std::string("null");

@@ -356,6 +356,9 @@ inline edge::Frame frame_in(const nanobind::dict& values) {
 /// @throws std::invalid_argument for a missing or unknown key.
 inline edge::Options options_in(const nanobind::dict& values) {
   std::vector<const char*> keys;
+  for (const auto& [key, member] : edge::kFlagOptions) {
+    keys.push_back(key);
+  }
   for (const auto& [key, member] : edge::kIntegerOptions) {
     keys.push_back(key);
   }
@@ -364,6 +367,9 @@ inline edge::Options options_in(const nanobind::dict& values) {
   }
   check_keys(values, keys, "edge.Options");
   edge::Options out;
+  for (const auto& [key, member] : edge::kFlagOptions) {
+    out.*member = nanobind::cast<bool>(values[key]);
+  }
   for (const auto& [key, member] : edge::kIntegerOptions) {
     out.*member = nanobind::cast<std::int64_t>(values[key]);
   }

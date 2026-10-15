@@ -189,6 +189,8 @@ pub struct Options {
     pub pnp_threshold: f64,
     /// Inliers the PnP fallback needs.
     pub pnp_min_inliers: usize,
+    /// Relocalise a failed frame through the keyframe database (needs a vocabulary).
+    pub relocalize: bool,
     /// The descriptor ratio test of the fallback and of relocalisation's matching by word.
     pub relocalize_ratio: f64,
     /// Keyframes observing at least this many of the same points are covisible.
@@ -217,7 +219,11 @@ pub struct Options {
     pub reloc_narrow_window: f64,
     /// Its descriptor distance.
     pub reloc_narrow_distance: i64,
-    /// Failed frames in a row before the track is lost.
+    /// A recently lost track is lost once more than this has passed since its first failed
+    /// frame, in seconds.
+    pub relocalize_seconds: f64,
+    /// A map of `reset_keyframes` keyframes or fewer is lost after this many failed frames in a
+    /// row instead.
     pub lost_frames: usize,
     /// A map lost with this many keyframes or fewer is reset rather than kept.
     pub reset_keyframes: usize,
@@ -302,6 +308,7 @@ impl Default for Options {
             redundant_observers: 3,
             pnp_threshold: 4.0,
             pnp_min_inliers: 30,
+            relocalize: true,
             relocalize_ratio: 0.75,
             covisible_points: 15,
             reloc_common_words: 0.8,
@@ -316,6 +323,7 @@ impl Default for Options {
             reloc_narrow_inliers: 30,
             reloc_narrow_window: 3.0,
             reloc_narrow_distance: 64,
+            relocalize_seconds: 3.0,
             lost_frames: 5,
             reset_keyframes: 10,
             seed: 0,
@@ -370,6 +378,8 @@ impl Options {
 /// A setting's value, by its kind: what a command line gives, and what a run records.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Setting {
+    /// A flag setting's.
+    Flag(bool),
     /// An integer setting's.
     Integer(i64),
     /// A real setting's.
@@ -412,6 +422,9 @@ macro_rules! named_settings {
             }
         }
     };
+    (@value Flag $value:ident) => {
+        Setting::Flag($value)
+    };
     (@value Integer $value:ident) => {
         Setting::Integer(i64::try_from($value).unwrap_or(i64::MAX))
     };
@@ -428,6 +441,7 @@ macro_rules! named_settings {
                 Err(_) => fail_setting($name, "out of range", integer),
             },
             Setting::Real(real) => fail_setting($name, "expected an integer", real),
+            Setting::Flag(flag) => fail_setting($name, "expected an integer", flag),
         }
     };
     (@set Real $slot:expr, $name:ident, $value:ident) => {
@@ -437,6 +451,17 @@ macro_rules! named_settings {
                 Ok(())
             }
             Setting::Integer(integer) => fail_setting($name, "expected a real", integer),
+            Setting::Flag(flag) => fail_setting($name, "expected a real", flag),
+        }
+    };
+    (@set Flag $slot:expr, $name:ident, $value:ident) => {
+        match $value {
+            Setting::Flag(flag) => {
+                $slot = flag;
+                Ok(())
+            }
+            Setting::Integer(integer) => fail_setting($name, "expected true or false", integer),
+            Setting::Real(real) => fail_setting($name, "expected true or false", real),
         }
     };
 }
@@ -479,6 +504,7 @@ named_settings!(
     point_cull_age: Integer,
     init_ba_iterations: Integer,
     init_ransac_iterations: Integer,
+    relocalize: Flag,
     relocalize_ratio: Real,
     covisible_points: Integer,
     reloc_common_words: Real,
@@ -493,6 +519,7 @@ named_settings!(
     reloc_narrow_inliers: Integer,
     reloc_narrow_window: Real,
     reloc_narrow_distance: Integer,
+    relocalize_seconds: Real,
     pnp_min_inliers: Integer, lost_frames: Integer, reset_keyframes: Integer, seed: Integer,
 );
 
@@ -617,6 +644,7 @@ fn check_reals(options: &Options) -> Result<()> {
         ("min_epipole_distance2", options.min_epipole_distance2),
         ("reloc_window", options.reloc_window),
         ("reloc_narrow_window", options.reloc_narrow_window),
+        ("relocalize_seconds", options.relocalize_seconds),
     ] {
         if !(value.is_finite() && value > 0.0) {
             return fail_setting(name, "must be finite and positive", value);
@@ -668,7 +696,7 @@ mod tests {
     fn settings_by_name() {
         let mut options = Options::default();
         let settings = options.settings();
-        assert_eq!(settings.len(), 90);
+        assert_eq!(settings.len(), 92);
         assert_eq!(settings[0], ("n_features", Setting::Integer(1000)));
         assert_eq!(settings[2], ("scale_factor", Setting::Real(1.2)));
         options.set("window", Setting::Integer(7)).unwrap();
@@ -722,6 +750,7 @@ mod tests {
             .into_iter()
             .filter_map(|(name, setting)| {
                 let bad = match setting {
+                    Setting::Flag(_) => return None, // either value is valid
                     Setting::Integer(_) => Setting::Integer((1 << 30) + 1),
                     Setting::Real(_) => Setting::Real(f64::NAN),
                 };

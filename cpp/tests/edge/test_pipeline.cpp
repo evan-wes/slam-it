@@ -36,7 +36,9 @@ Eigen::Matrix4d along(std::int64_t i) {
 /// @brief The settings for a 60-point scene: the counts ORB-SLAM sizes for hundreds lowered.
 /// @return The settings.
 edge::Options small_scene() {
-  return {.min_init_features = 20, .min_init_features_depth = 20, .init_min_matches = 20};
+  edge::Options out{.min_init_features = 20, .min_init_features_depth = 20, .init_min_matches = 20};
+  out.relocalize = false;  // the scene's words would need a vocabulary; A2's loss rule holds
+  return out;
 }
 
 /// @brief Run the path through a pipeline.
@@ -45,7 +47,7 @@ edge::Options small_scene() {
 /// @return The pipeline, or an error.
 slam_it::foundations::Result<edge::Pipeline> run(edge::Mode mode,
                                                  std::vector<edge::FrameResult>& results) {
-  auto pipeline = edge::Pipeline::create(mode, scene::camera(), small_scene());
+  auto pipeline = edge::Pipeline::create(mode, scene::camera(), small_scene(), std::nullopt);
   if (!pipeline) {
     return pipeline;
   }
@@ -148,7 +150,8 @@ void check_lost(int& failures) {
   for (const std::int64_t reset_keyframes : {std::int64_t{1}, std::int64_t{0}}) {
     edge::Options options = small_scene();
     options.reset_keyframes = reset_keyframes;
-    auto pipeline = edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), options);
+    auto pipeline =
+        edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), options, std::nullopt);
     const auto started =
         pipeline
             ? pipeline->track(scene::frame_at(along(0), true))
@@ -178,7 +181,8 @@ void check_lost(int& failures) {
   }
   edge::Camera monocular = scene::camera();
   monocular.baseline = 0.0;
-  expect(is_invalid_input(edge::Pipeline::create(edge::Mode::kRgbd, monocular, edge::Options{})),
+  expect(is_invalid_input(
+             edge::Pipeline::create(edge::Mode::kRgbd, monocular, edge::Options{}, std::nullopt)),
          "RGB-D without a baseline is refused", failures);
 }
 

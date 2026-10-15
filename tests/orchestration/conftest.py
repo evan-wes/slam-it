@@ -20,10 +20,12 @@ from tests.conftest import REQUIRED_BACKENDS, require_backend
 from tests.edge import room
 from tests.edge.support import FRAMES, OPTIONS
 from tests.orchestration.datasets import (
+    FOUND_OPTIONS,
     GAP_OPTIONS,
     KEPT_OPTIONS,
     MOVED_OPTIONS,
     Room,
+    found_frames,
     gap_frames,
     lost_frames,
     write_room,
@@ -82,6 +84,14 @@ def gap_folders(rendered_room: list[room.Frame], tmp_path_factory: pytest.TempPa
 def lost_folders(rendered_room: list[room.Frame], tmp_path_factory: pytest.TempPathFactory) -> Room:
     """Write the lost room (:func:`lost_frames`) as both datasets' folders."""
     return write_room(tmp_path_factory.mktemp("lost"), lost_frames(rendered_room))
+
+
+@pytest.fixture(scope="session")
+def found_folders(
+    rendered_room: list[room.Frame], tmp_path_factory: pytest.TempPathFactory
+) -> Room:
+    """Write the found room (:func:`found_frames`) as both datasets' folders."""
+    return write_room(tmp_path_factory.mktemp("found"), found_frames(rendered_room))
 
 
 class RoomRun:
@@ -157,6 +167,12 @@ def moved_runs(gap_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> R
 def lost_runs(lost_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> RoomRun:
     """Run the lost room at the room's settings: its first map is reset."""
     return RoomRun(lost_folders, OPTIONS, tmp_path_factory.mktemp("lost_runs"))
+
+
+@pytest.fixture(scope="session")
+def found_runs(found_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> RoomRun:
+    """Run the found room with :data:`FOUND_OPTIONS`: the camera, back at the start, relocalises."""
+    return RoomRun(found_folders, FOUND_OPTIONS, tmp_path_factory.mktemp("found_runs"))
 
 
 @pytest.fixture(scope="session")

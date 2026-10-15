@@ -93,6 +93,9 @@ pub struct Run {
     pub points: Vec<Vector3<f64>>,
     /// The pipeline's options.
     pub settings: JsonObject,
+    /// The vocabulary a relocalising run used: its `vocabulary.json`'s text, a JSON object;
+    /// written as null for a run that did not relocalise.
+    pub vocabulary: Option<String>,
     /// One object per frame, each with a `timestamp`; the edge pipeline's also time its steps
     /// (`read_seconds`, `build_seconds`, `track_seconds`, `map_seconds`, as
     /// `slam_it.eval.runs.STEPS` defines them).
@@ -634,6 +637,8 @@ pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
     info_text.pop();
     info_text.push_str(", \"settings\": ");
     info_text.push_str(&json_object(&run.settings));
+    info_text.push_str(", \"vocabulary\": ");
+    info_text.push_str(run.vocabulary.as_deref().unwrap_or("null"));
     info_text.push_str(", \"record_features\": ");
     info_text.push_str(if run.record_features { "true" } else { "false" });
     let integer_or_null =
@@ -948,6 +953,7 @@ mod tests {
             sequence: values["sequence"].as_str().unwrap().into(),
             mode: values["mode"].as_str().unwrap().into(),
             backend: "rust".into(),
+            vocabulary: None,
             timestamps: numbers(&values["timestamps"]),
             poses: poses(&values["poses"]),
             keyframe_timestamps: numbers(&values["keyframe_timestamps"]),

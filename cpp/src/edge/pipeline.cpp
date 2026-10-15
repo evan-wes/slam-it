@@ -59,13 +59,16 @@ const char* name(Placement placement) {
       return "motion";
     case Placement::kLocalPnp:
       return "local_pnp";
+    case Placement::kRelocalization:
+      return "relocalization";
     case Placement::kCount:
       break;
   }
   return "unknown";
 }
 
-Result<Pipeline> Pipeline::create(Mode mode, Camera camera, Options options) {
+Result<Pipeline> Pipeline::create(Mode mode, Camera camera, Options options,
+                                  std::optional<foundations::vocabulary::Vocabulary> vocabulary) {
   if (auto ok = check_setup(camera, options); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
@@ -73,7 +76,13 @@ Result<Pipeline> Pipeline::create(Mode mode, Camera camera, Options options) {
     return fail(ErrorKind::kInvalidInput,
                 std::string("camera.baseline: ") + name(mode) + " needs a positive baseline");
   }
-  return Pipeline(mode, std::move(camera), options);
+  if (options.relocalize && !vocabulary) {
+    return fail(ErrorKind::kInvalidInput, "vocabulary: relocalize needs one");
+  }
+  if (!options.relocalize && vocabulary) {
+    return fail(ErrorKind::kInvalidInput, "vocabulary: given, but relocalize is off");
+  }
+  return Pipeline(mode, std::move(camera), options, std::move(vocabulary));
 }
 
 foundations::orb::Options Pipeline::extraction() const {
@@ -89,7 +98,7 @@ Result<FrameResult> Pipeline::track(const Frame& frame) {
   }
   Step step = std::move(*stepped);
   date();
-  const State state = state_;
+  const State state = step.lost ? State::kLost : state_;
   const std::optional<std::int64_t> map_id = map_id_;
   const std::optional<Tracked>& tracked = step.tracked;
   Fates fates{.fate = std::vector<Fate>(keypoint_count(frame), Fate::kUnmatched),
@@ -99,7 +108,7 @@ Result<FrameResult> Pipeline::track(const Frame& frame) {
     mark(fates, Fate::kTracked, tracked->points, pt_base_);
   }
   mark(fates, Fate::kMade, step.made, pt_base_);
-  if (state == State::kLost && map_) {  // a lost frame was tracking, so there is a map
+  if (step.lost && map_) {  // a lost frame was tracking, so there is a map
     const Map lost = std::move(*map_);
     step.summary.lost = close(lost);
   }
@@ -194,6 +203,7 @@ LostSummary Pipeline::close(const Map& m) {
                          .reset = reset};
   map_.reset();
   map_id_.reset();
+  database_.reset();
   state_ = State::kNotInitialized;
   last_frame_.reset();
   last_tracked_.reset();
@@ -202,6 +212,7 @@ LostSummary Pipeline::close(const Map& m) {
   previous_.clear();
   failures_ = 0;
   since_recovery_.reset();
+  lost_since_.reset();
   return lost;
 }
 
@@ -218,15 +229,23 @@ Result<Pipeline::Step> Pipeline::initialize(const Frame& frame) {
                         .init = std::move(attempt->summary),
                         .motion = std::nullopt,
                         .pnp = std::nullopt,
+                        .relocalization = std::nullopt,
                         .local_map = std::nullopt,
                         .mapping = std::nullopt,
                         .lost = std::nullopt},
             .matched = {},
-            .made = {}};
+            .made = {},
+            .lost = false};
   if (!attempt->started) {
     return step;
   }
   map_ = std::move(attempt->started->map);
+  if (vocabulary_) {
+    database_.emplace();
+    if (auto ok = sync_database(); !ok) {
+      return std::unexpected(std::move(ok.error()));
+    }
+  }
   map_id_ = maps_++;
   kf_base_ = static_cast<std::int64_t>(keyframe_lives_.size());
   pt_base_ = static_cast<std::int64_t>(point_lives_.size());
@@ -295,15 +314,49 @@ Result<void> Pipeline::accept(const Frame& frame, const Tracked& tracked) {
   last_frame_ = frame;
   last_tracked_ = tracked;
   failures_ = 0;
+  lost_since_.reset();
   return {};
 }
 
-void Pipeline::record_failure() {
+Result<void> Pipeline::sync_database() {
+  if (!database_ || !map_ || !vocabulary_) {
+    return {};  // not relocalising
+  }
+  const Map& m = *map_;
+  std::vector<std::int64_t> culled;
+  for (const auto& [keyframe, words] : database_->keyframes) {
+    if (keyframe_row(m, keyframe) < 0) {
+      culled.push_back(keyframe);
+    }
+  }
+  for (const std::int64_t keyframe : culled) {
+    if (auto ok = erase(*database_, keyframe); !ok) {
+      return ok;
+    }
+  }
+  for (std::size_t k = 0; k < keyframe_count(m); ++k) {
+    if (database_->keyframes.contains(m.kf_id[k])) {
+      continue;
+    }
+    const auto begin = static_cast<std::size_t>(m.kf_start[k]);
+    const auto end = static_cast<std::size_t>(m.kf_start[k + 1]);
+    const auto descriptors = std::span(m.kp_descriptor).subspan(begin, end - begin);
+    if (auto ok = add(*database_, *vocabulary_, m.kf_id[k], descriptors); !ok) {
+      return ok;
+    }
+  }
+  return {};
+}
+
+bool Pipeline::record_failure(const Frame& frame, std::size_t keyframes) {
   ++failures_;
   velocity_.reset();
-  if (failures_ >= options_.lost_frames) {
-    state_ = State::kLost;
+  const double since = lost_since_.has_value() ? *lost_since_ : frame.timestamp;
+  lost_since_ = since;
+  if (!options_.relocalize || std::cmp_less_equal(keyframes, options_.reset_keyframes)) {
+    return failures_ >= options_.lost_frames;
   }
+  return frame.timestamp - since > options_.relocalize_seconds;
 }
 
 Result<Pipeline::Placed> Pipeline::place(const Map& m, const Frame& frame) const {
@@ -331,12 +384,25 @@ Result<Pipeline::Placed> Pipeline::place(const Map& m, const Frame& frame) const
     return std::unexpected(std::move(recovery.error()));
   }
   summary.pnp = recovery->summary;
-  if (recovery->tracked) {
-    summary.placed_by = Placement::kLocalPnp;
+  if (recovery->tracked || !database_ || !vocabulary_) {  // placed, or not relocalising
+    if (recovery->tracked) {
+      summary.placed_by = Placement::kLocalPnp;
+    }
+    return Placed{.tracked = std::move(recovery->tracked),
+                  .summary = std::move(summary),
+                  .matched = std::move(recovery->matched)};
   }
-  return Placed{.tracked = std::move(recovery->tracked),
+  auto found = relocalize(m, *database_, *vocabulary_, camera_, frame, options_);
+  if (!found) {
+    return std::unexpected(std::move(found.error()));
+  }
+  summary.relocalization = found->summary;
+  if (found->tracked) {
+    summary.placed_by = Placement::kRelocalization;
+  }
+  return Placed{.tracked = std::move(found->tracked),
                 .summary = std::move(summary),
-                .matched = std::move(recovery->matched)};
+                .matched = std::move(found->matched)};
 }
 
 Result<Pipeline::Refined> Pipeline::refine(Map& m, const Frame& frame, const Tracked& placed,
@@ -375,7 +441,8 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
     return std::unexpected(std::move(placed.error()));
   }
   auto& [where, summary, matched] = *placed;
-  if (summary.placed_by == Placement::kLocalPnp) {
+  if (summary.placed_by == Placement::kLocalPnp ||
+      summary.placed_by == Placement::kRelocalization) {
     since_recovery_ = 0;
   } else if (since_recovery_) {
     ++*since_recovery_;
@@ -393,13 +460,14 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
     matched = std::move(refined->matched);
   }
   if (!tracked) {
-    record_failure();
+    const bool lost = record_failure(frame, keyframe_count(m));
     return Step{.tracked = std::nullopt,
                 .keyframe = false,
                 .map_seconds = 0.0,
                 .summary = std::move(summary),
                 .matched = std::move(matched),
-                .made = {}};
+                .made = {},
+                .lost = lost};
   }
   const bool held = recent && std::cmp_greater(keyframe_count(m), options_.max_frames);
   auto need = held ? Result<bool>(false)
@@ -415,6 +483,9 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
     if (!mapping) {
       return std::unexpected(std::move(mapping.error()));
     }
+    if (auto ok = sync_database(); !ok) {
+      return std::unexpected(std::move(ok.error()));
+    }
     mapped = std::chrono::steady_clock::now() - start;
     summary.mapping = std::move(mapping->summary);
     made = std::move(mapping->made);
@@ -427,7 +498,8 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
               .map_seconds = mapped.count(),
               .summary = std::move(summary),
               .matched = std::move(matched),
-              .made = std::move(made)};
+              .made = std::move(made),
+              .lost = false};
 }
 
 }  // namespace slam_it::edge

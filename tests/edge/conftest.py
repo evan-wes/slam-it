@@ -23,7 +23,7 @@ from slam_it.edge.map import Map
 from slam_it.foundations import matching, vocabulary
 from tests.conftest import require_backend
 from tests.edge import room
-from tests.edge.support import CAMERA, FRAMES, OPTIONS
+from tests.edge.support import CAMERA, FRAMES, OPTIONS, words_for
 
 KEYFRAMES = (0, 12, 24, 36)
 """The frames the truth map makes keyframes."""
@@ -187,7 +187,7 @@ def run_room(mode: str, rendered: list[room.Frame]) -> Run:
     camera = frames.Camera(
         "pinhole", room.SMALL.intrinsics, room.SMALL.width, room.SMALL.height, baseline
     )
-    run = pipeline.Pipeline(mode, camera, OPTIONS)
+    run = pipeline.Pipeline(mode, camera, OPTIONS, words_for(OPTIONS))
     results = []
     for f in rendered:
         if mode == "monocular":

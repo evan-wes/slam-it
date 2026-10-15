@@ -32,6 +32,7 @@ fn small_scene() -> Options {
         min_init_features: 20,
         min_init_features_depth: 20,
         init_min_matches: 20,
+        relocalize: false, // the scene's words would need a vocabulary; A2's loss rule holds
         ..Options::default()
     }
 }
@@ -39,7 +40,7 @@ fn small_scene() -> Options {
 /// Runs the path through a pipeline.
 #[allow(clippy::cast_precision_loss, reason = "frames below 16")]
 fn run(mode: Mode) -> (Pipeline, Vec<FrameResult>) {
-    let mut pipeline = Pipeline::new(mode, camera(), small_scene()).unwrap();
+    let mut pipeline = Pipeline::new(mode, camera(), small_scene(), None).unwrap();
     let results = (0..FRAMES)
         .map(|i| {
             let frame = Frame {
@@ -89,7 +90,7 @@ fn empty_frames_lose_the_track_and_the_next_frame_starts_a_new_map() {
             reset_keyframes,
             ..small_scene()
         };
-        let mut pipeline = Pipeline::new(Mode::Rgbd, camera(), options).unwrap();
+        let mut pipeline = Pipeline::new(Mode::Rgbd, camera(), options, None).unwrap();
         let started = pipeline.track(&frame_at(&along(0), true, 0)).unwrap();
         assert_eq!(started.map, Some(0));
         let features = Features {
@@ -141,6 +142,6 @@ fn empty_frames_lose_the_track_and_the_next_frame_starts_a_new_map() {
     }
     let mut monocular = camera();
     monocular.baseline = 0.0;
-    let err = Pipeline::new(Mode::Rgbd, monocular, Options::default()).unwrap_err();
+    let err = Pipeline::new(Mode::Rgbd, monocular, Options::default(), None).unwrap_err();
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }

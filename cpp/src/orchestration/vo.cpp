@@ -40,6 +40,7 @@
 #include "slam_it/foundations/ransac.hpp"
 #include "slam_it/foundations/se3.hpp"
 #include "slam_it/foundations/stereo.hpp"
+#include "slam_it/foundations/vocabulary.hpp"
 
 namespace slam_it::orchestration::vo {
 
@@ -270,6 +271,9 @@ Result<Source> euroc_source(const std::string& root, edge::Mode mode) {
 /// @return Each one's name and value.
 eval::runs::JsonObject settings(const edge::Options& options) {
   eval::runs::JsonObject out;
+  for (const auto& [name, member] : edge::kFlagOptions) {
+    out.emplace_back(name, options.*member);
+  }
   for (const auto& [name, member] : edge::kIntegerOptions) {
     out.emplace_back(name, options.*member);
   }
@@ -346,22 +350,61 @@ Result<eval::runs::JsonValue> init_json(const edge::InitSummary& s) {
                  {"ba", std::move(*ba)}});
 }
 
+/// @brief A RANSAC run's termination as a stage records it: its name, `degenerate` when it
+///        found no pose, or null when it did not run.
+/// @param degenerate Whether it found no pose.
+/// @param termination Why it stopped, if it found one.
+/// @return The value.
+eval::runs::JsonValue termination_json(
+    bool degenerate, const std::optional<foundations::ransac::Termination>& termination) {
+  if (degenerate) {
+    return name_json("degenerate");
+  }
+  return termination ? name_json(foundations::ransac::name(*termination))
+                     : eval::runs::JsonValue(nullptr);
+}
+
 /// @brief How the PnP fallback went, as JSON.
 /// @param s The summary.
 /// @return Its object.
 Result<eval::runs::JsonValue> pnp_json(const edge::PnpSummary& s) {
-  eval::runs::JsonValue termination = nullptr;
-  if (s.degenerate) {
-    termination = name_json("degenerate");
-  } else if (s.termination) {
-    termination = name_json(foundations::ransac::name(*s.termination));
-  }
   return nested({{"candidates", s.candidates},
                  {"matches", count_or_null(s.matches)},
                  {"iterations", count_or_null(s.iterations)},
-                 {"termination", std::move(termination)},
+                 {"termination", termination_json(s.degenerate, s.termination)},
                  {"inliers", count_or_null(s.inliers)},
                  {"refined", count_or_null(s.refined)}});
+}
+
+/// @brief How relocalising the frame went, as JSON
+///        (`slam_it.edge.relocalization.RelocalizationSummary.as_dict`).
+/// @param s The summary.
+/// @return Its object.
+Result<eval::runs::JsonValue> relocalization_json(const edge::RelocalizationSummary& s) {
+  std::vector<eval::runs::JsonValue> tried;
+  for (const edge::CandidateSummary& c : s.candidates) {
+    auto item = nested({{"keyframe", c.keyframe},
+                        {"score", c.score},
+                        {"matches", c.matches},
+                        {"iterations", count_or_null(c.iterations)},
+                        {"termination", termination_json(c.degenerate, c.termination)},
+                        {"inliers", count_or_null(c.inliers)},
+                        {"refined", count_or_null(c.refined)},
+                        {"found", count_or_null(c.found)}});
+    if (!item) {
+      return std::unexpected(std::move(item.error()));
+    }
+    tried.push_back(std::move(*item));
+  }
+  auto candidates = eval::runs::json_array(tried);
+  if (!candidates) {
+    return std::unexpected(std::move(candidates.error()));
+  }
+  return nested({{"words", s.words},
+                 {"sharing", s.sharing},
+                 {"scored", s.scored},
+                 {"candidates", std::move(*candidates)},
+                 {"placed", s.placed}});
 }
 
 /// @brief How mapping the keyframe went, as JSON.
@@ -412,10 +455,11 @@ Result<eval::runs::JsonObject> summary_json(const edge::FrameSummary& summary) {
   const auto lost = [](const edge::LostSummary& s) {
     return nested({{"keyframes", s.keyframes}, {"points", s.points}, {"reset", s.reset}});
   };
-  const std::array<std::pair<const char*, Result<JsonValue>>, 6> stages = {{
+  const std::array<std::pair<const char*, Result<JsonValue>>, 7> stages = {{
       {"init", or_null(summary.init, init_json)},
       {"motion", or_null(summary.motion, motion)},
       {"pnp", or_null(summary.pnp, pnp_json)},
+      {"relocalization", or_null(summary.relocalization, relocalization_json)},
       {"local_map", or_null(summary.local_map, local_map)},
       {"mapping", or_null(summary.mapping, mapping_json)},
       {"lost", or_null(summary.lost, lost)},
@@ -606,6 +650,17 @@ Result<void> read_option(std::string_view text, edge::Options& options) {
   }
   const std::string_view key = text.substr(0, equals);
   const std::string_view value = text.substr(equals + 1);
+  for (const auto& [name, member] : edge::kFlagOptions) {
+    if (key == name) {
+      const std::string_view word = eval::text::trim(value);
+      if (word != "true" && word != "false") {
+        return fail(ErrorKind::kInvalidInput, std::string(key) + ": expected true or false, got '" +
+                                                  std::string(value) + "'");
+      }
+      options.*member = word == "true";
+      return {};
+    }
+  }
   for (const auto& [name, member] : edge::kIntegerOptions) {
     if (key == name) {
       const auto integer = integer_of(key, value);
@@ -659,6 +714,8 @@ Result<void> read_flag(Request& out, std::string_view flag, const std::string& v
     } else {
       out.count = *integer;
     }
+  } else if (flag == "--vocabulary") {
+    out.vocabulary = value;
   } else if (flag == "--option") {
     return read_option(value, out.options);
   } else {
@@ -715,6 +772,12 @@ Result<void> check(const Request& request) {
   if (request.first < 0 || request.count.value_or(0) < 0) {
     return fail(ErrorKind::kInvalidInput, "first, count: must be at least 0");
   }
+  if (request.options.relocalize && !request.vocabulary) {
+    return fail(ErrorKind::kInvalidInput, "--vocabulary: relocalize needs one");
+  }
+  if (!request.options.relocalize && request.vocabulary) {
+    return fail(ErrorKind::kInvalidInput, "--vocabulary: given, but relocalize is off");
+  }
   return edge::check_options(request.options);
 }
 
@@ -727,7 +790,27 @@ Result<eval::runs::Run> run(const Request& request) {
   if (!source) {
     return std::unexpected(source.error());
   }
-  auto pipeline = edge::Pipeline::create(request.mode, source->camera, request.options);
+  std::optional<foundations::vocabulary::Vocabulary> words;
+  std::optional<std::string> record;
+  if (request.vocabulary) {
+    auto read = foundations::vocabulary::read(*request.vocabulary);
+    if (!read) {
+      return std::unexpected(read.error());
+    }
+    words = std::move(*read);
+    auto lines = eval::text::read_lines(
+        (std::filesystem::path(*request.vocabulary) / "vocabulary.json").string());
+    if (!lines) {
+      return std::unexpected(lines.error());
+    }
+    std::string text;
+    for (const std::string& line : *lines) {
+      text += line + "\n";
+    }
+    record = std::move(text);
+  }
+  auto pipeline =
+      edge::Pipeline::create(request.mode, source->camera, request.options, std::move(words));
   if (!pipeline) {
     return std::unexpected(pipeline.error());
   }
@@ -737,6 +820,7 @@ Result<eval::runs::Run> run(const Request& request) {
   out.mode = edge::name(request.mode);
   out.backend = "cpp";
   out.settings = settings(request.options);
+  out.vocabulary = std::move(record);
   out.record_features = request.record_features;
   std::optional<eval::runs::FeatureWriter> features;
   if (request.record_features) {

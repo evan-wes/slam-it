@@ -11,14 +11,17 @@
 #include <utility>
 #include <vector>
 
+#include "slam_it/edge/database.hpp"
 #include "slam_it/edge/frames.hpp"
 #include "slam_it/edge/initialization.hpp"
 #include "slam_it/edge/map.hpp"
 #include "slam_it/edge/mapping.hpp"
 #include "slam_it/edge/options.hpp"
+#include "slam_it/edge/relocalization.hpp"
 #include "slam_it/edge/tracking.hpp"
 #include "slam_it/foundations/error.hpp"
 #include "slam_it/foundations/orb.hpp"
+#include "slam_it/foundations/vocabulary.hpp"
 
 namespace slam_it::edge {
 
@@ -49,8 +52,10 @@ enum class Placement : std::uint8_t {
   kMotion = 1,
   /// @brief The fallback: PnP against the local map.
   kLocalPnp = 2,
+  /// @brief Relocalised against the whole map, through its keyframe database.
+  kRelocalization = 3,
   /// @brief The number of placements (a sentinel, not a placement).
-  kCount = 3,
+  kCount = 4,
 };
 
 /// @brief A placement's name, as `slam_it.edge.pipeline.Placement` spells it.
@@ -104,6 +109,8 @@ struct FrameSummary {
   std::optional<MotionSummary> motion;
   /// @brief The PnP fallback, run only when tracking the last frame failed.
   std::optional<PnpSummary> pnp;
+  /// @brief Relocalisation, run only when the fallback failed too.
+  std::optional<RelocalizationSummary> relocalization;
   /// @brief Tracking the local map, run on a placed frame.
   std::optional<LocalMapSummary> local_map;
   /// @brief Local mapping, on a keyframe after the first.
@@ -168,10 +175,14 @@ class Pipeline {
   /// @param mode The sensor mode.
   /// @param camera The camera.
   /// @param options The settings.
-  /// @return The pipeline; `InvalidInput` for an invalid camera or settings, or a stereo or
-  ///         RGB-D camera without a baseline.
-  [[nodiscard]] static foundations::Result<Pipeline> create(Mode mode, Camera camera,
-                                                            Options options);
+  /// @param vocabulary The vocabulary of the keyframe database's words: required with
+  ///        `relocalize` on, refused with it off.
+  /// @return The pipeline; `InvalidInput` for an invalid camera or settings, a stereo or
+  ///         RGB-D camera without a baseline, or a vocabulary missing while relocalising or given
+  ///         while not.
+  [[nodiscard]] static foundations::Result<Pipeline> create(
+      Mode mode, Camera camera, Options options,
+      std::optional<foundations::vocabulary::Vocabulary> vocabulary);
 
   /// @brief The extraction settings the next frame should be built with.
   /// @return `init_feature_factor` times the features for a monocular frame before the map
@@ -213,6 +224,8 @@ class Pipeline {
     std::vector<std::int64_t> matched;
     /// @brief The point made of each keypoint, -1 where none; empty if none were made.
     std::vector<std::int64_t> made;
+    /// @brief Whether the frame lost the track.
+    bool lost{false};
   };
 
   /// @brief A frame placed, as `place` gives it.
@@ -239,8 +252,13 @@ class Pipeline {
   /// @param mode The sensor mode.
   /// @param camera The camera.
   /// @param options The settings.
-  Pipeline(Mode mode, Camera camera, Options options)
-      : mode_(mode), camera_(std::move(camera)), options_(options) {}
+  /// @param vocabulary The keyframe database's vocabulary, when relocalising.
+  Pipeline(Mode mode, Camera camera, Options options,
+           std::optional<foundations::vocabulary::Vocabulary> vocabulary)
+      : mode_(mode),
+        camera_(std::move(camera)),
+        options_(options),
+        vocabulary_(std::move(vocabulary)) {}
 
   /// @brief Try to start the map with a frame.
   /// @param frame The frame.
@@ -263,9 +281,17 @@ class Pipeline {
   /// @return Nothing, or an error if the last pose cannot be inverted.
   foundations::Result<void> accept(const Frame& frame, const Tracked& tracked);
 
-  /// @brief Count a frame that was not tracked and end the velocity; enough in a row lose the
-  ///        track.
-  void record_failure();
+  /// @brief Count a frame that was not tracked, which ends the velocity
+  ///        (`slam_it.edge.pipeline.Pipeline._record_failure`).
+  /// @param frame The frame.
+  /// @param keyframes The map's keyframes.
+  /// @return Whether it loses the track: past `relocalize_seconds` since the first failure, or
+  ///         for a small map or with `relocalize` off, on the `lost_frames`-th in a row.
+  bool record_failure(const Frame& frame, std::size_t keyframes);
+
+  /// @brief Bring the keyframe database to the map's keyframes: add the new, erase the culled.
+  /// @return Nothing; a quantisation's error.
+  foundations::Result<void> sync_database();
 
   /// @brief Track the last frame, or recover by PnP.
   /// @param m The map.
@@ -324,6 +350,12 @@ class Pipeline {
   std::vector<std::array<double, 2>> previous_;
   /// @brief Frames in a row not tracked.
   std::int64_t failures_{0};
+  /// @brief The vocabulary, when relocalising.
+  std::optional<foundations::vocabulary::Vocabulary> vocabulary_;
+  /// @brief The map's keyframe database, when relocalising and a map exists.
+  std::optional<Database> database_;
+  /// @brief The first failed frame's time, while the track is recently lost.
+  std::optional<double> lost_since_;
   /// @brief Frames since the last recovery, if any.
   std::optional<std::int64_t> since_recovery_;
   /// @brief Frames given so far.

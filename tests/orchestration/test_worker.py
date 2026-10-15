@@ -229,7 +229,7 @@ def test_the_summary_says_where_a_run_lost_the_track_and_went_on(
     after = [times[10 + blanks], times[-1]]
     for name, options, segments in (
         ("reset", OPTIONS, [after]),
-        ("kept", replace(OPTIONS, reset_keyframes=0), [[0.0, times[9]], after]),
+        ("kept", replace(OPTIONS, reset_keyframes=0, relocalize=False), [[0.0, times[9]], after]),
     ):
         run = vo.run("tum", folders.tum, "rgbd", tmp_path / name, options=options)
         summary = worker.summarize(run, folders.timestamps, "nominal", (320, 240))

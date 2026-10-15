@@ -129,7 +129,7 @@ foundations::Result<void> check_options(const Options& options) {
       return ok;
     }
   }
-  const std::array<RealSetting, 20> positive{{
+  const std::array<RealSetting, 21> positive{{
       {"scale_factor", options.scale_factor},
       {"close_depth", options.close_depth},
       {"init_window", options.init_window},
@@ -150,6 +150,7 @@ foundations::Result<void> check_options(const Options& options) {
       {"min_epipole_distance2", options.min_epipole_distance2},
       {"reloc_window", options.reloc_window},
       {"reloc_narrow_window", options.reloc_narrow_window},
+      {"relocalize_seconds", options.relocalize_seconds},
   }};
   for (const auto& [setting, value] : positive) {
     if (!std::isfinite(value) || value <= 0.0) {

@@ -40,6 +40,7 @@ vo::Request request_for(const std::string& dataset, edge::Mode mode, const std::
   out.sequence = sequence(name);
   out.mode = mode;
   out.out = "run";
+  out.options.relocalize = false;  // no vocabulary: these check the request, not relocalising
   return out;
 }
 
@@ -132,7 +133,8 @@ void check_runs(int& failures) {
   const auto empty = vo::run(request);
   expect(empty.has_value() && empty->timestamps.empty() && empty->sequence == "tum_camera" &&
              empty->backend == "cpp" &&
-             empty->settings.size() == edge::kIntegerOptions.size() + edge::kRealOptions.size(),
+             empty->settings.size() == edge::kFlagOptions.size() + edge::kIntegerOptions.size() +
+                                           edge::kRealOptions.size(),
          "a run of no frames records the sequence and every setting", failures);
   expect(!fs::exists(out / "run.json"), "the run is the program's to write", failures);
   if (empty.has_value()) {

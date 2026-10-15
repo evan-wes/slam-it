@@ -33,6 +33,7 @@ trained on another descriptor, or whose arrays changed, is refused.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import io
 import json
@@ -645,6 +646,47 @@ def _replace(path: Path, data: bytes) -> None:
     temporary = path.with_name(f".{path.name}.tmp")
     temporary.write_bytes(data)
     temporary.replace(path)
+
+
+def record(folder: str | Path) -> dict[str, Any]:
+    """Return a vocabulary's ``vocabulary.json``, as a relocalising run records it.
+
+    Parameters
+    ----------
+    folder : str or pathlib.Path
+        The vocabulary's folder (:func:`read` checks it).
+
+    Returns
+    -------
+    dict
+        Its ``vocabulary.json``: the format and version, k, levels, the descriptor, the training
+        set, the seed and each array's SHA-256.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If it is not a JSON object.
+    """
+    path = Path(folder) / "vocabulary.json"
+    try:
+        info = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise InvalidInputError(f"{path}: not JSON ({error})") from None
+    if not isinstance(info, dict):
+        raise InvalidInputError(f"{path}: expected a JSON object")
+    return info
+
+
+@functools.cache
+def default() -> Vocabulary:
+    """Return the committed default vocabulary (:data:`DEFAULT`), read once and then shared.
+
+    Returns
+    -------
+    Vocabulary
+        The vocabulary.
+    """
+    return read(DEFAULT)
 
 
 def read(folder: str | Path) -> Vocabulary:

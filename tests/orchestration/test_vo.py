@@ -17,6 +17,7 @@ import pytest
 from slam_it import backends
 from slam_it.edge.options import Options
 from slam_it.eval import budgets, runs
+from slam_it.foundations import vocabulary
 from slam_it.foundations.errors import DegenerateError, InvalidInputError, NotConvergedError
 from slam_it.orchestration import vo
 from tests.conftest import FIXTURES, assert_matches_fixture, load_fixture
@@ -215,7 +216,7 @@ def test_the_moved_settings_change_the_decisions(
     assert moved != default
 
 
-ROOMS = ("room", "gap", "lost", "kept")
+ROOMS = ("room", "gap", "lost", "kept", "found")
 """The rooms the golden record holds, each run by its fixture ``<room>_runs``."""
 
 GOLDEN = load_fixture("edge/room_runs.json")
@@ -411,7 +412,9 @@ def test_a_setting_out_of_range_is_a_failed_run_not_a_usage_error() -> None:
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_every_program_records_its_process(backend: str, tmp_path: Path) -> None:
     """Each backend's program writes its run with its own peak memory and CPUs, and says so."""
-    request = vo.Request("tum", SEQUENCES / "tum_camera", "rgbd", tmp_path, count=0)
+    request = vo.Request(
+        "tum", SEQUENCES / "tum_camera", "rgbd", tmp_path, count=0, vocabulary=vocabulary.DEFAULT
+    )
     done = subprocess.run(
         [*vo.command(require_program(backend)), *request.arguments()],
         capture_output=True, text=True, check=False,
@@ -517,7 +520,9 @@ def test_a_program_fails_a_file_it_cannot_read_or_write_alike(backend: str, tmp_
     message prefixed and naming the file.
     """
     command = vo.command(require_program(backend))
-    missing = vo.Request("euroc", SEQUENCES / "euroc", "stereo", tmp_path, count=1)
+    missing = vo.Request(
+        "euroc", SEQUENCES / "euroc", "stereo", tmp_path, count=1, vocabulary=vocabulary.DEFAULT
+    )
     done = subprocess.run(
         [*command, *missing.arguments()], capture_output=True, text=True, check=False
     )
@@ -525,7 +530,14 @@ def test_a_program_fails_a_file_it_cannot_read_or_write_alike(backend: str, tmp_
     assert re.match(r"slam_it_vo: .*mav0/cam0/data/\d+\.png", done.stderr)
     blocked = tmp_path / "a_file"
     blocked.write_text("")
-    unwritable = vo.Request("tum", SEQUENCES / "tum_camera", "rgbd", blocked / "run", count=0)
+    unwritable = vo.Request(
+        "tum",
+        SEQUENCES / "tum_camera",
+        "rgbd",
+        blocked / "run",
+        count=0,
+        vocabulary=vocabulary.DEFAULT,
+    )
     done = subprocess.run(
         [*command, *unwritable.arguments()], capture_output=True, text=True, check=False
     )

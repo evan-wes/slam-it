@@ -184,6 +184,8 @@ struct Options {
   double pnp_threshold{4.0};
   /// @brief Inliers the PnP fallback needs.
   std::int64_t pnp_min_inliers{30};
+  /// @brief Relocalise a failed frame through the keyframe database (needs a vocabulary).
+  bool relocalize{true};
   /// @brief The descriptor ratio test of the fallback and of relocalisation's matching by word.
   double relocalize_ratio{0.75};
   /// @brief Keyframes observing at least this many of the same points are covisible.
@@ -212,7 +214,11 @@ struct Options {
   double reloc_narrow_window{3.0};
   /// @brief Its descriptor distance.
   std::int64_t reloc_narrow_distance{64};
-  /// @brief Failed frames in a row before the track is lost.
+  /// @brief A recently lost track is lost once more than this has passed since its first
+  ///        failed frame, in seconds.
+  double relocalize_seconds{3.0};
+  /// @brief A map of `reset_keyframes` keyframes or fewer is lost after this many failed frames
+  ///        in a row instead.
   std::int64_t lost_frames{5};
   /// @brief A map lost with this many keyframes or fewer is reset rather than kept.
   std::int64_t reset_keyframes{10};
@@ -225,6 +231,14 @@ using IntegerOption = std::pair<const char*, std::int64_t Options::*>;
 
 /// @brief A real setting's name and member.
 using RealOption = std::pair<const char*, double Options::*>;
+
+/// @brief A flag setting's name and member.
+using FlagOption = std::pair<const char*, bool Options::*>;
+
+/// @brief `Options`' flag fields, by their Python names.
+inline constexpr std::array<FlagOption, 1> kFlagOptions{{
+    {"relocalize", &Options::relocalize},
+}};
 
 /// @brief `Options`' integer fields, by their Python names.
 inline constexpr std::array<IntegerOption, 50> kIntegerOptions{{
@@ -281,7 +295,7 @@ inline constexpr std::array<IntegerOption, 50> kIntegerOptions{{
 }};
 
 /// @brief `Options`' real fields, by their Python names.
-inline constexpr std::array<RealOption, 40> kRealOptions{{
+inline constexpr std::array<RealOption, 41> kRealOptions{{
     {"scale_factor", &Options::scale_factor},
     {"stereo_band", &Options::stereo_band},
     {"stereo_outlier_factor", &Options::stereo_outlier_factor},
@@ -322,6 +336,7 @@ inline constexpr std::array<RealOption, 40> kRealOptions{{
     {"reloc_confidence", &Options::reloc_confidence},
     {"reloc_window", &Options::reloc_window},
     {"reloc_narrow_window", &Options::reloc_narrow_window},
+    {"relocalize_seconds", &Options::relocalize_seconds},
 }};
 
 /// @brief The ORB extraction settings.
