@@ -533,10 +533,7 @@ def _in_view(m: Map, camera: Camera, pose: Array, rows: IntArray, options: Optio
     """Select the points a camera sees (reference)."""
     xyz = m.pt_xyz[rows]
     local = maps.to_camera(pose, xyz)
-    keep = local[:, 2] > 0.0
-    pixels = np.full((len(rows), 2), np.nan)
-    pixels[keep] = camera.project(local[keep])
-    keep &= camera.inside(pixels)
+    pixels, keep = camera.project_in_view(local)
     offset = xyz - maps.camera_centre(pose)
     distance = np.linalg.norm(offset, axis=1)
     keep &= maps.in_distance_range(m, rows, distance, options)
@@ -644,10 +641,7 @@ def _track_last_frame(  # noqa: PLR0913 -- the stage's state
     rows = m.point_rows(last_tracked.points)
     have = np.flatnonzero(rows >= 0)
     local = maps.to_camera(predicted, m.pt_xyz[rows[have]])
-    front = local[:, 2] > 0.0
-    pixels = np.full((len(have), 2), np.nan)
-    pixels[front] = camera.project(local[front])
-    ok = front & camera.inside(pixels)
+    pixels, ok = camera.project_in_view(local)
     have, local, pixels = have[ok], local[ok], pixels[ok]
     last_level = last.features.keypoints.level[have]
     low, high = last_level - 1, last_level + 1

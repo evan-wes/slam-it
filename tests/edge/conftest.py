@@ -18,8 +18,9 @@ import pytest
 
 from slam_it.edge import frames, pipeline
 from slam_it.edge import map as maps
+from slam_it.edge.database import Database
 from slam_it.edge.map import Map
-from slam_it.foundations import matching
+from slam_it.foundations import matching, vocabulary
 from tests.conftest import require_backend
 from tests.edge import room
 from tests.edge.support import CAMERA, FRAMES, OPTIONS
@@ -125,6 +126,21 @@ def truth(rendered: list[room.Frame]) -> Truth:
     built = [frames.rgbd(f.gray, f.depth, f.timestamp, CAMERA, extraction) for f in rendered]
     poses = [np.linalg.inv(f.T_world_cam) for f in rendered]
     return Truth(CAMERA, built, poses, truth_map(built, poses))
+
+
+@pytest.fixture(scope="session")
+def words() -> vocabulary.Vocabulary:
+    """Read the committed vocabulary."""
+    return vocabulary.read(vocabulary.DEFAULT)
+
+
+@pytest.fixture(scope="session")
+def room_database(truth: Truth, words: vocabulary.Vocabulary) -> Database:
+    """Put the truth map's keyframes in a database (tests must not change it)."""
+    db = Database(words)
+    for k in range(truth.map.keyframes):
+        db.add(int(truth.map.kf_id[k]), truth.map.kp_descriptor[truth.map.keypoint_rows(k)])
+    return db
 
 
 @pytest.fixture(scope="session")

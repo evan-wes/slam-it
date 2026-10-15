@@ -184,8 +184,34 @@ struct Options {
   double pnp_threshold{4.0};
   /// @brief Inliers the PnP fallback needs.
   std::int64_t pnp_min_inliers{30};
-  /// @brief The fallback's descriptor ratio test.
+  /// @brief The descriptor ratio test of the fallback and of relocalisation's matching by word.
   double relocalize_ratio{0.75};
+  /// @brief Keyframes observing at least this many of the same points are covisible.
+  std::int64_t covisible_points{15};
+  /// @brief Relocalisation scores keyframes sharing more than this fraction of the most words.
+  double reloc_common_words{0.8};
+  /// @brief A scored keyframe's score is accumulated over this many best covisible keyframes.
+  std::int64_t reloc_neighbours{10};
+  /// @brief Groups above this fraction of the best accumulated score give a candidate.
+  double reloc_group_score{0.75};
+  /// @brief A candidate needs this many matches by word.
+  std::int64_t reloc_min_matches{15};
+  /// @brief A candidate's PnP RANSAC needs this fraction of its matches as inliers.
+  double reloc_inlier_ratio{0.5};
+  /// @brief ...and at least this many, before and after the pose is optimised.
+  std::int64_t reloc_min_inliers{10};
+  /// @brief The confidence its samples are drawn for, in (0, 1).
+  double reloc_confidence{0.99};
+  /// @brief The most samples it draws.
+  std::int64_t reloc_ransac_iterations{300};
+  /// @brief The window, in pixels at the predicted level, of the search by projection.
+  double reloc_window{10.0};
+  /// @brief With more inliers than this but too few still, the search is repeated narrower.
+  std::int64_t reloc_narrow_inliers{30};
+  /// @brief That window.
+  double reloc_narrow_window{3.0};
+  /// @brief Its descriptor distance.
+  std::int64_t reloc_narrow_distance{64};
   /// @brief Failed frames in a row before the track is lost.
   std::int64_t lost_frames{5};
   /// @brief A map lost with this many keyframes or fewer is reset rather than kept.
@@ -201,7 +227,7 @@ using IntegerOption = std::pair<const char*, std::int64_t Options::*>;
 using RealOption = std::pair<const char*, double Options::*>;
 
 /// @brief `Options`' integer fields, by their Python names.
-inline constexpr std::array<IntegerOption, 43> kIntegerOptions{{
+inline constexpr std::array<IntegerOption, 50> kIntegerOptions{{
     {"n_features", &Options::n_features},
     {"levels", &Options::levels},
     {"fast_threshold", &Options::fast_threshold},
@@ -245,10 +271,17 @@ inline constexpr std::array<IntegerOption, 43> kIntegerOptions{{
     {"point_cull_age", &Options::point_cull_age},
     {"init_ba_iterations", &Options::init_ba_iterations},
     {"init_ransac_iterations", &Options::init_ransac_iterations},
+    {"covisible_points", &Options::covisible_points},
+    {"reloc_neighbours", &Options::reloc_neighbours},
+    {"reloc_min_matches", &Options::reloc_min_matches},
+    {"reloc_min_inliers", &Options::reloc_min_inliers},
+    {"reloc_ransac_iterations", &Options::reloc_ransac_iterations},
+    {"reloc_narrow_inliers", &Options::reloc_narrow_inliers},
+    {"reloc_narrow_distance", &Options::reloc_narrow_distance},
 }};
 
 /// @brief `Options`' real fields, by their Python names.
-inline constexpr std::array<RealOption, 34> kRealOptions{{
+inline constexpr std::array<RealOption, 40> kRealOptions{{
     {"scale_factor", &Options::scale_factor},
     {"stereo_band", &Options::stereo_band},
     {"stereo_outlier_factor", &Options::stereo_outlier_factor},
@@ -283,6 +316,12 @@ inline constexpr std::array<RealOption, 34> kRealOptions{{
     {"min_epipole_distance2", &Options::min_epipole_distance2},
     {"min_baseline_depth", &Options::min_baseline_depth},
     {"relocalize_ratio", &Options::relocalize_ratio},
+    {"reloc_common_words", &Options::reloc_common_words},
+    {"reloc_group_score", &Options::reloc_group_score},
+    {"reloc_inlier_ratio", &Options::reloc_inlier_ratio},
+    {"reloc_confidence", &Options::reloc_confidence},
+    {"reloc_window", &Options::reloc_window},
+    {"reloc_narrow_window", &Options::reloc_narrow_window},
 }};
 
 /// @brief The ORB extraction settings.

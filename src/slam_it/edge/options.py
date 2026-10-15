@@ -223,7 +223,43 @@ class Options:
     pnp_min_inliers : int
         Inliers the PnP fallback needs.
     relocalize_ratio : float
-        The fallback's descriptor ratio test (``Relocalization``'s ``ORBmatcher(0.75, true)``).
+        The descriptor ratio test of the fallback and of relocalisation's matching by word
+        (``Relocalization``'s ``ORBmatcher(0.75, true)``).
+    covisible_points : int
+        Two keyframes that observe at least this many of the same points are covisible
+        (``UpdateConnections``' 15).
+    reloc_common_words : float
+        Relocalisation scores the keyframes that share more than this fraction of the most
+        words any keyframe shares with the frame (``DetectRelocalizationCandidates``' 0.8).
+    reloc_neighbours : int
+        A scored keyframe's score is accumulated over its best this many covisible keyframes
+        (``GetBestCovisibilityKeyFrames(10)``).
+    reloc_group_score : float
+        Groups whose accumulated score exceeds this fraction of the best give a candidate
+        (0.75).
+    reloc_min_matches : int
+        A candidate needs this many matches by word (``SearchByBoW``; 15).
+    reloc_inlier_ratio : float
+        A candidate's PnP RANSAC needs this fraction of its matches as inliers, and draws the
+        samples that find such a pose with ``reloc_confidence`` (MLPnP's ``epsilon``, 0.5).
+    reloc_min_inliers : int
+        ...and at least this many, before and after the pose is optimised (10).
+    reloc_confidence : float
+        The confidence its samples are drawn for, in (0, 1) (0.99).
+    reloc_ransac_iterations : int
+        The most samples it draws (300).
+    reloc_window : float
+        The window, in pixels at the predicted level, in which a candidate's other points are
+        searched by projection when too few inliers relocalise the frame (10, with ``th_high``
+        as the distance).
+    reloc_narrow_inliers : int
+        With more inliers than this but too few still, the search is repeated in a narrower
+        window (``nGood > 30``).
+    reloc_narrow_window : float
+        That window (3).
+    reloc_narrow_distance : int
+        Its descriptor distance (64), at most
+        :data:`slam_it.foundations.matching.MAX_DISTANCE`.
     lost_frames : int
         Frames the fallback may fail on in a row before the track is lost: the map is kept,
         or reset (``reset_keyframes``), and the next frame starts a new one (ORB-SLAM3's
@@ -310,6 +346,19 @@ class Options:
     pnp_threshold: float = 4.0
     pnp_min_inliers: int = 30
     relocalize_ratio: float = 0.75
+    covisible_points: int = 15
+    reloc_common_words: float = 0.8
+    reloc_neighbours: int = 10
+    reloc_group_score: float = 0.75
+    reloc_min_matches: int = 15
+    reloc_inlier_ratio: float = 0.5
+    reloc_min_inliers: int = 10
+    reloc_confidence: float = 0.99
+    reloc_ransac_iterations: int = 300
+    reloc_window: float = 10.0
+    reloc_narrow_inliers: int = 30
+    reloc_narrow_window: float = 3.0
+    reloc_narrow_distance: int = 64
     lost_frames: int = 5
     reset_keyframes: int = 10
     seed: int = 0
@@ -345,8 +394,12 @@ class Options:
                         f"{item.name}: must be finite and positive, got {number}"
                     )
                 set_(self, item.name, number)
-        for name in ("th_low", "th_high"):
+        for name in ("th_low", "th_high", "reloc_narrow_distance"):
             as_count(getattr(self, name), name, 1, matching.MAX_DISTANCE)
+        if not self.reloc_confidence < 1.0:
+            raise InvalidInputError(
+                f"reloc_confidence: must be in (0, 1), got {self.reloc_confidence}"
+            )
         try:
             self.stereo_matching()
         except InvalidInputError as error:
@@ -423,6 +476,10 @@ _FRACTIONS = frozenset(
         "redundant_fraction",
         "view_cos_limit",
         "max_parallax_cos",
+        "reloc_common_words",
+        "reloc_group_score",
+        "reloc_inlier_ratio",
+        "reloc_confidence",
     }
 )
 """The real settings in (0, 1]."""

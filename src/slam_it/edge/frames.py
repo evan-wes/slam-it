@@ -114,6 +114,26 @@ class Camera:
         """
         return camera_model.project(self.model, self.intrinsics, points)
 
+    def project_in_view(self, points: Array) -> tuple[Array, NDArray[np.bool_]]:
+        """Project camera-frame points, and say which are in front of the camera and in the image.
+
+        Parameters
+        ----------
+        points : ndarray of float64, shape (N, 3)
+            Points in the camera's frame.
+
+        Returns
+        -------
+        pixels : ndarray of float64, shape (N, 2)
+            Their pixels; NaN for a point not in front of the camera.
+        seen : ndarray of bool, shape (N,)
+            Which are in front of it (``z > 0``) and project into the image (:meth:`inside`).
+        """
+        front = points[:, 2] > 0.0
+        pixels = np.full((len(points), 2), np.nan)
+        pixels[front] = self.project(points[front])
+        return pixels, front & self.inside(pixels)
+
     def bearings(self, pixels: Array) -> Array:
         """Return unit bearings of pixels; NaN rows where the model cannot unproject.
 

@@ -53,6 +53,8 @@ def test_the_settings_cross_as_scalars() -> None:
         ({"stereo_outlier_factor": 0.5}, "stereo_outlier_factor: must be at least 1"),
         ({"stereo_window": 50}, "stereo_window: must be from 1"),
         ({"stereo_band": -1.0}, "stereo_band: must be finite and positive"),
+        ({"reloc_confidence": 1.0}, r"reloc_confidence: must be in \(0, 1\), got 1.0"),
+        ({"reloc_narrow_distance": 257}, "reloc_narrow_distance: must be from 1 to 256"),
     ],
 )
 def test_settings_out_of_range_are_refused(settings: dict[str, object], message: str) -> None:
