@@ -10,10 +10,13 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
+from slam_it import backends
 from slam_it.edge import database
 from slam_it.edge.database import Database
+from slam_it.edge.options import Options
 from slam_it.foundations import vocabulary
 from slam_it.foundations.errors import InvalidInputError
+from tests.conftest import require_function
 from tests.edge.conftest import KEYFRAMES, Truth
 from tests.edge.support import OPTIONS
 
@@ -118,6 +121,35 @@ def test_a_group_adds_its_scored_neighbours(
         assert score == vocabulary.score(vector, room_database.vector(keyframe))
     grouped = database.candidates(room_database, truth.map, vector, OPTIONS)
     assert grouped.scores[0] >= alone.scores[0]
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("frame", [1, 13, 25, 37])
+@pytest.mark.parametrize(
+    "settings",
+    [
+        OPTIONS,
+        replace(OPTIONS, covisible_points=1 << 20),
+        replace(OPTIONS, reloc_common_words=0.5, reloc_group_score=0.5, reloc_neighbours=1),
+    ],
+    ids=["defaults", "no covisibility", "looser"],
+)
+def test_every_backend_finds_python_s_candidates(  # noqa: PLR0917 -- cases, fixtures
+    backend: str,
+    frame: int,
+    settings: Options,
+    truth: Truth,
+    words: vocabulary.Vocabulary,
+    room_database: Database,
+) -> None:
+    """The same candidates in the same order, the same sums of the same scores: exactly."""
+    chosen = require_function(backend, database.__name__, "candidates")
+    vector = _frame_vector(truth, words, frame)
+    expected = database.candidates(room_database, truth.map, vector, settings)
+    got = database.candidates(room_database, truth.map, vector, settings, backend=chosen)
+    np.testing.assert_array_equal(got.keyframes, expected.keyframes)
+    np.testing.assert_array_equal(got.scores, expected.scores)
+    assert (got.sharing, got.scored) == (expected.sharing, expected.scored)
 
 
 def test_a_frame_sharing_no_word_has_no_candidates(truth: Truth, room_database: Database) -> None:

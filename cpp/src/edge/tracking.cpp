@@ -472,6 +472,23 @@ Result<LocalTracking> track_local_map(const Map& m, const Camera& camera, const 
   return out;
 }
 
+Result<PnpRun> run_pnp(const Eigen::Ref<const foundations::correspondences::Rows3>& world,
+                       const Eigen::Ref<const foundations::correspondences::Rows3>& rays,
+                       const foundations::ransac::Options& settings) {
+  auto solved = foundations::pnp::pnp_ransac(world, rays, settings);
+  if (!solved) {
+    if (solved.error().kind == ErrorKind::kDegenerate) {
+      return PnpRun{};
+    }
+    return std::unexpected(std::move(solved.error()));
+  }
+  const auto inliers = static_cast<std::int64_t>(solved->state.inliers.count());
+  return PnpRun{.consensus = std::move(solved->state),
+                .iterations = solved->summary.run.iterations,
+                .termination = solved->summary.run.termination,
+                .inliers = inliers};
+}
+
 Result<Relocalization> relocalize_locally(const Map& m, const Camera& camera, const Frame& frame,
                                           const Options& options) {
   if (auto ok = check_setup(camera, options); !ok) {
@@ -529,23 +546,17 @@ Result<Relocalization> relocalize_locally(const Map& m, const Camera& camera, co
     rays.row(static_cast<Eigen::Index>(j)) =
         frame.bearings[static_cast<std::size_t>(pairs[j].first)].transpose();
   }
-  auto solved = foundations::pnp::pnp_ransac(world, rays,
-                                             {.threshold = options.pnp_threshold / focal(camera),
-                                              .seed = static_cast<std::uint64_t>(options.seed)});
-  if (!solved) {
-    if (solved.error().kind == ErrorKind::kDegenerate) {
-      out.summary.degenerate = true;
-      return out;
-    }
-    return std::unexpected(std::move(solved.error()));
+  auto placed = pnp_consensus(world, rays,
+                              {.threshold = options.pnp_threshold / focal(camera),
+                               .seed = static_cast<std::uint64_t>(options.seed)},
+                              options.pnp_min_inliers, out.summary);
+  if (!placed) {
+    return std::unexpected(std::move(placed.error()));
   }
-  const auto& consensus = solved->state;
-  out.summary.iterations = solved->summary.run.iterations;
-  out.summary.termination = solved->summary.run.termination;
-  out.summary.inliers = static_cast<std::int64_t>(consensus.inliers.count());
-  if (consensus.inliers.count() < options.pnp_min_inliers) {
+  if (!*placed) {
     return out;
   }
+  const auto& consensus = **placed;
   std::vector<std::int64_t> points(keypoint_count(frame), -1);
   for (std::size_t j = 0; j < pairs.size(); ++j) {
     if (consensus.inliers(static_cast<Eigen::Index>(j))) {

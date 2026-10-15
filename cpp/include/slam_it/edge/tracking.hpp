@@ -15,6 +15,7 @@
 #include "slam_it/edge/frames.hpp"
 #include "slam_it/edge/map.hpp"
 #include "slam_it/edge/options.hpp"
+#include "slam_it/foundations/correspondences.hpp"
 #include "slam_it/foundations/error.hpp"
 #include "slam_it/foundations/ransac.hpp"
 
@@ -115,6 +116,58 @@ struct Relocalization {
   ///        front), -1 where none: all -1 if the fallback stopped before matching.
   std::vector<std::int64_t> matched;
 };
+
+/// @brief A PnP RANSAC run on matched points, as the PnP fallback and relocalisation make it.
+struct PnpRun {
+  /// @brief The pose and its inliers; none if no sample gave a pose.
+  std::optional<foundations::ransac::Consensus<Eigen::Matrix4d>> consensus;
+  /// @brief RANSAC's samples, if it found a pose.
+  std::optional<std::int64_t> iterations;
+  /// @brief Why it stopped, if it found a pose.
+  std::optional<foundations::ransac::Termination> termination;
+  /// @brief The pose's inliers, if it found one.
+  std::optional<std::int64_t> inliers;
+};
+
+/// @brief Run PnP RANSAC on matched points (Ding's P3P, the best pose refined), a run in
+///        which no sample gave a pose reported rather than raised.
+/// @param world The points.
+/// @param rays Their bearings.
+/// @param settings RANSAC's settings.
+/// @return The run; `InvalidInput` for invalid correspondences or settings.
+[[nodiscard]] foundations::Result<PnpRun> run_pnp(
+    const Eigen::Ref<const foundations::correspondences::Rows3>& world,
+    const Eigen::Ref<const foundations::correspondences::Rows3>& rays,
+    const foundations::ransac::Options& settings);
+
+/// @brief Run PnP RANSAC on matched points and record the run in a stage's summary (whether no
+///        sample gave a pose, and its samples, termination and inliers).
+/// @tparam Summary A summary with `degenerate`, `iterations`, `termination` and `inliers`.
+/// @param world The points.
+/// @param rays Their bearings.
+/// @param settings RANSAC's settings.
+/// @param needed The inliers the pose needs.
+/// @param summary The summary.
+/// @return The pose and its inliers if it has `needed`, else none; `InvalidInput` for invalid
+///         correspondences or settings.
+template <typename Summary>
+foundations::Result<std::optional<foundations::ransac::Consensus<Eigen::Matrix4d>>> pnp_consensus(
+    const Eigen::Ref<const foundations::correspondences::Rows3>& world,
+    const Eigen::Ref<const foundations::correspondences::Rows3>& rays,
+    const foundations::ransac::Options& settings, std::int64_t needed, Summary& summary) {
+  auto run = run_pnp(world, rays, settings);
+  if (!run) {
+    return std::unexpected(std::move(run.error()));
+  }
+  summary.degenerate = !run->consensus;
+  summary.iterations = run->iterations;
+  summary.termination = run->termination;
+  summary.inliers = run->inliers;
+  if (!run->consensus || run->consensus->inliers.count() < needed) {
+    return std::nullopt;
+  }
+  return std::move(run->consensus);
+}
 
 /// @brief Predict a frame's pose by the constant-velocity model
 ///        (`slam_it.edge.tracking.predict`), its rotation projected back onto SO(3).

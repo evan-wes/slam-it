@@ -125,6 +125,75 @@ pub struct Relocalization {
     pub matched: Vec<i64>,
 }
 
+/// A PnP RANSAC run on matched points, as the PnP fallback and relocalisation make it.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PnpRun {
+    /// The pose and its inliers; `None` if no sample gave a pose.
+    pub consensus: Option<ransac::Consensus<Matrix4<f64>>>,
+    /// RANSAC's samples, if it found a pose.
+    pub iterations: Option<usize>,
+    /// Why it stopped, if it found a pose.
+    pub termination: Option<ransac::Termination>,
+    /// The pose's inliers, if it found one.
+    pub inliers: Option<usize>,
+}
+
+/// Runs PnP RANSAC on matched points (Ding's P3P, the best pose refined), a run in which no
+/// sample gave a pose reported rather than raised.
+///
+/// # Arguments
+///
+/// * `world` - The points.
+/// * `rays` - Their bearings.
+/// * `settings` - RANSAC's settings.
+///
+/// # Returns
+///
+/// The run.
+///
+/// # Errors
+///
+/// `InvalidInput` for invalid correspondences or settings.
+pub fn run_pnp(
+    world: &[Vector3<f64>],
+    rays: &[Vector3<f64>],
+    settings: &ransac::Options,
+) -> Result<PnpRun> {
+    let solved = match pnp::pnp_ransac(world, rays, settings, Solver::Ding, true) {
+        Ok(solved) => solved,
+        Err(e) if e.kind == ErrorKind::Degenerate => return Ok(PnpRun::default()),
+        Err(e) => return Err(e),
+    };
+    let inliers = solved
+        .state
+        .inliers
+        .iter()
+        .filter(|&&inlier| inlier)
+        .count();
+    Ok(PnpRun {
+        consensus: Some(solved.state),
+        iterations: Some(solved.summary.run.iterations),
+        termination: Some(solved.summary.run.termination),
+        inliers: Some(inliers),
+    })
+}
+
+/// Records a PnP run in a stage's summary (whether no sample gave a pose, and its samples,
+/// termination and inliers), and gives the pose and its inliers if it has `needed`. The summary
+/// is any with `degenerate`, `iterations`, `termination` and `inliers`.
+macro_rules! pnp_consensus {
+    ($run:expr, $needed:expr, $summary:expr) => {{
+        let run: PnpRun = $run;
+        $summary.degenerate = run.consensus.is_none();
+        $summary.iterations = run.iterations;
+        $summary.termination = run.termination;
+        $summary.inliers = run.inliers;
+        run.consensus
+            .filter(|_| run.inliers.unwrap_or(0) >= $needed)
+    }};
+}
+pub(crate) use pnp_consensus;
+
 /// Checks the camera, the settings, and a frame's matches: one point id (or -1) per keypoint.
 ///
 /// # Arguments
@@ -796,22 +865,14 @@ pub fn relocalize_locally(
         seed: options.seed,
         ..ransac::Options::default()
     };
-    let solved = match pnp::pnp_ransac(&world, &rays, &settings, Solver::Ding, true) {
-        Ok(solved) => solved,
-        Err(e) if e.kind == ErrorKind::Degenerate => {
-            summary.degenerate = true;
-            return unplaced(summary, matched);
-        }
-        Err(e) => return Err(e),
-    };
-    let consensus = solved.state;
-    let sampled = consensus.inliers.iter().filter(|&&inlier| inlier).count();
-    summary.iterations = Some(solved.summary.run.iterations);
-    summary.termination = Some(solved.summary.run.termination);
-    summary.inliers = Some(sampled);
-    if sampled < options.pnp_min_inliers {
+    let placed = pnp_consensus!(
+        run_pnp(&world, &rays, &settings)?,
+        options.pnp_min_inliers,
+        summary
+    );
+    let Some(consensus) = placed else {
         return unplaced(summary, matched);
-    }
+    };
     let mut points = vec![-1; frame.size()];
     for (pair, &inlier) in pairs.iter().zip(&consensus.inliers) {
         if inlier {

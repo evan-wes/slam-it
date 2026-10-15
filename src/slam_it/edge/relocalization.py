@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 from numpy.typing import NDArray
@@ -189,6 +189,33 @@ class _Attempt:
     tracked: Tracked | None
     summary: CandidateSummary
     matched: IntArray
+
+
+class Implementation(Protocol):
+    """The functions a compiled backend's ``edge.relocalization`` submodule provides.
+
+    The map, its database (:meth:`slam_it.edge.database.Database.as_dict`), the vocabulary
+    (:func:`slam_it.foundations.vocabulary.fields`), the camera, the frame and the settings
+    cross as dicts; :class:`Relocalized` as a dict of ``tracked`` (or None), ``matched`` and
+    ``summary``, its candidates a list of dicts, RANSAC's termination as its code in
+    ``codes()`` (or None) beside ``degenerate``.
+    """
+
+    def codes(self) -> dict[str, list[str]]:
+        """Return each enum's names in code order."""
+        ...
+
+    def relocalize(  # noqa: PLR0913, PLR0917 -- the map, its database and vocabulary, the frame
+        self,
+        m: dict[str, Any],
+        database: dict[str, Any],
+        vocabulary: dict[str, Any],
+        camera: dict[str, Any],
+        frame: dict[str, Any],
+        options: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Place a frame in the map through the keyframes that look like it."""
+        ...
 
 
 def ransac_budget(matches: int, options: Options) -> tuple[int, int]:
@@ -510,18 +537,21 @@ def relocalize(  # noqa: PLR0913 -- the map, its database, the camera, the frame
     )
 
 
-def _decode_candidate(raw: dict[str, Any]) -> CandidateSummary:
+def _decode_candidate(raw: dict[str, Any], codes: backends.Codes) -> CandidateSummary:
     """Rebuild a candidate's summary from a compiled backend's dict."""
-    termination = raw["termination"]
+    code = raw["termination"]
+    termination = (
+        None
+        if code is None
+        else ransac.Termination(backends.decode_name(codes, "ransac_termination", code))
+    )
     return CandidateSummary(
         keyframe=int(raw["keyframe"]),
         score=float(raw["score"]),
         matches=int(raw["matches"]),
         iterations=_optional(raw["iterations"]),
-        termination=None
-        if termination in (None, "degenerate")
-        else ransac.Termination(termination),
-        degenerate=termination == "degenerate",
+        termination=termination,
+        degenerate=bool(raw["degenerate"]),
         inliers=_optional(raw["inliers"]),
         refined=_optional(raw["refined"]),
         found=_optional(raw["found"]),
@@ -542,7 +572,7 @@ def _decode_relocalized(raw: dict[str, Any], codes: backends.Codes) -> Relocaliz
             words=int(summary["words"]),
             sharing=int(summary["sharing"]),
             scored=int(summary["scored"]),
-            candidates=tuple(_decode_candidate(c) for c in summary["candidates"]),
+            candidates=tuple(_decode_candidate(c, codes) for c in summary["candidates"]),
             placed=bool(summary["placed"]),
         ),
         matched=backends.checked_array(raw["matched"], np.int64, 1, "relocalize matched"),

@@ -32,6 +32,7 @@ mod stereo;
 mod triangulation;
 mod twoview;
 mod vocabulary;
+pub(crate) mod vocabulary_crossing;
 
 /// Registers the foundations submodules.
 ///

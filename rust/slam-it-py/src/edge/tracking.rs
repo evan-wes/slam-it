@@ -14,9 +14,9 @@ use slam_it_foundations::ransac;
 
 use super::edge_crossing::{
     camera_in, count_or_none, frame_in, indices, indices_array, map_in, maybe_tracked, mode_in,
-    options_in, pose_in, rows_array, tracked_dict, tracked_in, vector_array,
+    options_in, pose_in, rows_array, termination_or_none, tracked_dict, tracked_in, vector_array,
 };
-use crate::common::{add_functions, encode, enum_codes, to_i64, unwrap};
+use crate::common::{add_functions, enum_codes, to_i64, unwrap};
 
 /// Refines a frame's pose against its matched points.
 ///
@@ -259,15 +259,7 @@ fn relocalize_locally<'py>(
     out.set_item("candidates", to_i64(summary.candidates))?;
     out.set_item("matches", count_or_none(py, summary.matches)?)?;
     out.set_item("iterations", count_or_none(py, summary.iterations)?)?;
-    match summary.termination {
-        Some(termination) => {
-            out.set_item(
-                "termination",
-                encode(&ransac::Termination::ALL, termination)?,
-            )?;
-        }
-        None => out.set_item("termination", py.None())?,
-    }
+    out.set_item("termination", termination_or_none(py, summary.termination)?)?;
     out.set_item("degenerate", summary.degenerate)?;
     out.set_item("inliers", count_or_none(py, summary.inliers)?)?;
     out.set_item("refined", count_or_none(py, summary.refined)?)?;

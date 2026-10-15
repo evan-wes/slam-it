@@ -10,13 +10,19 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
+from slam_it import backends
 from slam_it.edge import frames, relocalization
 from slam_it.edge.database import Database
-from slam_it.edge.frames import Tracked
+from slam_it.edge.frames import Frame, Tracked
+from slam_it.edge.options import Options
 from slam_it.foundations import se3
 from slam_it.foundations.errors import InvalidInputError
+from tests.conftest import require_function
 from tests.edge.conftest import Truth
-from tests.edge.support import CAMERA, OPTIONS
+from tests.edge.support import CAMERA, OPTIONS, SOLVER_TOLERANCE, assert_close, assert_records_match
+
+NOISE = -1
+"""A case's frame index standing for :func:`_noise_frame`."""
 
 
 def _error(pose: np.ndarray, truth: np.ndarray) -> tuple[float, float]:
@@ -48,12 +54,16 @@ def test_a_frame_of_the_room_is_placed_near_its_true_pose(
     assert np.all(found.matched[found.tracked.points >= 0] >= 0)
 
 
-def test_a_frame_of_elsewhere_is_not_placed(truth: Truth, room_database: Database) -> None:
-    """A noise image's features place nothing: no candidate reaches recovery_tracked."""
+def _noise_frame() -> Frame:
+    """Return a frame of a noise image, at a constant depth: features of no place."""
     rng = np.random.default_rng(3)
     noise = rng.integers(0, 256, (CAMERA.height, CAMERA.width), dtype=np.uint8)
-    depth = np.full(noise.shape, 2.0)
-    frame = frames.rgbd(noise, depth, 0.0, CAMERA, OPTIONS.extraction())
+    return frames.rgbd(noise, np.full(noise.shape, 2.0), 0.0, CAMERA, OPTIONS.extraction())
+
+
+def test_a_frame_of_elsewhere_is_not_placed(truth: Truth, room_database: Database) -> None:
+    """A noise image's features place nothing: no candidate reaches recovery_tracked."""
+    frame = _noise_frame()
     found = relocalization.relocalize(truth.map, room_database, CAMERA, frame, OPTIONS)
     assert found.tracked is None
     assert not found.summary.placed
@@ -149,9 +159,46 @@ def test_a_keyframe_searched_at_the_true_pose_finds_its_points(truth: Truth) -> 
     assert not set(skipped[skipped >= 0].tolist()) & set(found[hits].tolist())
 
 
-def test_a_candidate_the_map_lacks_is_refused(truth: Truth, room_database: Database) -> None:
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize(
+    ("index", "settings"),
+    [
+        (3, OPTIONS),
+        (18, OPTIONS),
+        (30, OPTIONS),
+        (39, OPTIONS),
+        (NOISE, OPTIONS),
+        (30, replace(OPTIONS, reloc_min_matches=1 << 20)),
+        (30, replace(OPTIONS, recovery_tracked=150)),
+        (6, replace(OPTIONS, recovery_tracked=175)),
+    ],
+    ids=["3", "18", "30", "39", "noise", "too few matches", "wide search", "narrow search"],
+)
+def test_every_backend_relocalizes_as_python_does(
+    backend: str, index: int, settings: Options, truth: Truth, room_database: Database
+) -> None:
+    """The same decisions exactly; the poses to the solver tolerance (they optimise)."""
+    chosen = require_function(backend, relocalization.__name__, "relocalize")
+    frame = _noise_frame() if index == NOISE else truth.frames[index]
+    expected = relocalization.relocalize(truth.map, room_database, CAMERA, frame, settings)
+    got = relocalization.relocalize(
+        truth.map, room_database, CAMERA, frame, settings, backend=chosen
+    )
+    assert (got.tracked is None) == (expected.tracked is None)
+    if got.tracked is not None and expected.tracked is not None:
+        assert_close(got.tracked.pose, expected.tracked.pose, SOLVER_TOLERANCE)
+        np.testing.assert_array_equal(got.tracked.points, expected.tracked.points)
+    np.testing.assert_array_equal(got.matched, expected.matched)
+    assert_records_match(got.summary.as_dict(), expected.summary.as_dict(), SOLVER_TOLERANCE)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_a_candidate_the_map_lacks_is_refused(
+    backend: str, truth: Truth, room_database: Database
+) -> None:
     """A database out of step with its map (a keyframe it does not hold): InvalidInputError."""
+    chosen = require_function(backend, relocalization.__name__, "relocalize")
     db = Database(room_database.vocabulary)
     db.add(99, truth.frames[30].features.descriptors)
     with pytest.raises(InvalidInputError, match="keyframe 99 is not in the map"):
-        relocalization.relocalize(truth.map, db, CAMERA, truth.frames[30], OPTIONS)
+        relocalization.relocalize(truth.map, db, CAMERA, truth.frames[30], OPTIONS, backend=chosen)

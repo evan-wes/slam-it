@@ -33,7 +33,7 @@ from __future__ import annotations
 import bisect
 import math
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -151,6 +151,26 @@ class Database:
             "node_start": _offsets([len(n) for n in nodes]),
             "node": _joined(nodes, np.int64),
         }
+
+
+class Implementation(Protocol):
+    """The functions a compiled backend's ``edge.database`` submodule provides.
+
+    A database crosses as :meth:`Database.as_dict`'s dict, from which the backend builds its
+    own index; a frame's word vector as ``ids`` and ``values``; :class:`Candidates` as a dict
+    of its fields.
+    """
+
+    def candidates(
+        self,
+        database: dict[str, Any],
+        m: dict[str, Any],
+        ids: NDArray[np.int64],
+        values: NDArray[np.float64],
+        options: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Find the keyframes a frame may be relocalised against."""
+        ...
 
 
 def _offsets(lengths: list[int]) -> IntArray:
