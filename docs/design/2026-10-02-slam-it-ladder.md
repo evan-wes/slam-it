@@ -543,7 +543,7 @@ there.
   - A warning on the upload and status pages, never a refusal, for a video recorded in the
     browser (on an iPhone, 360x480 and no lens metadata) or frames under 480 pixels on their
     short side.
-- **2B: online SLAM**, ORB-SLAM's own parts:
+- **2B: online SLAM**, ORB-SLAM's own parts ([the 2B design](2026-10-14-online-slam.md)):
   - place recognition in rung 0, for the edge rung now and the classic rung later: a
     vocabulary of our own ORB descriptors' binary words (DBoW2's hierarchical k-means,
     Gálvez-López and Tardós 2012), trained by a Python tool on public sequences no evaluation
