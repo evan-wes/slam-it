@@ -127,6 +127,19 @@ def test_matches_fixture(backend: str, function: str, case: dict[str, Any]) -> N
         )
         _check_int64(found.pairs, case["expected"]["pairs"])
         _check_int64(found.distances, case["expected"]["distances"])
+    elif function == "search_by_bow":
+        found = matching.search_by_bow(
+            _descriptors(args[0]),
+            np.asarray(args[1], dtype=np.int64),
+            _descriptors(args[2]),
+            np.asarray(args[3], dtype=np.int64),
+            np.asarray(args[4], dtype=np.int64),
+            np.asarray(args[5], dtype=np.int64),
+            matching.Options(**args[6]),
+            backend=chosen,
+        )
+        _check_int64(found.pairs, case["expected"]["pairs"])
+        _check_int64(found.distances, case["expected"]["distances"])
     else:
         found = matching.match(
             _descriptors(args[0]),
@@ -191,6 +204,21 @@ def test_each_second_descriptor_is_matched_once() -> None:
     np.testing.assert_array_equal(found.pairs, [[1, 0]])
 
 
+def test_matching_by_word_pairs_only_under_a_shared_node() -> None:
+    """Under one node it is match; a copy under another node is not found, its pair's lost."""
+    first, second, where = _planted(30, 20, 10, seed=8)
+    angles1, angles2 = np.zeros(len(first), np.int64), np.zeros(len(second), np.int64)
+    one1, one2 = np.zeros(len(first), np.int64), np.zeros(len(second), np.int64)
+    whole = matching.match(first, second, angles1, angles2)
+    under_one = matching.search_by_bow(first, one1, second, one2, angles1, angles2)
+    np.testing.assert_array_equal(under_one.pairs, whole.pairs)
+    moved = one2.copy()
+    moved[where[:10]] = 1  # the first ten copies under a node the first set lacks
+    found = matching.search_by_bow(first, one1, second, moved, angles1, angles2)
+    assert set(found.pairs[:, 0].tolist()) == set(whole.pairs[:, 0].tolist()) - set(range(10))
+    assert np.all(moved[found.pairs[:, 1]] == one1[found.pairs[:, 0]])
+
+
 GOOD = np.zeros((3, DESCRIPTOR_BYTES), dtype=np.uint8)
 
 
@@ -205,6 +233,21 @@ GOOD = np.zeros((3, DESCRIPTOR_BYTES), dtype=np.uint8)
         ("match", (GOOD, GOOD, [0, 1, 30], [0, 1, 2]), r"angles1: bins must lie in \[0, 30\)"),
         ("match", (GOOD, GOOD, [0, 1, 2], [-1, 1, 2]), r"angles2: bins must lie in \[0, 30\)"),
         ("match", (GOOD, GOOD, [True, False, True], [0, 1, 2]), "angles1: expected 3 integers"),
+        (
+            "search_by_bow",
+            (GOOD, [0, 0], GOOD, [0, 0, 0], [0, 1, 2], [0, 1, 2]),
+            "nodes1: expected 3 integers",
+        ),
+        (
+            "search_by_bow",
+            (GOOD, [0, 0, 0], GOOD, [0, -1, 0], [0, 1, 2], [0, 1, 2]),
+            "nodes2: nodes must be at least 0",
+        ),
+        (
+            "search_by_bow",
+            (GOOD, [0, 0, 0], GOOD, [0, 0, 0], [0, 1, 2], [0, 1, 30]),
+            r"angles2: bins must lie in \[0, 30\)",
+        ),
     ],
 )
 def test_rejects_invalid_input(

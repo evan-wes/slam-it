@@ -6,7 +6,8 @@ Run from the repository root after changing the cases (the fixture is committed)
 
 Independent of the module under test, nothing imported from slam_it: distances are Python
 integers' bit counts, and matching is a brute force over sorted neighbour lists, with the
-rotation histogram's maxima taken from a sort. A search by projection is a brute force too:
+rotation histogram's maxima taken from a sort; matching by word is the same brute force over
+the second set's descriptors under the same node. A search by projection is a brute force too:
 every keypoint tested against every window, its candidates sorted by (distance, index). Every
 value is an integer, so the policy is ``exact``. A right column of ``null`` is none (NaN).
 """
@@ -50,11 +51,20 @@ def _match(
     angles1: list[int],
     angles2: list[int],
     options: dict[str, Any],
+    *,
+    nodes: tuple[list[int], list[int]] | None = None,
 ) -> dict[str, Any]:
-    """Match by brute force: sort each row's neighbours, filter, settle conflicts, check."""
+    """Match by brute force: sort each row's neighbours, filter, settle conflicts, check.
+
+    With `nodes`, a row's neighbours are only the second set's rows under its node.
+    """
     candidates = []
     for i, a in enumerate(first):
-        ranked = sorted((_distance(a, b), j) for j, b in enumerate(second))
+        ranked = sorted(
+            (_distance(a, b), j)
+            for j, b in enumerate(second)
+            if nodes is None or nodes[0][i] == nodes[1][j]
+        )
         if not ranked:
             continue
         best, j = ranked[0]
@@ -334,6 +344,54 @@ def _area_cases(rng: np.random.Generator) -> list[dict[str, Any]]:
     ]
 
 
+def _bow_cases() -> list[dict[str, Any]]:
+    """Return matching by word's cases: pairs under shared nodes, some split, lone, none.
+
+    Drawn from their own generator, so that the other functions' cases stay as they were.
+    """
+    rng = np.random.default_rng(29)
+    default = {"max_distance": 50, "ratio": 0.75, "check_orientation": True}
+    first, second, a1, a2 = _planted(rng, 40, 25, 12, 3)
+    # The copies of the first set's first 40 share their node; the rest are drawn at random.
+    nodes1 = rng.integers(0, 6, len(first)).tolist()
+    nodes2 = rng.integers(0, 6, len(second)).tolist()
+    planted = rng.integers(0, 6, 40).tolist()
+    for i in range(40):
+        nodes1[i] = planted[i]
+    for j, row in enumerate(second):
+        twin = next((i for i in range(40) if _distance(first[i], row) <= 12), None)
+        if twin is not None:
+            nodes2[j] = planted[twin]
+    split = list(nodes2)
+    for j in range(0, len(second), 3):
+        split[j] = 7  # a third of the second set's descriptors under a node the first lacks
+    small = rng.integers(0, 256, (6, BYTES)).tolist()
+    cases = [
+        ("planted pairs under shared nodes", (first, nodes1, second, nodes2, a1, a2), default),
+        ("a third of them under another node", (first, nodes1, second, split, a1, a2), default),
+        (
+            "every descriptor under one node: match's result",
+            (first, [0] * len(first), second, [0] * len(second), a1, a2),
+            default,
+        ),
+        (
+            "a node with one descriptor to match against",
+            (small, [1, 1, 2, 2, 3, 3], small[:1] + small[3:4], [1, 2], [0] * 6, [0, 0]),
+            default,
+        ),
+        ("no node shared", (small, [0] * 6, small, [1] * 6, [0] * 6, [0] * 6), default),
+        ("an empty set", (small, [0] * 6, [], [], [0] * 6, []), default),
+    ]
+    return [
+        {
+            "name": name,
+            "input": [d1, n1, d2, n2, b1, b2, options],
+            "expected": _match(d1, d2, b1, b2, options, nodes=(n1, n2)),
+        }
+        for name, (d1, n1, d2, n2, b1, b2), options in cases
+    ]
+
+
 def main() -> None:
     """Write the fixture."""
     rng = np.random.default_rng(23)
@@ -385,6 +443,7 @@ def main() -> None:
         "match": {"unpack": True, "tolerance": EXACT, "cases": match_cases},
         "features_in_area": {"unpack": True, "tolerance": EXACT, "cases": _area_cases(rng)},
         "search_by_projection": {"unpack": True, "tolerance": EXACT, "cases": _search_cases(rng)},
+        "search_by_bow": {"unpack": True, "tolerance": EXACT, "cases": _bow_cases()},
     }
     fixture = {
         "description": "Descriptor matching: parity fixture (generate_matching.py).",
