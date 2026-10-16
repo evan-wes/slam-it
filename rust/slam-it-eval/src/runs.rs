@@ -11,12 +11,15 @@ use nalgebra::{Matrix4, Vector3};
 use slam_it_foundations::error::{ErrorKind, Result, fail};
 use slam_it_foundations::{se3, so3};
 
+use crate::vocabularies::{ARRAYS, Header};
+
 /// `run.json`'s `format`.
 pub const FORMAT: &str = "slam-it-run";
 
 /// `run.json`'s `version` (2 added `peak_memory`, `cpus` and `memory_cap`; 3 every point and
-/// keyframe the run made, with their lives; 4 the maps, and the removal `reset`).
-pub const VERSION: i64 = 4;
+/// keyframe the run made, with their lives; 4 the maps, and the removal `reset`; 5 the
+/// `vocabulary` a relocalising run used).
+pub const VERSION: i64 = 5;
 
 /// The number of removal codes a life may hold (`slam_it.eval.runs.REMOVALS`).
 pub const REMOVALS: i64 = 4;
@@ -93,6 +96,9 @@ pub struct Run {
     pub points: Vec<Vector3<f64>>,
     /// The pipeline's options.
     pub settings: JsonObject,
+    /// The vocabulary a relocalising run used: its folder's header and checksums, written as
+    /// `slam_it.eval.vocabularies.record` writes them; null for a run that did not relocalise.
+    pub vocabulary: Option<Header>,
     /// One object per frame, each with a `timestamp`; the edge pipeline's also time its steps
     /// (`read_seconds`, `build_seconds`, `track_seconds`, `map_seconds`, as
     /// `slam_it.eval.runs.STEPS` defines them).
@@ -602,6 +608,39 @@ fn replace(path: &Path, data: &[u8]) -> Result<()> {
         })
 }
 
+/// A vocabulary's header and checksums as JSON (`slam_it.eval.vocabularies.record`): its
+/// numbers, then each array's SHA-256 in hex, by name.
+///
+/// # Arguments
+///
+/// * `header` - The header.
+///
+/// # Returns
+///
+/// The object's text.
+fn vocabulary_text(header: &Header) -> String {
+    let numbers = [
+        ("version", header.version),
+        ("descriptor_version", header.descriptor_version),
+        ("k", header.k),
+        ("levels", header.levels),
+        ("words", header.words),
+    ];
+    let sums = ARRAYS.iter().zip(&header.sha256).map(|(name, digest)| {
+        let hex = digest.iter().fold(String::new(), |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}"); // writing to a String cannot fail
+            hex
+        });
+        ((*name).to_owned(), JsonValue::Text(hex))
+    });
+    let object: JsonObject = numbers
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), JsonValue::Integer(*value)))
+        .chain([("sha256".to_owned(), JsonValue::Object(sums.collect()))])
+        .collect();
+    json_object(&object)
+}
+
 /// Writes a run's folder, created if needed, each file replaced whole (written to a temporary
 /// sibling, then renamed): `slam_it.eval.runs.write_run`.
 ///
@@ -634,6 +673,12 @@ pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
     info_text.pop();
     info_text.push_str(", \"settings\": ");
     info_text.push_str(&json_object(&run.settings));
+    info_text.push_str(", \"vocabulary\": ");
+    info_text.push_str(
+        &run.vocabulary
+            .as_ref()
+            .map_or_else(|| "null".to_owned(), vocabulary_text),
+    );
     info_text.push_str(", \"record_features\": ");
     info_text.push_str(if run.record_features { "true" } else { "false" });
     let integer_or_null =
@@ -879,6 +924,7 @@ mod tests {
     //! streamed feature files too), the JSON and trajectory value for value.
 
     use super::*;
+    use crate::vocabularies::SHA256_BYTES;
     use serde_json::Value;
     use std::path::PathBuf;
 
@@ -939,6 +985,27 @@ mod tests {
         }
     }
 
+    /// A run's record of its vocabulary, as the run writer takes it: the header it was read
+    /// with.
+    fn header_of(record: &Value) -> Header {
+        let number = |key: &str| record[key].as_i64().unwrap();
+        let mut sha256 = [[0; SHA256_BYTES]; ARRAYS.len()];
+        for (digest, name) in sha256.iter_mut().zip(ARRAYS) {
+            let hex = record["sha256"][name].as_str().unwrap();
+            for (j, byte) in digest.iter_mut().enumerate() {
+                *byte = u8::from_str_radix(&hex[2 * j..2 * j + 2], 16).unwrap();
+            }
+        }
+        Header {
+            version: number("version"),
+            descriptor_version: number("descriptor_version"),
+            k: number("k"),
+            levels: number("levels"),
+            words: number("words"),
+            sha256,
+        }
+    }
+
     /// The run Python wrote, as the Rust backend.
     fn golden_run() -> Run {
         let text = std::fs::read_to_string(fixtures().join("run_values.json")).unwrap();
@@ -948,6 +1015,7 @@ mod tests {
             sequence: values["sequence"].as_str().unwrap().into(),
             mode: values["mode"].as_str().unwrap().into(),
             backend: "rust".into(),
+            vocabulary: Some(header_of(&values["vocabulary"])),
             timestamps: numbers(&values["timestamps"]),
             poses: poses(&values["poses"]),
             keyframe_timestamps: numbers(&values["keyframe_timestamps"]),

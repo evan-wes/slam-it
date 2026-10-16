@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -28,6 +29,7 @@
 #include "common.hpp"
 #include "foundations/nls_crossing.hpp"
 #include "slam_it/edge/adjust.hpp"
+#include "slam_it/edge/database.hpp"
 #include "slam_it/edge/frames.hpp"
 #include "slam_it/edge/initialization.hpp"
 #include "slam_it/edge/map.hpp"
@@ -354,6 +356,9 @@ inline edge::Frame frame_in(const nanobind::dict& values) {
 /// @throws std::invalid_argument for a missing or unknown key.
 inline edge::Options options_in(const nanobind::dict& values) {
   std::vector<const char*> keys;
+  for (const auto& [key, member] : edge::kFlagOptions) {
+    keys.push_back(key);
+  }
   for (const auto& [key, member] : edge::kIntegerOptions) {
     keys.push_back(key);
   }
@@ -362,6 +367,9 @@ inline edge::Options options_in(const nanobind::dict& values) {
   }
   check_keys(values, keys, "edge.Options");
   edge::Options out;
+  for (const auto& [key, member] : edge::kFlagOptions) {
+    out.*member = nanobind::cast<bool>(values[key]);
+  }
   for (const auto& [key, member] : edge::kIntegerOptions) {
     out.*member = nanobind::cast<std::int64_t>(values[key]);
   }
@@ -485,6 +493,51 @@ inline nanobind::dict initialization_dict(const edge::Initialization& attempt) {
   out["outcome"] = static_cast<int>(attempt.summary.outcome);
   out["matches"] = count_or_none(attempt.summary.matches);
   out["solves"] = solves_list(attempt.summary.solves);
+  return out;
+}
+
+/// @brief `slam_it.edge.database.Database.as_dict`'s keys.
+inline constexpr std::array<const char*, 6> kDatabaseKeys = {"kf_id",     "bow_start",  "bow_word",
+                                                             "bow_value", "node_start", "node"};
+
+/// @brief A keyframe database from `slam_it.edge.database.Database.as_dict()`'s dict: each
+///        keyframe's vector and nodes, laid end to end by id; the core builds its own index.
+/// @param values The dict: `kf_id`, `bow_start`, `bow_word`, `bow_value`, `node_start` and
+///        `node`.
+/// @return The database.
+/// @throws std::invalid_argument for a missing or unknown key, or offsets that do not lay the
+///         arrays end to end; `CoreError` for a keyframe given twice.
+inline edge::Database database_in(const nanobind::dict& values) {
+  check_keys(values, kDatabaseKeys, "edge.database.Database.as_dict");
+  const auto ids = vector_item<std::int64_t>(values, "kf_id");
+  const auto bow_start = vector_item<std::int64_t>(values, "bow_start");
+  const auto bow_word = vector_item<std::int64_t>(values, "bow_word");
+  const auto bow_value = vector_item<double>(values, "bow_value");
+  const auto node_start = vector_item<std::int64_t>(values, "node_start");
+  const auto node = vector_item<std::int64_t>(values, "node");
+  const auto laid = [&ids](const std::vector<std::int64_t>& start, std::size_t total) {
+    return start.size() == ids.size() + 1 && start.front() == 0 &&
+           std::cmp_equal(start.back(), total) && std::ranges::is_sorted(start);
+  };
+  if (!laid(bow_start, bow_word.size()) || bow_value.size() != bow_word.size() ||
+      !laid(node_start, node.size())) {
+    throw std::invalid_argument("database: offsets that do not lay its arrays end to end");
+  }
+  edge::Database out;
+  for (std::size_t i = 0; i < ids.size(); ++i) {
+    const auto words =
+        std::span(bow_word).subspan(static_cast<std::size_t>(bow_start[i]),
+                                    static_cast<std::size_t>(bow_start[i + 1] - bow_start[i]));
+    const auto weights =
+        std::span(bow_value).subspan(static_cast<std::size_t>(bow_start[i]), words.size());
+    const auto nodes =
+        std::span(node).subspan(static_cast<std::size_t>(node_start[i]),
+                                static_cast<std::size_t>(node_start[i + 1] - node_start[i]));
+    unwrap(edge::insert(out, ids[i],
+                        {.vector = {.ids = {words.begin(), words.end()},
+                                    .values = {weights.begin(), weights.end()}},
+                         .nodes = {nodes.begin(), nodes.end()}}));
+  }
   return out;
 }
 

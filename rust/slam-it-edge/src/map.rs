@@ -17,8 +17,7 @@ use std::collections::BTreeSet;
 
 use nalgebra::{Matrix4, Vector3};
 use slam_it_foundations::error::{ErrorKind, Result, check_range, fail, fail_setting};
-use slam_it_foundations::matching;
-use slam_it_foundations::orb::{Descriptor, MAX_LEVELS};
+use slam_it_foundations::orb::{self, Descriptor, MAX_LEVELS};
 
 use crate::frames::Frame;
 use crate::options::Options;
@@ -691,10 +690,7 @@ pub fn distinctive_descriptor(descriptors: &[Descriptor]) -> Result<usize> {
     let n = descriptors.len();
     let mut best = (0, i64::MAX);
     for (i, a) in descriptors.iter().enumerate() {
-        let mut row: Vec<i64> = descriptors
-            .iter()
-            .map(|b| matching::distance(a, b))
-            .collect();
+        let mut row: Vec<i64> = descriptors.iter().map(|b| orb::distance(a, b)).collect();
         row.sort_unstable();
         let median = row[(n - 1) / 2];
         if median < best.1 {

@@ -4,18 +4,32 @@
 #include "slam_it/foundations/matching.hpp"
 
 #include <algorithm>
-#include <bit>
 #include <cmath>
 #include <cstddef>
-#include <cstring>
 #include <limits>
+#include <map>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <utility>
 
 namespace slam_it::foundations::matching {
 
 namespace {
+
+/// @brief Check that there is one value per descriptor.
+/// @param count The number of descriptors.
+/// @param length The number of values.
+/// @param name The values' name, for the message.
+/// @return Nothing, or `InvalidInput`.
+Result<void> check_length(std::size_t count, std::size_t length, const char* name) {
+  if (length != count) {
+    return fail(ErrorKind::kInvalidInput, std::string(name) + ": expected " +
+                                              std::to_string(count) + " integers, got " +
+                                              std::to_string(length));
+  }
+  return {};
+}
 
 /// @brief Check a descriptor set's size and its angles.
 /// @param count The number of descriptors.
@@ -26,10 +40,8 @@ Result<void> check_set(std::size_t count, std::span<const std::int64_t> angles, 
   if (count > kMaxDescriptors) {
     return fail(ErrorKind::kInvalidInput, std::string(name) + ": too many descriptors");
   }
-  if (angles.size() != count) {
-    return fail(ErrorKind::kInvalidInput, std::string(name) + ": expected " +
-                                              std::to_string(count) + " integers, got " +
-                                              std::to_string(angles.size()));
+  if (auto ok = check_length(count, angles.size(), name); !ok) {
+    return ok;
   }
   if (std::ranges::any_of(angles, [](std::int64_t a) { return a < 0 || a >= orb::kAngleBins; })) {
     return fail(ErrorKind::kInvalidInput, std::string(name) + ": bins must lie in [0, " +
@@ -48,14 +60,18 @@ struct Nearest {
   std::int64_t second{std::numeric_limits<std::int64_t>::max()};
 };
 
-/// @brief Find a descriptor's nearest and second-nearest distances in a set.
+/// @brief Find a descriptor's nearest and second-nearest distances among some of a set's.
+/// @tparam Indices A range of indices into the set.
 /// @param query The descriptor.
-/// @param set The set, non-empty.
-/// @return The nearest.
-Nearest nearest(const orb::Descriptor& query, std::span<const orb::Descriptor> set) {
+/// @param set The set.
+/// @param among The indices compared, ascending, at least one.
+/// @return The nearest, its index the set's.
+template <std::ranges::input_range Indices>
+Nearest nearest(const orb::Descriptor& query, std::span<const orb::Descriptor> set,
+                const Indices& among) {
   Nearest out;
-  for (std::size_t j = 0; j < set.size(); ++j) {
-    const std::int64_t d = distance(query, set[j]);
+  for (const std::size_t j : among) {
+    const std::int64_t d = orb::distance(query, set[j]);
     if (d < out.best) {
       out.second = out.best;
       out.best = d;
@@ -65,6 +81,21 @@ Nearest nearest(const orb::Descriptor& query, std::span<const orb::Descriptor> s
     }
   }
   return out;
+}
+
+/// @brief Check vocabulary nodes: one per descriptor, at least 0.
+/// @param count The number of descriptors.
+/// @param nodes Their nodes.
+/// @param name The nodes' name, for the message.
+/// @return Nothing, or `InvalidInput`.
+Result<void> check_nodes(std::size_t count, std::span<const std::int64_t> nodes, const char* name) {
+  if (auto ok = check_length(count, nodes.size(), name); !ok) {
+    return ok;
+  }
+  if (std::ranges::any_of(nodes, [](std::int64_t n) { return n < 0; })) {
+    return fail(ErrorKind::kInvalidInput, std::string(name) + ": nodes must be at least 0");
+  }
+  return {};
 }
 
 /// @brief The rotation histogram's kept bins: its highest three, the lower two only if they
@@ -253,6 +284,47 @@ void keep_consistent_rotations(std::vector<Match>& matches, First angles1, Secon
   std::erase_if(matches, [&](const Match& m) { return !std::ranges::contains(kept, rotation(m)); });
 }
 
+/// @brief Match each first-set descriptor to its nearest among the second set's it is compared
+///        with, filtered: `match`'s and `search_by_bow`'s common part.
+/// @tparam Among A callable from a first-set index to the second-set indices compared with
+///         it, ascending (an empty range for none).
+/// @param descriptors1 The first set.
+/// @param descriptors2 The second set.
+/// @param among The indices each first-set descriptor is compared with.
+/// @param angles The two sets' orientation bins.
+/// @param options The filters.
+/// @return The kept matches, by first-set index.
+template <typename Among>
+std::vector<Match> nearest_matches(std::span<const orb::Descriptor> descriptors1,
+                                   std::span<const orb::Descriptor> descriptors2, Among among,
+                                   std::array<std::span<const std::int64_t>, 2> angles,
+                                   const Options& options) {
+  // Each second-set descriptor's claimant: the nearest first-set match passing the filters
+  // (ties: the lowest first-set index, which is offered first).
+  Claims claims(descriptors2.size());
+  for (std::size_t i = 0; i < descriptors1.size(); ++i) {
+    const auto compared = among(i);
+    if (std::ranges::empty(compared)) {
+      continue;
+    }
+    const Nearest n = nearest(descriptors1[i], descriptors2, compared);
+    const bool passes = std::ranges::size(compared) == 1 ||
+                        static_cast<double>(n.best) < options.ratio * static_cast<double>(n.second);
+    if (passes && n.best <= options.max_distance) {
+      claims.offer({.first = static_cast<std::int64_t>(i),
+                    .second = static_cast<std::int64_t>(n.index),
+                    .distance = n.best});
+    }
+  }
+  std::vector<Match> out = claims.by_first();
+  if (options.check_orientation) {
+    keep_consistent_rotations(
+        out, [&](std::int64_t i) { return angles[0][static_cast<std::size_t>(i)]; },
+        [&](std::int64_t j) { return angles[1][static_cast<std::size_t>(j)]; });
+  }
+  return out;
+}
+
 /// @brief A window's nearest and second-nearest candidates, by `before`.
 struct NearestTwo {
   /// @brief The nearest.
@@ -277,7 +349,7 @@ NearestTwo nearest_two(const Projection& p, std::span<const std::uint32_t> candi
     if (taken[k] != 0 || std::fabs(right[k] - p.right) > p.radius) {
       continue;
     }
-    const Ranked here{.distance = distance(p.descriptor, descriptors[k]), .index = k};
+    const Ranked here{.distance = orb::distance(p.descriptor, descriptors[k]), .index = k};
     if (before(here, out.best)) {
       out.second = out.best;
       out.best = here;
@@ -300,20 +372,6 @@ Result<void> check_options(const Options& options) {
   return {};
 }
 
-std::int64_t distance(const orb::Descriptor& a, const orb::Descriptor& b) {
-  static_assert(orb::kDescriptorBytes % sizeof(std::uint64_t) == 0,
-                "the distance reads whole 64-bit words");
-  std::int64_t bits = 0;
-  for (std::size_t offset = 0; offset < orb::kDescriptorBytes; offset += sizeof(std::uint64_t)) {
-    std::uint64_t x = 0;
-    std::uint64_t y = 0;
-    std::memcpy(&x, &a.at(offset), sizeof(x));
-    std::memcpy(&y, &b.at(offset), sizeof(y));
-    bits += std::popcount(x ^ y);
-  }
-  return bits;
-}
-
 Result<std::vector<std::int64_t>> distances(std::span<const orb::Descriptor> descriptors1,
                                             std::span<const orb::Descriptor> descriptors2) {
   if (descriptors1.size() > kMaxDescriptors || descriptors2.size() > kMaxDescriptors) {
@@ -323,7 +381,7 @@ Result<std::vector<std::int64_t>> distances(std::span<const orb::Descriptor> des
   out.reserve(descriptors1.size() * descriptors2.size());
   for (const orb::Descriptor& a : descriptors1) {
     for (const orb::Descriptor& b : descriptors2) {
-      out.push_back(distance(a, b));
+      out.push_back(orb::distance(a, b));
     }
   }
   return out;
@@ -342,29 +400,38 @@ Result<std::vector<Match>> match(std::span<const orb::Descriptor> descriptors1,
   if (auto ok = check_set(descriptors2.size(), angles2, "angles2"); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
-  if (descriptors1.empty() || descriptors2.empty()) {
-    return std::vector<Match>{};
-  }
-  // Each second-set descriptor's claimant: the nearest first-set match passing the filters
-  // (ties: the lowest first-set index, which is offered first).
-  Claims claims(descriptors2.size());
-  for (std::size_t i = 0; i < descriptors1.size(); ++i) {
-    const Nearest n = nearest(descriptors1[i], descriptors2);
-    const bool passes = descriptors2.size() == 1 ||
-                        static_cast<double>(n.best) < options.ratio * static_cast<double>(n.second);
-    if (passes && n.best <= options.max_distance) {
-      claims.offer({.first = static_cast<std::int64_t>(i),
-                    .second = static_cast<std::int64_t>(n.index),
-                    .distance = n.best});
+  const auto every = std::views::iota(std::size_t{0}, descriptors2.size());
+  return nearest_matches(
+      descriptors1, descriptors2, [&](std::size_t /*i*/) { return every; }, {angles1, angles2},
+      options);
+}
+
+Result<std::vector<Match>> search_by_bow(std::span<const orb::Descriptor> descriptors1,
+                                         std::span<const std::int64_t> nodes1,
+                                         std::span<const orb::Descriptor> descriptors2,
+                                         std::span<const std::int64_t> nodes2,
+                                         std::span<const std::int64_t> angles1,
+                                         std::span<const std::int64_t> angles2,
+                                         const Options& options) {
+  for (auto ok : {check_nodes(descriptors1.size(), nodes1, "nodes1"),
+                  check_nodes(descriptors2.size(), nodes2, "nodes2"), check_options(options),
+                  check_set(descriptors1.size(), angles1, "angles1"),
+                  check_set(descriptors2.size(), angles2, "angles2")}) {
+    if (!ok) {
+      return std::unexpected(std::move(ok.error()));
     }
   }
-  std::vector<Match> out = claims.by_first();
-  if (options.check_orientation) {
-    keep_consistent_rotations(
-        out, [&](std::int64_t i) { return angles1[static_cast<std::size_t>(i)]; },
-        [&](std::int64_t j) { return angles2[static_cast<std::size_t>(j)]; });
+  // The second set's descriptors under each node, ascending.
+  std::map<std::int64_t, std::vector<std::size_t>> under;
+  for (std::size_t j = 0; j < descriptors2.size(); ++j) {
+    under[nodes2[j]].push_back(j);
   }
-  return out;
+  const auto among = [&](std::size_t i) {
+    const auto shared = under.find(nodes1[i]);
+    return shared == under.end() ? std::span<const std::size_t>{}
+                                 : std::span<const std::size_t>(shared->second);
+  };
+  return nearest_matches(descriptors1, descriptors2, among, {angles1, angles2}, options);
 }
 
 std::int64_t FeatureGrid::cell(double t, const Axis& axis) {

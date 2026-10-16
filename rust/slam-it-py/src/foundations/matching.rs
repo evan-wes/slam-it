@@ -16,9 +16,9 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use serde::Deserialize;
 use slam_it_foundations::matching as core;
-use slam_it_foundations::orb::{DESCRIPTOR_BYTES, Descriptor, Features, Keypoint};
+use slam_it_foundations::orb::{Features, Keypoint};
 
-use crate::common::{add_functions, contiguous, int64_array, to_i64, unwrap};
+use crate::common::{add_functions, contiguous, descriptors_in, int64_array, to_i64, unwrap};
 
 /// `matching.Options`' fields, as they cross.
 #[derive(Debug, Deserialize)]
@@ -54,32 +54,6 @@ const FRAME_KEYS: [&str; 7] = [
     "levels",
 ];
 
-/// Copies a descriptor set in.
-///
-/// # Arguments
-///
-/// * `descriptors` - An (N, 32) uint8 array.
-///
-/// # Returns
-///
-/// The descriptors.
-///
-/// # Errors
-///
-/// `ValueError` for another shape or a non-contiguous array.
-fn descriptors_in(descriptors: &PyReadonlyArray2<'_, u8>) -> PyResult<Vec<Descriptor>> {
-    if descriptors.shape()[1] != DESCRIPTOR_BYTES {
-        return Err(PyValueError::new_err(format!(
-            "expected shape (N, {DESCRIPTOR_BYTES}), got {:?}",
-            descriptors.shape()
-        )));
-    }
-    Ok(contiguous(descriptors)?
-        .as_chunks::<DESCRIPTOR_BYTES>()
-        .0
-        .to_vec())
-}
-
 /// Copies orientation bins in.
 ///
 /// # Arguments
@@ -98,6 +72,53 @@ fn angles_in(angles: &PyReadonlyArray1<'_, i64>) -> PyResult<Vec<usize>> {
         .iter()
         .map(|&a| usize::try_from(a).map_err(|e| PyValueError::new_err(format!("angles: {e}"))))
         .collect()
+}
+
+/// Copies vocabulary nodes in.
+///
+/// # Arguments
+///
+/// * `nodes` - An int64 array.
+/// * `name` - Its name, for the message.
+///
+/// # Returns
+///
+/// The nodes.
+///
+/// # Errors
+///
+/// `ValueError` for a negative node or a non-contiguous array.
+fn nodes_in(nodes: &PyReadonlyArray1<'_, i64>, name: &str) -> PyResult<Vec<usize>> {
+    contiguous(nodes)?
+        .iter()
+        .map(|&n| {
+            usize::try_from(n)
+                .map_err(|_| PyValueError::new_err(format!("{name}: nodes must be at least 0")))
+        })
+        .collect()
+}
+
+/// Reads `matching.Options`' fields.
+///
+/// # Arguments
+///
+/// * `options` - The dict.
+///
+/// # Returns
+///
+/// The filters.
+///
+/// # Errors
+///
+/// `ValueError` for a malformed dict.
+fn options_in(options: &Bound<'_, PyDict>) -> PyResult<core::Options> {
+    let raw: OptionsIn = pythonize::depythonize(options.as_any())
+        .map_err(|e| PyValueError::new_err(format!("options: {e}")))?;
+    Ok(core::Options {
+        max_distance: raw.max_distance,
+        ratio: raw.ratio,
+        check_orientation: raw.check_orientation,
+    })
 }
 
 /// Wraps row-major values as a new int64 array of the given shape.
@@ -180,13 +201,6 @@ fn match_descriptors<'py>(
     angles2: PyReadonlyArray1<'py, i64>,
     options: &Bound<'py, PyDict>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let raw: OptionsIn = pythonize::depythonize(options.as_any())
-        .map_err(|e| PyValueError::new_err(format!("options: {e}")))?;
-    let settings = core::Options {
-        max_distance: raw.max_distance,
-        ratio: raw.ratio,
-        check_orientation: raw.check_orientation,
-    };
     let matches = unwrap(
         py,
         core::match_descriptors(
@@ -194,7 +208,56 @@ fn match_descriptors<'py>(
             &descriptors_in(&descriptors2)?,
             &angles_in(&angles1)?,
             &angles_in(&angles2)?,
-            &settings,
+            &options_in(options)?,
+        ),
+    )?;
+    matches_dict(py, &matches)
+}
+
+/// Matches two descriptor sets node by node; returns a dict of `Matches`' fields.
+///
+/// # Arguments
+///
+/// * `descriptors1` - The first set.
+/// * `nodes1` - Its nodes.
+/// * `descriptors2` - The second set.
+/// * `nodes2` - Its nodes.
+/// * `angles1` - The first set's orientation bins.
+/// * `angles2` - The second set's.
+/// * `options` - The filters, as a dict.
+///
+/// # Returns
+///
+/// A dict with `pairs` (K, 2) and `distances` (K,), both int64.
+///
+/// # Errors
+///
+/// `ValueError` for a malformed array or dict; `InvalidInputError` from the core.
+#[pyfunction]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "two sets, their nodes and angles, the filters"
+)]
+fn search_by_bow<'py>(
+    py: Python<'py>,
+    descriptors1: PyReadonlyArray2<'py, u8>,
+    nodes1: PyReadonlyArray1<'py, i64>,
+    descriptors2: PyReadonlyArray2<'py, u8>,
+    nodes2: PyReadonlyArray1<'py, i64>,
+    angles1: PyReadonlyArray1<'py, i64>,
+    angles2: PyReadonlyArray1<'py, i64>,
+    options: &Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let matches = unwrap(
+        py,
+        core::search_by_bow(
+            &descriptors_in(&descriptors1)?,
+            &nodes_in(&nodes1, "nodes1")?,
+            &descriptors_in(&descriptors2)?,
+            &nodes_in(&nodes2, "nodes2")?,
+            &angles_in(&angles1)?,
+            &angles_in(&angles2)?,
+            &options_in(options)?,
         ),
     )?;
     matches_dict(py, &matches)
@@ -491,6 +554,13 @@ fn search_by_projection<'py>(
 /// Returns a Python error if a function cannot be added.
 #[pymodule]
 pub fn matching(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    add_functions!(m; distances, match_descriptors, features_in_area, search_by_projection);
+    add_functions!(
+        m;
+        distances,
+        match_descriptors,
+        search_by_bow,
+        features_in_area,
+        search_by_projection
+    );
     Ok(())
 }

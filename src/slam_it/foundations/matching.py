@@ -25,6 +25,14 @@ filters as ORB-SLAM's matcher does (Mur-Artal et al., T-RO 2015):
 Nearest neighbours tie to the lowest second-set index. Every quantity is an integer except
 the ratio test's one float64 product, so the three languages agree exactly.
 
+**Matching by word** (:func:`search_by_bow`, ORB-SLAM's ``SearchByBoW``) is :func:`match` with
+each descriptor's nearest and second nearest sought only among the second set's descriptors
+under the same vocabulary node (:func:`slam_it.foundations.vocabulary.quantize`'s direct
+index), so that two images of one place are matched without comparing every pair. The filters
+are :func:`match`'s, the ratio test among the node's descriptors (a node with one passes it, as
+ORB-SLAM's second-nearest distance of 256 does). ORB-SLAM gives a second-set descriptor to the
+first match in its loop and skips it after; here the nearest keeps it, as :func:`match` does.
+
 **Guided matching** (:func:`search_by_projection`, ORB-SLAM's ``SearchByProjection``) is
 what a tracker does once it can predict where its map points appear: each map point's
 descriptor is compared only with the frame's keypoints near its projection, so far fewer
@@ -62,7 +70,7 @@ from numpy.typing import ArrayLike, NDArray
 from slam_it import backends
 from slam_it.foundations.arrays import as_count, as_flag, as_number, as_real, holds_integers
 from slam_it.foundations.errors import InvalidInputError
-from slam_it.foundations.orb import ANGLE_BINS, DESCRIPTOR_BYTES, MAX_LEVELS, Features
+from slam_it.foundations.orb import ANGLE_BINS, DESCRIPTOR_BYTES, MAX_LEVELS, Features, distance
 
 MAX_DESCRIPTORS = 1 << 20
 """The most descriptors a set may hold."""
@@ -80,9 +88,6 @@ GRID_COLS = 64
 
 GRID_ROWS = 48
 """Cells down it (ORB-SLAM's ``FRAME_GRID_ROWS``)."""
-
-_POPCOUNT = np.array([bin(b).count("1") for b in range(256)], dtype=np.int64)
-"""Set bits per byte value."""
 
 _CHUNK = 256
 """First-set rows per block of the reference's distance computation (bounds its memory)."""
@@ -256,6 +261,19 @@ class Implementation(Protocol):
         """Match two descriptor sets; return a dict of :class:`Matches`' fields."""
         ...
 
+    def search_by_bow(  # noqa: PLR0913, PLR0917 -- two sets, their nodes and angles, the filters
+        self,
+        descriptors1: NDArray[np.uint8],
+        nodes1: NDArray[np.int64],
+        descriptors2: NDArray[np.uint8],
+        nodes2: NDArray[np.int64],
+        angles1: NDArray[np.int64],
+        angles2: NDArray[np.int64],
+        options: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Match two descriptor sets node by node; return a dict of :class:`Matches`' fields."""
+        ...
+
     def features_in_area(  # noqa: PLR0913 -- the keypoints, then the window
         self,
         xy: NDArray[np.float64],
@@ -287,8 +305,8 @@ def _distances(
     """Every pair's Hamming distance (reference)."""
     out = np.empty((len(descriptors1), len(descriptors2)), dtype=np.int64)
     for start in range(0, len(descriptors1), _CHUNK):
-        block = descriptors1[start : start + _CHUNK, None, :] ^ descriptors2[None, :, :]
-        out[start : start + _CHUNK] = _POPCOUNT[block].sum(axis=-1)
+        block = descriptors1[start : start + _CHUNK, None, :]
+        out[start : start + _CHUNK] = distance(block, descriptors2[None, :, :])
     return out
 
 
@@ -349,6 +367,19 @@ def _match(
     else:
         passes = np.ones(len(descriptors1), dtype=bool)
     candidates = np.flatnonzero(passes & (best_distance <= options.max_distance))
+    return _kept(candidates, best, best_distance, angles1, angles2, options=options)
+
+
+def _kept(  # noqa: PLR0913 -- the candidates, their nearest, the angles, the filters
+    candidates: NDArray[np.int64],
+    best: NDArray[np.int64],
+    best_distance: NDArray[np.int64],
+    angles1: NDArray[np.int64],
+    angles2: NDArray[np.int64],
+    *,
+    options: Options,
+) -> Matches:
+    """Keep one candidate per second-set descriptor, then those the rotation check keeps."""
     # One match per second-set descriptor: the nearest (ties: the lowest first-set index).
     order = np.lexsort((candidates, best_distance[candidates], best[candidates]))
     ranked = candidates[order]
@@ -363,6 +394,35 @@ def _match(
         pairs=np.column_stack([kept, best[kept]]).astype(np.int64).reshape(-1, 2),
         distances=best_distance[kept].astype(np.int64),
     )
+
+
+def _search_by_bow(  # noqa: PLR0913 -- two sets, their nodes and angles, the filters
+    descriptors1: NDArray[np.uint8],
+    nodes1: NDArray[np.int64],
+    descriptors2: NDArray[np.uint8],
+    nodes2: NDArray[np.int64],
+    *,
+    angles1: NDArray[np.int64],
+    angles2: NDArray[np.int64],
+    options: Options,
+) -> Matches:
+    """Match two descriptor sets node by node (reference)."""
+    n = len(descriptors1)
+    best = np.zeros(n, dtype=np.int64)
+    best_distance = np.full(n, MAX_DISTANCE + 1, dtype=np.int64)  # no node shared: no match
+    passes = np.zeros(n, dtype=bool)
+    for node in np.intersect1d(nodes1, nodes2).tolist():
+        rows1 = np.flatnonzero(nodes1 == node)
+        rows2 = np.flatnonzero(nodes2 == node)
+        index, nearest, second = _nearest_two(descriptors1[rows1], descriptors2[rows2])
+        best[rows1] = rows2[index]
+        best_distance[rows1] = nearest
+        if len(rows2) > 1:
+            passes[rows1] = nearest < options.ratio * second.astype(np.float64)
+        else:
+            passes[rows1] = True
+    candidates = np.flatnonzero(passes & (best_distance <= options.max_distance))
+    return _kept(candidates, best, best_distance, angles1, angles2, options=options)
 
 
 class _Window(NamedTuple):
@@ -429,13 +489,13 @@ def _search_by_projection(
         index = np.flatnonzero(candidates)
         if len(index) == 0:
             continue
-        distance = _POPCOUNT[frame.descriptors[index] ^ projections.descriptors[i]].sum(axis=1)
-        order = np.lexsort((index, distance))  # by distance, then index
-        best, best_k = int(distance[order[0]]), int(index[order[0]])
+        distances = distance(frame.descriptors[index], projections.descriptors[i])
+        order = np.lexsort((index, distances))  # by distance, then index
+        best, best_k = int(distances[order[0]]), int(index[order[0]])
         if best > options.max_distance:
             continue
         if len(order) > 1:
-            second, second_k = float(distance[order[1]]), int(index[order[1]])
+            second, second_k = float(distances[order[1]]), int(index[order[1]])
             if frame.level[second_k] == frame.level[best_k] and best > options.ratio * second:
                 continue
         held = claim.get(best_k)
@@ -647,6 +707,88 @@ def match(  # noqa: PLR0913 -- two sets, their angles, the filters
         },
         decode=decode_matches,
     )
+
+
+def search_by_bow(  # noqa: PLR0913, PLR0917 -- two sets, their nodes and angles, the filters
+    descriptors1: ArrayLike,
+    nodes1: ArrayLike,
+    descriptors2: ArrayLike,
+    nodes2: ArrayLike,
+    angles1: ArrayLike,
+    angles2: ArrayLike,
+    options: Options | None = None,
+    *,
+    backend: str = "python",
+) -> Matches:
+    """Match each descriptor of the first set to its nearest in the second under its node.
+
+    :func:`match`, each descriptor compared only with the second set's descriptors under the
+    same vocabulary node (ORB-SLAM's ``SearchByBoW``; the module docstring).
+
+    Parameters
+    ----------
+    descriptors1 : array_like of uint8, shape (N, DESCRIPTOR_BYTES)
+        The first set.
+    nodes1 : array_like of int, shape (N,)
+        Each one's node (:func:`slam_it.foundations.vocabulary.quantize`), at least 0.
+    descriptors2 : array_like of uint8, shape (M, DESCRIPTOR_BYTES)
+        The second set.
+    nodes2 : array_like of int, shape (M,)
+        Each one's node.
+    angles1 : array_like of int, shape (N,)
+        The first set's orientation bins.
+    angles2 : array_like of int, shape (M,)
+        The second set's.
+    options : Options, optional
+        The filters (default: distance 50, ratio 0.8, rotation consistency on).
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    Matches
+        The kept pairs, by first-set index; each second-set descriptor appears at most once,
+        and every pair shares a node.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If a set is malformed, or the nodes or angles are not one per descriptor (nodes at
+        least 0, angles bins in ``[0, ANGLE_BINS)``).
+    """
+    first = _as_descriptors(descriptors1, "descriptors1")
+    second = _as_descriptors(descriptors2, "descriptors2")
+    under1 = _as_nodes(nodes1, len(first), "nodes1")
+    under2 = _as_nodes(nodes2, len(second), "nodes2")
+    bins1 = _as_angles(angles1, len(first), "angles1")
+    bins2 = _as_angles(angles2, len(second), "angles2")
+    settings = Options() if options is None else options
+    return backends.call(
+        backend,
+        __name__,
+        "search_by_bow",
+        reference=lambda: _search_by_bow(
+            first, under1, second, under2, angles1=bins1, angles2=bins2, options=settings
+        ),
+        arguments={
+            "descriptors1": first,
+            "nodes1": under1,
+            "descriptors2": second,
+            "nodes2": under2,
+            "angles1": bins1,
+            "angles2": bins2,
+            "options": asdict(settings),
+        },
+        decode=decode_matches,
+    )
+
+
+def _as_nodes(value: ArrayLike, count: int, name: str) -> NDArray[np.int64]:
+    """Check vocabulary nodes: `count` integers, at least 0 (booleans refused)."""
+    arr = _as_integers(value, count, name)
+    if count and arr.min() < 0:
+        raise InvalidInputError(f"{name}: nodes must be at least 0")
+    return arr
 
 
 def _decode_indices(raw: Any, codes: backends.Codes) -> NDArray[np.int64]:  # noqa: ANN401 -- a backend's array

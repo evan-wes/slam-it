@@ -18,13 +18,15 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use slam_it_edge::adjust::Solve;
+use slam_it_edge::database::{Database, Words};
 use slam_it_edge::frames::{Camera, Frame, Tracked};
 use slam_it_edge::initialization::{Initialization, Outcome};
 use slam_it_edge::map::{Map, check_map, index_observations};
 use slam_it_edge::options::{Mode, Options, Setting};
 use slam_it_foundations::camera::Model;
-use slam_it_foundations::nls;
 use slam_it_foundations::orb::{DESCRIPTOR_BYTES, Descriptor, Features, Keypoint};
+use slam_it_foundations::vocabulary::BowVector;
+use slam_it_foundations::{nls, ransac};
 
 use crate::common::{by_name, contiguous, encode, item_array, to_i64, unwrap};
 
@@ -547,6 +549,7 @@ pub fn options_in(values: &Bound<'_, PyDict>) -> PyResult<Options> {
     for (name, kind) in settings {
         let value = item(values, &keys, name)?;
         let setting = match kind {
+            Setting::Flag(_) => Setting::Flag(value.extract()?),
             Setting::Integer(_) => Setting::Integer(value.extract()?),
             Setting::Real(_) => Setting::Real(value.extract()?),
         };
@@ -738,5 +741,94 @@ pub fn initialization_dict(py: Python<'_>, attempt: Initialization) -> PyResult<
     out.set_item("outcome", encode(&Outcome::ALL, attempt.summary.outcome)?)?;
     out.set_item("matches", count_or_none(py, attempt.summary.matches)?)?;
     out.set_item("solves", solves_list(py, &attempt.summary.solves)?)?;
+    Ok(out)
+}
+
+/// A RANSAC termination as its code in `codes()`, or None.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `termination` - The termination, if there is one.
+///
+/// # Returns
+///
+/// The code, or None.
+///
+/// # Errors
+///
+/// A Python error if the code cannot be made.
+pub fn termination_or_none(
+    py: Python<'_>,
+    termination: Option<ransac::Termination>,
+) -> PyResult<Bound<'_, PyAny>> {
+    match termination {
+        Some(termination) => Ok(encode(&ransac::Termination::ALL, termination)?
+            .into_pyobject(py)?
+            .into_any()),
+        None => Ok(py.None().into_bound(py)),
+    }
+}
+
+/// `Database.as_dict()`'s keys.
+const DATABASE_KEYS: [&str; 6] = [
+    "kf_id",
+    "bow_start",
+    "bow_word",
+    "bow_value",
+    "node_start",
+    "node",
+];
+
+/// Reads a keyframe database from `slam_it.edge.database.Database.as_dict()`'s dict: each
+/// keyframe's vector and nodes, laid end to end by id; the core builds its own index.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `values` - The dict.
+///
+/// # Returns
+///
+/// The database.
+///
+/// # Errors
+///
+/// `ValueError` for a missing or extra key, or offsets that do not lay the arrays end to end;
+/// `InvalidInputError` for a keyframe given twice.
+pub fn database_in(py: Python<'_>, values: &Bound<'_, PyDict>) -> PyResult<Database> {
+    let field = |key| item(values, &DATABASE_KEYS, key);
+    let ids = vector::<i64>(&field("kf_id")?)?;
+    let bow_start = indices(&field("bow_start")?)?;
+    let bow_word = vector::<i64>(&field("bow_word")?)?;
+    let bow_value = vector::<f64>(&field("bow_value")?)?;
+    let node_start = indices(&field("node_start")?)?;
+    let node = indices(&field("node")?)?;
+    let laid = |start: &[usize], total: usize| {
+        start.len() == ids.len() + 1
+            && start.first() == Some(&0)
+            && start.last() == Some(&total)
+            && start.is_sorted()
+    };
+    if !(laid(&bow_start, bow_word.len())
+        && bow_value.len() == bow_word.len()
+        && laid(&node_start, node.len()))
+    {
+        return Err(PyValueError::new_err(
+            "database: offsets that do not lay its arrays end to end",
+        ));
+    }
+    let mut out = Database::default();
+    for (i, &keyframe) in ids.iter().enumerate() {
+        let words = bow_start[i]..bow_start[i + 1];
+        let words = Words {
+            vector: BowVector {
+                ids: bow_word[words.clone()].to_vec(),
+                values: bow_value[words].to_vec(),
+            },
+            nodes: node[node_start[i]..node_start[i + 1]].to_vec(),
+        };
+        unwrap(py, out.insert(keyframe, words))?;
+    }
     Ok(out)
 }

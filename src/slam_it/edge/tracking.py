@@ -10,9 +10,10 @@
   whether the frame is tracked.
 - **The fallback** (:func:`relocalize_locally`): when the prediction fails, the frame's
   descriptors are matched to the local map's and PnP RANSAC
-  (:func:`slam_it.foundations.pnp.pnp_ransac`) places it. No bag of words: this recovers only
-  near the local map; a lost track closes the map, and the pipeline starts a new one
-  (:class:`slam_it.edge.pipeline.Pipeline`).
+  (:func:`slam_it.foundations.pnp.pnp_ransac`) places it. It recovers only near the local map;
+  past it, the pipeline relocalises the frame against the whole map through its bag of words
+  (:mod:`slam_it.edge.relocalization`), and a track lost closes the map, the next frame starting
+  a new one (:class:`slam_it.edge.pipeline.Pipeline`).
 
 Each stage reports how it went beside its result (:class:`MotionSummary`,
 :class:`PnpSummary`, :meth:`LocalTracking.summary`), which a run records per frame, and the map
@@ -240,6 +241,94 @@ class PnpSummary:
             "inliers": self.inliers,
             "refined": self.refined,
         }
+
+
+@dataclass(frozen=True)
+class PnpRun:
+    """A PnP RANSAC run on matched points, as the fallback and relocalisation make it.
+
+    Attributes
+    ----------
+    pose : ndarray of float64, shape (4, 4), or None
+        Its pose, ``T_cam_world``; None if no sample gave one.
+    inliers : ndarray of bool, shape (n,), or None
+        Which matches are its inliers.
+    iterations : int or None
+        RANSAC's samples, if it found a pose.
+    termination : slam_it.foundations.ransac.Termination or None
+        Why it stopped, if it found a pose.
+    """
+
+    pose: NDArray[np.float64] | None
+    inliers: NDArray[np.bool_] | None = None
+    iterations: int | None = None
+    termination: ransac.Termination | None = None
+
+    @property
+    def count(self) -> int:
+        """Its inliers, 0 if it found no pose."""
+        return 0 if self.inliers is None else int(np.count_nonzero(self.inliers))
+
+    def kept(self, needed: int) -> tuple[NDArray[np.float64], NDArray[np.bool_]] | None:
+        """Return the pose and its inliers, if the run found one with at least `needed` inliers.
+
+        Parameters
+        ----------
+        needed : int
+            The inliers a pose must have.
+
+        Returns
+        -------
+        tuple of ndarray, or None
+            The pose and which matches are its inliers; None otherwise (Rust's ``PnpRun::kept``).
+        """
+        if self.pose is None or self.inliers is None or self.count < needed:
+            return None
+        return self.pose, self.inliers
+
+    def recorded(self) -> dict[str, Any]:
+        """Return what a stage's summary records of it.
+
+        Returns
+        -------
+        dict
+            ``degenerate`` if it found no pose; else its ``iterations``, ``termination`` and
+            ``inliers``.
+        """
+        if self.pose is None:
+            return {"degenerate": True}
+        return {
+            "iterations": self.iterations,
+            "termination": self.termination,
+            "inliers": self.count,
+        }
+
+
+def run_pnp(
+    xyz: NDArray[np.float64], bearings: NDArray[np.float64], settings: ransac.Options
+) -> PnpRun:
+    """Run PnP RANSAC on matched points, a run in which no sample gave a pose reported, not raised.
+
+    Parameters
+    ----------
+    xyz : ndarray of float64, shape (n, 3)
+        The points, in the world frame.
+    bearings : ndarray of float64, shape (n, 3)
+        Their keypoints' bearings.
+    settings : slam_it.foundations.ransac.Options
+        RANSAC's settings.
+
+    Returns
+    -------
+    PnpRun
+        The run.
+    """
+    try:
+        solved = pnp.pnp_ransac(xyz, bearings, settings)
+    except DegenerateError:
+        return PnpRun(None)
+    run = solved.summary.run
+    return PnpRun(solved.state.model, solved.state.inliers, run.iterations, run.termination)
 
 
 @dataclass(frozen=True)
@@ -533,10 +622,7 @@ def _in_view(m: Map, camera: Camera, pose: Array, rows: IntArray, options: Optio
     """Select the points a camera sees (reference)."""
     xyz = m.pt_xyz[rows]
     local = maps.to_camera(pose, xyz)
-    keep = local[:, 2] > 0.0
-    pixels = np.full((len(rows), 2), np.nan)
-    pixels[keep] = camera.project(local[keep])
-    keep &= camera.inside(pixels)
+    pixels, keep = camera.project_in_view(local)
     offset = xyz - maps.camera_centre(pose)
     distance = np.linalg.norm(offset, axis=1)
     keep &= maps.in_distance_range(m, rows, distance, options)
@@ -644,10 +730,7 @@ def _track_last_frame(  # noqa: PLR0913 -- the stage's state
     rows = m.point_rows(last_tracked.points)
     have = np.flatnonzero(rows >= 0)
     local = maps.to_camera(predicted, m.pt_xyz[rows[have]])
-    front = local[:, 2] > 0.0
-    pixels = np.full((len(have), 2), np.nan)
-    pixels[front] = camera.project(local[front])
-    ok = front & camera.inside(pixels)
+    pixels, ok = camera.project_in_view(local)
     have, local, pixels = have[ok], local[ok], pixels[ok]
     last_level = last.features.keypoints.level[have]
     low, high = last_level - 1, last_level + 1
@@ -916,26 +999,15 @@ def _relocalize_locally(m: Map, camera: Camera, frame: Frame, options: Options) 
     if len(pairs) < options.pnp_min_inliers:
         return Relocalization(tracked=None, summary=matched, matched=points)
     settings = ransac.Options(threshold=options.pnp_threshold / camera.focal, seed=options.seed)
-    try:
-        solved = pnp.pnp_ransac(m.pt_xyz[local[pairs[:, 1]]], frame.bearings[pairs[:, 0]], settings)
-    except DegenerateError:
-        failed = replace(matched, degenerate=True)
-        return Relocalization(tracked=None, summary=failed, matched=points)
-    inliers = solved.state.inliers
-    run = solved.summary.run
-    sampled = replace(
-        matched,
-        iterations=run.iterations,
-        termination=run.termination,
-        inliers=int(np.count_nonzero(inliers)),
-    )
-    if np.count_nonzero(inliers) < options.pnp_min_inliers:
+    run = run_pnp(m.pt_xyz[local[pairs[:, 1]]], frame.bearings[pairs[:, 0]], settings)
+    sampled = replace(matched, **run.recorded())
+    consensus = run.kept(options.pnp_min_inliers)
+    if consensus is None:
         return Relocalization(tracked=None, summary=sampled, matched=points)
+    pose, inliers = consensus
     sample = np.full(frame.size, -1, dtype=np.int64)
     sample[pairs[inliers, 0]] = m.pt_id[local[pairs[inliers, 1]]]
-    tracked = _optimize_pose(
-        m, camera, frame, Tracked(pose=solved.state.model, points=sample), options
-    )
+    tracked = _optimize_pose(m, camera, frame, Tracked(pose=pose, points=sample), options)
     summary = replace(sampled, refined=tracked.inliers)
     kept = tracked if tracked.inliers >= options.pnp_min_inliers else None
     return Relocalization(kept, summary, matched=points)
@@ -948,8 +1020,9 @@ def relocalize_locally(
 
     The frame's descriptors are matched to the local map's points' (``th_high``, the
     ``relocalize_ratio`` test), PnP RANSAC places it on the matches (``pnp_threshold``
-    pixels, ``seed``), and the pose is refined (:func:`optimize_pose`). ORB-SLAM relocalises
-    against keyframes found by its bag of words; this recovers only near the local map.
+    pixels, ``seed``), and the pose is refined (:func:`optimize_pose`). It recovers only near
+    the local map: ORB-SLAM has no such step, relocalising against the keyframes its bag of
+    words finds, as :func:`slam_it.edge.relocalization.relocalize` does after it.
 
     Parameters
     ----------

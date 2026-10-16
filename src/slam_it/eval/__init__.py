@@ -29,6 +29,8 @@
   timestamps.
 - :mod:`slam_it.eval.runs`: the run format every backend's pipeline writes, a sequence's
   ground truth, and scoring a run.
+- :mod:`slam_it.eval.vocabularies`: a place-recognition vocabulary's folder, written and read
+  (C++'s ``slam_it_eval`` and Rust's ``slam-it-eval`` read it too, for the native programs).
 - :mod:`slam_it.eval.timestamps`: checking timestamps and finding the nearest, for the readers
   and metrics.
 - :mod:`slam_it.eval.colmap_reference`: COLMAP's Ceres bundle adjuster, as the reference

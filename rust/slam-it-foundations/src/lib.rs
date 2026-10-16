@@ -28,3 +28,4 @@ pub mod solve;
 pub mod stereo;
 pub mod triangulation;
 pub mod twoview;
+pub mod vocabulary;

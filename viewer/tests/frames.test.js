@@ -19,6 +19,7 @@ import {
   posesUpTo,
   recordIndex,
   sharesFrame,
+  truthRange,
 } from "../src/frames.js";
 import { fetchGolden } from "./golden.js";
 
@@ -145,4 +146,18 @@ test("a map's poses are consecutive rows", () => {
   assert.deepEqual(mapRows(poseMaps, 1), [3, 3]); // reset: no poses
   assert.deepEqual(mapRows(poseMaps, 2), [3, 5]);
   assert.deepEqual(mapRows(poseMaps, 3), [5, 6]);
+});
+
+test("the truth is drawn over the segments whose two frames are both in a stretch", () => {
+  // Segments ending at frames 1, 2, 4 and 5 (frames 0-1, 1-2, 3-4 and 4-5; 2-3 has no truth).
+  const ends = new Int32Array([1, 2, 4, 5]);
+  // Two vertices a segment: [start, count].
+  assert.deepEqual(truthRange(ends, 0, 5), [0, 8]);
+  assert.deepEqual(truthRange(ends, 0, 2), [0, 4]);
+  // From frame 1: the segment 0-1 begins before it.
+  assert.deepEqual(truthRange(ends, 1, 5), [2, 6]);
+  assert.deepEqual(truthRange(ends, 3, 4), [4, 2]);
+  // A single frame, or a stretch inside the gap: no segment.
+  assert.deepEqual(truthRange(ends, 4, 4), [6, 0]);
+  assert.deepEqual(truthRange(ends, 2, 3), [4, 0]);
 });

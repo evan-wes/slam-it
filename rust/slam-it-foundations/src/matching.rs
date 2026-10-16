@@ -5,8 +5,12 @@
 //! guided matching, a search by projection over a feature grid (the Python module's docstring
 //! defines each filter).
 
+use std::collections::BTreeMap;
+
 use crate::error::{ErrorKind, Result, check_range, fail, fail_setting};
-use crate::orb::{ANGLE_BINS, DESCRIPTOR_BYTES, Descriptor, Features, Keypoint, MAX_LEVELS};
+use crate::orb::{
+    ANGLE_BINS, DESCRIPTOR_BYTES, Descriptor, Features, Keypoint, MAX_LEVELS, distance,
+};
 
 /// The most descriptors a set may hold.
 pub const MAX_DESCRIPTORS: usize = 1 << 20;
@@ -113,26 +117,6 @@ pub fn check_options(options: &Options) -> Result<()> {
     Ok(())
 }
 
-/// The Hamming distance between two descriptors: the bits in which they differ.
-///
-/// # Arguments
-///
-/// * `a` - A descriptor.
-/// * `b` - Another.
-///
-/// # Returns
-///
-/// From 0 to 256.
-#[must_use]
-pub fn distance(a: &Descriptor, b: &Descriptor) -> i64 {
-    a.as_chunks::<8>()
-        .0
-        .iter()
-        .zip(b.as_chunks::<8>().0)
-        .map(|(x, y)| i64::from((u64::from_le_bytes(*x) ^ u64::from_le_bytes(*y)).count_ones()))
-        .sum()
-}
-
 /// Every pair's Hamming distance.
 ///
 /// # Arguments
@@ -175,12 +159,7 @@ fn check_set(count: usize, angles: &[usize], name: &str) -> Result<()> {
             format!("{name}: too many descriptors"),
         );
     }
-    if angles.len() != count {
-        return fail(
-            ErrorKind::InvalidInput,
-            format!("{name}: expected {count} integers, got {}", angles.len()),
-        );
-    }
+    check_length(count, angles.len(), name)?;
     if angles.iter().any(|&a| a >= ANGLE_BINS) {
         return fail(
             ErrorKind::InvalidInput,
@@ -190,21 +169,44 @@ fn check_set(count: usize, angles: &[usize], name: &str) -> Result<()> {
     Ok(())
 }
 
-/// A descriptor's nearest index and distance in a set, and the second-nearest distance (the
-/// best again on a tie); ties go to the lowest index.
+/// Checks the filters, and two sets' sizes and angles.
+///
+/// # Arguments
+///
+/// * `options` - The filters.
+/// * `counts` - The sets' descriptors.
+/// * `angles` - Their orientation bins.
+///
+/// # Errors
+///
+/// `InvalidInput` for a bad filter, a set too large, or angles that are not one bin in
+/// `[0, ANGLE_BINS)` per descriptor.
+fn check_sets(options: &Options, counts: [usize; 2], angles: [&[usize]; 2]) -> Result<()> {
+    check_options(options)?;
+    check_set(counts[0], angles[0], "angles1")?;
+    check_set(counts[1], angles[1], "angles2")
+}
+
+/// A descriptor's nearest index and distance among some of a set's, and the second-nearest
+/// distance (the best again on a tie); ties go to the lowest index.
 ///
 /// # Arguments
 ///
 /// * `query` - The descriptor.
-/// * `set` - The set, non-empty.
+/// * `set` - The set.
+/// * `among` - The indices compared, ascending, at least one.
 ///
 /// # Returns
 ///
-/// `(index, best, second)`.
-fn nearest(query: &Descriptor, set: &[Descriptor]) -> (usize, i64, i64) {
+/// `(index, best, second)`, the index the set's.
+fn nearest_among(
+    query: &Descriptor,
+    set: &[Descriptor],
+    among: impl IntoIterator<Item = usize>,
+) -> (usize, i64, i64) {
     let mut out = (0, i64::MAX, i64::MAX);
-    for (j, candidate) in set.iter().enumerate() {
-        let d = distance(query, candidate);
+    for j in among {
+        let d = distance(query, &set[j]);
         if d < out.1 {
             out = (j, d, out.1);
         } else if d < out.2 {
@@ -212,6 +214,27 @@ fn nearest(query: &Descriptor, set: &[Descriptor]) -> (usize, i64, i64) {
         }
     }
     out
+}
+
+/// Checks that there is one value per descriptor.
+///
+/// # Arguments
+///
+/// * `count` - The number of descriptors.
+/// * `length` - The number of values.
+/// * `name` - The values' name, for the message.
+///
+/// # Errors
+///
+/// `InvalidInput` if they are not one per descriptor.
+fn check_length(count: usize, length: usize, name: &str) -> Result<()> {
+    if length != count {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!("{name}: expected {count} integers, got {length}"),
+        );
+    }
+    Ok(())
 }
 
 /// The rotation histogram's kept bins: its highest three, the lower two only if they hold at
@@ -268,10 +291,6 @@ fn three_maxima(counts: &[i64; ANGLE_BINS]) -> Vec<usize> {
 ///
 /// `InvalidInput` for a bad filter, a set too large, or angles that are not one bin in
 /// `[0, ANGLE_BINS)` per descriptor.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "Hamming distances are at most 256, exact in f64"
-)]
 pub fn match_descriptors(
     descriptors1: &[Descriptor],
     descriptors2: &[Descriptor],
@@ -279,18 +298,57 @@ pub fn match_descriptors(
     angles2: &[usize],
     options: &Options,
 ) -> Result<Vec<Match>> {
-    check_options(options)?;
-    check_set(descriptors1.len(), angles1, "angles1")?;
-    check_set(descriptors2.len(), angles2, "angles2")?;
-    if descriptors1.is_empty() || descriptors2.is_empty() {
-        return Ok(Vec::new());
-    }
+    check_sets(
+        options,
+        [descriptors1.len(), descriptors2.len()],
+        [angles1, angles2],
+    )?;
+    let every: Vec<usize> = (0..descriptors2.len()).collect();
+    Ok(nearest_matches(
+        descriptors1,
+        descriptors2,
+        |_| every.as_slice(),
+        [angles1, angles2],
+        options,
+    ))
+}
+
+/// Matches each first-set descriptor to its nearest among the second set's it is compared
+/// with, filtered: [`match_descriptors`]' and [`search_by_bow`]'s common part.
+///
+/// # Arguments
+///
+/// * `descriptors1` - The first set.
+/// * `descriptors2` - The second set.
+/// * `among` - The second-set indices each first-set descriptor is compared with, ascending
+///   (empty for none).
+/// * `angles` - The two sets' orientation bins.
+/// * `options` - The filters.
+///
+/// # Returns
+///
+/// The kept matches, by first-set index.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "Hamming distances are at most 256, exact in f64"
+)]
+fn nearest_matches<'a>(
+    descriptors1: &[Descriptor],
+    descriptors2: &[Descriptor],
+    among: impl Fn(usize) -> &'a [usize],
+    angles: [&[usize]; 2],
+    options: &Options,
+) -> Vec<Match> {
     // Each second-set descriptor's claimant: the nearest first-set match passing the filters
     // (ties: the lowest first-set index, which is offered first).
     let mut claims = Claims::new(descriptors2.len());
     for (i, query) in descriptors1.iter().enumerate() {
-        let (j, best, second) = nearest(query, descriptors2);
-        let passes = descriptors2.len() == 1 || (best as f64) < options.ratio * second as f64;
+        let compared = among(i);
+        if compared.is_empty() {
+            continue;
+        }
+        let (j, best, second) = nearest_among(query, descriptors2, compared.iter().copied());
+        let passes = compared.len() == 1 || (best as f64) < options.ratio * second as f64;
         if passes && best <= options.max_distance {
             claims.offer(Match {
                 first: i,
@@ -301,9 +359,61 @@ pub fn match_descriptors(
     }
     let mut out = claims.by_first();
     if options.check_orientation {
-        keep_consistent_rotations(&mut out, |i| angles1[i], |j| angles2[j]);
+        keep_consistent_rotations(&mut out, |i| angles[0][i], |j| angles[1][j]);
     }
-    Ok(out)
+    out
+}
+
+/// Matches each descriptor of the first set to its nearest in the second under its node
+/// (Python's `search_by_bow`, ORB-SLAM's `SearchByBoW`): [`match_descriptors`], each descriptor
+/// compared only with the second set's under the same vocabulary node.
+///
+/// # Arguments
+///
+/// * `descriptors1` - The first set.
+/// * `nodes1` - Each one's node.
+/// * `descriptors2` - The second set.
+/// * `nodes2` - Each one's node.
+/// * `angles1` - The first set's orientation bins.
+/// * `angles2` - The second set's.
+/// * `options` - The filters.
+///
+/// # Returns
+///
+/// The kept matches, by first-set index.
+///
+/// # Errors
+///
+/// `InvalidInput` for a bad filter, a set too large, or nodes or angles that are not one per
+/// descriptor (angles in `[0, ANGLE_BINS)`).
+pub fn search_by_bow(
+    descriptors1: &[Descriptor],
+    nodes1: &[usize],
+    descriptors2: &[Descriptor],
+    nodes2: &[usize],
+    angles1: &[usize],
+    angles2: &[usize],
+    options: &Options,
+) -> Result<Vec<Match>> {
+    check_length(descriptors1.len(), nodes1.len(), "nodes1")?;
+    check_length(descriptors2.len(), nodes2.len(), "nodes2")?;
+    check_sets(
+        options,
+        [descriptors1.len(), descriptors2.len()],
+        [angles1, angles2],
+    )?;
+    // The second set's descriptors under each node, ascending.
+    let mut under: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for (j, &node) in nodes2.iter().enumerate() {
+        under.entry(node).or_default().push(j);
+    }
+    Ok(nearest_matches(
+        descriptors1,
+        descriptors2,
+        |i| under.get(&nodes1[i]).map_or(&[], Vec::as_slice),
+        [angles1, angles2],
+        options,
+    ))
 }
 
 /// Each second-side item's claimant: the nearest match offered for it, the first offered on a
@@ -917,7 +1027,8 @@ pub fn search_by_projection(
 #[cfg(test)]
 mod tests {
     //! Native tests against the parity fixture `tests/fixtures/foundations/matching.json`,
-    //! which the Python and C++ tests share, and the core's own input checks.
+    //! which the Python and C++ tests share (matching by word's cases too), and the core's own
+    //! input checks.
 
     use super::*;
     use crate::rng::Pcg32;
@@ -985,6 +1096,31 @@ mod tests {
                 &descriptors(&input[1]),
                 &list(&input[2], count),
                 &list(&input[3], count),
+                &options,
+            )
+            .unwrap();
+            assert_eq!(got, matches_of(&case["expected"]), "{}", case["name"]);
+        }
+    }
+
+    /// `search_by_bow` matches the fixture.
+    #[test]
+    fn search_by_bow_matches_the_fixture() {
+        for case in list(&functions()["search_by_bow"]["cases"], Clone::clone) {
+            let input = &case["input"];
+            let (max_distance, ratio, check_orientation) = filters(&input[6]);
+            let options = Options {
+                max_distance,
+                ratio,
+                check_orientation,
+            };
+            let got = search_by_bow(
+                &descriptors(&input[0]),
+                &list(&input[1], count),
+                &descriptors(&input[2]),
+                &list(&input[3], count),
+                &list(&input[4], count),
+                &list(&input[5], count),
                 &options,
             )
             .unwrap();

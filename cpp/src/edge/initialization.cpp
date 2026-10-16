@@ -307,9 +307,11 @@ Result<Initialization> initialize_monocular(const Camera& camera, const Frame& r
     bearings1.row(i) = reference.bearings[static_cast<std::size_t>(pair[0])].transpose();
     bearings2.row(i) = frame.bearings[static_cast<std::size_t>(pair[1])].transpose();
   }
-  auto result = twoview::initialize(
-      bearings1, bearings2,
-      {.focal = focal(camera), .seed = static_cast<std::uint64_t>(options.seed)});
+  auto result =
+      twoview::initialize(bearings1, bearings2,
+                          {.focal = focal(camera),
+                           .max_iterations = static_cast<int>(options.init_ransac_iterations),
+                           .seed = static_cast<std::uint64_t>(options.seed)});
   if (!result) {
     if (result.error().kind == ErrorKind::kDegenerate) {
       return failed(Outcome::kDegenerate, given);

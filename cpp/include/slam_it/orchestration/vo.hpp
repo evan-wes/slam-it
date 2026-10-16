@@ -23,7 +23,8 @@ inline constexpr std::array<const char*, 2> kDatasets{"tum", "euroc"};
 /// @brief The program's command line.
 inline constexpr const char* kUsage =
     "usage: slam_it_vo --dataset tum|euroc --sequence PATH --mode monocular|stereo|rgbd "
-    "--out RUN_DIR [--first I] [--count N] [--record-features] [--option KEY=VALUE ...]";
+    "--out RUN_DIR [--first I] [--count N] [--vocabulary FOLDER] [--record-features] "
+    "[--option KEY=VALUE ...]";
 
 /// @brief The program's exit code for a command line it cannot read.
 inline constexpr int kExitUsage = 2;
@@ -65,6 +66,8 @@ struct Request {
   edge::Options options;
   /// @brief Whether the run records each frame's keypoints, with their fates.
   bool record_features{false};
+  /// @brief The vocabulary's folder: required with `relocalize` on, refused with it off.
+  std::optional<std::string> vocabulary;
 };
 
 /// @brief Read the command line: `kUsage`, flags in any order, each with its value but
@@ -78,8 +81,8 @@ struct Request {
 /// @brief Check a request (`slam_it.orchestration.vo.check`).
 /// @param request The request.
 /// @return Nothing; `InvalidInput` for an unknown dataset, a mode it does not record (TUM has
-///         no stereo pairs, EuRoC no depth maps), a negative `first` or `count`, or settings
-///         out of range.
+///         no stereo pairs, EuRoC no depth maps), a negative `first` or `count`, settings
+///         out of range, or a vocabulary missing while relocalising or given while not.
 [[nodiscard]] foundations::Result<void> check(const Request& request);
 
 /// @brief Run a sequence through the pipeline: the run, not yet written, as Python's program

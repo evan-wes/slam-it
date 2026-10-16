@@ -171,12 +171,6 @@ class FeatureGrid {
 /// @return Nothing, or `InvalidInput` naming the first one out of range.
 [[nodiscard]] Result<void> check_options(const Options& options);
 
-/// @brief The Hamming distance between two descriptors: the bits in which they differ.
-/// @param a A descriptor.
-/// @param b Another.
-/// @return From 0 to 256.
-[[nodiscard]] std::int64_t distance(const orb::Descriptor& a, const orb::Descriptor& b);
-
 /// @brief Every pair's Hamming distance.
 /// @param descriptors1 The first set.
 /// @param descriptors2 The second set.
@@ -198,6 +192,24 @@ class FeatureGrid {
                                                std::span<const std::int64_t> angles1,
                                                std::span<const std::int64_t> angles2,
                                                const Options& options);
+
+/// @brief Match each descriptor of the first set to its nearest in the second under its node
+///        (`slam_it.foundations.matching.search_by_bow`, ORB-SLAM's `SearchByBoW`): `match`,
+///        each descriptor compared only with the second set's under the same vocabulary node.
+/// @param descriptors1 The first set.
+/// @param nodes1 Each one's node, at least 0.
+/// @param descriptors2 The second set.
+/// @param nodes2 Each one's node.
+/// @param angles1 The first set's orientation bins.
+/// @param angles2 The second set's.
+/// @param options The filters.
+/// @return The kept matches, by first-set index; `InvalidInput` for a bad filter, a set too
+///         large, or nodes or angles that are not one per descriptor in range.
+[[nodiscard]] Result<std::vector<Match>> search_by_bow(
+    std::span<const orb::Descriptor> descriptors1, std::span<const std::int64_t> nodes1,
+    std::span<const orb::Descriptor> descriptors2, std::span<const std::int64_t> nodes2,
+    std::span<const std::int64_t> angles1, std::span<const std::int64_t> angles2,
+    const Options& options);
 
 /// @brief Check a search's filters.
 /// @param options The filters.

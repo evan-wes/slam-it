@@ -31,6 +31,8 @@ mod so3;
 mod stereo;
 mod triangulation;
 mod twoview;
+mod vocabulary;
+pub(crate) mod vocabulary_crossing;
 
 /// Registers the foundations submodules.
 ///
@@ -55,5 +57,6 @@ pub fn foundations(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_wrapped(pyo3::wrap_pymodule!(stereo::stereo))?;
     m.add_wrapped(pyo3::wrap_pymodule!(triangulation::triangulation))?;
     m.add_wrapped(pyo3::wrap_pymodule!(twoview::twoview))?;
+    m.add_wrapped(pyo3::wrap_pymodule!(vocabulary::vocabulary))?;
     Ok(())
 }

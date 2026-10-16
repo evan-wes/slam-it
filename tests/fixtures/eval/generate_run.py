@@ -11,7 +11,9 @@ writers write the same values and are held to the folder: the ``.npy`` files byt
 differ). The diagnostics nest as the edge pipeline's stage summaries do: objects, lists and
 nulls inside each line. The run records its features, every fate among them and a frame with
 no keypoints: :class:`slam_it.eval.runs.FeatureWriter` streams them frame by frame from
-``features``, and the native feature writers are held to its two files byte for byte.
+``features``, and the native feature writers are held to its two files byte for byte. It
+relocalised, with the vocabulary reader's fixture (``vocabulary/``): its ``vocabulary`` is that
+folder's record, which the native writers write from the header their readers read.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from typing import Any
 
 import numpy as np
 
-from slam_it.eval import runs
+from slam_it.eval import runs, vocabularies
 from slam_it.foundations import so3
 
 HERE = Path(__file__).parent
@@ -133,6 +135,7 @@ def values() -> dict[str, Any]:
         "point_lives": [[0, -1, -1], [0, -1, -1], [3, -1, -1], [3, 4, 1], [4, -1, -1]],
         "keyframe_lives": [[0, -1, -1], [3, -1, -1], [4, -1, -1]],
         "settings": {"n_features": 1000, "scale_factor": 1.2, "window": 10, "chi2_mono": 5.991},
+        "vocabulary": vocabularies.record(HERE / "vocabulary"),
         "peak_memory": 48_381_952,
         "cpus": [4, 5, 6, 7],
         "memory_cap": 8_589_934_592,
@@ -173,6 +176,7 @@ def main() -> None:
             keyframe_poses=np.array(run["keyframe_poses"]),
             points=np.array(run["points"]),
             settings=run["settings"],
+            vocabulary=run["vocabulary"],
             diagnostics=run["diagnostics"],
             peak_memory=run["peak_memory"],
             cpus=run["cpus"],

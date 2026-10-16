@@ -5,8 +5,17 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { loadBundle } from "../src/bundle.js";
-import { STATE_WORDS, notRunText, placement, spanHint, stateSpans } from "../src/timeline.js";
-import { fetchGolden } from "./golden.js";
+import {
+  RELOCALIZED,
+  STATE_WORDS,
+  foundFrames,
+  foundHint,
+  notRunText,
+  placement,
+  spanHint,
+  stateSpans,
+} from "../src/timeline.js";
+import { fetchGolden, foundRoomRecords } from "./golden.js";
 
 /**
  * A track as the timeline reads it.
@@ -90,6 +99,27 @@ test("each run of states is hinted by its words, map and frames", () => {
     "rust: no map yet, frames 0–60",
   );
   assert.deepEqual(Object.keys(STATE_WORDS), ["not_initialized", "tracking", "lost"]);
+});
+
+test("the frames found again are those relocalisation placed, each with its map", async () => {
+  const records = {
+    frame: [3, 4, 5, 7, 8],
+    placed_by: ["motion", null, RELOCALIZED, "local_pnp", RELOCALIZED],
+    map: [0, 0, 0, 1, null],
+  };
+  assert.deepEqual(foundFrames(records), [
+    { frame: 5, map: 0 },
+    { frame: 8, map: null },
+  ]);
+  assert.deepEqual(foundFrames({ frame: [0, 1], placed_by: ["motion", null] }), []);
+  assert.equal(foundHint("cpp", { frame: 34, map: 0 }), "cpp: found again in map 0, frame 34");
+  // The found room's track, failed on its blank frames, is found again in map 0 after them.
+  const found = foundFrames(
+    /** @type {{frame: number[], placed_by: unknown[], map: unknown[]}} */ (
+      await foundRoomRecords()
+    ),
+  );
+  assert.deepEqual(found, [{ frame: 34, map: 0 }]);
 });
 
 test("the golden runs stop short of the room's end by count: the rest is not run", async () => {

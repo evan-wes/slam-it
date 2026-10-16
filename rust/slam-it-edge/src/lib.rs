@@ -4,11 +4,13 @@
 //! Builds on `slam-it-foundations` alone. Every module mirrors the Python module of its name.
 
 pub mod adjust;
+pub mod database;
 pub mod frames;
 pub mod initialization;
 pub mod map;
 pub mod mapping;
 pub mod options;
 pub mod pipeline;
+pub mod relocalization;
 pub mod residuals;
 pub mod tracking;

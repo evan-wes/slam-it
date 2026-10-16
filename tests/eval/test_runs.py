@@ -13,7 +13,7 @@ import pytest
 from numpy.typing import NDArray
 
 from slam_it.edge.map import Removal
-from slam_it.edge.pipeline import Fate, State
+from slam_it.edge.pipeline import Fate, Placement, State
 from slam_it.eval import runs, tum
 from slam_it.foundations import so3
 from slam_it.foundations.errors import DegenerateError, InvalidInputError
@@ -122,9 +122,10 @@ def test_the_fate_codes_are_the_pipelines() -> None:
     assert [int(f) for f in Fate] == list(range(len(runs.FATES)))
 
 
-def test_the_lost_state_is_the_pipelines() -> None:
-    """A run's lost state, which :func:`runs.tracking` reads, is the pipeline's."""
+def test_the_lost_state_and_the_relocalised_placement_are_the_pipelines() -> None:
+    """A run's lost state and relocalised placement, which :func:`runs.tracking` reads."""
     assert runs.LOST == State.LOST
+    assert runs.RELOCALIZED == Placement.RELOCALIZATION
 
 
 def test_tracking_says_what_of_a_sequence_a_run_ran_and_tracked() -> None:
@@ -132,11 +133,14 @@ def test_tracking_says_what_of_a_sequence_a_run_ran_and_tracked() -> None:
 
     Map 0 tracks from the second frame and is lost at the fourth, kept; map 1 starts at the
     fifth, is lost at the sixth and reset, its frames' poses dropped; map 2 tracks the last two.
+    Map 0's third frame was relocalised.
     """
     times = np.asarray(100.0 + 0.1 * np.arange(9), dtype=np.float64)
     states = ["not_initialized", "tracking", "tracking", "lost", "not_initialized"]
     states += ["tracking", "lost", "tracking", "tracking"]
     diagnostics = [{"timestamp": float(t), "state": s} for t, s in zip(times, states, strict=True)]
+    for k, placed in ((1, "initialization"), (2, "relocalization"), (8, "motion")):
+        diagnostics[k]["placed_by"] = placed
     tracked = [1, 2, 7, 8]
     run = runs.Run(
         "tum", "s", "monocular", "python", times[tracked], _poses(4), diagnostics=diagnostics,
@@ -146,6 +150,7 @@ def test_tracking_says_what_of_a_sequence_a_run_ran_and_tracked() -> None:
     )  # fmt: skip
     span = runs.tracking(run, times)
     assert (span.frames, span.tracked, span.losses, span.resets) == (9, 4, 2, 1)
+    assert span.relocalizations == 1
     assert span.segments == (runs.Segment(0, 2, 0.1, 0.2), runs.Segment(2, 2, 0.7, 0.8))
     assert (span.tracked_from, span.tracked_to, span.ran_to, span.seconds) == (0.1, 0.8, 0.8, 0.8)
     never = runs.tracking(
@@ -156,6 +161,7 @@ def test_tracking_says_what_of_a_sequence_a_run_ran_and_tracked() -> None:
     )  # fmt: skip
     unstated = [{"timestamp": float(t)} for t in times]  # the format makes state optional
     assert runs.tracking(replace(run, diagnostics=unstated), times).losses == 0
+    assert runs.tracking(replace(run, diagnostics=unstated), times).relocalizations == 0
 
 
 def _record_features(folder: Path) -> None:
@@ -560,13 +566,15 @@ def test_write_run_replaces_files_whole(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("edit", "message"),
     [
-        (lambda info: info.update(version=3), "version 4"),
+        (lambda info: info.update(version=4), "version 5, got 'slam-it-run' version 4"),
         (lambda info: info.update(format="other"), "format"),
         (lambda info: info.update(mode="lidar"), "mode"),
         (lambda info: info.update(backend="java"), "backend"),
         (lambda info: info.pop("mode"), "missing mode"),
         (lambda info: info.update(sequence=7), "sequence must be a string"),
         (lambda info: info.update(settings=[1]), "settings must be an object"),
+        (lambda info: info.pop("vocabulary"), "missing vocabulary"),
+        (lambda info: info.update(vocabulary={"k": 10}), "vocabulary: expected an object"),
         (lambda info: info.pop("record_features"), "missing record_features"),
         (lambda info: info.update(record_features=1), "record_features must be true or false"),
         (lambda info: info.pop("peak_memory"), "missing peak_memory"),

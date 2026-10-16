@@ -21,6 +21,12 @@ void bind_edge(nanobind::module_& parent) {
   bind_tracking(tracking);
   nanobind::module_ mapping = edge.def_submodule("mapping", "Local mapping around each keyframe.");
   bind_mapping(mapping);
+  nanobind::module_ database =
+      edge.def_submodule("database", "The keyframe database: place recognition's index.");
+  bind_database(database);
+  nanobind::module_ relocalization =
+      edge.def_submodule("relocalization", "Relocalisation: placing a lost frame by its words.");
+  bind_relocalization(relocalization);
 }
 
 }  // namespace slam_it::bindings

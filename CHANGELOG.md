@@ -4,6 +4,101 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.3.10.0] - 2026-10-16
+
+Milestone 2B's first part, B1: place recognition and relocalisation
+(`docs/design/2026-10-14-online-slam.md`, section 3). A frame that tracking fails is relocalised
+against the whole active map through a bag of words, as ORB-SLAM's is, and a lost track is given
+3 s to be found again before its map closes, as visual-only ORB-SLAM3's recently lost track is.
+The three languages relocalise alike. On the test set at seed 0, 31 runs relocalise 123 frames,
+all but one where the ground truth puts them, and maps fall from 359 to 268 and losses from 348
+to 231; but 6.4% fewer frames are tracked, the 3 s waited through costing more than it finds.
+The window is kept for B1 and measured again with B4's merging. The run format is version 5:
+runs written by 0.3.9.0 no longer read.
+
+### Added
+
+- **Place recognition's vocabulary** (`slam_it.foundations.vocabulary`, with C++ and Rust
+  twins): DBoW2's tree of binary words over our own ORB descriptors (k = 10), a descriptor's
+  word, a frame's weighted vector and DBoW2's L1 score, alike in the three languages to the bit,
+  held to a parity fixture. **Its folder** (`slam_it.eval.vocabularies`, with readers in
+  `slam_it_eval` and `slam-it-eval`): five `.npy` arrays, a header array of its format and
+  descriptor versions, which every reader checks, and the arrays' SHA-256, which Python checks
+  before any program runs (the native programs trust them, the ladder's one exception).
+- **The training tool** (`scripts/train_vocabulary.py`): hierarchical k-means from a fixed seed
+  on frames drawn from Bovisa or ARKitScenes, the same tree on a rebuild (its weights to their
+  rule: numpy's log may differ in the last bit on another CPU). **The default
+  vocabulary**, committed: 5 levels and 99,961 words, from 10,000 frames of ARKitScenes'
+  training fold. Two of 6 levels, from Bovisa and ARKitScenes, are kept outside the repository
+  and named, with the commands that rebuild them, in `slam_it/eval/vocabularies/local.json`.
+- **Matching by word** (`matching.search_by_bow`, three languages): ORB-SLAM's SearchByBoW.
+- **The keyframe database and relocalisation** (`edge.database`, `edge.relocalization`, three
+  languages): ORB-SLAM's KeyFrameDatabase and `Tracking::Relocalization`, with its thresholds and
+  MLPnP's RANSAC budget; candidates tried best first.
+- **Relocalisation in the pipelines:**
+  - a frame the motion model and the local fallback fail is relocalised against the whole map,
+    and the track is lost once `relocalize_seconds` (3) have passed since its first failed
+    frame with none tracked; a map of 10 keyframes or fewer is lost after 5 failures, as before;
+  - `Options.relocalize`, on; off, nothing relocalises and a map is lost as A2 loses it;
+  - the vocabulary, required with relocalisation on (`--vocabulary`, the committed one by
+    default), refused with it off, and recorded in `run.json`'s `vocabulary`, its header and
+    checksums, which every language writes from what it read (`Run.vocabulary`; run format
+    version 5);
+  - each frame's diagnostics: `placed_by` "relocalization", and relocalisation's summary (its
+    words, the keyframes sharing a word and scored, each candidate as far as it got).
+- **The found room** in the golden record: blank frames, then the start seen again, which every
+  backend, in every case, relocalises in map 0 on frame 34; and a golden bundle of it, which the
+  viewer's tests read. **The window room**: found again, then lost by `relocalize_seconds`
+  (0.05 s there) before `lost_frames`, an RGB-D run culling keyframes first, with
+  relocalisation's settings off their defaults.
+- **Native tests** of the vocabulary, its reader, the keyframe database, relocalisation and the
+  pipeline relocalising, in C++ and Rust; matching by word's fixture cases run natively; and
+  training's rules held to known answers.
+- **Relocalisation counted and shown:** `runs.tracking`'s `relocalizations` and the measure's
+  "relocalised" column; the status page says how many frames tracking failed and found again;
+  the viewer marks each such frame on its timeline and shows the Relocalisation stage in the
+  solver panel.
+- **The measurement scripts:** `scripts/measure_testset.py --option KEY=VALUE`, a setting
+  replaced in every run; `scripts/measure_sharded.py`, the test set side by side, a worker a CPU,
+  at several seeds; `scripts/compare_testsets.py`, two measures compared: by group, the runs that
+  moved, how failures ended, latency by frame, relocalised frames against the ground truth.
+- **The test set's B1 results**, in `docs/notes/test-set.md`:
+  - relocalisation finds 123 frames again in 31 runs, all but one within three times their map's
+    usual error;
+  - maps from 359 to 268, losses from 348 to 231, and 6.4% fewer frames tracked: 231 stretches
+    still end lost after waiting 3 s, 17,439 frames past A2's 5 failures;
+  - ZJU B5's four black stretches and two of B7's three are found again in map 0;
+  - a relocalised frame takes a median of 14.3 to 15.4 ms against a deadline of 32 to 33, none
+    late, made alone.
+- **"Whole truth"** in the viewer's map panel: the ground truth drawn whole.
+
+### Changed
+
+- **A monocular start's two-view RANSAC draws at most 200 samples a model**
+  (`init_ransac_iterations`), as ORB-SLAM's initialiser does. No decision of the test set's
+  monocular runs moves at seeds 0, 1 and 2; on the 7 ADVIO runs late in A2, made alone, the late
+  frames fall from 108 to 0 and the slowest from 442.7 to 25.4 ms.
+- **The viewer's ground truth** is faint gold, drawn over the frames the shown map's trajectory
+  covers so far.
+- **The run format, version 5:** `run.json`'s `vocabulary` is required, null or the header and
+  checksums of the vocabulary the run relocalised with.
+- **One Hamming distance a language**, in `orb` (`orb.distance`, `orb::distance`), which
+  matching, stereo, the vocabulary and the edge rung call; numpy's floor is 2.0, for
+  `np.bitwise_count`.
+- **The keyframe database sits beside bundle adjustment** in the edge rung's import order.
+
+### Fixed
+
+- **The viewer's Solver panel** keeps 260 px on a wide or short window, which had left it none;
+  the frame shrinks, its proportions kept.
+- **C++'s vocabulary check** no longer reads out of range on a malformed tree (a parent after its
+  child, children past the int32 range, a leaf's first child), and the reader no longer throws
+  on a shape too large to hold.
+- **The keyframe database** refuses a vector whose words are not integers, as the vocabulary
+  does, where Python truncated them.
+- **`scripts/measure_sharded.py`** writes each result as its run ends, and records a failed
+  worker's run, where one failure lost every result.
+
 ## [0.3.9.0] - 2026-10-14
 
 Milestone 2A's second part, A2: a lost track no longer ends a run. Its map closes, kept or, if it

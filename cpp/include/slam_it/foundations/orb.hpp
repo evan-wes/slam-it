@@ -72,6 +72,9 @@ inline constexpr std::int64_t kMaxFastThreshold = 254;
 inline constexpr std::array<std::uint32_t, 7> kBlurKernel{287, 537, 781, 886, 781, 537, 287};
 /// @brief A descriptor's length: 256 bits.
 inline constexpr std::size_t kDescriptorBytes = 32;
+/// @brief This descriptor's version (`slam_it.foundations.orb.DESCRIPTOR_VERSION`), raised when
+///        what a descriptor holds changes; a vocabulary records the one it was trained on.
+inline constexpr std::int64_t kDescriptorVersion = 1;
 
 // rBRIEF's learned test pairs (x1, y1, x2, y2): OpenCV's bit_pattern_31_
 // (modules/features2d/src/orb.cpp), learned by Ethan Rublee, Vincent Rabaud and Gary Bradski
@@ -197,6 +200,14 @@ struct Keypoint {
 
 /// @brief A 256-bit rBRIEF descriptor, least significant bit first.
 using Descriptor = std::array<std::uint8_t, kDescriptorBytes>;
+
+/// @brief The Hamming distance between two descriptors: the bits in which they differ
+///        (`slam_it.foundations.orb.distance`), the one that matching, stereo, the vocabulary
+///        and the edge rung compare descriptors by.
+/// @param a A descriptor.
+/// @param b Another.
+/// @return From 0 to 256.
+[[nodiscard]] std::int64_t distance(const Descriptor& a, const Descriptor& b);
 
 /// @brief ORB features: keypoints and their descriptors, element for element, and the
 ///        pyramid they span (with the image's shape, every level's shape).

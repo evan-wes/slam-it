@@ -6,13 +6,16 @@ use std::time::Instant;
 
 use nalgebra::{Matrix4, Vector3};
 use slam_it_foundations::error::{ErrorKind, Result, fail};
+use slam_it_foundations::vocabulary::Vocabulary;
 use slam_it_foundations::{orb, se3};
 
+use crate::database::Database;
 use crate::frames::{Camera, Frame, Tracked, check_setup};
 use crate::initialization::{self, InitSummary, Initialization, Outcome, Started};
 use crate::map::{self, Map, Removal};
 use crate::mapping::{self, MappingSummary};
 use crate::options::{Mode, Options};
+use crate::relocalization::{self, RelocalizationSummary};
 use crate::tracking::{self, LocalMapSummary, MotionSummary, PnpSummary};
 
 /// Where the pipeline is, with the codes it is written as.
@@ -56,6 +59,8 @@ pub enum Placement {
     Motion = 1,
     /// The fallback: PnP against the local map.
     LocalPnp = 2,
+    /// Relocalised against the whole map, through its keyframe database.
+    Relocalization = 3,
 }
 
 impl Placement {
@@ -70,6 +75,7 @@ impl Placement {
             Self::Initialization => "initialization",
             Self::Motion => "motion",
             Self::LocalPnp => "local_pnp",
+            Self::Relocalization => "relocalization",
         }
     }
 }
@@ -142,6 +148,8 @@ pub struct FrameSummary {
     pub motion: Option<MotionSummary>,
     /// The PnP fallback, run only when tracking the last frame failed.
     pub pnp: Option<PnpSummary>,
+    /// Relocalisation, run only when the fallback failed too.
+    pub relocalization: Option<RelocalizationSummary>,
     /// Tracking the local map, run on a placed frame.
     pub local_map: Option<LocalMapSummary>,
     /// Local mapping, on a keyframe after the first.
@@ -194,6 +202,8 @@ struct Step {
     matched: Vec<i64>,
     /// The point made of each keypoint, -1 where none; empty if none were made.
     made: Vec<i64>,
+    /// Whether the frame lost the track.
+    lost: bool,
 }
 
 /// A frame placed, as `Pipeline::place` gives it.
@@ -281,6 +291,12 @@ pub struct Pipeline {
     previous: Vec<[f64; 2]>,
     /// Frames in a row not tracked.
     failures: usize,
+    /// The vocabulary, when relocalising.
+    vocabulary: Option<Vocabulary>,
+    /// The map's keyframe database, when relocalising and a map exists.
+    database: Option<Database>,
+    /// The first failed frame's time, while the track is recently lost.
+    lost_since: Option<f64>,
     /// Frames since the last recovery, if any.
     since_recovery: Option<usize>,
     /// Frames given so far.
@@ -307,6 +323,8 @@ impl Pipeline {
     /// * `mode` - The sensor mode.
     /// * `camera` - The camera.
     /// * `options` - The settings.
+    /// * `vocabulary` - The keyframe database's vocabulary: required with `relocalize` on,
+    ///   refused with it off.
     ///
     /// # Returns
     ///
@@ -314,14 +332,28 @@ impl Pipeline {
     ///
     /// # Errors
     ///
-    /// `InvalidInput` for an invalid camera or settings, or a stereo or RGB-D camera without a
-    /// baseline.
-    pub fn new(mode: Mode, camera: Camera, options: Options) -> Result<Self> {
+    /// `InvalidInput` for an invalid camera or settings, a stereo or RGB-D camera without a
+    /// baseline, or a vocabulary missing while relocalising or given while not.
+    pub fn new(
+        mode: Mode,
+        camera: Camera,
+        options: Options,
+        vocabulary: Option<Vocabulary>,
+    ) -> Result<Self> {
         check_setup(&camera, &options)?;
         if mode != Mode::Monocular && !(camera.baseline > 0.0) {
             return fail(
                 ErrorKind::InvalidInput,
                 format!("camera.baseline: {} needs a positive baseline", mode.name()),
+            );
+        }
+        if options.relocalize && vocabulary.is_none() {
+            return fail(ErrorKind::InvalidInput, "vocabulary: relocalize needs one");
+        }
+        if !options.relocalize && vocabulary.is_some() {
+            return fail(
+                ErrorKind::InvalidInput,
+                "vocabulary: given, but relocalize is off",
             );
         }
         Ok(Self {
@@ -336,6 +368,9 @@ impl Pipeline {
             reference: None,
             previous: Vec::new(),
             failures: 0,
+            vocabulary,
+            database: None,
+            lost_since: None,
             since_recovery: None,
             frames: 0,
             map_id: None,
@@ -400,7 +435,8 @@ impl Pipeline {
             self.initialize(frame)?
         };
         self.date();
-        let (state, map_id) = (self.state, self.map_id);
+        let state = if step.lost { State::Lost } else { self.state };
+        let map_id = self.map_id;
         let mut fates = Fates {
             fate: vec![Fate::Unmatched; frame.size()],
             point: vec![-1; frame.size()],
@@ -411,7 +447,7 @@ impl Pipeline {
         }
         fates.mark(Fate::Made, &step.made, self.pt_base);
         let mut summary = step.summary;
-        if state == State::Lost
+        if step.lost
             && let Some(lost) = self.map.take()
         {
             summary.lost = Some(self.close(&lost));
@@ -530,6 +566,8 @@ impl Pipeline {
         self.previous.clear();
         self.failures = 0;
         self.since_recovery = None;
+        self.lost_since = None;
+        self.database = None;
         LostSummary {
             keyframes: m.kf_id.len(),
             points: m.pt_id.len(),
@@ -566,6 +604,11 @@ impl Pipeline {
                 ..Step::default()
             });
         };
+        if self.vocabulary.is_some() {
+            let mut database = Database::default();
+            self.sync_database(&mut database, &map)?;
+            self.database = Some(database);
+        }
         self.map = Some(map);
         self.map_id = Some(self.maps);
         self.maps += 1;
@@ -581,6 +624,7 @@ impl Pipeline {
             map_seconds: 0.0,
             summary,
             matched: Vec::new(),
+            lost: false,
         })
     }
 
@@ -666,17 +710,62 @@ impl Pipeline {
         self.last_frame = Some(frame.clone());
         self.last_tracked = Some(tracked.clone());
         self.failures = 0;
+        self.lost_since = None;
         Ok(())
     }
 
-    /// Counts a frame that was not tracked: it ends the velocity; enough in a row lose the
-    /// track.
-    fn record_failure(&mut self) {
+    /// Counts a frame that was not tracked, which ends the velocity
+    /// (`slam_it.edge.pipeline.Pipeline._record_failure`).
+    ///
+    /// # Arguments
+    ///
+    /// * `frame` - The frame.
+    /// * `keyframes` - The map's keyframes.
+    ///
+    /// # Returns
+    ///
+    /// Whether it loses the track: past `relocalize_seconds` since the first failure, or for a
+    /// small map or with `relocalize` off, on the `lost_frames`-th in a row.
+    fn record_failure(&mut self, frame: &Frame, keyframes: usize) -> bool {
         self.failures += 1;
         self.velocity = None;
-        if self.failures >= self.options.lost_frames {
-            self.state = State::Lost;
+        let since = *self.lost_since.get_or_insert(frame.timestamp);
+        if !self.options.relocalize || keyframes <= self.options.reset_keyframes {
+            return self.failures >= self.options.lost_frames;
         }
+        frame.timestamp - since > self.options.relocalize_seconds
+    }
+
+    /// Brings a keyframe database to a map's keyframes: adds the new, erases the culled.
+    ///
+    /// # Arguments
+    ///
+    /// * `database` - The database.
+    /// * `m` - The map.
+    ///
+    /// # Errors
+    ///
+    /// A quantisation's error.
+    fn sync_database(&self, database: &mut Database, m: &Map) -> Result<()> {
+        let Some(vocabulary) = &self.vocabulary else {
+            return Ok(()); // not relocalising
+        };
+        let culled: Vec<i64> = database
+            .keyframes
+            .keys()
+            .copied()
+            .filter(|&id| m.keyframe_row(id).is_none())
+            .collect();
+        for id in culled {
+            database.erase(id)?;
+        }
+        for (k, &id) in m.kf_id.iter().enumerate() {
+            if !database.keyframes.contains_key(&id) {
+                let rows = m.kf_start[k]..m.kf_start[k + 1];
+                database.add(vocabulary, id, &m.kp_descriptor[rows])?;
+            }
+        }
+        Ok(())
     }
 
     /// Tracks the last frame, or recovers by PnP.
@@ -701,7 +790,8 @@ impl Pipeline {
             );
         };
         // No velocity (just initialised, or after a failure): predict no motion. ORB-SLAM
-        // tracks its reference keyframe by bag of words here; the lite pipeline has none.
+        // tracks its reference keyframe by bag of words here; the lite pipeline's words only
+        // relocalise.
         let predicted = tracking::predict(&last_tracked.pose, self.velocity.as_ref());
         let motion = tracking::track_last_frame(
             m,
@@ -727,13 +817,35 @@ impl Pipeline {
         }
         let recovery = tracking::relocalize_locally(m, &self.camera, frame, &self.options)?;
         summary.pnp = Some(recovery.summary);
-        if recovery.tracked.is_some() {
-            summary.placed_by = Some(Placement::LocalPnp);
+        let (Some(database), Some(vocabulary), None) =
+            (&self.database, &self.vocabulary, &recovery.tracked)
+        else {
+            // Placed by the fallback, or not relocalising.
+            if recovery.tracked.is_some() {
+                summary.placed_by = Some(Placement::LocalPnp);
+            }
+            return Ok(Placed {
+                tracked: recovery.tracked,
+                summary,
+                matched: recovery.matched,
+            });
+        };
+        let found = relocalization::relocalize(
+            m,
+            database,
+            vocabulary,
+            &self.camera,
+            frame,
+            &self.options,
+        )?;
+        if found.tracked.is_some() {
+            summary.placed_by = Some(Placement::Relocalization);
         }
+        summary.relocalization = Some(found.summary);
         Ok(Placed {
-            tracked: recovery.tracked,
+            tracked: found.tracked,
             summary,
-            matched: recovery.matched,
+            matched: found.matched,
         })
     }
 
@@ -758,10 +870,12 @@ impl Pipeline {
         let placed = self.place(&m, frame);
         let outcome = placed.and_then(|placed| self.refine(&mut m, frame, placed));
         self.map = Some(m);
-        let step = outcome?;
-        match &step.tracked {
-            Some(t) => self.accept(frame, t)?,
-            None => self.record_failure(),
+        let mut step = outcome?;
+        if let Some(t) = &step.tracked {
+            self.accept(frame, t)?;
+        } else {
+            let keyframes = self.map.as_ref().map_or(0, Map::keyframes);
+            step.lost = self.record_failure(frame, keyframes);
         }
         Ok(step)
     }
@@ -790,7 +904,10 @@ impl Pipeline {
             matched,
         } = placed;
         let options = self.options;
-        if summary.placed_by == Some(Placement::LocalPnp) {
+        if matches!(
+            summary.placed_by,
+            Some(Placement::LocalPnp | Placement::Relocalization)
+        ) {
             self.since_recovery = Some(0);
         } else if let Some(since) = &mut self.since_recovery {
             *since += 1;
@@ -849,6 +966,11 @@ impl Pipeline {
         if keyframe {
             let start = Instant::now();
             let mapped = mapping::process(m, &self.camera, frame, &tracked, self.mode, &options)?;
+            if let Some(mut database) = self.database.take() {
+                let synced = self.sync_database(&mut database, m);
+                self.database = Some(database);
+                synced?;
+            }
             map_seconds = start.elapsed().as_secs_f64();
             summary.mapping = Some(mapped.summary);
             made = mapped.made;
@@ -860,6 +982,7 @@ impl Pipeline {
             summary,
             matched: local.matched,
             made,
+            lost: false,
         })
     }
 }

@@ -175,6 +175,31 @@ def test_monocular_matches_the_reference(backend: str, monocular_pair: Pair) -> 
     )
 
 
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_monocular_draws_at_most_init_ransac_iterations(backend: str, monocular_pair: Pair) -> None:
+    """The two-view RANSAC draws at most ``init_ransac_iterations`` samples, in every backend.
+
+    With a fifth of the matches made outliers, one sample a model starts the map from another
+    model than the default's 200 do: a backend that ignored the setting would start the
+    default's map.
+    """
+    chosen = require_function(backend, initialization.__name__, "initialize_monocular")
+    matched = _matched(monocular_pair)
+    pairs = matched.pairs.copy()
+    rng = np.random.default_rng(0)
+    wrong = rng.choice(len(pairs), len(pairs) // 5, replace=False)
+    pairs[wrong, 1] = rng.permutation(pairs[wrong, 1])
+    matches = replace(matched, pairs=pairs)
+    one = replace(OPTIONS, init_ransac_iterations=1)
+    expected = initialization.initialize_monocular(CAMERA, *monocular_pair, matches, one)
+    default = initialization.initialize_monocular(CAMERA, *monocular_pair, matches, OPTIONS)
+    assert expected.started is not None
+    assert default.started is not None
+    assert expected.started[0].points != default.started[0].points
+    got = initialization.initialize_monocular(CAMERA, *monocular_pair, matches, one, backend=chosen)
+    _assert_started_match(got, expected, SOLVER_TOLERANCE)
+
+
 def test_monocular_keeps_points_of_orb_slams_parallax(monocular_pair: Pair) -> None:
     """Every two-view point is kept, and the inliers between 0.36 and 1 degree too (CheckRT)."""
     reference, frame = monocular_pair

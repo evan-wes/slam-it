@@ -5,8 +5,10 @@ The room from its TUM and EuRoC folders, the native programs' command line, and 
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import shutil
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -16,7 +18,7 @@ import pytest
 
 from slam_it import backends
 from slam_it.edge.options import Options
-from slam_it.eval import budgets, runs
+from slam_it.eval import budgets, runs, vocabularies
 from slam_it.foundations.errors import DegenerateError, InvalidInputError, NotConvergedError
 from slam_it.orchestration import vo
 from tests.conftest import FIXTURES, assert_matches_fixture, load_fixture
@@ -31,7 +33,18 @@ from tests.edge.support import (
 )
 from tests.fixtures.edge.generate_room_runs import record, summaries
 from tests.orchestration.conftest import RoomRun, require_program
-from tests.orchestration.datasets import BLANK_AT, CASES, LOST_AT, Room, room_inputs
+from tests.orchestration.datasets import (
+    BLANK_AT,
+    CASES,
+    FOUND_AT,
+    FOUND_BLANKS,
+    LOST_AT,
+    WINDOW_AT,
+    WINDOW_BLANKS,
+    WINDOW_OPTIONS,
+    Room,
+    room_inputs,
+)
 
 SEQUENCES = FIXTURES / "eval" / "sequences"
 """The readers' fixture folders: their files listed, their images absent."""
@@ -215,7 +228,7 @@ def test_the_moved_settings_change_the_decisions(
     assert moved != default
 
 
-ROOMS = ("room", "gap", "lost", "kept")
+ROOMS = ("room", "gap", "lost", "kept", "found", "window")
 """The rooms the golden record holds, each run by its fixture ``<room>_runs``."""
 
 GOLDEN = load_fixture("edge/room_runs.json")
@@ -290,7 +303,57 @@ def test_a_lost_track_starts_a_new_map_and_the_run_goes_on(
         assert sorted(set(run.pose_maps.tolist())) == kept
         span = runs.tracking(run, vo.open_source(dataset, runs_of.sequence(dataset), mode).times)
         assert [s.map for s in span.segments] == kept
-        assert (span.losses, span.resets) == (2, 2 * int(reset))
+        assert (span.losses, span.resets, span.relocalizations) == (2, 2 * int(reset), 0)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize(("dataset", "mode"), CASES)
+def test_a_track_found_again_is_counted_as_relocalised(
+    dataset: str, mode: str, backend: str, found_runs: RoomRun
+) -> None:
+    """The frame after the found room's blank ones is relocalised in map 0, and counted."""
+    run = found_runs(dataset, mode, backend)
+    back = FOUND_AT + FOUND_BLANKS
+    placed = [k for k, d in enumerate(run.diagnostics) if d["placed_by"] == runs.RELOCALIZED]
+    assert placed == [back]
+    assert run.diagnostics[back]["map"] == 0
+    span = runs.tracking(run, vo.open_source(dataset, found_runs.sequence(dataset), mode).times)
+    assert (span.losses, span.resets, span.relocalizations) == (0, 0, 1)
+    assert [s.map for s in span.segments] == [0]
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize(("dataset", "mode"), CASES)
+def test_the_window_room_loses_its_kept_maps_by_the_time(
+    dataset: str, mode: str, backend: str, window_runs: RoomRun
+) -> None:
+    """Each kept map is lost 0.05 s after its first failed frame, before ``lost_frames`` failures.
+
+    Review panel findings L1 and L2. In stereo and RGB-D, the frame after the first blank
+    stretch is relocalised in map 0, and the second stretch's last blank frame loses it; an
+    RGB-D run first culls keyframes, which leave the database before the relocalisation. A
+    monocular run loses its small maps by the time before the stretches.
+    """
+    run = window_runs(dataset, mode, backend)
+    lost = [k for k, d in enumerate(run.diagnostics) if d["state"] == "lost"]
+    assert lost
+    for k in lost:
+        assert run.diagnostics[k]["lost"]["reset"] is False
+        failed = 0  # the failed frames of the lost map, up to its lost frame
+        while failed <= k and run.diagnostics[k - failed]["tracked"] == 0:
+            failed += 1
+        assert 1 < failed < WINDOW_OPTIONS.lost_frames
+    if mode == "monocular":
+        return
+    back = FOUND_AT + WINDOW_BLANKS
+    placed = [k for k, d in enumerate(run.diagnostics) if d["placed_by"] == runs.RELOCALIZED]
+    assert placed == [back]
+    assert run.diagnostics[back]["map"] == 0
+    assert lost == [WINDOW_AT + FOUND_BLANKS - 1]
+    if mode == "rgbd":
+        culled = run.keyframe_lives[run.keyframe_lives[:, 2] == runs.REMOVALS.index("culled")]
+        assert len(culled) > 0
+        assert np.all(culled[:, 1] < back)
 
 
 def test_a_request_crosses_as_a_command_line() -> None:
@@ -337,6 +400,9 @@ def test_parse_reads_a_command_line() -> None:
         (["--dataset", "euroc"], "--dataset: given twice"),
         (["--verbose", "1"], "unknown argument '--verbose'"),
         (["--record-features", "--record-features"], "--record-features: given twice"),
+        (["--vocabulary", "a", "--vocabulary", "b"], "--vocabulary: given twice"),
+        (["--option", "relocalize=maybe"], "relocalize: expected true or false, got 'maybe'"),
+        (["--option", "relocalize=1"], "relocalize: expected true or false, got '1'"),
     ],
 )
 def test_parse_refuses_what_the_native_programs_refuse(more: list[str], message: str) -> None:
@@ -411,7 +477,9 @@ def test_a_setting_out_of_range_is_a_failed_run_not_a_usage_error() -> None:
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_every_program_records_its_process(backend: str, tmp_path: Path) -> None:
     """Each backend's program writes its run with its own peak memory and CPUs, and says so."""
-    request = vo.Request("tum", SEQUENCES / "tum_camera", "rgbd", tmp_path, count=0)
+    request = vo.Request(
+        "tum", SEQUENCES / "tum_camera", "rgbd", tmp_path, count=0, vocabulary=vocabularies.DEFAULT
+    )
     done = subprocess.run(
         [*vo.command(require_program(backend)), *request.arguments()],
         capture_output=True, text=True, check=False,
@@ -517,7 +585,9 @@ def test_a_program_fails_a_file_it_cannot_read_or_write_alike(backend: str, tmp_
     message prefixed and naming the file.
     """
     command = vo.command(require_program(backend))
-    missing = vo.Request("euroc", SEQUENCES / "euroc", "stereo", tmp_path, count=1)
+    missing = vo.Request(
+        "euroc", SEQUENCES / "euroc", "stereo", tmp_path, count=1, vocabulary=vocabularies.DEFAULT
+    )
     done = subprocess.run(
         [*command, *missing.arguments()], capture_output=True, text=True, check=False
     )
@@ -525,7 +595,14 @@ def test_a_program_fails_a_file_it_cannot_read_or_write_alike(backend: str, tmp_
     assert re.match(r"slam_it_vo: .*mav0/cam0/data/\d+\.png", done.stderr)
     blocked = tmp_path / "a_file"
     blocked.write_text("")
-    unwritable = vo.Request("tum", SEQUENCES / "tum_camera", "rgbd", blocked / "run", count=0)
+    unwritable = vo.Request(
+        "tum",
+        SEQUENCES / "tum_camera",
+        "rgbd",
+        blocked / "run",
+        count=0,
+        vocabulary=vocabularies.DEFAULT,
+    )
     done = subprocess.run(
         [*command, *unwritable.arguments()], capture_output=True, text=True, check=False
     )
@@ -613,6 +690,120 @@ def test_a_program_refuses_a_bad_command_line(backend: str) -> None:
         assert done.returncode == vo.EXIT_USAGE
         assert done.stderr.startswith("slam_it_vo: ")
         assert "\nusage: " in done.stderr
+
+
+def test_the_vocabulary_and_a_flag_setting_cross_the_command_line() -> None:
+    """``--vocabulary`` is read and passed on; a flag setting crosses as true or false."""
+    base = ["--dataset", "tum", "--sequence", "seq", "--mode", "rgbd", "--out", "out"]
+    request = vo.parse([*base, "--vocabulary", "words", "--option", "relocalize=false"])
+    assert (request.vocabulary, request.options.relocalize) == (Path("words"), False)
+    arguments = request.arguments()
+    assert arguments[arguments.index("--vocabulary") + 1] == "words"
+    assert arguments[arguments.index("--option") + 1] == "relocalize=false"
+    assert vo.parse(base).vocabulary is None
+    assert vo.parse_setting("relocalize= true ") == ("relocalize", True)
+
+
+@pytest.mark.parametrize(
+    ("relocalize", "vocabulary", "message"),
+    [
+        (True, None, "--vocabulary: relocalize needs one"),
+        (False, Path("words"), "--vocabulary: given, but relocalize is off"),
+    ],
+)
+def test_check_refuses_a_vocabulary_missing_or_unasked_for(
+    relocalize: bool, vocabulary: Path | None, message: str
+) -> None:
+    """Relocalising needs a vocabulary; one given with relocalisation off is refused."""
+    request = vo.Request(
+        "tum", SEQUENCES / "tum_camera", "rgbd", Path("out"),
+        options=Options(relocalize=relocalize), vocabulary=vocabulary,
+    )  # fmt: skip
+    with pytest.raises(InvalidInputError, match=re.escape(message)):
+        vo.check(request)
+
+
+def test_run_relocalises_with_the_committed_vocabulary_unless_told_otherwise(
+    tmp_path: Path,
+) -> None:
+    """Unnamed, a relocalising run's vocabulary is the committed one, which it records.
+
+    Off, none is recorded, and one given is refused before anything runs.
+    """
+    on = vo.run("tum", SEQUENCES / "tum_camera", "rgbd", tmp_path / "on", count=0)
+    assert on.vocabulary == vocabularies.record(vocabularies.DEFAULT)
+    off_options = Options(relocalize=False)
+    off = vo.run(
+        "tum", SEQUENCES / "tum_camera", "rgbd", tmp_path / "off", count=0, options=off_options
+    )
+    assert off.vocabulary is None
+    with pytest.raises(InvalidInputError, match="given, but relocalize is off"):
+        vo.run(
+            "tum", SEQUENCES / "tum_camera", "rgbd", tmp_path / "refused", count=0,
+            options=off_options, vocabulary=vocabularies.DEFAULT,
+        )  # fmt: skip
+    assert not (tmp_path / "refused").exists()
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize(
+    ("more", "message"),
+    [
+        (["--vocabulary", "a", "--vocabulary", "b"], "--vocabulary: given twice"),
+        (["--option", "relocalize=maybe"], "relocalize: expected true or false, got 'maybe'"),
+    ],
+)
+def test_every_program_refuses_a_vocabulary_twice_and_a_flag_not_true_or_false(
+    backend: str, more: list[str], message: str
+) -> None:
+    """Every program's usage error, with Python's parse's message (review panel finding H10)."""
+    base = ["--dataset", "tum", "--sequence", "seq", "--mode", "rgbd", "--out", "out"]
+    program = vo.command(require_program(backend))
+    done = subprocess.run([*program, *base, *more], capture_output=True, text=True, check=False)
+    assert done.returncode == vo.EXIT_USAGE
+    assert done.stderr.startswith(f"slam_it_vo: {message}")
+
+
+def _foreign_vocabulary(folder: Path) -> Path:
+    """Write a copy of the reader's fixture whose header names another descriptor."""
+    cases = json.loads((FIXTURES / "eval" / "vocabulary_cases.json").read_text())["cases"]
+    (case,) = [c for c in cases if c["name"] == "another descriptor's words"]
+    shutil.copytree(FIXTURES / "eval" / "vocabulary", folder)
+    for name, data in case["files"].items():
+        (folder / name).write_bytes(bytes.fromhex(data))
+    return folder
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("refused", ["none", "unasked", "foreign"])
+def test_every_program_refuses_a_vocabulary_missing_unasked_or_foreign(
+    backend: str, refused: str, tmp_path: Path
+) -> None:
+    """A vocabulary missing, unasked for or foreign: every program fails the run and writes none.
+
+    Relocalising without a vocabulary, given one with relocalisation off, or given one of another
+    descriptor, every program exits 3 and says why (review panel findings A1 and run 2's H17:
+    before B1's fixes, the native programs read a foreign vocabulary and exited 0).
+    """
+    out = tmp_path / "run"
+    request = vo.Request("tum", SEQUENCES / "tum_camera", "rgbd", out, count=0)
+    message = "--vocabulary: relocalize needs one"
+    if refused == "unasked":
+        request = replace(
+            request, options=Options(relocalize=False), vocabulary=vocabularies.DEFAULT
+        )
+        message = "--vocabulary: given, but relocalize is off"
+    elif refused == "foreign":
+        folder = _foreign_vocabulary(tmp_path / "foreign")
+        request = replace(request, vocabulary=folder)
+        message = f"{folder}: trained on descriptor version 99"
+    program = vo.command(require_program(backend))
+    done = subprocess.run(
+        [*program, *request.arguments()], capture_output=True, text=True, check=False
+    )
+    assert done.returncode == vo.EXIT_FAILED
+    assert done.stderr.startswith(f"slam_it_vo: {message}")
+    assert not (out / "run.json").exists()
 
 
 def test_a_run_set_up_for_its_frames_size_gets_their_features() -> None:

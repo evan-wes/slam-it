@@ -1,0 +1,10 @@
+{
+ "images": 9969,
+ "descriptors": 9160968,
+ "seed": 0,
+ "name": "arkitscenes-training",
+ "sources": [
+  "zips:arkitscenes-train"
+ ],
+ "drawn_from": 45079
+}

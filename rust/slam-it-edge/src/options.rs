@@ -169,6 +169,8 @@ pub struct Options {
     pub ba_min_keyframes: usize,
     /// The monocular map's first bundle adjustment's iterations.
     pub init_ba_iterations: usize,
+    /// The most samples a monocular start's two-view RANSAC draws, per model.
+    pub init_ransac_iterations: usize,
     /// A new point found in less than this fraction of its views is culled.
     pub found_ratio: f64,
     /// A point is culled on evidence until this many keyframes after its creation.
@@ -187,9 +189,41 @@ pub struct Options {
     pub pnp_threshold: f64,
     /// Inliers the PnP fallback needs.
     pub pnp_min_inliers: usize,
-    /// The fallback's descriptor ratio test.
+    /// Relocalise a failed frame through the keyframe database (needs a vocabulary).
+    pub relocalize: bool,
+    /// The descriptor ratio test of the fallback and of relocalisation's matching by word.
     pub relocalize_ratio: f64,
-    /// Failed frames in a row before the track is lost.
+    /// Keyframes observing at least this many of the same points are covisible.
+    pub covisible_points: usize,
+    /// Relocalisation scores keyframes sharing more than this fraction of the most words.
+    pub reloc_common_words: f64,
+    /// A scored keyframe's score is accumulated over this many best covisible keyframes.
+    pub reloc_neighbours: usize,
+    /// Groups above this fraction of the best accumulated score give a candidate.
+    pub reloc_group_score: f64,
+    /// A candidate needs this many matches by word.
+    pub reloc_min_matches: usize,
+    /// A candidate's PnP RANSAC needs this fraction of its matches as inliers.
+    pub reloc_inlier_ratio: f64,
+    /// ...and at least this many, before and after the pose is optimised.
+    pub reloc_min_inliers: usize,
+    /// The confidence its samples are drawn for, in (0, 1).
+    pub reloc_confidence: f64,
+    /// The most samples it draws.
+    pub reloc_ransac_iterations: usize,
+    /// The window, in pixels at the predicted level, of the search by projection.
+    pub reloc_window: f64,
+    /// With more inliers than this but too few still, the search is repeated narrower.
+    pub reloc_narrow_inliers: usize,
+    /// That window.
+    pub reloc_narrow_window: f64,
+    /// Its descriptor distance.
+    pub reloc_narrow_distance: i64,
+    /// A recently lost track is lost once more than this has passed since its first failed
+    /// frame, in seconds.
+    pub relocalize_seconds: f64,
+    /// A map of `reset_keyframes` keyframes or fewer is lost after this many failed frames in a
+    /// row instead.
     pub lost_frames: usize,
     /// A map lost with this many keyframes or fewer is reset rather than kept.
     pub reset_keyframes: usize,
@@ -264,6 +298,7 @@ impl Default for Options {
             ba_refine_iterations: 10,
             ba_min_keyframes: 3,
             init_ba_iterations: 20,
+            init_ransac_iterations: 200,
             found_ratio: 0.25,
             recent_point_keyframes: 3,
             point_cull_age: 2,
@@ -273,7 +308,22 @@ impl Default for Options {
             redundant_observers: 3,
             pnp_threshold: 4.0,
             pnp_min_inliers: 30,
+            relocalize: true,
             relocalize_ratio: 0.75,
+            covisible_points: 15,
+            reloc_common_words: 0.8,
+            reloc_neighbours: 10,
+            reloc_group_score: 0.75,
+            reloc_min_matches: 15,
+            reloc_inlier_ratio: 0.5,
+            reloc_min_inliers: 10,
+            reloc_confidence: 0.99,
+            reloc_ransac_iterations: 300,
+            reloc_window: 10.0,
+            reloc_narrow_inliers: 30,
+            reloc_narrow_window: 3.0,
+            reloc_narrow_distance: 64,
+            relocalize_seconds: 3.0,
             lost_frames: 5,
             reset_keyframes: 10,
             seed: 0,
@@ -328,6 +378,8 @@ impl Options {
 /// A setting's value, by its kind: what a command line gives, and what a run records.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Setting {
+    /// A flag setting's.
+    Flag(bool),
     /// An integer setting's.
     Integer(i64),
     /// A real setting's.
@@ -370,6 +422,9 @@ macro_rules! named_settings {
             }
         }
     };
+    (@value Flag $value:ident) => {
+        Setting::Flag($value)
+    };
     (@value Integer $value:ident) => {
         Setting::Integer(i64::try_from($value).unwrap_or(i64::MAX))
     };
@@ -386,6 +441,7 @@ macro_rules! named_settings {
                 Err(_) => fail_setting($name, "out of range", integer),
             },
             Setting::Real(real) => fail_setting($name, "expected an integer", real),
+            Setting::Flag(flag) => fail_setting($name, "expected an integer", flag),
         }
     };
     (@set Real $slot:expr, $name:ident, $value:ident) => {
@@ -395,6 +451,17 @@ macro_rules! named_settings {
                 Ok(())
             }
             Setting::Integer(integer) => fail_setting($name, "expected a real", integer),
+            Setting::Flag(flag) => fail_setting($name, "expected a real", flag),
+        }
+    };
+    (@set Flag $slot:expr, $name:ident, $value:ident) => {
+        match $value {
+            Setting::Flag(flag) => {
+                $slot = flag;
+                Ok(())
+            }
+            Setting::Integer(integer) => fail_setting($name, "expected true or false", integer),
+            Setting::Real(real) => fail_setting($name, "expected true or false", real),
         }
     };
 }
@@ -436,7 +503,23 @@ named_settings!(
     recent_point_keyframes: Integer,
     point_cull_age: Integer,
     init_ba_iterations: Integer,
+    init_ransac_iterations: Integer,
+    relocalize: Flag,
     relocalize_ratio: Real,
+    covisible_points: Integer,
+    reloc_common_words: Real,
+    reloc_neighbours: Integer,
+    reloc_group_score: Real,
+    reloc_min_matches: Integer,
+    reloc_inlier_ratio: Real,
+    reloc_min_inliers: Integer,
+    reloc_confidence: Real,
+    reloc_ransac_iterations: Integer,
+    reloc_window: Real,
+    reloc_narrow_inliers: Integer,
+    reloc_narrow_window: Real,
+    reloc_narrow_distance: Integer,
+    relocalize_seconds: Real,
     pnp_min_inliers: Integer, lost_frames: Integer, reset_keyframes: Integer, seed: Integer,
 );
 
@@ -449,7 +532,11 @@ fn check_matching(options: &Options) -> Result<()> {
     if let Err(error) = stereo::check_options(&options.stereo_matching()) {
         return fail(error.kind, format!("stereo_{}", error.message));
     }
-    for (name, value) in [("th_low", options.th_low), ("th_high", options.th_high)] {
+    for (name, value) in [
+        ("th_low", options.th_low),
+        ("th_high", options.th_high),
+        ("reloc_narrow_distance", options.reloc_narrow_distance),
+    ] {
         check_range(name, value, 1, matching::MAX_DISTANCE)?;
     }
     Ok(())
@@ -516,9 +603,26 @@ pub fn check_options(options: &Options) -> Result<()> {
         ("recent_point_keyframes", options.recent_point_keyframes),
         ("point_cull_age", options.point_cull_age),
         ("init_ba_iterations", options.init_ba_iterations),
+        ("init_ransac_iterations", options.init_ransac_iterations),
+        ("covisible_points", options.covisible_points),
+        ("reloc_neighbours", options.reloc_neighbours),
+        ("reloc_min_matches", options.reloc_min_matches),
+        ("reloc_min_inliers", options.reloc_min_inliers),
+        ("reloc_ransac_iterations", options.reloc_ransac_iterations),
+        ("reloc_narrow_inliers", options.reloc_narrow_inliers),
     ] {
         check_range(name, value, 1, MAX_SETTING)?;
     }
+    check_reals(options)
+}
+
+/// Checks the real settings: those that must be finite and positive, the fractions in (0, 1],
+/// and `reloc_confidence` below 1.
+///
+/// # Errors
+///
+/// `InvalidInput` naming the first one out of range.
+fn check_reals(options: &Options) -> Result<()> {
     for (name, value) in [
         ("scale_factor", options.scale_factor),
         ("close_depth", options.close_depth),
@@ -538,6 +642,9 @@ pub fn check_options(options: &Options) -> Result<()> {
         ("max_distance_margin", options.max_distance_margin),
         ("epipolar_chi2", options.epipolar_chi2),
         ("min_epipole_distance2", options.min_epipole_distance2),
+        ("reloc_window", options.reloc_window),
+        ("reloc_narrow_window", options.reloc_narrow_window),
+        ("relocalize_seconds", options.relocalize_seconds),
     ] {
         if !(value.is_finite() && value > 0.0) {
             return fail_setting(name, "must be finite and positive", value);
@@ -558,10 +665,21 @@ pub fn check_options(options: &Options) -> Result<()> {
         ("first_ref_ratio", options.first_ref_ratio),
         ("min_baseline_depth", options.min_baseline_depth),
         ("relocalize_ratio", options.relocalize_ratio),
+        ("reloc_common_words", options.reloc_common_words),
+        ("reloc_group_score", options.reloc_group_score),
+        ("reloc_inlier_ratio", options.reloc_inlier_ratio),
+        ("reloc_confidence", options.reloc_confidence),
     ] {
         if !(value.is_finite() && value > 0.0 && value <= 1.0) {
             return fail_setting(name, "must be in (0, 1]", value);
         }
+    }
+    if options.reloc_confidence >= 1.0 {
+        return fail_setting(
+            "reloc_confidence",
+            "must be in (0, 1)",
+            options.reloc_confidence,
+        );
     }
     Ok(())
 }
@@ -578,7 +696,7 @@ mod tests {
     fn settings_by_name() {
         let mut options = Options::default();
         let settings = options.settings();
-        assert_eq!(settings.len(), 76);
+        assert_eq!(settings.len(), 92);
         assert_eq!(settings[0], ("n_features", Setting::Integer(1000)));
         assert_eq!(settings[2], ("scale_factor", Setting::Real(1.2)));
         options.set("window", Setting::Integer(7)).unwrap();
@@ -632,6 +750,7 @@ mod tests {
             .into_iter()
             .filter_map(|(name, setting)| {
                 let bad = match setting {
+                    Setting::Flag(_) => return None, // either value is valid
                     Setting::Integer(_) => Setting::Integer((1 << 30) + 1),
                     Setting::Real(_) => Setting::Real(f64::NAN),
                 };

@@ -2,7 +2,8 @@
 /// @brief Native tests for the pipeline (slam_it/edge/pipeline.hpp) on the exact scene seen
 ///        along a sideways path: RGB-D and stereo track every frame exactly, monocular starts
 ///        its map and keeps the path's direction, and empty frames lose the track, the next
-///        frame starting a new map.
+///        frame starting a new map; relocalising, a kept map is lost in time and a small one in
+///        frames, and a frame the fallback cannot reach is relocalised.
 #include <cmath>
 #include <cstdint>
 #include <optional>
@@ -36,7 +37,9 @@ Eigen::Matrix4d along(std::int64_t i) {
 /// @brief The settings for a 60-point scene: the counts ORB-SLAM sizes for hundreds lowered.
 /// @return The settings.
 edge::Options small_scene() {
-  return {.min_init_features = 20, .min_init_features_depth = 20, .init_min_matches = 20};
+  edge::Options out{.min_init_features = 20, .min_init_features_depth = 20, .init_min_matches = 20};
+  out.relocalize = false;  // A2's loss rule; relocalizing() turns it on, with a vocabulary
+  return out;
 }
 
 /// @brief Run the path through a pipeline.
@@ -45,7 +48,7 @@ edge::Options small_scene() {
 /// @return The pipeline, or an error.
 slam_it::foundations::Result<edge::Pipeline> run(edge::Mode mode,
                                                  std::vector<edge::FrameResult>& results) {
-  auto pipeline = edge::Pipeline::create(mode, scene::camera(), small_scene());
+  auto pipeline = edge::Pipeline::create(mode, scene::camera(), small_scene(), std::nullopt);
   if (!pipeline) {
     return pipeline;
   }
@@ -117,6 +120,17 @@ edge::Frame empty_frame() {
       .value();
 }
 
+/// @brief Start a pipeline's map on the path's first frame, RGB-D.
+/// @param pipeline The pipeline, or the error that made none.
+/// @return The first frame's result, or the error.
+slam_it::foundations::Result<edge::FrameResult> start(
+    slam_it::foundations::Result<edge::Pipeline>& pipeline) {
+  if (!pipeline) {
+    return std::unexpected(pipeline.error());
+  }
+  return pipeline->track(scene::frame_at(along(0), true));
+}
+
 /// @brief Whether the lives after a loss and a new map are right: map 0's keyframe and points
 ///        made on frame 0, ended as reset on the lost frame if `reset`, map 1's alive.
 /// @param lives The pipeline's lifetimes.
@@ -148,11 +162,9 @@ void check_lost(int& failures) {
   for (const std::int64_t reset_keyframes : {std::int64_t{1}, std::int64_t{0}}) {
     edge::Options options = small_scene();
     options.reset_keyframes = reset_keyframes;
-    auto pipeline = edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), options);
-    const auto started =
-        pipeline
-            ? pipeline->track(scene::frame_at(along(0), true))
-            : slam_it::foundations::Result<edge::FrameResult>(std::unexpected(pipeline.error()));
+    auto pipeline =
+        edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), options, std::nullopt);
+    const auto started = start(pipeline);
     if (!started || started->map != 0) {
       expect(false, "the pipeline starts map 0", failures);
       return;
@@ -178,8 +190,95 @@ void check_lost(int& failures) {
   }
   edge::Camera monocular = scene::camera();
   monocular.baseline = 0.0;
-  expect(is_invalid_input(edge::Pipeline::create(edge::Mode::kRgbd, monocular, edge::Options{})),
+  expect(is_invalid_input(
+             edge::Pipeline::create(edge::Mode::kRgbd, monocular, edge::Options{}, std::nullopt)),
          "RGB-D without a baseline is refused", failures);
+}
+
+/// @brief The settings relocalising, a map above `reset_keyframes` kept: the scene's, with
+///        `relocalize` on.
+/// @param reset_keyframes The most keyframes a lost map is reset with.
+/// @return The settings.
+edge::Options relocalizing(std::int64_t reset_keyframes) {
+  edge::Options out = small_scene();
+  out.relocalize = true;
+  out.reset_keyframes = reset_keyframes;
+  return out;
+}
+
+/// @brief An empty frame at a time.
+/// @param timestamp The time.
+/// @return The frame.
+edge::Frame empty_at(double timestamp) {
+  edge::Frame out = empty_frame();
+  out.timestamp = timestamp;
+  return out;
+}
+
+/// @brief Check the loss rules relocalising (Python's
+///        `test_a_large_map_is_lost_in_time_and_a_small_one_in_frames`): a map above
+///        `reset_keyframes` is lost once more than `relocalize_seconds` have passed since the
+///        first failed frame (at 0.25 s a frame, on the fourteenth: 3.25 s, where the
+///        thirteenth's 3 s is not more), one of `reset_keyframes` or fewer on the
+///        `lost_frames`-th failure, whatever the time; each failed frame tried relocalisation.
+/// @param failures Running failure count.
+void check_lost_relocalizing(int& failures) {
+  struct Case {
+    std::int64_t reset_keyframes;
+    double step;
+    std::int64_t lost_on;
+  };
+  for (const Case c : {Case{.reset_keyframes = 0, .step = 0.25, .lost_on = 14},
+                       Case{.reset_keyframes = 1, .step = 0.25, .lost_on = 5},
+                       Case{.reset_keyframes = 1, .step = 0.001, .lost_on = 5}}) {
+    auto pipeline = edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(),
+                                           relocalizing(c.reset_keyframes), scene::one_word());
+    const auto started = start(pipeline);
+    bool ok = started && started->keyframe;
+    for (std::int64_t k = 0; ok && k < c.lost_on; ++k) {
+      const auto failed = pipeline->track(empty_at(c.step * static_cast<double>(k + 1)));
+      const edge::State expected = k + 1 < c.lost_on ? edge::State::kTracking : edge::State::kLost;
+      ok = failed && failed->state == expected && failed->summary.relocalization;
+    }
+    expect(ok,
+           c.reset_keyframes == 0
+               ? "a kept map is lost past relocalize_seconds from the first failed frame"
+               : "a small map is lost on the lost_frames-th failure, whatever the time",
+           failures);
+  }
+}
+
+/// @brief Check that a frame the local fallback cannot reach is placed by relocalisation in
+///        the same map, at its pose: after the path, 30 cm to the right, and an empty frame, the
+///        camera is back where the map began, 25 px away, past the motion model's narrowed
+///        window.
+/// @param failures Running failure count.
+void check_relocalized(int& failures) {
+  edge::Options options = relocalizing(0);
+  options.pnp_min_inliers = 1'000'000;  // the local fallback out of reach
+  options.motion_window = 5.0;          // 10 px widened: the 25 px back to the start out of reach
+  auto pipeline =
+      edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), options, scene::one_word());
+  bool tracked = pipeline.has_value();
+  for (std::int64_t i = 0; tracked && i < kFrames; ++i) {
+    edge::Frame frame = scene::frame_at(along(i), true);
+    frame.timestamp = static_cast<double>(i);
+    const auto result = pipeline->track(frame);
+    tracked = result && result->pose;
+  }
+  if (!tracked) {
+    expect(false, "the path is tracked", failures);
+    return;
+  }
+  const edge::FrameResult failed = pipeline->track(empty_at(static_cast<double>(kFrames))).value();
+  edge::Frame back = scene::frame_at(along(0), true);
+  back.timestamp = static_cast<double>(kFrames + 1);
+  const std::optional<edge::FrameResult> found = pipeline->track(back).value();
+  expect(!failed.pose, "the empty frame fails", failures);
+  expect(found && found->map == 0 && found->state == edge::State::kTracking &&
+             found->summary.placed_by == edge::Placement::kRelocalization && found->pose &&
+             (*found->pose - along(0)).cwiseAbs().maxCoeff() < 1e-6,
+         "a frame out of the fallback's reach is relocalised in its map, at its pose", failures);
 }
 
 /// @brief The test body.
@@ -189,6 +288,8 @@ int run_tests() {
   check_depth_modes(failures);
   check_monocular(failures);
   check_lost(failures);
+  check_lost_relocalizing(failures);
+  check_relocalized(failures);
   return slam_it::testing::finish("edge/pipeline", failures);
 }
 

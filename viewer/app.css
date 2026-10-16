@@ -11,11 +11,12 @@
   --accent-soft: #d7eef1;
   --on-accent: #ffffff;
   --fail: #a53a31;
+  --found: #2f9d5a;
   --fate-unmatched: #8d9a9f;
   --fate-rejected: #d1453b;
   --fate-tracked: #2f9d5a;
   --fate-made: #e0a020;
-  --truth: #8a8f92;
+  --truth: #c9a227;
   --keyframe: #5b4bb7;
   --point: #3b4a50;
   --camera: #d1453b;
@@ -40,11 +41,12 @@
     --accent-soft: #12343a;
     --on-accent: #08181b;
     --fail: #e07a70;
+    --found: #57c27f;
     --fate-unmatched: #6c7a7f;
     --fate-rejected: #ef6a5f;
     --fate-tracked: #57c27f;
     --fate-made: #f2c14e;
-    --truth: #8d9a9f;
+    --truth: #e3bd4f;
     --keyframe: #a596ff;
     --point: #c9d3d5;
     --camera: #ef6a5f;
@@ -184,7 +186,7 @@ input:focus-visible {
 }
 /* Each backend's frames, a row each, inset to the slider's track (its thumb's half-width):
    tracking in its colour, faded before its first map, broken where its map was reset, the frame
-   it lost the track in red. */
+   it lost the track in red, and each frame it found the track again in green. */
 .spans {
   position: relative;
   margin: 0 7px;
@@ -205,6 +207,10 @@ input:focus-visible {
   min-width: 3px;
   background: var(--fail);
 }
+.span.found {
+  min-width: 3px;
+  background: var(--found);
+}
 .legend.states span {
   padding: 0 5px;
   font-size: 0.64rem;
@@ -223,6 +229,9 @@ input:focus-visible {
 }
 .swatch.lost {
   background: var(--fail);
+}
+.swatch.found {
+  background: var(--found);
 }
 .swatch.reset {
   background: repeating-linear-gradient(90deg, var(--muted) 0 3px, transparent 3px 5px);
@@ -272,7 +281,9 @@ select {
   gap: 12px;
   padding: 12px 16px;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr);
-  grid-template-rows: auto minmax(0, 1fr);
+  /* The frame's row as tall as its image at the column's width, short of leaving the solver
+     less than its floor, about its head and its two plots: the frame then shrinks (#image). */
+  grid-template-rows: minmax(0, auto) minmax(260px, 1fr);
   grid-template-areas: "image scene" "solver scene";
 }
 .image-panel {
@@ -336,13 +347,18 @@ select {
 
 .image-box {
   position: relative;
+  flex: 0 1 auto;
+  min-height: 0;
   border: 1px solid var(--line);
   background: var(--ground);
 }
+/* The frame at the column's width or, where its row is shorter, as tall as the row leaves it,
+   its proportions kept (letterboxed on the ground). */
 #image {
   display: block;
   width: 100%;
-  height: auto;
+  height: 100%;
+  object-fit: contain;
 }
 .tag {
   position: absolute;

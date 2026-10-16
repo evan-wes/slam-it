@@ -74,7 +74,7 @@ from slam_it import backends
 from slam_it.edge import frames
 from slam_it.edge.options import MODES, Options, features_for
 from slam_it.edge.pipeline import Pipeline
-from slam_it.eval import budgets, euroc, images, runs, tum
+from slam_it.eval import budgets, euroc, images, runs, tum, vocabularies
 from slam_it.foundations import image, orb, se3, stereo
 from slam_it.foundations.errors import (
     DegenerateError,
@@ -82,6 +82,7 @@ from slam_it.foundations.errors import (
     NotConvergedError,
     SlamItError,
 )
+from slam_it.foundations.vocabulary import Vocabulary
 
 PROGRAM = "slam_it_vo"
 """The native programs' name, in C++ (``cpp/apps/orchestration/``) and Rust
@@ -92,8 +93,8 @@ MODULE = "slam_it.orchestration.vo"
 
 USAGE = (
     f"usage: python -m {MODULE} --dataset tum|euroc --sequence PATH --mode "
-    "monocular|stereo|rgbd --out RUN_DIR [--first I] [--count N] [--record-features] "
-    "[--option KEY=VALUE ...]"
+    "monocular|stereo|rgbd --out RUN_DIR [--first I] [--count N] [--vocabulary FOLDER] "
+    "[--record-features] [--option KEY=VALUE ...]"
 )
 """Python's program's command line: the native programs' (their ``kUsage``/``USAGE``)."""
 
@@ -142,6 +143,8 @@ class Request:
         The pipeline's settings.
     record_features : bool
         Whether the run records each frame's keypoints, with their fates.
+    vocabulary : pathlib.Path or None
+        The vocabulary's folder: required with ``relocalize`` on, refused with it off.
     """
 
     dataset: str
@@ -152,6 +155,7 @@ class Request:
     count: int | None = None
     options: Options = field(default_factory=Options)
     record_features: bool = False
+    vocabulary: Path | None = None
 
     def arguments(self) -> list[str]:
         """Return the native program's command line for the request.
@@ -159,9 +163,10 @@ class Request:
         Returns
         -------
         list of str
-            The arguments after the program's name: every flag (``--record-features`` if
-            asked), and ``--option KEY=VALUE`` for each setting that differs from its default
-            (integers as integers, reals round-tripping).
+            The arguments after the program's name: every flag (``--vocabulary`` if given,
+            ``--record-features`` if asked), and ``--option KEY=VALUE`` for each setting that
+            differs from its default (flags as ``true`` or ``false``, integers as integers,
+            reals round-tripping).
         """
         out = [
             "--dataset",
@@ -177,13 +182,20 @@ class Request:
         ]
         if self.count is not None:
             out += ["--count", str(self.count)]
+        if self.vocabulary is not None:
+            out += ["--vocabulary", str(self.vocabulary)]
         if self.record_features:
             out.append("--record-features")
         defaults = Options()
         for setting in fields(Options):
             value, default = getattr(self.options, setting.name), getattr(defaults, setting.name)
             if value != default:
-                text = str(int(value)) if isinstance(default, int) else repr(float(value))
+                if isinstance(default, bool):
+                    text = "true" if value else "false"
+                elif isinstance(default, int):
+                    text = str(int(value))
+                else:
+                    text = repr(float(value))
                 out += ["--option", f"{setting.name}={text}"]
         return out
 
@@ -200,8 +212,9 @@ def check(request: Request) -> None:
     ------
     slam_it.foundations.errors.InvalidInputError
         For an unknown dataset or mode, a mode the dataset does not record (TUM has no stereo
-        pairs, EuRoC no depth maps), or a negative `first` or `count`. (The options checked
-        themselves when they were made.)
+        pairs, EuRoC no depth maps), a negative `first` or `count`, or a vocabulary missing
+        while relocalising or given while not. (The options checked themselves when they were
+        made; the vocabulary's folder is checked when it is read.)
     """
     if request.dataset not in runs.DATASETS:
         wanted = " or ".join(runs.DATASETS)
@@ -214,6 +227,10 @@ def check(request: Request) -> None:
         raise InvalidInputError("mode: a euroc sequence has no depth maps")
     if request.first < 0 or (request.count is not None and request.count < 0):
         raise InvalidInputError("first, count: must be at least 0")
+    if request.options.relocalize and request.vocabulary is None:
+        raise InvalidInputError("--vocabulary: relocalize needs one")
+    if not request.options.relocalize and request.vocabulary is not None:
+        raise InvalidInputError("--vocabulary: given, but relocalize is off")
 
 
 def _integer(flag: str, text: str) -> int:
@@ -227,7 +244,7 @@ _DECIMAL = re.compile(r"[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][-+]?[0-9]+)?")
 """A decimal number, as the native programs read one (``eval::text::number``)."""
 
 
-def parse_setting(text: str) -> tuple[str, int | float]:
+def parse_setting(text: str) -> tuple[str, bool | int | float]:
     """Read one ``--option KEY=VALUE``, as the programs read it.
 
     Parameters
@@ -244,14 +261,20 @@ def parse_setting(text: str) -> tuple[str, int | float]:
     Raises
     ------
     UsageError
-        For no ``=``, an unknown setting, or a value that is not a number of its type.
+        For no ``=``, an unknown setting, or a value that is not of its type (``true`` or
+        ``false`` for a flag).
     """
     key, equals, value = text.partition("=")
     if not equals:
         raise UsageError(f"--option: expected KEY=VALUE, got '{text}'")
     if key not in {setting.name for setting in fields(Options)}:
         raise UsageError(f"--option: no setting '{key}'")
-    if isinstance(getattr(Options(), key), int):
+    default = getattr(Options(), key)
+    if isinstance(default, bool):
+        if value.strip() not in ("true", "false"):
+            raise UsageError(f"{key}: expected true or false, got '{value}'")
+        return key, value.strip() == "true"
+    if isinstance(default, int):
         return key, _integer(key, value)
     real = float(value) if _DECIMAL.fullmatch(value.strip()) else float("nan")
     if not np.isfinite(real):  # past float64's range, the native readers refuse it too
@@ -305,7 +328,7 @@ def parse(arguments: Sequence[str]) -> Request:
             continue
         if flag in values:
             raise UsageError(f"{flag}: given twice")
-        if flag not in (*_REQUIRED, "--first", "--count"):
+        if flag not in (*_REQUIRED, "--first", "--count", "--vocabulary"):
             raise UsageError(f"unknown argument '{flag}'")
         if flag == "--mode" and value not in MODES:
             raise UsageError(f"--mode: expected monocular, stereo or rgbd, got '{value}'")
@@ -324,6 +347,7 @@ def parse(arguments: Sequence[str]) -> Request:
         count=numbers.get("--count"),
         options=replace(Options(), **changes),
         record_features=_RECORD_FEATURES in values,
+        vocabulary=Path(values["--vocabulary"]) if "--vocabulary" in values else None,
     )
 
 
@@ -391,6 +415,7 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
     count: int | None = None,
     budget: budgets.Budget | None = None,
     record_features: bool = False,
+    vocabulary: str | Path | None = None,
 ) -> runs.Run:
     """Run a sequence through the edge pipeline and write its run folder.
 
@@ -419,6 +444,11 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
     record_features : bool, optional
         Whether to record each frame's keypoints, with their fates
         (:func:`slam_it.eval.runs.read_features` reads them; default: no).
+    vocabulary : str or pathlib.Path, optional
+        The vocabulary's folder, which a relocalising run needs (default: the committed one
+        when ``relocalize`` is on, none when it is off; one given while it is off is refused).
+        It is read once, here, its checksums checked before any program runs
+        (:func:`slam_it.eval.vocabularies.read`).
 
     Returns
     -------
@@ -451,11 +481,15 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
         count=count,
         options=Options() if options is None else options,
         record_features=record_features,
+        vocabulary=None if vocabulary is None else Path(vocabulary),
     )
+    if request.vocabulary is None and request.options.relocalize:
+        request = replace(request, vocabulary=vocabularies.DEFAULT)
     backends.check_name(backend)
     check(request)
+    words = _read_vocabulary(request)  # its versions and checksums, before any program runs
     if backend == "python" and budget is None:
-        runs.write_run(request.out, _run_here(request))
+        runs.write_run(request.out, _run_here(request, words))
     else:
         _run_program(backend, request, budget)
     return runs.read_run(request.out)
@@ -633,11 +667,16 @@ def open_source(dataset: str, sequence: str | Path, mode: str) -> Source:
     raise InvalidInputError(f"dataset: expected one of {runs.DATASETS}, got {dataset!r}")
 
 
-def _run_here(request: Request) -> runs.Run:
-    """Run the request with the Python pipeline, in-process."""
+def _read_vocabulary(request: Request) -> Vocabulary | None:
+    """Read the request's vocabulary, if it names one (:func:`slam_it.eval.vocabularies.read`)."""
+    return None if request.vocabulary is None else vocabularies.read(request.vocabulary)
+
+
+def _run_here(request: Request, words: Vocabulary | None) -> runs.Run:
+    """Run the request with the Python pipeline, in-process, with its vocabulary as read."""
     source = open_source(request.dataset, request.sequence, request.mode)
     matching = request.options.stereo_matching()
-    tracker = Pipeline(request.mode, source.camera, request.options)
+    tracker = Pipeline(request.mode, source.camera, request.options, words)
     end = len(source.times)
     if request.count is not None:
         end = min(end, request.first + request.count)
@@ -696,6 +735,7 @@ def _run_here(request: Request) -> runs.Run:
         keyframe_poses=se3.inverse(keyframes) if len(keyframes) else np.zeros((0, 4, 4)),
         points=lives.points,
         settings=request.options.as_dict(),
+        vocabulary=None if request.vocabulary is None else vocabularies.record(request.vocabulary),
         diagnostics=diagnostics,
         point_lives=lives.point_lives,
         keyframe_lives=lives.keyframe_lives,
@@ -751,7 +791,7 @@ def main(arguments: Sequence[str]) -> int:
         check(request)
         # What the program records of its own process, before it writes the run.
         done = replace(
-            _run_here(request),
+            _run_here(request, _read_vocabulary(request)),
             peak_memory=budgets.peak_memory(),
             cpus=budgets.allowed_cpus(),
             memory_cap=budgets.memory_cap(),

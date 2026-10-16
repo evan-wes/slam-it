@@ -156,6 +156,7 @@ MOVED_OPTIONS = replace(
     recent_point_keyframes=4,
     point_cull_age=3,
     init_ba_iterations=15,
+    init_ransac_iterations=150,
     init_parallax_cos=0.99995,
     relocalize_ratio=0.8,
     recovery_window_frames=3,
@@ -178,9 +179,123 @@ second stretch cuts a monocular run's map 1, started on frame 28, to 3 tracked f
 it tracked 12 to the room's end with one stretch (finding L10): the room's 40 frames leave no
 later place for it."""
 
-KEPT_OPTIONS = replace(OPTIONS, reset_keyframes=0)
+KEPT_OPTIONS = replace(OPTIONS, reset_keyframes=0, relocalize=False)
 """The room's settings with every lost map kept: the lost room's lost maps, of a few keyframes
-each, are otherwise reset (ORB-SLAM3's reset of a map lost with 10 keyframes or fewer)."""
+each, are otherwise reset (ORB-SLAM3's reset of a map lost with 10 keyframes or fewer). Without
+relocalisation, so that a kept map is lost after ``lost_frames`` failures, as before milestone
+2B: relocalising, a map above ``reset_keyframes`` is lost only after ``relocalize_seconds``,
+longer than the room."""
+
+
+FOUND_AT = 31
+"""Where the found room's blank frames begin: the camera, blinded for :data:`FOUND_BLANKS`
+frames, comes back where it began, at frame :data:`FOUND_BACK`, and goes on from there."""
+
+FOUND_BLANKS = 3
+"""The found room's blank frames: fewer than ``lost_frames``, so the track is not lost."""
+
+FOUND_BACK = 2
+"""The rendered frame the found room's camera comes back to after its blank frames."""
+
+FOUND_OPTIONS = replace(OPTIONS, pnp_min_inliers=1 << 20)
+"""The found room's settings: the local fallback out of reach, so that only relocalisation,
+through the keyframe database, can find the frame the camera comes back on (the room's map is
+small enough for the fallback's local map to hold all of it)."""
+
+
+WINDOW_BLANKS = 2
+"""The window room's first blank frames, from :data:`FOUND_AT`: one fewer than the found room's.
+The second, 0.033 s after the first, is within the room's 0.05 s ``relocalize_seconds``, so the
+track is not lost on it; the frame after, back at :data:`FOUND_BACK` and 0.067 s after the first,
+is relocalised, because the time is judged only on a frame that every attempt fails, as
+ORB-SLAM3 judges it after ``Relocalization``. A native that judged it first would lose the map
+there."""
+
+WINDOW_AT = 36
+"""Where the window room's second blank stretch begins: :data:`FOUND_BLANKS` frames, longer than
+its ``relocalize_seconds`` and shorter than ``lost_frames``, so that its map, kept, is lost by
+the time on the last of them, and the frame after starts a new one."""
+
+WINDOW_OPTIONS = replace(
+    FOUND_OPTIONS,
+    reset_keyframes=0,
+    relocalize_seconds=0.05,
+    redundant_fraction=0.6,
+    redundant_observers=1,
+    recovery_tracked=60,
+    reloc_inlier_ratio=0.4,
+    reloc_min_inliers=12,
+    reloc_confidence=0.95,
+    reloc_ransac_iterations=200,
+    reloc_window=2.0,
+    reloc_narrow_inliers=25,
+    reloc_narrow_window=1.0,
+    reloc_narrow_distance=30,
+)
+"""The window room's settings (review panel findings L1 and L2): the found room's, every map
+kept; lost 0.05 s after its first failed frame, on the third frame at 30 Hz, where
+``lost_frames`` would lose it on the fifth; a keyframe culled when 60% of its points are seen by
+one other keyframe, so that an RGB-D run culls several, which leave its database, before the
+frame is relocalised; ``recovery_tracked`` above the relocalised frame's first inliers, so that the
+search by projection runs; and the relocalisation settings off their defaults. Here only the
+search's window and RANSAC's confidence decide (review panel finding L9): the stage parity's
+cases (``tests/edge/test_relocalization.py``'s ``DECISIVE``) move each setting where it alone
+decides."""
+
+
+def window_frames(rendered: list[room.Frame]) -> list[room.Frame]:
+    """Return the window room: the found room with two blank stretches.
+
+    Parameters
+    ----------
+    rendered : list of tests.edge.room.Frame
+        The room's frames.
+
+    Returns
+    -------
+    list of tests.edge.room.Frame
+        As many frames, at the room's times: frames 0 to ``FOUND_AT - 1``, :data:`WINDOW_BLANKS`
+        blank ones, then the frames from :data:`FOUND_BACK` on, of which the
+        :data:`FOUND_BLANKS` from :data:`WINDOW_AT` are blanked.
+    """
+    after = len(rendered) - FOUND_AT - WINDOW_BLANKS
+    order: list[int | None] = [
+        *range(FOUND_AT), *([None] * WINDOW_BLANKS), *range(FOUND_BACK, FOUND_BACK + after)
+    ]  # fmt: skip
+    for k in range(WINDOW_AT, WINDOW_AT + FOUND_BLANKS):
+        order[k] = None
+    return [
+        replace(
+            blank(rendered[FOUND_AT - 1]) if source is None else rendered[source],
+            timestamp=at.timestamp,
+        )
+        for source, at in zip(order, rendered, strict=True)
+    ]
+
+
+def found_frames(rendered: list[room.Frame]) -> list[room.Frame]:
+    """Return the found room: blank frames from :data:`FOUND_AT`, then the start seen again.
+
+    Parameters
+    ----------
+    rendered : list of tests.edge.room.Frame
+        The room's frames.
+
+    Returns
+    -------
+    list of tests.edge.room.Frame
+        As many frames, at the room's times: frames 0 to ``FOUND_AT - 1``, :data:`FOUND_BLANKS`
+        blank ones, then the frames from :data:`FOUND_BACK` on, each at the time of its place.
+    """
+    after = len(rendered) - FOUND_AT - FOUND_BLANKS
+    order = [*range(FOUND_AT), *([None] * FOUND_BLANKS), *range(FOUND_BACK, FOUND_BACK + after)]
+    return [
+        replace(
+            blank(rendered[FOUND_AT - 1]) if source is None else rendered[source],
+            timestamp=at.timestamp,
+        )
+        for source, at in zip(order, rendered, strict=True)
+    ]
 
 
 def lost_frames(rendered: list[room.Frame]) -> list[room.Frame]:
@@ -271,4 +386,8 @@ def room_inputs() -> dict[str, Any]:
         "room": moved(OPTIONS),
         "gap_room": moved(GAP_OPTIONS),
         "kept_room": moved(KEPT_OPTIONS),
+        "found": [FOUND_AT, FOUND_BLANKS, FOUND_BACK],
+        "found_room": moved(FOUND_OPTIONS),
+        "window": [WINDOW_BLANKS, WINDOW_AT],
+        "window_room": moved(WINDOW_OPTIONS),
     }

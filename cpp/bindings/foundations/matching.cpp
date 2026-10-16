@@ -97,6 +97,16 @@ nb::ndarray<nb::numpy, std::int64_t> distances(const DescriptorsIn& descriptors1
   return out;
 }
 
+/// @brief Read `matching.Options`' fields.
+/// @param options The dict.
+/// @return The filters.
+foundations::matching::Options matching_options_in(const nb::dict& options) {
+  check_keys(options, kMatchingOptionKeys, "matching.Options");
+  return {.max_distance = nb::cast<std::int64_t>(options["max_distance"]),
+          .ratio = nb::cast<double>(options["ratio"]),
+          .check_orientation = nb::cast<bool>(options["check_orientation"])};
+}
+
 /// @brief Match two descriptor sets.
 /// @param descriptors1 The first set.
 /// @param descriptors2 The second set.
@@ -108,16 +118,35 @@ nb::ndarray<nb::numpy, std::int64_t> distances(const DescriptorsIn& descriptors1
 nb::dict match(const DescriptorsIn& descriptors1, const DescriptorsIn& descriptors2,
                const VectorIn<std::int64_t>& angles1, const VectorIn<std::int64_t>& angles2,
                const nb::dict& options) {
-  check_keys(options, kMatchingOptionKeys, "matching.Options");
-  const foundations::matching::Options settings{
-      .max_distance = nb::cast<std::int64_t>(options["max_distance"]),
-      .ratio = nb::cast<double>(options["ratio"]),
-      .check_orientation = nb::cast<bool>(options["check_orientation"])};
+  const foundations::matching::Options settings = matching_options_in(options);
   const std::vector<foundations::matching::Match> matches = unwrap(foundations::matching::match(
       descriptors_in(descriptors1), descriptors_in(descriptors2),
       std::span<const std::int64_t>(angles1.data(), angles1.shape(0)),
       std::span<const std::int64_t>(angles2.data(), angles2.shape(0)), settings));
   return matches_dict(matches);
+}
+
+/// @brief Match two descriptor sets node by node (`search_by_bow`).
+/// @param descriptors1 The first set.
+/// @param nodes1 Its nodes.
+/// @param descriptors2 The second set.
+/// @param nodes2 Its nodes.
+/// @param angles1 The first set's orientation bins.
+/// @param angles2 The second set's.
+/// @param options `matching.Options`' fields.
+/// @return A dict of `Matches`' fields.
+/// @throws CoreError for invalid input; std::invalid_argument for a malformed dict.
+nb::dict search_by_bow(const DescriptorsIn& descriptors1, const VectorIn<std::int64_t>& nodes1,
+                       const DescriptorsIn& descriptors2, const VectorIn<std::int64_t>& nodes2,
+                       const VectorIn<std::int64_t>& angles1, const VectorIn<std::int64_t>& angles2,
+                       const nb::dict& options) {
+  const foundations::matching::Options settings = matching_options_in(options);
+  const auto span = [](const VectorIn<std::int64_t>& v) {
+    return std::span<const std::int64_t>(v.data(), v.shape(0));
+  };
+  return matches_dict(unwrap(foundations::matching::search_by_bow(
+      descriptors_in(descriptors1), span(nodes1), descriptors_in(descriptors2), span(nodes2),
+      span(angles1), span(angles2), settings)));
 }
 
 /// @brief Read keypoints' positions and levels (the rest zero).
@@ -273,6 +302,11 @@ void bind_matching(nb::module_& m) {
   m.def("match", &match, nb::arg("descriptors1").noconvert(), nb::arg("descriptors2").noconvert(),
         nb::arg("angles1").noconvert(), nb::arg("angles2").noconvert(), nb::arg("options"),
         "Match two descriptor sets; return a dict of Matches' fields.");
+  m.def("search_by_bow", &search_by_bow, nb::arg("descriptors1").noconvert(),
+        nb::arg("nodes1").noconvert(), nb::arg("descriptors2").noconvert(),
+        nb::arg("nodes2").noconvert(), nb::arg("angles1").noconvert(),
+        nb::arg("angles2").noconvert(), nb::arg("options"),
+        "Match two descriptor sets node by node; return a dict of Matches' fields.");
   m.def("features_in_area", &features_in_area, nb::arg("xy").noconvert(),
         nb::arg("level").noconvert(), nb::arg("center"), nb::arg("radius"), nb::arg("min_level"),
         nb::arg("max_level"), "Return the indices of the keypoints in a window, ascending.");

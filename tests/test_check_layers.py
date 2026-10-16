@@ -457,3 +457,45 @@ def test_two_contracts_over_one_container_are_rejected() -> None:
     pyproject = {"tool": {"importlinter": {"contracts": [contract, contract]}}}
     with pytest.raises(ValueError, match="two layers contracts"):
         check_layers.internal_orders(pyproject)
+
+
+def test_the_rungs_kept_from_files_are_the_algorithm_rungs() -> None:
+    """The forbidden contract over Python's file modules names every algorithm rung."""
+    pyproject = tomllib.loads((REPO / "pyproject.toml").read_text())
+    assert check_layers.file_reading_rungs(pyproject) == {
+        "foundations", "edge", "vi", "classic", "dense", "learned",
+    }  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("path", "text", "reported"),
+    [
+        ("cpp/src/foundations/x.cpp", "#include <fstream>\n", True),
+        ("cpp/include/slam_it/edge/x.hpp", "#include <filesystem>\n", True),
+        ("cpp/src/edge/x.cpp", "#include <cstdio>\n", True),
+        ("cpp/src/eval/x.cpp", "#include <fstream>\n", False),  # eval reads the files
+        ("cpp/tests/foundations/x.cpp", "#include <fstream>\n", False),  # tests read fixtures
+        ("cpp/src/foundations/x.cpp", "#include <vector>\n", False),
+        ("rust/slam-it-foundations/src/x.rs", "use std::fs;\n", True),
+        ("rust/slam-it-edge/src/x.rs", "use std::{fs, io};\n", True),
+        ("rust/slam-it-edge/src/x.rs", "let t = std::fs::read(p);\n", True),
+        ("rust/slam-it-eval/src/x.rs", "use std::fs;\n", False),
+        ("rust/slam-it-edge/src/x.rs", "// std::fs, in a comment\n", False),
+        (
+            "rust/slam-it-edge/src/x.rs",
+            "fn f() {}\n#[cfg(test)]\nmod tests {\n    use std::fs;\n}\n",
+            False,
+        ),
+    ],
+)
+def test_a_rung_kept_from_files_reads_none_natively(
+    fake_repo: Path, path: str, text: str, reported: bool
+) -> None:
+    """A file header in a rung's C++ modules, or std::fs in its crate outside tests, is reported."""
+    _write(fake_repo, path, text)
+    pyproject = tomllib.loads((fake_repo / "pyproject.toml").read_text())
+    found = list(check_layers.check_file_io(fake_repo, check_layers.file_reading_rungs(pyproject)))
+    assert bool(found) == reported
+    if reported:
+        assert found[0].location == f"{path}:1"
+        assert "reads no files" in found[0].message

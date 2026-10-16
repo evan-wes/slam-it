@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use nalgebra::{Matrix3, Matrix4, Vector2, Vector3};
 use slam_it_foundations::error::{ErrorKind, Result, fail};
-use slam_it_foundations::matching::{self, FeatureGrid};
-use slam_it_foundations::orb::Keypoint;
+use slam_it_foundations::matching::FeatureGrid;
+use slam_it_foundations::orb::{self, Keypoint};
 use slam_it_foundations::triangulation;
 
 use crate::adjust::{Adjustment, Solve, bundle_adjust};
@@ -423,7 +423,7 @@ fn triangulation_pairs(
         let line = epipolar.essential * normalised(&m.kp_bearing[r1]);
         let mut best: Option<(i64, usize)> = None;
         for (j, &r2) in rows2.iter().enumerate() {
-            let d = matching::distance(&m.kp_descriptor[r1], &m.kp_descriptor[r2]);
+            let d = orb::distance(&m.kp_descriptor[r1], &m.kp_descriptor[r2]);
             if d <= options.th_low
                 && best.is_none_or(|(b, _)| d < b)
                 && epipolar_ok(m, &epipolar, &line, r1, r2)
@@ -896,7 +896,7 @@ fn fuse_target(
     let mut best: Option<(i64, usize)> = None;
     for j in near {
         let row = m.kf_start[k] + j;
-        let d = matching::distance(&m.pt_descriptor[p], &m.kp_descriptor[row]);
+        let d = orb::distance(&m.pt_descriptor[p], &m.kp_descriptor[row]);
         if reprojects(m, camera, k, row, &m.pt_xyz[p], options)? && best.is_none_or(|(b, _)| d < b)
         {
             best = Some((d, row));

@@ -1,6 +1,6 @@
 {
  "format": "slam-it-run",
- "version": 4,
+ "version": 5,
  "dataset": "tum",
  "sequence": "rgbd_dataset_freiburg1_fixture",
  "mode": "rgbd",
@@ -10,6 +10,20 @@
   "scale_factor": 1.2,
   "window": 10,
   "chi2_mono": 5.991
+ },
+ "vocabulary": {
+  "version": 2,
+  "descriptor_version": 1,
+  "k": 2,
+  "levels": 3,
+  "words": 5,
+  "sha256": {
+   "descriptors": "92e29b477d0313eba4becdbd12f1c2ce86a95d4984f4e65ceb9e4e2a6a581139",
+   "parents": "da6d3c057d0a085e071b0afc4accd9a6acb11b755d2ca2a13966b249b20a353a",
+   "children": "22c418136a04ab503df761746c1ef834086e9975ecfaa5bafe6073dd39cf01dc",
+   "words": "f5c8f32637f733de72e0c32548560297b51cadb10510dffcb45ff53f29aecebd",
+   "weights": "009f36ddbae4e217f468337e88d7e06013e5ccc4f7ff0e185a6bc585622953d4"
+  }
  },
  "record_features": true,
  "peak_memory": 48381952,

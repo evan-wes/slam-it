@@ -24,10 +24,11 @@ that loop over a whole sequence without Python.
 - a **sliding window of the last N keyframes** (N = 10) stands in for the covisibility graph
   wherever ORB-SLAM takes a keyframe's neighbours, and the newest keyframe for the reference
   keyframe;
-- **no bag of words**: no relocalisation against the whole map, no loop closure (the classic
-  rung's, milestone 4). When the motion model fails, PnP against the local map recovers the
-  frame if it can; after `lost_frames` failures in a row the track is lost and the run ends
-  (since milestone 2A's A2, the map closes instead and the next frame starts a new one:
+- **no loop closure** (the classic rung's, milestone 4), and at first **no bag of words**:
+  when the motion model fails, PnP against the local map recovers the frame if it can; after
+  `lost_frames` failures in a row the track was lost and the run ended (since milestone 2A's
+  A2, the map closes instead and the next frame starts a new one; since 2B's B1, a bag of words
+  first relocalises a failed frame against the whole active map, for up to 3 s:
   `docs/notes/test-set.md`);
 - **one thread**: mapping runs after tracking on each keyframe, so a run is deterministic and
   every backend can be compared with every other frame by frame.
@@ -236,13 +237,13 @@ every frame, and their poses differ by at most 8e-12.
 No first run loses the track, nor any RGB-D or stereo run. Six of the twenty monocular runs
 do: three of five on fr1/desk, two on MH_01 and one on V1_01. Each loses it deep into the run,
 with 44 to 128 keyframes mapped, when its inliers fall below 30, ORB-SLAM's threshold for a
-lost track. ORB-SLAM relocalises from there; this pipeline has no relocalisation yet
-(milestone 4), so the run ends. The first monocular runs start at the first pair of frames
-that initialises: frame 5 on fr1/xyz, 21 on fr3/long_office, 62 on fr1/desk, 140 on MH_01 and
-113 on V1_01; their frame counts include the images RGB-D skips for want of a depth map (17
-on fr1/desk, 97 on fr3/long_office). Rust's pipeline is a fifth faster than C++'s, but its
-frame building is slower, and whole runs, reading the images and building the frames
-included, take 29 to 95 ms a frame in C++ and 37 to 132 ms in Rust: building the frames, not
+lost track. ORB-SLAM relocalises from there; this pipeline had no relocalisation then
+(milestone 2B's B1 added it), so the run ends. The first monocular runs start at the first
+pair of frames that initialises: frame 5 on fr1/xyz, 21 on fr3/long_office, 62 on fr1/desk,
+140 on MH_01 and 113 on V1_01; their frame counts include the images RGB-D skips for want of
+a depth map (17 on fr1/desk, 97 on fr3/long_office). Rust's pipeline is a fifth faster than
+C++'s, but its frame building is slower, and whole runs, reading the images and building the
+frames included, take 29 to 95 ms a frame in C++ and 37 to 132 ms in Rust: building the frames, not
 the pipeline, sets the frame rate. PR 9 brought building and tracking a frame to 9 to 26 ms
 (medians) in both languages, within a laptop-CPU budget, no frame late on any sequence
 ([the real-time note](real-time.md)).
@@ -289,8 +290,9 @@ ORB-SLAM's TUM monocular numbers (Mur-Artal et al., T-RO 2015, Table III) and OR
 keyframes. ORB-SLAM3's EuRoC numbers (Campos et al., T-RO 2021, Table II) are medians of ten
 runs over every frame; the DSO row beside them is DSO's authors' figure, as ORB-SLAM3 reprints
 it. Ours are odometry, the medians of five deterministic runs, with no relocalisation to
-recover a run that loses the track. Loop closure removes accumulated drift, so the gap widens
-with a sequence's length and its revisits (fr3/long_office returns to its start; the EuRoC
+recover a run that loses the track (they were measured before milestone 2B's B1 added it).
+Loop closure removes accumulated drift, so the gap widens with a sequence's length and its
+revisits (fr3/long_office returns to its start; the EuRoC
 sequences revisit their rooms).
 
 - **Short TUM sequences:** monocular over keyframes has about one and a half times ORB-SLAM's
@@ -314,9 +316,9 @@ sequences revisit their rooms).
 
 ## What it does not do yet
 
-- **Relocalisation and loop closure** need a place-recognition index (the bag of words): the
-  classic rung (milestone 4). Without relocalisation, a run that loses the track ends: six of
-  the twenty monocular runs above.
+- **Loop closure** (milestone 2B's B3), on the place recognition B1 built for relocalisation.
+  The runs above predate both, and A2's new map: six of the twenty monocular runs end where
+  they lost the track.
 - **The timings above** are an unconstrained desktop's, from before PR 9, which runs these
   programs within a laptop-CPU budget ([the real-time note](real-time.md)); the edge budgets
   (milestone 7) add smaller ones.

@@ -5,7 +5,7 @@ import { test } from "node:test";
 
 import { loadBundle, loadTrack } from "../src/bundle.js";
 import { STAGES, latency, series, summaryAt, valueText } from "../src/solver.js";
-import { fetchGolden } from "./golden.js";
+import { fetchGolden, foundRoomRecords } from "./golden.js";
 
 async function records() {
   const bundle = await loadBundle(fetchGolden);
@@ -49,6 +49,28 @@ test("every stage's fields are what the pipeline records", async () => {
   }
 });
 
+test("a relocalised frame shows its relocalisation, each field the pipeline's", async () => {
+  const columns = await foundRoomRecords();
+  const k = columns.placed_by.indexOf("relocalization");
+  const summary = summaryAt(columns, k);
+  assert.equal(summary.placedBy, "relocalization");
+  assert.deepEqual(
+    summary.stages.map((s) => s.stage),
+    ["motion", "pnp", "relocalization", "local_map"],
+  );
+  const recorded = /** @type {Record<string, unknown>} */ (columns.relocalization[k]);
+  const { hints } = /** @type {(typeof STAGES)[number]} */ (
+    STAGES.find((s) => s.stage === "relocalization")
+  );
+  assert.deepEqual(Object.keys(hints).sort(), Object.keys(recorded).sort());
+  const rows = summary.stages[2].rows;
+  assert.equal(rows.find((row) => row.field === "placed")?.value, "yes");
+  const [first] = /** @type {{keyframe: number, found: number}[]} */ (recorded.candidates);
+  const tried = rows.find((row) => row.field === "candidates")?.value ?? "";
+  assert.ok(tried.startsWith(`keyframe ${first.keyframe} (score `), tried);
+  assert.ok(tried.endsWith(`, ${first.found} found`), tried);
+});
+
 test("values read as the panel shows them", () => {
   assert.equal(valueText("matches", null), "–");
   assert.equal(valueText("widened", true), "yes");
@@ -58,6 +80,29 @@ test("values read as the panel shows them", () => {
     valueText("ba", [solve, solve]),
     "12.50 → 0.7500 in 5 (function); 12.50 → 0.7500 in 5 (function)",
   );
+  // Relocalisation's candidates, each as far as it got; the PnP fallback's are a count.
+  const candidate = {
+    keyframe: 4,
+    score: 0.13934,
+    matches: 131,
+    iterations: 2,
+    termination: "confidence",
+    inliers: 130,
+    refined: 120,
+    found: 110,
+  };
+  const none = { iterations: null, termination: null, inliers: null, refined: null, found: null };
+  assert.equal(
+    valueText("candidates", [
+      candidate,
+      { ...candidate, ...none, keyframe: 9, score: 0.1, matches: 8 },
+      { ...candidate, ...none, keyframe: 2, termination: "degenerate" },
+    ]),
+    "keyframe 4 (score 0.139): 131 matched, 130 inliers, 120 refined, 110 found; " +
+      "keyframe 9 (score 0.100): 8 matched; keyframe 2 (score 0.139): 131 matched, no pose",
+  );
+  assert.equal(valueText("candidates", []), "none");
+  assert.equal(valueText("candidates", 641), "641");
 });
 
 test("a series is a number per frame, NaN where its stage did not run", async () => {

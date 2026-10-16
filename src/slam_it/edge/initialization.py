@@ -372,7 +372,11 @@ def _initialize_monocular(
         result = twoview.initialize(
             reference.bearings[pairs[:, 0]],
             frame.bearings[pairs[:, 1]],
-            twoview.Options(focal=camera.focal, seed=options.seed),
+            twoview.Options(
+                focal=camera.focal,
+                seed=options.seed,
+                max_iterations=options.init_ransac_iterations,
+            ),
         )
     except DegenerateError:
         return _failed(Outcome.DEGENERATE, given)

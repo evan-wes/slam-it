@@ -132,18 +132,22 @@ export function centres(poses) {
 /**
  * The truth's polyline as segments between consecutive frames that both have a truth.
  * @param {Float32Array} truth The true centre at each frame, (F, 3), NaN where none.
- * @returns {Float32Array} (S * 2, 3): each segment's two ends.
+ * @returns {{positions: Float32Array, ends: Int32Array}} Each segment's two ends, (S * 2, 3),
+ *     and the frame each segment ends at, (S,), ascending: it begins at the frame before.
  */
 export function truthSegments(truth) {
   /** @type {number[]} */
   const out = [];
+  /** @type {number[]} */
+  const ends = [];
   for (let i = 3; i < truth.length; i += 3) {
     const pair = truth.subarray(i - 3, i + 3);
     if (pair.every((v) => !Number.isNaN(v))) {
       out.push(...pair);
+      ends.push(i / 3);
     }
   }
-  return Float32Array.from(out);
+  return { positions: Float32Array.from(out), ends: Int32Array.from(ends) };
 }
 
 /**

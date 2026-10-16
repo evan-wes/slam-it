@@ -87,7 +87,10 @@ test("a frustum reaches from the centre to the image's corners at its depth", ()
 
 test("the truth's segments join only frames that both have a truth", () => {
   const truth = new Float32Array([0, 0, 0, 1, 0, 0, NaN, NaN, NaN, 3, 0, 0, 4, 0, 0]);
-  assert.deepEqual(Array.from(truthSegments(truth)), [0, 0, 0, 1, 0, 0, 3, 0, 0, 4, 0, 0]);
+  const { positions, ends } = truthSegments(truth);
+  assert.deepEqual(Array.from(positions), [0, 0, 0, 1, 0, 0, 3, 0, 0, 4, 0, 0]);
+  // Each segment by the frame it ends at: frames 0-1 and 3-4, frame 2 having none.
+  assert.deepEqual(Array.from(ends), [1, 4]);
 });
 
 test("each vertex carries its item's life, a life without an end ending never", () => {

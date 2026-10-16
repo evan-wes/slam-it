@@ -64,7 +64,8 @@ foundations::Result<void> check_options(const Options& options) {
         foundations::Error{.kind = ok.error().kind, .message = "stereo_" + ok.error().message});
   }
   for (const auto& [setting, value] :
-       {std::pair{"th_low", options.th_low}, std::pair{"th_high", options.th_high}}) {
+       {std::pair{"th_low", options.th_low}, std::pair{"th_high", options.th_high},
+        std::pair{"reloc_narrow_distance", options.reloc_narrow_distance}}) {
     if (auto ok = foundations::check_range(setting, value, 1, foundations::matching::kMaxDistance);
         !ok) {
       return ok;
@@ -81,7 +82,7 @@ foundations::Result<void> check_options(const Options& options) {
       return ok;
     }
   }
-  const std::array<IntSetting, 33> counts{{
+  const std::array<IntSetting, 40> counts{{
       {"n_features", options.n_features},
       {"levels", options.levels},
       {"fast_threshold", options.fast_threshold},
@@ -115,13 +116,20 @@ foundations::Result<void> check_options(const Options& options) {
       {"recent_point_keyframes", options.recent_point_keyframes},
       {"point_cull_age", options.point_cull_age},
       {"init_ba_iterations", options.init_ba_iterations},
+      {"init_ransac_iterations", options.init_ransac_iterations},
+      {"covisible_points", options.covisible_points},
+      {"reloc_neighbours", options.reloc_neighbours},
+      {"reloc_min_matches", options.reloc_min_matches},
+      {"reloc_min_inliers", options.reloc_min_inliers},
+      {"reloc_ransac_iterations", options.reloc_ransac_iterations},
+      {"reloc_narrow_inliers", options.reloc_narrow_inliers},
   }};
   for (const auto& [setting, value] : counts) {
     if (auto ok = foundations::check_range(setting, value, 1, kMaxSetting); !ok) {
       return ok;
     }
   }
-  const std::array<RealSetting, 18> positive{{
+  const std::array<RealSetting, 21> positive{{
       {"scale_factor", options.scale_factor},
       {"close_depth", options.close_depth},
       {"init_window", options.init_window},
@@ -140,13 +148,16 @@ foundations::Result<void> check_options(const Options& options) {
       {"max_distance_margin", options.max_distance_margin},
       {"epipolar_chi2", options.epipolar_chi2},
       {"min_epipole_distance2", options.min_epipole_distance2},
+      {"reloc_window", options.reloc_window},
+      {"reloc_narrow_window", options.reloc_narrow_window},
+      {"relocalize_seconds", options.relocalize_seconds},
   }};
   for (const auto& [setting, value] : positive) {
     if (!std::isfinite(value) || value <= 0.0) {
       return foundations::fail_setting(setting, "must be finite and positive", value);
     }
   }
-  const std::array<RealSetting, 14> fractions{{
+  const std::array<RealSetting, 18> fractions{{
       {"init_ratio", options.init_ratio},
       {"init_parallax_cos", options.init_parallax_cos},
       {"ref_ratio", options.ref_ratio},
@@ -161,11 +172,19 @@ foundations::Result<void> check_options(const Options& options) {
       {"first_ref_ratio", options.first_ref_ratio},
       {"min_baseline_depth", options.min_baseline_depth},
       {"relocalize_ratio", options.relocalize_ratio},
+      {"reloc_common_words", options.reloc_common_words},
+      {"reloc_group_score", options.reloc_group_score},
+      {"reloc_inlier_ratio", options.reloc_inlier_ratio},
+      {"reloc_confidence", options.reloc_confidence},
   }};
   for (const auto& [setting, value] : fractions) {
     if (!std::isfinite(value) || value <= 0.0 || value > 1.0) {
       return foundations::fail_setting(setting, "must be in (0, 1]", value);
     }
+  }
+  if (options.reloc_confidence >= 1.0) {
+    return foundations::fail_setting("reloc_confidence", "must be in (0, 1)",
+                                     options.reloc_confidence);
   }
   return {};
 }

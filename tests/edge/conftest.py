@@ -18,11 +18,13 @@ import pytest
 
 from slam_it.edge import frames, pipeline
 from slam_it.edge import map as maps
+from slam_it.edge.database import Database
 from slam_it.edge.map import Map
-from slam_it.foundations import matching
+from slam_it.eval import vocabularies
+from slam_it.foundations import matching, vocabulary
 from tests.conftest import require_backend
 from tests.edge import room
-from tests.edge.support import CAMERA, FRAMES, OPTIONS
+from tests.edge.support import CAMERA, FRAMES, OPTIONS, words_for
 
 KEYFRAMES = (0, 12, 24, 36)
 """The frames the truth map makes keyframes."""
@@ -128,6 +130,21 @@ def truth(rendered: list[room.Frame]) -> Truth:
 
 
 @pytest.fixture(scope="session")
+def words() -> vocabulary.Vocabulary:
+    """Return the committed vocabulary."""
+    return vocabularies.default()
+
+
+@pytest.fixture(scope="session")
+def room_database(truth: Truth, words: vocabulary.Vocabulary) -> Database:
+    """Put the truth map's keyframes in a database (tests must not change it)."""
+    db = Database(words)
+    for k in range(truth.map.keyframes):
+        db.add(int(truth.map.kf_id[k]), truth.map.kp_descriptor[truth.map.keypoint_rows(k)])
+    return db
+
+
+@pytest.fixture(scope="session")
 def monocular_pair(rendered: list[room.Frame]) -> tuple[frames.Frame, frames.Frame]:
     """Build :data:`MONOCULAR_PAIR` as monocular frames, with initialisation's features."""
     extraction = OPTIONS.extraction(initializing=True)
@@ -171,7 +188,7 @@ def run_room(mode: str, rendered: list[room.Frame]) -> Run:
     camera = frames.Camera(
         "pinhole", room.SMALL.intrinsics, room.SMALL.width, room.SMALL.height, baseline
     )
-    run = pipeline.Pipeline(mode, camera, OPTIONS)
+    run = pipeline.Pipeline(mode, camera, OPTIONS, words_for(OPTIONS))
     results = []
     for f in rendered:
         if mode == "monocular":

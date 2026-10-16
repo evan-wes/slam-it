@@ -112,6 +112,20 @@ export function posesUpTo(poseFrames, frame) {
 }
 
 /**
+ * The truth's segments over a stretch of frames, as a draw range: those whose two frames are
+ * both in it.
+ * @param {Int32Array} ends The frame each segment ends at, ascending (`truthSegments`).
+ * @param {number} first The stretch's first frame.
+ * @param {number} last Its last frame.
+ * @returns {[number, number]} The segments' vertices, `[start, count]`.
+ */
+export function truthRange(ends, first, last) {
+  const start = lowerBound(ends, 1, first + 1);
+  const stop = lowerBound(ends, 1, last + 1);
+  return [start * 2, Math.max(stop - start, 0) * 2];
+}
+
+/**
  * The map a backend shows at each of its frames: the frame's own, else the last before it, so
  * that between a lost map and the next the lost one stays in view.
  * @param {{frame: number[], map?: unknown[]}} records Its records.

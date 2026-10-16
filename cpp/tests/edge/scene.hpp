@@ -13,6 +13,7 @@
 
 #include "slam_it/edge/frames.hpp"
 #include "slam_it/edge/map.hpp"
+#include "slam_it/foundations/vocabulary.hpp"
 
 namespace slam_it::testing::scene {
 
@@ -111,6 +112,20 @@ inline Eigen::Matrix4d moved(double dz) {
   Eigen::Matrix4d out = Eigen::Matrix4d::Identity();
   out(2, 3) = -dz;
   return out;
+}
+
+/// @brief A vocabulary of one word, weighing 1: every descriptor's, so every frame's vector is
+///        the same, every keyframe is a relocalisation candidate, and matching by word compares
+///        every feature with every point (the scene's descriptors tell its points apart).
+/// @return The vocabulary.
+inline foundations::vocabulary::Vocabulary one_word() {
+  return {.k = 2,
+          .levels = 1,
+          .descriptors = {{}, {}},
+          .parents = {-1, 0},
+          .children = {{1, 1}, {0, 0}},
+          .words = {-1, 0},
+          .weights = {1.0}};
 }
 
 /// @brief The scene's map: the first keyframe makes a point at each keypoint, the others

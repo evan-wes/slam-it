@@ -133,6 +133,12 @@ BLUR_KERNEL = (287, 537, 781, 886, 781, 537, 287)
 DESCRIPTOR_BYTES = 32
 """A descriptor's length: 256 bits."""
 
+DESCRIPTOR_VERSION = 1
+"""This ORB descriptor's version, raised whenever what a descriptor holds changes: its patch,
+smoothing, test pattern or rotation. A vocabulary records the version it was trained on, and one
+trained on another is refused (:mod:`slam_it.foundations.vocabulary`), its words meaning nothing
+for these descriptors. A test pins the constants it stands for."""
+
 # rBRIEF's learned test pairs (x1, y1, x2, y2): OpenCV's bit_pattern_31_
 # (modules/features2d/src/orb.cpp), learned by Ethan Rublee, Vincent Rabaud and Gary Bradski
 # for the ORB paper. Reproduced under OpenCV's licence for that file:
@@ -388,6 +394,37 @@ def _rotated_patterns() -> NDArray[np.int64]:
 
 
 _PATTERNS = _rotated_patterns()
+
+
+def distance(first: NDArray[np.uint8], second: NDArray[np.uint8]) -> NDArray[np.int64]:
+    """Return descriptors' Hamming distances: the bits in which they differ.
+
+    The one distance rung 0 and the edge rung compare descriptors by (matching, stereo, the
+    vocabulary), as the C++ and Rust cores' ``orb::distance``.
+
+    Parameters
+    ----------
+    first, second : ndarray of uint8, shape (..., DESCRIPTOR_BYTES)
+        Descriptors, broadcast against each other over their leading axes.
+
+    Returns
+    -------
+    ndarray of int64
+        The distances, from 0 to 256, of the broadcast leading shape.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If either is not uint8 rows of DESCRIPTOR_BYTES (a signed array's bit counts would be its
+        values' magnitudes', not its bits').
+    """
+    for name, array in (("first", first), ("second", second)):
+        if array.dtype != np.uint8 or array.ndim == 0 or array.shape[-1] != DESCRIPTOR_BYTES:
+            raise InvalidInputError(f"{name}: expected uint8 descriptors (..., {DESCRIPTOR_BYTES})")
+    out: NDArray[np.int64] = np.bitwise_count(np.bitwise_xor(first, second)).sum(
+        axis=-1, dtype=np.int64
+    )
+    return out
 
 
 def level_budgets(n_features: int, levels: int, scale_factor: float) -> list[int]:

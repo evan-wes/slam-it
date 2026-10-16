@@ -2,15 +2,19 @@
 
 A run is a folder, written by any backend's pipeline (C++ and Rust write the same files):
 
-- ``run.json``: what ran: ``{"format": "slam-it-run", "version": 4, "dataset", "sequence",
-  "mode", "backend", "settings", "record_features", "peak_memory", "cpus", "memory_cap"}``,
-  ``mode`` one of :data:`MODES` and ``backend`` one of ``python``, ``cpp`` and ``rust``;
-  ``settings`` holds the pipeline's options as JSON; ``record_features`` whether the run
-  recorded its features (below). The last three describe the program that ran it, as it recorded
-  them before writing (:mod:`slam_it.eval.budgets`), and are null when the run was not a
-  program's of its own (Python's in-process run) or the system does not say: ``peak_memory``,
-  its largest resident set in bytes; ``cpus``, the CPUs it could run on, ascending (a budget
-  pins them); ``memory_cap``, its control group's memory cap in bytes (null without one).
+- ``run.json``: what ran: ``{"format": "slam-it-run", "version": 5, "dataset", "sequence",
+  "mode", "backend", "settings", "vocabulary", "record_features", "peak_memory", "cpus",
+  "memory_cap"}``, ``mode`` one of :data:`MODES` and ``backend`` one of ``python``, ``cpp`` and
+  ``rust``; ``settings`` holds the pipeline's options as JSON; ``vocabulary`` the vocabulary a
+  relocalising run used, as its folder's header and checksums record it
+  (:func:`slam_it.eval.vocabularies.record`: its format and descriptor versions, k, levels,
+  words and each array's SHA-256), null for a run that did not relocalise (``relocalize`` off);
+  ``record_features`` whether the run recorded its features (below). The last three describe the
+  program that ran it, as it recorded them before writing (:mod:`slam_it.eval.budgets`), and are
+  null when the run was not a program's of its own (Python's in-process run) or the system does
+  not say: ``peak_memory``, its largest resident set in bytes; ``cpus``, the CPUs it could run
+  on, ascending (a budget pins them); ``memory_cap``, its control group's memory cap in bytes
+  (null without one).
 - ``trajectory.txt``: each tracked frame's ``T_world_cam`` in TUM's format, one
   ``timestamp tx ty tz qx qy qz qw`` line per frame, ``#`` comments allowed: what ORB-SLAM and
   the TUM tools write, so other systems' trajectories evaluate the same way. Numbers are
@@ -39,14 +43,16 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
   :class:`slam_it.edge.pipeline.Fates` gives them. Streamed as the run goes
   (:class:`FeatureWriter`), and read mapped from disk (:func:`read_features`).
 - ``diagnostics.jsonl``: one JSON object per line, per frame, each with its ``timestamp``;
-  otherwise what the pipeline wants to report (tracked points, state). Three keys are read
-  across a run's maps: ``map``, the frame's map or null if it was in none (a run with maps
-  names each of them on a frame, and its maps never descend); ``state``, ``"lost"`` on a frame
-  that lost the track (:func:`tracking` counts them); and ``lost``, that frame's account of the
-  map it closed. The edge pipeline's frames also time their steps, in seconds
-  (:data:`STEPS`), which the budget harness judges (:func:`slam_it.eval.budgets.judge`), and
-  say how their stages went (:meth:`slam_it.edge.pipeline.FrameSummary.as_dict`): an object
-  per stage, null where it did not run.
+  otherwise what the pipeline wants to report (tracked points, state). Four keys are read across
+  a run's maps: ``map``, the frame's map or null if it was in none (a run with maps names each
+  of them on a frame, and its maps never descend); ``state``, ``"lost"`` on a frame that lost
+  the track (:func:`tracking` counts them); ``lost``, that frame's account of the map it closed;
+  and ``placed_by``, ``"relocalization"`` on a frame that tracking failed and relocalisation
+  found in its map (:func:`tracking` counts them too). The edge pipeline's frames also time
+  their steps, in seconds (:data:`STEPS`), which the budget harness judges
+  (:func:`slam_it.eval.budgets.judge`), and say how their stages went
+  (:meth:`slam_it.edge.pipeline.FrameSummary.as_dict`): an object per stage, null where it did
+  not run.
 
 :func:`write_run` checks everything before it writes, and replaces each file whole (written
 to a temporary sibling, then renamed); :func:`read_run` checks every file's shape;
@@ -69,7 +75,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from slam_it.eval import euroc, metrics, tum
+from slam_it.eval import euroc, metrics, tum, vocabularies
 from slam_it.eval.timestamps import as_times
 from slam_it.foundations import se3, so3
 from slam_it.foundations.arrays import as_batch, as_number
@@ -78,10 +84,10 @@ from slam_it.foundations.errors import DegenerateError, InvalidInputError
 FORMAT = "slam-it-run"
 """``run.json``'s ``format``."""
 
-VERSION = 4
+VERSION = 5
 """``run.json``'s ``version``: this module's layout (2 added ``peak_memory``, ``cpus`` and
 ``memory_cap``; 3 every point and keyframe the run made, with their lives; 4 the maps, and the
-removal ``reset``)."""
+removal ``reset``; 5 the ``vocabulary`` a relocalising run used)."""
 
 REMOVALS = ("culled", "fused", "weak", "reset")
 """Why a point or keyframe was removed, a life's code being the index: culled (a recent point
@@ -120,6 +126,11 @@ LOST = "lost"
 kept or reset, and the next frame starts a new one (:class:`slam_it.edge.pipeline.State`'s
 ``LOST``)."""
 
+RELOCALIZED = "relocalization"
+"""A diagnostic's ``placed_by`` on a frame the edge pipeline relocalised: tracking the last frame
+and the PnP fallback both failed it, and the map's keyframe database found it again
+(:class:`slam_it.edge.pipeline.Placement`'s ``RELOCALIZATION``)."""
+
 MAX_DIFFERENCE = 0.02
 """The largest time difference, in seconds, between a run's frame and its ground-truth pose:
 TUM's ``associate.py`` default, and :data:`slam_it.eval.tum.MAX_DIFFERENCE`. Pairing is
@@ -132,6 +143,7 @@ _INFO_KEYS = (
     "mode",
     "backend",
     "settings",
+    "vocabulary",
     "record_features",
     "peak_memory",
     "cpus",
@@ -166,6 +178,9 @@ class Run:
         Every point the run made, by id, where it last was, in its map's world frame.
     settings : dict
         The pipeline's options, as JSON values.
+    vocabulary : dict or None
+        The vocabulary a relocalising run used, its header and checksums
+        (:func:`slam_it.eval.vocabularies.record`); None if it did not relocalise.
     diagnostics : list of dict
         One JSON object per frame, each with a ``timestamp``, and its ``map`` in a run with maps
         (the module docstring has the keys read across a run's maps).
@@ -200,6 +215,7 @@ class Run:
     keyframe_poses: NDArray[np.float64] = field(default_factory=lambda: np.zeros((0, 4, 4)))
     points: NDArray[np.float64] = field(default_factory=lambda: np.zeros((0, 3)))
     settings: dict[str, Any] = field(default_factory=dict)
+    vocabulary: dict[str, Any] | None = None
     diagnostics: list[dict[str, Any]] = field(default_factory=list)
     peak_memory: int | None = None
     cpus: list[int] | None = None
@@ -497,7 +513,9 @@ def write_run(folder: str | Path, run: Run) -> None:
         settings or a diagnostic are not JSON (a diagnostic must be an object with a
         ``timestamp``, its ``map`` as the module docstring has it), or what it records of its
         program is malformed (a peak memory or memory cap that is not a whole number of bytes,
-        CPUs not ascending), or ``record_features`` is not a bool. Nothing is written then.
+        CPUs not ascending), the vocabulary is neither None nor a record of one
+        (:func:`slam_it.eval.vocabularies.check_record`), or ``record_features`` is not a bool.
+        Nothing is written then.
     """
     for name in ("dataset", "sequence"):
         if not isinstance(getattr(run, name), str):
@@ -512,6 +530,8 @@ def write_run(folder: str | Path, run: Run) -> None:
         raise InvalidInputError(f"points: expected (M, 3), got {lead}")
     if not isinstance(run.settings, dict):
         raise InvalidInputError("settings: expected a dict")
+    if run.vocabulary is not None:
+        vocabularies.check_record(run.vocabulary)
     if not isinstance(run.record_features, bool):
         raise InvalidInputError("record_features: expected a bool")
     _check_process(run.peak_memory, run.cpus, run.memory_cap, "")
@@ -523,6 +543,7 @@ def write_run(folder: str | Path, run: Run) -> None:
         "mode": run.mode,
         "backend": run.backend,
         "settings": run.settings,
+        "vocabulary": run.vocabulary,
         "record_features": run.record_features,
         "peak_memory": run.peak_memory,
         "cpus": run.cpus,
@@ -611,6 +632,11 @@ def _read_info(path: Path) -> dict[str, Any]:
             raise InvalidInputError(f"{path}: {key} must be a string")
     if not isinstance(info["settings"], dict):
         raise InvalidInputError(f"{path}: settings must be an object")
+    if info["vocabulary"] is not None:
+        try:
+            vocabularies.check_record(info["vocabulary"])
+        except InvalidInputError as error:
+            raise InvalidInputError(f"{path}: {error}") from None
     if not isinstance(info["record_features"], bool):
         raise InvalidInputError(f"{path}: record_features must be true or false")
     _check_process(info["peak_memory"], info["cpus"], info["memory_cap"], f"{path}: ")
@@ -687,6 +713,7 @@ def read_run(folder: str | Path) -> Run:
         keyframe_poses=keyframe_poses,
         points=points,
         settings=info["settings"],
+        vocabulary=info["vocabulary"],
         diagnostics=diagnostics,
         peak_memory=info["peak_memory"],
         cpus=info["cpus"],
@@ -952,6 +979,10 @@ class Tracking:
         The frames the track was lost on.
     resets : int
         The maps reset.
+    relocalizations : int
+        The frames relocalised: each one that tracking failed and relocalisation found in its
+        map. A count of frames, not of times the track was dropped: relocalisation runs on the
+        frame tracking failed, so one can follow a tracked frame with none untracked between.
     """
 
     frames: int
@@ -961,6 +992,7 @@ class Tracking:
     ran_to: float
     losses: int
     resets: int
+    relocalizations: int
 
     @property
     def tracked_from(self) -> float | None:
@@ -987,7 +1019,7 @@ def tracking(run: Run, times: ArrayLike) -> Tracking:
     Returns
     -------
     Tracking
-        The segments, and what the run lost and reset.
+        The segments, and what the run lost, reset and relocalised.
     """
     stamps = np.asarray(times, dtype=np.float64)
     start = float(stamps[0]) if len(stamps) else 0.0
@@ -1009,6 +1041,7 @@ def tracking(run: Run, times: ArrayLike) -> Tracking:
         ran_to=since(ran[-1]) if ran else 0.0,
         losses=sum(entry.get("state") == LOST for entry in run.diagnostics),  # optional
         resets=len(run.reset_maps()),
+        relocalizations=sum(entry.get("placed_by") == RELOCALIZED for entry in run.diagnostics),
     )
 
 

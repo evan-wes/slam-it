@@ -13,7 +13,7 @@ license = "PolyForm-Noncommercial-1.0.0"
 license-files = ["LICENSE"]
 authors = [{ name = "evan-wes" }]
 # Pillow reads image files, in slam_it.eval.images alone (a contract below keeps it there).
-dependencies = ["numpy>=1.26", "pillow>=10.0"]
+dependencies = ["numpy>=2.0", "pillow>=10.0"]
 
 [project.optional-dependencies]
 # COLMAP's Ceres bundle adjuster, for slam_it.eval.colmap_reference (the only importer).
@@ -156,7 +156,7 @@ containers = ["slam_it.foundations"]
 layers = [
   "(ba) | (twoview)",
   "(epipolar) | (homography) | (pnp) | (stereo)",
-  "(camera) | (fivepoint) | (matching) | (p3p) | (ransac) | (triangulation)",
+  "(camera) | (fivepoint) | (matching) | (p3p) | (ransac) | (triangulation) | (vocabulary)",
   "(nls) | (orb)",
   "(correspondences) | (image)",
   "(alignment)",
@@ -182,8 +182,10 @@ layers = [
 ]
 
 # The order of modules inside the edge rung: the settings, a frame and the map at the bottom;
-# the observation test and bundle adjustment on them; initialisation, tracking and mapping,
-# independent of each other, on those; the pipeline on top. New modules are optional layers.
+# the observation test on them; bundle adjustment and the keyframe database, independent of each
+# other, on that (the database needs only the map); initialisation, tracking and mapping,
+# independent of each other, on those; relocalisation on tracking; the pipeline on top. New
+# modules are optional layers.
 [[tool.importlinter.contracts]]
 name = "The edge rung's internal order"
 type = "layers"
@@ -191,8 +193,9 @@ exhaustive = true
 containers = ["slam_it.edge"]
 layers = [
   "(pipeline)",
+  "(relocalization)",
   "(initialization) | (tracking) | (mapping)",
-  "(adjust)",
+  "(adjust) | (database)",
   "(residuals)",
   "map",
   "frames",
@@ -231,11 +234,11 @@ source_modules = ["slam_it"]
 forbidden_modules = ["poselib", "mpmath", "manifpy", "scipy"]
 
 # The order of modules inside eval: the timestamp helpers, the image reader, the sensor.yaml
-# helpers and the LiDAR depth at the bottom, the dataset readers and metrics on them, runs (and
-# the COLMAP reference) on them, then what writes a dataset's TUM-format folder with its ground
-# truth (the video import, ZJU-SenseTime's, ARKitScenes') and the compute budgets, which judge
-# runs, and on top ADVIO's import, a video's through the video import. New modules are optional
-# layers, as in rung 0's contract.
+# helpers, the LiDAR depth and a vocabulary's folder at the bottom, the dataset readers and
+# metrics on them, runs (and the COLMAP reference) on them, then what writes a dataset's
+# TUM-format folder with its ground truth (the video import, ZJU-SenseTime's, ARKitScenes') and
+# the compute budgets, which judge runs, and on top ADVIO's import, a video's through the video
+# import. New modules are optional layers, as in rung 0's contract.
 [[tool.importlinter.contracts]]
 name = "Eval's internal order"
 type = "layers"
@@ -246,7 +249,7 @@ layers = [
   "(budgets) | (video) | (zju) | (arkitscenes)",
   "(runs) | (colmap_reference)",
   "(metrics) | (tum) | (euroc) | (readers) | (reprojection)",
-  "(timestamps) | (images) | (lenses) | (lidar) | (sensor_yaml)",
+  "(timestamps) | (images) | (lenses) | (lidar) | (sensor_yaml) | (vocabularies)",
 ]
 
 # Pillow reads image files in slam_it.eval.images alone: the cores decode PNGs natively, and
@@ -258,6 +261,38 @@ type = "forbidden"
 source_modules = ["slam_it"]
 forbidden_modules = ["PIL"]
 ignore_imports = ["slam_it.eval.images -> PIL"]
+
+# The algorithm rungs take arrays, never files: none imports what reads, finds or hashes one.
+# Eval reads their files for them (a vocabulary's folder in slam_it.eval.vocabularies, the run
+# format in slam_it.eval.runs), as its native libraries do for the C++ and Rust cores, which
+# scripts/check_layers.py holds to the same (no <fstream>, <filesystem> or <cstdio>, no std::fs).
+# import-linter cannot see the builtin open() or np.load. The source list is explicit: a new
+# algorithm rung (calib) must be added to it.
+[[tool.importlinter.contracts]]
+name = "The algorithm rungs read no files"
+type = "forbidden"
+source_modules = [
+  "slam_it.foundations",
+  "slam_it.edge",
+  "slam_it.vi",
+  "slam_it.classic",
+  "slam_it.dense",
+  "slam_it.learned",
+]
+forbidden_modules = [
+  "hashlib",
+  "io",
+  "json",
+  "os",
+  "pathlib",
+  "pickle",
+  "shutil",
+  "tarfile",
+  "tempfile",
+  "zipfile",
+]
+# The rungs' own modules: slam_it.backends, below them, finds the compiled programs by path.
+allow_indirect_imports = true
 
 # PyAV decodes phone videos in slam_it.eval.video alone (the optional `video` extra): the
 # pipeline reads frames from a folder, never a video.
