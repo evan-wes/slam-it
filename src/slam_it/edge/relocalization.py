@@ -53,8 +53,8 @@ from slam_it.edge.database import Database
 from slam_it.edge.frames import Camera, Frame, Tracked
 from slam_it.edge.map import Map
 from slam_it.edge.options import Options
-from slam_it.foundations import matching, p3p, pnp, ransac, vocabulary
-from slam_it.foundations.errors import DegenerateError, InvalidInputError
+from slam_it.foundations import matching, p3p, ransac, vocabulary
+from slam_it.foundations.errors import InvalidInputError
 
 Array = NDArray[np.float64]
 IntArray = NDArray[np.int64]
@@ -382,18 +382,18 @@ def _project_more(  # noqa: PLR0913 -- the candidate's state
     return tracking.optimize_pose(m, camera, frame, last, options), last.points
 
 
-def _try(  # noqa: PLR0913 -- the map, the database, the frame, the candidate, the settings
-    m: Map,
-    db: Database,
-    camera: Camera,
-    frame: Frame,
-    *,
-    nodes: IntArray,
-    keyframe: int,
-    score: float,
-    options: Options,
-) -> _Attempt:
-    """Try to place the frame through one candidate (module docstring, steps 2 to 4)."""
+def _match_by_word(  # noqa: PLR0913, PLR0917 -- the map, its database, the frame, the candidate
+    m: Map, db: Database, frame: Frame, nodes: IntArray, keyframe: int, options: Options
+) -> tuple[IntArray, IntArray]:
+    """Match the frame's keypoints to a candidate's points by word (module docstring, step 2).
+
+    Returns
+    -------
+    pairs : ndarray of int64, shape (n, 2)
+        Each match's keyframe keypoint row and frame keypoint, the frame's bearing in front.
+    matched : ndarray of int64, shape (F,)
+        The point each of the frame's keypoints matched, -1 for none.
+    """
     k = _keyframe_row(m, keyframe)
     start = int(m.kf_start[k])
     rows = np.arange(start, m.kf_start[k + 1], dtype=np.int64)
@@ -412,8 +412,29 @@ def _try(  # noqa: PLR0913 -- the map, the database, the frame, the candidate, t
         ),
     )
     pairs = found.pairs[frame.bearings[found.pairs[:, 1], 2] > 0.0]  # NaN bearings fail too
-    matched = np.full(frame.size, -1, dtype=np.int64)  # by word
+    matched = np.full(frame.size, -1, dtype=np.int64)
     matched[pairs[:, 1]] = m.kp_point[rows[pairs[:, 0]]]
+    return pairs, matched
+
+
+def _try(  # noqa: PLR0913 -- the map, the database, the frame, the candidate, the settings
+    m: Map,
+    db: Database,
+    camera: Camera,
+    frame: Frame,
+    *,
+    nodes: IntArray,
+    keyframe: int,
+    score: float,
+    options: Options,
+) -> _Attempt:
+    """Try to place the frame through one candidate (module docstring, steps 2 to 4).
+
+    Matched by word (:func:`_match_by_word`), placed by PnP RANSAC within MLPnP's budget
+    (:func:`ransac_budget`), the pose refined and, short of ``recovery_tracked`` inliers, the
+    keyframe's other points searched for (:func:`_project_more`).
+    """
+    pairs, matched = _match_by_word(m, db, frame, nodes, keyframe, options)
     summary = CandidateSummary(keyframe, score, matches=len(pairs))
     needed, samples = ransac_budget(len(pairs), options)
     if len(pairs) < max(options.reloc_min_matches, needed):
@@ -425,34 +446,24 @@ def _try(  # noqa: PLR0913 -- the map, the database, the frame, the candidate, t
         seed=options.seed,
     )
     keypoints = pairs[:, 1]
-    xyz = m.pt_xyz[m.point_rows(matched[keypoints])]
-    try:
-        solved = pnp.pnp_ransac(xyz, frame.bearings[keypoints], settings)
-    except DegenerateError:
-        return _Attempt(None, replace(summary, degenerate=True), matched)
-    inliers = solved.state.inliers
-    run = solved.summary.run
-    summary = replace(
-        summary,
-        iterations=run.iterations,
-        termination=run.termination,
-        inliers=int(np.count_nonzero(inliers)),
+    run = tracking.run_pnp(
+        m.pt_xyz[m.point_rows(matched[keypoints])], frame.bearings[keypoints], settings
     )
-    if np.count_nonzero(inliers) < needed:
+    summary = replace(summary, **run.recorded())
+    if run.pose is None or run.inliers is None or run.count < needed:
         return _Attempt(None, summary, matched)
     sample = np.full(frame.size, -1, dtype=np.int64)
-    sample[keypoints[inliers]] = matched[keypoints[inliers]]
+    sample[keypoints[run.inliers]] = matched[keypoints[run.inliers]]
     refined = tracking.optimize_pose(
-        m, camera, frame, Tracked(pose=solved.state.model, points=sample), options
+        m, camera, frame, Tracked(pose=run.pose, points=sample), options
     )
     summary = replace(summary, refined=refined.inliers)
     if refined.inliers < options.reloc_min_inliers:
         return _Attempt(None, summary, matched)
     last = refined
     if refined.inliers < options.recovery_tracked:
-        found_points = sample[sample >= 0]
         last, searched = _project_more(
-            m, camera, frame, keyframe, refined=refined, found=found_points, options=options
+            m, camera, frame, keyframe, refined=refined, found=sample[sample >= 0], options=options
         )
         matched = np.where(searched >= 0, searched, matched)
     summary = replace(summary, found=last.inliers)

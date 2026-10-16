@@ -178,21 +178,51 @@ pub fn run_pnp(
     })
 }
 
-/// Records a PnP run in a stage's summary (whether no sample gave a pose, and its samples,
-/// termination and inliers), and gives the pose and its inliers if it has `needed`. The summary
-/// is any with `degenerate`, `iterations`, `termination` and `inliers`.
-macro_rules! pnp_consensus {
-    ($run:expr, $needed:expr, $summary:expr) => {{
-        let run: PnpRun = $run;
-        $summary.degenerate = run.consensus.is_none();
-        $summary.iterations = run.iterations;
-        $summary.termination = run.termination;
-        $summary.inliers = run.inliers;
-        run.consensus
-            .filter(|_| run.inliers.unwrap_or(0) >= $needed)
-    }};
+/// What a stage's summary records of a PnP run: whether no sample gave a pose, and its samples,
+/// termination and inliers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PnpRecord {
+    /// Whether no sample gave a pose.
+    pub degenerate: bool,
+    /// RANSAC's samples, if it found a pose.
+    pub iterations: Option<usize>,
+    /// Why it stopped, if it found a pose.
+    pub termination: Option<ransac::Termination>,
+    /// The pose's inliers, if it found one.
+    pub inliers: Option<usize>,
 }
-pub(crate) use pnp_consensus;
+
+impl PnpRun {
+    /// What a stage's summary records of the run.
+    ///
+    /// # Returns
+    ///
+    /// The record.
+    #[must_use]
+    pub fn record(&self) -> PnpRecord {
+        PnpRecord {
+            degenerate: self.consensus.is_none(),
+            iterations: self.iterations,
+            termination: self.termination,
+            inliers: self.inliers,
+        }
+    }
+
+    /// The pose and its inliers, if the run found a pose with at least `needed` inliers.
+    ///
+    /// # Arguments
+    ///
+    /// * `needed` - The inliers a pose must have.
+    ///
+    /// # Returns
+    ///
+    /// The consensus, or `None`.
+    #[must_use]
+    pub fn kept(self, needed: usize) -> Option<ransac::Consensus<Matrix4<f64>>> {
+        let enough = self.inliers.unwrap_or(0) >= needed;
+        self.consensus.filter(|_| enough)
+    }
+}
 
 /// Checks the camera, the settings, and a frame's matches: one point id (or -1) per keypoint.
 ///
@@ -865,12 +895,21 @@ pub fn relocalize_locally(
         seed: options.seed,
         ..ransac::Options::default()
     };
-    let placed = pnp_consensus!(
-        run_pnp(&world, &rays, &settings)?,
-        options.pnp_min_inliers,
-        summary
-    );
-    let Some(consensus) = placed else {
+    let run = run_pnp(&world, &rays, &settings)?;
+    let PnpRecord {
+        degenerate,
+        iterations,
+        termination,
+        inliers,
+    } = run.record();
+    summary = PnpSummary {
+        iterations,
+        termination,
+        degenerate,
+        inliers,
+        ..summary
+    };
+    let Some(consensus) = run.kept(options.pnp_min_inliers) else {
         return unplaced(summary, matched);
     };
     let mut points = vec![-1; frame.size()];

@@ -8,13 +8,13 @@ use slam_it_foundations::error::{ErrorKind, Result, fail};
 use slam_it_foundations::matching::{self, Match, Projection, SearchOptions};
 use slam_it_foundations::p3p;
 use slam_it_foundations::ransac;
-use slam_it_foundations::vocabulary::{self, Vocabulary};
+use slam_it_foundations::vocabulary::Vocabulary;
 
-use crate::database::{Database, candidates};
+use crate::database::{Database, Words, candidates, words_of};
 use crate::frames::{Camera, Frame, Tracked, check_setup, search};
 use crate::map::{Map, camera_centre, in_distance_range, predict_level, to_camera};
 use crate::options::Options;
-use crate::tracking::{PnpRun, optimize_pose, pnp_consensus, run_pnp};
+use crate::tracking::{optimize_pose, run_pnp};
 
 /// How far one candidate got (`slam_it.edge.relocalization.CandidateSummary`); each count
 /// `None` where it stopped first.
@@ -482,8 +482,13 @@ fn try_candidate(
         seed: options.seed,
         ..ransac::Options::default()
     };
-    let Some(consensus) = pnp_consensus!(run_pnp(&world, &rays, &settings)?, needed, summary)
-    else {
+    let run = run_pnp(&world, &rays, &settings)?;
+    let record = run.record();
+    summary.degenerate = record.degenerate;
+    summary.iterations = record.iterations;
+    summary.termination = record.termination;
+    summary.inliers = record.inliers;
+    let Some(consensus) = run.kept(needed) else {
         return unplaced(summary, matched);
     };
     let mut sample = vec![-1; frame.size()];
@@ -546,13 +551,10 @@ pub fn relocalize(
     options: &Options,
 ) -> Result<Relocalized> {
     check_setup(camera, options)?;
-    let quantized = vocabulary::quantize(vocabulary, &frame.features.descriptors);
-    let vector = vocabulary::bow(vocabulary, &quantized.words)?;
-    let frame_nodes: Vec<usize> = quantized
-        .nodes
-        .iter()
-        .map(|&n| usize::try_from(n).unwrap_or(usize::MAX))
-        .collect();
+    let Words {
+        vector,
+        nodes: frame_nodes,
+    } = words_of(vocabulary, &frame.features.descriptors)?;
     let found = candidates(db, m, &vector, options)?;
     let mut out = Relocalized {
         tracked: None,

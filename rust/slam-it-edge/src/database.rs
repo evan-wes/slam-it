@@ -44,6 +44,28 @@ pub struct Candidates {
     pub scored: usize,
 }
 
+/// What the vocabulary makes of a keyframe's or a frame's features: its word vector, and each
+/// feature's node at the direct index's level.
+///
+/// # Arguments
+///
+/// * `vocabulary` - The vocabulary.
+/// * `descriptors` - The features' descriptors.
+///
+/// # Errors
+///
+/// `vocabulary::bow`'s, which a checked vocabulary's own words never meet.
+pub fn words_of(vocabulary: &Vocabulary, descriptors: &[Descriptor]) -> Result<Words> {
+    let quantized = vocabulary::quantize(vocabulary, descriptors);
+    let vector = vocabulary::bow(vocabulary, &quantized.words)?;
+    let nodes = quantized
+        .nodes
+        .iter()
+        .map(|&n| usize::try_from(n).unwrap_or(usize::MAX)) // a node index, never negative
+        .collect();
+    Ok(Words { vector, nodes })
+}
+
 impl Database {
     /// Puts a keyframe's words in the database and indexes them.
     ///
@@ -89,14 +111,7 @@ impl Database {
         keyframe: i64,
         descriptors: &[Descriptor],
     ) -> Result<()> {
-        let quantized = vocabulary::quantize(vocabulary, descriptors);
-        let vector = vocabulary::bow(vocabulary, &quantized.words)?;
-        let nodes = quantized
-            .nodes
-            .iter()
-            .map(|&n| usize::try_from(n).unwrap_or(usize::MAX))
-            .collect();
-        self.insert(keyframe, Words { vector, nodes })
+        self.insert(keyframe, words_of(vocabulary, descriptors)?)
     }
 
     /// Removes a keyframe (culled): it leaves the index
