@@ -32,7 +32,15 @@ from tests.edge.support import (
 )
 from tests.fixtures.edge.generate_room_runs import record, summaries
 from tests.orchestration.conftest import RoomRun, require_program
-from tests.orchestration.datasets import BLANK_AT, CASES, LOST_AT, Room, room_inputs
+from tests.orchestration.datasets import (
+    BLANK_AT,
+    CASES,
+    FOUND_AT,
+    FOUND_BLANKS,
+    LOST_AT,
+    Room,
+    room_inputs,
+)
 
 SEQUENCES = FIXTURES / "eval" / "sequences"
 """The readers' fixture folders: their files listed, their images absent."""
@@ -291,7 +299,23 @@ def test_a_lost_track_starts_a_new_map_and_the_run_goes_on(
         assert sorted(set(run.pose_maps.tolist())) == kept
         span = runs.tracking(run, vo.open_source(dataset, runs_of.sequence(dataset), mode).times)
         assert [s.map for s in span.segments] == kept
-        assert (span.losses, span.resets) == (2, 2 * int(reset))
+        assert (span.losses, span.resets, span.relocalizations) == (2, 2 * int(reset), 0)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize(("dataset", "mode"), CASES)
+def test_a_track_found_again_is_counted_as_relocalised(
+    dataset: str, mode: str, backend: str, found_runs: RoomRun
+) -> None:
+    """The frame after the found room's blank ones is relocalised in map 0, and counted."""
+    run = found_runs(dataset, mode, backend)
+    back = FOUND_AT + FOUND_BLANKS
+    placed = [k for k, d in enumerate(run.diagnostics) if d["placed_by"] == runs.RELOCALIZED]
+    assert placed == [back]
+    assert run.diagnostics[back]["map"] == 0
+    span = runs.tracking(run, vo.open_source(dataset, found_runs.sequence(dataset), mode).times)
+    assert (span.losses, span.resets, span.relocalizations) == (0, 0, 1)
+    assert [s.map for s in span.segments] == [0]
 
 
 def test_a_request_crosses_as_a_command_line() -> None:

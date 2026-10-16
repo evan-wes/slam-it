@@ -240,6 +240,14 @@ def test_the_summary_says_where_a_run_lost_the_track_and_went_on(
         assert summary["ran_to"] == summary["clip_seconds"] == times[-1]
 
 
+def test_a_summary_counts_the_frames_found_again(found_runs: RoomRun, found_folders: Room) -> None:
+    """The found room's track fails on its blank frames, and is found again in its one map."""
+    run = found_runs("tum", "rgbd", "python")
+    summary = worker.summarize(run, found_folders.timestamps, "nominal", (320, 240))
+    assert (summary["losses"], summary["resets"], summary["relocalizations"]) == (0, 0, 1)
+    assert summary["segment_count"] == 1
+
+
 def test_a_summary_lists_the_first_segments(
     monkeypatch: pytest.MonkeyPatch, room_runs: RoomRun, room_folders: Room
 ) -> None:
@@ -262,6 +270,7 @@ def test_the_summary_of_a_whole_run_says_when_tracking_began(
     times = room_folders.timestamps
     summary = worker.summarize(run, times, "nominal", (320, 240))
     assert (summary["frames"], summary["losses"], summary["resets"]) == (FRAMES, 0, 0)
+    assert summary["relocalizations"] == 0
     assert summary["segments"] == [[summary["tracked_from"], summary["tracked_to"]]]
     assert summary["ran_to"] == summary["clip_seconds"] == round(times[-1] - times[0], 3)
     assert 0 < summary["tracked_from"] < summary["tracked_to"] <= summary["ran_to"]

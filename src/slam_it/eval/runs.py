@@ -43,14 +43,16 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
   :class:`slam_it.edge.pipeline.Fates` gives them. Streamed as the run goes
   (:class:`FeatureWriter`), and read mapped from disk (:func:`read_features`).
 - ``diagnostics.jsonl``: one JSON object per line, per frame, each with its ``timestamp``;
-  otherwise what the pipeline wants to report (tracked points, state). Three keys are read
-  across a run's maps: ``map``, the frame's map or null if it was in none (a run with maps
-  names each of them on a frame, and its maps never descend); ``state``, ``"lost"`` on a frame
-  that lost the track (:func:`tracking` counts them); and ``lost``, that frame's account of the
-  map it closed. The edge pipeline's frames also time their steps, in seconds
-  (:data:`STEPS`), which the budget harness judges (:func:`slam_it.eval.budgets.judge`), and
-  say how their stages went (:meth:`slam_it.edge.pipeline.FrameSummary.as_dict`): an object
-  per stage, null where it did not run.
+  otherwise what the pipeline wants to report (tracked points, state). Four keys are read across
+  a run's maps: ``map``, the frame's map or null if it was in none (a run with maps names each
+  of them on a frame, and its maps never descend); ``state``, ``"lost"`` on a frame that lost
+  the track (:func:`tracking` counts them); ``lost``, that frame's account of the map it closed;
+  and ``placed_by``, ``"relocalization"`` on a frame that tracking failed and relocalisation
+  found in its map (:func:`tracking` counts them too). The edge pipeline's frames also time
+  their steps, in seconds (:data:`STEPS`), which the budget harness judges
+  (:func:`slam_it.eval.budgets.judge`), and say how their stages went
+  (:meth:`slam_it.edge.pipeline.FrameSummary.as_dict`): an object per stage, null where it did
+  not run.
 
 :func:`write_run` checks everything before it writes, and replaces each file whole (written
 to a temporary sibling, then renamed); :func:`read_run` checks every file's shape;
@@ -123,6 +125,11 @@ LOST = "lost"
 """A diagnostic's ``state`` on the frame the edge pipeline lost the track on: its map closed there,
 kept or reset, and the next frame starts a new one (:class:`slam_it.edge.pipeline.State`'s
 ``LOST``)."""
+
+RELOCALIZED = "relocalization"
+"""A diagnostic's ``placed_by`` on a frame the edge pipeline relocalised: tracking the last frame
+and the PnP fallback both failed it, and the map's keyframe database found it again
+(:class:`slam_it.edge.pipeline.Placement`'s ``RELOCALIZATION``)."""
 
 MAX_DIFFERENCE = 0.02
 """The largest time difference, in seconds, between a run's frame and its ground-truth pose:
@@ -967,6 +974,10 @@ class Tracking:
         The frames the track was lost on.
     resets : int
         The maps reset.
+    relocalizations : int
+        The frames relocalised: each one that tracking failed and relocalisation found in its
+        map. A count of frames, not of times the track was dropped: relocalisation runs on the
+        frame tracking failed, so one can follow a tracked frame with none untracked between.
     """
 
     frames: int
@@ -976,6 +987,7 @@ class Tracking:
     ran_to: float
     losses: int
     resets: int
+    relocalizations: int
 
     @property
     def tracked_from(self) -> float | None:
@@ -1002,7 +1014,7 @@ def tracking(run: Run, times: ArrayLike) -> Tracking:
     Returns
     -------
     Tracking
-        The segments, and what the run lost and reset.
+        The segments, and what the run lost, reset and relocalised.
     """
     stamps = np.asarray(times, dtype=np.float64)
     start = float(stamps[0]) if len(stamps) else 0.0
@@ -1024,6 +1036,7 @@ def tracking(run: Run, times: ArrayLike) -> Tracking:
         ran_to=since(ran[-1]) if ran else 0.0,
         losses=sum(entry.get("state") == LOST for entry in run.diagnostics),  # optional
         resets=len(run.reset_maps()),
+        relocalizations=sum(entry.get("placed_by") == RELOCALIZED for entry in run.diagnostics),
     )
 
 

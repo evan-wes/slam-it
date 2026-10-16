@@ -113,6 +113,9 @@ test("a summary is listed, its mode and intrinsics source named", () => {
   // The maps, where a lost track started more than one, or one was reset.
   assert.deepEqual(summaryRows({ segment_count: 3, resets: 0 })[2], ["maps", "3"]);
   assert.deepEqual(summaryRows({ segment_count: 1, resets: 2 })[2], ["maps", "1 kept, 2 reset"]);
+  // The frames found again in their map, where there were any.
+  assert.deepEqual(summaryRows({ relocalizations: 3 })[2], ["frames found again", "3"]);
+  assert.ok(!summaryRows({ relocalizations: 0 }).some(([label]) => label === "frames found again"));
 });
 
 test("what of the clip was tracked is said, in stretches, and why there are several", () => {
@@ -160,6 +163,18 @@ test("what of the clip was tracked is said, in stretches, and why there are seve
     trackingText(many),
     "Tracked in 7 stretches, from 0.0 s to 27.1 s of your 27.1 s clip. The track was lost 6 " +
       "times, and each time a new map was started, so the rest of the clip was still processed.",
+  );
+  // Frames that tracking failed and relocalisation found again in their map: frames, not drops.
+  assert.equal(
+    trackingText({ ...two, relocalizations: 1 }),
+    "Tracked 0.0–15.9 s and 17.0–27.1 s of your 27.1 s clip. Tracking failed on one frame and " +
+      "found it again in the same map, by recognising a place it had seen. The track was lost " +
+      "twice, and each time a new map was started, so the rest of the clip was still " +
+      "processed; one map was lost too soon to keep.",
+  );
+  assert.match(
+    trackingText({ ...two, relocalizations: 3 }),
+    /Tracking failed on 3 frames and found each again in the same map/,
   );
   const whole = summary({ clip_seconds: 10, tracked_from: 0, tracked_to: 10, segment_count: 1 });
   assert.equal(trackingText(whole), "Tracked from 0.0 s to 10.0 s of your 10.0 s clip.");

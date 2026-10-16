@@ -46,6 +46,19 @@ export const STAGES = [
     },
   },
   {
+    stage: "relocalization",
+    title: "Relocalisation",
+    hints: {
+      words: "the frame's visual words, from the run's vocabulary",
+      sharing: "the map's keyframes that share a word with it",
+      scored: "those that share enough of its words to be scored",
+      candidates:
+        "the keyframes tried, best first: each one's score, its points matched by word, and " +
+        "the inliers of RANSAC, pose refinement and the searches by projection, as far as it got",
+      placed: "whether a candidate placed the frame: it was found again in its map",
+    },
+  },
+  {
     stage: "local_map",
     title: "Tracking the local map",
     hints: {
@@ -75,7 +88,8 @@ export const STAGES = [
 /** What `placed_by` means. */
 export const PLACED_HINT =
   "how the frame was placed before the local map refined it: initialization, motion (the last " +
-  "frame's points) or local_pnp (the fallback); none if it was not";
+  "frame's points), local_pnp (the fallback) or relocalization (found again through the map's " +
+  "keyframe database, once both failed); none if it was not";
 
 /**
  * A solve, as shown: cost before → after, iterations, and why it stopped.
@@ -91,10 +105,36 @@ function solveText(solve) {
 }
 
 /**
+ * A relocalisation candidate, as shown: as far as it got, its keyframe, score and counts.
+ * @param {unknown} candidate A candidate's record.
+ * @returns {string} The text.
+ */
+function candidateText(candidate) {
+  const c =
+    /** @type {{keyframe: number, score: number, matches: number, termination: string | null,
+     *   inliers: number | null, refined: number | null, found: number | null}} */ (candidate);
+  const said = [`${c.matches} matched`];
+  if (c.termination === "degenerate") {
+    said.push("no pose");
+  }
+  for (const [count, name] of /** @type {[number | null, string][]} */ ([
+    [c.inliers, "inliers"],
+    [c.refined, "refined"],
+    [c.found, "found"],
+  ])) {
+    if (count !== null) {
+      said.push(`${count} ${name}`);
+    }
+  }
+  return `keyframe ${c.keyframe} (score ${c.score.toPrecision(3)}): ${said.join(", ")}`;
+}
+
+/**
  * A field's value, as shown.
  * @param {string} field The field.
  * @param {unknown} value Its value.
- * @returns {string} The text: none for null, each solve on its own for `ba`.
+ * @returns {string} The text: none for null, each solve on its own for `ba`, and each
+ *     relocalisation candidate for a list of `candidates`.
  */
 export function valueText(field, value) {
   if (value === null || value === undefined) {
@@ -103,6 +143,9 @@ export function valueText(field, value) {
   if (field === "ba") {
     const solves = /** @type {unknown[]} */ (value);
     return solves.length === 0 ? "none" : solves.map(solveText).join("; ");
+  }
+  if (field === "candidates" && Array.isArray(value)) {
+    return value.length === 0 ? "none" : value.map(candidateText).join("; ");
   }
   if (typeof value === "boolean") {
     return value ? "yes" : "no";

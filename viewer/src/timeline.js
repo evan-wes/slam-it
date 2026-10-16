@@ -11,6 +11,10 @@ export const LOST = "lost";
  *  (slam_it.edge.pipeline.State.NOT_INITIALIZED). */
 export const NOT_INITIALIZED = "not_initialized";
 
+/** A frame's `placed_by` where relocalisation placed it: the track failed, and was found again
+ *  in its map through the keyframe database (slam_it.eval.runs.RELOCALIZED). */
+export const RELOCALIZED = "relocalization";
+
 /** What a state is called on the page; a state not named here is shown as tracking. */
 export const STATE_WORDS = {
   [NOT_INITIALIZED]: "no map yet",
@@ -76,6 +80,32 @@ export function spanHint(name, { state, map, reset, first, end }) {
   const where =
     map === null ? "" : ` ${state === LOST ? "of" : "in"} map ${map}${reset ? ", reset" : ""}`;
   return `${name}: ${words}${where}, ${frames}`;
+}
+
+/**
+ * A backend's frames found again: each where its track failed and relocalisation placed it.
+ * @param {{frame: number[], placed_by?: unknown[], map?: unknown[]}} records Its records.
+ * @returns {{frame: number, map: number | null}[]} Each such frame, the bundle's, and the map
+ *     it was found in, in order.
+ */
+export function foundFrames(records) {
+  const placed = records.placed_by ?? [];
+  const named = records.map ?? [];
+  return records.frame.flatMap((frame, k) =>
+    placed[k] === RELOCALIZED
+      ? [{ frame, map: typeof named[k] === "number" ? /** @type {number} */ (named[k]) : null }]
+      : [],
+  );
+}
+
+/**
+ * A frame found again, as its hint says it.
+ * @param {string} name The backend.
+ * @param {{frame: number, map: number | null}} found The frame and its map.
+ * @returns {string} "cpp: found again in map 0, frame 34", say.
+ */
+export function foundHint(name, { frame, map }) {
+  return `${name}: found again${map === null ? "" : ` in map ${map}`}, frame ${frame}`;
 }
 
 /**

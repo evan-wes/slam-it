@@ -73,7 +73,7 @@ def test_a_sequence_is_run_measured_and_tabled(
     assert (result["features"], result["frames"], result["tracked"]) == (1000, FRAMES, FRAMES)
     assert (result["share"], result["tracked_from"], result["losses"]) == (1.0, 0.0, 0)
     assert [(s["map"], s["tracked"]) for s in result["segments"]] == [(0, FRAMES)]
-    assert result["resets"] == 0
+    assert (result["resets"], result["relocalizations"]) == (0, 0)
     assert [m["map"] for m in result["map_ate"]] == [0]
     assert result["ate"] < ATE_BOUND["rgbd"]
     assert (result["matched"], result["reference"]) == (FRAMES, "the room's own poses")
@@ -84,7 +84,8 @@ def test_a_sequence_is_run_measured_and_tabled(
     table = capsys.readouterr().out.splitlines()
     assert table[0].startswith("| sequence | mode |")
     assert table[2].startswith(f"| room | rgbd | 320x240 | 1000 | {FRAMES}/{FRAMES} (100%) |")
-    assert "| 1 (0 reset) | 0 |" in table[2]
+    assert "| 1 (0 reset) | 0 | 0 |" in table[2]
+    assert table[0].count("|") == table[1].count("|") == table[2].count("|")
 
 
 @pytest.mark.usefixtures("cpp")

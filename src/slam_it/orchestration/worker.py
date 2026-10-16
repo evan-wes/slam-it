@@ -511,7 +511,8 @@ def summarize(
         map's first and last tracked frames' times, the first :data:`SEGMENTS` of them, and
         ``segment_count``, all of them; ``ran_to``, the last frame run's time; every time since
         the clip's first frame, to the millisecond; ``losses``, the frames the track was lost
-        on; and ``resets``, the maps lost too soon to keep.
+        on; ``resets``, the maps lost too soon to keep; and ``relocalizations``, the frames
+        that tracking failed and relocalisation found in their map.
     """
     span = runs.tracking(run, times)
     segments = [[s.tracked_from, s.tracked_to] for s in span.segments[:SEGMENTS]]
@@ -531,6 +532,7 @@ def summarize(
         "ran_to": span.ran_to,
         "losses": span.losses,
         "resets": span.resets,
+        "relocalizations": span.relocalizations,
     }
 
 

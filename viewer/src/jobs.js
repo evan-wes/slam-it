@@ -207,7 +207,7 @@ function times(count) {
  * What of the clip a done job ran and tracked, in words. A run tracks nothing until it has made
  * its first map, and a lost track closes its map, the next frame starting a new one, so the
  * clip can be tracked in stretches: this says why, so that a result is not taken for a cropped
- * video.
+ * video. Frames that tracking failed and relocalisation found again in their map are said too.
  * @param {Record<string, unknown>} summary The worker's summary
  *     (slam_it.orchestration.worker.summarize).
  * @returns {string} The words.
@@ -216,6 +216,7 @@ export function trackingText(summary) {
   const clip = Number(summary.clip_seconds);
   const losses = Number(summary.losses ?? 0);
   const resets = Number(summary.resets ?? 0);
+  const found = Number(summary.relocalizations ?? 0);
   /** @type {string[]} */
   const said = [];
   // An RGB-D run makes its first map from one frame's depth; a monocular one, from two views.
@@ -241,6 +242,13 @@ export function trackingText(summary) {
   }
   const from = Number(summary.tracked_from);
   said.push(`Tracked ${stretches(summary)} of your ${seconds(clip)} clip.`);
+  if (found > 0) {
+    const frames = found === 1 ? "one frame and found it" : `${found} frames and found each`;
+    said.push(
+      `Tracking failed on ${frames} again in the same map, by recognising a place it had ` +
+        "seen.",
+    );
+  }
   if (losses > 0) {
     const dropped =
       resets === 0
@@ -305,6 +313,10 @@ export function summaryRows(summary) {
   const resets = Number(summary.resets ?? 0);
   if (maps > 1 || resets > 0) {
     rows.push(["maps", resets > 0 ? `${maps} kept, ${resets} reset` : String(maps)]);
+  }
+  const found = Number(summary.relocalizations ?? 0);
+  if (found > 0) {
+    rows.push(["frames found again", String(found)]);
   }
   rows.push(["keyframes", String(summary.keyframes ?? 0)]);
   rows.push(["map points", String(summary.points ?? 0)]);

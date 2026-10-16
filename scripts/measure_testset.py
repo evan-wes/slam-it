@@ -22,8 +22,9 @@ worker sets a run up (:func:`slam_it.orchestration.vo.options_for`), then is mea
 - ``tracked`` and ``share``: the frames tracked, in every map, and their share of the
   sequence's;
 - ``segments``: each map's stretch, ``map``, ``tracked`` and its first and last tracked frames'
-  times, ``tracked_from`` and ``tracked_to``; ``losses``, the frames the track was lost on, and
-  ``resets``, the maps lost too soon to keep; and ``tracked_from``, ``tracked_to`` and
+  times, ``tracked_from`` and ``tracked_to``; ``losses``, the frames the track was lost on,
+  ``resets``, the maps lost too soon to keep, and ``relocalizations``, the frames that tracking
+  failed and relocalisation found in their map; and ``tracked_from``, ``tracked_to`` and
   ``ran_to`` for the whole run: every time since the sequence's first frame
   (:func:`slam_it.eval.runs.tracking`);
 - ``ate``: the RMSE in metres over the tracked frames matched to the reference, each map aligned
@@ -176,6 +177,7 @@ def measure(
         ],
         "losses": span.losses,
         "resets": span.resets,
+        "relocalizations": span.relocalizations,
         "tracked_from": span.tracked_from,
         "tracked_to": span.tracked_to,
         "ran_to": span.ran_to,
@@ -233,13 +235,14 @@ def row(result: dict[str, Any]) -> str:
     return (
         f"| {result['name']} | {result['mode']} | {width}x{height} | {result['features']} | "
         f"{result['tracked']}/{result['frames']} ({100 * result['share']:.0f}%) | {span} | "
-        f"{maps} | {result['losses']} | {ate} | {p95} |"
+        f"{maps} | {result['losses']} | {result['relocalizations']} | {ate} | {p95} |"
     )
 
 
 HEADER = (
     "| sequence | mode | size | features | tracked | tracked from-to | maps tracked | losses | "
-    "ATE (matched) | p95 latency of the frame period |\n|---|---|---|---|---|---|---|---|---|---|"
+    "relocalised | ATE (matched) | p95 latency of the frame period |\n"
+    "|---|---|---|---|---|---|---|---|---|---|---|"
 )
 """The table's header."""
 

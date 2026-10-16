@@ -12,7 +12,16 @@ import { element } from "./page_view.js";
 import { Playhead } from "./playback.js";
 import { SceneView } from "./scene_view.js";
 import { SolverView } from "./solver_view.js";
-import { LOST, NOT_INITIALIZED, notRunText, placement, spanHint, stateSpans } from "./timeline.js";
+import {
+  LOST,
+  NOT_INITIALIZED,
+  foundFrames,
+  foundHint,
+  notRunText,
+  placement,
+  spanHint,
+  stateSpans,
+} from "./timeline.js";
 
 /** The height of each backend's row under the frame slider, in pixels. */
 const SPAN_ROW = 4;
@@ -129,7 +138,8 @@ function showAgreement(agreement, backends, differ) {
 
 /**
  * Draw the timeline: under the frame slider, each backend's frames, a row each, coloured by
- * state; beside it, the parts of the sequence no run reached, each part as wide as its time.
+ * state, each frame found again marked on it; beside it, the parts of the sequence no run
+ * reached, each part as wide as its time.
  * @param {import("./bundle.js").Bundle} bundle The bundle.
  * @param {import("./bundle.js").Track[]} tracks The backends' tracks.
  */
@@ -152,6 +162,17 @@ function showTimeline(bundle, tracks) {
           bar.style.background = `var(--backend-${track.name})`;
         }
         return bar;
+      }),
+    ),
+    ...tracks.flatMap((track, row) =>
+      foundFrames(track.records).map((found) => {
+        const mark = document.createElement("div");
+        mark.className = "span found";
+        mark.title = foundHint(track.name, found);
+        mark.style.left = `${(100 * found.frame) / frames}%`;
+        mark.style.width = `${100 / frames}%`;
+        mark.style.top = `${row * SPAN_ROW}px`;
+        return mark;
       }),
     ),
   );
