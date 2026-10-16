@@ -93,38 +93,44 @@ source (`KeyFrameDatabase.cc`, `Tracking.cc`):
 ## 3. B1: place recognition and relocalisation (0.3.9.0 -> 0.3.10.0)
 
 1. **The vocabulary, in rung 0** (`slam_it.foundations.vocabulary`, with C++ and Rust twins):
-   - its files, `.npy` arrays all three languages read as they read the run format: each node's
-     descriptor (`(N, 32)` uint8), its parent, the first of its children (children are
-     consecutive), each leaf's weight (float64), and a `vocabulary.json` naming its k, levels,
-     training set, seed and the SHA-256 of each array;
+   - its files, a folder that eval reads (`slam_it.eval.vocabularies`, with readers in
+     `slam_it_eval` and `slam-it-eval`; the rungs take a vocabulary, never its files), format
+     version 2: `.npy` arrays of each node's descriptor (`(N, 32)` uint8), its parent, the first
+     of its children and their count (children are consecutive), each leaf's word and each
+     word's weight (float64); a header array (the format's and the descriptor's versions, k,
+     levels and the words) and each array's SHA-256 (`sha256.npy`); and `training.json`, what
+     training recorded (the training set, its images, the seed);
    - the transform: a descriptor descends from the root, at each level to the nearest child by
      Hamming distance (the lowest index among equals), to its word; a frame's words form its
      vector, weighted and L1-normalised; its features are grouped by their node at level 2
      (the direct index; ORB-SLAM's level 2 of 6, kept at level 2 of 5);
    - the score: DBoW2's L1 score, 1 - |v - w|_1 / 2;
    - the default is the committed 5-level vocabulary; a run's `--vocabulary` (`vo.run`'s
-     `vocabulary`) names another folder, whose arrays must match their recorded checksums, and
-     the run records the vocabulary it used (`run.json`'s `vocabulary`: its `vocabulary.json`,
-     the checksums with it);
+     `vocabulary`) names another folder, whose arrays must match their recorded checksums
+     (Python checks them before any program runs; a native program run on its own trusts
+     them, the ladder's one exception), and the run records the vocabulary it used
+     (`run.json`'s `vocabulary`: its header and checksums, as every language writes them);
    - a vocabulary's words mean something only for the descriptor they were trained on: its
-     `vocabulary.json` records the descriptor's settings (the patch, the smoothing, the test
-     pattern), and a run whose descriptor differs refuses it, rather than scoring against words
-     that no longer mean anything. The feature count and the pyramid do not change a
-     descriptor, so they are not checked.
+     header records the descriptor's version (`orb.DESCRIPTOR_VERSION`, which stands for the
+     patch, the smoothing and the test pattern, pinned by their SHA-256), and every language's
+     reader refuses another, rather than scoring against words that no longer mean anything.
+     The feature count and the pyramid do not change a descriptor, so they are not checked.
 2. **The training tool** (`scripts/train_vocabulary.py`, Python only): ORB features as the
    pipeline extracts them, from a training set's images, hierarchical k-means with k-means++
    seeding from a fixed seed and the bitwise majority as a centre, weights from the training
-   images' document frequencies. Deterministic for a seed: a rebuild gives the same checksums.
+   images' document frequencies. Deterministic for a seed: a rebuild gives the same tree, its
+   four integer and byte arrays to their checksums; its weights, numpy's log, may differ in the
+   last bit on another CPU, so they are held to their rule.
    Three vocabularies, each from 10,000 images drawn with a fixed seed:
 
    | Vocabulary | Trained on | Levels | Kept |
    |---|---|---|---|
    | ORB-SLAM's kind | Bovisa 2008-09-01, the front camera | 6 | `../vocabularies/` |
    | A phone's | ARKitScenes' training fold | 6 | the same |
-   | The default | ARKitScenes' training fold | 5 | committed, `slam_it/foundations/vocabularies/default/` |
+   | The default | ARKitScenes' training fold | 5 | committed, `slam_it/eval/vocabularies/default/` |
 
    The two kept outside are named, with their checksums and the commands that rebuild them, in
-   `slam_it/foundations/vocabularies/local.json`. If Bovisa's serves the test set better, the
+   `slam_it/eval/vocabularies/local.json`. If Bovisa's serves the test set better, the
    default is retrained from it.
 3. **The keyframe database:** each keyframe's word vector and direct index made when it is made,
    and an inverted index from each word to the active map's keyframes, a keyframe removed as
@@ -139,14 +145,17 @@ source (`KeyFrameDatabase.cc`, `Tracking.cc`):
    reproduce alike).
 5. **The loss flow:** a frame that fails, as now (the motion model, then PnP against the local
    map), is relocalised against the whole active map, while `relocalize` is on (by default, as
-   ORB-SLAM always relocalises; on, a run needs a vocabulary, the committed one unless
-   `--vocabulary` names another; off, it refuses one, and a map is lost as A2 loses it). A run
-   is recently lost from its first failed frame: it is tracked again on a frame that succeeds,
+   ORB-SLAM always relocalises; on, a run needs a vocabulary: `vo.run` takes the committed one
+   unless told another, and a program needs `--vocabulary`; off, it refuses one, and a map is
+   lost as A2 loses it). A run is recently lost from its first failed frame: it is tracked
+   again on a frame that succeeds,
    and lost, its map closed as A2 closes it, once `relocalize_seconds` (3.0) have passed since
    that frame with no success. A map of `reset_keyframes` or fewer is lost after `lost_frames`
    (5) failures instead, as section 6 has it. The pipeline's own state stays tracking or not
    initialised between frames, the loss flagged on the frame's step (the A2 panel's A8).
-6. **The run format,** still version 4: a frame relocalised is placed by `relocalization`, and
+6. **The run format,** version 5, a clean break with 0.3.9.0's runs (B1's panel, H9): `run.json`'s
+   `vocabulary` is required, null or the vocabulary's record; a frame relocalised is placed by
+   `relocalization`, and
    its diagnostics say how relocalisation went (the candidates, each one's matches and inliers,
    the outcome), null where it did not run.
 7. **The measure, the bake and the status page:** relocalisations counted per run beside the
@@ -157,8 +166,13 @@ source (`KeyFrameDatabase.cc`, `Tracking.cc`):
 8. **Parity:** the golden record gains a room where the track is lost and found again: the lost
    room's blank frames end where the camera sees what it saw before, so the next frame
    relocalises in map 0 instead of starting map 1. Its rooms that never lose the track keep
-   their records unchanged.
-9. **Rust's cost**, as the ladder decided: measured after this PR, and Rust kept or dropped.
+   their records unchanged. From B1's panel: the window room (found again, then lost by
+   `relocalize_seconds` before `lost_frames`, an RGB-D run culling keyframes first);
+   relocalisation's settings each moved where it alone decides; a golden bundle of the found
+   room for the viewer's tests; and native tests of the vocabulary, its reader, the database,
+   relocalisation and the pipeline relocalising.
+9. **Rust's cost**, as the ladder decided: measured after this PR, and Rust kept or dropped
+   (B1's panel, A13: due after its merge).
 10. **The two-view sample limit,** deferred from A2's measurement: a failed monocular start
    takes up to 0.43 s on ADVIO, every late frame of the test set, where rung 0's two-view RANSAC
    draws up to 10,000 samples per model (`twoview.Options.max_iterations`) and ORB-SLAM's
@@ -172,6 +186,9 @@ Each gets its own section here before its PR, its forks put to the owner then.
   and their best neighbours (ORB-SLAM's K1 and K2, up to 80 keyframes), local BA over the
   covisible keyframes, culling by covisibility; the essential graph kept for B3. It changes every
   run's decisions, so the golden record is regenerated whole and the test set rerun against B1's.
+  From B1's panel (A12): its covisibility module replaces `edge.database.best_covisible`, which
+  stands in for it until then, and `edge.Options`' 92 flat settings are grouped before B2 to B4
+  add more.
 - **B3, loop closure:** inline, not in a thread, as the ladder decided; the frame it closes on
   measured against the deadline, a thread only if it misses it. Measured on TUM and EuRoC's
   loops.
@@ -183,7 +200,10 @@ Each gets its own section here before its PR, its forks put to the owner then.
   map can be found again by merging, a new map could start at once instead, nothing lost to
   the wait. B1 keeps 3 s (decided with evan-wes on 2026-10-15). TUM's `fr2_360_kidnap` and
   7-Scenes' relocalisation across sequences, deferred from B1, are measured here: each needs a
-  map other than the active one recognised.
+  map other than the active one recognised. From B1's panel (L7): a kept map needs its
+  database, kept or rebuilt from its descriptors, and B4 decides whether words are counted
+  across maps, as ORB-SLAM3's `DetectRelocalizationCandidates` counts them, or per map, as B1's
+  database does.
 
 ## 5. Measurements (B1)
 
