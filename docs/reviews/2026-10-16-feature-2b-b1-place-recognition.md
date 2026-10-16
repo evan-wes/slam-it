@@ -29,7 +29,7 @@ A14, L1 and L2 in part. Each is decided once, under its first ID.
 | H6 | should-fix | hygiene | `edge/database.py` `candidates`; its C++ and Rust twins | The database checks a word vector more weakly than the vocabulary does | fix (the vocabulary's check, public, used by the database) | fixed (8c45675) -- decided by evan-wes, 2026-10-16 |
 | H7 | should-fix | hygiene | `edge/relocalization.py` `_try` and its twins; `tracking.py`; Rust `pnp_consensus!` | Long multi-phase functions; Python repeats the PnP block the natives factored; a macro that writes into its caller | fix (Python's split and shared, the macro a returned struct) | fixed (7412a7a: `PnpRun`/`run_pnp` shared in Python, `_try` split; Rust's macro is `PnpRun::record` and `kept`) -- decided by evan-wes, 2026-10-16 |
 | H8 | should-fix | hygiene | the native run writers; `orb.hpp`, `orb.rs` | `vocabulary.json` pasted into `run.json` unchecked; the descriptor-version constants unused | as A1 | fixed (152b394), as A1 -- decided by evan-wes, 2026-10-16 |
-| H9 | should-fix | hygiene | `eval/runs.py` `_read_info` | `setdefault("vocabulary", None)` keeps 0.3.9.0's runs readable: a compatibility path | fix (run format version 5, the key required) | fixed (152b394: run format version 5, `vocabulary` required; 2a3eb34: the status page's `relocalizations ?? 0`). -- decided by evan-wes, 2026-10-16. The viewer's `placed_by ?? []` is kept, pending evan-wes's word: bundles carried `placed_by` before B1 (the golden bundle at fd530cb has it), so it types an unchecked column rather than serving older bundles |
+| H9 | should-fix | hygiene | `eval/runs.py` `_read_info` | `setdefault("vocabulary", None)` keeps 0.3.9.0's runs readable: a compatibility path | fix (run format version 5, the key required) | fixed (152b394: run format version 5, `vocabulary` required; 2a3eb34: the status page's `relocalizations ?? 0`). -- decided by evan-wes, 2026-10-16. The viewer's `placed_by ?? []` is kept: bundles carried `placed_by` before B1 (the golden bundle at fd530cb has it), so it types an unchecked column rather than serving older bundles -- decided by evan-wes, 2026-10-16 (run 2's prompt) |
 | H10 | should-fix | hygiene | `tests/orchestration/test_vo.py`; the native programs' tests | `--vocabulary`, the flag settings and the vocabulary refusals are untested on the command line | fix | fixed (2a3eb34) -- decided by evan-wes, 2026-10-16 |
 | H11 | should-fix | hygiene | `scripts/measure_sharded.py` | One worker's failure loses every result | fix (each result written as it completes; a failed future recorded) | fixed (2a3eb34) -- decided by evan-wes, 2026-10-16 |
 | H12 | should-fix | hygiene | `tests/foundations/test_vocabulary.py` | The python case of a backend test passes having asserted nothing | fix (the compiled backends only) | fixed (152b394: the test went with the bindings' `read`; the native readers are tested natively against the reader's fixture) -- decided by evan-wes, 2026-10-16 |
@@ -480,3 +480,505 @@ Sources:
 - [MegaLoc, arXiv:2502.17237](https://arxiv.org/pdf/2502.17237)
 - [MASt3R-SLAM, arXiv:2412.12392](https://arxiv.org/pdf/2412.12392)
 - [iBoW-LCD, arXiv:1802.05909](https://arxiv.org/pdf/1802.05909)
+
+## Run 2 -- 2026-10-16
+
+| | |
+|---|---|
+| **Branch** | `feature/2b-b1-place-recognition` |
+| **Range** | `03f3d21...98fed93` (base: `origin/develop`); the fixes since Run 1: `e6d293a..98fed93` |
+| **Reviewers** | hygiene (sonnet), architecture (opus), algorithm (opus) |
+| **How they ran** | registered `slam-it-*-reviewer` agents |
+| **Layer 1** | not run on this head, by evan-wes's instruction of 2026-10-16: it runs once, when the PR is ready to merge; each fix commit ran the checks its change touches |
+
+### Findings and resolutions
+
+Every Run 1 finding was found resolved as recorded, except L1, which the algorithm reviewer
+(L9) and the hygiene reviewer (H16) found half met, and H10, which H17 finds met in part. IDs
+continue Run 1's; H21 here is this run's, not PR 8's finding of that name.
+
+| ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|---|
+| H16 | should-fix | hygiene | `tests/edge/test_relocalization.py` `MOVED`, `MOVED_CASES` | Six of the eight moved relocalisation settings change no decision; the test checks only the bundle | as L9 | fixed (43d7650), as L9 -- decided by evan-wes, 2026-10-16 |
+| H17 | should-fix | hygiene | `tests/orchestration/test_vo.py`; the native programs' `run` | No test runs a native program without a vocabulary, with one and relocalisation off, or with one its reader refuses (A1's symptom) | fix (a test over every backend: exit 3, the folder named, no `run.json`) | fixed (6ead1d5) -- decided by evan-wes, 2026-10-16 |
+| H18 | should-fix | hygiene | the vocabulary and database crossings | A4's exact-key checks have no test | fix (missing and extra keys, both compiled backends; Rust's check once, at the top of `vocabulary_in`) | fixed (6ead1d5) -- decided by evan-wes, 2026-10-16 |
+| H19 | should-fix | hygiene | `foundations/orb.py` `distance` | Public and unvalidated: an int8 array gives 32 where every bit differs | fix (uint8 and DESCRIPTOR_BYTES checked, `InvalidInputError`, a test) | fixed (618e5aa) -- decided by evan-wes, 2026-10-16 |
+| H20 | should-fix | hygiene | `cpp/tests/edge/test_relocalization.cpp`; Rust's edge tests | `one_word` written twice in C++; an empty frame built three times in Rust | fix (the scene's `one_word`; an `empty_frame` in Rust's scene) | fixed (43d7650) -- decided by evan-wes, 2026-10-16 |
+| H21 | should-fix | hygiene | `docs/design/2026-10-14-online-slam.md` section 3 | The plan's B1 section describes the old vocabulary layout | as A17 | as A17 -- decided by evan-wes, 2026-10-16 |
+| H22 | note | hygiene | `../vocabularies/{arkitscenes-6,bovisa-6}`; `local.json`; CHANGELOG | The two kept 6-level folders are format version 1 and no longer read | fix (convert them outside the repo, the arrays untouched; say so in `local.json`) | fixed (both folders converted outside the repository by `convert_vocabulary_v1_to_v2.py`, which only adds the three new files after checking each array's SHA-256, and read back; c20f759's `local.json` says they are format version 2) -- decided by evan-wes, 2026-10-16 |
+| H23 | note | hygiene | `cpp/src/eval/vocabularies.cpp`, `rust/slam-it-eval/src/vocabularies.rs` | The native `.npy` header parsers accept garbage in the padding, and echo a corrupt `descr` raw | fix (a Python-only case for the padding; `descr` escaped) | fixed (618e5aa: the 20th reader case, refused by Python alone; `descr` quoted) -- decided by evan-wes, 2026-10-16 |
+| H24 | note | hygiene | `edge/tracking.py` `PnpRun`; Rust's two ways of applying a `PnpRecord` | Co-null fields re-checked; the record applied two ways | fix (one way in Rust; the Python check narrowed once) | fixed (618e5aa: `PnpRun.kept` in Python; Rust's `RecordsPnp` and `pnp_kept`) -- decided by evan-wes, 2026-10-16 |
+| H25 | note | hygiene | `eval/vocabularies.py`, `generate_vocabulary.py`, Rust `read_npy` | Readability: positional header indices, a shapes dict rebuilt per call, a discarded read-back, an 85-line function | fix | fixed (618e5aa) -- decided by evan-wes, 2026-10-16 |
+| H26 | note | hygiene | the ladder; `edge-vo.md:292`; `vocabulary.py`, `matching.py` imports | A 132-column line, a pre-B1 statement in the present tense, two import styles of `orb` | fix | fixed (618e5aa: the imports; 4b14a90: the ladder's line, `edge-vo.md`) -- decided by evan-wes, 2026-10-16 |
+| A15 | should-fix | architecture | `eval/vocabularies.py:62`; `foundations/vocabularies/` | The committed vocabulary's files are still rung 0's package data, eval reaching into `foundations/` by path | fix (`slam_it.eval.vocabularies` a package, `default/` and `local.json` in it) | fixed (c20f759) -- decided by evan-wes, 2026-10-16 |
+| A16 | should-fix | architecture | `scripts/check_layers.py`; `pyproject.toml` | "The algorithm rungs read no files" holds Python only; nothing keeps the native cores from reading files again | fix (`<fstream>`, `<filesystem>`, `<cstdio>` and `std::fs` refused in the rungs' native sources, outside tests) | fixed (50dd7d1; the ladder in 4b14a90) -- decided by evan-wes, 2026-10-16 |
+| A17 | should-fix | architecture | develop's `docs/design/2026-10-14-online-slam.md` | Section 3's vocabulary files, checksums, descriptor record, run format version and `--vocabulary` default contradict the code | fix (a docs commit on develop, its wording for evan-wes's approval) | fix decided: a docs commit on develop, its wording shown to evan-wes for approval -- decided by evan-wes, 2026-10-16 |
+| A18 | note | architecture | the ladder's package table | `vocabularies` and the native vocabulary reader missing from eval's row | fix | fixed (4b14a90) -- decided by evan-wes, 2026-10-16 |
+| A19 | note | architecture | the ladder's exception; `eval/vocabularies.py`'s docstring | A standalone native run records the checksums its folder claims, unverified | fix (one clause: a run's record is verified only when `vo.run` launched it) | fixed (4b14a90) -- decided by evan-wes, 2026-10-16 |
+| A20 | note | architecture | `pyproject.toml`'s no-files contract | It could forbid `pathlib`, `io`, `os`, `shutil`, `tempfile`, `zipfile`, `tarfile`, `pickle` too; it cannot see `open()`; its source list must grow with the rungs | fix (the modules added; the limits stated) | fixed (50dd7d1) -- decided by evan-wes, 2026-10-16 |
+| A21 | note | architecture | `cpp/src/eval/runs.cpp`, `vocabularies.cpp` and Rust's twins | `.npy` written in one native eval module and read in another | defer (B4, when a second native reader arrives: one `npy` module) | deferred (the ladder's open items, with B4; 4b14a90) -- decided by evan-wes, 2026-10-16 |
+| L9 | must-fix | algorithm | `tests/edge/test_relocalization.py` `MOVED`; `WINDOW_OPTIONS`; the narrow search | L1 half met: six of the eight moved settings, and the whole narrow search (its last optimisation, the outliers held), decide nothing in any test; three docstrings and c3f20da's message say otherwise | fix (cases where each setting decides, per-setting reversions asserted, `ransac_budget` tested natively off its defaults, the docstrings corrected; c3f20da's claim corrected in the PR's description) | fixed (43d7650: `DECISIVE`, a test per setting, the narrow search placing, the budget natively off its defaults; c3f20da's claim corrected in the PR's description) -- decided by evan-wes, 2026-10-16 |
+| L10 | should-fix | algorithm | `vocabularies/local.json`; CHANGELOG; `vocabulary.py` `train` | "Rebuilt exactly" can fail on an AVX-512 CPU: numpy's own float64 log there | fix (a rebuild held to the four integer arrays' SHA-256, the weights to their rule within a few ULP, said in `local.json` and the CHANGELOG) | fixed (c20f759) -- decided by evan-wes, 2026-10-16 |
+| L11 | note | algorithm | `tests/orchestration/datasets.py` `WINDOW_BLANKS` | Misstates why frame 33 is tried; undersells that the room checks relocalising before the window | fix | fixed (43d7650) -- decided by evan-wes, 2026-10-16 |
+| L12 | note | algorithm | `tests/fixtures/foundations/generate_vocabulary.py` | Ties covered by chance, not design | fix (the generator asserts a tie at a visited node on every level) | fixed (618e5aa) -- decided by evan-wes, 2026-10-16 |
+| L13 | note | algorithm | the PR | L3's description half, and c3f20da's claim, need the PR's body | fix (in the PR's body) | fixed (the PR's body) -- decided by evan-wes, 2026-10-16 |
+| L14 | note | algorithm | `tests/orchestration/datasets.py` `MOVED_OPTIONS` (H21 of PR 8) | 11 of its 33 settings decide nothing on the gap room | defer (the ladder's open items: H21's check made per setting) | deferred (the ladder's open items; 4b14a90) -- decided by evan-wes, 2026-10-16 |
+
+### Hygiene review
+
+## Hygiene review
+
+**Scope:** Run 2, `e6d293a..98fed93` (nine commits, 121 files), run 1's H1-H15 checked one by one, and the new code read in full: `slam_it.eval.vocabularies` and its C++/Rust twins (`cpp/src/eval/vocabularies.cpp`, `rust/slam-it-eval/src/vocabularies.rs`), the reader fixture and its 19 cases, the vocabulary parity fixture, the native tests (vocabulary, database, relocalisation, pipeline), the window room, the `PnpRun` and `words_of` refactors, `orb.distance`, `measure_sharded`, and the docs and CHANGELOG edits. Layer 1 was not run on this head.
+
+Checks I ran myself:
+- 320 Python tests (`test_vocabularies`, `test_runs`, `test_vocabulary`, `test_orb`) pass.
+- `cargo test -p slam-it-eval vocabularies` passes (3 tests).
+- A fuzz of 400 mutated copies of the reader fixture through the C++ `slam_it_vo --vocabulary`, with no crash. Details are under H1.
+- A one-setting-at-a-time ablation of the window room's moved relocalisation settings. Details are in the first finding.
+
+Importing the C++ backend made the editable install rebuild `build/slam-it`, which is untracked. `git status` is clean.
+
+**Summary:** All fifteen of run 1's hygiene findings are resolved as the report says, with two qualifications. H3/L1's "settings off their defaults" tests do not exercise six of the eight settings they claim to, and H10's command-line refusals are covered only in part (the native programs' vocabulary refusals are untested). The new reader code is well documented, validates before it allocates, and held up under fuzzing. There is no must-fix. The six should-fix items are about test strength, one duplicated test helper, an unvalidated public kernel, and a stale design doc.
+
+### Findings
+
+#### [should-fix] The moved relocalisation settings are mostly not exercised, so a native that hard-codes one would still pass (L1 resolved only in part)
+- **Where:** `tests/edge/test_relocalization.py:162-199` (`MOVED`, `MOVED_CASES`, `test_the_moved_settings_change_what_relocalisation_decides`); `tests/orchestration/datasets.py` (`WINDOW_OPTIONS`); c3f20da's message ("so the agreement shows the natives read them").
+- **Issue:** The test checks that all eight moved settings together change Python's result against all-default. The `MOVED_CASES` docstring says "every setting it moves is used". That is false for six of the eight. Parity with Python proves a native reads a setting only if that setting alone changes a decision on a compared case.
+- **Why it matters:** L1 was a must-fix because a native could hard-code `reloc_*` and nothing would fail. For six settings, that is still true.
+- **Evidence:** I reset one moved setting at a time to its default and compared the whole `relocalize` result (summary, pose, tracked points and `matched`). Script: `/tmp/scratch/panel2/ablate2.py`.
+
+  | Setting reset to default | Frame 30 (wide search) | Frame 6 (narrow search) |
+  |---|---|---|
+  | `reloc_window` | changes | changes |
+  | `reloc_confidence` | no change | changes |
+  | `reloc_inlier_ratio` | no change | no change |
+  | `reloc_min_inliers` | no change | no change |
+  | `reloc_ransac_iterations` | no change | no change |
+  | `reloc_narrow_inliers` | no change | no change |
+  | `reloc_narrow_window` | no change | no change |
+  | `reloc_narrow_distance` | no change | no change |
+
+  So only `reloc_window` and `reloc_confidence` are shown to be read; `recovery_tracked` is one of the case's own parameters.
+- **Suggested fix:**
+  - Make the test per-setting: for each moved setting, assert that resetting it alone changes Python's result on at least one case. It will then fail until a case shows each setting.
+  - For the three budget settings (`reloc_inlier_ratio`, `reloc_confidence`, `reloc_ransac_iterations`), add native assertions on `ransac_budget` with moved values. It is a pure function, and `check_budget` only tests it at defaults.
+  - Pick inputs for the narrow-search settings (a narrow window or distance that rejects matches) and for `reloc_min_inliers` (a value above what the frame reaches).
+  - Correct the docstring and the CHANGELOG's "relocalisation's settings off their defaults" until the claim holds.
+
+#### [should-fix] The native programs' vocabulary refusals are untested; H10 and A1 are covered at the library level only
+- **Where:** `tests/orchestration/test_vo.py:691-762`; `cpp/src/orchestration/vo.cpp:794-802`; `rust/slam-it-orchestration/src/vo.rs:979-984,1010-1014`.
+- **Issue:** The new tests cover Python's `parse`, `check` and `run`, and that every program refuses `--vocabulary` twice and `relocalize=maybe`. Nothing runs C++'s or Rust's `slam_it_vo` and asserts any of these:
+  - a relocalising run with no `--vocabulary` (the default settings, so the likeliest mistake when run by hand) is refused;
+  - `--vocabulary` with `relocalize=false` is refused;
+  - a folder the reader refuses (another descriptor, a malformed array) exits non-zero with a message naming the folder, and writes no `run.json`. This was A1's symptom: exit 0 and an unreadable `run.json`.
+- **Why it matters:** A1 was a must-fix. The readers are tested natively against 19 cases, but the three-line wiring that turns a reader error into an exit code has no regression test in either language. `grep "needs one\|but relocalize is off" cpp/tests rust` finds only the sources.
+- **Evidence:** The behaviour is right today. `slam_it_vo ... --mode rgbd --count 0` with no vocabulary prints `--vocabulary: relocalize needs one`, exit 3. With `relocalize=false` and a folder it prints `given, but relocalize is off`, exit 3, and no output folder is created. No test pins it.
+- **Suggested fix:** Add a test parametrised over `BACKENDS` (the pattern at `test_vo.py:747-762`) with these cases. For the third, copy the reader fixture with `header.npy`'s descriptor version changed. Assert exit 3, the folder in stderr, and no `run.json`.
+
+#### [should-fix] The vocabulary and database crossings now hold their keys exactly, with no test (A4)
+- **Where:** `cpp/bindings/foundations/vocabulary_crossing.hpp:51-60`; `cpp/bindings/edge/edge_crossing.hpp:499-511`; `rust/slam-it-py/src/foundations/vocabulary_crossing.rs:14-40`.
+- **Issue:** 152b394 adds `check_keys` in C++ and a field-count check in Rust. No test passes a missing or extra key. `grep -rn "unknown\|missing\|extra" tests/foundations/test_vocabulary.py tests/edge/test_database.py` finds nothing relevant, and other crossings have such tests (`tests/foundations/test_ba.py:569`).
+- **Why it matters:** It is the same class of drift A4 was raised for, and nothing keeps it fixed.
+- **Evidence:** I probed both backends. An extra key and a missing `weights` each raise `ValueError`. C++ says `unknown field 'bogus'` or `missing field 'weights'`; Rust says `expected exactly the keys [...]` for both. Script: `.../panel2/keys.py`.
+- **Suggested fix:**
+  - Parametrise a test over the compiled backends for the vocabulary (`quantize`, `bow`) and for the database in `candidates` and `best_covisible`.
+  - Optionally move Rust's check out of `field` (`vocabulary_crossing.rs:35`), which re-runs it for each of the seven keys, into one check at the top of `vocabulary_in`, as C++ does.
+
+#### [should-fix] `orb.distance` is public and unvalidated; a signed dtype silently gives wrong distances
+- **Where:** `src/slam_it/foundations/orb.py:399-418` (and its callers in `matching.py`, `vocabulary.py`).
+- **Issue:** 8c45675 replaced four private popcounts with one public function. It has no dtype or width check, and its docstring has no `Raises`. Every internal caller passes validated uint8, but the function is exported, and the repo's rule is to validate public boundaries.
+- **Why it matters:** `np.bitwise_count` counts the magnitude of a signed value, so a descriptor array of the wrong dtype gives wrong distances with no error. The C++ and Rust `distance` take a fixed `Descriptor`, so they cannot be misused this way.
+- **Evidence:**
+  - `orb.distance(np.zeros(32, np.int8), np.full(32, -1, np.int8))` returns `32`, where every bit differs and the answer is 256.
+  - Two `(2, 5)` uint8 arrays return `[40 40]` with no width error.
+- **Suggested fix:** Check `dtype == np.uint8` and `shape[-1] == DESCRIPTOR_BYTES` (O(1) per call), raise `InvalidInputError`, add a `Raises` section and a test.
+
+#### [should-fix] A helper written twice in C++ tests, and an empty frame built three times in Rust tests
+- **Where:** `cpp/tests/edge/scene.hpp:121` and `cpp/tests/edge/test_relocalization.cpp:27` (identical `one_word()`); `rust/slam-it-edge/tests/pipeline.rs:97-103` and `:161-169`, and `rust/slam-it-edge/tests/relocalization.rs:~44-50`.
+- **Issue:**
+  - c6ed83a added `scene::one_word()` to the shared `scene.hpp`, and `test_relocalization.cpp` keeps its own copy. It already includes `scene.hpp`.
+  - Rust builds the same empty `Features`/`Frame::new` inline in the existing pipeline test, again in the new `empty_at`, and a third time in `relocalization.rs`. C++ shares `empty_frame()`/`empty_at`.
+- **Why it matters:** This is duplication jscpd cannot see within one language. The two C++ vocabularies can drift apart.
+- **Suggested fix:** Delete the local copy in `test_relocalization.cpp` and use `scene::one_word()`. Add an `empty_frame(timestamp)` to Rust's `scene/mod.rs`, as `one_word` was.
+
+#### [should-fix] The online-SLAM plan's B1 section still describes the old design
+- **Where:** `docs/design/2026-10-14-online-slam.md:95-110` (and the sentence at 108-109 about `vocabulary.json` recording the descriptor's settings).
+- **Issue:** Item 1 says "The vocabulary, in rung 0 ... its files ... a `vocabulary.json` naming its k, levels, training set, seed and the SHA-256 of each array". After A3 and A1 the folder is eval's, the format is version 2 (`header.npy`, `sha256.npy`, `training.json`), and the native readers do not check the checksums. 806f8eb updated the ladder doc but not this plan.
+- **Why it matters:** This plan is the live specification for B2-B4, which build on the vocabulary. A reader following it would build against a layout that no longer exists.
+- **Suggested fix:** Edit item 1 to the as-built layout, or add one line saying B1's panel moved the folder to `slam_it.eval.vocabularies` (format version 2) and pointing to the ladder doc.
+
+#### [note] The owner's two kept 6-level vocabularies are version-1 folders and no longer read
+- **Where:** `../vocabularies/arkitscenes-6` and `../vocabularies/bovisa-6` (each holds a `vocabulary.json`); `src/slam_it/foundations/vocabularies/local.json`; `CHANGELOG.md`.
+- **Issue:** `vocabularies.read` on either folder gives a bare `FileNotFoundError: .../header.npy`.
+- **Evidence:** I ran `vocabularies.read("../vocabularies/bovisa-6")`.
+- **Why it matters:** The arrays are unchanged and `local.json`'s checksums still hold. But the only documented route is a rebuild (hours, about 15 GB). Neither the CHANGELOG nor `local.json` says the two kept folders need rewriting.
+- **Suggested fix (for the owner):** Convert them once (write `header.npy` and `sha256.npy` from the existing arrays), or say in `local.json` and the CHANGELOG that they need a rebuild.
+
+#### [note] Hand-written native `.npy` parsers are looser than numpy's, and echo raw bytes in one message
+- **Where:** `cpp/src/eval/vocabularies.cpp:51-72` (`header_value`), `:155`; `rust/slam-it-eval/src/vocabularies.rs:71-78`, `:160`.
+- **Issue:**
+  - The parsers find keys by substring and ignore the rest of the dict, so they accept a header with garbage in its padding, which numpy's `literal_eval` refuses.
+  - The "unexpected .npy type" message prints the raw `descr` bytes of a corrupt file, unescaped.
+- **Evidence:** In the 400-mutation fuzz of `slam_it_vo --vocabulary` (`.../panel2/fuzz.py`) there was no crash and no exit outside the controlled refusals. The only C++-accepts/Python-refuses cases were 15 `header.npy` files damaged after the closing brace. One stderr contained a byte that is not valid UTF-8 (`UnicodeDecodeError` in my harness).
+- **Why it matters:** The data stay fully checked for type, shape and length, so this is harmless to results. It is still a difference from "fail the same way", and the fixture's 19 cases do not pin it.
+- **Suggested fix:** Optionally add a padding-garbage case marked as Python-only, and quote or escape `descr` in messages.
+
+#### [note] `PnpRun`'s two co-null fields make callers re-check
+- **Where:** `src/slam_it/edge/tracking.py:245-285`; `tracking.py:987`; `relocalization.py:453` (`run.pose is None or run.inliers is None or run.count < needed`). `rust/slam-it-edge/src/relocalization.rs:486-491` vs `tracking.rs:896-912`.
+- **Issue:**
+  - `pose` and `inliers` are None together, so the `inliers is None` test only narrows the type for mypy. `replace(summary, **run.recorded())` also splats a dict, which hides field names from mypy.
+  - Rust applies one `PnpRecord` to two summary types in two ways: four assignments in `try_candidate`, a destructure and struct update in `relocalize_locally`.
+- **Suggested fix:** Optional. Return `PnpRun | None`, or make the fields non-optional on a success type, and use one way of applying the record.
+
+#### [note] Small readability items in `eval/vocabularies.py`, its fixture generator and Rust's `read_npy`
+- **Where:**
+  - `src/slam_it/eval/vocabularies.py:151` (`(root / "header.npy").read_bytes()` repeats the path), `:152` and `:272` (positional header indices `0, 1, 2, 3, 4`, and a literal `5` that is `len(HEADER)`), `:252` (a constant `shapes` dict rebuilt on each call).
+  - `tests/fixtures/eval/generate_vocabulary.py:177` (`json.loads(OUT.read_text())  # it reads back` discards its result).
+  - `rust/slam-it-eval/src/vocabularies.rs:89-175` (`read_npy` is about 85 lines in one function, where the C++ twin splits `header_span`, `parse_shape` and `item_size`); the array length `5` in `[[u8; SHA256_BYTES]; 5]` where `ARRAYS.len()` is a constant expression.
+- **Suggested fix:** Optional. Index the header by `HEADER.index(...)` or return a small record, hoist the shapes dict to a module constant, and drop the pointless line.
+
+#### [note] Docs leftovers
+- **Where:**
+  - `docs/design/2026-10-02-slam-it-ladder.md`, the line added by 806f8eb ("the frame's step now, and the pipeline's state is two-valued. `_date` and `_close` ...") is 132 columns; the other added doc lines are at most 100.
+  - `docs/notes/edge-vo.md:292` ("Ours are odometry ... with no relocalisation to recover a run that loses the track") is a present-tense statement of a pre-B1 measurement. This is H2's residue; the ladder says those runs have not been measured again, so add "before B1".
+  - `src/slam_it/foundations/vocabulary.py:40-43` and `matching.py:70-74` import `orb` as a module and also import names from it (`from ... import orb` plus `from ...orb import DESCRIPTOR_BYTES`).
+- **Suggested fix:** Reflow the one line, add the qualifier, and use one import style per module.
+
+### Run 1 hygiene findings, checked
+
+| ID | Result |
+|---|---|
+| H1 | Resolved. The int64 span check, the skipped leaf span, `from_chars` shapes and `check_parents` before `depths` are in `foundations/vocabulary.cpp` and `eval/vocabularies.cpp`. Native tests cover the parent, int32, leaf-too-deep, overflow and cut-short cases. The fuzz showed no abort or out-of-bounds read. |
+| H2 | Resolved in the docstrings and comments, except the `edge-vo.md:292` leftover above. |
+| H3 | Native tests exist for the vocabulary, database, relocalisation, `search_by_bow` and the relocalising pipelines. Settings coverage is the first finding. |
+| H4 | Resolved. Every malformed-file fault is `InvalidInputError`, tested by the 19 cases. |
+| H5 | Resolved. One `distance` per language, and no other popcount remains in `src`, `cpp` or `rust`. `numpy>=2.0`; the lock has 2.4.6. See the validation finding. |
+| H6 | Resolved. All three databases call the vocabulary's vector check; `test_database.py` covers non-integer words. |
+| H7 | Resolved. `_match_by_word` and `run_pnp`/`PnpRun`; Rust's macro is `record`/`kept`. See the `PnpRun` note. |
+| H8 | Resolved. The descriptor-version constants are read, and the run writers write `Header`. |
+| H9 | Resolved. Run format 5 requires `vocabulary`, `check_record` runs on read and write, and the status page defaults are gone. The viewer's `placed_by ?? []` is left pending the owner, as the report says. |
+| H10 | Resolved in part; see the second finding. |
+| H11 | Resolved. Results are streamed, a failed worker is a result, and `test_a_failed_worker_is_its_runs_result_and_the_others_are_kept` asserts values. |
+| H12 | Resolved. The test went away with the binding's `read`. |
+| H13, H14 | Resolved. The arrays are read-only, and `vo.run` reads the vocabulary once. Natively, the program reads the folder again by design. |
+| H15 | Resolved. The `:func:` is fixed, `DEFAULT` says 9,969 of 10,000, the archives are closed through an `ExitStack`, and `words_of` is written once in Rust. |
+
+### Checked and fine
+- **Python reader (`eval/vocabularies.py`):** its docstring states every file's dtype and shape, and the exception for checksums. `_load` refuses big-endian, Fortran order and a shape its data do not fill before allocating, and returns read-only views. `write` validates `info` before writing anything and writes each file whole. Errors name the file and the bad value.
+- **C++/Rust reader parity:** the 19 cases are run by all three readers (15 are refused by all three, 2 are read, 2 are refused by Python alone), with the same messages in all three. The Rust and C++ headers and docs are complete.
+- **Rung 0 / eval boundary:** the new contract keeps `json` and `hashlib` out of the rungs, and the eval layer order is updated. The tree's `check` is fully before `depths`, with no unchecked index use in C++ or Rust.
+- **Vocabulary parity fixture:** `tests/fixtures/foundations/vocabulary.json` comes from an independent brute force (nothing imported from `slam_it`). C++, Rust and Python hold it exactly, and each language's refusal cases are present.
+- **Training rules (L4):** tie-bit, weight and tiny-training SHA tests assert values, and the fragility on numpy's Generator is documented.
+- **Window room:** the Python test asserts the placed frame, the map, the lost frame, the culled keyframes' lives and "fewer than `lost_frames` failures". The golden record has 24 cases and `room_inputs` records the new constants.
+- **Native database and relocalisation tests:** C++ and Rust test erase, double insert, malformed vector, placement at the true pose with every point, an empty frame, and the MLPnP budget.
+- **Golden found bundle:** the layout test asserts frame 34 is relocalised in map 0, and the viewer tests read it through `loadBundle`/`loadTrack` instead of rebuilding columns.
+- **Other items:** `measure_sharded` closes its streams through an `ExitStack` and reports a failed worker's error. `train_vocabulary` closes its archives. CMake and the test crates glob the new test files. No debug prints, TODOs or commented-out code in the added files.
+
+Scratch files, all outside the repository (`/tmp/scratch/panel2/`): `ablate.py`, `ablate2.py`, `keys.py`, `fuzz.py`.
+
+### Architecture review
+
+## Architecture review
+
+**Scope:** Run 2 of `feature/2b-b1-place-recognition`. I read the nine fix commits `e6d293a..98fed93` (121 files) in full in my area and checked them against Run 1's A1-A14, leaving out the deferred A12 and A13. I used the whole PR (`03f3d21...98fed93`) for context. I also checked the ladder doc and develop's `docs/design/2026-10-14-online-slam.md` (cited at 03f3d21) against the code. Paths are relative to the repository root.
+
+What I ran:
+- `lint-imports`: 22 contracts kept.
+- `scripts/check_layers.py`: passed.
+- A targeted pytest run (`tests/test_backends.py`, `tests/eval/test_vocabularies.py`, `tests/eval/test_runs.py`, `tests/foundations/test_vocabulary.py`, `tests/edge/test_database.py`): 250 passed.
+- Two probes: the compiled crossings' key checks, and the native programs given three copies of the committed vocabulary (the default itself, one whose header names another descriptor, and one with an array changed under its checksum).
+
+The repo's Rust program was stale, so I built a fresh one with `--locked` into the scratchpad's target dir rather than `rust/target`. Nothing in the repository was modified.
+
+**Summary:** Every Run 1 architecture finding in scope is resolved as the report says. The probes confirm A1 and A4 on built code. The new boundary holds:
+- rung 0 keeps the tree;
+- eval reads its folder in all three languages;
+- the run format is version 5, with no compatibility path;
+- one Hamming distance per language.
+
+There is no must-fix. There are three should-fixes:
+1. The committed vocabulary's files still live in rung 0's package directory, and eval reaches into it by path.
+2. "The algorithm rungs read no files" is enforced in Python only, though A3 was found in all three languages.
+3. Develop's online-SLAM design now contradicts the code in several places.
+
+The notes are small doc gaps and things to watch.
+
+### Findings
+
+#### [should-fix] The committed vocabulary's files are still rung 0's package data; eval reaches into `foundations/` by path
+- **Where:**
+  - `src/slam_it/eval/vocabularies.py:62`
+  - `src/slam_it/foundations/vocabularies/default/`, including `header.npy` and `sha256.npy`, which 152b394 added there
+  - `src/slam_it/foundations/vocabularies/local.json`
+  - `CHANGELOG.md:32` ("in `vocabularies/local.json`")
+- **Issue:** 152b394 is titled "a vocabulary's folder is eval's", and the ladder (lines 95-97) now says eval reads the rungs' files for them. The reader moved; the files did not.
+  - `slam_it/foundations/` now holds a format-version-2 folder and a JSON record of the local vocabularies. No code there knows either format: `grep -rn vocabularies src/slam_it/foundations` finds only docstrings pointing at eval.
+  - Eval finds the folder by walking into a sibling package's directory:
+    ```python
+    DEFAULT = Path(__file__).parents[1] / "foundations" / "vocabularies" / "default"
+    ```
+  - import-linter cannot see this dependency.
+- **Why it matters:**
+  - A change to the folder's format edits eval's code and rung 0's data.
+  - A rename or move inside rung 0's tree breaks the default silently, until a test reads it.
+  - It undercuts the boundary the fix set up: the rungs "read no files", but they still hold them.
+- **Evidence:** `ls src/slam_it/foundations/vocabularies/default` lists `children.npy descriptors.npy header.npy parents.npy sha256.npy training.json weights.npy words.npy`. The `DEFAULT` line is quoted above.
+- **Suggested fix:** Recommended: change the code.
+  - Turn `slam_it.eval.vocabularies` into a package (`eval/vocabularies/__init__.py`), with `default/` and `local.json` beside it, and `DEFAULT = Path(__file__).parent / "default"`.
+  - Eval's internal-order contract still treats it as one layer, and `wheel.packages` ships it unchanged.
+  - Update the online-SLAM doc's §3.2 table (lines 124 and 127) and the CHANGELOG path.
+  - The alternative is a doc change: record in the ladder that the committed vocabulary is rung 0's package data, which eval locates.
+
+#### [should-fix] "The algorithm rungs read no files" is enforced for Python only
+- **Where:**
+  - `pyproject.toml:265-279`, the contract.
+  - `scripts/check_layers.py:156-165`: forbidden contracts are reduced to their `slam_it.*` modules, so `json` and `hashlib` drop out.
+  - `scripts/check_layers.py:690`: angle-bracket includes count as system headers and go unchecked.
+- **Issue:** A3 was found in all three languages: C++ `vocabulary.cpp` used `<fstream>` and `<filesystem>`, and Rust `vocabulary.rs` used `std::fs::read`.
+  - The fix holds Python by contract.
+  - The native cores are clean today: no `<fstream>`, `<filesystem>` or `<cstdio>` in `cpp/{src,include/slam_it}/{foundations,edge}`, and `std::fs` only in the rung crates' trailing test modules (`rng.rs:150`, `orb.rs:1172` and the like).
+  - Nothing keeps them clean. The ladder says eval reads the rungs' files "as its native libraries do for the C++ and Rust cores" (lines 95-97), and that the three languages "share one source of truth" for layering (line 445).
+- **Why it matters:** A native core could start reading a file again and layer 1 would still pass. These cores are the ones the edge budgets and a possible phone target take standalone.
+- **Evidence:** The `check_layers.py` excerpt, in which only modules starting with `slam_it.` are subtracted:
+  ```python
+  forbidden = {m.removeprefix(prefix) for m in contract["forbidden_modules"] if m.startswith(prefix)}
+  ```
+- **Suggested fix:** Give the contract a native reading in `check_layers.py`:
+  - for the contract's source rungs, refuse `<fstream>`, `<filesystem>` and `<cstdio>` in `cpp/include/slam_it/<rung>` and `cpp/src/<rung>`;
+  - refuse `std::fs` and `std::fs::File` in rung crates' `src`, outside the trailing `#[cfg(test)] mod tests`, which the script already splits off.
+  - Or have the ladder say that the native side is unchecked.
+
+#### [should-fix] Develop's online-SLAM design contradicts the code
+- **Where:** `docs/design/2026-10-14-online-slam.md` at 03f3d21. The branch carries fd530cb's older copy, and the merge keeps develop's.
+- **Issue:** Each of these is now false:
+  - **Lines 95-99:** the vocabulary's "files, `.npy` arrays all three languages read ... and a `vocabulary.json` naming its k, levels, training set, seed and the SHA-256 of each array". The code instead has:
+    - folder format version 2;
+    - `header.npy`, int64 (5,): format version, descriptor version, k, levels, words;
+    - `sha256.npy`, uint8 (5, 32);
+    - `training.json`, read by Python only;
+    - all of it read by `slam_it.eval.vocabularies`, `slam_it_eval` and `slam-it-eval`, not by rung 0.
+  - **Lines 105-107:**
+    - The doc says the arrays "must match their recorded checksums"; only Python checks them (the ladder's exception, lines 339-343).
+    - The doc says the run records "its `vocabulary.json`, the checksums with it". The record is now the header's numbers plus each array's SHA-256, with no training-set name.
+  - **Lines 109-112:** the doc says "its `vocabulary.json` records the descriptor's settings (the patch, the smoothing, the test pattern)". A descriptor version number stands for them now (`orb.DESCRIPTOR_VERSION`, `header.npy[1]`), and every reader checks it.
+  - **Line 149:** "The run format, still version 4". It is version 5, with `vocabulary` required.
+  - **Lines 141-143 (from B1's original commits):** "on, a run needs a vocabulary, the committed one unless `--vocabulary` names another". That holds for `vo.run` only. Every program, Python's included, refuses relocalisation without `--vocabulary`. I checked: `python -m slam_it.orchestration.vo ...` gives "`--vocabulary: relocalize needs one`".
+  - **Lines 157-160:** incomplete rather than wrong. Parity also gained the window room (24 cases), the found golden bundle, and native tests.
+- **Suggested fix:** Change the doc; the code is the decided fix. Commit it on develop once the owner approves the wording, under the docs-only rule.
+
+#### [note] The ladder's package table omits eval's new module
+- **Where:** `docs/design/2026-10-02-slam-it-ladder.md:377`.
+- **Issue:** The Python column lists eval's modules one by one (`video`, `lenses`, `zju`, ...) but not `vocabularies`. The C++/Rust column, "(native PNG and dataset readers, run writer, a program's process for its run)", leaves out the vocabulary reader.
+- **Suggested fix:** Add both. This branch already edits the ladder.
+
+#### [note] A standalone native run records the checksums its folder claims, not ones it checked
+- **Evidence:** The probe's "tampered" copy changes `weights.npy` under its recorded SHA-256.
+  - Python refuses it: "its SHA-256 is not the recorded one".
+  - C++ and Rust both exit 0, and `read_run(out).vocabulary == vocabularies.record(DEFAULT)` is `True`.
+- **Issue:** This follows from the decided exception and is not a re-raise of A1. The ladder (lines 339-343) and the module docstring say such a program "trusts its arrays". They do not say that its `run.json` then names checksums its arrays may not have.
+- **Suggested fix:** Add one clause to the exception, so that a reader of a run knows its `vocabulary` record is verified only when `vo.run` launched it. `vo.run` is the only launcher in the repository; the worker and `measure_testset` go through it.
+
+#### [note] The Python contract could cover more of what reading a file takes, and must grow with the rungs
+- **What it could add:** `pathlib`, `io`, `os`, `shutil`, `tempfile`, `zipfile`, `tarfile` and `pickle`. No algorithm rung imports any of them today. I listed every top-level import in the six source packages: numpy, math, typing, dataclasses, collections, enum, bisect, itertools, time, contextlib.
+- **What it cannot see:** builtin `open()` and `np.load`, so the contract's name still claims more than it checks.
+- **What it must grow with:** its source list is explicit, not exhaustive. When `slam_it.calib` lands (the ladder's layers at line 414 already list it), it has to be added by hand.
+
+#### [note] Natively, the `.npy` format is written in one eval module and read in another
+- **Where:** `cpp/src/eval/runs.cpp:395` writes and `cpp/src/eval/vocabularies.cpp:76` reads; Rust's are `rust/slam-it-eval/src/runs.rs:305` and `vocabularies.rs:94`.
+- **Issue:** Run 1's A3 worry, `.npy` handling split across rungs, is gone: both now sit in eval. When a second native reader arrives (for example B4's kept-map arrays), give the format one `npy` module beside `text` and `png` rather than copying the reader.
+
+### Checked and fine
+- **A1:** Native readers check the format and descriptor versions against `kVersion` / `VERSION` and `kDescriptorVersion` / `DESCRIPTOR_VERSION`, which are live now.
+  - Probe: the foreign header is refused with exit 3 by C++ and Rust, with Python's message.
+  - The default's record written by both native programs equals Python's.
+  - The CHANGELOG is corrected.
+- **A2:** `tests/fixtures/foundations/vocabulary.json` comes from an independent generator, which imports only numpy and the fixtures' layout helper.
+  - C++ (`cpp/tests/foundations/test_vocabulary.cpp`) and Rust's trailing test module are held to it.
+  - The reader's 19 cases in `tests/fixtures/eval/` run in all three languages; CMake picks up the native tests by glob.
+- **A3:** The folder's I/O is in `slam_it.eval.vocabularies` and its native twins.
+  - Rung 0's C++ and Rust headers say "takes a tree's arrays, never its files".
+  - The bindings' `read` is gone, and the `Implementation` Protocol is `quantize` / `bow` / `score`. `test_backends` passes.
+- **A4:** Probe: an extra key and a missing key are refused by both compiled backends, for the vocabulary and for the database (`check_keys` with `kVocabularyKeys` / `kDatabaseKeys`; Rust's exact-length check with every key read).
+- **A5:** The int32 tree exception is recorded in the ladder (lines 313-315) and matches the crossings.
+- **A6:** `viewer/tests/golden.js` loads `found_bundle/` through `loadBundle` / `loadTrack` and no longer reads `room_runs.json`. `test_bundles.py` holds the found bundle to what the bake writes.
+- **A7:** The edge and rung-0 package docstrings name the vocabulary, the database and relocalisation. The three pipeline comments now say the words only relocalise.
+- **A8:** The ladder records the database as the edge rung's (it moves to rung 0 only when the classic rung needs it), closes A8's rest and the two-view item, marks A13 as met in part, and states L15's current state.
+- **A9:** Run format version 5 in all three languages, with `vocabulary` required and checked by `check_record` on write and read. The golden run fixture is version 5. No `setdefault` is left.
+- **A10:** `vo.run` reads the vocabulary once, and a read vocabulary's arrays are read-only. `default()` remains a lazy cache used only by tests, which is harmless now.
+- **A11:** The edge order is `(adjust) | (database)` over `(residuals)`, in import-linter and `check_layers.py` alike.
+- **A14:** Native database and relocalisation tests now exist (`cpp/tests/edge/test_database.cpp`, `test_relocalization.cpp`, `rust/slam-it-edge/tests/database.rs`, `relocalization.rs`).
+- **Eval's order:**
+  - `vocabularies` sits at the bottom, with `runs` above it: C++ `runs.hpp` includes `vocabularies.hpp`, Rust uses `crate::vocabularies`.
+  - `slam_it_eval` DEPENDS only on `slam_it_foundations`, and the `slam-it-eval` crate depends only on `slam-it-foundations`.
+  - No new runtime dependency in any language; numpy's floor is 2.0.
+- **One Hamming distance per language:** `orb.distance` / `orb::distance`, called by matching, stereo, the vocabulary, and the edge rung's map and mapping. No other popcount is left in the cores.
+- **Ladder exceptions:** the int32 crossing and the checksums-Python's-alone exception match the code, and `vo.run` reads the folder before every program it launches.
+- **Error contract:** a missing file is `FileNotFoundError` in Python and `InvalidInput` naming the file natively, as the ladder says. A malformed header, descriptor or tree fails with the same message in all three languages.
+- **Edge relocalisation split:** `PnpRun` / `run_pnp` live in tracking in all three languages, and relocalisation calls them from the layer above. No cross-module private names.
+- **Other:** no reifyscene import and no import-time side effects (`DEFAULT` is a path constant). `slam_it.backends` is unchanged. Rust's exact-keys check remains a private helper in each crossing, as it already was before B1.
+
+Files outside the repository:
+- Probes:
+  - `/tmp/scratch/panel2/probe_keys.py`
+  - `/tmp/scratch/panel2/probe_native_vocab2.py`
+- The probes' runs: `/tmp/scratch/panel2/work/`
+- The scratch Rust build: `/tmp/scratch/panel2/target/` (it can be deleted).
+- Saved for reuse: `probe_native_vocabulary_header.py`, the native-vocabulary probe for the new header format. It replaces Run 1's `probe_native_vocabulary_checks.py`, which reads the old `vocabulary.json` and no longer works; I left that file in place.
+- The repo's `rust/target/release/slam_it_vo` is older than `rust/slam-it-edge/src/pipeline.rs`. It needs a rebuild before layer 1.
+
+### Algorithm review
+
+## Algorithm review
+
+**Scope:** This run covers the fixes made since Run 1, `e6d293a..98fed93` (the nine commits from 152b394 to 98fed93), on `feature/2b-b1-place-recognition`. I checked L1 to L6 against what the Run 1 report says was done (L7 deferred, L8 waived). Files read in full:
+- the window room: `tests/orchestration/datasets.py`, its golden cases, and the test in `tests/orchestration/test_vo.py`;
+- `tests/edge/test_relocalization.py`;
+- the native pipeline, database and relocalisation tests in C++ and Rust;
+- `tests/fixtures/foundations/generate_vocabulary.py` and its fixture;
+- training's new known-answer tests;
+- `orb.distance` in all three languages;
+- `tracking.run_pnp` / `PnpRun`, the split of `relocalization._try`, and Rust's `PnpRun::record` / `kept`;
+- the corrected loss-timer docstring in `src/slam_it/edge/pipeline.py`, against ORB_SLAM3 master `src/Tracking.cc`.
+
+Paths are relative to the repository root.
+
+Tests run, with nothing in the repository modified:
+- **Python:** the vocabulary, orb-distance, database, relocalisation and database-through-culling tests: 118 passed.
+- **`test_vo.py -k "window or golden_record or found or moved"`:** 107 passed, all backends.
+- **C++:** built in a scratch tree, `ctest -R 'edge|vocabular|matching|orb|eval'`: 17 of 17 passed.
+- **Rust:** `cargo test -p slam-it-edge -p slam-it-foundations -p slam-it-eval` in a scratch target: all passed.
+
+For the panel: `rust/target/release/slam_it_vo` is older than `rust/slam-it-edge/src/pipeline.rs`, because 806f8eb changed only a comment there. Until layer 1 rebuilds it, `test_vo.py` fails 28 Rust cases with `StaleProgramError`. For the Rust runs above I built HEAD's program in scratch and pointed `slam_it.backends._RUST_PROGRAMS` at it.
+
+Scratch scripts are in `/tmp/scratch/panel2/scripts/`.
+
+**Summary:**
+- **Resolved:** L2, L3 (docstring), L4, L5 and L6 are resolved as the report says. The fixes change no decision: the golden record's 20 earlier cases are byte-identical to e6d293a's.
+- **The loss timer (L1's first half) is now tested well natively.** The 0.25 s frame steps make the 3.0 s boundary exact in float64. The window room separates the time rule from `lost_frames`, and it also tests ORB-SLAM3's order: relocalise first, judge the window only after a failure.
+- **L1's second half is not met.** Of the eight relocalisation settings the fix moved off their defaults, six change no decision in any test. No test can see the narrow search's result. A native that ignored any of them would pass.
+- **Smaller items:** one should-fix on whether the vocabulary weights really rebuild exactly, and four notes.
+
+### Findings
+
+#### [must-fix] L1 is only half resolved: six of the eight moved relocalisation settings, and the whole narrow search, decide nothing in any test
+- **Where:**
+  - `tests/edge/test_relocalization.py:162-198`: `MOVED`, `MOVED_CASES`, and `test_the_moved_settings_change_what_relocalisation_decides`, which checks only the bundle (`assert moved.summary.as_dict() != default.summary.as_dict()`).
+  - `tests/orchestration/datasets.py:216-238`: `WINDOW_OPTIONS`.
+  - The narrow search: `src/slam_it/edge/relocalization.py:345-381` (`_project_more`), `cpp/src/edge/relocalization.cpp:90-131`, and `rust/slam-it-edge/src/relocalization.rs` `project_more`.
+  - The native budget tests use the defaults only: `cpp/tests/edge/test_relocalization.cpp:89-96` and its Rust twin.
+- **Issue:**
+  - **Test:** I reverted each moved setting alone to its default and compared Python's result. In the stage parity's two moved cases, only `reloc_window` and `reloc_confidence` change anything. Across the window room's four golden cases (run with the C++ program, which the record holds equal to Python), likewise. Never decisive anywhere:
+    - `reloc_inlier_ratio`, `reloc_min_inliers`, `reloc_ransac_iterations`: every RANSAC run stops on confidence after 1 or 2 samples, with inliers far above either threshold;
+    - `reloc_narrow_inliers`, `reloc_narrow_window`, `reloc_narrow_distance`.
+  - **The narrow search:** in the default "narrow search" case (frame 6, `recovery_tracked=175`), the steps are refined 69, the wide search adds 117, re-optimised 168, the narrow search adds 3. Since 171 < 175, `_project_more` returns the second optimisation's result and drops the narrow search's matches. A native that skipped the narrow search, or ran it with any window or distance, would agree with Python.
+  - **The "moved" narrow case:** `reloc_window=2.0` makes the wide search add 100, and 69 + 100 = 169 < 175. So neither the second optimisation nor the narrow search runs. The "69, not 168" difference that c3f20da cites comes from `reloc_window`, not from any narrow setting.
+  - **The golden record:** no candidate in any case reaches the narrow search. Only `window/tum/rgbd` frame 33 runs the wide search (59 → 115).
+  - **Coverage:** the narrow search's final optimisation, and the rule that the second optimisation's outliers keep their matches until the last, run in no test in any language.
+- **Why it matters:**
+  - L1 was a must-fix, recorded as fixed. Three docstrings now state a property that is false:
+    - `MOVED`: "a native that hard-coded one would decide unlike Python on the frames below";
+    - `MOVED_CASES`: "every setting it moves is used";
+    - `WINDOW_OPTIONS`: the same claim.
+  - c3f20da's message makes the same claim ("so the agreement shows the natives read them"). It is on an unmerged branch, so under the owner's rule the contradiction should be raised with them.
+  - The native narrow search and final optimisation read correctly against Python (checked), but nothing guards them against regression.
+- **Evidence** (`scripts/reloc_sensitivity.py`, `scripts/window_sensitivity.py`, `scripts/narrow_trace.py`):
+  ```
+  frame 30 (wide, moved): only reloc_window reverted -> CHANGES
+  frame 6 (narrow, moved): reloc_confidence, reloc_window -> CHANGES; the other six: no change
+  window tum/rgbd:  changes: reloc_window, recovery_tracked, redundant_*, relocalize_seconds
+  window euroc/stereo: changes: reloc_confidence, relocalize_seconds
+  window monocular (both): changes: reloc_confidence, reloc_window, redundant_observers, relocalize_seconds
+  narrow search (default): optimize 69; search w=10 +117; optimize 168; search w=3 +3   (discarded: 171 < 175)
+  narrow search, moved:    optimize 69; search w=2 +100                                 (169 < 175: stops)
+  ```
+- **Suggested fix:**
+  - **The narrow search:** add stage-parity cases where each setting decides, all found with `scripts/decisive_probe.py` and `scripts/narrow_place_probe.py`:
+    - `(6, recovery_tracked=169)` places the frame through the narrow search's final optimisation (168 → +3 → 169);
+    - `(6, recovery_tracked=170)` with `reloc_narrow_window=2.0`, with `reloc_narrow_distance=50`, or with `reloc_narrow_inliers=168`: each one decides.
+  - **The RANSAC settings:**
+    - `(6, recovery_tracked=175, reloc_ransac_iterations=1)` ends on `max_iterations`;
+    - `(6, …, reloc_inlier_ratio=1.0)` is not refined;
+    - `(30, recovery_tracked=150, reloc_min_inliers=85)` is dropped before RANSAC.
+  - Test natively `ransac_budget` with non-default settings.
+  - Replace the bundle assertion with a per-setting one: reverting any one moved setting changes Python's result in at least one case. Then the docstrings' claim is checked instead of asserted.
+
+#### [should-fix] "Rebuilt exactly" for the vocabulary weights depends on the CPU, as the new test itself says
+- **Where:**
+  - `src/slam_it/foundations/vocabulary.py:582`: `weights[seen > 0] = np.log(n_images / seen[seen > 0])`, on an array.
+  - `src/slam_it/foundations/vocabularies/local.json:2`: "each rebuilt exactly … the rebuild's arrays must have these SHA-256", with a weights SHA-256 at lines 21 and 44.
+  - `CHANGELOG.md:29`: "the same arrays on a rebuild".
+  - Against `tests/foundations/test_vocabulary.py:319`: "The weights are `np.log`'s, whose last bit may differ between CPUs, so they are checked against their rule rather than pinned."
+- **Issue:** numpy 2.4 has its own AVX-512F float64 log, `AVX512F_log_DOUBLE` in `numpy/_core/src/umath/loops_exponent_log.dispatch.c.src`: a table-based range reduction and series, not libm's. It is chosen at runtime on AVX-512F CPUs. This machine reports `found: X86_V3`, `not_found: X86_V4, AVX512_ICL, AVX512_SPR`. Here `np.log` equals `math.log` bit for bit on 200,000 ratios of the form 9969/n. So the committed and kept weights are libm's, and a rebuild on an AVX-512 machine may differ in the last bit and fail its weights SHA-256 although nothing changed. The L4 fix spotted this for the tiny training but left the claim standing for the real vocabularies.
+- **Why it matters:** the record promises a check, a bit-exact rebuild, that can fail on correct hardware. It fails loudly, not silently, but it would send someone looking for a training change that does not exist.
+- **Suggested fix:** hold a rebuild to the four integer arrays' SHA-256 exactly, and the weights to their rule within a few ULP, as the new test does. State this in `local.json`'s `_about` and in the CHANGELOG line. Computing the IDF with a scalar log per distinct `N_i` narrows the exposure but does not remove it, since glibc selects FMA variants of `log` by CPU. The tolerance route is the robust one.
+
+#### [note] The window room's docstring misstates why frame 33 is tried, and undersells what the room tests
+- **Where:** `tests/orchestration/datasets.py:206-209`, `WINDOW_BLANKS`: "so that the frame after them … is tried within its short `relocalize_seconds`".
+- **Detail:**
+  - Frame 33 comes 0.067 s after the first failed frame (31), past the 0.05 s window. It is tried, and relocalised, because the window is judged only on a frame that fails every attempt, and frame 32 at 0.033 s was within it.
+  - That is ORB-SLAM3's order: `bOK = Relocalization(); if(mCurrentFrame.mTimeStamp-mTimeStampLost>3.0f && !bOK) mState = LOST;` (`Tracking.cc`, the RECENTLY_LOST branch).
+  - So the room also catches a native that judged the window before trying: it would lose the map on frame 33. Worth saying so in the docstring.
+
+#### [note] The vocabulary fixture covers ties by chance, not by design
+- **Where:** `tests/fixtures/foundations/generate_vocabulary.py` `_between` and `_descriptors`.
+- **Detail:**
+  - `_between(a, b)` is a tie only when the two centres' distance is even.
+  - It is a tie only at a node the descriptor actually reaches. The centres are independent random descriptors, not nested, so a descriptor "between" two grandchildren usually descends elsewhere. Of the 7 such descriptors, only the root's intended tie occurs.
+  - Even so, the fixture has 14 ties at visited nodes on all three levels, two of them three-way at the root, so the lowest-index rule is well covered today.
+  - Suggest the generator assert that ties at visited nodes occur on every level, so a regeneration with another seed or tree keeps the coverage.
+
+#### [note] L3's PR-description half has no PR to land in yet
+- `gh pr list --repo evan-wes/slam-it --head feature/2b-b1-place-recognition` returns `[]`.
+- The correction of 80c960a's loss-timer claim, and now c3f20da's narrow-search claim (first finding), need to go into the PR body when it is opened.
+
+#### [note] Backlog, outside B1: the same bundle-only check weakens H21's `MOVED_OPTIONS`
+- Reverting each of its 33 settings alone on the gap room (C++ program, four cases; `scripts/moved_options_sensitivity.py`), 11 change no decision:
+  - `stereo_search`, `init_parallax_cos`, `min_motion_inliers`, `recovery_tracked`;
+  - `min_distance_margin`, `max_distance_margin`, `ref_min_observations_early`, `min_epipole_distance2`;
+  - `init_ba_iterations`, `init_ransac_iterations`, `reset_keyframes`.
+- Some are moved decisively elsewhere:
+  - `init_ransac_iterations` in `test_initialization.py`'s backend test;
+  - `recovery_tracked` in the relocalisation stage parity;
+  - `reset_keyframes` in the kept and window rooms.
+- The per-setting check above would harden `test_the_moved_settings_change_the_decisions` too.
+
+### Checked and fine
+- **L1, the timer, natively:** `check_lost_relocalizing` and `relocalizing_a_large_map_is_lost_in_time_and_a_small_one_in_frames` step at 0.25 s, so the 13th failure sits at exactly 3.0 s after the first. These tests catch:
+  - `>=` written for `>`;
+  - the time taken from the last failure or from the last tracked frame;
+  - a hard-coded window;
+  - the `lost_frames` rule for small maps;
+  - relocalisation tried on every failed frame (`summary.relocalization` set).
+
+  `check_relocalized` places a frame the fallback cannot reach in map 0, at its pose to 1e-6. Both pass in C++ and Rust.
+- **The window room's record** matches the commit's claims:
+  - stereo and RGB-D are relocalised on frame 33 in map 0 and lost (kept) on frame 38, after 3 failed frames (`lost_frames` is 5);
+  - RGB-D culls 23 keyframes on frames 8 to 30;
+  - monocular loses 2-keyframe kept maps on frames 11 and 25.
+
+  A timer not cleared on a tracked frame would lose the second stretch on frame 36, so it is caught.
+- **L2 across languages:** the RGB-D record pins `sharing: 2` at frame 33 after the culls, and monocular pins `sharing: 2` after its cull on frame 8. A native database holding culled keyframes would share many more, or fail on `row_of`, so it could not reproduce them. The native `erase` tests check the word lists, the candidates, a double erase and an empty index. The Python test checks the database against the map's keyframes after every frame of a culling run.
+- **L3:** the corrected statement matches `Tracking.cc`:
+  - `mTimeStampLost` is set only when the state leaves OK (the frame-tracking failure branch, and the end-of-`Track` `else if (mState == OK)`);
+  - `Relocalization()` sets `mnLastRelocFrameId` but never `mState`;
+  - the frame that loses the track does not relocalise; a RECENTLY_LOST frame only relocalises.
+
+  The design doc's loss-flow summary (`2026-10-14-online-slam.md:79-83`) also matches, including the reset of a LOST map with 10 keyframes or fewer (`KeyFramesInMap()<=10`) at the end of `Track`.
+- **L4:**
+  - The tie test matches DBoW2's `FORB::meanValue` (`N2 = size/2 + size%2`, set when `sum >= N2`).
+  - The log 1.5 / 0 / log 3 test matches `setNodeWeights`: a word with `Ni = 0` keeps the Node constructor's weight 0, the first of two equal leaves takes the descriptor, and the tolerances are explicit (`rtol=0, atol=1e-15`; `rtol=1e-15`).
+  - The tiny training is pinned by its four integer arrays.
+- **L5 and L6:** the C++ and Rust readers refuse another format or descriptor version. The module docstring states what `N` counts.
+- **The vocabulary parity fixture:** the brute force is independent (nothing imported from `slam_it`). It covers leaves on levels 1 and 2, the direct node of a leaf reached above level 2, a weight-0 word dropped from vectors (`[3, 3, 3]` gives an empty vector), and empty and disjoint vectors scoring 0. Its exact policy is applied in Python, and natively by `==`. serde_json has `float_roundtrip` on.
+- **One Hamming distance:** the same 64-bit popcount in C++ and Rust, and a broadcasting `bitwise_count` in Python. Every call site keeps its shapes. The tiny-training SHA-256, pinned before 8c45675, still passes. The numpy floor is 2.0.
+- **`run_pnp` / `PnpRun`:** Python's `recorded()` and Rust's `record()` / `kept()` reproduce the old blocks field for field: degenerate means no pose, and the inlier cap is applied after recording. `_try`'s split keeps the order of the checks. The C++ and Rust narrow-search code mirrors Python's (both conditions strict, outliers held, the skip set the merged points).
+- **Golden record:** 24 cases; the 20 earlier ones are identical to e6d293a's, as is the tolerance policy.
+
+Sources:
+- [ORB_SLAM3 Tracking.cc (master)](https://raw.githubusercontent.com/UZ-SLAMLab/ORB_SLAM3/master/src/Tracking.cc): `Track` lines 1938-2012, 2142-2163, 2270-2288; `Relocalization` lines 3755-3775.
+- [DBoW2 FORB.cpp](https://raw.githubusercontent.com/dorian3d/DBoW2/master/src/FORB.cpp) and [TemplatedVocabulary.h](https://raw.githubusercontent.com/dorian3d/DBoW2/master/include/DBoW2/TemplatedVocabulary.h) (Gálvez-López and Tardós, "Bags of Binary Words for Fast Place Recognition in Image Sequences", T-RO 2012).
+- [numpy v2.4.0 loops_exponent_log.dispatch.c.src](https://raw.githubusercontent.com/numpy/numpy/v2.4.0/numpy/_core/src/umath/loops_exponent_log.dispatch.c.src) (`AVX512F_log_DOUBLE`).
+- [numba PR 8027](https://github.com/numba/numba/pull/8027), on numpy dispatching transcendentals to SVML on AVX-512.
+- [Fedora/AlmaLinux numpy patch on SVML gating](https://git.almalinux.org/rpms/python3.14-numpy/src/branch/c9s/fix-test_validate_transcendentals-x86_64.patch).
+- Campos et al., "ORB-SLAM3", T-RO 2021; Mur-Artal and Tardós, "ORB-SLAM2", T-RO 2017.
