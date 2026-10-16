@@ -938,8 +938,10 @@ def in_distance_range(
     ndarray of bool, shape (N,)
         Which are in range.
     """
-    near = distance >= options.min_distance_margin * m.pt_min_distance[rows]
-    return np.asarray(near & (distance <= options.max_distance_margin * m.pt_max_distance[rows]))
+    near = distance >= options.tracking.min_distance_margin * m.pt_min_distance[rows]
+    return np.asarray(
+        near & (distance <= options.tracking.max_distance_margin * m.pt_max_distance[rows])
+    )
 
 
 def predict_level(

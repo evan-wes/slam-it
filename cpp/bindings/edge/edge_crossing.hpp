@@ -23,6 +23,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -350,32 +351,47 @@ inline edge::Frame frame_in(const nanobind::dict& values) {
                                  std::move(bearings), std::move(depth), std::move(right)));
 }
 
-/// @brief Read the settings from a dict of scalars.
-/// @param values The dict, with exactly `Options`' fields.
+/// @brief Read the settings from a dict of groups (`Options.as_dict`).
+/// @param values The dict: exactly `Options`' groups, each a dict of exactly its fields, and
+///        `seed`.
 /// @return The settings (checked by the core).
 /// @throws std::invalid_argument for a missing or unknown key.
 inline edge::Options options_in(const nanobind::dict& values) {
-  std::vector<const char*> keys;
-  for (const auto& [key, member] : edge::kFlagOptions) {
-    keys.push_back(key);
-  }
-  for (const auto& [key, member] : edge::kIntegerOptions) {
-    keys.push_back(key);
-  }
-  for (const auto& [key, member] : edge::kRealOptions) {
-    keys.push_back(key);
-  }
-  check_keys(values, keys, "edge.Options");
   edge::Options out;
-  for (const auto& [key, member] : edge::kFlagOptions) {
-    out.*member = nanobind::cast<bool>(values[key]);
+  std::vector<std::string> top;  // the groups, then seed
+  std::vector<std::pair<std::string, std::vector<std::string>>> groups;
+  edge::for_each_setting(out, [&](const char* name, const auto&) {
+    const auto [group, field] = edge::split_setting(name);
+    if (group.empty()) {
+      top.emplace_back(field);
+      return;
+    }
+    if (groups.empty() || groups.back().first != group) {
+      top.emplace_back(group);
+      groups.emplace_back(group, std::vector<std::string>{});
+    }
+    groups.back().second.emplace_back(field);
+  });
+  const auto pointers = [](const std::vector<std::string>& names) {
+    std::vector<const char*> out;
+    for (const std::string& name : names) {
+      out.push_back(name.c_str());
+    }
+    return out;
+  };
+  check_keys(values, pointers(top), "edge.Options");
+  for (const auto& [group, fields] : groups) {
+    const std::string what = "edge.Options." + group;
+    check_keys(nanobind::cast<nanobind::dict>(values[group.c_str()]), pointers(fields),
+               what.c_str());
   }
-  for (const auto& [key, member] : edge::kIntegerOptions) {
-    out.*member = nanobind::cast<std::int64_t>(values[key]);
-  }
-  for (const auto& [key, member] : edge::kRealOptions) {
-    out.*member = nanobind::cast<double>(values[key]);
-  }
+  edge::for_each_setting(out, [&](const char* name, auto& field) {
+    const auto [group, item] = edge::split_setting(name);
+    const std::string key(item);
+    const nanobind::dict owner =
+        group.empty() ? values : nanobind::cast<nanobind::dict>(values[std::string(group).c_str()]);
+    field = nanobind::cast<std::remove_reference_t<decltype(field)>>(owner[key.c_str()]);
+  });
   return out;
 }
 

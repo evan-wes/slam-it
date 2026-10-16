@@ -537,10 +537,10 @@ def _optimize_pose(
     limit = residuals.thresholds(frame.right[matched], options)
     # The Cauchy scale: the chi-square bound at level 0, in pixels, in the normalised plane;
     # the level weights whiten each residual to level-0 units, so one scale serves all.
-    scale = math.sqrt(options.chi2_mono) / camera.focal
+    scale = math.sqrt(options.adjustment.chi2_mono) / camera.focal
     use = matched.copy()
     current = np.asarray(tracked.pose, dtype=np.float64)
-    for _ in range(options.pose_rounds):
+    for _ in range(options.adjustment.pose_rounds):
         use[np.flatnonzero(use)[maps.to_camera(current, xyz[use])[:, 2] <= 0.0]] = False
         if np.count_nonzero(use) < p3p.SAMPLE_SIZE:  # refine_pose's minimum
             break
@@ -627,7 +627,7 @@ def _in_view(m: Map, camera: Camera, pose: Array, rows: IntArray, options: Optio
     distance = np.linalg.norm(offset, axis=1)
     keep &= maps.in_distance_range(m, rows, distance, options)
     view_cos = maps.viewing_cos(m, rows, offset, np.where(keep, distance, 1.0))
-    keep &= view_cos >= options.view_cos_limit
+    keep &= view_cos >= options.tracking.view_cos_limit
     chosen = rows[keep]
     right = np.full(len(chosen), np.nan)
     if camera.baseline > 0.0:
@@ -735,7 +735,11 @@ def _track_last_frame(  # noqa: PLR0913 -- the stage's state
     last_level = last.features.keypoints.level[have]
     low, high = last_level - 1, last_level + 1
     right = np.full(len(have), np.nan)
-    window = options.stereo_motion_window if mode == "stereo" else options.motion_window
+    window = (
+        options.tracking.stereo_motion_window
+        if mode == "stereo"
+        else options.tracking.motion_window
+    )
     if mode != "monocular":
         right = pixels[:, 0] - camera.focal * camera.baseline / local[:, 2]
         # The current camera's centre in the last camera's frame (ORB-SLAM's tlc): moving
@@ -748,7 +752,7 @@ def _track_last_frame(  # noqa: PLR0913 -- the stage's state
         elif -ahead > camera.baseline:
             low, high = np.zeros(len(have), dtype=np.int64), last_level
     searched = matching.SearchOptions(
-        max_distance=options.th_high, ratio=1.0, check_orientation=True
+        max_distance=options.matching.th_high, ratio=1.0, check_orientation=True
     )
     points = np.full(frame.size, -1, dtype=np.int64)
     widened = False
@@ -766,14 +770,14 @@ def _track_last_frame(  # noqa: PLR0913 -- the stage's state
         points = _search(
             frame, projections, m.pt_id[rows[have]], searched, taken=np.zeros(frame.size, bool)
         )
-        if np.count_nonzero(points >= 0) >= options.min_motion_matches:
+        if np.count_nonzero(points >= 0) >= options.tracking.min_motion_matches:
             break
     matches = int(np.count_nonzero(points >= 0))
-    if matches < options.min_motion_matches:
+    if matches < options.tracking.min_motion_matches:
         return Motion(tracked=None, summary=MotionSummary(matches, widened, None), matched=points)
     tracked = _optimize_pose(m, camera, frame, Tracked(pose=predicted, points=points), options)
     summary = MotionSummary(matches, widened, tracked.inliers)
-    kept = tracked if tracked.inliers >= options.min_motion_inliers else None
+    kept = tracked if tracked.inliers >= options.tracking.min_motion_inliers else None
     return Motion(kept, summary, matched=points)
 
 
@@ -866,18 +870,18 @@ def _track_local_map(  # noqa: PLR0913 -- the stage's state
     recovering: bool,
 ) -> LocalTracking:
     """Match the local map's points in view and refine the pose (reference)."""
-    local = m.observed_by(m.window(options.window))
+    local = m.observed_by(m.window(options.mapping.window))
     already = m.point_rows(tracked.points)
     already = already[already >= 0]
     view = _in_view(m, camera, tracked.pose, np.setdiff1d(local, already), options)
     if recovering:
-        th = options.recovery_local_window
+        th = options.tracking.recovery_local_window
     else:
-        th = options.rgbd_local_window if mode == "rgbd" else options.local_window
+        th = options.tracking.rgbd_local_window if mode == "rgbd" else options.tracking.local_window
     narrow = np.where(
-        view.view_cos > options.aligned_view_cos,
-        options.aligned_view_radius,
-        options.oblique_view_radius,
+        view.view_cos > options.tracking.aligned_view_cos,
+        options.tracking.aligned_view_radius,
+        options.tracking.oblique_view_radius,
     )
     projections = matching.Projections(
         xy=view.xy,
@@ -889,7 +893,9 @@ def _track_local_map(  # noqa: PLR0913 -- the stage's state
         right=view.right,
     )
     searched = matching.SearchOptions(
-        max_distance=options.th_high, ratio=options.local_map_ratio, check_orientation=False
+        max_distance=options.matching.th_high,
+        ratio=options.tracking.local_map_ratio,
+        check_orientation=False,
     )
     found = _search(frame, projections, m.pt_id[view.rows], searched, taken=tracked.points >= 0)
     points = np.where(tracked.points >= 0, tracked.points, found)
@@ -979,10 +985,10 @@ def track_local_map(  # noqa: PLR0913 -- the stage's state, the recovery flag, a
 
 def _relocalize_locally(m: Map, camera: Camera, frame: Frame, options: Options) -> Relocalization:
     """Place a frame against the local map by descriptors and PnP RANSAC (reference)."""
-    local = m.observed_by(m.window(options.window))
+    local = m.observed_by(m.window(options.mapping.window))
     candidates = len(local)
     points = np.full(frame.size, -1, dtype=np.int64)
-    if candidates < options.pnp_min_inliers:
+    if candidates < options.tracking.pnp_min_inliers:
         return Relocalization(tracked=None, summary=PnpSummary(candidates), matched=points)
     found = matching.match(
         frame.features.descriptors,
@@ -990,18 +996,22 @@ def _relocalize_locally(m: Map, camera: Camera, frame: Frame, options: Options) 
         frame.features.keypoints.angle,
         np.zeros(len(local), dtype=np.int64),
         matching.Options(
-            max_distance=options.th_high, ratio=options.relocalize_ratio, check_orientation=False
+            max_distance=options.matching.th_high,
+            ratio=options.relocalization.ratio,
+            check_orientation=False,
         ),
     )
     pairs = found.pairs[frame.bearings[found.pairs[:, 0], 2] > 0.0]
     points[pairs[:, 0]] = m.pt_id[local[pairs[:, 1]]]
     matched = PnpSummary(candidates, matches=len(pairs))
-    if len(pairs) < options.pnp_min_inliers:
+    if len(pairs) < options.tracking.pnp_min_inliers:
         return Relocalization(tracked=None, summary=matched, matched=points)
-    settings = ransac.Options(threshold=options.pnp_threshold / camera.focal, seed=options.seed)
+    settings = ransac.Options(
+        threshold=options.tracking.pnp_threshold / camera.focal, seed=options.seed
+    )
     run = run_pnp(m.pt_xyz[local[pairs[:, 1]]], frame.bearings[pairs[:, 0]], settings)
     sampled = replace(matched, **run.recorded())
-    consensus = run.kept(options.pnp_min_inliers)
+    consensus = run.kept(options.tracking.pnp_min_inliers)
     if consensus is None:
         return Relocalization(tracked=None, summary=sampled, matched=points)
     pose, inliers = consensus
@@ -1009,7 +1019,7 @@ def _relocalize_locally(m: Map, camera: Camera, frame: Frame, options: Options) 
     sample[pairs[inliers, 0]] = m.pt_id[local[pairs[inliers, 1]]]
     tracked = _optimize_pose(m, camera, frame, Tracked(pose=pose, points=sample), options)
     summary = replace(sampled, refined=tracked.inliers)
-    kept = tracked if tracked.inliers >= options.pnp_min_inliers else None
+    kept = tracked if tracked.inliers >= options.tracking.pnp_min_inliers else None
     return Relocalization(kept, summary, matched=points)
 
 

@@ -56,7 +56,9 @@ def test_from_depth_matches_the_reference(backend: str, truth: Truth) -> None:
     assert expected.summary.outcome is Outcome.INITIALIZED
     got = initialization.initialize_from_depth(frame, OPTIONS, backend=chosen)
     _assert_started_match(got, expected, TOLERANCE)
-    exactly = replace(OPTIONS, min_init_features_depth=frame.size)  # N > 500: more than
+    exactly = OPTIONS.with_settings(
+        {"initialization.min_features_depth": frame.size}
+    )  # N > 500: more than
     refused = initialization.initialize_from_depth(frame, exactly, backend=chosen)
     assert refused.started is None
     assert refused.summary.outcome is Outcome.TOO_FEW_FEATURES
@@ -71,7 +73,7 @@ def test_from_depth_counts_keypoints_not_depths(backend: str, truth: Truth) -> N
     """
     chosen = require_function(backend, initialization.__name__, "initialize_from_depth")
     frame = truth.frames[0]
-    options = replace(OPTIONS, min_init_features_depth=frame.size - 1)
+    options = OPTIONS.with_settings({"initialization.min_features_depth": frame.size - 1})
     for kept in (5, 0):
         sparse = replace(
             frame,
@@ -128,20 +130,20 @@ def test_matches_pair_level_zero_keypoints_within_the_window(monocular_pair: Pai
     """Each match joins two level-0 keypoints within the window, close in descriptor."""
     reference, frame = monocular_pair
     found = _matched(monocular_pair)
-    assert len(found.pairs) > OPTIONS.init_min_matches
+    assert len(found.pairs) > OPTIONS.initialization.min_matches
     first, second = reference.features.keypoints, frame.features.keypoints
     assert np.all(first.level[found.pairs[:, 0]] == 0)
     assert np.all(second.level[found.pairs[:, 1]] == 0)
     gap = np.abs(first.xy[found.pairs[:, 0]] - second.xy[found.pairs[:, 1]])
-    assert np.all(gap < OPTIONS.init_window)
-    assert np.all(found.distances <= OPTIONS.th_low)
+    assert np.all(gap < OPTIONS.initialization.window)
+    assert np.all(found.distances <= OPTIONS.matching.th_low)
     assert len(np.unique(found.pairs[:, 1])) == len(found.pairs)
 
 
 def test_the_search_follows_the_previous_matches(monocular_pair: Pair) -> None:
     """A keypoint is searched where it was last matched, not where it started."""
     reference, frame = monocular_pair
-    away = _own(reference) + 10 * OPTIONS.init_window
+    away = _own(reference) + 10 * OPTIONS.initialization.window
     assert len(initialization.match_for_initialization(*monocular_pair, away, OPTIONS).pairs) == 0
     found = _matched(monocular_pair)
     followed = _own(reference)
@@ -190,7 +192,7 @@ def test_monocular_draws_at_most_init_ransac_iterations(backend: str, monocular_
     wrong = rng.choice(len(pairs), len(pairs) // 5, replace=False)
     pairs[wrong, 1] = rng.permutation(pairs[wrong, 1])
     matches = replace(matched, pairs=pairs)
-    one = replace(OPTIONS, init_ransac_iterations=1)
+    one = OPTIONS.with_settings({"initialization.ransac_iterations": 1})
     expected = initialization.initialize_monocular(CAMERA, *monocular_pair, matches, one)
     default = initialization.initialize_monocular(CAMERA, *monocular_pair, matches, OPTIONS)
     assert expected.started is not None
@@ -213,7 +215,7 @@ def test_monocular_keeps_points_of_orb_slams_parallax(monocular_pair: Pair) -> N
                                result.points[result.triangulated], atol=1e-12)  # fmt: skip
     seen = triangulation.two_view(result.relative_pose, rays[0][kept], rays[1][kept])
     assert np.all(seen.in_front)
-    assert np.all(np.cos(seen.parallax) < OPTIONS.init_parallax_cos)
+    assert np.all(np.cos(seen.parallax) < OPTIONS.initialization.parallax_cos)
 
 
 def _imaged(template: Frame, xy: NDArray[np.float64]) -> Frame:
@@ -284,7 +286,7 @@ def test_monocular_map_has_unit_median_depth(monocular_pair: Pair) -> None:
     assert started is not None
     m, tracked = started
     assert m.keyframes == 2
-    assert m.points >= OPTIONS.init_min_matches
+    assert m.points >= OPTIONS.initialization.min_matches
     np.testing.assert_array_equal(m.kf_pose[0], np.eye(4))
     assert np.median(m.pt_xyz[:, 2]) == pytest.approx(1.0, abs=1e-12)
     np.testing.assert_array_equal(tracked.pose, m.kf_pose[1])
@@ -293,7 +295,7 @@ def test_monocular_map_has_unit_median_depth(monocular_pair: Pair) -> None:
 
 def test_monocular_needs_enough_matches(monocular_pair: Pair) -> None:
     """With fewer matches than ``init_min_matches``, no map."""
-    strict = replace(OPTIONS, init_min_matches=10_000)
+    strict = OPTIONS.with_settings({"initialization.min_matches": 10_000})
     matches = _matched(monocular_pair)
     refused = initialization.initialize_monocular(CAMERA, *monocular_pair, matches, strict)
     assert refused.started is None
@@ -309,7 +311,7 @@ def test_rejects_frames_of_another_pyramid(
     backend: str, truth: Truth, monocular_pair: Pair
 ) -> None:
     """A frame extracted with another pyramid raises before any backend runs."""
-    other = Options(levels=OPTIONS.levels - 1)
+    other = Options().with_settings({"features.levels": OPTIONS.features.levels - 1})
     with pytest.raises(InvalidInputError, match="pyramid"):
         initialization.initialize_from_depth(truth.frames[0], other, backend=backend)
     own, matches = _own(monocular_pair[0]), _matched(monocular_pair)

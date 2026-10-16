@@ -85,14 +85,14 @@ void check_budget(int& failures) {
          "100 matches: 50 inliers needed, 35 samples", failures);
   expect(edge::ransac_budget(15, options).second == 14, "15 matches: 14 samples", failures);
   edge::Options moved = options;
-  moved.reloc_inlier_ratio = 0.4;
-  moved.reloc_min_inliers = 12;
-  moved.reloc_confidence = 0.95;
+  moved.relocalization.inlier_ratio = 0.4;
+  moved.relocalization.min_inliers = 12;
+  moved.relocalization.confidence = 0.95;
   expect(edge::ransac_budget(100, moved) == Budget{40, 46},
          "moved: 100 matches need 40 inliers, in 46 samples", failures);
   expect(edge::ransac_budget(12, moved) == Budget{12, 1},
          "moved: 12 matches need all 12, in one sample", failures);
-  moved.reloc_ransac_iterations = 20;
+  moved.relocalization.ransac_iterations = 20;
   expect(edge::ransac_budget(100, moved) == Budget{40, 20}, "moved: the samples capped at 20",
          failures);
 }

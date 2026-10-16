@@ -280,7 +280,7 @@ def test_a_lost_track_starts_a_new_map_and_the_run_goes_on(
     starts map 2 after the second loss and tracks it to the room's end; a monocular one has
     too few frames left to start it.
     """
-    losses = [at + OPTIONS.lost_frames - 1 for at in LOST_AT]
+    losses = [at + OPTIONS.loss.lost_frames - 1 for at in LOST_AT]
     reset_code = runs.REMOVALS.index("reset")
     last = [0, 1] if mode == "monocular" else [0, 1, 2]
     for runs_of, reset in ((lost_runs, True), (kept_runs, False)):
@@ -342,7 +342,7 @@ def test_the_window_room_loses_its_kept_maps_by_the_time(
         failed = 0  # the failed frames of the lost map, up to its lost frame
         while failed <= k and run.diagnostics[k - failed]["tracked"] == 0:
             failed += 1
-        assert 1 < failed < WINDOW_OPTIONS.lost_frames
+        assert 1 < failed < WINDOW_OPTIONS.loss.lost_frames
     if mode == "monocular":
         return
     back = FOUND_AT + WINDOW_BLANKS
@@ -358,14 +358,14 @@ def test_the_window_room_loses_its_kept_maps_by_the_time(
 
 def test_a_request_crosses_as_a_command_line() -> None:
     """Only settings off their defaults are passed, integers as integers, reals round-tripping."""
-    options = Options(window=7, close_depth=0.1 + 0.2)
+    options = Options().with_settings({"mapping.window": 7, "stereo.close_depth": 0.1 + 0.2})
     request = vo.Request(
         "tum", Path("seq"), "rgbd", Path("out"), 2, 5, options=options, record_features=True
     )
     assert request.arguments() == [
         *("--dataset", "tum", "--sequence", "seq", "--mode", "rgbd", "--out", "out"),
         *("--first", "2", "--count", "5", "--record-features"),
-        *("--option", "close_depth=0.30000000000000004", "--option", "window=7"),
+        *("--option", "stereo.close_depth=0.30000000000000004", "--option", "mapping.window=7"),
     ]
     assert "--record-features" not in replace(request, record_features=False).arguments()
 
@@ -374,10 +374,10 @@ def test_parse_reads_a_command_line() -> None:
     """Every flag is read, in any order; the settings named are set, the rest default."""
     request = vo.parse(
         [*("--mode", "rgbd", "--dataset", "tum", "--sequence", "seq", "--out", "out"),
-         *("--first", "3", "--record-features", "--count", "10", "--option", "window=7"),
-         *("--option", "close_depth=35.5")]
+         *("--first", "3", "--record-features", "--count", "10", "--option", "mapping.window=7"),
+         *("--option", "stereo.close_depth=35.5")]
     )  # fmt: skip
-    expected = Options(window=7, close_depth=35.5)
+    expected = Options().with_settings({"mapping.window": 7, "stereo.close_depth": 35.5})
     assert request == vo.Request("tum", Path("seq"), "rgbd", Path("out"), 3, 10, expected, True)
     plain = vo.parse(["--dataset", "tum", "--sequence", "s", "--mode", "rgbd", "--out", "o"])
     assert (plain.first, plain.count, plain.options) == (0, None, Options())
@@ -392,17 +392,26 @@ def test_parse_reads_a_command_line() -> None:
         (["--first", "1_000"], "--first: expected an integer"),
         (["--count"], "--count: expected a value"),
         (["--option", "windows=7"], "--option: no setting 'windows'"),
-        (["--option", "window=7.5"], "window: expected an integer, got '7.5'"),
-        (["--option", "close_depth=inf"], "close_depth: expected a finite number, got 'inf'"),
-        (["--option", "close_depth=3_5"], "close_depth: expected a finite number"),
-        (["--option", "close_depth=+-5"], "close_depth: expected a finite number"),
+        (["--option", "mapping.window=7.5"], "mapping.window: expected an integer, got '7.5'"),
+        (
+            ["--option", "stereo.close_depth=inf"],
+            "stereo.close_depth: expected a finite number, got 'inf'",
+        ),
+        (["--option", "stereo.close_depth=3_5"], "stereo.close_depth: expected a finite number"),
+        (["--option", "stereo.close_depth=+-5"], "stereo.close_depth: expected a finite number"),
         (["--option", "window"], "--option: expected KEY=VALUE, got 'window'"),
         (["--dataset", "euroc"], "--dataset: given twice"),
         (["--verbose", "1"], "unknown argument '--verbose'"),
         (["--record-features", "--record-features"], "--record-features: given twice"),
         (["--vocabulary", "a", "--vocabulary", "b"], "--vocabulary: given twice"),
-        (["--option", "relocalize=maybe"], "relocalize: expected true or false, got 'maybe'"),
-        (["--option", "relocalize=1"], "relocalize: expected true or false, got '1'"),
+        (
+            ["--option", "relocalization.enabled=maybe"],
+            "relocalization.enabled: expected true or false, got 'maybe'",
+        ),
+        (
+            ["--option", "relocalization.enabled=1"],
+            "relocalization.enabled: expected true or false, got '1'",
+        ),
     ],
 )
 def test_parse_refuses_what_the_native_programs_refuse(more: list[str], message: str) -> None:
@@ -418,14 +427,14 @@ def test_parse_refuses_what_the_native_programs_refuse(more: list[str], message:
 @pytest.mark.parametrize(
     ("text", "value"),
     [
-        ("close_depth=35.5", 35.5),
-        ("close_depth=+0.5", 0.5),
-        ("close_depth=.5", 0.5),
-        ("close_depth=5.", 5.0),
-        ("close_depth=1e5", 1e5),
-        ("close_depth= 2.0 ", 2.0),
-        ("close_depth=-1", -1.0),  # a number; its range is the settings' to check
-        ("window=10", 10),
+        ("stereo.close_depth=35.5", 35.5),
+        ("stereo.close_depth=+0.5", 0.5),
+        ("stereo.close_depth=.5", 0.5),
+        ("stereo.close_depth=5.", 5.0),
+        ("stereo.close_depth=1e5", 1e5),
+        ("stereo.close_depth= 2.0 ", 2.0),
+        ("stereo.close_depth=-1", -1.0),  # a number; its range is the settings' to check
+        ("mapping.window=10", 10),
     ],
 )
 def test_parse_setting_reads_what_the_programs_read(text: str, value: float) -> None:
@@ -437,18 +446,18 @@ def test_parse_setting_reads_what_the_programs_read(text: str, value: float) -> 
 @pytest.mark.parametrize(
     "text",
     [
-        "close_depth=inf",
-        "close_depth=nan",
-        "close_depth=1e999",
-        "close_depth=3_5",
-        "close_depth=1e",
-        "close_depth=+-5",
-        "close_depth=",
-        "close_depth=0x10",
-        "window=1.0",
-        "window=1_000",
+        "stereo.close_depth=inf",
+        "stereo.close_depth=nan",
+        "stereo.close_depth=1e999",
+        "stereo.close_depth=3_5",
+        "stereo.close_depth=1e",
+        "stereo.close_depth=+-5",
+        "stereo.close_depth=",
+        "stereo.close_depth=0x10",
+        "mapping.window=1.0",
+        "mapping.window=1_000",
         "no_such_setting=1",
-        "close_depth",
+        "stereo.close_depth",
     ],
 )
 def test_parse_setting_refuses_what_the_programs_refuse(text: str) -> None:
@@ -469,8 +478,8 @@ def test_parse_refuses_an_unknown_mode_or_a_missing_flag() -> None:
 def test_a_setting_out_of_range_is_a_failed_run_not_a_usage_error() -> None:
     """As the natives' check refuses it after reading the command line, with exit code 3."""
     base = ["--dataset", "tum", "--sequence", "seq", "--mode", "rgbd", "--out", "out"]
-    with pytest.raises(InvalidInputError, match="window") as raised:
-        vo.parse([*base, "--option", "window=0"])
+    with pytest.raises(InvalidInputError, match=r"mapping\.window") as raised:
+        vo.parse([*base, "--option", "mapping.window=0"])
     assert not isinstance(raised.value, vo.UsageError)
 
 
@@ -499,7 +508,14 @@ def test_a_run_records_its_settings(backend: str, tmp_path: Path) -> None:
     Its peak memory is its program's; Python's in-process run, which shares its process with
     whatever called it, records none.
     """
-    options = Options(n_features=700, close_depth=0.1 + 0.2, chi2_mono=5.0, seed=3)
+    options = Options().with_settings(
+        {
+            "features.n_features": 700,
+            "stereo.close_depth": 0.1 + 0.2,
+            "adjustment.chi2_mono": 5.0,
+            "seed": 3,
+        }
+    )
     run = vo.run(
         "tum",
         SEQUENCES / "tum_camera",
@@ -555,7 +571,7 @@ def test_a_stereo_run_matches_with_its_settings(
     made = {}
     for name, options in (
         ("default", OPTIONS),
-        ("strict", replace(OPTIONS, stereo_max_distance=1)),
+        ("strict", OPTIONS.with_settings({"stereo.max_distance": 1})),
     ):
         run = vo.run(
             "euroc",
@@ -567,7 +583,7 @@ def test_a_stereo_run_matches_with_its_settings(
             count=1,
         )
         made[name] = len(run.points)
-        assert run.settings["stereo_max_distance"] == options.stereo_max_distance
+        assert run.settings["stereo"]["max_distance"] == options.stereo.max_distance
     assert 0 < 10 * made["strict"] < made["default"]
 
 
@@ -695,13 +711,13 @@ def test_a_program_refuses_a_bad_command_line(backend: str) -> None:
 def test_the_vocabulary_and_a_flag_setting_cross_the_command_line() -> None:
     """``--vocabulary`` is read and passed on; a flag setting crosses as true or false."""
     base = ["--dataset", "tum", "--sequence", "seq", "--mode", "rgbd", "--out", "out"]
-    request = vo.parse([*base, "--vocabulary", "words", "--option", "relocalize=false"])
-    assert (request.vocabulary, request.options.relocalize) == (Path("words"), False)
+    request = vo.parse([*base, "--vocabulary", "words", "--option", "relocalization.enabled=false"])
+    assert (request.vocabulary, request.options.relocalization.enabled) == (Path("words"), False)
     arguments = request.arguments()
     assert arguments[arguments.index("--vocabulary") + 1] == "words"
-    assert arguments[arguments.index("--option") + 1] == "relocalize=false"
+    assert arguments[arguments.index("--option") + 1] == "relocalization.enabled=false"
     assert vo.parse(base).vocabulary is None
-    assert vo.parse_setting("relocalize= true ") == ("relocalize", True)
+    assert vo.parse_setting("relocalization.enabled= true ") == ("relocalization.enabled", True)
 
 
 @pytest.mark.parametrize(
@@ -717,7 +733,8 @@ def test_check_refuses_a_vocabulary_missing_or_unasked_for(
     """Relocalising needs a vocabulary; one given with relocalisation off is refused."""
     request = vo.Request(
         "tum", SEQUENCES / "tum_camera", "rgbd", Path("out"),
-        options=Options(relocalize=relocalize), vocabulary=vocabulary,
+        options=Options().with_settings({"relocalization.enabled": relocalize}),
+        vocabulary=vocabulary,
     )  # fmt: skip
     with pytest.raises(InvalidInputError, match=re.escape(message)):
         vo.check(request)
@@ -732,7 +749,7 @@ def test_run_relocalises_with_the_committed_vocabulary_unless_told_otherwise(
     """
     on = vo.run("tum", SEQUENCES / "tum_camera", "rgbd", tmp_path / "on", count=0)
     assert on.vocabulary == vocabularies.record(vocabularies.DEFAULT)
-    off_options = Options(relocalize=False)
+    off_options = Options().with_settings({"relocalization.enabled": False})
     off = vo.run(
         "tum", SEQUENCES / "tum_camera", "rgbd", tmp_path / "off", count=0, options=off_options
     )
@@ -750,7 +767,10 @@ def test_run_relocalises_with_the_committed_vocabulary_unless_told_otherwise(
     ("more", "message"),
     [
         (["--vocabulary", "a", "--vocabulary", "b"], "--vocabulary: given twice"),
-        (["--option", "relocalize=maybe"], "relocalize: expected true or false, got 'maybe'"),
+        (
+            ["--option", "relocalization.enabled=maybe"],
+            "relocalization.enabled: expected true or false, got 'maybe'",
+        ),
     ],
 )
 def test_every_program_refuses_a_vocabulary_twice_and_a_flag_not_true_or_false(
@@ -790,7 +810,9 @@ def test_every_program_refuses_a_vocabulary_missing_unasked_or_foreign(
     message = "--vocabulary: relocalize needs one"
     if refused == "unasked":
         request = replace(
-            request, options=Options(relocalize=False), vocabulary=vocabularies.DEFAULT
+            request,
+            options=Options().with_settings({"relocalization.enabled": False}),
+            vocabulary=vocabularies.DEFAULT,
         )
         message = "--vocabulary: given, but relocalize is off"
     elif refused == "foreign":
@@ -808,5 +830,5 @@ def test_every_program_refuses_a_vocabulary_missing_unasked_or_foreign(
 
 def test_a_run_set_up_for_its_frames_size_gets_their_features() -> None:
     """A 16:9 clip imported at 854x480 runs with 1,334 features; its other settings, ORB-SLAM's."""
-    assert vo.options_for(854, 480) == replace(Options(), n_features=1334)
+    assert vo.options_for(854, 480) == Options().with_settings({"features.n_features": 1334})
     assert vo.options_for(320, 240) == Options()

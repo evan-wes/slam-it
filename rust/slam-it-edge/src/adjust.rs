@@ -194,7 +194,7 @@ fn solver_options(options: &Options, iterations: usize) -> ba::Options {
         solver: nls::Options {
             loss: nls::Loss {
                 kind: nls::LossKind::Huber,
-                scale: options.chi2_mono.sqrt(),
+                scale: options.adjustment.chi2_mono.sqrt(),
             },
             max_iterations: iterations as i64,
             ..nls::Options::default()
@@ -307,7 +307,10 @@ pub fn bundle_adjust(
         observing,
         point_of,
     } = build(m, camera, keyframes, fixed, &points)?;
-    let first = ba::solve::solve(&problem, &solver_options(options, options.ba_iterations))?;
+    let first = ba::solve::solve(
+        &problem,
+        &solver_options(options, options.adjustment.iterations),
+    )?;
     let first_summary = first.summary.solve;
     let start = std::mem::replace(&mut problem.points, first.points);
     problem.poses = first.poses;
@@ -331,7 +334,7 @@ pub fn bundle_adjust(
     }
     let second = ba::solve::solve(
         &refined,
-        &solver_options(options, options.ba_refine_iterations),
+        &solver_options(options, options.adjustment.refine_iterations),
     )?;
     problem.poses.clone_from(&second.poses);
     problem.points.clone_from(&second.points);

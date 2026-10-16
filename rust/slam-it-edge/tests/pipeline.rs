@@ -9,7 +9,7 @@ mod scene;
 use nalgebra::{Matrix4, Vector3};
 use slam_it_edge::frames::Frame;
 use slam_it_edge::map::Removal;
-use slam_it_edge::options::{Mode, Options};
+use slam_it_edge::options::{InitializationOptions, Mode, Options, RelocalizationOptions};
 use slam_it_edge::pipeline::{Fate, FrameResult, LostSummary, Pipeline, Placement, State};
 use slam_it_foundations::error::ErrorKind;
 
@@ -29,10 +29,16 @@ fn along(i: usize) -> Matrix4<f64> {
 /// The settings for a 60-point scene: the counts ORB-SLAM sizes for hundreds lowered.
 fn small_scene() -> Options {
     Options {
-        min_init_features: 20,
-        min_init_features_depth: 20,
-        init_min_matches: 20,
-        relocalize: false, // A2's loss rule; relocalizing() turns it on, with a vocabulary
+        initialization: InitializationOptions {
+            min_features: 20,
+            min_features_depth: 20,
+            min_matches: 20,
+            ..InitializationOptions::default()
+        },
+        relocalization: RelocalizationOptions {
+            enabled: false, // A2's loss rule; relocalizing() turns it on, with a vocabulary
+            ..RelocalizationOptions::default()
+        },
         ..Options::default()
     }
 }
@@ -86,15 +92,13 @@ fn monocular_tracks_the_path_direction() {
 fn empty_frames_lose_the_track_and_the_next_frame_starts_a_new_map() {
     // The map has one keyframe: 1, the rule's boundary, resets it; 0 keeps it.
     for reset_keyframes in [1, 0] {
-        let options = Options {
-            reset_keyframes,
-            ..small_scene()
-        };
+        let mut options = small_scene();
+        options.loss.reset_keyframes = reset_keyframes;
         let mut pipeline = Pipeline::new(Mode::Rgbd, camera(), options, None).unwrap();
         let started = pipeline.track(&frame_at(&along(0), true, 0)).unwrap();
         assert_eq!(started.map, Some(0));
         let empty = empty_frame(1.0);
-        let results: Vec<FrameResult> = (0..options.lost_frames)
+        let results: Vec<FrameResult> = (0..options.loss.lost_frames)
             .map(|_| pipeline.track(&empty).unwrap())
             .collect();
         assert!(results.iter().all(|r| r.pose.is_none() && r.map == Some(0)));
@@ -118,7 +122,7 @@ fn empty_frames_lose_the_track_and_the_next_frame_starts_a_new_map() {
         let first = started.tracked;
         let (lost_at, code) = if reset {
             (
-                i64::try_from(options.lost_frames).unwrap(),
+                i64::try_from(options.loss.lost_frames).unwrap(),
                 Removal::Reset.code(),
             )
         } else {
@@ -140,14 +144,13 @@ fn empty_frames_lose_the_track_and_the_next_frame_starts_a_new_map() {
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
-/// The settings relocalising: the scene's, with `relocalize` on and a lost map of more than
-/// `reset_keyframes` keyframes kept.
+/// The settings relocalising: the scene's, with `relocalization.enabled` on and a lost map of
+/// more than `loss.reset_keyframes` keyframes kept.
 fn relocalizing(reset_keyframes: usize) -> Options {
-    Options {
-        relocalize: true,
-        reset_keyframes,
-        ..small_scene()
-    }
+    let mut out = small_scene();
+    out.relocalization.enabled = true;
+    out.loss.reset_keyframes = reset_keyframes;
+    out
 }
 
 /// Relocalising (Python's `test_a_large_map_is_lost_in_time_and_a_small_one_in_frames`): a map
@@ -187,11 +190,9 @@ fn relocalizing_a_large_map_is_lost_in_time_and_a_small_one_in_frames() {
 #[test]
 #[allow(clippy::cast_precision_loss, reason = "frames below 16")]
 fn a_frame_out_of_the_fallbacks_reach_is_relocalized_in_its_map() {
-    let options = Options {
-        pnp_min_inliers: 1 << 20, // the local fallback out of reach
-        motion_window: 5.0,       // 10 px widened: the 25 px back to the start out of reach
-        ..relocalizing(0)
-    };
+    let mut options = relocalizing(0);
+    options.tracking.pnp_min_inliers = 1 << 20; // the local fallback out of reach
+    options.tracking.motion_window = 5.0; // 10 px widened: the 25 px back to the start out of reach
     let mut pipeline = Pipeline::new(Mode::Rgbd, camera(), options, Some(one_word())).unwrap();
     for i in 0..FRAMES {
         let mut frame = frame_at(&along(i), true, 0);

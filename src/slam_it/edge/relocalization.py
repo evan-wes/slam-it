@@ -241,15 +241,15 @@ def ransac_budget(matches: int, options: Options) -> tuple[int, int]:
         inlier.
     """
     needed = max(
-        options.reloc_min_inliers,
-        math.floor(options.reloc_inlier_ratio * matches),
+        options.relocalization.min_inliers,
+        math.floor(options.relocalization.inlier_ratio * matches),
         p3p.SAMPLE_SIZE,
     )
     if needed >= matches:
         return needed, 1
-    ratio = max(options.reloc_inlier_ratio, needed / matches)
-    bound = ransac.required_iterations(ratio, p3p.SAMPLE_SIZE, options.reloc_confidence)
-    return needed, max(1, min(math.ceil(bound), options.reloc_ransac_iterations))
+    ratio = max(options.relocalization.inlier_ratio, needed / matches)
+    bound = ransac.required_iterations(ratio, p3p.SAMPLE_SIZE, options.relocalization.confidence)
+    return needed, max(1, min(math.ceil(bound), options.relocalization.ransac_iterations))
 
 
 def search_keyframe(  # noqa: PLR0913 -- the map, its camera, the frame, the keyframe, the search
@@ -358,23 +358,24 @@ def _project_more(  # noqa: PLR0913 -- the candidate's state
     would have: those it was given and the searches' additions. `found` is the points RANSAC's
     inliers matched, which the first search skips.
     """
-    needed = options.recovery_tracked
+    needed = options.tracking.recovery_tracked
     added = search_keyframe(
         m, camera, frame, refined, keyframe,
-        skip=found, window=options.reloc_window, distance=options.th_high, options=options,
+        skip=found, window=options.relocalization.window, distance=options.matching.th_high,
+        options=options,
     )  # fmt: skip
     merged = _merged(refined, added)
     if refined.inliers + int(np.count_nonzero(added >= 0)) < needed:
         return refined, merged.points
     again = tracking.optimize_pose(m, camera, frame, merged, options)
-    if not options.reloc_narrow_inliers < again.inliers < needed:
+    if not options.relocalization.narrow_inliers < again.inliers < needed:
         return again, merged.points
     # The second optimisation's outliers keep their matches until the last (ORB-SLAM's).
     held = Tracked(pose=again.pose, points=merged.points)
     narrow = search_keyframe(
         m, camera, frame, held, keyframe,
-        skip=merged.points[merged.points >= 0], window=options.reloc_narrow_window,
-        distance=options.reloc_narrow_distance, options=options,
+        skip=merged.points[merged.points >= 0], window=options.relocalization.narrow_window,
+        distance=options.relocalization.narrow_distance, options=options,
     )  # fmt: skip
     if again.inliers + int(np.count_nonzero(narrow >= 0)) < needed:
         return again, merged.points
@@ -408,7 +409,9 @@ def _match_by_word(  # noqa: PLR0913, PLR0917 -- the map, its database, the fram
         m.kp_angle[rows],
         frame.features.keypoints.angle,
         matching.Options(
-            max_distance=options.th_low, ratio=options.relocalize_ratio, check_orientation=True
+            max_distance=options.matching.th_low,
+            ratio=options.relocalization.ratio,
+            check_orientation=True,
         ),
     )
     pairs = found.pairs[frame.bearings[found.pairs[:, 1], 2] > 0.0]  # NaN bearings fail too
@@ -437,11 +440,11 @@ def _try(  # noqa: PLR0913 -- the map, the database, the frame, the candidate, t
     pairs, matched = _match_by_word(m, db, frame, nodes, keyframe, options)
     summary = CandidateSummary(keyframe, score, matches=len(pairs))
     needed, samples = ransac_budget(len(pairs), options)
-    if len(pairs) < max(options.reloc_min_matches, needed):
+    if len(pairs) < max(options.relocalization.min_matches, needed):
         return _Attempt(None, summary, matched)
     settings = ransac.Options(
-        threshold=options.pnp_threshold / camera.focal,
-        confidence=options.reloc_confidence,
+        threshold=options.tracking.pnp_threshold / camera.focal,
+        confidence=options.relocalization.confidence,
         max_iterations=samples,
         seed=options.seed,
     )
@@ -458,16 +461,16 @@ def _try(  # noqa: PLR0913 -- the map, the database, the frame, the candidate, t
     sample[keypoints[inliers]] = matched[keypoints[inliers]]
     refined = tracking.optimize_pose(m, camera, frame, Tracked(pose=pose, points=sample), options)
     summary = replace(summary, refined=refined.inliers)
-    if refined.inliers < options.reloc_min_inliers:
+    if refined.inliers < options.relocalization.min_inliers:
         return _Attempt(None, summary, matched)
     last = refined
-    if refined.inliers < options.recovery_tracked:
+    if refined.inliers < options.tracking.recovery_tracked:
         last, searched = _project_more(
             m, camera, frame, keyframe, refined=refined, found=sample[sample >= 0], options=options
         )
         matched = np.where(searched >= 0, searched, matched)
     summary = replace(summary, found=last.inliers)
-    placed = last if last.inliers >= options.recovery_tracked else None
+    placed = last if last.inliers >= options.tracking.recovery_tracked else None
     return _Attempt(placed, summary, matched)
 
 

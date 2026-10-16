@@ -111,7 +111,7 @@ fn check_newest(m: &Map, camera: &Camera, options: &Options) -> Result<()> {
 /// `close_depth` baselines, in metres.
 #[must_use]
 pub fn close_depth(camera: &Camera, options: &Options) -> f64 {
-    options.close_depth * camera.baseline
+    options.stereo.close_depth * camera.baseline
 }
 
 /// Decides whether a tracked frame becomes a keyframe (`slam_it.edge.mapping.need_keyframe`,
@@ -155,9 +155,9 @@ pub fn need_keyframe(
     }
     // NeedNewKeyFrame's nKFs <= 2.
     let min_observations = i64::try_from(if m.keyframes() <= 2 {
-        options.ref_min_observations_early
+        options.keyframes.ref_min_observations_early
     } else {
-        options.ref_min_observations
+        options.keyframes.ref_min_observations
     })
     .unwrap_or(i64::MAX);
     let rows: Vec<usize> = rows_of(m, m.keyframes() - 1)
@@ -180,20 +180,20 @@ pub fn need_keyframe(
                 }
             }
         }
-        need_close =
-            tracked_close < options.close_tracked && untracked_close > options.close_untracked;
+        need_close = tracked_close < options.keyframes.close_tracked
+            && untracked_close > options.keyframes.close_untracked;
     }
     let mut ratio = if m.keyframes() < 2 {
-        options.first_ref_ratio
+        options.keyframes.first_ref_ratio
     } else {
-        options.ref_ratio
+        options.keyframes.ref_ratio
     };
     if mode == Mode::Monocular {
-        ratio = options.mono_ref_ratio;
+        ratio = options.keyframes.mono_ref_ratio;
     }
     let count = tracked.inliers();
     let weak = (count as f64) < tracked_reference as f64 * ratio || need_close;
-    Ok(weak && count > options.min_keyframe_inliers)
+    Ok(weak && count > options.keyframes.min_inliers)
 }
 
 /// Creates points from the newest keyframe's close depth
@@ -223,7 +223,7 @@ pub fn create_points_from_depth(m: &mut Map, camera: &Camera, options: &Options)
             xyz.push(from_depth(m, k, row));
             observers.push(vec![row]);
         }
-        if m.kp_depth[row] > limit && count > options.min_new_points {
+        if m.kp_depth[row] > limit && count > options.mapping.min_new_points {
             break;
         }
     }
@@ -257,8 +257,9 @@ pub fn cull_points(m: &mut Map, mode: Mode, options: &Options) -> Result<()> {
             "m: expected a map with at least one keyframe",
         );
     };
-    let recent_keyframes = i64::try_from(options.recent_point_keyframes).unwrap_or(i64::MAX);
-    let cull_age = i64::try_from(options.point_cull_age).unwrap_or(i64::MAX);
+    let recent_keyframes =
+        i64::try_from(options.mapping.recent_point_keyframes).unwrap_or(i64::MAX);
+    let cull_age = i64::try_from(options.mapping.point_cull_age).unwrap_or(i64::MAX);
     let recent: Vec<usize> = (0..m.points())
         .filter(|&p| current - m.pt_first_kf[p] <= recent_keyframes)
         .collect();
@@ -266,9 +267,9 @@ pub fn cull_points(m: &mut Map, mode: Mode, options: &Options) -> Result<()> {
         return Ok(());
     }
     let minimum = i64::try_from(if mode == Mode::Monocular {
-        options.min_point_observations
+        options.mapping.min_point_observations
     } else {
-        options.min_point_observations_depth
+        options.mapping.min_point_observations_depth
     })
     .unwrap_or(i64::MAX);
     let weights = map::observation_weight(m, &recent)?;
@@ -276,7 +277,7 @@ pub fn cull_points(m: &mut Map, mode: Mode, options: &Options) -> Result<()> {
     for (&p, &weight) in recent.iter().zip(&weights) {
         let ratio = m.pt_found[p] as f64 / m.pt_visible[p] as f64;
         let age = current - m.pt_first_kf[p];
-        erase[p] = ratio < options.found_ratio || (age >= cull_age && weight <= minimum);
+        erase[p] = ratio < options.mapping.found_ratio || (age >= cull_age && weight <= minimum);
     }
     map::erase_points(m, &erase, Removal::Culled)
 }
@@ -413,8 +414,8 @@ fn triangulation_pairs(
         essential: skew * rotation,
         epipole: (t.z != 0.0).then(|| Vector2::new(t.x / t.z, t.y / t.z)),
         focal: camera.focal(),
-        chi2: options.epipolar_chi2,
-        epipole_distance2: options.min_epipole_distance2,
+        chi2: options.mapping.epipolar_chi2,
+        epipole_distance2: options.mapping.min_epipole_distance2,
     };
     // For each keyframe-1 keypoint, the nearest candidate (ties: the first); then one match per
     // keyframe-2 keypoint, the nearest keeping it (ties: the lower keyframe-1 keypoint).
@@ -424,7 +425,7 @@ fn triangulation_pairs(
         let mut best: Option<(i64, usize)> = None;
         for (j, &r2) in rows2.iter().enumerate() {
             let d = orb::distance(&m.kp_descriptor[r1], &m.kp_descriptor[r2]);
-            if d <= options.th_low
+            if d <= options.matching.th_low
                 && best.is_none_or(|(b, _)| d < b)
                 && epipolar_ok(m, &epipolar, &line, r1, r2)
             {
@@ -551,7 +552,7 @@ fn choose_source(
     };
     if cos_rays < cos1.min(cos2)
         && cos_rays > 0.0
-        && (has1 || has2 || cos_rays < options.max_parallax_cos)
+        && (has1 || has2 || cos_rays < options.mapping.max_parallax_cos)
     {
         Source::Rays
     } else if has1 && cos1 < cos2 {
@@ -633,7 +634,7 @@ fn scale_consistent(
     let ratio_octave = m
         .scale_factor
         .powf((m.kp_level[pair[0]] as i64 - m.kp_level[pair[1]] as i64) as f64);
-    let factor = options.scale_ratio * m.scale_factor;
+    let factor = options.mapping.scale_ratio * m.scale_factor;
     !(ratio_distance * factor < ratio_octave || ratio_distance > ratio_octave * factor)
 }
 
@@ -750,19 +751,19 @@ pub fn triangulate_new_points(
 ) -> Result<()> {
     check_newest(m, camera, options)?;
     let k1 = m.keyframes() - 1;
-    let mut others = m.window(options.window);
+    let mut others = m.window(options.mapping.window);
     others.pop();
     others.reverse();
     others.truncate(if mode == Mode::Monocular {
-        options.mono_triangulation_neighbours
+        options.mapping.mono_triangulation_neighbours
     } else {
-        options.triangulation_neighbours
+        options.mapping.triangulation_neighbours
     });
     for k2 in others {
         let baseline = (m.centre(k2) - m.centre(k1)).norm();
         if mode == Mode::Monocular {
             match median_depth(m, k2) {
-                Some(median) if baseline / median >= options.min_baseline_depth => {}
+                Some(median) if baseline / median >= options.mapping.min_baseline_depth => {}
                 _ => continue,
             }
         } else if baseline < camera.baseline {
@@ -882,14 +883,14 @@ fn fuse_target(
     let distance = offset.norm();
     if !(camera.inside(&pixel)
         && map::in_distance_range(m, p, distance, options)
-        && map::viewing_cos(m, p, &offset, distance) >= options.view_cos_limit)
+        && map::viewing_cos(m, p, &offset, distance) >= options.tracking.view_cos_limit)
     {
         return Ok(None);
     }
     let level = map::predict_level(m, &[p], &[distance])?[0];
     let near = grid.in_area(
         [pixel.x, pixel.y],
-        options.fuse_window * m.scale_factor.powf(level as f64),
+        options.mapping.fuse_window * m.scale_factor.powf(level as f64),
         level as i64 - 1,
         level as i64,
     )?;
@@ -902,7 +903,7 @@ fn fuse_target(
             best = Some((d, row));
         }
     }
-    Ok(best.and_then(|(d, row)| (d <= options.th_low).then_some(row)))
+    Ok(best.and_then(|(d, row)| (d <= options.matching.th_low).then_some(row)))
 }
 
 /// Fuses one point into a keyframe (`slam_it.edge.mapping._fuse_one`).
@@ -984,7 +985,7 @@ fn fuse_into(m: &mut Map, camera: &Camera, k: usize, ids: &[i64], options: &Opti
 pub fn fuse_points(m: &mut Map, camera: &Camera, options: &Options) -> Result<()> {
     check_newest(m, camera, options)?;
     let mut targets: Vec<i64> = m
-        .window(options.window)
+        .window(options.mapping.window)
         .iter()
         .map(|&k| m.kf_id[k])
         .collect();
@@ -1071,7 +1072,7 @@ pub fn cull_keyframes(m: &mut Map, camera: &Camera, mode: Mode, options: &Option
     check_setup(camera, options)?;
     let limit = close_depth(camera, options);
     let mut ids: Vec<i64> = m
-        .window(options.window)
+        .window(options.mapping.window)
         .iter()
         .map(|&k| m.kf_id[k])
         .collect();
@@ -1092,8 +1093,8 @@ pub fn cull_keyframes(m: &mut Map, camera: &Camera, mode: Mode, options: &Option
         if rows.is_empty() {
             continue;
         }
-        let count = redundant(m, k, &rows, options.redundant_observers)?;
-        if count as f64 > options.redundant_fraction * rows.len() as f64 {
+        let count = redundant(m, k, &rows, options.mapping.redundant_observers)?;
+        if count as f64 > options.mapping.redundant_fraction * rows.len() as f64 {
             map::erase_keyframe(m, k)?;
         }
     }
@@ -1182,9 +1183,9 @@ pub fn process(
     fuse_points(m, camera, options)?;
     let fused = m.points();
     let mut adjustment = Adjustment::default();
-    if m.keyframes() >= options.ba_min_keyframes {
+    if m.keyframes() >= options.adjustment.min_keyframes {
         let fixed: Vec<bool> = m.kf_id.iter().map(|&id| id == 0).collect();
-        let window = m.window(options.window);
+        let window = m.window(options.mapping.window);
         adjustment = bundle_adjust(m, camera, &window, &fixed, options)?;
     }
     let keyframes = m.keyframes();

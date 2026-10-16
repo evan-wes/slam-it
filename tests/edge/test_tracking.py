@@ -114,7 +114,7 @@ def test_stages_match_the_reference(backend: str, room_state: Room) -> None:
     recovery = tracking.relocalize_locally(r.map, CAMERA, r.frame, OPTIONS)
     _close(relocalized.tracked, recovery.tracked)
     assert_records_match(relocalized.summary.as_dict(), recovery.summary.as_dict())
-    strict = replace(OPTIONS, pnp_min_inliers=r.map.points + 1)
+    strict = OPTIONS.with_settings({"tracking.pnp_min_inliers": r.map.points + 1})
     refused = tracking.relocalize_locally(r.map, CAMERA, r.frame, strict, backend=backend)
     assert refused.tracked is None
     assert refused.summary == tracking.PnpSummary(candidates=refused.summary.candidates)
@@ -134,7 +134,7 @@ def test_tracking_finds_the_pose(room_state: Room) -> None:
     summary = local.summary()
     assert summary.in_view == len(local.visible)
     assert summary.inliers == local.tracked.inliers <= summary.matches
-    assert local.tracked.inliers > last.inliers >= OPTIONS.min_tracked
+    assert local.tracked.inliers > last.inliers >= OPTIONS.tracking.min_tracked
     assert np.abs(local.tracked.pose[:3, 3] - r.truth[:3, 3]).max() < 0.01
     np.testing.assert_array_equal(local.found, local.tracked.points[local.tracked.points >= 0])
     assert set(local.visible) >= set(last.points[last.points >= 0])
@@ -146,7 +146,7 @@ def test_relocalizing_places_the_frame(room_state: Room) -> None:
     recovery = tracking.relocalize_locally(r.map, CAMERA, r.frame, OPTIONS)
     placed = recovery.tracked
     assert placed is not None
-    assert placed.inliers >= OPTIONS.pnp_min_inliers
+    assert placed.inliers >= OPTIONS.tracking.pnp_min_inliers
     assert np.abs(placed.pose[:3, 3] - r.truth[:3, 3]).max() < 0.01
     s = recovery.summary
     assert s.matches is not None

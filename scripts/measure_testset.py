@@ -46,8 +46,9 @@ an RGB-D run's split of near and far points does not move with the guess. It mea
 guessed lens costs.
 
 ``--option KEY=VALUE``, given once a setting, replaces one of the edge pipeline's settings
-(:class:`slam_it.edge.options.Options`) in every run, its value read as JSON: ``--option
-relocalize=false`` measures without relocalisation, ``--option seed=1`` at another RANSAC seed.
+(:class:`slam_it.edge.options.Options`, named by its group and field) in every run, its value
+read as JSON: ``--option relocalization.enabled=false`` measures without relocalisation,
+``--option seed=1`` at another RANSAC seed.
 Each result names the settings it replaced, in ``options``.
 
 The results are one JSON line per sequence in ``OUT/results.jsonl``, and a table on stdout::
@@ -64,7 +65,6 @@ tracking and the ATE.
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import json
 import os
 import sys
@@ -82,8 +82,8 @@ from slam_it.orchestration import vo
 KEYS = ("name", "folder", "mode", "reference")
 """Each sequence's keys in the config, every one a string."""
 
-SETTINGS = frozenset(item.name for item in dataclasses.fields(Options))
-"""The settings an ``--option`` may replace."""
+SETTINGS = frozenset(Options().settings())
+"""The settings an ``--option`` may replace, each named by its group and field."""
 
 LINKED = ("rgb", "rgb.txt", "depth", "depth.txt", "groundtruth.txt")
 """What a nominal camera's folder links to in the sequence's, where the sequence has it."""
@@ -158,7 +158,7 @@ def read_options(given: list[str]) -> dict[str, Any]:
             out[key] = json.loads(value)
         except json.JSONDecodeError:
             out[key] = value
-    dataclasses.replace(Options(), **out)  # each value checked as a run will check it
+    Options().with_settings(out)  # each value checked as a run will check it
     return out
 
 
@@ -207,7 +207,7 @@ def measure(  # noqa: PLR0913 -- the sequence and its folder; how it runs keywor
     folder = nominal_folder(entry.folder, out / "sequence") if nominal else entry.folder
     camera = tum.read_camera(folder)
     chosen = vo.options_for(camera.width, camera.height) if by_size else Options()
-    options = dataclasses.replace(chosen, **replaced)
+    options = chosen.with_settings(replaced)
     run = vo.run("tum", folder, entry.mode, out / "run", backend=backend, options=options)
     times = vo.open_source("tum", folder, entry.mode).times
     span = runs.tracking(run, times)
@@ -217,7 +217,7 @@ def measure(  # noqa: PLR0913 -- the sequence and its folder; how it runs keywor
         "backend": backend,
         "camera": "nominal" if nominal else "exact",
         "size": [camera.width, camera.height],
-        "features": options.n_features,
+        "features": options.features.n_features,
         "options": replaced,
         "frames": len(times),
         "run": span.frames,

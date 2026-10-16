@@ -231,8 +231,8 @@ def _bundle_adjust(
     if len(points) == 0:
         return Adjustment(map=m, solves=(), outliers=0)
     problem, rows, observing = _problem(m, camera, keyframes, points, fixed)
-    loss = nls.Loss("huber", math.sqrt(options.chi2_mono))
-    first = ba.solve(problem, _options(loss, options.ba_iterations))
+    loss = nls.Loss("huber", math.sqrt(options.adjustment.chi2_mono))
+    first = ba.solve(problem, _options(loss, options.adjustment.iterations))
     solved = replace(problem, poses=first.poses, points=first.points)
     outlier = _outliers(m, camera, solved, rows, options)
     # A point left with fewer than two inlier views is left out of the second solve: it goes
@@ -245,7 +245,7 @@ def _bundle_adjust(
             weights=np.where(outlier, 0.0, problem.weights),
             depth_prior_weights=np.where(outlier, 0.0, problem.depth_prior_weights),
         ),
-        _options(loss, options.ba_refine_iterations),
+        _options(loss, options.adjustment.refine_iterations),
     )
     final = replace(problem, poses=second.poses, points=second.points)
     dropped = rows[_outliers(m, camera, final, rows, options)]

@@ -406,8 +406,8 @@ double viewing_cos(const Map& m, std::size_t p, const Eigen::Vector3d& offset, d
 }
 
 bool in_distance_range(const Map& m, std::size_t p, double distance, const Options& options) {
-  return distance >= options.min_distance_margin * m.pt_min_distance[p] &&
-         distance <= options.max_distance_margin * m.pt_max_distance[p];
+  return distance >= options.tracking.min_distance_margin * m.pt_min_distance[p] &&
+         distance <= options.tracking.max_distance_margin * m.pt_max_distance[p];
 }
 
 Result<std::vector<std::int64_t>> predict_level(const Map& m, std::span<const std::int64_t> rows,

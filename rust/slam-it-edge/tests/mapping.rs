@@ -11,7 +11,7 @@ use slam_it_edge::mapping::{
     create_points_from_depth, cull_keyframes, cull_points, fuse_points, match_for_triangulation,
     need_keyframe, process, triangulate_new_points,
 };
-use slam_it_edge::options::{Mode, Options};
+use slam_it_edge::options::{MappingOptions, Mode, Options, StereoOptions};
 
 use scene::{POINTS, camera, frame, frame_at, moved, points, pose, scene_map};
 
@@ -67,8 +67,14 @@ fn keyframes_and_points_follow_the_rules() {
     assert_eq!(every.points(), 2 * POINTS);
     let mut nearest = m.clone();
     let options = Options {
-        close_depth: 1.0,
-        min_new_points: 10,
+        stereo: StereoOptions {
+            close_depth: 1.0,
+            ..StereoOptions::default()
+        },
+        mapping: MappingOptions {
+            min_new_points: 10,
+            ..MappingOptions::default()
+        },
         ..Options::default()
     };
     create_points_from_depth(&mut nearest, &camera(), &options).unwrap();

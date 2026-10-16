@@ -108,8 +108,8 @@ def test_records_its_two_solves(truth: Truth) -> None:
     first, second = adjusted.solves
     assert first.final_cost < first.initial_cost
     assert second.final_cost <= second.initial_cost
-    assert 0 < first.iterations <= OPTIONS.ba_iterations
-    assert 0 < second.iterations <= OPTIONS.ba_refine_iterations
+    assert 0 < first.iterations <= OPTIONS.adjustment.iterations
+    assert 0 < second.iterations <= OPTIONS.adjustment.refine_iterations
     assert set(first.as_dict()) == {"initial_cost", "final_cost", "iterations", "termination"}
 
 

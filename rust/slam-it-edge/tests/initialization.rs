@@ -8,7 +8,7 @@ use nalgebra::Matrix4;
 use slam_it_edge::initialization::{
     InitSummary, Outcome, initialize_from_depth, initialize_monocular, match_for_initialization,
 };
-use slam_it_edge::options::Options;
+use slam_it_edge::options::{FeatureOptions, InitializationOptions, Options};
 use slam_it_foundations::error::ErrorKind;
 
 use scene::{POINTS, camera, frame, points, pose};
@@ -17,7 +17,10 @@ use scene::{POINTS, camera, frame, points, pose};
 fn from_depth_puts_a_point_at_every_keypoint() {
     let f = frame(0, true);
     let options = Options {
-        min_init_features_depth: 10,
+        initialization: InitializationOptions {
+            min_features_depth: 10,
+            ..InitializationOptions::default()
+        },
         ..Options::default()
     };
     let attempt = initialize_from_depth(&f, &options).unwrap();
@@ -30,7 +33,10 @@ fn from_depth_puts_a_point_at_every_keypoint() {
         assert!((x - truth).norm() < 1e-12);
     }
     let strict = Options {
-        min_init_features_depth: 100,
+        initialization: InitializationOptions {
+            min_features_depth: 100,
+            ..InitializationOptions::default()
+        },
         ..Options::default()
     };
     let outcome = |options: &Options| {
@@ -40,7 +46,10 @@ fn from_depth_puts_a_point_at_every_keypoint() {
     };
     assert_eq!(outcome(&strict), Outcome::TooFewFeatures);
     let exactly = Options {
-        min_init_features_depth: POINTS,
+        initialization: InitializationOptions {
+            min_features_depth: POINTS,
+            ..options.initialization
+        },
         ..options
     };
     assert_eq!(outcome(&exactly), Outcome::TooFewFeatures); // more than, as N > 500
@@ -51,7 +60,10 @@ fn from_depth_puts_a_point_at_every_keypoint() {
     let thin = initialize_from_depth(&shallow, &options).unwrap();
     assert_eq!(thin.started.unwrap().map.points(), 5); // a map of the points it has
     let other = Options {
-        levels: 4,
+        features: FeatureOptions {
+            levels: 4,
+            ..FeatureOptions::default()
+        },
         ..Options::default()
     };
     let err = initialize_from_depth(&f, &other).unwrap_err();
@@ -84,7 +96,10 @@ fn monocular_starts_a_unit_depth_map() {
     );
     assert_eq!(beyond.unwrap_err().kind, ErrorKind::InvalidInput);
     let options = Options {
-        init_min_matches: 20,
+        initialization: InitializationOptions {
+            min_matches: 20,
+            ..InitializationOptions::default()
+        },
         ..Options::default()
     };
     let attempt = initialize_monocular(&camera(), &first, &last, &pairs, &options).unwrap();

@@ -528,11 +528,12 @@ pub fn camera_in(values: &Bound<'_, PyDict>) -> PyResult<Camera> {
     })
 }
 
-/// Reads the settings from a dict of scalars.
+/// Reads the settings from a dict of groups (`Options.as_dict`).
 ///
 /// # Arguments
 ///
-/// * `values` - The dict, with exactly `Options`' fields.
+/// * `values` - The dict: exactly `Options`' groups, each a dict of exactly its fields, and
+///   `seed`.
 ///
 /// # Returns
 ///
@@ -545,9 +546,26 @@ pub fn camera_in(values: &Bound<'_, PyDict>) -> PyResult<Camera> {
 pub fn options_in(values: &Bound<'_, PyDict>) -> PyResult<Options> {
     let mut out = Options::default();
     let settings = out.settings();
-    let keys: Vec<&str> = settings.iter().map(|&(name, _)| name).collect();
-    for (name, kind) in settings {
-        let value = item(values, &keys, name)?;
+    let mut top: Vec<&str> = Vec::new(); // the groups, then seed
+    for &(name, _) in &settings {
+        let key = name.split_once('.').map_or(name, |(group, _)| group);
+        if top.last() != Some(&key) {
+            top.push(key);
+        }
+    }
+    for (name, kind) in settings.iter().copied() {
+        let value = if let Some((group, field)) = name.split_once('.') {
+            let fields: Vec<&str> = settings
+                .iter()
+                .filter_map(|&(other, _)| other.split_once('.'))
+                .filter(|&(owner, _)| owner == group)
+                .map(|(_, field)| field)
+                .collect();
+            let inner: Bound<'_, PyDict> = item(values, &top, group)?.extract()?;
+            item(&inner, &fields, field)?
+        } else {
+            item(values, &top, name)?
+        };
         let setting = match kind {
             Setting::Flag(_) => Setting::Flag(value.extract()?),
             Setting::Integer(_) => Setting::Integer(value.extract()?),

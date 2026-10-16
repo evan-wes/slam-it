@@ -117,7 +117,7 @@ def test_process_matches_the_reference(backend: str, mode: str, mapped: Mapped) 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_local_ba_waits_for_enough_keyframes(backend: str, mapped: Mapped) -> None:
     """Before the map holds ``ba_min_keyframes``, no local BA: the poses stay as tracked."""
-    waiting = replace(OPTIONS, ba_min_keyframes=mapped.map.keyframes + 2)
+    waiting = OPTIONS.with_settings({"adjustment.min_keyframes": mapped.map.keyframes + 2})
     args = (mapped.map, CAMERA, mapped.frame, mapped.tracked)
     waited = mapping.process(*args, mode="rgbd", options=waiting)
     held = waited.map
@@ -144,8 +144,8 @@ def test_keyframe_needed_when_tracking_thins(mapped: Mapped) -> None:
     def need(t: Tracked) -> bool:
         return mapping.need_keyframe(m, CAMERA, frame.depth, t, mode="monocular", options=OPTIONS)
 
-    assert need(keeping(OPTIONS.min_keyframe_inliers + 1))
-    assert not need(keeping(OPTIONS.min_keyframe_inliers))
+    assert need(keeping(OPTIONS.keyframes.min_inliers + 1))
+    assert not need(keeping(OPTIONS.keyframes.min_inliers))
     assert not need(tracked)
 
 
@@ -169,8 +169,8 @@ def test_rarely_found_new_points_are_culled(mapped: Mapped) -> None:
     m = mapped.inserted
     found = m.pt_found.copy()
     visible = m.pt_visible.copy()
-    recent = np.flatnonzero(m.kf_id[-1] - m.pt_first_kf <= OPTIONS.recent_point_keyframes)
-    old = np.flatnonzero(m.kf_id[-1] - m.pt_first_kf > OPTIONS.recent_point_keyframes)
+    recent = np.flatnonzero(m.kf_id[-1] - m.pt_first_kf <= OPTIONS.mapping.recent_point_keyframes)
+    old = np.flatnonzero(m.kf_id[-1] - m.pt_first_kf > OPTIONS.mapping.recent_point_keyframes)
     assert len(recent)
     assert len(old)
     visible[[recent[0], old[0]]] = 10
@@ -188,7 +188,7 @@ def test_triangulation_matches_free_keypoints_once(mapped: Mapped) -> None:
     assert np.all(m.kp_point[pairs] < 0)
     assert len(np.unique(pairs[:, 0])) == len(pairs) == len(np.unique(pairs[:, 1]))
     bits = matching.distances(m.kp_descriptor[pairs[:, 0]], m.kp_descriptor[pairs[:, 1]])
-    assert np.all(np.diagonal(bits) <= OPTIONS.th_low)
+    assert np.all(np.diagonal(bits) <= OPTIONS.matching.th_low)
 
 
 def test_triangulated_points_reproject_in_both_views(mapped: Mapped) -> None:
@@ -251,7 +251,7 @@ def test_process_adds_a_keyframe(mode: str, mapped: Mapped) -> None:
 def test_rejects_malformed_arguments(backend: str, mapped: Mapped) -> None:
     """A bad mode, keyframe rows, matches or an empty map raise before any backend runs."""
     m = mapped.inserted
-    empty = maps.empty(OPTIONS.levels, OPTIONS.scale_factor)
+    empty = maps.empty(OPTIONS.features.levels, OPTIONS.features.scale_factor)
     short = Tracked(pose=mapped.tracked.pose, points=mapped.tracked.points[:-1])
     calls: list[Callable[[], object]] = [
         lambda: mapping.cull_points(m, "lidar", OPTIONS, backend=backend),

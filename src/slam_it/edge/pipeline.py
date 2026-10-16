@@ -425,9 +425,9 @@ class Pipeline:
             raise InvalidInputError(f"mode: expected one of {MODES}, got {self.mode!r}")
         if self.mode != "monocular" and not self.camera.baseline > 0.0:
             raise InvalidInputError(f"camera.baseline: {self.mode} needs a positive baseline")
-        if self.options.relocalize and self.vocabulary is None:
+        if self.options.relocalization.enabled and self.vocabulary is None:
             raise InvalidInputError("vocabulary: relocalize needs one")
-        if not self.options.relocalize and self.vocabulary is not None:
+        if not self.options.relocalization.enabled and self.vocabulary is not None:
             raise InvalidInputError("vocabulary: given, but relocalize is off")
 
     def extraction(self) -> orb.Options:
@@ -543,7 +543,7 @@ class Pipeline:
         the next frame starts a new one.
         """
         frame = self._frames - 1  # dated already
-        reset = m.keyframes <= self.options.reset_keyframes
+        reset = m.keyframes <= self.options.loss.reset_keyframes
         for point_id, xyz in zip(m.pt_id, m.pt_xyz, strict=True):
             run_id = self._pt_base + int(point_id)
             self._past_points[run_id] = xyz
@@ -585,7 +585,7 @@ class Pipeline:
 
     def _initialize_monocular(self, frame: Frame) -> Initialization:
         """Pair a monocular frame with the reference, or make it the reference."""
-        if frame.size <= self.options.min_init_features:
+        if frame.size <= self.options.initialization.min_features:
             self._reference = None  # too few features: ORB-SLAM drops its initializer
             return Initialization(started=None, summary=InitSummary(Outcome.TOO_FEW_FEATURES))
         if self._reference is None or self._previous is None:
@@ -594,7 +594,7 @@ class Pipeline:
         matched = initialization.match_for_initialization(
             self._reference, frame, self._previous, self.options
         )
-        if len(matched.pairs) < self.options.init_min_matches:
+        if len(matched.pairs) < self.options.initialization.min_matches:
             # The views no longer overlap enough: start again from this frame.
             self._reference, self._previous = frame, frame.features.keypoints.xy.copy()
             replaced = InitSummary(Outcome.REFERENCE_REPLACED, matches=len(matched.pairs))
@@ -642,9 +642,9 @@ class Pipeline:
         if self._lost_since is None:
             self._lost_since = frame.timestamp
         options = self.options
-        if not options.relocalize or self.map.keyframes <= options.reset_keyframes:
-            return self._failures >= options.lost_frames
-        return frame.timestamp - self._lost_since > options.relocalize_seconds
+        if not options.relocalization.enabled or self.map.keyframes <= options.loss.reset_keyframes:
+            return self._failures >= options.loss.lost_frames
+        return frame.timestamp - self._lost_since > options.loss.relocalize_seconds
 
     def _place(self, m: Map, frame: Frame) -> tuple[Tracked | None, FrameSummary, IntArray]:
         """Track the last frame, or recover by PnP, or relocalise.
@@ -689,8 +689,8 @@ class Pipeline:
         elif self._since_recovery is not None:
             self._since_recovery += 1
         since = self._since_recovery
-        recent = since is not None and since < options.max_frames
-        wide = since is not None and since < options.recovery_window_frames
+        recent = since is not None and since < options.tracking.max_frames
+        wide = since is not None and since < options.tracking.recovery_window_frames
         tracked = None
         if placed is not None:
             local = tracking.track_local_map(
@@ -701,13 +701,13 @@ class Pipeline:
             matched = local.matched
             m = maps.count(m, local.visible, visible=np.ones(len(local.visible), dtype=np.int64))
             m = maps.count(m, local.found, found=np.ones(len(local.found), dtype=np.int64))
-            needed = options.recovery_tracked if recent else options.min_tracked
+            needed = options.tracking.recovery_tracked if recent else options.tracking.min_tracked
             tracked = local.tracked if local.tracked.inliers >= needed else None
         self.map = m
         if tracked is None:
             lost = self._record_failure(frame)
             return _Step(None, False, 0.0, summary, matched=matched, lost=lost)
-        held = recent and m.keyframes > options.max_frames
+        held = recent and m.keyframes > options.tracking.max_frames
         keyframe = not held and mapping.need_keyframe(
             m, self.camera, frame.depth, tracked, mode=self.mode, options=options
         )

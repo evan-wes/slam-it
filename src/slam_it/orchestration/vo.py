@@ -63,7 +63,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -186,9 +186,9 @@ class Request:
             out += ["--vocabulary", str(self.vocabulary)]
         if self.record_features:
             out.append("--record-features")
-        defaults = Options()
-        for setting in fields(Options):
-            value, default = getattr(self.options, setting.name), getattr(defaults, setting.name)
+        defaults = Options().settings()
+        for name, value in self.options.settings().items():
+            default = defaults[name]
             if value != default:
                 if isinstance(default, bool):
                     text = "true" if value else "false"
@@ -196,7 +196,7 @@ class Request:
                     text = str(int(value))
                 else:
                     text = repr(float(value))
-                out += ["--option", f"{setting.name}={text}"]
+                out += ["--option", f"{name}={text}"]
         return out
 
 
@@ -227,9 +227,9 @@ def check(request: Request) -> None:
         raise InvalidInputError("mode: a euroc sequence has no depth maps")
     if request.first < 0 or (request.count is not None and request.count < 0):
         raise InvalidInputError("first, count: must be at least 0")
-    if request.options.relocalize and request.vocabulary is None:
+    if request.options.relocalization.enabled and request.vocabulary is None:
         raise InvalidInputError("--vocabulary: relocalize needs one")
-    if not request.options.relocalize and request.vocabulary is not None:
+    if not request.options.relocalization.enabled and request.vocabulary is not None:
         raise InvalidInputError("--vocabulary: given, but relocalize is off")
 
 
@@ -250,7 +250,8 @@ def parse_setting(text: str) -> tuple[str, bool | int | float]:
     Parameters
     ----------
     text : str
-        ``KEY=VALUE``: a field of :class:`~slam_it.edge.options.Options` and its value.
+        ``KEY=VALUE``: a setting of :class:`~slam_it.edge.options.Options`, named by its group
+        and field (``relocalization.enabled``), and its value.
 
     Returns
     -------
@@ -267,9 +268,10 @@ def parse_setting(text: str) -> tuple[str, bool | int | float]:
     key, equals, value = text.partition("=")
     if not equals:
         raise UsageError(f"--option: expected KEY=VALUE, got '{text}'")
-    if key not in {setting.name for setting in fields(Options)}:
+    defaults = Options().settings()
+    if key not in defaults:
         raise UsageError(f"--option: no setting '{key}'")
-    default = getattr(Options(), key)
+    default = defaults[key]
     if isinstance(default, bool):
         if value.strip() not in ("true", "false"):
             raise UsageError(f"{key}: expected true or false, got '{value}'")
@@ -286,7 +288,8 @@ def parse(arguments: Sequence[str]) -> Request:
     """Read a program's command line (:data:`USAGE`), as the native programs read theirs.
 
     Flags come in any order, each with its value but ``--record-features``; ``--option
-    KEY=VALUE`` is repeatable and names a field of :class:`~slam_it.edge.options.Options`.
+    KEY=VALUE`` is repeatable and names a setting of :class:`~slam_it.edge.options.Options` by its
+    group and field.
 
     Parameters
     ----------
@@ -308,7 +311,7 @@ def parse(arguments: Sequence[str]) -> Request:
     """
     values: dict[str, str] = {}
     numbers: dict[str, int] = {}
-    changes: dict[str, Any] = {}  # each of its field's type (parse_setting)
+    changes: dict[str, Any] = {}  # each of its setting's type (parse_setting)
     i = 0
     while i < len(arguments):
         flag = arguments[i]
@@ -345,7 +348,7 @@ def parse(arguments: Sequence[str]) -> Request:
         Path(values["--out"]),
         first=numbers.get("--first", 0),
         count=numbers.get("--count"),
-        options=replace(Options(), **changes),
+        options=Options().with_settings(changes),
         record_features=_RECORD_FEATURES in values,
         vocabulary=Path(values["--vocabulary"]) if "--vocabulary" in values else None,
     )
@@ -400,7 +403,7 @@ def options_for(width: int, height: int) -> Options:
     slam_it.foundations.errors.InvalidInputError
         If a side is not a positive integer.
     """
-    return Options(n_features=features_for(width, height))
+    return Options().with_settings({"features.n_features": features_for(width, height)})
 
 
 def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest keyword-only
@@ -483,7 +486,7 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
         record_features=record_features,
         vocabulary=None if vocabulary is None else Path(vocabulary),
     )
-    if request.vocabulary is None and request.options.relocalize:
+    if request.vocabulary is None and request.options.relocalization.enabled:
         request = replace(request, vocabulary=vocabularies.DEFAULT)
     backends.check_name(backend)
     check(request)

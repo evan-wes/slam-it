@@ -39,9 +39,9 @@ impl Mode {
 /// The largest an integer setting may be (Python's `1 << 30`).
 const MAX_SETTING: usize = 1 << 30;
 
-/// The edge pipeline's settings (`slam_it.edge.options.Options`).
+/// ORB extraction's settings (`Options.features`).
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Options {
+pub struct FeatureOptions {
     /// ORB features per frame.
     pub n_features: usize,
     /// Pyramid levels.
@@ -52,36 +52,111 @@ pub struct Options {
     pub fast_threshold: i64,
     /// The FAST threshold for cells with no corner at the first.
     pub min_fast_threshold: i64,
+    /// A monocular frame's features are this many times `features.n_features` before the map.
+    pub init_factor: usize,
+}
+
+impl Default for FeatureOptions {
+    fn default() -> Self {
+        Self {
+            n_features: 1000,
+            levels: 8,
+            scale_factor: 1.2,
+            fast_threshold: 20,
+            min_fast_threshold: 7,
+            init_factor: 2,
+        }
+    }
+}
+
+/// The descriptor distances matching takes in every stage (`Options.matching`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MatchingOptions {
     /// The stricter descriptor distance: initialisation, triangulation, fusion (`TH_LOW`).
     pub th_low: i64,
     /// The looser one: tracking (`TH_HIGH`).
     pub th_high: i64,
+}
+
+impl Default for MatchingOptions {
+    fn default() -> Self {
+        Self {
+            th_low: 50,
+            th_high: 100,
+        }
+    }
+}
+
+/// A stereo pair's row matching, and the close depth of stereo and RGB-D (`Options.stereo`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StereoOptions {
     /// The stereo row matching's Hamming distance must be below this.
-    pub stereo_max_distance: i64,
+    pub max_distance: i64,
     /// Its row band, in multiples of the right keypoint's level scale.
-    pub stereo_band: f64,
+    pub band: f64,
     /// Its SAD patch's half-width.
-    pub stereo_window: usize,
+    pub window: usize,
     /// Its SAD search's half-range.
-    pub stereo_search: usize,
+    pub search: usize,
     /// Its matches whose best sum exceeds this times the median are dropped.
-    pub stereo_outlier_factor: f64,
+    pub outlier_factor: f64,
     /// Keypoints nearer than this many baselines are close.
     pub close_depth: f64,
-    /// A monocular frame's features are this many times `n_features` before the map.
-    pub init_feature_factor: usize,
+}
+
+impl Default for StereoOptions {
+    fn default() -> Self {
+        Self {
+            max_distance: 75,
+            band: 2.0,
+            window: 5,
+            search: 5,
+            outlier_factor: 2.1,
+            close_depth: 40.0,
+        }
+    }
+}
+
+/// Starting the map (`Options.initialization`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InitializationOptions {
     /// A monocular frame takes part in initialisation with more than this many keypoints.
-    pub min_init_features: usize,
+    pub min_features: usize,
     /// A stereo or RGB-D frame starts the map with more than this many keypoints.
-    pub min_init_features_depth: usize,
+    pub min_features_depth: usize,
     /// The monocular initialisation's search window, in pixels.
-    pub init_window: f64,
+    pub window: f64,
     /// Its ratio test.
-    pub init_ratio: f64,
+    pub ratio: f64,
     /// Matches it needs (fewer: the reference frame is replaced).
-    pub init_min_matches: usize,
+    pub min_matches: usize,
     /// A monocular start keeps the points whose rays' cosine is below this.
-    pub init_parallax_cos: f64,
+    pub parallax_cos: f64,
+    /// The monocular map's first bundle adjustment's iterations.
+    pub ba_iterations: usize,
+    /// The most samples a monocular start's two-view RANSAC draws, per model.
+    pub ransac_iterations: usize,
+}
+
+impl Default for InitializationOptions {
+    fn default() -> Self {
+        Self {
+            min_features: 100,
+            min_features_depth: 500,
+            window: 100.0,
+            ratio: 0.9,
+            min_matches: 100,
+            parallax_cos: 0.99998,
+            ba_iterations: 20,
+            ransac_iterations: 200,
+        }
+    }
+}
+
+/// Placing each frame: the motion model, the local map, the PnP fallback
+/// (`Options.tracking`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TrackingOptions {
     /// The motion model's search window, in pixels at level 0.
     pub motion_window: f64,
     /// The same for stereo.
@@ -110,21 +185,81 @@ pub struct Options {
     pub min_tracked: usize,
     /// Inliers a frame needs just after a recovery.
     pub recovery_tracked: usize,
-    /// The outlier test for a 2D observation (chi-square, 2 dof, 95%).
-    pub chi2_mono: f64,
-    /// The same for a 3D (left and right) one.
-    pub chi2_stereo: f64,
-    /// Rounds of pose refinement and outlier classification.
-    pub pose_rounds: usize,
+    /// Frames after a recovery that need more inliers, and that make no keyframe once the map
+    /// holds more than this many (the frame rate).
+    pub max_frames: usize,
     /// A point is in view only within this cosine of its mean viewing direction.
     pub view_cos_limit: f64,
     /// A point is in view from this fraction of its minimum distance...
     pub min_distance_margin: f64,
     /// ...to this multiple of its maximum.
     pub max_distance_margin: f64,
-    /// Frames after a recovery that need more inliers, and that make no keyframe once the map
-    /// holds more than this many (the frame rate).
-    pub max_frames: usize,
+    /// The PnP fallback's RANSAC threshold, in pixels.
+    pub pnp_threshold: f64,
+    /// Inliers the PnP fallback needs.
+    pub pnp_min_inliers: usize,
+}
+
+impl Default for TrackingOptions {
+    fn default() -> Self {
+        Self {
+            motion_window: 15.0,
+            stereo_motion_window: 7.0,
+            min_motion_matches: 20,
+            min_motion_inliers: 10,
+            local_window: 1.0,
+            rgbd_local_window: 3.0,
+            recovery_local_window: 5.0,
+            recovery_window_frames: 2,
+            aligned_view_cos: 0.998,
+            aligned_view_radius: 2.5,
+            oblique_view_radius: 4.0,
+            local_map_ratio: 0.8,
+            min_tracked: 30,
+            recovery_tracked: 50,
+            max_frames: 30,
+            view_cos_limit: 0.5,
+            min_distance_margin: 0.8,
+            max_distance_margin: 1.2,
+            pnp_threshold: 4.0,
+            pnp_min_inliers: 30,
+        }
+    }
+}
+
+/// Pose optimisation and local BA (`Options.adjustment`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AdjustmentOptions {
+    /// The outlier test for a 2D observation (chi-square, 2 dof, 95%).
+    pub chi2_mono: f64,
+    /// The same for a 3D (left and right) one.
+    pub chi2_stereo: f64,
+    /// Rounds of pose refinement and outlier classification.
+    pub pose_rounds: usize,
+    /// Local BA's iterations before dropping outliers.
+    pub iterations: usize,
+    /// And after.
+    pub refine_iterations: usize,
+    /// Local BA runs once the map holds this many keyframes.
+    pub min_keyframes: usize,
+}
+
+impl Default for AdjustmentOptions {
+    fn default() -> Self {
+        Self {
+            chi2_mono: 5.991,
+            chi2_stereo: 7.815,
+            pose_rounds: 4,
+            iterations: 5,
+            refine_iterations: 10,
+            min_keyframes: 3,
+        }
+    }
+}
+
+/// The keyframe decision (`Options.keyframes`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KeyframeOptions {
     /// Stereo and RGB-D keyframe ratio of the reference keyframe's points.
     pub ref_ratio: f64,
     /// The same for monocular.
@@ -136,11 +271,31 @@ pub struct Options {
     /// ...this many while the map holds two keyframes or fewer.
     pub ref_min_observations_early: usize,
     /// A keyframe needs more inliers than this.
-    pub min_keyframe_inliers: usize,
+    pub min_inliers: usize,
     /// Close points tracked below which stereo and RGB-D may need a keyframe.
     pub close_tracked: usize,
     /// Untracked close points above which they do.
     pub close_untracked: usize,
+}
+
+impl Default for KeyframeOptions {
+    fn default() -> Self {
+        Self {
+            ref_ratio: 0.75,
+            mono_ref_ratio: 0.9,
+            first_ref_ratio: 0.4,
+            ref_min_observations: 3,
+            ref_min_observations_early: 2,
+            min_inliers: 15,
+            close_tracked: 100,
+            close_untracked: 70,
+        }
+    }
+}
+
+/// Local mapping: points from depth, triangulation, fusion and culling (`Options.mapping`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MappingOptions {
     /// The sliding window's keyframes.
     pub window: usize,
     /// Points a stereo or RGB-D keyframe creates from depth, at least.
@@ -161,16 +316,6 @@ pub struct Options {
     pub scale_ratio: f64,
     /// The fusion search window, in pixels at level 0.
     pub fuse_window: f64,
-    /// Local BA's iterations before dropping outliers.
-    pub ba_iterations: usize,
-    /// And after.
-    pub ba_refine_iterations: usize,
-    /// Local BA runs once the map holds this many keyframes.
-    pub ba_min_keyframes: usize,
-    /// The monocular map's first bundle adjustment's iterations.
-    pub init_ba_iterations: usize,
-    /// The most samples a monocular start's two-view RANSAC draws, per model.
-    pub init_ransac_iterations: usize,
     /// A new point found in less than this fraction of its views is culled.
     pub found_ratio: f64,
     /// A point is culled on evidence until this many keyframes after its creation.
@@ -185,105 +330,11 @@ pub struct Options {
     pub redundant_fraction: f64,
     /// By at least this many other keyframes.
     pub redundant_observers: usize,
-    /// The PnP fallback's RANSAC threshold, in pixels.
-    pub pnp_threshold: f64,
-    /// Inliers the PnP fallback needs.
-    pub pnp_min_inliers: usize,
-    /// Relocalise a failed frame through the keyframe database (needs a vocabulary).
-    pub relocalize: bool,
-    /// The descriptor ratio test of the fallback and of relocalisation's matching by word.
-    pub relocalize_ratio: f64,
-    /// Keyframes observing at least this many of the same points are covisible.
-    pub covisible_points: usize,
-    /// Relocalisation scores keyframes sharing more than this fraction of the most words.
-    pub reloc_common_words: f64,
-    /// A scored keyframe's score is accumulated over this many best covisible keyframes.
-    pub reloc_neighbours: usize,
-    /// Groups above this fraction of the best accumulated score give a candidate.
-    pub reloc_group_score: f64,
-    /// A candidate needs this many matches by word.
-    pub reloc_min_matches: usize,
-    /// A candidate's PnP RANSAC needs this fraction of its matches as inliers.
-    pub reloc_inlier_ratio: f64,
-    /// ...and at least this many, before and after the pose is optimised.
-    pub reloc_min_inliers: usize,
-    /// The confidence its samples are drawn for, in (0, 1).
-    pub reloc_confidence: f64,
-    /// The most samples it draws.
-    pub reloc_ransac_iterations: usize,
-    /// The window, in pixels at the predicted level, of the search by projection.
-    pub reloc_window: f64,
-    /// With more inliers than this but too few still, the search is repeated narrower.
-    pub reloc_narrow_inliers: usize,
-    /// That window.
-    pub reloc_narrow_window: f64,
-    /// Its descriptor distance.
-    pub reloc_narrow_distance: i64,
-    /// A recently lost track is lost once more than this has passed since its first failed
-    /// frame, in seconds.
-    pub relocalize_seconds: f64,
-    /// A map of `reset_keyframes` keyframes or fewer is lost after this many failed frames in a
-    /// row instead.
-    pub lost_frames: usize,
-    /// A map lost with this many keyframes or fewer is reset rather than kept.
-    pub reset_keyframes: usize,
-    /// Every RANSAC's seed.
-    pub seed: u64,
 }
 
-impl Default for Options {
-    /// ORB-SLAM2's settings (and the design note's window of 10 keyframes).
+impl Default for MappingOptions {
     fn default() -> Self {
         Self {
-            n_features: 1000,
-            levels: 8,
-            scale_factor: 1.2,
-            fast_threshold: 20,
-            min_fast_threshold: 7,
-            th_low: 50,
-            th_high: 100,
-            stereo_max_distance: 75,
-            stereo_band: 2.0,
-            stereo_window: 5,
-            stereo_search: 5,
-            stereo_outlier_factor: 2.1,
-            close_depth: 40.0,
-            init_feature_factor: 2,
-            min_init_features: 100,
-            min_init_features_depth: 500,
-            init_window: 100.0,
-            init_ratio: 0.9,
-            init_min_matches: 100,
-            init_parallax_cos: 0.99998,
-            motion_window: 15.0,
-            stereo_motion_window: 7.0,
-            min_motion_matches: 20,
-            min_motion_inliers: 10,
-            local_window: 1.0,
-            rgbd_local_window: 3.0,
-            recovery_local_window: 5.0,
-            recovery_window_frames: 2,
-            aligned_view_cos: 0.998,
-            aligned_view_radius: 2.5,
-            oblique_view_radius: 4.0,
-            local_map_ratio: 0.8,
-            min_tracked: 30,
-            recovery_tracked: 50,
-            chi2_mono: 5.991,
-            chi2_stereo: 7.815,
-            pose_rounds: 4,
-            view_cos_limit: 0.5,
-            min_distance_margin: 0.8,
-            max_distance_margin: 1.2,
-            max_frames: 30,
-            ref_ratio: 0.75,
-            mono_ref_ratio: 0.9,
-            first_ref_ratio: 0.4,
-            ref_min_observations: 3,
-            ref_min_observations_early: 2,
-            min_keyframe_inliers: 15,
-            close_tracked: 100,
-            close_untracked: 70,
             window: 10,
             min_new_points: 100,
             triangulation_neighbours: 10,
@@ -294,11 +345,6 @@ impl Default for Options {
             max_parallax_cos: 0.9998,
             scale_ratio: 1.5,
             fuse_window: 3.0,
-            ba_iterations: 5,
-            ba_refine_iterations: 10,
-            ba_min_keyframes: 3,
-            init_ba_iterations: 20,
-            init_ransac_iterations: 200,
             found_ratio: 0.25,
             recent_point_keyframes: 3,
             point_cull_age: 2,
@@ -306,29 +352,128 @@ impl Default for Options {
             min_point_observations_depth: 3,
             redundant_fraction: 0.9,
             redundant_observers: 3,
-            pnp_threshold: 4.0,
-            pnp_min_inliers: 30,
-            relocalize: true,
-            relocalize_ratio: 0.75,
-            covisible_points: 15,
-            reloc_common_words: 0.8,
-            reloc_neighbours: 10,
-            reloc_group_score: 0.75,
-            reloc_min_matches: 15,
-            reloc_inlier_ratio: 0.5,
-            reloc_min_inliers: 10,
-            reloc_confidence: 0.99,
-            reloc_ransac_iterations: 300,
-            reloc_window: 10.0,
-            reloc_narrow_inliers: 30,
-            reloc_narrow_window: 3.0,
-            reloc_narrow_distance: 64,
+        }
+    }
+}
+
+/// The covisibility graph (`Options.covisibility`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CovisibilityOptions {
+    /// Keyframes observing at least this many of the same points are covisible.
+    pub min_points: usize,
+}
+
+impl Default for CovisibilityOptions {
+    fn default() -> Self {
+        Self { min_points: 15 }
+    }
+}
+
+/// Relocalising a failed frame against the whole map (`Options.relocalization`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RelocalizationOptions {
+    /// Relocalise a failed frame through the keyframe database (needs a vocabulary).
+    pub enabled: bool,
+    /// The descriptor ratio test of the fallback and of relocalisation's matching by word.
+    pub ratio: f64,
+    /// Relocalisation scores keyframes sharing more than this fraction of the most words.
+    pub common_words: f64,
+    /// A scored keyframe's score is accumulated over this many best covisible keyframes.
+    pub neighbours: usize,
+    /// Groups above this fraction of the best accumulated score give a candidate.
+    pub group_score: f64,
+    /// A candidate needs this many matches by word.
+    pub min_matches: usize,
+    /// A candidate's PnP RANSAC needs this fraction of its matches as inliers.
+    pub inlier_ratio: f64,
+    /// ...and at least this many, before and after the pose is optimised.
+    pub min_inliers: usize,
+    /// The confidence its samples are drawn for, in (0, 1).
+    pub confidence: f64,
+    /// The most samples it draws.
+    pub ransac_iterations: usize,
+    /// The window, in pixels at the predicted level, of the search by projection.
+    pub window: f64,
+    /// With more inliers than this but too few still, the search is repeated narrower.
+    pub narrow_inliers: usize,
+    /// That window.
+    pub narrow_window: f64,
+    /// Its descriptor distance.
+    pub narrow_distance: i64,
+}
+
+impl Default for RelocalizationOptions {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            ratio: 0.75,
+            common_words: 0.8,
+            neighbours: 10,
+            group_score: 0.75,
+            min_matches: 15,
+            inlier_ratio: 0.5,
+            min_inliers: 10,
+            confidence: 0.99,
+            ransac_iterations: 300,
+            window: 10.0,
+            narrow_inliers: 30,
+            narrow_window: 3.0,
+            narrow_distance: 64,
+        }
+    }
+}
+
+/// When a lost track's map is closed (`Options.loss`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LossOptions {
+    /// A recently lost track is lost once more than this has passed since its first failed
+    /// frame, in seconds.
+    pub relocalize_seconds: f64,
+    /// A map of `loss.reset_keyframes` keyframes or fewer is lost after this many failed frames in a
+    /// row instead.
+    pub lost_frames: usize,
+    /// A map lost with this many keyframes or fewer is reset rather than kept.
+    pub reset_keyframes: usize,
+}
+
+impl Default for LossOptions {
+    fn default() -> Self {
+        Self {
             relocalize_seconds: 3.0,
             lost_frames: 5,
             reset_keyframes: 10,
-            seed: 0,
         }
     }
+}
+
+/// The edge pipeline's settings (`slam_it.edge.options.Options`), grouped by the stage that
+/// reads them; the defaults are ORB-SLAM2's (and the design note's window of 10 keyframes).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Options {
+    /// ORB extraction's settings.
+    pub features: FeatureOptions,
+    /// The descriptor distances matching takes in every stage.
+    pub matching: MatchingOptions,
+    /// A stereo pair's row matching, and the close depth of stereo and RGB-D.
+    pub stereo: StereoOptions,
+    /// Starting the map.
+    pub initialization: InitializationOptions,
+    /// Placing each frame: the motion model, the local map, the PnP fallback.
+    pub tracking: TrackingOptions,
+    /// Pose optimisation and local BA.
+    pub adjustment: AdjustmentOptions,
+    /// The keyframe decision.
+    pub keyframes: KeyframeOptions,
+    /// Local mapping: points from depth, triangulation, fusion and culling.
+    pub mapping: MappingOptions,
+    /// The covisibility graph.
+    pub covisibility: CovisibilityOptions,
+    /// Relocalising a failed frame against the whole map.
+    pub relocalization: RelocalizationOptions,
+    /// When a lost track's map is closed.
+    pub loss: LossOptions,
+    /// Every RANSAC's seed.
+    pub seed: u64,
 }
 
 impl Options {
@@ -336,7 +481,7 @@ impl Options {
     ///
     /// # Arguments
     ///
-    /// * `initializing` - For a monocular frame before the map exists: `init_feature_factor`
+    /// * `initializing` - For a monocular frame before the map exists: `features.init_factor`
     ///   times the features.
     ///
     /// # Returns
@@ -345,16 +490,16 @@ impl Options {
     #[must_use]
     pub fn extraction(&self, initializing: bool) -> orb::Options {
         let factor = if initializing {
-            self.init_feature_factor
+            self.features.init_factor
         } else {
             1
         };
         orb::Options {
-            n_features: (self.n_features * factor).min(orb::MAX_FEATURES),
-            levels: self.levels,
-            scale_factor: self.scale_factor,
-            fast_threshold: self.fast_threshold,
-            min_fast_threshold: self.min_fast_threshold,
+            n_features: (self.features.n_features * factor).min(orb::MAX_FEATURES),
+            levels: self.features.levels,
+            scale_factor: self.features.scale_factor,
+            fast_threshold: self.features.fast_threshold,
+            min_fast_threshold: self.features.min_fast_threshold,
         }
     }
 
@@ -362,15 +507,15 @@ impl Options {
     ///
     /// # Returns
     ///
-    /// The `stereo_*` settings.
+    /// The `stereo` group's settings, but the close depth.
     #[must_use]
     pub fn stereo_matching(&self) -> stereo::MatchOptions {
         stereo::MatchOptions {
-            max_distance: self.stereo_max_distance,
-            band: self.stereo_band,
-            window: self.stereo_window,
-            search: self.stereo_search,
-            outlier_factor: self.stereo_outlier_factor,
+            max_distance: self.stereo.max_distance,
+            band: self.stereo.band,
+            window: self.stereo.window,
+            search: self.stereo.search,
+            outlier_factor: self.stereo.outlier_factor,
         }
     }
 }
@@ -386,24 +531,33 @@ pub enum Setting {
     Real(f64),
 }
 
-/// Implements [`Options::settings`] and [`Options::set`] over every field, each with its
-/// kind. `settings` destructures the struct without `..`, so a field missing from the list
-/// fails to build.
+/// Implements [`Options::settings`] and [`Options::set`] over every group's fields, each with
+/// its kind, named `group.field` as `Options.settings()` names them, then `seed`. `settings`
+/// destructures each struct without `..`, so a field missing from the list fails to build.
 macro_rules! named_settings {
-    ($($field:ident: $kind:ident),+ $(,)?) => {
+    ($($group:ident: $Group:ident { $($field:ident: $kind:ident),+ $(,)? }),+ $(,)?) => {
         impl Options {
-            /// Every setting's name, as the Python class's field, and value, in its order.
+            /// Every setting's name, `group.field` (or `seed`), and value, in the groups' order.
             ///
             /// # Returns
             ///
             /// The settings.
             #[must_use]
             pub fn settings(&self) -> Vec<(&'static str, Setting)> {
-                let Self { $($field),+ } = *self;
-                vec![$((stringify!($field), named_settings!(@value $kind $field))),+]
+                let Self { $($group),+, seed } = *self;
+                let mut out = Vec::new();
+                $(
+                    let $Group { $($field),+ } = $group;
+                    $(out.push((
+                        concat!(stringify!($group), ".", stringify!($field)),
+                        named_settings!(@value $kind $field),
+                    ));)+
+                )+
+                out.push(("seed", named_settings!(@value Integer seed)));
+                out
             }
 
-            /// Sets one setting by its name, as the Python class's field.
+            /// Sets one setting by its name, `group.field` (or `seed`).
             ///
             /// # Arguments
             ///
@@ -416,7 +570,10 @@ macro_rules! named_settings {
             /// the setting cannot hold (negative, for a count).
             pub fn set(&mut self, name: &str, value: Setting) -> Result<()> {
                 match name {
-                    $(stringify!($field) => named_settings!(@set $kind self.$field, name, value),)+
+                    $($(concat!(stringify!($group), ".", stringify!($field)) => {
+                        named_settings!(@set $kind self.$group.$field, name, value)
+                    })+)+
+                    "seed" => named_settings!(@set Integer self.seed, name, value),
                     _ => fail(ErrorKind::InvalidInput, format!("options: no setting {name:?}")),
                 }
             }
@@ -467,60 +624,17 @@ macro_rules! named_settings {
 }
 
 named_settings!(
-    n_features: Integer, levels: Integer, scale_factor: Real, fast_threshold: Integer,
-    min_fast_threshold: Integer, th_low: Integer, th_high: Integer,
-    stereo_max_distance: Integer, stereo_band: Real, stereo_window: Integer,
-    stereo_search: Integer, stereo_outlier_factor: Real, close_depth: Real,
-    init_feature_factor: Integer,
-    min_init_features: Integer, min_init_features_depth: Integer, init_window: Real,
-    init_ratio: Real, init_min_matches: Integer, init_parallax_cos: Real, motion_window: Real,
-    stereo_motion_window: Real, min_motion_matches: Integer, local_window: Real,
-    rgbd_local_window: Real, recovery_local_window: Real, min_tracked: Integer, chi2_mono: Real, chi2_stereo: Real,
-    pose_rounds: Integer, view_cos_limit: Real, max_frames: Integer, ref_ratio: Real,
-    mono_ref_ratio: Real, min_keyframe_inliers: Integer, close_tracked: Integer,
-    close_untracked: Integer, window: Integer, min_new_points: Integer, max_parallax_cos: Real,
-    scale_ratio: Real, fuse_window: Real, ba_iterations: Integer, ba_refine_iterations: Integer,
-    ba_min_keyframes: Integer,
-    found_ratio: Real, min_point_observations: Integer, min_point_observations_depth: Integer,
-    redundant_fraction: Real, redundant_observers: Integer, pnp_threshold: Real,
-    min_motion_inliers: Integer,
-    recovery_window_frames: Integer,
-    aligned_view_cos: Real,
-    aligned_view_radius: Real,
-    oblique_view_radius: Real,
-    local_map_ratio: Real,
-    recovery_tracked: Integer,
-    min_distance_margin: Real,
-    max_distance_margin: Real,
-    first_ref_ratio: Real,
-    ref_min_observations: Integer,
-    ref_min_observations_early: Integer,
-    triangulation_neighbours: Integer,
-    mono_triangulation_neighbours: Integer,
-    epipolar_chi2: Real,
-    min_epipole_distance2: Real,
-    min_baseline_depth: Real,
-    recent_point_keyframes: Integer,
-    point_cull_age: Integer,
-    init_ba_iterations: Integer,
-    init_ransac_iterations: Integer,
-    relocalize: Flag,
-    relocalize_ratio: Real,
-    covisible_points: Integer,
-    reloc_common_words: Real,
-    reloc_neighbours: Integer,
-    reloc_group_score: Real,
-    reloc_min_matches: Integer,
-    reloc_inlier_ratio: Real,
-    reloc_min_inliers: Integer,
-    reloc_confidence: Real,
-    reloc_ransac_iterations: Integer,
-    reloc_window: Real,
-    reloc_narrow_inliers: Integer,
-    reloc_narrow_window: Real,
-    reloc_narrow_distance: Integer,
-    relocalize_seconds: Real,
-    pnp_min_inliers: Integer, lost_frames: Integer, reset_keyframes: Integer, seed: Integer,
+    features: FeatureOptions { n_features: Integer, levels: Integer, scale_factor: Real, fast_threshold: Integer, min_fast_threshold: Integer, init_factor: Integer },
+    matching: MatchingOptions { th_low: Integer, th_high: Integer },
+    stereo: StereoOptions { max_distance: Integer, band: Real, window: Integer, search: Integer, outlier_factor: Real, close_depth: Real },
+    initialization: InitializationOptions { min_features: Integer, min_features_depth: Integer, window: Real, ratio: Real, min_matches: Integer, parallax_cos: Real, ba_iterations: Integer, ransac_iterations: Integer },
+    tracking: TrackingOptions { motion_window: Real, stereo_motion_window: Real, min_motion_matches: Integer, min_motion_inliers: Integer, local_window: Real, rgbd_local_window: Real, recovery_local_window: Real, recovery_window_frames: Integer, aligned_view_cos: Real, aligned_view_radius: Real, oblique_view_radius: Real, local_map_ratio: Real, min_tracked: Integer, recovery_tracked: Integer, max_frames: Integer, view_cos_limit: Real, min_distance_margin: Real, max_distance_margin: Real, pnp_threshold: Real, pnp_min_inliers: Integer },
+    adjustment: AdjustmentOptions { chi2_mono: Real, chi2_stereo: Real, pose_rounds: Integer, iterations: Integer, refine_iterations: Integer, min_keyframes: Integer },
+    keyframes: KeyframeOptions { ref_ratio: Real, mono_ref_ratio: Real, first_ref_ratio: Real, ref_min_observations: Integer, ref_min_observations_early: Integer, min_inliers: Integer, close_tracked: Integer, close_untracked: Integer },
+    mapping: MappingOptions { window: Integer, min_new_points: Integer, triangulation_neighbours: Integer, mono_triangulation_neighbours: Integer, epipolar_chi2: Real, min_epipole_distance2: Real, min_baseline_depth: Real, max_parallax_cos: Real, scale_ratio: Real, fuse_window: Real, found_ratio: Real, recent_point_keyframes: Integer, point_cull_age: Integer, min_point_observations: Integer, min_point_observations_depth: Integer, redundant_fraction: Real, redundant_observers: Integer },
+    covisibility: CovisibilityOptions { min_points: Integer },
+    relocalization: RelocalizationOptions { enabled: Flag, ratio: Real, common_words: Real, neighbours: Integer, group_score: Real, min_matches: Integer, inlier_ratio: Real, min_inliers: Integer, confidence: Real, ransac_iterations: Integer, window: Real, narrow_inliers: Integer, narrow_window: Real, narrow_distance: Integer },
+    loss: LossOptions { relocalize_seconds: Real, lost_frames: Integer, reset_keyframes: Integer },
 );
 
 /// Checks the descriptor distances and the stereo matching's settings, named as `Options`' fields.
@@ -530,12 +644,15 @@ named_settings!(
 /// `InvalidInput` naming the first one out of range.
 fn check_matching(options: &Options) -> Result<()> {
     if let Err(error) = stereo::check_options(&options.stereo_matching()) {
-        return fail(error.kind, format!("stereo_{}", error.message));
+        return fail(error.kind, format!("stereo.{}", error.message));
     }
     for (name, value) in [
-        ("th_low", options.th_low),
-        ("th_high", options.th_high),
-        ("reloc_narrow_distance", options.reloc_narrow_distance),
+        ("matching.th_low", options.matching.th_low),
+        ("matching.th_high", options.matching.th_high),
+        (
+            "relocalization.narrow_distance",
+            options.relocalization.narrow_distance,
+        ),
     ] {
         check_range(name, value, 1, matching::MAX_DISTANCE)?;
     }
@@ -552,133 +669,276 @@ fn check_matching(options: &Options) -> Result<()> {
 ///
 /// `InvalidInput` naming the first one out of range.
 pub fn check_options(options: &Options) -> Result<()> {
-    orb::check_options(&options.extraction(false))?;
+    if let Err(error) = orb::check_options(&options.extraction(false)) {
+        return fail(error.kind, format!("features.{}", error.message));
+    }
     check_matching(options)?;
     for (name, value) in [
-        ("min_init_features", options.min_init_features),
-        ("min_init_features_depth", options.min_init_features_depth),
-        ("reset_keyframes", options.reset_keyframes),
+        (
+            "initialization.min_features",
+            options.initialization.min_features,
+        ),
+        (
+            "initialization.min_features_depth",
+            options.initialization.min_features_depth,
+        ),
+        ("loss.reset_keyframes", options.loss.reset_keyframes),
     ] {
         check_range(name, value, 0, MAX_SETTING)?;
     }
     check_range("seed", options.seed, 0, MAX_SETTING as u64)?;
-    for (name, value) in [
-        ("n_features", options.n_features),
-        ("levels", options.levels),
-        ("init_feature_factor", options.init_feature_factor),
-        ("init_min_matches", options.init_min_matches),
-        ("min_motion_matches", options.min_motion_matches),
-        ("min_tracked", options.min_tracked),
-        ("pose_rounds", options.pose_rounds),
-        ("max_frames", options.max_frames),
-        ("min_keyframe_inliers", options.min_keyframe_inliers),
-        ("close_tracked", options.close_tracked),
-        ("close_untracked", options.close_untracked),
-        ("window", options.window),
-        ("min_new_points", options.min_new_points),
-        ("ba_iterations", options.ba_iterations),
-        ("ba_refine_iterations", options.ba_refine_iterations),
-        ("ba_min_keyframes", options.ba_min_keyframes),
-        ("min_point_observations", options.min_point_observations),
-        (
-            "min_point_observations_depth",
-            options.min_point_observations_depth,
-        ),
-        ("redundant_observers", options.redundant_observers),
-        ("pnp_min_inliers", options.pnp_min_inliers),
-        ("lost_frames", options.lost_frames),
-        ("min_motion_inliers", options.min_motion_inliers),
-        ("recovery_window_frames", options.recovery_window_frames),
-        ("recovery_tracked", options.recovery_tracked),
-        ("ref_min_observations", options.ref_min_observations),
-        (
-            "ref_min_observations_early",
-            options.ref_min_observations_early,
-        ),
-        ("triangulation_neighbours", options.triangulation_neighbours),
-        (
-            "mono_triangulation_neighbours",
-            options.mono_triangulation_neighbours,
-        ),
-        ("recent_point_keyframes", options.recent_point_keyframes),
-        ("point_cull_age", options.point_cull_age),
-        ("init_ba_iterations", options.init_ba_iterations),
-        ("init_ransac_iterations", options.init_ransac_iterations),
-        ("covisible_points", options.covisible_points),
-        ("reloc_neighbours", options.reloc_neighbours),
-        ("reloc_min_matches", options.reloc_min_matches),
-        ("reloc_min_inliers", options.reloc_min_inliers),
-        ("reloc_ransac_iterations", options.reloc_ransac_iterations),
-        ("reloc_narrow_inliers", options.reloc_narrow_inliers),
-    ] {
-        check_range(name, value, 1, MAX_SETTING)?;
-    }
+    check_counts(options)?;
     check_reals(options)
 }
 
-/// Checks the real settings: those that must be finite and positive, the fractions in (0, 1],
-/// and `reloc_confidence` below 1.
+/// Checks the integer settings that must be at least 1.
 ///
 /// # Errors
 ///
 /// `InvalidInput` naming the first one out of range.
-fn check_reals(options: &Options) -> Result<()> {
+#[allow(
+    clippy::too_many_lines,
+    reason = "one table of the counts, each named as Python names it"
+)]
+fn check_counts(options: &Options) -> Result<()> {
     for (name, value) in [
-        ("scale_factor", options.scale_factor),
-        ("close_depth", options.close_depth),
-        ("init_window", options.init_window),
-        ("motion_window", options.motion_window),
-        ("stereo_motion_window", options.stereo_motion_window),
-        ("local_window", options.local_window),
-        ("rgbd_local_window", options.rgbd_local_window),
-        ("recovery_local_window", options.recovery_local_window),
-        ("chi2_mono", options.chi2_mono),
-        ("chi2_stereo", options.chi2_stereo),
-        ("scale_ratio", options.scale_ratio),
-        ("fuse_window", options.fuse_window),
-        ("pnp_threshold", options.pnp_threshold),
-        ("aligned_view_radius", options.aligned_view_radius),
-        ("oblique_view_radius", options.oblique_view_radius),
-        ("max_distance_margin", options.max_distance_margin),
-        ("epipolar_chi2", options.epipolar_chi2),
-        ("min_epipole_distance2", options.min_epipole_distance2),
-        ("reloc_window", options.reloc_window),
-        ("reloc_narrow_window", options.reloc_narrow_window),
-        ("relocalize_seconds", options.relocalize_seconds),
+        ("features.n_features", options.features.n_features),
+        ("features.levels", options.features.levels),
+        ("features.init_factor", options.features.init_factor),
+        (
+            "initialization.min_matches",
+            options.initialization.min_matches,
+        ),
+        (
+            "tracking.min_motion_matches",
+            options.tracking.min_motion_matches,
+        ),
+        ("tracking.min_tracked", options.tracking.min_tracked),
+        ("adjustment.pose_rounds", options.adjustment.pose_rounds),
+        ("tracking.max_frames", options.tracking.max_frames),
+        ("keyframes.min_inliers", options.keyframes.min_inliers),
+        ("keyframes.close_tracked", options.keyframes.close_tracked),
+        (
+            "keyframes.close_untracked",
+            options.keyframes.close_untracked,
+        ),
+        ("mapping.window", options.mapping.window),
+        ("mapping.min_new_points", options.mapping.min_new_points),
+        ("adjustment.iterations", options.adjustment.iterations),
+        (
+            "adjustment.refine_iterations",
+            options.adjustment.refine_iterations,
+        ),
+        ("adjustment.min_keyframes", options.adjustment.min_keyframes),
+        (
+            "mapping.min_point_observations",
+            options.mapping.min_point_observations,
+        ),
+        (
+            "mapping.min_point_observations_depth",
+            options.mapping.min_point_observations_depth,
+        ),
+        (
+            "mapping.redundant_observers",
+            options.mapping.redundant_observers,
+        ),
+        ("tracking.pnp_min_inliers", options.tracking.pnp_min_inliers),
+        ("loss.lost_frames", options.loss.lost_frames),
+        (
+            "tracking.min_motion_inliers",
+            options.tracking.min_motion_inliers,
+        ),
+        (
+            "tracking.recovery_window_frames",
+            options.tracking.recovery_window_frames,
+        ),
+        (
+            "tracking.recovery_tracked",
+            options.tracking.recovery_tracked,
+        ),
+        (
+            "keyframes.ref_min_observations",
+            options.keyframes.ref_min_observations,
+        ),
+        (
+            "keyframes.ref_min_observations_early",
+            options.keyframes.ref_min_observations_early,
+        ),
+        (
+            "mapping.triangulation_neighbours",
+            options.mapping.triangulation_neighbours,
+        ),
+        (
+            "mapping.mono_triangulation_neighbours",
+            options.mapping.mono_triangulation_neighbours,
+        ),
+        (
+            "mapping.recent_point_keyframes",
+            options.mapping.recent_point_keyframes,
+        ),
+        ("mapping.point_cull_age", options.mapping.point_cull_age),
+        (
+            "initialization.ba_iterations",
+            options.initialization.ba_iterations,
+        ),
+        (
+            "initialization.ransac_iterations",
+            options.initialization.ransac_iterations,
+        ),
+        ("covisibility.min_points", options.covisibility.min_points),
+        (
+            "relocalization.neighbours",
+            options.relocalization.neighbours,
+        ),
+        (
+            "relocalization.min_matches",
+            options.relocalization.min_matches,
+        ),
+        (
+            "relocalization.min_inliers",
+            options.relocalization.min_inliers,
+        ),
+        (
+            "relocalization.ransac_iterations",
+            options.relocalization.ransac_iterations,
+        ),
+        (
+            "relocalization.narrow_inliers",
+            options.relocalization.narrow_inliers,
+        ),
+    ] {
+        check_range(name, value, 1, MAX_SETTING)?;
+    }
+    Ok(())
+}
+
+/// Checks the real settings that must be finite and positive.
+///
+/// # Errors
+///
+/// `InvalidInput` naming the first one out of range.
+fn check_positive(options: &Options) -> Result<()> {
+    for (name, value) in [
+        ("features.scale_factor", options.features.scale_factor),
+        ("stereo.close_depth", options.stereo.close_depth),
+        ("initialization.window", options.initialization.window),
+        ("tracking.motion_window", options.tracking.motion_window),
+        (
+            "tracking.stereo_motion_window",
+            options.tracking.stereo_motion_window,
+        ),
+        ("tracking.local_window", options.tracking.local_window),
+        (
+            "tracking.rgbd_local_window",
+            options.tracking.rgbd_local_window,
+        ),
+        (
+            "tracking.recovery_local_window",
+            options.tracking.recovery_local_window,
+        ),
+        ("adjustment.chi2_mono", options.adjustment.chi2_mono),
+        ("adjustment.chi2_stereo", options.adjustment.chi2_stereo),
+        ("mapping.scale_ratio", options.mapping.scale_ratio),
+        ("mapping.fuse_window", options.mapping.fuse_window),
+        ("tracking.pnp_threshold", options.tracking.pnp_threshold),
+        (
+            "tracking.aligned_view_radius",
+            options.tracking.aligned_view_radius,
+        ),
+        (
+            "tracking.oblique_view_radius",
+            options.tracking.oblique_view_radius,
+        ),
+        (
+            "tracking.max_distance_margin",
+            options.tracking.max_distance_margin,
+        ),
+        ("mapping.epipolar_chi2", options.mapping.epipolar_chi2),
+        (
+            "mapping.min_epipole_distance2",
+            options.mapping.min_epipole_distance2,
+        ),
+        ("relocalization.window", options.relocalization.window),
+        (
+            "relocalization.narrow_window",
+            options.relocalization.narrow_window,
+        ),
+        ("loss.relocalize_seconds", options.loss.relocalize_seconds),
     ] {
         if !(value.is_finite() && value > 0.0) {
             return fail_setting(name, "must be finite and positive", value);
         }
     }
+    Ok(())
+}
+
+/// Checks the real settings: those that must be finite and positive, the fractions in (0, 1],
+/// and `relocalization.confidence` below 1.
+///
+/// # Errors
+///
+/// `InvalidInput` naming the first one out of range.
+fn check_reals(options: &Options) -> Result<()> {
+    check_positive(options)?;
     for (name, value) in [
-        ("init_ratio", options.init_ratio),
-        ("ref_ratio", options.ref_ratio),
-        ("mono_ref_ratio", options.mono_ref_ratio),
-        ("found_ratio", options.found_ratio),
-        ("redundant_fraction", options.redundant_fraction),
-        ("view_cos_limit", options.view_cos_limit),
-        ("max_parallax_cos", options.max_parallax_cos),
-        ("init_parallax_cos", options.init_parallax_cos),
-        ("aligned_view_cos", options.aligned_view_cos),
-        ("local_map_ratio", options.local_map_ratio),
-        ("min_distance_margin", options.min_distance_margin),
-        ("first_ref_ratio", options.first_ref_ratio),
-        ("min_baseline_depth", options.min_baseline_depth),
-        ("relocalize_ratio", options.relocalize_ratio),
-        ("reloc_common_words", options.reloc_common_words),
-        ("reloc_group_score", options.reloc_group_score),
-        ("reloc_inlier_ratio", options.reloc_inlier_ratio),
-        ("reloc_confidence", options.reloc_confidence),
+        ("initialization.ratio", options.initialization.ratio),
+        ("keyframes.ref_ratio", options.keyframes.ref_ratio),
+        ("keyframes.mono_ref_ratio", options.keyframes.mono_ref_ratio),
+        ("mapping.found_ratio", options.mapping.found_ratio),
+        (
+            "mapping.redundant_fraction",
+            options.mapping.redundant_fraction,
+        ),
+        ("tracking.view_cos_limit", options.tracking.view_cos_limit),
+        ("mapping.max_parallax_cos", options.mapping.max_parallax_cos),
+        (
+            "initialization.parallax_cos",
+            options.initialization.parallax_cos,
+        ),
+        (
+            "tracking.aligned_view_cos",
+            options.tracking.aligned_view_cos,
+        ),
+        ("tracking.local_map_ratio", options.tracking.local_map_ratio),
+        (
+            "tracking.min_distance_margin",
+            options.tracking.min_distance_margin,
+        ),
+        (
+            "keyframes.first_ref_ratio",
+            options.keyframes.first_ref_ratio,
+        ),
+        (
+            "mapping.min_baseline_depth",
+            options.mapping.min_baseline_depth,
+        ),
+        ("relocalization.ratio", options.relocalization.ratio),
+        (
+            "relocalization.common_words",
+            options.relocalization.common_words,
+        ),
+        (
+            "relocalization.group_score",
+            options.relocalization.group_score,
+        ),
+        (
+            "relocalization.inlier_ratio",
+            options.relocalization.inlier_ratio,
+        ),
+        (
+            "relocalization.confidence",
+            options.relocalization.confidence,
+        ),
     ] {
         if !(value.is_finite() && value > 0.0 && value <= 1.0) {
             return fail_setting(name, "must be in (0, 1]", value);
         }
     }
-    if options.reloc_confidence >= 1.0 {
+    if options.relocalization.confidence >= 1.0 {
         return fail_setting(
-            "reloc_confidence",
+            "relocalization.confidence",
             "must be in (0, 1)",
-            options.reloc_confidence,
+            options.relocalization.confidence,
         );
     }
     Ok(())
@@ -690,24 +950,26 @@ mod tests {
 
     use super::*;
 
-    /// Settings are read and set by name; an unknown name, a value of the other kind, or a
-    /// count out of range is refused.
+    /// Settings are read and set by name, `group.field`; an unknown name, a value of the other
+    /// kind, or a count out of range is refused.
     #[test]
     fn settings_by_name() {
         let mut options = Options::default();
         let settings = options.settings();
         assert_eq!(settings.len(), 92);
-        assert_eq!(settings[0], ("n_features", Setting::Integer(1000)));
-        assert_eq!(settings[2], ("scale_factor", Setting::Real(1.2)));
-        options.set("window", Setting::Integer(7)).unwrap();
-        options.set("close_depth", Setting::Real(35.5)).unwrap();
-        assert_eq!(options.window, 7);
-        assert!((options.close_depth - 35.5).abs() < f64::EPSILON);
+        assert_eq!(settings[0], ("features.n_features", Setting::Integer(1000)));
+        assert_eq!(settings[2], ("features.scale_factor", Setting::Real(1.2)));
+        options.set("mapping.window", Setting::Integer(7)).unwrap();
+        options
+            .set("stereo.close_depth", Setting::Real(35.5))
+            .unwrap();
+        assert_eq!(options.mapping.window, 7);
+        assert!((options.stereo.close_depth - 35.5).abs() < f64::EPSILON);
         for (name, value) in [
             ("windows", Setting::Integer(1)),
-            ("window", Setting::Real(1.0)),
-            ("close_depth", Setting::Integer(1)),
-            ("window", Setting::Integer(-1)),
+            ("mapping.window", Setting::Real(1.0)),
+            ("stereo.close_depth", Setting::Integer(1)),
+            ("mapping.window", Setting::Integer(-1)),
         ] {
             assert_eq!(
                 options.set(name, value).unwrap_err().kind,
@@ -722,15 +984,24 @@ mod tests {
         check_options(&Options::default()).unwrap();
         for bad in [
             Options {
-                window: 0,
+                mapping: MappingOptions {
+                    window: 0,
+                    ..MappingOptions::default()
+                },
                 ..Options::default()
             },
             Options {
-                ref_ratio: 1.5,
+                keyframes: KeyframeOptions {
+                    ref_ratio: 1.5,
+                    ..KeyframeOptions::default()
+                },
                 ..Options::default()
             },
             Options {
-                chi2_mono: f64::NAN,
+                adjustment: AdjustmentOptions {
+                    chi2_mono: f64::NAN,
+                    ..AdjustmentOptions::default()
+                },
                 ..Options::default()
             },
         ] {
@@ -764,11 +1035,14 @@ mod tests {
         assert!(unnamed.is_empty(), "not refused by name: {unnamed:?}");
     }
 
-    /// Initialisation's extraction has `init_feature_factor` times the features.
+    /// Initialisation's extraction has `features.init_factor` times the features.
     #[test]
     fn initializing_doubles_the_features() {
         let options = Options::default();
-        assert_eq!(options.extraction(true).n_features, 2 * options.n_features);
+        assert_eq!(
+            options.extraction(true).n_features,
+            2 * options.features.n_features
+        );
         assert_eq!(Mode::ALL.map(Mode::name), ["monocular", "stereo", "rgbd"]);
     }
 }

@@ -251,7 +251,7 @@ def close_depth(camera: Camera, options: Options) -> float:
     float
         The depth, in metres (0 for monocular).
     """
-    return options.close_depth * camera.baseline
+    return options.stereo.close_depth * camera.baseline
 
 
 def _world(pose: Array, local: Array) -> Array:
@@ -281,7 +281,11 @@ def _need_keyframe(  # noqa: PLR0913 -- the stage's state
 ) -> bool:
     """Decide whether a tracked frame becomes a keyframe (reference)."""
     early = m.keyframes <= 2  # NeedNewKeyFrame's nKFs <= 2
-    min_observations = options.ref_min_observations_early if early else options.ref_min_observations
+    min_observations = (
+        options.keyframes.ref_min_observations_early
+        if early
+        else options.keyframes.ref_min_observations
+    )
     seen = m.kp_point[m.keypoint_rows(m.keyframes - 1)]
     rows = m.point_rows(seen[seen >= 0])
     weights = maps.observation_weight(m, rows[rows >= 0])
@@ -292,13 +296,14 @@ def _need_keyframe(  # noqa: PLR0913 -- the stage's state
         tracked_close = int(np.count_nonzero(close & (tracked.points >= 0)))
         untracked_close = int(np.count_nonzero(close & (tracked.points < 0)))
         need_close = (
-            tracked_close < options.close_tracked and untracked_close > options.close_untracked
+            tracked_close < options.keyframes.close_tracked
+            and untracked_close > options.keyframes.close_untracked
         )
-    ratio = options.first_ref_ratio if m.keyframes < 2 else options.ref_ratio
+    ratio = options.keyframes.first_ref_ratio if m.keyframes < 2 else options.keyframes.ref_ratio
     if mode == "monocular":
-        ratio = options.mono_ref_ratio
+        ratio = options.keyframes.mono_ref_ratio
     weak = tracked.inliers < tracked_reference * ratio or need_close
-    return bool(weak and tracked.inliers > options.min_keyframe_inliers)
+    return bool(weak and tracked.inliers > options.keyframes.min_inliers)
 
 
 def need_keyframe(  # noqa: PLR0913 -- the stage's state, and the backend
@@ -379,7 +384,7 @@ def _create_points_from_depth(m: Map, camera: Camera, options: Options) -> Map:
     for count, row in enumerate(order, start=1):
         if m.kp_point[row] < 0:
             chosen.append(row)
-        if m.kp_depth[row] > limit and count > options.min_new_points:
+        if m.kp_depth[row] > limit and count > options.mapping.min_new_points:
             break
     if not chosen:
         return m
@@ -431,19 +436,19 @@ def create_points_from_depth(
 def _cull_points(m: Map, mode: str, options: Options) -> Map:
     """Cull recently created points tracking rarely finds (reference)."""
     age = m.kf_id[-1] - m.pt_first_kf
-    recent = np.flatnonzero(age <= options.recent_point_keyframes)
+    recent = np.flatnonzero(age <= options.mapping.recent_point_keyframes)
     if len(recent) == 0:
         return m
     minimum = (
-        options.min_point_observations
+        options.mapping.min_point_observations
         if mode == "monocular"
-        else options.min_point_observations_depth
+        else options.mapping.min_point_observations_depth
     )
     ratio = m.pt_found[recent] / m.pt_visible[recent]
     weight = maps.observation_weight(m, recent)
     erase = np.zeros(m.points, dtype=bool)
-    erase[recent] = (ratio < options.found_ratio) | (
-        (age[recent] >= options.point_cull_age) & (weight <= minimum)
+    erase[recent] = (ratio < options.mapping.found_ratio) | (
+        (age[recent] >= options.mapping.point_cull_age) & (weight <= minimum)
     )
     return maps.erase_points(m, erase, Removal.CULLED)
 
@@ -518,20 +523,23 @@ def _match_for_triangulation(
     lines = x1 @ essential.T  # each k1 keypoint's epipolar line in k2, normalised plane
     numerator = lines @ x2.T
     distance2 = numerator**2 / (lines[:, :1] ** 2 + lines[:, 1:2] ** 2) * camera.focal**2
-    band = distance2 < options.epipolar_chi2 * residuals.sigma2(m, m.kp_level[rows2])[None, :]
+    band = (
+        distance2 < options.mapping.epipolar_chi2 * residuals.sigma2(m, m.kp_level[rows2])[None, :]
+    )
     if t[2] != 0.0:  # camera 1's centre in camera 2 is t: the epipole
         epipole = t[:2] / t[2]
         near = np.sum((x2[:, :2] - epipole) ** 2, axis=1) * camera.focal**2 < (
-            options.min_epipole_distance2 * m.scale_factor ** m.kp_level[rows2].astype(np.float64)
+            options.mapping.min_epipole_distance2
+            * m.scale_factor ** m.kp_level[rows2].astype(np.float64)
         )
         no_depth = np.isnan(m.kp_depth[rows1])[:, None] & np.isnan(m.kp_depth[rows2])[None, :]
         band &= ~(no_depth & near[None, :])
     hamming = matching.distances(m.kp_descriptor[rows1], m.kp_descriptor[rows2])
-    hamming = np.where(band & (hamming <= options.th_low), hamming, np.iinfo(np.int64).max)
+    hamming = np.where(band & (hamming <= options.matching.th_low), hamming, np.iinfo(np.int64).max)
     best = np.argmin(hamming, axis=1)
     best_distance = hamming[np.arange(len(rows1)), best]
     claims: dict[int, tuple[int, int]] = {}
-    for i in np.flatnonzero(best_distance <= options.th_low):
+    for i in np.flatnonzero(best_distance <= options.matching.th_low):
         j, d = int(best[i]), int(best_distance[i])
         if j not in claims or d < claims[j][0]:
             claims[j] = (d, int(i))
@@ -615,7 +623,7 @@ def _triangulate(  # noqa: PLR0913 -- the two keyframes, their matches, the sett
     from_rays = (
         (cos_rays < cos_stereo)
         & (cos_rays > 0.0)
-        & (has1 | has2 | (cos_rays < options.max_parallax_cos))
+        & (has1 | has2 | (cos_rays < options.mapping.max_parallax_cos))
     )
     from_depth1 = ~from_rays & has1 & (cos1 < cos2)
     from_depth2 = ~from_rays & ~from_depth1 & has2 & (cos2 < cos1)
@@ -649,7 +657,7 @@ def _triangulate(  # noqa: PLR0913 -- the two keyframes, their matches, the sett
     keep &= (distance1 > 0.0) & (distance2 > 0.0)
     ratio_distance = distance2 / np.where(distance1 > 0.0, distance1, 1.0)
     ratio_octave = m.scale_factor ** (m.kp_level[rows1] - m.kp_level[rows2]).astype(np.float64)
-    factor = options.scale_ratio * m.scale_factor
+    factor = options.mapping.scale_ratio * m.scale_factor
     keep &= ~((ratio_distance * factor < ratio_octave) | (ratio_distance > ratio_octave * factor))
     return filled, keep
 
@@ -669,17 +677,17 @@ def _triangulate_new_points(m: Map, camera: Camera, mode: str, options: Options)
     """Triangulate the newest keyframe's free keypoints against the window's (reference)."""
     k1 = m.keyframes - 1
     neighbours = (
-        options.mono_triangulation_neighbours
+        options.mapping.mono_triangulation_neighbours
         if mode == "monocular"
-        else options.triangulation_neighbours
+        else options.mapping.triangulation_neighbours
     )
-    others = m.window(options.window)[:-1][::-1][:neighbours]
+    others = m.window(options.mapping.window)[:-1][::-1][:neighbours]
     centres = m.centres()
     for k2 in (int(k) for k in others):
         baseline = float(np.linalg.norm(centres[k2] - centres[k1]))
         if mode == "monocular":
             median = _median_depth(m, k2)
-            if median is None or baseline / median < options.min_baseline_depth:
+            if median is None or baseline / median < options.mapping.min_baseline_depth:
                 continue
         elif baseline < camera.baseline:
             continue
@@ -756,7 +764,7 @@ def _fuse_target(m: Map, camera: Camera, k: int, p: int, options: Options) -> in
         camera.inside(pixel[None])[0]
         and maps.in_distance_range(m, np.array([p]), np.array([distance]), options)[0]
         and maps.viewing_cos(m, np.array([p]), offset[None], np.array([distance]))[0]
-        >= options.view_cos_limit
+        >= options.tracking.view_cos_limit
     ):
         return None
     level = int(maps.predict_level(m, np.array([p]), np.array([distance]))[0])
@@ -765,7 +773,7 @@ def _fuse_target(m: Map, camera: Camera, k: int, p: int, options: Options) -> in
         m.kp_xy[rows],
         m.kp_level[rows],
         pixel,
-        options.fuse_window * m.scale_factor**level,
+        options.mapping.fuse_window * m.scale_factor**level,
         min_level=level - 1,
         max_level=level,
     )
@@ -782,7 +790,7 @@ def _fuse_target(m: Map, camera: Camera, k: int, p: int, options: Options) -> in
         return None
     hamming = matching.distances(m.pt_descriptor[p : p + 1], m.kp_descriptor[candidates])[0]
     best = int(np.argmin(hamming))
-    return int(candidates[best]) if hamming[best] <= options.th_low else None
+    return int(candidates[best]) if hamming[best] <= options.matching.th_low else None
 
 
 def _fuse_one(m: Map, camera: Camera, k: int, point_id: int, options: Options) -> Map:
@@ -831,7 +839,7 @@ def _merge_points(m: Map, *, lose: int, keep: int) -> Map:
 def _fuse_points(m: Map, camera: Camera, options: Options) -> Map:
     """Fuse the newest keyframe's points with the window's (reference)."""
     newest_id = int(m.kf_id[-1])
-    window_ids = m.kf_id[m.window(options.window)[:-1]]
+    window_ids = m.kf_id[m.window(options.mapping.window)[:-1]]
     own = m.pt_id[m.observed_by(np.array([m.keyframes - 1]))]
     for target in window_ids:
         k = int(m.keyframe_rows(np.array([target]))[0])
@@ -908,7 +916,7 @@ def _redundant(m: Map, k: int, rows: IntArray, threshold: int) -> int:
 def _cull_keyframes(m: Map, camera: Camera, mode: str, options: Options) -> Map:
     """Cull the window's redundant keyframes (reference)."""
     limit = close_depth(camera, options)
-    for kf_id in m.kf_id[m.window(options.window)][:-1]:
+    for kf_id in m.kf_id[m.window(options.mapping.window)][:-1]:
         if kf_id == 0:
             continue
         k = int(m.keyframe_rows(np.array([kf_id]))[0])
@@ -917,8 +925,8 @@ def _cull_keyframes(m: Map, camera: Camera, mode: str, options: Options) -> Map:
         if mode != "monocular":
             depth = m.kp_depth[rows]
             rows = rows[(depth >= 0.0) & (depth <= limit)]  # NaN: no depth, not counted
-        if len(rows) and _redundant(m, k, rows, options.redundant_observers) > (
-            options.redundant_fraction * len(rows)
+        if len(rows) and _redundant(m, k, rows, options.mapping.redundant_observers) > (
+            options.mapping.redundant_fraction * len(rows)
         ):
             m = maps.erase_keyframe(m, k)
     return m
@@ -987,8 +995,10 @@ def _process(  # noqa: PLR0913 -- the stage's state
     fused = m.points
     solves: tuple[adjust.Solve, ...] = ()
     outliers = 0
-    if m.keyframes >= options.ba_min_keyframes:
-        adjusted = adjust.bundle_adjust(m, camera, m.window(options.window), m.kf_id == 0, options)
+    if m.keyframes >= options.adjustment.min_keyframes:
+        adjusted = adjust.bundle_adjust(
+            m, camera, m.window(options.mapping.window), m.kf_id == 0, options
+        )
         m, solves, outliers = adjusted.map, adjusted.solves, adjusted.outliers
     keyframes = m.keyframes
     m = _cull_keyframes(m, camera, mode, options)

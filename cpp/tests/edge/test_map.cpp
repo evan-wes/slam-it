@@ -3,10 +3,12 @@
 ///        small hand-built map's operations and observation index, the checks, depth lookup.
 ///        Parity with the Python reference is checked through the bindings by tests/edge.
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <limits>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -190,9 +192,9 @@ void check_checks(int& failures) {
   expect(is_invalid_input(edge::insert_keyframe(m, frame_of(4, true), Eigen::Matrix4d::Identity(),
                                                 std::vector<std::int64_t>{3, -1, -1, -1})),
          "insert_keyframe rejects a point that is not in the map", failures);
-  expect(is_invalid_input(edge::check_options(edge::Options{.window = 0})),
+  expect(is_invalid_input(edge::check_options(edge::Options{.mapping = {.window = 0}})),
          "check_options rejects an empty window", failures);
-  expect(is_invalid_input(edge::check_options(edge::Options{.ref_ratio = 1.5})),
+  expect(is_invalid_input(edge::check_options(edge::Options{.keyframes = {.ref_ratio = 1.5}})),
          "check_options rejects a ratio above 1", failures);
   const edge::Camera bad{.model = slam_it::foundations::camera::Model::kPinhole,
                          .intrinsics = Eigen::Vector4d(250.0, 250.0, 160.0, 120.0),
@@ -224,15 +226,31 @@ void check_every_setting(int& failures) {
       unnamed.push_back(name);
     }
   };
-  for (const auto& [name, member] : edge::kIntegerOptions) {
+  std::size_t count = 0;
+  const edge::Options defaults{};
+  edge::for_each_setting(defaults, [&count](const char*, const auto&) { ++count; });
+  for (std::size_t k = 0; k < count; ++k) {
     edge::Options options{};
-    options.*member = 1'073'741'825;  // 2^30 + 1, above every integer setting's range
-    refused(options, name);
-  }
-  for (const auto& [name, member] : edge::kRealOptions) {
-    edge::Options options{};
-    options.*member = kNan;
-    refused(options, name);
+    std::string name;
+    bool flag = false;
+    std::size_t i = 0;
+    edge::for_each_setting(options, [&](const char* setting, auto& field) {
+      using Field = std::remove_reference_t<decltype(field)>;
+      if (i++ != k) {
+        return;
+      }
+      name = setting;
+      if constexpr (std::is_same_v<Field, bool>) {
+        flag = true;  // a flag has no value out of range
+      } else if constexpr (std::is_same_v<Field, double>) {
+        field = kNan;
+      } else {
+        field = 1'073'741'825;  // 2^30 + 1, above every integer setting's range
+      }
+    });
+    if (!flag) {
+      refused(options, name);
+    }
   }
   for (const std::string& name : unnamed) {
     std::cerr << "  not refused by name: " << name << "\n";

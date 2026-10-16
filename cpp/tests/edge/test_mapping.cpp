@@ -85,8 +85,9 @@ void check_keyframes_and_points(int& failures) {
   expect(edge::create_points_from_depth(every, scene::camera(), edge::Options{}).has_value() &&
              edge::point_count(every) == 2 * scene::kPoints,
          "every close keypoint with depth makes a point", failures);
-  expect(edge::create_points_from_depth(nearest, scene::camera(),
-                                        edge::Options{.close_depth = 1.0, .min_new_points = 10})
+  expect(edge::create_points_from_depth(
+             nearest, scene::camera(),
+             edge::Options{.stereo = {.close_depth = 1.0}, .mapping = {.min_new_points = 10}})
                  .has_value() &&
              edge::point_count(nearest) == scene::kPoints + 11,
          "past the close depth, points stop once there are enough", failures);

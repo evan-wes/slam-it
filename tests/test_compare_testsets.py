@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import importlib
 import json
 from pathlib import Path
@@ -41,11 +40,9 @@ def batches(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path, Path]
         f'[[sequence]]\nname = "room-found"\nfolder = "{base / "room"}"\nmode = "rgbd"\n'
         'reference = "its own poses"\n'
     )
-    default = Options()
+    default = Options().settings()
     replaced = {
-        item.name: getattr(FOUND_OPTIONS, item.name)
-        for item in dataclasses.fields(Options)
-        if getattr(FOUND_OPTIONS, item.name) != getattr(default, item.name)
+        name: value for name, value in FOUND_OPTIONS.settings().items() if value != default[name]
     }
     with pytest.MonkeyPatch.context() as patch:
         patch.syspath_prepend(str(REPO / "scripts"))
@@ -56,7 +53,7 @@ def batches(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path, Path]
         out.mkdir()
         result = measure.measure(
             entry, out / entry.name, backend="cpp", by_size=False, nominal=False,
-            replaced={**replaced, "relocalize": relocalize},
+            replaced={**replaced, "relocalization.enabled": relocalize},
         )  # fmt: skip
         (out / "results.jsonl").write_text(json.dumps(result) + "\n")
     return base / "off", base / "on", config
@@ -117,7 +114,7 @@ def test_the_found_room_compared_off_and_on(
     names = ["room-found"]
     # Off: the frames after the blank ones fail too, the local fallback out of reach, until the
     # map is lost after lost_frames failures. On: the blank frames end relocalised.
-    lost_frames = Options().lost_frames
+    lost_frames = Options().loss.lost_frames
     assert (
         script.endings(base, names)[2]
         == f"| room rgbd | 0 / 0 / 1 / 0 | 0 / 0 / {lost_frames} / 0 | 0 |"

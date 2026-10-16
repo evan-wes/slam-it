@@ -91,10 +91,10 @@ using Searched = std::pair<Tracked, std::vector<std::int64_t>>;
 Result<Searched> project_more(const Map& m, const Camera& camera, const Frame& frame,
                               std::int64_t keyframe, const Tracked& refined,
                               std::span<const std::int64_t> found, const Options& options) {
-  const std::int64_t needed = options.recovery_tracked;
-  auto added =
-      search_keyframe(m, camera, frame, refined, keyframe, found,
-                      {.radius = options.reloc_window, .distance = options.th_high}, options);
+  const std::int64_t needed = options.tracking.recovery_tracked;
+  auto added = search_keyframe(
+      m, camera, frame, refined, keyframe, found,
+      {.radius = options.relocalization.window, .distance = options.matching.th_high}, options);
   if (!added) {
     return std::unexpected(std::move(added.error()));
   }
@@ -107,16 +107,17 @@ Result<Searched> project_more(const Map& m, const Camera& camera, const Frame& f
     return std::unexpected(std::move(again.error()));
   }
   const std::int64_t good = inliers(*again);
-  if (good <= options.reloc_narrow_inliers || good >= needed) {
+  if (good <= options.relocalization.narrow_inliers || good >= needed) {
     return Searched{std::move(*again), std::move(all)};
   }
   // The second optimisation's outliers keep their matches until the last (ORB-SLAM's).
   const Tracked held{.pose = again->pose, .points = all};
   std::vector<std::int64_t> skip;
   std::ranges::copy_if(all, std::back_inserter(skip), [](std::int64_t p) { return p >= 0; });
-  auto narrow = search_keyframe(
-      m, camera, frame, held, keyframe, skip,
-      {.radius = options.reloc_narrow_window, .distance = options.reloc_narrow_distance}, options);
+  auto narrow = search_keyframe(m, camera, frame, held, keyframe, skip,
+                                {.radius = options.relocalization.narrow_window,
+                                 .distance = options.relocalization.narrow_distance},
+                                options);
   if (!narrow) {
     return std::unexpected(std::move(narrow.error()));
   }
@@ -165,8 +166,8 @@ Result<std::vector<matching::Match>> match_by_word(const Map& m, const Frame& fr
   }
   auto found = matching::search_by_bow(descriptors, candidate.nodes, frame.features.descriptors,
                                        frame_nodes, angles, frame_angles,
-                                       {.max_distance = options.th_low,
-                                        .ratio = options.relocalize_ratio,
+                                       {.max_distance = options.matching.th_low,
+                                        .ratio = options.relocalization.ratio,
                                         .check_orientation = true});
   if (!found) {
     return std::unexpected(std::move(found.error()));
@@ -230,7 +231,7 @@ Result<Attempt> try_candidate(const Map& m, const Database& db, const Camera& ca
         m.kp_point[static_cast<std::size_t>(observing.rows[static_cast<std::size_t>(pair.first)])];
   }
   const auto [needed, samples] = ransac_budget(out.summary.matches, options);
-  if (out.summary.matches < std::max(options.reloc_min_matches, needed)) {
+  if (out.summary.matches < std::max(options.relocalization.min_matches, needed)) {
     return out;
   }
   Rows3 world(static_cast<Eigen::Index>(pairs->size()), 3);
@@ -241,10 +242,11 @@ Result<Attempt> try_candidate(const Map& m, const Database& db, const Camera& ca
     world.row(static_cast<Eigen::Index>(j)) = m.pt_xyz[static_cast<std::size_t>(p)].transpose();
     rays.row(static_cast<Eigen::Index>(j)) = frame.bearings[keypoint].transpose();
   }
-  const foundations::ransac::Options settings{.threshold = options.pnp_threshold / focal(camera),
-                                              .confidence = options.reloc_confidence,
-                                              .max_iterations = static_cast<int>(samples),
-                                              .seed = static_cast<std::uint64_t>(options.seed)};
+  const foundations::ransac::Options settings{
+      .threshold = options.tracking.pnp_threshold / focal(camera),
+      .confidence = options.relocalization.confidence,
+      .max_iterations = static_cast<int>(samples),
+      .seed = static_cast<std::uint64_t>(options.seed)};
   auto consensus = pnp_consensus(world, rays, settings, needed, out.summary);
   if (!consensus) {
     return std::unexpected(std::move(consensus.error()));
@@ -267,11 +269,11 @@ Result<Attempt> try_candidate(const Map& m, const Database& db, const Camera& ca
     return std::unexpected(std::move(refined.error()));
   }
   out.summary.refined = inliers(*refined);
-  if (*out.summary.refined < options.reloc_min_inliers) {
+  if (*out.summary.refined < options.relocalization.min_inliers) {
     return out;
   }
   Tracked last = std::move(*refined);
-  if (inliers(last) < options.recovery_tracked) {
+  if (inliers(last) < options.tracking.recovery_tracked) {
     auto more = project_more(m, camera, frame, keyframe, last, found, options);
     if (!more) {
       return std::unexpected(std::move(more.error()));
@@ -280,7 +282,7 @@ Result<Attempt> try_candidate(const Map& m, const Database& db, const Camera& ca
     out.matched = merged(out.matched, more->second);
   }
   out.summary.found = inliers(last);
-  if (*out.summary.found >= options.recovery_tracked) {
+  if (*out.summary.found >= options.tracking.recovery_tracked) {
     out.tracked = std::move(last);
   }
   return out;
@@ -290,19 +292,20 @@ Result<Attempt> try_candidate(const Map& m, const Database& db, const Camera& ca
 
 std::pair<std::int64_t, std::int64_t> ransac_budget(std::int64_t matches, const Options& options) {
   const std::int64_t needed =
-      std::max({options.reloc_min_inliers,
+      std::max({options.relocalization.min_inliers,
                 static_cast<std::int64_t>(
-                    std::floor(options.reloc_inlier_ratio * static_cast<double>(matches))),
+                    std::floor(options.relocalization.inlier_ratio * static_cast<double>(matches))),
                 static_cast<std::int64_t>(foundations::p3p::kSampleSize)});
   if (needed >= matches) {
     return {needed, 1};
   }
-  const double ratio = std::max(options.reloc_inlier_ratio,
+  const double ratio = std::max(options.relocalization.inlier_ratio,
                                 static_cast<double>(needed) / static_cast<double>(matches));
   const double bound = foundations::ransac::required_iterations(
-      ratio, foundations::p3p::kSampleSize, options.reloc_confidence);
+      ratio, foundations::p3p::kSampleSize, options.relocalization.confidence);
   const auto samples = static_cast<std::int64_t>(std::ceil(bound));
-  return {needed, std::max<std::int64_t>(1, std::min(samples, options.reloc_ransac_iterations))};
+  return {needed,
+          std::max<std::int64_t>(1, std::min(samples, options.relocalization.ransac_iterations))};
 }
 
 Result<std::vector<std::int64_t>> search_keyframe(const Map& m, const Camera& camera,

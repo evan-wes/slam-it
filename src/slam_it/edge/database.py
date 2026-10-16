@@ -233,9 +233,9 @@ def best_covisible(m: Map, keyframes: list[int], options: Options) -> dict[int, 
         mine = seen[seen[:, 0] == keyframe, 1]
         others = seen[np.isin(seen[:, 1], mine) & (seen[:, 0] != keyframe), 0]
         ids, counts = np.unique(others, return_counts=True)
-        kept = counts >= options.covisible_points
+        kept = counts >= options.covisibility.min_points
         ids, counts = ids[kept], counts[kept]
-        order = np.lexsort((ids, -counts))[: options.reloc_neighbours]
+        order = np.lexsort((ids, -counts))[: options.relocalization.neighbours]
         out[keyframe] = ids[order].tolist()
     return out
 
@@ -251,7 +251,7 @@ def _candidates(
     none = np.zeros(0, dtype=np.int64)
     if not shared:
         return Candidates(none, np.zeros(0), sharing=0, scored=0)
-    least = math.floor(options.reloc_common_words * max(shared.values()))
+    least = math.floor(options.relocalization.common_words * max(shared.values()))
     scores = {
         keyframe: vocabulary.score(frame, db.vector(keyframe))
         for keyframe in sorted(shared)
@@ -267,7 +267,7 @@ def _candidates(
                 if scores[other] > best_score:
                     best, best_score = other, scores[other]
         groups.append((total, best))
-    retained = options.reloc_group_score * max(total for total, _ in groups)
+    retained = options.relocalization.group_score * max(total for total, _ in groups)
     chosen: dict[int, float] = {}
     for total, best in sorted(groups, key=lambda group: (-group[0], group[1])):
         if total > retained and best not in chosen:

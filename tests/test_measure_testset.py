@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import importlib.util
 import json
 import subprocess
@@ -230,8 +229,8 @@ def test_the_measure_never_needs_the_video_import() -> None:
 def test_options_are_read_as_json_and_checked_as_a_run_checks_them() -> None:
     """A value is JSON where it parses; each must be one its setting takes."""
     read = _script().read_options
-    assert read(["relocalize=false", "relocalize_seconds=0.5", "seed=2"]) == {
-        "relocalize": False, "relocalize_seconds": 0.5, "seed": 2,
+    assert read(["relocalization.enabled=false", "loss.relocalize_seconds=0.5", "seed=2"]) == {
+        "relocalization.enabled": False, "loss.relocalize_seconds": 0.5, "seed": 2,
     }  # fmt: skip
     assert read([]) == {}
 
@@ -239,10 +238,10 @@ def test_options_are_read_as_json_and_checked_as_a_run_checks_them() -> None:
 @pytest.mark.parametrize(
     ("given", "message"),
     [
-        (["relocalize"], "expected KEY=VALUE"),
+        (["relocalization.enabled"], "expected KEY=VALUE"),
         (["nothing=1"], "no setting 'nothing'"),
         (["seed=1", "seed=2"], "seed given twice"),
-        (["relocalize=maybe"], "relocalize"),
+        (["relocalization.enabled=maybe"], "relocalization.enabled"),
         (["seed=-1"], "seed"),
     ],
 )
@@ -257,12 +256,12 @@ def test_an_option_replaces_a_setting_in_every_run(sequence: Path, tmp_path: Pat
     """Each result names the settings it replaced, and its run's settings hold them."""
     config = _config(tmp_path / "testset.toml", sequence)
     out = tmp_path / "out"
-    replaced = ["--option", "relocalize=false", "--option", "seed=3"]
+    replaced = ["--option", "relocalization.enabled=false", "--option", "seed=3"]
     assert _script().main([str(config), str(out), *replaced]) == 0
     result = json.loads((out / "results.jsonl").read_text())
-    assert result["options"] == {"relocalize": False, "seed": 3}
+    assert result["options"] == {"relocalization.enabled": False, "seed": 3}
     settings = runs.read_run(out / "room" / "run").settings
-    assert (settings["relocalize"], settings["seed"]) == (False, 3)
+    assert (settings["relocalization"]["enabled"], settings["seed"]) == (False, 3)
 
 
 @pytest.mark.usefixtures("cpp")
@@ -270,14 +269,14 @@ def test_the_found_room_relocalises_unless_an_option_turns_it_off(tmp_path: Path
     """The golden record's found room, measured with its settings: found again, or not."""
     write_tum(tmp_path / "found", found_frames(room.sequence(FRAMES)))
     config = _config(tmp_path / "testset.toml", tmp_path / "found", name="found")
-    default = Options()
+    default = Options().settings()
     found = [
-        f"--option={item.name}={json.dumps(getattr(FOUND_OPTIONS, item.name))}"
-        for item in dataclasses.fields(Options)
-        if getattr(FOUND_OPTIONS, item.name) != getattr(default, item.name)
+        f"--option={name}={json.dumps(value)}"
+        for name, value in FOUND_OPTIONS.settings().items()
+        if value != default[name]
     ]
     measured = {}
-    for name, extra in (("on", []), ("off", ["--option=relocalize=false"])):
+    for name, extra in (("on", []), ("off", ["--option=relocalization.enabled=false"])):
         out = tmp_path / name
         assert _script().main([str(config), str(out), "--features", "default", *found, *extra]) == 0
         measured[name] = json.loads((out / "results.jsonl").read_text())

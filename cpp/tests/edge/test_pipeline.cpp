@@ -37,8 +37,10 @@ Eigen::Matrix4d along(std::int64_t i) {
 /// @brief The settings for a 60-point scene: the counts ORB-SLAM sizes for hundreds lowered.
 /// @return The settings.
 edge::Options small_scene() {
-  edge::Options out{.min_init_features = 20, .min_init_features_depth = 20, .init_min_matches = 20};
-  out.relocalize = false;  // A2's loss rule; relocalizing() turns it on, with a vocabulary
+  edge::Options out{
+      .initialization = {.min_features = 20, .min_features_depth = 20, .min_matches = 20}};
+  out.relocalization.enabled =
+      false;  // A2's loss rule; relocalizing() turns it on, with a vocabulary
   return out;
 }
 
@@ -161,7 +163,7 @@ bool lived(const edge::Lifetimes& lives, std::int64_t first, bool reset, std::in
 void check_lost(int& failures) {
   for (const std::int64_t reset_keyframes : {std::int64_t{1}, std::int64_t{0}}) {
     edge::Options options = small_scene();
-    options.reset_keyframes = reset_keyframes;
+    options.loss.reset_keyframes = reset_keyframes;
     auto pipeline =
         edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), options, std::nullopt);
     const auto started = start(pipeline);
@@ -170,7 +172,7 @@ void check_lost(int& failures) {
       return;
     }
     std::optional<edge::FrameResult> lost;
-    for (std::int64_t i = 0; i < options.lost_frames; ++i) {
+    for (std::int64_t i = 0; i < options.loss.lost_frames; ++i) {
       lost = pipeline->track(empty_frame()).value();
     }
     const bool reset = reset_keyframes > 0;
@@ -185,7 +187,8 @@ void check_lost(int& failures) {
       made_after = restarted->fates.fate[j] != edge::Fate::kMade ||
                    restarted->fates.point[j] >= started->tracked;
     }
-    expect(made_after && lived(pipeline->lifetimes(), started->tracked, reset, options.lost_frames),
+    expect(made_after &&
+               lived(pipeline->lifetimes(), started->tracked, reset, options.loss.lost_frames),
            "the next frame starts map 1, the run's ids following map 0's", failures);
   }
   edge::Camera monocular = scene::camera();
@@ -201,8 +204,8 @@ void check_lost(int& failures) {
 /// @return The settings.
 edge::Options relocalizing(std::int64_t reset_keyframes) {
   edge::Options out = small_scene();
-  out.relocalize = true;
-  out.reset_keyframes = reset_keyframes;
+  out.relocalization.enabled = true;
+  out.loss.reset_keyframes = reset_keyframes;
   return out;
 }
 
@@ -255,8 +258,8 @@ void check_lost_relocalizing(int& failures) {
 /// @param failures Running failure count.
 void check_relocalized(int& failures) {
   edge::Options options = relocalizing(0);
-  options.pnp_min_inliers = 1'000'000;  // the local fallback out of reach
-  options.motion_window = 5.0;          // 10 px widened: the 25 px back to the start out of reach
+  options.tracking.pnp_min_inliers = 1'000'000;  // the local fallback out of reach
+  options.tracking.motion_window = 5.0;  // 10 px widened: the 25 px back to the start out of reach
   auto pipeline =
       edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), options, scene::one_word());
   bool tracked = pipeline.has_value();

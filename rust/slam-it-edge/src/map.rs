@@ -622,8 +622,8 @@ pub fn viewing_cos(m: &Map, p: usize, offset: &Vector3<f64>, distance: f64) -> f
 /// Whether it is in range.
 #[must_use]
 pub fn in_distance_range(m: &Map, p: usize, distance: f64, options: &Options) -> bool {
-    distance >= options.min_distance_margin * m.pt_min_distance[p]
-        && distance <= options.max_distance_margin * m.pt_max_distance[p]
+    distance >= options.tracking.min_distance_margin * m.pt_min_distance[p]
+        && distance <= options.tracking.max_distance_margin * m.pt_max_distance[p]
 }
 
 /// Predicts the pyramid level points appear at from a distance (`PredictScale`).

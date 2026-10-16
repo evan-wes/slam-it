@@ -160,14 +160,15 @@ std::map<std::int64_t, std::vector<std::int64_t>> best_covisible(
     }
     std::vector<std::pair<std::int64_t, std::int64_t>> ranked;  // (shared, id)
     for (const auto& [other, count] : shared) {
-      if (count >= options.covisible_points) {
+      if (count >= options.covisibility.min_points) {
         ranked.emplace_back(count, other);
       }
     }
     std::ranges::sort(ranked, [](const auto& a, const auto& b) {
       return a.first > b.first || (a.first == b.first && a.second < b.second);
     });
-    for (std::size_t i = 0; i < ranked.size() && std::cmp_less(i, options.reloc_neighbours); ++i) {
+    for (std::size_t i = 0;
+         i < ranked.size() && std::cmp_less(i, options.relocalization.neighbours); ++i) {
       best.push_back(ranked[i].second);
     }
   }
@@ -187,8 +188,8 @@ Result<Candidates> candidates(const Database& db, const Map& m,
     return out;
   }
   const std::int64_t most = std::ranges::max(shared | std::views::values);
-  const auto least =
-      static_cast<std::int64_t>(std::floor(options.reloc_common_words * static_cast<double>(most)));
+  const auto least = static_cast<std::int64_t>(
+      std::floor(options.relocalization.common_words * static_cast<double>(most)));
   std::map<std::int64_t, double> scores;
   std::vector<std::int64_t> scored;
   for (const auto& [keyframe, count] : shared) {
@@ -203,7 +204,7 @@ Result<Candidates> candidates(const Database& db, const Map& m,
   }
   out.scored = static_cast<std::int64_t>(scores.size());
   auto groups = groups_of(scores, best_covisible(m, scored, options));
-  const double retained = options.reloc_group_score * std::ranges::max(groups).first;
+  const double retained = options.relocalization.group_score * std::ranges::max(groups).first;
   std::ranges::sort(groups, [](const auto& a, const auto& b) {
     return a.first > b.first || (a.first == b.first && a.second < b.second);
   });

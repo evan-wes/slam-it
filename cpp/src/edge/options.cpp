@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <string>
 #include <utility>
 
 #include "slam_it/foundations/matching.hpp"
@@ -21,6 +22,15 @@ using IntSetting = std::pair<const char*, std::int64_t>;
 
 /// @brief A real setting, by name.
 using RealSetting = std::pair<const char*, double>;
+
+/// @brief A group's own check's error, its setting named by the group too.
+/// @param group The group's name.
+/// @param error The error, naming the setting by its field.
+/// @return The error, naming it `group.field`.
+foundations::Result<void> in_group(const char* group, const foundations::Error& error) {
+  return std::unexpected(
+      foundations::Error{.kind = error.kind, .message = std::string(group) + "." + error.message});
+}
 
 }  // namespace
 
@@ -39,33 +49,34 @@ const char* name(Mode mode) {
 }
 
 foundations::orb::Options extraction(const Options& options, bool initializing) {
-  const std::int64_t factor = initializing ? options.init_feature_factor : 1;
-  return {.n_features = std::min(options.n_features * factor, foundations::orb::kMaxFeatures),
-          .levels = options.levels,
-          .scale_factor = options.scale_factor,
-          .fast_threshold = options.fast_threshold,
-          .min_fast_threshold = options.min_fast_threshold};
+  const std::int64_t factor = initializing ? options.features.init_factor : 1;
+  return {
+      .n_features = std::min(options.features.n_features * factor, foundations::orb::kMaxFeatures),
+      .levels = options.features.levels,
+      .scale_factor = options.features.scale_factor,
+      .fast_threshold = options.features.fast_threshold,
+      .min_fast_threshold = options.features.min_fast_threshold};
 }
 
 foundations::stereo::MatchOptions stereo_matching(const Options& options) {
-  return {.max_distance = options.stereo_max_distance,
-          .band = options.stereo_band,
-          .window = options.stereo_window,
-          .search = options.stereo_search,
-          .outlier_factor = options.stereo_outlier_factor};
+  return {.max_distance = options.stereo.max_distance,
+          .band = options.stereo.band,
+          .window = options.stereo.window,
+          .search = options.stereo.search,
+          .outlier_factor = options.stereo.outlier_factor};
 }
 
 foundations::Result<void> check_options(const Options& options) {
   if (auto ok = foundations::orb::check_options(extraction(options)); !ok) {
-    return ok;
+    return in_group("features", ok.error());
   }
   if (auto ok = foundations::stereo::check_options(stereo_matching(options)); !ok) {
-    return std::unexpected(
-        foundations::Error{.kind = ok.error().kind, .message = "stereo_" + ok.error().message});
+    return in_group("stereo", ok.error());
   }
   for (const auto& [setting, value] :
-       {std::pair{"th_low", options.th_low}, std::pair{"th_high", options.th_high},
-        std::pair{"reloc_narrow_distance", options.reloc_narrow_distance}}) {
+       {std::pair{"matching.th_low", options.matching.th_low},
+        std::pair{"matching.th_high", options.matching.th_high},
+        std::pair{"relocalization.narrow_distance", options.relocalization.narrow_distance}}) {
     if (auto ok = foundations::check_range(setting, value, 1, foundations::matching::kMaxDistance);
         !ok) {
       return ok;
@@ -74,55 +85,55 @@ foundations::Result<void> check_options(const Options& options) {
   // Settings that may be 0, then those that must be at least 1.
   const std::array<IntSetting, 4> may_be_zero{
       {{"seed", options.seed},
-       {"min_init_features", options.min_init_features},
-       {"min_init_features_depth", options.min_init_features_depth},
-       {"reset_keyframes", options.reset_keyframes}}};
+       {"initialization.min_features", options.initialization.min_features},
+       {"initialization.min_features_depth", options.initialization.min_features_depth},
+       {"loss.reset_keyframes", options.loss.reset_keyframes}}};
   for (const auto& [setting, value] : may_be_zero) {
     if (auto ok = foundations::check_range(setting, value, 0, kMaxSetting); !ok) {
       return ok;
     }
   }
   const std::array<IntSetting, 40> counts{{
-      {"n_features", options.n_features},
-      {"levels", options.levels},
-      {"fast_threshold", options.fast_threshold},
-      {"min_fast_threshold", options.min_fast_threshold},
-      {"init_feature_factor", options.init_feature_factor},
-      {"init_min_matches", options.init_min_matches},
-      {"min_motion_matches", options.min_motion_matches},
-      {"min_tracked", options.min_tracked},
-      {"pose_rounds", options.pose_rounds},
-      {"max_frames", options.max_frames},
-      {"min_keyframe_inliers", options.min_keyframe_inliers},
-      {"close_tracked", options.close_tracked},
-      {"close_untracked", options.close_untracked},
-      {"window", options.window},
-      {"min_new_points", options.min_new_points},
-      {"ba_iterations", options.ba_iterations},
-      {"ba_refine_iterations", options.ba_refine_iterations},
-      {"ba_min_keyframes", options.ba_min_keyframes},
-      {"min_point_observations", options.min_point_observations},
-      {"min_point_observations_depth", options.min_point_observations_depth},
-      {"redundant_observers", options.redundant_observers},
-      {"pnp_min_inliers", options.pnp_min_inliers},
-      {"lost_frames", options.lost_frames},
-      {"min_motion_inliers", options.min_motion_inliers},
-      {"recovery_window_frames", options.recovery_window_frames},
-      {"recovery_tracked", options.recovery_tracked},
-      {"ref_min_observations", options.ref_min_observations},
-      {"ref_min_observations_early", options.ref_min_observations_early},
-      {"triangulation_neighbours", options.triangulation_neighbours},
-      {"mono_triangulation_neighbours", options.mono_triangulation_neighbours},
-      {"recent_point_keyframes", options.recent_point_keyframes},
-      {"point_cull_age", options.point_cull_age},
-      {"init_ba_iterations", options.init_ba_iterations},
-      {"init_ransac_iterations", options.init_ransac_iterations},
-      {"covisible_points", options.covisible_points},
-      {"reloc_neighbours", options.reloc_neighbours},
-      {"reloc_min_matches", options.reloc_min_matches},
-      {"reloc_min_inliers", options.reloc_min_inliers},
-      {"reloc_ransac_iterations", options.reloc_ransac_iterations},
-      {"reloc_narrow_inliers", options.reloc_narrow_inliers},
+      {"features.n_features", options.features.n_features},
+      {"features.levels", options.features.levels},
+      {"features.fast_threshold", options.features.fast_threshold},
+      {"features.min_fast_threshold", options.features.min_fast_threshold},
+      {"features.init_factor", options.features.init_factor},
+      {"initialization.min_matches", options.initialization.min_matches},
+      {"tracking.min_motion_matches", options.tracking.min_motion_matches},
+      {"tracking.min_tracked", options.tracking.min_tracked},
+      {"adjustment.pose_rounds", options.adjustment.pose_rounds},
+      {"tracking.max_frames", options.tracking.max_frames},
+      {"keyframes.min_inliers", options.keyframes.min_inliers},
+      {"keyframes.close_tracked", options.keyframes.close_tracked},
+      {"keyframes.close_untracked", options.keyframes.close_untracked},
+      {"mapping.window", options.mapping.window},
+      {"mapping.min_new_points", options.mapping.min_new_points},
+      {"adjustment.iterations", options.adjustment.iterations},
+      {"adjustment.refine_iterations", options.adjustment.refine_iterations},
+      {"adjustment.min_keyframes", options.adjustment.min_keyframes},
+      {"mapping.min_point_observations", options.mapping.min_point_observations},
+      {"mapping.min_point_observations_depth", options.mapping.min_point_observations_depth},
+      {"mapping.redundant_observers", options.mapping.redundant_observers},
+      {"tracking.pnp_min_inliers", options.tracking.pnp_min_inliers},
+      {"loss.lost_frames", options.loss.lost_frames},
+      {"tracking.min_motion_inliers", options.tracking.min_motion_inliers},
+      {"tracking.recovery_window_frames", options.tracking.recovery_window_frames},
+      {"tracking.recovery_tracked", options.tracking.recovery_tracked},
+      {"keyframes.ref_min_observations", options.keyframes.ref_min_observations},
+      {"keyframes.ref_min_observations_early", options.keyframes.ref_min_observations_early},
+      {"mapping.triangulation_neighbours", options.mapping.triangulation_neighbours},
+      {"mapping.mono_triangulation_neighbours", options.mapping.mono_triangulation_neighbours},
+      {"mapping.recent_point_keyframes", options.mapping.recent_point_keyframes},
+      {"mapping.point_cull_age", options.mapping.point_cull_age},
+      {"initialization.ba_iterations", options.initialization.ba_iterations},
+      {"initialization.ransac_iterations", options.initialization.ransac_iterations},
+      {"covisibility.min_points", options.covisibility.min_points},
+      {"relocalization.neighbours", options.relocalization.neighbours},
+      {"relocalization.min_matches", options.relocalization.min_matches},
+      {"relocalization.min_inliers", options.relocalization.min_inliers},
+      {"relocalization.ransac_iterations", options.relocalization.ransac_iterations},
+      {"relocalization.narrow_inliers", options.relocalization.narrow_inliers},
   }};
   for (const auto& [setting, value] : counts) {
     if (auto ok = foundations::check_range(setting, value, 1, kMaxSetting); !ok) {
@@ -130,27 +141,27 @@ foundations::Result<void> check_options(const Options& options) {
     }
   }
   const std::array<RealSetting, 21> positive{{
-      {"scale_factor", options.scale_factor},
-      {"close_depth", options.close_depth},
-      {"init_window", options.init_window},
-      {"motion_window", options.motion_window},
-      {"stereo_motion_window", options.stereo_motion_window},
-      {"local_window", options.local_window},
-      {"rgbd_local_window", options.rgbd_local_window},
-      {"recovery_local_window", options.recovery_local_window},
-      {"chi2_mono", options.chi2_mono},
-      {"chi2_stereo", options.chi2_stereo},
-      {"scale_ratio", options.scale_ratio},
-      {"fuse_window", options.fuse_window},
-      {"pnp_threshold", options.pnp_threshold},
-      {"aligned_view_radius", options.aligned_view_radius},
-      {"oblique_view_radius", options.oblique_view_radius},
-      {"max_distance_margin", options.max_distance_margin},
-      {"epipolar_chi2", options.epipolar_chi2},
-      {"min_epipole_distance2", options.min_epipole_distance2},
-      {"reloc_window", options.reloc_window},
-      {"reloc_narrow_window", options.reloc_narrow_window},
-      {"relocalize_seconds", options.relocalize_seconds},
+      {"features.scale_factor", options.features.scale_factor},
+      {"stereo.close_depth", options.stereo.close_depth},
+      {"initialization.window", options.initialization.window},
+      {"tracking.motion_window", options.tracking.motion_window},
+      {"tracking.stereo_motion_window", options.tracking.stereo_motion_window},
+      {"tracking.local_window", options.tracking.local_window},
+      {"tracking.rgbd_local_window", options.tracking.rgbd_local_window},
+      {"tracking.recovery_local_window", options.tracking.recovery_local_window},
+      {"adjustment.chi2_mono", options.adjustment.chi2_mono},
+      {"adjustment.chi2_stereo", options.adjustment.chi2_stereo},
+      {"mapping.scale_ratio", options.mapping.scale_ratio},
+      {"mapping.fuse_window", options.mapping.fuse_window},
+      {"tracking.pnp_threshold", options.tracking.pnp_threshold},
+      {"tracking.aligned_view_radius", options.tracking.aligned_view_radius},
+      {"tracking.oblique_view_radius", options.tracking.oblique_view_radius},
+      {"tracking.max_distance_margin", options.tracking.max_distance_margin},
+      {"mapping.epipolar_chi2", options.mapping.epipolar_chi2},
+      {"mapping.min_epipole_distance2", options.mapping.min_epipole_distance2},
+      {"relocalization.window", options.relocalization.window},
+      {"relocalization.narrow_window", options.relocalization.narrow_window},
+      {"loss.relocalize_seconds", options.loss.relocalize_seconds},
   }};
   for (const auto& [setting, value] : positive) {
     if (!std::isfinite(value) || value <= 0.0) {
@@ -158,33 +169,33 @@ foundations::Result<void> check_options(const Options& options) {
     }
   }
   const std::array<RealSetting, 18> fractions{{
-      {"init_ratio", options.init_ratio},
-      {"init_parallax_cos", options.init_parallax_cos},
-      {"ref_ratio", options.ref_ratio},
-      {"mono_ref_ratio", options.mono_ref_ratio},
-      {"found_ratio", options.found_ratio},
-      {"redundant_fraction", options.redundant_fraction},
-      {"view_cos_limit", options.view_cos_limit},
-      {"max_parallax_cos", options.max_parallax_cos},
-      {"aligned_view_cos", options.aligned_view_cos},
-      {"local_map_ratio", options.local_map_ratio},
-      {"min_distance_margin", options.min_distance_margin},
-      {"first_ref_ratio", options.first_ref_ratio},
-      {"min_baseline_depth", options.min_baseline_depth},
-      {"relocalize_ratio", options.relocalize_ratio},
-      {"reloc_common_words", options.reloc_common_words},
-      {"reloc_group_score", options.reloc_group_score},
-      {"reloc_inlier_ratio", options.reloc_inlier_ratio},
-      {"reloc_confidence", options.reloc_confidence},
+      {"initialization.ratio", options.initialization.ratio},
+      {"initialization.parallax_cos", options.initialization.parallax_cos},
+      {"keyframes.ref_ratio", options.keyframes.ref_ratio},
+      {"keyframes.mono_ref_ratio", options.keyframes.mono_ref_ratio},
+      {"mapping.found_ratio", options.mapping.found_ratio},
+      {"mapping.redundant_fraction", options.mapping.redundant_fraction},
+      {"tracking.view_cos_limit", options.tracking.view_cos_limit},
+      {"mapping.max_parallax_cos", options.mapping.max_parallax_cos},
+      {"tracking.aligned_view_cos", options.tracking.aligned_view_cos},
+      {"tracking.local_map_ratio", options.tracking.local_map_ratio},
+      {"tracking.min_distance_margin", options.tracking.min_distance_margin},
+      {"keyframes.first_ref_ratio", options.keyframes.first_ref_ratio},
+      {"mapping.min_baseline_depth", options.mapping.min_baseline_depth},
+      {"relocalization.ratio", options.relocalization.ratio},
+      {"relocalization.common_words", options.relocalization.common_words},
+      {"relocalization.group_score", options.relocalization.group_score},
+      {"relocalization.inlier_ratio", options.relocalization.inlier_ratio},
+      {"relocalization.confidence", options.relocalization.confidence},
   }};
   for (const auto& [setting, value] : fractions) {
     if (!std::isfinite(value) || value <= 0.0 || value > 1.0) {
       return foundations::fail_setting(setting, "must be in (0, 1]", value);
     }
   }
-  if (options.reloc_confidence >= 1.0) {
-    return foundations::fail_setting("reloc_confidence", "must be in (0, 1)",
-                                     options.reloc_confidence);
+  if (options.relocalization.confidence >= 1.0) {
+    return foundations::fail_setting("relocalization.confidence", "must be in (0, 1)",
+                                     options.relocalization.confidence);
   }
   return {};
 }

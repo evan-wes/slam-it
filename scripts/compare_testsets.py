@@ -248,7 +248,7 @@ def endings(batch: Batch, names: list[str]) -> list[str]:
     for name in names:
         run = runs.read_run(batch.folder / name / "run")
         key = group(batch.results[name])
-        lost_frames = int(run.settings["lost_frames"])
+        lost_frames = int(run.settings["loss"]["lost_frames"])
         for stretch in stretches(run.diagnostics):
             count[key][stretch.ending] += 1
             frames[key][stretch.ending] += stretch.frames

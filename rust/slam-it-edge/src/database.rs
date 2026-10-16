@@ -198,13 +198,13 @@ pub fn best_covisible(m: &Map, keyframes: &[i64], options: &Options) -> BTreeMap
             }
             let mut ranked: Vec<(usize, i64)> = shared
                 .into_iter()
-                .filter(|&(_, count)| count >= options.covisible_points)
+                .filter(|&(_, count)| count >= options.covisibility.min_points)
                 .map(|(other, count)| (count, other))
                 .collect();
             ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
             best = ranked
                 .into_iter()
-                .take(options.reloc_neighbours)
+                .take(options.relocalization.neighbours)
                 .map(|(_, other)| other)
                 .collect();
         }
@@ -258,7 +258,7 @@ pub fn candidates(
     let Some(&most) = shared.values().max() else {
         return Ok(out);
     };
-    let least = (options.reloc_common_words * most as f64).floor() as usize;
+    let least = (options.relocalization.common_words * most as f64).floor() as usize;
     let mut scores: BTreeMap<i64, f64> = BTreeMap::new();
     for (&keyframe, &count) in &shared {
         if count > least {
@@ -285,7 +285,7 @@ pub fn candidates(
         }
         groups.push((total, best));
     }
-    let retained = options.reloc_group_score
+    let retained = options.relocalization.group_score
         * groups
             .iter()
             .map(|&(total, _)| total)

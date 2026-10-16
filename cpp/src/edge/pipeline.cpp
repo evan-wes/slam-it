@@ -76,10 +76,10 @@ Result<Pipeline> Pipeline::create(Mode mode, Camera camera, Options options,
     return fail(ErrorKind::kInvalidInput,
                 std::string("camera.baseline: ") + name(mode) + " needs a positive baseline");
   }
-  if (options.relocalize && !vocabulary) {
+  if (options.relocalization.enabled && !vocabulary) {
     return fail(ErrorKind::kInvalidInput, "vocabulary: relocalize needs one");
   }
-  if (!options.relocalize && vocabulary) {
+  if (!options.relocalization.enabled && vocabulary) {
     return fail(ErrorKind::kInvalidInput, "vocabulary: given, but relocalize is off");
   }
   return Pipeline(mode, std::move(camera), options, std::move(vocabulary));
@@ -179,7 +179,7 @@ void Pipeline::date() {
 
 LostSummary Pipeline::close(const Map& m) {
   const std::int64_t frame = frames_ - 1;  // dated already
-  const bool reset = std::cmp_less_equal(keyframe_count(m), options_.reset_keyframes);
+  const bool reset = std::cmp_less_equal(keyframe_count(m), options_.loss.reset_keyframes);
   const auto code = static_cast<std::int64_t>(Removal::kReset);
   for (std::size_t p = 0; p < point_count(m); ++p) {
     const auto id = static_cast<std::size_t>(pt_base_ + m.pt_id[p]);
@@ -266,7 +266,7 @@ Result<Initialization> Pipeline::initialize_monocular(const Frame& frame) {
     return Initialization{.started = std::nullopt,
                           .summary = {.outcome = outcome, .matches = matches, .solves = {}}};
   };
-  if (std::cmp_less_equal(keypoint_count(frame), options_.min_init_features)) {
+  if (std::cmp_less_equal(keypoint_count(frame), options_.initialization.min_features)) {
     reference_.reset();  // too few features: ORB-SLAM drops its initializer
     return not_started(Outcome::kTooFewFeatures, std::nullopt);
   }
@@ -278,7 +278,7 @@ Result<Initialization> Pipeline::initialize_monocular(const Frame& frame) {
   if (!matched) {
     return std::unexpected(std::move(matched.error()));
   }
-  if (std::cmp_less(matched->size(), options_.init_min_matches)) {
+  if (std::cmp_less(matched->size(), options_.initialization.min_matches)) {
     set_reference(frame);  // the views no longer overlap enough: start again
     return not_started(Outcome::kReferenceReplaced, static_cast<std::int64_t>(matched->size()));
   }
@@ -353,10 +353,11 @@ bool Pipeline::record_failure(const Frame& frame, std::size_t keyframes) {
   velocity_.reset();
   const double since = lost_since_.has_value() ? *lost_since_ : frame.timestamp;
   lost_since_ = since;
-  if (!options_.relocalize || std::cmp_less_equal(keyframes, options_.reset_keyframes)) {
-    return failures_ >= options_.lost_frames;
+  if (!options_.relocalization.enabled ||
+      std::cmp_less_equal(keyframes, options_.loss.reset_keyframes)) {
+    return failures_ >= options_.loss.lost_frames;
   }
-  return frame.timestamp - since > options_.relocalize_seconds;
+  return frame.timestamp - since > options_.loss.relocalize_seconds;
 }
 
 Result<Pipeline::Placed> Pipeline::place(const Map& m, const Frame& frame) const {
@@ -424,7 +425,8 @@ Result<Pipeline::Refined> Pipeline::refine(Map& m, const Frame& frame, const Tra
   Refined out{.tracked = std::nullopt,
               .summary = edge::summary(*local),
               .matched = std::move(local->matched)};
-  const std::int64_t needed = recent ? options_.recovery_tracked : options_.min_tracked;
+  const std::int64_t needed =
+      recent ? options_.tracking.recovery_tracked : options_.tracking.min_tracked;
   if (inliers(local->tracked) >= needed) {
     out.tracked = std::move(local->tracked);
   }
@@ -447,8 +449,8 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
   } else if (since_recovery_) {
     ++*since_recovery_;
   }
-  const bool recent = since_recovery_ && *since_recovery_ < options_.max_frames;
-  const bool wide = since_recovery_ && *since_recovery_ < options_.recovery_window_frames;
+  const bool recent = since_recovery_ && *since_recovery_ < options_.tracking.max_frames;
+  const bool wide = since_recovery_ && *since_recovery_ < options_.tracking.recovery_window_frames;
   std::optional<Tracked> tracked;
   if (where) {
     auto refined = refine(m, frame, *where, wide, recent);
@@ -469,7 +471,7 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
                 .made = {},
                 .lost = lost};
   }
-  const bool held = recent && std::cmp_greater(keyframe_count(m), options_.max_frames);
+  const bool held = recent && std::cmp_greater(keyframe_count(m), options_.tracking.max_frames);
   auto need = held ? Result<bool>(false)
                    : need_keyframe(m, camera_, frame.depth, *tracked, mode_, options_);
   if (!need) {

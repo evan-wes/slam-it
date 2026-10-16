@@ -3,15 +3,22 @@
 ORB-SLAM2 (Mur-Artal and Tardós, T-RO 2017) is the reference: each setting's docstring names
 the ORB-SLAM quantity it stands for. Where SLAM It!'s lite pipeline has no counterpart (the
 sliding window), the default is the design note's (``docs/design/2026-10-05-edge-vo.md``).
+
+The settings are grouped by the stage that reads them (:class:`Options`), and a setting is
+named by its group and its field, ``relocalization.min_inliers``: on a command line
+(``--option``), in an error, and as the three languages' tables list them. A group is checked
+when the :class:`Options` holding it is made.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, dataclass, fields
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, field, fields, replace
 from typing import Any
 
-from slam_it.foundations import matching, orb, stereo
+from slam_it.foundations import matching, orb
+from slam_it.foundations import stereo as rows
 from slam_it.foundations.arrays import MAX_IMAGE_SIDE, as_count, as_flag, as_number
 from slam_it.foundations.errors import InvalidInputError
 
@@ -19,17 +26,19 @@ MODES = ("monocular", "stereo", "rgbd")
 """The pipeline's modes."""
 
 FEATURES_AREA = 640 * 480
-"""The frame area the default ``n_features``, ORB-SLAM's 1,000, is set for: its TUM settings'."""
+"""The frame area the default ``features.n_features``, ORB-SLAM's 1,000, is set for: its TUM
+settings'."""
 
 FEATURES_BOUNDS = (1000, 2000)
 """The fewest and most features :func:`features_for` gives. ORB-SLAM's own settings span 1,000
 (TUM, 640x480) to 2,000 (KITTI, 1241x376). The fewest also keep a stereo or RGB-D frame able
-to start the map, which needs more than ``min_init_features_depth`` (500) keypoints."""
+to start the map, which needs more than ``initialization.min_features_depth`` (500)
+keypoints."""
 
 
 @dataclass(frozen=True)
-class Options:
-    """The edge pipeline's settings.
+class FeatureOptions:
+    """ORB extraction's settings (``Options.features``).
 
     Attributes
     ----------
@@ -41,13 +50,44 @@ class Options:
         The pyramid's scale factor (``scaleFactor``).
     fast_threshold, min_fast_threshold : int
         FAST thresholds (``iniThFAST``, ``minThFAST``).
+    init_factor : int
+        A monocular frame is extracted with this many times ``features.n_features`` until the map
+        exists (ORB-SLAM's initialisation extractor, ``2 * nFeatures``).
+    """
+
+    n_features: int = 1000
+    levels: int = 8
+    scale_factor: float = 1.2
+    fast_threshold: int = 20
+    min_fast_threshold: int = 7
+    init_factor: int = 2
+
+
+@dataclass(frozen=True)
+class MatchingOptions:
+    """The descriptor distances matching takes in every stage (``Options.matching``).
+
+    Attributes
+    ----------
     th_low : int
         The stricter descriptor distance, for initialisation, triangulation and fusion
         (ORB-SLAM's ``ORBmatcher::TH_LOW``, 50), at most
         :data:`slam_it.foundations.matching.MAX_DISTANCE`.
     th_high : int
         The looser one, for tracking (``TH_HIGH``, 100).
-    stereo_max_distance, stereo_band, stereo_window, stereo_search, stereo_outlier_factor
+    """
+
+    th_low: int = 50
+    th_high: int = 100
+
+
+@dataclass(frozen=True)
+class StereoOptions:
+    """A stereo pair's row matching, and the close depth of stereo and RGB-D (``Options.stereo``).
+
+    Attributes
+    ----------
+    max_distance, band, window, search, outlier_factor
         The stereo pair's row matching (:class:`slam_it.foundations.stereo.Options`, ORB-SLAM's
         ``ComputeStereoMatches``: a Hamming distance below 75, a band of 2 times the level's
         scale, a SAD window of 5 searched over 5 pixels either side, matches beyond 2.1 times
@@ -55,31 +95,69 @@ class Options:
     close_depth : float
         Keypoints nearer than this many baselines are "close" (``ThDepth``, 40): only close
         points become map points from depth, and their tracking decides keyframes.
-    init_feature_factor : int
-        A monocular frame is extracted with this many times ``n_features`` until the map
-        exists (ORB-SLAM's initialisation extractor, ``2 * nFeatures``).
-    min_init_features : int
+    """
+
+    max_distance: int = 75
+    band: float = 2.0
+    window: int = 5
+    search: int = 5
+    outlier_factor: float = 2.1
+    close_depth: float = 40.0
+
+
+@dataclass(frozen=True)
+class InitializationOptions:
+    """Starting the map (``Options.initialization``).
+
+    Attributes
+    ----------
+    min_features : int
         A monocular frame takes part in initialisation with more than this many keypoints
         (``MonocularInitialization``'s ``mvKeys.size() > 100``).
-    min_init_features_depth : int
+    min_features_depth : int
         A stereo or RGB-D frame starts the map with more than this many keypoints, a point
         made at each one with depth (``StereoInitialization``'s ``N > 500`` counts every
         keypoint, with depth or not). A map started from too little depth to track loses the
-        track and is reset (``reset_keyframes``), as ORB-SLAM's is.
-    init_window : float
+        track and is reset (``loss.reset_keyframes``), as ORB-SLAM's is.
+    window : float
         The window, in pixels, in which a monocular initialisation matches a keypoint of the
         reference frame (``SearchForInitialization``'s 100).
-    init_ratio : float
+    ratio : float
         Its ratio test (``ORBmatcher(0.9, true)``).
-    init_min_matches : int
+    min_matches : int
         Matches a monocular initialisation needs (100). With fewer, the reference frame is
         replaced by the current one; otherwise it is kept, and later frames are tried
         against it until the two initialise (ORB-SLAM's ``MonocularInitialization``); the
         map then needs as many points after its first adjustment.
-    init_parallax_cos : float
+    parallax_cos : float
         A monocular start keeps every inlier in front of both views whose two rays' cosine is
         below this (``CheckRT``'s 0.99998, 0.36 degrees); two-view's own 1 degree only decides
         whether the views initialise.
+    ba_iterations : int
+        The monocular map's first bundle adjustment's iterations (``GlobalBundleAdjustemnt(map,
+        20)``).
+    ransac_iterations : int
+        The most samples a monocular start's two-view RANSAC draws, per model (ORB-SLAM's
+        ``TwoViewReconstruction``, 200): the start stops sooner once confident, and a pair that
+        is not one costs at most this many.
+    """
+
+    min_features: int = 100
+    min_features_depth: int = 500
+    window: float = 100.0
+    ratio: float = 0.9
+    min_matches: int = 100
+    parallax_cos: float = 0.99998
+    ba_iterations: int = 20
+    ransac_iterations: int = 200
+
+
+@dataclass(frozen=True)
+class TrackingOptions:
+    """Placing each frame: the motion model, the local map, the PnP fallback (``Options.tracking``).
+
+    Attributes
+    ----------
     motion_window : float
         The search window, in pixels at level 0, around a point predicted by the motion model
         (``TrackWithMotionModel``'s ``th``: 15, or 7 for stereo).
@@ -100,29 +178,23 @@ class Options:
         The same on a recovery's frame and the next, in every mode (``SearchLocalPoints``'
         ``th = 5`` just after a relocalisation).
     recovery_window_frames : int
-        The frames, the recovery's included, searched in ``recovery_local_window``
+        The frames, the recovery's included, searched in ``tracking.recovery_local_window``
         (``SearchLocalPoints``' ``mnLastRelocFrameId + 2``).
     aligned_view_cos : float
         A point seen at a cosine above this to its mean viewing direction is searched in
-        ``aligned_view_radius`` times the window, the others in ``oblique_view_radius`` times
-        it (``RadiusByViewingCos``).
+        ``tracking.aligned_view_radius`` times the window, the others in
+        ``tracking.oblique_view_radius`` times it (``RadiusByViewingCos``).
     aligned_view_radius : float
-        See ``aligned_view_cos`` (2.5).
+        See ``tracking.aligned_view_cos`` (2.5).
     oblique_view_radius : float
-        See ``aligned_view_cos`` (4).
+        See ``tracking.aligned_view_cos`` (4).
     local_map_ratio : float
         The local map search's ratio test, when the second best is on the same level
         (``TrackLocalMap``'s ``ORBmatcher(0.8)``).
     min_tracked : int
         Inliers the local map must give for the frame to be tracked (``TrackLocalMap``'s 30).
     recovery_tracked : int
-        Inliers a frame needs within ``max_frames`` of a recovery (``TrackLocalMap``'s 50).
-    chi2_mono : float
-        The outlier test for a 2D observation (``5.991``: chi-square, 2 dof, 95%).
-    chi2_stereo : float
-        The same for a 3D (left and right) one (``7.815``: 3 dof, 95%).
-    pose_rounds : int
-        Rounds of pose refinement and outlier classification (``PoseOptimization``'s 4).
+        Inliers a frame needs within ``tracking.max_frames`` of a recovery (``TrackLocalMap``'s 50).
     view_cos_limit : float
         A map point is in view only when the angle to its mean viewing direction has at least
         this cosine (``isInFrustum``'s 0.5).
@@ -132,11 +204,74 @@ class Options:
     max_distance_margin : float
         ...to at most this multiple of its maximum (1.2).
     max_frames : int
-        Frames after a recovery during which a frame needs ``recovery_tracked`` inliers, and
-        no keyframe is made once the map holds more than this many (``mMaxFrames``, the
-        frame rate, in ``TrackLocalMap`` and ``NeedNewKeyFrame``). Its other use in
+        Frames after a recovery during which a frame needs ``tracking.recovery_tracked``
+        inliers, and no keyframe is made once the map holds more than this many (``mMaxFrames``,
+        the frame rate, in ``TrackLocalMap`` and ``NeedNewKeyFrame``). Its other use in
         ``NeedNewKeyFrame``, condition c1a, only allows a keyframe; with local mapping idle,
         as the one-thread pipeline always is, c1b allows one anyway, and c2 decides.
+    pnp_threshold : float
+        The PnP fallback's RANSAC threshold, in pixels.
+    pnp_min_inliers : int
+        Inliers the PnP fallback needs.
+    """
+
+    motion_window: float = 15.0
+    stereo_motion_window: float = 7.0
+    min_motion_matches: int = 20
+    min_motion_inliers: int = 10
+    local_window: float = 1.0
+    rgbd_local_window: float = 3.0
+    recovery_local_window: float = 5.0
+    recovery_window_frames: int = 2
+    aligned_view_cos: float = 0.998
+    aligned_view_radius: float = 2.5
+    oblique_view_radius: float = 4.0
+    local_map_ratio: float = 0.8
+    min_tracked: int = 30
+    recovery_tracked: int = 50
+    max_frames: int = 30
+    view_cos_limit: float = 0.5
+    min_distance_margin: float = 0.8
+    max_distance_margin: float = 1.2
+    pnp_threshold: float = 4.0
+    pnp_min_inliers: int = 30
+
+
+@dataclass(frozen=True)
+class AdjustmentOptions:
+    """Pose optimisation and local BA (``Options.adjustment``).
+
+    Attributes
+    ----------
+    chi2_mono : float
+        The outlier test for a 2D observation (``5.991``: chi-square, 2 dof, 95%).
+    chi2_stereo : float
+        The same for a 3D (left and right) one (``7.815``: 3 dof, 95%).
+    pose_rounds : int
+        Rounds of pose refinement and outlier classification (``PoseOptimization``'s 4).
+    iterations : int
+        Local BA's iterations before dropping outliers (5)...
+    refine_iterations : int
+        ...and after (10).
+    min_keyframes : int
+        Local BA runs once the map holds this many keyframes (``LocalMapping``'s
+        ``KeyFramesInMap() > 2``).
+    """
+
+    chi2_mono: float = 5.991
+    chi2_stereo: float = 7.815
+    pose_rounds: int = 4
+    iterations: int = 5
+    refine_iterations: int = 10
+    min_keyframes: int = 3
+
+
+@dataclass(frozen=True)
+class KeyframeOptions:
+    """The keyframe decision (``Options.keyframes``).
+
+    Attributes
+    ----------
     ref_ratio : float
         A keyframe is needed when the frame tracks fewer than this fraction of the reference
         keyframe's points (``thRefRatio``: 0.75 for stereo and RGB-D)...
@@ -149,15 +284,33 @@ class Options:
         (``nMinObs``: 3)...
     ref_min_observations_early : int
         ...2 while the map holds two keyframes or fewer.
-    min_keyframe_inliers : int
+    min_inliers : int
         A frame becomes a keyframe only if it tracks more than this many inliers
         (``NeedNewKeyFrame``'s 15).
     close_tracked, close_untracked : int
-        Stereo and RGB-D also need one when fewer than ``close_tracked`` close points are
-        tracked and more than ``close_untracked`` could be created (100, 70).
+        Stereo and RGB-D also need one when fewer than ``keyframes.close_tracked`` close points are
+        tracked and more than ``keyframes.close_untracked`` could be created (100, 70).
+    """
+
+    ref_ratio: float = 0.75
+    mono_ref_ratio: float = 0.9
+    first_ref_ratio: float = 0.4
+    ref_min_observations: int = 3
+    ref_min_observations_early: int = 2
+    min_inliers: int = 15
+    close_tracked: int = 100
+    close_untracked: int = 70
+
+
+@dataclass(frozen=True)
+class MappingOptions:
+    """Local mapping: points from depth, triangulation, fusion and culling (``Options.mapping``).
+
+    Attributes
+    ----------
     window : int
         The sliding window's keyframes: the local map, local BA and culling act on the last
-        ``window`` keyframes (lite: ORB-SLAM's covisibility graph).
+        ``mapping.window`` keyframes (lite: ORB-SLAM's covisibility graph).
     min_new_points : int
         A stereo or RGB-D keyframe creates points from depth, nearest first, until it has at
         least this many and has passed the close depth (100).
@@ -184,20 +337,6 @@ class Options:
         factor).
     fuse_window : float
         The search window, in pixels at level 0, when fusing points into a keyframe (3).
-    ba_iterations : int
-        Local BA's iterations before dropping outliers (5)...
-    ba_refine_iterations : int
-        ...and after (10).
-    ba_min_keyframes : int
-        Local BA runs once the map holds this many keyframes (``LocalMapping``'s
-        ``KeyFramesInMap() > 2``).
-    init_ba_iterations : int
-        The monocular map's first bundle adjustment's iterations (``GlobalBundleAdjustemnt(map,
-        20)``).
-    init_ransac_iterations : int
-        The most samples a monocular start's two-view RANSAC draws, per model (ORB-SLAM's
-        ``TwoViewReconstruction``, 200): the start stops sooner once confident, and a pair that
-        is not one costs at most this many.
     found_ratio : float
         A new point is culled when found in less than this fraction of the frames that should
         have seen it (0.25).
@@ -208,129 +347,17 @@ class Options:
         A recent point at least this many keyframes old is culled on too few observations
         (``MapPointCulling``' 2).
     min_point_observations : int
-        A point ``point_cull_age`` keyframes old is culled with this few observations or fewer
-        (``cnThObs``:
-        2 for monocular)...
+        A point ``mapping.point_cull_age`` keyframes old is culled with this few observations
+        or fewer (``cnThObs``: 2 for monocular)...
     min_point_observations_depth : int
         ...3 for stereo and RGB-D.
     redundant_fraction : float
         A keyframe is culled when this fraction of its points are seen by
-        ``redundant_observers`` other keyframes at the same or a finer scale (0.9, 3).
+        ``mapping.redundant_observers`` other keyframes at the same or a finer scale (0.9, 3).
     redundant_observers : int
-        See ``redundant_fraction``.
-    pnp_threshold : float
-        The PnP fallback's RANSAC threshold, in pixels.
-    pnp_min_inliers : int
-        Inliers the PnP fallback needs.
-    relocalize : bool
-        Relocalise a failed frame against the whole map through its keyframe database, which
-        needs a vocabulary (on, as ORB-SLAM always is). Off, a failed frame tries only the motion
-        model and the local fallback, and a map is lost after ``lost_frames`` failures in a row,
-        as before milestone 2B.
-    relocalize_ratio : float
-        The descriptor ratio test of the fallback and of relocalisation's matching by word
-        (``Relocalization``'s ``ORBmatcher(0.75, true)``).
-    covisible_points : int
-        Two keyframes that observe at least this many of the same points are covisible
-        (``UpdateConnections``' 15).
-    reloc_common_words : float
-        Relocalisation scores the keyframes that share more than this fraction of the most
-        words any keyframe shares with the frame (``DetectRelocalizationCandidates``' 0.8).
-    reloc_neighbours : int
-        A scored keyframe's score is accumulated over its best this many covisible keyframes
-        (``GetBestCovisibilityKeyFrames(10)``).
-    reloc_group_score : float
-        Groups whose accumulated score exceeds this fraction of the best give a candidate
-        (0.75).
-    reloc_min_matches : int
-        A candidate needs this many matches by word (``SearchByBoW``; 15).
-    reloc_inlier_ratio : float
-        A candidate's PnP RANSAC needs this fraction of its matches as inliers, and draws the
-        samples that find such a pose with ``reloc_confidence`` (MLPnP's ``epsilon``, 0.5).
-    reloc_min_inliers : int
-        ...and at least this many, before and after the pose is optimised (10).
-    reloc_confidence : float
-        The confidence its samples are drawn for, in (0, 1) (0.99).
-    reloc_ransac_iterations : int
-        The most samples it draws (300).
-    reloc_window : float
-        The window, in pixels at the predicted level, in which a candidate's other points are
-        searched by projection when too few inliers relocalise the frame (10, with ``th_high``
-        as the distance).
-    reloc_narrow_inliers : int
-        With more inliers than this but too few still, the search is repeated in a narrower
-        window (``nGood > 30``).
-    reloc_narrow_window : float
-        That window (3).
-    reloc_narrow_distance : int
-        Its descriptor distance (64), at most
-        :data:`slam_it.foundations.matching.MAX_DISTANCE`.
-    relocalize_seconds : float
-        Relocalising, a recently lost track is lost once more than this has passed since its
-        first failed frame with none tracked (ORB-SLAM3's ``RECENTLY_LOST``, 3 s): the map is
-        kept, or reset (``reset_keyframes``), and the next frame starts a new one (ORB-SLAM3's
-        atlas).
-    lost_frames : int
-        A map is lost after this many failed frames in a row instead when it has
-        ``reset_keyframes`` keyframes or fewer (ORB-SLAM3 loses one at once), or whenever
-        ``relocalize`` is off.
-    reset_keyframes : int
-        A map lost with this many keyframes or fewer is reset rather than kept: its keyframes
-        and points removed, its frames' poses dropped (ORB-SLAM3's ``ResetActiveMap``, for a
-        map of up to 10 keyframes). 0 keeps every map.
-    seed : int
-        Every RANSAC's seed, so a run is deterministic.
+        See ``mapping.redundant_fraction``.
     """
 
-    n_features: int = 1000
-    levels: int = 8
-    scale_factor: float = 1.2
-    fast_threshold: int = 20
-    min_fast_threshold: int = 7
-    th_low: int = 50
-    th_high: int = 100
-    stereo_max_distance: int = 75
-    stereo_band: float = 2.0
-    stereo_window: int = 5
-    stereo_search: int = 5
-    stereo_outlier_factor: float = 2.1
-    close_depth: float = 40.0
-    init_feature_factor: int = 2
-    min_init_features: int = 100
-    min_init_features_depth: int = 500
-    init_window: float = 100.0
-    init_ratio: float = 0.9
-    init_min_matches: int = 100
-    init_parallax_cos: float = 0.99998
-    motion_window: float = 15.0
-    stereo_motion_window: float = 7.0
-    min_motion_matches: int = 20
-    min_motion_inliers: int = 10
-    local_window: float = 1.0
-    rgbd_local_window: float = 3.0
-    recovery_local_window: float = 5.0
-    recovery_window_frames: int = 2
-    aligned_view_cos: float = 0.998
-    aligned_view_radius: float = 2.5
-    oblique_view_radius: float = 4.0
-    local_map_ratio: float = 0.8
-    min_tracked: int = 30
-    recovery_tracked: int = 50
-    chi2_mono: float = 5.991
-    chi2_stereo: float = 7.815
-    pose_rounds: int = 4
-    view_cos_limit: float = 0.5
-    min_distance_margin: float = 0.8
-    max_distance_margin: float = 1.2
-    max_frames: int = 30
-    ref_ratio: float = 0.75
-    mono_ref_ratio: float = 0.9
-    first_ref_ratio: float = 0.4
-    ref_min_observations: int = 3
-    ref_min_observations_early: int = 2
-    min_keyframe_inliers: int = 15
-    close_tracked: int = 100
-    close_untracked: int = 70
     window: int = 10
     min_new_points: int = 100
     triangulation_neighbours: int = 10
@@ -341,11 +368,6 @@ class Options:
     max_parallax_cos: float = 0.9998
     scale_ratio: float = 1.5
     fuse_window: float = 3.0
-    ba_iterations: int = 5
-    ba_refine_iterations: int = 10
-    ba_min_keyframes: int = 3
-    init_ba_iterations: int = 20
-    init_ransac_iterations: int = 200
     found_ratio: float = 0.25
     recent_point_keyframes: int = 3
     point_cull_age: int = 2
@@ -353,71 +375,238 @@ class Options:
     min_point_observations_depth: int = 3
     redundant_fraction: float = 0.9
     redundant_observers: int = 3
-    pnp_threshold: float = 4.0
-    pnp_min_inliers: int = 30
-    relocalize: bool = True
-    relocalize_ratio: float = 0.75
-    covisible_points: int = 15
-    reloc_common_words: float = 0.8
-    reloc_neighbours: int = 10
-    reloc_group_score: float = 0.75
-    reloc_min_matches: int = 15
-    reloc_inlier_ratio: float = 0.5
-    reloc_min_inliers: int = 10
-    reloc_confidence: float = 0.99
-    reloc_ransac_iterations: int = 300
-    reloc_window: float = 10.0
-    reloc_narrow_inliers: int = 30
-    reloc_narrow_window: float = 3.0
-    reloc_narrow_distance: int = 64
+
+
+@dataclass(frozen=True)
+class CovisibilityOptions:
+    """The covisibility graph (``Options.covisibility``).
+
+    Attributes
+    ----------
+    min_points : int
+        Two keyframes that observe at least this many of the same points are covisible
+        (``UpdateConnections``' 15).
+    """
+
+    min_points: int = 15
+
+
+@dataclass(frozen=True)
+class RelocalizationOptions:
+    """Relocalising a failed frame against the whole map (``Options.relocalization``).
+
+    Attributes
+    ----------
+    enabled : bool
+        Relocalise a failed frame against the whole map through its keyframe database, which
+        needs a vocabulary (on, as ORB-SLAM always is). Off, a failed frame tries only the motion
+        model and the local fallback, and a map is lost after ``loss.lost_frames`` failures in a
+        row, as before milestone 2B.
+    ratio : float
+        The descriptor ratio test of the fallback and of relocalisation's matching by word
+        (``Relocalization``'s ``ORBmatcher(0.75, true)``).
+    common_words : float
+        Relocalisation scores the keyframes that share more than this fraction of the most
+        words any keyframe shares with the frame (``DetectRelocalizationCandidates``' 0.8).
+    neighbours : int
+        A scored keyframe's score is accumulated over its best this many covisible keyframes
+        (``GetBestCovisibilityKeyFrames(10)``).
+    group_score : float
+        Groups whose accumulated score exceeds this fraction of the best give a candidate
+        (0.75).
+    min_matches : int
+        A candidate needs this many matches by word (``SearchByBoW``; 15).
+    inlier_ratio : float
+        A candidate's PnP RANSAC needs this fraction of its matches as inliers, and draws the
+        samples that find such a pose with ``relocalization.confidence`` (MLPnP's ``epsilon``, 0.5).
+    min_inliers : int
+        ...and at least this many, before and after the pose is optimised (10).
+    confidence : float
+        The confidence its samples are drawn for, in (0, 1) (0.99).
+    ransac_iterations : int
+        The most samples it draws (300).
+    window : float
+        The window, in pixels at the predicted level, in which a candidate's other points are
+        searched by projection when too few inliers relocalise the frame (10, with
+        ``matching.th_high`` as the distance).
+    narrow_inliers : int
+        With more inliers than this but too few still, the search is repeated in a narrower
+        window (``nGood > 30``).
+    narrow_window : float
+        That window (3).
+    narrow_distance : int
+        Its descriptor distance (64), at most
+        :data:`slam_it.foundations.matching.MAX_DISTANCE`.
+    """
+
+    enabled: bool = True
+    ratio: float = 0.75
+    common_words: float = 0.8
+    neighbours: int = 10
+    group_score: float = 0.75
+    min_matches: int = 15
+    inlier_ratio: float = 0.5
+    min_inliers: int = 10
+    confidence: float = 0.99
+    ransac_iterations: int = 300
+    window: float = 10.0
+    narrow_inliers: int = 30
+    narrow_window: float = 3.0
+    narrow_distance: int = 64
+
+
+@dataclass(frozen=True)
+class LossOptions:
+    """When a lost track's map is closed (``Options.loss``).
+
+    Attributes
+    ----------
+    relocalize_seconds : float
+        Relocalising, a recently lost track is lost once more than this has passed since its
+        first failed frame with none tracked (ORB-SLAM3's ``RECENTLY_LOST``, 3 s): the map is
+        kept, or reset (``loss.reset_keyframes``), and the next frame starts a new one (ORB-SLAM3's
+        atlas).
+    lost_frames : int
+        A map is lost after this many failed frames in a row instead when it has
+        ``loss.reset_keyframes`` keyframes or fewer (ORB-SLAM3 loses one at once), or whenever
+        ``relocalization.enabled`` is off.
+    reset_keyframes : int
+        A map lost with this many keyframes or fewer is reset rather than kept: its keyframes
+        and points removed, its frames' poses dropped (ORB-SLAM3's ``ResetActiveMap``, for a
+        map of up to 10 keyframes). 0 keeps every map.
+    """
+
     relocalize_seconds: float = 3.0
     lost_frames: int = 5
     reset_keyframes: int = 10
+
+
+@dataclass(frozen=True)
+class Options:
+    """The edge pipeline's settings, grouped by the stage that reads them.
+
+    A stage may read another group's setting: relocalisation takes the PnP fallback's threshold
+    (``tracking.pnp_threshold``), and the fallback relocalisation's ratio test
+    (``relocalization.ratio``).
+
+    Attributes
+    ----------
+    features : FeatureOptions
+        ORB extraction.
+    matching : MatchingOptions
+        The descriptor distances.
+    stereo : StereoOptions
+        A stereo pair's row matching, and the close depth.
+    initialization : InitializationOptions
+        Starting the map.
+    tracking : TrackingOptions
+        Placing each frame.
+    adjustment : AdjustmentOptions
+        Pose optimisation and local BA.
+    keyframes : KeyframeOptions
+        The keyframe decision.
+    mapping : MappingOptions
+        Local mapping.
+    covisibility : CovisibilityOptions
+        The covisibility graph.
+    relocalization : RelocalizationOptions
+        Relocalisation.
+    loss : LossOptions
+        When a lost track's map is closed.
+    seed : int
+        Every RANSAC's seed, so a run is deterministic.
+    """
+
+    features: FeatureOptions = field(default_factory=FeatureOptions)
+    matching: MatchingOptions = field(default_factory=MatchingOptions)
+    stereo: StereoOptions = field(default_factory=StereoOptions)
+    initialization: InitializationOptions = field(default_factory=InitializationOptions)
+    tracking: TrackingOptions = field(default_factory=TrackingOptions)
+    adjustment: AdjustmentOptions = field(default_factory=AdjustmentOptions)
+    keyframes: KeyframeOptions = field(default_factory=KeyframeOptions)
+    mapping: MappingOptions = field(default_factory=MappingOptions)
+    covisibility: CovisibilityOptions = field(default_factory=CovisibilityOptions)
+    relocalization: RelocalizationOptions = field(default_factory=RelocalizationOptions)
+    loss: LossOptions = field(default_factory=LossOptions)
     seed: int = 0
 
     def __post_init__(self) -> None:
-        """Check every setting's type and range.
+        """Check every setting's type and range, each named by its group and field.
 
         Raises
         ------
         slam_it.foundations.errors.InvalidInputError
-            If a setting has the wrong type or is out of range.
+            If a group is not its class, or a setting has the wrong type or is out of range.
         """
-        orb.Options(
-            self.n_features,
-            self.levels,
-            self.scale_factor,
-            self.fast_threshold,
-            self.min_fast_threshold,
-        )
-        set_ = object.__setattr__  # frozen: store the checked, normalised values
-        for item in fields(self):
-            value = getattr(self, item.name)
-            if item.type == "bool":
-                set_(self, item.name, as_flag(value, item.name))
-            elif item.type == "int":
-                low = 0 if item.name in _MAY_BE_ZERO else 1
-                set_(self, item.name, as_count(value, item.name, low, 1 << 30))
-            else:
-                number = as_number(value, item.name)
-                if item.name in _FRACTIONS:
-                    if not (math.isfinite(number) and 0.0 < number <= 1.0):
-                        raise InvalidInputError(f"{item.name}: must be in (0, 1], got {number}")
-                elif not (math.isfinite(number) and number > 0.0):
-                    raise InvalidInputError(
-                        f"{item.name}: must be finite and positive, got {number}"
-                    )
-                set_(self, item.name, number)
-        for name in ("th_low", "th_high", "reloc_narrow_distance"):
-            as_count(getattr(self, name), name, 1, matching.MAX_DISTANCE)
-        if not self.reloc_confidence < 1.0:
-            raise InvalidInputError(
-                f"reloc_confidence: must be in (0, 1), got {self.reloc_confidence}"
-            )
+        for name, kind in _GROUPS.items():
+            given = getattr(self, name)
+            if not isinstance(given, kind):
+                got = type(given).__name__
+                raise InvalidInputError(f"{name}: expected {kind.__name__}, got {got}")
+        try:
+            self.extraction()
+        except InvalidInputError as error:
+            raise InvalidInputError(f"features.{error}") from error
+        for owner, item, name in _fields(self):
+            value = _checked(name, item.type, getattr(owner, item.name))
+            object.__setattr__(owner, item.name, value)  # frozen: store it checked, normalised
+        for name, value in (
+            ("matching.th_low", self.matching.th_low),
+            ("matching.th_high", self.matching.th_high),
+            ("relocalization.narrow_distance", self.relocalization.narrow_distance),
+        ):
+            as_count(value, name, 1, matching.MAX_DISTANCE)
+        if not self.relocalization.confidence < 1.0:
+            confidence = self.relocalization.confidence
+            message = f"must be in (0, 1), got {confidence}"
+            raise InvalidInputError(f"relocalization.confidence: {message}")
         try:
             self.stereo_matching()
         except InvalidInputError as error:
-            raise InvalidInputError(f"stereo_{error}") from error
+            raise InvalidInputError(f"stereo.{error}") from error
+
+    def settings(self) -> dict[str, bool | int | float]:
+        """Return every setting by its name, in the groups' order.
+
+        Returns
+        -------
+        dict
+            Each setting's name (``group.field``, or ``seed``) to its value.
+        """
+        return {name: getattr(owner, item.name) for owner, item, name in _fields(self)}
+
+    def with_settings(self, changes: Mapping[str, Any]) -> Options:
+        """Return these settings with some changed, each named as :meth:`settings` names it.
+
+        Parameters
+        ----------
+        changes : mapping
+            Each setting's name to its new value.
+
+        Returns
+        -------
+        Options
+            The settings, checked.
+
+        Raises
+        ------
+        slam_it.foundations.errors.InvalidInputError
+            For an unknown name, or a value the setting refuses.
+        """
+        known = self.settings()
+        top: dict[str, Any] = {}
+        grouped: dict[str, dict[str, Any]] = {}
+        for name, value in changes.items():
+            if name not in known:
+                raise InvalidInputError(f"options: no setting {name!r}")
+            group, dot, item = name.partition(".")
+            if dot:
+                grouped.setdefault(group, {})[item] = value
+            else:
+                top[name] = value
+        for group, items in grouped.items():
+            top[group] = replace(getattr(self, group), **items)
+        return replace(self, **top)
 
     def extraction(self, *, initializing: bool = False) -> orb.Options:
         """Return the ORB extraction settings.
@@ -425,7 +614,7 @@ class Options:
         Parameters
         ----------
         initializing : bool, optional
-            For a monocular frame before the map exists: ``init_feature_factor`` times the
+            For a monocular frame before the map exists: ``features.init_factor`` times the
             features.
 
         Returns
@@ -433,67 +622,110 @@ class Options:
         slam_it.foundations.orb.Options
             Features, levels, scale factor and FAST thresholds.
         """
-        factor = self.init_feature_factor if initializing else 1
+        features = self.features
+        factor = features.init_factor if initializing else 1
         return orb.Options(
-            min(self.n_features * factor, orb.MAX_FEATURES),
-            self.levels,
-            self.scale_factor,
-            self.fast_threshold,
-            self.min_fast_threshold,
+            min(features.n_features * factor, orb.MAX_FEATURES),
+            features.levels,
+            features.scale_factor,
+            features.fast_threshold,
+            features.min_fast_threshold,
         )
 
-    def stereo_matching(self) -> stereo.Options:
+    def stereo_matching(self) -> rows.Options:
         """Return the stereo pair's row-matching settings.
 
         Returns
         -------
         slam_it.foundations.stereo.Options
-            The ``stereo_*`` settings.
+            The ``stereo`` group's, but the close depth.
         """
-        return stereo.Options(
-            self.stereo_max_distance,
-            self.stereo_band,
-            self.stereo_window,
-            self.stereo_search,
-            self.stereo_outlier_factor,
-        )
+        s = self.stereo
+        return rows.Options(s.max_distance, s.band, s.window, s.search, s.outlier_factor)
 
     def as_dict(self) -> dict[str, Any]:
-        """Return the settings as a dict of scalars, as they cross the bindings.
+        """Return the settings as a dict of groups, as they cross the bindings and runs record them.
 
         Returns
         -------
         dict
-            Each field's value.
+            Each group's name to a dict of its fields' values, and ``seed``.
         """
         return asdict(self)
 
 
+_GROUPS: dict[str, type] = {
+    "features": FeatureOptions,
+    "matching": MatchingOptions,
+    "stereo": StereoOptions,
+    "initialization": InitializationOptions,
+    "tracking": TrackingOptions,
+    "adjustment": AdjustmentOptions,
+    "keyframes": KeyframeOptions,
+    "mapping": MappingOptions,
+    "covisibility": CovisibilityOptions,
+    "relocalization": RelocalizationOptions,
+    "loss": LossOptions,
+}
+"""Each group's name in :class:`Options`, and its class."""
+
+
+def _fields(options: Options) -> list[tuple[Any, Any, str]]:
+    """Every setting: the object holding it, its field and its name, in the groups' order."""
+    out = [
+        (getattr(options, group), item, f"{group}.{item.name}")
+        for group in _GROUPS
+        for item in fields(getattr(options, group))
+    ]
+    seed = next(item for item in fields(options) if item.name == "seed")
+    return [*out, (options, seed, "seed")]
+
+
+def _checked(name: str, kind: str, value: Any) -> bool | int | float:  # noqa: ANN401 -- as given
+    """Return one setting's value checked for its type and range, and normalised."""
+    if kind == "bool":
+        return as_flag(value, name)
+    if kind == "int":
+        return as_count(value, name, 0 if name in _MAY_BE_ZERO else 1, 1 << 30)
+    number = as_number(value, name)
+    if name in _FRACTIONS:
+        if not (math.isfinite(number) and 0.0 < number <= 1.0):
+            raise InvalidInputError(f"{name}: must be in (0, 1], got {number}")
+    elif not (math.isfinite(number) and number > 0.0):
+        raise InvalidInputError(f"{name}: must be finite and positive, got {number}")
+    return number
+
+
 _MAY_BE_ZERO = frozenset(
-    {"seed", "min_init_features", "min_init_features_depth", "reset_keyframes"}
+    {
+        "seed",
+        "initialization.min_features",
+        "initialization.min_features_depth",
+        "loss.reset_keyframes",
+    }
 )
 """The integer settings that may be 0."""
 
 _FRACTIONS = frozenset(
     {
-        "init_ratio",
-        "relocalize_ratio",
-        "min_baseline_depth",
-        "first_ref_ratio",
-        "min_distance_margin",
-        "local_map_ratio",
-        "aligned_view_cos",
-        "init_parallax_cos",
-        "ref_ratio",
-        "mono_ref_ratio",
-        "found_ratio",
-        "redundant_fraction",
-        "view_cos_limit",
-        "max_parallax_cos",
-        "reloc_common_words",
-        "reloc_group_score",
-        "reloc_inlier_ratio",
-        "reloc_confidence",
+        "initialization.ratio",
+        "relocalization.ratio",
+        "mapping.min_baseline_depth",
+        "keyframes.first_ref_ratio",
+        "tracking.min_distance_margin",
+        "tracking.local_map_ratio",
+        "tracking.aligned_view_cos",
+        "initialization.parallax_cos",
+        "keyframes.ref_ratio",
+        "keyframes.mono_ref_ratio",
+        "mapping.found_ratio",
+        "mapping.redundant_fraction",
+        "tracking.view_cos_limit",
+        "mapping.max_parallax_cos",
+        "relocalization.common_words",
+        "relocalization.group_score",
+        "relocalization.inlier_ratio",
+        "relocalization.confidence",
     }
 )
 """The real settings in (0, 1]."""
@@ -503,9 +735,9 @@ def features_for(width: int, height: int) -> int:
     """Return the ORB features for a frame's size, ORB-SLAM's 1,000 at 640x480 scaled with area.
 
     ORB-SLAM's settings ask for more features on a larger frame (1,200 for EuRoC's 752x480,
-    2,000 for KITTI's 1241x376); this scales the default ``n_features``, its 1,000, by the
+    2,000 for KITTI's 1241x376); this scales the default ``features.n_features``, its 1,000, by the
     frame's area over :data:`FEATURES_AREA`, rounded, within :data:`FEATURES_BOUNDS`. A run is
-    given it where it is set up, as its ``n_features``
+    given it where it is set up, as its ``features.n_features``
     (:func:`slam_it.orchestration.vo.options_for`); the default stays 1,000, so a dataset's
     results do not move. It is Python's alone, by design: the cores take the count as the
     setting they already have, and never compute it.
@@ -530,7 +762,7 @@ def features_for(width: int, height: int) -> int:
         height, "height", 1, MAX_IMAGE_SIDE
     )
     low, high = FEATURES_BOUNDS
-    return min(max(round(Options.n_features * area / FEATURES_AREA), low), high)
+    return min(max(round(FeatureOptions.n_features * area / FEATURES_AREA), low), high)
 
 
 def check_mode(mode: str) -> None:

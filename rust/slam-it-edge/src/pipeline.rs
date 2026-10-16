@@ -347,10 +347,10 @@ impl Pipeline {
                 format!("camera.baseline: {} needs a positive baseline", mode.name()),
             );
         }
-        if options.relocalize && vocabulary.is_none() {
+        if options.relocalization.enabled && vocabulary.is_none() {
             return fail(ErrorKind::InvalidInput, "vocabulary: relocalize needs one");
         }
-        if !options.relocalize && vocabulary.is_some() {
+        if !options.relocalization.enabled && vocabulary.is_some() {
             return fail(
                 ErrorKind::InvalidInput,
                 "vocabulary: given, but relocalize is off",
@@ -539,7 +539,7 @@ impl Pipeline {
     /// The closed map's summary.
     fn close(&mut self, m: &Map) -> LostSummary {
         let frame = self.frames - 1; // dated already
-        let reset = m.kf_id.len() <= self.options.reset_keyframes;
+        let reset = m.kf_id.len() <= self.options.loss.reset_keyframes;
         let code = Removal::Reset.code();
         let lives = &mut self.lives;
         for (&id, xyz) in m.pt_id.iter().zip(&m.pt_xyz) {
@@ -642,7 +642,7 @@ impl Pipeline {
     ///
     /// A stage's error.
     fn initialize_monocular(&mut self, frame: &Frame) -> Result<Initialization> {
-        if frame.size() <= self.options.min_init_features {
+        if frame.size() <= self.options.initialization.min_features {
             self.reference = None; // too few features: ORB-SLAM drops its initializer
             return Ok(Initialization::failed(
                 Outcome::TooFewFeatures,
@@ -664,7 +664,7 @@ impl Pipeline {
             &self.previous,
             &self.options,
         )?;
-        if matched.len() < self.options.init_min_matches {
+        if matched.len() < self.options.initialization.min_matches {
             let replaced = Some(matched.len());
             self.set_reference(frame); // the views no longer overlap enough: start again
             return Ok(Initialization::failed(
@@ -730,10 +730,10 @@ impl Pipeline {
         self.failures += 1;
         self.velocity = None;
         let since = *self.lost_since.get_or_insert(frame.timestamp);
-        if !self.options.relocalize || keyframes <= self.options.reset_keyframes {
-            return self.failures >= self.options.lost_frames;
+        if !self.options.relocalization.enabled || keyframes <= self.options.loss.reset_keyframes {
+            return self.failures >= self.options.loss.lost_frames;
         }
-        frame.timestamp - since > self.options.relocalize_seconds
+        frame.timestamp - since > self.options.loss.relocalize_seconds
     }
 
     /// Brings a keyframe database to a map's keyframes: adds the new, erases the culled.
@@ -912,10 +912,12 @@ impl Pipeline {
         } else if let Some(since) = &mut self.since_recovery {
             *since += 1;
         }
-        let recent = self.since_recovery.is_some_and(|s| s < options.max_frames);
+        let recent = self
+            .since_recovery
+            .is_some_and(|s| s < options.tracking.max_frames);
         let wide = self
             .since_recovery
-            .is_some_and(|s| s < options.recovery_window_frames);
+            .is_some_and(|s| s < options.tracking.recovery_window_frames);
         let Some(placed) = placed else {
             return Ok(Step {
                 summary,
@@ -939,9 +941,9 @@ impl Pipeline {
             &vec![1; local.found.len()],
         )?;
         let needed = if recent {
-            options.recovery_tracked
+            options.tracking.recovery_tracked
         } else {
-            options.min_tracked
+            options.tracking.min_tracked
         };
         if local.tracked.inliers() < needed {
             return Ok(Step {
@@ -951,7 +953,7 @@ impl Pipeline {
             });
         }
         let tracked = local.tracked;
-        let held = recent && m.keyframes() > options.max_frames;
+        let held = recent && m.keyframes() > options.tracking.max_frames;
         let keyframe = !held
             && mapping::need_keyframe(
                 m,

@@ -5,8 +5,6 @@ On the room's truth map, its keyframes' words those of the committed vocabulary.
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 import numpy as np
 import pytest
 
@@ -81,12 +79,14 @@ def test_covisible_keyframes_share_the_most_points(truth: Truth) -> None:
     for k in keyframes:
         shared = {other: len(seen[k] & seen[other]) for other in keyframes if other != k}
         expected = sorted(
-            (o for o, n in shared.items() if n >= OPTIONS.covisible_points),
+            (o for o, n in shared.items() if n >= OPTIONS.covisibility.min_points),
             key=lambda o: (-shared[o], o),
         )
-        assert best[k] == expected[: OPTIONS.reloc_neighbours]
+        assert best[k] == expected[: OPTIONS.relocalization.neighbours]
     assert any(best[k] for k in keyframes)
-    none = database.best_covisible(m, keyframes, replace(OPTIONS, covisible_points=1 << 20))
+    none = database.best_covisible(
+        m, keyframes, OPTIONS.with_settings({"covisibility.min_points": 1 << 20})
+    )
     assert all(not neighbours for neighbours in none.values())
 
 
@@ -115,7 +115,10 @@ def test_a_group_adds_its_scored_neighbours(
     """Without covisibility a candidate's score is its own; with it, its group's, no less."""
     vector = _frame_vector(truth, words, 25)
     alone = database.candidates(
-        room_database, truth.map, vector, replace(OPTIONS, covisible_points=1 << 20)
+        room_database,
+        truth.map,
+        vector,
+        OPTIONS.with_settings({"covisibility.min_points": 1 << 20}),
     )
     for keyframe, score in zip(alone.keyframes.tolist(), alone.scores.tolist(), strict=True):
         assert score == vocabulary.score(vector, room_database.vector(keyframe))
@@ -129,8 +132,14 @@ def test_a_group_adds_its_scored_neighbours(
     "settings",
     [
         OPTIONS,
-        replace(OPTIONS, covisible_points=1 << 20),
-        replace(OPTIONS, reloc_common_words=0.5, reloc_group_score=0.5, reloc_neighbours=1),
+        OPTIONS.with_settings({"covisibility.min_points": 1 << 20}),
+        OPTIONS.with_settings(
+            {
+                "relocalization.common_words": 0.5,
+                "relocalization.group_score": 0.5,
+                "relocalization.neighbours": 1,
+            }
+        ),
     ],
     ids=["defaults", "no covisibility", "looser"],
 )

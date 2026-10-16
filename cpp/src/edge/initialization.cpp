@@ -30,8 +30,8 @@ Result<void> check_frame(const Frame& frame, const Options& options, const char*
   if (auto ok = check_options(options); !ok) {
     return ok;
   }
-  if (frame.features.levels != options.levels ||
-      frame.features.scale_factor != options.scale_factor) {
+  if (frame.features.levels != options.features.levels ||
+      frame.features.scale_factor != options.features.scale_factor) {
     return fail(ErrorKind::kInvalidInput,
                 std::string(name) + ": its pyramid must be the settings'");
   }
@@ -125,7 +125,7 @@ Result<std::pair<std::vector<Eigen::Index>, std::vector<Eigen::Vector3d>>> kept_
   }
   std::pair<std::vector<Eigen::Index>, std::vector<Eigen::Vector3d>> out;
   for (Eigen::Index j = 0; j < count; ++j) {
-    if (seen->in_front(j) && std::cos(seen->parallax(j)) < options.init_parallax_cos) {
+    if (seen->in_front(j) && std::cos(seen->parallax(j)) < options.initialization.parallax_cos) {
       out.first.push_back(inliers[static_cast<std::size_t>(j)]);
       out.second.emplace_back(seen->points.row(j).transpose());
     }
@@ -198,7 +198,7 @@ Result<Initialization> initialize_from_depth(const Frame& frame, const Options& 
   if (auto ok = check_frame(frame, options, "frame"); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
-  if (std::cmp_less_equal(keypoint_count(frame), options.min_init_features_depth)) {
+  if (std::cmp_less_equal(keypoint_count(frame), options.initialization.min_features_depth)) {
     return failed(Outcome::kTooFewFeatures);
   }
   std::vector<std::int64_t> has_depth;
@@ -207,7 +207,8 @@ Result<Initialization> initialize_from_depth(const Frame& frame, const Options& 
       has_depth.push_back(static_cast<std::int64_t>(i));
     }
   }
-  Started out{.map = empty_map(options.levels, options.scale_factor), .tracked = {}};
+  Started out{.map = empty_map(options.features.levels, options.features.scale_factor),
+              .tracked = {}};
   if (auto ok = insert_unobserving(out.map, frame, Eigen::Matrix4d::Identity()); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
@@ -250,7 +251,7 @@ Result<std::vector<matching::Match>> match_for_initialization(
     if (k.level == 0) {
       rows.push_back(static_cast<std::int64_t>(i));
       projections.push_back({.xy = previous[i],
-                             .radius = options.init_window,
+                             .radius = options.initialization.window,
                              .min_level = 0,
                              .max_level = 0,
                              .descriptor = reference.features.descriptors[i],
@@ -258,9 +259,10 @@ Result<std::vector<matching::Match>> match_for_initialization(
                              .right = std::numeric_limits<double>::quiet_NaN()});
     }
   }
-  auto found = search(
-      frame, projections,
-      {.max_distance = options.th_low, .ratio = options.init_ratio, .check_orientation = true});
+  auto found = search(frame, projections,
+                      {.max_distance = options.matching.th_low,
+                       .ratio = options.initialization.ratio,
+                       .check_orientation = true});
   if (!found) {
     return std::unexpected(std::move(found.error()));
   }
@@ -296,7 +298,7 @@ Result<Initialization> initialize_monocular(const Camera& camera, const Frame& r
       usable.push_back(pair);
     }
   }
-  if (std::cmp_less(usable.size(), options.init_min_matches)) {
+  if (std::cmp_less(usable.size(), options.initialization.min_matches)) {
     return failed(Outcome::kTooFewMatches, given);
   }
   const auto n = static_cast<Eigen::Index>(usable.size());
@@ -307,11 +309,11 @@ Result<Initialization> initialize_monocular(const Camera& camera, const Frame& r
     bearings1.row(i) = reference.bearings[static_cast<std::size_t>(pair[0])].transpose();
     bearings2.row(i) = frame.bearings[static_cast<std::size_t>(pair[1])].transpose();
   }
-  auto result =
-      twoview::initialize(bearings1, bearings2,
-                          {.focal = focal(camera),
-                           .max_iterations = static_cast<int>(options.init_ransac_iterations),
-                           .seed = static_cast<std::uint64_t>(options.seed)});
+  auto result = twoview::initialize(
+      bearings1, bearings2,
+      {.focal = focal(camera),
+       .max_iterations = static_cast<int>(options.initialization.ransac_iterations),
+       .seed = static_cast<std::uint64_t>(options.seed)});
   if (!result) {
     if (result.error().kind == ErrorKind::kDegenerate) {
       return failed(Outcome::kDegenerate, given);
@@ -321,7 +323,8 @@ Result<Initialization> initialize_monocular(const Camera& camera, const Frame& r
   if (result->status != twoview::Status::kInitialized) {
     return failed(outcome_of(result->status), given);
   }
-  Started out{.map = empty_map(options.levels, options.scale_factor), .tracked = {}};
+  Started out{.map = empty_map(options.features.levels, options.features.scale_factor),
+              .tracked = {}};
   Map& m = out.map;
   if (auto ok = insert_unobserving(m, reference, Eigen::Matrix4d::Identity()); !ok) {
     return std::unexpected(std::move(ok.error()));
@@ -344,14 +347,14 @@ Result<Initialization> initialize_monocular(const Camera& camera, const Frame& r
     return std::unexpected(std::move(ok.error()));
   }
   Options adjusted = options;
-  adjusted.ba_iterations = options.init_ba_iterations;
+  adjusted.adjustment.iterations = options.initialization.ba_iterations;
   const std::vector<std::int64_t> both{0, 1};
   const std::vector<std::uint8_t> fixed{1, 0};
   auto adjustment = bundle_adjust(m, camera, both, fixed, adjusted);
   if (!adjustment) {
     return std::unexpected(std::move(adjustment.error()));
   }
-  if (std::cmp_less(point_count(m), options.init_min_matches)) {
+  if (std::cmp_less(point_count(m), options.initialization.min_matches)) {
     // ORB-SLAM resets with fewer than 100 tracked points
     return failed(Outcome::kTooFewPoints, given, std::move(adjustment->solves));
   }

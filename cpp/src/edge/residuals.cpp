@@ -12,7 +12,7 @@ double sigma2(const Map& m, std::int64_t level) {
 }
 
 double threshold(double right, const Options& options) {
-  return std::isnan(right) ? options.chi2_mono : options.chi2_stereo;
+  return std::isnan(right) ? options.adjustment.chi2_mono : options.adjustment.chi2_stereo;
 }
 
 foundations::Result<std::vector<double>> chi2(const Camera& camera,

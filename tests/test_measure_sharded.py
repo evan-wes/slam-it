@@ -98,15 +98,15 @@ def test_each_seed_is_measured_into_its_own_folder(
     out = tmp_path / "out"
     jobs = str(min(2, len(os.sched_getaffinity(0))))
     arguments = [str(config), str(out), "--seeds", "0", "1", "--jobs", jobs]
-    assert script.main([*arguments, "--option", "relocalize=false"]) == 0
+    assert script.main([*arguments, "--option", "relocalization.enabled=false"]) == 0
     for seed in (0, 1):
         lines = (out / f"seed-{seed}" / "results.jsonl").read_text().splitlines()
         assert len(lines) == 1
         result = json.loads(lines[0])
-        assert result["options"] == {"relocalize": False, "seed": seed}
+        assert result["options"] == {"relocalization.enabled": False, "seed": seed}
         assert (result["name"], result["tracked"]) == ("room", FRAMES)
         settings = runs.read_run(out / f"seed-{seed}" / "room" / "run").settings
-        assert (settings["seed"], settings["relocalize"]) == (seed, False)
+        assert (settings["seed"], settings["relocalization"]["enabled"]) == (seed, False)
 
 
 def test_a_failed_worker_is_its_runs_result_and_the_others_are_kept(

@@ -135,7 +135,7 @@ void check_local_map(const edge::Map& m, int& failures) {
            "the fallback's summary records each step it took", failures);
   }
   edge::Options strict;
-  strict.pnp_min_inliers = 61;
+  strict.tracking.pnp_min_inliers = 61;
   const auto short_map =
       edge::relocalize_locally(m, scene::camera(), scene::frame(2, true), strict);
   expect(short_map.has_value() && !short_map->tracked.has_value() &&

@@ -40,7 +40,7 @@ vo::Request request_for(const std::string& dataset, edge::Mode mode, const std::
   out.sequence = sequence(name);
   out.mode = mode;
   out.out = "run";
-  out.options.relocalize = false;  // no vocabulary: these check the request, not relocalising
+  out.options.relocalization.enabled = false;  // no vocabulary: these check the request
   return out;
 }
 
@@ -67,14 +67,16 @@ void check_exit_codes(int& failures) {
 /// @brief Check reading a command line, and its refusals.
 /// @param failures Running failure count.
 void check_parse(int& failures) {
-  const auto request = vo::parse(command({"--first", "3", "--record-features", "--count", "10",
-                                          "--option", "window=7", "--option", "close_depth=35.5"}));
+  const auto request =
+      vo::parse(command({"--first", "3", "--record-features", "--count", "10", "--option",
+                         "mapping.window=7", "--option", "stereo.close_depth=35.5"}));
   expect(request.has_value() && request->dataset == "tum" && request->mode == edge::Mode::kRgbd &&
              request->out == "run" && request->first == 3 && request->count == 10 &&
              request->record_features,
          "parse reads every flag, --record-features without a value", failures);
-  expect(request.has_value() && request->options.window == 7 &&
-             request->options.close_depth == 35.5 && request->options.n_features == 1000,
+  expect(request.has_value() && request->options.mapping.window == 7 &&
+             request->options.stereo.close_depth == 35.5 &&
+             request->options.features.n_features == 1000,
          "parse sets the options named, the rest default", failures);
   const auto plain = vo::parse(command({}));
   expect(plain.has_value() && plain->first == 0 && !plain->count.has_value() &&
@@ -84,13 +86,13 @@ void check_parse(int& failures) {
       {"--mode", "lidar"},
       {"--first", "x"},
       {"--count"},
-      {"--option", "windows=7"},
-      {"--option", "window=7.5"},
-      {"--option", "close_depth=inf"},
+      {"--option", "mapping.windows=7"},
+      {"--option", "mapping.window=7.5"},
+      {"--option", "stereo.close_depth=inf"},
       {"--option", "window"},
       {"--dataset", "euroc"},
       {"--verbose", "1"},
-      {"--option", "close_depth=+-5"},
+      {"--option", "stereo.close_depth=+-5"},
       {"--record-features", "--record-features"},
   };
   for (const auto& more : refused) {
@@ -118,7 +120,7 @@ void check_requests(int& failures) {
   bad.count = -1;
   expect(is_invalid_input(vo::check(bad)), "check refuses a negative count", failures);
   bad = good;
-  bad.options.window = 0;
+  bad.options.mapping.window = 0;
   expect(is_invalid_input(vo::check(bad)), "check refuses settings out of range", failures);
 }
 
@@ -131,11 +133,18 @@ void check_runs(int& failures) {
   request.out = out.string();
   request.count = 0;
   const auto empty = vo::run(request);
+  std::vector<std::string> recorded;  // each group, and the seed
+  const edge::Options defaults{};
+  edge::for_each_setting(defaults, [&recorded](const char* name, const auto&) {
+    const auto [group, field] = edge::split_setting(name);
+    const std::string key(group.empty() ? field : group);
+    if (recorded.empty() || recorded.back() != key) {
+      recorded.push_back(key);
+    }
+  });
   expect(empty.has_value() && empty->timestamps.empty() && empty->sequence == "tum_camera" &&
-             empty->backend == "cpp" &&
-             empty->settings.size() == edge::kFlagOptions.size() + edge::kIntegerOptions.size() +
-                                           edge::kRealOptions.size(),
-         "a run of no frames records the sequence and every setting", failures);
+             empty->backend == "cpp" && empty->settings.size() == recorded.size(),
+         "a run of no frames records the sequence and every group of settings", failures);
   expect(!fs::exists(out / "run.json"), "the run is the program's to write", failures);
   if (empty.has_value()) {
     const auto written = slam_it::eval::runs::write_run(request.out, *empty);
