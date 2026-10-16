@@ -159,6 +159,45 @@ def test_a_keyframe_searched_at_the_true_pose_finds_its_points(truth: Truth) -> 
     assert not set(skipped[skipped >= 0].tolist()) & set(found[hits].tolist())
 
 
+MOVED = replace(
+    OPTIONS,
+    reloc_inlier_ratio=0.4,
+    reloc_min_inliers=12,
+    reloc_confidence=0.95,
+    reloc_ransac_iterations=200,
+    reloc_window=2.0,
+    reloc_narrow_inliers=25,
+    reloc_narrow_window=1.0,
+    reloc_narrow_distance=30,
+)
+"""Relocalisation's settings off their defaults (review panel finding L1, by finding H21's rule):
+a native that hard-coded one would decide unlike Python on the frames below."""
+
+MOVED_CASES = [
+    (30, replace(MOVED, recovery_tracked=150)),
+    (6, replace(MOVED, recovery_tracked=175)),
+]
+"""The wide and narrow searches, with :data:`MOVED`: every setting it moves is used."""
+
+
+@pytest.mark.parametrize(("index", "settings"), MOVED_CASES, ids=["wide search", "narrow search"])
+def test_the_moved_settings_change_what_relocalisation_decides(
+    index: int, settings: Options, truth: Truth, room_database: Database
+) -> None:
+    """Off their defaults, the settings change Python's result.
+
+    So the backends' agreement with them (below) shows that the natives read them.
+    """
+    moved = relocalization.relocalize(
+        truth.map, room_database, CAMERA, truth.frames[index], settings
+    )
+    at_defaults = replace(OPTIONS, recovery_tracked=settings.recovery_tracked)
+    default = relocalization.relocalize(
+        truth.map, room_database, CAMERA, truth.frames[index], at_defaults
+    )
+    assert moved.summary.as_dict() != default.summary.as_dict()
+
+
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize(
     ("index", "settings"),
@@ -171,8 +210,20 @@ def test_a_keyframe_searched_at_the_true_pose_finds_its_points(truth: Truth) -> 
         (30, replace(OPTIONS, reloc_min_matches=1 << 20)),
         (30, replace(OPTIONS, recovery_tracked=150)),
         (6, replace(OPTIONS, recovery_tracked=175)),
+        *MOVED_CASES,
     ],
-    ids=["3", "18", "30", "39", "noise", "too few matches", "wide search", "narrow search"],
+    ids=[
+        "3",
+        "18",
+        "30",
+        "39",
+        "noise",
+        "too few matches",
+        "wide search",
+        "narrow search",
+        "wide search, moved",
+        "narrow search, moved",
+    ],
 )
 def test_every_backend_relocalizes_as_python_does(
     backend: str, index: int, settings: Options, truth: Truth, room_database: Database

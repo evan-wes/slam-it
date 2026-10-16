@@ -203,6 +203,71 @@ through the keyframe database, can find the frame the camera comes back on (the 
 small enough for the fallback's local map to hold all of it)."""
 
 
+WINDOW_BLANKS = 2
+"""The window room's first blank frames, from :data:`FOUND_AT`: one fewer than the found room's,
+so that the frame after them, back at :data:`FOUND_BACK`, is tried within its short
+``relocalize_seconds``, and relocalised."""
+
+WINDOW_AT = 36
+"""Where the window room's second blank stretch begins: :data:`FOUND_BLANKS` frames, longer than
+its ``relocalize_seconds`` and shorter than ``lost_frames``, so that its map, kept, is lost by
+the time on the last of them, and the frame after starts a new one."""
+
+WINDOW_OPTIONS = replace(
+    FOUND_OPTIONS,
+    reset_keyframes=0,
+    relocalize_seconds=0.05,
+    redundant_fraction=0.6,
+    redundant_observers=1,
+    recovery_tracked=60,
+    reloc_inlier_ratio=0.4,
+    reloc_min_inliers=12,
+    reloc_confidence=0.95,
+    reloc_ransac_iterations=200,
+    reloc_window=2.0,
+    reloc_narrow_inliers=25,
+    reloc_narrow_window=1.0,
+    reloc_narrow_distance=30,
+)
+"""The window room's settings (review panel findings L1 and L2): the found room's, every map
+kept; lost 0.05 s after its first failed frame, on the third frame at 30 Hz, where
+``lost_frames`` would lose it on the fifth; a keyframe culled when 60% of its points are seen by
+one other keyframe, so that an RGB-D run culls several, which leave its database, before the
+frame is relocalised; ``recovery_tracked`` above the relocalised frame's first inliers, so that the
+search by projection runs; and the relocalisation settings off their defaults, so that a native
+that hard-coded one would decide unlike Python (finding H21's rule)."""
+
+
+def window_frames(rendered: list[room.Frame]) -> list[room.Frame]:
+    """Return the window room: the found room with two blank stretches.
+
+    Parameters
+    ----------
+    rendered : list of tests.edge.room.Frame
+        The room's frames.
+
+    Returns
+    -------
+    list of tests.edge.room.Frame
+        As many frames, at the room's times: frames 0 to ``FOUND_AT - 1``, :data:`WINDOW_BLANKS`
+        blank ones, then the frames from :data:`FOUND_BACK` on, of which the
+        :data:`FOUND_BLANKS` from :data:`WINDOW_AT` are blanked.
+    """
+    after = len(rendered) - FOUND_AT - WINDOW_BLANKS
+    order: list[int | None] = [
+        *range(FOUND_AT), *([None] * WINDOW_BLANKS), *range(FOUND_BACK, FOUND_BACK + after)
+    ]  # fmt: skip
+    for k in range(WINDOW_AT, WINDOW_AT + FOUND_BLANKS):
+        order[k] = None
+    return [
+        replace(
+            blank(rendered[FOUND_AT - 1]) if source is None else rendered[source],
+            timestamp=at.timestamp,
+        )
+        for source, at in zip(order, rendered, strict=True)
+    ]
+
+
 def found_frames(rendered: list[room.Frame]) -> list[room.Frame]:
     """Return the found room: blank frames from :data:`FOUND_AT`, then the start seen again.
 
@@ -318,4 +383,6 @@ def room_inputs() -> dict[str, Any]:
         "kept_room": moved(KEPT_OPTIONS),
         "found": [FOUND_AT, FOUND_BLANKS, FOUND_BACK],
         "found_room": moved(FOUND_OPTIONS),
+        "window": [WINDOW_BLANKS, WINDOW_AT],
+        "window_room": moved(WINDOW_OPTIONS),
     }

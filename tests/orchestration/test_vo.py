@@ -37,6 +37,9 @@ from tests.orchestration.datasets import (
     FOUND_AT,
     FOUND_BLANKS,
     LOST_AT,
+    WINDOW_AT,
+    WINDOW_BLANKS,
+    WINDOW_OPTIONS,
     Room,
     room_inputs,
 )
@@ -223,7 +226,7 @@ def test_the_moved_settings_change_the_decisions(
     assert moved != default
 
 
-ROOMS = ("room", "gap", "lost", "kept", "found")
+ROOMS = ("room", "gap", "lost", "kept", "found", "window")
 """The rooms the golden record holds, each run by its fixture ``<room>_runs``."""
 
 GOLDEN = load_fixture("edge/room_runs.json")
@@ -315,6 +318,40 @@ def test_a_track_found_again_is_counted_as_relocalised(
     span = runs.tracking(run, vo.open_source(dataset, found_runs.sequence(dataset), mode).times)
     assert (span.losses, span.resets, span.relocalizations) == (0, 0, 1)
     assert [s.map for s in span.segments] == [0]
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize(("dataset", "mode"), CASES)
+def test_the_window_room_loses_its_kept_maps_by_the_time(
+    dataset: str, mode: str, backend: str, window_runs: RoomRun
+) -> None:
+    """Each kept map is lost 0.05 s after its first failed frame, before ``lost_frames`` failures.
+
+    Review panel findings L1 and L2. In stereo and RGB-D, the frame after the first blank
+    stretch is relocalised in map 0, and the second stretch's last blank frame loses it; an
+    RGB-D run first culls keyframes, which leave the database before the relocalisation. A
+    monocular run loses its small maps by the time before the stretches.
+    """
+    run = window_runs(dataset, mode, backend)
+    lost = [k for k, d in enumerate(run.diagnostics) if d["state"] == "lost"]
+    assert lost
+    for k in lost:
+        assert run.diagnostics[k]["lost"]["reset"] is False
+        failed = 0  # the failed frames of the lost map, up to its lost frame
+        while failed <= k and run.diagnostics[k - failed]["tracked"] == 0:
+            failed += 1
+        assert 1 < failed < WINDOW_OPTIONS.lost_frames
+    if mode == "monocular":
+        return
+    back = FOUND_AT + WINDOW_BLANKS
+    placed = [k for k, d in enumerate(run.diagnostics) if d["placed_by"] == runs.RELOCALIZED]
+    assert placed == [back]
+    assert run.diagnostics[back]["map"] == 0
+    assert lost == [WINDOW_AT + FOUND_BLANKS - 1]
+    if mode == "rgbd":
+        culled = run.keyframe_lives[run.keyframe_lives[:, 2] == runs.REMOVALS.index("culled")]
+        assert len(culled) > 0
+        assert np.all(culled[:, 1] < back)
 
 
 def test_a_request_crosses_as_a_command_line() -> None:

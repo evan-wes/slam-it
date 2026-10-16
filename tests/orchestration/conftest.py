@@ -1,9 +1,10 @@
 """The room as dataset folders (:mod:`tests.orchestration.datasets`), and its runs.
 
-The room is rendered once per session and written whole, with its gap, and lost (frames
-blanked to lose the track); :func:`room_runs`, :func:`gap_runs`, :func:`lost_runs` and
-:func:`kept_runs` run them through :func:`slam_it.orchestration.vo.run`, each case once,
-recording their features.
+The room is rendered once per session and written whole, with its gap, lost (frames blanked
+to lose the track), found (blanked, then back at the start) and the window room (found, then
+lost by the time); :func:`room_runs`, :func:`gap_runs`, :func:`lost_runs`, :func:`kept_runs`,
+:func:`found_runs` and :func:`window_runs` run them through :func:`slam_it.orchestration.vo.run`,
+each case once, recording their features.
 """
 
 from __future__ import annotations
@@ -24,10 +25,12 @@ from tests.orchestration.datasets import (
     GAP_OPTIONS,
     KEPT_OPTIONS,
     MOVED_OPTIONS,
+    WINDOW_OPTIONS,
     Room,
     found_frames,
     gap_frames,
     lost_frames,
+    window_frames,
     write_room,
 )
 
@@ -92,6 +95,14 @@ def found_folders(
 ) -> Room:
     """Write the found room (:func:`found_frames`) as both datasets' folders."""
     return write_room(tmp_path_factory.mktemp("found"), found_frames(rendered_room))
+
+
+@pytest.fixture(scope="session")
+def window_folders(
+    rendered_room: list[room.Frame], tmp_path_factory: pytest.TempPathFactory
+) -> Room:
+    """Write the window room (:func:`window_frames`) as both datasets' folders."""
+    return write_room(tmp_path_factory.mktemp("window"), window_frames(rendered_room))
 
 
 class RoomRun:
@@ -173,6 +184,12 @@ def lost_runs(lost_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> R
 def found_runs(found_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> RoomRun:
     """Run the found room with :data:`FOUND_OPTIONS`: the camera, back at the start, relocalises."""
     return RoomRun(found_folders, FOUND_OPTIONS, tmp_path_factory.mktemp("found_runs"))
+
+
+@pytest.fixture(scope="session")
+def window_runs(window_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> RoomRun:
+    """Run the window room with :data:`WINDOW_OPTIONS`: found again, then lost by the time."""
+    return RoomRun(window_folders, WINDOW_OPTIONS, tmp_path_factory.mktemp("window_runs"))
 
 
 @pytest.fixture(scope="session")
