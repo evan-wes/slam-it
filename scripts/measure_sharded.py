@@ -4,8 +4,10 @@ The edge pipeline runs in one thread and, for a RANSAC seed, decides alike every
 tracking and ATE do not depend on what else the machine runs: only its latency does. This runs
 ``scripts/measure_testset.py``'s measure over the config's sequences at each seed given, a worker
 process a CPU, each pinned to its CPU with the programs its runs start, the longest sequences
-first. Each seed's results are the measure's, in ``OUT/seed-S``: its runs, and ``results.jsonl``
-in the config's order, each result's ``options`` naming its ``seed``::
+first. Each seed's results are the measure's, in ``OUT/seed-S``: its runs, and ``results.jsonl``,
+each result's ``options`` naming its ``seed``. A result is written there as its run ends, so a
+measure stopped part way keeps what it finished, and a run whose worker failed is a result
+saying why; once every run has ended, the file is rewritten in the config's order::
 
     python scripts/measure_sharded.py CONFIG OUT [--seeds 0 1 2] [--jobs N] [--backend cpp]
         [--features by-size|default] [--camera exact|nominal] [--only NAME ...]
@@ -25,6 +27,7 @@ imports the extension, and an editable install's import checks the build: each w
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import multiprocessing
 import os
@@ -84,13 +87,11 @@ def _pin(cpus: Queue[int]) -> None:
 
 
 def _work(
-    seed: int, entry: tuple[str, str, str, str], out: str, args: argparse.Namespace,
+    seed: int, entry: measure_testset.Entry, out: Path, args: argparse.Namespace,
     replaced: dict[str, Any],
-) -> tuple[int, dict[str, Any]]:  # fmt: skip
-    """Measure one sequence at one seed in a worker; return the seed and the result."""
-    name, folder, mode, reference = entry
-    sequence = measure_testset.Entry(name, Path(folder), mode, reference)
-    return seed, measure_testset.measured(sequence, Path(out), args, {**replaced, "seed": seed})
+) -> dict[str, Any]:  # fmt: skip
+    """Measure one sequence at one seed in a worker; return the result."""
+    return measure_testset.measured(entry, out, args, {**replaced, "seed": seed})
 
 
 def main(arguments: list[str]) -> int:
@@ -127,23 +128,27 @@ def main(arguments: list[str]) -> int:
         free.put(cpu)
     print(f"{len(jobs)} runs, on CPUs {', '.join(map(str, cpus))}", flush=True)
     results: dict[int, dict[str, dict[str, Any]]] = {seed: {} for seed in args.seeds}
-    with ProcessPoolExecutor(
-        len(cpus), mp_context=context, initializer=_pin, initargs=(free,)
-    ) as pool:
-        futures = [
-            pool.submit(
-                _work,
-                seed,
-                (e.name, str(e.folder), e.mode, e.reference),
-                str(args.out / f"seed-{seed}"),
-                args,
-                replaced,
-            )
+    with contextlib.ExitStack() as stack:
+        streams = {
+            seed: stack.enter_context((args.out / f"seed-{seed}" / "results.jsonl").open("w"))
+            for seed in args.seeds
+        }
+        pool = stack.enter_context(
+            ProcessPoolExecutor(len(cpus), mp_context=context, initializer=_pin, initargs=(free,))
+        )
+        futures = {
+            pool.submit(_work, seed, e, args.out / f"seed-{seed}", args, replaced): (seed, e)
             for seed, e in jobs
-        ]
+        }
         for future in as_completed(futures):
-            seed, result = future.result()
-            results[seed][result["name"]] = result
+            seed, entry = futures[future]
+            try:
+                result = future.result()
+            except Exception as error:
+                result = {"name": entry.name, "failed": f"{type(error).__name__}: {error}"}
+            results[seed][entry.name] = result
+            streams[seed].write(json.dumps(result) + "\n")
+            streams[seed].flush()
             print(f"seed {seed}: {measure_testset.shown(result)}", flush=True)
     for seed in args.seeds:
         with (args.out / f"seed-{seed}" / "results.jsonl").open("w") as written:

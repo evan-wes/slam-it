@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -106,3 +107,28 @@ def test_each_seed_is_measured_into_its_own_folder(
         assert (result["name"], result["tracked"]) == ("room", FRAMES)
         settings = runs.read_run(out / f"seed-{seed}" / "room" / "run").settings
         assert (settings["seed"], settings["relocalize"]) == (seed, False)
+
+
+def test_a_failed_worker_is_its_runs_result_and_the_others_are_kept(
+    script: ModuleType, config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run whose worker raises is written as failed, why named; the other seed's run is kept.
+
+    The workers are forked, so the measure patched here is theirs too.
+    """
+    require_program("cpp")
+    measured = script.measure_testset.measured
+
+    def flaky(entry: object, out: Path, args: object, replaced: dict[str, Any]) -> dict[str, Any]:
+        if replaced["seed"] == 1:
+            raise OSError("the disk is full")
+        result: dict[str, Any] = measured(entry, out, args, replaced)
+        return result
+
+    monkeypatch.setattr(script.measure_testset, "measured", flaky)
+    out = tmp_path / "out"
+    assert script.main([str(config), str(out), "--seeds", "0", "1", "--jobs", "1"]) == 0
+    failed = json.loads((out / "seed-1" / "results.jsonl").read_text())
+    assert failed == {"name": "room", "failed": "OSError: the disk is full"}
+    kept = json.loads((out / "seed-0" / "results.jsonl").read_text())
+    assert (kept["name"], kept["tracked"]) == ("room", FRAMES)

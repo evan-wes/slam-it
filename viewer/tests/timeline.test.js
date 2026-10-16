@@ -111,7 +111,7 @@ test("the frames found again are those relocalisation placed, each with its map"
     { frame: 5, map: 0 },
     { frame: 8, map: null },
   ]);
-  assert.deepEqual(foundFrames({ frame: [0, 1] }), []); // a run from before relocalisation
+  assert.deepEqual(foundFrames({ frame: [0, 1], placed_by: ["motion", null] }), []);
   assert.equal(foundHint("cpp", { frame: 34, map: 0 }), "cpp: found again in map 0, frame 34");
   // The found room's track, failed on its blank frames, is found again in map 0 after them.
   const found = foundFrames(

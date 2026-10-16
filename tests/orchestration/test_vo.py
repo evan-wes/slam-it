@@ -398,6 +398,9 @@ def test_parse_reads_a_command_line() -> None:
         (["--dataset", "euroc"], "--dataset: given twice"),
         (["--verbose", "1"], "unknown argument '--verbose'"),
         (["--record-features", "--record-features"], "--record-features: given twice"),
+        (["--vocabulary", "a", "--vocabulary", "b"], "--vocabulary: given twice"),
+        (["--option", "relocalize=maybe"], "relocalize: expected true or false, got 'maybe'"),
+        (["--option", "relocalize=1"], "relocalize: expected true or false, got '1'"),
     ],
 )
 def test_parse_refuses_what_the_native_programs_refuse(more: list[str], message: str) -> None:
@@ -685,6 +688,78 @@ def test_a_program_refuses_a_bad_command_line(backend: str) -> None:
         assert done.returncode == vo.EXIT_USAGE
         assert done.stderr.startswith("slam_it_vo: ")
         assert "\nusage: " in done.stderr
+
+
+def test_the_vocabulary_and_a_flag_setting_cross_the_command_line() -> None:
+    """``--vocabulary`` is read and passed on; a flag setting crosses as true or false."""
+    base = ["--dataset", "tum", "--sequence", "seq", "--mode", "rgbd", "--out", "out"]
+    request = vo.parse([*base, "--vocabulary", "words", "--option", "relocalize=false"])
+    assert (request.vocabulary, request.options.relocalize) == (Path("words"), False)
+    arguments = request.arguments()
+    assert arguments[arguments.index("--vocabulary") + 1] == "words"
+    assert arguments[arguments.index("--option") + 1] == "relocalize=false"
+    assert vo.parse(base).vocabulary is None
+    assert vo.parse_setting("relocalize= true ") == ("relocalize", True)
+
+
+@pytest.mark.parametrize(
+    ("relocalize", "vocabulary", "message"),
+    [
+        (True, None, "--vocabulary: relocalize needs one"),
+        (False, Path("words"), "--vocabulary: given, but relocalize is off"),
+    ],
+)
+def test_check_refuses_a_vocabulary_missing_or_unasked_for(
+    relocalize: bool, vocabulary: Path | None, message: str
+) -> None:
+    """Relocalising needs a vocabulary; one given with relocalisation off is refused."""
+    request = vo.Request(
+        "tum", SEQUENCES / "tum_camera", "rgbd", Path("out"),
+        options=Options(relocalize=relocalize), vocabulary=vocabulary,
+    )  # fmt: skip
+    with pytest.raises(InvalidInputError, match=re.escape(message)):
+        vo.check(request)
+
+
+def test_run_relocalises_with_the_committed_vocabulary_unless_told_otherwise(
+    tmp_path: Path,
+) -> None:
+    """Unnamed, a relocalising run's vocabulary is the committed one, which it records.
+
+    Off, none is recorded, and one given is refused before anything runs.
+    """
+    on = vo.run("tum", SEQUENCES / "tum_camera", "rgbd", tmp_path / "on", count=0)
+    assert on.vocabulary == vocabularies.record(vocabularies.DEFAULT)
+    off_options = Options(relocalize=False)
+    off = vo.run(
+        "tum", SEQUENCES / "tum_camera", "rgbd", tmp_path / "off", count=0, options=off_options
+    )
+    assert off.vocabulary is None
+    with pytest.raises(InvalidInputError, match="given, but relocalize is off"):
+        vo.run(
+            "tum", SEQUENCES / "tum_camera", "rgbd", tmp_path / "refused", count=0,
+            options=off_options, vocabulary=vocabularies.DEFAULT,
+        )  # fmt: skip
+    assert not (tmp_path / "refused").exists()
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize(
+    ("more", "message"),
+    [
+        (["--vocabulary", "a", "--vocabulary", "b"], "--vocabulary: given twice"),
+        (["--option", "relocalize=maybe"], "relocalize: expected true or false, got 'maybe'"),
+    ],
+)
+def test_every_program_refuses_a_vocabulary_twice_and_a_flag_not_true_or_false(
+    backend: str, more: list[str], message: str
+) -> None:
+    """Every program's usage error, with Python's parse's message (review panel finding H10)."""
+    base = ["--dataset", "tum", "--sequence", "seq", "--mode", "rgbd", "--out", "out"]
+    program = vo.command(require_program(backend))
+    done = subprocess.run([*program, *base, *more], capture_output=True, text=True, check=False)
+    assert done.returncode == vo.EXIT_USAGE
+    assert done.stderr.startswith(f"slam_it_vo: {message}")
 
 
 def test_a_run_set_up_for_its_frames_size_gets_their_features() -> None:

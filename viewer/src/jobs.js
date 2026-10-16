@@ -216,7 +216,7 @@ export function trackingText(summary) {
   const clip = Number(summary.clip_seconds);
   const losses = Number(summary.losses ?? 0);
   const resets = Number(summary.resets ?? 0);
-  const found = Number(summary.relocalizations ?? 0);
+  const found = Number(summary.relocalizations);
   /** @type {string[]} */
   const said = [];
   // An RGB-D run makes its first map from one frame's depth; a monocular one, from two views.
@@ -314,7 +314,7 @@ export function summaryRows(summary) {
   if (maps > 1 || resets > 0) {
     rows.push(["maps", resets > 0 ? `${maps} kept, ${resets} reset` : String(maps)]);
   }
-  const found = Number(summary.relocalizations ?? 0);
+  const found = Number(summary.relocalizations);
   if (found > 0) {
     rows.push(["frames found again", String(found)]);
   }
