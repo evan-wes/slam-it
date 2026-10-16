@@ -8,7 +8,7 @@
 #include <string>
 #include <utility>
 
-#include "slam_it/foundations/matching.hpp"
+#include "slam_it/foundations/orb.hpp"
 
 namespace slam_it::edge {
 
@@ -541,7 +541,7 @@ Result<std::int64_t> distinctive_descriptor(
   std::vector<std::int64_t> row(n);
   for (std::size_t i = 0; i < n; ++i) {
     for (std::size_t j = 0; j < n; ++j) {
-      row[j] = foundations::matching::distance(descriptors[i], descriptors[j]);
+      row[j] = foundations::orb::distance(descriptors[i], descriptors[j]);
     }
     std::ranges::sort(row);
     const std::int64_t median = row[(n - 1) / 2];

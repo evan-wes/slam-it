@@ -224,7 +224,7 @@ std::optional<std::size_t> nearest(const orb::Keypoint& k, const orb::Descriptor
         r.xy[0] < k.xy[0] - focal || r.xy[0] > k.xy[0]) {
       continue;
     }
-    const std::int64_t d = matching::distance(descriptor, right.descriptors[j]);
+    const std::int64_t d = orb::distance(descriptor, right.descriptors[j]);
     if (d < best_distance) {
       best_distance = d;
       best = j;

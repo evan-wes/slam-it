@@ -171,12 +171,6 @@ class FeatureGrid {
 /// @return Nothing, or `InvalidInput` naming the first one out of range.
 [[nodiscard]] Result<void> check_options(const Options& options);
 
-/// @brief The Hamming distance between two descriptors: the bits in which they differ.
-/// @param a A descriptor.
-/// @param b Another.
-/// @return From 0 to 256.
-[[nodiscard]] std::int64_t distance(const orb::Descriptor& a, const orb::Descriptor& b);
-
 /// @brief Every pair's Hamming distance.
 /// @param descriptors1 The first set.
 /// @param descriptors2 The second set.

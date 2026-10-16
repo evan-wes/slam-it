@@ -227,12 +227,7 @@ pub fn candidates(
     frame: &BowVector,
     options: &Options,
 ) -> Result<Candidates> {
-    if frame.ids.len() != frame.values.len() || frame.ids.windows(2).any(|w| w[0] >= w[1]) {
-        return fail(
-            ErrorKind::InvalidInput,
-            "frame: expected (m,) ascending words and (m,) values",
-        );
-    }
+    vocabulary::check_vector(frame)?;
     let mut shared: BTreeMap<i64, usize> = BTreeMap::new();
     for word in &frame.ids {
         if let Some(holders) = db.inverted.get(word) {

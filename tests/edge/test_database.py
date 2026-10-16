@@ -160,7 +160,10 @@ def test_a_frame_sharing_no_word_has_no_candidates(truth: Truth, room_database: 
 
 
 def test_a_malformed_vector_is_refused(truth: Truth, room_database: Database) -> None:
-    """Words that do not ascend, or values not one per word: InvalidInputError."""
-    for ids, values in (([2, 1], [0.5, 0.5]), ([1, 2], [1.0])):
-        with pytest.raises(InvalidInputError, match="ascending words"):
+    """Words that do not ascend, values not one per word, or not integers: InvalidInputError.
+
+    The vocabulary's check (:func:`slam_it.foundations.vocabulary.as_vector`).
+    """
+    for ids, values in (([2, 1], [0.5, 0.5]), ([1, 2], [1.0]), ([1.9, 2.5], [0.5, 0.5])):
+        with pytest.raises(InvalidInputError, match="vector: expected"):
             database.candidates(room_database, truth.map, (ids, values), OPTIONS)

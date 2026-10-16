@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
-#include <functional>
 #include <map>
 #include <ranges>
 #include <string>
@@ -100,17 +99,6 @@ std::vector<std::pair<double, std::int64_t>> groups_of(
   return out;
 }
 
-/// @brief Check a word vector: as many values as words, the words ascending.
-/// @param frame The vector.
-/// @return Nothing, or `InvalidInput`.
-Result<void> check_vector(const vocabulary::BowVector& frame) {
-  if (frame.ids.size() != frame.values.size() ||
-      std::ranges::adjacent_find(frame.ids, std::greater_equal{}) != frame.ids.end()) {
-    return fail(ErrorKind::kInvalidInput, "frame: expected (m,) ascending words and (m,) values");
-  }
-  return {};
-}
-
 }  // namespace
 
 Result<void> insert(Database& db, std::int64_t keyframe, Words words) {
@@ -189,7 +177,7 @@ std::map<std::int64_t, std::vector<std::int64_t>> best_covisible(
 Result<Candidates> candidates(const Database& db, const Map& m,
                               const foundations::vocabulary::BowVector& frame,
                               const Options& options) {
-  if (auto ok = check_vector(frame); !ok) {
+  if (auto ok = vocabulary::check_vector(frame); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   const std::map<std::int64_t, std::int64_t> shared = shared_words(db, frame);

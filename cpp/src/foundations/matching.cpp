@@ -4,10 +4,8 @@
 #include "slam_it/foundations/matching.hpp"
 
 #include <algorithm>
-#include <bit>
 #include <cmath>
 #include <cstddef>
-#include <cstring>
 #include <limits>
 #include <map>
 #include <optional>
@@ -73,7 +71,7 @@ Nearest nearest(const orb::Descriptor& query, std::span<const orb::Descriptor> s
                 const Indices& among) {
   Nearest out;
   for (const std::size_t j : among) {
-    const std::int64_t d = distance(query, set[j]);
+    const std::int64_t d = orb::distance(query, set[j]);
     if (d < out.best) {
       out.second = out.best;
       out.best = d;
@@ -351,7 +349,7 @@ NearestTwo nearest_two(const Projection& p, std::span<const std::uint32_t> candi
     if (taken[k] != 0 || std::fabs(right[k] - p.right) > p.radius) {
       continue;
     }
-    const Ranked here{.distance = distance(p.descriptor, descriptors[k]), .index = k};
+    const Ranked here{.distance = orb::distance(p.descriptor, descriptors[k]), .index = k};
     if (before(here, out.best)) {
       out.second = out.best;
       out.best = here;
@@ -374,20 +372,6 @@ Result<void> check_options(const Options& options) {
   return {};
 }
 
-std::int64_t distance(const orb::Descriptor& a, const orb::Descriptor& b) {
-  static_assert(orb::kDescriptorBytes % sizeof(std::uint64_t) == 0,
-                "the distance reads whole 64-bit words");
-  std::int64_t bits = 0;
-  for (std::size_t offset = 0; offset < orb::kDescriptorBytes; offset += sizeof(std::uint64_t)) {
-    std::uint64_t x = 0;
-    std::uint64_t y = 0;
-    std::memcpy(&x, &a.at(offset), sizeof(x));
-    std::memcpy(&y, &b.at(offset), sizeof(y));
-    bits += std::popcount(x ^ y);
-  }
-  return bits;
-}
-
 Result<std::vector<std::int64_t>> distances(std::span<const orb::Descriptor> descriptors1,
                                             std::span<const orb::Descriptor> descriptors2) {
   if (descriptors1.size() > kMaxDescriptors || descriptors2.size() > kMaxDescriptors) {
@@ -397,7 +381,7 @@ Result<std::vector<std::int64_t>> distances(std::span<const orb::Descriptor> des
   out.reserve(descriptors1.size() * descriptors2.size());
   for (const orb::Descriptor& a : descriptors1) {
     for (const orb::Descriptor& b : descriptors2) {
-      out.push_back(distance(a, b));
+      out.push_back(orb::distance(a, b));
     }
   }
   return out;

@@ -4,7 +4,6 @@
 #include "slam_it/foundations/vocabulary.hpp"
 
 #include <algorithm>
-#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -29,32 +28,6 @@ std::vector<std::int64_t> depths(const std::vector<std::int32_t>& parents) {
     out[node] = out[static_cast<std::size_t>(parents[node])] + 1;
   }
   return out;
-}
-
-/// @brief The Hamming distance between two descriptors.
-/// @param a A descriptor.
-/// @param b Another.
-/// @return The bits in which they differ.
-std::int64_t hamming(const orb::Descriptor& a, const orb::Descriptor& b) {
-  std::int64_t out = 0;
-  for (std::size_t i = 0; i < orb::kDescriptorBytes; ++i) {
-    out += std::popcount(static_cast<unsigned>(a.at(i) ^ b.at(i)));
-  }
-  return out;
-}
-
-/// @brief Check a word vector: as many values as words, the words ascending, values finite.
-/// @param vector The vector.
-/// @return Nothing, or `InvalidInput`.
-Result<void> check_vector(const BowVector& vector) {
-  if (vector.ids.size() != vector.values.size()) {
-    return fail(ErrorKind::kInvalidInput, "vector: expected (m,) words and (m,) values");
-  }
-  if (std::ranges::adjacent_find(vector.ids, std::greater_equal<>()) != vector.ids.end() ||
-      !std::ranges::all_of(vector.values, [](double v) { return std::isfinite(v); })) {
-    return fail(ErrorKind::kInvalidInput, "vector: expected ascending words and finite values");
-  }
-  return {};
 }
 
 /// @brief Check that every node's parent comes before it, the root's -1.
@@ -133,6 +106,17 @@ Result<void> check_leaves(const Vocabulary& vocabulary) {
 
 }  // namespace
 
+Result<void> check_vector(const BowVector& vector) {
+  if (vector.ids.size() != vector.values.size()) {
+    return fail(ErrorKind::kInvalidInput, "vector: expected (m,) words and (m,) values");
+  }
+  if (std::ranges::adjacent_find(vector.ids, std::greater_equal<>()) != vector.ids.end() ||
+      !std::ranges::all_of(vector.values, [](double v) { return std::isfinite(v); })) {
+    return fail(ErrorKind::kInvalidInput, "vector: expected ascending words and finite values");
+  }
+  return {};
+}
+
 Result<void> check(const Vocabulary& vocabulary) {
   if (auto ok = check_range("k", vocabulary.k, 2, kMaxK); !ok) {
     return ok;
@@ -175,7 +159,7 @@ Quantized quantize(const Vocabulary& vocabulary, std::span<const orb::Descriptor
         auto chosen = static_cast<std::size_t>(first);
         for (std::int32_t c = first; c < first + count; ++c) {
           const std::int64_t d =
-              hamming(descriptor, vocabulary.descriptors[static_cast<std::size_t>(c)]);
+              orb::distance(descriptor, vocabulary.descriptors[static_cast<std::size_t>(c)]);
           if (d < best) {  // the first of equals, the lowest index
             best = d;
             chosen = static_cast<std::size_t>(c);

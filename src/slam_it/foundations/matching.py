@@ -68,6 +68,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slam_it import backends
+from slam_it.foundations import orb
 from slam_it.foundations.arrays import as_count, as_flag, as_number, as_real, holds_integers
 from slam_it.foundations.errors import InvalidInputError
 from slam_it.foundations.orb import ANGLE_BINS, DESCRIPTOR_BYTES, MAX_LEVELS, Features
@@ -88,9 +89,6 @@ GRID_COLS = 64
 
 GRID_ROWS = 48
 """Cells down it (ORB-SLAM's ``FRAME_GRID_ROWS``)."""
-
-_POPCOUNT = np.array([bin(b).count("1") for b in range(256)], dtype=np.int64)
-"""Set bits per byte value."""
 
 _CHUNK = 256
 """First-set rows per block of the reference's distance computation (bounds its memory)."""
@@ -308,8 +306,8 @@ def _distances(
     """Every pair's Hamming distance (reference)."""
     out = np.empty((len(descriptors1), len(descriptors2)), dtype=np.int64)
     for start in range(0, len(descriptors1), _CHUNK):
-        block = descriptors1[start : start + _CHUNK, None, :] ^ descriptors2[None, :, :]
-        out[start : start + _CHUNK] = _POPCOUNT[block].sum(axis=-1)
+        block = descriptors1[start : start + _CHUNK, None, :]
+        out[start : start + _CHUNK] = orb.distance(block, descriptors2[None, :, :])
     return out
 
 
@@ -492,7 +490,7 @@ def _search_by_projection(
         index = np.flatnonzero(candidates)
         if len(index) == 0:
             continue
-        distance = _POPCOUNT[frame.descriptors[index] ^ projections.descriptors[i]].sum(axis=1)
+        distance = orb.distance(frame.descriptors[index], projections.descriptors[i])
         order = np.lexsort((index, distance))  # by distance, then index
         best, best_k = int(distance[order[0]]), int(index[order[0]])
         if best > options.max_distance:

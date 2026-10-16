@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 
 use crate::error::{ErrorKind, Result, check_range, fail};
-use crate::orb::Descriptor;
+use crate::orb::{Descriptor, distance};
 
 /// The tree level whose nodes group a frame's features for matching (the direct index).
 pub const DIRECT_LEVEL: usize = 2;
@@ -72,20 +72,6 @@ fn depths(parents: &[i32]) -> Vec<usize> {
         out[node] = out[usize::try_from(parents[node]).unwrap_or(0)] + 1;
     }
     out
-}
-
-/// The Hamming distance between two descriptors.
-///
-/// # Arguments
-///
-/// * `a` - A descriptor.
-/// * `b` - Another.
-///
-/// # Returns
-///
-/// The bits in which they differ.
-fn hamming(a: &Descriptor, b: &Descriptor) -> u32 {
-    a.iter().zip(b).map(|(x, y)| (x ^ y).count_ones()).sum()
 }
 
 /// Checks a tree as `Vocabulary.__post_init__` does.
@@ -219,9 +205,9 @@ pub fn quantize(vocabulary: &Vocabulary, descriptors: &[Descriptor]) -> Quantize
             if count > 0 {
                 let first = usize::try_from(first).unwrap_or(0);
                 let count = usize::try_from(count).unwrap_or(0);
-                let mut best = u32::MAX;
+                let mut best = i64::MAX;
                 for c in first..first + count {
-                    let d = hamming(descriptor, &vocabulary.descriptors[c]);
+                    let d = distance(descriptor, &vocabulary.descriptors[c]);
                     if d < best {
                         // the first of equals, the lowest index
                         best = d;
@@ -291,7 +277,8 @@ pub fn bow(vocabulary: &Vocabulary, words: &[i64]) -> Result<BowVector> {
     Ok(out)
 }
 
-/// Checks a word vector: as many values as words, the words ascending, the values finite.
+/// Checks a word vector, [`bow`]'s: as many values as words, the words ascending, the values
+/// finite (`slam_it.foundations.vocabulary.as_vector`).
 ///
 /// # Arguments
 ///
@@ -300,7 +287,7 @@ pub fn bow(vocabulary: &Vocabulary, words: &[i64]) -> Result<BowVector> {
 /// # Errors
 ///
 /// `InvalidInput` otherwise.
-fn check_vector(vector: &BowVector) -> Result<()> {
+pub fn check_vector(vector: &BowVector) -> Result<()> {
     if vector.ids.len() != vector.values.len() {
         return fail(
             ErrorKind::InvalidInput,

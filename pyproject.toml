@@ -13,7 +13,7 @@ license = "PolyForm-Noncommercial-1.0.0"
 license-files = ["LICENSE"]
 authors = [{ name = "evan-wes" }]
 # Pillow reads image files, in slam_it.eval.images alone (a contract below keeps it there).
-dependencies = ["numpy>=1.26", "pillow>=10.0"]
+dependencies = ["numpy>=2.0", "pillow>=10.0"]
 
 [project.optional-dependencies]
 # COLMAP's Ceres bundle adjuster, for slam_it.eval.colmap_reference (the only importer).

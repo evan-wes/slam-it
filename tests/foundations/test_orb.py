@@ -445,3 +445,16 @@ def test_a_malformed_compiled_result_is_a_runtime_error(monkeypatch: pytest.Monk
     _fake_backend(monkeypatch, raw)
     with pytest.raises(RuntimeError, match="levels float, expected float and int"):
         orb.extract(frame, backend="cpp")
+
+
+def test_the_distance_counts_the_bits_two_descriptors_differ_in() -> None:
+    """0 for the same, 256 for every bit, one per flipped bit; broadcast over leading axes."""
+    zero = np.zeros(orb.DESCRIPTOR_BYTES, dtype=np.uint8)
+    ones = np.full(orb.DESCRIPTOR_BYTES, 255, dtype=np.uint8)
+    flipped = zero.copy()
+    flipped[[0, 31]] = [0b1000_0001, 0b0001_0000]
+    got = [int(orb.distance(zero, other)) for other in (zero, ones, flipped)]
+    assert got == [0, 256, 3]
+    pairs = orb.distance(np.stack([zero, ones])[:, None, :], np.stack([zero, flipped])[None])
+    assert pairs.dtype == np.int64
+    np.testing.assert_array_equal(pairs, [[0, 3], [256, 253]])

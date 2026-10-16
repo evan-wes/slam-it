@@ -201,6 +201,14 @@ struct Keypoint {
 /// @brief A 256-bit rBRIEF descriptor, least significant bit first.
 using Descriptor = std::array<std::uint8_t, kDescriptorBytes>;
 
+/// @brief The Hamming distance between two descriptors: the bits in which they differ
+///        (`slam_it.foundations.orb.distance`), the one that matching, stereo, the vocabulary
+///        and the edge rung compare descriptors by.
+/// @param a A descriptor.
+/// @param b Another.
+/// @return From 0 to 256.
+[[nodiscard]] std::int64_t distance(const Descriptor& a, const Descriptor& b);
+
 /// @brief ORB features: keypoints and their descriptors, element for element, and the
 ///        pyramid they span (with the image's shape, every level's shape).
 struct Features {

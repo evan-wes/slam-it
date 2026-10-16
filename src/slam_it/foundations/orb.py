@@ -396,6 +396,28 @@ def _rotated_patterns() -> NDArray[np.int64]:
 _PATTERNS = _rotated_patterns()
 
 
+def distance(first: NDArray[np.uint8], second: NDArray[np.uint8]) -> NDArray[np.int64]:
+    """Return descriptors' Hamming distances: the bits in which they differ.
+
+    The one distance rung 0 and the edge rung compare descriptors by (matching, stereo, the
+    vocabulary), as the C++ and Rust cores' ``orb::distance``.
+
+    Parameters
+    ----------
+    first, second : ndarray of uint8, shape (..., DESCRIPTOR_BYTES)
+        Descriptors, broadcast against each other over their leading axes.
+
+    Returns
+    -------
+    ndarray of int64
+        The distances, from 0 to 256, of the broadcast leading shape.
+    """
+    out: NDArray[np.int64] = np.bitwise_count(np.bitwise_xor(first, second)).sum(
+        axis=-1, dtype=np.int64
+    )
+    return out
+
+
 def level_budgets(n_features: int, levels: int, scale_factor: float) -> list[int]:
     """Split the feature budget over the levels, falling geometrically with the level.
 

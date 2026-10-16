@@ -324,12 +324,9 @@ def candidates(
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If the vector is malformed (:func:`slam_it.foundations.vocabulary.score`'s checks).
+        If the vector is malformed (:func:`slam_it.foundations.vocabulary.as_vector`).
     """
-    ids, values = np.asarray(frame[0]), np.asarray(frame[1], dtype=np.float64)
-    if ids.ndim != 1 or values.shape != ids.shape or np.any(np.diff(ids) <= 0):
-        raise InvalidInputError("frame: expected (m,) ascending words and (m,) values")
-    vector = (np.ascontiguousarray(ids, dtype=np.int64), np.ascontiguousarray(values))
+    vector = vocabulary.as_vector(*frame)
     return backends.call(
         backend,
         __name__,

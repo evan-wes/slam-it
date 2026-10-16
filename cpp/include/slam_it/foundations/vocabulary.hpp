@@ -67,6 +67,12 @@ struct BowVector {
 /// @return Nothing, or `InvalidInput` naming what is malformed.
 [[nodiscard]] Result<void> check(const Vocabulary& vocabulary);
 
+/// @brief Check a word vector, `bow`'s: as many values as words, the words ascending, the values
+///        finite (`slam_it.foundations.vocabulary.as_vector`).
+/// @param vector The vector.
+/// @return Nothing, or `InvalidInput`.
+[[nodiscard]] Result<void> check_vector(const BowVector& vector);
+
 /// @brief Each descriptor's word, and its node at `kDirectLevel`.
 /// @param vocabulary The vocabulary, checked.
 /// @param descriptors The descriptors.

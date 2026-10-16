@@ -188,6 +188,28 @@ pub const PATTERN: [[i64; 4]; 256] = [
 /// A 256-bit rBRIEF descriptor, least significant bit first.
 pub type Descriptor = [u8; DESCRIPTOR_BYTES];
 
+/// The Hamming distance between two descriptors: the bits in which they differ
+/// (`slam_it.foundations.orb.distance`), the one that matching, stereo, the vocabulary and the
+/// edge rung compare descriptors by.
+///
+/// # Arguments
+///
+/// * `a` - A descriptor.
+/// * `b` - Another.
+///
+/// # Returns
+///
+/// From 0 to 256.
+#[must_use]
+pub fn distance(a: &Descriptor, b: &Descriptor) -> i64 {
+    a.as_chunks::<8>()
+        .0
+        .iter()
+        .zip(b.as_chunks::<8>().0)
+        .map(|(x, y)| i64::from((u64::from_le_bytes(*x) ^ u64::from_le_bytes(*y)).count_ones()))
+        .sum()
+}
+
 /// ORB extraction settings (`slam_it.foundations.orb.Options`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Options {

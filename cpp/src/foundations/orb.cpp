@@ -3,8 +3,11 @@
 #include "slam_it/foundations/orb.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <iterator>
 #include <limits>
 #include <optional>
@@ -705,6 +708,20 @@ Result<Features> extract_levels(std::span<const image::Image> levels, const Opti
     return std::unexpected(std::move(ok.error()));
   }
   return extract_checked(levels, options);
+}
+
+std::int64_t distance(const Descriptor& a, const Descriptor& b) {
+  static_assert(kDescriptorBytes % sizeof(std::uint64_t) == 0,
+                "the distance reads whole 64-bit words");
+  std::int64_t bits = 0;
+  for (std::size_t offset = 0; offset < kDescriptorBytes; offset += sizeof(std::uint64_t)) {
+    std::uint64_t x = 0;
+    std::uint64_t y = 0;
+    std::memcpy(&x, &a.at(offset), sizeof(x));
+    std::memcpy(&y, &b.at(offset), sizeof(y));
+    bits += std::popcount(x ^ y);
+  }
+  return bits;
 }
 
 }  // namespace slam_it::foundations::orb

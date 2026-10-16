@@ -37,6 +37,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slam_it import backends
+from slam_it.foundations import orb
 from slam_it.foundations.arrays import as_count
 from slam_it.foundations.errors import InvalidInputError
 from slam_it.foundations.orb import DESCRIPTOR_BYTES
@@ -218,13 +219,6 @@ def _depths(parents: NDArray[np.int32]) -> NDArray[np.int64]:
     return depth
 
 
-def _hamming(descriptors: NDArray[np.uint8], centres: NDArray[np.uint8]) -> NDArray[np.int64]:
-    """Each descriptor's Hamming distance to each centre: (n, m)."""
-    xor = np.bitwise_xor(descriptors[:, None, :], centres[None, :, :])
-    out: NDArray[np.int64] = np.bitwise_count(xor).sum(axis=2, dtype=np.int64)
-    return out
-
-
 def _as_descriptors(descriptors: ArrayLike, name: str = "descriptors") -> NDArray[np.uint8]:
     """Check descriptors: uint8 rows of DESCRIPTOR_BYTES."""
     out = np.asarray(descriptors)
@@ -293,8 +287,7 @@ def _quantize(
             candidates = first[nodes, None] + offsets[None, :]
             valid = offsets[None, :] < count[nodes, None]
             centres = vocabulary.descriptors[np.where(valid, candidates, 0)]
-            xor = np.bitwise_xor(desc[lo : lo + CHUNK][moving][:, None, :], centres)
-            distance = np.bitwise_count(xor).sum(axis=2, dtype=np.int64)
+            distance = orb.distance(desc[lo : lo + CHUNK][moving][:, None, :], centres)
             distance[~valid] = np.iinfo(np.int64).max
             chosen = candidates[np.arange(len(nodes)), np.argmin(distance, axis=1)]
             at[moving] = chosen
@@ -462,14 +455,15 @@ def _assign(descriptors: NDArray[np.uint8], centres: NDArray[np.uint8]) -> NDArr
     """Each descriptor's nearest centre (the lowest index among equals)."""
     out = np.empty(len(descriptors), dtype=np.int64)
     for lo in range(0, len(descriptors), CHUNK):
-        out[lo : lo + CHUNK] = np.argmin(_hamming(descriptors[lo : lo + CHUNK], centres), axis=1)
+        block = descriptors[lo : lo + CHUNK, None, :]
+        out[lo : lo + CHUNK] = np.argmin(orb.distance(block, centres[None, :, :]), axis=1)
     return out
 
 
 def _seeds(descriptors: NDArray[np.uint8], k: int, rng: np.random.Generator) -> NDArray[np.uint8]:
     """k-means++ centres as DBoW2 picks them: each next with probability its distance."""
     centres = [descriptors[rng.integers(len(descriptors))]]
-    nearest = _assign_distance(descriptors, centres[0])
+    nearest = orb.distance(descriptors, centres[0])
     while len(centres) < k:
         total = float(nearest.sum())
         if total <= 0.0:  # every descriptor is a centre already
@@ -479,18 +473,8 @@ def _seeds(descriptors: NDArray[np.uint8], k: int, rng: np.random.Generator) -> 
             cut = rng.uniform(0.0, total)
         index = min(int(np.searchsorted(np.cumsum(nearest), cut, side="left")), len(nearest) - 1)
         centres.append(descriptors[index])
-        nearest = np.minimum(nearest, _assign_distance(descriptors, centres[-1]))
+        nearest = np.minimum(nearest, orb.distance(descriptors, centres[-1]))
     return np.stack(centres)
-
-
-def _assign_distance(
-    descriptors: NDArray[np.uint8], centre: NDArray[np.uint8]
-) -> NDArray[np.int64]:
-    """Each descriptor's Hamming distance to one centre."""
-    out: NDArray[np.int64] = np.bitwise_count(np.bitwise_xor(descriptors, centre)).sum(
-        axis=1, dtype=np.int64
-    )
-    return out
 
 
 def _kmeans(

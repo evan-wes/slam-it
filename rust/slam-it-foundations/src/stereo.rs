@@ -514,7 +514,7 @@ fn nearest(
         {
             continue;
         }
-        let d = matching::distance(descriptor, other);
+        let d = orb::distance(descriptor, other);
         if d < best_distance {
             best_distance = d;
             best = Some(j);

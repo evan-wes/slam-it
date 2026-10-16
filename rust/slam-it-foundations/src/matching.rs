@@ -8,7 +8,9 @@
 use std::collections::BTreeMap;
 
 use crate::error::{ErrorKind, Result, check_range, fail, fail_setting};
-use crate::orb::{ANGLE_BINS, DESCRIPTOR_BYTES, Descriptor, Features, Keypoint, MAX_LEVELS};
+use crate::orb::{
+    ANGLE_BINS, DESCRIPTOR_BYTES, Descriptor, Features, Keypoint, MAX_LEVELS, distance,
+};
 
 /// The most descriptors a set may hold.
 pub const MAX_DESCRIPTORS: usize = 1 << 20;
@@ -113,26 +115,6 @@ pub fn check_options(options: &Options) -> Result<()> {
         return fail_setting("ratio", "must be in (0, 1]", options.ratio);
     }
     Ok(())
-}
-
-/// The Hamming distance between two descriptors: the bits in which they differ.
-///
-/// # Arguments
-///
-/// * `a` - A descriptor.
-/// * `b` - Another.
-///
-/// # Returns
-///
-/// From 0 to 256.
-#[must_use]
-pub fn distance(a: &Descriptor, b: &Descriptor) -> i64 {
-    a.as_chunks::<8>()
-        .0
-        .iter()
-        .zip(b.as_chunks::<8>().0)
-        .map(|(x, y)| i64::from((u64::from_le_bytes(*x) ^ u64::from_le_bytes(*y)).count_ones()))
-        .sum()
 }
 
 /// Every pair's Hamming distance.
