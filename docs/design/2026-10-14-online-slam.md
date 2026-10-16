@@ -68,9 +68,9 @@ source (`KeyFrameDatabase.cc`, `Tracking.cc`):
     accumulated score are kept;
   - for each candidate, features matched word by word (`SearchByBoW`, a ratio of 0.75, with the
     rotation check); fewer than 15 matches discard it;
-  - PnP RANSAC (MLPnP: confidence 0.99, at least 10 inliers, at most 300 iterations, a minimal
-    set of 6, the chi-square threshold 5.991), run 5 iterations at a time across the
-    candidates;
+  - PnP RANSAC (MLPnP: confidence 0.99, at least 10 inliers, an expected inlier ratio of 0.5,
+    at most 300 iterations, a minimal set of 6, the chi-square threshold 5.991), run 5
+    iterations at a time across the candidates;
   - the pose optimised; fewer than 10 inliers discard it; under 50, more matches by projection
     from the candidate's map points (a window of 10 pixels, a distance of 100), optimised
     again, and at 30 to 50 a narrower search (3 pixels, 64); 50 inliers relocalise the frame;
@@ -104,7 +104,8 @@ source (`KeyFrameDatabase.cc`, `Tracking.cc`):
    - the score: DBoW2's L1 score, 1 - |v - w|_1 / 2;
    - the default is the committed 5-level vocabulary; a run's `--vocabulary` (`vo.run`'s
      `vocabulary`) names another folder, whose arrays must match their recorded checksums, and
-     the run's settings record its name and checksums;
+     the run records the vocabulary it used (`run.json`'s `vocabulary`: its `vocabulary.json`,
+     the checksums with it);
    - a vocabulary's words mean something only for the descriptor they were trained on: its
      `vocabulary.json` records the descriptor's settings (the patch, the smoothing, the test
      pattern), and a run whose descriptor differs refuses it, rather than scoring against words
@@ -120,9 +121,11 @@ source (`KeyFrameDatabase.cc`, `Tracking.cc`):
    |---|---|---|---|
    | ORB-SLAM's kind | Bovisa 2008-09-01, the front camera | 6 | `../vocabularies/` |
    | A phone's | ARKitScenes' training fold | 6 | the same |
-   | The default | ARKitScenes' training fold | 5 | committed, `data/vocabulary/` |
+   | The default | ARKitScenes' training fold | 5 | committed, `slam_it/foundations/vocabularies/default/` |
 
-   If Bovisa's serves the test set better, the default is retrained from it.
+   The two kept outside are named, with their checksums and the commands that rebuild them, in
+   `slam_it/foundations/vocabularies/local.json`. If Bovisa's serves the test set better, the
+   default is retrained from it.
 3. **The keyframe database:** each keyframe's word vector and direct index made when it is made,
    and an inverted index from each word to the active map's keyframes, a keyframe removed as
    culling or a reset removes it. Ties are broken by keyframe id throughout, so that the three
@@ -135,18 +138,22 @@ source (`KeyFrameDatabase.cc`, `Tracking.cc`):
    (ORB-SLAM adds the score it kept from an earlier query, which the three languages could not
    reproduce alike).
 5. **The loss flow:** a frame that fails, as now (the motion model, then PnP against the local
-   map), is relocalised against the whole active map. A run is recently lost from its first
-   failed frame: it is tracked again on a frame that succeeds, and lost, its map closed as A2
-   closes it, once `relocalize_seconds` (3.0) have passed since that frame with no success. A
-   map of `reset_keyframes` or fewer is lost after `lost_frames` (5) failures instead, as
-   section 6 has it. The pipeline's own state stays tracking or not initialised between
-   frames, the loss flagged on the frame's step (the A2 panel's A8).
+   map), is relocalised against the whole active map, while `relocalize` is on (by default, as
+   ORB-SLAM always relocalises; on, a run needs a vocabulary, the committed one unless
+   `--vocabulary` names another; off, it refuses one, and a map is lost as A2 loses it). A run
+   is recently lost from its first failed frame: it is tracked again on a frame that succeeds,
+   and lost, its map closed as A2 closes it, once `relocalize_seconds` (3.0) have passed since
+   that frame with no success. A map of `reset_keyframes` or fewer is lost after `lost_frames`
+   (5) failures instead, as section 6 has it. The pipeline's own state stays tracking or not
+   initialised between frames, the loss flagged on the frame's step (the A2 panel's A8).
 6. **The run format,** still version 4: a frame relocalised is placed by `relocalization`, and
    its diagnostics say how relocalisation went (the candidates, each one's matches and inliers,
    the outcome), null where it did not run.
 7. **The measure, the bake and the status page:** relocalisations counted per run beside the
-   losses; the viewer's timeline marks a relocalised frame; the summary says how often a lost
-   track was found again.
+   losses; the viewer's timeline marks a relocalised frame; the status page says how many
+   frames tracking failed and relocalisation found again. A count of frames, not of times the
+   track was dropped, decided with evan-wes on 2026-10-15: relocalisation runs on the frame
+   tracking failed, so a relocalised frame can follow a tracked one.
 8. **Parity:** the golden record gains a room where the track is lost and found again: the lost
    room's blank frames end where the camera sees what it saw before, so the next frame
    relocalises in map 0 instead of starting map 1. Its rooms that never lose the track keep
@@ -170,22 +177,31 @@ Each gets its own section here before its PR, its forks put to the owner then.
   loops.
 - **B4, merging maps:** the atlas the A2 panel deferred (`edge.atlas`: a kept map's descriptors
   and observations kept whole, the pipeline owning the trajectory record), and maps welded where
-  the database recognises one in another.
+  the database recognises one in another. With it, the loss window revisited: B1 relocalises a
+  lost track for 3 s before a new map starts, as visual-only ORB-SLAM3 does, and on the test
+  set the frames waited through cost more than relocalisation found (B1's note). Once a lost
+  map can be found again by merging, a new map could start at once instead, nothing lost to
+  the wait. B1 keeps 3 s (decided with evan-wes on 2026-10-15). TUM's `fr2_360_kidnap` and
+  7-Scenes' relocalisation across sequences, deferred from B1, are measured here: each needs a
+  map other than the active one recognised.
 
 ## 5. Measurements (B1)
 
 - **The two-view sample limit first,** the monocular runs at seeds 0, 1 and 2 against A2's:
   the starts, the share tracked and the late frames.
-- **The test set at seeds 0, 1 and 2**, against A2's: the share tracked, the maps per run, the
-  losses and relocalisations, the latency and late frames, with the default vocabulary; then,
-  at seed 0, the two 6-level ones, Bovisa's and ARKitScenes', so that the training set and the
-  size are each read apart.
-- **Relocalisation across sequences** (7-Scenes' four scenes, section 6): a scene's sequences
-  share a world frame, so a run of a training sequence followed by a test sequence must
-  relocalise the test frames in the training sequence's map. The share relocalised and their
-  error against the ground truth, monocular and RGB-D.
-- **TUM's `fr2_360_kidnap`**, whose camera is covered and carried elsewhere, and ZJU's black
-  frames: whether each relocalises in its first map.
+- **The test set at seed 0**, against the same code with relocalisation off, with the default
+  vocabulary: the share tracked, the maps per run, the losses and relocalisations, how each
+  stretch of failed frames ended, and each relocalised frame's error against the ground truth
+  (measured side by side by `scripts/measure_sharded.py`, compared by
+  `scripts/compare_testsets.py`).
+- **The latency alone**, each run pinned to one core: the five sequences that relocalise most,
+  relocalisation on and off; a relocalised frame's latency, and a failed attempt's, against the
+  frame's deadline.
+- **ZJU's black frames:** whether each black stretch ends found again in its first map.
+- **A relocalising run in the viewer:** ZJU B0's.
+- **Cut** by evan-wes on 2026-10-15, to move on to B2: seeds 1 and 2, and the two 6-level
+  vocabularies' comparison (to the backlog); TUM's `fr2_360_kidnap` and relocalisation across
+  7-Scenes' sequences (to B4, which recognises a map other than the active one).
 
 ## 6. The training sets, and the rest decided
 
