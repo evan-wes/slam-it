@@ -1,13 +1,22 @@
 // The 3D panel: one map of the run at a time, the map of the frame shown: its trajectory as
-// tracked, the other backends' beside it, the truth if the map is placed on it, its keyframes
-// and points alive at the frame, and the camera. Every point and keyframe sits in one buffer
-// with the frames of its life and its map; a shader hides each outside them, so scrubbing
-// changes two numbers and rebuilds nothing.
+// tracked, the other backends' beside it, the truth if the map is placed on it (over the frames
+// its trajectory is drawn over, or whole), its keyframes and points alive at the frame, and the
+// camera. Every point and keyframe sits in one buffer with the frames of its life and its map;
+// a shader hides each outside them, so scrubbing changes two numbers and rebuilds nothing.
 
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
-import { cameraAt, mapAt, mapRows, mapsShown, placed, posesUpTo, sharesFrame } from "./frames.js";
+import {
+  cameraAt,
+  mapAt,
+  mapRows,
+  mapsShown,
+  placed,
+  posesUpTo,
+  sharesFrame,
+  truthRange,
+} from "./frames.js";
 import {
   FRUSTUM_SEGMENTS,
   centres,
@@ -90,6 +99,9 @@ function livingGeometry(positions, lives, maps, vertices) {
 /** A frustum's depth before any map is shown, in the trajectory's units. */
 const DEFAULT_DEPTH = 0.1;
 
+/** The truth's opacity: faint beside the trajectories it is read against. */
+const TRUTH_OPACITY = 0.6;
+
 /** The way up in a truth's world, gravity-aligned. */
 const TRUTH_UP = new THREE.Vector3(0, 0, 1);
 
@@ -97,7 +109,8 @@ const TRUTH_UP = new THREE.Vector3(0, 0, 1);
 const CAMERA_UP = new THREE.Vector3(0, -1, 0);
 
 /** The map shown after the frame shown: its trajectory so far, the other backends' and the
- *  truth's, its keyframes and points alive, and the camera, followed or orbited. */
+ *  truth's (or the whole truth), its keyframes and points alive, and the camera, followed or
+ *  orbited. */
 export class SceneView {
   /**
    * @param {HTMLElement} box The element the view fills.
@@ -107,6 +120,8 @@ export class SceneView {
     this.box = box;
     this.bundle = bundle;
     this.follow = true;
+    /** Whether the truth is drawn whole, rather than over the frames the trajectory is. */
+    this.wholeTruth = false;
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setPixelRatio(window.devicePixelRatio);
     box.append(this.renderer.domElement);
@@ -121,11 +136,19 @@ export class SceneView {
     this.living = [];
     /** @type {THREE.LineSegments | null} */
     this.truth = null;
+    /** @type {Int32Array} The frame each of the truth's segments ends at (`truthSegments`). */
+    this.truthEnds = new Int32Array(0);
     if (bundle.truth !== null) {
+      const { positions, ends } = truthSegments(bundle.truth);
       const truth = new THREE.BufferGeometry();
-      truth.setAttribute("position", new THREE.BufferAttribute(truthSegments(bundle.truth), 3));
-      const material = new THREE.LineBasicMaterial({ color: colour("--truth") });
+      truth.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+      const material = new THREE.LineBasicMaterial({
+        color: colour("--truth"),
+        transparent: true,
+        opacity: TRUTH_OPACITY,
+      });
       this.truth = new THREE.LineSegments(truth, material);
+      this.truthEnds = ends;
       this.scene.add(this.truth);
     }
     this.trajectory = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial());
@@ -299,6 +322,7 @@ export class SceneView {
       const [start, end] = this.rows;
       const upTo = Math.min(posesUpTo(this.run.poseFrames, frame), end);
       this.trajectory.geometry.setDrawRange(start, Math.max(upTo - start, 0));
+      this.showTruth(this.run.poseFrames, start, upTo);
       const at = cameraAt(this.run.poses, this.run.poseFrames, frame, this.rows);
       this.current.visible = at !== null;
       if (at !== null) {
@@ -315,6 +339,27 @@ export class SceneView {
     this.showOthers(frame);
     this.render();
     return this.shownMap ?? null;
+  }
+
+  /**
+   * Draw the truth whole, or over the frames the map's trajectory is drawn over: from its first
+   * tracked frame to its last so far, growing with it.
+   * @param {Int32Array} poseFrames The run's tracked frames.
+   * @param {number} start The map's first pose's row.
+   * @param {number} upTo The row after its last pose so far.
+   */
+  showTruth(poseFrames, start, upTo) {
+    if (this.truth === null) {
+      return;
+    }
+    if (this.wholeTruth) {
+      this.truth.geometry.setDrawRange(0, Infinity);
+    } else if (upTo > start) {
+      const [first, count] = truthRange(this.truthEnds, poseFrames[start], poseFrames[upTo - 1]);
+      this.truth.geometry.setDrawRange(first, count);
+    } else {
+      this.truth.geometry.setDrawRange(0, 0);
+    }
   }
 
   /**

@@ -388,6 +388,13 @@ async function main() {
     follow.setAttribute("aria-pressed", String(scene.follow));
     show();
   });
+  const wholeTruth = element("whole-truth", HTMLButtonElement);
+  wholeTruth.hidden = !info.truth;
+  wholeTruth.addEventListener("click", () => {
+    scene.wholeTruth = !scene.wholeTruth;
+    wholeTruth.setAttribute("aria-pressed", String(scene.wholeTruth));
+    show();
+  });
   element("fit", HTMLButtonElement).addEventListener("click", () => {
     scene.fit();
     scene.render();
