@@ -290,8 +290,9 @@ ORB-SLAM's TUM monocular numbers (Mur-Artal et al., T-RO 2015, Table III) and OR
 keyframes. ORB-SLAM3's EuRoC numbers (Campos et al., T-RO 2021, Table II) are medians of ten
 runs over every frame; the DSO row beside them is DSO's authors' figure, as ORB-SLAM3 reprints
 it. Ours are odometry, the medians of five deterministic runs, with no relocalisation to
-recover a run that loses the track. Loop closure removes accumulated drift, so the gap widens
-with a sequence's length and its revisits (fr3/long_office returns to its start; the EuRoC
+recover a run that loses the track (they were measured before milestone 2B's B1 added it).
+Loop closure removes accumulated drift, so the gap widens with a sequence's length and its
+revisits (fr3/long_office returns to its start; the EuRoC
 sequences revisit their rooms).
 
 - **Short TUM sequences:** monocular over keyframes has about one and a half times ORB-SLAM's
