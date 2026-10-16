@@ -182,13 +182,7 @@ source (`KeyFrameDatabase.cc`, `Tracking.cc`):
 ## 4. B2 to B4, in outline
 
 Each gets its own section here before its PR, its forks put to the owner then.
-- **B2, the covisibility graph:** the local map from the keyframes that see the frame's points
-  and their best neighbours (ORB-SLAM's K1 and K2, up to 80 keyframes), local BA over the
-  covisible keyframes, culling by covisibility; the essential graph kept for B3. It changes every
-  run's decisions, so the golden record is regenerated whole and the test set rerun against B1's.
-  From B1's panel (A12): its covisibility module replaces `edge.database.best_covisible`, which
-  stands in for it until then, and `edge.Options`' 92 flat settings are grouped before B2 to B4
-  add more.
+- **B2, the covisibility graph:** section 8.
 - **B3, loop closure:** inline, not in a thread, as the ladder decided; the frame it closes on
   measured against the deadline, a thread only if it misses it. Measured on TUM and EuRoC's
   loops.
@@ -258,5 +252,98 @@ Each gets its own section here before its PR, its forks put to the owner then.
   the loss flow; the diagnostics, measure, bake and status page; the relocalising room in the
   golden record; the test set rerun and the note. The review panel on the finished slice;
   offline CI before the merge.
-- **B2, B3 and B4** after it, each designed here first.
+- **B2** (0.3.10.0 -> 0.3.11.0, section 8): the settings grouped; the covisibility module and the
+  spanning tree, held to a brute-force fixture; tracking's local map and the reference keyframe;
+  local mapping off the window; the fallback and relocalisation's groups; the run format 6 and
+  the bundle's 3; the viewer's graph; the golden record regenerated; the test set rerun and the
+  note. The review panel on the finished slice; offline CI before the merge.
+- **B3 and B4** after it, each designed here first.
 - **Not in 2B:** the IMU (milestone 6); the learned rungs.
+
+## 8. B2: the covisibility graph (0.3.10.0 -> 0.3.11.0)
+
+Decided with evan-wes on 2026-10-16. The window of the last 10 keyframes goes: each of its six
+users takes its keyframes from the covisibility graph, as ORB-SLAM's do (ORB-SLAM2's
+`Tracking.cc`, `LocalMapping.cc`, `KeyFrame.cc` and `Optimizer.cc`; ORB-SLAM3's where it
+differs).
+
+1. **The settings grouped first** (B1's panel, A12), in a commit of their own: `edge.Options`'
+   92 flat settings nested by the stage that reads them (features, matching, stereo,
+   initialization, tracking, keyframes, mapping, adjustment, covisibility, relocalization and
+   loss; `seed` at the top), each group's prefix dropped from its names (`reloc_min_inliers` is
+   `relocalization.min_inliers`), in the three languages. A clean break: `--option` takes
+   dotted keys (`--option mapping.fuse_window=3`), and the run format's `settings` are nested
+   (item 7).
+2. **The graph, counted when asked** (`slam_it.edge.covisibility`, with C++ and Rust twins, in
+   place of `edge.database.best_covisible`): two keyframes' weight is the number of points both
+   observe, counted from the map's observations each time it is asked for, so it is always
+   exact. ORB-SLAM stores the weights and updates a keyframe's at a few points
+   (`UpdateConnections`: at initialisation, when it is inserted, after fusion, and in loop
+   closing), so they are stale in between: an observation BA drops still counts. A keyframe is
+   linked to those it shares at least `covisibility.min_points` (15) with, or, if it shares that
+   many with none, to the one it shares most with; its best are its links, the most shared
+   first, ties broken by the lower id. Only the spanning tree is stored.
+3. **The spanning tree,** the essential graph's spine, kept for B3: each keyframe's parent, a
+   new map array (`kf_parent`), is the keyframe it is most strongly linked to when it is
+   inserted with its tracked points (ORB-SLAM's first `UpdateConnections`). A keyframe that
+   shares no point then gets its parent after fusion; a map's first keyframe has none. A
+   keyframe's children are those whose parent it is, found when asked. A culled keyframe's
+   children get new parents as ORB-SLAM's `SetBadFlag` gives them: the candidates start as its
+   parent; each round, the child and candidate most strongly linked are paired and the child
+   becomes a candidate; children linked to no candidate get its parent. The essential graph's
+   strong links (`covisibility.strong_points`, 100) are counted the same way; its loop links are
+   B3's.
+4. **Tracking's local map** (`UpdateLocalKeyFrames`): K1, the keyframes that observe the points
+   the frame was matched to, the most shared first; then, for each of K1 in that order, unless
+   the local map already holds more than `covisibility.local_keyframes` (80): the first of its
+   `covisibility.local_neighbours` (10) best not yet in it, its first child not yet in it (the
+   lowest id), and its parent if not yet in it. Its points are those its keyframes observe. The
+   keyframe of K1 that shares the most points with the frame is its **reference keyframe**,
+   which the keyframe decision counts its tracked points against (`NeedNewKeyFrame`'s
+   `nRefMatches`), in place of the newest keyframe. **The paper's expansion, not the
+   source's:** ORB-SLAM2's and ORB-SLAM3's loops end the whole expansion once a parent is
+   added (a `break` out of the outer loop), and take K1 in the order of its keyframes'
+   addresses in memory. The papers' K2 is every K1 keyframe's neighbours, so that is what is
+   done, in an order the three languages share.
+5. **Local mapping:**
+   - **local BA** (`LocalBundleAdjustment`): the new keyframe and every keyframe linked to it;
+     the keyframes that observe their points, and the map's first keyframe, held fixed, as now;
+   - **keyframe culling** (`KeyFrameCulling`): every keyframe linked to the new one, by the
+     same test as now;
+   - **triangulation** (`CreateNewMapPoints`): the new keyframe's best
+     `mapping.triangulation_neighbours` (10; monocular, 20);
+   - **fusion** (`SearchInNeighbors`): its best `mapping.fuse_neighbours` (10; monocular, 20)
+     and each one's best `mapping.fuse_second_neighbours` (5), leaving out the new keyframe and
+     repeats. ORB-SLAM2's numbers, as triangulation's already are; ORB-SLAM3's (30 monocular,
+     20 second neighbours) are a setting away.
+6. **The local fallback,** PnP against the local map's points as now, searches the local map
+   built from the last tracked frame's points (item 4) in place of the window's. Relocalisation's
+   candidate groups (B1) take each candidate's best `relocalization.neighbours` (10) from the
+   graph, which links a keyframe sharing fewer than 15 points with every other to its best, as
+   ORB-SLAM's `GetBestCovisibilityKeyFrames` does.
+7. **The run format, version 6, and the bundle's, version 3,** clean breaks: `run.json`'s
+   `settings` nested (item 1); each keyframe's parent, the last it had
+   (`keyframe_parents.npy`, `(K,)` int64, -1 for none); and each map's strong links when it
+   closed or the run ended (`keyframe_links.npy`, `(L, 3)` int64: the two keyframes' ids and the
+   points they share). The diagnostics count the local map's keyframes and points, name the
+   reference keyframe, and count local BA's free and fixed keyframes.
+8. **The viewer** draws the graph on a toggle, as ORB-SLAM's viewer does: each living
+   keyframe's line to its parent, and the strong links between living keyframes.
+9. **Parity:** B2 changes every run's decisions, so the golden record and the golden bundle are
+   regenerated whole, their rooms unchanged. The covisibility module is tested in the three
+   languages against a brute-force fixture (the weights, the links, the best, the local map,
+   and a culled keyframe's children given new parents), and each stage moved off the window
+   keeps its native tests.
+
+## 9. Measurements (B2)
+
+Once, on the finished branch:
+- **The test set at seed 0,** against B1's (0.3.10.0), side by side (`scripts/measure_sharded.py`,
+  compared by `scripts/compare_testsets.py`): the share tracked, the losses and what failed at
+  each, the maps, the relocalisations and the ATE, with the local map's and local BA's sizes
+  from the diagnostics. In particular: the losses whose local map kept too few inliers (53% of
+  A2's, section 1), and the monocular runs lost deep into a map (the ladder's L15).
+- **The latency alone,** each run pinned to one core, on the five sequences whose maps grow
+  largest: keyframe frames apart from the rest, against the deadline. Local mapping runs
+  inline, and local BA now covers every linked keyframe; a late frame is put to evan-wes with
+  the numbers, not met by a cap decided alone.
