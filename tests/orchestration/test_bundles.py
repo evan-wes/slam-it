@@ -17,12 +17,15 @@ from slam_it.foundations.errors import InvalidInputError
 from slam_it.orchestration import bundles, vo
 from tests.conftest import FIXTURES
 from tests.edge.support import FRAMES, OPTIONS
-from tests.fixtures.orchestration.generate_bundle import short_runs
+from tests.fixtures.orchestration.generate_bundle import found_run, short_runs
 from tests.orchestration.conftest import RoomRun, require_program
 from tests.orchestration.datasets import Room
 
 GOLDEN = FIXTURES / "orchestration" / "bundle"
 """The golden bundle (``generate_bundle.py``), whose values the page's tests read."""
+
+FOUND = FIXTURES / "orchestration" / "found_bundle"
+"""The found bundle (``generate_bundle.py``): a relocalised frame, as the page's tests read it."""
 
 
 def _keys(value: Any) -> Any:  # noqa: ANN401 -- a JSON value
@@ -93,6 +96,24 @@ def test_the_bake_keeps_the_golden_bundles_layout(
     # The tables the page checks a bundle against: the golden's are the run format's.
     golden = json.loads((GOLDEN / "bundle.json").read_text())
     assert (golden["fates"], golden["steps"]) == (list(runs.FATES), list(runs.STEPS))
+
+
+def test_the_bake_keeps_the_found_bundles_layout(found_folders: Room, tmp_path: Path) -> None:
+    """The found bundle's files, as the bake writes them; its frame 34 relocalised in map 0.
+
+    So the page's tests of a relocalised frame read what the bake writes (review panel finding
+    A6).
+    """
+    bundles.bake([found_run(found_folders.tum, tmp_path / "runs")], found_folders.tum,
+                 tmp_path / "bundle")  # fmt: skip
+    assert _layout(tmp_path / "bundle") == _layout(FOUND)
+    records = json.loads((FOUND / "python" / "records.json").read_text())
+    placed = [
+        (frame, records["map"][k])
+        for k, frame in enumerate(records["frame"])
+        if records["placed_by"][k] == runs.RELOCALIZED
+    ]
+    assert placed == [(34, 0)]
 
 
 @pytest.mark.parametrize(("mode", "alignment"), [("rgbd", "se3"), ("monocular", "sim3")])
