@@ -383,3 +383,22 @@ def test_rejects_a_bad_mode_or_baseline(mode: str, baseline: float, message: str
     camera = frames.Camera("pinhole", room.SMALL.intrinsics, 320, 240, baseline)
     with pytest.raises(InvalidInputError, match=message):
         pipeline.Pipeline(mode, camera, Options(), words_for(Options()))
+
+
+def test_the_database_holds_the_maps_keyframes_through_culling(
+    rendered: list[room.Frame],
+) -> None:
+    """A culled keyframe leaves the database: after every frame it holds the map's keyframes.
+
+    The room culls no keyframe at ORB-SLAM's redundancy (90% of a keyframe's points seen by 3
+    others); at 60% seen by one other, it culls several (review panel finding L2).
+    """
+    options = replace(OPTIONS, redundant_fraction=0.6, redundant_observers=1)
+    run = pipeline.Pipeline("rgbd", CAMERA, options, words_for(options))
+    for f in rendered:
+        run.track(frames.rgbd(f.gray, f.depth, f.timestamp, CAMERA, run.extraction()))
+        assert run.map is not None
+        assert run._database is not None
+        assert run._database.keyframes.tolist() == sorted(run.map.kf_id.tolist())
+    lives = run.lifetimes().keyframe_lives
+    assert np.count_nonzero(lives[:, 2] == Removal.CULLED) > 0

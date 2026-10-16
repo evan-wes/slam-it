@@ -1,12 +1,13 @@
 /// @file
 /// @brief Native tests for descriptor matching (slam_it/foundations/matching.hpp), against the
 ///        parity fixture `tests/fixtures/foundations/matching.json` that the Python and Rust
-///        tests share, and the core's own input checks.
+///        tests share (matching by word's cases too), and the core's own input checks.
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <string>
 #include <vector>
 
 #include "fixture_support.hpp"
@@ -223,6 +224,21 @@ void check_fixture(int& failures) {
            m.distance == c["expected"]["distances"][k].get<std::int64_t>();
     }
     expect(ok, "match matches the fixture", failures);
+  }
+  for (const auto& c : functions["search_by_bow"]["cases"]) {
+    const auto& input = c["input"];
+    const auto& settings = input[6];
+    const matching::Options options{.max_distance = settings["max_distance"].get<std::int64_t>(),
+                                    .ratio = settings["ratio"].get<double>(),
+                                    .check_orientation = settings["check_orientation"].get<bool>()};
+    const auto got = matching::search_by_bow(
+        input[0].get<std::vector<orb::Descriptor>>(), input[1].get<std::vector<std::int64_t>>(),
+        input[2].get<std::vector<orb::Descriptor>>(), input[3].get<std::vector<std::int64_t>>(),
+        input[4].get<std::vector<std::int64_t>>(), input[5].get<std::vector<std::int64_t>>(),
+        options);
+    expect(same_matches(got, c["expected"]),
+           ("search_by_bow matches the fixture: " + c["name"].get<std::string>()).c_str(),
+           failures);
   }
   check_search_fixture(functions, failures);
 }

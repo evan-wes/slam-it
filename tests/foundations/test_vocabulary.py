@@ -17,7 +17,7 @@ from slam_it import backends
 from slam_it.eval import vocabularies
 from slam_it.foundations import orb, vocabulary
 from slam_it.foundations.errors import InvalidInputError
-from tests.conftest import require_function
+from tests.conftest import assert_matches_fixture, load_fixture, require_function
 
 DESCRIPTOR_SHA256 = "9d83b625eaed2a0f0a5690805875536339cf2e5e5ec6167325c1e41382a4ae4b"
 """The SHA-256 of the constants that define an ORB descriptor, as of DESCRIPTOR_VERSION 1."""
@@ -237,3 +237,94 @@ def test_every_backend_refuses_a_word_outside_the_vocabulary(
     chosen = require_function(backend, vocabulary.__name__, "bow")
     with pytest.raises(InvalidInputError, match="words of the vocabulary"):
         vocabulary.bow(default, [default.size], backend=chosen)
+
+
+VOCABULARY = load_fixture("foundations/vocabulary.json")
+"""The parity fixture: quantising, word vectors and scores on a tree built by its generator."""
+
+TRAINED_SHA256 = {
+    "descriptors": "ed79984d99983e61508d5b10e5fec484a3a2c790789d5a0bdb5f341a918cc445",
+    "parents": "30f5d888242099062ef3bfd3913221ce9d91c14fc3a87b71d40c7b48c7177b3b",
+    "children": "c35ddabda51712c3af97f048bcfc74fac16ca03d2e8a45b2edd9bd48f5b08d1c",
+    "words": "f84bce7368537a38df486ed4815f735213c341df84070659d731d12eba1988f6",
+}
+"""The SHA-256 of a tiny training's tree (:func:`_clusters`, k = 4, three levels, seed 5): its
+four arrays of integers and bytes, which integer arithmetic and numpy's ``Generator`` decide."""
+
+
+def _fixture_tree() -> vocabulary.Vocabulary:
+    """Return the parity fixture's tree."""
+    tree = VOCABULARY["tree"]
+    return vocabulary.Vocabulary(
+        tree["k"], tree["levels"], np.array(tree["descriptors"], dtype=np.uint8),
+        np.array(tree["parents"], dtype=np.int32), np.array(tree["children"], dtype=np.int32),
+        np.array(tree["words"], dtype=np.int32), np.array(tree["weights"]),
+    )  # fmt: skip
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_every_backend_matches_the_parity_fixture(backend: str) -> None:
+    """Words, direct nodes, vectors and scores are the fixture's brute force's, exactly."""
+    chosen = require_function(backend, vocabulary.__name__, "quantize")
+    tree, policy = _fixture_tree(), VOCABULARY["tolerance"]
+    q = VOCABULARY["quantize"]
+    words, nodes = vocabulary.quantize(
+        tree, np.array(q["descriptors"], dtype=np.uint8), backend=chosen
+    )
+    assert_matches_fixture(words, q["words"], policy)
+    assert_matches_fixture(nodes, q["nodes"], policy)
+    vectors = []
+    for case in VOCABULARY["bow"]:
+        ids, values = vocabulary.bow(tree, case["words"], backend=chosen)
+        assert_matches_fixture(ids, case["ids"], policy)
+        assert_matches_fixture(values, case["values"], policy)
+        vectors.append((ids, values))
+    for case in VOCABULARY["score"]:
+        got = vocabulary.score(vectors[case["first"]], vectors[case["second"]], backend=chosen)
+        assert_matches_fixture(got, case["score"], policy)
+
+
+def test_a_tied_bit_is_set_in_a_centre() -> None:
+    """DBoW2's ``meanValue``: a bit set in half the descriptors is set; in fewer, not."""
+    zero, ones = (
+        np.zeros(orb.DESCRIPTOR_BYTES, np.uint8),
+        np.full(orb.DESCRIPTOR_BYTES, 255, np.uint8),
+    )
+    np.testing.assert_array_equal(vocabulary._majority(np.stack([zero, ones])), ones)
+    np.testing.assert_array_equal(vocabulary._majority(np.stack([zero, zero, ones])), zero)
+    np.testing.assert_array_equal(vocabulary._majority(np.stack([zero, ones, ones])), ones)
+
+
+def test_a_words_weight_is_the_log_of_the_images_over_those_with_it() -> None:
+    """log(N / N_i): a word in 1 of 3 images weighs log 3, in 2 of 3 log 1.5, in none 0.
+
+    Three descriptors, fewer than k: a leaf each (DBoW2's trivial case). The first two are the
+    same, in images 0 and 1: both descend to the first leaf (the lowest index among equals), so
+    it is in two images and the second in none.
+    """
+    descriptors, _, _ = _clusters(prototypes=2, per=1)
+    three = np.stack([descriptors[0], descriptors[0], descriptors[1]])
+    vocab = vocabulary.train(three, np.array([0, 1, 2]), k=4, levels=1)
+    np.testing.assert_allclose(vocab.weights, [np.log(1.5), 0.0, np.log(3.0)], rtol=0, atol=1e-15)
+    assert vocab.info["images"] == 3
+
+
+def test_a_tiny_training_is_pinned_to_its_checksums() -> None:
+    """A tiny training's tree, byte for byte, and its weights by their rule.
+
+    The two 6-level vocabularies kept outside the repository are rebuilt "exactly", to the
+    SHA-256 in ``vocabularies/local.json``, from about 15 GB of images. Their checksums depend on
+    the seeding, the majority, the k-means rounds and numpy's ``Generator`` streams (which NEP
+    19 does not hold across numpy's versions); this catches a change to any of them in a second,
+    where a rebuild takes hours. The weights are ``np.log``'s, whose last bit may differ between
+    CPUs, so they are checked against their rule rather than pinned.
+    """
+    descriptors, _, images = _clusters()
+    vocab = vocabulary.train(descriptors, images, k=4, levels=3, seed=5)
+    pinned = {name: getattr(vocab, name) for name in TRAINED_SHA256}
+    got = {name: hashlib.sha256(array.tobytes()).hexdigest() for name, array in pinned.items()}
+    assert got == TRAINED_SHA256
+    words, _ = vocabulary.quantize(vocab, descriptors)
+    holders = [len(np.unique(images[words == w])) for w in range(vocab.size)]
+    expected = [np.log(12 / n) if n else 0.0 for n in holders]
+    np.testing.assert_allclose(vocab.weights, expected, rtol=1e-15, atol=0)

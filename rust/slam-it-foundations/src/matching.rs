@@ -1045,7 +1045,8 @@ pub fn search_by_projection(
 #[cfg(test)]
 mod tests {
     //! Native tests against the parity fixture `tests/fixtures/foundations/matching.json`,
-    //! which the Python and C++ tests share, and the core's own input checks.
+    //! which the Python and C++ tests share (matching by word's cases too), and the core's own
+    //! input checks.
 
     use super::*;
     use crate::rng::Pcg32;
@@ -1113,6 +1114,31 @@ mod tests {
                 &descriptors(&input[1]),
                 &list(&input[2], count),
                 &list(&input[3], count),
+                &options,
+            )
+            .unwrap();
+            assert_eq!(got, matches_of(&case["expected"]), "{}", case["name"]);
+        }
+    }
+
+    /// `search_by_bow` matches the fixture.
+    #[test]
+    fn search_by_bow_matches_the_fixture() {
+        for case in list(&functions()["search_by_bow"]["cases"], Clone::clone) {
+            let input = &case["input"];
+            let (max_distance, ratio, check_orientation) = filters(&input[6]);
+            let options = Options {
+                max_distance,
+                ratio,
+                check_orientation,
+            };
+            let got = search_by_bow(
+                &descriptors(&input[0]),
+                &list(&input[1], count),
+                &descriptors(&input[2]),
+                &list(&input[3], count),
+                &list(&input[4], count),
+                &list(&input[5], count),
                 &options,
             )
             .unwrap();

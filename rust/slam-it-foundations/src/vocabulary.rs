@@ -345,3 +345,163 @@ pub fn score(first: &BowVector, second: &BowVector) -> Result<f64> {
     }
     Ok(total / 2.0)
 }
+
+#[cfg(test)]
+mod tests {
+    //! Native tests against the parity fixture `tests/fixtures/foundations/vocabulary.json`,
+    //! which the Python and C++ tests share (quantising, word vectors and scores, exactly), and
+    //! the core's checks: a malformed tree, a word outside the vocabulary, a malformed vector.
+
+    use super::*;
+    use serde_json::Value;
+
+    /// The shared fixture, read into the tests when they are built.
+    const FIXTURE: &str = include_str!("../../../tests/fixtures/foundations/vocabulary.json");
+
+    /// Parses the shared fixture.
+    fn fixture() -> Value {
+        serde_json::from_str(FIXTURE).expect("the fixture is valid JSON")
+    }
+
+    /// Reads an integer of a type.
+    fn integer<T: TryFrom<i64>>(value: &Value) -> T
+    where
+        T::Error: std::fmt::Debug,
+    {
+        T::try_from(value.as_i64().expect("an integer")).expect("in range")
+    }
+
+    /// Reads a list of integers of a type.
+    fn integers<T: TryFrom<i64>>(value: &Value) -> Vec<T>
+    where
+        T::Error: std::fmt::Debug,
+    {
+        value
+            .as_array()
+            .expect("a list")
+            .iter()
+            .map(integer)
+            .collect()
+    }
+
+    /// Reads a list of floats.
+    fn floats(value: &Value) -> Vec<f64> {
+        let values = value.as_array().expect("a list");
+        values
+            .iter()
+            .map(|x| x.as_f64().expect("a float"))
+            .collect()
+    }
+
+    /// Reads a descriptor set.
+    fn descriptors(value: &Value) -> Vec<Descriptor> {
+        serde_json::from_value(value.clone()).expect("rows of 32 bytes")
+    }
+
+    /// Reads the fixture's tree.
+    fn tree(value: &Value) -> Vocabulary {
+        let children = value["children"].as_array().expect("a list");
+        Vocabulary {
+            k: integer(&value["k"]),
+            levels: integer(&value["levels"]),
+            descriptors: descriptors(&value["descriptors"]),
+            parents: integers(&value["parents"]),
+            children: children
+                .iter()
+                .map(|c| [integer(&c[0]), integer(&c[1])])
+                .collect(),
+            words: integers(&value["words"]),
+            weights: floats(&value["weights"]),
+        }
+    }
+
+    /// Quantising, the vectors and the scores match the fixture, exactly.
+    #[test]
+    fn quantizing_weighing_and_scoring_match_the_fixture() {
+        let fixture = fixture();
+        let v = tree(&fixture["tree"]);
+        check(&v).unwrap();
+        let q = &fixture["quantize"];
+        let found = quantize(&v, &descriptors(&q["descriptors"]));
+        assert_eq!(found.words, integers::<i64>(&q["words"]));
+        assert_eq!(found.nodes, integers::<i64>(&q["nodes"]));
+        let mut vectors = Vec::new();
+        for c in fixture["bow"].as_array().unwrap() {
+            let got = bow(&v, &integers::<i64>(&c["words"])).unwrap();
+            assert_eq!(got.ids, integers::<i64>(&c["ids"]));
+            assert_eq!(got.values, floats(&c["values"]));
+            vectors.push(got);
+        }
+        for c in fixture["score"].as_array().unwrap() {
+            let (i, j): (usize, usize) = (integer(&c["first"]), integer(&c["second"]));
+            assert_eq!(
+                score(&vectors[i], &vectors[j]).unwrap(),
+                c["score"].as_f64().unwrap()
+            );
+        }
+    }
+
+    /// A malformed tree is refused: a parent after its child, children past the int32 range, a
+    /// leaf too deep, words out of node order, a word without a weight; a leaf's first child is
+    /// not read.
+    #[test]
+    fn a_malformed_tree_is_refused() {
+        let v = tree(&fixture()["tree"]);
+        let refused = |change: &dyn Fn(&mut Vocabulary)| {
+            let mut bad = v.clone();
+            change(&mut bad);
+            check(&bad).unwrap_err().kind
+        };
+        assert_eq!(refused(&|b| b.parents[5] = -7), ErrorKind::InvalidInput);
+        assert_eq!(
+            refused(&|b| b.children[1] = [i32::MAX, 3]),
+            ErrorKind::InvalidInput
+        );
+        assert_eq!(refused(&|b| b.levels = 2), ErrorKind::InvalidInput);
+        assert_eq!(refused(&|b| b.words.swap(3, 8)), ErrorKind::InvalidInput);
+        assert_eq!(
+            refused(&|b| {
+                b.weights.pop();
+            }),
+            ErrorKind::InvalidInput
+        );
+        let mut leaf = v.clone();
+        leaf.children[3] = [2_000_000_000, 0]; // node 3 is a leaf
+        assert!(check(&leaf).is_ok());
+    }
+
+    /// A word past the last and a malformed vector are refused.
+    #[test]
+    fn a_word_outside_and_a_malformed_vector_are_refused() {
+        let v = tree(&fixture()["tree"]);
+        let past = i64::try_from(v.weights.len()).unwrap();
+        assert_eq!(bow(&v, &[past]).unwrap_err().kind, ErrorKind::InvalidInput);
+        let fine = BowVector {
+            ids: vec![1, 4],
+            values: vec![0.5, 0.5],
+        };
+        for bad in [
+            BowVector {
+                ids: vec![4, 1],
+                values: vec![0.5, 0.5],
+            },
+            BowVector {
+                ids: vec![1, 4],
+                values: vec![1.0],
+            },
+            BowVector {
+                ids: vec![1],
+                values: vec![f64::INFINITY],
+            },
+        ] {
+            assert_eq!(
+                score(&fine, &bad).unwrap_err().kind,
+                ErrorKind::InvalidInput
+            );
+            assert_eq!(
+                score(&bad, &fine).unwrap_err().kind,
+                ErrorKind::InvalidInput
+            );
+        }
+    }
+}

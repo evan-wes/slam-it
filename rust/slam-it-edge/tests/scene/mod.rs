@@ -8,6 +8,7 @@ use slam_it_edge::frames::{Camera, Frame};
 use slam_it_edge::map::{self, Map};
 use slam_it_foundations::camera::Model;
 use slam_it_foundations::orb::{Features, Keypoint};
+use slam_it_foundations::vocabulary::Vocabulary;
 
 /// The scene's points.
 pub const POINTS: usize = 60;
@@ -155,6 +156,25 @@ pub fn moved(dz: f64) -> Matrix4<f64> {
     let mut out = Matrix4::identity();
     out[(2, 3)] = -dz;
     out
+}
+
+/// A vocabulary of one word, weighing 1: every descriptor's, so every frame's vector is the same,
+/// every keyframe is a relocalisation candidate, and matching by word compares every feature
+/// with every point (the scene's descriptors tell its points apart).
+///
+/// # Returns
+///
+/// The vocabulary.
+pub fn one_word() -> Vocabulary {
+    Vocabulary {
+        k: 2,
+        levels: 1,
+        descriptors: vec![[0; 32]; 2],
+        parents: vec![-1, 0],
+        children: vec![[1, 1], [0, 0]],
+        words: vec![-1, 0],
+        weights: vec![1.0],
+    }
 }
 
 /// The scene's map: the first keyframe makes a point at each keypoint, the others observe
