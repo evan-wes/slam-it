@@ -269,6 +269,23 @@ class PnpRun:
         """Its inliers, 0 if it found no pose."""
         return 0 if self.inliers is None else int(np.count_nonzero(self.inliers))
 
+    def kept(self, needed: int) -> tuple[NDArray[np.float64], NDArray[np.bool_]] | None:
+        """Return the pose and its inliers, if the run found one with at least `needed` inliers.
+
+        Parameters
+        ----------
+        needed : int
+            The inliers a pose must have.
+
+        Returns
+        -------
+        tuple of ndarray, or None
+            The pose and which matches are its inliers; None otherwise (Rust's ``PnpRun::kept``).
+        """
+        if self.pose is None or self.inliers is None or self.count < needed:
+            return None
+        return self.pose, self.inliers
+
     def recorded(self) -> dict[str, Any]:
         """Return what a stage's summary records of it.
 
@@ -984,11 +1001,13 @@ def _relocalize_locally(m: Map, camera: Camera, frame: Frame, options: Options) 
     settings = ransac.Options(threshold=options.pnp_threshold / camera.focal, seed=options.seed)
     run = run_pnp(m.pt_xyz[local[pairs[:, 1]]], frame.bearings[pairs[:, 0]], settings)
     sampled = replace(matched, **run.recorded())
-    if run.pose is None or run.inliers is None or run.count < options.pnp_min_inliers:
+    consensus = run.kept(options.pnp_min_inliers)
+    if consensus is None:
         return Relocalization(tracked=None, summary=sampled, matched=points)
+    pose, inliers = consensus
     sample = np.full(frame.size, -1, dtype=np.int64)
-    sample[pairs[run.inliers, 0]] = m.pt_id[local[pairs[run.inliers, 1]]]
-    tracked = _optimize_pose(m, camera, frame, Tracked(pose=run.pose, points=sample), options)
+    sample[pairs[inliers, 0]] = m.pt_id[local[pairs[inliers, 1]]]
+    tracked = _optimize_pose(m, camera, frame, Tracked(pose=pose, points=sample), options)
     summary = replace(sampled, refined=tracked.inliers)
     kept = tracked if tracked.inliers >= options.pnp_min_inliers else None
     return Relocalization(kept, summary, matched=points)

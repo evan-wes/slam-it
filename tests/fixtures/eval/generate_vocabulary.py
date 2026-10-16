@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import hashlib
 import io
-import json
 import shutil
 from pathlib import Path
 from typing import Any
@@ -82,6 +81,19 @@ def _with_header(data: bytes, old: bytes, new: bytes) -> bytes:
     assert len(header) - 1 - len(padding) > grown, "not enough padding to grow into"
     changed = changed[: -1 - grown] + b"\n" if grown > 0 else changed
     return data[:10] + changed + data[10 + length :]
+
+
+def _past_dict(data: bytes) -> bytes:
+    """Return a ``.npy`` file's bytes with text in its header's padding, past the dict.
+
+    numpy refuses it (the header must be a dict literal); the native readers find their keys and
+    read it, the one way they are looser than numpy, harmless to the data, which they check whole.
+    """
+    length = int.from_bytes(data[8:10], "little")
+    header = data[10 : 10 + length]
+    end = header.index(b"}") + 1
+    assert header[end : end + 3] == b"   ", "no padding after the dict"
+    return data[:10] + header[:end] + b" x " + header[end + 3 :] + data[10 + length :]
 
 
 def _arrays(**changed: bytes) -> dict[str, bytes]:
@@ -149,6 +161,8 @@ def _cases() -> list[dict[str, Any]]:
          "SHA-256 is not the recorded one"),
         ("a training record that is not an object", {vocabularies.TRAINING: b"[]\n"}, ["python"],
          "expected a JSON object"),
+        ("a header with text past its dict", {"header.npy": _past_dict(
+            (FOLDER / "header.npy").read_bytes())}, ["python"], "header"),
     ]  # fmt: skip
     return [
         {"name": name, "files": {f: data.hex() for f, data in files.items()},
@@ -174,4 +188,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    json.loads(OUT.read_text())  # it reads back

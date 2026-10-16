@@ -458,3 +458,14 @@ def test_the_distance_counts_the_bits_two_descriptors_differ_in() -> None:
     pairs = orb.distance(np.stack([zero, ones])[:, None, :], np.stack([zero, flipped])[None])
     assert pairs.dtype == np.int64
     np.testing.assert_array_equal(pairs, [[0, 3], [256, 253]])
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [np.zeros(32, dtype=np.int8), np.zeros((2, 5), dtype=np.uint8), np.uint8(0)],
+    ids=["signed", "too short", "a scalar"],
+)
+def test_the_distance_refuses_what_is_not_uint8_descriptors(bad: np.ndarray) -> None:
+    """A signed array would count its values' magnitudes: 32 for int8 0 against -1, not 256."""
+    with pytest.raises(InvalidInputError, match="uint8 descriptors"):
+        orb.distance(np.asarray(bad), np.zeros(32, dtype=np.uint8))

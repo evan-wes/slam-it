@@ -130,6 +130,26 @@ std::size_t item_size(const std::string& descr) {
   return descr == "<i8" || descr == "<f8" ? 8 : 0;
 }
 
+/// @brief Text from a file, quoted for a message: printable ASCII as it is, any other byte as
+///        `\xNN`, so that a corrupt file's bytes never reach the message raw.
+/// @param text The text.
+/// @return It, quoted.
+std::string escaped(const std::string& text) {
+  constexpr std::string_view kDigits = "0123456789abcdef";
+  std::string out = "'";
+  for (const char c : text) {
+    const auto byte = static_cast<unsigned char>(c);
+    if (byte >= 0x20U && byte < 0x7FU) {
+      out += c;
+    } else {
+      out += "\\x";
+      out += kDigits[byte >> 4U];
+      out += kDigits[byte & 0xFU];
+    }
+  }
+  return out + "'";
+}
+
 /// @brief Read a `.npy` file of version 1 or 2, C order.
 /// @param path The file.
 /// @return The array, or `InvalidInput` for a missing or malformed file.
@@ -152,7 +172,8 @@ Result<Npy> read_npy(const std::filesystem::path& path) {
   Npy out{.descr = descr.substr(1, descr.size() - 2), .shape = *shape, .data = {}};
   const std::size_t item = item_size(out.descr);
   if (item == 0) {
-    return fail(ErrorKind::kInvalidInput, path.string() + ": unexpected .npy type " + out.descr);
+    return fail(ErrorKind::kInvalidInput,
+                path.string() + ": unexpected .npy type " + escaped(out.descr));
   }
   out.data = bytes.substr(span->first + span->second);
   std::size_t count = item;

@@ -36,7 +36,7 @@ pub struct Header {
     /// The number of words.
     pub words: i64,
     /// Each array's SHA-256, in [`ARRAYS`]' order.
-    pub sha256: [[u8; SHA256_BYTES]; 5],
+    pub sha256: [[u8; SHA256_BYTES]; ARRAYS.len()],
 }
 
 /// A folder as read: the vocabulary, and its header.
@@ -77,6 +77,65 @@ fn header_value<'a>(header: &'a str, key: &str) -> Option<&'a str> {
     Some(&value[..value.find([',', '}'])?])
 }
 
+/// Where a `.npy` file's header lies, from its magic and version.
+///
+/// # Arguments
+///
+/// * `bytes` - The file.
+///
+/// # Returns
+///
+/// The header's offset and length, or `None` for another file or version.
+fn header_span(bytes: &[u8]) -> Option<(usize, usize)> {
+    if bytes.len() < 10 || &bytes[..6] != b"\x93NUMPY" {
+        return None;
+    }
+    match bytes[6] {
+        1 => Some((10, usize::from(u16::from_le_bytes([bytes[8], bytes[9]])))),
+        2 if bytes.len() >= 12 => {
+            let raw = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
+            Some((12, usize::try_from(raw).ok()?))
+        }
+        _ => None,
+    }
+}
+
+/// A `.npy` header's shape tuple, e.g. `(111070, 32)` or `(99961,)`.
+///
+/// # Arguments
+///
+/// * `text` - The tuple's text.
+///
+/// # Returns
+///
+/// The shape, or `None` if a part is not a whole number a `usize` holds.
+fn parse_shape(text: &str) -> Option<Vec<usize>> {
+    text.trim_matches(|c| c == '(' || c == ')')
+        .split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(|p| p.parse::<usize>().ok())
+        .collect()
+}
+
+/// The bytes one value of a `.npy` type takes, for the types a vocabulary's folder holds.
+///
+/// # Arguments
+///
+/// * `descr` - numpy's `descr`.
+///
+/// # Returns
+///
+/// 1, 4 or 8; or `None` for another type.
+fn item_size(descr: &str) -> Option<usize> {
+    match descr {
+        "|u1" => Some(1),
+        "<i4" => Some(4),
+        "<i8" | "<f8" => Some(8),
+        _ => None,
+    }
+}
+
 /// Reads a `.npy` file of version 1 or 2, C order.
 ///
 /// # Arguments
@@ -88,88 +147,38 @@ fn header_value<'a>(header: &'a str, key: &str) -> Option<&'a str> {
 /// `InvalidInput` for a missing or malformed file.
 fn read_npy(path: &Path) -> Result<Npy> {
     let name = path.display();
+    let invalid = |why: &str| fail(ErrorKind::InvalidInput, format!("{name}: {why}"));
     let Ok(bytes) = std::fs::read(path) else {
-        return fail(ErrorKind::InvalidInput, format!("{name}: cannot be read"));
+        return invalid("cannot be read");
     };
-    if bytes.len() < 10 || &bytes[..6] != b"\x93NUMPY" {
-        return fail(ErrorKind::InvalidInput, format!("{name}: not a .npy file"));
-    }
-    let (length, offset) = match bytes[6] {
-        1 => (usize::from(u16::from_le_bytes([bytes[8], bytes[9]])), 10),
-        2 if bytes.len() >= 12 => {
-            let raw = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
-            (usize::try_from(raw).unwrap_or(usize::MAX), 12)
-        }
-        _ => {
-            return fail(
-                ErrorKind::InvalidInput,
-                format!("{name}: an unknown .npy version"),
-            );
-        }
+    let Some((offset, length)) = header_span(&bytes) else {
+        return invalid("not a .npy file of version 1 or 2");
     };
     if length > bytes.len() - offset {
-        return fail(
-            ErrorKind::InvalidInput,
-            format!("{name}: a .npy header past its end"),
-        );
+        return invalid("a .npy header past its end");
     }
     let Ok(header) = std::str::from_utf8(&bytes[offset..offset + length]) else {
-        return fail(
-            ErrorKind::InvalidInput,
-            format!("{name}: a .npy header not text"),
-        );
-    };
-    let malformed = || {
-        fail(
-            ErrorKind::InvalidInput,
-            format!("{name}: a malformed .npy header"),
-        )
-    };
-    let Some(descr) = header_value(header, "'descr'") else {
-        return malformed();
+        return invalid("a .npy header not text");
     };
     if header_value(header, "'fortran_order'") != Some("False") {
-        return fail(
-            ErrorKind::InvalidInput,
-            format!("{name}: expected a C-order .npy array"),
-        );
+        return invalid("expected a C-order .npy array");
     }
-    let Some(shape_text) = header_value(header, "'shape'") else {
-        return malformed();
+    let (Some(descr), Some(shape)) = (
+        header_value(header, "'descr'"),
+        header_value(header, "'shape'").and_then(parse_shape),
+    ) else {
+        return invalid("a malformed .npy header");
     };
-    let mut shape = Vec::new();
-    for part in shape_text
-        .trim_matches(|c| c == '(' || c == ')')
-        .split(',')
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-    {
-        let Ok(value) = part.parse::<usize>() else {
-            return malformed();
-        };
-        shape.push(value);
-    }
     let descr = descr.trim_matches('\'').to_owned();
-    let item = match descr.as_str() {
-        "|u1" => 1,
-        "<i4" => 4,
-        "<i8" | "<f8" => 8,
-        _ => {
-            return fail(
-                ErrorKind::InvalidInput,
-                format!("{name}: unexpected .npy type {descr}"),
-            );
-        }
+    let Some(item) = item_size(&descr) else {
+        return invalid(&format!("unexpected .npy type {descr:?}"));
     };
     let data = bytes[offset + length..].to_vec();
     let size = shape
         .iter()
         .try_fold(item, |count: usize, &extent| count.checked_mul(extent));
     if size != Some(data.len()) {
-        return fail(
-            ErrorKind::InvalidInput,
-            format!("{name}: its data do not fill its shape"),
-        );
+        return invalid("its data do not fill its shape");
     }
     Ok(Npy { descr, shape, data })
 }
@@ -258,7 +267,7 @@ fn read_header(root: &Path) -> Result<Header> {
         );
     }
     let sums = read_array(root, "sha256", "|u1", &[ARRAYS.len(), SHA256_BYTES])?;
-    let mut sha256 = [[0; SHA256_BYTES]; 5];
+    let mut sha256 = [[0; SHA256_BYTES]; ARRAYS.len()];
     for (out, digest) in sha256
         .iter_mut()
         .zip(sums.data.as_chunks::<SHA256_BYTES>().0)

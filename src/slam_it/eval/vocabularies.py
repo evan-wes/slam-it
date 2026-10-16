@@ -59,6 +59,15 @@ SHA256_BYTES = 32
 TRAINING = "training.json"
 """The file of what training recorded."""
 
+SHAPES: dict[str, tuple[type[np.generic], tuple[int, ...]]] = {
+    "descriptors": (np.uint8, (-1, -1)),
+    "parents": (np.int32, (-1,)),
+    "children": (np.int32, (-1, 2)),
+    "words": (np.int32, (-1,)),
+    "weights": (np.float64, (-1,)),
+}
+"""Each array's type and shape as read (a -1 any length); the tree's own check does the rest."""
+
 DEFAULT = Path(__file__).parents[1] / "foundations" / "vocabularies" / "default"
 """The committed vocabulary, every relocalising run's unless it names another: 5 levels of
 k = 10, trained by ``scripts/train_vocabulary.py`` on the 9,969 of 10,000 frames drawn from 20
@@ -146,10 +155,15 @@ def _load(path: Path, data: bytes, dtype: type[np.generic], shape: tuple[int, ..
     return np.frombuffer(data, dtype, count=count, offset=buffer.tell()).reshape(found)
 
 
-def _read_header(root: Path) -> tuple[NDArray[np.int64], NDArray[np.uint8]]:
-    """Read a folder's header and checksums: this format's version, this ORB's descriptor."""
-    header = _load(root / "header.npy", (root / "header.npy").read_bytes(), np.int64, (5,))
-    version, descriptor = int(header[0]), int(header[1])
+def _read_header(root: Path) -> tuple[dict[str, int], NDArray[np.uint8]]:
+    """Read a folder's header, by :data:`HEADER`'s names, and its checksums.
+
+    This format's version, this ORB's descriptor.
+    """
+    path = root / "header.npy"
+    numbers = _load(path, path.read_bytes(), np.int64, (len(HEADER),))
+    header = dict(zip(HEADER, numbers.tolist(), strict=True))
+    version, descriptor = header["version"], header["descriptor_version"]
     if version != VERSION:
         raise InvalidInputError(
             f"{root}: a vocabulary of format version {version}, expected {VERSION}"
@@ -159,8 +173,8 @@ def _read_header(root: Path) -> tuple[NDArray[np.int64], NDArray[np.uint8]]:
             f"{root}: trained on descriptor version {descriptor}, this ORB's is "
             f"{DESCRIPTOR_VERSION}: its words mean nothing here"
         )
-    shape = (len(ARRAYS), SHA256_BYTES)
-    sums = _load(root / "sha256.npy", (root / "sha256.npy").read_bytes(), np.uint8, shape)
+    path = root / "sha256.npy"
+    sums = _load(path, path.read_bytes(), np.uint8, (len(ARRAYS), SHA256_BYTES))
     return header, sums
 
 
@@ -186,7 +200,7 @@ def record(folder: str | Path) -> dict[str, Any]:
         checksums are malformed.
     """
     header, sums = _read_header(Path(folder))
-    return dict(zip(HEADER, header.tolist(), strict=True)) | {
+    return header | {
         "sha256": {name: bytes(row).hex() for name, row in zip(ARRAYS, sums, strict=True)}
     }
 
@@ -249,19 +263,12 @@ def read(folder: str | Path) -> Vocabulary:
     root = Path(folder)
     header, sums = _read_header(root)
     arrays = {}
-    shapes: dict[str, tuple[type[np.generic], tuple[int, ...]]] = {
-        "descriptors": (np.uint8, (-1, -1)),
-        "parents": (np.int32, (-1,)),
-        "children": (np.int32, (-1, 2)),
-        "words": (np.int32, (-1,)),
-        "weights": (np.float64, (-1,)),
-    }
     for name, digest in zip(ARRAYS, sums, strict=True):
         path = root / f"{name}.npy"
         data = path.read_bytes()
         if hashlib.sha256(data).digest() != bytes(digest):
             raise InvalidInputError(f"{path}: its SHA-256 is not the recorded one")
-        arrays[name] = _load(path, data, *shapes[name])
+        arrays[name] = _load(path, data, *SHAPES[name])
     path = root / TRAINING
     try:
         info = json.loads(path.read_text(encoding="utf-8"))
@@ -269,10 +276,10 @@ def read(folder: str | Path) -> Vocabulary:
         raise InvalidInputError(f"{path}: not JSON ({error})") from None
     if not isinstance(info, dict):
         raise InvalidInputError(f"{path}: expected a JSON object")
-    k, levels, words = (int(header[i]) for i in (2, 3, 4))
+    words = header["words"]
     out = Vocabulary(
-        k, levels, arrays["descriptors"], arrays["parents"], arrays["children"], arrays["words"],
-        arrays["weights"], info,
+        header["k"], header["levels"], arrays["descriptors"], arrays["parents"],
+        arrays["children"], arrays["words"], arrays["weights"], info,
     )  # fmt: skip
     if out.size != words:
         raise InvalidInputError(f"{root}: the header counts {words} words, the tree {out.size}")

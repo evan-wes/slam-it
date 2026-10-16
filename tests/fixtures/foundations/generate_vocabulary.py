@@ -75,17 +75,19 @@ def _tree(rng: np.random.Generator) -> dict[str, Any]:
     }
 
 
-def _descend(tree: dict[str, Any], d: Descriptor) -> tuple[int, int]:
-    """Return a descriptor's word and its direct node, by brute force."""
-    node, direct = 0, 0
+def _descend(tree: dict[str, Any], d: Descriptor) -> tuple[int, int, set[int]]:
+    """Return a descriptor's word, its direct node, and the levels where two children tied."""
+    node, direct, tied = 0, 0, set()
     for level in range(1, tree["levels"] + 1):
         first, count = tree["children"][node]
         if count:
-            node = min(range(first, first + count),
-                       key=lambda c: (_distance(d, tree["descriptors"][c]), c))  # fmt: skip
+            gaps = [_distance(d, tree["descriptors"][c]) for c in range(first, first + count)]
+            if gaps.count(min(gaps)) > 1:
+                tied.add(level)
+            node = first + gaps.index(min(gaps))  # the lowest index among equals
         if level == DIRECT_LEVEL:
             direct = node
-    return tree["words"][node], direct
+    return tree["words"][node], direct, tied
 
 
 def _flipped(d: Descriptor, bits: list[int]) -> Descriptor:
@@ -148,7 +150,9 @@ def main() -> None:
     tree = _tree(rng)
     descriptors = _descriptors(tree, rng)
     found = [_descend(tree, d) for d in descriptors]
-    words = [w for w, _ in found]
+    tied = set().union(*(t for _, _, t in found))
+    assert tied == {1, 2, 3}, f"ties on levels {sorted(tied)} only: the lowest-index rule untested"
+    words = [w for w, _, _ in found]
     frames = [words[:12], words[12:], words[::2], [3, 3, 3], [], words[:12] * 2]
     vectors = [_bow(tree, f) for f in frames]
     pairs = [(i, j) for i in range(len(vectors)) for j in range(i, len(vectors))]
@@ -159,7 +163,7 @@ def main() -> None:
         "summed in word order",
         "tolerance": EXACT,
         "tree": tree,
-        "quantize": {"descriptors": descriptors, "words": words, "nodes": [n for _, n in found]},
+        "quantize": {"descriptors": descriptors, "words": words, "nodes": [n for _, n, _ in found]},
         "bow": [{"words": f, "ids": v[0], "values": v[1]} for f, v in zip(frames, vectors,
                                                                        strict=True)],
         "score": [{"first": i, "second": j, "score": _score(vectors[i], vectors[j])}

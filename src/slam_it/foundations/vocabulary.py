@@ -37,10 +37,9 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slam_it import backends
-from slam_it.foundations import orb
 from slam_it.foundations.arrays import as_count
 from slam_it.foundations.errors import InvalidInputError
-from slam_it.foundations.orb import DESCRIPTOR_BYTES
+from slam_it.foundations.orb import DESCRIPTOR_BYTES, distance
 
 ARRAYS = ("descriptors", "parents", "children", "words", "weights")
 """A vocabulary's arrays (each a ``<name>.npy`` in its folder: :mod:`slam_it.eval.vocabularies`)."""
@@ -287,9 +286,9 @@ def _quantize(
             candidates = first[nodes, None] + offsets[None, :]
             valid = offsets[None, :] < count[nodes, None]
             centres = vocabulary.descriptors[np.where(valid, candidates, 0)]
-            distance = orb.distance(desc[lo : lo + CHUNK][moving][:, None, :], centres)
-            distance[~valid] = np.iinfo(np.int64).max
-            chosen = candidates[np.arange(len(nodes)), np.argmin(distance, axis=1)]
+            distances = distance(desc[lo : lo + CHUNK][moving][:, None, :], centres)
+            distances[~valid] = np.iinfo(np.int64).max
+            chosen = candidates[np.arange(len(nodes)), np.argmin(distances, axis=1)]
             at[moving] = chosen
         if level == DIRECT_LEVEL:  # a leaf reached higher stays where it is
             direct = current.copy()
@@ -456,14 +455,14 @@ def _assign(descriptors: NDArray[np.uint8], centres: NDArray[np.uint8]) -> NDArr
     out = np.empty(len(descriptors), dtype=np.int64)
     for lo in range(0, len(descriptors), CHUNK):
         block = descriptors[lo : lo + CHUNK, None, :]
-        out[lo : lo + CHUNK] = np.argmin(orb.distance(block, centres[None, :, :]), axis=1)
+        out[lo : lo + CHUNK] = np.argmin(distance(block, centres[None, :, :]), axis=1)
     return out
 
 
 def _seeds(descriptors: NDArray[np.uint8], k: int, rng: np.random.Generator) -> NDArray[np.uint8]:
     """k-means++ centres as DBoW2 picks them: each next with probability its distance."""
     centres = [descriptors[rng.integers(len(descriptors))]]
-    nearest = orb.distance(descriptors, centres[0])
+    nearest = distance(descriptors, centres[0])
     while len(centres) < k:
         total = float(nearest.sum())
         if total <= 0.0:  # every descriptor is a centre already
@@ -473,7 +472,7 @@ def _seeds(descriptors: NDArray[np.uint8], k: int, rng: np.random.Generator) -> 
             cut = rng.uniform(0.0, total)
         index = min(int(np.searchsorted(np.cumsum(nearest), cut, side="left")), len(nearest) - 1)
         centres.append(descriptors[index])
-        nearest = np.minimum(nearest, orb.distance(descriptors, centres[-1]))
+        nearest = np.minimum(nearest, distance(descriptors, centres[-1]))
     return np.stack(centres)
 
 

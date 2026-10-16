@@ -192,6 +192,79 @@ pub struct PnpRecord {
     pub inliers: Option<usize>,
 }
 
+impl PnpRecord {
+    /// Writes the record into a stage's summary, the fallback's or a relocalisation candidate's.
+    ///
+    /// # Arguments
+    ///
+    /// * `degenerate` - The summary's flag for a run in which no sample gave a pose.
+    /// * `iterations` - Its RANSAC samples.
+    /// * `termination` - Why RANSAC stopped.
+    /// * `inliers` - RANSAC's inliers.
+    pub fn write(
+        self,
+        degenerate: &mut bool,
+        iterations: &mut Option<usize>,
+        termination: &mut Option<ransac::Termination>,
+        inliers: &mut Option<usize>,
+    ) {
+        (*degenerate, *iterations, *termination, *inliers) = (
+            self.degenerate,
+            self.iterations,
+            self.termination,
+            self.inliers,
+        );
+    }
+}
+
+/// A stage's summary that records a PnP run: the fallback's ([`PnpSummary`]) and a
+/// relocalisation candidate's.
+pub trait RecordsPnp {
+    /// Records a run: whether no sample gave a pose, and its samples, termination and inliers.
+    ///
+    /// # Arguments
+    ///
+    /// * `record` - The run's record.
+    fn record_pnp(&mut self, record: PnpRecord);
+}
+
+impl RecordsPnp for PnpSummary {
+    fn record_pnp(&mut self, record: PnpRecord) {
+        record.write(
+            &mut self.degenerate,
+            &mut self.iterations,
+            &mut self.termination,
+            &mut self.inliers,
+        );
+    }
+}
+
+/// Runs PnP RANSAC on matched points ([`run_pnp`]), records the run in a stage's summary, and
+/// gives the pose and its inliers if it has `needed`.
+///
+/// # Arguments
+///
+/// * `world` - The points.
+/// * `rays` - Their bearings.
+/// * `settings` - RANSAC's settings.
+/// * `needed` - The inliers a pose must have.
+/// * `summary` - The summary the run is recorded in.
+///
+/// # Errors
+///
+/// [`run_pnp`]'s.
+pub fn pnp_kept(
+    world: &[Vector3<f64>],
+    rays: &[Vector3<f64>],
+    settings: &ransac::Options,
+    needed: usize,
+    summary: &mut impl RecordsPnp,
+) -> Result<Option<ransac::Consensus<Matrix4<f64>>>> {
+    let run = run_pnp(world, rays, settings)?;
+    summary.record_pnp(run.record());
+    Ok(run.kept(needed))
+}
+
 impl PnpRun {
     /// What a stage's summary records of the run.
     ///
@@ -895,21 +968,14 @@ pub fn relocalize_locally(
         seed: options.seed,
         ..ransac::Options::default()
     };
-    let run = run_pnp(&world, &rays, &settings)?;
-    let PnpRecord {
-        degenerate,
-        iterations,
-        termination,
-        inliers,
-    } = run.record();
-    summary = PnpSummary {
-        iterations,
-        termination,
-        degenerate,
-        inliers,
-        ..summary
-    };
-    let Some(consensus) = run.kept(options.pnp_min_inliers) else {
+    let placed = pnp_kept(
+        &world,
+        &rays,
+        &settings,
+        options.pnp_min_inliers,
+        &mut summary,
+    )?;
+    let Some(consensus) = placed else {
         return unplaced(summary, matched);
     };
     let mut points = vec![-1; frame.size()];

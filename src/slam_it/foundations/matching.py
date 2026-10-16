@@ -68,10 +68,9 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slam_it import backends
-from slam_it.foundations import orb
 from slam_it.foundations.arrays import as_count, as_flag, as_number, as_real, holds_integers
 from slam_it.foundations.errors import InvalidInputError
-from slam_it.foundations.orb import ANGLE_BINS, DESCRIPTOR_BYTES, MAX_LEVELS, Features
+from slam_it.foundations.orb import ANGLE_BINS, DESCRIPTOR_BYTES, MAX_LEVELS, Features, distance
 
 MAX_DESCRIPTORS = 1 << 20
 """The most descriptors a set may hold."""
@@ -307,7 +306,7 @@ def _distances(
     out = np.empty((len(descriptors1), len(descriptors2)), dtype=np.int64)
     for start in range(0, len(descriptors1), _CHUNK):
         block = descriptors1[start : start + _CHUNK, None, :]
-        out[start : start + _CHUNK] = orb.distance(block, descriptors2[None, :, :])
+        out[start : start + _CHUNK] = distance(block, descriptors2[None, :, :])
     return out
 
 
@@ -415,11 +414,11 @@ def _search_by_bow(  # noqa: PLR0913 -- two sets, their nodes and angles, the fi
     for node in np.intersect1d(nodes1, nodes2).tolist():
         rows1 = np.flatnonzero(nodes1 == node)
         rows2 = np.flatnonzero(nodes2 == node)
-        index, distance, second = _nearest_two(descriptors1[rows1], descriptors2[rows2])
+        index, nearest, second = _nearest_two(descriptors1[rows1], descriptors2[rows2])
         best[rows1] = rows2[index]
-        best_distance[rows1] = distance
+        best_distance[rows1] = nearest
         if len(rows2) > 1:
-            passes[rows1] = distance < options.ratio * second.astype(np.float64)
+            passes[rows1] = nearest < options.ratio * second.astype(np.float64)
         else:
             passes[rows1] = True
     candidates = np.flatnonzero(passes & (best_distance <= options.max_distance))
@@ -490,13 +489,13 @@ def _search_by_projection(
         index = np.flatnonzero(candidates)
         if len(index) == 0:
             continue
-        distance = orb.distance(frame.descriptors[index], projections.descriptors[i])
-        order = np.lexsort((index, distance))  # by distance, then index
-        best, best_k = int(distance[order[0]]), int(index[order[0]])
+        distances = distance(frame.descriptors[index], projections.descriptors[i])
+        order = np.lexsort((index, distances))  # by distance, then index
+        best, best_k = int(distances[order[0]]), int(index[order[0]])
         if best > options.max_distance:
             continue
         if len(order) > 1:
-            second, second_k = float(distance[order[1]]), int(index[order[1]])
+            second, second_k = float(distances[order[1]]), int(index[order[1]])
             if frame.level[second_k] == frame.level[best_k] and best > options.ratio * second:
                 continue
         held = claim.get(best_k)

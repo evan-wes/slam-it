@@ -411,7 +411,16 @@ def distance(first: NDArray[np.uint8], second: NDArray[np.uint8]) -> NDArray[np.
     -------
     ndarray of int64
         The distances, from 0 to 256, of the broadcast leading shape.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If either is not uint8 rows of DESCRIPTOR_BYTES (a signed array's bit counts would be its
+        values' magnitudes', not its bits').
     """
+    for name, array in (("first", first), ("second", second)):
+        if array.dtype != np.uint8 or array.ndim == 0 or array.shape[-1] != DESCRIPTOR_BYTES:
+            raise InvalidInputError(f"{name}: expected uint8 descriptors (..., {DESCRIPTOR_BYTES})")
     out: NDArray[np.int64] = np.bitwise_count(np.bitwise_xor(first, second)).sum(
         axis=-1, dtype=np.int64
     )

@@ -450,13 +450,13 @@ def _try(  # noqa: PLR0913 -- the map, the database, the frame, the candidate, t
         m.pt_xyz[m.point_rows(matched[keypoints])], frame.bearings[keypoints], settings
     )
     summary = replace(summary, **run.recorded())
-    if run.pose is None or run.inliers is None or run.count < needed:
+    consensus = run.kept(needed)
+    if consensus is None:
         return _Attempt(None, summary, matched)
+    pose, inliers = consensus
     sample = np.full(frame.size, -1, dtype=np.int64)
-    sample[keypoints[run.inliers]] = matched[keypoints[run.inliers]]
-    refined = tracking.optimize_pose(
-        m, camera, frame, Tracked(pose=run.pose, points=sample), options
-    )
+    sample[keypoints[inliers]] = matched[keypoints[inliers]]
+    refined = tracking.optimize_pose(m, camera, frame, Tracked(pose=pose, points=sample), options)
     summary = replace(summary, refined=refined.inliers)
     if refined.inliers < options.reloc_min_inliers:
         return _Attempt(None, summary, matched)

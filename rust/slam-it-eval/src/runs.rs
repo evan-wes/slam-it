@@ -989,7 +989,7 @@ mod tests {
     /// with.
     fn header_of(record: &Value) -> Header {
         let number = |key: &str| record[key].as_i64().unwrap();
-        let mut sha256 = [[0; SHA256_BYTES]; 5];
+        let mut sha256 = [[0; SHA256_BYTES]; ARRAYS.len()];
         for (digest, name) in sha256.iter_mut().zip(ARRAYS) {
             let hex = record["sha256"][name].as_str().unwrap();
             for (j, byte) in digest.iter_mut().enumerate() {

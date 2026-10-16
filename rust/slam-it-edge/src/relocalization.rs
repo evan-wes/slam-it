@@ -14,7 +14,7 @@ use crate::database::{Database, Words, candidates, words_of};
 use crate::frames::{Camera, Frame, Tracked, check_setup, search};
 use crate::map::{Map, camera_centre, in_distance_range, predict_level, to_camera};
 use crate::options::Options;
-use crate::tracking::{optimize_pose, run_pnp};
+use crate::tracking::{PnpRecord, RecordsPnp, optimize_pose, pnp_kept};
 
 /// How far one candidate got (`slam_it.edge.relocalization.CandidateSummary`); each count
 /// `None` where it stopped first.
@@ -38,6 +38,17 @@ pub struct CandidateSummary {
     pub refined: Option<usize>,
     /// The inliers after the searches by projection: the last optimisation's.
     pub found: Option<usize>,
+}
+
+impl RecordsPnp for CandidateSummary {
+    fn record_pnp(&mut self, record: PnpRecord) {
+        record.write(
+            &mut self.degenerate,
+            &mut self.iterations,
+            &mut self.termination,
+            &mut self.inliers,
+        );
+    }
 }
 
 /// How relocalising a frame went (`slam_it.edge.relocalization.RelocalizationSummary`).
@@ -482,13 +493,7 @@ fn try_candidate(
         seed: options.seed,
         ..ransac::Options::default()
     };
-    let run = run_pnp(&world, &rays, &settings)?;
-    let record = run.record();
-    summary.degenerate = record.degenerate;
-    summary.iterations = record.iterations;
-    summary.termination = record.termination;
-    summary.inliers = record.inliers;
-    let Some(consensus) = run.kept(needed) else {
+    let Some(consensus) = pnp_kept(&world, &rays, &settings, needed, &mut summary)? else {
         return unplaced(summary, matched);
     };
     let mut sample = vec![-1; frame.size()];
