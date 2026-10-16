@@ -15,6 +15,7 @@
 #include <variant>
 #include <vector>
 
+#include "slam_it/eval/vocabularies.hpp"
 #include "slam_it/foundations/error.hpp"
 
 /// @brief The run format.
@@ -24,8 +25,9 @@ namespace slam_it::eval::runs {
 inline constexpr const char* kFormat = "slam-it-run";
 
 /// @brief `run.json`'s `version` (2 added `peak_memory`, `cpus` and `memory_cap`; 3 every point
-///        and keyframe the run made, with their lives; 4 the maps, and the removal `reset`).
-inline constexpr std::int64_t kVersion = 4;
+///        and keyframe the run made, with their lives; 4 the maps, and the removal `reset`; 5 the
+///        `vocabulary` a relocalising run used).
+inline constexpr std::int64_t kVersion = 5;
 
 /// @brief The number of removal codes a life may hold (`slam_it.eval.runs.REMOVALS`).
 inline constexpr std::int64_t kRemovals = 4;
@@ -82,9 +84,10 @@ struct Run {
   std::vector<Eigen::Vector3d> points;
   /// @brief The pipeline's options.
   JsonObject settings;
-  /// @brief The vocabulary a relocalising run used: its `vocabulary.json`'s text, a JSON
-  ///        object; written as null for a run that did not relocalise.
-  std::optional<std::string> vocabulary;
+  /// @brief The vocabulary a relocalising run used: its folder's header and checksums, written
+  ///        as `slam_it.eval.vocabularies.record` writes them; null for a run that did not
+  ///        relocalise.
+  std::optional<vocabularies::Header> vocabulary;
   /// @brief One object per frame, each with a `timestamp`; the edge pipeline's also time
   ///        its steps (`read_seconds`, `build_seconds`, `track_seconds`, `map_seconds`, as
   ///        `slam_it.eval.runs.STEPS` defines them) and say how its stages went.

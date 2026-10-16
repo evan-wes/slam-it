@@ -96,6 +96,28 @@ std::vector<runs::Life> lives(const nlohmann::json& values) {
   return out;
 }
 
+/// @brief A run's record of its vocabulary, as the run writer takes it: the header it was read
+///        with.
+/// @param record The record (`slam_it.eval.vocabularies.record`'s).
+/// @return The header.
+slam_it::eval::vocabularies::Header header_of(const nlohmann::json& record) {
+  namespace vocabularies = slam_it::eval::vocabularies;
+  vocabularies::Header out{.version = record["version"].get<std::int64_t>(),
+                           .descriptor_version = record["descriptor_version"].get<std::int64_t>(),
+                           .k = record["k"].get<std::int64_t>(),
+                           .levels = record["levels"].get<std::int64_t>(),
+                           .words = record["words"].get<std::int64_t>(),
+                           .sha256 = {}};
+  for (std::size_t i = 0; i < vocabularies::kArrays.size(); ++i) {
+    const auto hex = record["sha256"][vocabularies::kArrays.at(i)].get<std::string>();
+    for (std::size_t j = 0; j < vocabularies::kSha256Bytes; ++j) {
+      out.sha256.at(i).at(j) =
+          static_cast<std::uint8_t>(std::stoul(hex.substr(2 * j, 2), nullptr, 16));
+    }
+  }
+  return out;
+}
+
 /// @brief The run Python wrote, as the C++ backend.
 /// @return The run.
 runs::Run golden_run() {
@@ -110,7 +132,7 @@ runs::Run golden_run() {
                 .keyframe_poses = poses(values["keyframe_poses"]),
                 .points = {},
                 .settings = object_of(values["settings"]),
-                .vocabulary = std::nullopt,
+                .vocabulary = header_of(values["vocabulary"]),
                 .diagnostics = {},
                 .peak_memory = values["peak_memory"].get<std::int64_t>(),
                 .cpus = values["cpus"].get<std::vector<std::int64_t>>(),

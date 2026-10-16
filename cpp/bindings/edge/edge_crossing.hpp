@@ -496,14 +496,19 @@ inline nanobind::dict initialization_dict(const edge::Initialization& attempt) {
   return out;
 }
 
+/// @brief `slam_it.edge.database.Database.as_dict`'s keys.
+inline constexpr std::array<const char*, 6> kDatabaseKeys = {"kf_id",     "bow_start",  "bow_word",
+                                                             "bow_value", "node_start", "node"};
+
 /// @brief A keyframe database from `slam_it.edge.database.Database.as_dict()`'s dict: each
 ///        keyframe's vector and nodes, laid end to end by id; the core builds its own index.
 /// @param values The dict: `kf_id`, `bow_start`, `bow_word`, `bow_value`, `node_start` and
 ///        `node`.
 /// @return The database.
-/// @throws std::invalid_argument for offsets that do not lay the arrays end to end;
-///         `CoreError` for a keyframe given twice.
+/// @throws std::invalid_argument for a missing or unknown key, or offsets that do not lay the
+///         arrays end to end; `CoreError` for a keyframe given twice.
 inline edge::Database database_in(const nanobind::dict& values) {
+  check_keys(values, kDatabaseKeys, "edge.database.Database.as_dict");
   const auto ids = vector_item<std::int64_t>(values, "kf_id");
   const auto bow_start = vector_item<std::int64_t>(values, "bow_start");
   const auto bow_word = vector_item<std::int64_t>(values, "bow_word");

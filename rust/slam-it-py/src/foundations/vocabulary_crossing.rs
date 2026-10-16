@@ -1,7 +1,7 @@
 //! Shared by every binding that takes a vocabulary: it crosses as a dict of
 //! `slam_it.foundations.vocabulary.Vocabulary`'s fields (`k`, `levels`, and its five arrays:
 //! `descriptors` (N, 32) uint8, `parents` (N,) int32, `children` (N, 2) int32, `words` (N,)
-//! int32, `weights` (W,) float64), copied in and checked.
+//! int32, `weights` (W,) float64), exactly those keys, copied in and checked.
 
 use numpy::{PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
@@ -11,7 +11,18 @@ use slam_it_foundations::vocabulary as core;
 
 use crate::common::{contiguous, descriptors_in, unwrap};
 
-/// Reads one field of a vocabulary's dict.
+/// `slam_it.foundations.vocabulary.fields`' keys.
+const VOCABULARY_KEYS: [&str; 7] = [
+    "k",
+    "levels",
+    "descriptors",
+    "parents",
+    "children",
+    "words",
+    "weights",
+];
+
+/// Reads one field of a vocabulary's dict, which must hold exactly [`VOCABULARY_KEYS`].
 ///
 /// # Arguments
 ///
@@ -20,8 +31,13 @@ use crate::common::{contiguous, descriptors_in, unwrap};
 ///
 /// # Errors
 ///
-/// `ValueError` if it is missing.
+/// `ValueError` if it is missing, or the dict has other keys.
 fn field<'py>(fields: &Bound<'py, PyDict>, key: &str) -> PyResult<Bound<'py, PyAny>> {
+    if fields.len() != VOCABULARY_KEYS.len() {
+        return Err(PyValueError::new_err(format!(
+            "vocabulary: expected exactly the keys {VOCABULARY_KEYS:?}"
+        )));
+    }
     fields
         .get_item(key)?
         .ok_or_else(|| PyValueError::new_err(format!("vocabulary: missing {key}")))

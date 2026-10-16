@@ -1,6 +1,5 @@
 /// @file
-/// @brief Place recognition's vocabulary (see vocabulary.hpp), and a `.npy` reader for its
-///        arrays.
+/// @brief Place recognition's vocabulary (see vocabulary.hpp).
 
 #include "slam_it/foundations/vocabulary.hpp"
 
@@ -9,170 +8,17 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
-#include <filesystem>
-#include <fstream>
-#include <iterator>
+#include <functional>
 #include <limits>
 #include <map>
-#include <optional>
 #include <span>
-#include <sstream>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
 namespace slam_it::foundations::vocabulary {
 
 namespace {
-
-/// @brief A `.npy` array: its type, shape and raw little-endian values.
-struct Npy {
-  /// @brief numpy's `descr`, e.g. `|u1`, `<i4`, `<f8`.
-  std::string descr;
-  /// @brief The shape.
-  std::vector<std::size_t> shape;
-  /// @brief The values' bytes, C order.
-  std::string data;
-};
-
-/// @brief The value of a key in a `.npy` header's dict literal, up to its comma or brace.
-/// @param header The header.
-/// @param key The key, e.g. `'descr'`.
-/// @return The value's text, or empty if the key is absent.
-std::string header_value(const std::string& header, const std::string& key) {
-  const std::size_t at = header.find(key);
-  if (at == std::string::npos) {
-    return {};
-  }
-  std::size_t start = header.find(':', at);
-  if (start == std::string::npos) {
-    return {};
-  }
-  ++start;
-  while (start < header.size() && header[start] == ' ') {
-    ++start;
-  }
-  if (start < header.size() && header[start] == '(') {
-    const std::size_t end = header.find(')', start);
-    return end == std::string::npos ? std::string{} : header.substr(start, end - start + 1);
-  }
-  const std::size_t end = header.find_first_of(",}", start);
-  return header.substr(start, end - start);
-}
-
-/// @brief Where a `.npy` file's header lies, from its magic and version.
-/// @param bytes The file.
-/// @return The header's offset and length, or nothing for another file or version.
-std::optional<std::pair<std::size_t, std::size_t>> header_span(const std::string& bytes) {
-  constexpr std::string_view kMagic{"\x93NUMPY", 6};
-  if (bytes.size() < 10 || std::string_view(bytes).substr(0, 6) != kMagic) {
-    return std::nullopt;
-  }
-  const auto byte = [&bytes](std::size_t i) {
-    return static_cast<std::size_t>(static_cast<unsigned char>(bytes[i]));
-  };
-  if (byte(6) == 1) {
-    return std::pair{std::size_t{10}, byte(8) | (byte(9) << 8U)};
-  }
-  if (byte(6) == 2 && bytes.size() >= 12) {
-    return std::pair{std::size_t{12},
-                     byte(8) | (byte(9) << 8U) | (byte(10) << 16U) | (byte(11) << 24U)};
-  }
-  return std::nullopt;
-}
-
-/// @brief A `.npy` header's shape tuple, e.g. `(111070, 32)` or `(99961,)`.
-/// @param text The tuple's text.
-/// @return The shape, or nothing if a part is not a whole number.
-std::optional<std::vector<std::size_t>> parse_shape(const std::string& text) {
-  std::vector<std::size_t> out;
-  std::string part;
-  const std::string inner = text.size() >= 2 ? text.substr(1, text.size() - 2) : std::string{};
-  std::istringstream parts(inner);
-  while (std::getline(parts, part, ',')) {
-    std::erase(part, ' ');
-    if (part.empty()) {
-      continue;
-    }
-    if (!std::ranges::all_of(part, [](char c) { return c >= '0' && c <= '9'; })) {
-      return std::nullopt;
-    }
-    out.push_back(std::stoull(part));
-  }
-  return out;
-}
-
-/// @brief The bytes one value of a `.npy` type takes, for the types a vocabulary holds.
-/// @param descr numpy's `descr`.
-/// @return 1, 4 or 8; or 0 for another type.
-std::size_t item_size(const std::string& descr) {
-  if (descr == "|u1") {
-    return 1;
-  }
-  if (descr == "<i4") {
-    return 4;
-  }
-  return descr == "<f8" ? 8 : 0;
-}
-
-/// @brief Read a `.npy` file of version 1 or 2, C order.
-/// @param path The file.
-/// @return The array, or `InvalidInput` for a missing or malformed file.
-Result<Npy> read_npy(const std::filesystem::path& path) {
-  std::ifstream file(path, std::ios::binary);
-  if (!file) {
-    return fail(ErrorKind::kInvalidInput, path.string() + ": cannot be read");
-  }
-  const std::string bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-  const auto span = header_span(bytes);
-  if (!span || span->first + span->second > bytes.size()) {
-    return fail(ErrorKind::kInvalidInput, path.string() + ": not a .npy file of version 1 or 2");
-  }
-  const std::string header = bytes.substr(span->first, span->second);
-  const std::string descr = header_value(header, "'descr'");
-  const auto shape = parse_shape(header_value(header, "'shape'"));
-  if (descr.size() < 2 || !shape || header_value(header, "'fortran_order'") != "False") {
-    return fail(ErrorKind::kInvalidInput, path.string() + ": a malformed or Fortran-order .npy");
-  }
-  Npy out{.descr = descr.substr(1, descr.size() - 2), .shape = *shape, .data = {}};
-  const std::size_t item = item_size(out.descr);
-  if (item == 0) {
-    return fail(ErrorKind::kInvalidInput, path.string() + ": unexpected .npy type " + out.descr);
-  }
-  out.data = bytes.substr(span->first + span->second);
-  std::size_t count = 1;
-  for (const std::size_t extent : out.shape) {
-    count *= extent;
-  }
-  if (out.data.size() != count * item) {
-    return fail(ErrorKind::kInvalidInput, path.string() + ": its data do not fill its shape");
-  }
-  return out;
-}
-
-/// @brief An array's values as `T`, checked against its type and shape.
-/// @tparam T The element type.
-/// @param array The array.
-/// @param descr The type it must have.
-/// @param shape The shape it must have; a 0 accepts any length on that axis.
-/// @param name Its name, for messages.
-/// @return The values, or `InvalidInput`.
-template <typename T>
-Result<std::vector<T>> values_of(const Npy& array, const char* descr,
-                                 const std::vector<std::size_t>& shape, const char* name) {
-  bool ok = array.descr == descr && array.shape.size() == shape.size();
-  for (std::size_t i = 0; ok && i < shape.size(); ++i) {
-    ok = shape[i] == 0 || array.shape[i] == shape[i];
-  }
-  if (!ok) {
-    return fail(ErrorKind::kInvalidInput, std::string(name) + ": unexpected type or shape");
-  }
-  std::vector<T> out(array.data.size() / sizeof(T));
-  std::memcpy(out.data(), array.data.data(), array.data.size());
-  return out;
-}
 
 /// @brief Each node's level, the root's 0 (each parent before its children).
 /// @param parents The parents.
@@ -238,13 +84,16 @@ Result<void> check_children(const Vocabulary& vocabulary) {
     if (count < 0 || count > vocabulary.k) {
       return fail(ErrorKind::kInvalidInput, "children: a node has from 0 to k children");
     }
-    if (count > 0 && (first < 1 || std::cmp_greater(first + count, n))) {
+    if (count == 0) {  // a leaf: its first child means nothing
+      continue;
+    }
+    if (first < 1 || std::cmp_greater(std::int64_t{first} + count, n)) {  // no int32 overflow
       return fail(ErrorKind::kInvalidInput,
                   "children: expected every node but the root once, in range");
     }
     const auto span =
         std::span(vocabulary.parents)
-            .subspan(static_cast<std::size_t>(std::max(first, 0)), static_cast<std::size_t>(count));
+            .subspan(static_cast<std::size_t>(first), static_cast<std::size_t>(count));
     if (!std::ranges::all_of(span, [node](std::int32_t p) { return std::cmp_equal(p, node); })) {
       return fail(ErrorKind::kInvalidInput,
                   "children: a node's children must be consecutive and name it");
@@ -310,67 +159,6 @@ Result<void> check(const Vocabulary& vocabulary) {
     return fail(ErrorKind::kInvalidInput, "weights: expected non-negative finite numbers");
   }
   return {};
-}
-
-Result<Vocabulary> read(const std::string& folder) {
-  const std::filesystem::path root(folder);
-  std::map<std::string, Npy> arrays;
-  for (const char* name : {"descriptors", "parents", "children", "words", "weights"}) {
-    auto array = read_npy(root / (std::string(name) + ".npy"));
-    if (!array) {
-      return std::unexpected(std::move(array.error()));
-    }
-    arrays.emplace(name, std::move(*array));
-  }
-  const std::size_t n = arrays["parents"].shape.empty() ? 0 : arrays["parents"].shape[0];
-  auto descriptors = values_of<std::uint8_t>(arrays["descriptors"], "|u1",
-                                             {n, orb::kDescriptorBytes}, "descriptors");
-  auto parents = values_of<std::int32_t>(arrays["parents"], "<i4", {n}, "parents");
-  auto children = values_of<std::int32_t>(arrays["children"], "<i4", {n, 2}, "children");
-  auto words = values_of<std::int32_t>(arrays["words"], "<i4", {n}, "words");
-  auto weights = values_of<double>(arrays["weights"], "<f8", {0}, "weights");
-  if (!descriptors) {
-    return std::unexpected(descriptors.error());
-  }
-  if (!parents) {
-    return std::unexpected(parents.error());
-  }
-  if (!children) {
-    return std::unexpected(children.error());
-  }
-  if (!words) {
-    return std::unexpected(words.error());
-  }
-  if (!weights) {
-    return std::unexpected(weights.error());
-  }
-  Vocabulary out;
-  out.descriptors.resize(n);
-  const std::span<const std::uint8_t> raw(*descriptors);
-  for (std::size_t i = 0; i < n; ++i) {
-    std::ranges::copy(raw.subspan(i * orb::kDescriptorBytes, orb::kDescriptorBytes),
-                      out.descriptors[i].begin());
-  }
-  out.parents = std::move(*parents);
-  out.children.resize(n);
-  for (std::size_t i = 0; i < n; ++i) {
-    out.children[i] = {(*children)[2 * i], (*children)[(2 * i) + 1]};
-  }
-  out.words = std::move(*words);
-  out.weights = std::move(*weights);
-  std::int64_t k = 2;
-  for (const auto& [first, count] : out.children) {
-    k = std::max<std::int64_t>(k, count);
-  }
-  out.k = k;
-  const std::vector<std::int64_t> level = out.parents.empty() || out.parents[0] != -1
-                                              ? std::vector<std::int64_t>{}
-                                              : depths(out.parents);
-  out.levels = level.empty() ? 1 : std::max<std::int64_t>(1, *std::ranges::max_element(level));
-  if (auto ok = check(out); !ok) {
-    return std::unexpected(std::move(ok.error()));
-  }
-  return out;
 }
 
 Quantized quantize(const Vocabulary& vocabulary, std::span<const orb::Descriptor> descriptors) {

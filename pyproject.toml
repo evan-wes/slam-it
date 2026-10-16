@@ -234,11 +234,11 @@ source_modules = ["slam_it"]
 forbidden_modules = ["poselib", "mpmath", "manifpy", "scipy"]
 
 # The order of modules inside eval: the timestamp helpers, the image reader, the sensor.yaml
-# helpers and the LiDAR depth at the bottom, the dataset readers and metrics on them, runs (and
-# the COLMAP reference) on them, then what writes a dataset's TUM-format folder with its ground
-# truth (the video import, ZJU-SenseTime's, ARKitScenes') and the compute budgets, which judge
-# runs, and on top ADVIO's import, a video's through the video import. New modules are optional
-# layers, as in rung 0's contract.
+# helpers, the LiDAR depth and a vocabulary's folder at the bottom, the dataset readers and
+# metrics on them, runs (and the COLMAP reference) on them, then what writes a dataset's
+# TUM-format folder with its ground truth (the video import, ZJU-SenseTime's, ARKitScenes') and
+# the compute budgets, which judge runs, and on top ADVIO's import, a video's through the video
+# import. New modules are optional layers, as in rung 0's contract.
 [[tool.importlinter.contracts]]
 name = "Eval's internal order"
 type = "layers"
@@ -249,7 +249,7 @@ layers = [
   "(budgets) | (video) | (zju) | (arkitscenes)",
   "(runs) | (colmap_reference)",
   "(metrics) | (tum) | (euroc) | (readers) | (reprojection)",
-  "(timestamps) | (images) | (lenses) | (lidar) | (sensor_yaml)",
+  "(timestamps) | (images) | (lenses) | (lidar) | (sensor_yaml) | (vocabularies)",
 ]
 
 # Pillow reads image files in slam_it.eval.images alone: the cores decode PNGs natively, and
@@ -261,6 +261,22 @@ type = "forbidden"
 source_modules = ["slam_it"]
 forbidden_modules = ["PIL"]
 ignore_imports = ["slam_it.eval.images -> PIL"]
+
+# The algorithm rungs take arrays, never files: none parses JSON or hashes a file's bytes. Eval
+# reads their files for them (a vocabulary's folder in slam_it.eval.vocabularies, the run
+# format in slam_it.eval.runs), as its native libraries do for the C++ and Rust cores.
+[[tool.importlinter.contracts]]
+name = "The algorithm rungs read no files"
+type = "forbidden"
+source_modules = [
+  "slam_it.foundations",
+  "slam_it.edge",
+  "slam_it.vi",
+  "slam_it.classic",
+  "slam_it.dense",
+  "slam_it.learned",
+]
+forbidden_modules = ["json", "hashlib"]
 
 # PyAV decodes phone videos in slam_it.eval.video alone (the optional `video` extra): the
 # pipeline reads frames from a folder, never a video.

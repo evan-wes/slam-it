@@ -4,18 +4,16 @@
 /// A vocabulary crosses as a dict of `Vocabulary`'s fields (`k`, `levels`, and its five arrays:
 /// `descriptors` (N, 32) uint8, `parents` (N,) int32, `children` (N, 2) int32, `words` (N,)
 /// int32, `weights` (W,) float64), copied in per call; descriptors as a C-contiguous (n, 32)
-/// uint8 array, words as int64. `read` returns the dict the core read from a folder.
+/// uint8 array, words as int64.
 #include "slam_it/foundations/vocabulary.hpp"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
-#include <nanobind/stl/string.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <span>
-#include <string>
 #include <vector>
 
 #include "common.hpp"
@@ -46,41 +44,6 @@ nb::ndarray<nb::numpy, std::int64_t> int64_out(const std::vector<std::int64_t>& 
     std::memcpy(data, values.data(), values.size() * sizeof(std::int64_t));
   }
   return array;
-}
-
-/// @brief Read a vocabulary's folder.
-/// @param folder The folder.
-/// @return The dict of `Vocabulary`'s fields.
-nb::dict read(const std::string& folder) {
-  const vocabulary::Vocabulary v = unwrap(vocabulary::read(folder));
-  const std::size_t n = v.parents.size();
-  auto [descriptors, descriptor_data] = new_array<std::uint8_t>({n, orb::kDescriptorBytes});
-  auto [parents, parent_data] = new_array<std::int32_t>({n});
-  auto [children, child_data] = new_array<std::int32_t>({n, 2});
-  auto [words, word_data] = new_array<std::int32_t>({n});
-  auto [weights, weight_data] = new_array<double>({v.weights.size()});
-  for (std::size_t i = 0; i < n; ++i) {
-    // NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic): array fill
-    std::memcpy(descriptor_data + (i * orb::kDescriptorBytes), v.descriptors[i].data(),
-                orb::kDescriptorBytes);
-    parent_data[i] = v.parents[i];
-    child_data[2 * i] = v.children[i][0];
-    child_data[(2 * i) + 1] = v.children[i][1];
-    word_data[i] = v.words[i];
-    // NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-  }
-  if (!v.weights.empty()) {
-    std::memcpy(weight_data, v.weights.data(), v.weights.size() * sizeof(double));
-  }
-  nb::dict out;
-  out["k"] = v.k;
-  out["levels"] = v.levels;
-  out["descriptors"] = descriptors;
-  out["parents"] = parents;
-  out["children"] = children;
-  out["words"] = words;
-  out["weights"] = weights;
-  return out;
 }
 
 /// @brief Quantise descriptors.
@@ -135,7 +98,6 @@ double score(const Int64In& ids1, const DoubleIn& values1, const Int64In& ids2,
 }  // namespace
 
 void bind_vocabulary(nb::module_& m) {
-  m.def("read", &read, nb::arg("folder"), "Read a vocabulary's folder.");
   m.def("quantize", &quantize, nb::arg("vocabulary"), nb::arg("descriptors").noconvert(),
         "Return each descriptor's word and its node at the direct index's level.");
   m.def("bow", &bow, nb::arg("vocabulary"), nb::arg("words").noconvert(),

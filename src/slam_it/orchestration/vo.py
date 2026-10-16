@@ -74,15 +74,15 @@ from slam_it import backends
 from slam_it.edge import frames
 from slam_it.edge.options import MODES, Options, features_for
 from slam_it.edge.pipeline import Pipeline
-from slam_it.eval import budgets, euroc, images, runs, tum
+from slam_it.eval import budgets, euroc, images, runs, tum, vocabularies
 from slam_it.foundations import image, orb, se3, stereo
-from slam_it.foundations import vocabulary as vocabulary_module
 from slam_it.foundations.errors import (
     DegenerateError,
     InvalidInputError,
     NotConvergedError,
     SlamItError,
 )
+from slam_it.foundations.vocabulary import Vocabulary
 
 PROGRAM = "slam_it_vo"
 """The native programs' name, in C++ (``cpp/apps/orchestration/``) and Rust
@@ -447,8 +447,8 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
     vocabulary : str or pathlib.Path, optional
         The vocabulary's folder, which a relocalising run needs (default: the committed one
         when ``relocalize`` is on, none when it is off; one given while it is off is refused).
-        Its checksums are checked here, before any program runs
-        (:func:`slam_it.foundations.vocabulary.read`).
+        It is read once, here, its checksums checked before any program runs
+        (:func:`slam_it.eval.vocabularies.read`).
 
     Returns
     -------
@@ -484,13 +484,12 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
         vocabulary=None if vocabulary is None else Path(vocabulary),
     )
     if request.vocabulary is None and request.options.relocalize:
-        request = replace(request, vocabulary=vocabulary_module.DEFAULT)
+        request = replace(request, vocabulary=vocabularies.DEFAULT)
     backends.check_name(backend)
     check(request)
-    if request.vocabulary is not None:
-        vocabulary_module.read(request.vocabulary)  # its versions and checksums
+    words = _read_vocabulary(request)  # its versions and checksums, before any program runs
     if backend == "python" and budget is None:
-        runs.write_run(request.out, _run_here(request))
+        runs.write_run(request.out, _run_here(request, words))
     else:
         _run_program(backend, request, budget)
     return runs.read_run(request.out)
@@ -668,11 +667,15 @@ def open_source(dataset: str, sequence: str | Path, mode: str) -> Source:
     raise InvalidInputError(f"dataset: expected one of {runs.DATASETS}, got {dataset!r}")
 
 
-def _run_here(request: Request) -> runs.Run:
-    """Run the request with the Python pipeline, in-process."""
+def _read_vocabulary(request: Request) -> Vocabulary | None:
+    """Read the request's vocabulary, if it names one (:func:`slam_it.eval.vocabularies.read`)."""
+    return None if request.vocabulary is None else vocabularies.read(request.vocabulary)
+
+
+def _run_here(request: Request, words: Vocabulary | None) -> runs.Run:
+    """Run the request with the Python pipeline, in-process, with its vocabulary as read."""
     source = open_source(request.dataset, request.sequence, request.mode)
     matching = request.options.stereo_matching()
-    words = None if request.vocabulary is None else vocabulary_module.read(request.vocabulary)
     tracker = Pipeline(request.mode, source.camera, request.options, words)
     end = len(source.times)
     if request.count is not None:
@@ -732,9 +735,7 @@ def _run_here(request: Request) -> runs.Run:
         keyframe_poses=se3.inverse(keyframes) if len(keyframes) else np.zeros((0, 4, 4)),
         points=lives.points,
         settings=request.options.as_dict(),
-        vocabulary=None
-        if request.vocabulary is None
-        else vocabulary_module.record(request.vocabulary),
+        vocabulary=None if request.vocabulary is None else vocabularies.record(request.vocabulary),
         diagnostics=diagnostics,
         point_lives=lives.point_lives,
         keyframe_lives=lives.keyframe_lives,
@@ -790,7 +791,7 @@ def main(arguments: Sequence[str]) -> int:
         check(request)
         # What the program records of its own process, before it writes the run.
         done = replace(
-            _run_here(request),
+            _run_here(request, _read_vocabulary(request)),
             peak_memory=budgets.peak_memory(),
             cpus=budgets.allowed_cpus(),
             memory_cap=budgets.memory_cap(),

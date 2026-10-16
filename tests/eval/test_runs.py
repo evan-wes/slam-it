@@ -566,13 +566,15 @@ def test_write_run_replaces_files_whole(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("edit", "message"),
     [
-        (lambda info: info.update(version=3), "version 4"),
+        (lambda info: info.update(version=4), "version 5, got 'slam-it-run' version 4"),
         (lambda info: info.update(format="other"), "format"),
         (lambda info: info.update(mode="lidar"), "mode"),
         (lambda info: info.update(backend="java"), "backend"),
         (lambda info: info.pop("mode"), "missing mode"),
         (lambda info: info.update(sequence=7), "sequence must be a string"),
         (lambda info: info.update(settings=[1]), "settings must be an object"),
+        (lambda info: info.pop("vocabulary"), "missing vocabulary"),
+        (lambda info: info.update(vocabulary={"k": 10}), "vocabulary: expected an object"),
         (lambda info: info.pop("record_features"), "missing record_features"),
         (lambda info: info.update(record_features=1), "record_features must be true or false"),
         (lambda info: info.pop("peak_memory"), "missing peak_memory"),

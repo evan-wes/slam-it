@@ -2,12 +2,14 @@
 /// @brief Shared by every binding that takes a vocabulary: it crosses as a dict of
 ///        `slam_it.foundations.vocabulary.Vocabulary`'s fields (`k`, `levels`, and its five
 ///        arrays: `descriptors` (N, 32) uint8, `parents` (N,) int32, `children` (N, 2) int32,
-///        `words` (N,) int32, `weights` (W,) float64), copied in and checked.
+///        `words` (N,) int32, `weights` (W,) float64), exactly those keys, copied in and
+///        checked.
 #pragma once
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -46,10 +48,16 @@ inline std::vector<orb::Descriptor> descriptors_in(const DescriptorsIn& in) {
   return out;
 }
 
+/// @brief `slam_it.foundations.vocabulary.fields`' keys.
+inline constexpr std::array<const char*, 7> kVocabularyKeys = {
+    "k", "levels", "descriptors", "parents", "children", "words", "weights"};
+
 /// @brief Copy a vocabulary's dict in, checked.
 /// @param fields The dict of `Vocabulary`'s fields.
 /// @return The vocabulary.
+/// @throws std::invalid_argument for a missing or unknown key; `CoreError` for a malformed tree.
 inline vocabulary::Vocabulary vocabulary_in(const nb::dict& fields) {
+  check_keys(fields, kVocabularyKeys, "vocabulary.fields");
   vocabulary::Vocabulary out;
   out.k = nb::cast<std::int64_t>(fields["k"]);
   out.levels = nb::cast<std::int64_t>(fields["levels"]);

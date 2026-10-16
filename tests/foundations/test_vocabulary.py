@@ -1,17 +1,20 @@
-"""Place recognition's vocabulary: training, quantising, word vectors, scores and its files."""
+"""Place recognition's vocabulary: training, quantising, word vectors and scores.
+
+Its folder's tests are ``tests/eval/test_vocabularies.py``.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import json
 from dataclasses import replace
-from pathlib import Path
 
 import numpy as np
 import pytest
 from numpy.typing import NDArray
 
 from slam_it import backends
+from slam_it.eval import vocabularies
 from slam_it.foundations import orb, vocabulary
 from slam_it.foundations.errors import InvalidInputError
 from tests.conftest import require_function
@@ -162,46 +165,6 @@ def test_the_l1_score_is_one_for_the_same_vector_and_zero_for_none_shared() -> N
     assert vocabulary.score(v, (np.zeros(0, dtype=np.int64), np.zeros(0))) == 0.0
 
 
-def test_a_vocabulary_round_trips_through_its_folder(tmp_path: Path) -> None:
-    """Every array and the record survive, checked by their SHA-256."""
-    descriptors, _, images = _clusters()
-    vocab = vocabulary.train(descriptors, images, k=4, levels=2, seed=0, info={"set": "test"})
-    vocabulary.write(tmp_path, vocab)
-    back = vocabulary.read(tmp_path)
-    for name in vocabulary.ARRAYS:
-        np.testing.assert_array_equal(getattr(back, name), getattr(vocab, name))
-    assert (back.k, back.levels, back.info) == (4, 2, vocab.info)
-    record = json.loads((tmp_path / "vocabulary.json").read_text())
-    assert (record["descriptor_version"], record["words"]) == (orb.DESCRIPTOR_VERSION, vocab.size)
-
-
-@pytest.mark.parametrize(
-    ("change", "message"),
-    [
-        ("tamper", "SHA-256 is not the recorded one"),
-        ("descriptor", "trained on descriptor version 0"),
-        ("format", "expected a slam-it-vocabulary of version 1"),
-    ],
-)
-def test_reading_refuses_a_changed_or_foreign_vocabulary(
-    tmp_path: Path, change: str, message: str
-) -> None:
-    """An array that changed, another descriptor's vocabulary, another format: refused."""
-    descriptors, _, images = _clusters()
-    vocabulary.write(tmp_path, vocabulary.train(descriptors, images, k=4, levels=2))
-    record = json.loads((tmp_path / "vocabulary.json").read_text())
-    if change == "tamper":
-        weights = np.load(tmp_path / "weights.npy")
-        np.save(tmp_path / "weights.npy", weights + 1.0)
-    elif change == "descriptor":
-        record["descriptor_version"] = 0
-    else:
-        record["version"] = 0
-    (tmp_path / "vocabulary.json").write_text(json.dumps(record))
-    with pytest.raises(InvalidInputError, match=message):
-        vocabulary.read(tmp_path)
-
-
 def test_a_malformed_tree_is_refused() -> None:
     """Children not naming their parent, a leaf too deep, words out of node order."""
     descriptors, _, images = _clusters()
@@ -221,18 +184,10 @@ def test_a_malformed_tree_is_refused() -> None:
         vocabulary.quantize(vocab, descriptors.astype(np.int16))
 
 
-def test_the_default_vocabulary_reads_and_is_the_documented_one() -> None:
-    """The committed vocabulary reads, its checksums hold, and it is 5 levels of k = 10."""
-    vocab = vocabulary.read(vocabulary.DEFAULT)
-    assert (vocab.k, vocab.levels) == (10, 5)
-    assert 90_000 < vocab.size <= 100_000
-    assert vocab.info["name"] == "arkitscenes-training"
-
-
 @pytest.fixture(scope="module")
 def default() -> vocabulary.Vocabulary:
-    """Read the committed vocabulary."""
-    return vocabulary.read(vocabulary.DEFAULT)
+    """Return the committed vocabulary."""
+    return vocabularies.default()
 
 
 def _room_descriptors() -> NDArray[np.uint8]:
@@ -244,22 +199,6 @@ def _room_descriptors() -> NDArray[np.uint8]:
     return np.concatenate(
         [orb.extract(rendered[i].gray, OPTIONS.extraction()).descriptors for i in (0, 20)]
     )
-
-
-@pytest.mark.parametrize("backend", backends.BACKENDS)
-def test_every_backend_reads_the_default_as_python_does(
-    backend: str, default: vocabulary.Vocabulary
-) -> None:
-    """The compiled readers read the same five arrays, and find k and the levels in the tree."""
-    if backend == "python":
-        return
-    reader = backends.implementation(
-        require_function(backend, vocabulary.__name__, "read"), vocabulary.__name__
-    )
-    got = reader.read(str(vocabulary.DEFAULT))
-    assert (got["k"], got["levels"]) == (default.k, default.levels)
-    for name in vocabulary.ARRAYS:
-        np.testing.assert_array_equal(got[name], getattr(default, name))
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)

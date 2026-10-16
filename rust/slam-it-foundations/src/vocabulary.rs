@@ -3,16 +3,15 @@
 //! A tree of binary words over ORB descriptors (`DBoW2`'s): a descriptor's word is the leaf
 //! reached from the root by the nearest child at each level; a frame's vector is each word's
 //! count times its weight, L1-normalised; two vectors score `DBoW2`'s L1 score. The Python
-//! module's docstring defines each step and the files. Training is Python's alone; this core
-//! reads a vocabulary's five `.npy` arrays (Python checks `vocabulary.json`'s versions and
-//! checksums before a native run is given the folder), and quantises, weighs and scores as
-//! Python does, adding the same terms in the same order.
+//! module's docstring defines each step. Training is Python's alone; this core checks a tree,
+//! and quantises, weighs and scores as Python does, adding the same terms in the same order. It
+//! takes a tree's arrays, never its files: `slam_it_eval::vocabularies` reads a vocabulary's
+//! folder.
 
 use std::collections::BTreeMap;
-use std::path::Path;
 
 use crate::error::{ErrorKind, Result, check_range, fail};
-use crate::orb::{DESCRIPTOR_BYTES, Descriptor};
+use crate::orb::Descriptor;
 
 /// The tree level whose nodes group a frame's features for matching (the direct index).
 pub const DIRECT_LEVEL: usize = 2;
@@ -125,24 +124,24 @@ pub fn check(vocabulary: &Vocabulary) -> Result<()> {
     }
     let mut total = 0;
     for (node, &[first, count]) in vocabulary.children.iter().enumerate() {
-        let (Ok(first), Ok(count)) = (usize::try_from(first), usize::try_from(count)) else {
+        let Some(count) = usize::try_from(count).ok().filter(|c| *c <= vocabulary.k) else {
             return fail(
                 ErrorKind::InvalidInput,
                 "children: a node has from 0 to k children",
             );
         };
-        if count > vocabulary.k {
-            return fail(
-                ErrorKind::InvalidInput,
-                "children: a node has from 0 to k children",
-            );
+        if count == 0 {
+            continue; // a leaf: its first child means nothing
         }
-        if count > 0 && (first < 1 || first + count > n) {
+        let Some(first) = usize::try_from(first)
+            .ok()
+            .filter(|f| *f >= 1 && f + count <= n)
+        else {
             return fail(
                 ErrorKind::InvalidInput,
                 "children: expected every node but the root once, in range",
             );
-        }
+        };
         if (first..first + count).any(|c| usize::try_from(vocabulary.parents[c]).ok() != Some(node))
         {
             return fail(
@@ -193,221 +192,6 @@ pub fn check(vocabulary: &Vocabulary) -> Result<()> {
         );
     }
     Ok(())
-}
-
-/// A `.npy` array: its type, shape and raw little-endian values.
-struct Npy {
-    /// numpy's `descr`, e.g. `|u1`, `<i4`, `<f8`.
-    descr: String,
-    /// The shape.
-    shape: Vec<usize>,
-    /// The values' bytes, C order.
-    data: Vec<u8>,
-}
-
-/// The value of a key in a `.npy` header's dict literal, up to its comma or brace.
-///
-/// # Arguments
-///
-/// * `header` - The header.
-/// * `key` - The key, e.g. `'descr'`.
-///
-/// # Returns
-///
-/// The value's text, or `None` if the key is absent.
-fn header_value<'a>(header: &'a str, key: &str) -> Option<&'a str> {
-    let after = &header[header.find(key)? + key.len()..];
-    let value = after[after.find(':')? + 1..].trim_start();
-    if value.starts_with('(') {
-        return Some(&value[..=value.find(')')?]);
-    }
-    Some(&value[..value.find([',', '}'])?])
-}
-
-/// Reads a `.npy` file of version 1 or 2, C order.
-///
-/// # Arguments
-///
-/// * `path` - The file.
-///
-/// # Errors
-///
-/// `InvalidInput` for a missing or malformed file.
-fn read_npy(path: &Path) -> Result<Npy> {
-    let name = path.display();
-    let Ok(bytes) = std::fs::read(path) else {
-        return fail(ErrorKind::InvalidInput, format!("{name}: cannot be read"));
-    };
-    if bytes.len() < 10 || &bytes[..6] != b"\x93NUMPY" {
-        return fail(ErrorKind::InvalidInput, format!("{name}: not a .npy file"));
-    }
-    let (length, offset) = match bytes[6] {
-        1 => (usize::from(u16::from_le_bytes([bytes[8], bytes[9]])), 10),
-        2 if bytes.len() >= 12 => {
-            let raw = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
-            (usize::try_from(raw).unwrap_or(usize::MAX), 12)
-        }
-        _ => {
-            return fail(
-                ErrorKind::InvalidInput,
-                format!("{name}: an unknown .npy version"),
-            );
-        }
-    };
-    if offset + length > bytes.len() {
-        return fail(
-            ErrorKind::InvalidInput,
-            format!("{name}: a .npy header past its end"),
-        );
-    }
-    let Ok(header) = std::str::from_utf8(&bytes[offset..offset + length]) else {
-        return fail(
-            ErrorKind::InvalidInput,
-            format!("{name}: a .npy header not text"),
-        );
-    };
-    let malformed = || {
-        fail(
-            ErrorKind::InvalidInput,
-            format!("{name}: a malformed .npy header"),
-        )
-    };
-    let Some(descr) = header_value(header, "'descr'") else {
-        return malformed();
-    };
-    if header_value(header, "'fortran_order'") != Some("False") {
-        return fail(
-            ErrorKind::InvalidInput,
-            format!("{name}: expected a C-order .npy array"),
-        );
-    }
-    let Some(shape_text) = header_value(header, "'shape'") else {
-        return malformed();
-    };
-    let mut shape = Vec::new();
-    for part in shape_text
-        .trim_matches(|c| c == '(' || c == ')')
-        .split(',')
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-    {
-        let Ok(value) = part.parse::<usize>() else {
-            return malformed();
-        };
-        shape.push(value);
-    }
-    let descr = descr.trim_matches('\'').to_owned();
-    let item = match descr.as_str() {
-        "|u1" => 1,
-        "<i4" => 4,
-        "<f8" => 8,
-        _ => {
-            return fail(
-                ErrorKind::InvalidInput,
-                format!("{name}: unexpected .npy type {descr}"),
-            );
-        }
-    };
-    let data = bytes[offset + length..].to_vec();
-    if data.len() != shape.iter().product::<usize>() * item {
-        return fail(
-            ErrorKind::InvalidInput,
-            format!("{name}: its data do not fill its shape"),
-        );
-    }
-    Ok(Npy { descr, shape, data })
-}
-
-/// Checks an array's type and shape (a 0 accepts any length on that axis).
-///
-/// # Arguments
-///
-/// * `array` - The array.
-/// * `descr` - The type it must have.
-/// * `shape` - The shape it must have.
-/// * `name` - Its name, for messages.
-///
-/// # Errors
-///
-/// `InvalidInput` if it differs.
-fn expect(array: &Npy, descr: &str, shape: &[usize], name: &str) -> Result<()> {
-    let ok = array.descr == descr
-        && array.shape.len() == shape.len()
-        && array
-            .shape
-            .iter()
-            .zip(shape)
-            .all(|(a, s)| *s == 0 || a == s);
-    if ok {
-        Ok(())
-    } else {
-        fail(
-            ErrorKind::InvalidInput,
-            format!("{name}: unexpected type or shape"),
-        )
-    }
-}
-
-/// Reads a vocabulary's arrays from its folder; `k` and `levels` from the tree itself.
-///
-/// # Arguments
-///
-/// * `folder` - The folder `slam_it.foundations.vocabulary.write` wrote.
-///
-/// # Errors
-///
-/// `InvalidInput` for a missing or malformed array, or a malformed tree.
-pub fn read(folder: &Path) -> Result<Vocabulary> {
-    let load = |name: &str| read_npy(&folder.join(format!("{name}.npy")));
-    let (descriptors, parents, children, words, weights) = (
-        load("descriptors")?,
-        load("parents")?,
-        load("children")?,
-        load("words")?,
-        load("weights")?,
-    );
-    let n = parents.shape.first().copied().unwrap_or(0);
-    expect(&descriptors, "|u1", &[n, DESCRIPTOR_BYTES], "descriptors")?;
-    expect(&parents, "<i4", &[n], "parents")?;
-    expect(&children, "<i4", &[n, 2], "children")?;
-    expect(&words, "<i4", &[n], "words")?;
-    expect(&weights, "<f8", &[0], "weights")?;
-    let int32 = |raw: &[u8]| -> Vec<i32> {
-        raw.as_chunks::<4>()
-            .0
-            .iter()
-            .map(|c| i32::from_le_bytes(*c))
-            .collect()
-    };
-    let children_flat = int32(&children.data);
-    let mut out = Vocabulary {
-        k: 2,
-        levels: 1,
-        descriptors: descriptors.data.as_chunks::<DESCRIPTOR_BYTES>().0.to_vec(),
-        parents: int32(&parents.data),
-        children: children_flat.as_chunks::<2>().0.to_vec(),
-        words: int32(&words.data),
-        weights: weights
-            .data
-            .as_chunks::<8>()
-            .0
-            .iter()
-            .map(|c| f64::from_le_bytes(*c))
-            .collect(),
-    };
-    out.k = out
-        .children
-        .iter()
-        .filter_map(|c| usize::try_from(c[1]).ok())
-        .fold(2, usize::max);
-    let ordered = out.parents.first() == Some(&-1)
-        && (1..out.parents.len())
-            .all(|node| usize::try_from(out.parents[node]).is_ok_and(|p| p < node));
-    if ordered {
-        out.levels = depths(&out.parents).into_iter().fold(1, usize::max);
-    }
-    check(&out)?;
-    Ok(out)
 }
 
 /// Each descriptor's word, and its node at [`DIRECT_LEVEL`].

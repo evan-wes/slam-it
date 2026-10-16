@@ -419,6 +419,31 @@ std::string npy_bytes(const std::vector<std::size_t>& shape, const char* descr,
   return out;
 }
 
+/// @brief A vocabulary's header and checksums as JSON (`slam_it.eval.vocabularies.record`):
+///        its numbers, then each array's SHA-256 in hex, by name.
+/// @param header The header.
+/// @return The object's text.
+std::string vocabulary_text(const vocabularies::Header& header) {
+  const JsonObject numbers = {{"version", header.version},
+                              {"descriptor_version", header.descriptor_version},
+                              {"k", header.k},
+                              {"levels", header.levels},
+                              {"words", header.words}};
+  JsonObject sums;
+  for (std::size_t i = 0; i < vocabularies::kArrays.size(); ++i) {
+    std::string hex;
+    for (const std::uint8_t byte : header.sha256.at(i)) {
+      constexpr std::string_view kDigits = "0123456789abcdef";
+      hex += kDigits[byte >> 4U];
+      hex += kDigits[byte & 0xFU];
+    }
+    sums.emplace_back(vocabularies::kArrays.at(i), hex);
+  }
+  std::string out = object_text(numbers);
+  out.pop_back();
+  return out + ", \"sha256\": " + object_text(sums) + "}";
+}
+
 /// @brief Lives, row-major.
 /// @param lives The lives.
 /// @return Their numbers.
@@ -483,7 +508,7 @@ Result<void> write_run(const std::string& folder, const Run& run) {
   std::string info_text = object_text(info);
   info_text.pop_back();
   info_text += ", \"settings\": " + object_text(run.settings);
-  info_text += ", \"vocabulary\": " + run.vocabulary.value_or("null");
+  info_text += ", \"vocabulary\": " + (run.vocabulary ? vocabulary_text(*run.vocabulary) : "null");
   info_text += std::string(", \"record_features\": ") + (run.record_features ? "true" : "false");
   const auto integer_or_null = [](const std::optional<std::int64_t>& value) {
     return value ? std::to_string(*value) : std::string("null");

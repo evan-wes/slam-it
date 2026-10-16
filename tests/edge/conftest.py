@@ -20,6 +20,7 @@ from slam_it.edge import frames, pipeline
 from slam_it.edge import map as maps
 from slam_it.edge.database import Database
 from slam_it.edge.map import Map
+from slam_it.eval import vocabularies
 from slam_it.foundations import matching, vocabulary
 from tests.conftest import require_backend
 from tests.edge import room
@@ -130,8 +131,8 @@ def truth(rendered: list[room.Frame]) -> Truth:
 
 @pytest.fixture(scope="session")
 def words() -> vocabulary.Vocabulary:
-    """Read the committed vocabulary."""
-    return vocabulary.read(vocabulary.DEFAULT)
+    """Return the committed vocabulary."""
+    return vocabularies.default()
 
 
 @pytest.fixture(scope="session")

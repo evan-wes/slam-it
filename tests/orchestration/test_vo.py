@@ -16,8 +16,7 @@ import pytest
 
 from slam_it import backends
 from slam_it.edge.options import Options
-from slam_it.eval import budgets, runs
-from slam_it.foundations import vocabulary
+from slam_it.eval import budgets, runs, vocabularies
 from slam_it.foundations.errors import DegenerateError, InvalidInputError, NotConvergedError
 from slam_it.orchestration import vo
 from tests.conftest import FIXTURES, assert_matches_fixture, load_fixture
@@ -437,7 +436,7 @@ def test_a_setting_out_of_range_is_a_failed_run_not_a_usage_error() -> None:
 def test_every_program_records_its_process(backend: str, tmp_path: Path) -> None:
     """Each backend's program writes its run with its own peak memory and CPUs, and says so."""
     request = vo.Request(
-        "tum", SEQUENCES / "tum_camera", "rgbd", tmp_path, count=0, vocabulary=vocabulary.DEFAULT
+        "tum", SEQUENCES / "tum_camera", "rgbd", tmp_path, count=0, vocabulary=vocabularies.DEFAULT
     )
     done = subprocess.run(
         [*vo.command(require_program(backend)), *request.arguments()],
@@ -545,7 +544,7 @@ def test_a_program_fails_a_file_it_cannot_read_or_write_alike(backend: str, tmp_
     """
     command = vo.command(require_program(backend))
     missing = vo.Request(
-        "euroc", SEQUENCES / "euroc", "stereo", tmp_path, count=1, vocabulary=vocabulary.DEFAULT
+        "euroc", SEQUENCES / "euroc", "stereo", tmp_path, count=1, vocabulary=vocabularies.DEFAULT
     )
     done = subprocess.run(
         [*command, *missing.arguments()], capture_output=True, text=True, check=False
@@ -560,7 +559,7 @@ def test_a_program_fails_a_file_it_cannot_read_or_write_alike(backend: str, tmp_
         "rgbd",
         blocked / "run",
         count=0,
-        vocabulary=vocabulary.DEFAULT,
+        vocabulary=vocabularies.DEFAULT,
     )
     done = subprocess.run(
         [*command, *unwritable.arguments()], capture_output=True, text=True, check=False

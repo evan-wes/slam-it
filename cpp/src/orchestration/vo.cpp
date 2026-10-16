@@ -32,6 +32,7 @@
 #include "slam_it/eval/runs.hpp"
 #include "slam_it/eval/text.hpp"
 #include "slam_it/eval/tum.hpp"
+#include "slam_it/eval/vocabularies.hpp"
 #include "slam_it/foundations/camera.hpp"
 #include "slam_it/foundations/error.hpp"
 #include "slam_it/foundations/image.hpp"
@@ -791,23 +792,14 @@ Result<eval::runs::Run> run(const Request& request) {
     return std::unexpected(source.error());
   }
   std::optional<foundations::vocabulary::Vocabulary> words;
-  std::optional<std::string> record;
+  std::optional<eval::vocabularies::Header> record;
   if (request.vocabulary) {
-    auto read = foundations::vocabulary::read(*request.vocabulary);
+    auto read = eval::vocabularies::read(*request.vocabulary);
     if (!read) {
       return std::unexpected(read.error());
     }
-    words = std::move(*read);
-    auto lines = eval::text::read_lines(
-        (std::filesystem::path(*request.vocabulary) / "vocabulary.json").string());
-    if (!lines) {
-      return std::unexpected(lines.error());
-    }
-    std::string text;
-    for (const std::string& line : *lines) {
-      text += line + "\n";
-    }
-    record = std::move(text);
+    words = std::move(read->vocabulary);
+    record = read->header;
   }
   auto pipeline =
       edge::Pipeline::create(request.mode, source->camera, request.options, std::move(words));
@@ -820,7 +812,7 @@ Result<eval::runs::Run> run(const Request& request) {
   out.mode = edge::name(request.mode);
   out.backend = "cpp";
   out.settings = settings(request.options);
-  out.vocabulary = std::move(record);
+  out.vocabulary = record;
   out.record_features = request.record_features;
   std::optional<eval::runs::FeatureWriter> features;
   if (request.record_features) {

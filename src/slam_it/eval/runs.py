@@ -2,13 +2,13 @@
 
 A run is a folder, written by any backend's pipeline (C++ and Rust write the same files):
 
-- ``run.json``: what ran: ``{"format": "slam-it-run", "version": 4, "dataset", "sequence",
+- ``run.json``: what ran: ``{"format": "slam-it-run", "version": 5, "dataset", "sequence",
   "mode", "backend", "settings", "vocabulary", "record_features", "peak_memory", "cpus",
   "memory_cap"}``, ``mode`` one of :data:`MODES` and ``backend`` one of ``python``, ``cpp`` and
   ``rust``; ``settings`` holds the pipeline's options as JSON; ``vocabulary`` the vocabulary a
-  relocalising run used, its ``vocabulary.json`` (:mod:`slam_it.foundations.vocabulary`: its
-  name, shape, training set and arrays' SHA-256), null for a run that did not relocalise
-  (``relocalize`` off, or a run from before milestone 2B, which has no such key);
+  relocalising run used, as its folder's header and checksums record it
+  (:func:`slam_it.eval.vocabularies.record`: its format and descriptor versions, k, levels,
+  words and each array's SHA-256), null for a run that did not relocalise (``relocalize`` off);
   ``record_features`` whether the run recorded its features (below). The last three describe the
   program that ran it, as it recorded them before writing (:mod:`slam_it.eval.budgets`), and are
   null when the run was not a program's of its own (Python's in-process run) or the system does
@@ -75,7 +75,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from slam_it.eval import euroc, metrics, tum
+from slam_it.eval import euroc, metrics, tum, vocabularies
 from slam_it.eval.timestamps import as_times
 from slam_it.foundations import se3, so3
 from slam_it.foundations.arrays import as_batch, as_number
@@ -84,10 +84,10 @@ from slam_it.foundations.errors import DegenerateError, InvalidInputError
 FORMAT = "slam-it-run"
 """``run.json``'s ``format``."""
 
-VERSION = 4
+VERSION = 5
 """``run.json``'s ``version``: this module's layout (2 added ``peak_memory``, ``cpus`` and
 ``memory_cap``; 3 every point and keyframe the run made, with their lives; 4 the maps, and the
-removal ``reset``)."""
+removal ``reset``; 5 the ``vocabulary`` a relocalising run used)."""
 
 REMOVALS = ("culled", "fused", "weak", "reset")
 """Why a point or keyframe was removed, a life's code being the index: culled (a recent point
@@ -143,6 +143,7 @@ _INFO_KEYS = (
     "mode",
     "backend",
     "settings",
+    "vocabulary",
     "record_features",
     "peak_memory",
     "cpus",
@@ -178,8 +179,8 @@ class Run:
     settings : dict
         The pipeline's options, as JSON values.
     vocabulary : dict or None
-        The vocabulary a relocalising run used (its ``vocabulary.json``); None if it did not
-        relocalise.
+        The vocabulary a relocalising run used, its header and checksums
+        (:func:`slam_it.eval.vocabularies.record`); None if it did not relocalise.
     diagnostics : list of dict
         One JSON object per frame, each with a ``timestamp``, and its ``map`` in a run with maps
         (the module docstring has the keys read across a run's maps).
@@ -512,7 +513,9 @@ def write_run(folder: str | Path, run: Run) -> None:
         settings or a diagnostic are not JSON (a diagnostic must be an object with a
         ``timestamp``, its ``map`` as the module docstring has it), or what it records of its
         program is malformed (a peak memory or memory cap that is not a whole number of bytes,
-        CPUs not ascending), or ``record_features`` is not a bool. Nothing is written then.
+        CPUs not ascending), the vocabulary is neither None nor a record of one
+        (:func:`slam_it.eval.vocabularies.check_record`), or ``record_features`` is not a bool.
+        Nothing is written then.
     """
     for name in ("dataset", "sequence"):
         if not isinstance(getattr(run, name), str):
@@ -527,8 +530,8 @@ def write_run(folder: str | Path, run: Run) -> None:
         raise InvalidInputError(f"points: expected (M, 3), got {lead}")
     if not isinstance(run.settings, dict):
         raise InvalidInputError("settings: expected a dict")
-    if run.vocabulary is not None and not isinstance(run.vocabulary, dict):
-        raise InvalidInputError("vocabulary: expected a dict or None")
+    if run.vocabulary is not None:
+        vocabularies.check_record(run.vocabulary)
     if not isinstance(run.record_features, bool):
         raise InvalidInputError("record_features: expected a bool")
     _check_process(run.peak_memory, run.cpus, run.memory_cap, "")
@@ -629,9 +632,11 @@ def _read_info(path: Path) -> dict[str, Any]:
             raise InvalidInputError(f"{path}: {key} must be a string")
     if not isinstance(info["settings"], dict):
         raise InvalidInputError(f"{path}: settings must be an object")
-    info.setdefault("vocabulary", None)  # a run from before relocalisation has none
-    if info["vocabulary"] is not None and not isinstance(info["vocabulary"], dict):
-        raise InvalidInputError(f"{path}: vocabulary must be an object or null")
+    if info["vocabulary"] is not None:
+        try:
+            vocabularies.check_record(info["vocabulary"])
+        except InvalidInputError as error:
+            raise InvalidInputError(f"{path}: {error}") from None
     if not isinstance(info["record_features"], bool):
         raise InvalidInputError(f"{path}: record_features must be true or false")
     _check_process(info["peak_memory"], info["cpus"], info["memory_cap"], f"{path}: ")

@@ -3,7 +3,8 @@
 //!
 //! Mirrors the Python package `slam_it.eval` where a standalone Rust pipeline needs it: reading
 //! PNG images (`png`), TUM and EuRoC sequences (`tum`, `euroc`, with `text` for their files),
-//! writing a run's folder (`runs`), and what a program records of its own process (`budgets`).
+//! writing a run's folder (`runs`), reading a vocabulary's folder (`vocabularies`), and what a
+//! program records of its own process (`budgets`).
 //! It sits above every rung in the ladder (`scripts/check_layers.py` holds it to that), so no
 //! rung crate may depend on it.
 
@@ -13,3 +14,4 @@ pub mod png;
 pub mod runs;
 pub mod text;
 pub mod tum;
+pub mod vocabularies;

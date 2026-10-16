@@ -13,33 +13,24 @@ Fast Place Recognition in Image Sequences", T-RO 2012; ORB-SLAM's place recognit
   descriptor. The leaves are the words.
 - **A descriptor's word:** from the root, to the nearest child at each level (the lowest index
   among equals), to a leaf (:func:`quantize`). Its node at :data:`DIRECT_LEVEL` groups it with
-  the features :func:`slam_it.edge` matches against it (DBoW2's direct index; ORB-SLAM keeps the
+  the features that matching by word compares it with
+  (:func:`slam_it.foundations.matching.search_by_bow`; DBoW2's direct index; ORB-SLAM keeps the
   node 4 levels above the leaves of its 6, so level 2).
 - **Weights:** a word's inverse document frequency, ``log(N / N_i)``, ``N`` the training images
-  and ``N_i`` those with the word. An image's vector is each word's count times its weight,
-  normalised to unit L1 norm (:func:`bow`); two vectors score ``1 - |v - w|_1 / 2`` (DBoW2's L1
-  score, :func:`score`): 1 for the same image, 0 for no word in common.
+  that yielded a descriptor and ``N_i`` those with the word (DBoW2 counts every image it is
+  given: an image without a descriptor would only shift every weight by the same amount). An
+  image's vector is each word's count times its weight, normalised to unit L1 norm (:func:`bow`);
+  two vectors score ``1 - |v - w|_1 / 2`` (DBoW2's L1 score, :func:`score`): 1 for the same
+  image, 0 for no word in common.
 
-**The files,** a folder (:func:`read`, :func:`write`), read by Python, C++ and Rust:
-``descriptors.npy`` (N, 32) uint8, each node's centre (the root's zeros); ``parents.npy`` (N,)
-int32, -1 for the root; ``children.npy`` (N, 2) int32, each node's first child and child count
-(a node's children are consecutive; a leaf has none); ``words.npy`` (N,) int32, a leaf's word
-(words numbered in node order), -1 for an inner node; ``weights.npy`` (W,) float64, each word's
-weight; and ``vocabulary.json``: the format and its version, k, levels, the descriptor it was
-trained on (:data:`slam_it.foundations.orb.DESCRIPTOR_VERSION`), the training set's name, images
-and descriptors, the seed, and each array's SHA-256. :func:`read` checks every one: a vocabulary
-trained on another descriptor, or whose arrays changed, is refused.
+The arrays are :data:`ARRAYS`; a vocabulary's folder of them is read and written by
+:mod:`slam_it.eval.vocabularies` (the algorithm rungs take a vocabulary, never its files).
 """
 
 from __future__ import annotations
 
-import functools
-import hashlib
-import io
-import json
 from collections import deque
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Protocol
 
 import numpy as np
@@ -48,16 +39,10 @@ from numpy.typing import ArrayLike, NDArray
 from slam_it import backends
 from slam_it.foundations.arrays import as_count
 from slam_it.foundations.errors import InvalidInputError
-from slam_it.foundations.orb import DESCRIPTOR_BYTES, DESCRIPTOR_VERSION
-
-FORMAT = "slam-it-vocabulary"
-"""``vocabulary.json``'s ``format``."""
-
-VERSION = 1
-"""``vocabulary.json``'s ``version``; a vocabulary of another is refused."""
+from slam_it.foundations.orb import DESCRIPTOR_BYTES
 
 ARRAYS = ("descriptors", "parents", "children", "words", "weights")
-"""A vocabulary's arrays, each in ``<name>.npy``."""
+"""A vocabulary's arrays (each a ``<name>.npy`` in its folder: :mod:`slam_it.eval.vocabularies`)."""
 
 DIRECT_LEVEL = 2
 """The tree level whose nodes group a frame's features for matching (DBoW2's direct index)."""
@@ -73,11 +58,6 @@ MAX_KMEANS_ROUNDS = 100
 
 CHUNK = 1 << 18
 """Descriptors compared with a node's centres at once, bounding the memory a step takes."""
-
-DEFAULT = Path(__file__).parent / "vocabularies" / "default"
-"""The committed vocabulary, every run's unless it names another: 5 levels of k = 10, trained by
-``scripts/train_vocabulary.py`` on 10,000 frames of 20 ARKitScenes captures from its training
-fold, none from a visit the test set films (``docs/design/2026-10-14-online-slam.md``)."""
 
 
 @dataclass(frozen=True)
@@ -102,8 +82,8 @@ class Vocabulary:
         Each word's weight, its inverse document frequency (0 for a word no training image
         reached).
     info : dict
-        What ``vocabulary.json`` records of its making: the training set, its images and
-        descriptors, the seed.
+        What training records of its making: the training set, its images and descriptors, the
+        seed (its folder's ``training.json``).
     """
 
     k: int
@@ -190,10 +170,6 @@ class Implementation(Protocol):
 
     A vocabulary crosses as a dict of :class:`Vocabulary`'s fields (:func:`fields`).
     """
-
-    def read(self, folder: str) -> dict[str, Any]:
-        """Read a folder's five arrays; ``k`` and ``levels`` from the tree itself."""
-        ...
 
     def quantize(
         self, vocabulary: dict[str, Any], descriptors: NDArray[np.uint8]
@@ -418,7 +394,7 @@ def score(
     slam_it.foundations.errors.InvalidInputError
         If a vector's words and values differ in length, or its words do not ascend.
     """
-    (a_ids, a_values), (b_ids, b_values) = (_as_vector(*first), _as_vector(*second))
+    (a_ids, a_values), (b_ids, b_values) = (as_vector(*first), as_vector(*second))
     return backends.call(
         backend,
         __name__,
@@ -443,8 +419,29 @@ def _score(
     return total / 2.0
 
 
-def _as_vector(ids: ArrayLike, values: ArrayLike) -> tuple[NDArray[np.int64], NDArray[np.float64]]:
-    """Check a word vector: ascending words, one finite value each."""
+def as_vector(ids: ArrayLike, values: ArrayLike) -> tuple[NDArray[np.int64], NDArray[np.float64]]:
+    """Check a word vector (:func:`bow`'s): its words ascending, one finite value each.
+
+    Parameters
+    ----------
+    ids : array_like of int, shape (m,)
+        The words.
+    values : array_like of float, shape (m,)
+        Their values.
+
+    Returns
+    -------
+    ids : ndarray of int64, shape (m,)
+        The words, contiguous.
+    values : ndarray of float64, shape (m,)
+        Their values, contiguous.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the words are not integers, or not one per value, or do not ascend, or a value is
+        not finite.
+    """
     i, v = np.asarray(ids), np.asarray(values, dtype=np.float64)
     if i.ndim != 1 or v.shape != i.shape or (i.size and not np.issubdtype(i.dtype, np.integer)):
         raise InvalidInputError("vector: expected (m,) words and (m,) values")
@@ -541,7 +538,7 @@ def train(  # noqa: PLR0913 -- the descriptors, their images, the tree's shape, 
     seed : int, optional
         The k-means++ seeding's seed: each node draws from its own stream, ``(seed, node)``.
     info : dict, optional
-        What to record of the training set in ``vocabulary.json``.
+        What to record of the training set (its folder's ``training.json``).
 
     Returns
     -------
@@ -603,138 +600,3 @@ def train(  # noqa: PLR0913 -- the descriptors, their images, the tree's shape, 
     return Vocabulary(
         k, levels, tree.descriptors, tree.parents, tree.children, words, weights, record
     )
-
-
-def _npy(array: NDArray[Any]) -> bytes:
-    """Return an array as the bytes of a ``.npy`` file."""
-    buffer = io.BytesIO()
-    np.save(buffer, array, allow_pickle=False)
-    return buffer.getvalue()
-
-
-def write(folder: str | Path, vocabulary: Vocabulary) -> None:
-    """Write a vocabulary's folder (the module docstring), each file whole.
-
-    Parameters
-    ----------
-    folder : str or pathlib.Path
-        The folder: created if needed; its files are replaced.
-    vocabulary : Vocabulary
-        The vocabulary.
-    """
-    out = Path(folder)
-    out.mkdir(parents=True, exist_ok=True)
-    sums = {}
-    for name in ARRAYS:
-        data = _npy(getattr(vocabulary, name))
-        sums[name] = hashlib.sha256(data).hexdigest()
-        _replace(out / f"{name}.npy", data)
-    info = {
-        "format": FORMAT,
-        "version": VERSION,
-        "descriptor_version": DESCRIPTOR_VERSION,
-        "k": vocabulary.k,
-        "levels": vocabulary.levels,
-        "words": vocabulary.size,
-        "info": vocabulary.info,
-        "sha256": sums,
-    }
-    _replace(out / "vocabulary.json", (json.dumps(info, indent=1) + "\n").encode())
-
-
-def _replace(path: Path, data: bytes) -> None:
-    temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_bytes(data)
-    temporary.replace(path)
-
-
-def record(folder: str | Path) -> dict[str, Any]:
-    """Return a vocabulary's ``vocabulary.json``, as a relocalising run records it.
-
-    Parameters
-    ----------
-    folder : str or pathlib.Path
-        The vocabulary's folder (:func:`read` checks it).
-
-    Returns
-    -------
-    dict
-        Its ``vocabulary.json``: the format and version, k, levels, the descriptor, the training
-        set, the seed and each array's SHA-256.
-
-    Raises
-    ------
-    slam_it.foundations.errors.InvalidInputError
-        If it is not a JSON object.
-    """
-    path = Path(folder) / "vocabulary.json"
-    try:
-        info = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as error:
-        raise InvalidInputError(f"{path}: not JSON ({error})") from None
-    if not isinstance(info, dict):
-        raise InvalidInputError(f"{path}: expected a JSON object")
-    return info
-
-
-@functools.cache
-def default() -> Vocabulary:
-    """Return the committed default vocabulary (:data:`DEFAULT`), read once and then shared.
-
-    Returns
-    -------
-    Vocabulary
-        The vocabulary.
-    """
-    return read(DEFAULT)
-
-
-def read(folder: str | Path) -> Vocabulary:
-    """Read a vocabulary's folder, every array checked against its recorded SHA-256.
-
-    Parameters
-    ----------
-    folder : str or pathlib.Path
-        The folder :func:`write` wrote.
-
-    Returns
-    -------
-    Vocabulary
-        The vocabulary.
-
-    Raises
-    ------
-    FileNotFoundError
-        If a file is missing.
-    slam_it.foundations.errors.InvalidInputError
-        If ``vocabulary.json`` is not this format's version, the vocabulary was trained on
-        another descriptor (:data:`slam_it.foundations.orb.DESCRIPTOR_VERSION`), an array's
-        SHA-256 differs from the recorded one, or the tree is malformed.
-    """
-    root = Path(folder)
-    try:
-        info = json.loads((root / "vocabulary.json").read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as error:
-        raise InvalidInputError(f"{root / 'vocabulary.json'}: not JSON ({error})") from None
-    if not isinstance(info, dict) or (info.get("format"), info.get("version")) != (FORMAT, VERSION):
-        raise InvalidInputError(f"{root}: expected a {FORMAT} of version {VERSION}")
-    if info.get("descriptor_version") != DESCRIPTOR_VERSION:
-        raise InvalidInputError(
-            f"{root}: trained on descriptor version {info.get('descriptor_version')!r}, "
-            f"this ORB's is {DESCRIPTOR_VERSION}: its words mean nothing here"
-        )
-    arrays = {}
-    for name in ARRAYS:
-        data = (root / f"{name}.npy").read_bytes()
-        if hashlib.sha256(data).hexdigest() != info.get("sha256", {}).get(name):
-            raise InvalidInputError(f"{root / name}.npy: its SHA-256 is not the recorded one")
-        try:
-            arrays[name] = np.load(io.BytesIO(data), allow_pickle=False)
-        except ValueError as error:
-            raise InvalidInputError(
-                f"{root / name}.npy: not a readable .npy array ({error})"
-            ) from None
-    return Vocabulary(
-        info["k"], info["levels"], arrays["descriptors"], arrays["parents"], arrays["children"],
-        arrays["words"], arrays["weights"], info.get("info", {}),
-    )  # fmt: skip

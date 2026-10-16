@@ -3,52 +3,15 @@
 //! A vocabulary crosses as a dict of `Vocabulary`'s fields (`k`, `levels`, and its five arrays:
 //! `descriptors` (N, 32) uint8, `parents` (N,) int32, `children` (N, 2) int32, `words` (N,)
 //! int32, `weights` (W,) float64), copied in per call; descriptors as a C-contiguous (n, 32)
-//! uint8 array, words as int64. `read` returns the dict the core read from a folder.
+//! uint8 array, words as int64.
 
-use std::path::PathBuf;
-
-use numpy::{
-    IntoPyArray, PyArray1, PyReadonlyArray1, PyReadonlyArray2,
-    ndarray::{Array1, Array2},
-};
-use pyo3::exceptions::PyValueError;
+use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyReadonlyArray2, ndarray::Array1};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use slam_it_foundations::orb::DESCRIPTOR_BYTES;
 use slam_it_foundations::vocabulary as core;
 
 use super::vocabulary_crossing::vocabulary_in;
 use crate::common::{add_functions, contiguous, descriptors_in, int64_array, unwrap};
-
-/// Reads a vocabulary's folder.
-///
-/// # Arguments
-///
-/// * `py` - The Python token.
-/// * `folder` - The folder.
-///
-/// # Errors
-///
-/// The core's error, as its Python exception.
-#[pyfunction]
-fn read(py: Python<'_>, folder: PathBuf) -> PyResult<Bound<'_, PyDict>> {
-    let v = unwrap(py, core::read(&folder))?;
-    let n = v.parents.len();
-    let out = PyDict::new(py);
-    out.set_item("k", v.k)?;
-    out.set_item("levels", v.levels)?;
-    let flat: Vec<u8> = v.descriptors.concat();
-    let descriptors = Array2::from_shape_vec((n, DESCRIPTOR_BYTES), flat)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    out.set_item("descriptors", descriptors.into_pyarray(py))?;
-    out.set_item("parents", Array1::from_vec(v.parents).into_pyarray(py))?;
-    let children = Array2::from_shape_vec((n, 2), v.children.concat())
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    out.set_item("children", children.into_pyarray(py))?;
-    out.set_item("words", Array1::from_vec(v.words).into_pyarray(py))?;
-    out.set_item("weights", Array1::from_vec(v.weights).into_pyarray(py))?;
-    Ok(out)
-}
 
 /// Quantises descriptors.
 ///
@@ -140,6 +103,6 @@ fn score(
 /// A registration failure.
 #[pymodule]
 pub fn vocabulary(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    add_functions!(m; read, quantize, bow, score);
+    add_functions!(m; quantize, bow, score);
     Ok(())
 }

@@ -5,16 +5,14 @@
 /// A tree of binary words over ORB descriptors (DBoW2's): a descriptor's word is the leaf
 /// reached from the root by the nearest child at each level; a frame's vector is each word's
 /// count times its weight, L1-normalised; two vectors score DBoW2's L1 score. The Python module's
-/// docstring defines each step and the files. Training is Python's alone; this core reads a
-/// vocabulary's five `.npy` arrays (Python checks `vocabulary.json`'s versions and checksums
-/// before a native run is given the folder), and quantises, weighs and scores as Python does,
-/// adding the same terms in the same order.
+/// docstring defines each step. Training is Python's alone; this core checks a tree, and
+/// quantises, weighs and scores as Python does, adding the same terms in the same order. It takes
+/// a tree's arrays, never its files: `slam_it::eval::vocabularies` reads a vocabulary's folder.
 #pragma once
 
 #include <array>
 #include <cstdint>
 #include <span>
-#include <string>
 #include <vector>
 
 #include "slam_it/foundations/error.hpp"
@@ -68,11 +66,6 @@ struct BowVector {
 /// @param vocabulary The tree.
 /// @return Nothing, or `InvalidInput` naming what is malformed.
 [[nodiscard]] Result<void> check(const Vocabulary& vocabulary);
-
-/// @brief Read a vocabulary's arrays from its folder; `k` and `levels` from the tree itself.
-/// @param folder The folder `slam_it.foundations.vocabulary.write` wrote.
-/// @return The vocabulary, checked; or `InvalidInput` for a missing or malformed array.
-[[nodiscard]] Result<Vocabulary> read(const std::string& folder);
 
 /// @brief Each descriptor's word, and its node at `kDirectLevel`.
 /// @param vocabulary The vocabulary, checked.

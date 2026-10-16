@@ -11,11 +11,11 @@ use slam_it_edge::frames::{self, Camera, DepthMap, Frame};
 use slam_it_edge::options::{Mode, Options, Setting, check_options};
 use slam_it_edge::pipeline::{Fates, FrameResult, FrameSummary, Lifetimes, Pipeline};
 use slam_it_eval::runs::{FeatureWriter, JsonObject, JsonValue, Run};
-use slam_it_eval::{euroc, png, text, tum};
+use slam_it_eval::{euroc, png, text, tum, vocabularies};
 use slam_it_foundations::camera::Model;
 use slam_it_foundations::error::{ErrorKind, Result, fail};
 use slam_it_foundations::image::{self, Image};
-use slam_it_foundations::{orb, ransac, se3, stereo, vocabulary};
+use slam_it_foundations::{orb, ransac, se3, stereo};
 
 /// The datasets a sequence can come from (`slam_it.orchestration.vo.DATASETS`).
 pub const DATASETS: [&str; 2] = ["tum", "euroc"];
@@ -1009,11 +1009,8 @@ pub fn run(request: &Request) -> Result<Run> {
     };
     let (words, record) = match &request.vocabulary {
         Some(folder) => {
-            let read = vocabulary::read(folder)?;
-            let path = folder.join("vocabulary.json");
-            let text = std::fs::read_to_string(&path)
-                .or_else(|e| invalid(format!("{}: cannot be read ({e})", path.display())))?;
-            (Some(read), Some(text))
+            let read = vocabularies::read(folder)?;
+            (Some(read.vocabulary), Some(read.header))
         }
         None => (None, None),
     };

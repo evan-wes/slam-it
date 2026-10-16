@@ -15,6 +15,7 @@ from numpy.typing import NDArray
 from slam_it.edge import frames
 from slam_it.edge.map import Map
 from slam_it.edge.options import Options
+from slam_it.eval import vocabularies
 from slam_it.foundations import vocabulary
 from tests.edge import room
 
@@ -61,7 +62,7 @@ def words_for(options: Options) -> vocabulary.Vocabulary | None:
     slam_it.foundations.vocabulary.Vocabulary or None
         The committed vocabulary with ``relocalize`` on, None with it off.
     """
-    return vocabulary.default() if options.relocalize else None
+    return vocabularies.default() if options.relocalize else None
 
 
 def assert_close(
