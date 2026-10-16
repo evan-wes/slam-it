@@ -151,19 +151,23 @@ checks, and share its style; their logic is `viewer/src/jobs.js`. The viewer rea
 its own site only, and loads three.js pinned by its hashes. The server serves only the viewer's
 pages, its stylesheet and its modules.
 
-**A result shorter than the clip.** A run ends at the frame it loses the track at, with no
-relocalisation after, and a monocular run tracks nothing until its first map, so a result can
-cover a part of the video, which would otherwise look cropped. Both pages say so:
+**A result in stretches.** A monocular run tracks nothing until its first map, and a lost track
+closes its map and the next frame starts a new one (since milestone 2A's A2), once
+relocalisation has tried for up to 3 s to find it again in the map it had (since 2B's B1). So a
+result can cover the video in stretches, which would otherwise look cropped. Both pages say so:
 - the status page in words, from the worker's summary (`worker.summarize`: the clip's length,
-  the first and last tracked frames' times, where the run ended, and whether by losing the
-  track): "Tracked from 2.5 s to 4.9 s of your 12.0 s clip. Tracking was lost at 5.0 s, which
-  ends a run, so the rest was not processed. The first 2.5 s went to finding a first map; moving
-  sideways at the start shortens it.";
+  each map's first and last tracked frames' times, the losses, the maps lost too soon to keep,
+  and the frames relocalised): "Tracked 0.0–15.9 s and 17.0–27.1 s of your 27.1 s clip.
+  Tracking failed on one frame and found it again in the same map, by recognising a place it had
+  seen. The track was lost twice, and each time a new map was started, so the rest of the clip
+  was still processed; one map was lost too soon to keep.", and, where finding a first map took
+  a while, "The first 2.5 s went to finding a first map; moving sideways at the start shortens
+  it.";
 - the viewer on its timeline: the frame slider spans the part the runs ran, beside the parts
-  of the sequence none reached, each as wide as its time, the part after labelled "not
-  processed: tracking was lost" where every run that reached the last frame lost the track there,
-  else "not run"; under the slider, each backend's frames are coloured by state (faded before
-  its first map, its colour while tracking, red where it lost the track), with a legend. The
+  of the sequence none reached, each as wide as its time and labelled "not run"; under the
+  slider, each backend's frames are coloured by state (faded before its first map, its colour
+  while tracking, broken where its map was reset, red where it lost the track, green on each
+  frame found again), with a legend. The
   bundle records the whole sequence for this (`bundle.json`'s `extent`: its frames, and its
   first and last frames' times), which the page requires.
 
@@ -306,7 +310,8 @@ Pro, Pixel 8, Galaxy A15) and a Stray Scanner recording, kept outside the repo, 
 
 ## What it does not do yet
 
-- Relocalising after a lost track: the run ends there, and the pages say so.
+- Joining a run's maps: each map a lost track closed stays apart from the next (milestone 2B's
+  B4).
 - Recording in the page, with a live camera view, or streaming a live camera.
 - Comparing the intrinsics' sources in the web app: measured once, on Stray Scanner recordings,
   and written up outside the repo.

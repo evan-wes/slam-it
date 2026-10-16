@@ -112,13 +112,18 @@ BUNDLE` serves it with a bundle on this machine. The page reads a bundle from it
   deadline, peak memory), each explained on hover; whether the backends' decisions agree.
 - **The image**: the frame with its keypoints in their fate's colour, and each fate's count.
 - **The map**: the trajectory tracked so far in its backend's colour, the others' faded beside
-  it, the truth, the keyframes and points alive at the frame, and the camera, followed or
+  it, the truth (faint gold, over the frames the map's trajectory covers so far, or all of it
+  with "whole truth"), the keyframes and points alive at the frame, and the camera, followed or
   orbited. Every point and keyframe sits in one buffer with its life, and a shader hides each
   outside it, so scrubbing changes one number.
 - **The solvers**: tracked points and the local map's matches over the run, every backend's
   latency against the deadline, the frames where the backends decided differently ticked; the
   backends' step times at the frame side by side; and the frame's stage summaries, each field
-  explained on hover.
+  explained on hover, relocalisation's among them since milestone 2B's B1 (its words, the
+  keyframes that share a word and those scored, each candidate as far as it got). The panel is
+  never under 260 px tall: on a wide or short window the frame shrinks, its proportions kept.
+- **The timeline**: under the slider, each backend's frames coloured by state, each frame
+  relocalisation found again marked in green.
 
 The modules that read a bundle and work out what a frame shows never touch the page (every
 module but `main.js` and the `*_view.js` views is checked without the DOM), so

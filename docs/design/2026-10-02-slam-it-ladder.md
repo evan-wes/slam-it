@@ -489,11 +489,13 @@ edge rung holds what is its own, tracking, keyframes and local mapping.
 **The edge rung is ORB-SLAM-lite** (decided for PR 8; the plan is
 [the edge VO design](2026-10-05-edge-vo.md)):
 - **What it leaves out of ORB-SLAM:** a sliding window of the last 10 keyframes stands in for
-  the covisibility graph; no bag of words, so no relocalisation or loop closure (milestone
-  2B's); one thread, mapping after tracking, so a run is deterministic; no map reuse.
-- **A lost track closes its map** (kept, or reset if it has 10 keyframes or fewer) and the
-  next frame starts a new one, as ORB-SLAM3's atlas does (milestone 2A's A2); relocalising
-  against the lost map, and joining maps, are milestone 2B's.
+  the covisibility graph; no loop closure (milestone 2B's B3); one thread, mapping after
+  tracking, so a run is deterministic; no map reuse.
+- **A lost track is relocalised** against the whole active map through a bag of words, for up
+  to 3 s, as visual-only ORB-SLAM3's recently lost track is (milestone 2B's B1); then it closes
+  its map (kept, or reset if it has 10 keyframes or fewer, such a map lost after 5 failures)
+  and the next frame starts a new one, as ORB-SLAM3's atlas does (milestone 2A's A2); joining
+  maps is 2B's B4.
 - **Its state is a struct of arrays** in all three languages, so each stage function
   (initialise, track, map) crosses the bindings as dicts of arrays, as rung 0's do. Python
   runs the whole pipeline in-process; C++ and Rust run it in the native programs, not across
