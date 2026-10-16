@@ -12,9 +12,8 @@ use slam_it_edge::map::Removal;
 use slam_it_edge::options::{Mode, Options};
 use slam_it_edge::pipeline::{Fate, FrameResult, LostSummary, Pipeline, Placement, State};
 use slam_it_foundations::error::ErrorKind;
-use slam_it_foundations::orb::Features;
 
-use scene::{camera, frame_at, one_word};
+use scene::{camera, empty_frame, frame_at, one_word};
 
 /// The path's frames.
 const FRAMES: usize = 16;
@@ -94,13 +93,7 @@ fn empty_frames_lose_the_track_and_the_next_frame_starts_a_new_map() {
         let mut pipeline = Pipeline::new(Mode::Rgbd, camera(), options, None).unwrap();
         let started = pipeline.track(&frame_at(&along(0), true, 0)).unwrap();
         assert_eq!(started.map, Some(0));
-        let features = Features {
-            keypoints: Vec::new(),
-            descriptors: Vec::new(),
-            scale_factor: 1.2,
-            levels: 8,
-        };
-        let empty = Frame::new(1.0, features, Vec::new(), Vec::new(), Vec::new()).unwrap();
+        let empty = empty_frame(1.0);
         let results: Vec<FrameResult> = (0..options.lost_frames)
             .map(|_| pipeline.track(&empty).unwrap())
             .collect();
@@ -157,17 +150,6 @@ fn relocalizing(reset_keyframes: usize) -> Options {
     }
 }
 
-/// A frame with no keypoints, at a time.
-fn empty_at(timestamp: f64) -> Frame {
-    let features = Features {
-        keypoints: Vec::new(),
-        descriptors: Vec::new(),
-        scale_factor: 1.2,
-        levels: 8,
-    };
-    Frame::new(timestamp, features, Vec::new(), Vec::new(), Vec::new()).unwrap()
-}
-
 /// Relocalising (Python's `test_a_large_map_is_lost_in_time_and_a_small_one_in_frames`): a map
 /// above `reset_keyframes` is lost once more than `relocalize_seconds` have passed since the
 /// first failed frame (at 0.25 s a frame, on the fourteenth: 3.25 s, where the thirteenth's 3 s
@@ -186,7 +168,7 @@ fn relocalizing_a_large_map_is_lost_in_time_and_a_small_one_in_frames() {
                 .keyframe
         );
         let failed: Vec<FrameResult> = (0..lost_on)
-            .map(|k| pipeline.track(&empty_at(step * (k + 1) as f64)).unwrap())
+            .map(|k| pipeline.track(&empty_frame(step * (k + 1) as f64)).unwrap())
             .collect();
         let states: Vec<State> = failed.iter().map(|r| r.state).collect();
         let mut expected = vec![State::Tracking; lost_on - 1];
@@ -218,7 +200,7 @@ fn a_frame_out_of_the_fallbacks_reach_is_relocalized_in_its_map() {
     }
     assert!(
         pipeline
-            .track(&empty_at(FRAMES as f64))
+            .track(&empty_frame(FRAMES as f64))
             .unwrap()
             .pose
             .is_none()

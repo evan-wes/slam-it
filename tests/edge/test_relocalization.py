@@ -6,6 +6,7 @@ On the room's truth map, its keyframes' words those of the committed vocabulary.
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Any
 
 import numpy as np
 import pytest
@@ -159,43 +160,80 @@ def test_a_keyframe_searched_at_the_true_pose_finds_its_points(truth: Truth) -> 
     assert not set(skipped[skipped >= 0].tolist()) & set(found[hits].tolist())
 
 
-MOVED = replace(
-    OPTIONS,
-    reloc_inlier_ratio=0.4,
-    reloc_min_inliers=12,
-    reloc_confidence=0.95,
-    reloc_ransac_iterations=200,
-    reloc_window=2.0,
-    reloc_narrow_inliers=25,
-    reloc_narrow_window=1.0,
-    reloc_narrow_distance=30,
-)
-"""Relocalisation's settings off their defaults (review panel finding L1, by finding H21's rule):
-a native that hard-coded one would decide unlike Python on the frames below."""
-
-MOVED_CASES = [
-    (30, replace(MOVED, recovery_tracked=150)),
-    (6, replace(MOVED, recovery_tracked=175)),
+DECISIVE = [
+    ("reloc_inlier_ratio", 1.0, 6, 175),
+    ("reloc_min_inliers", 85, 30, 150),
+    ("reloc_confidence", 0.95, 6, 175),
+    ("reloc_ransac_iterations", 1, 6, 175),
+    ("reloc_window", 2.0, 30, 150),
+    ("reloc_narrow_inliers", 168, 6, 170),
+    ("reloc_narrow_window", 2.0, 6, 170),
+    ("reloc_narrow_distance", 50, 6, 170),
 ]
-"""The wide and narrow searches, with :data:`MOVED`: every setting it moves is used."""
+"""Each of relocalisation's settings off its default (the setting, its value, the frame and
+``recovery_tracked``) where it alone changes Python's decisions (review panel findings L1 and L9,
+by finding H21's rule): a native that hard-coded it would decide unlike Python there. At 170
+inliers needed, frame 6's narrow search decides; at 175, its RANSAC; frame 30's wide search at
+150, and its 84 matches against a minimum of 85."""
+
+COVERED_ELSEWHERE = {
+    "reloc_min_matches",
+    "reloc_common_words",
+    "reloc_neighbours",
+    "reloc_group_score",
+}
+"""Relocalisation's settings moved by other tests: the matches by word below, the candidates'
+in the database's tests."""
 
 
-@pytest.mark.parametrize(("index", "settings"), MOVED_CASES, ids=["wide search", "narrow search"])
-def test_the_moved_settings_change_what_relocalisation_decides(
-    index: int, settings: Options, truth: Truth, room_database: Database
+def _moved(setting: str, value: float, recovery_tracked: int) -> Options:
+    """Return the settings with one moved, and ``recovery_tracked`` set."""
+    moved: dict[str, Any] = {setting: value}
+    return replace(OPTIONS, recovery_tracked=recovery_tracked, **moved)
+
+
+def _decided(found: relocalization.Relocalized) -> tuple[object, ...]:
+    """Return what a relocalisation decided: its summary, the points it placed with, its matches."""
+    points = None if found.tracked is None else found.tracked.points.tolist()
+    return found.summary.as_dict(), points, found.matched.tolist()
+
+
+def test_every_relocalisation_setting_is_moved_where_it_decides() -> None:
+    """Each ``reloc_*`` setting is in :data:`DECISIVE`, or moved by another test."""
+    settings = {name for name in OPTIONS.as_dict() if name.startswith("reloc_")}
+    assert settings == {d[0] for d in DECISIVE} | COVERED_ELSEWHERE
+
+
+@pytest.mark.parametrize("case", DECISIVE, ids=[d[0] for d in DECISIVE])
+def test_each_moved_setting_alone_changes_what_relocalisation_decides(
+    case: tuple[str, float, int, int], truth: Truth, room_database: Database
 ) -> None:
-    """Off their defaults, the settings change Python's result.
+    """Moved alone, the setting changes Python's result.
 
-    So the backends' agreement with them (below) shows that the natives read them.
+    The backends' agreement on the same case (below) then shows that the natives read it.
     """
+    setting, value, index, recovery_tracked = case
+    frame = truth.frames[index]
     moved = relocalization.relocalize(
-        truth.map, room_database, CAMERA, truth.frames[index], settings
+        truth.map, room_database, CAMERA, frame, _moved(setting, value, recovery_tracked)
     )
-    at_defaults = replace(OPTIONS, recovery_tracked=settings.recovery_tracked)
-    default = relocalization.relocalize(
-        truth.map, room_database, CAMERA, truth.frames[index], at_defaults
-    )
-    assert moved.summary.as_dict() != default.summary.as_dict()
+    at_default = replace(OPTIONS, recovery_tracked=recovery_tracked)
+    default = relocalization.relocalize(truth.map, room_database, CAMERA, frame, at_default)
+    assert _decided(moved) != _decided(default)
+
+
+def test_the_narrow_search_can_place_the_frame(truth: Truth, room_database: Database) -> None:
+    """Needing 169 inliers, frame 6 is placed by the narrow search's last optimisation.
+
+    The second optimisation keeps 168; the narrow search adds the rest, and the frame's points
+    are the last optimisation's (the second's outliers kept until it).
+    """
+    demanding = replace(OPTIONS, recovery_tracked=169)
+    found = relocalization.relocalize(truth.map, room_database, CAMERA, truth.frames[6], demanding)
+    assert found.tracked is not None
+    last = found.summary.candidates[-1]
+    assert last.found is not None
+    assert last.found >= demanding.recovery_tracked > 168
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -210,7 +248,8 @@ def test_the_moved_settings_change_what_relocalisation_decides(
         (30, replace(OPTIONS, reloc_min_matches=1 << 20)),
         (30, replace(OPTIONS, recovery_tracked=150)),
         (6, replace(OPTIONS, recovery_tracked=175)),
-        *MOVED_CASES,
+        (6, replace(OPTIONS, recovery_tracked=169)),
+        *[(index, _moved(setting, value, rt)) for setting, value, index, rt in DECISIVE],
     ],
     ids=[
         "3",
@@ -221,8 +260,8 @@ def test_the_moved_settings_change_what_relocalisation_decides(
         "too few matches",
         "wide search",
         "narrow search",
-        "wide search, moved",
-        "narrow search, moved",
+        "narrow search places",
+        *[f"{d[0]} moved" for d in DECISIVE],
     ],
 )
 def test_every_backend_relocalizes_as_python_does(

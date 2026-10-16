@@ -204,9 +204,12 @@ small enough for the fallback's local map to hold all of it)."""
 
 
 WINDOW_BLANKS = 2
-"""The window room's first blank frames, from :data:`FOUND_AT`: one fewer than the found room's,
-so that the frame after them, back at :data:`FOUND_BACK`, is tried within its short
-``relocalize_seconds``, and relocalised."""
+"""The window room's first blank frames, from :data:`FOUND_AT`: one fewer than the found room's.
+The second, 0.033 s after the first, is within the room's 0.05 s ``relocalize_seconds``, so the
+track is not lost on it; the frame after, back at :data:`FOUND_BACK` and 0.067 s after the first,
+is relocalised, because the time is judged only on a frame that every attempt fails, as
+ORB-SLAM3 judges it after ``Relocalization``. A native that judged it first would lose the map
+there."""
 
 WINDOW_AT = 36
 """Where the window room's second blank stretch begins: :data:`FOUND_BLANKS` frames, longer than
@@ -234,8 +237,10 @@ kept; lost 0.05 s after its first failed frame, on the third frame at 30 Hz, whe
 ``lost_frames`` would lose it on the fifth; a keyframe culled when 60% of its points are seen by
 one other keyframe, so that an RGB-D run culls several, which leave its database, before the
 frame is relocalised; ``recovery_tracked`` above the relocalised frame's first inliers, so that the
-search by projection runs; and the relocalisation settings off their defaults, so that a native
-that hard-coded one would decide unlike Python (finding H21's rule)."""
+search by projection runs; and the relocalisation settings off their defaults. Here only the
+search's window and RANSAC's confidence decide (review panel finding L9): the stage parity's
+cases (``tests/edge/test_relocalization.py``'s ``DECISIVE``) move each setting where it alone
+decides."""
 
 
 def window_frames(rendered: list[room.Frame]) -> list[room.Frame]:

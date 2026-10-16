@@ -177,6 +177,29 @@ pub fn one_word() -> Vocabulary {
     }
 }
 
+/// A frame with no keypoints, at a time.
+///
+/// # Arguments
+///
+/// * `timestamp` - The time.
+///
+/// # Returns
+///
+/// The frame.
+///
+/// # Panics
+///
+/// Never: an empty frame is well formed.
+pub fn empty_frame(timestamp: f64) -> Frame {
+    let features = Features {
+        keypoints: Vec::new(),
+        descriptors: Vec::new(),
+        scale_factor: 1.2,
+        levels: 8,
+    };
+    Frame::new(timestamp, features, Vec::new(), Vec::new(), Vec::new()).unwrap()
+}
+
 /// The scene's map: the first keyframe makes a point at each keypoint, the others observe
 /// them all.
 ///
