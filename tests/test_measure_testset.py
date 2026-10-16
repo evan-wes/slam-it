@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.util
 import json
 import subprocess
@@ -12,12 +13,19 @@ from types import ModuleType
 import numpy as np
 import pytest
 
+from slam_it.edge.options import Options
 from slam_it.eval import lenses, runs, tum
 from slam_it.foundations.errors import InvalidInputError
 from tests.edge import room
 from tests.edge.support import ATE_BOUND, FRAMES
 from tests.orchestration.conftest import require_program
-from tests.orchestration.datasets import write_tum
+from tests.orchestration.datasets import (
+    FOUND_AT,
+    FOUND_BLANKS,
+    FOUND_OPTIONS,
+    found_frames,
+    write_tum,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -71,6 +79,7 @@ def test_a_sequence_is_run_measured_and_tabled(
         "room", "rgbd", "exact", [320, 240],
     )  # fmt: skip
     assert (result["features"], result["frames"], result["tracked"]) == (1000, FRAMES, FRAMES)
+    assert result["options"] == {}
     assert (result["share"], result["tracked_from"], result["losses"]) == (1.0, 0.0, 0)
     assert [(s["map"], s["tracked"]) for s in result["segments"]] == [(0, FRAMES)]
     assert (result["resets"], result["relocalizations"]) == (0, 0)
@@ -151,13 +160,18 @@ def test_the_template_is_a_config_the_script_reads() -> None:
 
 
 @pytest.mark.parametrize(
-    ("extra", "message"), [(["--only", "other"], "not in the config"), ([], "new or empty")]
+    ("extra", "message"),
+    [
+        (["--only", "other"], "not in the config"),
+        (["--option", "nothing=1"], "no setting 'nothing'"),
+        ([], "new or empty"),
+    ],
 )
 def test_main_refuses_an_unknown_name_or_a_used_folder(
     extra: list[str], message: str, sequence: Path, tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:  # fmt: skip
-    """``--only`` names a sequence the config lists; the results go to a new or empty folder."""
+    """``--only`` names a listed sequence, ``--option`` a setting; the folder is new or empty."""
     config = _config(tmp_path / "testset.toml", sequence)
     out = tmp_path / "out"
     if not extra:
@@ -211,3 +225,68 @@ def test_the_measure_never_needs_the_video_import() -> None:
         [sys.executable, "-c", probe], capture_output=True, text=True, check=True
     )
     assert found.stdout.strip() == "[]"
+
+
+def test_options_are_read_as_json_and_checked_as_a_run_checks_them() -> None:
+    """A value is JSON where it parses; each must be one its setting takes."""
+    read = _script().read_options
+    assert read(["relocalize=false", "relocalize_seconds=0.5", "seed=2"]) == {
+        "relocalize": False, "relocalize_seconds": 0.5, "seed": 2,
+    }  # fmt: skip
+    assert read([]) == {}
+
+
+@pytest.mark.parametrize(
+    ("given", "message"),
+    [
+        (["relocalize"], "expected KEY=VALUE"),
+        (["nothing=1"], "no setting 'nothing'"),
+        (["seed=1", "seed=2"], "seed given twice"),
+        (["relocalize=maybe"], "relocalize"),
+        (["seed=-1"], "seed"),
+    ],
+)
+def test_a_bad_option_is_refused(given: list[str], message: str) -> None:
+    """Not KEY=VALUE, no such setting, one given twice, a value its setting does not take."""
+    with pytest.raises(InvalidInputError, match=message):
+        _script().read_options(given)
+
+
+@pytest.mark.usefixtures("cpp")
+def test_an_option_replaces_a_setting_in_every_run(sequence: Path, tmp_path: Path) -> None:
+    """Each result names the settings it replaced, and its run's settings hold them."""
+    config = _config(tmp_path / "testset.toml", sequence)
+    out = tmp_path / "out"
+    replaced = ["--option", "relocalize=false", "--option", "seed=3"]
+    assert _script().main([str(config), str(out), *replaced]) == 0
+    result = json.loads((out / "results.jsonl").read_text())
+    assert result["options"] == {"relocalize": False, "seed": 3}
+    settings = runs.read_run(out / "room" / "run").settings
+    assert (settings["relocalize"], settings["seed"]) == (False, 3)
+
+
+@pytest.mark.usefixtures("cpp")
+def test_the_found_room_relocalises_unless_an_option_turns_it_off(tmp_path: Path) -> None:
+    """The golden record's found room, measured with its settings: found again, or not."""
+    write_tum(tmp_path / "found", found_frames(room.sequence(FRAMES)))
+    config = _config(tmp_path / "testset.toml", tmp_path / "found", name="found")
+    default = Options()
+    found = [
+        f"--option={item.name}={json.dumps(getattr(FOUND_OPTIONS, item.name))}"
+        for item in dataclasses.fields(Options)
+        if getattr(FOUND_OPTIONS, item.name) != getattr(default, item.name)
+    ]
+    measured = {}
+    for name, extra in (("on", []), ("off", ["--option=relocalize=false"])):
+        out = tmp_path / name
+        assert _script().main([str(config), str(out), "--features", "default", *found, *extra]) == 0
+        measured[name] = json.loads((out / "results.jsonl").read_text())
+    # Relocalised on the first frame after the blank ones, as the golden record has it.
+    assert measured["on"]["relocalizations"] == 1
+    placed = [
+        k
+        for k, entry in enumerate(runs.read_run(tmp_path / "on" / "found" / "run").diagnostics)
+        if entry.get("placed_by") == runs.RELOCALIZED
+    ]
+    assert placed == [FOUND_AT + FOUND_BLANKS]
+    assert measured["off"]["relocalizations"] == 0

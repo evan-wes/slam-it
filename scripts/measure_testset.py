@@ -45,15 +45,26 @@ folder of links to its frames written beside the run. Its depth's virtual baseli
 an RGB-D run's split of near and far points does not move with the guess. It measures what a
 guessed lens costs.
 
+``--option KEY=VALUE``, given once a setting, replaces one of the edge pipeline's settings
+(:class:`slam_it.edge.options.Options`) in every run, its value read as JSON: ``--option
+relocalize=false`` measures without relocalisation, ``--option seed=1`` at another RANSAC seed.
+Each result names the settings it replaced, in ``options``.
+
 The results are one JSON line per sequence in ``OUT/results.jsonl``, and a table on stdout::
 
     python scripts/measure_testset.py CONFIG OUT [--backend cpp] [--features by-size|default]
-        [--camera exact|nominal] [--only NAME ...]
+        [--camera exact|nominal] [--only NAME ...] [--option KEY=VALUE ...]
+
+A run's latency is read only from a measure made alone, pinned to one core (``taskset -c 2
+python scripts/measure_testset.py ...``): runs side by side share the caches, the memory's
+bandwidth and the power. ``scripts/measure_sharded.py`` runs them side by side, for the
+tracking and the ATE.
 """
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import sys
@@ -70,6 +81,9 @@ from slam_it.orchestration import vo
 
 KEYS = ("name", "folder", "mode", "reference")
 """Each sequence's keys in the config, every one a string."""
+
+SETTINGS = frozenset(item.name for item in dataclasses.fields(Options))
+"""The settings an ``--option`` may replace."""
 
 LINKED = ("rgb", "rgb.txt", "depth", "depth.txt", "groundtruth.txt")
 """What a nominal camera's folder links to in the sequence's, where the sequence has it."""
@@ -117,6 +131,37 @@ def read_config(path: Path) -> list[Entry]:
     return entries
 
 
+def read_options(given: list[str]) -> dict[str, Any]:
+    """Read ``--option`` arguments: each ``KEY=VALUE``, its value JSON or else a string.
+
+    Returns
+    -------
+    dict
+        The settings to replace, each checked as the pipeline's settings check it.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If one is not ``KEY=VALUE``, names no setting or one given before, or its value is not
+        one the setting takes.
+    """
+    out: dict[str, Any] = {}
+    for text in given:
+        key, equals, value = text.partition("=")
+        if not equals:
+            raise InvalidInputError(f"--option {text!r}: expected KEY=VALUE")
+        if key not in SETTINGS:
+            raise InvalidInputError(f"--option {text!r}: no setting {key!r}")
+        if key in out:
+            raise InvalidInputError(f"--option {text!r}: {key} given twice")
+        try:
+            out[key] = json.loads(value)
+        except json.JSONDecodeError:
+            out[key] = value
+    dataclasses.replace(Options(), **out)  # each value checked as a run will check it
+    return out
+
+
 def nominal_folder(sequence: Path, out: Path) -> Path:
     """Write a folder of links to a sequence's frames, its camera a nominal guess; return it.
 
@@ -145,13 +190,24 @@ def nominal_folder(sequence: Path, out: Path) -> Path:
     return out
 
 
-def measure(
-    entry: Entry, out: Path, *, backend: str, by_size: bool, nominal: bool
+def measure(  # noqa: PLR0913 -- the sequence and its folder; how it runs keyword-only
+    entry: Entry,
+    out: Path,
+    *,
+    backend: str,
+    by_size: bool,
+    nominal: bool,
+    replaced: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Run a sequence and measure it (the module docstring); return its result."""
+    """Run a sequence and measure it (the module docstring); return its result.
+
+    `replaced` holds the settings to replace in its run (:func:`read_options`).
+    """
+    replaced = replaced or {}
     folder = nominal_folder(entry.folder, out / "sequence") if nominal else entry.folder
     camera = tum.read_camera(folder)
-    options = vo.options_for(camera.width, camera.height) if by_size else Options()
+    chosen = vo.options_for(camera.width, camera.height) if by_size else Options()
+    options = dataclasses.replace(chosen, **replaced)
     run = vo.run("tum", folder, entry.mode, out / "run", backend=backend, options=options)
     times = vo.open_source("tum", folder, entry.mode).times
     span = runs.tracking(run, times)
@@ -162,6 +218,7 @@ def measure(
         "camera": "nominal" if nominal else "exact",
         "size": [camera.width, camera.height],
         "features": options.n_features,
+        "options": replaced,
         "frames": len(times),
         "run": span.frames,
         "tracked": span.tracked,
@@ -247,42 +304,82 @@ HEADER = (
 """The table's header."""
 
 
-def main(arguments: list[str]) -> int:
-    """Measure the test set from the command line (the module docstring)."""
-    parser = argparse.ArgumentParser(prog="python scripts/measure_testset.py")
+def add_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add the measure's arguments: the config, the results' folder, and how runs are made."""
     parser.add_argument("config", type=Path, help="the test set's config (TOML)")
     parser.add_argument("out", type=Path, help="the folder for the runs and results.jsonl")
     parser.add_argument("--backend", default="cpp", choices=("python", "cpp", "rust"))
     parser.add_argument("--features", default="by-size", choices=("by-size", "default"))
     parser.add_argument("--camera", default="exact", choices=("exact", "nominal"))
     parser.add_argument("--only", nargs="+", metavar="NAME", help="measure these sequences")
-    args = parser.parse_args(arguments)
+    parser.add_argument(
+        "--option",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="replace one of the pipeline's settings in every run (repeatable)",
+    )
+
+
+def chosen(
+    args: argparse.Namespace, parser: argparse.ArgumentParser
+) -> tuple[list[Entry], dict[str, Any]]:
+    """Return the sequences to measure and the settings to replace, and make the results' folder.
+
+    Refuses, through `parser`, a name not in the config, a bad option, or a folder already used.
+    """
     entries = read_config(args.config)
     if args.only:
         unknown = set(args.only) - {e.name for e in entries}
         if unknown:
             parser.error(f"--only: not in the config: {', '.join(sorted(unknown))}")
         entries = [e for e in entries if e.name in args.only]
+    try:
+        replaced = read_options(args.option)
+    except InvalidInputError as error:
+        parser.error(str(error))
     if args.out.exists() and any(args.out.iterdir()):
         parser.error(f"{args.out}: expected a new or empty folder")
     args.out.mkdir(parents=True, exist_ok=True)
+    return entries, replaced
+
+
+def measured(
+    entry: Entry, out: Path, args: argparse.Namespace, replaced: dict[str, Any]
+) -> dict[str, Any]:
+    """Measure a sequence as the arguments ask; a sequence that fails is a result saying why."""
+    try:
+        return measure(
+            entry,
+            out / entry.name,
+            backend=args.backend,
+            by_size=args.features == "by-size",
+            nominal=args.camera == "nominal",
+            replaced=replaced,
+        )
+    except (SlamItError, FileNotFoundError) as error:
+        return {"name": entry.name, "failed": str(error)}
+
+
+def shown(result: dict[str, Any]) -> str:
+    """Return a result as a line of the table, or the line saying why its sequence failed."""
+    if "failed" in result:
+        return f"| {result['name']} | failed: {result['failed']} |"
+    return row(result)
+
+
+def main(arguments: list[str]) -> int:
+    """Measure the test set from the command line (the module docstring)."""
+    parser = argparse.ArgumentParser(prog="python scripts/measure_testset.py")
+    add_arguments(parser)
+    args = parser.parse_args(arguments)
+    entries, replaced = chosen(args, parser)
     print(HEADER, flush=True)
     with (args.out / "results.jsonl").open("w") as results:
         for entry in entries:
-            try:
-                result = measure(
-                    entry,
-                    args.out / entry.name,
-                    backend=args.backend,
-                    by_size=args.features == "by-size",
-                    nominal=args.camera == "nominal",
-                )
-            except (SlamItError, FileNotFoundError) as error:
-                print(f"| {entry.name} | failed: {error} |", flush=True)
-                results.write(json.dumps({"name": entry.name, "failed": str(error)}) + "\n")
-                continue
+            result = measured(entry, args.out, args, replaced)
             results.write(json.dumps(result) + "\n")
-            print(row(result), flush=True)
+            print(shown(result), flush=True)
     return 0
 
 
