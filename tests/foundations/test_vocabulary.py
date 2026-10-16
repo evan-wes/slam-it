@@ -328,3 +328,20 @@ def test_a_tiny_training_is_pinned_to_its_checksums() -> None:
     holders = [len(np.unique(images[words == w])) for w in range(vocab.size)]
     expected = [np.log(12 / n) if n else 0.0 for n in holders]
     np.testing.assert_allclose(vocab.weights, expected, rtol=1e-15, atol=0)
+
+
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+@pytest.mark.parametrize("change", ["missing", "extra"])
+def test_a_vocabulary_with_a_key_missing_or_extra_is_refused(
+    backend: str, change: str, default: vocabulary.Vocabulary
+) -> None:
+    """A vocabulary crosses as exactly :func:`vocabulary.fields`' keys (review panel finding A4)."""
+    chosen = require_function(backend, vocabulary.__name__, "bow")
+    compiled = backends.implementation(chosen, vocabulary.__name__)
+    crossed = vocabulary.fields(default)
+    if change == "missing":
+        del crossed["weights"]
+    else:
+        crossed["bogus"] = 1
+    with pytest.raises(ValueError, match=r"weights|bogus|exactly the keys"):
+        compiled.bow(crossed, np.zeros(1, dtype=np.int64))

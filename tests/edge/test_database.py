@@ -167,3 +167,24 @@ def test_a_malformed_vector_is_refused(truth: Truth, room_database: Database) ->
     for ids, values in (([2, 1], [0.5, 0.5]), ([1, 2], [1.0]), ([1.9, 2.5], [0.5, 0.5])):
         with pytest.raises(InvalidInputError, match="vector: expected"):
             database.candidates(room_database, truth.map, (ids, values), OPTIONS)
+
+
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+@pytest.mark.parametrize("change", ["missing", "extra"])
+def test_a_database_with_a_key_missing_or_extra_is_refused(
+    backend: str, change: str, truth: Truth, room_database: Database
+) -> None:
+    """The database crosses as exactly :meth:`Database.as_dict`'s keys (review panel finding A4).
+
+    A key one side added and the other did not know is refused, in both languages alike.
+    """
+    chosen = require_function(backend, database.__name__, "candidates")
+    compiled = backends.implementation(chosen, database.__name__)
+    crossed = room_database.as_dict()
+    if change == "missing":
+        del crossed["node"]
+    else:
+        crossed["bogus"] = np.zeros(0, dtype=np.int64)
+    ids, values = vocabulary.bow(room_database.vocabulary, [0])
+    with pytest.raises(ValueError, match=r"node|bogus|exactly the keys"):
+        compiled.candidates(crossed, truth.map.as_dict(), ids, values, OPTIONS.as_dict())

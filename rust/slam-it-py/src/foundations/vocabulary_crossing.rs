@@ -22,7 +22,7 @@ const VOCABULARY_KEYS: [&str; 7] = [
     "weights",
 ];
 
-/// Reads one field of a vocabulary's dict, which must hold exactly [`VOCABULARY_KEYS`].
+/// Reads one field of a vocabulary's dict.
 ///
 /// # Arguments
 ///
@@ -31,13 +31,8 @@ const VOCABULARY_KEYS: [&str; 7] = [
 ///
 /// # Errors
 ///
-/// `ValueError` if it is missing, or the dict has other keys.
+/// `ValueError` if it is missing.
 fn field<'py>(fields: &Bound<'py, PyDict>, key: &str) -> PyResult<Bound<'py, PyAny>> {
-    if fields.len() != VOCABULARY_KEYS.len() {
-        return Err(PyValueError::new_err(format!(
-            "vocabulary: expected exactly the keys {VOCABULARY_KEYS:?}"
-        )));
-    }
     fields
         .get_item(key)?
         .ok_or_else(|| PyValueError::new_err(format!("vocabulary: missing {key}")))
@@ -52,8 +47,17 @@ fn field<'py>(fields: &Bound<'py, PyDict>, key: &str) -> PyResult<Bound<'py, PyA
 ///
 /// # Errors
 ///
-/// `ValueError` for a malformed field or tree.
+/// `ValueError` for a dict without exactly [`VOCABULARY_KEYS`], or a malformed field or tree.
 pub fn vocabulary_in(py: Python<'_>, fields: &Bound<'_, PyDict>) -> PyResult<core::Vocabulary> {
+    if fields.len() != VOCABULARY_KEYS.len()
+        || VOCABULARY_KEYS
+            .iter()
+            .any(|key| !fields.contains(key).unwrap_or(false))
+    {
+        return Err(PyValueError::new_err(format!(
+            "vocabulary: expected exactly the keys {VOCABULARY_KEYS:?}"
+        )));
+    }
     let children: PyReadonlyArray2<'_, i32> = field(fields, "children")?.extract()?;
     let parents: PyReadonlyArray1<'_, i32> = field(fields, "parents")?.extract()?;
     let words: PyReadonlyArray1<'_, i32> = field(fields, "words")?.extract()?;

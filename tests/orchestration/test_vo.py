@@ -5,8 +5,10 @@ The room from its TUM and EuRoC folders, the native programs' command line, and 
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import shutil
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -760,6 +762,48 @@ def test_every_program_refuses_a_vocabulary_twice_and_a_flag_not_true_or_false(
     done = subprocess.run([*program, *base, *more], capture_output=True, text=True, check=False)
     assert done.returncode == vo.EXIT_USAGE
     assert done.stderr.startswith(f"slam_it_vo: {message}")
+
+
+def _foreign_vocabulary(folder: Path) -> Path:
+    """Write a copy of the reader's fixture whose header names another descriptor."""
+    cases = json.loads((FIXTURES / "eval" / "vocabulary_cases.json").read_text())["cases"]
+    (case,) = [c for c in cases if c["name"] == "another descriptor's words"]
+    shutil.copytree(FIXTURES / "eval" / "vocabulary", folder)
+    for name, data in case["files"].items():
+        (folder / name).write_bytes(bytes.fromhex(data))
+    return folder
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("refused", ["none", "unasked", "foreign"])
+def test_every_program_refuses_a_vocabulary_missing_unasked_or_foreign(
+    backend: str, refused: str, tmp_path: Path
+) -> None:
+    """A vocabulary missing, unasked for or foreign: every program fails the run and writes none.
+
+    Relocalising without a vocabulary, given one with relocalisation off, or given one of another
+    descriptor, every program exits 3 and says why (review panel findings A1 and run 2's H17:
+    before B1's fixes, the native programs read a foreign vocabulary and exited 0).
+    """
+    out = tmp_path / "run"
+    request = vo.Request("tum", SEQUENCES / "tum_camera", "rgbd", out, count=0)
+    message = "--vocabulary: relocalize needs one"
+    if refused == "unasked":
+        request = replace(
+            request, options=Options(relocalize=False), vocabulary=vocabularies.DEFAULT
+        )
+        message = "--vocabulary: given, but relocalize is off"
+    elif refused == "foreign":
+        folder = _foreign_vocabulary(tmp_path / "foreign")
+        request = replace(request, vocabulary=folder)
+        message = f"{folder}: trained on descriptor version 99"
+    program = vo.command(require_program(backend))
+    done = subprocess.run(
+        [*program, *request.arguments()], capture_output=True, text=True, check=False
+    )
+    assert done.returncode == vo.EXIT_FAILED
+    assert done.stderr.startswith(f"slam_it_vo: {message}")
+    assert not (out / "run.json").exists()
 
 
 def test_a_run_set_up_for_its_frames_size_gets_their_features() -> None:
