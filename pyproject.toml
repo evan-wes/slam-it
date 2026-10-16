@@ -182,9 +182,10 @@ layers = [
 ]
 
 # The order of modules inside the edge rung: the settings, a frame and the map at the bottom;
-# the keyframe database, the observation test and bundle adjustment on them; initialisation,
-# tracking and mapping, independent of each other, on those; relocalisation on tracking; the
-# pipeline on top. New modules are optional layers.
+# the observation test on them; bundle adjustment and the keyframe database, independent of each
+# other, on that (the database needs only the map); initialisation, tracking and mapping,
+# independent of each other, on those; relocalisation on tracking; the pipeline on top. New
+# modules are optional layers.
 [[tool.importlinter.contracts]]
 name = "The edge rung's internal order"
 type = "layers"
@@ -194,9 +195,8 @@ layers = [
   "(pipeline)",
   "(relocalization)",
   "(initialization) | (tracking) | (mapping)",
-  "(adjust)",
+  "(adjust) | (database)",
   "(residuals)",
-  "(database)",
   "map",
   "frames",
   "options",
