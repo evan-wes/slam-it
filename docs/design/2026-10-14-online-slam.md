@@ -171,8 +171,8 @@ source (`KeyFrameDatabase.cc`, `Tracking.cc`):
    relocalisation's settings each moved where it alone decides; a golden bundle of the found
    room for the viewer's tests; and native tests of the vocabulary, its reader, the database,
    relocalisation and the pipeline relocalising.
-9. **Rust's cost**, as the ladder decided: measured after this PR, and Rust kept or dropped
-   (B1's panel, A13: due after its merge).
+9. **Rust stays**, as it was always meant to: no language is dropped partway through the
+   project, so no keep-or-drop decision follows this PR (B1's panel, A13).
 10. **The two-view sample limit,** deferred from A2's measurement: a failed monocular start
    takes up to 0.43 s on ADVIO, every late frame of the test set, where rung 0's two-view RANSAC
    draws up to 10,000 samples per model (`twoview.Options.max_iterations`) and ORB-SLAM's
@@ -257,6 +257,6 @@ Each gets its own section here before its PR, its forks put to the owner then.
   tool; the three vocabularies trained, the default committed; the database and relocalisation;
   the loss flow; the diagnostics, measure, bake and status page; the relocalising room in the
   golden record; the test set rerun and the note. The review panel on the finished slice;
-  offline CI before the merge. Then Rust's cost.
+  offline CI before the merge.
 - **B2, B3 and B4** after it, each designed here first.
 - **Not in 2B:** the IMU (milestone 6); the learned rungs.

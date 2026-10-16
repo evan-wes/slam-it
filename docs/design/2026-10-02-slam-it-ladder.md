@@ -541,8 +541,8 @@ tracking, local mapping and loop closing share a covisibility graph; place recog
 relocalises a lost track and closes loops; and an atlas of maps lets a run go on after a loss
 and joins its maps when a place is seen again (Mur-Artal and Tardós 2017; Campos et al. 2021).
 Both milestones are the real-time pipeline's, in Python, C++ and Rust, each planned in a design
-doc of its own; Rust's cost is measured after 2B's first PR, and Rust kept or dropped from
-there.
+doc of its own. Rust stays in both, as it was always meant to: no language is dropped partway
+through the project.
 
 - **2A: VO that survives a phone.**
   - A public test set with ground truth, measured by the share of each sequence tracked: TUM
