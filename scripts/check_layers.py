@@ -10,6 +10,9 @@ the other two languages, reading the same contracts, so the three can never disa
   (except the bindings' root, which only wires the rungs); and every
   ``slam_it_add_rung(<rung> DEPENDS ...)`` in ``CMakeLists.txt`` may only link the rungs it
   may depend on.
+- Files: the rungs a forbidden contract keeps from Python's file modules (``json``, ``io``,
+  ...) include no C++ file header (``<fstream>``, ``<filesystem>``, ``<cstdio>``) and name no
+  ``std::fs`` in Rust outside their tests (:func:`check_file_io`).
 - Rust: every crate under ``rust/`` except the ``slam-it-py`` bindings crate -- listed
   workspace members and the implicit ones Cargo adds for path dependencies alike -- is a
   rung crate named ``slam-it-<rung>``. It may only depend on the crates of the rungs it may
@@ -96,6 +99,14 @@ _BINDINGS_CRATE = "slam-it-py"
 _PACKAGE = "slam_it"
 _NON_RUNG_PACKAGES = frozenset({"backends"})
 """Layers that are Python plumbing, with no C++ or Rust counterpart."""
+_FILE_MODULES = frozenset({"json", "hashlib", "io", "os", "pathlib", "pickle", "shutil", "tarfile",
+                           "tempfile", "zipfile"})  # fmt: skip
+"""Python modules for reading files: a forbidden contract naming one keeps its source rungs from
+files, and :func:`check_file_io` holds their C++ and Rust to the same."""
+_CPP_FILE_HEADERS = frozenset({"cstdio", "filesystem", "fstream", "stdio.h"})
+"""The C++ headers that read and write files."""
+_RUST_FILE_IO = re.compile(r"\bstd\s*::\s*(?:fs\b|\{[^}]*\bfs\b)")
+"""A Rust path to ``std::fs``, direct or in a ``use std::{...}`` group."""
 
 
 @dataclass(frozen=True)
@@ -836,6 +847,70 @@ def _reachable_rung_crates(
     return found
 
 
+def file_reading_rungs(pyproject: dict[str, Any]) -> frozenset[str]:
+    """Return the rungs a forbidden contract keeps from reading files.
+
+    Parameters
+    ----------
+    pyproject : dict
+        The parsed ``pyproject.toml``.
+
+    Returns
+    -------
+    frozenset of str
+        The source rungs of every forbidden contract naming one of :data:`_FILE_MODULES`.
+    """
+    prefix = f"{_PACKAGE}."
+    return frozenset(
+        source.removeprefix(prefix)
+        for contract in pyproject["tool"]["importlinter"]["contracts"]
+        if contract["type"] == "forbidden" and _FILE_MODULES & set(contract["forbidden_modules"])
+        for source in contract["source_modules"]
+    )
+
+
+def check_file_io(root: Path, rungs: frozenset[str]) -> Iterator[Violation]:
+    """Check that the C++ and Rust of rungs kept from files read none.
+
+    Their modules (``cpp/include/slam_it/<rung>``, ``cpp/src/<rung>``) may not include a header
+    of :data:`_CPP_FILE_HEADERS`, and their crates' sources may not name ``std::fs`` outside
+    comments, literals and the trailing test module, whose tests read fixtures.
+
+    Parameters
+    ----------
+    root : pathlib.Path
+        The repository root.
+    rungs : frozenset of str
+        The rungs kept from files, from :func:`file_reading_rungs`.
+
+    Yields
+    ------
+    Violation
+        Each file include, and each use of ``std::fs``.
+    """
+    for rung in sorted(rungs):
+        for module_root in _CPP_MODULE_ROOTS:
+            base = root / module_root / rung
+            for source in sorted(p for p in base.rglob("*") if p.suffix in _CPP_SUFFIXES):
+                text = source.read_text()
+                for match in _ANY_INCLUDE.finditer(text):
+                    if match.group(1) == "<" and match.group(2) in _CPP_FILE_HEADERS:
+                        line = text.count("\n", 0, match.start()) + 1
+                        yield Violation(
+                            f"{source.relative_to(root)}:{line}",
+                            f"rung {rung!r} reads no files: <{match.group(2)}> is eval's",
+                        )
+        src = root / "rust" / f"slam-it-{rung.replace('_', '-')}" / "src"
+        for source in sorted(src.rglob("*.rs")):
+            code, _ = _rust_code(source.read_text())
+            for match in _RUST_FILE_IO.finditer(code):
+                line = code.count("\n", 0, match.start()) + 1
+                yield Violation(
+                    f"{source.relative_to(root)}:{line}",
+                    f"rung {rung!r} reads no files: std::fs is eval's",
+                )
+
+
 def main(argv: list[str]) -> int:
     """Run every check and report violations.
 
@@ -857,6 +932,7 @@ def main(argv: list[str]) -> int:
         *check_cpp_internal(root, internal_orders(pyproject)),
         *check_rust_internal(root, internal_orders(pyproject)),
         *check_rust(root, allowed),
+        *check_file_io(root, file_reading_rungs(pyproject)),
     ]
     for violation in violations:
         print(f"{violation.location}: {violation.message}")

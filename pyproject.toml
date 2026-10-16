@@ -262,9 +262,12 @@ source_modules = ["slam_it"]
 forbidden_modules = ["PIL"]
 ignore_imports = ["slam_it.eval.images -> PIL"]
 
-# The algorithm rungs take arrays, never files: none parses JSON or hashes a file's bytes. Eval
-# reads their files for them (a vocabulary's folder in slam_it.eval.vocabularies, the run
-# format in slam_it.eval.runs), as its native libraries do for the C++ and Rust cores.
+# The algorithm rungs take arrays, never files: none imports what reads, finds or hashes one.
+# Eval reads their files for them (a vocabulary's folder in slam_it.eval.vocabularies, the run
+# format in slam_it.eval.runs), as its native libraries do for the C++ and Rust cores, which
+# scripts/check_layers.py holds to the same (no <fstream>, <filesystem> or <cstdio>, no std::fs).
+# import-linter cannot see the builtin open() or np.load. The source list is explicit: a new
+# algorithm rung (calib) must be added to it.
 [[tool.importlinter.contracts]]
 name = "The algorithm rungs read no files"
 type = "forbidden"
@@ -276,7 +279,20 @@ source_modules = [
   "slam_it.dense",
   "slam_it.learned",
 ]
-forbidden_modules = ["json", "hashlib"]
+forbidden_modules = [
+  "hashlib",
+  "io",
+  "json",
+  "os",
+  "pathlib",
+  "pickle",
+  "shutil",
+  "tarfile",
+  "tempfile",
+  "zipfile",
+]
+# The rungs' own modules: slam_it.backends, below them, finds the compiled programs by path.
+allow_indirect_imports = true
 
 # PyAV decodes phone videos in slam_it.eval.video alone (the optional `video` extra): the
 # pipeline reads frames from a folder, never a video.
