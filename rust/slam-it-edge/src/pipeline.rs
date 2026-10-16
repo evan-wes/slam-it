@@ -790,7 +790,8 @@ impl Pipeline {
             );
         };
         // No velocity (just initialised, or after a failure): predict no motion. ORB-SLAM
-        // tracks its reference keyframe by bag of words here; the lite pipeline has none.
+        // tracks its reference keyframe by bag of words here; the lite pipeline's words only
+        // relocalise.
         let predicted = tracking::predict(&last_tracked.pose, self.velocity.as_ref());
         let motion = tracking::track_last_frame(
             m,

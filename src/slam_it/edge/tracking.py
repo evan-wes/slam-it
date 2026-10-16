@@ -10,9 +10,10 @@
   whether the frame is tracked.
 - **The fallback** (:func:`relocalize_locally`): when the prediction fails, the frame's
   descriptors are matched to the local map's and PnP RANSAC
-  (:func:`slam_it.foundations.pnp.pnp_ransac`) places it. No bag of words: this recovers only
-  near the local map; a lost track closes the map, and the pipeline starts a new one
-  (:class:`slam_it.edge.pipeline.Pipeline`).
+  (:func:`slam_it.foundations.pnp.pnp_ransac`) places it. It recovers only near the local map;
+  past it, the pipeline relocalises the frame against the whole map through its bag of words
+  (:mod:`slam_it.edge.relocalization`), and a track lost closes the map, the next frame starting
+  a new one (:class:`slam_it.edge.pipeline.Pipeline`).
 
 Each stage reports how it went beside its result (:class:`MotionSummary`,
 :class:`PnpSummary`, :meth:`LocalTracking.summary`), which a run records per frame, and the map
@@ -1000,8 +1001,9 @@ def relocalize_locally(
 
     The frame's descriptors are matched to the local map's points' (``th_high``, the
     ``relocalize_ratio`` test), PnP RANSAC places it on the matches (``pnp_threshold``
-    pixels, ``seed``), and the pose is refined (:func:`optimize_pose`). ORB-SLAM relocalises
-    against keyframes found by its bag of words; this recovers only near the local map.
+    pixels, ``seed``), and the pose is refined (:func:`optimize_pose`). It recovers only near
+    the local map: ORB-SLAM has no such step, relocalising against the keyframes its bag of
+    words finds, as :func:`slam_it.edge.relocalization.relocalize` does after it.
 
     Parameters
     ----------

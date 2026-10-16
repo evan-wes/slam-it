@@ -13,16 +13,18 @@ against the whole active map through a bag of words, as ORB-SLAM's is, and a los
 The three languages relocalise alike. On the test set at seed 0, 31 runs relocalise 123 frames,
 all but one where the ground truth puts them, and maps fall from 359 to 268 and losses from 348
 to 231; but 6.4% fewer frames are tracked, the 3 s waited through costing more than it finds.
-The window is kept for B1 and measured again with B4's merging. Runs and bundles written by
-0.3.9.0 still read.
+The window is kept for B1 and measured again with B4's merging. The run format is version 5:
+runs written by 0.3.9.0 no longer read.
 
 ### Added
 
 - **Place recognition's vocabulary** (`slam_it.foundations.vocabulary`, with C++ and Rust
   twins): DBoW2's tree of binary words over our own ORB descriptors (k = 10), a descriptor's
-  word, a frame's weighted vector and DBoW2's L1 score, alike in the three languages to the bit;
-  read from five `.npy` arrays and a `vocabulary.json` whose checksums and descriptor version
-  are checked.
+  word, a frame's weighted vector and DBoW2's L1 score, alike in the three languages to the bit,
+  held to a parity fixture. **Its folder** (`slam_it.eval.vocabularies`, with readers in
+  `slam_it_eval` and `slam-it-eval`): five `.npy` arrays, a header array of its format and
+  descriptor versions, which every reader checks, and the arrays' SHA-256, which Python checks
+  before any program runs (the native programs trust them, the ladder's one exception).
 - **The training tool** (`scripts/train_vocabulary.py`): hierarchical k-means from a fixed seed
   on frames drawn from Bovisa or ARKitScenes, the same arrays on a rebuild. **The default
   vocabulary**, committed: 5 levels and 99,961 words, from 10,000 frames of ARKitScenes'
@@ -38,12 +40,19 @@ The window is kept for B1 and measured again with B4's merging. Runs and bundles
     frame with none tracked; a map of 10 keyframes or fewer is lost after 5 failures, as before;
   - `Options.relocalize`, on; off, nothing relocalises and a map is lost as A2 loses it;
   - the vocabulary, required with relocalisation on (`--vocabulary`, the committed one by
-    default), refused with it off, and recorded in `run.json`'s `vocabulary` (`Run.vocabulary`,
-    null for an older run);
+    default), refused with it off, and recorded in `run.json`'s `vocabulary`, its header and
+    checksums, which every language writes from what it read (`Run.vocabulary`; run format
+    version 5);
   - each frame's diagnostics: `placed_by` "relocalization", and relocalisation's summary (its
     words, the keyframes sharing a word and scored, each candidate as far as it got).
 - **The found room** in the golden record: blank frames, then the start seen again, which every
-  backend, in every case, relocalises in map 0 on frame 34.
+  backend, in every case, relocalises in map 0 on frame 34; and a golden bundle of it, which the
+  viewer's tests read. **The window room**: found again, then lost by `relocalize_seconds`
+  (0.05 s there) before `lost_frames`, an RGB-D run culling keyframes first, with
+  relocalisation's settings off their defaults.
+- **Native tests** of the vocabulary, its reader, the keyframe database, relocalisation and the
+  pipeline relocalising, in C++ and Rust; matching by word's fixture cases run natively; and
+  training's rules held to known answers.
 - **Relocalisation counted and shown:** `runs.tracking`'s `relocalizations` and the measure's
   "relocalised" column; the status page says how many frames tracking failed and found again;
   the viewer marks each such frame on its timeline and shows the Relocalisation stage in the
@@ -70,11 +79,24 @@ The window is kept for B1 and measured again with B4's merging. Runs and bundles
   frames fall from 108 to 0 and the slowest from 442.7 to 25.4 ms.
 - **The viewer's ground truth** is faint gold, drawn over the frames the shown map's trajectory
   covers so far.
+- **The run format, version 5:** `run.json`'s `vocabulary` is required, null or the header and
+  checksums of the vocabulary the run relocalised with.
+- **One Hamming distance a language**, in `orb` (`orb.distance`, `orb::distance`), which
+  matching, stereo, the vocabulary and the edge rung call; numpy's floor is 2.0, for
+  `np.bitwise_count`.
+- **The keyframe database sits beside bundle adjustment** in the edge rung's import order.
 
 ### Fixed
 
 - **The viewer's Solver panel** keeps 260 px on a wide or short window, which had left it none;
   the frame shrinks, its proportions kept.
+- **C++'s vocabulary check** no longer reads out of range on a malformed tree (a parent after its
+  child, children past the int32 range, a leaf's first child), and the reader no longer throws
+  on a shape too large to hold.
+- **The keyframe database** refuses a vector whose words are not integers, as the vocabulary
+  does, where Python truncated them.
+- **`scripts/measure_sharded.py`** writes each result as its run ends, and records a failed
+  worker's run, where one failure lost every result.
 
 ## [0.3.9.0] - 2026-10-14
 

@@ -364,7 +364,7 @@ Result<Pipeline::Placed> Pipeline::place(const Map& m, const Frame& frame) const
     return fail(ErrorKind::kInvalidInput, "track: no last frame to track from");
   }
   // No velocity (just initialised, or after a failure): predict no motion. ORB-SLAM tracks its
-  // reference keyframe by bag of words here; the lite pipeline has none.
+  // reference keyframe by bag of words here; the lite pipeline's words only relocalise.
   const Eigen::Matrix4d predicted = predict(last_tracked_->pose, velocity_);
   auto motion =
       track_last_frame(m, camera_, frame, *last_frame_, *last_tracked_, predicted, mode_, options_);

@@ -92,7 +92,9 @@ document first.
 - **Python:** numpy. Pillow too, but in `slam_it.eval.images` alone, which reads image files
   (milestone 2 reads PNG frames and depth maps) and encodes the run viewer's JPEGs (PR 10): the
   algorithm rungs take arrays, never files, and an import-linter contract keeps Pillow in that
-  one module. PyAV, an optional extra (`video`, from PR 11), decodes phone videos in
+  one module; another keeps `json` and `hashlib` out of every algorithm rung, whose files eval
+  reads for them (a place-recognition vocabulary's folder, `slam_it.eval.vocabularies`, from
+  milestone 2B's B1). PyAV, an optional extra (`video`, from PR 11), decodes phone videos in
   `slam_it.eval.video` alone, kept there by a contract of its own. Its wheels bundle an
   FFmpeg built with GPL encoders (x264, x265); the project installs it from PyPI and ships no
   binaries. `slam_it.eval.rosbag` reads ROS 1 bags by hand, with no dependency (the
@@ -308,6 +310,10 @@ choosing their scalar head by an operand's address at run time.
 - bool masks (fixed variables);
 - options as scalars, with integer codes for enums.
 
+A place-recognition vocabulary's tree crosses as its files store it (milestone 2B's B1):
+`parents`, `children` and `words` int32, not widened to int64, so the default vocabulary's
+arrays are not doubled on every call (B1's panel, A5).
+
 **Options cross as one dict of their dataclass's fields** (from PR 2): a solver whose
 settings are a frozen dataclass (`ransac.Options`, `twoview.Options`) passes
 `dataclasses.asdict(options)` as one `options` argument, and the binding reads each field by
@@ -330,7 +336,11 @@ rung 0's argument choices stay codes.
 
 The cores check index bounds and sizes and return `InvalidInput`, even though the Python
 entry point validates too. Standalone C++ and Rust callers get the same protection, and both
-languages fail the same way.
+languages fail the same way. One exception, a vocabulary's checksums (B1's panel, A1): the native
+readers (`slam_it_eval`, `slam-it-eval`) check a vocabulary's header (its format and descriptor
+versions) and its tree, but not each array's SHA-256, which would need a hash written by hand
+in two languages. Python checks them (`slam_it.eval.vocabularies.read`), and `vo.run` reads the
+folder before any program runs; a native program run on its own trusts its arrays.
 
 **Generic in the core, concrete in the bindings.**
 - Generic algorithms (the least-squares solver, RANSAC) are templates in C++ and traits in
@@ -549,7 +559,9 @@ there.
   - place recognition in rung 0, for the edge rung now and the classic rung later: a
     vocabulary of our own ORB descriptors' binary words (DBoW2's hierarchical k-means,
     Gálvez-López and Tardós 2012), trained by a Python tool on public sequences no evaluation
-    uses, read by all three languages; and the keyframe database, an inverted index;
+    uses, read by all three languages; and the keyframe database, an inverted index, the edge
+    rung's, beside its map (B1); when the classic rung needs retrieval, the generic index moves
+    to rung 0 rather than being copied;
   - relocalisation against the active map before a new one is started (ORB-SLAM's
     `Tracking::Relocalization`: candidates from the database, matches by word, PnP RANSAC, a
     guided search);
@@ -995,8 +1007,9 @@ shared with the owner's other projects.
     Started one to four frames after the frame the first run initialises from, 6 of 20
     monocular runs on TUM and EuRoC lose the track (3 of 5 on fr1/desk), each deep into the
     run (44 to 128 keyframes), when its inliers fall below ORB-SLAM's 30. ORB-SLAM relocalises
-    there with the bag of words (`Tracking::Relocalization`); the lite pipeline ends the run.
-    The edge note counts a lost run as a failure in its five-start medians.
+    there with the bag of words (`Tracking::Relocalization`); the lite pipeline ended the run.
+    The edge note counts a lost run as a failure in its five-start medians. Milestone 2B's B1
+    relocalises too, but these five-start runs have not been measured again.
   - **The Rust extension in layer 1 (run 2, A19).** `scripts/check.sh` rebuilds the Rust
     program before pytest but not the extension `slam_it_rs` (`maturin develop`), so after a
     Rust change the stage-parity tests run the old extension while the whole-run tests run
@@ -1018,9 +1031,9 @@ shared with the owner's other projects.
     which 2B's relocalisation against lost maps and their merging need whole. A reset map's
     keyframes and points are reset by the pipeline but its poses dropped by each run program, so
     one rule lives in six places: the pipeline should own the trajectory record, as ORB-SLAM3's
-    tracker does, and drop a reset map's entries itself. `State.LOST` is both a frame's outcome
-    and, for an instant, the pipeline's state: flag the loss on the step and keep the
-    pipeline's two-valued. `_date` and `_close` walk a map's arrays with the same arithmetic.
+    tracker does, and drop a reset map's entries itself. Closed by milestone 2B's B1: `State.LOST`
+    was both a frame's outcome and, for an instant, the pipeline's state; the loss is flagged on
+    the frame's step now, and the pipeline's state is two-valued. `_date` and `_close` walk a map's arrays with the same arithmetic.
     An `edge.atlas` module, in the edge rung's import order, holds them.
   - **A run of several maps across the reifyscene boundary, before milestone 3 (A10).** The
     `SlamResult` sketch has every pose in one world; say whether the adapter takes the largest
@@ -1031,13 +1044,17 @@ shared with the owner's other projects.
   - **The test set's seeds and loss table from the repository (A13).** The note's seeds 1 and 2
     were set by a local wrapper, and its losses sorted by a local script: a `--seed` option and
     the losses' check in `measure_testset.py` would let the note be regenerated from the repo.
+    In part by B1: `measure_sharded.py --seeds` sets the seeds, `--option` any setting, and
+    `compare_testsets.py` sorts the failures by how they ended, all in the repository.
   - **The map arrays held against one another (L7).** Each is checked alone: that every map of
     `pose_maps` has a keyframe, and that a reset map has no poses, are what `tracking`, the bake
     and `Run.reset_maps` rely on.
-  - **A monocular start in real time (from A2's measurement).** On ADVIO, a failed two-view
-    start takes up to 0.43 s, and every late frame of the test set is one. The two-view RANSAC
-    draws up to 10,000 samples per model (`twoview.Options.max_iterations`), where ORB-SLAM's
-    `TwoViewReconstruction` draws 200: measure whether 200 bounds it at no cost to the starts.
+  - Closed by milestone 2B's B1: **a monocular start in real time (from A2's measurement).** On
+    ADVIO, a failed two-view start took up to 0.43 s, and every late frame of the test set was
+    one: the two-view RANSAC drew up to 10,000 samples per model, where ORB-SLAM's
+    `TwoViewReconstruction` draws 200. It draws 200 now (`init_ransac_iterations`): no decision
+    of the test set's monocular runs moves at seeds 0, 1 and 2, and on the 7 ADVIO runs late in
+    A2, made alone, the late frames fall from 108 to 0 (`docs/notes/test-set.md`).
 - **Deferred from milestone 2A's A1 review panel**
   ([report](../reviews/2026-10-13-feature-2a-a1-measure-and-import.md),
   [security pass](../reviews/2026-10-13-feature-2a-a1-measure-and-import-security.md)):

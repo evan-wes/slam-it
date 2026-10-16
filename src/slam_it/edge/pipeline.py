@@ -24,10 +24,11 @@
    instead (ORB-SLAM3 loses it at once), as is any map with ``relocalize`` off. The map is
    then kept, or reset if it has ``reset_keyframes`` keyframes or fewer (its keyframes and
    points removed), and the next frame starts a new map (step 1), as ORB-SLAM3's atlas does
-   (``Tracking::Track``'s ``CreateMapInAtlas`` and ``ResetActiveMap``). ORB-SLAM3 relocalises
-   a recently lost frame without first trying the motion model and the local map, and
-   restarts its time when a relocalised frame fails the local map; here every failed frame
-   tries all three, and the time runs from the first.
+   (``Tracking::Track``'s ``CreateMapInAtlas`` and ``ResetActiveMap``). The time runs from the
+   first failed frame, as ORB-SLAM3's ``mTimeStampLost`` does. Unlike ORB-SLAM3, every failed
+   frame tries the motion model and the local map before relocalising, and the first failed
+   frame relocalises too: ORB-SLAM3 relocalises only the frames after the one that lost the
+   track, and tries nothing else on them.
 4. **Mapping:** a tracked frame that needs a keyframe
    (:func:`slam_it.edge.mapping.need_keyframe`; none within ``max_frames`` of a recovery once
    the map holds more than ``max_frames``) is inserted and mapped
@@ -654,7 +655,8 @@ class Pipeline:
         assert self._last_tracked is not None
         options = self.options
         # No velocity (just initialised, or after a failure): predict no motion. ORB-SLAM
-        # tracks its reference keyframe by bag of words here; the lite pipeline has none.
+        # tracks its reference keyframe by bag of words here; the lite pipeline's words only
+        # relocalise.
         predicted = tracking.predict(self._last_tracked.pose, self._velocity)
         motion = tracking.track_last_frame(
             m, self.camera, frame, self._last_frame, self._last_tracked,
