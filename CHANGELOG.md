@@ -26,10 +26,11 @@ runs written by 0.3.9.0 no longer read.
   descriptor versions, which every reader checks, and the arrays' SHA-256, which Python checks
   before any program runs (the native programs trust them, the ladder's one exception).
 - **The training tool** (`scripts/train_vocabulary.py`): hierarchical k-means from a fixed seed
-  on frames drawn from Bovisa or ARKitScenes, the same arrays on a rebuild. **The default
+  on frames drawn from Bovisa or ARKitScenes, the same tree on a rebuild (its weights to their
+  rule: numpy's log may differ in the last bit on another CPU). **The default
   vocabulary**, committed: 5 levels and 99,961 words, from 10,000 frames of ARKitScenes'
   training fold. Two of 6 levels, from Bovisa and ARKitScenes, are kept outside the repository
-  and named, with the commands that rebuild them, in `vocabularies/local.json`.
+  and named, with the commands that rebuild them, in `slam_it/eval/vocabularies/local.json`.
 - **Matching by word** (`matching.search_by_bow`, three languages): ORB-SLAM's SearchByBoW.
 - **The keyframe database and relocalisation** (`edge.database`, `edge.relocalization`, three
   languages): ORB-SLAM's KeyFrameDatabase and `Tracking::Relocalization`, with its thresholds and

@@ -1,5 +1,5 @@
 {
- "_about": "Vocabularies kept outside the repository (too large for it), each rebuilt exactly by scripts/train_vocabulary.py with the command given: the rebuild's arrays must have these SHA-256. docs/design/2026-10-14-online-slam.md, section 3.",
+ "_about": "Vocabularies kept outside the repository (too large for it), each a folder of slam_it.eval.vocabularies's format, version 2, rebuilt by scripts/train_vocabulary.py with the command given. A rebuild's descriptors, parents, children and words must have these SHA-256 exactly; its weights, numpy's log of each word's document frequency, may differ in the last bit on another CPU (numpy has its own AVX-512 log), so they are held to their rule within a few ULP, not to their SHA-256. docs/design/2026-10-14-online-slam.md, section 3.",
  "vocabularies": {
   "arkitscenes-6": {
    "k": 10,

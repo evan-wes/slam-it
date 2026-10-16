@@ -1,5 +1,8 @@
 """A vocabulary's folder: the files that keep place recognition's tree, written and read.
 
+The package also holds the committed vocabulary (``default/``, :data:`DEFAULT`) and the record of
+the vocabularies kept outside the repository (``local.json``), beside the code that reads them.
+
 The tree and what it computes are rung 0's (:class:`slam_it.foundations.vocabulary.Vocabulary`);
 the algorithm rungs take a vocabulary, never its files (the ladder: arrays, never files). Its
 folder is read here, and by the native eval libraries' twins (``slam_it_eval``,
@@ -68,7 +71,7 @@ SHAPES: dict[str, tuple[type[np.generic], tuple[int, ...]]] = {
 }
 """Each array's type and shape as read (a -1 any length); the tree's own check does the rest."""
 
-DEFAULT = Path(__file__).parents[1] / "foundations" / "vocabularies" / "default"
+DEFAULT = Path(__file__).parent / "default"
 """The committed vocabulary, every relocalising run's unless it names another: 5 levels of
 k = 10, trained by ``scripts/train_vocabulary.py`` on the 9,969 of 10,000 frames drawn from 20
 ARKitScenes captures of its training fold that yielded descriptors, none from a visit the test

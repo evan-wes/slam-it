@@ -312,12 +312,13 @@ def test_a_words_weight_is_the_log_of_the_images_over_those_with_it() -> None:
 def test_a_tiny_training_is_pinned_to_its_checksums() -> None:
     """A tiny training's tree, byte for byte, and its weights by their rule.
 
-    The two 6-level vocabularies kept outside the repository are rebuilt "exactly", to the
-    SHA-256 in ``vocabularies/local.json``, from about 15 GB of images. Their checksums depend on
-    the seeding, the majority, the k-means rounds and numpy's ``Generator`` streams (which NEP
-    19 does not hold across numpy's versions); this catches a change to any of them in a second,
-    where a rebuild takes hours. The weights are ``np.log``'s, whose last bit may differ between
-    CPUs, so they are checked against their rule rather than pinned.
+    The two 6-level vocabularies kept outside the repository are rebuilt from about 15 GB of
+    images to the SHA-256 of their four integer and byte arrays in
+    ``slam_it/eval/vocabularies/local.json``, which depend on the seeding, the majority, the
+    k-means rounds and numpy's ``Generator`` streams (which NEP 19 does not hold across numpy's
+    versions); this catches a change to any of them in a second, where a rebuild takes hours.
+    The weights are ``np.log``'s, whose last bit may differ between CPUs (numpy has its own
+    AVX-512 log), so they are held to their rule, here as in a rebuild, rather than pinned.
     """
     descriptors, _, images = _clusters()
     vocab = vocabulary.train(descriptors, images, k=4, levels=3, seed=5)

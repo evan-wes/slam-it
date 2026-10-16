@@ -6,7 +6,9 @@ with the pipeline's settings for its size (:func:`slam_it.orchestration.vo.optio
 compiled backend, whose descriptors are the Python reference's bit for bit), and every descriptor
 kept with its image, for the words' document frequencies. The tree is then built by hierarchical
 k-means and written to OUT as a vocabulary's folder (:mod:`slam_it.eval.vocabularies`), its
-arrays' SHA-256 in ``sha256.npy``: the same sources, sample, seed and shape give the same files.
+arrays' SHA-256 in ``sha256.npy``. The same sources, sample, seed and shape give the same tree,
+its four integer and byte arrays byte for byte; the weights, numpy's log of each word's document
+frequency, may differ in the last bit on another CPU (numpy has its own AVX-512 log).
 
 A source is ``KIND:PATH``:
 - ``tar:FILE``: every ``.png`` member of a tar file (Rawseeds' Bovisa: one camera's frames);
