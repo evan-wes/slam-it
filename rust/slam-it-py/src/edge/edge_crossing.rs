@@ -30,6 +30,31 @@ use slam_it_foundations::{nls, ransac};
 
 use crate::common::{by_name, contiguous, encode, item_array, to_i64, unwrap};
 
+/// Runs a step on a copy of the map.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `m` - The map, as a dict.
+/// * `step` - The step, changing the copy.
+///
+/// # Returns
+///
+/// The new map, as a dict.
+///
+/// # Errors
+///
+/// `ValueError` for a malformed map; `InvalidInputError` from the core.
+pub fn changed<'py>(
+    py: Python<'py>,
+    m: &Bound<'py, PyDict>,
+    step: impl FnOnce(&mut Map) -> slam_it_foundations::error::Result<()>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let mut out = map_in(py, m)?;
+    unwrap(py, step(&mut out))?;
+    map_dict(py, &out)
+}
+
 /// The map's fields, as the dict's keys.
 const MAP_KEYS: [&str; 34] = [
     "levels",

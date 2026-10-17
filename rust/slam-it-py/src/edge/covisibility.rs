@@ -8,8 +8,11 @@ use numpy::PyReadonlyArray1;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 use slam_it_edge::covisibility as core;
+use slam_it_edge::map::Map;
+use slam_it_edge::options::Options;
+use slam_it_foundations::error::Result;
 
-use super::edge_crossing::{indices_array, map_dict, map_in, options_in, rows_array};
+use super::edge_crossing::{changed, indices_array, map_in, options_in, rows_array};
 use crate::common::{add_functions, contiguous, to_i64, unwrap};
 
 /// A keyframe's links.
@@ -91,9 +94,35 @@ fn local_map<'py>(
 /// `InvalidInputError` from the core.
 #[pyfunction]
 fn adopt<'py>(py: Python<'py>, m: &Bound<'py, PyDict>, k: usize) -> PyResult<Bound<'py, PyDict>> {
-    let mut out = map_in(py, m)?;
-    unwrap(py, core::adopt(&mut out, k))?;
-    map_dict(py, &out)
+    changed(py, m, |out| core::adopt(out, k))
+}
+
+/// Runs a step on a keyframe, with the settings, on a copy of the map.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `m` - The map, as a dict.
+/// * `k` - The keyframe's row.
+/// * `options` - The settings, as a dict.
+/// * `step` - The core's step.
+///
+/// # Returns
+///
+/// The new map, as a dict.
+///
+/// # Errors
+///
+/// `ValueError` for malformed settings; `InvalidInputError` from the core.
+fn with_settings<'py>(
+    py: Python<'py>,
+    m: &Bound<'py, PyDict>,
+    k: usize,
+    options: &Bound<'py, PyDict>,
+    step: fn(&mut Map, usize, &Options) -> Result<()>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let options = options_in(options)?;
+    changed(py, m, |out| step(out, k, &options))
 }
 
 /// Gives a keyframe's children new parents.
@@ -119,9 +148,7 @@ fn reparent<'py>(
     k: usize,
     options: &Bound<'py, PyDict>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let mut out = map_in(py, m)?;
-    unwrap(py, core::reparent(&mut out, k, &options_in(options)?))?;
-    map_dict(py, &out)
+    with_settings(py, m, k, options, core::reparent)
 }
 
 /// Culls a keyframe: its children given new parents, then it erased.
@@ -147,9 +174,7 @@ fn cull<'py>(
     k: usize,
     options: &Bound<'py, PyDict>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let mut out = map_in(py, m)?;
-    unwrap(py, core::cull(&mut out, k, &options_in(options)?))?;
-    map_dict(py, &out)
+    with_settings(py, m, k, options, core::cull)
 }
 
 /// The strong links.

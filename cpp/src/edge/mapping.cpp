@@ -120,6 +120,17 @@ Result<void> has_keyframes(const Map& m) {
   return {};
 }
 
+/// @brief Check the settings, and that the map has a keyframe (no camera needed).
+/// @param m The map.
+/// @param options The settings.
+/// @return Nothing, or `InvalidInput`.
+Result<void> check_keyframes(const Map& m, const Options& options) {
+  if (auto ok = check_options(options); !ok) {
+    return ok;
+  }
+  return has_keyframes(m);
+}
+
 /// @brief The points from an id on that the newest keyframe observes, by keypoint.
 /// @param m The map, with at least one keyframe.
 /// @param first The first id.
@@ -907,20 +918,14 @@ Result<void> fuse_points(Map& m, const Camera& camera, Mode mode, const Options&
 }
 
 Result<std::vector<std::int64_t>> fuse_targets(const Map& m, Mode mode, const Options& options) {
-  if (auto ok = check_options(options); !ok) {
-    return std::unexpected(std::move(ok.error()));
-  }
-  if (auto ok = has_keyframes(m); !ok) {
+  if (auto ok = check_keyframes(m, options); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   return targets_of(m, mode, options);
 }
 
 Result<std::vector<std::int64_t>> local_ba_keyframes(const Map& m, const Options& options) {
-  if (auto ok = check_options(options); !ok) {
-    return std::unexpected(std::move(ok.error()));
-  }
-  if (auto ok = has_keyframes(m); !ok) {
+  if (auto ok = check_keyframes(m, options); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   return local_rows(m, options);

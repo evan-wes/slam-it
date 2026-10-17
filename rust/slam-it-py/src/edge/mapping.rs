@@ -7,39 +7,13 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use slam_it_edge::mapping as core;
 
-use slam_it_edge::map::Map;
 use slam_it_foundations::nls;
 
 use super::edge_crossing::{
-    camera_in, frame_in, indices_array, map_dict, map_in, mode_in, options_in, rows_array,
+    camera_in, changed, frame_in, indices_array, map_dict, map_in, mode_in, options_in, rows_array,
     solves_list, tracked_in, vector, vector_array,
 };
 use crate::common::{add_functions, enum_codes, to_i64, unwrap};
-
-/// Runs a step on a copy of the map.
-///
-/// # Arguments
-///
-/// * `py` - The Python token.
-/// * `m` - The map, as a dict.
-/// * `step` - The step, changing the copy.
-///
-/// # Returns
-///
-/// The new map, as a dict.
-///
-/// # Errors
-///
-/// `ValueError` for a malformed map; `InvalidInputError` from the core.
-fn changed<'py>(
-    py: Python<'py>,
-    m: &Bound<'py, PyDict>,
-    step: impl FnOnce(&mut Map) -> slam_it_foundations::error::Result<()>,
-) -> PyResult<Bound<'py, PyDict>> {
-    let mut out = map_in(py, m)?;
-    unwrap(py, step(&mut out))?;
-    map_dict(py, &out)
-}
 
 /// Decides whether a tracked frame becomes a keyframe.
 ///
