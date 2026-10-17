@@ -890,24 +890,8 @@ Result<void> fuse_points(Map& m, const Camera& camera, Mode mode, const Options&
   return refresh_points(m, observed_by(m, newest));
 }
 
-namespace {
-
-/// @brief Cull a keyframe: its children given new parents, then it erased (`SetBadFlag`).
-/// @param m The map.
-/// @param k The keyframe's row.
-/// @param options The settings.
-/// @return Nothing, or the error.
-Result<void> cull(Map& m, std::int64_t k, const Options& options) {
-  if (auto ok = reparent(m, k, options); !ok) {
-    return ok;
-  }
-  return erase_keyframe(m, k);
-}
-
-}  // namespace
-
 Result<void> cull_keyframes(Map& m, const Camera& camera, Mode mode, const Options& options) {
-  if (auto ok = check_setup(camera, options); !ok) {
+  if (auto ok = check_newest(m, camera, options); !ok) {
     return ok;
   }
   const double limit = close_depth(camera, options);

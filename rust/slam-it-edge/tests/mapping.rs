@@ -140,6 +140,11 @@ fn culling_and_a_whole_step_keep_the_map_valid() {
     cull_keyframes(&mut copy, &camera(), Mode::Rgbd, &Options::default()).unwrap();
     assert_eq!(copy.kf_id, vec![0, 2, 3]);
     check_map(&copy).unwrap();
+    let mut none = Map::empty(8, 1.2);
+    assert!(
+        cull_keyframes(&mut none, &camera(), Mode::Rgbd, &Options::default()).is_err(),
+        "culling refuses a map without keyframes"
+    );
     let mut m = built;
     let mut ahead = pose(2);
     ahead[(2, 3)] -= 0.05;

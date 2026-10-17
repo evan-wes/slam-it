@@ -20,6 +20,7 @@ namespace {
 namespace edge = slam_it::edge;
 namespace scene = slam_it::testing::scene;
 using slam_it::testing::expect;
+using slam_it::testing::is_invalid_input;
 
 /// @brief Point ids `first` to `last - 1`, then -1 to the scene's size.
 /// @param first The first id.
@@ -172,6 +173,10 @@ void check_culling_and_process(int& failures) {
   }();
   expect(culled == std::vector<std::int64_t>{0, 2, 3},
          "the first redundant keyframe goes, the first keyframe stays, the index kept", failures);
+  edge::Map none = edge::empty_map(8, 1.2);
+  expect(is_invalid_input(
+             edge::cull_keyframes(none, scene::camera(), edge::Mode::kRgbd, edge::Options{})),
+         "culling refuses a map without keyframes", failures);
   Eigen::Matrix4d ahead = scene::pose(2);
   ahead(2, 3) -= 0.05;
   const std::int64_t first = m.next_pt_id;

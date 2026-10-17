@@ -983,7 +983,7 @@ def _cull_keyframes(m: Map, camera: Camera, mode: str, options: Options) -> Map:
         if len(rows) and _redundant(m, k, rows, options.mapping.redundant_observers) > (
             options.mapping.redundant_fraction * len(rows)
         ):
-            m = maps.erase_keyframe(covisibility.reparent(m, k, options), k)
+            m = covisibility.cull(m, k, options)
     return m
 
 
@@ -993,7 +993,8 @@ def cull_keyframes(
     """Cull the newest keyframe's redundant links (``KeyFrameCulling``).
 
     Each keyframe linked to the newest (:func:`slam_it.edge.covisibility.links`, the most
-    shared first), but the map's first (id 0), goes when more than
+    shared first), but the map's first (id 0), is culled (:func:`slam_it.edge.covisibility.cull`)
+    when more than
     ``mapping.redundant_fraction`` of its points (its close ones with depth, for stereo and RGB-D)
     are observed with weight above ``mapping.redundant_observers`` and seen by at least
     ``mapping.redundant_observers`` other keyframes at its level, a finer one, or the next coarser.
@@ -1019,9 +1020,10 @@ def cull_keyframes(
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If the mode is unknown.
+        If the mode is unknown, or the map has no keyframe.
     """
     check_mode(mode)
+    _check_newest(m)
     return backends.call(
         backend,
         __name__,

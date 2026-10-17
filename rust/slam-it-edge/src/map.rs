@@ -1067,6 +1067,9 @@ pub fn forget_observations(m: &mut Map, rows: &[usize]) -> Result<()> {
 
 /// Removes a keyframe and its keypoints; its points lose an observation each.
 ///
+/// A keyframe that is still another's parent is refused, so every parent stays a keyframe of
+/// the map: [`crate::covisibility::cull`] gives its children new parents first.
+///
 /// # Arguments
 ///
 /// * `m` - The map.
@@ -1074,7 +1077,7 @@ pub fn forget_observations(m: &mut Map, rows: &[usize]) -> Result<()> {
 ///
 /// # Errors
 ///
-/// `InvalidInput` for a row out of range.
+/// `InvalidInput` for a row out of range or a keyframe that is still a parent.
 pub fn erase_keyframe(m: &mut Map, k: usize) -> Result<()> {
     if k >= m.keyframes() {
         return fail(
@@ -1082,6 +1085,16 @@ pub fn erase_keyframe(m: &mut Map, k: usize) -> Result<()> {
             format!(
                 "k: must be from 0 to {}, got {k}",
                 m.keyframes().saturating_sub(1)
+            ),
+        );
+    }
+    if let Some(child) = m.kf_parent.iter().position(|&p| p == m.kf_id[k]) {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!(
+                "k: keyframe {} is still keyframe {}'s parent (covisibility's cull gives its \
+                 children new parents first)",
+                m.kf_id[k], m.kf_id[child]
             ),
         );
     }

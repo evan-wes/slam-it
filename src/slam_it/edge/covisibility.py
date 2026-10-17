@@ -15,8 +15,9 @@ V.D; ``KeyFrame::UpdateConnections``, ``KeyFrame::SetBadFlag``, ``Tracking::Upda
 - **The spanning tree,** the one part stored: each keyframe's parent
   (:attr:`slam_it.edge.map.Map.kf_parent`) is the keyframe it shared the most points with when
   it was inserted (:func:`adopt`, ORB-SLAM's first ``UpdateConnections``); a map's first
-  keyframe has none. A culled keyframe's children are given new parents as ``SetBadFlag`` gives
-  them (:func:`reparent`).
+  keyframe has none. A keyframe leaves the map only by :func:`cull`, ORB-SLAM's ``SetBadFlag``:
+  its children are given new parents (:func:`reparent`), then it is erased, and
+  :func:`slam_it.edge.map.erase_keyframe` refuses a keyframe that is still a parent.
 - **Tracking's local map** (:func:`local_map`, ``UpdateLocalKeyFrames``): K1, the keyframes
   that observe the points a frame was matched to, the most shared first, the first of them
   the frame's reference keyframe; then, for each of K1 in that order, while the local map holds
@@ -89,6 +90,10 @@ class Implementation(Protocol):
 
     def reparent(self, m: dict[str, Any], k: int, options: dict[str, Any]) -> dict[str, Any]:
         """Return the map with a keyframe's children given new parents."""
+        ...
+
+    def cull(self, m: dict[str, Any], k: int, options: dict[str, Any]) -> dict[str, Any]:
+        """Return the map without a keyframe, its children given new parents first."""
         ...
 
     def strong_links(self, m: dict[str, Any], options: dict[str, Any]) -> NDArray[np.int64]:
@@ -208,6 +213,11 @@ def _reparent(m: Map, k: int, options: Options) -> Map:
         children.remove(child)
     parents[children] = parent  # linked to no candidate: its own parent
     return replace(m, kf_parent=parents)
+
+
+def _cull(m: Map, k: int, options: Options) -> Map:
+    """Give a keyframe's children new parents, then erase it (reference)."""
+    return maps.erase_keyframe(_reparent(m, k, options), k)
 
 
 def _strong_links(m: Map, options: Options) -> IntArray:
@@ -336,7 +346,9 @@ def adopt(m: Map, k: int, *, backend: str = "python") -> Map:
 
     The parent is the keyframe it shares the most points with (ties: the lower id), as
     ORB-SLAM's first ``UpdateConnections`` sets it. A map's first keyframe (id 0) has none, and
-    a keyframe that shares no point keeps none until it does.
+    a keyframe that shares no point keeps none until it does. It is for the keyframe being
+    inserted, the map's newest, every other already in the tree: given an older keyframe
+    without a parent, it may take a newer one whose own chain leads back to it, a cycle.
 
     Parameters
     ----------
@@ -403,6 +415,50 @@ def reparent(m: Map, k: int, options: Options, *, backend: str = "python") -> Ma
         __name__,
         "reparent",
         reference=lambda: _reparent(m, row, options),
+        arguments={"m": m.as_dict(), "k": row, "options": options.as_dict()},
+        decode=_decode_map,
+    )
+
+
+def cull(m: Map, k: int, options: Options, *, backend: str = "python") -> Map:
+    """Return the map without a keyframe, its children given new parents first (``SetBadFlag``).
+
+    The one way a keyframe leaves the graph: :func:`reparent`, then
+    :func:`slam_it.edge.map.erase_keyframe`, which refuses a keyframe that is still a parent, so
+    every parent stays a keyframe of the map. The map's first keyframe (id 0), its tree's root,
+    is refused, as ``SetBadFlag`` leaves it.
+
+    Parameters
+    ----------
+    m : slam_it.edge.map.Map
+        The map.
+    k : int
+        The keyframe's row.
+    options : slam_it.edge.options.Options
+        ``covisibility.min_points``.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    slam_it.edge.map.Map
+        The map without the keyframe, its children's ``kf_parent`` changed.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If `k` is not a keyframe row, or is the map's first keyframe.
+    """
+    row = maps.as_keyframe_row(m, k)
+    if m.kf_id[row] == 0:
+        raise InvalidInputError(
+            "k: keyframe 0 is the map's first, its tree's root, and is not culled"
+        )
+    return backends.call(
+        backend,
+        __name__,
+        "cull",
+        reference=lambda: _cull(m, row, options),
         arguments={"m": m.as_dict(), "k": row, "options": options.as_dict()},
         decode=_decode_map,
     )

@@ -292,9 +292,13 @@ void clear_gone(Map& m);
                                                             std::span<const std::int64_t> rows);
 
 /// @brief Remove a keyframe and its keypoints; its points lose an observation each.
+///
+/// A keyframe that is still another's parent is refused, so every parent stays a keyframe of the
+/// map: covisibility's `cull` gives its children new parents first.
 /// @param m The map.
 /// @param k The keyframe's row.
-/// @return Nothing, or `InvalidInput` for a row out of range.
+/// @return Nothing, or `InvalidInput` for a row out of range or a keyframe that is still a
+///         parent.
 [[nodiscard]] foundations::Result<void> erase_keyframe(Map& m, std::int64_t k);
 
 /// @brief Point a keypoint at a point, or at none, keeping the observation lists.

@@ -124,6 +124,34 @@ fn reparent<'py>(
     map_dict(py, &out)
 }
 
+/// Culls a keyframe: its children given new parents, then it erased.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `m` - The map, as a dict.
+/// * `k` - The keyframe's row.
+/// * `options` - The settings, as a dict.
+///
+/// # Returns
+///
+/// The map, as a dict.
+///
+/// # Errors
+///
+/// `InvalidInputError` from the core.
+#[pyfunction]
+fn cull<'py>(
+    py: Python<'py>,
+    m: &Bound<'py, PyDict>,
+    k: usize,
+    options: &Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let mut out = map_in(py, m)?;
+    unwrap(py, core::cull(&mut out, k, &options_in(options)?))?;
+    map_dict(py, &out)
+}
+
 /// The strong links.
 ///
 /// # Arguments
@@ -158,6 +186,6 @@ fn strong_links<'py>(
 /// Returns a Python error if a function cannot be added.
 #[pymodule]
 pub fn covisibility(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    add_functions!(m; links, local_map, adopt, reparent, strong_links);
+    add_functions!(m; links, local_map, adopt, reparent, cull, strong_links);
     Ok(())
 }

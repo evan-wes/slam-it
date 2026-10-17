@@ -1099,13 +1099,13 @@ fn redundant(m: &Map, k: usize, rows: &[usize], threshold: usize) -> Result<usiz
 ///
 /// # Errors
 ///
-/// `InvalidInput` for an invalid camera or settings.
+/// `InvalidInput` for a map without keyframes, or an invalid camera or settings.
 #[allow(
     clippy::cast_precision_loss,
     reason = "counts of keypoints, exact in f64"
 )]
 pub fn cull_keyframes(m: &mut Map, camera: &Camera, mode: Mode, options: &Options) -> Result<()> {
-    check_setup(camera, options)?;
+    check_newest(m, camera, options)?;
     let limit = close_depth(camera, options);
     let ids: Vec<i64> = linked_rows(m, m.keyframes() - 1, options)
         .iter()
@@ -1129,8 +1129,7 @@ pub fn cull_keyframes(m: &mut Map, camera: &Camera, mode: Mode, options: &Option
         }
         let count = redundant(m, k, &rows, options.mapping.redundant_observers)?;
         if count as f64 > options.mapping.redundant_fraction * rows.len() as f64 {
-            covisibility::reparent(m, k, options)?;
-            map::erase_keyframe(m, k)?;
+            covisibility::cull(m, k, options)?;
         }
     }
     Ok(())

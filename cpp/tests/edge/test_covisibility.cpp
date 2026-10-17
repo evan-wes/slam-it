@@ -2,11 +2,13 @@
 /// @brief Native tests for the covisibility graph (slam_it/edge/covisibility.hpp), against the
 ///        brute-force fixture `tests/fixtures/edge/covisibility.json` that the Python and Rust
 ///        tests share: each keyframe's links, tracking's local map, the parent a keyframe adopts,
-///        the parents a culled keyframe's children get, and the strong links.
+///        the parents a culled keyframe's children get, a keyframe culled, and the strong links.
+#include <Eigen/Core>
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -23,7 +25,8 @@ namespace edge = slam_it::edge;
 using slam_it::testing::expect;
 using slam_it::testing::is_invalid_input;
 
-/// @brief A case's map: the columns the graph reads (ids, parents, each keypoint's point).
+/// @brief A case's map: the columns the graph reads (ids, parents, each keypoint's point), the
+///        rest blank, as the Python test builds it, so that it can be culled.
 /// @param keyframes The case's keyframes.
 /// @return The map, its observations indexed.
 edge::Map map_of(const nlohmann::json& keyframes) {
@@ -32,8 +35,17 @@ edge::Map map_of(const nlohmann::json& keyframes) {
   for (const nlohmann::json& k : keyframes) {
     m.kf_id.push_back(k["id"].get<std::int64_t>());
     m.kf_parent.push_back(k["parent"].get<std::int64_t>());
+    m.kf_time.push_back(0.0);
+    m.kf_pose.emplace_back(Eigen::Matrix4d::Identity());
     for (const nlohmann::json& p : k["points"]) {
       m.kp_point.push_back(p.get<std::int64_t>());
+      m.kp_xy.push_back({0.0, 0.0});
+      m.kp_level.push_back(0);
+      m.kp_angle.push_back(0);
+      m.kp_descriptor.emplace_back();
+      m.kp_bearing.emplace_back(0.0, 0.0, 1.0);
+      m.kp_depth.push_back(std::numeric_limits<double>::quiet_NaN());
+      m.kp_right.push_back(std::numeric_limits<double>::quiet_NaN());
       if (p.get<std::int64_t>() >= 0) {
         points.push_back(p.get<std::int64_t>());
       }
@@ -43,9 +55,59 @@ edge::Map map_of(const nlohmann::json& keyframes) {
   std::ranges::sort(points);
   const auto [first, last] = std::ranges::unique(points);
   points.erase(first, last);
+  for (std::size_t p = 0; p < points.size(); ++p) {
+    m.pt_xyz.emplace_back(Eigen::Vector3d::Zero());
+    m.pt_descriptor.emplace_back();
+    m.pt_normal.emplace_back(0.0, 0.0, 1.0);
+    m.pt_min_distance.push_back(1.0);
+    m.pt_max_distance.push_back(1.0);
+    m.pt_visible.push_back(1);
+    m.pt_found.push_back(1);
+    m.pt_first_kf.push_back(0);
+    m.pt_reference_kf.push_back(0);
+  }
+  m.next_kf_id = std::ranges::max(m.kf_id) + 1;
+  m.next_pt_id = points.empty() ? 0 : points.back() + 1;
   m.pt_id = std::move(points);
   edge::index_observations(m);
   return m;
+}
+
+/// @brief A vector without one element.
+/// @param values The vector.
+/// @param k The element's index.
+/// @return The rest, in order.
+std::vector<std::int64_t> without(std::vector<std::int64_t> values, std::size_t k) {
+  values.erase(values.begin() + static_cast<std::ptrdiff_t>(k));
+  return values;
+}
+
+/// @brief Check culling a case's keyframe: refused for the map's first, else its children given
+///        the fixture's new parents and it erased; erasing it unculled refused if it has any.
+/// @param c The case.
+/// @param m Its map.
+/// @param k The keyframe's row.
+/// @param options Its settings.
+/// @param failures The failure count.
+void check_cull(const nlohmann::json& c, const edge::Map& m, std::size_t k,
+                const edge::Options& options, int& failures) {
+  const std::string name = c["name"].get<std::string>() + ": row " + std::to_string(k);
+  edge::Map culled = m;
+  const auto row = static_cast<std::int64_t>(k);
+  if (m.kf_id[k] == 0) {
+    expect(is_invalid_input(edge::cull(culled, row, options)),
+           (name + ": the map's first keyframe is not culled").c_str(), failures);
+    return;
+  }
+  const auto parents = c["reparented"][k].get<std::vector<std::int64_t>>();
+  expect(edge::cull(culled, row, options).has_value() && culled.kf_id == without(m.kf_id, k) &&
+             culled.kf_parent == without(parents, k) && edge::check_map(culled).has_value(),
+         (name + ": culled, its children reparented first").c_str(), failures);
+  if (std::ranges::find(m.kf_parent, m.kf_id[k]) != m.kf_parent.end()) {
+    edge::Map erased = m;
+    expect(is_invalid_input(edge::erase_keyframe(erased, row)),
+           (name + ": a parent is not erased").c_str(), failures);
+  }
 }
 
 /// @brief A case's settings.
@@ -91,6 +153,7 @@ void check_case(const nlohmann::json& c, int& failures) {
     expect(edge::reparent(culled, static_cast<std::int64_t>(k), options).has_value() &&
                culled.kf_parent == c["reparented"][k].get<std::vector<std::int64_t>>(),
            (name + ": the parents after culling row " + std::to_string(k)).c_str(), failures);
+    check_cull(c, m, k, options, failures);
   }
   for (const nlohmann::json& local : c["local_maps"]) {
     const auto points = local["points"].get<std::vector<std::int64_t>>();

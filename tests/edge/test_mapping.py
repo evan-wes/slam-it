@@ -262,6 +262,7 @@ def test_rejects_malformed_arguments(backend: str, mapped: Mapped) -> None:
             m, CAMERA, 0, m.keyframes, OPTIONS, backend=backend
         ),
         lambda: mapping.create_points_from_depth(empty, CAMERA, OPTIONS, backend=backend),
+        lambda: mapping.cull_keyframes(empty, CAMERA, "rgbd", OPTIONS, backend=backend),
         lambda: mapping.process(
             m, CAMERA, mapped.frame, short, mode="rgbd", options=OPTIONS, backend=backend
         ),

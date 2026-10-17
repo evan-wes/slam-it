@@ -1,11 +1,12 @@
 //! Native tests for the covisibility graph (`slam_it_edge::covisibility`), against the
 //! brute-force fixture `tests/fixtures/edge/covisibility.json` that the Python and C++ tests
 //! share: each keyframe's links, tracking's local map, the parent a keyframe adopts, the
-//! parents a culled keyframe's children get, and the strong links.
+//! parents a culled keyframe's children get, a keyframe culled, and the strong links.
 
+use nalgebra::{Matrix4, Vector3};
 use serde_json::Value;
-use slam_it_edge::covisibility::{adopt, links, local_map, reparent, strong_links};
-use slam_it_edge::map::{Map, index_observations};
+use slam_it_edge::covisibility::{adopt, cull, links, local_map, reparent, strong_links};
+use slam_it_edge::map::{Map, check_map, erase_keyframe, index_observations};
 use slam_it_edge::options::Options;
 
 /// The fixture, read once per test.
@@ -34,21 +35,85 @@ fn rows(value: &Value) -> Vec<usize> {
         .collect()
 }
 
-/// A case's map: the columns the graph reads (ids, parents, each keypoint's point).
+/// A case's map: the columns the graph reads (ids, parents, each keypoint's point), the rest
+/// blank, as the Python test builds it, so that it can be culled.
 fn map_of(keyframes: &Value) -> Map {
     let mut m = Map::empty(8, 1.2);
     for k in keyframes.as_array().expect("keyframes") {
         m.kf_id.push(k["id"].as_i64().expect("an id"));
         m.kf_parent.push(k["parent"].as_i64().expect("a parent"));
-        m.kp_point.extend(integers(&k["points"]));
+        m.kf_time.push(0.0);
+        m.kf_pose.push(Matrix4::identity());
+        for p in integers(&k["points"]) {
+            m.kp_point.push(p);
+            m.kp_xy.push([0.0, 0.0]);
+            m.kp_level.push(0);
+            m.kp_angle.push(0);
+            m.kp_descriptor.push([0; 32]);
+            m.kp_bearing.push(Vector3::z());
+            m.kp_depth.push(f64::NAN);
+            m.kp_right.push(f64::NAN);
+        }
         m.kf_start.push(m.kp_point.len());
     }
     let mut points: Vec<i64> = m.kp_point.iter().copied().filter(|&p| p >= 0).collect();
     points.sort_unstable();
     points.dedup();
+    for _ in &points {
+        m.pt_xyz.push(Vector3::zeros());
+        m.pt_descriptor.push([0; 32]);
+        m.pt_normal.push(Vector3::z());
+        m.pt_min_distance.push(1.0);
+        m.pt_max_distance.push(1.0);
+        m.pt_visible.push(1);
+        m.pt_found.push(1);
+        m.pt_first_kf.push(0);
+        m.pt_reference_kf.push(0);
+    }
+    m.next_kf_id = m.kf_id.iter().max().map_or(0, |&id| id + 1);
+    m.next_pt_id = points.last().map_or(0, |&p| p + 1);
     m.pt_id = points;
     index_observations(&mut m);
     m
+}
+
+/// A vector without one element.
+fn without(mut values: Vec<i64>, k: usize) -> Vec<i64> {
+    values.remove(k);
+    values
+}
+
+/// Culling a case's keyframe: refused for the map's first, else its children given the
+/// fixture's new parents and it erased; erasing it unculled refused if it has any.
+fn check_cull(case: &Value, m: &Map, k: usize, options: &Options) {
+    let name = case["name"].as_str().expect("a name");
+    let mut culled = m.clone();
+    if m.kf_id[k] == 0 {
+        assert!(
+            cull(&mut culled, k, options).is_err(),
+            "{name}: the map's first keyframe is not culled"
+        );
+        return;
+    }
+    cull(&mut culled, k, options).unwrap();
+    assert_eq!(
+        culled.kf_id,
+        without(m.kf_id.clone(), k),
+        "{name}: row {k} culled"
+    );
+    assert_eq!(
+        culled.kf_parent,
+        without(integers(&case["reparented"][k]), k),
+        "{name}: row {k}'s children reparented first"
+    );
+    check_map(&culled).unwrap();
+    if m.kf_parent.contains(&m.kf_id[k]) {
+        let mut erased = m.clone();
+        assert!(
+            erase_keyframe(&mut erased, k).is_err(),
+            "{name}: row {k}, a parent, is not erased"
+        );
+    }
 }
 
 /// A case's settings.
@@ -101,6 +166,7 @@ fn every_case_matches_the_brute_force() {
                 integers(&case["reparented"][k]),
                 "{name}: the parents after culling row {k}"
             );
+            check_cull(case, &m, k, &options);
         }
         for local in case["local_maps"].as_array().expect("local maps") {
             let found = local_map(&m, &integers(&local["points"]), &options).unwrap();

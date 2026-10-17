@@ -1291,6 +1291,9 @@ def forget_observations(m: Map, rows: ArrayLike, *, backend: str = "python") -> 
 def erase_keyframe(m: Map, k: int, *, backend: str = "python") -> Map:
     """Remove a keyframe and its keypoints; its points lose an observation each.
 
+    A keyframe that is still another's parent is refused, so every parent stays a keyframe of
+    the map: :func:`slam_it.edge.covisibility.cull` gives its children new parents first.
+
     Parameters
     ----------
     m : Map
@@ -1308,11 +1311,17 @@ def erase_keyframe(m: Map, k: int, *, backend: str = "python") -> Map:
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If `k` is not a keyframe's row.
+        If `k` is not a keyframe's row, or the keyframe is still another's parent.
     """
     if m.keyframes == 0:
         raise InvalidInputError("k: the map has no keyframes")
     row = as_count(k, "k", 0, m.keyframes - 1)
+    children = np.flatnonzero(m.kf_parent == m.kf_id[row])
+    if len(children):
+        raise InvalidInputError(
+            f"k: keyframe {m.kf_id[row]} is still keyframe {m.kf_id[children[0]]}'s parent "
+            "(covisibility's cull gives its children new parents first)"
+        )
     return backends.call(
         backend,
         __name__,

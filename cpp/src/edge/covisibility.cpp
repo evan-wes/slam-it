@@ -265,6 +265,20 @@ Result<void> reparent(Map& m, std::int64_t k, const Options& options) {
   return {};
 }
 
+Result<void> cull(Map& m, std::int64_t k, const Options& options) {
+  if (auto ok = check_row(m, k); !ok) {
+    return ok;
+  }
+  if (m.kf_id[static_cast<std::size_t>(k)] == 0) {
+    return fail(ErrorKind::kInvalidInput,
+                "k: keyframe 0 is the map's first, its tree's root, and is not culled");
+  }
+  if (auto ok = reparent(m, k, options); !ok) {
+    return ok;
+  }
+  return erase_keyframe(m, k);
+}
+
 std::vector<std::array<std::int64_t, 3>> strong_links(const Map& m, const Options& options) {
   std::vector<std::array<std::int64_t, 3>> out;
   for (std::size_t a = 0; a < keyframe_count(m); ++a) {

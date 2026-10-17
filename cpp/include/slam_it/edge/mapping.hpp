@@ -138,7 +138,8 @@ struct Mapped {
 /// @param camera The camera.
 /// @param mode The pipeline's mode.
 /// @param options The fraction and count.
-/// @return Nothing; `InvalidInput` for an invalid camera or settings.
+/// @return Nothing; `InvalidInput` for a map without keyframes, or an invalid camera or
+///         settings.
 [[nodiscard]] foundations::Result<void> cull_keyframes(Map& m, const Camera& camera, Mode mode,
                                                        const Options& options);
 

@@ -9,7 +9,7 @@
 
 use slam_it_foundations::error::{ErrorKind, Result, check_range, fail};
 
-use crate::map::Map;
+use crate::map::{self, Map};
 use crate::options::Options;
 
 /// A link: another keyframe's row, and the points the two share.
@@ -293,6 +293,32 @@ pub fn reparent(m: &mut Map, k: usize, options: &Options) -> Result<()> {
         m.kf_parent[child] = parent; // linked to no candidate: its own parent
     }
     Ok(())
+}
+
+/// Culls a keyframe: its children given new parents, then it erased (ORB-SLAM's `SetBadFlag`;
+/// `slam_it.edge.covisibility.cull`). The one way a keyframe leaves the graph, as
+/// [`map::erase_keyframe`] refuses a keyframe that is still a parent. The map's first keyframe
+/// (id 0), its tree's root, is refused, as `SetBadFlag` leaves it.
+///
+/// # Arguments
+///
+/// * `m` - The map, changed in place.
+/// * `k` - The keyframe's row.
+/// * `options` - The settings: `covisibility.min_points`.
+///
+/// # Errors
+///
+/// `InvalidInput` for a row out of range or the map's first keyframe.
+pub fn cull(m: &mut Map, k: usize, options: &Options) -> Result<()> {
+    check_row(m, k)?;
+    if m.kf_id[k] == 0 {
+        return fail(
+            ErrorKind::InvalidInput,
+            "k: keyframe 0 is the map's first, its tree's root, and is not culled",
+        );
+    }
+    reparent(m, k, options)?;
+    map::erase_keyframe(m, k)
 }
 
 /// Every pair of keyframes sharing at least `covisibility.strong_points`

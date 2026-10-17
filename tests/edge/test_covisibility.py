@@ -3,8 +3,9 @@
 ``tests/fixtures/edge/covisibility.json`` (``generate_covisibility.py``) gives, for small maps
 of hand-picked and seeded points, each keyframe's links, tracking's local map for some frames,
 the parent :func:`~slam_it.edge.covisibility.adopt` gives, the parents
-:func:`~slam_it.edge.covisibility.reparent` leaves, and the strong links, computed from point
-sets by the rules alone. Every backend is held to it; the C++ and Rust native tests hold their
+:func:`~slam_it.edge.covisibility.reparent` leaves (and so what
+:func:`~slam_it.edge.covisibility.cull` leaves), and the strong links, computed from point sets
+by the rules alone. Every backend is held to it; the C++ and Rust native tests hold their
 cores to the same file.
 """
 
@@ -125,6 +126,31 @@ def test_a_culled_keyframes_children_get_new_parents(case: dict[str, Any], backe
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize("case", CASES, ids=NAMES)
+def test_a_culled_keyframe_leaves_after_its_children(case: dict[str, Any], backend: str) -> None:
+    """``cull``: the children given SetBadFlag's parents, then the keyframe erased; not id 0."""
+    chosen = require_function(backend, covisibility.__name__, "cull")
+    m, options = fixture_map(case), fixture_options(case)
+    for k, parents in enumerate(case["reparented"]):
+        if m.kf_id[k] == 0:
+            with pytest.raises(InvalidInputError, match="is not culled"):
+                covisibility.cull(m, k, options, backend=chosen)
+            continue
+        got = covisibility.cull(m, k, options, backend=chosen)
+        assert got.kf_id.tolist() == np.delete(m.kf_id, k).tolist(), f"keyframe row {k}"
+        assert got.kf_parent.tolist() == np.delete(parents, k).tolist(), f"keyframe row {k}"
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_a_parent_is_not_erased(backend: str) -> None:
+    """``map.erase_keyframe`` refuses a keyframe that is still a parent: ``cull`` it instead."""
+    case = next(c for c in CASES if c["name"] == "repair")
+    m = fixture_map(case)
+    with pytest.raises(InvalidInputError, match="still keyframe 2's parent"):
+        maps.erase_keyframe(m, 1, backend=backend)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("case", CASES, ids=NAMES)
 def test_strong_links_share_strong_points(case: dict[str, Any], backend: str) -> None:
     """Every pair sharing at least strong_points, by id."""
     chosen = require_function(backend, covisibility.__name__, "strong_links")
@@ -147,7 +173,8 @@ def test_a_bad_row_or_point_is_refused(backend: str) -> None:
 def test_the_room_keeps_a_spanning_tree(mode: str, runs: dict[str, Run]) -> None:
     """The room's last map, run through the pipeline, is one tree rooted at its first keyframe.
 
-    Each keyframe but the first has a parent, one of the map's, which is among its links.
+    Each keyframe but the first has a parent, one of the map's, which is among its links, and
+    its chain of parents reaches the first keyframe: no cycle.
     """
     m = runs[mode].pipeline.map
     assert m is not None
@@ -158,3 +185,9 @@ def test_the_room_keeps_a_spanning_tree(mode: str, runs: dict[str, Run]) -> None
     every = Options().with_settings({"covisibility.min_points": 1})
     for k, parent in enumerate(rows, start=1):
         assert parent in covisibility.links(m, k, every)[0].tolist(), f"keyframe row {k}"
+    parents = np.concatenate([[-1], rows])
+    for k in range(m.keyframes):
+        row, steps = k, 0
+        while row > 0 and steps < m.keyframes:
+            row, steps = int(parents[row]), steps + 1
+        assert row == 0, f"keyframe row {k}'s chain of parents"

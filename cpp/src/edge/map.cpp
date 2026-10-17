@@ -604,6 +604,13 @@ Result<void> erase_keyframe(Map& m, std::int64_t k) {
     return ok;
   }
   const auto row = static_cast<std::size_t>(k);
+  if (const auto child = std::ranges::find(m.kf_parent, m.kf_id[row]); child != m.kf_parent.end()) {
+    const auto id = m.kf_id[static_cast<std::size_t>(child - m.kf_parent.begin())];
+    return fail(ErrorKind::kInvalidInput,
+                "k: keyframe " + std::to_string(m.kf_id[row]) + " is still keyframe " +
+                    std::to_string(id) +
+                    "'s parent (covisibility's cull gives its children new parents first)");
+  }
   const std::int64_t start = m.kf_start[row];
   const std::int64_t stop = m.kf_start[row + 1];
   std::vector<std::int64_t> rows;

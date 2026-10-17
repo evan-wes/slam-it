@@ -83,6 +83,16 @@ struct LocalMap {
 /// @return Nothing, or `InvalidInput` for a row out of range.
 [[nodiscard]] foundations::Result<void> reparent(Map& m, std::int64_t k, const Options& options);
 
+/// @brief Cull a keyframe: its children given new parents, then it erased (ORB-SLAM's
+///        `SetBadFlag`; `slam_it.edge.covisibility.cull`). The one way a keyframe leaves the
+///        graph, as `erase_keyframe` refuses a keyframe that is still a parent. The map's first
+///        keyframe (id 0), its tree's root, is refused, as `SetBadFlag` leaves it.
+/// @param m The map, changed in place.
+/// @param k The keyframe's row.
+/// @param options The settings: `covisibility.min_points`.
+/// @return Nothing, or `InvalidInput` for a row out of range or the map's first keyframe.
+[[nodiscard]] foundations::Result<void> cull(Map& m, std::int64_t k, const Options& options);
+
 /// @brief Every pair of keyframes sharing at least `covisibility.strong_points`
 ///        (`slam_it.edge.covisibility.strong_links`).
 /// @param m The map.
