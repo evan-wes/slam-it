@@ -64,6 +64,42 @@ def _config(path: Path, sequence: Path, name: str = "room") -> Path:
     return path
 
 
+def test_a_stretch_ends_relocalised_recovered_lost_or_with_the_sequence() -> None:
+    """Untracked frames are those tracking failed, a frame placed that then failed among them."""
+    states = [
+        (0, "tracking", "initialization", 200),
+        (0, "tracking", "motion", 0),  # placed, then failed the local map
+        (0, "tracking", None, 0),
+        (0, "tracking", "relocalization", 80),
+        (0, "tracking", None, 0),
+        (0, "tracking", "motion", 150),
+        (0, "tracking", None, 0),
+        (0, "lost", None, 0),
+        (None, "not_initialized", None, 0),
+        (1, "tracking", "initialization", 200),
+        (1, "tracking", None, 0),
+    ]
+    diagnostics = [
+        {"timestamp": float(k), "map": m, "state": state, "placed_by": placed, "tracked": n}
+        for k, (m, state, placed, n) in enumerate(states)
+    ]
+    assert _script().stretches(diagnostics) == [
+        ("relocalised", 2, 2.0), ("recovered", 1, 1.0), ("lost", 2, 1.0), ("end", 1, 0.0),
+    ]  # fmt: skip
+
+
+def test_a_frame_is_relocalised_tried_placed_or_neither() -> None:
+    """What a frame needed, read from its diagnostic."""
+    summary = {"words": 10, "placed": False}
+    kind = _script().kind
+    assert [
+        kind({"placed_by": "relocalization", "relocalization": {**summary, "placed": True}}),
+        kind({"placed_by": None, "relocalization": summary}),
+        kind({"placed_by": "motion", "relocalization": None}),
+        kind({"placed_by": None, "relocalization": None}),
+    ] == ["relocalised", "tried", "placed", "other"]
+
+
 @pytest.mark.usefixtures("cpp")
 def test_a_sequence_is_run_measured_and_tabled(
     sequence: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -89,6 +125,13 @@ def test_a_sequence_is_run_measured_and_tabled(
     assert result["deadline"] == pytest.approx(1 / 30, abs=1e-6)  # rgb.txt's microseconds
     assert result["late"] >= 0
     assert result["unjudged"] is None
+    # The run's details: nothing untracked, every frame placed (the first by the map's start),
+    # and no relocalised frame to hold against the truth.
+    assert (result["lost_frames"], result["stretches"]) == (Options().loss.lost_frames, [])
+    assert {k: len(v) for k, v in result["latency"].items()} == {
+        "relocalised": 0, "tried": 0, "placed": FRAMES, "other": 0,
+    }  # fmt: skip
+    assert result["relocalised_frames"] == []
     table = capsys.readouterr().out.splitlines()
     assert table[0].startswith("| sequence | mode |")
     assert table[2].startswith(f"| room | rgbd | 320x240 | 1000 | {FRAMES}/{FRAMES} (100%) |")

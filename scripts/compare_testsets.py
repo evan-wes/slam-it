@@ -1,7 +1,10 @@
 """Compare two measures of the test set: what moved, how failures ended, and relocalisation's cost.
 
 BASE and NEW are ``scripts/measure_testset.py``'s folders (or a seed's of
-``scripts/measure_sharded.py``): ``results.jsonl``, and each sequence's run. Printed as markdown:
+``scripts/measure_sharded.py``). Only their ``results.jsonl`` is read: each result carries its
+run's details (``measure_testset.DETAILS``), recorded by the code that ran it, so two measures
+compare across a change of the run format, which a newer reader refuses (B2's review panel, A9).
+Printed as markdown:
 
 - **By group**, a group being a sequence's dataset (its name up to the first ``-``) and mode:
   the runs in both, the frames tracked, the median share, the maps, the losses, the relocalised
@@ -9,31 +12,31 @@ BASE and NEW are ``scripts/measure_testset.py``'s folders (or a seed's of
   named.
 - **The runs that moved**: a share by more than a point, an ATE by more than a tenth (or scored
   in one only), or any frame relocalised.
-- **How failures ended**: a stretch is consecutive frames of a map that it did not track (a
-  frame's diagnostic records ``tracked``, its inliers, 0 when tracking failed it, a frame placed
-  that then failed the local map among them; a map reset later keeps its record); it ends
-  relocalised (the next frame placed by relocalisation), recovered (tracked otherwise), lost
-  (its last frame lost the track) or with the sequence. Each batch's stretches and their frames
-  by ending, a group a row, and the frames lost stretches waited past ``loss.lost_frames`` (the
-  run's own setting): those a map lost after ``loss.lost_frames`` failures in a row would not have.
+- **How failures ended**: each batch's stretches of frames a map did not track
+  (``measure_testset.stretches``) and their frames, by how they ended, a group a row, and the
+  frames lost stretches waited past ``loss.lost_frames`` (the run's own setting): those a map
+  lost after ``loss.lost_frames`` failures in a row would not have.
 - **Latency by frame**: building and tracking a frame, as :func:`slam_it.eval.budgets.judge`
-  times it, by what the frame needed: relocalised, relocalisation tried with nothing placed,
-  placed otherwise, or none of these. Each kind's frames, median, 95th percentile and slowest,
-  and those past the run's deadline. Comparable only between measures made alone, pinned to a
-  core (``measure_testset.py`` says how).
-- With ``--config``, the measure's config: **each relocalised frame against the ground truth**,
-  its error with its map aligned as the ATE aligns it, beside the map's median error and the
-  error of the map's last tracked frame before it. A frame relocalised into the wrong place
-  stands out from both.
+  times it, by what the frame needed (``measure_testset.KINDS``). Each kind's frames, median,
+  95th percentile and slowest, and those past the run's deadline. Comparable only between
+  measures made alone, pinned to a core (``measure_testset.py`` says how).
+- **Each relocalised frame against the ground truth**, new: its error with its map aligned as
+  the ATE aligns it, beside the map's median error and the error of the map's last tracked
+  frame before it. A frame relocalised into the wrong place stands out from both.
 
-::
+A measure made before results carried their run's details is given them by ``summarize``,
+which reads its runs and its config's ground truth. Run it with the code that made the measure,
+before a change of the run format leaves its runs unreadable; the results it replaces are kept
+as ``results.undetailed.jsonl``::
 
-    python scripts/compare_testsets.py BASE NEW [--config CONFIG]
+    python scripts/compare_testsets.py compare BASE NEW
+    python scripts/compare_testsets.py summarize BATCH CONFIG
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import statistics
 import sys
@@ -45,21 +48,17 @@ from typing import Any, NamedTuple
 import measure_testset  # this script's neighbour: its folder is on the path when it runs
 import numpy as np
 
-from slam_it.eval import budgets, runs
+from slam_it.eval import runs
 from slam_it.foundations.errors import DegenerateError, InvalidInputError
-
-ENDINGS = ("relocalised", "recovered", "lost", "end")
-"""How a stretch of frames a map did not track ended."""
-
-KINDS = ("relocalised", "tried", "placed", "other")
-"""What a frame needed: relocalised; relocalisation tried, nothing placed; placed otherwise (by
-the motion model, the local fallback or a map's start); none of these."""
 
 SHARE_MOVED = 0.01
 """A run's share tracked moved when it changed by more than this."""
 
 ATE_MOVED = 0.1
 """A run's ATE moved when it changed by more than this fraction of the base's."""
+
+UNDETAILED = "results.undetailed.jsonl"
+"""Where ``summarize`` keeps the results it gave their details."""
 
 
 class Batch(NamedTuple):
@@ -70,23 +69,15 @@ class Batch(NamedTuple):
     failed: list[str]
 
 
-class Stretch(NamedTuple):
-    """Consecutive frames of a map that it did not track, and how they ended (:data:`ENDINGS`)."""
+def _rows(folder: Path) -> list[dict[str, Any]]:
+    """Return a measure's results, one per line of its ``results.jsonl``.
 
-    ending: str
-    frames: int
-    seconds: float
-
-
-class Placed(NamedTuple):
-    """A relocalised frame against the ground truth, in metres (None where unmatched)."""
-
-    name: str
-    seconds: float
-    map: int
-    error: float | None
-    median: float | None
-    before: float | None
+    Raises
+    ------
+    FileNotFoundError
+        If the folder has no ``results.jsonl``.
+    """
+    return [json.loads(line) for line in (folder / "results.jsonl").read_text().splitlines()]
 
 
 def read_batch(folder: Path) -> Batch:
@@ -96,86 +87,64 @@ def read_batch(folder: Path) -> Batch:
     ------
     FileNotFoundError
         If the folder has no ``results.jsonl``.
+    slam_it.foundations.errors.InvalidInputError
+        If a result lacks its run's details: ``summarize`` gives them.
     """
-    rows = [json.loads(line) for line in (folder / "results.jsonl").read_text().splitlines()]
+    rows = _rows(folder)
     measured = {row["name"]: row for row in rows if "failed" not in row}
+    bare = [name for name, row in measured.items() if not set(measure_testset.DETAILS) <= set(row)]
+    if bare:
+        raise InvalidInputError(
+            f"{folder}: no run details for {', '.join(bare)}; give them with "
+            "`compare_testsets.py summarize`, run by the code that made the measure"
+        )
     return Batch(folder, measured, [row["name"] for row in rows if "failed" in row])
+
+
+def summarize(folder: Path, config: Path) -> int:
+    """Give each of a measure's results its run's details (the module docstring).
+
+    Reads each result's run, and its sequence's ground truth through `config`; results that
+    have their details, and sequences that failed, are left as they are.
+
+    Returns
+    -------
+    int
+        The results given their details; the measure's ``results.jsonl`` is rewritten, the one
+        it replaces kept as ``results.undetailed.jsonl``, only if there were any.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If a result's sequence is not in the config, or ``results.undetailed.jsonl`` exists.
+    """
+    folders = {e.name: e.folder for e in measure_testset.read_config(config)}
+    rows = _rows(folder)
+    given = 0
+    for row in rows:
+        if "failed" in row or set(measure_testset.DETAILS) <= set(row):
+            continue
+        if row["name"] not in folders:
+            raise InvalidInputError(f"{config}: no sequence {row['name']!r}")
+        run = runs.read_run(folder / row["name"] / "run")
+        truth = runs.ground_truth("tum", folders[row["name"]])
+        scored = None
+        if truth is not None:
+            with contextlib.suppress(DegenerateError):  # no map aligned: its ATE says so
+                scored = runs.evaluate_absolute(run, *truth)
+        row.update(measure_testset.details(run, truth, scored))
+        given += 1
+    if given:
+        if (folder / UNDETAILED).exists():
+            raise InvalidInputError(f"{folder / UNDETAILED}: exists, so would be overwritten")
+        (folder / "results.jsonl").rename(folder / UNDETAILED)
+        (folder / "results.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+    return given
 
 
 def group(result: dict[str, Any]) -> str:
     """Return a result's group: its dataset, the name up to the first ``-``, and its mode."""
     return f"{result['name'].split('-')[0]} {result['mode']}"
-
-
-def stretches(diagnostics: list[dict[str, Any]]) -> list[Stretch]:
-    """Return each stretch of frames a run's maps did not track, in order (the module docstring).
-
-    A frame that lost the track ends its stretch.
-    """
-    out: list[Stretch] = []
-    frames, start = 0, 0.0
-    for entry in diagnostics:
-        time = float(entry["timestamp"])
-        lost = entry.get("state") == runs.LOST
-        if lost or (entry.get("map") is not None and entry.get("tracked", 0) == 0):
-            start = start if frames else time
-            frames += 1
-            if lost:
-                out.append(Stretch("lost", frames, time - start))
-                frames = 0
-        elif frames:
-            found = entry.get("placed_by") == runs.RELOCALIZED
-            out.append(Stretch("relocalised" if found else "recovered", frames, time - start))
-            frames = 0
-    if frames:
-        out.append(Stretch("end", frames, float(diagnostics[-1]["timestamp"]) - start))
-    return out
-
-
-def kind(entry: dict[str, Any]) -> str:
-    """Return what a frame needed (:data:`KINDS`)."""
-    if entry.get("placed_by") == runs.RELOCALIZED:
-        return "relocalised"
-    if entry.get("relocalization") is not None:
-        return "tried"
-    return "other" if entry.get("placed_by") is None else "placed"
-
-
-def relocalised_errors(name: str, run: runs.Run, truth: runs.Truth) -> list[Placed]:
-    """Return each relocalised frame's error against the ground truth (the module docstring).
-
-    Raises
-    ------
-    slam_it.foundations.errors.DegenerateError
-        If no map of the run can be aligned to the truth.
-    """
-    times, poses = truth
-    scored = runs.evaluate_absolute(run, times, poses)
-    aligned = {e.map: e.absolute for e in scored.maps}
-    first = float(run.diagnostics[0]["timestamp"]) if run.diagnostics else 0.0
-
-    def error(k: int) -> float | None:
-        absolute = aligned.get(int(run.pose_maps[k]))
-        j = int(np.argmin(np.abs(times - run.timestamps[k])))
-        if absolute is None or abs(times[j] - run.timestamps[k]) > runs.MAX_DIFFERENCE:
-            return None
-        centre = absolute.alignment @ np.append(run.poses[k][:3, 3], 1.0)
-        return float(np.linalg.norm(centre[:3] - poses[j][:3, 3]))
-
-    row = {float(t): k for k, t in enumerate(run.timestamps)}
-    out = []
-    for entry in run.diagnostics:
-        k = row.get(float(entry["timestamp"]))
-        if entry.get("placed_by") != runs.RELOCALIZED or k is None:
-            continue
-        m = int(run.pose_maps[k])
-        before = next((j for j in range(k - 1, -1, -1) if run.pose_maps[j] == m), None)
-        median = aligned[m].median if m in aligned else None
-        seconds = float(entry["timestamp"]) - first
-        out.append(
-            Placed(name, seconds, m, error(k), median, None if before is None else error(before))
-        )
-    return out
 
 
 def _cm(metres: float | None) -> str:
@@ -246,46 +215,47 @@ def endings(batch: Batch, names: list[str]) -> list[str]:
     frames: dict[str, Counter[str]] = defaultdict(Counter)
     waited: Counter[str] = Counter()
     for name in names:
-        run = runs.read_run(batch.folder / name / "run")
-        key = group(batch.results[name])
-        lost_frames = int(run.settings["loss"]["lost_frames"])
-        for stretch in stretches(run.diagnostics):
-            count[key][stretch.ending] += 1
-            frames[key][stretch.ending] += stretch.frames
-            if stretch.ending == "lost":
-                waited[key] += max(stretch.frames - lost_frames, 0)
+        result = batch.results[name]
+        key = group(result)
+        for ending, length, _ in result["stretches"]:
+            count[key][ending] += 1
+            frames[key][ending] += length
+            if ending == "lost":
+                waited[key] += max(length - result["lost_frames"], 0)
     lines = [
-        "| group | stretches, " + " / ".join(ENDINGS) + " | their frames "
+        "| group | stretches, " + " / ".join(measure_testset.ENDINGS) + " | their frames "
         "| frames waited past lost_frames before a loss |",
         "|---|---|---|---|",
     ]
     for key in sorted(count):
-        stretched = " / ".join(str(count[key][e]) for e in ENDINGS)
-        framed = " / ".join(str(frames[key][e]) for e in ENDINGS)
+        stretched = " / ".join(str(count[key][e]) for e in measure_testset.ENDINGS)
+        framed = " / ".join(str(frames[key][e]) for e in measure_testset.ENDINGS)
         lines.append(f"| {key} | {stretched} | {framed} | {waited[key]} |")
     return lines
 
 
 def latencies(batch: Batch, names: list[str]) -> list[str]:
-    """Return the table of a batch's latency by what a frame needed, a group a row per kind."""
+    """Return the table of a batch's latency by what a frame needed, a group a row per kind.
+
+    A run too short to judge (no ``deadline``) is left out, as the budgets leave it unjudged.
+    """
     seconds: dict[tuple[str, str], list[float]] = defaultdict(list)
     late: Counter[tuple[str, str]] = Counter()
     for name in names:
-        run = runs.read_run(batch.folder / name / "run")
-        try:
-            deadline = budgets.judge(run).deadline
-        except InvalidInputError:  # too short to judge
+        result = batch.results[name]
+        if result["deadline"] is None:
             continue
-        for entry in run.diagnostics:
-            key = (group(batch.results[name]), kind(entry))
-            latency = float(entry["build_seconds"]) + float(entry["track_seconds"])
-            seconds[key].append(latency)
-            late[key] += latency > deadline
+        for frame_kind, values in result["latency"].items():
+            key = (group(result), frame_kind)
+            seconds[key].extend(values)
+            late[key] += sum(value > result["deadline"] for value in values)
     lines = [
         "| group | frame | frames | median ms | p95 ms | slowest ms | late |",
         "|---|---|---|---|---|---|---|",
     ]
-    for key in sorted(seconds, key=lambda k: (k[0], KINDS.index(k[1]))):
+    for key in sorted(seconds, key=lambda k: (k[0], measure_testset.KINDS.index(k[1]))):
+        if not seconds[key]:
+            continue
         values = np.asarray(seconds[key])
         lines.append(
             f"| {key[0]} | {key[1]} | {len(values)} | {_ms(values.tolist())} "
@@ -294,38 +264,26 @@ def latencies(batch: Batch, names: list[str]) -> list[str]:
     return lines
 
 
-def against_truth(batch: Batch, names: list[str], folders: dict[str, Path]) -> list[str]:
+def against_truth(batch: Batch, names: list[str]) -> list[str]:
     """Return the table of a batch's relocalised frames against the ground truth."""
     lines = [
         "| run | time s | map | error cm | map's median cm | last tracked before cm |",
         "|---|---|---|---|---|---|",
     ]
     for name in names:
-        truth = runs.ground_truth("tum", folders[name])
-        if not batch.results[name]["relocalizations"] or truth is None:
-            continue
-        try:
-            placed = relocalised_errors(name, runs.read_run(batch.folder / name / "run"), truth)
-        except DegenerateError:  # no map aligned: its ATE says so
-            continue
         lines.extend(
-            f"| {p.name} | {p.seconds:.2f} | {p.map} | {_cm(p.error)} | {_cm(p.median)} "
-            f"| {_cm(p.before)} |"
-            for p in placed
+            f"| {name} | {p['seconds']:.2f} | {p['map']} | {_cm(p['error'])} "
+            f"| {_cm(p['median'])} | {_cm(p['before'])} |"
+            for p in batch.results[name]["relocalised_frames"] or []
         )
     return lines
 
 
-def main(arguments: list[str]) -> int:
-    """Compare two measures from the command line (the module docstring)."""
-    parser = argparse.ArgumentParser(prog="python scripts/compare_testsets.py")
-    parser.add_argument("base", type=Path, help="the measure compared against")
-    parser.add_argument("new", type=Path, help="the measure compared")
-    parser.add_argument("--config", type=Path, help="the measure's config, for the ground truth")
-    args = parser.parse_args(arguments)
-    base, new = read_batch(args.base), read_batch(args.new)
+def compare(base_folder: Path, new_folder: Path) -> None:
+    """Print the comparison of two measures (the module docstring)."""
+    base, new = read_batch(base_folder), read_batch(new_folder)
     names = [n for n in new.results if n in base.results]
-    print(f"{len(names)} runs compared, of {args.base} (base) and {args.new} (new).")
+    print(f"{len(names)} runs compared, of {base_folder} (base) and {new_folder} (new).")
     for label, listed in (
         ("In the base only", sorted(set(base.results) - set(new.results))),
         ("In the new only", sorted(set(new.results) - set(base.results))),
@@ -341,15 +299,29 @@ def main(arguments: list[str]) -> int:
         ("How failures ended, new", endings(new, names)),
         ("Latency by frame, base", latencies(base, names)),
         ("Latency by frame, new", latencies(new, names)),
+        ("Relocalised frames against the ground truth, new", against_truth(new, names)),
     ]
-    if args.config is not None:
-        folders = {e.name: e.folder for e in measure_testset.read_config(args.config)}
-        sections.append(
-            ("Relocalised frames against the ground truth, new", against_truth(new, names, folders))
-        )
     for title, lines in sections:
         print(f"\n## {title}\n")
         print("\n".join(lines))
+
+
+def main(arguments: list[str]) -> int:
+    """Compare two measures, or give one its runs' details, from the command line."""
+    parser = argparse.ArgumentParser(prog="python scripts/compare_testsets.py")
+    commands = parser.add_subparsers(dest="command", required=True)
+    compared = commands.add_parser("compare", help="compare two measures")
+    compared.add_argument("base", type=Path, help="the measure compared against")
+    compared.add_argument("new", type=Path, help="the measure compared")
+    summarized = commands.add_parser("summarize", help="give a measure's results their details")
+    summarized.add_argument("batch", type=Path, help="the measure")
+    summarized.add_argument("config", type=Path, help="its config, for the ground truth")
+    args = parser.parse_args(arguments)
+    if args.command == "compare":
+        compare(args.base, args.new)
+    else:
+        given = summarize(args.batch, args.config)
+        print(f"{args.batch}: {given} results given their runs' details.")
     return 0
 
 

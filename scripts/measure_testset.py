@@ -37,7 +37,18 @@ worker sets a run up (:func:`slam_it.orchestration.vo.options_for`), then is mea
 - ``p95``: the 95th percentile of a frame's latency, building and tracking it, in seconds,
   read against the frame period ``deadline``, with the frames ``late`` past it
   (:func:`slam_it.eval.budgets.judge`); null, with ``unjudged`` saying why, if the run is too
-  short to judge.
+  short to judge;
+- the run's details (:data:`DETAILS`), which ``scripts/compare_testsets.py`` compares, so that
+  a batch is compared by what the code that ran it recorded, never by reading its runs with
+  code that may no longer read their format (B2's review panel, A9):
+  - ``stretches``: each stretch of frames a map did not track, ``[ending, frames, seconds]``
+    (:func:`stretches`), and ``lost_frames``, the run's ``loss.lost_frames``;
+  - ``latency``: each frame's latency, building and tracking it, in seconds, by what the frame
+    needed (:data:`KINDS`, :func:`kind`);
+  - ``relocalised_frames``: each relocalised frame against the ground truth, its ``seconds``
+    since the first frame, its ``map``, its ``error``, the map's ``median`` error and the
+    ``before`` error of the map's last tracked frame before it, in metres (null where
+    unmatched); null if no map could be scored (:func:`relocalised_errors`).
 
 ``--camera nominal`` runs each sequence with a guess for its camera in place of its own: a
 typical phone's field of view (:func:`slam_it.eval.lenses.nominal`), without distortion, on a
@@ -88,6 +99,16 @@ SETTINGS = frozenset(Options().settings())
 LINKED = ("rgb", "rgb.txt", "depth", "depth.txt", "groundtruth.txt")
 """What a nominal camera's folder links to in the sequence's, where the sequence has it."""
 
+ENDINGS = ("relocalised", "recovered", "lost", "end")
+"""How a stretch of frames a map did not track ended."""
+
+KINDS = ("relocalised", "tried", "placed", "other")
+"""What a frame needed: relocalised; relocalisation tried, nothing placed; placed otherwise (by
+the motion model, the local fallback or a map's start); none of these."""
+
+DETAILS = ("lost_frames", "stretches", "latency", "relocalised_frames")
+"""A result's details of its run (the module docstring), which a comparison reads."""
+
 
 class Entry(NamedTuple):
     """A sequence of the test set, as its config lists it."""
@@ -96,6 +117,120 @@ class Entry(NamedTuple):
     folder: Path
     mode: str
     reference: str
+
+
+class Stretch(NamedTuple):
+    """Consecutive frames of a map that it did not track, and how they ended (:data:`ENDINGS`)."""
+
+    ending: str
+    frames: int
+    seconds: float
+
+
+class Placed(NamedTuple):
+    """A relocalised frame against the ground truth, in metres (None where unmatched)."""
+
+    seconds: float
+    map: int
+    error: float | None
+    median: float | None
+    before: float | None
+
+
+def stretches(diagnostics: list[dict[str, Any]]) -> list[Stretch]:
+    """Return each stretch of frames a run's maps did not track, in order.
+
+    A frame is untracked when tracking failed it (its diagnostic's ``tracked``, its inliers, is
+    0), a frame placed that then failed the local map among them, or when it lost the track; a
+    map reset later keeps its record. A stretch ends relocalised (the next frame placed by
+    relocalisation), recovered (tracked otherwise), lost (its last frame lost the track) or with
+    the sequence (``end``).
+    """
+    out: list[Stretch] = []
+    frames, start = 0, 0.0
+    for entry in diagnostics:
+        time = float(entry["timestamp"])
+        lost = entry.get("state") == runs.LOST
+        if lost or (entry.get("map") is not None and entry.get("tracked", 0) == 0):
+            start = start if frames else time
+            frames += 1
+            if lost:
+                out.append(Stretch("lost", frames, time - start))
+                frames = 0
+        elif frames:
+            found = entry.get("placed_by") == runs.RELOCALIZED
+            out.append(Stretch("relocalised" if found else "recovered", frames, time - start))
+            frames = 0
+    if frames:
+        out.append(Stretch("end", frames, float(diagnostics[-1]["timestamp"]) - start))
+    return out
+
+
+def kind(entry: dict[str, Any]) -> str:
+    """Return what a frame needed (:data:`KINDS`), from its diagnostic."""
+    if entry.get("placed_by") == runs.RELOCALIZED:
+        return "relocalised"
+    if entry.get("relocalization") is not None:
+        return "tried"
+    return "other" if entry.get("placed_by") is None else "placed"
+
+
+def relocalised_errors(run: runs.Run, truth: runs.Truth, scored: runs.Evaluation) -> list[Placed]:
+    """Return each relocalised frame's error against the ground truth, each map aligned as scored.
+
+    `scored` is the run scored against `truth` (:func:`slam_it.eval.runs.evaluate_absolute`). A
+    frame's error is its centre's distance from the truth's, its map aligned as the ATE aligns
+    it, beside its map's median error and the error of the map's last tracked frame before it,
+    so that a frame relocalised into the wrong place stands out from both.
+    """
+    times, poses = truth
+    aligned = {e.map: e.absolute for e in scored.maps}
+    first = float(run.diagnostics[0]["timestamp"]) if run.diagnostics else 0.0
+
+    def error(k: int) -> float | None:
+        absolute = aligned.get(int(run.pose_maps[k]))
+        j = int(np.argmin(np.abs(times - run.timestamps[k])))
+        if absolute is None or abs(times[j] - run.timestamps[k]) > runs.MAX_DIFFERENCE:
+            return None
+        centre = absolute.alignment @ np.append(run.poses[k][:3, 3], 1.0)
+        return float(np.linalg.norm(centre[:3] - poses[j][:3, 3]))
+
+    row = {float(t): k for k, t in enumerate(run.timestamps)}
+    out = []
+    for entry in run.diagnostics:
+        k = row.get(float(entry["timestamp"]))
+        if entry.get("placed_by") != runs.RELOCALIZED or k is None:
+            continue
+        m = int(run.pose_maps[k])
+        before = next((j for j in range(k - 1, -1, -1) if run.pose_maps[j] == m), None)
+        median = aligned[m].median if m in aligned else None
+        seconds = float(entry["timestamp"]) - first
+        out.append(Placed(seconds, m, error(k), median, None if before is None else error(before)))
+    return out
+
+
+def details(
+    run: runs.Run, truth: runs.Truth | None, scored: runs.Evaluation | None
+) -> dict[str, Any]:
+    """Return a run's details (:data:`DETAILS`; the module docstring).
+
+    `scored` is the run scored against `truth`, None where there is no truth or no map could
+    be aligned to it, which makes ``relocalised_frames`` null.
+    """
+    latency: dict[str, list[float]] = {k: [] for k in KINDS}
+    for entry in run.diagnostics:
+        latency[kind(entry)].append(float(entry["build_seconds"]) + float(entry["track_seconds"]))
+    placed = (
+        None
+        if truth is None or scored is None
+        else [p._asdict() for p in relocalised_errors(run, truth, scored)]
+    )
+    return {
+        "lost_frames": int(run.settings["loss"]["lost_frames"]),
+        "stretches": [list(s) for s in stretches(run.diagnostics)],
+        "latency": latency,
+        "relocalised_frames": placed,
+    }
 
 
 def read_config(path: Path) -> list[Entry]:
@@ -250,6 +385,7 @@ def measure(  # noqa: PLR0913 -- the sequence and its folder; how it runs keywor
         "unjudged": None,
     }
     truth = runs.ground_truth("tum", folder)
+    scored = None
     if truth is None:
         result["unscored"] = "no ground truth"
     else:
@@ -271,6 +407,7 @@ def measure(  # noqa: PLR0913 -- the sequence and its folder; how it runs keywor
         result.update(p95=judged.latency.p95, deadline=judged.deadline, late=judged.late)
     except InvalidInputError as error:  # a run too short to judge: said, never hidden
         result["unjudged"] = str(error)
+    result.update(details(run, truth, scored))
     return result
 
 
