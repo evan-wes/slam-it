@@ -6,6 +6,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
 
@@ -14,6 +15,7 @@ import pytest
 
 from slam_it.edge.options import Options
 from slam_it.eval import lenses, runs, tum
+from slam_it.foundations import so3
 from slam_it.foundations.errors import InvalidInputError
 from tests.edge import room
 from tests.edge.support import ATE_BOUND, FRAMES
@@ -23,6 +25,7 @@ from tests.orchestration.datasets import (
     FOUND_BLANKS,
     FOUND_OPTIONS,
     found_frames,
+    write_euroc,
     write_tum,
 )
 
@@ -119,7 +122,9 @@ def test_a_sequence_is_run_measured_and_tabled(
     assert [(s["map"], s["tracked"]) for s in result["segments"]] == [(0, FRAMES)]
     assert (result["resets"], result["relocalizations"]) == (0, 0)
     assert [m["map"] for m in result["map_ate"]] == [0]
-    assert result["ate"] < ATE_BOUND["rgbd"]
+    for key in ("ate", "ate_tracked", "ate_keyframes"):  # final, as tracked, the keyframes'
+        assert result[key] < ATE_BOUND["rgbd"]
+    assert result["loops"] == []  # the room closes none
     assert (result["matched"], result["reference"]) == (FRAMES, "the room's own poses")
     assert result["p95"] > 0.0
     assert result["deadline"] == pytest.approx(1 / 30, abs=1e-6)  # rgb.txt's microseconds
@@ -180,6 +185,7 @@ KEYS = 'name = "a"\nfolder = "/a"\nmode = "rgbd"\nreference = "r"\n'
         ("[[sequence]]\n" + KEYS + "extra = 1\n", "expected the keys"),
         ("[[sequence]]\n" + KEYS.replace('"/a"', "1"), "expected strings"),
         ("[[sequence]]\n" + KEYS.replace("rgbd", "lidar"), "unknown mode 'lidar'"),
+        ("[[sequence]]\n" + KEYS + 'dataset = "kitti"\n', "unknown dataset 'kitti'"),
         ("[[sequence]]\n" + KEYS + "[[sequence]]\n" + KEYS, "share a name"),
     ],
 )
@@ -193,6 +199,83 @@ def test_a_malformed_config_is_refused(text: str, message: str, tmp_path: Path) 
     path.write_text(text)
     with pytest.raises(InvalidInputError, match=message):
         _script().read_config(path)
+
+
+def test_a_euroc_sequence_is_measured_from_its_own_folder(tmp_path: Path) -> None:
+    """A sequence naming its dataset ``euroc`` runs as EuRoC, in stereo.
+
+    The room's EuRoC folder has no ground truth, which the result says; the room closes no loop.
+    """
+    folder = tmp_path / "room_euroc"
+    write_euroc(folder, room.sequence(FRAMES, stereo=True))
+    config = tmp_path / "testset.toml"
+    config.write_text(
+        f'[[sequence]]\nname = "room"\nfolder = "{folder}"\nmode = "stereo"\n'
+        'reference = "the room\'s own poses"\ndataset = "euroc"\n'
+    )
+    assert _script().main([str(config), str(tmp_path / "out")]) == 0
+    result = json.loads((tmp_path / "out" / "results.jsonl").read_text())
+    assert (result["dataset"], result["mode"], result["tracked"]) == ("euroc", "stereo", FRAMES)
+    assert (result["ate"], result["unscored"]) == (None, "no ground truth")
+    assert result["loops"] == []
+
+
+def _line_run(count: int) -> tuple[runs.Run, runs.Truth]:
+    """Return a run along a 6 m line, keyframes every tenth frame at the truth's poses.
+
+    The frames' poses are a centimetre off the truth's, so the map has a median error.
+    """
+    times = np.arange(count, dtype=np.float64) / 10.0
+    poses = np.tile(np.eye(4), (count, 1, 1))
+    poses[:, 0, 3] = np.linspace(0.0, 6.0, count)
+    poses[:, 1, 3] = 0.1 * np.sin(times)  # off a line, so the ATE aligns
+    tracked = poses.copy()
+    tracked[:, :3, 3] += np.random.default_rng(4).normal(0.0, 0.01, (count, 3))
+    rows = [0, 10, 20, count - 1]
+    run = runs.Run(
+        "synthetic", "line", "rgbd", "python", times, tracked, tracked,
+        keyframe_timestamps=times[rows], keyframe_poses=poses[rows].copy(),
+        keyframe_lives=np.array([[k, -1, -1] for k in rows], dtype=np.int64),
+        pose_maps=np.zeros(count, dtype=np.int64),
+        keyframe_maps=np.zeros(len(rows), dtype=np.int64),
+    )  # fmt: skip
+    return run, (times, poses)
+
+
+def test_a_loop_is_judged_by_the_reference() -> None:
+    """A loop over 3 m apart is at a wrong place; one whose keyframe turned 10 degrees is poor.
+
+    The keyframes' poses are the run's own after it, placed on the reference by the trajectory's
+    alignment; a loop closed between keyframes 2 m apart, the second turned, is in the right
+    place with a poor pose.
+    """
+    run, truth = _line_run(30)
+    turned = run.keyframe_poses.copy()
+    turned[1, :3, :3] = so3.exp([0.0, 0.0, np.radians(10.0)])
+    run = replace(run, keyframe_poses=turned, keyframe_loops=np.array([[0, 1], [0, 3]]))
+    scored = runs.evaluate_absolute(run, *truth)
+    near, far = _script().judge_loops(run, truth, scored)
+    assert near["keyframes"] == [0, 1]
+    assert (near["wrong_place"], near["poor_pose"]) == (False, True)
+    _, poses = truth
+    assert near["distance"] == pytest.approx(np.linalg.norm(poses[10, :3, 3] - poses[0, :3, 3]))
+    assert near["rotation_error"] == pytest.approx(10.0, abs=1e-6)
+    assert (far["wrong_place"], far["poor_pose"]) == (True, False)
+    assert far["distance"] > _script().WRONG_DISTANCE
+    unjudged = _script().judge_loops(run, None, None)
+    assert unjudged[0]["wrong_place"] is None
+    assert unjudged[0]["poor_pose"] is None
+
+
+def test_the_keyframes_ate_is_their_own() -> None:
+    """The final keyframes' ATE is scored on them alone: a keyframe moved 1 m shows."""
+    run, truth = _line_run(30)
+    assert _script().keyframes_ate(run, truth) == pytest.approx(0.0, abs=1e-9)  # the truth's
+    moved = run.keyframe_poses.copy()
+    moved[1, 2, 3] += 1.0
+    error = _script().keyframes_ate(replace(run, keyframe_poses=moved), truth)
+    assert error is not None
+    assert error > 0.1
 
 
 def test_the_template_is_a_config_the_script_reads() -> None:

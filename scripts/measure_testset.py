@@ -12,6 +12,9 @@ is its format::
     mode = "monocular"
     reference = "ADVIO: IMU and fixed points"
 
+A sequence may also name its ``dataset``, ``"tum"`` (the default) or ``"euroc"``: a EuRoC
+sequence's own folder, run as EuRoC (monocular or stereo; :func:`slam_it.eval.euroc`).
+
 Each sequence runs on one backend (:func:`slam_it.orchestration.vo.run`) with ORB-SLAM's
 settings and, unless ``--features default``, the features for its frame size, as the demo's
 worker sets a run up (:func:`slam_it.orchestration.vo.options_for`), then is measured:
@@ -31,9 +34,21 @@ worker sets a run up (:func:`slam_it.orchestration.vo.options_for`), then is mea
   on its own, Sim(3) for monocular and SE(3) otherwise, with ``matched`` and the ``reference``
   named; each map's own in ``map_ate`` (``map``, ``matched``, ``ate``), and in
   ``unscored_maps`` the maps too short or straight to align; ``ate`` null, with ``unscored``
-  saying why, if no map can be scored. It is scored alone
+  saying why, if no map can be scored. It is the final trajectory's (run format 7),
+  ``ate_tracked`` the poses' as tracked, and ``ate_keyframes`` the final keyframes', scored the
+  same way: ORB-SLAM's paper reports its monocular TUM results by its keyframes. It is scored alone
   (:func:`slam_it.eval.runs.evaluate_absolute`): the measure reports no relative error, and a
   reference too sparse for one still scores;
+- ``loops``: each loop closed, ``keyframes`` (the older first), judged against the reference
+  (:func:`judge_loops`): ``distance`` and ``angle`` (degrees) between the two keyframes by the
+  reference, ``wrong_place`` when more than :data:`WRONG_DISTANCE` or :data:`WRONG_ANGLE`
+  apart (they cannot have seen the same place); and, the map aligned as its ATE aligns it, the
+  two keyframes' relative pose after the run against the reference's, ``translation_error``
+  and ``rotation_error`` (degrees), ``poor_pose`` when the first is more than
+  :data:`POOR_FACTOR` times the map's median error or the second more than :data:`POOR_ANGLE`
+  (the online-SLAM design's section 10). Each judgement is null where the reference has no
+  pose within :data:`slam_it.eval.runs.MAX_DIFFERENCE` of a keyframe, or the map was not
+  scored;
 - ``p95``: the 95th percentile of a frame's latency, building and tracking it, in seconds,
   read against the frame period ``deadline``, with the frames ``late`` past it
   (:func:`slam_it.eval.budgets.judge`); null, with ``unjudged`` saying why, if the run is too
@@ -77,9 +92,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import tomllib
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -92,6 +109,21 @@ from slam_it.orchestration import vo
 
 KEYS = ("name", "folder", "mode", "reference")
 """Each sequence's keys in the config, every one a string."""
+
+OPTIONAL_KEYS = ("dataset",)
+"""The keys a sequence may also have: its ``dataset``, ``"tum"`` unless given."""
+
+WRONG_DISTANCE = 3.0
+"""A loop's keyframes farther apart than this by the reference, in metres, are at a wrong place."""
+
+WRONG_ANGLE = 60.0
+"""A loop's keyframes looking further apart than this, in degrees, are at a wrong place."""
+
+POOR_FACTOR = 5.0
+"""A loop's relative pose missing by more than this many times its map's median error is poor."""
+
+POOR_ANGLE = 5.0
+"""A loop's relative pose turned by more than this, in degrees, from the reference's is poor."""
 
 SETTINGS = frozenset(Options().settings())
 """The settings an ``--option`` may replace, each named by its group and field."""
@@ -117,6 +149,7 @@ class Entry(NamedTuple):
     folder: Path
     mode: str
     reference: str
+    dataset: str = "tum"
 
 
 class Stretch(NamedTuple):
@@ -209,6 +242,90 @@ def relocalised_errors(run: runs.Run, truth: runs.Truth, scored: runs.Evaluation
     return out
 
 
+def keyframes_ate(run: runs.Run, truth: runs.Truth) -> float | None:
+    """Return the ATE RMSE of the run's final keyframes, each map aligned on its own.
+
+    None if no map's keyframes can be aligned.
+    """
+    times, poses = run.final_keyframes()
+    alive = run.keyframe_lives[:, 1] < 0
+    keyframes = replace(
+        run, timestamps=times, poses=poses, tracked_poses=poses, pose_maps=run.keyframe_maps[alive]
+    )
+    try:
+        return runs.evaluate_absolute(keyframes, *truth).ate_rmse
+    except DegenerateError:
+        return None
+
+
+def _turn(rotation: np.ndarray) -> float:
+    """Return a rotation's angle, in degrees."""
+    return math.degrees(math.acos(float(np.clip((np.trace(rotation) - 1.0) / 2.0, -1.0, 1.0))))
+
+
+def judge_loops(
+    run: runs.Run, truth: runs.Truth | None, scored: runs.Evaluation | None
+) -> list[dict[str, Any]]:
+    """Return each loop the run closed, judged against the reference (the module docstring).
+
+    `scored` is the run scored against `truth`, None where there is none or no map could be
+    aligned to it: the judgements are null then.
+    """
+    aligned = {} if scored is None else {e.map: e.absolute for e in scored.maps}
+    out: list[dict[str, Any]] = []
+    for older, newer in run.keyframe_loops.tolist():
+        judged: dict[str, Any] = {
+            "keyframes": [older, newer],
+            "distance": None,
+            "angle": None,
+            "wrong_place": None,
+            "translation_error": None,
+            "rotation_error": None,
+            "poor_pose": None,
+        }
+        out.append(judged)
+        if truth is None:
+            continue
+        times, poses = truth
+        rows = [int(np.argmin(np.abs(times - run.keyframe_timestamps[k]))) for k in (older, newer)]
+        if any(
+            abs(times[j] - run.keyframe_timestamps[k]) > runs.MAX_DIFFERENCE
+            for j, k in zip(rows, (older, newer), strict=True)
+        ):
+            continue
+        a, b = poses[rows[0]], poses[rows[1]]
+        distance = float(np.linalg.norm(a[:3, 3] - b[:3, 3]))
+        angle = _turn(a[:3, :3].T @ b[:3, :3])
+        judged.update(
+            distance=distance,
+            angle=angle,
+            wrong_place=distance > WRONG_DISTANCE or angle > WRONG_ANGLE,
+        )
+        absolute = aligned.get(int(run.keyframe_maps[older]))
+        if absolute is None:
+            continue
+        # Each keyframe placed on the reference: its centre carried by the alignment, its
+        # rotation turned by the alignment's; the pair's relative pose in the first's frame.
+        turn = absolute.alignment[:3, :3] / absolute.scale
+        centres = [
+            absolute.alignment[:3, :3] @ run.keyframe_poses[k][:3, 3] + absolute.alignment[:3, 3]
+            for k in (older, newer)
+        ]
+        rotations = [turn @ run.keyframe_poses[k][:3, :3] for k in (older, newer)]
+        moved = float(
+            np.linalg.norm(
+                rotations[0].T @ (centres[1] - centres[0]) - a[:3, :3].T @ (b[:3, 3] - a[:3, 3])
+            )
+        )
+        turned = _turn((rotations[0].T @ rotations[1]).T @ (a[:3, :3].T @ b[:3, :3]))
+        judged.update(
+            translation_error=moved,
+            rotation_error=turned,
+            poor_pose=moved > POOR_FACTOR * absolute.median or turned > POOR_ANGLE,
+        )
+    return out
+
+
 def details(
     run: runs.Run, truth: runs.Truth | None, scored: runs.Evaluation | None
 ) -> dict[str, Any]:
@@ -242,7 +359,7 @@ def read_config(path: Path) -> list[Entry]:
         If the file does not exist.
     slam_it.foundations.errors.InvalidInputError
         If it is not TOML, lists no sequence, a sequence lacks a key or has another, a value is
-        not a string, a mode is unknown, or two sequences share a name.
+        not a string, a mode or dataset is unknown, or two sequences share a name.
     """
     try:
         data = tomllib.loads(path.read_text())
@@ -253,13 +370,20 @@ def read_config(path: Path) -> list[Entry]:
         raise InvalidInputError(f"{path}: no [[sequence]]")
     entries: list[Entry] = []
     for number, item in enumerate(listed, start=1):
-        if not isinstance(item, dict) or set(item) != set(KEYS):
-            raise InvalidInputError(f"{path}: sequence {number}: expected the keys {KEYS}")
-        if not all(isinstance(item[key], str) for key in KEYS):
+        if not isinstance(item, dict) or not set(KEYS) <= set(item) <= {*KEYS, *OPTIONAL_KEYS}:
+            raise InvalidInputError(
+                f"{path}: sequence {number}: expected the keys {KEYS}, and maybe {OPTIONAL_KEYS}"
+            )
+        if not all(isinstance(value, str) for value in item.values()):
             raise InvalidInputError(f"{path}: sequence {number}: expected strings")
         if item["mode"] not in MODES:
             raise InvalidInputError(f"{path}: sequence {number}: unknown mode {item['mode']!r}")
-        entries.append(Entry(item["name"], Path(item["folder"]), item["mode"], item["reference"]))
+        dataset = item.get("dataset", "tum")
+        if dataset not in runs.DATASETS:
+            raise InvalidInputError(f"{path}: sequence {number}: unknown dataset {dataset!r}")
+        entries.append(
+            Entry(item["name"], Path(item["folder"]), item["mode"], item["reference"], dataset)
+        )
     names = [e.name for e in entries]
     if len(set(names)) != len(names):
         raise InvalidInputError(f"{path}: two sequences share a name")
@@ -339,15 +463,19 @@ def measure(  # noqa: PLR0913 -- the sequence and its folder; how it runs keywor
     `replaced` holds the settings to replace in its run (:func:`read_options`).
     """
     replaced = replaced or {}
+    if nominal and entry.dataset != "tum":
+        raise InvalidInputError(f"{entry.name}: a nominal camera is guessed for TUM folders only")
     folder = nominal_folder(entry.folder, out / "sequence") if nominal else entry.folder
-    camera = tum.read_camera(folder)
+    source = vo.open_source(entry.dataset, folder, entry.mode)
+    camera = source.camera
     chosen = vo.options_for(camera.width, camera.height) if by_size else Options()
     options = chosen.with_settings(replaced)
-    run = vo.run("tum", folder, entry.mode, out / "run", backend=backend, options=options)
-    times = vo.open_source("tum", folder, entry.mode).times
+    run = vo.run(entry.dataset, folder, entry.mode, out / "run", backend=backend, options=options)
+    times = source.times
     span = runs.tracking(run, times)
     result: dict[str, Any] = {
         "name": entry.name,
+        "dataset": entry.dataset,
         "mode": entry.mode,
         "backend": backend,
         "camera": "nominal" if nominal else "exact",
@@ -375,6 +503,8 @@ def measure(  # noqa: PLR0913 -- the sequence and its folder; how it runs keywor
         "ran_to": span.ran_to,
         "reference": entry.reference,
         "ate": None,
+        "ate_tracked": None,
+        "ate_keyframes": None,
         "matched": 0,
         "map_ate": [],
         "unscored_maps": [],
@@ -384,15 +514,18 @@ def measure(  # noqa: PLR0913 -- the sequence and its folder; how it runs keywor
         "late": None,
         "unjudged": None,
     }
-    truth = runs.ground_truth("tum", folder)
+    truth = runs.ground_truth(entry.dataset, folder)
     scored = None
     if truth is None:
         result["unscored"] = "no ground truth"
     else:
         try:
             scored = runs.evaluate_absolute(run, *truth)
+            as_tracked = runs.evaluate_absolute(run, *truth, tracked=True)
             result.update(
                 ate=scored.ate_rmse,
+                ate_tracked=as_tracked.ate_rmse,
+                ate_keyframes=keyframes_ate(run, truth),
                 matched=scored.matched,
                 map_ate=[
                     {"map": e.map, "matched": e.matched, "ate": e.absolute.rmse}
@@ -407,6 +540,7 @@ def measure(  # noqa: PLR0913 -- the sequence and its folder; how it runs keywor
         result.update(p95=judged.latency.p95, deadline=judged.deadline, late=judged.late)
     except InvalidInputError as error:  # a run too short to judge: said, never hidden
         result["unjudged"] = str(error)
+    result["loops"] = judge_loops(run, truth, scored)
     result.update(details(run, truth, scored))
     return result
 
