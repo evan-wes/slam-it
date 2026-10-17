@@ -203,7 +203,7 @@ exhaustive = true
 containers = ["slam_it.edge"]
 layers = [
   "(pipeline)",
-  "(relocalization)",
+  "(loops) | (relocalization)",
   "(initialization) | (tracking) | (mapping)",
   "(adjust) | (database)",
   "(residuals) | (covisibility)",

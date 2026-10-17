@@ -313,10 +313,72 @@ def path(frames: int, rate: float = 30.0) -> list[Array]:
     return out
 
 
+LOOP_RADIUS = 0.6
+"""The loop path's circle's radius, in metres."""
+
+LOOP_TURN = 2.0 * math.pi * 7.0 / 6.0
+"""How far the loop path turns: once round, and a sixth more, back over where it began."""
+
+LOOP_FRAMES = 280
+"""The loop path's frames at 30 a second: its turn at about 45 degrees a second."""
+
+LOOP_PITCH = 0.25
+"""How far the loop path's camera looks up, in radians (y is down): the ceiling in view above
+the walls, so the depths across an image differ and a turn is told from a step sideways
+(looking level at a wall 2.4 m off, RGB-D's tracking jumped by up to 3 degrees)."""
+
+
+def loop_path(frames: int, rate: float = 30.0) -> list[Array]:
+    """Return a trajectory that comes back to where it began: ``T_world_cam`` for each frame.
+
+    The camera goes round a circle of :data:`LOOP_RADIUS` about the room's centre, looking
+    outward and :data:`LOOP_PITCH` up as it goes, so it moves sideways to its view (a
+    monocular start's parallax) and sees each wall in turn; over ``frames`` it turns
+    :data:`LOOP_TURN`, so the walls it first saw come back into view after it has looked
+    everywhere else: a loop to close. It bobs a few centimetres, so the views are not all at
+    one height.
+
+    Parameters
+    ----------
+    frames : int
+        How many poses.
+    rate : float, optional
+        Frames per second (the bobbing's clock).
+
+    Returns
+    -------
+    list of ndarray, shape (4, 4)
+        The poses.
+    """
+    out = []
+    for i in range(frames):
+        angle = LOOP_TURN * i / max(frames - 1, 1)
+        t = i / rate
+        position = np.array(
+            [
+                LOOP_RADIUS * math.sin(angle),
+                -0.2 + 0.05 * math.sin(1.3 * t),
+                LOOP_RADIUS * math.cos(angle) - 0.4,
+            ]
+        )
+        pose = np.eye(4)
+        tilt = LOOP_PITCH + 0.06 * math.sin(0.7 * t)
+        pose[:3, :3] = so3.exp([0.0, angle, 0.0]) @ so3.exp([tilt, 0.0, 0.0])
+        pose[:3, 3] = position
+        out.append(pose)
+    return out
+
+
 def sequence(
-    frames: int, camera: Camera = SMALL, *, stereo: bool = False, seed: int = 0, rate: float = 30.0
+    frames: int,
+    camera: Camera = SMALL,
+    *,
+    stereo: bool = False,
+    seed: int = 0,
+    rate: float = 30.0,
+    loop: bool = False,
 ) -> list[Frame]:
-    """Render a sequence along :func:`path`.
+    """Render a sequence along :func:`path`, or :func:`loop_path`.
 
     Parameters
     ----------
@@ -330,6 +392,8 @@ def sequence(
         The room's texture seed.
     rate : float, optional
         Frames per second (the timestamps' spacing).
+    loop : bool, optional
+        Follow :func:`loop_path`, which comes back to where it began (default: :func:`path`).
 
     Returns
     -------
@@ -338,7 +402,7 @@ def sequence(
     """
     room = Room(seed)
     out = []
-    for i, pose in enumerate(path(frames, rate)):
+    for i, pose in enumerate((loop_path if loop else path)(frames, rate)):
         gray, depth, right = room.render(camera, pose, stereo=stereo)
         out.append(Frame(i / rate, gray, depth, right, pose))
     return out

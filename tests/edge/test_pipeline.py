@@ -118,6 +118,39 @@ def test_every_point_and_keyframe_has_a_life(mode: str, runs: dict[str, Run]) ->
     assert int(np.count_nonzero(lives.keyframe_lives[:, 1] >= 0)) == culled_keyframes
 
 
+@pytest.mark.parametrize("mode", ["monocular", "stereo", "rgbd"])
+def test_the_final_trajectory_follows_the_keyframes(mode: str, runs: dict[str, Run]) -> None:
+    """Each tracked frame once, in order, placed by its reference keyframe's last pose.
+
+    The poses as tracked are the frames' own; a keyframe's own frame is where its keyframe is
+    now (but a monocular map's first, whose frame only set initialisation's reference); and the
+    final trajectory is within the bound tracking is held to.
+    """
+    run = runs[mode]
+    trajectory = run.pipeline.trajectory()
+    tracked = [r for r in run.results if r.pose is not None]
+    np.testing.assert_array_equal(trajectory.timestamps, [r.timestamp for r in tracked])
+    np.testing.assert_array_equal(trajectory.tracked, [r.pose for r in tracked])
+    assert np.all(trajectory.maps == 0)
+    lives = run.pipeline.lifetimes()
+    at = {float(t): i for i, t in enumerate(trajectory.timestamps)}
+    alive = lives.keyframe_lives[:, 1] < 0
+    placed = 0
+    for keyframe in np.flatnonzero(alive).tolist():
+        frame = at.get(float(lives.keyframe_times[keyframe]))
+        if frame is None:  # a monocular map's first keyframe: its frame was never tracked
+            continue
+        np.testing.assert_allclose(
+            trajectory.poses[frame], lives.keyframe_poses[keyframe], atol=1e-12
+        )
+        placed += 1
+    assert placed >= np.count_nonzero(alive) - 1
+    truth = np.array([run.truth[i] for i, r in enumerate(run.results) if r.pose is not None])
+    final = np.array([np.linalg.inv(pose) for pose in trajectory.poses])
+    error = absolute_error(final, truth, with_scale=mode == "monocular")
+    assert error.rmse < ATE_BOUND[mode]
+
+
 def test_monocular_frames_start_with_more_features() -> None:
     """Before the map, a monocular frame gets features.init_factor times the features."""
     camera = frames.Camera("pinhole", room.SMALL.intrinsics, 320, 240)

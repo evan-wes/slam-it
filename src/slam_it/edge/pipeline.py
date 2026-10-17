@@ -32,13 +32,27 @@
 4. **Mapping:** a tracked frame that needs a keyframe
    (:func:`slam_it.edge.mapping.need_keyframe`; none within ``tracking.max_frames`` of a recovery
    once the map holds more than ``tracking.max_frames``) is inserted and mapped
-   (:func:`slam_it.edge.mapping.process`).
+   (:func:`slam_it.edge.mapping.process`), culling sparing the keyframes a loop being confirmed
+   holds.
+5. **Loop closing:** with ``loops.enabled`` and the keyframe database, each keyframe mapped is
+   searched for a loop (:func:`slam_it.edge.loops.detect`), the loop being confirmed carried
+   from keyframe to keyframe; a loop closed is corrected at once
+   (:func:`slam_it.edge.loops.correct`), and the last frame, the keyframe's own, moved with its
+   keyframe, as ORB-SLAM's tracking places its last frame by its reference keyframe.
 
 **The keyframe database** (:class:`slam_it.edge.database.Database`), kept only when
 relocalising, holds the words of the map being tracked, with the pipeline's vocabulary: a map's
 first keyframes enter it when the map starts, a keyframe made by mapping when it is mapped
 (timed as mapping, as ORB-SLAM computes a keyframe's words in its local-mapping thread), and a
 culled keyframe leaves it. A map closed takes its database with it.
+
+**The final trajectory** (:meth:`Pipeline.trajectory`, ORB-SLAM's ``SaveTrajectoryTUM``): each
+tracked frame keeps its reference keyframe (the one it shared the most points with, or its own
+when it became one) and its pose relative to it; a culled keyframe keeps its pose relative to
+its parent (:attr:`slam_it.edge.map.Map.gone_kf_relative`). Each frame is placed by its
+reference keyframe's last pose, through the keyframe's culled ancestors where it was culled, so
+the trajectory follows what loop closing and bundle adjustment did to the keyframes after the
+frame was tracked. The poses as tracked are kept beside it.
 
 **Maps** are numbered from 0 in the order they start; a reset map's number is not given
 again. A map numbers its own keyframes and points from 0, so its first keyframe, which local
@@ -65,11 +79,12 @@ from typing import Any, Protocol
 import numpy as np
 from numpy.typing import NDArray
 
-from slam_it.edge import covisibility, initialization, mapping, relocalization, tracking
+from slam_it.edge import covisibility, initialization, loops, mapping, relocalization, tracking
 from slam_it.edge import map as maps
 from slam_it.edge.database import Database
 from slam_it.edge.frames import Camera, Frame, Tracked
 from slam_it.edge.initialization import Initialization, InitSummary, Outcome
+from slam_it.edge.loops import CorrectionSummary, DetectionSummary, Pending
 from slam_it.edge.map import Map, Removal
 from slam_it.edge.mapping import MappingSummary
 from slam_it.edge.options import MODES, Options
@@ -190,6 +205,44 @@ class LostSummary:
 
 
 @dataclass(frozen=True)
+class LoopSummary:
+    """How loop closing went on a keyframe, as a run records it.
+
+    Attributes
+    ----------
+    detection : slam_it.edge.loops.DetectionSummary
+        The search.
+    correction : slam_it.edge.loops.CorrectionSummary or None
+        The correction, when a loop closed.
+    detection_seconds : float
+        The time the search took.
+    correction_seconds : float
+        The time the correction took, global BA included (0 when none closed).
+    """
+
+    detection: DetectionSummary
+    correction: CorrectionSummary | None
+    detection_seconds: float
+    correction_seconds: float
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the summary as JSON values.
+
+        Returns
+        -------
+        dict
+            ``detection``, ``correction`` (or None), ``detection_seconds`` and
+            ``correction_seconds``.
+        """
+        return {
+            "detection": self.detection.as_dict(),
+            "correction": _record(self.correction),
+            "detection_seconds": self.detection_seconds,
+            "correction_seconds": self.correction_seconds,
+        }
+
+
+@dataclass(frozen=True)
 class FrameSummary:
     """How the stages went on one frame, as a run records it; None where a stage did not run.
 
@@ -210,6 +263,8 @@ class FrameSummary:
         Tracking the local map, run on a placed frame.
     mapping : slam_it.edge.mapping.MappingSummary or None
         Local mapping, on a keyframe after the first.
+    loop : LoopSummary or None
+        Loop closing, on a keyframe after the first while it is on.
     lost : LostSummary or None
         The map closed, on the frame the track was lost on.
     """
@@ -221,6 +276,7 @@ class FrameSummary:
     relocalization: RelocalizationSummary | None = None
     local_map: LocalMapSummary | None = None
     mapping: MappingSummary | None = None
+    loop: LoopSummary | None = None
     lost: LostSummary | None = None
 
     def as_dict(self) -> dict[str, Any]:
@@ -230,7 +286,7 @@ class FrameSummary:
         -------
         dict
             ``placed_by`` (by name), ``init``, ``motion``, ``pnp``, ``relocalization``,
-            ``local_map``, ``mapping`` and ``lost``, each an object or None.
+            ``local_map``, ``mapping``, ``loop`` and ``lost``, each an object or None.
         """
         return {
             "placed_by": None if self.placed_by is None else self.placed_by.value,
@@ -240,6 +296,7 @@ class FrameSummary:
             "relocalization": _record(self.relocalization),
             "local_map": _record(self.local_map),
             "mapping": _record(self.mapping),
+            "loop": _record(self.loop),
             "lost": _record(self.lost),
         }
 
@@ -269,6 +326,9 @@ class FrameResult:
     map_seconds : float
         The time mapping it took as a keyframe (:func:`slam_it.edge.mapping.process`), 0 for
         any other frame: what ORB-SLAM's local-mapping thread does.
+    loop_seconds : float
+        The time loop closing took on it as a keyframe, 0 for any other frame: what ORB-SLAM's
+        loop-closing thread does.
     summary : FrameSummary
         How its stages went.
     fates : Fates
@@ -283,6 +343,7 @@ class FrameResult:
     keyframe: bool
     track_seconds: float
     map_seconds: float
+    loop_seconds: float
     summary: FrameSummary
     fates: Fates
 
@@ -314,6 +375,8 @@ class Lifetimes:
     keyframe_links : ndarray of int64, shape (L, 3)
         Each map's strong links (:func:`slam_it.edge.covisibility.strong_links`) when it closed,
         and the current map's now, by the run's ids, ascending.
+    keyframe_loops : ndarray of int64, shape (E, 2)
+        Each map's loop edges, the older keyframe first, by the run's ids, in the order closed.
     point_maps : ndarray of int64, shape (N,)
         The map each point was made in.
     keyframe_maps : ndarray of int64, shape (K,)
@@ -327,8 +390,49 @@ class Lifetimes:
     keyframe_lives: NDArray[np.int64]
     keyframe_parents: NDArray[np.int64]
     keyframe_links: NDArray[np.int64]
+    keyframe_loops: NDArray[np.int64]
     point_maps: NDArray[np.int64]
     keyframe_maps: NDArray[np.int64]
+
+
+@dataclass(frozen=True)
+class Trajectory:
+    """The run's trajectory: each tracked frame's final pose, and its pose as tracked.
+
+    The frames of a map that was reset are left out, as ORB-SLAM3 drops a reset map's.
+
+    Attributes
+    ----------
+    timestamps : ndarray of float64, shape (N,)
+        Each tracked frame's time, in the order tracked.
+    poses : ndarray of float64, shape (N, 4, 4)
+        Its final ``T_cam_world``: its pose relative to its reference keyframe, carried by the
+        keyframe's last pose (the module docstring).
+    tracked : ndarray of float64, shape (N, 4, 4)
+        Its ``T_cam_world`` as tracked.
+    maps : ndarray of int64, shape (N,)
+        The map it was tracked in.
+    """
+
+    timestamps: Array
+    poses: Array
+    tracked: Array
+    maps: NDArray[np.int64]
+
+
+@dataclass(frozen=True)
+class _Placement:
+    """A tracked frame's place, for the final trajectory: when, in which map, relative to what.
+
+    ``reference`` is the run's id of its reference keyframe and ``relative`` its pose relative
+    to it, ``T_cam_ref``; ``tracked`` its ``T_cam_world`` as tracked.
+    """
+
+    timestamp: float
+    map: int
+    reference: int
+    relative: Array
+    tracked: Array
 
 
 @dataclass(frozen=True)
@@ -347,6 +451,7 @@ class _Step:
     matched: IntArray | None = None
     made: IntArray | None = None
     lost: bool = False
+    loop_seconds: float = 0.0
 
     def fates(self, size: int, base: int) -> Fates:
         """Return what became of each of the frame's `size` keypoints (:class:`Fate`).
@@ -420,6 +525,14 @@ class Pipeline:
     )
     # The closed maps' strong links, by the run's ids.
     _past_links: list[NDArray[np.int64]] = field(default_factory=list, init=False, repr=False)
+    # The closed maps' loop edges, by the run's ids.
+    _past_loops: list[NDArray[np.int64]] = field(default_factory=list, init=False, repr=False)
+    # The loop being confirmed in the current map, if any.
+    _pending: Pending | None = field(default=None, init=False, repr=False)
+    # Each tracked frame's place, and each culled keyframe's parent and pose relative to it, by
+    # the run's ids: the final trajectory's (trajectory()).
+    _placements: list[_Placement] = field(default_factory=list, init=False, repr=False)
+    _culled: dict[int, tuple[int, Array]] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Check the mode.
@@ -472,7 +585,7 @@ class Pipeline:
         fates = step.fates(frame.size, self._pt_base)
         if step.lost and self.map is not None:  # a lost frame was tracking a map
             summary = replace(summary, lost=self._close(self.map))
-        track_seconds = time.perf_counter() - start - step.map_seconds
+        track_seconds = time.perf_counter() - start - step.map_seconds - step.loop_seconds
         tracked = step.tracked
         return FrameResult(
             timestamp=frame.timestamp,
@@ -483,6 +596,7 @@ class Pipeline:
             keyframe=step.keyframe,
             track_seconds=track_seconds,
             map_seconds=step.map_seconds,
+            loop_seconds=step.loop_seconds,
             summary=summary,
             fates=fates,
         )
@@ -505,6 +619,7 @@ class Pipeline:
         for keyframe_id, (seconds, pose, parent) in self._past_keyframes.items():
             times[keyframe_id], poses[keyframe_id], parents[keyframe_id] = seconds, pose, parent
         links = list(self._past_links)
+        loop_edges = list(self._past_loops)
         m = self.map
         if m is not None:
             points[self._pt_base + m.pt_id] = m.pt_xyz
@@ -512,6 +627,7 @@ class Pipeline:
             poses[self._kf_base + m.kf_id] = m.kf_pose
             parents[self._kf_base + m.kf_id] = self._run_ids(m.kf_parent)
             links.append(self._strong_links(m))
+            loop_edges.append(self._kf_base + m.loop_edges)
         return Lifetimes(
             points=points,
             point_lives=np.array(self._point_lives, dtype=np.int64).reshape(-1, 3),
@@ -520,8 +636,38 @@ class Pipeline:
             keyframe_lives=np.array(self._keyframe_lives, dtype=np.int64).reshape(-1, 3),
             keyframe_parents=parents,
             keyframe_links=np.concatenate([np.zeros((0, 3), dtype=np.int64), *links]),
+            keyframe_loops=np.concatenate([np.zeros((0, 2), dtype=np.int64), *loop_edges]),
             point_maps=np.array(self._point_maps, dtype=np.int64),
             keyframe_maps=np.array(self._keyframe_maps, dtype=np.int64),
+        )
+
+    def trajectory(self) -> Trajectory:
+        """Return the run's trajectory so far: each tracked frame's final pose, and as tracked.
+
+        Returns
+        -------
+        Trajectory
+            The frames tracked, but a reset map's, each placed by its reference keyframe's last
+            pose (the module docstring); a frame whose keyframe chain ends at none (a culled
+            keyframe that had no parent) keeps its pose as tracked.
+        """
+        last: dict[int, Array] = {k: pose for k, (_, pose, _) in self._past_keyframes.items()}
+        m = self.map
+        if m is not None:
+            last.update(zip((self._kf_base + m.kf_id).tolist(), m.kf_pose, strict=True))
+        poses: list[Array] = []
+        for placed in self._placements:
+            pose, keyframe = placed.relative, placed.reference
+            while keyframe in self._culled:
+                parent, relative = self._culled[keyframe]
+                pose, keyframe = pose @ relative, parent
+            anchor = last.get(keyframe)
+            poses.append(placed.tracked if anchor is None else pose @ anchor)
+        return Trajectory(
+            timestamps=np.array([placed.timestamp for placed in self._placements]),
+            poses=np.array(poses).reshape(-1, 4, 4),
+            tracked=np.array([placed.tracked for placed in self._placements]).reshape(-1, 4, 4),
+            maps=np.array([placed.map for placed in self._placements], dtype=np.int64),
         )
 
     def _date(self) -> None:
@@ -541,13 +687,15 @@ class Pipeline:
             run_id = self._pt_base + int(point_id)
             self._point_lives[run_id][1:] = [frame, int(how)]
             self._past_points[run_id] = xyz
-        for keyframe_id, seconds, pose, parent in zip(
+        for keyframe_id, seconds, pose, parent, relative in zip(
             m.gone_kf_id, m.gone_kf_time, m.gone_kf_pose, self._run_ids(m.gone_kf_parent),
-            strict=True,
+            m.gone_kf_relative, strict=True,
         ):  # fmt: skip
             run_id = self._kf_base + int(keyframe_id)
             self._keyframe_lives[run_id][1:] = [frame, int(Removal.CULLED)]
             self._past_keyframes[run_id] = (float(seconds), pose, int(parent))
+            if parent >= 0:
+                self._culled[run_id] = (int(parent), relative)
         if len(m.gone_pt_id) or len(m.gone_kf_id):
             self.map = maps.clear_gone(m)
 
@@ -588,8 +736,12 @@ class Pipeline:
             if reset:
                 self._keyframe_lives[run_id][1:] = [frame, int(Removal.RESET)]
         self._past_links.append(self._strong_links(m))
+        self._past_loops.append(self._kf_base + m.loop_edges)
+        if reset:  # its frames' poses go with it
+            self._placements = [p for p in self._placements if p.map != self._map_id]
         lost = LostSummary(keyframes=m.keyframes, points=m.points, reset=reset)
         self.map, self._map_id, self._database = None, None, None
+        self._pending = None
         self.state = State.NOT_INITIALIZED
         self._last_frame, self._last_tracked, self._velocity = None, None, None
         self._reference, self._previous = None, None
@@ -612,6 +764,7 @@ class Pipeline:
         self._map_id, self._maps = self._maps, self._maps + 1
         self._kf_base, self._pt_base = len(self._keyframe_lives), len(self._point_lives)
         self.state = State.TRACKING
+        self._place_frame(frame, tracked, int(self.map.kf_id[-1]))
         self._accept(frame, tracked)
         summary = replace(summary, placed_by=Placement.INITIALIZATION)
         # Every point the frame observes was made of it.
@@ -649,6 +802,53 @@ class Pipeline:
             self._velocity = None
         self._last_frame, self._last_tracked = frame, tracked
         self._failures, self._lost_since = 0, None
+
+    def _place_frame(self, frame: Frame, tracked: Tracked, reference: int) -> None:
+        """Keep a tracked frame's place: its reference keyframe (by the map's id) and pose to it."""
+        assert self.map is not None
+        assert self._map_id is not None
+        k = int(self.map.keyframe_rows(np.array([reference], dtype=np.int64))[0])
+        relative = tracked.pose @ se3.inverse(self.map.kf_pose[k])
+        self._placements.append(
+            _Placement(
+                timestamp=frame.timestamp,
+                map=self._map_id,
+                reference=self._kf_base + reference,
+                relative=relative,
+                tracked=tracked.pose.copy(),
+            )
+        )
+
+    def _close_loops(self) -> tuple[LoopSummary | None, bool]:
+        """Search the newest keyframe for a loop, and correct one that closes.
+
+        Return how it went (None when loop closing is off, there is no database, or the keyframe
+        is the map's first), and whether a loop was corrected.
+        """
+        m, db = self.map, self._database
+        assert m is not None
+        keyframe = int(m.kf_id[-1])
+        if db is None or not self.options.loops.enabled or keyframe == 0:
+            return None, False
+        start = time.perf_counter()
+        found = loops.detect(
+            m, db, self.camera, keyframe, self._pending, mode=self.mode, options=self.options
+        )
+        self._pending = found.pending
+        searched = time.perf_counter()
+        correction = None
+        if found.loop is not None:
+            fixed = loops.correct(m, self.camera, found.loop, mode=self.mode, options=self.options)
+            self.map, correction = fixed.map, fixed.summary
+            self._sync_database()
+        done = time.perf_counter()
+        summary = LoopSummary(
+            detection=found.summary,
+            correction=correction,
+            detection_seconds=searched - start,
+            correction_seconds=done - searched if correction is not None else 0.0,
+        )
+        return summary, correction is not None
 
     def _sync_database(self) -> None:
         """Bring the keyframe database to the map's keyframes: add the new, erase the culled."""
@@ -748,16 +948,38 @@ class Pipeline:
             m, self.camera, frame.depth, tracked, reference=reference, mode=self.mode,
             options=options,
         )  # fmt: skip
-        map_seconds = 0.0
+        map_seconds = loop_seconds = 0.0
         made = None
+        corrected = False
         if keyframe:
             start = time.perf_counter()
+            holding = () if self._pending is None else self._pending.held
             mapped = mapping.process(
-                m, self.camera, frame, tracked, mode=self.mode, options=options
+                m, self.camera, frame, tracked, mode=self.mode, options=options, held=holding
             )
             self.map, made = mapped.map, mapped.made
             self._sync_database()
             map_seconds = time.perf_counter() - start
             summary = replace(summary, mapping=mapped.summary)
+            # The frame's reference is its own keyframe, placed where the frame was.
+            self._placements.append(
+                _Placement(
+                    frame.timestamp, self._map_id or 0, self._kf_base + int(self.map.kf_id[-1]),
+                    np.eye(4), tracked.pose.copy(),
+                )
+            )  # fmt: skip
+            looped, corrected = self._close_loops()
+            if looped is not None:
+                summary = replace(summary, loop=looped)
+                loop_seconds = looped.detection_seconds + looped.correction_seconds
+        else:
+            self._place_frame(frame, tracked, int(m.kf_id[reference]))
         self._accept(frame, tracked)
-        return _Step(tracked, keyframe, map_seconds, summary, matched=matched, made=made)
+        if corrected:  # the last frame, the new keyframe's own, moved with it
+            assert self.map is not None
+            assert self._last_tracked is not None
+            self._last_tracked = replace(self._last_tracked, pose=self.map.kf_pose[-1].copy())
+        return _Step(
+            tracked, keyframe, map_seconds, summary, matched=matched, made=made,
+            loop_seconds=loop_seconds,
+        )  # fmt: skip
