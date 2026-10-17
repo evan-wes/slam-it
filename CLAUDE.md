@@ -32,11 +32,17 @@ suggest starting a session inside the SLAM It! repository. Consequences:
 
 | Language | Role |
 |---|---|
-| Python (`src/slam_it`) | Reference implementation of every algorithm; orchestration, evaluation, learned rungs |
+| Python (`src/slam_it`) | Reference implementation of every algorithm, held to the same bar of results as C++ and Rust on the synthetic rooms, never to real time; orchestration, evaluation, learned rungs |
 | C++ (`cpp/`, module `slam_it._cpp`) | Performance core: rung 0, edge rung, edge budgets; `eval`'s native readers, run writer and process readings (`slam_it_eval`); the native programs (`slam_it_orchestration`, `slam_it_vo`) |
 | Rust (`rust/`, module `slam_it_rs`) | Rung 0 and the edge VO only; `eval`'s native readers, run writer and process readings (`slam-it-eval`); the native programs (`slam-it-orchestration`, `slam_it_vo`) |
 | JavaScript (`viewer/`) | The run viewer's page, and the upload and status pages beside it: plain modules, no build step, three.js from a CDN, pinned by its hashes. The viewer reads only a bundle (`slam_it.orchestration.bundles`), on its own site; the upload and status pages talk to the upload server's API. Logic modules (all but `main.js` and `*_view.js`) never touch the page (checked: `tsc` without the DOM), so Node tests them; JSDoc types, checked by `tsc --checkJs`; formatted by prettier |
 | Python (`server/`, `slam_it_server`) | The upload server (FastAPI, uvicorn, boto3): the job list, storage's links and the guards, for the run viewer's "your own video". A package of its own that never imports `slam_it`, tested in `tests/server/` |
+
+**Libraries are welcome.** Well-tested libraries belong in the runtime, the SLAM parts
+included (GTSAM from milestone 2B's B3): learning SLAM includes learning its standard tools
+(decided with evan-wes on 2026-10-17). Never keep a library out so that a test can use it as
+an oracle; test against something else. A new runtime dependency is recorded in the ladder's
+"Runtime dependencies" first.
 
 ## Conventions
 
@@ -88,10 +94,14 @@ options and environment variables use `SLAM_IT_`, and types `SlamIt`.
   module that `tests/test_backends.py` checks every extension submodule against. The edge
   rung's stages compare live with the Python reference on states built from the synthetic
   room (stored, they would run to megabytes), at `tests/edge/support.py`'s tolerances; its
-  fixture is a golden record of the room's runs (`tests/fixtures/edge/room_runs.json`) that
-  every backend is held to, so a decision changed in all three languages fails until the
-  record is regenerated. Bindings only convert types; algorithms live in the cores, which
-  build without Python.
+  whole runs are held to a golden record of the room's runs, so a changed decision fails
+  until the record is regenerated. **Until milestone 2B's B3,** that is one record
+  (`tests/fixtures/edge/room_runs.json`), Python's, which every backend must match decision
+  for decision. **B3 replaces it** (decided with evan-wes on 2026-10-17) with a record per
+  language, each its own regression check, and one bar of results that all three must clear
+  on the same data: the languages must each map and localise well, not decide alike. Add no
+  test or fixture that requires the languages to decide identically. Bindings only convert
+  types; algorithms live in the cores, which build without Python.
 - Native benchmarks are developer tools outside the cores: `cpp/bench/<rung>/` (Google
   Benchmark, built with `-DSLAM_IT_BUILD_BENCHMARKS=ON`) and each crate's `benches/`
   (criterion), held to the ladder by `check_layers.py`; layer 1 builds them, never runs them,
@@ -128,7 +138,9 @@ options and environment variables use `SLAM_IT_`, and types `SlamIt`.
 
 ## Review process
 
-**Layer 1, every PR:** `scripts/check.sh` must pass. It runs ruff (numpy docstrings, type
+**Layer 1, once per PR:** `scripts/check.sh` must pass when the PR is ready to merge, run by
+offline CI. Between commits, run only the checks a change touches, and say in the commit
+which ran, never that layer 1 passed. `check.sh` runs ruff (numpy docstrings, type
 hints) and mypy --strict over `src/`, `server/`, `tests/` and `scripts/`, import-linter,
 clang-format, clang-tidy, doxygen (every declaration documented), rustfmt, clippy (pedantic,
 missing docs), the run viewer's `node --check`, `node --test`, `tsc --checkJs` (twice: the
@@ -142,8 +154,13 @@ projects).
 
 **PRs are slices, not steps.** A PR makes meaningful progress toward a stated goal: a slice
 of a milestone (e.g. milestone 1's "BA spine"). The individual steps are semantic commits
-inside it (`feat(foundations): ...`, `test(...)`, `docs(notes): ...`), each with layer 1
-green. Prefer few, substantial PRs over many small ones.
+inside it (`feat(foundations): ...`, `test(...)`, `docs(notes): ...`), each with the checks it
+touches green. Prefer few, substantial PRs over many small ones.
+
+**Measurement, once per PR, on the finished slice** (decided with evan-wes on 2026-10-17): C++
+and Rust on just the sequences the PR's claim needs, sharded; the whole test set only when a
+PR changes how tracking behaves across the board. Python is held to the bar on the synthetic
+rooms, in layer 1, and runs on real data only when asked. No long runs at intermediate steps.
 
 **Layer 2, the review panel (`/slam-it-review-panel`):**
 - **When:** once per PR, on the finished slice, against the PR's stated goal. Never after
@@ -168,8 +185,9 @@ green. Prefer few, substantial PRs over many small ones.
 
 - Feature branches off `develop`, PRs into `develop`. `main` only takes `develop` releases.
 - **Docs-only changes skip the PR:** once the owner has finalized the wording, commit them
-  directly on `develop` (layer 1 green) and push. They need no version bump or CHANGELOG
-  entry. Anything that touches code, tests or tooling still goes through a PR.
+  directly on `develop` and push; no check touches a design doc or note, so none runs. They
+  need no version bump or CHANGELOG entry. Anything that touches code, tests or tooling still
+  goes through a PR.
 - Every PR with a code change bumps `VERSION` (4-digit MAJOR.MINOR.PATCH.MICRO) and adds a
   `CHANGELOG.md` entry.
 - **PR descriptions follow `.github/pull_request_template.md`.** Its "How this was built"

@@ -30,9 +30,11 @@ the viewer ([its note](../notes/your-own-video.md)).
 
 SLAM It! is a localization-and-mapping project in its own right. It has two goals:
 
-1. **Learning SLAM across the compute spectrum.** Every component is built by us and explained in
-   a design note as it is built. The range runs from first-principles geometry to learned
-   dense SLAM, and from a Pi-class compute budget to a large GPU.
+1. **Learning SLAM across the compute spectrum.** Every component is built by us, on the
+   field's standard libraries where they serve, and explained in a design note as it is
+   built: learning SLAM includes learning its tools (decided with evan-wes on 2026-10-17). The
+   range runs from first-principles geometry to learned dense SLAM, and from a Pi-class
+   compute budget to a large GPU.
 2. **Real-time SLAM.** At least one rung runs in real time under an edge-class budget.
 
 It is also the geometry source for [reifyscene](https://github.com/evan-wes/reifyscene). That is a
@@ -42,8 +44,10 @@ It is a hobby and learning project with no commercial use.
 
 ## Non-goals
 
-- Wrapping existing SLAM systems as black boxes. Reference implementations (DROID-SLAM, MegaSaM,
-  ORB-SLAM3) are for study and parity checks only.
+- Wrapping existing SLAM systems as black boxes. Reference implementations (DROID-SLAM,
+  MegaSaM, ORB-SLAM3) are for study and parity checks only; ORB-SLAM3 is also run here, as a
+  yardstick, once milestone 2B is done. The libraries such systems are built from (GTSAM,
+  Ceres, OpenCV and the like) are welcome ([Languages](#languages)).
 - Owning depth networks. Monocular depth models (UniDepth, MoGe, VGGT) are *inputs*, reached
   through a small provider interface.
 - Keeping things compatible. There are no users, so formats and APIs make clean breaks.
@@ -82,13 +86,16 @@ The ladder spans compute budgets. Every rung stands on rung 0.
 
 | Language | Role |
 |---|---|
-| **Python** | The readable reference implementation of every algorithm; orchestration, evaluation, and the learned rungs (PyTorch) |
+| **Python** | The readable reference implementation of every algorithm; orchestration, evaluation, and the learned rungs (PyTorch). Held to the same bar of results as C++ and Rust, on the synthetic rooms; never to real time |
 | **C++** | The performance core: rung 0, the edge rung, the edge budgets, and dense-BA kernels if profiling calls for them; outside the cores, `eval`'s native readers, run writer and process readings for a budget (`slam_it_eval`) and the native VO program (`slam_it_vo`, in orchestration); and the calibration side track (`slam_it_calib`), beside Python, without Rust. Showing C++ is a goal in its own right. |
 | **Rust** | Rung 0 and the edge rung, each in lock-step with Python and C++: every slice of those rungs lands in all three languages together; outside the cores, `eval`'s native readers, run writer and process readings for a budget (`slam-it-eval`) and the native VO program (`slam_it_vo`, crate `slam-it-orchestration`). The other rungs have no Rust. |
 | **JavaScript** | The run viewer's page (`viewer/`, from PR 10), and the upload and status pages beside it (PR 11): plain modules with no build step, three.js from a CDN pinned by its hashes. The viewer reads only bundles, on its own site; the upload and status pages, the upload server's API. No algorithm runs in it: its logic modules work out what a frame shows and never touch the page, so Node tests them; `tsc --checkJs` checks their JSDoc types. Its development tools (TypeScript, three.js's types, prettier) are pinned in `viewer/package-lock.json`. |
 
-**Runtime dependencies.** Adding one, to the Python package or to a core, is a change to this
-document first.
+**Runtime dependencies.** Well-tested libraries are welcome, the SLAM parts included (decided
+with evan-wes on 2026-10-17): learning SLAM includes learning its standard tools, and no
+library is kept out of the runtime so that a test can use it as an oracle; such a test checks
+against something else. Adding one, to the Python package or to a core, is still a change to
+this document first.
 - **Python:** numpy. Pillow too, but in `slam_it.eval.images` alone, which reads image files
   (milestone 2 reads PNG frames and depth maps) and encodes the run viewer's JPEGs (PR 10): the
   algorithm rungs take arrays, never files, and an import-linter contract keeps Pillow in that
@@ -112,16 +119,26 @@ document first.
   not backward stable; see the Rust port's note); the 3x3 SVDs, since PR 9, a port of Eigen's
   `JacobiSVD` in the same module (the real-time note). The `slam-it-eval` crate reads PNGs with
   the pure-Rust `png` crate, outside the algorithm cores.
+- **GTSAM 4.3, from milestone 2B's B3,** in all three languages, behind rung 0's
+  `slam_it.foundations.graphs`: the loop's Sim(3) refinement, the essential graph and global
+  BA. C++ links conda-forge's build of it, made against our Eigen 5.0.1; Python uses its
+  official bindings, the same build; Rust reaches it through a `cxx` bridge
+  ([the 2B design](2026-10-14-online-slam.md), section 10).
 - The three readers read a file the same way (gray from a gray file as stored, from a colour
   one through `image.to_gray`), held to shared PNG fixtures.
 - The native run writers and VO programs add none (decided for PR 8): they write JSON and
   `.npy` by hand, and the programs take their options as command-line flags, so nothing
   native reads JSON.
 
-**Parity.** Shared fixtures (fixed inputs, expected outputs) live in `tests/fixtures/`. Every C++
-and Rust implementation is checked against the Python reference. All three are benchmarked under
-the same compute budgets, which gives a "same algorithm, three languages" comparison of speed,
-memory and lines of code.
+**Parity.** Shared fixtures (fixed inputs, expected outputs) live in `tests/fixtures/`. Every
+C++ and Rust implementation is checked against the Python reference, stage by stage, within
+stated tolerances. Whole runs are held to their results, not to one another (decided with
+evan-wes on 2026-10-17, from milestone 2B's B3): each language keeps a golden record of its
+own runs, its regression check, and all three must clear one bar on the same data, namely the
+frames tracked, the maps, the loops closed with none at a wrong place, and the final
+trajectory's error. C++ and Rust must also clear a latency bar; Python is never held to real
+time. All three are benchmarked under the same compute budgets, which gives a "same
+algorithm, three languages" comparison of speed, memory and lines of code.
 
 **Packaging.** There are three importable parts. The two compiled ones are optional. Each
 algorithm's `backend=` argument picks an implementation at runtime, and `slam_it.backends`
@@ -471,7 +488,7 @@ then milestone 3 (decided 2026-10-12, below).
 | 1 | Rung 0: foundations | Py, C++, Rust | Synthetic scenes with exact answers |
 | 2 | Sparse VO under a laptop-CPU budget: monocular, stereo and RGB-D; the run viewer, and your own phone video | Py, C++, Rust | TUM RGB-D, EuRoC |
 | 2A | VO that survives a phone: a hard test set measured, settings by frame size, Stray Scanner's depth as RGB-D, a new map after a lost track | Py, C++, Rust | TUM RGB-D (its hard sequences), ZJU-SenseTime, ADVIO, ARKitScenes |
-| 2B | Online SLAM: place recognition, relocalisation, the covisibility graph, loop closure, merging maps | Py, C++, Rust | TUM RGB-D, EuRoC, 7-Scenes |
+| 2B | Online SLAM: place recognition, relocalisation, the covisibility graph, loop closure, threads, merging maps | Py, C++, Rust | TUM RGB-D, EuRoC, 7-Scenes |
 | 3 | **reifyscene payoff 1:** depth-aware, motion-masked BA refining VGGT's cameras | Py (+C++ solver) | reifyscene lab-coat masked PSNR; spin GT poses |
 | 4 | Classic heavy: incremental SfM and global BA, offline (place recognition and loop closure from 2B) | Py, C++ | KITTI odometry |
 | 5 | **reifyscene payoff 2:** DROID-style rung with DROID's published weights loaded, plus dense BA with a depth prior (the full Shape-of-Motion recipe) | Py (PyTorch) | Parity with the DROID reference; reifyscene lab-coat and spin |
@@ -505,8 +522,8 @@ edge rung holds what is its own, tracking, keyframes and local mapping.
 [the edge VO design](2026-10-05-edge-vo.md)):
 - **What it leaves out of ORB-SLAM:** no loop closure (milestone 2B's B3); one thread, mapping
   after tracking, so a run is deterministic, and so mapping is never busy: it neither refuses a
-  keyframe nor cuts a local BA short, as ORB-SLAM's mapping thread does (B3's design decides the
-  stand-in); no map reuse.
+  keyframe nor cuts a local BA short, as ORB-SLAM's mapping thread does (milestone 2B's B3b
+  gives tracking, mapping and loop closing threads of their own); no map reuse.
 - **The covisibility graph** (milestone 2B's B2), in place of a sliding window of the last 10
   keyframes, gives tracking's local map, local BA, keyframe culling, triangulation and fusion
   their keyframes, as ORB-SLAM's does, and keeps the spanning tree for B3's essential graph
@@ -526,7 +543,8 @@ edge rung holds what is its own, tracking, keyframes and local mapping.
   results are reported, not gated. *As built (PR 8's panel, A1, A16):* the states are built
   from the room when the tests run and compared live with the Python reference; on whole
   runs, every backend takes the same decisions, with poses within 1e-9, and is held to a
-  golden record of the room's runs (the edge VO design, §3).
+  golden record of the room's runs (the edge VO design, §3). *From milestone 2B's B3:* a
+  golden record per language, and one bar for all three ([Languages](#languages), "Parity").
 - **Its generic parts go in rung 0:** guided matching by projection and a feature grid in
   `foundations.matching`, the full-image-to-level map in `foundations.image`.
 
@@ -578,17 +596,18 @@ through the project.
   - the covisibility graph and the essential graph, in place of the window of 10 keyframes
     (B2; the essential graph's loop links come with loop closure);
   - loop closure: candidates checked for consistency, the loop's Sim(3) solved by RANSAC over
-    Horn's closed form, points fused, the essential graph optimised in Sim(3) on rung 0's
-    NLS, then a global BA;
+    Horn's closed form, points fused, the essential graph optimised in Sim(3) on GTSAM, then a
+    global BA;
   - maps joined where a recognised place links them (ORB-SLAM3's merging);
   - measured on TUM and EuRoC, whose sequences close loops, and on 7-Scenes for relocalisation.
 - **2B's forks, for its design** (ORB-SLAM's answer first):
   - the vocabulary: ORB-SLAM's is trained on Bovisa from its own descriptors; ours are not
     bit for bit theirs, so we train our own;
-  - threads: ORB-SLAM closes loops, and runs its global BA, in threads of their own; the edge
-    rung's one thread keeps a run deterministic and the three languages in parity, so loop
-    closing runs inline first, the latency of the frame it closes on measured against the
-    deadline, and a thread follows only if that frame misses it;
+  - threads: ORB-SLAM closes loops, and runs its global BA, in threads of their own. Decided
+    with evan-wes on 2026-10-17: B3 closes loops in the one worker, and B3b gives tracking,
+    mapping and loop closing real threads, a design of our own compared with ORB-SLAM's scheme
+    built in our C++, with a switch that runs their work in order
+    ([the 2B design](2026-10-14-online-slam.md), section 4);
   - ties: candidate keyframes ranked by score with an explicit order among equals (their
     ids), so that the three languages pick the same.
 - **Milestone 4 splits:** place recognition and loop closure move to 2B; milestone 4 keeps the
@@ -707,7 +726,8 @@ machine, and are labelled that way.
   program over the cap is killed. No `CPUQuota`: the laptop's cores are whole. The deadline is
   judged, not enforced: a frame past it is reported late, none is dropped. It holds building and
   tracking a frame, ORB-SLAM's tracking thread; mapping, in the same thread here so a run stays
-  deterministic, is judged by its load, over the run and over its busiest 10 seconds. Each
+  deterministic until milestone 2B's B3b gives it a thread of its own, is judged by its load,
+  over the run and over its busiest 10 seconds. Each
   program records its own process in its run: its peak memory, the CPUs it could run on and its
   memory cap.
 - **Where a rung declares its budget:**
@@ -792,6 +812,11 @@ Code is reviewed in two layers. The full rules are in `CLAUDE.md`.
 
   All three call out code that is not production quality. A smaller change can run one
   reviewer alone.
+- **Measurement, once per PR** (decided with evan-wes on 2026-10-17): between commits, only
+  the checks a change touches run. A PR's measurement is C++ and Rust on just the sequences
+  its claim needs, sharded; the whole test set reruns only when a PR changes how tracking
+  behaves across the board. Python is held to the bar on the synthetic rooms, in layer 1, and
+  runs on real data only when asked.
 - **Results are documented and decided together.** Each run's report is saved in
   `docs/reviews/` and committed with the PR. The owner decides the action on every finding;
   the report records each resolution.
@@ -1030,7 +1055,7 @@ shared with the owner's other projects.
   - **The C++ edge tests' layout (H18).** Options' checks live in `test_map.cpp` and the
     residuals' in `test_adjust.cpp`, not in tests mirroring their modules.
 - **Found while building PR 9:**
-  - **Mapping in a thread of its own, decided in milestone 2B's B3 (was milestone 7).** The
+  - **Mapping in a thread of its own, in milestone 2B's B3b (was milestone 7).** The
     edge rung maps after tracking in one thread, so runs are deterministic and the languages
     compare frame by frame; PR 9 judges mapping by its load, as a thread of its own would run
     it. A real mapping thread, and ORB-SLAM's interruption of a local BA when a keyframe
@@ -1039,7 +1064,21 @@ shared with the owner's other projects.
     on the test set's five largest maps, as no busy thread refuses a keyframe; how the edge rung
     stands in for ORB-SLAM's threads, local mapping's and loop closing's, is decided in B3's
     design (decided with evan-wes on 2026-10-16;
-    [the test-set note](../notes/test-set.md#b2-the-covisibility-graph)).
+    [the test-set note](../notes/test-set.md#b2-the-covisibility-graph)). *2026-10-17:* real
+    threads, a design of our own, in B3b ([the 2B design](2026-10-14-online-slam.md),
+    section 4).
+- **Found while designing milestone 2B's B3:**
+  - **Hand-built parts a standard library could replace** (decided with evan-wes on
+    2026-10-17). What rung 0 and the edge rung built by hand before libraries were welcome
+    is weighed one part at a time, each against the library the field uses: local BA and rung
+    0's least-squares solver (GTSAM, Ceres), the Lie groups (Sophus, GTSAM's), the ORB front
+    end and the ban on OpenCV (OpenCV), the vocabulary and its database (DBoW2, fbow). Each
+    is a decision of its own, never a rider on another PR.
+  - **ORB-SLAM3 itself, once milestone 2B is done** (decided with evan-wes on 2026-10-17).
+    Built outside the repository (GPLv3: run, never vendored or linked), run on the loop
+    sequences and the test set, several runs each since it is threaded, and scored by our
+    evaluation: the whole system's yardstick, and the bar's anchor where ORB-SLAM's papers
+    publish no figure.
 - **Deferred from milestone 2B's B2 review panel**
   ([report](../reviews/2026-10-16-feature-2b-b2-covisibility.md)):
   - **Every fixture states its oracle and tolerance (A4).** CLAUDE.md asks it of every parity
@@ -1180,12 +1219,12 @@ shared with the owner's other projects.
     `MapPointCulling` reads; the fix moves decisions, so it is a PR of its own.
 - **Deferred from PR 9's review panel**
   ([report](../reviews/2026-10-08-feature-real-time.md)):
-  - **A mapping thread's backlog, with milestone 7 (L8).** `judge` measures mapping by its load
-    over the run and over its busiest window; the lag a mapping thread of its own would build
-    up is the waiting time of a FIFO queue, Lindley's recursion (`W' = max(0, W + S - A)`,
-    keyframe arrivals A, mapping times S), an upper bound where ORB-SLAM also holds back
-    keyframes and stops its local BA. Add it with the thread.
-  - **Physical cores for a budget, with milestone 7 (L12).** A budget's cores are logical
+  - **A mapping thread's backlog, with milestone 2B's B3b (L8).** `judge` measures mapping by
+    its load over the run and over its busiest window; the lag a mapping thread of its own would
+    build up is the waiting time of a FIFO queue, Lindley's recursion
+    (`W' = max(0, W + S - A)`, keyframe arrivals A, mapping times S), an upper bound where
+    ORB-SLAM also holds back keyframes and stops its local BA. Add it with the thread.
+  - **Physical cores for a budget, with milestone 2B's B3b (L12).** A budget's cores are logical
     CPUs: this machine has no SMT, but on one that has, the four highest-numbered CPUs can be
     two physical cores. Read `topology/thread_siblings_list` when a budget runs threads.
   - **The anchored point's own observation (L10).** A host's observation of its own anchored
@@ -1268,7 +1307,9 @@ shared with the owner's other projects.
     CG behind the same seam (see the BA note's state-of-the-art section). It belongs in
     rung 0, beside the dense one, not in `classic`. The C++ core is not yet parametrised on
     a reduced solver (it uses its dense one directly), so the seam has to be opened there
-    first.
+    first. *2026-10-17:* B3's essential graph and global BA are GTSAM's, which factors
+    sparsely; local BA keeps the dense solver, and whether it moves to GTSAM is the item on
+    hand-built parts (found while designing milestone 2B's B3).
   - **A per-block step tolerance (L6).** NLS's absolute step tolerance never fires on BA's
     mixed scales (radians, pixels of focal length, metres). Replace it with a relative,
     per-block test.
@@ -1287,6 +1328,8 @@ shared with the owner's other projects.
   - **The gauge in rung 0's own right (A26, run 3).** `ba/gauge` depends only on poses and
     points. When pose-graph optimisation (milestone 2B's loop closure) needs the same
     null-space removal, lift it to `foundations.gauge` rather than importing it from `ba`.
+    *2026-10-17:* B3's pose graph is GTSAM's, which holds a keyframe fixed instead, so this
+    waits for another user.
   - Closed by PR 5: **one mechanism for enum names (A27, run 3).** Every enum that crosses a
     binding has its names in its core: `name()` in C++ (camera models, NLS methods and losses,
     BA gauges joined the terminations and solvers) and `ALL` with `name()` in Rust. Each
