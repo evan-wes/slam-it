@@ -1,4 +1,4 @@
-# The test set: the VO on phones, a lens, a size, a confidence, a new map, and relocalisation
+# The test set: the VO on phones, a lens, a size, a confidence, a new map, relocalisation and the covisibility graph
 
 Results note for milestones 2A (`docs/design/2026-10-12-phone-robust-vo.md`) and 2B
 (`docs/design/2026-10-14-online-slam.md`):
@@ -8,7 +8,10 @@ Results note for milestones 2A (`docs/design/2026-10-12-phone-robust-vo.md`) and
   ([A2](#a2-a-new-map-after-each-lost-track));
 - B1's (2B's section 5): the same runs relocalising a failed frame in its map, against the same
   code without it, and a monocular start's two-view sample limit
-  ([B1](#b1-relocalisation-and-the-two-view-sample-limit)).
+  ([B1](#b1-relocalisation-and-the-two-view-sample-limit));
+- B2's (2B's section 8): the same runs with the covisibility graph in place of the window of 10
+  keyframes, the ladder's L15 measured again, and the latency
+  ([B2](#b2-the-covisibility-graph)).
 
 A1's imports and the measure are the modules and the script the design names
 (`slam_it.eval.zju`, `advio`, `arkitscenes`, `lidar`; `scripts/measure_testset.py`). The review
@@ -318,6 +321,124 @@ two-view RANSAC draws at most 200 samples a model, as ORB-SLAM's initialiser doe
   to 157.9 cm, its runs in fewer and longer maps: maps of other lengths do not compare by their
   ATE (A2's results).
 
+## B2: the covisibility graph
+
+Milestone 2B's second part (`docs/design/2026-10-14-online-slam.md`, section 8). The window of
+the last 10 keyframes is gone. Tracking's local map is the keyframes that see the frame's matched
+points and their neighbours in the covisibility graph, to 80, as ORB-SLAM's
+`UpdateLocalKeyFrames` builds it; local BA takes every keyframe linked to the new one, and
+culling, triangulation and fusion take its links; the keyframe decision counts against the
+frame's reference keyframe, the one sharing the most of its points.
+
+**Conditions:**
+- the C++ backend, a release build, the features for the frame size, and the default vocabulary;
+  seed 0 alone, as for B1;
+- B2: the pipeline of commit 8e9b39b on `feature/2b-b2-covisibility`, which no later commit on
+  the branch changes, measured at 986d4c0 by `scripts/measure_sharded.py`, a run a CPU over 24,
+  against B1's runs above, relocalisation on;
+- latency from runs made alone, pinned to CPU 2, at 986d4c0, on the five sequences whose maps
+  grow largest;
+- the ladder's L15 by the same program, on TUM and EuRoC (below);
+- compared by `scripts/compare_testsets.py`. Measured 2026-10-16.
+
+**Seed 0,** per dataset and mode, B1 then B2:
+
+| Dataset | Mode | Runs | Tracked | Median share | Maps | Losses | Relocalised | Median ATE |
+|---|---|---|---|---|---|---|---|---|
+| TUM | monocular | 9 | 7,523 / 8,831 | 58.0% / 81.7% | 15 / 14 | 14 / 12 | 17 / 3 | 6.4 / 10.1 cm |
+| TUM | RGB-D | 9 | 11,662 / 11,830 | 96.2% / 97.4% | 9 / 9 | 2 / 2 | 16 / 1 | 4.1 / 2.8 cm |
+| ZJU | monocular | 16 | 24,782 / 27,027 | 78.7% / 88.5% | 36 / 23 | 22 / 8 | 69 / 18 | 2.7 / 1.5 cm |
+| ADVIO | monocular | 23 | 99,519 / 102,297 | 80.3% / 85.4% | 141 / 120 | 143 / 112 | 12 / 8 | 157.9 / 220.8 cm |
+| ARKitScenes | monocular | 10 | 26,523 / 28,017 | 80.2% / 87.9% | 40 / 34 | 33 / 27 | 8 / 4 | 12.7 / 14.7 cm |
+| ARKitScenes | RGB-D | 10 | 30,888 / 30,904 | 94.6% / 94.6% | 27 / 26 | 17 / 16 | 1 / 0 | 7.2 / 6.1 cm |
+
+- **More frames tracked, in fewer maps.** Of the set's 246,529, 208,906 (84.7%) against B1's
+  200,897 (81.5%), 8,009 more; a run's median share 88.0% against 82.2%. 42 runs track more,
+  17 fewer and 18 the same. Maps tracked fall from 268 to 226, losses from 231 to 177 and resets
+  from 28 to 18. A2, which does not relocalise, still tracks more: 214,583 (87.0%), a median
+  share of 89.8%. The runs that track fewer lose 1,312 frames between them, most on advio-18
+  (265), advio-14 (201) and ARKitScenes 42445028 monocular (172); fr1_360 monocular falls from
+  36% to 26%, its losses from 3 to 6.
+- **Fewer frames fail.** B2's maps leave 325 stretches of untracked frames, against B1's 535:
+
+  | Dataset and mode | Stretches, B1: found again / recovered / lost / at the end | Stretches, B2 | Frames waited past 5 before a loss, B2 |
+  |---|---|---|---|
+  | TUM monocular | 17 / 11 / 14 / 0 | 1 / 9 / 12 / 0 | 776 |
+  | TUM RGB-D | 13 / 3 / 2 / 0 | 1 / 2 / 2 / 0 | 87 |
+  | ZJU monocular | 64 / 69 / 22 / 1 | 15 / 46 / 8 / 0 | 609 |
+  | ADVIO monocular | 6 / 78 / 143 / 0 | 3 / 34 / 112 / 0 | 8,796 |
+  | ARKitScenes monocular | 8 / 20 / 33 / 2 | 4 / 20 / 27 / 0 | 2,088 |
+  | ARKitScenes RGB-D | 1 / 11 / 17 / 0 | 0 / 13 / 16 / 0 | 1,343 |
+  | All | 109 / 192 / 231 / 3 | 24 / 124 / 177 / 0 | 13,699 |
+
+  The losses that began with a frame the motion model or PnP placed and its local map then left
+  with too few inliers, 53% of A2's (the design's section 1), fall from 152 of B1's 231 (66%)
+  to 91 of 177 (51%), after a frame that kept a median of 37 inliers; those that began with a
+  frame no method placed are 86, against 79. The frames lost stretches waited through past A2's
+  5 failures fall from 17,439 to 13,699.
+- **Fewer frames need relocalising:** 19 runs relocalise 34 frames, against 31 runs and 123.
+  Against the ground truth, 33 of the 34 are within three times the larger of their map's median
+  error and the error of the map's frame before; the other is zju-B0's at 4.93 s, 4.1 cm from
+  the truth in a map whose median is 0.5 cm, after a frame 1.1 cm out.
+- **The monocular runs lost deep into a map (the ladder's L15) are not lost.** The edge VO note's
+  five-start protocol, on fr1/xyz, fr1/desk, fr3/long_office, MH_01 and V1_01 monocular (EuRoC
+  with `tracking.max_frames` 20, its frame rate): each started 1 to 4 frames after the reference
+  frame of start 0's initialising pair (frames 0, 59, 0, 129 and 110). None of the 20 loses the
+  track, where 6 of PR 8's 20 did, 44 to 128 keyframes in. One frame of them fails in its map
+  (MH_01 started at frame 130) and the next is tracked; none is relocalised, so tracking holds
+  where it thinned, not B1's relocalisation behind it. They track 99 to 100% of their frames.
+- **The ATE** falls by median where runs keep their maps: ZJU's from 2.7 to 1.5 cm, TUM RGB-D's
+  from 4.1 to 2.8 cm and ARKitScenes RGB-D's from 7.2 to 6.1 cm. It rises in the monocular
+  groups whose maps grow longer: TUM's from 6.4 to 10.1 cm, ARKitScenes' from 12.7 to 14.7 cm
+  and ADVIO's from 157.9 to 220.8 cm. Maps of other lengths do not compare by their ATE (A2's
+  results).
+- **The local map and local BA are ORB-SLAM's, unbounded as its are.** Over the tracked frames,
+  the local map holds a median of 38 keyframes and 2,539 points (95th percentile 160 and 9,076;
+  at most 535 and 26,320); local BA a median of 29 free keyframes and 26 fixed (95th percentile
+  81 and 188; at most 156 free, 608 in all). The largest map holds 2,244 keyframes at once
+  (advio-20's first). B2 maps 78,952 keyframes against B1's 50,344, 0.38 a tracked frame against
+  0.25, its decision counted against the reference keyframe, as ORB-SLAM's is.
+- **Tracking mostly keeps its deadline; mapping does not keep up.** On the five sequences whose
+  maps grow largest, made alone, against deadlines of 33.3 ms (ADVIO) and 33.0 ms (ARKitScenes):
+
+  | Sequence | Frames | p95 | Slowest | Late | Mapping a keyframe, median / p95 | Mapping's load | Its busiest 10 s |
+  |---|---|---|---|---|---|---|---|
+  | advio-02 | 5,964 | 22.2 ms | 188.5 ms | 8 | 175 / 313 ms | 2.63 | 5.89 |
+  | advio-10 | 3,686 | 22.8 ms | 106.9 ms | 9 | 139 / 209 ms | 2.12 | 4.27 |
+  | advio-20 | 9,076 | 29.5 ms | 359.7 ms | 101 | 183 / 271 ms | 1.74 | 3.96 |
+  | advio-21 | 9,520 | 23.0 ms | 339.9 ms | 53 | 185 / 298 ms | 1.88 | 3.16 |
+  | ARKitScenes 42446016, mono | 6,820 | 20.2 ms | 114.8 ms | 1 | 104 / 232 ms | 1.78 | 4.77 |
+
+  Before B2, on the two-view limit's seven ADVIO runs above, also alone: a p95 of 13 to 17 ms,
+  the slowest 25.4 ms, none late; mapping 57 to 61 ms a keyframe by median, its load 0.38 to
+  0.84, its busiest 10 s 0.98 to 1.66. Tracking a frame takes a median of 3.8 to 5.0 ms against
+  0.6 to 0.8, with the larger local map. 172 of the 35,066 frames are late:
+  - the 7 frames on which a map is lost, 58 to 360 ms, growing with the map (58 ms at 307
+    keyframes, 360 ms at 2,244): B2 records the closed map's strong links for the run there,
+    counted over every keyframe's points, the one work it adds to that frame; before B2, no frame
+    took more than 25.4 ms;
+  - 73 frames relocalisation tried, 70 of them placing nothing: 50 in advio-21's lost stretch
+    from 311.8 to 314.0 s, 34.3 ms each by median, scoring a map whose 1,981 keyframes all share
+    a word with the frame, and 19 on advio-20;
+  - 88 placed by the motion model, 79 of them advio-20's, with large local maps (a median of 118
+    keyframes and 7,576 points), which take 30.9 ms to build by median, where advio-20's frames
+    take 14.6 ms and the other runs' 7 to 11 ms;
+  - 4 placed by the local fallback.
+
+  Mapping's load, its time over the sequence's, judges it as a thread of its own would run
+  (`slam_it.eval.budgets`): 1.74 to 2.63 means such a thread would fall behind. A keyframe's
+  mapping costs 2.5 times B1's, local BA taking every link (by median over the 77 runs made side
+  by side, 143 ms against 58, which compare with each other but not with a deadline), and B2
+  makes 1.2 to 2.1 times B1's keyframes on these five runs. ORB-SLAM's mapping keeps up by its thread: a monocular frame
+  becomes a keyframe only while mapping is idle (stereo and RGB-D while fewer than 3 wait), and a
+  keyframe asked for while mapping is busy cuts the running local BA short (`InterruptBA`). Here
+  mapping runs inline, so a run stays deterministic, and is never busy: no keyframe is refused
+  and no BA cut short. Put to evan-wes with these numbers (the design's section 9), and decided
+  with evan-wes on 2026-10-16: B2 keeps ORB-SLAM's local map and local BA; how the edge rung
+  stands in for ORB-SLAM's threads, local mapping's and loop closing's, is decided in B3's
+  design and measured with it, and B4's merging joins loop closing's; the lost map's record
+  stays in its frame until B4's atlas keeps maps whole.
+
 ## What a guessed lens costs
 
 Each run was repeated with the nominal guess in place of its camera: a pinhole of the typical
@@ -441,7 +562,11 @@ ten, and what medium adds does not improve the runs.
   map.
 - **Pin the latency.** A1's and A2's p95 figures are from one unpinned run each on a shared
   machine: they show the margin, not a budget's verdict. B1's are pinned to one core, on five
-  sequences and the two-view limit's seven.
+  sequences and the two-view limit's seven, and B2's on the five whose maps grow largest.
+- **Keep mapping in real time.** Judged as a thread of its own, B2's local mapping is loaded 1.7
+  to 2.6 times over on the five sequences whose maps grow largest: inline and never busy, it
+  neither refuses a keyframe nor cuts a local BA short, as ORB-SLAM's mapping thread does. B3's
+  design decides the stand-in for ORB-SLAM's threads.
 - **Measure Stray Scanner at 720,** which needs a recording outside the public set.
 
 ## What was learned
@@ -469,6 +594,15 @@ ten, and what medium adds does not improve the runs.
   86 were found within 1 s and 99 within 2 s, while 231 were not found in 3 s, and the frames
   waited through cost more tracked frames than relocalisation recovers. Whether to wait is a
   question for B4, which can find a lost map again later.
+- **The graph keeps the track where the window thinned it.** With ORB-SLAM's local map, the
+  losses that began with a local map left too few inliers fall from 152 to 91, the runs L15
+  found lost deep into a map are not lost, and the set tracks 8,009 more frames than B1's, in 42
+  fewer maps.
+- **ORB-SLAM's mapping keeps up by its thread.** Its rule asks for a keyframe whenever tracking
+  holds less than a share of the reference keyframe's points (90%, monocular); only a busy
+  mapping thread holds it back. Inline and never busy, the pipeline makes 0.38 keyframes a
+  tracked frame and adjusts every link of each: on the five largest maps, 1.7 to 2.6 seconds of
+  mapping for each second of video.
 
 ## Every run
 
@@ -726,3 +860,88 @@ tracked, the losses, the frames relocalised, and the ATE pooled over the maps.
 | zju-B5 | mono | 2144 | 1979 (92%) | 2003 (93%) | 5 / 1 | 4 / 0 | 4 | 0.7 cm | 1.1 cm |
 | zju-B6 | mono | 2134 | 1540 (72%) | 1342 (63%) | 5 / 3 | 4 / 2 | 6 | 1.3 cm | 32.9 cm |
 | zju-B7 | mono | 1880 | 1327 (71%) | 1412 (75%) | 4 / 1 | 3 / 0 | 2 | 1.0 cm | 1.8 cm |
+
+## Every run, B2
+
+Seed 0, B1 (relocalisation on, its runs above) and B2: the frames tracked across all maps,
+the maps tracked, the losses, the frames relocalised, and the ATE pooled over the maps.
+
+| Sequence | Mode | Frames | Tracked, B1 | Tracked, B2 | Maps, B1 / B2 | Losses, B1 / B2 | Relocalised, B1 / B2 | ATE, B1 | ATE, B2 |
+|---|---|---|---|---|---|---|---|---|---|
+| fr1_360 | mono | 756 | 270 (36%) | 196 (26%) | 3 / 3 | 3 / 6 | 0 / 0 | 4.9 cm | 10.1 cm |
+| fr1_360 | RGB-D | 756 | 756 (100%) | 756 (100%) | 1 / 1 | 0 / 0 | 0 / 0 | 27.1 cm | 23.4 cm |
+| fr1_rpy | mono | 723 | 500 (69%) | 647 (89%) | 1 / 1 | 0 / 0 | 12 / 1 | 3.9 cm | 4.9 cm |
+| fr1_rpy | RGB-D | 723 | 723 (100%) | 723 (100%) | 1 / 1 | 0 / 0 | 0 / 0 | 3.4 cm | 2.5 cm |
+| fr2_rpy | mono | 3290 | 2687 (82%) | 2687 (82%) | 1 / 1 | 0 / 0 | 0 / 0 | 0.8 cm | 1.3 cm |
+| fr2_rpy | RGB-D | 3290 | 3287 (100%) | 3287 (100%) | 1 / 1 | 0 / 0 | 0 / 0 | 0.5 cm | 0.5 cm |
+| fr2_360_hemisphere | mono | 2729 | 702 (26%) | 1408 (52%) | 4 / 4 | 8 / 4 | 2 / 0 | 30.7 cm | 26.5 cm |
+| fr2_360_hemisphere | RGB-D | 2729 | 2626 (96%) | 2729 (100%) | 1 / 1 | 0 / 0 | 9 / 0 | 27.9 cm | 12.7 cm |
+| fr2_360_kidnap | mono | 1431 | 1069 (75%) | 1198 (84%) | 2 / 2 | 1 / 1 | 0 / 0 | 8.7 cm | 77.6 cm |
+| fr2_360_kidnap | RGB-D | 1431 | 1302 (91%) | 1302 (91%) | 2 / 2 | 2 / 2 | 0 / 0 | 13.2 cm | 7.7 cm |
+| fr1_floor | mono | 1242 | 720 (58%) | 1057 (85%) | 3 / 2 | 2 / 1 | 0 / 2 | 16.7 cm | 14.2 cm |
+| fr1_floor | RGB-D | 1242 | 1078 (87%) | 1143 (92%) | 1 / 1 | 0 / 0 | 7 / 1 | 2.5 cm | 1.9 cm |
+| fr3_nostructure_texture_near_withloop | mono | 1682 | 1575 (94%) | 1638 (97%) | 1 / 1 | 0 / 0 | 3 / 0 | 6.4 cm | 2.0 cm |
+| fr3_nostructure_texture_near_withloop | RGB-D | 1682 | 1639 (97%) | 1639 (97%) | 1 / 1 | 0 / 0 | 0 / 0 | 4.8 cm | 3.0 cm |
+| fr3_structure_notexture_far | mono | 814 | 0 (0%) | 0 (0%) | 0 / 0 | 0 / 0 | 0 / 0 | - | - |
+| fr3_structure_notexture_far | RGB-D | 814 | 251 (31%) | 251 (31%) | 1 / 1 | 0 / 0 | 0 / 0 | 0.9 cm | 0.8 cm |
+| fr3_nostructure_notexture_far | mono | 474 | 0 (0%) | 0 (0%) | 0 / 0 | 0 / 0 | 0 / 0 | - | - |
+| fr3_nostructure_notexture_far | RGB-D | 474 | 0 (0%) | 0 (0%) | 0 / 0 | 0 / 0 | 0 / 0 | - | - |
+| advio-01 | mono | 7795 | 4737 (61%) | 4679 (60%) | 12 / 13 | 14 / 14 | 1 / 0 | 292.3 cm | 220.8 cm |
+| advio-02 | mono | 5964 | 4754 (80%) | 5563 (93%) | 8 / 2 | 8 / 2 | 1 / 3 | 117.9 cm | 904.5 cm |
+| advio-03 | mono | 4423 | 3459 (78%) | 3552 (80%) | 8 / 7 | 8 / 7 | 0 / 1 | 87.1 cm | 82.9 cm |
+| advio-04 | mono | 3512 | 2386 (68%) | 2402 (68%) | 9 / 9 | 10 / 9 | 0 / 0 | 106.0 cm | 106.5 cm |
+| advio-05 | mono | 4835 | 4114 (85%) | 4273 (88%) | 3 / 3 | 5 / 2 | 1 / 1 | 157.9 cm | 1115.3 cm |
+| advio-06 | mono | 8268 | 7281 (88%) | 7709 (93%) | 7 / 4 | 6 / 3 | 0 / 0 | 262.8 cm | 491.1 cm |
+| advio-07 | mono | 2859 | 1590 (56%) | 1682 (59%) | 6 / 5 | 8 / 7 | 0 / 1 | 9.6 cm | 30.7 cm |
+| advio-08 | mono | 3206 | 2109 (66%) | 1952 (61%) | 7 / 8 | 10 / 10 | 1 / 0 | 169.4 cm | 163.4 cm |
+| advio-09 | mono | 2891 | 2241 (78%) | 2468 (85%) | 4 / 3 | 3 / 2 | 0 / 0 | 85.1 cm | 302.0 cm |
+| advio-10 | mono | 3686 | 3382 (92%) | 3357 (91%) | 2 / 2 | 1 / 1 | 1 / 0 | 764.3 cm | 434.6 cm |
+| advio-11 | mono | 6198 | 5207 (84%) | 5173 (83%) | 6 / 5 | 5 / 5 | 0 / 0 | 134.9 cm | 177.8 cm |
+| advio-12 | mono | 3441 | 2828 (82%) | 3028 (88%) | 4 / 3 | 3 / 2 | 0 / 0 | 342.7 cm | 156.5 cm |
+| advio-13 | mono | 4550 | 3655 (80%) | 3852 (85%) | 6 / 5 | 5 / 4 | 2 / 1 | 485.5 cm | 845.6 cm |
+| advio-14 | mono | 3373 | 1743 (52%) | 1542 (46%) | 7 / 8 | 8 / 9 | 0 / 0 | 54.0 cm | 35.2 cm |
+| advio-15 | mono | 1553 | 1467 (94%) | 1467 (94%) | 1 / 1 | 0 / 0 | 0 / 0 | 81.9 cm | 76.9 cm |
+| advio-16 | mono | 4389 | 3175 (72%) | 3166 (72%) | 9 / 8 | 9 / 8 | 0 / 0 | 224.7 cm | 645.8 cm |
+| advio-17 | mono | 4724 | 3575 (76%) | 3802 (80%) | 10 / 8 | 9 / 7 | 0 / 0 | 117.2 cm | 78.9 cm |
+| advio-18 | mono | 5913 | 3861 (65%) | 3596 (61%) | 9 / 9 | 8 / 8 | 1 / 0 | 76.4 cm | 64.3 cm |
+| advio-19 | mono | 4262 | 3700 (87%) | 3744 (88%) | 5 / 5 | 6 / 4 | 0 / 0 | 100.4 cm | 66.4 cm |
+| advio-20 | mono | 9076 | 8489 (94%) | 8900 (98%) | 3 / 2 | 3 / 1 | 0 / 0 | 786.6 cm | 1033.6 cm |
+| advio-21 | mono | 9520 | 9271 (97%) | 9209 (97%) | 2 / 3 | 3 / 2 | 1 / 0 | 1738.2 cm | 433.0 cm |
+| advio-22 | mono | 11572 | 11144 (96%) | 11156 (96%) | 5 / 5 | 4 / 4 | 2 / 1 | 728.3 cm | 633.1 cm |
+| advio-23 | mono | 6169 | 5351 (87%) | 6025 (98%) | 8 / 2 | 7 / 1 | 1 / 0 | 427.2 cm | 497.9 cm |
+| arkitscenes-42444946 | mono | 2822 | 1629 (58%) | 1559 (55%) | 5 / 6 | 4 / 5 | 1 / 1 | 34.1 cm | 25.7 cm |
+| arkitscenes-42444946 | RGB-D | 2822 | 2115 (75%) | 2169 (77%) | 5 / 4 | 4 / 3 | 1 / 0 | 16.3 cm | 15.2 cm |
+| arkitscenes-42444966 | mono | 3386 | 2909 (86%) | 3059 (90%) | 5 / 4 | 4 / 3 | 0 / 0 | 5.0 cm | 28.3 cm |
+| arkitscenes-42444966 | RGB-D | 3386 | 3202 (95%) | 3202 (95%) | 3 / 3 | 2 / 2 | 0 / 0 | 3.0 cm | 4.0 cm |
+| arkitscenes-42445021 | mono | 1449 | 1066 (74%) | 1074 (74%) | 3 / 4 | 2 / 3 | 4 / 0 | 12.7 cm | 4.2 cm |
+| arkitscenes-42445021 | RGB-D | 1449 | 1255 (87%) | 1255 (87%) | 3 / 3 | 2 / 2 | 0 / 0 | 13.6 cm | 12.8 cm |
+| arkitscenes-42445028 | mono | 1992 | 1537 (77%) | 1365 (69%) | 2 / 3 | 1 / 2 | 0 / 1 | 30.6 cm | 3.1 cm |
+| arkitscenes-42445028 | RGB-D | 1992 | 1808 (91%) | 1807 (91%) | 3 / 3 | 2 / 2 | 0 / 0 | 7.1 cm | 6.7 cm |
+| arkitscenes-42445429 | mono | 2527 | 1388 (55%) | 1619 (64%) | 4 / 3 | 6 / 4 | 1 / 0 | 6.3 cm | 10.1 cm |
+| arkitscenes-42445429 | RGB-D | 2527 | 2188 (87%) | 2188 (87%) | 4 / 4 | 3 / 3 | 0 / 0 | 4.8 cm | 4.0 cm |
+| arkitscenes-42445966 | mono | 5110 | 4249 (83%) | 4768 (93%) | 7 / 3 | 6 / 2 | 1 / 0 | 12.2 cm | 19.3 cm |
+| arkitscenes-42445966 | RGB-D | 5110 | 4833 (95%) | 4832 (95%) | 3 / 3 | 2 / 2 | 0 / 0 | 4.4 cm | 3.4 cm |
+| arkitscenes-42445984 | mono | 2939 | 2493 (85%) | 2587 (88%) | 4 / 4 | 3 / 3 | 1 / 1 | 10.6 cm | 7.6 cm |
+| arkitscenes-42445984 | RGB-D | 2939 | 2847 (97%) | 2846 (97%) | 2 / 2 | 1 / 1 | 0 / 0 | 43.9 cm | 38.5 cm |
+| arkitscenes-42446016 | mono | 6820 | 6255 (92%) | 6658 (98%) | 3 / 2 | 2 / 1 | 0 / 0 | 48.9 cm | 28.7 cm |
+| arkitscenes-42446016 | RGB-D | 6820 | 6679 (98%) | 6644 (97%) | 2 / 2 | 1 / 1 | 0 / 0 | 3.3 cm | 3.5 cm |
+| arkitscenes-42446100 | mono | 4025 | 3753 (93%) | 3628 (90%) | 2 / 2 | 1 / 2 | 0 / 0 | 14.4 cm | 9.6 cm |
+| arkitscenes-42446100 | RGB-D | 4025 | 4025 (100%) | 4025 (100%) | 1 / 1 | 0 / 0 | 0 / 0 | 7.2 cm | 5.5 cm |
+| arkitscenes-42446137 | mono | 1936 | 1244 (64%) | 1700 (88%) | 5 / 3 | 4 / 2 | 0 / 1 | 12.6 cm | 67.0 cm |
+| arkitscenes-42446137 | RGB-D | 1936 | 1936 (100%) | 1936 (100%) | 1 / 1 | 0 / 0 | 0 / 0 | 7.2 cm | 9.2 cm |
+| zju-A0 | mono | 1742 | 1057 (61%) | 1466 (84%) | 2 / 1 | 1 / 0 | 11 / 1 | 6.5 cm | 12.5 cm |
+| zju-A1 | mono | 3555 | 2410 (68%) | 2651 (75%) | 5 / 2 | 4 / 1 | 1 / 1 | 27.9 cm | 26.9 cm |
+| zju-A2 | mono | 2175 | 1849 (85%) | 1944 (89%) | 2 / 1 | 1 / 0 | 0 / 0 | 8.0 cm | 8.4 cm |
+| zju-A3 | mono | 1335 | 1171 (88%) | 1172 (88%) | 1 / 1 | 0 / 0 | 0 / 0 | 1.6 cm | 1.2 cm |
+| zju-A4 | mono | 2895 | 2608 (90%) | 2586 (89%) | 1 / 1 | 0 / 0 | 0 / 1 | 2.1 cm | 17.1 cm |
+| zju-A5 | mono | 2275 | 2142 (94%) | 2142 (94%) | 1 / 1 | 0 / 0 | 0 / 0 | 3.4 cm | 1.6 cm |
+| zju-A6 | mono | 2143 | 1711 (80%) | 1789 (83%) | 1 / 1 | 0 / 0 | 2 / 0 | 1.0 cm | 0.9 cm |
+| zju-A7 | mono | 2194 | 1959 (89%) | 1959 (89%) | 1 / 1 | 0 / 0 | 0 / 0 | 0.5 cm | 0.5 cm |
+| zju-B0 | mono | 1188 | 969 (82%) | 1074 (90%) | 2 / 1 | 1 / 0 | 17 / 7 | 5.9 cm | 1.3 cm |
+| zju-B1 | mono | 1705 | 1323 (78%) | 1660 (97%) | 1 / 1 | 0 / 0 | 17 / 0 | 1.6 cm | 1.3 cm |
+| zju-B2 | mono | 1897 | 1451 (76%) | 1535 (81%) | 1 / 1 | 0 / 0 | 8 / 2 | 4.3 cm | 1.1 cm |
+| zju-B3 | mono | 1426 | 978 (69%) | 1397 (98%) | 4 / 1 | 3 / 0 | 0 / 0 | 1.5 cm | 2.1 cm |
+| zju-B4 | mono | 1368 | 397 (29%) | 667 (49%) | 9 / 6 | 10 / 6 | 1 / 6 | 8.0 cm | 7.1 cm |
+| zju-B5 | mono | 2144 | 2003 (93%) | 2004 (93%) | 1 / 1 | 0 / 0 | 4 / 0 | 1.1 cm | 30.3 cm |
+| zju-B6 | mono | 2134 | 1342 (63%) | 1560 (73%) | 3 / 2 | 2 / 1 | 6 / 0 | 32.9 cm | 1.0 cm |
+| zju-B7 | mono | 1880 | 1412 (75%) | 1421 (76%) | 1 / 1 | 0 / 0 | 2 / 0 | 1.8 cm | 1.2 cm |
