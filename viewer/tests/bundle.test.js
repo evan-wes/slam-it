@@ -127,6 +127,18 @@ test("the loader refuses another format, a mis-shaped array, an unknown backend 
     loadBackend(over({ [`${name}/keyframe_links.npy`]: link }), track),
     /keyframe_links.npy: \d+ names none/,
   );
+  // Below the least id: a parent under -1 (none), a link's keyframe under 0.
+  parents[k - 1] = -2;
+  const below = npy("<i4", `${k},`, parents);
+  await assert.rejects(
+    loadBackend(over({ [`${name}/keyframe_parents.npy`]: below }), track),
+    /keyframe_parents.npy: -2 names none/,
+  );
+  const unnamed = npy("<i4", "1, 3", new Int32Array([-1, 0, 120]));
+  await assert.rejects(
+    loadBackend(over({ [`${name}/keyframe_links.npy`]: unnamed }), track),
+    /keyframe_links.npy: -1 names none/,
+  );
 });
 
 /**

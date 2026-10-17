@@ -34,7 +34,11 @@ NAMES = [case["name"] for case in CASES]
 
 
 def fixture_map(case: dict[str, Any]) -> Map:
-    """Build a case's map: one keypoint per entry of each keyframe's points, the rest blank."""
+    """Build a case's map: one keypoint per entry of each keyframe's points, the rest blank.
+
+    The cameras sit at the origin and the points a metre in front, so a map culled here keeps
+    finite normals.
+    """
     keyframes = case["keyframes"]
     observed = np.array([p for k in keyframes for p in k["points"]], dtype=np.int64)
     points = np.unique(observed[observed >= 0])
@@ -56,7 +60,7 @@ def fixture_map(case: dict[str, Any]) -> Map:
         kp_right=np.full(t, np.nan),
         kp_point=observed,
         pt_id=points,
-        pt_xyz=np.zeros((p, 3)),
+        pt_xyz=np.tile([0.0, 0.0, 1.0], (p, 1)),
         pt_descriptor=np.zeros((p, DESCRIPTOR_BYTES), dtype=np.uint8),
         pt_normal=np.tile([0.0, 0.0, 1.0], (p, 1)),
         pt_min_distance=np.ones(p),
@@ -140,6 +144,7 @@ def test_a_culled_keyframe_leaves_after_its_children(case: dict[str, Any], backe
         got = covisibility.cull(m, k, options, backend=chosen)
         assert got.kf_id.tolist() == np.delete(m.kf_id, k).tolist(), f"keyframe row {k}"
         assert got.kf_parent.tolist() == np.delete(parents, k).tolist(), f"keyframe row {k}"
+        assert np.all(np.isfinite(got.pt_normal)), f"keyframe row {k}"
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -157,13 +162,15 @@ def test_the_stages_take_the_graphs_keyframes(case: dict[str, Any], backend: str
     assert mapping.local_ba_keyframes(m, options, backend=chosen).tolist() == case["local_ba"]
 
 
-@pytest.mark.parametrize("backend", backends.BACKENDS)
-def test_a_parent_is_not_erased(backend: str) -> None:
-    """``map.erase_keyframe`` refuses a keyframe that is still a parent: ``cull`` it instead."""
+def test_a_parent_is_not_erased() -> None:
+    """``map.erase_keyframe`` refuses a keyframe that is still a parent: ``cull`` it instead.
+
+    Python refuses before any backend runs; the C++ and Rust tests hold their cores' refusal.
+    """
     case = next(c for c in CASES if c["name"] == "repair")
     m = fixture_map(case)
     with pytest.raises(InvalidInputError, match="still keyframe 2's parent"):
-        maps.erase_keyframe(m, 1, backend=backend)
+        maps.erase_keyframe(m, 1)
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -194,7 +201,7 @@ def test_the_golden_record_keeps_one_tree_a_map() -> None:
     """
     for name, case in load_fixture("edge/room_runs.json")["cases"].items():
         parents = np.array(case["keyframe_parents"], dtype=np.int64)
-        why = np.array(case["keyframe_lives"][2], dtype=np.int64)
+        why = np.array(case["keyframe_lives"][2], dtype=np.int64)  # by column: why each ended
         in_map = np.array(case["keyframe_maps"], dtype=np.int64)
         for number in np.unique(in_map):
             ids = np.flatnonzero(in_map == number)

@@ -225,8 +225,8 @@
     ]
    ],
    "fusion": {
-    "fuse_neighbours": 2,
-    "mono_fuse_neighbours": 3,
+    "fuse_neighbours": 1,
+    "mono_fuse_neighbours": 2,
     "fuse_second_neighbours": 2
    },
    "fuse_targets": {
@@ -500,21 +500,19 @@
     ]
    ],
    "fusion": {
-    "fuse_neighbours": 2,
-    "mono_fuse_neighbours": 3,
+    "fuse_neighbours": 1,
+    "mono_fuse_neighbours": 2,
     "fuse_second_neighbours": 2
    },
    "fuse_targets": {
     "monocular": [
      0,
      1,
-     2,
-     4
+     2
     ],
     "other": [
      0,
-     1,
-     2
+     1
     ]
    },
    "local_ba": [
@@ -1283,8 +1281,8 @@
     ]
    ],
    "fusion": {
-    "fuse_neighbours": 2,
-    "mono_fuse_neighbours": 3,
+    "fuse_neighbours": 1,
+    "mono_fuse_neighbours": 2,
     "fuse_second_neighbours": 2
    },
    "fuse_targets": {
@@ -1295,8 +1293,7 @@
     ],
     "other": [
      15,
-     14,
-     13
+     14
     ]
    },
    "local_ba": [
@@ -2018,8 +2015,8 @@
     ]
    ],
    "fusion": {
-    "fuse_neighbours": 2,
-    "mono_fuse_neighbours": 3,
+    "fuse_neighbours": 1,
+    "mono_fuse_neighbours": 2,
     "fuse_second_neighbours": 2
    },
    "fuse_targets": {
@@ -2779,8 +2776,8 @@
     ]
    ],
    "fusion": {
-    "fuse_neighbours": 2,
-    "mono_fuse_neighbours": 3,
+    "fuse_neighbours": 1,
+    "mono_fuse_neighbours": 2,
     "fuse_second_neighbours": 2
    },
    "fuse_targets": {

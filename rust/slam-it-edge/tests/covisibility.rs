@@ -9,6 +9,7 @@ use slam_it_edge::covisibility::{adopt, cull, links, local_map, reparent, strong
 use slam_it_edge::map::{Map, check_map, erase_keyframe, index_observations};
 use slam_it_edge::mapping::{fuse_targets, local_ba_keyframes};
 use slam_it_edge::options::{Mode, Options};
+use slam_it_foundations::error::ErrorKind;
 
 /// The fixture, read once per test.
 fn fixture() -> Value {
@@ -61,7 +62,7 @@ fn map_of(keyframes: &Value) -> Map {
     points.sort_unstable();
     points.dedup();
     for _ in &points {
-        m.pt_xyz.push(Vector3::zeros());
+        m.pt_xyz.push(Vector3::z()); // in front of every camera, so normals stay finite
         m.pt_descriptor.push([0; 32]);
         m.pt_normal.push(Vector3::z());
         m.pt_min_distance.push(1.0);
@@ -90,8 +91,9 @@ fn check_cull(case: &Value, m: &Map, k: usize, options: &Options) {
     let name = case["name"].as_str().expect("a name");
     let mut culled = m.clone();
     if m.kf_id[k] == 0 {
-        assert!(
-            cull(&mut culled, k, options).is_err(),
+        assert_eq!(
+            cull(&mut culled, k, options).unwrap_err().kind,
+            ErrorKind::InvalidInput,
             "{name}: the map's first keyframe is not culled"
         );
         return;
@@ -108,10 +110,18 @@ fn check_cull(case: &Value, m: &Map, k: usize, options: &Options) {
         "{name}: row {k}'s children reparented first"
     );
     check_map(&culled).unwrap();
+    assert!(
+        culled
+            .pt_normal
+            .iter()
+            .all(|n| n.iter().all(|x| x.is_finite())),
+        "{name}: row {k} culled, its points' normals finite"
+    );
     if m.kf_parent.contains(&m.kf_id[k]) {
         let mut erased = m.clone();
-        assert!(
-            erase_keyframe(&mut erased, k).is_err(),
+        assert_eq!(
+            erase_keyframe(&mut erased, k).unwrap_err().kind,
+            ErrorKind::InvalidInput,
             "{name}: row {k}, a parent, is not erased"
         );
     }
@@ -227,5 +237,15 @@ fn a_bad_row_or_point_is_refused() {
     let m = map_of(&fixture()["cases"][0]["keyframes"]);
     let options = Options::default();
     assert!(links(&m, m.keyframes(), &options).is_err());
+    let mut past = m.clone();
+    assert_eq!(
+        cull(&mut past, m.keyframes(), &options).unwrap_err().kind,
+        ErrorKind::InvalidInput
+    );
+    let mut none = Map::empty(8, 1.2);
+    assert_eq!(
+        cull(&mut none, 0, &options).unwrap_err().kind,
+        ErrorKind::InvalidInput
+    );
     assert!(local_map(&m, &[3, -2], &options).is_err());
 }

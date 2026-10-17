@@ -2,7 +2,9 @@
 /// @brief Native tests for local mapping (slam_it/edge/mapping.hpp) on the exact scene: the
 ///        keyframe decision, points from depth, culling points and keyframes, triangulation,
 ///        fusion, and a whole mapping step. Parity with the Python reference is checked through
-///        the bindings by tests/edge.
+///        the bindings by tests/edge. What fusion and local BA take from the graph
+///        (`fuse_targets`, `local_ba_keyframes`) is held to the covisibility fixture in
+///        test_covisibility.cpp.
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -184,6 +186,13 @@ void check_culling_and_process(int& failures) {
   expect(is_invalid_input(
              edge::cull_keyframes(none, scene::camera(), edge::Mode::kRgbd, edge::Options{})),
          "culling refuses a map without keyframes", failures);
+  expect(is_invalid_input(edge::fuse_targets(none, edge::Mode::kRgbd, edge::Options{})) &&
+             is_invalid_input(edge::local_ba_keyframes(none, edge::Options{})),
+         "fusion's targets and local BA's keyframes refuse a map without keyframes", failures);
+  const edge::Options bad{.covisibility = {.local_neighbours = 0}};
+  expect(is_invalid_input(edge::fuse_targets(m, edge::Mode::kRgbd, bad)) &&
+             is_invalid_input(edge::local_ba_keyframes(m, bad)),
+         "fusion's targets and local BA's keyframes refuse invalid settings", failures);
   Eigen::Matrix4d ahead = scene::pose(2);
   ahead(2, 3) -= 0.05;
   const std::int64_t first = m.next_pt_id;

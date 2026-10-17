@@ -1,7 +1,10 @@
 """Local mapping's tests: every backend against the reference, and its rules.
 
 On the room's truth map with a later frame tracked against it: each step on the map with
-that frame inserted as its newest keyframe, and the whole of :func:`mapping.process`.
+that frame inserted as its newest keyframe, and the whole of :func:`mapping.process`. What
+fusion and local BA take from the graph (:func:`mapping.fuse_targets`,
+:func:`mapping.local_ba_keyframes`) is held to the covisibility fixture's maps in
+``tests/edge/test_covisibility.py``.
 """
 
 from __future__ import annotations
@@ -303,6 +306,9 @@ def test_rejects_malformed_arguments(backend: str, mapped: Mapped) -> None:
         ),
         lambda: mapping.create_points_from_depth(empty, CAMERA, OPTIONS, backend=backend),
         lambda: mapping.cull_keyframes(empty, CAMERA, "rgbd", OPTIONS, backend=backend),
+        lambda: mapping.fuse_targets(empty, "rgbd", OPTIONS, backend=backend),
+        lambda: mapping.fuse_targets(m, "lidar", OPTIONS, backend=backend),
+        lambda: mapping.local_ba_keyframes(empty, OPTIONS, backend=backend),
         *(
             partial(
                 mapping.need_keyframe,

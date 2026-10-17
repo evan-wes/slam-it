@@ -100,20 +100,28 @@ def _local_map(
     return {"keyframes": local, "reference": k1[0]}
 
 
-FUSION = {"fuse_neighbours": 2, "mono_fuse_neighbours": 3, "fuse_second_neighbours": 2}
-"""Fusion's counts, low enough that each binds on the fixture's maps."""
+FUSION = {"fuse_neighbours": 1, "mono_fuse_neighbours": 2, "fuse_second_neighbours": 2}
+"""Fusion's counts, each binding on the fixture's maps: put back at its default
+(:data:`FUSION_DEFAULTS`), each changes some case's targets (asserted), and the monocular targets
+differ from the others'."""
+
+FUSION_DEFAULTS = {"fuse_neighbours": 10, "mono_fuse_neighbours": 20, "fuse_second_neighbours": 5}
+"""Fusion's counts at ORB-SLAM2's defaults, as :class:`slam_it.edge.options.MappingOptions` has
+them."""
 
 FUSED: dict[str, int] = {"second": 0, "newest": 0, "repeat": 0}
 """How often fusion took a second neighbour, or left out the newest or a repeat: each tested."""
 
 
-def _fuse_targets(keyframes: Keyframes, min_points: int, first: int) -> list[int]:
+def _fuse_targets(
+    keyframes: Keyframes, min_points: int, first: int, second_count: int
+) -> list[int]:
     """Return the newest keyframe's fusion targets' ids: its best, then each one's best."""
     newest = len(keyframes) - 1
     best = _links(keyframes, newest, min_points)[0][:first]
     targets = list(best)
     for r in best:
-        for second in _links(keyframes, r, min_points)[0][: FUSION["fuse_second_neighbours"]]:
+        for second in _links(keyframes, r, min_points)[0][:second_count]:
             if second == newest:
                 FUSED["newest"] += 1
             elif second in targets:
@@ -122,6 +130,15 @@ def _fuse_targets(keyframes: Keyframes, min_points: int, first: int) -> list[int
                 targets.append(second)
                 FUSED["second"] += 1
     return [keyframes[r]["id"] for r in targets]
+
+
+def _fusion(keyframes: Keyframes, min_points: int, counts: dict[str, int]) -> dict[str, list[int]]:
+    """Return the newest keyframe's fusion targets, monocular and not, at `counts`."""
+    second = counts["fuse_second_neighbours"]
+    return {
+        "monocular": _fuse_targets(keyframes, min_points, counts["mono_fuse_neighbours"], second),
+        "other": _fuse_targets(keyframes, min_points, counts["fuse_neighbours"], second),
+    }
 
 
 def _adopted(keyframes: Keyframes, a: int) -> int:
@@ -182,12 +199,7 @@ def _case(
         "reparented": [_reparented(keyframes, a, settings["min_points"]) for a in rows],
         "strong_links": _strong(keyframes, settings["strong_points"]),
         "fusion": FUSION,
-        "fuse_targets": {
-            "monocular": _fuse_targets(
-                keyframes, settings["min_points"], FUSION["mono_fuse_neighbours"]
-            ),
-            "other": _fuse_targets(keyframes, settings["min_points"], FUSION["fuse_neighbours"]),
-        },
+        "fuse_targets": _fusion(keyframes, settings["min_points"], FUSION),
         "local_ba": sorted(
             [*_links(keyframes, len(keyframes) - 1, settings["min_points"])[0], len(keyframes) - 1]
         ),
@@ -253,6 +265,15 @@ def main() -> None:
     assert capped, "no local map reached its cap"
     assert all(ADDED.values()), f"K2 never took a keyframe some way: {ADDED}"
     assert all(FUSED.values()), f"fusion never met some case: {FUSED}"
+    for name, default in FUSION_DEFAULTS.items():
+        back = {**FUSION, name: default}
+        moved = [
+            c
+            for c in cases
+            if _fusion(c["keyframes"], c["settings"]["min_points"], back) != c["fuse_targets"]
+        ]
+        assert moved, f"fusion's {name} binds on no case"
+    assert any(c["fuse_targets"]["monocular"] != c["fuse_targets"]["other"] for c in cases)
     doc = {
         "description": "The covisibility graph, by brute force (generate_covisibility.py).",
         "oracle": "brute force over each keyframe's point set, by the rules alone",

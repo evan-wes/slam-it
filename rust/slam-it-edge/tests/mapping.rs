@@ -1,15 +1,16 @@
 //! Integration tests of local mapping (`slam_it_edge::mapping`) on the exact scene: the
 //! keyframe decision, points from depth, culling points and keyframes, triangulation, fusion,
 //! and a whole mapping step. Parity with the Python reference is checked through the bindings
-//! by `tests/edge`.
+//! by `tests/edge`. What fusion and local BA take from the graph (`fuse_targets`,
+//! `local_ba_keyframes`) is held to the covisibility fixture in `tests/covisibility.rs`.
 
 mod scene;
 
 use slam_it_edge::frames::Tracked;
 use slam_it_edge::map::{self, Map, check_map};
 use slam_it_edge::mapping::{
-    create_points_from_depth, cull_keyframes, cull_points, fuse_points, match_for_triangulation,
-    need_keyframe, process, triangulate_new_points,
+    create_points_from_depth, cull_keyframes, cull_points, fuse_points, fuse_targets,
+    local_ba_keyframes, match_for_triangulation, need_keyframe, process, triangulate_new_points,
 };
 use slam_it_edge::options::{MappingOptions, Mode, Options, StereoOptions};
 
@@ -163,6 +164,12 @@ fn culling_and_a_whole_step_keep_the_map_valid() {
         cull_keyframes(&mut none, &camera(), Mode::Rgbd, &Options::default()).is_err(),
         "culling refuses a map without keyframes"
     );
+    assert!(fuse_targets(&none, Mode::Rgbd, &Options::default()).is_err());
+    assert!(local_ba_keyframes(&none, &Options::default()).is_err());
+    let mut bad = Options::default();
+    bad.covisibility.local_neighbours = 0;
+    assert!(fuse_targets(&copy, Mode::Rgbd, &bad).is_err());
+    assert!(local_ba_keyframes(&copy, &bad).is_err());
     let mut m = built;
     let mut ahead = pose(2);
     ahead[(2, 3)] -= 0.05;

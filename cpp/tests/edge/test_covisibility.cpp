@@ -57,7 +57,7 @@ edge::Map map_of(const nlohmann::json& keyframes) {
   const auto [first, last] = std::ranges::unique(points);
   points.erase(first, last);
   for (std::size_t p = 0; p < points.size(); ++p) {
-    m.pt_xyz.emplace_back(Eigen::Vector3d::Zero());
+    m.pt_xyz.emplace_back(0.0, 0.0, 1.0);  // in front of every camera, so normals stay finite
     m.pt_descriptor.emplace_back();
     m.pt_normal.emplace_back(0.0, 0.0, 1.0);
     m.pt_min_distance.push_back(1.0);
@@ -102,7 +102,9 @@ void check_cull(const nlohmann::json& c, const edge::Map& m, std::size_t k,
   }
   const auto parents = c["reparented"][k].get<std::vector<std::int64_t>>();
   expect(edge::cull(culled, row, options).has_value() && culled.kf_id == without(m.kf_id, k) &&
-             culled.kf_parent == without(parents, k) && edge::check_map(culled).has_value(),
+             culled.kf_parent == without(parents, k) && edge::check_map(culled).has_value() &&
+             std::ranges::all_of(culled.pt_normal,
+                                 [](const Eigen::Vector3d& n) { return n.allFinite(); }),
          (name + ": culled, its children reparented first").c_str(), failures);
   if (std::ranges::find(m.kf_parent, m.kf_id[k]) != m.kf_parent.end()) {
     edge::Map erased = m;
@@ -200,6 +202,12 @@ int run() {
          "a keyframe row out of range is refused", failures);
   const std::vector<std::int64_t> bad{3, -2};
   expect(is_invalid_input(edge::local_map(m, bad, options)), "a point id below -1 is refused",
+         failures);
+  edge::Map past = m;
+  expect(is_invalid_input(edge::cull(past, static_cast<std::int64_t>(m.kf_id.size()), options)),
+         "culling a keyframe row out of range is refused", failures);
+  edge::Map none;
+  expect(is_invalid_input(edge::cull(none, 0, options)), "culling in an empty map is refused",
          failures);
   return slam_it::testing::finish("edge/covisibility", failures);
 }
