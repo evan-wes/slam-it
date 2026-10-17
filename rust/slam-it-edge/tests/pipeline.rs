@@ -154,10 +154,10 @@ fn relocalizing(reset_keyframes: usize) -> Options {
 }
 
 /// Relocalising (Python's `test_a_large_map_is_lost_in_time_and_a_small_one_in_frames`): a map
-/// above `reset_keyframes` is lost once more than `relocalize_seconds` have passed since the
-/// first failed frame (at 0.25 s a frame, on the fourteenth: 3.25 s, where the thirteenth's 3 s
-/// is not more), one of `reset_keyframes` or fewer on the `lost_frames`-th failure, whatever the
-/// time; each failed frame tried relocalisation.
+/// above `loss.reset_keyframes` is lost once more than `loss.relocalize_seconds` have passed since
+/// the first failed frame (at 0.25 s a frame, on the fourteenth: 3.25 s, where the thirteenth's 3 s
+/// is not more), one of `loss.reset_keyframes` or fewer on the `loss.lost_frames`-th failure,
+/// whatever the time; each failed frame tried relocalisation.
 #[test]
 #[allow(clippy::cast_precision_loss, reason = "frames below 16")]
 fn relocalizing_a_large_map_is_lost_in_time_and_a_small_one_in_frames() {

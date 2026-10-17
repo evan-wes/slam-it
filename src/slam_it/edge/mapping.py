@@ -7,21 +7,21 @@ runs ORB-SLAM's local mapping steps in order, single-threaded:
    creates points from its close depth (:func:`create_points_from_depth`,
    ``CreateNewKeyFrame``).
 2. **Cull new points** (:func:`cull_points`, ``MapPointCulling``).
-3. **Triangulate new points** between the keyframe and the window's others
+3. **Triangulate new points** between the keyframe and its best links
    (:func:`triangulate_new_points`, ``CreateNewMapPoints``).
 4. **Fuse duplicates** (:func:`fuse_points`, ``SearchInNeighbors``).
-5. **Local BA** over the window (:func:`slam_it.edge.adjust.bundle_adjust`), the map's first
-   keyframe fixed, once the map holds ``adjustment.min_keyframes`` (``KeyFramesInMap() > 2``).
+5. **Local BA** over the keyframe and its links (:func:`slam_it.edge.adjust.bundle_adjust`),
+   the keyframes that see their points and the map's first keyframe fixed, once the map holds
+   ``adjustment.min_keyframes`` (``KeyFramesInMap() > 2``).
 6. **Cull redundant keyframes** (:func:`cull_keyframes`, ``KeyFrameCulling``).
 
 :func:`process` returns the map with how each step went (:class:`MappingSummary`), which a
 run records per keyframe.
 
-Lite: the sliding window of the last ``window`` keyframes stands in for the covisibility
-graph wherever ORB-SLAM takes a keyframe's neighbours, and the newest keyframe for the
-reference keyframe. Matching for triangulation has no bag of words: every free keypoint pair
-within the stricter distance and the epipolar band is a candidate
-(:func:`match_for_triangulation`).
+A keyframe's neighbours are its links in the covisibility graph
+(:mod:`slam_it.edge.covisibility`), as ORB-SLAM's are. Lite: matching for triangulation has no
+bag of words: every free keypoint pair within the stricter distance and the epipolar band is a
+candidate (:func:`match_for_triangulation`).
 """
 
 from __future__ import annotations
@@ -198,17 +198,17 @@ class Implementation(Protocol):
     def triangulate_new_points(
         self, m: Crossing, camera: Crossing, mode: str, options: Crossing
     ) -> Crossing:
-        """Triangulate the newest keyframe's free keypoints against the window's."""
+        """Triangulate the newest keyframe's free keypoints against its best links'."""
         ...
 
     def fuse_points(self, m: Crossing, camera: Crossing, mode: str, options: Crossing) -> Crossing:
-        """Fuse the newest keyframe's points with the window's."""
+        """Fuse the newest keyframe's points with its neighbours'."""
         ...
 
     def cull_keyframes(
         self, m: Crossing, camera: Crossing, mode: str, options: Crossing
     ) -> Crossing:
-        """Cull the window's redundant keyframes."""
+        """Cull the newest keyframe's redundant links."""
         ...
 
     def process(  # noqa: PLR0913 -- the stage's state, as the reference takes it
@@ -732,7 +732,7 @@ def _triangulate_new_points(m: Map, camera: Camera, mode: str, options: Options)
 def triangulate_new_points(
     m: Map, camera: Camera, mode: str, options: Options, *, backend: str = "python"
 ) -> Map:
-    """Triangulate the newest keyframe's free keypoints against the window's keyframes.
+    """Triangulate the newest keyframe's free keypoints against its best links.
 
     ORB-SLAM's ``CreateNewMapPoints``. For each neighbour (the keyframe's best links, at most
     ``mapping.triangulation_neighbours``, ``mapping.mono_triangulation_neighbours`` for

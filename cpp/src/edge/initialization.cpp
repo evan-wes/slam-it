@@ -98,7 +98,7 @@ double median(std::vector<double>& values) {
 /// @brief The matches a monocular start keeps, and their points
 ///        (`slam_it.edge.initialization._kept_points`, ORB-SLAM's `CheckRT`): the chosen
 ///        motion's inliers in front of both views with rays whose cosine is below
-///        `init_parallax_cos`.
+///        `initialization.parallax_cos`.
 /// @param result The two-view initialisation.
 /// @param bearings1 The matches' bearings in the reference (N x 3).
 /// @param bearings2 In the later frame.

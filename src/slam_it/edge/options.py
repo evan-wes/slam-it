@@ -1,8 +1,8 @@
 """The edge pipeline's settings: every threshold named, defaulted to ORB-SLAM's.
 
 ORB-SLAM2 (Mur-Artal and Tardós, T-RO 2017) is the reference: each setting's docstring names
-the ORB-SLAM quantity it stands for. Where SLAM It!'s lite pipeline has no counterpart (the
-sliding window), the default is the design note's (``docs/design/2026-10-05-edge-vo.md``).
+the ORB-SLAM quantity it stands for. Where ORB-SLAM has none, the default is the one decided in
+the design that added the setting (``docs/design/``).
 
 The settings are grouped by the stage that reads them (:class:`Options`), and a setting is
 named by its group and its field, ``relocalization.min_inliers``: on a command line

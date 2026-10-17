@@ -93,7 +93,7 @@ nb::ndarray<nb::numpy, std::int64_t> match_for_triangulation(const nb::dict& m,
   return out;
 }
 
-/// @brief Triangulate the newest keyframe's free keypoints against the window's.
+/// @brief Triangulate the newest keyframe's free keypoints against its best links.
 /// @param m The map, as a dict.
 /// @param camera The camera, as a dict.
 /// @param mode The mode's name.
@@ -107,7 +107,7 @@ nb::dict triangulate_new_points(const nb::dict& m, const nb::dict& camera, const
   return map_dict(out);
 }
 
-/// @brief Fuse the newest keyframe's points with the window's.
+/// @brief Fuse the newest keyframe's points with its neighbours'.
 /// @param m The map, as a dict.
 /// @param camera The camera, as a dict.
 /// @param options The settings, as a dict.
@@ -120,7 +120,7 @@ nb::dict fuse_points(const nb::dict& m, const nb::dict& camera, const std::strin
   return map_dict(out);
 }
 
-/// @brief Cull the window's redundant keyframes.
+/// @brief Cull the newest keyframe's redundant links.
 /// @param m The map, as a dict.
 /// @param camera The camera, as a dict.
 /// @param mode The mode's name.

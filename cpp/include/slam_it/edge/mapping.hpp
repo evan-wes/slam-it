@@ -58,7 +58,7 @@ struct Mapped {
 /// @brief The depth below which a point is close (`slam_it.edge.mapping.close_depth`).
 /// @param camera The camera (its baseline).
 /// @param options The factor.
-/// @return `close_depth` baselines, in metres.
+/// @return `stereo.close_depth` baselines, in metres.
 [[nodiscard]] double close_depth(const Camera& camera, const Options& options);
 
 /// @brief Decide whether a tracked frame becomes a keyframe
@@ -110,7 +110,7 @@ struct Mapped {
 [[nodiscard]] foundations::Result<std::vector<std::array<std::int64_t, 2>>> match_for_triangulation(
     const Map& m, const Camera& camera, std::int64_t k1, std::int64_t k2, const Options& options);
 
-/// @brief Triangulate the newest keyframe's free keypoints against the window's
+/// @brief Triangulate the newest keyframe's free keypoints against its best links
 ///        (`slam_it.edge.mapping.triangulate_new_points`, ORB-SLAM's `CreateNewMapPoints`).
 /// @param m The map, changed in place.
 /// @param camera The camera.
@@ -132,7 +132,7 @@ struct Mapped {
 [[nodiscard]] foundations::Result<void> fuse_points(Map& m, const Camera& camera, Mode mode,
                                                     const Options& options);
 
-/// @brief Cull the window's redundant keyframes (`slam_it.edge.mapping.cull_keyframes`,
+/// @brief Cull the newest keyframe's redundant links (`slam_it.edge.mapping.cull_keyframes`,
 ///        ORB-SLAM's `KeyFrameCulling`).
 /// @param m The map, changed in place.
 /// @param camera The camera.

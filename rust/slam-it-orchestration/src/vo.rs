@@ -53,7 +53,7 @@ pub struct Request {
     pub options: Options,
     /// Whether the run records each frame's keypoints, with their fates.
     pub record_features: bool,
-    /// The vocabulary's folder: required with `relocalize` on, refused with it off.
+    /// The vocabulary's folder: required with `relocalization.enabled` on, refused with it off.
     pub vocabulary: Option<PathBuf>,
 }
 

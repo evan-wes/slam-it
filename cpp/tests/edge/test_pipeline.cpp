@@ -156,8 +156,8 @@ bool lived(const edge::Lifetimes& lives, std::int64_t first, bool reset, std::in
   return true;
 }
 
-/// @brief Check losing the track: the map of one keyframe is reset with `reset_keyframes` 1, the
-///        rule's boundary, or kept with 0, and the next frame starts map 1, its ids following
+/// @brief Check losing the track: the map of one keyframe is reset with `loss.reset_keyframes` 1,
+///        the rule's boundary, or kept with 0, and the next frame starts map 1, its ids following
 ///        map 0's.
 /// @param failures Running failure count.
 void check_lost(int& failures) {
@@ -198,8 +198,8 @@ void check_lost(int& failures) {
          "RGB-D without a baseline is refused", failures);
 }
 
-/// @brief The settings relocalising, a map above `reset_keyframes` kept: the scene's, with
-///        `relocalize` on.
+/// @brief The settings relocalising, a map above `loss.reset_keyframes` kept: the scene's, with
+///        `relocalization.enabled` on.
 /// @param reset_keyframes The most keyframes a lost map is reset with.
 /// @return The settings.
 edge::Options relocalizing(std::int64_t reset_keyframes) {
@@ -220,10 +220,10 @@ edge::Frame empty_at(double timestamp) {
 
 /// @brief Check the loss rules relocalising (Python's
 ///        `test_a_large_map_is_lost_in_time_and_a_small_one_in_frames`): a map above
-///        `reset_keyframes` is lost once more than `relocalize_seconds` have passed since the
-///        first failed frame (at 0.25 s a frame, on the fourteenth: 3.25 s, where the
-///        thirteenth's 3 s is not more), one of `reset_keyframes` or fewer on the
-///        `lost_frames`-th failure, whatever the time; each failed frame tried relocalisation.
+///        `loss.reset_keyframes` is lost once more than `loss.relocalize_seconds` have passed since
+///        the first failed frame (at 0.25 s a frame, on the fourteenth: 3.25 s, where the
+///        thirteenth's 3 s is not more), one of `loss.reset_keyframes` or fewer on the
+///        `loss.lost_frames`-th failure, whatever the time; each failed frame tried relocalisation.
 /// @param failures Running failure count.
 void check_lost_relocalizing(int& failures) {
   struct Case {

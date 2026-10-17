@@ -145,7 +145,7 @@ struct Observing {
 /// @param frame The frame.
 /// @param candidate The candidate's keypoints that observe a point, and their nodes.
 /// @param frame_nodes Each of the frame's keypoints' node.
-/// @param options `th_low` and `relocalize_ratio`.
+/// @param options `matching.th_low` and `relocalization.ratio`.
 /// @return `(observing keypoint, frame keypoint)` matches; `InvalidInput` from matching.
 Result<std::vector<matching::Match>> match_by_word(const Map& m, const Frame& frame,
                                                    const Observing& candidate,

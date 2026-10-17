@@ -115,7 +115,7 @@ def test_process_matches_the_reference(backend: str, mode: str, mapped: Mapped) 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_local_ba_waits_for_enough_keyframes(backend: str, mapped: Mapped) -> None:
-    """Before the map holds ``ba_min_keyframes``, no local BA: the poses stay as tracked."""
+    """Before the map holds ``adjustment.min_keyframes``, no local BA: the poses stay as tracked."""
     waiting = OPTIONS.with_settings({"adjustment.min_keyframes": mapped.map.keyframes + 2})
     args = (mapped.map, CAMERA, mapped.frame, mapped.tracked)
     waited = mapping.process(*args, mode="rgbd", options=waiting)

@@ -9,13 +9,13 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
   group, :meth:`slam_it.edge.options.Options.as_dict`); ``vocabulary`` the vocabulary a
   relocalising run used, as its folder's header and checksums record it
   (:func:`slam_it.eval.vocabularies.record`: its format and descriptor versions, k, levels,
-  words and each array's SHA-256), null for a run that did not relocalise (``relocalize`` off);
-  ``record_features`` whether the run recorded its features (below). The last three describe the
-  program that ran it, as it recorded them before writing (:mod:`slam_it.eval.budgets`), and are
-  null when the run was not a program's of its own (Python's in-process run) or the system does
-  not say: ``peak_memory``, its largest resident set in bytes; ``cpus``, the CPUs it could run
-  on, ascending (a budget pins them); ``memory_cap``, its control group's memory cap in bytes
-  (null without one).
+  words and each array's SHA-256), null for a run that did not relocalise
+  (``relocalization.enabled`` off); ``record_features`` whether the run recorded its features
+  (below). The last three describe the program that ran it, as it recorded them before writing
+  (:mod:`slam_it.eval.budgets`), and are null when the run was not a program's of its own
+  (Python's in-process run) or the system does not say: ``peak_memory``, its largest resident
+  set in bytes; ``cpus``, the CPUs it could run on, ascending (a budget pins them);
+  ``memory_cap``, its control group's memory cap in bytes (null without one).
 - ``trajectory.txt``: each tracked frame's ``T_world_cam`` in TUM's format, one
   ``timestamp tx ty tz qx qy qz qw`` line per frame, ``#`` comments allowed: what ORB-SLAM and
   the TUM tools write, so other systems' trajectories evaluate the same way. Numbers are

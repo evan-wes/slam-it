@@ -126,7 +126,7 @@ GAP_OPTIONS = OPTIONS.with_settings(
     {"tracking.motion_window": 2.0, "tracking.stereo_motion_window": 2.0, "tracking.max_frames": 2}
 )
 """The room's settings with the motion model's window narrowed: across the gap, tracking the
-last frame fails and the pipeline recovers by PnP against the local map. ``max_frames`` is
+last frame fails and the pipeline recovers by PnP against the local map. ``tracking.max_frames`` is
 lowered below the keyframes the map holds, so the hold on keyframes just after a recovery
 decides (monocular)."""
 
@@ -174,7 +174,7 @@ Python here, where at the defaults it could not."""
 
 
 LOST_AT = (12, 31)
-"""Where the lost room's two blank stretches begin: ``lost_frames`` of the room's frames from
+"""Where the lost room's two blank stretches begin: ``loss.lost_frames`` of the room's frames from
 each are blanked, so the track is lost on the last of each and the frames after start a new
 map. A stereo or RGB-D run reaches a third map, whose ids follow the first two maps' (review
 panel finding L4); a monocular one starts no map in the frames left after the second. The
@@ -185,9 +185,9 @@ later place for it."""
 KEPT_OPTIONS = OPTIONS.with_settings({"loss.reset_keyframes": 0, "relocalization.enabled": False})
 """The room's settings with every lost map kept: the lost room's lost maps, of a few keyframes
 each, are otherwise reset (ORB-SLAM3's reset of a map lost with 10 keyframes or fewer). Without
-relocalisation, so that a kept map is lost after ``lost_frames`` failures, as before milestone
-2B: relocalising, a map above ``reset_keyframes`` is lost only after ``relocalize_seconds``,
-longer than the room."""
+relocalisation, so that a kept map is lost after ``loss.lost_frames`` failures, as before
+milestone 2B: relocalising, a map above ``loss.reset_keyframes`` is lost only after
+``loss.relocalize_seconds``, longer than the room."""
 
 
 FOUND_AT = 31
@@ -195,7 +195,7 @@ FOUND_AT = 31
 frames, comes back where it began, at frame :data:`FOUND_BACK`, and goes on from there."""
 
 FOUND_BLANKS = 3
-"""The found room's blank frames: fewer than ``lost_frames``, so the track is not lost."""
+"""The found room's blank frames: fewer than ``loss.lost_frames``, so the track is not lost."""
 
 FOUND_BACK = 2
 """The rendered frame the found room's camera comes back to after its blank frames."""
@@ -208,7 +208,7 @@ small enough for the fallback's local map to hold all of it)."""
 
 WINDOW_BLANKS = 2
 """The window room's first blank frames, from :data:`FOUND_AT`: one fewer than the found room's.
-The second, 0.033 s after the first, is within the room's 0.05 s ``relocalize_seconds``, so the
+The second, 0.033 s after the first, is within the room's 0.05 s ``loss.relocalize_seconds``, so the
 track is not lost on it; the frame after, back at :data:`FOUND_BACK` and 0.067 s after the first,
 is relocalised, because the time is judged only on a frame that every attempt fails, as
 ORB-SLAM3 judges it after ``Relocalization``. A native that judged it first would lose the map
@@ -216,8 +216,8 @@ there."""
 
 WINDOW_AT = 36
 """Where the window room's second blank stretch begins: :data:`FOUND_BLANKS` frames, longer than
-its ``relocalize_seconds`` and shorter than ``lost_frames``, so that its map, kept, is lost by
-the time on the last of them, and the frame after starts a new one."""
+its ``loss.relocalize_seconds`` and shorter than ``loss.lost_frames``, so that its map, kept, is
+lost by the time on the last of them, and the frame after starts a new one."""
 
 WINDOW_OPTIONS = FOUND_OPTIONS.with_settings(
     {
@@ -238,11 +238,11 @@ WINDOW_OPTIONS = FOUND_OPTIONS.with_settings(
 )
 """The window room's settings (review panel findings L1 and L2): the found room's, every map
 kept; lost 0.05 s after its first failed frame, on the third frame at 30 Hz, where
-``lost_frames`` would lose it on the fifth; a keyframe culled when 60% of its points are seen by
-one other keyframe, so that an RGB-D run culls several, which leave its database, before the
-frame is relocalised; ``recovery_tracked`` above the relocalised frame's first inliers, so that the
-search by projection runs; and the relocalisation settings off their defaults. Here only the
-search's window and RANSAC's confidence decide (review panel finding L9): the stage parity's
+``loss.lost_frames`` would lose it on the fifth; a keyframe culled when 60% of its points are seen
+by one other keyframe, so that an RGB-D run culls several, which leave its database, before the
+frame is relocalised; ``tracking.recovery_tracked`` above the relocalised frame's first inliers, so
+that the search by projection runs; and the relocalisation settings off their defaults. Here only
+the search's window and RANSAC's confidence decide (review panel finding L9): the stage parity's
 cases (``tests/edge/test_relocalization.py``'s ``DECISIVE``) move each setting where it alone
 decides."""
 
@@ -303,7 +303,7 @@ def found_frames(rendered: list[room.Frame]) -> list[room.Frame]:
 
 
 def lost_frames(rendered: list[room.Frame]) -> list[room.Frame]:
-    """Return the lost room: the room with ``lost_frames`` frames from each :data:`LOST_AT` blanked.
+    """Return the lost room: ``loss.lost_frames`` frames blanked from each :data:`LOST_AT`.
 
     Parameters
     ----------

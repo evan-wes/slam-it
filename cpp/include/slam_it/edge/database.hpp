@@ -79,7 +79,7 @@ struct Candidates {
 /// @param db The map's keyframe database.
 /// @param m The map, whose observations give covisibility.
 /// @param frame The frame's word vector.
-/// @param options The `reloc_*` settings and `covisible_points`.
+/// @param options The `relocalization` settings and `covisibility.min_points`.
 /// @return The candidates, best first, with their scores (none if no keyframe shares a word);
 ///         `InvalidInput` for a malformed vector.
 [[nodiscard]] foundations::Result<Candidates> candidates(

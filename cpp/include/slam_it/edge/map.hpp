@@ -207,8 +207,9 @@ void index_observations(Map& m);
                                  double distance);
 
 /// @brief Whether a point lies within the distances it is matchable from
-///        (`slam_it.edge.map.in_distance_range`): from `min_distance_margin` of its minimum
-///        distance to `max_distance_margin` of its maximum (`isInFrustum`, `Fuse`), unchecked.
+///        (`slam_it.edge.map.in_distance_range`): from `tracking.min_distance_margin` of its
+///        minimum distance to `tracking.max_distance_margin` of its maximum (`isInFrustum`,
+///        `Fuse`), unchecked.
 /// @param m The map.
 /// @param p The point's row.
 /// @param distance Its distance from the camera centre.

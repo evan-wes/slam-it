@@ -39,7 +39,7 @@ pub fn sigma2(m: &Map, level: usize) -> f64 {
 ///
 /// # Returns
 ///
-/// `chi2_stereo` with a right column, else `chi2_mono`.
+/// `adjustment.chi2_stereo` with a right column, else `adjustment.chi2_mono`.
 #[must_use]
 pub fn threshold(right: f64, options: &Options) -> f64 {
     if right.is_nan() {

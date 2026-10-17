@@ -185,7 +185,7 @@ fn best_links(m: &Map, keyframes: &[i64], options: &Options) -> BTreeMap<i64, Ve
 /// * `db` - The map's keyframe database.
 /// * `m` - The map, whose observations give covisibility.
 /// * `frame` - The frame's word vector.
-/// * `options` - The `reloc_*` settings and `covisible_points`.
+/// * `options` - The `relocalization` settings and `covisibility.min_points`.
 ///
 /// # Returns
 ///

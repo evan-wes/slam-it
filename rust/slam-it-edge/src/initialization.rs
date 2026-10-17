@@ -270,7 +270,7 @@ fn median(values: &mut [f64]) -> f64 {
 /// # Returns
 ///
 /// The map of one keyframe at the origin with a point at every keypoint with depth (and a
-/// bearing), or none unless it has more than `min_init_features_depth` keypoints; and the
+/// bearing), or none unless it has more than `initialization.min_features_depth` keypoints; and the
 /// outcome.
 ///
 /// # Errors
@@ -389,7 +389,7 @@ pub fn match_for_initialization(
 
 /// The matches a monocular start keeps, and their points
 /// (`slam_it.edge.initialization._kept_points`, ORB-SLAM's `CheckRT`): the chosen motion's
-/// inliers in front of both views with rays whose cosine is below `init_parallax_cos`.
+/// inliers in front of both views with rays whose cosine is below `initialization.parallax_cos`.
 ///
 /// # Arguments
 ///
@@ -441,7 +441,7 @@ fn kept_points(
 /// # Returns
 ///
 /// The map of two keyframes and their points (the chosen motion's inliers in front of both
-/// views with rays whose cosine is below `init_parallax_cos`, `CheckRT`), scaled so the
+/// views with rays whose cosine is below `initialization.parallax_cos`, `CheckRT`), scaled so the
 /// first's median depth is 1, or none if too few keypoints match, the views do not
 /// initialise, or too few points survive the adjustment; with the pairs given, the outcome and
 /// the adjustment's solves.

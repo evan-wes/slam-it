@@ -216,7 +216,7 @@ def test_the_summary_says_where_a_run_lost_the_track_and_went_on(
 
     The summary gives each map's stretch of the clip, in its own time, and the loss. The room's
     first ten frames make too few keyframes to keep at the defaults: that map is reset, and only
-    the next is tracked; with every lost map kept (``reset_keyframes`` 0), both are.
+    the next is tracked; with every lost map kept (``loss.reset_keyframes`` 0), both are.
     """
     blanks = OPTIONS.loss.lost_frames
     clip = [

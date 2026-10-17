@@ -28,7 +28,7 @@ namespace slam_it::edge {
 /// @brief An observation's chi-square threshold (`slam_it.edge.residuals.thresholds`).
 /// @param right Its right column, or NaN.
 /// @param options The thresholds.
-/// @return `chi2_stereo` with a right column, else `chi2_mono`.
+/// @return `adjustment.chi2_stereo` with a right column, else `adjustment.chi2_mono`.
 [[nodiscard]] double threshold(double right, const Options& options);
 
 /// @brief Each observation's chi-square error (`slam_it.edge.residuals.chi2`).

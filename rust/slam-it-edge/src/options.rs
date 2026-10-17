@@ -448,8 +448,8 @@ pub struct LossOptions {
     /// A recently lost track is lost once more than this has passed since its first failed
     /// frame, in seconds.
     pub relocalize_seconds: f64,
-    /// A map of `loss.reset_keyframes` keyframes or fewer is lost after this many failed frames in a
-    /// row instead.
+    /// A map of `loss.reset_keyframes` keyframes or fewer is lost after this many failed frames in
+    /// a row instead.
     pub lost_frames: usize,
     /// A map lost with this many keyframes or fewer is reset rather than kept.
     pub reset_keyframes: usize,
@@ -466,7 +466,7 @@ impl Default for LossOptions {
 }
 
 /// The edge pipeline's settings (`slam_it.edge.options.Options`), grouped by the stage that
-/// reads them; the defaults are ORB-SLAM2's (and the design note's window of 10 keyframes).
+/// reads them; the defaults are ORB-SLAM2's.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Options {
     /// ORB extraction's settings.

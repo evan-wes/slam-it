@@ -285,7 +285,7 @@ def candidates(
     db : Database
         The map's keyframe database.
     m : slam_it.edge.map.Map
-        The map, whose observations give covisibility (:func:`best_covisible`).
+        The map, whose observations give covisibility (:mod:`slam_it.edge.covisibility`).
     frame : tuple of array_like
         The frame's word vector (:func:`slam_it.foundations.vocabulary.bow`): its words,
         ascending, and their values.

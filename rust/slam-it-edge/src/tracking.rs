@@ -803,7 +803,7 @@ pub fn track_last_frame(
 /// * `mode` - The pipeline's mode.
 /// * `options` - The window, thresholds and minimums.
 /// * `recovering` - Whether the frame is a recovery's or the next: the window is then
-///   `recovery_local_window`.
+///   `tracking.recovery_local_window`.
 ///
 /// # Returns
 ///

@@ -329,7 +329,7 @@ def test_a_track_found_again_is_counted_as_relocalised(
 def test_the_window_room_loses_its_kept_maps_by_the_time(
     dataset: str, mode: str, backend: str, window_runs: RoomRun
 ) -> None:
-    """Each kept map is lost 0.05 s after its first failed frame, before ``lost_frames`` failures.
+    """Each kept map is lost 0.05 s after its first failure, before ``loss.lost_frames`` failures.
 
     Review panel findings L1 and L2. In stereo and RGB-D, the frame after the first blank
     stretch is relocalised in map 0, and the second stretch's last blank frame loses it; an

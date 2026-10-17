@@ -199,9 +199,10 @@ struct Epipolar {
   std::optional<Eigen::Vector2d> epipole;
   /// @brief The focal length, in pixels.
   double focal{1.0};
-  /// @brief The band's chi-square bound (`epipolar_chi2`).
+  /// @brief The band's chi-square bound (`mapping.epipolar_chi2`).
   double chi2{0.0};
-  /// @brief The least squared distance from the epipole at level 0 (`min_epipole_distance2`).
+  /// @brief The least squared distance from the epipole at level 0
+  ///        (`mapping.min_epipole_distance2`).
   double epipole_distance2{0.0};
 };
 

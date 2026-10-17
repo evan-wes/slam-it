@@ -94,7 +94,8 @@ struct LostSummary {
   std::int64_t keyframes{0};
   /// @brief Its points.
   std::int64_t points{0};
-  /// @brief Whether it was reset, having `reset_keyframes` keyframes or fewer, rather than kept.
+  /// @brief Whether it was reset, having `loss.reset_keyframes` keyframes or fewer, rather than
+  ///        kept.
   bool reset{false};
 };
 
@@ -181,7 +182,7 @@ class Pipeline {
   /// @param camera The camera.
   /// @param options The settings.
   /// @param vocabulary The vocabulary of the keyframe database's words: required with
-  ///        `relocalize` on, refused with it off.
+  ///        `relocalization.enabled` on, refused with it off.
   /// @return The pipeline; `InvalidInput` for an invalid camera or settings, a stereo or
   ///         RGB-D camera without a baseline, or a vocabulary missing while relocalising or given
   ///         while not.
@@ -190,7 +191,7 @@ class Pipeline {
       std::optional<foundations::vocabulary::Vocabulary> vocabulary);
 
   /// @brief The extraction settings the next frame should be built with.
-  /// @return `init_feature_factor` times the features for a monocular frame before the map
+  /// @return `features.init_factor` times the features for a monocular frame before the map
   ///         exists, the usual ones otherwise.
   [[nodiscard]] foundations::orb::Options extraction() const;
 
@@ -292,8 +293,9 @@ class Pipeline {
   ///        (`slam_it.edge.pipeline.Pipeline._record_failure`).
   /// @param frame The frame.
   /// @param keyframes The map's keyframes.
-  /// @return Whether it loses the track: past `relocalize_seconds` since the first failure, or
-  ///         for a small map or with `relocalize` off, on the `lost_frames`-th in a row.
+  /// @return Whether it loses the track: past `loss.relocalize_seconds` since the first failure, or
+  ///         for a small map or with `relocalization.enabled` off, on the `loss.lost_frames`-th in
+  ///         a row.
   bool record_failure(const Frame& frame, std::size_t keyframes);
 
   /// @brief Bring the keyframe database to the map's keyframes: add the new, erase the culled.
@@ -322,8 +324,8 @@ class Pipeline {
   /// @brief Date what this frame made and removed, and empty the map's archive of removals.
   void date();
 
-  /// @brief Close the map the track was lost in, on this frame: keep it, or reset it if it
-  ///        has `reset_keyframes` keyframes or fewer (its lives end, as `Removal::kReset`). The
+  /// @brief Close the map the track was lost in, on this frame: keep it, or reset it if it has
+  ///        `loss.reset_keyframes` keyframes or fewer (its lives end, as `Removal::kReset`). The
   ///        tracking state goes with it, so the next frame starts a new map.
   /// @param m The map, taken out of the pipeline.
   /// @return The closed map's summary.

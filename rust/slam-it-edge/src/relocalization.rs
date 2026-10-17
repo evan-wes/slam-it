@@ -145,8 +145,8 @@ fn merged(points: &[i64], added: &[i64]) -> Vec<i64> {
 /// # Arguments
 ///
 /// * `matches` - The candidate's matches by word.
-/// * `options` - `reloc_min_inliers`, `reloc_inlier_ratio`, `reloc_confidence` and
-///   `reloc_ransac_iterations`.
+/// * `options` - `relocalization.min_inliers`, `relocalization.inlier_ratio`,
+///   `relocalization.confidence` and `relocalization.ransac_iterations`.
 ///
 /// # Returns
 ///
@@ -379,7 +379,7 @@ fn project_more(
 /// * `rows` - The candidate's keypoint rows that observe a point.
 /// * `nodes` - Each row's node.
 /// * `frame_nodes` - Each of the frame's keypoints' node.
-/// * `options` - `th_low` and `relocalize_ratio`.
+/// * `options` - `matching.th_low` and `relocalization.ratio`.
 ///
 /// # Returns
 ///
@@ -546,7 +546,7 @@ fn try_candidate(
 ///
 /// # Returns
 ///
-/// The frame placed with `recovery_tracked` inliers or more, or none; how the search went;
+/// The frame placed with `tracking.recovery_tracked` inliers or more, or none; how the search went;
 /// each keypoint's match in the last candidate tried.
 ///
 /// # Errors

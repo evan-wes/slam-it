@@ -250,7 +250,7 @@ foundations::Result<std::optional<foundations::ransac::Consensus<Eigen::Matrix4d
 /// @param mode The pipeline's mode.
 /// @param options The window, thresholds and minimums.
 /// @param recovering Whether the frame is a recovery's or the next: the window is then
-///        `recovery_local_window`.
+///        `tracking.recovery_local_window`.
 /// @return The refined frame, the ids of the points in view and of the inliers, and each
 ///         keypoint's match before refinement; `InvalidInput` for matches that are not one per
 ///         keypoint, or an invalid camera or settings.

@@ -109,7 +109,7 @@ fn check_newest(m: &Map, camera: &Camera, options: &Options) -> Result<()> {
 ///
 /// # Returns
 ///
-/// `close_depth` baselines, in metres.
+/// `stereo.close_depth` baselines, in metres.
 #[must_use]
 pub fn close_depth(camera: &Camera, options: &Options) -> f64 {
     options.stereo.close_depth * camera.baseline
@@ -343,9 +343,9 @@ struct Epipolar {
     epipole: Option<Vector2<f64>>,
     /// The focal length, in pixels.
     focal: f64,
-    /// The band's chi-square bound (`epipolar_chi2`).
+    /// The band's chi-square bound (`mapping.epipolar_chi2`).
     chi2: f64,
-    /// The least squared distance from the epipole at level 0 (`min_epipole_distance2`).
+    /// The least squared distance from the epipole at level 0 (`mapping.min_epipole_distance2`).
     epipole_distance2: f64,
 }
 

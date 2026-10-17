@@ -133,7 +133,7 @@ pub struct LostSummary {
     pub keyframes: usize,
     /// Its points.
     pub points: usize,
-    /// Whether it was reset, having `reset_keyframes` keyframes or fewer, rather than kept.
+    /// Whether it was reset, having `loss.reset_keyframes` keyframes or fewer, rather than kept.
     pub reset: bool,
 }
 
@@ -329,8 +329,8 @@ impl Pipeline {
     /// * `mode` - The sensor mode.
     /// * `camera` - The camera.
     /// * `options` - The settings.
-    /// * `vocabulary` - The keyframe database's vocabulary: required with `relocalize` on,
-    ///   refused with it off.
+    /// * `vocabulary` - The keyframe database's vocabulary: required with `relocalization.enabled`
+    ///   on, refused with it off.
     ///
     /// # Returns
     ///
@@ -391,7 +391,7 @@ impl Pipeline {
     ///
     /// # Returns
     ///
-    /// `init_feature_factor` times the features for a monocular frame before the map exists,
+    /// `features.init_factor` times the features for a monocular frame before the map exists,
     /// the usual ones otherwise.
     #[must_use]
     pub fn extraction(&self) -> orb::Options {
@@ -555,7 +555,7 @@ impl Pipeline {
     }
 
     /// Closes the map the track was lost in, on this frame: keeps it, or resets it if it has
-    /// `reset_keyframes` keyframes or fewer (its lives end, as [`Removal::Reset`]). The
+    /// `loss.reset_keyframes` keyframes or fewer (its lives end, as [`Removal::Reset`]). The
     /// tracking state goes with it, so the next frame starts a new map.
     ///
     /// # Arguments
@@ -756,8 +756,8 @@ impl Pipeline {
     ///
     /// # Returns
     ///
-    /// Whether it loses the track: past `relocalize_seconds` since the first failure, or for a
-    /// small map or with `relocalize` off, on the `lost_frames`-th in a row.
+    /// Whether it loses the track: past `loss.relocalize_seconds` since the first failure, or for a
+    /// small map or with `relocalization.enabled` off, on the `loss.lost_frames`-th in a row.
     fn record_failure(&mut self, frame: &Frame, keyframes: usize) -> bool {
         self.failures += 1;
         self.velocity = None;

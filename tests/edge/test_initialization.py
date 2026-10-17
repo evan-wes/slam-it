@@ -179,7 +179,7 @@ def test_monocular_matches_the_reference(backend: str, monocular_pair: Pair) -> 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_monocular_draws_at_most_init_ransac_iterations(backend: str, monocular_pair: Pair) -> None:
-    """The two-view RANSAC draws at most ``init_ransac_iterations`` samples, in every backend.
+    """Two-view RANSAC draws at most ``initialization.ransac_iterations`` samples, in every backend.
 
     With a fifth of the matches made outliers, one sample a model starts the map from another
     model than the default's 200 do: a backend that ignored the setting would start the
@@ -294,7 +294,7 @@ def test_monocular_map_has_unit_median_depth(monocular_pair: Pair) -> None:
 
 
 def test_monocular_needs_enough_matches(monocular_pair: Pair) -> None:
-    """With fewer matches than ``init_min_matches``, no map."""
+    """With fewer matches than ``initialization.min_matches``, no map."""
     strict = OPTIONS.with_settings({"initialization.min_matches": 10_000})
     matches = _matched(monocular_pair)
     refused = initialization.initialize_monocular(CAMERA, *monocular_pair, matches, strict)
