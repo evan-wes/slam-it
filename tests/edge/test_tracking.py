@@ -121,6 +121,9 @@ def test_stages_match_the_reference(backend: str, room_state: Room) -> None:
     refused = tracking.relocalize_locally(r.map, CAMERA, r.frame, last, strict, backend=backend)
     assert refused.tracked is None
     assert refused.summary == tracking.PnpSummary(candidates=refused.summary.candidates)
+    for bad in (np.array([-2]), np.zeros((2, 2), dtype=np.int64)):  # an id below -1; not a vector
+        with pytest.raises(InvalidInputError, match="point ids"):
+            tracking.relocalize_locally(r.map, CAMERA, r.frame, bad, OPTIONS, backend=backend)
 
 
 def test_tracking_finds_the_pose(room_state: Room) -> None:

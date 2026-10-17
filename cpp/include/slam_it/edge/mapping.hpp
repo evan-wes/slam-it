@@ -132,6 +132,28 @@ struct Mapped {
 [[nodiscard]] foundations::Result<void> fuse_points(Map& m, const Camera& camera, Mode mode,
                                                     const Options& options);
 
+/// @brief The keyframes the newest keyframe's points are fused into
+///        (`slam_it.edge.mapping.fuse_targets`, ORB-SLAM's `SearchInNeighbors`): its best
+///        `mapping.fuse_neighbours` links (`mapping.mono_fuse_neighbours` in monocular), then each
+///        one's best `mapping.fuse_second_neighbours`, leaving out the newest keyframe and repeats
+///        (ORB-SLAM3's order).
+/// @param m The map.
+/// @param mode The pipeline's mode.
+/// @param options The settings.
+/// @return The targets' ids, in order; `InvalidInput` for a map without keyframes or invalid
+///         settings.
+[[nodiscard]] foundations::Result<std::vector<std::int64_t>> fuse_targets(const Map& m, Mode mode,
+                                                                          const Options& options);
+
+/// @brief The keyframes local BA adjusts (`slam_it.edge.mapping.local_ba_keyframes`, ORB-SLAM's
+///        `LocalBundleAdjustment`): the newest and every keyframe linked to it.
+/// @param m The map.
+/// @param options The settings.
+/// @return Their rows, ascending; `InvalidInput` for a map without keyframes or invalid
+///         settings.
+[[nodiscard]] foundations::Result<std::vector<std::int64_t>> local_ba_keyframes(
+    const Map& m, const Options& options);
+
 /// @brief Cull the newest keyframe's redundant links (`slam_it.edge.mapping.cull_keyframes`,
 ///        ORB-SLAM's `KeyFrameCulling`).
 /// @param m The map, changed in place.

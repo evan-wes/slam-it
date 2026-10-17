@@ -105,6 +105,11 @@ void check_building(int& failures) {
              m.pt_visible[0] == 3 && m.pt_found[0] == 2,
          "count adds repeats and skips unknown ids", failures);
   expect(edge::check_map(m).has_value(), "the map checks out", failures);
+  for (const std::int64_t parent : {m.kf_id[1], m.next_kf_id + 5, std::int64_t{-2}}) {
+    edge::Map bad = m;  // a parent that is itself, not in the map, or below -1
+    bad.kf_parent[1] = parent;
+    expect(is_invalid_input(edge::check_map(bad)), "a bad parent is refused", failures);
+  }
 }
 
 /// @brief Check removing: forgetting, erasing points and keyframes.

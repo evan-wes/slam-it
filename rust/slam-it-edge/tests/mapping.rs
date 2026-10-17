@@ -60,6 +60,24 @@ fn keyframes_and_points_follow_the_rules() {
     assert!(need(16));
     assert!(!need(15));
     assert!(!need(60));
+    let tracked = Tracked {
+        pose: pose(2),
+        points: ids(0, 16),
+    };
+    let past = built.keyframes();
+    let refused = need_keyframe(
+        &built,
+        &camera(),
+        &f.depth,
+        &tracked,
+        past,
+        Mode::Rgbd,
+        &Options::default(),
+    );
+    assert!(
+        refused.is_err(),
+        "a reference keyframe out of range is refused"
+    );
     let mut m = built.clone();
     let ahead = moved(0.1);
     map::insert_keyframe(&mut m, &frame_at(&ahead, true, 0), &ahead, &[-1; POINTS]).unwrap();

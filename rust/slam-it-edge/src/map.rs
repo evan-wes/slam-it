@@ -1344,6 +1344,11 @@ mod tests {
             check_map(&dangling).unwrap_err().kind,
             ErrorKind::InvalidInput
         );
+        for parent in [m.kf_id[1], m.next_kf_id + 5, -2] {
+            let mut bad = m.clone(); // a parent that is itself, not in the map, or below -1
+            bad.kf_parent[1] = parent;
+            assert_eq!(check_map(&bad).unwrap_err().kind, ErrorKind::InvalidInput);
+        }
         let mut again = m.clone();
         let result = add_points(&mut again, &[Vector3::new(0.0, 0.0, 1.0)], &[vec![2, 3]]);
         assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput);

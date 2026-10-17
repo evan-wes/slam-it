@@ -7,7 +7,8 @@ use nalgebra::{Matrix4, Vector3};
 use serde_json::Value;
 use slam_it_edge::covisibility::{adopt, cull, links, local_map, reparent, strong_links};
 use slam_it_edge::map::{Map, check_map, erase_keyframe, index_observations};
-use slam_it_edge::options::Options;
+use slam_it_edge::mapping::{fuse_targets, local_ba_keyframes};
+use slam_it_edge::options::{Mode, Options};
 
 /// The fixture, read once per test.
 fn fixture() -> Value {
@@ -182,6 +183,28 @@ fn every_case_matches_the_brute_force() {
                 "{name}: its reference"
             );
         }
+        let count =
+            |name: &str| usize::try_from(case["fusion"][name].as_i64().expect(name)).expect(name);
+        let mut fusion = options;
+        fusion.mapping.fuse_neighbours = count("fuse_neighbours");
+        fusion.mapping.mono_fuse_neighbours = count("mono_fuse_neighbours");
+        fusion.mapping.fuse_second_neighbours = count("fuse_second_neighbours");
+        for (mode, key) in [
+            (Mode::Monocular, "monocular"),
+            (Mode::Rgbd, "other"),
+            (Mode::Stereo, "other"),
+        ] {
+            assert_eq!(
+                fuse_targets(&m, mode, &fusion).unwrap(),
+                integers(&case["fuse_targets"][key]),
+                "{name}: fusion's targets, {key}"
+            );
+        }
+        assert_eq!(
+            local_ba_keyframes(&m, &fusion).unwrap(),
+            rows(&case["local_ba"]),
+            "{name}: local BA's keyframes"
+        );
         let strong: Vec<[i64; 3]> = case["strong_links"]
             .as_array()
             .expect("strong links")

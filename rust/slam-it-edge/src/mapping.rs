@@ -91,6 +91,15 @@ fn from_depth(m: &Map, k: usize, row: usize) -> Vector3<f64> {
 /// `InvalidInput` otherwise.
 fn check_newest(m: &Map, camera: &Camera, options: &Options) -> Result<()> {
     check_setup(camera, options)?;
+    has_keyframes(m)
+}
+
+/// Checks that the map has a keyframe.
+///
+/// # Errors
+///
+/// `InvalidInput` otherwise.
+fn has_keyframes(m: &Map) -> Result<()> {
     if m.keyframes() == 0 {
         return fail(
             ErrorKind::InvalidInput,
@@ -984,10 +993,8 @@ fn linked_rows(m: &Map, k: usize, options: &Options) -> Vec<usize> {
     .collect()
 }
 
-/// The newest keyframe's fusion targets' ids, as `SearchInNeighbors` takes them
-/// (`slam_it.edge.mapping._fuse_targets`): its best links, then each one's own best, leaving
-/// out the newest keyframe and repeats (ORB-SLAM3's order).
-fn fuse_targets(m: &Map, mode: Mode, options: &Options) -> Vec<i64> {
+/// The newest keyframe's fusion targets' ids ([`fuse_targets`], unchecked).
+fn targets_of(m: &Map, mode: Mode, options: &Options) -> Vec<i64> {
     let newest = m.keyframes() - 1;
     let settings = &options.mapping;
     let mut targets = linked_rows(m, newest, options);
@@ -1008,6 +1015,61 @@ fn fuse_targets(m: &Map, mode: Mode, options: &Options) -> Vec<i64> {
     targets.iter().map(|&k| m.kf_id[k]).collect()
 }
 
+/// The newest keyframe's row and its links', ascending ([`local_ba_keyframes`], unchecked).
+fn local_rows(m: &Map, options: &Options) -> Vec<usize> {
+    let newest = m.keyframes() - 1;
+    let mut local = linked_rows(m, newest, options);
+    local.push(newest);
+    local.sort_unstable();
+    local
+}
+
+/// The keyframes the newest keyframe's points are fused into
+/// (`slam_it.edge.mapping.fuse_targets`, ORB-SLAM's `SearchInNeighbors`): its best
+/// `mapping.fuse_neighbours` links (`mapping.mono_fuse_neighbours` in monocular), then each
+/// one's best `mapping.fuse_second_neighbours`, leaving out the newest keyframe and repeats
+/// (ORB-SLAM3's order).
+///
+/// # Arguments
+///
+/// * `m` - The map.
+/// * `mode` - The pipeline's mode.
+/// * `options` - The settings.
+///
+/// # Returns
+///
+/// The targets' ids, in order.
+///
+/// # Errors
+///
+/// `InvalidInput` for a map without keyframes or invalid settings.
+pub fn fuse_targets(m: &Map, mode: Mode, options: &Options) -> Result<Vec<i64>> {
+    check_options(options)?;
+    has_keyframes(m)?;
+    Ok(targets_of(m, mode, options))
+}
+
+/// The keyframes local BA adjusts (`slam_it.edge.mapping.local_ba_keyframes`, ORB-SLAM's
+/// `LocalBundleAdjustment`): the newest and every keyframe linked to it.
+///
+/// # Arguments
+///
+/// * `m` - The map.
+/// * `options` - The settings.
+///
+/// # Returns
+///
+/// Their rows, ascending.
+///
+/// # Errors
+///
+/// `InvalidInput` for a map without keyframes or invalid settings.
+pub fn local_ba_keyframes(m: &Map, options: &Options) -> Result<Vec<usize>> {
+    check_options(options)?;
+    has_keyframes(m)?;
+    Ok(local_rows(m, options))
+}
+
 /// Fuses the newest keyframe's points with its neighbours' (`slam_it.edge.mapping.fuse_points`,
 /// ORB-SLAM's `SearchInNeighbors`).
 ///
@@ -1023,7 +1085,7 @@ fn fuse_targets(m: &Map, mode: Mode, options: &Options) -> Vec<i64> {
 /// `InvalidInput` for a map without keyframes, or an invalid camera or settings.
 pub fn fuse_points(m: &mut Map, camera: &Camera, mode: Mode, options: &Options) -> Result<()> {
     check_newest(m, camera, options)?;
-    let targets = fuse_targets(m, mode, options);
+    let targets = targets_of(m, mode, options);
     let newest = m.keyframes() - 1;
     let own: Vec<i64> = m
         .observed_by(&[newest])
@@ -1227,12 +1289,7 @@ pub fn process(
     let mut adjustment = Adjustment::default();
     if m.keyframes() >= options.adjustment.min_keyframes {
         let fixed: Vec<bool> = m.kf_id.iter().map(|&id| id == 0).collect();
-        // The newest keyframe and its links, as ORB-SLAM's LocalBundleAdjustment takes them.
-        let newest = m.keyframes() - 1;
-        let mut local = linked_rows(m, newest, options);
-        local.push(newest);
-        local.sort_unstable();
-        adjustment = bundle_adjust(m, camera, &local, &fixed, options)?;
+        adjustment = bundle_adjust(m, camera, &local_rows(m, options), &fixed, options)?;
     }
     let keyframes = m.keyframes();
     cull_keyframes(m, camera, mode, options)?;

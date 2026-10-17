@@ -76,6 +76,13 @@ void check_keyframes_and_points(int& failures) {
   };
   expect(need(16).value_or(false) && !need(15).value_or(true) && !need(60).value_or(true),
          "a keyframe when tracking thins, but not below the minimum inliers", failures);
+  for (const std::int64_t reference :
+       {std::int64_t{-1}, static_cast<std::int64_t>(edge::keyframe_count(*built))}) {
+    expect(is_invalid_input(edge::need_keyframe(*built, scene::camera(), frame.depth,
+                                                {.pose = scene::pose(2), .points = ids(0, 16)},
+                                                reference, edge::Mode::kRgbd, edge::Options{})),
+           "the keyframe decision refuses a reference keyframe out of range", failures);
+  }
   edge::Map m = *built;
   const std::vector<std::int64_t> none(scene::kPoints, -1);
   const Eigen::Matrix4d ahead = scene::moved(0.1);

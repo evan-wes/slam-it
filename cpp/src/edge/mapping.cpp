@@ -64,14 +64,12 @@ std::vector<std::int64_t> linked_rows(const Map& m, std::size_t k, const Options
   return out;
 }
 
-/// @brief The newest keyframe's fusion targets' ids, as `SearchInNeighbors` takes them
-///        (`slam_it.edge.mapping._fuse_targets`): its best links, then each one's own best,
-///        leaving out the newest keyframe and repeats (ORB-SLAM3's order).
-/// @param m The map.
+/// @brief The newest keyframe's fusion targets' ids (`fuse_targets`, unchecked).
+/// @param m The map, with at least one keyframe.
 /// @param mode The pipeline's mode.
 /// @param options The settings.
 /// @return The ids.
-std::vector<std::int64_t> fuse_targets(const Map& m, Mode mode, const Options& options) {
+std::vector<std::int64_t> targets_of(const Map& m, Mode mode, const Options& options) {
   const auto newest = static_cast<std::int64_t>(keyframe_count(m)) - 1;
   const MappingOptions& settings = options.mapping;
   const std::int64_t n =
@@ -99,6 +97,27 @@ std::vector<std::int64_t> fuse_targets(const Map& m, Mode mode, const Options& o
     ids.push_back(m.kf_id[static_cast<std::size_t>(row)]);
   }
   return ids;
+}
+
+/// @brief The newest keyframe's row and its links', ascending (`local_ba_keyframes`, unchecked).
+/// @param m The map, with at least one keyframe.
+/// @param options The settings.
+/// @return The rows.
+std::vector<std::int64_t> local_rows(const Map& m, const Options& options) {
+  std::vector<std::int64_t> local = linked_rows(m, keyframe_count(m) - 1, options);
+  local.push_back(static_cast<std::int64_t>(keyframe_count(m)) - 1);
+  std::ranges::sort(local);
+  return local;
+}
+
+/// @brief Check that the map has a keyframe.
+/// @param m The map.
+/// @return Nothing, or `InvalidInput`.
+Result<void> has_keyframes(const Map& m) {
+  if (keyframe_count(m) == 0) {
+    return fail(ErrorKind::kInvalidInput, "m: expected a map with at least one keyframe");
+  }
+  return {};
 }
 
 /// @brief The points from an id on that the newest keyframe observes, by keypoint.
@@ -134,10 +153,7 @@ Result<void> check_newest(const Map& m, const Camera& camera, const Options& opt
   if (auto ok = check_setup(camera, options); !ok) {
     return ok;
   }
-  if (keyframe_count(m) == 0) {
-    return fail(ErrorKind::kInvalidInput, "m: expected a map with at least one keyframe");
-  }
-  return {};
+  return has_keyframes(m);
 }
 
 /// @brief The number of a frame's keypoints that are close and tracked, and close and not.
@@ -870,7 +886,7 @@ Result<void> fuse_points(Map& m, const Camera& camera, Mode mode, const Options&
   if (auto ok = check_newest(m, camera, options); !ok) {
     return ok;
   }
-  const std::vector<std::int64_t> targets = fuse_targets(m, mode, options);
+  const std::vector<std::int64_t> targets = targets_of(m, mode, options);
   const std::vector<std::int64_t> newest{static_cast<std::int64_t>(keyframe_count(m) - 1)};
   const std::vector<std::int64_t> own = observed_ids(m, newest);
   for (const std::int64_t target : targets) {
@@ -888,6 +904,26 @@ Result<void> fuse_points(Map& m, const Camera& camera, Mode mode, const Options&
     return ok;
   }
   return refresh_points(m, observed_by(m, newest));
+}
+
+Result<std::vector<std::int64_t>> fuse_targets(const Map& m, Mode mode, const Options& options) {
+  if (auto ok = check_options(options); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  if (auto ok = has_keyframes(m); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  return targets_of(m, mode, options);
+}
+
+Result<std::vector<std::int64_t>> local_ba_keyframes(const Map& m, const Options& options) {
+  if (auto ok = check_options(options); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  if (auto ok = has_keyframes(m); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  return local_rows(m, options);
 }
 
 Result<void> cull_keyframes(Map& m, const Camera& camera, Mode mode, const Options& options) {
@@ -977,11 +1013,7 @@ Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame, const T
   }
   Adjustment adjustment;
   if (std::cmp_greater_equal(keyframe_count(m), options.adjustment.min_keyframes)) {
-    // The newest keyframe and its links, as ORB-SLAM's LocalBundleAdjustment takes them.
-    std::vector<std::int64_t> local = linked_rows(m, keyframe_count(m) - 1, options);
-    local.push_back(static_cast<std::int64_t>(keyframe_count(m)) - 1);
-    std::ranges::sort(local);
-    auto adjusted = bundle_adjust(m, camera, local, fixed, options);
+    auto adjusted = bundle_adjust(m, camera, local_rows(m, options), fixed, options);
     if (!adjusted) {
       return std::unexpected(std::move(adjusted.error()));
     }

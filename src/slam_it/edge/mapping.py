@@ -201,8 +201,16 @@ class Implementation(Protocol):
         """Triangulate the newest keyframe's free keypoints against its best links'."""
         ...
 
+    def fuse_targets(self, m: Crossing, mode: str, options: Crossing) -> NDArray[np.int64]:
+        """Return the ids of the keyframes the newest keyframe's points are fused into."""
+        ...
+
     def fuse_points(self, m: Crossing, camera: Crossing, mode: str, options: Crossing) -> Crossing:
         """Fuse the newest keyframe's points with its neighbours'."""
+        ...
+
+    def local_ba_keyframes(self, m: Crossing, options: Crossing) -> NDArray[np.int64]:
+        """Return the rows of the keyframes local BA adjusts."""
         ...
 
     def cull_keyframes(
@@ -882,6 +890,92 @@ def _fuse_targets(m: Map, mode: str, options: Options) -> IntArray:
     return m.kf_id[np.array(targets, dtype=np.int64)]
 
 
+def fuse_targets(m: Map, mode: str, options: Options, *, backend: str = "python") -> IntArray:
+    """Return the keyframes the newest keyframe's points are fused into (``SearchInNeighbors``).
+
+    Its best ``mapping.fuse_neighbours`` links (``mapping.mono_fuse_neighbours`` in monocular),
+    then each one's best ``mapping.fuse_second_neighbours`` in turn, leaving out the newest
+    keyframe and repeats: ORB-SLAM3's order, with ORB-SLAM2's counts. ORB-SLAM2 took each link's
+    own best right after it, and could take a keyframe twice. :func:`fuse_points` fuses into
+    them.
+
+    Parameters
+    ----------
+    m : Map
+        The map, with at least one keyframe.
+    mode : {"monocular", "stereo", "rgbd"}
+        The pipeline's mode.
+    options : Options
+        The counts and ``covisibility.min_points``.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    ndarray of int64, shape (T,)
+        The targets' ids, in order.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the mode is unknown, or the map has no keyframe.
+    """
+    check_mode(mode)
+    _check_newest(m)
+    return backends.call(
+        backend,
+        __name__,
+        "fuse_targets",
+        reference=lambda: _fuse_targets(m, mode, options),
+        arguments=_arguments(m, None, options, mode=mode),
+        decode=lambda raw, codes: backends.checked_array(raw, np.int64, 1, "fusion targets"),
+    )
+
+
+def _local_ba_keyframes(m: Map, options: Options) -> IntArray:
+    """Return the newest keyframe's row and its links', ascending (reference)."""
+    newest = m.keyframes - 1
+    return np.sort(np.append(covisibility.links(m, newest, options)[0], newest)).astype(np.int64)
+
+
+def local_ba_keyframes(m: Map, options: Options, *, backend: str = "python") -> IntArray:
+    """Return the keyframes local BA adjusts: the newest and every one linked to it.
+
+    ORB-SLAM's ``LocalBundleAdjustment`` takes the new keyframe and its covisible keyframes
+    (:func:`slam_it.edge.covisibility.links`); :func:`process` adjusts them, holding the map's
+    first keyframe and every other that observes their points fixed
+    (:func:`slam_it.edge.adjust.bundle_adjust`).
+
+    Parameters
+    ----------
+    m : Map
+        The map, with at least one keyframe.
+    options : Options
+        ``covisibility.min_points``.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    ndarray of int64, shape (L,)
+        Their rows, ascending.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the map has no keyframe.
+    """
+    _check_newest(m)
+    return backends.call(
+        backend,
+        __name__,
+        "local_ba_keyframes",
+        reference=lambda: _local_ba_keyframes(m, options),
+        arguments=_arguments(m, None, options),
+        decode=lambda raw, codes: backends.checked_array(raw, np.int64, 1, "local BA's keyframes"),
+    )
+
+
 def _fuse_points(m: Map, camera: Camera, mode: str, options: Options) -> Map:
     """Fuse the newest keyframe's points with its neighbours' (reference)."""
     newest_id = int(m.kf_id[-1])
@@ -1057,9 +1151,7 @@ def _process(  # noqa: PLR0913 -- the stage's state
     outliers = 0
     free = fixed = 0
     if m.keyframes >= options.adjustment.min_keyframes:
-        # The newest keyframe and its links, as ORB-SLAM's LocalBundleAdjustment takes them.
-        newest = m.keyframes - 1
-        local = np.sort(np.append(covisibility.links(m, newest, options)[0], newest))
+        local = _local_ba_keyframes(m, options)
         adjusted = adjust.bundle_adjust(m, camera, local, m.kf_id == 0, options)
         m, solves, outliers = adjusted.map, adjusted.solves, adjusted.outliers
         free, fixed = adjusted.free, adjusted.fixed

@@ -92,7 +92,7 @@ def test_round_trip(tmp_path: Path) -> None:
     np.testing.assert_array_equal(back.points, run.points)
     np.testing.assert_array_equal(back.point_lives, run.point_lives)
     np.testing.assert_array_equal(back.keyframe_lives, run.keyframe_lives)
-    for name in ("pose_maps", "keyframe_maps", "point_maps"):
+    for name in ("pose_maps", "keyframe_maps", "point_maps", "keyframe_parents", "keyframe_links"):
         np.testing.assert_array_equal(getattr(back, name), getattr(run, name))
     assert back.settings == run.settings
     assert back.diagnostics == run.diagnostics
@@ -503,6 +503,39 @@ def test_evaluate_rejects_a_run_whose_times_do_not_ascend() -> None:
             "point_maps: maps must be numbers from 0, never descending",
         ),
         (
+            {"keyframe_parents": np.array([-1, 0], dtype=np.int64)},
+            r"keyframe_parents: expected int64 \(3,\)",
+        ),
+        ({"keyframe_parents": np.array([-1.0, 0.0, -1.0])}, r"keyframe_parents: expected int64"),
+        *(
+            (
+                {"keyframe_parents": np.array(parents, dtype=np.int64)},
+                "a parent must be -1 or another",
+            )
+            for parents in ([-1, 5, -1], [-1, 1, -1], [-1, -2, -1])
+        ),
+        (
+            {"keyframe_parents": np.array([-1, 0, 0], dtype=np.int64)},
+            "keyframe_parents: a parent must be in its keyframe's map",
+        ),
+        (
+            {"keyframe_links": np.zeros((1, 2), dtype=np.int64)},
+            r"keyframe_links: expected int64 \(L, 3\)",
+        ),
+        ({"keyframe_links": np.array([[0.0, 1.0, 150.0]])}, r"keyframe_links: expected int64"),
+        *(
+            ({"keyframe_links": np.array([link], dtype=np.int64)}, "the lower first, by points")
+            for link in ([1, 0, 150], [0, 3, 150], [-1, 1, 150], [0, 1, 0])
+        ),
+        (
+            {"keyframe_links": np.array([[1, 2, 150]], dtype=np.int64)},
+            "keyframe_links: a link's keyframes must be in one map",
+        ),
+        (
+            {"keyframe_links": np.array([[0, 1, 150], [0, 1, 150]], dtype=np.int64)},
+            "keyframe_links: the links must ascend, each once",
+        ),
+        (
             {"keyframe_lives": np.array([[0, -1, -1], [4, -1, -1], [12, -1, -1]], dtype=np.int64)},
             "keyframe_lives: a life must start in one of the run's 12 frames",
         ),
@@ -658,6 +691,18 @@ def test_read_run_checks_the_maps(tmp_path: Path) -> None:
         runs.read_run(tmp_path)
     np.save(tmp_path / "pose_maps.npy", np.arange(12, dtype=np.int64)[::-1].copy())
     with pytest.raises(InvalidInputError, match="maps must be numbers from 0, never descending"):
+        runs.read_run(tmp_path)
+
+
+def test_read_run_checks_the_parents_and_links(tmp_path: Path) -> None:
+    """A parent in another map, or links out of order, are refused on reading too."""
+    runs.write_run(tmp_path, _run())
+    np.save(tmp_path / "keyframe_parents.npy", np.array([-1, 0, 0], dtype=np.int64))
+    with pytest.raises(InvalidInputError, match="a parent must be in its keyframe's map"):
+        runs.read_run(tmp_path)
+    runs.write_run(tmp_path, _run())
+    np.save(tmp_path / "keyframe_links.npy", np.array([[1, 0, 150]], dtype=np.int64))
+    with pytest.raises(InvalidInputError, match="the lower first, by points"):
         runs.read_run(tmp_path)
 
 

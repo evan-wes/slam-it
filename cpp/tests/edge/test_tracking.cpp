@@ -147,6 +147,10 @@ void check_local_map(const edge::Map& m, int& failures) {
   expect(short_map.has_value() && !short_map->tracked.has_value() &&
              short_map->summary.candidates == 60 && !short_map->summary.matches.has_value(),
          "a local map smaller than the minimum stops the fallback first", failures);
+  const std::vector<std::int64_t> below{-2};
+  expect(is_invalid_input(edge::relocalize_locally(m, scene::camera(), scene::frame(2, true), below,
+                                                   edge::Options{})),
+         "the fallback refuses a last frame's point id below -1", failures);
   const auto recovering = edge::track_local_map(m, scene::camera(), scene::frame(2, true), seeded,
                                                 edge::Mode::kRgbd, edge::Options{}, true);
   expect(recovering.has_value() && edge::inliers(recovering->tracked) == 60,

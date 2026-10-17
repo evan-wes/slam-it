@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from functools import partial
 
 import numpy as np
 import pytest
@@ -150,6 +151,45 @@ def test_keyframe_needed_when_tracking_thins(mapped: Mapped) -> None:
     assert not need(tracked)
 
 
+def _reference_points(m: Map, row: int) -> int:
+    """Return the points a keyframe sees from enough keyframes (``TrackedMapPoints``), by hand."""
+    keyframes = OPTIONS.keyframes
+    least = (
+        keyframes.ref_min_observations_early if m.keyframes <= 2 else keyframes.ref_min_observations
+    )
+    seen = m.kp_point[m.keypoint_rows(row)]
+    rows = m.point_rows(seen[seen >= 0])
+    return int(np.count_nonzero(maps.observation_weight(m, rows[rows >= 0]) >= least))
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_the_keyframe_decision_counts_against_its_reference(backend: str, mapped: Mapped) -> None:
+    """The same frame, against two reference keyframes seeing different counts, decides both ways.
+
+    It tracks the share of the fewer the one sees, so needs no keyframe against it, and less than
+    the share of the more the other sees, so needs one against that.
+    """
+    m, frame, tracked = mapped.map, mapped.frame, mapped.tracked
+    counts = [_reference_points(m, row) for row in range(m.keyframes)]
+    few, many = int(np.argmin(counts)), int(np.argmax(counts))
+    ratio = OPTIONS.keyframes.mono_ref_ratio
+    kept = int(np.ceil(ratio * counts[few]))
+    assert OPTIONS.keyframes.min_inliers < kept < ratio * counts[many], counts
+    matched = np.flatnonzero(tracked.points >= 0)[:kept]
+    points = np.full_like(tracked.points, -1)
+    points[matched] = tracked.points[matched]
+    t = Tracked(pose=tracked.pose, points=points)
+
+    def need(reference: int) -> bool:
+        return mapping.need_keyframe(
+            m, CAMERA, frame.depth, t, reference=reference, mode="monocular", options=OPTIONS,
+            backend=backend,
+        )  # fmt: skip
+
+    assert not need(few)
+    assert need(many)
+
+
 def test_points_from_depth_start_nearest(mapped: Mapped) -> None:
     """New points sit at the newest keyframe's free keypoints' depths, nearest first."""
     m = mapped.inserted
@@ -250,7 +290,7 @@ def test_process_adds_a_keyframe(mode: str, mapped: Mapped) -> None:
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_rejects_malformed_arguments(backend: str, mapped: Mapped) -> None:
-    """A bad mode, keyframe rows, matches or an empty map raise before any backend runs."""
+    """A bad mode, keyframe rows, matches, reference keyframe or an empty map raise first."""
     m = mapped.inserted
     empty = maps.empty(OPTIONS.features.levels, OPTIONS.features.scale_factor)
     short = Tracked(pose=mapped.tracked.pose, points=mapped.tracked.points[:-1])
@@ -263,6 +303,20 @@ def test_rejects_malformed_arguments(backend: str, mapped: Mapped) -> None:
         ),
         lambda: mapping.create_points_from_depth(empty, CAMERA, OPTIONS, backend=backend),
         lambda: mapping.cull_keyframes(empty, CAMERA, "rgbd", OPTIONS, backend=backend),
+        *(
+            partial(
+                mapping.need_keyframe,
+                m,
+                CAMERA,
+                mapped.frame.depth,
+                mapped.tracked,
+                reference=reference,
+                mode="rgbd",
+                options=OPTIONS,
+                backend=backend,
+            )
+            for reference in (-1, m.keyframes)
+        ),
         lambda: mapping.process(
             m, CAMERA, mapped.frame, short, mode="rgbd", options=OPTIONS, backend=backend
         ),

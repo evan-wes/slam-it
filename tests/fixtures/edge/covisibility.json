@@ -1,5 +1,12 @@
 {
  "description": "The covisibility graph, by brute force (generate_covisibility.py).",
+ "oracle": "brute force over each keyframe's point set, by the rules alone",
+ "tolerance": {
+  "comparison": "exact",
+  "rtol": 0.0,
+  "atol": 0.0,
+  "reason": "keyframe rows, ids and shared-point counts are integers"
+ },
  "cases": [
   {
    "name": "ties",
@@ -216,6 +223,25 @@
      2,
      5
     ]
+   ],
+   "fusion": {
+    "fuse_neighbours": 2,
+    "mono_fuse_neighbours": 3,
+    "fuse_second_neighbours": 2
+   },
+   "fuse_targets": {
+    "monocular": [
+     3,
+     0
+    ],
+    "other": [
+     3,
+     0
+    ]
+   },
+   "local_ba": [
+    3,
+    4
    ]
   },
   {
@@ -472,6 +498,31 @@
      4,
      10
     ]
+   ],
+   "fusion": {
+    "fuse_neighbours": 2,
+    "mono_fuse_neighbours": 3,
+    "fuse_second_neighbours": 2
+   },
+   "fuse_targets": {
+    "monocular": [
+     0,
+     1,
+     2,
+     4
+    ],
+    "other": [
+     0,
+     1,
+     2
+    ]
+   },
+   "local_ba": [
+    0,
+    1,
+    2,
+    3,
+    4
    ]
   },
   {
@@ -1230,6 +1281,28 @@
      9,
      8
     ]
+   ],
+   "fusion": {
+    "fuse_neighbours": 2,
+    "mono_fuse_neighbours": 3,
+    "fuse_second_neighbours": 2
+   },
+   "fuse_targets": {
+    "monocular": [
+     15,
+     14,
+     13
+    ],
+    "other": [
+     15,
+     14,
+     13
+    ]
+   },
+   "local_ba": [
+    11,
+    12,
+    13
    ]
   },
   {
@@ -1943,6 +2016,27 @@
      2,
      6
     ]
+   ],
+   "fusion": {
+    "fuse_neighbours": 2,
+    "mono_fuse_neighbours": 3,
+    "fuse_second_neighbours": 2
+   },
+   "fuse_targets": {
+    "monocular": [
+     11,
+     10,
+     12
+    ],
+    "other": [
+     11,
+     10,
+     12
+    ]
+   },
+   "local_ba": [
+    10,
+    13
    ]
   },
   {
@@ -2683,6 +2777,25 @@
      7,
      6
     ]
+   ],
+   "fusion": {
+    "fuse_neighbours": 2,
+    "mono_fuse_neighbours": 3,
+    "fuse_second_neighbours": 2
+   },
+   "fuse_targets": {
+    "monocular": [
+     15,
+     14
+    ],
+    "other": [
+     15,
+     14
+    ]
+   },
+   "local_ba": [
+    12,
+    13
    ]
   }
  ]

@@ -17,6 +17,7 @@
 #include "../foundations/test_support.hpp"
 #include "slam_it/edge/covisibility.hpp"
 #include "slam_it/edge/map.hpp"
+#include "slam_it/edge/mapping.hpp"
 #include "slam_it/edge/options.hpp"
 
 namespace {
@@ -163,6 +164,21 @@ void check_case(const nlohmann::json& c, int& failures) {
                found->reference == local["reference"].get<std::int64_t>(),
            (name + ": a local map").c_str(), failures);
   }
+  edge::Options fusion = options;
+  fusion.mapping.fuse_neighbours = c["fusion"]["fuse_neighbours"].get<std::int64_t>();
+  fusion.mapping.mono_fuse_neighbours = c["fusion"]["mono_fuse_neighbours"].get<std::int64_t>();
+  fusion.mapping.fuse_second_neighbours = c["fusion"]["fuse_second_neighbours"].get<std::int64_t>();
+  for (const auto& [mode, key] :
+       {std::pair{edge::Mode::kMonocular, "monocular"}, std::pair{edge::Mode::kRgbd, "other"},
+        std::pair{edge::Mode::kStereo, "other"}}) {
+    const auto targets = edge::fuse_targets(m, mode, fusion);
+    expect(
+        targets.has_value() && *targets == c["fuse_targets"][key].get<std::vector<std::int64_t>>(),
+        (name + ": fusion's targets").c_str(), failures);
+  }
+  const auto local = edge::local_ba_keyframes(m, fusion);
+  expect(local.has_value() && *local == c["local_ba"].get<std::vector<std::int64_t>>(),
+         (name + ": local BA's keyframes").c_str(), failures);
   std::vector<std::array<std::int64_t, 3>> strong;
   for (const nlohmann::json& link : c["strong_links"]) {
     strong.push_back(link.get<std::array<std::int64_t, 3>>());

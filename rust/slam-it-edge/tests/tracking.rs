@@ -173,6 +173,10 @@ fn the_local_map_and_the_fallback_place_the_frame() {
     );
     assert!(local.keyframes > 0);
     let last = &m.pt_id; // the last frame matched every point
+    assert!(
+        relocalize_locally(&m, &camera(), &frame(2, true), &[-2], &options).is_err(),
+        "a last frame's point id below -1 is refused"
+    );
     let recovery = relocalize_locally(&m, &camera(), &frame(2, true), last, &options).unwrap();
     let summary = recovery.summary;
     assert_eq!(

@@ -166,11 +166,22 @@ MOVED_OPTIONS = GAP_OPTIONS.with_settings(
         "tracking.recovery_local_window": 4.0,
         "adjustment.min_keyframes": 4,
         "loss.reset_keyframes": 9,
+        "mapping.fuse_neighbours": 2,
+        "mapping.mono_fuse_neighbours": 2,
+        "mapping.fuse_second_neighbours": 1,
+        "covisibility.min_points": 100,
+        "covisibility.strong_points": 150,
+        "covisibility.local_keyframes": 1,
+        "covisibility.local_neighbours": 1,
     }
 )
 """The gap room's settings with every one the review panel's fixes added moved off its default
 (finding H21): a native that read one at its default, or hard-coded it, would decide unlike
-Python here, where at the defaults it could not."""
+Python here, where at the defaults it could not. B2's settings (its panel's H3): each of fusion's
+three counts, ``covisibility.min_points`` and ``covisibility.strong_points``, put back at its
+default with the rest moved, changes the room's decisions; the local map's two caps cannot, as
+the keyframes that see a frame's points are every keyframe the room's local map could take, so
+the covisibility fixture's capped local maps hold them in the three languages."""
 
 
 LOST_AT = (12, 31)

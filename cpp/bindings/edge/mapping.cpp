@@ -59,6 +59,29 @@ nb::dict create_points_from_depth(const nb::dict& m, const nb::dict& camera,
   return map_dict(out);
 }
 
+/// @brief The keyframes the newest keyframe's points are fused into.
+/// @param m The map, as a dict.
+/// @param mode The mode's name.
+/// @param options The settings, as a dict.
+/// @return Their ids (int64).
+/// @throws CoreError for invalid input.
+nb::ndarray<nb::numpy, std::int64_t> fuse_targets(const nb::dict& m, const std::string& mode,
+                                                  const nb::dict& options) {
+  return edge_crossing::vector_array(
+      unwrap(edge::fuse_targets(map_in(m), mode_in(mode), options_in(options))));
+}
+
+/// @brief The keyframes local BA adjusts.
+/// @param m The map, as a dict.
+/// @param options The settings, as a dict.
+/// @return Their rows (int64).
+/// @throws CoreError for invalid input.
+nb::ndarray<nb::numpy, std::int64_t> local_ba_keyframes(const nb::dict& m,
+                                                        const nb::dict& options) {
+  return edge_crossing::vector_array(
+      unwrap(edge::local_ba_keyframes(map_in(m), options_in(options))));
+}
+
 /// @brief Cull recently created points tracking rarely finds.
 /// @param m The map, as a dict.
 /// @param mode The mode's name.
@@ -184,6 +207,10 @@ void bind_mapping(nb::module_& m) {
   m.def("triangulate_new_points", &triangulate_new_points, nb::arg("m"), nb::arg("camera"),
         nb::arg("mode"), nb::arg("options"),
         "Triangulate the newest keyframe's free keypoints against its best links.");
+  m.def("fuse_targets", &fuse_targets, nb::arg("m"), nb::arg("mode"), nb::arg("options"),
+        "The keyframes the newest keyframe's points are fused into.");
+  m.def("local_ba_keyframes", &local_ba_keyframes, nb::arg("m"), nb::arg("options"),
+        "The keyframes local BA adjusts.");
   m.def("fuse_points", &fuse_points, nb::arg("m"), nb::arg("camera"), nb::arg("mode"),
         nb::arg("options"), "Fuse the newest keyframe's points with its neighbours'.");
   m.def("cull_keyframes", &cull_keyframes, nb::arg("m"), nb::arg("camera"), nb::arg("mode"),

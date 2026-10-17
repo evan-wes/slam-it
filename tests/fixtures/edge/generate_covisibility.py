@@ -13,7 +13,10 @@ and none of the module's code:
 - tracking's local map for some frames' matched points;
 - each keyframe's parent from :func:`~slam_it.edge.covisibility.adopt`, with its own unset;
 - each keyframe's children given new parents by :func:`~slam_it.edge.covisibility.reparent`;
-- the strong links.
+- the strong links;
+- what the stages take from the graph for the newest keyframe, with fusion's counts in
+  ``fusion``: fusion's targets (:func:`slam_it.edge.mapping.fuse_targets`), monocular and not,
+  and local BA's keyframes (:func:`slam_it.edge.mapping.local_ba_keyframes`).
 
 Two cases are built by hand: ties between equal weights and the link kept when none reaches
 ``min_points``; and a culled keyframe whose children are joined in rounds, one becoming the
@@ -97,6 +100,30 @@ def _local_map(
     return {"keyframes": local, "reference": k1[0]}
 
 
+FUSION = {"fuse_neighbours": 2, "mono_fuse_neighbours": 3, "fuse_second_neighbours": 2}
+"""Fusion's counts, low enough that each binds on the fixture's maps."""
+
+FUSED: dict[str, int] = {"second": 0, "newest": 0, "repeat": 0}
+"""How often fusion took a second neighbour, or left out the newest or a repeat: each tested."""
+
+
+def _fuse_targets(keyframes: Keyframes, min_points: int, first: int) -> list[int]:
+    """Return the newest keyframe's fusion targets' ids: its best, then each one's best."""
+    newest = len(keyframes) - 1
+    best = _links(keyframes, newest, min_points)[0][:first]
+    targets = list(best)
+    for r in best:
+        for second in _links(keyframes, r, min_points)[0][: FUSION["fuse_second_neighbours"]]:
+            if second == newest:
+                FUSED["newest"] += 1
+            elif second in targets:
+                FUSED["repeat"] += 1
+            else:
+                targets.append(second)
+                FUSED["second"] += 1
+    return [keyframes[r]["id"] for r in targets]
+
+
 def _adopted(keyframes: Keyframes, a: int) -> int:
     """Return the parent `a` takes, its own unset: the one sharing most, ties by the lower id."""
     if keyframes[a]["id"] == 0:
@@ -154,6 +181,16 @@ def _case(
         "adopted": [_adopted(keyframes, a) for a in rows],
         "reparented": [_reparented(keyframes, a, settings["min_points"]) for a in rows],
         "strong_links": _strong(keyframes, settings["strong_points"]),
+        "fusion": FUSION,
+        "fuse_targets": {
+            "monocular": _fuse_targets(
+                keyframes, settings["min_points"], FUSION["mono_fuse_neighbours"]
+            ),
+            "other": _fuse_targets(keyframes, settings["min_points"], FUSION["fuse_neighbours"]),
+        },
+        "local_ba": sorted(
+            [*_links(keyframes, len(keyframes) - 1, settings["min_points"])[0], len(keyframes) - 1]
+        ),
     }
 
 
@@ -215,8 +252,16 @@ def main() -> None:
     capped = [m for c in cases[2:] for m in c["local_maps"] if len(m["keyframes"]) > 4]
     assert capped, "no local map reached its cap"
     assert all(ADDED.values()), f"K2 never took a keyframe some way: {ADDED}"
+    assert all(FUSED.values()), f"fusion never met some case: {FUSED}"
     doc = {
         "description": "The covisibility graph, by brute force (generate_covisibility.py).",
+        "oracle": "brute force over each keyframe's point set, by the rules alone",
+        "tolerance": {
+            "comparison": "exact",
+            "rtol": 0.0,
+            "atol": 0.0,
+            "reason": "keyframe rows, ids and shared-point counts are integers",
+        },
         "cases": cases,
     }
     (HERE / "covisibility.json").write_text(json.dumps(doc, indent=1) + "\n")

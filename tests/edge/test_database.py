@@ -89,18 +89,17 @@ def test_a_frame_of_the_room_finds_the_keyframe_beside_it(
 def test_a_group_adds_its_scored_neighbours(
     truth: Truth, words: vocabulary.Vocabulary, room_database: Database
 ) -> None:
-    """Without covisibility a candidate's score is its own; with it, its group's, no less."""
+    """A candidate stands for its group: its score is its own and its scored links', summed.
+
+    With ``relocalization.common_words`` lowered, every keyframe sharing a word is scored, so the
+    best candidate's links are too, and its group's score is more than its own.
+    """
     vector = _frame_vector(truth, words, 25)
-    alone = database.candidates(
-        room_database,
-        truth.map,
-        vector,
-        OPTIONS.with_settings({"covisibility.min_points": 1 << 20}),
-    )
-    for keyframe, score in zip(alone.keyframes.tolist(), alone.scores.tolist(), strict=True):
-        assert score == vocabulary.score(vector, room_database.vector(keyframe))
-    grouped = database.candidates(room_database, truth.map, vector, OPTIONS)
-    assert grouped.scores[0] >= alone.scores[0]
+    every = OPTIONS.with_settings({"relocalization.common_words": 0.1})
+    found = database.candidates(room_database, truth.map, vector, every)
+    assert found.scored >= 2
+    own = vocabulary.score(vector, room_database.vector(int(found.keyframes[0])))
+    assert found.scores[0] > own
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -118,7 +117,7 @@ def test_a_group_adds_its_scored_neighbours(
             }
         ),
     ],
-    ids=["defaults", "no covisibility", "looser"],
+    ids=["defaults", "best link only", "looser"],
 )
 def test_every_backend_finds_python_s_candidates(  # noqa: PLR0917 -- cases, fixtures
     backend: str,

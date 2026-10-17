@@ -11,8 +11,8 @@ use slam_it_edge::map::Map;
 use slam_it_foundations::nls;
 
 use super::edge_crossing::{
-    camera_in, frame_in, map_dict, map_in, mode_in, options_in, rows_array, solves_list,
-    tracked_in, vector, vector_array,
+    camera_in, frame_in, indices_array, map_dict, map_in, mode_in, options_in, rows_array,
+    solves_list, tracked_in, vector, vector_array,
 };
 use crate::common::{add_functions, enum_codes, to_i64, unwrap};
 
@@ -229,6 +229,60 @@ fn cull_points<'py>(
     changed(py, m, |out| core::cull_points(out, mode, &options))
 }
 
+/// The keyframes the newest keyframe's points are fused into.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `m` - The map, as a dict.
+/// * `mode` - The mode's name.
+/// * `options` - The settings, as a dict.
+///
+/// # Returns
+///
+/// Their ids (int64).
+///
+/// # Errors
+///
+/// `ValueError` for a malformed argument; `InvalidInputError` from the core.
+#[pyfunction]
+fn fuse_targets<'py>(
+    py: Python<'py>,
+    m: &Bound<'py, PyDict>,
+    mode: &str,
+    options: &Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let (mode, options) = (mode_in(mode)?, options_in(options)?);
+    let ids = unwrap(py, core::fuse_targets(&map_in(py, m)?, mode, &options))?;
+    Ok(vector_array(py, &ids))
+}
+
+/// The keyframes local BA adjusts.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `m` - The map, as a dict.
+/// * `options` - The settings, as a dict.
+///
+/// # Returns
+///
+/// Their rows (int64).
+///
+/// # Errors
+///
+/// `ValueError` for a malformed argument; `InvalidInputError` from the core.
+#[pyfunction]
+fn local_ba_keyframes<'py>(
+    py: Python<'py>,
+    m: &Bound<'py, PyDict>,
+    options: &Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let options = options_in(options)?;
+    let rows = unwrap(py, core::local_ba_keyframes(&map_in(py, m)?, &options))?;
+    Ok(indices_array(py, &rows))
+}
+
 /// Matches two keyframes' free keypoints for triangulation.
 ///
 /// # Arguments
@@ -343,7 +397,9 @@ pub fn mapping(m: &Bound<'_, PyModule>) -> PyResult<()> {
         cull_points,
         match_for_triangulation,
         triangulate_new_points,
+        fuse_targets,
         fuse_points,
+        local_ba_keyframes,
         cull_keyframes,
         process
     );

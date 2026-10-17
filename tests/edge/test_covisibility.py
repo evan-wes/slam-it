@@ -4,9 +4,11 @@
 of hand-picked and seeded points, each keyframe's links, tracking's local map for some frames,
 the parent :func:`~slam_it.edge.covisibility.adopt` gives, the parents
 :func:`~slam_it.edge.covisibility.reparent` leaves (and so what
-:func:`~slam_it.edge.covisibility.cull` leaves), and the strong links, computed from point sets
-by the rules alone. Every backend is held to it; the C++ and Rust native tests hold their
-cores to the same file.
+:func:`~slam_it.edge.covisibility.cull` leaves), the strong links, and the keyframes fusion and
+local BA take (:func:`~slam_it.edge.mapping.fuse_targets`,
+:func:`~slam_it.edge.mapping.local_ba_keyframes`), computed from point sets by the rules
+alone. Every backend is held to it; the C++ and Rust native tests hold their cores to the same
+file.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ import numpy as np
 import pytest
 
 from slam_it import backends
-from slam_it.edge import covisibility
+from slam_it.edge import covisibility, mapping
 from slam_it.edge import map as maps
 from slam_it.edge.map import Map
 from slam_it.edge.options import Options
@@ -141,6 +143,21 @@ def test_a_culled_keyframe_leaves_after_its_children(case: dict[str, Any], backe
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("case", CASES, ids=NAMES)
+def test_the_stages_take_the_graphs_keyframes(case: dict[str, Any], backend: str) -> None:
+    """Fusion's targets, monocular and not, and local BA's keyframes, for the newest keyframe."""
+    chosen = require_function(backend, mapping.__name__, "fuse_targets")
+    chosen = require_function(chosen, mapping.__name__, "local_ba_keyframes")
+    m = fixture_map(case)
+    fusion = {f"mapping.{name}": value for name, value in case["fusion"].items()}
+    options = fixture_options(case).with_settings(fusion)
+    for mode, key in (("monocular", "monocular"), ("rgbd", "other"), ("stereo", "other")):
+        got = mapping.fuse_targets(m, mode, options, backend=chosen)
+        assert got.tolist() == case["fuse_targets"][key], mode
+    assert mapping.local_ba_keyframes(m, options, backend=chosen).tolist() == case["local_ba"]
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_a_parent_is_not_erased(backend: str) -> None:
     """``map.erase_keyframe`` refuses a keyframe that is still a parent: ``cull`` it instead."""
     case = next(c for c in CASES if c["name"] == "repair")
@@ -167,6 +184,33 @@ def test_a_bad_row_or_point_is_refused(backend: str) -> None:
         covisibility.links(m, m.keyframes, options, backend=chosen)
     with pytest.raises(InvalidInputError, match="points: "):
         covisibility.local_map(m, np.array([3, -2]), options, backend=chosen)
+
+
+def test_the_golden_record_keeps_one_tree_a_map() -> None:
+    """Every map of every run the golden record holds ends as one tree, rooted at its first.
+
+    Its keyframes not culled (a reset map's among them) each have a parent of the same map,
+    alive too, but its first, which has none, and each chain of parents reaches the first.
+    """
+    for name, case in load_fixture("edge/room_runs.json")["cases"].items():
+        parents = np.array(case["keyframe_parents"], dtype=np.int64)
+        why = np.array(case["keyframe_lives"][2], dtype=np.int64)
+        in_map = np.array(case["keyframe_maps"], dtype=np.int64)
+        for number in np.unique(in_map):
+            ids = np.flatnonzero(in_map == number)
+            alive = {int(k) for k in ids if why[k] != maps.Removal.CULLED}
+            root = int(ids.min())
+            assert root in alive, name
+            for k in alive:
+                parent = int(parents[k])
+                assert (parent == -1) == (k == root), f"{name}: keyframe {k}"
+                assert parent == -1 or parent in alive, f"{name}: keyframe {k}"
+                row = k
+                for _ in range(len(alive)):
+                    if row == root:
+                        break
+                    row = int(parents[row])
+                assert row == root, f"{name}: keyframe {k}'s chain of parents"
 
 
 @pytest.mark.parametrize("mode", ["monocular", "stereo", "rgbd"])

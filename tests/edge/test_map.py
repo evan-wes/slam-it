@@ -231,8 +231,13 @@ def _observed_row(m: Map) -> int:
 
 
 def test_a_map_checks_its_structure(truth: Truth) -> None:
-    """A map with unsorted ids, bad offsets or a dangling observation is refused."""
+    """A map with unsorted ids, bad offsets, a dangling observation or parent is refused."""
     m = truth.map
+    for parent in (m.kf_id[1], m.next_kf_id + 5, -2):  # itself, a keyframe not in the map, below -1
+        parents = m.kf_parent.copy()
+        parents[1] = parent
+        with pytest.raises(InvalidInputError, match="kf_parent"):
+            replace(m, kf_parent=parents)
     with pytest.raises(InvalidInputError, match="pt_id"):
         replace(m, pt_id=m.pt_id[::-1].copy())
     with pytest.raises(InvalidInputError, match="kf_start"):
