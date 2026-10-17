@@ -30,6 +30,7 @@ CLANG_VERSION="23.1.2"
 RUST_VERSION="1.99.0"   # pinned: a new release adds clippy lints, and CI builds its env afresh
 JSCPD_VERSION="5.4.0"
 EIGEN_VERSION="5.0.1"
+GTSAM_VERSION="4.3.0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -55,8 +56,13 @@ fi
 # manifpy is a test-only Lie-group oracle, packaged for conda-forge only.
 # nlohmann_json lets the native C++ tests read the shared parity fixtures (test-only);
 # benchmark is Google Benchmark, for the native C++ benchmarks (cpp/bench/).
+# GTSAM is rung 0's factor-graph back end (slam_it.foundations.graphs, from milestone 2B's B3):
+# conda-forge's build, made against this Eigen, gives the C++ library, the Python bindings over
+# the same library, and what the Rust bridge links; its CMake package needs Boost's and TBB's
+# headers (libboost-devel, tbb-devel).
 CONDA_PACKAGES=(cmake ninja cxx-compiler "rust=${RUST_VERSION}" "clang-tools=${CLANG_VERSION}" "clang=${CLANG_VERSION}"
-  "eigen=${EIGEN_VERSION}" doxygen nodejs manifpy nlohmann_json benchmark)
+  "eigen=${EIGEN_VERSION}" doxygen nodejs manifpy nlohmann_json benchmark
+  "gtsam=${GTSAM_VERSION}" libboost-devel tbb-devel)
 
 # --- conda layer ---------------------------------------------------------------
 if "${CONDA_BIN}" env list | awk '{print $1}' | grep -qx "${ENV_NAME}"; then
