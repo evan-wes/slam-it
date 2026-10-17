@@ -16,7 +16,13 @@ Python builds them on GTSAM's official bindings, C++ on the library they wrap, a
 a bridge (``rust/slam-it-foundations``). The two factors GTSAM lacks, a point's reprojection
 through rung 0's camera models (radtan's ``k3`` and a stereo right column among them) and a
 match's reprojection through a similarity, are each language's own: here GTSAM's
-``CustomFactor`` calls back into Python for the residual and its Jacobians.
+``CustomFactor`` calls back into Python for the residual and its Jacobians. Bundle adjustment
+through a pinhole camera takes GTSAM's own factors instead (``GenericProjectionFactorCal3_S2``,
+and ``GenericStereoFactor3D`` with a right column), which model it exactly: GTSAM's Python
+wrapper copies the whole of a problem's values on every call into a ``CustomFactor``, so a map's
+bundle adjustment through them took minutes where GTSAM's own take under a second (decided with
+evan-wes on 2026-10-17). A point behind its camera then costs GTSAM's constant error of twice
+the focal length, with no gradient, where the ``CustomFactor`` costs none.
 
 **Conventions.**
 
@@ -61,6 +67,9 @@ POSE_DIM = 6
 
 SIMILARITY_DIM = 7
 """A similarity's tangent dimension, ``(ω, v, λ)``."""
+
+STEREO_DIMENSION = 3
+"""A stereo observation's length: ``(u, v, u_r)``, the right column after the pixel."""
 
 
 class Termination(enum.StrEnum):
@@ -892,6 +901,30 @@ def refine_similarity(  # noqa: PLR0913, PLR0917 -- the matches, their camera an
 # --- bundle adjustment --------------------------------------------------------------------
 
 
+def _pinhole_factors(
+    intrinsics: Array, bf: float
+) -> Callable[[Array, gtsam.noiseModel.Base, int, int], gtsam.NonlinearFactor]:
+    """Return a builder of GTSAM's own projection factors for a pinhole camera.
+
+    A measurement ``(u, v)`` makes a ``GenericProjectionFactorCal3_S2``; ``(u, v, u_r)`` a
+    ``GenericStereoFactor3D``, its baseline ``bf / fx``.
+    """
+    fx, fy, cx, cy = (float(x) for x in intrinsics)
+    mono = gtsam.Cal3_S2(fx, fy, 0.0, cx, cy)
+    stereo = gtsam.Cal3_S2Stereo(fx, fy, 0.0, cx, cy, bf / fx) if bf > 0.0 else None
+
+    def build(
+        measured: Array, noise: gtsam.noiseModel.Base, pose: int, point: int
+    ) -> gtsam.NonlinearFactor:
+        if measured.shape[0] == STEREO_DIMENSION:
+            u, v, u_right = (float(x) for x in measured)
+            observed = gtsam.StereoPoint2(u, u_right, v)
+            return gtsam.GenericStereoFactor3D(observed, noise, pose, point, stereo)
+        return gtsam.GenericProjectionFactorCal3_S2(measured, noise, pose, point, mono)
+
+    return build
+
+
 def _bundle(  # noqa: PLR0913, PLR0917 -- the problem, its camera and the solve
     poses: Array,
     points: Array,
@@ -916,11 +949,15 @@ def _bundle(  # noqa: PLR0913, PLR0917 -- the problem, its camera and the solve
         values.insert(first_point + p, np.asarray(point, dtype=np.float64))
     for c in fixed:
         graph.add(gtsam.NonlinearEqualityPose3(int(c), gtsam.Pose3(poses[c])))
+    builtin = _pinhole_factors(intrinsics, bf) if model == "pinhole" else None
     for m in range(cameras.shape[0]):
         stereo = not math.isnan(right[m])
         measured = np.append(pixels[m], right[m]) if stereo else pixels[m]
         c, p = int(cameras[m]), int(point_ids[m])
         noise = gtsam.noiseModel.Isotropic.Precision(measured.shape[0], float(information[m]))
+        if builtin is not None:
+            graph.add(builtin(measured, noise, c, first_point + p))
+            continue
 
         def evaluate(
             values: gtsam.Values, c: int = c, p: int = p, measured: Array = measured

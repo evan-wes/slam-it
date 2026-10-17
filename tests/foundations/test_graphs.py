@@ -269,10 +269,14 @@ def _scene(seed: int) -> tuple[Array, Array]:
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
-def test_bundle_adjustment_recovers_a_stereo_scene(backend: str) -> None:
-    """Stereo observations fix the scale: perturbed cameras and points return to the truth."""
+@pytest.mark.parametrize("lens", [RADTAN, PINHOLE], ids=["radtan", "pinhole"])
+def test_bundle_adjustment_recovers_a_stereo_scene(backend: str, lens: tuple[str, Array]) -> None:
+    """Stereo observations fix the scale: perturbed cameras and points return to the truth.
+
+    Through radtan, Python's factors are its own; through a pinhole camera, GTSAM's.
+    """
     chosen = require_function(backend, graphs.__name__, "bundle_adjust")
-    name, intrinsics = RADTAN
+    name, intrinsics = lens
     poses, points = _scene(5)
     cameras, ids, pixels, right = [], [], [], []
     for c, pose in enumerate(poses):
