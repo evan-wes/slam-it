@@ -1040,6 +1040,18 @@ shared with the owner's other projects.
     stands in for ORB-SLAM's threads, local mapping's and loop closing's, is decided in B3's
     design (decided with evan-wes on 2026-10-16;
     [the test-set note](../notes/test-set.md#b2-the-covisibility-graph)).
+- **Deferred from milestone 2B's B2 review panel**
+  ([report](../reviews/2026-10-16-feature-2b-b2-covisibility.md)):
+  - **Every fixture states its oracle and tolerance (A4).** CLAUDE.md asks it of every parity
+    fixture; B2's covisibility fixture states both now, but others state one or neither (among
+    them `foundations/svd3.json`, `eval/png.json` and most of rung 0's, which give their oracle
+    alone). A test over `tests/fixtures/**/*.json` would hold them to it, a contract the import
+    and layer checks cannot express.
+  - **The graph through time (A7).** The run records each keyframe's last parent and a map's
+    strong links when it closed or the run ended, and the viewer draws them through the run
+    while both their keyframes live: the graph as each map ended, not as it grew. A life for
+    each link (made, removed), as points and keyframes have, would show it growing; the toggle
+    says which it is meanwhile.
 - **Deferred from milestone 2B's B1 review panel**
   ([report](../reviews/2026-10-16-feature-2b-b1-place-recognition.md)):
   - **One native `.npy` module, with B4 (run 2, A21).** `slam_it_eval` and `slam-it-eval` write

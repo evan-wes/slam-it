@@ -189,7 +189,16 @@ Each gets its own section here before its PR, its forks put to the owner then.
   From B2's latency (section 9), decided with evan-wes on 2026-10-16: B3's design also decides
   how the edge rung stands in for ORB-SLAM's threads, local mapping's refusal of a keyframe
   while busy and its interrupted local BA with loop closing's own, measured together; B4's
-  merging runs in loop closing's, as ORB-SLAM3's does.
+  merging runs in loop closing's, as ORB-SLAM3's does. From B2's review panel, for that design:
+  - a local BA with no keyframe held fixed, which ORB-SLAM3 abandons ("0 fixed KF ... LBA
+    aborted"): none of B2's 78,917 at seed 0 had none, but 15,113 had one, nearly all monocular
+    (L5);
+  - ORB-SLAM3's culling tests every keyframe sharing a point with the new one, stopping after
+    100 (L4); B2's tests the new one's links;
+  - the papers' K2, which B2 builds, makes a larger local map than ORB-SLAM's source does (its
+    `break`), so ORB-SLAM's timings are not B2's to compare with (L6);
+  - two measures across a run-format break are compared by each batch's own summary, written by
+    the code that ran it, not by reading the other's runs, which a newer reader refuses (A9).
 - **B4, merging maps:** the atlas the A2 panel deferred (`edge.atlas`: a kept map's descriptors
   and observations kept whole, the pipeline owning the trajectory record), and maps welded where
   the database recognises one in another. With it, the loss window revisited: B1 relocalises a

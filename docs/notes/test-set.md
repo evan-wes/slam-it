@@ -339,7 +339,11 @@ frame's reference keyframe, the one sharing the most of its points.
 - latency from runs made alone, pinned to CPU 2, at 986d4c0, on the five sequences whose maps
   grow largest;
 - the ladder's L15 by the same program, on TUM and EuRoC (below);
-- compared by `scripts/compare_testsets.py`. Measured 2026-10-16.
+- compared by `scripts/compare_testsets.py`, by group and run by run. Its sections that read the
+  runs (how failures ended, the relocalised frames against the ground truth) read B2's alone:
+  B1's runs are run format 5, which 0.3.11.0 does not read, so B1's stretches are its own
+  section's, above, and the losses' first frames and the latency before B2 are read from the
+  runs' diagnostics directly. Measured 2026-10-16.
 
 **Seed 0,** per dataset and mode, B1 then B2:
 

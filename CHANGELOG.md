@@ -27,7 +27,12 @@ no longer read.
   `covisibility.strong_points` (100). Held to a brute-force fixture in the three languages.
 - **The spanning tree:** each keyframe's parent (`Map.kf_parent`), the keyframe it shares the
   most points with when inserted; a culled keyframe's children given new parents as ORB-SLAM's
-  `SetBadFlag` gives them. Kept for B3's essential graph.
+  `SetBadFlag` gives them, by `covisibility.cull`, the one way a keyframe leaves the map:
+  `map.erase_keyframe` refuses one that is still a parent, and `cull` the map's first. Kept for
+  B3's essential graph.
+- **What the stages take from the graph,** public in the three languages and held to the
+  fixture's brute force: `mapping.fuse_targets`, fusion's targets, and
+  `mapping.local_ba_keyframes`, the newest keyframe and its links.
 - **The run format, version 6:** `keyframe_parents.npy` and `keyframe_links.npy`, each
   keyframe's last parent and each map's strong links, written by every language.
 - **The viewer draws the graph** on a "graph" toggle: each keyframe's line to its parent and the
@@ -57,8 +62,12 @@ no longer read.
   a run's record, which nests them by group: 97 in all.
 - **The ladder:** L15 closed; PR 9's item on mapping in a thread of its own, left for milestone
   7, is decided in B3's design.
-- **The comments** name every setting `group.field`, as the code does, and none describes the
-  window.
+- **The comments, docstrings and errors** name every setting `group.field`, as the code does
+  (the vocabulary's errors say `relocalization.enabled`), and none describes the window.
+- **Culling keyframes refuses a map without any** in the three languages, where Rust panicked and
+  C++ read out of bounds; the Python reference counts the keyframes it is asked about, not
+  every pair (`covisibility.links` from 194 to 3 ms at 500 keyframes on the panel's synthetic
+  map); the viewer refuses a bundle whose graph names a keyframe the run has not.
 - **The golden record** is regenerated: every room keeps its states, the frames tracked and
   lost; 12 cases make more keyframes. It gains each keyframe's last parent and the strong links.
 
@@ -66,8 +75,13 @@ no longer read.
 
 - The covisibility graph's fixture (`tests/fixtures/edge/covisibility.json`), by brute force:
   5 cases, ties, the kept best link, a tree repaired in rounds, and the local map at its cap.
-- The room's last map, in each mode, is one spanning tree; the run format's writers refuse a
+- The room's last map, in each mode, and every map of the golden record are one tree, each
+  chain of parents reaching the first keyframe; the run format's writers and readers refuse a
   bad parent or link in the three languages.
+- B2's seven settings moved off their defaults in the gap room's whole runs, where the natives
+  must decide as Python does; the keyframe decision decides both ways for one frame against two
+  reference keyframes; a culled keyframe's children, culling an empty map, a bad parent,
+  reference keyframe or point id, each refused or held in the three languages.
 
 ## [0.3.10.0] - 2026-10-16
 
