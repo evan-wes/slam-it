@@ -1,8 +1,8 @@
-// The 3D panel: one map of the run at a time, the map of the frame shown: its trajectory as
-// tracked, the other backends' beside it, the truth if the map is placed on it (over the frames
-// its trajectory is drawn over, or whole), its keyframes and points alive at the frame, the
-// covisibility graph if asked (each keyframe's line to its parent, and the strong links), and
-// the camera. Every point and keyframe sits in one buffer with the frames of its life and its map;
+// The 3D panel: one map of the run at a time, the map of the frame shown: its final trajectory,
+// the other backends' beside it, the truth if the map is placed on it (over the frames its
+// trajectory is drawn over, or whole), its keyframes and points alive at the frame, the
+// covisibility graph if asked (each keyframe's line to its parent, the strong links, and the
+// loops closed), and the camera. Every point and keyframe sits in one buffer with the frames of its life and its map;
 // a shader hides each outside them, so scrubbing changes two numbers and rebuilds nothing.
 
 import * as THREE from "three";
@@ -144,7 +144,7 @@ export class SceneView {
     this.follow = true;
     /** Whether the truth is drawn whole, rather than over the frames the trajectory is. */
     this.wholeTruth = false;
-    /** Whether the covisibility graph is drawn: the spanning tree and the strong links. */
+    /** Whether the covisibility graph is drawn: the spanning tree, the strong links, the loops. */
     this.graph = false;
     /** @type {THREE.Object3D[]} The graph's lines, shown with `graph`. */
     this.graphObjects = [];
@@ -229,7 +229,8 @@ export class SceneView {
     const points = livingMaterial("--point", 2);
     const tree = livingMaterial("--graph-tree", 1);
     const links = livingMaterial("--graph-link", 1);
-    this.living = [keyframes, points, tree, links];
+    const loops = livingMaterial("--graph-loop", 1);
+    this.living = [keyframes, points, tree, links, loops];
     const frames = mapFrustums(
       run.keyframePoses,
       run.keyframeMaps,
@@ -247,13 +248,15 @@ export class SceneView {
     this.graphObjects = [
       graphLine(run, treePairs(run.keyframeParents), tree, this.graph),
       graphLine(run, linkPairs(run.keyframeLinks), links, this.graph),
+      graphLine(run, run.keyframeLoops, loops, this.graph),
     ];
     this.runObjects.push(...this.graphObjects);
     this.scene.add(...this.runObjects);
   }
 
   /**
-   * Draw the covisibility graph, or not: the spanning tree and the strong links of the map shown.
+   * Draw the covisibility graph, or not: the spanning tree, the strong links and the loops closed
+   * of the map shown.
    * @param {boolean} shown Whether to draw it.
    */
   showGraph(shown) {

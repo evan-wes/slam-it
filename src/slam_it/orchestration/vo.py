@@ -680,6 +680,11 @@ def _read_vocabulary(request: Request) -> Vocabulary | None:
     return None if request.vocabulary is None else vocabularies.read(request.vocabulary)
 
 
+def _world_cam(poses: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Return ``T_cam_world`` poses as ``T_world_cam``, the run format's (none for none)."""
+    return se3.inverse(poses) if len(poses) else np.zeros((0, 4, 4))
+
+
 def _run_here(request: Request, words: Vocabulary | None) -> runs.Run:
     """Run the request with the Python pipeline, in-process, with its vocabulary as read."""
     source = open_source(request.dataset, request.sequence, request.mode)
@@ -688,9 +693,6 @@ def _run_here(request: Request, words: Vocabulary | None) -> runs.Run:
     end = len(source.times)
     if request.count is not None:
         end = min(end, request.first + request.count)
-    times: list[float] = []
-    poses: list[NDArray[np.float64]] = []
-    pose_maps: list[int] = []
     diagnostics: list[dict[str, object]] = []
     recording: contextlib.AbstractContextManager[runs.FeatureWriter | None] = (
         runs.FeatureWriter(request.out) if request.record_features else contextlib.nullcontext()
@@ -716,20 +718,14 @@ def _run_here(request: Request, words: Vocabulary | None) -> runs.Run:
                     "build_seconds": after_build - after_read,
                     "track_seconds": result.track_seconds,
                     "map_seconds": result.map_seconds,
+                    "loop_seconds": result.loop_seconds,
                     **result.summary.as_dict(),
                 }
             )
             if features is not None:
                 keypoints = frame.features.keypoints
                 features.write(keypoints.xy, keypoints.level, result.fates.fate, result.fates.point)
-            if result.pose is not None and result.map is not None:
-                poses.append(se3.inverse(result.pose))
-                times.append(result.timestamp)
-                pose_maps.append(result.map)
-            lost = result.summary.lost
-            if lost is not None and lost.reset:  # its frames' poses go with it
-                while pose_maps and pose_maps[-1] == result.map:
-                    del poses[-1], times[-1], pose_maps[-1]
+    trajectory = tracker.trajectory()  # a reset map's frames left out
     lives = tracker.lifetimes()
     keyframes = lives.keyframe_poses
     return runs.Run(
@@ -737,10 +733,11 @@ def _run_here(request: Request, words: Vocabulary | None) -> runs.Run:
         sequence=request.sequence.resolve().name,
         mode=request.mode,
         backend="python",
-        timestamps=np.array(times),
-        poses=np.array(poses).reshape(-1, 4, 4),
+        timestamps=trajectory.timestamps,
+        poses=_world_cam(trajectory.poses),
+        tracked_poses=_world_cam(trajectory.tracked),
         keyframe_timestamps=lives.keyframe_times,
-        keyframe_poses=se3.inverse(keyframes) if len(keyframes) else np.zeros((0, 4, 4)),
+        keyframe_poses=_world_cam(keyframes),
         points=lives.points,
         settings=request.options.as_dict(),
         vocabulary=None if request.vocabulary is None else vocabularies.record(request.vocabulary),
@@ -749,8 +746,9 @@ def _run_here(request: Request, words: Vocabulary | None) -> runs.Run:
         keyframe_lives=lives.keyframe_lives,
         keyframe_parents=lives.keyframe_parents,
         keyframe_links=lives.keyframe_links,
+        keyframe_loops=lives.keyframe_loops,
         record_features=request.record_features,
-        pose_maps=np.array(pose_maps, dtype=np.int64),
+        pose_maps=trajectory.maps,
         keyframe_maps=lives.keyframe_maps,
         point_maps=lives.point_maps,
     )

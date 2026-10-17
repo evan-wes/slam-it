@@ -328,6 +328,12 @@
    120
   ]
  ],
+ "keyframe_loops": [
+  [
+   1,
+   2
+  ]
+ ],
  "settings": {
   "features": {
    "n_features": 1000,
@@ -530,6 +536,7 @@
    "build_seconds": 0.0125,
    "track_seconds": 0.005,
    "map_seconds": 0.0,
+   "loop_seconds": 0.0,
    "placed_by": "initialization",
    "init": {
     "matches": null,
@@ -540,6 +547,7 @@
    "pnp": null,
    "local_map": null,
    "mapping": null,
+   "loop": null,
    "lost": null
   },
   {
@@ -552,6 +560,7 @@
    "build_seconds": 0.025,
    "track_seconds": 0.01,
    "map_seconds": 0.0,
+   "loop_seconds": 0.0,
    "placed_by": "motion",
    "init": null,
    "motion": {
@@ -566,6 +575,7 @@
     "inliers": 291
    },
    "mapping": null,
+   "loop": null,
    "lost": null
   },
   {
@@ -578,6 +588,7 @@
    "build_seconds": 0.037500000000000006,
    "track_seconds": 0.015,
    "map_seconds": 0.0,
+   "loop_seconds": 0.0,
    "placed_by": null,
    "init": null,
    "motion": {
@@ -595,6 +606,7 @@
    },
    "local_map": null,
    "mapping": null,
+   "loop": null,
    "lost": {
     "keyframes": 1,
     "points": 2,
@@ -611,6 +623,7 @@
    "build_seconds": 0.05,
    "track_seconds": 0.02,
    "map_seconds": 0.0,
+   "loop_seconds": 0.0,
    "placed_by": "initialization",
    "init": {
     "matches": null,
@@ -621,6 +634,7 @@
    "pnp": null,
    "local_map": null,
    "mapping": null,
+   "loop": null,
    "lost": null
   },
   {
@@ -633,6 +647,7 @@
    "build_seconds": 0.0625,
    "track_seconds": 0.025,
    "map_seconds": 0.0625,
+   "loop_seconds": 0.1328125,
    "placed_by": "motion",
    "init": null,
    "motion": {
@@ -669,6 +684,79 @@
     "weak_points": 1,
     "culled_keyframes": 0
    },
+   "loop": {
+    "detection": {
+     "outcome": "closed",
+     "confirmation": null,
+     "sharing": 1,
+     "scored": 1,
+     "candidates": [
+      {
+       "keyframe": 0,
+       "score": 0.125,
+       "near": false,
+       "matches": 64,
+       "best": 0,
+       "inliers": 40,
+       "projected": 90,
+       "refined": 35,
+       "reprojected": 120,
+       "confirmations": 3
+      }
+     ],
+     "confirmations": 3
+    },
+    "correction": {
+     "current": 1,
+     "matched": 0,
+     "similarity": [
+      [
+       1.0,
+       0.0,
+       0.0,
+       0.5
+      ],
+      [
+       0.0,
+       1.0,
+       0.0,
+       0.0
+      ],
+      [
+       0.0,
+       0.0,
+       1.0,
+       0.25
+      ],
+      [
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     ],
+     "corrected": 2,
+     "moved": 3,
+     "replaced": 1,
+     "fused": 1,
+     "links": 1,
+     "edges": 2,
+     "essential": {
+      "initial_error": 0.5,
+      "final_error": 0.0625,
+      "iterations": 4,
+      "termination": "function"
+     },
+     "global_ba": {
+      "initial_error": 0.5,
+      "final_error": 0.0625,
+      "iterations": 10,
+      "termination": "max_iterations"
+     }
+    },
+    "detection_seconds": 0.0078125,
+    "correction_seconds": 0.125
+   },
    "lost": null
   },
   {
@@ -681,6 +769,7 @@
    "build_seconds": 0.07500000000000001,
    "track_seconds": 0.03,
    "map_seconds": 0.0,
+   "loop_seconds": 0.0,
    "placed_by": "motion",
    "init": null,
    "motion": {
@@ -695,7 +784,140 @@
     "inliers": 295
    },
    "mapping": null,
+   "loop": null,
    "lost": null
   }
+ ],
+ "tracked_poses": [
+  [
+   [
+    -0.009060342020773549,
+    0.9246999224772839,
+    0.38058896932645236,
+    1.3176003783884627
+   ],
+   [
+    0.36375690580374054,
+    -0.35148080065821774,
+    0.8626367487237872,
+    -0.09736673976940957
+   ],
+   [
+    0.9314498503314899,
+    0.1462576498483507,
+    -0.3331814463295968,
+    2.906664090532286
+   ],
+   [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ]
+  ],
+  [
+   [
+    -0.6622418958910565,
+    0.308511216615799,
+    -0.6828297742108631,
+    -1.5951959281854309
+   ],
+   [
+    0.19361071331634733,
+    0.9508103689984122,
+    0.2418150820239267,
+    -0.5754209301355372
+   ],
+   [
+    0.723844294731784,
+    0.02793691871597105,
+    -0.6893975381134627,
+    0.6929519279335747
+   ],
+   [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ]
+  ],
+  [
+   [
+    0.31510164326751955,
+    -0.9309942333804482,
+    0.18428426905859424,
+    0.41310303313370805
+   ],
+   [
+    0.24742145676031524,
+    0.2680453897339522,
+    0.9310930628981063,
+    -3.1592377426702996
+   ],
+   [
+    -0.9162388210203234,
+    -0.24779307184569388,
+    0.31480949223389454,
+    0.7418261785812903
+   ],
+   [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ]
+  ],
+  [
+   [
+    0.761450722902303,
+    0.46402466516927393,
+    0.45262998873926097,
+    -0.1739689546535942
+   ],
+   [
+    0.39736145689091124,
+    0.2175514264016407,
+    -0.8915016822463905,
+    -0.5033113758600395
+   ],
+   [
+    -0.5121490692846106,
+    0.8586923121730826,
+    -0.018730826083023455,
+    -0.21967923784709587
+   ],
+   [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ]
+  ],
+  [
+   [
+    -0.0030218592317488024,
+    0.8208128677573987,
+    0.5711892020081074,
+    0.4639203781660909
+   ],
+   [
+    0.14316586678213206,
+    0.5656628520370099,
+    -0.8121139528501382,
+    -3.6303014507435614
+   ],
+   [
+    -0.9896940956453687,
+    0.07932070315643264,
+    -0.11922173918990087,
+    3.059842276432571
+   ],
+   [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ]
+  ]
  ]
 }

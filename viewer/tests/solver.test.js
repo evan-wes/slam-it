@@ -105,6 +105,61 @@ test("values read as the panel shows them", () => {
   assert.equal(valueText("candidates", 641), "641");
 });
 
+test("loop closing's search and correction read as the panel shows them", () => {
+  const candidate = {
+    keyframe: 0,
+    score: 0.125,
+    near: false,
+    matches: 64,
+    best: 0,
+    inliers: 40,
+    projected: 90,
+    refined: 35,
+    reprojected: 120,
+    confirmations: 3,
+  };
+  const near = { ...candidate, keyframe: 7, near: true, matches: null, best: null };
+  const unreached = { inliers: null, projected: null, refined: null, reprojected: null };
+  const detection = {
+    outcome: "confirmed",
+    confirmation: { matched: 2, projected: 210, refined: 120, reprojected: null, confirmed: true },
+    sharing: 4,
+    scored: 2,
+    candidates: [candidate, { ...near, ...unreached, confirmations: null }],
+    confirmations: 2,
+  };
+  assert.equal(
+    valueText("detection", detection),
+    "confirmed, 2 confirmations; carried to keyframe 2's loop: 210 projected, 120 refined; " +
+      "keyframe 0 (score 0.125): 64 matches, 40 inliers, 90 projected, 35 refined, " +
+      "120 reprojected, 3 confirmations; keyframe 7 (score 0.125): linked: not tried",
+  );
+  const solve = { initial_error: 0.5, final_error: 0.0625, iterations: 4, termination: "function" };
+  const correction = {
+    current: 9,
+    matched: 2,
+    similarity: [
+      [0, -1.5, 0, 0.5],
+      [1.5, 0, 0, 0],
+      [0, 0, 1.5, 0.25],
+      [0, 0, 0, 1],
+    ],
+    corrected: 3,
+    moved: 30,
+    replaced: 4,
+    fused: 12,
+    links: 5,
+    edges: 40,
+    essential: solve,
+    global_ba: null,
+  };
+  assert.equal(
+    valueText("correction", correction),
+    "keyframe 2, scale 1.500; 30 moved, 4 replaced, 12 fused, 5 new links; essential graph " +
+      "(40 edges) 0.5000 → 0.06250 in 4 (function); global BA none",
+  );
+});
+
 test("a series is a number per frame, NaN where its stage did not run", async () => {
   const columns = await records();
   const inliers = series(columns, "local_map.inliers");

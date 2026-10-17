@@ -90,6 +90,20 @@ export const STAGES = [
       culled_keyframes: "redundant keyframes culled",
     },
   },
+  {
+    stage: "loop",
+    title: "Loop closing",
+    hints: {
+      detection:
+        "the search for a loop: what came of it, the loop being confirmed carried to the " +
+        "keyframe, the candidates tried as far as each got, and the confirmations it has",
+      correction:
+        "the loop corrected: the keyframe it matched and the scale it found, the points moved, " +
+        "replaced and fused, the links new across it, the essential graph's solve and global BA's",
+      detection_seconds: "the search's time, in seconds",
+      correction_seconds: "the correction's time, global BA included, in seconds",
+    },
+  },
 ];
 
 /** What `placed_by` means. */
@@ -137,15 +151,89 @@ function candidateText(candidate) {
 }
 
 /**
+ * The counts a loop candidate or confirmation reached, as shown: each that is not null.
+ * @param {Record<string, unknown>} record The record.
+ * @param {string[]} names The counts, in order.
+ * @returns {string[]} Each as "<count> <name>".
+ */
+function counts(record, names) {
+  return names.filter((name) => record[name] !== null).map((name) => `${record[name]} ${name}`);
+}
+
+/**
+ * A loop search, as shown: what came of it, the loop carried, the candidates tried.
+ * @param {unknown} detection A detection's record.
+ * @returns {string} The text.
+ */
+function detectionText(detection) {
+  const d =
+    /** @type {{outcome: string, confirmation: Record<string, unknown> | null,
+     *   candidates: Record<string, unknown>[], confirmations: number}} */ (detection);
+  const said = [`${d.outcome}, ${d.confirmations} confirmations`];
+  if (d.confirmation !== null) {
+    const carried = counts(d.confirmation, ["projected", "refined", "reprojected"]);
+    said.push(`carried to keyframe ${d.confirmation.matched}'s loop: ${carried.join(", ")}`);
+  }
+  for (const c of d.candidates) {
+    const reached = c.near
+      ? ["linked: not tried"]
+      : counts(c, ["matches", "inliers", "projected", "refined", "reprojected", "confirmations"]);
+    const score = /** @type {number} */ (c.score).toPrecision(3);
+    said.push(`keyframe ${c.keyframe} (score ${score}): ${reached.join(", ")}`);
+  }
+  return said.join("; ");
+}
+
+/**
+ * A graph solve, as shown: error before → after, iterations, and why it stopped.
+ * @param {unknown} solve A solve's record.
+ * @returns {string} The text.
+ */
+function graphSolveText(solve) {
+  const s =
+    /** @type {{initial_error: number, final_error: number, iterations: number,
+     *   termination: string}} */ (solve);
+  const errors = `${s.initial_error.toPrecision(4)} → ${s.final_error.toPrecision(4)}`;
+  return `${errors} in ${s.iterations} (${s.termination})`;
+}
+
+/**
+ * A loop's correction, as shown.
+ * @param {unknown} correction A correction's record.
+ * @returns {string} The text.
+ */
+function correctionText(correction) {
+  const c =
+    /** @type {{matched: number, similarity: number[][], moved: number, replaced: number,
+     *   fused: number, links: number, edges: number, essential: unknown,
+     *   global_ba: unknown}} */ (correction);
+  const [x, y, z] = c.similarity.slice(0, 3).map((row) => row[0]);
+  const scale = Math.hypot(x, y, z).toPrecision(4);
+  const ba = c.global_ba === null ? "none" : graphSolveText(c.global_ba);
+  return (
+    `keyframe ${c.matched}, scale ${scale}; ${c.moved} moved, ${c.replaced} replaced, ` +
+    `${c.fused} fused, ${c.links} new links; essential graph (${c.edges} edges) ` +
+    `${graphSolveText(c.essential)}; global BA ${ba}`
+  );
+}
+
+/**
  * A field's value, as shown.
  * @param {string} field The field.
  * @param {unknown} value Its value.
- * @returns {string} The text: none for null, each solve on its own for `ba`, and each
- *     relocalisation candidate for a list of `candidates`.
+ * @returns {string} The text: none for null, each solve on its own for `ba`, each
+ *     relocalisation candidate for a list of `candidates`, and loop closing's search and
+ *     correction for `detection` and `correction`.
  */
 export function valueText(field, value) {
   if (value === null || value === undefined) {
     return "–";
+  }
+  if (field === "detection") {
+    return detectionText(value);
+  }
+  if (field === "correction") {
+    return correctionText(value);
   }
   if (field === "ba") {
     const solves = /** @type {unknown[]} */ (value);

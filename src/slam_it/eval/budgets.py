@@ -23,7 +23,8 @@ ORB-SLAM's tracking thread does. The clock starts with the frame's images decode
 camera delivers them, so reading them is reported but not held to the deadline. Mapping a
 keyframe runs after tracking in the same thread here, so a run stays deterministic; it is
 judged as ORB-SLAM's local-mapping thread would be, by its load: its total time over the
-sequence's, which must stay below 1 for a thread of its own to keep up.
+sequence's, which must stay below 1 for a thread of its own to keep up. Closing loops on a
+keyframe runs after mapping it, and is reported the same way, as its own thread's load.
 
 The budgeted runs are tests marked ``budget``, outside layer 1: ``python -m pytest -m budget``.
 """
@@ -350,6 +351,12 @@ class Frames:
         Mapping's largest load over any window of ``window`` seconds that starts at a frame:
         below 1, a mapping thread of its own would keep up there too. On a run no longer than
         the judgement's window it is the run's own load, ``mapping_load``.
+    searched : int
+        The keyframes loop closing ran on.
+    looping : Spread or None
+        Loop closing's time per keyframe it ran on, a correction's included; None if none.
+    loop_load : float
+        Loop closing's total time over the sequence's, as ``mapping_load``.
     """
 
     count: int
@@ -364,6 +371,9 @@ class Frames:
     mapping_load: float
     window: float
     mapping_peak_load: float
+    searched: int
+    looping: Spread | None
+    loop_load: float
 
 
 def _number(entry: dict[str, object], key: str, k: int) -> float:
@@ -405,7 +415,7 @@ def judge(run: runs.Run, *, window: float = WINDOW) -> Frames:
     """Judge a run's frames against their real-time deadline.
 
     The split is the edge pipeline's, as ORB-SLAM's threads divide the work: building and
-    tracking a frame hold its deadline, and mapping is judged by its load.
+    tracking a frame hold its deadline, and mapping and loop closing are judged by their loads.
 
     Parameters
     ----------
@@ -437,6 +447,7 @@ def judge(run: runs.Run, *, window: float = WINDOW) -> Frames:
     deadline = float(np.median(np.diff(times)))
     latency = steps["build"] + steps["track"]
     mapped = steps["map"][steps["map"] > 0.0]
+    looped = steps["loop"][steps["loop"] > 0.0]
     # The busiest window: mapping's time over [t_i, t_i + width), for each frame i, the width
     # no longer than the run, whose load a shorter run's window would otherwise dilute.
     length = times[-1] - times[0] + deadline
@@ -457,4 +468,7 @@ def judge(run: runs.Run, *, window: float = WINDOW) -> Frames:
         mapping_load=float(np.sum(mapped) / length),
         window=float(width),
         mapping_peak_load=float(np.max(windows) / width),
+        searched=len(looped),
+        looping=_spread(looped) if len(looped) else None,
+        loop_load=float(np.sum(looped) / length),
     )
