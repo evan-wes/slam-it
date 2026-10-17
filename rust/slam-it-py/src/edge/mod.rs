@@ -7,6 +7,7 @@
 use pyo3::prelude::*;
 
 mod adjust;
+mod covisibility;
 mod database;
 mod edge_crossing;
 mod frames;
@@ -31,6 +32,7 @@ pub fn edge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_wrapped(pyo3::wrap_pymodule!(initialization::initialization))?;
     m.add_wrapped(pyo3::wrap_pymodule!(tracking::tracking))?;
     m.add_wrapped(pyo3::wrap_pymodule!(mapping::mapping))?;
+    m.add_wrapped(pyo3::wrap_pymodule!(covisibility::covisibility))?;
     m.add_wrapped(pyo3::wrap_pymodule!(database::database))?;
     m.add_wrapped(pyo3::wrap_pymodule!(relocalization::relocalization))?;
     Ok(())

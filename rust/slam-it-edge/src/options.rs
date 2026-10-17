@@ -359,13 +359,26 @@ impl Default for MappingOptions {
 /// The covisibility graph (`Options.covisibility`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CovisibilityOptions {
-    /// Keyframes observing at least this many of the same points are covisible.
+    /// Keyframes observing at least this many of the same points are linked; one sharing this
+    /// many with none is linked to the one it shares most with.
     pub min_points: usize,
+    /// Tracking's local map stops adding K1's neighbours once it holds more than this many
+    /// keyframes.
+    pub local_keyframes: usize,
+    /// Of a K1 keyframe's best this many links, the first not yet in the local map joins.
+    pub local_neighbours: usize,
+    /// Keyframes sharing at least this many points are strongly linked.
+    pub strong_points: usize,
 }
 
 impl Default for CovisibilityOptions {
     fn default() -> Self {
-        Self { min_points: 15 }
+        Self {
+            min_points: 15,
+            local_keyframes: 80,
+            local_neighbours: 10,
+            strong_points: 100,
+        }
     }
 }
 
@@ -632,7 +645,12 @@ named_settings!(
     adjustment: AdjustmentOptions { chi2_mono: Real, chi2_stereo: Real, pose_rounds: Integer, iterations: Integer, refine_iterations: Integer, min_keyframes: Integer },
     keyframes: KeyframeOptions { ref_ratio: Real, mono_ref_ratio: Real, first_ref_ratio: Real, ref_min_observations: Integer, ref_min_observations_early: Integer, min_inliers: Integer, close_tracked: Integer, close_untracked: Integer },
     mapping: MappingOptions { window: Integer, min_new_points: Integer, triangulation_neighbours: Integer, mono_triangulation_neighbours: Integer, epipolar_chi2: Real, min_epipole_distance2: Real, min_baseline_depth: Real, max_parallax_cos: Real, scale_ratio: Real, fuse_window: Real, found_ratio: Real, recent_point_keyframes: Integer, point_cull_age: Integer, min_point_observations: Integer, min_point_observations_depth: Integer, redundant_fraction: Real, redundant_observers: Integer },
-    covisibility: CovisibilityOptions { min_points: Integer },
+    covisibility: CovisibilityOptions {
+        min_points: Integer,
+        local_keyframes: Integer,
+        local_neighbours: Integer,
+        strong_points: Integer,
+    },
     relocalization: RelocalizationOptions { enabled: Flag, ratio: Real, common_words: Real, neighbours: Integer, group_score: Real, min_matches: Integer, inlier_ratio: Real, min_inliers: Integer, confidence: Real, ransac_iterations: Integer, window: Real, narrow_inliers: Integer, narrow_window: Real, narrow_distance: Integer },
     loss: LossOptions { relocalize_seconds: Real, lost_frames: Integer, reset_keyframes: Integer },
 );
@@ -786,6 +804,18 @@ fn check_counts(options: &Options) -> Result<()> {
             options.initialization.ransac_iterations,
         ),
         ("covisibility.min_points", options.covisibility.min_points),
+        (
+            "covisibility.local_keyframes",
+            options.covisibility.local_keyframes,
+        ),
+        (
+            "covisibility.local_neighbours",
+            options.covisibility.local_neighbours,
+        ),
+        (
+            "covisibility.strong_points",
+            options.covisibility.strong_points,
+        ),
         (
             "relocalization.neighbours",
             options.relocalization.neighbours,
@@ -956,7 +986,7 @@ mod tests {
     fn settings_by_name() {
         let mut options = Options::default();
         let settings = options.settings();
-        assert_eq!(settings.len(), 92);
+        assert_eq!(settings.len(), 95);
         assert_eq!(settings[0], ("features.n_features", Setting::Integer(1000)));
         assert_eq!(settings[2], ("features.scale_factor", Setting::Real(1.2)));
         options.set("mapping.window", Setting::Integer(7)).unwrap();

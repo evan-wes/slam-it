@@ -28,7 +28,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slam_it import backends
-from slam_it.edge import adjust, frames
+from slam_it.edge import adjust, covisibility, frames
 from slam_it.edge import map as maps
 from slam_it.edge.frames import Camera, Frame, Tracked
 from slam_it.edge.map import Map
@@ -398,7 +398,7 @@ def _initialize_monocular(
     )
     second = int(m.kf_start[1])
     observers = np.column_stack([pairs[good, 0], second + pairs[good, 1]]).astype(np.int64)
-    m = maps.add_points(m, xyz, observers)
+    m = covisibility.adopt(maps.add_points(m, xyz, observers), 1)  # the second keyframe's parent
     adjusted = adjust.bundle_adjust(
         m,
         camera,

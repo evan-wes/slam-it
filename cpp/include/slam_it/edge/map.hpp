@@ -55,6 +55,9 @@ struct Map {
   std::vector<double> kf_time;
   /// @brief Its pose `T_cam_world`.
   std::vector<Eigen::Matrix4d> kf_pose;
+  /// @brief Its parent in the spanning tree, another keyframe's id, or -1 (the map's first, and
+  ///        one that has shared no point yet; `slam_it/edge/covisibility.hpp`).
+  std::vector<std::int64_t> kf_parent;
   /// @brief Where each keyframe's keypoints start; the last is the keypoint count.
   std::vector<std::int64_t> kf_start{0};
   /// @brief Each keypoint's pixel.
@@ -109,6 +112,8 @@ struct Map {
   std::vector<double> gone_kf_time;
   /// @brief Their last poses `T_cam_world`.
   std::vector<Eigen::Matrix4d> gone_kf_pose;
+  /// @brief Their last parents.
+  std::vector<std::int64_t> gone_kf_parent;
   /// @brief Each point's observing keypoint rows, ascending: the index of `kp_point` the
   ///        operations here keep. It does not cross to Python; `index_observations` builds it
   ///        for a map assembled column by column.

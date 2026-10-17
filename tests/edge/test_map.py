@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import fields, replace
 from typing import Any
 
 import numpy as np
@@ -21,7 +21,7 @@ from tests.edge.support import assert_maps_match
 
 FUNCTIONS = sorted(protocol_members(maps))
 
-_GONE = ("gone_pt_id", "gone_pt_xyz", "gone_pt_how", "gone_kf_id", "gone_kf_time", "gone_kf_pose")
+_GONE = tuple(item.name for item in fields(Map) if item.name.startswith("gone_"))
 """The map's archive of removed points and keyframes."""
 """Every compiled map operation."""
 
@@ -153,6 +153,7 @@ def test_what_is_removed_is_kept_aside_until_cleared(truth: Truth) -> None:
     np.testing.assert_array_equal(culled.gone_kf_id, [m.kf_id[1]])
     np.testing.assert_array_equal(culled.gone_kf_time, [m.kf_time[1]])
     np.testing.assert_array_equal(culled.gone_kf_pose, m.kf_pose[[1]])
+    np.testing.assert_array_equal(culled.gone_kf_parent, m.kf_parent[[1]])
     weak = culled.gone_pt_id[2:]
     assert len(weak) == fused.points - culled.points
     assert np.all(culled.gone_pt_how[2:] == Removal.WEAK)

@@ -43,7 +43,10 @@ fn an_erased_keyframe_leaves_the_index_and_the_candidates() {
         (vec![0, 1], vec![0, 1, 2])
     );
     let options = Options {
-        covisibility: CovisibilityOptions { min_points: 1 },
+        covisibility: CovisibilityOptions {
+            min_points: 1,
+            ..CovisibilityOptions::default()
+        },
         ..Options::default()
     };
     let frame = BowVector {

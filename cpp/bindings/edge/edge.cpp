@@ -21,6 +21,9 @@ void bind_edge(nanobind::module_& parent) {
   bind_tracking(tracking);
   nanobind::module_ mapping = edge.def_submodule("mapping", "Local mapping around each keyframe.");
   bind_mapping(mapping);
+  nanobind::module_ covisibility =
+      edge.def_submodule("covisibility", "The covisibility graph and the spanning tree.");
+  bind_covisibility(covisibility);
   nanobind::module_ database =
       edge.def_submodule("database", "The keyframe database: place recognition's index.");
   bind_database(database);

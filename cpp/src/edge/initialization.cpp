@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "slam_it/edge/adjust.hpp"
+#include "slam_it/edge/covisibility.hpp"
 #include "slam_it/foundations/triangulation.hpp"
 #include "slam_it/foundations/twoview.hpp"
 
@@ -344,6 +345,9 @@ Result<Initialization> initialize_monocular(const Camera& camera, const Frame& r
   }
   const std::vector<Eigen::Vector3d>& xyz = kept->second;
   if (auto ok = add_points(m, xyz, observers); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  if (auto ok = adopt(m, 1); !ok) {  // the second keyframe's parent
     return std::unexpected(std::move(ok.error()));
   }
   Options adjusted = options;

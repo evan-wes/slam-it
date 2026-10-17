@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "slam_it/edge/adjust.hpp"
+#include "slam_it/edge/covisibility.hpp"
 #include "slam_it/edge/residuals.hpp"
 #include "slam_it/foundations/correspondences.hpp"
 #include "slam_it/foundations/matching.hpp"
@@ -838,6 +839,22 @@ Result<void> fuse_points(Map& m, const Camera& camera, const Options& options) {
   return refresh_points(m, observed_by(m, newest));
 }
 
+namespace {
+
+/// @brief Cull a keyframe: its children given new parents, then it erased (`SetBadFlag`).
+/// @param m The map.
+/// @param k The keyframe's row.
+/// @param options The settings.
+/// @return Nothing, or the error.
+Result<void> cull(Map& m, std::int64_t k, const Options& options) {
+  if (auto ok = reparent(m, k, options); !ok) {
+    return ok;
+  }
+  return erase_keyframe(m, k);
+}
+
+}  // namespace
+
 Result<void> cull_keyframes(Map& m, const Camera& camera, Mode mode, const Options& options) {
   if (auto ok = check_setup(camera, options); !ok) {
     return ok;
@@ -872,7 +889,7 @@ Result<void> cull_keyframes(Map& m, const Camera& camera, Mode mode, const Optio
     }
     if (static_cast<double>(*count) >
         options.mapping.redundant_fraction * static_cast<double>(rows.size())) {
-      if (auto ok = erase_keyframe(m, static_cast<std::int64_t>(k)); !ok) {
+      if (auto ok = cull(m, static_cast<std::int64_t>(k), options); !ok) {
         return ok;
       }
     }
@@ -883,6 +900,11 @@ Result<void> cull_keyframes(Map& m, const Camera& camera, Mode mode, const Optio
 Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame, const Tracked& tracked,
                        Mode mode, const Options& options) {
   if (auto ok = insert_keyframe(m, frame, tracked.pose, tracked.points); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  // Its parent, as ORB-SLAM's first UpdateConnections sets it (after fusion if it shares none).
+  const auto newest = static_cast<std::int64_t>(keyframe_count(m)) - 1;
+  if (auto ok = adopt(m, newest); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   const auto points = [&m] { return static_cast<std::int64_t>(point_count(m)); };
@@ -911,6 +933,9 @@ Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame, const T
     }
   }
   if (auto ok = fuse_points(m, camera, options); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  if (auto ok = adopt(m, newest); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   const std::int64_t fused = points();

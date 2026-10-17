@@ -384,11 +384,24 @@ class CovisibilityOptions:
     Attributes
     ----------
     min_points : int
-        Two keyframes that observe at least this many of the same points are covisible
-        (``UpdateConnections``' 15).
+        Two keyframes that observe at least this many of the same points are linked
+        (``UpdateConnections``' 15); one that shares this many with none is linked to the one it
+        shares most with.
+    local_keyframes : int
+        Tracking's local map stops adding K1's neighbours once it holds more than this many
+        keyframes (``UpdateLocalKeyFrames``' 80).
+    local_neighbours : int
+        Of a K1 keyframe's best this many links, the first not yet in the local map joins it
+        (``GetBestCovisibilityKeyFrames(10)``).
+    strong_points : int
+        Two keyframes sharing at least this many points are strongly linked, the essential
+        graph's links (``GetCovisiblesByWeight(100)``).
     """
 
     min_points: int = 15
+    local_keyframes: int = 80
+    local_neighbours: int = 10
+    strong_points: int = 100
 
 
 @dataclass(frozen=True)

@@ -64,6 +64,9 @@ pub struct Map {
     pub kf_time: Vec<f64>,
     /// Its pose `T_cam_world`.
     pub kf_pose: Vec<Matrix4<f64>>,
+    /// Its parent in the spanning tree, another keyframe's id, or -1 (the map's first, and one
+    /// that has shared no point yet; [`crate::covisibility`]).
+    pub kf_parent: Vec<i64>,
     /// Where each keyframe's keypoints start; the last is the keypoint count.
     pub kf_start: Vec<usize>,
     /// Each keypoint's pixel.
@@ -118,6 +121,8 @@ pub struct Map {
     pub gone_kf_time: Vec<f64>,
     /// Their last poses `T_cam_world`.
     pub gone_kf_pose: Vec<Matrix4<f64>>,
+    /// Their last parents.
+    pub gone_kf_parent: Vec<i64>,
     /// Each point's observing keypoint rows, ascending: the index of `kp_point` the operations
     /// here keep. It does not cross to Python; `index_observations` builds it for a map
     /// assembled column by column.
@@ -143,6 +148,7 @@ impl Map {
             kf_id: Vec::new(),
             kf_time: Vec::new(),
             kf_pose: Vec::new(),
+            kf_parent: Vec::new(),
             kf_start: vec![0],
             kp_xy: Vec::new(),
             kp_level: Vec::new(),
@@ -170,6 +176,7 @@ impl Map {
             gone_kf_id: Vec::new(),
             gone_kf_time: Vec::new(),
             gone_kf_pose: Vec::new(),
+            gone_kf_parent: Vec::new(),
             pt_observations: Vec::new(),
         }
     }
@@ -382,6 +389,7 @@ pub fn check_map(m: &Map) -> Result<()> {
     let lengths = [
         m.kf_time.len() == k,
         m.kf_pose.len() == k,
+        m.kf_parent.len() == k,
         m.kf_start.len() == k + 1,
         m.kp_xy.len() == t,
         m.kp_level.len() == t,
@@ -403,6 +411,7 @@ pub fn check_map(m: &Map) -> Result<()> {
         m.gone_pt_how.len() == m.gone_pt_id.len(),
         m.gone_kf_time.len() == m.gone_kf_id.len(),
         m.gone_kf_pose.len() == m.gone_kf_id.len(),
+        m.gone_kf_parent.len() == m.gone_kf_id.len(),
     ];
     if lengths.contains(&false) {
         return fail(
@@ -432,6 +441,16 @@ pub fn check_map(m: &Map) -> Result<()> {
         return fail(
             ErrorKind::InvalidInput,
             "map.kp_point: every observed point must be in the map",
+        );
+    }
+    if m.kf_parent
+        .iter()
+        .zip(&m.kf_id)
+        .any(|(&parent, &id)| parent == id || (parent != -1 && m.keyframe_row(parent).is_none()))
+    {
+        return fail(
+            ErrorKind::InvalidInput,
+            "map.kf_parent: a parent must be -1 or another of its keyframes",
         );
     }
     if m.pt_observations != indexed(m) {
@@ -497,6 +516,7 @@ pub fn clear_gone(m: &mut Map) {
     m.gone_kf_id.clear();
     m.gone_kf_time.clear();
     m.gone_kf_pose.clear();
+    m.gone_kf_parent.clear();
 }
 
 /// Builds `pt_observations` from `kp_point`, for a map assembled column by column.
@@ -892,6 +912,7 @@ pub fn insert_keyframe(
     m.next_kf_id += 1;
     m.kf_time.push(frame.timestamp);
     m.kf_pose.push(*pose);
+    m.kf_parent.push(-1);
     m.kf_start.push(first + n);
     for (i, k) in frame.features.keypoints.iter().enumerate() {
         m.kp_xy.push(k.xy);
@@ -1093,9 +1114,11 @@ pub fn erase_keyframe(m: &mut Map, k: usize) -> Result<()> {
     m.gone_kf_id.push(m.kf_id[k]);
     m.gone_kf_time.push(m.kf_time[k]);
     m.gone_kf_pose.push(m.kf_pose[k]);
+    m.gone_kf_parent.push(m.kf_parent[k]);
     m.kf_id.remove(k);
     m.kf_time.remove(k);
     m.kf_pose.remove(k);
+    m.kf_parent.remove(k);
     m.kf_start.remove(k + 1);
     for start_of in &mut m.kf_start[k + 1..] {
         *start_of -= stop - start;

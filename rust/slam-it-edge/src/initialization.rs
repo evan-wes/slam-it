@@ -9,6 +9,7 @@ use slam_it_foundations::triangulation;
 use slam_it_foundations::twoview::{self, Status};
 
 use crate::adjust::{Solve, bundle_adjust};
+use crate::covisibility;
 use crate::frames::{Camera, Frame, Tracked, check_camera, search};
 use crate::map::{self, Map};
 use crate::options::{Options, check_options};
@@ -510,6 +511,7 @@ pub fn initialize_monocular(
         .map(|&i| vec![pairs[i][0], second + pairs[i][1]])
         .collect();
     map::add_points(&mut m, &xyz, &observers)?;
+    covisibility::adopt(&mut m, 1)?; // the second keyframe's parent
     let mut adjusted = *options;
     adjusted.adjustment.iterations = options.initialization.ba_iterations;
     let adjustment = bundle_adjust(&mut m, camera, &[0, 1], &[true, false], &adjusted)?;

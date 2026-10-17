@@ -93,7 +93,7 @@ foundations::Result<void> check_options(const Options& options) {
       return ok;
     }
   }
-  const std::array<IntSetting, 40> counts{{
+  const std::array<IntSetting, 43> counts{{
       {"features.n_features", options.features.n_features},
       {"features.levels", options.features.levels},
       {"features.fast_threshold", options.features.fast_threshold},
@@ -129,6 +129,9 @@ foundations::Result<void> check_options(const Options& options) {
       {"initialization.ba_iterations", options.initialization.ba_iterations},
       {"initialization.ransac_iterations", options.initialization.ransac_iterations},
       {"covisibility.min_points", options.covisibility.min_points},
+      {"covisibility.local_keyframes", options.covisibility.local_keyframes},
+      {"covisibility.local_neighbours", options.covisibility.local_neighbours},
+      {"covisibility.strong_points", options.covisibility.strong_points},
       {"relocalization.neighbours", options.relocalization.neighbours},
       {"relocalization.min_matches", options.relocalization.min_matches},
       {"relocalization.min_inliers", options.relocalization.min_inliers},

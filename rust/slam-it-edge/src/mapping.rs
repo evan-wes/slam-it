@@ -11,6 +11,7 @@ use slam_it_foundations::orb::{self, Keypoint};
 use slam_it_foundations::triangulation;
 
 use crate::adjust::{Adjustment, Solve, bundle_adjust};
+use crate::covisibility;
 use crate::frames::{Camera, Frame, Tracked, check_setup};
 use crate::map::{self, Map, Removal};
 use crate::options::{Mode, Options, check_options};
@@ -1095,6 +1096,7 @@ pub fn cull_keyframes(m: &mut Map, camera: &Camera, mode: Mode, options: &Option
         }
         let count = redundant(m, k, &rows, options.mapping.redundant_observers)?;
         if count as f64 > options.mapping.redundant_fraction * rows.len() as f64 {
+            covisibility::reparent(m, k, options)?;
             map::erase_keyframe(m, k)?;
         }
     }
@@ -1163,6 +1165,9 @@ pub fn process(
     options: &Options,
 ) -> Result<Mapped> {
     map::insert_keyframe(m, frame, &tracked.pose, &tracked.points)?;
+    // Its parent, as ORB-SLAM's first UpdateConnections sets it (after fusion if it shares none).
+    let newest = m.keyframes() - 1;
+    covisibility::adopt(m, newest)?;
     let start = m.points();
     let first = m.next_pt_id;
     if mode != Mode::Monocular {
@@ -1181,6 +1186,7 @@ pub fn process(
         }
     }
     fuse_points(m, camera, options)?;
+    covisibility::adopt(m, newest)?;
     let fused = m.points();
     let mut adjustment = Adjustment::default();
     if m.keyframes() >= options.adjustment.min_keyframes {

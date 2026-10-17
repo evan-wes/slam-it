@@ -33,7 +33,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slam_it import backends
-from slam_it.edge import adjust, residuals
+from slam_it.edge import adjust, covisibility, residuals
 from slam_it.edge import map as maps
 from slam_it.edge.frames import Camera, Frame, Tracked, as_pose, checked_tracked
 from slam_it.edge.map import Map, Removal
@@ -928,7 +928,7 @@ def _cull_keyframes(m: Map, camera: Camera, mode: str, options: Options) -> Map:
         if len(rows) and _redundant(m, k, rows, options.mapping.redundant_observers) > (
             options.mapping.redundant_fraction * len(rows)
         ):
-            m = maps.erase_keyframe(m, k)
+            m = maps.erase_keyframe(covisibility.reparent(m, k, options), k)
     return m
 
 
@@ -981,6 +981,8 @@ def _process(  # noqa: PLR0913 -- the stage's state
 ) -> Mapped:
     """Insert a keyframe and run local mapping on it (reference)."""
     m = maps.insert_keyframe(m, frame, tracked.pose, tracked.points)
+    # Its parent, as ORB-SLAM's first UpdateConnections sets it (after fusion if it shares none).
+    m = covisibility.adopt(m, m.keyframes - 1)
     start, first = m.points, m.next_pt_id
     if mode != "monocular":
         m = _create_points_from_depth(m, camera, options)
@@ -991,7 +993,7 @@ def _process(  # noqa: PLR0913 -- the stage's state
     triangulated = m.points
     # Taken before fusion, which may replace a new point; a depth point culled since stays made.
     made = np.where(from_depth >= 0, from_depth, _made_since(m, first))
-    m = _fuse_points(m, camera, options)
+    m = covisibility.adopt(_fuse_points(m, camera, options), m.keyframes - 1)
     fused = m.points
     solves: tuple[adjust.Solve, ...] = ()
     outliers = 0

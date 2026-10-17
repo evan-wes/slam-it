@@ -220,8 +220,16 @@ struct MappingOptions {
 
 /// @brief The covisibility graph (`Options.covisibility`).
 struct CovisibilityOptions {
-  /// @brief Keyframes observing at least this many of the same points are covisible.
+  /// @brief Keyframes observing at least this many of the same points are linked; one sharing
+  ///        this many with none is linked to the one it shares most with.
   std::int64_t min_points{15};
+  /// @brief Tracking's local map stops adding K1's neighbours once it holds more than this many
+  ///        keyframes.
+  std::int64_t local_keyframes{80};
+  /// @brief Of a K1 keyframe's best this many links, the first not yet in the local map joins.
+  std::int64_t local_neighbours{10};
+  /// @brief Keyframes sharing at least this many points are strongly linked.
+  std::int64_t strong_points{100};
 };
 
 /// @brief Relocalising a failed frame against the whole map (`Options.relocalization`).
@@ -383,6 +391,9 @@ constexpr void for_each_setting(Settings& options, Visit visit) {
   visit("mapping.redundant_fraction", options.mapping.redundant_fraction);
   visit("mapping.redundant_observers", options.mapping.redundant_observers);
   visit("covisibility.min_points", options.covisibility.min_points);
+  visit("covisibility.local_keyframes", options.covisibility.local_keyframes);
+  visit("covisibility.local_neighbours", options.covisibility.local_neighbours);
+  visit("covisibility.strong_points", options.covisibility.strong_points);
   visit("relocalization.enabled", options.relocalization.enabled);
   visit("relocalization.ratio", options.relocalization.ratio);
   visit("relocalization.common_words", options.relocalization.common_words);

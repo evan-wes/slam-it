@@ -31,12 +31,13 @@ use slam_it_foundations::{nls, ransac};
 use crate::common::{by_name, contiguous, encode, item_array, to_i64, unwrap};
 
 /// The map's fields, as the dict's keys.
-const MAP_KEYS: [&str; 32] = [
+const MAP_KEYS: [&str; 34] = [
     "levels",
     "scale_factor",
     "kf_id",
     "kf_time",
     "kf_pose",
+    "kf_parent",
     "kf_start",
     "kp_xy",
     "kp_level",
@@ -64,6 +65,7 @@ const MAP_KEYS: [&str; 32] = [
     "gone_kf_id",
     "gone_kf_time",
     "gone_kf_pose",
+    "gone_kf_parent",
 ];
 
 /// The frame's fields, as the dict's keys.
@@ -241,6 +243,7 @@ pub fn map_in(py: Python<'_>, values: &Bound<'_, PyDict>) -> PyResult<Map> {
         kf_id: vector(&get("kf_id")?)?,
         kf_time: vector(&get("kf_time")?)?,
         kf_pose: poses(&get("kf_pose")?)?,
+        kf_parent: vector(&get("kf_parent")?)?,
         kf_start: indices(&get("kf_start")?)?,
         kp_xy: rows::<f64, 2>(&get("kp_xy")?)?,
         kp_level: indices(&get("kp_level")?)?,
@@ -268,6 +271,7 @@ pub fn map_in(py: Python<'_>, values: &Bound<'_, PyDict>) -> PyResult<Map> {
         gone_kf_id: vector(&get("gone_kf_id")?)?,
         gone_kf_time: vector(&get("gone_kf_time")?)?,
         gone_kf_pose: poses(&get("gone_kf_pose")?)?,
+        gone_kf_parent: vector(&get("gone_kf_parent")?)?,
         pt_observations: Vec::new(),
     };
     index_observations(&mut m);
@@ -397,6 +401,7 @@ pub fn map_dict<'py>(py: Python<'py>, m: &Map) -> PyResult<Bound<'py, PyDict>> {
     out.set_item("kf_id", vector_array(py, &m.kf_id))?;
     out.set_item("kf_time", vector_array(py, &m.kf_time))?;
     out.set_item("kf_pose", poses_array(py, &m.kf_pose)?)?;
+    out.set_item("kf_parent", vector_array(py, &m.kf_parent))?;
     out.set_item("kf_start", indices_array(py, &m.kf_start))?;
     out.set_item("kp_xy", rows_array(py, &m.kp_xy)?)?;
     out.set_item("kp_level", indices_array(py, &m.kp_level))?;
@@ -424,6 +429,7 @@ pub fn map_dict<'py>(py: Python<'py>, m: &Map) -> PyResult<Bound<'py, PyDict>> {
     out.set_item("gone_kf_id", vector_array(py, &m.gone_kf_id))?;
     out.set_item("gone_kf_time", vector_array(py, &m.gone_kf_time))?;
     out.set_item("gone_kf_pose", poses_array(py, &m.gone_kf_pose)?)?;
+    out.set_item("gone_kf_parent", vector_array(py, &m.gone_kf_parent))?;
     Ok(out)
 }
 

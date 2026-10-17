@@ -1,0 +1,160 @@
+"""The covisibility graph and the spanning tree, held to the brute-force fixture.
+
+``tests/fixtures/edge/covisibility.json`` (``generate_covisibility.py``) gives, for small maps
+of hand-picked and seeded points, each keyframe's links, tracking's local map for some frames,
+the parent :func:`~slam_it.edge.covisibility.adopt` gives, the parents
+:func:`~slam_it.edge.covisibility.reparent` leaves, and the strong links, computed from point
+sets by the rules alone. Every backend is held to it; the C++ and Rust native tests hold their
+cores to the same file.
+"""
+
+from __future__ import annotations
+
+from dataclasses import replace
+from typing import Any
+
+import numpy as np
+import pytest
+
+from slam_it import backends
+from slam_it.edge import covisibility
+from slam_it.edge import map as maps
+from slam_it.edge.map import Map
+from slam_it.edge.options import Options
+from slam_it.foundations.errors import InvalidInputError
+from slam_it.foundations.orb import DESCRIPTOR_BYTES
+from tests.conftest import load_fixture, require_function
+from tests.edge.conftest import Run
+
+CASES: list[dict[str, Any]] = load_fixture("edge/covisibility.json")["cases"]
+NAMES = [case["name"] for case in CASES]
+
+
+def fixture_map(case: dict[str, Any]) -> Map:
+    """Build a case's map: one keypoint per entry of each keyframe's points, the rest blank."""
+    keyframes = case["keyframes"]
+    observed = np.array([p for k in keyframes for p in k["points"]], dtype=np.int64)
+    points = np.unique(observed[observed >= 0])
+    t, p = len(observed), len(points)
+    sizes = [len(k["points"]) for k in keyframes]
+    return replace(
+        maps.empty(8, 1.2),
+        kf_id=np.array([k["id"] for k in keyframes], dtype=np.int64),
+        kf_time=np.zeros(len(keyframes)),
+        kf_pose=np.tile(np.eye(4), (len(keyframes), 1, 1)),
+        kf_parent=np.array([k["parent"] for k in keyframes], dtype=np.int64),
+        kf_start=np.concatenate([[0], np.cumsum(sizes)]).astype(np.int64),
+        kp_xy=np.zeros((t, 2)),
+        kp_level=np.zeros(t, dtype=np.int64),
+        kp_angle=np.zeros(t, dtype=np.int64),
+        kp_descriptor=np.zeros((t, DESCRIPTOR_BYTES), dtype=np.uint8),
+        kp_bearing=np.tile([0.0, 0.0, 1.0], (t, 1)),
+        kp_depth=np.full(t, np.nan),
+        kp_right=np.full(t, np.nan),
+        kp_point=observed,
+        pt_id=points,
+        pt_xyz=np.zeros((p, 3)),
+        pt_descriptor=np.zeros((p, DESCRIPTOR_BYTES), dtype=np.uint8),
+        pt_normal=np.tile([0.0, 0.0, 1.0], (p, 1)),
+        pt_min_distance=np.ones(p),
+        pt_max_distance=np.ones(p),
+        pt_visible=np.ones(p, dtype=np.int64),
+        pt_found=np.ones(p, dtype=np.int64),
+        pt_first_kf=np.zeros(p, dtype=np.int64),
+        pt_reference_kf=np.zeros(p, dtype=np.int64),
+        next_kf_id=int(max(k["id"] for k in keyframes)) + 1,
+        next_pt_id=int(points.max()) + 1 if p else 0,
+    )
+
+
+def fixture_options(case: dict[str, Any]) -> Options:
+    """Return the settings a case is read with."""
+    return Options().with_settings(
+        {f"covisibility.{name}": value for name, value in case["settings"].items()}
+    )
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("case", CASES, ids=NAMES)
+def test_links_rank_the_shared_points(case: dict[str, Any], backend: str) -> None:
+    """Each keyframe's links: at least min_points, or its best, most shared first, ties by id."""
+    chosen = require_function(backend, covisibility.__name__, "links")
+    m, options = fixture_map(case), fixture_options(case)
+    for k, (rows, weights) in enumerate(case["links"]):
+        got = covisibility.links(m, k, options, backend=chosen)
+        assert (got[0].tolist(), got[1].tolist()) == (rows, weights), f"keyframe row {k}"
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("case", CASES, ids=NAMES)
+def test_the_local_map_is_k1_then_k2(case: dict[str, Any], backend: str) -> None:
+    """K1 most shared first; K2 a neighbour, a child and the parent of each, to the cap."""
+    chosen = require_function(backend, covisibility.__name__, "local_map")
+    m, options = fixture_map(case), fixture_options(case)
+    for expected in case["local_maps"]:
+        got = covisibility.local_map(m, np.array(expected["points"]), options, backend=chosen)
+        assert got.keyframes.tolist() == expected["keyframes"]
+        assert got.reference == expected["reference"]
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("case", CASES, ids=NAMES)
+def test_a_keyframe_adopts_the_one_it_shares_most_with(case: dict[str, Any], backend: str) -> None:
+    """With its parent unset, a keyframe takes the one it shares most with; the first, none."""
+    chosen = require_function(backend, covisibility.__name__, "adopt")
+    m = fixture_map(case)
+    for k, parent in enumerate(case["adopted"]):
+        orphan = m.kf_parent.copy()
+        orphan[k] = -1
+        orphan[orphan == m.kf_id[k]] = -1  # its children too, so the map stays a forest
+        got = covisibility.adopt(replace(m, kf_parent=orphan), k, backend=chosen)
+        assert int(got.kf_parent[k]) == parent, f"keyframe row {k}"
+        np.testing.assert_array_equal(np.delete(got.kf_parent, k), np.delete(orphan, k))
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("case", CASES, ids=NAMES)
+def test_a_culled_keyframes_children_get_new_parents(case: dict[str, Any], backend: str) -> None:
+    """SetBadFlag's rounds: the strongest link to a candidate first; the rest, its parent."""
+    chosen = require_function(backend, covisibility.__name__, "reparent")
+    m, options = fixture_map(case), fixture_options(case)
+    for k, parents in enumerate(case["reparented"]):
+        got = covisibility.reparent(m, k, options, backend=chosen)
+        assert got.kf_parent.tolist() == parents, f"keyframe row {k}"
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("case", CASES, ids=NAMES)
+def test_strong_links_share_strong_points(case: dict[str, Any], backend: str) -> None:
+    """Every pair sharing at least strong_points, by id."""
+    chosen = require_function(backend, covisibility.__name__, "strong_links")
+    got = covisibility.strong_links(fixture_map(case), fixture_options(case), backend=chosen)
+    assert got.reshape(-1, 3).tolist() == case["strong_links"]
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_a_bad_row_or_point_is_refused(backend: str) -> None:
+    """A keyframe row out of range, and a point id below -1."""
+    chosen = require_function(backend, covisibility.__name__, "links")
+    m, options = fixture_map(CASES[0]), fixture_options(CASES[0])
+    with pytest.raises(InvalidInputError, match="k: "):
+        covisibility.links(m, m.keyframes, options, backend=chosen)
+    with pytest.raises(InvalidInputError, match="points: "):
+        covisibility.local_map(m, np.array([3, -2]), options, backend=chosen)
+
+
+@pytest.mark.parametrize("mode", ["monocular", "stereo", "rgbd"])
+def test_the_room_keeps_a_spanning_tree(mode: str, runs: dict[str, Run]) -> None:
+    """The room's last map, run through the pipeline, is one tree rooted at its first keyframe.
+
+    Each keyframe but the first has a parent, one of the map's, which is among its links.
+    """
+    m = runs[mode].pipeline.map
+    assert m is not None
+    assert m.kf_id[0] == 0
+    assert m.kf_parent[0] == -1
+    rows = m.keyframe_rows(m.kf_parent[1:])
+    assert np.all(rows >= 0)
+    every = Options().with_settings({"covisibility.min_points": 1})
+    for k, parent in enumerate(rows, start=1):
+        assert parent in covisibility.links(m, k, every)[0].tolist(), f"keyframe row {k}"
