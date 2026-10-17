@@ -18,7 +18,8 @@ A1).
 Per room, dataset and mode: each frame's state, map, tracked inliers and keyframe flag; the
 tracked frames' times, ``T_world_cam`` and maps; the final map's keyframes' times and its number
 of points; every point's and keyframe's life (the run format's ``*_lives.npy``), as three
-columns each, and map;
+columns each, and map; each keyframe's last parent and the strong links (``keyframe_parents``
+and ``keyframe_links``, the links as three columns);
 each frame's count of keypoints of each fate (:data:`slam_it.eval.runs.FATES`), a column per
 fate; and each frame's stage summaries (:class:`slam_it.edge.pipeline.FrameSummary`), one
 line per frame.
@@ -115,8 +116,9 @@ def record(run: runs.Run, features: runs.Features) -> dict[str, Any]:
         Each frame's state (one string), map (null before one), tracked inliers and keyframe
         flag (0 or 1); the tracked frames' times, ``T_world_cam`` (a row of 16 each) and maps;
         the final map's keyframes' times and number of points; the lives of every point and
-        keyframe, as columns (made, removed, why), and their maps; each frame's count of
-        keypoints of each fate, a column per fate; each frame's stage summaries. Columns of
+        keyframe, as columns (made, removed, why), and their maps; each keyframe's last parent,
+        and the strong links as columns (the two keyframes, the points shared); each frame's
+        count of keypoints of each fate, a column per fate; each frame's stage summaries. Columns of
         numbers, and one summary per frame, so the record lays out one line per column or
         frame and a changed decision shows as a changed line.
     """
@@ -132,6 +134,8 @@ def record(run: runs.Run, features: runs.Features) -> dict[str, Any]:
         "points": len(run.final_points()),
         "point_lives": run.point_lives.T.tolist(),
         "keyframe_lives": run.keyframe_lives.T.tolist(),
+        "keyframe_parents": run.keyframe_parents.tolist(),
+        "keyframe_links": run.keyframe_links.T.tolist(),
         "point_maps": run.point_maps.tolist(),
         "keyframe_maps": run.keyframe_maps.tolist(),
         "fates": fate_counts(run, features),

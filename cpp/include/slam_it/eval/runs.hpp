@@ -27,7 +27,7 @@ inline constexpr const char* kFormat = "slam-it-run";
 /// @brief `run.json`'s `version` (2 added `peak_memory`, `cpus` and `memory_cap`; 3 every point
 ///        and keyframe the run made, with their lives; 4 the maps, and the removal `reset`; 5 the
 ///        `vocabulary` a relocalising run used).
-inline constexpr std::int64_t kVersion = 5;
+inline constexpr std::int64_t kVersion = 6;
 
 /// @brief The number of removal codes a life may hold (`slam_it.eval.runs.REMOVALS`).
 inline constexpr std::int64_t kRemovals = 4;
@@ -105,6 +105,12 @@ struct Run {
   std::vector<Life> point_lives;
   /// @brief Each keyframe's life, by id.
   std::vector<Life> keyframe_lives;
+  /// @brief Each keyframe's parent in its map's spanning tree, the last it had, by id: a
+  ///        keyframe of the same map, or -1.
+  std::vector<std::int64_t> keyframe_parents;
+  /// @brief The strong links: two keyframes of the same map, the lower id first, and the points
+  ///        they share, ascending.
+  std::vector<std::array<std::int64_t, 3>> keyframe_links;
   /// @brief Whether the run recorded its features (`FeatureWriter` streams them).
   bool record_features{false};
   /// @brief The map each tracked frame's pose is in, never descending.

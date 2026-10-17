@@ -101,6 +101,8 @@ def _assert_same_run(native: runs.Run, reference: runs.Run) -> None:
     np.testing.assert_array_equal(native.keyframe_timestamps, reference.keyframe_timestamps)
     np.testing.assert_array_equal(native.point_lives, reference.point_lives)
     np.testing.assert_array_equal(native.keyframe_lives, reference.keyframe_lives)
+    np.testing.assert_array_equal(native.keyframe_parents, reference.keyframe_parents)
+    np.testing.assert_array_equal(native.keyframe_links, reference.keyframe_links)
     assert native.points.shape == reference.points.shape
     assert_close(native.poses, reference.poses, SOLVER_TOLERANCE)
     assert_close(native.keyframe_poses, reference.keyframe_poses, SOLVER_TOLERANCE)

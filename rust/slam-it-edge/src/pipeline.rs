@@ -9,6 +9,7 @@ use slam_it_foundations::error::{ErrorKind, Result, fail};
 use slam_it_foundations::vocabulary::Vocabulary;
 use slam_it_foundations::{orb, se3};
 
+use crate::covisibility;
 use crate::database::Database;
 use crate::frames::{Camera, Frame, Tracked, check_setup};
 use crate::initialization::{self, InitSummary, Initialization, Outcome, Started};
@@ -260,6 +261,11 @@ pub struct Lifetimes {
     pub keyframe_poses: Vec<Matrix4<f64>>,
     /// Their lives.
     pub keyframe_lives: Vec<Life>,
+    /// Each one's last parent in its map's spanning tree, by the run's id, or -1.
+    pub keyframe_parents: Vec<i64>,
+    /// Each map's strong links when it closed, and the current map's now, by the run's ids,
+    /// ascending.
+    pub keyframe_links: Vec<[i64; 3]>,
     /// The map each point was made in.
     pub point_maps: Vec<i64>,
     /// The map each keyframe was made in.
@@ -482,12 +488,32 @@ impl Pipeline {
             for (&id, xyz) in m.pt_id.iter().zip(&m.pt_xyz) {
                 out.points[to_index(self.pt_base + id)] = *xyz;
             }
-            for ((&id, &time), pose) in m.kf_id.iter().zip(&m.kf_time).zip(&m.kf_pose) {
-                out.keyframe_times[to_index(self.kf_base + id)] = time;
-                out.keyframe_poses[to_index(self.kf_base + id)] = *pose;
+            for (k, &id) in m.kf_id.iter().enumerate() {
+                let row = to_index(self.kf_base + id);
+                out.keyframe_times[row] = m.kf_time[k];
+                out.keyframe_poses[row] = m.kf_pose[k];
+                out.keyframe_parents[row] = self.run_id(m.kf_parent[k]);
             }
+            out.keyframe_links.extend(self.run_links(m));
         }
         out
+    }
+
+    /// A parent of the current map, by the run's id: -1 kept.
+    fn run_id(&self, parent: i64) -> i64 {
+        if parent >= 0 {
+            self.kf_base + parent
+        } else {
+            -1
+        }
+    }
+
+    /// A map's strong links, by the run's ids.
+    fn run_links(&self, m: &Map) -> Vec<[i64; 3]> {
+        covisibility::strong_links(m, &self.options)
+            .into_iter()
+            .map(|[a, b, weight]| [self.kf_base + a, self.kf_base + b, weight])
+            .collect()
     }
 
     /// Dates what this frame made and removed, and empties the map's archive of removals.
@@ -507,21 +533,23 @@ impl Pipeline {
         lives.keyframe_maps.resize(keyframes, map_id);
         lives.keyframe_times.resize(keyframes, 0.0);
         lives.keyframe_poses.resize(keyframes, Matrix4::identity());
+        lives.keyframe_parents.resize(keyframes, -1);
         for ((&id, xyz), &how) in m.gone_pt_id.iter().zip(&m.gone_pt_xyz).zip(&m.gone_pt_how) {
             let id = to_index(self.pt_base + id);
             lives.point_lives[id] = [lives.point_lives[id][0], frame, how];
             lives.points[id] = *xyz;
         }
-        for ((&id, &time), pose) in m
-            .gone_kf_id
-            .iter()
-            .zip(&m.gone_kf_time)
-            .zip(&m.gone_kf_pose)
-        {
+        for (g, &id) in m.gone_kf_id.iter().enumerate() {
             let id = to_index(self.kf_base + id);
             lives.keyframe_lives[id] = [lives.keyframe_lives[id][0], frame, Removal::Culled.code()];
-            lives.keyframe_times[id] = time;
-            lives.keyframe_poses[id] = *pose;
+            lives.keyframe_times[id] = m.gone_kf_time[g];
+            lives.keyframe_poses[id] = m.gone_kf_pose[g];
+            let parent = m.gone_kf_parent[g];
+            lives.keyframe_parents[id] = if parent >= 0 {
+                self.kf_base + parent
+            } else {
+                -1
+            };
         }
         map::clear_gone(m);
     }
@@ -541,6 +569,8 @@ impl Pipeline {
         let frame = self.frames - 1; // dated already
         let reset = m.kf_id.len() <= self.options.loss.reset_keyframes;
         let code = Removal::Reset.code();
+        let parents: Vec<i64> = m.kf_parent.iter().map(|&p| self.run_id(p)).collect();
+        let links = self.run_links(m);
         let lives = &mut self.lives;
         for (&id, xyz) in m.pt_id.iter().zip(&m.pt_xyz) {
             let id = to_index(self.pt_base + id);
@@ -549,14 +579,16 @@ impl Pipeline {
                 lives.point_lives[id] = [lives.point_lives[id][0], frame, code];
             }
         }
-        for ((&id, &time), pose) in m.kf_id.iter().zip(&m.kf_time).zip(&m.kf_pose) {
+        for (k, &id) in m.kf_id.iter().enumerate() {
             let id = to_index(self.kf_base + id);
-            lives.keyframe_times[id] = time;
-            lives.keyframe_poses[id] = *pose;
+            lives.keyframe_times[id] = m.kf_time[k];
+            lives.keyframe_poses[id] = m.kf_pose[k];
+            lives.keyframe_parents[id] = parents[k];
             if reset {
                 lives.keyframe_lives[id] = [lives.keyframe_lives[id][0], frame, code];
             }
         }
+        lives.keyframe_links.extend(links);
         self.map_id = None;
         self.state = State::NotInitialized;
         self.last_frame = None;

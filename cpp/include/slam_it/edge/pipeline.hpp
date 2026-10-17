@@ -162,6 +162,11 @@ struct Lifetimes {
   std::vector<Eigen::Matrix4d> keyframe_poses;
   /// @brief Their lives.
   std::vector<Life> keyframe_lives;
+  /// @brief Each one's last parent in its map's spanning tree, by the run's id, or -1.
+  std::vector<std::int64_t> keyframe_parents;
+  /// @brief Each map's strong links when it closed, and the current map's now, by the run's
+  ///        ids, ascending.
+  std::vector<std::array<std::int64_t, 3>> keyframe_links;
   /// @brief The map each point was made in.
   std::vector<std::int64_t> point_maps;
   /// @brief The map each keyframe was made in.
@@ -322,6 +327,11 @@ class Pipeline {
   /// @return The closed map's summary.
   LostSummary close(const Map& m);
 
+  /// @brief A parent of the current map, by the run's id.
+  /// @param parent Its id in the map, or -1.
+  /// @return The run's id, or -1.
+  [[nodiscard]] std::int64_t run_id(std::int64_t parent) const;
+
   /// @brief Track a frame against the map; insert a keyframe if one is needed (and time it).
   /// @param frame The frame.
   /// @return The tracked frame, if any, whether it became a keyframe, the time mapping it
@@ -383,6 +393,10 @@ class Pipeline {
   std::vector<double> past_times_;
   /// @brief Their last poses (unset for the others).
   std::vector<Eigen::Matrix4d> past_poses_;
+  /// @brief Their last parents, by the run's id (unset for the others).
+  std::vector<std::int64_t> past_parents_;
+  /// @brief The closed maps' strong links, by the run's ids.
+  std::vector<std::array<std::int64_t, 3>> past_links_;
 };
 
 }  // namespace slam_it::edge

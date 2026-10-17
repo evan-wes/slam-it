@@ -316,6 +316,18 @@
    -1
   ]
  ],
+ "keyframe_parents": [
+  -1,
+  -1,
+  1
+ ],
+ "keyframe_links": [
+  [
+   1,
+   2,
+   120
+  ]
+ ],
  "settings": {
   "n_features": 1000,
   "scale_factor": 1.2,

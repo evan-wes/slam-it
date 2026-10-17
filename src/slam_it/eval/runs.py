@@ -2,10 +2,11 @@
 
 A run is a folder, written by any backend's pipeline (C++ and Rust write the same files):
 
-- ``run.json``: what ran: ``{"format": "slam-it-run", "version": 5, "dataset", "sequence",
+- ``run.json``: what ran: ``{"format": "slam-it-run", "version": 6, "dataset", "sequence",
   "mode", "backend", "settings", "vocabulary", "record_features", "peak_memory", "cpus",
   "memory_cap"}``, ``mode`` one of :data:`MODES` and ``backend`` one of ``python``, ``cpp`` and
-  ``rust``; ``settings`` holds the pipeline's options as JSON; ``vocabulary`` the vocabulary a
+  ``rust``; ``settings`` holds the pipeline's options as JSON (the edge pipeline's an object per
+  group, :meth:`slam_it.edge.options.Options.as_dict`); ``vocabulary`` the vocabulary a
   relocalising run used, as its folder's header and checksums record it
   (:func:`slam_it.eval.vocabularies.record`: its format and descriptor versions, k, levels,
   words and each array's SHA-256), null for a run that did not relocalise (``relocalize`` off);
@@ -23,7 +24,12 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
   must align one map at a time, splitting the file there or by ``pose_maps.npy``.
 - ``keyframes.npy``: the timestamps of every keyframe the run made, by id (the order it made
   them in), ``(K,)`` float64; ``keyframe_poses.npy``: their ``T_world_cam``, ``(K, 4, 4)``, the
-  last each had; ``keyframe_lives.npy``: their lives, ``(K, 3)`` int64 (below).
+  last each had; ``keyframe_lives.npy``: their lives, ``(K, 3)`` int64 (below);
+  ``keyframe_parents.npy``: each one's parent in its map's spanning tree, the last it had, a
+  keyframe id or -1, ``(K,)`` int64 (:mod:`slam_it.edge.covisibility`); and
+  ``keyframe_links.npy``: each map's strong links when it closed or the run ended, ``(L, 3)``
+  int64: two keyframe ids of the same map, the lower first, and the points they share, the
+  rows ascending.
 - ``points.npy``: every point the run made, by id, in its map's world frame, ``(M, 3)``
   float64, where each last was; ``point_lives.npy``: their lives, ``(M, 3)`` int64.
 - **A life** is three numbers: the frame that made it; the frame that removed it, or -1 if it
@@ -84,10 +90,11 @@ from slam_it.foundations.errors import DegenerateError, InvalidInputError
 FORMAT = "slam-it-run"
 """``run.json``'s ``format``."""
 
-VERSION = 5
+VERSION = 6
 """``run.json``'s ``version``: this module's layout (2 added ``peak_memory``, ``cpus`` and
 ``memory_cap``; 3 every point and keyframe the run made, with their lives; 4 the maps, and the
-removal ``reset``; 5 the ``vocabulary`` a relocalising run used)."""
+removal ``reset``; 5 the ``vocabulary`` a relocalising run used; 6 the settings grouped, each
+keyframe's parent and the strong links)."""
 
 REMOVALS = ("culled", "fused", "weak", "reset")
 """Why a point or keyframe was removed, a life's code being the index: culled (a recent point
@@ -195,6 +202,12 @@ class Run:
         why (its index in :data:`REMOVALS`; -1 if none).
     keyframe_lives : ndarray of int64, shape (K, 3)
         Each keyframe's life, the same way.
+    keyframe_parents : ndarray of int64, shape (K,)
+        Each keyframe's parent in its map's spanning tree, the last it had: a keyframe of the
+        same map, or -1.
+    keyframe_links : ndarray of int64, shape (L, 3)
+        The strong links: two keyframes of the same map, the lower id first, and the points they
+        share, the rows ascending.
     record_features : bool
         Whether the run recorded its features (:func:`read_features` reads them).
     pose_maps : ndarray of int64, shape (F,)
@@ -222,6 +235,10 @@ class Run:
     memory_cap: int | None = None
     point_lives: NDArray[np.int64] = field(default_factory=lambda: np.zeros((0, 3), dtype=np.int64))
     keyframe_lives: NDArray[np.int64] = field(
+        default_factory=lambda: np.zeros((0, 3), dtype=np.int64)
+    )
+    keyframe_parents: NDArray[np.int64] = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    keyframe_links: NDArray[np.int64] = field(
         default_factory=lambda: np.zeros((0, 3), dtype=np.int64)
     )
     record_features: bool = False
@@ -387,6 +404,47 @@ def _check_lives(lives: ArrayLike, count: int, frames: int, name: str) -> NDArra
         raise InvalidInputError(f"{name}: a life must end in its start's frame or later, or -1")
     if np.any(alive != (how == -1)) or np.any(~alive & ((how < 0) | (how >= len(REMOVALS)))):
         raise InvalidInputError(f"{name}: why a life ended must be a removal code, -1 if alive")
+    return out
+
+
+def _check_parents(parents: ArrayLike, maps: NDArray[np.int64], name: str) -> NDArray[np.int64]:
+    """Check parents, one per keyframe: -1, or another keyframe of its map; return them.
+
+    `maps` is each keyframe's map, checked; `name` begins each message.
+    """
+    out = np.asarray(parents)
+    if out.dtype != np.int64 or out.shape != maps.shape:
+        raise InvalidInputError(
+            f"{name}: expected int64 {maps.shape}, one per keyframe, got {out.dtype} {out.shape}"
+        )
+    own = np.arange(len(out))
+    known = (out >= 0) & (out < len(out))
+    if np.any(~known & (out != -1)) or np.any(known & (out == own)):
+        raise InvalidInputError(f"{name}: a parent must be -1 or another keyframe's id")
+    if np.any(known & (maps[np.where(known, out, 0)] != maps)):
+        raise InvalidInputError(f"{name}: a parent must be in its keyframe's map")
+    return out
+
+
+def _check_links(links: ArrayLike, maps: NDArray[np.int64], name: str) -> NDArray[np.int64]:
+    """Check strong links: two keyframes of one map, the lower first, a weight; return them.
+
+    The rows must ascend, each once. `maps` is each keyframe's map, checked; `name` begins each
+    message.
+    """
+    out = np.asarray(links)
+    if out.dtype != np.int64 or out.ndim != 2 or out.shape[1] != 3:
+        raise InvalidInputError(f"{name}: expected int64 (L, 3), got {out.dtype} {out.shape}")
+    first, second, weight = out.T
+    if np.any((first < 0) | (first >= second) | (second >= len(maps)) | (weight < 1)):
+        raise InvalidInputError(
+            f"{name}: a link must join two keyframes, the lower first, by points"
+        )
+    if np.any(maps[first] != maps[second]):
+        raise InvalidInputError(f"{name}: a link's keyframes must be in one map")
+    codes = first * len(maps) + second
+    if np.any(np.diff(codes) <= 0):
+        raise InvalidInputError(f"{name}: the links must ascend, each once")
     return out
 
 
@@ -567,6 +625,8 @@ def write_run(folder: str | Path, run: Run) -> None:
         )
     }
     _check_frame_maps(run.diagnostics, maps["keyframe_maps"], "diagnostics")
+    parents = _check_parents(run.keyframe_parents, maps["keyframe_maps"], "keyframe_parents")
+    links = _check_links(run.keyframe_links, maps["keyframe_maps"], "keyframe_links")
     out = Path(folder)
     out.mkdir(parents=True, exist_ok=True)
     _replace(out / "run.json", (json.dumps(info, indent=1) + "\n").encode())
@@ -574,6 +634,8 @@ def write_run(folder: str | Path, run: Run) -> None:
     _replace(out / "keyframes.npy", _npy(keyframe_times))
     _replace(out / "keyframe_poses.npy", _npy(keyframe_poses))
     _replace(out / "keyframe_lives.npy", _npy(keyframe_lives))
+    _replace(out / "keyframe_parents.npy", _npy(parents))
+    _replace(out / "keyframe_links.npy", _npy(links))
     _replace(out / "points.npy", _npy(points))
     _replace(out / "point_lives.npy", _npy(point_lives))
     for name, values in maps.items():
@@ -702,6 +764,16 @@ def read_run(folder: str | Path) -> Run:
         )
     }
     _check_frame_maps(diagnostics, maps["keyframe_maps"], str(root / "diagnostics.jsonl"))
+    parents = _check_parents(
+        _load(root / "keyframe_parents.npy", (), np.int64),
+        maps["keyframe_maps"],
+        str(root / "keyframe_parents"),
+    )
+    links = _check_links(
+        _load(root / "keyframe_links.npy", (3,), np.int64),
+        maps["keyframe_maps"],
+        str(root / "keyframe_links"),
+    )
     return Run(
         dataset=info["dataset"],
         sequence=info["sequence"],
@@ -720,6 +792,8 @@ def read_run(folder: str | Path) -> Run:
         memory_cap=info["memory_cap"],
         point_lives=lives["point_lives"],
         keyframe_lives=lives["keyframe_lives"],
+        keyframe_parents=parents,
+        keyframe_links=links,
         record_features=info["record_features"],
         pose_maps=maps["pose_maps"],
         keyframe_maps=maps["keyframe_maps"],

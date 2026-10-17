@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "slam_it/edge/covisibility.hpp"
 #include "slam_it/edge/mapping.hpp"
 #include "slam_it/edge/tracking.hpp"
 #include "slam_it/foundations/se3.hpp"
@@ -131,6 +132,8 @@ Lifetimes Pipeline::lifetimes() const {
                 .keyframe_times = past_times_,
                 .keyframe_poses = past_poses_,
                 .keyframe_lives = keyframe_lives_,
+                .keyframe_parents = past_parents_,
+                .keyframe_links = past_links_,
                 .point_maps = point_maps_,
                 .keyframe_maps = keyframe_maps_};
   if (map_) {
@@ -141,9 +144,17 @@ Lifetimes Pipeline::lifetimes() const {
       const auto id = static_cast<std::size_t>(kf_base_ + map_->kf_id[k]);
       out.keyframe_times[id] = map_->kf_time[k];
       out.keyframe_poses[id] = map_->kf_pose[k];
+      out.keyframe_parents[id] = run_id(map_->kf_parent[k]);
+    }
+    for (const auto& link : strong_links(*map_, options_)) {
+      out.keyframe_links.push_back({kf_base_ + link[0], kf_base_ + link[1], link[2]});
     }
   }
   return out;
+}
+
+std::int64_t Pipeline::run_id(std::int64_t parent) const {
+  return parent >= 0 ? kf_base_ + parent : -1;
 }
 
 void Pipeline::date() {
@@ -161,6 +172,7 @@ void Pipeline::date() {
   keyframe_maps_.resize(keyframes, *map_id_);
   past_times_.resize(keyframes, 0.0);
   past_poses_.resize(keyframes, Eigen::Matrix4d::Identity());
+  past_parents_.resize(keyframes, -1);
   for (std::size_t g = 0; g < m.gone_pt_id.size(); ++g) {
     const auto id = static_cast<std::size_t>(pt_base_ + m.gone_pt_id[g]);
     point_lives_[id][1] = frame;
@@ -173,6 +185,7 @@ void Pipeline::date() {
     keyframe_lives_[id][2] = static_cast<std::int64_t>(Removal::kCulled);
     past_times_[id] = m.gone_kf_time[g];
     past_poses_[id] = m.gone_kf_pose[g];
+    past_parents_[id] = run_id(m.gone_kf_parent[g]);
   }
   clear_gone(m);
 }
@@ -193,10 +206,14 @@ LostSummary Pipeline::close(const Map& m) {
     const auto id = static_cast<std::size_t>(kf_base_ + m.kf_id[k]);
     past_times_[id] = m.kf_time[k];
     past_poses_[id] = m.kf_pose[k];
+    past_parents_[id] = run_id(m.kf_parent[k]);
     if (reset) {
       keyframe_lives_[id][1] = frame;
       keyframe_lives_[id][2] = code;
     }
+  }
+  for (const auto& link : strong_links(m, options_)) {
+    past_links_.push_back({kf_base_ + link[0], kf_base_ + link[1], link[2]});
   }
   const LostSummary lost{.keyframes = static_cast<std::int64_t>(keyframe_count(m)),
                          .points = static_cast<std::int64_t>(point_count(m)),

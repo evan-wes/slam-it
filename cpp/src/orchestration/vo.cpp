@@ -551,6 +551,8 @@ Result<void> record_lives(eval::runs::Run& out, const edge::Lifetimes& lives) {
   out.points = lives.points;
   out.point_lives = lives.point_lives;
   out.keyframe_lives = lives.keyframe_lives;
+  out.keyframe_parents = lives.keyframe_parents;
+  out.keyframe_links = lives.keyframe_links;
   out.point_maps = lives.point_maps;
   out.keyframe_maps = lives.keyframe_maps;
   return {};

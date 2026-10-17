@@ -65,7 +65,7 @@ from typing import Any, Protocol
 import numpy as np
 from numpy.typing import NDArray
 
-from slam_it.edge import initialization, mapping, relocalization, tracking
+from slam_it.edge import covisibility, initialization, mapping, relocalization, tracking
 from slam_it.edge import map as maps
 from slam_it.edge.database import Database
 from slam_it.edge.frames import Camera, Frame, Tracked
@@ -309,6 +309,11 @@ class Lifetimes:
         Its last ``T_cam_world``.
     keyframe_lives : ndarray of int64, shape (K, 3)
         Their lives.
+    keyframe_parents : ndarray of int64, shape (K,)
+        Each one's last parent in its map's spanning tree, by the run's id, or -1.
+    keyframe_links : ndarray of int64, shape (L, 3)
+        Each map's strong links (:func:`slam_it.edge.covisibility.strong_links`) when it closed,
+        and the current map's now, by the run's ids, ascending.
     point_maps : ndarray of int64, shape (N,)
         The map each point was made in.
     keyframe_maps : ndarray of int64, shape (K,)
@@ -320,6 +325,8 @@ class Lifetimes:
     keyframe_times: Array
     keyframe_poses: Array
     keyframe_lives: NDArray[np.int64]
+    keyframe_parents: NDArray[np.int64]
+    keyframe_links: NDArray[np.int64]
     point_maps: NDArray[np.int64]
     keyframe_maps: NDArray[np.int64]
 
@@ -408,9 +415,11 @@ class Pipeline:
     # Where each point and keyframe no longer in the current map last was, by the run's id:
     # removed, or in a closed map.
     _past_points: dict[int, Array] = field(default_factory=dict, init=False, repr=False)
-    _past_keyframes: dict[int, tuple[float, Array]] = field(
+    _past_keyframes: dict[int, tuple[float, Array, int]] = field(
         default_factory=dict, init=False, repr=False
     )
+    # The closed maps' strong links, by the run's ids.
+    _past_links: list[NDArray[np.int64]] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Check the mode.
@@ -490,21 +499,27 @@ class Pipeline:
         points = np.zeros((len(self._point_lives), 3))
         times = np.zeros(len(self._keyframe_lives))
         poses = np.tile(np.eye(4), (len(self._keyframe_lives), 1, 1))
+        parents = np.full(len(self._keyframe_lives), -1, dtype=np.int64)
         for point_id, xyz in self._past_points.items():
             points[point_id] = xyz
-        for keyframe_id, (seconds, pose) in self._past_keyframes.items():
-            times[keyframe_id], poses[keyframe_id] = seconds, pose
+        for keyframe_id, (seconds, pose, parent) in self._past_keyframes.items():
+            times[keyframe_id], poses[keyframe_id], parents[keyframe_id] = seconds, pose, parent
+        links = list(self._past_links)
         m = self.map
         if m is not None:
             points[self._pt_base + m.pt_id] = m.pt_xyz
             times[self._kf_base + m.kf_id] = m.kf_time
             poses[self._kf_base + m.kf_id] = m.kf_pose
+            parents[self._kf_base + m.kf_id] = self._run_ids(m.kf_parent)
+            links.append(self._strong_links(m))
         return Lifetimes(
             points=points,
             point_lives=np.array(self._point_lives, dtype=np.int64).reshape(-1, 3),
             keyframe_times=times,
             keyframe_poses=poses,
             keyframe_lives=np.array(self._keyframe_lives, dtype=np.int64).reshape(-1, 3),
+            keyframe_parents=parents,
+            keyframe_links=np.concatenate([np.zeros((0, 3), dtype=np.int64), *links]),
             point_maps=np.array(self._point_maps, dtype=np.int64),
             keyframe_maps=np.array(self._keyframe_maps, dtype=np.int64),
         )
@@ -526,14 +541,24 @@ class Pipeline:
             run_id = self._pt_base + int(point_id)
             self._point_lives[run_id][1:] = [frame, int(how)]
             self._past_points[run_id] = xyz
-        for keyframe_id, seconds, pose in zip(
-            m.gone_kf_id, m.gone_kf_time, m.gone_kf_pose, strict=True
-        ):
+        for keyframe_id, seconds, pose, parent in zip(
+            m.gone_kf_id, m.gone_kf_time, m.gone_kf_pose, self._run_ids(m.gone_kf_parent),
+            strict=True,
+        ):  # fmt: skip
             run_id = self._kf_base + int(keyframe_id)
             self._keyframe_lives[run_id][1:] = [frame, int(Removal.CULLED)]
-            self._past_keyframes[run_id] = (float(seconds), pose)
+            self._past_keyframes[run_id] = (float(seconds), pose, int(parent))
         if len(m.gone_pt_id) or len(m.gone_kf_id):
             self.map = maps.clear_gone(m)
+
+    def _run_ids(self, parents: NDArray[np.int64]) -> NDArray[np.int64]:
+        """Return the current map's keyframe ids as the run's, -1 kept."""
+        return np.where(parents >= 0, self._kf_base + parents, -1)
+
+    def _strong_links(self, m: Map) -> NDArray[np.int64]:
+        """Return the current map's strong links, by the run's ids."""
+        links = covisibility.strong_links(m, self.options)
+        return links + np.array([self._kf_base, self._kf_base, 0], dtype=np.int64)
 
     def _close(self, m: Map) -> LostSummary:
         """Close `m`, the map the track was lost in, on this frame: keep it, or reset it if small.
@@ -549,11 +574,14 @@ class Pipeline:
             self._past_points[run_id] = xyz
             if reset:
                 self._point_lives[run_id][1:] = [frame, int(Removal.RESET)]
-        for keyframe_id, seconds, pose in zip(m.kf_id, m.kf_time, m.kf_pose, strict=True):
+        for keyframe_id, seconds, pose, parent in zip(
+            m.kf_id, m.kf_time, m.kf_pose, self._run_ids(m.kf_parent), strict=True
+        ):
             run_id = self._kf_base + int(keyframe_id)
-            self._past_keyframes[run_id] = (float(seconds), pose)
+            self._past_keyframes[run_id] = (float(seconds), pose, int(parent))
             if reset:
                 self._keyframe_lives[run_id][1:] = [frame, int(Removal.RESET)]
+        self._past_links.append(self._strong_links(m))
         lost = LostSummary(keyframes=m.keyframes, points=m.points, reset=reset)
         self.map, self._map_id, self._database = None, None, None
         self.state = State.NOT_INITIALIZED

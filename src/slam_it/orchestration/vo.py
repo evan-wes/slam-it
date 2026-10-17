@@ -742,6 +742,8 @@ def _run_here(request: Request, words: Vocabulary | None) -> runs.Run:
         diagnostics=diagnostics,
         point_lives=lives.point_lives,
         keyframe_lives=lives.keyframe_lives,
+        keyframe_parents=lives.keyframe_parents,
+        keyframe_links=lives.keyframe_links,
         record_features=request.record_features,
         pose_maps=np.array(pose_maps, dtype=np.int64),
         keyframe_maps=lives.keyframe_maps,

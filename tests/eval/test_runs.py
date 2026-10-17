@@ -61,6 +61,8 @@ def _run(n: int = 12) -> runs.Run:
         memory_cap=8 * 2**30,
         point_lives=_lives(30, n, gone),
         keyframe_lives=np.array([[0, -1, -1], [4, 9, 0], [8, -1, -1]], dtype=np.int64),
+        keyframe_parents=np.array([-1, 0, -1], dtype=np.int64),
+        keyframe_links=np.array([[0, 1, 150]], dtype=np.int64),
         pose_maps=np.repeat([0, 1], [n // 2, n - n // 2]).astype(np.int64),
         keyframe_maps=np.array([0, 0, 1], dtype=np.int64),
         point_maps=np.repeat([0, 1], 15).astype(np.int64),
@@ -550,8 +552,10 @@ def test_write_run_replaces_files_whole(tmp_path: Path) -> None:
     assert runs.read_run(tmp_path).sequence == "V1_02_medium"
     assert sorted(p.name for p in tmp_path.iterdir()) == [
         "diagnostics.jsonl",
+        "keyframe_links.npy",
         "keyframe_lives.npy",
         "keyframe_maps.npy",
+        "keyframe_parents.npy",
         "keyframe_poses.npy",
         "keyframes.npy",
         "point_lives.npy",
@@ -566,7 +570,7 @@ def test_write_run_replaces_files_whole(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("edit", "message"),
     [
-        (lambda info: info.update(version=4), "version 5, got 'slam-it-run' version 4"),
+        (lambda info: info.update(version=5), "version 6, got 'slam-it-run' version 5"),
         (lambda info: info.update(format="other"), "format"),
         (lambda info: info.update(mode="lidar"), "mode"),
         (lambda info: info.update(backend="java"), "backend"),

@@ -19,7 +19,7 @@ pub const FORMAT: &str = "slam-it-run";
 /// `run.json`'s `version` (2 added `peak_memory`, `cpus` and `memory_cap`; 3 every point and
 /// keyframe the run made, with their lives; 4 the maps, and the removal `reset`; 5 the
 /// `vocabulary` a relocalising run used).
-pub const VERSION: i64 = 5;
+pub const VERSION: i64 = 6;
 
 /// The number of removal codes a life may hold (`slam_it.eval.runs.REMOVALS`).
 pub const REMOVALS: i64 = 4;
@@ -116,6 +116,12 @@ pub struct Run {
     pub point_lives: Vec<Life>,
     /// Each keyframe's life, by id.
     pub keyframe_lives: Vec<Life>,
+    /// Each keyframe's parent in its map's spanning tree, the last it had, by id: a keyframe of
+    /// the same map, or -1.
+    pub keyframe_parents: Vec<i64>,
+    /// The strong links: two keyframes of the same map, the lower id first, and the points they
+    /// share, ascending.
+    pub keyframe_links: Vec<[i64; 3]>,
     /// Whether the run recorded its features (`FeatureWriter` streams them).
     pub record_features: bool,
     /// The map each tracked frame's pose is in, never descending.
@@ -352,6 +358,93 @@ fn check_lives(lives: &[Life], rows: usize, frames: usize, name: &str) -> Result
     Ok(())
 }
 
+/// Checks parents, one per keyframe: -1, or another keyframe of its map
+/// (`slam_it.eval.runs._check_parents`).
+///
+/// # Arguments
+///
+/// * `parents` - The parents.
+/// * `maps` - Each keyframe's map, checked.
+///
+/// # Errors
+///
+/// `InvalidInput` otherwise.
+fn check_parents(parents: &[i64], maps: &[i64]) -> Result<()> {
+    if parents.len() != maps.len() {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!(
+                "keyframe_parents: expected one per keyframe, {}, got {}",
+                maps.len(),
+                parents.len()
+            ),
+        );
+    }
+    for (k, &parent) in parents.iter().enumerate() {
+        if parent == -1 {
+            continue;
+        }
+        let Some(row) = usize::try_from(parent)
+            .ok()
+            .filter(|&r| r < maps.len() && r != k)
+        else {
+            return fail(
+                ErrorKind::InvalidInput,
+                "keyframe_parents: a parent must be -1 or another keyframe's id",
+            );
+        };
+        if maps[row] != maps[k] {
+            return fail(
+                ErrorKind::InvalidInput,
+                "keyframe_parents: a parent must be in its keyframe's map",
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Checks strong links: two keyframes of one map, the lower first, a weight, the rows ascending
+/// (`slam_it.eval.runs._check_links`).
+///
+/// # Arguments
+///
+/// * `links` - The links.
+/// * `maps` - Each keyframe's map, checked.
+///
+/// # Errors
+///
+/// `InvalidInput` otherwise.
+fn check_links(links: &[[i64; 3]], maps: &[i64]) -> Result<()> {
+    let row = |id: i64| usize::try_from(id).ok().filter(|&r| r < maps.len());
+    for (i, &[first, second, weight]) in links.iter().enumerate() {
+        let (Some(a), Some(b)) = (row(first), row(second)) else {
+            return fail(
+                ErrorKind::InvalidInput,
+                "keyframe_links: a link must join two keyframes, the lower first, by its points",
+            );
+        };
+        if a >= b || weight < 1 {
+            return fail(
+                ErrorKind::InvalidInput,
+                "keyframe_links: a link must join two keyframes, the lower first, by its points",
+            );
+        }
+        if maps[a] != maps[b] {
+            return fail(
+                ErrorKind::InvalidInput,
+                "keyframe_links: a link's keyframes must be in one map",
+            );
+        }
+        if i > 0 && (links[i - 1][0], links[i - 1][1]) >= (first, second) {
+            return fail(
+                ErrorKind::InvalidInput,
+                "keyframe_links: the links must ascend, each once",
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Checks maps: one per row, numbers from 0, never descending.
 ///
 /// # Arguments
@@ -460,6 +553,8 @@ fn check(run: &Run) -> Result<()> {
         "keyframe_maps",
     )?;
     check_maps(&run.point_maps, run.points.len(), "point_maps")?;
+    check_parents(&run.keyframe_parents, &run.keyframe_maps)?;
+    check_links(&run.keyframe_links, &run.keyframe_maps)?;
     if !finite(&run.settings) {
         return fail(
             ErrorKind::InvalidInput,
@@ -661,6 +756,83 @@ fn vocabulary_text(header: &Header) -> String {
 pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
     check(run)?;
     let trajectory = trajectory_text(&run.timestamps, &run.poses, &run.pose_maps)?;
+    let info_text = info_text(run);
+    let diagnostics: String = run
+        .diagnostics
+        .iter()
+        .map(|entry| json_object(entry) + "\n")
+        .collect();
+    let poses: Vec<f64> = run
+        .keyframe_poses
+        .iter()
+        .flat_map(|p| (0..4).flat_map(move |r| (0..4).map(move |c| p[(r, c)])))
+        .collect();
+    let points: Vec<f64> = run.points.iter().flat_map(|p| [p.x, p.y, p.z]).collect();
+    std::fs::create_dir_all(folder).or_else(|e| {
+        fail(
+            ErrorKind::InvalidInput,
+            format!("{}: {e}", folder.display()),
+        )
+    })?;
+    let lives = |lives: &[Life]| -> Vec<i64> { lives.iter().flatten().copied().collect() };
+    let files: [(&str, Vec<u8>); 13] = [
+        ("run.json", info_text.into_bytes()),
+        ("trajectory.txt", trajectory.into_bytes()),
+        (
+            "keyframes.npy",
+            npy(&[run.keyframe_timestamps.len()], &run.keyframe_timestamps),
+        ),
+        (
+            "keyframe_poses.npy",
+            npy(&[run.keyframe_poses.len(), 4, 4], &poses),
+        ),
+        (
+            "keyframe_lives.npy",
+            npy_int64(&[run.keyframe_lives.len(), 3], &lives(&run.keyframe_lives)),
+        ),
+        (
+            "keyframe_parents.npy",
+            npy_int64(&[run.keyframe_parents.len()], &run.keyframe_parents),
+        ),
+        (
+            "keyframe_links.npy",
+            npy_int64(&[run.keyframe_links.len(), 3], &lives(&run.keyframe_links)),
+        ),
+        ("points.npy", npy(&[run.points.len(), 3], &points)),
+        (
+            "point_lives.npy",
+            npy_int64(&[run.point_lives.len(), 3], &lives(&run.point_lives)),
+        ),
+        (
+            "pose_maps.npy",
+            npy_int64(&[run.pose_maps.len()], &run.pose_maps),
+        ),
+        (
+            "keyframe_maps.npy",
+            npy_int64(&[run.keyframe_maps.len()], &run.keyframe_maps),
+        ),
+        (
+            "point_maps.npy",
+            npy_int64(&[run.point_maps.len()], &run.point_maps),
+        ),
+        ("diagnostics.jsonl", diagnostics.into_bytes()),
+    ];
+    for (name, data) in files {
+        replace(&folder.join(name), &data)?;
+    }
+    Ok(())
+}
+
+/// A run's `run.json`: what ran, the settings, the vocabulary and the program's resources.
+///
+/// # Arguments
+///
+/// * `run` - The run, checked.
+///
+/// # Returns
+///
+/// The file's text.
+fn info_text(run: &Run) -> String {
     let info: JsonObject = vec![
         ("format".into(), JsonValue::Text(FORMAT.into())),
         ("version".into(), JsonValue::Integer(VERSION)),
@@ -696,62 +868,7 @@ pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
     info_text.push_str(", \"memory_cap\": ");
     info_text.push_str(&integer_or_null(run.memory_cap));
     info_text.push_str("}\n");
-    let diagnostics: String = run
-        .diagnostics
-        .iter()
-        .map(|entry| json_object(entry) + "\n")
-        .collect();
-    let poses: Vec<f64> = run
-        .keyframe_poses
-        .iter()
-        .flat_map(|p| (0..4).flat_map(move |r| (0..4).map(move |c| p[(r, c)])))
-        .collect();
-    let points: Vec<f64> = run.points.iter().flat_map(|p| [p.x, p.y, p.z]).collect();
-    std::fs::create_dir_all(folder).or_else(|e| {
-        fail(
-            ErrorKind::InvalidInput,
-            format!("{}: {e}", folder.display()),
-        )
-    })?;
-    let lives = |lives: &[Life]| -> Vec<i64> { lives.iter().flatten().copied().collect() };
-    let files: [(&str, Vec<u8>); 11] = [
-        ("run.json", info_text.into_bytes()),
-        ("trajectory.txt", trajectory.into_bytes()),
-        (
-            "keyframes.npy",
-            npy(&[run.keyframe_timestamps.len()], &run.keyframe_timestamps),
-        ),
-        (
-            "keyframe_poses.npy",
-            npy(&[run.keyframe_poses.len(), 4, 4], &poses),
-        ),
-        (
-            "keyframe_lives.npy",
-            npy_int64(&[run.keyframe_lives.len(), 3], &lives(&run.keyframe_lives)),
-        ),
-        ("points.npy", npy(&[run.points.len(), 3], &points)),
-        (
-            "point_lives.npy",
-            npy_int64(&[run.point_lives.len(), 3], &lives(&run.point_lives)),
-        ),
-        (
-            "pose_maps.npy",
-            npy_int64(&[run.pose_maps.len()], &run.pose_maps),
-        ),
-        (
-            "keyframe_maps.npy",
-            npy_int64(&[run.keyframe_maps.len()], &run.keyframe_maps),
-        ),
-        (
-            "point_maps.npy",
-            npy_int64(&[run.point_maps.len()], &run.point_maps),
-        ),
-        ("diagnostics.jsonl", diagnostics.into_bytes()),
-    ];
-    for (name, data) in files {
-        replace(&folder.join(name), &data)?;
-    }
-    Ok(())
+    info_text
 }
 
 /// Fails for a folder or file that cannot be written.
@@ -1048,6 +1165,8 @@ mod tests {
             memory_cap: values["memory_cap"].as_u64(),
             point_lives: lives(&values["point_lives"]),
             keyframe_lives: lives(&values["keyframe_lives"]),
+            keyframe_parents: integers(&values["keyframe_parents"]),
+            keyframe_links: lives(&values["keyframe_links"]),
             record_features: values["record_features"].as_bool().unwrap(),
             pose_maps: integers(&values["pose_maps"]),
             keyframe_maps: integers(&values["keyframe_maps"]),
@@ -1133,6 +1252,8 @@ mod tests {
             "keyframes.npy",
             "keyframe_poses.npy",
             "keyframe_lives.npy",
+            "keyframe_parents.npy",
+            "keyframe_links.npy",
             "points.npy",
             "point_lives.npy",
             "pose_maps.npy",
@@ -1370,5 +1491,48 @@ mod tests {
             (json_number(1.0), json_number(0.1)),
             ("1.0".into(), "0.1".into())
         );
+    }
+
+    #[test]
+    fn bad_parents_and_links_are_refused() {
+        let out = std::env::temp_dir().join(format!(
+            "slam_it_rust_test_runs_parents_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&out);
+        let _guard = Scratch(out.clone());
+        // The golden keyframes' maps are 0, 1, 1; keyframe 2's parent is 1, linked to it by 120.
+        let parented = |parents: Vec<i64>| Run {
+            keyframe_parents: parents,
+            ..golden_run()
+        };
+        let linked = |links: Vec<[i64; 3]>| Run {
+            keyframe_links: links,
+            ..golden_run()
+        };
+        let parents = [
+            vec![-1, -1],
+            vec![-1, -1, 2],
+            vec![-1, -1, 0],
+            vec![-1, -1, 3],
+        ];
+        let links = [
+            vec![[2, 1, 120]],
+            vec![[0, 1, 120]],
+            vec![[1, 2, 0]],
+            vec![[1, 3, 120]],
+            vec![[1, 2, 120], [1, 2, 120]],
+        ];
+        for run in parents
+            .into_iter()
+            .map(parented)
+            .chain(links.into_iter().map(linked))
+        {
+            assert_eq!(
+                write_run(&out, &run).unwrap_err().kind,
+                ErrorKind::InvalidInput
+            );
+        }
+        assert!(!out.exists());
     }
 }
