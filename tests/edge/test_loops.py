@@ -517,11 +517,12 @@ def test_every_backend_refines_as_python_does(backend: str, loop_rigid: Loop) ->
     require_function(backend, loops.__name__, "refine")
     m = loop_rigid.truth
     k1, k2, own, shared = _shared(m)
-    start = m.kf_pose[k1] @ se3.inverse(m.kf_pose[k2])
-    start[:3, :] *= 1.03
+    rigid = m.kf_pose[k1] @ se3.inverse(m.kf_pose[k2])
+    scaled = rigid.copy()
+    scaled[:3, :] *= 1.03
     few = np.where(np.cumsum(shared) < OPTIONS.loops.min_kept, np.where(shared, own, -1), -1)
     for matched in (np.where(shared, own, -1), few):
-        for fixed_scale in (True, False):
+        for fixed_scale, start in ((True, rigid), (False, scaled)):
             expected, got = (
                 loops.refine(
                     m, CAMERA, k1, k2, similarity=start, matched=matched,
