@@ -38,6 +38,7 @@ from tests.orchestration.datasets import (
     CASES,
     FOUND_AT,
     FOUND_BLANKS,
+    LOOP_CASES,
     LOST_AT,
     WINDOW_AT,
     WINDOW_BLANKS,
@@ -80,7 +81,8 @@ def test_every_frame_times_its_steps(
     """Every frame times reading, building and tracking; only keyframes after the start map.
 
     The frame that starts the map is initialisation, which tracking's time holds, as ORB-SLAM's
-    tracking thread initialises.
+    tracking thread initialises. Loop closing is timed exactly on the frames it ran on, the
+    keyframes after the start.
     """
     run = room_runs(dataset, mode, backend)
     for d in run.diagnostics:
@@ -89,49 +91,9 @@ def test_every_frame_times_its_steps(
     mapped = [d["map_seconds"] > 0.0 for d in run.diagnostics]
     assert mapped == [d["keyframe"] and i > start for i, d in enumerate(run.diagnostics)]
     assert all(d["map_seconds"] == 0.0 for d in run.diagnostics if not d["keyframe"])
-
-
-def _assert_same_run(native: runs.Run, reference: runs.Run) -> None:
-    """Check that a native run made the reference's decisions and placed what it placed.
-
-    The same frames tracked with the same matches, the same keyframes, poses and points within
-    the solver tolerance, the same lives for every point and keyframe, and the same stage
-    summaries (their bundle adjustments' costs within it too).
-    """
-    np.testing.assert_array_equal(native.timestamps, reference.timestamps)
-    np.testing.assert_array_equal(native.keyframe_timestamps, reference.keyframe_timestamps)
-    np.testing.assert_array_equal(native.point_lives, reference.point_lives)
-    np.testing.assert_array_equal(native.keyframe_lives, reference.keyframe_lives)
-    np.testing.assert_array_equal(native.keyframe_parents, reference.keyframe_parents)
-    np.testing.assert_array_equal(native.keyframe_links, reference.keyframe_links)
-    assert native.points.shape == reference.points.shape
-    assert_close(native.poses, reference.poses, SOLVER_TOLERANCE)
-    assert_close(native.keyframe_poses, reference.keyframe_poses, SOLVER_TOLERANCE)
-    assert_close(native.points, reference.points, SOLVER_TOLERANCE)
-    states = [(d["state"], d["tracked"], d["keyframe"]) for d in native.diagnostics]
-    assert states == [(d["state"], d["tracked"], d["keyframe"]) for d in reference.diagnostics]
-    assert_records_match(summaries(native), summaries(reference))
-
-
-def _assert_same_features(runs_of: RoomRun, dataset: str, mode: str, backend: str) -> None:
-    """Check that a native run recorded Python's feature records, byte for byte."""
-    native, reference = (
-        runs_of.features(dataset, mode, backend),
-        runs_of.features(dataset, mode, "python"),
-    )
-    np.testing.assert_array_equal(native.records, reference.records)
-    np.testing.assert_array_equal(native.pixels, reference.pixels)
-
-
-@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
-@pytest.mark.parametrize(("dataset", "mode"), CASES)
-def test_the_backends_agree(dataset: str, mode: str, backend: str, room_runs: RoomRun) -> None:
-    """A native program makes Python's decisions and places every pose and point as Python does.
-
-    It records every keypoint's pixel, level, fate and point exactly as Python does.
-    """
-    _assert_same_run(room_runs(dataset, mode, backend), room_runs(dataset, mode, "python"))
-    _assert_same_features(room_runs, dataset, mode, backend)
+    looped = [d["loop_seconds"] > 0.0 for d in run.diagnostics]
+    assert looped == [d["loop"] is not None for d in run.diagnostics]
+    assert looped == mapped
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -193,80 +155,64 @@ def test_the_gap_room_fails_once_and_recovers_twice(
     assert all(d["state"] == "tracking" for d in run.diagnostics[started:])
 
 
-@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
-@pytest.mark.parametrize(("dataset", "mode"), CASES)
-def test_the_backends_agree_across_the_gap(
-    dataset: str, mode: str, backend: str, gap_runs: RoomRun
-) -> None:
-    """Through a recovery, a native program makes Python's decisions as on the whole room."""
-    _assert_same_run(gap_runs(dataset, mode, backend), gap_runs(dataset, mode, "python"))
-    _assert_same_features(gap_runs, dataset, mode, backend)
-
-
-@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
-@pytest.mark.parametrize(("dataset", "mode"), CASES)
-def test_the_backends_agree_off_the_defaults(
-    dataset: str, mode: str, backend: str, moved_runs: RoomRun
-) -> None:
-    """With the newer settings off their defaults, a native program makes Python's decisions.
-
-    Review panel finding H21: at the defaults, a native that hard-coded a setting would agree.
-    """
-    _assert_same_run(moved_runs(dataset, mode, backend), moved_runs(dataset, mode, "python"))
-    _assert_same_features(moved_runs, dataset, mode, backend)
-
-
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize(("dataset", "mode"), CASES)
 def test_the_moved_settings_change_the_decisions(
-    dataset: str, mode: str, moved_runs: RoomRun, gap_runs: RoomRun
+    dataset: str, mode: str, backend: str, moved_runs: RoomRun, gap_runs: RoomRun
 ) -> None:
-    """Off their defaults, the settings change what Python decides on the gap room.
+    """Off their defaults, the settings change what each backend decides on the gap room.
 
-    So the agreement off the defaults is evidence that the natives read them.
+    So each native reads them (review panel finding H21: a native that hard-coded a setting
+    would decide alike either way). Since B3 the languages are not held to one another's
+    decisions, so each is held to its own.
     """
-    moved = record(
-        moved_runs(dataset, mode, "python"), moved_runs.features(dataset, mode, "python")
-    )
-    default = record(gap_runs(dataset, mode, "python"), gap_runs.features(dataset, mode, "python"))
+    moved = record(moved_runs(dataset, mode, backend), moved_runs.features(dataset, mode, backend))
+    default = record(gap_runs(dataset, mode, backend), gap_runs.features(dataset, mode, backend))
     assert moved != default
 
 
 ROOMS = ("room", "gap", "lost", "kept", "found", "window")
-"""The rooms the golden record holds, each run by its fixture ``<room>_runs``."""
+"""The rooms the golden records hold in every case, each run by its fixture ``<room>_runs``."""
 
-GOLDEN = load_fixture("edge/room_runs.json")
-"""What the pipeline decided on the room and the gap room (``generate_room_runs.py``)."""
+RECORDED = [
+    *((name, dataset, mode) for name in ROOMS for dataset, mode in CASES),
+    *(("loop", dataset, mode) for dataset, mode in LOOP_CASES),
+]
+"""Every case the golden records hold: each room's in every case, the loop room's in its own."""
+
+GOLDEN = {backend: load_fixture(f"edge/room_runs_{backend}.json") for backend in backends.BACKENDS}
+"""What each language's pipeline decided on the rooms (``generate_room_runs.py``)."""
 
 
-def test_the_golden_record_is_of_these_rooms() -> None:
-    """The record is of the rooms and settings the tests run, and holds exactly their cases.
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_the_golden_record_is_of_these_rooms(backend: str) -> None:
+    """Each record is of the rooms and settings the tests run, and holds exactly their cases.
 
     Checked before any decision, so a change to the rooms, rather than to the pipeline, is
     named as one (review panel finding A20).
     """
-    assert GOLDEN["inputs"] == room_inputs()
-    names = {f"{name}/{dataset}/{mode}" for name in ROOMS for dataset, mode in CASES}
-    assert set(GOLDEN["cases"]) == names
+    assert GOLDEN[backend]["inputs"] == room_inputs()
+    assert set(GOLDEN[backend]["cases"]) == {"/".join(case) for case in RECORDED}
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
-@pytest.mark.parametrize("name", ROOMS)
-@pytest.mark.parametrize(("dataset", "mode"), CASES)
-def test_every_backend_matches_the_golden_record(
-    dataset: str, mode: str, name: str, backend: str, request: pytest.FixtureRequest
+@pytest.mark.parametrize(("name", "dataset", "mode"), RECORDED)
+def test_every_backend_matches_its_golden_record(
+    name: str, dataset: str, mode: str, backend: str, request: pytest.FixtureRequest
 ) -> None:
-    """Every backend's run is the recorded one.
+    """Every backend's run is the one its own record holds.
 
-    A decision changed in all three languages fails here until the record is regenerated
-    (review panel finding A1).
+    A decision changed fails here until the record is regenerated (review panel finding A1).
     """
     runs_of: RoomRun = request.getfixturevalue(f"{name}_runs")
     run = runs_of(dataset, mode, backend)
-    expected = GOLDEN["cases"][f"{name}/{dataset}/{mode}"]
-    floating = {"poses": None, "summaries": None}
+    golden = GOLDEN[backend]
+    expected = golden["cases"][f"{name}/{dataset}/{mode}"]
+    floating = {"poses": None, "tracked_poses": None, "summaries": None}
     assert record(run, runs_of.features(dataset, mode, backend)) | floating == expected | floating
-    golden = np.reshape(expected["poses"], (-1, 16))  # a run whose every map was reset has none
-    assert_matches_fixture(run.poses.reshape(-1, 16), golden, GOLDEN["tolerance"])
+    for key, poses in (("poses", run.poses), ("tracked_poses", run.tracked_poses)):
+        recorded = np.reshape(expected[key], (-1, 16))  # a run whose every map was reset has none
+        assert_matches_fixture(poses.reshape(-1, 16), recorded, golden["tolerance"])
     assert_records_match(summaries(run), expected["summaries"], SOLVER_TOLERANCE)
 
 
@@ -677,6 +623,25 @@ def test_a_failed_program_raises_its_error(backend: str, tmp_path: Path) -> None
         )
 
 
+def _assert_same_run(got: runs.Run, expected: runs.Run) -> None:
+    """Check that two runs of one backend made the same decisions and placed what they placed.
+
+    The same frames tracked with the same matches, the same keyframes, poses and points within
+    the solver tolerance, the same lives, parents, links and loops, and the same stage summaries
+    (their solves' costs within it too).
+    """
+    np.testing.assert_array_equal(got.timestamps, expected.timestamps)
+    np.testing.assert_array_equal(got.keyframe_timestamps, expected.keyframe_timestamps)
+    for name in ("point_lives", "keyframe_lives", "keyframe_parents", "keyframe_links"):
+        np.testing.assert_array_equal(getattr(got, name), getattr(expected, name))
+    np.testing.assert_array_equal(got.keyframe_loops, expected.keyframe_loops)
+    for name in ("poses", "tracked_poses", "keyframe_poses", "points"):
+        assert_close(getattr(got, name), getattr(expected, name), SOLVER_TOLERANCE)
+    states = [(d["state"], d["tracked"], d["keyframe"]) for d in got.diagnostics]
+    assert states == [(d["state"], d["tracked"], d["keyframe"]) for d in expected.diagnostics]
+    assert_records_match(summaries(got), summaries(expected))
+
+
 def test_a_killed_program_says_so(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A program killed by a signal (a budget's memory cap kills with 9) raises, naming it."""
     program = tmp_path / "slam_it_vo"
@@ -700,7 +665,7 @@ def test_every_backend_runs_the_room_within_the_laptop_budget(  # noqa: PLR0917 
         dataset, folder, mode, tmp_path, backend=require_program(backend), options=OPTIONS,
         budget=budget,
     )  # fmt: skip
-    _assert_same_run(run, room_runs(dataset, mode, "python"))
+    _assert_same_run(run, room_runs(dataset, mode, backend))
     assert run.peak_memory is not None
     assert 0 < run.peak_memory < budget.memory
     assert run.cpus == budgets.cpus(budget)

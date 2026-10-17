@@ -4,9 +4,10 @@ The room (:mod:`tests.edge.room`), rendered with its right views, is written as 
 folder (gray PNGs, 16-bit depth PNGs, ``rgb.txt``, ``depth.txt`` and ``camera.txt``, with
 ORB-SLAM's TUM ``bf``) and as a EuRoC sequence (``mav0/cam0`` and ``cam1``: PNGs,
 ``data.csv`` and ``sensor.yaml``, the right camera :data:`tests.edge.room.BASELINE` to the
-left one's right, no distortion). The gap room drops the frames of :data:`GAP`. The tests'
-fixtures (``tests/orchestration/conftest.py``) and the golden record's generator
-(``tests/fixtures/edge/generate_room_runs.py``) both write them from here.
+left one's right, no distortion). The gap room drops the frames of :data:`GAP`. The loop room
+follows :func:`tests.edge.room.loop_path` instead, back over where it began
+(:func:`loop_frames`). The tests' fixtures (``tests/orchestration/conftest.py``) and the golden
+records' generator (``tests/fixtures/edge/generate_room_runs.py``) both write them from here.
 """
 
 from __future__ import annotations
@@ -375,6 +376,21 @@ def write_room(base: Path, rendered: list[room.Frame]) -> Room:
 CASES = [("tum", "rgbd"), ("tum", "monocular"), ("euroc", "stereo"), ("euroc", "monocular")]
 """Each dataset in each mode it records."""
 
+LOOP_CASES = [("tum", "rgbd"), ("tum", "monocular"), ("euroc", "stereo")]
+"""The loop room's cases: each mode once (its monocular case alone in TUM's folder, Python's
+monocular run being the longest the tests make)."""
+
+
+def loop_frames() -> list[room.Frame]:
+    """Render the loop room with its right views: :data:`tests.edge.room.LOOP_FRAMES` frames.
+
+    Returns
+    -------
+    list of tests.edge.room.Frame
+        The frames.
+    """
+    return room.sequence(room.LOOP_FRAMES, stereo=True, loop=True)
+
 
 def room_inputs() -> dict[str, Any]:
     """Return what the golden record's runs depend on besides the pipeline.
@@ -383,7 +399,8 @@ def room_inputs() -> dict[str, Any]:
     -------
     dict
         The frames rendered, the gap, the blank frame, where the lost room's blank frames begin
-        and how many, and each room's settings off their defaults: recorded with the runs and
+        and how many, the loop room's frames, radius, turn and pitch, and each room's settings
+        off their defaults: recorded with the runs and
         checked first, so a change to the rooms reads as one, not as a change to what the
         pipeline decides.
     """
@@ -405,4 +422,5 @@ def room_inputs() -> dict[str, Any]:
         "found_room": moved(FOUND_OPTIONS),
         "window": [WINDOW_BLANKS, WINDOW_AT],
         "window_room": moved(WINDOW_OPTIONS),
+        "loop": [room.LOOP_FRAMES, room.LOOP_RADIUS, room.LOOP_TURN, room.LOOP_PITCH],
     }

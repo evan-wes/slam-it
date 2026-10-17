@@ -1,42 +1,49 @@
-"""Generate ``room_runs.json``: the golden record of the room's runs.
+"""Generate ``room_runs_<backend>.json``: each language's golden record of the rooms' runs.
 
-Run from the repository root after a change meant to alter what the pipeline decides::
+Run from the repository root after a change meant to alter what a pipeline decides, naming the
+backends whose records it changes (default: all three)::
 
-    python -m tests.fixtures.edge.generate_room_runs
+    python -m tests.fixtures.edge.generate_room_runs [python] [cpp] [rust]
 
 The edge rung's stage parity compares every backend live with the Python reference, on states
 built from the synthetic room (stored, they would run to megabytes), at the tolerances of
 ``tests/edge/support.py``. A change made in all three languages at once passes those
-comparisons. This record of what the Python pipeline decided on the room, whole, with its gap,
-lost twice, its lost maps reset or kept, lost and found again by relocalisation, and found
-again then lost by the time, keyframes culled before (:mod:`tests.orchestration.datasets`),
-catches it:
-every backend's runs are held to it (``tests/orchestration/test_vo.py``), so regenerating it is
-the deliberate act that accepts new decisions, and its diff shows them (review panel finding
-A1).
+comparisons. These records of what each language's pipeline decided on the room, whole, with
+its gap, lost twice, its lost maps reset or kept, lost and found again by relocalisation, and
+found again then lost by the time, keyframes culled before, and on the loop room, a loop closed
+(:mod:`tests.orchestration.datasets`), catch it: each backend's runs are held to its own record
+(``tests/orchestration/test_vo.py``), so regenerating one is the deliberate act that accepts
+new decisions, and its diff shows them (review panel finding A1). A record per language, since
+B3: each language solves on GTSAM through its own factors, so after a loop's global BA they may
+decide differently, as the online-SLAM design's section 10 decided.
 
 Per room, dataset and mode: each frame's state, map, tracked inliers and keyframe flag; the
-tracked frames' times, ``T_world_cam`` and maps; the final map's keyframes' times and its number
-of points; every point's and keyframe's life (the run format's ``*_lives.npy``), as three
-columns each, and map; each keyframe's last parent and the strong links (``keyframe_parents``
-and ``keyframe_links``, the links as three columns);
+tracked frames' times, final ``T_world_cam``, ``T_world_cam`` as tracked, and maps; the final
+map's keyframes' times and its number of points; every point's and keyframe's life (the run
+format's ``*_lives.npy``), as three columns each, and map; each keyframe's last parent, the
+strong links and the loops closed (``keyframe_parents``, ``keyframe_links`` and
+``keyframe_loops``, the links as three columns, the loops as two);
 each frame's count of keypoints of each fate (:data:`slam_it.eval.runs.FATES`), a column per
 fate; and each frame's stage summaries (:class:`slam_it.edge.pipeline.FrameSummary`), one
 line per frame.
-The record also holds its inputs (:func:`tests.orchestration.datasets.room_inputs`), which the
+A record also holds its inputs (:func:`tests.orchestration.datasets.room_inputs`), which the
 tests check first. The two monocular cases decide alike, the room being the same in both
-datasets' folders; both are kept, since each holds a different reader.
+datasets' folders; both are kept, since each holds a different reader. The loop room has one
+case a mode (:data:`tests.orchestration.datasets.LOOP_CASES`).
 """
 
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from slam_it import backends
+from slam_it.edge.options import Options
 from slam_it.edge.pipeline import FrameSummary
 from slam_it.eval import runs
 from slam_it.orchestration import vo
@@ -48,9 +55,11 @@ from tests.orchestration.datasets import (
     FOUND_OPTIONS,
     GAP_OPTIONS,
     KEPT_OPTIONS,
+    LOOP_CASES,
     WINDOW_OPTIONS,
     found_frames,
     gap_frames,
+    loop_frames,
     lost_frames,
     room_inputs,
     window_frames,
@@ -114,11 +123,12 @@ def record(run: runs.Run, features: runs.Features) -> dict[str, Any]:
     -------
     dict
         Each frame's state (one string), map (null before one), tracked inliers and keyframe
-        flag (0 or 1); the tracked frames' times, ``T_world_cam`` (a row of 16 each) and maps;
-        the final map's keyframes' times and number of points; the lives of every point and
-        keyframe, as columns (made, removed, why), and their maps; each keyframe's last parent,
-        and the strong links as columns (the two keyframes, the points shared); each frame's
-        count of keypoints of each fate, a column per fate; each frame's stage summaries. Columns of
+        flag (0 or 1); the tracked frames' times, final ``T_world_cam`` and ``T_world_cam`` as
+        tracked (a row of 16 each), and maps; the final map's keyframes' times and number of
+        points; the lives of every point and keyframe, as columns (made, removed, why), and their
+        maps; each keyframe's last parent, the strong links as columns (the two keyframes, the
+        points shared), and the loops closed as columns; each frame's count of keypoints of each
+        fate, a column per fate; each frame's stage summaries. Columns of
         numbers, and one summary per frame, so the record lays out one line per column or
         frame and a changed decision shows as a changed line.
     """
@@ -129,6 +139,7 @@ def record(run: runs.Run, features: runs.Features) -> dict[str, Any]:
         "keyframes": [int(d["keyframe"]) for d in run.diagnostics],
         "timestamps": run.timestamps.tolist(),
         "poses": run.poses.reshape(-1, 16).tolist(),
+        "tracked_poses": run.tracked_poses.reshape(-1, 16).tolist(),
         "pose_maps": run.pose_maps.tolist(),
         "keyframe_timestamps": run.final_keyframes()[0].tolist(),
         "points": len(run.final_points()),
@@ -136,6 +147,7 @@ def record(run: runs.Run, features: runs.Features) -> dict[str, Any]:
         "keyframe_lives": run.keyframe_lives.T.tolist(),
         "keyframe_parents": run.keyframe_parents.tolist(),
         "keyframe_links": run.keyframe_links.T.tolist(),
+        "keyframe_loops": run.keyframe_loops.T.tolist(),
         "point_maps": run.point_maps.tolist(),
         "keyframe_maps": run.keyframe_maps.tolist(),
         "fates": fate_counts(run, features),
@@ -157,43 +169,60 @@ def _laid_out(doc: dict[str, Any]) -> str:
     return text
 
 
-def main() -> None:
-    """Run each room in every case with the Python reference; write the record."""
-    rendered = room.sequence(FRAMES, stereo=True)
+def _rooms(
+    rendered: list[room.Frame],
+) -> list[tuple[str, list[room.Frame], Options, list[tuple[str, str]]]]:
+    """Return each room: its name, frames, settings and cases."""
     lost = lost_frames(rendered)
-    rooms = (
-        ("room", rendered, OPTIONS),
-        ("gap", gap_frames(rendered), GAP_OPTIONS),
-        ("lost", lost, OPTIONS),
-        ("kept", lost, KEPT_OPTIONS),
-        ("found", found_frames(rendered), FOUND_OPTIONS),
-        ("window", window_frames(rendered), WINDOW_OPTIONS),
-    )
-    cases: dict[str, dict[str, Any]] = {}
-    with tempfile.TemporaryDirectory() as scratch:
-        base = Path(scratch)
-        for name, frames, options in rooms:
-            folders = write_room(base / name, frames)
-            for dataset, mode in CASES:
-                folder = folders.tum if dataset == "tum" else folders.euroc
-                out = base / f"{name}-{dataset}-{mode}"
-                run = vo.run(dataset, folder, mode, out, options=options, record_features=True)
-                cases[f"{name}/{dataset}/{mode}"] = record(run, runs.read_features(out, run))
-    doc = {
-        "description": "The room's runs: a golden record (generate_room_runs.py).",
-        "oracle": "the Python reference pipeline, as it decided when the record was made",
-        "tolerance": {
-            "comparison": "close",
-            **SOLVER_TOLERANCE,
-            "reason": "decisions exactly; poses as the backends agree through bundle "
-            "adjustment (tests/edge/support.py's SOLVER_TOLERANCE)",
-        },
-        "inputs": room_inputs(),
-        "cases": cases,
-    }
-    (HERE / "room_runs.json").write_text(_laid_out(doc))
-    print(f"wrote room_runs.json ({len(cases)} cases)")
+    return [
+        ("room", rendered, OPTIONS, CASES),
+        ("gap", gap_frames(rendered), GAP_OPTIONS, CASES),
+        ("lost", lost, OPTIONS, CASES),
+        ("kept", lost, KEPT_OPTIONS, CASES),
+        ("found", found_frames(rendered), FOUND_OPTIONS, CASES),
+        ("window", window_frames(rendered), WINDOW_OPTIONS, CASES),
+        ("loop", loop_frames(), OPTIONS, LOOP_CASES),
+    ]
+
+
+def main(chosen: list[str]) -> None:
+    """Run each room in every case with each chosen backend; write each one's record.
+
+    Parameters
+    ----------
+    chosen : list of str
+        The backends whose records are written (default: all of them).
+    """
+    rooms = _rooms(room.sequence(FRAMES, stereo=True))
+    for backend in chosen or list(backends.BACKENDS):
+        cases: dict[str, dict[str, Any]] = {}
+        with tempfile.TemporaryDirectory() as scratch:
+            base = Path(scratch)
+            for name, frames, options, room_cases in rooms:
+                folders = write_room(base / name, frames)
+                for dataset, mode in room_cases:
+                    folder = folders.tum if dataset == "tum" else folders.euroc
+                    out = base / f"{name}-{dataset}-{mode}"
+                    run = vo.run(
+                        dataset, folder, mode, out, backend=backend, options=options,
+                        record_features=True,
+                    )  # fmt: skip
+                    cases[f"{name}/{dataset}/{mode}"] = record(run, runs.read_features(out, run))
+        doc = {
+            "description": f"The rooms' runs in {backend}: a record (generate_room_runs.py).",
+            "oracle": f"the {backend} pipeline, as it decided when the record was made",
+            "tolerance": {
+                "comparison": "close",
+                **SOLVER_TOLERANCE,
+                "reason": "decisions exactly; poses as a run repeats them through its solves "
+                "(tests/edge/support.py's SOLVER_TOLERANCE)",
+            },
+            "inputs": room_inputs(),
+            "cases": cases,
+        }
+        (HERE / f"room_runs_{backend}.json").write_text(_laid_out(doc))
+        print(f"wrote room_runs_{backend}.json ({len(cases)} cases)")
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

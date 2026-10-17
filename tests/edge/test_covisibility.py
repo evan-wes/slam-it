@@ -213,13 +213,14 @@ def test_a_bad_row_or_point_is_refused(backend: str) -> None:
         covisibility.local_map(m, np.array([3, -2]), options, backend=chosen)
 
 
-def test_the_golden_record_keeps_one_tree_a_map() -> None:
-    """Every map of every run the golden record holds ends as one tree, rooted at its first.
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_the_golden_record_keeps_one_tree_a_map(backend: str) -> None:
+    """Every map of every run a language's golden record holds ends as one tree, at its first.
 
     Its keyframes not culled (a reset map's among them) each have a parent of the same map,
     alive too, but its first, which has none, and each chain of parents reaches the first.
     """
-    for name, case in load_fixture("edge/room_runs.json")["cases"].items():
+    for name, case in load_fixture(f"edge/room_runs_{backend}.json")["cases"].items():
         parents = np.array(case["keyframe_parents"], dtype=np.int64)
         why = np.array(case["keyframe_lives"][2], dtype=np.int64)  # by column: why each ended
         in_map = np.array(case["keyframe_maps"], dtype=np.int64)

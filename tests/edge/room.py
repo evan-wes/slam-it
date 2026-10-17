@@ -313,6 +313,33 @@ def path(frames: int, rate: float = 30.0) -> list[Array]:
     return out
 
 
+def surface_distance(points: Array) -> Array:
+    """Return each point's distance to the room's nearest surface: a wall, or a box's face.
+
+    The room is seen from inside, so a point's distance to it is to the nearest of its six
+    planes; a box is seen from outside, so a point's distance to it is to its surface, from
+    either side.
+
+    Parameters
+    ----------
+    points : ndarray of float64, shape (N, 3)
+        The points, in the room's frame.
+
+    Returns
+    -------
+    ndarray of float64, shape (N,)
+        Each one's distance, in metres.
+    """
+    lo, hi = (np.array([axis[k] for axis in ROOM]) for k in (0, 1))
+    out = np.abs(np.minimum(points - lo, hi - points)).min(axis=1)
+    for box in BOXES:
+        lo, hi = (np.array([axis[k] for axis in box]) for k in (0, 1))
+        beyond = np.linalg.norm(np.maximum(np.maximum(lo - points, points - hi), 0.0), axis=1)
+        within = np.minimum(points - lo, hi - points).min(axis=1)
+        out = np.minimum(out, np.where(within > 0.0, within, beyond))
+    return np.asarray(out, dtype=np.float64)
+
+
 LOOP_RADIUS = 0.6
 """The loop path's circle's radius, in metres."""
 

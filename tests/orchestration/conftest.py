@@ -2,9 +2,10 @@
 
 The room is rendered once per session and written whole, with its gap, lost (frames blanked
 to lose the track), found (blanked, then back at the start) and the window room (found, then
-lost by the time); :func:`room_runs`, :func:`gap_runs`, :func:`lost_runs`, :func:`kept_runs`,
-:func:`found_runs` and :func:`window_runs` run them through :func:`slam_it.orchestration.vo.run`,
-each case once, recording their features.
+lost by the time); the loop room is rendered apart (:func:`loop_folders`). :func:`room_runs`,
+:func:`gap_runs`, :func:`lost_runs`, :func:`kept_runs`, :func:`found_runs`, :func:`window_runs`
+and :func:`loop_runs` run them through :func:`slam_it.orchestration.vo.run`, each case once,
+recording their features.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from tests.orchestration.datasets import (
     Room,
     found_frames,
     gap_frames,
+    loop_frames,
     lost_frames,
     window_frames,
     write_room,
@@ -103,6 +105,12 @@ def window_folders(
 ) -> Room:
     """Write the window room (:func:`window_frames`) as both datasets' folders."""
     return write_room(tmp_path_factory.mktemp("window"), window_frames(rendered_room))
+
+
+@pytest.fixture(scope="session")
+def loop_folders(tmp_path_factory: pytest.TempPathFactory) -> Room:
+    """Render the loop room with its right views, once per session, and write its folders."""
+    return write_room(tmp_path_factory.mktemp("loop"), loop_frames())
 
 
 class RoomRun:
@@ -196,3 +204,9 @@ def window_runs(window_folders: Room, tmp_path_factory: pytest.TempPathFactory) 
 def kept_runs(lost_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> RoomRun:
     """Run the lost room with :data:`KEPT_OPTIONS`: its first map is kept."""
     return RoomRun(lost_folders, KEPT_OPTIONS, tmp_path_factory.mktemp("kept_runs"))
+
+
+@pytest.fixture(scope="session")
+def loop_runs(loop_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> RoomRun:
+    """Run the loop room at the room's settings: a loop closes in every mode."""
+    return RoomRun(loop_folders, OPTIONS, tmp_path_factory.mktemp("loop_runs"))
