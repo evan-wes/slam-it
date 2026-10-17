@@ -103,7 +103,7 @@ test("the loader refuses another format, a mis-shaped array, an unknown backend 
   const older = new TextEncoder().encode(JSON.stringify({ ...info, version: 0 })).buffer;
   await assert.rejects(
     loadBundle(over({ "bundle.json": older })),
-    /expected slam-it-bundle version 3/,
+    /expected slam-it-bundle version 4/,
   );
   const short = npy("<f4", "2,", new Float32Array([0, 1]));
   await assert.rejects(
@@ -139,6 +139,17 @@ test("the loader refuses another format, a mis-shaped array, an unknown backend 
     loadBackend(over({ [`${name}/keyframe_links.npy`]: unnamed }), track),
     /keyframe_links.npy: -1 names none/,
   );
+  // A loop's two keyframes are both ids: one past the last, or under 0, names none.
+  for (const ends of [
+    [0, k],
+    [-1, 0],
+  ]) {
+    const loop = npy("<i4", "1, 2", new Int32Array(ends));
+    await assert.rejects(
+      loadBackend(over({ [`${name}/keyframe_loops.npy`]: loop }), track),
+      new RegExp(`keyframe_loops.npy: ${ends[0] < 0 ? -1 : k} names none`),
+    );
+  }
 });
 
 /**
