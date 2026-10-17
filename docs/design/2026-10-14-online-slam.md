@@ -2,13 +2,14 @@
 
 Milestone 2B, the second of the two milestones the ladder places before milestone 3
 ([Milestones 2A and 2B](2026-10-02-slam-it-ladder.md#milestones)): ORB-SLAM's own parts, so that
-the edge rung is a SLAM system rather than odometry that starts again. Four PRs, each in Python,
+the edge rung is a SLAM system rather than odometry that starts again. Five PRs, each in Python,
 C++ and Rust, each measured on the test set:
 - **B1:** place recognition and relocalisation: a vocabulary of binary words, a keyframe
   database, and a lost track relocalised in its own map before a new one is started.
 - **B2:** the covisibility graph and the essential graph, in place of the window of 10
   keyframes.
-- **B3:** loop closure.
+- **B3:** loop closure, in the one worker that tracks and maps.
+- **B3b:** tracking, mapping and loop closing in threads of their own.
 - **B4:** maps joined where a recognised place links them (ORB-SLAM3's merging).
 
 Decided with evan-wes on 2026-10-14:
@@ -183,26 +184,22 @@ source (`KeyFrameDatabase.cc`, `Tracking.cc`):
 
 Each gets its own section here before its PR, its forks put to the owner then.
 - **B2, the covisibility graph:** section 8.
-- **B3, loop closure:** inline, not in a thread, as the ladder decided; the frame it closes on
-  measured against the deadline, a thread only if it misses it. Measured on TUM and EuRoC's
-  loops.
-  From B2's latency (section 9), decided with evan-wes on 2026-10-16: B3's design also decides
-  how the edge rung stands in for ORB-SLAM's threads, local mapping's refusal of a keyframe
-  while busy and its interrupted local BA with loop closing's own, measured together; B4's
-  merging runs in loop closing's, as ORB-SLAM3's does. From B2's review panel, for that design:
-  - a local BA with no keyframe held fixed, which ORB-SLAM3 abandons ("0 fixed KF ... LBA
-    aborted"): none of B2's 78,917 at seed 0 had none, but 15,113 had one, nearly all monocular
-    (L5);
+- **B3, loop closure:** section 10.
+- **B3b, the threads** (decided with evan-wes on 2026-10-17, replacing the stand-in for
+  ORB-SLAM's threads decided on 2026-10-16): real threads in the three languages, a design of our
+  own started from ORB-SLAM's, which runs tracking, local mapping, loop closing and global BA
+  each in a thread, with queues between them and its handshakes (`AcceptKeyFrames`,
+  `InterruptBA`, `RequestStop`). Ours is compared with ORB-SLAM's own scheme, built in our C++
+  so that only the threading differs; ORB-SLAM3 itself, built and run here, is compared with
+  the whole system once phase B is done (decided with evan-wes on 2026-10-17). A switch
+  runs the threads' work in order, for debugging and each language's record. Python runs the
+  same design under the GIL: it stays on 3.11, its free-threaded build passed over, as GTSAM has
+  none. The latency bar, C++ and Rust's alone, starts here. B4's merging runs in loop closing's
+  thread, as ORB-SLAM3's does. From B2's review panel, for this design:
   - ORB-SLAM3's culling tests every keyframe sharing a point with the new one, stopping after
     100 (L4); B2's tests the new one's links;
   - the papers' K2, which B2 builds, makes a larger local map than ORB-SLAM's source does (its
-    `break`), so ORB-SLAM's timings are not B2's to compare with (L6);
-  - two measures across a run-format break are compared by each batch's own summary, written by
-    the code that ran it, not by reading the other's runs, which a newer reader refuses (A9);
-  - culling must spare the keyframes loop closing is testing and those with loop edges, as
-    `SetBadFlag`'s `mbNotErase` does (run 2, L9), in `covisibility.cull`, the one way out; and
-    the map's erase guards parents, not the root, so a second caller of it, or merging that
-    renumbers a root, revisits the rule kept in `cull` (run 2, A15).
+    `break`), so ORB-SLAM's timings are not B2's to compare with (L6).
 - **B4, merging maps:** the atlas the A2 panel deferred (`edge.atlas`: a kept map's descriptors
   and observations kept whole, the pipeline owning the trajectory record), and maps welded where
   the database recognises one in another. With it, the loss window revisited: B1 relocalises a
@@ -216,7 +213,9 @@ Each gets its own section here before its PR, its forks put to the owner then.
   across maps, as ORB-SLAM3's `DetectRelocalizationCandidates` counts them, or per map, as B1's
   database does. Decided with evan-wes on 2026-10-16: the record of a lost map's strong links,
   which B2 computes in the frame the map is lost on (58 to 360 ms, growing with the map; section
-  9), stays there until the atlas keeps maps whole.
+  9), stays there until the atlas keeps maps whole. From B2's review panel (run 2, A15): the
+  map's erase guards parents, not the root, so merging that renumbers a root revisits the rule
+  kept in `covisibility.cull`.
 
 ## 5. Measurements (B1)
 
@@ -276,7 +275,12 @@ Each gets its own section here before its PR, its forks put to the owner then.
   local mapping off the window; the fallback and relocalisation's groups; the run format 6 and
   the bundle's 3; the viewer's graph; the golden record regenerated; the test set rerun and the
   note. The review panel on the finished slice; offline CI before the merge.
-- **B3 and B4** after it, each designed here first.
+- **B3** (0.3.11.0 -> 0.3.12.0, section 10): GTSAM in the three languages; detection, the loop's
+  Sim(3), the correction, the essential graph and global BA; the final trajectory; the run
+  format 7 and the bundle's 4; a record per language, the loop room and the bar; the loop
+  sequences and the test set measured. The review panel on the finished slice; offline CI
+  before the merge.
+- **B3b** after it, then **B4**, each designed here first.
 - **Not in 2B:** the IMU (milestone 6); the learned rungs.
 
 ## 8. B2: the covisibility graph (0.3.10.0 -> 0.3.11.0)
@@ -382,3 +386,144 @@ runs lost. Tracking keeps its deadline but for 172 of the 35,066 frames made alo
 mapping, judged as a thread of its own, is loaded 1.7 to 2.6 times over: never busy, the
 pipeline refuses no keyframe and cuts no local BA short. Put to evan-wes, who left the threads
 to B3's design (section 4).
+
+## 10. B3: loop closure (0.3.11.0 -> 0.3.12.0)
+
+Decided with evan-wes on 2026-10-17, from ORB-SLAM2's and ORB-SLAM3's `LoopClosing.cc`,
+`KeyFrameDatabase.cc`, `Sim3Solver.cc` and `Optimizer.cc`. Loop closing runs on each keyframe
+after local mapping, in the one worker, as everything has until now; B3b gives it a thread.
+Three decisions of that day reach beyond B3:
+- **Well-tested libraries are welcome in the runtime,** the SLAM parts included: learning SLAM
+  includes learning its standard tools. Here that is GTSAM, in all three languages.
+- **Each language is held to a bar of results on the same data,** not to the others'
+  decisions: each must map and localise well, and none need decide as another does.
+- **The trajectory a run scores is ORB-SLAM's final one,** which loop closure corrects.
+
+1. **GTSAM 4.3 is the back end** (Dellaert and Kaess's factor-graph library), behind rung 0's
+   `slam_it.foundations.graphs`: the loop's Sim(3) refinement, the essential graph and global
+   BA.
+   - C++ links conda-forge's build of it, made against our Eigen 5.0.1. Python uses its
+     official bindings, the same build. Rust reaches it through a `cxx` bridge.
+   - GTSAM lacks two of the factors needed: a point's reprojection through our camera models
+     (radtan with its `k3`, which its `Cal3DS2` leaves out, and the right column), and a match's
+     reprojection through a Sim(3). They are written once in C++ and shared by C++ and the Rust
+     bridge; Python writes them as `CustomFactor`s, its reference.
+   - A monocular map optimises Sim(3) (`Similarity3`); a stereo or RGB-D map fixes the scale
+     and optimises SE(3) (`Pose3`), as ORB-SLAM's `mbFixScale` does.
+   - GTSAM joins the runtime dependencies. The import-linter contract that kept the test oracles
+     out of the library drops scipy, and a test that used one as an oracle keeps it wherever the
+     library does not call the same routine.
+2. **Detection, ORB-SLAM3's** (`NewDetectCommonRegions`), on the active map's keyframe database.
+   A map of fewer than `loop.min_keyframes` (12) keyframes is not searched.
+   - **Candidates** (`DetectNBestCandidates`): the keyframes sharing a word with the new one and
+     not linked to it; those sharing more than 80% of the most words any shares are scored; each
+     score accumulated over the keyframe's 10 best neighbours that were scored, the best-scored
+     standing for the group; the `loop.candidates` (3) best groups, best first, ties by id.
+   - **Each candidate,** with its 10 best neighbours, unless one of them is linked to the new
+     keyframe: features matched by word against each (a ratio of 0.9), at least 20 in all; the
+     loop's Sim(3) (item 3); the group's points projected through it (8 pixels, a ratio of 1.5),
+     at least 50; refined, at least 20 inliers; projected again (5 pixels, 1.0), at least 80.
+   - **Confirmed** by up to 3 of the new keyframe's 10 best neighbours, each projecting at least
+     30 of the group's points through the Sim(3) carried to it. Three confirmations close the
+     loop at once. Fewer are carried to the keyframes that follow, each confirming with 30
+     points projected, 50 inliers refined and 100 projected again, until there are three (the
+     loop closes) or two misses in a row (it is dropped).
+3. **The loop's Sim(3):** RANSAC over samples of 3 matches (rung 0's `ransac`: a probability of
+   0.99, at least 15 inliers, at most 300 iterations; each candidate run to its end, best first,
+   as B1's relocalisation runs them). Each sample is solved in closed form by rung 0's
+   `alignment.umeyama`, the least-squares answer Horn's quaternion method gives ORB-SLAM's
+   `Sim3Solver`, with Umeyama's guard against a reflection; the scale is fixed for stereo and
+   RGB-D. A match is an inlier when it reprojects within the 99% chi-square bound (9.21 σ²) in
+   both keyframes. The result is refined as `OptimizeSim3` refines it, on GTSAM: each match
+   reprojected both ways, a Huber loss at √10, 5 iterations, the matches past 10 dropped, then
+   10 more (5 if none was dropped).
+4. **The correction, ORB-SLAM's `CorrectLoop`:**
+   - the new keyframe and its links moved by the loop's Sim(3), their points with them;
+   - each matched point replacing the new keyframe's (`Replace`), or joining it where it had
+     none;
+   - the loop's group's points fused into the new keyframe and its links (a 4-pixel window, a
+     ratio of 0.8);
+   - the links new across the loop collected, then the essential graph (item 5);
+   - the loop edge added to both keyframes.
+5. **The essential graph,** ORB-SLAM's `OptimizeEssentialGraph`, on GTSAM:
+   - a node per keyframe, starting from its corrected pose where step 4 gave it one;
+   - an edge between two keyframes for each of: the spanning tree, the loop edges, links
+     sharing at least `loop.essential_points` (100) points, and the loop's new links of that
+     strength, the new keyframe's link to the matched one whatever its strength. Each edge holds
+     the two keyframes' relative pose from before the correction;
+   - unit information, the matched keyframe fixed, Levenberg–Marquardt for 20 iterations;
+   - each point then moved with its reference keyframe, or with the keyframe that moved it in
+     step 4.
+6. **Global BA after each loop,** as visual-only ORB-SLAM3 always runs it, on GTSAM:
+   - every keyframe and point of the map, the reprojection factors, a Huber loss at √5.991
+     (√7.815 with a right column), the map's first keyframe fixed, 10 iterations;
+   - each keyframe and point set to its result. It runs inline here, so no keyframe is made
+     while it runs and none needs correcting through the spanning tree afterwards, as ORB-SLAM's
+     `RunGlobalBundleAdjustment` corrects them; B3b's thread does need that;
+   - `loop.global_ba` turns it off, so that what it adds can be measured.
+7. **What stays guarded** (B2's review panel):
+   - culling spares a keyframe with a loop edge, and the keyframes detection is holding, as
+     ORB-SLAM's `SetNotErase` does, in `covisibility.cull` (L9);
+   - a local BA with no keyframe held fixed is skipped, as ORB-SLAM3 skips it (L5).
+8. **The final trajectory** (ORB-SLAM's `SaveTrajectoryTUM`):
+   - as each frame is tracked, it keeps its reference keyframe and its pose relative to it
+     (`mlRelativeFramePoses`); a culled keyframe keeps its pose relative to its parent
+     (`mTcp`);
+   - when a map closes or the run ends, each of its frames is placed by its reference keyframe's
+     final pose, through the keyframe's culled ancestors where it was culled;
+   - the poses as tracked are kept beside it.
+9. **The run format, version 7, and the bundle's, version 4,** clean breaks:
+   - `trajectory.txt` holds the final trajectory, and `trajectory_tracked.txt` the poses as
+     tracked;
+   - each keyframe's loop edges are kept (`keyframe_loops.npy`, `(E, 2)` int64);
+   - per keyframe, the diagnostics record how detection went (the candidates, their matches and
+     inliers, the confirmations, the outcome), and, on a loop, its correction (the matched
+     keyframe, the Sim(3), the points fused, the graph's edges, iterations and cost, and global
+     BA's), with their times;
+   - the viewer draws the loop edges.
+10. **Tests: a record per language, and a bar for all three:**
+    - the golden record becomes one per language (`room_runs_{python,cpp,rust}.json`), each its
+      own language's regression check, regenerated deliberately as now;
+    - the stage comparisons with Python's reference stay, at their tolerances;
+    - a new room whose camera comes back to where it started, so a loop closes, in every mode;
+    - the bar on the rooms, in layer 1, for all three languages: the frames tracked, the maps,
+      the loops closed, no loop at a wrong place, and the error of the final trajectory against
+      the room's truth and of the points against its walls, each threshold set from B3's first
+      runs;
+    - the bar on real data, C++ and Rust's, is section 11's;
+    - a loop is judged against the ground truth twice (decided with evan-wes on 2026-10-17):
+      - **a wrong place,** which fails the bar: by the ground truth, the loop's two keyframes
+        were more than 3 m apart or looked more than 60° apart, so they could not have seen the
+        same place (place recognition's convention; starting values, revisited with the first
+        runs);
+      - **a poor pose,** which is reported: with the map aligned to the ground truth as the ATE
+        aligns it, the two keyframes' relative pose after the correction misses the truth by
+        more than five times the map's median error, or by more than 5°.
+
+## 11. Measurements (B3)
+
+Once, on the finished branch, as verification goes from B3 on (decided with evan-wes on
+2026-10-17): C++ and Rust measure what the PR claims; Python is held to the bar on the rooms
+alone, and runs on real data only when asked.
+- **The bar's anchor is ORB-SLAM's published accuracy** (decided with evan-wes on 2026-10-17):
+  the RMSE of the ATE that ORB-SLAM3's paper gives for EuRoC, monocular and stereo, ORB-SLAM2's
+  for TUM RGB-D, and ORB-SLAM's for TUM monocular, each checked against its paper. Our headline
+  ATE is the same measure. A sequence and mode with no published figure has no ATE bar until
+  ORB-SLAM3 is built and run here, after phase B.
+- **The loop sequences**, C++ and Rust at seed 0, sharded:
+  - TUM's fr3_long_office_household, fr1_desk and fr3_nostructure_texture_near_withloop,
+    monocular and RGB-D;
+  - EuRoC's MH_01 to MH_05 and V1_01 to V1_03, monocular and stereo;
+  - each run's loops closed, any at a wrong place or with a poor pose, the share tracked, the
+    maps and the final trajectory's ATE, against the published figure, with global BA on and
+    off.
+- **The bar's starting thresholds,** on each loop sequence: the ATE within 1.5 times the
+  published figure, at least 95% of the frames tracked (the papers mark a sequence only as
+  tracked or failed, so there is no published share to anchor it), and no loop at a wrong
+  place.
+- **The test set at seed 0, C++ and Rust** (decided with evan-wes on 2026-10-17), against
+  B2's: the loops closed, any at a wrong place or with a poor pose, the share tracked, the maps,
+  and the ATE of both trajectories (the as-tracked one compares with B2's). B2's runs are run
+  format 6, so their per-batch summaries are written before the break (A9).
+- **Not measured:** latency. Loop correction and global BA run inside their frame here, so the
+  frames they make late are counted from the diagnostics, and judged from B3b on.
