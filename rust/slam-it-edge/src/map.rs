@@ -1238,6 +1238,81 @@ pub fn add_loop_edge(m: &mut Map, first: i64, second: i64) -> Result<()> {
     Ok(())
 }
 
+/// Replaces one point by another (`slam_it.edge.map.replace_point`, `MapPoint::Replace`).
+///
+/// The lost point's observations pass to the kept one, except in keyframes that already see
+/// the kept one, where they are dropped; its visible and found counts are added to the kept
+/// one's; it is erased ([`Removal::Fused`]), and the kept one refreshed. Local mapping's fusion
+/// and loop closing replace points through it.
+///
+/// # Arguments
+///
+/// * `m` - The map.
+/// * `lose` - The lost point's id.
+/// * `keep` - The kept point's id.
+///
+/// # Errors
+///
+/// `InvalidInput` if either point is not in the map, or they are the same.
+pub fn replace_point(m: &mut Map, lose: i64, keep: i64) -> Result<()> {
+    let (Some(p_lose), Some(p_keep)) = (m.point_row(lose), m.point_row(keep)) else {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!("replace {lose} by {keep}: expected two of the map's points"),
+        );
+    };
+    if lose == keep {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!("replace {lose} by {keep}: expected two of the map's points"),
+        );
+    }
+    let kept_in: BTreeSet<usize> = m.pt_observations[p_keep]
+        .iter()
+        .map(|&r| m.keyframe_of(r))
+        .collect();
+    for r in m.pt_observations[p_lose].clone() {
+        let to = if kept_in.contains(&m.keyframe_of(r)) {
+            -1
+        } else {
+            keep
+        };
+        observe(m, r, to)?;
+    }
+    m.pt_visible[p_keep] += m.pt_visible[p_lose];
+    m.pt_found[p_keep] += m.pt_found[p_lose];
+    let mut flags = vec![false; m.points()];
+    flags[p_lose] = true;
+    erase(m, &flags, Removal::Fused);
+    let kept: Vec<usize> = m.point_row(keep).into_iter().collect();
+    refresh_points(m, &kept)
+}
+
+/// The row of the keyframe with an id, refusing one the map does not hold
+/// (`slam_it.edge.map.keyframe_row`).
+///
+/// # Arguments
+///
+/// * `m` - The map.
+/// * `keyframe` - The keyframe's id.
+///
+/// # Returns
+///
+/// Its row.
+///
+/// # Errors
+///
+/// `InvalidInput` if the map holds no keyframe with that id.
+pub fn keyframe_row(m: &Map, keyframe: i64) -> Result<usize> {
+    match m.keyframe_row(keyframe) {
+        Some(k) => Ok(k),
+        None => fail(
+            ErrorKind::InvalidInput,
+            format!("keyframe {keyframe} is not in the map"),
+        ),
+    }
+}
+
 /// Points a keypoint at a point, or at none, keeping the observation lists.
 ///
 /// # Arguments

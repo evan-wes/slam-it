@@ -8,6 +8,7 @@ pub mod covisibility;
 pub mod database;
 pub mod frames;
 pub mod initialization;
+pub mod loops;
 pub mod map;
 pub mod mapping;
 pub mod options;

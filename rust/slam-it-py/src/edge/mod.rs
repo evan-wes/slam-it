@@ -12,6 +12,7 @@ mod database;
 mod edge_crossing;
 mod frames;
 mod initialization;
+mod loops;
 mod map;
 mod mapping;
 mod relocalization;
@@ -35,5 +36,6 @@ pub fn edge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_wrapped(pyo3::wrap_pymodule!(covisibility::covisibility))?;
     m.add_wrapped(pyo3::wrap_pymodule!(database::database))?;
     m.add_wrapped(pyo3::wrap_pymodule!(relocalization::relocalization))?;
+    m.add_wrapped(pyo3::wrap_pymodule!(loops::loops))?;
     Ok(())
 }
