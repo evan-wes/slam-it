@@ -28,6 +28,7 @@ mod p3p;
 mod pnp;
 mod ransac_crossing;
 mod se3;
+mod sim3;
 mod so3;
 mod stereo;
 mod triangulation;
@@ -55,6 +56,7 @@ pub fn foundations(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_wrapped(pyo3::wrap_pymodule!(p3p::p3p))?;
     m.add_wrapped(pyo3::wrap_pymodule!(pnp::pnp))?;
     m.add_wrapped(pyo3::wrap_pymodule!(se3::se3))?;
+    m.add_wrapped(pyo3::wrap_pymodule!(sim3::sim3))?;
     m.add_wrapped(pyo3::wrap_pymodule!(so3::so3))?;
     m.add_wrapped(pyo3::wrap_pymodule!(stereo::stereo))?;
     m.add_wrapped(pyo3::wrap_pymodule!(triangulation::triangulation))?;

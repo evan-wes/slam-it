@@ -38,6 +38,8 @@ void bind_foundations(nanobind::module_& parent) {
   bind_p3p(p3p);
   nanobind::module_ pnp = foundations.def_submodule("pnp", "Absolute pose (PnP).");
   bind_pnp(pnp);
+  nanobind::module_ sim3 = foundations.def_submodule("sim3", "Sim(3) RANSAC between two cameras.");
+  bind_sim3(sim3);
   nanobind::module_ homography = foundations.def_submodule("homography", "Homographies.");
   bind_homography(homography);
   nanobind::module_ stereo = foundations.def_submodule("stereo", "Rectified stereo.");

@@ -222,7 +222,8 @@ pub fn refined_codes(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     Ok(out)
 }
 
-/// The enum table a RANSAC module's `codes()` returns.
+/// The enum table of a module running an unrefined RANSAC, which registers this as its
+/// `codes()`; a refined one's adds NLS' ([`refined_codes`]).
 ///
 /// # Arguments
 ///
@@ -235,6 +236,7 @@ pub fn refined_codes(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
 /// # Errors
 ///
 /// A Python error if the dict cannot be built.
+#[pyfunction]
 pub fn codes(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     let out = PyDict::new(py);
     out.set_item(

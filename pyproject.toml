@@ -165,7 +165,7 @@ exhaustive = true
 containers = ["slam_it.foundations"]
 layers = [
   "(ba) | (graphs) | (twoview)",
-  "(epipolar) | (homography) | (pnp) | (stereo)",
+  "(epipolar) | (homography) | (pnp) | (sim3) | (stereo)",
   "(camera) | (fivepoint) | (matching) | (p3p) | (ransac) | (triangulation) | (vocabulary)",
   "(nls) | (orb)",
   "(correspondences) | (image)",

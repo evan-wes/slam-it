@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use slam_it_foundations::homography as core;
 
-use super::ransac_crossing;
+use super::ransac_crossing::{self, codes};
 use crate::common::{
     ArrayIn, ArrayOut, add_functions, item_array, items_array, one, rows, unwrap, vector_array,
 };
@@ -116,24 +116,6 @@ fn homography_ransac<'py>(
         &ransac_crossing::read_options(&options)?,
     );
     ransac_crossing::ransac_result(py, &unwrap(py, found)?)
-}
-
-/// The enum table: RANSAC's terminations.
-///
-/// # Arguments
-///
-/// * `py` - The Python token.
-///
-/// # Returns
-///
-/// `{"ransac_termination": [...]}`.
-///
-/// # Errors
-///
-/// A Python error if the dict cannot be built.
-#[pyfunction]
-fn codes(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
-    ransac_crossing::codes(py)
 }
 
 /// Registers the `homography` functions.

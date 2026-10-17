@@ -24,6 +24,7 @@ pub mod pnp;
 pub mod ransac;
 pub mod rng;
 pub mod se3;
+pub mod sim3;
 pub mod so3;
 pub mod solve;
 pub mod stereo;
