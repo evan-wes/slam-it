@@ -71,20 +71,21 @@ from __future__ import annotations
 import enum
 import math
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 
+from slam_it import backends
 from slam_it.edge import covisibility, database, residuals
 from slam_it.edge import map as maps
 from slam_it.edge.database import Database
 from slam_it.edge.frames import Camera
 from slam_it.edge.map import Map
-from slam_it.edge.options import Options
+from slam_it.edge.options import Options, check_mode
 from slam_it.foundations import camera as cameras
 from slam_it.foundations import graphs, matching, ransac, sim3
-from slam_it.foundations.errors import DegenerateError
+from slam_it.foundations.errors import DegenerateError, InvalidInputError
 
 Array = NDArray[np.float64]
 IntArray = NDArray[np.int64]
@@ -180,7 +181,7 @@ def _candidates_near(m: Map, k: int, pixel: Array, radius: float, level: int) ->
     return rows[near]
 
 
-def search_by_similarity(  # noqa: PLR0913 -- the map, its camera, the keyframe, the search
+def _search_by_similarity(  # noqa: PLR0913 -- the map, its camera, the keyframe, the search
     m: Map,
     camera: Camera,
     k: int,
@@ -191,37 +192,7 @@ def search_by_similarity(  # noqa: PLR0913 -- the map, its camera, the keyframe,
     distance: int,
     options: Options,
 ) -> IntArray:
-    """Match points to a keyframe's keypoints through a similarity (``SearchByProjection``).
-
-    Each point in view (:func:`_in_view`), in order, is compared with the keyframe's keypoints
-    not yet matched in this search, within ``window`` times its predicted level's scale, on that
-    level or the one below; the nearest by Hamming distance (ties: the lower row) takes it if
-    within `distance`. No ratio test, no rotation check, as ORB-SLAM's similarity search.
-
-    Parameters
-    ----------
-    m : slam_it.edge.map.Map
-        The map.
-    camera : slam_it.edge.frames.Camera
-        The camera.
-    k : int
-        The keyframe's row.
-    similarity : ndarray of float64, shape (4, 4)
-        Its ``S_cw``, through which the points are carried.
-    points : ndarray of int64
-        The points' rows, in the order they are searched.
-    window : float
-        The window's half-width, in pixels at level 0.
-    distance : int
-        The largest Hamming distance a match may have.
-    options : slam_it.edge.options.Options
-        ``tracking.view_cos_limit``.
-
-    Returns
-    -------
-    ndarray of int64, shape (N,)
-        The id of the point each of the keyframe's keypoints matched, -1 where none.
-    """
+    """Match points to a keyframe's keypoints through a similarity (reference)."""
     start = int(m.kf_start[k])
     out = np.full(int(m.kf_start[k + 1]) - start, -1, dtype=np.int64)
     seen = _in_view(m, camera, similarity, points, options)
@@ -237,29 +208,8 @@ def search_by_similarity(  # noqa: PLR0913 -- the map, its camera, the keyframe,
     return out
 
 
-def match_by_word(m: Map, db: Database, k1: int, k2: int, options: Options) -> IntArray:
-    """Match two keyframes' points by word (ORB-SLAM's keyframe-to-keyframe ``SearchByBoW``).
-
-    The keypoints of each that observe a point, matched under the vocabulary's nodes
-    (:func:`slam_it.foundations.matching.search_by_bow`: ``matching.th_low``, ``loops.ratio``,
-    the rotation check).
-
-    Parameters
-    ----------
-    m : slam_it.edge.map.Map
-        The map.
-    db : slam_it.edge.database.Database
-        Its keyframe database, holding both keyframes.
-    k1, k2 : int
-        The two keyframes' rows.
-    options : slam_it.edge.options.Options
-        ``matching.th_low`` and ``loops.ratio``.
-
-    Returns
-    -------
-    ndarray of int64, shape (N,)
-        For each keypoint of `k1`, the id of the point of `k2` it matched, -1 where none.
-    """
+def _match_by_word(m: Map, db: Database, k1: int, k2: int, options: Options) -> IntArray:
+    """Match two keyframes' points by word (reference)."""
     rows1, rows2 = (np.arange(m.kf_start[k], m.kf_start[k + 1], dtype=np.int64) for k in (k1, k2))
     nodes1, nodes2 = (db.nodes(int(m.kf_id[k])) for k in (k1, k2))
     own1, own2 = rows1[m.kp_point[rows1] >= 0], rows2[m.kp_point[rows2] >= 0]
@@ -298,29 +248,8 @@ def _best_links(m: Map, k: int, options: Options) -> list[int]:
     return [int(r) for r in covisibility.links(m, k, options)[0][: options.loops.neighbours]]
 
 
-def group_points(m: Map, matched: int, linked: set[int], options: Options) -> IntArray:
-    """Return the points a matched keyframe's group sees (ORB-SLAM's ``FindMatchesByProjection``).
-
-    The keyframe's best ``loops.neighbours`` links and itself; with fewer links than that, each
-    link's own best, at most ``loops.neighbours`` of each, but those already in and those of
-    `linked`. Their points, each once, in that order.
-
-    Parameters
-    ----------
-    m : slam_it.edge.map.Map
-        The map.
-    matched : int
-        The matched keyframe's row.
-    linked : set of int
-        The rows of the keyframe searching's links, never added by widening.
-    options : slam_it.edge.options.Options
-        ``loops.neighbours`` and ``covisibility.min_points``.
-
-    Returns
-    -------
-    ndarray of int64
-        The points' rows.
-    """
+def _group_points(m: Map, matched: int, linked: set[int], options: Options) -> IntArray:
+    """Return the points a matched keyframe's group sees (reference)."""
     first = _best_links(m, matched, options)
     group = [*first, matched]
     if len(first) < options.loops.neighbours:
@@ -383,7 +312,7 @@ class Refined:
     inliers: int
 
 
-def refine(  # noqa: PLR0913 -- the map, the two keyframes, the start, the matches, the settings
+def _refine(  # noqa: PLR0913 -- the map, the two keyframes, the start, the matches, the settings
     m: Map,
     camera: Camera,
     k1: int,
@@ -394,40 +323,7 @@ def refine(  # noqa: PLR0913 -- the map, the two keyframes, the start, the match
     fixed_scale: bool,
     options: Options,
 ) -> Refined | None:
-    """Refine the similarity between two keyframes against their matches (``OptimizeSim3``).
-
-    Each keypoint of `k1` that observes a point and matched one carried into camera 2's frame in
-    front of it gives two errors, its keypoint's in image 1 and its partner's in image 2 (none
-    there where `k2` does not observe the partner), each weighed by its level's information
-    (:func:`slam_it.foundations.graphs.refine_similarity`). A first round of
-    ``loops.refine_iterations`` with a Huber loss at ``sqrt(loops.huber_chi2)``; the matches
-    whose either chi-square exceeds ``loops.huber_chi2`` dropped; a second round with no robust
-    loss, of ``loops.refine_more`` iterations if any was dropped, else
-    ``loops.refine_iterations``; its inliers counted the same way.
-
-    Parameters
-    ----------
-    m : slam_it.edge.map.Map
-        The map.
-    camera : slam_it.edge.frames.Camera
-        The camera.
-    k1, k2 : int
-        The two keyframes' rows.
-    similarity : ndarray of float64, shape (4, 4)
-        The starting ``S_12``, from camera 2's frame to camera 1's.
-    matched : ndarray of int64, shape (N,)
-        For each keypoint of `k1`, the id of the point it matched, -1 for none.
-    fixed_scale : bool
-        Refine a rigid motion.
-    options : slam_it.edge.options.Options
-        The ``loops`` refinement's settings.
-
-    Returns
-    -------
-    Refined or None
-        The similarity and its inliers; None when fewer than ``loops.min_kept`` matches survive
-        the first round, or no match can be used.
-    """
+    """Refine the similarity between two keyframes against their matches (reference)."""
     settings = options.loops
     rows1 = np.arange(m.kf_start[k1], m.kf_start[k1 + 1], dtype=np.int64)
     use = (matched >= 0) & (m.kp_point[rows1] >= 0)
@@ -747,8 +643,8 @@ def _confirm_by_projection(  # noqa: PLR0913 -- the map, its camera, the keyfram
     :func:`search_by_similarity` with ``loops.confirm_window`` and ``loops.confirm_distance``.
     Return the group's points' ids and each of the keyframe's keypoints' match.
     """
-    points = group_points(m, matched, _linked(m, k, options), options)
-    found = search_by_similarity(
+    points = _group_points(m, matched, _linked(m, k, options), options)
+    found = _search_by_similarity(
         m, camera, k, similarity, points,
         window=options.loops.confirm_window, distance=options.loops.confirm_distance,
         options=options,
@@ -777,7 +673,7 @@ def _carry(  # noqa: PLR0913 -- the map, its camera, the keyframe, the loop, the
     confirmed: tuple[Array, IntArray, IntArray] | None = None
     if summary.projected >= settings.confirm_matches:
         start = carried @ sim3.inverse(m.kf_pose[matched])
-        refined = refine(
+        refined = _refine(
             m, camera, k, matched, similarity=start, matched=found, fixed_scale=fixed_scale,
             options=options,
         )  # fmt: skip
@@ -832,7 +728,7 @@ def _merged_by_word(
     used: set[int] = set()
     best, most = group[0], -1
     for g in group:
-        found = match_by_word(m, db, k, g, options)
+        found = _match_by_word(m, db, k, g, options)
         if _matched(found) > most:
             best, most = g, _matched(found)
         for i in np.flatnonzero(found >= 0).tolist():
@@ -932,14 +828,14 @@ def _place(  # noqa: PLR0913 -- the map, its camera, the two keyframes, the star
     """
     settings = options.loops
     points = _keyframe_points(m, [*_best_links(m, best, options), best])
-    coarse = search_by_similarity(
+    coarse = _search_by_similarity(
         m, camera, k, model @ m.kf_pose[best], points,
         window=settings.coarse_window, distance=settings.coarse_distance, options=options,
     )  # fmt: skip
     summary = replace(summary, projected=_matched(coarse))
     if _matched(coarse) < settings.coarse_matches:
         return None, summary
-    refined = refine(
+    refined = _refine(
         m, camera, k, best, similarity=model, matched=coarse, fixed_scale=fixed_scale,
         options=options,
     )  # fmt: skip
@@ -947,7 +843,7 @@ def _place(  # noqa: PLR0913 -- the map, its camera, the two keyframes, the star
     if refined is None or refined.inliers < settings.min_refined:
         return None, summary
     placed = refined.similarity @ m.kf_pose[best]
-    fine = search_by_similarity(
+    fine = _search_by_similarity(
         m, camera, k, placed, points,
         window=settings.fine_window, distance=settings.fine_distance, options=options,
     )  # fmt: skip
@@ -1031,7 +927,7 @@ def _search(  # noqa: PLR0913 -- the map, its database and camera, the keyframe,
     return best, searched
 
 
-def detect(  # noqa: PLR0913 -- the map, its database and camera, the keyframe, the state
+def _detect(  # noqa: PLR0913 -- the map, its database and camera, the keyframe, the state
     m: Map,
     db: Database,
     camera: Camera,
@@ -1041,38 +937,7 @@ def detect(  # noqa: PLR0913 -- the map, its database and camera, the keyframe, 
     mode: str,
     options: Options,
 ) -> Detection:
-    """Look for a loop at a newly mapped keyframe (ORB-SLAM3's ``NewDetectCommonRegions``).
-
-    The module docstring's detection: the loop being confirmed carried to the keyframe, and,
-    when it is not confirmed here, the database's candidates tried.
-
-    Parameters
-    ----------
-    m : slam_it.edge.map.Map
-        The map, holding the keyframe.
-    db : slam_it.edge.database.Database
-        Its keyframe database, holding the keyframe.
-    camera : slam_it.edge.frames.Camera
-        The camera.
-    keyframe : int
-        The new keyframe's id.
-    pending : Pending or None
-        The loop being confirmed, from the keyframes before; None if none is.
-    mode : {"monocular", "stereo", "rgbd"}
-        The pipeline's mode: the similarity is rigid but in monocular.
-    options : slam_it.edge.options.Options
-        The ``loops`` settings, and those the searches read.
-
-    Returns
-    -------
-    Detection
-        The loop being confirmed after the keyframe, the loop closed on it, and how it went.
-
-    Raises
-    ------
-    slam_it.foundations.errors.InvalidInputError
-        If the keyframe is not in the map or the database, or the mode is unknown.
-    """
+    """Look for a loop at a newly mapped keyframe (reference)."""
     k = maps.keyframe_row(m, keyframe)
     fixed_scale = mode != "monocular"
     settings = options.loops
@@ -1224,7 +1089,7 @@ class Corrected:
     summary: CorrectionSummary
 
 
-def fuse_by_similarity(  # noqa: PLR0913 -- the map, its camera, the keyframe, the fusion
+def _fuse_by_similarity(  # noqa: PLR0913 -- the map, its camera, the keyframe, the fusion
     m: Map,
     camera: Camera,
     k: int,
@@ -1233,35 +1098,7 @@ def fuse_by_similarity(  # noqa: PLR0913 -- the map, its camera, the keyframe, t
     *,
     options: Options,
 ) -> tuple[Map, int]:
-    """Fuse points into a keyframe through a similarity (ORB-SLAM's ``Fuse`` with ``Scw``).
-
-    Each point still in the map that the keyframe does not observe, in view through the
-    similarity (:func:`_in_view`), is compared with every keypoint within ``loops.fuse_window``
-    times its predicted level's scale, on that level or the one below; the nearest within
-    ``matching.th_low`` takes it: a free keypoint observes it, and a keypoint observing another
-    point has that point replaced by it (:func:`slam_it.edge.map.replace_point`: the loop's
-    point is kept, as ORB-SLAM's loop fusion keeps it).
-
-    Parameters
-    ----------
-    m : slam_it.edge.map.Map
-        The map.
-    camera : slam_it.edge.frames.Camera
-        The camera.
-    k : int
-        The keyframe's row.
-    similarity : ndarray of float64, shape (4, 4)
-        Its ``S_cw``.
-    point_ids : ndarray of int64
-        The points' ids, in the order fused.
-    options : slam_it.edge.options.Options
-        ``loops.fuse_window``, ``matching.th_low`` and ``tracking.view_cos_limit``.
-
-    Returns
-    -------
-    tuple of slam_it.edge.map.Map and int
-        The map, and the points fused.
-    """
+    """Fuse points into a keyframe through a similarity (reference)."""
     keyframe = int(m.kf_id[k])
     fused = 0
     for point_id in point_ids.tolist():
@@ -1466,27 +1303,8 @@ def essential_graph(  # noqa: PLR0913 -- the map, the loop's state, the settings
     return [sim3.inverse(pose) for pose in solved.poses], len(graph.edges), solved.summary
 
 
-def global_bundle_adjust(m: Map, camera: Camera, options: Options) -> tuple[Map, graphs.Summary]:
-    """Bundle-adjust every keyframe and point (``GlobalBundleAdjustemnt``, as loop closing runs it).
-
-    Every observation, weighed by its level's information, with its right column where it has
-    one; no robust loss; the map's first keyframe held fixed; ``loops.global_iterations``
-    (:func:`slam_it.foundations.graphs.bundle_adjust`). Every point is refreshed after.
-
-    Parameters
-    ----------
-    m : slam_it.edge.map.Map
-        The map, with its first keyframe.
-    camera : slam_it.edge.frames.Camera
-        The camera.
-    options : slam_it.edge.options.Options
-        ``loops.global_iterations``.
-
-    Returns
-    -------
-    tuple of slam_it.edge.map.Map and slam_it.foundations.graphs.Summary
-        The map adjusted, and the solve's summary.
-    """
+def _global_bundle_adjust(m: Map, camera: Camera, options: Options) -> tuple[Map, graphs.Summary]:
+    """Bundle-adjust every keyframe and point (reference)."""
     rows = np.flatnonzero(m.kp_point >= 0)
     adjusted = graphs.bundle_adjust(
         np.array([sim3.inverse(pose) for pose in m.kf_pose]),
@@ -1507,32 +1325,8 @@ def global_bundle_adjust(m: Map, camera: Camera, options: Options) -> tuple[Map,
     return maps.refresh_points(out, np.arange(out.points)), adjusted.summary
 
 
-def correct(m: Map, camera: Camera, loop: Loop, *, mode: str, options: Options) -> Corrected:
-    """Correct a loop closed at a keyframe (ORB-SLAM3's ``CorrectLoop``; the module docstring).
-
-    Parameters
-    ----------
-    m : slam_it.edge.map.Map
-        The map, holding both keyframes.
-    camera : slam_it.edge.frames.Camera
-        The camera.
-    loop : Loop
-        The loop.
-    mode : {"monocular", "stereo", "rgbd"}
-        The pipeline's mode: the essential graph is Sim(3) but in stereo and RGB-D.
-    options : slam_it.edge.options.Options
-        The ``loops`` settings, and those the fusion reads.
-
-    Returns
-    -------
-    Corrected
-        The map corrected, and how it went.
-
-    Raises
-    ------
-    slam_it.foundations.errors.InvalidInputError
-        If either keyframe is not in the map.
-    """
+def _correct(m: Map, camera: Camera, loop: Loop, *, mode: str, options: Options) -> Corrected:
+    """Correct a loop closed at a keyframe (reference)."""
     k, matched = maps.keyframe_row(m, loop.current), maps.keyframe_row(m, loop.matched)
     fixed_scale = mode != "monocular"
     links = [int(r) for r in covisibility.links(m, k, options)[0]]
@@ -1549,7 +1343,7 @@ def correct(m: Map, camera: Camera, loop: Loop, *, mode: str, options: Options) 
     fused = 0
     for keyframe in moved_ids:
         r = maps.keyframe_row(m, keyframe)
-        m, count = fuse_by_similarity(
+        m, count = _fuse_by_similarity(
             m, camera, r, corrected[moved_rows[moved_ids.index(keyframe)]], loop.points,
             options=options,
         )  # fmt: skip
@@ -1571,7 +1365,7 @@ def correct(m: Map, camera: Camera, loop: Loop, *, mode: str, options: Options) 
     m = maps.add_loop_edge(m, loop.matched, loop.current)
     ba: graphs.Summary | None = None
     if options.loops.global_ba:
-        m, ba = global_bundle_adjust(m, camera, options)
+        m, ba = _global_bundle_adjust(m, camera, options)
     summary = CorrectionSummary(
         current=loop.current,
         matched=loop.matched,
@@ -1608,3 +1402,786 @@ def _move_by_graph(
     poses = np.array([rigid_of(s) for s in optimised]).reshape(-1, 4, 4)
     out = replace(m, kf_pose=poses, pt_xyz=xyz)
     return maps.refresh_points(out, np.arange(out.points))
+
+
+# --- the backends -------------------------------------------------------------------------
+
+Crossing = dict[str, Any]
+"""A value as it crosses the bindings: a dict of arrays, numbers, and dicts of them."""
+
+
+class Implementation(Protocol):
+    """The functions a compiled backend's ``edge.loops`` submodule provides.
+
+    The map, its database, the camera and the settings cross as dicts (their ``as_dict``); a
+    similarity as its 4x4 matrix; a :class:`Pending` and a :class:`Loop` as their
+    :meth:`~Pending.as_dict`; the mode by name. Results cross back as dicts: a detection's
+    ``pending`` and ``loop`` (each a dict or None) and ``summary``, its outcome a code in
+    ``codes()["loop_outcome"]``; a correction's ``map`` and ``summary``, each solve's
+    termination a code in ``codes()["graphs_termination"]``.
+    """
+
+    def codes(self) -> dict[str, list[str]]:
+        """Return each enum's names in code order."""
+        ...
+
+    def search_by_similarity(  # noqa: PLR0913 -- the map, its camera, the keyframe, the search
+        self,
+        *,
+        m: Crossing,
+        camera: Crossing,
+        k: int,
+        similarity: Array,
+        points: IntArray,
+        window: float,
+        distance: int,
+        options: Crossing,
+    ) -> IntArray:
+        """Match points to a keyframe's keypoints through a similarity."""
+        ...
+
+    def match_by_word(
+        self, *, m: Crossing, database: Crossing, k1: int, k2: int, options: Crossing
+    ) -> IntArray:
+        """Match two keyframes' points by word."""
+        ...
+
+    def group_points(
+        self, *, m: Crossing, matched: int, linked: IntArray, options: Crossing
+    ) -> IntArray:
+        """Return the points a matched keyframe's group sees."""
+        ...
+
+    def refine(  # noqa: PLR0913 -- the map, the two keyframes, the start, the matches
+        self,
+        *,
+        m: Crossing,
+        camera: Crossing,
+        k1: int,
+        k2: int,
+        similarity: Array,
+        matched: IntArray,
+        fixed_scale: bool,
+        options: Crossing,
+    ) -> Crossing | None:
+        """Refine the similarity between two keyframes against their matches."""
+        ...
+
+    def fuse_by_similarity(  # noqa: PLR0913 -- the map, its camera, the keyframe, the fusion
+        self,
+        *,
+        m: Crossing,
+        camera: Crossing,
+        k: int,
+        similarity: Array,
+        point_ids: IntArray,
+        options: Crossing,
+    ) -> Crossing:
+        """Fuse points into a keyframe through a similarity."""
+        ...
+
+    def global_bundle_adjust(self, *, m: Crossing, camera: Crossing, options: Crossing) -> Crossing:
+        """Bundle-adjust every keyframe and point."""
+        ...
+
+    def detect(  # noqa: PLR0913 -- the map, its database and camera, the keyframe, the state
+        self,
+        *,
+        m: Crossing,
+        database: Crossing,
+        camera: Crossing,
+        keyframe: int,
+        pending: Crossing | None,
+        mode: str,
+        options: Crossing,
+    ) -> Crossing:
+        """Look for a loop at a newly mapped keyframe."""
+        ...
+
+    def correct(
+        self, *, m: Crossing, camera: Crossing, loop: Crossing, mode: str, options: Crossing
+    ) -> Crossing:
+        """Correct a loop closed at a keyframe."""
+        ...
+
+
+def codes() -> dict[str, list[str]]:
+    """Return the module's enum names in code order, as a compiled backend's ``codes()`` does.
+
+    Returns
+    -------
+    dict of str to list of str
+        ``loop_outcome`` (:class:`Outcome`) and ``graphs_termination``
+        (:class:`slam_it.foundations.graphs.Termination`).
+    """
+    return {
+        "loop_outcome": [o.value for o in Outcome],
+        "graphs_termination": [t.value for t in graphs.Termination],
+    }
+
+
+def _similarity(similarity: ArrayLike, name: str = "similarity") -> Array:
+    """Check a similarity: a finite 4x4 ``[[s R, t], [0, 1]]``, ``s > 0``."""
+    out = np.asarray(similarity, dtype=np.float64)
+    if out.shape != (4, 4) or not np.all(np.isfinite(out)):
+        raise InvalidInputError(f"{name}: expected a finite 4x4 similarity")
+    scale = np.cbrt(np.linalg.det(out[:3, :3]))
+    rotation = out[:3, :3] / scale if scale > 0.0 else out[:3, :3]
+    if scale <= 0.0 or not np.allclose(rotation @ rotation.T, np.eye(3), atol=1e-6):
+        raise InvalidInputError(f"{name}: expected s R with s > 0 and R a rotation")
+    if not np.array_equal(out[3], [0.0, 0.0, 0.0, 1.0]):
+        raise InvalidInputError(f"{name}: expected a last row of 0 0 0 1")
+    return out
+
+
+def _ids(values: ArrayLike, name: str) -> IntArray:
+    """Check a vector of ids: integers, at least -1."""
+    out = covisibility.as_points(values)
+    if np.any(out < -1):
+        raise InvalidInputError(f"{name}: expected ids of at least -1")
+    return out
+
+
+def _keypoint_ids(m: Map, k: int, values: ArrayLike, name: str) -> IntArray:
+    """Check a keyframe's keypoint-by-keypoint ids: one per keypoint, at least -1."""
+    out = _ids(values, name)
+    if len(out) != int(m.kf_start[k + 1] - m.kf_start[k]):
+        raise InvalidInputError(f"{name}: expected one id per keypoint of keyframe row {k}")
+    return out
+
+
+def _pending_as_dict(pending: Pending) -> Crossing:
+    """Return a loop being confirmed as it crosses the bindings."""
+    return {
+        "matched": pending.matched,
+        "last": pending.last,
+        "similarity": pending.similarity,
+        "confirmations": pending.confirmations,
+        "misses": pending.misses,
+        "points": pending.points,
+        "matched_points": pending.matched_points,
+    }
+
+
+def _loop_as_dict(loop: Loop) -> Crossing:
+    """Return a closed loop as it crosses the bindings."""
+    return {
+        "current": loop.current,
+        "matched": loop.matched,
+        "similarity": loop.similarity,
+        "points": loop.points,
+        "matched_points": loop.matched_points,
+    }
+
+
+def _checked_ids(raw: Any, name: str) -> IntArray:  # noqa: ANN401 -- a compiled backend's value
+    """Return a compiled backend's id vector, checked."""
+    return backends.checked_array(raw, np.int64, 1, name)
+
+
+def _checked_similarity(raw: Any, name: str) -> Array:  # noqa: ANN401 -- a compiled backend's value
+    """Return a compiled backend's similarity, checked."""
+    return backends.checked_array(raw, np.float64, 2, name)
+
+
+def _decode_pending(raw: Crossing | None) -> Pending | None:
+    """Rebuild a loop being confirmed from a compiled backend's dict."""
+    if raw is None:
+        return None
+    return Pending(
+        matched=int(raw["matched"]),
+        last=int(raw["last"]),
+        similarity=_checked_similarity(raw["similarity"], "pending similarity"),
+        confirmations=int(raw["confirmations"]),
+        misses=int(raw["misses"]),
+        points=_checked_ids(raw["points"], "pending points"),
+        matched_points=_checked_ids(raw["matched_points"], "pending matched_points"),
+    )
+
+
+def _decode_loop(raw: Crossing | None) -> Loop | None:
+    """Rebuild a closed loop from a compiled backend's dict."""
+    if raw is None:
+        return None
+    return Loop(
+        current=int(raw["current"]),
+        matched=int(raw["matched"]),
+        similarity=_checked_similarity(raw["similarity"], "loop similarity"),
+        points=_checked_ids(raw["points"], "loop points"),
+        matched_points=_checked_ids(raw["matched_points"], "loop matched_points"),
+    )
+
+
+def _optional(raw: Any) -> int | None:  # noqa: ANN401 -- a compiled backend's value
+    """Return an optional count as an int or None."""
+    return None if raw is None else int(raw)
+
+
+def _decode_detection(raw: Crossing, codes: backends.Codes) -> Detection:
+    """Rebuild :class:`Detection` from a compiled backend's dict."""
+    summary = raw["summary"]
+    carried = summary["confirmation"]
+    confirmation = (
+        None
+        if carried is None
+        else ConfirmationSummary(
+            matched=int(carried["matched"]),
+            projected=int(carried["projected"]),
+            refined=_optional(carried["refined"]),
+            reprojected=_optional(carried["reprojected"]),
+            confirmed=bool(carried["confirmed"]),
+        )
+    )
+    candidates = tuple(
+        CandidateSummary(
+            keyframe=int(c["keyframe"]),
+            score=float(c["score"]),
+            near=bool(c["near"]),
+            matches=_optional(c["matches"]),
+            best=_optional(c["best"]),
+            inliers=_optional(c["inliers"]),
+            projected=_optional(c["projected"]),
+            refined=_optional(c["refined"]),
+            reprojected=_optional(c["reprojected"]),
+            confirmations=_optional(c["confirmations"]),
+        )
+        for c in summary["candidates"]
+    )
+    outcome = Outcome(backends.decode_name(codes, "loop_outcome", summary["outcome"]))
+    return Detection(
+        pending=_decode_pending(raw["pending"]),
+        loop=_decode_loop(raw["loop"]),
+        summary=DetectionSummary(
+            outcome=outcome,
+            confirmation=confirmation,
+            sharing=int(summary["sharing"]),
+            scored=int(summary["scored"]),
+            candidates=candidates,
+            confirmations=int(summary["confirmations"]),
+        ),
+    )
+
+
+def _decode_corrected(raw: Crossing, codes: backends.Codes) -> Corrected:
+    """Rebuild :class:`Corrected` from a compiled backend's dict."""
+    s = raw["summary"]
+    ba = s["global_ba"]
+    return Corrected(
+        map=maps.decode(raw["map"], codes),
+        summary=CorrectionSummary(
+            current=int(s["current"]),
+            matched=int(s["matched"]),
+            similarity=_checked_similarity(s["similarity"], "correction similarity"),
+            corrected=int(s["corrected"]),
+            moved=int(s["moved"]),
+            replaced=int(s["replaced"]),
+            fused=int(s["fused"]),
+            links=int(s["links"]),
+            edges=int(s["edges"]),
+            essential=graphs.summary_from_backend(s["essential"], codes),
+            global_ba=None if ba is None else graphs.summary_from_backend(ba, codes),
+        ),
+    )
+
+
+def search_by_similarity(  # noqa: PLR0913 -- the map, its camera, the keyframe, the search
+    m: Map,
+    camera: Camera,
+    k: int,
+    similarity: ArrayLike,
+    points: ArrayLike,
+    *,
+    window: float,
+    distance: int,
+    options: Options,
+    backend: str = "python",
+) -> IntArray:
+    """Match points to a keyframe's keypoints through a similarity (``SearchByProjection``).
+
+    Each point in view (in front of the camera, in the image, within the distances it is
+    matchable from, and seen within ``tracking.view_cos_limit`` of its mean viewing direction),
+    in order, is compared with the keyframe's keypoints not yet matched in this search, within
+    ``window`` times its predicted level's scale, on that level or the one below; the nearest
+    by Hamming distance (ties: the lower row) takes it if within `distance`. No ratio test, no
+    rotation check, as ORB-SLAM's similarity search.
+
+    Parameters
+    ----------
+    m : slam_it.edge.map.Map
+        The map.
+    camera : slam_it.edge.frames.Camera
+        The camera.
+    k : int
+        The keyframe's row.
+    similarity : array_like, shape (4, 4)
+        Its ``S_cw``, through which the points are carried.
+    points : array_like of int
+        The points' rows, in the order they are searched.
+    window : float
+        The window's half-width, in pixels at level 0.
+    distance : int
+        The largest Hamming distance a match may have.
+    options : slam_it.edge.options.Options
+        ``tracking.view_cos_limit``.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    ndarray of int64, shape (N,)
+        The id of the point each of the keyframe's keypoints matched, -1 where none.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If `k` is not a keyframe row, the similarity is not one, or a point row is out of range.
+    """
+    row = maps.as_keyframe_row(m, k)
+    chosen = _similarity(similarity)
+    rows = maps.as_point_rows(m, points, "points")
+    return backends.call(
+        backend,
+        __name__,
+        "search_by_similarity",
+        reference=lambda: _search_by_similarity(
+            m, camera, row, chosen, rows, window=window, distance=distance, options=options
+        ),
+        arguments={
+            "m": m.as_dict(),
+            "camera": camera.as_dict(),
+            "k": row,
+            "similarity": chosen,
+            "points": rows,
+            "window": float(window),
+            "distance": int(distance),
+            "options": options.as_dict(),
+        },
+        decode=lambda raw, _: _checked_ids(raw, "search_by_similarity"),
+    )
+
+
+def match_by_word(  # noqa: PLR0913 -- the map, its database, the two keyframes, the backend
+    m: Map, db: Database, k1: int, k2: int, options: Options, *, backend: str = "python"
+) -> IntArray:
+    """Match two keyframes' points by word (ORB-SLAM's keyframe-to-keyframe ``SearchByBoW``).
+
+    The keypoints of each that observe a point, matched under the vocabulary's nodes
+    (:func:`slam_it.foundations.matching.search_by_bow`: ``matching.th_low``, ``loops.ratio``,
+    the rotation check).
+
+    Parameters
+    ----------
+    m : slam_it.edge.map.Map
+        The map.
+    db : slam_it.edge.database.Database
+        Its keyframe database, holding both keyframes.
+    k1, k2 : int
+        The two keyframes' rows.
+    options : slam_it.edge.options.Options
+        ``matching.th_low`` and ``loops.ratio``.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    ndarray of int64, shape (N,)
+        For each keypoint of `k1`, the id of the point of `k2` it matched, -1 where none.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If either row is not a keyframe's.
+    """
+    first, second = maps.as_keyframe_row(m, k1, "k1"), maps.as_keyframe_row(m, k2, "k2")
+    return backends.call(
+        backend,
+        __name__,
+        "match_by_word",
+        reference=lambda: _match_by_word(m, db, first, second, options),
+        arguments={
+            "m": m.as_dict(),
+            "database": db.as_dict(),
+            "k1": first,
+            "k2": second,
+            "options": options.as_dict(),
+        },
+        decode=lambda raw, _: _checked_ids(raw, "match_by_word"),
+    )
+
+
+def group_points(
+    m: Map, matched: int, linked: ArrayLike, options: Options, *, backend: str = "python"
+) -> IntArray:
+    """Return the points a matched keyframe's group sees (ORB-SLAM's ``FindMatchesByProjection``).
+
+    The keyframe's best ``loops.neighbours`` links and itself; with fewer links than that, each
+    link's own best, at most ``loops.neighbours`` of each, but those already in and those of
+    `linked`. Their points, each once, in that order.
+
+    Parameters
+    ----------
+    m : slam_it.edge.map.Map
+        The map.
+    matched : int
+        The matched keyframe's row.
+    linked : array_like of int
+        The rows of the keyframe searching's links, never added by widening.
+    options : slam_it.edge.options.Options
+        ``loops.neighbours`` and ``covisibility.min_points``.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    ndarray of int64
+        The points' rows.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If `matched` or a row of `linked` is not a keyframe's.
+    """
+    row = maps.as_keyframe_row(m, matched, "matched")
+    rows = np.unique(covisibility.as_points(linked))
+    if np.any((rows < 0) | (rows >= m.keyframes)):
+        raise InvalidInputError("linked: expected keyframe rows")
+    return backends.call(
+        backend,
+        __name__,
+        "group_points",
+        reference=lambda: _group_points(m, row, set(rows.tolist()), options),
+        arguments={"m": m.as_dict(), "matched": row, "linked": rows, "options": options.as_dict()},
+        decode=lambda raw, _: _checked_ids(raw, "group_points"),
+    )
+
+
+def refine(  # noqa: PLR0913 -- the map, the two keyframes, the start, the matches, the settings
+    m: Map,
+    camera: Camera,
+    k1: int,
+    k2: int,
+    *,
+    similarity: ArrayLike,
+    matched: ArrayLike,
+    fixed_scale: bool,
+    options: Options,
+    backend: str = "python",
+) -> Refined | None:
+    """Refine the similarity between two keyframes against their matches (``OptimizeSim3``).
+
+    Each keypoint of `k1` that observes a point and matched one carried into camera 2's frame in
+    front of it gives two errors, its keypoint's in image 1 and its partner's in image 2 (none
+    there where `k2` does not observe the partner), each weighed by its level's information
+    (:func:`slam_it.foundations.graphs.refine_similarity`). A first round of
+    ``loops.refine_iterations`` with a Huber loss at ``sqrt(loops.huber_chi2)``; the matches
+    whose either chi-square exceeds ``loops.huber_chi2`` dropped; a second round with no robust
+    loss, of ``loops.refine_more`` iterations if any was dropped, else
+    ``loops.refine_iterations``; its inliers counted the same way.
+
+    Parameters
+    ----------
+    m : slam_it.edge.map.Map
+        The map.
+    camera : slam_it.edge.frames.Camera
+        The camera.
+    k1, k2 : int
+        The two keyframes' rows.
+    similarity : array_like, shape (4, 4)
+        The starting ``S_12``, from camera 2's frame to camera 1's.
+    matched : array_like of int, shape (N,)
+        For each keypoint of `k1`, the id of the point it matched, -1 for none.
+    fixed_scale : bool
+        Refine a rigid motion.
+    options : slam_it.edge.options.Options
+        The ``loops`` refinement's settings.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    Refined or None
+        The similarity and its inliers; None when fewer than ``loops.min_kept`` matches survive
+        the first round, or no match can be used.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If a row is not a keyframe's, the similarity is not one, or the matches are not one per
+        keypoint of `k1`.
+    """
+    first, second = maps.as_keyframe_row(m, k1, "k1"), maps.as_keyframe_row(m, k2, "k2")
+    start = _similarity(similarity)
+    ids = _keypoint_ids(m, first, matched, "matched")
+
+    def decode(raw: Crossing | None, _: backends.Codes) -> Refined | None:
+        if raw is None:
+            return None
+        found = _checked_similarity(raw["similarity"], "refined similarity")
+        return Refined(similarity=found, inliers=int(raw["inliers"]))
+
+    return backends.call(
+        backend,
+        __name__,
+        "refine",
+        reference=lambda: _refine(
+            m,
+            camera,
+            first,
+            second,
+            similarity=start,
+            matched=ids,
+            fixed_scale=bool(fixed_scale),
+            options=options,
+        ),
+        arguments={
+            "m": m.as_dict(),
+            "camera": camera.as_dict(),
+            "k1": first,
+            "k2": second,
+            "similarity": start,
+            "matched": ids,
+            "fixed_scale": bool(fixed_scale),
+            "options": options.as_dict(),
+        },
+        decode=decode,
+    )
+
+
+def fuse_by_similarity(  # noqa: PLR0913 -- the map, its camera, the keyframe, the fusion
+    m: Map,
+    camera: Camera,
+    k: int,
+    similarity: ArrayLike,
+    point_ids: ArrayLike,
+    *,
+    options: Options,
+    backend: str = "python",
+) -> tuple[Map, int]:
+    """Fuse points into a keyframe through a similarity (ORB-SLAM's ``Fuse`` with ``Scw``).
+
+    Each point still in the map that the keyframe does not observe, in view through the
+    similarity (as :func:`search_by_similarity` checks it), is compared with every keypoint
+    within ``loops.fuse_window`` times its predicted level's scale, on that level or the one
+    below; the nearest within ``matching.th_low`` takes it: a free keypoint observes it, and a
+    keypoint observing another point has that point replaced by it
+    (:func:`slam_it.edge.map.replace_point`: the loop's point is kept, as ORB-SLAM's loop
+    fusion keeps it).
+
+    Parameters
+    ----------
+    m : slam_it.edge.map.Map
+        The map.
+    camera : slam_it.edge.frames.Camera
+        The camera.
+    k : int
+        The keyframe's row.
+    similarity : array_like, shape (4, 4)
+        Its ``S_cw``.
+    point_ids : array_like of int
+        The points' ids, in the order fused; one no longer in the map is passed over.
+    options : slam_it.edge.options.Options
+        ``loops.fuse_window``, ``matching.th_low`` and ``tracking.view_cos_limit``.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    tuple of slam_it.edge.map.Map and int
+        The map, and the points fused.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If `k` is not a keyframe row, the similarity is not one, or an id is negative.
+    """
+    row = maps.as_keyframe_row(m, k)
+    chosen = _similarity(similarity)
+    ids = covisibility.as_points(point_ids)
+    if np.any(ids < 0):
+        raise InvalidInputError("point_ids: expected point ids")
+
+    def decode(raw: Crossing, codes: backends.Codes) -> tuple[Map, int]:
+        return maps.decode(raw["map"], codes), int(raw["fused"])
+
+    return backends.call(
+        backend,
+        __name__,
+        "fuse_by_similarity",
+        reference=lambda: _fuse_by_similarity(m, camera, row, chosen, ids, options=options),
+        arguments={
+            "m": m.as_dict(),
+            "camera": camera.as_dict(),
+            "k": row,
+            "similarity": chosen,
+            "point_ids": ids,
+            "options": options.as_dict(),
+        },
+        decode=decode,
+    )
+
+
+def global_bundle_adjust(
+    m: Map, camera: Camera, options: Options, *, backend: str = "python"
+) -> tuple[Map, graphs.Summary]:
+    """Bundle-adjust every keyframe and point (``GlobalBundleAdjustemnt``, as loop closing runs it).
+
+    Every observation, weighed by its level's information, with its right column where it has
+    one; no robust loss; the map's first keyframe (id 0) held fixed; ``loops.global_iterations``
+    (:func:`slam_it.foundations.graphs.bundle_adjust`). Every point is refreshed after.
+
+    Parameters
+    ----------
+    m : slam_it.edge.map.Map
+        The map, with its first keyframe.
+    camera : slam_it.edge.frames.Camera
+        The camera.
+    options : slam_it.edge.options.Options
+        ``loops.global_iterations``.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    tuple of slam_it.edge.map.Map and slam_it.foundations.graphs.Summary
+        The map adjusted, and the solve's summary.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the map does not hold its first keyframe.
+    """
+    if not np.any(m.kf_id == 0):
+        raise InvalidInputError("m: expected the map's first keyframe (id 0)")
+
+    def decode(raw: Crossing, codes: backends.Codes) -> tuple[Map, graphs.Summary]:
+        return maps.decode(raw["map"], codes), graphs.summary_from_backend(raw["summary"], codes)
+
+    return backends.call(
+        backend,
+        __name__,
+        "global_bundle_adjust",
+        reference=lambda: _global_bundle_adjust(m, camera, options),
+        arguments={"m": m.as_dict(), "camera": camera.as_dict(), "options": options.as_dict()},
+        decode=decode,
+    )
+
+
+def detect(  # noqa: PLR0913 -- the map, its database and camera, the keyframe, the state
+    m: Map,
+    db: Database,
+    camera: Camera,
+    keyframe: int,
+    pending: Pending | None,
+    *,
+    mode: str,
+    options: Options,
+    backend: str = "python",
+) -> Detection:
+    """Look for a loop at a newly mapped keyframe (ORB-SLAM3's ``NewDetectCommonRegions``).
+
+    The module docstring's detection: the loop being confirmed carried to the keyframe, and,
+    when it is not confirmed here, the database's candidates tried.
+
+    Parameters
+    ----------
+    m : slam_it.edge.map.Map
+        The map, holding the keyframe.
+    db : slam_it.edge.database.Database
+        Its keyframe database, holding the keyframe.
+    camera : slam_it.edge.frames.Camera
+        The camera.
+    keyframe : int
+        The new keyframe's id.
+    pending : Pending or None
+        The loop being confirmed, from the keyframes before; None if none is.
+    mode : {"monocular", "stereo", "rgbd"}
+        The pipeline's mode: the similarity is rigid but in monocular.
+    options : slam_it.edge.options.Options
+        The ``loops`` settings, and those the searches read.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    Detection
+        The loop being confirmed after the keyframe, the loop closed on it, and how it went.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the keyframe is not in the map, the mode is unknown, or the loop being confirmed
+        holds a similarity that is not one.
+    """
+    check_mode(mode)
+    maps.keyframe_row(m, keyframe)
+    if pending is not None:
+        _similarity(pending.similarity, "pending.similarity")
+    return backends.call(
+        backend,
+        __name__,
+        "detect",
+        reference=lambda: _detect(m, db, camera, keyframe, pending, mode=mode, options=options),
+        arguments={
+            "m": m.as_dict(),
+            "database": db.as_dict(),
+            "camera": camera.as_dict(),
+            "keyframe": int(keyframe),
+            "pending": None if pending is None else _pending_as_dict(pending),
+            "mode": mode,
+            "options": options.as_dict(),
+        },
+        decode=_decode_detection,
+    )
+
+
+def correct(  # noqa: PLR0913 -- the map, its camera, the loop, the settings, the backend
+    m: Map, camera: Camera, loop: Loop, *, mode: str, options: Options, backend: str = "python"
+) -> Corrected:
+    """Correct a loop closed at a keyframe (ORB-SLAM3's ``CorrectLoop``; the module docstring).
+
+    Parameters
+    ----------
+    m : slam_it.edge.map.Map
+        The map, holding both keyframes.
+    camera : slam_it.edge.frames.Camera
+        The camera.
+    loop : Loop
+        The loop.
+    mode : {"monocular", "stereo", "rgbd"}
+        The pipeline's mode: the essential graph is Sim(3) but in stereo and RGB-D.
+    options : slam_it.edge.options.Options
+        The ``loops`` settings, and those the fusion reads.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    Corrected
+        The map corrected, and how it went.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If either keyframe is not in the map, the mode is unknown, the similarity is not one, or
+        the matched points are not one per keypoint of the current keyframe.
+    """
+    check_mode(mode)
+    current = maps.keyframe_row(m, loop.current)
+    maps.keyframe_row(m, loop.matched)
+    _similarity(loop.similarity, "loop.similarity")
+    _keypoint_ids(m, current, loop.matched_points, "loop.matched_points")
+    _ids(loop.points, "loop.points")
+    return backends.call(
+        backend,
+        __name__,
+        "correct",
+        reference=lambda: _correct(m, camera, loop, mode=mode, options=options),
+        arguments={
+            "m": m.as_dict(),
+            "camera": camera.as_dict(),
+            "loop": _loop_as_dict(loop),
+            "mode": mode,
+            "options": options.as_dict(),
+        },
+        decode=_decode_corrected,
+    )

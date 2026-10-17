@@ -13,15 +13,26 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
+from slam_it import backends
 from slam_it.edge import covisibility, loops
 from slam_it.edge import map as maps
 from slam_it.edge.database import Database
 from slam_it.edge.loops import Outcome, Pending
 from slam_it.edge.map import Map
+from slam_it.edge.options import Options
 from slam_it.foundations import matching, se3, so3
 from slam_it.foundations.errors import InvalidInputError
+from tests.conftest import require_function
 from tests.edge.conftest import Loop
-from tests.edge.support import CAMERA, OPTIONS
+from tests.edge.support import (
+    CAMERA,
+    GRAPH_TOLERANCE,
+    OPTIONS,
+    TOLERANCE,
+    assert_close,
+    assert_maps_match,
+    assert_records_match,
+)
 
 LAST_CONFIRMED = -2
 """The loop map's keyframe where the loop closes at once: the second last (its last has two
@@ -162,7 +173,7 @@ def test_matches_by_word_are_where_the_keypoints_are(
 def test_a_group_s_points_are_its_keyframes_once_each(loop_rigid: Loop) -> None:
     """The matched keyframe's and its best links' points, each once, never a linked one's."""
     m = loop_rigid.truth
-    rows = loops.group_points(m, 2, set(), OPTIONS)
+    rows = loops.group_points(m, 2, [], OPTIONS)
     assert len(np.unique(rows)) == len(rows)
     links = covisibility.links(m, 2, OPTIONS)[0][: OPTIONS.loops.neighbours]
     expected = set()
@@ -461,3 +472,195 @@ def test_correction_refuses_a_keyframe_outside_the_map(loop_rigid: Loop) -> None
     )  # fmt: skip
     with pytest.raises(InvalidInputError, match="not in the map"):
         loops.correct(m, CAMERA, stray, mode="rgbd", options=OPTIONS)
+
+
+# --- every backend ------------------------------------------------------------------------
+
+
+def _assert_same_ids(got: np.ndarray, expected: np.ndarray) -> None:
+    """Check two id vectors are the same, type and all."""
+    assert got.dtype == np.int64
+    np.testing.assert_array_equal(got, expected)
+
+
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+def test_every_backend_searches_as_python_does(
+    backend: str, loop_rigid: Loop, loop_database: Database
+) -> None:
+    """The similarity search, the matches by word and a group's points: exactly Python's."""
+    for name in ("search_by_similarity", "match_by_word", "group_points"):
+        require_function(backend, loops.__name__, name)
+    m = loop_rigid.map
+    for k in (1, MIDDLE, m.keyframes - 1):
+        linked = covisibility.links(m, k, OPTIONS)[0]
+        points = loops.group_points(m, 2, linked, OPTIONS)
+        _assert_same_ids(loops.group_points(m, 2, linked, OPTIONS, backend=backend), points)
+        for window, distance in ((8.0, 75), (4.0, 30)):
+            searched = [
+                loops.search_by_similarity(
+                    m, CAMERA, k, m.kf_pose[k], points, window=window, distance=distance,
+                    options=OPTIONS, backend=chosen,
+                )
+                for chosen in ("python", backend)
+            ]  # fmt: skip
+            _assert_same_ids(searched[1], searched[0])
+        by_word = [
+            loops.match_by_word(m, loop_database, k, k - 1, OPTIONS, backend=b)
+            for b in ("python", backend)
+        ]
+        _assert_same_ids(by_word[1], by_word[0])
+
+
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+def test_every_backend_refines_as_python_does(backend: str, loop_rigid: Loop) -> None:
+    """The same inliers, the similarity to GTSAM's convergence; None where Python's is."""
+    require_function(backend, loops.__name__, "refine")
+    m = loop_rigid.truth
+    k1, k2, own, shared = _shared(m)
+    start = m.kf_pose[k1] @ se3.inverse(m.kf_pose[k2])
+    start[:3, :] *= 1.03
+    few = np.where(np.cumsum(shared) < OPTIONS.loops.min_kept, np.where(shared, own, -1), -1)
+    for matched in (np.where(shared, own, -1), few):
+        for fixed_scale in (True, False):
+            expected, got = (
+                loops.refine(
+                    m, CAMERA, k1, k2, similarity=start, matched=matched,
+                    fixed_scale=fixed_scale, options=OPTIONS, backend=chosen,
+                )
+                for chosen in ("python", backend)
+            )  # fmt: skip
+            if expected is None:
+                assert got is None
+                continue
+            assert got is not None
+            assert got.inliers == expected.inliers
+            assert_close(got.similarity, expected.similarity, GRAPH_TOLERANCE)
+
+
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+def test_every_backend_fuses_as_python_does(backend: str, loop_rigid: Loop) -> None:
+    """The loop's start fused into its end, undrifted: the same map, exactly.
+
+    The end's points where the start's are get replaced, its free keypoints given them.
+    """
+    require_function(backend, loops.__name__, "fuse_by_similarity")
+    m = loop_rigid.truth
+    start = m.kp_point[np.concatenate([_rows(m, k) for k in range(4)])]
+    ids = np.unique(start[start >= 0])
+    k = m.keyframes - 1
+    expected, got = (
+        loops.fuse_by_similarity(m, CAMERA, k, m.kf_pose[k], ids, options=OPTIONS, backend=chosen)
+        for chosen in ("python", backend)
+    )
+    assert got[1] == expected[1] > 0
+    assert_maps_match(got[0], expected[0], TOLERANCE)
+
+
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+def test_every_backend_adjusts_the_whole_map_as_python_does(backend: str, loop: Loop) -> None:
+    """Global BA on the drifted map: the same map to GTSAM's convergence, the same solve."""
+    require_function(backend, loops.__name__, "global_bundle_adjust")
+    expected, got = (
+        loops.global_bundle_adjust(loop.map, CAMERA, OPTIONS, backend=chosen)
+        for chosen in ("python", backend)
+    )
+    assert_maps_match(got[0], expected[0], GRAPH_TOLERANCE)
+    assert (got[1].iterations, got[1].termination) == (
+        expected[1].iterations,
+        expected[1].termination,
+    )
+    assert got[1].final_error == pytest.approx(expected[1].final_error, rel=GRAPH_TOLERANCE["rtol"])
+
+
+def _assert_same_detection(got: loops.Detection, expected: loops.Detection) -> None:
+    """Check two detections: the summaries' decisions exactly, the similarities to GTSAM's."""
+    assert_records_match(got.summary.as_dict(), expected.summary.as_dict(), GRAPH_TOLERANCE)
+    for a, b in ((got.pending, expected.pending), (got.loop, expected.loop)):
+        assert (a is None) == (b is None)
+        if a is None or b is None:
+            continue
+        assert_close(a.similarity, b.similarity, GRAPH_TOLERANCE)
+        _assert_same_ids(a.points, b.points)
+        _assert_same_ids(a.matched_points, b.matched_points)
+        assert (
+            replace(a, similarity=b.similarity, points=b.points, matched_points=b.matched_points)
+            == b
+        )
+
+
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+def test_every_backend_detects_as_python_does(
+    backend: str, loop: Loop, loop_database: Database
+) -> None:
+    """Half way round, closing at once, started and then carried: as Python decides."""
+    require_function(backend, loops.__name__, "detect")
+    m = loop.map
+    needed = OPTIONS.loops.confirmations + 1
+    cases: list[tuple[int, Pending | None, Options]] = [
+        (MIDDLE, None, OPTIONS),
+        (LAST_CONFIRMED, None, OPTIONS),
+        (-2, None, OPTIONS.with_settings({"loops.confirmations": needed})),
+    ]
+    started = _detect(loop, loop_database, -2, confirmations=needed).pending
+    assert started is not None
+    cases.append((-1, started, OPTIONS.with_settings({"loops.confirmations": needed})))
+    for row, pending, options in cases:
+        keyframe = int(m.kf_id[row])
+        expected, got = (
+            loops.detect(
+                m, loop_database, CAMERA, keyframe, pending, mode=_mode(loop), options=options,
+                backend=chosen,
+            )
+            for chosen in ("python", backend)
+        )  # fmt: skip
+        _assert_same_detection(got, expected)
+
+
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+@pytest.mark.parametrize("global_ba", [False, True], ids=["graph only", "global BA"])
+def test_every_backend_corrects_as_python_does(
+    backend: str, global_ba: bool, loop: Loop, loop_database: Database
+) -> None:
+    """The same map after the correction, to GTSAM's convergence; the same counts exactly."""
+    require_function(backend, loops.__name__, "correct")
+    closed = _closed(loop, loop_database)
+    options = OPTIONS.with_settings({"loops.global_ba": global_ba})
+    expected, got = (
+        loops.correct(loop.map, CAMERA, closed, mode=_mode(loop), options=options, backend=chosen)
+        for chosen in ("python", backend)
+    )
+    assert_maps_match(got.map, expected.map, GRAPH_TOLERANCE)
+    assert_records_match(got.summary.as_dict(), expected.summary.as_dict(), GRAPH_TOLERANCE)
+
+
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+def test_every_core_refuses_a_keyframe_outside_the_map(
+    backend: str, loop_rigid: Loop, loop_database: Database
+) -> None:
+    """Python refuses it before any backend runs; each core refuses it too."""
+    for name in ("detect", "correct"):
+        require_function(backend, loops.__name__, name)
+    compiled = backends.implementation(backend, loops.__name__)
+    m = loop_rigid.map
+    stray = m.next_kf_id
+    with pytest.raises(ValueError, match="not in the map"):
+        compiled.detect(
+            m=m.as_dict(), database=loop_database.as_dict(), camera=CAMERA.as_dict(),
+            keyframe=stray, pending=None, mode="rgbd", options=OPTIONS.as_dict(),
+        )  # fmt: skip
+    loop = {
+        "current": stray, "matched": 0, "similarity": np.eye(4),
+        "points": np.zeros(0, dtype=np.int64), "matched_points": np.zeros(0, dtype=np.int64),
+    }  # fmt: skip
+    with pytest.raises(ValueError, match="not in the map"):
+        compiled.correct(
+            m=m.as_dict(), camera=CAMERA.as_dict(), loop=loop, mode="rgbd",
+            options=OPTIONS.as_dict(),
+        )  # fmt: skip
+
+
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+def test_the_compiled_codes_match(backend: str) -> None:
+    """The outcome and termination codes Python decodes are each compiled core's, in order."""
+    chosen = require_function(backend, loops.__name__, "codes")
+    assert backends.implementation(chosen, loops.__name__).codes() == loops.codes()
