@@ -56,7 +56,7 @@ pub fn changed<'py>(
 }
 
 /// The map's fields, as the dict's keys.
-const MAP_KEYS: [&str; 34] = [
+const MAP_KEYS: [&str; 36] = [
     "levels",
     "scale_factor",
     "kf_id",
@@ -91,6 +91,8 @@ const MAP_KEYS: [&str; 34] = [
     "gone_kf_time",
     "gone_kf_pose",
     "gone_kf_parent",
+    "gone_kf_relative",
+    "loop_edges",
 ];
 
 /// The frame's fields, as the dict's keys.
@@ -297,6 +299,8 @@ pub fn map_in(py: Python<'_>, values: &Bound<'_, PyDict>) -> PyResult<Map> {
         gone_kf_time: vector(&get("gone_kf_time")?)?,
         gone_kf_pose: poses(&get("gone_kf_pose")?)?,
         gone_kf_parent: vector(&get("gone_kf_parent")?)?,
+        gone_kf_relative: poses(&get("gone_kf_relative")?)?,
+        loop_edges: rows::<i64, 2>(&get("loop_edges")?)?,
         pt_observations: Vec::new(),
     };
     index_observations(&mut m);
@@ -455,6 +459,8 @@ pub fn map_dict<'py>(py: Python<'py>, m: &Map) -> PyResult<Bound<'py, PyDict>> {
     out.set_item("gone_kf_time", vector_array(py, &m.gone_kf_time))?;
     out.set_item("gone_kf_pose", poses_array(py, &m.gone_kf_pose)?)?;
     out.set_item("gone_kf_parent", vector_array(py, &m.gone_kf_parent))?;
+    out.set_item("gone_kf_relative", poses_array(py, &m.gone_kf_relative)?)?;
+    out.set_item("loop_edges", rows_array(py, &m.loop_edges)?)?;
     Ok(out)
 }
 

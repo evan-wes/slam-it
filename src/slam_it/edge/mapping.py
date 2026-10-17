@@ -12,8 +12,10 @@ runs ORB-SLAM's local mapping steps in order, single-threaded:
 4. **Fuse duplicates** (:func:`fuse_points`, ``SearchInNeighbors``).
 5. **Local BA** over the keyframe and its links (:func:`slam_it.edge.adjust.bundle_adjust`),
    the keyframes that see their points and the map's first keyframe fixed, once the map holds
-   ``adjustment.min_keyframes`` (``KeyFramesInMap() > 2``).
-6. **Cull redundant keyframes** (:func:`cull_keyframes`, ``KeyFrameCulling``).
+   ``adjustment.min_keyframes`` (``KeyFramesInMap() > 2``); skipped when none of them is fixed,
+   as ORB-SLAM3 skips it.
+6. **Cull redundant keyframes** (:func:`cull_keyframes`, ``KeyFrameCulling``), sparing those
+   with a loop edge and those loop detection holds (:func:`slam_it.edge.covisibility.cull`).
 
 :func:`process` returns the map with how each step went (:class:`MappingSummary`), which a
 run records per keyframe.
@@ -214,7 +216,12 @@ class Implementation(Protocol):
         ...
 
     def cull_keyframes(
-        self, m: Crossing, camera: Crossing, mode: str, options: Crossing
+        self,
+        m: Crossing,
+        camera: Crossing,
+        mode: str,
+        options: Crossing,
+        held: NDArray[np.int64],
     ) -> Crossing:
         """Cull the newest keyframe's redundant links."""
         ...
@@ -228,6 +235,7 @@ class Implementation(Protocol):
         tracked: Crossing,
         mode: str,
         options: Crossing,
+        held: NDArray[np.int64],
     ) -> Crossing:
         """Insert a keyframe and run local mapping on it."""
         ...
@@ -1062,7 +1070,7 @@ def _redundant(m: Map, k: int, rows: IntArray, threshold: int) -> int:
     return redundant
 
 
-def _cull_keyframes(m: Map, camera: Camera, mode: str, options: Options) -> Map:
+def _cull_keyframes(m: Map, camera: Camera, mode: str, options: Options, held: IntArray) -> Map:
     """Cull the newest keyframe's redundant links (reference)."""
     limit = close_depth(camera, options)
     for kf_id in m.kf_id[covisibility.links(m, m.keyframes - 1, options)[0]]:
@@ -1077,12 +1085,18 @@ def _cull_keyframes(m: Map, camera: Camera, mode: str, options: Options) -> Map:
         if len(rows) and _redundant(m, k, rows, options.mapping.redundant_observers) > (
             options.mapping.redundant_fraction * len(rows)
         ):
-            m = covisibility.cull(m, k, options)
+            m = covisibility.cull(m, k, options, held=held)
     return m
 
 
-def cull_keyframes(
-    m: Map, camera: Camera, mode: str, options: Options, *, backend: str = "python"
+def cull_keyframes(  # noqa: PLR0913 -- the map, its camera, the mode, the settings, the held
+    m: Map,
+    camera: Camera,
+    mode: str,
+    options: Options,
+    *,
+    held: ArrayLike = (),
+    backend: str = "python",
 ) -> Map:
     """Cull the newest keyframe's redundant links (``KeyFrameCulling``).
 
@@ -1091,7 +1105,7 @@ def cull_keyframes(
     when more than ``mapping.redundant_fraction`` of its points (its close ones with depth, for
     stereo and RGB-D) are observed with weight above ``mapping.redundant_observers`` and seen by
     at least ``mapping.redundant_observers`` other keyframes at its level, a finer one, or the next
-    coarser.
+    coarser; ``cull`` spares one with a loop edge, and one of `held`.
 
     Parameters
     ----------
@@ -1103,6 +1117,8 @@ def cull_keyframes(
         The pipeline's mode.
     options : Options
         The fraction and count.
+    held : array_like of int, optional
+        The ids of the keyframes loop detection holds (default: none).
     backend : {"python", "cpp", "rust"}, optional
         Which implementation computes the result (default: the Python reference).
 
@@ -1114,22 +1130,30 @@ def cull_keyframes(
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If the mode is unknown, or the map has no keyframe.
+        If the mode is unknown, the map has no keyframe, or `held` is not ids.
     """
     check_mode(mode)
     _check_newest(m)
+    kept = covisibility.as_held(held)
     return backends.call(
         backend,
         __name__,
         "cull_keyframes",
-        reference=lambda: _cull_keyframes(m, camera, mode, options),
-        arguments=_arguments(m, camera, options, mode=mode),
+        reference=lambda: _cull_keyframes(m, camera, mode, options, kept),
+        arguments=_arguments(m, camera, options, mode=mode, held=kept),
         decode=maps.decode,
     )
 
 
 def _process(  # noqa: PLR0913 -- the stage's state
-    m: Map, camera: Camera, frame: Frame, tracked: Tracked, *, mode: str, options: Options
+    m: Map,
+    camera: Camera,
+    frame: Frame,
+    tracked: Tracked,
+    *,
+    mode: str,
+    options: Options,
+    held: IntArray,
 ) -> Mapped:
     """Insert a keyframe and run local mapping on it (reference)."""
     m = maps.insert_keyframe(m, frame, tracked.pose, tracked.points)
@@ -1156,7 +1180,7 @@ def _process(  # noqa: PLR0913 -- the stage's state
         m, solves, outliers = adjusted.map, adjusted.solves, adjusted.outliers
         free, fixed = adjusted.free, adjusted.fixed
     keyframes = m.keyframes
-    m = _cull_keyframes(m, camera, mode, options)
+    m = _cull_keyframes(m, camera, mode, options, held)
     summary = MappingSummary(
         from_depth=with_depth - start,
         culled_points=with_depth - culled,
@@ -1180,6 +1204,7 @@ def process(  # noqa: PLR0913 -- the stage's state, and the backend
     *,
     mode: str,
     options: Options,
+    held: ArrayLike = (),
     backend: str = "python",
 ) -> Mapped:
     """Insert a keyframe and run local mapping on it (the module docstring's six steps).
@@ -1198,6 +1223,8 @@ def process(  # noqa: PLR0913 -- the stage's state, and the backend
         The pipeline's mode.
     options : Options
         The settings.
+    held : array_like of int, optional
+        The ids of the keyframes loop detection holds, which culling spares (default: none).
     backend : {"python", "cpp", "rust"}, optional
         Which implementation computes the result (default: the Python reference).
 
@@ -1210,17 +1237,26 @@ def process(  # noqa: PLR0913 -- the stage's state, and the backend
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If the mode is unknown, or the matches are not one per keypoint.
+        If the mode is unknown, the matches are not one per keypoint, or `held` is not ids.
     """
     check_mode(mode)
     checked = checked_tracked(tracked, frame)
+    kept = covisibility.as_held(held)
     return backends.call(
         backend,
         __name__,
         "process",
-        reference=lambda: _process(m, camera, frame, checked, mode=mode, options=options),
+        reference=lambda: _process(
+            m, camera, frame, checked, mode=mode, options=options, held=kept
+        ),
         arguments=_arguments(
-            m, camera, options, frame=frame.as_dict(), tracked=checked.as_dict(), mode=mode
+            m,
+            camera,
+            options,
+            frame=frame.as_dict(),
+            tracked=checked.as_dict(),
+            mode=mode,
+            held=kept,
         ),
         decode=_decode_mapped,
     )

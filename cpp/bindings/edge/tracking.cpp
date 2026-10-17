@@ -57,7 +57,7 @@ nb::dict in_view(const nb::dict& m, const nb::dict& camera, const Matrix4In& pos
                            edge_crossing::int64_in(rows), options_in(options)));
   nb::dict out;
   out["rows"] = edge_crossing::vector_array(view.rows);
-  out["xy"] = edge_crossing::pixels_array(view.xy);
+  out["xy"] = edge_crossing::pairs_array(view.xy);
   out["right"] = edge_crossing::vector_array(view.right);
   out["level"] = edge_crossing::vector_array(view.level);
   out["view_cos"] = edge_crossing::vector_array(view.view_cos);

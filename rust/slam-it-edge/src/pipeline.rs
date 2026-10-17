@@ -1020,7 +1020,8 @@ impl Pipeline {
         let mut made = Vec::new();
         if keyframe {
             let start = Instant::now();
-            let mapped = mapping::process(m, &self.camera, frame, &tracked, self.mode, &options)?;
+            let mapped =
+                mapping::process(m, &self.camera, frame, &tracked, self.mode, &options, &[])?;
             if let Some(mut database) = self.database.take() {
                 let synced = self.sync_database(&mut database, m);
                 self.database = Some(database);

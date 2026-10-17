@@ -476,6 +476,139 @@ class RelocalizationOptions:
 
 
 @dataclass(frozen=True)
+class LoopOptions:
+    """Loop closure: detection, the loop's similarity, its correction (``Options.loops``).
+
+    ORB-SLAM3's ``LoopClosing`` (``NewDetectCommonRegions`` and what it calls), with the values
+    its source hard-codes. A distance named here is a Hamming distance; ORB-SLAM writes the
+    projection searches' as ``TH_LOW`` (50) times a ratio.
+
+    Attributes
+    ----------
+    enabled : bool
+        Close loops in the map being tracked, each keyframe searched once it is mapped (on, as
+        ORB-SLAM always is). It needs the keyframe database, so ``relocalization.enabled`` too.
+    min_keyframes : int
+        A map of fewer keyframes is not searched (``KeyFramesInMap() < 12``).
+    candidates : int
+        The best groups of keyframes the database gives (``DetectNBestCandidates``' 3).
+    common_words : float
+        The database scores the keyframes sharing more than this fraction of the most words any
+        shares with the keyframe (0.8).
+    neighbours : int
+        A candidate's group: it and its best this many links, whose scores the database
+        accumulates too; and the new keyframe's best this many links, which confirm a loop
+        (``GetBestCovisibilityKeyFrames(10)``).
+    ratio : float
+        The ratio test of the matching by word between the new keyframe and a group
+        (``ORBmatcher matcherBoW(0.9, true)``), at ``matching.th_low``.
+    min_matches : int
+        A group needs this many matches by word (``nBoWMatches``, 20).
+    min_inliers : int
+        The loop's Sim(3) RANSAC needs this many inliers (``nBoWInliers``, 15)...
+    confidence : float
+        ...and draws the samples that find them with this confidence, in (0, 1) (0.99)...
+    ransac_iterations : int
+        ...at most this many (``SetRansacParameters(0.99, 15, 300)``).
+    chi2 : float
+        A match is the RANSAC's inlier when it reprojects within this many variances in both
+        keyframes (``Sim3Solver``'s 9.21: two degrees of freedom at 99%).
+    coarse_window : float
+        The group's points are searched through the RANSAC's similarity in this window, in
+        pixels at the predicted level (``SearchByProjection(..., 8, 1.5)``)...
+    coarse_distance : int
+        ...within this distance (75)...
+    coarse_matches : int
+        ...and must give this many matches (``nProjMatches``, 50).
+    huber_chi2 : float
+        The refinement's Huber loss sits at this chi-square's root, and a match whose either
+        error exceeds it is dropped (``OptimizeSim3``'s ``th2``, 10).
+    refine_iterations : int
+        The refinement's first round (5), and its second when it dropped no match...
+    refine_more : int
+        ...or this many when it did (10).
+    min_kept : int
+        The refinement fails when fewer matches than this survive its first round (10).
+    min_refined : int
+        The refined similarity needs this many inliers (``nSim3Inliers``, 20)...
+    fine_window : float
+        ...and the group's points, searched through it in this window (5)...
+    fine_distance : int
+        ...within this distance (50)...
+    fine_matches : int
+        ...must give this many matches (``nProjOptMatches``, 80).
+    confirm_window : float
+        A neighbour of the new keyframe, or a later keyframe, confirms the loop when the group's
+        points, searched in this window through the similarity carried to it
+        (``FindMatchesByProjection``'s 3)...
+    confirm_distance : int
+        ...within this distance (75)...
+    confirm_matches : int
+        ...give this many matches (30).
+    confirmations : int
+        Confirmations that close the loop (``mnLoopNumCoincidences >= 3``).
+    misses : int
+        Later keyframes in a row that fail to confirm a loop drop it (``mnLoopNumNotFound >=
+        2``).
+    temporal_refined : int
+        A later keyframe confirms only if refining the similarity carried to it keeps more
+        inliers than this (``DetectAndReffineSim3FromLastKF``'s 50)...
+    temporal_matches : int
+        ...and the search through the refined one gives this many matches (100).
+    fuse_window : float
+        The loop's group's points are fused into the corrected keyframes in this window, within
+        ``matching.th_low`` (``SearchAndFuse``'s 4).
+    essential_points : int
+        The essential graph links keyframes sharing this many points (``minFeat``, 100).
+    essential_iterations : int
+        Its Levenberg-Marquardt iterations (20)...
+    essential_damping : float
+        ...from this damping (``setUserLambdaInit(1e-16)``).
+    global_ba : bool
+        Bundle-adjust the whole map after each loop (on, as visual-only ORB-SLAM3 always does;
+        off measures what it adds).
+    global_iterations : int
+        Its iterations (``GlobalBundleAdjustemnt``'s 10).
+    """
+
+    enabled: bool = True
+    min_keyframes: int = 12
+    candidates: int = 3
+    common_words: float = 0.8
+    neighbours: int = 10
+    ratio: float = 0.9
+    min_matches: int = 20
+    min_inliers: int = 15
+    confidence: float = 0.99
+    ransac_iterations: int = 300
+    chi2: float = 9.21
+    coarse_window: float = 8.0
+    coarse_distance: int = 75
+    coarse_matches: int = 50
+    huber_chi2: float = 10.0
+    refine_iterations: int = 5
+    refine_more: int = 10
+    min_kept: int = 10
+    min_refined: int = 20
+    fine_window: float = 5.0
+    fine_distance: int = 50
+    fine_matches: int = 80
+    confirm_window: float = 3.0
+    confirm_distance: int = 75
+    confirm_matches: int = 30
+    confirmations: int = 3
+    misses: int = 2
+    temporal_refined: int = 50
+    temporal_matches: int = 100
+    fuse_window: float = 4.0
+    essential_points: int = 100
+    essential_iterations: int = 20
+    essential_damping: float = 1e-16
+    global_ba: bool = True
+    global_iterations: int = 10
+
+
+@dataclass(frozen=True)
 class LossOptions:
     """When a lost track's map is closed (``Options.loss``).
 
@@ -531,6 +664,8 @@ class Options:
         The covisibility graph.
     relocalization : RelocalizationOptions
         Relocalisation.
+    loops : LoopOptions
+        Loop closure.
     loss : LossOptions
         When a lost track's map is closed.
     seed : int
@@ -547,6 +682,7 @@ class Options:
     mapping: MappingOptions = field(default_factory=MappingOptions)
     covisibility: CovisibilityOptions = field(default_factory=CovisibilityOptions)
     relocalization: RelocalizationOptions = field(default_factory=RelocalizationOptions)
+    loops: LoopOptions = field(default_factory=LoopOptions)
     loss: LossOptions = field(default_factory=LossOptions)
     seed: int = 0
 
@@ -574,12 +710,17 @@ class Options:
             ("matching.th_low", self.matching.th_low),
             ("matching.th_high", self.matching.th_high),
             ("relocalization.narrow_distance", self.relocalization.narrow_distance),
+            ("loops.coarse_distance", self.loops.coarse_distance),
+            ("loops.fine_distance", self.loops.fine_distance),
+            ("loops.confirm_distance", self.loops.confirm_distance),
         ):
             as_count(value, name, 1, matching.MAX_DISTANCE)
-        if not self.relocalization.confidence < 1.0:
-            confidence = self.relocalization.confidence
-            message = f"must be in (0, 1), got {confidence}"
-            raise InvalidInputError(f"relocalization.confidence: {message}")
+        for name, confidence in (
+            ("relocalization.confidence", self.relocalization.confidence),
+            ("loops.confidence", self.loops.confidence),
+        ):
+            if not confidence < 1.0:
+                raise InvalidInputError(f"{name}: must be in (0, 1), got {confidence}")
         try:
             self.stereo_matching()
         except InvalidInputError as error:
@@ -739,6 +880,9 @@ _FRACTIONS = frozenset(
         "relocalization.group_score",
         "relocalization.inlier_ratio",
         "relocalization.confidence",
+        "loops.common_words",
+        "loops.ratio",
+        "loops.confidence",
     }
 )
 """The real settings in (0, 1]."""

@@ -76,7 +76,10 @@ foundations::Result<void> check_options(const Options& options) {
   for (const auto& [setting, value] :
        {std::pair{"matching.th_low", options.matching.th_low},
         std::pair{"matching.th_high", options.matching.th_high},
-        std::pair{"relocalization.narrow_distance", options.relocalization.narrow_distance}}) {
+        std::pair{"relocalization.narrow_distance", options.relocalization.narrow_distance},
+        std::pair{"loops.coarse_distance", options.loops.coarse_distance},
+        std::pair{"loops.fine_distance", options.loops.fine_distance},
+        std::pair{"loops.confirm_distance", options.loops.confirm_distance}}) {
     if (auto ok = foundations::check_range(setting, value, 1, foundations::matching::kMaxDistance);
         !ok) {
       return ok;
@@ -93,7 +96,7 @@ foundations::Result<void> check_options(const Options& options) {
       return ok;
     }
   }
-  const std::array<IntSetting, 45> counts{{
+  const std::array<IntSetting, 65> counts{{
       {"features.n_features", options.features.n_features},
       {"features.levels", options.features.levels},
       {"features.fast_threshold", options.features.fast_threshold},
@@ -139,13 +142,33 @@ foundations::Result<void> check_options(const Options& options) {
       {"relocalization.min_inliers", options.relocalization.min_inliers},
       {"relocalization.ransac_iterations", options.relocalization.ransac_iterations},
       {"relocalization.narrow_inliers", options.relocalization.narrow_inliers},
+      {"loops.min_keyframes", options.loops.min_keyframes},
+      {"loops.candidates", options.loops.candidates},
+      {"loops.neighbours", options.loops.neighbours},
+      {"loops.min_matches", options.loops.min_matches},
+      {"loops.min_inliers", options.loops.min_inliers},
+      {"loops.ransac_iterations", options.loops.ransac_iterations},
+      {"loops.coarse_matches", options.loops.coarse_matches},
+      {"loops.refine_iterations", options.loops.refine_iterations},
+      {"loops.refine_more", options.loops.refine_more},
+      {"loops.min_kept", options.loops.min_kept},
+      {"loops.min_refined", options.loops.min_refined},
+      {"loops.fine_matches", options.loops.fine_matches},
+      {"loops.confirm_matches", options.loops.confirm_matches},
+      {"loops.confirmations", options.loops.confirmations},
+      {"loops.misses", options.loops.misses},
+      {"loops.temporal_refined", options.loops.temporal_refined},
+      {"loops.temporal_matches", options.loops.temporal_matches},
+      {"loops.essential_points", options.loops.essential_points},
+      {"loops.essential_iterations", options.loops.essential_iterations},
+      {"loops.global_iterations", options.loops.global_iterations},
   }};
   for (const auto& [setting, value] : counts) {
     if (auto ok = foundations::check_range(setting, value, 1, kMaxSetting); !ok) {
       return ok;
     }
   }
-  const std::array<RealSetting, 21> positive{{
+  const std::array<RealSetting, 28> positive{{
       {"features.scale_factor", options.features.scale_factor},
       {"stereo.close_depth", options.stereo.close_depth},
       {"initialization.window", options.initialization.window},
@@ -166,6 +189,13 @@ foundations::Result<void> check_options(const Options& options) {
       {"mapping.min_epipole_distance2", options.mapping.min_epipole_distance2},
       {"relocalization.window", options.relocalization.window},
       {"relocalization.narrow_window", options.relocalization.narrow_window},
+      {"loops.chi2", options.loops.chi2},
+      {"loops.coarse_window", options.loops.coarse_window},
+      {"loops.huber_chi2", options.loops.huber_chi2},
+      {"loops.fine_window", options.loops.fine_window},
+      {"loops.confirm_window", options.loops.confirm_window},
+      {"loops.fuse_window", options.loops.fuse_window},
+      {"loops.essential_damping", options.loops.essential_damping},
       {"loss.relocalize_seconds", options.loss.relocalize_seconds},
   }};
   for (const auto& [setting, value] : positive) {
@@ -173,7 +203,7 @@ foundations::Result<void> check_options(const Options& options) {
       return foundations::fail_setting(setting, "must be finite and positive", value);
     }
   }
-  const std::array<RealSetting, 18> fractions{{
+  const std::array<RealSetting, 21> fractions{{
       {"initialization.ratio", options.initialization.ratio},
       {"initialization.parallax_cos", options.initialization.parallax_cos},
       {"keyframes.ref_ratio", options.keyframes.ref_ratio},
@@ -192,15 +222,21 @@ foundations::Result<void> check_options(const Options& options) {
       {"relocalization.group_score", options.relocalization.group_score},
       {"relocalization.inlier_ratio", options.relocalization.inlier_ratio},
       {"relocalization.confidence", options.relocalization.confidence},
+      {"loops.common_words", options.loops.common_words},
+      {"loops.ratio", options.loops.ratio},
+      {"loops.confidence", options.loops.confidence},
   }};
   for (const auto& [setting, value] : fractions) {
     if (!std::isfinite(value) || value <= 0.0 || value > 1.0) {
       return foundations::fail_setting(setting, "must be in (0, 1]", value);
     }
   }
-  if (options.relocalization.confidence >= 1.0) {
-    return foundations::fail_setting("relocalization.confidence", "must be in (0, 1)",
-                                     options.relocalization.confidence);
+  for (const auto& [setting, value] :
+       {RealSetting{"relocalization.confidence", options.relocalization.confidence},
+        RealSetting{"loops.confidence", options.loops.confidence}}) {
+    if (value >= 1.0) {
+      return foundations::fail_setting(setting, "must be in (0, 1)", value);
+    }
   }
   return {};
 }

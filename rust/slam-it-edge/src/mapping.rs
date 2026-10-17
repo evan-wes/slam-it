@@ -1158,6 +1158,7 @@ fn redundant(m: &Map, k: usize, rows: &[usize], threshold: usize) -> Result<usiz
 /// * `camera` - The camera.
 /// * `mode` - The pipeline's mode.
 /// * `options` - The fraction and count.
+/// * `held` - The ids of the keyframes loop detection holds, which `cull` spares.
 ///
 /// # Errors
 ///
@@ -1166,7 +1167,13 @@ fn redundant(m: &Map, k: usize, rows: &[usize], threshold: usize) -> Result<usiz
     clippy::cast_precision_loss,
     reason = "counts of keypoints, exact in f64"
 )]
-pub fn cull_keyframes(m: &mut Map, camera: &Camera, mode: Mode, options: &Options) -> Result<()> {
+pub fn cull_keyframes(
+    m: &mut Map,
+    camera: &Camera,
+    mode: Mode,
+    options: &Options,
+    held: &[i64],
+) -> Result<()> {
     check_newest(m, camera, options)?;
     let limit = close_depth(camera, options);
     let ids: Vec<i64> = linked_rows(m, m.keyframes() - 1, options)
@@ -1191,7 +1198,7 @@ pub fn cull_keyframes(m: &mut Map, camera: &Camera, mode: Mode, options: &Option
         }
         let count = redundant(m, k, &rows, options.mapping.redundant_observers)?;
         if count as f64 > options.mapping.redundant_fraction * rows.len() as f64 {
-            covisibility::cull(m, k, options)?;
+            covisibility::cull(m, k, options, held)?;
         }
     }
     Ok(())
@@ -1245,6 +1252,7 @@ pub struct Mapped {
 /// * `tracked` - Its pose and matches.
 /// * `mode` - The pipeline's mode.
 /// * `options` - The settings.
+/// * `held` - The ids of the keyframes loop detection holds, which culling spares.
 ///
 /// # Returns
 ///
@@ -1261,6 +1269,7 @@ pub fn process(
     tracked: &Tracked,
     mode: Mode,
     options: &Options,
+    held: &[i64],
 ) -> Result<Mapped> {
     map::insert_keyframe(m, frame, &tracked.pose, &tracked.points)?;
     // Its parent, as ORB-SLAM's first UpdateConnections sets it (after fusion if it shares none).
@@ -1292,7 +1301,7 @@ pub fn process(
         adjustment = bundle_adjust(m, camera, &local_rows(m, options), &fixed, options)?;
     }
     let keyframes = m.keyframes();
-    cull_keyframes(m, camera, mode, options)?;
+    cull_keyframes(m, camera, mode, options, held)?;
     Ok(Mapped {
         summary: MappingSummary {
             from_depth: with_depth - start,

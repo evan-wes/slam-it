@@ -111,6 +111,15 @@ void check_cull(const nlohmann::json& c, const edge::Map& m, std::size_t k,
     expect(is_invalid_input(edge::erase_keyframe(erased, row)),
            (name + ": a parent is not erased").c_str(), failures);
   }
+  edge::Map held = m;
+  const std::vector<std::int64_t> holding{m.kf_id[k]};
+  expect(edge::cull(held, row, options, holding).has_value() && held.kf_id == m.kf_id,
+         (name + ": a held keyframe is spared").c_str(), failures);
+  edge::Map looped = m;
+  const std::int64_t other = m.kf_id[k == 0 ? 1 : 0];
+  expect(edge::add_loop_edge(looped, m.kf_id[k], other).has_value() &&
+             edge::cull(looped, row, options).has_value() && looped.kf_id == m.kf_id,
+         (name + ": a keyframe with a loop edge is spared").c_str(), failures);
 }
 
 /// @brief A case's settings.

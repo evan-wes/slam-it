@@ -931,7 +931,8 @@ Result<std::vector<std::int64_t>> local_ba_keyframes(const Map& m, const Options
   return local_rows(m, options);
 }
 
-Result<void> cull_keyframes(Map& m, const Camera& camera, Mode mode, const Options& options) {
+Result<void> cull_keyframes(Map& m, const Camera& camera, Mode mode, const Options& options,
+                            std::span<const std::int64_t> held) {
   if (auto ok = check_newest(m, camera, options); !ok) {
     return ok;
   }
@@ -962,7 +963,7 @@ Result<void> cull_keyframes(Map& m, const Camera& camera, Mode mode, const Optio
     }
     if (static_cast<double>(*count) >
         options.mapping.redundant_fraction * static_cast<double>(rows.size())) {
-      if (auto ok = cull(m, static_cast<std::int64_t>(k), options); !ok) {
+      if (auto ok = cull(m, static_cast<std::int64_t>(k), options, held); !ok) {
         return ok;
       }
     }
@@ -971,7 +972,7 @@ Result<void> cull_keyframes(Map& m, const Camera& camera, Mode mode, const Optio
 }
 
 Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame, const Tracked& tracked,
-                       Mode mode, const Options& options) {
+                       Mode mode, const Options& options, std::span<const std::int64_t> held) {
   if (auto ok = insert_keyframe(m, frame, tracked.pose, tracked.points); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
@@ -1025,7 +1026,7 @@ Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame, const T
     adjustment = std::move(*adjusted);
   }
   const auto keyframes = static_cast<std::int64_t>(keyframe_count(m));
-  if (auto ok = cull_keyframes(m, camera, mode, options); !ok) {
+  if (auto ok = cull_keyframes(m, camera, mode, options, held); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   return Mapped{

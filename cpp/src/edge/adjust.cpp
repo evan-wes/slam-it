@@ -301,6 +301,9 @@ Result<Adjustment> bundle_adjust(Map& m, const Camera& camera,
   ba::Problem& problem = built->problem;
   const auto held = static_cast<std::int64_t>(std::ranges::count(problem.fixed_poses, true));
   const auto posed = static_cast<std::int64_t>(problem.fixed_poses.size());
+  if (held == 0) {
+    return Adjustment{};  // no gauge: ORB-SLAM3 skips it
+  }
   auto first = ba::solve(problem, solver_options(options, options.adjustment.iterations));
   if (!first) {
     return std::unexpected(std::move(first.error()));

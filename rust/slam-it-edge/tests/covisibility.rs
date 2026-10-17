@@ -6,7 +6,7 @@
 use nalgebra::{Matrix4, Vector3};
 use serde_json::Value;
 use slam_it_edge::covisibility::{adopt, cull, links, local_map, reparent, strong_links};
-use slam_it_edge::map::{Map, check_map, erase_keyframe, index_observations};
+use slam_it_edge::map::{Map, add_loop_edge, check_map, erase_keyframe, index_observations};
 use slam_it_edge::mapping::{fuse_targets, local_ba_keyframes};
 use slam_it_edge::options::{Mode, Options};
 use slam_it_foundations::error::ErrorKind;
@@ -92,13 +92,13 @@ fn check_cull(case: &Value, m: &Map, k: usize, options: &Options) {
     let mut culled = m.clone();
     if m.kf_id[k] == 0 {
         assert_eq!(
-            cull(&mut culled, k, options).unwrap_err().kind,
+            cull(&mut culled, k, options, &[]).unwrap_err().kind,
             ErrorKind::InvalidInput,
             "{name}: the map's first keyframe is not culled"
         );
         return;
     }
-    cull(&mut culled, k, options).unwrap();
+    cull(&mut culled, k, options, &[]).unwrap();
     assert_eq!(
         culled.kf_id,
         without(m.kf_id.clone(), k),
@@ -125,6 +125,17 @@ fn check_cull(case: &Value, m: &Map, k: usize, options: &Options) {
             "{name}: row {k}, a parent, is not erased"
         );
     }
+    let mut held = m.clone();
+    cull(&mut held, k, options, &[m.kf_id[k]]).unwrap();
+    assert_eq!(held.kf_id, m.kf_id, "{name}: row {k}, held, is spared");
+    let mut looped = m.clone();
+    let other = m.kf_id[usize::from(k == 0)];
+    add_loop_edge(&mut looped, m.kf_id[k], other).unwrap();
+    cull(&mut looped, k, options, &[]).unwrap();
+    assert_eq!(
+        looped.kf_id, m.kf_id,
+        "{name}: row {k}, with a loop edge, is spared"
+    );
 }
 
 /// A case's settings.
@@ -239,12 +250,14 @@ fn a_bad_row_or_point_is_refused() {
     assert!(links(&m, m.keyframes(), &options).is_err());
     let mut past = m.clone();
     assert_eq!(
-        cull(&mut past, m.keyframes(), &options).unwrap_err().kind,
+        cull(&mut past, m.keyframes(), &options, &[])
+            .unwrap_err()
+            .kind,
         ErrorKind::InvalidInput
     );
     let mut none = Map::empty(8, 1.2);
     assert_eq!(
-        cull(&mut none, 0, &options).unwrap_err().kind,
+        cull(&mut none, 0, &options, &[]).unwrap_err().kind,
         ErrorKind::InvalidInput
     );
     assert!(local_map(&m, &[3, -2], &options).is_err());

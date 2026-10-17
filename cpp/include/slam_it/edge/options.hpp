@@ -268,6 +268,81 @@ struct RelocalizationOptions {
   std::int64_t narrow_distance{64};
 };
 
+/// @brief Loop closure: detection, the loop's similarity, its correction (`Options.loops`).
+struct LoopOptions {
+  /// @brief Close loops in the map being tracked (needs the keyframe database).
+  bool enabled{true};
+  /// @brief A map of fewer keyframes is not searched.
+  std::int64_t min_keyframes{12};
+  /// @brief The best groups of keyframes the database gives.
+  std::int64_t candidates{3};
+  /// @brief The database scores keyframes sharing more than this fraction of the most words.
+  double common_words{0.8};
+  /// @brief A candidate's group: it and its best this many links; and the confirming links.
+  std::int64_t neighbours{10};
+  /// @brief The ratio test of the matching by word with a group.
+  double ratio{0.9};
+  /// @brief A group needs this many matches by word.
+  std::int64_t min_matches{20};
+  /// @brief The loop's Sim(3) RANSAC needs this many inliers...
+  std::int64_t min_inliers{15};
+  /// @brief ...drawing its samples with this confidence, in (0, 1)...
+  double confidence{0.99};
+  /// @brief ...at most this many.
+  std::int64_t ransac_iterations{300};
+  /// @brief A match is the RANSAC's inlier within this many variances in both keyframes.
+  double chi2{9.21};
+  /// @brief The window of the search through the RANSAC's similarity...
+  double coarse_window{8.0};
+  /// @brief ...its descriptor distance...
+  std::int64_t coarse_distance{75};
+  /// @brief ...and the matches it must give.
+  std::int64_t coarse_matches{50};
+  /// @brief The refinement's Huber loss sits at this chi-square's root; above it a match is
+  /// dropped.
+  double huber_chi2{10.0};
+  /// @brief The refinement's first round, and its second when it dropped no match...
+  std::int64_t refine_iterations{5};
+  /// @brief ...or this many when it did.
+  std::int64_t refine_more{10};
+  /// @brief The refinement fails when fewer matches survive its first round.
+  std::int64_t min_kept{10};
+  /// @brief The refined similarity needs this many inliers...
+  std::int64_t min_refined{20};
+  /// @brief ...and the search through it, in this window...
+  double fine_window{5.0};
+  /// @brief ...within this distance...
+  std::int64_t fine_distance{50};
+  /// @brief ...must give this many matches.
+  std::int64_t fine_matches{80};
+  /// @brief A confirmation's search window...
+  double confirm_window{3.0};
+  /// @brief ...its distance...
+  std::int64_t confirm_distance{75};
+  /// @brief ...and the matches it must give.
+  std::int64_t confirm_matches{30};
+  /// @brief Confirmations that close the loop.
+  std::int64_t confirmations{3};
+  /// @brief Later keyframes in a row that fail to confirm a loop drop it.
+  std::int64_t misses{2};
+  /// @brief A later keyframe's refinement must keep more inliers than this...
+  std::int64_t temporal_refined{50};
+  /// @brief ...and its search through the refined similarity give this many.
+  std::int64_t temporal_matches{100};
+  /// @brief The loop's points are fused into the corrected keyframes in this window.
+  double fuse_window{4.0};
+  /// @brief The essential graph links keyframes sharing this many points.
+  std::int64_t essential_points{100};
+  /// @brief Its Levenberg-Marquardt iterations...
+  std::int64_t essential_iterations{20};
+  /// @brief ...from this damping.
+  double essential_damping{1e-16};
+  /// @brief Bundle-adjust the whole map after each loop.
+  bool global_ba{true};
+  /// @brief Its iterations.
+  std::int64_t global_iterations{10};
+};
+
 /// @brief When a lost track's map is closed (`Options.loss`).
 struct LossOptions {
   /// @brief A recently lost track is lost once more than this has passed since its first
@@ -303,6 +378,8 @@ struct Options {
   CovisibilityOptions covisibility{};
   /// @brief Relocalising a failed frame against the whole map.
   RelocalizationOptions relocalization{};
+  /// @brief Loop closure.
+  LoopOptions loops{};
   /// @brief When a lost track's map is closed.
   LossOptions loss{};
   /// @brief Every RANSAC's seed.
@@ -414,6 +491,41 @@ constexpr void for_each_setting(Settings& options, Visit visit) {
   visit("relocalization.narrow_inliers", options.relocalization.narrow_inliers);
   visit("relocalization.narrow_window", options.relocalization.narrow_window);
   visit("relocalization.narrow_distance", options.relocalization.narrow_distance);
+  visit("loops.enabled", options.loops.enabled);
+  visit("loops.min_keyframes", options.loops.min_keyframes);
+  visit("loops.candidates", options.loops.candidates);
+  visit("loops.common_words", options.loops.common_words);
+  visit("loops.neighbours", options.loops.neighbours);
+  visit("loops.ratio", options.loops.ratio);
+  visit("loops.min_matches", options.loops.min_matches);
+  visit("loops.min_inliers", options.loops.min_inliers);
+  visit("loops.confidence", options.loops.confidence);
+  visit("loops.ransac_iterations", options.loops.ransac_iterations);
+  visit("loops.chi2", options.loops.chi2);
+  visit("loops.coarse_window", options.loops.coarse_window);
+  visit("loops.coarse_distance", options.loops.coarse_distance);
+  visit("loops.coarse_matches", options.loops.coarse_matches);
+  visit("loops.huber_chi2", options.loops.huber_chi2);
+  visit("loops.refine_iterations", options.loops.refine_iterations);
+  visit("loops.refine_more", options.loops.refine_more);
+  visit("loops.min_kept", options.loops.min_kept);
+  visit("loops.min_refined", options.loops.min_refined);
+  visit("loops.fine_window", options.loops.fine_window);
+  visit("loops.fine_distance", options.loops.fine_distance);
+  visit("loops.fine_matches", options.loops.fine_matches);
+  visit("loops.confirm_window", options.loops.confirm_window);
+  visit("loops.confirm_distance", options.loops.confirm_distance);
+  visit("loops.confirm_matches", options.loops.confirm_matches);
+  visit("loops.confirmations", options.loops.confirmations);
+  visit("loops.misses", options.loops.misses);
+  visit("loops.temporal_refined", options.loops.temporal_refined);
+  visit("loops.temporal_matches", options.loops.temporal_matches);
+  visit("loops.fuse_window", options.loops.fuse_window);
+  visit("loops.essential_points", options.loops.essential_points);
+  visit("loops.essential_iterations", options.loops.essential_iterations);
+  visit("loops.essential_damping", options.loops.essential_damping);
+  visit("loops.global_ba", options.loops.global_ba);
+  visit("loops.global_iterations", options.loops.global_iterations);
   visit("loss.relocalize_seconds", options.loss.relocalize_seconds);
   visit("loss.lost_frames", options.loss.lost_frames);
   visit("loss.reset_keyframes", options.loss.reset_keyframes);

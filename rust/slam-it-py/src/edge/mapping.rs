@@ -3,6 +3,7 @@
 //! Each step copies the map in, changes the copy, and returns it as a dict; the mode crosses
 //! by name, a tracked frame as `pose` and `points`. `process` also returns how each step went.
 
+use numpy::PyReadonlyArray1;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use slam_it_edge::mapping as core;
@@ -13,7 +14,7 @@ use super::edge_crossing::{
     camera_in, changed, frame_in, indices_array, map_dict, map_in, mode_in, options_in, rows_array,
     solves_list, tracked_in, vector, vector_array,
 };
-use crate::common::{add_functions, enum_codes, to_i64, unwrap};
+use crate::common::{add_functions, contiguous, enum_codes, to_i64, unwrap};
 
 /// Decides whether a tracked frame becomes a keyframe.
 ///
@@ -157,23 +158,41 @@ mode_steps! {
     ///
     /// `ValueError` for a malformed argument; `InvalidInputError` from the core.
     triangulate_new_points;
-    /// Culls the newest keyframe's redundant links.
-    ///
-    /// # Arguments
-    ///
-    /// * `m` - The map, as a dict.
-    /// * `camera` - The camera, as a dict.
-    /// * `mode` - The mode's name.
-    /// * `options` - The settings, as a dict.
-    ///
-    /// # Returns
-    ///
-    /// The new map, as a dict.
-    ///
-    /// # Errors
-    ///
-    /// `ValueError` for a malformed argument; `InvalidInputError` from the core.
-    cull_keyframes;
+}
+
+/// Culls the newest keyframe's redundant links, sparing those loop detection holds.
+///
+/// # Arguments
+///
+/// * `m` - The map, as a dict.
+/// * `camera` - The camera, as a dict.
+/// * `mode` - The mode's name.
+/// * `options` - The settings, as a dict.
+/// * `held` - The ids of the keyframes loop detection holds.
+///
+/// # Returns
+///
+/// The new map, as a dict.
+///
+/// # Errors
+///
+/// `ValueError` for a malformed argument; `InvalidInputError` from the core.
+#[pyfunction]
+#[pyo3(signature = (m, camera, mode, options, held))]
+fn cull_keyframes<'py>(
+    py: Python<'py>,
+    m: &Bound<'py, PyDict>,
+    camera: &Bound<'py, PyDict>,
+    mode: &str,
+    options: &Bound<'py, PyDict>,
+    held: PyReadonlyArray1<'py, i64>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let (camera, mode) = (camera_in(camera)?, mode_in(mode)?);
+    let options = options_in(options)?;
+    let held = contiguous(&held)?;
+    changed(py, m, |out| {
+        core::cull_keyframes(out, &camera, mode, &options, held)
+    })
 }
 
 /// Culls recently created points tracking rarely finds.
@@ -311,6 +330,7 @@ fn match_for_triangulation<'py>(
 /// * `tracked` - Its pose and matches, as a dict.
 /// * `mode` - The mode's name.
 /// * `options` - The settings, as a dict.
+/// * `held` - The ids of the keyframes loop detection holds.
 ///
 /// # Returns
 ///
@@ -320,7 +340,11 @@ fn match_for_triangulation<'py>(
 ///
 /// `ValueError` for a malformed argument; `InvalidInputError` from the core.
 #[pyfunction]
-#[pyo3(signature = (m, camera, frame, tracked, mode, options))]
+#[pyo3(signature = (m, camera, frame, tracked, mode, options, held))]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the stage's state, as the reference takes it"
+)]
 fn process<'py>(
     py: Python<'py>,
     m: &Bound<'py, PyDict>,
@@ -329,13 +353,22 @@ fn process<'py>(
     tracked: &Bound<'py, PyDict>,
     mode: &str,
     options: &Bound<'py, PyDict>,
+    held: PyReadonlyArray1<'py, i64>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let (camera, frame, tracked) = (camera_in(camera)?, frame_in(frame)?, tracked_in(tracked)?);
     let (mode, options) = (mode_in(mode)?, options_in(options)?);
     let mut mapped = map_in(py, m)?;
     let done = unwrap(
         py,
-        core::process(&mut mapped, &camera, &frame, &tracked, mode, &options),
+        core::process(
+            &mut mapped,
+            &camera,
+            &frame,
+            &tracked,
+            mode,
+            &options,
+            contiguous(&held)?,
+        ),
     )?;
     let summary = &done.summary;
     let out = PyDict::new(py);

@@ -90,12 +90,15 @@ struct LocalMap {
 /// @brief Cull a keyframe: its children given new parents, then it erased (ORB-SLAM's
 ///        `SetBadFlag`; `slam_it.edge.covisibility.cull`). The one way a keyframe leaves the
 ///        graph, as `erase_keyframe` refuses a keyframe that is still a parent. The map's first
-///        keyframe (id 0), its tree's root, is refused, as `SetBadFlag` leaves it.
+///        keyframe (id 0), its tree's root, is refused, as `SetBadFlag` leaves it. A keyframe
+///        with a loop edge, or one of `held`, is spared, the map left as it was (`SetNotErase`).
 /// @param m The map, changed in place.
 /// @param k The keyframe's row.
 /// @param options The settings: `covisibility.min_points`.
+/// @param held The ids of the keyframes loop detection holds.
 /// @return Nothing, or `InvalidInput` for a row out of range or the map's first keyframe.
-[[nodiscard]] foundations::Result<void> cull(Map& m, std::int64_t k, const Options& options);
+[[nodiscard]] foundations::Result<void> cull(Map& m, std::int64_t k, const Options& options,
+                                             std::span<const std::int64_t> held = {});
 
 /// @brief Every pair of keyframes sharing at least `covisibility.strong_points`
 ///        (`slam_it.edge.covisibility.strong_links`).

@@ -2,6 +2,7 @@
 /// @brief Native tests for the edge rung's state (slam_it/edge/{options,frames,map}.hpp): a
 ///        small hand-built map's operations and observation index, the checks, depth lookup.
 ///        Parity with the Python reference is checked through the bindings by tests/edge.
+#include <Eigen/LU>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -219,6 +220,41 @@ void check_checks(int& failures) {
   expect(levels.has_value() && levels->empty(), "predict_level takes no rows", failures);
 }
 
+/// @brief Check loop edges: kept older first, refused between a keyframe and itself or a
+///        stranger, their keyframes never erased; and an erased keyframe's pose relative to its
+///        parent archived.
+/// @param failures Running failure count.
+void check_loops(int& failures) {
+  edge::Map m = two_keyframes(failures);
+  Eigen::Matrix4d further = Eigen::Matrix4d::Identity();
+  further(0, 3) = -0.4;
+  further(1, 3) = 0.1;
+  expect(
+      edge::insert_keyframe(m, frame_of(4, false), further, std::vector<std::int64_t>{0, 1, -1, -1})
+          .has_value(),
+      "the setup succeeds", failures);
+  m.kf_parent = {-1, 0, 0};
+  edge::Map looped = m;
+  expect(edge::add_loop_edge(looped, 1, 0).has_value() &&
+             looped.loop_edges == std::vector<std::array<std::int64_t, 2>>{{0, 1}} &&
+             edge::has_loop(looped, 0) && edge::has_loop(looped, 1) && !edge::has_loop(looped, 2) &&
+             edge::check_map(looped).has_value(),
+         "a loop edge joins two keyframes, the older first", failures);
+  expect(is_invalid_input(edge::add_loop_edge(looped, 1, 1)) &&
+             is_invalid_input(edge::add_loop_edge(looped, 1, 9)),
+         "a loop edge to itself or a stranger is refused", failures);
+  expect(is_invalid_input(edge::erase_keyframe(looped, 1)),
+         "a keyframe with a loop edge is not erased", failures);
+  edge::Map backwards = m;
+  backwards.loop_edges = {{1, 0}};
+  expect(is_invalid_input(edge::check_map(backwards)), "check_map rejects a newer-first edge",
+         failures);
+  const Eigen::Matrix4d expected = m.kf_pose[2] * m.kf_pose[0].inverse();
+  expect(edge::erase_keyframe(m, 2).has_value() && m.gone_kf_relative.size() == 1 &&
+             (m.gone_kf_relative[0] - expected).cwiseAbs().maxCoeff() < 1e-12,
+         "an erased keyframe keeps its pose relative to its parent", failures);
+}
+
 /// @brief The test body.
 /// @return The exit code.
 /// @brief Check that every setting refuses a bad value by name: an integer above 2^30, a real
@@ -270,6 +306,7 @@ int run() {
   check_removing(failures);
   check_index(failures);
   check_checks(failures);
+  check_loops(failures);
   check_every_setting(failures);
   return slam_it::testing::finish("edge/map", failures);
 }

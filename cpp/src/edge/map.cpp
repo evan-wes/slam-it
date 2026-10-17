@@ -246,7 +246,8 @@ Result<void> check_lengths(const Map& m) {
                   m.gone_pt_how.size() == m.gone_pt_id.size() &&
                   m.gone_kf_time.size() == m.gone_kf_id.size() &&
                   m.gone_kf_pose.size() == m.gone_kf_id.size() &&
-                  m.gone_kf_parent.size() == m.gone_kf_id.size();
+                  m.gone_kf_parent.size() == m.gone_kf_id.size() &&
+                  m.gone_kf_relative.size() == m.gone_kf_id.size();
   if (!ok) {
     return fail(ErrorKind::kInvalidInput, "map: every table's arrays must have its row count");
   }
@@ -287,6 +288,45 @@ Result<void> check_gone(std::vector<std::int64_t> gone, const std::vector<std::i
   return {};
 }
 
+/// @brief Check the keyframes' links: each parent, and each loop edge.
+/// @param m The map.
+/// @return Nothing, or `InvalidInput`.
+Result<void> check_links(const Map& m) {
+  for (std::size_t k = 0; k < m.kf_parent.size(); ++k) {
+    const std::int64_t parent = m.kf_parent[k];
+    if (parent == m.kf_id[k] || (parent != -1 && row_of(m.kf_id, parent) < 0)) {
+      return fail(ErrorKind::kInvalidInput,
+                  "map.kf_parent: a parent must be -1 or another of its keyframes");
+    }
+  }
+  for (const auto& [older, newer] : m.loop_edges) {
+    if (older >= newer || row_of(m.kf_id, older) < 0 || row_of(m.kf_id, newer) < 0) {
+      return fail(ErrorKind::kInvalidInput,
+                  "map.loop_edges: each joins two of its keyframes, the older (lower id) first");
+    }
+  }
+  return {};
+}
+
+/// @brief A keyframe's pose relative to its parent, `T_cam_parent`, or the identity.
+/// @param m The map.
+/// @param row The keyframe's row.
+/// @return The relative pose.
+Eigen::Matrix4d relative_to_parent(const Map& m, std::size_t row) {
+  const std::int64_t parent = row_of(m.kf_id, m.kf_parent[row]);
+  if (m.kf_parent[row] < 0 || parent < 0) {
+    return Eigen::Matrix4d::Identity();
+  }
+  const Eigen::Matrix4d& pose = m.kf_pose[row];
+  const Eigen::Matrix4d& of_parent = m.kf_pose[static_cast<std::size_t>(parent)];
+  Eigen::Matrix4d out = Eigen::Matrix4d::Identity();
+  out.topLeftCorner<3, 3>() =
+      pose.topLeftCorner<3, 3>() * of_parent.topLeftCorner<3, 3>().transpose();
+  out.topRightCorner<3, 1>() =
+      pose.topRightCorner<3, 1>() - (out.topLeftCorner<3, 3>() * of_parent.topRightCorner<3, 1>());
+  return out;
+}
+
 }  // namespace
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (levels, scale_factor), as in Python
@@ -321,12 +361,8 @@ Result<void> check_map(const Map& m) {
   if (auto ok = check_ids(m.pt_id, m.next_pt_id, "pt_id"); !ok) {
     return ok;
   }
-  for (std::size_t k = 0; k < m.kf_parent.size(); ++k) {
-    const std::int64_t parent = m.kf_parent[k];
-    if (parent == m.kf_id[k] || (parent != -1 && row_of(m.kf_id, parent) < 0)) {
-      return fail(ErrorKind::kInvalidInput,
-                  "map.kf_parent: a parent must be -1 or another of its keyframes");
-    }
+  if (auto ok = check_links(m); !ok) {
+    return ok;
   }
   if (std::ranges::any_of(m.kp_point, [&](std::int64_t id) {
         return id < -1 || (id >= 0 && row_of(m.pt_id, id) < 0);
@@ -359,6 +395,7 @@ void clear_gone(Map& m) {
   m.gone_kf_time.clear();
   m.gone_kf_pose.clear();
   m.gone_kf_parent.clear();
+  m.gone_kf_relative.clear();
 }
 
 void index_observations(Map& m) { m.pt_observations = indexed(m); }
@@ -611,6 +648,11 @@ Result<void> erase_keyframe(Map& m, std::int64_t k) {
                     std::to_string(id) +
                     "'s parent (covisibility's cull gives its children new parents first)");
   }
+  if (has_loop(m, row)) {
+    return fail(ErrorKind::kInvalidInput,
+                "k: keyframe " + std::to_string(m.kf_id[row]) + " has a loop edge, and is kept");
+  }
+  const Eigen::Matrix4d relative = relative_to_parent(m, row);
   const std::int64_t start = m.kf_start[row];
   const std::int64_t stop = m.kf_start[row + 1];
   std::vector<std::int64_t> rows;
@@ -635,6 +677,7 @@ Result<void> erase_keyframe(Map& m, std::int64_t k) {
   m.gone_kf_time.push_back(m.kf_time[row]);
   m.gone_kf_pose.push_back(m.kf_pose[row]);
   m.gone_kf_parent.push_back(m.kf_parent[row]);
+  m.gone_kf_relative.push_back(relative);
   m.kf_id.erase(m.kf_id.begin() + at);
   m.kf_time.erase(m.kf_time.begin() + at);
   m.kf_pose.erase(m.kf_pose.begin() + at);
@@ -650,6 +693,23 @@ Result<void> erase_keyframe(Map& m, std::int64_t k) {
       }
     }
   }
+  return {};
+}
+
+bool has_loop(const Map& m, std::size_t k) {
+  return std::ranges::any_of(m.loop_edges, [&](const std::array<std::int64_t, 2>& edge) {
+    return edge[0] == m.kf_id[k] || edge[1] == m.kf_id[k];
+  });
+}
+
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the edge's two ends, in either order
+Result<void> add_loop_edge(Map& m, std::int64_t first, std::int64_t second) {
+  if (first == second || row_of(m.kf_id, first) < 0 || row_of(m.kf_id, second) < 0) {
+    return fail(ErrorKind::kInvalidInput, "loop edge " + std::to_string(first) + "-" +
+                                              std::to_string(second) +
+                                              ": expected two of the map's keyframes");
+  }
+  m.loop_edges.push_back({std::min(first, second), std::max(first, second)});
   return {};
 }
 

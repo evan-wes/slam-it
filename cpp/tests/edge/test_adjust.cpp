@@ -97,6 +97,25 @@ void check_recovery(int& failures) {
          failures);
 }
 
+/// @brief Check that with no keyframe held fixed nothing is solved: ORB-SLAM3 skips it.
+/// @param failures Running failure count.
+void check_no_gauge(int& failures) {
+  auto built = scene::map();
+  if (!built) {
+    expect(false, "the scene's map builds", failures);
+    return;
+  }
+  edge::Map m = *built;
+  m.kf_pose[1].topRightCorner<3, 1>() += Eigen::Vector3d(0.01, -0.01, 0.02);
+  const edge::Map before = m;
+  const std::vector<std::int64_t> every{0, 1, 2};
+  const std::vector<std::uint8_t> free{0, 0, 0};
+  const auto adjusted = edge::bundle_adjust(m, scene::camera(), every, free, edge::Options{});
+  expect(adjusted.has_value() && adjusted->solves.empty() && adjusted->free == 0 &&
+             adjusted->fixed == 0 && m.kf_pose == before.kf_pose && m.pt_xyz == before.pt_xyz,
+         "with no keyframe held fixed, nothing is solved", failures);
+}
+
 /// @brief Check the argument checks.
 /// @param failures Running failure count.
 void check_arguments(int& failures) {
@@ -120,6 +139,7 @@ int run() {
   int failures = 0;
   check_chi2(failures);
   check_recovery(failures);
+  check_no_gauge(failures);
   check_arguments(failures);
   return slam_it::testing::finish("edge/adjust", failures);
 }

@@ -442,6 +442,123 @@ impl Default for RelocalizationOptions {
     }
 }
 
+/// Loop closure: detection, the loop's similarity, its correction (`Options.loops`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LoopOptions {
+    /// Close loops in the map being tracked (needs the keyframe database).
+    pub enabled: bool,
+    /// A map of fewer keyframes is not searched.
+    pub min_keyframes: usize,
+    /// The best groups of keyframes the database gives.
+    pub candidates: usize,
+    /// The database scores keyframes sharing more than this fraction of the most words.
+    pub common_words: f64,
+    /// A candidate's group: it and its best this many links; and the confirming links.
+    pub neighbours: usize,
+    /// The ratio test of the matching by word with a group.
+    pub ratio: f64,
+    /// A group needs this many matches by word.
+    pub min_matches: usize,
+    /// The loop's Sim(3) RANSAC needs this many inliers...
+    pub min_inliers: usize,
+    /// ...drawing its samples with this confidence, in (0, 1)...
+    pub confidence: f64,
+    /// ...at most this many.
+    pub ransac_iterations: usize,
+    /// A match is the RANSAC's inlier within this many variances in both keyframes.
+    pub chi2: f64,
+    /// The window of the search through the RANSAC's similarity...
+    pub coarse_window: f64,
+    /// ...its descriptor distance...
+    pub coarse_distance: i64,
+    /// ...and the matches it must give.
+    pub coarse_matches: usize,
+    /// The refinement's Huber loss sits at this chi-square's root; above it a match is dropped.
+    pub huber_chi2: f64,
+    /// The refinement's first round, and its second when it dropped no match...
+    pub refine_iterations: usize,
+    /// ...or this many when it did.
+    pub refine_more: usize,
+    /// The refinement fails when fewer matches survive its first round.
+    pub min_kept: usize,
+    /// The refined similarity needs this many inliers...
+    pub min_refined: usize,
+    /// ...and the search through it, in this window...
+    pub fine_window: f64,
+    /// ...within this distance...
+    pub fine_distance: i64,
+    /// ...must give this many matches.
+    pub fine_matches: usize,
+    /// A confirmation's search window...
+    pub confirm_window: f64,
+    /// ...its distance...
+    pub confirm_distance: i64,
+    /// ...and the matches it must give.
+    pub confirm_matches: usize,
+    /// Confirmations that close the loop.
+    pub confirmations: usize,
+    /// Later keyframes in a row that fail to confirm a loop drop it.
+    pub misses: usize,
+    /// A later keyframe's refinement must keep more inliers than this...
+    pub temporal_refined: usize,
+    /// ...and its search through the refined similarity give this many.
+    pub temporal_matches: usize,
+    /// The loop's points are fused into the corrected keyframes in this window.
+    pub fuse_window: f64,
+    /// The essential graph links keyframes sharing this many points.
+    pub essential_points: usize,
+    /// Its Levenberg-Marquardt iterations...
+    pub essential_iterations: usize,
+    /// ...from this damping.
+    pub essential_damping: f64,
+    /// Bundle-adjust the whole map after each loop.
+    pub global_ba: bool,
+    /// Its iterations.
+    pub global_iterations: usize,
+}
+
+impl Default for LoopOptions {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            min_keyframes: 12,
+            candidates: 3,
+            common_words: 0.8,
+            neighbours: 10,
+            ratio: 0.9,
+            min_matches: 20,
+            min_inliers: 15,
+            confidence: 0.99,
+            ransac_iterations: 300,
+            chi2: 9.21,
+            coarse_window: 8.0,
+            coarse_distance: 75,
+            coarse_matches: 50,
+            huber_chi2: 10.0,
+            refine_iterations: 5,
+            refine_more: 10,
+            min_kept: 10,
+            min_refined: 20,
+            fine_window: 5.0,
+            fine_distance: 50,
+            fine_matches: 80,
+            confirm_window: 3.0,
+            confirm_distance: 75,
+            confirm_matches: 30,
+            confirmations: 3,
+            misses: 2,
+            temporal_refined: 50,
+            temporal_matches: 100,
+            fuse_window: 4.0,
+            essential_points: 100,
+            essential_iterations: 20,
+            essential_damping: 1e-16,
+            global_ba: true,
+            global_iterations: 10,
+        }
+    }
+}
+
 /// When a lost track's map is closed (`Options.loss`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LossOptions {
@@ -489,6 +606,8 @@ pub struct Options {
     pub covisibility: CovisibilityOptions,
     /// Relocalising a failed frame against the whole map.
     pub relocalization: RelocalizationOptions,
+    /// Loop closure.
+    pub loops: LoopOptions,
     /// When a lost track's map is closed.
     pub loss: LossOptions,
     /// Every RANSAC's seed.
@@ -658,6 +777,7 @@ named_settings!(
         strong_points: Integer,
     },
     relocalization: RelocalizationOptions { enabled: Flag, ratio: Real, common_words: Real, neighbours: Integer, group_score: Real, min_matches: Integer, inlier_ratio: Real, min_inliers: Integer, confidence: Real, ransac_iterations: Integer, window: Real, narrow_inliers: Integer, narrow_window: Real, narrow_distance: Integer },
+    loops: LoopOptions { enabled: Flag, min_keyframes: Integer, candidates: Integer, common_words: Real, neighbours: Integer, ratio: Real, min_matches: Integer, min_inliers: Integer, confidence: Real, ransac_iterations: Integer, chi2: Real, coarse_window: Real, coarse_distance: Integer, coarse_matches: Integer, huber_chi2: Real, refine_iterations: Integer, refine_more: Integer, min_kept: Integer, min_refined: Integer, fine_window: Real, fine_distance: Integer, fine_matches: Integer, confirm_window: Real, confirm_distance: Integer, confirm_matches: Integer, confirmations: Integer, misses: Integer, temporal_refined: Integer, temporal_matches: Integer, fuse_window: Real, essential_points: Integer, essential_iterations: Integer, essential_damping: Real, global_ba: Flag, global_iterations: Integer },
     loss: LossOptions { relocalize_seconds: Real, lost_frames: Integer, reset_keyframes: Integer },
 );
 
@@ -677,6 +797,9 @@ fn check_matching(options: &Options) -> Result<()> {
             "relocalization.narrow_distance",
             options.relocalization.narrow_distance,
         ),
+        ("loops.coarse_distance", options.loops.coarse_distance),
+        ("loops.fine_distance", options.loops.fine_distance),
+        ("loops.confirm_distance", options.loops.confirm_distance),
     ] {
         check_range(name, value, 1, matching::MAX_DISTANCE)?;
     }
@@ -850,6 +973,29 @@ fn check_counts(options: &Options) -> Result<()> {
             "relocalization.narrow_inliers",
             options.relocalization.narrow_inliers,
         ),
+        ("loops.min_keyframes", options.loops.min_keyframes),
+        ("loops.candidates", options.loops.candidates),
+        ("loops.neighbours", options.loops.neighbours),
+        ("loops.min_matches", options.loops.min_matches),
+        ("loops.min_inliers", options.loops.min_inliers),
+        ("loops.ransac_iterations", options.loops.ransac_iterations),
+        ("loops.coarse_matches", options.loops.coarse_matches),
+        ("loops.refine_iterations", options.loops.refine_iterations),
+        ("loops.refine_more", options.loops.refine_more),
+        ("loops.min_kept", options.loops.min_kept),
+        ("loops.min_refined", options.loops.min_refined),
+        ("loops.fine_matches", options.loops.fine_matches),
+        ("loops.confirm_matches", options.loops.confirm_matches),
+        ("loops.confirmations", options.loops.confirmations),
+        ("loops.misses", options.loops.misses),
+        ("loops.temporal_refined", options.loops.temporal_refined),
+        ("loops.temporal_matches", options.loops.temporal_matches),
+        ("loops.essential_points", options.loops.essential_points),
+        (
+            "loops.essential_iterations",
+            options.loops.essential_iterations,
+        ),
+        ("loops.global_iterations", options.loops.global_iterations),
     ] {
         check_range(name, value, 1, MAX_SETTING)?;
     }
@@ -908,6 +1054,13 @@ fn check_positive(options: &Options) -> Result<()> {
             options.relocalization.narrow_window,
         ),
         ("loss.relocalize_seconds", options.loss.relocalize_seconds),
+        ("loops.chi2", options.loops.chi2),
+        ("loops.coarse_window", options.loops.coarse_window),
+        ("loops.huber_chi2", options.loops.huber_chi2),
+        ("loops.fine_window", options.loops.fine_window),
+        ("loops.confirm_window", options.loops.confirm_window),
+        ("loops.fuse_window", options.loops.fuse_window),
+        ("loops.essential_damping", options.loops.essential_damping),
     ] {
         if !(value.is_finite() && value > 0.0) {
             return fail_setting(name, "must be finite and positive", value);
@@ -917,7 +1070,7 @@ fn check_positive(options: &Options) -> Result<()> {
 }
 
 /// Checks the real settings: those that must be finite and positive, the fractions in (0, 1],
-/// and `relocalization.confidence` below 1.
+/// and the confidences below 1.
 ///
 /// # Errors
 ///
@@ -973,17 +1126,24 @@ fn check_reals(options: &Options) -> Result<()> {
             "relocalization.confidence",
             options.relocalization.confidence,
         ),
+        ("loops.common_words", options.loops.common_words),
+        ("loops.ratio", options.loops.ratio),
+        ("loops.confidence", options.loops.confidence),
     ] {
         if !(value.is_finite() && value > 0.0 && value <= 1.0) {
             return fail_setting(name, "must be in (0, 1]", value);
         }
     }
-    if options.relocalization.confidence >= 1.0 {
-        return fail_setting(
+    for (name, value) in [
+        (
             "relocalization.confidence",
-            "must be in (0, 1)",
             options.relocalization.confidence,
-        );
+        ),
+        ("loops.confidence", options.loops.confidence),
+    ] {
+        if value >= 1.0 {
+            return fail_setting(name, "must be in (0, 1)", value);
+        }
     }
     Ok(())
 }
@@ -1000,7 +1160,7 @@ mod tests {
     fn settings_by_name() {
         let mut options = Options::default();
         let settings = options.settings();
-        assert_eq!(settings.len(), 97);
+        assert_eq!(settings.len(), 132);
         assert_eq!(settings[0], ("features.n_features", Setting::Integer(1000)));
         assert_eq!(settings[2], ("features.scale_factor", Setting::Real(1.2)));
         options

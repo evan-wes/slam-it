@@ -10,6 +10,9 @@ into one :class:`slam_it.foundations.ba.BAProblem`:
 - the keyframes that are not free held fixed, as are the ones the caller fixes;
 - a Huber loss at ``sqrt(chi2_mono)`` on the weighted errors.
 
+With no keyframe held fixed the problem has no gauge, and nothing is solved: ORB-SLAM3's
+``LocalBundleAdjustment`` returns when it counts no fixed keyframe.
+
 It solves for ``adjustment.iterations``, drops the observations failing the chi-square test
 (:func:`slam_it.edge.residuals.chi2`) or behind their camera, solves again for
 ``adjustment.refine_iterations`` (a point left with fewer than two inlier views is left out of that
@@ -113,8 +116,8 @@ class Adjustment:
     map : Map
         The map with adjusted poses and points, and the outlier observations forgotten.
     solves : tuple of Solve
-        The first solve and the refining one; empty when no point was observed, so nothing
-        was solved.
+        The first solve and the refining one; empty when nothing was solved: no point was
+        observed, or no keyframe was held fixed.
     outliers : int
         The observations forgotten as outliers after the refining solve.
     free : int
@@ -240,6 +243,8 @@ def _bundle_adjust(
     if len(points) == 0:
         return Adjustment(map=m, solves=(), outliers=0)
     problem, rows, observing = _problem(m, camera, keyframes, points, fixed)
+    if not np.any(problem.fixed_poses):  # no gauge: ORB-SLAM3 skips it
+        return Adjustment(map=m, solves=(), outliers=0)
     loss = nls.Loss("huber", math.sqrt(options.adjustment.chi2_mono))
     first = ba.solve(problem, _options(loss, options.adjustment.iterations))
     solved = replace(problem, poses=first.poses, points=first.points)
@@ -313,7 +318,8 @@ def bundle_adjust(  # noqa: PLR0913 -- the map, its camera, what to adjust, the 
     -------
     Adjustment
         The map with adjusted poses and points and the outlier observations forgotten; the
-        two solves (none if no point was observed) and the outliers dropped.
+        two solves (none, the map as it was, if no point was observed or no keyframe was held
+        fixed) and the outliers dropped.
 
     Raises
     ------

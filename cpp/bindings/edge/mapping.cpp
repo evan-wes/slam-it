@@ -148,12 +148,14 @@ nb::dict fuse_points(const nb::dict& m, const nb::dict& camera, const std::strin
 /// @param camera The camera, as a dict.
 /// @param mode The mode's name.
 /// @param options The settings, as a dict.
+/// @param held The ids of the keyframes loop detection holds.
 /// @return The new map, as a dict.
 /// @throws CoreError for invalid input.
 nb::dict cull_keyframes(const nb::dict& m, const nb::dict& camera, const std::string& mode,
-                        const nb::dict& options) {
+                        const nb::dict& options, const edge_crossing::Int64In& held) {
   edge::Map out = map_in(m);
-  unwrap(edge::cull_keyframes(out, camera_in(camera), mode_in(mode), options_in(options)));
+  unwrap(edge::cull_keyframes(out, camera_in(camera), mode_in(mode), options_in(options),
+                              edge_crossing::int64_in(held)));
   return map_dict(out);
 }
 
@@ -164,15 +166,18 @@ nb::dict cull_keyframes(const nb::dict& m, const nb::dict& camera, const std::st
 /// @param tracked Its pose and matches, as a dict.
 /// @param mode The mode's name.
 /// @param options The settings, as a dict.
+/// @param held The ids of the keyframes loop detection holds.
 /// @return The new map, as a dict, how each step went (the summary's counts and `solves`), and
 ///         `made`.
 /// @throws CoreError for invalid input.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): every argument crosses by keyword
 nb::dict process(const nb::dict& m, const nb::dict& camera, const nb::dict& frame,
-                 const nb::dict& tracked, const std::string& mode, const nb::dict& options) {
+                 const nb::dict& tracked, const std::string& mode, const nb::dict& options,
+                 const edge_crossing::Int64In& held) {
   edge::Map mapped = map_in(m);
-  const edge::Mapped done =
-      unwrap(edge::process(mapped, camera_in(camera), edge_crossing::frame_in(frame),
-                           edge_crossing::tracked_in(tracked), mode_in(mode), options_in(options)));
+  const edge::Mapped done = unwrap(edge::process(
+      mapped, camera_in(camera), edge_crossing::frame_in(frame), edge_crossing::tracked_in(tracked),
+      mode_in(mode), options_in(options), edge_crossing::int64_in(held)));
   const edge::MappingSummary& summary = done.summary;
   nb::dict out;
   out["map"] = map_dict(mapped);
@@ -214,9 +219,11 @@ void bind_mapping(nb::module_& m) {
   m.def("fuse_points", &fuse_points, nb::arg("m"), nb::arg("camera"), nb::arg("mode"),
         nb::arg("options"), "Fuse the newest keyframe's points with its neighbours'.");
   m.def("cull_keyframes", &cull_keyframes, nb::arg("m"), nb::arg("camera"), nb::arg("mode"),
-        nb::arg("options"), "Cull the newest keyframe's redundant links.");
+        nb::arg("options"), nb::arg("held").noconvert(),
+        "Cull the newest keyframe's redundant links.");
   m.def("process", &process, nb::arg("m"), nb::arg("camera"), nb::arg("frame"), nb::arg("tracked"),
-        nb::arg("mode"), nb::arg("options"), "Insert a keyframe and run local mapping on it.");
+        nb::arg("mode"), nb::arg("options"), nb::arg("held").noconvert(),
+        "Insert a keyframe and run local mapping on it.");
 }
 
 }  // namespace slam_it::bindings

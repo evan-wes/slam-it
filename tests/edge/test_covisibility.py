@@ -149,6 +149,26 @@ def test_a_culled_keyframe_leaves_after_its_children(case: dict[str, Any], backe
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize("case", CASES, ids=NAMES)
+def test_a_keyframe_with_a_loop_edge_or_held_is_spared(case: dict[str, Any], backend: str) -> None:
+    """``cull`` leaves the map as it was for a keyframe with a loop edge, or one held."""
+    chosen = require_function(backend, covisibility.__name__, "cull")
+    m, options = fixture_map(case), fixture_options(case)
+    for k in range(m.keyframes):
+        kf_id = int(m.kf_id[k])
+        if kf_id == 0:
+            continue
+        held = covisibility.cull(m, k, options, held=[kf_id], backend=chosen)
+        assert held.kf_id.tolist() == m.kf_id.tolist(), f"keyframe row {k} held"
+        assert held.kf_parent.tolist() == m.kf_parent.tolist(), f"keyframe row {k} held"
+        other = int(m.kf_id[0] if k else m.kf_id[1])
+        looped = maps.add_loop_edge(m, kf_id, other)
+        spared = covisibility.cull(looped, k, options, backend=chosen)
+        assert spared.kf_id.tolist() == m.kf_id.tolist(), f"keyframe row {k} looped"
+        assert spared.loop_edges.tolist() == looped.loop_edges.tolist()
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("case", CASES, ids=NAMES)
 def test_the_stages_take_the_graphs_keyframes(case: dict[str, Any], backend: str) -> None:
     """Fusion's targets, monocular and not, and local BA's keyframes, for the newest keyframe."""
     chosen = require_function(backend, mapping.__name__, "fuse_targets")
