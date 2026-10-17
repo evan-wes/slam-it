@@ -101,16 +101,13 @@ struct LostSummary {
   bool reset{false};
 };
 
-/// @brief How loop closing went on a keyframe (`slam_it.edge.pipeline.LoopSummary`).
+/// @brief How loop closing went on a keyframe (`slam_it.edge.pipeline.LoopSummary`); its time
+///        is the frame's `loop_seconds`.
 struct LoopSummary {
   /// @brief The search.
   loops::DetectionSummary detection;
   /// @brief The correction, when a loop closed.
   std::optional<loops::CorrectionSummary> correction;
-  /// @brief The time the search took, in seconds.
-  double detection_seconds{0.0};
-  /// @brief The time the correction took, global BA included, in seconds (0 when none closed).
-  double correction_seconds{0.0};
 };
 
 /// @brief How the stages went on one frame (`slam_it.edge.pipeline.FrameSummary`); each

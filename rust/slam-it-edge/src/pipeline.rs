@@ -140,17 +140,14 @@ pub struct LostSummary {
     pub reset: bool,
 }
 
-/// How loop closing went on a keyframe (`slam_it.edge.pipeline.LoopSummary`).
+/// How loop closing went on a keyframe (`slam_it.edge.pipeline.LoopSummary`); its time is the
+/// frame's `loop_seconds`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoopSummary {
     /// The search.
     pub detection: DetectionSummary,
     /// The correction, when a loop closed.
     pub correction: Option<CorrectionSummary>,
-    /// The time the search took, in seconds.
-    pub detection_seconds: f64,
-    /// The time the correction took, global BA included (0 when none closed).
-    pub correction_seconds: f64,
 }
 
 /// How the stages went on one frame (`slam_it.edge.pipeline.FrameSummary`); each `None`
@@ -941,7 +938,6 @@ impl Pipeline {
         if !self.options.loops.enabled || keyframe == 0 {
             return Ok((None, false));
         }
-        let start = Instant::now();
         let found = loops::detect(
             m,
             database,
@@ -952,7 +948,6 @@ impl Pipeline {
             &self.options,
         )?;
         self.pending = found.pending;
-        let searched = start.elapsed().as_secs_f64();
         let mut correction = None;
         if let Some(closed) = &found.closed {
             correction = Some(loops::correct(
@@ -968,14 +963,11 @@ impl Pipeline {
                 synced?;
             }
         }
-        let done = start.elapsed().as_secs_f64();
         let corrected = correction.is_some();
         Ok((
             Some(LoopSummary {
                 detection: found.summary,
                 correction,
-                detection_seconds: searched,
-                correction_seconds: if corrected { done - searched } else { 0.0 },
             }),
             corrected,
         ))
@@ -1213,10 +1205,11 @@ impl Pipeline {
             relative: Matrix4::identity(),
             tracked: tracked.pose,
         });
+        let searching = Instant::now();
         let (looped, corrected) = self.close_loops(m)?;
         out.corrected = corrected;
         if let Some(looped) = looped {
-            out.loop_seconds = looped.detection_seconds + looped.correction_seconds;
+            out.loop_seconds = searching.elapsed().as_secs_f64();
             summary.loop_closing = Some(looped);
         }
         Ok(out)

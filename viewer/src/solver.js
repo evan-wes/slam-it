@@ -100,8 +100,6 @@ export const STAGES = [
       correction:
         "the loop corrected: the keyframe it matched and the scale it found, the points moved, " +
         "replaced and fused, the links new across it, the essential graph's solve and global BA's",
-      detection_seconds: "the search's time, in seconds",
-      correction_seconds: "the correction's time, global BA included, in seconds",
     },
   },
 ];

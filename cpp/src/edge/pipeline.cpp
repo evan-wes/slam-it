@@ -404,19 +404,15 @@ void Pipeline::place_frame(const Map& m, const Frame& frame, const Tracked& trac
 }
 
 Result<std::pair<std::optional<LoopSummary>, bool>> Pipeline::close_loops(Map& m) {
-  using Clock = std::chrono::steady_clock;
-  using Seconds = std::chrono::duration<double>;
   const std::int64_t keyframe = m.kf_id.back();
   if (!database_ || !options_.loops.enabled || keyframe == 0) {
     return std::pair<std::optional<LoopSummary>, bool>{std::nullopt, false};
   }
-  const auto start = Clock::now();
   auto found = loops::detect(m, *database_, camera_, keyframe, pending_, name(mode_), options_);
   if (!found) {
     return std::unexpected(std::move(found.error()));
   }
   pending_ = std::move(found->pending);
-  const auto searched = Clock::now();
   std::optional<loops::CorrectionSummary> correction;
   if (found->loop) {
     auto fixed = loops::correct(m, camera_, *found->loop, name(mode_), options_);
@@ -428,12 +424,8 @@ Result<std::pair<std::optional<LoopSummary>, bool>> Pipeline::close_loops(Map& m
       return std::unexpected(std::move(ok.error()));
     }
   }
-  const auto done = Clock::now();
   const bool corrected = correction.has_value();
-  LoopSummary summary{.detection = std::move(found->summary),
-                      .correction = std::move(correction),
-                      .detection_seconds = Seconds(searched - start).count(),
-                      .correction_seconds = corrected ? Seconds(done - searched).count() : 0.0};
+  LoopSummary summary{.detection = std::move(found->summary), .correction = std::move(correction)};
   return std::pair<std::optional<LoopSummary>, bool>{std::move(summary), corrected};
 }
 
@@ -573,6 +565,7 @@ Result<Pipeline::Keyframed> Pipeline::make_keyframe(Map& m, const Frame& frame,
                          .reference = kf_base_ + m.kf_id.back(),
                          .relative = Eigen::Matrix4d::Identity(),
                          .tracked = tracked.pose});
+  const auto searching = std::chrono::steady_clock::now();
   auto looped = close_loops(m);
   if (!looped) {
     return std::unexpected(std::move(looped.error()));
@@ -582,7 +575,8 @@ Result<Pipeline::Keyframed> Pipeline::make_keyframe(Map& m, const Frame& frame,
                 .corrected = looped->second,
                 .made = std::move(mapping->made)};
   if (looped->first) {
-    out.loop_seconds = looped->first->detection_seconds + looped->first->correction_seconds;
+    out.loop_seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - searching).count();
     summary.loop = std::move(looped->first);
   }
   return out;

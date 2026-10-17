@@ -129,8 +129,6 @@ def _loop() -> dict[str, Any]:
             "essential": solve,
             "global_ba": {**solve, "iterations": 10, "termination": "max_iterations"},
         },
-        "detection_seconds": 0.0078125,
-        "correction_seconds": 0.125,
     }  # fmt: skip
 
 

@@ -573,10 +573,7 @@ Result<eval::runs::JsonValue> loop_json(const edge::LoopSummary& s) {
     }
     correction = std::move(*corrected);
   }
-  return nested({{"detection", std::move(*detection)},
-                 {"correction", std::move(correction)},
-                 {"detection_seconds", s.detection_seconds},
-                 {"correction_seconds", s.correction_seconds}});
+  return nested({{"detection", std::move(*detection)}, {"correction", std::move(correction)}});
 }
 
 /// @brief A stage's summary as JSON, or null if the stage did not run.

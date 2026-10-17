@@ -208,22 +208,18 @@ class LostSummary:
 class LoopSummary:
     """How loop closing went on a keyframe, as a run records it.
 
+    Its time is the frame's ``loop_seconds`` (:class:`FrameResult`).
+
     Attributes
     ----------
     detection : slam_it.edge.loops.DetectionSummary
         The search.
     correction : slam_it.edge.loops.CorrectionSummary or None
         The correction, when a loop closed.
-    detection_seconds : float
-        The time the search took.
-    correction_seconds : float
-        The time the correction took, global BA included (0 when none closed).
     """
 
     detection: DetectionSummary
     correction: CorrectionSummary | None
-    detection_seconds: float
-    correction_seconds: float
 
     def as_dict(self) -> dict[str, Any]:
         """Return the summary as JSON values.
@@ -231,15 +227,9 @@ class LoopSummary:
         Returns
         -------
         dict
-            ``detection``, ``correction`` (or None), ``detection_seconds`` and
-            ``correction_seconds``.
+            ``detection``, and ``correction`` (or None).
         """
-        return {
-            "detection": self.detection.as_dict(),
-            "correction": _record(self.correction),
-            "detection_seconds": self.detection_seconds,
-            "correction_seconds": self.correction_seconds,
-        }
+        return {"detection": self.detection.as_dict(), "correction": _record(self.correction)}
 
 
 @dataclass(frozen=True)
@@ -830,24 +820,16 @@ class Pipeline:
         keyframe = int(m.kf_id[-1])
         if db is None or not self.options.loops.enabled or keyframe == 0:
             return None, False
-        start = time.perf_counter()
         found = loops.detect(
             m, db, self.camera, keyframe, self._pending, mode=self.mode, options=self.options
         )
         self._pending = found.pending
-        searched = time.perf_counter()
         correction = None
         if found.loop is not None:
             fixed = loops.correct(m, self.camera, found.loop, mode=self.mode, options=self.options)
             self.map, correction = fixed.map, fixed.summary
             self._sync_database()
-        done = time.perf_counter()
-        summary = LoopSummary(
-            detection=found.summary,
-            correction=correction,
-            detection_seconds=searched - start,
-            correction_seconds=done - searched if correction is not None else 0.0,
-        )
+        summary = LoopSummary(detection=found.summary, correction=correction)
         return summary, correction is not None
 
     def _sync_database(self) -> None:
@@ -968,10 +950,11 @@ class Pipeline:
                     np.eye(4), tracked.pose.copy(),
                 )
             )  # fmt: skip
+            searching = time.perf_counter()
             looped, corrected = self._close_loops()
             if looped is not None:
                 summary = replace(summary, loop=looped)
-                loop_seconds = looped.detection_seconds + looped.correction_seconds
+                loop_seconds = time.perf_counter() - searching
         else:
             self._place_frame(frame, tracked, int(m.kf_id[reference]))
         self._accept(frame, tracked)

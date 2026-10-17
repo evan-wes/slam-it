@@ -684,11 +684,6 @@ fn loop_json(s: &LoopSummary) -> JsonValue {
     object([
         ("detection", detection_json(&s.detection)),
         ("correction", correction),
-        ("detection_seconds", JsonValue::Number(s.detection_seconds)),
-        (
-            "correction_seconds",
-            JsonValue::Number(s.correction_seconds),
-        ),
     ])
 }
 
