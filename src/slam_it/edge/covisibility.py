@@ -105,7 +105,10 @@ class Implementation(Protocol):
 
 
 def _weights(m: Map) -> IntArray:
-    """Every pair of keyframes' shared points, by row, (K, K), 0 on the diagonal."""
+    """Every pair of keyframes' shared points, by row, (K, K), 0 on the diagonal.
+
+    For the strong links, which ask for every pair; one keyframe's row is :func:`_shared`.
+    """
     rows = np.flatnonzero(m.kp_point >= 0)
     seen = np.unique(np.column_stack([m.kp_point[rows], m.keypoint_keyframe()[rows]]), axis=0)
     out = np.zeros((m.keyframes, m.keyframes), dtype=np.int64)
@@ -123,6 +126,42 @@ def _weights(m: Map) -> IntArray:
     return out
 
 
+def _observing(m: Map, points: IntArray) -> IntArray:
+    """Return how many of the points (ids) each keyframe observes, by row."""
+    rows = np.flatnonzero(np.isin(m.kp_point, points))
+    seen = np.column_stack([m.kp_point[rows], m.keypoint_keyframe()[rows]])
+    return np.bincount(np.unique(seen, axis=0)[:, 1], minlength=m.keyframes).astype(np.int64)
+
+
+def _shared(m: Map, k: int) -> IntArray:
+    """Return the points keyframe row `k` shares with each keyframe, by row, 0 for itself."""
+    seen = m.kp_point[m.keypoint_rows(k)]
+    out = _observing(m, np.unique(seen[seen >= 0]))
+    out[k] = 0
+    return out
+
+
+def _pairs(m: Map) -> IntArray:
+    """Return each observation once, as (point id, keyframe row), sorted by point, (P, 2)."""
+    rows = np.flatnonzero(m.kp_point >= 0)
+    seen = np.column_stack([m.kp_point[rows], m.keypoint_keyframe()[rows]])
+    return np.unique(seen, axis=0).reshape(-1, 2)
+
+
+def _shared_in(m: Map, pairs: IntArray, k: int) -> IntArray:
+    """Return :func:`_shared` from :func:`_pairs`'s, made once for the many rows a caller reads.
+
+    Each point's observations are a run of rows in `pairs`.
+    """
+    own = pairs[pairs[:, 1] == k, 0]
+    start = np.searchsorted(pairs[:, 0], own, side="left")
+    sizes = np.searchsorted(pairs[:, 0], own, side="right") - start
+    taken = np.repeat(start - np.cumsum(sizes) + sizes, sizes) + np.arange(int(sizes.sum()))
+    out = np.bincount(pairs[taken, 1], minlength=m.keyframes).astype(np.int64)
+    out[k] = 0
+    return out
+
+
 def _ranked(m: Map, shared: IntArray) -> IntArray:
     """Return the rows sharing a point, most shared first, ties by the lower id."""
     others = np.flatnonzero(shared > 0)
@@ -137,23 +176,19 @@ def _links_of(m: Map, shared: IntArray, min_points: int) -> IntArray:
 
 
 def _links(m: Map, k: int, options: Options) -> tuple[IntArray, IntArray]:
-    shared = _weights(m)[k]
+    """Return a keyframe's links and their weights (reference)."""
+    shared = _shared(m, k)
     linked = _links_of(m, shared, options.covisibility.min_points)
     return linked, shared[linked]
 
 
 def _local_map(m: Map, points: IntArray, options: Options) -> LocalMap:
+    """Return tracking's local map (reference)."""
     settings = options.covisibility
-    matched = np.unique(points[points >= 0])
-    observed = np.flatnonzero(np.isin(m.kp_point, matched))
-    pairs = np.unique(
-        np.column_stack([m.kp_point[observed], m.keypoint_keyframe()[observed]]), axis=0
-    )
-    shared = np.bincount(pairs[:, 1], minlength=m.keyframes).astype(np.int64)
-    k1 = _ranked(m, shared)
+    k1 = _ranked(m, _observing(m, np.unique(points[points >= 0])))
     if len(k1) == 0:
         return LocalMap(keyframes=np.zeros(0, dtype=np.int64), reference=-1)
-    weights = _weights(m)
+    pairs = _pairs(m)
     local = [int(k) for k in k1]
     inside = set(local)
 
@@ -164,7 +199,8 @@ def _local_map(m: Map, points: IntArray, options: Options) -> LocalMap:
     for k in k1:
         if len(local) > settings.local_keyframes:
             break
-        best = _links_of(m, weights[k], settings.min_points)[: settings.local_neighbours]
+        shared = _shared_in(m, pairs, int(k))
+        best = _links_of(m, shared, settings.min_points)[: settings.local_neighbours]
         neighbour = next((int(r) for r in best if int(r) not in inside), None)
         if neighbour is not None:
             add(neighbour)
@@ -179,9 +215,10 @@ def _local_map(m: Map, points: IntArray, options: Options) -> LocalMap:
 
 
 def _adopt(m: Map, k: int) -> Map:
+    """Give a keyframe its parent, if it has none yet (reference)."""
     if m.kf_id[k] == 0 or m.kf_parent[k] >= 0:
         return m
-    ranked = _ranked(m, _weights(m)[k])
+    ranked = _ranked(m, _shared(m, k))
     if len(ranked) == 0:
         return m
     parents = m.kf_parent.copy()
@@ -190,21 +227,23 @@ def _adopt(m: Map, k: int) -> Map:
 
 
 def _reparent(m: Map, k: int, options: Options) -> Map:
+    """Give a keyframe's children new parents (reference)."""
     children = [int(r) for r in np.flatnonzero(m.kf_parent == m.kf_id[k])]
     if not children:
         return m
-    weights = _weights(m)
-    weights[k, :] = 0  # its links erased first, as SetBadFlag erases them
-    weights[:, k] = 0
+    pairs = _pairs(m)
+    shared = {child: _shared_in(m, pairs, child) for child in children}
+    for counts in shared.values():
+        counts[k] = 0  # its links erased first, as SetBadFlag erases them
     parent = int(m.kf_parent[k])
     candidates = {int(r) for r in m.keyframe_rows(np.array([parent])) if r >= 0}
     parents = m.kf_parent.copy()
     while children:
         best: tuple[int, int, int] | None = None  # (weight, child, candidate)
         for child in children:
-            for row in _links_of(m, weights[child], options.covisibility.min_points):
-                if int(row) in candidates and (best is None or weights[child, row] > best[0]):
-                    best = (int(weights[child, row]), child, int(row))
+            for row in _links_of(m, shared[child], options.covisibility.min_points):
+                if int(row) in candidates and (best is None or shared[child][row] > best[0]):
+                    best = (int(shared[child][row]), child, int(row))
         if best is None:
             break
         _, child, row = best
@@ -221,6 +260,7 @@ def _cull(m: Map, k: int, options: Options) -> Map:
 
 
 def _strong_links(m: Map, options: Options) -> IntArray:
+    """Return every pair of keyframes sharing at least the strong points (reference)."""
     weights = _weights(m)
     a, b = np.nonzero(np.triu(weights >= options.covisibility.strong_points, 1))
     return np.column_stack([m.kf_id[a], m.kf_id[b], weights[a, b]]).astype(np.int64)
@@ -253,10 +293,6 @@ def as_points(points: ArrayLike) -> IntArray:
     if arr.ndim != 1 or not holds_integers(arr) or arr.min() < -1:
         raise InvalidInputError("points: expected a vector of point ids (-1 or more)")
     return np.ascontiguousarray(arr, dtype=np.int64)
-
-
-def _decode_map(raw: dict[str, Any], codes: backends.Codes) -> Map:
-    return maps.decode(raw, codes)
 
 
 def links(
@@ -376,7 +412,7 @@ def adopt(m: Map, k: int, *, backend: str = "python") -> Map:
         "adopt",
         reference=lambda: _adopt(m, row),
         arguments={"m": m.as_dict(), "k": row},
-        decode=_decode_map,
+        decode=maps.decode,
     )
 
 
@@ -416,7 +452,7 @@ def reparent(m: Map, k: int, options: Options, *, backend: str = "python") -> Ma
         "reparent",
         reference=lambda: _reparent(m, row, options),
         arguments={"m": m.as_dict(), "k": row, "options": options.as_dict()},
-        decode=_decode_map,
+        decode=maps.decode,
     )
 
 
@@ -460,7 +496,7 @@ def cull(m: Map, k: int, options: Options, *, backend: str = "python") -> Map:
         "cull",
         reference=lambda: _cull(m, row, options),
         arguments={"m": m.as_dict(), "k": row, "options": options.as_dict()},
-        decode=_decode_map,
+        decode=maps.decode,
     )
 
 
