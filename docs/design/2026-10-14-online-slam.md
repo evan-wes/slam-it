@@ -185,30 +185,30 @@ source (`KeyFrameDatabase.cc`, `Tracking.cc`):
 Each gets its own section here before its PR, its forks put to the owner then.
 - **B2, the covisibility graph:** section 8.
 - **B3, loop closure:** section 10.
-- **B3b, the threads** (decided with evan-wes on 2026-10-17, replacing the stand-in for
-  ORB-SLAM's threads decided on 2026-10-16): real threads in the three languages, a design of our
-  own started from ORB-SLAM's, which runs tracking, local mapping, loop closing and global BA
-  each in a thread, with queues between them and its handshakes (`AcceptKeyFrames`,
+- **B3b, the threads** (section 12; decided with evan-wes on 2026-10-17, replacing the stand-in
+  for ORB-SLAM's threads decided on 2026-10-16): real threads in the three languages, a design
+  of our own started from ORB-SLAM's, which runs tracking, local mapping, loop closing and
+  global BA each in a thread, with queues between them and its handshakes (`AcceptKeyFrames`,
   `InterruptBA`, `RequestStop`). Ours is compared with ORB-SLAM's own scheme, built in our C++
-  so that only the threading differs; ORB-SLAM3 itself, built and run here, is compared with
-  the whole system once phase B is done (decided with evan-wes on 2026-10-17). A switch
-  runs the threads' work in order, for debugging and each language's record. Python runs the
-  same design under the GIL: it stays on 3.11, its free-threaded build passed over, as GTSAM has
-  none. The latency bar, C++ and Rust's alone, starts here. B4's merging runs in loop closing's
-  thread, as ORB-SLAM3's does. From B2's review panel, for this design:
+  so that only the threading differs; ORB-SLAM3 itself, built and run here, is compared with the
+  whole system once phase B is done (decided with evan-wes on 2026-10-17). A switch runs the
+  threads' work in order, for debugging and each language's record. Python runs the same design
+  under the GIL: it stays on 3.11, its free-threaded build passed over, as GTSAM has none. The
+  latency bar, C++ and Rust's alone, starts here. B4's merging runs in loop closing's thread, as
+  ORB-SLAM3's does. From B2's review panel, for this design:
   - ORB-SLAM3's culling tests every keyframe sharing a point with the new one, stopping after
     100 (L4); B2's tests the new one's links;
   - the papers' K2, which B2 builds, makes a larger local map than ORB-SLAM's source does (its
     `break`), so ORB-SLAM's timings are not B2's to compare with (L6).
-- **B4, merging maps:** the atlas the A2 panel deferred (`edge.atlas`: a kept map's descriptors
-  and observations kept whole, the pipeline owning the trajectory record), and maps welded where
-  the database recognises one in another. With it, the loss window revisited: B1 relocalises a
-  lost track for 3 s before a new map starts, as visual-only ORB-SLAM3 does, and on the test
-  set the frames waited through cost more than relocalisation found (B1's note). Once a lost
-  map can be found again by merging, a new map could start at once instead, nothing lost to
-  the wait. B1 keeps 3 s (decided with evan-wes on 2026-10-15). TUM's `fr2_360_kidnap` and
-  7-Scenes' relocalisation across sequences, deferred from B1, are measured here: each needs a
-  map other than the active one recognised. From B1's panel (L7): a kept map needs its
+- **B4, merging maps** (section 14): the atlas the A2 panel deferred (`edge.atlas`: a kept map's
+  descriptors and observations kept whole, the pipeline owning the trajectory record), and maps
+  welded where the database recognises one in another. With it, the loss window revisited: B1
+  relocalises a lost track for 3 s before a new map starts, as visual-only ORB-SLAM3 does, and
+  on the test set the frames waited through cost more than relocalisation found (B1's note).
+  Once a lost map can be found again by merging, a new map could start at once instead, nothing
+  lost to the wait. B1 keeps 3 s (decided with evan-wes on 2026-10-15). TUM's `fr2_360_kidnap`
+  and 7-Scenes' relocalisation across sequences, deferred from B1, are measured here: each needs
+  a map other than the active one recognised. From B1's panel (L7): a kept map needs its
   database, kept or rebuilt from its descriptors, and B4 decides whether words are counted
   across maps, as ORB-SLAM3's `DetectRelocalizationCandidates` counts them, or per map, as B1's
   database does. Decided with evan-wes on 2026-10-16: the record of a lost map's strong links,
@@ -280,7 +280,17 @@ Each gets its own section here before its PR, its forks put to the owner then.
   format 7 and the bundle's 4; a record per language, the loop room and the bar; the loop
   sequences and the test set measured. The review panel on the finished slice; offline CI
   before the merge.
-- **B3b** after it, then **B4**, each designed here first.
+- **B3b** (0.3.12.0 -> 0.3.13.0, section 12): the seams, which change no decision; the threads,
+  our design and ORB-SLAM's scheme in our C++; global BA's thread; the run format 8; the tests
+  and ThreadSanitizer; the latency bar, and the loop sequences and the test set threaded. The
+  review panel on the finished slice; offline CI before the merge.
+- **B4** (0.3.13.0 -> 0.3.14.0, section 14): the atlas; relocalisation in every map; merge
+  detection and the merge; sessions; the run format 9 and the bundle's 5; the merge room and the
+  records; multi-session EuRoC, the kidnap, 7-Scenes, the loss window, and the test set. The
+  review panel on the finished slice; offline CI before the merge.
+- **Built side by side** (decided with evan-wes on 2026-10-17): B3b and B4 in worktrees of their
+  own, B4 on B3b's seams. They merge in order, B3, then B3b, then B4, each PR opened once the one
+  before it has merged.
 - **Not in 2B:** the IMU (milestone 6); the learned rungs.
 
 ## 8. B2: the covisibility graph (0.3.10.0 -> 0.3.11.0)
@@ -527,3 +537,228 @@ alone, and runs on real data only when asked.
   format 6, so their per-batch summaries are written before the break (A9).
 - **Not measured:** latency. Loop correction and global BA run inside their frame here, so the
   frames they make late are counted from the diagnostics, and judged from B3b on.
+
+## 12. B3b: the threads (0.3.12.0 -> 0.3.13.0)
+
+Decided with evan-wes on 2026-10-17, from ORB-SLAM3's `Tracking.cc`, `LocalMapping.cc`,
+`LoopClosing.cc` and `Optimizer.cc`. Until now every step has run in the frame that needed it,
+so a run repeats exactly and mapping is judged by its load (the real-time note's rules of
+2026-10-07). B2 measured that load at 1.74 to 2.63 on the test set's five largest maps, and 3.16
+to 5.89 over their busiest 10 s (section 9): there, a mapping thread of its own falls behind.
+ORB-SLAM keeps up by refusing keyframes and cutting local BA short, so on the largest maps B3b
+is expected to lose some accuracy; section 13 measures how much.
+
+1. **The seams first,** in commits that change no decision, every record the same:
+   - the run's records (the trajectory's placements, the lives and the closed maps: `_date`,
+     `_close`, `lifetimes`, `trajectory`) leave the pipeline for `slam_it.edge.atlas`, the
+     module the A2 panel proposed and B4 grows;
+   - tracking, local mapping and loop closing become functions over state of their own
+     (tracking's: the last frame, the motion and the loss's counters; mapping's: the map and the
+     keyframes held; loop closing's: the loop being confirmed and the database), which the
+     pipeline calls in turn;
+   - the map is reached through one owner: the active map read, a mapping step's result
+     applied, a correction applied;
+   - the handshake that stops mapping, aborts global BA and releases them is written once, for
+     the loop's correction and B4's merge.
+
+   B3b then moves the calls into threads, and B4 changes what the steps do.
+2. **ORB-SLAM's threads:** tracking in the caller's; local mapping, loop closing and global BA
+   each in one of its own; a queue of keyframes from tracking to mapping, and one from mapping to
+   loop closing.
+3. **The map shared, our design: one writer, and a view published for tracking.**
+   - ORB-SLAM3's sharing: tracking holds the map's update lock through its whole frame
+     (`Tracking::Track`); local BA solves without it and takes it to write its results back;
+     culling, triangulation and fusion run beside tracking under each keyframe's and point's own
+     locks; global BA's results are carried through the spanning tree under the lock, over the
+     whole map, while tracking waits. Its source shows where that sharing slips (read from the
+     source, not observed): the abort flags are plain `bool`s, written and read across threads
+     unlocked; `CorrectLoop` empties mapping's queue before mapping has stopped (`MergeLocal`
+     waits first); an aborted global BA can still be writing its results' fields as the next one
+     starts; and tracking can read keyframes and points partway through a change that spans
+     several of them.
+   - Ours: one thread changes the map at a time, mapping or, with mapping stopped, loop closing
+     (ORB-SLAM's `RequestStop`). After making a keyframe's points, after its local BA and after
+     each correction, the writer publishes a view of what tracking reads: the local map's
+     keyframes and points (their poses, positions, descriptors, viewing directions and distance
+     ranges), and the reference keyframe's keypoints and points. A view is swapped in whole and
+     never changed after. Tracking reads only the view and takes no lock. What it writes (each
+     point's counts of frames seen and found in, and the keyframes it asks for) goes to mapping as
+     messages. Relocalisation, rare, reads the whole map and its database with mapping held off.
+   - Python's map is already immutable, each operation returning a new one, so its view is the
+     map itself, published by reference.
+   - Why: tracking never waits on a lock, and no thread changes what another is reading, by
+     construction. The cost: a copy per publish, a few hundred kilobytes at B2's local map (a
+     median of 38 keyframes and 2,539 points; an estimate), and tracking sees a new point only
+     once mapping publishes it, where ORB-SLAM's tracking sees it as it is made.
+4. **The scheduling, ORB-SLAM's** (`NeedNewKeyFrame`, `LocalMapping::Run`), in our design and
+   the baseline alike, so that only the sharing differs:
+   - a keyframe is asked for only while mapping accepts one: a monocular map waits until mapping
+     is idle; a stereo or RGB-D map interrupts the local BA and queues up to 3;
+   - every keyframe queued aborts the local BA running;
+   - fusion with the neighbours, local BA and keyframe culling run only while no keyframe is
+     queued;
+   - none is asked for while mapping is stopped or being stopped.
+
+   `mapping.need_keyframe`'s assumption that mapping is always idle goes.
+5. **Global BA in a thread of its own** (`RunGlobalBundleAdjustment`), on a copy of the map taken
+   when the loop is corrected. A new loop aborts it, through a generation counter, the flags
+   atomic. When it finishes, with mapping stopped, each keyframe it solved takes its result,
+   each keyframe made since moves with its parent through the spanning tree, and each point with
+   its reference keyframe. Section 10's "runs inline, so none needs correcting" (item 6) ends.
+6. **A map lost:** tracking closes it by a message to mapping, which first finishes the keyframes
+   queued for it (ORB-SLAM3's `CreateMapInAtlas` does not drain them; its queued keyframes carry
+   their map), and tracking starts the next map at once. A map of 10 keyframes or fewer is reset
+   only once both workers have stopped, as `ResetActiveMap` waits for them.
+7. **ORB-SLAM's own scheme, in our C++,** the baseline (section 4): its locks, held where it
+   holds them. Our map has no lock per keyframe or point, so where ORB-SLAM takes those, the
+   baseline takes the map's. That is stricter than ORB-SLAM, and is said beside each comparison.
+   ORB-SLAM3 itself, built and run here once phase B is done, compares the whole system. Its
+   culling's wider set (L4) and the K2 local map, larger than its source's (L6), belong to that
+   comparison, not this one, where both schemes run our steps.
+8. **A setting runs the steps in order,** in one thread, as every run has until now: the
+   records, the stage tests and debugging use it, and such a run repeats exactly.
+9. **Frames fed at their recorded rate** when threaded, as ORB-SLAM3's examples feed them (each
+   sleeps out the rest of its frame's interval), with none dropped: a late frame delays the next.
+   Python, far slower than its frames, is fed as fast as it tracks.
+10. **Python runs the same design under the GIL** (section 4), the readable reference held to the
+    bar.
+11. **The budget judge:**
+    - a frame's latency is its build and track, measured as they ran;
+    - mapping is measured by its queue, the keyframes refused and the local BAs aborted;
+    - for runs made in order, the backlog a mapping thread would build up, by Lindley's
+      recursion (L8, deferred from PR 9's panel);
+    - a budget's cores are read as physical cores (L12, the same).
+12. **The run format, version 8:**
+    - per frame, the time tracking waited for the map;
+    - per keyframe asked for, whether it was refused, and mapping's queue;
+    - per local BA, whether it was aborted;
+    - per global BA, whether it was aborted, or else the keyframes moved after it.
+13. **Tests:**
+    - the records and the stage tests run in order, as now;
+    - the loop room's bar runs threaded too, in C++ and Rust, fed at its rate;
+    - each handshake (stop, release, abort, the view's swap) is tested natively in each
+      language;
+    - layer 1 builds the C++ tests once more with ThreadSanitizer; Rust's threads are safe code.
+
+## 13. Measurements (B3b)
+
+Once, on the finished branch, C++ and Rust (section 11's rule).
+- **The latency bar** (decided with evan-wes on 2026-10-17): at least 99% of the frames built
+  and tracked within their deadline (the median frame interval), C++ and Rust each, each run
+  alone on cores of its own; the late frames are listed.
+- **Accuracy, threaded:** the loop sequences and the test set, threaded and fed in real time,
+  against B3's runs made in order. The bar still holds: the final ATE within 1.5 times the
+  published figure, at least 95% of the frames tracked, no loop at a wrong place. Also measured:
+  the keyframes made and refused, the local BAs aborted, and the loops closed. Each run gets
+  cores of its own, so only a few run at a time, and the test set takes its own length in wall
+  time.
+- **Our design against ORB-SLAM's scheme,** in C++ on the same runs: the latency (median, 99th
+  percentile, worst), the time tracking waited, and the accuracy.
+
+## 14. B4: merging maps (0.3.13.0 -> 0.3.14.0)
+
+Decided with evan-wes on 2026-10-17, from ORB-SLAM3's paper (its section VI) and its `Atlas.cc`,
+`LoopClosing.cc` (`MergeLocal`), `KeyFrameDatabase.cc` and `Optimizer.cc`. Where the paper and
+the source differ, each item says which it follows.
+
+1. **The atlas** (`slam_it.edge.atlas`, from B3b's seams) keeps the active map and every map
+   kept, whole: keyframes with their keypoints and descriptors, points, observations, the
+   spanning tree and the links. Each map has its own database, and the maps are numbered in the
+   order they started, as ORB-SLAM3's `Atlas` keeps them.
+   - It replaces the closed maps' records, and the lost map's strong links computed in the frame
+     it is lost on (kept until now, decided with evan-wes on 2026-10-16).
+   - A map's keyframes and points carry their run ids rather than a base, since a merge brings
+     one map's into another's.
+2. **Relocalisation in every map** (L7), as ORB-SLAM3's paper describes it; its source searches
+   the active map alone.
+   - Each map's database finds its own candidates, its words counted within the map. All maps'
+     candidates are then tried best score first; the scores are comparable under the one
+     vocabulary.
+   - ORB-SLAM3's source counts words across the atlas before it drops other maps' candidates,
+     so a strong match in another map can raise the cut past every candidate in the active one.
+   - Found in another map, tracking goes on in it, and the lost map is kept.
+3. **Detecting a merge, ORB-SLAM3's** (`NewDetectCommonRegions`'s merge branch). It runs on each
+   keyframe beside loop detection, by the same stages (section 10, item 2, with B3's
+   departures):
+   - up to 3 candidates from the other maps (`DetectNBestCandidates`); a map of fewer than 12
+     keyframes searches none;
+   - its own merge being confirmed, as a loop is;
+   - a merge and a loop found on one keyframe: the merge goes first, and the loop is dropped
+     (`Run`).
+
+   Unlike ORB-SLAM3's source, a confirmation resets the merge's misses as it resets the loop's,
+   so it takes two misses in a row to drop a merge. A monocular merge's Sim(3) carries the two
+   maps' scale ratio, with no bound on it (ORB-SLAM3's 0.9 to 1.1 is for inertial maps). The
+   loop's searches take two maps: the new keyframe's and the matched one's.
+4. **The merge** (`MergeLocal`, its correction the paper's):
+   - mapping is stopped and global BA aborted (B3b's handshake);
+   - the matched map, the older, survives with its frame, scale and number. The active map's
+     keyframes and points move into it by the merge's Sim(3), each keyframe by its pose relative
+     to the new one and each point with its reference keyframe, keeping their run ids. The
+     merged map becomes the active one. ORB-SLAM3 hands the survivor the active map's number
+     (`ChangeId`, marked "TODO for debug"); not here;
+   - the active map's spanning tree is re-rooted at the new keyframe and hung under the matched
+     one. Its first keyframe becomes an ordinary one, so no root is renumbered and
+     `covisibility.cull`'s rule stands (A15);
+   - the welding window: each of the two keyframes and its 25 best links, widened through its
+     members' 12 best links, up to 5 rounds, while it holds fewer (ORB-SLAM3's
+     `numTemporalKFs`);
+   - the matched side's points are fused into the active side's keyframes (`SearchAndFuse`:
+     4 pixels, `TH_LOW`), each replacing the point a keypoint had;
+   - **welding BA, the paper's:** both sides' keyframes in the window and their points
+     optimised, with the matched map's keyframes outside it that see those points fixed; a Huber
+     loss, 5 iterations, the outliers dropped, then 10 more. ORB-SLAM3's source fixes the matched
+     side's window instead;
+   - **the essential graph over the whole merged map,** the window fixed, in every mode, as the
+     paper does it. ORB-SLAM3's source covers only the rest of the active map, and only for
+     stereo and RGB-D; it moves a monocular map by a single similarity, so its drift is never
+     spread;
+   - **global BA after,** as after a loop (section 10, item 6), in B3b's thread; ORB-SLAM3's
+     source runs it only where one was interrupted. `loops.global_ba` turns it off for both;
+   - the two keyframes are recorded as merged (`AddMergeEdge`), and mapping is released.
+5. **Sessions:** a run over several sequences in turn, with a new map at each one's start, as
+   ORB-SLAM3's `ChangeDataset` starts one (a map of fewer than 12 keyframes reset, others kept).
+   The input takes a list of sequences.
+6. **The loss window, measured both ways:** B1's 3 s stays the default. A new map at once is
+   measured beside it on the test set (section 15), and decided with evan-wes on the numbers.
+7. **The run format, version 9, and the bundle's, version 5:**
+   - each keyframe and point records the map it ends in; each frame records the map it ends in
+     (the final trajectory's) and the map it was tracked in (the as-tracked one's);
+   - a run's maps no longer only rise, and a map's frames need not be contiguous;
+   - the merges are kept (`keyframe_merges.npy`, `(E, 2)` int64), and each is recorded in the
+     diagnostics as a loop is: the maps, the keyframes, the Sim(3), the points fused, and the
+     results of the welding BA, the graph and global BA;
+   - each map is still aligned on its own. The final trajectory holds every kept map's frames,
+     where ORB-SLAM3's saves only its largest map's;
+   - the viewer draws the merges.
+8. **Tests:**
+   - the merge room: the loop room's circle with black frames partway, longer than the loss
+     window, so the track is lost and a new map starts, and the path passing its start again, so
+     the maps merge. Every language ends in one map, merged at the right place, with its final
+     ATE and its points' distance to the walls within bounds set from the first runs;
+   - the stage comparisons with Python's reference, for the two-map searches and the merge;
+   - the records, one per language, regenerated.
+9. **Not in B4:** reifyscene's adapter for several maps (A10, which lives in reifyscene);
+   merging inertial maps (`MergeLocal2`, milestone 6).
+
+## 15. Measurements (B4)
+
+Once, on the finished branch, C++ and Rust, threaded and fed in real time (section 13).
+- **Multi-session EuRoC, the bar** (decided with evan-wes on 2026-10-17): MH_01 to MH_03, MH_01
+  to MH_05 and V1_01 to V1_03, monocular and stereo, each room's sequences in one run, aligned
+  once to the ground truth, as the paper aligns them. The bar:
+  - the ATE within 1.5 times ORB-SLAM3's (its Table V, a median of 5 runs): monocular 3.0, 5.8
+    and 5.8 cm; stereo 2.8, 4.0 and 2.7 cm;
+  - every session ending in one map;
+  - at least 95% of the frames tracked;
+  - no loop or merge at a wrong place.
+
+  V2_01 to V2_03 are not run: that room is not downloaded, and the disk is short.
+- **TUM's fr2_360_kidnap,** RGB-D and monocular: whether the track is found again after the
+  kidnap, by relocalisation or by a merge, and the ATE. There is no published figure.
+- **7-Scenes across sequences:** chess, fire, heads and stairs, each scene's sequences in one
+  run: how many sessions relocalise into the first's map or merge with it, and the ATE. There is
+  no published figure. The scenes are unpacked first, their size checked.
+- **The loss window:** the test set with 3 s and with a new map at once: the share tracked, the
+  maps, the merges and the final ATE.
+- **The test set and the loop sequences,** against B3b's.
