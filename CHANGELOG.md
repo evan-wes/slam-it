@@ -64,17 +64,16 @@ no longer read.
   7, is decided in B3's design.
 - **The comments, docstrings and errors** name every setting `group.field`, as the code does
   (the vocabulary's errors say `relocalization.enabled`), and none describes the window.
-- **Culling keyframes refuses a map without any** in the three languages, where Rust panicked and
-  C++ read out of bounds; the Python reference counts the keyframes it is asked about, not
-  every pair (`covisibility.links` from 194 to 3 ms at 500 keyframes on the panel's synthetic
-  map); the viewer refuses a bundle whose graph names a keyframe the run has not.
+- **Culling keyframes refuses a map without any** in the three languages, where it did nothing
+  before; the viewer refuses a bundle whose graph names a keyframe the run has not.
 - **The golden record** is regenerated: every room keeps its states, the frames tracked and
   lost; 12 cases make more keyframes. It gains each keyframe's last parent and the strong links.
 
 ### Tests
 
 - The covisibility graph's fixture (`tests/fixtures/edge/covisibility.json`), by brute force:
-  5 cases, ties, the kept best link, a tree repaired in rounds, and the local map at its cap.
+  5 cases, ties, the kept best link, a tree repaired in rounds, the local map at its cap, and
+  what fusion and local BA take, each of fusion's counts binding.
 - The room's last map, in each mode, and every map of the golden record are one tree, each
   chain of parents reaching the first keyframe; the run format's writers and readers refuse a
   bad parent or link in the three languages.

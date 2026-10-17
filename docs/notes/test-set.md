@@ -333,9 +333,10 @@ frame's reference keyframe, the one sharing the most of its points.
 **Conditions:**
 - the C++ backend, a release build, the features for the frame size, and the default vocabulary;
   seed 0 alone, as for B1;
-- B2: the pipeline of commit 8e9b39b on `feature/2b-b2-covisibility`, which no later commit on
-  the branch changes, measured at 986d4c0 by `scripts/measure_sharded.py`, a run a CPU over 24,
-  against B1's runs above, relocalisation on;
+- B2: the pipeline of commit 8e9b39b on `feature/2b-b2-covisibility`, whose decisions no later
+  commit on the branch changes (the golden record unmoved through the review panel's fixes),
+  measured at 986d4c0 by `scripts/measure_sharded.py`, a run a CPU over 24, against B1's runs
+  above, relocalisation on;
 - latency from runs made alone, pinned to CPU 2, at 986d4c0, on the five sequences whose maps
   grow largest;
 - the ladder's L15 by the same program, on TUM and EuRoC (below);

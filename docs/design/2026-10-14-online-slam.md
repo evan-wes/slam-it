@@ -198,7 +198,11 @@ Each gets its own section here before its PR, its forks put to the owner then.
   - the papers' K2, which B2 builds, makes a larger local map than ORB-SLAM's source does (its
     `break`), so ORB-SLAM's timings are not B2's to compare with (L6);
   - two measures across a run-format break are compared by each batch's own summary, written by
-    the code that ran it, not by reading the other's runs, which a newer reader refuses (A9).
+    the code that ran it, not by reading the other's runs, which a newer reader refuses (A9);
+  - culling must spare the keyframes loop closing is testing and those with loop edges, as
+    `SetBadFlag`'s `mbNotErase` does (run 2, L9), in `covisibility.cull`, the one way out; and
+    the map's erase guards parents, not the root, so a second caller of it, or merging that
+    renumbers a root, revisits the rule kept in `cull` (run 2, A15).
 - **B4, merging maps:** the atlas the A2 panel deferred (`edge.atlas`: a kept map's descriptors
   and observations kept whole, the pipeline owning the trajectory record), and maps welded where
   the database recognises one in another. With it, the loss window revisited: B1 relocalises a
@@ -307,7 +311,11 @@ differs).
    parent; each round, the child and candidate most strongly linked are paired and the child
    becomes a candidate; children linked to no candidate get its parent. The essential graph's
    strong links (`covisibility.strong_points`, 100) are counted the same way; its loop links are
-   B3's.
+   B3's. *As built (B2's review panel, A1 and A3):* a keyframe leaves the map only by
+   `covisibility.cull`, the children reparented and then the keyframe erased, which refuses the
+   map's first keyframe, the tree's root, as `SetBadFlag` leaves it; `map.erase_keyframe`
+   refuses a keyframe that is still a parent; `adopt` is for the keyframe being inserted, as on
+   an older one it can close a cycle.
 4. **Tracking's local map** (`UpdateLocalKeyFrames`): K1, the keyframes that observe the points
    the frame was matched to, the most shared first; then, for each of K1 in that order, unless
    the local map already holds more than `covisibility.local_keyframes` (80): the first of its
@@ -348,7 +356,11 @@ differs).
    regenerated whole, their rooms unchanged. The covisibility module is tested in the three
    languages against a brute-force fixture (the weights, the links, the best, the local map,
    and a culled keyframe's children given new parents), and each stage moved off the window
-   keeps its native tests.
+   keeps its native tests. *As built (B2's review panel, L1):* the fixture also holds `cull` and
+   what the stages take from the graph, fusion's targets and local BA's keyframes
+   (`mapping.fuse_targets`, `mapping.local_ba_keyframes`, public for it), each of fusion's counts
+   binding; every map of the golden record is one tree; and B2's settings are moved off their
+   defaults in the whole runs the languages are compared on.
 
 ## 9. Measurements (B2)
 
