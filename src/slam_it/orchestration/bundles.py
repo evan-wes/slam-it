@@ -33,7 +33,9 @@ It holds one sequence's runs in one mode, at most one per backend, and the frame
     ``(T,)`` int32;
   - ``keyframe_poses.npy``, ``(K, 3, 4)`` float32, ``keyframe_lives.npy``, ``(K, 3)`` int32,
     and ``keyframe_maps.npy``, ``(K,)`` int32; ``keyframe_parents.npy``, ``(K,)`` int32, and
-    ``keyframe_links.npy``, ``(L, 3)`` int32, the spanning tree and the strong links;
+    ``keyframe_links.npy``, ``(L, 3)`` int32, the spanning tree and the strong links as each
+    map ended (each keyframe's last parent; a map's links when it closed or the run ended), which
+    the page draws through the run while both their keyframes live;
     ``points.npy``, ``(N, 3)`` float32,
     ``point_lives.npy``, ``(N, 3)`` int32, and ``point_maps.npy``, ``(N,)`` int32: every
     keyframe and point the run made, as the run format holds them (:mod:`slam_it.eval.runs`);

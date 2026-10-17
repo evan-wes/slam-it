@@ -199,7 +199,7 @@ void check_checks(int& failures) {
          "insert_keyframe rejects a point that is not in the map", failures);
   expect(
       is_invalid_input(edge::check_options(edge::Options{.covisibility = {.local_neighbours = 0}})),
-      "check_options rejects an empty window", failures);
+      "check_options rejects no local neighbours", failures);
   expect(is_invalid_input(edge::check_options(edge::Options{.keyframes = {.ref_ratio = 1.5}})),
          "check_options rejects a ratio above 1", failures);
   const edge::Camera bad{.model = slam_it::foundations::camera::Model::kPinhole,

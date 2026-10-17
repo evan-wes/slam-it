@@ -94,7 +94,8 @@ class LocalMapSummary:
     points : int
         The points they observe.
     reference : int
-        The frame's reference keyframe, by the run's id (:meth:`LocalTracking.summary`).
+        The frame's reference keyframe, by the run's id (:meth:`LocalTracking.summary`); -1 when
+        the frame was matched to no point.
     """
 
     in_view: int
@@ -178,7 +179,7 @@ class LocalTracking:
             inliers=self.tracked.inliers,
             keyframes=self.keyframes,
             points=self.points,
-            reference=base + self.reference_id,
+            reference=-1 if self.reference_id < 0 else base + self.reference_id,
         )
 
 
@@ -1117,17 +1118,17 @@ def relocalize_locally(  # noqa: PLR0913 -- the map, its camera, two frames, the
         RANSAC finds no pose, or fewer inliers survive; how far it got
         (:class:`PnpSummary`); and each keypoint's match by descriptor.
     """
-    before = covisibility.as_points(last)
+    checked = covisibility.as_points(last)
     return backends.call(
         backend,
         __name__,
         "relocalize_locally",
-        reference=lambda: _relocalize_locally(m, camera, frame, before, options),
+        reference=lambda: _relocalize_locally(m, camera, frame, checked, options),
         arguments={
             "m": m.as_dict(),
             "camera": camera.as_dict(),
             "frame": frame.as_dict(),
-            "last": before,
+            "last": checked,
             "options": options.as_dict(),
         },
         decode=_decode_relocalization,

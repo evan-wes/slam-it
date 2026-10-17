@@ -354,12 +354,15 @@ impl Pipeline {
             );
         }
         if options.relocalization.enabled && vocabulary.is_none() {
-            return fail(ErrorKind::InvalidInput, "vocabulary: relocalize needs one");
+            return fail(
+                ErrorKind::InvalidInput,
+                "vocabulary: relocalization.enabled needs one",
+            );
         }
         if !options.relocalization.enabled && vocabulary.is_some() {
             return fail(
                 ErrorKind::InvalidInput,
-                "vocabulary: given, but relocalize is off",
+                "vocabulary: given, but relocalization.enabled is off",
             );
         }
         Ok(Self {
@@ -556,7 +559,11 @@ impl Pipeline {
 
     /// Closes the map the track was lost in, on this frame: keeps it, or resets it if it has
     /// `loss.reset_keyframes` keyframes or fewer (its lives end, as [`Removal::Reset`]). The
-    /// tracking state goes with it, so the next frame starts a new map.
+    /// tracking state goes with it, so the next frame starts a new map. A stand-in until
+    /// milestone 2B's B4: the map's strong links are counted here, for the run's record, inside
+    /// the frame's timed step (58 to 360 ms in the C++ program on the test set's largest maps);
+    /// B4's atlas keeps maps whole, and the record moves with it (the online-SLAM design,
+    /// section 4).
     ///
     /// # Arguments
     ///

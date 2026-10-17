@@ -737,8 +737,8 @@ def test_the_vocabulary_and_a_flag_setting_cross_the_command_line() -> None:
 @pytest.mark.parametrize(
     ("relocalize", "vocabulary", "message"),
     [
-        (True, None, "--vocabulary: relocalize needs one"),
-        (False, Path("words"), "--vocabulary: given, but relocalize is off"),
+        (True, None, "--vocabulary: relocalization.enabled needs one"),
+        (False, Path("words"), "--vocabulary: given, but relocalization.enabled is off"),
     ],
 )
 def test_check_refuses_a_vocabulary_missing_or_unasked_for(
@@ -768,7 +768,7 @@ def test_run_relocalises_with_the_committed_vocabulary_unless_told_otherwise(
         "tum", SEQUENCES / "tum_camera", "rgbd", tmp_path / "off", count=0, options=off_options
     )
     assert off.vocabulary is None
-    with pytest.raises(InvalidInputError, match="given, but relocalize is off"):
+    with pytest.raises(InvalidInputError, match=r"given, but relocalization\.enabled is off"):
         vo.run(
             "tum", SEQUENCES / "tum_camera", "rgbd", tmp_path / "refused", count=0,
             options=off_options, vocabulary=vocabularies.DEFAULT,
@@ -821,14 +821,14 @@ def test_every_program_refuses_a_vocabulary_missing_unasked_or_foreign(
     """
     out = tmp_path / "run"
     request = vo.Request("tum", SEQUENCES / "tum_camera", "rgbd", out, count=0)
-    message = "--vocabulary: relocalize needs one"
+    message = "--vocabulary: relocalization.enabled needs one"
     if refused == "unasked":
         request = replace(
             request,
             options=Options().with_settings({"relocalization.enabled": False}),
             vocabulary=vocabularies.DEFAULT,
         )
-        message = "--vocabulary: given, but relocalize is off"
+        message = "--vocabulary: given, but relocalization.enabled is off"
     elif refused == "foreign":
         folder = _foreign_vocabulary(tmp_path / "foreign")
         request = replace(request, vocabulary=folder)

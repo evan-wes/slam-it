@@ -6,10 +6,16 @@
  "mode": "rgbd",
  "backend": "python",
  "settings": {
-  "n_features": 1000,
-  "scale_factor": 1.2,
-  "window": 10,
-  "chi2_mono": 5.991
+  "features": {
+   "n_features": 1000,
+   "scale_factor": 1.2
+  },
+  "covisibility": {
+   "local_neighbours": 10
+  },
+  "adjustment": {
+   "chi2_mono": 5.991
+  }
  },
  "vocabulary": {
   "version": 2,

@@ -26,7 +26,8 @@ inline constexpr const char* kFormat = "slam-it-run";
 
 /// @brief `run.json`'s `version` (2 added `peak_memory`, `cpus` and `memory_cap`; 3 every point
 ///        and keyframe the run made, with their lives; 4 the maps, and the removal `reset`; 5 the
-///        `vocabulary` a relocalising run used).
+///        `vocabulary` a relocalising run used; 6 the settings grouped, each keyframe's parent and
+///        the strong links).
 inline constexpr std::int64_t kVersion = 6;
 
 /// @brief The number of removal codes a life may hold (`slam_it.eval.runs.REMOVALS`).

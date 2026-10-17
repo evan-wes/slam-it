@@ -172,6 +172,13 @@ fn the_local_map_and_the_fallback_place_the_frame() {
         }
     );
     assert!(local.keyframes > 0);
+    let mut none = local.clone();
+    none.reference_id = -1;
+    assert_eq!(
+        none.summary(10).reference,
+        -1,
+        "no reference keyframe: -1, not 9"
+    );
     let last = &m.pt_id; // the last frame matched every point
     assert!(
         relocalize_locally(&m, &camera(), &frame(2, true), &[-2], &options).is_err(),

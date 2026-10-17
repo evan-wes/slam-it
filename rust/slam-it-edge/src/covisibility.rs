@@ -60,6 +60,12 @@ fn check_row(m: &Map, k: usize) -> Result<()> {
     check_range("k", k, 0, m.keyframes() - 1)
 }
 
+/// Adds a keyframe's row to the local map.
+fn add(keyframes: &mut Vec<usize>, inside: &mut [bool], row: usize) {
+    keyframes.push(row);
+    inside[row] = true;
+}
+
 /// The rows whose parent is a keyframe, ascending.
 fn children_of(m: &Map, k: usize) -> Vec<usize> {
     (0..m.keyframes())
@@ -199,18 +205,15 @@ pub fn local_map(m: &Map, points: &[i64], options: &Options) -> Result<LocalMap>
             .map(|link| link.row)
             .find(|&row| !inside[row])
         {
-            keyframes.push(row);
-            inside[row] = true;
+            add(&mut keyframes, &mut inside, row);
         }
         if let Some(row) = children_of(m, k).into_iter().find(|&row| !inside[row]) {
-            keyframes.push(row);
-            inside[row] = true;
+            add(&mut keyframes, &mut inside, row);
         }
         if let Some(row) = m.keyframe_row(m.kf_parent[k])
             && !inside[row]
         {
-            keyframes.push(row);
-            inside[row] = true;
+            add(&mut keyframes, &mut inside, row);
         }
     }
     Ok(LocalMap {

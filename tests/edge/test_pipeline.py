@@ -119,7 +119,7 @@ def test_every_point_and_keyframe_has_a_life(mode: str, runs: dict[str, Run]) ->
 
 
 def test_monocular_frames_start_with_more_features() -> None:
-    """Before the map, a monocular frame gets init_feature_factor times the features."""
+    """Before the map, a monocular frame gets features.init_factor times the features."""
     camera = frames.Camera("pinhole", room.SMALL.intrinsics, 320, 240)
     mono = pipeline.Pipeline("monocular", camera, OPTIONS, words_for(OPTIONS))
     assert (
@@ -151,8 +151,8 @@ def _lose_and_restart(
 ) -> tuple[pipeline.Pipeline, list[pipeline.FrameResult]]:
     """Start a map on the first frame, lose it on empty ones a second apart, start the next.
 
-    A map of one keyframe is lost on the fifth either way: after lost_frames (5) failures if it
-    is small, or once more than relocalize_seconds (3) have passed since the first if not.
+    A map of one keyframe is lost on the fifth either way: after loss.lost_frames (5) failures if it
+    is small, or once more than loss.relocalize_seconds (3) have passed since the first if not.
     """
     run = pipeline.Pipeline("rgbd", CAMERA, options, words_for(options))
     first, second = rendered[0], rendered[1]
@@ -165,9 +165,9 @@ def _lose_and_restart(
 def test_a_lost_track_resets_a_small_map_and_starts_a_new_one(
     rendered: list[room.Frame],
 ) -> None:
-    """lost_frames frames in a row untracked lose the track; the next frame starts map 1.
+    """loss.lost_frames frames in a row untracked lose the track; the next frame starts map 1.
 
-    The lost map has one keyframe, and reset_keyframes is 1, the rule's boundary: "1 or fewer"
+    The lost map has one keyframe, and loss.reset_keyframes is 1, the rule's boundary: "1 or fewer"
     resets it (review panel finding L3), its keyframe and points ending on the frame the track
     was lost on (ORB-SLAM3's ResetActiveMap).
     """
@@ -199,7 +199,7 @@ def test_a_lost_track_resets_a_small_map_and_starts_a_new_one(
 
 
 def test_a_lost_map_above_reset_keyframes_is_kept(rendered: list[room.Frame]) -> None:
-    """With reset_keyframes 0, one under the lost map's one keyframe, the lost map is kept.
+    """With loss.reset_keyframes 0, one under the lost map's one keyframe, the lost map is kept.
 
     Its keyframe and points stay alive, where they were when it closed, and the tracking state
     starts again with the next map.
@@ -232,7 +232,7 @@ def test_a_lost_map_above_reset_keyframes_is_kept(rendered: list[room.Frame]) ->
 def test_a_large_map_is_lost_in_time_and_a_small_one_in_frames(
     rendered: list[room.Frame], reset_keyframes: int, step: float, lost_on: int
 ) -> None:
-    """relocalize_seconds rules a map above reset_keyframes, lost_frames one of it or fewer."""
+    """Time loses a map above loss.reset_keyframes; loss.lost_frames failures, a smaller one."""
     options = OPTIONS.with_settings({"loss.reset_keyframes": reset_keyframes})
     run = pipeline.Pipeline("rgbd", CAMERA, options, words_for(options))
     first = rendered[0]
@@ -246,7 +246,7 @@ def test_a_large_map_is_lost_in_time_and_a_small_one_in_frames(
 def test_off_a_kept_map_is_lost_after_lost_frames_and_nothing_relocalizes(
     rendered: list[room.Frame],
 ) -> None:
-    """With relocalize off, A2's rule: lost on the lost_frames-th failure, whatever the time."""
+    """Relocalisation off, A2's rule: lost on the loss.lost_frames-th failure, whatever the time."""
     options = OPTIONS.with_settings({"relocalization.enabled": False, "loss.reset_keyframes": 0})
     run = pipeline.Pipeline("rgbd", CAMERA, options)
     first = rendered[0]
@@ -334,7 +334,7 @@ def test_a_map_without_points_is_lost_and_the_third_map_follows_the_first_two(
 ) -> None:
     """A frame without depth starts a map of no points; tracked frames lose it; maps go on.
 
-    Map 0 has no points, so no frame after it is placed: lost_frames frames lose it, and it is
+    Map 0 has no points, so no frame after it is placed: loss.lost_frames frames lose it, and it is
     reset. Map 1 starts on the next frame and is lost on empty frames; map 2 starts after it,
     its keyframe and points numbered after both maps' (review panel finding L4).
     """

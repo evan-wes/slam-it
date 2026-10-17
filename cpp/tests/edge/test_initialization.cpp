@@ -102,7 +102,7 @@ void check_monocular(int& failures) {
   const auto few = edge::initialize_monocular(scene::camera(), first, last, pairs, edge::Options{});
   expect(few.has_value() && !few->started.has_value() &&
              few->summary.outcome == edge::Outcome::kTooFewMatches && few->summary.matches == given,
-         "fewer matches than init_min_matches start nothing", failures);
+         "fewer matches than initialization.min_matches start nothing", failures);
   const std::vector<std::array<std::int64_t, 2>> beyond{{0, scene::kPoints}};
   expect(is_invalid_input(
              edge::initialize_monocular(scene::camera(), first, last, beyond, edge::Options{})),

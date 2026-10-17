@@ -78,10 +78,10 @@ Result<Pipeline> Pipeline::create(Mode mode, Camera camera, Options options,
                 std::string("camera.baseline: ") + name(mode) + " needs a positive baseline");
   }
   if (options.relocalization.enabled && !vocabulary) {
-    return fail(ErrorKind::kInvalidInput, "vocabulary: relocalize needs one");
+    return fail(ErrorKind::kInvalidInput, "vocabulary: relocalization.enabled needs one");
   }
   if (!options.relocalization.enabled && vocabulary) {
-    return fail(ErrorKind::kInvalidInput, "vocabulary: given, but relocalize is off");
+    return fail(ErrorKind::kInvalidInput, "vocabulary: given, but relocalization.enabled is off");
   }
   return Pipeline(mode, std::move(camera), options, std::move(vocabulary));
 }

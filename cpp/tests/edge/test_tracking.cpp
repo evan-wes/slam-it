@@ -126,6 +126,11 @@ void check_local_map(const edge::Map& m, int& failures) {
              edge::summary(*local).in_view == 60 && edge::summary(*local).inliers == 60 &&
              edge::summary(*local).keyframes > 0 && edge::summary(*local).points == 60,
          "the local map matches every point and pins the pose", failures);
+  if (local) {
+    edge::LocalTracking none = *local;
+    none.reference_id = -1;
+    expect(edge::summary(none, 10).reference == -1, "no reference keyframe: -1, not 9", failures);
+  }
   const std::vector<std::int64_t>& last = m.pt_id;  // the last frame matched every point
   const auto placed =
       edge::relocalize_locally(m, scene::camera(), scene::frame(2, true), last, edge::Options{});

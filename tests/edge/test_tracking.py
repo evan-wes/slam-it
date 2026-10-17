@@ -303,3 +303,13 @@ def test_rejects_malformed_arguments(backend: str, room_state: Room) -> None:
     for call in calls:
         with pytest.raises(InvalidInputError):
             call()
+
+
+def test_a_summary_without_a_reference_keyframe_names_none() -> None:
+    """With no reference keyframe the summary says -1, not the run's id before its map's first."""
+    none = np.zeros(0, dtype=np.int64)
+    local = tracking.LocalTracking(
+        tracked=Tracked(pose=np.eye(4), points=none), visible=none, found=none, matched=none,
+        keyframes=0, points=0, reference=-1, reference_id=-1,
+    )  # fmt: skip
+    assert local.summary(10).reference == -1

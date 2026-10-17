@@ -228,9 +228,9 @@ def check(request: Request) -> None:
     if request.first < 0 or (request.count is not None and request.count < 0):
         raise InvalidInputError("first, count: must be at least 0")
     if request.options.relocalization.enabled and request.vocabulary is None:
-        raise InvalidInputError("--vocabulary: relocalize needs one")
+        raise InvalidInputError("--vocabulary: relocalization.enabled needs one")
     if not request.options.relocalization.enabled and request.vocabulary is not None:
-        raise InvalidInputError("--vocabulary: given, but relocalize is off")
+        raise InvalidInputError("--vocabulary: given, but relocalization.enabled is off")
 
 
 def _integer(flag: str, text: str) -> int:

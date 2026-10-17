@@ -25,7 +25,9 @@ relocalisation's candidates take their keyframes from the covisibility graph.
 - :mod:`slam_it.edge.pipeline`: the per-frame loop over them, holding the map.
 
 **Compute budget:** real time under ``laptop-cpu``, then ``jetson-class`` and
-``pi-class``. CPU only; implemented in Python, C++ and Rust in lock-step. Must never import
-PyTorch, a GPU stack or a depth model (enforced by import-linter). Builds only on
-:mod:`slam_it.foundations`.
+``pi-class``; local mapping, run inline, falls behind on the largest maps since milestone 2B's
+B2 (its load 1.7 to 2.6 on the test set's five largest), and how it shares time with tracking is
+decided in B3's design (the ladder's "Mapping in a thread of its own"). CPU only; implemented
+in Python, C++ and Rust in lock-step. Must never import PyTorch, a GPU stack or a depth model
+(enforced by import-linter). Builds only on :mod:`slam_it.foundations`.
 """

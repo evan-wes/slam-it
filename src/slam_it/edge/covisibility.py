@@ -31,8 +31,12 @@ V.D; ``KeyFrame::UpdateConnections``, ``KeyFrame::SetBadFlag``, ``Tracking::Upda
 **Unlike ORB-SLAM,** the local map expands every K1 keyframe, as the papers describe K2:
 ORB-SLAM2's and ORB-SLAM3's loops end the whole expansion once a parent is added (a ``break``
 out of the outer loop), and take K1 in the order of its keyframes' addresses in memory; here
-K1 runs most shared first, ties by id, in the three languages alike. The design is section 8 of
-``docs/design/2026-10-14-online-slam.md``.
+K1 runs most shared first, ties by id, in the three languages alike. And ORB-SLAM's source keeps
+every keyframe sharing a point in the list it re-sorts (``UpdateBestCovisibles``), with no
+threshold of 15: ``SetBadFlag`` can join a child to a candidate it shares fewer with, where here
+it takes the culled keyframe's parent, and ORB-SLAM3's culling tests every keyframe sharing a
+point with the new one, up to 100. Here the paper's rule holds in every stage. The design is
+section 8 of ``docs/design/2026-10-14-online-slam.md``.
 """
 
 from __future__ import annotations

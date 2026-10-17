@@ -76,6 +76,8 @@ def test_the_settings_cross_as_groups_of_scalars() -> None:
             {"relocalization.narrow_distance": 257},
             "relocalization.narrow_distance: must be from 1 to 256",
         ),
+        ({"features.n_features": "a"}, "features.n_features: must be an integer"),
+        ({"features.n_features": None}, "features.n_features: must be an integer"),
     ],
 )
 def test_settings_out_of_range_are_refused(settings: dict[str, object], message: str) -> None:

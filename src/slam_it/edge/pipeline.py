@@ -435,9 +435,9 @@ class Pipeline:
         if self.mode != "monocular" and not self.camera.baseline > 0.0:
             raise InvalidInputError(f"camera.baseline: {self.mode} needs a positive baseline")
         if self.options.relocalization.enabled and self.vocabulary is None:
-            raise InvalidInputError("vocabulary: relocalize needs one")
+            raise InvalidInputError("vocabulary: relocalization.enabled needs one")
         if not self.options.relocalization.enabled and self.vocabulary is not None:
-            raise InvalidInputError("vocabulary: given, but relocalize is off")
+            raise InvalidInputError("vocabulary: given, but relocalization.enabled is off")
 
     def extraction(self) -> orb.Options:
         """Return the extraction settings the next frame should be built with.
@@ -566,6 +566,12 @@ class Pipeline:
         Its points and keyframes go where they last were; a reset map's lives end on this
         frame (:attr:`slam_it.edge.map.Removal.RESET`). The tracking state goes with the map, so
         the next frame starts a new one.
+
+        A stand-in until milestone 2B's B4: the map's strong links are counted here, for the
+        run's record, inside the frame's timed step, which costs that frame 58 to 360 ms in the
+        C++ program on the test set's largest maps; B4's atlas keeps maps whole, and the record
+        moves with it
+        (``docs/design/2026-10-14-online-slam.md``, section 4).
         """
         frame = self._frames - 1  # dated already
         reset = m.keyframes <= self.options.loss.reset_keyframes

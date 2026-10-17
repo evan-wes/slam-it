@@ -136,7 +136,11 @@ def values() -> dict[str, Any]:
         "keyframe_lives": [[0, -1, -1], [3, -1, -1], [4, -1, -1]],
         "keyframe_parents": [-1, -1, 1],
         "keyframe_links": [[1, 2, 120]],
-        "settings": {"n_features": 1000, "scale_factor": 1.2, "window": 10, "chi2_mono": 5.991},
+        "settings": {
+            "features": {"n_features": 1000, "scale_factor": 1.2},
+            "covisibility": {"local_neighbours": 10},
+            "adjustment": {"chi2_mono": 5.991},
+        },
         "vocabulary": vocabularies.record(HERE / "vocabulary"),
         "peak_memory": 48_381_952,
         "cpus": [4, 5, 6, 7],

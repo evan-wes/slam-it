@@ -12,10 +12,11 @@ when the :class:`Options` holding it is made.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, fields, replace
-from typing import Any
+from typing import Any, get_type_hints
 
 from slam_it.foundations import matching, orb
 from slam_it.foundations import stereo as rows
@@ -563,13 +564,13 @@ class Options:
             if not isinstance(given, kind):
                 got = type(given).__name__
                 raise InvalidInputError(f"{name}: expected {kind.__name__}, got {got}")
-        try:
-            self.extraction()
-        except InvalidInputError as error:
-            raise InvalidInputError(f"features.{error}") from error
         for owner, item, name in _fields(self):
             value = _checked(name, item.type, getattr(owner, item.name))
             object.__setattr__(owner, item.name, value)  # frozen: store it checked, normalised
+        try:
+            self.extraction()  # its fields checked first, so a wrong type is named, not a TypeError
+        except InvalidInputError as error:
+            raise InvalidInputError(f"features.{error}") from error
         for name, value in (
             ("matching.th_low", self.matching.th_low),
             ("matching.th_high", self.matching.th_high),
@@ -675,19 +676,12 @@ class Options:
 
 
 _GROUPS: dict[str, type] = {
-    "features": FeatureOptions,
-    "matching": MatchingOptions,
-    "stereo": StereoOptions,
-    "initialization": InitializationOptions,
-    "tracking": TrackingOptions,
-    "adjustment": AdjustmentOptions,
-    "keyframes": KeyframeOptions,
-    "mapping": MappingOptions,
-    "covisibility": CovisibilityOptions,
-    "relocalization": RelocalizationOptions,
-    "loss": LossOptions,
+    name: kind
+    for name, kind in get_type_hints(Options).items()
+    if isinstance(kind, type) and dataclasses.is_dataclass(kind)
 }
-"""Each group's name in :class:`Options`, and its class."""
+"""Each group's name in :class:`Options`, and its class: its fields that are groups, all but the
+seed."""
 
 
 def _fields(options: Options) -> list[tuple[Any, Any, str]]:

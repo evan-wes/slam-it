@@ -326,7 +326,11 @@ class Pipeline {
 
   /// @brief Close the map the track was lost in, on this frame: keep it, or reset it if it has
   ///        `loss.reset_keyframes` keyframes or fewer (its lives end, as `Removal::kReset`). The
-  ///        tracking state goes with it, so the next frame starts a new map.
+  ///        tracking state goes with it, so the next frame starts a new map. A stand-in until
+  ///        milestone 2B's B4: the map's strong links are counted here, for the run's record,
+  ///        inside the frame's timed step (58 to 360 ms on the test set's largest maps); B4's
+  ///        atlas keeps maps whole, and the record moves with it (the online-SLAM design,
+  ///        section 4).
   /// @param m The map, taken out of the pipeline.
   /// @return The closed map's summary.
   LostSummary close(const Map& m);

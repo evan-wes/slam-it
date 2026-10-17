@@ -88,7 +88,11 @@ impl LocalTracking {
             inliers: self.tracked.inliers(),
             keyframes: self.keyframes,
             points: self.points,
-            reference: base + self.reference_id,
+            reference: if self.reference_id < 0 {
+                -1
+            } else {
+                base + self.reference_id
+            },
         }
     }
 }

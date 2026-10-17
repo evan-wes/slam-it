@@ -995,10 +995,10 @@ pub fn check(request: &Request) -> Result<()> {
         return invalid("first, count: must be at least 0".to_owned());
     }
     if request.options.relocalization.enabled && request.vocabulary.is_none() {
-        return invalid("--vocabulary: relocalize needs one".to_owned());
+        return invalid("--vocabulary: relocalization.enabled needs one".to_owned());
     }
     if !request.options.relocalization.enabled && request.vocabulary.is_some() {
-        return invalid("--vocabulary: given, but relocalize is off".to_owned());
+        return invalid("--vocabulary: given, but relocalization.enabled is off".to_owned());
     }
     check_options(&request.options)
 }

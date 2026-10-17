@@ -34,7 +34,7 @@ def _error(pose: np.ndarray, truth: np.ndarray) -> tuple[float, float]:
 def test_a_frame_of_the_room_is_placed_near_its_true_pose(
     truth: Truth, room_database: Database, index: int
 ) -> None:
-    """Placed with recovery_tracked inliers or more, within 2 cm and half a degree."""
+    """Placed with tracking.recovery_tracked inliers or more, within 2 cm and half a degree."""
     found = relocalization.relocalize(
         truth.map, room_database, CAMERA, truth.frames[index], OPTIONS
     )
@@ -71,7 +71,7 @@ def test_a_frame_of_elsewhere_is_not_placed(truth: Truth, room_database: Databas
 def test_too_few_matches_by_word_skip_every_candidate(
     truth: Truth, room_database: Database
 ) -> None:
-    """A candidate with fewer than reloc_min_matches never reaches RANSAC."""
+    """A candidate with fewer than relocalization.min_matches never reaches RANSAC."""
     strict = OPTIONS.with_settings({"relocalization.min_matches": 1 << 20})
     found = relocalization.relocalize(truth.map, room_database, CAMERA, truth.frames[30], strict)
     assert found.tracked is None
@@ -84,7 +84,7 @@ def test_too_few_matches_by_word_skip_every_candidate(
     ("matches", "needed", "samples"),
     [
         (100, 50, 35),  # half the matches, at 0.99: log(0.01) / log(1 - 0.5^3)
-        (15, 10, 14),  # reloc_min_inliers binds: e = 10 / 15
+        (15, 10, 14),  # relocalization.min_inliers binds: e = 10 / 15
         (10, 10, 1),  # every match must be an inlier: one sample
         (8, 10, 1),  # fewer matches than inliers needed: never drawn
     ],
@@ -113,7 +113,7 @@ def test_the_searches_by_projection_top_up_a_weak_start(
 def test_between_the_bounds_after_the_first_search_a_narrower_one_runs(
     truth: Truth, room_database: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """More than reloc_narrow_inliers but fewer than recovery_tracked: the narrow search runs."""
+    """Over relocalization.narrow_inliers, under tracking.recovery_tracked: the narrow search."""
     searched: list[tuple[float, int]] = []
     original = relocalization.search_keyframe
 

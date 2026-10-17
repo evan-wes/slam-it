@@ -816,10 +816,10 @@ Result<void> check(const Request& request) {
     return fail(ErrorKind::kInvalidInput, "first, count: must be at least 0");
   }
   if (request.options.relocalization.enabled && !request.vocabulary) {
-    return fail(ErrorKind::kInvalidInput, "--vocabulary: relocalize needs one");
+    return fail(ErrorKind::kInvalidInput, "--vocabulary: relocalization.enabled needs one");
   }
   if (!request.options.relocalization.enabled && request.vocabulary) {
-    return fail(ErrorKind::kInvalidInput, "--vocabulary: given, but relocalize is off");
+    return fail(ErrorKind::kInvalidInput, "--vocabulary: given, but relocalization.enabled is off");
   }
   return edge::check_options(request.options);
 }

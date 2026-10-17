@@ -13,10 +13,11 @@ et al., T-RO 2021), against the map being tracked:
 3. **PnP RANSAC** on those matches (:func:`slam_it.foundations.pnp.pnp_ransac`,
    ``tracking.pnp_threshold`` pixels, ``seed``), set as ORB-SLAM sets MLPnP's
    (``SetRansacParameters(0.99, 10, 300, 6, 0.5, 5.991)``): the pose needs
-   ``n = max(reloc_min_inliers, floor(reloc_inlier_ratio * matches))`` inliers, and the samples
-   drawn are those that find such a pose with ``relocalization.confidence``,
-   ``ceil(log(1 - p) / log(1 - e^3))`` for ``e = max(reloc_inlier_ratio, n / matches)``, at most
-   ``relocalization.ransac_iterations`` (35 at the defaults). Fewer inliers: the next candidate.
+   ``n = max(relocalization.min_inliers, floor(relocalization.inlier_ratio * matches))`` inliers,
+   and the samples drawn are those that find such a pose with ``relocalization.confidence``,
+   ``ceil(log(1 - p) / log(1 - e^3))`` for ``e = max(relocalization.inlier_ratio, n / matches)``, at
+   most ``relocalization.ransac_iterations`` (35 at the defaults). Fewer inliers: the next
+   candidate.
 4. **The pose optimised** (:func:`slam_it.edge.tracking.optimize_pose`); fewer than
    ``relocalization.min_inliers`` inliers: the next candidate. Fewer than
    ``tracking.recovery_tracked`` (50): the candidate's other points searched by projection
@@ -235,8 +236,8 @@ def ransac_budget(matches: int, options: Options) -> tuple[int, int]:
     Returns
     -------
     needed : int
-        ``max(reloc_min_inliers, floor(reloc_inlier_ratio * matches))``, and at least P3P's
-        sample.
+        ``max(relocalization.min_inliers, floor(relocalization.inlier_ratio * matches))``, and at
+        least P3P's sample.
     samples : int
         The samples, from 1 to ``relocalization.ransac_iterations``: 1 if every match must be an
         inlier.
@@ -519,7 +520,7 @@ def relocalize(  # noqa: PLR0913 -- the map, its database, the camera, the frame
     frame : slam_it.edge.frames.Frame
         The frame.
     options : slam_it.edge.options.Options
-        The ``reloc_*`` settings, ``matching.th_low``, ``matching.th_high``,
+        The ``relocalization`` settings, ``matching.th_low``, ``matching.th_high``,
         ``relocalization.ratio``, ``tracking.pnp_threshold``, ``tracking.recovery_tracked``, the
         pose optimisation's and ``seed``.
     backend : {"python", "cpp", "rust"}, optional

@@ -180,7 +180,7 @@ void check_lost(int& failures) {
                lost->summary.lost && lost->summary.lost->reset == reset &&
                lost->summary.lost->keyframes == 1 &&
                pipeline->state() == edge::State::kNotInitialized && !pipeline->map(),
-           "lost_frames frames in a row untracked lose the track and close the map", failures);
+           "loss.lost_frames frames in a row untracked lose the track and close the map", failures);
     const auto restarted = pipeline->track(scene::frame_at(along(1), true));
     bool made_after = restarted.has_value() && restarted->map == 1 && restarted->keyframe;
     for (std::size_t j = 0; made_after && j < restarted->fates.point.size(); ++j) {
@@ -245,8 +245,8 @@ void check_lost_relocalizing(int& failures) {
     }
     expect(ok,
            c.reset_keyframes == 0
-               ? "a kept map is lost past relocalize_seconds from the first failed frame"
-               : "a small map is lost on the lost_frames-th failure, whatever the time",
+               ? "a kept map is lost past loss.relocalize_seconds from the first failed frame"
+               : "a small map is lost on the loss.lost_frames-th failure, whatever the time",
            failures);
   }
 }

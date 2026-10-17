@@ -345,7 +345,7 @@ LocalMapSummary summary(const LocalTracking& local, std::int64_t base) {
           .inliers = inliers(local.tracked),
           .keyframes = local.keyframes,
           .points = local.points,
-          .reference = base + local.reference_id};
+          .reference = local.reference_id < 0 ? -1 : base + local.reference_id};
 }
 
 Result<Motion> track_last_frame(const Map& m, const Camera& camera, const Frame& frame,

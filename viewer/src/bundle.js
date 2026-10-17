@@ -202,6 +202,27 @@ function expectShape(name, shape, trailing, rows) {
 }
 
 /**
+ * Check that a graph's array names only the run's keyframes (the bake checks them; a bundle
+ * changed by hand might not be).
+ * @param {string} name The array's file, for the message.
+ * @param {Int32Array} values Its values.
+ * @param {number} keyframes The run's keyframes.
+ * @param {number} stride Values a row: 1 for parents (-1 for none), 3 for links (two ids, then
+ *     the points shared, not an id).
+ * @returns {Int32Array} The values.
+ * @throws {Error} If one names no keyframe.
+ */
+function keyframeIds(name, values, keyframes, stride) {
+  values.forEach((id, i) => {
+    const isId = stride === 1 || i % stride < 2;
+    if (isId && (id >= keyframes || id < (stride === 1 ? -1 : 0))) {
+      throw new Error(`${name}: ${id} names none of the run's ${keyframes} keyframes`);
+    }
+  });
+  return values;
+}
+
+/**
  * Whether bundle.json's `extent` is one: the sequence's frames, at least the bundle's, and its
  * first and last frames' times, in order.
  * @param {unknown} extent The value.
@@ -318,11 +339,12 @@ export async function loadTrack(fetch, bundle, name) {
  * @param {Fetch} fetch How to fetch one of the bundle's files.
  * @param {Track} track Its track.
  * @returns {Promise<Backend>} Its whole run.
- * @throws {Error} If an array is mis-shaped.
+ * @throws {Error} If an array is mis-shaped, or the graph names a keyframe the run has not.
  */
 export async function loadBackend(fetch, track) {
   const { float32, int32 } = readers(fetch, track.name);
   const keyframeLives = await int32("keyframe_lives.npy", [3]);
+  const keyframes = keyframeLives.length / 3;
   const pointLives = await int32("point_lives.npy", [3]);
   let features = null;
   if (track.info.features) {
@@ -331,11 +353,21 @@ export async function loadBackend(fetch, track) {
   }
   return {
     ...track,
-    keyframePoses: await float32("keyframe_poses.npy", [3, 4], keyframeLives.length / 3),
+    keyframePoses: await float32("keyframe_poses.npy", [3, 4], keyframes),
     keyframeLives,
-    keyframeMaps: await int32("keyframe_maps.npy", [], keyframeLives.length / 3),
-    keyframeParents: await int32("keyframe_parents.npy", [], keyframeLives.length / 3),
-    keyframeLinks: await int32("keyframe_links.npy", [3]),
+    keyframeMaps: await int32("keyframe_maps.npy", [], keyframes),
+    keyframeParents: keyframeIds(
+      "keyframe_parents.npy",
+      await int32("keyframe_parents.npy", [], keyframes),
+      keyframes,
+      1,
+    ),
+    keyframeLinks: keyframeIds(
+      "keyframe_links.npy",
+      await int32("keyframe_links.npy", [3]),
+      keyframes,
+      3,
+    ),
     points: await float32("points.npy", [3], pointLives.length / 3),
     pointLives,
     pointMaps: await int32("point_maps.npy", [], pointLives.length / 3),

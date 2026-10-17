@@ -18,7 +18,8 @@ pub const FORMAT: &str = "slam-it-run";
 
 /// `run.json`'s `version` (2 added `peak_memory`, `cpus` and `memory_cap`; 3 every point and
 /// keyframe the run made, with their lives; 4 the maps, and the removal `reset`; 5 the
-/// `vocabulary` a relocalising run used).
+/// `vocabulary` a relocalising run used; 6 the settings grouped, each keyframe's parent and the
+/// strong links).
 pub const VERSION: i64 = 6;
 
 /// The number of removal codes a life may hold (`slam_it.eval.runs.REMOVALS`).
@@ -417,18 +418,15 @@ fn check_parents(parents: &[i64], maps: &[i64]) -> Result<()> {
 fn check_links(links: &[[i64; 3]], maps: &[i64]) -> Result<()> {
     let row = |id: i64| usize::try_from(id).ok().filter(|&r| r < maps.len());
     for (i, &[first, second, weight]) in links.iter().enumerate() {
-        let (Some(a), Some(b)) = (row(first), row(second)) else {
-            return fail(
-                ErrorKind::InvalidInput,
-                "keyframe_links: a link must join two keyframes, the lower first, by its points",
-            );
+        let (a, b) = match (row(first), row(second)) {
+            (Some(a), Some(b)) if a < b && weight >= 1 => (a, b),
+            _ => {
+                return fail(
+                    ErrorKind::InvalidInput,
+                    "keyframe_links: a link must join two keyframes, the lower first, by its points",
+                );
+            }
         };
-        if a >= b || weight < 1 {
-            return fail(
-                ErrorKind::InvalidInput,
-                "keyframe_links: a link must join two keyframes, the lower first, by its points",
-            );
-        }
         if maps[a] != maps[b] {
             return fail(
                 ErrorKind::InvalidInput,
