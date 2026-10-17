@@ -70,6 +70,10 @@ struct LocalMap {
                                                       const Options& options);
 
 /// @brief Give a keyframe its parent, if it has none yet (`slam_it.edge.covisibility.adopt`).
+///
+/// For the keyframe being inserted, the map's newest, every other already in the tree: given an
+/// older keyframe without a parent, it may take a newer one whose own chain leads back to it, a
+/// cycle.
 /// @param m The map, changed in place.
 /// @param k The keyframe's row.
 /// @return Nothing, or `InvalidInput` for a row out of range.

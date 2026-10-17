@@ -47,7 +47,7 @@ struct LocalMapSummary {
   std::int64_t keyframes{0};
   /// @brief The points they observe.
   std::int64_t points{0};
-  /// @brief The frame's reference keyframe, by the run's id.
+  /// @brief The frame's reference keyframe, by the run's id; -1 when it was matched to no point.
   std::int64_t reference{-1};
 };
 

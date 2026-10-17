@@ -294,7 +294,9 @@ void clear_gone(Map& m);
 /// @brief Remove a keyframe and its keypoints; its points lose an observation each.
 ///
 /// A keyframe that is still another's parent is refused, so every parent stays a keyframe of the
-/// map: covisibility's `cull` gives its children new parents first.
+/// map: covisibility's `cull` gives its children new parents first. It guards the parents, not
+/// the root: a childless first keyframe is erased; callers above the map go through `cull`, which
+/// refuses it.
 /// @param m The map.
 /// @param k The keyframe's row.
 /// @return Nothing, or `InvalidInput` for a row out of range or a keyframe that is still a

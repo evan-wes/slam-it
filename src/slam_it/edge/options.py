@@ -12,10 +12,9 @@ when the :class:`Options` holding it is made.
 
 from __future__ import annotations
 
-import dataclasses
 import math
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field, fields, replace
+from dataclasses import asdict, dataclass, field, fields, is_dataclass, replace
 from typing import Any, get_type_hints
 
 from slam_it.foundations import matching, orb
@@ -678,7 +677,7 @@ class Options:
 _GROUPS: dict[str, type] = {
     name: kind
     for name, kind in get_type_hints(Options).items()
-    if isinstance(kind, type) and dataclasses.is_dataclass(kind)
+    if isinstance(kind, type) and is_dataclass(kind)
 }
 """Each group's name in :class:`Options`, and its class: its fields that are groups, all but the
 seed."""

@@ -89,7 +89,7 @@ nb::dict reparent(const nb::dict& m, std::int64_t k, const nb::dict& options) {
 /// @param k The keyframe's row.
 /// @param options The settings, as a dict.
 /// @return The map.
-/// @throws CoreError for a row out of range.
+/// @throws CoreError for a row out of range or the map's first keyframe.
 nb::dict cull(const nb::dict& m, std::int64_t k, const nb::dict& options) {
   edge::Map out = map_in(m);
   unwrap(edge::cull(out, k, options_in(options)));

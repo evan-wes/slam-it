@@ -224,6 +224,10 @@ pub fn local_map(m: &Map, points: &[i64], options: &Options) -> Result<LocalMap>
 
 /// Gives a keyframe its parent, if it has none yet (`slam_it.edge.covisibility.adopt`).
 ///
+/// For the keyframe being inserted, the map's newest, every other already in the tree: given an
+/// older keyframe without a parent, it may take a newer one whose own chain leads back to it, a
+/// cycle.
+///
 /// # Arguments
 ///
 /// * `m` - The map, changed in place.

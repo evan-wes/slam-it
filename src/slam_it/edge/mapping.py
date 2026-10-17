@@ -1088,10 +1088,10 @@ def cull_keyframes(
 
     Each keyframe linked to the newest (:func:`slam_it.edge.covisibility.links`, the most
     shared first), but the map's first (id 0), is culled (:func:`slam_it.edge.covisibility.cull`)
-    when more than
-    ``mapping.redundant_fraction`` of its points (its close ones with depth, for stereo and RGB-D)
-    are observed with weight above ``mapping.redundant_observers`` and seen by at least
-    ``mapping.redundant_observers`` other keyframes at its level, a finer one, or the next coarser.
+    when more than ``mapping.redundant_fraction`` of its points (its close ones with depth, for
+    stereo and RGB-D) are observed with weight above ``mapping.redundant_observers`` and seen by
+    at least ``mapping.redundant_observers`` other keyframes at its level, a finer one, or the next
+    coarser.
 
     Parameters
     ----------

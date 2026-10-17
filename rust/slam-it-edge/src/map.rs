@@ -1068,7 +1068,9 @@ pub fn forget_observations(m: &mut Map, rows: &[usize]) -> Result<()> {
 /// Removes a keyframe and its keypoints; its points lose an observation each.
 ///
 /// A keyframe that is still another's parent is refused, so every parent stays a keyframe of
-/// the map: [`crate::covisibility::cull`] gives its children new parents first.
+/// the map: [`crate::covisibility::cull`] gives its children new parents first. It guards the
+/// parents, not the root: a childless first keyframe is erased; callers above the map go through
+/// `cull`, which refuses it.
 ///
 /// # Arguments
 ///

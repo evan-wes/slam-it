@@ -42,7 +42,7 @@ pub struct LocalMapSummary {
     pub keyframes: usize,
     /// The points they observe.
     pub points: usize,
-    /// The frame's reference keyframe, by the run's id.
+    /// The frame's reference keyframe, by the run's id; -1 when it was matched to no point.
     pub reference: i64,
 }
 
