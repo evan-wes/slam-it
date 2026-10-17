@@ -251,8 +251,10 @@ pub struct ProjectionResidual {
     pub d_pose: DMatrix<f64>,
     /// Its Jacobian on the point (D x 3).
     pub d_point: DMatrix<f64>,
-    /// Whether the point is in front of the camera; one that is not contributes nothing
-    /// (zero residual and Jacobians).
+    /// Whether the point is in front of the camera (`Z > camera::MIN_DEPTH`). One that is not
+    /// cannot be projected: its residual is twice the focal length in every row, its Jacobians
+    /// zero, GTSAM's own projection factors' convention (a constant error with no gradient, so
+    /// a solve gains nothing by moving a point behind its camera).
     pub in_front: bool,
 }
 
@@ -356,8 +358,9 @@ pub fn projection_residual(
     let (rotation, translation, _) = split(pose);
     let in_camera = rotation.transpose() * (point - translation);
     let Some((pixel, d_pixel)) = projected(lens, &in_camera) else {
+        let fx = lens.intrinsics[lens.model.focal_indices()[0]];
         return Ok(ProjectionResidual {
-            residual: DVector::zeros(size),
+            residual: DVector::from_element(size, 2.0 * fx),
             d_pose: DMatrix::zeros(size, POSE_DIM),
             d_point: DMatrix::zeros(size, 3),
             in_front: false,
@@ -1628,23 +1631,33 @@ mod tests {
         }
     }
 
+    /// A point behind its camera costs GTSAM's constant, twice the focal length in every row,
+    /// with no gradient; a match carried behind a camera adds nothing to the similarity.
     #[test]
-    fn a_point_behind_its_camera_contributes_nothing() {
-        let behind = projection_residual(
-            &Matrix4::identity(),
-            &Vector3::new(0.0, 0.0, -1.0),
-            &[1.0, 2.0, 3.0],
-            &pinhole(),
-        )
-        .unwrap();
-        assert!(!behind.in_front);
-        assert!(
-            behind
-                .residual
-                .iter()
-                .chain(behind.d_pose.iter())
-                .all(|v| *v == 0.0)
-        );
+    fn a_point_behind_its_camera_costs_a_constant_with_no_gradient() {
+        let lens = pinhole();
+        let fx = lens.intrinsics[lens.model.focal_indices()[0]];
+        for measured in [&[1.0, 2.0][..], &[1.0, 2.0, 3.0][..]] {
+            let behind = projection_residual(
+                &Matrix4::identity(),
+                &Vector3::new(0.0, 0.0, -1.0),
+                measured,
+                &lens,
+            )
+            .unwrap();
+            assert!(!behind.in_front);
+            assert_eq!(
+                behind.residual,
+                DVector::from_element(measured.len(), 2.0 * fx)
+            );
+            assert!(
+                behind
+                    .d_pose
+                    .iter()
+                    .chain(behind.d_point.iter())
+                    .all(|v| *v == 0.0)
+            );
+        }
         let both = similarity_residuals(
             &Matrix4::identity(),
             &Vector3::new(0.0, 0.0, 2.0),
