@@ -72,8 +72,8 @@ struct Relocalized {
 /// @brief The inliers a candidate's pose needs, and the most samples its RANSAC draws
 ///        (`slam_it.edge.relocalization.ransac_budget`, MLPnP's `SetRansacParameters`).
 /// @param matches The candidate's matches by word.
-/// @param options `reloc_min_inliers`, `reloc_inlier_ratio`, `reloc_confidence` and
-///        `reloc_ransac_iterations`.
+/// @param options `relocalization.min_inliers`, `relocalization.inlier_ratio`,
+///        `relocalization.confidence` and `relocalization.ransac_iterations`.
 /// @return `(needed, samples)`.
 [[nodiscard]] std::pair<std::int64_t, std::int64_t> ransac_budget(std::int64_t matches,
                                                                   const Options& options);
@@ -111,10 +111,10 @@ struct SearchWindow {
 /// @param camera The camera.
 /// @param frame The frame.
 /// @param options The settings.
-/// @return The frame placed with `recovery_tracked` inliers or more, or none; how the search
-///         went; each keypoint's match in the last candidate tried. `InvalidInput` for a
-///         candidate the map does not hold or whose features are not the database's, or an
-///         invalid camera or settings.
+/// @return The frame placed with `tracking.recovery_tracked` inliers or more, or none; how the
+///         search went; each keypoint's match in the last candidate tried. `InvalidInput` for a
+///         candidate the map does not hold or whose features are not the database's, or an invalid
+///         camera or settings.
 [[nodiscard]] foundations::Result<Relocalized> relocalize(
     const Map& m, const Database& db, const foundations::vocabulary::Vocabulary& vocabulary,
     const Camera& camera, const Frame& frame, const Options& options);

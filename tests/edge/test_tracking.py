@@ -110,14 +110,21 @@ def test_stages_match_the_reference(backend: str, room_state: Room) -> None:
         tracking.optimize_pose(r.map, CAMERA, r.last, start, OPTIONS, backend=backend),
         tracking.optimize_pose(r.map, CAMERA, r.last, start, OPTIONS),
     )
-    relocalized = tracking.relocalize_locally(r.map, CAMERA, r.frame, OPTIONS, backend=backend)
-    recovery = tracking.relocalize_locally(r.map, CAMERA, r.frame, OPTIONS)
+    last = r.last_tracked.points
+    relocalized = tracking.relocalize_locally(
+        r.map, CAMERA, r.frame, last, OPTIONS, backend=backend
+    )
+    recovery = tracking.relocalize_locally(r.map, CAMERA, r.frame, last, OPTIONS)
     _close(relocalized.tracked, recovery.tracked)
     assert_records_match(relocalized.summary.as_dict(), recovery.summary.as_dict())
-    strict = replace(OPTIONS, pnp_min_inliers=r.map.points + 1)
-    refused = tracking.relocalize_locally(r.map, CAMERA, r.frame, strict, backend=backend)
+    strict = OPTIONS.with_settings({"tracking.pnp_min_inliers": r.map.points + 1})
+    refused = tracking.relocalize_locally(r.map, CAMERA, r.frame, last, strict, backend=backend)
     assert refused.tracked is None
     assert refused.summary == tracking.PnpSummary(candidates=refused.summary.candidates)
+    # An id below -1; not a vector. Python refuses before the backend; the natives hold theirs.
+    for bad in (np.array([-2]), np.zeros((2, 2), dtype=np.int64)):
+        with pytest.raises(InvalidInputError, match="point ids"):
+            tracking.relocalize_locally(r.map, CAMERA, r.frame, bad, OPTIONS, backend=backend)
 
 
 def test_tracking_finds_the_pose(room_state: Room) -> None:
@@ -133,8 +140,11 @@ def test_tracking_finds_the_pose(room_state: Room) -> None:
     local = tracking.track_local_map(r.map, CAMERA, r.frame, last, mode="rgbd", options=OPTIONS)
     summary = local.summary()
     assert summary.in_view == len(local.visible)
+    assert summary.keyframes > 0
+    assert summary.points >= summary.in_view
+    assert summary.reference == r.map.kf_id[local.reference]
     assert summary.inliers == local.tracked.inliers <= summary.matches
-    assert local.tracked.inliers > last.inliers >= OPTIONS.min_tracked
+    assert local.tracked.inliers > last.inliers >= OPTIONS.tracking.min_tracked
     assert np.abs(local.tracked.pose[:3, 3] - r.truth[:3, 3]).max() < 0.01
     np.testing.assert_array_equal(local.found, local.tracked.points[local.tracked.points >= 0])
     assert set(local.visible) >= set(last.points[last.points >= 0])
@@ -143,10 +153,10 @@ def test_tracking_finds_the_pose(room_state: Room) -> None:
 def test_relocalizing_places_the_frame(room_state: Room) -> None:
     """Without a prediction, descriptors and PnP place the frame near the local map."""
     r = room_state
-    recovery = tracking.relocalize_locally(r.map, CAMERA, r.frame, OPTIONS)
+    recovery = tracking.relocalize_locally(r.map, CAMERA, r.frame, r.last_tracked.points, OPTIONS)
     placed = recovery.tracked
     assert placed is not None
-    assert placed.inliers >= OPTIONS.pnp_min_inliers
+    assert placed.inliers >= OPTIONS.tracking.pnp_min_inliers
     assert np.abs(placed.pose[:3, 3] - r.truth[:3, 3]).max() < 0.01
     s = recovery.summary
     assert s.matches is not None
@@ -294,3 +304,13 @@ def test_rejects_malformed_arguments(backend: str, room_state: Room) -> None:
     for call in calls:
         with pytest.raises(InvalidInputError):
             call()
+
+
+def test_a_summary_without_a_reference_keyframe_names_none() -> None:
+    """With no reference keyframe the summary says -1, not the run's id before its map's first."""
+    none = np.zeros(0, dtype=np.int64)
+    local = tracking.LocalTracking(
+        tracked=Tracked(pose=np.eye(4), points=none), visible=none, found=none, matched=none,
+        keyframes=0, points=0, reference=-1, reference_id=-1,
+    )  # fmt: skip
+    assert local.summary(10).reference == -1

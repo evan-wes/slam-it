@@ -170,6 +170,59 @@ Result<void> check_maps(const std::vector<std::int64_t>& maps, std::size_t rows,
   return {};
 }
 
+/// @brief Check parents, one per keyframe: -1, or another keyframe of its map
+///        (`slam_it.eval.runs._check_parents`).
+/// @param parents The parents.
+/// @param maps Each keyframe's map, checked.
+/// @return Nothing, or `InvalidInput`.
+Result<void> check_parents(const std::vector<std::int64_t>& parents,
+                           const std::vector<std::int64_t>& maps) {
+  if (parents.size() != maps.size()) {
+    return fail(ErrorKind::kInvalidInput, "keyframe_parents: expected one per keyframe, " +
+                                              std::to_string(maps.size()) + ", got " +
+                                              std::to_string(parents.size()));
+  }
+  for (std::size_t k = 0; k < parents.size(); ++k) {
+    const std::int64_t parent = parents[k];
+    if (parent == -1) {
+      continue;
+    }
+    if (parent < 0 || std::cmp_greater_equal(parent, parents.size()) || std::cmp_equal(parent, k)) {
+      return fail(ErrorKind::kInvalidInput,
+                  "keyframe_parents: a parent must be -1 or another keyframe's id");
+    }
+    if (maps[static_cast<std::size_t>(parent)] != maps[k]) {
+      return fail(ErrorKind::kInvalidInput,
+                  "keyframe_parents: a parent must be in its keyframe's map");
+    }
+  }
+  return {};
+}
+
+/// @brief Check strong links: two keyframes of one map, the lower first, a weight, the rows
+///        ascending (`slam_it.eval.runs._check_links`).
+/// @param links The links.
+/// @param maps Each keyframe's map, checked.
+/// @return Nothing, or `InvalidInput`.
+Result<void> check_links(const std::vector<std::array<std::int64_t, 3>>& links,
+                         const std::vector<std::int64_t>& maps) {
+  for (std::size_t i = 0; i < links.size(); ++i) {
+    const auto [first, second, weight] = links[i];
+    if (first < 0 || first >= second || std::cmp_greater_equal(second, maps.size()) || weight < 1) {
+      return fail(ErrorKind::kInvalidInput,
+                  "keyframe_links: a link must join two keyframes, the lower first, by its points");
+    }
+    if (maps[static_cast<std::size_t>(first)] != maps[static_cast<std::size_t>(second)]) {
+      return fail(ErrorKind::kInvalidInput,
+                  "keyframe_links: a link's keyframes must be in one map");
+    }
+    if (i > 0 && std::pair{links[i - 1][0], links[i - 1][1]} >= std::pair{first, second}) {
+      return fail(ErrorKind::kInvalidInput, "keyframe_links: the links must ascend, each once");
+    }
+  }
+  return {};
+}
+
 /// @brief Check a run before anything is written.
 /// @param run The run.
 /// @return Nothing, or `InvalidInput`.
@@ -267,6 +320,12 @@ Result<void> check(const Run& run) {
     if (auto ok = check_maps(*maps, rows, name); !ok) {
       return ok;
     }
+  }
+  if (auto ok = check_parents(run.keyframe_parents, run.keyframe_maps); !ok) {
+    return ok;
+  }
+  if (auto ok = check_links(run.keyframe_links, run.keyframe_maps); !ok) {
+    return ok;
   }
   if (!finite(run.settings)) {
     return fail(ErrorKind::kInvalidInput, "settings: not JSON (a number is not finite)");
@@ -538,12 +597,14 @@ Result<void> write_run(const std::string& folder, const Run& run) {
   if (auto ok = create_folder(out); !ok) {
     return ok;
   }
-  const std::array<std::pair<const char*, std::string>, 11> files = {{
+  const std::array<std::pair<const char*, std::string>, 13> files = {{
       {"run.json", info_text},
       {"trajectory.txt", *trajectory},
       {"keyframes.npy", npy({run.keyframe_timestamps.size()}, run.keyframe_timestamps)},
       {"keyframe_poses.npy", npy({run.keyframe_poses.size(), 4, 4}, flatten(run.keyframe_poses))},
       {"keyframe_lives.npy", npy({run.keyframe_lives.size(), 3}, flatten(run.keyframe_lives))},
+      {"keyframe_parents.npy", npy({run.keyframe_parents.size()}, run.keyframe_parents)},
+      {"keyframe_links.npy", npy({run.keyframe_links.size(), 3}, flatten(run.keyframe_links))},
       {"points.npy", npy({run.points.size(), 3}, points)},
       {"point_lives.npy", npy({run.point_lives.size(), 3}, flatten(run.point_lives))},
       {"pose_maps.npy", npy({run.pose_maps.size()}, run.pose_maps)},

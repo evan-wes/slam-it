@@ -6,7 +6,7 @@
 mod scene;
 
 use slam_it_edge::database::{Database, Words, candidates};
-use slam_it_edge::options::Options;
+use slam_it_edge::options::{CovisibilityOptions, Options};
 use slam_it_foundations::error::ErrorKind;
 use slam_it_foundations::vocabulary::BowVector;
 
@@ -43,7 +43,10 @@ fn an_erased_keyframe_leaves_the_index_and_the_candidates() {
         (vec![0, 1], vec![0, 1, 2])
     );
     let options = Options {
-        covisible_points: 1,
+        covisibility: CovisibilityOptions {
+            min_points: 1,
+            ..CovisibilityOptions::default()
+        },
         ..Options::default()
     };
     let frame = BowVector {

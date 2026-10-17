@@ -2,7 +2,9 @@
 /// @brief Native tests for local mapping (slam_it/edge/mapping.hpp) on the exact scene: the
 ///        keyframe decision, points from depth, culling points and keyframes, triangulation,
 ///        fusion, and a whole mapping step. Parity with the Python reference is checked through
-///        the bindings by tests/edge.
+///        the bindings by tests/edge. What fusion and local BA take from the graph
+///        (`fuse_targets`, `local_ba_keyframes`) is held to the covisibility fixture in
+///        test_covisibility.cpp.
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -20,6 +22,7 @@ namespace {
 namespace edge = slam_it::edge;
 namespace scene = slam_it::testing::scene;
 using slam_it::testing::expect;
+using slam_it::testing::is_invalid_input;
 
 /// @brief Point ids `first` to `last - 1`, then -1 to the scene's size.
 /// @param first The first id.
@@ -38,14 +41,15 @@ std::vector<std::int64_t> ids(std::int64_t first, std::int64_t last) {
 /// @param m The map.
 /// @param k The keyframe's row.
 /// @param xyz The points: the scene's first ones.
+/// @param from The first of them to add (the keyframe's earlier keypoints observe others).
 /// @return Whether it worked.
-bool add_scene_points(edge::Map& m, std::int64_t k, std::span<const Eigen::Vector3d> xyz) {
+bool add_scene_points(edge::Map& m, std::int64_t k, std::span<const Eigen::Vector3d> xyz,
+                      std::size_t from = 0) {
   std::vector<std::vector<std::int64_t>> observers;
-  observers.reserve(xyz.size());
-  for (std::size_t p = 0; p < xyz.size(); ++p) {
+  for (std::size_t p = from; p < xyz.size(); ++p) {
     observers.push_back({m.kf_start[static_cast<std::size_t>(k)] + static_cast<std::int64_t>(p)});
   }
-  return edge::add_points(m, xyz, observers).has_value();
+  return edge::add_points(m, xyz.subspan(from), observers).has_value();
 }
 
 /// @brief The scene's first points.
@@ -67,12 +71,20 @@ void check_keyframes_and_points(int& failures) {
   }
   const edge::Frame frame = scene::frame(2, true);
   const auto need = [&](std::int64_t kept) {
+    const auto newest = static_cast<std::int64_t>(edge::keyframe_count(*built)) - 1;
     return edge::need_keyframe(*built, scene::camera(), frame.depth,
-                               {.pose = scene::pose(2), .points = ids(0, kept)}, edge::Mode::kRgbd,
-                               edge::Options{});
+                               {.pose = scene::pose(2), .points = ids(0, kept)}, newest,
+                               edge::Mode::kRgbd, edge::Options{});
   };
   expect(need(16).value_or(false) && !need(15).value_or(true) && !need(60).value_or(true),
          "a keyframe when tracking thins, but not below the minimum inliers", failures);
+  for (const std::int64_t reference :
+       {std::int64_t{-1}, static_cast<std::int64_t>(edge::keyframe_count(*built))}) {
+    expect(is_invalid_input(edge::need_keyframe(*built, scene::camera(), frame.depth,
+                                                {.pose = scene::pose(2), .points = ids(0, 16)},
+                                                reference, edge::Mode::kRgbd, edge::Options{})),
+           "the keyframe decision refuses a reference keyframe out of range", failures);
+  }
   edge::Map m = *built;
   const std::vector<std::int64_t> none(scene::kPoints, -1);
   const Eigen::Matrix4d ahead = scene::moved(0.1);
@@ -85,8 +97,9 @@ void check_keyframes_and_points(int& failures) {
   expect(edge::create_points_from_depth(every, scene::camera(), edge::Options{}).has_value() &&
              edge::point_count(every) == 2 * scene::kPoints,
          "every close keypoint with depth makes a point", failures);
-  expect(edge::create_points_from_depth(nearest, scene::camera(),
-                                        edge::Options{.close_depth = 1.0, .min_new_points = 10})
+  expect(edge::create_points_from_depth(
+             nearest, scene::camera(),
+             edge::Options{.stereo = {.close_depth = 1.0}, .mapping = {.min_new_points = 10}})
                  .has_value() &&
              edge::point_count(nearest) == scene::kPoints + 11,
          "past the close depth, points stop once there are enough", failures);
@@ -123,21 +136,26 @@ void check_triangulation(int& failures) {
   expect(worst < 1e-9, "the triangulated points are the scene's", failures);
 }
 
-/// @brief Check fusion: each keyframe made its own points of the scene; fusing merges them.
+/// @brief Check fusion: the keyframes share a few points, so they are linked, and each made its
+///        own of the rest; fusing merges those.
 /// @param failures Running failure count.
 void check_fusion(int& failures) {
+  constexpr std::int64_t kShared = 5;
   edge::Map m = edge::empty_map(8, 1.2);
   if (!edge::insert_keyframe(m, scene::frame(0, false), scene::pose(0), ids(0, 0)) ||
       !add_scene_points(m, 0, first_points(scene::kPoints)) ||
-      !edge::insert_keyframe(m, scene::frame(2, false), scene::pose(2), ids(0, 0)) ||
-      !add_scene_points(m, 1, first_points(scene::kPoints))) {
+      !edge::insert_keyframe(m, scene::frame(2, false), scene::pose(2), ids(0, kShared)) ||
+      !add_scene_points(m, 1, first_points(scene::kPoints), kShared)) {
     expect(false, "the fusion scene builds", failures);
     return;
   }
-  const bool fused = edge::fuse_points(m, scene::camera(), edge::Options{}).has_value();
+  const bool fused =
+      edge::fuse_points(m, scene::camera(), edge::Mode::kRgbd, edge::Options{}).has_value();
   bool linked = true;
-  for (const std::int64_t point : m.kp_point) {
-    linked = linked && std::cmp_greater_equal(point, scene::kPoints);
+  for (std::size_t row = 0; row < m.kp_point.size(); ++row) {
+    const auto index = static_cast<std::int64_t>(row % scene::kPoints);  // in its keyframe
+    linked = linked && (index < kShared ? m.kp_point[row] == index
+                                        : std::cmp_greater_equal(m.kp_point[row], scene::kPoints));
   }
   expect(
       fused && edge::point_count(m) == scene::kPoints && linked && edge::check_map(m).has_value(),
@@ -164,6 +182,17 @@ void check_culling_and_process(int& failures) {
   }();
   expect(culled == std::vector<std::int64_t>{0, 2, 3},
          "the first redundant keyframe goes, the first keyframe stays, the index kept", failures);
+  edge::Map none = edge::empty_map(8, 1.2);
+  expect(is_invalid_input(
+             edge::cull_keyframes(none, scene::camera(), edge::Mode::kRgbd, edge::Options{})),
+         "culling refuses a map without keyframes", failures);
+  expect(is_invalid_input(edge::fuse_targets(none, edge::Mode::kRgbd, edge::Options{})) &&
+             is_invalid_input(edge::local_ba_keyframes(none, edge::Options{})),
+         "fusion's targets and local BA's keyframes refuse a map without keyframes", failures);
+  const edge::Options bad{.covisibility = {.local_neighbours = 0}};
+  expect(is_invalid_input(edge::fuse_targets(m, edge::Mode::kRgbd, bad)) &&
+             is_invalid_input(edge::local_ba_keyframes(m, bad)),
+         "fusion's targets and local BA's keyframes refuse invalid settings", failures);
   Eigen::Matrix4d ahead = scene::pose(2);
   ahead(2, 3) -= 0.05;
   const std::int64_t first = m.next_pt_id;

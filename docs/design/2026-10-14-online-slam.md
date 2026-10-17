@@ -186,6 +186,23 @@ Each gets its own section here before its PR, its forks put to the owner then.
 - **B3, loop closure:** inline, not in a thread, as the ladder decided; the frame it closes on
   measured against the deadline, a thread only if it misses it. Measured on TUM and EuRoC's
   loops.
+  From B2's latency (section 9), decided with evan-wes on 2026-10-16: B3's design also decides
+  how the edge rung stands in for ORB-SLAM's threads, local mapping's refusal of a keyframe
+  while busy and its interrupted local BA with loop closing's own, measured together; B4's
+  merging runs in loop closing's, as ORB-SLAM3's does. From B2's review panel, for that design:
+  - a local BA with no keyframe held fixed, which ORB-SLAM3 abandons ("0 fixed KF ... LBA
+    aborted"): none of B2's 78,917 at seed 0 had none, but 15,113 had one, nearly all monocular
+    (L5);
+  - ORB-SLAM3's culling tests every keyframe sharing a point with the new one, stopping after
+    100 (L4); B2's tests the new one's links;
+  - the papers' K2, which B2 builds, makes a larger local map than ORB-SLAM's source does (its
+    `break`), so ORB-SLAM's timings are not B2's to compare with (L6);
+  - two measures across a run-format break are compared by each batch's own summary, written by
+    the code that ran it, not by reading the other's runs, which a newer reader refuses (A9);
+  - culling must spare the keyframes loop closing is testing and those with loop edges, as
+    `SetBadFlag`'s `mbNotErase` does (run 2, L9), in `covisibility.cull`, the one way out; and
+    the map's erase guards parents, not the root, so a second caller of it, or merging that
+    renumbers a root, revisits the rule kept in `cull` (run 2, A15).
 - **B4, merging maps:** the atlas the A2 panel deferred (`edge.atlas`: a kept map's descriptors
   and observations kept whole, the pipeline owning the trajectory record), and maps welded where
   the database recognises one in another. With it, the loss window revisited: B1 relocalises a
@@ -197,7 +214,9 @@ Each gets its own section here before its PR, its forks put to the owner then.
   map other than the active one recognised. From B1's panel (L7): a kept map needs its
   database, kept or rebuilt from its descriptors, and B4 decides whether words are counted
   across maps, as ORB-SLAM3's `DetectRelocalizationCandidates` counts them, or per map, as B1's
-  database does.
+  database does. Decided with evan-wes on 2026-10-16: the record of a lost map's strong links,
+  which B2 computes in the frame the map is lost on (58 to 360 ms, growing with the map; section
+  9), stays there until the atlas keeps maps whole.
 
 ## 5. Measurements (B1)
 
@@ -292,7 +311,11 @@ differs).
    parent; each round, the child and candidate most strongly linked are paired and the child
    becomes a candidate; children linked to no candidate get its parent. The essential graph's
    strong links (`covisibility.strong_points`, 100) are counted the same way; its loop links are
-   B3's.
+   B3's. *As built (B2's review panel, A1 and A3):* a keyframe leaves the map only by
+   `covisibility.cull`, the children reparented and then the keyframe erased, which refuses the
+   map's first keyframe, the tree's root, as `SetBadFlag` leaves it; `map.erase_keyframe`
+   refuses a keyframe that is still a parent; `adopt` is for the keyframe being inserted, as on
+   an older one it can close a cycle.
 4. **Tracking's local map** (`UpdateLocalKeyFrames`): K1, the keyframes that observe the points
    the frame was matched to, the most shared first; then, for each of K1 in that order, unless
    the local map already holds more than `covisibility.local_keyframes` (80): the first of its
@@ -333,7 +356,11 @@ differs).
    regenerated whole, their rooms unchanged. The covisibility module is tested in the three
    languages against a brute-force fixture (the weights, the links, the best, the local map,
    and a culled keyframe's children given new parents), and each stage moved off the window
-   keeps its native tests.
+   keeps its native tests. *As built (B2's review panel, L1):* the fixture also holds `cull` and
+   what the stages take from the graph, fusion's targets and local BA's keyframes
+   (`mapping.fuse_targets`, `mapping.local_ba_keyframes`, public for it), each of fusion's counts
+   binding; every map of the golden record is one tree; and B2's settings are moved off their
+   defaults in the whole runs the languages are compared on.
 
 ## 9. Measurements (B2)
 
@@ -347,3 +374,11 @@ Once, on the finished branch:
   largest: keyframe frames apart from the rest, against the deadline. Local mapping runs
   inline, and local BA now covers every linked keyframe; a late frame is put to evan-wes with
   the numbers, not met by a cap decided alone.
+
+*As measured* ([the test-set note](../notes/test-set.md#b2-the-covisibility-graph)): 208,906 of
+the set's 246,529 frames tracked against B1's 200,897, in 226 maps against 268, with 177 losses
+against 231; the losses whose local map kept too few inliers 91 against 152; none of L15's 20
+runs lost. Tracking keeps its deadline but for 172 of the 35,066 frames made alone, and
+mapping, judged as a thread of its own, is loaded 1.7 to 2.6 times over: never busy, the
+pipeline refuses no keyframe and cuts no local BA short. Put to evan-wes, who left the threads
+to B3's design (section 4).

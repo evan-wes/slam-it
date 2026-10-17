@@ -267,20 +267,33 @@ Result<Source> euroc_source(const std::string& root, edge::Mode mode) {
   return Source{.camera = camera, .frames = count, .read = std::move(deliver)};
 }
 
-/// @brief The settings as a run records them, by their Python names.
+/// @brief The settings as a run records them (`Options.as_dict`): each group an object of its
+///        fields' values, in order, then `seed`.
 /// @param options The settings.
-/// @return Each one's name and value.
-eval::runs::JsonObject settings(const edge::Options& options) {
+/// @return Each group's name and object, and the seed; or the error writing a group.
+Result<eval::runs::JsonObject> settings(const edge::Options& options) {
+  std::vector<std::pair<std::string, eval::runs::JsonObject>> groups;
+  eval::runs::JsonObject top;
+  edge::for_each_setting(options, [&](const char* name, const auto& value) {
+    const auto [group, field] = edge::split_setting(name);
+    if (group.empty()) {
+      top.emplace_back(field, value);
+      return;
+    }
+    if (groups.empty() || groups.back().first != group) {
+      groups.emplace_back(group, eval::runs::JsonObject{});
+    }
+    groups.back().second.emplace_back(field, value);
+  });
   eval::runs::JsonObject out;
-  for (const auto& [name, member] : edge::kFlagOptions) {
-    out.emplace_back(name, options.*member);
+  for (const auto& [group, fields] : groups) {
+    auto text = eval::runs::json_object(fields);
+    if (!text) {
+      return std::unexpected(text.error());
+    }
+    out.emplace_back(group, *std::move(text));
   }
-  for (const auto& [name, member] : edge::kIntegerOptions) {
-    out.emplace_back(name, options.*member);
-  }
-  for (const auto& [name, member] : edge::kRealOptions) {
-    out.emplace_back(name, options.*member);
-  }
+  out.insert(out.end(), top.begin(), top.end());
   return out;
 }
 
@@ -421,6 +434,8 @@ Result<eval::runs::JsonValue> mapping_json(const edge::MappingSummary& s) {
                  {"triangulated", s.triangulated},
                  {"fused", s.fused},
                  {"ba", std::move(*ba)},
+                 {"free", s.free},
+                 {"fixed", s.fixed},
                  {"outliers", s.outliers},
                  {"weak_points", s.weak_points},
                  {"culled_keyframes", s.culled_keyframes}});
@@ -451,7 +466,12 @@ Result<eval::runs::JsonObject> summary_json(const edge::FrameSummary& summary) {
         {{"matches", s.matches}, {"widened", s.widened}, {"inliers", count_or_null(s.inliers)}});
   };
   const auto local_map = [](const edge::LocalMapSummary& s) {
-    return nested({{"in_view", s.in_view}, {"matches", s.matches}, {"inliers", s.inliers}});
+    return nested({{"in_view", s.in_view},
+                   {"matches", s.matches},
+                   {"inliers", s.inliers},
+                   {"keyframes", s.keyframes},
+                   {"points", s.points},
+                   {"reference", s.reference}});
   };
   const auto lost = [](const edge::LostSummary& s) {
     return nested({{"keyframes", s.keyframes}, {"points", s.points}, {"reset", s.reset}});
@@ -538,6 +558,8 @@ Result<void> record_lives(eval::runs::Run& out, const edge::Lifetimes& lives) {
   out.points = lives.points;
   out.point_lives = lives.point_lives;
   out.keyframe_lives = lives.keyframe_lives;
+  out.keyframe_parents = lives.keyframe_parents;
+  out.keyframe_links = lives.keyframe_links;
   out.point_maps = lives.point_maps;
   out.keyframe_maps = lives.keyframe_maps;
   return {};
@@ -639,6 +661,50 @@ Result<std::int64_t> integer_of(std::string_view flag, std::string_view text) {
               std::string(flag) + ": expected an integer, got '" + std::string(text) + "'");
 }
 
+/// @brief Read a flag setting's value: `true` or `false`.
+/// @param key The setting.
+/// @param value Its text.
+/// @param field The setting's field.
+/// @return Nothing, or `InvalidInput` for another word.
+Result<void> read_value(std::string_view key, std::string_view value, bool& field) {
+  const std::string_view word = eval::text::trim(value);
+  if (word != "true" && word != "false") {
+    return fail(ErrorKind::kInvalidInput,
+                std::string(key) + ": expected true or false, got '" + std::string(value) + "'");
+  }
+  field = word == "true";
+  return {};
+}
+
+/// @brief Read an integer setting's value: a whole integer.
+/// @param key The setting.
+/// @param value Its text.
+/// @param field The setting's field.
+/// @return Nothing, or `InvalidInput` for anything else.
+Result<void> read_value(std::string_view key, std::string_view value, std::int64_t& field) {
+  const auto integer = integer_of(key, value);
+  if (!integer) {
+    return std::unexpected(integer.error());
+  }
+  field = *integer;
+  return {};
+}
+
+/// @brief Read a real setting's value: a finite decimal number.
+/// @param key The setting.
+/// @param value Its text.
+/// @param field The setting's field.
+/// @return Nothing, or `InvalidInput` for anything else.
+Result<void> read_value(std::string_view key, std::string_view value, double& field) {
+  const auto number = eval::text::number(value);
+  if (!number.has_value() || !std::isfinite(*number)) {
+    return fail(ErrorKind::kInvalidInput,
+                std::string(key) + ": expected a finite number, got '" + std::string(value) + "'");
+  }
+  field = *number;
+  return {};
+}
+
 /// @brief Read one `--option KEY=VALUE` into the settings.
 /// @param text `KEY=VALUE`.
 /// @param options The settings.
@@ -651,40 +717,16 @@ Result<void> read_option(std::string_view text, edge::Options& options) {
   }
   const std::string_view key = text.substr(0, equals);
   const std::string_view value = text.substr(equals + 1);
-  for (const auto& [name, member] : edge::kFlagOptions) {
-    if (key == name) {
-      const std::string_view word = eval::text::trim(value);
-      if (word != "true" && word != "false") {
-        return fail(ErrorKind::kInvalidInput, std::string(key) + ": expected true or false, got '" +
-                                                  std::string(value) + "'");
-      }
-      options.*member = word == "true";
-      return {};
+  std::optional<Result<void>> read;
+  edge::for_each_setting(options, [&](const char* name, auto& field) {
+    if (!read && key == name) {
+      read = read_value(key, value, field);
     }
+  });
+  if (!read) {
+    return fail(ErrorKind::kInvalidInput, "--option: no setting '" + std::string(key) + "'");
   }
-  for (const auto& [name, member] : edge::kIntegerOptions) {
-    if (key == name) {
-      const auto integer = integer_of(key, value);
-      if (!integer) {
-        return std::unexpected(integer.error());
-      }
-      options.*member = *integer;
-      return {};
-    }
-  }
-  for (const auto& [name, member] : edge::kRealOptions) {
-    if (key == name) {
-      const auto number = eval::text::number(value);
-      if (!number.has_value() || !std::isfinite(*number)) {
-        return fail(
-            ErrorKind::kInvalidInput,
-            std::string(key) + ": expected a finite number, got '" + std::string(value) + "'");
-      }
-      options.*member = *number;
-      return {};
-    }
-  }
-  return fail(ErrorKind::kInvalidInput, "--option: no setting '" + std::string(key) + "'");
+  return *read;
 }
 
 /// @brief Read one flag's value into the request.
@@ -773,11 +815,11 @@ Result<void> check(const Request& request) {
   if (request.first < 0 || request.count.value_or(0) < 0) {
     return fail(ErrorKind::kInvalidInput, "first, count: must be at least 0");
   }
-  if (request.options.relocalize && !request.vocabulary) {
-    return fail(ErrorKind::kInvalidInput, "--vocabulary: relocalize needs one");
+  if (request.options.relocalization.enabled && !request.vocabulary) {
+    return fail(ErrorKind::kInvalidInput, "--vocabulary: relocalization.enabled needs one");
   }
-  if (!request.options.relocalize && request.vocabulary) {
-    return fail(ErrorKind::kInvalidInput, "--vocabulary: given, but relocalize is off");
+  if (!request.options.relocalization.enabled && request.vocabulary) {
+    return fail(ErrorKind::kInvalidInput, "--vocabulary: given, but relocalization.enabled is off");
   }
   return edge::check_options(request.options);
 }
@@ -811,7 +853,11 @@ Result<eval::runs::Run> run(const Request& request) {
   out.sequence = sequence_name(request.sequence);
   out.mode = edge::name(request.mode);
   out.backend = "cpp";
-  out.settings = settings(request.options);
+  auto recorded = settings(request.options);
+  if (!recorded) {
+    return std::unexpected(recorded.error());
+  }
+  out.settings = *std::move(recorded);
   out.vocabulary = record;
   out.record_features = request.record_features;
   std::optional<eval::runs::FeatureWriter> features;

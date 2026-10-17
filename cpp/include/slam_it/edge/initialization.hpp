@@ -85,7 +85,7 @@ struct Initialization {
 /// @param frame The frame.
 /// @param options The minimum keypoints, and the pyramid.
 /// @return The map of one keyframe at the origin with a point at every keypoint with depth
-///         (and a bearing), or none unless it has more than `min_init_features_depth`
+///         (and a bearing), or none unless it has more than `initialization.min_features_depth`
 ///         keypoints, and the outcome; `InvalidInput` for a frame whose pyramid is not the
 ///         settings', or invalid settings.
 [[nodiscard]] foundations::Result<Initialization> initialize_from_depth(const Frame& frame,
@@ -113,13 +113,13 @@ match_for_initialization(const Frame& reference, const Frame& frame,
 /// @param frame The later frame.
 /// @param pairs `(reference keypoint, frame keypoint)` matches.
 /// @param options The minimum matches, the parallax, the seed, and the pyramid.
-/// @return The map of two keyframes and their points (the chosen motion's inliers in front of
-///         both views with rays whose cosine is below `init_parallax_cos`, `CheckRT`), scaled
-///         so the first's median depth is 1, or none if too few keypoints match, the views
-///         do not initialise, or too few points survive the adjustment; with the pairs given,
-///         the outcome and the adjustment's solves; `InvalidInput` for a frame whose pyramid
-///         is not the settings', a pair that is not a keypoint of each frame, or an invalid
-///         camera or settings.
+/// @return The map of two keyframes and their points (the chosen motion's inliers in front of both
+///         views with rays whose cosine is below `initialization.parallax_cos`, `CheckRT`), scaled
+///         so the first's median depth is 1, or none if too few keypoints match, the views do not
+///         initialise, or too few points survive the adjustment; with the pairs given, the outcome
+///         and the adjustment's solves; `InvalidInput` for a frame whose pyramid is not the
+///         settings', a pair that is not a keypoint of each frame, or an invalid camera or
+///         settings.
 [[nodiscard]] foundations::Result<Initialization> initialize_monocular(
     const Camera& camera, const Frame& reference, const Frame& frame,
     std::span<const std::array<std::int64_t, 2>> pairs, const Options& options);

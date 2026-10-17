@@ -9,6 +9,7 @@ use slam_it_foundations::triangulation;
 use slam_it_foundations::twoview::{self, Status};
 
 use crate::adjust::{Solve, bundle_adjust};
+use crate::covisibility;
 use crate::frames::{Camera, Frame, Tracked, check_camera, search};
 use crate::map::{self, Map};
 use crate::options::{Options, check_options};
@@ -190,8 +191,8 @@ const fn outcome_of(status: Status) -> Outcome {
 )]
 fn check_frame(frame: &Frame, options: &Options, name: &str) -> Result<()> {
     check_options(options)?;
-    if frame.features.levels != options.levels
-        || frame.features.scale_factor != options.scale_factor
+    if frame.features.levels != options.features.levels
+        || frame.features.scale_factor != options.features.scale_factor
     {
         return fail(
             ErrorKind::InvalidInput,
@@ -269,7 +270,7 @@ fn median(values: &mut [f64]) -> f64 {
 /// # Returns
 ///
 /// The map of one keyframe at the origin with a point at every keypoint with depth (and a
-/// bearing), or none unless it has more than `min_init_features_depth` keypoints; and the
+/// bearing), or none unless it has more than `initialization.min_features_depth` keypoints; and the
 /// outcome.
 ///
 /// # Errors
@@ -277,7 +278,7 @@ fn median(values: &mut [f64]) -> f64 {
 /// `InvalidInput` for a frame whose pyramid is not the settings', or invalid settings.
 pub fn initialize_from_depth(frame: &Frame, options: &Options) -> Result<Initialization> {
     check_frame(frame, options, "frame")?;
-    if frame.size() <= options.min_init_features_depth {
+    if frame.size() <= options.initialization.min_features_depth {
         return Ok(Initialization::failed(
             Outcome::TooFewFeatures,
             None,
@@ -287,7 +288,7 @@ pub fn initialize_from_depth(frame: &Frame, options: &Options) -> Result<Initial
     let has_depth: Vec<usize> = (0..frame.size())
         .filter(|&i| !frame.depth[i].is_nan() && !frame.bearings[i].x.is_nan())
         .collect();
-    let mut m = Map::empty(options.levels, options.scale_factor);
+    let mut m = Map::empty(options.features.levels, options.features.scale_factor);
     insert_unobserving(&mut m, frame, &Matrix4::identity())?;
     let xyz: Vec<Vector3<f64>> = has_depth
         .iter()
@@ -361,7 +362,7 @@ pub fn match_for_initialization(
             let k = &reference.features.keypoints[i];
             Projection {
                 xy: previous[i],
-                radius: options.init_window,
+                radius: options.initialization.window,
                 min_level: 0,
                 max_level: 0,
                 descriptor: reference.features.descriptors[i],
@@ -374,8 +375,8 @@ pub fn match_for_initialization(
         frame,
         &projections,
         &SearchOptions {
-            max_distance: options.th_low,
-            ratio: options.init_ratio,
+            max_distance: options.matching.th_low,
+            ratio: options.initialization.ratio,
             check_orientation: true,
         },
         &[],
@@ -388,7 +389,7 @@ pub fn match_for_initialization(
 
 /// The matches a monocular start keeps, and their points
 /// (`slam_it.edge.initialization._kept_points`, ORB-SLAM's `CheckRT`): the chosen motion's
-/// inliers in front of both views with rays whose cosine is below `init_parallax_cos`.
+/// inliers in front of both views with rays whose cosine is below `initialization.parallax_cos`.
 ///
 /// # Arguments
 ///
@@ -419,7 +420,9 @@ fn kept_points(
     Ok(inliers
         .iter()
         .enumerate()
-        .filter(|&(j, _)| seen.in_front[j] && seen.parallax[j].cos() < options.init_parallax_cos)
+        .filter(|&(j, _)| {
+            seen.in_front[j] && seen.parallax[j].cos() < options.initialization.parallax_cos
+        })
         .map(|(j, &i)| (i, seen.points[j]))
         .unzip())
 }
@@ -438,7 +441,7 @@ fn kept_points(
 /// # Returns
 ///
 /// The map of two keyframes and their points (the chosen motion's inliers in front of both
-/// views with rays whose cosine is below `init_parallax_cos`, `CheckRT`), scaled so the
+/// views with rays whose cosine is below `initialization.parallax_cos`, `CheckRT`), scaled so the
 /// first's median depth is 1, or none if too few keypoints match, the views do not
 /// initialise, or too few points survive the adjustment; with the pairs given, the outcome and
 /// the adjustment's solves.
@@ -473,7 +476,7 @@ pub fn initialize_monocular(
         .collect();
     let given = Some(matches.len());
     let failed = |outcome, solves| Ok(Initialization::failed(outcome, given, solves));
-    if pairs.len() < options.init_min_matches {
+    if pairs.len() < options.initialization.min_matches {
         return failed(Outcome::TooFewMatches, Vec::new());
     }
     let bearings1: Vec<Vector3<f64>> = pairs.iter().map(|p| reference.bearings[p[0]]).collect();
@@ -484,7 +487,8 @@ pub fn initialize_monocular(
         &twoview::Options {
             focal: camera.focal(),
             seed: options.seed,
-            max_iterations: i64::try_from(options.init_ransac_iterations).unwrap_or(i64::MAX),
+            max_iterations: i64::try_from(options.initialization.ransac_iterations)
+                .unwrap_or(i64::MAX),
             ..twoview::Options::default()
         },
     ) {
@@ -497,7 +501,7 @@ pub fn initialize_monocular(
     if result.status != Status::Initialized {
         return failed(outcome_of(result.status), Vec::new());
     }
-    let mut m = Map::empty(options.levels, options.scale_factor);
+    let mut m = Map::empty(options.features.levels, options.features.scale_factor);
     insert_unobserving(&mut m, reference, &Matrix4::identity())?;
     insert_unobserving(&mut m, frame, &result.relative_pose)?;
     let second = m.kf_start[1];
@@ -507,12 +511,11 @@ pub fn initialize_monocular(
         .map(|&i| vec![pairs[i][0], second + pairs[i][1]])
         .collect();
     map::add_points(&mut m, &xyz, &observers)?;
-    let adjusted = Options {
-        ba_iterations: options.init_ba_iterations,
-        ..*options
-    };
+    covisibility::adopt(&mut m, 1)?; // the second keyframe's parent
+    let mut adjusted = *options;
+    adjusted.adjustment.iterations = options.initialization.ba_iterations;
     let adjustment = bundle_adjust(&mut m, camera, &[0, 1], &[true, false], &adjusted)?;
-    if m.points() < options.init_min_matches {
+    if m.points() < options.initialization.min_matches {
         // ORB-SLAM resets with fewer than 100 tracked points
         return failed(Outcome::TooFewPoints, adjustment.solves);
     }

@@ -5,12 +5,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use nalgebra::{Matrix3, Matrix4, Vector2, Vector3};
-use slam_it_foundations::error::{ErrorKind, Result, fail};
+use slam_it_foundations::error::{ErrorKind, Result, check_range, fail};
 use slam_it_foundations::matching::FeatureGrid;
 use slam_it_foundations::orb::{self, Keypoint};
 use slam_it_foundations::triangulation;
 
 use crate::adjust::{Adjustment, Solve, bundle_adjust};
+use crate::covisibility;
 use crate::frames::{Camera, Frame, Tracked, check_setup};
 use crate::map::{self, Map, Removal};
 use crate::options::{Mode, Options, check_options};
@@ -90,6 +91,15 @@ fn from_depth(m: &Map, k: usize, row: usize) -> Vector3<f64> {
 /// `InvalidInput` otherwise.
 fn check_newest(m: &Map, camera: &Camera, options: &Options) -> Result<()> {
     check_setup(camera, options)?;
+    has_keyframes(m)
+}
+
+/// Checks that the map has a keyframe.
+///
+/// # Errors
+///
+/// `InvalidInput` otherwise.
+fn has_keyframes(m: &Map) -> Result<()> {
     if m.keyframes() == 0 {
         return fail(
             ErrorKind::InvalidInput,
@@ -108,10 +118,10 @@ fn check_newest(m: &Map, camera: &Camera, options: &Options) -> Result<()> {
 ///
 /// # Returns
 ///
-/// `close_depth` baselines, in metres.
+/// `stereo.close_depth` baselines, in metres.
 #[must_use]
 pub fn close_depth(camera: &Camera, options: &Options) -> f64 {
-    options.close_depth * camera.baseline
+    options.stereo.close_depth * camera.baseline
 }
 
 /// Decides whether a tracked frame becomes a keyframe (`slam_it.edge.mapping.need_keyframe`,
@@ -123,6 +133,7 @@ pub fn close_depth(camera: &Camera, options: &Options) -> f64 {
 /// * `camera` - The camera.
 /// * `depth` - The frame's keypoints' depths (NaN where unknown).
 /// * `tracked` - Its pose and matches.
+/// * `reference` - Its reference keyframe's row ([`crate::tracking::LocalTracking::reference`]).
 /// * `mode` - The pipeline's mode.
 /// * `options` - The ratios and counts.
 ///
@@ -132,8 +143,8 @@ pub fn close_depth(camera: &Camera, options: &Options) -> f64 {
 ///
 /// # Errors
 ///
-/// `InvalidInput` for a map without keyframes, matches that are not one per depth, or an
-/// invalid camera or settings.
+/// `InvalidInput` for a map without keyframes, matches that are not one per depth, a
+/// reference out of range, or an invalid camera or settings.
 #[allow(
     clippy::cast_precision_loss,
     reason = "counts of keypoints, exact in f64"
@@ -143,10 +154,12 @@ pub fn need_keyframe(
     camera: &Camera,
     depth: &[f64],
     tracked: &Tracked,
+    reference: usize,
     mode: Mode,
     options: &Options,
 ) -> Result<bool> {
     check_newest(m, camera, options)?;
+    check_range("reference", reference, 0, m.keyframes() - 1)?;
     if tracked.points.len() != depth.len() {
         return fail(
             ErrorKind::InvalidInput,
@@ -155,12 +168,12 @@ pub fn need_keyframe(
     }
     // NeedNewKeyFrame's nKFs <= 2.
     let min_observations = i64::try_from(if m.keyframes() <= 2 {
-        options.ref_min_observations_early
+        options.keyframes.ref_min_observations_early
     } else {
-        options.ref_min_observations
+        options.keyframes.ref_min_observations
     })
     .unwrap_or(i64::MAX);
-    let rows: Vec<usize> = rows_of(m, m.keyframes() - 1)
+    let rows: Vec<usize> = rows_of(m, reference)
         .filter_map(|r| m.point_row(m.kp_point[r]))
         .collect();
     let tracked_reference = map::observation_weight(m, &rows)?
@@ -180,20 +193,20 @@ pub fn need_keyframe(
                 }
             }
         }
-        need_close =
-            tracked_close < options.close_tracked && untracked_close > options.close_untracked;
+        need_close = tracked_close < options.keyframes.close_tracked
+            && untracked_close > options.keyframes.close_untracked;
     }
     let mut ratio = if m.keyframes() < 2 {
-        options.first_ref_ratio
+        options.keyframes.first_ref_ratio
     } else {
-        options.ref_ratio
+        options.keyframes.ref_ratio
     };
     if mode == Mode::Monocular {
-        ratio = options.mono_ref_ratio;
+        ratio = options.keyframes.mono_ref_ratio;
     }
     let count = tracked.inliers();
     let weak = (count as f64) < tracked_reference as f64 * ratio || need_close;
-    Ok(weak && count > options.min_keyframe_inliers)
+    Ok(weak && count > options.keyframes.min_inliers)
 }
 
 /// Creates points from the newest keyframe's close depth
@@ -223,7 +236,7 @@ pub fn create_points_from_depth(m: &mut Map, camera: &Camera, options: &Options)
             xyz.push(from_depth(m, k, row));
             observers.push(vec![row]);
         }
-        if m.kp_depth[row] > limit && count > options.min_new_points {
+        if m.kp_depth[row] > limit && count > options.mapping.min_new_points {
             break;
         }
     }
@@ -257,8 +270,9 @@ pub fn cull_points(m: &mut Map, mode: Mode, options: &Options) -> Result<()> {
             "m: expected a map with at least one keyframe",
         );
     };
-    let recent_keyframes = i64::try_from(options.recent_point_keyframes).unwrap_or(i64::MAX);
-    let cull_age = i64::try_from(options.point_cull_age).unwrap_or(i64::MAX);
+    let recent_keyframes =
+        i64::try_from(options.mapping.recent_point_keyframes).unwrap_or(i64::MAX);
+    let cull_age = i64::try_from(options.mapping.point_cull_age).unwrap_or(i64::MAX);
     let recent: Vec<usize> = (0..m.points())
         .filter(|&p| current - m.pt_first_kf[p] <= recent_keyframes)
         .collect();
@@ -266,9 +280,9 @@ pub fn cull_points(m: &mut Map, mode: Mode, options: &Options) -> Result<()> {
         return Ok(());
     }
     let minimum = i64::try_from(if mode == Mode::Monocular {
-        options.min_point_observations
+        options.mapping.min_point_observations
     } else {
-        options.min_point_observations_depth
+        options.mapping.min_point_observations_depth
     })
     .unwrap_or(i64::MAX);
     let weights = map::observation_weight(m, &recent)?;
@@ -276,7 +290,7 @@ pub fn cull_points(m: &mut Map, mode: Mode, options: &Options) -> Result<()> {
     for (&p, &weight) in recent.iter().zip(&weights) {
         let ratio = m.pt_found[p] as f64 / m.pt_visible[p] as f64;
         let age = current - m.pt_first_kf[p];
-        erase[p] = ratio < options.found_ratio || (age >= cull_age && weight <= minimum);
+        erase[p] = ratio < options.mapping.found_ratio || (age >= cull_age && weight <= minimum);
     }
     map::erase_points(m, &erase, Removal::Culled)
 }
@@ -338,9 +352,9 @@ struct Epipolar {
     epipole: Option<Vector2<f64>>,
     /// The focal length, in pixels.
     focal: f64,
-    /// The band's chi-square bound (`epipolar_chi2`).
+    /// The band's chi-square bound (`mapping.epipolar_chi2`).
     chi2: f64,
-    /// The least squared distance from the epipole at level 0 (`min_epipole_distance2`).
+    /// The least squared distance from the epipole at level 0 (`mapping.min_epipole_distance2`).
     epipole_distance2: f64,
 }
 
@@ -413,8 +427,8 @@ fn triangulation_pairs(
         essential: skew * rotation,
         epipole: (t.z != 0.0).then(|| Vector2::new(t.x / t.z, t.y / t.z)),
         focal: camera.focal(),
-        chi2: options.epipolar_chi2,
-        epipole_distance2: options.min_epipole_distance2,
+        chi2: options.mapping.epipolar_chi2,
+        epipole_distance2: options.mapping.min_epipole_distance2,
     };
     // For each keyframe-1 keypoint, the nearest candidate (ties: the first); then one match per
     // keyframe-2 keypoint, the nearest keeping it (ties: the lower keyframe-1 keypoint).
@@ -424,7 +438,7 @@ fn triangulation_pairs(
         let mut best: Option<(i64, usize)> = None;
         for (j, &r2) in rows2.iter().enumerate() {
             let d = orb::distance(&m.kp_descriptor[r1], &m.kp_descriptor[r2]);
-            if d <= options.th_low
+            if d <= options.matching.th_low
                 && best.is_none_or(|(b, _)| d < b)
                 && epipolar_ok(m, &epipolar, &line, r1, r2)
             {
@@ -551,7 +565,7 @@ fn choose_source(
     };
     if cos_rays < cos1.min(cos2)
         && cos_rays > 0.0
-        && (has1 || has2 || cos_rays < options.max_parallax_cos)
+        && (has1 || has2 || cos_rays < options.mapping.max_parallax_cos)
     {
         Source::Rays
     } else if has1 && cos1 < cos2 {
@@ -633,7 +647,7 @@ fn scale_consistent(
     let ratio_octave = m
         .scale_factor
         .powf((m.kp_level[pair[0]] as i64 - m.kp_level[pair[1]] as i64) as f64);
-    let factor = options.scale_ratio * m.scale_factor;
+    let factor = options.mapping.scale_ratio * m.scale_factor;
     !(ratio_distance * factor < ratio_octave || ratio_distance > ratio_octave * factor)
 }
 
@@ -729,7 +743,7 @@ fn median_depth(m: &Map, k: usize) -> Option<f64> {
     Some(depths[(depths.len() - 1) / 2])
 }
 
-/// Triangulates the newest keyframe's free keypoints against the window's
+/// Triangulates the newest keyframe's free keypoints against its best links'
 /// (`slam_it.edge.mapping.triangulate_new_points`, ORB-SLAM's `CreateNewMapPoints`).
 ///
 /// # Arguments
@@ -750,19 +764,17 @@ pub fn triangulate_new_points(
 ) -> Result<()> {
     check_newest(m, camera, options)?;
     let k1 = m.keyframes() - 1;
-    let mut others = m.window(options.window);
-    others.pop();
-    others.reverse();
+    let mut others = linked_rows(m, k1, options);
     others.truncate(if mode == Mode::Monocular {
-        options.mono_triangulation_neighbours
+        options.mapping.mono_triangulation_neighbours
     } else {
-        options.triangulation_neighbours
+        options.mapping.triangulation_neighbours
     });
     for k2 in others {
         let baseline = (m.centre(k2) - m.centre(k1)).norm();
         if mode == Mode::Monocular {
             match median_depth(m, k2) {
-                Some(median) if baseline / median >= options.min_baseline_depth => {}
+                Some(median) if baseline / median >= options.mapping.min_baseline_depth => {}
                 _ => continue,
             }
         } else if baseline < camera.baseline {
@@ -882,14 +894,14 @@ fn fuse_target(
     let distance = offset.norm();
     if !(camera.inside(&pixel)
         && map::in_distance_range(m, p, distance, options)
-        && map::viewing_cos(m, p, &offset, distance) >= options.view_cos_limit)
+        && map::viewing_cos(m, p, &offset, distance) >= options.tracking.view_cos_limit)
     {
         return Ok(None);
     }
     let level = map::predict_level(m, &[p], &[distance])?[0];
     let near = grid.in_area(
         [pixel.x, pixel.y],
-        options.fuse_window * m.scale_factor.powf(level as f64),
+        options.mapping.fuse_window * m.scale_factor.powf(level as f64),
         level as i64 - 1,
         level as i64,
     )?;
@@ -902,7 +914,7 @@ fn fuse_target(
             best = Some((d, row));
         }
     }
-    Ok(best.and_then(|(d, row)| (d <= options.th_low).then_some(row)))
+    Ok(best.and_then(|(d, row)| (d <= options.matching.th_low).then_some(row)))
 }
 
 /// Fuses one point into a keyframe (`slam_it.edge.mapping._fuse_one`).
@@ -969,26 +981,111 @@ fn fuse_into(m: &mut Map, camera: &Camera, k: usize, ids: &[i64], options: &Opti
     Ok(())
 }
 
-/// Fuses the newest keyframe's points with the window's (`slam_it.edge.mapping.fuse_points`,
-/// ORB-SLAM's `SearchInNeighbors`, lite).
+/// A keyframe's links' rows, most shared first (`slam_it.edge.covisibility.links`).
+fn linked_rows(m: &Map, k: usize, options: &Options) -> Vec<usize> {
+    covisibility::links_of(
+        m,
+        &covisibility::shared_points(m, k),
+        options.covisibility.min_points,
+    )
+    .into_iter()
+    .map(|link| link.row)
+    .collect()
+}
+
+/// The newest keyframe's fusion targets' ids ([`fuse_targets`], unchecked).
+fn targets_of(m: &Map, mode: Mode, options: &Options) -> Vec<i64> {
+    let newest = m.keyframes() - 1;
+    let settings = &options.mapping;
+    let mut targets = linked_rows(m, newest, options);
+    targets.truncate(if mode == Mode::Monocular {
+        settings.mono_fuse_neighbours
+    } else {
+        settings.fuse_neighbours
+    });
+    for i in 0..targets.len() {
+        let mut second = linked_rows(m, targets[i], options);
+        second.truncate(settings.fuse_second_neighbours);
+        for row in second {
+            if row != newest && !targets.contains(&row) {
+                targets.push(row);
+            }
+        }
+    }
+    targets.iter().map(|&k| m.kf_id[k]).collect()
+}
+
+/// The newest keyframe's row and its links', ascending ([`local_ba_keyframes`], unchecked).
+fn local_rows(m: &Map, options: &Options) -> Vec<usize> {
+    let newest = m.keyframes() - 1;
+    let mut local = linked_rows(m, newest, options);
+    local.push(newest);
+    local.sort_unstable();
+    local
+}
+
+/// The keyframes the newest keyframe's points are fused into
+/// (`slam_it.edge.mapping.fuse_targets`, ORB-SLAM's `SearchInNeighbors`): its best
+/// `mapping.fuse_neighbours` links (`mapping.mono_fuse_neighbours` in monocular), then each
+/// one's best `mapping.fuse_second_neighbours`, leaving out the newest keyframe and repeats
+/// (ORB-SLAM3's order).
+///
+/// # Arguments
+///
+/// * `m` - The map.
+/// * `mode` - The pipeline's mode.
+/// * `options` - The settings.
+///
+/// # Returns
+///
+/// The targets' ids, in order.
+///
+/// # Errors
+///
+/// `InvalidInput` for a map without keyframes or invalid settings.
+pub fn fuse_targets(m: &Map, mode: Mode, options: &Options) -> Result<Vec<i64>> {
+    check_options(options)?;
+    has_keyframes(m)?;
+    Ok(targets_of(m, mode, options))
+}
+
+/// The keyframes local BA adjusts (`slam_it.edge.mapping.local_ba_keyframes`, ORB-SLAM's
+/// `LocalBundleAdjustment`): the newest and every keyframe linked to it.
+///
+/// # Arguments
+///
+/// * `m` - The map.
+/// * `options` - The settings.
+///
+/// # Returns
+///
+/// Their rows, ascending.
+///
+/// # Errors
+///
+/// `InvalidInput` for a map without keyframes or invalid settings.
+pub fn local_ba_keyframes(m: &Map, options: &Options) -> Result<Vec<usize>> {
+    check_options(options)?;
+    has_keyframes(m)?;
+    Ok(local_rows(m, options))
+}
+
+/// Fuses the newest keyframe's points with its neighbours' (`slam_it.edge.mapping.fuse_points`,
+/// ORB-SLAM's `SearchInNeighbors`).
 ///
 /// # Arguments
 ///
 /// * `m` - The map, changed in place.
 /// * `camera` - The camera.
-/// * `options` - The window and thresholds.
+/// * `mode` - The pipeline's mode.
+/// * `options` - The neighbours and thresholds.
 ///
 /// # Errors
 ///
 /// `InvalidInput` for a map without keyframes, or an invalid camera or settings.
-pub fn fuse_points(m: &mut Map, camera: &Camera, options: &Options) -> Result<()> {
+pub fn fuse_points(m: &mut Map, camera: &Camera, mode: Mode, options: &Options) -> Result<()> {
     check_newest(m, camera, options)?;
-    let mut targets: Vec<i64> = m
-        .window(options.window)
-        .iter()
-        .map(|&k| m.kf_id[k])
-        .collect();
-    targets.pop();
+    let targets = targets_of(m, mode, options);
     let newest = m.keyframes() - 1;
     let own: Vec<i64> = m
         .observed_by(&[newest])
@@ -1050,8 +1147,10 @@ fn redundant(m: &Map, k: usize, rows: &[usize], threshold: usize) -> Result<usiz
         .count())
 }
 
-/// Culls the window's redundant keyframes (`slam_it.edge.mapping.cull_keyframes`, ORB-SLAM's
-/// `KeyFrameCulling`).
+/// Culls the newest keyframe's redundant links (`slam_it.edge.mapping.cull_keyframes`,
+/// ORB-SLAM's `KeyFrameCulling`).
+///
+/// Each keyframe linked to the newest, the most shared first, but the map's first.
 ///
 /// # Arguments
 ///
@@ -1062,20 +1161,18 @@ fn redundant(m: &Map, k: usize, rows: &[usize], threshold: usize) -> Result<usiz
 ///
 /// # Errors
 ///
-/// `InvalidInput` for an invalid camera or settings.
+/// `InvalidInput` for a map without keyframes, or an invalid camera or settings.
 #[allow(
     clippy::cast_precision_loss,
     reason = "counts of keypoints, exact in f64"
 )]
 pub fn cull_keyframes(m: &mut Map, camera: &Camera, mode: Mode, options: &Options) -> Result<()> {
-    check_setup(camera, options)?;
+    check_newest(m, camera, options)?;
     let limit = close_depth(camera, options);
-    let mut ids: Vec<i64> = m
-        .window(options.window)
+    let ids: Vec<i64> = linked_rows(m, m.keyframes() - 1, options)
         .iter()
         .map(|&k| m.kf_id[k])
         .collect();
-    ids.pop();
     for id in ids {
         if id == 0 {
             continue;
@@ -1092,9 +1189,9 @@ pub fn cull_keyframes(m: &mut Map, camera: &Camera, mode: Mode, options: &Option
         if rows.is_empty() {
             continue;
         }
-        let count = redundant(m, k, &rows, options.redundant_observers)?;
-        if count as f64 > options.redundant_fraction * rows.len() as f64 {
-            map::erase_keyframe(m, k)?;
+        let count = redundant(m, k, &rows, options.mapping.redundant_observers)?;
+        if count as f64 > options.mapping.redundant_fraction * rows.len() as f64 {
+            covisibility::cull(m, k, options)?;
         }
     }
     Ok(())
@@ -1108,12 +1205,16 @@ pub struct MappingSummary {
     pub from_depth: usize,
     /// Recent points culled.
     pub culled_points: usize,
-    /// Points triangulated with the window's keyframes.
+    /// Points triangulated with the keyframe's best links.
     pub triangulated: usize,
     /// Points fused into another.
     pub fused: usize,
     /// The local bundle adjustment's solves; none if it did not run.
     pub solves: Vec<Solve>,
+    /// The keyframes it adjusted (0 if it did not run).
+    pub free: usize,
+    /// The keyframes it held fixed.
+    pub fixed: usize,
     /// The observations it dropped.
     pub outliers: usize,
     /// Points erased because the observations dropped, by the adjustment or with a culled
@@ -1162,6 +1263,9 @@ pub fn process(
     options: &Options,
 ) -> Result<Mapped> {
     map::insert_keyframe(m, frame, &tracked.pose, &tracked.points)?;
+    // Its parent, as ORB-SLAM's first UpdateConnections sets it (after fusion if it shares none).
+    let newest = m.keyframes() - 1;
+    covisibility::adopt(m, newest)?;
     let start = m.points();
     let first = m.next_pt_id;
     if mode != Mode::Monocular {
@@ -1179,13 +1283,13 @@ pub fn process(
             *id = triangulated;
         }
     }
-    fuse_points(m, camera, options)?;
+    fuse_points(m, camera, mode, options)?;
+    covisibility::adopt(m, newest)?;
     let fused = m.points();
     let mut adjustment = Adjustment::default();
-    if m.keyframes() >= options.ba_min_keyframes {
+    if m.keyframes() >= options.adjustment.min_keyframes {
         let fixed: Vec<bool> = m.kf_id.iter().map(|&id| id == 0).collect();
-        let window = m.window(options.window);
-        adjustment = bundle_adjust(m, camera, &window, &fixed, options)?;
+        adjustment = bundle_adjust(m, camera, &local_rows(m, options), &fixed, options)?;
     }
     let keyframes = m.keyframes();
     cull_keyframes(m, camera, mode, options)?;
@@ -1196,6 +1300,8 @@ pub fn process(
             triangulated: triangulated - culled,
             fused: triangulated - fused,
             solves: adjustment.solves,
+            free: adjustment.free,
+            fixed: adjustment.fixed,
             outliers: adjustment.outliers,
             weak_points: fused - m.points(),
             culled_keyframes: keyframes - m.keyframes(),

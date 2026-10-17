@@ -471,7 +471,7 @@ then milestone 3 (decided 2026-10-12, below).
 | 1 | Rung 0: foundations | Py, C++, Rust | Synthetic scenes with exact answers |
 | 2 | Sparse VO under a laptop-CPU budget: monocular, stereo and RGB-D; the run viewer, and your own phone video | Py, C++, Rust | TUM RGB-D, EuRoC |
 | 2A | VO that survives a phone: a hard test set measured, settings by frame size, Stray Scanner's depth as RGB-D, a new map after a lost track | Py, C++, Rust | TUM RGB-D (its hard sequences), ZJU-SenseTime, ADVIO, ARKitScenes |
-| 2B | Online SLAM: place recognition, relocalisation, the covisibility graph, loop closure, merging maps | Py, C++, Rust (Rust reviewed after its first PR) | TUM RGB-D, EuRoC, 7-Scenes |
+| 2B | Online SLAM: place recognition, relocalisation, the covisibility graph, loop closure, merging maps | Py, C++, Rust | TUM RGB-D, EuRoC, 7-Scenes |
 | 3 | **reifyscene payoff 1:** depth-aware, motion-masked BA refining VGGT's cameras | Py (+C++ solver) | reifyscene lab-coat masked PSNR; spin GT poses |
 | 4 | Classic heavy: incremental SfM and global BA, offline (place recognition and loop closure from 2B) | Py, C++ | KITTI odometry |
 | 5 | **reifyscene payoff 2:** DROID-style rung with DROID's published weights loaded, plus dense BA with a depth prior (the full Shape-of-Motion recipe) | Py (PyTorch) | Parity with the DROID reference; reifyscene lab-coat and spin |
@@ -503,9 +503,14 @@ edge rung holds what is its own, tracking, keyframes and local mapping.
 
 **The edge rung is ORB-SLAM-lite** (decided for PR 8; the plan is
 [the edge VO design](2026-10-05-edge-vo.md)):
-- **What it leaves out of ORB-SLAM:** a sliding window of the last 10 keyframes stands in for
-  the covisibility graph; no loop closure (milestone 2B's B3); one thread, mapping after
-  tracking, so a run is deterministic; no map reuse.
+- **What it leaves out of ORB-SLAM:** no loop closure (milestone 2B's B3); one thread, mapping
+  after tracking, so a run is deterministic, and so mapping is never busy: it neither refuses a
+  keyframe nor cuts a local BA short, as ORB-SLAM's mapping thread does (B3's design decides the
+  stand-in); no map reuse.
+- **The covisibility graph** (milestone 2B's B2), in place of a sliding window of the last 10
+  keyframes, gives tracking's local map, local BA, keyframe culling, triangulation and fusion
+  their keyframes, as ORB-SLAM's does, and keeps the spanning tree for B3's essential graph
+  ([the 2B design](2026-10-14-online-slam.md), section 8).
 - **A lost track is relocalised** against the whole active map through a bag of words, for up
   to 3 s, as visual-only ORB-SLAM3's recently lost track is (milestone 2B's B1); then it closes
   its map (kept, or reset if it has 10 keyframes or fewer, such a map lost after 5 failures)
@@ -570,7 +575,8 @@ through the project.
   - relocalisation against the active map before a new one is started (ORB-SLAM's
     `Tracking::Relocalization`: candidates from the database, matches by word, PnP RANSAC, a
     guided search);
-  - the covisibility graph and the essential graph, in place of the window of 10 keyframes;
+  - the covisibility graph and the essential graph, in place of the window of 10 keyframes
+    (B2; the essential graph's loop links come with loop closure);
   - loop closure: candidates checked for consistency, the loop's Sim(3) solved by RANSAC over
     Horn's closed form, points fused, the essential graph optimised in Sim(3) on rung 0's
     NLS, then a global BA;
@@ -1008,13 +1014,14 @@ shared with the owner's other projects.
     lost with `reset_keyframes` (10) keyframes or fewer is reset, as ORB-SLAM3 resets its active
     map, its frames' poses dropped from the trajectory; `min_init_depth_points`, the stand-in,
     is gone, so a depth map starts from any frame of more than 500 keypoints.
-  - **Relocalising monocular runs that lose the track, with milestone 2B (run 2, L15).**
-    Started one to four frames after the frame the first run initialises from, 6 of 20
-    monocular runs on TUM and EuRoC lose the track (3 of 5 on fr1/desk), each deep into the
-    run (44 to 128 keyframes), when its inliers fall below ORB-SLAM's 30. ORB-SLAM relocalises
+  - Closed by milestone 2B's B2: **Relocalising monocular runs that lose the track (run 2,
+    L15).** Started one to four frames after the frame the first run initialises from, 6 of 20
+    monocular runs on TUM and EuRoC lost the track (3 of 5 on fr1/desk), each deep into the
+    run (44 to 128 keyframes), when its inliers fell below ORB-SLAM's 30. ORB-SLAM relocalises
     there with the bag of words (`Tracking::Relocalization`); the lite pipeline ended the run.
-    The edge note counts a lost run as a failure in its five-start medians. Milestone 2B's B1
-    relocalises too, but these five-start runs have not been measured again.
+    Measured again with B2's covisibility graph
+    ([the test-set note](../notes/test-set.md#b2-the-covisibility-graph)): none of the 20 loses
+    the track, one frame of them fails, and none needs relocalising.
   - **The Rust extension in layer 1 (run 2, A19).** `scripts/check.sh` rebuilds the Rust
     program before pytest but not the extension `slam_it_rs` (`maturin develop`), so after a
     Rust change the stage-parity tests run the old extension while the whole-run tests run
@@ -1023,11 +1030,28 @@ shared with the owner's other projects.
   - **The C++ edge tests' layout (H18).** Options' checks live in `test_map.cpp` and the
     residuals' in `test_adjust.cpp`, not in tests mirroring their modules.
 - **Found while building PR 9:**
-  - **Mapping in a thread of its own, with milestone 7.** The edge rung maps after tracking in
-    one thread, so runs are deterministic and the languages compare frame by frame; PR 9
-    judges mapping by its load, as a thread of its own would run it. A real mapping thread, and
-    ORB-SLAM's interruption of a local BA when a keyframe arrives, belong with the edge
-    targets' budgets, where keyframe bursts would otherwise delay frames.
+  - **Mapping in a thread of its own, decided in milestone 2B's B3 (was milestone 7).** The
+    edge rung maps after tracking in one thread, so runs are deterministic and the languages
+    compare frame by frame; PR 9 judges mapping by its load, as a thread of its own would run
+    it. A real mapping thread, and ORB-SLAM's interruption of a local BA when a keyframe
+    arrives, were left for the edge targets' budgets, where keyframe bursts would otherwise
+    delay frames. *B2 (2026-10-16):* with local BA over every link, mapping's load is 1.7 to 2.6
+    on the test set's five largest maps, as no busy thread refuses a keyframe; how the edge rung
+    stands in for ORB-SLAM's threads, local mapping's and loop closing's, is decided in B3's
+    design (decided with evan-wes on 2026-10-16;
+    [the test-set note](../notes/test-set.md#b2-the-covisibility-graph)).
+- **Deferred from milestone 2B's B2 review panel**
+  ([report](../reviews/2026-10-16-feature-2b-b2-covisibility.md)):
+  - **Every fixture states its oracle and tolerance (A4).** CLAUDE.md asks it of every parity
+    fixture; B2's covisibility fixture states both now, but others state one or neither (among
+    them `foundations/svd3.json`, `eval/png.json` and most of rung 0's, which give their oracle
+    alone). A test over `tests/fixtures/**/*.json` would hold them to it, a contract the import
+    and layer checks cannot express.
+  - **The graph through time (A7).** The run records each keyframe's last parent and a map's
+    strong links when it closed or the run ended, and the viewer draws them through the run
+    while both their keyframes live: the graph as each map ended, not as it grew. A life for
+    each link (made, removed), as points and keyframes have, would show it growing; the toggle
+    says which it is meanwhile.
 - **Deferred from milestone 2B's B1 review panel**
   ([report](../reviews/2026-10-16-feature-2b-b1-place-recognition.md)):
   - **One native `.npy` module, with B4 (run 2, A21).** `slam_it_eval` and `slam-it-eval` write

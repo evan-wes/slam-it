@@ -153,4 +153,4 @@ def thresholds(right: Array, options: Options) -> Array:
     ndarray of float64, shape (N,)
         The thresholds.
     """
-    return np.where(np.isnan(right), options.chi2_mono, options.chi2_stereo)
+    return np.where(np.isnan(right), options.adjustment.chi2_mono, options.adjustment.chi2_stereo)

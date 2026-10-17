@@ -88,7 +88,7 @@ import { readFloat32, readInt32 } from "./npy.js";
  * bundle.json.
  * @typedef {object} BundleInfo
  * @property {string} format "slam-it-bundle".
- * @property {number} version 2.
+ * @property {number} version 3.
  * @property {string} dataset The dataset.
  * @property {string} sequence The sequence.
  * @property {string} mode "monocular", "stereo" or "rgbd".
@@ -131,6 +131,10 @@ import { readFloat32, readInt32 } from "./npy.js";
  * @property {Float32Array} keyframePoses Every keyframe's last pose, (K, 3, 4).
  * @property {Int32Array} keyframeLives Their lives, (K, 3): made, removed (-1 if never), why.
  * @property {Int32Array} keyframeMaps Their maps, (K,).
+ * @property {Int32Array} keyframeParents Each one's last parent in its map's spanning tree, by
+ *     id, or -1, (K,).
+ * @property {Int32Array} keyframeLinks The strong links: two ids of one map and the points
+ *     they share, (L, 3).
  * @property {Float32Array} points Every point's last position, (N, 3).
  * @property {Int32Array} pointLives Their lives, (N, 3).
  * @property {Int32Array} pointMaps Their maps, (N,).
@@ -149,7 +153,7 @@ import { readFloat32, readInt32 } from "./npy.js";
  */
 
 export const FORMAT = "slam-it-bundle";
-export const VERSION = 2;
+export const VERSION = 3;
 
 /** The backends a bundle may hold, in the order the page offers them. */
 export const BACKENDS = ["cpp", "rust", "python"];
@@ -195,6 +199,27 @@ function expectShape(name, shape, trailing, rows) {
     const wanted = [rows ?? "N", ...trailing].join(", ");
     throw new Error(`${name}: expected (${wanted}), got (${shape.join(", ")})`);
   }
+}
+
+/**
+ * Check that a graph's array names only the run's keyframes (the bake checks them; a bundle
+ * changed by hand might not be).
+ * @param {string} name The array's file, for the message.
+ * @param {Int32Array} values Its values.
+ * @param {number} keyframes The run's keyframes.
+ * @param {number} stride Values a row: 1 for parents (-1 for none), 3 for links (two ids, then
+ *     the points shared, not an id).
+ * @returns {Int32Array} The values.
+ * @throws {Error} If one names no keyframe.
+ */
+function keyframeIds(name, values, keyframes, stride) {
+  values.forEach((id, i) => {
+    const isId = stride === 1 || i % stride < 2;
+    if (isId && (id >= keyframes || id < (stride === 1 ? -1 : 0))) {
+      throw new Error(`${name}: ${id} names none of the run's ${keyframes} keyframes`);
+    }
+  });
+  return values;
 }
 
 /**
@@ -314,11 +339,12 @@ export async function loadTrack(fetch, bundle, name) {
  * @param {Fetch} fetch How to fetch one of the bundle's files.
  * @param {Track} track Its track.
  * @returns {Promise<Backend>} Its whole run.
- * @throws {Error} If an array is mis-shaped.
+ * @throws {Error} If an array is mis-shaped, or the graph names a keyframe the run has not.
  */
 export async function loadBackend(fetch, track) {
   const { float32, int32 } = readers(fetch, track.name);
   const keyframeLives = await int32("keyframe_lives.npy", [3]);
+  const keyframes = keyframeLives.length / 3;
   const pointLives = await int32("point_lives.npy", [3]);
   let features = null;
   if (track.info.features) {
@@ -327,9 +353,21 @@ export async function loadBackend(fetch, track) {
   }
   return {
     ...track,
-    keyframePoses: await float32("keyframe_poses.npy", [3, 4], keyframeLives.length / 3),
+    keyframePoses: await float32("keyframe_poses.npy", [3, 4], keyframes),
     keyframeLives,
-    keyframeMaps: await int32("keyframe_maps.npy", [], keyframeLives.length / 3),
+    keyframeMaps: await int32("keyframe_maps.npy", [], keyframes),
+    keyframeParents: keyframeIds(
+      "keyframe_parents.npy",
+      await int32("keyframe_parents.npy", [], keyframes),
+      keyframes,
+      1,
+    ),
+    keyframeLinks: keyframeIds(
+      "keyframe_links.npy",
+      await int32("keyframe_links.npy", [3]),
+      keyframes,
+      3,
+    ),
     points: await float32("points.npy", [3], pointLives.length / 3),
     pointLives,
     pointMaps: await int32("point_maps.npy", [], pointLives.length / 3),

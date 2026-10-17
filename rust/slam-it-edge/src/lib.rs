@@ -4,6 +4,7 @@
 //! Builds on `slam-it-foundations` alone. Every module mirrors the Python module of its name.
 
 pub mod adjust;
+pub mod covisibility;
 pub mod database;
 pub mod frames;
 pub mod initialization;

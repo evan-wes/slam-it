@@ -8,6 +8,7 @@ use slam_it_foundations::matching::{self, Match, Projection, SearchOptions, matc
 use slam_it_foundations::p3p::Solver;
 use slam_it_foundations::{p3p, pnp, ransac, so3};
 
+use crate::covisibility;
 use crate::frames::{Camera, Frame, Tracked, check_setup, search};
 use crate::map::{Map, camera_centre, in_distance_range, predict_level, to_camera, viewing_cos};
 use crate::options::{Mode, Options};
@@ -37,6 +38,12 @@ pub struct LocalMapSummary {
     pub matches: usize,
     /// The matches the refinement kept.
     pub inliers: usize,
+    /// The local map's keyframes.
+    pub keyframes: usize,
+    /// The points they observe.
+    pub points: usize,
+    /// The frame's reference keyframe, by the run's id; -1 when it was matched to no point.
+    pub reference: i64,
 }
 
 /// A frame tracked against the local map, and the counts it adds to
@@ -51,20 +58,41 @@ pub struct LocalTracking {
     pub found: Vec<i64>,
     /// The id of the map point each keypoint matched before the pose was refined, -1 where none.
     pub matched: Vec<i64>,
+    /// The local map's keyframes.
+    pub keyframes: usize,
+    /// The points they observe.
+    pub points: usize,
+    /// The frame's reference keyframe's row: the one sharing the most of the points it was
+    /// matched to before the search; `None` if it was matched to none.
+    pub reference: Option<usize>,
+    /// Its id in the map, or -1.
+    pub reference_id: i64,
 }
 
 impl LocalTracking {
     /// How the stage went (`slam_it.edge.tracking.LocalTracking.summary`).
     ///
+    /// # Arguments
+    ///
+    /// * `base` - The run's id of the map's keyframe 0, for the reference keyframe's.
+    ///
     /// # Returns
     ///
-    /// The points in view, the matches and the inliers.
+    /// The points in view, the matches, the inliers, the local map's size and the reference
+    /// keyframe.
     #[must_use]
-    pub fn summary(&self) -> LocalMapSummary {
+    pub fn summary(&self, base: i64) -> LocalMapSummary {
         LocalMapSummary {
             in_view: self.visible.len(),
             matches: count_matched(&self.matched),
             inliers: self.tracked.inliers(),
+            keyframes: self.keyframes,
+            points: self.points,
+            reference: if self.reference_id < 0 {
+                -1
+            } else {
+                base + self.reference_id
+            },
         }
     }
 }
@@ -424,13 +452,13 @@ fn refine(
         .iter()
         .map(|&i| sigma2(m, keypoints[i].level))
         .collect();
-    let scale = options.chi2_mono.sqrt() / camera.focal();
+    let scale = options.adjustment.chi2_mono.sqrt() / camera.focal();
     let mut used = vec![false; n];
     for &i in &matched {
         used[i] = true;
     }
     let mut current = tracked.pose;
-    for _ in 0..options.pose_rounds {
+    for _ in 0..options.adjustment.pose_rounds {
         let chosen: Vec<usize> = matched
             .iter()
             .copied()
@@ -508,7 +536,7 @@ fn select_in_view(
             continue;
         }
         let view_cos = viewing_cos(m, p, &offset, distance);
-        if !(view_cos >= options.view_cos_limit) {
+        if !(view_cos >= options.tracking.view_cos_limit) {
             continue;
         }
         out.rows.push(p);
@@ -679,9 +707,9 @@ pub fn track_last_frame(
     )?;
     let bf = camera.focal() * camera.baseline;
     let window = if mode == Mode::Stereo {
-        options.stereo_motion_window
+        options.tracking.stereo_motion_window
     } else {
-        options.motion_window
+        options.tracking.motion_window
     };
     let mut rows = Vec::new();
     let mut levels = Vec::new();
@@ -716,7 +744,7 @@ pub fn track_last_frame(
         });
     }
     let searched = SearchOptions {
-        max_distance: options.th_high,
+        max_distance: options.matching.th_high,
         ratio: 1.0,
         check_orientation: true,
     };
@@ -729,12 +757,12 @@ pub fn track_last_frame(
         }
         let found = search(frame, &projections, &searched, &[])?;
         points = matched_ids(m, frame, &found, &rows);
-        if count_matched(&points) >= options.min_motion_matches {
+        if count_matched(&points) >= options.tracking.min_motion_matches {
             break;
         }
     }
     let matches = count_matched(&points);
-    if matches < options.min_motion_matches {
+    if matches < options.tracking.min_motion_matches {
         return Ok(Motion {
             tracked: None,
             summary: MotionSummary {
@@ -757,7 +785,7 @@ pub fn track_last_frame(
     )?;
     let kept = tracked.inliers();
     Ok(Motion {
-        tracked: (kept >= options.min_motion_inliers).then_some(tracked),
+        tracked: (kept >= options.tracking.min_motion_inliers).then_some(tracked),
         summary: MotionSummary {
             matches,
             widened,
@@ -779,7 +807,7 @@ pub fn track_last_frame(
 /// * `mode` - The pipeline's mode.
 /// * `options` - The window, thresholds and minimums.
 /// * `recovering` - Whether the frame is a recovery's or the next: the window is then
-///   `recovery_local_window`.
+///   `tracking.recovery_local_window`.
 ///
 /// # Returns
 ///
@@ -805,7 +833,8 @@ pub fn track_local_map(
     recovering: bool,
 ) -> Result<LocalTracking> {
     check_tracking(camera, options, &tracked.points, frame, "tracked.points")?;
-    let local_points = m.observed_by(&m.window(options.window));
+    let nearby = covisibility::local_map(m, &tracked.points, options)?;
+    let local_points = m.observed_by(&nearby.keyframes);
     let already: Vec<usize> = tracked
         .points
         .iter()
@@ -814,23 +843,24 @@ pub fn track_local_map(
     let mut sorted_already = already.clone();
     sorted_already.sort_unstable();
     let candidates: Vec<usize> = local_points
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|p| sorted_already.binary_search(p).is_err())
         .collect();
     let view = select_in_view(m, camera, &tracked.pose, &candidates, options)?;
     let th = if recovering {
-        options.recovery_local_window
+        options.tracking.recovery_local_window
     } else if mode == Mode::Rgbd {
-        options.rgbd_local_window
+        options.tracking.rgbd_local_window
     } else {
-        options.local_window
+        options.tracking.local_window
     };
     let projections: Vec<Projection> = (0..view.rows.len())
         .map(|j| {
-            let narrow = if view.view_cos[j] > options.aligned_view_cos {
-                options.aligned_view_radius
+            let narrow = if view.view_cos[j] > options.tracking.aligned_view_cos {
+                options.tracking.aligned_view_radius
             } else {
-                options.oblique_view_radius
+                options.tracking.oblique_view_radius
             };
             let level = view.level[j];
             Projection {
@@ -849,8 +879,8 @@ pub fn track_local_map(
         frame,
         &projections,
         &SearchOptions {
-            max_distance: options.th_high,
-            ratio: options.local_map_ratio,
+            max_distance: options.matching.th_high,
+            ratio: options.tracking.local_map_ratio,
             check_orientation: false,
         },
         &taken,
@@ -887,6 +917,10 @@ pub fn track_local_map(
         visible,
         found,
         matched: points,
+        keyframes: nearby.keyframes.len(),
+        points: local_points.len(),
+        reference: nearby.reference,
+        reference_id: nearby.reference.map_or(-1, |k| m.kf_id[k]),
     })
 }
 
@@ -898,6 +932,8 @@ pub fn track_local_map(
 /// * `m` - The map.
 /// * `camera` - The camera.
 /// * `frame` - The frame.
+/// * `last` - The point each of the last tracked frame's keypoints was matched to, -1 for
+///   none: the local map is that frame's.
 /// * `options` - The RANSAC threshold, minimum inliers and seed.
 ///
 /// # Returns
@@ -912,6 +948,7 @@ pub fn relocalize_locally(
     m: &Map,
     camera: &Camera,
     frame: &Frame,
+    last: &[i64],
     options: &Options,
 ) -> Result<Relocalization> {
     check_setup(camera, options)?;
@@ -922,13 +959,13 @@ pub fn relocalize_locally(
             matched,
         })
     };
-    let local_points = m.observed_by(&m.window(options.window));
+    let local_points = m.observed_by(&covisibility::local_map(m, last, options)?.keyframes);
     let mut summary = PnpSummary {
         candidates: local_points.len(),
         ..PnpSummary::default()
     };
     let mut matched = vec![-1; frame.size()];
-    if local_points.len() < options.pnp_min_inliers {
+    if local_points.len() < options.tracking.pnp_min_inliers {
         return unplaced(summary, matched);
     }
     let descriptors: Vec<_> = local_points.iter().map(|&p| m.pt_descriptor[p]).collect();
@@ -939,8 +976,8 @@ pub fn relocalize_locally(
         &angles,
         &vec![0; local_points.len()],
         &matching::Options {
-            max_distance: options.th_high,
-            ratio: options.relocalize_ratio,
+            max_distance: options.matching.th_high,
+            ratio: options.relocalization.ratio,
             check_orientation: false,
         },
     )?;
@@ -952,7 +989,7 @@ pub fn relocalize_locally(
         matched[pair.first] = m.pt_id[local_points[pair.second]];
     }
     summary.matches = Some(pairs.len());
-    if pairs.len() < options.pnp_min_inliers {
+    if pairs.len() < options.tracking.pnp_min_inliers {
         return unplaced(summary, matched);
     }
     let world: Vec<Vector3<f64>> = pairs
@@ -964,7 +1001,7 @@ pub fn relocalize_locally(
         .map(|pair| frame.bearings[pair.first])
         .collect();
     let settings = ransac::Options {
-        threshold: options.pnp_threshold / camera.focal(),
+        threshold: options.tracking.pnp_threshold / camera.focal(),
         seed: options.seed,
         ..ransac::Options::default()
     };
@@ -972,7 +1009,7 @@ pub fn relocalize_locally(
         &world,
         &rays,
         &settings,
-        options.pnp_min_inliers,
+        options.tracking.pnp_min_inliers,
         &mut summary,
     )?;
     let Some(consensus) = placed else {
@@ -997,7 +1034,7 @@ pub fn relocalize_locally(
     let kept = tracked.inliers();
     summary.refined = Some(kept);
     Ok(Relocalization {
-        tracked: (kept >= options.pnp_min_inliers).then_some(tracked),
+        tracked: (kept >= options.tracking.pnp_min_inliers).then_some(tracked),
         summary,
         matched,
     })

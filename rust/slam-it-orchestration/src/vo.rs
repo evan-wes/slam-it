@@ -53,7 +53,7 @@ pub struct Request {
     pub options: Options,
     /// Whether the run records each frame's keypoints, with their fates.
     pub record_features: bool,
-    /// The vocabulary's folder: required with `relocalize` on, refused with it off.
+    /// The vocabulary's folder: required with `relocalization.enabled` on, refused with it off.
     pub vocabulary: Option<PathBuf>,
 }
 
@@ -378,7 +378,8 @@ fn euroc_source(root: &Path, mode: Mode) -> Result<Source> {
     })
 }
 
-/// The settings as a run records them, by their Python names.
+/// The settings as a run records them (`Options.as_dict`): each group an object of its fields'
+/// values, in order, then `seed`.
 ///
 /// # Arguments
 ///
@@ -386,20 +387,30 @@ fn euroc_source(root: &Path, mode: Mode) -> Result<Source> {
 ///
 /// # Returns
 ///
-/// Each one's name and value.
+/// Each group's name and object, and the seed.
 fn settings(options: &Options) -> JsonObject {
-    options
-        .settings()
-        .into_iter()
-        .map(|(name, value)| {
-            let value = match value {
-                Setting::Flag(flag) => JsonValue::Bool(flag),
-                Setting::Integer(integer) => JsonValue::Integer(integer),
-                Setting::Real(real) => JsonValue::Number(real),
-            };
-            (name.to_owned(), value)
-        })
-        .collect()
+    let mut out: JsonObject = Vec::new();
+    for (name, value) in options.settings() {
+        let value = match value {
+            Setting::Flag(flag) => JsonValue::Bool(flag),
+            Setting::Integer(integer) => JsonValue::Integer(integer),
+            Setting::Real(real) => JsonValue::Number(real),
+        };
+        let Some((group, field)) = name.split_once('.') else {
+            out.push((name.to_owned(), value));
+            continue;
+        };
+        match out.last_mut() {
+            Some((last, JsonValue::Object(fields))) if last == group => {
+                fields.push((field.to_owned(), value));
+            }
+            _ => out.push((
+                group.to_owned(),
+                JsonValue::Object(vec![(field.to_owned(), value)]),
+            )),
+        }
+    }
+    out
 }
 
 /// A sequence's name: its folder's, the path resolved.
@@ -589,6 +600,9 @@ fn summary_json(summary: &FrameSummary) -> JsonObject {
             ("in_view", count(s.in_view)),
             ("matches", count(s.matches)),
             ("inliers", count(s.inliers)),
+            ("keyframes", count(s.keyframes)),
+            ("points", count(s.points)),
+            ("reference", JsonValue::Integer(s.reference)),
         ])
     });
     let mapping = summary.mapping.as_ref().map_or(JsonValue::Null, |s| {
@@ -598,6 +612,8 @@ fn summary_json(summary: &FrameSummary) -> JsonObject {
             ("triangulated", count(s.triangulated)),
             ("fused", count(s.fused)),
             ("ba", solves_json(&s.solves)),
+            ("free", count(s.free)),
+            ("fixed", count(s.fixed)),
             ("outliers", count(s.outliers)),
             ("weak_points", count(s.weak_points)),
             ("culled_keyframes", count(s.culled_keyframes)),
@@ -704,6 +720,8 @@ fn record_lives(out: &mut Run, lives: Lifetimes) -> Result<()> {
     out.points = lives.points;
     out.point_lives = lives.point_lives;
     out.keyframe_lives = lives.keyframe_lives;
+    out.keyframe_parents = lives.keyframe_parents;
+    out.keyframe_links = lives.keyframe_links;
     out.point_maps = lives.point_maps;
     out.keyframe_maps = lives.keyframe_maps;
     Ok(())
@@ -976,11 +994,11 @@ pub fn check(request: &Request) -> Result<()> {
     if request.first < 0 || request.count.unwrap_or(0) < 0 {
         return invalid("first, count: must be at least 0".to_owned());
     }
-    if request.options.relocalize && request.vocabulary.is_none() {
-        return invalid("--vocabulary: relocalize needs one".to_owned());
+    if request.options.relocalization.enabled && request.vocabulary.is_none() {
+        return invalid("--vocabulary: relocalization.enabled needs one".to_owned());
     }
-    if !request.options.relocalize && request.vocabulary.is_some() {
-        return invalid("--vocabulary: given, but relocalize is off".to_owned());
+    if !request.options.relocalization.enabled && request.vocabulary.is_some() {
+        return invalid("--vocabulary: given, but relocalization.enabled is off".to_owned());
     }
     check_options(&request.options)
 }
@@ -1042,6 +1060,7 @@ mod tests {
     //! run, through every backend, by `tests/orchestration`.
 
     use super::*;
+    use slam_it_edge::options::CovisibilityOptions;
 
     /// A scratch folder, removed when the test ends, failed or not.
     struct Scratch(std::path::PathBuf);
@@ -1099,9 +1118,9 @@ mod tests {
             "--count",
             "10",
             "--option",
-            "window=7",
+            "covisibility.local_neighbours=7",
             "--option",
-            "close_depth=35.5",
+            "stereo.close_depth=35.5",
         ]))
         .unwrap();
         assert_eq!(
@@ -1114,10 +1133,13 @@ mod tests {
             ("tum", Mode::Rgbd, 3, Some(10))
         );
         assert_eq!(
-            (request.options.window, request.options.n_features),
+            (
+                request.options.covisibility.local_neighbours,
+                request.options.features.n_features
+            ),
             (7, 1000)
         );
-        assert!((request.options.close_depth - 35.5).abs() < f64::EPSILON);
+        assert!((request.options.stereo.close_depth - 35.5).abs() < f64::EPSILON);
         assert!(request.record_features);
         let plain = parse(&command(&[])).unwrap();
         assert_eq!(
@@ -1133,10 +1155,10 @@ mod tests {
             &["--mode", "lidar"][..],
             &["--first", "x"],
             &["--count"],
-            &["--option", "windows=7"],
-            &["--option", "window=7.5"],
-            &["--option", "close_depth=inf"],
-            &["--option", "close_depth=+-5"],
+            &["--option", "covisibility.local_neighbourss=7"],
+            &["--option", "covisibility.local_neighbours=7.5"],
+            &["--option", "stereo.close_depth=inf"],
+            &["--option", "stereo.close_depth=+-5"],
             &["--option", "window"],
             &["--dataset", "euroc"],
             &["--verbose", "1"],
@@ -1162,7 +1184,7 @@ mod tests {
             Mode::Monocular,
             Path::new("run"),
         );
-        good.options.relocalize = false; // no vocabulary: these check the request alone
+        good.options.relocalization.enabled = false; // no vocabulary: these check the request alone
         check(&good).unwrap();
         let mut bads = vec![
             Request {
@@ -1181,7 +1203,10 @@ mod tests {
         ];
         bads.push(Request {
             options: Options {
-                window: 0,
+                covisibility: CovisibilityOptions {
+                    local_neighbours: 0,
+                    ..good.options.covisibility
+                },
                 ..good.options
             },
             ..good
@@ -1199,7 +1224,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&out);
         let _guard = Scratch(out.clone());
         let mut request = Request::new("tum", &folder("tum_camera"), Mode::Rgbd, &out);
-        request.options.relocalize = false;
+        request.options.relocalization.enabled = false;
         request.count = Some(0);
         let empty = run(&request).unwrap();
         assert_eq!(empty.timestamps, Vec::<f64>::new());
@@ -1208,20 +1233,26 @@ mod tests {
             "the run is the program's to write"
         );
         slam_it_eval::runs::write_run(&out, &empty).unwrap();
+        let mut recorded: Vec<&str> = Options::default()
+            .settings()
+            .iter()
+            .map(|&(name, _)| name.split_once('.').map_or(name, |(group, _)| group))
+            .collect();
+        recorded.dedup(); // each group, and the seed
         assert_eq!(
             (
                 empty.sequence.as_str(),
                 empty.backend.as_str(),
                 empty.settings.len()
             ),
-            ("tum_camera", "rust", Options::default().settings().len())
+            ("tum_camera", "rust", recorded.len())
         );
         let text = std::fs::read_to_string(out.join("run.json")).unwrap();
-        assert!(text.contains("\"window\": 10") && out.join("trajectory.txt").exists());
+        assert!(text.contains("\"mapping\": {") && out.join("trajectory.txt").exists());
         request.count = Some(1);
         assert_eq!(run(&request).unwrap_err().kind, ErrorKind::InvalidInput);
         let mut stereo = Request::new("euroc", &folder("euroc"), Mode::Stereo, &out);
-        stereo.options.relocalize = false;
+        stereo.options.relocalization.enabled = false;
         stereo.count = Some(1);
         assert_eq!(run(&stereo).unwrap_err().kind, ErrorKind::InvalidInput);
         stereo.sequence = folder("no_such_sequence");

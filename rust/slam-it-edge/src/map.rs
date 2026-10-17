@@ -64,6 +64,9 @@ pub struct Map {
     pub kf_time: Vec<f64>,
     /// Its pose `T_cam_world`.
     pub kf_pose: Vec<Matrix4<f64>>,
+    /// Its parent in the spanning tree, another keyframe's id, or -1 (the map's first, and one
+    /// that has shared no point yet; [`crate::covisibility`]).
+    pub kf_parent: Vec<i64>,
     /// Where each keyframe's keypoints start; the last is the keypoint count.
     pub kf_start: Vec<usize>,
     /// Each keypoint's pixel.
@@ -118,6 +121,8 @@ pub struct Map {
     pub gone_kf_time: Vec<f64>,
     /// Their last poses `T_cam_world`.
     pub gone_kf_pose: Vec<Matrix4<f64>>,
+    /// Their last parents.
+    pub gone_kf_parent: Vec<i64>,
     /// Each point's observing keypoint rows, ascending: the index of `kp_point` the operations
     /// here keep. It does not cross to Python; `index_observations` builds it for a map
     /// assembled column by column.
@@ -143,6 +148,7 @@ impl Map {
             kf_id: Vec::new(),
             kf_time: Vec::new(),
             kf_pose: Vec::new(),
+            kf_parent: Vec::new(),
             kf_start: vec![0],
             kp_xy: Vec::new(),
             kp_level: Vec::new(),
@@ -170,6 +176,7 @@ impl Map {
             gone_kf_id: Vec::new(),
             gone_kf_time: Vec::new(),
             gone_kf_pose: Vec::new(),
+            gone_kf_parent: Vec::new(),
             pt_observations: Vec::new(),
         }
     }
@@ -258,20 +265,6 @@ impl Map {
     #[must_use]
     pub fn centre(&self, k: usize) -> Vector3<f64> {
         camera_centre(&self.kf_pose[k])
-    }
-
-    /// The sliding window: the rows of the last `size` keyframes, oldest first.
-    ///
-    /// # Arguments
-    ///
-    /// * `size` - The window's size.
-    ///
-    /// # Returns
-    ///
-    /// The rows.
-    #[must_use]
-    pub fn window(&self, size: usize) -> Vec<usize> {
-        (self.keyframes().saturating_sub(size)..self.keyframes()).collect()
     }
 
     /// The points the given keyframes observe.
@@ -382,6 +375,7 @@ pub fn check_map(m: &Map) -> Result<()> {
     let lengths = [
         m.kf_time.len() == k,
         m.kf_pose.len() == k,
+        m.kf_parent.len() == k,
         m.kf_start.len() == k + 1,
         m.kp_xy.len() == t,
         m.kp_level.len() == t,
@@ -403,6 +397,7 @@ pub fn check_map(m: &Map) -> Result<()> {
         m.gone_pt_how.len() == m.gone_pt_id.len(),
         m.gone_kf_time.len() == m.gone_kf_id.len(),
         m.gone_kf_pose.len() == m.gone_kf_id.len(),
+        m.gone_kf_parent.len() == m.gone_kf_id.len(),
     ];
     if lengths.contains(&false) {
         return fail(
@@ -432,6 +427,16 @@ pub fn check_map(m: &Map) -> Result<()> {
         return fail(
             ErrorKind::InvalidInput,
             "map.kp_point: every observed point must be in the map",
+        );
+    }
+    if m.kf_parent
+        .iter()
+        .zip(&m.kf_id)
+        .any(|(&parent, &id)| parent == id || (parent != -1 && m.keyframe_row(parent).is_none()))
+    {
+        return fail(
+            ErrorKind::InvalidInput,
+            "map.kf_parent: a parent must be -1 or another of its keyframes",
         );
     }
     if m.pt_observations != indexed(m) {
@@ -497,6 +502,7 @@ pub fn clear_gone(m: &mut Map) {
     m.gone_kf_id.clear();
     m.gone_kf_time.clear();
     m.gone_kf_pose.clear();
+    m.gone_kf_parent.clear();
 }
 
 /// Builds `pt_observations` from `kp_point`, for a map assembled column by column.
@@ -607,8 +613,8 @@ pub fn viewing_cos(m: &Map, p: usize, offset: &Vector3<f64>, distance: f64) -> f
 }
 
 /// Whether a point lies within the distances it is matchable from
-/// (`slam_it.edge.map.in_distance_range`): from `min_distance_margin` of its minimum distance
-/// to `max_distance_margin` of its maximum (`isInFrustum`, `Fuse`), unchecked.
+/// (`slam_it.edge.map.in_distance_range`): from `tracking.min_distance_margin` of its minimum
+/// distance to `tracking.max_distance_margin` of its maximum (`isInFrustum`, `Fuse`), unchecked.
 ///
 /// # Arguments
 ///
@@ -622,8 +628,8 @@ pub fn viewing_cos(m: &Map, p: usize, offset: &Vector3<f64>, distance: f64) -> f
 /// Whether it is in range.
 #[must_use]
 pub fn in_distance_range(m: &Map, p: usize, distance: f64, options: &Options) -> bool {
-    distance >= options.min_distance_margin * m.pt_min_distance[p]
-        && distance <= options.max_distance_margin * m.pt_max_distance[p]
+    distance >= options.tracking.min_distance_margin * m.pt_min_distance[p]
+        && distance <= options.tracking.max_distance_margin * m.pt_max_distance[p]
 }
 
 /// Predicts the pyramid level points appear at from a distance (`PredictScale`).
@@ -892,6 +898,7 @@ pub fn insert_keyframe(
     m.next_kf_id += 1;
     m.kf_time.push(frame.timestamp);
     m.kf_pose.push(*pose);
+    m.kf_parent.push(-1);
     m.kf_start.push(first + n);
     for (i, k) in frame.features.keypoints.iter().enumerate() {
         m.kp_xy.push(k.xy);
@@ -1060,6 +1067,11 @@ pub fn forget_observations(m: &mut Map, rows: &[usize]) -> Result<()> {
 
 /// Removes a keyframe and its keypoints; its points lose an observation each.
 ///
+/// A keyframe that is still another's parent is refused, so every parent stays a keyframe of
+/// the map: [`crate::covisibility::cull`] gives its children new parents first. It guards the
+/// parents, not the root: a childless first keyframe is erased; callers above the map go through
+/// `cull`, which refuses it.
+///
 /// # Arguments
 ///
 /// * `m` - The map.
@@ -1067,7 +1079,7 @@ pub fn forget_observations(m: &mut Map, rows: &[usize]) -> Result<()> {
 ///
 /// # Errors
 ///
-/// `InvalidInput` for a row out of range.
+/// `InvalidInput` for a row out of range or a keyframe that is still a parent.
 pub fn erase_keyframe(m: &mut Map, k: usize) -> Result<()> {
     if k >= m.keyframes() {
         return fail(
@@ -1075,6 +1087,16 @@ pub fn erase_keyframe(m: &mut Map, k: usize) -> Result<()> {
             format!(
                 "k: must be from 0 to {}, got {k}",
                 m.keyframes().saturating_sub(1)
+            ),
+        );
+    }
+    if let Some(child) = m.kf_parent.iter().position(|&p| p == m.kf_id[k]) {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!(
+                "k: keyframe {} is still keyframe {}'s parent (covisibility's cull gives its \
+                 children new parents first)",
+                m.kf_id[k], m.kf_id[child]
             ),
         );
     }
@@ -1093,9 +1115,11 @@ pub fn erase_keyframe(m: &mut Map, k: usize) -> Result<()> {
     m.gone_kf_id.push(m.kf_id[k]);
     m.gone_kf_time.push(m.kf_time[k]);
     m.gone_kf_pose.push(m.kf_pose[k]);
+    m.gone_kf_parent.push(m.kf_parent[k]);
     m.kf_id.remove(k);
     m.kf_time.remove(k);
     m.kf_pose.remove(k);
+    m.kf_parent.remove(k);
     m.kf_start.remove(k + 1);
     for start_of in &mut m.kf_start[k + 1..] {
         *start_of -= stop - start;
@@ -1322,6 +1346,11 @@ mod tests {
             check_map(&dangling).unwrap_err().kind,
             ErrorKind::InvalidInput
         );
+        for parent in [m.kf_id[1], m.next_kf_id + 5, -2] {
+            let mut bad = m.clone(); // a parent that is itself, not in the map, or below -1
+            bad.kf_parent[1] = parent;
+            assert_eq!(check_map(&bad).unwrap_err().kind, ErrorKind::InvalidInput);
+        }
         let mut again = m.clone();
         let result = add_points(&mut again, &[Vector3::new(0.0, 0.0, 1.0)], &[vec![2, 3]]);
         assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput);

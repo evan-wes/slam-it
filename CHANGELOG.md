@@ -4,6 +4,84 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.3.11.0] - 2026-10-16
+
+Milestone 2B's second part, B2: the covisibility graph (`docs/design/2026-10-14-online-slam.md`,
+section 8). The window of the last 10 keyframes is gone: tracking's local map, the local
+fallback, local BA, keyframe culling, triangulation and fusion take their keyframes from the
+graph, as ORB-SLAM's do, in the three languages alike. On the test set at seed 0, 208,906 of
+246,529 frames are tracked against B1's 200,897, in 226 maps against 268, and none of the
+monocular runs the ladder's L15 found lost deep into a map is lost. But local mapping, inline
+and never busy, makes more keyframes and adjusts every link of each: judged as a thread of its
+own, it falls behind on the largest maps, which B3's design takes up. The settings are grouped
+by stage, each named `group.field`, and the run format is version 6: runs written by 0.3.10.0
+no longer read.
+
+### Added
+
+- **The covisibility graph** (`slam_it.edge.covisibility`, with C++ and Rust twins): two
+  keyframes' weight, the points both observe, counted from the map's observations when asked;
+  a keyframe's links, those sharing at least `covisibility.min_points` (15), or its best if
+  none does, most shared first; tracking's local map, K1 and K2 as the papers describe it, to
+  `covisibility.local_keyframes` (80), and the frame's reference keyframe; the strong links of
+  `covisibility.strong_points` (100). Held to a brute-force fixture in the three languages.
+- **The spanning tree:** each keyframe's parent (`Map.kf_parent`), the keyframe it shares the
+  most points with when inserted; a culled keyframe's children given new parents as ORB-SLAM's
+  `SetBadFlag` gives them, by `covisibility.cull`, the one way a keyframe leaves the map:
+  `map.erase_keyframe` refuses one that is still a parent, and `cull` the map's first. Kept for
+  B3's essential graph.
+- **What the stages take from the graph,** public in the three languages and held to the
+  fixture's brute force: `mapping.fuse_targets`, fusion's targets, and
+  `mapping.local_ba_keyframes`, the newest keyframe and its links.
+- **The run format, version 6:** `keyframe_parents.npy` and `keyframe_links.npy`, each
+  keyframe's last parent and each map's strong links, written by every language.
+- **The viewer draws the graph** on a "graph" toggle: each keyframe's line to its parent and the
+  strong links, in the map shown, each alive while both its keyframes are; bundle format 3.
+- **The diagnostics:** the local map's keyframes and points and the reference keyframe; local
+  BA's free and fixed keyframes; the Solver panel describes them.
+- **The test set's B2 results**, in `docs/notes/test-set.md`:
+  - 8,009 more frames tracked than B1, in 42 fewer maps, and losses from 231 to 177; the losses
+    that began with a local map left too few inliers fall from 152 to 91;
+  - none of L15's 20 monocular runs on TUM and EuRoC is lost, where PR 8 lost 6;
+  - made alone, on the five largest maps: 172 of 35,066 frames late, and mapping's load 1.7 to
+    2.6. ORB-SLAM's mapping thread refuses a keyframe while busy and cuts its local BA short,
+    which the inline pipeline never does.
+- **Fusion's neighbours:** `mapping.fuse_neighbours` (10; `mapping.mono_fuse_neighbours`, 20)
+  and `mapping.fuse_second_neighbours` (5), ORB-SLAM2's numbers in ORB-SLAM3's order.
+
+### Changed
+
+- **The local map, local BA, culling, triangulation and fusion take the graph's keyframes,**
+  the window's no longer (`mapping.window` is gone); the keyframe decision counts against the
+  frame's reference keyframe, not the newest; the local fallback searches the last tracked
+  frame's local map; relocalisation's candidate groups take each candidate's best links
+  (`edge.database.best_covisible`, B1's stand-in, is gone).
+- **The settings are grouped by stage** (features, matching, stereo, initialization, tracking,
+  adjustment, keyframes, mapping, covisibility, relocalization, loss, and the seed), each named
+  `group.field` on a command line (`--option relocalization.enabled=false`), in an error and in
+  a run's record, which nests them by group: 97 in all.
+- **The ladder:** L15 closed; PR 9's item on mapping in a thread of its own, left for milestone
+  7, is decided in B3's design.
+- **The comments, docstrings and errors** name every setting `group.field`, as the code does
+  (the vocabulary's errors say `relocalization.enabled`), and none describes the window.
+- **Culling keyframes refuses a map without any** in the three languages, where it did nothing
+  before; the viewer refuses a bundle whose graph names a keyframe the run has not.
+- **The golden record** is regenerated: every room keeps its states, the frames tracked and
+  lost; 12 cases make more keyframes. It gains each keyframe's last parent and the strong links.
+
+### Tests
+
+- The covisibility graph's fixture (`tests/fixtures/edge/covisibility.json`), by brute force:
+  5 cases, ties, the kept best link, a tree repaired in rounds, the local map at its cap, and
+  what fusion and local BA take, each of fusion's counts binding.
+- The room's last map, in each mode, and every map of the golden record are one tree, each
+  chain of parents reaching the first keyframe; the run format's writers and readers refuse a
+  bad parent or link in the three languages.
+- B2's seven settings moved off their defaults in the gap room's whole runs, where the natives
+  must decide as Python does; the keyframe decision decides both ways for one frame against two
+  reference keyframes; a culled keyframe's children, culling an empty map, a bad parent,
+  reference keyframe or point id, each refused or held in the three languages.
+
 ## [0.3.10.0] - 2026-10-16
 
 Milestone 2B's first part, B1: place recognition and relocalisation

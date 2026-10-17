@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -120,12 +119,14 @@ def test_every_point_and_keyframe_has_a_life(mode: str, runs: dict[str, Run]) ->
 
 
 def test_monocular_frames_start_with_more_features() -> None:
-    """Before the map, a monocular frame gets init_feature_factor times the features."""
+    """Before the map, a monocular frame gets features.init_factor times the features."""
     camera = frames.Camera("pinhole", room.SMALL.intrinsics, 320, 240)
     mono = pipeline.Pipeline("monocular", camera, OPTIONS, words_for(OPTIONS))
-    assert mono.extraction().n_features == OPTIONS.init_feature_factor * OPTIONS.n_features
+    assert (
+        mono.extraction().n_features == OPTIONS.features.init_factor * OPTIONS.features.n_features
+    )
     depth = pipeline.Pipeline("rgbd", CAMERA, OPTIONS, words_for(OPTIONS))
-    assert depth.extraction().n_features == OPTIONS.n_features
+    assert depth.extraction().n_features == OPTIONS.features.n_features
 
 
 def _empty(timestamp: float = 0.0) -> frames.Frame:
@@ -139,8 +140,8 @@ def _empty(timestamp: float = 0.0) -> frames.Frame:
             angle=np.zeros(0, dtype=np.int64),
         ),
         np.zeros((0, orb.DESCRIPTOR_BYTES), dtype=np.uint8),
-        scale_factor=OPTIONS.scale_factor,
-        levels=OPTIONS.levels,
+        scale_factor=OPTIONS.features.scale_factor,
+        levels=OPTIONS.features.levels,
     )
     return frames.Frame(timestamp, features, np.zeros((0, 3)), np.zeros(0), np.zeros(0))
 
@@ -150,8 +151,8 @@ def _lose_and_restart(
 ) -> tuple[pipeline.Pipeline, list[pipeline.FrameResult]]:
     """Start a map on the first frame, lose it on empty ones a second apart, start the next.
 
-    A map of one keyframe is lost on the fifth either way: after lost_frames (5) failures if it
-    is small, or once more than relocalize_seconds (3) have passed since the first if not.
+    A map of one keyframe is lost on the fifth either way: after loss.lost_frames (5) failures if it
+    is small, or once more than loss.relocalize_seconds (3) have passed since the first if not.
     """
     run = pipeline.Pipeline("rgbd", CAMERA, options, words_for(options))
     first, second = rendered[0], rendered[1]
@@ -164,13 +165,13 @@ def _lose_and_restart(
 def test_a_lost_track_resets_a_small_map_and_starts_a_new_one(
     rendered: list[room.Frame],
 ) -> None:
-    """lost_frames frames in a row untracked lose the track; the next frame starts map 1.
+    """loss.lost_frames frames in a row untracked lose the track; the next frame starts map 1.
 
-    The lost map has one keyframe, and reset_keyframes is 1, the rule's boundary: "1 or fewer"
+    The lost map has one keyframe, and loss.reset_keyframes is 1, the rule's boundary: "1 or fewer"
     resets it (review panel finding L3), its keyframe and points ending on the frame the track
     was lost on (ORB-SLAM3's ResetActiveMap).
     """
-    run, results = _lose_and_restart(rendered, replace(OPTIONS, reset_keyframes=1))
+    run, results = _lose_and_restart(rendered, OPTIONS.with_settings({"loss.reset_keyframes": 1}))
     started, *failed, lost, restarted = results
     assert (started.state, started.map) == (pipeline.State.TRACKING, 0)
     assert all(r.pose is None and r.state is pipeline.State.TRACKING for r in failed)
@@ -198,12 +199,12 @@ def test_a_lost_track_resets_a_small_map_and_starts_a_new_one(
 
 
 def test_a_lost_map_above_reset_keyframes_is_kept(rendered: list[room.Frame]) -> None:
-    """With reset_keyframes 0, one under the lost map's one keyframe, the lost map is kept.
+    """With loss.reset_keyframes 0, one under the lost map's one keyframe, the lost map is kept.
 
     Its keyframe and points stay alive, where they were when it closed, and the tracking state
     starts again with the next map.
     """
-    run, results = _lose_and_restart(rendered, replace(OPTIONS, reset_keyframes=0))
+    run, results = _lose_and_restart(rendered, OPTIONS.with_settings({"loss.reset_keyframes": 0}))
     started, lost, restarted = results[0], results[-2], results[-1]
     closed = pipeline.LostSummary(keyframes=1, points=started.tracked, reset=False)
     assert lost.summary.lost == closed
@@ -231,8 +232,8 @@ def test_a_lost_map_above_reset_keyframes_is_kept(rendered: list[room.Frame]) ->
 def test_a_large_map_is_lost_in_time_and_a_small_one_in_frames(
     rendered: list[room.Frame], reset_keyframes: int, step: float, lost_on: int
 ) -> None:
-    """relocalize_seconds rules a map above reset_keyframes, lost_frames one of it or fewer."""
-    options = replace(OPTIONS, reset_keyframes=reset_keyframes)
+    """Time loses a map above loss.reset_keyframes; loss.lost_frames failures, a smaller one."""
+    options = OPTIONS.with_settings({"loss.reset_keyframes": reset_keyframes})
     run = pipeline.Pipeline("rgbd", CAMERA, options, words_for(options))
     first = rendered[0]
     assert run.track(frames.rgbd(first.gray, first.depth, 0.0, CAMERA, run.extraction())).keyframe
@@ -245,12 +246,12 @@ def test_a_large_map_is_lost_in_time_and_a_small_one_in_frames(
 def test_off_a_kept_map_is_lost_after_lost_frames_and_nothing_relocalizes(
     rendered: list[room.Frame],
 ) -> None:
-    """With relocalize off, A2's rule: lost on the lost_frames-th failure, whatever the time."""
-    options = replace(OPTIONS, relocalize=False, reset_keyframes=0)
+    """Relocalisation off, A2's rule: lost on the loss.lost_frames-th failure, whatever the time."""
+    options = OPTIONS.with_settings({"relocalization.enabled": False, "loss.reset_keyframes": 0})
     run = pipeline.Pipeline("rgbd", CAMERA, options)
     first = rendered[0]
     assert run.track(frames.rgbd(first.gray, first.depth, 0.0, CAMERA, run.extraction())).keyframe
-    failed = [run.track(_empty(0.001 * (k + 1))) for k in range(options.lost_frames)]
+    failed = [run.track(_empty(0.001 * (k + 1))) for k in range(options.loss.lost_frames)]
     assert [r.state for r in failed] == [pipeline.State.TRACKING] * 4 + [pipeline.State.LOST]
     assert all(r.summary.relocalization is None for r in failed)
 
@@ -258,7 +259,7 @@ def test_off_a_kept_map_is_lost_after_lost_frames_and_nothing_relocalizes(
 @pytest.mark.parametrize(("relocalize", "message"), [(True, "needs one"), (False, "is off")])
 def test_the_vocabulary_is_needed_exactly_when_relocalizing(relocalize: bool, message: str) -> None:
     """Relocalising without a vocabulary, or given one while not: InvalidInputError."""
-    options = replace(OPTIONS, relocalize=relocalize)
+    options = OPTIONS.with_settings({"relocalization.enabled": relocalize})
     given = None if relocalize else words_for(OPTIONS)
     with pytest.raises(InvalidInputError, match=f"vocabulary: .*{message}"):
         pipeline.Pipeline("rgbd", CAMERA, options, given)
@@ -271,7 +272,9 @@ def test_when_the_fallback_fails_relocalization_places_the_frame_in_its_map(
 
     It is placed in the same map, through the database, and the track goes on.
     """
-    options = replace(OPTIONS, pnp_min_inliers=1 << 20, reset_keyframes=0)
+    options = OPTIONS.with_settings(
+        {"tracking.pnp_min_inliers": 1 << 20, "loss.reset_keyframes": 0}
+    )
     run = pipeline.Pipeline("rgbd", CAMERA, options, words_for(options))
     for f in rendered[:31]:
         run.track(frames.rgbd(f.gray, f.depth, f.timestamp, CAMERA, run.extraction()))
@@ -283,7 +286,7 @@ def test_when_the_fallback_fails_relocalization_places_the_frame_in_its_map(
     assert found.summary.placed_by is Placement.RELOCALIZATION
     assert found.summary.relocalization is not None
     assert found.summary.relocalization.placed
-    assert found.tracked >= OPTIONS.recovery_tracked
+    assert found.tracked >= OPTIONS.tracking.recovery_tracked
     assert run._failures == 0
 
 
@@ -331,7 +334,7 @@ def test_a_map_without_points_is_lost_and_the_third_map_follows_the_first_two(
 ) -> None:
     """A frame without depth starts a map of no points; tracked frames lose it; maps go on.
 
-    Map 0 has no points, so no frame after it is placed: lost_frames frames lose it, and it is
+    Map 0 has no points, so no frame after it is placed: loss.lost_frames frames lose it, and it is
     reset. Map 1 starts on the next frame and is lost on empty frames; map 2 starts after it,
     its keyframe and points numbered after both maps' (review panel finding L4).
     """
@@ -340,17 +343,17 @@ def test_a_map_without_points_is_lost_and_the_third_map_follows_the_first_two(
     no_depth = frames.rgbd(first.gray, np.zeros_like(first.depth), 0.0, CAMERA, run.extraction())
     results = [run.track(no_depth)]
     assert (results[0].map, results[0].tracked) == (0, 0)
-    for k, f in enumerate(rendered[1 : 1 + OPTIONS.lost_frames], start=1):
+    for k, f in enumerate(rendered[1 : 1 + OPTIONS.loss.lost_frames], start=1):
         results.append(run.track(frames.rgbd(f.gray, f.depth, k, CAMERA, run.extraction())))
     assert all(r.pose is None for r in results[1:])
     assert results[-1].summary.lost == pipeline.LostSummary(keyframes=1, points=0, reset=True)
-    second = rendered[1 + OPTIONS.lost_frames]
+    second = rendered[1 + OPTIONS.loss.lost_frames]
     restarted = run.track(frames.rgbd(second.gray, second.depth, 10.0, CAMERA, run.extraction()))
     assert restarted.map == 1
-    for _ in range(OPTIONS.lost_frames):
+    for _ in range(OPTIONS.loss.lost_frames):
         lost = run.track(_empty())
     assert (lost.map, lost.summary.lost) == (1, pipeline.LostSummary(1, restarted.tracked, True))
-    third = rendered[2 + OPTIONS.lost_frames]
+    third = rendered[2 + OPTIONS.loss.lost_frames]
     again = run.track(frames.rgbd(third.gray, third.depth, 20.0, CAMERA, run.extraction()))
     assert (again.map, again.keyframe) == (2, True)
     lives = run.lifetimes()
@@ -393,7 +396,9 @@ def test_the_database_holds_the_maps_keyframes_through_culling(
     The room culls no keyframe at ORB-SLAM's redundancy (90% of a keyframe's points seen by 3
     others); at 60% seen by one other, it culls several (review panel finding L2).
     """
-    options = replace(OPTIONS, redundant_fraction=0.6, redundant_observers=1)
+    options = OPTIONS.with_settings(
+        {"mapping.redundant_fraction": 0.6, "mapping.redundant_observers": 1}
+    )
     run = pipeline.Pipeline("rgbd", CAMERA, options, words_for(options))
     for f in rendered:
         run.track(frames.rgbd(f.gray, f.depth, f.timestamp, CAMERA, run.extraction()))

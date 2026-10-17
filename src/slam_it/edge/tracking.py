@@ -5,9 +5,10 @@
   with it and matched in a window (:func:`slam_it.foundations.matching.search_by_projection`),
   twice as wide if too few match; the pose refined (:func:`optimize_pose`).
 - **Tracking the local map** (:func:`track_local_map`, ``TrackLocalMap``): the points the
-  sliding window's keyframes observe, those in view (:func:`in_view`, ``isInFrustum``)
-  projected and matched at their predicted level; the pose refined again. Its inliers decide
-  whether the frame is tracked.
+  local map's keyframes observe (:func:`slam_it.edge.covisibility.local_map`: those seeing the
+  frame's matched points and their neighbours in the covisibility graph), those in view
+  (:func:`in_view`, ``isInFrustum``) projected and matched at their predicted level; the pose
+  refined again. Its inliers decide whether the frame is tracked.
 - **The fallback** (:func:`relocalize_locally`): when the prediction fails, the frame's
   descriptors are matched to the local map's and PnP RANSAC
   (:func:`slam_it.foundations.pnp.pnp_ransac`) places it. It recovers only near the local map;
@@ -37,7 +38,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slam_it import backends
-from slam_it.edge import frames, residuals
+from slam_it.edge import covisibility, frames, residuals
 from slam_it.edge import map as maps
 from slam_it.edge.frames import Camera, Frame, Tracked
 from slam_it.edge.map import Map
@@ -88,11 +89,21 @@ class LocalMapSummary:
         The keypoints matched before the pose was refined.
     inliers : int
         The matches the refinement kept.
+    keyframes : int
+        The local map's keyframes (:func:`slam_it.edge.covisibility.local_map`).
+    points : int
+        The points they observe.
+    reference : int
+        The frame's reference keyframe, by the run's id (:meth:`LocalTracking.summary`); -1 when
+        the frame was matched to no point.
     """
 
     in_view: int
     matches: int
     inliers: int
+    keyframes: int
+    points: int
+    reference: int
 
     def as_dict(self) -> dict[str, Any]:
         """Return the summary as JSON values.
@@ -100,9 +111,17 @@ class LocalMapSummary:
         Returns
         -------
         dict
-            ``in_view``, ``matches`` and ``inliers``.
+            ``in_view``, ``matches``, ``inliers``, ``keyframes``, ``points`` and
+            ``reference``.
         """
-        return {"in_view": self.in_view, "matches": self.matches, "inliers": self.inliers}
+        return {
+            "in_view": self.in_view,
+            "matches": self.matches,
+            "inliers": self.inliers,
+            "keyframes": self.keyframes,
+            "points": self.points,
+            "reference": self.reference,
+        }
 
 
 @dataclass(frozen=True)
@@ -120,25 +139,47 @@ class LocalTracking:
     matched : ndarray of int64, shape (N,)
         The id of the map point each keypoint matched before the pose was refined, -1 where
         none.
+    keyframes : int
+        The local map's keyframes.
+    points : int
+        The points they observe.
+    reference : int
+        The frame's reference keyframe's row: the one sharing the most of the points it was
+        matched to before the search (``mpReferenceKF``).
+    reference_id : int
+        Its id in the map.
     """
 
     tracked: Tracked
     visible: IntArray
     found: IntArray
     matched: IntArray
+    keyframes: int
+    points: int
+    reference: int
+    reference_id: int
 
-    def summary(self) -> LocalMapSummary:
+    def summary(self, base: int = 0) -> LocalMapSummary:
         """Return how the stage went.
+
+        Parameters
+        ----------
+        base : int, optional
+            The run's id of the map's keyframe 0 (default 0), for the reference keyframe's.
 
         Returns
         -------
         LocalMapSummary
-            The points in view, the matches and the inliers.
+            The points in view, the matches, the inliers, the local map's size and the
+            reference keyframe.
         """
         return LocalMapSummary(
             in_view=len(self.visible),
             matches=int(np.count_nonzero(self.matched >= 0)),
             inliers=self.tracked.inliers,
+            keyframes=self.keyframes,
+            points=self.points,
+            reference=-1 if self.reference_id < 0 else base + self.reference_id,
         )
 
 
@@ -421,6 +462,7 @@ class Implementation(Protocol):
         m: dict[str, Any],
         camera: dict[str, Any],
         frame: dict[str, Any],
+        last: NDArray[np.int64],
         options: dict[str, Any],
     ) -> dict[str, Any]:
         """Place a frame against the local map by descriptors and PnP RANSAC."""
@@ -453,6 +495,10 @@ def _decode_local(raw: dict[str, Any], codes: backends.Codes) -> LocalTracking:
         visible=backends.checked_array(raw["visible"], np.int64, 1, "visible ids"),
         found=backends.checked_array(raw["found"], np.int64, 1, "found ids"),
         matched=backends.checked_array(raw["matched"], np.int64, 1, "matched ids"),
+        keyframes=int(raw["local_keyframes"]),
+        points=int(raw["local_points"]),
+        reference=int(raw["reference"]),
+        reference_id=int(raw["reference_id"]),
     )
 
 
@@ -537,10 +583,10 @@ def _optimize_pose(
     limit = residuals.thresholds(frame.right[matched], options)
     # The Cauchy scale: the chi-square bound at level 0, in pixels, in the normalised plane;
     # the level weights whiten each residual to level-0 units, so one scale serves all.
-    scale = math.sqrt(options.chi2_mono) / camera.focal
+    scale = math.sqrt(options.adjustment.chi2_mono) / camera.focal
     use = matched.copy()
     current = np.asarray(tracked.pose, dtype=np.float64)
-    for _ in range(options.pose_rounds):
+    for _ in range(options.adjustment.pose_rounds):
         use[np.flatnonzero(use)[maps.to_camera(current, xyz[use])[:, 2] <= 0.0]] = False
         if np.count_nonzero(use) < p3p.SAMPLE_SIZE:  # refine_pose's minimum
             break
@@ -571,8 +617,8 @@ def optimize_pose(  # noqa: PLR0913 -- the map, its camera, the frame tracked, t
 ) -> Tracked:
     """Refine a frame's pose against its matched points, dropping outliers (``PoseOptimization``).
 
-    ``pose_rounds`` rounds, each refining the pose on the matches the last one kept (those in
-    front of the camera), each weighted by its level's information ``1/s^(2l)``, and
+    ``adjustment.pose_rounds`` rounds, each refining the pose on the matches the last one kept
+    (those in front of the camera), each weighted by its level's information ``1/s^(2l)``, and
     classifying every match afresh by the chi-square test.
 
     Parameters
@@ -627,7 +673,7 @@ def _in_view(m: Map, camera: Camera, pose: Array, rows: IntArray, options: Optio
     distance = np.linalg.norm(offset, axis=1)
     keep &= maps.in_distance_range(m, rows, distance, options)
     view_cos = maps.viewing_cos(m, rows, offset, np.where(keep, distance, 1.0))
-    keep &= view_cos >= options.view_cos_limit
+    keep &= view_cos >= options.tracking.view_cos_limit
     chosen = rows[keep]
     right = np.full(len(chosen), np.nan)
     if camera.baseline > 0.0:
@@ -653,8 +699,8 @@ def in_view(  # noqa: PLR0913 -- the map, its camera, a pose, the candidates, th
     """Select the points a camera sees, at a distance and angle they are matchable from.
 
     A point is in view when it is in front, projects inside the image, lies in its distance
-    range (:func:`slam_it.edge.map.in_distance_range`), and is seen within ``view_cos_limit`` of
-    its mean viewing direction (ORB-SLAM's ``isInFrustum``).
+    range (:func:`slam_it.edge.map.in_distance_range`), and is seen within
+    ``tracking.view_cos_limit`` of its mean viewing direction (ORB-SLAM's ``isInFrustum``).
 
     Parameters
     ----------
@@ -735,7 +781,11 @@ def _track_last_frame(  # noqa: PLR0913 -- the stage's state
     last_level = last.features.keypoints.level[have]
     low, high = last_level - 1, last_level + 1
     right = np.full(len(have), np.nan)
-    window = options.stereo_motion_window if mode == "stereo" else options.motion_window
+    window = (
+        options.tracking.stereo_motion_window
+        if mode == "stereo"
+        else options.tracking.motion_window
+    )
     if mode != "monocular":
         right = pixels[:, 0] - camera.focal * camera.baseline / local[:, 2]
         # The current camera's centre in the last camera's frame (ORB-SLAM's tlc): moving
@@ -748,7 +798,7 @@ def _track_last_frame(  # noqa: PLR0913 -- the stage's state
         elif -ahead > camera.baseline:
             low, high = np.zeros(len(have), dtype=np.int64), last_level
     searched = matching.SearchOptions(
-        max_distance=options.th_high, ratio=1.0, check_orientation=True
+        max_distance=options.matching.th_high, ratio=1.0, check_orientation=True
     )
     points = np.full(frame.size, -1, dtype=np.int64)
     widened = False
@@ -766,14 +816,14 @@ def _track_last_frame(  # noqa: PLR0913 -- the stage's state
         points = _search(
             frame, projections, m.pt_id[rows[have]], searched, taken=np.zeros(frame.size, bool)
         )
-        if np.count_nonzero(points >= 0) >= options.min_motion_matches:
+        if np.count_nonzero(points >= 0) >= options.tracking.min_motion_matches:
             break
     matches = int(np.count_nonzero(points >= 0))
-    if matches < options.min_motion_matches:
+    if matches < options.tracking.min_motion_matches:
         return Motion(tracked=None, summary=MotionSummary(matches, widened, None), matched=points)
     tracked = _optimize_pose(m, camera, frame, Tracked(pose=predicted, points=points), options)
     summary = MotionSummary(matches, widened, tracked.inliers)
-    kept = tracked if tracked.inliers >= options.min_motion_inliers else None
+    kept = tracked if tracked.inliers >= options.tracking.min_motion_inliers else None
     return Motion(kept, summary, matched=points)
 
 
@@ -791,11 +841,11 @@ def track_last_frame(  # noqa: PLR0913 -- the stage's state, and the backend
 ) -> Motion:
     """Track the last frame's points into this one (``TrackWithMotionModel``).
 
-    The last frame's inlier points are projected with the predicted pose and searched in a
-    window of ``motion_window`` (``stereo_motion_window`` in stereo) pixels at the last
-    keypoint's level, on its level and the next ones (with depth: on its level and the
-    coarser ones when moving forward, the finer ones when moving back); twice as wide if fewer
-    than ``min_motion_matches`` match. The pose is then refined (:func:`optimize_pose`).
+    The last frame's inlier points are projected with the predicted pose and searched in a window of
+    ``tracking.motion_window`` (``tracking.stereo_motion_window`` in stereo) pixels at the last
+    keypoint's level, on its level and the next ones (with depth: on its level and the coarser ones
+    when moving forward, the finer ones when moving back); twice as wide if fewer than
+    ``tracking.min_motion_matches`` match. The pose is then refined (:func:`optimize_pose`).
 
     Parameters
     ----------
@@ -821,9 +871,9 @@ def track_last_frame(  # noqa: PLR0913 -- the stage's state, and the backend
     Returns
     -------
     Motion
-        The tracked frame, none if fewer than ``min_motion_matches`` points matched or fewer
-        than ``min_motion_inliers`` survived refinement; the matches, whether the window was
-        widened, and the inliers; and each keypoint's match before refinement.
+        The tracked frame, none if fewer than ``tracking.min_motion_matches`` points matched or
+        fewer than ``tracking.min_motion_inliers`` survived refinement; the matches, whether the
+        window was widened, and the inliers; and each keypoint's match before refinement.
 
     Raises
     ------
@@ -866,18 +916,19 @@ def _track_local_map(  # noqa: PLR0913 -- the stage's state
     recovering: bool,
 ) -> LocalTracking:
     """Match the local map's points in view and refine the pose (reference)."""
-    local = m.observed_by(m.window(options.window))
+    nearby = covisibility.local_map(m, tracked.points, options)
+    local = m.observed_by(nearby.keyframes)
     already = m.point_rows(tracked.points)
     already = already[already >= 0]
     view = _in_view(m, camera, tracked.pose, np.setdiff1d(local, already), options)
     if recovering:
-        th = options.recovery_local_window
+        th = options.tracking.recovery_local_window
     else:
-        th = options.rgbd_local_window if mode == "rgbd" else options.local_window
+        th = options.tracking.rgbd_local_window if mode == "rgbd" else options.tracking.local_window
     narrow = np.where(
-        view.view_cos > options.aligned_view_cos,
-        options.aligned_view_radius,
-        options.oblique_view_radius,
+        view.view_cos > options.tracking.aligned_view_cos,
+        options.tracking.aligned_view_radius,
+        options.tracking.oblique_view_radius,
     )
     projections = matching.Projections(
         xy=view.xy,
@@ -889,7 +940,9 @@ def _track_local_map(  # noqa: PLR0913 -- the stage's state
         right=view.right,
     )
     searched = matching.SearchOptions(
-        max_distance=options.th_high, ratio=options.local_map_ratio, check_orientation=False
+        max_distance=options.matching.th_high,
+        ratio=options.tracking.local_map_ratio,
+        check_orientation=False,
     )
     found = _search(frame, projections, m.pt_id[view.rows], searched, taken=tracked.points >= 0)
     points = np.where(tracked.points >= 0, tracked.points, found)
@@ -899,6 +952,10 @@ def _track_local_map(  # noqa: PLR0913 -- the stage's state
         visible=np.concatenate([m.pt_id[already], m.pt_id[view.rows]]),
         found=refined.points[refined.points >= 0],
         matched=points,
+        keyframes=len(nearby.keyframes),
+        points=len(local),
+        reference=nearby.reference,
+        reference_id=int(m.kf_id[nearby.reference]) if nearby.reference >= 0 else -1,
     )
 
 
@@ -915,12 +972,13 @@ def track_local_map(  # noqa: PLR0913 -- the stage's state, the recovery flag, a
 ) -> LocalTracking:
     """Match the local map's points in view and refine the pose (``TrackLocalMap``).
 
-    The local map is the points the window's keyframes observe. Those the frame has not
-    matched yet and that are in view (:func:`in_view`) are searched at their predicted level
-    and the one below, in a window of ``local_window`` (``rgbd_local_window`` in RGB-D,
-    ``recovery_local_window`` just after a recovery) times ``aligned_view_radius`` or
-    ``oblique_view_radius`` pixels at that level (``RadiusByViewingCos``), with the
-    ``local_map_ratio`` test.
+    The local map is the points its keyframes observe (:func:`slam_it.edge.covisibility.local_map`,
+    from the points the frame was matched to), whose first is the frame's reference keyframe. Those
+    the frame has not matched yet and that are in view (:func:`in_view`) are searched at their
+    predicted level and the one below, in a window of ``tracking.local_window``
+    (``tracking.rgbd_local_window`` in RGB-D, ``tracking.recovery_local_window`` just after a
+    recovery) times ``tracking.aligned_view_radius`` or ``tracking.oblique_view_radius`` pixels at
+    that level (``RadiusByViewingCos``), with the ``tracking.local_map_ratio`` test.
 
     Parameters
     ----------
@@ -938,15 +996,15 @@ def track_local_map(  # noqa: PLR0913 -- the stage's state, the recovery flag, a
         The window, thresholds and minimums.
     recovering : bool, optional
         Whether the frame is a recovery's or the next (``mnLastRelocFrameId + 2``): the
-        window is then ``recovery_local_window``.
+        window is then ``tracking.recovery_local_window``.
     backend : {"python", "cpp", "rust"}, optional
         Which implementation computes the result (default: the Python reference).
 
     Returns
     -------
     LocalTracking
-        The refined frame, the ids of the points in view and of the inliers, and each
-        keypoint's match before refinement.
+        The refined frame, the ids of the points in view and of the inliers, each keypoint's
+        match before refinement, the local map's size and the reference keyframe.
 
     Raises
     ------
@@ -977,12 +1035,14 @@ def track_local_map(  # noqa: PLR0913 -- the stage's state, the recovery flag, a
     )
 
 
-def _relocalize_locally(m: Map, camera: Camera, frame: Frame, options: Options) -> Relocalization:
+def _relocalize_locally(
+    m: Map, camera: Camera, frame: Frame, last: IntArray, options: Options
+) -> Relocalization:
     """Place a frame against the local map by descriptors and PnP RANSAC (reference)."""
-    local = m.observed_by(m.window(options.window))
+    local = m.observed_by(covisibility.local_map(m, last, options).keyframes)
     candidates = len(local)
     points = np.full(frame.size, -1, dtype=np.int64)
-    if candidates < options.pnp_min_inliers:
+    if candidates < options.tracking.pnp_min_inliers:
         return Relocalization(tracked=None, summary=PnpSummary(candidates), matched=points)
     found = matching.match(
         frame.features.descriptors,
@@ -990,18 +1050,22 @@ def _relocalize_locally(m: Map, camera: Camera, frame: Frame, options: Options) 
         frame.features.keypoints.angle,
         np.zeros(len(local), dtype=np.int64),
         matching.Options(
-            max_distance=options.th_high, ratio=options.relocalize_ratio, check_orientation=False
+            max_distance=options.matching.th_high,
+            ratio=options.relocalization.ratio,
+            check_orientation=False,
         ),
     )
     pairs = found.pairs[frame.bearings[found.pairs[:, 0], 2] > 0.0]
     points[pairs[:, 0]] = m.pt_id[local[pairs[:, 1]]]
     matched = PnpSummary(candidates, matches=len(pairs))
-    if len(pairs) < options.pnp_min_inliers:
+    if len(pairs) < options.tracking.pnp_min_inliers:
         return Relocalization(tracked=None, summary=matched, matched=points)
-    settings = ransac.Options(threshold=options.pnp_threshold / camera.focal, seed=options.seed)
+    settings = ransac.Options(
+        threshold=options.tracking.pnp_threshold / camera.focal, seed=options.seed
+    )
     run = run_pnp(m.pt_xyz[local[pairs[:, 1]]], frame.bearings[pairs[:, 0]], settings)
     sampled = replace(matched, **run.recorded())
-    consensus = run.kept(options.pnp_min_inliers)
+    consensus = run.kept(options.tracking.pnp_min_inliers)
     if consensus is None:
         return Relocalization(tracked=None, summary=sampled, matched=points)
     pose, inliers = consensus
@@ -1009,17 +1073,25 @@ def _relocalize_locally(m: Map, camera: Camera, frame: Frame, options: Options) 
     sample[pairs[inliers, 0]] = m.pt_id[local[pairs[inliers, 1]]]
     tracked = _optimize_pose(m, camera, frame, Tracked(pose=pose, points=sample), options)
     summary = replace(sampled, refined=tracked.inliers)
-    kept = tracked if tracked.inliers >= options.pnp_min_inliers else None
+    kept = tracked if tracked.inliers >= options.tracking.pnp_min_inliers else None
     return Relocalization(kept, summary, matched=points)
 
 
-def relocalize_locally(
-    m: Map, camera: Camera, frame: Frame, options: Options, *, backend: str = "python"
+def relocalize_locally(  # noqa: PLR0913 -- the map, its camera, two frames, the settings
+    m: Map,
+    camera: Camera,
+    frame: Frame,
+    last: ArrayLike,
+    options: Options,
+    *,
+    backend: str = "python",
 ) -> Relocalization:
     """Place a frame against the local map by descriptors and PnP RANSAC (the fallback).
 
-    The frame's descriptors are matched to the local map's points' (``th_high``, the
-    ``relocalize_ratio`` test), PnP RANSAC places it on the matches (``pnp_threshold``
+    The local map is the last tracked frame's (:func:`slam_it.edge.covisibility.local_map`,
+    from the points that frame was matched to). The frame's descriptors are matched to the
+    local map's points' (``matching.th_high``, the
+    ``relocalization.ratio`` test), PnP RANSAC places it on the matches (``tracking.pnp_threshold``
     pixels, ``seed``), and the pose is refined (:func:`optimize_pose`). It recovers only near
     the local map: ORB-SLAM has no such step, relocalising against the keyframes its bag of
     words finds, as :func:`slam_it.edge.relocalization.relocalize` does after it.
@@ -1032,6 +1104,8 @@ def relocalize_locally(
         The camera.
     frame : slam_it.edge.frames.Frame
         The frame.
+    last : array_like of int
+        The point each of the last tracked frame's keypoints was matched to, -1 for none.
     options : Options
         The RANSAC threshold, minimum inliers and seed.
     backend : {"python", "cpp", "rust"}, optional
@@ -1040,19 +1114,21 @@ def relocalize_locally(
     Returns
     -------
     Relocalization
-        The frame placed and refined, none if fewer than ``pnp_min_inliers`` points match,
+        The frame placed and refined, none if fewer than ``tracking.pnp_min_inliers`` points match,
         RANSAC finds no pose, or fewer inliers survive; how far it got
         (:class:`PnpSummary`); and each keypoint's match by descriptor.
     """
+    checked = covisibility.as_points(last)
     return backends.call(
         backend,
         __name__,
         "relocalize_locally",
-        reference=lambda: _relocalize_locally(m, camera, frame, options),
+        reference=lambda: _relocalize_locally(m, camera, frame, checked, options),
         arguments={
             "m": m.as_dict(),
             "camera": camera.as_dict(),
             "frame": frame.as_dict(),
+            "last": checked,
             "options": options.as_dict(),
         },
         decode=_decode_relocalization,

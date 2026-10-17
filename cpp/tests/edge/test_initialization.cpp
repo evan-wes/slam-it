@@ -25,7 +25,7 @@ using slam_it::testing::is_invalid_input;
 /// @param failures Running failure count.
 void check_from_depth(int& failures) {
   const edge::Frame frame = scene::frame(0, true);
-  const edge::Options options{.min_init_features_depth = 10};
+  const edge::Options options{.initialization = {.min_features_depth = 10}};
   const auto started = edge::initialize_from_depth(frame, options);
   expect(started.has_value() && started->started.has_value() &&
              started->summary.outcome == edge::Outcome::kInitialized && !started->summary.matches &&
@@ -42,16 +42,16 @@ void check_from_depth(int& failures) {
                worst < 1e-12 && edge::inliers(started->started->tracked) == 60,
            "it puts a point at every keypoint's depth", failures);
   }
-  const auto few =
-      edge::initialize_from_depth(frame, edge::Options{.min_init_features_depth = 100});
+  const auto few = edge::initialize_from_depth(
+      frame, edge::Options{.initialization = {.min_features_depth = 100}});
   const auto not_started = [](const auto& attempt, edge::Outcome outcome) {
     return attempt.has_value() && !attempt->started.has_value() &&
            attempt->summary.outcome == outcome;
   };
   expect(not_started(few, edge::Outcome::kTooFewFeatures), "too few keypoints start nothing",
          failures);
-  const auto exactly =
-      edge::initialize_from_depth(frame, edge::Options{.min_init_features_depth = 60});
+  const auto exactly = edge::initialize_from_depth(
+      frame, edge::Options{.initialization = {.min_features_depth = 60}});
   expect(not_started(exactly, edge::Outcome::kTooFewFeatures),
          "the start needs more keypoints than the count, as ORB-SLAM's N > 500", failures);
   edge::Frame shallow = frame;
@@ -62,7 +62,8 @@ void check_from_depth(int& failures) {
   expect(
       thin.has_value() && thin->started.has_value() && edge::point_count(thin->started->map) == 5,
       "a frame with little depth starts a map of the points it has", failures);
-  expect(is_invalid_input(edge::initialize_from_depth(frame, edge::Options{.levels = 4})),
+  expect(is_invalid_input(
+             edge::initialize_from_depth(frame, edge::Options{.features = {.levels = 4}})),
          "a frame of another pyramid is rejected", failures);
 }
 
@@ -101,13 +102,13 @@ void check_monocular(int& failures) {
   const auto few = edge::initialize_monocular(scene::camera(), first, last, pairs, edge::Options{});
   expect(few.has_value() && !few->started.has_value() &&
              few->summary.outcome == edge::Outcome::kTooFewMatches && few->summary.matches == given,
-         "fewer matches than init_min_matches start nothing", failures);
+         "fewer matches than initialization.min_matches start nothing", failures);
   const std::vector<std::array<std::int64_t, 2>> beyond{{0, scene::kPoints}};
   expect(is_invalid_input(
              edge::initialize_monocular(scene::camera(), first, last, beyond, edge::Options{})),
          "initialize_monocular rejects a pair beyond a frame's keypoints", failures);
-  const auto started = edge::initialize_monocular(scene::camera(), first, last, pairs,
-                                                  edge::Options{.init_min_matches = 20});
+  const auto started = edge::initialize_monocular(
+      scene::camera(), first, last, pairs, edge::Options{.initialization = {.min_matches = 20}});
   expect(started.has_value() && started->started.has_value() &&
              started->summary.outcome == edge::Outcome::kInitialized &&
              started->summary.matches == given && started->summary.solves.size() == 2,

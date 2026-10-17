@@ -102,7 +102,8 @@ nb::dict track_last_frame(const nb::dict& m, const nb::dict& camera, const nb::d
 /// @param mode The mode's name.
 /// @param options The settings, as a dict.
 /// @param recovering Whether the frame is a recovery's or the next.
-/// @return `pose`, `points`, `visible`, `found` and `matched`.
+/// @return `pose`, `points`, `visible`, `found`, `matched`, `local_keyframes`, `local_points`,
+///         `reference` and `reference_id`.
 /// @throws CoreError for invalid input.
 nb::dict track_local_map(const nb::dict& m, const nb::dict& camera, const nb::dict& frame,
                          const nb::dict& tracked, const std::string& mode, const nb::dict& options,
@@ -114,6 +115,10 @@ nb::dict track_local_map(const nb::dict& m, const nb::dict& camera, const nb::di
   out["visible"] = edge_crossing::vector_array(local.visible);
   out["found"] = edge_crossing::vector_array(local.found);
   out["matched"] = edge_crossing::vector_array(local.matched);
+  out["local_keyframes"] = local.keyframes;
+  out["local_points"] = local.points;
+  out["reference"] = local.reference;
+  out["reference_id"] = local.reference_id;
   return out;
 }
 
@@ -121,6 +126,7 @@ nb::dict track_local_map(const nb::dict& m, const nb::dict& camera, const nb::di
 /// @param m The map, as a dict.
 /// @param camera The camera, as a dict.
 /// @param frame The frame, as a dict.
+/// @param last The point each of the last tracked frame's keypoints was matched to.
 /// @param options The settings, as a dict.
 /// @return `tracked` (a dict, or None), `matched`, and the summary's fields: `candidates`,
 ///         `matches`, `iterations`, `termination` (its code in `ransac_termination`),
@@ -128,9 +134,10 @@ nb::dict track_local_map(const nb::dict& m, const nb::dict& camera, const nb::di
 ///         before it.
 /// @throws CoreError for invalid input.
 nb::dict relocalize_locally(const nb::dict& m, const nb::dict& camera, const nb::dict& frame,
-                            const nb::dict& options) {
-  const edge::Relocalization recovery = unwrap(
-      edge::relocalize_locally(map_in(m), camera_in(camera), frame_in(frame), options_in(options)));
+                            const edge_crossing::Int64In& last, const nb::dict& options) {
+  const edge::Relocalization recovery =
+      unwrap(edge::relocalize_locally(map_in(m), camera_in(camera), frame_in(frame),
+                                      edge_crossing::int64_in(last), options_in(options)));
   const edge::PnpSummary& summary = recovery.summary;
   nb::dict out;
   out["tracked"] = edge_crossing::maybe_tracked(recovery.tracked);
@@ -163,7 +170,7 @@ void bind_tracking(nb::module_& m) {
         nb::arg("tracked"), nb::arg("mode"), nb::arg("options"), nb::arg("recovering"),
         "Match the local map's points in view and refine the pose.");
   m.def("relocalize_locally", &relocalize_locally, nb::arg("m"), nb::arg("camera"),
-        nb::arg("frame"), nb::arg("options"),
+        nb::arg("frame"), nb::arg("last").noconvert(), nb::arg("options"),
         "Place a frame against the local map by descriptors and PnP RANSAC.");
 }
 

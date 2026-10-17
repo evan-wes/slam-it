@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "slam_it/edge/adjust.hpp"
+#include "slam_it/edge/covisibility.hpp"
 #include "slam_it/edge/residuals.hpp"
 #include "slam_it/foundations/correspondences.hpp"
 #include "slam_it/foundations/matching.hpp"
@@ -50,6 +51,86 @@ std::vector<std::int64_t> rows_of(const Map& m, std::size_t k) {
   return out;
 }
 
+/// @brief A keyframe's links' rows, most shared first (`slam_it.edge.covisibility.links`).
+/// @param m The map.
+/// @param k The keyframe's row.
+/// @param options The settings.
+/// @return The rows.
+std::vector<std::int64_t> linked_rows(const Map& m, std::size_t k, const Options& options) {
+  std::vector<std::int64_t> out;
+  for (const Link& link : links_of(m, shared_points(m, k), options.covisibility.min_points)) {
+    out.push_back(link.row);
+  }
+  return out;
+}
+
+/// @brief The newest keyframe's fusion targets' ids (`fuse_targets`, unchecked).
+/// @param m The map, with at least one keyframe.
+/// @param mode The pipeline's mode.
+/// @param options The settings.
+/// @return The ids.
+std::vector<std::int64_t> targets_of(const Map& m, Mode mode, const Options& options) {
+  const auto newest = static_cast<std::int64_t>(keyframe_count(m)) - 1;
+  const MappingOptions& settings = options.mapping;
+  const std::int64_t n =
+      mode == Mode::kMonocular ? settings.mono_fuse_neighbours : settings.fuse_neighbours;
+  std::vector<std::int64_t> targets = linked_rows(m, static_cast<std::size_t>(newest), options);
+  if (std::cmp_greater(targets.size(), n)) {
+    targets.resize(static_cast<std::size_t>(n));
+  }
+  const std::size_t first = targets.size();
+  for (std::size_t i = 0; i < first; ++i) {
+    std::vector<std::int64_t> second =
+        linked_rows(m, static_cast<std::size_t>(targets[i]), options);
+    if (std::cmp_greater(second.size(), settings.fuse_second_neighbours)) {
+      second.resize(static_cast<std::size_t>(settings.fuse_second_neighbours));
+    }
+    for (const std::int64_t row : second) {
+      if (row != newest && !std::ranges::contains(targets, row)) {
+        targets.push_back(row);
+      }
+    }
+  }
+  std::vector<std::int64_t> ids;
+  ids.reserve(targets.size());
+  for (const std::int64_t row : targets) {
+    ids.push_back(m.kf_id[static_cast<std::size_t>(row)]);
+  }
+  return ids;
+}
+
+/// @brief The newest keyframe's row and its links', ascending (`local_ba_keyframes`, unchecked).
+/// @param m The map, with at least one keyframe.
+/// @param options The settings.
+/// @return The rows.
+std::vector<std::int64_t> local_rows(const Map& m, const Options& options) {
+  std::vector<std::int64_t> local = linked_rows(m, keyframe_count(m) - 1, options);
+  local.push_back(static_cast<std::int64_t>(keyframe_count(m)) - 1);
+  std::ranges::sort(local);
+  return local;
+}
+
+/// @brief Check that the map has a keyframe.
+/// @param m The map.
+/// @return Nothing, or `InvalidInput`.
+Result<void> has_keyframes(const Map& m) {
+  if (keyframe_count(m) == 0) {
+    return fail(ErrorKind::kInvalidInput, "m: expected a map with at least one keyframe");
+  }
+  return {};
+}
+
+/// @brief Check the settings, and that the map has a keyframe (no camera needed).
+/// @param m The map.
+/// @param options The settings.
+/// @return Nothing, or `InvalidInput`.
+Result<void> check_keyframes(const Map& m, const Options& options) {
+  if (auto ok = check_options(options); !ok) {
+    return ok;
+  }
+  return has_keyframes(m);
+}
+
 /// @brief The points from an id on that the newest keyframe observes, by keypoint.
 /// @param m The map, with at least one keyframe.
 /// @param first The first id.
@@ -83,10 +164,7 @@ Result<void> check_newest(const Map& m, const Camera& camera, const Options& opt
   if (auto ok = check_setup(camera, options); !ok) {
     return ok;
   }
-  if (keyframe_count(m) == 0) {
-    return fail(ErrorKind::kInvalidInput, "m: expected a map with at least one keyframe");
-  }
-  return {};
+  return has_keyframes(m);
 }
 
 /// @brief The number of a frame's keypoints that are close and tracked, and close and not.
@@ -148,9 +226,10 @@ struct Epipolar {
   std::optional<Eigen::Vector2d> epipole;
   /// @brief The focal length, in pixels.
   double focal{1.0};
-  /// @brief The band's chi-square bound (`epipolar_chi2`).
+  /// @brief The band's chi-square bound (`mapping.epipolar_chi2`).
   double chi2{0.0};
-  /// @brief The least squared distance from the epipole at level 0 (`min_epipole_distance2`).
+  /// @brief The least squared distance from the epipole at level 0
+  ///        (`mapping.min_epipole_distance2`).
   double epipole_distance2{0.0};
 };
 
@@ -203,8 +282,8 @@ std::vector<std::array<std::int64_t, 2>> triangulation_pairs(const Map& m, const
   Epipolar epipolar{.essential = skew * rotation,
                     .epipole = std::nullopt,
                     .focal = focal(camera),
-                    .chi2 = options.epipolar_chi2,
-                    .epipole_distance2 = options.min_epipole_distance2};
+                    .chi2 = options.mapping.epipolar_chi2,
+                    .epipole_distance2 = options.mapping.min_epipole_distance2};
   if (t.z() != 0.0) {
     epipolar.epipole = Eigen::Vector2d(t.x() / t.z(), t.y() / t.z());
   }
@@ -219,12 +298,13 @@ std::vector<std::array<std::int64_t, 2>> triangulation_pairs(const Map& m, const
     for (std::size_t j = 0; j < rows2.size(); ++j) {
       const std::int64_t d = foundations::orb::distance(
           m.kp_descriptor[r1], m.kp_descriptor[static_cast<std::size_t>(rows2[j])]);
-      if (d <= options.th_low && d < best && epipolar_ok(m, epipolar, line, rows1[i], rows2[j])) {
+      if (d <= options.matching.th_low && d < best &&
+          epipolar_ok(m, epipolar, line, rows1[i], rows2[j])) {
         best = d;
         best_j = j;
       }
     }
-    if (best <= options.th_low) {
+    if (best <= options.matching.th_low) {
       const auto it = claims.find(best_j);
       if (it == claims.end() || best < it->second.first) {
         claims[best_j] = {best, i};
@@ -282,7 +362,7 @@ Source choose_source(const Map& m, const Camera& camera, std::array<std::size_t,
   const double cos1 = has1 ? stereo_cos(camera, m.kp_depth[r1]) : cos_rays + 1.0;
   const double cos2 = !has1 && has2 ? stereo_cos(camera, m.kp_depth[r2]) : cos_rays + 1.0;
   if (cos_rays < std::min(cos1, cos2) && cos_rays > 0.0 &&
-      (has1 || has2 || cos_rays < options.max_parallax_cos)) {
+      (has1 || has2 || cos_rays < options.mapping.max_parallax_cos)) {
     return Source::kRays;
   }
   if (has1 && cos1 < cos2) {
@@ -335,7 +415,7 @@ bool scale_consistent(const Map& m, std::array<std::size_t, 2> ks,
   const double ratio_octave =
       std::pow(m.scale_factor, static_cast<double>(m.kp_level[static_cast<std::size_t>(pair[0])] -
                                                    m.kp_level[static_cast<std::size_t>(pair[1])]));
-  const double factor = options.scale_ratio * m.scale_factor;
+  const double factor = options.mapping.scale_ratio * m.scale_factor;
   return !(ratio_distance * factor < ratio_octave) && !(ratio_distance > ratio_octave * factor);
 }
 
@@ -492,7 +572,7 @@ Result<std::optional<std::int64_t>> fuse_target(const Map& m, const Camera& came
   const Eigen::Vector3d offset = m.pt_xyz[p] - centre(m, k);
   const double distance = offset.norm();
   if (!inside(camera, pixel) || !in_distance_range(m, p, distance, options) ||
-      !(viewing_cos(m, p, offset, distance) >= options.view_cos_limit)) {
+      !(viewing_cos(m, p, offset, distance) >= options.tracking.view_cos_limit)) {
     return std::nullopt;
   }
   auto levels = predict_level(m, std::vector<std::int64_t>{static_cast<std::int64_t>(p)},
@@ -503,7 +583,8 @@ Result<std::optional<std::int64_t>> fuse_target(const Map& m, const Camera& came
   const std::int64_t level = (*levels)[0];
   auto near = grid.in_area(
       {pixel.x(), pixel.y()},
-      options.fuse_window * std::pow(m.scale_factor, static_cast<double>(level)), level - 1, level);
+      options.mapping.fuse_window * std::pow(m.scale_factor, static_cast<double>(level)), level - 1,
+      level);
   if (!near) {
     return std::unexpected(std::move(near.error()));
   }
@@ -522,7 +603,7 @@ Result<std::optional<std::int64_t>> fuse_target(const Map& m, const Camera& came
       best_row = row;
     }
   }
-  if (best > options.th_low) {
+  if (best > options.matching.th_low) {
     return std::nullopt;
   }
   return best_row;
@@ -633,12 +714,18 @@ Result<std::int64_t> redundant(const Map& m, std::size_t k, const std::vector<st
 }  // namespace
 
 double close_depth(const Camera& camera, const Options& options) {
-  return options.close_depth * camera.baseline;
+  return options.stereo.close_depth * camera.baseline;
 }
 
 Result<bool> need_keyframe(const Map& m, const Camera& camera, std::span<const double> depth,
-                           const Tracked& tracked, Mode mode, const Options& options) {
+                           const Tracked& tracked, std::int64_t reference, Mode mode,
+                           const Options& options) {
   if (auto ok = check_newest(m, camera, options); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  if (auto ok = foundations::check_range("reference", reference, 0,
+                                         static_cast<std::int64_t>(keyframe_count(m)) - 1);
+      !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   if (tracked.points.size() != depth.size()) {
@@ -646,10 +733,10 @@ Result<bool> need_keyframe(const Map& m, const Camera& camera, std::span<const d
                 "tracked.points: expected one point id (or -1) per depth");
   }
   const std::int64_t min_observations = keyframe_count(m) <= 2  // NeedNewKeyFrame's nKFs <= 2
-                                            ? options.ref_min_observations_early
-                                            : options.ref_min_observations;
+                                            ? options.keyframes.ref_min_observations_early
+                                            : options.keyframes.ref_min_observations;
   std::vector<std::int64_t> rows;
-  for (const std::int64_t row : rows_of(m, keyframe_count(m) - 1)) {
+  for (const std::int64_t row : rows_of(m, static_cast<std::size_t>(reference))) {
     if (const std::int64_t p = point_row(m, m.kp_point[static_cast<std::size_t>(row)]); p >= 0) {
       rows.push_back(p);
     }
@@ -664,16 +751,18 @@ Result<bool> need_keyframe(const Map& m, const Camera& camera, std::span<const d
   if (mode != Mode::kMonocular) {
     const auto [tracked_close, untracked_close] =
         close_counts(depth, tracked, close_depth(camera, options));
-    need_close = tracked_close < options.close_tracked && untracked_close > options.close_untracked;
+    need_close = tracked_close < options.keyframes.close_tracked &&
+                 untracked_close > options.keyframes.close_untracked;
   }
-  double ratio = keyframe_count(m) < 2 ? options.first_ref_ratio : options.ref_ratio;
+  double ratio =
+      keyframe_count(m) < 2 ? options.keyframes.first_ref_ratio : options.keyframes.ref_ratio;
   if (mode == Mode::kMonocular) {
-    ratio = options.mono_ref_ratio;
+    ratio = options.keyframes.mono_ref_ratio;
   }
   const std::int64_t count = inliers(tracked);
   const bool weak =
       static_cast<double>(count) < static_cast<double>(tracked_reference) * ratio || need_close;
-  return weak && count > options.min_keyframe_inliers;
+  return weak && count > options.keyframes.min_inliers;
 }
 
 Result<void> create_points_from_depth(Map& m, const Camera& camera, const Options& options) {
@@ -702,7 +791,7 @@ Result<void> create_points_from_depth(Map& m, const Camera& camera, const Option
       observers.push_back({row});
     }
     ++count;
-    if (m.kp_depth[r] > limit && count > options.min_new_points) {
+    if (m.kp_depth[r] > limit && count > options.mapping.min_new_points) {
       break;
     }
   }
@@ -722,15 +811,16 @@ Result<void> cull_points(Map& m, Mode mode, const Options& options) {
   const std::int64_t current = m.kf_id.back();
   std::vector<std::int64_t> recent;
   for (std::size_t p = 0; p < point_count(m); ++p) {
-    if (current - m.pt_first_kf[p] <= options.recent_point_keyframes) {
+    if (current - m.pt_first_kf[p] <= options.mapping.recent_point_keyframes) {
       recent.push_back(static_cast<std::int64_t>(p));
     }
   }
   if (recent.empty()) {
     return {};
   }
-  const std::int64_t minimum = mode == Mode::kMonocular ? options.min_point_observations
-                                                        : options.min_point_observations_depth;
+  const std::int64_t minimum = mode == Mode::kMonocular
+                                   ? options.mapping.min_point_observations
+                                   : options.mapping.min_point_observations_depth;
   auto weights = observation_weight(m, recent);
   if (!weights) {
     return std::unexpected(std::move(weights.error()));
@@ -740,10 +830,10 @@ Result<void> cull_points(Map& m, Mode mode, const Options& options) {
     const auto p = static_cast<std::size_t>(recent[i]);
     const double ratio = static_cast<double>(m.pt_found[p]) / static_cast<double>(m.pt_visible[p]);
     const std::int64_t age = current - m.pt_first_kf[p];
-    erase[p] =
-        (ratio < options.found_ratio || (age >= options.point_cull_age && (*weights)[i] <= minimum))
-            ? 1
-            : 0;
+    erase[p] = (ratio < options.mapping.found_ratio ||
+                (age >= options.mapping.point_cull_age && (*weights)[i] <= minimum))
+                   ? 1
+                   : 0;
   }
   return erase_points(m, erase, Removal::kCulled);
 }
@@ -768,11 +858,10 @@ Result<void> triangulate_new_points(Map& m, const Camera& camera, Mode mode,
     return ok;
   }
   const std::size_t k1 = keyframe_count(m) - 1;
-  std::vector<std::int64_t> others = window(m, options.window);
-  others.pop_back();
-  std::ranges::reverse(others);
-  const std::int64_t neighbours = mode == Mode::kMonocular ? options.mono_triangulation_neighbours
-                                                           : options.triangulation_neighbours;
+  std::vector<std::int64_t> others = linked_rows(m, k1, options);
+  const std::int64_t neighbours = mode == Mode::kMonocular
+                                      ? options.mapping.mono_triangulation_neighbours
+                                      : options.mapping.triangulation_neighbours;
   if (std::cmp_greater(others.size(), neighbours)) {
     others.resize(static_cast<std::size_t>(neighbours));
   }
@@ -781,7 +870,7 @@ Result<void> triangulate_new_points(Map& m, const Camera& camera, Mode mode,
     const double baseline = (centre(m, k2) - centre(m, k1)).norm();
     if (mode == Mode::kMonocular) {
       const std::optional<double> median = median_depth(m, k2);
-      if (!median || !(baseline / *median >= options.min_baseline_depth)) {
+      if (!median || !(baseline / *median >= options.mapping.min_baseline_depth)) {
         continue;
       }
     } else if (baseline < camera.baseline) {
@@ -804,15 +893,11 @@ Result<void> triangulate_new_points(Map& m, const Camera& camera, Mode mode,
   return {};
 }
 
-Result<void> fuse_points(Map& m, const Camera& camera, const Options& options) {
+Result<void> fuse_points(Map& m, const Camera& camera, Mode mode, const Options& options) {
   if (auto ok = check_newest(m, camera, options); !ok) {
     return ok;
   }
-  std::vector<std::int64_t> targets;
-  for (const std::int64_t k : window(m, options.window)) {
-    targets.push_back(m.kf_id[static_cast<std::size_t>(k)]);
-  }
-  targets.pop_back();
+  const std::vector<std::int64_t> targets = targets_of(m, mode, options);
   const std::vector<std::int64_t> newest{static_cast<std::int64_t>(keyframe_count(m) - 1)};
   const std::vector<std::int64_t> own = observed_ids(m, newest);
   for (const std::int64_t target : targets) {
@@ -832,17 +917,28 @@ Result<void> fuse_points(Map& m, const Camera& camera, const Options& options) {
   return refresh_points(m, observed_by(m, newest));
 }
 
+Result<std::vector<std::int64_t>> fuse_targets(const Map& m, Mode mode, const Options& options) {
+  if (auto ok = check_keyframes(m, options); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  return targets_of(m, mode, options);
+}
+
+Result<std::vector<std::int64_t>> local_ba_keyframes(const Map& m, const Options& options) {
+  if (auto ok = check_keyframes(m, options); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  return local_rows(m, options);
+}
+
 Result<void> cull_keyframes(Map& m, const Camera& camera, Mode mode, const Options& options) {
-  if (auto ok = check_setup(camera, options); !ok) {
+  if (auto ok = check_newest(m, camera, options); !ok) {
     return ok;
   }
   const double limit = close_depth(camera, options);
   std::vector<std::int64_t> ids;
-  for (const std::int64_t k : window(m, options.window)) {
+  for (const std::int64_t k : linked_rows(m, keyframe_count(m) - 1, options)) {
     ids.push_back(m.kf_id[static_cast<std::size_t>(k)]);
-  }
-  if (!ids.empty()) {
-    ids.pop_back();
   }
   for (const std::int64_t id : ids) {
     if (id == 0) {
@@ -860,13 +956,13 @@ Result<void> cull_keyframes(Map& m, const Camera& camera, Mode mode, const Optio
     if (rows.empty()) {
       continue;
     }
-    auto count = redundant(m, k, rows, options.redundant_observers);
+    auto count = redundant(m, k, rows, options.mapping.redundant_observers);
     if (!count) {
       return std::unexpected(std::move(count.error()));
     }
     if (static_cast<double>(*count) >
-        options.redundant_fraction * static_cast<double>(rows.size())) {
-      if (auto ok = erase_keyframe(m, static_cast<std::int64_t>(k)); !ok) {
+        options.mapping.redundant_fraction * static_cast<double>(rows.size())) {
+      if (auto ok = cull(m, static_cast<std::int64_t>(k), options); !ok) {
         return ok;
       }
     }
@@ -877,6 +973,11 @@ Result<void> cull_keyframes(Map& m, const Camera& camera, Mode mode, const Optio
 Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame, const Tracked& tracked,
                        Mode mode, const Options& options) {
   if (auto ok = insert_keyframe(m, frame, tracked.pose, tracked.points); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  // Its parent, as ORB-SLAM's first UpdateConnections sets it (after fusion if it shares none).
+  const auto newest = static_cast<std::int64_t>(keyframe_count(m)) - 1;
+  if (auto ok = adopt(m, newest); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   const auto points = [&m] { return static_cast<std::int64_t>(point_count(m)); };
@@ -904,7 +1005,10 @@ Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame, const T
       made[j] = triangulated_ids[j];
     }
   }
-  if (auto ok = fuse_points(m, camera, options); !ok) {
+  if (auto ok = fuse_points(m, camera, mode, options); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  if (auto ok = adopt(m, newest); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   const std::int64_t fused = points();
@@ -913,8 +1017,8 @@ Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame, const T
     fixed[k] = m.kf_id[k] == 0 ? 1 : 0;
   }
   Adjustment adjustment;
-  if (std::cmp_greater_equal(keyframe_count(m), options.ba_min_keyframes)) {
-    auto adjusted = bundle_adjust(m, camera, window(m, options.window), fixed, options);
+  if (std::cmp_greater_equal(keyframe_count(m), options.adjustment.min_keyframes)) {
+    auto adjusted = bundle_adjust(m, camera, local_rows(m, options), fixed, options);
     if (!adjusted) {
       return std::unexpected(std::move(adjusted.error()));
     }
@@ -930,6 +1034,8 @@ Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame, const T
                   .triangulated = triangulated - culled,
                   .fused = triangulated - fused,
                   .solves = std::move(adjustment.solves),
+                  .free = adjustment.free,
+                  .fixed = adjustment.fixed,
                   .outliers = adjustment.outliers,
                   .weak_points = fused - points(),
                   .culled_keyframes = keyframes - static_cast<std::int64_t>(keyframe_count(m))},

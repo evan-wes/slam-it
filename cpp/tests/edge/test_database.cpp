@@ -58,7 +58,7 @@ void check_erase(int& failures) {
   expect(inserted && holders(db, 1, {0, 1}) && holders(db, 9, {0, 1, 2}),
          "each word lists its keyframes, ascending", failures);
   edge::Options options;
-  options.covisible_points = 1;
+  options.covisibility.min_points = 1;
   const BowVector frame{.ids = {1, 2, 9}, .values = {0.25, 0.25, 0.5}};
   const auto before = edge::candidates(db, *m, frame, options);
   expect(before.has_value() && before->sharing == 3, "every keyframe shares a word with the frame",

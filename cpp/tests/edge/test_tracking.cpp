@@ -113,16 +113,27 @@ void check_level_rule(int& failures) {
 void check_local_map(const edge::Map& m, int& failures) {
   Eigen::Matrix4d start = scene::pose(2);
   start.topRightCorner<3, 1>() += Eigen::Vector3d(0.005, 0.0, -0.005);
-  const edge::Tracked none{.pose = start, .points = std::vector<std::int64_t>(scene::kPoints, -1)};
-  const auto local = edge::track_local_map(m, scene::camera(), scene::frame(2, true), none,
+  // The motion model matched the first few points: the keyframes seeing them are the local map.
+  edge::Tracked seeded{.pose = start, .points = std::vector<std::int64_t>(scene::kPoints, -1)};
+  for (std::int64_t p = 0; p < 5; ++p) {
+    seeded.points[static_cast<std::size_t>(p)] = p;
+  }
+  const auto local = edge::track_local_map(m, scene::camera(), scene::frame(2, true), seeded,
                                            edge::Mode::kRgbd, edge::Options{});
   expect(local.has_value() && edge::inliers(local->tracked) == 60 && local->visible.size() == 60 &&
              local->found.size() == 60 && gap(local->tracked.pose, scene::pose(2)) < 1e-6 &&
              local->matched == local->tracked.points && edge::summary(*local).matches == 60 &&
-             edge::summary(*local).in_view == 60 && edge::summary(*local).inliers == 60,
+             edge::summary(*local).in_view == 60 && edge::summary(*local).inliers == 60 &&
+             edge::summary(*local).keyframes > 0 && edge::summary(*local).points == 60,
          "the local map matches every point and pins the pose", failures);
+  if (local) {
+    edge::LocalTracking none = *local;
+    none.reference_id = -1;
+    expect(edge::summary(none, 10).reference == -1, "no reference keyframe: -1, not 9", failures);
+  }
+  const std::vector<std::int64_t>& last = m.pt_id;  // the last frame matched every point
   const auto placed =
-      edge::relocalize_locally(m, scene::camera(), scene::frame(2, true), edge::Options{});
+      edge::relocalize_locally(m, scene::camera(), scene::frame(2, true), last, edge::Options{});
   expect(placed.has_value() && placed->tracked.has_value() &&
              edge::inliers(*placed->tracked) == 60 &&
              gap(placed->tracked->pose, scene::pose(2)) < 1e-6,
@@ -135,13 +146,17 @@ void check_local_map(const edge::Map& m, int& failures) {
            "the fallback's summary records each step it took", failures);
   }
   edge::Options strict;
-  strict.pnp_min_inliers = 61;
+  strict.tracking.pnp_min_inliers = 61;
   const auto short_map =
-      edge::relocalize_locally(m, scene::camera(), scene::frame(2, true), strict);
+      edge::relocalize_locally(m, scene::camera(), scene::frame(2, true), last, strict);
   expect(short_map.has_value() && !short_map->tracked.has_value() &&
              short_map->summary.candidates == 60 && !short_map->summary.matches.has_value(),
          "a local map smaller than the minimum stops the fallback first", failures);
-  const auto recovering = edge::track_local_map(m, scene::camera(), scene::frame(2, true), none,
+  const std::vector<std::int64_t> below{-2};
+  expect(is_invalid_input(edge::relocalize_locally(m, scene::camera(), scene::frame(2, true), below,
+                                                   edge::Options{})),
+         "the fallback refuses a last frame's point id below -1", failures);
+  const auto recovering = edge::track_local_map(m, scene::camera(), scene::frame(2, true), seeded,
                                                 edge::Mode::kRgbd, edge::Options{}, true);
   expect(recovering.has_value() && edge::inliers(recovering->tracked) == 60,
          "a recovery's wider search matches every point too", failures);

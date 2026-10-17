@@ -30,13 +30,39 @@ use slam_it_foundations::{nls, ransac};
 
 use crate::common::{by_name, contiguous, encode, item_array, to_i64, unwrap};
 
+/// Runs a step on a copy of the map.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `m` - The map, as a dict.
+/// * `step` - The step, changing the copy.
+///
+/// # Returns
+///
+/// The new map, as a dict.
+///
+/// # Errors
+///
+/// `ValueError` for a malformed map; `InvalidInputError` from the core.
+pub fn changed<'py>(
+    py: Python<'py>,
+    m: &Bound<'py, PyDict>,
+    step: impl FnOnce(&mut Map) -> slam_it_foundations::error::Result<()>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let mut out = map_in(py, m)?;
+    unwrap(py, step(&mut out))?;
+    map_dict(py, &out)
+}
+
 /// The map's fields, as the dict's keys.
-const MAP_KEYS: [&str; 32] = [
+const MAP_KEYS: [&str; 34] = [
     "levels",
     "scale_factor",
     "kf_id",
     "kf_time",
     "kf_pose",
+    "kf_parent",
     "kf_start",
     "kp_xy",
     "kp_level",
@@ -64,6 +90,7 @@ const MAP_KEYS: [&str; 32] = [
     "gone_kf_id",
     "gone_kf_time",
     "gone_kf_pose",
+    "gone_kf_parent",
 ];
 
 /// The frame's fields, as the dict's keys.
@@ -241,6 +268,7 @@ pub fn map_in(py: Python<'_>, values: &Bound<'_, PyDict>) -> PyResult<Map> {
         kf_id: vector(&get("kf_id")?)?,
         kf_time: vector(&get("kf_time")?)?,
         kf_pose: poses(&get("kf_pose")?)?,
+        kf_parent: vector(&get("kf_parent")?)?,
         kf_start: indices(&get("kf_start")?)?,
         kp_xy: rows::<f64, 2>(&get("kp_xy")?)?,
         kp_level: indices(&get("kp_level")?)?,
@@ -268,6 +296,7 @@ pub fn map_in(py: Python<'_>, values: &Bound<'_, PyDict>) -> PyResult<Map> {
         gone_kf_id: vector(&get("gone_kf_id")?)?,
         gone_kf_time: vector(&get("gone_kf_time")?)?,
         gone_kf_pose: poses(&get("gone_kf_pose")?)?,
+        gone_kf_parent: vector(&get("gone_kf_parent")?)?,
         pt_observations: Vec::new(),
     };
     index_observations(&mut m);
@@ -397,6 +426,7 @@ pub fn map_dict<'py>(py: Python<'py>, m: &Map) -> PyResult<Bound<'py, PyDict>> {
     out.set_item("kf_id", vector_array(py, &m.kf_id))?;
     out.set_item("kf_time", vector_array(py, &m.kf_time))?;
     out.set_item("kf_pose", poses_array(py, &m.kf_pose)?)?;
+    out.set_item("kf_parent", vector_array(py, &m.kf_parent))?;
     out.set_item("kf_start", indices_array(py, &m.kf_start))?;
     out.set_item("kp_xy", rows_array(py, &m.kp_xy)?)?;
     out.set_item("kp_level", indices_array(py, &m.kp_level))?;
@@ -424,6 +454,7 @@ pub fn map_dict<'py>(py: Python<'py>, m: &Map) -> PyResult<Bound<'py, PyDict>> {
     out.set_item("gone_kf_id", vector_array(py, &m.gone_kf_id))?;
     out.set_item("gone_kf_time", vector_array(py, &m.gone_kf_time))?;
     out.set_item("gone_kf_pose", poses_array(py, &m.gone_kf_pose)?)?;
+    out.set_item("gone_kf_parent", vector_array(py, &m.gone_kf_parent))?;
     Ok(out)
 }
 
@@ -528,11 +559,12 @@ pub fn camera_in(values: &Bound<'_, PyDict>) -> PyResult<Camera> {
     })
 }
 
-/// Reads the settings from a dict of scalars.
+/// Reads the settings from a dict of groups (`Options.as_dict`).
 ///
 /// # Arguments
 ///
-/// * `values` - The dict, with exactly `Options`' fields.
+/// * `values` - The dict: exactly `Options`' groups, each a dict of exactly its fields, and
+///   `seed`.
 ///
 /// # Returns
 ///
@@ -545,9 +577,26 @@ pub fn camera_in(values: &Bound<'_, PyDict>) -> PyResult<Camera> {
 pub fn options_in(values: &Bound<'_, PyDict>) -> PyResult<Options> {
     let mut out = Options::default();
     let settings = out.settings();
-    let keys: Vec<&str> = settings.iter().map(|&(name, _)| name).collect();
-    for (name, kind) in settings {
-        let value = item(values, &keys, name)?;
+    let mut top: Vec<&str> = Vec::new(); // the groups, then seed
+    for &(name, _) in &settings {
+        let key = name.split_once('.').map_or(name, |(group, _)| group);
+        if top.last() != Some(&key) {
+            top.push(key);
+        }
+    }
+    for (name, kind) in settings.iter().copied() {
+        let value = if let Some((group, field)) = name.split_once('.') {
+            let fields: Vec<&str> = settings
+                .iter()
+                .filter_map(|&(other, _)| other.split_once('.'))
+                .filter(|&(owner, _)| owner == group)
+                .map(|(_, field)| field)
+                .collect();
+            let inner: Bound<'_, PyDict> = item(values, &top, group)?.extract()?;
+            item(&inner, &fields, field)?
+        } else {
+            item(values, &top, name)?
+        };
         let setting = match kind {
             Setting::Flag(_) => Setting::Flag(value.extract()?),
             Setting::Integer(_) => Setting::Integer(value.extract()?),

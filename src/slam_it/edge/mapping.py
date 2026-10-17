@@ -7,21 +7,21 @@ runs ORB-SLAM's local mapping steps in order, single-threaded:
    creates points from its close depth (:func:`create_points_from_depth`,
    ``CreateNewKeyFrame``).
 2. **Cull new points** (:func:`cull_points`, ``MapPointCulling``).
-3. **Triangulate new points** between the keyframe and the window's others
+3. **Triangulate new points** between the keyframe and its best links
    (:func:`triangulate_new_points`, ``CreateNewMapPoints``).
 4. **Fuse duplicates** (:func:`fuse_points`, ``SearchInNeighbors``).
-5. **Local BA** over the window (:func:`slam_it.edge.adjust.bundle_adjust`), the map's first
-   keyframe fixed, once the map holds ``ba_min_keyframes`` (``KeyFramesInMap() > 2``).
+5. **Local BA** over the keyframe and its links (:func:`slam_it.edge.adjust.bundle_adjust`),
+   the keyframes that see their points and the map's first keyframe fixed, once the map holds
+   ``adjustment.min_keyframes`` (``KeyFramesInMap() > 2``).
 6. **Cull redundant keyframes** (:func:`cull_keyframes`, ``KeyFrameCulling``).
 
 :func:`process` returns the map with how each step went (:class:`MappingSummary`), which a
 run records per keyframe.
 
-Lite: the sliding window of the last ``window`` keyframes stands in for the covisibility
-graph wherever ORB-SLAM takes a keyframe's neighbours, and the newest keyframe for the
-reference keyframe. Matching for triangulation has no bag of words: every free keypoint pair
-within the stricter distance and the epipolar band is a candidate
-(:func:`match_for_triangulation`).
+A keyframe's neighbours are its links in the covisibility graph
+(:mod:`slam_it.edge.covisibility`), as ORB-SLAM's are. Lite: matching for triangulation has no
+bag of words: every free keypoint pair within the stricter distance and the epipolar band is a
+candidate (:func:`match_for_triangulation`).
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slam_it import backends
-from slam_it.edge import adjust, residuals
+from slam_it.edge import adjust, covisibility, residuals
 from slam_it.edge import map as maps
 from slam_it.edge.frames import Camera, Frame, Tracked, as_pose, checked_tracked
 from slam_it.edge.map import Map, Removal
@@ -64,11 +64,17 @@ class MappingSummary:
     culled_points : int
         Recent points culled.
     triangulated : int
-        Points triangulated with the window's keyframes.
+        Points triangulated with the keyframe's best links.
     fused : int
         Points fused into another.
     solves : tuple of slam_it.edge.adjust.Solve
         The local bundle adjustment's solves; empty if it did not run.
+    free : int
+        The keyframes it adjusted: the keyframe and its links, but the map's first (0 if it did
+        not run).
+    fixed : int
+        The keyframes it held fixed: the map's first among those, and the others that observe
+        their points.
     outliers : int
         The observations it dropped.
     weak_points : int
@@ -83,6 +89,8 @@ class MappingSummary:
     triangulated: int
     fused: int
     solves: tuple[adjust.Solve, ...]
+    free: int
+    fixed: int
     outliers: int
     weak_points: int
     culled_keyframes: int
@@ -101,6 +109,8 @@ class MappingSummary:
             "triangulated": self.triangulated,
             "fused": self.fused,
             "ba": [solve.as_dict() for solve in self.solves],
+            "free": self.free,
+            "fixed": self.fixed,
             "outliers": self.outliers,
             "weak_points": self.weak_points,
             "culled_keyframes": self.culled_keyframes,
@@ -133,6 +143,8 @@ _COUNTS = (
     "culled_points",
     "triangulated",
     "fused",
+    "free",
+    "fixed",
     "outliers",
     "weak_points",
     "culled_keyframes",
@@ -160,6 +172,7 @@ class Implementation(Protocol):
         camera: Crossing,
         depth: NDArray[np.float64],
         tracked: Crossing,
+        reference: int,
         mode: str,
         options: Crossing,
     ) -> bool:
@@ -185,17 +198,25 @@ class Implementation(Protocol):
     def triangulate_new_points(
         self, m: Crossing, camera: Crossing, mode: str, options: Crossing
     ) -> Crossing:
-        """Triangulate the newest keyframe's free keypoints against the window's."""
+        """Triangulate the newest keyframe's free keypoints against its best links'."""
         ...
 
-    def fuse_points(self, m: Crossing, camera: Crossing, options: Crossing) -> Crossing:
-        """Fuse the newest keyframe's points with the window's."""
+    def fuse_targets(self, m: Crossing, mode: str, options: Crossing) -> NDArray[np.int64]:
+        """Return the ids of the keyframes the newest keyframe's points are fused into."""
+        ...
+
+    def fuse_points(self, m: Crossing, camera: Crossing, mode: str, options: Crossing) -> Crossing:
+        """Fuse the newest keyframe's points with its neighbours'."""
+        ...
+
+    def local_ba_keyframes(self, m: Crossing, options: Crossing) -> NDArray[np.int64]:
+        """Return the rows of the keyframes local BA adjusts."""
         ...
 
     def cull_keyframes(
         self, m: Crossing, camera: Crossing, mode: str, options: Crossing
     ) -> Crossing:
-        """Cull the window's redundant keyframes."""
+        """Cull the newest keyframe's redundant links."""
         ...
 
     def process(  # noqa: PLR0913 -- the stage's state, as the reference takes it
@@ -237,7 +258,9 @@ def _check_newest(m: Map) -> None:
 
 
 def close_depth(camera: Camera, options: Options) -> float:
-    """Return the depth below which a point is close: ``close_depth`` baselines (``mThDepth``).
+    """Return the depth below which a point is close: ``stereo.close_depth`` baselines.
+
+    ORB-SLAM's ``mThDepth``.
 
     Parameters
     ----------
@@ -251,7 +274,7 @@ def close_depth(camera: Camera, options: Options) -> float:
     float
         The depth, in metres (0 for monocular).
     """
-    return options.close_depth * camera.baseline
+    return options.stereo.close_depth * camera.baseline
 
 
 def _world(pose: Array, local: Array) -> Array:
@@ -277,12 +300,23 @@ def _from_depth(m: Map, k: int, rows: IntArray) -> Array:
 
 
 def _need_keyframe(  # noqa: PLR0913 -- the stage's state
-    m: Map, camera: Camera, depth: Array, tracked: Tracked, *, mode: str, options: Options
+    m: Map,
+    camera: Camera,
+    depth: Array,
+    tracked: Tracked,
+    *,
+    reference: int,
+    mode: str,
+    options: Options,
 ) -> bool:
     """Decide whether a tracked frame becomes a keyframe (reference)."""
     early = m.keyframes <= 2  # NeedNewKeyFrame's nKFs <= 2
-    min_observations = options.ref_min_observations_early if early else options.ref_min_observations
-    seen = m.kp_point[m.keypoint_rows(m.keyframes - 1)]
+    min_observations = (
+        options.keyframes.ref_min_observations_early
+        if early
+        else options.keyframes.ref_min_observations
+    )
+    seen = m.kp_point[m.keypoint_rows(reference)]
     rows = m.point_rows(seen[seen >= 0])
     weights = maps.observation_weight(m, rows[rows >= 0])
     tracked_reference = int(np.count_nonzero(weights >= min_observations))
@@ -292,13 +326,14 @@ def _need_keyframe(  # noqa: PLR0913 -- the stage's state
         tracked_close = int(np.count_nonzero(close & (tracked.points >= 0)))
         untracked_close = int(np.count_nonzero(close & (tracked.points < 0)))
         need_close = (
-            tracked_close < options.close_tracked and untracked_close > options.close_untracked
+            tracked_close < options.keyframes.close_tracked
+            and untracked_close > options.keyframes.close_untracked
         )
-    ratio = options.first_ref_ratio if m.keyframes < 2 else options.ref_ratio
+    ratio = options.keyframes.first_ref_ratio if m.keyframes < 2 else options.keyframes.ref_ratio
     if mode == "monocular":
-        ratio = options.mono_ref_ratio
+        ratio = options.keyframes.mono_ref_ratio
     weak = tracked.inliers < tracked_reference * ratio or need_close
-    return bool(weak and tracked.inliers > options.min_keyframe_inliers)
+    return bool(weak and tracked.inliers > options.keyframes.min_inliers)
 
 
 def need_keyframe(  # noqa: PLR0913 -- the stage's state, and the backend
@@ -307,6 +342,7 @@ def need_keyframe(  # noqa: PLR0913 -- the stage's state, and the backend
     depth: ArrayLike,
     tracked: Tracked,
     *,
+    reference: int,
     mode: str,
     options: Options,
     backend: str = "python",
@@ -314,11 +350,12 @@ def need_keyframe(  # noqa: PLR0913 -- the stage's state, and the backend
     """Decide whether a tracked frame becomes a keyframe (``NeedNewKeyFrame``, single-threaded).
 
     With mapping never busy, ORB-SLAM's conditions reduce to: the frame tracks fewer than
-    ``ref_ratio`` (``mono_ref_ratio``; ``first_ref_ratio`` with one keyframe) of the
-    points the reference keyframe (here the newest) sees from two keyframes (three once
-    there are more than two), or, with depth, fewer than ``close_tracked`` close points while
-    more than ``close_untracked`` close ones go untracked; and it tracks more than
-    ``min_keyframe_inliers``.
+    ``keyframes.ref_ratio`` (``keyframes.mono_ref_ratio``; ``keyframes.first_ref_ratio`` with one
+    keyframe) of the points the frame's reference keyframe (the one sharing the most of its points,
+    :func:`slam_it.edge.covisibility.local_map`) sees from two keyframes (three once there are more
+    than two), or, with depth, fewer than ``keyframes.close_tracked`` close points while more than
+    ``keyframes.close_untracked`` close ones go untracked; and it tracks more than
+    ``keyframes.min_inliers``.
 
     Parameters
     ----------
@@ -330,6 +367,8 @@ def need_keyframe(  # noqa: PLR0913 -- the stage's state, and the backend
         The frame's keypoints' depths (NaN where unknown).
     tracked : slam_it.edge.frames.Tracked
         Its pose and matches.
+    reference : int
+        Its reference keyframe's row (:attr:`slam_it.edge.tracking.LocalTracking.reference`).
     mode : {"monocular", "stereo", "rgbd"}
         The pipeline's mode.
     options : Options
@@ -355,13 +394,16 @@ def need_keyframe(  # noqa: PLR0913 -- the stage's state, and the backend
     if ids.shape != depths.shape or not np.issubdtype(ids.dtype, np.integer):
         raise InvalidInputError("tracked.points: expected one point id (or -1) per depth")
     checked = Tracked(pose=as_pose(tracked.pose, "tracked.pose"), points=ids.astype(np.int64))
+    row = maps.as_keyframe_row(m, reference, "reference")
     return backends.call(
         backend,
         __name__,
         "need_keyframe",
-        reference=lambda: _need_keyframe(m, camera, depths, checked, mode=mode, options=options),
+        reference=lambda: _need_keyframe(
+            m, camera, depths, checked, reference=row, mode=mode, options=options
+        ),
         arguments=_arguments(
-            m, camera, options, depth=depths, tracked=checked.as_dict(), mode=mode
+            m, camera, options, depth=depths, tracked=checked.as_dict(), reference=row, mode=mode
         ),
         decode=lambda raw, codes: bool(raw),
     )
@@ -379,7 +421,7 @@ def _create_points_from_depth(m: Map, camera: Camera, options: Options) -> Map:
     for count, row in enumerate(order, start=1):
         if m.kp_point[row] < 0:
             chosen.append(row)
-        if m.kp_depth[row] > limit and count > options.min_new_points:
+        if m.kp_depth[row] > limit and count > options.mapping.min_new_points:
             break
     if not chosen:
         return m
@@ -393,7 +435,7 @@ def create_points_from_depth(
     """Create points from the newest keyframe's close depth (``CreateNewKeyFrame``).
 
     Keypoints with depth, nearest first: each one not observing a point creates one, until
-    the keyframe holds at least ``min_new_points`` (counting those it tracked) and the next
+    the keyframe holds at least ``mapping.min_new_points`` (counting those it tracked) and the next
     is no longer close.
 
     Parameters
@@ -431,19 +473,19 @@ def create_points_from_depth(
 def _cull_points(m: Map, mode: str, options: Options) -> Map:
     """Cull recently created points tracking rarely finds (reference)."""
     age = m.kf_id[-1] - m.pt_first_kf
-    recent = np.flatnonzero(age <= options.recent_point_keyframes)
+    recent = np.flatnonzero(age <= options.mapping.recent_point_keyframes)
     if len(recent) == 0:
         return m
     minimum = (
-        options.min_point_observations
+        options.mapping.min_point_observations
         if mode == "monocular"
-        else options.min_point_observations_depth
+        else options.mapping.min_point_observations_depth
     )
     ratio = m.pt_found[recent] / m.pt_visible[recent]
     weight = maps.observation_weight(m, recent)
     erase = np.zeros(m.points, dtype=bool)
-    erase[recent] = (ratio < options.found_ratio) | (
-        (age[recent] >= options.point_cull_age) & (weight <= minimum)
+    erase[recent] = (ratio < options.mapping.found_ratio) | (
+        (age[recent] >= options.mapping.point_cull_age) & (weight <= minimum)
     )
     return maps.erase_points(m, erase, Removal.CULLED)
 
@@ -451,10 +493,10 @@ def _cull_points(m: Map, mode: str, options: Options) -> Map:
 def cull_points(m: Map, mode: str, options: Options, *, backend: str = "python") -> Map:
     """Cull recently created points that tracking rarely finds (``MapPointCulling``).
 
-    A point created at most ``recent_point_keyframes`` keyframes ago goes when found in under
-    ``found_ratio`` of the frames that had it in view, or when, two or more keyframes after
-    its creation, it is observed with weight ``min_point_observations`` or less
-    (``min_point_observations_depth`` with depth).
+    A point created at most ``mapping.recent_point_keyframes`` keyframes ago goes when found in
+    under ``mapping.found_ratio`` of the frames that had it in view, or when, two or more keyframes
+    after its creation, it is observed with weight ``mapping.min_point_observations`` or less
+    (``mapping.min_point_observations_depth`` with depth).
 
     Parameters
     ----------
@@ -518,20 +560,23 @@ def _match_for_triangulation(
     lines = x1 @ essential.T  # each k1 keypoint's epipolar line in k2, normalised plane
     numerator = lines @ x2.T
     distance2 = numerator**2 / (lines[:, :1] ** 2 + lines[:, 1:2] ** 2) * camera.focal**2
-    band = distance2 < options.epipolar_chi2 * residuals.sigma2(m, m.kp_level[rows2])[None, :]
+    band = (
+        distance2 < options.mapping.epipolar_chi2 * residuals.sigma2(m, m.kp_level[rows2])[None, :]
+    )
     if t[2] != 0.0:  # camera 1's centre in camera 2 is t: the epipole
         epipole = t[:2] / t[2]
         near = np.sum((x2[:, :2] - epipole) ** 2, axis=1) * camera.focal**2 < (
-            options.min_epipole_distance2 * m.scale_factor ** m.kp_level[rows2].astype(np.float64)
+            options.mapping.min_epipole_distance2
+            * m.scale_factor ** m.kp_level[rows2].astype(np.float64)
         )
         no_depth = np.isnan(m.kp_depth[rows1])[:, None] & np.isnan(m.kp_depth[rows2])[None, :]
         band &= ~(no_depth & near[None, :])
     hamming = matching.distances(m.kp_descriptor[rows1], m.kp_descriptor[rows2])
-    hamming = np.where(band & (hamming <= options.th_low), hamming, np.iinfo(np.int64).max)
+    hamming = np.where(band & (hamming <= options.matching.th_low), hamming, np.iinfo(np.int64).max)
     best = np.argmin(hamming, axis=1)
     best_distance = hamming[np.arange(len(rows1)), best]
     claims: dict[int, tuple[int, int]] = {}
-    for i in np.flatnonzero(best_distance <= options.th_low):
+    for i in np.flatnonzero(best_distance <= options.matching.th_low):
         j, d = int(best[i]), int(best_distance[i])
         if j not in claims or d < claims[j][0]:
             claims[j] = (d, int(i))
@@ -545,9 +590,9 @@ def match_for_triangulation(  # noqa: PLR0913 -- the map, its camera, two keyfra
     """Match two keyframes' free keypoints for triangulation (``SearchForTriangulation``, lite).
 
     No bag of words: for each free keypoint of `k1` (one observing no point), the nearest
-    free keypoint of `k2` within ``th_low`` (ties: the first) that lies within the epipolar
-    band (``epipolar_chi2`` of its level's variance, in pixels at the focal length) and,
-    when neither has depth, not near the epipole (``min_epipole_distance2``). One match per
+    free keypoint of `k2` within ``matching.th_low`` (ties: the first) that lies within the epipolar
+    band (``mapping.epipolar_chi2`` of its level's variance, in pixels at the focal length) and,
+    when neither has depth, not near the epipole (``mapping.min_epipole_distance2``). One match per
     keypoint of `k2`: the nearest keeps it (ties: the lower `k1` keypoint).
 
     Parameters
@@ -615,7 +660,7 @@ def _triangulate(  # noqa: PLR0913 -- the two keyframes, their matches, the sett
     from_rays = (
         (cos_rays < cos_stereo)
         & (cos_rays > 0.0)
-        & (has1 | has2 | (cos_rays < options.max_parallax_cos))
+        & (has1 | has2 | (cos_rays < options.mapping.max_parallax_cos))
     )
     from_depth1 = ~from_rays & has1 & (cos1 < cos2)
     from_depth2 = ~from_rays & ~from_depth1 & has2 & (cos2 < cos1)
@@ -649,7 +694,7 @@ def _triangulate(  # noqa: PLR0913 -- the two keyframes, their matches, the sett
     keep &= (distance1 > 0.0) & (distance2 > 0.0)
     ratio_distance = distance2 / np.where(distance1 > 0.0, distance1, 1.0)
     ratio_octave = m.scale_factor ** (m.kp_level[rows1] - m.kp_level[rows2]).astype(np.float64)
-    factor = options.scale_ratio * m.scale_factor
+    factor = options.mapping.scale_ratio * m.scale_factor
     keep &= ~((ratio_distance * factor < ratio_octave) | (ratio_distance > ratio_octave * factor))
     return filled, keep
 
@@ -666,20 +711,20 @@ def _median_depth(m: Map, k: int) -> float | None:
 
 
 def _triangulate_new_points(m: Map, camera: Camera, mode: str, options: Options) -> Map:
-    """Triangulate the newest keyframe's free keypoints against the window's (reference)."""
+    """Triangulate the newest keyframe's free keypoints against its best links (reference)."""
     k1 = m.keyframes - 1
     neighbours = (
-        options.mono_triangulation_neighbours
+        options.mapping.mono_triangulation_neighbours
         if mode == "monocular"
-        else options.triangulation_neighbours
+        else options.mapping.triangulation_neighbours
     )
-    others = m.window(options.window)[:-1][::-1][:neighbours]
+    others = covisibility.links(m, k1, options)[0][:neighbours]
     centres = m.centres()
     for k2 in (int(k) for k in others):
         baseline = float(np.linalg.norm(centres[k2] - centres[k1]))
         if mode == "monocular":
             median = _median_depth(m, k2)
-            if median is None or baseline / median < options.min_baseline_depth:
+            if median is None or baseline / median < options.mapping.min_baseline_depth:
                 continue
         elif baseline < camera.baseline:
             continue
@@ -695,17 +740,17 @@ def _triangulate_new_points(m: Map, camera: Camera, mode: str, options: Options)
 def triangulate_new_points(
     m: Map, camera: Camera, mode: str, options: Options, *, backend: str = "python"
 ) -> Map:
-    """Triangulate the newest keyframe's free keypoints against the window's keyframes.
+    """Triangulate the newest keyframe's free keypoints against its best links.
 
-    ORB-SLAM's ``CreateNewMapPoints``. For each neighbour (the window's other keyframes,
-    newest first, at most ``triangulation_neighbours``, ``mono_triangulation_neighbours`` for
-    monocular): skip it if the baseline is too short (shorter than the stereo baseline, or
-    under ``min_baseline_depth`` of its median depth for monocular);
+    ORB-SLAM's ``CreateNewMapPoints``. For each neighbour (the keyframe's best links, at most
+    ``mapping.triangulation_neighbours``, ``mapping.mono_triangulation_neighbours`` for
+    monocular): skip it if the baseline is too short (shorter than the stereo baseline, or under
+    ``mapping.min_baseline_depth`` of its median depth for monocular);
     match (:func:`match_for_triangulation`); for each match take the point from the rays
     (:func:`slam_it.foundations.triangulation.two_view`) if their parallax beats what depth
     gives, else from the keypoint with the better depth; keep it if it is in front of both,
     passes the chi-square test in both, and its distances agree with the keypoints' levels
-    (``scale_ratio``).
+    (``mapping.scale_ratio``).
 
     Parameters
     ----------
@@ -756,7 +801,7 @@ def _fuse_target(m: Map, camera: Camera, k: int, p: int, options: Options) -> in
         camera.inside(pixel[None])[0]
         and maps.in_distance_range(m, np.array([p]), np.array([distance]), options)[0]
         and maps.viewing_cos(m, np.array([p]), offset[None], np.array([distance]))[0]
-        >= options.view_cos_limit
+        >= options.tracking.view_cos_limit
     ):
         return None
     level = int(maps.predict_level(m, np.array([p]), np.array([distance]))[0])
@@ -765,7 +810,7 @@ def _fuse_target(m: Map, camera: Camera, k: int, p: int, options: Options) -> in
         m.kp_xy[rows],
         m.kp_level[rows],
         pixel,
-        options.fuse_window * m.scale_factor**level,
+        options.mapping.fuse_window * m.scale_factor**level,
         min_level=level - 1,
         max_level=level,
     )
@@ -782,7 +827,7 @@ def _fuse_target(m: Map, camera: Camera, k: int, p: int, options: Options) -> in
         return None
     hamming = matching.distances(m.pt_descriptor[p : p + 1], m.kp_descriptor[candidates])[0]
     best = int(np.argmin(hamming))
-    return int(candidates[best]) if hamming[best] <= options.th_low else None
+    return int(candidates[best]) if hamming[best] <= options.matching.th_low else None
 
 
 def _fuse_one(m: Map, camera: Camera, k: int, point_id: int, options: Options) -> Map:
@@ -828,17 +873,120 @@ def _merge_points(m: Map, *, lose: int, keep: int) -> Map:
     return maps.refresh_points(merged, merged.point_rows(np.array([keep])))
 
 
-def _fuse_points(m: Map, camera: Camera, options: Options) -> Map:
-    """Fuse the newest keyframe's points with the window's (reference)."""
+def _fuse_targets(m: Map, mode: str, options: Options) -> IntArray:
+    """Return the newest keyframe's fusion targets' ids, as ``SearchInNeighbors`` takes them.
+
+    Its best links, then each one's own best in turn, leaving out the newest keyframe and
+    repeats: ORB-SLAM3's order. ORB-SLAM2 took each link's own best right after it, and could
+    take a keyframe twice (it did not mark those).
+    """
+    newest = m.keyframes - 1
+    settings = options.mapping
+    n = settings.mono_fuse_neighbours if mode == "monocular" else settings.fuse_neighbours
+    targets = [int(r) for r in covisibility.links(m, newest, options)[0][:n]]
+    for row in list(targets):
+        second = covisibility.links(m, row, options)[0][: settings.fuse_second_neighbours]
+        targets += [int(r) for r in second if int(r) != newest and int(r) not in targets]
+    return m.kf_id[np.array(targets, dtype=np.int64)]
+
+
+def fuse_targets(m: Map, mode: str, options: Options, *, backend: str = "python") -> IntArray:
+    """Return the keyframes the newest keyframe's points are fused into (``SearchInNeighbors``).
+
+    Its best ``mapping.fuse_neighbours`` links (``mapping.mono_fuse_neighbours`` in monocular),
+    then each one's best ``mapping.fuse_second_neighbours`` in turn, leaving out the newest
+    keyframe and repeats: ORB-SLAM3's order, with ORB-SLAM2's counts. ORB-SLAM2 took each link's
+    own best right after it, and could take a keyframe twice. :func:`fuse_points` fuses into
+    them.
+
+    Parameters
+    ----------
+    m : Map
+        The map, with at least one keyframe.
+    mode : {"monocular", "stereo", "rgbd"}
+        The pipeline's mode.
+    options : Options
+        The counts and ``covisibility.min_points``.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    ndarray of int64, shape (T,)
+        The targets' ids, in order.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the mode is unknown, or the map has no keyframe.
+    """
+    check_mode(mode)
+    _check_newest(m)
+    return backends.call(
+        backend,
+        __name__,
+        "fuse_targets",
+        reference=lambda: _fuse_targets(m, mode, options),
+        arguments=_arguments(m, None, options, mode=mode),
+        decode=lambda raw, codes: backends.checked_array(raw, np.int64, 1, "fusion targets"),
+    )
+
+
+def _local_ba_keyframes(m: Map, options: Options) -> IntArray:
+    """Return the newest keyframe's row and its links', ascending (reference)."""
+    newest = m.keyframes - 1
+    return np.sort(np.append(covisibility.links(m, newest, options)[0], newest)).astype(np.int64)
+
+
+def local_ba_keyframes(m: Map, options: Options, *, backend: str = "python") -> IntArray:
+    """Return the keyframes local BA adjusts: the newest and every one linked to it.
+
+    ORB-SLAM's ``LocalBundleAdjustment`` takes the new keyframe and its covisible keyframes
+    (:func:`slam_it.edge.covisibility.links`); :func:`process` adjusts them, holding the map's
+    first keyframe and every other that observes their points fixed
+    (:func:`slam_it.edge.adjust.bundle_adjust`).
+
+    Parameters
+    ----------
+    m : Map
+        The map, with at least one keyframe.
+    options : Options
+        ``covisibility.min_points``.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    ndarray of int64, shape (L,)
+        Their rows, ascending.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the map has no keyframe.
+    """
+    _check_newest(m)
+    return backends.call(
+        backend,
+        __name__,
+        "local_ba_keyframes",
+        reference=lambda: _local_ba_keyframes(m, options),
+        arguments=_arguments(m, None, options),
+        decode=lambda raw, codes: backends.checked_array(raw, np.int64, 1, "local BA's keyframes"),
+    )
+
+
+def _fuse_points(m: Map, camera: Camera, mode: str, options: Options) -> Map:
+    """Fuse the newest keyframe's points with its neighbours' (reference)."""
     newest_id = int(m.kf_id[-1])
-    window_ids = m.kf_id[m.window(options.window)[:-1]]
+    target_ids = _fuse_targets(m, mode, options)
     own = m.pt_id[m.observed_by(np.array([m.keyframes - 1]))]
-    for target in window_ids:
+    for target in target_ids:
         k = int(m.keyframe_rows(np.array([target]))[0])
         for point_id in own:
             m = _fuse_one(m, camera, k, int(point_id), options)
     newest = m.keyframes - 1
-    rows = m.keyframe_rows(window_ids)
+    rows = m.keyframe_rows(target_ids)
     theirs = m.pt_id[m.observed_by(rows[rows >= 0])]
     for point_id in theirs:
         m = _fuse_one(m, camera, newest, int(point_id), options)
@@ -846,17 +994,23 @@ def _fuse_points(m: Map, camera: Camera, options: Options) -> Map:
     return maps.refresh_points(m, m.observed_by(np.array([newest])))
 
 
-def fuse_points(m: Map, camera: Camera, options: Options, *, backend: str = "python") -> Map:
-    """Fuse the newest keyframe's points with the window's (``SearchInNeighbors``, lite).
+def fuse_points(
+    m: Map, camera: Camera, mode: str, options: Options, *, backend: str = "python"
+) -> Map:
+    """Fuse the newest keyframe's points with its neighbours' (``SearchInNeighbors``).
 
-    The newest keyframe's points are fused into each other window keyframe, then all the
-    others' points into the newest (``Fuse``): each point not already in the keyframe, in
-    front, inside the image, in its distance range (:func:`slam_it.edge.map.in_distance_range`)
-    and seen within ``view_cos_limit`` of its viewing direction, is compared with the keyframe's
-    keypoints within ``fuse_window`` pixels at its predicted level (on that level or the one
-    below) that pass the chi-square test; the nearest within ``th_low`` takes it: a free
-    keypoint observes it, one observing another point merges the two (the one with the lower
-    observation weight replaced). The newest keyframe's points are refreshed at the end.
+    The neighbours are its best ``mapping.fuse_neighbours`` links (``mapping.mono_fuse_neighbours``
+    in monocular), then each one's best ``mapping.fuse_second_neighbours``, leaving out the newest
+    keyframe and repeats
+    (:func:`slam_it.edge.covisibility.links`). The newest keyframe's points are fused into each
+    neighbour, then all the neighbours' points into the newest (``Fuse``): each point not already in
+    the keyframe, in front, inside the image, in its distance range
+    (:func:`slam_it.edge.map.in_distance_range`) and seen within ``tracking.view_cos_limit`` of its
+    viewing direction, is compared with the keyframe's keypoints within ``mapping.fuse_window``
+    pixels at its predicted level (on that level or the one below) that pass the chi-square test;
+    the nearest within ``matching.th_low`` takes it: a free keypoint observes it, one observing
+    another point merges the two (the one with the lower observation weight replaced). The newest
+    keyframe's points are refreshed at the end.
 
     Parameters
     ----------
@@ -864,8 +1018,10 @@ def fuse_points(m: Map, camera: Camera, options: Options, *, backend: str = "pyt
         The map.
     camera : slam_it.edge.frames.Camera
         The camera.
+    mode : {"monocular", "stereo", "rgbd"}
+        The pipeline's mode.
     options : Options
-        The window and thresholds.
+        The neighbours and thresholds.
     backend : {"python", "cpp", "rust"}, optional
         Which implementation computes the result (default: the Python reference).
 
@@ -879,13 +1035,14 @@ def fuse_points(m: Map, camera: Camera, options: Options, *, backend: str = "pyt
     slam_it.foundations.errors.InvalidInputError
         If the map has no keyframe.
     """
+    check_mode(mode)
     _check_newest(m)
     return backends.call(
         backend,
         __name__,
         "fuse_points",
-        reference=lambda: _fuse_points(m, camera, options),
-        arguments=_arguments(m, camera, options),
+        reference=lambda: _fuse_points(m, camera, mode, options),
+        arguments=_arguments(m, camera, options, mode=mode),
         decode=maps.decode,
     )
 
@@ -906,9 +1063,9 @@ def _redundant(m: Map, k: int, rows: IntArray, threshold: int) -> int:
 
 
 def _cull_keyframes(m: Map, camera: Camera, mode: str, options: Options) -> Map:
-    """Cull the window's redundant keyframes (reference)."""
+    """Cull the newest keyframe's redundant links (reference)."""
     limit = close_depth(camera, options)
-    for kf_id in m.kf_id[m.window(options.window)][:-1]:
+    for kf_id in m.kf_id[covisibility.links(m, m.keyframes - 1, options)[0]]:
         if kf_id == 0:
             continue
         k = int(m.keyframe_rows(np.array([kf_id]))[0])
@@ -917,22 +1074,24 @@ def _cull_keyframes(m: Map, camera: Camera, mode: str, options: Options) -> Map:
         if mode != "monocular":
             depth = m.kp_depth[rows]
             rows = rows[(depth >= 0.0) & (depth <= limit)]  # NaN: no depth, not counted
-        if len(rows) and _redundant(m, k, rows, options.redundant_observers) > (
-            options.redundant_fraction * len(rows)
+        if len(rows) and _redundant(m, k, rows, options.mapping.redundant_observers) > (
+            options.mapping.redundant_fraction * len(rows)
         ):
-            m = maps.erase_keyframe(m, k)
+            m = covisibility.cull(m, k, options)
     return m
 
 
 def cull_keyframes(
     m: Map, camera: Camera, mode: str, options: Options, *, backend: str = "python"
 ) -> Map:
-    """Cull the window's redundant keyframes (``KeyFrameCulling``).
+    """Cull the newest keyframe's redundant links (``KeyFrameCulling``).
 
-    A window keyframe other than the newest and the map's first (id 0) goes when more than
-    ``redundant_fraction`` of its points (its close ones with depth, for stereo and RGB-D)
-    are observed with weight above ``redundant_observers`` and seen by at least
-    ``redundant_observers`` other keyframes at its level, a finer one, or the next coarser.
+    Each keyframe linked to the newest (:func:`slam_it.edge.covisibility.links`, the most
+    shared first), but the map's first (id 0), is culled (:func:`slam_it.edge.covisibility.cull`)
+    when more than ``mapping.redundant_fraction`` of its points (its close ones with depth, for
+    stereo and RGB-D) are observed with weight above ``mapping.redundant_observers`` and seen by
+    at least ``mapping.redundant_observers`` other keyframes at its level, a finer one, or the next
+    coarser.
 
     Parameters
     ----------
@@ -955,9 +1114,10 @@ def cull_keyframes(
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If the mode is unknown.
+        If the mode is unknown, or the map has no keyframe.
     """
     check_mode(mode)
+    _check_newest(m)
     return backends.call(
         backend,
         __name__,
@@ -973,6 +1133,8 @@ def _process(  # noqa: PLR0913 -- the stage's state
 ) -> Mapped:
     """Insert a keyframe and run local mapping on it (reference)."""
     m = maps.insert_keyframe(m, frame, tracked.pose, tracked.points)
+    # Its parent, as ORB-SLAM's first UpdateConnections sets it (after fusion if it shares none).
+    m = covisibility.adopt(m, m.keyframes - 1)
     start, first = m.points, m.next_pt_id
     if mode != "monocular":
         m = _create_points_from_depth(m, camera, options)
@@ -983,13 +1145,16 @@ def _process(  # noqa: PLR0913 -- the stage's state
     triangulated = m.points
     # Taken before fusion, which may replace a new point; a depth point culled since stays made.
     made = np.where(from_depth >= 0, from_depth, _made_since(m, first))
-    m = _fuse_points(m, camera, options)
+    m = covisibility.adopt(_fuse_points(m, camera, mode, options), m.keyframes - 1)
     fused = m.points
     solves: tuple[adjust.Solve, ...] = ()
     outliers = 0
-    if m.keyframes >= options.ba_min_keyframes:
-        adjusted = adjust.bundle_adjust(m, camera, m.window(options.window), m.kf_id == 0, options)
+    free = fixed = 0
+    if m.keyframes >= options.adjustment.min_keyframes:
+        local = _local_ba_keyframes(m, options)
+        adjusted = adjust.bundle_adjust(m, camera, local, m.kf_id == 0, options)
         m, solves, outliers = adjusted.map, adjusted.solves, adjusted.outliers
+        free, fixed = adjusted.free, adjusted.fixed
     keyframes = m.keyframes
     m = _cull_keyframes(m, camera, mode, options)
     summary = MappingSummary(
@@ -998,6 +1163,8 @@ def _process(  # noqa: PLR0913 -- the stage's state
         triangulated=triangulated - culled,
         fused=triangulated - fused,
         solves=solves,
+        free=free,
+        fixed=fixed,
         outliers=outliers,
         weak_points=fused - m.points,
         culled_keyframes=keyframes - m.keyframes,

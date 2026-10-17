@@ -139,6 +139,8 @@ runs::Run golden_run() {
                 .memory_cap = values["memory_cap"].get<std::int64_t>(),
                 .point_lives = lives(values["point_lives"]),
                 .keyframe_lives = lives(values["keyframe_lives"]),
+                .keyframe_parents = values["keyframe_parents"].get<std::vector<std::int64_t>>(),
+                .keyframe_links = lives(values["keyframe_links"]),
                 .record_features = values["record_features"].get<bool>(),
                 .pose_maps = values["pose_maps"].get<std::vector<std::int64_t>>(),
                 .keyframe_maps = values["keyframe_maps"].get<std::vector<std::int64_t>>(),
@@ -225,8 +227,9 @@ void check_golden(int& failures) {
   const fs::path& out = scratch.path();
   expect(runs::write_run(out.string(), golden_run()).has_value(), "the run is written", failures);
   for (const char* name :
-       {"keyframes.npy", "keyframe_poses.npy", "keyframe_lives.npy", "points.npy",
-        "point_lives.npy", "pose_maps.npy", "keyframe_maps.npy", "point_maps.npy"}) {
+       {"keyframes.npy", "keyframe_poses.npy", "keyframe_lives.npy", "keyframe_parents.npy",
+        "keyframe_links.npy", "points.npy", "point_lives.npy", "pose_maps.npy", "keyframe_maps.npy",
+        "point_maps.npy"}) {
     expect(bytes(out / name) == bytes(golden / name),
            (std::string(name) + " matches numpy's byte for byte").c_str(), failures);
   }
@@ -400,6 +403,27 @@ void check_refusals(int& failures) {
   run.keyframe_maps[0] = -1;
   expect(is_invalid_input(runs::write_run(out.string(), run)), "a negative map is refused",
          failures);
+  // The golden keyframes' maps are 0, 1, 1; keyframe 2's parent is 1, linked to it by 120.
+  for (const std::vector<std::int64_t>& parents :
+       {std::vector<std::int64_t>{-1, -1}, std::vector<std::int64_t>{-1, -1, 2},
+        std::vector<std::int64_t>{-1, -1, 0}, std::vector<std::int64_t>{-1, -1, 3}}) {
+    run = golden_run();
+    run.keyframe_parents = parents;
+    expect(is_invalid_input(runs::write_run(out.string(), run)),
+           "parents that are not one per keyframe, its own, another map's or none are refused",
+           failures);
+  }
+  for (const std::array<std::int64_t, 3>& link :
+       {std::array<std::int64_t, 3>{2, 1, 120}, std::array<std::int64_t, 3>{0, 1, 120},
+        std::array<std::int64_t, 3>{1, 2, 0}, std::array<std::int64_t, 3>{1, 3, 120}}) {
+    run = golden_run();
+    run.keyframe_links = {link};
+    expect(is_invalid_input(runs::write_run(out.string(), run)),
+           "a link backwards, across maps, of no points or to no keyframe is refused", failures);
+  }
+  run = golden_run();
+  run.keyframe_links = {{1, 2, 120}, {1, 2, 120}};
+  expect(is_invalid_input(runs::write_run(out.string(), run)), "a link twice is refused", failures);
   // The diagnostics' maps, golden 0, 0, 0, 1, 1, 1 (map 1 has keyframes).
   expect(
       is_invalid_input(runs::write_run(out.string(), with_map(golden_run(), 3, std::int64_t{-1}))),

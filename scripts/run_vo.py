@@ -19,14 +19,14 @@ Example, the C++ program on 300 frames of a TUM sequence::
     python scripts/run_vo.py --dataset tum --sequence PATH --mode rgbd --out RUN_DIR
         --backend cpp --count 300 --rerun RUN.rrd
 
-``--option KEY=VALUE`` sets a field of :class:`slam_it.edge.options.Options` (repeatable),
-read as the programs read it (:func:`slam_it.orchestration.vo.parse_setting`).
+``--option KEY=VALUE`` sets a setting of :class:`slam_it.edge.options.Options`, named by its
+group and field (repeatable), read as the programs read it
+(:func:`slam_it.orchestration.vo.parse_setting`).
 """
 
 from __future__ import annotations
 
 import argparse
-import dataclasses
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +40,7 @@ from slam_it.orchestration import vo
 
 
 def parse_options(pairs: list[str]) -> Options:
-    """Build the settings from ``KEY=VALUE`` pairs, each value of its field's type.
+    """Build the settings from ``KEY=VALUE`` pairs, each value of its setting's type.
 
     Parameters
     ----------
@@ -50,20 +50,20 @@ def parse_options(pairs: list[str]) -> Options:
     Returns
     -------
     slam_it.edge.options.Options
-        The defaults, with the pairs' fields set.
+        The defaults, with the pairs' settings set.
 
     Raises
     ------
     SystemExit
-        For a pair without ``=``, an unknown field, or a value not of its type
+        For a pair without ``=``, an unknown setting, or a value not of its type
         (:func:`slam_it.orchestration.vo.parse_setting`).
     """
-    changes: dict[str, Any] = {}  # each of its field's type (parse_setting)
+    changes: dict[str, Any] = {}  # each of its setting's type (parse_setting)
     try:
         changes.update(vo.parse_setting(pair) for pair in pairs)
     except vo.UsageError as error:
         raise SystemExit(f"--option: {error}") from None
-    return dataclasses.replace(Options(), **changes)
+    return Options().with_settings(changes)
 
 
 def score(run: runs.Run, truth: runs.Truth | None) -> runs.Evaluation | None:

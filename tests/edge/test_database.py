@@ -5,8 +5,6 @@ On the room's truth map, its keyframes' words those of the committed vocabulary.
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 import numpy as np
 import pytest
 
@@ -69,27 +67,6 @@ def test_the_database_crosses_keyframe_by_keyframe(room_database: Database) -> N
         np.testing.assert_array_equal(crossed["node"][nodes], room_database.nodes(keyframe))
 
 
-def test_covisible_keyframes_share_the_most_points(truth: Truth) -> None:
-    """Each keyframe's best covisible keyframes share at least covisible_points, most first."""
-    m = truth.map
-    keyframes = m.kf_id.tolist()
-    best = database.best_covisible(m, keyframes, OPTIONS)
-    seen = {
-        k: set(m.kp_point[m.keypoint_rows(row)][m.kp_point[m.keypoint_rows(row)] >= 0].tolist())
-        for row, k in enumerate(keyframes)
-    }
-    for k in keyframes:
-        shared = {other: len(seen[k] & seen[other]) for other in keyframes if other != k}
-        expected = sorted(
-            (o for o, n in shared.items() if n >= OPTIONS.covisible_points),
-            key=lambda o: (-shared[o], o),
-        )
-        assert best[k] == expected[: OPTIONS.reloc_neighbours]
-    assert any(best[k] for k in keyframes)
-    none = database.best_covisible(m, keyframes, replace(OPTIONS, covisible_points=1 << 20))
-    assert all(not neighbours for neighbours in none.values())
-
-
 @pytest.mark.parametrize(("frame", "keyframe"), [(1, 0), (13, 1), (25, 2), (37, 3)])
 def test_a_frame_of_the_room_finds_the_keyframe_beside_it(
     truth: Truth,
@@ -112,15 +89,17 @@ def test_a_frame_of_the_room_finds_the_keyframe_beside_it(
 def test_a_group_adds_its_scored_neighbours(
     truth: Truth, words: vocabulary.Vocabulary, room_database: Database
 ) -> None:
-    """Without covisibility a candidate's score is its own; with it, its group's, no less."""
+    """A candidate stands for its group: its score is its own and its scored links', summed.
+
+    With ``relocalization.common_words`` lowered, every keyframe sharing a word is scored, so the
+    best candidate's links are too, and its group's score is more than its own.
+    """
     vector = _frame_vector(truth, words, 25)
-    alone = database.candidates(
-        room_database, truth.map, vector, replace(OPTIONS, covisible_points=1 << 20)
-    )
-    for keyframe, score in zip(alone.keyframes.tolist(), alone.scores.tolist(), strict=True):
-        assert score == vocabulary.score(vector, room_database.vector(keyframe))
-    grouped = database.candidates(room_database, truth.map, vector, OPTIONS)
-    assert grouped.scores[0] >= alone.scores[0]
+    every = OPTIONS.with_settings({"relocalization.common_words": 0.1})
+    found = database.candidates(room_database, truth.map, vector, every)
+    assert found.scored >= 2
+    own = vocabulary.score(vector, room_database.vector(int(found.keyframes[0])))
+    assert found.scores[0] > own
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -129,10 +108,16 @@ def test_a_group_adds_its_scored_neighbours(
     "settings",
     [
         OPTIONS,
-        replace(OPTIONS, covisible_points=1 << 20),
-        replace(OPTIONS, reloc_common_words=0.5, reloc_group_score=0.5, reloc_neighbours=1),
+        OPTIONS.with_settings({"covisibility.min_points": 1 << 20}),
+        OPTIONS.with_settings(
+            {
+                "relocalization.common_words": 0.5,
+                "relocalization.group_score": 0.5,
+                "relocalization.neighbours": 1,
+            }
+        ),
     ],
-    ids=["defaults", "no covisibility", "looser"],
+    ids=["defaults", "best link only", "looser"],
 )
 def test_every_backend_finds_python_s_candidates(  # noqa: PLR0917 -- cases, fixtures
     backend: str,

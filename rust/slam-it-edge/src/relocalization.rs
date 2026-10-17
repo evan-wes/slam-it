@@ -145,8 +145,8 @@ fn merged(points: &[i64], added: &[i64]) -> Vec<i64> {
 /// # Arguments
 ///
 /// * `matches` - The candidate's matches by word.
-/// * `options` - `reloc_min_inliers`, `reloc_inlier_ratio`, `reloc_confidence` and
-///   `reloc_ransac_iterations`.
+/// * `options` - `relocalization.min_inliers`, `relocalization.inlier_ratio`,
+///   `relocalization.confidence` and `relocalization.ransac_iterations`.
 ///
 /// # Returns
 ///
@@ -160,18 +160,24 @@ fn merged(points: &[i64], added: &[i64]) -> Vec<i64> {
 )]
 pub fn ransac_budget(matches: usize, options: &Options) -> (usize, usize) {
     let needed = options
-        .reloc_min_inliers
-        .max((options.reloc_inlier_ratio * matches as f64).floor() as usize)
+        .relocalization
+        .min_inliers
+        .max((options.relocalization.inlier_ratio * matches as f64).floor() as usize)
         .max(p3p::SAMPLE_SIZE);
     if needed >= matches {
         return (needed, 1);
     }
     let ratio = options
-        .reloc_inlier_ratio
+        .relocalization
+        .inlier_ratio
         .max(needed as f64 / matches as f64);
-    let bound = ransac::required_iterations(ratio, p3p::SAMPLE_SIZE, options.reloc_confidence);
+    let bound =
+        ransac::required_iterations(ratio, p3p::SAMPLE_SIZE, options.relocalization.confidence);
     let samples = bound.ceil() as usize;
-    (needed, samples.min(options.reloc_ransac_iterations).max(1))
+    (
+        needed,
+        samples.min(options.relocalization.ransac_iterations).max(1),
+    )
 }
 
 /// The settings of one search by projection.
@@ -314,10 +320,10 @@ fn project_more(
     found: &[i64],
     options: &Options,
 ) -> Result<(Tracked, Vec<i64>)> {
-    let needed = options.recovery_tracked;
+    let needed = options.tracking.recovery_tracked;
     let wide = SearchWindow {
-        radius: options.reloc_window,
-        distance: options.th_high,
+        radius: options.relocalization.window,
+        distance: options.matching.th_high,
     };
     let added = search_keyframe(m, camera, frame, refined, keyframe, found, wide, options)?;
     let all = merged(&refined.points, &added);
@@ -330,7 +336,7 @@ fn project_more(
     };
     let again = optimize_pose(m, camera, frame, &start, options)?;
     let good = again.inliers();
-    if !(options.reloc_narrow_inliers < good && good < needed) {
+    if !(options.relocalization.narrow_inliers < good && good < needed) {
         return Ok((again, all));
     }
     // The second optimisation's outliers keep their matches until the last (ORB-SLAM's).
@@ -340,8 +346,8 @@ fn project_more(
     };
     let skip: Vec<i64> = all.iter().copied().filter(|&p| p >= 0).collect();
     let narrow_window = SearchWindow {
-        radius: options.reloc_narrow_window,
-        distance: options.reloc_narrow_distance,
+        radius: options.relocalization.narrow_window,
+        distance: options.relocalization.narrow_distance,
     };
     let narrow = search_keyframe(
         m,
@@ -373,7 +379,7 @@ fn project_more(
 /// * `rows` - The candidate's keypoint rows that observe a point.
 /// * `nodes` - Each row's node.
 /// * `frame_nodes` - Each of the frame's keypoints' node.
-/// * `options` - `th_low` and `relocalize_ratio`.
+/// * `options` - `matching.th_low` and `relocalization.ratio`.
 ///
 /// # Returns
 ///
@@ -401,8 +407,8 @@ fn match_by_word(
         &angles,
         &frame_angles,
         &matching::Options {
-            max_distance: options.th_low,
-            ratio: options.relocalize_ratio,
+            max_distance: options.matching.th_low,
+            ratio: options.relocalization.ratio,
             check_orientation: true,
         },
     )?;
@@ -469,7 +475,7 @@ fn try_candidate(
         })
     };
     let (needed, samples) = ransac_budget(pairs.len(), options);
-    if pairs.len() < options.reloc_min_matches.max(needed) {
+    if pairs.len() < options.relocalization.min_matches.max(needed) {
         return unplaced(summary, matched);
     }
     let Some(world) = pairs
@@ -487,8 +493,8 @@ fn try_candidate(
         .map(|pair| frame.bearings[pair.second])
         .collect();
     let settings = ransac::Options {
-        threshold: options.pnp_threshold / camera.focal(),
-        confidence: options.reloc_confidence,
+        threshold: options.tracking.pnp_threshold / camera.focal(),
+        confidence: options.relocalization.confidence,
         max_iterations: i64::try_from(samples).unwrap_or(i64::MAX),
         seed: options.seed,
         ..ransac::Options::default()
@@ -509,18 +515,18 @@ fn try_candidate(
     };
     let refined = optimize_pose(m, camera, frame, &start_pose, options)?;
     summary.refined = Some(refined.inliers());
-    if refined.inliers() < options.reloc_min_inliers {
+    if refined.inliers() < options.relocalization.min_inliers {
         return unplaced(summary, matched);
     }
     let mut last = refined;
-    if last.inliers() < options.recovery_tracked {
+    if last.inliers() < options.tracking.recovery_tracked {
         let (searched, all) = project_more(m, camera, frame, keyframe, &last, &found, options)?;
         last = searched;
         matched = merged(&matched, &all);
     }
     summary.found = Some(last.inliers());
     Ok(Attempt {
-        tracked: (last.inliers() >= options.recovery_tracked).then_some(last),
+        tracked: (last.inliers() >= options.tracking.recovery_tracked).then_some(last),
         summary,
         matched,
     })
@@ -540,7 +546,7 @@ fn try_candidate(
 ///
 /// # Returns
 ///
-/// The frame placed with `recovery_tracked` inliers or more, or none; how the search went;
+/// The frame placed with `tracking.recovery_tracked` inliers or more, or none; how the search went;
 /// each keypoint's match in the last candidate tried.
 ///
 /// # Errors

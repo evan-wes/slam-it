@@ -38,6 +38,10 @@ void bind_tracking(nanobind::module_& m);
 /// @param m The submodule.
 void bind_mapping(nanobind::module_& m);
 
+/// @brief Bind `slam_it.edge.covisibility`'s compiled functions.
+/// @param m The submodule.
+void bind_covisibility(nanobind::module_& m);
+
 /// @brief Bind `slam_it.edge.database`'s compiled functions.
 /// @param m The submodule.
 void bind_database(nanobind::module_& m);

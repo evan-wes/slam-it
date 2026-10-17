@@ -14,8 +14,8 @@ BASE and NEW are ``scripts/measure_testset.py``'s folders (or a seed's of
   that then failed the local map among them; a map reset later keeps its record); it ends
   relocalised (the next frame placed by relocalisation), recovered (tracked otherwise), lost
   (its last frame lost the track) or with the sequence. Each batch's stretches and their frames
-  by ending, a group a row, and the frames lost stretches waited past ``lost_frames`` (the
-  run's own setting): those a map lost after ``lost_frames`` failures in a row would not have.
+  by ending, a group a row, and the frames lost stretches waited past ``loss.lost_frames`` (the
+  run's own setting): those a map lost after ``loss.lost_frames`` failures in a row would not have.
 - **Latency by frame**: building and tracking a frame, as :func:`slam_it.eval.budgets.judge`
   times it, by what the frame needed: relocalised, relocalisation tried with nothing placed,
   placed otherwise, or none of these. Each kind's frames, median, 95th percentile and slowest,
@@ -248,7 +248,7 @@ def endings(batch: Batch, names: list[str]) -> list[str]:
     for name in names:
         run = runs.read_run(batch.folder / name / "run")
         key = group(batch.results[name])
-        lost_frames = int(run.settings["lost_frames"])
+        lost_frames = int(run.settings["loss"]["lost_frames"])
         for stretch in stretches(run.diagnostics):
             count[key][stretch.ending] += 1
             frames[key][stretch.ending] += stretch.frames

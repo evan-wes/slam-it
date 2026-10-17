@@ -235,16 +235,18 @@ Result<void> check_lengths(const Map& m) {
   const std::size_t k = m.kf_id.size();
   const std::size_t t = m.kp_point.size();
   const std::size_t p = m.pt_id.size();
-  const bool ok =
-      m.kf_time.size() == k && m.kf_pose.size() == k && m.kf_start.size() == k + 1 &&
-      m.kp_xy.size() == t && m.kp_level.size() == t && m.kp_angle.size() == t &&
-      m.kp_descriptor.size() == t && m.kp_bearing.size() == t && m.kp_depth.size() == t &&
-      m.kp_right.size() == t && m.pt_xyz.size() == p && m.pt_descriptor.size() == p &&
-      m.pt_normal.size() == p && m.pt_min_distance.size() == p && m.pt_max_distance.size() == p &&
-      m.pt_visible.size() == p && m.pt_found.size() == p && m.pt_first_kf.size() == p &&
-      m.pt_reference_kf.size() == p && m.gone_pt_xyz.size() == m.gone_pt_id.size() &&
-      m.gone_pt_how.size() == m.gone_pt_id.size() && m.gone_kf_time.size() == m.gone_kf_id.size() &&
-      m.gone_kf_pose.size() == m.gone_kf_id.size();
+  const bool ok = m.kf_time.size() == k && m.kf_pose.size() == k && m.kf_parent.size() == k &&
+                  m.kf_start.size() == k + 1 && m.kp_xy.size() == t && m.kp_level.size() == t &&
+                  m.kp_angle.size() == t && m.kp_descriptor.size() == t &&
+                  m.kp_bearing.size() == t && m.kp_depth.size() == t && m.kp_right.size() == t &&
+                  m.pt_xyz.size() == p && m.pt_descriptor.size() == p && m.pt_normal.size() == p &&
+                  m.pt_min_distance.size() == p && m.pt_max_distance.size() == p &&
+                  m.pt_visible.size() == p && m.pt_found.size() == p && m.pt_first_kf.size() == p &&
+                  m.pt_reference_kf.size() == p && m.gone_pt_xyz.size() == m.gone_pt_id.size() &&
+                  m.gone_pt_how.size() == m.gone_pt_id.size() &&
+                  m.gone_kf_time.size() == m.gone_kf_id.size() &&
+                  m.gone_kf_pose.size() == m.gone_kf_id.size() &&
+                  m.gone_kf_parent.size() == m.gone_kf_id.size();
   if (!ok) {
     return fail(ErrorKind::kInvalidInput, "map: every table's arrays must have its row count");
   }
@@ -319,6 +321,13 @@ Result<void> check_map(const Map& m) {
   if (auto ok = check_ids(m.pt_id, m.next_pt_id, "pt_id"); !ok) {
     return ok;
   }
+  for (std::size_t k = 0; k < m.kf_parent.size(); ++k) {
+    const std::int64_t parent = m.kf_parent[k];
+    if (parent == m.kf_id[k] || (parent != -1 && row_of(m.kf_id, parent) < 0)) {
+      return fail(ErrorKind::kInvalidInput,
+                  "map.kf_parent: a parent must be -1 or another of its keyframes");
+    }
+  }
   if (std::ranges::any_of(m.kp_point, [&](std::int64_t id) {
         return id < -1 || (id >= 0 && row_of(m.pt_id, id) < 0);
       })) {
@@ -349,6 +358,7 @@ void clear_gone(Map& m) {
   m.gone_kf_id.clear();
   m.gone_kf_time.clear();
   m.gone_kf_pose.clear();
+  m.gone_kf_parent.clear();
 }
 
 void index_observations(Map& m) { m.pt_observations = indexed(m); }
@@ -371,15 +381,6 @@ Eigen::Vector3d camera_centre(const Eigen::Matrix4d& pose) {
 }
 
 Eigen::Vector3d centre(const Map& m, std::size_t k) { return camera_centre(m.kf_pose[k]); }
-
-std::vector<std::int64_t> window(const Map& m, std::int64_t size) {
-  const auto count = static_cast<std::int64_t>(keyframe_count(m));
-  std::vector<std::int64_t> out;
-  for (std::int64_t k = std::max<std::int64_t>(0, count - size); k < count; ++k) {
-    out.push_back(k);
-  }
-  return out;
-}
 
 std::vector<std::int64_t> observed_by(const Map& m, std::span<const std::int64_t> keyframes) {
   std::set<std::int64_t> ids;
@@ -406,8 +407,8 @@ double viewing_cos(const Map& m, std::size_t p, const Eigen::Vector3d& offset, d
 }
 
 bool in_distance_range(const Map& m, std::size_t p, double distance, const Options& options) {
-  return distance >= options.min_distance_margin * m.pt_min_distance[p] &&
-         distance <= options.max_distance_margin * m.pt_max_distance[p];
+  return distance >= options.tracking.min_distance_margin * m.pt_min_distance[p] &&
+         distance <= options.tracking.max_distance_margin * m.pt_max_distance[p];
 }
 
 Result<std::vector<std::int64_t>> predict_level(const Map& m, std::span<const std::int64_t> rows,
@@ -454,6 +455,7 @@ Result<void> insert_keyframe(Map& m, const Frame& frame, const Eigen::Matrix4d& 
   m.kf_id.push_back(m.next_kf_id++);
   m.kf_time.push_back(frame.timestamp);
   m.kf_pose.push_back(pose);
+  m.kf_parent.push_back(-1);
   m.kf_start.push_back(first + static_cast<std::int64_t>(n));
   for (std::size_t i = 0; i < n; ++i) {
     const foundations::orb::Keypoint& k = frame.features.keypoints[i];
@@ -602,6 +604,13 @@ Result<void> erase_keyframe(Map& m, std::int64_t k) {
     return ok;
   }
   const auto row = static_cast<std::size_t>(k);
+  if (const auto child = std::ranges::find(m.kf_parent, m.kf_id[row]); child != m.kf_parent.end()) {
+    const auto id = m.kf_id[static_cast<std::size_t>(child - m.kf_parent.begin())];
+    return fail(ErrorKind::kInvalidInput,
+                "k: keyframe " + std::to_string(m.kf_id[row]) + " is still keyframe " +
+                    std::to_string(id) +
+                    "'s parent (covisibility's cull gives its children new parents first)");
+  }
   const std::int64_t start = m.kf_start[row];
   const std::int64_t stop = m.kf_start[row + 1];
   std::vector<std::int64_t> rows;
@@ -625,9 +634,11 @@ Result<void> erase_keyframe(Map& m, std::int64_t k) {
   m.gone_kf_id.push_back(m.kf_id[row]);
   m.gone_kf_time.push_back(m.kf_time[row]);
   m.gone_kf_pose.push_back(m.kf_pose[row]);
+  m.gone_kf_parent.push_back(m.kf_parent[row]);
   m.kf_id.erase(m.kf_id.begin() + at);
   m.kf_time.erase(m.kf_time.begin() + at);
   m.kf_pose.erase(m.kf_pose.begin() + at);
+  m.kf_parent.erase(m.kf_parent.begin() + at);
   m.kf_start.erase(m.kf_start.begin() + at + 1);
   for (std::size_t i = row + 1; i < m.kf_start.size(); ++i) {
     m.kf_start[i] -= stop - start;

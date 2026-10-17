@@ -22,8 +22,13 @@ from tests.edge import room
 FRAMES = 40
 """Frames rendered for the session's states."""
 
-OPTIONS = Options(
-    n_features=600, init_window=50.0, init_min_matches=50, min_init_features_depth=200
+OPTIONS = Options().with_settings(
+    {
+        "features.n_features": 600,
+        "initialization.window": 50.0,
+        "initialization.min_matches": 50,
+        "initialization.min_features_depth": 200,
+    }
 )
 """ORB-SLAM's defaults scaled to the room's 320x240 images (its are for 640x480)."""
 
@@ -60,9 +65,9 @@ def words_for(options: Options) -> vocabulary.Vocabulary | None:
     Returns
     -------
     slam_it.foundations.vocabulary.Vocabulary or None
-        The committed vocabulary with ``relocalize`` on, None with it off.
+        The committed vocabulary with ``relocalization.enabled`` on, None with it off.
     """
-    return vocabularies.default() if options.relocalize else None
+    return vocabularies.default() if options.relocalization.enabled else None
 
 
 def assert_close(

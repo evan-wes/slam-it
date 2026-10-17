@@ -1,7 +1,8 @@
 // The 3D panel: one map of the run at a time, the map of the frame shown: its trajectory as
 // tracked, the other backends' beside it, the truth if the map is placed on it (over the frames
-// its trajectory is drawn over, or whole), its keyframes and points alive at the frame, and the
-// camera. Every point and keyframe sits in one buffer with the frames of its life and its map;
+// its trajectory is drawn over, or whole), its keyframes and points alive at the frame, the
+// covisibility graph if asked (each keyframe's line to its parent, and the strong links), and
+// the camera. Every point and keyframe sits in one buffer with the frames of its life and its map;
 // a shader hides each outside them, so scrubbing changes two numbers and rebuilds nothing.
 
 import * as THREE from "three";
@@ -21,10 +22,13 @@ import {
   FRUSTUM_SEGMENTS,
   centres,
   frustums,
+  keyframeSegments,
   lifeAttributes,
+  linkPairs,
   mapAttribute,
   mapDepths,
   mapFrustums,
+  treePairs,
   truthSegments,
 } from "./geometry.js";
 
@@ -79,6 +83,24 @@ function livingMaterial(token, size) {
 }
 
 /**
+ * The lines of some of the covisibility graph's edges, each alive while both its keyframes are.
+ * @param {import("./bundle.js").Backend} run The run.
+ * @param {Int32Array} pairs The keyframes each line joins, two ids a line.
+ * @param {THREE.ShaderMaterial} material Its material (`livingMaterial`).
+ * @param {boolean} visible Whether it is drawn at first.
+ * @returns {THREE.LineSegments} The lines.
+ */
+function graphLine(run, pairs, material, visible) {
+  const segments = keyframeSegments(run.keyframePoses, run.keyframeLives, run.keyframeMaps, pairs);
+  const line = new THREE.LineSegments(
+    livingGeometry(segments.positions, segments.lives, segments.maps, 2),
+    material,
+  );
+  line.visible = visible;
+  return line;
+}
+
+/**
  * A geometry of positions, each with its life and map.
  * @param {Float32Array} positions (V, 3).
  * @param {Int32Array} lives The items' lives, (N, 3).
@@ -122,6 +144,10 @@ export class SceneView {
     this.follow = true;
     /** Whether the truth is drawn whole, rather than over the frames the trajectory is. */
     this.wholeTruth = false;
+    /** Whether the covisibility graph is drawn: the spanning tree and the strong links. */
+    this.graph = false;
+    /** @type {THREE.Object3D[]} The graph's lines, shown with `graph`. */
+    this.graphObjects = [];
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setPixelRatio(window.devicePixelRatio);
     box.append(this.renderer.domElement);
@@ -201,7 +227,9 @@ export class SceneView {
     const camera = this.bundle.info.camera;
     const keyframes = livingMaterial("--keyframe", 1);
     const points = livingMaterial("--point", 2);
-    this.living = [keyframes, points];
+    const tree = livingMaterial("--graph-tree", 1);
+    const links = livingMaterial("--graph-link", 1);
+    this.living = [keyframes, points, tree, links];
     const frames = mapFrustums(
       run.keyframePoses,
       run.keyframeMaps,
@@ -216,7 +244,24 @@ export class SceneView {
       ),
       new THREE.Points(livingGeometry(run.points, run.pointLives, run.pointMaps, 1), points),
     ];
+    this.graphObjects = [
+      graphLine(run, treePairs(run.keyframeParents), tree, this.graph),
+      graphLine(run, linkPairs(run.keyframeLinks), links, this.graph),
+    ];
+    this.runObjects.push(...this.graphObjects);
     this.scene.add(...this.runObjects);
+  }
+
+  /**
+   * Draw the covisibility graph, or not: the spanning tree and the strong links of the map shown.
+   * @param {boolean} shown Whether to draw it.
+   */
+  showGraph(shown) {
+    this.graph = shown;
+    for (const line of this.graphObjects) {
+      line.visible = shown;
+    }
+    this.render();
   }
 
   /**

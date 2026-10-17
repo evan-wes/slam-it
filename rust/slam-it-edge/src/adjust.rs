@@ -63,6 +63,10 @@ pub struct Adjustment {
     pub solves: Vec<Solve>,
     /// The observations forgotten as outliers after the refining solve.
     pub outliers: usize,
+    /// The keyframes adjusted: those given, but the ones held fixed among them.
+    pub free: usize,
+    /// The keyframes held fixed: those given that were, and every other observing their points.
+    pub fixed: usize,
 }
 
 /// The BA problem built from the map, and where its rows came from.
@@ -194,7 +198,7 @@ fn solver_options(options: &Options, iterations: usize) -> ba::Options {
         solver: nls::Options {
             loss: nls::Loss {
                 kind: nls::LossKind::Huber,
-                scale: options.chi2_mono.sqrt(),
+                scale: options.adjustment.chi2_mono.sqrt(),
             },
             max_iterations: iterations as i64,
             ..nls::Options::default()
@@ -307,7 +311,12 @@ pub fn bundle_adjust(
         observing,
         point_of,
     } = build(m, camera, keyframes, fixed, &points)?;
-    let first = ba::solve::solve(&problem, &solver_options(options, options.ba_iterations))?;
+    let held = problem.fixed_poses.iter().filter(|&&f| f).count();
+    let posed = problem.fixed_poses.len();
+    let first = ba::solve::solve(
+        &problem,
+        &solver_options(options, options.adjustment.iterations),
+    )?;
     let first_summary = first.summary.solve;
     let start = std::mem::replace(&mut problem.points, first.points);
     problem.poses = first.poses;
@@ -331,7 +340,7 @@ pub fn bundle_adjust(
     }
     let second = ba::solve::solve(
         &refined,
-        &solver_options(options, options.ba_refine_iterations),
+        &solver_options(options, options.adjustment.refine_iterations),
     )?;
     problem.poses.clone_from(&second.poses);
     problem.points.clone_from(&second.points);
@@ -356,5 +365,7 @@ pub fn bundle_adjust(
     Ok(Adjustment {
         solves: vec![Solve::of(&first_summary), Solve::of(&second.summary.solve)],
         outliers: dropped.len(),
+        free: posed - held,
+        fixed: held,
     })
 }

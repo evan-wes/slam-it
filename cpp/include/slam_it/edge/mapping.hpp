@@ -25,12 +25,16 @@ struct MappingSummary {
   std::int64_t from_depth{0};
   /// @brief Recent points culled.
   std::int64_t culled_points{0};
-  /// @brief Points triangulated with the window's keyframes.
+  /// @brief Points triangulated with the keyframe's best links.
   std::int64_t triangulated{0};
   /// @brief Points fused into another.
   std::int64_t fused{0};
   /// @brief The local bundle adjustment's solves; none if it did not run.
   std::vector<Solve> solves;
+  /// @brief The keyframes it adjusted (0 if it did not run).
+  std::int64_t free{0};
+  /// @brief The keyframes it held fixed.
+  std::int64_t fixed{0};
   /// @brief The observations it dropped.
   std::int64_t outliers{0};
   /// @brief Points erased because the observations dropped, by the adjustment or with a culled
@@ -54,7 +58,7 @@ struct Mapped {
 /// @brief The depth below which a point is close (`slam_it.edge.mapping.close_depth`).
 /// @param camera The camera (its baseline).
 /// @param options The factor.
-/// @return `close_depth` baselines, in metres.
+/// @return `stereo.close_depth` baselines, in metres.
 [[nodiscard]] double close_depth(const Camera& camera, const Options& options);
 
 /// @brief Decide whether a tracked frame becomes a keyframe
@@ -63,13 +67,16 @@ struct Mapped {
 /// @param camera The camera.
 /// @param depth The frame's keypoints' depths (NaN where unknown).
 /// @param tracked Its pose and matches.
+/// @param reference Its reference keyframe's row (`LocalTracking::reference`).
 /// @param mode The pipeline's mode.
 /// @param options The ratios and counts.
 /// @return Whether to insert a keyframe; `InvalidInput` for a map without keyframes, matches
-///         that are not one per depth, or an invalid camera or settings.
+///         that are not one per depth, a reference out of range, or an invalid camera or
+///         settings.
 [[nodiscard]] foundations::Result<bool> need_keyframe(const Map& m, const Camera& camera,
                                                       std::span<const double> depth,
-                                                      const Tracked& tracked, Mode mode,
+                                                      const Tracked& tracked,
+                                                      std::int64_t reference, Mode mode,
                                                       const Options& options);
 
 /// @brief Create points from the newest keyframe's close depth
@@ -103,7 +110,7 @@ struct Mapped {
 [[nodiscard]] foundations::Result<std::vector<std::array<std::int64_t, 2>>> match_for_triangulation(
     const Map& m, const Camera& camera, std::int64_t k1, std::int64_t k2, const Options& options);
 
-/// @brief Triangulate the newest keyframe's free keypoints against the window's
+/// @brief Triangulate the newest keyframe's free keypoints against its best links
 ///        (`slam_it.edge.mapping.triangulate_new_points`, ORB-SLAM's `CreateNewMapPoints`).
 /// @param m The map, changed in place.
 /// @param camera The camera.
@@ -114,23 +121,47 @@ struct Mapped {
 [[nodiscard]] foundations::Result<void> triangulate_new_points(Map& m, const Camera& camera,
                                                                Mode mode, const Options& options);
 
-/// @brief Fuse the newest keyframe's points with the window's
-///        (`slam_it.edge.mapping.fuse_points`, ORB-SLAM's `SearchInNeighbors`, lite).
+/// @brief Fuse the newest keyframe's points with its neighbours'
+///        (`slam_it.edge.mapping.fuse_points`, ORB-SLAM's `SearchInNeighbors`).
 /// @param m The map, changed in place.
 /// @param camera The camera.
-/// @param options The window and thresholds.
+/// @param mode The pipeline's mode.
+/// @param options The neighbours and thresholds.
 /// @return Nothing; `InvalidInput` for a map without keyframes, or an invalid camera or
 ///         settings.
-[[nodiscard]] foundations::Result<void> fuse_points(Map& m, const Camera& camera,
+[[nodiscard]] foundations::Result<void> fuse_points(Map& m, const Camera& camera, Mode mode,
                                                     const Options& options);
 
-/// @brief Cull the window's redundant keyframes (`slam_it.edge.mapping.cull_keyframes`,
+/// @brief The keyframes the newest keyframe's points are fused into
+///        (`slam_it.edge.mapping.fuse_targets`, ORB-SLAM's `SearchInNeighbors`): its best
+///        `mapping.fuse_neighbours` links (`mapping.mono_fuse_neighbours` in monocular), then each
+///        one's best `mapping.fuse_second_neighbours`, leaving out the newest keyframe and repeats
+///        (ORB-SLAM3's order).
+/// @param m The map.
+/// @param mode The pipeline's mode.
+/// @param options The settings.
+/// @return The targets' ids, in order; `InvalidInput` for a map without keyframes or invalid
+///         settings.
+[[nodiscard]] foundations::Result<std::vector<std::int64_t>> fuse_targets(const Map& m, Mode mode,
+                                                                          const Options& options);
+
+/// @brief The keyframes local BA adjusts (`slam_it.edge.mapping.local_ba_keyframes`, ORB-SLAM's
+///        `LocalBundleAdjustment`): the newest and every keyframe linked to it.
+/// @param m The map.
+/// @param options The settings.
+/// @return Their rows, ascending; `InvalidInput` for a map without keyframes or invalid
+///         settings.
+[[nodiscard]] foundations::Result<std::vector<std::int64_t>> local_ba_keyframes(
+    const Map& m, const Options& options);
+
+/// @brief Cull the newest keyframe's redundant links (`slam_it.edge.mapping.cull_keyframes`,
 ///        ORB-SLAM's `KeyFrameCulling`).
 /// @param m The map, changed in place.
 /// @param camera The camera.
 /// @param mode The pipeline's mode.
 /// @param options The fraction and count.
-/// @return Nothing; `InvalidInput` for an invalid camera or settings.
+/// @return Nothing; `InvalidInput` for a map without keyframes, or an invalid camera or
+///         settings.
 [[nodiscard]] foundations::Result<void> cull_keyframes(Map& m, const Camera& camera, Mode mode,
                                                        const Options& options);
 

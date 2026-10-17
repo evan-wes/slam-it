@@ -43,6 +43,12 @@ struct LocalMapSummary {
   std::int64_t matches{0};
   /// @brief The matches the refinement kept.
   std::int64_t inliers{0};
+  /// @brief The local map's keyframes.
+  std::int64_t keyframes{0};
+  /// @brief The points they observe.
+  std::int64_t points{0};
+  /// @brief The frame's reference keyframe, by the run's id; -1 when it was matched to no point.
+  std::int64_t reference{-1};
 };
 
 /// @brief A frame tracked against the local map, and the counts it adds to
@@ -57,12 +63,23 @@ struct LocalTracking {
   /// @brief The id of the map point each keypoint matched before the pose was refined, -1 where
   ///        none.
   std::vector<std::int64_t> matched;
+  /// @brief The local map's keyframes.
+  std::int64_t keyframes{0};
+  /// @brief The points they observe.
+  std::int64_t points{0};
+  /// @brief The frame's reference keyframe's row: the one sharing the most of the points it was
+  ///        matched to before the search.
+  std::int64_t reference{-1};
+  /// @brief Its id in the map.
+  std::int64_t reference_id{-1};
 };
 
 /// @brief How tracking the local map went (`slam_it.edge.tracking.LocalTracking.summary`).
 /// @param local The frame tracked against the local map.
-/// @return The points in view, the matches and the inliers.
-[[nodiscard]] LocalMapSummary summary(const LocalTracking& local);
+/// @param base The run's id of the map's keyframe 0, for the reference keyframe's.
+/// @return The points in view, the matches, the inliers, the local map's size and the reference
+///         keyframe.
+[[nodiscard]] LocalMapSummary summary(const LocalTracking& local, std::int64_t base = 0);
 
 /// @brief How tracking the last frame went (`slam_it.edge.tracking.MotionSummary`).
 struct MotionSummary {
@@ -233,7 +250,7 @@ foundations::Result<std::optional<foundations::ransac::Consensus<Eigen::Matrix4d
 /// @param mode The pipeline's mode.
 /// @param options The window, thresholds and minimums.
 /// @param recovering Whether the frame is a recovery's or the next: the window is then
-///        `recovery_local_window`.
+///        `tracking.recovery_local_window`.
 /// @return The refined frame, the ids of the points in view and of the inliers, and each
 ///         keypoint's match before refinement; `InvalidInput` for matches that are not one per
 ///         keypoint, or an invalid camera or settings.
@@ -248,12 +265,13 @@ foundations::Result<std::optional<foundations::ransac::Consensus<Eigen::Matrix4d
 /// @param m The map.
 /// @param camera The camera.
 /// @param frame The frame.
+/// @param last The point each of the last tracked frame's keypoints was matched to, -1 for none:
+///        the local map is that frame's.
 /// @param options The RANSAC threshold, minimum inliers and seed.
 /// @return The frame placed and refined, none if too few inliers, how far it got, and each
 ///         keypoint's match by descriptor; `InvalidInput` for an invalid camera or settings.
-[[nodiscard]] foundations::Result<Relocalization> relocalize_locally(const Map& m,
-                                                                     const Camera& camera,
-                                                                     const Frame& frame,
-                                                                     const Options& options);
+[[nodiscard]] foundations::Result<Relocalization> relocalize_locally(
+    const Map& m, const Camera& camera, const Frame& frame, std::span<const std::int64_t> last,
+    const Options& options);
 
 }  // namespace slam_it::edge

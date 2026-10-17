@@ -70,6 +70,15 @@ test("each golden backend's arrays agree with its header", async () => {
     assert.equal(run.poseMaps.length, info.tracked, name);
     assert.equal(run.keyframeLives.length / 3, info.made.keyframes, name);
     assert.equal(run.keyframeMaps.length, info.made.keyframes, name);
+    assert.equal(run.keyframeParents.length, info.made.keyframes, name);
+    // The spanning tree joins keyframes of one map; so does each strong link, the lower first.
+    run.keyframeParents.forEach((parent, child) => {
+      assert.ok(parent === -1 || run.keyframeMaps[parent] === run.keyframeMaps[child], name);
+    });
+    for (let l = 0; l < run.keyframeLinks.length; l += 3) {
+      const [a, b, weight] = run.keyframeLinks.subarray(l, l + 3);
+      assert.ok(a < b && weight >= 1 && run.keyframeMaps[a] === run.keyframeMaps[b], name);
+    }
     assert.equal(run.pointLives.length / 3, info.made.points, name);
     assert.equal(run.pointMaps.length, info.made.points, name);
     // Each map's tracked frames are its poses'.
@@ -84,7 +93,7 @@ test("each golden backend's arrays agree with its header", async () => {
   }
 });
 
-test("the loader refuses another format, a mis-shaped array, and an unknown backend", async () => {
+test("the loader refuses another format, a mis-shaped array, an unknown backend or keyframe", async () => {
   /**
    * @param {Record<string, ArrayBuffer>} files Files that replace the golden bundle's.
    * @returns {(path: string) => Promise<ArrayBuffer>} The fetcher.
@@ -94,7 +103,7 @@ test("the loader refuses another format, a mis-shaped array, and an unknown back
   const older = new TextEncoder().encode(JSON.stringify({ ...info, version: 0 })).buffer;
   await assert.rejects(
     loadBundle(over({ "bundle.json": older })),
-    /expected slam-it-bundle version 2/,
+    /expected slam-it-bundle version 3/,
   );
   const short = npy("<f4", "2,", new Float32Array([0, 1]));
   await assert.rejects(
@@ -103,6 +112,33 @@ test("the loader refuses another format, a mis-shaped array, and an unknown back
   );
   const bundle = await loadBundle(fetchGolden);
   await assert.rejects(loadTrack(fetchGolden, bundle, "java"), /the bundle has no java run/);
+  const [name, run] = Object.entries(bundle.info.backends)[0];
+  const k = run.made.keyframes;
+  const parents = new Int32Array(k).fill(-1);
+  parents[k - 1] = k;
+  const past = npy("<i4", `${k},`, parents);
+  const track = await loadTrack(fetchGolden, bundle, name);
+  await assert.rejects(
+    loadBackend(over({ [`${name}/keyframe_parents.npy`]: past }), track),
+    new RegExp(`keyframe_parents.npy: ${k} names none of the run's ${k} keyframes`),
+  );
+  const link = npy("<i4", "1, 3", new Int32Array([0, k, 120]));
+  await assert.rejects(
+    loadBackend(over({ [`${name}/keyframe_links.npy`]: link }), track),
+    /keyframe_links.npy: \d+ names none/,
+  );
+  // Below the least id: a parent under -1 (none), a link's keyframe under 0.
+  parents[k - 1] = -2;
+  const below = npy("<i4", `${k},`, parents);
+  await assert.rejects(
+    loadBackend(over({ [`${name}/keyframe_parents.npy`]: below }), track),
+    /keyframe_parents.npy: -2 names none/,
+  );
+  const unnamed = npy("<i4", "1, 3", new Int32Array([-1, 0, 120]));
+  await assert.rejects(
+    loadBackend(over({ [`${name}/keyframe_links.npy`]: unnamed }), track),
+    /keyframe_links.npy: -1 names none/,
+  );
 });
 
 /**

@@ -55,6 +55,9 @@ struct Map {
   std::vector<double> kf_time;
   /// @brief Its pose `T_cam_world`.
   std::vector<Eigen::Matrix4d> kf_pose;
+  /// @brief Its parent in the spanning tree, another keyframe's id, or -1 (the map's first, and
+  ///        one that has shared no point yet; `slam_it/edge/covisibility.hpp`).
+  std::vector<std::int64_t> kf_parent;
   /// @brief Where each keyframe's keypoints start; the last is the keypoint count.
   std::vector<std::int64_t> kf_start{0};
   /// @brief Each keypoint's pixel.
@@ -109,6 +112,8 @@ struct Map {
   std::vector<double> gone_kf_time;
   /// @brief Their last poses `T_cam_world`.
   std::vector<Eigen::Matrix4d> gone_kf_pose;
+  /// @brief Their last parents.
+  std::vector<std::int64_t> gone_kf_parent;
   /// @brief Each point's observing keypoint rows, ascending: the index of `kp_point` the
   ///        operations here keep. It does not cross to Python; `index_observations` builds it
   ///        for a map assembled column by column.
@@ -184,12 +189,6 @@ void index_observations(Map& m);
 /// @return The centre.
 [[nodiscard]] Eigen::Vector3d centre(const Map& m, std::size_t k);
 
-/// @brief The sliding window: the rows of the last `size` keyframes, oldest first.
-/// @param m The map.
-/// @param size The window's size.
-/// @return The rows.
-[[nodiscard]] std::vector<std::int64_t> window(const Map& m, std::int64_t size);
-
 /// @brief The points the given keyframes observe.
 /// @param m The map.
 /// @param keyframes Keyframe rows.
@@ -208,8 +207,9 @@ void index_observations(Map& m);
                                  double distance);
 
 /// @brief Whether a point lies within the distances it is matchable from
-///        (`slam_it.edge.map.in_distance_range`): from `min_distance_margin` of its minimum
-///        distance to `max_distance_margin` of its maximum (`isInFrustum`, `Fuse`), unchecked.
+///        (`slam_it.edge.map.in_distance_range`): from `tracking.min_distance_margin` of its
+///        minimum distance to `tracking.max_distance_margin` of its maximum (`isInFrustum`,
+///        `Fuse`), unchecked.
 /// @param m The map.
 /// @param p The point's row.
 /// @param distance Its distance from the camera centre.
@@ -292,9 +292,15 @@ void clear_gone(Map& m);
                                                             std::span<const std::int64_t> rows);
 
 /// @brief Remove a keyframe and its keypoints; its points lose an observation each.
+///
+/// A keyframe that is still another's parent is refused, so every parent stays a keyframe of the
+/// map: covisibility's `cull` gives its children new parents first. It guards the parents, not
+/// the root: a childless first keyframe is erased; callers above the map go through `cull`, which
+/// refuses it.
 /// @param m The map.
 /// @param k The keyframe's row.
-/// @return Nothing, or `InvalidInput` for a row out of range.
+/// @return Nothing, or `InvalidInput` for a row out of range or a keyframe that is still a
+///         parent.
 [[nodiscard]] foundations::Result<void> erase_keyframe(Map& m, std::int64_t k);
 
 /// @brief Point a keypoint at a point, or at none, keeping the observation lists.

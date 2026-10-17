@@ -216,9 +216,9 @@ def test_the_summary_says_where_a_run_lost_the_track_and_went_on(
 
     The summary gives each map's stretch of the clip, in its own time, and the loss. The room's
     first ten frames make too few keyframes to keep at the defaults: that map is reset, and only
-    the next is tracked; with every lost map kept (``reset_keyframes`` 0), both are.
+    the next is tracked; with every lost map kept (``loss.reset_keyframes`` 0), both are.
     """
-    blanks = OPTIONS.lost_frames
+    blanks = OPTIONS.loss.lost_frames
     clip = [
         *rendered_room[:10],
         *map(blank, rendered_room[10 : 10 + blanks]),
@@ -229,7 +229,11 @@ def test_the_summary_says_where_a_run_lost_the_track_and_went_on(
     after = [times[10 + blanks], times[-1]]
     for name, options, segments in (
         ("reset", OPTIONS, [after]),
-        ("kept", replace(OPTIONS, reset_keyframes=0, relocalize=False), [[0.0, times[9]], after]),
+        (
+            "kept",
+            OPTIONS.with_settings({"loss.reset_keyframes": 0, "relocalization.enabled": False}),
+            [[0.0, times[9]], after],
+        ),
     ):
         run = vo.run("tum", folders.tum, "rgbd", tmp_path / name, options=options)
         summary = worker.summarize(run, folders.timestamps, "nominal", (320, 240))

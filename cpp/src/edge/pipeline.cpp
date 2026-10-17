@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "slam_it/edge/covisibility.hpp"
 #include "slam_it/edge/mapping.hpp"
 #include "slam_it/edge/tracking.hpp"
 #include "slam_it/foundations/se3.hpp"
@@ -76,11 +77,11 @@ Result<Pipeline> Pipeline::create(Mode mode, Camera camera, Options options,
     return fail(ErrorKind::kInvalidInput,
                 std::string("camera.baseline: ") + name(mode) + " needs a positive baseline");
   }
-  if (options.relocalize && !vocabulary) {
-    return fail(ErrorKind::kInvalidInput, "vocabulary: relocalize needs one");
+  if (options.relocalization.enabled && !vocabulary) {
+    return fail(ErrorKind::kInvalidInput, "vocabulary: relocalization.enabled needs one");
   }
-  if (!options.relocalize && vocabulary) {
-    return fail(ErrorKind::kInvalidInput, "vocabulary: given, but relocalize is off");
+  if (!options.relocalization.enabled && vocabulary) {
+    return fail(ErrorKind::kInvalidInput, "vocabulary: given, but relocalization.enabled is off");
   }
   return Pipeline(mode, std::move(camera), options, std::move(vocabulary));
 }
@@ -131,6 +132,8 @@ Lifetimes Pipeline::lifetimes() const {
                 .keyframe_times = past_times_,
                 .keyframe_poses = past_poses_,
                 .keyframe_lives = keyframe_lives_,
+                .keyframe_parents = past_parents_,
+                .keyframe_links = past_links_,
                 .point_maps = point_maps_,
                 .keyframe_maps = keyframe_maps_};
   if (map_) {
@@ -141,9 +144,17 @@ Lifetimes Pipeline::lifetimes() const {
       const auto id = static_cast<std::size_t>(kf_base_ + map_->kf_id[k]);
       out.keyframe_times[id] = map_->kf_time[k];
       out.keyframe_poses[id] = map_->kf_pose[k];
+      out.keyframe_parents[id] = run_id(map_->kf_parent[k]);
+    }
+    for (const auto& link : strong_links(*map_, options_)) {
+      out.keyframe_links.push_back({kf_base_ + link[0], kf_base_ + link[1], link[2]});
     }
   }
   return out;
+}
+
+std::int64_t Pipeline::run_id(std::int64_t parent) const {
+  return parent >= 0 ? kf_base_ + parent : -1;
 }
 
 void Pipeline::date() {
@@ -161,6 +172,7 @@ void Pipeline::date() {
   keyframe_maps_.resize(keyframes, *map_id_);
   past_times_.resize(keyframes, 0.0);
   past_poses_.resize(keyframes, Eigen::Matrix4d::Identity());
+  past_parents_.resize(keyframes, -1);
   for (std::size_t g = 0; g < m.gone_pt_id.size(); ++g) {
     const auto id = static_cast<std::size_t>(pt_base_ + m.gone_pt_id[g]);
     point_lives_[id][1] = frame;
@@ -173,13 +185,14 @@ void Pipeline::date() {
     keyframe_lives_[id][2] = static_cast<std::int64_t>(Removal::kCulled);
     past_times_[id] = m.gone_kf_time[g];
     past_poses_[id] = m.gone_kf_pose[g];
+    past_parents_[id] = run_id(m.gone_kf_parent[g]);
   }
   clear_gone(m);
 }
 
 LostSummary Pipeline::close(const Map& m) {
   const std::int64_t frame = frames_ - 1;  // dated already
-  const bool reset = std::cmp_less_equal(keyframe_count(m), options_.reset_keyframes);
+  const bool reset = std::cmp_less_equal(keyframe_count(m), options_.loss.reset_keyframes);
   const auto code = static_cast<std::int64_t>(Removal::kReset);
   for (std::size_t p = 0; p < point_count(m); ++p) {
     const auto id = static_cast<std::size_t>(pt_base_ + m.pt_id[p]);
@@ -193,10 +206,14 @@ LostSummary Pipeline::close(const Map& m) {
     const auto id = static_cast<std::size_t>(kf_base_ + m.kf_id[k]);
     past_times_[id] = m.kf_time[k];
     past_poses_[id] = m.kf_pose[k];
+    past_parents_[id] = run_id(m.kf_parent[k]);
     if (reset) {
       keyframe_lives_[id][1] = frame;
       keyframe_lives_[id][2] = code;
     }
+  }
+  for (const auto& link : strong_links(m, options_)) {
+    past_links_.push_back({kf_base_ + link[0], kf_base_ + link[1], link[2]});
   }
   const LostSummary lost{.keyframes = static_cast<std::int64_t>(keyframe_count(m)),
                          .points = static_cast<std::int64_t>(point_count(m)),
@@ -266,7 +283,7 @@ Result<Initialization> Pipeline::initialize_monocular(const Frame& frame) {
     return Initialization{.started = std::nullopt,
                           .summary = {.outcome = outcome, .matches = matches, .solves = {}}};
   };
-  if (std::cmp_less_equal(keypoint_count(frame), options_.min_init_features)) {
+  if (std::cmp_less_equal(keypoint_count(frame), options_.initialization.min_features)) {
     reference_.reset();  // too few features: ORB-SLAM drops its initializer
     return not_started(Outcome::kTooFewFeatures, std::nullopt);
   }
@@ -278,7 +295,7 @@ Result<Initialization> Pipeline::initialize_monocular(const Frame& frame) {
   if (!matched) {
     return std::unexpected(std::move(matched.error()));
   }
-  if (std::cmp_less(matched->size(), options_.init_min_matches)) {
+  if (std::cmp_less(matched->size(), options_.initialization.min_matches)) {
     set_reference(frame);  // the views no longer overlap enough: start again
     return not_started(Outcome::kReferenceReplaced, static_cast<std::int64_t>(matched->size()));
   }
@@ -353,10 +370,11 @@ bool Pipeline::record_failure(const Frame& frame, std::size_t keyframes) {
   velocity_.reset();
   const double since = lost_since_.has_value() ? *lost_since_ : frame.timestamp;
   lost_since_ = since;
-  if (!options_.relocalize || std::cmp_less_equal(keyframes, options_.reset_keyframes)) {
-    return failures_ >= options_.lost_frames;
+  if (!options_.relocalization.enabled ||
+      std::cmp_less_equal(keyframes, options_.loss.reset_keyframes)) {
+    return failures_ >= options_.loss.lost_frames;
   }
-  return frame.timestamp - since > options_.relocalize_seconds;
+  return frame.timestamp - since > options_.loss.relocalize_seconds;
 }
 
 Result<Pipeline::Placed> Pipeline::place(const Map& m, const Frame& frame) const {
@@ -379,7 +397,7 @@ Result<Pipeline::Placed> Pipeline::place(const Map& m, const Frame& frame) const
                   .summary = std::move(summary),
                   .matched = std::move(motion->matched)};
   }
-  auto recovery = relocalize_locally(m, camera_, frame, options_);
+  auto recovery = relocalize_locally(m, camera_, frame, last_tracked_->points, options_);
   if (!recovery) {
     return std::unexpected(std::move(recovery.error()));
   }
@@ -422,9 +440,11 @@ Result<Pipeline::Refined> Pipeline::refine(Map& m, const Frame& frame, const Tra
     return std::unexpected(std::move(ok.error()));
   }
   Refined out{.tracked = std::nullopt,
-              .summary = edge::summary(*local),
-              .matched = std::move(local->matched)};
-  const std::int64_t needed = recent ? options_.recovery_tracked : options_.min_tracked;
+              .summary = edge::summary(*local, kf_base_),
+              .matched = std::move(local->matched),
+              .reference = local->reference};
+  const std::int64_t needed =
+      recent ? options_.tracking.recovery_tracked : options_.tracking.min_tracked;
   if (inliers(local->tracked) >= needed) {
     out.tracked = std::move(local->tracked);
   }
@@ -447,15 +467,17 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
   } else if (since_recovery_) {
     ++*since_recovery_;
   }
-  const bool recent = since_recovery_ && *since_recovery_ < options_.max_frames;
-  const bool wide = since_recovery_ && *since_recovery_ < options_.recovery_window_frames;
+  const bool recent = since_recovery_ && *since_recovery_ < options_.tracking.max_frames;
+  const bool wide = since_recovery_ && *since_recovery_ < options_.tracking.recovery_window_frames;
   std::optional<Tracked> tracked;
+  std::int64_t reference = -1;
   if (where) {
     auto refined = refine(m, frame, *where, wide, recent);
     if (!refined) {
       return std::unexpected(std::move(refined.error()));
     }
     tracked = std::move(refined->tracked);
+    reference = refined->reference;
     summary.local_map = refined->summary;
     matched = std::move(refined->matched);
   }
@@ -469,9 +491,9 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
                 .made = {},
                 .lost = lost};
   }
-  const bool held = recent && std::cmp_greater(keyframe_count(m), options_.max_frames);
+  const bool held = recent && std::cmp_greater(keyframe_count(m), options_.tracking.max_frames);
   auto need = held ? Result<bool>(false)
-                   : need_keyframe(m, camera_, frame.depth, *tracked, mode_, options_);
+                   : need_keyframe(m, camera_, frame.depth, *tracked, reference, mode_, options_);
   if (!need) {
     return std::unexpected(std::move(need.error()));
   }

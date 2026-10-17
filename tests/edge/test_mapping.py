@@ -1,13 +1,17 @@
 """Local mapping's tests: every backend against the reference, and its rules.
 
 On the room's truth map with a later frame tracked against it: each step on the map with
-that frame inserted as its newest keyframe, and the whole of :func:`mapping.process`.
+that frame inserted as its newest keyframe, and the whole of :func:`mapping.process`. What
+fusion and local BA take from the graph (:func:`mapping.fuse_targets`,
+:func:`mapping.local_ba_keyframes`) is held to the covisibility fixture's maps in
+``tests/edge/test_covisibility.py``.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from functools import partial
 
 import numpy as np
 import pytest
@@ -38,12 +42,13 @@ MODES = ("monocular", "stereo", "rgbd")
 
 @dataclass(frozen=True)
 class Mapped:
-    """The truth map, a frame tracked against it, and the map with that frame inserted."""
+    """The truth map, a frame tracked against it, the map with it inserted, its reference."""
 
     map: Map
     frame: Frame
     tracked: Tracked
     inserted: Map
+    reference: int
 
 
 @pytest.fixture(scope="module")
@@ -57,11 +62,9 @@ def mapped(truth: Truth) -> Mapped:
         predicted=truth.poses[CURRENT], mode="rgbd", options=OPTIONS,
     ).tracked  # fmt: skip
     assert found is not None
-    tracked = tracking.track_local_map(
-        m, CAMERA, frame, found, mode="rgbd", options=OPTIONS
-    ).tracked
-    inserted = maps.insert_keyframe(m, frame, tracked.pose, tracked.points)
-    return Mapped(m, frame, tracked, inserted)
+    local = tracking.track_local_map(m, CAMERA, frame, found, mode="rgbd", options=OPTIONS)
+    inserted = maps.insert_keyframe(m, frame, local.tracked.pose, local.tracked.points)
+    return Mapped(m, frame, local.tracked, inserted, local.reference)
 
 
 def _same(backend: str, function: str, *args: object, **kwargs: object) -> None:
@@ -84,11 +87,11 @@ def test_steps_match_the_reference(backend: str, mode: str, mapped: Mapped) -> N
     """Every backend runs each step as the reference does, in every mode."""
     m = mapped.inserted
     _same(backend, "need_keyframe", mapped.map, CAMERA, mapped.frame.depth, mapped.tracked,
-          mode=mode, options=OPTIONS)  # fmt: skip
+          reference=mapped.reference, mode=mode, options=OPTIONS)  # fmt: skip
     _same(backend, "create_points_from_depth", m, CAMERA, OPTIONS)
     _same(backend, "cull_points", m, mode, OPTIONS)
     _same(backend, "triangulate_new_points", m, CAMERA, mode, OPTIONS)
-    _same(backend, "fuse_points", m, CAMERA, OPTIONS)
+    _same(backend, "fuse_points", m, CAMERA, mode, OPTIONS)
     _same(backend, "cull_keyframes", m, CAMERA, mode, OPTIONS)
 
 
@@ -116,8 +119,8 @@ def test_process_matches_the_reference(backend: str, mode: str, mapped: Mapped) 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_local_ba_waits_for_enough_keyframes(backend: str, mapped: Mapped) -> None:
-    """Before the map holds ``ba_min_keyframes``, no local BA: the poses stay as tracked."""
-    waiting = replace(OPTIONS, ba_min_keyframes=mapped.map.keyframes + 2)
+    """Before the map holds ``adjustment.min_keyframes``, no local BA: the poses stay as tracked."""
+    waiting = OPTIONS.with_settings({"adjustment.min_keyframes": mapped.map.keyframes + 2})
     args = (mapped.map, CAMERA, mapped.frame, mapped.tracked)
     waited = mapping.process(*args, mode="rgbd", options=waiting)
     held = waited.map
@@ -142,11 +145,52 @@ def test_keyframe_needed_when_tracking_thins(mapped: Mapped) -> None:
         return Tracked(pose=tracked.pose, points=points)
 
     def need(t: Tracked) -> bool:
-        return mapping.need_keyframe(m, CAMERA, frame.depth, t, mode="monocular", options=OPTIONS)
+        return mapping.need_keyframe(
+            m, CAMERA, frame.depth, t, reference=m.keyframes - 1, mode="monocular", options=OPTIONS
+        )
 
-    assert need(keeping(OPTIONS.min_keyframe_inliers + 1))
-    assert not need(keeping(OPTIONS.min_keyframe_inliers))
+    assert need(keeping(OPTIONS.keyframes.min_inliers + 1))
+    assert not need(keeping(OPTIONS.keyframes.min_inliers))
     assert not need(tracked)
+
+
+def _reference_points(m: Map, row: int) -> int:
+    """Return the points a keyframe sees from enough keyframes (``TrackedMapPoints``), by hand."""
+    keyframes = OPTIONS.keyframes
+    least = (
+        keyframes.ref_min_observations_early if m.keyframes <= 2 else keyframes.ref_min_observations
+    )
+    seen = m.kp_point[m.keypoint_rows(row)]
+    rows = m.point_rows(seen[seen >= 0])
+    return int(np.count_nonzero(maps.observation_weight(m, rows[rows >= 0]) >= least))
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_the_keyframe_decision_counts_against_its_reference(backend: str, mapped: Mapped) -> None:
+    """The same frame, against two reference keyframes seeing different counts, decides both ways.
+
+    It tracks the share of the fewer the one sees, so needs no keyframe against it, and less than
+    the share of the more the other sees, so needs one against that.
+    """
+    m, frame, tracked = mapped.map, mapped.frame, mapped.tracked
+    counts = [_reference_points(m, row) for row in range(m.keyframes)]
+    few, many = int(np.argmin(counts)), int(np.argmax(counts))
+    ratio = OPTIONS.keyframes.mono_ref_ratio
+    kept = int(np.ceil(ratio * counts[few]))
+    assert OPTIONS.keyframes.min_inliers < kept < ratio * counts[many], counts
+    matched = np.flatnonzero(tracked.points >= 0)[:kept]
+    points = np.full_like(tracked.points, -1)
+    points[matched] = tracked.points[matched]
+    t = Tracked(pose=tracked.pose, points=points)
+
+    def need(reference: int) -> bool:
+        return mapping.need_keyframe(
+            m, CAMERA, frame.depth, t, reference=reference, mode="monocular", options=OPTIONS,
+            backend=backend,
+        )  # fmt: skip
+
+    assert not need(few)
+    assert need(many)
 
 
 def test_points_from_depth_start_nearest(mapped: Mapped) -> None:
@@ -169,8 +213,8 @@ def test_rarely_found_new_points_are_culled(mapped: Mapped) -> None:
     m = mapped.inserted
     found = m.pt_found.copy()
     visible = m.pt_visible.copy()
-    recent = np.flatnonzero(m.kf_id[-1] - m.pt_first_kf <= OPTIONS.recent_point_keyframes)
-    old = np.flatnonzero(m.kf_id[-1] - m.pt_first_kf > OPTIONS.recent_point_keyframes)
+    recent = np.flatnonzero(m.kf_id[-1] - m.pt_first_kf <= OPTIONS.mapping.recent_point_keyframes)
+    old = np.flatnonzero(m.kf_id[-1] - m.pt_first_kf > OPTIONS.mapping.recent_point_keyframes)
     assert len(recent)
     assert len(old)
     visible[[recent[0], old[0]]] = 10
@@ -188,7 +232,7 @@ def test_triangulation_matches_free_keypoints_once(mapped: Mapped) -> None:
     assert np.all(m.kp_point[pairs] < 0)
     assert len(np.unique(pairs[:, 0])) == len(pairs) == len(np.unique(pairs[:, 1]))
     bits = matching.distances(m.kp_descriptor[pairs[:, 0]], m.kp_descriptor[pairs[:, 1]])
-    assert np.all(np.diagonal(bits) <= OPTIONS.th_low)
+    assert np.all(np.diagonal(bits) <= OPTIONS.matching.th_low)
 
 
 def test_triangulated_points_reproject_in_both_views(mapped: Mapped) -> None:
@@ -213,9 +257,9 @@ def test_triangulated_points_reproject_in_both_views(mapped: Mapped) -> None:
 
 
 def test_fusion_adds_observations(mapped: Mapped) -> None:
-    """Fusing finds the newest keyframe's points in the window's keyframes, and theirs in it."""
+    """Fusing finds the newest keyframe's points in its neighbours, and theirs in it."""
     m = mapped.inserted
-    fused = mapping.fuse_points(m, CAMERA, OPTIONS)
+    fused = mapping.fuse_points(m, CAMERA, "rgbd", OPTIONS)
     assert np.count_nonzero(fused.kp_point >= 0) > np.count_nonzero(m.kp_point >= 0)
     assert fused.points <= m.points
 
@@ -249,9 +293,9 @@ def test_process_adds_a_keyframe(mode: str, mapped: Mapped) -> None:
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_rejects_malformed_arguments(backend: str, mapped: Mapped) -> None:
-    """A bad mode, keyframe rows, matches or an empty map raise before any backend runs."""
+    """A bad mode, keyframe rows, matches, reference keyframe or an empty map raise first."""
     m = mapped.inserted
-    empty = maps.empty(OPTIONS.levels, OPTIONS.scale_factor)
+    empty = maps.empty(OPTIONS.features.levels, OPTIONS.features.scale_factor)
     short = Tracked(pose=mapped.tracked.pose, points=mapped.tracked.points[:-1])
     calls: list[Callable[[], object]] = [
         lambda: mapping.cull_points(m, "lidar", OPTIONS, backend=backend),
@@ -261,6 +305,24 @@ def test_rejects_malformed_arguments(backend: str, mapped: Mapped) -> None:
             m, CAMERA, 0, m.keyframes, OPTIONS, backend=backend
         ),
         lambda: mapping.create_points_from_depth(empty, CAMERA, OPTIONS, backend=backend),
+        lambda: mapping.cull_keyframes(empty, CAMERA, "rgbd", OPTIONS, backend=backend),
+        lambda: mapping.fuse_targets(empty, "rgbd", OPTIONS, backend=backend),
+        lambda: mapping.fuse_targets(m, "lidar", OPTIONS, backend=backend),
+        lambda: mapping.local_ba_keyframes(empty, OPTIONS, backend=backend),
+        *(
+            partial(
+                mapping.need_keyframe,
+                m,
+                CAMERA,
+                mapped.frame.depth,
+                mapped.tracked,
+                reference=reference,
+                mode="rgbd",
+                options=OPTIONS,
+                backend=backend,
+            )
+            for reference in (-1, m.keyframes)
+        ),
         lambda: mapping.process(
             m, CAMERA, mapped.frame, short, mode="rgbd", options=OPTIONS, backend=backend
         ),

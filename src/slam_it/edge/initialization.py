@@ -3,9 +3,9 @@
 ORB-SLAM's ``StereoInitialization`` and ``MonocularInitialization``:
 
 - **Stereo and RGB-D** (:func:`initialize_from_depth`): the first frame with more than
-  ``min_init_features_depth`` keypoints is the first keyframe, at the origin, with a point at
-  every keypoint with depth, so the map is metric from the start. A map started from too
-  little depth to track is lost and reset (:class:`slam_it.edge.pipeline.Pipeline`).
+  ``initialization.min_features_depth`` keypoints is the first keyframe, at the origin, with a point
+  at every keypoint with depth, so the map is metric from the start. A map started from too little
+  depth to track is lost and reset (:class:`slam_it.edge.pipeline.Pipeline`).
 - **Monocular** (:func:`initialize_monocular`): a reference frame and a later one are matched
   within a window (:func:`match_for_initialization`, ``SearchForInitialization``) and
   initialised by :func:`slam_it.foundations.twoview.initialize`; the two become keyframes, a
@@ -28,7 +28,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slam_it import backends
-from slam_it.edge import adjust, frames
+from slam_it.edge import adjust, covisibility, frames
 from slam_it.edge import map as maps
 from slam_it.edge.frames import Camera, Frame, Tracked
 from slam_it.edge.map import Map
@@ -162,8 +162,8 @@ class Implementation(Protocol):
 
 def _check_pyramid(frame: Frame, options: Options, name: str) -> None:
     """Refuse a frame whose pyramid is not the settings'."""
-    if frame.features.levels != options.levels or (
-        frame.features.scale_factor != options.scale_factor
+    if frame.features.levels != options.features.levels or (
+        frame.features.scale_factor != options.features.scale_factor
     ):
         raise InvalidInputError(f"{name}: its pyramid must be the settings'")
 
@@ -195,12 +195,12 @@ def _failed(
 
 def _initialize_from_depth(frame: Frame, options: Options) -> Initialization:
     """Start the map from a stereo or RGB-D frame (reference)."""
-    if frame.size <= options.min_init_features_depth:
+    if frame.size <= options.initialization.min_features_depth:
         return _failed(Outcome.TOO_FEW_FEATURES)
     has_depth = np.flatnonzero(~np.isnan(frame.depth) & ~np.isnan(frame.bearings[:, 0]))
     pose = np.eye(4)
     m = maps.insert_keyframe(
-        maps.empty(options.levels, options.scale_factor),
+        maps.empty(options.features.levels, options.features.scale_factor),
         frame,
         pose,
         np.full(frame.size, -1, dtype=np.int64),
@@ -235,7 +235,7 @@ def initialize_from_depth(
     Initialization
         The map, its one keyframe at the origin with a point at every keypoint with depth
         (and a bearing), and the frame tracked; none unless the frame has more than
-        ``min_init_features_depth`` keypoints (:attr:`Outcome.TOO_FEW_FEATURES`).
+        ``initialization.min_features_depth`` keypoints (:attr:`Outcome.TOO_FEW_FEATURES`).
 
     Raises
     ------
@@ -262,7 +262,7 @@ def _match_for_initialization(
     n = len(rows)
     projections = matching.Projections(
         xy=previous[rows],
-        radius=np.full(n, options.init_window),
+        radius=np.full(n, options.initialization.window),
         min_level=np.zeros(n, dtype=np.int64),
         max_level=np.zeros(n, dtype=np.int64),
         descriptors=reference.features.descriptors[rows],
@@ -270,7 +270,9 @@ def _match_for_initialization(
         right=np.full(n, np.nan),
     )
     searched = matching.SearchOptions(
-        max_distance=options.th_low, ratio=options.init_ratio, check_orientation=True
+        max_distance=options.matching.th_low,
+        ratio=options.initialization.ratio,
+        check_orientation=True,
     )
     found = frames.search(frame, projections, searched)
     return matching.Matches(
@@ -291,7 +293,7 @@ def match_for_initialization(
 
     Each level-0 keypoint of the reference is searched where it was last matched
     (``previous``, ORB-SLAM's ``vbPrevMatched``: the caller moves a keypoint's position to its
-    match's after each search, so the window follows the motion), within ``init_window``,
+    match's after each search, so the window follows the motion), within ``initialization.window``,
     among the later frame's level-0 keypoints, with ORB-SLAM's stricter distance, its 0.9
     ratio test and the rotation check.
 
@@ -348,12 +350,12 @@ def _kept_points(
     """Return the matches a monocular start keeps, and their points (``CheckRT``).
 
     The chosen motion's inliers in front of both views whose rays' cosine is below
-    ``init_parallax_cos``: two-view's own triangulated points need its larger parallax, which
-    only decides whether the views initialise.
+    ``initialization.parallax_cos``: two-view's own triangulated points need its larger parallax,
+    which only decides whether the views initialise.
     """
     inliers = np.flatnonzero(result.inliers)
     found = triangulation.two_view(result.relative_pose, bearings1[inliers], bearings2[inliers])
-    keep = found.in_front & (np.cos(found.parallax) < options.init_parallax_cos)
+    keep = found.in_front & (np.cos(found.parallax) < options.initialization.parallax_cos)
     return inliers[keep], found.points[keep]
 
 
@@ -366,7 +368,7 @@ def _initialize_monocular(
         frame.bearings[matched[:, 1], 0]
     )
     pairs = matched[valid]
-    if len(pairs) < options.init_min_matches:
+    if len(pairs) < options.initialization.min_matches:
         return _failed(Outcome.TOO_FEW_MATCHES, given)
     try:
         result = twoview.initialize(
@@ -375,7 +377,7 @@ def _initialize_monocular(
             twoview.Options(
                 focal=camera.focal,
                 seed=options.seed,
-                max_iterations=options.init_ransac_iterations,
+                max_iterations=options.initialization.ransac_iterations,
             ),
         )
     except DegenerateError:
@@ -386,7 +388,7 @@ def _initialize_monocular(
         result, reference.bearings[pairs[:, 0]], frame.bearings[pairs[:, 1]], options
     )
     m = maps.insert_keyframe(
-        maps.empty(options.levels, options.scale_factor),
+        maps.empty(options.features.levels, options.features.scale_factor),
         reference,
         np.eye(4),
         np.full(reference.size, -1, dtype=np.int64),
@@ -396,16 +398,16 @@ def _initialize_monocular(
     )
     second = int(m.kf_start[1])
     observers = np.column_stack([pairs[good, 0], second + pairs[good, 1]]).astype(np.int64)
-    m = maps.add_points(m, xyz, observers)
+    m = covisibility.adopt(maps.add_points(m, xyz, observers), 1)  # the second keyframe's parent
     adjusted = adjust.bundle_adjust(
         m,
         camera,
         np.arange(2, dtype=np.int64),
         np.array([True, False]),
-        replace(options, ba_iterations=options.init_ba_iterations),
+        options.with_settings({"adjustment.iterations": options.initialization.ba_iterations}),
     )
     m, solves = adjusted.map, adjusted.solves
-    if m.points < options.init_min_matches:
+    if m.points < options.initialization.min_matches:
         # ORB-SLAM resets with fewer than 100 tracked points
         return _failed(Outcome.TOO_FEW_POINTS, given, solves)
     first = m.kf_pose[0]
@@ -433,9 +435,9 @@ def initialize_monocular(  # noqa: PLR0913 -- the two frames, their matches, the
 
     The matches (:func:`match_for_initialization`) are initialised by
     :func:`slam_it.foundations.twoview.initialize`. The chosen motion's inliers in front of
-    both views with rays whose cosine is below ``init_parallax_cos`` become points
+    both views with rays whose cosine is below ``initialization.parallax_cos`` become points
     (``CheckRT``); the frames become keyframes, a bundle adjustment of
-    ``init_ba_iterations`` refines them with the first held fixed, and the map is scaled
+    ``initialization.ba_iterations`` refines them with the first held fixed, and the map is scaled
     so the first keyframe's median depth is 1.
 
     Parameters
@@ -457,8 +459,8 @@ def initialize_monocular(  # noqa: PLR0913 -- the two frames, their matches, the
     -------
     Initialization
         The map of two keyframes and their triangulated points, and the later frame tracked;
-        none if fewer than ``init_min_matches`` keypoints match, the two views do not
-        initialise, or fewer than ``init_min_matches`` points survive the adjustment. Its
+        none if fewer than ``initialization.min_matches`` keypoints match, the two views do not
+        initialise, or fewer than ``initialization.min_matches`` points survive the adjustment. Its
         summary holds the matches given, the outcome (:class:`Outcome`) and the adjustment's
         solves.
 

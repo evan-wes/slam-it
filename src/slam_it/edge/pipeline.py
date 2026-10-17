@@ -11,27 +11,27 @@
    are extracted with more features until then (:meth:`Pipeline.extraction`).
 2. **Tracking:** predict by constant velocity (no motion when the last frame was not
    tracked) and track the last frame; if that fails, fall back to PnP against the local map
-   (:func:`slam_it.edge.tracking.relocalize_locally`), and if that fails, with ``relocalize``
-   on, relocalise against the whole map through its keyframe database
-   (:func:`slam_it.edge.relocalization.relocalize`);
-   then track the local map, its window widened just after a recovery
-   (``recovery_local_window``). Fewer than ``min_tracked`` inliers (``recovery_tracked``
-   within ``max_frames`` of a recovery) counts as a failure.
+   (:func:`slam_it.edge.tracking.relocalize_locally`), and if that fails, with
+   ``relocalization.enabled`` on, relocalise against the whole map through its keyframe database
+   (:func:`slam_it.edge.relocalization.relocalize`); then track the local map, its window widened
+   just after a recovery (``tracking.recovery_local_window``). Fewer than ``tracking.min_tracked``
+   inliers (``tracking.recovery_tracked`` within ``tracking.max_frames`` of a recovery) counts as a
+   failure.
 3. **Lost:** the track is recently lost from its first failed frame, and found again on the
-   next frame tracked. Relocalising, it is lost once more than ``relocalize_seconds`` have
+   next frame tracked. Relocalising, it is lost once more than ``loss.relocalize_seconds`` have
    passed since that frame with none tracked (ORB-SLAM3's ``RECENTLY_LOST``); a map of
-   ``reset_keyframes`` keyframes or fewer is lost after ``lost_frames`` failures in a row
-   instead (ORB-SLAM3 loses it at once), as is any map with ``relocalize`` off. The map is
-   then kept, or reset if it has ``reset_keyframes`` keyframes or fewer (its keyframes and
-   points removed), and the next frame starts a new map (step 1), as ORB-SLAM3's atlas does
-   (``Tracking::Track``'s ``CreateMapInAtlas`` and ``ResetActiveMap``). The time runs from the
-   first failed frame, as ORB-SLAM3's ``mTimeStampLost`` does. Unlike ORB-SLAM3, every failed
-   frame tries the motion model and the local map before relocalising, and the first failed
-   frame relocalises too: ORB-SLAM3 relocalises only the frames after the one that lost the
-   track, and tries nothing else on them.
+   ``loss.reset_keyframes`` keyframes or fewer is lost after ``loss.lost_frames`` failures in a
+   row instead (ORB-SLAM3 loses it at once), as is any map with ``relocalization.enabled`` off.
+   The map is then kept, or reset if it has ``loss.reset_keyframes`` keyframes or fewer (its
+   keyframes and points removed), and the next frame starts a new map (step 1), as ORB-SLAM3's
+   atlas does (``Tracking::Track``'s ``CreateMapInAtlas`` and ``ResetActiveMap``). The time runs
+   from the first failed frame, as ORB-SLAM3's ``mTimeStampLost`` does. Unlike ORB-SLAM3, every
+   failed frame tries the motion model and the local map before relocalising, and the first
+   failed frame relocalises too: ORB-SLAM3 relocalises only the frames after the one that lost
+   the track, and tries nothing else on them.
 4. **Mapping:** a tracked frame that needs a keyframe
-   (:func:`slam_it.edge.mapping.need_keyframe`; none within ``max_frames`` of a recovery once
-   the map holds more than ``max_frames``) is inserted and mapped
+   (:func:`slam_it.edge.mapping.need_keyframe`; none within ``tracking.max_frames`` of a recovery
+   once the map holds more than ``tracking.max_frames``) is inserted and mapped
    (:func:`slam_it.edge.mapping.process`).
 
 **The keyframe database** (:class:`slam_it.edge.database.Database`), kept only when
@@ -65,7 +65,7 @@ from typing import Any, Protocol
 import numpy as np
 from numpy.typing import NDArray
 
-from slam_it.edge import initialization, mapping, relocalization, tracking
+from slam_it.edge import covisibility, initialization, mapping, relocalization, tracking
 from slam_it.edge import map as maps
 from slam_it.edge.database import Database
 from slam_it.edge.frames import Camera, Frame, Tracked
@@ -171,7 +171,7 @@ class LostSummary:
     points : int
         Its points.
     reset : bool
-        Whether it was reset, having ``reset_keyframes`` keyframes or fewer, rather than kept.
+        Whether it was reset, having ``loss.reset_keyframes`` keyframes or fewer, rather than kept.
     """
 
     keyframes: int
@@ -309,6 +309,11 @@ class Lifetimes:
         Its last ``T_cam_world``.
     keyframe_lives : ndarray of int64, shape (K, 3)
         Their lives.
+    keyframe_parents : ndarray of int64, shape (K,)
+        Each one's last parent in its map's spanning tree, by the run's id, or -1.
+    keyframe_links : ndarray of int64, shape (L, 3)
+        Each map's strong links (:func:`slam_it.edge.covisibility.strong_links`) when it closed,
+        and the current map's now, by the run's ids, ascending.
     point_maps : ndarray of int64, shape (N,)
         The map each point was made in.
     keyframe_maps : ndarray of int64, shape (K,)
@@ -320,6 +325,8 @@ class Lifetimes:
     keyframe_times: Array
     keyframe_poses: Array
     keyframe_lives: NDArray[np.int64]
+    keyframe_parents: NDArray[np.int64]
+    keyframe_links: NDArray[np.int64]
     point_maps: NDArray[np.int64]
     keyframe_maps: NDArray[np.int64]
 
@@ -373,8 +380,8 @@ class Pipeline:
     options : Options
         The settings.
     vocabulary : slam_it.foundations.vocabulary.Vocabulary or None
-        The vocabulary the keyframe database's words are of: required with ``relocalize`` on,
-        refused with it off.
+        The vocabulary the keyframe database's words are of: required with
+        ``relocalization.enabled`` on, refused with it off.
     state : State
         Where the pipeline is: never :attr:`State.LOST`, which a lost frame's result has.
     map : Map or None
@@ -408,9 +415,11 @@ class Pipeline:
     # Where each point and keyframe no longer in the current map last was, by the run's id:
     # removed, or in a closed map.
     _past_points: dict[int, Array] = field(default_factory=dict, init=False, repr=False)
-    _past_keyframes: dict[int, tuple[float, Array]] = field(
+    _past_keyframes: dict[int, tuple[float, Array, int]] = field(
         default_factory=dict, init=False, repr=False
     )
+    # The closed maps' strong links, by the run's ids.
+    _past_links: list[NDArray[np.int64]] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Check the mode.
@@ -425,10 +434,10 @@ class Pipeline:
             raise InvalidInputError(f"mode: expected one of {MODES}, got {self.mode!r}")
         if self.mode != "monocular" and not self.camera.baseline > 0.0:
             raise InvalidInputError(f"camera.baseline: {self.mode} needs a positive baseline")
-        if self.options.relocalize and self.vocabulary is None:
-            raise InvalidInputError("vocabulary: relocalize needs one")
-        if not self.options.relocalize and self.vocabulary is not None:
-            raise InvalidInputError("vocabulary: given, but relocalize is off")
+        if self.options.relocalization.enabled and self.vocabulary is None:
+            raise InvalidInputError("vocabulary: relocalization.enabled needs one")
+        if not self.options.relocalization.enabled and self.vocabulary is not None:
+            raise InvalidInputError("vocabulary: given, but relocalization.enabled is off")
 
     def extraction(self) -> orb.Options:
         """Return the extraction settings the next frame should be built with.
@@ -436,7 +445,7 @@ class Pipeline:
         Returns
         -------
         slam_it.foundations.orb.Options
-            ``init_feature_factor`` times the features for a monocular frame before the map
+            ``features.init_factor`` times the features for a monocular frame before the map
             exists, the usual ones otherwise.
         """
         initializing = self.mode == "monocular" and self.state is State.NOT_INITIALIZED
@@ -490,21 +499,27 @@ class Pipeline:
         points = np.zeros((len(self._point_lives), 3))
         times = np.zeros(len(self._keyframe_lives))
         poses = np.tile(np.eye(4), (len(self._keyframe_lives), 1, 1))
+        parents = np.full(len(self._keyframe_lives), -1, dtype=np.int64)
         for point_id, xyz in self._past_points.items():
             points[point_id] = xyz
-        for keyframe_id, (seconds, pose) in self._past_keyframes.items():
-            times[keyframe_id], poses[keyframe_id] = seconds, pose
+        for keyframe_id, (seconds, pose, parent) in self._past_keyframes.items():
+            times[keyframe_id], poses[keyframe_id], parents[keyframe_id] = seconds, pose, parent
+        links = list(self._past_links)
         m = self.map
         if m is not None:
             points[self._pt_base + m.pt_id] = m.pt_xyz
             times[self._kf_base + m.kf_id] = m.kf_time
             poses[self._kf_base + m.kf_id] = m.kf_pose
+            parents[self._kf_base + m.kf_id] = self._run_ids(m.kf_parent)
+            links.append(self._strong_links(m))
         return Lifetimes(
             points=points,
             point_lives=np.array(self._point_lives, dtype=np.int64).reshape(-1, 3),
             keyframe_times=times,
             keyframe_poses=poses,
             keyframe_lives=np.array(self._keyframe_lives, dtype=np.int64).reshape(-1, 3),
+            keyframe_parents=parents,
+            keyframe_links=np.concatenate([np.zeros((0, 3), dtype=np.int64), *links]),
             point_maps=np.array(self._point_maps, dtype=np.int64),
             keyframe_maps=np.array(self._keyframe_maps, dtype=np.int64),
         )
@@ -526,14 +541,24 @@ class Pipeline:
             run_id = self._pt_base + int(point_id)
             self._point_lives[run_id][1:] = [frame, int(how)]
             self._past_points[run_id] = xyz
-        for keyframe_id, seconds, pose in zip(
-            m.gone_kf_id, m.gone_kf_time, m.gone_kf_pose, strict=True
-        ):
+        for keyframe_id, seconds, pose, parent in zip(
+            m.gone_kf_id, m.gone_kf_time, m.gone_kf_pose, self._run_ids(m.gone_kf_parent),
+            strict=True,
+        ):  # fmt: skip
             run_id = self._kf_base + int(keyframe_id)
             self._keyframe_lives[run_id][1:] = [frame, int(Removal.CULLED)]
-            self._past_keyframes[run_id] = (float(seconds), pose)
+            self._past_keyframes[run_id] = (float(seconds), pose, int(parent))
         if len(m.gone_pt_id) or len(m.gone_kf_id):
             self.map = maps.clear_gone(m)
+
+    def _run_ids(self, parents: NDArray[np.int64]) -> NDArray[np.int64]:
+        """Return the current map's keyframe ids as the run's, -1 kept."""
+        return np.where(parents >= 0, self._kf_base + parents, -1)
+
+    def _strong_links(self, m: Map) -> NDArray[np.int64]:
+        """Return the current map's strong links, by the run's ids."""
+        links = covisibility.strong_links(m, self.options)
+        return links + np.array([self._kf_base, self._kf_base, 0], dtype=np.int64)
 
     def _close(self, m: Map) -> LostSummary:
         """Close `m`, the map the track was lost in, on this frame: keep it, or reset it if small.
@@ -541,19 +566,28 @@ class Pipeline:
         Its points and keyframes go where they last were; a reset map's lives end on this
         frame (:attr:`slam_it.edge.map.Removal.RESET`). The tracking state goes with the map, so
         the next frame starts a new one.
+
+        A stand-in until milestone 2B's B4: the map's strong links are counted here, for the
+        run's record, inside the frame's timed step, which costs that frame 58 to 360 ms in the
+        C++ program on the test set's largest maps; B4's atlas keeps maps whole, and the record
+        moves with it
+        (``docs/design/2026-10-14-online-slam.md``, section 4).
         """
         frame = self._frames - 1  # dated already
-        reset = m.keyframes <= self.options.reset_keyframes
+        reset = m.keyframes <= self.options.loss.reset_keyframes
         for point_id, xyz in zip(m.pt_id, m.pt_xyz, strict=True):
             run_id = self._pt_base + int(point_id)
             self._past_points[run_id] = xyz
             if reset:
                 self._point_lives[run_id][1:] = [frame, int(Removal.RESET)]
-        for keyframe_id, seconds, pose in zip(m.kf_id, m.kf_time, m.kf_pose, strict=True):
+        for keyframe_id, seconds, pose, parent in zip(
+            m.kf_id, m.kf_time, m.kf_pose, self._run_ids(m.kf_parent), strict=True
+        ):
             run_id = self._kf_base + int(keyframe_id)
-            self._past_keyframes[run_id] = (float(seconds), pose)
+            self._past_keyframes[run_id] = (float(seconds), pose, int(parent))
             if reset:
                 self._keyframe_lives[run_id][1:] = [frame, int(Removal.RESET)]
+        self._past_links.append(self._strong_links(m))
         lost = LostSummary(keyframes=m.keyframes, points=m.points, reset=reset)
         self.map, self._map_id, self._database = None, None, None
         self.state = State.NOT_INITIALIZED
@@ -585,7 +619,7 @@ class Pipeline:
 
     def _initialize_monocular(self, frame: Frame) -> Initialization:
         """Pair a monocular frame with the reference, or make it the reference."""
-        if frame.size <= self.options.min_init_features:
+        if frame.size <= self.options.initialization.min_features:
             self._reference = None  # too few features: ORB-SLAM drops its initializer
             return Initialization(started=None, summary=InitSummary(Outcome.TOO_FEW_FEATURES))
         if self._reference is None or self._previous is None:
@@ -594,7 +628,7 @@ class Pipeline:
         matched = initialization.match_for_initialization(
             self._reference, frame, self._previous, self.options
         )
-        if len(matched.pairs) < self.options.init_min_matches:
+        if len(matched.pairs) < self.options.initialization.min_matches:
             # The views no longer overlap enough: start again from this frame.
             self._reference, self._previous = frame, frame.features.keypoints.xy.copy()
             replaced = InitSummary(Outcome.REFERENCE_REPLACED, matches=len(matched.pairs))
@@ -632,9 +666,9 @@ class Pipeline:
     def _record_failure(self, frame: Frame) -> bool:
         """Count an untracked frame, which ends the velocity; return whether it loses the track.
 
-        Lost once more than ``relocalize_seconds`` have passed since the first failed frame, or
-        for a map of ``reset_keyframes`` keyframes or fewer or with ``relocalize`` off, after
-        ``lost_frames`` failures in a row. :meth:`track` then closes the map.
+        Lost once more than ``loss.relocalize_seconds`` have passed since the first failed frame, or
+        for a map of ``loss.reset_keyframes`` keyframes or fewer or with ``relocalization.enabled``
+        off, after ``loss.lost_frames`` failures in a row. :meth:`track` then closes the map.
         """
         assert self.map is not None
         self._failures += 1
@@ -642,9 +676,9 @@ class Pipeline:
         if self._lost_since is None:
             self._lost_since = frame.timestamp
         options = self.options
-        if not options.relocalize or self.map.keyframes <= options.reset_keyframes:
-            return self._failures >= options.lost_frames
-        return frame.timestamp - self._lost_since > options.relocalize_seconds
+        if not options.relocalization.enabled or self.map.keyframes <= options.loss.reset_keyframes:
+            return self._failures >= options.loss.lost_frames
+        return frame.timestamp - self._lost_since > options.loss.relocalize_seconds
 
     def _place(self, m: Map, frame: Frame) -> tuple[Tracked | None, FrameSummary, IntArray]:
         """Track the last frame, or recover by PnP, or relocalise.
@@ -665,7 +699,8 @@ class Pipeline:
         summary = FrameSummary(motion=motion.summary)
         if motion.tracked is not None:
             return motion.tracked, replace(summary, placed_by=Placement.MOTION), motion.matched
-        recovery = tracking.relocalize_locally(m, self.camera, frame, options)
+        last = self._last_tracked.points
+        recovery = tracking.relocalize_locally(m, self.camera, frame, last, options)
         summary = replace(summary, pnp=recovery.summary)
         if recovery.tracked is not None:
             placed_by = Placement.LOCAL_PNP
@@ -689,28 +724,30 @@ class Pipeline:
         elif self._since_recovery is not None:
             self._since_recovery += 1
         since = self._since_recovery
-        recent = since is not None and since < options.max_frames
-        wide = since is not None and since < options.recovery_window_frames
+        recent = since is not None and since < options.tracking.max_frames
+        wide = since is not None and since < options.tracking.recovery_window_frames
         tracked = None
         if placed is not None:
             local = tracking.track_local_map(
                 m, self.camera, frame, placed, mode=self.mode, options=options,
                 recovering=wide,
             )  # fmt: skip
-            summary = replace(summary, local_map=local.summary())
+            summary = replace(summary, local_map=local.summary(self._kf_base))
             matched = local.matched
             m = maps.count(m, local.visible, visible=np.ones(len(local.visible), dtype=np.int64))
             m = maps.count(m, local.found, found=np.ones(len(local.found), dtype=np.int64))
-            needed = options.recovery_tracked if recent else options.min_tracked
+            needed = options.tracking.recovery_tracked if recent else options.tracking.min_tracked
             tracked = local.tracked if local.tracked.inliers >= needed else None
+            reference = local.reference
         self.map = m
         if tracked is None:
             lost = self._record_failure(frame)
             return _Step(None, False, 0.0, summary, matched=matched, lost=lost)
-        held = recent and m.keyframes > options.max_frames
+        held = recent and m.keyframes > options.tracking.max_frames
         keyframe = not held and mapping.need_keyframe(
-            m, self.camera, frame.depth, tracked, mode=self.mode, options=options
-        )
+            m, self.camera, frame.depth, tracked, reference=reference, mode=self.mode,
+            options=options,
+        )  # fmt: skip
         map_seconds = 0.0
         made = None
         if keyframe:

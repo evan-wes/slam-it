@@ -6,7 +6,7 @@
 mod scene;
 
 use slam_it_edge::database::Database;
-use slam_it_edge::options::Options;
+use slam_it_edge::options::{Options, RelocalizationOptions};
 use slam_it_edge::relocalization::{ransac_budget, relocalize};
 
 use scene::{KEYFRAMES, POINTS, camera, empty_frame, frame, frame_at, moved, one_word, scene_map};
@@ -56,13 +56,16 @@ fn the_ransac_budget_is_mlpnps() {
     assert_eq!(ransac_budget(100, &options), (50, 35));
     assert_eq!(ransac_budget(15, &options).1, 14);
     let mut moved = Options {
-        reloc_inlier_ratio: 0.4,
-        reloc_min_inliers: 12,
-        reloc_confidence: 0.95,
+        relocalization: RelocalizationOptions {
+            inlier_ratio: 0.4,
+            min_inliers: 12,
+            confidence: 0.95,
+            ..options.relocalization
+        },
         ..options
     };
     assert_eq!(ransac_budget(100, &moved), (40, 46));
     assert_eq!(ransac_budget(12, &moved), (12, 1));
-    moved.reloc_ransac_iterations = 20;
+    moved.relocalization.ransac_iterations = 20;
     assert_eq!(ransac_budget(100, &moved), (40, 20));
 }

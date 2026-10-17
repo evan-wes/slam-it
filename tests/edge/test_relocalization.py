@@ -5,9 +5,6 @@ On the room's truth map, its keyframes' words those of the committed vocabulary.
 
 from __future__ import annotations
 
-from dataclasses import replace
-from typing import Any
-
 import numpy as np
 import pytest
 
@@ -37,12 +34,12 @@ def _error(pose: np.ndarray, truth: np.ndarray) -> tuple[float, float]:
 def test_a_frame_of_the_room_is_placed_near_its_true_pose(
     truth: Truth, room_database: Database, index: int
 ) -> None:
-    """Placed with recovery_tracked inliers or more, within 2 cm and half a degree."""
+    """Placed with tracking.recovery_tracked inliers or more, within 2 cm and half a degree."""
     found = relocalization.relocalize(
         truth.map, room_database, CAMERA, truth.frames[index], OPTIONS
     )
     assert found.tracked is not None
-    assert found.tracked.inliers >= OPTIONS.recovery_tracked
+    assert found.tracked.inliers >= OPTIONS.tracking.recovery_tracked
     metres, degrees = _error(found.tracked.pose, truth.poses[index])
     assert metres < 0.02
     assert degrees < 0.5
@@ -51,7 +48,7 @@ def test_a_frame_of_the_room_is_placed_near_its_true_pose(
     assert s.words > 0
     last = s.candidates[-1]
     assert last.found == found.tracked.inliers
-    assert last.matches >= (last.inliers or 0) >= OPTIONS.reloc_min_inliers
+    assert last.matches >= (last.inliers or 0) >= OPTIONS.relocalization.min_inliers
     assert np.all(found.matched[found.tracked.points >= 0] >= 0)
 
 
@@ -68,14 +65,14 @@ def test_a_frame_of_elsewhere_is_not_placed(truth: Truth, room_database: Databas
     found = relocalization.relocalize(truth.map, room_database, CAMERA, frame, OPTIONS)
     assert found.tracked is None
     assert not found.summary.placed
-    assert all((c.found or 0) < OPTIONS.recovery_tracked for c in found.summary.candidates)
+    assert all((c.found or 0) < OPTIONS.tracking.recovery_tracked for c in found.summary.candidates)
 
 
 def test_too_few_matches_by_word_skip_every_candidate(
     truth: Truth, room_database: Database
 ) -> None:
-    """A candidate with fewer than reloc_min_matches never reaches RANSAC."""
-    strict = replace(OPTIONS, reloc_min_matches=1 << 20)
+    """A candidate with fewer than relocalization.min_matches never reaches RANSAC."""
+    strict = OPTIONS.with_settings({"relocalization.min_matches": 1 << 20})
     found = relocalization.relocalize(truth.map, room_database, CAMERA, truth.frames[30], strict)
     assert found.tracked is None
     assert found.summary.candidates
@@ -87,7 +84,7 @@ def test_too_few_matches_by_word_skip_every_candidate(
     ("matches", "needed", "samples"),
     [
         (100, 50, 35),  # half the matches, at 0.99: log(0.01) / log(1 - 0.5^3)
-        (15, 10, 14),  # reloc_min_inliers binds: e = 10 / 15
+        (15, 10, 14),  # relocalization.min_inliers binds: e = 10 / 15
         (10, 10, 1),  # every match must be an inlier: one sample
         (8, 10, 1),  # fewer matches than inliers needed: never drawn
     ],
@@ -95,7 +92,7 @@ def test_too_few_matches_by_word_skip_every_candidate(
 def test_the_ransac_budget_is_mlpnps(matches: int, needed: int, samples: int) -> None:
     """MLPnP's SetRansacParameters: the inliers needed, and the samples that find them."""
     assert relocalization.ransac_budget(matches, OPTIONS) == (needed, samples)
-    capped = replace(OPTIONS, reloc_ransac_iterations=20)
+    capped = OPTIONS.with_settings({"relocalization.ransac_iterations": 20})
     assert relocalization.ransac_budget(matches, capped) == (needed, min(samples, 20))
 
 
@@ -103,7 +100,7 @@ def test_the_searches_by_projection_top_up_a_weak_start(
     truth: Truth, room_database: Database
 ) -> None:
     """Asked for more inliers than matches by word give, the searches add the keyframe's others."""
-    demanding = replace(OPTIONS, recovery_tracked=150)
+    demanding = OPTIONS.with_settings({"tracking.recovery_tracked": 150})
     found = relocalization.relocalize(truth.map, room_database, CAMERA, truth.frames[30], demanding)
     gains = [
         c.found - c.refined
@@ -116,7 +113,7 @@ def test_the_searches_by_projection_top_up_a_weak_start(
 def test_between_the_bounds_after_the_first_search_a_narrower_one_runs(
     truth: Truth, room_database: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """More than reloc_narrow_inliers but fewer than recovery_tracked: the narrow search runs."""
+    """Over relocalization.narrow_inliers, under tracking.recovery_tracked: the narrow search."""
     searched: list[tuple[float, int]] = []
     original = relocalization.search_keyframe
 
@@ -125,15 +122,15 @@ def test_between_the_bounds_after_the_first_search_a_narrower_one_runs(
         return original(*args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(relocalization, "search_keyframe", recorded)
-    demanding = replace(OPTIONS, recovery_tracked=175)
+    demanding = OPTIONS.with_settings({"tracking.recovery_tracked": 175})
     found = relocalization.relocalize(truth.map, room_database, CAMERA, truth.frames[6], demanding)
     assert searched == [
-        (OPTIONS.reloc_window, OPTIONS.th_high),
-        (OPTIONS.reloc_narrow_window, OPTIONS.reloc_narrow_distance),
+        (OPTIONS.relocalization.window, OPTIONS.matching.th_high),
+        (OPTIONS.relocalization.narrow_window, OPTIONS.relocalization.narrow_distance),
     ]
     last = found.summary.candidates[-1]
     assert last.found is not None
-    assert OPTIONS.reloc_narrow_inliers < last.found < demanding.recovery_tracked
+    assert OPTIONS.relocalization.narrow_inliers < last.found < demanding.tracking.recovery_tracked
     assert found.tracked is None
 
 
@@ -144,8 +141,8 @@ def test_a_keyframe_searched_at_the_true_pose_finds_its_points(truth: Truth) -> 
     start = Tracked(pose=pose, points=np.full(frame.size, -1, dtype=np.int64))
     found = relocalization.search_keyframe(
         m, CAMERA, frame, start, 3,
-        skip=np.zeros(0, dtype=np.int64), window=OPTIONS.reloc_window,
-        distance=OPTIONS.th_high, options=OPTIONS,
+        skip=np.zeros(0, dtype=np.int64), window=OPTIONS.relocalization.window,
+        distance=OPTIONS.matching.th_high, options=OPTIONS,
     )  # fmt: skip
     hits = np.flatnonzero(found >= 0)
     assert len(hits) > 50
@@ -155,41 +152,41 @@ def test_a_keyframe_searched_at_the_true_pose_finds_its_points(truth: Truth) -> 
     assert np.median(gap) < 2.0
     skipped = relocalization.search_keyframe(
         m, CAMERA, frame, start, 3,
-        skip=found[hits], window=OPTIONS.reloc_window, distance=OPTIONS.th_high, options=OPTIONS,
+        skip=found[hits], window=OPTIONS.relocalization.window,
+        distance=OPTIONS.matching.th_high, options=OPTIONS,
     )  # fmt: skip
     assert not set(skipped[skipped >= 0].tolist()) & set(found[hits].tolist())
 
 
 DECISIVE = [
-    ("reloc_inlier_ratio", 1.0, 6, 175),
-    ("reloc_min_inliers", 85, 30, 150),
-    ("reloc_confidence", 0.95, 6, 175),
-    ("reloc_ransac_iterations", 1, 6, 175),
-    ("reloc_window", 2.0, 30, 150),
-    ("reloc_narrow_inliers", 168, 6, 170),
-    ("reloc_narrow_window", 2.0, 6, 170),
-    ("reloc_narrow_distance", 50, 6, 170),
+    ("relocalization.inlier_ratio", 1.0, 6, 175),
+    ("relocalization.min_inliers", 85, 30, 150),
+    ("relocalization.confidence", 0.95, 6, 175),
+    ("relocalization.ransac_iterations", 1, 6, 175),
+    ("relocalization.window", 2.0, 30, 150),
+    ("relocalization.narrow_inliers", 168, 6, 170),
+    ("relocalization.narrow_window", 2.0, 6, 170),
+    ("relocalization.narrow_distance", 50, 6, 170),
 ]
 """Each of relocalisation's settings off its default (the setting, its value, the frame and
-``recovery_tracked``) where it alone changes Python's decisions (review panel findings L1 and L9,
-by finding H21's rule): a native that hard-coded it would decide unlike Python there. At 170
-inliers needed, frame 6's narrow search decides; at 175, its RANSAC; frame 30's wide search at
-150, and its 84 matches against a minimum of 85."""
+``tracking.recovery_tracked``) where it alone changes Python's decisions (review panel findings
+L1 and L9, by finding H21's rule): a native that hard-coded it would decide unlike Python
+there. At 170 inliers needed, frame 6's narrow search decides; at 175, its RANSAC; frame 30's
+wide search at 150, and its 84 matches against a minimum of 85."""
 
 COVERED_ELSEWHERE = {
-    "reloc_min_matches",
-    "reloc_common_words",
-    "reloc_neighbours",
-    "reloc_group_score",
+    "relocalization.min_matches",
+    "relocalization.common_words",
+    "relocalization.neighbours",
+    "relocalization.group_score",
 }
 """Relocalisation's settings moved by other tests: the matches by word below, the candidates'
 in the database's tests."""
 
 
 def _moved(setting: str, value: float, recovery_tracked: int) -> Options:
-    """Return the settings with one moved, and ``recovery_tracked`` set."""
-    moved: dict[str, Any] = {setting: value}
-    return replace(OPTIONS, recovery_tracked=recovery_tracked, **moved)
+    """Return the settings with one moved, and ``tracking.recovery_tracked`` set."""
+    return OPTIONS.with_settings({"tracking.recovery_tracked": recovery_tracked, setting: value})
 
 
 def _decided(found: relocalization.Relocalized) -> tuple[object, ...]:
@@ -199,8 +196,12 @@ def _decided(found: relocalization.Relocalized) -> tuple[object, ...]:
 
 
 def test_every_relocalisation_setting_is_moved_where_it_decides() -> None:
-    """Each ``reloc_*`` setting is in :data:`DECISIVE`, or moved by another test."""
-    settings = {name for name in OPTIONS.as_dict() if name.startswith("reloc_")}
+    """Each of relocalisation's own settings is in :data:`DECISIVE`, or moved by another test.
+
+    Its switch and its ratio test, which the fallback shares, are not counted, as before.
+    """
+    settings = {name for name in OPTIONS.settings() if name.startswith("relocalization.")}
+    settings -= {"relocalization.enabled", "relocalization.ratio"}
     assert settings == {d[0] for d in DECISIVE} | COVERED_ELSEWHERE
 
 
@@ -217,7 +218,7 @@ def test_each_moved_setting_alone_changes_what_relocalisation_decides(
     moved = relocalization.relocalize(
         truth.map, room_database, CAMERA, frame, _moved(setting, value, recovery_tracked)
     )
-    at_default = replace(OPTIONS, recovery_tracked=recovery_tracked)
+    at_default = OPTIONS.with_settings({"tracking.recovery_tracked": recovery_tracked})
     default = relocalization.relocalize(truth.map, room_database, CAMERA, frame, at_default)
     assert _decided(moved) != _decided(default)
 
@@ -228,12 +229,12 @@ def test_the_narrow_search_can_place_the_frame(truth: Truth, room_database: Data
     The second optimisation keeps 168; the narrow search adds the rest, and the frame's points
     are the last optimisation's (the second's outliers kept until it).
     """
-    demanding = replace(OPTIONS, recovery_tracked=169)
+    demanding = OPTIONS.with_settings({"tracking.recovery_tracked": 169})
     found = relocalization.relocalize(truth.map, room_database, CAMERA, truth.frames[6], demanding)
     assert found.tracked is not None
     last = found.summary.candidates[-1]
     assert last.found is not None
-    assert last.found >= demanding.recovery_tracked > 168
+    assert last.found >= demanding.tracking.recovery_tracked > 168
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -245,10 +246,10 @@ def test_the_narrow_search_can_place_the_frame(truth: Truth, room_database: Data
         (30, OPTIONS),
         (39, OPTIONS),
         (NOISE, OPTIONS),
-        (30, replace(OPTIONS, reloc_min_matches=1 << 20)),
-        (30, replace(OPTIONS, recovery_tracked=150)),
-        (6, replace(OPTIONS, recovery_tracked=175)),
-        (6, replace(OPTIONS, recovery_tracked=169)),
+        (30, OPTIONS.with_settings({"relocalization.min_matches": 1 << 20})),
+        (30, OPTIONS.with_settings({"tracking.recovery_tracked": 150})),
+        (6, OPTIONS.with_settings({"tracking.recovery_tracked": 175})),
+        (6, OPTIONS.with_settings({"tracking.recovery_tracked": 169})),
         *[(index, _moved(setting, value, rt)) for setting, value, index, rt in DECISIVE],
     ],
     ids=[

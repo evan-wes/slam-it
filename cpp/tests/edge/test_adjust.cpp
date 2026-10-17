@@ -46,8 +46,8 @@ void check_chi2(int& failures) {
              edge::chi2(camera, one, at, std::vector<double>{kNan}, std::vector<double>{0.0})),
          "chi2 rejects a variance that is not positive", failures);
   const edge::Options options;
-  expect(edge::threshold(kNan, options) == options.chi2_mono &&
-             edge::threshold(10.0, options) == options.chi2_stereo,
+  expect(edge::threshold(kNan, options) == options.adjustment.chi2_mono &&
+             edge::threshold(10.0, options) == options.adjustment.chi2_stereo,
          "the threshold follows the right column", failures);
 }
 

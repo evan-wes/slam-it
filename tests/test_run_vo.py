@@ -29,12 +29,16 @@ def _script() -> ModuleType:
 
 def test_parse_options_sets_the_pairs_fields() -> None:
     """KEY=VALUE pairs set those settings, each of its type; the rest keep their defaults."""
-    options = _script().parse_options(["window=7", "close_depth=35.5"])
-    assert (options.window, options.close_depth) == (7, 35.5)
-    assert options.n_features == Options().n_features
+    options = _script().parse_options(
+        ["covisibility.local_neighbours=7", "stereo.close_depth=35.5"]
+    )
+    assert (options.covisibility.local_neighbours, options.stereo.close_depth) == (7, 35.5)
+    assert options.features.n_features == Options().features.n_features
 
 
-@pytest.mark.parametrize("pair", ["window=1_000", "close_depth=inf", "nothing=1", "window"])
+@pytest.mark.parametrize(
+    "pair", ["covisibility.local_neighbours=1_000", "stereo.close_depth=inf", "nothing=1", "window"]
+)
 def test_parse_options_refuses_as_the_programs_do(pair: str) -> None:
     """A pair the programs refuse ends the script with the reader's message."""
     with pytest.raises(SystemExit, match="--option: "):

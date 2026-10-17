@@ -9,6 +9,7 @@ use slam_it_foundations::error::{ErrorKind, Result, fail};
 use slam_it_foundations::vocabulary::Vocabulary;
 use slam_it_foundations::{orb, se3};
 
+use crate::covisibility;
 use crate::database::Database;
 use crate::frames::{Camera, Frame, Tracked, check_setup};
 use crate::initialization::{self, InitSummary, Initialization, Outcome, Started};
@@ -132,7 +133,7 @@ pub struct LostSummary {
     pub keyframes: usize,
     /// Its points.
     pub points: usize,
-    /// Whether it was reset, having `reset_keyframes` keyframes or fewer, rather than kept.
+    /// Whether it was reset, having `loss.reset_keyframes` keyframes or fewer, rather than kept.
     pub reset: bool,
 }
 
@@ -260,6 +261,11 @@ pub struct Lifetimes {
     pub keyframe_poses: Vec<Matrix4<f64>>,
     /// Their lives.
     pub keyframe_lives: Vec<Life>,
+    /// Each one's last parent in its map's spanning tree, by the run's id, or -1.
+    pub keyframe_parents: Vec<i64>,
+    /// Each map's strong links when it closed, and the current map's now, by the run's ids,
+    /// ascending.
+    pub keyframe_links: Vec<[i64; 3]>,
     /// The map each point was made in.
     pub point_maps: Vec<i64>,
     /// The map each keyframe was made in.
@@ -323,8 +329,8 @@ impl Pipeline {
     /// * `mode` - The sensor mode.
     /// * `camera` - The camera.
     /// * `options` - The settings.
-    /// * `vocabulary` - The keyframe database's vocabulary: required with `relocalize` on,
-    ///   refused with it off.
+    /// * `vocabulary` - The keyframe database's vocabulary: required with `relocalization.enabled`
+    ///   on, refused with it off.
     ///
     /// # Returns
     ///
@@ -347,13 +353,16 @@ impl Pipeline {
                 format!("camera.baseline: {} needs a positive baseline", mode.name()),
             );
         }
-        if options.relocalize && vocabulary.is_none() {
-            return fail(ErrorKind::InvalidInput, "vocabulary: relocalize needs one");
-        }
-        if !options.relocalize && vocabulary.is_some() {
+        if options.relocalization.enabled && vocabulary.is_none() {
             return fail(
                 ErrorKind::InvalidInput,
-                "vocabulary: given, but relocalize is off",
+                "vocabulary: relocalization.enabled needs one",
+            );
+        }
+        if !options.relocalization.enabled && vocabulary.is_some() {
+            return fail(
+                ErrorKind::InvalidInput,
+                "vocabulary: given, but relocalization.enabled is off",
             );
         }
         Ok(Self {
@@ -385,7 +394,7 @@ impl Pipeline {
     ///
     /// # Returns
     ///
-    /// `init_feature_factor` times the features for a monocular frame before the map exists,
+    /// `features.init_factor` times the features for a monocular frame before the map exists,
     /// the usual ones otherwise.
     #[must_use]
     pub fn extraction(&self) -> orb::Options {
@@ -482,12 +491,32 @@ impl Pipeline {
             for (&id, xyz) in m.pt_id.iter().zip(&m.pt_xyz) {
                 out.points[to_index(self.pt_base + id)] = *xyz;
             }
-            for ((&id, &time), pose) in m.kf_id.iter().zip(&m.kf_time).zip(&m.kf_pose) {
-                out.keyframe_times[to_index(self.kf_base + id)] = time;
-                out.keyframe_poses[to_index(self.kf_base + id)] = *pose;
+            for (k, &id) in m.kf_id.iter().enumerate() {
+                let row = to_index(self.kf_base + id);
+                out.keyframe_times[row] = m.kf_time[k];
+                out.keyframe_poses[row] = m.kf_pose[k];
+                out.keyframe_parents[row] = self.run_id(m.kf_parent[k]);
             }
+            out.keyframe_links.extend(self.run_links(m));
         }
         out
+    }
+
+    /// A parent of the current map, by the run's id: -1 kept.
+    fn run_id(&self, parent: i64) -> i64 {
+        if parent >= 0 {
+            self.kf_base + parent
+        } else {
+            -1
+        }
+    }
+
+    /// A map's strong links, by the run's ids.
+    fn run_links(&self, m: &Map) -> Vec<[i64; 3]> {
+        covisibility::strong_links(m, &self.options)
+            .into_iter()
+            .map(|[a, b, weight]| [self.kf_base + a, self.kf_base + b, weight])
+            .collect()
     }
 
     /// Dates what this frame made and removed, and empties the map's archive of removals.
@@ -507,28 +536,34 @@ impl Pipeline {
         lives.keyframe_maps.resize(keyframes, map_id);
         lives.keyframe_times.resize(keyframes, 0.0);
         lives.keyframe_poses.resize(keyframes, Matrix4::identity());
+        lives.keyframe_parents.resize(keyframes, -1);
         for ((&id, xyz), &how) in m.gone_pt_id.iter().zip(&m.gone_pt_xyz).zip(&m.gone_pt_how) {
             let id = to_index(self.pt_base + id);
             lives.point_lives[id] = [lives.point_lives[id][0], frame, how];
             lives.points[id] = *xyz;
         }
-        for ((&id, &time), pose) in m
-            .gone_kf_id
-            .iter()
-            .zip(&m.gone_kf_time)
-            .zip(&m.gone_kf_pose)
-        {
+        for (g, &id) in m.gone_kf_id.iter().enumerate() {
             let id = to_index(self.kf_base + id);
             lives.keyframe_lives[id] = [lives.keyframe_lives[id][0], frame, Removal::Culled.code()];
-            lives.keyframe_times[id] = time;
-            lives.keyframe_poses[id] = *pose;
+            lives.keyframe_times[id] = m.gone_kf_time[g];
+            lives.keyframe_poses[id] = m.gone_kf_pose[g];
+            let parent = m.gone_kf_parent[g];
+            lives.keyframe_parents[id] = if parent >= 0 {
+                self.kf_base + parent
+            } else {
+                -1
+            };
         }
         map::clear_gone(m);
     }
 
     /// Closes the map the track was lost in, on this frame: keeps it, or resets it if it has
-    /// `reset_keyframes` keyframes or fewer (its lives end, as [`Removal::Reset`]). The
-    /// tracking state goes with it, so the next frame starts a new map.
+    /// `loss.reset_keyframes` keyframes or fewer (its lives end, as [`Removal::Reset`]). The
+    /// tracking state goes with it, so the next frame starts a new map. A stand-in until
+    /// milestone 2B's B4: the map's strong links are counted here, for the run's record, inside
+    /// the frame's timed step (58 to 360 ms in the C++ program on the test set's largest maps);
+    /// B4's atlas keeps maps whole, and the record moves with it (the online-SLAM design,
+    /// section 4).
     ///
     /// # Arguments
     ///
@@ -539,8 +574,10 @@ impl Pipeline {
     /// The closed map's summary.
     fn close(&mut self, m: &Map) -> LostSummary {
         let frame = self.frames - 1; // dated already
-        let reset = m.kf_id.len() <= self.options.reset_keyframes;
+        let reset = m.kf_id.len() <= self.options.loss.reset_keyframes;
         let code = Removal::Reset.code();
+        let parents: Vec<i64> = m.kf_parent.iter().map(|&p| self.run_id(p)).collect();
+        let links = self.run_links(m);
         let lives = &mut self.lives;
         for (&id, xyz) in m.pt_id.iter().zip(&m.pt_xyz) {
             let id = to_index(self.pt_base + id);
@@ -549,14 +586,16 @@ impl Pipeline {
                 lives.point_lives[id] = [lives.point_lives[id][0], frame, code];
             }
         }
-        for ((&id, &time), pose) in m.kf_id.iter().zip(&m.kf_time).zip(&m.kf_pose) {
+        for (k, &id) in m.kf_id.iter().enumerate() {
             let id = to_index(self.kf_base + id);
-            lives.keyframe_times[id] = time;
-            lives.keyframe_poses[id] = *pose;
+            lives.keyframe_times[id] = m.kf_time[k];
+            lives.keyframe_poses[id] = m.kf_pose[k];
+            lives.keyframe_parents[id] = parents[k];
             if reset {
                 lives.keyframe_lives[id] = [lives.keyframe_lives[id][0], frame, code];
             }
         }
+        lives.keyframe_links.extend(links);
         self.map_id = None;
         self.state = State::NotInitialized;
         self.last_frame = None;
@@ -642,7 +681,7 @@ impl Pipeline {
     ///
     /// A stage's error.
     fn initialize_monocular(&mut self, frame: &Frame) -> Result<Initialization> {
-        if frame.size() <= self.options.min_init_features {
+        if frame.size() <= self.options.initialization.min_features {
             self.reference = None; // too few features: ORB-SLAM drops its initializer
             return Ok(Initialization::failed(
                 Outcome::TooFewFeatures,
@@ -664,7 +703,7 @@ impl Pipeline {
             &self.previous,
             &self.options,
         )?;
-        if matched.len() < self.options.init_min_matches {
+        if matched.len() < self.options.initialization.min_matches {
             let replaced = Some(matched.len());
             self.set_reference(frame); // the views no longer overlap enough: start again
             return Ok(Initialization::failed(
@@ -724,16 +763,16 @@ impl Pipeline {
     ///
     /// # Returns
     ///
-    /// Whether it loses the track: past `relocalize_seconds` since the first failure, or for a
-    /// small map or with `relocalize` off, on the `lost_frames`-th in a row.
+    /// Whether it loses the track: past `loss.relocalize_seconds` since the first failure, or for a
+    /// small map or with `relocalization.enabled` off, on the `loss.lost_frames`-th in a row.
     fn record_failure(&mut self, frame: &Frame, keyframes: usize) -> bool {
         self.failures += 1;
         self.velocity = None;
         let since = *self.lost_since.get_or_insert(frame.timestamp);
-        if !self.options.relocalize || keyframes <= self.options.reset_keyframes {
-            return self.failures >= self.options.lost_frames;
+        if !self.options.relocalization.enabled || keyframes <= self.options.loss.reset_keyframes {
+            return self.failures >= self.options.loss.lost_frames;
         }
-        frame.timestamp - since > self.options.relocalize_seconds
+        frame.timestamp - since > self.options.loss.relocalize_seconds
     }
 
     /// Brings a keyframe database to a map's keyframes: adds the new, erases the culled.
@@ -815,7 +854,13 @@ impl Pipeline {
                 matched: motion.matched,
             });
         }
-        let recovery = tracking::relocalize_locally(m, &self.camera, frame, &self.options)?;
+        let recovery = tracking::relocalize_locally(
+            m,
+            &self.camera,
+            frame,
+            &last_tracked.points,
+            &self.options,
+        )?;
         summary.pnp = Some(recovery.summary);
         let (Some(database), Some(vocabulary), None) =
             (&self.database, &self.vocabulary, &recovery.tracked)
@@ -912,10 +957,12 @@ impl Pipeline {
         } else if let Some(since) = &mut self.since_recovery {
             *since += 1;
         }
-        let recent = self.since_recovery.is_some_and(|s| s < options.max_frames);
+        let recent = self
+            .since_recovery
+            .is_some_and(|s| s < options.tracking.max_frames);
         let wide = self
             .since_recovery
-            .is_some_and(|s| s < options.recovery_window_frames);
+            .is_some_and(|s| s < options.tracking.recovery_window_frames);
         let Some(placed) = placed else {
             return Ok(Step {
                 summary,
@@ -925,7 +972,7 @@ impl Pipeline {
         };
         let local =
             tracking::track_local_map(m, &self.camera, frame, &placed, self.mode, &options, wide)?;
-        summary.local_map = Some(local.summary());
+        summary.local_map = Some(local.summary(self.kf_base));
         map::count(
             m,
             &local.visible,
@@ -939,9 +986,9 @@ impl Pipeline {
             &vec![1; local.found.len()],
         )?;
         let needed = if recent {
-            options.recovery_tracked
+            options.tracking.recovery_tracked
         } else {
-            options.min_tracked
+            options.tracking.min_tracked
         };
         if local.tracked.inliers() < needed {
             return Ok(Step {
@@ -951,13 +998,21 @@ impl Pipeline {
             });
         }
         let tracked = local.tracked;
-        let held = recent && m.keyframes() > options.max_frames;
+        let held = recent && m.keyframes() > options.tracking.max_frames;
+        // Placed with inliers, the frame was matched to points: its reference keyframe exists.
+        let Some(reference) = local.reference else {
+            return fail(
+                ErrorKind::InvalidInput,
+                "reference: a tracked frame matched no point of the map",
+            );
+        };
         let keyframe = !held
             && mapping::need_keyframe(
                 m,
                 &self.camera,
                 &frame.depth,
                 &tracked,
+                reference,
                 self.mode,
                 &options,
             )?;

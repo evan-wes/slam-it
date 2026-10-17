@@ -51,7 +51,9 @@ def test_chi2_weighs_both_terms() -> None:
 def test_thresholds_follow_the_right_column(truth: Truth) -> None:
     """2 dof without a right column, 3 with; level l's variance is s^(2 l)."""
     limits = residuals.thresholds(np.array([np.nan, 10.0]), OPTIONS)
-    np.testing.assert_array_equal(limits, [OPTIONS.chi2_mono, OPTIONS.chi2_stereo])
+    np.testing.assert_array_equal(
+        limits, [OPTIONS.adjustment.chi2_mono, OPTIONS.adjustment.chi2_stereo]
+    )
     np.testing.assert_allclose(residuals.sigma2(truth.map, np.array([0, 2])), [1.0, 1.2**4])
 
 

@@ -100,7 +100,7 @@ def truth_map(built: list[frames.Frame], poses: list[np.ndarray]) -> Map:
         Keyframes at :data:`KEYFRAMES`, each observing the earlier points it sees and adding
         points from its own depth at every second free keypoint.
     """
-    m = maps.empty(OPTIONS.levels, OPTIONS.scale_factor)
+    m = maps.empty(OPTIONS.features.levels, OPTIONS.features.scale_factor)
     for i in KEYFRAMES:
         observed = _observe(m, built[i], poses[i])
         m = maps.insert_keyframe(m, built[i], poses[i], observed)

@@ -119,7 +119,8 @@ Result<Built> build(const Map& m, const Camera& camera, std::span<const std::int
 /// @return The settings.
 ba::Options solver_options(const Options& options, std::int64_t iterations) {
   ba::Options out;
-  out.solver.loss = nls::Loss{.kind = nls::LossKind::kHuber, .scale = std::sqrt(options.chi2_mono)};
+  out.solver.loss =
+      nls::Loss{.kind = nls::LossKind::kHuber, .scale = std::sqrt(options.adjustment.chi2_mono)};
   out.solver.max_iterations = static_cast<int>(iterations);
   return out;
 }
@@ -298,7 +299,9 @@ Result<Adjustment> bundle_adjust(Map& m, const Camera& camera,
     return std::unexpected(std::move(built.error()));
   }
   ba::Problem& problem = built->problem;
-  auto first = ba::solve(problem, solver_options(options, options.ba_iterations));
+  const auto held = static_cast<std::int64_t>(std::ranges::count(problem.fixed_poses, true));
+  const auto posed = static_cast<std::int64_t>(problem.fixed_poses.size());
+  auto first = ba::solve(problem, solver_options(options, options.adjustment.iterations));
   if (!first) {
     return std::unexpected(std::move(first.error()));
   }
@@ -310,7 +313,7 @@ Result<Adjustment> bundle_adjust(Map& m, const Camera& camera,
     return std::unexpected(std::move(outlier.error()));
   }
   auto second = ba::solve(refined_problem(problem, start, *outlier),
-                          solver_options(options, options.ba_refine_iterations));
+                          solver_options(options, options.adjustment.refine_iterations));
   if (!second) {
     return std::unexpected(std::move(second.error()));
   }
@@ -333,7 +336,9 @@ Result<Adjustment> bundle_adjust(Map& m, const Camera& camera,
     return std::unexpected(std::move(dropped.error()));
   }
   return Adjustment{.solves = {solve_of(first->summary.solve), solve_of(second->summary.solve)},
-                    .outliers = *dropped};
+                    .outliers = *dropped,
+                    .free = posed - held,
+                    .fixed = held};
 }
 
 }  // namespace slam_it::edge

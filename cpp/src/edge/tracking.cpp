@@ -8,6 +8,7 @@
 #include <string>
 #include <utility>
 
+#include "slam_it/edge/covisibility.hpp"
 #include "slam_it/edge/residuals.hpp"
 #include "slam_it/foundations/correspondences.hpp"
 #include "slam_it/foundations/matching.hpp"
@@ -171,10 +172,10 @@ Result<std::vector<bool>> classify(const Camera& camera, const Observations& obs
 Result<Tracked> refine(const Map& m, const Camera& camera, const Frame& frame,
                        const Tracked& tracked, const Options& options) {
   const Observations observations = gather(m, frame, tracked.points);
-  const double scale = std::sqrt(options.chi2_mono) / focal(camera);
+  const double scale = std::sqrt(options.adjustment.chi2_mono) / focal(camera);
   std::vector<bool> use(observations.keypoints.size(), true);
   Eigen::Matrix4d current = tracked.pose;
-  for (std::int64_t round = 0; round < options.pose_rounds; ++round) {
+  for (std::int64_t round = 0; round < options.adjustment.pose_rounds; ++round) {
     std::vector<std::size_t> chosen;
     for (std::size_t j = 0; j < use.size(); ++j) {
       if (use[j] && to_camera(current, observations.xyz[j]).z() > 0.0) {
@@ -235,7 +236,7 @@ Result<InView> select_in_view(const Map& m, const Camera& camera, const Eigen::M
       continue;
     }
     const double view_cos = viewing_cos(m, p, offset, distance);
-    if (!(view_cos >= options.view_cos_limit)) {
+    if (!(view_cos >= options.tracking.view_cos_limit)) {
       continue;
     }
     out.rows.push_back(row);
@@ -280,6 +281,30 @@ std::pair<std::int64_t, std::int64_t> level_range(const Map& m, const Camera& ca
   return {level - 1, level + 1};
 }
 
+/// @brief Tracking's local map, and the points its keyframes observe.
+struct Nearby {
+  /// @brief The local map.
+  LocalMap map;
+  /// @brief The points its keyframes observe, ascending.
+  std::vector<std::int64_t> points;
+};
+
+/// @brief The local map of some matched points (`slam_it.edge.covisibility.local_map`), and its
+///        points.
+/// @param m The map.
+/// @param points The point each keypoint was matched to, -1 for none.
+/// @param options The settings.
+/// @return The local map and its points; `InvalidInput` for an id below -1.
+Result<Nearby> nearby_of(const Map& m, std::span<const std::int64_t> points,
+                         const Options& options) {
+  auto found = local_map(m, points, options);
+  if (!found) {
+    return std::unexpected(std::move(found.error()));
+  }
+  std::vector<std::int64_t> seen = observed_by(m, found->keyframes);
+  return Nearby{.map = std::move(*found), .points = std::move(seen)};
+}
+
 }  // namespace
 
 Eigen::Matrix4d predict(const Eigen::Matrix4d& last_pose,
@@ -314,10 +339,13 @@ Result<InView> in_view(const Map& m, const Camera& camera, const Eigen::Matrix4d
   return select_in_view(m, camera, pose, rows, options);
 }
 
-LocalMapSummary summary(const LocalTracking& local) {
+LocalMapSummary summary(const LocalTracking& local, std::int64_t base) {
   return {.in_view = static_cast<std::int64_t>(local.visible.size()),
           .matches = count_matched(local.matched),
-          .inliers = inliers(local.tracked)};
+          .inliers = inliers(local.tracked),
+          .keyframes = local.keyframes,
+          .points = local.points,
+          .reference = local.reference_id < 0 ? -1 : base + local.reference_id};
 }
 
 Result<Motion> track_last_frame(const Map& m, const Camera& camera, const Frame& frame,
@@ -329,8 +357,8 @@ Result<Motion> track_last_frame(const Map& m, const Camera& camera, const Frame&
     return std::unexpected(std::move(ok.error()));
   }
   const double bf = focal(camera) * camera.baseline;
-  const double window =
-      mode == Mode::kStereo ? options.stereo_motion_window : options.motion_window;
+  const double window = mode == Mode::kStereo ? options.tracking.stereo_motion_window
+                                              : options.tracking.motion_window;
   std::vector<std::int64_t> rows;
   std::vector<std::int64_t> levels;
   std::vector<matching::Projection> projections;
@@ -367,18 +395,19 @@ Result<Motion> track_last_frame(const Map& m, const Camera& camera, const Frame&
       projections[j].radius =
           factor * window * std::pow(m.scale_factor, static_cast<double>(levels[j]));
     }
-    auto found = search(frame, projections,
-                        {.max_distance = options.th_high, .ratio = 1.0, .check_orientation = true});
+    auto found =
+        search(frame, projections,
+               {.max_distance = options.matching.th_high, .ratio = 1.0, .check_orientation = true});
     if (!found) {
       return std::unexpected(std::move(found.error()));
     }
     points = matched_ids(m, frame, *found, rows);
-    if (count_matched(points) >= options.min_motion_matches) {
+    if (count_matched(points) >= options.tracking.min_motion_matches) {
       break;
     }
   }
   const std::int64_t matches = count_matched(points);
-  if (matches < options.min_motion_matches) {
+  if (matches < options.tracking.min_motion_matches) {
     return Motion{.tracked = std::nullopt,
                   .summary = {.matches = matches, .widened = widened, .inliers = std::nullopt},
                   .matched = std::move(points)};
@@ -391,7 +420,7 @@ Result<Motion> track_last_frame(const Map& m, const Camera& camera, const Frame&
   Motion out{.tracked = std::nullopt,
              .summary = {.matches = matches, .widened = widened, .inliers = kept},
              .matched = std::move(points)};
-  if (kept >= options.min_motion_inliers) {
+  if (kept >= options.tracking.min_motion_inliers) {
     out.tracked = std::move(*tracked);
   }
   return out;
@@ -403,7 +432,11 @@ Result<LocalTracking> track_local_map(const Map& m, const Camera& camera, const 
   if (auto ok = check_tracking(camera, options, tracked.points, frame, "tracked.points"); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
-  const std::vector<std::int64_t> local_points = observed_by(m, window(m, options.window));
+  auto nearby = nearby_of(m, tracked.points, options);
+  if (!nearby) {
+    return std::unexpected(std::move(nearby.error()));
+  }
+  const std::vector<std::int64_t>& local_points = nearby->points;
   std::vector<std::int64_t> already;
   for (const std::int64_t id : tracked.points) {
     if (const std::int64_t p = point_row(m, id); p >= 0) {
@@ -418,15 +451,16 @@ Result<LocalTracking> track_local_map(const Map& m, const Camera& camera, const 
   if (!view) {
     return std::unexpected(std::move(view.error()));
   }
-  double th = mode == Mode::kRgbd ? options.rgbd_local_window : options.local_window;
+  double th =
+      mode == Mode::kRgbd ? options.tracking.rgbd_local_window : options.tracking.local_window;
   if (recovering) {
-    th = options.recovery_local_window;
+    th = options.tracking.recovery_local_window;
   }
   std::vector<matching::Projection> projections;
   for (std::size_t j = 0; j < view->rows.size(); ++j) {
-    const double narrow = view->view_cos[j] > options.aligned_view_cos
-                              ? options.aligned_view_radius
-                              : options.oblique_view_radius;
+    const double narrow = view->view_cos[j] > options.tracking.aligned_view_cos
+                              ? options.tracking.aligned_view_radius
+                              : options.tracking.oblique_view_radius;
     const std::int64_t level = view->level[j];
     projections.push_back(
         {.xy = view->xy[j],
@@ -442,8 +476,8 @@ Result<LocalTracking> track_local_map(const Map& m, const Camera& camera, const 
     taken[i] = tracked.points[i] >= 0 ? 1 : 0;
   }
   auto found = search(frame, projections,
-                      {.max_distance = options.th_high,
-                       .ratio = options.local_map_ratio,
+                      {.max_distance = options.matching.th_high,
+                       .ratio = options.tracking.local_map_ratio,
                        .check_orientation = false},
                       taken);
   if (!found) {
@@ -459,8 +493,16 @@ Result<LocalTracking> track_local_map(const Map& m, const Camera& camera, const 
   if (!refined) {
     return std::unexpected(std::move(refined.error()));
   }
+  const std::int64_t reference = nearby->map.reference;
   LocalTracking out{
-      .tracked = std::move(*refined), .visible = {}, .found = {}, .matched = std::move(points)};
+      .tracked = std::move(*refined),
+      .visible = {},
+      .found = {},
+      .matched = std::move(points),
+      .keyframes = static_cast<std::int64_t>(nearby->map.keyframes.size()),
+      .points = static_cast<std::int64_t>(local_points.size()),
+      .reference = reference,
+      .reference_id = reference >= 0 ? m.kf_id[static_cast<std::size_t>(reference)] : -1};
   for (const std::int64_t p : already) {
     out.visible.push_back(m.pt_id[static_cast<std::size_t>(p)]);
   }
@@ -490,11 +532,16 @@ Result<PnpRun> run_pnp(const Eigen::Ref<const foundations::correspondences::Rows
 }
 
 Result<Relocalization> relocalize_locally(const Map& m, const Camera& camera, const Frame& frame,
+                                          std::span<const std::int64_t> last,
                                           const Options& options) {
   if (auto ok = check_setup(camera, options); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
-  const std::vector<std::int64_t> local_points = observed_by(m, window(m, options.window));
+  auto nearby = nearby_of(m, last, options);
+  if (!nearby) {
+    return std::unexpected(std::move(nearby.error()));
+  }
+  const std::vector<std::int64_t>& local_points = nearby->points;
   Relocalization out{.tracked = std::nullopt,
                      .summary = {.candidates = static_cast<std::int64_t>(local_points.size()),
                                  .matches = std::nullopt,
@@ -504,7 +551,7 @@ Result<Relocalization> relocalize_locally(const Map& m, const Camera& camera, co
                                  .inliers = std::nullopt,
                                  .refined = std::nullopt},
                      .matched = std::vector<std::int64_t>(keypoint_count(frame), -1)};
-  if (std::cmp_less(local_points.size(), options.pnp_min_inliers)) {
+  if (std::cmp_less(local_points.size(), options.tracking.pnp_min_inliers)) {
     return out;
   }
   std::vector<foundations::orb::Descriptor> descriptors;
@@ -519,8 +566,8 @@ Result<Relocalization> relocalize_locally(const Map& m, const Camera& camera, co
   }
   const std::vector<std::int64_t> zeros(local_points.size(), 0);
   auto found = matching::match(frame.features.descriptors, descriptors, angles, zeros,
-                               {.max_distance = options.th_high,
-                                .ratio = options.relocalize_ratio,
+                               {.max_distance = options.matching.th_high,
+                                .ratio = options.relocalization.ratio,
                                 .check_orientation = false});
   if (!found) {
     return std::unexpected(std::move(found.error()));
@@ -534,7 +581,7 @@ Result<Relocalization> relocalize_locally(const Map& m, const Camera& camera, co
         m.pt_id[static_cast<std::size_t>(local_points[static_cast<std::size_t>(pair.second)])];
   }
   out.summary.matches = static_cast<std::int64_t>(pairs.size());
-  if (std::cmp_less(pairs.size(), options.pnp_min_inliers)) {
+  if (std::cmp_less(pairs.size(), options.tracking.pnp_min_inliers)) {
     return out;
   }
   Rows3 world(static_cast<Eigen::Index>(pairs.size()), 3);
@@ -547,9 +594,9 @@ Result<Relocalization> relocalize_locally(const Map& m, const Camera& camera, co
         frame.bearings[static_cast<std::size_t>(pairs[j].first)].transpose();
   }
   auto placed = pnp_consensus(world, rays,
-                              {.threshold = options.pnp_threshold / focal(camera),
+                              {.threshold = options.tracking.pnp_threshold / focal(camera),
                                .seed = static_cast<std::uint64_t>(options.seed)},
-                              options.pnp_min_inliers, out.summary);
+                              options.tracking.pnp_min_inliers, out.summary);
   if (!placed) {
     return std::unexpected(std::move(placed.error()));
   }
@@ -569,7 +616,7 @@ Result<Relocalization> relocalize_locally(const Map& m, const Camera& camera, co
     return std::unexpected(std::move(tracked.error()));
   }
   out.summary.refined = inliers(*tracked);
-  if (*out.summary.refined >= options.pnp_min_inliers) {
+  if (*out.summary.refined >= options.tracking.pnp_min_inliers) {
     out.tracked = std::move(*tracked);
   }
   return out;

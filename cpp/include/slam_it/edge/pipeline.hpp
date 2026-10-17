@@ -94,7 +94,8 @@ struct LostSummary {
   std::int64_t keyframes{0};
   /// @brief Its points.
   std::int64_t points{0};
-  /// @brief Whether it was reset, having `reset_keyframes` keyframes or fewer, rather than kept.
+  /// @brief Whether it was reset, having `loss.reset_keyframes` keyframes or fewer, rather than
+  ///        kept.
   bool reset{false};
 };
 
@@ -162,6 +163,11 @@ struct Lifetimes {
   std::vector<Eigen::Matrix4d> keyframe_poses;
   /// @brief Their lives.
   std::vector<Life> keyframe_lives;
+  /// @brief Each one's last parent in its map's spanning tree, by the run's id, or -1.
+  std::vector<std::int64_t> keyframe_parents;
+  /// @brief Each map's strong links when it closed, and the current map's now, by the run's
+  ///        ids, ascending.
+  std::vector<std::array<std::int64_t, 3>> keyframe_links;
   /// @brief The map each point was made in.
   std::vector<std::int64_t> point_maps;
   /// @brief The map each keyframe was made in.
@@ -176,7 +182,7 @@ class Pipeline {
   /// @param camera The camera.
   /// @param options The settings.
   /// @param vocabulary The vocabulary of the keyframe database's words: required with
-  ///        `relocalize` on, refused with it off.
+  ///        `relocalization.enabled` on, refused with it off.
   /// @return The pipeline; `InvalidInput` for an invalid camera or settings, a stereo or
   ///         RGB-D camera without a baseline, or a vocabulary missing while relocalising or given
   ///         while not.
@@ -185,7 +191,7 @@ class Pipeline {
       std::optional<foundations::vocabulary::Vocabulary> vocabulary);
 
   /// @brief The extraction settings the next frame should be built with.
-  /// @return `init_feature_factor` times the features for a monocular frame before the map
+  /// @return `features.init_factor` times the features for a monocular frame before the map
   ///         exists, the usual ones otherwise.
   [[nodiscard]] foundations::orb::Options extraction() const;
 
@@ -246,6 +252,8 @@ class Pipeline {
     LocalMapSummary summary;
     /// @brief Its match for each keypoint before refinement.
     std::vector<std::int64_t> matched;
+    /// @brief The frame's reference keyframe's row.
+    std::int64_t reference{-1};
   };
 
   /// @brief A pipeline before its first frame.
@@ -285,8 +293,9 @@ class Pipeline {
   ///        (`slam_it.edge.pipeline.Pipeline._record_failure`).
   /// @param frame The frame.
   /// @param keyframes The map's keyframes.
-  /// @return Whether it loses the track: past `relocalize_seconds` since the first failure, or
-  ///         for a small map or with `relocalize` off, on the `lost_frames`-th in a row.
+  /// @return Whether it loses the track: past `loss.relocalize_seconds` since the first failure, or
+  ///         for a small map or with `relocalization.enabled` off, on the `loss.lost_frames`-th in
+  ///         a row.
   bool record_failure(const Frame& frame, std::size_t keyframes);
 
   /// @brief Bring the keyframe database to the map's keyframes: add the new, erase the culled.
@@ -315,12 +324,21 @@ class Pipeline {
   /// @brief Date what this frame made and removed, and empty the map's archive of removals.
   void date();
 
-  /// @brief Close the map the track was lost in, on this frame: keep it, or reset it if it
-  ///        has `reset_keyframes` keyframes or fewer (its lives end, as `Removal::kReset`). The
-  ///        tracking state goes with it, so the next frame starts a new map.
+  /// @brief Close the map the track was lost in, on this frame: keep it, or reset it if it has
+  ///        `loss.reset_keyframes` keyframes or fewer (its lives end, as `Removal::kReset`). The
+  ///        tracking state goes with it, so the next frame starts a new map. A stand-in until
+  ///        milestone 2B's B4: the map's strong links are counted here, for the run's record,
+  ///        inside the frame's timed step (58 to 360 ms on the test set's largest maps); B4's
+  ///        atlas keeps maps whole, and the record moves with it (the online-SLAM design,
+  ///        section 4).
   /// @param m The map, taken out of the pipeline.
   /// @return The closed map's summary.
   LostSummary close(const Map& m);
+
+  /// @brief A parent of the current map, by the run's id.
+  /// @param parent Its id in the map, or -1.
+  /// @return The run's id, or -1.
+  [[nodiscard]] std::int64_t run_id(std::int64_t parent) const;
 
   /// @brief Track a frame against the map; insert a keyframe if one is needed (and time it).
   /// @param frame The frame.
@@ -383,6 +401,10 @@ class Pipeline {
   std::vector<double> past_times_;
   /// @brief Their last poses (unset for the others).
   std::vector<Eigen::Matrix4d> past_poses_;
+  /// @brief Their last parents, by the run's id (unset for the others).
+  std::vector<std::int64_t> past_parents_;
+  /// @brief The closed maps' strong links, by the run's ids.
+  std::vector<std::array<std::int64_t, 3>> past_links_;
 };
 
 }  // namespace slam_it::edge

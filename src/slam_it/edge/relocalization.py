@@ -7,31 +7,33 @@ et al., T-RO 2021), against the map being tracked:
    (:mod:`slam_it.foundations.vocabulary`), and the keyframe database's candidates found
    (:func:`slam_it.edge.database.candidates`), best first.
 2. **For each candidate in turn,** its keypoints that observe a point are matched to the frame's
-   by word (:func:`slam_it.foundations.matching.search_by_bow`: ``th_low``,
-   ``relocalize_ratio``, the rotation check; ``SearchByBoW``); with fewer than
-   ``reloc_min_matches``, the next candidate.
+   by word (:func:`slam_it.foundations.matching.search_by_bow`: ``matching.th_low``,
+   ``relocalization.ratio``, the rotation check; ``SearchByBoW``); with fewer than
+   ``relocalization.min_matches``, the next candidate.
 3. **PnP RANSAC** on those matches (:func:`slam_it.foundations.pnp.pnp_ransac`,
-   ``pnp_threshold`` pixels, ``seed``), set as ORB-SLAM sets MLPnP's
+   ``tracking.pnp_threshold`` pixels, ``seed``), set as ORB-SLAM sets MLPnP's
    (``SetRansacParameters(0.99, 10, 300, 6, 0.5, 5.991)``): the pose needs
-   ``n = max(reloc_min_inliers, floor(reloc_inlier_ratio * matches))`` inliers, and the
-   samples drawn are those that find such a pose with ``reloc_confidence``,
-   ``ceil(log(1 - p) / log(1 - e^3))`` for ``e = max(reloc_inlier_ratio, n / matches)``, at
-   most ``reloc_ransac_iterations`` (35 at the defaults). Fewer inliers: the next candidate.
+   ``n = max(relocalization.min_inliers, floor(relocalization.inlier_ratio * matches))`` inliers,
+   and the samples drawn are those that find such a pose with ``relocalization.confidence``,
+   ``ceil(log(1 - p) / log(1 - e^3))`` for ``e = max(relocalization.inlier_ratio, n / matches)``, at
+   most ``relocalization.ransac_iterations`` (35 at the defaults). Fewer inliers: the next
+   candidate.
 4. **The pose optimised** (:func:`slam_it.edge.tracking.optimize_pose`); fewer than
-   ``reloc_min_inliers`` inliers: the next candidate. Fewer than ``recovery_tracked`` (50): the
-   candidate's other points searched by projection (:func:`search_keyframe`, a window of
-   ``reloc_window`` pixels at the predicted level and ``th_high``), and if that brings 50, the
-   pose optimised again; then with more than ``reloc_narrow_inliers`` but fewer than 50, the
-   search repeated narrower (``reloc_narrow_window``, ``reloc_narrow_distance``) and, if that
-   brings 50, the pose optimised once more. 50 inliers place the frame, and end the search.
+   ``relocalization.min_inliers`` inliers: the next candidate. Fewer than
+   ``tracking.recovery_tracked`` (50): the candidate's other points searched by projection
+   (:func:`search_keyframe`, a window of ``relocalization.window`` pixels at the predicted level and
+   ``matching.th_high``), and if that brings 50, the pose optimised again; then with more than
+   ``relocalization.narrow_inliers`` but fewer than 50, the search repeated narrower
+   (``relocalization.narrow_window``, ``relocalization.narrow_distance``) and, if that brings 50,
+   the pose optimised once more. 50 inliers place the frame, and end the search.
 
-**Unlike ORB-SLAM** (decided with evan-wes on 2026-10-15): the candidates are tried one at a
-time, best first, each RANSAC run to its end, its best pose kept (LO-MSAC, stopping once
-confident); ORB-SLAM runs five samples of each in turn, in the order its index found them, and
-takes the first pose with enough inliers. ORB-SLAM counts its samples with ``e^3`` though MLPnP
-draws 6 points; P3P draws 3, so the count is right for it. The RANSAC's threshold is
-``pnp_threshold`` at every level, where MLPnP's is 5.991 times the level's variance. The search
-by projection skips a point behind the camera, which ORB-SLAM's projects regardless.
+**Unlike ORB-SLAM** (decided with evan-wes on 2026-10-15): the candidates are tried one at a time,
+best first, each RANSAC run to its end, its best pose kept (LO-MSAC, stopping once confident);
+ORB-SLAM runs five samples of each in turn, in the order its index found them, and takes the first
+pose with enough inliers. ORB-SLAM counts its samples with ``e^3`` though MLPnP draws 6 points; P3P
+draws 3, so the count is right for it. The RANSAC's threshold is ``tracking.pnp_threshold`` at every
+level, where MLPnP's is 5.991 times the level's variance. The search by projection skips a point
+behind the camera, which ORB-SLAM's projects regardless.
 
 Each candidate tried reports how far it got (:class:`CandidateSummary`), and the frame how the
 search went (:class:`RelocalizationSummary`), which a run records.
@@ -228,28 +230,28 @@ def ransac_budget(matches: int, options: Options) -> tuple[int, int]:
     matches : int
         The candidate's matches by word.
     options : slam_it.edge.options.Options
-        ``reloc_min_inliers``, ``reloc_inlier_ratio``, ``reloc_confidence`` and
-        ``reloc_ransac_iterations``.
+        ``relocalization.min_inliers``, ``relocalization.inlier_ratio``,
+        ``relocalization.confidence`` and ``relocalization.ransac_iterations``.
 
     Returns
     -------
     needed : int
-        ``max(reloc_min_inliers, floor(reloc_inlier_ratio * matches))``, and at least P3P's
-        sample.
+        ``max(relocalization.min_inliers, floor(relocalization.inlier_ratio * matches))``, and at
+        least P3P's sample.
     samples : int
-        The samples, from 1 to ``reloc_ransac_iterations``: 1 if every match must be an
+        The samples, from 1 to ``relocalization.ransac_iterations``: 1 if every match must be an
         inlier.
     """
     needed = max(
-        options.reloc_min_inliers,
-        math.floor(options.reloc_inlier_ratio * matches),
+        options.relocalization.min_inliers,
+        math.floor(options.relocalization.inlier_ratio * matches),
         p3p.SAMPLE_SIZE,
     )
     if needed >= matches:
         return needed, 1
-    ratio = max(options.reloc_inlier_ratio, needed / matches)
-    bound = ransac.required_iterations(ratio, p3p.SAMPLE_SIZE, options.reloc_confidence)
-    return needed, max(1, min(math.ceil(bound), options.reloc_ransac_iterations))
+    ratio = max(options.relocalization.inlier_ratio, needed / matches)
+    bound = ransac.required_iterations(ratio, p3p.SAMPLE_SIZE, options.relocalization.confidence)
+    return needed, max(1, min(math.ceil(bound), options.relocalization.ransac_iterations))
 
 
 def search_keyframe(  # noqa: PLR0913 -- the map, its camera, the frame, the keyframe, the search
@@ -358,23 +360,24 @@ def _project_more(  # noqa: PLR0913 -- the candidate's state
     would have: those it was given and the searches' additions. `found` is the points RANSAC's
     inliers matched, which the first search skips.
     """
-    needed = options.recovery_tracked
+    needed = options.tracking.recovery_tracked
     added = search_keyframe(
         m, camera, frame, refined, keyframe,
-        skip=found, window=options.reloc_window, distance=options.th_high, options=options,
+        skip=found, window=options.relocalization.window, distance=options.matching.th_high,
+        options=options,
     )  # fmt: skip
     merged = _merged(refined, added)
     if refined.inliers + int(np.count_nonzero(added >= 0)) < needed:
         return refined, merged.points
     again = tracking.optimize_pose(m, camera, frame, merged, options)
-    if not options.reloc_narrow_inliers < again.inliers < needed:
+    if not options.relocalization.narrow_inliers < again.inliers < needed:
         return again, merged.points
     # The second optimisation's outliers keep their matches until the last (ORB-SLAM's).
     held = Tracked(pose=again.pose, points=merged.points)
     narrow = search_keyframe(
         m, camera, frame, held, keyframe,
-        skip=merged.points[merged.points >= 0], window=options.reloc_narrow_window,
-        distance=options.reloc_narrow_distance, options=options,
+        skip=merged.points[merged.points >= 0], window=options.relocalization.narrow_window,
+        distance=options.relocalization.narrow_distance, options=options,
     )  # fmt: skip
     if again.inliers + int(np.count_nonzero(narrow >= 0)) < needed:
         return again, merged.points
@@ -408,7 +411,9 @@ def _match_by_word(  # noqa: PLR0913, PLR0917 -- the map, its database, the fram
         m.kp_angle[rows],
         frame.features.keypoints.angle,
         matching.Options(
-            max_distance=options.th_low, ratio=options.relocalize_ratio, check_orientation=True
+            max_distance=options.matching.th_low,
+            ratio=options.relocalization.ratio,
+            check_orientation=True,
         ),
     )
     pairs = found.pairs[frame.bearings[found.pairs[:, 1], 2] > 0.0]  # NaN bearings fail too
@@ -431,17 +436,17 @@ def _try(  # noqa: PLR0913 -- the map, the database, the frame, the candidate, t
     """Try to place the frame through one candidate (module docstring, steps 2 to 4).
 
     Matched by word (:func:`_match_by_word`), placed by PnP RANSAC within MLPnP's budget
-    (:func:`ransac_budget`), the pose refined and, short of ``recovery_tracked`` inliers, the
-    keyframe's other points searched for (:func:`_project_more`).
+    (:func:`ransac_budget`), the pose refined and, short of ``tracking.recovery_tracked`` inliers,
+    the keyframe's other points searched for (:func:`_project_more`).
     """
     pairs, matched = _match_by_word(m, db, frame, nodes, keyframe, options)
     summary = CandidateSummary(keyframe, score, matches=len(pairs))
     needed, samples = ransac_budget(len(pairs), options)
-    if len(pairs) < max(options.reloc_min_matches, needed):
+    if len(pairs) < max(options.relocalization.min_matches, needed):
         return _Attempt(None, summary, matched)
     settings = ransac.Options(
-        threshold=options.pnp_threshold / camera.focal,
-        confidence=options.reloc_confidence,
+        threshold=options.tracking.pnp_threshold / camera.focal,
+        confidence=options.relocalization.confidence,
         max_iterations=samples,
         seed=options.seed,
     )
@@ -458,16 +463,16 @@ def _try(  # noqa: PLR0913 -- the map, the database, the frame, the candidate, t
     sample[keypoints[inliers]] = matched[keypoints[inliers]]
     refined = tracking.optimize_pose(m, camera, frame, Tracked(pose=pose, points=sample), options)
     summary = replace(summary, refined=refined.inliers)
-    if refined.inliers < options.reloc_min_inliers:
+    if refined.inliers < options.relocalization.min_inliers:
         return _Attempt(None, summary, matched)
     last = refined
-    if refined.inliers < options.recovery_tracked:
+    if refined.inliers < options.tracking.recovery_tracked:
         last, searched = _project_more(
             m, camera, frame, keyframe, refined=refined, found=sample[sample >= 0], options=options
         )
         matched = np.where(searched >= 0, searched, matched)
     summary = replace(summary, found=last.inliers)
-    placed = last if last.inliers >= options.recovery_tracked else None
+    placed = last if last.inliers >= options.tracking.recovery_tracked else None
     return _Attempt(placed, summary, matched)
 
 
@@ -515,15 +520,16 @@ def relocalize(  # noqa: PLR0913 -- the map, its database, the camera, the frame
     frame : slam_it.edge.frames.Frame
         The frame.
     options : slam_it.edge.options.Options
-        The ``reloc_*`` settings, ``th_low``, ``th_high``, ``relocalize_ratio``,
-        ``pnp_threshold``, ``recovery_tracked``, the pose optimisation's and ``seed``.
+        The ``relocalization`` settings, ``matching.th_low``, ``matching.th_high``,
+        ``relocalization.ratio``, ``tracking.pnp_threshold``, ``tracking.recovery_tracked``, the
+        pose optimisation's and ``seed``.
     backend : {"python", "cpp", "rust"}, optional
         Which implementation computes the result (default: the Python reference).
 
     Returns
     -------
     Relocalized
-        The frame placed with ``recovery_tracked`` inliers or more, or none; how the search
+        The frame placed with ``tracking.recovery_tracked`` inliers or more, or none; how the search
         went; and each keypoint's match in the last candidate tried.
 
     Raises

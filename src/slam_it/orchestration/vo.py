@@ -9,7 +9,7 @@ builds each frame for the mode (:mod:`slam_it.edge.frames`), tracks it
   :func:`slam_it.eval.tum.read_camera`): as it is for monocular, and for RGB-D with a virtual
   baseline of the camera's ``bf`` over its focal length (ORB-SLAM's ``Camera.bf``: depth gives
   each keypoint a virtual right column that baseline away, and points nearer than
-  ``close_depth`` baselines count as close); a folder whose camera gives no ``bf`` runs
+  ``stereo.close_depth`` baselines count as close); a folder whose camera gives no ``bf`` runs
   monocular only. A EuRoC sequence's left camera for monocular; for stereo, the pair rectified
   (:func:`slam_it.foundations.stereo.rectify`), each image remapped, and the rectified left
   camera (pinhole) with the pair's baseline. A stereo run's poses are therefore the rectified
@@ -63,7 +63,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -144,7 +144,7 @@ class Request:
     record_features : bool
         Whether the run records each frame's keypoints, with their fates.
     vocabulary : pathlib.Path or None
-        The vocabulary's folder: required with ``relocalize`` on, refused with it off.
+        The vocabulary's folder: required with ``relocalization.enabled`` on, refused with it off.
     """
 
     dataset: str
@@ -186,9 +186,9 @@ class Request:
             out += ["--vocabulary", str(self.vocabulary)]
         if self.record_features:
             out.append("--record-features")
-        defaults = Options()
-        for setting in fields(Options):
-            value, default = getattr(self.options, setting.name), getattr(defaults, setting.name)
+        defaults = Options().settings()
+        for name, value in self.options.settings().items():
+            default = defaults[name]
             if value != default:
                 if isinstance(default, bool):
                     text = "true" if value else "false"
@@ -196,7 +196,7 @@ class Request:
                     text = str(int(value))
                 else:
                     text = repr(float(value))
-                out += ["--option", f"{setting.name}={text}"]
+                out += ["--option", f"{name}={text}"]
         return out
 
 
@@ -227,10 +227,10 @@ def check(request: Request) -> None:
         raise InvalidInputError("mode: a euroc sequence has no depth maps")
     if request.first < 0 or (request.count is not None and request.count < 0):
         raise InvalidInputError("first, count: must be at least 0")
-    if request.options.relocalize and request.vocabulary is None:
-        raise InvalidInputError("--vocabulary: relocalize needs one")
-    if not request.options.relocalize and request.vocabulary is not None:
-        raise InvalidInputError("--vocabulary: given, but relocalize is off")
+    if request.options.relocalization.enabled and request.vocabulary is None:
+        raise InvalidInputError("--vocabulary: relocalization.enabled needs one")
+    if not request.options.relocalization.enabled and request.vocabulary is not None:
+        raise InvalidInputError("--vocabulary: given, but relocalization.enabled is off")
 
 
 def _integer(flag: str, text: str) -> int:
@@ -250,7 +250,8 @@ def parse_setting(text: str) -> tuple[str, bool | int | float]:
     Parameters
     ----------
     text : str
-        ``KEY=VALUE``: a field of :class:`~slam_it.edge.options.Options` and its value.
+        ``KEY=VALUE``: a setting of :class:`~slam_it.edge.options.Options`, named by its group
+        and field (``relocalization.enabled``), and its value.
 
     Returns
     -------
@@ -267,9 +268,10 @@ def parse_setting(text: str) -> tuple[str, bool | int | float]:
     key, equals, value = text.partition("=")
     if not equals:
         raise UsageError(f"--option: expected KEY=VALUE, got '{text}'")
-    if key not in {setting.name for setting in fields(Options)}:
+    defaults = Options().settings()
+    if key not in defaults:
         raise UsageError(f"--option: no setting '{key}'")
-    default = getattr(Options(), key)
+    default = defaults[key]
     if isinstance(default, bool):
         if value.strip() not in ("true", "false"):
             raise UsageError(f"{key}: expected true or false, got '{value}'")
@@ -286,7 +288,8 @@ def parse(arguments: Sequence[str]) -> Request:
     """Read a program's command line (:data:`USAGE`), as the native programs read theirs.
 
     Flags come in any order, each with its value but ``--record-features``; ``--option
-    KEY=VALUE`` is repeatable and names a field of :class:`~slam_it.edge.options.Options`.
+    KEY=VALUE`` is repeatable and names a setting of :class:`~slam_it.edge.options.Options` by its
+    group and field.
 
     Parameters
     ----------
@@ -308,7 +311,7 @@ def parse(arguments: Sequence[str]) -> Request:
     """
     values: dict[str, str] = {}
     numbers: dict[str, int] = {}
-    changes: dict[str, Any] = {}  # each of its field's type (parse_setting)
+    changes: dict[str, Any] = {}  # each of its setting's type (parse_setting)
     i = 0
     while i < len(arguments):
         flag = arguments[i]
@@ -345,7 +348,7 @@ def parse(arguments: Sequence[str]) -> Request:
         Path(values["--out"]),
         first=numbers.get("--first", 0),
         count=numbers.get("--count"),
-        options=replace(Options(), **changes),
+        options=Options().with_settings(changes),
         record_features=_RECORD_FEATURES in values,
         vocabulary=Path(values["--vocabulary"]) if "--vocabulary" in values else None,
     )
@@ -400,7 +403,7 @@ def options_for(width: int, height: int) -> Options:
     slam_it.foundations.errors.InvalidInputError
         If a side is not a positive integer.
     """
-    return Options(n_features=features_for(width, height))
+    return Options().with_settings({"features.n_features": features_for(width, height)})
 
 
 def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest keyword-only
@@ -445,9 +448,9 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
         Whether to record each frame's keypoints, with their fates
         (:func:`slam_it.eval.runs.read_features` reads them; default: no).
     vocabulary : str or pathlib.Path, optional
-        The vocabulary's folder, which a relocalising run needs (default: the committed one
-        when ``relocalize`` is on, none when it is off; one given while it is off is refused).
-        It is read once, here, its checksums checked before any program runs
+        The vocabulary's folder, which a relocalising run needs (default: the committed one when
+        ``relocalization.enabled`` is on, none when it is off; one given while it is off is
+        refused). It is read once, here, its checksums checked before any program runs
         (:func:`slam_it.eval.vocabularies.read`).
 
     Returns
@@ -483,7 +486,7 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
         record_features=record_features,
         vocabulary=None if vocabulary is None else Path(vocabulary),
     )
-    if request.vocabulary is None and request.options.relocalize:
+    if request.vocabulary is None and request.options.relocalization.enabled:
         request = replace(request, vocabulary=vocabularies.DEFAULT)
     backends.check_name(backend)
     check(request)
@@ -739,6 +742,8 @@ def _run_here(request: Request, words: Vocabulary | None) -> runs.Run:
         diagnostics=diagnostics,
         point_lives=lives.point_lives,
         keyframe_lives=lives.keyframe_lives,
+        keyframe_parents=lives.keyframe_parents,
+        keyframe_links=lives.keyframe_links,
         record_features=request.record_features,
         pose_maps=np.array(pose_maps, dtype=np.int64),
         keyframe_maps=lives.keyframe_maps,

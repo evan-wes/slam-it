@@ -39,13 +39,13 @@ pub fn sigma2(m: &Map, level: usize) -> f64 {
 ///
 /// # Returns
 ///
-/// `chi2_stereo` with a right column, else `chi2_mono`.
+/// `adjustment.chi2_stereo` with a right column, else `adjustment.chi2_mono`.
 #[must_use]
 pub fn threshold(right: f64, options: &Options) -> f64 {
     if right.is_nan() {
-        options.chi2_mono
+        options.adjustment.chi2_mono
     } else {
-        options.chi2_stereo
+        options.adjustment.chi2_stereo
     }
 }
 
@@ -163,8 +163,10 @@ mod tests {
     #[test]
     fn thresholds_follow_the_right_column() {
         let options = Options::default();
-        assert!((threshold(f64::NAN, &options) - options.chi2_mono).abs() < f64::EPSILON);
-        assert!((threshold(10.0, &options) - options.chi2_stereo).abs() < f64::EPSILON);
+        assert!(
+            (threshold(f64::NAN, &options) - options.adjustment.chi2_mono).abs() < f64::EPSILON
+        );
+        assert!((threshold(10.0, &options) - options.adjustment.chi2_stereo).abs() < f64::EPSILON);
         let m = Map::empty(8, 1.2);
         assert!((sigma2(&m, 2) - 1.2_f64.powi(4)).abs() < 1e-12);
     }

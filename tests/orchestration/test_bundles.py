@@ -162,10 +162,15 @@ def _split(run: runs.Run, at: int, moved: np.ndarray) -> runs.Run:
     keyframes[keyframe_maps == 1] = moved @ keyframes[keyframe_maps == 1]
     points[point_maps == 1] = points[point_maps == 1] @ moved[:3, :3].T + moved[:3, 3]
     diagnostics = [{**d, "map": int(k >= at)} for k, d in enumerate(run.diagnostics)]
+    # The spanning tree and the strong links cut where the maps split.
+    parents = run.keyframe_parents.copy()
+    parents[(parents >= 0) & (keyframe_maps[np.maximum(parents, 0)] != keyframe_maps)] = -1
+    links = run.keyframe_links
+    links = links[keyframe_maps[links[:, 0]] == keyframe_maps[links[:, 1]]]
     return replace(
         run, poses=poses, keyframe_poses=keyframes, points=points, diagnostics=diagnostics,
         pose_maps=pose_maps, keyframe_maps=keyframe_maps, point_maps=point_maps,
-        record_features=False,
+        keyframe_parents=parents, keyframe_links=links, record_features=False,
     )  # fmt: skip
 
 

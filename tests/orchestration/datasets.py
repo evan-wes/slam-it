@@ -122,56 +122,70 @@ BLANK_AT = 10
 """Where the gap room has a blank frame (no texture, no depth), before the gap: a frame that
 fails, after which the motion model predicts no motion (review panel finding A14)."""
 
-GAP_OPTIONS = replace(OPTIONS, motion_window=2.0, stereo_motion_window=2.0, max_frames=2)
+GAP_OPTIONS = OPTIONS.with_settings(
+    {"tracking.motion_window": 2.0, "tracking.stereo_motion_window": 2.0, "tracking.max_frames": 2}
+)
 """The room's settings with the motion model's window narrowed: across the gap, tracking the
-last frame fails and the pipeline recovers by PnP against the local map. ``max_frames`` is
+last frame fails and the pipeline recovers by PnP against the local map. ``tracking.max_frames`` is
 lowered below the keyframes the map holds, so the hold on keyframes just after a recovery
 decides (monocular)."""
 
 
-MOVED_OPTIONS = replace(
-    GAP_OPTIONS,
-    th_low=45,
-    th_high=90,
-    stereo_max_distance=70,
-    stereo_band=2.5,
-    stereo_window=4,
-    stereo_search=6,
-    stereo_outlier_factor=2.5,
-    min_motion_inliers=12,
-    aligned_view_cos=0.995,
-    aligned_view_radius=2.0,
-    oblique_view_radius=5.0,
-    local_map_ratio=0.75,
-    min_distance_margin=0.7,
-    max_distance_margin=1.3,
-    first_ref_ratio=0.5,
-    ref_min_observations=2,
-    ref_min_observations_early=1,
-    triangulation_neighbours=5,
-    mono_triangulation_neighbours=8,
-    epipolar_chi2=5.0,
-    min_epipole_distance2=80.0,
-    min_baseline_depth=0.02,
-    recent_point_keyframes=4,
-    point_cull_age=3,
-    init_ba_iterations=15,
-    init_ransac_iterations=150,
-    init_parallax_cos=0.99995,
-    relocalize_ratio=0.8,
-    recovery_window_frames=3,
-    recovery_tracked=40,
-    recovery_local_window=4.0,
-    ba_min_keyframes=4,
-    reset_keyframes=9,
+MOVED_OPTIONS = GAP_OPTIONS.with_settings(
+    {
+        "matching.th_low": 45,
+        "matching.th_high": 90,
+        "stereo.max_distance": 70,
+        "stereo.band": 2.5,
+        "stereo.window": 4,
+        "stereo.search": 6,
+        "stereo.outlier_factor": 2.5,
+        "tracking.min_motion_inliers": 12,
+        "tracking.aligned_view_cos": 0.995,
+        "tracking.aligned_view_radius": 2.0,
+        "tracking.oblique_view_radius": 5.0,
+        "tracking.local_map_ratio": 0.75,
+        "tracking.min_distance_margin": 0.7,
+        "tracking.max_distance_margin": 1.3,
+        "keyframes.first_ref_ratio": 0.5,
+        "keyframes.ref_min_observations": 2,
+        "keyframes.ref_min_observations_early": 1,
+        "mapping.triangulation_neighbours": 5,
+        "mapping.mono_triangulation_neighbours": 8,
+        "mapping.epipolar_chi2": 5.0,
+        "mapping.min_epipole_distance2": 80.0,
+        "mapping.min_baseline_depth": 0.02,
+        "mapping.recent_point_keyframes": 4,
+        "mapping.point_cull_age": 3,
+        "initialization.ba_iterations": 15,
+        "initialization.ransac_iterations": 150,
+        "initialization.parallax_cos": 0.99995,
+        "relocalization.ratio": 0.8,
+        "tracking.recovery_window_frames": 3,
+        "tracking.recovery_tracked": 40,
+        "tracking.recovery_local_window": 4.0,
+        "adjustment.min_keyframes": 4,
+        "loss.reset_keyframes": 9,
+        "mapping.fuse_neighbours": 2,
+        "mapping.mono_fuse_neighbours": 2,
+        "mapping.fuse_second_neighbours": 1,
+        "covisibility.min_points": 100,
+        "covisibility.strong_points": 150,
+        "covisibility.local_keyframes": 1,
+        "covisibility.local_neighbours": 1,
+    }
 )
 """The gap room's settings with every one the review panel's fixes added moved off its default
 (finding H21): a native that read one at its default, or hard-coded it, would decide unlike
-Python here, where at the defaults it could not."""
+Python here, where at the defaults it could not. B2's settings (its panel's H3): each of fusion's
+three counts, ``covisibility.min_points`` and ``covisibility.strong_points``, put back at its
+default with the rest moved, changes the room's decisions; the local map's two caps cannot, as
+the keyframes that see a frame's points are every keyframe the room's local map could take, so
+the covisibility fixture's capped local maps hold them in the three languages."""
 
 
 LOST_AT = (12, 31)
-"""Where the lost room's two blank stretches begin: ``lost_frames`` of the room's frames from
+"""Where the lost room's two blank stretches begin: ``loss.lost_frames`` of the room's frames from
 each are blanked, so the track is lost on the last of each and the frames after start a new
 map. A stereo or RGB-D run reaches a third map, whose ids follow the first two maps' (review
 panel finding L4); a monocular one starts no map in the frames left after the second. The
@@ -179,12 +193,12 @@ second stretch cuts a monocular run's map 1, started on frame 28, to 3 tracked f
 it tracked 12 to the room's end with one stretch (finding L10): the room's 40 frames leave no
 later place for it."""
 
-KEPT_OPTIONS = replace(OPTIONS, reset_keyframes=0, relocalize=False)
+KEPT_OPTIONS = OPTIONS.with_settings({"loss.reset_keyframes": 0, "relocalization.enabled": False})
 """The room's settings with every lost map kept: the lost room's lost maps, of a few keyframes
 each, are otherwise reset (ORB-SLAM3's reset of a map lost with 10 keyframes or fewer). Without
-relocalisation, so that a kept map is lost after ``lost_frames`` failures, as before milestone
-2B: relocalising, a map above ``reset_keyframes`` is lost only after ``relocalize_seconds``,
-longer than the room."""
+relocalisation, so that a kept map is lost after ``loss.lost_frames`` failures, as before
+milestone 2B: relocalising, a map above ``loss.reset_keyframes`` is lost only after
+``loss.relocalize_seconds``, longer than the room."""
 
 
 FOUND_AT = 31
@@ -192,12 +206,12 @@ FOUND_AT = 31
 frames, comes back where it began, at frame :data:`FOUND_BACK`, and goes on from there."""
 
 FOUND_BLANKS = 3
-"""The found room's blank frames: fewer than ``lost_frames``, so the track is not lost."""
+"""The found room's blank frames: fewer than ``loss.lost_frames``, so the track is not lost."""
 
 FOUND_BACK = 2
 """The rendered frame the found room's camera comes back to after its blank frames."""
 
-FOUND_OPTIONS = replace(OPTIONS, pnp_min_inliers=1 << 20)
+FOUND_OPTIONS = OPTIONS.with_settings({"tracking.pnp_min_inliers": 1 << 20})
 """The found room's settings: the local fallback out of reach, so that only relocalisation,
 through the keyframe database, can find the frame the camera comes back on (the room's map is
 small enough for the fallback's local map to hold all of it)."""
@@ -205,7 +219,7 @@ small enough for the fallback's local map to hold all of it)."""
 
 WINDOW_BLANKS = 2
 """The window room's first blank frames, from :data:`FOUND_AT`: one fewer than the found room's.
-The second, 0.033 s after the first, is within the room's 0.05 s ``relocalize_seconds``, so the
+The second, 0.033 s after the first, is within the room's 0.05 s ``loss.relocalize_seconds``, so the
 track is not lost on it; the frame after, back at :data:`FOUND_BACK` and 0.067 s after the first,
 is relocalised, because the time is judged only on a frame that every attempt fails, as
 ORB-SLAM3 judges it after ``Relocalization``. A native that judged it first would lose the map
@@ -213,32 +227,33 @@ there."""
 
 WINDOW_AT = 36
 """Where the window room's second blank stretch begins: :data:`FOUND_BLANKS` frames, longer than
-its ``relocalize_seconds`` and shorter than ``lost_frames``, so that its map, kept, is lost by
-the time on the last of them, and the frame after starts a new one."""
+its ``loss.relocalize_seconds`` and shorter than ``loss.lost_frames``, so that its map, kept, is
+lost by the time on the last of them, and the frame after starts a new one."""
 
-WINDOW_OPTIONS = replace(
-    FOUND_OPTIONS,
-    reset_keyframes=0,
-    relocalize_seconds=0.05,
-    redundant_fraction=0.6,
-    redundant_observers=1,
-    recovery_tracked=60,
-    reloc_inlier_ratio=0.4,
-    reloc_min_inliers=12,
-    reloc_confidence=0.95,
-    reloc_ransac_iterations=200,
-    reloc_window=2.0,
-    reloc_narrow_inliers=25,
-    reloc_narrow_window=1.0,
-    reloc_narrow_distance=30,
+WINDOW_OPTIONS = FOUND_OPTIONS.with_settings(
+    {
+        "loss.reset_keyframes": 0,
+        "loss.relocalize_seconds": 0.05,
+        "mapping.redundant_fraction": 0.6,
+        "mapping.redundant_observers": 1,
+        "tracking.recovery_tracked": 60,
+        "relocalization.inlier_ratio": 0.4,
+        "relocalization.min_inliers": 12,
+        "relocalization.confidence": 0.95,
+        "relocalization.ransac_iterations": 200,
+        "relocalization.window": 2.0,
+        "relocalization.narrow_inliers": 25,
+        "relocalization.narrow_window": 1.0,
+        "relocalization.narrow_distance": 30,
+    }
 )
 """The window room's settings (review panel findings L1 and L2): the found room's, every map
 kept; lost 0.05 s after its first failed frame, on the third frame at 30 Hz, where
-``lost_frames`` would lose it on the fifth; a keyframe culled when 60% of its points are seen by
-one other keyframe, so that an RGB-D run culls several, which leave its database, before the
-frame is relocalised; ``recovery_tracked`` above the relocalised frame's first inliers, so that the
-search by projection runs; and the relocalisation settings off their defaults. Here only the
-search's window and RANSAC's confidence decide (review panel finding L9): the stage parity's
+``loss.lost_frames`` would lose it on the fifth; a keyframe culled when 60% of its points are seen
+by one other keyframe, so that an RGB-D run culls several, which leave its database, before the
+frame is relocalised; ``tracking.recovery_tracked`` above the relocalised frame's first inliers, so
+that the search by projection runs; and the relocalisation settings off their defaults. Here only
+the search's window and RANSAC's confidence decide (review panel finding L9): the stage parity's
 cases (``tests/edge/test_relocalization.py``'s ``DECISIVE``) move each setting where it alone
 decides."""
 
@@ -299,7 +314,7 @@ def found_frames(rendered: list[room.Frame]) -> list[room.Frame]:
 
 
 def lost_frames(rendered: list[room.Frame]) -> list[room.Frame]:
-    """Return the lost room: the room with ``lost_frames`` frames from each :data:`LOST_AT` blanked.
+    """Return the lost room: ``loss.lost_frames`` frames blanked from each :data:`LOST_AT`.
 
     Parameters
     ----------
@@ -311,7 +326,7 @@ def lost_frames(rendered: list[room.Frame]) -> list[room.Frame]:
     list of tests.edge.room.Frame
         The lost room's frames, as many as the room's, at the same times.
     """
-    blanked = {at + k for at in LOST_AT for k in range(OPTIONS.lost_frames)}
+    blanked = {at + k for at in LOST_AT for k in range(OPTIONS.loss.lost_frames)}
     return [blank(f) if k in blanked else f for k, f in enumerate(rendered)]
 
 
@@ -372,17 +387,17 @@ def room_inputs() -> dict[str, Any]:
         checked first, so a change to the rooms reads as one, not as a change to what the
         pipeline decides.
     """
-    defaults = Options().as_dict()
+    defaults = Options().settings()
 
     def moved(options: Options) -> dict[str, Any]:
-        return {k: v for k, v in options.as_dict().items() if v != defaults[k]}
+        return {k: v for k, v in options.settings().items() if v != defaults[k]}
 
     return {
         "frames": FRAMES,
         "gap": list(GAP),
         "blank_at": BLANK_AT,
         "lost_at": list(LOST_AT),
-        "lost_frames": OPTIONS.lost_frames,
+        "lost_frames": OPTIONS.loss.lost_frames,
         "room": moved(OPTIONS),
         "gap_room": moved(GAP_OPTIONS),
         "kept_room": moved(KEPT_OPTIONS),

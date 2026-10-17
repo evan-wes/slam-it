@@ -87,6 +87,9 @@ class Map:
         Its time, in seconds.
     kf_pose : ndarray of float64, shape (K, 4, 4)
         Its pose ``T_cam_world``.
+    kf_parent : ndarray of int64, shape (K,)
+        Its parent in the spanning tree, another keyframe's id, or -1: the map's first
+        keyframe, and one that has shared no point yet (:mod:`slam_it.edge.covisibility`).
     kf_start : ndarray of int64, shape (K + 1,)
         Where each keyframe's keypoints start in the keypoint table; the last is T.
     kp_xy : ndarray of float64, shape (T, 2)
@@ -135,6 +138,8 @@ class Map:
         Their times.
     gone_kf_pose : ndarray of float64, shape (H, 4, 4)
         Their last poses ``T_cam_world``.
+    gone_kf_parent : ndarray of int64, shape (H,)
+        Their last parents.
     """
 
     levels: int
@@ -142,6 +147,7 @@ class Map:
     kf_id: IntArray
     kf_time: Array
     kf_pose: Array
+    kf_parent: IntArray
     kf_start: IntArray
     kp_xy: Array
     kp_level: IntArray
@@ -169,6 +175,7 @@ class Map:
     gone_kf_id: IntArray
     gone_kf_time: Array
     gone_kf_pose: Array
+    gone_kf_parent: IntArray
 
     def __post_init__(self) -> None:
         """Check the tables' shapes, types and links (not copied: maps are built by this module).
@@ -178,8 +185,9 @@ class Map:
         slam_it.foundations.errors.InvalidInputError
             If an array has the wrong type or length, the keypoint offsets do not run from 0
             to the keypoint count, an id column is not strictly ascending or reaches its next
-            id, a keypoint observes a point that is not in the map, or the archive holds an id
-            the map still has, one it never gave, or an unknown removal.
+            id, a keypoint observes a point that is not in the map, a keyframe's parent is
+            neither -1 nor another of its keyframes, or the archive holds an id the map still
+            has, one it never gave, or an unknown removal.
         """
         _check(self)
 
@@ -259,21 +267,6 @@ class Map:
         rotation, translation = self.kf_pose[:, :3, :3], self.kf_pose[:, :3, 3]
         return np.asarray(-np.einsum("kji,kj->ki", rotation, translation))
 
-    def window(self, size: int) -> IntArray:
-        """Return the sliding window: the rows of the last `size` keyframes.
-
-        Parameters
-        ----------
-        size : int
-            The window's size.
-
-        Returns
-        -------
-        ndarray of int64
-            Their rows, oldest first.
-        """
-        return np.arange(max(0, self.keyframes - size), self.keyframes, dtype=np.int64)
-
     def observed_by(self, keyframes: IntArray) -> IntArray:
         """Return the points the given keyframes observe.
 
@@ -340,6 +333,7 @@ def empty(levels: int, scale_factor: float) -> Map:
         kf_id=no_int,
         kf_time=no_real,
         kf_pose=np.zeros((0, 4, 4)),
+        kf_parent=no_int,
         kf_start=np.zeros(1, dtype=np.int64),
         kp_xy=np.zeros((0, 2)),
         kp_level=no_int,
@@ -367,6 +361,7 @@ def empty(levels: int, scale_factor: float) -> Map:
         gone_kf_id=no_int,
         gone_kf_time=no_real,
         gone_kf_pose=np.zeros((0, 4, 4)),
+        gone_kf_parent=no_int,
     )
 
 
@@ -407,6 +402,7 @@ def _insert_keyframe(m: Map, frame: Frame, pose: Array, points: IntArray) -> Map
         kf_id=np.append(m.kf_id, m.next_kf_id),
         kf_time=np.append(m.kf_time, frame.timestamp),
         kf_pose=np.concatenate([m.kf_pose, np.asarray(pose, dtype=np.float64)[None]]),
+        kf_parent=np.append(m.kf_parent, -1),
         kf_start=np.append(m.kf_start, total + frame.size),
         kp_xy=np.concatenate([m.kp_xy, keypoints.xy]),
         kp_level=np.concatenate([m.kp_level, keypoints.level]),
@@ -571,9 +567,11 @@ def _erase_keyframe(m: Map, k: int) -> Map:
         gone_kf_id=np.append(forgotten.gone_kf_id, forgotten.kf_id[k]),
         gone_kf_time=np.append(forgotten.gone_kf_time, forgotten.kf_time[k]),
         gone_kf_pose=np.concatenate([forgotten.gone_kf_pose, forgotten.kf_pose[k][None]]),
+        gone_kf_parent=np.append(forgotten.gone_kf_parent, forgotten.kf_parent[k]),
         kf_id=forgotten.kf_id[keep_kf],
         kf_time=forgotten.kf_time[keep_kf],
         kf_pose=forgotten.kf_pose[keep_kf],
+        kf_parent=forgotten.kf_parent[keep_kf],
         kf_start=np.concatenate([[0], np.cumsum(counts)]).astype(np.int64),
         **{
             item.name: getattr(forgotten, item.name)[keep_rows]
@@ -599,6 +597,7 @@ _SHAPES: dict[str, tuple[str, type[np.generic], tuple[int, ...]]] = {
     "kf_id": ("K", np.int64, ()),
     "kf_time": ("K", np.float64, ()),
     "kf_pose": ("K", np.float64, (4, 4)),
+    "kf_parent": ("K", np.int64, ()),
     "kp_xy": ("T", np.float64, (2,)),
     "kp_level": ("T", np.int64, ()),
     "kp_angle": ("T", np.int64, ()),
@@ -623,6 +622,7 @@ _SHAPES: dict[str, tuple[str, type[np.generic], tuple[int, ...]]] = {
     "gone_kf_id": ("H", np.int64, ()),
     "gone_kf_time": ("H", np.float64, ()),
     "gone_kf_pose": ("H", np.float64, (4, 4)),
+    "gone_kf_parent": ("H", np.int64, ()),
 }
 """Each table array's row count (keyframes, keypoints, points, or erased points and keyframes),
 dtype and item shape."""
@@ -675,6 +675,9 @@ def _check(m: Map) -> None:
             )
     if not np.all(np.isin(m.gone_pt_how, [int(r) for r in Removal])):
         raise InvalidInputError("map.gone_pt_how: expected Removal codes")
+    parents = np.asarray(m.kf_parent)
+    if np.any(parents == m.kf_id) or not np.all((parents == -1) | np.isin(parents, m.kf_id)):
+        raise InvalidInputError("map.kf_parent: a parent must be -1 or another of its keyframes")
 
 
 class Implementation(Protocol):
@@ -892,7 +895,7 @@ def viewing_cos(
     """Return the cosine between each point's mean viewing direction and a view of it.
 
     The one viewing-angle test of tracking's in-view check and fusion (``isInFrustum``'s
-    ``viewCos``), compared with ``view_cos_limit``.
+    ``viewCos``), compared with ``tracking.view_cos_limit``.
 
     Parameters
     ----------
@@ -918,9 +921,9 @@ def in_distance_range(
 ) -> NDArray[np.bool_]:
     """Return which points lie within the distances they are matchable from.
 
-    From ``min_distance_margin`` of a point's minimum distance to ``max_distance_margin`` of
-    its maximum (``isInFrustum``'s and ``Fuse``'s 0.8 and 1.2). Unchecked: `rows` are the
-    map's point rows and `distance` holds one distance per row.
+    From ``tracking.min_distance_margin`` of a point's minimum distance to
+    ``tracking.max_distance_margin`` of its maximum (``isInFrustum``'s and ``Fuse``'s 0.8 and 1.2).
+    Unchecked: `rows` are the map's point rows and `distance` holds one distance per row.
 
     Parameters
     ----------
@@ -938,8 +941,10 @@ def in_distance_range(
     ndarray of bool, shape (N,)
         Which are in range.
     """
-    near = distance >= options.min_distance_margin * m.pt_min_distance[rows]
-    return np.asarray(near & (distance <= options.max_distance_margin * m.pt_max_distance[rows]))
+    near = distance >= options.tracking.min_distance_margin * m.pt_min_distance[rows]
+    return np.asarray(
+        near & (distance <= options.tracking.max_distance_margin * m.pt_max_distance[rows])
+    )
 
 
 def predict_level(
@@ -1286,6 +1291,11 @@ def forget_observations(m: Map, rows: ArrayLike, *, backend: str = "python") -> 
 def erase_keyframe(m: Map, k: int, *, backend: str = "python") -> Map:
     """Remove a keyframe and its keypoints; its points lose an observation each.
 
+    A keyframe that is still another's parent is refused, so every parent stays a keyframe of
+    the map: :func:`slam_it.edge.covisibility.cull` gives its children new parents first. It
+    guards the parents, not the root: a childless first keyframe is erased; callers above the map
+    go through ``cull``, which refuses it.
+
     Parameters
     ----------
     m : Map
@@ -1303,11 +1313,17 @@ def erase_keyframe(m: Map, k: int, *, backend: str = "python") -> Map:
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If `k` is not a keyframe's row.
+        If `k` is not a keyframe's row, or the keyframe is still another's parent.
     """
     if m.keyframes == 0:
         raise InvalidInputError("k: the map has no keyframes")
     row = as_count(k, "k", 0, m.keyframes - 1)
+    children = np.flatnonzero(m.kf_parent == m.kf_id[row])
+    if len(children):
+        raise InvalidInputError(
+            f"k: keyframe {m.kf_id[row]} is still keyframe {m.kf_id[children[0]]}'s parent "
+            "(covisibility's cull gives its children new parents first)"
+        )
     return backends.call(
         backend,
         __name__,
