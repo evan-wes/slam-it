@@ -608,21 +608,20 @@ double chi2_of(bool in_front, double information, const Eigen::Vector2d& residua
 /// @param matches The matches, checked.
 /// @param model The camera model.
 /// @param intrinsics Its intrinsics, checked.
-/// @param huber The Huber loss's threshold.
+/// @param huber The Huber loss's threshold, or none.
 /// @param options How the solve runs.
 /// @return The refinement, or `NotConverged` if GTSAM fails.
 template <typename Motion>
 Result<SimilarityRefinement> refine(const Motion& start, const MatchRows& matches,
                                     camera::Model model,
                                     const Eigen::Ref<const Eigen::VectorXd>& intrinsics,
-                                    double huber, const Options& options) {
+                                    std::optional<double> huber, const Options& options) {
   using Factor = SimilarityFactor<Motion>;
   const auto& [points1, points2, pixels1, pixels2, information] = matches;
   constexpr bool kRigid = std::is_same_v<Motion, gtsam::Pose3>;
   gtsam::NonlinearFactorGraph graph;
   gtsam::Values values;
   values.insert(0, start);
-  const auto kernel = gtsam::noiseModel::mEstimator::Huber::Create(huber);
   const Eigen::VectorXd camera = intrinsics;
   for (Eigen::Index k = 0; k < points1.rows(); ++k) {
     // A match image 2 does not observe (a NaN row) counts its image-1 error alone.
@@ -631,8 +630,12 @@ Result<SimilarityRefinement> refine(const Motion& start, const MatchRows& matche
       if (!first && !seen2) {
         continue;
       }
-      const auto noise = gtsam::noiseModel::Robust::Create(
-          kernel, gtsam::noiseModel::Isotropic::Precision(2, information(k, first ? 0 : 1)));
+      const gtsam::SharedNoiseModel weighted =
+          gtsam::noiseModel::Isotropic::Precision(2, information(k, first ? 0 : 1));
+      const gtsam::SharedNoiseModel noise =
+          huber ? gtsam::noiseModel::Robust::Create(
+                      gtsam::noiseModel::mEstimator::Huber::Create(*huber), weighted)
+                : weighted;
       graph.emplace_shared<Factor>(0,
                                    typename Factor::Match{.point1 = points1.row(k).transpose(),
                                                           .point2 = points2.row(k).transpose(),
@@ -724,7 +727,7 @@ Result<SimilarityRefinement> refine_similarity(
     const Eigen::Ref<const Points>& points2, const Eigen::Ref<const Pairs>& pixels1,
     const Eigen::Ref<const Pairs>& pixels2, const Eigen::Ref<const Pairs>& information,
     camera::Model model, const Eigen::Ref<const Eigen::VectorXd>& intrinsics, bool fixed_scale,
-    double huber, const Options& options) {
+    std::optional<double> huber, const Options& options) {
   if (auto checked = check_options(options); !checked) {
     return std::unexpected(checked.error());
   }
@@ -746,8 +749,8 @@ Result<SimilarityRefinement> refine_similarity(
   if (!information.allFinite() || !(information.array() > 0.0).all()) {
     return fail(ErrorKind::kInvalidInput, "information: expected positive values");
   }
-  if (!std::isfinite(huber) || huber <= 0.0) {
-    return fail_setting("huber", "expected > 0", huber);
+  if (huber && (!std::isfinite(*huber) || *huber <= 0.0)) {
+    return fail_setting("huber", "expected > 0", *huber);
   }
   if (auto checked = camera::check_intrinsics(model, intrinsics); !checked) {
     return std::unexpected(checked.error());

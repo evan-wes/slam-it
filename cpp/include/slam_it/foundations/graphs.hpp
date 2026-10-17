@@ -11,6 +11,7 @@
 
 #include <Eigen/Core>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -134,7 +135,8 @@ struct SimilarityRefinement {
 /// @brief Refine the similarity carrying one keyframe's matched points into another's images.
 ///
 /// ORB-SLAM's `OptimizeSim3` on GTSAM, one round: `S_12` is the only variable, each match two
-/// errors (its camera-2 point in image 1, its camera-1 point in image 2) with a Huber loss.
+/// errors (its camera-2 point in image 1, its camera-1 point in image 2), with a Huber loss or,
+/// as in ORB-SLAM's second round, none.
 /// @param similarity The starting `S_12`, `s > 0` (`s = 1` with `fixed_scale`).
 /// @param points1 Each match's point in camera 1's frame (M x 3), M >= 1.
 /// @param points2 Each match's point in camera 2's frame (M x 3).
@@ -145,7 +147,8 @@ struct SimilarityRefinement {
 /// @param model The camera model, the same for both images.
 /// @param intrinsics Its intrinsics.
 /// @param fixed_scale Hold the scale at 1, refining a rigid motion.
-/// @param huber The Huber loss's threshold on the whitened error's norm, positive.
+/// @param huber The Huber loss's threshold on the whitened error's norm, positive; none for no
+///        robust loss.
 /// @param options How the solve runs.
 /// @return The motion, each match's chi-squares and the summary; `InvalidInput` for a motion
 ///         not of the kind, mismatched sizes, no match, a non-positive information or
@@ -155,7 +158,7 @@ struct SimilarityRefinement {
     const Eigen::Ref<const Points>& points2, const Eigen::Ref<const Pairs>& pixels1,
     const Eigen::Ref<const Pairs>& pixels2, const Eigen::Ref<const Pairs>& information,
     camera::Model model, const Eigen::Ref<const Eigen::VectorXd>& intrinsics, bool fixed_scale,
-    double huber, const Options& options);
+    std::optional<double> huber, const Options& options);
 
 /// @brief A bundle adjustment's solution.
 struct Adjustment {

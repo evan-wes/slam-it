@@ -9,6 +9,7 @@
 #include <functional>
 #include <limits>
 #include <numbers>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -280,9 +281,9 @@ void test_refine_similarity(int& failures) {
         first->similarity, points1.bottomRows(kMatches - 1), points2.bottomRows(kMatches - 1),
         pixels1.bottomRows(kMatches - 1), pixels2.bottomRows(kMatches - 1),
         ones.bottomRows(kMatches - 1), camera::Model::kPinhole, pinhole(), fixed_scale,
-        std::sqrt(10.0), options);
+        std::nullopt, options);
     expect(second.has_value() && close(second->similarity, truth, 0.0, 1e-12),
-           "without it the second round returns the true motion", failures);
+           "without it the second round, with no robust loss, returns the true motion", failures);
   }
 }
 

@@ -967,7 +967,7 @@ fn distinct(indices: &[usize]) -> Vec<usize> {
 /// * `model` - The camera model.
 /// * `intrinsics` - Its intrinsics.
 /// * `fixed_scale` - Whether the motion is rigid.
-/// * `huber` - The Huber loss's threshold.
+/// * `huber` - The Huber loss's threshold, or none.
 /// * `options` - How the solve runs.
 ///
 /// # Errors
@@ -979,7 +979,7 @@ fn check_refinement(
     model: Model,
     intrinsics: &[f64],
     fixed_scale: bool,
-    huber: f64,
+    huber: Option<f64>,
     options: &Options,
 ) -> Result<()> {
     options.check()?;
@@ -1018,8 +1018,10 @@ fn check_refinement(
             "information: expected positive values",
         );
     }
-    if !(huber.is_finite() && huber > 0.0) {
-        return fail_setting("huber", "expected > 0", huber);
+    if let Some(threshold) = huber
+        && !(threshold.is_finite() && threshold > 0.0)
+    {
+        return fail_setting("huber", "expected > 0", threshold);
     }
     camera::check_intrinsics(model, intrinsics)
 }
@@ -1241,7 +1243,8 @@ pub fn optimize_pose_graph(
 /// * `model` - The camera model, the same for both images.
 /// * `intrinsics` - Its intrinsics.
 /// * `fixed_scale` - Hold the scale at 1, refining a rigid motion.
-/// * `huber` - The Huber loss's threshold on the whitened error's norm, positive.
+/// * `huber` - The Huber loss's threshold on the whitened error's norm, positive; none for no
+///   robust loss (`OptimizeSim3`'s second round).
 /// * `options` - How the solve runs.
 ///
 /// # Returns
@@ -1258,7 +1261,7 @@ pub fn refine_similarity(
     model: Model,
     intrinsics: &[f64],
     fixed_scale: bool,
-    huber: f64,
+    huber: Option<f64>,
     options: &Options,
 ) -> Result<SimilarityRefinement> {
     check_refinement(
@@ -1303,7 +1306,7 @@ pub fn refine_similarity(
                 &[kind],
                 2,
                 matches.information[k][side],
-                huber,
+                huber.unwrap_or(0.0), // the bridge's 0: no robust loss
                 factors.len(),
             ))?;
             factors.push(Factor::Similarity {
@@ -1761,7 +1764,8 @@ mod tests {
                 max_iterations: 20,
                 ..Options::default()
             };
-            let refine = |start: &Matrix4<f64>, from: usize| {
+            // ORB-SLAM's two rounds: a Huber loss, then none on the inliers.
+            let refine = |start: &Matrix4<f64>, from: usize, huber: Option<f64>| {
                 refine_similarity(
                     start,
                     &Matches {
@@ -1774,15 +1778,16 @@ mod tests {
                     lens.model,
                     &lens.intrinsics,
                     fixed_scale,
-                    10.0_f64.sqrt(),
+                    huber,
                     &options,
                 )
                 .unwrap()
             };
-            let first = refine(&(truth * pose([0.01, -0.01, 0.02], [0.02, -0.02, 0.01])), 0);
+            let start = truth * pose([0.01, -0.01, 0.02], [0.02, -0.02, 0.01]);
+            let first = refine(&start, 0, Some(10.0_f64.sqrt()));
             assert!((first.similarity - truth).abs().max() < 1e-2);
             assert!(first.chi2[0][0] > 1000.0);
-            let second = refine(&first.similarity, 1);
+            let second = refine(&first.similarity, 1, None);
             assert!((second.similarity - truth).abs().max() < 1e-12);
         }
     }

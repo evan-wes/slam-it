@@ -191,7 +191,7 @@ fn optimize_pose_graph<'py>(
 /// * `information` - (M, 2) informations, image 1 then image 2.
 /// * `model` - The camera model's code; `intrinsics` its intrinsics.
 /// * `fixed_scale` - Hold the scale at 1.
-/// * `huber` - The Huber loss's threshold.
+/// * `huber` - The Huber loss's threshold, or None for no robust loss.
 /// * `options` - `graphs.Options.as_dict()`.
 ///
 /// # Returns
@@ -222,7 +222,7 @@ fn refine_similarity<'py>(
     model: i64,
     intrinsics: PyReadonlyArray1<'py, f64>,
     fixed_scale: bool,
-    huber: f64,
+    huber: Option<f64>,
     options: Bound<'py, PyDict>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let start = one::<Matrix4<f64>>(&similarity)?;

@@ -247,7 +247,7 @@ class Implementation(Protocol):
         model: int,
         intrinsics: Array,
         fixed_scale: bool,
-        huber: float,
+        huber: float | None,
         options: dict[str, Any],
     ) -> dict[str, Any]:
         """Refine a similarity; return ``similarity``, ``chi2`` and the summary's fields."""
@@ -729,7 +729,7 @@ def _refine(  # noqa: PLR0913, PLR0917 -- the matches, their camera and the solv
     model: str,
     intrinsics: Array,
     fixed_scale: bool,
-    huber: float,
+    huber: float | None,
     options: Options,
 ) -> SimilarityRefinement:
     """Refine a similarity against its matches (reference)."""
@@ -739,7 +739,6 @@ def _refine(  # noqa: PLR0913, PLR0917 -- the matches, their camera and the solv
         values.insert(0, gtsam.Pose3(similarity))
     else:
         values.insert(0, to_similarity3(similarity))
-    kernel = gtsam.noiseModel.mEstimator.Huber.Create(huber)
 
     def residuals(k: int, motion: Array) -> SimilarityResiduals:
         return similarity_residuals(
@@ -748,9 +747,11 @@ def _refine(  # noqa: PLR0913, PLR0917 -- the matches, their camera and the solv
 
     for k in range(points1.shape[0]):
         for side in (0, 1) if np.isfinite(pixels2[k, 0]) else (0,):
-            noise = gtsam.noiseModel.Robust.Create(
-                kernel, gtsam.noiseModel.Isotropic.Precision(2, float(information[k, side]))
-            )
+            noise = gtsam.noiseModel.Isotropic.Precision(2, float(information[k, side]))
+            if huber is not None:
+                noise = gtsam.noiseModel.Robust.Create(
+                    gtsam.noiseModel.mEstimator.Huber.Create(huber), noise
+                )
 
             def evaluate(
                 values: gtsam.Values, k: int = k, side: int = side
@@ -787,7 +788,7 @@ def refine_similarity(  # noqa: PLR0913, PLR0917 -- the matches, their camera an
     model: str,
     intrinsics: ArrayLike,
     fixed_scale: bool,
-    huber: float,
+    huber: float | None,
     options: Options | None = None,
     backend: str = "python",
 ) -> SimilarityRefinement:
@@ -797,7 +798,8 @@ def refine_similarity(  # noqa: PLR0913, PLR0917 -- the matches, their camera an
     the points held where they are; each match gives two errors, its camera-2 point carried
     into image 1 and its camera-1 point carried into image 2, each with its keypoint's
     information and a Huber loss at `huber` (ORB-SLAM: ``√10``). The caller drops the matches
-    whose ``chi2`` exceeds its bound and runs another round, as ORB-SLAM does.
+    whose ``chi2`` exceeds its bound and runs another round with no robust loss, as ORB-SLAM
+    does.
 
     Parameters
     ----------
@@ -819,8 +821,8 @@ def refine_similarity(  # noqa: PLR0913, PLR0917 -- the matches, their camera an
     fixed_scale : bool
         Hold the scale at 1, refining a rigid motion (stereo and RGB-D: ORB-SLAM's
         ``mbFixScale``).
-    huber : float
-        The Huber loss's threshold on the whitened error's norm, > 0.
+    huber : float or None
+        The Huber loss's threshold on the whitened error's norm, > 0; None for no robust loss.
     options : Options, optional
         How the solve runs (default: :class:`Options`'s).
     backend : {"python", "cpp", "rust"}, optional
@@ -852,8 +854,8 @@ def refine_similarity(  # noqa: PLR0913, PLR0917 -- the matches, their camera an
     if len(lead) != 1 or lead[0] == 0 or not lead == lead2 == lead3 == lead4:
         raise InvalidInputError("matches: expected equal (M, 3) and (M, 2) arrays, M >= 1")
     weights = _information(information, 2 * lead[0], "information").reshape(lead[0], 2)
-    if not (math.isfinite(huber) and huber > 0.0):
-        raise InvalidInputError(f"huber: expected > 0, got {huber}")
+    if huber is not None and not (math.isfinite(huber) and huber > 0.0):
+        raise InvalidInputError(f"huber: expected > 0 or None, got {huber}")
     code, params = camera.as_model(model, intrinsics)
 
     def decode(raw: dict[str, Any], codes: dict[str, list[str]]) -> SimilarityRefinement:

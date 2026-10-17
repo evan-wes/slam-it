@@ -193,7 +193,8 @@ def test_a_similarity_is_refined_its_outlier_dropped_and_refined_again(
 ) -> None:
     """ORB-SLAM's two rounds: a wrong match stands out, and without it the motion is exact.
 
-    The Huber loss keeps the wrong match from pulling the first round's motion far.
+    The first round's Huber loss keeps the wrong match from pulling the motion far; the second,
+    on the inliers, has none, as ORB-SLAM's.
     """
     chosen = require_function(backend, graphs.__name__, "refine_similarity")
     name, intrinsics = PINHOLE
@@ -209,20 +210,23 @@ def test_a_similarity_is_refined_its_outlier_dropped_and_refined_again(
     pixels2 = camera.project(name, intrinsics, points2)
     pixels1[0] += [40.0, -35.0]  # one wrong match
 
-    def refine(start: Array, keep: NDArray[np.bool_]) -> graphs.SimilarityRefinement:
+    def refine(
+        start: Array, keep: NDArray[np.bool_], huber: float | None
+    ) -> graphs.SimilarityRefinement:
         return graphs.refine_similarity(
             start, points1[keep], points2[keep], pixels1[keep], pixels2[keep],
             np.ones((int(keep.sum()), 2)), model=name, intrinsics=intrinsics,
-            fixed_scale=fixed_scale, huber=np.sqrt(10.0),
-            options=graphs.Options(max_iterations=20), backend=chosen,
+            fixed_scale=fixed_scale, huber=huber, options=graphs.Options(max_iterations=20),
+            backend=chosen,
         )  # fmt: skip
 
-    first = refine(truth @ se3.exp([0.02, -0.02, 0.01, 0.01, -0.01, 0.02]), np.ones(40, bool))
+    start = truth @ se3.exp([0.02, -0.02, 0.01, 0.01, -0.01, 0.02])
+    first = refine(start, np.ones(40, bool), np.sqrt(10.0))
     np.testing.assert_allclose(first.similarity, truth, rtol=0, atol=1e-2)
     assert first.chi2[0, 0] > 1000.0
     keep = np.all(first.chi2 <= 10.0, axis=1)
     assert keep.tolist() == [False] + [True] * 39
-    second = refine(first.similarity, keep)
+    second = refine(first.similarity, keep, None)
     np.testing.assert_allclose(second.similarity, truth, rtol=0, atol=1e-12)
     assert second.summary.final_error < 1e-20  # exact data: down to rounding
     assert np.all(second.chi2 < 1e-12)

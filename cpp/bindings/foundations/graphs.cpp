@@ -8,10 +8,12 @@
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
+#include <nanobind/stl/optional.h>
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -114,7 +116,7 @@ nb::dict optimize_pose_graph(const BatchIn<4, 4>& poses, const IndexPairsIn& edg
 /// @param model The camera model's code.
 /// @param intrinsics Its intrinsics.
 /// @param fixed_scale Hold the scale at 1.
-/// @param huber The Huber loss's threshold.
+/// @param huber The Huber loss's threshold, or None for no robust loss.
 /// @param options `graphs.Options.as_dict()`.
 /// @return `{"similarity", "chi2", "initial_error", "final_error", "iterations",
 ///         "termination"}`.
@@ -124,8 +126,8 @@ nb::dict optimize_pose_graph(const BatchIn<4, 4>& poses, const IndexPairsIn& edg
 nb::dict refine_similarity(const Matrix4In& similarity, const BatchIn<3>& points1,
                            const BatchIn<3>& points2, const BatchIn<2>& pixels1,
                            const BatchIn<2>& pixels2, const BatchIn<2>& information, int model,
-                           const VectorIn<double>& intrinsics, bool fixed_scale, double huber,
-                           const nb::dict& options) {
+                           const VectorIn<double>& intrinsics, bool fixed_scale,
+                           std::optional<double> huber, const nb::dict& options) {
   const Eigen::VectorXd params = copy_vector<Eigen::VectorXd>(intrinsics);
   const graphs::SimilarityRefinement result = unwrap(graphs::refine_similarity(
       matrix4(similarity), rows3(points1), rows3(points2), rows2(pixels1), rows2(pixels2),
@@ -191,7 +193,7 @@ void bind_graphs(nb::module_& m) {
         nb::arg("points1").noconvert(), nb::arg("points2").noconvert(),
         nb::arg("pixels1").noconvert(), nb::arg("pixels2").noconvert(),
         nb::arg("information").noconvert(), nb::arg("model"), nb::arg("intrinsics").noconvert(),
-        nb::arg("fixed_scale"), nb::arg("huber"), nb::arg("options"),
+        nb::arg("fixed_scale"), nb::arg("huber").none(), nb::arg("options"),
         "Refine a similarity; return it, each match's chi2 and the summary's fields.");
   m.def("bundle_adjust", &bundle_adjust, nb::arg("poses").noconvert(),
         nb::arg("points").noconvert(), nb::arg("cameras").noconvert(),
