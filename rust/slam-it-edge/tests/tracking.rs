@@ -138,16 +138,20 @@ fn the_local_map_and_the_fallback_place_the_frame() {
     let mut start = pose(2);
     let mut t = start.fixed_view_mut::<3, 1>(0, 3);
     t += Vector3::new(0.005, 0.0, -0.005);
-    let none = Tracked {
+    // The motion model matched the first few points: the keyframes seeing them are the local map.
+    let mut seeded = Tracked {
         pose: start,
         points: vec![-1; POINTS],
     };
+    for (p, id) in seeded.points.iter_mut().take(5).enumerate() {
+        *id = i64::try_from(p).unwrap();
+    }
     let options = Options::default();
     let local = track_local_map(
         &m,
         &camera(),
         &frame(2, true),
-        &none,
+        &seeded,
         Mode::Rgbd,
         &options,
         false,
@@ -157,14 +161,19 @@ fn the_local_map_and_the_fallback_place_the_frame() {
     assert_eq!((local.visible.len(), local.found.len()), (POINTS, POINTS));
     assert!(gap(&local.tracked.pose, &pose(2)) < 1e-6);
     assert_eq!(
-        local.summary(),
+        local.summary(0),
         LocalMapSummary {
             in_view: POINTS,
             matches: POINTS,
-            inliers: POINTS
+            inliers: POINTS,
+            keyframes: local.keyframes,
+            points: POINTS,
+            reference: local.reference_id,
         }
     );
-    let recovery = relocalize_locally(&m, &camera(), &frame(2, true), &options).unwrap();
+    assert!(local.keyframes > 0);
+    let last = &m.pt_id; // the last frame matched every point
+    let recovery = relocalize_locally(&m, &camera(), &frame(2, true), last, &options).unwrap();
     let summary = recovery.summary;
     assert_eq!(
         (
@@ -184,7 +193,7 @@ fn the_local_map_and_the_fallback_place_the_frame() {
         &m,
         &camera(),
         &frame(2, true),
-        &none,
+        &seeded,
         Mode::Rgbd,
         &options,
         true,

@@ -11,6 +11,8 @@
 #include <utility>
 #include <vector>
 
+#include "slam_it/edge/covisibility.hpp"
+
 namespace slam_it::edge {
 
 namespace {
@@ -19,39 +21,6 @@ using foundations::ErrorKind;
 using foundations::fail;
 using foundations::Result;
 namespace vocabulary = foundations::vocabulary;
-
-/// @brief The distinct points a keyframe's keypoints observe.
-/// @param m The map.
-/// @param k The keyframe's row.
-/// @return The points' rows, ascending.
-std::vector<std::int64_t> points_of(const Map& m, std::size_t k) {
-  std::vector<std::int64_t> out;
-  for (auto row = m.kf_start[k]; row < m.kf_start[k + 1]; ++row) {
-    const std::int64_t id = m.kp_point[static_cast<std::size_t>(row)];
-    if (id >= 0) {
-      out.push_back(point_row(m, id));
-    }
-  }
-  std::ranges::sort(out);
-  const auto [first, last] = std::ranges::unique(out);
-  out.erase(first, last);
-  return out;
-}
-
-/// @brief The keyframes that observe a point, by id, each once.
-/// @param m The map.
-/// @param p The point's row.
-/// @return Their ids, ascending.
-std::vector<std::int64_t> observers_of(const Map& m, std::int64_t p) {
-  std::vector<std::int64_t> out;
-  for (const std::int64_t row : m.pt_observations[static_cast<std::size_t>(p)]) {
-    out.push_back(m.kf_id[keyframe_of(m, row)]);
-  }
-  std::ranges::sort(out);
-  const auto [first, last] = std::ranges::unique(out);
-  out.erase(first, last);
-  return out;
-}
 
 /// @brief Each keyframe's words shared with a frame, found through the index.
 /// @param db The database.
@@ -99,6 +68,32 @@ std::vector<std::pair<double, std::int64_t>> groups_of(
   return out;
 }
 
+/// @brief Each scored keyframe's best `relocalization.neighbours` links' ids
+///        (`slam_it.edge.database._best`).
+/// @param m The map.
+/// @param keyframes The keyframes' ids, each in the map.
+/// @param options The settings.
+/// @return Each keyframe's id to its best links' ids, most shared first.
+std::map<std::int64_t, std::vector<std::int64_t>> best_links(
+    const Map& m, std::span<const std::int64_t> keyframes, const Options& options) {
+  std::map<std::int64_t, std::vector<std::int64_t>> out;
+  for (const std::int64_t keyframe : keyframes) {
+    std::vector<std::int64_t>& best = out[keyframe];
+    const std::int64_t row = keyframe_row(m, keyframe);
+    if (row < 0) {
+      continue;  // a keyframe the map does not hold has none, as in Python
+    }
+    const auto k = static_cast<std::size_t>(row);
+    for (const Link& link : links_of(m, shared_points(m, k), options.covisibility.min_points)) {
+      if (std::cmp_greater_equal(best.size(), options.relocalization.neighbours)) {
+        break;
+      }
+      best.push_back(m.kf_id[static_cast<std::size_t>(link.row)]);
+    }
+  }
+  return out;
+}
+
 }  // namespace
 
 Result<void> insert(Database& db, std::int64_t keyframe, Words words) {
@@ -141,40 +136,6 @@ Result<void> erase(Database& db, std::int64_t keyframe) {
   return {};
 }
 
-std::map<std::int64_t, std::vector<std::int64_t>> best_covisible(
-    const Map& m, std::span<const std::int64_t> keyframes, const Options& options) {
-  std::map<std::int64_t, std::vector<std::int64_t>> out;
-  for (const std::int64_t keyframe : keyframes) {
-    std::vector<std::int64_t>& best = out[keyframe];
-    const std::int64_t k = keyframe_row(m, keyframe);
-    if (k < 0) {
-      continue;  // a keyframe the map does not hold has no neighbours, as in Python
-    }
-    std::map<std::int64_t, std::int64_t> shared;  // each other keyframe's id: points shared
-    for (const std::int64_t p : points_of(m, static_cast<std::size_t>(k))) {
-      for (const std::int64_t other : observers_of(m, p)) {
-        if (other != keyframe) {
-          ++shared[other];
-        }
-      }
-    }
-    std::vector<std::pair<std::int64_t, std::int64_t>> ranked;  // (shared, id)
-    for (const auto& [other, count] : shared) {
-      if (count >= options.covisibility.min_points) {
-        ranked.emplace_back(count, other);
-      }
-    }
-    std::ranges::sort(ranked, [](const auto& a, const auto& b) {
-      return a.first > b.first || (a.first == b.first && a.second < b.second);
-    });
-    for (std::size_t i = 0;
-         i < ranked.size() && std::cmp_less(i, options.relocalization.neighbours); ++i) {
-      best.push_back(ranked[i].second);
-    }
-  }
-  return out;
-}
-
 Result<Candidates> candidates(const Database& db, const Map& m,
                               const foundations::vocabulary::BowVector& frame,
                               const Options& options) {
@@ -203,7 +164,7 @@ Result<Candidates> candidates(const Database& db, const Map& m,
     }
   }
   out.scored = static_cast<std::int64_t>(scores.size());
-  auto groups = groups_of(scores, best_covisible(m, scored, options));
+  auto groups = groups_of(scores, best_links(m, scored, options));
   const double retained = options.relocalization.group_score * std::ranges::max(groups).first;
   std::ranges::sort(groups, [](const auto& a, const auto& b) {
     return a.first > b.first || (a.first == b.first && a.second < b.second);

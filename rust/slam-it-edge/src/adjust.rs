@@ -63,6 +63,10 @@ pub struct Adjustment {
     pub solves: Vec<Solve>,
     /// The observations forgotten as outliers after the refining solve.
     pub outliers: usize,
+    /// The keyframes adjusted: those given, but the ones held fixed among them.
+    pub free: usize,
+    /// The keyframes held fixed: those given that were, and every other observing their points.
+    pub fixed: usize,
 }
 
 /// The BA problem built from the map, and where its rows came from.
@@ -307,6 +311,8 @@ pub fn bundle_adjust(
         observing,
         point_of,
     } = build(m, camera, keyframes, fixed, &points)?;
+    let held = problem.fixed_poses.iter().filter(|&&f| f).count();
+    let posed = problem.fixed_poses.len();
     let first = ba::solve::solve(
         &problem,
         &solver_options(options, options.adjustment.iterations),
@@ -359,5 +365,7 @@ pub fn bundle_adjust(
     Ok(Adjustment {
         solves: vec![Solve::of(&first_summary), Solve::of(&second.summary.solve)],
         outliers: dropped.len(),
+        free: posed - held,
+        fixed: held,
     })
 }

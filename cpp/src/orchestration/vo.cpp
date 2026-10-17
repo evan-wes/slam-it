@@ -434,6 +434,8 @@ Result<eval::runs::JsonValue> mapping_json(const edge::MappingSummary& s) {
                  {"triangulated", s.triangulated},
                  {"fused", s.fused},
                  {"ba", std::move(*ba)},
+                 {"free", s.free},
+                 {"fixed", s.fixed},
                  {"outliers", s.outliers},
                  {"weak_points", s.weak_points},
                  {"culled_keyframes", s.culled_keyframes}});
@@ -464,7 +466,12 @@ Result<eval::runs::JsonObject> summary_json(const edge::FrameSummary& summary) {
         {{"matches", s.matches}, {"widened", s.widened}, {"inliers", count_or_null(s.inliers)}});
   };
   const auto local_map = [](const edge::LocalMapSummary& s) {
-    return nested({{"in_view", s.in_view}, {"matches", s.matches}, {"inliers", s.inliers}});
+    return nested({{"in_view", s.in_view},
+                   {"matches", s.matches},
+                   {"inliers", s.inliers},
+                   {"keyframes", s.keyframes},
+                   {"points", s.points},
+                   {"reference", s.reference}});
   };
   const auto lost = [](const edge::LostSummary& s) {
     return nested({{"keyframes", s.keyframes}, {"points", s.points}, {"reset", s.reset}});

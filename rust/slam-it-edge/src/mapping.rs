@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use nalgebra::{Matrix3, Matrix4, Vector2, Vector3};
-use slam_it_foundations::error::{ErrorKind, Result, fail};
+use slam_it_foundations::error::{ErrorKind, Result, check_range, fail};
 use slam_it_foundations::matching::FeatureGrid;
 use slam_it_foundations::orb::{self, Keypoint};
 use slam_it_foundations::triangulation;
@@ -124,6 +124,7 @@ pub fn close_depth(camera: &Camera, options: &Options) -> f64 {
 /// * `camera` - The camera.
 /// * `depth` - The frame's keypoints' depths (NaN where unknown).
 /// * `tracked` - Its pose and matches.
+/// * `reference` - Its reference keyframe's row ([`crate::tracking::LocalTracking::reference`]).
 /// * `mode` - The pipeline's mode.
 /// * `options` - The ratios and counts.
 ///
@@ -133,8 +134,8 @@ pub fn close_depth(camera: &Camera, options: &Options) -> f64 {
 ///
 /// # Errors
 ///
-/// `InvalidInput` for a map without keyframes, matches that are not one per depth, or an
-/// invalid camera or settings.
+/// `InvalidInput` for a map without keyframes, matches that are not one per depth, a
+/// reference out of range, or an invalid camera or settings.
 #[allow(
     clippy::cast_precision_loss,
     reason = "counts of keypoints, exact in f64"
@@ -144,10 +145,12 @@ pub fn need_keyframe(
     camera: &Camera,
     depth: &[f64],
     tracked: &Tracked,
+    reference: usize,
     mode: Mode,
     options: &Options,
 ) -> Result<bool> {
     check_newest(m, camera, options)?;
+    check_range("reference", reference, 0, m.keyframes() - 1)?;
     if tracked.points.len() != depth.len() {
         return fail(
             ErrorKind::InvalidInput,
@@ -161,7 +164,7 @@ pub fn need_keyframe(
         options.keyframes.ref_min_observations
     })
     .unwrap_or(i64::MAX);
-    let rows: Vec<usize> = rows_of(m, m.keyframes() - 1)
+    let rows: Vec<usize> = rows_of(m, reference)
         .filter_map(|r| m.point_row(m.kp_point[r]))
         .collect();
     let tracked_reference = map::observation_weight(m, &rows)?
@@ -731,7 +734,7 @@ fn median_depth(m: &Map, k: usize) -> Option<f64> {
     Some(depths[(depths.len() - 1) / 2])
 }
 
-/// Triangulates the newest keyframe's free keypoints against the window's
+/// Triangulates the newest keyframe's free keypoints against its best links'
 /// (`slam_it.edge.mapping.triangulate_new_points`, ORB-SLAM's `CreateNewMapPoints`).
 ///
 /// # Arguments
@@ -752,9 +755,7 @@ pub fn triangulate_new_points(
 ) -> Result<()> {
     check_newest(m, camera, options)?;
     let k1 = m.keyframes() - 1;
-    let mut others = m.window(options.mapping.window);
-    others.pop();
-    others.reverse();
+    let mut others = linked_rows(m, k1, options);
     others.truncate(if mode == Mode::Monocular {
         options.mapping.mono_triangulation_neighbours
     } else {
@@ -971,26 +972,58 @@ fn fuse_into(m: &mut Map, camera: &Camera, k: usize, ids: &[i64], options: &Opti
     Ok(())
 }
 
-/// Fuses the newest keyframe's points with the window's (`slam_it.edge.mapping.fuse_points`,
-/// ORB-SLAM's `SearchInNeighbors`, lite).
+/// A keyframe's links' rows, most shared first (`slam_it.edge.covisibility.links`).
+fn linked_rows(m: &Map, k: usize, options: &Options) -> Vec<usize> {
+    covisibility::links_of(
+        m,
+        &covisibility::shared_points(m, k),
+        options.covisibility.min_points,
+    )
+    .into_iter()
+    .map(|link| link.row)
+    .collect()
+}
+
+/// The newest keyframe's fusion targets' ids, as `SearchInNeighbors` takes them
+/// (`slam_it.edge.mapping._fuse_targets`): its best links, then each one's own best, leaving
+/// out the newest keyframe and repeats (ORB-SLAM3's order).
+fn fuse_targets(m: &Map, mode: Mode, options: &Options) -> Vec<i64> {
+    let newest = m.keyframes() - 1;
+    let settings = &options.mapping;
+    let mut targets = linked_rows(m, newest, options);
+    targets.truncate(if mode == Mode::Monocular {
+        settings.mono_fuse_neighbours
+    } else {
+        settings.fuse_neighbours
+    });
+    for i in 0..targets.len() {
+        let mut second = linked_rows(m, targets[i], options);
+        second.truncate(settings.fuse_second_neighbours);
+        for row in second {
+            if row != newest && !targets.contains(&row) {
+                targets.push(row);
+            }
+        }
+    }
+    targets.iter().map(|&k| m.kf_id[k]).collect()
+}
+
+/// Fuses the newest keyframe's points with its neighbours' (`slam_it.edge.mapping.fuse_points`,
+/// ORB-SLAM's `SearchInNeighbors`).
 ///
 /// # Arguments
 ///
 /// * `m` - The map, changed in place.
 /// * `camera` - The camera.
-/// * `options` - The window and thresholds.
+/// * `mode` - The pipeline's mode.
+/// * `options` - The neighbours and thresholds.
 ///
 /// # Errors
 ///
 /// `InvalidInput` for a map without keyframes, or an invalid camera or settings.
-pub fn fuse_points(m: &mut Map, camera: &Camera, options: &Options) -> Result<()> {
+pub fn fuse_points(m: &mut Map, camera: &Camera, mode: Mode, options: &Options) -> Result<()> {
     check_newest(m, camera, options)?;
-    let mut targets: Vec<i64> = m
-        .window(options.mapping.window)
-        .iter()
-        .map(|&k| m.kf_id[k])
-        .collect();
-    targets.pop();
+    let targets = fuse_targets(m, mode, options);
     let newest = m.keyframes() - 1;
     let own: Vec<i64> = m
         .observed_by(&[newest])
@@ -1052,8 +1085,10 @@ fn redundant(m: &Map, k: usize, rows: &[usize], threshold: usize) -> Result<usiz
         .count())
 }
 
-/// Culls the window's redundant keyframes (`slam_it.edge.mapping.cull_keyframes`, ORB-SLAM's
-/// `KeyFrameCulling`).
+/// Culls the newest keyframe's redundant links (`slam_it.edge.mapping.cull_keyframes`,
+/// ORB-SLAM's `KeyFrameCulling`).
+///
+/// Each keyframe linked to the newest, the most shared first, but the map's first.
 ///
 /// # Arguments
 ///
@@ -1072,12 +1107,10 @@ fn redundant(m: &Map, k: usize, rows: &[usize], threshold: usize) -> Result<usiz
 pub fn cull_keyframes(m: &mut Map, camera: &Camera, mode: Mode, options: &Options) -> Result<()> {
     check_setup(camera, options)?;
     let limit = close_depth(camera, options);
-    let mut ids: Vec<i64> = m
-        .window(options.mapping.window)
+    let ids: Vec<i64> = linked_rows(m, m.keyframes() - 1, options)
         .iter()
         .map(|&k| m.kf_id[k])
         .collect();
-    ids.pop();
     for id in ids {
         if id == 0 {
             continue;
@@ -1111,12 +1144,16 @@ pub struct MappingSummary {
     pub from_depth: usize,
     /// Recent points culled.
     pub culled_points: usize,
-    /// Points triangulated with the window's keyframes.
+    /// Points triangulated with the keyframe's best links.
     pub triangulated: usize,
     /// Points fused into another.
     pub fused: usize,
     /// The local bundle adjustment's solves; none if it did not run.
     pub solves: Vec<Solve>,
+    /// The keyframes it adjusted (0 if it did not run).
+    pub free: usize,
+    /// The keyframes it held fixed.
+    pub fixed: usize,
     /// The observations it dropped.
     pub outliers: usize,
     /// Points erased because the observations dropped, by the adjustment or with a culled
@@ -1185,14 +1222,18 @@ pub fn process(
             *id = triangulated;
         }
     }
-    fuse_points(m, camera, options)?;
+    fuse_points(m, camera, mode, options)?;
     covisibility::adopt(m, newest)?;
     let fused = m.points();
     let mut adjustment = Adjustment::default();
     if m.keyframes() >= options.adjustment.min_keyframes {
         let fixed: Vec<bool> = m.kf_id.iter().map(|&id| id == 0).collect();
-        let window = m.window(options.mapping.window);
-        adjustment = bundle_adjust(m, camera, &window, &fixed, options)?;
+        // The newest keyframe and its links, as ORB-SLAM's LocalBundleAdjustment takes them.
+        let newest = m.keyframes() - 1;
+        let mut local = linked_rows(m, newest, options);
+        local.push(newest);
+        local.sort_unstable();
+        adjustment = bundle_adjust(m, camera, &local, &fixed, options)?;
     }
     let keyframes = m.keyframes();
     cull_keyframes(m, camera, mode, options)?;
@@ -1203,6 +1244,8 @@ pub fn process(
             triangulated: triangulated - culled,
             fused: triangulated - fused,
             solves: adjustment.solves,
+            free: adjustment.free,
+            fixed: adjustment.fixed,
             outliers: adjustment.outliers,
             weak_points: fused - m.points(),
             culled_keyframes: keyframes - m.keyframes(),

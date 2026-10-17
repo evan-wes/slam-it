@@ -192,8 +192,9 @@ void check_checks(int& failures) {
   expect(is_invalid_input(edge::insert_keyframe(m, frame_of(4, true), Eigen::Matrix4d::Identity(),
                                                 std::vector<std::int64_t>{3, -1, -1, -1})),
          "insert_keyframe rejects a point that is not in the map", failures);
-  expect(is_invalid_input(edge::check_options(edge::Options{.mapping = {.window = 0}})),
-         "check_options rejects an empty window", failures);
+  expect(
+      is_invalid_input(edge::check_options(edge::Options{.covisibility = {.local_neighbours = 0}})),
+      "check_options rejects an empty window", failures);
   expect(is_invalid_input(edge::check_options(edge::Options{.keyframes = {.ref_ratio = 1.5}})),
          "check_options rejects a ratio above 1", failures);
   const edge::Camera bad{.model = slam_it::foundations::camera::Model::kPinhole,

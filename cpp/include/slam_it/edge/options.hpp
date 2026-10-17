@@ -182,11 +182,9 @@ struct KeyframeOptions {
 
 /// @brief Local mapping: points from depth, triangulation, fusion and culling (`Options.mapping`).
 struct MappingOptions {
-  /// @brief The sliding window's keyframes.
-  std::int64_t window{10};
   /// @brief Points a stereo or RGB-D keyframe creates from depth, at least.
   std::int64_t min_new_points{100};
-  /// @brief Keyframes a new stereo or RGB-D keyframe triangulates against.
+  /// @brief A new stereo or RGB-D keyframe triangulates against its best this many links.
   std::int64_t triangulation_neighbours{10};
   /// @brief The same for monocular.
   std::int64_t mono_triangulation_neighbours{20};
@@ -202,6 +200,12 @@ struct MappingOptions {
   double scale_ratio{1.5};
   /// @brief The fusion search window, in pixels at level 0.
   double fuse_window{3.0};
+  /// @brief A new stereo or RGB-D keyframe's points are fused with its best this many links'.
+  std::int64_t fuse_neighbours{10};
+  /// @brief The same for monocular.
+  std::int64_t mono_fuse_neighbours{20};
+  /// @brief And with each one's best this many links'.
+  std::int64_t fuse_second_neighbours{5};
   /// @brief A new point found in less than this fraction of its views is culled.
   double found_ratio{0.25};
   /// @brief A point is culled on evidence until this many keyframes after its creation.
@@ -373,7 +377,6 @@ constexpr void for_each_setting(Settings& options, Visit visit) {
   visit("keyframes.min_inliers", options.keyframes.min_inliers);
   visit("keyframes.close_tracked", options.keyframes.close_tracked);
   visit("keyframes.close_untracked", options.keyframes.close_untracked);
-  visit("mapping.window", options.mapping.window);
   visit("mapping.min_new_points", options.mapping.min_new_points);
   visit("mapping.triangulation_neighbours", options.mapping.triangulation_neighbours);
   visit("mapping.mono_triangulation_neighbours", options.mapping.mono_triangulation_neighbours);
@@ -383,6 +386,9 @@ constexpr void for_each_setting(Settings& options, Visit visit) {
   visit("mapping.max_parallax_cos", options.mapping.max_parallax_cos);
   visit("mapping.scale_ratio", options.mapping.scale_ratio);
   visit("mapping.fuse_window", options.mapping.fuse_window);
+  visit("mapping.fuse_neighbours", options.mapping.fuse_neighbours);
+  visit("mapping.mono_fuse_neighbours", options.mapping.mono_fuse_neighbours);
+  visit("mapping.fuse_second_neighbours", options.mapping.fuse_second_neighbours);
   visit("mapping.found_ratio", options.mapping.found_ratio);
   visit("mapping.recent_point_keyframes", options.mapping.recent_point_keyframes);
   visit("mapping.point_cull_age", options.mapping.point_cull_age);

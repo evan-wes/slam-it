@@ -11,27 +11,27 @@
    are extracted with more features until then (:meth:`Pipeline.extraction`).
 2. **Tracking:** predict by constant velocity (no motion when the last frame was not
    tracked) and track the last frame; if that fails, fall back to PnP against the local map
-   (:func:`slam_it.edge.tracking.relocalize_locally`), and if that fails, with ``relocalize``
-   on, relocalise against the whole map through its keyframe database
-   (:func:`slam_it.edge.relocalization.relocalize`);
-   then track the local map, its window widened just after a recovery
-   (``recovery_local_window``). Fewer than ``min_tracked`` inliers (``recovery_tracked``
-   within ``max_frames`` of a recovery) counts as a failure.
+   (:func:`slam_it.edge.tracking.relocalize_locally`), and if that fails, with
+   ``relocalization.enabled`` on, relocalise against the whole map through its keyframe database
+   (:func:`slam_it.edge.relocalization.relocalize`); then track the local map, its window widened
+   just after a recovery (``tracking.recovery_local_window``). Fewer than ``tracking.min_tracked``
+   inliers (``tracking.recovery_tracked`` within ``tracking.max_frames`` of a recovery) counts as a
+   failure.
 3. **Lost:** the track is recently lost from its first failed frame, and found again on the
-   next frame tracked. Relocalising, it is lost once more than ``relocalize_seconds`` have
+   next frame tracked. Relocalising, it is lost once more than ``loss.relocalize_seconds`` have
    passed since that frame with none tracked (ORB-SLAM3's ``RECENTLY_LOST``); a map of
-   ``reset_keyframes`` keyframes or fewer is lost after ``lost_frames`` failures in a row
-   instead (ORB-SLAM3 loses it at once), as is any map with ``relocalize`` off. The map is
-   then kept, or reset if it has ``reset_keyframes`` keyframes or fewer (its keyframes and
-   points removed), and the next frame starts a new map (step 1), as ORB-SLAM3's atlas does
-   (``Tracking::Track``'s ``CreateMapInAtlas`` and ``ResetActiveMap``). The time runs from the
-   first failed frame, as ORB-SLAM3's ``mTimeStampLost`` does. Unlike ORB-SLAM3, every failed
-   frame tries the motion model and the local map before relocalising, and the first failed
-   frame relocalises too: ORB-SLAM3 relocalises only the frames after the one that lost the
-   track, and tries nothing else on them.
+   ``loss.reset_keyframes`` keyframes or fewer is lost after ``loss.lost_frames`` failures in a
+   row instead (ORB-SLAM3 loses it at once), as is any map with ``relocalization.enabled`` off.
+   The map is then kept, or reset if it has ``loss.reset_keyframes`` keyframes or fewer (its
+   keyframes and points removed), and the next frame starts a new map (step 1), as ORB-SLAM3's
+   atlas does (``Tracking::Track``'s ``CreateMapInAtlas`` and ``ResetActiveMap``). The time runs
+   from the first failed frame, as ORB-SLAM3's ``mTimeStampLost`` does. Unlike ORB-SLAM3, every
+   failed frame tries the motion model and the local map before relocalising, and the first
+   failed frame relocalises too: ORB-SLAM3 relocalises only the frames after the one that lost
+   the track, and tries nothing else on them.
 4. **Mapping:** a tracked frame that needs a keyframe
-   (:func:`slam_it.edge.mapping.need_keyframe`; none within ``max_frames`` of a recovery once
-   the map holds more than ``max_frames``) is inserted and mapped
+   (:func:`slam_it.edge.mapping.need_keyframe`; none within ``tracking.max_frames`` of a recovery
+   once the map holds more than ``tracking.max_frames``) is inserted and mapped
    (:func:`slam_it.edge.mapping.process`).
 
 **The keyframe database** (:class:`slam_it.edge.database.Database`), kept only when
@@ -171,7 +171,7 @@ class LostSummary:
     points : int
         Its points.
     reset : bool
-        Whether it was reset, having ``reset_keyframes`` keyframes or fewer, rather than kept.
+        Whether it was reset, having ``loss.reset_keyframes`` keyframes or fewer, rather than kept.
     """
 
     keyframes: int
@@ -380,8 +380,8 @@ class Pipeline:
     options : Options
         The settings.
     vocabulary : slam_it.foundations.vocabulary.Vocabulary or None
-        The vocabulary the keyframe database's words are of: required with ``relocalize`` on,
-        refused with it off.
+        The vocabulary the keyframe database's words are of: required with
+        ``relocalization.enabled`` on, refused with it off.
     state : State
         Where the pipeline is: never :attr:`State.LOST`, which a lost frame's result has.
     map : Map or None
@@ -445,7 +445,7 @@ class Pipeline:
         Returns
         -------
         slam_it.foundations.orb.Options
-            ``init_feature_factor`` times the features for a monocular frame before the map
+            ``features.init_factor`` times the features for a monocular frame before the map
             exists, the usual ones otherwise.
         """
         initializing = self.mode == "monocular" and self.state is State.NOT_INITIALIZED
@@ -660,9 +660,9 @@ class Pipeline:
     def _record_failure(self, frame: Frame) -> bool:
         """Count an untracked frame, which ends the velocity; return whether it loses the track.
 
-        Lost once more than ``relocalize_seconds`` have passed since the first failed frame, or
-        for a map of ``reset_keyframes`` keyframes or fewer or with ``relocalize`` off, after
-        ``lost_frames`` failures in a row. :meth:`track` then closes the map.
+        Lost once more than ``loss.relocalize_seconds`` have passed since the first failed frame, or
+        for a map of ``loss.reset_keyframes`` keyframes or fewer or with ``relocalization.enabled``
+        off, after ``loss.lost_frames`` failures in a row. :meth:`track` then closes the map.
         """
         assert self.map is not None
         self._failures += 1
@@ -693,7 +693,8 @@ class Pipeline:
         summary = FrameSummary(motion=motion.summary)
         if motion.tracked is not None:
             return motion.tracked, replace(summary, placed_by=Placement.MOTION), motion.matched
-        recovery = tracking.relocalize_locally(m, self.camera, frame, options)
+        last = self._last_tracked.points
+        recovery = tracking.relocalize_locally(m, self.camera, frame, last, options)
         summary = replace(summary, pnp=recovery.summary)
         if recovery.tracked is not None:
             placed_by = Placement.LOCAL_PNP
@@ -725,20 +726,22 @@ class Pipeline:
                 m, self.camera, frame, placed, mode=self.mode, options=options,
                 recovering=wide,
             )  # fmt: skip
-            summary = replace(summary, local_map=local.summary())
+            summary = replace(summary, local_map=local.summary(self._kf_base))
             matched = local.matched
             m = maps.count(m, local.visible, visible=np.ones(len(local.visible), dtype=np.int64))
             m = maps.count(m, local.found, found=np.ones(len(local.found), dtype=np.int64))
             needed = options.tracking.recovery_tracked if recent else options.tracking.min_tracked
             tracked = local.tracked if local.tracked.inliers >= needed else None
+            reference = local.reference
         self.map = m
         if tracked is None:
             lost = self._record_failure(frame)
             return _Step(None, False, 0.0, summary, matched=matched, lost=lost)
         held = recent and m.keyframes > options.tracking.max_frames
         keyframe = not held and mapping.need_keyframe(
-            m, self.camera, frame.depth, tracked, mode=self.mode, options=options
-        )
+            m, self.camera, frame.depth, tracked, reference=reference, mode=self.mode,
+            options=options,
+        )  # fmt: skip
         map_seconds = 0.0
         made = None
         if keyframe:

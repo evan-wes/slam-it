@@ -38,12 +38,13 @@ MODES = ("monocular", "stereo", "rgbd")
 
 @dataclass(frozen=True)
 class Mapped:
-    """The truth map, a frame tracked against it, and the map with that frame inserted."""
+    """The truth map, a frame tracked against it, the map with it inserted, its reference."""
 
     map: Map
     frame: Frame
     tracked: Tracked
     inserted: Map
+    reference: int
 
 
 @pytest.fixture(scope="module")
@@ -57,11 +58,9 @@ def mapped(truth: Truth) -> Mapped:
         predicted=truth.poses[CURRENT], mode="rgbd", options=OPTIONS,
     ).tracked  # fmt: skip
     assert found is not None
-    tracked = tracking.track_local_map(
-        m, CAMERA, frame, found, mode="rgbd", options=OPTIONS
-    ).tracked
-    inserted = maps.insert_keyframe(m, frame, tracked.pose, tracked.points)
-    return Mapped(m, frame, tracked, inserted)
+    local = tracking.track_local_map(m, CAMERA, frame, found, mode="rgbd", options=OPTIONS)
+    inserted = maps.insert_keyframe(m, frame, local.tracked.pose, local.tracked.points)
+    return Mapped(m, frame, local.tracked, inserted, local.reference)
 
 
 def _same(backend: str, function: str, *args: object, **kwargs: object) -> None:
@@ -84,11 +83,11 @@ def test_steps_match_the_reference(backend: str, mode: str, mapped: Mapped) -> N
     """Every backend runs each step as the reference does, in every mode."""
     m = mapped.inserted
     _same(backend, "need_keyframe", mapped.map, CAMERA, mapped.frame.depth, mapped.tracked,
-          mode=mode, options=OPTIONS)  # fmt: skip
+          reference=mapped.reference, mode=mode, options=OPTIONS)  # fmt: skip
     _same(backend, "create_points_from_depth", m, CAMERA, OPTIONS)
     _same(backend, "cull_points", m, mode, OPTIONS)
     _same(backend, "triangulate_new_points", m, CAMERA, mode, OPTIONS)
-    _same(backend, "fuse_points", m, CAMERA, OPTIONS)
+    _same(backend, "fuse_points", m, CAMERA, mode, OPTIONS)
     _same(backend, "cull_keyframes", m, CAMERA, mode, OPTIONS)
 
 
@@ -142,7 +141,9 @@ def test_keyframe_needed_when_tracking_thins(mapped: Mapped) -> None:
         return Tracked(pose=tracked.pose, points=points)
 
     def need(t: Tracked) -> bool:
-        return mapping.need_keyframe(m, CAMERA, frame.depth, t, mode="monocular", options=OPTIONS)
+        return mapping.need_keyframe(
+            m, CAMERA, frame.depth, t, reference=m.keyframes - 1, mode="monocular", options=OPTIONS
+        )
 
     assert need(keeping(OPTIONS.keyframes.min_inliers + 1))
     assert not need(keeping(OPTIONS.keyframes.min_inliers))
@@ -213,9 +214,9 @@ def test_triangulated_points_reproject_in_both_views(mapped: Mapped) -> None:
 
 
 def test_fusion_adds_observations(mapped: Mapped) -> None:
-    """Fusing finds the newest keyframe's points in the window's keyframes, and theirs in it."""
+    """Fusing finds the newest keyframe's points in its neighbours, and theirs in it."""
     m = mapped.inserted
-    fused = mapping.fuse_points(m, CAMERA, OPTIONS)
+    fused = mapping.fuse_points(m, CAMERA, "rgbd", OPTIONS)
     assert np.count_nonzero(fused.kp_point >= 0) > np.count_nonzero(m.kp_point >= 0)
     assert fused.points <= m.points
 

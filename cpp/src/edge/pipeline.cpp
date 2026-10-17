@@ -397,7 +397,7 @@ Result<Pipeline::Placed> Pipeline::place(const Map& m, const Frame& frame) const
                   .summary = std::move(summary),
                   .matched = std::move(motion->matched)};
   }
-  auto recovery = relocalize_locally(m, camera_, frame, options_);
+  auto recovery = relocalize_locally(m, camera_, frame, last_tracked_->points, options_);
   if (!recovery) {
     return std::unexpected(std::move(recovery.error()));
   }
@@ -440,8 +440,9 @@ Result<Pipeline::Refined> Pipeline::refine(Map& m, const Frame& frame, const Tra
     return std::unexpected(std::move(ok.error()));
   }
   Refined out{.tracked = std::nullopt,
-              .summary = edge::summary(*local),
-              .matched = std::move(local->matched)};
+              .summary = edge::summary(*local, kf_base_),
+              .matched = std::move(local->matched),
+              .reference = local->reference};
   const std::int64_t needed =
       recent ? options_.tracking.recovery_tracked : options_.tracking.min_tracked;
   if (inliers(local->tracked) >= needed) {
@@ -469,12 +470,14 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
   const bool recent = since_recovery_ && *since_recovery_ < options_.tracking.max_frames;
   const bool wide = since_recovery_ && *since_recovery_ < options_.tracking.recovery_window_frames;
   std::optional<Tracked> tracked;
+  std::int64_t reference = -1;
   if (where) {
     auto refined = refine(m, frame, *where, wide, recent);
     if (!refined) {
       return std::unexpected(std::move(refined.error()));
     }
     tracked = std::move(refined->tracked);
+    reference = refined->reference;
     summary.local_map = refined->summary;
     matched = std::move(refined->matched);
   }
@@ -490,7 +493,7 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
   }
   const bool held = recent && std::cmp_greater(keyframe_count(m), options_.tracking.max_frames);
   auto need = held ? Result<bool>(false)
-                   : need_keyframe(m, camera_, frame.depth, *tracked, mode_, options_);
+                   : need_keyframe(m, camera_, frame.depth, *tracked, reference, mode_, options_);
   if (!need) {
     return std::unexpected(std::move(need.error()));
   }

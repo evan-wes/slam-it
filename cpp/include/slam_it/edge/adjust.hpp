@@ -42,6 +42,11 @@ struct Adjustment {
   std::vector<Solve> solves;
   /// @brief The observations forgotten as outliers after the refining solve.
   std::int64_t outliers{0};
+  /// @brief The keyframes adjusted: those given, but the ones held fixed among them.
+  std::int64_t free{0};
+  /// @brief The keyframes held fixed: those given that were, and every other observing their
+  ///        points.
+  std::int64_t fixed{0};
 };
 
 /// @brief A solve's record, from its summary (`slam_it.edge.adjust.Solve.of`).

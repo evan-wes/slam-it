@@ -67,14 +67,14 @@ void check_exit_codes(int& failures) {
 /// @brief Check reading a command line, and its refusals.
 /// @param failures Running failure count.
 void check_parse(int& failures) {
-  const auto request =
-      vo::parse(command({"--first", "3", "--record-features", "--count", "10", "--option",
-                         "mapping.window=7", "--option", "stereo.close_depth=35.5"}));
+  const auto request = vo::parse(
+      command({"--first", "3", "--record-features", "--count", "10", "--option",
+               "covisibility.local_neighbours=7", "--option", "stereo.close_depth=35.5"}));
   expect(request.has_value() && request->dataset == "tum" && request->mode == edge::Mode::kRgbd &&
              request->out == "run" && request->first == 3 && request->count == 10 &&
              request->record_features,
          "parse reads every flag, --record-features without a value", failures);
-  expect(request.has_value() && request->options.mapping.window == 7 &&
+  expect(request.has_value() && request->options.covisibility.local_neighbours == 7 &&
              request->options.stereo.close_depth == 35.5 &&
              request->options.features.n_features == 1000,
          "parse sets the options named, the rest default", failures);
@@ -86,8 +86,8 @@ void check_parse(int& failures) {
       {"--mode", "lidar"},
       {"--first", "x"},
       {"--count"},
-      {"--option", "mapping.windows=7"},
-      {"--option", "mapping.window=7.5"},
+      {"--option", "covisibility.local_neighbourss=7"},
+      {"--option", "covisibility.local_neighbours=7.5"},
       {"--option", "stereo.close_depth=inf"},
       {"--option", "window"},
       {"--dataset", "euroc"},
@@ -120,7 +120,7 @@ void check_requests(int& failures) {
   bad.count = -1;
   expect(is_invalid_input(vo::check(bad)), "check refuses a negative count", failures);
   bad = good;
-  bad.options.mapping.window = 0;
+  bad.options.covisibility.local_neighbours = 0;
   expect(is_invalid_input(vo::check(bad)), "check refuses settings out of range", failures);
 }
 

@@ -67,29 +67,6 @@ def test_the_database_crosses_keyframe_by_keyframe(room_database: Database) -> N
         np.testing.assert_array_equal(crossed["node"][nodes], room_database.nodes(keyframe))
 
 
-def test_covisible_keyframes_share_the_most_points(truth: Truth) -> None:
-    """Each keyframe's best covisible keyframes share at least covisible_points, most first."""
-    m = truth.map
-    keyframes = m.kf_id.tolist()
-    best = database.best_covisible(m, keyframes, OPTIONS)
-    seen = {
-        k: set(m.kp_point[m.keypoint_rows(row)][m.kp_point[m.keypoint_rows(row)] >= 0].tolist())
-        for row, k in enumerate(keyframes)
-    }
-    for k in keyframes:
-        shared = {other: len(seen[k] & seen[other]) for other in keyframes if other != k}
-        expected = sorted(
-            (o for o, n in shared.items() if n >= OPTIONS.covisibility.min_points),
-            key=lambda o: (-shared[o], o),
-        )
-        assert best[k] == expected[: OPTIONS.relocalization.neighbours]
-    assert any(best[k] for k in keyframes)
-    none = database.best_covisible(
-        m, keyframes, OPTIONS.with_settings({"covisibility.min_points": 1 << 20})
-    )
-    assert all(not neighbours for neighbours in none.values())
-
-
 @pytest.mark.parametrize(("frame", "keyframe"), [(1, 0), (13, 1), (25, 2), (37, 3)])
 def test_a_frame_of_the_room_finds_the_keyframe_beside_it(
     truth: Truth,

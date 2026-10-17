@@ -296,8 +296,6 @@ impl Default for KeyframeOptions {
 /// Local mapping: points from depth, triangulation, fusion and culling (`Options.mapping`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MappingOptions {
-    /// The sliding window's keyframes.
-    pub window: usize,
     /// Points a stereo or RGB-D keyframe creates from depth, at least.
     pub min_new_points: usize,
     /// Keyframes a new stereo or RGB-D keyframe triangulates against.
@@ -316,6 +314,12 @@ pub struct MappingOptions {
     pub scale_ratio: f64,
     /// The fusion search window, in pixels at level 0.
     pub fuse_window: f64,
+    /// A new stereo or RGB-D keyframe's points are fused with its best this many links'.
+    pub fuse_neighbours: usize,
+    /// The same for monocular.
+    pub mono_fuse_neighbours: usize,
+    /// And with each one's best this many links'.
+    pub fuse_second_neighbours: usize,
     /// A new point found in less than this fraction of its views is culled.
     pub found_ratio: f64,
     /// A point is culled on evidence until this many keyframes after its creation.
@@ -335,7 +339,6 @@ pub struct MappingOptions {
 impl Default for MappingOptions {
     fn default() -> Self {
         Self {
-            window: 10,
             min_new_points: 100,
             triangulation_neighbours: 10,
             mono_triangulation_neighbours: 20,
@@ -345,6 +348,9 @@ impl Default for MappingOptions {
             max_parallax_cos: 0.9998,
             scale_ratio: 1.5,
             fuse_window: 3.0,
+            fuse_neighbours: 10,
+            mono_fuse_neighbours: 20,
+            fuse_second_neighbours: 5,
             found_ratio: 0.25,
             recent_point_keyframes: 3,
             point_cull_age: 2,
@@ -644,7 +650,7 @@ named_settings!(
     tracking: TrackingOptions { motion_window: Real, stereo_motion_window: Real, min_motion_matches: Integer, min_motion_inliers: Integer, local_window: Real, rgbd_local_window: Real, recovery_local_window: Real, recovery_window_frames: Integer, aligned_view_cos: Real, aligned_view_radius: Real, oblique_view_radius: Real, local_map_ratio: Real, min_tracked: Integer, recovery_tracked: Integer, max_frames: Integer, view_cos_limit: Real, min_distance_margin: Real, max_distance_margin: Real, pnp_threshold: Real, pnp_min_inliers: Integer },
     adjustment: AdjustmentOptions { chi2_mono: Real, chi2_stereo: Real, pose_rounds: Integer, iterations: Integer, refine_iterations: Integer, min_keyframes: Integer },
     keyframes: KeyframeOptions { ref_ratio: Real, mono_ref_ratio: Real, first_ref_ratio: Real, ref_min_observations: Integer, ref_min_observations_early: Integer, min_inliers: Integer, close_tracked: Integer, close_untracked: Integer },
-    mapping: MappingOptions { window: Integer, min_new_points: Integer, triangulation_neighbours: Integer, mono_triangulation_neighbours: Integer, epipolar_chi2: Real, min_epipole_distance2: Real, min_baseline_depth: Real, max_parallax_cos: Real, scale_ratio: Real, fuse_window: Real, found_ratio: Real, recent_point_keyframes: Integer, point_cull_age: Integer, min_point_observations: Integer, min_point_observations_depth: Integer, redundant_fraction: Real, redundant_observers: Integer },
+    mapping: MappingOptions { min_new_points: Integer, triangulation_neighbours: Integer, mono_triangulation_neighbours: Integer, epipolar_chi2: Real, min_epipole_distance2: Real, min_baseline_depth: Real, max_parallax_cos: Real, scale_ratio: Real, fuse_window: Real, fuse_neighbours: Integer, mono_fuse_neighbours: Integer, fuse_second_neighbours: Integer, found_ratio: Real, recent_point_keyframes: Integer, point_cull_age: Integer, min_point_observations: Integer, min_point_observations_depth: Integer, redundant_fraction: Real, redundant_observers: Integer },
     covisibility: CovisibilityOptions {
         min_points: Integer,
         local_keyframes: Integer,
@@ -740,7 +746,6 @@ fn check_counts(options: &Options) -> Result<()> {
             "keyframes.close_untracked",
             options.keyframes.close_untracked,
         ),
-        ("mapping.window", options.mapping.window),
         ("mapping.min_new_points", options.mapping.min_new_points),
         ("adjustment.iterations", options.adjustment.iterations),
         (
@@ -793,6 +798,15 @@ fn check_counts(options: &Options) -> Result<()> {
         (
             "mapping.recent_point_keyframes",
             options.mapping.recent_point_keyframes,
+        ),
+        ("mapping.fuse_neighbours", options.mapping.fuse_neighbours),
+        (
+            "mapping.mono_fuse_neighbours",
+            options.mapping.mono_fuse_neighbours,
+        ),
+        (
+            "mapping.fuse_second_neighbours",
+            options.mapping.fuse_second_neighbours,
         ),
         ("mapping.point_cull_age", options.mapping.point_cull_age),
         (
@@ -986,20 +1000,22 @@ mod tests {
     fn settings_by_name() {
         let mut options = Options::default();
         let settings = options.settings();
-        assert_eq!(settings.len(), 95);
+        assert_eq!(settings.len(), 97);
         assert_eq!(settings[0], ("features.n_features", Setting::Integer(1000)));
         assert_eq!(settings[2], ("features.scale_factor", Setting::Real(1.2)));
-        options.set("mapping.window", Setting::Integer(7)).unwrap();
+        options
+            .set("covisibility.local_neighbours", Setting::Integer(7))
+            .unwrap();
         options
             .set("stereo.close_depth", Setting::Real(35.5))
             .unwrap();
-        assert_eq!(options.mapping.window, 7);
+        assert_eq!(options.covisibility.local_neighbours, 7);
         assert!((options.stereo.close_depth - 35.5).abs() < f64::EPSILON);
         for (name, value) in [
             ("windows", Setting::Integer(1)),
-            ("mapping.window", Setting::Real(1.0)),
+            ("covisibility.local_neighbours", Setting::Real(1.0)),
             ("stereo.close_depth", Setting::Integer(1)),
-            ("mapping.window", Setting::Integer(-1)),
+            ("covisibility.local_neighbours", Setting::Integer(-1)),
         ] {
             assert_eq!(
                 options.set(name, value).unwrap_err().kind,
@@ -1014,9 +1030,9 @@ mod tests {
         check_options(&Options::default()).unwrap();
         for bad in [
             Options {
-                mapping: MappingOptions {
-                    window: 0,
-                    ..MappingOptions::default()
+                covisibility: CovisibilityOptions {
+                    local_neighbours: 0,
+                    ..CovisibilityOptions::default()
                 },
                 ..Options::default()
             },

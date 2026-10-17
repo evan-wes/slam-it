@@ -93,7 +93,7 @@ foundations::Result<void> check_options(const Options& options) {
       return ok;
     }
   }
-  const std::array<IntSetting, 43> counts{{
+  const std::array<IntSetting, 45> counts{{
       {"features.n_features", options.features.n_features},
       {"features.levels", options.features.levels},
       {"features.fast_threshold", options.features.fast_threshold},
@@ -107,7 +107,6 @@ foundations::Result<void> check_options(const Options& options) {
       {"keyframes.min_inliers", options.keyframes.min_inliers},
       {"keyframes.close_tracked", options.keyframes.close_tracked},
       {"keyframes.close_untracked", options.keyframes.close_untracked},
-      {"mapping.window", options.mapping.window},
       {"mapping.min_new_points", options.mapping.min_new_points},
       {"adjustment.iterations", options.adjustment.iterations},
       {"adjustment.refine_iterations", options.adjustment.refine_iterations},
@@ -125,6 +124,9 @@ foundations::Result<void> check_options(const Options& options) {
       {"mapping.triangulation_neighbours", options.mapping.triangulation_neighbours},
       {"mapping.mono_triangulation_neighbours", options.mapping.mono_triangulation_neighbours},
       {"mapping.recent_point_keyframes", options.mapping.recent_point_keyframes},
+      {"mapping.fuse_neighbours", options.mapping.fuse_neighbours},
+      {"mapping.mono_fuse_neighbours", options.mapping.mono_fuse_neighbours},
+      {"mapping.fuse_second_neighbours", options.mapping.fuse_second_neighbours},
       {"mapping.point_cull_age", options.mapping.point_cull_age},
       {"initialization.ba_iterations", options.initialization.ba_iterations},
       {"initialization.ransac_iterations", options.initialization.ransac_iterations},

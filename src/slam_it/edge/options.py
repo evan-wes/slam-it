@@ -308,14 +308,11 @@ class MappingOptions:
 
     Attributes
     ----------
-    window : int
-        The sliding window's keyframes: the local map, local BA and culling act on the last
-        ``mapping.window`` keyframes (lite: ORB-SLAM's covisibility graph).
     min_new_points : int
         A stereo or RGB-D keyframe creates points from depth, nearest first, until it has at
         least this many and has passed the close depth (100).
     triangulation_neighbours : int
-        Keyframes a new stereo or RGB-D keyframe triangulates against, newest first
+        A new stereo or RGB-D keyframe triangulates against its best this many links
         (``CreateNewMapPoints``' ``nn``: 10)...
     mono_triangulation_neighbours : int
         ...20 for monocular.
@@ -337,6 +334,14 @@ class MappingOptions:
         factor).
     fuse_window : float
         The search window, in pixels at level 0, when fusing points into a keyframe (3).
+    fuse_neighbours : int
+        A new stereo or RGB-D keyframe's points are fused with its best this many links'
+        (``SearchInNeighbors``' ``nn``: 10)...
+    mono_fuse_neighbours : int
+        ...20 for monocular...
+    fuse_second_neighbours : int
+        ...and with each one's best this many links' (5): ORB-SLAM2's numbers, as triangulation's
+        are (ORB-SLAM3's are 30 for monocular, and 20).
     found_ratio : float
         A new point is culled when found in less than this fraction of the frames that should
         have seen it (0.25).
@@ -358,7 +363,6 @@ class MappingOptions:
         See ``mapping.redundant_fraction``.
     """
 
-    window: int = 10
     min_new_points: int = 100
     triangulation_neighbours: int = 10
     mono_triangulation_neighbours: int = 20
@@ -368,6 +372,9 @@ class MappingOptions:
     max_parallax_cos: float = 0.9998
     scale_ratio: float = 1.5
     fuse_window: float = 3.0
+    fuse_neighbours: int = 10
+    mono_fuse_neighbours: int = 20
+    fuse_second_neighbours: int = 5
     found_ratio: float = 0.25
     recent_point_keyframes: int = 3
     point_cull_age: int = 2

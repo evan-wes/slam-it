@@ -219,8 +219,24 @@ def _strong_links(m: Map, options: Options) -> IntArray:
 # --- dispatch -----------------------------------------------------------------------------
 
 
-def _as_points(points: ArrayLike) -> IntArray:
-    """Check a frame's points: a vector of point ids, -1 for a keypoint matched to none."""
+def as_points(points: ArrayLike) -> IntArray:
+    """Check a frame's points: a vector of point ids, -1 for a keypoint matched to none.
+
+    Parameters
+    ----------
+    points : array_like of int
+        The point each keypoint was matched to.
+
+    Returns
+    -------
+    ndarray of int64
+        The points, checked.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If they are not a vector of ids, -1 or more.
+    """
     arr = np.asarray(points)
     if arr.size == 0:
         return np.zeros(0, dtype=np.int64)
@@ -301,7 +317,7 @@ def local_map(m: Map, points: ArrayLike, options: Options, *, backend: str = "py
     slam_it.foundations.errors.InvalidInputError
         If `points` is not a vector of ids.
     """
-    checked = _as_points(points)
+    checked = as_points(points)
     return backends.call(
         backend,
         __name__,

@@ -9,6 +9,7 @@ use slam_it_foundations::error::{ErrorKind, Result, fail};
 use slam_it_foundations::orb::Descriptor;
 use slam_it_foundations::vocabulary::{self, BowVector, Vocabulary};
 
+use crate::covisibility;
 use crate::map::Map;
 use crate::options::Options;
 
@@ -143,74 +144,37 @@ impl Database {
     }
 }
 
-/// The keyframes that observe a point, by id, each once.
-///
-/// # Arguments
-///
-/// * `m` - The map.
-/// * `p` - The point's row.
-///
-/// # Returns
-///
-/// Their ids, ascending.
-fn observers_of(m: &Map, p: usize) -> Vec<i64> {
-    let mut out: Vec<i64> = m.pt_observations[p]
-        .iter()
-        .map(|&row| m.kf_id[m.keyframe_of(row)])
-        .collect();
-    out.sort_unstable();
-    out.dedup();
-    out
-}
-
-/// Each keyframe's best covisible keyframes, from the map's observations
-/// (`slam_it.edge.database.best_covisible`).
+/// Each scored keyframe's best `relocalization.neighbours` links' ids
+/// (`slam_it.edge.database._best`).
 ///
 /// # Arguments
 ///
 /// * `m` - The map.
 /// * `keyframes` - The keyframes' ids.
-/// * `options` - `covisible_points` and `reloc_neighbours`.
+/// * `options` - The settings.
 ///
 /// # Returns
 ///
-/// Each keyframe's id to the ids of those observing at least `covisible_points` of its points,
-/// the most shared first (ties: the lower id), at most `reloc_neighbours`; none for a keyframe
-/// the map does not hold.
-#[must_use]
-pub fn best_covisible(m: &Map, keyframes: &[i64], options: &Options) -> BTreeMap<i64, Vec<i64>> {
-    let mut out = BTreeMap::new();
-    for &keyframe in keyframes {
-        let mut best = Vec::new();
-        if let Some(k) = m.keyframe_row(keyframe) {
-            let mut points: Vec<usize> = (m.kf_start[k]..m.kf_start[k + 1])
-                .filter_map(|row| m.point_row(m.kp_point[row]))
-                .collect();
-            points.sort_unstable();
-            points.dedup();
-            let mut shared: BTreeMap<i64, usize> = BTreeMap::new();
-            for p in points {
-                for other in observers_of(m, p) {
-                    if other != keyframe {
-                        *shared.entry(other).or_default() += 1;
-                    }
-                }
-            }
-            let mut ranked: Vec<(usize, i64)> = shared
-                .into_iter()
-                .filter(|&(_, count)| count >= options.covisibility.min_points)
-                .map(|(other, count)| (count, other))
-                .collect();
-            ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-            best = ranked
+/// Each keyframe's id to its best links' ids, most shared first; none for a keyframe the map
+/// does not hold.
+fn best_links(m: &Map, keyframes: &[i64], options: &Options) -> BTreeMap<i64, Vec<i64>> {
+    keyframes
+        .iter()
+        .map(|&keyframe| {
+            let best = m.keyframe_row(keyframe).map_or_else(Vec::new, |k| {
+                covisibility::links_of(
+                    m,
+                    &covisibility::shared_points(m, k),
+                    options.covisibility.min_points,
+                )
                 .into_iter()
                 .take(options.relocalization.neighbours)
-                .map(|(_, other)| other)
-                .collect();
-        }
-        out.insert(keyframe, best);
-    }
-    out
+                .map(|link| m.kf_id[link.row])
+                .collect()
+            });
+            (keyframe, best)
+        })
+        .collect()
 }
 
 /// Finds the keyframes a frame may be relocalised against
@@ -270,7 +234,7 @@ pub fn candidates(
     }
     out.scored = scores.len();
     let weighed: Vec<i64> = scores.keys().copied().collect();
-    let neighbours = best_covisible(m, &weighed, options);
+    let neighbours = best_links(m, &weighed, options);
     let mut groups: Vec<(f64, i64)> = Vec::with_capacity(scores.len());
     for (&keyframe, &own) in &scores {
         let (mut total, mut best, mut best_score) = (own, keyframe, own);

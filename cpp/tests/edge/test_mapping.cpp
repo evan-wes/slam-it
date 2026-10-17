@@ -38,14 +38,15 @@ std::vector<std::int64_t> ids(std::int64_t first, std::int64_t last) {
 /// @param m The map.
 /// @param k The keyframe's row.
 /// @param xyz The points: the scene's first ones.
+/// @param from The first of them to add (the keyframe's earlier keypoints observe others).
 /// @return Whether it worked.
-bool add_scene_points(edge::Map& m, std::int64_t k, std::span<const Eigen::Vector3d> xyz) {
+bool add_scene_points(edge::Map& m, std::int64_t k, std::span<const Eigen::Vector3d> xyz,
+                      std::size_t from = 0) {
   std::vector<std::vector<std::int64_t>> observers;
-  observers.reserve(xyz.size());
-  for (std::size_t p = 0; p < xyz.size(); ++p) {
+  for (std::size_t p = from; p < xyz.size(); ++p) {
     observers.push_back({m.kf_start[static_cast<std::size_t>(k)] + static_cast<std::int64_t>(p)});
   }
-  return edge::add_points(m, xyz, observers).has_value();
+  return edge::add_points(m, xyz.subspan(from), observers).has_value();
 }
 
 /// @brief The scene's first points.
@@ -67,9 +68,10 @@ void check_keyframes_and_points(int& failures) {
   }
   const edge::Frame frame = scene::frame(2, true);
   const auto need = [&](std::int64_t kept) {
+    const auto newest = static_cast<std::int64_t>(edge::keyframe_count(*built)) - 1;
     return edge::need_keyframe(*built, scene::camera(), frame.depth,
-                               {.pose = scene::pose(2), .points = ids(0, kept)}, edge::Mode::kRgbd,
-                               edge::Options{});
+                               {.pose = scene::pose(2), .points = ids(0, kept)}, newest,
+                               edge::Mode::kRgbd, edge::Options{});
   };
   expect(need(16).value_or(false) && !need(15).value_or(true) && !need(60).value_or(true),
          "a keyframe when tracking thins, but not below the minimum inliers", failures);
@@ -124,21 +126,26 @@ void check_triangulation(int& failures) {
   expect(worst < 1e-9, "the triangulated points are the scene's", failures);
 }
 
-/// @brief Check fusion: each keyframe made its own points of the scene; fusing merges them.
+/// @brief Check fusion: the keyframes share a few points, so they are linked, and each made its
+///        own of the rest; fusing merges those.
 /// @param failures Running failure count.
 void check_fusion(int& failures) {
+  constexpr std::int64_t kShared = 5;
   edge::Map m = edge::empty_map(8, 1.2);
   if (!edge::insert_keyframe(m, scene::frame(0, false), scene::pose(0), ids(0, 0)) ||
       !add_scene_points(m, 0, first_points(scene::kPoints)) ||
-      !edge::insert_keyframe(m, scene::frame(2, false), scene::pose(2), ids(0, 0)) ||
-      !add_scene_points(m, 1, first_points(scene::kPoints))) {
+      !edge::insert_keyframe(m, scene::frame(2, false), scene::pose(2), ids(0, kShared)) ||
+      !add_scene_points(m, 1, first_points(scene::kPoints), kShared)) {
     expect(false, "the fusion scene builds", failures);
     return;
   }
-  const bool fused = edge::fuse_points(m, scene::camera(), edge::Options{}).has_value();
+  const bool fused =
+      edge::fuse_points(m, scene::camera(), edge::Mode::kRgbd, edge::Options{}).has_value();
   bool linked = true;
-  for (const std::int64_t point : m.kp_point) {
-    linked = linked && std::cmp_greater_equal(point, scene::kPoints);
+  for (std::size_t row = 0; row < m.kp_point.size(); ++row) {
+    const auto index = static_cast<std::int64_t>(row % scene::kPoints);  // in its keyframe
+    linked = linked && (index < kShared ? m.kp_point[row] == index
+                                        : std::cmp_greater_equal(m.kp_point[row], scene::kPoints));
   }
   expect(
       fused && edge::point_count(m) == scene::kPoints && linked && edge::check_map(m).has_value(),

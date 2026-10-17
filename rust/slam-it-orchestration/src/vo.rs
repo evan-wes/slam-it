@@ -600,6 +600,9 @@ fn summary_json(summary: &FrameSummary) -> JsonObject {
             ("in_view", count(s.in_view)),
             ("matches", count(s.matches)),
             ("inliers", count(s.inliers)),
+            ("keyframes", count(s.keyframes)),
+            ("points", count(s.points)),
+            ("reference", JsonValue::Integer(s.reference)),
         ])
     });
     let mapping = summary.mapping.as_ref().map_or(JsonValue::Null, |s| {
@@ -609,6 +612,8 @@ fn summary_json(summary: &FrameSummary) -> JsonObject {
             ("triangulated", count(s.triangulated)),
             ("fused", count(s.fused)),
             ("ba", solves_json(&s.solves)),
+            ("free", count(s.free)),
+            ("fixed", count(s.fixed)),
             ("outliers", count(s.outliers)),
             ("weak_points", count(s.weak_points)),
             ("culled_keyframes", count(s.culled_keyframes)),
@@ -1055,7 +1060,7 @@ mod tests {
     //! run, through every backend, by `tests/orchestration`.
 
     use super::*;
-    use slam_it_edge::options::MappingOptions;
+    use slam_it_edge::options::CovisibilityOptions;
 
     /// A scratch folder, removed when the test ends, failed or not.
     struct Scratch(std::path::PathBuf);
@@ -1113,7 +1118,7 @@ mod tests {
             "--count",
             "10",
             "--option",
-            "mapping.window=7",
+            "covisibility.local_neighbours=7",
             "--option",
             "stereo.close_depth=35.5",
         ]))
@@ -1129,7 +1134,7 @@ mod tests {
         );
         assert_eq!(
             (
-                request.options.mapping.window,
+                request.options.covisibility.local_neighbours,
                 request.options.features.n_features
             ),
             (7, 1000)
@@ -1150,8 +1155,8 @@ mod tests {
             &["--mode", "lidar"][..],
             &["--first", "x"],
             &["--count"],
-            &["--option", "mapping.windows=7"],
-            &["--option", "mapping.window=7.5"],
+            &["--option", "covisibility.local_neighbourss=7"],
+            &["--option", "covisibility.local_neighbours=7.5"],
             &["--option", "stereo.close_depth=inf"],
             &["--option", "stereo.close_depth=+-5"],
             &["--option", "window"],
@@ -1198,9 +1203,9 @@ mod tests {
         ];
         bads.push(Request {
             options: Options {
-                mapping: MappingOptions {
-                    window: 0,
-                    ..good.options.mapping
+                covisibility: CovisibilityOptions {
+                    local_neighbours: 0,
+                    ..good.options.covisibility
                 },
                 ..good.options
             },

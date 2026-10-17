@@ -360,14 +360,21 @@ def test_the_window_room_loses_its_kept_maps_by_the_time(
 
 def test_a_request_crosses_as_a_command_line() -> None:
     """Only settings off their defaults are passed, integers as integers, reals round-tripping."""
-    options = Options().with_settings({"mapping.window": 7, "stereo.close_depth": 0.1 + 0.2})
+    options = Options().with_settings(
+        {"covisibility.local_neighbours": 7, "stereo.close_depth": 0.1 + 0.2}
+    )
     request = vo.Request(
         "tum", Path("seq"), "rgbd", Path("out"), 2, 5, options=options, record_features=True
     )
     assert request.arguments() == [
         *("--dataset", "tum", "--sequence", "seq", "--mode", "rgbd", "--out", "out"),
         *("--first", "2", "--count", "5", "--record-features"),
-        *("--option", "stereo.close_depth=0.30000000000000004", "--option", "mapping.window=7"),
+        *(
+            "--option",
+            "stereo.close_depth=0.30000000000000004",
+            "--option",
+            "covisibility.local_neighbours=7",
+        ),
     ]
     assert "--record-features" not in replace(request, record_features=False).arguments()
 
@@ -376,10 +383,12 @@ def test_parse_reads_a_command_line() -> None:
     """Every flag is read, in any order; the settings named are set, the rest default."""
     request = vo.parse(
         [*("--mode", "rgbd", "--dataset", "tum", "--sequence", "seq", "--out", "out"),
-         *("--first", "3", "--record-features", "--count", "10", "--option", "mapping.window=7"),
-         *("--option", "stereo.close_depth=35.5")]
+         *("--first", "3", "--record-features", "--count", "10"),
+         *("--option", "covisibility.local_neighbours=7", "--option", "stereo.close_depth=35.5")]
     )  # fmt: skip
-    expected = Options().with_settings({"mapping.window": 7, "stereo.close_depth": 35.5})
+    expected = Options().with_settings(
+        {"covisibility.local_neighbours": 7, "stereo.close_depth": 35.5}
+    )
     assert request == vo.Request("tum", Path("seq"), "rgbd", Path("out"), 3, 10, expected, True)
     plain = vo.parse(["--dataset", "tum", "--sequence", "s", "--mode", "rgbd", "--out", "o"])
     assert (plain.first, plain.count, plain.options) == (0, None, Options())
@@ -394,7 +403,10 @@ def test_parse_reads_a_command_line() -> None:
         (["--first", "1_000"], "--first: expected an integer"),
         (["--count"], "--count: expected a value"),
         (["--option", "windows=7"], "--option: no setting 'windows'"),
-        (["--option", "mapping.window=7.5"], "mapping.window: expected an integer, got '7.5'"),
+        (
+            ["--option", "covisibility.local_neighbours=7.5"],
+            "covisibility.local_neighbours: expected an integer, got '7.5'",
+        ),
         (
             ["--option", "stereo.close_depth=inf"],
             "stereo.close_depth: expected a finite number, got 'inf'",
@@ -436,7 +448,7 @@ def test_parse_refuses_what_the_native_programs_refuse(more: list[str], message:
         ("stereo.close_depth=1e5", 1e5),
         ("stereo.close_depth= 2.0 ", 2.0),
         ("stereo.close_depth=-1", -1.0),  # a number; its range is the settings' to check
-        ("mapping.window=10", 10),
+        ("covisibility.local_neighbours=10", 10),
     ],
 )
 def test_parse_setting_reads_what_the_programs_read(text: str, value: float) -> None:
@@ -456,8 +468,8 @@ def test_parse_setting_reads_what_the_programs_read(text: str, value: float) -> 
         "stereo.close_depth=+-5",
         "stereo.close_depth=",
         "stereo.close_depth=0x10",
-        "mapping.window=1.0",
-        "mapping.window=1_000",
+        "covisibility.local_neighbours=1.0",
+        "covisibility.local_neighbours=1_000",
         "no_such_setting=1",
         "stereo.close_depth",
     ],
@@ -480,8 +492,8 @@ def test_parse_refuses_an_unknown_mode_or_a_missing_flag() -> None:
 def test_a_setting_out_of_range_is_a_failed_run_not_a_usage_error() -> None:
     """As the natives' check refuses it after reading the command line, with exit code 3."""
     base = ["--dataset", "tum", "--sequence", "seq", "--mode", "rgbd", "--out", "out"]
-    with pytest.raises(InvalidInputError, match=r"mapping\.window") as raised:
-        vo.parse([*base, "--option", "mapping.window=0"])
+    with pytest.raises(InvalidInputError, match=r"covisibility\.local_neighbours") as raised:
+        vo.parse([*base, "--option", "covisibility.local_neighbours=0"])
     assert not isinstance(raised.value, vo.UsageError)
 
 

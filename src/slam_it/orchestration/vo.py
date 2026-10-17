@@ -9,7 +9,7 @@ builds each frame for the mode (:mod:`slam_it.edge.frames`), tracks it
   :func:`slam_it.eval.tum.read_camera`): as it is for monocular, and for RGB-D with a virtual
   baseline of the camera's ``bf`` over its focal length (ORB-SLAM's ``Camera.bf``: depth gives
   each keypoint a virtual right column that baseline away, and points nearer than
-  ``close_depth`` baselines count as close); a folder whose camera gives no ``bf`` runs
+  ``stereo.close_depth`` baselines count as close); a folder whose camera gives no ``bf`` runs
   monocular only. A EuRoC sequence's left camera for monocular; for stereo, the pair rectified
   (:func:`slam_it.foundations.stereo.rectify`), each image remapped, and the rectified left
   camera (pinhole) with the pair's baseline. A stereo run's poses are therefore the rectified
@@ -144,7 +144,7 @@ class Request:
     record_features : bool
         Whether the run records each frame's keypoints, with their fates.
     vocabulary : pathlib.Path or None
-        The vocabulary's folder: required with ``relocalize`` on, refused with it off.
+        The vocabulary's folder: required with ``relocalization.enabled`` on, refused with it off.
     """
 
     dataset: str
@@ -448,9 +448,9 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
         Whether to record each frame's keypoints, with their fates
         (:func:`slam_it.eval.runs.read_features` reads them; default: no).
     vocabulary : str or pathlib.Path, optional
-        The vocabulary's folder, which a relocalising run needs (default: the committed one
-        when ``relocalize`` is on, none when it is off; one given while it is off is refused).
-        It is read once, here, its checksums checked before any program runs
+        The vocabulary's folder, which a relocalising run needs (default: the committed one when
+        ``relocalization.enabled`` is on, none when it is off; one given while it is off is
+        refused). It is read once, here, its checksums checked before any program runs
         (:func:`slam_it.eval.vocabularies.read`).
 
     Returns

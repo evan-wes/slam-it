@@ -11,15 +11,15 @@ T-RO 2012), for the map being tracked:
   (``mvInvertedFile``). A keyframe leaves it when culled; a map's database goes with the map.
 - **Relocalisation's candidates** (:func:`candidates`, ``DetectRelocalizationCandidates``): the
   keyframes that share a word with a frame, found through the index; those sharing more than
-  ``reloc_common_words`` of the most words any shares are scored (the L1 score); each score is
-  accumulated over the keyframe's best ``reloc_neighbours`` covisible keyframes that were scored
-  too, the best-scored of the group standing for it; and the groups above
-  ``reloc_group_score`` of the best accumulated score give the candidates, best first.
+  ``relocalization.common_words`` of the most words any shares are scored (the L1 score); each score
+  is accumulated over the keyframe's best ``relocalization.neighbours`` covisible keyframes that
+  were scored too, the best-scored of the group standing for it; and the groups above
+  ``relocalization.group_score`` of the best accumulated score give the candidates, best first.
 
-**Covisibility** is counted from the map's observations until milestone 2B's second PR builds
-the covisibility graph: two keyframes are covisible when they observe at least
-``covisible_points`` of the same points, the best those that share the most (ties: the lower
-id). ORB-SLAM keeps a keyframe's single best neighbour when none shares 15; here it has none.
+**Covisibility** is the graph's (:func:`slam_it.edge.covisibility.links`): a keyframe's best
+are its links, those sharing at least ``covisibility.min_points`` points, the most shared
+first (ties: the lower id), or its single best when none shares that many, as ORB-SLAM's
+``GetBestCovisibilityKeyFrames`` gives them.
 
 **Unlike ORB-SLAM,** a neighbour that shares a word with the frame but was not scored adds
 nothing to its group (ORB-SLAM adds the score it kept from an earlier frame's query, which the
@@ -39,6 +39,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slam_it import backends
+from slam_it.edge import covisibility
 from slam_it.edge.map import Map
 from slam_it.edge.options import Options
 from slam_it.foundations import vocabulary
@@ -206,38 +207,16 @@ class Candidates:
     scored: int
 
 
-def best_covisible(m: Map, keyframes: list[int], options: Options) -> dict[int, list[int]]:
-    """Return each keyframe's best covisible keyframes, from the map's observations.
+def _best(m: Map, keyframe: int, options: Options) -> list[int]:
+    """Return a keyframe's best ``relocalization.neighbours`` links' ids (by its id), or none.
 
-    Parameters
-    ----------
-    m : slam_it.edge.map.Map
-        The map.
-    keyframes : list of int
-        The keyframes' ids.
-    options : slam_it.edge.options.Options
-        ``covisible_points`` and ``reloc_neighbours``.
-
-    Returns
-    -------
-    dict
-        Each keyframe's id to the ids of the keyframes that observe at least
-        ``covisible_points`` of its points, the most shared first (ties: the lower id), at
-        most ``reloc_neighbours``.
+    A keyframe the map does not hold has none: relocalisation then refuses it by name.
     """
-    rows = np.flatnonzero(m.kp_point >= 0)
-    owner = m.kf_id[m.keypoint_keyframe()[rows]]
-    seen = np.unique(np.column_stack([owner, m.kp_point[rows]]), axis=0)  # (keyframe, point)
-    out: dict[int, list[int]] = {}
-    for keyframe in keyframes:
-        mine = seen[seen[:, 0] == keyframe, 1]
-        others = seen[np.isin(seen[:, 1], mine) & (seen[:, 0] != keyframe), 0]
-        ids, counts = np.unique(others, return_counts=True)
-        kept = counts >= options.covisibility.min_points
-        ids, counts = ids[kept], counts[kept]
-        order = np.lexsort((ids, -counts))[: options.relocalization.neighbours]
-        out[keyframe] = ids[order].tolist()
-    return out
+    row = int(m.keyframe_rows(np.array([keyframe]))[0])
+    if row < 0:
+        return []
+    rows = covisibility.links(m, row, options)[0][: options.relocalization.neighbours]
+    return [int(k) for k in m.kf_id[rows]]
 
 
 def _candidates(
@@ -257,7 +236,7 @@ def _candidates(
         for keyframe in sorted(shared)
         if shared[keyframe] > least
     }
-    neighbours = best_covisible(m, list(scores), options)
+    neighbours = {keyframe: _best(m, keyframe, options) for keyframe in scores}
     groups: list[tuple[float, int]] = []
     for keyframe, own in scores.items():
         total, best, best_score = own, keyframe, own
@@ -311,8 +290,8 @@ def candidates(
         The frame's word vector (:func:`slam_it.foundations.vocabulary.bow`): its words,
         ascending, and their values.
     options : slam_it.edge.options.Options
-        ``reloc_common_words``, ``reloc_neighbours``, ``reloc_group_score`` and
-        ``covisible_points``.
+        ``relocalization.common_words``, ``relocalization.neighbours``,
+        ``relocalization.group_score`` and ``covisibility.min_points``.
     backend : {"python", "cpp", "rust"}, optional
         Which implementation computes the result (default: the Python reference).
 

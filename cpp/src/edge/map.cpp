@@ -382,15 +382,6 @@ Eigen::Vector3d camera_centre(const Eigen::Matrix4d& pose) {
 
 Eigen::Vector3d centre(const Map& m, std::size_t k) { return camera_centre(m.kf_pose[k]); }
 
-std::vector<std::int64_t> window(const Map& m, std::int64_t size) {
-  const auto count = static_cast<std::int64_t>(keyframe_count(m));
-  std::vector<std::int64_t> out;
-  for (std::int64_t k = std::max<std::int64_t>(0, count - size); k < count; ++k) {
-    out.push_back(k);
-  }
-  return out;
-}
-
 std::vector<std::int64_t> observed_by(const Map& m, std::span<const std::int64_t> keyframes) {
   std::set<std::int64_t> ids;
   for (const std::int64_t k : keyframes) {

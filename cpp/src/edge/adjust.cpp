@@ -299,6 +299,8 @@ Result<Adjustment> bundle_adjust(Map& m, const Camera& camera,
     return std::unexpected(std::move(built.error()));
   }
   ba::Problem& problem = built->problem;
+  const auto held = static_cast<std::int64_t>(std::ranges::count(problem.fixed_poses, true));
+  const auto posed = static_cast<std::int64_t>(problem.fixed_poses.size());
   auto first = ba::solve(problem, solver_options(options, options.adjustment.iterations));
   if (!first) {
     return std::unexpected(std::move(first.error()));
@@ -334,7 +336,9 @@ Result<Adjustment> bundle_adjust(Map& m, const Camera& camera,
     return std::unexpected(std::move(dropped.error()));
   }
   return Adjustment{.solves = {solve_of(first->summary.solve), solve_of(second->summary.solve)},
-                    .outliers = *dropped};
+                    .outliers = *dropped,
+                    .free = posed - held,
+                    .fixed = held};
 }
 
 }  // namespace slam_it::edge

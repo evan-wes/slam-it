@@ -53,6 +53,8 @@ fn bundle_adjust<'py>(
     out.set_item("map", map_dict(py, &adjusted)?)?;
     out.set_item("solves", solves_list(py, &adjustment.solves)?)?;
     out.set_item("outliers", to_i64(adjustment.outliers))?;
+    out.set_item("free", to_i64(adjustment.free))?;
+    out.set_item("fixed", to_i64(adjustment.fixed))?;
     Ok(out)
 }
 

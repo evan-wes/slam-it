@@ -10,9 +10,9 @@ into one :class:`slam_it.foundations.ba.BAProblem`:
 - the keyframes that are not free held fixed, as are the ones the caller fixes;
 - a Huber loss at ``sqrt(chi2_mono)`` on the weighted errors.
 
-It solves for ``ba_iterations``, drops the observations failing the chi-square test
+It solves for ``adjustment.iterations``, drops the observations failing the chi-square test
 (:func:`slam_it.edge.residuals.chi2`) or behind their camera, solves again for
-``ba_refine_iterations`` (a point left with fewer than two inlier views is left out of that
+``adjustment.refine_iterations`` (a point left with fewer than two inlier views is left out of that
 solve, back where it started: ORB-SLAM's second pass would re-solve it from its one stereo
 edge, so as not to keep where its outliers pulled it), forgets the observations still failing it
 (:func:`slam_it.edge.map.forget_observations`), and refreshes the surviving points
@@ -117,11 +117,18 @@ class Adjustment:
         was solved.
     outliers : int
         The observations forgotten as outliers after the refining solve.
+    free : int
+        The keyframes adjusted: those given, but the ones held fixed among them.
+    fixed : int
+        The keyframes held fixed: those given that were, and every other observing their
+        points.
     """
 
     map: Map
     solves: tuple[Solve, ...]
     outliers: int
+    free: int = 0
+    fixed: int = 0
 
 
 class Implementation(Protocol):
@@ -182,6 +189,8 @@ def _decode_adjustment(raw: dict[str, Any], codes: backends.Codes) -> Adjustment
         map=maps.decode(raw["map"], codes),
         solves=decode_solves(raw["solves"], codes),
         outliers=int(raw["outliers"]),
+        free=int(raw["free"]),
+        fixed=int(raw["fixed"]),
     )
 
 
@@ -261,6 +270,8 @@ def _bundle_adjust(
         map=maps.refresh_points(adjusted, kept[kept >= 0]),
         solves=(Solve.of(first.summary.solve), Solve.of(second.summary.solve)),
         outliers=len(dropped),
+        free=int(np.count_nonzero(~problem.fixed_poses)),
+        fixed=int(np.count_nonzero(problem.fixed_poses)),
     )
 
 
@@ -275,8 +286,8 @@ def bundle_adjust(  # noqa: PLR0913 -- the map, its camera, what to adjust, the 
 ) -> Adjustment:
     """Bundle-adjust keyframes and the points they observe (``LocalBundleAdjustment``).
 
-    Solves for ``ba_iterations``, drops the observations failing the chi-square test (or
-    behind their camera), solves again for ``ba_refine_iterations`` (a point left with fewer
+    Solves for ``adjustment.iterations``, drops the observations failing the chi-square test (or
+    behind their camera), solves again for ``adjustment.refine_iterations`` (a point left with fewer
     than two inlier views restarting from its position before the adjustment), then forgets
     the observations still failing it and refreshes the adjusted points' descriptors, normals and
     distances. Only the free keyframes' poses are written back, so a fixed keyframe keeps its

@@ -49,6 +49,7 @@ fn changed<'py>(
 /// * `camera` - The camera, as a dict.
 /// * `depth` - The frame's keypoints' depths.
 /// * `tracked` - Its pose and matches, as a dict.
+/// * `reference` - Its reference keyframe's row.
 /// * `mode` - The mode's name.
 /// * `options` - The settings, as a dict.
 ///
@@ -60,13 +61,18 @@ fn changed<'py>(
 ///
 /// `ValueError` for a malformed argument; `InvalidInputError` from the core.
 #[pyfunction]
-#[pyo3(signature = (m, camera, depth, tracked, mode, options))]
+#[pyo3(signature = (m, camera, depth, tracked, reference, mode, options))]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the stage's state, as the reference takes it"
+)]
 fn need_keyframe<'py>(
     py: Python<'py>,
     m: &Bound<'py, PyDict>,
     camera: &Bound<'py, PyDict>,
     depth: Bound<'py, PyAny>,
     tracked: &Bound<'py, PyDict>,
+    reference: usize,
     mode: &str,
     options: &Bound<'py, PyDict>,
 ) -> PyResult<bool> {
@@ -77,6 +83,7 @@ fn need_keyframe<'py>(
             &camera_in(camera)?,
             &vector::<f64>(&depth)?,
             &tracked_in(tracked)?,
+            reference,
             mode_in(mode)?,
             &options_in(options)?,
         ),
@@ -139,12 +146,16 @@ camera_steps! {
     ///
     /// `ValueError` for a malformed argument; `InvalidInputError` from the core.
     create_points_from_depth;
-    /// Fuses the newest keyframe's points with the window's.
+}
+
+mode_steps! {
+    /// Fuses the newest keyframe's points with its neighbours'.
     ///
     /// # Arguments
     ///
     /// * `m` - The map, as a dict.
     /// * `camera` - The camera, as a dict.
+    /// * `mode` - The mode's name.
     /// * `options` - The settings, as a dict.
     ///
     /// # Returns
@@ -155,10 +166,7 @@ camera_steps! {
     ///
     /// `ValueError` for a malformed argument; `InvalidInputError` from the core.
     fuse_points;
-}
-
-mode_steps! {
-    /// Triangulates the newest keyframe's free keypoints against the window's.
+    /// Triangulates the newest keyframe's free keypoints against its best links'.
     ///
     /// # Arguments
     ///
@@ -175,7 +183,7 @@ mode_steps! {
     ///
     /// `ValueError` for a malformed argument; `InvalidInputError` from the core.
     triangulate_new_points;
-    /// Culls the window's redundant keyframes.
+    /// Culls the newest keyframe's redundant links.
     ///
     /// # Arguments
     ///
@@ -309,6 +317,8 @@ fn process<'py>(
     out.set_item("triangulated", to_i64(summary.triangulated))?;
     out.set_item("fused", to_i64(summary.fused))?;
     out.set_item("solves", solves_list(py, &summary.solves)?)?;
+    out.set_item("free", to_i64(summary.free))?;
+    out.set_item("fixed", to_i64(summary.fixed))?;
     out.set_item("outliers", to_i64(summary.outliers))?;
     out.set_item("weak_points", to_i64(summary.weak_points))?;
     out.set_item("culled_keyframes", to_i64(summary.culled_keyframes))?;

@@ -74,16 +74,6 @@ struct Candidates {
 /// @return Nothing; `InvalidInput` if it is not in the database.
 [[nodiscard]] foundations::Result<void> erase(Database& db, std::int64_t keyframe);
 
-/// @brief Each keyframe's best covisible keyframes, from the map's observations
-///        (`slam_it.edge.database.best_covisible`).
-/// @param m The map.
-/// @param keyframes The keyframes' ids, each in the map.
-/// @param options `covisible_points` and `reloc_neighbours`.
-/// @return Each keyframe's id to the ids of those observing at least `covisible_points` of its
-///         points, the most shared first (ties: the lower id), at most `reloc_neighbours`.
-[[nodiscard]] std::map<std::int64_t, std::vector<std::int64_t>> best_covisible(
-    const Map& m, std::span<const std::int64_t> keyframes, const Options& options);
-
 /// @brief Find the keyframes a frame may be relocalised against
 ///        (`slam_it.edge.database.candidates`, ORB-SLAM's `DetectRelocalizationCandidates`).
 /// @param db The map's keyframe database.

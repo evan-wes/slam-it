@@ -51,6 +51,56 @@ std::vector<std::int64_t> rows_of(const Map& m, std::size_t k) {
   return out;
 }
 
+/// @brief A keyframe's links' rows, most shared first (`slam_it.edge.covisibility.links`).
+/// @param m The map.
+/// @param k The keyframe's row.
+/// @param options The settings.
+/// @return The rows.
+std::vector<std::int64_t> linked_rows(const Map& m, std::size_t k, const Options& options) {
+  std::vector<std::int64_t> out;
+  for (const Link& link : links_of(m, shared_points(m, k), options.covisibility.min_points)) {
+    out.push_back(link.row);
+  }
+  return out;
+}
+
+/// @brief The newest keyframe's fusion targets' ids, as `SearchInNeighbors` takes them
+///        (`slam_it.edge.mapping._fuse_targets`): its best links, then each one's own best,
+///        leaving out the newest keyframe and repeats (ORB-SLAM3's order).
+/// @param m The map.
+/// @param mode The pipeline's mode.
+/// @param options The settings.
+/// @return The ids.
+std::vector<std::int64_t> fuse_targets(const Map& m, Mode mode, const Options& options) {
+  const auto newest = static_cast<std::int64_t>(keyframe_count(m)) - 1;
+  const MappingOptions& settings = options.mapping;
+  const std::int64_t n =
+      mode == Mode::kMonocular ? settings.mono_fuse_neighbours : settings.fuse_neighbours;
+  std::vector<std::int64_t> targets = linked_rows(m, static_cast<std::size_t>(newest), options);
+  if (std::cmp_greater(targets.size(), n)) {
+    targets.resize(static_cast<std::size_t>(n));
+  }
+  const std::size_t first = targets.size();
+  for (std::size_t i = 0; i < first; ++i) {
+    std::vector<std::int64_t> second =
+        linked_rows(m, static_cast<std::size_t>(targets[i]), options);
+    if (std::cmp_greater(second.size(), settings.fuse_second_neighbours)) {
+      second.resize(static_cast<std::size_t>(settings.fuse_second_neighbours));
+    }
+    for (const std::int64_t row : second) {
+      if (row != newest && !std::ranges::contains(targets, row)) {
+        targets.push_back(row);
+      }
+    }
+  }
+  std::vector<std::int64_t> ids;
+  ids.reserve(targets.size());
+  for (const std::int64_t row : targets) {
+    ids.push_back(m.kf_id[static_cast<std::size_t>(row)]);
+  }
+  return ids;
+}
+
 /// @brief The points from an id on that the newest keyframe observes, by keypoint.
 /// @param m The map, with at least one keyframe.
 /// @param first The first id.
@@ -640,8 +690,14 @@ double close_depth(const Camera& camera, const Options& options) {
 }
 
 Result<bool> need_keyframe(const Map& m, const Camera& camera, std::span<const double> depth,
-                           const Tracked& tracked, Mode mode, const Options& options) {
+                           const Tracked& tracked, std::int64_t reference, Mode mode,
+                           const Options& options) {
   if (auto ok = check_newest(m, camera, options); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  if (auto ok = foundations::check_range("reference", reference, 0,
+                                         static_cast<std::int64_t>(keyframe_count(m)) - 1);
+      !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   if (tracked.points.size() != depth.size()) {
@@ -652,7 +708,7 @@ Result<bool> need_keyframe(const Map& m, const Camera& camera, std::span<const d
                                             ? options.keyframes.ref_min_observations_early
                                             : options.keyframes.ref_min_observations;
   std::vector<std::int64_t> rows;
-  for (const std::int64_t row : rows_of(m, keyframe_count(m) - 1)) {
+  for (const std::int64_t row : rows_of(m, static_cast<std::size_t>(reference))) {
     if (const std::int64_t p = point_row(m, m.kp_point[static_cast<std::size_t>(row)]); p >= 0) {
       rows.push_back(p);
     }
@@ -774,9 +830,7 @@ Result<void> triangulate_new_points(Map& m, const Camera& camera, Mode mode,
     return ok;
   }
   const std::size_t k1 = keyframe_count(m) - 1;
-  std::vector<std::int64_t> others = window(m, options.mapping.window);
-  others.pop_back();
-  std::ranges::reverse(others);
+  std::vector<std::int64_t> others = linked_rows(m, k1, options);
   const std::int64_t neighbours = mode == Mode::kMonocular
                                       ? options.mapping.mono_triangulation_neighbours
                                       : options.mapping.triangulation_neighbours;
@@ -811,15 +865,11 @@ Result<void> triangulate_new_points(Map& m, const Camera& camera, Mode mode,
   return {};
 }
 
-Result<void> fuse_points(Map& m, const Camera& camera, const Options& options) {
+Result<void> fuse_points(Map& m, const Camera& camera, Mode mode, const Options& options) {
   if (auto ok = check_newest(m, camera, options); !ok) {
     return ok;
   }
-  std::vector<std::int64_t> targets;
-  for (const std::int64_t k : window(m, options.mapping.window)) {
-    targets.push_back(m.kf_id[static_cast<std::size_t>(k)]);
-  }
-  targets.pop_back();
+  const std::vector<std::int64_t> targets = fuse_targets(m, mode, options);
   const std::vector<std::int64_t> newest{static_cast<std::int64_t>(keyframe_count(m) - 1)};
   const std::vector<std::int64_t> own = observed_ids(m, newest);
   for (const std::int64_t target : targets) {
@@ -861,11 +911,8 @@ Result<void> cull_keyframes(Map& m, const Camera& camera, Mode mode, const Optio
   }
   const double limit = close_depth(camera, options);
   std::vector<std::int64_t> ids;
-  for (const std::int64_t k : window(m, options.mapping.window)) {
+  for (const std::int64_t k : linked_rows(m, keyframe_count(m) - 1, options)) {
     ids.push_back(m.kf_id[static_cast<std::size_t>(k)]);
-  }
-  if (!ids.empty()) {
-    ids.pop_back();
   }
   for (const std::int64_t id : ids) {
     if (id == 0) {
@@ -932,7 +979,7 @@ Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame, const T
       made[j] = triangulated_ids[j];
     }
   }
-  if (auto ok = fuse_points(m, camera, options); !ok) {
+  if (auto ok = fuse_points(m, camera, mode, options); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   if (auto ok = adopt(m, newest); !ok) {
@@ -945,7 +992,11 @@ Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame, const T
   }
   Adjustment adjustment;
   if (std::cmp_greater_equal(keyframe_count(m), options.adjustment.min_keyframes)) {
-    auto adjusted = bundle_adjust(m, camera, window(m, options.mapping.window), fixed, options);
+    // The newest keyframe and its links, as ORB-SLAM's LocalBundleAdjustment takes them.
+    std::vector<std::int64_t> local = linked_rows(m, keyframe_count(m) - 1, options);
+    local.push_back(static_cast<std::int64_t>(keyframe_count(m)) - 1);
+    std::ranges::sort(local);
+    auto adjusted = bundle_adjust(m, camera, local, fixed, options);
     if (!adjusted) {
       return std::unexpected(std::move(adjusted.error()));
     }
@@ -961,6 +1012,8 @@ Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame, const T
                   .triangulated = triangulated - culled,
                   .fused = triangulated - fused,
                   .solves = std::move(adjustment.solves),
+                  .free = adjustment.free,
+                  .fixed = adjustment.fixed,
                   .outliers = adjustment.outliers,
                   .weak_points = fused - points(),
                   .culled_keyframes = keyframes - static_cast<std::int64_t>(keyframe_count(m))},

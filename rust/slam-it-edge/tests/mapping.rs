@@ -29,11 +29,11 @@ fn ids(first: usize, last: usize) -> Vec<i64> {
         .collect()
 }
 
-/// Adds a point at each of the first `count` scene points, seen by keyframe `k`'s keypoints of
-/// the same index.
-fn add_scene_points(m: &mut Map, k: usize, count: usize) {
-    let xyz = &points()[..count];
-    let observers: Vec<Vec<usize>> = (0..count).map(|p| vec![m.kf_start[k] + p]).collect();
+/// Adds a point at each of the scene points `from` to `count`, seen by keyframe `k`'s keypoints
+/// of the same index (its earlier keypoints observe others).
+fn add_scene_points(m: &mut Map, k: usize, from: usize, count: usize) {
+    let xyz = &points()[from..count];
+    let observers: Vec<Vec<usize>> = (from..count).map(|p| vec![m.kf_start[k] + p]).collect();
     map::add_points(m, xyz, &observers).unwrap();
 }
 
@@ -51,6 +51,7 @@ fn keyframes_and_points_follow_the_rules() {
             &camera(),
             &f.depth,
             &tracked,
+            built.keyframes() - 1,
             Mode::Rgbd,
             &Options::default(),
         )
@@ -90,7 +91,7 @@ fn keyframes_and_points_follow_the_rules() {
 fn triangulation_recovers_the_scene() {
     let mut m = Map::empty(8, 1.2);
     map::insert_keyframe(&mut m, &frame(0, false), &pose(0), &ids(0, 0)).unwrap();
-    add_scene_points(&mut m, 0, 10);
+    add_scene_points(&mut m, 0, 0, 10);
     map::insert_keyframe(&mut m, &frame(2, false), &pose(2), &ids(0, 10)).unwrap();
     let pairs = match_for_triangulation(&m, &camera(), 1, 0, &Options::default()).unwrap();
     assert_eq!((pairs.len(), pairs[0]), (50, [70, 10]));
@@ -101,18 +102,33 @@ fn triangulation_recovers_the_scene() {
     }
 }
 
+/// The keyframes share a few points, so they are linked, and each made its own of the rest:
+/// fusing merges those.
 #[test]
 fn fusion_merges_duplicates() {
+    const SHARED: usize = 5;
     let mut m = Map::empty(8, 1.2);
     map::insert_keyframe(&mut m, &frame(0, false), &pose(0), &ids(0, 0)).unwrap();
-    add_scene_points(&mut m, 0, POINTS);
-    map::insert_keyframe(&mut m, &frame(2, false), &pose(2), &ids(0, 0)).unwrap();
-    add_scene_points(&mut m, 1, POINTS);
-    fuse_points(&mut m, &camera(), &Options::default()).unwrap();
+    add_scene_points(&mut m, 0, 0, POINTS);
+    map::insert_keyframe(&mut m, &frame(2, false), &pose(2), &ids(0, SHARED)).unwrap();
+    add_scene_points(&mut m, 1, SHARED, POINTS);
+    fuse_points(&mut m, &camera(), Mode::Rgbd, &Options::default()).unwrap();
     assert_eq!(m.points(), POINTS);
     #[allow(clippy::cast_possible_wrap, reason = "ids below 120")]
     let duplicated = POINTS as i64;
-    assert!(m.kp_point.iter().all(|&p| p >= duplicated));
+    for (row, &p) in m.kp_point.iter().enumerate() {
+        let index = row % POINTS; // in its keyframe
+        #[allow(clippy::cast_possible_wrap, reason = "indices below 60")]
+        let shared = index as i64;
+        assert!(
+            if index < SHARED {
+                p == shared
+            } else {
+                p >= duplicated
+            },
+            "row {row}"
+        );
+    }
     check_map(&m).unwrap();
 }
 

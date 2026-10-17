@@ -847,7 +847,13 @@ impl Pipeline {
                 matched: motion.matched,
             });
         }
-        let recovery = tracking::relocalize_locally(m, &self.camera, frame, &self.options)?;
+        let recovery = tracking::relocalize_locally(
+            m,
+            &self.camera,
+            frame,
+            &last_tracked.points,
+            &self.options,
+        )?;
         summary.pnp = Some(recovery.summary);
         let (Some(database), Some(vocabulary), None) =
             (&self.database, &self.vocabulary, &recovery.tracked)
@@ -959,7 +965,7 @@ impl Pipeline {
         };
         let local =
             tracking::track_local_map(m, &self.camera, frame, &placed, self.mode, &options, wide)?;
-        summary.local_map = Some(local.summary());
+        summary.local_map = Some(local.summary(self.kf_base));
         map::count(
             m,
             &local.visible,
@@ -986,12 +992,20 @@ impl Pipeline {
         }
         let tracked = local.tracked;
         let held = recent && m.keyframes() > options.tracking.max_frames;
+        // Placed with inliers, the frame was matched to points: its reference keyframe exists.
+        let Some(reference) = local.reference else {
+            return fail(
+                ErrorKind::InvalidInput,
+                "reference: a tracked frame matched no point of the map",
+            );
+        };
         let keyframe = !held
             && mapping::need_keyframe(
                 m,
                 &self.camera,
                 &frame.depth,
                 &tracked,
+                reference,
                 self.mode,
                 &options,
             )?;

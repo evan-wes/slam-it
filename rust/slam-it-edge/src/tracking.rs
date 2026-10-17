@@ -8,6 +8,7 @@ use slam_it_foundations::matching::{self, Match, Projection, SearchOptions, matc
 use slam_it_foundations::p3p::Solver;
 use slam_it_foundations::{p3p, pnp, ransac, so3};
 
+use crate::covisibility;
 use crate::frames::{Camera, Frame, Tracked, check_setup, search};
 use crate::map::{Map, camera_centre, in_distance_range, predict_level, to_camera, viewing_cos};
 use crate::options::{Mode, Options};
@@ -37,6 +38,12 @@ pub struct LocalMapSummary {
     pub matches: usize,
     /// The matches the refinement kept.
     pub inliers: usize,
+    /// The local map's keyframes.
+    pub keyframes: usize,
+    /// The points they observe.
+    pub points: usize,
+    /// The frame's reference keyframe, by the run's id.
+    pub reference: i64,
 }
 
 /// A frame tracked against the local map, and the counts it adds to
@@ -51,20 +58,37 @@ pub struct LocalTracking {
     pub found: Vec<i64>,
     /// The id of the map point each keypoint matched before the pose was refined, -1 where none.
     pub matched: Vec<i64>,
+    /// The local map's keyframes.
+    pub keyframes: usize,
+    /// The points they observe.
+    pub points: usize,
+    /// The frame's reference keyframe's row: the one sharing the most of the points it was
+    /// matched to before the search; `None` if it was matched to none.
+    pub reference: Option<usize>,
+    /// Its id in the map, or -1.
+    pub reference_id: i64,
 }
 
 impl LocalTracking {
     /// How the stage went (`slam_it.edge.tracking.LocalTracking.summary`).
     ///
+    /// # Arguments
+    ///
+    /// * `base` - The run's id of the map's keyframe 0, for the reference keyframe's.
+    ///
     /// # Returns
     ///
-    /// The points in view, the matches and the inliers.
+    /// The points in view, the matches, the inliers, the local map's size and the reference
+    /// keyframe.
     #[must_use]
-    pub fn summary(&self) -> LocalMapSummary {
+    pub fn summary(&self, base: i64) -> LocalMapSummary {
         LocalMapSummary {
             in_view: self.visible.len(),
             matches: count_matched(&self.matched),
             inliers: self.tracked.inliers(),
+            keyframes: self.keyframes,
+            points: self.points,
+            reference: base + self.reference_id,
         }
     }
 }
@@ -805,7 +829,8 @@ pub fn track_local_map(
     recovering: bool,
 ) -> Result<LocalTracking> {
     check_tracking(camera, options, &tracked.points, frame, "tracked.points")?;
-    let local_points = m.observed_by(&m.window(options.mapping.window));
+    let nearby = covisibility::local_map(m, &tracked.points, options)?;
+    let local_points = m.observed_by(&nearby.keyframes);
     let already: Vec<usize> = tracked
         .points
         .iter()
@@ -814,7 +839,8 @@ pub fn track_local_map(
     let mut sorted_already = already.clone();
     sorted_already.sort_unstable();
     let candidates: Vec<usize> = local_points
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|p| sorted_already.binary_search(p).is_err())
         .collect();
     let view = select_in_view(m, camera, &tracked.pose, &candidates, options)?;
@@ -887,6 +913,10 @@ pub fn track_local_map(
         visible,
         found,
         matched: points,
+        keyframes: nearby.keyframes.len(),
+        points: local_points.len(),
+        reference: nearby.reference,
+        reference_id: nearby.reference.map_or(-1, |k| m.kf_id[k]),
     })
 }
 
@@ -898,6 +928,8 @@ pub fn track_local_map(
 /// * `m` - The map.
 /// * `camera` - The camera.
 /// * `frame` - The frame.
+/// * `last` - The point each of the last tracked frame's keypoints was matched to, -1 for
+///   none: the local map is that frame's.
 /// * `options` - The RANSAC threshold, minimum inliers and seed.
 ///
 /// # Returns
@@ -912,6 +944,7 @@ pub fn relocalize_locally(
     m: &Map,
     camera: &Camera,
     frame: &Frame,
+    last: &[i64],
     options: &Options,
 ) -> Result<Relocalization> {
     check_setup(camera, options)?;
@@ -922,7 +955,7 @@ pub fn relocalize_locally(
             matched,
         })
     };
-    let local_points = m.observed_by(&m.window(options.mapping.window));
+    let local_points = m.observed_by(&covisibility::local_map(m, last, options)?.keyframes);
     let mut summary = PnpSummary {
         candidates: local_points.len(),
         ..PnpSummary::default()

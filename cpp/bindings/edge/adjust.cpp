@@ -35,6 +35,8 @@ nb::dict bundle_adjust(const nb::dict& m, const nb::dict& camera,
   out["map"] = edge_crossing::map_dict(adjusted);
   out["solves"] = edge_crossing::solves_list(adjustment.solves);
   out["outliers"] = adjustment.outliers;
+  out["free"] = adjustment.free;
+  out["fixed"] = adjustment.fixed;
   return out;
 }
 

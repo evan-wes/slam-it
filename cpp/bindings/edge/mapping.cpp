@@ -39,10 +39,11 @@ using edge_crossing::options_in;
 /// @return Whether to insert a keyframe.
 /// @throws CoreError for invalid input.
 bool need_keyframe(const nb::dict& m, const nb::dict& camera, const VectorIn<double>& depth,
-                   const nb::dict& tracked, const std::string& mode, const nb::dict& options) {
-  return unwrap(
-      edge::need_keyframe(map_in(m), camera_in(camera), copy_vector<std::vector<double>>(depth),
-                          edge_crossing::tracked_in(tracked), mode_in(mode), options_in(options)));
+                   const nb::dict& tracked, std::int64_t reference, const std::string& mode,
+                   const nb::dict& options) {
+  return unwrap(edge::need_keyframe(
+      map_in(m), camera_in(camera), copy_vector<std::vector<double>>(depth),
+      edge_crossing::tracked_in(tracked), reference, mode_in(mode), options_in(options)));
 }
 
 /// @brief Create points from the newest keyframe's close depth.
@@ -112,9 +113,10 @@ nb::dict triangulate_new_points(const nb::dict& m, const nb::dict& camera, const
 /// @param options The settings, as a dict.
 /// @return The new map, as a dict.
 /// @throws CoreError for invalid input.
-nb::dict fuse_points(const nb::dict& m, const nb::dict& camera, const nb::dict& options) {
+nb::dict fuse_points(const nb::dict& m, const nb::dict& camera, const std::string& mode,
+                     const nb::dict& options) {
   edge::Map out = map_in(m);
-  unwrap(edge::fuse_points(out, camera_in(camera), options_in(options)));
+  unwrap(edge::fuse_points(out, camera_in(camera), mode_in(mode), options_in(options)));
   return map_dict(out);
 }
 
@@ -156,6 +158,8 @@ nb::dict process(const nb::dict& m, const nb::dict& camera, const nb::dict& fram
   out["triangulated"] = summary.triangulated;
   out["fused"] = summary.fused;
   out["solves"] = edge_crossing::solves_list(summary.solves);
+  out["free"] = summary.free;
+  out["fixed"] = summary.fixed;
   out["outliers"] = summary.outliers;
   out["weak_points"] = summary.weak_points;
   out["culled_keyframes"] = summary.culled_keyframes;
@@ -168,8 +172,8 @@ nb::dict process(const nb::dict& m, const nb::dict& camera, const nb::dict& fram
 void bind_mapping(nb::module_& m) {
   m.def("codes", &edge_crossing::solve_codes, "Each enum's names in code order.");
   m.def("need_keyframe", &need_keyframe, nb::arg("m"), nb::arg("camera"),
-        nb::arg("depth").noconvert(), nb::arg("tracked"), nb::arg("mode"), nb::arg("options"),
-        "Decide whether a tracked frame becomes a keyframe.");
+        nb::arg("depth").noconvert(), nb::arg("tracked"), nb::arg("reference"), nb::arg("mode"),
+        nb::arg("options"), "Decide whether a tracked frame becomes a keyframe.");
   m.def("create_points_from_depth", &create_points_from_depth, nb::arg("m"), nb::arg("camera"),
         nb::arg("options"), "Create points from the newest keyframe's close depth.");
   m.def("cull_points", &cull_points, nb::arg("m"), nb::arg("mode"), nb::arg("options"),
@@ -179,11 +183,11 @@ void bind_mapping(nb::module_& m) {
         "Match two keyframes' free keypoints for triangulation.");
   m.def("triangulate_new_points", &triangulate_new_points, nb::arg("m"), nb::arg("camera"),
         nb::arg("mode"), nb::arg("options"),
-        "Triangulate the newest keyframe's free keypoints against the window's.");
-  m.def("fuse_points", &fuse_points, nb::arg("m"), nb::arg("camera"), nb::arg("options"),
-        "Fuse the newest keyframe's points with the window's.");
+        "Triangulate the newest keyframe's free keypoints against its best links.");
+  m.def("fuse_points", &fuse_points, nb::arg("m"), nb::arg("camera"), nb::arg("mode"),
+        nb::arg("options"), "Fuse the newest keyframe's points with its neighbours'.");
   m.def("cull_keyframes", &cull_keyframes, nb::arg("m"), nb::arg("camera"), nb::arg("mode"),
-        nb::arg("options"), "Cull the window's redundant keyframes.");
+        nb::arg("options"), "Cull the newest keyframe's redundant links.");
   m.def("process", &process, nb::arg("m"), nb::arg("camera"), nb::arg("frame"), nb::arg("tracked"),
         nb::arg("mode"), nb::arg("options"), "Insert a keyframe and run local mapping on it.");
 }

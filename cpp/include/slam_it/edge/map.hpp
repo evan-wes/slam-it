@@ -189,12 +189,6 @@ void index_observations(Map& m);
 /// @return The centre.
 [[nodiscard]] Eigen::Vector3d centre(const Map& m, std::size_t k);
 
-/// @brief The sliding window: the rows of the last `size` keyframes, oldest first.
-/// @param m The map.
-/// @param size The window's size.
-/// @return The rows.
-[[nodiscard]] std::vector<std::int64_t> window(const Map& m, std::int64_t size);
-
 /// @brief The points the given keyframes observe.
 /// @param m The map.
 /// @param keyframes Keyframe rows.

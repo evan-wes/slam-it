@@ -5,7 +5,7 @@
 //! `Motion` and `Relocalization` as dicts of `tracked` (or None) and their summary's fields,
 //! RANSAC's termination as its code in `codes()` (or None). The mode crosses by name.
 
-use numpy::PyReadonlyArray2;
+use numpy::{PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use slam_it_edge::tracking as core;
@@ -16,7 +16,7 @@ use super::edge_crossing::{
     camera_in, count_or_none, frame_in, indices, indices_array, map_in, maybe_tracked, mode_in,
     options_in, pose_in, rows_array, termination_or_none, tracked_dict, tracked_in, vector_array,
 };
-use crate::common::{add_functions, enum_codes, to_i64, unwrap};
+use crate::common::{add_functions, contiguous, enum_codes, to_i64, unwrap};
 
 /// Refines a frame's pose against its matched points.
 ///
@@ -214,6 +214,10 @@ fn track_local_map<'py>(
     out.set_item("visible", vector_array(py, &local.visible))?;
     out.set_item("found", vector_array(py, &local.found))?;
     out.set_item("matched", vector_array(py, &local.matched))?;
+    out.set_item("local_keyframes", to_i64(local.keyframes))?;
+    out.set_item("local_points", to_i64(local.points))?;
+    out.set_item("reference", local.reference.map_or(-1, to_i64))?;
+    out.set_item("reference_id", local.reference_id)?;
     Ok(out)
 }
 
@@ -224,6 +228,7 @@ fn track_local_map<'py>(
 /// * `m` - The map, as a dict.
 /// * `camera` - The camera, as a dict.
 /// * `frame` - The frame, as a dict.
+/// * `last` - The point each of the last tracked frame's keypoints was matched to.
 /// * `options` - The settings, as a dict.
 ///
 /// # Returns
@@ -236,12 +241,13 @@ fn track_local_map<'py>(
 ///
 /// `ValueError` for a malformed argument; `InvalidInputError` from the core.
 #[pyfunction]
-#[pyo3(signature = (m, camera, frame, options))]
+#[pyo3(signature = (m, camera, frame, last, options))]
 fn relocalize_locally<'py>(
     py: Python<'py>,
     m: &Bound<'py, PyDict>,
     camera: &Bound<'py, PyDict>,
     frame: &Bound<'py, PyDict>,
+    last: PyReadonlyArray1<'py, i64>,
     options: &Bound<'py, PyDict>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let recovery = unwrap(
@@ -250,6 +256,7 @@ fn relocalize_locally<'py>(
             &map_in(py, m)?,
             &camera_in(camera)?,
             &frame_in(frame)?,
+            contiguous(&last)?,
             &options_in(options)?,
         ),
     )?;

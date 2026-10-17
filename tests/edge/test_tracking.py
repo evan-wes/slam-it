@@ -110,12 +110,15 @@ def test_stages_match_the_reference(backend: str, room_state: Room) -> None:
         tracking.optimize_pose(r.map, CAMERA, r.last, start, OPTIONS, backend=backend),
         tracking.optimize_pose(r.map, CAMERA, r.last, start, OPTIONS),
     )
-    relocalized = tracking.relocalize_locally(r.map, CAMERA, r.frame, OPTIONS, backend=backend)
-    recovery = tracking.relocalize_locally(r.map, CAMERA, r.frame, OPTIONS)
+    last = r.last_tracked.points
+    relocalized = tracking.relocalize_locally(
+        r.map, CAMERA, r.frame, last, OPTIONS, backend=backend
+    )
+    recovery = tracking.relocalize_locally(r.map, CAMERA, r.frame, last, OPTIONS)
     _close(relocalized.tracked, recovery.tracked)
     assert_records_match(relocalized.summary.as_dict(), recovery.summary.as_dict())
     strict = OPTIONS.with_settings({"tracking.pnp_min_inliers": r.map.points + 1})
-    refused = tracking.relocalize_locally(r.map, CAMERA, r.frame, strict, backend=backend)
+    refused = tracking.relocalize_locally(r.map, CAMERA, r.frame, last, strict, backend=backend)
     assert refused.tracked is None
     assert refused.summary == tracking.PnpSummary(candidates=refused.summary.candidates)
 
@@ -133,6 +136,9 @@ def test_tracking_finds_the_pose(room_state: Room) -> None:
     local = tracking.track_local_map(r.map, CAMERA, r.frame, last, mode="rgbd", options=OPTIONS)
     summary = local.summary()
     assert summary.in_view == len(local.visible)
+    assert summary.keyframes > 0
+    assert summary.points >= summary.in_view
+    assert summary.reference == r.map.kf_id[local.reference]
     assert summary.inliers == local.tracked.inliers <= summary.matches
     assert local.tracked.inliers > last.inliers >= OPTIONS.tracking.min_tracked
     assert np.abs(local.tracked.pose[:3, 3] - r.truth[:3, 3]).max() < 0.01
@@ -143,7 +149,7 @@ def test_tracking_finds_the_pose(room_state: Room) -> None:
 def test_relocalizing_places_the_frame(room_state: Room) -> None:
     """Without a prediction, descriptors and PnP place the frame near the local map."""
     r = room_state
-    recovery = tracking.relocalize_locally(r.map, CAMERA, r.frame, OPTIONS)
+    recovery = tracking.relocalize_locally(r.map, CAMERA, r.frame, r.last_tracked.points, OPTIONS)
     placed = recovery.tracked
     assert placed is not None
     assert placed.inliers >= OPTIONS.tracking.pnp_min_inliers

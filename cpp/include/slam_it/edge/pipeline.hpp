@@ -251,6 +251,8 @@ class Pipeline {
     LocalMapSummary summary;
     /// @brief Its match for each keypoint before refinement.
     std::vector<std::int64_t> matched;
+    /// @brief The frame's reference keyframe's row.
+    std::int64_t reference{-1};
   };
 
   /// @brief A pipeline before its first frame.

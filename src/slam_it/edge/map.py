@@ -267,21 +267,6 @@ class Map:
         rotation, translation = self.kf_pose[:, :3, :3], self.kf_pose[:, :3, 3]
         return np.asarray(-np.einsum("kji,kj->ki", rotation, translation))
 
-    def window(self, size: int) -> IntArray:
-        """Return the sliding window: the rows of the last `size` keyframes.
-
-        Parameters
-        ----------
-        size : int
-            The window's size.
-
-        Returns
-        -------
-        ndarray of int64
-            Their rows, oldest first.
-        """
-        return np.arange(max(0, self.keyframes - size), self.keyframes, dtype=np.int64)
-
     def observed_by(self, keyframes: IntArray) -> IntArray:
         """Return the points the given keyframes observe.
 
@@ -910,7 +895,7 @@ def viewing_cos(
     """Return the cosine between each point's mean viewing direction and a view of it.
 
     The one viewing-angle test of tracking's in-view check and fusion (``isInFrustum``'s
-    ``viewCos``), compared with ``view_cos_limit``.
+    ``viewCos``), compared with ``tracking.view_cos_limit``.
 
     Parameters
     ----------
@@ -936,9 +921,9 @@ def in_distance_range(
 ) -> NDArray[np.bool_]:
     """Return which points lie within the distances they are matchable from.
 
-    From ``min_distance_margin`` of a point's minimum distance to ``max_distance_margin`` of
-    its maximum (``isInFrustum``'s and ``Fuse``'s 0.8 and 1.2). Unchecked: `rows` are the
-    map's point rows and `distance` holds one distance per row.
+    From ``tracking.min_distance_margin`` of a point's minimum distance to
+    ``tracking.max_distance_margin`` of its maximum (``isInFrustum``'s and ``Fuse``'s 0.8 and 1.2).
+    Unchecked: `rows` are the map's point rows and `distance` holds one distance per row.
 
     Parameters
     ----------

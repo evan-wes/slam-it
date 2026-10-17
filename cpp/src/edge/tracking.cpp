@@ -8,6 +8,7 @@
 #include <string>
 #include <utility>
 
+#include "slam_it/edge/covisibility.hpp"
 #include "slam_it/edge/residuals.hpp"
 #include "slam_it/foundations/correspondences.hpp"
 #include "slam_it/foundations/matching.hpp"
@@ -280,6 +281,30 @@ std::pair<std::int64_t, std::int64_t> level_range(const Map& m, const Camera& ca
   return {level - 1, level + 1};
 }
 
+/// @brief Tracking's local map, and the points its keyframes observe.
+struct Nearby {
+  /// @brief The local map.
+  LocalMap map;
+  /// @brief The points its keyframes observe, ascending.
+  std::vector<std::int64_t> points;
+};
+
+/// @brief The local map of some matched points (`slam_it.edge.covisibility.local_map`), and its
+///        points.
+/// @param m The map.
+/// @param points The point each keypoint was matched to, -1 for none.
+/// @param options The settings.
+/// @return The local map and its points; `InvalidInput` for an id below -1.
+Result<Nearby> nearby_of(const Map& m, std::span<const std::int64_t> points,
+                         const Options& options) {
+  auto found = local_map(m, points, options);
+  if (!found) {
+    return std::unexpected(std::move(found.error()));
+  }
+  std::vector<std::int64_t> seen = observed_by(m, found->keyframes);
+  return Nearby{.map = std::move(*found), .points = std::move(seen)};
+}
+
 }  // namespace
 
 Eigen::Matrix4d predict(const Eigen::Matrix4d& last_pose,
@@ -314,10 +339,13 @@ Result<InView> in_view(const Map& m, const Camera& camera, const Eigen::Matrix4d
   return select_in_view(m, camera, pose, rows, options);
 }
 
-LocalMapSummary summary(const LocalTracking& local) {
+LocalMapSummary summary(const LocalTracking& local, std::int64_t base) {
   return {.in_view = static_cast<std::int64_t>(local.visible.size()),
           .matches = count_matched(local.matched),
-          .inliers = inliers(local.tracked)};
+          .inliers = inliers(local.tracked),
+          .keyframes = local.keyframes,
+          .points = local.points,
+          .reference = base + local.reference_id};
 }
 
 Result<Motion> track_last_frame(const Map& m, const Camera& camera, const Frame& frame,
@@ -404,7 +432,11 @@ Result<LocalTracking> track_local_map(const Map& m, const Camera& camera, const 
   if (auto ok = check_tracking(camera, options, tracked.points, frame, "tracked.points"); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
-  const std::vector<std::int64_t> local_points = observed_by(m, window(m, options.mapping.window));
+  auto nearby = nearby_of(m, tracked.points, options);
+  if (!nearby) {
+    return std::unexpected(std::move(nearby.error()));
+  }
+  const std::vector<std::int64_t>& local_points = nearby->points;
   std::vector<std::int64_t> already;
   for (const std::int64_t id : tracked.points) {
     if (const std::int64_t p = point_row(m, id); p >= 0) {
@@ -461,8 +493,16 @@ Result<LocalTracking> track_local_map(const Map& m, const Camera& camera, const 
   if (!refined) {
     return std::unexpected(std::move(refined.error()));
   }
+  const std::int64_t reference = nearby->map.reference;
   LocalTracking out{
-      .tracked = std::move(*refined), .visible = {}, .found = {}, .matched = std::move(points)};
+      .tracked = std::move(*refined),
+      .visible = {},
+      .found = {},
+      .matched = std::move(points),
+      .keyframes = static_cast<std::int64_t>(nearby->map.keyframes.size()),
+      .points = static_cast<std::int64_t>(local_points.size()),
+      .reference = reference,
+      .reference_id = reference >= 0 ? m.kf_id[static_cast<std::size_t>(reference)] : -1};
   for (const std::int64_t p : already) {
     out.visible.push_back(m.pt_id[static_cast<std::size_t>(p)]);
   }
@@ -492,11 +532,16 @@ Result<PnpRun> run_pnp(const Eigen::Ref<const foundations::correspondences::Rows
 }
 
 Result<Relocalization> relocalize_locally(const Map& m, const Camera& camera, const Frame& frame,
+                                          std::span<const std::int64_t> last,
                                           const Options& options) {
   if (auto ok = check_setup(camera, options); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
-  const std::vector<std::int64_t> local_points = observed_by(m, window(m, options.mapping.window));
+  auto nearby = nearby_of(m, last, options);
+  if (!nearby) {
+    return std::unexpected(std::move(nearby.error()));
+  }
+  const std::vector<std::int64_t>& local_points = nearby->points;
   Relocalization out{.tracked = std::nullopt,
                      .summary = {.candidates = static_cast<std::int64_t>(local_points.size()),
                                  .matches = std::nullopt,

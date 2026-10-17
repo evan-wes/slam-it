@@ -267,20 +267,6 @@ impl Map {
         camera_centre(&self.kf_pose[k])
     }
 
-    /// The sliding window: the rows of the last `size` keyframes, oldest first.
-    ///
-    /// # Arguments
-    ///
-    /// * `size` - The window's size.
-    ///
-    /// # Returns
-    ///
-    /// The rows.
-    #[must_use]
-    pub fn window(&self, size: usize) -> Vec<usize> {
-        (self.keyframes().saturating_sub(size)..self.keyframes()).collect()
-    }
-
     /// The points the given keyframes observe.
     ///
     /// # Arguments

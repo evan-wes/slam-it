@@ -25,12 +25,16 @@ struct MappingSummary {
   std::int64_t from_depth{0};
   /// @brief Recent points culled.
   std::int64_t culled_points{0};
-  /// @brief Points triangulated with the window's keyframes.
+  /// @brief Points triangulated with the keyframe's best links.
   std::int64_t triangulated{0};
   /// @brief Points fused into another.
   std::int64_t fused{0};
   /// @brief The local bundle adjustment's solves; none if it did not run.
   std::vector<Solve> solves;
+  /// @brief The keyframes it adjusted (0 if it did not run).
+  std::int64_t free{0};
+  /// @brief The keyframes it held fixed.
+  std::int64_t fixed{0};
   /// @brief The observations it dropped.
   std::int64_t outliers{0};
   /// @brief Points erased because the observations dropped, by the adjustment or with a culled
@@ -63,13 +67,16 @@ struct Mapped {
 /// @param camera The camera.
 /// @param depth The frame's keypoints' depths (NaN where unknown).
 /// @param tracked Its pose and matches.
+/// @param reference Its reference keyframe's row (`LocalTracking::reference`).
 /// @param mode The pipeline's mode.
 /// @param options The ratios and counts.
 /// @return Whether to insert a keyframe; `InvalidInput` for a map without keyframes, matches
-///         that are not one per depth, or an invalid camera or settings.
+///         that are not one per depth, a reference out of range, or an invalid camera or
+///         settings.
 [[nodiscard]] foundations::Result<bool> need_keyframe(const Map& m, const Camera& camera,
                                                       std::span<const double> depth,
-                                                      const Tracked& tracked, Mode mode,
+                                                      const Tracked& tracked,
+                                                      std::int64_t reference, Mode mode,
                                                       const Options& options);
 
 /// @brief Create points from the newest keyframe's close depth
@@ -114,14 +121,15 @@ struct Mapped {
 [[nodiscard]] foundations::Result<void> triangulate_new_points(Map& m, const Camera& camera,
                                                                Mode mode, const Options& options);
 
-/// @brief Fuse the newest keyframe's points with the window's
-///        (`slam_it.edge.mapping.fuse_points`, ORB-SLAM's `SearchInNeighbors`, lite).
+/// @brief Fuse the newest keyframe's points with its neighbours'
+///        (`slam_it.edge.mapping.fuse_points`, ORB-SLAM's `SearchInNeighbors`).
 /// @param m The map, changed in place.
 /// @param camera The camera.
-/// @param options The window and thresholds.
+/// @param mode The pipeline's mode.
+/// @param options The neighbours and thresholds.
 /// @return Nothing; `InvalidInput` for a map without keyframes, or an invalid camera or
 ///         settings.
-[[nodiscard]] foundations::Result<void> fuse_points(Map& m, const Camera& camera,
+[[nodiscard]] foundations::Result<void> fuse_points(Map& m, const Camera& camera, Mode mode,
                                                     const Options& options);
 
 /// @brief Cull the window's redundant keyframes (`slam_it.edge.mapping.cull_keyframes`,
