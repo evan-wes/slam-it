@@ -4,16 +4,21 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use nalgebra::Vector2;
+use nalgebra::{Matrix4, Vector2};
 
 use slam_it_edge::adjust::Solve;
 use slam_it_edge::frames::{self, Camera, DepthMap, Frame};
+use slam_it_edge::loops::{CandidateSummary, ConfirmationSummary, DetectionSummary};
 use slam_it_edge::options::{Mode, Options, Setting, check_options};
-use slam_it_edge::pipeline::{Fates, FrameResult, FrameSummary, Lifetimes, Pipeline};
+use slam_it_edge::pipeline::{
+    Fates, FrameResult, FrameSummary, Lifetimes, LoopSummary, Pipeline, Trajectory,
+};
+use slam_it_edge::relocalization::RelocalizationSummary;
 use slam_it_eval::runs::{FeatureWriter, JsonObject, JsonValue, Run};
 use slam_it_eval::{euroc, png, text, tum, vocabularies};
 use slam_it_foundations::camera::Model;
 use slam_it_foundations::error::{ErrorKind, Result, fail};
+use slam_it_foundations::graphs;
 use slam_it_foundations::image::{self, Image};
 use slam_it_foundations::{orb, ransac, se3, stereo};
 
@@ -540,6 +545,188 @@ fn termination_json(degenerate: bool, termination: Option<ransac::Termination>) 
     termination.map_or(JsonValue::Null, |termination| name_json(termination.name()))
 }
 
+/// A graph solve as JSON (`slam_it.edge.loops._solve_record`).
+///
+/// # Arguments
+///
+/// * `summary` - The solve's summary.
+///
+/// # Returns
+///
+/// Its errors, iterations and termination by name.
+fn graph_solve_json(summary: &graphs::Summary) -> JsonValue {
+    object([
+        ("initial_error", JsonValue::Number(summary.initial_error)),
+        ("final_error", JsonValue::Number(summary.final_error)),
+        ("iterations", count(summary.iterations)),
+        ("termination", name_json(summary.termination.name())),
+    ])
+}
+
+/// A loop candidate's summary as JSON (`slam_it.edge.loops.CandidateSummary.as_dict`).
+///
+/// # Arguments
+///
+/// * `c` - The summary.
+///
+/// # Returns
+///
+/// Its fields, in order.
+fn candidate_json(c: &CandidateSummary) -> JsonValue {
+    object([
+        ("keyframe", JsonValue::Integer(c.keyframe)),
+        ("score", JsonValue::Number(c.score)),
+        ("near", JsonValue::Bool(c.near)),
+        ("matches", count_or_null(c.matches)),
+        ("best", c.best.map_or(JsonValue::Null, JsonValue::Integer)),
+        ("inliers", count_or_null(c.inliers)),
+        ("projected", count_or_null(c.projected)),
+        ("refined", count_or_null(c.refined)),
+        ("reprojected", count_or_null(c.reprojected)),
+        ("confirmations", count_or_null(c.confirmations)),
+    ])
+}
+
+/// A loop being confirmed's summary as JSON (`slam_it.edge.loops.ConfirmationSummary.as_dict`).
+///
+/// # Arguments
+///
+/// * `c` - The summary.
+///
+/// # Returns
+///
+/// Its fields, in order.
+fn confirmation_json(c: &ConfirmationSummary) -> JsonValue {
+    object([
+        ("matched", JsonValue::Integer(c.matched)),
+        ("projected", count(c.projected)),
+        ("refined", count_or_null(c.refined)),
+        ("reprojected", count_or_null(c.reprojected)),
+        ("confirmed", JsonValue::Bool(c.confirmed)),
+    ])
+}
+
+/// A detection's summary as JSON (`slam_it.edge.loops.DetectionSummary.as_dict`).
+///
+/// # Arguments
+///
+/// * `d` - The summary.
+///
+/// # Returns
+///
+/// Its fields, in order.
+fn detection_json(d: &DetectionSummary) -> JsonValue {
+    object([
+        ("outcome", name_json(d.outcome.name())),
+        (
+            "confirmation",
+            d.confirmation
+                .as_ref()
+                .map_or(JsonValue::Null, confirmation_json),
+        ),
+        ("sharing", count(d.sharing)),
+        ("scored", count(d.scored)),
+        (
+            "candidates",
+            JsonValue::Array(d.candidates.iter().map(candidate_json).collect()),
+        ),
+        ("confirmations", count(d.confirmations)),
+    ])
+}
+
+/// A similarity as JSON: its rows, as Python's `tolist()` gives them.
+///
+/// # Arguments
+///
+/// * `matrix` - The matrix.
+///
+/// # Returns
+///
+/// Four rows of four numbers.
+fn matrix_json(matrix: &Matrix4<f64>) -> JsonValue {
+    JsonValue::Array(
+        (0..4)
+            .map(|r| JsonValue::Array((0..4).map(|c| JsonValue::Number(matrix[(r, c)])).collect()))
+            .collect(),
+    )
+}
+
+/// Loop closing's summary as JSON (`slam_it.edge.pipeline.LoopSummary.as_dict`).
+///
+/// # Arguments
+///
+/// * `s` - The summary.
+///
+/// # Returns
+///
+/// Its fields, in order.
+fn loop_json(s: &LoopSummary) -> JsonValue {
+    let correction = s.correction.as_ref().map_or(JsonValue::Null, |c| {
+        object([
+            ("current", JsonValue::Integer(c.current)),
+            ("matched", JsonValue::Integer(c.matched)),
+            ("similarity", matrix_json(&c.similarity)),
+            ("corrected", count(c.corrected)),
+            ("moved", count(c.moved)),
+            ("replaced", count(c.replaced)),
+            ("fused", count(c.fused)),
+            ("links", count(c.links)),
+            ("edges", count(c.edges)),
+            ("essential", graph_solve_json(&c.essential)),
+            (
+                "global_ba",
+                c.global_ba
+                    .as_ref()
+                    .map_or(JsonValue::Null, graph_solve_json),
+            ),
+        ])
+    });
+    object([
+        ("detection", detection_json(&s.detection)),
+        ("correction", correction),
+        ("detection_seconds", JsonValue::Number(s.detection_seconds)),
+        (
+            "correction_seconds",
+            JsonValue::Number(s.correction_seconds),
+        ),
+    ])
+}
+
+/// Relocalisation's summary as JSON (`slam_it.edge.relocalization.RelocalizationSummary`).
+///
+/// # Arguments
+///
+/// * `s` - The summary.
+///
+/// # Returns
+///
+/// Its fields, in order, each candidate's as an object.
+fn relocalization_json(s: &RelocalizationSummary) -> JsonValue {
+    let tried = s
+        .candidates
+        .iter()
+        .map(|c| {
+            object([
+                ("keyframe", JsonValue::Integer(c.keyframe)),
+                ("score", JsonValue::Number(c.score)),
+                ("matches", count(c.matches)),
+                ("iterations", count_or_null(c.iterations)),
+                ("termination", termination_json(c.degenerate, c.termination)),
+                ("inliers", count_or_null(c.inliers)),
+                ("refined", count_or_null(c.refined)),
+                ("found", count_or_null(c.found)),
+            ])
+        })
+        .collect();
+    object([
+        ("words", count(s.words)),
+        ("sharing", count(s.sharing)),
+        ("scored", count(s.scored)),
+        ("candidates", JsonValue::Array(tried)),
+        ("placed", JsonValue::Bool(s.placed)),
+    ])
+}
+
 /// How a frame's stages went, as a run records it
 /// (`slam_it.edge.pipeline.FrameSummary.as_dict`): each stage an object, or null.
 ///
@@ -581,31 +768,7 @@ fn summary_json(summary: &FrameSummary) -> JsonObject {
     let relocalization = summary
         .relocalization
         .as_ref()
-        .map_or(JsonValue::Null, |s| {
-            let tried = s
-                .candidates
-                .iter()
-                .map(|c| {
-                    object([
-                        ("keyframe", JsonValue::Integer(c.keyframe)),
-                        ("score", JsonValue::Number(c.score)),
-                        ("matches", count(c.matches)),
-                        ("iterations", count_or_null(c.iterations)),
-                        ("termination", termination_json(c.degenerate, c.termination)),
-                        ("inliers", count_or_null(c.inliers)),
-                        ("refined", count_or_null(c.refined)),
-                        ("found", count_or_null(c.found)),
-                    ])
-                })
-                .collect();
-            object([
-                ("words", count(s.words)),
-                ("sharing", count(s.sharing)),
-                ("scored", count(s.scored)),
-                ("candidates", JsonValue::Array(tried)),
-                ("placed", JsonValue::Bool(s.placed)),
-            ])
-        });
+        .map_or(JsonValue::Null, relocalization_json);
     let local_map = summary.local_map.map_or(JsonValue::Null, |s| {
         object([
             ("in_view", count(s.in_view)),
@@ -630,6 +793,10 @@ fn summary_json(summary: &FrameSummary) -> JsonObject {
             ("culled_keyframes", count(s.culled_keyframes)),
         ])
     });
+    let loop_closing = summary
+        .loop_closing
+        .as_ref()
+        .map_or(JsonValue::Null, loop_json);
     let lost = summary.lost.map_or(JsonValue::Null, |s| {
         object([
             ("keyframes", count(s.keyframes)),
@@ -645,6 +812,7 @@ fn summary_json(summary: &FrameSummary) -> JsonObject {
         ("relocalization", relocalization),
         ("local_map", local_map),
         ("mapping", mapping),
+        ("loop", loop_closing),
         ("lost", lost),
     ]
     .into_iter()
@@ -652,8 +820,7 @@ fn summary_json(summary: &FrameSummary) -> JsonObject {
     .collect()
 }
 
-/// Records a frame's result: its diagnostics, and its pose and map if it was tracked; a reset
-/// map's poses are dropped, as ORB-SLAM3 drops them.
+/// Records a frame's result: its diagnostics.
 ///
 /// # Arguments
 ///
@@ -661,16 +828,7 @@ fn summary_json(summary: &FrameSummary) -> JsonObject {
 /// * `result` - The result.
 /// * `read_seconds` - The time delivering its images took, in seconds.
 /// * `build_seconds` - The time building the frame took, in seconds.
-///
-/// # Errors
-///
-/// The pose's inversion's.
-fn record(
-    out: &mut Run,
-    result: &FrameResult,
-    read_seconds: f64,
-    build_seconds: f64,
-) -> Result<()> {
+fn record(out: &mut Run, result: &FrameResult, read_seconds: f64, build_seconds: f64) {
     let mut diagnostic = vec![
         ("timestamp".to_owned(), JsonValue::Number(result.timestamp)),
         ("state".to_owned(), name_json(result.state.name())),
@@ -690,24 +848,39 @@ fn record(
             "map_seconds".to_owned(),
             JsonValue::Number(result.map_seconds),
         ),
+        (
+            "loop_seconds".to_owned(),
+            JsonValue::Number(result.loop_seconds),
+        ),
     ];
     diagnostic.extend(summary_json(&result.summary));
     out.diagnostics.push(diagnostic);
-    if let (Some(pose), Some(map)) = (&result.pose, result.map) {
-        out.poses.push(se3::inverse(pose)?);
-        out.timestamps.push(result.timestamp);
-        out.pose_maps.push(map);
-    }
-    if result.summary.lost.is_some_and(|lost| lost.reset)
-        && let Some(map) = result.map
-    {
-        // Its frames' poses go with it.
-        while out.pose_maps.last() == Some(&map) {
-            out.poses.pop();
-            out.timestamps.pop();
-            out.pose_maps.pop();
-        }
-    }
+}
+
+/// Records the run's trajectory: each tracked frame's final pose and its pose as tracked, as
+/// `T_world_cam`, and its map; a reset map's frames are left out, as ORB-SLAM3 drops them.
+///
+/// # Arguments
+///
+/// * `out` - The run.
+/// * `trajectory` - The pipeline's trajectory.
+///
+/// # Errors
+///
+/// A pose's inversion's.
+fn record_trajectory(out: &mut Run, trajectory: Trajectory) -> Result<()> {
+    out.timestamps = trajectory.timestamps;
+    out.poses = trajectory
+        .poses
+        .iter()
+        .map(se3::inverse)
+        .collect::<Result<_>>()?;
+    out.tracked_poses = trajectory
+        .tracked
+        .iter()
+        .map(se3::inverse)
+        .collect::<Result<_>>()?;
+    out.pose_maps = trajectory.maps;
     Ok(())
 }
 
@@ -733,6 +906,7 @@ fn record_lives(out: &mut Run, lives: Lifetimes) -> Result<()> {
     out.keyframe_lives = lives.keyframe_lives;
     out.keyframe_parents = lives.keyframe_parents;
     out.keyframe_links = lives.keyframe_links;
+    out.keyframe_loops = lives.keyframe_loops;
     out.point_maps = lives.point_maps;
     out.keyframe_maps = lives.keyframe_maps;
     Ok(())
@@ -782,7 +956,7 @@ fn track(
         )?;
         let built = start.elapsed().as_secs_f64();
         let result = pipeline.track(&frame)?;
-        record(out, &result, read, built - read)?;
+        record(out, &result, read, built - read);
         if let Some(writer) = features.as_deref_mut() {
             write_features(writer, &frame, &result.fates)?;
         }
@@ -1061,6 +1235,7 @@ pub fn run(request: &Request) -> Result<Run> {
         None
     };
     track(&source, &mut pipeline, request, &mut out, features.as_mut())?;
+    record_trajectory(&mut out, pipeline.trajectory())?;
     record_lives(&mut out, pipeline.lifetimes())?;
     Ok(out)
 }

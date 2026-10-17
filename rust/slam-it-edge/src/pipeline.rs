@@ -1,7 +1,9 @@
-//! The edge pipeline, initialising, tracking each frame and mapping on keyframes: the Rust
-//! core's mirror of `slam_it.edge.pipeline`, whose docstring states the per-frame loop. It runs
-//! in the native program, not across the binding.
+//! The edge pipeline, initialising, tracking each frame, mapping on keyframes and closing
+//! loops: the Rust core's mirror of `slam_it.edge.pipeline`, whose docstring states the
+//! per-frame loop and the final trajectory. It runs in the native program, not across the
+//! binding.
 
+use std::collections::BTreeMap;
 use std::time::Instant;
 
 use nalgebra::{Matrix4, Vector3};
@@ -13,6 +15,7 @@ use crate::covisibility;
 use crate::database::Database;
 use crate::frames::{Camera, Frame, Tracked, check_setup};
 use crate::initialization::{self, InitSummary, Initialization, Outcome, Started};
+use crate::loops::{self, CorrectionSummary, DetectionSummary, Pending};
 use crate::map::{self, Map, Removal};
 use crate::mapping::{self, MappingSummary};
 use crate::options::{Mode, Options};
@@ -137,6 +140,19 @@ pub struct LostSummary {
     pub reset: bool,
 }
 
+/// How loop closing went on a keyframe (`slam_it.edge.pipeline.LoopSummary`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoopSummary {
+    /// The search.
+    pub detection: DetectionSummary,
+    /// The correction, when a loop closed.
+    pub correction: Option<CorrectionSummary>,
+    /// The time the search took, in seconds.
+    pub detection_seconds: f64,
+    /// The time the correction took, global BA included (0 when none closed).
+    pub correction_seconds: f64,
+}
+
 /// How the stages went on one frame (`slam_it.edge.pipeline.FrameSummary`); each `None`
 /// where the stage did not run.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -155,6 +171,8 @@ pub struct FrameSummary {
     pub local_map: Option<LocalMapSummary>,
     /// Local mapping, on a keyframe after the first.
     pub mapping: Option<MappingSummary>,
+    /// Loop closing, on a keyframe after the first while it is on (Python's `loop`).
+    pub loop_closing: Option<LoopSummary>,
     /// The map closed, on the frame the track was lost on.
     pub lost: Option<LostSummary>,
 }
@@ -181,6 +199,9 @@ pub struct FrameResult {
     /// The time mapping it took as a keyframe (`mapping::process`), 0 for any other frame:
     /// what ORB-SLAM's local-mapping thread does.
     pub map_seconds: f64,
+    /// The time loop closing took on it as a keyframe, 0 for any other frame: what ORB-SLAM's
+    /// loop-closing thread does.
+    pub loop_seconds: f64,
     /// How its stages went.
     pub summary: FrameSummary,
     /// What became of each of its keypoints.
@@ -205,6 +226,23 @@ struct Step {
     made: Vec<i64>,
     /// Whether the frame lost the track.
     lost: bool,
+    /// The time loop closing took, in seconds, if it ran.
+    loop_seconds: f64,
+    /// Whether a loop was corrected on it.
+    corrected: bool,
+}
+
+/// A keyframe mapped, as `Pipeline::map_keyframe` gives it.
+#[derive(Debug, Default)]
+struct KeyframeMapped {
+    /// The time mapping it took, in seconds.
+    map_seconds: f64,
+    /// The time loop closing took, in seconds.
+    loop_seconds: f64,
+    /// The point made of each keypoint, -1 where none.
+    made: Vec<i64>,
+    /// Whether a loop was corrected on it.
+    corrected: bool,
 }
 
 /// A frame placed, as `Pipeline::place` gives it.
@@ -266,10 +304,42 @@ pub struct Lifetimes {
     /// Each map's strong links when it closed, and the current map's now, by the run's ids,
     /// ascending.
     pub keyframe_links: Vec<[i64; 3]>,
+    /// Each map's loop edges, the older keyframe first, by the run's ids, in the order closed.
+    pub keyframe_loops: Vec<[i64; 2]>,
     /// The map each point was made in.
     pub point_maps: Vec<i64>,
     /// The map each keyframe was made in.
     pub keyframe_maps: Vec<i64>,
+}
+
+/// The run's trajectory: each tracked frame's final pose, and its pose as tracked
+/// (`slam_it.edge.pipeline.Trajectory`). A reset map's frames are left out.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Trajectory {
+    /// Each tracked frame's time, in the order tracked.
+    pub timestamps: Vec<f64>,
+    /// Its final `T_cam_world`: its pose relative to its reference keyframe, carried by the
+    /// keyframe's last pose.
+    pub poses: Vec<Matrix4<f64>>,
+    /// Its `T_cam_world` as tracked.
+    pub tracked: Vec<Matrix4<f64>>,
+    /// The map it was tracked in.
+    pub maps: Vec<i64>,
+}
+
+/// A tracked frame's place, for the final trajectory (`slam_it.edge.pipeline._Placement`).
+#[derive(Debug, Clone, PartialEq)]
+struct FramePlace {
+    /// The frame's time.
+    timestamp: f64,
+    /// The map it was tracked in.
+    map: i64,
+    /// The run's id of its reference keyframe.
+    reference: i64,
+    /// Its pose relative to it, `T_cam_ref`.
+    relative: Matrix4<f64>,
+    /// Its `T_cam_world` as tracked.
+    tracked: Matrix4<f64>,
 }
 
 /// The edge pipeline for one sequence (`slam_it.edge.pipeline.Pipeline`).
@@ -319,6 +389,12 @@ pub struct Pipeline {
     /// map (removed, or in a closed map) where they last were; the others' entries are
     /// placeholders, filled from the map by [`Pipeline::lifetimes`].
     lives: Lifetimes,
+    /// The loop being confirmed in the current map, if any.
+    pending: Option<Pending>,
+    /// Each tracked frame's place, for the final trajectory ([`Pipeline::trajectory`]).
+    placements: Vec<FramePlace>,
+    /// Each culled keyframe's parent and pose relative to it, by the run's ids.
+    culled: BTreeMap<i64, (i64, Matrix4<f64>)>,
 }
 
 impl Pipeline {
@@ -387,6 +463,9 @@ impl Pipeline {
             kf_base: 0,
             pt_base: 0,
             lives: Lifetimes::default(),
+            pending: None,
+            placements: Vec::new(),
+            culled: BTreeMap::new(),
         })
     }
 
@@ -461,7 +540,7 @@ impl Pipeline {
         {
             summary.lost = Some(self.close(&lost));
         }
-        let track_seconds = start.elapsed().as_secs_f64() - step.map_seconds;
+        let track_seconds = start.elapsed().as_secs_f64() - step.map_seconds - step.loop_seconds;
         let tracked = step.tracked.as_ref();
         Ok(FrameResult {
             timestamp: frame.timestamp,
@@ -472,6 +551,7 @@ impl Pipeline {
             keyframe: step.keyframe,
             track_seconds,
             map_seconds: step.map_seconds,
+            loop_seconds: step.loop_seconds,
             summary,
             fates,
         })
@@ -498,8 +578,44 @@ impl Pipeline {
                 out.keyframe_parents[row] = self.run_id(m.kf_parent[k]);
             }
             out.keyframe_links.extend(self.run_links(m));
+            out.keyframe_loops.extend(self.run_loops(m));
         }
         out
+    }
+
+    /// The run's trajectory so far: each tracked frame's final pose, and as tracked
+    /// (`slam_it.edge.pipeline.Pipeline.trajectory`).
+    ///
+    /// # Returns
+    ///
+    /// The frames tracked, but a reset map's, each placed by its reference keyframe's last
+    /// pose, through the keyframe's culled ancestors where it was culled.
+    #[must_use]
+    pub fn trajectory(&self) -> Trajectory {
+        let last = self.lifetimes().keyframe_poses;
+        let mut out = Trajectory::default();
+        for placed in &self.placements {
+            let (mut pose, mut keyframe) = (placed.relative, placed.reference);
+            while let Some(&(parent, relative)) = self.culled.get(&keyframe) {
+                pose *= relative;
+                keyframe = parent;
+            }
+            let anchor = usize::try_from(keyframe).ok().and_then(|k| last.get(k));
+            out.timestamps.push(placed.timestamp);
+            out.poses
+                .push(anchor.map_or(placed.tracked, |anchor| pose * anchor));
+            out.tracked.push(placed.tracked);
+            out.maps.push(placed.map);
+        }
+        out
+    }
+
+    /// A map's loop edges, by the run's ids.
+    fn run_loops(&self, m: &Map) -> Vec<[i64; 2]> {
+        m.loop_edges
+            .iter()
+            .map(|&[a, b]| [self.kf_base + a, self.kf_base + b])
+            .collect()
     }
 
     /// A parent of the current map, by the run's id: -1 kept.
@@ -553,6 +669,12 @@ impl Pipeline {
             } else {
                 -1
             };
+            if parent >= 0 {
+                self.culled.insert(
+                    self.kf_base + m.gone_kf_id[g],
+                    (self.kf_base + parent, m.gone_kf_relative[g]),
+                );
+            }
         }
         map::clear_gone(m);
     }
@@ -578,6 +700,7 @@ impl Pipeline {
         let code = Removal::Reset.code();
         let parents: Vec<i64> = m.kf_parent.iter().map(|&p| self.run_id(p)).collect();
         let links = self.run_links(m);
+        let loop_edges = self.run_loops(m);
         let lives = &mut self.lives;
         for (&id, xyz) in m.pt_id.iter().zip(&m.pt_xyz) {
             let id = to_index(self.pt_base + id);
@@ -596,6 +719,13 @@ impl Pipeline {
             }
         }
         lives.keyframe_links.extend(links);
+        lives.keyframe_loops.extend(loop_edges);
+        if reset {
+            // Its frames' poses go with it.
+            let closing = self.map_id;
+            self.placements.retain(|p| Some(p.map) != closing);
+        }
+        self.pending = None;
         self.map_id = None;
         self.state = State::NotInitialized;
         self.last_frame = None;
@@ -648,12 +778,13 @@ impl Pipeline {
             self.sync_database(&mut database, &map)?;
             self.database = Some(database);
         }
-        self.map = Some(map);
         self.map_id = Some(self.maps);
         self.maps += 1;
         self.kf_base = to_id(self.lives.keyframe_lives.len());
         self.pt_base = to_id(self.lives.point_lives.len());
         self.state = State::Tracking;
+        self.place_frame(&map, frame, &tracked, map.kf_id[map.keyframes() - 1])?;
+        self.map = Some(map);
         self.accept(frame, &tracked)?;
         summary.placed_by = Some(Placement::Initialization);
         Ok(Step {
@@ -664,6 +795,8 @@ impl Pipeline {
             summary,
             matched: Vec::new(),
             lost: false,
+            loop_seconds: 0.0,
+            corrected: false,
         })
     }
 
@@ -751,6 +884,101 @@ impl Pipeline {
         self.failures = 0;
         self.lost_since = None;
         Ok(())
+    }
+
+    /// Keeps a tracked frame's place: its reference keyframe and its pose relative to it
+    /// (`slam_it.edge.pipeline.Pipeline._place_frame`).
+    ///
+    /// # Arguments
+    ///
+    /// * `m` - The map.
+    /// * `frame` - The frame.
+    /// * `tracked` - Its pose.
+    /// * `reference` - The reference keyframe's id in the map.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidInput` for a keyframe the map does not hold.
+    fn place_frame(
+        &mut self,
+        m: &Map,
+        frame: &Frame,
+        tracked: &Tracked,
+        reference: i64,
+    ) -> Result<()> {
+        let k = map::keyframe_row(m, reference)?;
+        let relative = tracked.pose * se3::inverse(&m.kf_pose[k])?;
+        self.placements.push(FramePlace {
+            timestamp: frame.timestamp,
+            map: self.map_id.unwrap_or(0),
+            reference: self.kf_base + reference,
+            relative,
+            tracked: tracked.pose,
+        });
+        Ok(())
+    }
+
+    /// Searches the newest keyframe for a loop, and corrects one that closes
+    /// (`slam_it.edge.pipeline.Pipeline._close_loops`).
+    ///
+    /// # Arguments
+    ///
+    /// * `m` - The map, changed in place by a correction.
+    ///
+    /// # Returns
+    ///
+    /// How it went (`None` when loop closing is off, there is no database, or the keyframe is
+    /// the map's first), and whether a loop was corrected.
+    ///
+    /// # Errors
+    ///
+    /// Detection's, the correction's or the database's.
+    fn close_loops(&mut self, m: &mut Map) -> Result<(Option<LoopSummary>, bool)> {
+        let keyframe = m.kf_id[m.keyframes() - 1];
+        let Some(database) = &self.database else {
+            return Ok((None, false));
+        };
+        if !self.options.loops.enabled || keyframe == 0 {
+            return Ok((None, false));
+        }
+        let start = Instant::now();
+        let found = loops::detect(
+            m,
+            database,
+            &self.camera,
+            keyframe,
+            self.pending.as_ref(),
+            self.mode,
+            &self.options,
+        )?;
+        self.pending = found.pending;
+        let searched = start.elapsed().as_secs_f64();
+        let mut correction = None;
+        if let Some(closed) = &found.closed {
+            correction = Some(loops::correct(
+                m,
+                &self.camera,
+                closed,
+                self.mode,
+                &self.options,
+            )?);
+            if let Some(mut database) = self.database.take() {
+                let synced = self.sync_database(&mut database, m);
+                self.database = Some(database);
+                synced?;
+            }
+        }
+        let done = start.elapsed().as_secs_f64();
+        let corrected = correction.is_some();
+        Ok((
+            Some(LoopSummary {
+                detection: found.summary,
+                correction,
+                detection_seconds: searched,
+                correction_seconds: if corrected { done - searched } else { 0.0 },
+            }),
+            corrected,
+        ))
     }
 
     /// Counts a frame that was not tracked, which ends the velocity
@@ -918,11 +1146,80 @@ impl Pipeline {
         let mut step = outcome?;
         if let Some(t) = &step.tracked {
             self.accept(frame, t)?;
+            if step.corrected
+                && let (Some(m), Some(last)) = (&self.map, &mut self.last_tracked)
+            {
+                // The last frame, the new keyframe's own, moved with it.
+                last.pose = m.kf_pose[m.keyframes() - 1];
+            }
         } else {
             let keyframes = self.map.as_ref().map_or(0, Map::keyframes);
             step.lost = self.record_failure(frame, keyframes);
         }
         Ok(step)
+    }
+
+    /// Maps a new keyframe and closes loops on it, timing each: its place in the trajectory is
+    /// its own keyframe's.
+    ///
+    /// # Arguments
+    ///
+    /// * `m` - The map, changed in place.
+    /// * `frame` - The keyframe's frame.
+    /// * `tracked` - Its pose and matches.
+    /// * `summary` - The frame's summary, mapping's and loop closing's written in.
+    ///
+    /// # Returns
+    ///
+    /// The times, the points made and whether a loop was corrected.
+    ///
+    /// # Errors
+    ///
+    /// Mapping's, loop closing's or the database's.
+    fn map_keyframe(
+        &mut self,
+        m: &mut Map,
+        frame: &Frame,
+        tracked: &Tracked,
+        summary: &mut FrameSummary,
+    ) -> Result<KeyframeMapped> {
+        let start = Instant::now();
+        let holding = self.pending.as_ref().map(Pending::held).unwrap_or_default();
+        let mapped = mapping::process(
+            m,
+            &self.camera,
+            frame,
+            tracked,
+            self.mode,
+            &self.options,
+            &holding,
+        )?;
+        if let Some(mut database) = self.database.take() {
+            let synced = self.sync_database(&mut database, m);
+            self.database = Some(database);
+            synced?;
+        }
+        let mut out = KeyframeMapped {
+            map_seconds: start.elapsed().as_secs_f64(),
+            made: mapped.made,
+            ..KeyframeMapped::default()
+        };
+        summary.mapping = Some(mapped.summary);
+        // The frame's reference is its own keyframe, placed where the frame was.
+        self.placements.push(FramePlace {
+            timestamp: frame.timestamp,
+            map: self.map_id.unwrap_or(0),
+            reference: self.kf_base + m.kf_id[m.keyframes() - 1],
+            relative: Matrix4::identity(),
+            tracked: tracked.pose,
+        });
+        let (looped, corrected) = self.close_loops(m)?;
+        out.corrected = corrected;
+        if let Some(looped) = looped {
+            out.loop_seconds = looped.detection_seconds + looped.correction_seconds;
+            summary.loop_closing = Some(looped);
+        }
+        Ok(out)
     }
 
     /// Tracks the local map from a placed frame, counts its points, and maps it if it needs a
@@ -1016,29 +1313,22 @@ impl Pipeline {
                 self.mode,
                 &options,
             )?;
-        let mut map_seconds = 0.0;
-        let mut made = Vec::new();
+        let mut mapped = KeyframeMapped::default();
         if keyframe {
-            let start = Instant::now();
-            let mapped =
-                mapping::process(m, &self.camera, frame, &tracked, self.mode, &options, &[])?;
-            if let Some(mut database) = self.database.take() {
-                let synced = self.sync_database(&mut database, m);
-                self.database = Some(database);
-                synced?;
-            }
-            map_seconds = start.elapsed().as_secs_f64();
-            summary.mapping = Some(mapped.summary);
-            made = mapped.made;
+            mapped = self.map_keyframe(m, frame, &tracked, &mut summary)?;
+        } else {
+            self.place_frame(m, frame, &tracked, m.kf_id[reference])?;
         }
         Ok(Step {
             tracked: Some(tracked),
             keyframe,
-            map_seconds,
+            map_seconds: mapped.map_seconds,
             summary,
             matched: local.matched,
-            made,
+            made: mapped.made,
             lost: false,
+            loop_seconds: mapped.loop_seconds,
+            corrected: mapped.corrected,
         })
     }
 }

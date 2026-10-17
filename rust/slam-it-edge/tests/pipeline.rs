@@ -2,7 +2,8 @@
 //! a sideways path: RGB-D and stereo track every frame exactly, monocular starts its map and
 //! keeps the path's direction, and empty frames lose the track, the next frame starting a new
 //! map; relocalising, a kept map is lost in time and a small one in frames, and a frame the
-//! fallback cannot reach is relocalised.
+//! fallback cannot reach is relocalised; the final trajectory follows the keyframes, and a reset
+//! map's frames leave it.
 
 mod scene;
 
@@ -72,6 +73,33 @@ fn depth_modes_track_every_frame_on_the_path() {
     }
 }
 
+/// The final trajectory: every tracked frame once, in order, its pose as tracked beside its
+/// final one; a keyframe's own frame where its keyframe is now, the others placed by theirs
+/// (here, where they were tracked: the path is exact).
+#[test]
+fn the_final_trajectory_follows_the_keyframes() {
+    for mode in [Mode::Rgbd, Mode::Monocular] {
+        let (pipeline, results) = run(mode);
+        let trajectory = pipeline.trajectory();
+        let tracked: Vec<&FrameResult> = results.iter().filter(|r| r.pose.is_some()).collect();
+        let times: Vec<f64> = tracked.iter().map(|r| r.timestamp).collect();
+        assert_eq!(trajectory.timestamps, times);
+        assert!(trajectory.maps.iter().all(|&m| m == 0));
+        for (k, result) in tracked.iter().enumerate() {
+            assert_eq!(trajectory.tracked[k], result.pose.unwrap());
+            assert!((trajectory.poses[k] - result.pose.unwrap()).abs().max() < 1e-6);
+        }
+        let m = pipeline.map().unwrap();
+        for (k, &time) in m.kf_time.iter().enumerate() {
+            if let Some(at) = times.iter().position(|&t| (t - time).abs() < 1e-12) {
+                assert!((trajectory.poses[at] - m.kf_pose[k]).abs().max() < 1e-12);
+            }
+        }
+        assert!(results.iter().all(|r| r.loop_seconds == 0.0)); // not relocalising: no loops
+        assert_eq!(pipeline.lifetimes().keyframe_loops.len(), 0);
+    }
+}
+
 #[test]
 #[allow(clippy::cast_precision_loss, reason = "frames below 16")]
 fn monocular_tracks_the_path_direction() {
@@ -117,6 +145,11 @@ fn empty_frames_lose_the_track_and_the_next_frame_starts_a_new_map() {
         assert!(pipeline.map().is_none());
         let restarted = pipeline.track(&frame_at(&along(1), true, 0)).unwrap();
         assert_eq!((restarted.map, restarted.keyframe), (Some(1), true));
+        // A reset map's frames leave the trajectory; a kept one's stay.
+        assert_eq!(
+            pipeline.trajectory().maps,
+            if reset { vec![1] } else { vec![0, 1] }
+        );
         let lives = pipeline.lifetimes();
         assert_eq!(lives.keyframe_maps, vec![0, 1]);
         let first = started.tracked;

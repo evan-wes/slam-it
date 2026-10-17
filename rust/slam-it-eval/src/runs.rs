@@ -19,8 +19,9 @@ pub const FORMAT: &str = "slam-it-run";
 /// `run.json`'s `version` (2 added `peak_memory`, `cpus` and `memory_cap`; 3 every point and
 /// keyframe the run made, with their lives; 4 the maps, and the removal `reset`; 5 the
 /// `vocabulary` a relocalising run used; 6 the settings grouped, each keyframe's parent and the
-/// strong links).
-pub const VERSION: i64 = 6;
+/// strong links; 7 the final trajectory, the poses as tracked beside it, the loops closed, and
+/// loop closing's time).
+pub const VERSION: i64 = 7;
 
 /// The number of removal codes a life may hold (`slam_it.eval.runs.REMOVALS`).
 pub const REMOVALS: i64 = 4;
@@ -87,8 +88,10 @@ pub struct Run {
     pub backend: String,
     /// Each tracked frame's timestamp, ascending.
     pub timestamps: Vec<f64>,
-    /// Each tracked frame's `T_world_cam`.
+    /// Each tracked frame's final `T_world_cam` (`trajectory.txt`).
     pub poses: Vec<Matrix4<f64>>,
+    /// Each tracked frame's `T_world_cam` as tracked (`trajectory_tracked.txt`).
+    pub tracked_poses: Vec<Matrix4<f64>>,
     /// The timestamps of every keyframe the run made, by id.
     pub keyframe_timestamps: Vec<f64>,
     /// Their last `T_world_cam`.
@@ -101,7 +104,7 @@ pub struct Run {
     /// `slam_it.eval.vocabularies.record` writes them; null for a run that did not relocalise.
     pub vocabulary: Option<Header>,
     /// One object per frame, each with a `timestamp`; the edge pipeline's also time its steps
-    /// (`read_seconds`, `build_seconds`, `track_seconds`, `map_seconds`, as
+    /// (`read_seconds`, `build_seconds`, `track_seconds`, `map_seconds`, `loop_seconds`, as
     /// `slam_it.eval.runs.STEPS` defines them).
     pub diagnostics: Vec<JsonObject>,
     /// The largest resident set of the program that ran it, in bytes, if known
@@ -123,6 +126,9 @@ pub struct Run {
     /// The strong links: two keyframes of the same map, the lower id first, and the points they
     /// share, ascending.
     pub keyframe_links: Vec<[i64; 3]>,
+    /// The loops closed: two keyframes of the same map, the lower id first, each once, in the
+    /// order they closed.
+    pub keyframe_loops: Vec<[i64; 2]>,
     /// Whether the run recorded its features (`FeatureWriter` streams them).
     pub record_features: bool,
     /// The map each tracked frame's pose is in, never descending.
@@ -443,6 +449,48 @@ fn check_links(links: &[[i64; 3]], maps: &[i64]) -> Result<()> {
     Ok(())
 }
 
+/// Checks loop edges: two keyframes of one map, the lower first, each pair once
+/// (`slam_it.eval.runs._check_loops`).
+///
+/// # Arguments
+///
+/// * `loops` - The loop edges.
+/// * `maps` - Each keyframe's map, checked.
+///
+/// # Errors
+///
+/// `InvalidInput` otherwise.
+fn check_loops(loops: &[[i64; 2]], maps: &[i64]) -> Result<()> {
+    let row = |id: i64| usize::try_from(id).ok().filter(|&r| r < maps.len());
+    for (i, &[first, second]) in loops.iter().enumerate() {
+        let (Some(a), Some(b)) = (row(first), row(second)) else {
+            return fail(
+                ErrorKind::InvalidInput,
+                "keyframe_loops: a loop must join two keyframes, the lower first",
+            );
+        };
+        if a >= b {
+            return fail(
+                ErrorKind::InvalidInput,
+                "keyframe_loops: a loop must join two keyframes, the lower first",
+            );
+        }
+        if maps[a] != maps[b] {
+            return fail(
+                ErrorKind::InvalidInput,
+                "keyframe_loops: a loop's keyframes must be in one map",
+            );
+        }
+        if loops[..i].contains(&[first, second]) {
+            return fail(
+                ErrorKind::InvalidInput,
+                "keyframe_loops: a loop must close once",
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Checks maps: one per row, numbers from 0, never descending.
 ///
 /// # Arguments
@@ -532,6 +580,7 @@ fn check(run: &Run) -> Result<()> {
         );
     }
     check_stamped(&run.timestamps, &run.poses, "trajectory")?;
+    check_stamped(&run.timestamps, &run.tracked_poses, "tracked trajectory")?;
     check_stamped(&run.keyframe_timestamps, &run.keyframe_poses, "keyframes")?;
     if !run.points.iter().all(|p| p.iter().all(|v| v.is_finite())) {
         return fail(ErrorKind::InvalidInput, "points: expected finite values");
@@ -553,6 +602,7 @@ fn check(run: &Run) -> Result<()> {
     check_maps(&run.point_maps, run.points.len(), "point_maps")?;
     check_parents(&run.keyframe_parents, &run.keyframe_maps)?;
     check_links(&run.keyframe_links, &run.keyframe_maps)?;
+    check_loops(&run.keyframe_loops, &run.keyframe_maps)?;
     if !finite(&run.settings) {
         return fail(
             ErrorKind::InvalidInput,
@@ -754,6 +804,7 @@ fn vocabulary_text(header: &Header) -> String {
 pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
     check(run)?;
     let trajectory = trajectory_text(&run.timestamps, &run.poses, &run.pose_maps)?;
+    let tracked = trajectory_text(&run.timestamps, &run.tracked_poses, &run.pose_maps)?;
     let info_text = info_text(run);
     let diagnostics: String = run
         .diagnostics
@@ -773,9 +824,11 @@ pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
         )
     })?;
     let lives = |lives: &[Life]| -> Vec<i64> { lives.iter().flatten().copied().collect() };
-    let files: [(&str, Vec<u8>); 13] = [
+    let loops: Vec<i64> = run.keyframe_loops.iter().flatten().copied().collect();
+    let files: [(&str, Vec<u8>); 15] = [
         ("run.json", info_text.into_bytes()),
         ("trajectory.txt", trajectory.into_bytes()),
+        ("trajectory_tracked.txt", tracked.into_bytes()),
         (
             "keyframes.npy",
             npy(&[run.keyframe_timestamps.len()], &run.keyframe_timestamps),
@@ -795,6 +848,10 @@ pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
         (
             "keyframe_links.npy",
             npy_int64(&[run.keyframe_links.len(), 3], &lives(&run.keyframe_links)),
+        ),
+        (
+            "keyframe_loops.npy",
+            npy_int64(&[run.keyframe_loops.len(), 2], &loops),
         ),
         ("points.npy", npy(&[run.points.len(), 3], &points)),
         (
@@ -1133,6 +1190,7 @@ mod tests {
             vocabulary: Some(header_of(&values["vocabulary"])),
             timestamps: numbers(&values["timestamps"]),
             poses: poses(&values["poses"]),
+            tracked_poses: poses(&values["tracked_poses"]),
             keyframe_timestamps: numbers(&values["keyframe_timestamps"]),
             keyframe_poses: poses(&values["keyframe_poses"]),
             points: values["points"]
@@ -1165,6 +1223,12 @@ mod tests {
             keyframe_lives: lives(&values["keyframe_lives"]),
             keyframe_parents: integers(&values["keyframe_parents"]),
             keyframe_links: lives(&values["keyframe_links"]),
+            keyframe_loops: values["keyframe_loops"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|edge| [edge[0].as_i64().unwrap(), edge[1].as_i64().unwrap()])
+                .collect(),
             record_features: values["record_features"].as_bool().unwrap(),
             pose_maps: integers(&values["pose_maps"]),
             keyframe_maps: integers(&values["keyframe_maps"]),
@@ -1252,6 +1316,7 @@ mod tests {
             "keyframe_lives.npy",
             "keyframe_parents.npy",
             "keyframe_links.npy",
+            "keyframe_loops.npy",
             "points.npy",
             "point_lives.npy",
             "pose_maps.npy",
@@ -1270,21 +1335,8 @@ mod tests {
         written.as_object_mut().unwrap().remove("backend");
         expected.as_object_mut().unwrap().remove("backend");
         assert_eq!(written, expected);
-        let (got, wanted) = (
-            trajectory(&out.join("trajectory.txt")),
-            trajectory(&golden.join("trajectory.txt")),
-        );
-        assert_eq!(
-            comments(&out.join("trajectory.txt")),
-            comments(&golden.join("trajectory.txt")),
-            "trajectory.txt marks each map where Python's does"
-        );
-        assert_eq!(got.len(), wanted.len());
-        for (a, b) in got.iter().zip(&wanted) {
-            assert_eq!(a[..4], b[..4]);
-            for i in 4..8 {
-                assert!((a[i] - b[i]).abs() < 1e-15);
-            }
+        for name in ["trajectory.txt", "trajectory_tracked.txt"] {
+            check_trajectory(&out.join(name), &golden.join(name));
         }
         assert_eq!(
             json(&out.join("diagnostics.jsonl"), true),
@@ -1301,6 +1353,25 @@ mod tests {
         let info = &json(&out.join("run.json"), false)[0];
         for key in ["peak_memory", "cpus", "memory_cap"] {
             assert!(info[key].is_null(), "{key}");
+        }
+    }
+
+    /// A trajectory file written as Python wrote it: the same maps marked, the same times and
+    /// positions exactly, the quaternions to rounding.
+    fn check_trajectory(written: &Path, golden: &Path) {
+        let (got, wanted) = (trajectory(written), trajectory(golden));
+        assert_eq!(
+            comments(written),
+            comments(golden),
+            "{} marks each map where Python's does",
+            written.display()
+        );
+        assert_eq!(got.len(), wanted.len());
+        for (a, b) in got.iter().zip(&wanted) {
+            assert_eq!(a[..4], b[..4]);
+            for i in 4..8 {
+                assert!((a[i] - b[i]).abs() < 1e-15);
+            }
         }
     }
 
@@ -1492,20 +1563,25 @@ mod tests {
     }
 
     #[test]
-    fn bad_parents_and_links_are_refused() {
+    fn bad_parents_links_loops_and_tracked_poses_are_refused() {
         let out = std::env::temp_dir().join(format!(
             "slam_it_rust_test_runs_parents_{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&out);
         let _guard = Scratch(out.clone());
-        // The golden keyframes' maps are 0, 1, 1; keyframe 2's parent is 1, linked to it by 120.
+        // The golden keyframes' maps are 0, 1, 1; keyframe 2's parent is 1, linked to it by 120,
+        // and a loop joins them.
         let parented = |parents: Vec<i64>| Run {
             keyframe_parents: parents,
             ..golden_run()
         };
         let linked = |links: Vec<[i64; 3]>| Run {
             keyframe_links: links,
+            ..golden_run()
+        };
+        let looped = |loops: Vec<[i64; 2]>| Run {
+            keyframe_loops: loops,
             ..golden_run()
         };
         let parents = [
@@ -1521,10 +1597,21 @@ mod tests {
             vec![[1, 3, 120]],
             vec![[1, 2, 120], [1, 2, 120]],
         ];
+        let loops = [
+            vec![[2, 1]],
+            vec![[0, 1]],
+            vec![[1, 3]],
+            vec![[1, 1]],
+            vec![[1, 2], [1, 2]],
+        ];
+        let mut tracked_short = golden_run();
+        tracked_short.tracked_poses.pop();
         for run in parents
             .into_iter()
             .map(parented)
             .chain(links.into_iter().map(linked))
+            .chain(loops.into_iter().map(looped))
+            .chain([tracked_short])
         {
             assert_eq!(
                 write_run(&out, &run).unwrap_err().kind,
