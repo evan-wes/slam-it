@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "slam_it/edge/frames.hpp"
+#include "slam_it/edge/loops.hpp"
 #include "slam_it/edge/map.hpp"
 #include "slam_it/edge/options.hpp"
 #include "slam_it/edge/pipeline.hpp"
@@ -35,6 +36,7 @@
 #include "slam_it/eval/vocabularies.hpp"
 #include "slam_it/foundations/camera.hpp"
 #include "slam_it/foundations/error.hpp"
+#include "slam_it/foundations/graphs.hpp"
 #include "slam_it/foundations/image.hpp"
 #include "slam_it/foundations/nls.hpp"
 #include "slam_it/foundations/orb.hpp"
@@ -338,26 +340,40 @@ Result<eval::runs::JsonValue> nested(const eval::runs::JsonObject& object) {
   return eval::runs::JsonValue(std::move(*text));
 }
 
-/// @brief Bundle-adjustment solves as JSON (`slam_it.edge.adjust.Solve.as_dict`, each).
-/// @param solves The solves.
-/// @return An array of one object per solve; `InvalidInput` for a cost that is not finite.
-Result<eval::runs::JsonValue> solves_json(const std::vector<edge::Solve>& solves) {
-  std::vector<eval::runs::JsonValue> items;
-  for (const edge::Solve& solve : solves) {
-    auto item = nested({{"initial_cost", solve.initial_cost},
-                        {"final_cost", solve.final_cost},
-                        {"iterations", solve.iterations},
-                        {"termination", name_json(foundations::nls::name(solve.termination))}});
-    if (!item) {
-      return std::unexpected(std::move(item.error()));
+/// @brief Items written as a JSON array of objects.
+/// @tparam Item An item's type.
+/// @tparam Write Its writer, giving its object or an error.
+/// @param items The items.
+/// @param write The writer.
+/// @return The array; the writer's error, or `InvalidInput` for a number that is not finite.
+template <typename Item, typename Write>
+Result<eval::runs::JsonValue> array_of(const std::vector<Item>& items, Write write) {
+  std::vector<eval::runs::JsonValue> values;
+  values.reserve(items.size());
+  for (const Item& item : items) {
+    auto value = write(item);
+    if (!value) {
+      return std::unexpected(std::move(value.error()));
     }
-    items.push_back(std::move(*item));
+    values.push_back(std::move(*value));
   }
-  auto text = eval::runs::json_array(items);
+  auto text = eval::runs::json_array(values);
   if (!text) {
     return std::unexpected(std::move(text.error()));
   }
   return eval::runs::JsonValue(std::move(*text));
+}
+
+/// @brief Bundle-adjustment solves as JSON (`slam_it.edge.adjust.Solve.as_dict`, each).
+/// @param solves The solves.
+/// @return An array of one object per solve; `InvalidInput` for a cost that is not finite.
+Result<eval::runs::JsonValue> solves_json(const std::vector<edge::Solve>& solves) {
+  return array_of(solves, [](const edge::Solve& solve) {
+    return nested({{"initial_cost", solve.initial_cost},
+                   {"final_cost", solve.final_cost},
+                   {"iterations", solve.iterations},
+                   {"termination", name_json(foundations::nls::name(solve.termination))}});
+  });
 }
 
 /// @brief How the frame's initialisation went, as JSON.
@@ -404,22 +420,16 @@ Result<eval::runs::JsonValue> pnp_json(const edge::PnpSummary& s) {
 /// @param s The summary.
 /// @return Its object.
 Result<eval::runs::JsonValue> relocalization_json(const edge::RelocalizationSummary& s) {
-  std::vector<eval::runs::JsonValue> tried;
-  for (const edge::CandidateSummary& c : s.candidates) {
-    auto item = nested({{"keyframe", c.keyframe},
-                        {"score", c.score},
-                        {"matches", c.matches},
-                        {"iterations", count_or_null(c.iterations)},
-                        {"termination", termination_json(c.degenerate, c.termination)},
-                        {"inliers", count_or_null(c.inliers)},
-                        {"refined", count_or_null(c.refined)},
-                        {"found", count_or_null(c.found)}});
-    if (!item) {
-      return std::unexpected(std::move(item.error()));
-    }
-    tried.push_back(std::move(*item));
-  }
-  auto candidates = eval::runs::json_array(tried);
+  auto candidates = array_of(s.candidates, [](const edge::CandidateSummary& c) {
+    return nested({{"keyframe", c.keyframe},
+                   {"score", c.score},
+                   {"matches", c.matches},
+                   {"iterations", count_or_null(c.iterations)},
+                   {"termination", termination_json(c.degenerate, c.termination)},
+                   {"inliers", count_or_null(c.inliers)},
+                   {"refined", count_or_null(c.refined)},
+                   {"found", count_or_null(c.found)}});
+  });
   if (!candidates) {
     return std::unexpected(std::move(candidates.error()));
   }
@@ -448,6 +458,125 @@ Result<eval::runs::JsonValue> mapping_json(const edge::MappingSummary& s) {
                  {"outliers", s.outliers},
                  {"weak_points", s.weak_points},
                  {"culled_keyframes", s.culled_keyframes}});
+}
+
+/// @brief A graph solve's summary as JSON (`slam_it.edge.loops._solve_record`).
+/// @param s The summary.
+/// @return Its object; `InvalidInput` for an error that is not finite.
+Result<eval::runs::JsonValue> graph_solve_json(const foundations::graphs::Summary& s) {
+  return nested({{"initial_error", s.initial_error},
+                 {"final_error", s.final_error},
+                 {"iterations", static_cast<std::int64_t>(s.iterations)},
+                 {"termination", name_json(foundations::graphs::name(s.termination))}});
+}
+
+/// @brief A loop search's summary as JSON (`slam_it.edge.loops.DetectionSummary.as_dict`).
+/// @param s The summary.
+/// @return Its object.
+Result<eval::runs::JsonValue> detection_json(const edge::loops::DetectionSummary& s) {
+  auto candidates = array_of(s.candidates, [](const edge::loops::CandidateSummary& c) {
+    return nested({{"keyframe", c.keyframe},
+                   {"score", c.score},
+                   {"near", c.near},
+                   {"matches", count_or_null(c.matches)},
+                   {"best", count_or_null(c.best)},
+                   {"inliers", count_or_null(c.inliers)},
+                   {"projected", count_or_null(c.projected)},
+                   {"refined", count_or_null(c.refined)},
+                   {"reprojected", count_or_null(c.reprojected)},
+                   {"confirmations", count_or_null(c.confirmations)}});
+  });
+  if (!candidates) {
+    return std::unexpected(std::move(candidates.error()));
+  }
+  eval::runs::JsonValue confirmation(nullptr);
+  if (s.confirmation) {
+    auto carried = nested({{"matched", s.confirmation->matched},
+                           {"projected", s.confirmation->projected},
+                           {"refined", count_or_null(s.confirmation->refined)},
+                           {"reprojected", count_or_null(s.confirmation->reprojected)},
+                           {"confirmed", s.confirmation->confirmed}});
+    if (!carried) {
+      return std::unexpected(std::move(carried.error()));
+    }
+    confirmation = std::move(*carried);
+  }
+  return nested({{"outcome", name_json(edge::loops::name(s.outcome))},
+                 {"confirmation", std::move(confirmation)},
+                 {"sharing", s.sharing},
+                 {"scored", s.scored},
+                 {"candidates", std::move(*candidates)},
+                 {"confirmations", s.confirmations}});
+}
+
+/// @brief A loop's correction as JSON (`slam_it.edge.loops.CorrectionSummary.as_dict`).
+/// @param s The summary.
+/// @return Its object.
+Result<eval::runs::JsonValue> correction_json(const edge::loops::CorrectionSummary& s) {
+  std::vector<eval::runs::JsonValue> rows;
+  rows.reserve(4);
+  for (Eigen::Index r = 0; r < 4; ++r) {
+    std::vector<eval::runs::JsonValue> row;
+    row.reserve(4);
+    for (Eigen::Index c = 0; c < 4; ++c) {
+      row.emplace_back(s.similarity(r, c));
+    }
+    auto text = eval::runs::json_array(row);
+    if (!text) {
+      return std::unexpected(std::move(text.error()));
+    }
+    rows.emplace_back(std::move(*text));
+  }
+  auto similarity = eval::runs::json_array(rows);
+  if (!similarity) {
+    return std::unexpected(std::move(similarity.error()));
+  }
+  auto essential = graph_solve_json(s.essential);
+  if (!essential) {
+    return std::unexpected(std::move(essential.error()));
+  }
+  eval::runs::JsonValue ba(nullptr);
+  if (s.global_ba) {
+    auto solved = graph_solve_json(*s.global_ba);
+    if (!solved) {
+      return std::unexpected(std::move(solved.error()));
+    }
+    ba = std::move(*solved);
+  }
+  return nested({{"current", s.current},
+                 {"matched", s.matched},
+                 {"similarity", std::move(*similarity)},
+                 {"corrected", s.corrected},
+                 {"moved", s.moved},
+                 {"replaced", s.replaced},
+                 {"fused", s.fused},
+                 {"links", s.links},
+                 {"edges", s.edges},
+                 {"essential", std::move(*essential)},
+                 {"global_ba", std::move(ba)}});
+}
+
+/// @brief How loop closing went on a keyframe, as JSON
+///        (`slam_it.edge.pipeline.LoopSummary.as_dict`).
+/// @param s The summary.
+/// @return Its object.
+Result<eval::runs::JsonValue> loop_json(const edge::LoopSummary& s) {
+  auto detection = detection_json(s.detection);
+  if (!detection) {
+    return std::unexpected(std::move(detection.error()));
+  }
+  eval::runs::JsonValue correction(nullptr);
+  if (s.correction) {
+    auto corrected = correction_json(*s.correction);
+    if (!corrected) {
+      return std::unexpected(std::move(corrected.error()));
+    }
+    correction = std::move(*corrected);
+  }
+  return nested({{"detection", std::move(*detection)},
+                 {"correction", std::move(correction)},
+                 {"detection_seconds", s.detection_seconds},
+                 {"correction_seconds", s.correction_seconds}});
 }
 
 /// @brief A stage's summary as JSON, or null if the stage did not run.
@@ -485,13 +614,14 @@ Result<eval::runs::JsonObject> summary_json(const edge::FrameSummary& summary) {
   const auto lost = [](const edge::LostSummary& s) {
     return nested({{"keyframes", s.keyframes}, {"points", s.points}, {"reset", s.reset}});
   };
-  const std::array<std::pair<const char*, Result<JsonValue>>, 7> stages = {{
+  const std::array<std::pair<const char*, Result<JsonValue>>, 8> stages = {{
       {"init", or_null(summary.init, init_json)},
       {"motion", or_null(summary.motion, motion)},
       {"pnp", or_null(summary.pnp, pnp_json)},
       {"relocalization", or_null(summary.relocalization, relocalization_json)},
       {"local_map", or_null(summary.local_map, local_map)},
       {"mapping", or_null(summary.mapping, mapping_json)},
+      {"loop", or_null(summary.loop, loop_json)},
       {"lost", or_null(summary.lost, lost)},
   }};
   eval::runs::JsonObject out;
@@ -506,13 +636,13 @@ Result<eval::runs::JsonObject> summary_json(const edge::FrameSummary& summary) {
   return out;
 }
 
-/// @brief Record a frame's result: its diagnostics, and its pose and map if it was tracked; a
-///        reset map's poses are dropped, as ORB-SLAM3 drops them.
+/// @brief Record a frame's result: its diagnostics (the trajectory is the pipeline's, at the
+///        end: `record_trajectory`).
 /// @param out The run.
 /// @param result The result.
 /// @param read_seconds The time delivering its images took, in seconds.
 /// @param build_seconds The time building the frame took, in seconds.
-/// @return Nothing, or the pose's inversion's error.
+/// @return Nothing, or a summary's error.
 Result<void> record(eval::runs::Run& out, const edge::FrameResult& result, double read_seconds,
                     double build_seconds) {
   out.diagnostics.push_back({{"timestamp", result.timestamp},
@@ -523,7 +653,8 @@ Result<void> record(eval::runs::Run& out, const edge::FrameResult& result, doubl
                              {"read_seconds", read_seconds},
                              {"build_seconds", build_seconds},
                              {"track_seconds", result.track_seconds},
-                             {"map_seconds", result.map_seconds}});
+                             {"map_seconds", result.map_seconds},
+                             {"loop_seconds", result.loop_seconds}});
   auto summary = summary_json(result.summary);
   if (!summary) {
     return std::unexpected(std::move(summary.error()));
@@ -531,21 +662,29 @@ Result<void> record(eval::runs::Run& out, const edge::FrameResult& result, doubl
   for (auto& item : *summary) {
     out.diagnostics.back().push_back(std::move(item));
   }
-  if (result.pose.has_value() && result.map.has_value()) {
-    const auto pose = foundations::se3::inverse(*result.pose);
-    if (!pose) {
-      return std::unexpected(pose.error());
+  return {};
+}
+
+/// @brief Record the run's trajectory: each tracked frame's final pose and its pose as tracked,
+///        as `T_world_cam`, and its map; a reset map's frames are left out
+///        (`edge::Pipeline::trajectory`).
+/// @param out The run.
+/// @param trajectory The pipeline's trajectory.
+/// @return Nothing, or a pose's inversion's error.
+Result<void> record_trajectory(eval::runs::Run& out, const edge::Trajectory& trajectory) {
+  for (std::size_t i = 0; i < trajectory.timestamps.size(); ++i) {
+    const auto final_pose = foundations::se3::inverse(trajectory.poses[i]);
+    if (!final_pose) {
+      return std::unexpected(final_pose.error());
     }
-    out.timestamps.push_back(result.timestamp);
-    out.poses.push_back(*pose);
-    out.pose_maps.push_back(*result.map);
-  }
-  if (result.summary.lost && result.summary.lost->reset) {  // its frames' poses go with it
-    while (!out.pose_maps.empty() && out.pose_maps.back() == result.map) {
-      out.timestamps.pop_back();
-      out.poses.pop_back();
-      out.pose_maps.pop_back();
+    const auto tracked_pose = foundations::se3::inverse(trajectory.tracked[i]);
+    if (!tracked_pose) {
+      return std::unexpected(tracked_pose.error());
     }
+    out.timestamps.push_back(trajectory.timestamps[i]);
+    out.poses.push_back(*final_pose);
+    out.tracked_poses.push_back(*tracked_pose);
+    out.pose_maps.push_back(trajectory.maps[i]);
   }
   return {};
 }
@@ -569,6 +708,7 @@ Result<void> record_lives(eval::runs::Run& out, const edge::Lifetimes& lives) {
   out.keyframe_lives = lives.keyframe_lives;
   out.keyframe_parents = lives.keyframe_parents;
   out.keyframe_links = lives.keyframe_links;
+  out.keyframe_loops = lives.keyframe_loops;
   out.point_maps = lives.point_maps;
   out.keyframe_maps = lives.keyframe_maps;
   return {};
@@ -881,6 +1021,9 @@ Result<eval::runs::Run> run(const Request& request) {
   if (const auto tracked = track(*source, *pipeline, request, out, features ? &*features : nullptr);
       !tracked) {
     return std::unexpected(tracked.error());
+  }
+  if (const auto recorded = record_trajectory(out, pipeline->trajectory()); !recorded) {
+    return std::unexpected(recorded.error());
   }
   if (const auto recorded = record_lives(out, pipeline->lifetimes()); !recorded) {
     return std::unexpected(recorded.error());

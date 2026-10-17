@@ -5,13 +5,16 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <map>
 #include <utility>
 #include <vector>
 
 #include "slam_it/edge/covisibility.hpp"
+#include "slam_it/edge/loops.hpp"
 #include "slam_it/edge/mapping.hpp"
 #include "slam_it/edge/tracking.hpp"
 #include "slam_it/foundations/se3.hpp"
+#include "slam_it/foundations/sim3.hpp"
 
 namespace slam_it::edge {
 
@@ -120,8 +123,9 @@ Result<FrameResult> Pipeline::track(const Frame& frame) {
                      .pose = tracked ? std::optional<Eigen::Matrix4d>(tracked->pose) : std::nullopt,
                      .tracked = tracked ? inliers(*tracked) : 0,
                      .keyframe = step.keyframe,
-                     .track_seconds = took.count() - step.map_seconds,
+                     .track_seconds = took.count() - step.map_seconds - step.loop_seconds,
                      .map_seconds = step.map_seconds,
+                     .loop_seconds = step.loop_seconds,
                      .summary = std::move(step.summary),
                      .fates = std::move(fates)};
 }
@@ -134,6 +138,7 @@ Lifetimes Pipeline::lifetimes() const {
                 .keyframe_lives = keyframe_lives_,
                 .keyframe_parents = past_parents_,
                 .keyframe_links = past_links_,
+                .keyframe_loops = past_loops_,
                 .point_maps = point_maps_,
                 .keyframe_maps = keyframe_maps_};
   if (map_) {
@@ -149,6 +154,45 @@ Lifetimes Pipeline::lifetimes() const {
     for (const auto& link : strong_links(*map_, options_)) {
       out.keyframe_links.push_back({kf_base_ + link[0], kf_base_ + link[1], link[2]});
     }
+    for (const auto& [older, newer] : map_->loop_edges) {
+      out.keyframe_loops.push_back({kf_base_ + older, kf_base_ + newer});
+    }
+  }
+  return out;
+}
+
+Trajectory Pipeline::trajectory() const {
+  std::map<std::int64_t, Eigen::Matrix4d> last;
+  for (std::size_t id = 0; id < past_poses_.size(); ++id) {
+    if (keyframe_lives_[id][1] >= 0) {
+      last[static_cast<std::int64_t>(id)] = past_poses_[id];  // removed: where it last was
+    }
+  }
+  for (std::size_t id = 0; id < keyframe_maps_.size(); ++id) {
+    const auto at = static_cast<std::int64_t>(id);
+    if (keyframe_lives_[id][1] < 0 && (!map_id_ || keyframe_maps_[id] != *map_id_)) {
+      last[at] = past_poses_[id];  // a closed map's, kept
+    }
+  }
+  if (map_) {
+    for (std::size_t k = 0; k < keyframe_count(*map_); ++k) {
+      last[kf_base_ + map_->kf_id[k]] = map_->kf_pose[k];
+    }
+  }
+  Trajectory out;
+  for (const FramePlace& placed : placements_) {
+    Eigen::Matrix4d pose = placed.relative;
+    std::int64_t keyframe = placed.reference;
+    for (auto gone = culled_.find(keyframe); gone != culled_.end(); gone = culled_.find(keyframe)) {
+      pose = pose * gone->second.second;
+      keyframe = gone->second.first;
+    }
+    const auto anchor = last.find(keyframe);
+    out.timestamps.push_back(placed.timestamp);
+    out.poses.push_back(anchor == last.end() ? placed.tracked
+                                             : Eigen::Matrix4d(pose * anchor->second));
+    out.tracked.push_back(placed.tracked);
+    out.maps.push_back(placed.map);
   }
   return out;
 }
@@ -186,6 +230,9 @@ void Pipeline::date() {
     past_times_[id] = m.gone_kf_time[g];
     past_poses_[id] = m.gone_kf_pose[g];
     past_parents_[id] = run_id(m.gone_kf_parent[g]);
+    if (m.gone_kf_parent[g] >= 0) {
+      culled_[static_cast<std::int64_t>(id)] = {run_id(m.gone_kf_parent[g]), m.gone_kf_relative[g]};
+    }
   }
   clear_gone(m);
 }
@@ -215,12 +262,19 @@ LostSummary Pipeline::close(const Map& m) {
   for (const auto& link : strong_links(m, options_)) {
     past_links_.push_back({kf_base_ + link[0], kf_base_ + link[1], link[2]});
   }
+  for (const auto& [older, newer] : m.loop_edges) {
+    past_loops_.push_back({kf_base_ + older, kf_base_ + newer});
+  }
+  if (reset && map_id_) {  // its frames' poses go with it
+    std::erase_if(placements_, [this](const FramePlace& p) { return p.map == *map_id_; });
+  }
   const LostSummary lost{.keyframes = static_cast<std::int64_t>(keyframe_count(m)),
                          .points = static_cast<std::int64_t>(point_count(m)),
                          .reset = reset};
   map_.reset();
   map_id_.reset();
   database_.reset();
+  pending_.reset();
   state_ = State::kNotInitialized;
   last_frame_.reset();
   last_tracked_.reset();
@@ -242,6 +296,7 @@ Result<Pipeline::Step> Pipeline::initialize(const Frame& frame) {
   Step step{.tracked = std::nullopt,
             .keyframe = false,
             .map_seconds = 0.0,
+            .loop_seconds = 0.0,
             .summary = {.placed_by = std::nullopt,
                         .init = std::move(attempt->summary),
                         .motion = std::nullopt,
@@ -249,6 +304,7 @@ Result<Pipeline::Step> Pipeline::initialize(const Frame& frame) {
                         .relocalization = std::nullopt,
                         .local_map = std::nullopt,
                         .mapping = std::nullopt,
+                        .loop = std::nullopt,
                         .lost = std::nullopt},
             .matched = {},
             .made = {},
@@ -256,6 +312,13 @@ Result<Pipeline::Step> Pipeline::initialize(const Frame& frame) {
   if (!attempt->started) {
     return step;
   }
+  map_id_ = maps_++;
+  kf_base_ = static_cast<std::int64_t>(keyframe_lives_.size());
+  pt_base_ = static_cast<std::int64_t>(point_lives_.size());
+  state_ = State::kTracking;
+  Tracked tracked = attempt->started->tracked;
+  const Map& started = attempt->started->map;
+  place_frame(started, frame, tracked, started.kf_id.back());
   map_ = std::move(attempt->started->map);
   if (vocabulary_) {
     database_.emplace();
@@ -263,11 +326,6 @@ Result<Pipeline::Step> Pipeline::initialize(const Frame& frame) {
       return std::unexpected(std::move(ok.error()));
     }
   }
-  map_id_ = maps_++;
-  kf_base_ = static_cast<std::int64_t>(keyframe_lives_.size());
-  pt_base_ = static_cast<std::int64_t>(point_lives_.size());
-  state_ = State::kTracking;
-  Tracked tracked = attempt->started->tracked;
   if (auto ok = accept(frame, tracked); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
@@ -333,6 +391,50 @@ Result<void> Pipeline::accept(const Frame& frame, const Tracked& tracked) {
   failures_ = 0;
   lost_since_.reset();
   return {};
+}
+
+void Pipeline::place_frame(const Map& m, const Frame& frame, const Tracked& tracked,
+                           std::int64_t reference) {
+  const auto k = static_cast<std::size_t>(keyframe_row(m, reference));
+  placements_.push_back({.timestamp = frame.timestamp,
+                         .map = map_id_.value_or(0),
+                         .reference = kf_base_ + reference,
+                         .relative = tracked.pose * foundations::sim3::inverse(m.kf_pose[k]),
+                         .tracked = tracked.pose});
+}
+
+Result<std::pair<std::optional<LoopSummary>, bool>> Pipeline::close_loops(Map& m) {
+  using Clock = std::chrono::steady_clock;
+  using Seconds = std::chrono::duration<double>;
+  const std::int64_t keyframe = m.kf_id.back();
+  if (!database_ || !options_.loops.enabled || keyframe == 0) {
+    return std::pair<std::optional<LoopSummary>, bool>{std::nullopt, false};
+  }
+  const auto start = Clock::now();
+  auto found = loops::detect(m, *database_, camera_, keyframe, pending_, name(mode_), options_);
+  if (!found) {
+    return std::unexpected(std::move(found.error()));
+  }
+  pending_ = std::move(found->pending);
+  const auto searched = Clock::now();
+  std::optional<loops::CorrectionSummary> correction;
+  if (found->loop) {
+    auto fixed = loops::correct(m, camera_, *found->loop, name(mode_), options_);
+    if (!fixed) {
+      return std::unexpected(std::move(fixed.error()));
+    }
+    correction = std::move(*fixed);
+    if (auto ok = sync_database(); !ok) {
+      return std::unexpected(std::move(ok.error()));
+    }
+  }
+  const auto done = Clock::now();
+  const bool corrected = correction.has_value();
+  LoopSummary summary{.detection = std::move(found->summary),
+                      .correction = std::move(correction),
+                      .detection_seconds = Seconds(searched - start).count(),
+                      .correction_seconds = corrected ? Seconds(done - searched).count() : 0.0};
+  return std::pair<std::optional<LoopSummary>, bool>{std::move(summary), corrected};
 }
 
 Result<void> Pipeline::sync_database() {
@@ -451,6 +553,41 @@ Result<Pipeline::Refined> Pipeline::refine(Map& m, const Frame& frame, const Tra
   return out;
 }
 
+Result<Pipeline::Keyframed> Pipeline::make_keyframe(Map& m, const Frame& frame,
+                                                    const Tracked& tracked, FrameSummary& summary) {
+  const auto start = std::chrono::steady_clock::now();
+  const std::vector<std::int64_t> holding =
+      pending_ ? loops::held(*pending_) : std::vector<std::int64_t>{};
+  auto mapping = process(m, camera_, frame, tracked, mode_, options_, holding);
+  if (!mapping) {
+    return std::unexpected(std::move(mapping.error()));
+  }
+  if (auto ok = sync_database(); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  const std::chrono::duration<double> mapped = std::chrono::steady_clock::now() - start;
+  summary.mapping = std::move(mapping->summary);
+  // The frame's reference is its own keyframe, placed where the frame was.
+  placements_.push_back({.timestamp = frame.timestamp,
+                         .map = map_id_.value_or(0),
+                         .reference = kf_base_ + m.kf_id.back(),
+                         .relative = Eigen::Matrix4d::Identity(),
+                         .tracked = tracked.pose});
+  auto looped = close_loops(m);
+  if (!looped) {
+    return std::unexpected(std::move(looped.error()));
+  }
+  Keyframed out{.map_seconds = mapped.count(),
+                .loop_seconds = 0.0,
+                .corrected = looped->second,
+                .made = std::move(mapping->made)};
+  if (looped->first) {
+    out.loop_seconds = looped->first->detection_seconds + looped->first->correction_seconds;
+    summary.loop = std::move(looped->first);
+  }
+  return out;
+}
+
 Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
   if (!map_) {
     return fail(ErrorKind::kInvalidInput, "track: no map to track against");
@@ -486,6 +623,7 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
     return Step{.tracked = std::nullopt,
                 .keyframe = false,
                 .map_seconds = 0.0,
+                .loop_seconds = 0.0,
                 .summary = std::move(summary),
                 .matched = std::move(matched),
                 .made = {},
@@ -497,30 +635,31 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
   if (!need) {
     return std::unexpected(std::move(need.error()));
   }
-  std::chrono::duration<double> mapped{0.0};
-  std::vector<std::int64_t> made;
+  Keyframed keyframed;
   if (*need) {
-    const auto start = std::chrono::steady_clock::now();
-    auto mapping = process(m, camera_, frame, *tracked, mode_, options_);
-    if (!mapping) {
-      return std::unexpected(std::move(mapping.error()));
+    auto made = make_keyframe(m, frame, *tracked, summary);
+    if (!made) {
+      return std::unexpected(std::move(made.error()));
     }
-    if (auto ok = sync_database(); !ok) {
-      return std::unexpected(std::move(ok.error()));
-    }
-    mapped = std::chrono::steady_clock::now() - start;
-    summary.mapping = std::move(mapping->summary);
-    made = std::move(mapping->made);
+    keyframed = std::move(*made);
+  } else {
+    const std::int64_t row =
+        reference >= 0 ? reference : static_cast<std::int64_t>(keyframe_count(m)) - 1;
+    place_frame(m, frame, *tracked, m.kf_id[static_cast<std::size_t>(row)]);
   }
   if (auto ok = accept(frame, *tracked); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
+  if (keyframed.corrected && last_tracked_) {  // the last frame, the new keyframe's own, moved
+    last_tracked_->pose = m.kf_pose.back();
+  }
   return Step{.tracked = std::move(tracked),
               .keyframe = *need,
-              .map_seconds = mapped.count(),
+              .map_seconds = keyframed.map_seconds,
+              .loop_seconds = keyframed.loop_seconds,
               .summary = std::move(summary),
               .matched = std::move(matched),
-              .made = std::move(made),
+              .made = std::move(keyframed.made),
               .lost = false};
 }
 

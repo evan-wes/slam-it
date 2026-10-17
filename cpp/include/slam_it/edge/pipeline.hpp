@@ -7,6 +7,7 @@
 #include <Eigen/Core>
 #include <array>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -14,6 +15,7 @@
 #include "slam_it/edge/database.hpp"
 #include "slam_it/edge/frames.hpp"
 #include "slam_it/edge/initialization.hpp"
+#include "slam_it/edge/loops.hpp"
 #include "slam_it/edge/map.hpp"
 #include "slam_it/edge/mapping.hpp"
 #include "slam_it/edge/options.hpp"
@@ -99,6 +101,18 @@ struct LostSummary {
   bool reset{false};
 };
 
+/// @brief How loop closing went on a keyframe (`slam_it.edge.pipeline.LoopSummary`).
+struct LoopSummary {
+  /// @brief The search.
+  loops::DetectionSummary detection;
+  /// @brief The correction, when a loop closed.
+  std::optional<loops::CorrectionSummary> correction;
+  /// @brief The time the search took, in seconds.
+  double detection_seconds{0.0};
+  /// @brief The time the correction took, global BA included, in seconds (0 when none closed).
+  double correction_seconds{0.0};
+};
+
 /// @brief How the stages went on one frame (`slam_it.edge.pipeline.FrameSummary`); each
 ///        empty where the stage did not run.
 struct FrameSummary {
@@ -116,6 +130,8 @@ struct FrameSummary {
   std::optional<LocalMapSummary> local_map;
   /// @brief Local mapping, on a keyframe after the first.
   std::optional<MappingSummary> mapping;
+  /// @brief Loop closing, on a keyframe after the first while it is on.
+  std::optional<LoopSummary> loop;
   /// @brief The map closed, on the frame the track was lost on.
   std::optional<LostSummary> lost;
 };
@@ -140,6 +156,9 @@ struct FrameResult {
   /// @brief The time mapping it took as a keyframe (`process`), 0 for any other frame: what
   ///        ORB-SLAM's local-mapping thread does.
   double map_seconds{0.0};
+  /// @brief The time loop closing took on it as a keyframe, 0 for any other frame: what
+  ///        ORB-SLAM's loop-closing thread does.
+  double loop_seconds{0.0};
   /// @brief How its stages went.
   FrameSummary summary;
   /// @brief What became of each of its keypoints.
@@ -168,10 +187,27 @@ struct Lifetimes {
   /// @brief Each map's strong links when it closed, and the current map's now, by the run's
   ///        ids, ascending.
   std::vector<std::array<std::int64_t, 3>> keyframe_links;
+  /// @brief Each map's loop edges, the older keyframe first, by the run's ids, in the order
+  ///        closed.
+  std::vector<std::array<std::int64_t, 2>> keyframe_loops;
   /// @brief The map each point was made in.
   std::vector<std::int64_t> point_maps;
   /// @brief The map each keyframe was made in.
   std::vector<std::int64_t> keyframe_maps;
+};
+
+/// @brief The run's trajectory: each tracked frame's final pose, and its pose as tracked
+///        (`slam_it.edge.pipeline.Trajectory`); a reset map's frames are left out.
+struct Trajectory {
+  /// @brief Each tracked frame's time, in the order tracked.
+  std::vector<double> timestamps;
+  /// @brief Its final `T_cam_world`: its pose relative to its reference keyframe, carried by
+  ///        the keyframe's last pose.
+  std::vector<Eigen::Matrix4d> poses;
+  /// @brief Its `T_cam_world` as tracked.
+  std::vector<Eigen::Matrix4d> tracked;
+  /// @brief The map it was tracked in.
+  std::vector<std::int64_t> maps;
 };
 
 /// @brief The edge pipeline for one sequence (`slam_it.edge.pipeline.Pipeline`).
@@ -214,6 +250,13 @@ class Pipeline {
   ///         them, the others where they last were.
   [[nodiscard]] Lifetimes lifetimes() const;
 
+  /// @brief The run's trajectory so far (`slam_it.edge.pipeline.Pipeline.trajectory`): each
+  ///        tracked frame placed by its reference keyframe's last pose, through the keyframe's
+  ///        culled ancestors where it was culled; a frame whose chain ends at none keeps its
+  ///        pose as tracked.
+  /// @return The frames tracked, but a reset map's.
+  [[nodiscard]] Trajectory trajectory() const;
+
  private:
   /// @brief A frame handled, as `initialize` and `track_frame` give it.
   struct Step {
@@ -223,6 +266,8 @@ class Pipeline {
     bool keyframe{false};
     /// @brief The time mapping it took, in seconds, if it did.
     double map_seconds{0.0};
+    /// @brief The time loop closing took, in seconds, if it ran.
+    double loop_seconds{0.0};
     /// @brief How its stages went.
     FrameSummary summary;
     /// @brief The last tracking stage's match for each keypoint before refinement; empty if no
@@ -242,6 +287,21 @@ class Pipeline {
     FrameSummary summary;
     /// @brief The last stage's match for each keypoint before refinement.
     std::vector<std::int64_t> matched;
+  };
+
+  /// @brief A tracked frame's place, for the final trajectory (`slam_it.edge.pipeline
+  ///        ._Placement`).
+  struct FramePlace {
+    /// @brief The frame's time.
+    double timestamp{0.0};
+    /// @brief The map it was tracked in.
+    std::int64_t map{0};
+    /// @brief The run's id of its reference keyframe.
+    std::int64_t reference{0};
+    /// @brief Its pose relative to the reference, `T_cam_ref`.
+    Eigen::Matrix4d relative{Eigen::Matrix4d::Identity()};
+    /// @brief Its `T_cam_world` as tracked.
+    Eigen::Matrix4d tracked{Eigen::Matrix4d::Identity()};
   };
 
   /// @brief A placed frame tracked against the local map, as `refine` gives it.
@@ -297,6 +357,43 @@ class Pipeline {
   ///         for a small map or with `relocalization.enabled` off, on the `loss.lost_frames`-th in
   ///         a row.
   bool record_failure(const Frame& frame, std::size_t keyframes);
+
+  /// @brief Keep a tracked frame's place: its reference keyframe and pose relative to it
+  ///        (`slam_it.edge.pipeline.Pipeline._place_frame`).
+  /// @param m The map the frame was tracked in.
+  /// @param frame The frame.
+  /// @param tracked Its pose.
+  /// @param reference The reference keyframe's id in the map.
+  void place_frame(const Map& m, const Frame& frame, const Tracked& tracked,
+                   std::int64_t reference);
+
+  /// @brief Search the newest keyframe for a loop, and correct one that closes
+  ///        (`slam_it.edge.pipeline.Pipeline._close_loops`).
+  /// @param m The map, corrected in place.
+  /// @return How it went (none when loop closing is off, there is no database, or the keyframe
+  ///         is the map's first), and whether a loop was corrected; a stage's error.
+  foundations::Result<std::pair<std::optional<LoopSummary>, bool>> close_loops(Map& m);
+
+  /// @brief A keyframe mapped and searched for loops, as `make_keyframe` gives it.
+  struct Keyframed {
+    /// @brief The time mapping it took, in seconds.
+    double map_seconds{0.0};
+    /// @brief The time loop closing took, in seconds.
+    double loop_seconds{0.0};
+    /// @brief Whether a loop was corrected.
+    bool corrected{false};
+    /// @brief The point made of each of its keypoints, -1 where none.
+    std::vector<std::int64_t> made;
+  };
+
+  /// @brief Insert a tracked frame as a keyframe, map it, place it, and close loops on it.
+  /// @param m The map.
+  /// @param frame The frame.
+  /// @param tracked Its pose and matches.
+  /// @param summary Its frame's summary, given the mapping's and the loop's.
+  /// @return The times, whether a loop was corrected, and the points made; a stage's error.
+  foundations::Result<Keyframed> make_keyframe(Map& m, const Frame& frame, const Tracked& tracked,
+                                               FrameSummary& summary);
 
   /// @brief Bring the keyframe database to the map's keyframes: add the new, erase the culled.
   /// @return Nothing; a quantisation's error.
@@ -405,6 +502,14 @@ class Pipeline {
   std::vector<std::int64_t> past_parents_;
   /// @brief The closed maps' strong links, by the run's ids.
   std::vector<std::array<std::int64_t, 3>> past_links_;
+  /// @brief The closed maps' loop edges, by the run's ids.
+  std::vector<std::array<std::int64_t, 2>> past_loops_;
+  /// @brief The loop being confirmed in the current map, if any.
+  std::optional<loops::Pending> pending_;
+  /// @brief Each tracked frame's place, for the final trajectory.
+  std::vector<FramePlace> placements_;
+  /// @brief Each culled keyframe's parent and its pose relative to it, by the run's ids.
+  std::map<std::int64_t, std::pair<std::int64_t, Eigen::Matrix4d>> culled_;
 };
 
 }  // namespace slam_it::edge

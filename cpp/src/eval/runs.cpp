@@ -223,6 +223,31 @@ Result<void> check_links(const std::vector<std::array<std::int64_t, 3>>& links,
   return {};
 }
 
+/// @brief Check loop edges: two keyframes of one map, the lower first, each pair once
+///        (`slam_it.eval.runs._check_loops`).
+/// @param loops The loops.
+/// @param maps Each keyframe's map, checked.
+/// @return Nothing, or `InvalidInput`.
+Result<void> check_loops(const std::vector<std::array<std::int64_t, 2>>& loops,
+                         const std::vector<std::int64_t>& maps) {
+  for (std::size_t i = 0; i < loops.size(); ++i) {
+    const auto [first, second] = loops[i];
+    if (first < 0 || first >= second || std::cmp_greater_equal(second, maps.size())) {
+      return fail(ErrorKind::kInvalidInput,
+                  "keyframe_loops: a loop must join two keyframes, the lower first");
+    }
+    if (maps[static_cast<std::size_t>(first)] != maps[static_cast<std::size_t>(second)]) {
+      return fail(ErrorKind::kInvalidInput,
+                  "keyframe_loops: a loop's keyframes must be in one map");
+    }
+    if (std::find(loops.begin(), loops.begin() + static_cast<std::ptrdiff_t>(i), loops[i]) !=
+        loops.begin() + static_cast<std::ptrdiff_t>(i)) {
+      return fail(ErrorKind::kInvalidInput, "keyframe_loops: a loop must close once");
+    }
+  }
+  return {};
+}
+
 /// @brief Check a run before anything is written.
 /// @param run The run.
 /// @return Nothing, or `InvalidInput`.
@@ -298,6 +323,9 @@ Result<void> check(const Run& run) {
   if (auto ok = check_stamped(run.timestamps, run.poses, "trajectory"); !ok) {
     return ok;
   }
+  if (auto ok = check_stamped(run.timestamps, run.tracked_poses, "tracked trajectory"); !ok) {
+    return ok;
+  }
   if (auto ok = check_stamped(run.keyframe_timestamps, run.keyframe_poses, "keyframes"); !ok) {
     return ok;
   }
@@ -325,6 +353,9 @@ Result<void> check(const Run& run) {
     return ok;
   }
   if (auto ok = check_links(run.keyframe_links, run.keyframe_maps); !ok) {
+    return ok;
+  }
+  if (auto ok = check_loops(run.keyframe_loops, run.keyframe_maps); !ok) {
     return ok;
   }
   if (!finite(run.settings)) {
@@ -503,6 +534,18 @@ std::string vocabulary_text(const vocabularies::Header& header) {
   return out + ", \"sha256\": " + object_text(sums) + "}";
 }
 
+/// @brief Pairs of ids, row-major.
+/// @param pairs The pairs.
+/// @return Their numbers.
+std::vector<std::int64_t> flatten(const std::vector<std::array<std::int64_t, 2>>& pairs) {
+  std::vector<std::int64_t> out;
+  out.reserve(2 * pairs.size());
+  for (const auto& [first, second] : pairs) {
+    out.insert(out.end(), {first, second});
+  }
+  return out;
+}
+
 /// @brief Lives, row-major.
 /// @param lives The lives.
 /// @return Their numbers.
@@ -561,6 +604,10 @@ Result<void> write_run(const std::string& folder, const Run& run) {
   if (!trajectory) {
     return std::unexpected(std::move(trajectory.error()));
   }
+  auto tracked = trajectory_text(run.timestamps, run.tracked_poses, run.pose_maps);
+  if (!tracked) {
+    return std::unexpected(std::move(tracked.error()));
+  }
   const JsonObject info = {
       {"format", std::string(kFormat)}, {"version", kVersion}, {"dataset", run.dataset},
       {"sequence", run.sequence},       {"mode", run.mode},    {"backend", run.backend}};
@@ -597,14 +644,16 @@ Result<void> write_run(const std::string& folder, const Run& run) {
   if (auto ok = create_folder(out); !ok) {
     return ok;
   }
-  const std::array<std::pair<const char*, std::string>, 13> files = {{
+  const std::array<std::pair<const char*, std::string>, 15> files = {{
       {"run.json", info_text},
       {"trajectory.txt", *trajectory},
+      {"trajectory_tracked.txt", *tracked},
       {"keyframes.npy", npy({run.keyframe_timestamps.size()}, run.keyframe_timestamps)},
       {"keyframe_poses.npy", npy({run.keyframe_poses.size(), 4, 4}, flatten(run.keyframe_poses))},
       {"keyframe_lives.npy", npy({run.keyframe_lives.size(), 3}, flatten(run.keyframe_lives))},
       {"keyframe_parents.npy", npy({run.keyframe_parents.size()}, run.keyframe_parents)},
       {"keyframe_links.npy", npy({run.keyframe_links.size(), 3}, flatten(run.keyframe_links))},
+      {"keyframe_loops.npy", npy({run.keyframe_loops.size(), 2}, flatten(run.keyframe_loops))},
       {"points.npy", npy({run.points.size(), 3}, points)},
       {"point_lives.npy", npy({run.point_lives.size(), 3}, flatten(run.point_lives))},
       {"pose_maps.npy", npy({run.pose_maps.size()}, run.pose_maps)},
