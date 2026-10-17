@@ -416,8 +416,13 @@ everything has until now; B3b gives it a thread. Three decisions of that day rea
      official bindings, the same build. Rust reaches it through a `cxx` bridge.
    - GTSAM lacks two of the factors needed: a point's reprojection through our camera models
      (radtan with its `k3`, which its `Cal3DS2` leaves out, and the right column), and a match's
-     reprojection through a Sim(3). They are written once in C++ and shared by C++ and the Rust
-     bridge; Python writes them as `CustomFactor`s, its reference.
+     reprojection through a Sim(3). Each language writes them on its own camera model: C++ as
+     GTSAM factors; Python as `CustomFactor`s, its reference; Rust through a generic factor in
+     the bridge that calls back into Rust for the residual and its Jacobians, as GTSAM's
+     `CustomFactor` calls back into Python. *Revised with evan-wes on 2026-10-17,* while building:
+     the design first had them written once in C++ and compiled into the Rust crate, which would
+     make Rust's build a second, hand-kept build of part of the C++ core, and leave Rust none of
+     the maths.
    - A monocular map optimises Sim(3) (`Similarity3`); a stereo or RGB-D map fixes the scale
      and optimises SE(3) (`Pose3`), as ORB-SLAM's `mbFixScale` does.
    - GTSAM joins the runtime dependencies. The import-linter contract that kept the test oracles
@@ -465,8 +470,9 @@ everything has until now; B3b gives it a thread. Three decisions of that day rea
    - each point then moved with its reference keyframe, or with the keyframe that moved it in
      step 4.
 6. **Global BA after each loop,** as visual-only ORB-SLAM3 always runs it, on GTSAM:
-   - every keyframe and point of the map, the reprojection factors, a Huber loss at √5.991
-     (√7.815 with a right column), the map's first keyframe fixed, 10 iterations;
+   - every keyframe and point of the map, the reprojection factors with no robust loss (ORB-SLAM's
+     loop closing calls `GlobalBundleAdjustemnt` with `bRobust` false; the design first gave it
+     a Huber loss in error), the map's first keyframe fixed, 10 iterations;
    - each keyframe and point set to its result. It runs inline here, so no keyframe is made
      while it runs and none needs correcting through the spanning tree afterwards, as ORB-SLAM's
      `RunGlobalBundleAdjustment` corrects them; B3b's thread does need that;
