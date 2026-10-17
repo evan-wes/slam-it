@@ -7,14 +7,17 @@ import { loadBundle } from "../src/bundle.js";
 import * as format from "../src/format.js";
 import {
   FRUSTUM_SEGMENTS,
-  NEVER,
   MIN_DEPTH,
+  NEVER,
   centres,
   frustums,
+  keyframeSegments,
   lifeAttributes,
+  linkPairs,
   mapAttribute,
   mapDepths,
   mapFrustums,
+  treePairs,
   truthSegments,
 } from "../src/geometry.js";
 import {
@@ -101,6 +104,27 @@ test("each vertex carries its item's life, a life without an end ending never", 
 
 test("each vertex carries its item's map", () => {
   assert.deepEqual(Array.from(mapAttribute(new Int32Array([0, 2]), 3)), [0, 0, 0, 2, 2, 2]);
+});
+
+test("the graph's lines join keyframes' centres, alive while both keyframes are", () => {
+  // Three keyframes of map 0 at x = 0, 1 and 2; the second culled at frame 6, the third made at 4.
+  const poses = new Float32Array(36);
+  for (let k = 0; k < 3; k++) {
+    poses.set([1, 0, 0, k, 0, 1, 0, 0, 0, 0, 1, 0], k * 12);
+  }
+  const lives = new Int32Array([0, -1, -1, 2, 6, 0, 4, -1, -1]);
+  const maps = new Int32Array([0, 0, 0]);
+  const tree = treePairs(new Int32Array([-1, 0, 1]));
+  assert.deepEqual(Array.from(tree), [1, 0, 2, 1]);
+  const links = linkPairs(new Int32Array([0, 2, 120]));
+  assert.deepEqual(Array.from(links), [0, 2]);
+  const lines = keyframeSegments(poses, lives, maps, tree);
+  assert.deepEqual(Array.from(lines.positions), [1, 0, 0, 0, 0, 0, 2, 0, 0, 1, 0, 0]);
+  // 1-0 lives from 2 to 6, as keyframe 1; 2-1 from 4, until keyframe 1 goes at 6.
+  assert.deepEqual(Array.from(lines.lives), [2, 6, 0, 4, 6, 0]);
+  assert.deepEqual(Array.from(lines.maps), [0, 0]);
+  const strong = keyframeSegments(poses, lives, maps, links);
+  assert.deepEqual(Array.from(strong.lives), [4, -1, -1]);
 });
 
 test("each map's frustums are as deep as a share of its own trajectory's extent", () => {

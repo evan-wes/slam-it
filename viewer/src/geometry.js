@@ -130,6 +130,64 @@ export function centres(poses) {
 }
 
 /**
+ * Segments between keyframes' centres, as the covisibility graph joins them: each from one
+ * keyframe to another of its map, alive while both are (made when the later is, removed when
+ * the first goes).
+ * @param {Float32Array} poses Every keyframe's last pose, (K, 3, 4).
+ * @param {Int32Array} lives Their lives, (K, 3): made, removed (-1 if never), why.
+ * @param {Int32Array} maps Their maps, (K,).
+ * @param {ArrayLike<number>} pairs The keyframes each segment joins, two ids a segment, (S * 2,).
+ * @returns {{positions: Float32Array, lives: Int32Array, maps: Int32Array}} Each segment's two
+ *     ends, (S * 2, 3); its life, (S, 3), why it ended 0 (culled) when it did; and its map, (S,).
+ */
+export function keyframeSegments(poses, lives, maps, pairs) {
+  const count = pairs.length / 2;
+  const at = centres(poses);
+  const positions = new Float32Array(count * 6);
+  const segmentLives = new Int32Array(count * 3);
+  const segmentMaps = new Int32Array(count);
+  for (let s = 0; s < count; s++) {
+    const [a, b] = [pairs[s * 2], pairs[s * 2 + 1]];
+    positions.set(at.subarray(a * 3, a * 3 + 3), s * 6);
+    positions.set(at.subarray(b * 3, b * 3 + 3), s * 6 + 3);
+    const ends = [lives[a * 3 + 1], lives[b * 3 + 1]].filter((end) => end >= 0);
+    const removed = ends.length ? Math.min(...ends) : -1;
+    segmentLives.set([Math.max(lives[a * 3], lives[b * 3]), removed, removed < 0 ? -1 : 0], s * 3);
+    segmentMaps[s] = maps[a];
+  }
+  return { positions, lives: segmentLives, maps: segmentMaps };
+}
+
+/**
+ * The spanning tree's edges: each keyframe with a parent, to it.
+ * @param {Int32Array} parents Each keyframe's last parent, by id, or -1.
+ * @returns {Int32Array} The pairs (child, parent), (S * 2,).
+ */
+export function treePairs(parents) {
+  /** @type {number[]} */
+  const out = [];
+  parents.forEach((parent, child) => {
+    if (parent >= 0) {
+      out.push(child, parent);
+    }
+  });
+  return Int32Array.from(out);
+}
+
+/**
+ * The strong links' pairs, their weights left out.
+ * @param {Int32Array} links The links, (L, 3): two ids and the points they share.
+ * @returns {Int32Array} The pairs, (L * 2,).
+ */
+export function linkPairs(links) {
+  const out = new Int32Array((links.length / 3) * 2);
+  for (let l = 0; l < links.length / 3; l++) {
+    out.set([links[l * 3], links[l * 3 + 1]], l * 2);
+  }
+  return out;
+}
+
+/**
  * The truth's polyline as segments between consecutive frames that both have a truth.
  * @param {Float32Array} truth The true centre at each frame, (F, 3), NaN where none.
  * @returns {{positions: Float32Array, ends: Int32Array}} Each segment's two ends, (S * 2, 3),

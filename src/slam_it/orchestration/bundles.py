@@ -3,7 +3,7 @@
 A bundle is a folder any plain file server can serve; the page (``viewer/``) reads nothing else.
 It holds one sequence's runs in one mode, at most one per backend, and the frames they ran:
 
-- ``bundle.json``: ``{"format": "slam-it-bundle", "version": 2, "dataset", "sequence",
+- ``bundle.json``: ``{"format": "slam-it-bundle", "version": 3, "dataset", "sequence",
   "mode", "camera", "frames", "first_time", "extent", "images", "truth", "fates", "steps",
   "backends"}``. ``camera`` is the pipeline's (a stereo pair's rectified left camera):
   ``model``, ``width``, ``height``, ``intrinsics`` and ``baseline``. ``frames`` counts the
@@ -32,7 +32,9 @@ It holds one sequence's runs in one mode, at most one per backend, and the frame
     float32; ``pose_frames.npy``: their frames, and ``pose_maps.npy``: their maps, each
     ``(T,)`` int32;
   - ``keyframe_poses.npy``, ``(K, 3, 4)`` float32, ``keyframe_lives.npy``, ``(K, 3)`` int32,
-    and ``keyframe_maps.npy``, ``(K,)`` int32; ``points.npy``, ``(N, 3)`` float32,
+    and ``keyframe_maps.npy``, ``(K,)`` int32; ``keyframe_parents.npy``, ``(K,)`` int32, and
+    ``keyframe_links.npy``, ``(L, 3)`` int32, the spanning tree and the strong links;
+    ``points.npy``, ``(N, 3)`` float32,
     ``point_lives.npy``, ``(N, 3)`` int32, and ``point_maps.npy``, ``(N,)`` int32: every
     keyframe and point the run made, as the run format holds them (:mod:`slam_it.eval.runs`);
   - ``feature_pixels.npy``, ``(M, 2)`` float32, and ``feature_records.npy``, ``(M, 4)``
@@ -84,8 +86,9 @@ from slam_it.orchestration import vo
 FORMAT = "slam-it-bundle"
 """``bundle.json``'s ``format``."""
 
-VERSION = 2
-"""``bundle.json``'s ``version``: this module's layout (2 added the maps)."""
+VERSION = 3
+"""``bundle.json``'s ``version``: this module's layout (2 added the maps; 3 the spanning tree and
+the strong links)."""
 
 CHUNK = 100
 """The frames whose JPEGs share a chunk file."""
@@ -324,6 +327,8 @@ def _write_backend(out: Path, baked: _Baked, times: NDArray[np.float64]) -> dict
     _npy(folder / "keyframe_poses.npy", keyframes)
     _npy(folder / "keyframe_lives.npy", _lives(run.keyframe_lives, frame))
     _npy(folder / "keyframe_maps.npy", run.keyframe_maps.astype(np.int32))
+    _npy(folder / "keyframe_parents.npy", run.keyframe_parents.astype(np.int32))
+    _npy(folder / "keyframe_links.npy", run.keyframe_links.astype(np.int32).reshape(-1, 3))
     _npy(folder / "points.npy", _moved(run.points, run.point_maps, alignments))
     _npy(folder / "point_lives.npy", _lives(run.point_lives, frame))
     _npy(folder / "point_maps.npy", run.point_maps.astype(np.int32))

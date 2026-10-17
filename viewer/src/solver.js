@@ -62,6 +62,11 @@ export const STAGES = [
     stage: "local_map",
     title: "Tracking the local map",
     hints: {
+      keyframes:
+        "the local map's keyframes: those seeing the frame's matched points, and their " +
+        "neighbours in the covisibility graph",
+      points: "the points they observe",
+      reference: "the frame's reference keyframe: the one sharing the most of its points",
       in_view: "the local map's points in the camera's view",
       matches: "keypoints matched to them, before the pose was refined",
       inliers: "the matches the final pose kept: the frame's tracked points",
@@ -73,11 +78,13 @@ export const STAGES = [
     hints: {
       from_depth: "points made from the keyframe's close depth",
       culled_points: "recent points culled: tracking found them too rarely",
-      triangulated: "points triangulated with the window's keyframes",
+      triangulated: "points triangulated with the keyframe's best links",
       fused: "points fused into another",
       ba:
         "the local bundle adjustment's solves: cost before → after, iterations, why it " +
         "stopped; the second solve is over the first's inliers, so it starts lower",
+      free: "the keyframes it adjusted: the new one and those linked to it",
+      fixed: "the keyframes it held fixed: the map's first, and the others seeing their points",
       outliers: "observations the adjustment dropped",
       weak_points: "points erased, left seen too little by the observations dropped",
       culled_keyframes: "redundant keyframes culled",

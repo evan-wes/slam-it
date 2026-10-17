@@ -18,6 +18,8 @@
   --fate-made: #e0a020;
   --truth: #c9a227;
   --keyframe: #5b4bb7;
+  --graph-tree: #2e8b57;
+  --graph-link: #8fbc8f;
   --point: #3b4a50;
   --camera: #d1453b;
   --backend-cpp: #0e7c8b;
@@ -48,6 +50,8 @@
     --fate-made: #f2c14e;
     --truth: #e3bd4f;
     --keyframe: #a596ff;
+    --graph-tree: #5fd38d;
+    --graph-link: #3c7a52;
     --point: #c9d3d5;
     --camera: #ef6a5f;
     --backend-cpp: #3fb6c6;

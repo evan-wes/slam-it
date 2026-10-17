@@ -1,6 +1,6 @@
 {
  "format": "slam-it-bundle",
- "version": 2,
+ "version": 3,
  "dataset": "tum",
  "sequence": "room_tum",
  "mode": "rgbd",
@@ -48,19 +48,19 @@
     36
    ],
    "tracked": 33,
-   "keyframes": 4,
-   "points": 641,
+   "keyframes": 5,
+   "points": 748,
    "made": {
-    "keyframes": 4,
-    "points": 1075
+    "keyframes": 5,
+    "points": 1268
    },
    "features": false,
    "alignment": "se3",
    "score": {
     "matched": 33,
-    "ate_rmse": 0.006510752860928974,
-    "rpe_translation_rmse": 0.009110102270696906,
-    "rpe_rotation_rmse": 0.0016230310926846204
+    "ate_rmse": 0.007272834652265271,
+    "rpe_translation_rmse": 0.009659955707803416,
+    "rpe_rotation_rmse": 0.0016766975397583133
    },
    "maps": [
     {
@@ -73,18 +73,18 @@
      "reset": false,
      "score": {
       "matched": 33,
-      "ate_rmse": 0.006510752860928974,
-      "rpe_translation_rmse": 0.009110102270696906,
-      "rpe_rotation_rmse": 0.0016230310926846204,
+      "ate_rmse": 0.007272834652265271,
+      "rpe_translation_rmse": 0.009659955707803416,
+      "rpe_rotation_rmse": 0.0016766975397583133,
       "scale": 1.0
      }
     }
    ],
    "latency": {
     "deadline": 0.03333300000000006,
-    "median": 0.04567062598653138,
-    "p95": 0.047586408036295325,
-    "max": 0.09803611994720995,
+    "median": 0.047013361006975174,
+    "p95": 0.048960700747556984,
+    "max": 0.10088377096690238,
     "late": 33
    },
    "peak_memory": null

@@ -395,6 +395,11 @@ async function main() {
     wholeTruth.setAttribute("aria-pressed", String(scene.wholeTruth));
     show();
   });
+  const graph = element("graph", HTMLButtonElement);
+  graph.addEventListener("click", () => {
+    scene.showGraph(!scene.graph);
+    graph.setAttribute("aria-pressed", String(scene.graph));
+  });
   element("fit", HTMLButtonElement).addEventListener("click", () => {
     scene.fit();
     scene.render();
