@@ -15,6 +15,10 @@ T-RO 2012), for the map being tracked:
   is accumulated over the keyframe's best ``relocalization.neighbours`` covisible keyframes that
   were scored too, the best-scored of the group standing for it; and the groups above
   ``relocalization.group_score`` of the best accumulated score give the candidates, best first.
+- **Loop closing's candidates** (:func:`loop_candidates`, ORB-SLAM3's ``DetectNBestCandidates``):
+  the same scoring of a keyframe of the map, with ``loops.common_words`` and ``loops.neighbours``,
+  leaving out the keyframe and every keyframe linked to it; the best ``loops.candidates`` groups
+  give the candidates, with no cut on their scores.
 
 **Covisibility** is the graph's (:func:`slam_it.edge.covisibility.links`): a keyframe's best
 are its links, those sharing at least ``covisibility.min_points`` points, the most shared
@@ -32,7 +36,7 @@ from __future__ import annotations
 
 import bisect
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 import numpy as np
@@ -173,6 +177,12 @@ class Implementation(Protocol):
         """Find the keyframes a frame may be relocalised against."""
         ...
 
+    def loop_candidates(
+        self, database: dict[str, Any], m: dict[str, Any], keyframe: int, options: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Find the keyframes a keyframe may close a loop with."""
+        ...
+
 
 def _offsets(lengths: list[int]) -> IntArray:
     """Return the offsets of consecutive runs of these lengths, from 0."""
@@ -207,56 +217,114 @@ class Candidates:
     scored: int
 
 
-def _best(m: Map, keyframe: int, options: Options) -> list[int]:
-    """Return a keyframe's best ``relocalization.neighbours`` links' ids (by its id), or none.
+def _best(m: Map, keyframe: int, count: int, options: Options) -> list[int]:
+    """Return a keyframe's best `count` links' ids (by its id), or none.
 
     A keyframe the map does not hold has none: relocalisation then refuses it by name.
     """
     row = int(m.keyframe_rows(np.array([keyframe]))[0])
     if row < 0:
         return []
-    rows = covisibility.links(m, row, options)[0][: options.relocalization.neighbours]
+    rows = covisibility.links(m, row, options)[0][:count]
     return [int(k) for k in m.kf_id[rows]]
+
+
+@dataclass(frozen=True)
+class _Scoring:
+    """A query's scoring: its groups, best first, and how many keyframes were weighed."""
+
+    groups: list[tuple[float, int]]
+    sharing: int
+    scored: int
+
+
+def _scoring(  # noqa: PLR0913 -- the database, its map, the query, its exclusions and rules
+    db: Database,
+    m: Map,
+    frame: tuple[IntArray, Array],
+    *,
+    excluded: set[int],
+    rules: tuple[float, int],
+    options: Options,
+) -> _Scoring:
+    """Score the keyframes sharing a frame's words, and accumulate them by group.
+
+    The keyframes sharing a word, but the `excluded`; those sharing more than `common_words` of
+    the most words any of them shares, scored; each score accumulated over the keyframe's best
+    `neighbours` links that were scored too, the best-scored standing for the group, with
+    `rules` the ``(common_words, neighbours)``. The groups come by accumulated score,
+    descending, ties by the lower id.
+    """
+    common_words, neighbours = rules
+    shared: dict[int, int] = {}
+    for word in frame[0].tolist():
+        for keyframe in db.holders(word):
+            if keyframe not in excluded:
+                shared[keyframe] = shared.get(keyframe, 0) + 1
+    if not shared:
+        return _Scoring(groups=[], sharing=0, scored=0)
+    least = math.floor(common_words * max(shared.values()))
+    scores = {
+        keyframe: vocabulary.score(frame, db.vector(keyframe))
+        for keyframe in sorted(shared)
+        if shared[keyframe] > least
+    }
+    groups: list[tuple[float, int]] = []
+    for keyframe, own in scores.items():
+        total, best, best_score = own, keyframe, own
+        for other in _best(m, keyframe, neighbours, options):
+            if other in scores:
+                total += scores[other]
+                if scores[other] > best_score:
+                    best, best_score = other, scores[other]
+        groups.append((total, best))
+    groups.sort(key=lambda group: (-group[0], group[1]))
+    return _Scoring(groups=groups, sharing=len(shared), scored=len(scores))
+
+
+def _chosen(groups: list[tuple[float, int]], *, above: float, most: int) -> Candidates:
+    """Return the groups' best keyframes, each once, scoring above `above`, at most `most`."""
+    chosen: dict[int, float] = {}
+    for total, best in groups:
+        if len(chosen) == most:
+            break
+        if total > above and best not in chosen:
+            chosen[best] = total
+    return Candidates(
+        keyframes=np.array(list(chosen), dtype=np.int64),
+        scores=np.array(list(chosen.values()), dtype=np.float64),
+        sharing=0,
+        scored=0,
+    )
 
 
 def _candidates(
     db: Database, m: Map, frame: tuple[IntArray, Array], options: Options
 ) -> Candidates:
     """Find relocalisation's candidates (reference)."""
-    shared: dict[int, int] = {}
-    for word in frame[0].tolist():
-        for keyframe in db.holders(word):
-            shared[keyframe] = shared.get(keyframe, 0) + 1
-    none = np.zeros(0, dtype=np.int64)
-    if not shared:
-        return Candidates(none, np.zeros(0), sharing=0, scored=0)
-    least = math.floor(options.relocalization.common_words * max(shared.values()))
-    scores = {
-        keyframe: vocabulary.score(frame, db.vector(keyframe))
-        for keyframe in sorted(shared)
-        if shared[keyframe] > least
-    }
-    neighbours = {keyframe: _best(m, keyframe, options) for keyframe in scores}
-    groups: list[tuple[float, int]] = []
-    for keyframe, own in scores.items():
-        total, best, best_score = own, keyframe, own
-        for other in neighbours[keyframe]:
-            if other in scores:
-                total += scores[other]
-                if scores[other] > best_score:
-                    best, best_score = other, scores[other]
-        groups.append((total, best))
-    retained = options.relocalization.group_score * max(total for total, _ in groups)
-    chosen: dict[int, float] = {}
-    for total, best in sorted(groups, key=lambda group: (-group[0], group[1])):
-        if total > retained and best not in chosen:
-            chosen[best] = total
-    return Candidates(
-        keyframes=np.array(list(chosen), dtype=np.int64),
-        scores=np.array(list(chosen.values()), dtype=np.float64),
-        sharing=len(shared),
-        scored=len(scores),
+    settings = options.relocalization
+    found = _scoring(
+        db, m, frame, excluded=set(), rules=(settings.common_words, settings.neighbours),
+        options=options,
+    )  # fmt: skip
+    if not found.groups:
+        return Candidates(np.zeros(0, dtype=np.int64), np.zeros(0), sharing=0, scored=0)
+    retained = settings.group_score * found.groups[0][0]
+    chosen = _chosen(found.groups, above=retained, most=len(found.groups))
+    return replace(chosen, sharing=found.sharing, scored=found.scored)
+
+
+def _loop_candidates(db: Database, m: Map, keyframe: int, options: Options) -> Candidates:
+    """Find loop closing's candidates (reference)."""
+    settings = options.loops
+    row = int(m.keyframe_rows(np.array([keyframe]))[0])
+    linked = {int(k) for k in m.kf_id[covisibility.links(m, row, options)[0]]}
+    rules = (settings.common_words, settings.neighbours)
+    found = _scoring(
+        db, m, db.vector(keyframe), excluded={keyframe} | linked, rules=rules, options=options
     )
+    chosen = _chosen(found.groups, above=-math.inf, most=settings.candidates)
+    return replace(chosen, sharing=found.sharing, scored=found.scored)
 
 
 def _decode_candidates(raw: dict[str, Any], codes: backends.Codes) -> Candidates:
@@ -316,6 +384,60 @@ def candidates(
             "m": m.as_dict(),
             "ids": vector[0],
             "values": vector[1],
+            "options": options.as_dict(),
+        },
+        decode=_decode_candidates,
+    )
+
+
+def loop_candidates(
+    db: Database, m: Map, keyframe: int, options: Options, *, backend: str = "python"
+) -> Candidates:
+    """Find the keyframes a keyframe may close a loop with (ORB-SLAM3's ``DetectNBestCandidates``).
+
+    Relocalisation's scoring (:func:`candidates`) of the keyframe's own words, with
+    ``loops.common_words`` and ``loops.neighbours``, leaving out the keyframe and every keyframe
+    linked to it (:func:`slam_it.edge.covisibility.links`); the best ``loops.candidates`` groups,
+    with no cut on their scores.
+
+    Parameters
+    ----------
+    db : Database
+        The map's keyframe database, holding the keyframe.
+    m : slam_it.edge.map.Map
+        The map, holding the keyframe, whose observations give covisibility.
+    keyframe : int
+        The keyframe's id.
+    options : slam_it.edge.options.Options
+        ``loops.candidates``, ``loops.common_words``, ``loops.neighbours`` and
+        ``covisibility.min_points``.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    Candidates
+        The candidates, best first, with their scores; none if no keyframe outside its links
+        shares a word. ``sharing`` and ``scored`` count those keyframes only.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the keyframe is not in the map, or not in the database.
+    """
+    if m.keyframe_rows(np.array([keyframe], dtype=np.int64))[0] < 0:
+        raise InvalidInputError(f"keyframe {keyframe} is not in the map")
+    if keyframe not in db.keyframes:
+        raise InvalidInputError(f"database: keyframe {keyframe} is not in it")
+    return backends.call(
+        backend,
+        __name__,
+        "loop_candidates",
+        reference=lambda: _loop_candidates(db, m, keyframe, options),
+        arguments={
+            "database": db.as_dict(),
+            "m": m.as_dict(),
+            "keyframe": keyframe,
             "options": options.as_dict(),
         },
         decode=_decode_candidates,

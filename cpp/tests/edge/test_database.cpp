@@ -1,8 +1,9 @@
 /// @file
 /// @brief Native tests for the keyframe database (slam_it/edge/database.hpp) on the exact
 ///        scene's map: the inverted index as keyframes enter and leave it, relocalisation's
-///        candidates without an erased keyframe, and the refusals (a keyframe given twice, one
-///        erased that is not there, a malformed vector).
+///        candidates without an erased keyframe, loop closing's outside a keyframe's links, and
+///        the refusals (a keyframe given twice, one erased that is not there, a malformed
+///        vector, a keyframe outside the map or the database).
 #include <algorithm>
 #include <cstdint>
 #include <vector>
@@ -94,12 +95,43 @@ void check_refusals(int& failures) {
          "a frame vector whose words do not ascend is refused", failures);
 }
 
+/// @brief Check loop closing's candidates: never the keyframe or one linked to it; with every
+///        keyframe linked to its best alone, the third keyframe the one left; a keyframe outside
+///        the map or the database refused.
+/// @param failures Running failure count.
+void check_loop_candidates(int& failures) {
+  const auto m = scene::map();
+  if (!m) {
+    expect(false, "the scene's map is built", failures);
+    return;
+  }
+  edge::Database db;
+  for (std::int64_t k = 0; k < 3; ++k) {
+    expect(edge::insert(db, k, words_of(k)).has_value(), "the setup succeeds", failures);
+  }
+  const auto linked = edge::loop_candidates(db, *m, 2, edge::Options{});
+  expect(linked.has_value() && linked->keyframes.empty() && linked->sharing == 0,
+         "every other keyframe linked: no candidate", failures);
+  edge::Options best_only;
+  best_only.covisibility.min_points = 1'048'576;  // 2^20: no keyframe shares that many
+  const auto found = edge::loop_candidates(db, *m, 2, best_only);
+  expect(found.has_value() && found->sharing == 1 && found->keyframes.size() == 1 &&
+             found->keyframes.front() != 2,
+         "linked to its best alone, the other keyframe is the candidate", failures);
+  expect(is_invalid_input(edge::loop_candidates(db, *m, 7, best_only)),
+         "a keyframe outside the map is refused", failures);
+  expect(edge::erase(db, 2).has_value() &&
+             is_invalid_input(edge::loop_candidates(db, *m, 2, best_only)),
+         "a keyframe outside the database is refused", failures);
+}
+
 /// @brief The test body.
 /// @return The exit code.
 int run() {
   int failures = 0;
   check_erase(failures);
   check_refusals(failures);
+  check_loop_candidates(failures);
   return slam_it::testing::finish("edge/database", failures);
 }
 

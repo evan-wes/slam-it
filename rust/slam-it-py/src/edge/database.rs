@@ -54,6 +54,62 @@ fn candidates<'py>(
             &options_in(options)?,
         ),
     )?;
+    candidates_dict(py, &found)
+}
+
+/// Finds the keyframes a keyframe may close a loop with.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `database` - The database, as a dict.
+/// * `m` - The map, as a dict.
+/// * `keyframe` - The keyframe's id.
+/// * `options` - The settings, as a dict.
+///
+/// # Returns
+///
+/// `keyframes` (int64), `scores` (float64), `sharing` and `scored`.
+///
+/// # Errors
+///
+/// `ValueError` for a malformed argument; `InvalidInputError` from the core.
+#[pyfunction]
+#[pyo3(signature = (database, m, keyframe, options))]
+fn loop_candidates<'py>(
+    py: Python<'py>,
+    database: &Bound<'py, PyDict>,
+    m: &Bound<'py, PyDict>,
+    keyframe: i64,
+    options: &Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let found = unwrap(
+        py,
+        core::loop_candidates(
+            &database_in(py, database)?,
+            &map_in(py, m)?,
+            keyframe,
+            &options_in(options)?,
+        ),
+    )?;
+    candidates_dict(py, &found)
+}
+
+/// Candidates as a dict.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `found` - The candidates.
+///
+/// # Returns
+///
+/// `keyframes` (int64), `scores` (float64), `sharing` and `scored`.
+///
+/// # Errors
+///
+/// A Python error if the dict cannot be built.
+fn candidates_dict<'py>(py: Python<'py>, found: &core::Candidates) -> PyResult<Bound<'py, PyDict>> {
     let out = PyDict::new(py);
     out.set_item("keyframes", vector_array(py, &found.keyframes))?;
     out.set_item("scores", vector_array(py, &found.scores))?;
@@ -69,6 +125,6 @@ fn candidates<'py>(
 /// Returns a Python error if a function cannot be added.
 #[pymodule]
 pub fn database(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    add_functions!(m; candidates);
+    add_functions!(m; candidates, loop_candidates);
     Ok(())
 }

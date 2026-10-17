@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <map>
 #include <ranges>
 #include <string>
@@ -25,15 +26,19 @@ namespace vocabulary = foundations::vocabulary;
 /// @brief Each keyframe's words shared with a frame, found through the index.
 /// @param db The database.
 /// @param frame The frame's word vector.
+/// @param excluded The keyframes left out, by id.
 /// @return Each keyframe's id: how many of the frame's words its vector holds.
 std::map<std::int64_t, std::int64_t> shared_words(const Database& db,
-                                                  const vocabulary::BowVector& frame) {
+                                                  const vocabulary::BowVector& frame,
+                                                  std::span<const std::int64_t> excluded) {
   std::map<std::int64_t, std::int64_t> out;
   for (const std::int64_t word : frame.ids) {
     const auto holders = db.inverted.find(word);
     if (holders != db.inverted.end()) {
       for (const std::int64_t keyframe : holders->second) {
-        ++out[keyframe];
+        if (!std::ranges::contains(excluded, keyframe)) {
+          ++out[keyframe];
+        }
       }
     }
   }
@@ -68,14 +73,15 @@ std::vector<std::pair<double, std::int64_t>> groups_of(
   return out;
 }
 
-/// @brief Each scored keyframe's best `relocalization.neighbours` links' ids
-///        (`slam_it.edge.database._best`).
+/// @brief Each scored keyframe's best `count` links' ids (`slam_it.edge.database._best`).
 /// @param m The map.
 /// @param keyframes The keyframes' ids, each in the map.
-/// @param options The settings.
+/// @param count The links kept.
+/// @param options The settings: `covisibility.min_points`.
 /// @return Each keyframe's id to its best links' ids, most shared first.
 std::map<std::int64_t, std::vector<std::int64_t>> best_links(
-    const Map& m, std::span<const std::int64_t> keyframes, const Options& options) {
+    const Map& m, std::span<const std::int64_t> keyframes, std::int64_t count,
+    const Options& options) {
   std::map<std::int64_t, std::vector<std::int64_t>> out;
   for (const std::int64_t keyframe : keyframes) {
     std::vector<std::int64_t>& best = out[keyframe];
@@ -85,10 +91,83 @@ std::map<std::int64_t, std::vector<std::int64_t>> best_links(
     }
     const auto k = static_cast<std::size_t>(row);
     for (const Link& link : links_of(m, shared_points(m, k), options.covisibility.min_points)) {
-      if (std::cmp_greater_equal(best.size(), options.relocalization.neighbours)) {
+      if (std::cmp_greater_equal(best.size(), count)) {
         break;
       }
       best.push_back(m.kf_id[static_cast<std::size_t>(link.row)]);
+    }
+  }
+  return out;
+}
+
+/// @brief A query's scoring: its groups, best first, and how many keyframes were weighed.
+struct Scoring {
+  /// @brief Each group's accumulated score and best keyframe, by score descending (ties: the
+  ///        lower id).
+  std::vector<std::pair<double, std::int64_t>> groups;
+  /// @brief The keyframes sharing a word, but the excluded.
+  std::int64_t sharing{0};
+  /// @brief Those scored.
+  std::int64_t scored{0};
+};
+
+/// @brief Score the keyframes sharing a frame's words and accumulate them by group
+///        (`slam_it.edge.database._scoring`).
+/// @param db The database.
+/// @param m The map.
+/// @param frame The frame's word vector, checked.
+/// @param excluded The keyframes left out, by id.
+/// @param rules `(common_words, neighbours)`.
+/// @param options The settings: `covisibility.min_points`.
+/// @return The scoring; a score's error.
+Result<Scoring> scoring(const Database& db, const Map& m, const vocabulary::BowVector& frame,
+                        std::span<const std::int64_t> excluded,
+                        std::pair<double, std::int64_t> rules, const Options& options) {
+  const auto [common_words, neighbours] = rules;
+  const std::map<std::int64_t, std::int64_t> shared = shared_words(db, frame, excluded);
+  Scoring out;
+  out.sharing = static_cast<std::int64_t>(shared.size());
+  if (shared.empty()) {
+    return out;
+  }
+  const std::int64_t most = std::ranges::max(shared | std::views::values);
+  const auto least =
+      static_cast<std::int64_t>(std::floor(common_words * static_cast<double>(most)));
+  std::map<std::int64_t, double> scores;
+  std::vector<std::int64_t> scored;
+  for (const auto& [keyframe, count] : shared) {
+    if (count > least) {
+      auto score = vocabulary::score(frame, db.keyframes.at(keyframe).vector);
+      if (!score) {
+        return std::unexpected(std::move(score.error()));
+      }
+      scores.emplace(keyframe, *score);
+      scored.push_back(keyframe);
+    }
+  }
+  out.scored = static_cast<std::int64_t>(scores.size());
+  out.groups = groups_of(scores, best_links(m, scored, neighbours, options));
+  std::ranges::sort(out.groups, [](const auto& a, const auto& b) {
+    return a.first > b.first || (a.first == b.first && a.second < b.second);
+  });
+  return out;
+}
+
+/// @brief The groups' best keyframes, each once, scoring above `above`, at most `most`.
+/// @param found The scoring.
+/// @param above The score a group must exceed.
+/// @param most The candidates kept.
+/// @return The candidates, with the scoring's counts.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (above, most), a score and a count
+Candidates chosen(const Scoring& found, double above, std::size_t most) {
+  Candidates out{.keyframes = {}, .scores = {}, .sharing = found.sharing, .scored = found.scored};
+  for (const auto& [total, best] : found.groups) {
+    if (out.keyframes.size() == most) {
+      break;
+    }
+    if (total > above && !std::ranges::contains(out.keyframes, best)) {
+      out.keyframes.push_back(best);
+      out.scores.push_back(total);
     }
   }
   return out;
@@ -142,40 +221,43 @@ Result<Candidates> candidates(const Database& db, const Map& m,
   if (auto ok = vocabulary::check_vector(frame); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
-  const std::map<std::int64_t, std::int64_t> shared = shared_words(db, frame);
-  Candidates out;
-  out.sharing = static_cast<std::int64_t>(shared.size());
-  if (shared.empty()) {
-    return out;
+  const RelocalizationOptions& settings = options.relocalization;
+  auto found = scoring(db, m, frame, {}, {settings.common_words, settings.neighbours}, options);
+  if (!found) {
+    return std::unexpected(std::move(found.error()));
   }
-  const std::int64_t most = std::ranges::max(shared | std::views::values);
-  const auto least = static_cast<std::int64_t>(
-      std::floor(options.relocalization.common_words * static_cast<double>(most)));
-  std::map<std::int64_t, double> scores;
-  std::vector<std::int64_t> scored;
-  for (const auto& [keyframe, count] : shared) {
-    if (count > least) {
-      auto score = vocabulary::score(frame, db.keyframes.at(keyframe).vector);
-      if (!score) {
-        return std::unexpected(std::move(score.error()));
-      }
-      scores.emplace(keyframe, *score);
-      scored.push_back(keyframe);
-    }
+  if (found->groups.empty()) {
+    return Candidates{.keyframes = {}, .scores = {}, .sharing = 0, .scored = 0};
   }
-  out.scored = static_cast<std::int64_t>(scores.size());
-  auto groups = groups_of(scores, best_links(m, scored, options));
-  const double retained = options.relocalization.group_score * std::ranges::max(groups).first;
-  std::ranges::sort(groups, [](const auto& a, const auto& b) {
-    return a.first > b.first || (a.first == b.first && a.second < b.second);
-  });
-  for (const auto& [total, best] : groups) {
-    if (total > retained && !std::ranges::contains(out.keyframes, best)) {
-      out.keyframes.push_back(best);
-      out.scores.push_back(total);
-    }
+  const double retained = settings.group_score * found->groups.front().first;
+  return chosen(*found, retained, found->groups.size());
+}
+
+Result<Candidates> loop_candidates(const Database& db, const Map& m, std::int64_t keyframe,
+                                   const Options& options) {
+  const std::int64_t row = keyframe_row(m, keyframe);
+  if (row < 0) {
+    return fail(ErrorKind::kInvalidInput,
+                "keyframe " + std::to_string(keyframe) + " is not in the map");
   }
-  return out;
+  const auto words = db.keyframes.find(keyframe);
+  if (words == db.keyframes.end()) {
+    return fail(ErrorKind::kInvalidInput,
+                "database: keyframe " + std::to_string(keyframe) + " is not in it");
+  }
+  std::vector<std::int64_t> excluded{keyframe};
+  const auto k = static_cast<std::size_t>(row);
+  for (const Link& link : links_of(m, shared_points(m, k), options.covisibility.min_points)) {
+    excluded.push_back(m.kf_id[static_cast<std::size_t>(link.row)]);
+  }
+  const LoopOptions& settings = options.loops;
+  auto found = scoring(db, m, words->second.vector, excluded,
+                       {settings.common_words, settings.neighbours}, options);
+  if (!found) {
+    return std::unexpected(std::move(found.error()));
+  }
+  return chosen(*found, -std::numeric_limits<double>::infinity(),
+                static_cast<std::size_t>(settings.candidates));
 }
 
 }  // namespace slam_it::edge

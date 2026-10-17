@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from slam_it import backends
-from slam_it.edge import database
+from slam_it.edge import covisibility, database
 from slam_it.edge.database import Database
 from slam_it.edge.options import Options
 from slam_it.foundations import vocabulary
@@ -25,6 +25,13 @@ def _frame_vector(
     """Return one of the room's frames' word vector."""
     found, _ = vocabulary.quantize(words, truth.frames[index].features.descriptors)
     return vocabulary.bow(words, found)
+
+
+def _assert_same_candidates(got: database.Candidates, expected: database.Candidates) -> None:
+    """Assert two searches found the same candidates in the same order, scores and counts too."""
+    np.testing.assert_array_equal(got.keyframes, expected.keyframes)
+    np.testing.assert_array_equal(got.scores, expected.scores)
+    assert (got.sharing, got.scored) == (expected.sharing, expected.scored)
 
 
 def test_the_index_holds_each_keyframe_under_its_words(room_database: Database) -> None:
@@ -132,9 +139,7 @@ def test_every_backend_finds_python_s_candidates(  # noqa: PLR0917 -- cases, fix
     vector = _frame_vector(truth, words, frame)
     expected = database.candidates(room_database, truth.map, vector, settings)
     got = database.candidates(room_database, truth.map, vector, settings, backend=chosen)
-    np.testing.assert_array_equal(got.keyframes, expected.keyframes)
-    np.testing.assert_array_equal(got.scores, expected.scores)
-    assert (got.sharing, got.scored) == (expected.sharing, expected.scored)
+    _assert_same_candidates(got, expected)
 
 
 def test_a_frame_sharing_no_word_has_no_candidates(truth: Truth, room_database: Database) -> None:
@@ -173,3 +178,77 @@ def test_a_database_with_a_key_missing_or_extra_is_refused(
     ids, values = vocabulary.bow(room_database.vocabulary, [0])
     with pytest.raises(ValueError, match=r"node|bogus|exactly the keys"):
         compiled.candidates(crossed, truth.map.as_dict(), ids, values, OPTIONS.as_dict())
+
+
+# --- loop closing's candidates ------------------------------------------------------------
+
+BEST_LINK_ONLY = OPTIONS.with_settings({"covisibility.min_points": 1 << 20})
+"""Each keyframe linked to the one it shares most with alone, so others are left to search."""
+
+
+@pytest.mark.parametrize("settings", [OPTIONS, BEST_LINK_ONLY], ids=["defaults", "best link only"])
+def test_a_keyframe_s_loop_candidates_are_outside_its_links(
+    truth: Truth, room_database: Database, settings: Options
+) -> None:
+    """Never the keyframe or one linked to it; at most ``loops.candidates``, best first."""
+    m = truth.map
+    for k in range(m.keyframes):
+        keyframe = int(m.kf_id[k])
+        linked = set(m.kf_id[covisibility.links(m, k, settings)[0]].tolist())
+        found = database.loop_candidates(room_database, m, keyframe, settings)
+        assert keyframe not in found.keyframes
+        assert not linked & set(found.keyframes.tolist())
+        assert len(found.keyframes) <= settings.loops.candidates
+        assert np.all(np.diff(found.scores) <= 0.0)
+        assert found.sharing <= m.keyframes - 1 - len(linked)
+        assert found.scored <= found.sharing
+
+
+def test_only_the_best_groups_are_kept(truth: Truth, room_database: Database) -> None:
+    """With one candidate asked and every sharer scored, the best group alone comes back."""
+    m = truth.map
+    looser = BEST_LINK_ONLY.with_settings({"loops.candidates": 1, "loops.common_words": 0.1})
+    found = database.loop_candidates(room_database, m, int(m.kf_id[-1]), looser)
+    assert len(found.keyframes) == 1
+    assert found.scored == found.sharing >= 1
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize(
+    "settings",
+    [
+        OPTIONS,
+        BEST_LINK_ONLY,
+        BEST_LINK_ONLY.with_settings(
+            {"loops.common_words": 0.5, "loops.neighbours": 1, "loops.candidates": 2}
+        ),
+    ],
+    ids=["defaults", "best link only", "looser"],
+)
+def test_every_backend_finds_python_s_loop_candidates(
+    backend: str, settings: Options, truth: Truth, room_database: Database
+) -> None:
+    """The same candidates in the same order, the same sums of the same scores: exactly."""
+    chosen = require_function(backend, database.__name__, "loop_candidates")
+    m = truth.map
+    for keyframe in m.kf_id.tolist():
+        expected = database.loop_candidates(room_database, m, keyframe, settings)
+        got = database.loop_candidates(room_database, m, keyframe, settings, backend=chosen)
+        _assert_same_candidates(got, expected)
+
+
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+def test_a_keyframe_outside_the_map_or_the_database_is_refused(
+    backend: str, truth: Truth, words: vocabulary.Vocabulary, room_database: Database
+) -> None:
+    """Python refuses either before any backend runs, and each core refuses it too."""
+    chosen = require_function(backend, database.__name__, "loop_candidates")
+    compiled = backends.implementation(chosen, database.__name__)
+    m = truth.map
+    with pytest.raises(InvalidInputError, match="not in the map"):
+        database.loop_candidates(room_database, m, m.next_kf_id + 2, OPTIONS)
+    with pytest.raises(InvalidInputError, match="not in it"):
+        database.loop_candidates(Database(words), m, int(m.kf_id[0]), OPTIONS)
+    for db, keyframe in ((room_database, m.next_kf_id + 2), (Database(words), int(m.kf_id[0]))):
+        with pytest.raises(InvalidInputError, match="not in"):
+            compiled.loop_candidates(db.as_dict(), m.as_dict(), keyframe, OPTIONS.as_dict())
