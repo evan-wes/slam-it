@@ -12,6 +12,7 @@ pub mod correspondences;
 pub mod epipolar;
 pub mod error;
 pub mod fivepoint;
+pub mod graphs;
 pub mod homography;
 pub mod image;
 pub(crate) mod linalg;

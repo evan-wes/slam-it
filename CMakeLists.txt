@@ -14,6 +14,10 @@ option(SLAM_IT_BUILD_BENCHMARKS "Build the native C++ benchmarks (Google Benchma
 # Eigen is the cores' linear algebra: fixed-size types may appear in core headers, so it is
 # a PUBLIC dependency of every rung library. Provided by the conda env (setup_slam_it.sh).
 find_package(Eigen3 5.0 CONFIG REQUIRED)
+# GTSAM is rung 0's factor-graph back end (cpp/src/foundations/graphs.cpp): built by
+# setup_slam_it.sh from its 4.3.0 tag with EIGEN_NO_CPUID, as the cores are (below), so its
+# products are blocked alike on every core. Kept out of every header: PRIVATE to the rung.
+find_package(GTSAM 4.3 CONFIG REQUIRED)
 
 # One static library per rung, mirroring the Python packages: slam_it_<rung> from
 # cpp/src/<rung>/, linking only the rungs below it. DEPENDS must agree with the ladder's
@@ -91,6 +95,7 @@ if(SLAM_IT_BUILD_BENCHMARKS)
 endif()
 
 slam_it_add_rung(foundations)
+target_link_libraries(slam_it_foundations PRIVATE gtsam)
 slam_it_add_rung(edge DEPENDS slam_it_foundations)
 # Evaluation: dataset readers and the run writer, outside the algorithm cores. PNGs decode
 # with the vendored stb_image (third_party/stb), included as a system header so its own

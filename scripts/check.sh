@@ -49,7 +49,10 @@ check() {
 
 # Source lists come from git (tracked plus new, unignored files), so new rung directories are
 # covered without editing this file.
-mapfile -t CPP_FILES < <(git ls-files --cached --others --exclude-standard 'cpp/*.hpp' 'cpp/*.cpp')
+# The Rust core's C++ bridge (rust/*/cxx/) is formatted and documented as the C++ core is; cargo
+# compiles it, so it has no compile commands for clang-tidy.
+mapfile -t CPP_FILES < <(git ls-files --cached --others --exclude-standard 'cpp/*.hpp' 'cpp/*.cpp' \
+  'rust/*/cxx/*.hpp' 'rust/*/cxx/*.cpp')
 mapfile -t CPP_TU < <(git ls-files --cached --others --exclude-standard 'cpp/src/*.cpp' 'cpp/tests/*.cpp' \
   'cpp/apps/*.cpp')
 mapfile -t BENCH_TU < <(git ls-files --cached --others --exclude-standard 'cpp/bench/*.cpp')
@@ -113,6 +116,8 @@ check "prettier (viewer)" viewer/node_modules/.bin/prettier --check \
   viewer/logic.d.ts
 
 # All languages
+# Docstrings, doc comments, `#include`s and Rust `use`s are not counted (.jscpd.json): files
+# that bind one library import the same headers, which is not duplicated code.
 check "jscpd (duplication)" jscpd --config .jscpd.json
 check "pytest (parity, doctests; CPU subset)" python -m pytest -q -m "not gpu and not budget"
 

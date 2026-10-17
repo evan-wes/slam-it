@@ -5,13 +5,31 @@ description = "Rung 0 of SLAM It!'s Rust core, foundations: builds standalone, w
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+build = "build.rs"
 
 [dependencies]
+# The bridge to GTSAM (src/graphs.rs, cxx/graphs_bridge.cpp): rung 0's factor-graph back end.
+cxx = "1.0.205"
 faer.workspace = true
 nalgebra.workspace = true
 
-[lints]
-workspace = true
+[build-dependencies]
+cxx-build = "1.0.205"
+
+# The workspace's lints, but for `unsafe_code`: denied here rather than forbidden, so that the
+# one module bridging to GTSAM (`graphs`'s `ffi`, whose C++ side `cxx` declares in an
+# `unsafe extern "C++"` block) can allow it. Keep the rest equal to the workspace's tables.
+[lints.rust]
+missing_docs = "deny"
+unsafe_code = "deny"
+
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+missing_docs_in_private_items = "deny"
+missing_errors_doc = "deny"
+missing_panics_doc = "deny"
+neg_cmp_op_on_partial_ord = "allow"
+many_single_char_names = "allow"
 
 [dev-dependencies]
 criterion = "0.8.2"

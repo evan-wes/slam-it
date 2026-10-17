@@ -16,6 +16,7 @@ mod ba;
 mod camera;
 mod epipolar;
 mod fivepoint;
+mod graphs;
 mod homography;
 mod image;
 pub(crate) mod image_crossing;
@@ -46,6 +47,7 @@ pub fn foundations(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_wrapped(pyo3::wrap_pymodule!(camera::camera))?;
     m.add_wrapped(pyo3::wrap_pymodule!(epipolar::epipolar))?;
     m.add_wrapped(pyo3::wrap_pymodule!(fivepoint::fivepoint))?;
+    m.add_wrapped(pyo3::wrap_pymodule!(graphs::graphs))?;
     m.add_wrapped(pyo3::wrap_pymodule!(homography::homography))?;
     m.add_wrapped(pyo3::wrap_pymodule!(image::image))?;
     m.add_wrapped(pyo3::wrap_pymodule!(matching::matching))?;

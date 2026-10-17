@@ -73,6 +73,10 @@ void bind_twoview(nanobind::module_& m);
 /// @param m The `foundations.ba` submodule.
 void bind_ba(nanobind::module_& m);
 
+/// @brief Add the `graphs` functions to the `foundations.graphs` submodule.
+/// @param m The `foundations.graphs` submodule.
+void bind_graphs(nanobind::module_& m);
+
 /// @brief Add the `vocabulary` functions to the `foundations.vocabulary` submodule.
 /// @param m The `foundations.vocabulary` submodule.
 void bind_vocabulary(nanobind::module_& m);

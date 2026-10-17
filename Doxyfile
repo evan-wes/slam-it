@@ -1,7 +1,7 @@
 # Doxygen for the C++ core. Run by scripts/check.sh, which fails on any warning:
 # every public declaration must be documented, and @param/@return must match it.
 PROJECT_NAME           = "SLAM It!"
-INPUT                  = cpp/include cpp/src
+INPUT                  = cpp/include cpp/src rust/slam-it-foundations/cxx
 RECURSIVE              = YES
 OUTPUT_DIRECTORY       = build/doxygen
 # Only the warnings are needed for the check. Doxygen refuses to run with no output format,

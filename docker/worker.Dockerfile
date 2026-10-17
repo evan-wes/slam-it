@@ -25,6 +25,24 @@ RUN git clone --quiet --depth 1 --branch 5.0.1 https://gitlab.com/libeigen/eigen
         -DEIGEN_BUILD_DOC=OFF -DEIGEN_BUILD_DEMOS=OFF \
     && cmake --install /tmp/eigen/build \
     && rm -rf /tmp/eigen
+# GTSAM 4.3.0, rung 0's factor-graph back end, at its tag's commit, built as
+# scripts/setup_slam_it.sh builds it (static, position-independent, EIGEN_NO_CPUID, no TBB, no
+# Boost features) but without its Python wrapper: the worker runs the native program, which
+# carries GTSAM. Keep the options equal to the setup script's GTSAM_OPTIONS.
+ARG GTSAM_COMMIT=71a25ca36c084cbad1f872e812d6d97fbadfdb05
+RUN git clone --quiet --depth 1 --branch 4.3.0 https://github.com/borglab/gtsam.git /tmp/gtsam \
+    && test "$(git -C /tmp/gtsam rev-parse HEAD)" = "${GTSAM_COMMIT}" \
+    && cmake -S /tmp/gtsam -B /tmp/gtsam/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+        "-DCMAKE_CXX_FLAGS=-DEIGEN_NO_CPUID -ffp-contract=off" \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_SHARED_LIBS=OFF -DGTSAM_BUILD_WITH_WERROR=OFF \
+        -DGTSAM_BUILD_WITH_MARCH_NATIVE=OFF -DGTSAM_WITH_TBB=OFF -DGTSAM_USE_SYSTEM_EIGEN=ON \
+        -DGTSAM_USE_BOOST_FEATURES=OFF -DGTSAM_ENABLE_BOOST_SERIALIZATION=OFF \
+        -DGTSAM_BUILD_UNSTABLE=OFF -DGTSAM_BUILD_TESTS=OFF -DGTSAM_BUILD_EXAMPLES_ALWAYS=OFF \
+        -DGTSAM_BUILD_TIMING_ALWAYS=OFF -DGTSAM_INSTALL_CPPUNITLITE=OFF -DGTSAM_BUILD_PYTHON=OFF \
+        -DGTSAM_USE_SYSTEM_CCOLAMD=OFF -DCMAKE_DISABLE_FIND_PACKAGE_CHOLMOD=ON \
+    && cmake --build /tmp/gtsam/build -j4 --target gtsam metis-gtsam \
+    && cmake --install /tmp/gtsam/build \
+    && rm -rf /tmp/gtsam
 COPY . /src
 # The lock pins the build's own tools (scikit-build-core, nanobind) too; four compile jobs.
 ENV PIP_CONSTRAINT=/src/scripts/locks/slam-it.lock CMAKE_BUILD_PARALLEL_LEVEL=4

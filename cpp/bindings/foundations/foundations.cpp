@@ -46,6 +46,9 @@ void bind_foundations(nanobind::module_& parent) {
   bind_twoview(twoview);
   nanobind::module_ ba = foundations.def_submodule("ba", "Bundle adjustment.");
   bind_ba(ba);
+  nanobind::module_ graphs =
+      foundations.def_submodule("graphs", "Factor graphs on GTSAM: pose graphs, a similarity, BA.");
+  bind_graphs(graphs);
 }
 
 }  // namespace slam_it::bindings

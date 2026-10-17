@@ -13,7 +13,10 @@ license = "PolyForm-Noncommercial-1.0.0"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/*"]
 authors = [{ name = "evan-wes" }]
 # Pillow reads image files, in slam_it.eval.images alone (a contract below keeps it there).
-dependencies = ["numpy>=2.0", "pillow>=10.0"]
+# GTSAM is rung 0's factor-graph back end (slam_it.foundations.graphs). scripts/setup_slam_it.sh
+# builds it from its release and pip-installs its Python bindings, built over the same library
+# the C++ core links; no index is asked for it.
+dependencies = ["numpy>=2.0", "pillow>=10.0", "gtsam>=4.3"]
 
 [project.optional-dependencies]
 # COLMAP's Ceres bundle adjuster, for slam_it.eval.colmap_reference (the only importer).
@@ -118,6 +121,13 @@ module = ["mpmath", "manifpy", "scipy.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+# GTSAM's Python bindings ship py.typed but no stubs for their extension module, so its names
+# are typed as Any.
+module = ["gtsam", "gtsam.*"]
+follow_imports = "skip"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 # The upload server's S3 client, which ships without type information.
 module = ["boto3", "botocore.*"]
 ignore_missing_imports = true
@@ -154,7 +164,7 @@ type = "layers"
 exhaustive = true
 containers = ["slam_it.foundations"]
 layers = [
-  "(ba) | (twoview)",
+  "(ba) | (graphs) | (twoview)",
   "(epipolar) | (homography) | (pnp) | (stereo)",
   "(camera) | (fivepoint) | (matching) | (p3p) | (ransac) | (triangulation) | (vocabulary)",
   "(nls) | (orb)",
@@ -223,15 +233,17 @@ type = "forbidden"
 source_modules = ["slam_it"]
 forbidden_modules = ["cv2"]
 
-# The library's runtime is numpy alone (the dependencies above), so none of these may enter
-# it; and they are the test oracles, which check slam_it against independent implementations,
-# so the library using one would make that check circular (PoseLib implements the same
-# solvers). A rung that needs one of them at run time changes the dependencies first.
+# Libraries are welcome in the runtime (the ladder's "Runtime dependencies", decided with
+# evan-wes on 2026-10-17), so none is kept out for a test's sake: scipy may enter once a rung
+# needs it, and a test then checks that rung against something else. These are test oracles
+# that implement the library's own solvers (PoseLib) or its mathematics at high precision
+# (mpmath, manif): nothing in the library needs them, and a rung that does adds it to the
+# dependencies first.
 [[tool.importlinter.contracts]]
 name = "slam_it never imports its test oracles"
 type = "forbidden"
 source_modules = ["slam_it"]
-forbidden_modules = ["poselib", "mpmath", "manifpy", "scipy"]
+forbidden_modules = ["poselib", "mpmath", "manifpy"]
 
 # The order of modules inside eval: the timestamp helpers, the image reader, the sensor.yaml
 # helpers, the LiDAR depth and a vocabulary's folder at the bottom, the dataset readers and

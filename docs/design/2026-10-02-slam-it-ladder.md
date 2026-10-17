@@ -121,9 +121,11 @@ this document first.
   the pure-Rust `png` crate, outside the algorithm cores.
 - **GTSAM 4.3, from milestone 2B's B3,** in all three languages, behind rung 0's
   `slam_it.foundations.graphs`: the loop's Sim(3) refinement, the essential graph and global
-  BA. C++ links conda-forge's build of it, made against our Eigen 5.0.1; Python uses its
-  official bindings, the same build; Rust reaches it through a `cxx` bridge
-  ([the 2B design](2026-10-14-online-slam.md), section 10).
+  BA. Built by `setup_slam_it.sh` from its release (static, with `EIGEN_NO_CPUID`, as the cores
+  build, so it repeats on every core), not taken from conda-forge, whose build did not; C++
+  links it, Python uses its official bindings built over the same library, and Rust reaches it
+  through a bridge with `cxx` (its runtime crate in `slam-it-foundations`, the one crate allowed
+  `unsafe`, in that module alone) ([the 2B design](2026-10-14-online-slam.md), section 10).
 - The three readers read a file the same way (gray from a gray file as stored, from a colour
   one through `image.to_gray`), held to shared PNG fixtures.
 - The native run writers and VO programs add none (decided for PR 8): they write JSON and
