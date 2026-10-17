@@ -250,8 +250,8 @@ def test_a_lost_map_above_reset_keyframes_is_kept(rendered: list[room.Frame]) ->
     np.testing.assert_array_equal(lives.keyframe_poses[0], np.eye(4))  # the first map's origin
     assert (restarted.map, restarted.state) == (1, pipeline.State.TRACKING)
     np.testing.assert_array_equal(lives.keyframe_poses[1], np.eye(4))  # the second's own
-    assert run._reference is None
-    assert run._failures == 0
+    assert run.tracking.reference is None
+    assert run.tracking.failures == 0
 
 
 @pytest.mark.parametrize(
@@ -334,7 +334,7 @@ def test_when_the_fallback_fails_relocalization_places_the_frame_in_its_map(
     assert found.summary.relocalization is not None
     assert found.summary.relocalization.placed
     assert found.tracked >= OPTIONS.tracking.recovery_tracked
-    assert run._failures == 0
+    assert run.tracking.failures == 0
 
 
 def test_a_failed_frame_ends_the_velocity(
@@ -421,7 +421,7 @@ def test_a_monocular_reference_needs_enough_features(rendered: list[room.Frame])
     first = rendered[0]
     run.track(frames.monocular(first.gray, 0.0, camera, run.extraction()))
     run.track(_empty())
-    assert run._reference is None
+    assert run.tracking.reference is None
 
 
 @pytest.mark.parametrize(
@@ -450,7 +450,7 @@ def test_the_database_holds_the_maps_keyframes_through_culling(
     for f in rendered:
         run.track(frames.rgbd(f.gray, f.depth, f.timestamp, CAMERA, run.extraction()))
         assert run.map is not None
-        assert run._database is not None
-        assert run._database.keyframes.tolist() == sorted(run.map.kf_id.tolist())
+        assert run.owner.database is not None
+        assert run.owner.database.keyframes.tolist() == sorted(run.map.kf_id.tolist())
     lives = run.lifetimes().keyframe_lives
     assert np.count_nonzero(lives[:, 2] == Removal.CULLED) > 0

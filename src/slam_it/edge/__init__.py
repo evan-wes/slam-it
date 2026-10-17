@@ -26,7 +26,10 @@ the map onto it: a Sim(3), the essential graph and a global BA, on rung 0's fact
 - :mod:`slam_it.edge.mapping`: growing and cleaning the map around each new keyframe.
 - :mod:`slam_it.edge.loops`: detecting the place a keyframe revisits, through the database's
   candidates, and correcting the map onto it (ORB-SLAM3's ``LoopClosing``).
-- :mod:`slam_it.edge.pipeline`: the per-frame loop over them, holding the map.
+- :mod:`slam_it.edge.atlas`: the run's records across its maps: the maps' numbers, every
+  point's and keyframe's life, and each frame's place for the final trajectory.
+- :mod:`slam_it.edge.pipeline`: the per-frame loop over them: tracking, local mapping and
+  loop closing as steps over state of their own, and the owner of the map being tracked.
 
 **Compute budget:** real time under ``laptop-cpu``, then ``jetson-class`` and
 ``pi-class``; local mapping, run inline, falls behind on the largest maps since milestone 2B's

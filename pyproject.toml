@@ -206,7 +206,8 @@ layers = [
 # the observation test and the covisibility graph, independent of each other, on them; bundle
 # adjustment and the keyframe database, independent of each other, on those (the database needs
 # only the map and the graph); initialisation, tracking and mapping, independent of each other,
-# on those; relocalisation on tracking; the pipeline on top. New modules are optional layers.
+# on those; relocalisation on tracking; the atlas (the run's records) on those; the pipeline on
+# top. New modules are optional layers.
 [[tool.importlinter.contracts]]
 name = "The edge rung's internal order"
 type = "layers"
@@ -214,6 +215,7 @@ exhaustive = true
 containers = ["slam_it.edge"]
 layers = [
   "(pipeline)",
+  "(atlas)",
   "(loops) | (relocalization)",
   "(initialization) | (tracking) | (mapping)",
   "(adjust) | (database)",
