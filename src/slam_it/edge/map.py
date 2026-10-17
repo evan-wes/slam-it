@@ -445,6 +445,49 @@ def add_loop_edge(m: Map, first: int, second: int) -> Map:
     return replace(m, loop_edges=np.concatenate([m.loop_edges, edge]))
 
 
+def replace_point(m: Map, *, lose: int, keep: int) -> Map:
+    """Return the map with one point replaced by another (ORB-SLAM's ``MapPoint::Replace``).
+
+    The lost point's observations pass to the kept one, except in keyframes that already see
+    the kept one, where they are dropped; its visible and found counts are added to the kept
+    one's; it is erased (:attr:`Removal.FUSED`), and the kept one refreshed. Local mapping's
+    fusion and loop closing replace points through it.
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    lose, keep : int
+        The two points' ids, both in the map, different.
+
+    Returns
+    -------
+    Map
+        The map without the lost point.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If either point is not in the map, or they are the same.
+    """
+    p_lose, p_keep = (int(r) for r in m.point_rows(np.array([lose, keep], dtype=np.int64)))
+    if lose == keep or p_lose < 0 or p_keep < 0:
+        raise InvalidInputError(f"replace {lose} by {keep}: expected two of the map's points")
+    keyframe_of = m.keypoint_keyframe()
+    kp_point = m.kp_point.copy()
+    kept_in = set(keyframe_of[kp_point == keep].tolist())
+    for row in np.flatnonzero(kp_point == lose):
+        kp_point[row] = -1 if int(keyframe_of[row]) in kept_in else keep
+    visible, found = m.pt_visible.copy(), m.pt_found.copy()
+    visible[p_keep] += visible[p_lose]
+    found[p_keep] += found[p_lose]
+    merged = replace(m, kp_point=kp_point, pt_visible=visible, pt_found=found)
+    erase = np.zeros(merged.points, dtype=bool)
+    erase[p_lose] = True
+    merged = erase_points(merged, erase, Removal.FUSED)
+    return refresh_points(merged, merged.point_rows(np.array([keep], dtype=np.int64)))
+
+
 def _predict_level(m: Map, rows: IntArray, distance: Array) -> IntArray:
     """Predict points' levels from their distances (reference)."""
     ratio = m.pt_max_distance[rows] / distance
@@ -890,6 +933,32 @@ def as_keyframe_row(m: Map, k: object, name: str = "k") -> int:
         If it is not an integer in range.
     """
     return as_count(k, name, 0, m.keyframes - 1)
+
+
+def keyframe_row(m: Map, keyframe: int) -> int:
+    """Return the row of the keyframe with an id; refuse one the map does not hold.
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    keyframe : int
+        The keyframe's id.
+
+    Returns
+    -------
+    int
+        Its row.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the map holds no keyframe with that id.
+    """
+    k = int(m.keyframe_rows(np.array([keyframe], dtype=np.int64))[0])
+    if k < 0:
+        raise InvalidInputError(f"keyframe {keyframe} is not in the map")
+    return k
 
 
 def as_point_rows(m: Map, rows: ArrayLike, name: str = "rows") -> IntArray:

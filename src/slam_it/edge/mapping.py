@@ -854,31 +854,8 @@ def _fuse_one(m: Map, camera: Camera, k: int, point_id: int, options: Options) -
     q = int(m.point_rows(np.array([held]))[0])
     weights = maps.observation_weight(m, np.array([q, p]))
     if weights[0] > weights[1]:
-        return _merge_points(m, lose=point_id, keep=held)
-    return _merge_points(m, lose=held, keep=point_id)
-
-
-def _merge_points(m: Map, *, lose: int, keep: int) -> Map:
-    """Replace one point by another (``MapPoint::Replace``).
-
-    The lost point's observations pass to the kept one, except in keyframes that already see
-    the kept one; its visible and found counts are added to the kept one's; it is erased, and
-    the kept one refreshed.
-    """
-    keyframe_of = m.keypoint_keyframe()
-    kp_point = m.kp_point.copy()
-    kept_in = set(keyframe_of[kp_point == keep].tolist())
-    for row in np.flatnonzero(kp_point == lose):
-        kp_point[row] = -1 if int(keyframe_of[row]) in kept_in else keep
-    p_lose, p_keep = (int(r) for r in m.point_rows(np.array([lose, keep])))
-    visible, found = m.pt_visible.copy(), m.pt_found.copy()
-    visible[p_keep] += visible[p_lose]
-    found[p_keep] += found[p_lose]
-    merged = replace(m, kp_point=kp_point, pt_visible=visible, pt_found=found)
-    erase = np.zeros(merged.points, dtype=bool)
-    erase[p_lose] = True
-    merged = maps.erase_points(merged, erase, Removal.FUSED)
-    return maps.refresh_points(merged, merged.point_rows(np.array([keep])))
+        return maps.replace_point(m, lose=point_id, keep=held)
+    return maps.replace_point(m, lose=held, keep=point_id)
 
 
 def _fuse_targets(m: Map, mode: str, options: Options) -> IntArray:
