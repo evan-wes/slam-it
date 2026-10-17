@@ -484,7 +484,9 @@ Result<ProjectionResidual> projection_residual(const Eigen::Matrix4d& pose,
   const Eigen::Vector3d in_camera = rotation.transpose() * (point - pose.topRightCorner<3, 1>());
   const std::optional<Projected> seen = projected(model, intrinsics, in_camera);
   if (!seen) {
-    return ProjectionResidual{.residual = Eigen::VectorXd::Zero(size),
+    // GTSAM's own projection factors' convention: a constant error, no gradient.
+    const double fx = intrinsics(camera::focal_indices(model).front());
+    return ProjectionResidual{.residual = Eigen::VectorXd::Constant(size, 2.0 * fx),
                               .d_pose = Eigen::MatrixXd::Zero(size, kPoseDim),
                               .d_point = Eigen::MatrixXd::Zero(size, 3),
                               .in_front = false};

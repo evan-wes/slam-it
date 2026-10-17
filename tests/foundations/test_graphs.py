@@ -131,14 +131,19 @@ def test_the_similarity_factors_jacobians_are_their_derivatives(
     )
 
 
-def test_a_point_behind_its_camera_contributes_nothing() -> None:
-    """Zero residual and Jacobians, and an infinite chi2 when a refinement ends with it there."""
+def test_a_point_behind_its_camera_costs_a_constant() -> None:
+    """In BA, twice the focal length in each row with zero Jacobians, GTSAM's own factors' cost.
+
+    In a refinement, a carried point behind its camera contributes nothing, and its chi2 is
+    infinite.
+    """
     name, intrinsics = PINHOLE
     behind = graphs.projection_residual(
         np.eye(4), np.array([0.0, 0.0, -1.0]), np.array([1.0, 2.0, 3.0]), name, intrinsics, BF
     )
     assert not behind.in_front
-    for block in (behind.residual, behind.d_pose, behind.d_point):
+    np.testing.assert_array_equal(behind.residual, np.full(3, 2.0 * intrinsics[0]))
+    for block in (behind.d_pose, behind.d_point):
         assert not block.any()
     both = graphs.similarity_residuals(
         np.eye(4), np.array([0.0, 0.0, 2.0]), np.array([0.0, 0.0, -2.0]), np.zeros(2),
@@ -301,6 +306,31 @@ def test_bundle_adjustment_recovers_a_stereo_scene(backend: str, lens: tuple[str
     np.testing.assert_allclose(result.poses, poses, rtol=0, atol=1e-7)
     np.testing.assert_allclose(result.points, points, rtol=0, atol=1e-6)
     assert result.summary.converged or result.summary.final_error < 1e-12
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("lens", [RADTAN, PINHOLE], ids=["radtan", "pinhole"])
+@pytest.mark.parametrize("right", [np.nan, 300.0], ids=["mono", "stereo"])
+def test_bundle_adjustment_charges_a_point_behind_its_camera(
+    backend: str, lens: tuple[str, Array], right: float
+) -> None:
+    """A point behind its camera costs ``(2 f_x)²`` a row, half summed: GTSAM's own factors' cost.
+
+    With no gradient there, the point stays where it is; through radtan the factor is each
+    language's own, through a pinhole camera Python's is GTSAM's.
+    """
+    chosen = require_function(backend, graphs.__name__, "bundle_adjust")
+    name, intrinsics = lens
+    rows = 2 if np.isnan(right) else 3
+    result = graphs.bundle_adjust(
+        np.stack([np.eye(4), np.eye(4)]), np.array([[0.1, 0.2, -1.0]]), [0], [0],
+        [[300.0, 200.0]], [right], [1.0], model=name, intrinsics=intrinsics, bf=BF,
+        fixed=[0, 1], options=graphs.Options(max_iterations=5), backend=chosen,
+    )  # fmt: skip
+    cost = 0.5 * rows * (2.0 * intrinsics[0]) ** 2
+    assert result.summary.initial_error == pytest.approx(cost, rel=1e-12)
+    assert result.summary.final_error == pytest.approx(cost, rel=1e-12)
+    np.testing.assert_array_equal(result.points, [[0.1, 0.2, -1.0]])
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)

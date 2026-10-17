@@ -21,8 +21,10 @@ through a pinhole camera takes GTSAM's own factors instead (``GenericProjectionF
 and ``GenericStereoFactor3D`` with a right column), which model it exactly: GTSAM's Python
 wrapper copies the whole of a problem's values on every call into a ``CustomFactor``, so a map's
 bundle adjustment through them took minutes where GTSAM's own take under a second (decided with
-evan-wes on 2026-10-17). A point behind its camera then costs GTSAM's constant error of twice
-the focal length, with no gradient, where the ``CustomFactor`` costs none.
+evan-wes on 2026-10-17). Every language's projection factor gives a point behind its camera
+GTSAM's own factors' constant error, twice the focal length in each row, with no gradient: with
+none, global BA's lack of a robust loss let a monocular map's solve move points behind their
+cameras until nothing was left to cost, and the map collapsed (the loop room, 2026-10-17).
 
 **Conventions.**
 
@@ -328,7 +330,9 @@ class ProjectionResidual(NamedTuple):
         Its Jacobian on the point.
     in_front : bool
         Whether the point is in front of the camera (``Z > camera.MIN_DEPTH``). One that is not
-        cannot be projected, and contributes nothing: its residual and Jacobians are zero.
+        cannot be projected: its residual is twice the focal length in every row, its
+        Jacobians zero, GTSAM's own projection factors' convention (a constant error with no
+        gradient, so a solve gains nothing by moving a point behind its camera).
     """
 
     residual: Array
@@ -400,7 +404,9 @@ def projection_residual(  # noqa: PLR0913, PLR0917 -- the observation and its ca
     size = measured.shape[0]
     projected = _projected(model, intrinsics, in_camera)
     if projected is None:
-        return ProjectionResidual(np.zeros(size), np.zeros((size, 6)), np.zeros((size, 3)), False)
+        fx = float(intrinsics[camera.FOCAL_INDICES[model][0]])
+        behind = np.full(size, 2.0 * fx)
+        return ProjectionResidual(behind, np.zeros((size, 6)), np.zeros((size, 3)), False)
     pixel, d_pixel = projected
     if size == 3:
         z = in_camera[2]

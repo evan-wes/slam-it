@@ -177,15 +177,17 @@ void test_similarity_jacobians(int& failures) {
   }
 }
 
-/// @brief A point behind its camera contributes nothing.
+/// @brief A point behind its camera costs a constant, as GTSAM's own factors make it, with no
+///        gradient; a carried point behind its camera contributes nothing to a refinement.
 /// @param failures The running failure count.
 void test_behind_the_camera(int& failures) {
   const auto behind = graphs::projection_residual(Eigen::Matrix4d::Identity(), {0.0, 0.0, -1.0},
                                                   Eigen::Vector3d(1.0, 2.0, 3.0),
                                                   camera::Model::kPinhole, pinhole(), kBf);
-  expect(behind.has_value() && !behind->in_front && behind->residual.isZero(0.0) &&
+  expect(behind.has_value() && !behind->in_front &&
+             behind->residual.isApprox(Eigen::Vector3d::Constant(2.0 * pinhole()(0)), 0.0) &&
              behind->d_pose.isZero(0.0) && behind->d_point.isZero(0.0),
-         "a point behind its camera has zero residual and Jacobians", failures);
+         "a point behind its camera costs 2 fx in each row, with zero Jacobians", failures);
   const graphs::SimilarityResiduals both = graphs::similarity_residuals(
       Eigen::Matrix4d::Identity(), {0.0, 0.0, 2.0}, {0.0, 0.0, -2.0}, Eigen::Vector2d::Zero(),
       Eigen::Vector2d::Zero(), camera::Model::kPinhole, pinhole(), false);
