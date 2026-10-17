@@ -28,19 +28,6 @@ using foundations::correspondences::Rows3;
 
 constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
 
-/// @brief A keyframe's row, refusing one the map does not hold.
-/// @param m The map.
-/// @param keyframe Its id.
-/// @return The row; `InvalidInput` if the map does not hold it.
-Result<std::size_t> row_of(const Map& m, std::int64_t keyframe) {
-  const std::int64_t k = keyframe_row(m, keyframe);
-  if (k < 0) {
-    return fail(ErrorKind::kInvalidInput,
-                "keyframe " + std::to_string(keyframe) + " is not in the map");
-  }
-  return static_cast<std::size_t>(k);
-}
-
 /// @brief How many keypoints matched a point.
 /// @param points Each keypoint's point id, or -1.
 /// @return The matched ones.
@@ -193,7 +180,7 @@ Result<Attempt> try_candidate(const Map& m, const Database& db, const Camera& ca
                               const Frame& frame, std::span<const std::int64_t> frame_nodes,
                               std::pair<std::int64_t, double> candidate, const Options& options) {
   const auto [keyframe, score] = candidate;
-  auto k = row_of(m, keyframe);
+  auto k = checked_keyframe_row(m, keyframe);
   if (!k) {
     return std::unexpected(std::move(k.error()));
   }
@@ -313,7 +300,7 @@ Result<std::vector<std::int64_t>> search_keyframe(const Map& m, const Camera& ca
                                                   std::int64_t keyframe,
                                                   std::span<const std::int64_t> skip,
                                                   SearchWindow window, const Options& options) {
-  auto k = row_of(m, keyframe);
+  auto k = checked_keyframe_row(m, keyframe);
   if (!k) {
     return std::unexpected(std::move(k.error()));
   }

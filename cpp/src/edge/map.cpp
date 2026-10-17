@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numeric>
 #include <set>
 #include <string>
 #include <utility>
@@ -404,6 +405,33 @@ std::int64_t point_row(const Map& m, std::int64_t id) { return row_of(m.pt_id, i
 
 std::int64_t keyframe_row(const Map& m, std::int64_t id) { return row_of(m.kf_id, id); }
 
+std::vector<std::int64_t> keypoint_rows(const Map& m, std::size_t k) {
+  std::vector<std::int64_t> out(static_cast<std::size_t>(m.kf_start[k + 1] - m.kf_start[k]));
+  std::ranges::iota(out, m.kf_start[k]);
+  return out;
+}
+
+std::vector<foundations::orb::Keypoint> keyframe_keypoints(const Map& m, std::size_t k) {
+  std::vector<foundations::orb::Keypoint> out;
+  for (const std::int64_t row : keypoint_rows(m, k)) {
+    const auto r = static_cast<std::size_t>(row);
+    out.push_back({.xy = m.kp_xy[r],
+                   .level = m.kp_level[r],
+                   .level_xy = {},
+                   .response = 0,
+                   .angle = m.kp_angle[r]});
+  }
+  return out;
+}
+
+Result<std::size_t> checked_keyframe_row(const Map& m, std::int64_t id) {
+  const std::int64_t k = keyframe_row(m, id);
+  if (k < 0) {
+    return fail(ErrorKind::kInvalidInput, "keyframe " + std::to_string(id) + " is not in the map");
+  }
+  return static_cast<std::size_t>(k);
+}
+
 std::size_t keyframe_of(const Map& m, std::int64_t row) {
   return static_cast<std::size_t>(std::ranges::upper_bound(m.kf_start, row) - m.kf_start.begin()) -
          1;
@@ -711,6 +739,38 @@ Result<void> add_loop_edge(Map& m, std::int64_t first, std::int64_t second) {
   }
   m.loop_edges.push_back({std::min(first, second), std::max(first, second)});
   return {};
+}
+
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (lose, keep), named as Python's
+Result<void> replace_point(Map& m, std::int64_t lose, std::int64_t keep) {
+  const std::int64_t r_lose = point_row(m, lose);
+  const std::int64_t r_keep = point_row(m, keep);
+  if (lose == keep || r_lose < 0 || r_keep < 0) {
+    return fail(ErrorKind::kInvalidInput, "replace " + std::to_string(lose) + " by " +
+                                              std::to_string(keep) +
+                                              ": expected two of the map's points");
+  }
+  const auto p_lose = static_cast<std::size_t>(r_lose);
+  const auto p_keep = static_cast<std::size_t>(r_keep);
+  std::set<std::size_t> kept_in;
+  for (const std::int64_t r : m.pt_observations[p_keep]) {
+    kept_in.insert(keyframe_of(m, r));
+  }
+  const std::vector<std::int64_t> moving = m.pt_observations[p_lose];  // observe() changes it
+  for (const std::int64_t r : moving) {
+    if (auto ok = observe(m, r, kept_in.contains(keyframe_of(m, r)) ? -1 : keep); !ok) {
+      return ok;
+    }
+  }
+  m.pt_visible[p_keep] += m.pt_visible[p_lose];
+  m.pt_found[p_keep] += m.pt_found[p_lose];
+  std::vector<std::uint8_t> erase(point_count(m), 0);
+  erase[p_lose] = 1;
+  if (auto ok = erase_points(m, erase, Removal::kFused); !ok) {
+    return ok;
+  }
+  const std::vector<std::int64_t> kept{point_row(m, keep)};
+  return refresh_points(m, kept);
 }
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (row, id), a keypoint and its point

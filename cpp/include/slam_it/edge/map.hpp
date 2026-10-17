@@ -173,6 +173,26 @@ void index_observations(Map& m);
 /// @return Its row, or -1.
 [[nodiscard]] std::int64_t keyframe_row(const Map& m, std::int64_t id);
 
+/// @brief Find a keyframe by id, refusing one the map does not hold
+///        (`slam_it.edge.map.keyframe_row`).
+/// @param m The map.
+/// @param id The id.
+/// @return Its row; `InvalidInput` naming the keyframe if the map does not hold it.
+[[nodiscard]] foundations::Result<std::size_t> checked_keyframe_row(const Map& m, std::int64_t id);
+
+/// @brief A keyframe's keypoint rows (`slam_it.edge.map.Map.keypoint_rows`).
+/// @param m The map.
+/// @param k The keyframe's row, in range.
+/// @return Its keypoints' rows, ascending.
+[[nodiscard]] std::vector<std::int64_t> keypoint_rows(const Map& m, std::size_t k);
+
+/// @brief A keyframe's keypoints as a grid reads them: positions, levels and orientations.
+/// @param m The map.
+/// @param k The keyframe's row, in range.
+/// @return Its keypoints, in row order.
+[[nodiscard]] std::vector<foundations::orb::Keypoint> keyframe_keypoints(const Map& m,
+                                                                         std::size_t k);
+
 /// @brief A keypoint's keyframe row.
 /// @param m The map.
 /// @param row The keypoint's row, in range.
@@ -325,6 +345,18 @@ void clear_gone(Map& m);
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the edge's two ends, in either order
 [[nodiscard]] foundations::Result<void> add_loop_edge(Map& m, std::int64_t first,
                                                       std::int64_t second);
+
+/// @brief Replace one point by another (`slam_it.edge.map.replace_point`,
+///        `MapPoint::Replace`): the lost point's observations pass to the kept one, but in
+///        keyframes that already see it, where they are dropped; its visible and found counts are
+///        added to the kept one's; it is erased (fused), and the kept one refreshed. Local
+///        mapping's fusion and loop closing replace points through it.
+/// @param m The map.
+/// @param lose The lost point's id.
+/// @param keep The kept point's id.
+/// @return Nothing, or `InvalidInput` if either is not in the map, or they are the same.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (lose, keep), named as Python's
+[[nodiscard]] foundations::Result<void> replace_point(Map& m, std::int64_t lose, std::int64_t keep);
 
 /// @brief Point a keypoint at a point, or at none, keeping the observation lists.
 /// @param m The map.
